@@ -1,0 +1,11 @@
+[package]
+name = "bench-runner"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+gsplat-core = { path = "../../crates/gsplat-core" }
+gsplat-io-ply = { path = "../../crates/gsplat-io-ply" }
+gsplat-render-wgpu = { path = "../../crates/gsplat-render-wgpu" }

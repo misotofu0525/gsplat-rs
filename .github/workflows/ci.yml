@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  check-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.93.0
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      - name: Cargo check
+        run: cargo check --workspace
+      - name: Cargo test
+        run: cargo test --workspace
+      - name: C ABI smoke
+        run: bash tests/ffi/run-ffi-smoke.sh
+      - name: JNI smoke
+        run: bash apps/android-demo/run-jni-smoke.sh
+      - name: Format pack verify
+        run: cargo run -p gsplat-pack -- tests/datasets/minimal_ascii.ply target/minimal.gspk --verify
+      - name: Stability smoke (short)
+        env:
+          STABILITY_SECONDS: "5"
+          RSS_GROWTH_LIMIT_KIB: "262144"
+        run: bash tests/perf/run-long-stability.sh
+
+  check-macos-swift:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.93.0
+      - name: Swift smoke
+        run: bash apps/ios-demo/run-swift-smoke.sh
+      - name: iOS simulator target build
+        run: bash apps/ios-demo/build-ios-sim.sh

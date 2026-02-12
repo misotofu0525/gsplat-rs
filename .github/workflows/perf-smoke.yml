@@ -1,0 +1,15 @@
+name: Perf Smoke
+
+on:
+  workflow_dispatch:
+
+jobs:
+  perf-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.93.0
+      - name: Cargo check
+        run: cargo check --workspace
+      - name: Run benchmark
+        run: cargo run -p bench-runner -- tests/datasets/minimal_ascii.ply 120

@@ -1,0 +1,10 @@
+[package]
+name = "desktop-dev"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+gsplat-core = { path = "../../crates/gsplat-core" }
+gsplat-render-wgpu = { path = "../../crates/gsplat-render-wgpu" }

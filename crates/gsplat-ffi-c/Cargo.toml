@@ -1,0 +1,14 @@
+[package]
+name = "gsplat-ffi-c"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[lib]
+crate-type = ["rlib", "cdylib", "staticlib"]
+
+[dependencies]
+gsplat-core = { path = "../gsplat-core" }
+gsplat-io-ply = { path = "../gsplat-io-ply" }
+gsplat-render-wgpu = { path = "../gsplat-render-wgpu" }
