@@ -4,9 +4,18 @@
 Close the remaining gaps called out after baseline delivery: WGSL render path, non-placeholder GPU sort backend, format/pack tooling, long-stability gate tooling, and mobile demo container-level execution evidence.
 
 ## Current Phase
-Phase R6 complete
+Phase R7 complete
 
 ## Phases
+
+### Phase R7: Full 3DGS Geometry Closure (High Priority)
+- [x] Re-baseline current simplified splat geometry path and identify exact gap
+- [x] Reference `hyperlogic/splatapult` splat shader math for covariance projection
+- [x] Implement covariance-driven anisotropic screen-space ellipse geometry in renderer
+- [x] Update WGSL to consume ellipse axes and apply Gaussian falloff consistently
+- [x] Add focused tests/verification for the new geometry path
+- [x] Update docs/planning logs to reflect closure status
+- **Status:** complete
 
 ### Phase R1: Remaining Gap Re-baseline
 - [x] Re-open remaining items from user feedback
@@ -108,3 +117,4 @@ Phase R6 complete
 | WGPU API mismatch compilation errors with v28 descriptors | 1 | Updated descriptors (`experimental_features`, `immediate_size`, `multiview_mask`) and poll API usage |
 | Homebrew gradle installation blocked by tap conflict | 1 | Replaced with script-driven project-local Gradle bootstrap |
 | `bench-runner` positional parsing caused dataset path to be overwritten by iterations value | 1 | Added explicit parser state to separate dataset and iteration positional args |
+| Policy rejected `rm -rf` while preparing reference repo checkout | 1 | Used timestamped clone path without destructive cleanup |

@@ -14,7 +14,7 @@ Execution progress: `docs/v0.1.0-subagent-execution.md`.
 - `crates/gsplat-core`: shared public types, config, stats, and error codes
 - `crates/gsplat-io-ply`: required-field PLY parser
 - `crates/gsplat-sort`: sort backend abstraction + CPU fallback + GPU compute sort backend
-- `crates/gsplat-render-wgpu`: preprocess/sort + WGSL instanced-quad render path
+- `crates/gsplat-render-wgpu`: preprocess/sort + WGSL covariance-driven anisotropic splat render path
 - `crates/gsplat-format`: packed scene format primitives
 - `crates/gsplat-ffi-c`: stable C ABI surface for mobile wrappers
 - `tools/gsplat-pack`: PLY -> packed format converter

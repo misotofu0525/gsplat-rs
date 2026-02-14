@@ -7,7 +7,7 @@
 1. Load scene (`gsplat-io-ply`) into `SceneBuffers`
 2. Preprocess visible set and depth keys (`gsplat-render-wgpu`)
 3. Sort (`gsplat-sort` GPU compute backend with CPU fallback)
-4. Raster/blend WGSL instanced-quad stage (`gsplat-render-wgpu`)
+4. Raster/blend WGSL covariance-driven anisotropic ellipse stage (`gsplat-render-wgpu`)
 5. Expose stats and error codes via Rust APIs and C ABI (`gsplat-ffi-c`)
 6. Optional offline pack (`gsplat-format` + `gsplat-pack`)
 

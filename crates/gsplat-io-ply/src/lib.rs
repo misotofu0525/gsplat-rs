@@ -29,7 +29,9 @@ pub struct PlyLoadResult {
 pub enum PlyLoadError {
     #[error("I/O error while reading PLY")]
     Io,
-    #[error("unsupported PLY format; supported: ascii 1.0, binary_little_endian 1.0, binary_big_endian 1.0")]
+    #[error(
+        "unsupported PLY format; supported: ascii 1.0, binary_little_endian 1.0, binary_big_endian 1.0"
+    )]
     UnsupportedFormat,
     #[error("malformed PLY header")]
     MalformedHeader,
@@ -118,13 +120,25 @@ pub fn parse_ply_bytes(input: &[u8]) -> Result<PlyLoadResult, PlyLoadError> {
     };
 
     match header.format {
-        PlyFormat::Ascii => parse_ascii_body(&header, body, &indices, &sh_rest_prop_indices, &mut scene)?,
-        PlyFormat::BinaryLittleEndian => {
-            parse_binary_body(&header, body, &indices, &sh_rest_prop_indices, Endian::Little, &mut scene)?
+        PlyFormat::Ascii => {
+            parse_ascii_body(&header, body, &indices, &sh_rest_prop_indices, &mut scene)?
         }
-        PlyFormat::BinaryBigEndian => {
-            parse_binary_body(&header, body, &indices, &sh_rest_prop_indices, Endian::Big, &mut scene)?
-        }
+        PlyFormat::BinaryLittleEndian => parse_binary_body(
+            &header,
+            body,
+            &indices,
+            &sh_rest_prop_indices,
+            Endian::Little,
+            &mut scene,
+        )?,
+        PlyFormat::BinaryBigEndian => parse_binary_body(
+            &header,
+            body,
+            &indices,
+            &sh_rest_prop_indices,
+            Endian::Big,
+            &mut scene,
+        )?,
     }
 
     scene.validate().map_err(|_| PlyLoadError::InvalidScene)?;
@@ -206,7 +220,8 @@ fn split_header_body(input: &[u8]) -> Result<(PlyHeader, &[u8]), PlyLoadError> {
     }
 
     let header_end = header_end.ok_or(PlyLoadError::MalformedHeader)?;
-    let header_text = std::str::from_utf8(&input[..header_end]).map_err(|_| PlyLoadError::MalformedHeader)?;
+    let header_text =
+        std::str::from_utf8(&input[..header_end]).map_err(|_| PlyLoadError::MalformedHeader)?;
     let header = parse_header_text(header_text)?;
     Ok((header, &input[header_end..]))
 }
@@ -239,7 +254,9 @@ fn parse_header_text(input: &str) -> Result<PlyHeader, PlyLoadError> {
             Some("format") => {
                 format = match (parts.next(), parts.next()) {
                     (Some("ascii"), Some("1.0")) => Some(PlyFormat::Ascii),
-                    (Some("binary_little_endian"), Some("1.0")) => Some(PlyFormat::BinaryLittleEndian),
+                    (Some("binary_little_endian"), Some("1.0")) => {
+                        Some(PlyFormat::BinaryLittleEndian)
+                    }
                     (Some("binary_big_endian"), Some("1.0")) => Some(PlyFormat::BinaryBigEndian),
                     _ => None,
                 };
@@ -304,7 +321,11 @@ fn infer_sh_rest_layout(header: &PlyHeader) -> Result<(u8, Option<Vec<usize>>), 
     // Collect all f_rest_* fields, ensure they are contiguous, and infer SH degree.
     let mut rest_pairs: Vec<(usize, usize)> = Vec::new();
     for (prop_index, prop) in header.vertex_properties.iter().enumerate() {
-        if let Some(rest_idx) = prop.name.strip_prefix("f_rest_").and_then(|s| s.parse::<usize>().ok()) {
+        if let Some(rest_idx) = prop
+            .name
+            .strip_prefix("f_rest_")
+            .and_then(|s| s.parse::<usize>().ok())
+        {
             rest_pairs.push((rest_idx, prop_index));
         }
     }
@@ -404,7 +425,9 @@ fn parse_ascii_body(
         let z = parse_field_f32_ascii(&values, indices, "z")?;
         scene.positions.push(Vec3f::new(x, y, z));
 
-        scene.opacity.push(parse_field_f32_ascii(&values, indices, "opacity")?);
+        scene
+            .opacity
+            .push(parse_field_f32_ascii(&values, indices, "opacity")?);
 
         scene.scale_xyz.push([
             parse_field_f32_ascii(&values, indices, "scale_0")?,
@@ -425,10 +448,9 @@ fn parse_ascii_body(
             parse_field_f32_ascii(&values, indices, "f_dc_2")?,
         ]);
 
-        if let (Some(rest_prop_indices), Some(rest_out)) = (
-            sh_rest_prop_indices.as_ref(),
-            scene.sh_rest.as_mut(),
-        ) {
+        if let (Some(rest_prop_indices), Some(rest_out)) =
+            (sh_rest_prop_indices.as_ref(), scene.sh_rest.as_mut())
+        {
             for &prop_index in rest_prop_indices {
                 rest_out.push(parse_field_f32_ascii_idx(&values, prop_index)?);
             }
@@ -443,7 +465,10 @@ fn parse_field_f32_ascii(
     indices: &HashMap<&str, usize>,
     field: &str,
 ) -> Result<f32, PlyLoadError> {
-    let idx = indices.get(field).copied().ok_or(PlyLoadError::MalformedHeader)?;
+    let idx = indices
+        .get(field)
+        .copied()
+        .ok_or(PlyLoadError::MalformedHeader)?;
     parse_field_f32_ascii_idx(values, idx)
 }
 
@@ -481,7 +506,9 @@ fn parse_binary_body(
         let z = read_field_f32_binary(record, header, &offsets, indices, "z", endian)?;
         scene.positions.push(Vec3f::new(x, y, z));
 
-        scene.opacity.push(read_field_f32_binary(record, header, &offsets, indices, "opacity", endian)?);
+        scene.opacity.push(read_field_f32_binary(
+            record, header, &offsets, indices, "opacity", endian,
+        )?);
 
         scene.scale_xyz.push([
             read_field_f32_binary(record, header, &offsets, indices, "scale_0", endian)?,
@@ -502,12 +529,13 @@ fn parse_binary_body(
             read_field_f32_binary(record, header, &offsets, indices, "f_dc_2", endian)?,
         ]);
 
-        if let (Some(rest_prop_indices), Some(rest_out)) = (
-            sh_rest_prop_indices.as_ref(),
-            scene.sh_rest.as_mut(),
-        ) {
+        if let (Some(rest_prop_indices), Some(rest_out)) =
+            (sh_rest_prop_indices.as_ref(), scene.sh_rest.as_mut())
+        {
             for &prop_index in rest_prop_indices {
-                rest_out.push(read_field_f32_binary_idx(record, header, &offsets, prop_index, endian)?);
+                rest_out.push(read_field_f32_binary_idx(
+                    record, header, &offsets, prop_index, endian,
+                )?);
             }
         }
     }
@@ -535,7 +563,10 @@ fn read_field_f32_binary(
     field: &str,
     endian: Endian,
 ) -> Result<f32, PlyLoadError> {
-    let prop_index = indices.get(field).copied().ok_or(PlyLoadError::MalformedHeader)?;
+    let prop_index = indices
+        .get(field)
+        .copied()
+        .ok_or(PlyLoadError::MalformedHeader)?;
     read_field_f32_binary_idx(record, header, offsets, prop_index, endian)
 }
 
@@ -550,7 +581,9 @@ fn read_field_f32_binary_idx(
         .vertex_properties
         .get(prop_index)
         .ok_or(PlyLoadError::MalformedHeader)?;
-    let offset = *offsets.get(prop_index).ok_or(PlyLoadError::MalformedHeader)?;
+    let offset = *offsets
+        .get(prop_index)
+        .ok_or(PlyLoadError::MalformedHeader)?;
     read_scalar_f32(record, offset, prop.ty, endian)
 }
 
@@ -561,7 +594,9 @@ fn read_scalar_f32(
     endian: Endian,
 ) -> Result<f32, PlyLoadError> {
     let size = ty.size_bytes();
-    let end = offset.checked_add(size).ok_or(PlyLoadError::MalformedHeader)?;
+    let end = offset
+        .checked_add(size)
+        .ok_or(PlyLoadError::MalformedHeader)?;
     if end > record.len() {
         return Err(PlyLoadError::VertexFieldCount);
     }
@@ -570,18 +605,34 @@ fn read_scalar_f32(
     let value = match (ty, endian) {
         (PlyScalarType::Int8, _) => i8::from_ne_bytes([bytes[0]]) as f32,
         (PlyScalarType::UInt8, _) => u8::from_ne_bytes([bytes[0]]) as f32,
-        (PlyScalarType::Int16, Endian::Little) => i16::from_le_bytes(bytes.try_into().unwrap()) as f32,
+        (PlyScalarType::Int16, Endian::Little) => {
+            i16::from_le_bytes(bytes.try_into().unwrap()) as f32
+        }
         (PlyScalarType::Int16, Endian::Big) => i16::from_be_bytes(bytes.try_into().unwrap()) as f32,
-        (PlyScalarType::UInt16, Endian::Little) => u16::from_le_bytes(bytes.try_into().unwrap()) as f32,
-        (PlyScalarType::UInt16, Endian::Big) => u16::from_be_bytes(bytes.try_into().unwrap()) as f32,
-        (PlyScalarType::Int32, Endian::Little) => i32::from_le_bytes(bytes.try_into().unwrap()) as f32,
+        (PlyScalarType::UInt16, Endian::Little) => {
+            u16::from_le_bytes(bytes.try_into().unwrap()) as f32
+        }
+        (PlyScalarType::UInt16, Endian::Big) => {
+            u16::from_be_bytes(bytes.try_into().unwrap()) as f32
+        }
+        (PlyScalarType::Int32, Endian::Little) => {
+            i32::from_le_bytes(bytes.try_into().unwrap()) as f32
+        }
         (PlyScalarType::Int32, Endian::Big) => i32::from_be_bytes(bytes.try_into().unwrap()) as f32,
-        (PlyScalarType::UInt32, Endian::Little) => u32::from_le_bytes(bytes.try_into().unwrap()) as f32,
-        (PlyScalarType::UInt32, Endian::Big) => u32::from_be_bytes(bytes.try_into().unwrap()) as f32,
+        (PlyScalarType::UInt32, Endian::Little) => {
+            u32::from_le_bytes(bytes.try_into().unwrap()) as f32
+        }
+        (PlyScalarType::UInt32, Endian::Big) => {
+            u32::from_be_bytes(bytes.try_into().unwrap()) as f32
+        }
         (PlyScalarType::Float32, Endian::Little) => f32::from_le_bytes(bytes.try_into().unwrap()),
         (PlyScalarType::Float32, Endian::Big) => f32::from_be_bytes(bytes.try_into().unwrap()),
-        (PlyScalarType::Float64, Endian::Little) => f64::from_le_bytes(bytes.try_into().unwrap()) as f32,
-        (PlyScalarType::Float64, Endian::Big) => f64::from_be_bytes(bytes.try_into().unwrap()) as f32,
+        (PlyScalarType::Float64, Endian::Little) => {
+            f64::from_le_bytes(bytes.try_into().unwrap()) as f32
+        }
+        (PlyScalarType::Float64, Endian::Big) => {
+            f64::from_be_bytes(bytes.try_into().unwrap()) as f32
+        }
     };
 
     if value.is_finite() {

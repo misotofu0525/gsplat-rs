@@ -1,7 +1,8 @@
 struct InstanceData {
-  pos_xy: vec2<f32>,
-  size: f32,
-  _pad0: f32,
+  // xy = center in NDC, zw = major axis in NDC
+  center_and_axis_u: vec4<f32>,
+  // xy = minor axis in NDC
+  axis_v_and_pad: vec4<f32>,
   color: vec4<f32>,
 };
 
@@ -33,10 +34,13 @@ fn vs_main(
 ) -> VsOut {
   let instance = instances[instance_index];
   let quad = quad_offset(vertex_index);
-  let offset = quad * instance.size;
+  let center = instance.center_and_axis_u.xy;
+  let axis_u = instance.center_and_axis_u.zw;
+  let axis_v = instance.axis_v_and_pad.xy;
+  let offset = axis_u * quad.x + axis_v * quad.y;
 
   var out: VsOut;
-  out.position = vec4<f32>(instance.pos_xy + offset, 0.0, 1.0);
+  out.position = vec4<f32>(center + offset, 0.0, 1.0);
   out.color = instance.color;
   out.local = quad;
   return out;
@@ -45,7 +49,15 @@ fn vs_main(
 @fragment
 fn fs_main(input: VsOut) -> @location(0) vec4<f32> {
   let r2 = dot(input.local, input.local);
-  // Radial Gaussian falloff in quad-local space. The scalar controls edge softness.
-  let g = exp(-r2 * 2.0);
-  return input.color * g;
+  if (r2 > 1.0) {
+    discard;
+  }
+
+  // Axis vectors encode a 3-sigma ellipse, so local-space exponent scales by 9.
+  let g = exp(-4.5 * r2);
+  let alpha = input.color.a * g;
+  if (alpha <= (1.0 / 256.0)) {
+    discard;
+  }
+  return vec4<f32>(input.color.rgb * g, alpha);
 }

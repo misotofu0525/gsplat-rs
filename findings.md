@@ -22,6 +22,9 @@
 - WGSL render path can be integrated without surface creation by rendering into an offscreen texture target.
 - `wgpu 28` API requires `experimental_features` in `DeviceDescriptor`, `immediate_size` in `PipelineLayoutDescriptor`, and `PollType::wait_indefinitely()`.
 - Android container build is feasible in this environment by combining Rust cross-compilation (`aarch64-linux-android`), NDK clang JNI linking, and local Gradle distribution bootstrap.
+- The current WGSL path uses isotropic quad size from `max(exp(scale_*))`; it does not project full 3D covariance into screen-space ellipse axes.
+- `hyperlogic/splatapult` projects 3D covariance with Jacobian-based affine approximation (`V' = J W V (J W)^T`), then derives ellipse extents from 2D covariance eigen decomposition.
+- `splatapult` fragment evaluation uses Gaussian form `exp(-0.5 * d^T * cov2_inv * d)` and alpha cutoff, which is directly portable to our SortedAlpha blend contract.
 
 ## Technical Decisions
 | Decision | Rationale |
@@ -37,6 +40,9 @@
 | Implement GPU sort backend as compute odd-even pass for v0.1 closure | Provides real GPU execution path with manageable complexity and deterministic fallback behavior |
 | Use offscreen WGSL render pass for baseline correctness path | Unblocks shader delivery before window/surface integration |
 | Build Android APK via project-local Gradle distribution | Avoids global tooling dependency conflicts on host machine |
+| Prioritize “full 3DGS geometry” before interactive viewer loop | User explicitly raised this as higher-priority unfinished work |
+| Port covariance-projection math from `splatapult` into current wgpu path | Delivers geometry correctness while preserving existing crate boundaries |
+| Keep implementation in current instanced draw model (no geometry shader) | Aligns with WebGPU/wgpu constraints and existing renderer architecture |
 
 ## Issues Encountered
 | Issue | Resolution |
@@ -48,6 +54,7 @@
 | `brew install gradle` failed due tap state conflict | Avoided global install and switched to project-local Gradle download flow |
 | `wgpu 28` API mismatch errors in new GPU code | Adapted descriptor fields and polling API to current version |
 | Bench-runner positional argument parsing regression after stability mode extension | Added explicit dataset/iteration parse state and revalidated both modes |
+| Local policy rejected `rm -rf` while cloning external reference repo | Switched to timestamped temporary clone path without destructive cleanup |
 
 ## Resources
 - `/Users/misotofu/Documents/workspace/gsplat-rs/docs/v0.1.0-multi-subagent-plan.md`
@@ -77,3 +84,7 @@
 - `/Users/misotofu/Documents/workspace/gsplat-rs/apps/android-demo/build-apk.sh`
 - `/Users/misotofu/Documents/workspace/gsplat-rs/apps/ios-demo/build-ios-sim.sh`
 - `/Users/misotofu/Documents/workspace/gsplat-rs/docs/release-v0.1.0-checklist.md`
+- `https://github.com/hyperlogic/splatapult`
+- `/tmp/splatapult_ref_1771062563/shader/splat_vert.glsl`
+- `/tmp/splatapult_ref_1771062563/shader/splat_geom.glsl`
+- `/tmp/splatapult_ref_1771062563/shader/splat_frag.glsl`

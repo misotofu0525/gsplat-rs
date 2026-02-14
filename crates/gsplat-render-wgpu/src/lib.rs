@@ -209,9 +209,11 @@ fn depth_to_key(depth_z: f32) -> u32 {
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct GpuInstance {
-    pos_xy: [f32; 2],
-    size: f32,
-    _pad0: f32,
+    // xy = center in NDC, zw = major axis in NDC
+    center_and_axis_u: [f32; 4],
+    // xy = minor axis in NDC, zw = reserved
+    axis_v_and_pad: [f32; 4],
+    // Premultiplied RGB + alpha
     color_rgba: [f32; 4],
 }
 
@@ -224,28 +226,56 @@ fn build_instances(
     let mut out = Vec::with_capacity(indices.len());
     let aspect = config.width as f32 / config.height as f32;
     let f = 1.0 / (camera.intrinsics.vertical_fov_radians * 0.5).tan();
+    let camera_inv_q = quat_inverse(camera.pose.rotation_xyzw);
+    let view_rot = quat_to_mat3(camera_inv_q);
 
     for &idx in indices {
         let i = idx as usize;
         let pos_world = scene.positions[i];
-        let p_cam = world_to_camera(pos_world, camera);
+        let p_cam = world_to_camera_with_inv_q(pos_world, camera, camera_inv_q);
         // Preprocess already culled by z range, but keep this safe for runtime camera changes.
         if !is_visible(p_cam.z, camera) {
             continue;
         }
 
+        // Project center to NDC for instance placement.
         let inv_z = 1.0 / p_cam.z.max(1e-6);
         let x_ndc = (p_cam.x * f) * inv_z / aspect;
         let y_ndc = (p_cam.y * f) * inv_z;
 
-        // 3DGS stores log-scales; runtime applies exp() to restore linear sigma.
+        // 3DGS stores log-scales; runtime applies exp() to restore linear sigma. Build
+        // object covariance and project into screen space using J * V_cam * J^T.
         let scale = scene.scale_xyz[i];
-        let sx = scale[0].exp();
-        let sy = scale[1].exp();
-        let sz = scale[2].exp();
-        let sigma = sx.max(sy).max(sz);
-        let size = (sigma * f) * inv_z;
-        let size = size.clamp(0.0005, 0.2);
+        let sx = scale[0].exp().max(1e-6);
+        let sy = scale[1].exp().max(1e-6);
+        let sz = scale[2].exp().max(1e-6);
+        let object_cov = [
+            [sx * sx, 0.0, 0.0],
+            [0.0, sy * sy, 0.0],
+            [0.0, 0.0, sz * sz],
+        ];
+        let rot_gaussian = quat_to_mat3(quat_normalize(scene.rotation_xyzw[i]));
+        let world_cov = mat3_mul(
+            mat3_mul(rot_gaussian, object_cov),
+            mat3_transpose(rot_gaussian),
+        );
+        let cam_cov = mat3_mul(mat3_mul(view_rot, world_cov), mat3_transpose(view_rot));
+        let Some(cov2_ndc) = project_covariance_to_ndc(p_cam, cam_cov, camera, config) else {
+            continue;
+        };
+        let Some((axis_u, axis_v)) = ellipse_axes_from_covariance(cov2_ndc) else {
+            continue;
+        };
+        let extent_x = axis_u[0].abs() + axis_v[0].abs();
+        let extent_y = axis_u[1].abs() + axis_v[1].abs();
+        if x_ndc + extent_x < -1.0
+            || x_ndc - extent_x > 1.0
+            || y_ndc + extent_y < -1.0
+            || y_ndc - extent_y > 1.0
+        {
+            continue;
+        }
+
         let alpha = sigmoid(scene.opacity[i]).clamp(0.0, 1.0);
         let dir_world = normalize3(Vec3f::new(
             pos_world.x - camera.pose.position.x,
@@ -260,9 +290,8 @@ fn build_instances(
         ];
 
         out.push(GpuInstance {
-            pos_xy: [x_ndc, y_ndc],
-            size,
-            _pad0: 0.0,
+            center_and_axis_u: [x_ndc, y_ndc, axis_u[0], axis_u[1]],
+            axis_v_and_pad: [axis_v[0], axis_v[1], 0.0, 0.0],
             color_rgba: [
                 (rgb[0] * alpha).clamp(0.0, 1.0),
                 (rgb[1] * alpha).clamp(0.0, 1.0),
@@ -280,14 +309,18 @@ fn sigmoid(value: f32) -> f32 {
 }
 
 fn world_to_camera(pos_world: Vec3f, camera: &Camera) -> Vec3f {
+    let inv_q = quat_inverse(camera.pose.rotation_xyzw);
+    world_to_camera_with_inv_q(pos_world, camera, inv_q)
+}
+
+fn world_to_camera_with_inv_q(pos_world: Vec3f, camera: &Camera, camera_inv_q: [f32; 4]) -> Vec3f {
     let p = Vec3f::new(
         pos_world.x - camera.pose.position.x,
         pos_world.y - camera.pose.position.y,
         pos_world.z - camera.pose.position.z,
     );
 
-    let inv_q = quat_inverse(camera.pose.rotation_xyzw);
-    quat_rotate(inv_q, p)
+    quat_rotate(camera_inv_q, p)
 }
 
 fn quat_inverse(q: [f32; 4]) -> [f32; 4] {
@@ -297,6 +330,151 @@ fn quat_inverse(q: [f32; 4]) -> [f32; 4] {
         return [0.0, 0.0, 0.0, 1.0];
     }
     [-x / norm2, -y / norm2, -z / norm2, w / norm2]
+}
+
+fn quat_normalize(q: [f32; 4]) -> [f32; 4] {
+    let norm2 = q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3];
+    if norm2 <= 0.0 {
+        return [0.0, 0.0, 0.0, 1.0];
+    }
+    let inv = 1.0 / norm2.sqrt();
+    [q[0] * inv, q[1] * inv, q[2] * inv, q[3] * inv]
+}
+
+fn quat_to_mat3(q: [f32; 4]) -> [[f32; 3]; 3] {
+    let q = quat_normalize(q);
+    let (x, y, z, w) = (q[0], q[1], q[2], q[3]);
+    let xx = x * x;
+    let yy = y * y;
+    let zz = z * z;
+    let xy = x * y;
+    let xz = x * z;
+    let yz = y * z;
+    let wx = w * x;
+    let wy = w * y;
+    let wz = w * z;
+
+    [
+        [1.0 - 2.0 * (yy + zz), 2.0 * (xy - wz), 2.0 * (xz + wy)],
+        [2.0 * (xy + wz), 1.0 - 2.0 * (xx + zz), 2.0 * (yz - wx)],
+        [2.0 * (xz - wy), 2.0 * (yz + wx), 1.0 - 2.0 * (xx + yy)],
+    ]
+}
+
+fn mat3_mul(a: [[f32; 3]; 3], b: [[f32; 3]; 3]) -> [[f32; 3]; 3] {
+    let mut out = [[0.0; 3]; 3];
+    for r in 0..3 {
+        for c in 0..3 {
+            out[r][c] = a[r][0] * b[0][c] + a[r][1] * b[1][c] + a[r][2] * b[2][c];
+        }
+    }
+    out
+}
+
+fn mat3_transpose(m: [[f32; 3]; 3]) -> [[f32; 3]; 3] {
+    [
+        [m[0][0], m[1][0], m[2][0]],
+        [m[0][1], m[1][1], m[2][1]],
+        [m[0][2], m[1][2], m[2][2]],
+    ]
+}
+
+fn project_covariance_to_ndc(
+    p_cam: Vec3f,
+    cov_cam: [[f32; 3]; 3],
+    camera: &Camera,
+    config: RendererConfig,
+) -> Option<[[f32; 2]; 2]> {
+    if config.width == 0 || config.height == 0 {
+        return None;
+    }
+    let z = p_cam.z;
+    if z <= 1e-6 || !z.is_finite() {
+        return None;
+    }
+
+    let aspect = config.width as f32 / config.height as f32;
+    let f = 1.0 / (camera.intrinsics.vertical_fov_radians * 0.5).tan();
+    let fx = f / aspect;
+    let fy = f;
+    let inv_z = 1.0 / z;
+    let inv_z2 = inv_z * inv_z;
+    let j = [
+        [fx * inv_z, 0.0, -fx * p_cam.x * inv_z2],
+        [0.0, fy * inv_z, -fy * p_cam.y * inv_z2],
+    ];
+
+    let mut cov2 = [[0.0_f32; 2]; 2];
+    for r in 0..2 {
+        for c in r..2 {
+            let mut sum = 0.0_f32;
+            for i in 0..3 {
+                for k in 0..3 {
+                    sum += j[r][i] * cov_cam[i][k] * j[c][k];
+                }
+            }
+            cov2[r][c] = sum;
+            cov2[c][r] = sum;
+        }
+    }
+
+    // Low-pass filter in NDC space to keep splats from collapsing to subpixel noise.
+    let blur_pixels = 0.3_f32;
+    let px_ndc_x = 2.0 / config.width as f32;
+    let px_ndc_y = 2.0 / config.height as f32;
+    cov2[0][0] += (blur_pixels * px_ndc_x).powi(2);
+    cov2[1][1] += (blur_pixels * px_ndc_y).powi(2);
+
+    if !cov2[0][0].is_finite()
+        || !cov2[0][1].is_finite()
+        || !cov2[1][0].is_finite()
+        || !cov2[1][1].is_finite()
+    {
+        return None;
+    }
+
+    Some(cov2)
+}
+
+fn ellipse_axes_from_covariance(cov2: [[f32; 2]; 2]) -> Option<([f32; 2], [f32; 2])> {
+    let a = cov2[0][0];
+    let b = cov2[0][1];
+    let c = cov2[1][1];
+    if !a.is_finite() || !b.is_finite() || !c.is_finite() {
+        return None;
+    }
+
+    let apco2 = (a + c) * 0.5;
+    let amco2 = (a - c) * 0.5;
+    let term = (amco2 * amco2 + b * b).sqrt();
+    let major = (apco2 + term).max(1e-10);
+    let minor = (apco2 - term).max(1e-10);
+
+    let axis_u_dir = if b.abs() > 1e-8 {
+        normalize2([b, major - a])
+    } else if a >= c {
+        [1.0, 0.0]
+    } else {
+        [0.0, 1.0]
+    };
+    let axis_v_dir = [-axis_u_dir[1], axis_u_dir[0]];
+
+    // 3-sigma support region for rasterization.
+    let radius_k = 3.0_f32;
+    let major_radius = (major.sqrt() * radius_k).clamp(1e-4, 2.0);
+    let minor_radius = (minor.sqrt() * radius_k).clamp(1e-4, 2.0);
+
+    let axis_u = [axis_u_dir[0] * major_radius, axis_u_dir[1] * major_radius];
+    let axis_v = [axis_v_dir[0] * minor_radius, axis_v_dir[1] * minor_radius];
+    if !axis_u[0].is_finite()
+        || !axis_u[1].is_finite()
+        || !axis_v[0].is_finite()
+        || !axis_v[1].is_finite()
+    {
+        return None;
+    }
+
+    Some((axis_u, axis_v))
 }
 
 fn quat_rotate(q: [f32; 4], v: Vec3f) -> Vec3f {
@@ -324,6 +502,15 @@ fn normalize3(v: Vec3f) -> [f32; 3] {
     }
     let inv = 1.0 / len2.sqrt();
     [v.x * inv, v.y * inv, v.z * inv]
+}
+
+fn normalize2(v: [f32; 2]) -> [f32; 2] {
+    let len2 = v[0] * v[0] + v[1] * v[1];
+    if len2 <= 0.0 {
+        return [1.0, 0.0];
+    }
+    let inv = 1.0 / len2.sqrt();
+    [v[0] * inv, v[1] * inv]
 }
 
 fn sh_color(scene: &SceneBuffers, index: usize, dir: [f32; 3]) -> [f32; 3] {
@@ -821,15 +1008,17 @@ fn create_instance_resources(
 
 #[cfg(test)]
 mod tests {
-    use gsplat_core::{Camera, RenderMode, SceneBuffers, Vec3f};
+    use gsplat_core::{Camera, RenderMode, RendererConfig, SceneBuffers, Vec3f};
 
-    use super::Renderer;
+    use super::{
+        Renderer, build_instances, ellipse_axes_from_covariance, project_covariance_to_ndc,
+    };
 
     fn build_scene() -> SceneBuffers {
         SceneBuffers {
             positions: vec![Vec3f::new(0.0, 0.0, 0.5), Vec3f::new(0.0, 0.0, 2.0)],
             opacity: vec![0.9, 0.8],
-            scale_xyz: vec![[1.0, 1.0, 1.0], [1.2, 1.2, 1.2]],
+            scale_xyz: vec![[0.0, 0.0, 0.0], [0.2, 0.2, 0.2]],
             rotation_xyzw: vec![[0.0, 0.0, 0.0, 1.0], [0.0, 0.0, 0.0, 1.0]],
             color_dc: vec![[0.1, 0.2, 0.3], [0.3, 0.2, 0.1]],
             sh_degree: 0,
@@ -862,5 +1051,77 @@ mod tests {
     fn renderer_constructs_without_required_gpu_adapter() {
         let renderer = Renderer::new(RenderMode::SortedAlpha).unwrap();
         let _ = renderer.has_gpu_rasterizer();
+    }
+
+    #[test]
+    fn covariance_projection_produces_nonzero_ellipse_axes() {
+        let camera = Camera::default();
+        let config = RendererConfig::default();
+        let cov_cam = [
+            [0.020, 0.000, 0.000],
+            [0.000, 0.005, 0.000],
+            [0.000, 0.000, 0.002],
+        ];
+        let cov2 = project_covariance_to_ndc(Vec3f::new(0.2, -0.1, 2.0), cov_cam, &camera, config)
+            .expect("covariance should project");
+        let (axis_u, axis_v) =
+            ellipse_axes_from_covariance(cov2).expect("ellipse axes should be finite");
+
+        let lu = (axis_u[0] * axis_u[0] + axis_u[1] * axis_u[1]).sqrt();
+        let lv = (axis_v[0] * axis_v[0] + axis_v[1] * axis_v[1]).sqrt();
+        assert!(lu > 0.0);
+        assert!(lv > 0.0);
+        assert!(lu > lv);
+    }
+
+    #[test]
+    fn build_instances_generates_anisotropic_oriented_axes() {
+        let qz = 0.5_f32.sqrt(); // sin/cos(90deg / 2)
+        let scene = SceneBuffers {
+            positions: vec![Vec3f::new(0.0, 0.0, 2.0)],
+            opacity: vec![1.0],
+            scale_xyz: vec![[0.8, -0.4, -0.4]],
+            rotation_xyzw: vec![[0.0, 0.0, qz, qz]],
+            color_dc: vec![[0.2, 0.3, 0.4]],
+            sh_degree: 0,
+            sh_rest: None,
+        };
+
+        let instances =
+            build_instances(&scene, &[0], &Camera::default(), RendererConfig::default());
+        assert_eq!(instances.len(), 1);
+        let inst = instances[0];
+        let axis_u = [inst.center_and_axis_u[2], inst.center_and_axis_u[3]];
+        let axis_v = [inst.axis_v_and_pad[0], inst.axis_v_and_pad[1]];
+
+        let lu = (axis_u[0] * axis_u[0] + axis_u[1] * axis_u[1]).sqrt();
+        let lv = (axis_v[0] * axis_v[0] + axis_v[1] * axis_v[1]).sqrt();
+        let dot = axis_u[0] * axis_v[0] + axis_u[1] * axis_v[1];
+        assert!(lu > lv);
+        assert!(dot.abs() < 1e-4);
+    }
+
+    #[test]
+    fn build_instances_keeps_partial_splats_with_offscreen_center() {
+        let scene = SceneBuffers {
+            positions: vec![Vec3f::new(2.3, 0.0, 1.0)],
+            opacity: vec![1.0],
+            // Large sigma to ensure the projected ellipse overlaps the viewport.
+            scale_xyz: vec![[2.0, 2.0, 2.0]],
+            rotation_xyzw: vec![[0.0, 0.0, 0.0, 1.0]],
+            color_dc: vec![[0.2, 0.3, 0.4]],
+            sh_degree: 0,
+            sh_rest: None,
+        };
+
+        let instances =
+            build_instances(&scene, &[0], &Camera::default(), RendererConfig::default());
+        assert_eq!(instances.len(), 1);
+
+        let inst = instances[0];
+        let center_x = inst.center_and_axis_u[0];
+        let extent_x = inst.center_and_axis_u[2].abs() + inst.axis_v_and_pad[0].abs();
+        assert!(center_x > 2.0);
+        assert!(center_x - extent_x <= 1.0);
     }
 }

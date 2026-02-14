@@ -1,5 +1,29 @@
 # Progress Log
 
+## Session: 2026-02-14 (Full 3DGS Geometry Priority Batch)
+
+### Phase R7: Full 3DGS Geometry Closure
+- **Status:** complete
+- **Started:** 2026-02-14
+- Actions taken:
+  - Re-opened unfinished item: simplified raster geometry vs covariance-driven splat geometry.
+  - Applied `planning-with-files` workflow for this new high-priority batch.
+  - Pulled `hyperlogic/splatapult` source for shader reference.
+  - Located and reviewed `splat_vert/splat_geom/splat_frag` covariance projection and Gaussian evaluation paths.
+  - Replaced size-based isotropic splat instances with covariance-projected anisotropic ellipse axes.
+  - Updated WGSL to render oriented ellipse quads with 3-sigma Gaussian evaluation + alpha cutoff.
+  - Added focused unit tests for covariance projection and anisotropic axis generation.
+  - Ran renderer + workspace regression and verified offscreen PNG output path.
+- Files created/modified:
+  - `/Users/misotofu/Documents/workspace/gsplat-rs/task_plan.md`
+  - `/Users/misotofu/Documents/workspace/gsplat-rs/findings.md`
+  - `/Users/misotofu/Documents/workspace/gsplat-rs/progress.md`
+  - `/Users/misotofu/Documents/workspace/gsplat-rs/crates/gsplat-render-wgpu/src/lib.rs`
+  - `/Users/misotofu/Documents/workspace/gsplat-rs/crates/gsplat-render-wgpu/shaders/splat.wgsl`
+  - `/Users/misotofu/Documents/workspace/gsplat-rs/docs/v0.1.0-subagent-execution.md`
+  - `/Users/misotofu/Documents/workspace/gsplat-rs/docs/architecture.md`
+  - `/Users/misotofu/Documents/workspace/gsplat-rs/README.md`
+
 ## Session: 2026-02-12
 
 ### Phase 1: Requirements and Discovery
@@ -153,6 +177,10 @@
 | Android native build | `bash apps/android-demo/build-android-native.sh` | Success | Success (`libgsplat_jni.so`) | PASS |
 | Android APK build | `bash apps/android-demo/build-apk.sh` | Success | Success (`app-debug.apk`) | PASS |
 | Perf benchmark | `cargo run -p bench-runner -- tests/datasets/minimal_ascii.ply 120` | Success | Success (`mode=iterations`) | PASS |
+| Covariance renderer tests | `cargo test -p gsplat-render-wgpu` | Success | Success (5 unit + 1 conformance passed) | PASS |
+| Workspace regression (post-geometry) | `cargo test --workspace` | Success | Success | PASS |
+| Offscreen PNG render (post-geometry) | `cargo run -p desktop-dev -- tests/datasets/minimal_ascii.ply --png target/out_covariance.png` | Success | Success (`target/out_covariance.png`) | PASS |
+| Final check (post-geometry) | `cargo check --workspace` | Success | Success | PASS |
 
 ## Error Log
 | Timestamp | Error | Attempt | Resolution |
@@ -163,12 +191,13 @@
 | 2026-02-12 15:16 PST | `wgpu 28` compile errors (`experimental_features`, `immediate_size`, `PollType`) | 1 | Updated code for current API contracts |
 | 2026-02-12 15:23 PST | Homebrew Gradle install blocked by tap conflict | 1 | Switched to project-local Gradle bootstrap in script |
 | 2026-02-12 15:31 PST | `bench-runner` positional arg parser misread second positional as dataset | 1 | Added explicit dataset-overridden tracking in parser |
+| 2026-02-14 | Policy blocked `rm -rf` for temp clone cleanup | 1 | Switched to timestamped temp clone path without destructive cleanup |
 
 ## 5-Question Reboot Check
 | Question | Answer |
 |----------|--------|
-| Where am I? | Phase 5 completed; continuation batch for G3 mobile baseline also completed |
-| Where am I going? | Final delivery summary; optional next step is native container/device packaging |
-| What's the goal? | Deliver gate-evidenced v0.1 baseline per multi-subagent plan |
-| What have I learned? | Remaining gaps can be closed with WGSL offscreen rendering, GPU compute sort, and scripted mobile container builds |
-| What have I done? | Completed remaining closure batch and validated full stack from format/pack to APK/iOS-sim builds |
+| Where am I? | Phase R7 complete |
+| Where am I going? | Final delivery summary with remaining non-geometry gaps |
+| What's the goal? | Close high-priority full 3DGS geometry gap |
+| What have I learned? | Covariance projection + ellipse axes can be ported cleanly from OpenGL references into wgpu instanced draws |
+| What have I done? | Implemented covariance-driven anisotropic geometry path, updated WGSL/docs, and passed full regression |

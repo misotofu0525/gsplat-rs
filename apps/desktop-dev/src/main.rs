@@ -49,22 +49,36 @@ impl Args {
                     return Err(usage());
                 }
                 "--frames" => {
-                    let value = args.next().ok_or_else(|| "missing value for --frames".to_owned())?;
-                    frames = value.parse::<u32>().map_err(|_| "invalid --frames".to_owned())?;
+                    let value = args
+                        .next()
+                        .ok_or_else(|| "missing value for --frames".to_owned())?;
+                    frames = value
+                        .parse::<u32>()
+                        .map_err(|_| "invalid --frames".to_owned())?;
                     frames = frames.max(1);
                 }
                 "--width" => {
-                    let value = args.next().ok_or_else(|| "missing value for --width".to_owned())?;
-                    config.width = value.parse::<u32>().map_err(|_| "invalid --width".to_owned())?;
+                    let value = args
+                        .next()
+                        .ok_or_else(|| "missing value for --width".to_owned())?;
+                    config.width = value
+                        .parse::<u32>()
+                        .map_err(|_| "invalid --width".to_owned())?;
                 }
                 "--height" => {
-                    let value = args.next().ok_or_else(|| "missing value for --height".to_owned())?;
-                    config.height = value.parse::<u32>().map_err(|_| "invalid --height".to_owned())?;
+                    let value = args
+                        .next()
+                        .ok_or_else(|| "missing value for --height".to_owned())?;
+                    config.height = value
+                        .parse::<u32>()
+                        .map_err(|_| "invalid --height".to_owned())?;
                 }
                 "--orbit" => orbit = true,
                 "--auto-camera" => auto_camera = true,
                 "--png" => {
-                    let value = args.next().ok_or_else(|| "missing value for --png".to_owned())?;
+                    let value = args
+                        .next()
+                        .ok_or_else(|| "missing value for --png".to_owned())?;
                     png_out = Some(PathBuf::from(value));
                 }
                 _ if arg.starts_with("--") => {
@@ -128,7 +142,9 @@ fn run(args: Args) -> Result<(), String> {
             camera.pose.rotation_xyzw = [0.0, (angle * 0.5).sin(), 0.0, (angle * 0.5).cos()];
         }
 
-        let stats = renderer.render_frame(&camera).map_err(|err| err.to_string())?;
+        let stats = renderer
+            .render_frame(&camera)
+            .map_err(|err| err.to_string())?;
         last_stats = Some(stats);
     }
     let elapsed = start.elapsed();
@@ -205,7 +221,11 @@ fn auto_camera(renderer: &Renderer, config: RendererConfig) -> Camera {
 }
 
 fn write_png(path: &Path, width: u32, height: u32, rgba: &[u8]) -> Result<(), String> {
-    if rgba.len() != (width as usize).saturating_mul(height as usize).saturating_mul(4) {
+    if rgba.len()
+        != (width as usize)
+            .saturating_mul(height as usize)
+            .saturating_mul(4)
+    {
         return Err("png write failed: rgba buffer size mismatch".to_owned());
     }
 

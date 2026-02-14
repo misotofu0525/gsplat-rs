@@ -31,5 +31,5 @@ Date: 2026-02-12
 
 ## Notes for v0.1.x
 
-- WGSL shader path is present for instanced quad SortedAlpha baseline.
+- WGSL shader path is present for covariance-driven anisotropic ellipse SortedAlpha baseline.
 - CPU fallback paths remain available for environments without GPU adapter access.
