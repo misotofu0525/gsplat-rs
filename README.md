@@ -7,6 +7,7 @@ Cross-platform Gaussian Splatting rendering library built with Rust + wgpu.
 `SortedAlpha` is the only quality-guaranteed path for `v0.1.x`.
 
 See ADR: `docs/adr/0001-v0.1-sortedalpha-only.md`.
+Execution progress: `docs/v0.1.0-subagent-execution.md`.
 
 ## Workspace layout
 
@@ -31,6 +32,21 @@ bash tests/ffi/run-ffi-smoke.sh
 bash apps/android-demo/run-jni-smoke.sh
 bash apps/ios-demo/run-swift-smoke.sh
 STABILITY_SECONDS=1800 bash tests/perf/run-long-stability.sh
+```
+
+## Desktop dev
+
+Render an offscreen frame and write a PNG (requires a GPU adapter):
+
+```bash
+cargo run -p desktop-dev -- tests/datasets/minimal_ascii.ply --png target/out.png
+```
+
+Fetch a real 3DGS dataset (binary PLY with `f_rest_0..44`) and render it:
+
+```bash
+bash tests/datasets/fetch-nvidia-flowers-1.sh
+cargo run -p desktop-dev -- tests/datasets/external/nvidia_flowers_1/model.ply --auto-camera --png target/flowers_1.png
 ```
 
 ## Mobile container builds

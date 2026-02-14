@@ -4,7 +4,7 @@ use std::time::Instant;
 
 use bytemuck::{Pod, Zeroable};
 use gsplat_core::{Camera, ErrorCode, FrameStats, RenderMode, RendererConfig, SceneBuffers, Vec3f};
-use gsplat_sort::{CpuSortBackend, GpuRadixSortBackend, SortBackend, SortError};
+use gsplat_sort::{CpuSortBackend, GpuOddEvenSortBackend, SortBackend, SortError};
 use thiserror::Error;
 
 const RENDER_TARGET_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
@@ -23,6 +23,10 @@ pub enum RendererError {
     SceneNotLoaded,
     #[error("invalid scene buffers")]
     InvalidScene,
+    #[error("gpu rasterizer unavailable")]
+    GpuRasterizerUnavailable,
+    #[error("gpu readback failed")]
+    GpuReadback,
     #[error("sort backend error: {0}")]
     Sort(#[from] SortError),
 }
@@ -32,6 +36,8 @@ impl RendererError {
         match self {
             Self::InvalidConfig | Self::InvalidScene => ErrorCode::InvalidArgument,
             Self::SceneNotLoaded => ErrorCode::SceneNotLoaded,
+            Self::GpuRasterizerUnavailable => ErrorCode::Unsupported,
+            Self::GpuReadback => ErrorCode::Internal,
             Self::Sort(_) => ErrorCode::Internal,
         }
     }
@@ -40,7 +46,7 @@ impl RendererError {
 pub struct Renderer {
     mode: RenderMode,
     config: RendererConfig,
-    gpu_sort_backend: GpuRadixSortBackend,
+    gpu_sort_backend: GpuOddEvenSortBackend,
     cpu_sort_backend: CpuSortBackend,
     gpu_rasterizer: Option<GpuRasterizer>,
     scene: Option<SceneBuffers>,
@@ -66,7 +72,7 @@ impl Renderer {
         Ok(Self {
             mode: config.mode,
             config,
-            gpu_sort_backend: GpuRadixSortBackend::default(),
+            gpu_sort_backend: GpuOddEvenSortBackend::default(),
             cpu_sort_backend: CpuSortBackend,
             gpu_rasterizer,
             scene: None,
@@ -97,6 +103,10 @@ impl Renderer {
         Ok(())
     }
 
+    pub fn scene(&self) -> Option<&SceneBuffers> {
+        self.scene.as_ref()
+    }
+
     pub fn preprocess_visible(&self, camera: &Camera) -> Result<PreprocessOutput, RendererError> {
         let scene = self.scene.as_ref().ok_or(RendererError::SceneNotLoaded)?;
 
@@ -104,9 +114,10 @@ impl Renderer {
         let mut depth_keys = Vec::with_capacity(scene.len());
 
         for (idx, position) in scene.positions.iter().enumerate() {
-            if is_visible(position.z, camera) {
+            let p_cam = world_to_camera(*position, camera);
+            if is_visible(p_cam.z, camera) {
                 indices.push(idx as u32);
-                depth_keys.push(depth_to_key(position.z));
+                depth_keys.push(depth_to_key(p_cam.z));
             }
         }
 
@@ -142,7 +153,7 @@ impl Renderer {
 
         let raster_start = Instant::now();
         let scene = self.scene.as_ref().ok_or(RendererError::SceneNotLoaded)?;
-        let instances = build_instances(scene, &preprocessed.indices);
+        let instances = build_instances(scene, &preprocessed.indices, camera, self.config);
 
         if let Some(gpu_rasterizer) = self.gpu_rasterizer.as_mut() {
             if gpu_rasterizer.render(self.config, &instances).is_err() {
@@ -171,6 +182,16 @@ impl Renderer {
         self.last_stats
     }
 
+    pub fn readback_rgba8(&mut self) -> Result<Vec<u8>, RendererError> {
+        let rasterizer = self
+            .gpu_rasterizer
+            .as_mut()
+            .ok_or(RendererError::GpuRasterizerUnavailable)?;
+        rasterizer
+            .readback_rgba8()
+            .map_err(|_| RendererError::GpuReadback)
+    }
+
     pub fn render_placeholder(&mut self) -> FrameStats {
         self.render_frame(&Camera::default()).unwrap_or_default()
     }
@@ -194,26 +215,58 @@ struct GpuInstance {
     color_rgba: [f32; 4],
 }
 
-fn build_instances(scene: &SceneBuffers, indices: &[u32]) -> Vec<GpuInstance> {
+fn build_instances(
+    scene: &SceneBuffers,
+    indices: &[u32],
+    camera: &Camera,
+    config: RendererConfig,
+) -> Vec<GpuInstance> {
     let mut out = Vec::with_capacity(indices.len());
+    let aspect = config.width as f32 / config.height as f32;
+    let f = 1.0 / (camera.intrinsics.vertical_fov_radians * 0.5).tan();
 
     for &idx in indices {
         let i = idx as usize;
-        let Vec3f { x, y, .. } = scene.positions[i];
+        let pos_world = scene.positions[i];
+        let p_cam = world_to_camera(pos_world, camera);
+        // Preprocess already culled by z range, but keep this safe for runtime camera changes.
+        if !is_visible(p_cam.z, camera) {
+            continue;
+        }
+
+        let inv_z = 1.0 / p_cam.z.max(1e-6);
+        let x_ndc = (p_cam.x * f) * inv_z / aspect;
+        let y_ndc = (p_cam.y * f) * inv_z;
+
+        // 3DGS stores log-scales; runtime applies exp() to restore linear sigma.
         let scale = scene.scale_xyz[i];
-        let avg_scale = (scale[0] + scale[1] + scale[2]) / 3.0;
-        let size = (avg_scale * 0.01).clamp(0.002, 0.1);
+        let sx = scale[0].exp();
+        let sy = scale[1].exp();
+        let sz = scale[2].exp();
+        let sigma = sx.max(sy).max(sz);
+        let size = (sigma * f) * inv_z;
+        let size = size.clamp(0.0005, 0.2);
         let alpha = sigmoid(scene.opacity[i]).clamp(0.0, 1.0);
-        let color = scene.color_dc[i];
+        let dir_world = normalize3(Vec3f::new(
+            pos_world.x - camera.pose.position.x,
+            pos_world.y - camera.pose.position.y,
+            pos_world.z - camera.pose.position.z,
+        ));
+        let rgb = sh_color(scene, i, dir_world);
+        let rgb = [
+            rgb[0].clamp(0.0, 1.0),
+            rgb[1].clamp(0.0, 1.0),
+            rgb[2].clamp(0.0, 1.0),
+        ];
 
         out.push(GpuInstance {
-            pos_xy: [x.clamp(-1.0, 1.0), y.clamp(-1.0, 1.0)],
+            pos_xy: [x_ndc, y_ndc],
             size,
             _pad0: 0.0,
             color_rgba: [
-                (color[0] * alpha).clamp(0.0, 1.0),
-                (color[1] * alpha).clamp(0.0, 1.0),
-                (color[2] * alpha).clamp(0.0, 1.0),
+                (rgb[0] * alpha).clamp(0.0, 1.0),
+                (rgb[1] * alpha).clamp(0.0, 1.0),
+                (rgb[2] * alpha).clamp(0.0, 1.0),
                 alpha,
             ],
         });
@@ -226,6 +279,195 @@ fn sigmoid(value: f32) -> f32 {
     1.0 / (1.0 + (-value).exp())
 }
 
+fn world_to_camera(pos_world: Vec3f, camera: &Camera) -> Vec3f {
+    let p = Vec3f::new(
+        pos_world.x - camera.pose.position.x,
+        pos_world.y - camera.pose.position.y,
+        pos_world.z - camera.pose.position.z,
+    );
+
+    let inv_q = quat_inverse(camera.pose.rotation_xyzw);
+    quat_rotate(inv_q, p)
+}
+
+fn quat_inverse(q: [f32; 4]) -> [f32; 4] {
+    let (x, y, z, w) = (q[0], q[1], q[2], q[3]);
+    let norm2 = x * x + y * y + z * z + w * w;
+    if norm2 <= 0.0 {
+        return [0.0, 0.0, 0.0, 1.0];
+    }
+    [-x / norm2, -y / norm2, -z / norm2, w / norm2]
+}
+
+fn quat_rotate(q: [f32; 4], v: Vec3f) -> Vec3f {
+    // v' = v + 2w(qxyz x v) + 2(qxyz x (qxyz x v))
+    let qv = Vec3f::new(q[0], q[1], q[2]);
+    let t = cross(qv, v);
+    let t2 = Vec3f::new(t.x * 2.0, t.y * 2.0, t.z * 2.0);
+    let v_wt = Vec3f::new(v.x + q[3] * t2.x, v.y + q[3] * t2.y, v.z + q[3] * t2.z);
+    let c = cross(qv, t2);
+    Vec3f::new(v_wt.x + c.x, v_wt.y + c.y, v_wt.z + c.z)
+}
+
+fn cross(a: Vec3f, b: Vec3f) -> Vec3f {
+    Vec3f::new(
+        a.y * b.z - a.z * b.y,
+        a.z * b.x - a.x * b.z,
+        a.x * b.y - a.y * b.x,
+    )
+}
+
+fn normalize3(v: Vec3f) -> [f32; 3] {
+    let len2 = v.x * v.x + v.y * v.y + v.z * v.z;
+    if len2 <= 0.0 {
+        return [0.0, 0.0, 1.0];
+    }
+    let inv = 1.0 / len2.sqrt();
+    [v.x * inv, v.y * inv, v.z * inv]
+}
+
+fn sh_color(scene: &SceneBuffers, index: usize, dir: [f32; 3]) -> [f32; 3] {
+    // The PLY stores SH coefficients as `f_dc_*` + `f_rest_*`. Evaluate as in 3DGS:
+    // `rgb = clamp_min(eval_sh(deg, sh, dir) + 0.5, 0.0)`.
+    // Reference: graphdeco-inria/gaussian-splatting `utils/sh_utils.py`.
+    let deg = if scene.sh_rest.is_some() {
+        scene.sh_degree
+    } else {
+        0
+    };
+
+    let dc = scene.color_dc[index];
+    let sh_eval_dc = [
+        eval_sh_channel(deg, dc[0], sh_rest_channel(scene, index, 0), dir),
+        eval_sh_channel(deg, dc[1], sh_rest_channel(scene, index, 1), dir),
+        eval_sh_channel(deg, dc[2], sh_rest_channel(scene, index, 2), dir),
+    ];
+
+    [
+        (sh_eval_dc[0] + 0.5).max(0.0),
+        (sh_eval_dc[1] + 0.5).max(0.0),
+        (sh_eval_dc[2] + 0.5).max(0.0),
+    ]
+}
+
+fn sh_rest_channel(scene: &SceneBuffers, index: usize, channel: usize) -> &[f32] {
+    let Some(rest) = scene.sh_rest.as_ref() else {
+        return &[];
+    };
+
+    let coeff_total = (scene.sh_degree as usize + 1).pow(2);
+    let per_channel = coeff_total.saturating_sub(1);
+    let stride = per_channel * 3;
+    let base = index * stride;
+    let channel_base = base + channel * per_channel;
+    &rest[channel_base..channel_base + per_channel]
+}
+
+fn eval_sh_channel(deg: u8, dc_coeff: f32, rest: &[f32], dir: [f32; 3]) -> f32 {
+    const C0: f32 = 0.28209479177387814_f32;
+    const C1: f32 = 0.4886025119029199_f32;
+    const C2: [f32; 5] = [
+        1.0925484305920792_f32,
+        -1.0925484305920792_f32,
+        0.31539156525252005_f32,
+        -1.0925484305920792_f32,
+        0.5462742152960396_f32,
+    ];
+    const C3: [f32; 7] = [
+        -0.5900435899266435_f32,
+        2.890611442640554_f32,
+        -0.4570457994644658_f32,
+        0.3731763325901154_f32,
+        -0.4570457994644658_f32,
+        1.445305721320277_f32,
+        -0.5900435899266435_f32,
+    ];
+    const C4: [f32; 9] = [
+        2.5033429417967046_f32,
+        -1.7701307697799304_f32,
+        0.9461746957575601_f32,
+        -0.6690465435572892_f32,
+        0.10578554691520431_f32,
+        -0.6690465435572892_f32,
+        0.47308734787878004_f32,
+        -1.7701307697799304_f32,
+        0.6258357354491761_f32,
+    ];
+
+    let mut result = C0 * dc_coeff;
+    if deg == 0 {
+        return result;
+    }
+
+    let x = dir[0];
+    let y = dir[1];
+    let z = dir[2];
+    if rest.len() < 3 {
+        return result;
+    }
+
+    result = result - C1 * y * rest[0] + C1 * z * rest[1] - C1 * x * rest[2];
+    if deg == 1 {
+        return result;
+    }
+
+    if rest.len() < 8 {
+        return result;
+    }
+    let xx = x * x;
+    let yy = y * y;
+    let zz = z * z;
+    let xy = x * y;
+    let yz = y * z;
+    let xz = x * z;
+
+    result = result
+        + C2[0] * xy * rest[3]
+        + C2[1] * yz * rest[4]
+        + C2[2] * (2.0 * zz - xx - yy) * rest[5]
+        + C2[3] * xz * rest[6]
+        + C2[4] * (xx - yy) * rest[7];
+
+    if deg == 2 {
+        return result;
+    }
+
+    if rest.len() < 15 {
+        return result;
+    }
+
+    result = result
+        + C3[0] * y * (3.0 * xx - yy) * rest[8]
+        + C3[1] * xy * z * rest[9]
+        + C3[2] * y * (4.0 * zz - xx - yy) * rest[10]
+        + C3[3] * z * (2.0 * zz - 3.0 * xx - 3.0 * yy) * rest[11]
+        + C3[4] * x * (4.0 * zz - xx - yy) * rest[12]
+        + C3[5] * z * (xx - yy) * rest[13]
+        + C3[6] * x * (xx - 3.0 * yy) * rest[14];
+
+    if deg == 3 {
+        return result;
+    }
+
+    if rest.len() < 24 {
+        return result;
+    }
+
+    // deg 4 support (rare for 3DGS, but safe to handle).
+    result = result
+        + C4[0] * xy * (xx - yy) * rest[15]
+        + C4[1] * yz * (3.0 * xx - yy) * rest[16]
+        + C4[2] * xy * (7.0 * zz - 1.0) * rest[17]
+        + C4[3] * yz * (7.0 * zz - 3.0) * rest[18]
+        + C4[4] * (zz * (35.0 * zz - 30.0) + 3.0) * rest[19]
+        + C4[5] * xz * (7.0 * zz - 3.0) * rest[20]
+        + C4[6] * (xx - yy) * (7.0 * zz - 1.0) * rest[21]
+        + C4[7] * xz * (xx - 3.0 * yy) * rest[22]
+        + C4[8] * (xx * (xx - 3.0 * yy) - yy * (3.0 * xx - yy)) * rest[23];
+
+    result
+}
+
 #[derive(Debug, Error)]
 enum GpuRasterError {
     #[error("no compatible wgpu adapter")]
@@ -234,6 +476,8 @@ enum GpuRasterError {
     DeviceCreation,
     #[error("invalid render dimensions")]
     InvalidDimensions,
+    #[error("failed to read back render target")]
+    ReadbackFailed,
 }
 
 struct GpuRasterizer {
@@ -410,6 +654,86 @@ impl GpuRasterizer {
         Ok(())
     }
 
+    fn readback_rgba8(&mut self) -> Result<Vec<u8>, GpuRasterError> {
+        use std::sync::mpsc;
+
+        let (width, height) = self.output_size;
+        if width == 0 || height == 0 {
+            return Err(GpuRasterError::InvalidDimensions);
+        }
+
+        let bytes_per_pixel = 4_u32;
+        let unpadded_bytes_per_row = width.saturating_mul(bytes_per_pixel);
+        let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+        let padded_bytes_per_row = unpadded_bytes_per_row.div_ceil(align).saturating_mul(align);
+        let buffer_size = padded_bytes_per_row as u64 * height as u64;
+
+        let readback = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("splat-readback"),
+            size: buffer_size,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        {
+            let mut encoder = self
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("splat-readback-encoder"),
+                });
+            encoder.copy_texture_to_buffer(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &self.output_texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                wgpu::TexelCopyBufferInfo {
+                    buffer: &readback,
+                    layout: wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(padded_bytes_per_row),
+                        rows_per_image: Some(height),
+                    },
+                },
+                wgpu::Extent3d {
+                    width,
+                    height,
+                    depth_or_array_layers: 1,
+                },
+            );
+            self.queue.submit(Some(encoder.finish()));
+        }
+
+        let slice = readback.slice(..);
+        let (tx, rx) = mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |result| {
+            let _ = tx.send(result);
+        });
+        let _ = self.device.poll(wgpu::PollType::wait_indefinitely());
+
+        match rx.recv() {
+            Ok(Ok(())) => {}
+            _ => return Err(GpuRasterError::ReadbackFailed),
+        }
+
+        let mapped = slice.get_mapped_range();
+        let unpadded = unpadded_bytes_per_row as usize;
+        let padded = padded_bytes_per_row as usize;
+        let mut out = vec![0_u8; unpadded.saturating_mul(height as usize)];
+
+        for row in 0..(height as usize) {
+            let src_start = row * padded;
+            let dst_start = row * unpadded;
+            out[dst_start..dst_start + unpadded]
+                .copy_from_slice(&mapped[src_start..src_start + unpadded]);
+        }
+
+        drop(mapped);
+        readback.unmap();
+        Ok(out)
+    }
+
     fn ensure_output_target(&mut self, width: u32, height: u32) -> Result<(), GpuRasterError> {
         if width == 0 || height == 0 {
             return Err(GpuRasterError::InvalidDimensions);
@@ -508,7 +832,8 @@ mod tests {
             scale_xyz: vec![[1.0, 1.0, 1.0], [1.2, 1.2, 1.2]],
             rotation_xyzw: vec![[0.0, 0.0, 0.0, 1.0], [0.0, 0.0, 0.0, 1.0]],
             color_dc: vec![[0.1, 0.2, 0.3], [0.3, 0.2, 0.1]],
-            sh_rest_rgb: None,
+            sh_degree: 0,
+            sh_rest: None,
         }
     }
 

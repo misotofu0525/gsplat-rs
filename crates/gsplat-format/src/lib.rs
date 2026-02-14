@@ -4,7 +4,7 @@ use gsplat_core::{SceneBuffers, Vec3f};
 use thiserror::Error;
 
 const MAGIC: [u8; 4] = *b"GSPK";
-const VERSION_V1: u32 = 1;
+const VERSION_V2: u32 = 2;
 const FLAG_HAS_SH_REST: u32 = 1 << 0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -12,6 +12,7 @@ pub struct PackedHeader {
     pub version: u32,
     pub gaussian_count: u32,
     pub flags: u32,
+    pub sh_degree: u8,
 }
 
 #[derive(Debug, Error)]
@@ -35,15 +36,16 @@ pub fn pack_scene(scene: &SceneBuffers) -> Result<Vec<u8>, FormatError> {
 
     let count = u32::try_from(scene.len()).map_err(|_| FormatError::SceneTooLarge)?;
     let mut flags = 0_u32;
-    if scene.sh_rest_rgb.is_some() {
+    if scene.sh_rest.is_some() {
         flags |= FLAG_HAS_SH_REST;
     }
 
     let mut out = Vec::new();
     out.extend_from_slice(&MAGIC);
-    out.extend_from_slice(&VERSION_V1.to_le_bytes());
+    out.extend_from_slice(&VERSION_V2.to_le_bytes());
     out.extend_from_slice(&count.to_le_bytes());
     out.extend_from_slice(&flags.to_le_bytes());
+    out.extend_from_slice(&(scene.sh_degree as u32).to_le_bytes());
 
     for pos in &scene.positions {
         out.extend_from_slice(&pos.x.to_le_bytes());
@@ -74,11 +76,9 @@ pub fn pack_scene(scene: &SceneBuffers) -> Result<Vec<u8>, FormatError> {
         out.extend_from_slice(&value[2].to_le_bytes());
     }
 
-    if let Some(values) = &scene.sh_rest_rgb {
+    if let Some(values) = &scene.sh_rest {
         for value in values {
-            out.extend_from_slice(&value[0].to_le_bytes());
-            out.extend_from_slice(&value[1].to_le_bytes());
-            out.extend_from_slice(&value[2].to_le_bytes());
+            out.extend_from_slice(&value.to_le_bytes());
         }
     }
 
@@ -95,8 +95,11 @@ pub fn unpack_scene(blob: &[u8]) -> Result<SceneBuffers, FormatError> {
         scale_xyz: Vec::with_capacity(count),
         rotation_xyzw: Vec::with_capacity(count),
         color_dc: Vec::with_capacity(count),
-        sh_rest_rgb: if header.flags & FLAG_HAS_SH_REST != 0 {
-            Some(Vec::with_capacity(count))
+        sh_degree: header.sh_degree,
+        sh_rest: if header.flags & FLAG_HAS_SH_REST != 0 {
+            let coeff_total = (header.sh_degree as usize + 1).pow(2);
+            let rest_stride = 3 * (coeff_total.saturating_sub(1));
+            Some(Vec::with_capacity(count * rest_stride))
         } else {
             None
         },
@@ -138,13 +141,11 @@ pub fn unpack_scene(blob: &[u8]) -> Result<SceneBuffers, FormatError> {
         ]);
     }
 
-    if let Some(values) = scene.sh_rest_rgb.as_mut() {
-        for _ in 0..count {
-            values.push([
-                read_f32(blob, &mut cursor)?,
-                read_f32(blob, &mut cursor)?,
-                read_f32(blob, &mut cursor)?,
-            ]);
+    if let Some(values) = scene.sh_rest.as_mut() {
+        let coeff_total = (scene.sh_degree as usize + 1).pow(2);
+        let rest_stride = 3 * (coeff_total.saturating_sub(1));
+        for _ in 0..(count * rest_stride) {
+            values.push(read_f32(blob, &mut cursor)?);
         }
     }
 
@@ -157,7 +158,7 @@ pub fn unpack_scene(blob: &[u8]) -> Result<SceneBuffers, FormatError> {
 }
 
 pub fn parse_header(blob: &[u8]) -> Result<(PackedHeader, usize), FormatError> {
-    if blob.len() < 16 {
+    if blob.len() < 20 {
         return Err(FormatError::Truncated);
     }
 
@@ -170,7 +171,7 @@ pub fn parse_header(blob: &[u8]) -> Result<(PackedHeader, usize), FormatError> {
             .try_into()
             .map_err(|_| FormatError::InvalidBlob)?,
     );
-    if version != VERSION_V1 {
+    if version != VERSION_V2 {
         return Err(FormatError::UnsupportedVersion);
     }
 
@@ -185,13 +186,21 @@ pub fn parse_header(blob: &[u8]) -> Result<(PackedHeader, usize), FormatError> {
             .map_err(|_| FormatError::InvalidBlob)?,
     );
 
+    let sh_degree_u32 = u32::from_le_bytes(
+        blob[16..20]
+            .try_into()
+            .map_err(|_| FormatError::InvalidBlob)?,
+    );
+    let sh_degree = u8::try_from(sh_degree_u32).map_err(|_| FormatError::InvalidBlob)?;
+
     Ok((
         PackedHeader {
             version,
             gaussian_count,
             flags,
+            sh_degree,
         },
-        16,
+        20,
     ))
 }
 
@@ -222,7 +231,13 @@ mod tests {
             scale_xyz: vec![[1.0, 1.0, 1.0], [0.5, 0.6, 0.7]],
             rotation_xyzw: vec![[0.0, 0.0, 0.0, 1.0], [0.1, 0.2, 0.3, 0.9]],
             color_dc: vec![[0.2, 0.3, 0.4], [0.7, 0.1, 0.5]],
-            sh_rest_rgb: Some(vec![[0.0, 0.0, 0.0], [0.01, 0.02, 0.03]]),
+            sh_degree: 1,
+            sh_rest: Some(vec![
+                // gaussian 0, R/G/B coeff1..3
+                0.0, 0.0, 0.0, 0.01, 0.02, 0.03, 0.04, 0.05, 0.06,
+                // gaussian 1
+                0.1, 0.2, 0.3, 0.11, 0.12, 0.13, 0.14, 0.15, 0.16,
+            ]),
         }
     }
 
@@ -239,9 +254,10 @@ mod tests {
         let scene = sample_scene();
         let blob = pack_scene(&scene).unwrap();
         let (header, offset) = parse_header(&blob).unwrap();
-        assert_eq!(header.version, 1);
+        assert_eq!(header.version, 2);
         assert_eq!(header.gaussian_count, 2);
-        assert_eq!(offset, 16);
+        assert_eq!(header.sh_degree, 1);
+        assert_eq!(offset, 20);
     }
 
     #[test]

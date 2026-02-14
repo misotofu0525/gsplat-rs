@@ -11,6 +11,7 @@ var<storage, read> instances: array<InstanceData>;
 struct VsOut {
   @builtin(position) position: vec4<f32>,
   @location(0) color: vec4<f32>,
+  @location(1) local: vec2<f32>,
 };
 
 fn quad_offset(vertex_index: u32) -> vec2<f32> {
@@ -31,15 +32,20 @@ fn vs_main(
   @builtin(vertex_index) vertex_index: u32,
 ) -> VsOut {
   let instance = instances[instance_index];
-  let offset = quad_offset(vertex_index) * instance.size;
+  let quad = quad_offset(vertex_index);
+  let offset = quad * instance.size;
 
   var out: VsOut;
   out.position = vec4<f32>(instance.pos_xy + offset, 0.0, 1.0);
   out.color = instance.color;
+  out.local = quad;
   return out;
 }
 
 @fragment
 fn fs_main(input: VsOut) -> @location(0) vec4<f32> {
-  return input.color;
+  let r2 = dot(input.local, input.local);
+  // Radial Gaussian falloff in quad-local space. The scalar controls edge softness.
+  let g = exp(-r2 * 2.0);
+  return input.color * g;
 }

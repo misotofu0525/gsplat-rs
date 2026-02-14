@@ -49,12 +49,12 @@ impl SortBackend for CpuSortBackend {
     }
 }
 
-pub struct GpuRadixSortBackend {
+pub struct GpuOddEvenSortBackend {
     runtime: Option<GpuSortRuntime>,
     init_attempted: bool,
 }
 
-impl Default for GpuRadixSortBackend {
+impl Default for GpuOddEvenSortBackend {
     fn default() -> Self {
         Self {
             runtime: None,
@@ -63,9 +63,9 @@ impl Default for GpuRadixSortBackend {
     }
 }
 
-impl SortBackend for GpuRadixSortBackend {
+impl SortBackend for GpuOddEvenSortBackend {
     fn name(&self) -> &'static str {
-        "gpu-radix-odd-even"
+        "gpu-odd-even"
     }
 
     fn sort_pairs(&mut self, keys: &mut [u32], values: &mut [u32]) -> Result<(), SortError> {
@@ -75,6 +75,14 @@ impl SortBackend for GpuRadixSortBackend {
 
         if keys.len() <= 1 {
             return Ok(());
+        }
+
+        // This backend uses an O(n^2) odd-even swap network. It is intended as an executable GPU
+        // path for small conformance datasets only; fall back to CPU for large scenes to avoid
+        // catastrophic runtimes.
+        const ODD_EVEN_MAX_LEN: usize = 4096;
+        if keys.len() > ODD_EVEN_MAX_LEN {
+            return Err(SortError::BackendUnavailable);
         }
 
         if !self.init_attempted {
@@ -331,7 +339,7 @@ impl GpuSortRuntime {
 
 #[cfg(test)]
 mod tests {
-    use super::{CpuSortBackend, GpuRadixSortBackend, SortBackend, SortError};
+    use super::{CpuSortBackend, GpuOddEvenSortBackend, SortBackend, SortError};
 
     #[test]
     fn cpu_backend_sorts_descending_by_key() {
@@ -357,7 +365,7 @@ mod tests {
 
     #[test]
     fn gpu_backend_sorts_or_reports_unavailable() {
-        let mut backend = GpuRadixSortBackend::default();
+        let mut backend = GpuOddEvenSortBackend::default();
         let mut keys = [10_u32, 2, 7, 7, 100, 1];
         let mut values = [0_u32, 1, 2, 3, 4, 5];
 
