@@ -394,14 +394,27 @@ fn project_covariance_to_ndc(
     }
 
     let aspect = config.width as f32 / config.height as f32;
-    let f = 1.0 / (camera.intrinsics.vertical_fov_radians * 0.5).tan();
+    let tan_half_fovy = (camera.intrinsics.vertical_fov_radians * 0.5).tan();
+    if tan_half_fovy <= 0.0 || !tan_half_fovy.is_finite() {
+        return None;
+    }
+    let f = 1.0 / tan_half_fovy;
     let fx = f / aspect;
     let fy = f;
+
+    // Match common 3DGS covariance projection behavior: clamp view-space x/z and y/z
+    // before Jacobian evaluation to avoid extreme derivatives at frustum edges.
+    let tan_half_fovx = tan_half_fovy * aspect;
+    let lim_x = 1.3 * tan_half_fovx;
+    let lim_y = 1.3 * tan_half_fovy;
+    let x_clamped = (p_cam.x / z).clamp(-lim_x, lim_x) * z;
+    let y_clamped = (p_cam.y / z).clamp(-lim_y, lim_y) * z;
+
     let inv_z = 1.0 / z;
     let inv_z2 = inv_z * inv_z;
     let j = [
-        [fx * inv_z, 0.0, -fx * p_cam.x * inv_z2],
-        [0.0, fy * inv_z, -fy * p_cam.y * inv_z2],
+        [fx * inv_z, 0.0, -fx * x_clamped * inv_z2],
+        [0.0, fy * inv_z, -fy * y_clamped * inv_z2],
     ];
 
     let mut cov2 = [[0.0_f32; 2]; 2];

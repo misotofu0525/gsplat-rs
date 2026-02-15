@@ -12,6 +12,60 @@ const REQUIRED_VERTEX_FIELDS: [&str; 14] = [
     "f_dc_0", "f_dc_1", "f_dc_2",
 ];
 
+// Common 3DGS PLYs (COLMAP/OpenCV-style) are authored in RDF coordinates:
+// +X right, +Y down, +Z forward. The runtime camera path in this workspace uses
+// +X right, +Y up, +Z forward (RUF), so we convert once at load time.
+//
+// SH sign flips mirror the coordinate conversion used by NVIDIA's SPZ converter
+// for a Y-axis flip (RDF -> RUF). Indices map to per-channel `f_rest_*` order.
+const SH_FLIP_RDF_TO_RUF: [f32; 15] = [
+    -1.0, 1.0, 1.0, -1.0, -1.0, 1.0, 1.0, 1.0, -1.0, -1.0, -1.0, 1.0, 1.0, 1.0, 1.0,
+];
+
+fn rotation_wxyz_to_xyzw(wxyz: [f32; 4]) -> [f32; 4] {
+    [wxyz[1], wxyz[2], wxyz[3], wxyz[0]]
+}
+
+fn convert_scene_rdf_to_ruf(scene: &mut SceneBuffers) {
+    for p in &mut scene.positions {
+        p.y = -p.y;
+    }
+
+    // Quaternion vector-part adjustment under Y-axis reflection. Internal layout is xyzw.
+    for q in &mut scene.rotation_xyzw {
+        q[0] = -q[0];
+        q[2] = -q[2];
+    }
+
+    let sh_degree = scene.sh_degree;
+    if let Some(rest) = scene.sh_rest.as_mut() {
+        flip_sh_rest_rdf_to_ruf(sh_degree, rest);
+    }
+}
+
+fn flip_sh_rest_rdf_to_ruf(sh_degree: u8, sh_rest: &mut [f32]) {
+    let coeff_total = (sh_degree as usize + 1).pow(2);
+    let per_channel = coeff_total.saturating_sub(1);
+    if per_channel == 0 {
+        return;
+    }
+    let stride = per_channel * 3;
+    if stride == 0 {
+        return;
+    }
+
+    for gaussian_coeffs in sh_rest.chunks_exact_mut(stride) {
+        for channel in 0..3 {
+            let base = channel * per_channel;
+            let coeffs = &mut gaussian_coeffs[base..base + per_channel];
+            for (coeff_idx, coeff) in coeffs.iter_mut().enumerate() {
+                let sign = SH_FLIP_RDF_TO_RUF.get(coeff_idx).copied().unwrap_or(1.0);
+                *coeff *= sign;
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PlySceneSummary {
     pub gaussians: usize,
@@ -141,6 +195,7 @@ pub fn parse_ply_bytes(input: &[u8]) -> Result<PlyLoadResult, PlyLoadError> {
         )?,
     }
 
+    convert_scene_rdf_to_ruf(&mut scene);
     scene.validate().map_err(|_| PlyLoadError::InvalidScene)?;
 
     Ok(PlyLoadResult {
@@ -435,12 +490,12 @@ fn parse_ascii_body(
             parse_field_f32_ascii(&values, indices, "scale_2")?,
         ]);
 
-        scene.rotation_xyzw.push([
+        scene.rotation_xyzw.push(rotation_wxyz_to_xyzw([
             parse_field_f32_ascii(&values, indices, "rot_0")?,
             parse_field_f32_ascii(&values, indices, "rot_1")?,
             parse_field_f32_ascii(&values, indices, "rot_2")?,
             parse_field_f32_ascii(&values, indices, "rot_3")?,
-        ]);
+        ]));
 
         scene.color_dc.push([
             parse_field_f32_ascii(&values, indices, "f_dc_0")?,
@@ -516,12 +571,12 @@ fn parse_binary_body(
             read_field_f32_binary(record, header, &offsets, indices, "scale_2", endian)?,
         ]);
 
-        scene.rotation_xyzw.push([
+        scene.rotation_xyzw.push(rotation_wxyz_to_xyzw([
             read_field_f32_binary(record, header, &offsets, indices, "rot_0", endian)?,
             read_field_f32_binary(record, header, &offsets, indices, "rot_1", endian)?,
             read_field_f32_binary(record, header, &offsets, indices, "rot_2", endian)?,
             read_field_f32_binary(record, header, &offsets, indices, "rot_3", endian)?,
-        ]);
+        ]));
 
         scene.color_dc.push([
             read_field_f32_binary(record, header, &offsets, indices, "f_dc_0", endian)?,
@@ -646,9 +701,10 @@ fn read_scalar_f32(
 mod tests {
     use super::{PlyLoadError, parse_ply_bytes, parse_ply_text};
 
-    const VALID_PLY: &str = "ply\nformat ascii 1.0\nelement vertex 1\nproperty float x\nproperty float y\nproperty float z\nproperty float opacity\nproperty float scale_0\nproperty float scale_1\nproperty float scale_2\nproperty float rot_0\nproperty float rot_1\nproperty float rot_2\nproperty float rot_3\nproperty float f_dc_0\nproperty float f_dc_1\nproperty float f_dc_2\nend_header\n0.0 0.1 1.0 0.9 1.0 1.1 1.2 0.0 0.0 0.0 1.0 0.2 0.3 0.4\n";
-    const PLY_INCOMPLETE_SH_REST: &str = "ply\nformat ascii 1.0\nelement vertex 1\nproperty float x\nproperty float y\nproperty float z\nproperty float opacity\nproperty float scale_0\nproperty float scale_1\nproperty float scale_2\nproperty float rot_0\nproperty float rot_1\nproperty float rot_2\nproperty float rot_3\nproperty float f_dc_0\nproperty float f_dc_1\nproperty float f_dc_2\nproperty float f_rest_0\nend_header\n0.0 0.1 1.0 0.9 1.0 1.1 1.2 0.0 0.0 0.0 1.0 0.2 0.3 0.4 0.125\n";
-    const PLY_WITH_SH_REST_DEG1: &str = "ply\nformat ascii 1.0\nelement vertex 1\nproperty float x\nproperty float y\nproperty float z\nproperty float opacity\nproperty float scale_0\nproperty float scale_1\nproperty float scale_2\nproperty float rot_0\nproperty float rot_1\nproperty float rot_2\nproperty float rot_3\nproperty float f_dc_0\nproperty float f_dc_1\nproperty float f_dc_2\nproperty float f_rest_0\nproperty float f_rest_1\nproperty float f_rest_2\nproperty float f_rest_3\nproperty float f_rest_4\nproperty float f_rest_5\nproperty float f_rest_6\nproperty float f_rest_7\nproperty float f_rest_8\nend_header\n0.0 0.1 1.0 0.9 1.0 1.1 1.2 0.0 0.0 0.0 1.0 0.2 0.3 0.4 0.01 0.02 0.03 0.04 0.05 0.06 0.07 0.08 0.09\n";
+    const VALID_PLY: &str = "ply\nformat ascii 1.0\nelement vertex 1\nproperty float x\nproperty float y\nproperty float z\nproperty float opacity\nproperty float scale_0\nproperty float scale_1\nproperty float scale_2\nproperty float rot_0\nproperty float rot_1\nproperty float rot_2\nproperty float rot_3\nproperty float f_dc_0\nproperty float f_dc_1\nproperty float f_dc_2\nend_header\n0.0 0.1 1.0 0.9 1.0 1.1 1.2 1.0 0.0 0.0 0.0 0.2 0.3 0.4\n";
+    const VALID_PLY_NON_IDENTITY_QUAT: &str = "ply\nformat ascii 1.0\nelement vertex 1\nproperty float x\nproperty float y\nproperty float z\nproperty float opacity\nproperty float scale_0\nproperty float scale_1\nproperty float scale_2\nproperty float rot_0\nproperty float rot_1\nproperty float rot_2\nproperty float rot_3\nproperty float f_dc_0\nproperty float f_dc_1\nproperty float f_dc_2\nend_header\n0.0 0.1 1.0 0.9 1.0 1.1 1.2 0.9 0.2 0.3 0.4 0.2 0.3 0.4\n";
+    const PLY_INCOMPLETE_SH_REST: &str = "ply\nformat ascii 1.0\nelement vertex 1\nproperty float x\nproperty float y\nproperty float z\nproperty float opacity\nproperty float scale_0\nproperty float scale_1\nproperty float scale_2\nproperty float rot_0\nproperty float rot_1\nproperty float rot_2\nproperty float rot_3\nproperty float f_dc_0\nproperty float f_dc_1\nproperty float f_dc_2\nproperty float f_rest_0\nend_header\n0.0 0.1 1.0 0.9 1.0 1.1 1.2 1.0 0.0 0.0 0.0 0.2 0.3 0.4 0.125\n";
+    const PLY_WITH_SH_REST_DEG1: &str = "ply\nformat ascii 1.0\nelement vertex 1\nproperty float x\nproperty float y\nproperty float z\nproperty float opacity\nproperty float scale_0\nproperty float scale_1\nproperty float scale_2\nproperty float rot_0\nproperty float rot_1\nproperty float rot_2\nproperty float rot_3\nproperty float f_dc_0\nproperty float f_dc_1\nproperty float f_dc_2\nproperty float f_rest_0\nproperty float f_rest_1\nproperty float f_rest_2\nproperty float f_rest_3\nproperty float f_rest_4\nproperty float f_rest_5\nproperty float f_rest_6\nproperty float f_rest_7\nproperty float f_rest_8\nend_header\n0.0 0.1 1.0 0.9 1.0 1.1 1.2 1.0 0.0 0.0 0.0 0.2 0.3 0.4 0.01 0.02 0.03 0.04 0.05 0.06 0.07 0.08 0.09\n";
 
     #[test]
     fn parses_valid_ascii_ply() {
@@ -656,7 +712,17 @@ mod tests {
         assert_eq!(result.summary.gaussians, 1);
         assert_eq!(result.summary.sh_degree, 0);
         assert!(!result.summary.has_sh_rest);
+        assert_eq!(result.scene.positions[0].y, -0.1);
         assert_eq!(result.scene.positions[0].z, 1.0);
+        assert_eq!(result.scene.rotation_xyzw[0], [0.0, 0.0, 0.0, 1.0]);
+    }
+
+    #[test]
+    fn flips_quaternion_components_for_rdf_to_ruf() {
+        let result = parse_ply_text(VALID_PLY_NON_IDENTITY_QUAT).unwrap();
+        // Input rot is wxyz=(0.9, 0.2, 0.3, 0.4). Internal xyzw before coord conversion
+        // would be (0.2, 0.3, 0.4, 0.9). RDF->RUF flips quaternion x and z.
+        assert_eq!(result.scene.rotation_xyzw[0], [-0.2, 0.3, -0.4, 0.9]);
     }
 
     #[test]
@@ -676,7 +742,10 @@ mod tests {
         assert_eq!(result.summary.sh_degree, 1);
         let sh = result.scene.sh_rest.as_ref().unwrap();
         assert_eq!(sh.len(), 9);
-        assert_eq!(sh[0], 0.01);
+        assert_eq!(sh[0], -0.01);
+        assert_eq!(sh[1], 0.02);
+        assert_eq!(sh[2], 0.03);
+        assert_eq!(sh[3], -0.04);
         assert_eq!(sh[8], 0.09);
     }
 
@@ -707,7 +776,7 @@ mod tests {
 
         let mut bytes = header.as_bytes().to_vec();
         let values: [f32; 14] = [
-            0.0, 0.1, 1.0, 0.9, 1.0, 1.1, 1.2, 0.0, 0.0, 0.0, 1.0, 0.2, 0.3, 0.4,
+            0.0, 0.1, 1.0, 0.9, 1.0, 1.1, 1.2, 1.0, 0.0, 0.0, 0.0, 0.2, 0.3, 0.4,
         ];
         for v in values {
             bytes.extend_from_slice(&v.to_le_bytes());
@@ -717,8 +786,9 @@ mod tests {
         assert_eq!(result.summary.gaussians, 1);
         assert_eq!(result.summary.sh_degree, 0);
         assert!(!result.summary.has_sh_rest);
-        assert_eq!(result.scene.positions[0].y, 0.1);
+        assert_eq!(result.scene.positions[0].y, -0.1);
         assert_eq!(result.scene.opacity[0], 0.9);
+        assert_eq!(result.scene.rotation_xyzw[0], [0.0, 0.0, 0.0, 1.0]);
     }
 
     #[test]
@@ -727,7 +797,7 @@ mod tests {
 
         let mut bytes = header.as_bytes().to_vec();
         let base: [f32; 14] = [
-            0.0, 0.1, 1.0, 0.9, 1.0, 1.1, 1.2, 0.0, 0.0, 0.0, 1.0, 0.2, 0.3, 0.4,
+            0.0, 0.1, 1.0, 0.9, 1.0, 1.1, 1.2, 1.0, 0.0, 0.0, 0.0, 0.2, 0.3, 0.4,
         ];
         for v in base {
             bytes.extend_from_slice(&v.to_le_bytes());
@@ -743,7 +813,7 @@ mod tests {
         assert!(result.summary.has_sh_rest);
         let sh = result.scene.sh_rest.as_ref().unwrap();
         assert_eq!(sh.len(), 9);
-        assert_eq!(sh[0], 0.01);
+        assert_eq!(sh[0], -0.01);
         assert_eq!(sh[8], 0.09);
     }
 }

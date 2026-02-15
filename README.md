@@ -21,6 +21,10 @@ Execution progress: `docs/v0.1.0-subagent-execution.md`.
 - `tools/bench-runner`: perf + stability runner
 - `tests/datasets`: test datasets
 
+PLY convention note:
+- Input quaternion properties `rot_0..3` are interpreted as `w,x,y,z` (common 3DGS export order) and mapped internally to `x,y,z,w`.
+- Input 3DGS PLY coordinates are treated as `RDF` (`+X` right, `+Y` down, `+Z` forward) and converted at load time to runtime `RUF` (`+X` right, `+Y` up, `+Z` forward), including quaternion and SH sign transforms.
+
 ## Gate checks
 
 ```bash
@@ -41,6 +45,22 @@ Render an offscreen frame and write a PNG (requires a GPU adapter):
 ```bash
 cargo run -p desktop-dev -- tests/datasets/minimal_ascii.ply --png target/out.png
 ```
+
+Run interactive on-screen realtime viewer loop (feature-gated):
+
+```bash
+cargo run -p desktop-dev --features interactive-viewer -- tests/datasets/minimal_ascii.ply --auto-camera --interactive
+```
+
+Interactive controls:
+
+- Mouse left drag / arrow keys: look
+- `W`/`S`: forward/backward
+- `A`/`D`: strafe left/right
+- `Q`/`E`: move down/up
+- `Shift`: faster movement
+- `Ctrl`: slower movement
+- `Esc`: exit viewer
 
 Fetch a real 3DGS dataset (binary PLY with `f_rest_0..44`) and render it:
 

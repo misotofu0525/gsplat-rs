@@ -7,6 +7,14 @@
 - User explicitly asked to finish remaining items, not just baseline placeholders.
 
 ## Research Findings
+- The only explicitly tracked open gap in current docs is "interactive on-screen realtime viewer loop".
+- `apps/desktop-dev` currently supports only offscreen frame sequencing and optional PNG dump.
+- Current renderer already exposes per-frame render + readback APIs, so a window-present path can be implemented in app-layer without changing crate contracts.
+- `apps/desktop-dev/Cargo.toml` currently has no windowing/event-loop dependency.
+- Feature-gating the viewer dependency keeps baseline/headless workspace behavior unchanged while exposing a runnable realtime path when enabled.
+- `flowers_1` visual streaking is caused by combined factors: quaternion semantic mismatch risk at PLY ingest and overly close auto-camera framing that amplifies projection anisotropy.
+- Current PLY ingest mapped `rot_0..3` directly to internal `xyzw`; this is ambiguous for common 3DGS exports that store quaternions as `wxyz`.
+- Auto-camera distance previously fit only x/y extents and ignored z depth in standoff calculation, placing the camera near the front surface for thick scenes.
 - Workspace is currently a scaffold with minimal placeholders in all key crates.
 - Current files show stubs for core types, PLY loader, renderer, sort backend, FFI symbols, and tools.
 - CI currently runs only `cargo check --workspace`; perf workflow runs a placeholder bench command.
@@ -29,6 +37,9 @@
 ## Technical Decisions
 | Decision | Rationale |
 |----------|-----------|
+| Implement viewer loop in `desktop-dev` with dedicated interactive mode flag and controls help text | Keeps current command behavior stable for scripts while adding the missing real-time path |
+| Keep render backend unchanged and present via per-frame readback in viewer mode | Avoids broad API churn in `gsplat-render-wgpu` and closes gap quickly with minimal risk |
+| Gate window dependency behind `desktop-dev` feature `interactive-viewer` | Prevents accidental regressions in non-interactive CI/default builds while still enabling full viewer loop |
 | Treat each SA as a parallel implementation track mapped by directory ownership | Aligns directly with user-provided plan and reduces cross-track conflicts |
 | Start from G0 API freeze work before deeper implementation | Downstream crates depend on shared contracts |
 | Add explicit error enums/codes and deterministic stats surfaces early | Needed for gate criteria and later QA automation |
@@ -43,6 +54,8 @@
 | Prioritize “full 3DGS geometry” before interactive viewer loop | User explicitly raised this as higher-priority unfinished work |
 | Port covariance-projection math from `splatapult` into current wgpu path | Delivers geometry correctness while preserving existing crate boundaries |
 | Keep implementation in current instanced draw model (no geometry shader) | Aligns with WebGPU/wgpu constraints and existing renderer architecture |
+| Normalize PLY quaternion semantics to `wxyz -> xyzw` at load time | Removes dataset-side ambiguity and keeps downstream math consistently `xyzw` |
+| Make auto-camera depth-aware by adding z-extent to standoff distance | Reduces close-up projection streak artifacts for large-thickness point clouds |
 
 ## Issues Encountered
 | Issue | Resolution |

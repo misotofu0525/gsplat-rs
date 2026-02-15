@@ -10,6 +10,7 @@
 4. Raster/blend WGSL covariance-driven anisotropic ellipse stage (`gsplat-render-wgpu`)
 5. Expose stats and error codes via Rust APIs and C ABI (`gsplat-ffi-c`)
 6. Optional offline pack (`gsplat-format` + `gsplat-pack`)
+7. Optional desktop interactive viewer loop (`apps/desktop-dev`, feature `interactive-viewer`)
 
 ## Gate alignment
 

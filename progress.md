@@ -1,5 +1,50 @@
 # Progress Log
 
+## Session: 2026-02-15 (Artifact Reduction Batch: Rotation + Camera)
+
+### Phase R9: Artifact Reduction Closure (Rotation Semantics + Camera Standoff)
+- **Status:** complete
+- **Started:** 2026-02-15
+- Actions taken:
+  - Re-opened render artifact issue for `flowers_1` streaking/micro-spike visuals.
+  - Applied multi-track execution: PLY rotation semantics fix, camera standoff fix, validation+render comparison.
+  - Updated PLY loader to interpret `rot_0..3` as `wxyz` and remap to internal `xyzw`.
+  - Updated parser tests and minimal dataset quaternion fixtures to reflect explicit `wxyz` input semantics.
+  - Updated `auto_camera` distance to include scene depth extent (`half_z`) to avoid front-surface over-close framing.
+  - Re-ran check/test targets and produced before/after render comparison images.
+- Files created/modified:
+  - `/Users/misotofu/Documents/workspace/gsplat-rs/task_plan.md`
+  - `/Users/misotofu/Documents/workspace/gsplat-rs/findings.md`
+  - `/Users/misotofu/Documents/workspace/gsplat-rs/progress.md`
+  - `/Users/misotofu/Documents/workspace/gsplat-rs/crates/gsplat-io-ply/src/lib.rs`
+  - `/Users/misotofu/Documents/workspace/gsplat-rs/tests/datasets/minimal_ascii.ply`
+  - `/Users/misotofu/Documents/workspace/gsplat-rs/apps/desktop-dev/src/main.rs`
+  - `/Users/misotofu/Documents/workspace/gsplat-rs/crates/gsplat-render-wgpu/src/lib.rs`
+
+## Session: 2026-02-14 (Interactive Viewer Loop Closure Batch)
+
+### Phase R8: Interactive On-Screen Viewer Loop Closure
+- **Status:** complete
+- **Started:** 2026-02-14
+- Actions taken:
+  - Re-opened unfinished item: on-screen interactive realtime viewer loop.
+  - Re-applied `planning-with-files` workflow for this closure batch.
+  - Re-validated current `desktop-dev` mode and renderer app-layer integration points.
+  - Split work into parallel tracks: event loop/windowing, camera controls, docs/verification.
+  - Added feature-gated interactive desktop viewer path (`--interactive`) with realtime window loop and control bindings.
+  - Preserved existing offscreen mode behavior and PNG output path.
+  - Added compile-time fallback message when interactive feature is not enabled.
+  - Ran formatter, workspace checks/tests, and interactive-feature compile check.
+- Files created/modified:
+  - `/Users/misotofu/Documents/workspace/gsplat-rs/task_plan.md`
+  - `/Users/misotofu/Documents/workspace/gsplat-rs/findings.md`
+  - `/Users/misotofu/Documents/workspace/gsplat-rs/progress.md`
+  - `/Users/misotofu/Documents/workspace/gsplat-rs/apps/desktop-dev/Cargo.toml`
+  - `/Users/misotofu/Documents/workspace/gsplat-rs/apps/desktop-dev/src/main.rs`
+  - `/Users/misotofu/Documents/workspace/gsplat-rs/README.md`
+  - `/Users/misotofu/Documents/workspace/gsplat-rs/docs/architecture.md`
+  - `/Users/misotofu/Documents/workspace/gsplat-rs/docs/v0.1.0-subagent-execution.md`
+
 ## Session: 2026-02-14 (Full 3DGS Geometry Priority Batch)
 
 ### Phase R7: Full 3DGS Geometry Closure
@@ -181,6 +226,16 @@
 | Workspace regression (post-geometry) | `cargo test --workspace` | Success | Success | PASS |
 | Offscreen PNG render (post-geometry) | `cargo run -p desktop-dev -- tests/datasets/minimal_ascii.ply --png target/out_covariance.png` | Success | Success (`target/out_covariance.png`) | PASS |
 | Final check (post-geometry) | `cargo check --workspace` | Success | Success | PASS |
+| Viewer path check (interactive feature) | `cargo check -p desktop-dev --features interactive-viewer` | Success | Success | PASS |
+| Viewer CLI help | `cargo run -p desktop-dev --features interactive-viewer -- --help` | Success | Success (help includes `--interactive`) | PASS |
+| Workspace regression (post-viewer) | `cargo test --workspace` | Success | Success | PASS |
+| Rotation + camera targeted tests | `cargo test -p gsplat-io-ply -p gsplat-render-wgpu -p desktop-dev` | Success | Success | PASS |
+| Workspace check (post-R9) | `cargo check --workspace` | Success | Success | PASS |
+| Workspace regression (post-R9) | `cargo test --workspace` | Success | Success | PASS |
+| Flower render compare (post-R9) | `cargo run -p desktop-dev -- tests/datasets/external/nvidia_flowers_1/flowers_1/flowers_1.ply --auto-camera --yaw-deg 0 --png target/flowers_1_fixed_yaw0.png` | Success | Success (`target/flowers_1_fixed_yaw0.png`) | PASS |
+| RDF->RUF loader fix tests | `cargo test -p gsplat-io-ply` | Success | Success (9 tests passed) | PASS |
+| Workspace regression (post-RDF->RUF) | `cargo test --workspace` | Success | Success | PASS |
+| Flower render (post-RDF->RUF) | `cargo run -p desktop-dev -- tests/datasets/external/nvidia_flowers_1/model.ply --auto-camera --yaw-deg 0 --png target/flowers_1_ruf_yaw0.png` | Success | Success (`target/flowers_1_ruf_yaw0.png`) | PASS |
 
 ## Error Log
 | Timestamp | Error | Attempt | Resolution |
@@ -196,8 +251,8 @@
 ## 5-Question Reboot Check
 | Question | Answer |
 |----------|--------|
-| Where am I? | Phase R7 complete |
-| Where am I going? | Final delivery summary with remaining non-geometry gaps |
-| What's the goal? | Close high-priority full 3DGS geometry gap |
-| What have I learned? | Covariance projection + ellipse axes can be ported cleanly from OpenGL references into wgpu instanced draws |
-| What have I done? | Implemented covariance-driven anisotropic geometry path, updated WGSL/docs, and passed full regression |
+| Where am I? | Phase R9 complete |
+| Where am I going? | Final delivery summary with artifact-reduction evidence |
+| What's the goal? | Reduce streak artifacts by fixing rotation semantics and camera standoff |
+| What have I learned? | PLY quaternion order + camera distance materially affect covariance-projected ellipse appearance |
+| What have I done? | Implemented `wxyz` rotation remap, depth-aware auto-camera standoff, and verified with regression + render comparison |

@@ -4,9 +4,26 @@
 Close the remaining gaps called out after baseline delivery: WGSL render path, non-placeholder GPU sort backend, format/pack tooling, long-stability gate tooling, and mobile demo container-level execution evidence.
 
 ## Current Phase
-Phase R7 complete
+Phase R9 complete
 
 ## Phases
+
+### Phase R9: Artifact Reduction Closure (Rotation Semantics + Camera Standoff)
+- [x] Re-baseline visible streaking root causes on `flowers_1` renders
+- [x] Switch PLY rotation interpretation to 3DGS common order (`wxyz`) mapped into internal `xyzw`
+- [x] Update loader/unit-test fixtures to keep quaternion semantics explicit and deterministic
+- [x] Make `auto_camera` depth-aware to avoid near-front Gaussian over-amplification
+- [x] Validate regression (`cargo check/test`) and render before/after comparison frames
+- **Status:** complete
+
+### Phase R8: Interactive On-Screen Viewer Loop Closure
+- [x] Re-baseline `apps/desktop-dev` entry path and preserve existing offscreen workflow
+- [x] Add real-time window event loop and continuous redraw cadence
+- [x] Add interactive camera controls (move/orbit/look) with deterministic defaults
+- [x] Wire frame upload/present path for on-screen display and runtime stats
+- [x] Update CLI/docs with explicit interactive mode contract and controls
+- [x] Run focused verification (`cargo check/test` + viewer compile path)
+- **Status:** complete
 
 ### Phase R7: Full 3DGS Geometry Closure (High Priority)
 - [x] Re-baseline current simplified splat geometry path and identify exact gap
@@ -94,6 +111,7 @@ Phase R7 complete
 1. What is the minimal real WGSL path that is executable in this repo without forcing surface integration?
 2. Which GPU sort implementation is practical now while keeping crate complexity manageable?
 3. How much mobile “container-level” evidence can be produced without full Android SDK/device setup?
+4. What is the safest cross-platform window loop path that keeps CI/headless checks stable?
 
 ## Decisions Made
 | Decision | Rationale |
@@ -107,6 +125,9 @@ Phase R7 complete
 | Restart planning phases for remaining-task closure instead of treating baseline as final | User explicitly asked to finish unfinished parts |
 | Close remaining render/sort gaps with offscreen WGSL and compute-based GPU sort | Delivers real GPU paths while keeping integration scope manageable for current repo stage |
 | Use local Gradle distribution for Android container build | Avoids host toolchain drift and failed global package installs |
+| Implement interactive viewer loop inside `desktop-dev` as an optional CLI mode while preserving offscreen defaults | Closes the explicit remaining gap without regressing existing scripts and headless-friendly paths |
+| Parse PLY `rot_0..3` using 3DGS common `wxyz` semantics and convert to internal `xyzw` | Aligns covariance orientation with common dataset conventions and removes ambiguous quaternion interpretation |
+| Increase `auto_camera` standoff using scene depth extent (`half_z`) | Prevents frontmost Gaussians from sitting too close to the camera and reducing projection stability |
 
 ## Errors Encountered
 | Error | Attempt | Resolution |
