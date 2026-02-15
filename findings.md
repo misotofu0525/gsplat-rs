@@ -7,6 +7,33 @@
 - User explicitly asked to finish remaining items, not just baseline placeholders.
 
 ## Research Findings
+- 2026-02-15 realtime preview architecture update:
+  - Interactive viewer no longer depends on `minifb` readback path; switched to `winit + wgpu surface` present path in app layer.
+  - Interactive rendering now uses `Renderer::build_sorted_instances()` (preprocess/sort/build only) and submits `GpuInstance` directly to surface render pass.
+  - Removed the mandatory per-frame `readback_rgba8()` requirement from interactive loop; this eliminates the previous blocking GPU->CPU sync in preview mode.
+- 2026-02-15 GPU compute preprocess closure:
+  - Interactive path now dispatches `apps/desktop-dev/shaders/preprocess_instances.wgsl` to build `GpuInstance` directly on GPU from sorted indices.
+  - Initial runtime panic (`Too many bindings of type StorageBuffers in COMPUTE`) was caused by 6 compute storage bindings on downlevel limits.
+  - Resolved by packing scene attributes (`position/covariance/color_dc/opacity`) into one `GpuSceneElem` storage buffer and reducing compute bindings to 4 total (`sorted_indices`, `scene`, `params`, `instances`).
+  - `cargo check -p desktop-dev --features interactive-viewer`, `cargo test -p gsplat-render-wgpu`, and `cargo check --workspace` all pass after this fix.
+- 2026-02-15 compute scene layout fix:
+  - Artifact screenshot (center streak/cross pattern) matched a storage-layout mismatch between WGSL `SceneElem` and Rust `GpuSceneElem`.
+  - WGSL `opacity + vec3` introduced 16-byte alignment holes while Rust struct was tightly packed, causing per-element stride mismatch and corrupted scene reads in compute.
+  - Resolved by changing both sides to `opacity_and_pad: vec4` and keeping scene element stride explicitly homogeneous.
+- 2026-02-15 CPU build-stage optimization:
+  - Added world-covariance precompute on scene load (`precompute_world_covariances`) and reuse in per-frame build path.
+  - Parallelized instance construction over sorted indices using Rayon (`par_iter + filter_map + collect`).
+  - Bench evidence (`flowers_1`):
+    - `desktop-dev --release --frames 30 --auto-camera --width 1280 --height 720` moved from roughly `frame_ms≈43/raster_ms≈38` to `frame_ms=13.58/raster_ms=8.33`.
+    - `bench-runner --release ... 120` now reports `avg_frame_ms=11.53`, `avg_sort_ms=2.63`, `avg_raster_ms=4.60`.
+- 2026-02-15 interactive perf triage (`flowers_1`, 1280x720, auto camera, 30 frames, release):
+  - `frame_ms=43.08`, `preprocess_ms=0.77`, `sort_ms=4.51`, `raster_ms=37.80`, `visible_count=562974`, `drawn_count=562974`.
+  - Lowering resolution to `640x360` keeps timings nearly identical (`frame_ms=42.99`, `raster_ms=37.73`), indicating the dominant cost is not fill-rate but CPU-side per-instance build/projection in raster stage.
+  - Interactive viewer mode adds per-frame readback/present overhead on top of render:
+    - `render_frame()` then `readback_rgba8()` then `rgba_to_xrgb()` then `window.update_with_buffer()`.
+    - `readback_rgba8()` currently allocates a new MAP_READ buffer, performs texture copy, and blocks with `device.poll(wait_indefinitely)` every frame.
+- Current 500k+ point workload therefore bottlenecks primarily in:
+  1) CPU `build_instances` math path (`raster_ms` bucket), 2) interactive per-frame GPU->CPU readback/present path, not sort.
 - The only explicitly tracked open gap in current docs is "interactive on-screen realtime viewer loop".
 - `apps/desktop-dev` currently supports only offscreen frame sequencing and optional PNG dump.
 - Current renderer already exposes per-frame render + readback APIs, so a window-present path can be implemented in app-layer without changing crate contracts.
@@ -56,6 +83,7 @@
 | Keep implementation in current instanced draw model (no geometry shader) | Aligns with WebGPU/wgpu constraints and existing renderer architecture |
 | Normalize PLY quaternion semantics to `wxyz -> xyzw` at load time | Removes dataset-side ambiguity and keeps downstream math consistently `xyzw` |
 | Make auto-camera depth-aware by adding z-extent to standoff distance | Reduces close-up projection streak artifacts for large-thickness point clouds |
+| Pack interactive compute scene data into a single storage buffer (`GpuSceneElem`) | Keeps compute prepass within adapter storage-buffer limits and preserves portability |
 
 ## Issues Encountered
 | Issue | Resolution |
@@ -66,6 +94,7 @@
 | Initial Swift smoke failed due type/import mismatch | Probed generated Swift signature and aligned to `OpaquePointer` |
 | `brew install gradle` failed due tap state conflict | Avoided global install and switched to project-local Gradle download flow |
 | `wgpu 28` API mismatch errors in new GPU code | Adapted descriptor fields and polling API to current version |
+| Runtime panic: `Too many bindings of type StorageBuffers in COMPUTE` during interactive startup | Reduced compute storage bindings from 6 to 3 read + 1 write by packing scene inputs |
 | Bench-runner positional argument parsing regression after stability mode extension | Added explicit dataset/iteration parse state and revalidated both modes |
 | Local policy rejected `rm -rf` while cloning external reference repo | Switched to timestamped temporary clone path without destructive cleanup |
 

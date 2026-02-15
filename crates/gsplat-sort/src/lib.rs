@@ -23,7 +23,9 @@ pub trait SortBackend {
 }
 
 #[derive(Default)]
-pub struct CpuSortBackend;
+pub struct CpuSortBackend {
+    packed: Vec<u64>,
+}
 
 impl SortBackend for CpuSortBackend {
     fn name(&self) -> &'static str {
@@ -35,17 +37,143 @@ impl SortBackend for CpuSortBackend {
             return Err(SortError::LengthMismatch);
         }
 
-        let mut zipped: Vec<(u32, u32)> =
-            keys.iter().copied().zip(values.iter().copied()).collect();
-        // Stable deterministic ordering: deeper key first; tie-breaker keeps smaller original index first.
-        zipped.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
-
-        for (i, (k, v)) in zipped.into_iter().enumerate() {
-            keys[i] = k;
-            values[i] = v;
+        let len = keys.len();
+        if len <= 1 {
+            return Ok(());
         }
 
+        if self.packed.len() < len {
+            self.packed.resize(len, 0);
+        }
+        let packed = &mut self.packed[..len];
+        pack_pairs(keys, values, packed);
+        packed.sort_unstable_by(|a, b| b.cmp(a));
+        unpack_pairs(packed, keys, values);
         Ok(())
+    }
+}
+
+#[inline]
+const fn pack_sort_pair(key: u32, value: u32) -> u64 {
+    ((key as u64) << 32) | ((!value) as u64)
+}
+
+#[inline]
+const fn unpack_sort_pair(packed: u64) -> (u32, u32) {
+    ((packed >> 32) as u32, !(packed as u32))
+}
+
+fn pack_pairs(keys: &[u32], values: &[u32], out: &mut [u64]) {
+    debug_assert_eq!(keys.len(), values.len());
+    debug_assert_eq!(keys.len(), out.len());
+
+    #[cfg(target_arch = "x86_64")]
+    {
+        if std::arch::is_x86_feature_detected!("avx2") {
+            // SAFETY: guarded by runtime AVX2 detection and length-validated slices.
+            unsafe {
+                pack_pairs_avx2(keys, values, out);
+            }
+            return;
+        }
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        // SAFETY: AArch64 guarantees Neon availability.
+        unsafe {
+            pack_pairs_neon(keys, values, out);
+        }
+        return;
+    }
+
+    #[cfg(not(target_arch = "aarch64"))]
+    for i in 0..keys.len() {
+        out[i] = pack_sort_pair(keys[i], values[i]);
+    }
+}
+
+fn unpack_pairs(packed: &[u64], keys: &mut [u32], values: &mut [u32]) {
+    debug_assert_eq!(packed.len(), keys.len());
+    debug_assert_eq!(packed.len(), values.len());
+
+    for i in 0..packed.len() {
+        let (key, value) = unpack_sort_pair(packed[i]);
+        keys[i] = key;
+        values[i] = value;
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn pack_pairs_avx2(keys: &[u32], values: &[u32], out: &mut [u64]) {
+    use std::arch::x86_64::*;
+
+    let len = keys.len();
+    let mut i = 0_usize;
+    let all_ones = _mm256_set1_epi64x(-1);
+
+    while i + 4 <= len {
+        // SAFETY: i + 4 <= len guarantees valid 16-byte loads.
+        let key_128 = unsafe { _mm_loadu_si128(keys.as_ptr().add(i) as *const __m128i) };
+        // SAFETY: i + 4 <= len guarantees valid 16-byte loads.
+        let val_128 = unsafe { _mm_loadu_si128(values.as_ptr().add(i) as *const __m128i) };
+
+        let key_64 = _mm256_cvtepu32_epi64(key_128);
+        let val_64 = _mm256_cvtepu32_epi64(val_128);
+        let inv_val_64 = _mm256_xor_si256(val_64, all_ones);
+        let key_hi_64 = _mm256_slli_epi64(key_64, 32);
+        let packed_64 = _mm256_or_si256(key_hi_64, inv_val_64);
+
+        // SAFETY: i + 4 <= len guarantees valid 32-byte stores.
+        unsafe { _mm256_storeu_si256(out.as_mut_ptr().add(i) as *mut __m256i, packed_64) };
+        i += 4;
+    }
+
+    while i < len {
+        out[i] = pack_sort_pair(keys[i], values[i]);
+        i += 1;
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+#[allow(unsafe_op_in_unsafe_fn)]
+#[target_feature(enable = "neon")]
+unsafe fn pack_pairs_neon(keys: &[u32], values: &[u32], out: &mut [u64]) {
+    use std::arch::aarch64::*;
+
+    let len = keys.len();
+    let mut i = 0_usize;
+    let all_ones = vdupq_n_u64(u64::MAX);
+
+    while i + 4 <= len {
+        // SAFETY: i + 4 <= len guarantees valid loads/stores.
+        let key_4 = unsafe { vld1q_u32(keys.as_ptr().add(i)) };
+        // SAFETY: i + 4 <= len guarantees valid loads/stores.
+        let val_4 = unsafe { vld1q_u32(values.as_ptr().add(i)) };
+
+        let key_lo = vmovl_u32(vget_low_u32(key_4));
+        let key_hi = vmovl_u32(vget_high_u32(key_4));
+        let val_lo = vmovl_u32(vget_low_u32(val_4));
+        let val_hi = vmovl_u32(vget_high_u32(val_4));
+
+        let key_hi_lo = vshlq_n_u64(key_lo, 32);
+        let key_hi_hi = vshlq_n_u64(key_hi, 32);
+        let inv_val_lo = veorq_u64(val_lo, all_ones);
+        let inv_val_hi = veorq_u64(val_hi, all_ones);
+        let packed_lo = vorrq_u64(key_hi_lo, inv_val_lo);
+        let packed_hi = vorrq_u64(key_hi_hi, inv_val_hi);
+
+        // SAFETY: i + 4 <= len guarantees valid stores.
+        unsafe { vst1q_u64(out.as_mut_ptr().add(i), packed_lo) };
+        // SAFETY: i + 4 <= len guarantees valid stores.
+        unsafe { vst1q_u64(out.as_mut_ptr().add(i + 2), packed_hi) };
+        i += 4;
+    }
+
+    while i < len {
+        out[i] = pack_sort_pair(keys[i], values[i]);
+        i += 1;
     }
 }
 
@@ -343,7 +471,7 @@ mod tests {
 
     #[test]
     fn cpu_backend_sorts_descending_by_key() {
-        let mut backend = CpuSortBackend;
+        let mut backend = CpuSortBackend::default();
         let mut keys = [20_u32, 5, 12];
         let mut values = [0_u32, 1, 2];
 
@@ -355,7 +483,7 @@ mod tests {
 
     #[test]
     fn cpu_backend_rejects_mismatch() {
-        let mut backend = CpuSortBackend;
+        let mut backend = CpuSortBackend::default();
         let mut keys = [1_u32, 2];
         let mut values = [1_u32];
 

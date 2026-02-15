@@ -26,6 +26,19 @@ fn rotation_wxyz_to_xyzw(wxyz: [f32; 4]) -> [f32; 4] {
     [wxyz[1], wxyz[2], wxyz[3], wxyz[0]]
 }
 
+fn rotation_input_to_xyzw(raw: [f32; 4]) -> [f32; 4] {
+    // Most 3DGS exports use wxyz for rot_0..3, but some toolchains emit xyzw.
+    // Allow runtime override for dataset compatibility experiments.
+    if matches!(
+        std::env::var("GSPLAT_ROT_LAYOUT").ok().as_deref(),
+        Some("xyzw") | Some("XYZW")
+    ) {
+        raw
+    } else {
+        rotation_wxyz_to_xyzw(raw)
+    }
+}
+
 fn convert_scene_rdf_to_ruf(scene: &mut SceneBuffers) {
     for p in &mut scene.positions {
         p.y = -p.y;
@@ -490,7 +503,7 @@ fn parse_ascii_body(
             parse_field_f32_ascii(&values, indices, "scale_2")?,
         ]);
 
-        scene.rotation_xyzw.push(rotation_wxyz_to_xyzw([
+        scene.rotation_xyzw.push(rotation_input_to_xyzw([
             parse_field_f32_ascii(&values, indices, "rot_0")?,
             parse_field_f32_ascii(&values, indices, "rot_1")?,
             parse_field_f32_ascii(&values, indices, "rot_2")?,
@@ -571,7 +584,7 @@ fn parse_binary_body(
             read_field_f32_binary(record, header, &offsets, indices, "scale_2", endian)?,
         ]);
 
-        scene.rotation_xyzw.push(rotation_wxyz_to_xyzw([
+        scene.rotation_xyzw.push(rotation_input_to_xyzw([
             read_field_f32_binary(record, header, &offsets, indices, "rot_0", endian)?,
             read_field_f32_binary(record, header, &offsets, indices, "rot_1", endian)?,
             read_field_f32_binary(record, header, &offsets, indices, "rot_2", endian)?,

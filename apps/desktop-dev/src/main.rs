@@ -5,15 +5,33 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 #[cfg(feature = "interactive-viewer")]
-use std::time::Duration;
+use std::{
+    collections::HashSet,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
 use gsplat_core::{Camera, RenderMode, RendererConfig, Vec3f};
 #[cfg(feature = "interactive-viewer")]
+use bytemuck::{Pod, Zeroable};
+#[cfg(feature = "interactive-viewer")]
 use gsplat_core::{CameraIntrinsics, CameraPose};
+#[cfg(feature = "interactive-viewer")]
+use gsplat_core::SceneBuffers;
 use gsplat_io_ply::load_ply;
+#[cfg(feature = "interactive-viewer")]
+use gsplat_render_wgpu::GpuInstance;
 use gsplat_render_wgpu::Renderer;
 #[cfg(feature = "interactive-viewer")]
-use minifb::{Key, MouseButton, MouseMode, Window, WindowOptions};
+use wgpu::util::DeviceExt;
+#[cfg(feature = "interactive-viewer")]
+use winit::{
+    dpi::PhysicalSize,
+    event::{ElementState, Event, MouseButton, MouseScrollDelta, WindowEvent},
+    event_loop::EventLoop,
+    keyboard::{KeyCode, PhysicalKey},
+    window::{Window, WindowAttributes},
+};
 
 fn main() {
     let args = match Args::parse(env::args().skip(1)) {
@@ -211,25 +229,35 @@ fn run_offscreen(args: &Args, mut renderer: Renderer, mut camera: Camera) -> Res
 
 #[cfg(feature = "interactive-viewer")]
 fn run_interactive(args: &Args, mut renderer: Renderer, camera: Camera) -> Result<(), String> {
-    if !renderer.has_gpu_rasterizer() {
-        return Err(
-            "interactive mode requires an available GPU rasterizer (adapter not found)".to_owned(),
-        );
+    if args.png_out.is_some() {
+        return Err("interactive mode does not support --png in surface-present path".to_owned());
     }
-
-    let width = args.config.width as usize;
-    let height = args.config.height as usize;
-    let mut window = Window::new(
-        "gsplat-rs viewer",
-        width,
-        height,
-        WindowOptions {
-            resize: false,
-            ..WindowOptions::default()
-        },
-    )
-    .map_err(|err| format!("window creation failed: {err}"))?;
-    window.set_target_fps(60);
+    let event_loop =
+        EventLoop::new().map_err(|err| format!("event loop creation failed: {err}"))?;
+    let window = Arc::new(
+        event_loop
+            .create_window(
+                WindowAttributes::default()
+                    .with_title("gsplat-rs viewer")
+                    .with_inner_size(PhysicalSize::new(args.config.width, args.config.height)),
+            )
+            .map_err(|err| format!("window creation failed: {err}"))?,
+    );
+    let mut presenter = {
+        let scene = renderer
+            .scene()
+            .ok_or_else(|| "interactive mode requires a loaded scene".to_owned())?;
+        let world_covariances = renderer
+            .world_covariances()
+            .ok_or_else(|| "interactive mode requires covariance cache".to_owned())?;
+        pollster::block_on(SurfacePresenter::new(
+            window.clone(),
+            args.config.width,
+            args.config.height,
+            scene,
+            world_covariances,
+        ))?
+    };
 
     println!("interactive viewer controls:");
     println!("  mouse-left drag / arrow keys: look");
@@ -238,54 +266,127 @@ fn run_interactive(args: &Args, mut renderer: Renderer, camera: Camera) -> Resul
     println!("  Esc: exit");
 
     let mut controller = CameraController::new(camera);
+    let mut input = InputState::default();
     let mut last_frame = Instant::now();
     let mut title_timer = Instant::now();
     let mut title_frames = 0_u32;
     let mut orbit_phase = 0.0_f32;
-    let mut xrgb = vec![0_u32; width.saturating_mul(height)];
-    let mut last_rgba = vec![0_u8; width.saturating_mul(height).saturating_mul(4)];
+    let window_id = window.id();
+    let render_error = Arc::new(Mutex::new(None::<String>));
+    let render_error_shared = render_error.clone();
 
-    while window.is_open() && !window.is_key_down(Key::Escape) {
-        let now = Instant::now();
-        let dt = (now - last_frame).as_secs_f32().clamp(0.0, 0.1);
-        last_frame = now;
+    event_loop
+        .run(move |event, target| match event {
+            Event::AboutToWait => {
+                window.request_redraw();
+            }
+            Event::WindowEvent {
+                window_id: id,
+                event,
+            } if id == window_id => match event {
+                WindowEvent::CloseRequested => target.exit(),
+                WindowEvent::Resized(size) => {
+                    presenter.resize(size.width, size.height);
+                }
+                WindowEvent::KeyboardInput { event, .. } => {
+                    if let PhysicalKey::Code(code) = event.physical_key {
+                        if code == KeyCode::Escape && event.state == ElementState::Pressed {
+                            target.exit();
+                            return;
+                        }
+                        match event.state {
+                            ElementState::Pressed => {
+                                input.keys_down.insert(code);
+                            }
+                            ElementState::Released => {
+                                input.keys_down.remove(&code);
+                            }
+                        }
+                    }
+                }
+                WindowEvent::MouseInput { state, button, .. } => {
+                    if button == MouseButton::Left {
+                        input.mouse_left_down = state == ElementState::Pressed;
+                        if !input.mouse_left_down {
+                            input.last_cursor = None;
+                        }
+                    }
+                }
+                WindowEvent::CursorMoved { position, .. } => {
+                    let current = (position.x as f32, position.y as f32);
+                    if input.mouse_left_down {
+                        if let Some((lx, ly)) = input.last_cursor {
+                            input.mouse_delta.0 += current.0 - lx;
+                            input.mouse_delta.1 += current.1 - ly;
+                        }
+                        input.last_cursor = Some(current);
+                    } else {
+                        input.last_cursor = Some(current);
+                    }
+                }
+                WindowEvent::MouseWheel { delta, .. } => match delta {
+                    MouseScrollDelta::LineDelta(_, y) => input.scroll_y += y,
+                    MouseScrollDelta::PixelDelta(p) => input.scroll_y += (p.y as f32) / 100.0,
+                },
+                WindowEvent::RedrawRequested => {
+                    let now = Instant::now();
+                    let dt = (now - last_frame).as_secs_f32().clamp(0.0, 0.1);
+                    last_frame = now;
 
-        if args.orbit {
-            orbit_phase += dt * 0.8;
-            controller.set_yaw(orbit_phase);
-        } else {
-            controller.update(&window, dt);
-        }
+                    if args.orbit {
+                        orbit_phase += dt * 0.8;
+                        controller.set_yaw(orbit_phase);
+                    } else {
+                        controller.update(&input, dt);
+                    }
 
-        let stats = renderer
-            .render_frame(&controller.camera())
-            .map_err(|err| format!("interactive render failed: {err}"))?;
-        last_rgba = renderer
-            .readback_rgba8()
-            .map_err(|err| format!("interactive readback failed: {err}"))?;
-        rgba_to_xrgb(&last_rgba, &mut xrgb)?;
-        window
-            .update_with_buffer(&xrgb, width, height)
-            .map_err(|err| format!("interactive present failed: {err}"))?;
+                    let camera_now = controller.camera();
+                    let (sorted_indices, stats) = match renderer.build_sorted_indices(&camera_now) {
+                        Ok(v) => v,
+                        Err(err) => {
+                            if let Ok(mut slot) = render_error_shared.lock() {
+                                *slot = Some(format!("interactive prepare failed: {err}"));
+                            }
+                            target.exit();
+                            return;
+                        }
+                    };
 
-        title_frames = title_frames.saturating_add(1);
-        let elapsed = title_timer.elapsed();
-        if elapsed >= Duration::from_millis(500) {
-            let fps = (title_frames as f32) / elapsed.as_secs_f32().max(1e-6);
-            window.set_title(&format!(
-                "gsplat-rs viewer | fps={fps:.1} frame={:.2}ms visible={} drawn={}",
-                stats.frame_ms, stats.visible_count, stats.drawn_count
-            ));
-            title_timer = Instant::now();
-            title_frames = 0;
-        }
+                    if let Err(err) = presenter.render(&sorted_indices, &camera_now) {
+                        if let Ok(mut slot) = render_error_shared.lock() {
+                            *slot = Some(format!("interactive present failed: {err}"));
+                        }
+                        target.exit();
+                        return;
+                    }
+
+                    title_frames = title_frames.saturating_add(1);
+                    let elapsed = title_timer.elapsed();
+                    if elapsed >= Duration::from_millis(500) {
+                        let fps = (title_frames as f32) / elapsed.as_secs_f32().max(1e-6);
+                        window.set_title(&format!(
+                            "gsplat-rs viewer | fps={fps:.1} frame={:.2}ms visible={} drawn={}",
+                            stats.frame_ms, stats.visible_count, stats.drawn_count
+                        ));
+                        title_timer = Instant::now();
+                        title_frames = 0;
+                    }
+
+                    input.end_frame();
+                }
+                _ => {}
+            },
+            _ => {}
+        })
+        .map_err(|err| format!("interactive event loop failed: {err}"))?;
+
+    if let Some(err) = render_error
+        .lock()
+        .map_err(|_| "interactive error state lock poisoned".to_owned())?
+        .take()
+    {
+        return Err(err);
     }
-
-    if let Some(png_path) = args.png_out.as_deref() {
-        write_png(png_path, args.config.width, args.config.height, &last_rgba)?;
-        println!("wrote_png={}", png_path.display());
-    }
-
     println!("interactive-viewer exited");
     Ok(())
 }
@@ -293,6 +394,553 @@ fn run_interactive(args: &Args, mut renderer: Renderer, camera: Camera) -> Resul
 #[cfg(not(feature = "interactive-viewer"))]
 fn run_interactive(_args: &Args, _renderer: Renderer, _camera: Camera) -> Result<(), String> {
     Err("interactive mode is not enabled. re-run with `--features interactive-viewer`".to_owned())
+}
+
+#[cfg(feature = "interactive-viewer")]
+#[derive(Debug, Default, Clone)]
+struct InputState {
+    keys_down: HashSet<KeyCode>,
+    mouse_left_down: bool,
+    last_cursor: Option<(f32, f32)>,
+    mouse_delta: (f32, f32),
+    scroll_y: f32,
+}
+
+#[cfg(feature = "interactive-viewer")]
+impl InputState {
+    fn is_key_down(&self, key: KeyCode) -> bool {
+        self.keys_down.contains(&key)
+    }
+
+    fn end_frame(&mut self) {
+        self.mouse_delta = (0.0, 0.0);
+        self.scroll_y = 0.0;
+    }
+}
+
+#[cfg(feature = "interactive-viewer")]
+struct SurfacePresenter {
+    surface: wgpu::Surface<'static>,
+    device: wgpu::Device,
+    queue: wgpu::Queue,
+    preprocess_pipeline: wgpu::ComputePipeline,
+    preprocess_bind_group: wgpu::BindGroup,
+    preprocess_params_buffer: wgpu::Buffer,
+    sorted_indices_buffer: wgpu::Buffer,
+    sorted_capacity: usize,
+    pipeline: wgpu::RenderPipeline,
+    surface_config: wgpu::SurfaceConfiguration,
+    _instance_buffer: wgpu::Buffer,
+    instance_capacity: usize,
+    sh_degree: u32,
+    _scene_buffer: wgpu::Buffer,
+    _sh_rest_buffer: wgpu::Buffer,
+    bind_group: wgpu::BindGroup,
+}
+
+#[cfg(feature = "interactive-viewer")]
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct GpuSceneElem {
+    position: [f32; 4],
+    cov_row0: [f32; 4],
+    cov_row1: [f32; 4],
+    cov_row2: [f32; 4],
+    color_dc: [f32; 4],
+    opacity_and_pad: [f32; 4],
+}
+
+#[cfg(feature = "interactive-viewer")]
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct PreprocessParams {
+    camera_pos: [f32; 4],
+    camera_inv_q: [f32; 4],
+    view_rot_row0: [f32; 4],
+    view_rot_row1: [f32; 4],
+    view_rot_row2: [f32; 4],
+    vertical_fov_radians: f32,
+    near_plane: f32,
+    far_plane: f32,
+    aspect: f32,
+    width: u32,
+    height: u32,
+    len: u32,
+    sh_degree: u32,
+}
+
+#[cfg(feature = "interactive-viewer")]
+impl SurfacePresenter {
+    async fn new(
+        window: Arc<Window>,
+        width: u32,
+        height: u32,
+        scene: &SceneBuffers,
+        world_covariances: &[[[f32; 3]; 3]],
+    ) -> Result<Self, String> {
+        if width == 0 || height == 0 {
+            return Err("invalid surface size".to_owned());
+        }
+        if scene.len() != world_covariances.len() {
+            return Err("scene/covariance length mismatch".to_owned());
+        }
+
+        let instance = wgpu::Instance::default();
+        let surface = instance
+            .create_surface(window)
+            .map_err(|err| format!("surface creation failed: {err}"))?;
+
+        let adapter = instance
+            .request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::HighPerformance,
+                compatible_surface: Some(&surface),
+                force_fallback_adapter: false,
+            })
+            .await
+            .map_err(|_| "surface adapter unavailable".to_owned())?;
+
+        let (device, queue) = adapter
+            .request_device(&wgpu::DeviceDescriptor {
+                label: Some("desktop-dev-surface-device"),
+                required_features: wgpu::Features::empty(),
+                required_limits: wgpu::Limits::downlevel_defaults(),
+                experimental_features: wgpu::ExperimentalFeatures::disabled(),
+                memory_hints: wgpu::MemoryHints::Performance,
+                trace: wgpu::Trace::Off,
+            })
+            .await
+            .map_err(|err| format!("surface device creation failed: {err}"))?;
+
+        let caps = surface.get_capabilities(&adapter);
+        let Some(format) = caps.formats.first().copied() else {
+            return Err("surface has no compatible format".to_owned());
+        };
+        let present_mode = if caps.present_modes.contains(&wgpu::PresentMode::Mailbox) {
+            wgpu::PresentMode::Mailbox
+        } else {
+            wgpu::PresentMode::Fifo
+        };
+        let alpha_mode = caps
+            .alpha_modes
+            .first()
+            .copied()
+            .unwrap_or(wgpu::CompositeAlphaMode::Opaque);
+
+        let surface_config = wgpu::SurfaceConfiguration {
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            format,
+            width,
+            height,
+            present_mode,
+            alpha_mode,
+            view_formats: vec![],
+            desired_maximum_frame_latency: 2,
+        };
+        surface.configure(&device, &surface_config);
+
+        let render_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("desktop-dev-splat-shader"),
+            source: wgpu::ShaderSource::Wgsl(
+                include_str!("../../../crates/gsplat-render-wgpu/shaders/splat.wgsl").into(),
+            ),
+        });
+        let preprocess_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("desktop-dev-preprocess-shader"),
+            source: wgpu::ShaderSource::Wgsl(
+                include_str!("../shaders/preprocess_instances.wgsl").into(),
+            ),
+        });
+
+        let render_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("desktop-dev-splat-bgl"),
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                }],
+            });
+        let preprocess_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("desktop-dev-preprocess-bgl"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 3,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 4,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: false },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                ],
+            });
+
+        let render_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("desktop-dev-splat-bgl"),
+                bind_group_layouts: &[&render_bind_group_layout],
+                immediate_size: 0,
+            });
+        let preprocess_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("desktop-dev-preprocess-pl"),
+                bind_group_layouts: &[&preprocess_bind_group_layout],
+                immediate_size: 0,
+            });
+
+        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("desktop-dev-splat-rp"),
+            layout: Some(&render_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &render_shader,
+                entry_point: Some("vs_main"),
+                buffers: &[],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &render_shader,
+                entry_point: Some("fs_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: Some(wgpu::BlendState {
+                        color: wgpu::BlendComponent {
+                            src_factor: wgpu::BlendFactor::One,
+                            dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                            operation: wgpu::BlendOperation::Add,
+                        },
+                        alpha: wgpu::BlendComponent {
+                            src_factor: wgpu::BlendFactor::One,
+                            dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                            operation: wgpu::BlendOperation::Add,
+                        },
+                    }),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            }),
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+        let preprocess_pipeline =
+            device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some("desktop-dev-preprocess-cp"),
+                layout: Some(&preprocess_pipeline_layout),
+                module: &preprocess_shader,
+                entry_point: Some("main"),
+                cache: None,
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            });
+
+        let scene_len = scene.len().max(1);
+        let scene_data: Vec<GpuSceneElem> = if scene.positions.is_empty() {
+            vec![GpuSceneElem {
+                position: [0.0, 0.0, 0.0, 0.0],
+                cov_row0: [0.0, 0.0, 0.0, 0.0],
+                cov_row1: [0.0, 0.0, 0.0, 0.0],
+                cov_row2: [0.0, 0.0, 0.0, 0.0],
+                color_dc: [0.0, 0.0, 0.0, 0.0],
+                opacity_and_pad: [0.0, 0.0, 0.0, 0.0],
+            }]
+        } else {
+            (0..scene.positions.len())
+                .map(|i| {
+                    let pos = scene.positions[i];
+                    let cov = world_covariances[i];
+                    let color_dc = scene.color_dc.get(i).copied().unwrap_or([0.0, 0.0, 0.0]);
+                    let opacity = *scene.opacity.get(i).unwrap_or(&0.0);
+                    GpuSceneElem {
+                        position: [pos.x, pos.y, pos.z, 0.0],
+                        cov_row0: [cov[0][0], cov[0][1], cov[0][2], 0.0],
+                        cov_row1: [cov[1][0], cov[1][1], cov[1][2], 0.0],
+                        cov_row2: [cov[2][0], cov[2][1], cov[2][2], 0.0],
+                        color_dc: [color_dc[0], color_dc[1], color_dc[2], 0.0],
+                        opacity_and_pad: [opacity, 0.0, 0.0, 0.0],
+                    }
+                })
+                .collect()
+        };
+
+        let scene_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("desktop-dev-scene-packed"),
+            contents: bytemuck::cast_slice(&scene_data),
+            usage: wgpu::BufferUsages::STORAGE,
+        });
+
+        let sorted_indices_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("desktop-dev-sorted-indices"),
+            size: (scene_len as u64) * std::mem::size_of::<u32>() as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let empty_rest = [0.0_f32];
+        let sh_rest = scene.sh_rest.as_deref().unwrap_or(&empty_rest);
+        let sh_rest_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("desktop-dev-sh-rest"),
+            contents: bytemuck::cast_slice(sh_rest),
+            usage: wgpu::BufferUsages::STORAGE,
+        });
+
+        let preprocess_params = PreprocessParams {
+            camera_pos: [0.0, 0.0, 0.0, 0.0],
+            camera_inv_q: [0.0, 0.0, 0.0, 1.0],
+            view_rot_row0: [1.0, 0.0, 0.0, 0.0],
+            view_rot_row1: [0.0, 1.0, 0.0, 0.0],
+            view_rot_row2: [0.0, 0.0, 1.0, 0.0],
+            vertical_fov_radians: 60.0_f32.to_radians(),
+            near_plane: 0.01,
+            far_plane: 1000.0,
+            aspect: width as f32 / height as f32,
+            width,
+            height,
+            len: 0,
+            sh_degree: scene.sh_degree as u32,
+        };
+        let preprocess_params_buffer =
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("desktop-dev-preprocess-params"),
+                contents: bytemuck::bytes_of(&preprocess_params),
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            });
+
+        let (instance_buffer, bind_group) = create_surface_instance_resources(
+            &device,
+            &render_bind_group_layout,
+            scene_len,
+        );
+        let preprocess_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("desktop-dev-preprocess-bg"),
+            layout: &preprocess_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: sorted_indices_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: scene_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: sh_rest_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: preprocess_params_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: instance_buffer.as_entire_binding(),
+                },
+            ],
+        });
+
+        Ok(Self {
+            surface,
+            device,
+            queue,
+            preprocess_pipeline,
+            preprocess_bind_group,
+            preprocess_params_buffer,
+            sorted_indices_buffer,
+            sorted_capacity: scene_len,
+            pipeline,
+            surface_config,
+            _instance_buffer: instance_buffer,
+            instance_capacity: scene_len,
+            sh_degree: scene.sh_degree as u32,
+            _scene_buffer: scene_buffer,
+            _sh_rest_buffer: sh_rest_buffer,
+            bind_group,
+        })
+    }
+
+    fn resize(&mut self, width: u32, height: u32) {
+        if width == 0 || height == 0 {
+            return;
+        }
+        self.surface_config.width = width;
+        self.surface_config.height = height;
+        self.surface.configure(&self.device, &self.surface_config);
+    }
+
+    fn render(&mut self, sorted_indices: &[u32], camera: &Camera) -> Result<(), String> {
+        if sorted_indices.len() > self.sorted_capacity {
+            return Err("sorted index buffer capacity exceeded".to_owned());
+        }
+        if sorted_indices.len() > self.instance_capacity {
+            return Err("instance buffer capacity exceeded".to_owned());
+        }
+        if !sorted_indices.is_empty() {
+            self.queue.write_buffer(
+                &self.sorted_indices_buffer,
+                0,
+                bytemuck::cast_slice(sorted_indices),
+            );
+        }
+
+        let camera_inv_q = quat_inverse(camera.pose.rotation_xyzw);
+        let view_rot = quat_to_mat3(camera_inv_q);
+        let params = PreprocessParams {
+            camera_pos: [
+                camera.pose.position.x,
+                camera.pose.position.y,
+                camera.pose.position.z,
+                0.0,
+            ],
+            camera_inv_q,
+            view_rot_row0: [view_rot[0][0], view_rot[0][1], view_rot[0][2], 0.0],
+            view_rot_row1: [view_rot[1][0], view_rot[1][1], view_rot[1][2], 0.0],
+            view_rot_row2: [view_rot[2][0], view_rot[2][1], view_rot[2][2], 0.0],
+            vertical_fov_radians: camera.intrinsics.vertical_fov_radians,
+            near_plane: camera.intrinsics.near_plane,
+            far_plane: camera.intrinsics.far_plane,
+            aspect: (self.surface_config.width as f32 / self.surface_config.height as f32)
+                .max(1e-6),
+            width: self.surface_config.width,
+            height: self.surface_config.height,
+            len: sorted_indices.len() as u32,
+            sh_degree: self.sh_degree,
+        };
+        self.queue.write_buffer(
+            &self.preprocess_params_buffer,
+            0,
+            bytemuck::bytes_of(&params),
+        );
+
+        let frame = match self.surface.get_current_texture() {
+            Ok(frame) => frame,
+            Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
+                self.surface.configure(&self.device, &self.surface_config);
+                return Ok(());
+            }
+            Err(wgpu::SurfaceError::Timeout) => return Ok(()),
+            Err(wgpu::SurfaceError::OutOfMemory) => {
+                return Err("surface out of memory".to_owned());
+            }
+            Err(wgpu::SurfaceError::Other) => return Err("surface acquire failed".to_owned()),
+        };
+        let view = frame
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
+
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("desktop-dev-surface-encoder"),
+            });
+        {
+            let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("desktop-dev-preprocess-pass"),
+                timestamp_writes: None,
+            });
+            cpass.set_pipeline(&self.preprocess_pipeline);
+            cpass.set_bind_group(0, &self.preprocess_bind_group, &[]);
+            cpass.dispatch_workgroups((sorted_indices.len() as u32).div_ceil(64).max(1), 1, 1);
+        }
+        {
+            let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("desktop-dev-surface-pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                occlusion_query_set: None,
+                timestamp_writes: None,
+                multiview_mask: None,
+            });
+            rpass.set_pipeline(&self.pipeline);
+            rpass.set_bind_group(0, &self.bind_group, &[]);
+            if !sorted_indices.is_empty() {
+                rpass.draw(0..6, 0..(sorted_indices.len() as u32));
+            }
+        }
+
+        self.queue.submit(Some(encoder.finish()));
+        frame.present();
+        Ok(())
+    }
+}
+
+#[cfg(feature = "interactive-viewer")]
+fn create_surface_instance_resources(
+    device: &wgpu::Device,
+    bind_group_layout: &wgpu::BindGroupLayout,
+    capacity: usize,
+) -> (wgpu::Buffer, wgpu::BindGroup) {
+    let stride = std::mem::size_of::<GpuInstance>() as u64;
+    let size = stride * (capacity.max(1) as u64);
+    let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("desktop-dev-surface-instance-buffer"),
+        size,
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("desktop-dev-surface-bg"),
+        layout: bind_group_layout,
+        entries: &[wgpu::BindGroupEntry {
+            binding: 0,
+            resource: buffer.as_entire_binding(),
+        }],
+    });
+    (buffer, bind_group)
 }
 
 #[cfg(feature = "interactive-viewer")]
@@ -305,7 +953,6 @@ struct CameraController {
     move_speed: f32,
     look_speed: f32,
     mouse_sensitivity: f32,
-    last_mouse: Option<(f32, f32)>,
 }
 
 #[cfg(feature = "interactive-viewer")]
@@ -319,7 +966,6 @@ impl CameraController {
             move_speed: 2.0,
             look_speed: 1.8,
             mouse_sensitivity: 0.003,
-            last_mouse: None,
         }
     }
 
@@ -337,65 +983,55 @@ impl CameraController {
         }
     }
 
-    fn update(&mut self, window: &Window, dt: f32) {
+    fn update(&mut self, input: &InputState, dt: f32) {
         let mut yaw_delta = 0.0_f32;
         let mut pitch_delta = 0.0_f32;
-        if window.is_key_down(Key::Left) {
+        if input.is_key_down(KeyCode::ArrowLeft) {
             yaw_delta -= 1.0;
         }
-        if window.is_key_down(Key::Right) {
+        if input.is_key_down(KeyCode::ArrowRight) {
             yaw_delta += 1.0;
         }
-        if window.is_key_down(Key::Up) {
+        if input.is_key_down(KeyCode::ArrowUp) {
             pitch_delta += 1.0;
         }
-        if window.is_key_down(Key::Down) {
+        if input.is_key_down(KeyCode::ArrowDown) {
             pitch_delta -= 1.0;
         }
 
         self.yaw += yaw_delta * self.look_speed * dt;
         self.pitch = (self.pitch + pitch_delta * self.look_speed * dt).clamp(-1.45, 1.45);
 
-        if window.get_mouse_down(MouseButton::Left) {
-            if let Some((mx, my)) = window.get_mouse_pos(MouseMode::Pass) {
-                if let Some((last_x, last_y)) = self.last_mouse {
-                    self.yaw += (mx - last_x) * self.mouse_sensitivity;
-                    self.pitch =
-                        (self.pitch - (my - last_y) * self.mouse_sensitivity).clamp(-1.45, 1.45);
-                }
-                self.last_mouse = Some((mx, my));
-            }
-        } else {
-            self.last_mouse = None;
-        }
+        self.yaw += input.mouse_delta.0 * self.mouse_sensitivity;
+        self.pitch = (self.pitch - input.mouse_delta.1 * self.mouse_sensitivity).clamp(-1.45, 1.45);
 
         let mut forward_axis = 0.0_f32;
         let mut right_axis = 0.0_f32;
         let mut up_axis = 0.0_f32;
-        if window.is_key_down(Key::W) {
+        if input.is_key_down(KeyCode::KeyW) {
             forward_axis += 1.0;
         }
-        if window.is_key_down(Key::S) {
+        if input.is_key_down(KeyCode::KeyS) {
             forward_axis -= 1.0;
         }
-        if window.is_key_down(Key::D) {
+        if input.is_key_down(KeyCode::KeyD) {
             right_axis += 1.0;
         }
-        if window.is_key_down(Key::A) {
+        if input.is_key_down(KeyCode::KeyA) {
             right_axis -= 1.0;
         }
-        if window.is_key_down(Key::E) {
+        if input.is_key_down(KeyCode::KeyE) {
             up_axis += 1.0;
         }
-        if window.is_key_down(Key::Q) {
+        if input.is_key_down(KeyCode::KeyQ) {
             up_axis -= 1.0;
         }
 
         let mut speed = self.move_speed;
-        if window.is_key_down(Key::LeftShift) || window.is_key_down(Key::RightShift) {
+        if input.is_key_down(KeyCode::ShiftLeft) || input.is_key_down(KeyCode::ShiftRight) {
             speed *= 4.0;
         }
-        if window.is_key_down(Key::LeftCtrl) || window.is_key_down(Key::RightCtrl) {
+        if input.is_key_down(KeyCode::ControlLeft) || input.is_key_down(KeyCode::ControlRight) {
             speed *= 0.25;
         }
 
@@ -416,14 +1052,12 @@ impl CameraController {
             self.position.z + desired.z * speed * dt,
         );
 
-        if let Some((_, scroll_y)) = window.get_scroll_wheel() {
-            if scroll_y != 0.0 {
-                self.position = Vec3f::new(
-                    self.position.x + forward.x * scroll_y * speed * 0.2,
-                    self.position.y + forward.y * scroll_y * speed * 0.2,
-                    self.position.z + forward.z * scroll_y * speed * 0.2,
-                );
-            }
+        if input.scroll_y != 0.0 {
+            self.position = Vec3f::new(
+                self.position.x + forward.x * input.scroll_y * speed * 0.2,
+                self.position.y + forward.y * input.scroll_y * speed * 0.2,
+                self.position.z + forward.z * input.scroll_y * speed * 0.2,
+            );
         }
     }
 }
@@ -473,6 +1107,37 @@ fn quat_normalize(q: [f32; 4]) -> [f32; 4] {
 }
 
 #[cfg(feature = "interactive-viewer")]
+fn quat_inverse(q: [f32; 4]) -> [f32; 4] {
+    let (x, y, z, w) = (q[0], q[1], q[2], q[3]);
+    let norm2 = x * x + y * y + z * z + w * w;
+    if norm2 <= 1e-12 {
+        return [0.0, 0.0, 0.0, 1.0];
+    }
+    [-x / norm2, -y / norm2, -z / norm2, w / norm2]
+}
+
+#[cfg(feature = "interactive-viewer")]
+fn quat_to_mat3(q: [f32; 4]) -> [[f32; 3]; 3] {
+    let q = quat_normalize(q);
+    let (x, y, z, w) = (q[0], q[1], q[2], q[3]);
+    let xx = x * x;
+    let yy = y * y;
+    let zz = z * z;
+    let xy = x * y;
+    let xz = x * z;
+    let yz = y * z;
+    let wx = w * x;
+    let wy = w * y;
+    let wz = w * z;
+
+    [
+        [1.0 - 2.0 * (yy + zz), 2.0 * (xy - wz), 2.0 * (xz + wy)],
+        [2.0 * (xy + wz), 1.0 - 2.0 * (xx + zz), 2.0 * (yz - wx)],
+        [2.0 * (xz - wy), 2.0 * (yz + wx), 1.0 - 2.0 * (xx + yy)],
+    ]
+}
+
+#[cfg(feature = "interactive-viewer")]
 fn quat_rotate_vec3(q: [f32; 4], v: Vec3f) -> Vec3f {
     let u = Vec3f::new(q[0], q[1], q[2]);
     let s = q[3];
@@ -492,20 +1157,6 @@ fn cross(a: Vec3f, b: Vec3f) -> Vec3f {
         a.z * b.x - a.x * b.z,
         a.x * b.y - a.y * b.x,
     )
-}
-
-#[cfg(feature = "interactive-viewer")]
-fn rgba_to_xrgb(rgba: &[u8], out: &mut [u32]) -> Result<(), String> {
-    let pixel_count = rgba.len() / 4;
-    if out.len() != pixel_count || rgba.len() % 4 != 0 {
-        return Err("interactive present failed: rgba/xrgb buffer size mismatch".to_owned());
-    }
-
-    for (dst, px) in out.iter_mut().zip(rgba.chunks_exact(4)) {
-        *dst = ((px[0] as u32) << 16) | ((px[1] as u32) << 8) | (px[2] as u32);
-    }
-
-    Ok(())
 }
 
 fn auto_camera(renderer: &Renderer, config: RendererConfig) -> Camera {

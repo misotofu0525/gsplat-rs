@@ -4,7 +4,7 @@
 Close the remaining gaps called out after baseline delivery: WGSL render path, non-placeholder GPU sort backend, format/pack tooling, long-stability gate tooling, and mobile demo container-level execution evidence.
 
 ## Current Phase
-Phase R9 complete
+Phase P3 complete
 
 ## Phases
 
@@ -14,6 +14,28 @@ Phase R9 complete
 - [x] Update loader/unit-test fixtures to keep quaternion semantics explicit and deterministic
 - [x] Make `auto_camera` depth-aware to avoid near-front Gaussian over-amplification
 - [x] Validate regression (`cargo check/test`) and render before/after comparison frames
+- **Status:** complete
+
+### Phase P1: Interactive FPS Bottleneck Triage
+- [x] Reproduce release-mode metrics with `flowers_1`
+- [x] Capture stage-level breakdown (`preprocess/sort/raster`)
+- [x] Confirm resolution sensitivity to separate CPU-vs-fill bottlenecks
+- [x] Identify interactive-only overhead path
+- **Status:** complete
+
+### Phase P2: Realtime Preview Pipeline Upgrade
+- [x] Replace interactive readback-present loop with `winit + wgpu surface` direct present path
+- [x] Add renderer entrypoint to build sorted GPU instances without offscreen readback dependency
+- [x] Precompute camera-invariant covariance terms at scene load and reuse at frame build stage
+- [x] Parallelize instance build over sorted indices
+- [x] Re-run validation/tests and collect updated perf evidence
+- **Status:** complete
+
+### Phase P3: GPU Compute Preprocess Closure
+- [x] Move per-frame instance build from CPU path to interactive compute prepass shader
+- [x] Align WGSL/Rust bind layout and reduce compute-stage storage bindings to adapter limit
+- [x] Pack scene attributes into a single storage buffer for compute prepass
+- [x] Verify compile/tests and interactive startup probe
 - **Status:** complete
 
 ### Phase R8: Interactive On-Screen Viewer Loop Closure
@@ -128,6 +150,7 @@ Phase R9 complete
 | Implement interactive viewer loop inside `desktop-dev` as an optional CLI mode while preserving offscreen defaults | Closes the explicit remaining gap without regressing existing scripts and headless-friendly paths |
 | Parse PLY `rot_0..3` using 3DGS common `wxyz` semantics and convert to internal `xyzw` | Aligns covariance orientation with common dataset conventions and removes ambiguous quaternion interpretation |
 | Increase `auto_camera` standoff using scene depth extent (`half_z`) | Prevents frontmost Gaussians from sitting too close to the camera and reducing projection stability |
+| Pack compute prepass scene inputs into a single storage buffer | Avoids downlevel `max_storage_buffers_per_shader_stage` limit and keeps interactive path portable |
 
 ## Errors Encountered
 | Error | Attempt | Resolution |

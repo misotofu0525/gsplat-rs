@@ -1,5 +1,61 @@
 # Progress Log
 
+## Session: 2026-02-15 (GPU Compute Preprocess Closure)
+
+### Phase P3: GPU-side Instance Build in Interactive Path
+- **Status:** complete
+- **Started:** 2026-02-15
+- Actions taken:
+  - Added interactive compute prepass shader (`preprocess_instances.wgsl`) to build `GpuInstance` from sorted indices on GPU.
+  - Replaced multi-buffer compute inputs with packed `GpuSceneElem` storage buffer in `SurfacePresenter`.
+  - Reduced compute bind group to 4 bindings and aligned Rust/WGSL layouts.
+  - Revalidated build/test targets and ran interactive startup probe for runtime panic checks.
+- Evidence:
+  - `cargo check -p desktop-dev --features interactive-viewer`: pass
+  - `cargo test -p gsplat-render-wgpu`: pass
+  - `cargo check --workspace`: pass
+  - Startup probe command (6s): `cargo run -p desktop-dev --features interactive-viewer -- tests/datasets/external/nvidia_flowers_1/model.ply --interactive --auto-camera --width 1280 --height 720` no longer reports storage-binding-limit panic.
+  - Follow-up fix: changed compute scene element layout from `opacity + vec3` to `opacity_and_pad: vec4` on both Rust/WGSL sides to remove storage stride mismatch artifacts.
+
+## Session: 2026-02-15 (Realtime Preview Pipeline Upgrade)
+
+### Phase P2: Interactive Surface Present + CPU Build Optimization
+- **Status:** complete
+- **Started:** 2026-02-15
+- Actions taken:
+  - Added `Renderer::build_sorted_instances()` to expose preprocess/sort/build outputs without forcing offscreen readback.
+  - Exposed `GpuInstance` as public data shape for app-side direct GPU upload.
+  - Replaced interactive viewer backend from `minifb` to `winit + wgpu surface` present path.
+  - Removed per-frame interactive readback in main loop; now rendering goes straight to surface render target.
+  - Added scene-load world covariance precompute cache and parallelized per-frame instance build with Rayon.
+  - Verified crate tests and desktop build paths after refactor.
+- Evidence:
+  - `cargo test -p gsplat-render-wgpu`: pass
+  - `cargo check -p desktop-dev --features interactive-viewer`: pass
+  - `cargo run -p desktop-dev --release -- ... --frames 30 --auto-camera --width 1280 --height 720`:
+    - `frame_ms=13.5828`, `preprocess_ms=0.8244`, `sort_ms=4.4245`, `raster_ms=8.3338`
+  - `cargo run -p bench-runner --release -- ... 120`:
+    - `avg_frame_ms=11.5261`, `avg_preprocess_ms=4.2964`, `avg_sort_ms=2.6315`, `avg_raster_ms=4.5981`
+
+## Session: 2026-02-15 (Interactive FPS Bottleneck Triage)
+
+### Phase P1: Realtime Preview Perf Diagnosis
+- **Status:** complete
+- **Started:** 2026-02-15
+- Actions taken:
+  - Pulled latest desktop/renderer/sort code paths and confirmed current sort/raster pipeline behavior.
+  - Downloaded `flowers_1` dataset and reproduced release-mode metrics with `desktop-dev`.
+  - Ran offscreen stage timing at `1280x720` and `640x360` to isolate bottleneck sensitivity.
+  - Confirmed `sort_ms` is no longer dominant after CPU sorter optimization; `raster_ms` dominates.
+  - Correlated interactive loop overhead to per-frame GPU readback + CPU format conversion + present path.
+- Evidence:
+  - `desktop-dev --release --auto-camera --frames 30 --width 1280 --height 720`:
+    - `frame_ms=43.0832`, `preprocess_ms=0.7746`, `sort_ms=4.5063`, `raster_ms=37.8021`, `visible_count=562974`.
+  - `desktop-dev --release --auto-camera --frames 30 --width 640 --height 360`:
+    - `frame_ms=42.9943`, `preprocess_ms=0.7785`, `sort_ms=4.4905`, `raster_ms=37.7251`.
+  - `bench-runner --release ... 120`:
+    - `avg_frame_ms=32.0630`, `avg_preprocess_ms=4.2384`, `avg_sort_ms=2.6320`, `avg_raster_ms=25.1924`.
+
 ## Session: 2026-02-15 (Artifact Reduction Batch: Rotation + Camera)
 
 ### Phase R9: Artifact Reduction Closure (Rotation Semantics + Camera Standoff)
