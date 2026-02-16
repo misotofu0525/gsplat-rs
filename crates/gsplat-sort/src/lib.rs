@@ -111,17 +111,17 @@ unsafe fn pack_pairs_avx2(keys: &[u32], values: &[u32], out: &mut [u64]) {
 
     let len = keys.len();
     let mut i = 0_usize;
-    let all_ones = _mm256_set1_epi64x(-1);
+    let all_ones_u32 = _mm_set1_epi32(-1);
 
     while i + 4 <= len {
         // SAFETY: i + 4 <= len guarantees valid 16-byte loads.
         let key_128 = unsafe { _mm_loadu_si128(keys.as_ptr().add(i) as *const __m128i) };
         // SAFETY: i + 4 <= len guarantees valid 16-byte loads.
         let val_128 = unsafe { _mm_loadu_si128(values.as_ptr().add(i) as *const __m128i) };
+        let inv_val_128 = _mm_xor_si128(val_128, all_ones_u32);
 
         let key_64 = _mm256_cvtepu32_epi64(key_128);
-        let val_64 = _mm256_cvtepu32_epi64(val_128);
-        let inv_val_64 = _mm256_xor_si256(val_64, all_ones);
+        let inv_val_64 = _mm256_cvtepu32_epi64(inv_val_128);
         let key_hi_64 = _mm256_slli_epi64(key_64, 32);
         let packed_64 = _mm256_or_si256(key_hi_64, inv_val_64);
 
@@ -144,25 +144,23 @@ unsafe fn pack_pairs_neon(keys: &[u32], values: &[u32], out: &mut [u64]) {
 
     let len = keys.len();
     let mut i = 0_usize;
-    let all_ones = vdupq_n_u64(u64::MAX);
 
     while i + 4 <= len {
         // SAFETY: i + 4 <= len guarantees valid loads/stores.
         let key_4 = unsafe { vld1q_u32(keys.as_ptr().add(i)) };
         // SAFETY: i + 4 <= len guarantees valid loads/stores.
         let val_4 = unsafe { vld1q_u32(values.as_ptr().add(i)) };
+        let inv_val_4 = vmvnq_u32(val_4);
 
         let key_lo = vmovl_u32(vget_low_u32(key_4));
         let key_hi = vmovl_u32(vget_high_u32(key_4));
-        let val_lo = vmovl_u32(vget_low_u32(val_4));
-        let val_hi = vmovl_u32(vget_high_u32(val_4));
+        let val_lo = vmovl_u32(vget_low_u32(inv_val_4));
+        let val_hi = vmovl_u32(vget_high_u32(inv_val_4));
 
         let key_hi_lo = vshlq_n_u64(key_lo, 32);
         let key_hi_hi = vshlq_n_u64(key_hi, 32);
-        let inv_val_lo = veorq_u64(val_lo, all_ones);
-        let inv_val_hi = veorq_u64(val_hi, all_ones);
-        let packed_lo = vorrq_u64(key_hi_lo, inv_val_lo);
-        let packed_hi = vorrq_u64(key_hi_hi, inv_val_hi);
+        let packed_lo = vorrq_u64(key_hi_lo, val_lo);
+        let packed_hi = vorrq_u64(key_hi_hi, val_hi);
 
         // SAFETY: i + 4 <= len guarantees valid stores.
         unsafe { vst1q_u64(out.as_mut_ptr().add(i), packed_lo) };
@@ -469,6 +467,11 @@ impl GpuSortRuntime {
 mod tests {
     use super::{CpuSortBackend, GpuOddEvenSortBackend, SortBackend, SortError};
 
+    fn lcg_next(state: &mut u32) -> u32 {
+        *state = state.wrapping_mul(1664525).wrapping_add(1013904223);
+        *state
+    }
+
     #[test]
     fn cpu_backend_sorts_descending_by_key() {
         let mut backend = CpuSortBackend::default();
@@ -479,6 +482,42 @@ mod tests {
 
         assert_eq!(keys, [20, 12, 5]);
         assert_eq!(values, [0, 2, 1]);
+    }
+
+    #[test]
+    fn cpu_backend_matches_reference_order_for_large_input() {
+        let mut backend = CpuSortBackend::default();
+        let len = 4099;
+        let mut seed = 1_u32;
+
+        let mut keys: Vec<u32> = (0..len).map(|_| lcg_next(&mut seed)).collect();
+        let mut values: Vec<u32> = (0..len as u32).collect();
+
+        let mut expected: Vec<(u32, u32)> = keys.iter().copied().zip(values.iter().copied()).collect();
+        expected.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+
+        backend.sort_pairs(&mut keys, &mut values).unwrap();
+
+        let actual: Vec<(u32, u32)> = keys.into_iter().zip(values).collect();
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn packed_pairs_match_scalar_reference() {
+        let len = 257;
+        let mut seed = 7_u32;
+        let keys: Vec<u32> = (0..len).map(|_| lcg_next(&mut seed)).collect();
+        let values: Vec<u32> = (0..len).map(|_| lcg_next(&mut seed)).collect();
+        let mut packed = vec![0_u64; len];
+
+        super::pack_pairs(&keys, &values, &mut packed);
+        let expected: Vec<u64> = keys
+            .iter()
+            .copied()
+            .zip(values.iter().copied())
+            .map(|(key, value)| super::pack_sort_pair(key, value))
+            .collect();
+        assert_eq!(packed, expected);
     }
 
     #[test]
