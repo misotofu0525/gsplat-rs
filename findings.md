@@ -7,6 +7,11 @@
 - User explicitly asked to finish remaining items, not just baseline placeholders.
 
 ## Research Findings
+- 2026-02-16 SDK preprocess ownership refactor:
+  - Interactive preprocess shader moved from `apps/desktop-dev/shaders/preprocess_instances.wgsl` to `crates/gsplat-render-wgpu/shaders/preprocess_instances.wgsl`.
+  - Added crate-level `GpuInstancePreprocessor` + `Renderer::create_gpu_instance_preprocessor()` so app/demo no longer owns shader source, compute bind layout, or scene packing for preprocess.
+  - `desktop-dev` `SurfacePresenter` now consumes SDK API for preprocess; app-layer code only keeps surface present/event loop concerns.
+  - Validation: `cargo check -p gsplat-render-wgpu`, `cargo check -p desktop-dev`, `cargo check -p desktop-dev --features interactive-viewer`, and `cargo test -p gsplat-render-wgpu` all pass.
 - 2026-02-15 realtime preview architecture update:
   - Interactive viewer no longer depends on `minifb` readback path; switched to `winit + wgpu surface` present path in app layer.
   - Interactive rendering now uses `Renderer::build_sorted_instances()` (preprocess/sort/build only) and submits `GpuInstance` directly to surface render pass.
@@ -84,6 +89,7 @@
 | Normalize PLY quaternion semantics to `wxyz -> xyzw` at load time | Removes dataset-side ambiguity and keeps downstream math consistently `xyzw` |
 | Make auto-camera depth-aware by adding z-extent to standoff distance | Reduces close-up projection streak artifacts for large-thickness point clouds |
 | Pack interactive compute scene data into a single storage buffer (`GpuSceneElem`) | Keeps compute prepass within adapter storage-buffer limits and preserves portability |
+| Move interactive preprocess compute ownership into `gsplat-render-wgpu` crate | Prevents demo-app-only shader coupling and makes SDK integration path self-contained |
 
 ## Issues Encountered
 | Issue | Resolution |

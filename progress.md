@@ -1,5 +1,21 @@
 # Progress Log
 
+## Session: 2026-02-16 (SDK Preprocess Ownership Refactor)
+
+### Phase P4: SDK Surface Preprocess Ownership Refactor
+- **Status:** complete
+- **Started:** 2026-02-16
+- Actions taken:
+  - Moved interactive compute preprocess shader from demo app into renderer crate shader directory.
+  - Added `GpuInstancePreprocessor` and `Renderer::create_gpu_instance_preprocessor()` in `gsplat-render-wgpu` to own compute preprocess internals in SDK.
+  - Replaced `desktop-dev` app-local preprocess pipeline/scene packing code with calls to crate API.
+  - Removed now-unused `bytemuck` dependency from `desktop-dev` interactive feature.
+- Evidence:
+  - `cargo check -p gsplat-render-wgpu`: pass
+  - `cargo check -p desktop-dev`: pass
+  - `cargo check -p desktop-dev --features interactive-viewer`: pass
+  - `cargo test -p gsplat-render-wgpu`: pass
+
 ## Session: 2026-02-15 (GPU Compute Preprocess Closure)
 
 ### Phase P3: GPU-side Instance Build in Interactive Path

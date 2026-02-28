@@ -4,7 +4,7 @@
 Close the remaining gaps called out after baseline delivery: WGSL render path, non-placeholder GPU sort backend, format/pack tooling, long-stability gate tooling, and mobile demo container-level execution evidence.
 
 ## Current Phase
-Phase P3 complete
+Phase P4 complete
 
 ## Phases
 
@@ -36,6 +36,13 @@ Phase P3 complete
 - [x] Align WGSL/Rust bind layout and reduce compute-stage storage bindings to adapter limit
 - [x] Pack scene attributes into a single storage buffer for compute prepass
 - [x] Verify compile/tests and interactive startup probe
+- **Status:** complete
+
+### Phase P4: SDK Surface Preprocess Ownership Refactor
+- [x] Move interactive preprocess shader from `apps/desktop-dev` into `crates/gsplat-render-wgpu`
+- [x] Add reusable crate-level GPU preprocess helper API so app/demo no longer owns shader internals
+- [x] Replace `desktop-dev` surface preprocess implementation with SDK API calls
+- [x] Re-run focused compile checks for renderer + interactive desktop path
 - **Status:** complete
 
 ### Phase R8: Interactive On-Screen Viewer Loop Closure
@@ -162,3 +169,4 @@ Phase P3 complete
 | Homebrew gradle installation blocked by tap conflict | 1 | Replaced with script-driven project-local Gradle bootstrap |
 | `bench-runner` positional parsing caused dataset path to be overwritten by iterations value | 1 | Added explicit parser state to separate dataset and iteration positional args |
 | Policy rejected `rm -rf` while preparing reference repo checkout | 1 | Used timestamped clone path without destructive cleanup |
+| `desktop-dev` non-interactive build failed after refactor due `Renderer` import accidentally behind feature gate | 1 | Split imports so `Renderer` is always imported while interactive-only symbols remain feature-gated |

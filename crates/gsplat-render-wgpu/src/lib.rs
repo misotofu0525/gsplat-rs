@@ -7,6 +7,7 @@ use gsplat_core::{Camera, ErrorCode, FrameStats, RenderMode, RendererConfig, Sce
 use gsplat_sort::{CpuSortBackend, GpuOddEvenSortBackend, SortBackend, SortError};
 use rayon::prelude::*;
 use thiserror::Error;
+use wgpu::util::DeviceExt;
 
 const RENDER_TARGET_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 
@@ -30,6 +31,8 @@ pub enum RendererError {
     GpuReadback,
     #[error("sort backend error: {0}")]
     Sort(#[from] SortError),
+    #[error("gpu instance preprocess error: {0}")]
+    GpuInstancePreprocess(#[from] GpuInstancePreprocessError),
 }
 
 impl RendererError {
@@ -40,8 +43,23 @@ impl RendererError {
             Self::GpuRasterizerUnavailable => ErrorCode::Unsupported,
             Self::GpuReadback => ErrorCode::Internal,
             Self::Sort(_) => ErrorCode::Internal,
+            Self::GpuInstancePreprocess(_) => ErrorCode::Internal,
         }
     }
+}
+
+#[derive(Debug, Error)]
+pub enum GpuInstancePreprocessError {
+    #[error("scene/covariance length mismatch")]
+    SceneCovarianceMismatch,
+    #[error("instance buffer capacity must be greater than zero")]
+    InvalidInstanceCapacity,
+    #[error("surface size must be non-zero")]
+    InvalidSurfaceSize,
+    #[error("sorted index buffer capacity exceeded")]
+    SortedIndexCapacityExceeded,
+    #[error("instance buffer capacity exceeded")]
+    InstanceBufferCapacityExceeded,
 }
 
 pub struct Renderer {
@@ -114,6 +132,26 @@ impl Renderer {
 
     pub fn world_covariances(&self) -> Option<&[[[f32; 3]; 3]]> {
         self.world_covariances.as_deref()
+    }
+
+    pub fn create_gpu_instance_preprocessor(
+        &self,
+        device: &wgpu::Device,
+        instance_buffer: &wgpu::Buffer,
+        instance_capacity: usize,
+    ) -> Result<GpuInstancePreprocessor, RendererError> {
+        let scene = self.scene.as_ref().ok_or(RendererError::SceneNotLoaded)?;
+        let world_covariances = self
+            .world_covariances
+            .as_deref()
+            .ok_or(RendererError::InvalidScene)?;
+        Ok(GpuInstancePreprocessor::new(
+            device,
+            scene,
+            world_covariances,
+            instance_buffer,
+            instance_capacity,
+        )?)
     }
 
     pub fn preprocess_visible(&self, camera: &Camera) -> Result<PreprocessOutput, RendererError> {
@@ -329,6 +367,319 @@ pub struct GpuInstance {
     pub axis_v_and_pad: [f32; 4],
     // Premultiplied RGB + alpha
     pub color_rgba: [f32; 4],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct GpuSceneElem {
+    position: [f32; 4],
+    cov_row0: [f32; 4],
+    cov_row1: [f32; 4],
+    cov_row2: [f32; 4],
+    color_dc: [f32; 4],
+    opacity_and_pad: [f32; 4],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct GpuPreprocessParams {
+    camera_pos: [f32; 4],
+    camera_inv_q: [f32; 4],
+    view_rot_row0: [f32; 4],
+    view_rot_row1: [f32; 4],
+    view_rot_row2: [f32; 4],
+    vertical_fov_radians: f32,
+    near_plane: f32,
+    far_plane: f32,
+    aspect: f32,
+    width: u32,
+    height: u32,
+    len: u32,
+    sh_degree: u32,
+}
+
+pub struct GpuInstancePreprocessor {
+    pipeline: wgpu::ComputePipeline,
+    bind_group: wgpu::BindGroup,
+    params_buffer: wgpu::Buffer,
+    sorted_indices_buffer: wgpu::Buffer,
+    sorted_capacity: usize,
+    instance_capacity: usize,
+    sh_degree: u32,
+    _scene_buffer: wgpu::Buffer,
+    _sh_rest_buffer: wgpu::Buffer,
+}
+
+impl GpuInstancePreprocessor {
+    pub fn new(
+        device: &wgpu::Device,
+        scene: &SceneBuffers,
+        world_covariances: &[[[f32; 3]; 3]],
+        instance_buffer: &wgpu::Buffer,
+        instance_capacity: usize,
+    ) -> Result<Self, GpuInstancePreprocessError> {
+        if scene.len() != world_covariances.len() {
+            return Err(GpuInstancePreprocessError::SceneCovarianceMismatch);
+        }
+        if instance_capacity == 0 {
+            return Err(GpuInstancePreprocessError::InvalidInstanceCapacity);
+        }
+
+        let preprocess_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("gsplat-render-preprocess-shader"),
+            source: wgpu::ShaderSource::Wgsl(
+                include_str!("../shaders/preprocess_instances.wgsl").into(),
+            ),
+        });
+        let preprocess_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("gsplat-render-preprocess-bgl"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 3,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 4,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: false },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                ],
+            });
+        let preprocess_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("gsplat-render-preprocess-pl"),
+                bind_group_layouts: &[&preprocess_bind_group_layout],
+                immediate_size: 0,
+            });
+        let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("gsplat-render-preprocess-cp"),
+            layout: Some(&preprocess_pipeline_layout),
+            module: &preprocess_shader,
+            entry_point: Some("main"),
+            cache: None,
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+        });
+
+        let scene_len = scene.len().max(1);
+        let scene_data: Vec<GpuSceneElem> = if scene.positions.is_empty() {
+            vec![GpuSceneElem {
+                position: [0.0, 0.0, 0.0, 0.0],
+                cov_row0: [0.0, 0.0, 0.0, 0.0],
+                cov_row1: [0.0, 0.0, 0.0, 0.0],
+                cov_row2: [0.0, 0.0, 0.0, 0.0],
+                color_dc: [0.0, 0.0, 0.0, 0.0],
+                opacity_and_pad: [0.0, 0.0, 0.0, 0.0],
+            }]
+        } else {
+            (0..scene.positions.len())
+                .map(|i| {
+                    let pos = scene.positions[i];
+                    let cov = world_covariances[i];
+                    let color_dc = scene.color_dc.get(i).copied().unwrap_or([0.0, 0.0, 0.0]);
+                    let opacity = *scene.opacity.get(i).unwrap_or(&0.0);
+                    GpuSceneElem {
+                        position: [pos.x, pos.y, pos.z, 0.0],
+                        cov_row0: [cov[0][0], cov[0][1], cov[0][2], 0.0],
+                        cov_row1: [cov[1][0], cov[1][1], cov[1][2], 0.0],
+                        cov_row2: [cov[2][0], cov[2][1], cov[2][2], 0.0],
+                        color_dc: [color_dc[0], color_dc[1], color_dc[2], 0.0],
+                        opacity_and_pad: [opacity, 0.0, 0.0, 0.0],
+                    }
+                })
+                .collect()
+        };
+        let scene_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("gsplat-render-preprocess-scene"),
+            contents: bytemuck::cast_slice(&scene_data),
+            usage: wgpu::BufferUsages::STORAGE,
+        });
+
+        let sorted_indices_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("gsplat-render-preprocess-sorted-indices"),
+            size: (scene_len as u64) * std::mem::size_of::<u32>() as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let empty_rest = [0.0_f32];
+        let sh_rest = scene.sh_rest.as_deref().unwrap_or(&empty_rest);
+        let sh_rest_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("gsplat-render-preprocess-sh-rest"),
+            contents: bytemuck::cast_slice(sh_rest),
+            usage: wgpu::BufferUsages::STORAGE,
+        });
+
+        let params = GpuPreprocessParams {
+            camera_pos: [0.0, 0.0, 0.0, 0.0],
+            camera_inv_q: [0.0, 0.0, 0.0, 1.0],
+            view_rot_row0: [1.0, 0.0, 0.0, 0.0],
+            view_rot_row1: [0.0, 1.0, 0.0, 0.0],
+            view_rot_row2: [0.0, 0.0, 1.0, 0.0],
+            vertical_fov_radians: 60.0_f32.to_radians(),
+            near_plane: 0.01,
+            far_plane: 1000.0,
+            aspect: 1.0,
+            width: 1,
+            height: 1,
+            len: 0,
+            sh_degree: scene.sh_degree as u32,
+        };
+        let params_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("gsplat-render-preprocess-params"),
+            contents: bytemuck::bytes_of(&params),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("gsplat-render-preprocess-bg"),
+            layout: &preprocess_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: sorted_indices_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: scene_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: sh_rest_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: params_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: instance_buffer.as_entire_binding(),
+                },
+            ],
+        });
+
+        Ok(Self {
+            pipeline,
+            bind_group,
+            params_buffer,
+            sorted_indices_buffer,
+            sorted_capacity: scene_len,
+            instance_capacity,
+            sh_degree: scene.sh_degree as u32,
+            _scene_buffer: scene_buffer,
+            _sh_rest_buffer: sh_rest_buffer,
+        })
+    }
+
+    pub const fn sorted_capacity(&self) -> usize {
+        self.sorted_capacity
+    }
+
+    pub const fn instance_capacity(&self) -> usize {
+        self.instance_capacity
+    }
+
+    pub fn prepare(
+        &self,
+        queue: &wgpu::Queue,
+        sorted_indices: &[u32],
+        camera: &Camera,
+        width: u32,
+        height: u32,
+    ) -> Result<u32, GpuInstancePreprocessError> {
+        if width == 0 || height == 0 {
+            return Err(GpuInstancePreprocessError::InvalidSurfaceSize);
+        }
+        if sorted_indices.len() > self.sorted_capacity {
+            return Err(GpuInstancePreprocessError::SortedIndexCapacityExceeded);
+        }
+        if sorted_indices.len() > self.instance_capacity {
+            return Err(GpuInstancePreprocessError::InstanceBufferCapacityExceeded);
+        }
+        if !sorted_indices.is_empty() {
+            queue.write_buffer(
+                &self.sorted_indices_buffer,
+                0,
+                bytemuck::cast_slice(sorted_indices),
+            );
+        }
+
+        let camera_inv_q = quat_inverse(camera.pose.rotation_xyzw);
+        let view_rot = quat_to_mat3(camera_inv_q);
+        let params = GpuPreprocessParams {
+            camera_pos: [
+                camera.pose.position.x,
+                camera.pose.position.y,
+                camera.pose.position.z,
+                0.0,
+            ],
+            camera_inv_q,
+            view_rot_row0: [view_rot[0][0], view_rot[0][1], view_rot[0][2], 0.0],
+            view_rot_row1: [view_rot[1][0], view_rot[1][1], view_rot[1][2], 0.0],
+            view_rot_row2: [view_rot[2][0], view_rot[2][1], view_rot[2][2], 0.0],
+            vertical_fov_radians: camera.intrinsics.vertical_fov_radians,
+            near_plane: camera.intrinsics.near_plane,
+            far_plane: camera.intrinsics.far_plane,
+            aspect: (width as f32 / height as f32).max(1e-6),
+            width,
+            height,
+            len: sorted_indices.len() as u32,
+            sh_degree: self.sh_degree,
+        };
+        queue.write_buffer(&self.params_buffer, 0, bytemuck::bytes_of(&params));
+        Ok(sorted_indices.len() as u32)
+    }
+
+    pub fn encode_dispatch(&self, encoder: &mut wgpu::CommandEncoder, instance_count: u32) {
+        let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+            label: Some("gsplat-render-preprocess-pass"),
+            timestamp_writes: None,
+        });
+        cpass.set_pipeline(&self.pipeline);
+        cpass.set_bind_group(0, &self.bind_group, &[]);
+        cpass.dispatch_workgroups(instance_count.div_ceil(64).max(1), 1, 1);
+    }
 }
 
 fn build_instances(

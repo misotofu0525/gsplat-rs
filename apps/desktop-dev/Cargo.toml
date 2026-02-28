@@ -7,7 +7,7 @@ authors.workspace = true
 
 [features]
 default = []
-interactive-viewer = ["dep:winit", "dep:wgpu", "dep:bytemuck", "dep:pollster"]
+interactive-viewer = ["dep:winit", "dep:wgpu", "dep:pollster"]
 
 [dependencies]
 gsplat-core = { path = "../../crates/gsplat-core" }
@@ -16,5 +16,4 @@ gsplat-io-ply = { path = "../../crates/gsplat-io-ply" }
 png = "0.17.16"
 winit = { version = "0.30.12", optional = true }
 wgpu = { workspace = true, optional = true }
-bytemuck = { version = "1.20.0", features = ["derive"], optional = true }
 pollster = { version = "0.4.0", optional = true }
