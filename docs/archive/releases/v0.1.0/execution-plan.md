@@ -1,3 +1,5 @@
+> Archived on 2026-03-06. Historical execution plan only; it may reference old paths and pre-closure status.
+
 # v0.1.0 多 Subagent 计划（Gate-Driven）
 
 ## 全局规则

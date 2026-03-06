@@ -218,6 +218,23 @@
 - Files created/modified:
   - `/Users/misotofu/Documents/workspace/gsplat-rs/task_plan.md`
   - `/Users/misotofu/Documents/workspace/gsplat-rs/findings.md`
+
+## Session: 2026-03-06 (Repo Hygiene / Doc-Structure Audit)
+
+### Phase A1: Tracked Temp Files, Stale Docs, and Naming Review
+- **Status:** complete
+- **Started:** 2026-03-06
+- Actions taken:
+  - Scanned tracked root/docs/app files and compared them against current code/layout.
+  - Verified root planning files are tracked and not just ignored local scratch files.
+  - Confirmed stale claims inside `findings.md` / `task_plan.md` / `docs/v0.1.0-subagent-execution.md`.
+  - Checked empty/placeholder directories (`apps/desktop-dev/shaders`, `apps/web-demo`) and local generated files covered by `.gitignore`.
+  - Reviewed path naming consistency across `apps/*` and `docs/*`.
+- Evidence:
+  - `git ls-files --stage PLAN.md task_plan.md findings.md progress.md docs/v0.1.0-multi-subagent-plan.md docs/v0.1.0-subagent-execution.md docs/release-v0.1.0-checklist.md`
+  - `find . -type d -empty`
+  - `find crates apps tools docs tests -maxdepth 3 -type f | sort`
+  - `rg -n --hidden --glob '!target/**' --glob '!.git/**' 'TODO|FIXME|placeholder|draft|subagent|multi-subagent|SortFree|web-demo|desktop-dev/shaders|v0\\.1\\.0'`
   - `/Users/misotofu/Documents/workspace/gsplat-rs/progress.md`
 
 ### Continuation: G3 Mobile Baseline Closure

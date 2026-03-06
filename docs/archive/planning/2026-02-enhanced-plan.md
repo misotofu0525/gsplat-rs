@@ -1,3 +1,5 @@
+> Archived on 2026-03-06. Historical roadmap snapshot only; current project status lives in `README.md` and `docs/roadmap.md`.
+
 # gsplat-rs 开发计划（增强版）
 
 > 目标：构建一个可复用的 Rust + wgpu Gaussian Splatting 渲染库，优先 iOS/Android，后续无缝复用到 Web。

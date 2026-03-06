@@ -8,9 +8,9 @@ Public APIs are split into:
 ## v0.1 contract
 
 - `SortedAlpha` is the only quality-guaranteed path.
-- Other modes (e.g. sort-free) are allowed for experiments but are out of contract.
+- `RenderMode` stays extensible, but anything other than `SortedAlpha` is experimental and out of contract.
 
-## C ABI (draft)
+## C ABI (v0.1 frozen surface)
 
 Public header is `crates/gsplat-ffi-c/include/gsplat.h`; signatures are frozen in `crates/gsplat-ffi-c/src/lib.rs`.
 
@@ -31,6 +31,8 @@ Key exports:
   - `gsplat_context_get_stats(ctx, out_stats) -> i32`
 
 All C ABI functions return an `ErrorCode` as `i32` (see `gsplat-core`).
+
+The current C ABI is intentionally small. It does not yet expose scene-from-memory loading, resize/surface integration, or runtime render-mode switching.
 
 ## Host smoke validation
 

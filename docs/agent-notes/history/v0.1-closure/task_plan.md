@@ -4,7 +4,7 @@
 Close the remaining gaps called out after baseline delivery: WGSL render path, non-placeholder GPU sort backend, format/pack tooling, long-stability gate tooling, and mobile demo container-level execution evidence.
 
 ## Current Phase
-Phase P4 complete
+Phase A1 complete (repo hygiene / doc-structure audit)
 
 ## Phases
 
@@ -170,3 +170,11 @@ Phase P4 complete
 | `bench-runner` positional parsing caused dataset path to be overwritten by iterations value | 1 | Added explicit parser state to separate dataset and iteration positional args |
 | Policy rejected `rm -rf` while preparing reference repo checkout | 1 | Used timestamped clone path without destructive cleanup |
 | `desktop-dev` non-interactive build failed after refactor due `Renderer` import accidentally behind feature gate | 1 | Split imports so `Renderer` is always imported while interactive-only symbols remain feature-gated |
+
+### Phase A1: Repo Hygiene / Doc-Structure Audit
+- [x] Re-scan workspace tree and tracked docs
+- [x] Identify tracked temporary/process files that no longer belong in project root
+- [x] Compare planning/progress docs against current repo state for stale claims
+- [x] Review app/doc path naming for misleading or inconsistent semantics
+- [x] Summarize removal/update recommendations with concrete repo anchors
+- **Status:** complete

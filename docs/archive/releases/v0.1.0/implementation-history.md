@@ -1,3 +1,5 @@
+> Archived on 2026-03-06. Historical implementation log only; current project status lives in `README.md`, `docs/api.md`, `docs/architecture.md`, and `docs/releases/`.
+
 # v0.1.0 Subagent Execution Status
 
 Execution source plan: `docs/v0.1.0-multi-subagent-plan.md`

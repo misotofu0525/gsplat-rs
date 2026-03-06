@@ -12,6 +12,8 @@ Validates Java/JNI -> C ABI -> Rust on the host machine.
 bash apps/android-demo/run-jni-smoke.sh
 ```
 
+Host-smoke sources live under `apps/android-demo/host-smoke/`.
+
 ## 2) Android APK build (arm64-v8a)
 
 Builds a real Android app container and packages `libgsplat_jni.so`.

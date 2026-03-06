@@ -44,7 +44,7 @@ clang \
 
 javac \
   -d "$CLASS_DIR" \
-  apps/android-demo/src/com/gsplat/demo/GsplatJniSmoke.java
+  apps/android-demo/host-smoke/src/com/gsplat/demo/GsplatJniSmoke.java
 
 if [[ "$UNAME_S" == "Darwin" ]]; then
   DYLD_LIBRARY_PATH="$JNI_LIB_DIR:$LIB_DIR" \

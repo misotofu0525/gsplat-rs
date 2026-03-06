@@ -136,3 +136,18 @@
 - `/tmp/splatapult_ref_1771062563/shader/splat_vert.glsl`
 - `/tmp/splatapult_ref_1771062563/shader/splat_geom.glsl`
 - `/tmp/splatapult_ref_1771062563/shader/splat_frag.glsl`
+
+## 2026-03-06 Repo Hygiene Audit
+
+- Root-level planning artifacts are tracked and user-visible (`task_plan.md`, `findings.md`, `progress.md`, `PLAN.md`), but they are execution scratch/history rather than stable project docs.
+- `findings.md` contains stale statements that are now false, including:
+  - repository has no `HEAD` commit,
+  - no `.wgsl` files exist under `crates/gsplat-render-wgpu/shaders`,
+  - workspace is still scaffold/placeholder level.
+- `task_plan.md` still frames major render/sort/format/mobile work as "remaining gaps" even though all listed phases are marked complete.
+- `docs/v0.1.0-subagent-execution.md` mixes historical execution log with current status and still leaves a "Known Gaps" section after marking all gates complete.
+- `PLAN.md` is a historical roadmap that no longer matches the current v0.1 contract; it still presents `SortFree`, GPU radix, and web delivery as active plan items.
+- `apps/web-demo/README.md` is a placeholder shell without an implementation directory behind it.
+- `apps/desktop-dev/shaders/` is an empty leftover directory after shader ownership moved into `crates/gsplat-render-wgpu/shaders`.
+- Android host-smoke source lives at `apps/android-demo/src/com/gsplat/demo/GsplatJniSmoke.java`, while actual Android app code lives under `apps/android-demo/app/src/main/java/...`; the shared `src/` name is ambiguous.
+- Local-only generated files currently present in the worktree include `.DS_Store`, `.idea/*`, and `apps/android-demo/local.properties`; these are ignored and safe to remove from the workspace.
