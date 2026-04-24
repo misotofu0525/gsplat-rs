@@ -2,6 +2,16 @@
 
 Android integration demo.
 
+## Integration boundary
+
+This is a thin Kotlin/JNI demo over the public C ABI in
+`crates/gsplat-ffi-c/include/gsplat.h`. It is useful as the Android starter
+path, but it is not a published AAR or a full Android SDK wrapper yet.
+
+The stable v0.1 render path is `GSPLAT_RENDER_MODE_SORTED_ALPHA`. Keep errors as
+integer `GsplatErrorCode` values at the native boundary and convert them to
+readable text with `gsplat_error_message()` or `NativeBridge.errorMessage()`.
+
 This demo provides two validation paths:
 
 ## 1) Host smoke (JNI)
@@ -19,6 +29,29 @@ Host-smoke Kotlin sources live under `apps/android-demo/host-smoke/`.
 Builds a real Android app container and packages `libgsplat_jni.so`.
 The app UI is Kotlin-only and renders through `SurfaceView` -> JNI -> `ANativeWindow` -> `wgpu::Surface`.
 It does not use the old Android bitmap/readback preview path.
+
+Surface creation returns both a native handle and an error code:
+
+```kotlin
+val createError = IntArray(1)
+val handle = NativeBridge.createSurfaceRenderer(
+    surface,
+    datasetPath,
+    width,
+    height,
+    createError
+)
+if (handle == 0L) {
+    error("gsplat create failed: ${NativeBridge.errorMessage(createError[0])}")
+}
+```
+
+Touch controls in the demo:
+
+- one-finger drag: orbit around the loaded scene
+- two-finger pinch: zoom
+- two-finger drag: pan
+- double tap: reset the auto camera
 
 Prereqs:
 
@@ -41,6 +74,7 @@ Notes:
 - This demo uses `files/flowers_1.ply` when present; otherwise it writes a minimal ASCII PLY into app internal storage.
 - On Android emulator, the `SurfaceView` buffer is capped to a 1600px maximum side and the Surface presenter caps the drawn splats to 120,000 instances. This keeps the ranchu Vulkan path stable while still exercising real `wgpu::Surface` presentation.
 - The status overlay reports `drawn=<surface_instances>/<visible_instances>` for the Android Surface path.
+- Production Android packaging is intentionally not solved here yet. A future AAR should wrap the same C ABI rather than introduce a separate render contract.
 
 ## 3) Emulator flower smoke
 

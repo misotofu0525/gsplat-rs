@@ -30,6 +30,11 @@ JNIEXPORT jint JNICALL Java_com_gsplat_demo_NativeBridge_versionMinor(JNIEnv *en
   return Java_com_gsplat_demo_GsplatJniSmoke_nativeVersionMinor(env, cls);
 }
 
+JNIEXPORT jstring JNICALL Java_com_gsplat_demo_NativeBridge_errorMessage(JNIEnv *env, jclass cls, jint code) {
+  (void)cls;
+  return (*env)->NewStringUTF(env, gsplat_error_message((int32_t)code));
+}
+
 JNIEXPORT jint JNICALL Java_com_gsplat_demo_GsplatJniSmoke_nativeFfiSmoke(JNIEnv *env, jclass cls, jstring dataset_path) {
   (void)cls;
 
@@ -38,7 +43,7 @@ JNIEXPORT jint JNICALL Java_com_gsplat_demo_GsplatJniSmoke_nativeFfiSmoke(JNIEnv
     return 20;
   }
 
-  GsplatConfig config = {1280, 720, 0};
+  GsplatConfig config = gsplat_config_default();
   GsplatContext *ctx = NULL;
   int32_t rc = gsplat_context_create(config, &ctx);
   if (rc != 0 || ctx == NULL) {
@@ -46,12 +51,7 @@ JNIEXPORT jint JNICALL Java_com_gsplat_demo_GsplatJniSmoke_nativeFfiSmoke(JNIEnv
     return rc == 0 ? 21 : rc;
   }
 
-  GsplatCamera camera;
-  memset(&camera, 0, sizeof(camera));
-  camera.rotation_xyzw[3] = 1.0f;
-  camera.vertical_fov_radians = 1.0471976f;
-  camera.near_plane = 0.01f;
-  camera.far_plane = 1000.0f;
+  GsplatCamera camera = gsplat_camera_default();
 
   rc = gsplat_context_set_camera(ctx, camera);
   if (rc != 0) {
@@ -108,6 +108,15 @@ typedef struct AndroidSurfaceRendererHandle {
   ANativeWindow *window;
 } AndroidSurfaceRendererHandle;
 
+static void set_out_error(JNIEnv *env, jintArray out_error, int32_t rc) {
+  if (out_error == NULL || (*env)->GetArrayLength(env, out_error) < 1) {
+    return;
+  }
+
+  jint value = (jint)rc;
+  (*env)->SetIntArrayRegion(env, out_error, 0, 1, &value);
+}
+
 static AndroidSurfaceRendererHandle *android_handle_from_jlong(jlong native_handle) {
   return (AndroidSurfaceRendererHandle *)(intptr_t)native_handle;
 }
@@ -118,21 +127,27 @@ JNIEXPORT jlong JNICALL Java_com_gsplat_demo_NativeBridge_createSurfaceRenderer(
     jobject surface,
     jstring dataset_path,
     jint width,
-    jint height) {
+    jint height,
+    jintArray out_error) {
   (void)cls;
 
-  if (surface == NULL || width <= 0 || height <= 0) {
+  set_out_error(env, out_error, GSPLAT_OK);
+
+  if (surface == NULL || dataset_path == NULL || width <= 0 || height <= 0) {
+    set_out_error(env, out_error, GSPLAT_ERROR_INVALID_ARGUMENT);
     return 0;
   }
 
   const char *dataset = (*env)->GetStringUTFChars(env, dataset_path, NULL);
   if (dataset == NULL) {
+    set_out_error(env, out_error, GSPLAT_ERROR_INTERNAL);
     return 0;
   }
 
   ANativeWindow *window = ANativeWindow_fromSurface(env, surface);
   if (window == NULL) {
     __android_log_print(ANDROID_LOG_ERROR, GSPLAT_LOG_TAG, "ANativeWindow_fromSurface failed");
+    set_out_error(env, out_error, GSPLAT_ERROR_UNSUPPORTED);
     (*env)->ReleaseStringUTFChars(env, dataset_path, dataset);
     return 0;
   }
@@ -141,6 +156,7 @@ JNIEXPORT jlong JNICALL Java_com_gsplat_demo_NativeBridge_createSurfaceRenderer(
       (AndroidSurfaceRendererHandle *)calloc(1, sizeof(AndroidSurfaceRendererHandle));
   if (handle == NULL) {
     __android_log_print(ANDROID_LOG_ERROR, GSPLAT_LOG_TAG, "surface renderer handle allocation failed");
+    set_out_error(env, out_error, GSPLAT_ERROR_INTERNAL);
     ANativeWindow_release(window);
     (*env)->ReleaseStringUTFChars(env, dataset_path, dataset);
     return 0;
@@ -165,6 +181,7 @@ JNIEXPORT jlong JNICALL Java_com_gsplat_demo_NativeBridge_createSurfaceRenderer(
   (*env)->ReleaseStringUTFChars(env, dataset_path, dataset);
 
   if (rc != 0 || renderer == NULL) {
+    set_out_error(env, out_error, rc == 0 ? GSPLAT_ERROR_INTERNAL : rc);
     __android_log_print(
         ANDROID_LOG_ERROR,
         GSPLAT_LOG_TAG,
@@ -177,6 +194,7 @@ JNIEXPORT jlong JNICALL Java_com_gsplat_demo_NativeBridge_createSurfaceRenderer(
   }
 
   __android_log_print(ANDROID_LOG_INFO, GSPLAT_LOG_TAG, "surface renderer created");
+  set_out_error(env, out_error, GSPLAT_OK);
   handle->renderer = renderer;
   handle->window = window;
   return (jlong)(intptr_t)handle;
@@ -200,6 +218,77 @@ JNIEXPORT jint JNICALL Java_com_gsplat_demo_NativeBridge_resizeSurfaceRenderer(
       handle->renderer,
       (uint32_t)width,
       (uint32_t)height);
+}
+
+JNIEXPORT jint JNICALL Java_com_gsplat_demo_NativeBridge_resetSurfaceCamera(
+    JNIEnv *env,
+    jclass cls,
+    jlong native_handle) {
+  (void)env;
+  (void)cls;
+
+  AndroidSurfaceRendererHandle *handle = android_handle_from_jlong(native_handle);
+  if (handle == NULL || handle->renderer == NULL) {
+    return GSPLAT_ERROR_INVALID_ARGUMENT;
+  }
+
+  return gsplat_surface_renderer_reset_camera(handle->renderer);
+}
+
+JNIEXPORT jint JNICALL Java_com_gsplat_demo_NativeBridge_orbitSurfaceRenderer(
+    JNIEnv *env,
+    jclass cls,
+    jlong native_handle,
+    jfloat delta_yaw_radians,
+    jfloat delta_pitch_radians) {
+  (void)env;
+  (void)cls;
+
+  AndroidSurfaceRendererHandle *handle = android_handle_from_jlong(native_handle);
+  if (handle == NULL || handle->renderer == NULL) {
+    return GSPLAT_ERROR_INVALID_ARGUMENT;
+  }
+
+  return gsplat_surface_renderer_orbit(
+      handle->renderer,
+      (float)delta_yaw_radians,
+      (float)delta_pitch_radians);
+}
+
+JNIEXPORT jint JNICALL Java_com_gsplat_demo_NativeBridge_zoomSurfaceRenderer(
+    JNIEnv *env,
+    jclass cls,
+    jlong native_handle,
+    jfloat distance_scale) {
+  (void)env;
+  (void)cls;
+
+  AndroidSurfaceRendererHandle *handle = android_handle_from_jlong(native_handle);
+  if (handle == NULL || handle->renderer == NULL) {
+    return GSPLAT_ERROR_INVALID_ARGUMENT;
+  }
+
+  return gsplat_surface_renderer_zoom(handle->renderer, (float)distance_scale);
+}
+
+JNIEXPORT jint JNICALL Java_com_gsplat_demo_NativeBridge_panSurfaceRenderer(
+    JNIEnv *env,
+    jclass cls,
+    jlong native_handle,
+    jfloat normalized_delta_x,
+    jfloat normalized_delta_y) {
+  (void)env;
+  (void)cls;
+
+  AndroidSurfaceRendererHandle *handle = android_handle_from_jlong(native_handle);
+  if (handle == NULL || handle->renderer == NULL) {
+    return GSPLAT_ERROR_INVALID_ARGUMENT;
+  }
+
+  return gsplat_surface_renderer_pan(
+      handle->renderer,
+      (float)normalized_delta_x,
+      (float)normalized_delta_y);
 }
 
 JNIEXPORT jint JNICALL Java_com_gsplat_demo_NativeBridge_renderSurfaceFrame(

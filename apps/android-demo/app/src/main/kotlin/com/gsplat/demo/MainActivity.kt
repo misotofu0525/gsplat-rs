@@ -3,14 +3,20 @@ package com.gsplat.demo
 import android.app.Activity
 import android.graphics.Color
 import android.os.Bundle
+import android.os.SystemClock
 import android.util.Log
+import android.view.MotionEvent
 import android.view.Surface
 import android.view.SurfaceHolder
 import android.view.SurfaceView
+import android.view.View
 import android.widget.FrameLayout
 import android.widget.TextView
 import java.io.File
+import kotlin.math.abs
+import kotlin.math.hypot
 import kotlin.math.max
+import kotlin.math.min
 import kotlin.math.roundToInt
 
 class MainActivity : Activity(), SurfaceHolder.Callback {
@@ -22,6 +28,16 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
     private lateinit var statusText: TextView
     private var latestStatus = "state=waiting_for_surface"
     private var surfaceSizeLabel = "pending"
+    @Volatile private var cameraStatus = "camera=auto"
+    private var gestureMode = GestureMode.None
+    private var lastTouchX = 0f
+    private var lastTouchY = 0f
+    private var lastSpan = 0f
+    private var lastFocusX = 0f
+    private var lastFocusY = 0f
+    private var lastTapAt = 0L
+    private var lastTapX = 0f
+    private var lastTapY = 0f
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -38,31 +54,33 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         val surfaceView = SurfaceView(this).apply {
             holder.addCallback(this@MainActivity)
             holder.setFixedSize(renderSurfaceSize.first, renderSurfaceSize.second)
+            setOnTouchListener(::handleTouch)
         }
         statusText = TextView(this).apply {
             setTextColor(Color.WHITE)
             setBackgroundColor(0x66000000)
+            isClickable = false
             text = buildStatusText(latestStatus)
         }
 
-        setContentView(
-            FrameLayout(this).apply {
-                addView(
-                    surfaceView,
-                    FrameLayout.LayoutParams(
-                        FrameLayout.LayoutParams.MATCH_PARENT,
-                        FrameLayout.LayoutParams.MATCH_PARENT
-                    )
+        val root = FrameLayout(this).apply {
+            setOnTouchListener(::handleTouch)
+            addView(
+                surfaceView,
+                FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.MATCH_PARENT,
+                    FrameLayout.LayoutParams.MATCH_PARENT
                 )
-                addView(
-                    statusText,
-                    FrameLayout.LayoutParams(
-                        FrameLayout.LayoutParams.MATCH_PARENT,
-                        FrameLayout.LayoutParams.WRAP_CONTENT
-                    )
+            )
+            addView(
+                statusText,
+                FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.MATCH_PARENT,
+                    FrameLayout.LayoutParams.WRAP_CONTENT
                 )
-            }
-        )
+            )
+        }
+        setContentView(root)
     }
 
     override fun surfaceCreated(holder: SurfaceHolder) {
@@ -114,11 +132,14 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
             {
                 Log.i(TAG, "createSurfaceRenderer start size=${width}x$height dataset=$datasetPath")
                 updateStatus("state=creating size=${width}x$height")
-                val handle = NativeBridge.createSurfaceRenderer(surface, datasetPath, width, height)
+                val createError = IntArray(1)
+                val handle = NativeBridge.createSurfaceRenderer(surface, datasetPath, width, height, createError)
                 if (handle == 0L) {
-                    Log.e(TAG, "createSurfaceRenderer failed")
+                    val rc = createError[0]
+                    val message = NativeBridge.errorMessage(rc)
+                    Log.e(TAG, "createSurfaceRenderer failed rc=$rc error=$message")
                     running = false
-                    updateStatus("state=create_failed")
+                    updateStatus("state=create_failed rc=$rc error=$message")
                     return@Thread
                 }
 
@@ -140,8 +161,9 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                         if (rc != 0) {
                             consecutiveErrors += 1
                             if (consecutiveErrors == 1L || consecutiveErrors % ERROR_STATUS_INTERVAL == 0L) {
-                                Log.e(TAG, "renderSurfaceFrame failed rc=$rc")
-                                updateStatus("state=render_error rc=$rc frames=$frameCount")
+                                val message = NativeBridge.errorMessage(rc)
+                                Log.e(TAG, "renderSurfaceFrame failed rc=$rc error=$message")
+                                updateStatus("state=render_error rc=$rc error=$message frames=$frameCount")
                             }
                         } else {
                             consecutiveErrors = 0L
@@ -204,6 +226,145 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         return max(1, (width * scale).roundToInt()) to max(1, (height * scale).roundToInt())
     }
 
+    private fun handleTouch(view: View, event: MotionEvent): Boolean {
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                maybeResetCameraFromDoubleTap(event.x, event.y)
+                gestureMode = GestureMode.Orbit
+                lastTouchX = event.x
+                lastTouchY = event.y
+            }
+            MotionEvent.ACTION_POINTER_DOWN -> {
+                if (event.pointerCount >= 2) {
+                    gestureMode = GestureMode.Transform
+                    lastSpan = pointerSpan(event)
+                    lastFocusX = pointerFocusX(event)
+                    lastFocusY = pointerFocusY(event)
+                }
+            }
+            MotionEvent.ACTION_MOVE -> {
+                if (event.pointerCount >= 2) {
+                    handleTransformGesture(view, event)
+                } else if (gestureMode == GestureMode.Orbit) {
+                    handleOrbitGesture(view, event)
+                }
+            }
+            MotionEvent.ACTION_POINTER_UP -> {
+                if (event.pointerCount <= 2) {
+                    gestureMode = GestureMode.None
+                    lastSpan = 0f
+                }
+            }
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                gestureMode = GestureMode.None
+                lastSpan = 0f
+            }
+        }
+        return true
+    }
+
+    private fun maybeResetCameraFromDoubleTap(x: Float, y: Float) {
+        val now = SystemClock.uptimeMillis()
+        val slop = DOUBLE_TAP_SLOP_DP * resources.displayMetrics.density
+        val isDoubleTap = now - lastTapAt <= DOUBLE_TAP_TIMEOUT_MS &&
+            hypot(x - lastTapX, y - lastTapY) <= slop
+
+        if (isDoubleTap) {
+            val rc = withNativeRenderer { NativeBridge.resetSurfaceCamera(it) }
+            cameraStatus = if (rc == 0) "camera=reset" else "camera=reset_error rc=$rc"
+            lastTapAt = 0L
+        } else {
+            lastTapAt = now
+            lastTapX = x
+            lastTapY = y
+        }
+    }
+
+    private fun handleOrbitGesture(view: View, event: MotionEvent) {
+        val size = min(view.width, view.height).coerceAtLeast(1).toFloat()
+        val dx = (event.x - lastTouchX) / size
+        val dy = (event.y - lastTouchY) / size
+        lastTouchX = event.x
+        lastTouchY = event.y
+
+        if (abs(dx) < TOUCH_EPSILON && abs(dy) < TOUCH_EPSILON) {
+            return
+        }
+
+        val rc = withNativeRenderer {
+            NativeBridge.orbitSurfaceRenderer(
+                it,
+                -dx * ORBIT_RADIANS_PER_SCREEN,
+                -dy * ORBIT_RADIANS_PER_SCREEN
+            )
+        }
+        cameraStatus = if (rc == 0) "camera=orbit" else "camera=orbit_error rc=$rc"
+    }
+
+    private fun handleTransformGesture(view: View, event: MotionEvent) {
+        val span = pointerSpan(event)
+        val focusX = pointerFocusX(event)
+        val focusY = pointerFocusY(event)
+        val width = view.width.coerceAtLeast(1).toFloat()
+        val height = view.height.coerceAtLeast(1).toFloat()
+
+        if (lastSpan > PINCH_MIN_SPAN && span > PINCH_MIN_SPAN) {
+            val scale = (lastSpan / span).coerceIn(MIN_ZOOM_STEP, MAX_ZOOM_STEP)
+            if (abs(scale - 1.0f) > ZOOM_EPSILON) {
+                val rc = withNativeRenderer { NativeBridge.zoomSurfaceRenderer(it, scale) }
+                cameraStatus = if (rc == 0) "camera=zoom" else "camera=zoom_error rc=$rc"
+            }
+        }
+
+        val dx = (focusX - lastFocusX) / width
+        val dy = (focusY - lastFocusY) / height
+        if (abs(dx) > TOUCH_EPSILON || abs(dy) > TOUCH_EPSILON) {
+            val rc = withNativeRenderer { NativeBridge.panSurfaceRenderer(it, dx, dy) }
+            if (rc != 0) {
+                cameraStatus = "camera=pan_error rc=$rc"
+            } else if (cameraStatus != "camera=zoom") {
+                cameraStatus = "camera=pan"
+            }
+        }
+
+        lastSpan = span
+        lastFocusX = focusX
+        lastFocusY = focusY
+    }
+
+    private fun withNativeRenderer(block: (Long) -> Int): Int =
+        synchronized(renderLock) {
+            val handle = nativeRenderer
+            if (handle == 0L) {
+                0
+            } else {
+                block(handle)
+            }
+        }
+
+    private fun pointerSpan(event: MotionEvent): Float {
+        if (event.pointerCount < 2) {
+            return 0f
+        }
+        return hypot(event.getX(0) - event.getX(1), event.getY(0) - event.getY(1))
+    }
+
+    private fun pointerFocusX(event: MotionEvent): Float {
+        var total = 0f
+        for (index in 0 until event.pointerCount) {
+            total += event.getX(index)
+        }
+        return total / event.pointerCount.toFloat()
+    }
+
+    private fun pointerFocusY(event: MotionEvent): Float {
+        var total = 0f
+        for (index in 0 until event.pointerCount) {
+            total += event.getY(index)
+        }
+        return total / event.pointerCount.toFloat()
+    }
+
     private fun updateStatus(status: String) {
         latestStatus = status
         runOnUiThread {
@@ -216,6 +377,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         appendLine("abi=${NativeBridge.versionMajor()}.${NativeBridge.versionMinor()}")
         appendLine("surface=wgpu realtime ${surfaceSizeLabel}")
         appendLine(status)
+        appendLine(cameraStatus)
         append("dataset=$datasetPath")
     }
 
@@ -227,6 +389,14 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         private const val STATUS_INTERVAL_NS = 500_000_000L
         private const val ERROR_STATUS_INTERVAL = 120L
         private const val MAX_SURFACE_SIDE = 1600
+        private const val ORBIT_RADIANS_PER_SCREEN = 3.2f
+        private const val PINCH_MIN_SPAN = 24f
+        private const val MIN_ZOOM_STEP = 0.5f
+        private const val MAX_ZOOM_STEP = 2.0f
+        private const val ZOOM_EPSILON = 0.003f
+        private const val TOUCH_EPSILON = 0.0001f
+        private const val DOUBLE_TAP_TIMEOUT_MS = 300L
+        private const val DOUBLE_TAP_SLOP_DP = 48f
 
         private val MINIMAL_PLY = """
             ply
@@ -249,5 +419,11 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
             end_header
             0.0 0.0 0.5 0.9 1.0 1.0 1.0 1.0 0.0 0.0 0.0 0.9 0.2 0.1
         """.trimIndent() + "\n"
+    }
+
+    private enum class GestureMode {
+        None,
+        Orbit,
+        Transform
     }
 }

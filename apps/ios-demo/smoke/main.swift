@@ -1,7 +1,8 @@
 import Foundation
 
 func fail(_ message: String, code: Int32) -> Never {
-    fputs("\(message) (code=\(code))\n", stderr)
+    let detail = String(cString: gsplat_error_message(code))
+    fputs("\(message): \(detail) (code=\(code))\n", stderr)
     exit(Int32(code == 0 ? 1 : code))
 }
 
@@ -13,7 +14,7 @@ if gsplat_version_major() != 0 || gsplat_version_minor() != 1 {
     fail("unexpected ABI version", code: 10)
 }
 
-var config = GsplatConfig(width: 1280, height: 720, mode: 0)
+var config = gsplat_config_default()
 var ctx: OpaquePointer? = nil
 
 var rc = gsplat_context_create(config, &ctx)
@@ -23,12 +24,7 @@ if rc != 0 || ctx == nil {
 
 defer { gsplat_context_destroy(ctx) }
 
-var camera = GsplatCamera()
-camera.position = (0, 0, 0)
-camera.rotation_xyzw = (0, 0, 0, 1)
-camera.vertical_fov_radians = 1.0471976
-camera.near_plane = 0.01
-camera.far_plane = 1000.0
+var camera = gsplat_camera_default()
 
 rc = gsplat_context_set_camera(ctx, camera)
 if rc != 0 {

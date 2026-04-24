@@ -11,6 +11,10 @@ use gsplat_core::{
 use gsplat_io_ply::load_ply;
 use gsplat_render_wgpu::{GpuInstance, Renderer, SURFACE_INSTANCE_LIMIT, SurfacePresenter};
 
+const SURFACE_CAMERA_MAX_PITCH: f32 = 1.45;
+const SURFACE_CAMERA_MIN_DISTANCE_MULTIPLIER: f32 = 0.2;
+const SURFACE_CAMERA_MAX_DISTANCE_MULTIPLIER: f32 = 20.0;
+
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct GsplatConfig {
@@ -105,13 +109,27 @@ pub struct GsplatSurfaceRenderer {
     renderer: Renderer,
     presenter: SurfacePresenter,
     camera: Camera,
+    camera_control: SurfaceCameraControl,
     surface_stats: FrameStats,
     uploaded_frame: bool,
     render_error_logged: bool,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct SurfaceCameraControl {
+    target: Vec3f,
+    radius: f32,
+    yaw: f32,
+    pitch: f32,
+    distance: f32,
+}
+
 fn log_surface_error(message: &str) {
     eprintln!("gsplat-ffi-c: {message}");
+}
+
+fn static_cstr(bytes: &'static [u8]) -> *const c_char {
+    bytes.as_ptr() as *const c_char
 }
 
 #[unsafe(no_mangle)]
@@ -122,6 +140,30 @@ pub extern "C" fn gsplat_version_major() -> u32 {
 #[unsafe(no_mangle)]
 pub extern "C" fn gsplat_version_minor() -> u32 {
     GSPLAT_API_VERSION_MINOR
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn gsplat_error_message(code: i32) -> *const c_char {
+    match code {
+        0 => static_cstr(b"ok\0"),
+        1 => static_cstr(b"invalid argument\0"),
+        2 => static_cstr(b"not found\0"),
+        3 => static_cstr(b"parse failed\0"),
+        4 => static_cstr(b"unsupported\0"),
+        5 => static_cstr(b"scene not loaded\0"),
+        100 => static_cstr(b"internal error\0"),
+        _ => static_cstr(b"unknown error\0"),
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn gsplat_config_default() -> GsplatConfig {
+    GsplatConfig::default()
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn gsplat_camera_default() -> GsplatCamera {
+    GsplatCamera::default()
 }
 
 #[unsafe(no_mangle)]
@@ -342,15 +384,17 @@ pub unsafe extern "C" fn gsplat_surface_renderer_create_android(
     if let Err(err) = renderer.set_size(surface_width, surface_height) {
         return err.code().as_i32();
     }
-    let camera = match auto_camera(&renderer) {
-        Ok(camera) => camera,
+    let camera_control = match auto_surface_camera_control(&renderer) {
+        Ok(camera_control) => camera_control,
         Err(code) => return code.as_i32(),
     };
+    let camera = surface_camera_from_control(camera_control, renderer.config());
 
     let surface_renderer = Box::new(GsplatSurfaceRenderer {
         renderer,
         presenter,
         camera,
+        camera_control,
         surface_stats: FrameStats::zero(),
         uploaded_frame: false,
         render_error_logged: false,
@@ -393,15 +437,111 @@ pub unsafe extern "C" fn gsplat_surface_renderer_resize(
     if let Err(err) = renderer.renderer.set_size(surface_width, surface_height) {
         return err.code().as_i32();
     }
-    renderer.camera = match auto_camera(&renderer.renderer) {
-        Ok(camera) => camera,
+    renderer.camera_control = match auto_surface_camera_control(&renderer.renderer) {
+        Ok(camera_control) => camera_control,
         Err(code) => return code.as_i32(),
     };
+    renderer.camera =
+        surface_camera_from_control(renderer.camera_control, renderer.renderer.config());
     renderer.surface_stats = FrameStats::zero();
     renderer.uploaded_frame = false;
     renderer.render_error_logged = false;
 
     ErrorCode::Ok.as_i32()
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gsplat_surface_renderer_reset_camera(
+    renderer: *mut GsplatSurfaceRenderer,
+) -> i32 {
+    let renderer = match unsafe { renderer.as_mut() } {
+        Some(renderer) => renderer,
+        None => return ErrorCode::InvalidArgument.as_i32(),
+    };
+
+    renderer.camera_control = match auto_surface_camera_control(&renderer.renderer) {
+        Ok(camera_control) => camera_control,
+        Err(code) => return code.as_i32(),
+    };
+    apply_surface_camera_control(renderer)
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gsplat_surface_renderer_orbit(
+    renderer: *mut GsplatSurfaceRenderer,
+    delta_yaw_radians: f32,
+    delta_pitch_radians: f32,
+) -> i32 {
+    let renderer = match unsafe { renderer.as_mut() } {
+        Some(renderer) => renderer,
+        None => return ErrorCode::InvalidArgument.as_i32(),
+    };
+
+    if !delta_yaw_radians.is_finite() || !delta_pitch_radians.is_finite() {
+        return ErrorCode::InvalidArgument.as_i32();
+    }
+
+    renderer.camera_control.yaw += delta_yaw_radians;
+    renderer.camera_control.pitch = (renderer.camera_control.pitch + delta_pitch_radians)
+        .clamp(-SURFACE_CAMERA_MAX_PITCH, SURFACE_CAMERA_MAX_PITCH);
+    apply_surface_camera_control(renderer)
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gsplat_surface_renderer_zoom(
+    renderer: *mut GsplatSurfaceRenderer,
+    distance_scale: f32,
+) -> i32 {
+    let renderer = match unsafe { renderer.as_mut() } {
+        Some(renderer) => renderer,
+        None => return ErrorCode::InvalidArgument.as_i32(),
+    };
+
+    if !distance_scale.is_finite() || distance_scale <= 0.0 {
+        return ErrorCode::InvalidArgument.as_i32();
+    }
+
+    let min_distance =
+        (renderer.camera_control.radius * SURFACE_CAMERA_MIN_DISTANCE_MULTIPLIER).max(0.01);
+    let max_distance =
+        (renderer.camera_control.radius * SURFACE_CAMERA_MAX_DISTANCE_MULTIPLIER).max(min_distance);
+    renderer.camera_control.distance =
+        (renderer.camera_control.distance * distance_scale).clamp(min_distance, max_distance);
+    apply_surface_camera_control(renderer)
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gsplat_surface_renderer_pan(
+    renderer: *mut GsplatSurfaceRenderer,
+    normalized_delta_x: f32,
+    normalized_delta_y: f32,
+) -> i32 {
+    let renderer = match unsafe { renderer.as_mut() } {
+        Some(renderer) => renderer,
+        None => return ErrorCode::InvalidArgument.as_i32(),
+    };
+
+    if !normalized_delta_x.is_finite() || !normalized_delta_y.is_finite() {
+        return ErrorCode::InvalidArgument.as_i32();
+    }
+
+    let config = renderer.renderer.config();
+    let aspect = (config.width as f32 / config.height.max(1) as f32).max(1.0e-3);
+    let view_height = 2.0
+        * renderer.camera_control.distance
+        * (renderer.camera.intrinsics.vertical_fov_radians * 0.5).tan();
+    let view_width = view_height * aspect;
+    let camera = surface_camera_from_control(renderer.camera_control, config);
+    let (right, up, _) = camera_basis(&camera, renderer.camera_control.target);
+
+    renderer.camera_control.target = vec3_add(
+        renderer.camera_control.target,
+        vec3_add(
+            vec3_scale(right, -normalized_delta_x * view_width),
+            vec3_scale(up, normalized_delta_y * view_height),
+        ),
+    );
+    apply_surface_camera_control(renderer)
 }
 
 #[unsafe(no_mangle)]
@@ -487,6 +627,14 @@ pub unsafe extern "C" fn gsplat_surface_renderer_get_stats(
 }
 
 fn auto_camera(renderer: &Renderer) -> Result<Camera, ErrorCode> {
+    let camera_control = auto_surface_camera_control(renderer)?;
+    Ok(surface_camera_from_control(
+        camera_control,
+        renderer.config(),
+    ))
+}
+
+fn auto_surface_camera_control(renderer: &Renderer) -> Result<SurfaceCameraControl, ErrorCode> {
     let Some(scene) = renderer.scene() else {
         return Err(ErrorCode::SceneNotLoaded);
     };
@@ -495,9 +643,6 @@ fn auto_camera(renderer: &Renderer) -> Result<Camera, ErrorCode> {
     };
 
     let config = renderer.config();
-    let mut camera = Camera::default();
-    camera.intrinsics.vertical_fov_radians = 60.0_f32.to_radians();
-
     let center = Vec3f::new(
         (min.x + max.x) * 0.5,
         (min.y + max.y) * 0.5,
@@ -509,20 +654,146 @@ fn auto_camera(renderer: &Renderer) -> Result<Camera, ErrorCode> {
     let half_z = (extent.z * 0.5).max(1e-3);
 
     let aspect = (config.width as f32) / (config.height as f32);
-    let vfov = camera.intrinsics.vertical_fov_radians.max(1e-3);
+    let vfov = Camera::default().intrinsics.vertical_fov_radians.max(1e-3);
     let hfov = 2.0 * ((vfov * 0.5).tan() * aspect).atan();
 
     let dist_y = half_y / (vfov * 0.5).tan();
     let dist_x = half_x / (hfov * 0.5).tan();
     let dist = (dist_y.max(dist_x) + half_z) * 1.2;
-    camera.pose.position = Vec3f::new(center.x, center.y, center.z - dist);
-    camera.pose.rotation_xyzw = [0.0, 0.0, 0.0, 1.0];
-
     let radius = half_x.max(half_y).max(half_z);
-    camera.intrinsics.near_plane = (dist - radius * 2.0).max(0.01);
-    camera.intrinsics.far_plane = (dist + radius * 8.0).max(100.0);
 
-    Ok(camera)
+    Ok(SurfaceCameraControl {
+        target: center,
+        radius,
+        yaw: 0.0,
+        pitch: 0.0,
+        distance: dist,
+    })
+}
+
+fn apply_surface_camera_control(renderer: &mut GsplatSurfaceRenderer) -> i32 {
+    let camera = surface_camera_from_control(renderer.camera_control, renderer.renderer.config());
+    if camera.validate().is_err() {
+        return ErrorCode::InvalidArgument.as_i32();
+    }
+
+    renderer.camera = camera;
+    renderer.uploaded_frame = false;
+    renderer.render_error_logged = false;
+    ErrorCode::Ok.as_i32()
+}
+
+fn surface_camera_from_control(control: SurfaceCameraControl, config: RendererConfig) -> Camera {
+    let mut camera = Camera::default();
+    let pitch = control
+        .pitch
+        .clamp(-SURFACE_CAMERA_MAX_PITCH, SURFACE_CAMERA_MAX_PITCH);
+    let cos_pitch = pitch.cos();
+    let offset = Vec3f::new(
+        control.yaw.sin() * cos_pitch * control.distance,
+        pitch.sin() * control.distance,
+        -control.yaw.cos() * cos_pitch * control.distance,
+    );
+    camera.pose.position = vec3_add(control.target, offset);
+    camera.pose.rotation_xyzw = camera_rotation_looking_at(camera.pose.position, control.target);
+
+    let radius = control.radius.max(1.0e-3);
+    camera.intrinsics.near_plane = (control.distance - radius * 2.0).max(0.01);
+    camera.intrinsics.far_plane = (control.distance + radius * 8.0).max(100.0);
+
+    let aspect = (config.width as f32 / config.height.max(1) as f32).max(1.0e-3);
+    if aspect < 0.6 {
+        camera.intrinsics.vertical_fov_radians = 65.0_f32.to_radians();
+    }
+
+    camera
+}
+
+fn camera_rotation_looking_at(position: Vec3f, target: Vec3f) -> [f32; 4] {
+    let (_, _, forward) = camera_basis_from_position(position, target);
+    let world_up = if forward.y.abs() > 0.98 {
+        Vec3f::new(0.0, 0.0, 1.0)
+    } else {
+        Vec3f::new(0.0, 1.0, 0.0)
+    };
+    let right = vec3_normalize(vec3_cross(world_up, forward)).unwrap_or(Vec3f::new(1.0, 0.0, 0.0));
+    let up = vec3_cross(forward, right);
+    quat_from_camera_basis(right, up, forward)
+}
+
+fn camera_basis(camera: &Camera, target: Vec3f) -> (Vec3f, Vec3f, Vec3f) {
+    camera_basis_from_position(camera.pose.position, target)
+}
+
+fn camera_basis_from_position(position: Vec3f, target: Vec3f) -> (Vec3f, Vec3f, Vec3f) {
+    let forward = vec3_normalize(vec3_sub(target, position)).unwrap_or(Vec3f::new(0.0, 0.0, 1.0));
+    let world_up = if forward.y.abs() > 0.98 {
+        Vec3f::new(0.0, 0.0, 1.0)
+    } else {
+        Vec3f::new(0.0, 1.0, 0.0)
+    };
+    let right = vec3_normalize(vec3_cross(world_up, forward)).unwrap_or(Vec3f::new(1.0, 0.0, 0.0));
+    let up = vec3_cross(forward, right);
+    (right, up, forward)
+}
+
+fn quat_from_camera_basis(right: Vec3f, up: Vec3f, forward: Vec3f) -> [f32; 4] {
+    let m00 = right.x;
+    let m01 = up.x;
+    let m02 = forward.x;
+    let m10 = right.y;
+    let m11 = up.y;
+    let m12 = forward.y;
+    let m20 = right.z;
+    let m21 = up.z;
+    let m22 = forward.z;
+    let trace = m00 + m11 + m22;
+
+    let (x, y, z, w) = if trace > 0.0 {
+        let s = (trace + 1.0).sqrt() * 2.0;
+        ((m21 - m12) / s, (m02 - m20) / s, (m10 - m01) / s, 0.25 * s)
+    } else if m00 > m11 && m00 > m22 {
+        let s = (1.0 + m00 - m11 - m22).sqrt() * 2.0;
+        (0.25 * s, (m01 + m10) / s, (m02 + m20) / s, (m21 - m12) / s)
+    } else if m11 > m22 {
+        let s = (1.0 + m11 - m00 - m22).sqrt() * 2.0;
+        ((m01 + m10) / s, 0.25 * s, (m12 + m21) / s, (m02 - m20) / s)
+    } else {
+        let s = (1.0 + m22 - m00 - m11).sqrt() * 2.0;
+        ((m02 + m20) / s, (m12 + m21) / s, 0.25 * s, (m10 - m01) / s)
+    };
+
+    let norm = (x * x + y * y + z * z + w * w).sqrt().max(1.0e-6);
+    [x / norm, y / norm, z / norm, w / norm]
+}
+
+fn vec3_add(a: Vec3f, b: Vec3f) -> Vec3f {
+    Vec3f::new(a.x + b.x, a.y + b.y, a.z + b.z)
+}
+
+fn vec3_sub(a: Vec3f, b: Vec3f) -> Vec3f {
+    Vec3f::new(a.x - b.x, a.y - b.y, a.z - b.z)
+}
+
+fn vec3_scale(v: Vec3f, scale: f32) -> Vec3f {
+    Vec3f::new(v.x * scale, v.y * scale, v.z * scale)
+}
+
+fn vec3_cross(a: Vec3f, b: Vec3f) -> Vec3f {
+    Vec3f::new(
+        a.y * b.z - a.z * b.y,
+        a.z * b.x - a.x * b.z,
+        a.x * b.y - a.y * b.x,
+    )
+}
+
+fn vec3_normalize(v: Vec3f) -> Option<Vec3f> {
+    let len = (v.x * v.x + v.y * v.y + v.z * v.z).sqrt();
+    if !len.is_finite() || len <= 1.0e-6 {
+        return None;
+    }
+
+    Some(vec3_scale(v, 1.0 / len))
 }
 
 fn scene_bounds(scene: &gsplat_core::SceneBuffers) -> Option<(Vec3f, Vec3f)> {
@@ -549,9 +820,63 @@ mod tests {
     use gsplat_core::ErrorCode;
 
     use super::{
-        GsplatCamera, GsplatConfig, GsplatContext, gsplat_context_create, gsplat_context_destroy,
-        gsplat_context_set_camera,
+        GsplatCamera, GsplatConfig, GsplatContext, SurfaceCameraControl,
+        camera_rotation_looking_at, gsplat_camera_default, gsplat_config_default,
+        gsplat_context_create, gsplat_context_destroy, gsplat_context_set_camera,
+        gsplat_error_message, surface_camera_from_control,
     };
+
+    #[test]
+    fn default_ffi_values_match_release_contract() {
+        let config = gsplat_config_default();
+        assert_eq!(config.width, 1280);
+        assert_eq!(config.height, 720);
+        assert_eq!(config.mode, 0);
+
+        let camera = gsplat_camera_default();
+        assert_eq!(camera.rotation_xyzw, [0.0, 0.0, 0.0, 1.0]);
+        assert_eq!(camera.near_plane, 0.01);
+        assert_eq!(camera.far_plane, 1000.0);
+    }
+
+    #[test]
+    fn error_message_describes_known_and_unknown_codes() {
+        let invalid = unsafe { std::ffi::CStr::from_ptr(gsplat_error_message(1)) };
+        assert_eq!(invalid.to_str().unwrap(), "invalid argument");
+
+        let unknown = unsafe { std::ffi::CStr::from_ptr(gsplat_error_message(-1)) };
+        assert_eq!(unknown.to_str().unwrap(), "unknown error");
+    }
+
+    #[test]
+    fn surface_camera_control_matches_default_view_direction() {
+        let control = SurfaceCameraControl {
+            target: gsplat_core::Vec3f::new(1.0, 2.0, 3.0),
+            radius: 2.0,
+            yaw: 0.0,
+            pitch: 0.0,
+            distance: 10.0,
+        };
+
+        let camera = surface_camera_from_control(control, gsplat_core::RendererConfig::default());
+
+        assert_eq!(
+            camera.pose.position,
+            gsplat_core::Vec3f::new(1.0, 2.0, -7.0)
+        );
+        assert_eq!(camera.pose.rotation_xyzw, [0.0, 0.0, 0.0, 1.0]);
+    }
+
+    #[test]
+    fn looking_at_rotation_is_normalized_for_orbited_camera() {
+        let q = camera_rotation_looking_at(
+            gsplat_core::Vec3f::new(2.0, 1.0, -4.0),
+            gsplat_core::Vec3f::new(0.0, 0.0, 0.0),
+        );
+        let norm2 = q.iter().map(|v| v * v).sum::<f32>();
+
+        assert!((norm2 - 1.0).abs() < 1.0e-4);
+    }
 
     #[test]
     fn create_and_destroy_context() {

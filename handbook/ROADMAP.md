@@ -24,13 +24,19 @@ Operational facts and command entrypoints live in `handbook/PROJECT_CONTEXT.md` 
 - Experimental Rust APIs may exist only when they stay out of the release contract and do not complicate verification.
 - Any backend that requires matched training metadata stays disabled by default until promoted here.
 - The current C ABI intentionally stays small:
+  - `gsplat_version_major`
+  - `gsplat_version_minor`
+  - `gsplat_error_message`
+  - `gsplat_config_default`
+  - `gsplat_camera_default`
   - `gsplat_context_create`
   - `gsplat_context_destroy`
   - `gsplat_context_set_camera`
+  - `gsplat_context_set_auto_camera`
   - `gsplat_context_load_scene_path`
   - `gsplat_context_render_frame`
   - `gsplat_context_get_stats`
-  - Android Surface renderer create/resize/render/stats/destroy functions for the demo integration path
+  - Android Surface renderer create/resize/camera-control/render/stats/destroy functions for the demo integration path
 - The current C ABI does not cover scene-from-memory loading or runtime render-mode switching.
 - Android Surface functions are validation/demo support, not a commitment to a full mobile product API.
 

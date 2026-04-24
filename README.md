@@ -19,6 +19,19 @@ Cross-platform Gaussian Splatting rendering library built with Rust + `wgpu`.
 - `tools/`: packaging and performance helpers
 - `tests/`: sample dataset plus smoke/perf scripts
 
+## Mobile Integration Status
+
+The current mobile-facing contract is the C ABI in `crates/gsplat-ffi-c/include/gsplat.h`.
+Android and iOS directories are validation demos and starter integrations, not packaged
+AAR/XCFramework SDK artifacts yet.
+
+- Use `gsplat_config_default()` and `gsplat_camera_default()` instead of hand-writing ABI defaults.
+- Use `GSPLAT_RENDER_MODE_SORTED_ALPHA`; it is the only release-gated render mode in v0.1.
+- Treat non-zero returns as `GsplatErrorCode` values and pass them to `gsplat_error_message()`.
+- Android Surface rendering is demonstrated by `apps/android-demo`.
+- Swift/C ABI integration is demonstrated by `apps/ios-demo`.
+- Not in the v0.1 contract: scene-from-memory loading, runtime render-mode switching, AAR packaging, and XCFramework packaging.
+
 ## Common Commands
 
 ```bash
