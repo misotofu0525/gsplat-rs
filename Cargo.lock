@@ -656,27 +656,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "gsplat-format"
-version = "0.1.0"
-dependencies = [
- "gsplat-core",
- "thiserror 2.0.18",
-]
-
-[[package]]
 name = "gsplat-io-ply"
 version = "0.1.0"
 dependencies = [
  "gsplat-core",
  "thiserror 2.0.18",
-]
-
-[[package]]
-name = "gsplat-pack"
-version = "0.1.0"
-dependencies = [
- "gsplat-format",
- "gsplat-io-ply",
 ]
 
 [[package]]

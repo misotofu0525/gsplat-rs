@@ -18,21 +18,19 @@
 
 - The workspace builds and tests cleanly on the supported CI paths.
 - `SortedAlpha` remains the only quality-guaranteed render mode.
-- The pack format, FFI smoke paths, and mobile smoke integrations stay working.
+- FFI smoke paths and mobile smoke integrations stay working.
 - Desktop and mobile demos remain validation surfaces for the shared crates, not separate product lines.
 
 ## Current Repository Shape
 
 - `crates/gsplat-core`: shared public types, config, stats, and error codes
 - `crates/gsplat-io-ply`: PLY parsing and scene buffer construction
-- `crates/gsplat-format`: packed scene encoding and decoding
 - `crates/gsplat-sort`: GPU and CPU sort backends
 - `crates/gsplat-render-wgpu`: preprocessing, raster path, and GPU helper APIs
 - `crates/gsplat-ffi-c`: small C ABI surface over the renderer
 - `apps/desktop-demo`: desktop viewer and offscreen PNG harness
 - `apps/android-demo`: Android container build plus host-side JNI smoke
 - `apps/ios-demo`: Swift smoke path plus iOS simulator build scripts
-- `tools/gsplat-pack`: PLY to packed-format converter
 - `tools/bench-runner`: perf and stability runner
 - `tests/`: sample dataset, FFI smoke harness, and perf scripts
 - `handbook/`: current project docs, architecture map, verification guide, roadmap, and project principles
@@ -53,7 +51,7 @@ For the broader command matrix, use `VERIFICATION.md`.
 - Keep the day-to-day verification paths passing and the release bar lightweight but real.
 - Expand conformance and perf coverage with real datasets before widening the public API surface.
 - Improve mobile integration only while the shared C ABI stays simple and stable.
-- Move runtime usage toward the packed scene format so PLY remains an import/input format.
+- Keep the runtime scene path centered on validated in-memory `SceneBuffers` until a measured asset-pipeline need exists.
 - Update the docs immediately when repository structure or responsibilities change.
 
 ## Constraints and Boundaries

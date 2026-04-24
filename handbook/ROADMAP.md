@@ -1,27 +1,27 @@
 # Roadmap
 
-This file is the current direction and release-boundary document for the repository.
+This file defines the current direction and release boundary for `gsplat-rs`.
 Operational facts and command entrypoints live in `handbook/PROJECT_CONTEXT.md` and `handbook/VERIFICATION.md`.
 
 ## Project Position
 
-- `gsplat-rs` is a cross-platform Gaussian Splatting renderer built with Rust + wgpu.
-- `SortedAlpha` is the only quality-guaranteed path for `v0.1.x`.
-- Desktop/mobile demos exist to validate the core crates, not to become separate product lines.
-- We prefer a small, stable surface over multiple partially-finished tracks.
+- `gsplat-rs` is a cross-platform Gaussian Splatting renderer built with Rust + `wgpu`.
+- The project is on the `0.1.x` line and should stay small until the core render path is more thoroughly validated.
+- `SortedAlpha` is the only quality-guaranteed render mode.
+- Desktop and mobile demos are validation surfaces for shared crates, not separate product lines.
 
-## Current Priorities
+## Near-Term Priorities
 
-1. Keep the day-to-day verification set passing, and keep the release bar lightweight but real.
-2. Expand conformance/perf coverage with real datasets before widening API surface.
-3. Improve mobile integration depth only when the shared C ABI remains simple and stable.
-4. Let runtime load the packed format directly so PLY becomes an import/input format, not the long-term runtime format.
-5. Document repo structure changes immediately when directories or responsibilities move.
+1. Keep the PLY import -> `SceneBuffers` -> renderer path correct and well tested.
+2. Expand conformance and performance coverage with real datasets before widening APIs.
+3. Keep C ABI, JNI, and Swift smoke paths boring, small, and in sync.
+4. Improve renderer quality and stability inside the existing crate boundaries.
+5. Keep handbook docs and verification commands aligned with the repository that actually exists.
 
 ## Current Release Boundary
 
-- The Rust API may keep room for experimentation, but `SortedAlpha` is the only release-gated render mode.
-- Experimental backends are allowed only when they stay explicitly out-of-contract and off the main release path.
+- The public contract is centered on PLY import, in-memory scene buffers, `SortedAlpha` rendering, and the small C ABI.
+- Experimental Rust APIs may exist only when they stay out of the release contract and do not complicate verification.
 - Any backend that requires matched training metadata stays disabled by default until promoted here.
 - The current C ABI intentionally stays small:
   - `gsplat_context_create`
@@ -30,11 +30,11 @@ Operational facts and command entrypoints live in `handbook/PROJECT_CONTEXT.md` 
   - `gsplat_context_load_scene_path`
   - `gsplat_context_render_frame`
   - `gsplat_context_get_stats`
-- The current C ABI does not yet cover scene-from-memory loading, resize/surface integration, or runtime render-mode switching.
+- The current C ABI does not cover scene-from-memory loading, resize/surface integration, or runtime render-mode switching.
 
 ## Release Bar
 
-- The canonical day-to-day verification set now lives in `handbook/VERIFICATION.md`.
+- The canonical day-to-day verification set lives in `handbook/VERIFICATION.md`.
 - Before cutting a release, also run:
 
 ```bash
@@ -43,6 +43,7 @@ STABILITY_SECONDS=1800 bash tests/perf/run-long-stability.sh
 
 ## Explicitly Not Active Right Now
 
+- A custom internal binary scene/cache format
 - A Web demo app
 - Additional experimental blending/rendering backends
 - New top-level apps or docs-only placeholders

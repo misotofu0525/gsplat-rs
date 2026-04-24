@@ -2,12 +2,10 @@
 members = [
   "crates/gsplat-core",
   "crates/gsplat-io-ply",
-  "crates/gsplat-format",
   "crates/gsplat-sort",
   "crates/gsplat-render-wgpu",
   "crates/gsplat-ffi-c",
   "apps/desktop-demo",
-  "tools/gsplat-pack",
   "tools/bench-runner",
 ]
 resolver = "3"

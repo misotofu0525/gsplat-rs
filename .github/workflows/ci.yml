@@ -22,8 +22,6 @@ jobs:
         run: bash tests/ffi/run-ffi-smoke.sh
       - name: JNI smoke
         run: bash apps/android-demo/run-jni-smoke.sh
-      - name: Format pack verify
-        run: cargo run -p gsplat-pack -- tests/datasets/minimal_ascii.ply target/minimal.gspk --verify
       - name: Stability smoke (short)
         env:
           STABILITY_SECONDS: "5"

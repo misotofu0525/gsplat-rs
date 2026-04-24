@@ -7,7 +7,7 @@
 
 ## System Boundaries
 
-- The repository owns scene loading, packed-scene encoding, sort backends, `wgpu` rendering, a small C ABI, and validation demos/tools around those pieces.
+- The repository owns scene loading, sort backends, `wgpu` rendering, a small C ABI, and validation demos/tools around those pieces.
 - The repository does not own model training, a web product surface, or multiple polished render backends.
 - Main external dependencies are `wgpu`, platform toolchains for Swift/JNI validation, and Android/iOS SDK tooling for mobile container builds.
 
@@ -15,7 +15,6 @@
 
 - Core data types live in `crates/gsplat-core`.
 - Scene import starts in `crates/gsplat-io-ply`.
-- Runtime packing lives in `crates/gsplat-format` and is exercised by `tools/gsplat-pack`.
 - Sorting lives in `crates/gsplat-sort`.
 - Rendering and GPU-facing orchestration live in `crates/gsplat-render-wgpu`.
 - Native embedding goes through `crates/gsplat-ffi-c`.
@@ -27,7 +26,7 @@
 - `apps/desktop-demo/`: desktop viewer and offscreen output harness
 - `apps/android-demo/`: Android demo project, JNI bridge, and host smoke entrypoint
 - `apps/ios-demo/`: Swift smoke source and iOS simulator build scripts
-- `tools/`: CLI tools for packaging and performance validation
+- `tools/`: CLI tools for performance validation
 - `tests/`: shared dataset, FFI smoke harness, and long-stability script
 - `handbook/`: current project docs, architecture map, verification guide, roadmap, and project principles
 - `docs/plans/`: active and completed task planning bundles
@@ -39,11 +38,6 @@
   passes through `crates/gsplat-io-ply/src/lib.rs`
   continues into `crates/gsplat-render-wgpu/src/lib.rs`
   is exercised by `apps/desktop-demo/src/main.rs`, `tools/bench-runner/src/main.rs`, and `crates/gsplat-ffi-c/src/lib.rs`
-
-- Packed scene flow:
-  starts at `tools/gsplat-pack/src/main.rs`
-  reads PLY through `crates/gsplat-io-ply/src/lib.rs`
-  writes packed output through `crates/gsplat-format/src/lib.rs`
 
 - Native integration flow:
   starts from C, Swift, or Java/JNI host entrypoints
@@ -67,6 +61,6 @@
 ## Useful Entry Points
 
 - Read first for renderer changes: `crates/gsplat-render-wgpu/src/lib.rs`
-- Read first for format/import changes: `crates/gsplat-io-ply/src/lib.rs` and `crates/gsplat-format/src/lib.rs`
+- Read first for import changes: `crates/gsplat-io-ply/src/lib.rs`
 - Read first for native integration changes: `crates/gsplat-ffi-c/src/lib.rs` and `crates/gsplat-ffi-c/include/gsplat.h`
 - Read first for verification flow: `VERIFICATION.md`

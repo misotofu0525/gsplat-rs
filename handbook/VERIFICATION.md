@@ -32,7 +32,6 @@ These are the current day-to-day commands the repo relies on:
 cargo check --workspace
 cargo test --workspace
 cargo run -p bench-runner -- tests/datasets/minimal_ascii.ply 120
-cargo run -p gsplat-pack -- tests/datasets/minimal_ascii.ply target/minimal.gspk --verify
 bash tests/ffi/run-ffi-smoke.sh
 bash apps/android-demo/run-jni-smoke.sh
 bash apps/ios-demo/run-swift-smoke.sh
@@ -71,7 +70,7 @@ STABILITY_SECONDS=1800 bash tests/perf/run-long-stability.sh
 - If you touch `crates/gsplat-ffi-c/`, run `bash tests/ffi/run-ffi-smoke.sh`.
 - If you touch `apps/android-demo/` or JNI glue, run `bash apps/android-demo/run-jni-smoke.sh`.
 - If you touch `apps/ios-demo/` or Swift/FFI integration, run `bash apps/ios-demo/run-swift-smoke.sh`.
-- If you touch the pack format or conversion path, run `cargo run -p gsplat-pack -- tests/datasets/minimal_ascii.ply target/minimal.gspk --verify`.
+- If you touch PLY import or scene normalization, run `cargo test --workspace` and `cargo run -p desktop-demo -- tests/datasets/minimal_ascii.ply --png target/out.png`.
 - If you touch renderer, sorting, or perf-sensitive code, run `cargo run -p bench-runner -- tests/datasets/minimal_ascii.ply 120` and consider the long-stability script.
 
 ## Structural Checks
