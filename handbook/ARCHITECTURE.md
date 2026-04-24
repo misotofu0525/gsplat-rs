@@ -40,9 +40,15 @@
   is exercised by `apps/desktop-demo/src/main.rs`, `tools/bench-runner/src/main.rs`, and `crates/gsplat-ffi-c/src/lib.rs`
 
 - Native integration flow:
-  starts from C, Swift, or Java/JNI host entrypoints
+  starts from C, Swift, or Kotlin/JNI host entrypoints
   crosses `crates/gsplat-ffi-c/include/gsplat.h` and `crates/gsplat-ffi-c/src/lib.rs`
   ends in the shared renderer and stats path
+
+- Android Surface flow:
+  starts at `apps/android-demo/app/src/main/kotlin/com/gsplat/demo/MainActivity.kt`
+  obtains a `SurfaceView` `Surface` and wraps it as an `ANativeWindow` in `apps/android-demo/jni/gsplat_jni.c`
+  creates a raw-handle `wgpu::Surface` in `crates/gsplat-render-wgpu/src/lib.rs`
+  presents directly to the Android swapchain, not through offscreen readback
 
 ## Invariants
 
@@ -56,6 +62,7 @@
 - `crates/gsplat-render-wgpu/src/lib.rs`: render behavior, GPU orchestration, and perf-sensitive logic
 - `crates/gsplat-sort/src/lib.rs`: ordering correctness and performance
 - `crates/gsplat-ffi-c/src/lib.rs` and `crates/gsplat-ffi-c/include/gsplat.h`: integration boundary stability
+- `apps/android-demo/app/src/main/kotlin/` and `apps/android-demo/jni/gsplat_jni.c`: Android Surface lifecycle and JNI bridge
 - `tests/perf/run-long-stability.sh` and `tools/bench-runner/src/main.rs`: regression detection for perf and stability
 
 ## Useful Entry Points

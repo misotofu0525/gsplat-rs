@@ -31,6 +31,7 @@ typedef struct GsplatCamera {
 } GsplatCamera;
 
 typedef struct GsplatContext GsplatContext;
+typedef struct GsplatSurfaceRenderer GsplatSurfaceRenderer;
 
 uint32_t gsplat_version_major(void);
 uint32_t gsplat_version_minor(void);
@@ -38,9 +39,26 @@ uint32_t gsplat_version_minor(void);
 int32_t gsplat_context_create(GsplatConfig config, GsplatContext **out_ctx);
 void gsplat_context_destroy(GsplatContext *ctx);
 int32_t gsplat_context_set_camera(GsplatContext *ctx, GsplatCamera camera);
+int32_t gsplat_context_set_auto_camera(GsplatContext *ctx);
 int32_t gsplat_context_load_scene_path(GsplatContext *ctx, const char *path);
 int32_t gsplat_context_render_frame(GsplatContext *ctx);
 int32_t gsplat_context_get_stats(const GsplatContext *ctx, GsplatStats *out_stats);
+
+int32_t gsplat_surface_renderer_create_android(
+    void *native_window,
+    const char *path,
+    uint32_t width,
+    uint32_t height,
+    GsplatSurfaceRenderer **out_renderer);
+void gsplat_surface_renderer_destroy(GsplatSurfaceRenderer *renderer);
+int32_t gsplat_surface_renderer_resize(
+    GsplatSurfaceRenderer *renderer,
+    uint32_t width,
+    uint32_t height);
+int32_t gsplat_surface_renderer_render_frame(GsplatSurfaceRenderer *renderer);
+int32_t gsplat_surface_renderer_get_stats(
+    const GsplatSurfaceRenderer *renderer,
+    GsplatStats *out_stats);
 
 #ifdef __cplusplus
 }

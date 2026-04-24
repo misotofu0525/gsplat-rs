@@ -493,7 +493,8 @@ mod tests {
         let mut keys: Vec<u32> = (0..len).map(|_| lcg_next(&mut seed)).collect();
         let mut values: Vec<u32> = (0..len as u32).collect();
 
-        let mut expected: Vec<(u32, u32)> = keys.iter().copied().zip(values.iter().copied()).collect();
+        let mut expected: Vec<(u32, u32)> =
+            keys.iter().copied().zip(values.iter().copied()).collect();
         expected.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
 
         backend.sort_pairs(&mut keys, &mut values).unwrap();

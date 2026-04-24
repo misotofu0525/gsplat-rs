@@ -5,6 +5,9 @@ ROOT_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$ROOT_DIR"
 
 DATASET_PATH="${1:-tests/datasets/minimal_ascii.ply}"
+if [[ "$DATASET_PATH" != /* ]]; then
+  DATASET_PATH="$ROOT_DIR/$DATASET_PATH"
+fi
 UNAME_S="$(uname -s)"
 
 if [[ -n "${JAVA_HOME:-}" ]]; then
@@ -12,7 +15,7 @@ if [[ -n "${JAVA_HOME:-}" ]]; then
 elif [[ "$UNAME_S" == "Darwin" ]]; then
   JAVA_HOME="$(/usr/libexec/java_home)"
 else
-  JAVA_BIN="$(readlink -f "$(command -v javac)")"
+  JAVA_BIN="$(readlink -f "$(command -v java)")"
   JAVA_HOME="$(cd "$(dirname "$JAVA_BIN")/.." && pwd)"
 fi
 
@@ -20,9 +23,8 @@ cargo build -p gsplat-ffi-c >/dev/null
 
 LIB_DIR="$ROOT_DIR/target/debug"
 OUT_DIR="$ROOT_DIR/target/android-jni"
-CLASS_DIR="$OUT_DIR/classes"
 JNI_LIB_DIR="$OUT_DIR/lib"
-mkdir -p "$CLASS_DIR" "$JNI_LIB_DIR"
+mkdir -p "$JNI_LIB_DIR"
 
 if [[ "$UNAME_S" == "Darwin" ]]; then
   JNI_OS_INCLUDE="$JAVA_HOME/include/darwin"
@@ -42,20 +44,22 @@ clang \
   -lgsplat_ffi_c \
   -o "$JNI_LIB_DIR/libgsplat_jni.$JNI_LIB_EXT"
 
-javac \
-  -d "$CLASS_DIR" \
-  apps/android-demo/host-smoke/src/com/gsplat/demo/GsplatJniSmoke.java
+GRADLE_VERSION="${GRADLE_VERSION:-8.7}"
+GRADLE_DIR="$ROOT_DIR/target/gradle-$GRADLE_VERSION"
+GRADLE_BIN="$GRADLE_DIR/bin/gradle"
 
-if [[ "$UNAME_S" == "Darwin" ]]; then
-  DYLD_LIBRARY_PATH="$JNI_LIB_DIR:$LIB_DIR" \
-  java --enable-native-access=ALL-UNNAMED \
-    -Djava.library.path="$JNI_LIB_DIR:$LIB_DIR" \
-    -cp "$CLASS_DIR" \
-    com.gsplat.demo.GsplatJniSmoke "$DATASET_PATH"
-else
-  LD_LIBRARY_PATH="$JNI_LIB_DIR:$LIB_DIR" \
-  java --enable-native-access=ALL-UNNAMED \
-    -Djava.library.path="$JNI_LIB_DIR:$LIB_DIR" \
-    -cp "$CLASS_DIR" \
-    com.gsplat.demo.GsplatJniSmoke "$DATASET_PATH"
+if [[ ! -x "$GRADLE_BIN" ]]; then
+  ZIP_PATH="$ROOT_DIR/target/gradle-$GRADLE_VERSION-bin.zip"
+  URL="https://services.gradle.org/distributions/gradle-$GRADLE_VERSION-bin.zip"
+  curl -fsSL "$URL" -o "$ZIP_PATH"
+  rm -rf "$GRADLE_DIR"
+  unzip -q "$ZIP_PATH" -d "$ROOT_DIR/target"
 fi
+
+"$GRADLE_BIN" \
+  -p "$ROOT_DIR/apps/android-demo" \
+  :host-smoke:run \
+  -PgsplatJniLibPath="$JNI_LIB_DIR" \
+  -PgsplatFfiLibPath="$LIB_DIR" \
+  -PgsplatDatasetPath="$DATASET_PATH" \
+  --quiet

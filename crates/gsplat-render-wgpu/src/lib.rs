@@ -10,6 +10,21 @@ use thiserror::Error;
 use wgpu::util::DeviceExt;
 
 const RENDER_TARGET_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
+pub const SURFACE_INSTANCE_LIMIT: usize = if cfg!(target_os = "android") {
+    120_000
+} else {
+    usize::MAX
+};
+
+#[cfg(target_os = "android")]
+const fn wgpu_label(_label: &'static str) -> Option<&'static str> {
+    None
+}
+
+#[cfg(not(target_os = "android"))]
+const fn wgpu_label(label: &'static str) -> Option<&'static str> {
+    Some(label)
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PreprocessOutput {
@@ -35,6 +50,8 @@ pub enum RendererError {
     Sort(#[from] SortError),
     #[error("gpu instance preprocess error: {0}")]
     GpuInstancePreprocess(#[from] GpuInstancePreprocessError),
+    #[error("surface presenter error: {0}")]
+    SurfacePresenter(#[from] SurfacePresenterError),
 }
 
 impl RendererError {
@@ -48,6 +65,7 @@ impl RendererError {
             Self::GpuReadback => ErrorCode::Internal,
             Self::Sort(_) => ErrorCode::Internal,
             Self::GpuInstancePreprocess(_) => ErrorCode::Internal,
+            Self::SurfacePresenter(err) => err.code(),
         }
     }
 }
@@ -64,6 +82,47 @@ pub enum GpuInstancePreprocessError {
     SortedIndexCapacityExceeded,
     #[error("instance buffer capacity exceeded")]
     InstanceBufferCapacityExceeded,
+}
+
+#[derive(Debug, Error)]
+pub enum SurfacePresenterError {
+    #[error("invalid surface size")]
+    InvalidSurfaceSize,
+    #[error("surface creation failed")]
+    SurfaceCreation,
+    #[error("no compatible surface adapter")]
+    NoAdapter,
+    #[error("surface device creation failed: {0}")]
+    DeviceCreation(String),
+    #[error("surface has no compatible format")]
+    NoSurfaceFormat,
+    #[error("surface configure failed: {0}")]
+    SurfaceConfigure(String),
+    #[error("surface requires a loaded scene")]
+    SceneNotLoaded,
+    #[error("surface acquire failed: {0}")]
+    SurfaceAcquire(String),
+    #[error("surface out of memory")]
+    SurfaceOutOfMemory,
+    #[error("gpu instance preprocess error: {0}")]
+    GpuInstancePreprocess(#[from] GpuInstancePreprocessError),
+}
+
+impl SurfacePresenterError {
+    pub const fn code(&self) -> ErrorCode {
+        match self {
+            Self::InvalidSurfaceSize => ErrorCode::InvalidArgument,
+            Self::SurfaceCreation | Self::NoAdapter | Self::DeviceCreation(_) => {
+                ErrorCode::Unsupported
+            }
+            Self::SceneNotLoaded => ErrorCode::SceneNotLoaded,
+            Self::NoSurfaceFormat
+            | Self::SurfaceConfigure(_)
+            | Self::SurfaceAcquire(_)
+            | Self::SurfaceOutOfMemory
+            | Self::GpuInstancePreprocess(_) => ErrorCode::Internal,
+        }
+    }
 }
 
 pub struct Renderer {
@@ -105,6 +164,19 @@ impl Renderer {
 
     pub fn config(&self) -> RendererConfig {
         self.config
+    }
+
+    pub fn set_size(&mut self, width: u32, height: u32) -> Result<(), RendererError> {
+        let config = RendererConfig {
+            width,
+            height,
+            ..self.config
+        };
+        config
+            .validate()
+            .map_err(|_| RendererError::InvalidConfig)?;
+        self.config = config;
+        Ok(())
     }
 
     pub fn mode(&self) -> RenderMode {
@@ -326,6 +398,369 @@ impl Renderer {
     }
 }
 
+pub struct SurfacePresenter {
+    surface: wgpu::Surface<'static>,
+    device: wgpu::Device,
+    queue: wgpu::Queue,
+    pipeline: wgpu::RenderPipeline,
+    surface_config: wgpu::SurfaceConfiguration,
+    max_texture_dimension_2d: u32,
+    instance_buffer: wgpu::Buffer,
+    instance_capacity: usize,
+    instance_count: u32,
+    bind_group: wgpu::BindGroup,
+}
+
+impl SurfacePresenter {
+    /// Creates a presenter from raw handles supplied by an embedding platform.
+    ///
+    /// # Safety
+    ///
+    /// The caller must guarantee that the raw display and window handles remain valid until
+    /// after the returned presenter is dropped.
+    pub unsafe fn from_raw_handles(
+        raw_display_handle: wgpu::rwh::RawDisplayHandle,
+        raw_window_handle: wgpu::rwh::RawWindowHandle,
+        width: u32,
+        height: u32,
+        renderer: &Renderer,
+    ) -> Result<Self, SurfacePresenterError> {
+        pollster::block_on(Self::from_raw_handles_async(
+            raw_display_handle,
+            raw_window_handle,
+            width,
+            height,
+            renderer,
+        ))
+    }
+
+    async fn from_raw_handles_async(
+        raw_display_handle: wgpu::rwh::RawDisplayHandle,
+        raw_window_handle: wgpu::rwh::RawWindowHandle,
+        width: u32,
+        height: u32,
+        renderer: &Renderer,
+    ) -> Result<Self, SurfacePresenterError> {
+        if width == 0 || height == 0 {
+            return Err(SurfacePresenterError::InvalidSurfaceSize);
+        }
+
+        let instance = create_surface_instance();
+        let surface = unsafe {
+            instance.create_surface_unsafe(wgpu::SurfaceTargetUnsafe::RawHandle {
+                raw_display_handle,
+                raw_window_handle,
+            })
+        }
+        .map_err(|_| SurfacePresenterError::SurfaceCreation)?;
+
+        let adapter = instance
+            .request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::HighPerformance,
+                compatible_surface: Some(&surface),
+                force_fallback_adapter: false,
+            })
+            .await
+            .map_err(|_| SurfacePresenterError::NoAdapter)?;
+
+        let adapter_info = adapter.get_info();
+        let adapter_limits = adapter.limits();
+        let (device, queue) = adapter
+            .request_device(&wgpu::DeviceDescriptor {
+                label: wgpu_label("gsplat-surface-device"),
+                required_features: wgpu::Features::empty(),
+                required_limits: wgpu::Limits::downlevel_defaults(),
+                experimental_features: wgpu::ExperimentalFeatures::disabled(),
+                memory_hints: wgpu::MemoryHints::Performance,
+                trace: wgpu::Trace::Off,
+            })
+            .await
+            .map_err(|err| {
+                SurfacePresenterError::DeviceCreation(format!(
+                    "{err}; adapter={adapter_info:?}; limits={adapter_limits:?}"
+                ))
+            })?;
+
+        let caps = surface.get_capabilities(&adapter);
+        let Some(format) = caps.formats.first().copied() else {
+            return Err(SurfacePresenterError::NoSurfaceFormat);
+        };
+        let present_mode = select_present_mode(&caps);
+        let alpha_mode = caps
+            .alpha_modes
+            .first()
+            .copied()
+            .unwrap_or(wgpu::CompositeAlphaMode::Opaque);
+
+        let max_texture_dimension_2d = device.limits().max_texture_dimension_2d.max(1);
+        let (surface_width, surface_height) =
+            fit_surface_size(width, height, max_texture_dimension_2d);
+
+        let surface_config = wgpu::SurfaceConfiguration {
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            format,
+            width: surface_width,
+            height: surface_height,
+            present_mode,
+            alpha_mode,
+            view_formats: vec![],
+            desired_maximum_frame_latency: 2,
+        };
+        let error_scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+        surface.configure(&device, &surface_config);
+        if let Some(err) = error_scope.pop().await {
+            return Err(SurfacePresenterError::SurfaceConfigure(err.to_string()));
+        }
+
+        let render_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: wgpu_label("gsplat-surface-shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("../shaders/splat.wgsl").into()),
+        });
+
+        let render_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: wgpu_label("gsplat-surface-bgl"),
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                }],
+            });
+
+        let render_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: wgpu_label("gsplat-surface-pipeline-layout"),
+                bind_group_layouts: &[&render_bind_group_layout],
+                immediate_size: 0,
+            });
+
+        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: wgpu_label("gsplat-surface-pipeline"),
+            layout: Some(&render_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &render_shader,
+                entry_point: Some("vs_main"),
+                buffers: &[],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &render_shader,
+                entry_point: Some("fs_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: Some(wgpu::BlendState {
+                        color: wgpu::BlendComponent {
+                            src_factor: wgpu::BlendFactor::One,
+                            dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                            operation: wgpu::BlendOperation::Add,
+                        },
+                        alpha: wgpu::BlendComponent {
+                            src_factor: wgpu::BlendFactor::One,
+                            dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                            operation: wgpu::BlendOperation::Add,
+                        },
+                    }),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            }),
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+
+        let scene_len = renderer
+            .scene()
+            .map(|scene| scene.len().max(1))
+            .ok_or(SurfacePresenterError::SceneNotLoaded)?;
+        let instance_capacity = surface_instance_capacity(scene_len);
+        let (instance_buffer, bind_group) = create_surface_instance_resources(
+            &device,
+            &render_bind_group_layout,
+            instance_capacity,
+        );
+
+        Ok(Self {
+            surface,
+            device,
+            queue,
+            pipeline,
+            surface_config,
+            max_texture_dimension_2d,
+            instance_buffer,
+            instance_capacity,
+            instance_count: 0,
+            bind_group,
+        })
+    }
+
+    pub fn resize(&mut self, width: u32, height: u32) {
+        if width == 0 || height == 0 {
+            return;
+        }
+        let (width, height) = fit_surface_size(width, height, self.max_texture_dimension_2d);
+        self.surface_config.width = width;
+        self.surface_config.height = height;
+        self.surface.configure(&self.device, &self.surface_config);
+    }
+
+    pub const fn surface_size(&self) -> (u32, u32) {
+        (self.surface_config.width, self.surface_config.height)
+    }
+
+    pub fn render_instances(
+        &mut self,
+        instances: &[GpuInstance],
+    ) -> Result<(), SurfacePresenterError> {
+        if instances.len() > self.instance_capacity {
+            return Err(SurfacePresenterError::GpuInstancePreprocess(
+                GpuInstancePreprocessError::InstanceBufferCapacityExceeded,
+            ));
+        }
+        if !instances.is_empty() {
+            self.queue
+                .write_buffer(&self.instance_buffer, 0, bytemuck::cast_slice(instances));
+        }
+        self.instance_count = instances.len() as u32;
+        self.render_current()
+    }
+
+    pub fn render_current(&mut self) -> Result<(), SurfacePresenterError> {
+        let frame = match self.surface.get_current_texture() {
+            Ok(frame) => frame,
+            Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
+                self.surface.configure(&self.device, &self.surface_config);
+                match self.surface.get_current_texture() {
+                    Ok(frame) => frame,
+                    Err(wgpu::SurfaceError::Timeout) => return Ok(()),
+                    Err(err) => return Err(surface_error_to_presenter(err)),
+                }
+            }
+            Err(wgpu::SurfaceError::Timeout) => return Ok(()),
+            Err(err) => return Err(surface_error_to_presenter(err)),
+        };
+        let view = frame
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
+
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: wgpu_label("gsplat-surface-encoder"),
+            });
+        {
+            let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: wgpu_label("gsplat-surface-pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                occlusion_query_set: None,
+                timestamp_writes: None,
+                multiview_mask: None,
+            });
+            rpass.set_pipeline(&self.pipeline);
+            rpass.set_bind_group(0, &self.bind_group, &[]);
+            if self.instance_count > 0 {
+                rpass.draw(0..6, 0..self.instance_count);
+            }
+        }
+
+        self.queue.submit(Some(encoder.finish()));
+        frame.present();
+        Ok(())
+    }
+
+    pub const fn instance_count(&self) -> u32 {
+        self.instance_count
+    }
+}
+
+fn create_surface_instance_resources(
+    device: &wgpu::Device,
+    bind_group_layout: &wgpu::BindGroupLayout,
+    capacity: usize,
+) -> (wgpu::Buffer, wgpu::BindGroup) {
+    let stride = std::mem::size_of::<GpuInstance>() as u64;
+    let size = stride * (capacity.max(1) as u64);
+    let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: wgpu_label("gsplat-surface-instance-buffer"),
+        size,
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: wgpu_label("gsplat-surface-bind-group"),
+        layout: bind_group_layout,
+        entries: &[wgpu::BindGroupEntry {
+            binding: 0,
+            resource: buffer.as_entire_binding(),
+        }],
+    });
+    (buffer, bind_group)
+}
+
+fn select_present_mode(caps: &wgpu::SurfaceCapabilities) -> wgpu::PresentMode {
+    if caps.present_modes.contains(&wgpu::PresentMode::Fifo) {
+        return wgpu::PresentMode::Fifo;
+    }
+
+    caps.present_modes
+        .first()
+        .copied()
+        .unwrap_or(wgpu::PresentMode::Fifo)
+}
+
+fn surface_error_to_presenter(err: wgpu::SurfaceError) -> SurfacePresenterError {
+    match err {
+        wgpu::SurfaceError::OutOfMemory => SurfacePresenterError::SurfaceOutOfMemory,
+        other => SurfacePresenterError::SurfaceAcquire(format!("{other:?}")),
+    }
+}
+
+fn surface_instance_capacity(scene_len: usize) -> usize {
+    scene_len.min(SURFACE_INSTANCE_LIMIT).max(1)
+}
+
+fn fit_surface_size(width: u32, height: u32, max_dimension: u32) -> (u32, u32) {
+    let max_input_dimension = width.max(height).max(1);
+    if max_input_dimension <= max_dimension {
+        return (width, height);
+    }
+
+    let scale = max_dimension as f32 / max_input_dimension as f32;
+    let scaled_width = ((width as f32) * scale).round() as u32;
+    let scaled_height = ((height as f32) * scale).round() as u32;
+    (scaled_width.max(1), scaled_height.max(1))
+}
+
+#[cfg(target_os = "android")]
+fn create_surface_instance() -> wgpu::Instance {
+    wgpu::Instance::new(&wgpu::InstanceDescriptor {
+        backends: wgpu::Backends::VULKAN,
+        flags: wgpu::InstanceFlags::empty(),
+        ..Default::default()
+    })
+}
+
+#[cfg(not(target_os = "android"))]
+fn create_surface_instance() -> wgpu::Instance {
+    wgpu::Instance::default()
+}
+
 fn is_visible(depth_z: f32, camera: &Camera) -> bool {
     depth_z >= camera.intrinsics.near_plane && depth_z <= camera.intrinsics.far_plane
 }
@@ -403,14 +838,14 @@ impl GpuInstancePreprocessor {
         }
 
         let preprocess_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("gsplat-render-preprocess-shader"),
+            label: wgpu_label("gsplat-render-preprocess-shader"),
             source: wgpu::ShaderSource::Wgsl(
                 include_str!("../shaders/preprocess_instances.wgsl").into(),
             ),
         });
         let preprocess_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("gsplat-render-preprocess-bgl"),
+                label: wgpu_label("gsplat-render-preprocess-bgl"),
                 entries: &[
                     wgpu::BindGroupLayoutEntry {
                         binding: 0,
@@ -466,12 +901,12 @@ impl GpuInstancePreprocessor {
             });
         let preprocess_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("gsplat-render-preprocess-pl"),
+                label: wgpu_label("gsplat-render-preprocess-pl"),
                 bind_group_layouts: &[&preprocess_bind_group_layout],
                 immediate_size: 0,
             });
         let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some("gsplat-render-preprocess-cp"),
+            label: wgpu_label("gsplat-render-preprocess-cp"),
             layout: Some(&preprocess_pipeline_layout),
             module: &preprocess_shader,
             entry_point: Some("main"),
@@ -508,13 +943,13 @@ impl GpuInstancePreprocessor {
                 .collect()
         };
         let scene_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("gsplat-render-preprocess-scene"),
+            label: wgpu_label("gsplat-render-preprocess-scene"),
             contents: bytemuck::cast_slice(&scene_data),
             usage: wgpu::BufferUsages::STORAGE,
         });
 
         let sorted_indices_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("gsplat-render-preprocess-sorted-indices"),
+            label: wgpu_label("gsplat-render-preprocess-sorted-indices"),
             size: (scene_len as u64) * std::mem::size_of::<u32>() as u64,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
@@ -523,7 +958,7 @@ impl GpuInstancePreprocessor {
         let empty_rest = [0.0_f32];
         let sh_rest = scene.sh_rest.as_deref().unwrap_or(&empty_rest);
         let sh_rest_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("gsplat-render-preprocess-sh-rest"),
+            label: wgpu_label("gsplat-render-preprocess-sh-rest"),
             contents: bytemuck::cast_slice(sh_rest),
             usage: wgpu::BufferUsages::STORAGE,
         });
@@ -544,13 +979,13 @@ impl GpuInstancePreprocessor {
             sh_degree: scene.sh_degree as u32,
         };
         let params_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("gsplat-render-preprocess-params"),
+            label: wgpu_label("gsplat-render-preprocess-params"),
             contents: bytemuck::bytes_of(&params),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
 
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("gsplat-render-preprocess-bg"),
+            label: wgpu_label("gsplat-render-preprocess-bg"),
             layout: &preprocess_bind_group_layout,
             entries: &[
                 wgpu::BindGroupEntry {
@@ -650,7 +1085,7 @@ impl GpuInstancePreprocessor {
 
     pub fn encode_dispatch(&self, encoder: &mut wgpu::CommandEncoder, instance_count: u32) {
         let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-            label: Some("gsplat-render-preprocess-pass"),
+            label: wgpu_label("gsplat-render-preprocess-pass"),
             timestamp_writes: None,
         });
         cpass.set_pipeline(&self.pipeline);
@@ -1169,7 +1604,7 @@ impl GpuRasterizer {
 
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
-                label: Some("gsplat-render-device"),
+                label: wgpu_label("gsplat-render-device"),
                 required_features: wgpu::Features::empty(),
                 required_limits: wgpu::Limits::downlevel_defaults(),
                 experimental_features: wgpu::ExperimentalFeatures::disabled(),
@@ -1180,12 +1615,12 @@ impl GpuRasterizer {
             .map_err(|_| GpuRasterError::DeviceCreation)?;
 
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("splat-shader"),
+            label: wgpu_label("splat-shader"),
             source: wgpu::ShaderSource::Wgsl(include_str!("../shaders/splat.wgsl").into()),
         });
 
         let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("splat-bgl"),
+            label: wgpu_label("splat-bgl"),
             entries: &[wgpu::BindGroupLayoutEntry {
                 binding: 0,
                 visibility: wgpu::ShaderStages::VERTEX,
@@ -1199,13 +1634,13 @@ impl GpuRasterizer {
         });
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("splat-pl"),
+            label: wgpu_label("splat-pl"),
             bind_group_layouts: &[&bind_group_layout],
             immediate_size: 0,
         });
 
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("splat-rp"),
+            label: wgpu_label("splat-rp"),
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &shader,
@@ -1276,12 +1711,12 @@ impl GpuRasterizer {
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("splat-render-encoder"),
+                label: wgpu_label("splat-render-encoder"),
             });
 
         {
             let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("splat-render-pass"),
+                label: wgpu_label("splat-render-pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &self.output_view,
                     depth_slice: None,
@@ -1323,7 +1758,7 @@ impl GpuRasterizer {
         let buffer_size = padded_bytes_per_row as u64 * height as u64;
 
         let readback = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("splat-readback"),
+            label: wgpu_label("splat-readback"),
             size: buffer_size,
             usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
@@ -1333,7 +1768,7 @@ impl GpuRasterizer {
             let mut encoder = self
                 .device
                 .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                    label: Some("splat-readback-encoder"),
+                    label: wgpu_label("splat-readback-encoder"),
                 });
             encoder.copy_texture_to_buffer(
                 wgpu::TexelCopyTextureInfo {
@@ -1428,7 +1863,7 @@ fn create_output_target(
     }
 
     let texture = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("splat-output"),
+        label: wgpu_label("splat-output"),
         size: wgpu::Extent3d {
             width,
             height,
@@ -1455,14 +1890,14 @@ fn create_instance_resources(
     let size = stride * (capacity.max(1) as u64);
 
     let buffer = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("splat-instance-buffer"),
+        label: wgpu_label("splat-instance-buffer"),
         size,
         usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
 
     let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("splat-bg"),
+        label: wgpu_label("splat-bg"),
         layout: bind_group_layout,
         entries: &[wgpu::BindGroupEntry {
             binding: 0,

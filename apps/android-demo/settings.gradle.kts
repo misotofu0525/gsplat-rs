@@ -16,3 +16,4 @@ dependencyResolutionManagement {
 
 rootProject.name = "gsplat-android-demo"
 include(":app")
+include(":host-smoke")

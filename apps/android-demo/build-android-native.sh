@@ -34,6 +34,12 @@ if [[ ! -x "$CLANG" ]]; then
   exit 1
 fi
 
+STRIP="$TOOLCHAIN_ROOT/bin/llvm-strip"
+if [[ ! -x "$STRIP" ]]; then
+  echo "Android llvm-strip not found: $STRIP"
+  exit 1
+fi
+
 JAVA_HOME="${JAVA_HOME:-$(/usr/libexec/java_home)}"
 
 rustup target add aarch64-linux-android >/dev/null
@@ -58,7 +64,9 @@ OUT_SO="$OUT_DIR/libgsplat_jni.so"
   -I"$JAVA_HOME/include" \
   -I"$JAVA_HOME/include/darwin" \
   -o "$OUT_SO" \
-  -llog -ldl -lm
+  -landroid -llog -ldl -lm
+
+"$STRIP" --strip-unneeded "$OUT_SO"
 
 echo "android native build complete"
 echo "so=$OUT_SO"

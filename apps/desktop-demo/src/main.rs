@@ -693,13 +693,18 @@ impl CameraController {
             target.y - camera.pose.position.y,
             target.z - camera.pose.position.z,
         );
-        let mut distance = (to_target.x * to_target.x + to_target.y * to_target.y + to_target.z * to_target.z)
-            .sqrt();
+        let mut distance =
+            (to_target.x * to_target.x + to_target.y * to_target.y + to_target.z * to_target.z)
+                .sqrt();
         if !distance.is_finite() || distance < 0.05 {
             distance = 1.0;
         }
         let forward = if distance > 1e-6 {
-            Vec3f::new(to_target.x / distance, to_target.y / distance, to_target.z / distance)
+            Vec3f::new(
+                to_target.x / distance,
+                to_target.y / distance,
+                to_target.z / distance,
+            )
         } else {
             quat_rotate_vec3(camera.pose.rotation_xyzw, Vec3f::new(0.0, 0.0, 1.0))
         };

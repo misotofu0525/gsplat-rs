@@ -4,6 +4,7 @@ target/
 apps/android-demo/.gradle/
 apps/android-demo/.idea/
 apps/android-demo/app/build/
+apps/android-demo/host-smoke/build/
 apps/android-demo/app/src/main/jniLibs/
 apps/android-demo/local.properties
 tests/datasets/external/
