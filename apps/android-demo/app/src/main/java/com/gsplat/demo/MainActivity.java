@@ -28,7 +28,7 @@ public final class MainActivity extends Activity {
           + "property float f_dc_1\n"
           + "property float f_dc_2\n"
           + "end_header\n"
-          + "0.0 0.0 0.5 0.9 1.0 1.0 1.0 0.0 0.0 0.0 1.0 0.9 0.2 0.1\n";
+          + "0.0 0.0 0.5 0.9 1.0 1.0 1.0 1.0 0.0 0.0 0.0 0.9 0.2 0.1\n";
 
   @Override
   protected void onCreate(Bundle savedInstanceState) {

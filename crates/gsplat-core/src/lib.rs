@@ -2,6 +2,7 @@
 
 pub const GSPLAT_API_VERSION_MAJOR: u32 = 0;
 pub const GSPLAT_API_VERSION_MINOR: u32 = 1;
+const CAMERA_ROTATION_NORM2_TOLERANCE: f32 = 1.0e-3;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Vec3f {
@@ -13,6 +14,10 @@ pub struct Vec3f {
 impl Vec3f {
     pub const fn new(x: f32, y: f32, z: f32) -> Self {
         Self { x, y, z }
+    }
+
+    pub fn is_finite(self) -> bool {
+        self.x.is_finite() && self.y.is_finite() && self.z.is_finite()
     }
 }
 
@@ -28,6 +33,24 @@ impl Default for CameraPose {
             position: Vec3f::new(0.0, 0.0, 0.0),
             rotation_xyzw: [0.0, 0.0, 0.0, 1.0],
         }
+    }
+}
+
+impl CameraPose {
+    pub fn validate(&self) -> Result<(), ErrorCode> {
+        if !self.position.is_finite() || !self.rotation_xyzw.iter().all(|v| v.is_finite()) {
+            return Err(ErrorCode::InvalidArgument);
+        }
+
+        let norm2 = self.rotation_xyzw.iter().map(|v| *v * *v).sum::<f32>();
+        if norm2 <= 0.0 || !norm2.is_finite() {
+            return Err(ErrorCode::InvalidArgument);
+        }
+        if (norm2 - 1.0).abs() > CAMERA_ROTATION_NORM2_TOLERANCE {
+            return Err(ErrorCode::InvalidArgument);
+        }
+
+        Ok(())
     }
 }
 
@@ -48,10 +71,39 @@ impl Default for CameraIntrinsics {
     }
 }
 
+impl CameraIntrinsics {
+    pub fn validate(&self) -> Result<(), ErrorCode> {
+        if !self.vertical_fov_radians.is_finite()
+            || !self.near_plane.is_finite()
+            || !self.far_plane.is_finite()
+        {
+            return Err(ErrorCode::InvalidArgument);
+        }
+
+        if self.vertical_fov_radians <= 0.0
+            || self.vertical_fov_radians >= std::f32::consts::PI
+            || self.near_plane <= 0.0
+            || self.far_plane <= self.near_plane
+        {
+            return Err(ErrorCode::InvalidArgument);
+        }
+
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct Camera {
     pub pose: CameraPose,
     pub intrinsics: CameraIntrinsics,
+}
+
+impl Camera {
+    pub fn validate(&self) -> Result<(), ErrorCode> {
+        self.pose.validate()?;
+        self.intrinsics.validate()?;
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -210,7 +262,7 @@ impl SceneBuffers {
 
 #[cfg(test)]
 mod tests {
-    use super::{ErrorCode, RenderMode, RendererConfig, SceneBuffers};
+    use super::{Camera, ErrorCode, RenderMode, RendererConfig, SceneBuffers};
 
     #[test]
     fn render_mode_from_u32() {
@@ -227,6 +279,36 @@ mod tests {
             mode: RenderMode::SortedAlpha,
         };
         assert_eq!(config.validate(), Err(ErrorCode::InvalidArgument));
+    }
+
+    #[test]
+    fn camera_validation_accepts_default_camera() {
+        assert_eq!(Camera::default().validate(), Ok(()));
+    }
+
+    #[test]
+    fn camera_validation_rejects_invalid_intrinsics() {
+        let mut camera = Camera::default();
+        camera.intrinsics.near_plane = 10.0;
+        camera.intrinsics.far_plane = 1.0;
+
+        assert_eq!(camera.validate(), Err(ErrorCode::InvalidArgument));
+    }
+
+    #[test]
+    fn camera_validation_rejects_invalid_pose() {
+        let mut camera = Camera::default();
+        camera.pose.rotation_xyzw = [0.0, 0.0, 0.0, 0.0];
+
+        assert_eq!(camera.validate(), Err(ErrorCode::InvalidArgument));
+    }
+
+    #[test]
+    fn camera_validation_rejects_scaled_quaternion() {
+        let mut camera = Camera::default();
+        camera.pose.rotation_xyzw = [0.0, 0.0, 0.0, 2.0];
+
+        assert_eq!(camera.validate(), Err(ErrorCode::InvalidArgument));
     }
 
     #[test]

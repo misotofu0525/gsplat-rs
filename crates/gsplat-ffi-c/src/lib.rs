@@ -123,15 +123,14 @@ pub unsafe extern "C" fn gsplat_context_create(
         *out_ctx = std::ptr::null_mut();
     }
 
-    let mode = match RenderMode::from_u32(config.mode) {
-        Some(mode) => mode,
-        None => return ErrorCode::InvalidArgument.as_i32(),
-    };
+    if config.mode != RenderMode::SortedAlpha as u32 {
+        return ErrorCode::InvalidArgument.as_i32();
+    }
 
     let renderer_config = RendererConfig {
         width: config.width,
         height: config.height,
-        mode,
+        mode: RenderMode::SortedAlpha,
     };
 
     let renderer = match Renderer::with_config(renderer_config) {
@@ -172,7 +171,12 @@ pub unsafe extern "C" fn gsplat_context_set_camera(
         None => return ErrorCode::InvalidArgument.as_i32(),
     };
 
-    ctx.camera = camera.into();
+    let camera: Camera = camera.into();
+    if camera.validate().is_err() {
+        return ErrorCode::InvalidArgument.as_i32();
+    }
+
+    ctx.camera = camera;
     ErrorCode::Ok.as_i32()
 }
 
@@ -246,7 +250,10 @@ mod tests {
 
     use gsplat_core::ErrorCode;
 
-    use super::{GsplatConfig, GsplatContext, gsplat_context_create, gsplat_context_destroy};
+    use super::{
+        GsplatCamera, GsplatConfig, GsplatContext, gsplat_context_create, gsplat_context_destroy,
+        gsplat_context_set_camera,
+    };
 
     #[test]
     fn create_and_destroy_context() {
@@ -256,6 +263,38 @@ mod tests {
         assert_eq!(rc, ErrorCode::Ok.as_i32());
         assert!(!ctx.is_null());
 
+        unsafe { gsplat_context_destroy(ctx) };
+    }
+
+    #[test]
+    fn context_create_rejects_non_release_render_mode() {
+        let mut ctx: *mut GsplatContext = ptr::null_mut();
+        let config = GsplatConfig {
+            mode: 1,
+            ..GsplatConfig::default()
+        };
+
+        let rc = unsafe { gsplat_context_create(config, &mut ctx) };
+
+        assert_eq!(rc, ErrorCode::InvalidArgument.as_i32());
+        assert!(ctx.is_null());
+    }
+
+    #[test]
+    fn context_set_camera_rejects_invalid_intrinsics() {
+        let mut ctx: *mut GsplatContext = ptr::null_mut();
+        let create_rc = unsafe { gsplat_context_create(GsplatConfig::default(), &mut ctx) };
+        assert_eq!(create_rc, ErrorCode::Ok.as_i32());
+        assert!(!ctx.is_null());
+
+        let camera = GsplatCamera {
+            near_plane: 10.0,
+            far_plane: 1.0,
+            ..GsplatCamera::default()
+        };
+        let rc = unsafe { gsplat_context_set_camera(ctx, camera) };
+
+        assert_eq!(rc, ErrorCode::InvalidArgument.as_i32());
         unsafe { gsplat_context_destroy(ctx) };
     }
 }

@@ -14,10 +14,21 @@ int main(int argc, char **argv) {
     return 2;
   }
 
+  GsplatConfig unsupported_config = {1280, 720, 1};
+  GsplatContext *unsupported_ctx = NULL;
+  int32_t rc = gsplat_context_create(unsupported_config, &unsupported_ctx);
+  if (rc != 1 || unsupported_ctx != NULL) {
+    fprintf(stderr, "expected unsupported render mode to fail with InvalidArgument, got rc=%d ctx=%p\n", rc, (void *)unsupported_ctx);
+    if (unsupported_ctx != NULL) {
+      gsplat_context_destroy(unsupported_ctx);
+    }
+    return 8;
+  }
+
   GsplatConfig config = {1280, 720, 0};
   GsplatContext *ctx = NULL;
 
-  int32_t rc = gsplat_context_create(config, &ctx);
+  rc = gsplat_context_create(config, &ctx);
   if (rc != 0 || ctx == NULL) {
     fprintf(stderr, "gsplat_context_create failed: %d\n", rc);
     return 3;
@@ -29,6 +40,16 @@ int main(int argc, char **argv) {
   camera.vertical_fov_radians = 1.0471976f;
   camera.near_plane = 0.01f;
   camera.far_plane = 1000.0f;
+
+  GsplatCamera invalid_camera = camera;
+  invalid_camera.near_plane = 10.0f;
+  invalid_camera.far_plane = 1.0f;
+  rc = gsplat_context_set_camera(ctx, invalid_camera);
+  if (rc != 1) {
+    fprintf(stderr, "expected invalid camera to fail with InvalidArgument, got: %d\n", rc);
+    gsplat_context_destroy(ctx);
+    return 9;
+  }
 
   rc = gsplat_context_set_camera(ctx, camera);
   if (rc != 0) {

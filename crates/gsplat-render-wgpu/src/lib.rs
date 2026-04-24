@@ -4,7 +4,7 @@ use std::time::Instant;
 
 use bytemuck::{Pod, Zeroable};
 use gsplat_core::{Camera, ErrorCode, FrameStats, RenderMode, RendererConfig, SceneBuffers, Vec3f};
-use gsplat_sort::{CpuSortBackend, GpuOddEvenSortBackend, SortBackend, SortError};
+use gsplat_sort::{CpuSortBackend, SortBackend, SortError};
 use rayon::prelude::*;
 use thiserror::Error;
 use wgpu::util::DeviceExt;
@@ -21,6 +21,8 @@ pub struct PreprocessOutput {
 pub enum RendererError {
     #[error("invalid renderer configuration")]
     InvalidConfig,
+    #[error("invalid camera")]
+    InvalidCamera,
     #[error("scene not loaded")]
     SceneNotLoaded,
     #[error("invalid scene buffers")]
@@ -38,7 +40,9 @@ pub enum RendererError {
 impl RendererError {
     pub const fn code(&self) -> ErrorCode {
         match self {
-            Self::InvalidConfig | Self::InvalidScene => ErrorCode::InvalidArgument,
+            Self::InvalidConfig | Self::InvalidCamera | Self::InvalidScene => {
+                ErrorCode::InvalidArgument
+            }
             Self::SceneNotLoaded => ErrorCode::SceneNotLoaded,
             Self::GpuRasterizerUnavailable => ErrorCode::Unsupported,
             Self::GpuReadback => ErrorCode::Internal,
@@ -65,7 +69,6 @@ pub enum GpuInstancePreprocessError {
 pub struct Renderer {
     mode: RenderMode,
     config: RendererConfig,
-    gpu_sort_backend: GpuOddEvenSortBackend,
     cpu_sort_backend: CpuSortBackend,
     gpu_rasterizer: Option<GpuRasterizer>,
     scene: Option<SceneBuffers>,
@@ -92,7 +95,6 @@ impl Renderer {
         Ok(Self {
             mode: config.mode,
             config,
-            gpu_sort_backend: GpuOddEvenSortBackend::default(),
             cpu_sort_backend: CpuSortBackend::default(),
             gpu_rasterizer,
             scene: None,
@@ -156,6 +158,9 @@ impl Renderer {
 
     pub fn preprocess_visible(&self, camera: &Camera) -> Result<PreprocessOutput, RendererError> {
         let scene = self.scene.as_ref().ok_or(RendererError::SceneNotLoaded)?;
+        camera
+            .validate()
+            .map_err(|_| RendererError::InvalidCamera)?;
 
         let mut indices = Vec::with_capacity(scene.len());
         let mut depth_keys = Vec::with_capacity(scene.len());
@@ -185,20 +190,7 @@ impl Renderer {
         let preprocess_ms = preprocess_start.elapsed().as_secs_f32() * 1000.0;
 
         let sort_start = Instant::now();
-        if self.mode == RenderMode::SortedAlpha {
-            let gpu_sort_result = self
-                .gpu_sort_backend
-                .sort_pairs(&mut preprocessed.depth_keys, &mut preprocessed.indices);
-
-            match gpu_sort_result {
-                Ok(()) => {}
-                Err(SortError::BackendUnavailable | SortError::BackendFailure) => {
-                    self.cpu_sort_backend
-                        .sort_pairs(&mut preprocessed.depth_keys, &mut preprocessed.indices)?;
-                }
-                Err(err) => return Err(RendererError::Sort(err)),
-            }
-        }
+        self.sort_preprocessed(&mut preprocessed)?;
         let sort_ms = sort_start.elapsed().as_secs_f32() * 1000.0;
 
         let raster_start = Instant::now();
@@ -240,20 +232,7 @@ impl Renderer {
         let preprocess_ms = preprocess_start.elapsed().as_secs_f32() * 1000.0;
 
         let sort_start = Instant::now();
-        if self.mode == RenderMode::SortedAlpha {
-            let gpu_sort_result = self
-                .gpu_sort_backend
-                .sort_pairs(&mut preprocessed.depth_keys, &mut preprocessed.indices);
-
-            match gpu_sort_result {
-                Ok(()) => {}
-                Err(SortError::BackendUnavailable | SortError::BackendFailure) => {
-                    self.cpu_sort_backend
-                        .sort_pairs(&mut preprocessed.depth_keys, &mut preprocessed.indices)?;
-                }
-                Err(err) => return Err(RendererError::Sort(err)),
-            }
-        }
+        self.sort_preprocessed(&mut preprocessed)?;
         let sort_ms = sort_start.elapsed().as_secs_f32() * 1000.0;
 
         let visible_count = preprocessed.indices.len() as u32;
@@ -277,20 +256,7 @@ impl Renderer {
         let preprocess_ms = preprocess_start.elapsed().as_secs_f32() * 1000.0;
 
         let sort_start = Instant::now();
-        if self.mode == RenderMode::SortedAlpha {
-            let gpu_sort_result = self
-                .gpu_sort_backend
-                .sort_pairs(&mut preprocessed.depth_keys, &mut preprocessed.indices);
-
-            match gpu_sort_result {
-                Ok(()) => {}
-                Err(SortError::BackendUnavailable | SortError::BackendFailure) => {
-                    self.cpu_sort_backend
-                        .sort_pairs(&mut preprocessed.depth_keys, &mut preprocessed.indices)?;
-                }
-                Err(err) => return Err(RendererError::Sort(err)),
-            }
-        }
+        self.sort_preprocessed(&mut preprocessed)?;
         let sort_ms = sort_start.elapsed().as_secs_f32() * 1000.0;
 
         let raster_start = Instant::now();
@@ -346,6 +312,17 @@ impl Renderer {
 
     pub fn render_placeholder(&mut self) -> FrameStats {
         self.render_frame(&Camera::default()).unwrap_or_default()
+    }
+
+    fn sort_preprocessed(
+        &mut self,
+        preprocessed: &mut PreprocessOutput,
+    ) -> Result<(), RendererError> {
+        if self.mode == RenderMode::SortedAlpha {
+            self.cpu_sort_backend
+                .sort_pairs(&mut preprocessed.depth_keys, &mut preprocessed.indices)?;
+        }
+        Ok(())
     }
 }
 
@@ -776,12 +753,9 @@ fn world_to_camera_with_inv_q(pos_world: Vec3f, camera: &Camera, camera_inv_q: [
 }
 
 fn quat_inverse(q: [f32; 4]) -> [f32; 4] {
+    let q = quat_normalize(q);
     let (x, y, z, w) = (q[0], q[1], q[2], q[3]);
-    let norm2 = x * x + y * y + z * z + w * w;
-    if norm2 <= 0.0 {
-        return [0.0, 0.0, 0.0, 1.0];
-    }
-    [-x / norm2, -y / norm2, -z / norm2, w / norm2]
+    [-x, -y, -z, w]
 }
 
 fn quat_normalize(q: [f32; 4]) -> [f32; 4] {
@@ -1501,10 +1475,11 @@ fn create_instance_resources(
 
 #[cfg(test)]
 mod tests {
-    use gsplat_core::{Camera, RenderMode, RendererConfig, SceneBuffers, Vec3f};
+    use gsplat_core::{Camera, ErrorCode, RenderMode, RendererConfig, SceneBuffers, Vec3f};
 
     use super::{
         Renderer, build_instances, ellipse_axes_from_covariance, project_covariance_to_ndc,
+        quat_inverse,
     };
 
     fn build_scene() -> SceneBuffers {
@@ -1538,6 +1513,23 @@ mod tests {
             err.code() as i32,
             gsplat_core::ErrorCode::SceneNotLoaded as i32
         );
+    }
+
+    #[test]
+    fn render_frame_rejects_invalid_camera() {
+        let mut renderer = Renderer::new(RenderMode::SortedAlpha).unwrap();
+        renderer.load_scene(build_scene()).unwrap();
+        let mut camera = Camera::default();
+        camera.intrinsics.vertical_fov_radians = 0.0;
+
+        let err = renderer.render_frame(&camera).unwrap_err();
+
+        assert_eq!(err.code(), ErrorCode::InvalidArgument);
+    }
+
+    #[test]
+    fn quaternion_inverse_normalizes_scaled_input() {
+        assert_eq!(quat_inverse([0.0, 0.0, 0.0, 2.0]), [0.0, 0.0, 0.0, 1.0]);
     }
 
     #[test]
