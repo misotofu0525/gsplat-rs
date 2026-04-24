@@ -21,6 +21,7 @@ import kotlin.math.roundToInt
 
 class MainActivity : Activity(), SurfaceHolder.Callback {
     private val renderLock = Object()
+    private val cameraCommandLock = Object()
     @Volatile private var running = false
     @Volatile private var renderThread: Thread? = null
     private var nativeRenderer = 0L
@@ -38,6 +39,12 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
     private var lastTapAt = 0L
     private var lastTapX = 0f
     private var lastTapY = 0f
+    private var pendingResetCamera = false
+    private var pendingOrbitYaw = 0f
+    private var pendingOrbitPitch = 0f
+    private var pendingZoomScale = 1f
+    private var pendingPanX = 0f
+    private var pendingPanY = 0f
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -127,6 +134,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
             return
         }
 
+        clearPendingCameraCommands()
         running = true
         renderThread = Thread(
             {
@@ -155,7 +163,13 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                     val stats = LongArray(6)
                     while (running && !Thread.currentThread().isInterrupted) {
                         val rc = synchronized(renderLock) {
-                            NativeBridge.renderSurfaceFrame(handle)
+                            val cameraRc = applyPendingCameraCommands(handle)
+                            if (cameraRc != 0) {
+                                Log.e(TAG, "applyPendingCameraCommands failed rc=$cameraRc")
+                                cameraRc
+                            } else {
+                                NativeBridge.renderSurfaceFrame(handle)
+                            }
                         }
                         frameCount += 1
                         if (rc != 0) {
@@ -270,8 +284,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
             hypot(x - lastTapX, y - lastTapY) <= slop
 
         if (isDoubleTap) {
-            val rc = withNativeRenderer { NativeBridge.resetSurfaceCamera(it) }
-            cameraStatus = if (rc == 0) "camera=reset" else "camera=reset_error rc=$rc"
+            queueCameraReset()
             lastTapAt = 0L
         } else {
             lastTapAt = now
@@ -291,14 +304,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
             return
         }
 
-        val rc = withNativeRenderer {
-            NativeBridge.orbitSurfaceRenderer(
-                it,
-                -dx * ORBIT_RADIANS_PER_SCREEN,
-                -dy * ORBIT_RADIANS_PER_SCREEN
-            )
-        }
-        cameraStatus = if (rc == 0) "camera=orbit" else "camera=orbit_error rc=$rc"
+        queueCameraOrbit(-dx * ORBIT_RADIANS_PER_SCREEN, -dy * ORBIT_RADIANS_PER_SCREEN)
     }
 
     private fun handleTransformGesture(view: View, event: MotionEvent) {
@@ -311,20 +317,14 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         if (lastSpan > PINCH_MIN_SPAN && span > PINCH_MIN_SPAN) {
             val scale = (lastSpan / span).coerceIn(MIN_ZOOM_STEP, MAX_ZOOM_STEP)
             if (abs(scale - 1.0f) > ZOOM_EPSILON) {
-                val rc = withNativeRenderer { NativeBridge.zoomSurfaceRenderer(it, scale) }
-                cameraStatus = if (rc == 0) "camera=zoom" else "camera=zoom_error rc=$rc"
+                queueCameraZoom(scale)
             }
         }
 
         val dx = (focusX - lastFocusX) / width
         val dy = (focusY - lastFocusY) / height
         if (abs(dx) > TOUCH_EPSILON || abs(dy) > TOUCH_EPSILON) {
-            val rc = withNativeRenderer { NativeBridge.panSurfaceRenderer(it, dx, dy) }
-            if (rc != 0) {
-                cameraStatus = "camera=pan_error rc=$rc"
-            } else if (cameraStatus != "camera=zoom") {
-                cameraStatus = "camera=pan"
-            }
+            queueCameraPan(dx, dy)
         }
 
         lastSpan = span
@@ -332,15 +332,115 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         lastFocusY = focusY
     }
 
-    private fun withNativeRenderer(block: (Long) -> Int): Int =
-        synchronized(renderLock) {
-            val handle = nativeRenderer
-            if (handle == 0L) {
-                0
+    private fun queueCameraReset() {
+        synchronized(cameraCommandLock) {
+            pendingResetCamera = true
+            pendingOrbitYaw = 0f
+            pendingOrbitPitch = 0f
+            pendingZoomScale = 1f
+            pendingPanX = 0f
+            pendingPanY = 0f
+        }
+        cameraStatus = "camera=reset"
+    }
+
+    private fun queueCameraOrbit(deltaYawRadians: Float, deltaPitchRadians: Float) {
+        synchronized(cameraCommandLock) {
+            pendingOrbitYaw += deltaYawRadians
+            pendingOrbitPitch += deltaPitchRadians
+        }
+        cameraStatus = "camera=orbit"
+    }
+
+    private fun queueCameraZoom(distanceScale: Float) {
+        synchronized(cameraCommandLock) {
+            pendingZoomScale = (pendingZoomScale * distanceScale).coerceIn(MIN_PENDING_ZOOM, MAX_PENDING_ZOOM)
+        }
+        cameraStatus = "camera=zoom"
+    }
+
+    private fun queueCameraPan(normalizedDeltaX: Float, normalizedDeltaY: Float) {
+        synchronized(cameraCommandLock) {
+            pendingPanX += normalizedDeltaX
+            pendingPanY += normalizedDeltaY
+        }
+        if (cameraStatus != "camera=zoom") {
+            cameraStatus = "camera=pan"
+        }
+    }
+
+    private fun clearPendingCameraCommands() {
+        synchronized(cameraCommandLock) {
+            pendingResetCamera = false
+            pendingOrbitYaw = 0f
+            pendingOrbitPitch = 0f
+            pendingZoomScale = 1f
+            pendingPanX = 0f
+            pendingPanY = 0f
+        }
+    }
+
+    private fun applyPendingCameraCommands(nativeHandle: Long): Int {
+        val command = synchronized(cameraCommandLock) {
+            val hasCommand = pendingResetCamera ||
+                abs(pendingOrbitYaw) > TOUCH_EPSILON ||
+                abs(pendingOrbitPitch) > TOUCH_EPSILON ||
+                abs(pendingZoomScale - 1f) > ZOOM_EPSILON ||
+                abs(pendingPanX) > TOUCH_EPSILON ||
+                abs(pendingPanY) > TOUCH_EPSILON
+            if (!hasCommand) {
+                null
             } else {
-                block(handle)
+                CameraCommand(
+                    reset = pendingResetCamera,
+                    orbitYaw = pendingOrbitYaw,
+                    orbitPitch = pendingOrbitPitch,
+                    zoomScale = pendingZoomScale,
+                    panX = pendingPanX,
+                    panY = pendingPanY
+                ).also {
+                    pendingResetCamera = false
+                    pendingOrbitYaw = 0f
+                    pendingOrbitPitch = 0f
+                    pendingZoomScale = 1f
+                    pendingPanX = 0f
+                    pendingPanY = 0f
+                }
+            }
+        } ?: return 0
+
+        var rc = 0
+        if (command.reset) {
+            rc = NativeBridge.resetSurfaceCamera(nativeHandle)
+            if (rc != 0) {
+                cameraStatus = "camera=reset_error rc=$rc"
+                return rc
             }
         }
+        if (abs(command.orbitYaw) > TOUCH_EPSILON || abs(command.orbitPitch) > TOUCH_EPSILON) {
+            rc = NativeBridge.orbitSurfaceRenderer(nativeHandle, command.orbitYaw, command.orbitPitch)
+            if (rc != 0) {
+                cameraStatus = "camera=orbit_error rc=$rc"
+                return rc
+            }
+        }
+        if (abs(command.zoomScale - 1f) > ZOOM_EPSILON) {
+            rc = NativeBridge.zoomSurfaceRenderer(nativeHandle, command.zoomScale)
+            if (rc != 0) {
+                cameraStatus = "camera=zoom_error rc=$rc"
+                return rc
+            }
+        }
+        if (abs(command.panX) > TOUCH_EPSILON || abs(command.panY) > TOUCH_EPSILON) {
+            rc = NativeBridge.panSurfaceRenderer(nativeHandle, command.panX, command.panY)
+            if (rc != 0) {
+                cameraStatus = "camera=pan_error rc=$rc"
+                return rc
+            }
+        }
+
+        return 0
+    }
 
     private fun pointerSpan(event: MotionEvent): Float {
         if (event.pointerCount < 2) {
@@ -393,6 +493,8 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         private const val PINCH_MIN_SPAN = 24f
         private const val MIN_ZOOM_STEP = 0.5f
         private const val MAX_ZOOM_STEP = 2.0f
+        private const val MIN_PENDING_ZOOM = 0.001f
+        private const val MAX_PENDING_ZOOM = 1000.0f
         private const val ZOOM_EPSILON = 0.003f
         private const val TOUCH_EPSILON = 0.0001f
         private const val DOUBLE_TAP_TIMEOUT_MS = 300L
@@ -426,4 +528,13 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         Orbit,
         Transform
     }
+
+    private data class CameraCommand(
+        val reset: Boolean,
+        val orbitYaw: Float,
+        val orbitPitch: Float,
+        val zoomScale: Float,
+        val panX: Float,
+        val panY: Float
+    )
 }
