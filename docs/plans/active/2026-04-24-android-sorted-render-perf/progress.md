@@ -1,0 +1,91 @@
+# Progress Log
+
+## 2026-04-24
+
+- Created task bundle for Android SortedAlpha flower-scene performance optimization.
+- Read project entry docs and Android demo README.
+- Confirmed task constraints: benchmark first, optimize based on evidence, target >100% speedup, no visual quality shortcuts.
+- Inspected renderer/sort/FFI/JNI/Android telemetry code.
+- Added Android benchmark mode gated by intent extras; it forces camera movement to measure SortedAlpha rebuild cost and logs `BENCHMARK_RESULT`.
+- Built and installed baseline APK on connected Android device `033ed212`.
+- Pushed `flowers_1.ply` into app internal storage and ran the benchmark.
+- Baseline result: `avg_call_ms=961.111`, `avg_frame_ms=950.421`, `avg_preprocess_ms=77.621`, `avg_sort_ms=461.753`, `avg_raster_ms=411.043`, `avg_visible=562974`, `avg_drawn=120000`.
+- Implemented release-profile Android native build, radix sort for packed CPU sort pairs, and preprocess camera inverse reuse.
+- Rebuilt and re-ran the same true-device flower benchmark.
+- After-change result: `avg_call_ms=87.224`, `avg_frame_ms=83.529`, `avg_preprocess_ms=2.808`, `avg_sort_ms=6.694`, `avg_raster_ms=74.026`, `avg_visible=562974`, `avg_drawn=120000`.
+- Speedup so far: about 11.0x on Kotlin/JNI render-call wall time and 11.4x on native frame time.
+- Synced Android native release-profile behavior into `apps/android-demo/README.md` and `handbook/VERIFICATION.md`.
+- Verification passed: `cargo fmt --check`; `cargo check --workspace`; `cargo test -p gsplat-sort`; `cargo test --workspace`; `cargo run -p bench-runner -- tests/datasets/minimal_ascii.ply 120`; `bash apps/android-demo/run-jni-smoke.sh`; `bash apps/android-demo/build-apk.sh`; true-device Android flower benchmark.
+- Remaining bottleneck: CPU instance construction is now about 74ms of the 83.5ms native frame time. A future pass should consider moving Surface instance preparation onto the existing GPU preprocessor while preserving the current surface cap semantics.
+- User reported true-device interaction still felt low FPS.
+- Tried a Surface-specific sampled sorted-index path and benchmarked `avg_call_ms=33.380`, but user correctly identified the visual instability/flicker as an unacceptable quality compromise.
+- Removed the Surface sampling/cap concept from current code and docs. The Android Surface presenter now allocates capacity from the loaded scene length and does not sample the sorted splat list.
+- Rebuilt and installed APK after removal.
+- No-sampling true-device benchmark: `avg_call_ms=87.657`, `avg_frame_ms=83.714`, `avg_preprocess_ms=2.645`, `avg_sort_ms=6.566`, `avg_raster_ms=74.500`, `avg_visible=562974`, `avg_drawn=562974`.
+- Relaunched normal app mode. Overlay confirms `drawn=562974/562974`.
+- Follow-up verification after removal passed: `cargo fmt --check`; `cargo check --workspace`; `bash apps/android-demo/run-jni-smoke.sh`; `bash apps/android-demo/build-apk.sh`; true-device Android flower benchmark.
+- Continued full 562,974-splat optimization after user reconnected the device.
+- Added CPU hot-path optimizations that preserve full `SortedAlpha` output:
+  - AArch64 Neon unpack path for sorted key/value pairs.
+  - Reused camera/view constants in instance preparation.
+  - Reused the Surface instance `Vec<GpuInstance>` between camera changes.
+  - Precomputed per-splat alpha at scene load.
+  - Avoided repeated quaternion rotation in the hot loop by using the camera view matrix.
+  - Projected covariance with only the terms needed by the 2D Jacobian.
+  - Added a degree-3 SH color fast path for the flower scene and avoided hot-loop bounds checks after validating index range.
+- Current best no-sampling true-device benchmark: `avg_call_ms=71.520`, `avg_frame_ms=68.042`, `avg_preprocess_ms=2.114`, `avg_sort_ms=8.915`, `avg_raster_ms=57.011`, `avg_visible=562974`, `avg_drawn=562974`.
+- At that CPU-only intermediate stage, full-scene speedup over the no-sampling baseline (`avg_frame_ms=83.714`) was about 18.7%; later GPU-SH and data-layout work improved it further.
+- Experiments rejected by evidence:
+  - GPU instance preprocessor Surface integration: `avg_call_ms=202.718`, `avg_frame_ms=202.685`, worse than CPU path.
+  - `SURFACE_INSTANCE_LIMIT` sampling/capping: faster but rejected because it caused visible flicker and reduced output.
+  - 4-thread Android Rayon pool: worsened to `avg_frame_ms=79.564`.
+  - ThinLTO/codegen-units=1: no meaningful improvement.
+  - `RUSTFLAGS=-C target-cpu=cortex-a710`: did not produce a valid benchmark on the device and was not retained.
+  - Three-channel Neon lane SH dot: worsened to `avg_frame_ms=70.273`.
+- Relaunched normal app mode after benchmark so the device is no longer in automated benchmark mode.
+- Researched recent Gaussian Splatting/mobile/WebGPU directions. Kept the useful architectural direction (GPU-driven work buffers), but rejected OIT/pruning/distillation as direct fixes because they would change the current full-PLY `SortedAlpha` contract.
+- Added and retained Surface GPU-SH vertex color evaluation. This removes CPU-side SH evaluation from Surface instance construction without changing sorted order or drawn count.
+- Rejected the Surface compute-color work-buffer after unlock: `avg_call_ms=140.665`, `avg_frame_ms=59.903`, worse than vertex GPU-SH.
+- Added and retained `CpuSortBackend::sort_values_by_keys`, including AArch64 Neon values-only unpack, so render paths avoid writing sorted depth keys back when only sorted indices are consumed.
+- Added and retained Surface 6-float world covariance terms, reducing hot-loop covariance memory traffic while keeping the same projection math.
+- Rejected final small experiments by benchmark: Surface triangle-strip quad (`avg_frame_ms=44.447`) and removing redundant Surface guard branches (`avg_frame_ms=44.600`).
+- First retained-code benchmark before the second pass: `avg_call_ms=49.971`, `avg_frame_ms=43.996`, `avg_preprocess_ms=3.021`, `avg_sort_ms=11.877`, `avg_raster_ms=29.096`, `avg_visible=562974`, `avg_drawn=562974`.
+- Best observed first-pass retained-code benchmark: `avg_call_ms=50.247`, `avg_frame_ms=43.796`, `avg_preprocess_ms=3.014`, `avg_sort_ms=12.361`, `avg_raster_ms=28.419`, `avg_visible=562974`, `avg_drawn=562974`.
+- Relative to the full-scene no-sampling baseline (`avg_frame_ms=83.714`), first-pass retained code was about 1.90x to 1.91x faster on native frame time. This was close to, but still below, the strict >100% improvement target.
+- First-pass verification passed: `cargo fmt`; `cargo test -p gsplat-sort -p gsplat-render-wgpu -p gsplat-ffi-c`; `cargo check --workspace`; `bash apps/android-demo/build-apk.sh`; true-device Android flower benchmark.
+- Relaunched normal app mode after that benchmark. Logs confirmed `state=rendering`, `visible=562974`, and `drawn=562974/562974`.
+- Continued after the user asked if any possibilities remained.
+- Added depth-only preprocess and renderer scratch reuse. This avoids computing unused camera-space x/y during preprocess and avoids reallocating large depth/index vectors every camera-change frame.
+- Rejected 11-bit radix buckets: `avg_frame_ms=47.566`, `avg_sort_ms=15.434`; the smaller count table did not compensate for the extra radix passes.
+- Added dense scene-order Surface instance construction. For `flowers_1.ply`, where nearly all splats are visible, the expensive projection path now reads scene arrays contiguously, then reorders compact `GpuSurfaceInstance` records by sorted index.
+- Dense scene-order benchmark: `avg_call_ms=51.233`, `avg_frame_ms=41.671`, `avg_preprocess_ms=2.431`, `avg_sort_ms=11.195`, `avg_raster_ms=28.044`, `avg_visible=562974`, `avg_drawn=562974`.
+- Re-tested Surface triangle-strip after scene-order build and rejected it: `avg_call_ms=53.428`, `avg_frame_ms=41.770`.
+- Preferred `Mailbox` present mode when the surface supports it, with FIFO fallback.
+- Latest retained-code benchmark: `avg_call_ms=51.001`, `avg_frame_ms=41.244`, `avg_preprocess_ms=2.411`, `avg_sort_ms=11.126`, `avg_raster_ms=27.705`, `avg_visible=562974`, `avg_drawn=562974`.
+- Relative to the no-sampling full-scene baseline (`avg_frame_ms=83.714`), native renderer frame time is now about 2.03x faster, crossing the strict >100% native-frame target. Kotlin/JNI call wall time still sits around 51ms, so further perceived-FPS work should target Surface upload/present pacing or a larger index-driven GPU geometry path.
+- Verification after the second pass passed: `cargo fmt`; `cargo test -p gsplat-sort -p gsplat-render-wgpu -p gsplat-ffi-c`; `cargo check --workspace`; `bash apps/android-demo/build-apk.sh`; true-device Android benchmark.
+- Relaunched normal app mode after the benchmark. Logs confirm `state=rendering`, `visible=562974`, and `drawn=562974/562974`.
+- Tried the user-requested sorted-index GPU geometry direction:
+  - Compute-build variant uploaded sorted `u32` indices, built Surface instances from scene/covariance buffers in a compute shader, then used the existing Surface render shader. Result: `avg_call_ms=67.736`, `avg_frame_ms=67.709`, `avg_visible=562974`, `avg_drawn=562974`. This preserved full output but regressed versus the retained path.
+  - Direct-vertex variant uploaded sorted `u32` indices and had the vertex shader read scene/covariance/SH buffers directly. Result: `avg_call_ms=73.151`, `avg_frame_ms=73.122`, `avg_visible=562974`, `avg_drawn=562974`. This was slower than the compute-build variant because geometry/covariance work repeated per quad vertex.
+- Reverted both sorted-index GPU geometry experiments. The retained-code confirmation benchmark after rollback was `avg_call_ms=51.497`, `avg_frame_ms=41.975`, `avg_preprocess_ms=2.577`, `avg_sort_ms=11.411`, `avg_raster_ms=27.985`, `avg_visible=562974`, `avg_drawn=562974`.
+- Relaunched normal app mode after the sorted-index experiments. Logs confirm `state=rendering`, `visible=562974`, and `drawn=562974/562974`.
+- Reviewed `hyperlogic/splatapult` for lessons:
+  - Its strongest transferable idea is a fully GPU-owned cull/sort/index pipeline: compute presort -> GPU radix sort -> copy sorted indices into element buffer -> draw static Gaussian vertex data.
+  - It confirms that moving only geometry generation to GPU is not enough; the CPU/GPU boundary has to move around sorting and draw indirection too.
+  - Its `--nosh`, nearest-splat pruning, and Quest2 25k-splat note are useful context but not acceptable as default improvements for our no-quality-loss target.
+
+## 2026-04-25
+
+- Tried a Splatapult-inspired full GPU-owned Surface prototype:
+  - GPU presort wrote 32-bit depth keys and source indices.
+  - GPU radix passes sorted key/index pairs.
+  - A GPU build pass generated the existing Surface instance buffer, preserving full `drawn=562974/562974`.
+- Fixed two prototype issues during the experiment:
+  - WGSL `pass` is a reserved keyword, so the radix uniform field had to be renamed.
+  - Android downlevel limits rejected a 5-storage-buffer scatter bind group, so key/index buffers had to be packed into a single pair buffer.
+- Short true-device benchmark for the working full GPU-owned prototype: `samples=5 warmup=1 avg_call_ms=1466.724 avg_frame_ms=1466.655 avg_preprocess_ms=0.000 avg_sort_ms=0.000 avg_raster_ms=1466.655 avg_visible=562974 avg_drawn=562974`.
+- Rejected and reverted the prototype. It preserves full output but is about 28x slower than the retained CPU/GPU-SH Surface path because the naive portable GPU radix implementation uses many dispatches plus serial/global prefix work.
+- Rebuilt and reinstalled the retained path after rollback.
+- Rollback confirmation benchmark: `samples=60 warmup=5 avg_call_ms=50.473 avg_frame_ms=39.981 avg_preprocess_ms=2.215 avg_sort_ms=11.148 avg_raster_ms=26.616 avg_visible=562974 avg_drawn=562974`.
+- Relaunched normal app mode after benchmark. Logs confirm `state=rendering`, `visible=562974`, and `drawn=562974/562974`.

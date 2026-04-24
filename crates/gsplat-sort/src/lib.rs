@@ -25,6 +25,48 @@ pub trait SortBackend {
 #[derive(Default)]
 pub struct CpuSortBackend {
     packed: Vec<u64>,
+    scratch: Vec<u64>,
+    counts: Vec<usize>,
+}
+
+impl CpuSortBackend {
+    pub fn sort_values_by_keys(
+        &mut self,
+        keys: &[u32],
+        values: &mut [u32],
+    ) -> Result<(), SortError> {
+        if keys.len() != values.len() {
+            return Err(SortError::LengthMismatch);
+        }
+
+        let len = keys.len();
+        if len <= 1 {
+            return Ok(());
+        }
+
+        self.prepare_scratch(len);
+        let packed = &mut self.packed[..len];
+        pack_pairs(keys, values, packed);
+        radix_sort_desc_u64(
+            packed,
+            &mut self.scratch[..len],
+            &mut self.counts[..RADIX_SORT_BUCKETS],
+        );
+        unpack_values(packed, values);
+        Ok(())
+    }
+
+    fn prepare_scratch(&mut self, len: usize) {
+        if self.packed.len() < len {
+            self.packed.resize(len, 0);
+        }
+        if self.scratch.len() < len {
+            self.scratch.resize(len, 0);
+        }
+        if self.counts.len() < RADIX_SORT_BUCKETS {
+            self.counts.resize(RADIX_SORT_BUCKETS, 0);
+        }
+    }
 }
 
 impl SortBackend for CpuSortBackend {
@@ -42,16 +84,22 @@ impl SortBackend for CpuSortBackend {
             return Ok(());
         }
 
-        if self.packed.len() < len {
-            self.packed.resize(len, 0);
-        }
+        self.prepare_scratch(len);
         let packed = &mut self.packed[..len];
         pack_pairs(keys, values, packed);
-        packed.sort_unstable_by(|a, b| b.cmp(a));
+        radix_sort_desc_u64(
+            packed,
+            &mut self.scratch[..len],
+            &mut self.counts[..RADIX_SORT_BUCKETS],
+        );
         unpack_pairs(packed, keys, values);
         Ok(())
     }
 }
+
+const RADIX_SORT_BITS: usize = 16;
+const RADIX_SORT_BUCKETS: usize = 1 << RADIX_SORT_BITS;
+const RADIX_SORT_MASK: u64 = (RADIX_SORT_BUCKETS as u64) - 1;
 
 #[inline]
 const fn pack_sort_pair(key: u32, value: u32) -> u64 {
@@ -97,10 +145,84 @@ fn unpack_pairs(packed: &[u64], keys: &mut [u32], values: &mut [u32]) {
     debug_assert_eq!(packed.len(), keys.len());
     debug_assert_eq!(packed.len(), values.len());
 
+    #[cfg(target_arch = "aarch64")]
+    {
+        // SAFETY: AArch64 guarantees Neon availability and slices are length-validated above.
+        unsafe {
+            unpack_pairs_neon(packed, keys, values);
+        }
+        return;
+    }
+
+    #[cfg(not(target_arch = "aarch64"))]
     for i in 0..packed.len() {
         let (key, value) = unpack_sort_pair(packed[i]);
         keys[i] = key;
         values[i] = value;
+    }
+}
+
+fn unpack_values(packed: &[u64], values: &mut [u32]) {
+    debug_assert_eq!(packed.len(), values.len());
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        // SAFETY: AArch64 guarantees Neon availability and slices are length-validated above.
+        unsafe {
+            unpack_values_neon(packed, values);
+        }
+        return;
+    }
+
+    #[cfg(not(target_arch = "aarch64"))]
+    for i in 0..packed.len() {
+        values[i] = !(packed[i] as u32);
+    }
+}
+
+fn radix_sort_desc_u64(values: &mut [u64], scratch: &mut [u64], counts: &mut [usize]) {
+    debug_assert_eq!(values.len(), scratch.len());
+    debug_assert_eq!(counts.len(), RADIX_SORT_BUCKETS);
+
+    let mut values_to_scratch = true;
+    for shift in (0..64).step_by(RADIX_SORT_BITS) {
+        counts.fill(0);
+        if values_to_scratch {
+            count_radix_digits(values, shift, counts);
+            descending_prefix_offsets(counts);
+            scatter_radix_digits(values, scratch, shift, counts);
+        } else {
+            count_radix_digits(scratch, shift, counts);
+            descending_prefix_offsets(counts);
+            scatter_radix_digits(scratch, values, shift, counts);
+        }
+        values_to_scratch = !values_to_scratch;
+    }
+
+    debug_assert!(values_to_scratch);
+}
+
+fn count_radix_digits(input: &[u64], shift: usize, counts: &mut [usize]) {
+    for &value in input {
+        counts[((value >> shift) & RADIX_SORT_MASK) as usize] += 1;
+    }
+}
+
+fn descending_prefix_offsets(counts: &mut [usize]) {
+    let mut offset = 0_usize;
+    for count in counts.iter_mut().rev() {
+        let bucket_len = *count;
+        *count = offset;
+        offset += bucket_len;
+    }
+}
+
+fn scatter_radix_digits(input: &[u64], output: &mut [u64], shift: usize, offsets: &mut [usize]) {
+    for &value in input {
+        let digit = ((value >> shift) & RADIX_SORT_MASK) as usize;
+        let output_index = offsets[digit];
+        output[output_index] = value;
+        offsets[digit] = output_index + 1;
     }
 }
 
@@ -171,6 +293,68 @@ unsafe fn pack_pairs_neon(keys: &[u32], values: &[u32], out: &mut [u64]) {
 
     while i < len {
         out[i] = pack_sort_pair(keys[i], values[i]);
+        i += 1;
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+#[allow(unsafe_op_in_unsafe_fn)]
+#[target_feature(enable = "neon")]
+unsafe fn unpack_pairs_neon(packed: &[u64], keys: &mut [u32], values: &mut [u32]) {
+    use std::arch::aarch64::*;
+
+    let len = packed.len();
+    let mut i = 0_usize;
+
+    while i + 4 <= len {
+        // SAFETY: i + 4 <= len guarantees valid loads/stores.
+        let packed_lo = unsafe { vld1q_u64(packed.as_ptr().add(i)) };
+        let packed_hi = unsafe { vld1q_u64(packed.as_ptr().add(i + 2)) };
+
+        let key_lo = vmovn_u64(vshrq_n_u64(packed_lo, 32));
+        let key_hi = vmovn_u64(vshrq_n_u64(packed_hi, 32));
+        let key_4 = vcombine_u32(key_lo, key_hi);
+
+        let val_lo = vmovn_u64(packed_lo);
+        let val_hi = vmovn_u64(packed_hi);
+        let value_4 = vmvnq_u32(vcombine_u32(val_lo, val_hi));
+
+        unsafe { vst1q_u32(keys.as_mut_ptr().add(i), key_4) };
+        unsafe { vst1q_u32(values.as_mut_ptr().add(i), value_4) };
+        i += 4;
+    }
+
+    while i < len {
+        let (key, value) = unpack_sort_pair(packed[i]);
+        keys[i] = key;
+        values[i] = value;
+        i += 1;
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+#[allow(unsafe_op_in_unsafe_fn)]
+#[target_feature(enable = "neon")]
+unsafe fn unpack_values_neon(packed: &[u64], values: &mut [u32]) {
+    use std::arch::aarch64::*;
+
+    let len = packed.len();
+    let mut i = 0_usize;
+
+    while i + 4 <= len {
+        // SAFETY: i + 4 <= len guarantees valid loads/stores.
+        let packed_lo = unsafe { vld1q_u64(packed.as_ptr().add(i)) };
+        let packed_hi = unsafe { vld1q_u64(packed.as_ptr().add(i + 2)) };
+        let val_lo = vmovn_u64(packed_lo);
+        let val_hi = vmovn_u64(packed_hi);
+        let value_4 = vmvnq_u32(vcombine_u32(val_lo, val_hi));
+
+        unsafe { vst1q_u32(values.as_mut_ptr().add(i), value_4) };
+        i += 4;
+    }
+
+    while i < len {
+        values[i] = !(packed[i] as u32);
         i += 1;
     }
 }
@@ -501,6 +685,18 @@ mod tests {
 
         let actual: Vec<(u32, u32)> = keys.into_iter().zip(values).collect();
         assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn cpu_backend_sorts_values_by_immutable_keys() {
+        let mut backend = CpuSortBackend::default();
+        let keys = [20_u32, 5, 12, 12];
+        let mut values = [0_u32, 1, 2, 3];
+
+        backend.sort_values_by_keys(&keys, &mut values).unwrap();
+
+        assert_eq!(keys, [20, 5, 12, 12]);
+        assert_eq!(values, [0, 2, 3, 1]);
     }
 
     #[test]

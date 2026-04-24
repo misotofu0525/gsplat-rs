@@ -285,10 +285,6 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   let minor_radius = clamp(sqrt(minor) * 3.0, 1e-4, 2.0);
   let max_anisotropy = 64.0;
   major_radius = min(major_radius, minor_radius * max_anisotropy);
-  if (minor_radius < 0.001 && major_radius > 0.2) {
-    write_zero(slot);
-    return;
-  }
   let axis_u = axis_u_dir * major_radius;
   let axis_v = axis_v_dir * minor_radius;
 

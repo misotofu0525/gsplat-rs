@@ -9,7 +9,7 @@ use gsplat_core::{
     GSPLAT_API_VERSION_MINOR, RenderMode, RendererConfig, Vec3f,
 };
 use gsplat_io_ply::load_ply;
-use gsplat_render_wgpu::{GpuInstance, Renderer, SURFACE_INSTANCE_LIMIT, SurfacePresenter};
+use gsplat_render_wgpu::{GpuSurfaceInstance, Renderer, SurfacePresenter};
 
 const SURFACE_CAMERA_MAX_PITCH: f32 = 1.45;
 const SURFACE_CAMERA_MIN_DISTANCE_MULTIPLIER: f32 = 0.2;
@@ -108,6 +108,7 @@ pub struct GsplatContext {
 pub struct GsplatSurfaceRenderer {
     renderer: Renderer,
     presenter: SurfacePresenter,
+    instances: Vec<GpuSurfaceInstance>,
     camera: Camera,
     camera_control: SurfaceCameraControl,
     surface_stats: FrameStats,
@@ -393,6 +394,7 @@ pub unsafe extern "C" fn gsplat_surface_renderer_create_android(
     let surface_renderer = Box::new(GsplatSurfaceRenderer {
         renderer,
         presenter,
+        instances: Vec::new(),
         camera,
         camera_control,
         surface_stats: FrameStats::zero(),
@@ -556,16 +558,16 @@ pub unsafe extern "C" fn gsplat_surface_renderer_render_frame(
     let result = if renderer.uploaded_frame {
         renderer.presenter.render_current().map(|_| None)
     } else {
-        let (instances, mut stats) =
-            match renderer.renderer.build_sorted_instances(&renderer.camera) {
-                Ok(result) => result,
-                Err(err) => return err.code().as_i32(),
-            };
-        let instances = limit_surface_instances(instances);
-        stats.drawn_count = instances.len() as u32;
+        let stats = match renderer
+            .renderer
+            .build_sorted_surface_instances_into(&renderer.camera, &mut renderer.instances)
+        {
+            Ok(result) => result,
+            Err(err) => return err.code().as_i32(),
+        };
         renderer
             .presenter
-            .render_instances(&instances)
+            .render_instances(&renderer.instances, &renderer.camera)
             .map(|_| Some(stats))
     };
 
@@ -588,21 +590,6 @@ pub unsafe extern "C" fn gsplat_surface_renderer_render_frame(
             err.code().as_i32()
         }
     }
-}
-
-fn limit_surface_instances(instances: Vec<GpuInstance>) -> Vec<GpuInstance> {
-    if instances.len() <= SURFACE_INSTANCE_LIMIT {
-        return instances;
-    }
-
-    let len = instances.len();
-    let step = len as f64 / SURFACE_INSTANCE_LIMIT as f64;
-    (0..SURFACE_INSTANCE_LIMIT)
-        .map(|i| {
-            let index = ((i as f64) * step).floor() as usize;
-            instances[index.min(len - 1)]
-        })
-        .collect()
 }
 
 #[unsafe(no_mangle)]

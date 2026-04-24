@@ -56,6 +56,7 @@ bash apps/android-demo/build-apk.sh
 
 - Run these when changing mobile packaging or build scripts.
 - Check the matching app README for platform prerequisites before assuming SDK/NDK/Xcode state.
+- `apps/android-demo/build-apk.sh` builds a debug APK container, but compiles the Rust native library with the Rust `release` profile by default. Set `ANDROID_RUST_PROFILE=dev` only for native debugging.
 
 ## Android Surface Smoke
 
@@ -74,6 +75,7 @@ ADB="$ANDROID_SDK_ROOT/platform-tools/adb"
 ```
 
 - Expected overlay includes `surface=wgpu realtime`, `state=rendering`, and `drawn=<surface_instances>/<visible_instances>`.
+- For repeatable perf checks, add the benchmark extras documented in `apps/android-demo/README.md` and read the `BENCHMARK_RESULT` logcat line.
 - Android emulator storage can be tight after pushing the flower PLY. If `adb install -r` reports insufficient storage, uninstall `com.gsplat.demo`, reinstall, and push the dataset again.
 
 ## Release Bar

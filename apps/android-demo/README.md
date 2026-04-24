@@ -29,6 +29,9 @@ Host-smoke Kotlin sources live under `apps/android-demo/host-smoke/`.
 Builds a real Android app container and packages `libgsplat_jni.so`.
 The app UI is Kotlin-only and renders through `SurfaceView` -> JNI -> `ANativeWindow` -> `wgpu::Surface`.
 It does not use the old Android bitmap/readback preview path.
+The native Rust library is built with the Rust `release` profile by default so
+Surface performance smoke runs exercise optimized renderer code. Set
+`ANDROID_RUST_PROFILE=dev` only when debugging native symbols or build issues.
 
 Surface creation returns both a native handle and an error code:
 
@@ -52,6 +55,7 @@ Touch controls in the demo:
 - two-finger pinch: zoom
 - two-finger drag: pan
 - double tap: reset the auto camera
+- `Import PLY`: open the Android system file picker, copy the selected file into app internal storage, and restart the Surface renderer with that imported scene
 
 Prereqs:
 
@@ -71,8 +75,9 @@ Outputs:
 
 Notes:
 
-- This demo uses `files/flowers_1.ply` when present; otherwise it writes a minimal ASCII PLY into app internal storage.
-- On Android emulator, the `SurfaceView` buffer is capped to a 1600px maximum side and the Surface presenter caps the drawn splats to 120,000 instances. This keeps the ranchu Vulkan path stable while still exercising real `wgpu::Surface` presentation.
+- This demo uses `files/imported_scene.ply` when present, then `files/flowers_1.ply` when present; otherwise it writes a minimal ASCII PLY into app internal storage.
+- Imported files come from the Android system picker as `content://` URIs and are copied into `files/imported_scene.ply` before crossing the JNI/C ABI boundary, which still receives a normal local file path.
+- On Android emulator, the `SurfaceView` buffer is capped to a 1600px maximum side. The Surface presenter does not sample or cap the sorted splat list; visual stability is preferred over artificial throughput wins.
 - The status overlay reports `drawn=<surface_instances>/<visible_instances>` for the Android Surface path.
 - Production Android packaging is intentionally not solved here yet. A future AAR should wrap the same C ABI rather than introduce a separate render contract.
 
@@ -91,3 +96,19 @@ ADB="$ANDROID_SDK_ROOT/platform-tools/adb"
 "$ADB" shell rm -f /data/local/tmp/flowers_1.ply
 "$ADB" shell am start -n com.gsplat.demo/.MainActivity
 ```
+
+For repeatable Surface performance checks, launch with benchmark extras:
+
+```bash
+"$ADB" logcat -c
+"$ADB" shell am force-stop com.gsplat.demo
+"$ADB" shell am start -n com.gsplat.demo/.MainActivity \
+  --ez gsplat_benchmark true \
+  --ei gsplat_benchmark_frames 120 \
+  --ei gsplat_benchmark_warmup_frames 10 \
+  --ef gsplat_benchmark_yaw_step 0.001
+"$ADB" logcat -d -s GsplatDemo:I | grep BENCHMARK_RESULT
+```
+
+Benchmark mode forces a tiny camera orbit each frame so it measures sorted
+Surface rebuild cost, not cached static presentation.

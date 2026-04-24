@@ -42,11 +42,28 @@ fi
 
 JAVA_HOME="${JAVA_HOME:-$(/usr/libexec/java_home)}"
 
+ANDROID_RUST_PROFILE="${ANDROID_RUST_PROFILE:-release}"
+case "$ANDROID_RUST_PROFILE" in
+  release)
+    CARGO_PROFILE_ARGS=(--release)
+    CARGO_TARGET_DIR_NAME="release"
+    ;;
+  dev|debug)
+    CARGO_PROFILE_ARGS=()
+    CARGO_TARGET_DIR_NAME="debug"
+    ;;
+  *)
+    echo "Unsupported ANDROID_RUST_PROFILE: $ANDROID_RUST_PROFILE"
+    echo "Expected one of: release, dev"
+    exit 1
+    ;;
+esac
+
 rustup target add aarch64-linux-android >/dev/null
 CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$CLANG" \
-  cargo build -p gsplat-ffi-c --target aarch64-linux-android
+  cargo build -p gsplat-ffi-c --target aarch64-linux-android "${CARGO_PROFILE_ARGS[@]}"
 
-RUST_STATIC_LIB="$ROOT_DIR/target/aarch64-linux-android/debug/libgsplat_ffi_c.a"
+RUST_STATIC_LIB="$ROOT_DIR/target/aarch64-linux-android/$CARGO_TARGET_DIR_NAME/libgsplat_ffi_c.a"
 if [[ ! -f "$RUST_STATIC_LIB" ]]; then
   echo "Rust static lib missing: $RUST_STATIC_LIB"
   exit 1
@@ -65,6 +82,10 @@ OUT_SO="$OUT_DIR/libgsplat_jni.so"
   -I"$JAVA_HOME/include/darwin" \
   -o "$OUT_SO" \
   -landroid -llog -ldl -lm
+
+SYMBOLS_DIR="$ROOT_DIR/apps/android-demo/app/build/native-symbols/arm64-v8a"
+mkdir -p "$SYMBOLS_DIR"
+cp "$OUT_SO" "$SYMBOLS_DIR/libgsplat_jni.so"
 
 "$STRIP" --strip-unneeded "$OUT_SO"
 

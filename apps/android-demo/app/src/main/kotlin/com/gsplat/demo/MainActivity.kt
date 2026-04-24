@@ -1,15 +1,20 @@
 package com.gsplat.demo
 
 import android.app.Activity
+import android.content.Intent
 import android.graphics.Color
+import android.net.Uri
 import android.os.Bundle
 import android.os.SystemClock
+import android.provider.OpenableColumns
 import android.util.Log
+import android.view.Gravity
 import android.view.MotionEvent
 import android.view.Surface
 import android.view.SurfaceHolder
 import android.view.SurfaceView
 import android.view.View
+import android.widget.Button
 import android.widget.FrameLayout
 import android.widget.TextView
 import java.io.File
@@ -26,7 +31,11 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
     @Volatile private var renderThread: Thread? = null
     private var nativeRenderer = 0L
     private lateinit var datasetPath: String
+    private var datasetLabel = "pending"
     private lateinit var statusText: TextView
+    private var currentSurface: Surface? = null
+    private var currentSurfaceWidth = 0
+    private var currentSurfaceHeight = 0
     private var latestStatus = "state=waiting_for_surface"
     private var surfaceSizeLabel = "pending"
     @Volatile private var cameraStatus = "camera=auto"
@@ -45,16 +54,13 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
     private var pendingZoomScale = 1f
     private var pendingPanX = 0f
     private var pendingPanY = 0f
+    private var benchmarkConfig = BenchmarkConfig()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        val flowerDataset = File(filesDir, "flowers_1.ply")
-        datasetPath = if (flowerDataset.exists()) {
-            flowerDataset.absolutePath
-        } else {
-            File(filesDir, "minimal_ascii.ply").absolutePath.also(::writeDataset)
-        }
+        benchmarkConfig = BenchmarkConfig.fromIntent(intent)
+        setDataset(resolveInitialDataset())
 
         val renderSurfaceSize = preferredSurfaceSize()
         surfaceSizeLabel = "${renderSurfaceSize.first}x${renderSurfaceSize.second}"
@@ -68,6 +74,10 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
             setBackgroundColor(0x66000000)
             isClickable = false
             text = buildStatusText(latestStatus)
+        }
+        val importButton = Button(this).apply {
+            text = "Import PLY"
+            setOnClickListener { openPlyPicker() }
         }
 
         val root = FrameLayout(this).apply {
@@ -85,6 +95,16 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                     FrameLayout.LayoutParams.MATCH_PARENT,
                     FrameLayout.LayoutParams.WRAP_CONTENT
                 )
+            )
+            addView(
+                importButton,
+                FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.WRAP_CONTENT,
+                    FrameLayout.LayoutParams.WRAP_CONTENT,
+                    Gravity.BOTTOM or Gravity.END
+                ).apply {
+                    setMargins(24, 24, 24, 24)
+                }
             )
         }
         setContentView(root)
@@ -105,6 +125,9 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         }
 
         Log.i(TAG, "surfaceChanged width=$width height=$height format=$format")
+        currentSurface = holder.surface
+        currentSurfaceWidth = width
+        currentSurfaceHeight = height
         surfaceSizeLabel = "${width}x${height}"
         updateStatus("state=surface_changed size=${width}x$height")
         synchronized(renderLock) {
@@ -120,6 +143,9 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
 
     override fun surfaceDestroyed(holder: SurfaceHolder) {
         Log.i(TAG, "surfaceDestroyed")
+        currentSurface = null
+        currentSurfaceWidth = 0
+        currentSurfaceHeight = 0
         updateStatus("state=surface_destroyed")
         stopRenderer()
     }
@@ -127,6 +153,36 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
     override fun onDestroy() {
         stopRenderer()
         super.onDestroy()
+    }
+
+    @Suppress("OVERRIDE_DEPRECATION")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode != REQUEST_IMPORT_PLY) {
+            return
+        }
+
+        val uri = data?.data
+        if (resultCode != RESULT_OK || uri == null) {
+            updateStatus("state=import_cancelled")
+            return
+        }
+
+        importPlyFromUri(uri)
+    }
+
+    private fun openPlyPicker() {
+        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "*/*"
+        }
+
+        @Suppress("DEPRECATION")
+        runCatching {
+            startActivityForResult(intent, REQUEST_IMPORT_PLY)
+        }.onFailure { error ->
+            updateStatus("state=import_picker_failed error=${compactMessage(error)}")
+        }
     }
 
     private fun startRenderer(surface: Surface, width: Int, height: Int) {
@@ -161,9 +217,19 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                     var consecutiveErrors = 0L
                     var lastStatusAt = 0L
                     val stats = LongArray(6)
+                    val benchmark = SurfaceBenchmark(benchmarkConfig)
                     while (running && !Thread.currentThread().isInterrupted) {
+                        val renderStartNs = System.nanoTime()
                         val rc = synchronized(renderLock) {
-                            val cameraRc = applyPendingCameraCommands(handle)
+                            val cameraRc = if (benchmark.enabled) {
+                                NativeBridge.orbitSurfaceRenderer(
+                                    handle,
+                                    benchmark.config.yawStepRadians,
+                                    0f
+                                )
+                            } else {
+                                applyPendingCameraCommands(handle)
+                            }
                             if (cameraRc != 0) {
                                 Log.e(TAG, "applyPendingCameraCommands failed rc=$cameraRc")
                                 cameraRc
@@ -171,6 +237,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                                 NativeBridge.renderSurfaceFrame(handle)
                             }
                         }
+                        val renderCallNs = System.nanoTime() - renderStartNs
                         frameCount += 1
                         if (rc != 0) {
                             consecutiveErrors += 1
@@ -182,6 +249,22 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                         } else {
                             consecutiveErrors = 0L
                             val now = System.nanoTime()
+                            if (benchmark.enabled) {
+                                val statsRc = NativeBridge.getSurfaceStats(handle, stats)
+                                if (statsRc == 0) {
+                                    benchmark.record(stats, renderCallNs)
+                                    if (benchmark.complete) {
+                                        val result = benchmark.resultLine(datasetLabel)
+                                        Log.i(TAG, result)
+                                        updateStatus("state=benchmark_complete $result")
+                                        running = false
+                                    }
+                                } else {
+                                    Log.e(TAG, "benchmark getSurfaceStats failed rc=$statsRc")
+                                    updateStatus("state=benchmark_stats_error rc=$statsRc")
+                                    running = false
+                                }
+                            }
                             if (now - lastStatusAt > STATUS_INTERVAL_NS) {
                                 lastStatusAt = now
                                 val statsRc = NativeBridge.getSurfaceStats(handle, stats)
@@ -189,7 +272,10 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                                     "state=rendering frames=$frameCount " +
                                         "visible=${stats[0]} drawn=${stats[1]}/${stats[0]} " +
                                         "frame=${formatMicros(stats[2])}ms " +
-                                        "sort=${formatMicros(stats[4])}ms"
+                                        "preprocess=${formatMicros(stats[3])}ms " +
+                                        "sort=${formatMicros(stats[4])}ms " +
+                                        "raster=${formatMicros(stats[5])}ms " +
+                                        "call=${formatNanos(renderCallNs)}ms"
                                 } else {
                                     "state=rendering frames=$frameCount stats_rc=$statsRc"
                                 }
@@ -197,7 +283,9 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                                 updateStatus(detail)
                             }
                         }
-                        Thread.sleep(16)
+                        if (!benchmark.enabled) {
+                            Thread.sleep(16)
+                        }
                     }
                 } finally {
                     synchronized(renderLock) {
@@ -221,11 +309,128 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         thread?.join(1000)
     }
 
+    private fun importPlyFromUri(uri: Uri) {
+        updateStatus("state=importing")
+        Thread(
+            {
+                val result = runCatching {
+                    val (file, displayName) = copyPlyIntoAppStorage(uri)
+                    DatasetSelection(file.absolutePath, "imported:$displayName")
+                }
+
+                runOnUiThread {
+                    result
+                        .onSuccess { selection ->
+                            setDataset(selection)
+                            updateStatus("state=imported")
+                            restartRendererForDataset()
+                        }
+                        .onFailure { error ->
+                            updateStatus("state=import_failed error=${compactMessage(error)}")
+                        }
+                }
+            },
+            "gsplat-import-ply"
+        ).start()
+    }
+
+    private fun copyPlyIntoAppStorage(uri: Uri): Pair<File, String> {
+        val displayName = displayNameForUri(uri)
+        val destination = File(filesDir, IMPORTED_PLY_NAME)
+        val temp = File(filesDir, "$IMPORTED_PLY_NAME.tmp")
+
+        runCatching { temp.delete() }
+        val input = contentResolver.openInputStream(uri)
+            ?: error("Unable to open selected file")
+        input.use { source ->
+            temp.outputStream().use { target ->
+                source.copyTo(target)
+            }
+        }
+
+        if (destination.exists() && !destination.delete()) {
+            error("Unable to replace previous import")
+        }
+        if (!temp.renameTo(destination)) {
+            temp.copyTo(destination, overwrite = true)
+            if (!temp.delete()) {
+                Log.w(TAG, "failed to remove temp import ${temp.absolutePath}")
+            }
+        }
+
+        return destination to displayName
+    }
+
+    private fun displayNameForUri(uri: Uri): String {
+        var displayName: String? = null
+        contentResolver.query(
+            uri,
+            arrayOf(OpenableColumns.DISPLAY_NAME),
+            null,
+            null,
+            null
+        )?.use { cursor ->
+            val nameIndex = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+            if (nameIndex >= 0 && cursor.moveToFirst()) {
+                displayName = cursor.getString(nameIndex)
+            }
+        }
+
+        return displayName
+            ?.takeIf { it.isNotBlank() }
+            ?: uri.lastPathSegment?.substringAfterLast('/')?.takeIf { it.isNotBlank() }
+            ?: IMPORTED_PLY_NAME
+    }
+
+    private fun restartRendererForDataset() {
+        clearPendingCameraCommands()
+        cameraStatus = "camera=auto"
+
+        val surface = currentSurface
+        val width = currentSurfaceWidth
+        val height = currentSurfaceHeight
+        stopRenderer()
+
+        if (surface != null && surface.isValid && width > 0 && height > 0) {
+            startRenderer(surface, width, height)
+        } else {
+            updateStatus("state=dataset_ready waiting_for_surface")
+        }
+    }
+
+    private fun resolveInitialDataset(): DatasetSelection {
+        val importedDataset = File(filesDir, IMPORTED_PLY_NAME)
+        if (importedDataset.exists()) {
+            return DatasetSelection(importedDataset.absolutePath, importedDataset.name)
+        }
+
+        val flowerDataset = File(filesDir, "flowers_1.ply")
+        if (flowerDataset.exists()) {
+            return DatasetSelection(flowerDataset.absolutePath, flowerDataset.name)
+        }
+
+        val minimalDataset = File(filesDir, "minimal_ascii.ply")
+        if (!minimalDataset.exists()) {
+            writeDataset(minimalDataset.absolutePath)
+        }
+        return DatasetSelection(minimalDataset.absolutePath, minimalDataset.name)
+    }
+
+    private fun setDataset(selection: DatasetSelection) {
+        datasetPath = selection.path
+        datasetLabel = selection.label
+    }
+
     private fun writeDataset(datasetPath: String) {
         runCatching {
             File(datasetPath).writeText(MINIMAL_PLY)
         }
     }
+
+    private fun compactMessage(error: Throwable): String =
+        (error.message ?: error::class.java.simpleName)
+            .replace('\n', ' ')
+            .take(160)
 
     private fun preferredSurfaceSize(): Pair<Int, Int> {
         val metrics = resources.displayMetrics
@@ -478,11 +683,18 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         appendLine("surface=wgpu realtime ${surfaceSizeLabel}")
         appendLine(status)
         appendLine(cameraStatus)
-        append("dataset=$datasetPath")
+        if (benchmarkConfig.enabled) {
+            appendLine("benchmark=orbit frames=${benchmarkConfig.frames} warmup=${benchmarkConfig.warmupFrames}")
+        }
+        appendLine("dataset=$datasetLabel")
+        append("path=$datasetPath")
     }
 
     private fun formatMicros(value: Long): String =
         String.format("%.2f", value.toDouble() / 1000.0)
+
+    private fun formatNanos(value: Long): String =
+        String.format("%.2f", value.toDouble() / 1_000_000.0)
 
     private companion object {
         private const val TAG = "GsplatDemo"
@@ -499,6 +711,15 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         private const val TOUCH_EPSILON = 0.0001f
         private const val DOUBLE_TAP_TIMEOUT_MS = 300L
         private const val DOUBLE_TAP_SLOP_DP = 48f
+        private const val REQUEST_IMPORT_PLY = 42
+        private const val IMPORTED_PLY_NAME = "imported_scene.ply"
+        private const val EXTRA_BENCHMARK = "gsplat_benchmark"
+        private const val EXTRA_BENCHMARK_FRAMES = "gsplat_benchmark_frames"
+        private const val EXTRA_BENCHMARK_WARMUP_FRAMES = "gsplat_benchmark_warmup_frames"
+        private const val EXTRA_BENCHMARK_YAW_STEP = "gsplat_benchmark_yaw_step"
+        private const val DEFAULT_BENCHMARK_FRAMES = 120
+        private const val DEFAULT_BENCHMARK_WARMUP_FRAMES = 10
+        private const val DEFAULT_BENCHMARK_YAW_STEP = 0.001f
 
         private val MINIMAL_PLY = """
             ply
@@ -529,6 +750,11 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         Transform
     }
 
+    private data class DatasetSelection(
+        val path: String,
+        val label: String
+    )
+
     private data class CameraCommand(
         val reset: Boolean,
         val orbitYaw: Float,
@@ -537,4 +763,87 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         val panX: Float,
         val panY: Float
     )
+
+    private data class BenchmarkConfig(
+        val enabled: Boolean = false,
+        val frames: Int = DEFAULT_BENCHMARK_FRAMES,
+        val warmupFrames: Int = DEFAULT_BENCHMARK_WARMUP_FRAMES,
+        val yawStepRadians: Float = DEFAULT_BENCHMARK_YAW_STEP
+    ) {
+        companion object {
+            fun fromIntent(intent: Intent): BenchmarkConfig {
+                val frames = intent
+                    .getIntExtra(EXTRA_BENCHMARK_FRAMES, DEFAULT_BENCHMARK_FRAMES)
+                    .coerceAtLeast(1)
+                val warmupFrames = intent
+                    .getIntExtra(EXTRA_BENCHMARK_WARMUP_FRAMES, DEFAULT_BENCHMARK_WARMUP_FRAMES)
+                    .coerceAtLeast(0)
+                val yawStep = intent
+                    .getFloatExtra(EXTRA_BENCHMARK_YAW_STEP, DEFAULT_BENCHMARK_YAW_STEP)
+                    .takeIf { it.isFinite() && it != 0f }
+                    ?: DEFAULT_BENCHMARK_YAW_STEP
+                return BenchmarkConfig(
+                    enabled = intent.getBooleanExtra(EXTRA_BENCHMARK, false),
+                    frames = frames,
+                    warmupFrames = warmupFrames,
+                    yawStepRadians = yawStep
+                )
+            }
+        }
+    }
+
+    private class SurfaceBenchmark(val config: BenchmarkConfig) {
+        val enabled: Boolean = config.enabled
+        var complete = false
+            private set
+
+        private var observedFrames = 0
+        private var samples = 0
+        private var totalCallNs = 0L
+        private var totalFrameMicros = 0L
+        private var totalPreprocessMicros = 0L
+        private var totalSortMicros = 0L
+        private var totalRasterMicros = 0L
+        private var totalVisible = 0L
+        private var totalDrawn = 0L
+
+        fun record(stats: LongArray, renderCallNs: Long) {
+            if (!enabled || complete) {
+                return
+            }
+            observedFrames += 1
+            if (observedFrames <= config.warmupFrames) {
+                return
+            }
+
+            samples += 1
+            totalVisible += stats[0]
+            totalDrawn += stats[1]
+            totalFrameMicros += stats[2]
+            totalPreprocessMicros += stats[3]
+            totalSortMicros += stats[4]
+            totalRasterMicros += stats[5]
+            totalCallNs += renderCallNs
+            complete = samples >= config.frames
+        }
+
+        fun resultLine(datasetLabel: String): String {
+            val safeSamples = samples.coerceAtLeast(1)
+            return "BENCHMARK_RESULT dataset=$datasetLabel " +
+                "samples=$samples warmup=${config.warmupFrames} " +
+                "avg_call_ms=${avgNs(totalCallNs, safeSamples)} " +
+                "avg_frame_ms=${avgMicros(totalFrameMicros, safeSamples)} " +
+                "avg_preprocess_ms=${avgMicros(totalPreprocessMicros, safeSamples)} " +
+                "avg_sort_ms=${avgMicros(totalSortMicros, safeSamples)} " +
+                "avg_raster_ms=${avgMicros(totalRasterMicros, safeSamples)} " +
+                "avg_visible=${totalVisible / safeSamples} " +
+                "avg_drawn=${totalDrawn / safeSamples}"
+        }
+
+        private fun avgMicros(total: Long, samples: Int): String =
+            String.format("%.3f", total.toDouble() / samples.toDouble() / 1000.0)
+
+        private fun avgNs(total: Long, samples: Int): String =
+            String.format("%.3f", total.toDouble() / samples.toDouble() / 1_000_000.0)
+    }
 }

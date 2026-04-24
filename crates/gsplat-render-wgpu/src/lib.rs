@@ -1,20 +1,16 @@
 //! WGPU renderer with a SortedAlpha reference path.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 use bytemuck::{Pod, Zeroable};
 use gsplat_core::{Camera, ErrorCode, FrameStats, RenderMode, RendererConfig, SceneBuffers, Vec3f};
-use gsplat_sort::{CpuSortBackend, SortBackend, SortError};
+use gsplat_sort::{CpuSortBackend, SortError};
 use rayon::prelude::*;
 use thiserror::Error;
 use wgpu::util::DeviceExt;
 
 const RENDER_TARGET_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
-pub const SURFACE_INSTANCE_LIMIT: usize = if cfg!(target_os = "android") {
-    120_000
-} else {
-    usize::MAX
-};
 
 #[cfg(target_os = "android")]
 const fn wgpu_label(_label: &'static str) -> Option<&'static str> {
@@ -132,6 +128,11 @@ pub struct Renderer {
     gpu_rasterizer: Option<GpuRasterizer>,
     scene: Option<SceneBuffers>,
     world_covariances: Option<Vec<[[f32; 3]; 3]>>,
+    world_covariance_terms: Option<Vec<CameraCovarianceTerms>>,
+    alpha_values: Option<Vec<f32>>,
+    preprocess_depth_keys: Vec<u32>,
+    preprocess_indices: Vec<u32>,
+    surface_instances_by_index: Vec<GpuSurfaceInstance>,
     last_stats: FrameStats,
 }
 
@@ -158,6 +159,11 @@ impl Renderer {
             gpu_rasterizer,
             scene: None,
             world_covariances: None,
+            world_covariance_terms: None,
+            alpha_values: None,
+            preprocess_depth_keys: Vec::new(),
+            preprocess_indices: Vec::new(),
+            surface_instances_by_index: Vec::new(),
             last_stats: FrameStats::zero(),
         })
     }
@@ -195,8 +201,16 @@ impl Renderer {
     pub fn load_scene(&mut self, scene: SceneBuffers) -> Result<(), RendererError> {
         scene.validate().map_err(|_| RendererError::InvalidScene)?;
         let world_covariances = precompute_world_covariances(&scene);
+        let world_covariance_terms = world_covariances
+            .iter()
+            .copied()
+            .map(CameraCovarianceTerms::from_matrix)
+            .collect();
+        let alpha_values = precompute_alpha_values(&scene);
         self.scene = Some(scene);
         self.world_covariances = Some(world_covariances);
+        self.world_covariance_terms = Some(world_covariance_terms);
+        self.alpha_values = Some(alpha_values);
         Ok(())
     }
 
@@ -230,39 +244,36 @@ impl Renderer {
 
     pub fn preprocess_visible(&self, camera: &Camera) -> Result<PreprocessOutput, RendererError> {
         let scene = self.scene.as_ref().ok_or(RendererError::SceneNotLoaded)?;
-        camera
-            .validate()
-            .map_err(|_| RendererError::InvalidCamera)?;
-
-        let mut indices = Vec::with_capacity(scene.len());
-        let mut depth_keys = Vec::with_capacity(scene.len());
-
-        for (idx, position) in scene.positions.iter().enumerate() {
-            let p_cam = world_to_camera(*position, camera);
-            if is_visible(p_cam.z, camera) {
-                indices.push(idx as u32);
-                depth_keys.push(depth_to_key(p_cam.z));
-            }
-        }
-
-        Ok(PreprocessOutput {
-            depth_keys,
-            indices,
-        })
+        let mut output = PreprocessOutput {
+            depth_keys: Vec::with_capacity(scene.len()),
+            indices: Vec::with_capacity(scene.len()),
+        };
+        preprocess_visible_into(scene, camera, &mut output.depth_keys, &mut output.indices)?;
+        Ok(output)
     }
 
     pub fn build_sorted_instances(
         &mut self,
         camera: &Camera,
     ) -> Result<(Vec<GpuInstance>, FrameStats), RendererError> {
+        let mut instances = Vec::new();
+        let stats = self.build_sorted_instances_into(camera, &mut instances)?;
+        Ok((instances, stats))
+    }
+
+    pub fn build_sorted_instances_into(
+        &mut self,
+        camera: &Camera,
+        instances: &mut Vec<GpuInstance>,
+    ) -> Result<FrameStats, RendererError> {
         let frame_start = Instant::now();
 
         let preprocess_start = Instant::now();
-        let mut preprocessed = self.preprocess_visible(camera)?;
+        self.preprocess_visible_scratch(camera)?;
         let preprocess_ms = preprocess_start.elapsed().as_secs_f32() * 1000.0;
 
         let sort_start = Instant::now();
-        self.sort_preprocessed(&mut preprocessed)?;
+        self.sort_preprocessed_scratch()?;
         let sort_ms = sort_start.elapsed().as_secs_f32() * 1000.0;
 
         let raster_start = Instant::now();
@@ -271,12 +282,18 @@ impl Renderer {
             .world_covariances
             .as_deref()
             .ok_or(RendererError::InvalidScene)?;
-        let instances = build_instances(
+        let alpha_values = self
+            .alpha_values
+            .as_deref()
+            .ok_or(RendererError::InvalidScene)?;
+        build_instances_into(
             scene,
             world_covariances,
-            &preprocessed.indices,
+            alpha_values,
+            &self.preprocess_indices,
             camera,
             self.config,
+            instances,
         );
         let drawn_count = instances.len() as u32;
         let raster_ms = raster_start.elapsed().as_secs_f32() * 1000.0;
@@ -286,11 +303,61 @@ impl Renderer {
             preprocess_ms,
             sort_ms,
             raster_ms,
-            visible_count: preprocessed.indices.len() as u32,
+            visible_count: self.preprocess_indices.len() as u32,
             drawn_count,
         };
         self.last_stats = stats;
-        Ok((instances, stats))
+        Ok(stats)
+    }
+
+    pub fn build_sorted_surface_instances_into(
+        &mut self,
+        camera: &Camera,
+        instances: &mut Vec<GpuSurfaceInstance>,
+    ) -> Result<FrameStats, RendererError> {
+        let frame_start = Instant::now();
+
+        let preprocess_start = Instant::now();
+        self.preprocess_visible_scratch(camera)?;
+        let preprocess_ms = preprocess_start.elapsed().as_secs_f32() * 1000.0;
+
+        let sort_start = Instant::now();
+        self.sort_preprocessed_scratch()?;
+        let sort_ms = sort_start.elapsed().as_secs_f32() * 1000.0;
+
+        let raster_start = Instant::now();
+        let scene = self.scene.as_ref().ok_or(RendererError::SceneNotLoaded)?;
+        let world_covariance_terms = self
+            .world_covariance_terms
+            .as_deref()
+            .ok_or(RendererError::InvalidScene)?;
+        let alpha_values = self
+            .alpha_values
+            .as_deref()
+            .ok_or(RendererError::InvalidScene)?;
+        build_surface_instances_into(
+            scene,
+            world_covariance_terms,
+            alpha_values,
+            &self.preprocess_indices,
+            camera,
+            self.config,
+            &mut self.surface_instances_by_index,
+            instances,
+        );
+        let drawn_count = instances.len() as u32;
+        let raster_ms = raster_start.elapsed().as_secs_f32() * 1000.0;
+
+        let stats = FrameStats {
+            frame_ms: frame_start.elapsed().as_secs_f32() * 1000.0,
+            preprocess_ms,
+            sort_ms,
+            raster_ms,
+            visible_count: self.preprocess_indices.len() as u32,
+            drawn_count,
+        };
+        self.last_stats = stats;
+        Ok(stats)
     }
 
     pub fn build_sorted_indices(
@@ -300,14 +367,14 @@ impl Renderer {
         let frame_start = Instant::now();
 
         let preprocess_start = Instant::now();
-        let mut preprocessed = self.preprocess_visible(camera)?;
+        self.preprocess_visible_scratch(camera)?;
         let preprocess_ms = preprocess_start.elapsed().as_secs_f32() * 1000.0;
 
         let sort_start = Instant::now();
-        self.sort_preprocessed(&mut preprocessed)?;
+        self.sort_preprocessed_scratch()?;
         let sort_ms = sort_start.elapsed().as_secs_f32() * 1000.0;
 
-        let visible_count = preprocessed.indices.len() as u32;
+        let visible_count = self.preprocess_indices.len() as u32;
         let stats = FrameStats {
             frame_ms: frame_start.elapsed().as_secs_f32() * 1000.0,
             preprocess_ms,
@@ -317,18 +384,18 @@ impl Renderer {
             drawn_count: visible_count,
         };
         self.last_stats = stats;
-        Ok((preprocessed.indices, stats))
+        Ok((self.preprocess_indices.clone(), stats))
     }
 
     pub fn render_frame(&mut self, camera: &Camera) -> Result<FrameStats, RendererError> {
         let frame_start = Instant::now();
 
         let preprocess_start = Instant::now();
-        let mut preprocessed = self.preprocess_visible(camera)?;
+        self.preprocess_visible_scratch(camera)?;
         let preprocess_ms = preprocess_start.elapsed().as_secs_f32() * 1000.0;
 
         let sort_start = Instant::now();
-        self.sort_preprocessed(&mut preprocessed)?;
+        self.sort_preprocessed_scratch()?;
         let sort_ms = sort_start.elapsed().as_secs_f32() * 1000.0;
 
         let raster_start = Instant::now();
@@ -337,10 +404,15 @@ impl Renderer {
             .world_covariances
             .as_deref()
             .ok_or(RendererError::InvalidScene)?;
+        let alpha_values = self
+            .alpha_values
+            .as_deref()
+            .ok_or(RendererError::InvalidScene)?;
         let instances = build_instances(
             scene,
             world_covariances,
-            &preprocessed.indices,
+            alpha_values,
+            &self.preprocess_indices,
             camera,
             self.config,
         );
@@ -360,7 +432,7 @@ impl Renderer {
             preprocess_ms,
             sort_ms,
             raster_ms,
-            visible_count: preprocessed.indices.len() as u32,
+            visible_count: self.preprocess_indices.len() as u32,
             drawn_count,
         };
 
@@ -386,13 +458,20 @@ impl Renderer {
         self.render_frame(&Camera::default()).unwrap_or_default()
     }
 
-    fn sort_preprocessed(
-        &mut self,
-        preprocessed: &mut PreprocessOutput,
-    ) -> Result<(), RendererError> {
+    fn preprocess_visible_scratch(&mut self, camera: &Camera) -> Result<(), RendererError> {
+        let scene = self.scene.as_ref().ok_or(RendererError::SceneNotLoaded)?;
+        preprocess_visible_into(
+            scene,
+            camera,
+            &mut self.preprocess_depth_keys,
+            &mut self.preprocess_indices,
+        )
+    }
+
+    fn sort_preprocessed_scratch(&mut self) -> Result<(), RendererError> {
         if self.mode == RenderMode::SortedAlpha {
             self.cpu_sort_backend
-                .sort_pairs(&mut preprocessed.depth_keys, &mut preprocessed.indices)?;
+                .sort_values_by_keys(&self.preprocess_depth_keys, &mut self.preprocess_indices)?;
         }
         Ok(())
     }
@@ -408,7 +487,11 @@ pub struct SurfacePresenter {
     instance_buffer: wgpu::Buffer,
     instance_capacity: usize,
     instance_count: u32,
+    params_buffer: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
+    sh_degree: u32,
+    _surface_color_buffer: wgpu::Buffer,
+    _sh_rest_buffer: wgpu::Buffer,
 }
 
 impl SurfacePresenter {
@@ -514,24 +597,55 @@ impl SurfacePresenter {
 
         let render_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: wgpu_label("gsplat-surface-shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("../shaders/splat.wgsl").into()),
+            source: wgpu::ShaderSource::Wgsl(include_str!("../shaders/splat_surface.wgsl").into()),
         });
 
         let render_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: wgpu_label("gsplat-surface-bgl"),
-                entries: &[wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: true },
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::VERTEX,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
                     },
-                    count: None,
-                }],
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::VERTEX,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::VERTEX,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 3,
+                        visibility: wgpu::ShaderStages::VERTEX,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                ],
             });
-
         let render_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: wgpu_label("gsplat-surface-pipeline-layout"),
@@ -575,17 +689,18 @@ impl SurfacePresenter {
             multiview_mask: None,
             cache: None,
         });
-
-        let scene_len = renderer
+        let scene = renderer
             .scene()
-            .map(|scene| scene.len().max(1))
             .ok_or(SurfacePresenterError::SceneNotLoaded)?;
+        let scene_len = scene.len().max(1);
         let instance_capacity = surface_instance_capacity(scene_len);
-        let (instance_buffer, bind_group) = create_surface_instance_resources(
-            &device,
-            &render_bind_group_layout,
-            instance_capacity,
-        );
+        let (instance_buffer, params_buffer, surface_color_buffer, sh_rest_buffer, bind_group) =
+            create_surface_instance_resources(
+                &device,
+                &render_bind_group_layout,
+                instance_capacity,
+                scene,
+            );
 
         Ok(Self {
             surface,
@@ -597,7 +712,11 @@ impl SurfacePresenter {
             instance_buffer,
             instance_capacity,
             instance_count: 0,
+            params_buffer,
             bind_group,
+            sh_degree: scene.sh_degree as u32,
+            _surface_color_buffer: surface_color_buffer,
+            _sh_rest_buffer: sh_rest_buffer,
         })
     }
 
@@ -617,7 +736,8 @@ impl SurfacePresenter {
 
     pub fn render_instances(
         &mut self,
-        instances: &[GpuInstance],
+        instances: &[GpuSurfaceInstance],
+        camera: &Camera,
     ) -> Result<(), SurfacePresenterError> {
         if instances.len() > self.instance_capacity {
             return Err(SurfacePresenterError::GpuInstancePreprocess(
@@ -628,6 +748,20 @@ impl SurfacePresenter {
             self.queue
                 .write_buffer(&self.instance_buffer, 0, bytemuck::cast_slice(instances));
         }
+        let params = GpuSurfaceRenderParams {
+            camera_pos: [
+                camera.pose.position.x,
+                camera.pose.position.y,
+                camera.pose.position.z,
+                0.0,
+            ],
+            sh_degree: self.sh_degree,
+            len: instances.len() as u32,
+            _pad0: 0,
+            _pad2: 0,
+        };
+        self.queue
+            .write_buffer(&self.params_buffer, 0, bytemuck::bytes_of(&params));
         self.instance_count = instances.len() as u32;
         self.render_current()
     }
@@ -693,27 +827,113 @@ fn create_surface_instance_resources(
     device: &wgpu::Device,
     bind_group_layout: &wgpu::BindGroupLayout,
     capacity: usize,
-) -> (wgpu::Buffer, wgpu::BindGroup) {
-    let stride = std::mem::size_of::<GpuInstance>() as u64;
+    scene: &SceneBuffers,
+) -> (
+    wgpu::Buffer,
+    wgpu::Buffer,
+    wgpu::Buffer,
+    wgpu::Buffer,
+    wgpu::BindGroup,
+) {
+    let stride = std::mem::size_of::<GpuSurfaceInstance>() as u64;
     let size = stride * (capacity.max(1) as u64);
-    let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+    let instance_buffer = device.create_buffer(&wgpu::BufferDescriptor {
         label: wgpu_label("gsplat-surface-instance-buffer"),
         size,
         usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
+    let params_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: wgpu_label("gsplat-surface-params-buffer"),
+        contents: bytemuck::bytes_of(&GpuSurfaceRenderParams::zeroed()),
+        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+    });
+    let surface_color_elems = make_surface_color_elems(scene);
+    let surface_color_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: wgpu_label("gsplat-surface-color-buffer"),
+        contents: bytemuck::cast_slice(&surface_color_elems),
+        usage: wgpu::BufferUsages::STORAGE,
+    });
+    let sh_rest_fallback = [0.0_f32];
+    let sh_rest = scene.sh_rest.as_deref().unwrap_or(&sh_rest_fallback);
+    let sh_rest_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: wgpu_label("gsplat-surface-sh-rest-buffer"),
+        contents: bytemuck::cast_slice(sh_rest),
+        usage: wgpu::BufferUsages::STORAGE,
+    });
     let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: wgpu_label("gsplat-surface-bind-group"),
         layout: bind_group_layout,
-        entries: &[wgpu::BindGroupEntry {
-            binding: 0,
-            resource: buffer.as_entire_binding(),
-        }],
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: instance_buffer.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: surface_color_buffer.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: sh_rest_buffer.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 3,
+                resource: params_buffer.as_entire_binding(),
+            },
+        ],
     });
-    (buffer, bind_group)
+    (
+        instance_buffer,
+        params_buffer,
+        surface_color_buffer,
+        sh_rest_buffer,
+        bind_group,
+    )
+}
+
+fn make_surface_color_elems(scene: &SceneBuffers) -> Vec<GpuSurfaceColorElem> {
+    scene
+        .positions
+        .iter()
+        .zip(scene.color_dc.iter())
+        .map(|(position, color_dc)| GpuSurfaceColorElem {
+            position: [position.x, position.y, position.z, 0.0],
+            color_dc: [color_dc[0], color_dc[1], color_dc[2], 0.0],
+        })
+        .collect()
+}
+
+fn make_gpu_scene_elems(
+    scene: &SceneBuffers,
+    world_covariances: &[[[f32; 3]; 3]],
+) -> Vec<GpuSceneElem> {
+    if scene.positions.is_empty() {
+        return vec![GpuSceneElem::zeroed()];
+    }
+
+    (0..scene.positions.len())
+        .map(|i| {
+            let pos = scene.positions[i];
+            let cov = world_covariances[i];
+            let color_dc = scene.color_dc.get(i).copied().unwrap_or([0.0, 0.0, 0.0]);
+            let opacity = *scene.opacity.get(i).unwrap_or(&0.0);
+            GpuSceneElem {
+                position: [pos.x, pos.y, pos.z, 0.0],
+                cov_row0: [cov[0][0], cov[0][1], cov[0][2], 0.0],
+                cov_row1: [cov[1][0], cov[1][1], cov[1][2], 0.0],
+                cov_row2: [cov[2][0], cov[2][1], cov[2][2], 0.0],
+                color_dc: [color_dc[0], color_dc[1], color_dc[2], 0.0],
+                opacity_and_pad: [opacity, 0.0, 0.0, 0.0],
+            }
+        })
+        .collect()
 }
 
 fn select_present_mode(caps: &wgpu::SurfaceCapabilities) -> wgpu::PresentMode {
+    if caps.present_modes.contains(&wgpu::PresentMode::Mailbox) {
+        return wgpu::PresentMode::Mailbox;
+    }
     if caps.present_modes.contains(&wgpu::PresentMode::Fifo) {
         return wgpu::PresentMode::Fifo;
     }
@@ -732,7 +952,7 @@ fn surface_error_to_presenter(err: wgpu::SurfaceError) -> SurfacePresenterError 
 }
 
 fn surface_instance_capacity(scene_len: usize) -> usize {
-    scene_len.min(SURFACE_INSTANCE_LIMIT).max(1)
+    scene_len.max(1)
 }
 
 fn fit_surface_size(width: u32, height: u32, max_dimension: u32) -> (u32, u32) {
@@ -779,6 +999,32 @@ pub struct GpuInstance {
     pub axis_v_and_pad: [f32; 4],
     // Premultiplied RGB + alpha
     pub color_rgba: [f32; 4],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+pub struct GpuSurfaceInstance {
+    // xy = center in NDC, zw = major axis in NDC
+    pub center_and_axis_u: [f32; 4],
+    // xy = minor axis in NDC, z = source splat index, w = alpha
+    pub axis_v_index_alpha: [f32; 4],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct GpuSurfaceColorElem {
+    position: [f32; 4],
+    color_dc: [f32; 4],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct GpuSurfaceRenderParams {
+    camera_pos: [f32; 4],
+    sh_degree: u32,
+    len: u32,
+    _pad0: u32,
+    _pad2: u32,
 }
 
 #[repr(C)]
@@ -915,33 +1161,7 @@ impl GpuInstancePreprocessor {
         });
 
         let scene_len = scene.len().max(1);
-        let scene_data: Vec<GpuSceneElem> = if scene.positions.is_empty() {
-            vec![GpuSceneElem {
-                position: [0.0, 0.0, 0.0, 0.0],
-                cov_row0: [0.0, 0.0, 0.0, 0.0],
-                cov_row1: [0.0, 0.0, 0.0, 0.0],
-                cov_row2: [0.0, 0.0, 0.0, 0.0],
-                color_dc: [0.0, 0.0, 0.0, 0.0],
-                opacity_and_pad: [0.0, 0.0, 0.0, 0.0],
-            }]
-        } else {
-            (0..scene.positions.len())
-                .map(|i| {
-                    let pos = scene.positions[i];
-                    let cov = world_covariances[i];
-                    let color_dc = scene.color_dc.get(i).copied().unwrap_or([0.0, 0.0, 0.0]);
-                    let opacity = *scene.opacity.get(i).unwrap_or(&0.0);
-                    GpuSceneElem {
-                        position: [pos.x, pos.y, pos.z, 0.0],
-                        cov_row0: [cov[0][0], cov[0][1], cov[0][2], 0.0],
-                        cov_row1: [cov[1][0], cov[1][1], cov[1][2], 0.0],
-                        cov_row2: [cov[2][0], cov[2][1], cov[2][2], 0.0],
-                        color_dc: [color_dc[0], color_dc[1], color_dc[2], 0.0],
-                        opacity_and_pad: [opacity, 0.0, 0.0, 0.0],
-                    }
-                })
-                .collect()
-        };
+        let scene_data = make_gpu_scene_elems(scene, world_covariances);
         let scene_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: wgpu_label("gsplat-render-preprocess-scene"),
             contents: bytemuck::cast_slice(&scene_data),
@@ -1097,74 +1317,405 @@ impl GpuInstancePreprocessor {
 fn build_instances(
     scene: &SceneBuffers,
     world_covariances: &[[[f32; 3]; 3]],
+    alpha_values: &[f32],
     indices: &[u32],
     camera: &Camera,
     config: RendererConfig,
 ) -> Vec<GpuInstance> {
-    if world_covariances.len() != scene.len() {
-        return Vec::new();
+    let mut out = Vec::new();
+    build_instances_into(
+        scene,
+        world_covariances,
+        alpha_values,
+        indices,
+        camera,
+        config,
+        &mut out,
+    );
+    out
+}
+
+fn build_instances_into(
+    scene: &SceneBuffers,
+    world_covariances: &[[[f32; 3]; 3]],
+    alpha_values: &[f32],
+    indices: &[u32],
+    camera: &Camera,
+    config: RendererConfig,
+    out: &mut Vec<GpuInstance>,
+) {
+    if world_covariances.len() != scene.len() || alpha_values.len() != scene.len() {
+        out.clear();
+        return;
     }
 
-    let aspect = config.width as f32 / config.height as f32;
-    let f = 1.0 / (camera.intrinsics.vertical_fov_radians * 0.5).tan();
-    let camera_inv_q = quat_inverse(camera.pose.rotation_xyzw);
-    let view_rot = quat_to_mat3(camera_inv_q);
-    let view_rot_t = mat3_transpose(view_rot);
+    let Some(params) = InstanceBuildParams::new(camera, config) else {
+        out.clear();
+        return;
+    };
 
-    indices
-        .par_iter()
-        .filter_map(|&idx| {
+    if out.len() < indices.len() {
+        out.resize(indices.len(), GpuInstance::zeroed());
+    } else {
+        out.truncate(indices.len());
+    }
+
+    let sh_layout = ShColorLayout::new(scene);
+    let had_invalid = AtomicBool::new(false);
+    out.par_iter_mut()
+        .zip(indices.par_iter())
+        .for_each(|(slot, &idx)| {
             let i = idx as usize;
-            let pos_world = scene.positions[i];
-            let p_cam = world_to_camera_with_inv_q(pos_world, camera, camera_inv_q);
-            // Preprocess already culled by z range, but keep this safe for runtime camera changes.
-            if !is_visible(p_cam.z, camera) {
-                return None;
+            let instance = if i < scene.len() {
+                // SAFETY: the explicit bounds check above covers all scene-parallel arrays because
+                // the caller validated equal lengths before entering this loop.
+                unsafe {
+                    build_instance_unchecked(
+                        scene,
+                        world_covariances,
+                        alpha_values,
+                        i,
+                        camera,
+                        &params,
+                        sh_layout,
+                    )
+                }
+            } else {
+                None
+            };
+            if let Some(instance) = instance {
+                *slot = instance;
+            } else {
+                *slot = invalid_gpu_instance();
+                had_invalid.store(true, Ordering::Relaxed);
             }
+        });
 
-            // Project center to NDC for instance placement.
-            let inv_z = 1.0 / p_cam.z.max(1e-6);
-            let x_ndc = (p_cam.x * f) * inv_z / aspect;
-            let y_ndc = (p_cam.y * f) * inv_z;
+    if had_invalid.load(Ordering::Relaxed) {
+        out.retain(|instance| instance.color_rgba[3] >= 0.0);
+    }
+}
 
-            let world_cov = world_covariances[i];
-            let cam_cov = mat3_mul(mat3_mul(view_rot, world_cov), view_rot_t);
-            let cov2_ndc = project_covariance_to_ndc(p_cam, cam_cov, camera, config)?;
-            let (axis_u, axis_v) = ellipse_axes_from_covariance(cov2_ndc)?;
-            let extent_x = axis_u[0].abs() + axis_v[0].abs();
-            let extent_y = axis_u[1].abs() + axis_v[1].abs();
-            if x_ndc + extent_x < -1.0
-                || x_ndc - extent_x > 1.0
-                || y_ndc + extent_y < -1.0
-                || y_ndc - extent_y > 1.0
-            {
-                return None;
+unsafe fn build_instance_unchecked(
+    scene: &SceneBuffers,
+    world_covariances: &[[[f32; 3]; 3]],
+    alpha_values: &[f32],
+    i: usize,
+    camera: &Camera,
+    params: &InstanceBuildParams,
+    sh_layout: ShColorLayout<'_>,
+) -> Option<GpuInstance> {
+    let pos_world = unsafe { *scene.positions.get_unchecked(i) };
+    let p_cam = world_to_camera_with_view_rot(pos_world, camera.pose.position, params.view_rot);
+    // Preprocess already culled by z range, but keep this safe for runtime camera changes.
+    if !is_visible(p_cam.z, camera) {
+        return None;
+    }
+
+    // Project center to NDC for instance placement.
+    let inv_z = 1.0 / p_cam.z.max(1e-6);
+    let x_ndc = (p_cam.x * params.f) * inv_z / params.aspect;
+    let y_ndc = (p_cam.y * params.f) * inv_z;
+
+    let cov2_ndc = project_world_covariance_to_ndc(
+        p_cam,
+        unsafe { *world_covariances.get_unchecked(i) },
+        params,
+    )?;
+    let (axis_u, axis_v) = ellipse_axes_from_covariance(cov2_ndc)?;
+    let extent_x = axis_u[0].abs() + axis_v[0].abs();
+    let extent_y = axis_u[1].abs() + axis_v[1].abs();
+    if x_ndc + extent_x < -1.0
+        || x_ndc - extent_x > 1.0
+        || y_ndc + extent_y < -1.0
+        || y_ndc - extent_y > 1.0
+    {
+        return None;
+    }
+
+    let alpha = unsafe { *alpha_values.get_unchecked(i) };
+    let dir_world = normalize3(Vec3f::new(
+        pos_world.x - camera.pose.position.x,
+        pos_world.y - camera.pose.position.y,
+        pos_world.z - camera.pose.position.z,
+    ));
+    let rgb = unsafe { sh_color_unchecked(scene, i, dir_world, sh_layout) };
+    let rgb = [
+        rgb[0].clamp(0.0, 1.0),
+        rgb[1].clamp(0.0, 1.0),
+        rgb[2].clamp(0.0, 1.0),
+    ];
+
+    Some(GpuInstance {
+        center_and_axis_u: [x_ndc, y_ndc, axis_u[0], axis_u[1]],
+        axis_v_and_pad: [axis_v[0], axis_v[1], 0.0, 0.0],
+        color_rgba: [
+            (rgb[0] * alpha).clamp(0.0, 1.0),
+            (rgb[1] * alpha).clamp(0.0, 1.0),
+            (rgb[2] * alpha).clamp(0.0, 1.0),
+            alpha,
+        ],
+    })
+}
+
+fn invalid_gpu_instance() -> GpuInstance {
+    GpuInstance {
+        color_rgba: [0.0, 0.0, 0.0, -1.0],
+        ..GpuInstance::zeroed()
+    }
+}
+
+fn build_surface_instances_into(
+    scene: &SceneBuffers,
+    world_covariance_terms: &[CameraCovarianceTerms],
+    alpha_values: &[f32],
+    indices: &[u32],
+    camera: &Camera,
+    config: RendererConfig,
+    by_index: &mut Vec<GpuSurfaceInstance>,
+    out: &mut Vec<GpuSurfaceInstance>,
+) {
+    if world_covariance_terms.len() != scene.len() || alpha_values.len() != scene.len() {
+        out.clear();
+        return;
+    }
+
+    let Some(params) = InstanceBuildParams::new(camera, config) else {
+        out.clear();
+        return;
+    };
+
+    if should_use_scene_order_surface_build(scene.len(), indices.len()) {
+        build_surface_instances_scene_order_into(
+            scene,
+            world_covariance_terms,
+            alpha_values,
+            indices,
+            camera,
+            &params,
+            by_index,
+            out,
+        );
+    } else {
+        build_surface_instances_index_order_into(
+            scene,
+            world_covariance_terms,
+            alpha_values,
+            indices,
+            camera,
+            &params,
+            out,
+        );
+    }
+}
+
+fn should_use_scene_order_surface_build(scene_len: usize, visible_len: usize) -> bool {
+    scene_len > 0 && visible_len.saturating_mul(100) >= scene_len.saturating_mul(85)
+}
+
+fn build_surface_instances_scene_order_into(
+    scene: &SceneBuffers,
+    world_covariance_terms: &[CameraCovarianceTerms],
+    alpha_values: &[f32],
+    indices: &[u32],
+    camera: &Camera,
+    params: &InstanceBuildParams,
+    by_index: &mut Vec<GpuSurfaceInstance>,
+    out: &mut Vec<GpuSurfaceInstance>,
+) {
+    if by_index.len() < scene.len() {
+        by_index.resize(scene.len(), GpuSurfaceInstance::zeroed());
+    } else {
+        by_index.truncate(scene.len());
+    }
+
+    by_index.par_iter_mut().enumerate().for_each(|(i, slot)| {
+        // SAFETY: this scene-order path iterates exactly over scene indices and the caller already
+        // validated equal-length side arrays.
+        let instance = unsafe {
+            build_surface_instance_unchecked(
+                scene,
+                world_covariance_terms,
+                alpha_values,
+                i,
+                camera,
+                params,
+            )
+        };
+        *slot = instance.unwrap_or_else(invalid_gpu_surface_instance);
+    });
+
+    if out.len() < indices.len() {
+        out.resize(indices.len(), GpuSurfaceInstance::zeroed());
+    } else {
+        out.truncate(indices.len());
+    }
+
+    let mut write_index = 0_usize;
+    for &idx in indices {
+        let i = idx as usize;
+        if i >= by_index.len() {
+            continue;
+        }
+        let instance = by_index[i];
+        if instance.axis_v_index_alpha[3] >= 0.0 {
+            out[write_index] = instance;
+            write_index += 1;
+        }
+    }
+    out.truncate(write_index);
+}
+
+fn build_surface_instances_index_order_into(
+    scene: &SceneBuffers,
+    world_covariance_terms: &[CameraCovarianceTerms],
+    alpha_values: &[f32],
+    indices: &[u32],
+    camera: &Camera,
+    params: &InstanceBuildParams,
+    out: &mut Vec<GpuSurfaceInstance>,
+) {
+    if out.len() < indices.len() {
+        out.resize(indices.len(), GpuSurfaceInstance::zeroed());
+    } else {
+        out.truncate(indices.len());
+    }
+
+    let had_invalid = AtomicBool::new(false);
+    out.par_iter_mut()
+        .zip(indices.par_iter())
+        .for_each(|(slot, &idx)| {
+            let i = idx as usize;
+            let instance = if i < scene.len() {
+                // SAFETY: the explicit bounds check above covers all scene-parallel arrays because
+                // the caller validated equal lengths before entering this loop.
+                unsafe {
+                    build_surface_instance_unchecked(
+                        scene,
+                        world_covariance_terms,
+                        alpha_values,
+                        i,
+                        camera,
+                        &params,
+                    )
+                }
+            } else {
+                None
+            };
+            if let Some(instance) = instance {
+                *slot = instance;
+            } else {
+                *slot = invalid_gpu_surface_instance();
+                had_invalid.store(true, Ordering::Relaxed);
             }
+        });
 
-            let alpha = sigmoid(scene.opacity[i]).clamp(0.0, 1.0);
-            let dir_world = normalize3(Vec3f::new(
-                pos_world.x - camera.pose.position.x,
-                pos_world.y - camera.pose.position.y,
-                pos_world.z - camera.pose.position.z,
-            ));
-            let rgb = sh_color(scene, i, dir_world);
-            let rgb = [
-                rgb[0].clamp(0.0, 1.0),
-                rgb[1].clamp(0.0, 1.0),
-                rgb[2].clamp(0.0, 1.0),
-            ];
+    if had_invalid.load(Ordering::Relaxed) {
+        out.retain(|instance| instance.axis_v_index_alpha[3] >= 0.0);
+    }
+}
 
-            Some(GpuInstance {
-                center_and_axis_u: [x_ndc, y_ndc, axis_u[0], axis_u[1]],
-                axis_v_and_pad: [axis_v[0], axis_v[1], 0.0, 0.0],
-                color_rgba: [
-                    (rgb[0] * alpha).clamp(0.0, 1.0),
-                    (rgb[1] * alpha).clamp(0.0, 1.0),
-                    (rgb[2] * alpha).clamp(0.0, 1.0),
-                    alpha,
-                ],
-            })
+unsafe fn build_surface_instance_unchecked(
+    scene: &SceneBuffers,
+    world_covariance_terms: &[CameraCovarianceTerms],
+    alpha_values: &[f32],
+    i: usize,
+    camera: &Camera,
+    params: &InstanceBuildParams,
+) -> Option<GpuSurfaceInstance> {
+    let pos_world = unsafe { *scene.positions.get_unchecked(i) };
+    let p_cam = world_to_camera_with_view_rot(pos_world, camera.pose.position, params.view_rot);
+    if !is_visible(p_cam.z, camera) {
+        return None;
+    }
+
+    let inv_z = 1.0 / p_cam.z.max(1e-6);
+    let x_ndc = (p_cam.x * params.f) * inv_z / params.aspect;
+    let y_ndc = (p_cam.y * params.f) * inv_z;
+
+    let cov2_ndc = project_world_covariance_terms_to_ndc(
+        p_cam,
+        unsafe { *world_covariance_terms.get_unchecked(i) },
+        params,
+    )?;
+    let (axis_u, axis_v) = ellipse_axes_from_covariance(cov2_ndc)?;
+    let extent_x = axis_u[0].abs() + axis_v[0].abs();
+    let extent_y = axis_u[1].abs() + axis_v[1].abs();
+    if x_ndc + extent_x < -1.0
+        || x_ndc - extent_x > 1.0
+        || y_ndc + extent_y < -1.0
+        || y_ndc - extent_y > 1.0
+    {
+        return None;
+    }
+
+    Some(GpuSurfaceInstance {
+        center_and_axis_u: [x_ndc, y_ndc, axis_u[0], axis_u[1]],
+        axis_v_index_alpha: [axis_v[0], axis_v[1], i as f32, unsafe {
+            *alpha_values.get_unchecked(i)
+        }],
+    })
+}
+
+fn invalid_gpu_surface_instance() -> GpuSurfaceInstance {
+    GpuSurfaceInstance {
+        axis_v_index_alpha: [0.0, 0.0, 0.0, -1.0],
+        ..GpuSurfaceInstance::zeroed()
+    }
+}
+
+#[derive(Clone, Copy)]
+struct InstanceBuildParams {
+    aspect: f32,
+    f: f32,
+    fx: f32,
+    fy: f32,
+    lim_x: f32,
+    lim_y: f32,
+    blur_cov_x: f32,
+    blur_cov_y: f32,
+    view_rot: [[f32; 3]; 3],
+}
+
+impl InstanceBuildParams {
+    fn new(camera: &Camera, config: RendererConfig) -> Option<Self> {
+        if config.width == 0 || config.height == 0 {
+            return None;
+        }
+        let tan_half_fovy = (camera.intrinsics.vertical_fov_radians * 0.5).tan();
+        if tan_half_fovy <= 0.0 || !tan_half_fovy.is_finite() {
+            return None;
+        }
+
+        let aspect = config.width as f32 / config.height as f32;
+        let f = 1.0 / tan_half_fovy;
+        let fx = f / aspect;
+        let fy = f;
+        let tan_half_fovx = tan_half_fovy * aspect;
+        let blur_pixels = 0.3_f32;
+        let px_ndc_x = 2.0 / config.width as f32;
+        let px_ndc_y = 2.0 / config.height as f32;
+        let camera_inv_q = quat_inverse(camera.pose.rotation_xyzw);
+
+        Some(Self {
+            aspect,
+            f,
+            fx,
+            fy,
+            lim_x: 1.3 * tan_half_fovx,
+            lim_y: 1.3 * tan_half_fovy,
+            blur_cov_x: (blur_pixels * px_ndc_x).powi(2),
+            blur_cov_y: (blur_pixels * px_ndc_y).powi(2),
+            view_rot: quat_to_mat3(camera_inv_q),
         })
+    }
+}
+
+fn precompute_alpha_values(scene: &SceneBuffers) -> Vec<f32> {
+    scene
+        .opacity
+        .iter()
+        .map(|&opacity| sigmoid(opacity).clamp(0.0, 1.0))
         .collect()
 }
 
@@ -1172,19 +1723,67 @@ fn sigmoid(value: f32) -> f32 {
     1.0 / (1.0 + (-value).exp())
 }
 
-fn world_to_camera(pos_world: Vec3f, camera: &Camera) -> Vec3f {
-    let inv_q = quat_inverse(camera.pose.rotation_xyzw);
-    world_to_camera_with_inv_q(pos_world, camera, inv_q)
+fn preprocess_visible_into(
+    scene: &SceneBuffers,
+    camera: &Camera,
+    depth_keys: &mut Vec<u32>,
+    indices: &mut Vec<u32>,
+) -> Result<(), RendererError> {
+    camera
+        .validate()
+        .map_err(|_| RendererError::InvalidCamera)?;
+
+    depth_keys.clear();
+    indices.clear();
+    if depth_keys.capacity() < scene.len() {
+        depth_keys.reserve(scene.len() - depth_keys.capacity());
+    }
+    if indices.capacity() < scene.len() {
+        indices.reserve(scene.len() - indices.capacity());
+    }
+
+    let camera_inv_q = quat_inverse(camera.pose.rotation_xyzw);
+    let view_rot = quat_to_mat3(camera_inv_q);
+    let depth_row = view_rot[2];
+    let camera_position = camera.pose.position;
+
+    for (idx, position) in scene.positions.iter().enumerate() {
+        let depth_z = world_to_camera_depth_with_view_row(*position, camera_position, depth_row);
+        if is_visible(depth_z, camera) {
+            indices.push(idx as u32);
+            depth_keys.push(depth_to_key(depth_z));
+        }
+    }
+
+    Ok(())
 }
 
-fn world_to_camera_with_inv_q(pos_world: Vec3f, camera: &Camera, camera_inv_q: [f32; 4]) -> Vec3f {
+fn world_to_camera_depth_with_view_row(
+    pos_world: Vec3f,
+    camera_position: Vec3f,
+    depth_row: [f32; 3],
+) -> f32 {
+    depth_row[0] * (pos_world.x - camera_position.x)
+        + depth_row[1] * (pos_world.y - camera_position.y)
+        + depth_row[2] * (pos_world.z - camera_position.z)
+}
+
+fn world_to_camera_with_view_rot(
+    pos_world: Vec3f,
+    camera_position: Vec3f,
+    view_rot: [[f32; 3]; 3],
+) -> Vec3f {
     let p = Vec3f::new(
-        pos_world.x - camera.pose.position.x,
-        pos_world.y - camera.pose.position.y,
-        pos_world.z - camera.pose.position.z,
+        pos_world.x - camera_position.x,
+        pos_world.y - camera_position.y,
+        pos_world.z - camera_position.z,
     );
 
-    quat_rotate(camera_inv_q, p)
+    Vec3f::new(
+        view_rot[0][0] * p.x + view_rot[0][1] * p.y + view_rot[0][2] * p.z,
+        view_rot[1][0] * p.x + view_rot[1][1] * p.y + view_rot[1][2] * p.z,
+        view_rot[2][0] * p.x + view_rot[2][1] * p.y + view_rot[2][2] * p.z,
+    )
 }
 
 fn quat_inverse(q: [f32; 4]) -> [f32; 4] {
@@ -1240,64 +1839,75 @@ fn mat3_transpose(m: [[f32; 3]; 3]) -> [[f32; 3]; 3] {
     ]
 }
 
+#[cfg(test)]
 fn project_covariance_to_ndc(
     p_cam: Vec3f,
     cov_cam: [[f32; 3]; 3],
     camera: &Camera,
     config: RendererConfig,
 ) -> Option<[[f32; 2]; 2]> {
-    if config.width == 0 || config.height == 0 {
-        return None;
-    }
+    let params = InstanceBuildParams::new(camera, config)?;
+    project_camera_covariance_to_ndc(p_cam, CameraCovarianceTerms::from_matrix(cov_cam), &params)
+}
+
+fn project_world_covariance_to_ndc(
+    p_cam: Vec3f,
+    world_cov: [[f32; 3]; 3],
+    params: &InstanceBuildParams,
+) -> Option<[[f32; 2]; 2]> {
+    let world_cov = CameraCovarianceTerms::from_matrix(world_cov);
+    project_world_covariance_terms_to_ndc(p_cam, world_cov, params)
+}
+
+fn project_world_covariance_terms_to_ndc(
+    p_cam: Vec3f,
+    world_cov: CameraCovarianceTerms,
+    params: &InstanceBuildParams,
+) -> Option<[[f32; 2]; 2]> {
+    let cov_cam = transform_covariance_terms_to_camera(world_cov, params.view_rot);
+    project_camera_covariance_to_ndc(p_cam, cov_cam, params)
+}
+
+fn project_camera_covariance_to_ndc(
+    p_cam: Vec3f,
+    cov_cam: CameraCovarianceTerms,
+    params: &InstanceBuildParams,
+) -> Option<[[f32; 2]; 2]> {
     let z = p_cam.z;
     if z <= 1e-6 || !z.is_finite() {
         return None;
     }
 
-    let aspect = config.width as f32 / config.height as f32;
-    let tan_half_fovy = (camera.intrinsics.vertical_fov_radians * 0.5).tan();
-    if tan_half_fovy <= 0.0 || !tan_half_fovy.is_finite() {
-        return None;
-    }
-    let f = 1.0 / tan_half_fovy;
-    let fx = f / aspect;
-    let fy = f;
-
     // Match common 3DGS covariance projection behavior: clamp view-space x/z and y/z
     // before Jacobian evaluation to avoid extreme derivatives at frustum edges.
-    let tan_half_fovx = tan_half_fovy * aspect;
-    let lim_x = 1.3 * tan_half_fovx;
-    let lim_y = 1.3 * tan_half_fovy;
-    let x_clamped = (p_cam.x / z).clamp(-lim_x, lim_x) * z;
-    let y_clamped = (p_cam.y / z).clamp(-lim_y, lim_y) * z;
+    let x_clamped = (p_cam.x / z).clamp(-params.lim_x, params.lim_x) * z;
+    let y_clamped = (p_cam.y / z).clamp(-params.lim_y, params.lim_y) * z;
 
     let inv_z = 1.0 / z;
     let inv_z2 = inv_z * inv_z;
-    let j = [
-        [fx * inv_z, 0.0, -fx * x_clamped * inv_z2],
-        [0.0, fy * inv_z, -fy * y_clamped * inv_z2],
+    let j00 = params.fx * inv_z;
+    let j02 = -params.fx * x_clamped * inv_z2;
+    let j11 = params.fy * inv_z;
+    let j12 = -params.fy * y_clamped * inv_z2;
+
+    let cov01 = j00 * j11 * cov_cam.xy
+        + j00 * j12 * cov_cam.xz
+        + j02 * j11 * cov_cam.yz
+        + j02 * j12 * cov_cam.zz;
+    let mut cov2 = [
+        [
+            j00 * j00 * cov_cam.xx + 2.0 * j00 * j02 * cov_cam.xz + j02 * j02 * cov_cam.zz,
+            cov01,
+        ],
+        [
+            cov01,
+            j11 * j11 * cov_cam.yy + 2.0 * j11 * j12 * cov_cam.yz + j12 * j12 * cov_cam.zz,
+        ],
     ];
 
-    let mut cov2 = [[0.0_f32; 2]; 2];
-    for r in 0..2 {
-        for c in r..2 {
-            let mut sum = 0.0_f32;
-            for i in 0..3 {
-                for k in 0..3 {
-                    sum += j[r][i] * cov_cam[i][k] * j[c][k];
-                }
-            }
-            cov2[r][c] = sum;
-            cov2[c][r] = sum;
-        }
-    }
-
     // Low-pass filter in NDC space to keep splats from collapsing to subpixel noise.
-    let blur_pixels = 0.3_f32;
-    let px_ndc_x = 2.0 / config.width as f32;
-    let px_ndc_y = 2.0 / config.height as f32;
-    cov2[0][0] += (blur_pixels * px_ndc_x).powi(2);
-    cov2[1][1] += (blur_pixels * px_ndc_y).powi(2);
+    cov2[0][0] += params.blur_cov_x;
+    cov2[1][1] += params.blur_cov_y;
 
     if !cov2[0][0].is_finite()
         || !cov2[0][1].is_finite()
@@ -1308,6 +1918,86 @@ fn project_covariance_to_ndc(
     }
 
     Some(cov2)
+}
+
+#[derive(Clone, Copy)]
+struct CameraCovarianceTerms {
+    xx: f32,
+    xy: f32,
+    xz: f32,
+    yy: f32,
+    yz: f32,
+    zz: f32,
+}
+
+impl CameraCovarianceTerms {
+    fn from_matrix(cov: [[f32; 3]; 3]) -> Self {
+        Self {
+            xx: cov[0][0],
+            xy: cov[0][1],
+            xz: cov[0][2],
+            yy: cov[1][1],
+            yz: cov[1][2],
+            zz: cov[2][2],
+        }
+    }
+}
+
+fn transform_covariance_terms_to_camera(
+    cov: CameraCovarianceTerms,
+    view_rot: [[f32; 3]; 3],
+) -> CameraCovarianceTerms {
+    let c00 = cov.xx;
+    let c01 = cov.xy;
+    let c02 = cov.xz;
+    let c11 = cov.yy;
+    let c12 = cov.yz;
+    let c22 = cov.zz;
+    let r0 = view_rot[0];
+    let r1 = view_rot[1];
+    let r2 = view_rot[2];
+
+    CameraCovarianceTerms {
+        xx: covariance_quadratic(c00, c01, c02, c11, c12, c22, r0),
+        xy: covariance_bilinear(c00, c01, c02, c11, c12, c22, r0, r1),
+        xz: covariance_bilinear(c00, c01, c02, c11, c12, c22, r0, r2),
+        yy: covariance_quadratic(c00, c01, c02, c11, c12, c22, r1),
+        yz: covariance_bilinear(c00, c01, c02, c11, c12, c22, r1, r2),
+        zz: covariance_quadratic(c00, c01, c02, c11, c12, c22, r2),
+    }
+}
+
+fn covariance_quadratic(
+    c00: f32,
+    c01: f32,
+    c02: f32,
+    c11: f32,
+    c12: f32,
+    c22: f32,
+    r: [f32; 3],
+) -> f32 {
+    r[0] * r[0] * c00
+        + 2.0 * r[0] * r[1] * c01
+        + 2.0 * r[0] * r[2] * c02
+        + r[1] * r[1] * c11
+        + 2.0 * r[1] * r[2] * c12
+        + r[2] * r[2] * c22
+}
+
+fn covariance_bilinear(
+    c00: f32,
+    c01: f32,
+    c02: f32,
+    c11: f32,
+    c12: f32,
+    c22: f32,
+    a: [f32; 3],
+    b: [f32; 3],
+) -> f32 {
+    let bx = c00 * b[0] + c01 * b[1] + c02 * b[2];
+    let by = c01 * b[0] + c11 * b[1] + c12 * b[2];
+    let bz = c02 * b[0] + c12 * b[1] + c22 * b[2];
+    a[0] * bx + a[1] * by + a[2] * bz
 }
 
 fn ellipse_axes_from_covariance(cov2: [[f32; 2]; 2]) -> Option<([f32; 2], [f32; 2])> {
@@ -1357,24 +2047,6 @@ fn ellipse_axes_from_covariance(cov2: [[f32; 2]; 2]) -> Option<([f32; 2], [f32; 
     Some((axis_u, axis_v))
 }
 
-fn quat_rotate(q: [f32; 4], v: Vec3f) -> Vec3f {
-    // v' = v + 2w(qxyz x v) + 2(qxyz x (qxyz x v))
-    let qv = Vec3f::new(q[0], q[1], q[2]);
-    let t = cross(qv, v);
-    let t2 = Vec3f::new(t.x * 2.0, t.y * 2.0, t.z * 2.0);
-    let v_wt = Vec3f::new(v.x + q[3] * t2.x, v.y + q[3] * t2.y, v.z + q[3] * t2.z);
-    let c = cross(qv, t2);
-    Vec3f::new(v_wt.x + c.x, v_wt.y + c.y, v_wt.z + c.z)
-}
-
-fn cross(a: Vec3f, b: Vec3f) -> Vec3f {
-    Vec3f::new(
-        a.y * b.z - a.z * b.y,
-        a.z * b.x - a.x * b.z,
-        a.x * b.y - a.y * b.x,
-    )
-}
-
 fn normalize3(v: Vec3f) -> [f32; 3] {
     let len2 = v.x * v.x + v.y * v.y + v.z * v.z;
     if len2 <= 0.0 {
@@ -1415,45 +2087,207 @@ fn precompute_world_covariances(scene: &SceneBuffers) -> Vec<[[f32; 3]; 3]> {
     out
 }
 
-fn sh_color(scene: &SceneBuffers, index: usize, dir: [f32; 3]) -> [f32; 3] {
+#[derive(Clone, Copy)]
+struct ShColorLayout<'a> {
+    rest: Option<&'a [f32]>,
+    degree: u8,
+    per_channel: usize,
+    stride: usize,
+}
+
+impl<'a> ShColorLayout<'a> {
+    fn new(scene: &'a SceneBuffers) -> Self {
+        let rest = scene.sh_rest.as_deref();
+        let coeff_total = if rest.is_some() {
+            (scene.sh_degree as usize + 1).pow(2)
+        } else {
+            1
+        };
+        let per_channel = coeff_total.saturating_sub(1);
+        Self {
+            rest,
+            degree: if rest.is_some() { scene.sh_degree } else { 0 },
+            per_channel,
+            stride: per_channel * 3,
+        }
+    }
+}
+
+unsafe fn sh_color_unchecked(
+    scene: &SceneBuffers,
+    index: usize,
+    dir: [f32; 3],
+    layout: ShColorLayout<'_>,
+) -> [f32; 3] {
     // The PLY stores SH coefficients as `f_dc_*` + `f_rest_*`. Evaluate as in 3DGS:
     // `rgb = clamp_min(eval_sh(deg, sh, dir) + 0.5, 0.0)`.
     // Reference: graphdeco-inria/gaussian-splatting `utils/sh_utils.py`.
-    let deg = if scene.sh_rest.is_some() {
-        scene.sh_degree
-    } else {
-        0
-    };
+    const C0: f32 = 0.28209479177387814_f32;
+    let dc = unsafe { *scene.color_dc.get_unchecked(index) };
+    let mut rgb = [C0 * dc[0], C0 * dc[1], C0 * dc[2]];
 
-    let dc = scene.color_dc[index];
-    let sh_eval_dc = [
-        eval_sh_channel(deg, dc[0], sh_rest_channel(scene, index, 0), dir),
-        eval_sh_channel(deg, dc[1], sh_rest_channel(scene, index, 1), dir),
-        eval_sh_channel(deg, dc[2], sh_rest_channel(scene, index, 2), dir),
-    ];
+    if let Some(rest) = layout.rest {
+        let base = index * layout.stride;
+        if layout.degree == 3 && layout.per_channel == 15 {
+            if let Some(end) = base.checked_add(45) {
+                if end <= rest.len() {
+                    let sh_rgb = sh_color_rest_deg3(dir, &rest[base..end]);
+                    return [
+                        (rgb[0] + sh_rgb[0] + 0.5).max(0.0),
+                        (rgb[1] + sh_rgb[1] + 0.5).max(0.0),
+                        (rgb[2] + sh_rgb[2] + 0.5).max(0.0),
+                    ];
+                }
+            }
+        }
+
+        let (basis, basis_len) = sh_basis(layout.degree, dir);
+        for (channel, value) in rgb.iter_mut().enumerate() {
+            let channel_base = base + channel * layout.per_channel;
+            if channel_base >= rest.len() {
+                continue;
+            }
+            let available = rest.len() - channel_base;
+            let term_count = basis_len.min(layout.per_channel).min(available);
+            *value += dot_sh_terms(&basis, &rest[channel_base..], term_count);
+        }
+    }
 
     [
-        (sh_eval_dc[0] + 0.5).max(0.0),
-        (sh_eval_dc[1] + 0.5).max(0.0),
-        (sh_eval_dc[2] + 0.5).max(0.0),
+        (rgb[0] + 0.5).max(0.0),
+        (rgb[1] + 0.5).max(0.0),
+        (rgb[2] + 0.5).max(0.0),
     ]
 }
 
-fn sh_rest_channel(scene: &SceneBuffers, index: usize, channel: usize) -> &[f32] {
-    let Some(rest) = scene.sh_rest.as_ref() else {
-        return &[];
-    };
+fn sh_color_rest_deg3(dir: [f32; 3], rest: &[f32]) -> [f32; 3] {
+    debug_assert!(rest.len() >= 45);
 
-    let coeff_total = (scene.sh_degree as usize + 1).pow(2);
-    let per_channel = coeff_total.saturating_sub(1);
-    let stride = per_channel * 3;
-    let base = index * stride;
-    let channel_base = base + channel * per_channel;
-    &rest[channel_base..channel_base + per_channel]
+    const C1: f32 = 0.4886025119029199_f32;
+    const C2: [f32; 5] = [
+        1.0925484305920792_f32,
+        -1.0925484305920792_f32,
+        0.31539156525252005_f32,
+        -1.0925484305920792_f32,
+        0.5462742152960396_f32,
+    ];
+    const C3: [f32; 7] = [
+        -0.5900435899266435_f32,
+        2.890611442640554_f32,
+        -0.4570457994644658_f32,
+        0.3731763325901154_f32,
+        -0.4570457994644658_f32,
+        1.445305721320277_f32,
+        -0.5900435899266435_f32,
+    ];
+
+    let x = dir[0];
+    let y = dir[1];
+    let z = dir[2];
+    let xx = x * x;
+    let yy = y * y;
+    let zz = z * z;
+    let xy = x * y;
+    let yz = y * z;
+    let xz = x * z;
+
+    let b0 = -C1 * y;
+    let b1 = C1 * z;
+    let b2 = -C1 * x;
+    let b3 = C2[0] * xy;
+    let b4 = C2[1] * yz;
+    let b5 = C2[2] * (2.0 * zz - xx - yy);
+    let b6 = C2[3] * xz;
+    let b7 = C2[4] * (xx - yy);
+    let b8 = C3[0] * y * (3.0 * xx - yy);
+    let b9 = C3[1] * xy * z;
+    let b10 = C3[2] * y * (4.0 * zz - xx - yy);
+    let b11 = C3[3] * z * (2.0 * zz - 3.0 * xx - 3.0 * yy);
+    let b12 = C3[4] * x * (4.0 * zz - xx - yy);
+    let b13 = C3[5] * z * (xx - yy);
+    let b14 = C3[6] * x * (xx - 3.0 * yy);
+
+    [
+        sh_dot15(
+            rest, b0, b1, b2, b3, b4, b5, b6, b7, b8, b9, b10, b11, b12, b13, b14,
+        ),
+        sh_dot15(
+            &rest[15..],
+            b0,
+            b1,
+            b2,
+            b3,
+            b4,
+            b5,
+            b6,
+            b7,
+            b8,
+            b9,
+            b10,
+            b11,
+            b12,
+            b13,
+            b14,
+        ),
+        sh_dot15(
+            &rest[30..],
+            b0,
+            b1,
+            b2,
+            b3,
+            b4,
+            b5,
+            b6,
+            b7,
+            b8,
+            b9,
+            b10,
+            b11,
+            b12,
+            b13,
+            b14,
+        ),
+    ]
 }
 
-fn eval_sh_channel(deg: u8, dc_coeff: f32, rest: &[f32], dir: [f32; 3]) -> f32 {
-    const C0: f32 = 0.28209479177387814_f32;
+#[allow(clippy::too_many_arguments)]
+fn sh_dot15(
+    rest: &[f32],
+    b0: f32,
+    b1: f32,
+    b2: f32,
+    b3: f32,
+    b4: f32,
+    b5: f32,
+    b6: f32,
+    b7: f32,
+    b8: f32,
+    b9: f32,
+    b10: f32,
+    b11: f32,
+    b12: f32,
+    b13: f32,
+    b14: f32,
+) -> f32 {
+    debug_assert!(rest.len() >= 15);
+    b0 * rest[0]
+        + b1 * rest[1]
+        + b2 * rest[2]
+        + b3 * rest[3]
+        + b4 * rest[4]
+        + b5 * rest[5]
+        + b6 * rest[6]
+        + b7 * rest[7]
+        + b8 * rest[8]
+        + b9 * rest[9]
+        + b10 * rest[10]
+        + b11 * rest[11]
+        + b12 * rest[12]
+        + b13 * rest[13]
+        + b14 * rest[14]
+}
+
+fn sh_basis(deg: u8, dir: [f32; 3]) -> ([f32; 24], usize) {
     const C1: f32 = 0.4886025119029199_f32;
     const C2: [f32; 5] = [
         1.0925484305920792_f32,
@@ -1483,26 +2317,21 @@ fn eval_sh_channel(deg: u8, dc_coeff: f32, rest: &[f32], dir: [f32; 3]) -> f32 {
         0.6258357354491761_f32,
     ];
 
-    let mut result = C0 * dc_coeff;
-    if deg == 0 {
-        return result;
-    }
-
+    let mut basis = [0.0_f32; 24];
     let x = dir[0];
     let y = dir[1];
     let z = dir[2];
-    if rest.len() < 3 {
-        return result;
+    if deg == 0 {
+        return (basis, 0);
     }
 
-    result = result - C1 * y * rest[0] + C1 * z * rest[1] - C1 * x * rest[2];
+    basis[0] = -C1 * y;
+    basis[1] = C1 * z;
+    basis[2] = -C1 * x;
     if deg == 1 {
-        return result;
+        return (basis, 3);
     }
 
-    if rest.len() < 8 {
-        return result;
-    }
     let xx = x * x;
     let yy = y * y;
     let zz = z * z;
@@ -1510,50 +2339,83 @@ fn eval_sh_channel(deg: u8, dc_coeff: f32, rest: &[f32], dir: [f32; 3]) -> f32 {
     let yz = y * z;
     let xz = x * z;
 
-    result = result
-        + C2[0] * xy * rest[3]
-        + C2[1] * yz * rest[4]
-        + C2[2] * (2.0 * zz - xx - yy) * rest[5]
-        + C2[3] * xz * rest[6]
-        + C2[4] * (xx - yy) * rest[7];
-
+    basis[3] = C2[0] * xy;
+    basis[4] = C2[1] * yz;
+    basis[5] = C2[2] * (2.0 * zz - xx - yy);
+    basis[6] = C2[3] * xz;
+    basis[7] = C2[4] * (xx - yy);
     if deg == 2 {
-        return result;
+        return (basis, 8);
     }
 
-    if rest.len() < 15 {
-        return result;
-    }
-
-    result = result
-        + C3[0] * y * (3.0 * xx - yy) * rest[8]
-        + C3[1] * xy * z * rest[9]
-        + C3[2] * y * (4.0 * zz - xx - yy) * rest[10]
-        + C3[3] * z * (2.0 * zz - 3.0 * xx - 3.0 * yy) * rest[11]
-        + C3[4] * x * (4.0 * zz - xx - yy) * rest[12]
-        + C3[5] * z * (xx - yy) * rest[13]
-        + C3[6] * x * (xx - 3.0 * yy) * rest[14];
-
+    basis[8] = C3[0] * y * (3.0 * xx - yy);
+    basis[9] = C3[1] * xy * z;
+    basis[10] = C3[2] * y * (4.0 * zz - xx - yy);
+    basis[11] = C3[3] * z * (2.0 * zz - 3.0 * xx - 3.0 * yy);
+    basis[12] = C3[4] * x * (4.0 * zz - xx - yy);
+    basis[13] = C3[5] * z * (xx - yy);
+    basis[14] = C3[6] * x * (xx - 3.0 * yy);
     if deg == 3 {
-        return result;
-    }
-
-    if rest.len() < 24 {
-        return result;
+        return (basis, 15);
     }
 
     // deg 4 support (rare for 3DGS, but safe to handle).
-    result = result
-        + C4[0] * xy * (xx - yy) * rest[15]
-        + C4[1] * yz * (3.0 * xx - yy) * rest[16]
-        + C4[2] * xy * (7.0 * zz - 1.0) * rest[17]
-        + C4[3] * yz * (7.0 * zz - 3.0) * rest[18]
-        + C4[4] * (zz * (35.0 * zz - 30.0) + 3.0) * rest[19]
-        + C4[5] * xz * (7.0 * zz - 3.0) * rest[20]
-        + C4[6] * (xx - yy) * (7.0 * zz - 1.0) * rest[21]
-        + C4[7] * xz * (xx - 3.0 * yy) * rest[22]
-        + C4[8] * (xx * (xx - 3.0 * yy) - yy * (3.0 * xx - yy)) * rest[23];
+    basis[15] = C4[0] * xy * (xx - yy);
+    basis[16] = C4[1] * yz * (3.0 * xx - yy);
+    basis[17] = C4[2] * xy * (7.0 * zz - 1.0);
+    basis[18] = C4[3] * yz * (7.0 * zz - 3.0);
+    basis[19] = C4[4] * (zz * (35.0 * zz - 30.0) + 3.0);
+    basis[20] = C4[5] * xz * (7.0 * zz - 3.0);
+    basis[21] = C4[6] * (xx - yy) * (7.0 * zz - 1.0);
+    basis[22] = C4[7] * xz * (xx - 3.0 * yy);
+    basis[23] = C4[8] * (xx * (xx - 3.0 * yy) - yy * (3.0 * xx - yy));
+    (basis, 24)
+}
 
+fn dot_sh_terms(basis: &[f32; 24], rest: &[f32], count: usize) -> f32 {
+    debug_assert!(count <= basis.len());
+    debug_assert!(count <= rest.len());
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        // SAFETY: AArch64 guarantees Neon availability and the count has been bounds-checked.
+        unsafe {
+            return dot_sh_terms_neon(basis, rest, count);
+        }
+    }
+
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        let mut result = 0.0_f32;
+        for i in 0..count {
+            result += basis[i] * rest[i];
+        }
+        result
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+#[allow(unsafe_op_in_unsafe_fn)]
+#[target_feature(enable = "neon")]
+unsafe fn dot_sh_terms_neon(basis: &[f32; 24], rest: &[f32], count: usize) -> f32 {
+    use std::arch::aarch64::*;
+
+    let mut sum4 = vdupq_n_f32(0.0);
+    let mut i = 0_usize;
+    while i + 4 <= count {
+        let b = unsafe { vld1q_f32(basis.as_ptr().add(i)) };
+        let r = unsafe { vld1q_f32(rest.as_ptr().add(i)) };
+        sum4 = vmlaq_f32(sum4, b, r);
+        i += 4;
+    }
+
+    let mut lanes = [0.0_f32; 4];
+    unsafe { vst1q_f32(lanes.as_mut_ptr(), sum4) };
+    let mut result = lanes[0] + lanes[1] + lanes[2] + lanes[3];
+    while i < count {
+        result += unsafe { *basis.as_ptr().add(i) } * unsafe { *rest.as_ptr().add(i) };
+        i += 1;
+    }
     result
 }
 
@@ -2008,9 +2870,11 @@ mod tests {
         };
 
         let world_cov = super::precompute_world_covariances(&scene);
+        let alpha_values = super::precompute_alpha_values(&scene);
         let instances = build_instances(
             &scene,
             &world_cov,
+            &alpha_values,
             &[0],
             &Camera::default(),
             RendererConfig::default(),
@@ -2041,9 +2905,11 @@ mod tests {
         };
 
         let world_cov = super::precompute_world_covariances(&scene);
+        let alpha_values = super::precompute_alpha_values(&scene);
         let instances = build_instances(
             &scene,
             &world_cov,
+            &alpha_values,
             &[0],
             &Camera::default(),
             RendererConfig::default(),
