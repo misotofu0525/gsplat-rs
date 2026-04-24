@@ -4,10 +4,10 @@ Cross-platform Gaussian Splatting rendering library built with Rust + `wgpu`.
 
 ## Start Here
 
-- Project context: `docs/PROJECT_CONTEXT.md`
-- Architecture map: `docs/ARCHITECTURE.md`
-- Verification commands: `docs/VERIFICATION.md`
-- Current direction and release boundary: `docs/roadmap.md`
+- Project context: `handbook/PROJECT_CONTEXT.md`
+- Architecture map: `handbook/ARCHITECTURE.md`
+- Verification commands: `handbook/VERIFICATION.md`
+- Current direction and release boundary: `handbook/ROADMAP.md`
 - Agent entrypoint: `AGENTS.md`
 
 ## Repository Layout
@@ -27,4 +27,4 @@ cargo test --workspace
 cargo run -p desktop-demo -- tests/datasets/minimal_ascii.ply --png target/out.png
 ```
 
-Use `docs/VERIFICATION.md` for the full validation matrix.
+Use `handbook/VERIFICATION.md` for the full validation matrix.

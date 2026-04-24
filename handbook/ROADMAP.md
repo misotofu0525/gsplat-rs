@@ -1,7 +1,7 @@
 # Roadmap
 
 This file is the current direction and release-boundary document for the repository.
-Operational facts and command entrypoints live in `PROJECT_CONTEXT.md` and `VERIFICATION.md`.
+Operational facts and command entrypoints live in `handbook/PROJECT_CONTEXT.md` and `handbook/VERIFICATION.md`.
 
 ## Project Position
 
@@ -34,7 +34,7 @@ Operational facts and command entrypoints live in `PROJECT_CONTEXT.md` and `VERI
 
 ## Release Bar
 
-- The canonical day-to-day verification set now lives in `VERIFICATION.md`.
+- The canonical day-to-day verification set now lives in `handbook/VERIFICATION.md`.
 - Before cutting a release, also run:
 
 ```bash

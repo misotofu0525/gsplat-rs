@@ -11,7 +11,8 @@
 - Agent/project entrypoint: `../AGENTS.md`
 - Architecture map: `ARCHITECTURE.md`
 - Verification entrypoint: `VERIFICATION.md`
-- Direction and scope: `roadmap.md`
+- Direction and scope: `ROADMAP.md`
+- Project taste guide: `GOLDEN_PRINCIPLES.md`
 
 ## Success Criteria
 
@@ -34,6 +35,8 @@
 - `tools/gsplat-pack`: PLY to packed-format converter
 - `tools/bench-runner`: perf and stability runner
 - `tests/`: sample dataset, FFI smoke harness, and perf scripts
+- `handbook/`: current project docs, architecture map, verification guide, roadmap, and project principles
+- `docs/plans/`: task-scoped research and planning bundles
 
 ## Common Commands
 

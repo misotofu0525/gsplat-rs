@@ -29,7 +29,8 @@
 - `apps/ios-demo/`: Swift smoke source and iOS simulator build scripts
 - `tools/`: CLI tools for packaging and performance validation
 - `tests/`: shared dataset, FFI smoke harness, and long-stability script
-- `docs/`: project context, verification, roadmap, and plan bundles
+- `handbook/`: current project docs, architecture map, verification guide, roadmap, and project principles
+- `docs/plans/`: active and completed task planning bundles
 
 ## Critical Flows
 
