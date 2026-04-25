@@ -47,15 +47,29 @@ cargo run -p desktop-demo --features interactive-viewer -- tests/datasets/minima
 - Use the PNG path for deterministic local smoke output.
 - Use the interactive viewer when changing windowed presentation or camera interaction behavior.
 
-## Mobile Container Builds
+## Mobile Builds and Simulator Smoke
 
 ```bash
+bash apps/ios-demo/build-ios-sim-app.sh
+bash apps/ios-demo/run-ios-sim-app.sh
+bash apps/ios-demo/build-ios-device-app.sh
+IOS_DEVICE_ID=<coredevice-id-or-udid> bash apps/ios-demo/run-ios-device-app.sh
+IOS_DEVICE_ID=<coredevice-id-or-udid> bash apps/ios-demo/benchmark-ios-device-app.sh
 bash apps/ios-demo/build-ios-sim.sh
+bash apps/ios-demo/run-ios-sim-smoke.sh
 bash apps/android-demo/build-apk.sh
 ```
 
-- Run these when changing mobile packaging or build scripts.
+- Run these when changing mobile packaging, simulator run scripts, or build scripts.
 - Check the matching app README for platform prerequisites before assuming SDK/NDK/Xcode state.
+- iOS device runs require a development provisioning profile whose device list
+  includes the target phone. The current local default is documented in
+  `apps/ios-demo/README.md`; override with `IOS_PROVISIONING_PROFILE`,
+  `IOS_CODE_SIGN_IDENTITY`, `IOS_BUNDLE_ID`, or `IOS_DEVICE_ID` when needed.
+- `apps/ios-demo/build-ios-device-app.sh` builds Rust with `release` and Swift
+  with `-O` by default so the iPhone path can be compared with Android's
+  release-native APK. Use `IOS_RUST_PROFILE=dev` and
+  `IOS_SWIFT_OPT_LEVEL=-Onone` only for debugging.
 - `apps/android-demo/build-apk.sh` builds a debug APK container, but compiles the Rust native library with the Rust `release` profile by default. Set `ANDROID_RUST_PROFILE=dev` only for native debugging.
 
 ## Android Surface Smoke
@@ -78,6 +92,32 @@ ADB="$ANDROID_SDK_ROOT/platform-tools/adb"
 - For repeatable perf checks, add the benchmark extras documented in `apps/android-demo/README.md` and read the `BENCHMARK_RESULT` logcat line.
 - Android emulator storage can be tight after pushing the flower PLY. If `adb install -r` reports insufficient storage, uninstall `com.gsplat.demo`, reinstall, and push the dataset again.
 
+## iOS Surface Smoke
+
+Use this when changing iOS realtime rendering, UIKit surface glue, touch
+controls, mobile packaging, signing, or `SurfacePresenter` behavior:
+
+```bash
+bash apps/ios-demo/run-ios-sim-app.sh
+IOS_DEVICE_ID=<coredevice-id-or-udid> bash apps/ios-demo/run-ios-device-app.sh
+```
+
+- Expected overlay includes `state=rendering`, `camera=<mode>`,
+  `dataset=flowers_1.ply`, and `drawn=<surface_instances>/<visible_instances>`.
+- The simulator app bundle lives at `target/ios-sim-app/GsplatIOSDemo.app`; the
+  device app bundle lives at `target/ios-device-app/GsplatIOSDemo.app`. Both
+  package `flowers_1.ply` from the shared dataset directory.
+- The app uses `Documents/imported_scene.ply` when present, otherwise the
+  bundled flower dataset, otherwise a generated minimal ASCII PLY fallback.
+- Touch smoke should include at least one one-finger swipe/orbit check in the
+  simulator. Pinch zoom and two-finger pan use the same C ABI camera-control
+  functions.
+- For repeatable perf checks, add the benchmark args documented in
+  `apps/ios-demo/README.md` after `--`. Use
+  `apps/ios-demo/benchmark-ios-device-app.sh` on a physical iPhone to print the
+  `BENCHMARK_RESULT` line and keep the raw log under
+  `target/ios-device-benchmarks/`.
+
 ## Release Bar
 
 Before cutting a release, also run:
@@ -90,7 +130,7 @@ STABILITY_SECONDS=1800 bash tests/perf/run-long-stability.sh
 
 - If you touch `crates/gsplat-ffi-c/`, run `bash tests/ffi/run-ffi-smoke.sh`.
 - If you touch `apps/android-demo/` or JNI glue, run `bash apps/android-demo/run-jni-smoke.sh`; for Surface changes, also run the Android Surface smoke above.
-- If you touch `apps/ios-demo/` or Swift/FFI integration, run `bash apps/ios-demo/run-swift-smoke.sh`.
+- If you touch `apps/ios-demo/` or Swift/FFI integration, run `bash apps/ios-demo/run-swift-smoke.sh`; for realtime Surface or touch changes, also run `bash apps/ios-demo/run-ios-sim-app.sh`; for offscreen simulator smoke changes, run `bash apps/ios-demo/run-ios-sim-smoke.sh`.
 - If you touch PLY import or scene normalization, run `cargo test --workspace` and `cargo run -p desktop-demo -- tests/datasets/minimal_ascii.ply --png target/out.png`.
 - If you touch renderer, sorting, or perf-sensitive code, run `cargo run -p bench-runner -- tests/datasets/minimal_ascii.ply 120` and consider the long-stability script.
 - For spatial/tile/chunk feasibility checks on a loaded PLY, use:

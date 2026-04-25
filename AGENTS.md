@@ -32,6 +32,16 @@
 - Keep the v0.1 C ABI small and stable. If you change it, update both `crates/gsplat-ffi-c/src/lib.rs` and `crates/gsplat-ffi-c/include/gsplat.h`, then run the FFI smoke path.
 - Prefer repo-local verification scripts from `handbook/VERIFICATION.md` over ad-hoc command sequences.
 
+## MCP Research Tools
+
+- Use MCP research tools as source-finding and API-reference helpers, not as substitutes for local code inspection or project verification.
+- Prefer `exa` for broad external discovery: recent papers, comparable GitHub repositories, architecture references, and ecosystem surveys.
+- Prefer `ref` or `context7` for API/library documentation, especially `wgpu`, Android NDK/JNI, Rust crates, shader language details, and platform behavior that may have changed.
+- When MCP tools are needed but not currently exposed, discover them through the available tool-discovery route first; do not invent MCP tool names or schemas.
+- For implementation decisions, reconcile MCP findings with repo-local files, current project docs, and true verification results. External examples are inspiration until the local benchmark/test path proves them.
+- For complex research or performance work, summarize useful MCP findings in the active plan bundle under `docs/plans/active/<task>/`, including links or identifiers for papers/repos/docs and the reason each idea was accepted, rejected, or deferred.
+- Do not count MCP research as completion evidence. Completion claims require local commands, tests, device runs, or other fresh verification from `handbook/VERIFICATION.md`.
+
 ## Verification
 
 - Fast check: `cargo check --workspace`

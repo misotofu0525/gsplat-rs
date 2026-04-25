@@ -15,7 +15,7 @@ Cross-platform Gaussian Splatting rendering library built with Rust + `wgpu`.
 - `crates/`: core library crates, render path, sort backends, format support, and C ABI
 - `apps/desktop-demo`: desktop viewer and offscreen PNG harness
 - `apps/android-demo`: Android integration demo and JNI smoke path
-- `apps/ios-demo`: Swift smoke path and iOS simulator build scripts
+- `apps/ios-demo`: Swift smoke path, UIKit realtime Surface app, and iOS simulator/device build/run scripts
 - `tools/`: packaging and performance helpers
 - `tests/`: sample dataset plus smoke/perf scripts
 
@@ -29,7 +29,8 @@ AAR/XCFramework SDK artifacts yet.
 - Use `GSPLAT_RENDER_MODE_SORTED_ALPHA`; it is the only release-gated render mode in v0.1.
 - Treat non-zero returns as `GsplatErrorCode` values and pass them to `gsplat_error_message()`.
 - Android Surface rendering is demonstrated by `apps/android-demo`.
-- Swift/C ABI integration is demonstrated by `apps/ios-demo`.
+- Swift/C ABI integration and a UIKit realtime simulator/device Surface demo are demonstrated by `apps/ios-demo`.
+- Both mobile demos are realtime validation surfaces with touch camera controls, local PLY import, and benchmark/A-B knobs over the same C ABI Surface functions.
 - Not in the v0.1 contract: scene-from-memory loading, runtime render-mode switching, AAR packaging, and XCFramework packaging.
 
 ## Common Commands

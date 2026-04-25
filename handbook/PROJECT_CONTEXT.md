@@ -27,10 +27,10 @@
 - `crates/gsplat-io-ply`: PLY parsing and scene buffer construction
 - `crates/gsplat-sort`: GPU and CPU sort backends
 - `crates/gsplat-render-wgpu`: preprocessing, raster path, Surface presenter, and GPU helper APIs
-- `crates/gsplat-ffi-c`: small C ABI surface over the renderer and Android Surface presenter
+- `crates/gsplat-ffi-c`: small C ABI surface over the renderer and mobile Surface presenters
 - `apps/desktop-demo`: desktop viewer and offscreen PNG harness
 - `apps/android-demo`: Kotlin Android Surface demo plus host-side JNI smoke
-- `apps/ios-demo`: Swift smoke path plus iOS simulator build scripts
+- `apps/ios-demo`: Swift smoke path plus UIKit realtime Surface app and iOS simulator/device build/run scripts
 - `tools/bench-runner`: perf and stability runner
 - `tests/`: sample dataset, FFI smoke harness, and perf scripts
 - `handbook/`: current project docs, architecture map, verification guide, roadmap, and project principles
@@ -58,7 +58,7 @@ For the broader command matrix, use `VERIFICATION.md`.
 
 - `SortedAlpha` is the only release-gated render path right now.
 - The current C ABI intentionally stays small and does not yet cover scene-from-memory loading or runtime render-mode switching.
-- Android Surface integration is present only as a demo/validation path; it is not a broader mobile product API.
+- Android and iOS Surface integration is present only as demo/validation paths; neither is a broader mobile product API.
 - Input PLY quaternion fields `rot_0..3` are interpreted as `w,x,y,z` and remapped internally to `x,y,z,w`.
 - Input 3DGS coordinates are treated as `RDF` and converted at load time to runtime `RUF`, including quaternion and SH sign transforms.
 

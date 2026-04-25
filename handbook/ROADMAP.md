@@ -36,9 +36,9 @@ Operational facts and command entrypoints live in `handbook/PROJECT_CONTEXT.md` 
   - `gsplat_context_load_scene_path`
   - `gsplat_context_render_frame`
   - `gsplat_context_get_stats`
-  - Android Surface renderer create/resize/camera-control/render/stats/destroy functions for the demo integration path
+  - Android and iOS Surface renderer create/resize/camera-control/render/stats/destroy functions for the demo integration paths
 - The current C ABI does not cover scene-from-memory loading or runtime render-mode switching.
-- Android Surface functions are validation/demo support, not a commitment to a full mobile product API.
+- Mobile Surface functions are validation/demo support, not a commitment to a full mobile product API.
 
 ## Release Bar
 

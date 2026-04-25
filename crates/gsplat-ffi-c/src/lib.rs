@@ -489,6 +489,84 @@ pub unsafe extern "C" fn gsplat_surface_renderer_create_android(
         wgpu::rwh::RawDisplayHandle::Android(wgpu::rwh::AndroidDisplayHandle::new());
     let raw_window_handle =
         wgpu::rwh::RawWindowHandle::AndroidNdk(wgpu::rwh::AndroidNdkWindowHandle::new(window));
+
+    create_surface_renderer_from_raw_handles(
+        renderer,
+        raw_display_handle,
+        raw_window_handle,
+        width,
+        height,
+        out_renderer,
+    )
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gsplat_surface_renderer_create_uikit(
+    ui_view: *mut c_void,
+    ui_view_controller: *mut c_void,
+    path: *const c_char,
+    width: u32,
+    height: u32,
+    out_renderer: *mut *mut GsplatSurfaceRenderer,
+) -> i32 {
+    if ui_view.is_null() || path.is_null() || out_renderer.is_null() {
+        return ErrorCode::InvalidArgument.as_i32();
+    }
+
+    unsafe {
+        *out_renderer = std::ptr::null_mut();
+    }
+
+    let path_str = match unsafe { CStr::from_ptr(path) }.to_str() {
+        Ok(path) => path,
+        Err(_) => return ErrorCode::InvalidArgument.as_i32(),
+    };
+
+    let mut renderer = match Renderer::with_config(RendererConfig {
+        width,
+        height,
+        mode: RenderMode::SortedAlpha,
+    }) {
+        Ok(renderer) => renderer,
+        Err(err) => return err.code().as_i32(),
+    };
+
+    let loaded = match load_ply(Path::new(path_str)) {
+        Ok(result) => result,
+        Err(err) => return err.code().as_i32(),
+    };
+    if let Err(err) = renderer.load_scene(loaded.scene) {
+        return err.code().as_i32();
+    };
+
+    let view = match NonNull::new(ui_view) {
+        Some(view) => view,
+        None => return ErrorCode::InvalidArgument.as_i32(),
+    };
+    let mut window_handle = wgpu::rwh::UiKitWindowHandle::new(view);
+    window_handle.ui_view_controller = NonNull::new(ui_view_controller);
+    let raw_display_handle =
+        wgpu::rwh::RawDisplayHandle::UiKit(wgpu::rwh::UiKitDisplayHandle::new());
+    let raw_window_handle = wgpu::rwh::RawWindowHandle::UiKit(window_handle);
+
+    create_surface_renderer_from_raw_handles(
+        renderer,
+        raw_display_handle,
+        raw_window_handle,
+        width,
+        height,
+        out_renderer,
+    )
+}
+
+fn create_surface_renderer_from_raw_handles(
+    mut renderer: Renderer,
+    raw_display_handle: wgpu::rwh::RawDisplayHandle,
+    raw_window_handle: wgpu::rwh::RawWindowHandle,
+    width: u32,
+    height: u32,
+    out_renderer: *mut *mut GsplatSurfaceRenderer,
+) -> i32 {
     let presenter = match unsafe {
         SurfacePresenter::from_raw_handles(
             raw_display_handle,

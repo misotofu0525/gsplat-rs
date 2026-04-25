@@ -81,6 +81,13 @@ int32_t gsplat_surface_renderer_create_android(
     uint32_t width,
     uint32_t height,
     GsplatSurfaceRenderer **out_renderer);
+int32_t gsplat_surface_renderer_create_uikit(
+    void *ui_view,
+    void *ui_view_controller,
+    const char *path,
+    uint32_t width,
+    uint32_t height,
+    GsplatSurfaceRenderer **out_renderer);
 void gsplat_surface_renderer_destroy(GsplatSurfaceRenderer *renderer);
 int32_t gsplat_surface_renderer_resize(
     GsplatSurfaceRenderer *renderer,
