@@ -122,6 +122,7 @@ pub struct GsplatSurfaceRenderer {
     surface_frames_since_sort: u32,
     surface_gpu_preproject: bool,
     surface_gpu_preproject_double_buffer: bool,
+    surface_static_direct: bool,
     surface_async_sort: bool,
     surface_async_geometry: bool,
     async_sorter: SurfaceAsyncSorter,
@@ -531,6 +532,7 @@ pub unsafe extern "C" fn gsplat_surface_renderer_create_android(
         surface_frames_since_sort: 0,
         surface_gpu_preproject: false,
         surface_gpu_preproject_double_buffer: false,
+        surface_static_direct: false,
         surface_async_sort: false,
         surface_async_geometry: false,
         async_sorter,
@@ -648,6 +650,29 @@ pub unsafe extern "C" fn gsplat_surface_renderer_set_gpu_preproject_double_buffe
         renderer.presenter.set_preproject_double_buffer(enabled);
         renderer.surface_frames_since_sort = 0;
         renderer.uploaded_frame = false;
+        renderer.render_error_logged = false;
+    }
+    ErrorCode::Ok.as_i32()
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gsplat_surface_renderer_set_static_direct(
+    renderer: *mut GsplatSurfaceRenderer,
+    enabled: u32,
+) -> i32 {
+    let renderer = match unsafe { renderer.as_mut() } {
+        Some(renderer) => renderer,
+        None => return ErrorCode::InvalidArgument.as_i32(),
+    };
+
+    let enabled = enabled != 0;
+    if renderer.surface_static_direct != enabled {
+        renderer.surface_static_direct = enabled;
+        renderer.surface_frames_since_sort = 0;
+        renderer.uploaded_frame = false;
+        if let Some(async_geometry) = renderer.async_geometry.as_mut() {
+            async_geometry.discard_in_flight();
+        }
         renderer.render_error_logged = false;
     }
     ErrorCode::Ok.as_i32()
@@ -851,14 +876,17 @@ pub unsafe extern "C" fn gsplat_surface_renderer_render_frame(
         None => return ErrorCode::InvalidArgument.as_i32(),
     };
 
-    let result = if renderer.uploaded_frame {
+    let result = if renderer.uploaded_frame && !renderer.surface_static_direct {
         renderer.presenter.render_current().map(|_| None)
     } else if renderer.surface_async_sort {
         match render_surface_frame_async_sort(renderer) {
             Ok(result) => Ok(Some(result)),
             Err(code) => return code.as_i32(),
         }
-    } else if renderer.surface_async_geometry && !renderer.surface_gpu_preproject {
+    } else if renderer.surface_async_geometry
+        && !renderer.surface_gpu_preproject
+        && !renderer.surface_static_direct
+    {
         match render_surface_frame_async_geometry(renderer) {
             Ok(result) => Ok(Some(result)),
             Err(code) => return code.as_i32(),
@@ -867,7 +895,24 @@ pub unsafe extern "C" fn gsplat_surface_renderer_render_frame(
         let refresh_sort = renderer.surface_sort_interval <= 1
             || renderer.surface_frames_since_sort == 0
             || renderer.surface_frames_since_sort >= renderer.surface_sort_interval;
-        let stats = if renderer.surface_gpu_preproject {
+        let stats = if renderer.surface_static_direct {
+            let stats = match renderer
+                .renderer
+                .build_surface_sorted_indices_with_sort_refresh(&renderer.camera, refresh_sort)
+            {
+                Ok(result) => result,
+                Err(err) => return err.code().as_i32(),
+            };
+            let sorted_indices = renderer.renderer.current_sorted_indices();
+            if let Err(err) = renderer.presenter.render_direct_sorted_indices(
+                sorted_indices,
+                &renderer.camera,
+                refresh_sort,
+            ) {
+                return err.code().as_i32();
+            }
+            stats
+        } else if renderer.surface_gpu_preproject {
             let stats = match renderer
                 .renderer
                 .build_surface_sorted_indices_with_sort_refresh(&renderer.camera, refresh_sort)
@@ -958,7 +1003,18 @@ fn render_surface_frame_async_sort(
     let should_schedule = !renderer.async_sorter.is_in_flight()
         && renderer.surface_frames_since_sort.saturating_add(1) >= interval;
 
-    let mut stats = if renderer.surface_gpu_preproject {
+    let mut stats = if renderer.surface_static_direct {
+        let stats = renderer
+            .renderer
+            .build_surface_sorted_indices_with_sort_refresh(&renderer.camera, false)
+            .map_err(|err| err.code())?;
+        let sorted_indices = renderer.renderer.current_sorted_indices();
+        renderer
+            .presenter
+            .render_direct_sorted_indices(sorted_indices, &renderer.camera, refresh_order_upload)
+            .map_err(|err| err.code())?;
+        stats
+    } else if renderer.surface_gpu_preproject {
         let stats = renderer
             .renderer
             .build_surface_sorted_indices_with_sort_refresh(&renderer.camera, false)
@@ -1058,7 +1114,18 @@ fn render_surface_frame_sync_sort(
     renderer: &mut GsplatSurfaceRenderer,
     refresh_sort: bool,
 ) -> Result<(FrameStats, bool), ErrorCode> {
-    let stats = if renderer.surface_gpu_preproject {
+    let stats = if renderer.surface_static_direct {
+        let stats = renderer
+            .renderer
+            .build_surface_sorted_indices_with_sort_refresh(&renderer.camera, refresh_sort)
+            .map_err(|err| err.code())?;
+        let sorted_indices = renderer.renderer.current_sorted_indices();
+        renderer
+            .presenter
+            .render_direct_sorted_indices(sorted_indices, &renderer.camera, refresh_sort)
+            .map_err(|err| err.code())?;
+        stats
+    } else if renderer.surface_gpu_preproject {
         let stats = renderer
             .renderer
             .build_surface_sorted_indices_with_sort_refresh(&renderer.camera, refresh_sort)

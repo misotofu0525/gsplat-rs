@@ -245,6 +245,18 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                     updateStatus("state=create_failed rc=$gpuPreprojectDoubleBufferRc error=$message")
                     return@Thread
                 }
+                val staticDirectRc = NativeBridge.setSurfaceStaticDirectEnabled(
+                    handle,
+                    benchmarkConfig.staticDirect
+                )
+                if (staticDirectRc != 0) {
+                    val message = NativeBridge.errorMessage(staticDirectRc)
+                    Log.e(TAG, "setSurfaceStaticDirectEnabled failed rc=$staticDirectRc error=$message")
+                    NativeBridge.destroySurfaceRenderer(handle)
+                    running = false
+                    updateStatus("state=create_failed rc=$staticDirectRc error=$message")
+                    return@Thread
+                }
                 val asyncSortRc = NativeBridge.setSurfaceAsyncSortEnabled(
                     handle,
                     benchmarkConfig.asyncSort
@@ -809,6 +821,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         private const val EXTRA_SURFACE_GPU_PREPROJECT = "gsplat_surface_gpu_preproject"
         private const val EXTRA_SURFACE_GPU_PREPROJECT_DOUBLE_BUFFER =
             "gsplat_surface_gpu_preproject_double_buffer"
+        private const val EXTRA_SURFACE_STATIC_DIRECT = "gsplat_surface_static_direct"
         private const val EXTRA_SURFACE_ASYNC_SORT = "gsplat_surface_async_sort"
         private const val EXTRA_SURFACE_ASYNC_GEOMETRY = "gsplat_surface_async_geometry"
         private const val EXTRA_SURFACE_INSTANCE_BUFFERS = "gsplat_surface_instance_buffers"
@@ -819,6 +832,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         private const val DEFAULT_SURFACE_SORT_INTERVAL = 2
         private const val DEFAULT_SURFACE_GPU_PREPROJECT = false
         private const val DEFAULT_SURFACE_GPU_PREPROJECT_DOUBLE_BUFFER = false
+        private const val DEFAULT_SURFACE_STATIC_DIRECT = false
         private const val DEFAULT_SURFACE_ASYNC_SORT = false
         private const val DEFAULT_SURFACE_ASYNC_GEOMETRY = false
         private const val DEFAULT_SURFACE_INSTANCE_BUFFERS = 1
@@ -876,6 +890,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         val sortInterval: Int = DEFAULT_SURFACE_SORT_INTERVAL,
         val gpuPreproject: Boolean = DEFAULT_SURFACE_GPU_PREPROJECT,
         val gpuPreprojectDoubleBuffer: Boolean = DEFAULT_SURFACE_GPU_PREPROJECT_DOUBLE_BUFFER,
+        val staticDirect: Boolean = DEFAULT_SURFACE_STATIC_DIRECT,
         val asyncSort: Boolean = DEFAULT_SURFACE_ASYNC_SORT,
         val asyncGeometry: Boolean = DEFAULT_SURFACE_ASYNC_GEOMETRY,
         val instanceBuffers: Int = DEFAULT_SURFACE_INSTANCE_BUFFERS,
@@ -905,6 +920,8 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                     EXTRA_SURFACE_GPU_PREPROJECT_DOUBLE_BUFFER,
                     DEFAULT_SURFACE_GPU_PREPROJECT_DOUBLE_BUFFER
                 )
+                val staticDirect = intent
+                    .getBooleanExtra(EXTRA_SURFACE_STATIC_DIRECT, DEFAULT_SURFACE_STATIC_DIRECT)
                 val asyncSort = intent
                     .getBooleanExtra(EXTRA_SURFACE_ASYNC_SORT, DEFAULT_SURFACE_ASYNC_SORT)
                 val asyncGeometry = intent
@@ -923,6 +940,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                     sortInterval = sortInterval,
                     gpuPreproject = gpuPreproject,
                     gpuPreprojectDoubleBuffer = gpuPreprojectDoubleBuffer,
+                    staticDirect = staticDirect,
                     asyncSort = asyncSort,
                     asyncGeometry = asyncGeometry,
                     instanceBuffers = instanceBuffers,
@@ -973,6 +991,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                 "samples=$samples warmup=${config.warmupFrames} sort_interval=${config.sortInterval} " +
                 "gpu_preproject=${config.gpuPreproject} " +
                 "gpu_preproject_double_buffer=${config.gpuPreprojectDoubleBuffer} " +
+                "static_direct=${config.staticDirect} " +
                 "async_sort=${config.asyncSort} " +
                 "async_geometry=${config.asyncGeometry} " +
                 "instance_buffers=${config.instanceBuffers} " +

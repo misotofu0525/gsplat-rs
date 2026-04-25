@@ -6,7 +6,7 @@ Improve Android true-device performance for the `flowers_1.ply` SortedAlpha rend
 
 ## Current Phase
 
-Phase 11
+Phase 12
 
 ## Phases
 
@@ -102,6 +102,15 @@ Phase 11
 - [x] Evaluate tiled compute / chunk metadata suitability for the current full flower scene.
 - **Status:** complete for this pass; none of the new opt-in architecture experiments beat the retained default on Android `avg_call_ms`, but adaptive normal-mode pacing improves real interaction cadence by removing an extra fixed 16ms sleep.
 
+### Phase 12: Four Remaining Architecture Attempts
+
+- [x] Re-test static GPU scene + sorted-id direct draw as an explicit opt-in path.
+- [x] Re-check mature GPU sort options against current `wgpu`/Android limits and record whether a safe patch exists.
+- [x] Add a tiled/chunk feasibility probe that quantifies flower-scene screen pressure without changing render output.
+- [x] Use the probe to decide whether chunk/octree interval metadata can honestly help the current full flower benchmark.
+- [x] Run targeted Rust/Android verification and true-device A/B benchmarks for any code paths added.
+- **Status:** complete for this pass; static direct draw regresses call wall time, mature GPU sort needs a dedicated key-value/indirect module, chunk culling has no flower-scene headroom, and tiled compute remains the only plausible larger renderer track.
+
 ## Key Questions
 
 1. What is the current flower-scene baseline on the connected Android device?
@@ -136,6 +145,9 @@ Phase 11
 | Keep async geometry and GPU preproject double-buffering off by default | Both preserve full drawn count, but they render latest-completed geometry and do not improve Android call wall time enough to justify temporal geometry lag. |
 | Keep optional Surface buffer ring lazy | Three buffers showed only a noise-level improvement, so extra large instance buffers are allocated only when the benchmark asks for them. |
 | Replace fixed normal-mode sleep with adaptive sleep | The previous Android render loop always added 16ms after each non-benchmark frame; the new loop sleeps only when rendering finishes faster than the target frame interval. |
+| Keep Phase 12 default-safe | The remaining ideas are architecture experiments. New paths must be opt-in until true-device flower benchmarks show a no-quality-loss win over the retained default. |
+| Keep static direct draw off by default | Same-APK true-device benchmark regressed `avg_call_ms` from `52.801` to `63.271` while preserving full drawn count. |
+| Treat tiled compute as the next architecture track, not a patch | The spatial probe shows all flower centers in view and heavy tile pressure; a real win requires bin/sort/blend work buffers plus image-diff validation. |
 
 ## Instrumentation Added
 
@@ -147,6 +159,7 @@ Phase 11
   - `gsplat_surface_sort_interval=<n>`
   - `gsplat_surface_gpu_preproject=<bool>`
   - `gsplat_surface_gpu_preproject_double_buffer=<bool>`
+  - `gsplat_surface_static_direct=<bool>` (Phase 12 opt-in)
   - `gsplat_surface_async_sort=<bool>`
   - `gsplat_surface_async_geometry=<bool>`
   - `gsplat_surface_instance_buffers=<n>`

@@ -3,7 +3,7 @@ use std::path::Path;
 use std::process::Command;
 use std::time::{Duration, Instant};
 
-use gsplat_core::{Camera, FrameStats, RenderMode};
+use gsplat_core::{Camera, FrameStats, RenderMode, RendererConfig, SceneBuffers, Vec3f};
 use gsplat_io_ply::load_ply;
 use gsplat_render_wgpu::Renderer;
 
@@ -16,11 +16,14 @@ fn main() {
 
 fn run() -> Result<(), String> {
     let config = BenchConfig::parse(env::args().skip(1).collect())?;
-    if config.iterations == 0 {
+    if config.analysis.is_none() && config.iterations == 0 {
         return Err("iterations must be > 0".to_owned());
     }
 
     let loaded = load_ply(Path::new(&config.dataset_path)).map_err(|err| err.to_string())?;
+    if let Some(analysis) = config.analysis {
+        return run_spatial_analysis(&loaded.scene, &config.dataset_path, analysis);
+    }
 
     let mut renderer = Renderer::new(RenderMode::SortedAlpha).map_err(|err| err.to_string())?;
     renderer
@@ -146,12 +149,158 @@ fn run_stability_mode(
     Ok(())
 }
 
+fn run_spatial_analysis(
+    scene: &SceneBuffers,
+    dataset_path: &str,
+    config: SpatialAnalysisConfig,
+) -> Result<(), String> {
+    let Some((min, max)) = scene_bounds(scene) else {
+        return Err("scene has no finite positions".to_owned());
+    };
+
+    let grid_axis = config.grid_axis.max(1);
+    let grid_cell_count = grid_axis
+        .checked_mul(grid_axis)
+        .and_then(|v| v.checked_mul(grid_axis))
+        .ok_or("analysis grid is too large")?;
+    let mut grid_counts = vec![0_u32; grid_cell_count];
+    let mut grid_min_index = vec![usize::MAX; grid_cell_count];
+    let mut grid_max_index = vec![0_usize; grid_cell_count];
+
+    for (i, position) in scene.positions.iter().enumerate() {
+        let cell = grid_cell_index(*position, min, max, grid_axis);
+        grid_counts[cell] += 1;
+        grid_min_index[cell] = grid_min_index[cell].min(i);
+        grid_max_index[cell] = grid_max_index[cell].max(i);
+    }
+
+    let mut non_empty_grid_counts = grid_counts
+        .iter()
+        .copied()
+        .filter(|count| *count > 0)
+        .collect::<Vec<_>>();
+    non_empty_grid_counts.sort_unstable();
+
+    let mut interval_span_ratios = Vec::new();
+    for cell in 0..grid_cell_count {
+        let count = grid_counts[cell] as usize;
+        if count == 0 {
+            continue;
+        }
+        let span = grid_max_index[cell] - grid_min_index[cell] + 1;
+        interval_span_ratios.push(span as f32 / count as f32);
+    }
+    interval_span_ratios.sort_by(f32::total_cmp);
+
+    let camera = auto_analysis_camera(scene, config.width, config.height)?;
+    let aspect = config.width as f32 / config.height.max(1) as f32;
+    let f = 1.0 / (camera.intrinsics.vertical_fov_radians * 0.5).tan();
+    let (right, up, forward) =
+        camera_basis_for_analysis(camera.pose.position, scene_center(min, max));
+    let tile_axis = config.tile_axis.max(1);
+    let mut tile_counts = vec![0_u32; tile_axis * tile_axis];
+    let mut visible_center_count = 0_u32;
+    let mut center_in_view_count = 0_u32;
+    let mut visible_grid = vec![false; grid_cell_count];
+
+    for position in &scene.positions {
+        let rel = vec3_sub(*position, camera.pose.position);
+        let p_cam = Vec3f::new(
+            vec3_dot(right, rel),
+            vec3_dot(up, rel),
+            vec3_dot(forward, rel),
+        );
+        if p_cam.z < camera.intrinsics.near_plane
+            || p_cam.z > camera.intrinsics.far_plane
+            || p_cam.z <= 1.0e-6
+        {
+            continue;
+        }
+        visible_center_count += 1;
+        visible_grid[grid_cell_index(*position, min, max, grid_axis)] = true;
+
+        let inv_z = 1.0 / p_cam.z;
+        let x_ndc = (p_cam.x * f) * inv_z / aspect;
+        let y_ndc = (p_cam.y * f) * inv_z;
+        if (-1.0..=1.0).contains(&x_ndc) && (-1.0..=1.0).contains(&y_ndc) {
+            center_in_view_count += 1;
+            let tx = (((x_ndc + 1.0) * 0.5) * tile_axis as f32)
+                .floor()
+                .clamp(0.0, tile_axis.saturating_sub(1) as f32) as usize;
+            let ty = (((1.0 - y_ndc) * 0.5) * tile_axis as f32)
+                .floor()
+                .clamp(0.0, tile_axis.saturating_sub(1) as f32) as usize;
+            tile_counts[ty * tile_axis + tx] += 1;
+        }
+    }
+
+    let visible_grid_cells = visible_grid.iter().filter(|visible| **visible).count();
+    let mut non_empty_tile_counts = tile_counts
+        .iter()
+        .copied()
+        .filter(|count| *count > 0)
+        .collect::<Vec<_>>();
+    non_empty_tile_counts.sort_unstable();
+
+    println!("bench-runner complete");
+    println!("mode=spatial-analysis");
+    println!("dataset={dataset_path}");
+    println!("splats={}", scene.len());
+    println!("bounds_min={:.6},{:.6},{:.6}", min.x, min.y, min.z);
+    println!("bounds_max={:.6},{:.6},{:.6}", max.x, max.y, max.z);
+    println!(
+        "analysis_surface={}x{} grid_axis={} tile_axis={}",
+        config.width, config.height, grid_axis, tile_axis
+    );
+    println!(
+        "grid_non_empty={}/{}",
+        non_empty_grid_counts.len(),
+        grid_cell_count
+    );
+    println!(
+        "grid_count_p50={} p90={} p99={} max={}",
+        percentile_u32(&non_empty_grid_counts, 0.50),
+        percentile_u32(&non_empty_grid_counts, 0.90),
+        percentile_u32(&non_empty_grid_counts, 0.99),
+        non_empty_grid_counts.last().copied().unwrap_or(0)
+    );
+    println!(
+        "grid_visible_center_cells={}/{}",
+        visible_grid_cells,
+        non_empty_grid_counts.len().max(1)
+    );
+    println!(
+        "grid_interval_span_per_count_p50={:.2} p90={:.2} p99={:.2} max={:.2}",
+        percentile_f32(&interval_span_ratios, 0.50),
+        percentile_f32(&interval_span_ratios, 0.90),
+        percentile_f32(&interval_span_ratios, 0.99),
+        interval_span_ratios.last().copied().unwrap_or(0.0)
+    );
+    println!("visible_center_count={visible_center_count}");
+    println!("center_in_view_count={center_in_view_count}");
+    println!(
+        "tile_non_empty={}/{}",
+        non_empty_tile_counts.len(),
+        tile_counts.len()
+    );
+    println!(
+        "tile_center_count_p50={} p90={} p99={} max={}",
+        percentile_u32(&non_empty_tile_counts, 0.50),
+        percentile_u32(&non_empty_tile_counts, 0.90),
+        percentile_u32(&non_empty_tile_counts, 0.99),
+        non_empty_tile_counts.last().copied().unwrap_or(0)
+    );
+
+    Ok(())
+}
+
 #[derive(Debug, Clone)]
 struct BenchConfig {
     dataset_path: String,
     iterations: usize,
     stability_seconds: Option<u64>,
     rss_growth_limit_kib: u64,
+    analysis: Option<SpatialAnalysisConfig>,
 }
 
 impl Default for BenchConfig {
@@ -161,6 +310,26 @@ impl Default for BenchConfig {
             iterations: 120,
             stability_seconds: None,
             rss_growth_limit_kib: 64 * 1024,
+            analysis: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct SpatialAnalysisConfig {
+    width: u32,
+    height: u32,
+    grid_axis: usize,
+    tile_axis: usize,
+}
+
+impl Default for SpatialAnalysisConfig {
+    fn default() -> Self {
+        Self {
+            width: 1080,
+            height: 2400,
+            grid_axis: 16,
+            tile_axis: 32,
         }
     }
 }
@@ -173,6 +342,55 @@ impl BenchConfig {
         let mut i = 0_usize;
         while i < args.len() {
             match args[i].as_str() {
+                "--analyze-spatial" => {
+                    config
+                        .analysis
+                        .get_or_insert_with(SpatialAnalysisConfig::default);
+                }
+                "--analysis-width" => {
+                    i += 1;
+                    let value = args.get(i).ok_or("missing value for --analysis-width")?;
+                    let analysis = config
+                        .analysis
+                        .get_or_insert_with(SpatialAnalysisConfig::default);
+                    analysis.width = value
+                        .parse::<u32>()
+                        .map_err(|_| "invalid --analysis-width value")?
+                        .max(1);
+                }
+                "--analysis-height" => {
+                    i += 1;
+                    let value = args.get(i).ok_or("missing value for --analysis-height")?;
+                    let analysis = config
+                        .analysis
+                        .get_or_insert_with(SpatialAnalysisConfig::default);
+                    analysis.height = value
+                        .parse::<u32>()
+                        .map_err(|_| "invalid --analysis-height value")?
+                        .max(1);
+                }
+                "--analysis-grid" => {
+                    i += 1;
+                    let value = args.get(i).ok_or("missing value for --analysis-grid")?;
+                    let analysis = config
+                        .analysis
+                        .get_or_insert_with(SpatialAnalysisConfig::default);
+                    analysis.grid_axis = value
+                        .parse::<usize>()
+                        .map_err(|_| "invalid --analysis-grid value")?
+                        .clamp(1, 128);
+                }
+                "--analysis-tiles" => {
+                    i += 1;
+                    let value = args.get(i).ok_or("missing value for --analysis-tiles")?;
+                    let analysis = config
+                        .analysis
+                        .get_or_insert_with(SpatialAnalysisConfig::default);
+                    analysis.tile_axis = value
+                        .parse::<usize>()
+                        .map_err(|_| "invalid --analysis-tiles value")?
+                        .clamp(1, 256);
+                }
                 "--stability-seconds" => {
                     i += 1;
                     let value = args.get(i).ok_or("missing value for --stability-seconds")?;
@@ -210,6 +428,145 @@ impl BenchConfig {
 
         Ok(config)
     }
+}
+
+fn scene_bounds(scene: &SceneBuffers) -> Option<(Vec3f, Vec3f)> {
+    let mut iter = scene
+        .positions
+        .iter()
+        .copied()
+        .filter(|position| position.is_finite());
+    let first = iter.next()?;
+    let mut min = first;
+    let mut max = first;
+    for position in iter {
+        min.x = min.x.min(position.x);
+        min.y = min.y.min(position.y);
+        min.z = min.z.min(position.z);
+        max.x = max.x.max(position.x);
+        max.y = max.y.max(position.y);
+        max.z = max.z.max(position.z);
+    }
+    Some((min, max))
+}
+
+fn scene_center(min: Vec3f, max: Vec3f) -> Vec3f {
+    Vec3f::new(
+        (min.x + max.x) * 0.5,
+        (min.y + max.y) * 0.5,
+        (min.z + max.z) * 0.5,
+    )
+}
+
+fn grid_cell_index(position: Vec3f, min: Vec3f, max: Vec3f, axis: usize) -> usize {
+    let axis = axis.max(1);
+    let ix = grid_axis_index(position.x, min.x, max.x, axis);
+    let iy = grid_axis_index(position.y, min.y, max.y, axis);
+    let iz = grid_axis_index(position.z, min.z, max.z, axis);
+    (iz * axis + iy) * axis + ix
+}
+
+fn grid_axis_index(value: f32, min: f32, max: f32, axis: usize) -> usize {
+    if axis <= 1 || max <= min {
+        return 0;
+    }
+    let normalized = ((value - min) / (max - min)).clamp(0.0, 0.999_999);
+    (normalized * axis as f32) as usize
+}
+
+fn auto_analysis_camera(scene: &SceneBuffers, width: u32, height: u32) -> Result<Camera, String> {
+    let Some((min, max)) = scene_bounds(scene) else {
+        return Err("scene has no finite positions".to_owned());
+    };
+    let center = scene_center(min, max);
+    let extent = Vec3f::new(max.x - min.x, max.y - min.y, max.z - min.z);
+    let half_x = (extent.x * 0.5).max(1.0e-3);
+    let half_y = (extent.y * 0.5).max(1.0e-3);
+    let half_z = (extent.z * 0.5).max(1.0e-3);
+    let aspect = width as f32 / height.max(1) as f32;
+    let mut camera = Camera::default();
+    let vfov = camera.intrinsics.vertical_fov_radians.max(1.0e-3);
+    let hfov = 2.0 * ((vfov * 0.5).tan() * aspect).atan();
+    let dist_y = half_y / (vfov * 0.5).tan();
+    let dist_x = half_x / (hfov * 0.5).tan();
+    let distance = (dist_y.max(dist_x) + half_z) * 1.2;
+    let radius = half_x.max(half_y).max(half_z);
+
+    camera.pose.position = Vec3f::new(center.x, center.y, center.z - distance);
+    camera.pose.rotation_xyzw = [0.0, 0.0, 0.0, 1.0];
+    camera.intrinsics.near_plane = (distance - radius * 2.0).max(0.01);
+    camera.intrinsics.far_plane = (distance + radius * 8.0).max(100.0);
+    let config = RendererConfig {
+        width,
+        height,
+        ..RendererConfig::default()
+    };
+    let aspect = (config.width as f32 / config.height.max(1) as f32).max(1.0e-3);
+    if aspect < 0.6 {
+        camera.intrinsics.vertical_fov_radians = 65.0_f32.to_radians();
+    }
+    camera.validate().map_err(|err| format!("{err:?}"))?;
+    Ok(camera)
+}
+
+fn camera_basis_for_analysis(position: Vec3f, target: Vec3f) -> (Vec3f, Vec3f, Vec3f) {
+    let forward = vec3_normalize(vec3_sub(target, position)).unwrap_or(Vec3f::new(0.0, 0.0, 1.0));
+    let world_up = if forward.y.abs() > 0.98 {
+        Vec3f::new(0.0, 0.0, 1.0)
+    } else {
+        Vec3f::new(0.0, 1.0, 0.0)
+    };
+    let right = vec3_normalize(vec3_cross(world_up, forward)).unwrap_or(Vec3f::new(1.0, 0.0, 0.0));
+    let up = vec3_cross(forward, right);
+    (right, up, forward)
+}
+
+fn vec3_sub(a: Vec3f, b: Vec3f) -> Vec3f {
+    Vec3f::new(a.x - b.x, a.y - b.y, a.z - b.z)
+}
+
+fn vec3_dot(a: Vec3f, b: Vec3f) -> f32 {
+    a.x * b.x + a.y * b.y + a.z * b.z
+}
+
+fn vec3_cross(a: Vec3f, b: Vec3f) -> Vec3f {
+    Vec3f::new(
+        a.y * b.z - a.z * b.y,
+        a.z * b.x - a.x * b.z,
+        a.x * b.y - a.y * b.x,
+    )
+}
+
+fn vec3_normalize(v: Vec3f) -> Option<Vec3f> {
+    let len2 = vec3_dot(v, v);
+    if !len2.is_finite() || len2 <= 1.0e-20 {
+        return None;
+    }
+    let inv_len = len2.sqrt().recip();
+    Some(Vec3f::new(v.x * inv_len, v.y * inv_len, v.z * inv_len))
+}
+
+fn percentile_u32(sorted_values: &[u32], p: f32) -> u32 {
+    if sorted_values.is_empty() {
+        return 0;
+    }
+    let index = percentile_index(sorted_values.len(), p);
+    sorted_values[index]
+}
+
+fn percentile_f32(sorted_values: &[f32], p: f32) -> f32 {
+    if sorted_values.is_empty() {
+        return 0.0;
+    }
+    let index = percentile_index(sorted_values.len(), p);
+    sorted_values[index]
+}
+
+fn percentile_index(len: usize, p: f32) -> usize {
+    if len <= 1 {
+        return 0;
+    }
+    ((len - 1) as f32 * p.clamp(0.0, 1.0)).round() as usize
 }
 
 fn process_rss_kib() -> Option<u64> {

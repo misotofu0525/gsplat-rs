@@ -93,6 +93,11 @@ STABILITY_SECONDS=1800 bash tests/perf/run-long-stability.sh
 - If you touch `apps/ios-demo/` or Swift/FFI integration, run `bash apps/ios-demo/run-swift-smoke.sh`.
 - If you touch PLY import or scene normalization, run `cargo test --workspace` and `cargo run -p desktop-demo -- tests/datasets/minimal_ascii.ply --png target/out.png`.
 - If you touch renderer, sorting, or perf-sensitive code, run `cargo run -p bench-runner -- tests/datasets/minimal_ascii.ply 120` and consider the long-stability script.
+- For spatial/tile/chunk feasibility checks on a loaded PLY, use:
+
+```bash
+cargo run -p bench-runner -- <scene.ply> --analyze-spatial
+```
 
 ## Structural Checks
 

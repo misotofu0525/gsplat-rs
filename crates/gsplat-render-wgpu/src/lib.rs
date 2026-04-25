@@ -615,6 +615,7 @@ pub struct SurfacePresenter {
     device: wgpu::Device,
     queue: wgpu::Queue,
     render_pipeline: wgpu::RenderPipeline,
+    direct_pipeline: wgpu::RenderPipeline,
     preproject_pipeline: wgpu::ComputePipeline,
     render_bind_group_layout: wgpu::BindGroupLayout,
     preproject_bind_group_layout: wgpu::BindGroupLayout,
@@ -628,6 +629,7 @@ pub struct SurfacePresenter {
     instance_count: u32,
     params_buffer: wgpu::Buffer,
     render_bind_groups: Vec<wgpu::BindGroup>,
+    direct_bind_group: wgpu::BindGroup,
     preproject_bind_groups: Vec<wgpu::BindGroup>,
     preproject_double_buffer: bool,
     preproject_ready: bool,
@@ -743,6 +745,12 @@ impl SurfacePresenter {
             label: wgpu_label("gsplat-surface-shader"),
             source: wgpu::ShaderSource::Wgsl(include_str!("../shaders/splat_surface.wgsl").into()),
         });
+        let direct_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: wgpu_label("gsplat-surface-direct-shader"),
+            source: wgpu::ShaderSource::Wgsl(
+                include_str!("../shaders/splat_surface_direct.wgsl").into(),
+            ),
+        });
         let preproject_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: wgpu_label("gsplat-surface-preproject-shader"),
             source: wgpu::ShaderSource::Wgsl(
@@ -800,6 +808,58 @@ impl SurfacePresenter {
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: wgpu_label("gsplat-surface-pipeline-layout"),
                 bind_group_layouts: &[&render_bind_group_layout],
+                immediate_size: 0,
+            });
+        let direct_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: wgpu_label("gsplat-surface-direct-bgl"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::VERTEX,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::VERTEX,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::VERTEX,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 3,
+                        visibility: wgpu::ShaderStages::VERTEX,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                ],
+            });
+        let direct_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: wgpu_label("gsplat-surface-direct-pipeline-layout"),
+                bind_group_layouts: &[&direct_bind_group_layout],
                 immediate_size: 0,
             });
         let preproject_bind_group_layout =
@@ -891,6 +951,42 @@ impl SurfacePresenter {
             multiview_mask: None,
             cache: None,
         });
+        let direct_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: wgpu_label("gsplat-surface-direct-pipeline"),
+            layout: Some(&direct_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &direct_shader,
+                entry_point: Some("vs_main"),
+                buffers: &[],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &direct_shader,
+                entry_point: Some("fs_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: Some(wgpu::BlendState {
+                        color: wgpu::BlendComponent {
+                            src_factor: wgpu::BlendFactor::One,
+                            dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                            operation: wgpu::BlendOperation::Add,
+                        },
+                        alpha: wgpu::BlendComponent {
+                            src_factor: wgpu::BlendFactor::One,
+                            dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                            operation: wgpu::BlendOperation::Add,
+                        },
+                    }),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            }),
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
         let preproject_pipeline =
             device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
                 label: wgpu_label("gsplat-surface-preproject-pipeline"),
@@ -921,10 +1017,12 @@ impl SurfacePresenter {
             surface_source_buffer,
             sh_rest_buffer,
             render_bind_groups,
+            direct_bind_group,
             preproject_bind_groups,
         ) = create_surface_instance_resources(
             &device,
             &render_bind_group_layout,
+            &direct_bind_group_layout,
             &preproject_bind_group_layout,
             instance_capacity,
             scene,
@@ -937,6 +1035,7 @@ impl SurfacePresenter {
             device,
             queue,
             render_pipeline,
+            direct_pipeline,
             preproject_pipeline,
             render_bind_group_layout,
             preproject_bind_group_layout,
@@ -950,6 +1049,7 @@ impl SurfacePresenter {
             instance_count: 0,
             params_buffer,
             render_bind_groups,
+            direct_bind_group,
             preproject_bind_groups,
             preproject_double_buffer: false,
             preproject_ready: false,
@@ -1200,6 +1300,77 @@ impl SurfacePresenter {
         Ok(())
     }
 
+    pub fn render_direct_sorted_indices(
+        &mut self,
+        sorted_indices: &[u32],
+        camera: &Camera,
+        refresh_indices: bool,
+    ) -> Result<(), SurfacePresenterError> {
+        if sorted_indices.len() > self.instance_capacity {
+            return Err(SurfacePresenterError::GpuInstancePreprocess(
+                GpuInstancePreprocessError::InstanceBufferCapacityExceeded,
+            ));
+        }
+        if refresh_indices && !sorted_indices.is_empty() {
+            self.queue.write_buffer(
+                &self.sorted_indices_buffer,
+                0,
+                bytemuck::cast_slice(sorted_indices),
+            );
+        }
+
+        let params = make_surface_render_params(
+            camera,
+            self.surface_config.width,
+            self.surface_config.height,
+            sorted_indices.len() as u32,
+            self.sh_degree,
+        );
+        self.queue
+            .write_buffer(&self.params_buffer, 0, bytemuck::bytes_of(&params));
+        self.instance_count = sorted_indices.len() as u32;
+
+        let Some(frame) = self.acquire_surface_texture()? else {
+            return Ok(());
+        };
+        let view = frame
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
+
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: wgpu_label("gsplat-surface-direct-encoder"),
+            });
+        {
+            let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: wgpu_label("gsplat-surface-direct-pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                occlusion_query_set: None,
+                timestamp_writes: None,
+                multiview_mask: None,
+            });
+            rpass.set_pipeline(&self.direct_pipeline);
+            rpass.set_bind_group(0, &self.direct_bind_group, &[]);
+            if self.instance_count > 0 {
+                rpass.draw(0..6, 0..self.instance_count);
+            }
+        }
+
+        self.queue.submit(Some(encoder.finish()));
+        frame.present();
+        Ok(())
+    }
+
     fn submit_preproject_compute(&mut self, buffer_index: usize) {
         if self.instance_count == 0 {
             return;
@@ -1294,6 +1465,7 @@ impl SurfacePresenter {
 fn create_surface_instance_resources(
     device: &wgpu::Device,
     render_bind_group_layout: &wgpu::BindGroupLayout,
+    direct_bind_group_layout: &wgpu::BindGroupLayout,
     preproject_bind_group_layout: &wgpu::BindGroupLayout,
     capacity: usize,
     scene: &SceneBuffers,
@@ -1307,6 +1479,7 @@ fn create_surface_instance_resources(
     wgpu::Buffer,
     wgpu::Buffer,
     Vec<wgpu::BindGroup>,
+    wgpu::BindGroup,
     Vec<wgpu::BindGroup>,
 ) {
     let stride = std::mem::size_of::<GpuSurfaceInstance>() as u64;
@@ -1379,6 +1552,28 @@ fn create_surface_instance_resources(
             })
         })
         .collect::<Vec<_>>();
+    let direct_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: wgpu_label("gsplat-surface-direct-bind-group"),
+        layout: direct_bind_group_layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: sorted_indices_buffer.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: surface_source_buffer.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: sh_rest_buffer.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 3,
+                resource: params_buffer.as_entire_binding(),
+            },
+        ],
+    });
     let preproject_bind_groups = instance_buffers
         .iter()
         .map(|instance_buffer| {
@@ -1414,6 +1609,7 @@ fn create_surface_instance_resources(
         surface_source_buffer,
         sh_rest_buffer,
         render_bind_groups,
+        direct_bind_group,
         preproject_bind_groups,
     )
 }

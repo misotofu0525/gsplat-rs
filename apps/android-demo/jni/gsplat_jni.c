@@ -272,6 +272,24 @@ JNIEXPORT jint JNICALL Java_com_gsplat_demo_NativeBridge_setSurfaceGpuPreproject
       enabled == JNI_TRUE ? 1u : 0u);
 }
 
+JNIEXPORT jint JNICALL Java_com_gsplat_demo_NativeBridge_setSurfaceStaticDirectEnabled(
+    JNIEnv *env,
+    jclass cls,
+    jlong native_handle,
+    jboolean enabled) {
+  (void)env;
+  (void)cls;
+
+  AndroidSurfaceRendererHandle *handle = android_handle_from_jlong(native_handle);
+  if (handle == NULL || handle->renderer == NULL) {
+    return GSPLAT_ERROR_INVALID_ARGUMENT;
+  }
+
+  return gsplat_surface_renderer_set_static_direct(
+      handle->renderer,
+      enabled == JNI_TRUE ? 1u : 0u);
+}
+
 JNIEXPORT jint JNICALL Java_com_gsplat_demo_NativeBridge_setSurfaceAsyncSortEnabled(
     JNIEnv *env,
     jclass cls,

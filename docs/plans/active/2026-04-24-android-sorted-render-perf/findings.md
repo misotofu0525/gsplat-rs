@@ -54,6 +54,20 @@
 - GPU preproject double buffering barely changes the already-slower GPU preproject path (`54.592ms -> 54.511ms`) and remains slower than the retained CPU instance path.
 - The Android normal render loop previously added an unconditional 16ms sleep after every non-benchmark frame. Adaptive sleep is a real interaction fix because it removes that extra delay when the render call already exceeds the target frame interval.
 - Tiled compute remains a separate renderer architecture, not a small patch. The current flower benchmark draws every splat (`visible=562974`, `drawn=562974`), so chunk/interval culling cannot honestly explain a performance win for this scene; tiled local sorting would need a new quality-validation track.
+- Phase 12 external MCP refresh:
+  - `exa` search found WebGPU 3DGS references where static scene data plus sorted ID indirection is the common raster-path pattern, including `Scthe/gaussian-splatting-webgpu` and `vismaychuriwala/WebGPU-Gaussian-Splat-Viewer`. These are useful design references, but repo claims are not local verification evidence.
+  - `playcanvas/engine` PR `#8453` describes a mature WebGPU path built from GPU stream compaction, prefix/scatter, indirect draw/dispatch, and radix-sort-indirect. This reinforces that a portable GPU sort win is likely a compacted/indirect pipeline rather than another naive global radix dispatch chain.
+  - `KeKsBoTer/wgpu_sort` and `kishimisu/WebGPU-Radix-Sort` show more serious portable radix designs with prefix sums and optional indirect dispatch. Immediate vendoring remains risky because our previous global GPU radix prototype was 1.47s on Android, while subgroup/indirect support and downlevel limits need a dedicated module and validation track.
+  - `context7` for `wgpu` confirms the ordinary storage-buffer and bind-group shape for shader-side data reads; no special mobile-only API appeared that would make the static direct-draw path a guaranteed win.
+  - `ref` returned relevant `wgpu` examples/spec pointers but no new direct recipe for mobile Gaussian sort/render.
+- Mature GPU-sort crate feasibility:
+  - `wgpu_sort 0.1.0` is key-value and matches the 3DGS depth/index need conceptually, but it depends on `wgpu 0.19.1`, while this repo is on `wgpu 28.0.0`; immediate use would require a port rather than a dependency drop-in.
+  - `wgpu-algorithms 0.1.0` uses `wgpu 28.0.0`, but its public sorter is key-only for returned data/resident buffer and its own README reports CPU wins below 1M items on Apple M3 Max. It would need key-value/order support before it can replace our sorted-index path.
+- Local spatial probe for `flowers_1.ply` at a 1080x2400 analysis surface:
+  - All 562,974 splat centers are visible and in view for the auto-analysis camera.
+  - Uniform 16^3 grid has 1,892 non-empty cells and all 1,892 have visible centers, so chunk culling has no honest no-quality-loss headroom for this benchmark view.
+  - Original PLY order is not spatially interval-friendly: grid cell index-span/count ratio is p50 `3609.07`, p90 `50762.60`, p99 `143287.67`, max `249134.00`. PlayCanvas-style interval compaction would need reordered/chunked asset metadata to work well here.
+  - Screen-center tile pressure is concentrated: only 95/1024 32x32 tiles receive centers, but those tiles are heavy (p50 `4439`, p90 `12995`, p99 `21973`, max `25951`). This supports tiled compute as a real architecture track, but not a small patch.
 
 ## Technical Decisions
 
@@ -77,6 +91,9 @@
 | Retain GPU preproject double buffering only as an opt-in experiment | It helps test scheduling but remains slower than the CPU default and has geometry latency. |
 | Allocate extra Surface instance buffers lazily | Buffer ring experiments did not justify extra default memory use. |
 | Use adaptive normal-mode sleeping | It improves actual app cadence without changing the benchmark path or render output. |
+| Re-test static direct draw as opt-in only | It should remove projected-instance upload but repeats projection/covariance work per quad vertex; prior reverted evidence was slow, so it needs a fresh retained A/B toggle rather than replacing the default. |
+| Do not vendor a GPU sort crate in Phase 12 | Available crates either do not match current `wgpu` or do not provide key-value order buffers yet; a correct integration would be a dedicated module/port, not a quick dependency addition. |
+| Use spatial analysis before chunk/tile renderer work | The flower scene has no chunk-culling headroom in the benchmark view, but concentrated tile pressure makes tiled compute worth a separate quality-validated renderer prototype. |
 
 ## Issues Encountered
 
@@ -160,6 +177,8 @@
   - GPU preproject double-buffer with 3 buffers: `avg_call_ms=54.511 avg_frame_ms=10.729`.
 - Final retained default benchmark after lazy async-geometry creation: `samples=120 warmup=10 sort_interval=2 gpu_preproject=false gpu_preproject_double_buffer=false async_sort=false async_geometry=false instance_buffers=1 frame_latency=2 avg_call_ms=52.491 avg_frame_ms=35.572 avg_preprocess_ms=1.795 avg_sort_ms=7.159 avg_raster_ms=26.617 avg_visible=562974 avg_drawn=562974`.
 - Final normal-mode launch after adaptive sleeping: logs reached `frames=100` about 4.8s after the first render status, with `visible=562974`, `drawn=562974/562974`, and render calls around `48ms`; the render loop no longer adds a fixed 16ms after those calls.
+- Phase 12 same-APK retained default baseline: `samples=120 warmup=10 sort_interval=2 gpu_preproject=false gpu_preproject_double_buffer=false static_direct=false async_sort=false async_geometry=false instance_buffers=1 frame_latency=2 avg_call_ms=52.801 avg_frame_ms=35.311 avg_preprocess_ms=1.739 avg_sort_ms=6.989 avg_raster_ms=26.582 avg_visible=562974 avg_drawn=562974`.
+- Static direct draw opt-in path: `samples=120 warmup=10 sort_interval=2 gpu_preproject=false gpu_preproject_double_buffer=false static_direct=true async_sort=false async_geometry=false instance_buffers=1 frame_latency=2 avg_call_ms=63.271 avg_frame_ms=10.952 avg_preprocess_ms=2.806 avg_sort_ms=8.145 avg_raster_ms=0.000 avg_visible=562974 avg_drawn=562974`. It preserves full output but is slower than default call wall time.
 
 ## Bottleneck Evidence
 
@@ -216,3 +235,4 @@
 | Async Surface geometry as default | `52.148 -> 52.015ms` call-wall improvement was noise-level and the path has one-frame geometry lag | Kept as opt-in A/B path, not default |
 | GPU preproject double-buffer as default | Best double-buffer run was `54.511ms`, still slower than the retained CPU path | Kept as opt-in A/B path, not default |
 | Tiled compute in this patch | Requires a new renderer and image-diff/quality validation; current flower scene has no culling headroom because all 562,974 splats draw | Deferred to a separate architecture track |
+| Static direct draw as default | `avg_call_ms=63.271`, slower than the same-APK default `52.801`; the path repeats projection/covariance work per quad vertex | Kept as an opt-in A/B path, not default |

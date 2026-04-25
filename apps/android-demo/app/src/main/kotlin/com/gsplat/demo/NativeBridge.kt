@@ -41,6 +41,9 @@ object NativeBridge {
     external fun setSurfaceGpuPreprojectDoubleBufferEnabled(nativeHandle: Long, enabled: Boolean): Int
 
     @JvmStatic
+    external fun setSurfaceStaticDirectEnabled(nativeHandle: Long, enabled: Boolean): Int
+
+    @JvmStatic
     external fun setSurfaceAsyncSortEnabled(nativeHandle: Long, enabled: Boolean): Int
 
     @JvmStatic

@@ -95,6 +95,9 @@ int32_t gsplat_surface_renderer_set_gpu_preproject(
 int32_t gsplat_surface_renderer_set_gpu_preproject_double_buffer(
     GsplatSurfaceRenderer *renderer,
     uint32_t enabled);
+int32_t gsplat_surface_renderer_set_static_direct(
+    GsplatSurfaceRenderer *renderer,
+    uint32_t enabled);
 int32_t gsplat_surface_renderer_set_async_sort(
     GsplatSurfaceRenderer *renderer,
     uint32_t enabled);

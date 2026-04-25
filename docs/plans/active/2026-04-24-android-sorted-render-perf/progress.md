@@ -165,3 +165,25 @@
 - Changed async geometry to lazy-create its cloned builder only when the opt-in flag is enabled, so the default path does not pay the memory/create cost for that rejected experiment.
 - Final retained default benchmark after lazy async-geometry creation: `samples=120 warmup=10 sort_interval=2 gpu_preproject=false gpu_preproject_double_buffer=false async_sort=false async_geometry=false instance_buffers=1 frame_latency=2 avg_call_ms=52.491 avg_frame_ms=35.572 avg_preprocess_ms=1.795 avg_sort_ms=7.159 avg_raster_ms=26.617 avg_visible=562974 avg_drawn=562974`.
 - Relaunched normal app mode after final install. Logs confirmed startup with `visible=562974`, `drawn=562974/562974`, and about 100 frames over roughly 4.8s after first render status; the old fixed 16ms post-frame sleep is no longer present.
+- Started Phase 12 after the user asked to try the four remaining directions:
+  1. static GPU scene + sorted-id direct draw;
+  2. mature compacted/indirect GPU sort;
+  3. tiled compute renderer feasibility;
+  4. chunk/octree/interval metadata feasibility.
+- Refreshed external research with MCP tools per `AGENTS.md`: `exa` for WebGPU/PlayCanvas-style references, `context7` for `wgpu` storage-buffer/bind-group shape, and `ref` for `wgpu` docs pointers.
+- Decision for this pass: implement static direct draw as an opt-in A/B path, and add a local probe for tile/chunk headroom. Mature GPU sort and full tiled compute are treated as architecture-track candidates unless the probe or true-device measurements reveal a safe small patch.
+- Added `gsplat_surface_static_direct`:
+  - new `splat_surface_direct.wgsl` reads sorted ids and persistent source/covariance/SH buffers directly in the vertex shader;
+  - new C ABI/JNI/Kotlin benchmark toggle;
+  - Android default remains unchanged.
+- Added `bench-runner --analyze-spatial` with configurable analysis surface, 3D grid, and screen tile grid. Minimal dataset smoke passed.
+- Flower spatial probe result: all 562,974 centers are visible/in view; all 1,892 non-empty 16^3 grid cells are visible; 32x32 tile pressure is concentrated into 95 tiles with max 25,951 centers/tile. This rejects chunk culling as a flower benchmark win and supports tiled compute only as a larger renderer track.
+- Mature GPU sort feasibility check:
+  - `wgpu_sort 0.1.0` is key-value but depends on `wgpu 0.19.1`, incompatible with the repo's `wgpu 28.0.0` without porting.
+  - `wgpu-algorithms 0.1.0` uses `wgpu 28.0.0` but is key-only at the public sort API and reports CPU wins below 1M keys, so it is not a drop-in replacement for sorted index order.
+- Verification passed after the new code: `cargo fmt`; `cargo check --workspace`; `bash apps/android-demo/build-apk.sh`.
+- Targeted final verification passed: `cargo test -p gsplat-render-wgpu -p gsplat-ffi-c -p gsplat-sort`; `cargo run -p bench-runner -- tests/datasets/minimal_ascii.ply 120`; `bash tests/ffi/run-ffi-smoke.sh`; `bash apps/android-demo/run-jni-smoke.sh`.
+- Same-APK true-device default baseline after adding the toggle: `samples=120 warmup=10 sort_interval=2 gpu_preproject=false gpu_preproject_double_buffer=false static_direct=false async_sort=false async_geometry=false instance_buffers=1 frame_latency=2 avg_call_ms=52.801 avg_frame_ms=35.311 avg_preprocess_ms=1.739 avg_sort_ms=6.989 avg_raster_ms=26.582 avg_visible=562974 avg_drawn=562974`.
+- Static direct draw benchmark: `samples=120 warmup=10 sort_interval=2 gpu_preproject=false gpu_preproject_double_buffer=false static_direct=true async_sort=false async_geometry=false instance_buffers=1 frame_latency=2 avg_call_ms=63.271 avg_frame_ms=10.952 avg_preprocess_ms=2.806 avg_sort_ms=8.145 avg_raster_ms=0.000 avg_visible=562974 avg_drawn=562974`.
+- Decision: static direct draw is retained only as an opt-in A/B path. It preserves full output and removes projected-instance upload, but the shader repeats projection/covariance work per quad vertex and regresses Android call wall time by about 10.5ms versus the same-APK default.
+- Relaunched normal app mode after benchmarks and verification. Logs confirmed `state=rendering`, `visible=562974`, and `drawn=562974/562974`, with render calls around `48-50ms`.
