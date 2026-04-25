@@ -3,13 +3,17 @@
 use std::ffi::{CStr, c_char, c_void};
 use std::path::Path;
 use std::ptr::NonNull;
+use std::sync::Arc;
+use std::thread::{self, JoinHandle};
+use std::time::Instant;
 
 use gsplat_core::{
     Camera, CameraIntrinsics, CameraPose, ErrorCode, FrameStats, GSPLAT_API_VERSION_MAJOR,
     GSPLAT_API_VERSION_MINOR, RenderMode, RendererConfig, Vec3f,
 };
 use gsplat_io_ply::load_ply;
-use gsplat_render_wgpu::{GpuSurfaceInstance, Renderer, SurfacePresenter};
+use gsplat_render_wgpu::{GpuSurfaceInstance, Renderer, SurfaceInstanceBuilder, SurfacePresenter};
+use gsplat_sort::CpuSortBackend;
 
 const SURFACE_CAMERA_MAX_PITCH: f32 = 1.45;
 const SURFACE_CAMERA_MIN_DISTANCE_MULTIPLIER: f32 = 0.2;
@@ -116,7 +120,125 @@ pub struct GsplatSurfaceRenderer {
     uploaded_frame: bool,
     surface_sort_interval: u32,
     surface_frames_since_sort: u32,
+    surface_gpu_preproject: bool,
+    surface_gpu_preproject_double_buffer: bool,
+    surface_async_sort: bool,
+    surface_async_geometry: bool,
+    async_sorter: SurfaceAsyncSorter,
+    async_geometry: Option<SurfaceGeometryWorker>,
     render_error_logged: bool,
+}
+
+struct SurfaceAsyncSorter {
+    positions: Arc<[Vec3f]>,
+    in_flight: Option<JoinHandle<Result<AsyncSortResult, ErrorCode>>>,
+}
+
+struct AsyncSortResult {
+    indices: Vec<u32>,
+    preprocess_ms: f32,
+    sort_ms: f32,
+}
+
+struct SurfaceGeometryWorker {
+    builder: Arc<SurfaceInstanceBuilder>,
+    in_flight: Option<JoinHandle<Result<AsyncGeometryResult, ErrorCode>>>,
+}
+
+struct AsyncGeometryResult {
+    instances: Vec<GpuSurfaceInstance>,
+    build_ms: f32,
+}
+
+impl SurfaceAsyncSorter {
+    fn new(scene: &gsplat_core::SceneBuffers) -> Self {
+        Self {
+            positions: Arc::from(scene.positions.clone().into_boxed_slice()),
+            in_flight: None,
+        }
+    }
+
+    fn is_in_flight(&self) -> bool {
+        self.in_flight.is_some()
+    }
+
+    fn poll_result(&mut self) -> Option<Result<AsyncSortResult, ErrorCode>> {
+        let handle = self.in_flight.as_ref()?;
+        if !handle.is_finished() {
+            return None;
+        }
+
+        let handle = self.in_flight.take()?;
+        Some(match handle.join() {
+            Ok(result) => result,
+            Err(_) => Err(ErrorCode::Internal),
+        })
+    }
+
+    fn start(&mut self, camera: Camera) {
+        if self.in_flight.is_some() {
+            return;
+        }
+
+        let positions = Arc::clone(&self.positions);
+        self.in_flight = Some(thread::spawn(move || {
+            sort_positions_for_camera(&positions, camera)
+        }));
+    }
+
+    fn discard_in_flight(&mut self) {
+        self.in_flight = None;
+    }
+}
+
+impl SurfaceGeometryWorker {
+    fn new(builder: SurfaceInstanceBuilder) -> Self {
+        Self {
+            builder: Arc::new(builder),
+            in_flight: None,
+        }
+    }
+
+    fn is_in_flight(&self) -> bool {
+        self.in_flight.is_some()
+    }
+
+    fn poll_result(&mut self) -> Option<Result<AsyncGeometryResult, ErrorCode>> {
+        let handle = self.in_flight.as_ref()?;
+        if !handle.is_finished() {
+            return None;
+        }
+
+        let handle = self.in_flight.take()?;
+        Some(match handle.join() {
+            Ok(result) => result,
+            Err(_) => Err(ErrorCode::Internal),
+        })
+    }
+
+    fn start(&mut self, camera: Camera, config: RendererConfig, indices: Vec<u32>) {
+        if self.in_flight.is_some() {
+            return;
+        }
+
+        let builder = Arc::clone(&self.builder);
+        self.in_flight = Some(thread::spawn(move || {
+            let build_start = Instant::now();
+            let mut by_index = Vec::new();
+            let mut instances = Vec::new();
+            builder
+                .build_into(&indices, &camera, config, &mut by_index, &mut instances)
+                .map_err(|err| err.code())?;
+            Ok(AsyncGeometryResult {
+                instances,
+                build_ms: build_start.elapsed().as_secs_f32() * 1000.0,
+            })
+        }));
+    }
+
+    fn discard_in_flight(&mut self) {
+        self.in_flight = None;
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -393,7 +515,10 @@ pub unsafe extern "C" fn gsplat_surface_renderer_create_android(
         Err(code) => return code.as_i32(),
     };
     let camera = surface_camera_from_control(camera_control, renderer.config());
-
+    let async_sorter = match renderer.scene() {
+        Some(scene) => SurfaceAsyncSorter::new(scene),
+        None => return ErrorCode::SceneNotLoaded.as_i32(),
+    };
     let surface_renderer = Box::new(GsplatSurfaceRenderer {
         renderer,
         presenter,
@@ -404,6 +529,12 @@ pub unsafe extern "C" fn gsplat_surface_renderer_create_android(
         uploaded_frame: false,
         surface_sort_interval: DEFAULT_SURFACE_SORT_INTERVAL,
         surface_frames_since_sort: 0,
+        surface_gpu_preproject: false,
+        surface_gpu_preproject_double_buffer: false,
+        surface_async_sort: false,
+        surface_async_geometry: false,
+        async_sorter,
+        async_geometry: None,
         render_error_logged: false,
     });
     unsafe {
@@ -453,6 +584,9 @@ pub unsafe extern "C" fn gsplat_surface_renderer_resize(
     renderer.surface_stats = FrameStats::zero();
     renderer.uploaded_frame = false;
     renderer.surface_frames_since_sort = 0;
+    if let Some(async_geometry) = renderer.async_geometry.as_mut() {
+        async_geometry.discard_in_flight();
+    }
     renderer.render_error_logged = false;
 
     ErrorCode::Ok.as_i32()
@@ -470,6 +604,141 @@ pub unsafe extern "C" fn gsplat_surface_renderer_set_sort_interval(
 
     renderer.surface_sort_interval = interval.max(1);
     renderer.surface_frames_since_sort = 0;
+    renderer.uploaded_frame = false;
+    renderer.render_error_logged = false;
+    ErrorCode::Ok.as_i32()
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gsplat_surface_renderer_set_gpu_preproject(
+    renderer: *mut GsplatSurfaceRenderer,
+    enabled: u32,
+) -> i32 {
+    let renderer = match unsafe { renderer.as_mut() } {
+        Some(renderer) => renderer,
+        None => return ErrorCode::InvalidArgument.as_i32(),
+    };
+
+    let enabled = enabled != 0;
+    if renderer.surface_gpu_preproject != enabled {
+        renderer.surface_gpu_preproject = enabled;
+        renderer.surface_frames_since_sort = 0;
+        renderer.uploaded_frame = false;
+        if let Some(async_geometry) = renderer.async_geometry.as_mut() {
+            async_geometry.discard_in_flight();
+        }
+        renderer.render_error_logged = false;
+    }
+    ErrorCode::Ok.as_i32()
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gsplat_surface_renderer_set_gpu_preproject_double_buffer(
+    renderer: *mut GsplatSurfaceRenderer,
+    enabled: u32,
+) -> i32 {
+    let renderer = match unsafe { renderer.as_mut() } {
+        Some(renderer) => renderer,
+        None => return ErrorCode::InvalidArgument.as_i32(),
+    };
+
+    let enabled = enabled != 0;
+    if renderer.surface_gpu_preproject_double_buffer != enabled {
+        renderer.surface_gpu_preproject_double_buffer = enabled;
+        renderer.presenter.set_preproject_double_buffer(enabled);
+        renderer.surface_frames_since_sort = 0;
+        renderer.uploaded_frame = false;
+        renderer.render_error_logged = false;
+    }
+    ErrorCode::Ok.as_i32()
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gsplat_surface_renderer_set_async_sort(
+    renderer: *mut GsplatSurfaceRenderer,
+    enabled: u32,
+) -> i32 {
+    let renderer = match unsafe { renderer.as_mut() } {
+        Some(renderer) => renderer,
+        None => return ErrorCode::InvalidArgument.as_i32(),
+    };
+
+    let enabled = enabled != 0;
+    if renderer.surface_async_sort != enabled {
+        renderer.surface_async_sort = enabled;
+        renderer.async_sorter.discard_in_flight();
+        renderer.surface_frames_since_sort = 0;
+        renderer.uploaded_frame = false;
+        renderer.render_error_logged = false;
+    }
+    ErrorCode::Ok.as_i32()
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gsplat_surface_renderer_set_async_geometry(
+    renderer: *mut GsplatSurfaceRenderer,
+    enabled: u32,
+) -> i32 {
+    let renderer = match unsafe { renderer.as_mut() } {
+        Some(renderer) => renderer,
+        None => return ErrorCode::InvalidArgument.as_i32(),
+    };
+
+    let enabled = enabled != 0;
+    if enabled && renderer.async_geometry.is_none() {
+        let builder = match SurfaceInstanceBuilder::from_renderer(&renderer.renderer) {
+            Ok(builder) => builder,
+            Err(err) => return err.code().as_i32(),
+        };
+        renderer.async_geometry = Some(SurfaceGeometryWorker::new(builder));
+    }
+    if renderer.surface_async_geometry != enabled {
+        renderer.surface_async_geometry = enabled;
+        if let Some(async_geometry) = renderer.async_geometry.as_mut() {
+            async_geometry.discard_in_flight();
+        }
+        renderer.surface_frames_since_sort = 0;
+        renderer.uploaded_frame = false;
+        renderer.render_error_logged = false;
+    }
+    ErrorCode::Ok.as_i32()
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gsplat_surface_renderer_set_instance_buffer_count(
+    renderer: *mut GsplatSurfaceRenderer,
+    count: u32,
+) -> i32 {
+    let renderer = match unsafe { renderer.as_mut() } {
+        Some(renderer) => renderer,
+        None => return ErrorCode::InvalidArgument.as_i32(),
+    };
+
+    if count == 0 {
+        return ErrorCode::InvalidArgument.as_i32();
+    }
+
+    renderer.presenter.set_instance_buffer_count(count);
+    renderer.uploaded_frame = false;
+    renderer.render_error_logged = false;
+    ErrorCode::Ok.as_i32()
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gsplat_surface_renderer_set_frame_latency(
+    renderer: *mut GsplatSurfaceRenderer,
+    latency: u32,
+) -> i32 {
+    let renderer = match unsafe { renderer.as_mut() } {
+        Some(renderer) => renderer,
+        None => return ErrorCode::InvalidArgument.as_i32(),
+    };
+
+    if latency == 0 {
+        return ErrorCode::InvalidArgument.as_i32();
+    }
+
+    renderer.presenter.set_frame_latency(latency);
     renderer.uploaded_frame = false;
     renderer.render_error_logged = false;
     ErrorCode::Ok.as_i32()
@@ -584,24 +853,57 @@ pub unsafe extern "C" fn gsplat_surface_renderer_render_frame(
 
     let result = if renderer.uploaded_frame {
         renderer.presenter.render_current().map(|_| None)
+    } else if renderer.surface_async_sort {
+        match render_surface_frame_async_sort(renderer) {
+            Ok(result) => Ok(Some(result)),
+            Err(code) => return code.as_i32(),
+        }
+    } else if renderer.surface_async_geometry && !renderer.surface_gpu_preproject {
+        match render_surface_frame_async_geometry(renderer) {
+            Ok(result) => Ok(Some(result)),
+            Err(code) => return code.as_i32(),
+        }
     } else {
         let refresh_sort = renderer.surface_sort_interval <= 1
             || renderer.surface_frames_since_sort == 0
             || renderer.surface_frames_since_sort >= renderer.surface_sort_interval;
-        let stats = match renderer
-            .renderer
-            .build_surface_instances_with_sort_refresh_into(
+        let stats = if renderer.surface_gpu_preproject {
+            let stats = match renderer
+                .renderer
+                .build_surface_sorted_indices_with_sort_refresh(&renderer.camera, refresh_sort)
+            {
+                Ok(result) => result,
+                Err(err) => return err.code().as_i32(),
+            };
+            let sorted_indices = renderer.renderer.current_sorted_indices();
+            if let Err(err) = renderer.presenter.render_sorted_indices(
+                sorted_indices,
                 &renderer.camera,
-                &mut renderer.instances,
                 refresh_sort,
             ) {
-            Ok(result) => result,
-            Err(err) => return err.code().as_i32(),
+                return err.code().as_i32();
+            }
+            stats
+        } else {
+            let stats = match renderer
+                .renderer
+                .build_surface_instances_with_sort_refresh_into(
+                    &renderer.camera,
+                    &mut renderer.instances,
+                    refresh_sort,
+                ) {
+                Ok(result) => result,
+                Err(err) => return err.code().as_i32(),
+            };
+            if let Err(err) = renderer
+                .presenter
+                .render_instances(&renderer.instances, &renderer.camera)
+            {
+                return err.code().as_i32();
+            }
+            stats
         };
-        renderer
-            .presenter
-            .render_instances(&renderer.instances, &renderer.camera)
-            .map(|_| Some((stats, refresh_sort)))
+        Ok(Some((stats, refresh_sort)))
     };
 
     match result {
@@ -632,6 +934,159 @@ pub unsafe extern "C" fn gsplat_surface_renderer_render_frame(
     }
 }
 
+fn render_surface_frame_async_sort(
+    renderer: &mut GsplatSurfaceRenderer,
+) -> Result<(FrameStats, bool), ErrorCode> {
+    let mut refresh_order_upload = false;
+    let mut async_sort_timing = None;
+    if let Some(result) = renderer.async_sorter.poll_result() {
+        let result = result?;
+        renderer
+            .renderer
+            .replace_surface_sorted_indices(result.indices)
+            .map_err(|err| err.code())?;
+        renderer.surface_frames_since_sort = 0;
+        refresh_order_upload = true;
+        async_sort_timing = Some((result.preprocess_ms, result.sort_ms));
+    }
+
+    if renderer.renderer.current_sorted_indices().is_empty() {
+        return render_surface_frame_sync_sort(renderer, true);
+    }
+
+    let interval = renderer.surface_sort_interval.max(1);
+    let should_schedule = !renderer.async_sorter.is_in_flight()
+        && renderer.surface_frames_since_sort.saturating_add(1) >= interval;
+
+    let mut stats = if renderer.surface_gpu_preproject {
+        let stats = renderer
+            .renderer
+            .build_surface_sorted_indices_with_sort_refresh(&renderer.camera, false)
+            .map_err(|err| err.code())?;
+        let sorted_indices = renderer.renderer.current_sorted_indices();
+        renderer
+            .presenter
+            .render_sorted_indices(sorted_indices, &renderer.camera, refresh_order_upload)
+            .map_err(|err| err.code())?;
+        stats
+    } else {
+        let stats = renderer
+            .renderer
+            .build_surface_instances_with_sort_refresh_into(
+                &renderer.camera,
+                &mut renderer.instances,
+                false,
+            )
+            .map_err(|err| err.code())?;
+        renderer
+            .presenter
+            .render_instances(&renderer.instances, &renderer.camera)
+            .map_err(|err| err.code())?;
+        stats
+    };
+
+    if let Some((preprocess_ms, sort_ms)) = async_sort_timing {
+        stats.preprocess_ms = preprocess_ms;
+        stats.sort_ms = sort_ms;
+    }
+
+    if should_schedule {
+        renderer.async_sorter.start(renderer.camera);
+    }
+
+    Ok((stats, !renderer.async_sorter.is_in_flight()))
+}
+
+fn render_surface_frame_async_geometry(
+    renderer: &mut GsplatSurfaceRenderer,
+) -> Result<(FrameStats, bool), ErrorCode> {
+    let mut completed_build_ms = None;
+    let async_geometry = renderer
+        .async_geometry
+        .as_mut()
+        .ok_or(ErrorCode::Internal)?;
+    if let Some(result) = async_geometry.poll_result() {
+        let result = result?;
+        renderer.instances = result.instances;
+        completed_build_ms = Some(result.build_ms);
+    }
+
+    let refresh_sort = renderer.surface_sort_interval <= 1
+        || renderer.surface_frames_since_sort == 0
+        || renderer.surface_frames_since_sort >= renderer.surface_sort_interval;
+    let mut stats = renderer
+        .renderer
+        .build_surface_sorted_indices_with_sort_refresh(&renderer.camera, refresh_sort)
+        .map_err(|err| err.code())?;
+
+    if renderer.instances.is_empty() {
+        stats = renderer
+            .renderer
+            .build_surface_instances_with_sort_refresh_into(
+                &renderer.camera,
+                &mut renderer.instances,
+                false,
+            )
+            .map_err(|err| err.code())?;
+        completed_build_ms = None;
+    }
+
+    renderer
+        .presenter
+        .render_instances(&renderer.instances, &renderer.camera)
+        .map_err(|err| err.code())?;
+
+    if let Some(build_ms) = completed_build_ms {
+        stats.raster_ms = build_ms;
+        stats.frame_ms = stats.preprocess_ms + stats.sort_ms + build_ms;
+        stats.drawn_count = renderer.instances.len() as u32;
+    }
+
+    let async_geometry = renderer
+        .async_geometry
+        .as_mut()
+        .ok_or(ErrorCode::Internal)?;
+    if !async_geometry.is_in_flight() {
+        let indices = renderer.renderer.current_sorted_indices().to_vec();
+        async_geometry.start(renderer.camera, renderer.renderer.config(), indices);
+    }
+
+    Ok((stats, refresh_sort))
+}
+
+fn render_surface_frame_sync_sort(
+    renderer: &mut GsplatSurfaceRenderer,
+    refresh_sort: bool,
+) -> Result<(FrameStats, bool), ErrorCode> {
+    let stats = if renderer.surface_gpu_preproject {
+        let stats = renderer
+            .renderer
+            .build_surface_sorted_indices_with_sort_refresh(&renderer.camera, refresh_sort)
+            .map_err(|err| err.code())?;
+        let sorted_indices = renderer.renderer.current_sorted_indices();
+        renderer
+            .presenter
+            .render_sorted_indices(sorted_indices, &renderer.camera, refresh_sort)
+            .map_err(|err| err.code())?;
+        stats
+    } else {
+        let stats = renderer
+            .renderer
+            .build_surface_instances_with_sort_refresh_into(
+                &renderer.camera,
+                &mut renderer.instances,
+                refresh_sort,
+            )
+            .map_err(|err| err.code())?;
+        renderer
+            .presenter
+            .render_instances(&renderer.instances, &renderer.camera)
+            .map_err(|err| err.code())?;
+        stats
+    };
+    Ok((stats, refresh_sort))
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn gsplat_surface_renderer_get_stats(
     renderer: *const GsplatSurfaceRenderer,
@@ -651,6 +1106,80 @@ pub unsafe extern "C" fn gsplat_surface_renderer_get_stats(
     }
 
     ErrorCode::Ok.as_i32()
+}
+
+fn sort_positions_for_camera(
+    positions: &[Vec3f],
+    camera: Camera,
+) -> Result<AsyncSortResult, ErrorCode> {
+    camera.validate()?;
+
+    let preprocess_start = Instant::now();
+    let camera_inv_q = async_quat_inverse(camera.pose.rotation_xyzw);
+    let view_rot = async_quat_to_mat3(camera_inv_q);
+    let depth_row = view_rot[2];
+    let camera_position = camera.pose.position;
+    let mut depth_keys = Vec::with_capacity(positions.len());
+    let mut indices = Vec::with_capacity(positions.len());
+    for (idx, &position) in positions.iter().enumerate() {
+        let p = vec3_sub(position, camera_position);
+        let depth_z = depth_row[0] * p.x + depth_row[1] * p.y + depth_row[2] * p.z;
+        if depth_z >= camera.intrinsics.near_plane && depth_z <= camera.intrinsics.far_plane {
+            indices.push(idx as u32);
+            depth_keys.push(async_depth_to_key(depth_z));
+        }
+    }
+    let preprocess_ms = preprocess_start.elapsed().as_secs_f32() * 1000.0;
+
+    let sort_start = Instant::now();
+    CpuSortBackend::default()
+        .sort_values_by_keys(&depth_keys, &mut indices)
+        .map_err(|_| ErrorCode::Internal)?;
+    let sort_ms = sort_start.elapsed().as_secs_f32() * 1000.0;
+
+    Ok(AsyncSortResult {
+        indices,
+        preprocess_ms,
+        sort_ms,
+    })
+}
+
+fn async_depth_to_key(depth_z: f32) -> u32 {
+    depth_z.max(0.0).to_bits()
+}
+
+fn async_quat_inverse(q: [f32; 4]) -> [f32; 4] {
+    let q = async_quat_normalize(q);
+    [-q[0], -q[1], -q[2], q[3]]
+}
+
+fn async_quat_normalize(q: [f32; 4]) -> [f32; 4] {
+    let norm2 = q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3];
+    if norm2 <= 0.0 || !norm2.is_finite() {
+        return [0.0, 0.0, 0.0, 1.0];
+    }
+    let inv = 1.0 / norm2.sqrt();
+    [q[0] * inv, q[1] * inv, q[2] * inv, q[3] * inv]
+}
+
+fn async_quat_to_mat3(q: [f32; 4]) -> [[f32; 3]; 3] {
+    let q = async_quat_normalize(q);
+    let (x, y, z, w) = (q[0], q[1], q[2], q[3]);
+    let xx = x * x;
+    let yy = y * y;
+    let zz = z * z;
+    let xy = x * y;
+    let xz = x * z;
+    let yz = y * z;
+    let wx = w * x;
+    let wy = w * y;
+    let wz = w * z;
+
+    [
+        [1.0 - 2.0 * (yy + zz), 2.0 * (xy - wz), 2.0 * (xz + wy)],
+        [2.0 * (xy + wz), 1.0 - 2.0 * (xx + zz), 2.0 * (yz - wx)],
+        [2.0 * (xz - wy), 2.0 * (yz + wx), 1.0 - 2.0 * (xx + yy)],
+    ]
 }
 
 fn auto_camera(renderer: &Renderer) -> Result<Camera, ErrorCode> {

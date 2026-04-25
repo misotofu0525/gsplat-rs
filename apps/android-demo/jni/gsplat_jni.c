@@ -236,6 +236,114 @@ JNIEXPORT jint JNICALL Java_com_gsplat_demo_NativeBridge_setSurfaceSortInterval(
   return gsplat_surface_renderer_set_sort_interval(handle->renderer, (uint32_t)interval);
 }
 
+JNIEXPORT jint JNICALL Java_com_gsplat_demo_NativeBridge_setSurfaceGpuPreprojectEnabled(
+    JNIEnv *env,
+    jclass cls,
+    jlong native_handle,
+    jboolean enabled) {
+  (void)env;
+  (void)cls;
+
+  AndroidSurfaceRendererHandle *handle = android_handle_from_jlong(native_handle);
+  if (handle == NULL || handle->renderer == NULL) {
+    return GSPLAT_ERROR_INVALID_ARGUMENT;
+  }
+
+  return gsplat_surface_renderer_set_gpu_preproject(
+      handle->renderer,
+      enabled == JNI_TRUE ? 1u : 0u);
+}
+
+JNIEXPORT jint JNICALL Java_com_gsplat_demo_NativeBridge_setSurfaceGpuPreprojectDoubleBufferEnabled(
+    JNIEnv *env,
+    jclass cls,
+    jlong native_handle,
+    jboolean enabled) {
+  (void)env;
+  (void)cls;
+
+  AndroidSurfaceRendererHandle *handle = android_handle_from_jlong(native_handle);
+  if (handle == NULL || handle->renderer == NULL) {
+    return GSPLAT_ERROR_INVALID_ARGUMENT;
+  }
+
+  return gsplat_surface_renderer_set_gpu_preproject_double_buffer(
+      handle->renderer,
+      enabled == JNI_TRUE ? 1u : 0u);
+}
+
+JNIEXPORT jint JNICALL Java_com_gsplat_demo_NativeBridge_setSurfaceAsyncSortEnabled(
+    JNIEnv *env,
+    jclass cls,
+    jlong native_handle,
+    jboolean enabled) {
+  (void)env;
+  (void)cls;
+
+  AndroidSurfaceRendererHandle *handle = android_handle_from_jlong(native_handle);
+  if (handle == NULL || handle->renderer == NULL) {
+    return GSPLAT_ERROR_INVALID_ARGUMENT;
+  }
+
+  return gsplat_surface_renderer_set_async_sort(
+      handle->renderer,
+      enabled == JNI_TRUE ? 1u : 0u);
+}
+
+JNIEXPORT jint JNICALL Java_com_gsplat_demo_NativeBridge_setSurfaceAsyncGeometryEnabled(
+    JNIEnv *env,
+    jclass cls,
+    jlong native_handle,
+    jboolean enabled) {
+  (void)env;
+  (void)cls;
+
+  AndroidSurfaceRendererHandle *handle = android_handle_from_jlong(native_handle);
+  if (handle == NULL || handle->renderer == NULL) {
+    return GSPLAT_ERROR_INVALID_ARGUMENT;
+  }
+
+  return gsplat_surface_renderer_set_async_geometry(
+      handle->renderer,
+      enabled == JNI_TRUE ? 1u : 0u);
+}
+
+JNIEXPORT jint JNICALL Java_com_gsplat_demo_NativeBridge_setSurfaceInstanceBufferCount(
+    JNIEnv *env,
+    jclass cls,
+    jlong native_handle,
+    jint count) {
+  (void)env;
+  (void)cls;
+
+  AndroidSurfaceRendererHandle *handle = android_handle_from_jlong(native_handle);
+  if (handle == NULL || handle->renderer == NULL || count <= 0) {
+    return GSPLAT_ERROR_INVALID_ARGUMENT;
+  }
+
+  return gsplat_surface_renderer_set_instance_buffer_count(
+      handle->renderer,
+      (uint32_t)count);
+}
+
+JNIEXPORT jint JNICALL Java_com_gsplat_demo_NativeBridge_setSurfaceFrameLatency(
+    JNIEnv *env,
+    jclass cls,
+    jlong native_handle,
+    jint latency) {
+  (void)env;
+  (void)cls;
+
+  AndroidSurfaceRendererHandle *handle = android_handle_from_jlong(native_handle);
+  if (handle == NULL || handle->renderer == NULL || latency <= 0) {
+    return GSPLAT_ERROR_INVALID_ARGUMENT;
+  }
+
+  return gsplat_surface_renderer_set_frame_latency(
+      handle->renderer,
+      (uint32_t)latency);
+}
+
 JNIEXPORT jint JNICALL Java_com_gsplat_demo_NativeBridge_resetSurfaceCamera(
     JNIEnv *env,
     jclass cls,

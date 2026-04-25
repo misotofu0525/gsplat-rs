@@ -6,7 +6,7 @@ Improve Android true-device performance for the `flowers_1.ply` SortedAlpha rend
 
 ## Current Phase
 
-Phase 7
+Phase 11
 
 ## Phases
 
@@ -69,6 +69,39 @@ Phase 7
 - [x] Relaunch normal app mode and confirm full-scene rendering still starts.
 - **Status:** complete; two-frame sort cadence improves native frame prep but does not materially reduce Kotlin/JNI call wall time.
 
+### Phase 8: PlayCanvas Engine Architecture Comparison
+
+- [x] Inspect `playcanvas/engine` current Gaussian Splatting paths.
+- [x] Compare PlayCanvas CPU worker sort, WebGPU GPU-sort raster path, and tiled compute path against our Android Surface path.
+- [x] Identify cross-platform improvements that do not depend on a specific SoC and do not rely on sampling/culling away full-scene quality by default.
+- **Status:** complete for research; next implementation candidate is a static GPU scene buffer plus sorted-id draw path, not a naive full-GPU global radix sort.
+
+### Phase 9: Persistent GPU Source + Sorted-ID Surface Experiment
+
+- [x] Add persistent Surface source buffers for geometry/covariance/alpha data.
+- [x] Add a sorted-index GPU preproject path that uploads compact source ids and generates `GpuSurfaceInstance` data on GPU.
+- [x] Keep the retained CPU instance-upload path as the Android default unless the GPU preproject path wins true-device `avg_call_ms`.
+- [x] Benchmark both paths on the connected Android device with `flowers_1.ply`.
+- **Status:** complete for this experiment; GPU preproject is retained as an opt-in A/B path, but not enabled by default because it does not beat the retained CPU path on current true-device call time.
+
+### Phase 10: Async Sort / Double-Buffered Order Experiment
+
+- [x] Add an opt-in background sort worker for Android Surface.
+- [x] Double-buffer sorted order: render uses the latest completed order while the next camera order sorts off-thread.
+- [x] Keep full splat count and preserve the existing CPU and GPU-preproject render paths.
+- [x] Benchmark async sort on `flowers_1.ply` against same-APK defaults.
+- **Status:** complete for this experiment; async sorting reduces main-thread native sort accounting, but only marginally improves total Android render-call wall time, so it stays opt-in.
+
+### Phase 11: Remaining Pacing / Double-Buffer Experiments
+
+- [x] Add opt-in Surface instance buffer ring and benchmark 1/2/3 buffers.
+- [x] Add opt-in Surface frame-latency setter and benchmark latency 1/2/3.
+- [x] Replace Android normal-mode fixed `Thread.sleep(16)` with adaptive frame pacing.
+- [x] Add opt-in async Surface geometry builder and benchmark against the retained path.
+- [x] Add opt-in GPU preproject double-buffering and benchmark against single-buffer GPU preproject and retained CPU path.
+- [x] Evaluate tiled compute / chunk metadata suitability for the current full flower scene.
+- **Status:** complete for this pass; none of the new opt-in architecture experiments beat the retained default on Android `avg_call_ms`, but adaptive normal-mode pacing improves real interaction cadence by removing an extra fixed 16ms sleep.
+
 ## Key Questions
 
 1. What is the current flower-scene baseline on the connected Android device?
@@ -97,6 +130,12 @@ Phase 7
 | Use scene-order Surface construction for dense visibility | Flower keeps nearly every splat visible, so the expensive projection pass can read scene arrays contiguously and then reorder the compact instance buffer by sorted index. |
 | Prefer Mailbox present mode when available | Mailbox avoids FIFO queue blocking without tearing; unsupported platforms fall back to FIFO. |
 | Add configurable Surface sort cadence with Android default `2` | User reported their OpenGL version sorted every two frames without perceptual regression; this keeps full splat count and current-camera geometry while reusing depth order for one camera-change frame. |
+| Treat PlayCanvas as an architecture reference, not a drop-in implementation | Its transferable pieces are static GPU data, order-buffer indirection, async CPU sort, interval compaction, and tiled local compute; quality-changing knobs such as LOD budget, alpha clipping, and min contribution are optional/non-default for our current full-scene benchmark. |
+| Keep GPU preproject off by default | The persistent-source + sorted-id preproject path preserves full output and removes per-frame CPU geometry build/upload, but current Android `avg_call_ms` is still slower than the retained CPU path due to added GPU compute/render synchronization. |
+| Keep async sort off by default | It preserves full output and decouples sorting from the render call, but measured `avg_call_ms` improvement is small and it introduces order-lag semantics during camera movement. |
+| Keep async geometry and GPU preproject double-buffering off by default | Both preserve full drawn count, but they render latest-completed geometry and do not improve Android call wall time enough to justify temporal geometry lag. |
+| Keep optional Surface buffer ring lazy | Three buffers showed only a noise-level improvement, so extra large instance buffers are allocated only when the benchmark asks for them. |
+| Replace fixed normal-mode sleep with adaptive sleep | The previous Android render loop always added 16ms after each non-benchmark frame; the new loop sleeps only when rendering finishes faster than the target frame interval. |
 
 ## Instrumentation Added
 
@@ -105,6 +144,13 @@ Phase 7
   - `gsplat_benchmark_frames=<n>`
   - `gsplat_benchmark_warmup_frames=<n>`
   - `gsplat_benchmark_yaw_step=<float>`
+  - `gsplat_surface_sort_interval=<n>`
+  - `gsplat_surface_gpu_preproject=<bool>`
+  - `gsplat_surface_gpu_preproject_double_buffer=<bool>`
+  - `gsplat_surface_async_sort=<bool>`
+  - `gsplat_surface_async_geometry=<bool>`
+  - `gsplat_surface_instance_buffers=<n>`
+  - `gsplat_surface_frame_latency=<n>`
 - Benchmark mode applies a tiny orbit before each frame to force a quality-preserving SortedAlpha rebuild, then logs `BENCHMARK_RESULT` with average call/frame/preprocess/sort/raster/visible/drawn metrics.
 
 ## Errors Encountered
@@ -118,8 +164,14 @@ Phase 7
 
 - Do not count performance wins from reducing visible splats, lowering resolution, disabling sorting, or changing blending quality.
 - Prefer repo-local verification commands from `handbook/VERIFICATION.md`.
-- Latest final benchmark for retained code: `avg_call_ms=51.001 avg_frame_ms=41.244 avg_preprocess_ms=2.411 avg_sort_ms=11.126 avg_raster_ms=27.705 avg_visible=562974 avg_drawn=562974`.
-- Relative to the full-scene no-sampling baseline (`avg_frame_ms=83.714`), the retained code is about `2.03x` faster on native frame time, or about `+103%` native-frame throughput. Strict `2x` required roughly `<=41.86ms`.
+- Latest final benchmark for retained code: `avg_call_ms=52.491 avg_frame_ms=35.572 avg_preprocess_ms=1.795 avg_sort_ms=7.159 avg_raster_ms=26.617 avg_visible=562974 avg_drawn=562974`.
+- Relative to the full-scene no-sampling baseline (`avg_frame_ms=83.714`), the retained code is about `2.35x` faster on native frame time, or about `+135%` native-frame throughput. Strict `2x` required roughly `<=41.86ms`.
 - Kotlin/JNI call wall time is still around `51ms`, so the remaining perceived-FPS work is likely Surface/GPU queue pacing and upload/render submission, not just CPU instance construction.
 - Sort-cadence A/B in the same APK: `sort_interval=1` gave `avg_frame_ms=43.810`, while `sort_interval=2` gave `avg_frame_ms=38.830`; both kept `avg_drawn=562974`.
 - `sort_interval=2` did not improve `avg_call_ms` (`51.917` vs `51.901`), reinforcing that the remaining interaction feel is gated by Surface present/upload pacing rather than only CPU sort/prep.
+- Persistent GPU-source preproject A/B in the same APK: default CPU path with `gpu_preproject=false` remained around `avg_call_ms=51.998` to `54.519`, while `gpu_preproject=true` measured `avg_call_ms=55.352` after shader/layout cleanup. It is useful evidence, but not a default win yet.
+- Async sort A/B in the same APK: with `sort_interval=2`, default measured `avg_call_ms=52.488`, while `async_sort=true` measured `avg_call_ms=51.694`; both kept `avg_drawn=562974`. With `sort_interval=1`, default measured `51.667` and async measured `51.502`.
+- Surface pacing matrix: default `instance_buffers=1 frame_latency=2` measured `avg_call_ms=51.881 avg_frame_ms=35.265` in the same run family and final retained default measured `52.491/35.572`; `instance_buffers=3` measured `avg_call_ms=51.802 avg_frame_ms=34.851`; latency `1` and `3` did not beat latency `2` in earlier same-APK runs.
+- Async geometry builder: `async_geometry=true` measured `avg_call_ms=52.015` with `instance_buffers=1` and `52.132` with `instance_buffers=3`; native stats improve because geometry build is off-thread, but call wall time does not, and the path has geometry latency.
+- GPU preproject double buffering: single-buffer GPU preproject measured `avg_call_ms=54.592`; double-buffer preproject measured `54.530` with 2 buffers and `54.511` with 3 buffers, still slower than the retained CPU default.
+- Normal Android mode after adaptive pacing starts full-scene rendering and reports roughly 100 frames over about 4.8s after load, with `visible=562974` and `drawn=562974/562974`; the old unconditional 16ms sleep would have added an avoidable delay after every render call.

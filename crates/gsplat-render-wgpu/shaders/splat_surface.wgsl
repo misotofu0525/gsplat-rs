@@ -12,10 +12,17 @@ struct SurfaceColorElem {
 
 struct Params {
   camera_pos: vec4<f32>,
+  view_rot_row0: vec4<f32>,
+  view_rot_row1: vec4<f32>,
+  view_rot_row2: vec4<f32>,
+  vertical_fov_radians: f32,
+  near_plane: f32,
+  far_plane: f32,
+  aspect: f32,
+  width: u32,
+  height: u32,
   sh_degree: u32,
   len: u32,
-  _pad0: u32,
-  _pad1: u32,
 };
 
 @group(0) @binding(0)

@@ -99,3 +99,69 @@
 - Two-frame sort cadence benchmark: `samples=120 warmup=10 sort_interval=2 avg_call_ms=51.901 avg_frame_ms=38.830 avg_preprocess_ms=1.613 avg_sort_ms=7.342 avg_raster_ms=29.873 avg_visible=562974 avg_drawn=562974`.
 - Result: `sort_interval=2` improved native frame prep by about 11.4% versus same-APK per-frame sorting and did not reduce drawn splats, but did not improve Kotlin/JNI call wall time. Remaining perceived-FPS bottleneck is likely Surface present/upload pacing.
 - Relaunched normal app mode. Logs confirm startup with `visible=562974` and `drawn=562974/562974`.
+- Compared against `playcanvas/engine` at commit `aa8ef62`:
+  - PlayCanvas has CPU worker sorting with double-buffered order upload, WebGPU raster with interval compaction + indirect GPU radix sort, and a tiled compute renderer.
+  - The most relevant idea for us is persistent GPU source/work-buffer data plus sorted-ID draw indirection. That directly targets our remaining full-instance upload/present pressure.
+  - The tiled compute path is a larger architecture track: it may address overdraw and presentation cost, but it needs careful quality validation and should not be mixed with sampling/LOD wins for the current benchmark.
+  - Optional PlayCanvas knobs like LOD budget, alpha clipping, min pixel size, and min contribution are not acceptable as default benchmark wins under the current no-quality-loss requirement.
+- Implemented a persistent GPU-source + sorted-ID Surface preproject experiment:
+  - Added a resident Surface source buffer containing position, world covariance terms, precomputed alpha, and color data.
+  - Added `splat_surface_preproject.wgsl`, which expands sorted source ids into the existing `GpuSurfaceInstance` layout on GPU.
+  - Added an Android/C ABI/JNI benchmark toggle, `gsplat_surface_gpu_preproject`, so the experiment can be A/B tested without becoming the default path.
+- First GPU preproject benchmark preserved full output but regressed badly: `avg_call_ms=91.741`, `avg_frame_ms=12.371`, `avg_visible=562974`, `avg_drawn=562974`.
+- Fixed a default-path regression by separating the compact Surface color buffer from the wider GPU preproject source buffer.
+- Same-APK A/B after cleanup:
+  - Default retained path, `gpu_preproject=false`: `avg_call_ms=51.998`, `avg_frame_ms=36.521`, `avg_visible=562974`, `avg_drawn=562974`.
+  - GPU preproject, `gpu_preproject=true`: `avg_call_ms=56.226`, `avg_frame_ms=10.757`, `avg_visible=562974`, `avg_drawn=562974`.
+- Increased the preproject shader workgroup size from 64 to 128. This improved the experiment slightly to `avg_call_ms=55.352`, but it still did not beat the retained default path.
+- Confirmation runs after the final shader tweak:
+  - Default retained path with `sort_interval=2`, `gpu_preproject=false`: `avg_call_ms=54.519`, `avg_frame_ms=35.934`, `avg_visible=562974`, `avg_drawn=562974`.
+  - Default retained path with `sort_interval=1`, `gpu_preproject=false`: `avg_call_ms=52.988`, `avg_frame_ms=42.336`, `avg_visible=562974`, `avg_drawn=562974`.
+- Decision: keep GPU preproject as an opt-in experiment only. It proves that raw geometry/covariance data can be resident and that only sorted ids need to be uploaded, but on this device the added GPU compute/render synchronization is not a default performance win yet.
+- Verification after the GPU preproject work passed: `cargo test -p gsplat-render-wgpu -p gsplat-ffi-c -p gsplat-sort`; `cargo check --workspace`; `bash tests/ffi/run-ffi-smoke.sh`; `bash apps/android-demo/run-jni-smoke.sh`; `bash apps/android-demo/build-apk.sh`; true-device Android benchmark A/B.
+- Relaunched normal app mode after benchmarks. Logs confirmed `state=rendering`, `visible=562974`, and `drawn=562974/562974`.
+- Added async sort / double-buffered order experiment:
+  - Added `SurfaceAsyncSorter` on the C ABI Surface renderer side.
+  - The worker owns cloned scene positions and sorts in a background Rust thread.
+  - The render thread polls the latest completed sorted order, renders with the last available order, and schedules the next current-camera order after render.
+  - Added `gsplat_surface_renderer_set_async_sort` plus JNI/Kotlin benchmark extra `gsplat_surface_async_sort`.
+- Same-APK benchmark with retained CPU render path:
+  - `sort_interval=2`, async off: `avg_call_ms=52.488`, `avg_frame_ms=37.419`, `avg_visible=562974`, `avg_drawn=562974`.
+  - `sort_interval=2`, async on: `avg_call_ms=51.694`, `avg_frame_ms=29.851`, `avg_visible=562974`, `avg_drawn=562974`.
+  - `sort_interval=1`, async off: `avg_call_ms=51.667`, `avg_frame_ms=41.164`, `avg_visible=562974`, `avg_drawn=562974`.
+  - `sort_interval=1`, async on: `avg_call_ms=51.502`, `avg_frame_ms=30.454`, `avg_visible=562974`, `avg_drawn=562974`.
+- Combination with GPU preproject did not win:
+  - `sort_interval=2`, `gpu_preproject=true`, `async_sort=true`: `avg_call_ms=53.485`.
+  - `sort_interval=1`, `gpu_preproject=true`, `async_sort=true`: `avg_call_ms=53.613`.
+- Decision: async sort is useful as evidence and an opt-in A/B tool, but stays off by default. It moves sort out of the render call, yet call wall time remains dominated by Surface/present/upload/render pacing.
+- Verification after async-sort work passed: `cargo test -p gsplat-render-wgpu -p gsplat-ffi-c -p gsplat-sort`; `cargo check --workspace`; `bash tests/ffi/run-ffi-smoke.sh`; `bash apps/android-demo/run-jni-smoke.sh`; `bash apps/android-demo/build-apk.sh`; true-device Android A/B benchmarks.
+- Relaunched normal app mode after async-sort benchmarks. Logs confirmed `state=rendering`, `visible=562974`, and `drawn=562974/562974`.
+- Continued with remaining pacing and double-buffer experiments.
+- Added Android benchmark extras for Surface instance buffer count and frame latency.
+- Added a lazy Surface instance buffer ring so `instance_buffers=2/3` allocates extra large buffers only when requested.
+- Replaced normal-mode unconditional `Thread.sleep(16)` with adaptive sleep that only fills time up to the target frame interval.
+- Same-APK Surface pacing matrix:
+  - default `instance_buffers=1 frame_latency=2`: `avg_call_ms=53.228 avg_frame_ms=36.100 avg_visible=562974 avg_drawn=562974`.
+  - `instance_buffers=2`: `avg_call_ms=53.144 avg_frame_ms=37.072`.
+  - `instance_buffers=3`: `avg_call_ms=52.732 avg_frame_ms=35.296`; final lazy-allocation confirmation `avg_call_ms=51.802 avg_frame_ms=34.851`.
+  - `frame_latency=1`: `avg_call_ms=53.388 avg_frame_ms=37.855`.
+  - `frame_latency=3`: `avg_call_ms=53.144 avg_frame_ms=36.377`.
+- Decision: buffer ring and frame latency are useful A/B knobs but not default wins; extra buffers stay lazy.
+- Added opt-in async Surface geometry worker. It builds full `GpuSurfaceInstance` buffers in a background Rust thread and renders the latest completed geometry.
+- Async geometry benchmark:
+  - same-APK default: `avg_call_ms=52.148 avg_frame_ms=35.861`.
+  - `async_geometry=true`: `avg_call_ms=52.015 avg_frame_ms=27.158`.
+  - `async_geometry=true instance_buffers=3`: `avg_call_ms=52.132 avg_frame_ms=26.471`.
+  - `async_geometry=true sort_interval=1`: `avg_call_ms=52.210 avg_frame_ms=35.300`.
+- Decision: async geometry stays opt-in only. It lowers native accounting but not call wall time, and it has one-frame projected-geometry latency.
+- Added opt-in GPU preproject double buffering. After the first preproject seed, it renders the latest completed preproject buffer and submits the next preproject compute for a future frame.
+- GPU preproject double-buffer benchmark:
+  - same-APK default CPU path: `avg_call_ms=52.330 avg_frame_ms=36.050`.
+  - GPU preproject single-buffer: `avg_call_ms=54.592 avg_frame_ms=10.774`.
+  - GPU preproject double-buffer with 2 buffers: `avg_call_ms=54.530 avg_frame_ms=10.722`.
+  - GPU preproject double-buffer with 3 buffers: `avg_call_ms=54.511 avg_frame_ms=10.729`.
+- Decision: GPU preproject double-buffering stays opt-in only; it does not make the GPU preproject path beat the retained default.
+- Evaluated tiled compute / chunk metadata as a follow-up direction. It remains a separate renderer architecture track because the current flower benchmark draws every splat (`visible=562974`, `drawn=562974`), so chunk culling cannot honestly provide a no-quality-loss win for this scene.
+- Changed async geometry to lazy-create its cloned builder only when the opt-in flag is enabled, so the default path does not pay the memory/create cost for that rejected experiment.
+- Final retained default benchmark after lazy async-geometry creation: `samples=120 warmup=10 sort_interval=2 gpu_preproject=false gpu_preproject_double_buffer=false async_sort=false async_geometry=false instance_buffers=1 frame_latency=2 avg_call_ms=52.491 avg_frame_ms=35.572 avg_preprocess_ms=1.795 avg_sort_ms=7.159 avg_raster_ms=26.617 avg_visible=562974 avg_drawn=562974`.
+- Relaunched normal app mode after final install. Logs confirmed startup with `visible=562974`, `drawn=562974/562974`, and about 100 frames over roughly 4.8s after first render status; the old fixed 16ms post-frame sleep is no longer present.

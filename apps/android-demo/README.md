@@ -107,7 +107,13 @@ For repeatable Surface performance checks, launch with benchmark extras:
   --ei gsplat_benchmark_frames 120 \
   --ei gsplat_benchmark_warmup_frames 10 \
   --ef gsplat_benchmark_yaw_step 0.001 \
-  --ei gsplat_surface_sort_interval 2
+  --ei gsplat_surface_sort_interval 2 \
+  --ez gsplat_surface_gpu_preproject false \
+  --ez gsplat_surface_gpu_preproject_double_buffer false \
+  --ez gsplat_surface_async_sort false \
+  --ez gsplat_surface_async_geometry false \
+  --ei gsplat_surface_instance_buffers 1 \
+  --ei gsplat_surface_frame_latency 2
 "$ADB" logcat -d -s GsplatDemo:I | grep BENCHMARK_RESULT
 ```
 
@@ -118,3 +124,24 @@ depth sorting during camera changes. The Android demo default is `2`, which
 reuses the previous sorted index order for one camera-change frame while still
 rebuilding current-camera geometry every frame; use `1` to force sorting every
 frame for comparison.
+`gsplat_surface_gpu_preproject=true` enables an experimental path that uploads
+only sorted splat ids and generates projected Surface geometry from persistent
+GPU source buffers. It is off by default because the current Android benchmark
+uses it only for A/B validation.
+`gsplat_surface_gpu_preproject_double_buffer=true` makes that GPU preproject
+path render the latest completed preproject buffer while submitting the next
+preproject compute pass. It requires `gsplat_surface_gpu_preproject=true` and
+`gsplat_surface_instance_buffers=2` or `3`; it is for A/B checks because it has
+one-frame geometry latency and does not currently beat the default path.
+`gsplat_surface_async_sort=true` enables an experimental background sort worker
+that double-buffers the latest completed order while the render thread continues
+with the previous order. It keeps the full splat count and is intended for
+interaction A/B checks.
+`gsplat_surface_async_geometry=true` enables an experimental background Surface
+instance builder. It keeps the full splat count but renders the latest completed
+geometry, so it is not a default quality path.
+`gsplat_surface_instance_buffers` controls the optional Surface instance buffer
+ring used by the A/B paths. The default is `1`; higher values are allocated
+only when requested.
+`gsplat_surface_frame_latency` maps to wgpu
+`desired_maximum_frame_latency`. The default is `2`.

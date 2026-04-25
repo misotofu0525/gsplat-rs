@@ -653,6 +653,7 @@ dependencies = [
  "gsplat-core",
  "gsplat-io-ply",
  "gsplat-render-wgpu",
+ "gsplat-sort",
  "wgpu",
 ]
 

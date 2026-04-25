@@ -11,6 +11,7 @@ use thiserror::Error;
 use wgpu::util::DeviceExt;
 
 const RENDER_TARGET_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
+const SURFACE_INSTANCE_BUFFER_RING_CAPACITY: usize = 3;
 
 #[cfg(target_os = "android")]
 const fn wgpu_label(_label: &'static str) -> Option<&'static str> {
@@ -318,6 +319,62 @@ impl Renderer {
         self.build_surface_instances_with_sort_refresh_into(camera, instances, true)
     }
 
+    pub fn build_surface_sorted_indices_with_sort_refresh(
+        &mut self,
+        camera: &Camera,
+        refresh_sort: bool,
+    ) -> Result<FrameStats, RendererError> {
+        let frame_start = Instant::now();
+
+        let refresh_sort = refresh_sort || self.preprocess_indices.is_empty();
+        let (preprocess_ms, sort_ms) = if refresh_sort {
+            let preprocess_start = Instant::now();
+            self.preprocess_visible_scratch(camera)?;
+            let preprocess_ms = preprocess_start.elapsed().as_secs_f32() * 1000.0;
+
+            let sort_start = Instant::now();
+            self.sort_preprocessed_scratch()?;
+            let sort_ms = sort_start.elapsed().as_secs_f32() * 1000.0;
+
+            (preprocess_ms, sort_ms)
+        } else {
+            camera
+                .validate()
+                .map_err(|_| RendererError::InvalidCamera)?;
+            (0.0, 0.0)
+        };
+
+        let visible_count = self.preprocess_indices.len() as u32;
+        let stats = FrameStats {
+            frame_ms: frame_start.elapsed().as_secs_f32() * 1000.0,
+            preprocess_ms,
+            sort_ms,
+            raster_ms: 0.0,
+            visible_count,
+            drawn_count: visible_count,
+        };
+        self.last_stats = stats;
+        Ok(stats)
+    }
+
+    pub fn current_sorted_indices(&self) -> &[u32] {
+        &self.preprocess_indices
+    }
+
+    pub fn replace_surface_sorted_indices(
+        &mut self,
+        indices: Vec<u32>,
+    ) -> Result<(), RendererError> {
+        let scene = self.scene.as_ref().ok_or(RendererError::SceneNotLoaded)?;
+        if indices.iter().any(|&idx| idx as usize >= scene.len()) {
+            return Err(RendererError::InvalidScene);
+        }
+
+        self.preprocess_depth_keys.clear();
+        self.preprocess_indices = indices;
+        Ok(())
+    }
+
     pub fn build_surface_instances_with_sort_refresh_into(
         &mut self,
         camera: &Camera,
@@ -496,20 +553,88 @@ impl Renderer {
     }
 }
 
+#[derive(Clone)]
+pub struct SurfaceInstanceBuilder {
+    scene: SceneBuffers,
+    world_covariance_terms: Vec<CameraCovarianceTerms>,
+    alpha_values: Vec<f32>,
+}
+
+impl SurfaceInstanceBuilder {
+    pub fn from_renderer(renderer: &Renderer) -> Result<Self, RendererError> {
+        let scene = renderer
+            .scene
+            .as_ref()
+            .ok_or(RendererError::SceneNotLoaded)?
+            .clone();
+        let world_covariance_terms = renderer
+            .world_covariance_terms
+            .as_ref()
+            .ok_or(RendererError::InvalidScene)?
+            .clone();
+        let alpha_values = renderer
+            .alpha_values
+            .as_ref()
+            .ok_or(RendererError::InvalidScene)?
+            .clone();
+
+        Ok(Self {
+            scene,
+            world_covariance_terms,
+            alpha_values,
+        })
+    }
+
+    pub fn build_into(
+        &self,
+        indices: &[u32],
+        camera: &Camera,
+        config: RendererConfig,
+        by_index: &mut Vec<GpuSurfaceInstance>,
+        out: &mut Vec<GpuSurfaceInstance>,
+    ) -> Result<(), RendererError> {
+        camera
+            .validate()
+            .map_err(|_| RendererError::InvalidCamera)?;
+        build_surface_instances_into(
+            &self.scene,
+            &self.world_covariance_terms,
+            &self.alpha_values,
+            indices,
+            camera,
+            config,
+            by_index,
+            out,
+        );
+        Ok(())
+    }
+}
+
 pub struct SurfacePresenter {
     surface: wgpu::Surface<'static>,
     device: wgpu::Device,
     queue: wgpu::Queue,
-    pipeline: wgpu::RenderPipeline,
+    render_pipeline: wgpu::RenderPipeline,
+    preproject_pipeline: wgpu::ComputePipeline,
+    render_bind_group_layout: wgpu::BindGroupLayout,
+    preproject_bind_group_layout: wgpu::BindGroupLayout,
     surface_config: wgpu::SurfaceConfiguration,
     max_texture_dimension_2d: u32,
-    instance_buffer: wgpu::Buffer,
+    instance_buffers: Vec<wgpu::Buffer>,
+    instance_buffer_size: u64,
+    current_instance_buffer: usize,
+    active_instance_buffers: usize,
     instance_capacity: usize,
     instance_count: u32,
     params_buffer: wgpu::Buffer,
-    bind_group: wgpu::BindGroup,
+    render_bind_groups: Vec<wgpu::BindGroup>,
+    preproject_bind_groups: Vec<wgpu::BindGroup>,
+    preproject_double_buffer: bool,
+    preproject_ready: bool,
+    sorted_indices_buffer: wgpu::Buffer,
     sh_degree: u32,
     _surface_color_buffer: wgpu::Buffer,
+    _surface_source_buffer: wgpu::Buffer,
     _sh_rest_buffer: wgpu::Buffer,
 }
 
@@ -618,6 +743,12 @@ impl SurfacePresenter {
             label: wgpu_label("gsplat-surface-shader"),
             source: wgpu::ShaderSource::Wgsl(include_str!("../shaders/splat_surface.wgsl").into()),
         });
+        let preproject_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: wgpu_label("gsplat-surface-preproject-shader"),
+            source: wgpu::ShaderSource::Wgsl(
+                include_str!("../shaders/splat_surface_preproject.wgsl").into(),
+            ),
+        });
 
         let render_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -671,8 +802,60 @@ impl SurfacePresenter {
                 bind_group_layouts: &[&render_bind_group_layout],
                 immediate_size: 0,
             });
+        let preproject_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: wgpu_label("gsplat-surface-preproject-bgl"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 3,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: false },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                ],
+            });
+        let preproject_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: wgpu_label("gsplat-surface-preproject-pipeline-layout"),
+                bind_group_layouts: &[&preproject_bind_group_layout],
+                immediate_size: 0,
+            });
 
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        let render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: wgpu_label("gsplat-surface-pipeline"),
             layout: Some(&render_pipeline_layout),
             vertex: wgpu::VertexState {
@@ -708,33 +891,72 @@ impl SurfacePresenter {
             multiview_mask: None,
             cache: None,
         });
+        let preproject_pipeline =
+            device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: wgpu_label("gsplat-surface-preproject-pipeline"),
+                layout: Some(&preproject_pipeline_layout),
+                module: &preproject_shader,
+                entry_point: Some("main"),
+                cache: None,
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            });
         let scene = renderer
             .scene()
             .ok_or(SurfacePresenterError::SceneNotLoaded)?;
         let scene_len = scene.len().max(1);
         let instance_capacity = surface_instance_capacity(scene_len);
-        let (instance_buffer, params_buffer, surface_color_buffer, sh_rest_buffer, bind_group) =
-            create_surface_instance_resources(
-                &device,
-                &render_bind_group_layout,
-                instance_capacity,
-                scene,
-            );
+        let world_covariance_terms = renderer
+            .world_covariance_terms
+            .as_deref()
+            .ok_or(SurfacePresenterError::SceneNotLoaded)?;
+        let alpha_values = renderer
+            .alpha_values
+            .as_deref()
+            .ok_or(SurfacePresenterError::SceneNotLoaded)?;
+        let (
+            instance_buffers,
+            sorted_indices_buffer,
+            params_buffer,
+            surface_color_buffer,
+            surface_source_buffer,
+            sh_rest_buffer,
+            render_bind_groups,
+            preproject_bind_groups,
+        ) = create_surface_instance_resources(
+            &device,
+            &render_bind_group_layout,
+            &preproject_bind_group_layout,
+            instance_capacity,
+            scene,
+            world_covariance_terms,
+            alpha_values,
+        );
 
         Ok(Self {
             surface,
             device,
             queue,
-            pipeline,
+            render_pipeline,
+            preproject_pipeline,
+            render_bind_group_layout,
+            preproject_bind_group_layout,
             surface_config,
             max_texture_dimension_2d,
-            instance_buffer,
+            instance_buffers,
+            instance_buffer_size: surface_instance_buffer_size(instance_capacity),
+            current_instance_buffer: 0,
+            active_instance_buffers: 1,
             instance_capacity,
             instance_count: 0,
             params_buffer,
-            bind_group,
+            render_bind_groups,
+            preproject_bind_groups,
+            preproject_double_buffer: false,
+            preproject_ready: false,
+            sorted_indices_buffer,
             sh_degree: scene.sh_degree as u32,
             _surface_color_buffer: surface_color_buffer,
+            _surface_source_buffer: surface_source_buffer,
             _sh_rest_buffer: sh_rest_buffer,
         })
     }
@@ -753,6 +975,93 @@ impl SurfacePresenter {
         (self.surface_config.width, self.surface_config.height)
     }
 
+    pub fn set_instance_buffer_count(&mut self, count: u32) {
+        let count = (count as usize).clamp(1, SURFACE_INSTANCE_BUFFER_RING_CAPACITY);
+        self.ensure_instance_buffer_count(count);
+        self.active_instance_buffers = count;
+        if self.current_instance_buffer >= count {
+            self.current_instance_buffer = 0;
+        }
+    }
+
+    pub fn set_frame_latency(&mut self, latency: u32) {
+        let latency = latency.clamp(1, 4);
+        if self.surface_config.desired_maximum_frame_latency == latency {
+            return;
+        }
+
+        self.surface_config.desired_maximum_frame_latency = latency;
+        self.surface.configure(&self.device, &self.surface_config);
+    }
+
+    pub fn set_preproject_double_buffer(&mut self, enabled: bool) {
+        if self.preproject_double_buffer == enabled {
+            return;
+        }
+
+        self.preproject_double_buffer = enabled;
+        self.preproject_ready = false;
+        self.current_instance_buffer = 0;
+    }
+
+    fn ensure_instance_buffer_count(&mut self, count: usize) {
+        while self.instance_buffers.len() < count {
+            let instance_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: wgpu_label("gsplat-surface-instance-buffer"),
+                size: self.instance_buffer_size,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            let render_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: wgpu_label("gsplat-surface-bind-group"),
+                layout: &self.render_bind_group_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: instance_buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: self._surface_color_buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: self._sh_rest_buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: self.params_buffer.as_entire_binding(),
+                    },
+                ],
+            });
+            let preproject_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: wgpu_label("gsplat-surface-preproject-bind-group"),
+                layout: &self.preproject_bind_group_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: self.sorted_indices_buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: self._surface_source_buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: self.params_buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: instance_buffer.as_entire_binding(),
+                    },
+                ],
+            });
+            self.instance_buffers.push(instance_buffer);
+            self.render_bind_groups.push(render_bind_group);
+            self.preproject_bind_groups.push(preproject_bind_group);
+        }
+    }
+
     pub fn render_instances(
         &mut self,
         instances: &[GpuSurfaceInstance],
@@ -763,41 +1072,159 @@ impl SurfacePresenter {
                 GpuInstancePreprocessError::InstanceBufferCapacityExceeded,
             ));
         }
-        if !instances.is_empty() {
-            self.queue
-                .write_buffer(&self.instance_buffer, 0, bytemuck::cast_slice(instances));
-        }
-        let params = GpuSurfaceRenderParams {
-            camera_pos: [
-                camera.pose.position.x,
-                camera.pose.position.y,
-                camera.pose.position.z,
-                0.0,
-            ],
-            sh_degree: self.sh_degree,
-            len: instances.len() as u32,
-            _pad0: 0,
-            _pad2: 0,
+        let buffer_index = if self.active_instance_buffers > 1 {
+            (self.current_instance_buffer + 1) % self.active_instance_buffers
+        } else {
+            0
         };
+        self.current_instance_buffer = buffer_index;
+        if !instances.is_empty() {
+            self.queue.write_buffer(
+                &self.instance_buffers[buffer_index],
+                0,
+                bytemuck::cast_slice(instances),
+            );
+        }
+        let params = make_surface_render_params(
+            camera,
+            self.surface_config.width,
+            self.surface_config.height,
+            instances.len() as u32,
+            self.sh_degree,
+        );
         self.queue
             .write_buffer(&self.params_buffer, 0, bytemuck::bytes_of(&params));
         self.instance_count = instances.len() as u32;
         self.render_current()
     }
 
-    pub fn render_current(&mut self) -> Result<(), SurfacePresenterError> {
-        let frame = match self.surface.get_current_texture() {
-            Ok(frame) => frame,
-            Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
-                self.surface.configure(&self.device, &self.surface_config);
-                match self.surface.get_current_texture() {
-                    Ok(frame) => frame,
-                    Err(wgpu::SurfaceError::Timeout) => return Ok(()),
-                    Err(err) => return Err(surface_error_to_presenter(err)),
-                }
+    pub fn render_sorted_indices(
+        &mut self,
+        sorted_indices: &[u32],
+        camera: &Camera,
+        refresh_indices: bool,
+    ) -> Result<(), SurfacePresenterError> {
+        if sorted_indices.len() > self.instance_capacity {
+            return Err(SurfacePresenterError::GpuInstancePreprocess(
+                GpuInstancePreprocessError::InstanceBufferCapacityExceeded,
+            ));
+        }
+        if refresh_indices && !sorted_indices.is_empty() {
+            self.queue.write_buffer(
+                &self.sorted_indices_buffer,
+                0,
+                bytemuck::cast_slice(sorted_indices),
+            );
+        }
+
+        let params = make_surface_render_params(
+            camera,
+            self.surface_config.width,
+            self.surface_config.height,
+            sorted_indices.len() as u32,
+            self.sh_degree,
+        );
+        self.queue
+            .write_buffer(&self.params_buffer, 0, bytemuck::bytes_of(&params));
+        self.instance_count = sorted_indices.len() as u32;
+
+        if self.preproject_double_buffer && self.active_instance_buffers > 1 {
+            if !self.preproject_ready {
+                self.current_instance_buffer = 0;
+                self.submit_preproject_compute(self.current_instance_buffer);
+                self.preproject_ready = true;
             }
-            Err(wgpu::SurfaceError::Timeout) => return Ok(()),
-            Err(err) => return Err(surface_error_to_presenter(err)),
+
+            let draw_index = self.current_instance_buffer;
+            self.render_current()?;
+            let compute_index = (draw_index + 1) % self.active_instance_buffers;
+            self.submit_preproject_compute(compute_index);
+            self.current_instance_buffer = compute_index;
+            return Ok(());
+        }
+
+        self.current_instance_buffer = 0;
+        let Some(frame) = self.acquire_surface_texture()? else {
+            return Ok(());
+        };
+        let view = frame
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
+
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: wgpu_label("gsplat-surface-indexed-encoder"),
+            });
+        if self.instance_count > 0 {
+            {
+                let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                    label: wgpu_label("gsplat-surface-preproject-pass"),
+                    timestamp_writes: None,
+                });
+                cpass.set_pipeline(&self.preproject_pipeline);
+                cpass.set_bind_group(0, &self.preproject_bind_groups[0], &[]);
+                cpass.dispatch_workgroups(self.instance_count.div_ceil(128), 1, 1);
+            }
+        }
+        {
+            let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: wgpu_label("gsplat-surface-indexed-pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                occlusion_query_set: None,
+                timestamp_writes: None,
+                multiview_mask: None,
+            });
+            rpass.set_pipeline(&self.render_pipeline);
+            rpass.set_bind_group(
+                0,
+                &self.render_bind_groups[self.current_instance_buffer],
+                &[],
+            );
+            if self.instance_count > 0 {
+                rpass.draw(0..6, 0..self.instance_count);
+            }
+        }
+
+        self.queue.submit(Some(encoder.finish()));
+        frame.present();
+        Ok(())
+    }
+
+    fn submit_preproject_compute(&mut self, buffer_index: usize) {
+        if self.instance_count == 0 {
+            return;
+        }
+
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: wgpu_label("gsplat-surface-preproject-encoder"),
+            });
+        {
+            let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: wgpu_label("gsplat-surface-preproject-pass"),
+                timestamp_writes: None,
+            });
+            cpass.set_pipeline(&self.preproject_pipeline);
+            cpass.set_bind_group(0, &self.preproject_bind_groups[buffer_index], &[]);
+            cpass.dispatch_workgroups(self.instance_count.div_ceil(128), 1, 1);
+        }
+        self.queue.submit(Some(encoder.finish()));
+    }
+
+    pub fn render_current(&mut self) -> Result<(), SurfacePresenterError> {
+        let Some(frame) = self.acquire_surface_texture()? else {
+            return Ok(());
         };
         let view = frame
             .texture
@@ -825,8 +1252,12 @@ impl SurfacePresenter {
                 timestamp_writes: None,
                 multiview_mask: None,
             });
-            rpass.set_pipeline(&self.pipeline);
-            rpass.set_bind_group(0, &self.bind_group, &[]);
+            rpass.set_pipeline(&self.render_pipeline);
+            rpass.set_bind_group(
+                0,
+                &self.render_bind_groups[self.current_instance_buffer],
+                &[],
+            );
             if self.instance_count > 0 {
                 rpass.draw(0..6, 0..self.instance_count);
             }
@@ -837,6 +1268,24 @@ impl SurfacePresenter {
         Ok(())
     }
 
+    fn acquire_surface_texture(
+        &mut self,
+    ) -> Result<Option<wgpu::SurfaceTexture>, SurfacePresenterError> {
+        match self.surface.get_current_texture() {
+            Ok(frame) => Ok(Some(frame)),
+            Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
+                self.surface.configure(&self.device, &self.surface_config);
+                match self.surface.get_current_texture() {
+                    Ok(frame) => Ok(Some(frame)),
+                    Err(wgpu::SurfaceError::Timeout) => Ok(None),
+                    Err(err) => Err(surface_error_to_presenter(err)),
+                }
+            }
+            Err(wgpu::SurfaceError::Timeout) => Ok(None),
+            Err(err) => Err(surface_error_to_presenter(err)),
+        }
+    }
+
     pub const fn instance_count(&self) -> u32 {
         self.instance_count
     }
@@ -844,21 +1293,37 @@ impl SurfacePresenter {
 
 fn create_surface_instance_resources(
     device: &wgpu::Device,
-    bind_group_layout: &wgpu::BindGroupLayout,
+    render_bind_group_layout: &wgpu::BindGroupLayout,
+    preproject_bind_group_layout: &wgpu::BindGroupLayout,
     capacity: usize,
     scene: &SceneBuffers,
+    world_covariance_terms: &[CameraCovarianceTerms],
+    alpha_values: &[f32],
 ) -> (
+    Vec<wgpu::Buffer>,
     wgpu::Buffer,
     wgpu::Buffer,
     wgpu::Buffer,
     wgpu::Buffer,
-    wgpu::BindGroup,
+    wgpu::Buffer,
+    Vec<wgpu::BindGroup>,
+    Vec<wgpu::BindGroup>,
 ) {
     let stride = std::mem::size_of::<GpuSurfaceInstance>() as u64;
     let size = stride * (capacity.max(1) as u64);
-    let instance_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-        label: wgpu_label("gsplat-surface-instance-buffer"),
-        size,
+    let instance_buffers = (0..1)
+        .map(|_| {
+            device.create_buffer(&wgpu::BufferDescriptor {
+                label: wgpu_label("gsplat-surface-instance-buffer"),
+                size,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            })
+        })
+        .collect::<Vec<_>>();
+    let sorted_indices_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: wgpu_label("gsplat-surface-sorted-indices-buffer"),
+        size: (capacity.max(1) as u64) * std::mem::size_of::<u32>() as u64,
         usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
@@ -873,6 +1338,13 @@ fn create_surface_instance_resources(
         contents: bytemuck::cast_slice(&surface_color_elems),
         usage: wgpu::BufferUsages::STORAGE,
     });
+    let surface_source_elems =
+        make_surface_source_elems(scene, world_covariance_terms, alpha_values);
+    let surface_source_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: wgpu_label("gsplat-surface-source-buffer"),
+        contents: bytemuck::cast_slice(&surface_source_elems),
+        usage: wgpu::BufferUsages::STORAGE,
+    });
     let sh_rest_fallback = [0.0_f32];
     let sh_rest = scene.sh_rest.as_deref().unwrap_or(&sh_rest_fallback);
     let sh_rest_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -880,38 +1352,77 @@ fn create_surface_instance_resources(
         contents: bytemuck::cast_slice(sh_rest),
         usage: wgpu::BufferUsages::STORAGE,
     });
-    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: wgpu_label("gsplat-surface-bind-group"),
-        layout: bind_group_layout,
-        entries: &[
-            wgpu::BindGroupEntry {
-                binding: 0,
-                resource: instance_buffer.as_entire_binding(),
-            },
-            wgpu::BindGroupEntry {
-                binding: 1,
-                resource: surface_color_buffer.as_entire_binding(),
-            },
-            wgpu::BindGroupEntry {
-                binding: 2,
-                resource: sh_rest_buffer.as_entire_binding(),
-            },
-            wgpu::BindGroupEntry {
-                binding: 3,
-                resource: params_buffer.as_entire_binding(),
-            },
-        ],
-    });
+    let render_bind_groups = instance_buffers
+        .iter()
+        .map(|instance_buffer| {
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: wgpu_label("gsplat-surface-bind-group"),
+                layout: render_bind_group_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: instance_buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: surface_color_buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: sh_rest_buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: params_buffer.as_entire_binding(),
+                    },
+                ],
+            })
+        })
+        .collect::<Vec<_>>();
+    let preproject_bind_groups = instance_buffers
+        .iter()
+        .map(|instance_buffer| {
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: wgpu_label("gsplat-surface-preproject-bind-group"),
+                layout: preproject_bind_group_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: sorted_indices_buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: surface_source_buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: params_buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: instance_buffer.as_entire_binding(),
+                    },
+                ],
+            })
+        })
+        .collect::<Vec<_>>();
     (
-        instance_buffer,
+        instance_buffers,
+        sorted_indices_buffer,
         params_buffer,
         surface_color_buffer,
+        surface_source_buffer,
         sh_rest_buffer,
-        bind_group,
+        render_bind_groups,
+        preproject_bind_groups,
     )
 }
 
 fn make_surface_color_elems(scene: &SceneBuffers) -> Vec<GpuSurfaceColorElem> {
+    if scene.positions.is_empty() {
+        return vec![GpuSurfaceColorElem::zeroed()];
+    }
+
     scene
         .positions
         .iter()
@@ -921,6 +1432,71 @@ fn make_surface_color_elems(scene: &SceneBuffers) -> Vec<GpuSurfaceColorElem> {
             color_dc: [color_dc[0], color_dc[1], color_dc[2], 0.0],
         })
         .collect()
+}
+
+fn make_surface_source_elems(
+    scene: &SceneBuffers,
+    world_covariance_terms: &[CameraCovarianceTerms],
+    alpha_values: &[f32],
+) -> Vec<GpuSurfaceSourceElem> {
+    if scene.positions.is_empty() {
+        return vec![GpuSurfaceSourceElem::zeroed()];
+    }
+
+    (0..scene.positions.len())
+        .map(|i| {
+            let position = scene.positions[i];
+            let color_dc = scene.color_dc.get(i).copied().unwrap_or([0.0, 0.0, 0.0]);
+            let cov = world_covariance_terms
+                .get(i)
+                .copied()
+                .unwrap_or(CameraCovarianceTerms {
+                    xx: 0.0,
+                    xy: 0.0,
+                    xz: 0.0,
+                    yy: 0.0,
+                    yz: 0.0,
+                    zz: 0.0,
+                });
+            let alpha = alpha_values.get(i).copied().unwrap_or(0.0);
+            GpuSurfaceSourceElem {
+                position: [position.x, position.y, position.z, 0.0],
+                covariance0: [cov.xx, cov.xy, cov.xz, cov.yy],
+                covariance1: [cov.yz, cov.zz, alpha, 0.0],
+                color_dc: [color_dc[0], color_dc[1], color_dc[2], 0.0],
+            }
+        })
+        .collect()
+}
+
+fn make_surface_render_params(
+    camera: &Camera,
+    width: u32,
+    height: u32,
+    len: u32,
+    sh_degree: u32,
+) -> GpuSurfaceRenderParams {
+    let camera_inv_q = quat_inverse(camera.pose.rotation_xyzw);
+    let view_rot = quat_to_mat3(camera_inv_q);
+    GpuSurfaceRenderParams {
+        camera_pos: [
+            camera.pose.position.x,
+            camera.pose.position.y,
+            camera.pose.position.z,
+            0.0,
+        ],
+        view_rot_row0: [view_rot[0][0], view_rot[0][1], view_rot[0][2], 0.0],
+        view_rot_row1: [view_rot[1][0], view_rot[1][1], view_rot[1][2], 0.0],
+        view_rot_row2: [view_rot[2][0], view_rot[2][1], view_rot[2][2], 0.0],
+        vertical_fov_radians: camera.intrinsics.vertical_fov_radians,
+        near_plane: camera.intrinsics.near_plane,
+        far_plane: camera.intrinsics.far_plane,
+        aspect: (width as f32 / height.max(1) as f32).max(1e-6),
+        width,
+        height,
+        sh_degree,
+        len,
+    }
 }
 
 fn make_gpu_scene_elems(
@@ -972,6 +1548,10 @@ fn surface_error_to_presenter(err: wgpu::SurfaceError) -> SurfacePresenterError 
 
 fn surface_instance_capacity(scene_len: usize) -> usize {
     scene_len.max(1)
+}
+
+fn surface_instance_buffer_size(capacity: usize) -> u64 {
+    std::mem::size_of::<GpuSurfaceInstance>() as u64 * (capacity.max(1) as u64)
 }
 
 fn fit_surface_size(width: u32, height: u32, max_dimension: u32) -> (u32, u32) {
@@ -1038,12 +1618,28 @@ struct GpuSurfaceColorElem {
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
+struct GpuSurfaceSourceElem {
+    position: [f32; 4],
+    covariance0: [f32; 4],
+    covariance1: [f32; 4],
+    color_dc: [f32; 4],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
 struct GpuSurfaceRenderParams {
     camera_pos: [f32; 4],
+    view_rot_row0: [f32; 4],
+    view_rot_row1: [f32; 4],
+    view_rot_row2: [f32; 4],
+    vertical_fov_radians: f32,
+    near_plane: f32,
+    far_plane: f32,
+    aspect: f32,
+    width: u32,
+    height: u32,
     sh_degree: u32,
     len: u32,
-    _pad0: u32,
-    _pad2: u32,
 }
 
 #[repr(C)]

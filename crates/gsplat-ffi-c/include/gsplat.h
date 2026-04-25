@@ -89,6 +89,24 @@ int32_t gsplat_surface_renderer_resize(
 int32_t gsplat_surface_renderer_set_sort_interval(
     GsplatSurfaceRenderer *renderer,
     uint32_t interval);
+int32_t gsplat_surface_renderer_set_gpu_preproject(
+    GsplatSurfaceRenderer *renderer,
+    uint32_t enabled);
+int32_t gsplat_surface_renderer_set_gpu_preproject_double_buffer(
+    GsplatSurfaceRenderer *renderer,
+    uint32_t enabled);
+int32_t gsplat_surface_renderer_set_async_sort(
+    GsplatSurfaceRenderer *renderer,
+    uint32_t enabled);
+int32_t gsplat_surface_renderer_set_async_geometry(
+    GsplatSurfaceRenderer *renderer,
+    uint32_t enabled);
+int32_t gsplat_surface_renderer_set_instance_buffer_count(
+    GsplatSurfaceRenderer *renderer,
+    uint32_t count);
+int32_t gsplat_surface_renderer_set_frame_latency(
+    GsplatSurfaceRenderer *renderer,
+    uint32_t latency);
 int32_t gsplat_surface_renderer_reset_camera(GsplatSurfaceRenderer *renderer);
 int32_t gsplat_surface_renderer_orbit(
     GsplatSurfaceRenderer *renderer,

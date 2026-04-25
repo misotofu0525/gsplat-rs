@@ -220,6 +220,79 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                     updateStatus("state=create_failed rc=$sortIntervalRc error=$message")
                     return@Thread
                 }
+                val gpuPreprojectRc = NativeBridge.setSurfaceGpuPreprojectEnabled(
+                    handle,
+                    benchmarkConfig.gpuPreproject
+                )
+                if (gpuPreprojectRc != 0) {
+                    val message = NativeBridge.errorMessage(gpuPreprojectRc)
+                    Log.e(TAG, "setSurfaceGpuPreprojectEnabled failed rc=$gpuPreprojectRc error=$message")
+                    NativeBridge.destroySurfaceRenderer(handle)
+                    running = false
+                    updateStatus("state=create_failed rc=$gpuPreprojectRc error=$message")
+                    return@Thread
+                }
+                val gpuPreprojectDoubleBufferRc =
+                    NativeBridge.setSurfaceGpuPreprojectDoubleBufferEnabled(
+                        handle,
+                        benchmarkConfig.gpuPreprojectDoubleBuffer
+                    )
+                if (gpuPreprojectDoubleBufferRc != 0) {
+                    val message = NativeBridge.errorMessage(gpuPreprojectDoubleBufferRc)
+                    Log.e(TAG, "setSurfaceGpuPreprojectDoubleBufferEnabled failed rc=$gpuPreprojectDoubleBufferRc error=$message")
+                    NativeBridge.destroySurfaceRenderer(handle)
+                    running = false
+                    updateStatus("state=create_failed rc=$gpuPreprojectDoubleBufferRc error=$message")
+                    return@Thread
+                }
+                val asyncSortRc = NativeBridge.setSurfaceAsyncSortEnabled(
+                    handle,
+                    benchmarkConfig.asyncSort
+                )
+                if (asyncSortRc != 0) {
+                    val message = NativeBridge.errorMessage(asyncSortRc)
+                    Log.e(TAG, "setSurfaceAsyncSortEnabled failed rc=$asyncSortRc error=$message")
+                    NativeBridge.destroySurfaceRenderer(handle)
+                    running = false
+                    updateStatus("state=create_failed rc=$asyncSortRc error=$message")
+                    return@Thread
+                }
+                val asyncGeometryRc = NativeBridge.setSurfaceAsyncGeometryEnabled(
+                    handle,
+                    benchmarkConfig.asyncGeometry
+                )
+                if (asyncGeometryRc != 0) {
+                    val message = NativeBridge.errorMessage(asyncGeometryRc)
+                    Log.e(TAG, "setSurfaceAsyncGeometryEnabled failed rc=$asyncGeometryRc error=$message")
+                    NativeBridge.destroySurfaceRenderer(handle)
+                    running = false
+                    updateStatus("state=create_failed rc=$asyncGeometryRc error=$message")
+                    return@Thread
+                }
+                val instanceBufferRc = NativeBridge.setSurfaceInstanceBufferCount(
+                    handle,
+                    benchmarkConfig.instanceBuffers
+                )
+                if (instanceBufferRc != 0) {
+                    val message = NativeBridge.errorMessage(instanceBufferRc)
+                    Log.e(TAG, "setSurfaceInstanceBufferCount failed rc=$instanceBufferRc error=$message")
+                    NativeBridge.destroySurfaceRenderer(handle)
+                    running = false
+                    updateStatus("state=create_failed rc=$instanceBufferRc error=$message")
+                    return@Thread
+                }
+                val frameLatencyRc = NativeBridge.setSurfaceFrameLatency(
+                    handle,
+                    benchmarkConfig.frameLatency
+                )
+                if (frameLatencyRc != 0) {
+                    val message = NativeBridge.errorMessage(frameLatencyRc)
+                    Log.e(TAG, "setSurfaceFrameLatency failed rc=$frameLatencyRc error=$message")
+                    NativeBridge.destroySurfaceRenderer(handle)
+                    running = false
+                    updateStatus("state=create_failed rc=$frameLatencyRc error=$message")
+                    return@Thread
+                }
                 synchronized(renderLock) {
                     nativeRenderer = handle
                 }
@@ -296,7 +369,10 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                             }
                         }
                         if (!benchmark.enabled) {
-                            Thread.sleep(16)
+                            val sleepNs = (TARGET_FRAME_INTERVAL_NS - renderCallNs).coerceAtLeast(0L)
+                            if (sleepNs > 0L) {
+                                Thread.sleep(sleepNs / 1_000_000L, (sleepNs % 1_000_000L).toInt())
+                            }
                         }
                     }
                 } finally {
@@ -730,10 +806,24 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         private const val EXTRA_BENCHMARK_WARMUP_FRAMES = "gsplat_benchmark_warmup_frames"
         private const val EXTRA_BENCHMARK_YAW_STEP = "gsplat_benchmark_yaw_step"
         private const val EXTRA_SURFACE_SORT_INTERVAL = "gsplat_surface_sort_interval"
+        private const val EXTRA_SURFACE_GPU_PREPROJECT = "gsplat_surface_gpu_preproject"
+        private const val EXTRA_SURFACE_GPU_PREPROJECT_DOUBLE_BUFFER =
+            "gsplat_surface_gpu_preproject_double_buffer"
+        private const val EXTRA_SURFACE_ASYNC_SORT = "gsplat_surface_async_sort"
+        private const val EXTRA_SURFACE_ASYNC_GEOMETRY = "gsplat_surface_async_geometry"
+        private const val EXTRA_SURFACE_INSTANCE_BUFFERS = "gsplat_surface_instance_buffers"
+        private const val EXTRA_SURFACE_FRAME_LATENCY = "gsplat_surface_frame_latency"
         private const val DEFAULT_BENCHMARK_FRAMES = 120
         private const val DEFAULT_BENCHMARK_WARMUP_FRAMES = 10
         private const val DEFAULT_BENCHMARK_YAW_STEP = 0.001f
         private const val DEFAULT_SURFACE_SORT_INTERVAL = 2
+        private const val DEFAULT_SURFACE_GPU_PREPROJECT = false
+        private const val DEFAULT_SURFACE_GPU_PREPROJECT_DOUBLE_BUFFER = false
+        private const val DEFAULT_SURFACE_ASYNC_SORT = false
+        private const val DEFAULT_SURFACE_ASYNC_GEOMETRY = false
+        private const val DEFAULT_SURFACE_INSTANCE_BUFFERS = 1
+        private const val DEFAULT_SURFACE_FRAME_LATENCY = 2
+        private const val TARGET_FRAME_INTERVAL_NS = 16_666_667L
 
         private val MINIMAL_PLY = """
             ply
@@ -783,7 +873,13 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         val frames: Int = DEFAULT_BENCHMARK_FRAMES,
         val warmupFrames: Int = DEFAULT_BENCHMARK_WARMUP_FRAMES,
         val yawStepRadians: Float = DEFAULT_BENCHMARK_YAW_STEP,
-        val sortInterval: Int = DEFAULT_SURFACE_SORT_INTERVAL
+        val sortInterval: Int = DEFAULT_SURFACE_SORT_INTERVAL,
+        val gpuPreproject: Boolean = DEFAULT_SURFACE_GPU_PREPROJECT,
+        val gpuPreprojectDoubleBuffer: Boolean = DEFAULT_SURFACE_GPU_PREPROJECT_DOUBLE_BUFFER,
+        val asyncSort: Boolean = DEFAULT_SURFACE_ASYNC_SORT,
+        val asyncGeometry: Boolean = DEFAULT_SURFACE_ASYNC_GEOMETRY,
+        val instanceBuffers: Int = DEFAULT_SURFACE_INSTANCE_BUFFERS,
+        val frameLatency: Int = DEFAULT_SURFACE_FRAME_LATENCY
     ) {
         companion object {
             fun fromIntent(intent: Intent): BenchmarkConfig {
@@ -800,12 +896,37 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                 val sortInterval = intent
                     .getIntExtra(EXTRA_SURFACE_SORT_INTERVAL, DEFAULT_SURFACE_SORT_INTERVAL)
                     .coerceAtLeast(1)
+                val gpuPreproject = intent
+                    .getBooleanExtra(
+                        EXTRA_SURFACE_GPU_PREPROJECT,
+                        DEFAULT_SURFACE_GPU_PREPROJECT
+                    )
+                val gpuPreprojectDoubleBuffer = intent.getBooleanExtra(
+                    EXTRA_SURFACE_GPU_PREPROJECT_DOUBLE_BUFFER,
+                    DEFAULT_SURFACE_GPU_PREPROJECT_DOUBLE_BUFFER
+                )
+                val asyncSort = intent
+                    .getBooleanExtra(EXTRA_SURFACE_ASYNC_SORT, DEFAULT_SURFACE_ASYNC_SORT)
+                val asyncGeometry = intent
+                    .getBooleanExtra(EXTRA_SURFACE_ASYNC_GEOMETRY, DEFAULT_SURFACE_ASYNC_GEOMETRY)
+                val instanceBuffers = intent
+                    .getIntExtra(EXTRA_SURFACE_INSTANCE_BUFFERS, DEFAULT_SURFACE_INSTANCE_BUFFERS)
+                    .coerceIn(1, 3)
+                val frameLatency = intent
+                    .getIntExtra(EXTRA_SURFACE_FRAME_LATENCY, DEFAULT_SURFACE_FRAME_LATENCY)
+                    .coerceIn(1, 4)
                 return BenchmarkConfig(
                     enabled = intent.getBooleanExtra(EXTRA_BENCHMARK, false),
                     frames = frames,
                     warmupFrames = warmupFrames,
                     yawStepRadians = yawStep,
-                    sortInterval = sortInterval
+                    sortInterval = sortInterval,
+                    gpuPreproject = gpuPreproject,
+                    gpuPreprojectDoubleBuffer = gpuPreprojectDoubleBuffer,
+                    asyncSort = asyncSort,
+                    asyncGeometry = asyncGeometry,
+                    instanceBuffers = instanceBuffers,
+                    frameLatency = frameLatency
                 )
             }
         }
@@ -850,6 +971,12 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
             val safeSamples = samples.coerceAtLeast(1)
             return "BENCHMARK_RESULT dataset=$datasetLabel " +
                 "samples=$samples warmup=${config.warmupFrames} sort_interval=${config.sortInterval} " +
+                "gpu_preproject=${config.gpuPreproject} " +
+                "gpu_preproject_double_buffer=${config.gpuPreprojectDoubleBuffer} " +
+                "async_sort=${config.asyncSort} " +
+                "async_geometry=${config.asyncGeometry} " +
+                "instance_buffers=${config.instanceBuffers} " +
+                "frame_latency=${config.frameLatency} " +
                 "avg_call_ms=${avgNs(totalCallNs, safeSamples)} " +
                 "avg_frame_ms=${avgMicros(totalFrameMicros, safeSamples)} " +
                 "avg_preprocess_ms=${avgMicros(totalPreprocessMicros, safeSamples)} " +
