@@ -32,6 +32,9 @@ object NativeBridge {
     external fun resizeSurfaceRenderer(nativeHandle: Long, width: Int, height: Int): Int
 
     @JvmStatic
+    external fun setSurfaceSortInterval(nativeHandle: Long, interval: Int): Int
+
+    @JvmStatic
     external fun resetSurfaceCamera(nativeHandle: Long): Int
 
     @JvmStatic

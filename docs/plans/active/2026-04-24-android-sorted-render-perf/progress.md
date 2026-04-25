@@ -89,3 +89,13 @@
 - Rebuilt and reinstalled the retained path after rollback.
 - Rollback confirmation benchmark: `samples=60 warmup=5 avg_call_ms=50.473 avg_frame_ms=39.981 avg_preprocess_ms=2.215 avg_sort_ms=11.148 avg_raster_ms=26.616 avg_visible=562974 avg_drawn=562974`.
 - Relaunched normal app mode after benchmark. Logs confirm `state=rendering`, `visible=562974`, and `drawn=562974/562974`.
+- Implemented the user-requested two-frame sort cadence experiment:
+  - Added `Renderer::build_surface_instances_with_sort_refresh_into` so callers can reuse sorted indices while still rebuilding current-camera Surface geometry.
+  - Added `gsplat_surface_renderer_set_sort_interval` to the C ABI, JNI bridge, and Android benchmark extras.
+  - Android demo default is now `gsplat_surface_sort_interval=2`; `1` restores per-frame sorting for A/B checks.
+- Verification passed: `cargo test -p gsplat-render-wgpu -p gsplat-ffi-c -p gsplat-sort`; `cargo check --workspace`; `bash apps/android-demo/build-apk.sh`; `bash tests/ffi/run-ffi-smoke.sh`; `bash apps/android-demo/run-jni-smoke.sh`.
+- Installed the APK on Android device `033ed212`; existing `flowers_1.ply` remained in app storage.
+- Same-APK per-frame sort baseline: `samples=120 warmup=10 sort_interval=1 avg_call_ms=51.917 avg_frame_ms=43.810 avg_preprocess_ms=2.468 avg_sort_ms=11.731 avg_raster_ms=29.609 avg_visible=562974 avg_drawn=562974`.
+- Two-frame sort cadence benchmark: `samples=120 warmup=10 sort_interval=2 avg_call_ms=51.901 avg_frame_ms=38.830 avg_preprocess_ms=1.613 avg_sort_ms=7.342 avg_raster_ms=29.873 avg_visible=562974 avg_drawn=562974`.
+- Result: `sort_interval=2` improved native frame prep by about 11.4% versus same-APK per-frame sorting and did not reduce drawn splats, but did not improve Kotlin/JNI call wall time. Remaining perceived-FPS bottleneck is likely Surface present/upload pacing.
+- Relaunched normal app mode. Logs confirm startup with `visible=562974` and `drawn=562974/562974`.

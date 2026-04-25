@@ -315,15 +315,34 @@ impl Renderer {
         camera: &Camera,
         instances: &mut Vec<GpuSurfaceInstance>,
     ) -> Result<FrameStats, RendererError> {
+        self.build_surface_instances_with_sort_refresh_into(camera, instances, true)
+    }
+
+    pub fn build_surface_instances_with_sort_refresh_into(
+        &mut self,
+        camera: &Camera,
+        instances: &mut Vec<GpuSurfaceInstance>,
+        refresh_sort: bool,
+    ) -> Result<FrameStats, RendererError> {
         let frame_start = Instant::now();
 
-        let preprocess_start = Instant::now();
-        self.preprocess_visible_scratch(camera)?;
-        let preprocess_ms = preprocess_start.elapsed().as_secs_f32() * 1000.0;
+        let refresh_sort = refresh_sort || self.preprocess_indices.is_empty();
+        let (preprocess_ms, sort_ms) = if refresh_sort {
+            let preprocess_start = Instant::now();
+            self.preprocess_visible_scratch(camera)?;
+            let preprocess_ms = preprocess_start.elapsed().as_secs_f32() * 1000.0;
 
-        let sort_start = Instant::now();
-        self.sort_preprocessed_scratch()?;
-        let sort_ms = sort_start.elapsed().as_secs_f32() * 1000.0;
+            let sort_start = Instant::now();
+            self.sort_preprocessed_scratch()?;
+            let sort_ms = sort_start.elapsed().as_secs_f32() * 1000.0;
+
+            (preprocess_ms, sort_ms)
+        } else {
+            camera
+                .validate()
+                .map_err(|_| RendererError::InvalidCamera)?;
+            (0.0, 0.0)
+        };
 
         let raster_start = Instant::now();
         let scene = self.scene.as_ref().ok_or(RendererError::SceneNotLoaded)?;

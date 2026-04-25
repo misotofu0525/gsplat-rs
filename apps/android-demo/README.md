@@ -106,9 +106,15 @@ For repeatable Surface performance checks, launch with benchmark extras:
   --ez gsplat_benchmark true \
   --ei gsplat_benchmark_frames 120 \
   --ei gsplat_benchmark_warmup_frames 10 \
-  --ef gsplat_benchmark_yaw_step 0.001
+  --ef gsplat_benchmark_yaw_step 0.001 \
+  --ei gsplat_surface_sort_interval 2
 "$ADB" logcat -d -s GsplatDemo:I | grep BENCHMARK_RESULT
 ```
 
 Benchmark mode forces a tiny camera orbit each frame so it measures sorted
 Surface rebuild cost, not cached static presentation.
+`gsplat_surface_sort_interval` controls how often the Surface path refreshes
+depth sorting during camera changes. The Android demo default is `2`, which
+reuses the previous sorted index order for one camera-change frame while still
+rebuilding current-camera geometry every frame; use `1` to force sorting every
+frame for comparison.

@@ -14,6 +14,7 @@ use gsplat_render_wgpu::{GpuSurfaceInstance, Renderer, SurfacePresenter};
 const SURFACE_CAMERA_MAX_PITCH: f32 = 1.45;
 const SURFACE_CAMERA_MIN_DISTANCE_MULTIPLIER: f32 = 0.2;
 const SURFACE_CAMERA_MAX_DISTANCE_MULTIPLIER: f32 = 20.0;
+const DEFAULT_SURFACE_SORT_INTERVAL: u32 = 2;
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -113,6 +114,8 @@ pub struct GsplatSurfaceRenderer {
     camera_control: SurfaceCameraControl,
     surface_stats: FrameStats,
     uploaded_frame: bool,
+    surface_sort_interval: u32,
+    surface_frames_since_sort: u32,
     render_error_logged: bool,
 }
 
@@ -399,6 +402,8 @@ pub unsafe extern "C" fn gsplat_surface_renderer_create_android(
         camera_control,
         surface_stats: FrameStats::zero(),
         uploaded_frame: false,
+        surface_sort_interval: DEFAULT_SURFACE_SORT_INTERVAL,
+        surface_frames_since_sort: 0,
         render_error_logged: false,
     });
     unsafe {
@@ -447,8 +452,26 @@ pub unsafe extern "C" fn gsplat_surface_renderer_resize(
         surface_camera_from_control(renderer.camera_control, renderer.renderer.config());
     renderer.surface_stats = FrameStats::zero();
     renderer.uploaded_frame = false;
+    renderer.surface_frames_since_sort = 0;
     renderer.render_error_logged = false;
 
+    ErrorCode::Ok.as_i32()
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gsplat_surface_renderer_set_sort_interval(
+    renderer: *mut GsplatSurfaceRenderer,
+    interval: u32,
+) -> i32 {
+    let renderer = match unsafe { renderer.as_mut() } {
+        Some(renderer) => renderer,
+        None => return ErrorCode::InvalidArgument.as_i32(),
+    };
+
+    renderer.surface_sort_interval = interval.max(1);
+    renderer.surface_frames_since_sort = 0;
+    renderer.uploaded_frame = false;
+    renderer.render_error_logged = false;
     ErrorCode::Ok.as_i32()
 }
 
@@ -465,7 +488,11 @@ pub unsafe extern "C" fn gsplat_surface_renderer_reset_camera(
         Ok(camera_control) => camera_control,
         Err(code) => return code.as_i32(),
     };
-    apply_surface_camera_control(renderer)
+    let rc = apply_surface_camera_control(renderer);
+    if rc == ErrorCode::Ok.as_i32() {
+        renderer.surface_frames_since_sort = 0;
+    }
+    rc
 }
 
 #[unsafe(no_mangle)]
@@ -558,25 +585,38 @@ pub unsafe extern "C" fn gsplat_surface_renderer_render_frame(
     let result = if renderer.uploaded_frame {
         renderer.presenter.render_current().map(|_| None)
     } else {
+        let refresh_sort = renderer.surface_sort_interval <= 1
+            || renderer.surface_frames_since_sort == 0
+            || renderer.surface_frames_since_sort >= renderer.surface_sort_interval;
         let stats = match renderer
             .renderer
-            .build_sorted_surface_instances_into(&renderer.camera, &mut renderer.instances)
-        {
+            .build_surface_instances_with_sort_refresh_into(
+                &renderer.camera,
+                &mut renderer.instances,
+                refresh_sort,
+            ) {
             Ok(result) => result,
             Err(err) => return err.code().as_i32(),
         };
         renderer
             .presenter
             .render_instances(&renderer.instances, &renderer.camera)
-            .map(|_| Some(stats))
+            .map(|_| Some((stats, refresh_sort)))
     };
 
     match result {
         Ok(stats) => {
-            if let Some(stats) = stats {
+            if let Some((stats, refresh_sort)) = stats {
                 renderer.surface_stats = stats;
+                renderer.surface_frames_since_sort = if refresh_sort {
+                    1
+                } else {
+                    renderer.surface_frames_since_sort.saturating_add(1)
+                };
+                renderer.uploaded_frame = refresh_sort;
+            } else {
+                renderer.uploaded_frame = true;
             }
-            renderer.uploaded_frame = true;
             renderer.render_error_logged = false;
             ErrorCode::Ok.as_i32()
         }

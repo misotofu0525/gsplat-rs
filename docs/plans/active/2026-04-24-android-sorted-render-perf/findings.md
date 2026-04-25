@@ -47,6 +47,7 @@
 | Keep depth-only preprocess and scratch reuse | Preprocess only needs z for visibility/depth keys, and render frames should not reallocate two large vectors every camera change. |
 | Keep dense scene-order Surface construction | For dense visibility scenes like `flowers_1.ply`, contiguous projection reads plus a sorted reorder beat fully sorted-order random reads. |
 | Prefer Mailbox present mode when supported | It can reduce FIFO queue blocking without introducing tearing; unsupported surfaces still fall back to FIFO. |
+| Use Android Surface sort interval `2` by default | It reuses the previous sorted depth order for one camera-change frame, but still rebuilds current-camera Surface geometry every frame and keeps full `drawn=562974/562974`. |
 
 ## Issues Encountered
 
@@ -94,6 +95,10 @@
 - Normal app mode was relaunched after the sorted-index experiments. Logs confirmed `state=rendering`, `visible=562974`, and `drawn=562974/562974`.
 - Splatapult-inspired full GPU-owned presort/radix/build prototype: `samples=5 warmup=1 avg_call_ms=1466.724 avg_frame_ms=1466.655 avg_preprocess_ms=0.000 avg_sort_ms=0.000 avg_raster_ms=1466.655 avg_visible=562974 avg_drawn=562974`. It preserved full output, but was dramatically slower and was reverted.
 - Retained-path confirmation after reverting the full GPU-owned prototype: `samples=60 warmup=5 avg_call_ms=50.473 avg_frame_ms=39.981 avg_preprocess_ms=2.215 avg_sort_ms=11.148 avg_raster_ms=26.616 avg_visible=562974 avg_drawn=562974`.
+- Same-APK sort-cadence baseline with per-frame sorting: `samples=120 warmup=10 sort_interval=1 avg_call_ms=51.917 avg_frame_ms=43.810 avg_preprocess_ms=2.468 avg_sort_ms=11.731 avg_raster_ms=29.609 avg_visible=562974 avg_drawn=562974`.
+- Two-frame sort cadence: `samples=120 warmup=10 sort_interval=2 avg_call_ms=51.901 avg_frame_ms=38.830 avg_preprocess_ms=1.613 avg_sort_ms=7.342 avg_raster_ms=29.873 avg_visible=562974 avg_drawn=562974`.
+- Relative to the same-APK `sort_interval=1` run, `sort_interval=2` improved native frame prep by about `11.4%` and kept the full drawn count. Kotlin/JNI call wall time was effectively unchanged, which means the remaining perceived-FPS bottleneck is likely Surface present/upload pacing.
+- Normal app mode after the sort-cadence change launched successfully and reported `visible=562974`, `drawn=562974/562974`.
 
 ## Bottleneck Evidence
 
@@ -108,6 +113,7 @@
 - `simpleperf --app` on the debug APK confirmed the remaining CPU cycles concentrate inside the inlined `build_instances_into` closure. `Renderer::preprocess_visible` is below 1% self in the captured profile, and `CpuSortBackend::sort_pairs` is a small single-digit share.
 - The flower PLY has SH degree 3 (`f_rest_0..f_rest_44`), so view-dependent color evaluation remains a significant part of the per-splat CPU work.
 - CPU-side sorted instance preparation now crosses strict 2x on native frame time. Further perceived-FPS gains likely require reducing per-frame Surface upload/present pressure, for example an index-driven GPU geometry path or GPU-side sort/work-buffer preparation that still preserves sorted order and full splat count.
+- Sorting every two camera-change frames lowers native CPU preparation time, but does not move `avg_call_ms` on the current device. The call wall time now appears dominated by Surface presentation, queueing, or buffer upload synchronization.
 
 ## Rejected Experiments
 

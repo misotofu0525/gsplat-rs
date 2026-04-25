@@ -208,6 +208,18 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                 }
 
                 Log.i(TAG, "createSurfaceRenderer ok handle=$handle")
+                val sortIntervalRc = NativeBridge.setSurfaceSortInterval(
+                    handle,
+                    benchmarkConfig.sortInterval
+                )
+                if (sortIntervalRc != 0) {
+                    val message = NativeBridge.errorMessage(sortIntervalRc)
+                    Log.e(TAG, "setSurfaceSortInterval failed rc=$sortIntervalRc error=$message")
+                    NativeBridge.destroySurfaceRenderer(handle)
+                    running = false
+                    updateStatus("state=create_failed rc=$sortIntervalRc error=$message")
+                    return@Thread
+                }
                 synchronized(renderLock) {
                     nativeRenderer = handle
                 }
@@ -717,9 +729,11 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         private const val EXTRA_BENCHMARK_FRAMES = "gsplat_benchmark_frames"
         private const val EXTRA_BENCHMARK_WARMUP_FRAMES = "gsplat_benchmark_warmup_frames"
         private const val EXTRA_BENCHMARK_YAW_STEP = "gsplat_benchmark_yaw_step"
+        private const val EXTRA_SURFACE_SORT_INTERVAL = "gsplat_surface_sort_interval"
         private const val DEFAULT_BENCHMARK_FRAMES = 120
         private const val DEFAULT_BENCHMARK_WARMUP_FRAMES = 10
         private const val DEFAULT_BENCHMARK_YAW_STEP = 0.001f
+        private const val DEFAULT_SURFACE_SORT_INTERVAL = 2
 
         private val MINIMAL_PLY = """
             ply
@@ -768,7 +782,8 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         val enabled: Boolean = false,
         val frames: Int = DEFAULT_BENCHMARK_FRAMES,
         val warmupFrames: Int = DEFAULT_BENCHMARK_WARMUP_FRAMES,
-        val yawStepRadians: Float = DEFAULT_BENCHMARK_YAW_STEP
+        val yawStepRadians: Float = DEFAULT_BENCHMARK_YAW_STEP,
+        val sortInterval: Int = DEFAULT_SURFACE_SORT_INTERVAL
     ) {
         companion object {
             fun fromIntent(intent: Intent): BenchmarkConfig {
@@ -782,11 +797,15 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                     .getFloatExtra(EXTRA_BENCHMARK_YAW_STEP, DEFAULT_BENCHMARK_YAW_STEP)
                     .takeIf { it.isFinite() && it != 0f }
                     ?: DEFAULT_BENCHMARK_YAW_STEP
+                val sortInterval = intent
+                    .getIntExtra(EXTRA_SURFACE_SORT_INTERVAL, DEFAULT_SURFACE_SORT_INTERVAL)
+                    .coerceAtLeast(1)
                 return BenchmarkConfig(
                     enabled = intent.getBooleanExtra(EXTRA_BENCHMARK, false),
                     frames = frames,
                     warmupFrames = warmupFrames,
-                    yawStepRadians = yawStep
+                    yawStepRadians = yawStep,
+                    sortInterval = sortInterval
                 )
             }
         }
@@ -830,7 +849,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         fun resultLine(datasetLabel: String): String {
             val safeSamples = samples.coerceAtLeast(1)
             return "BENCHMARK_RESULT dataset=$datasetLabel " +
-                "samples=$samples warmup=${config.warmupFrames} " +
+                "samples=$samples warmup=${config.warmupFrames} sort_interval=${config.sortInterval} " +
                 "avg_call_ms=${avgNs(totalCallNs, safeSamples)} " +
                 "avg_frame_ms=${avgMicros(totalFrameMicros, safeSamples)} " +
                 "avg_preprocess_ms=${avgMicros(totalPreprocessMicros, safeSamples)} " +

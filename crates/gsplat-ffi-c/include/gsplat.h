@@ -86,6 +86,9 @@ int32_t gsplat_surface_renderer_resize(
     GsplatSurfaceRenderer *renderer,
     uint32_t width,
     uint32_t height);
+int32_t gsplat_surface_renderer_set_sort_interval(
+    GsplatSurfaceRenderer *renderer,
+    uint32_t interval);
 int32_t gsplat_surface_renderer_reset_camera(GsplatSurfaceRenderer *renderer);
 int32_t gsplat_surface_renderer_orbit(
     GsplatSurfaceRenderer *renderer,

@@ -6,7 +6,7 @@ Improve Android true-device performance for the `flowers_1.ply` SortedAlpha rend
 
 ## Current Phase
 
-Phase 6
+Phase 7
 
 ## Phases
 
@@ -61,6 +61,14 @@ Phase 6
 - [x] Validate a retained full-scene run that crosses strict 2x on native frame time.
 - **Status:** complete for this pass; strict 2x is met for native renderer frame time, while Kotlin/JNI call wall time still shows Surface/present pacing overhead.
 
+### Phase 7: Temporal Sort-Cadence Experiment
+
+- [x] Add a configurable Android Surface sort interval.
+- [x] Preserve full drawn splat count and current-camera geometry rebuild on every camera-change frame.
+- [x] Compare `sort_interval=1` and `sort_interval=2` on the connected Android device with `flowers_1.ply`.
+- [x] Relaunch normal app mode and confirm full-scene rendering still starts.
+- **Status:** complete; two-frame sort cadence improves native frame prep but does not materially reduce Kotlin/JNI call wall time.
+
 ## Key Questions
 
 1. What is the current flower-scene baseline on the connected Android device?
@@ -88,6 +96,7 @@ Phase 6
 | Reuse renderer preprocess scratch and compute only depth during preprocess | Sorting only needs camera-space z, so preprocess avoids rebuilding large Vec allocations and avoids unused x/y camera-space math. |
 | Use scene-order Surface construction for dense visibility | Flower keeps nearly every splat visible, so the expensive projection pass can read scene arrays contiguously and then reorder the compact instance buffer by sorted index. |
 | Prefer Mailbox present mode when available | Mailbox avoids FIFO queue blocking without tearing; unsupported platforms fall back to FIFO. |
+| Add configurable Surface sort cadence with Android default `2` | User reported their OpenGL version sorted every two frames without perceptual regression; this keeps full splat count and current-camera geometry while reusing depth order for one camera-change frame. |
 
 ## Instrumentation Added
 
@@ -112,3 +121,5 @@ Phase 6
 - Latest final benchmark for retained code: `avg_call_ms=51.001 avg_frame_ms=41.244 avg_preprocess_ms=2.411 avg_sort_ms=11.126 avg_raster_ms=27.705 avg_visible=562974 avg_drawn=562974`.
 - Relative to the full-scene no-sampling baseline (`avg_frame_ms=83.714`), the retained code is about `2.03x` faster on native frame time, or about `+103%` native-frame throughput. Strict `2x` required roughly `<=41.86ms`.
 - Kotlin/JNI call wall time is still around `51ms`, so the remaining perceived-FPS work is likely Surface/GPU queue pacing and upload/render submission, not just CPU instance construction.
+- Sort-cadence A/B in the same APK: `sort_interval=1` gave `avg_frame_ms=43.810`, while `sort_interval=2` gave `avg_frame_ms=38.830`; both kept `avg_drawn=562974`.
+- `sort_interval=2` did not improve `avg_call_ms` (`51.917` vs `51.901`), reinforcing that the remaining interaction feel is gated by Surface present/upload pacing rather than only CPU sort/prep.

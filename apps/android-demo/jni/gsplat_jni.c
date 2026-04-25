@@ -220,6 +220,22 @@ JNIEXPORT jint JNICALL Java_com_gsplat_demo_NativeBridge_resizeSurfaceRenderer(
       (uint32_t)height);
 }
 
+JNIEXPORT jint JNICALL Java_com_gsplat_demo_NativeBridge_setSurfaceSortInterval(
+    JNIEnv *env,
+    jclass cls,
+    jlong native_handle,
+    jint interval) {
+  (void)env;
+  (void)cls;
+
+  AndroidSurfaceRendererHandle *handle = android_handle_from_jlong(native_handle);
+  if (handle == NULL || handle->renderer == NULL || interval <= 0) {
+    return GSPLAT_ERROR_INVALID_ARGUMENT;
+  }
+
+  return gsplat_surface_renderer_set_sort_interval(handle->renderer, (uint32_t)interval);
+}
+
 JNIEXPORT jint JNICALL Java_com_gsplat_demo_NativeBridge_resetSurfaceCamera(
     JNIEnv *env,
     jclass cls,
