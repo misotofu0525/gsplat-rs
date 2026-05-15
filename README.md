@@ -75,6 +75,7 @@ cargo fmt --check
 cargo clippy --workspace --all-targets -- -D warnings
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
 node --check apps/web-demo/src/main.js
+node --check apps/web-demo/gsplat-web-sdk/src/index.js
 ```
 
 Use `handbook/VERIFICATION.md` for the full validation matrix, including FFI,
