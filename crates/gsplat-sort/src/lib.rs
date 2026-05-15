@@ -132,7 +132,6 @@ fn pack_pairs(keys: &[u32], values: &[u32], out: &mut [u64]) {
         unsafe {
             pack_pairs_neon(keys, values, out);
         }
-        return;
     }
 
     #[cfg(not(target_arch = "aarch64"))]
@@ -151,7 +150,6 @@ fn unpack_pairs(packed: &[u64], keys: &mut [u32], values: &mut [u32]) {
         unsafe {
             unpack_pairs_neon(packed, keys, values);
         }
-        return;
     }
 
     #[cfg(not(target_arch = "aarch64"))]
@@ -171,7 +169,6 @@ fn unpack_values(packed: &[u64], values: &mut [u32]) {
         unsafe {
             unpack_values_neon(packed, values);
         }
-        return;
     }
 
     #[cfg(not(target_arch = "aarch64"))]
@@ -359,18 +356,10 @@ unsafe fn unpack_values_neon(packed: &[u64], values: &mut [u32]) {
     }
 }
 
+#[derive(Default)]
 pub struct GpuOddEvenSortBackend {
     runtime: Option<GpuSortRuntime>,
     init_attempted: bool,
-}
-
-impl Default for GpuOddEvenSortBackend {
-    fn default() -> Self {
-        Self {
-            runtime: None,
-            init_attempted: false,
-        }
-    }
 }
 
 impl SortBackend for GpuOddEvenSortBackend {

@@ -29,3 +29,4 @@
 - If repo structure changes, update `PROJECT_CONTEXT.md`, `ARCHITECTURE.md`, and `AGENTS.md` in the same change.
 - If verification changes, update `VERIFICATION.md` before claiming the new path is canonical.
 - If release scope changes, update `ROADMAP.md` before treating the change as in-contract.
+- If contributor workflow changes, update `README.md`, `CONTRIBUTING.md`, and GitHub templates together.

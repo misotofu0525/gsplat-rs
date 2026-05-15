@@ -1,0 +1,73 @@
+name: Bug report
+description: Report a build, runtime, rendering, or integration bug.
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What happened?
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Core Rust
+        - PLY import
+        - Renderer
+        - Sorting
+        - C ABI
+        - Android demo
+        - iOS demo
+        - Web demo
+        - Web WASM
+        - CI or scripts
+        - Documentation
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction
+      description: Include exact commands, scripts, or device/browser steps.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: Include the first failing error line or visible runtime symptom.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Rust version, OS, GPU, platform toolchains, device model, browser, or dataset size.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: verification
+    attributes:
+      label: Verification already attempted
+      description: List relevant commands from handbook/VERIFICATION.md and their result.
+      render: text
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Safety check
+      options:
+        - label: I removed secrets, credentials, private datasets, and .env values from this report.
+          required: true

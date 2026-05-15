@@ -106,17 +106,12 @@ impl Camera {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[repr(u32)]
 pub enum RenderMode {
+    #[default]
     SortedAlpha = 0,
     SortFree = 1,
-}
-
-impl Default for RenderMode {
-    fn default() -> Self {
-        Self::SortedAlpha
-    }
 }
 
 impl RenderMode {

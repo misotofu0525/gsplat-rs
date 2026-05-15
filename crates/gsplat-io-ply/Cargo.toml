@@ -1,10 +1,13 @@
 [package]
 name = "gsplat-io-ply"
 version = "0.1.0"
+description = "PLY import and scene-buffer construction for gsplat-rs."
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
 
 [dependencies]
-gsplat-core = { path = "../gsplat-core" }
+gsplat-core = { path = "../gsplat-core", version = "0.1.0" }
 thiserror.workspace = true

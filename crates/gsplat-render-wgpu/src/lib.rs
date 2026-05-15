@@ -536,11 +536,11 @@ impl Renderer {
 
         #[cfg(not(target_arch = "wasm32"))]
         {
-            if let Some(gpu_rasterizer) = self.gpu_rasterizer.as_mut() {
-                if gpu_rasterizer.render(self.config, &instances).is_err() {
-                    // If GPU path fails during runtime, drop to CPU placeholder path.
-                    self.gpu_rasterizer = None;
-                }
+            if let Some(gpu_rasterizer) = self.gpu_rasterizer.as_mut()
+                && gpu_rasterizer.render(self.config, &instances).is_err()
+            {
+                // If GPU path fails during runtime, drop to CPU placeholder path.
+                self.gpu_rasterizer = None;
             }
         }
 
@@ -571,9 +571,9 @@ impl Renderer {
                 .gpu_rasterizer
                 .as_mut()
                 .ok_or(RendererError::GpuRasterizerUnavailable)?;
-            return rasterizer
+            rasterizer
                 .readback_rgba8()
-                .map_err(|_| RendererError::GpuReadback);
+                .map_err(|_| RendererError::GpuReadback)
         }
 
         #[cfg(target_arch = "wasm32")]
@@ -1547,6 +1547,7 @@ impl SurfacePresenter {
     }
 }
 
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn create_surface_instance_resources(
     device: &wgpu::Device,
     render_bind_group_layout: &wgpu::BindGroupLayout,
@@ -2395,6 +2396,7 @@ fn invalid_gpu_instance() -> GpuInstance {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_surface_instances_into(
     scene: &SceneBuffers,
     world_covariance_terms: &[CameraCovarianceTerms],
@@ -2443,6 +2445,7 @@ fn should_use_scene_order_surface_build(scene_len: usize, visible_len: usize) ->
     scene_len > 0 && visible_len.saturating_mul(100) >= scene_len.saturating_mul(85)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_surface_instances_scene_order_into(
     scene: &SceneBuffers,
     world_covariance_terms: &[CameraCovarianceTerms],
@@ -2550,7 +2553,7 @@ fn build_surface_instances_index_order_into(
                             alpha_values,
                             i,
                             camera,
-                            &params,
+                            params,
                         )
                     }
                 } else {
@@ -2968,6 +2971,7 @@ fn covariance_quadratic(
         + r[2] * r[2] * c22
 }
 
+#[allow(clippy::too_many_arguments)]
 fn covariance_bilinear(
     c00: f32,
     c01: f32,
@@ -3106,23 +3110,23 @@ unsafe fn sh_color_unchecked(
     // The PLY stores SH coefficients as `f_dc_*` + `f_rest_*`. Evaluate as in 3DGS:
     // `rgb = clamp_min(eval_sh(deg, sh, dir) + 0.5, 0.0)`.
     // Reference: graphdeco-inria/gaussian-splatting `utils/sh_utils.py`.
-    const C0: f32 = 0.28209479177387814_f32;
+    const C0: f32 = 0.282_094_8_f32;
     let dc = unsafe { *scene.color_dc.get_unchecked(index) };
     let mut rgb = [C0 * dc[0], C0 * dc[1], C0 * dc[2]];
 
     if let Some(rest) = layout.rest {
         let base = index * layout.stride;
-        if layout.degree == 3 && layout.per_channel == 15 {
-            if let Some(end) = base.checked_add(45) {
-                if end <= rest.len() {
-                    let sh_rgb = sh_color_rest_deg3(dir, &rest[base..end]);
-                    return [
-                        (rgb[0] + sh_rgb[0] + 0.5).max(0.0),
-                        (rgb[1] + sh_rgb[1] + 0.5).max(0.0),
-                        (rgb[2] + sh_rgb[2] + 0.5).max(0.0),
-                    ];
-                }
-            }
+        if layout.degree == 3
+            && layout.per_channel == 15
+            && let Some(end) = base.checked_add(45)
+            && end <= rest.len()
+        {
+            let sh_rgb = sh_color_rest_deg3(dir, &rest[base..end]);
+            return [
+                (rgb[0] + sh_rgb[0] + 0.5).max(0.0),
+                (rgb[1] + sh_rgb[1] + 0.5).max(0.0),
+                (rgb[2] + sh_rgb[2] + 0.5).max(0.0),
+            ];
         }
 
         let (basis, basis_len) = sh_basis(layout.degree, dir);
@@ -3147,22 +3151,22 @@ unsafe fn sh_color_unchecked(
 fn sh_color_rest_deg3(dir: [f32; 3], rest: &[f32]) -> [f32; 3] {
     debug_assert!(rest.len() >= 45);
 
-    const C1: f32 = 0.4886025119029199_f32;
+    const C1: f32 = 0.488_602_52_f32;
     const C2: [f32; 5] = [
-        1.0925484305920792_f32,
-        -1.0925484305920792_f32,
-        0.31539156525252005_f32,
-        -1.0925484305920792_f32,
-        0.5462742152960396_f32,
+        1.092_548_5_f32,
+        -1.092_548_5_f32,
+        0.315_391_57_f32,
+        -1.092_548_5_f32,
+        0.546_274_24_f32,
     ];
     const C3: [f32; 7] = [
-        -0.5900435899266435_f32,
-        2.890611442640554_f32,
-        -0.4570457994644658_f32,
-        0.3731763325901154_f32,
-        -0.4570457994644658_f32,
-        1.445305721320277_f32,
-        -0.5900435899266435_f32,
+        -0.590_043_6_f32,
+        2.890_611_4_f32,
+        -0.457_045_8_f32,
+        0.373_176_34_f32,
+        -0.457_045_8_f32,
+        1.445_305_7_f32,
+        -0.590_043_6_f32,
     ];
 
     let x = dir[0];
@@ -3272,33 +3276,33 @@ fn sh_dot15(
 }
 
 fn sh_basis(deg: u8, dir: [f32; 3]) -> ([f32; 24], usize) {
-    const C1: f32 = 0.4886025119029199_f32;
+    const C1: f32 = 0.488_602_52_f32;
     const C2: [f32; 5] = [
-        1.0925484305920792_f32,
-        -1.0925484305920792_f32,
-        0.31539156525252005_f32,
-        -1.0925484305920792_f32,
-        0.5462742152960396_f32,
+        1.092_548_5_f32,
+        -1.092_548_5_f32,
+        0.315_391_57_f32,
+        -1.092_548_5_f32,
+        0.546_274_24_f32,
     ];
     const C3: [f32; 7] = [
-        -0.5900435899266435_f32,
-        2.890611442640554_f32,
-        -0.4570457994644658_f32,
-        0.3731763325901154_f32,
-        -0.4570457994644658_f32,
-        1.445305721320277_f32,
-        -0.5900435899266435_f32,
+        -0.590_043_6_f32,
+        2.890_611_4_f32,
+        -0.457_045_8_f32,
+        0.373_176_34_f32,
+        -0.457_045_8_f32,
+        1.445_305_7_f32,
+        -0.590_043_6_f32,
     ];
     const C4: [f32; 9] = [
-        2.5033429417967046_f32,
-        -1.7701307697799304_f32,
-        0.9461746957575601_f32,
-        -0.6690465435572892_f32,
-        0.10578554691520431_f32,
-        -0.6690465435572892_f32,
-        0.47308734787878004_f32,
-        -1.7701307697799304_f32,
-        0.6258357354491761_f32,
+        2.503_342_9_f32,
+        -1.770_130_8_f32,
+        0.946_174_7_f32,
+        -0.669_046_5_f32,
+        0.105_785_55_f32,
+        -0.669_046_5_f32,
+        0.473_087_34_f32,
+        -1.770_130_8_f32,
+        0.625_835_7_f32,
     ];
 
     let mut basis = [0.0_f32; 24];
@@ -3363,9 +3367,7 @@ fn dot_sh_terms(basis: &[f32; 24], rest: &[f32], count: usize) -> f32 {
     #[cfg(target_arch = "aarch64")]
     {
         // SAFETY: AArch64 guarantees Neon availability and the count has been bounds-checked.
-        unsafe {
-            return dot_sh_terms_neon(basis, rest, count);
-        }
+        unsafe { dot_sh_terms_neon(basis, rest, count) }
     }
 
     #[cfg(not(target_arch = "aarch64"))]

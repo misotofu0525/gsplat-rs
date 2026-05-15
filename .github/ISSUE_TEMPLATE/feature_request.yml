@@ -1,0 +1,38 @@
+name: Feature request
+description: Propose a new capability or integration direction.
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What limitation are you trying to solve?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed change
+      description: Describe the smallest useful change.
+    validations:
+      required: true
+  - type: textarea
+    id: boundary
+    attributes:
+      label: Release-boundary impact
+      description: Does this widen the v0.1 public API, C ABI, mobile SDK surface, Web SDK surface, or render-mode contract?
+    validations:
+      required: true
+  - type: textarea
+    id: verification
+    attributes:
+      label: Verification path
+      description: Which commands, scripts, benchmarks, device runs, or browser smoke checks would prove this feature?
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered

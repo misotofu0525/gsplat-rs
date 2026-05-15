@@ -1,59 +1,123 @@
 # gsplat-rs
 
-Cross-platform Gaussian Splatting rendering library built with Rust + `wgpu`.
+`gsplat-rs` is a cross-platform Gaussian Splatting renderer built with Rust
+and `wgpu`. The project focuses on a small, verifiable core: PLY import,
+in-memory scene buffers, `SortedAlpha` rendering, a narrow C ABI, and demo
+surfaces that validate the stack on desktop, Android, iOS, and browser paths
+without overstating SDK maturity.
 
-## Start Here
+## Project Status
 
-- Project context: `handbook/PROJECT_CONTEXT.md`
-- Architecture map: `handbook/ARCHITECTURE.md`
-- Verification commands: `handbook/VERIFICATION.md`
-- Current direction and release boundary: `handbook/ROADMAP.md`
-- Agent entrypoint: `AGENTS.md`
+- Release line: `0.1.x`
+- Quality-gated render path: `SortedAlpha`
+- Native integration surface: `crates/gsplat-ffi-c/include/gsplat.h`
+- Mobile status: Android and iOS are validation demos, not packaged
+  AAR/XCFramework SDK artifacts yet.
+- Web status: `apps/web-demo` is a browser validation surface. The shared
+  Rust/WASM renderer boundary lives in `crates/gsplat-web` and remains
+  experimental until the wasm build and browser smoke path are verified.
 
-## Repository Layout
-
-- `crates/`: core library crates, render path, sort backends, format support, C ABI, and experimental Web bindings
-- `apps/desktop-demo`: desktop viewer and offscreen PNG harness
-- `apps/android-demo`: Android integration demo and JNI smoke path
-- `apps/ios-demo`: Swift smoke path, UIKit realtime Surface app, and iOS simulator/device build/run scripts
-- `apps/web-demo`: static browser demo for PLY loading and SortedAlpha-style WebGL2 preview
-- `tools/`: packaging and performance helpers
-- `tests/`: sample dataset plus smoke/perf scripts
-
-## Mobile Integration Status
-
-The current mobile-facing contract is the C ABI in `crates/gsplat-ffi-c/include/gsplat.h`.
-Android and iOS directories are validation demos and starter integrations, not packaged
-AAR/XCFramework SDK artifacts yet.
-
-- Use `gsplat_config_default()` and `gsplat_camera_default()` instead of hand-writing ABI defaults.
-- Use `GSPLAT_RENDER_MODE_SORTED_ALPHA`; it is the only release-gated render mode in v0.1.
-- Treat non-zero returns as `GsplatErrorCode` values and pass them to `gsplat_error_message()`.
-- Android Surface rendering is demonstrated by `apps/android-demo`.
-- Swift/C ABI integration and a UIKit realtime simulator/device Surface demo are demonstrated by `apps/ios-demo`.
-- Both mobile demos are realtime validation surfaces with touch camera controls, local PLY import, and benchmark/A-B knobs over the same C ABI Surface functions.
-- Not in the v0.1 contract: scene-from-memory loading, runtime render-mode switching, AAR packaging, and XCFramework packaging.
-
-## Web Demo Status
-
-`apps/web-demo` is the browser validation surface and generated wasm package
-host. When `apps/web-demo/pkg/` exists it attempts the `crates/gsplat-web`
-Rust/WASM renderer first; otherwise it falls back to the WebGL2 point-splat
-preview. The formal Web SDK path now starts in `crates/gsplat-web`: it exposes a
-`wasm-bindgen` boundary that accepts a browser canvas plus PLY bytes, parses via
-`gsplat-io-ply`, and renders through the shared Rust `wgpu` Surface renderer.
-Build the generated browser package with `bash apps/web-demo/build-wasm.sh` once
-`wasm32-unknown-unknown` and `wasm-bindgen` are installed locally. Use
-`http://127.0.0.1:4173/apps/web-demo/?dataset=flowers` for a repeatable browser
-flower smoke.
-
-## Common Commands
+## Quick Start
 
 ```bash
 cargo check --workspace
 cargo test --workspace
 cargo run -p desktop-demo -- tests/datasets/minimal_ascii.ply --png target/out.png
+```
+
+For the browser validation demo:
+
+```bash
 python3 -m http.server 4173 --bind 127.0.0.1 --directory .
 ```
 
-Use `handbook/VERIFICATION.md` for the full validation matrix.
+Then open `http://127.0.0.1:4173/apps/web-demo/`.
+
+## Repository Layout
+
+- `crates/gsplat-core`: shared public types, config, stats, and error codes
+- `crates/gsplat-io-ply`: PLY parsing and scene buffer construction
+- `crates/gsplat-sort`: CPU and GPU sort backends
+- `crates/gsplat-render-wgpu`: preprocessing, raster path, Surface presenter,
+  and GPU helper APIs
+- `crates/gsplat-ffi-c`: small C ABI surface over the renderer and mobile
+  Surface presenters
+- `crates/gsplat-web`: experimental `wasm-bindgen` bindings over the shared
+  `wgpu` Surface renderer
+- `apps/desktop-demo`: desktop viewer and offscreen PNG harness
+- `apps/android-demo`: Android Surface demo plus host-side JNI smoke
+- `apps/ios-demo`: Swift smoke path plus UIKit realtime Surface app and iOS
+  simulator/device scripts
+- `apps/web-demo`: browser PLY loader, generated wasm package host, and WebGL2
+  fallback preview
+- `tools/bench-runner`: perf and stability runner
+- `tests/`: sample dataset, FFI smoke harness, and perf scripts
+- `handbook/`: current project docs, architecture map, verification guide,
+  roadmap, and project principles
+
+## Verification
+
+The fast check is:
+
+```bash
+cargo check --workspace
+```
+
+The CI-level local hygiene checks are:
+
+```bash
+cargo fmt --check
+cargo clippy --workspace --all-targets -- -D warnings
+RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
+node --check apps/web-demo/src/main.js
+```
+
+Use `handbook/VERIFICATION.md` for the full validation matrix, including FFI,
+JNI, Swift, desktop, Web, mobile Surface, and long-stability smoke paths.
+
+## Integration Boundaries
+
+The current mobile-facing contract is the C ABI in
+`crates/gsplat-ffi-c/include/gsplat.h`.
+
+- Use `gsplat_config_default()` and `gsplat_camera_default()` instead of
+  hand-writing ABI defaults.
+- Use `GSPLAT_RENDER_MODE_SORTED_ALPHA`; it is the only release-gated render
+  mode in v0.1.
+- Treat non-zero returns as `GsplatErrorCode` values and pass them to
+  `gsplat_error_message()`.
+- Android Surface rendering is demonstrated by `apps/android-demo`.
+- Swift/C ABI integration and a UIKit realtime simulator/device Surface demo
+  are demonstrated by `apps/ios-demo`.
+- Not in the v0.1 contract: scene-from-memory loading, runtime render-mode
+  switching, AAR packaging, and XCFramework packaging.
+
+## Documentation
+
+- Project context: `handbook/PROJECT_CONTEXT.md`
+- Architecture map: `handbook/ARCHITECTURE.md`
+- Verification commands: `handbook/VERIFICATION.md`
+- Current direction and release boundary: `handbook/ROADMAP.md`
+- Project principles: `handbook/GOLDEN_PRINCIPLES.md`
+- Agent entrypoint: `AGENTS.md`
+
+## Contributing
+
+Read `CONTRIBUTING.md` before opening a pull request. The short version is:
+keep diffs small, preserve the documented release boundary, run the relevant
+verification path, and update handbook docs when repository structure or
+commands change.
+
+## Security
+
+Do not open public issues that include exploit details, private datasets,
+tokens, or credentials. See `SECURITY.md` for the reporting policy.
+
+## License
+
+Licensed under either of:
+
+- Apache License, Version 2.0 (`LICENSE-APACHE`)
+- MIT license (`LICENSE-MIT`)
+
+at your option.

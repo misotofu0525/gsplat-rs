@@ -24,13 +24,31 @@ cargo test --workspace
 
 - Run this when changing shared types, parsing, render logic, or CLI behavior.
 
+## Code Hygiene and Docs
+
+```bash
+cargo fmt --check
+cargo clippy --workspace --all-targets -- -D warnings
+RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
+node --check apps/web-demo/src/main.js
+```
+
+- Run these before opening a pull request that changes Rust code, public docs,
+  or the Web demo.
+- `node --check` is syntax validation only; browser behavior still requires
+  the Web Demo smoke path below.
+
 ## Day-to-Day Verification Set
 
 These are the current day-to-day commands the repo relies on:
 
 ```bash
 cargo check --workspace
+cargo fmt --check
+cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
+RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
+node --check apps/web-demo/src/main.js
 cargo run -p bench-runner -- tests/datasets/minimal_ascii.ply 120
 bash tests/ffi/run-ffi-smoke.sh
 bash apps/android-demo/run-jni-smoke.sh
@@ -201,7 +219,10 @@ cargo run -p bench-runner -- <scene.ply> --analyze-spatial
 ## Structural Checks
 
 - CI entrypoints live in `.github/workflows/ci.yml`, `.github/workflows/perf-smoke.yml`, and `.github/workflows/long-stability.yml`.
-- There is no dedicated lint entrypoint in the repo today; do not invent one in docs or task reports.
+- Contributor issue and pull request templates live under `.github/`.
+- The lint and docs entrypoints are `cargo fmt --check`,
+  `cargo clippy --workspace --all-targets -- -D warnings`, and
+  `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps`.
 
 ## Failure Triage
 

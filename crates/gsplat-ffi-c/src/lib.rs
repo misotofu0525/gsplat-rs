@@ -293,6 +293,12 @@ pub extern "C" fn gsplat_camera_default() -> GsplatCamera {
     GsplatCamera::default()
 }
 
+/// Create a renderer context.
+///
+/// # Safety
+///
+/// `out_ctx` must be valid for one pointer write. On success, the returned
+/// handle must be released exactly once with `gsplat_context_destroy`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn gsplat_context_create(
     config: GsplatConfig,
@@ -333,6 +339,12 @@ pub unsafe extern "C" fn gsplat_context_create(
     ErrorCode::Ok.as_i32()
 }
 
+/// Destroy a renderer context.
+///
+/// # Safety
+///
+/// `ctx` may be null. Non-null values must be handles returned by
+/// `gsplat_context_create` that have not already been destroyed.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn gsplat_context_destroy(ctx: *mut GsplatContext) {
     if ctx.is_null() {
@@ -344,6 +356,11 @@ pub unsafe extern "C" fn gsplat_context_destroy(ctx: *mut GsplatContext) {
     }
 }
 
+/// Replace the current camera for a context.
+///
+/// # Safety
+///
+/// `ctx` must be null or a live handle returned by `gsplat_context_create`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn gsplat_context_set_camera(
     ctx: *mut GsplatContext,
@@ -363,6 +380,11 @@ pub unsafe extern "C" fn gsplat_context_set_camera(
     ErrorCode::Ok.as_i32()
 }
 
+/// Set the context camera to an automatically framed view of the loaded scene.
+///
+/// # Safety
+///
+/// `ctx` must be null or a live handle returned by `gsplat_context_create`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn gsplat_context_set_auto_camera(ctx: *mut GsplatContext) -> i32 {
     let ctx = match unsafe { ctx.as_mut() } {
@@ -379,6 +401,12 @@ pub unsafe extern "C" fn gsplat_context_set_auto_camera(ctx: *mut GsplatContext)
     }
 }
 
+/// Load a scene from a filesystem path.
+///
+/// # Safety
+///
+/// `ctx` must be null or a live handle returned by `gsplat_context_create`.
+/// `path` must be a non-null, NUL-terminated C string.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn gsplat_context_load_scene_path(
     ctx: *mut GsplatContext,
@@ -409,6 +437,11 @@ pub unsafe extern "C" fn gsplat_context_load_scene_path(
     }
 }
 
+/// Render one offscreen frame for a context.
+///
+/// # Safety
+///
+/// `ctx` must be null or a live handle returned by `gsplat_context_create`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn gsplat_context_render_frame(ctx: *mut GsplatContext) -> i32 {
     let ctx = match unsafe { ctx.as_mut() } {
@@ -422,6 +455,12 @@ pub unsafe extern "C" fn gsplat_context_render_frame(ctx: *mut GsplatContext) ->
     }
 }
 
+/// Copy the last frame stats for a context.
+///
+/// # Safety
+///
+/// `ctx` must be null or a live handle returned by `gsplat_context_create`.
+/// `out_stats` must be valid for one `GsplatStats` write.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn gsplat_context_get_stats(
     ctx: *const GsplatContext,
@@ -443,6 +482,14 @@ pub unsafe extern "C" fn gsplat_context_get_stats(
     ErrorCode::Ok.as_i32()
 }
 
+/// Create an Android Surface renderer from an `ANativeWindow`.
+///
+/// # Safety
+///
+/// `native_window` must be a valid `ANativeWindow` for the lifetime required
+/// by the created Surface renderer. `path` must be a non-null, NUL-terminated
+/// C string. `out_renderer` must be valid for one pointer write. On success,
+/// the returned handle must be destroyed with `gsplat_surface_renderer_destroy`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn gsplat_surface_renderer_create_android(
     native_window: *mut c_void,
@@ -500,6 +547,15 @@ pub unsafe extern "C" fn gsplat_surface_renderer_create_android(
     )
 }
 
+/// Create a UIKit Surface renderer from a view backed by `CAMetalLayer`.
+///
+/// # Safety
+///
+/// `ui_view` must be a valid UIKit view backed by `CAMetalLayer`.
+/// `ui_view_controller` may be null. `path` must be a non-null,
+/// NUL-terminated C string. `out_renderer` must be valid for one pointer
+/// write. On success, the returned handle must be destroyed with
+/// `gsplat_surface_renderer_destroy`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn gsplat_surface_renderer_create_uikit(
     ui_view: *mut c_void,
@@ -624,6 +680,12 @@ fn create_surface_renderer_from_raw_handles(
     ErrorCode::Ok.as_i32()
 }
 
+/// Destroy a Surface renderer.
+///
+/// # Safety
+///
+/// `renderer` may be null. Non-null values must be handles returned by a
+/// Surface renderer create function that have not already been destroyed.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn gsplat_surface_renderer_destroy(renderer: *mut GsplatSurfaceRenderer) {
     if renderer.is_null() {
@@ -635,6 +697,12 @@ pub unsafe extern "C" fn gsplat_surface_renderer_destroy(renderer: *mut GsplatSu
     }
 }
 
+/// Resize a Surface renderer.
+///
+/// # Safety
+///
+/// `renderer` must be null or a live handle returned by a Surface renderer
+/// create function.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn gsplat_surface_renderer_resize(
     renderer: *mut GsplatSurfaceRenderer,
@@ -672,6 +740,12 @@ pub unsafe extern "C" fn gsplat_surface_renderer_resize(
     ErrorCode::Ok.as_i32()
 }
 
+/// Set the Surface renderer sort interval in frames.
+///
+/// # Safety
+///
+/// `renderer` must be null or a live handle returned by a Surface renderer
+/// create function.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn gsplat_surface_renderer_set_sort_interval(
     renderer: *mut GsplatSurfaceRenderer,
@@ -689,6 +763,12 @@ pub unsafe extern "C" fn gsplat_surface_renderer_set_sort_interval(
     ErrorCode::Ok.as_i32()
 }
 
+/// Enable or disable the experimental GPU preproject path.
+///
+/// # Safety
+///
+/// `renderer` must be null or a live handle returned by a Surface renderer
+/// create function.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn gsplat_surface_renderer_set_gpu_preproject(
     renderer: *mut GsplatSurfaceRenderer,
@@ -712,6 +792,12 @@ pub unsafe extern "C" fn gsplat_surface_renderer_set_gpu_preproject(
     ErrorCode::Ok.as_i32()
 }
 
+/// Enable or disable double-buffering for the GPU preproject path.
+///
+/// # Safety
+///
+/// `renderer` must be null or a live handle returned by a Surface renderer
+/// create function.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn gsplat_surface_renderer_set_gpu_preproject_double_buffer(
     renderer: *mut GsplatSurfaceRenderer,
@@ -733,6 +819,12 @@ pub unsafe extern "C" fn gsplat_surface_renderer_set_gpu_preproject_double_buffe
     ErrorCode::Ok.as_i32()
 }
 
+/// Enable or disable the experimental static-direct Surface path.
+///
+/// # Safety
+///
+/// `renderer` must be null or a live handle returned by a Surface renderer
+/// create function.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn gsplat_surface_renderer_set_static_direct(
     renderer: *mut GsplatSurfaceRenderer,
@@ -756,6 +848,12 @@ pub unsafe extern "C" fn gsplat_surface_renderer_set_static_direct(
     ErrorCode::Ok.as_i32()
 }
 
+/// Enable or disable experimental async sorting.
+///
+/// # Safety
+///
+/// `renderer` must be null or a live handle returned by a Surface renderer
+/// create function.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn gsplat_surface_renderer_set_async_sort(
     renderer: *mut GsplatSurfaceRenderer,
@@ -777,6 +875,12 @@ pub unsafe extern "C" fn gsplat_surface_renderer_set_async_sort(
     ErrorCode::Ok.as_i32()
 }
 
+/// Enable or disable experimental async geometry building.
+///
+/// # Safety
+///
+/// `renderer` must be null or a live handle returned by a Surface renderer
+/// create function.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn gsplat_surface_renderer_set_async_geometry(
     renderer: *mut GsplatSurfaceRenderer,
@@ -807,6 +911,12 @@ pub unsafe extern "C" fn gsplat_surface_renderer_set_async_geometry(
     ErrorCode::Ok.as_i32()
 }
 
+/// Set the number of lazily allocated Surface instance buffers.
+///
+/// # Safety
+///
+/// `renderer` must be null or a live handle returned by a Surface renderer
+/// create function.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn gsplat_surface_renderer_set_instance_buffer_count(
     renderer: *mut GsplatSurfaceRenderer,
@@ -827,6 +937,12 @@ pub unsafe extern "C" fn gsplat_surface_renderer_set_instance_buffer_count(
     ErrorCode::Ok.as_i32()
 }
 
+/// Set the preferred Surface frame latency.
+///
+/// # Safety
+///
+/// `renderer` must be null or a live handle returned by a Surface renderer
+/// create function.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn gsplat_surface_renderer_set_frame_latency(
     renderer: *mut GsplatSurfaceRenderer,
@@ -847,6 +963,12 @@ pub unsafe extern "C" fn gsplat_surface_renderer_set_frame_latency(
     ErrorCode::Ok.as_i32()
 }
 
+/// Reset the Surface camera to the automatic scene framing.
+///
+/// # Safety
+///
+/// `renderer` must be null or a live handle returned by a Surface renderer
+/// create function.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn gsplat_surface_renderer_reset_camera(
     renderer: *mut GsplatSurfaceRenderer,
@@ -867,6 +989,12 @@ pub unsafe extern "C" fn gsplat_surface_renderer_reset_camera(
     rc
 }
 
+/// Orbit the Surface camera by yaw and pitch deltas in radians.
+///
+/// # Safety
+///
+/// `renderer` must be null or a live handle returned by a Surface renderer
+/// create function.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn gsplat_surface_renderer_orbit(
     renderer: *mut GsplatSurfaceRenderer,
@@ -888,6 +1016,12 @@ pub unsafe extern "C" fn gsplat_surface_renderer_orbit(
     apply_surface_camera_control(renderer)
 }
 
+/// Zoom the Surface camera by a positive distance scale.
+///
+/// # Safety
+///
+/// `renderer` must be null or a live handle returned by a Surface renderer
+/// create function.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn gsplat_surface_renderer_zoom(
     renderer: *mut GsplatSurfaceRenderer,
@@ -911,6 +1045,12 @@ pub unsafe extern "C" fn gsplat_surface_renderer_zoom(
     apply_surface_camera_control(renderer)
 }
 
+/// Pan the Surface camera in normalized viewport units.
+///
+/// # Safety
+///
+/// `renderer` must be null or a live handle returned by a Surface renderer
+/// create function.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn gsplat_surface_renderer_pan(
     renderer: *mut GsplatSurfaceRenderer,
@@ -945,6 +1085,12 @@ pub unsafe extern "C" fn gsplat_surface_renderer_pan(
     apply_surface_camera_control(renderer)
 }
 
+/// Render one frame to the Surface renderer.
+///
+/// # Safety
+///
+/// `renderer` must be null or a live handle returned by a Surface renderer
+/// create function.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn gsplat_surface_renderer_render_frame(
     renderer: *mut GsplatSurfaceRenderer,
@@ -1232,6 +1378,12 @@ fn render_surface_frame_sync_sort(
     Ok((stats, refresh_sort))
 }
 
+/// Copy the last Surface renderer stats.
+///
+/// # Safety
+///
+/// `renderer` must be null or a live handle returned by a Surface renderer
+/// create function. `out_stats` must be valid for one `GsplatStats` write.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn gsplat_surface_renderer_get_stats(
     renderer: *const GsplatSurfaceRenderer,

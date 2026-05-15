@@ -32,6 +32,7 @@
 - `tests/`: shared dataset, FFI smoke harness, and long-stability script
 - `handbook/`: current project docs, architecture map, verification guide, roadmap, and project principles
 - `docs/plans/`: active and completed task planning bundles
+- `.github/`: CI workflows and contributor templates
 
 ## Critical Flows
 

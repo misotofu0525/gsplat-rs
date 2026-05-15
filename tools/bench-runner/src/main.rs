@@ -109,7 +109,7 @@ fn run_stability_mode(
             .map_err(|err| err.to_string())?;
         frame_count += 1;
 
-        if frame_count % 60 == 0 {
+        if frame_count.is_multiple_of(60) {
             let rss = process_rss_kib();
             min_rss = merge_min(min_rss, rss);
             max_rss = merge_max(max_rss, rss);

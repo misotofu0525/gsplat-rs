@@ -1,18 +1,22 @@
 [package]
 name = "desktop-demo"
 version = "0.1.0"
+description = "Desktop validation demo and PNG smoke harness for gsplat-rs."
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
 
 [features]
 default = []
 interactive-viewer = ["dep:winit", "dep:wgpu", "dep:pollster"]
 
 [dependencies]
-gsplat-core = { path = "../../crates/gsplat-core" }
-gsplat-render-wgpu = { path = "../../crates/gsplat-render-wgpu" }
-gsplat-io-ply = { path = "../../crates/gsplat-io-ply" }
+gsplat-core = { path = "../../crates/gsplat-core", version = "0.1.0" }
+gsplat-render-wgpu = { path = "../../crates/gsplat-render-wgpu", version = "0.1.0" }
+gsplat-io-ply = { path = "../../crates/gsplat-io-ply", version = "0.1.0" }
 png = "0.17.16"
 winit = { version = "0.30.12", optional = true }
 wgpu = { workspace = true, optional = true }

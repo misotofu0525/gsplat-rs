@@ -13,6 +13,8 @@
 - Verification entrypoint: `VERIFICATION.md`
 - Direction and scope: `ROADMAP.md`
 - Project taste guide: `GOLDEN_PRINCIPLES.md`
+- Contribution guide: `../CONTRIBUTING.md`
+- Security policy: `../SECURITY.md`
 
 ## Success Criteria
 
@@ -37,12 +39,15 @@
 - `tests/`: sample dataset, FFI smoke harness, and perf scripts
 - `handbook/`: current project docs, architecture map, verification guide, roadmap, and project principles
 - `docs/plans/`: task-scoped research and planning bundles
+- `.github/`: CI workflows plus issue and pull request templates
 
 ## Common Commands
 
 ```bash
 cargo check --workspace
 cargo test --workspace
+cargo fmt --check
+cargo clippy --workspace --all-targets -- -D warnings
 cargo run -p desktop-demo -- tests/datasets/minimal_ascii.ply --png target/out.png
 ```
 
@@ -56,6 +61,7 @@ For the broader command matrix, use `VERIFICATION.md`.
 - Bring the experimental Web SDK path up through the shared Rust `wgpu` Surface renderer.
 - Keep the runtime scene path centered on validated in-memory `SceneBuffers` until a measured asset-pipeline need exists.
 - Update the docs immediately when repository structure or responsibilities change.
+- Keep contributor-facing maintenance files aligned with the actual verification and release boundary.
 
 ## Constraints and Boundaries
 

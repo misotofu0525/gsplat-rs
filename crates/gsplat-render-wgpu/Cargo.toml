@@ -1,13 +1,16 @@
 [package]
 name = "gsplat-render-wgpu"
 version = "0.1.0"
+description = "wgpu renderer and surface presentation paths for gsplat-rs."
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
 
 [dependencies]
-gsplat-core = { path = "../gsplat-core" }
-gsplat-sort = { path = "../gsplat-sort" }
+gsplat-core = { path = "../gsplat-core", version = "0.1.0" }
+gsplat-sort = { path = "../gsplat-sort", version = "0.1.0" }
 wgpu.workspace = true
 thiserror.workspace = true
 bytemuck = { version = "1.20.0", features = ["derive"] }
@@ -21,4 +24,4 @@ js-sys = "0.3.98"
 web-sys = { version = "0.3.98", features = ["HtmlCanvasElement"] }
 
 [dev-dependencies]
-gsplat-io-ply = { path = "../gsplat-io-ply" }
+gsplat-io-ply = { path = "../gsplat-io-ply", version = "0.1.0" }

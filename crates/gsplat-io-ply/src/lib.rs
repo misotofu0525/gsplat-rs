@@ -430,7 +430,7 @@ fn infer_sh_rest_layout(header: &PlyHeader) -> Result<(u8, Option<Vec<usize>>), 
 }
 
 fn infer_sh_degree(rest_count_total: usize) -> Option<u8> {
-    if rest_count_total % 3 != 0 {
+    if !rest_count_total.is_multiple_of(3) {
         return None;
     }
     let per_channel = rest_count_total / 3;
@@ -473,7 +473,7 @@ fn parse_ascii_body(
 
     for _ in 0..header.vertex_count {
         let mut row: Option<&str> = None;
-        while let Some(line) = lines.next() {
+        for line in lines.by_ref() {
             let trimmed = line.trim();
             if trimmed.is_empty() || trimmed.starts_with("comment") {
                 continue;

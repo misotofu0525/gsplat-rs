@@ -57,8 +57,10 @@ struct Args {
 impl Args {
     fn parse(mut args: impl Iterator<Item = String>) -> Result<Self, String> {
         let mut dataset_path: Option<PathBuf> = None;
-        let mut config = RendererConfig::default();
-        config.mode = RenderMode::SortedAlpha;
+        let mut config = RendererConfig {
+            mode: RenderMode::SortedAlpha,
+            ..RendererConfig::default()
+        };
         let mut frames = 1_u32;
         let mut orbit = false;
         let mut auto_camera = false;
