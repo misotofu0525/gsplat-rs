@@ -31,6 +31,7 @@ cargo fmt --check
 cargo clippy --workspace --all-targets -- -D warnings
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
 node --check apps/web-demo/src/main.js
+node --check apps/web-demo/gsplat-web-sdk/src/index.js
 ```
 
 - Run these before opening a pull request that changes Rust code, public docs,
@@ -49,6 +50,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
 node --check apps/web-demo/src/main.js
+node --check apps/web-demo/gsplat-web-sdk/src/index.js
 cargo run -p bench-runner -- tests/datasets/minimal_ascii.ply 120
 bash tests/ffi/run-ffi-smoke.sh
 bash apps/android-demo/run-jni-smoke.sh
@@ -109,6 +111,8 @@ in `crates/gsplat-render-wgpu/`:
 ```bash
 cargo check -p gsplat-web --target wasm32-unknown-unknown
 bash apps/web-demo/build-wasm.sh
+bash apps/web-demo/build-web-sdk.sh
+node --check apps/web-demo/gsplat-web-sdk/dist/index.js
 ```
 
 - `cargo check --workspace` still checks the host-side workspace and the
@@ -117,8 +121,10 @@ bash apps/web-demo/build-wasm.sh
   `rustup target add wasm32-unknown-unknown`.
 - `apps/web-demo/build-wasm.sh` also requires the `wasm-bindgen` CLI and writes
   generated files to ignored `apps/web-demo/pkg/`.
-- This is the proof path for the shared Rust `wgpu` renderer running in the
-  browser. After the package exists, reload
+- `apps/web-demo/build-web-sdk.sh` writes the local ESM wrapper distribution to
+  ignored `apps/web-demo/gsplat-web-sdk/dist/`.
+- This is the proof path for the shared Rust `wgpu` renderer and local Web SDK
+  wrapper running in the browser. After the package exists, reload
   `http://127.0.0.1:4173/apps/web-demo/?dataset=flowers`; expected status should
   report `surface=wasm-wgpu`, `renderer=wasm_wgpu_surface` in benchmark output,
   and non-zero `Visible` / `Drawn` counts for `flowers_1.ply`.
@@ -229,7 +235,12 @@ STABILITY_SECONDS=1800 bash tests/perf/run-long-stability.sh
   changes, run `bash apps/ios-demo/run-ios-sim-smoke.sh`.
 - If you touch PLY import or scene normalization, run `cargo test --workspace` and `cargo run -p desktop-demo -- tests/datasets/minimal_ascii.ply --png target/out.png`.
 - If you touch renderer, sorting, or perf-sensitive code, run `cargo run -p bench-runner -- tests/datasets/minimal_ascii.ply 120` and consider the long-stability script.
-- If you touch `apps/web-demo/`, run `node --check apps/web-demo/src/main.js` and the Web Demo smoke above.
+- If you touch `apps/web-demo/`, run `node --check apps/web-demo/src/main.js`
+  and the Web Demo smoke above. If you touch
+  `apps/web-demo/gsplat-web-sdk/`, also run
+  `node --check apps/web-demo/gsplat-web-sdk/src/index.js`,
+  `bash apps/web-demo/build-web-sdk.sh`, and
+  `node --check apps/web-demo/gsplat-web-sdk/dist/index.js`.
 - If you touch `crates/gsplat-web/` or browser Surface creation in `crates/gsplat-render-wgpu/`, run `cargo check --workspace` and the Web WASM Build path above.
 - For spatial/tile/chunk feasibility checks on a loaded PLY, use:
 

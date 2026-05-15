@@ -8,6 +8,8 @@ There are now two Web paths:
   build.
 - Experimental Rust/WASM renderer package: `crates/gsplat-web`, built into
   `apps/web-demo/pkg/` with the script below.
+- Local browser SDK wrapper: `gsplat-web-sdk`, built into
+  `apps/web-demo/gsplat-web-sdk/dist/`.
 
 ## Run
 
@@ -36,6 +38,12 @@ To build the experimental Rust/WASM package for this demo:
 
 ```bash
 bash apps/web-demo/build-wasm.sh
+```
+
+To build the local Web SDK wrapper distribution:
+
+```bash
+bash apps/web-demo/build-web-sdk.sh
 ```
 
 That script expects `wasm32-unknown-unknown` and the `wasm-bindgen` CLI to
@@ -75,8 +83,8 @@ run the same benchmark against
 - Reports an Android-style realtime status overlay with state, camera mode,
   dataset, path, surface size, and frame stats.
 - Imports the generated `apps/web-demo/pkg/gsplat_web.js` package when present
-  and attempts the Rust/WASM `wgpu` Surface renderer before falling back to the
-  WebGL2 point-splat path.
+  and routes renderer creation through `gsplat-web-sdk/src/index.js` before
+  falling back to the WebGL2 point-splat path.
 - Supports benchmark orbit runs with `sort_interval` A/B checks.
 - Renders a WebGL2 point-splat preview rather than the full `wgpu` ellipse
   pipeline when the generated wasm package is missing or cannot create a
@@ -89,5 +97,7 @@ run the same benchmark against
 
 The repo now has a dedicated Rust/WASM boundary in `crates/gsplat-web`. It is
 still experimental and must pass the wasm build plus browser smoke path before a
-Web renderer change is called complete. New Web renderer work should target that
-crate rather than adding more rendering logic to `src/main.js`.
+Web renderer change is called complete. `gsplat-web-sdk` is the local ESM
+consumer wrapper around that generated wasm package. New Web renderer work
+should target `crates/gsplat-web` and the wrapper rather than adding more
+rendering logic to `src/main.js`.

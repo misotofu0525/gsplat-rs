@@ -33,3 +33,13 @@ bash apps/web-demo/build-wasm.sh
 
 The generated browser package is written to `apps/web-demo/pkg/` and is ignored
 by git.
+
+For a local npm-style wrapper, build:
+
+```bash
+bash apps/web-demo/build-web-sdk.sh
+```
+
+That writes `apps/web-demo/gsplat-web-sdk/dist/` and keeps the generated wasm
+module behind the `@gsplat-rs/web` ESM wrapper. This is still local-only and is
+not published to npm.

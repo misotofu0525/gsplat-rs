@@ -9,7 +9,7 @@
 
 - The repository owns scene loading, sort backends, `wgpu` rendering, a small C ABI, experimental Rust/WASM Web bindings, and validation demos/tools around those pieces.
 - The repository does not own model training, a polished web product surface, or multiple polished render backends.
-- Main external dependencies are `wgpu`, platform toolchains for Swift/JNI validation, Android/iOS SDK tooling for mobile container builds and local package artifacts, browser WebGL2 for the static Web demo, and `wasm-bindgen` for the experimental Web SDK path.
+- Main external dependencies are `wgpu`, platform toolchains for Swift/JNI validation, Android/iOS SDK tooling for mobile container builds and local package artifacts, browser WebGL2 for the static Web demo, and `wasm-bindgen`/browser ESM tooling for the experimental Web SDK path.
 
 ## Runtime Topology
 
@@ -27,7 +27,7 @@
 - `apps/desktop-demo/`: desktop viewer and offscreen output harness
 - `apps/android-demo/`: Android `gsplat-android` library module, demo app, JNI bridge, and host smoke entrypoint
 - `apps/ios-demo/`: local `GsplatKit` Swift package wrapper, Swift smoke source, UIKit realtime Surface app, and iOS simulator/device build/run scripts
-- `apps/web-demo/`: static frontend demo for browser PLY loading, WebGL2 point-splat fallback, and generated wasm package hosting
+- `apps/web-demo/`: static frontend demo for browser PLY loading, local `@gsplat-rs/web` wrapper, WebGL2 point-splat fallback, and generated wasm package hosting
 - `tools/`: CLI tools for performance validation
 - `tests/`: shared dataset, FFI smoke harness, and long-stability script
 - `handbook/`: current project docs, architecture map, verification guide, roadmap, and project principles
@@ -66,7 +66,7 @@
   packages the C ABI as a local `GsplatFFI.xcframework` through `apps/ios-demo/build-xcframework.sh`
 
 - Web WASM renderer flow:
-  starts at browser JavaScript that imports the generated `gsplat-web` wasm package
+  starts at browser JavaScript that imports the local `apps/web-demo/gsplat-web-sdk` wrapper or generated `gsplat-web` wasm package
   passes an `HtmlCanvasElement`, PLY bytes, and dimensions through `wasm-bindgen`
   parses the PLY with `gsplat-io-ply::parse_ply_bytes`
   loads the scene into `gsplat-render-wgpu::Renderer`
@@ -76,7 +76,9 @@
 - Web demo flow:
   starts at `apps/web-demo/index.html`
   loads `apps/web-demo/src/main.js`
-  imports generated `apps/web-demo/pkg/gsplat_web.js` when present and attempts the Rust/WASM Surface renderer first
+  imports generated `apps/web-demo/pkg/gsplat_web.js` when present, routes it
+  through `apps/web-demo/gsplat-web-sdk/src/index.js`, and attempts the
+  Rust/WASM Surface renderer first
   fetches or uploads a `.ply` file in the browser
   parses ASCII or binary PLY data into frontend buffers
   applies the same RDF-to-RUF Y-axis flip, DC color, and opacity conventions as the Rust import/render path
@@ -93,7 +95,9 @@
   library/AAR packaging slice and iOS has a local `GsplatKit`/XCFramework
   packaging slice, but neither path is a published product SDK yet.
 - `crates/gsplat-web` is the active experimental Rust/WASM target; Web renderer changes require the wasm build and browser smoke path before completion is claimed.
-- The Web demo directory stays a browser validator and generated wasm package host, not a polished web product surface.
+- The Web demo directory stays a browser validator, local Web SDK wrapper, and
+  generated wasm package host, not a polished web product surface or published
+  npm package.
 
 ## Hotspots
 
@@ -101,6 +105,7 @@
 - `crates/gsplat-sort/src/lib.rs`: ordering correctness and performance
 - `crates/gsplat-ffi-c/src/lib.rs` and `crates/gsplat-ffi-c/include/gsplat.h`: integration boundary stability
 - `crates/gsplat-web/src/`: browser `wasm-bindgen` API over the shared Surface renderer
+- `apps/web-demo/gsplat-web-sdk/src/index.js`: local browser ESM wrapper over the generated wasm-bindgen module
 - `apps/android-demo/gsplat-android/src/main/kotlin/`, `apps/android-demo/app/src/main/kotlin/`, and `apps/android-demo/jni/gsplat_jni.c`: Android SDK wrapper, Surface lifecycle sample, and JNI bridge
 - `apps/ios-demo/GsplatKit/Sources/GsplatKit/GsplatKit.swift`: Swift wrapper over the v0.1 C ABI
 - `apps/ios-demo/app/GsplatIOSDemo.swift`: iOS Surface lifecycle and UIKit gesture bridge

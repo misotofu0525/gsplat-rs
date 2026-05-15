@@ -11,4 +11,5 @@ apps/android-demo/gsplat-android/src/main/jniLibs/
 apps/android-demo/local.properties
 apps/ios-demo/GsplatKit/Binaries/
 apps/web-demo/pkg/
+apps/web-demo/gsplat-web-sdk/dist/
 tests/datasets/external/

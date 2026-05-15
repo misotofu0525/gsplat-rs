@@ -1,0 +1,17 @@
+{
+  "name": "@gsplat-rs/web",
+  "version": "0.1.0",
+  "description": "Local browser wrapper for the experimental gsplat-rs Rust/WASM renderer.",
+  "type": "module",
+  "license": "MIT OR Apache-2.0",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist/"
+  ],
+  "sideEffects": false,
+  "scripts": {
+    "check": "node --check src/index.js"
+  }
+}

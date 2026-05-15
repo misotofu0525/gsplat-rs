@@ -12,6 +12,8 @@ Operational facts and command entrypoints live in `handbook/PROJECT_CONTEXT.md` 
   now has a local library/AAR packaging slice, and iOS has a local
   `GsplatKit`/XCFramework packaging slice, but neither is a published product
   SDK.
+- Web has a local `@gsplat-rs/web` ESM wrapper over the experimental Rust/WASM
+  renderer, but it is not a published npm SDK.
 
 ## Near-Term Priorities
 
@@ -19,7 +21,7 @@ Operational facts and command entrypoints live in `handbook/PROJECT_CONTEXT.md` 
 2. Expand conformance and performance coverage with real datasets before widening APIs.
 3. Keep C ABI, JNI, Android library packaging, iOS local XCFramework packaging, and Swift smoke paths boring, small, and in sync.
 4. Improve renderer quality and stability inside the existing crate boundaries.
-5. Bring the Rust/WASM Web renderer target up behind the shared `wgpu` Surface path before calling Web parity complete.
+5. Harden the local Web wrapper and Rust/WASM renderer target behind the shared `wgpu` Surface path before calling Web parity complete.
 6. Keep handbook docs and verification commands aligned with the repository that actually exists.
 
 ## Current Release Boundary
@@ -48,7 +50,9 @@ Operational facts and command entrypoints live in `handbook/PROJECT_CONTEXT.md` 
   C ABI for Swift consumption. Maven publishing, multi-ABI Android
   distribution, published binary SwiftPM/XCFramework distribution, and polished
   mobile view APIs are still outside the current release contract.
-- `crates/gsplat-web` is the active experimental Rust/WASM Web API boundary. It is not a stable v0.1 release surface; Web renderer changes require verified wasm build and browser smoke evidence.
+- `crates/gsplat-web` plus `apps/web-demo/gsplat-web-sdk` form the local
+  experimental Web API boundary. They are not a stable v0.1 release surface;
+  Web renderer changes require verified wasm build and browser smoke evidence.
 - The Web demo is validation/demo support for browser PLY loading, the WebGL2 fallback, and hosting the generated wasm package; it is not a polished web product surface.
 
 ## Release Bar
@@ -65,4 +69,4 @@ STABILITY_SECONDS=1800 bash tests/perf/run-long-stability.sh
 - A custom internal binary scene/cache format
 - Additional experimental blending/rendering backends
 - New top-level apps or docs-only placeholders
-- Published Maven or binary SwiftPM SDK distribution
+- Published Maven, binary SwiftPM, or npm SDK distribution

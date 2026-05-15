@@ -17,9 +17,9 @@ without overstating SDK maturity.
 - iOS status: `apps/ios-demo/GsplatKit` is a local Swift package wrapper and
   `bash apps/ios-demo/build-xcframework.sh` builds a local
   `GsplatFFI.xcframework`; it is not a published binary SwiftPM release yet.
-- Web status: `apps/web-demo` is a browser validation surface. The shared
-  Rust/WASM renderer boundary lives in `crates/gsplat-web` and remains
-  experimental until the wasm build and browser smoke path are verified.
+- Web status: `apps/web-demo/gsplat-web-sdk` is a local browser ESM wrapper
+  around the experimental `crates/gsplat-web` Rust/WASM renderer; it is not
+  published to npm yet.
 
 ## Quick Start
 
@@ -53,8 +53,8 @@ Then open `http://127.0.0.1:4173/apps/web-demo/`.
   and the local `gsplat-android` library module
 - `apps/ios-demo`: local `GsplatKit` Swift package wrapper, Swift smoke path,
   UIKit realtime Surface app, and iOS simulator/device scripts
-- `apps/web-demo`: browser PLY loader, generated wasm package host, and WebGL2
-  fallback preview
+- `apps/web-demo`: browser PLY loader, local `@gsplat-rs/web` wrapper,
+  generated wasm package hosts, and WebGL2 fallback preview
 - `tools/bench-runner`: perf and stability runner
 - `tests/`: sample dataset, FFI smoke harness, and perf scripts
 - `handbook/`: current project docs, architecture map, verification guide,
@@ -98,9 +98,12 @@ The current mobile-facing contract is the C ABI in
   demonstrated by `apps/ios-demo`.
 - The local iOS XCFramework is built with
   `bash apps/ios-demo/build-xcframework.sh`.
+- Browser Rust/WASM integration and the local `@gsplat-rs/web` ESM wrapper are
+  demonstrated by `apps/web-demo`.
+- The local Web SDK wrapper is built with `bash apps/web-demo/build-web-sdk.sh`.
 - Not in the v0.1 contract: scene-from-memory loading, runtime render-mode
   switching, Maven publishing, multi-ABI Android distribution, and
-  published binary SwiftPM/XCFramework distribution.
+  published binary SwiftPM/XCFramework or npm distribution.
 
 ## Documentation
 

@@ -1,3 +1,5 @@
+import { createGsplatRenderer, initGsplatWeb } from "../gsplat-web-sdk/src/index.js";
+
 const API_VERSION = "0.1";
 const MAX_SURFACE_SIDE = 1600;
 const ORBIT_RADIANS_PER_SCREEN = 3.2;
@@ -161,8 +163,7 @@ async function initWasmModule() {
     }
 
     const module = await import(WASM_ENTRY.href);
-    await module.default();
-    state.wasmModule = module;
+    state.wasmModule = await initGsplatWeb({ module });
     state.backend = "wasm";
     els.gpuStatus.textContent = "wasm ready";
     setRenderMode("Rust/WASM + wgpu Surface");
@@ -304,16 +305,17 @@ async function createWasmRenderer(scene) {
   disposeWasmRenderer();
   setStatus(`state=wasm_creating dataset=${scene.name}`);
   try {
-    const renderer = await state.wasmModule.createRenderer(
-      els.canvas,
-      scene.rawBytes,
-      els.canvas.width,
-      els.canvas.height,
-    );
+    const renderer = await createGsplatRenderer({
+      module: state.wasmModule,
+      canvas: els.canvas,
+      plyBytes: scene.rawBytes,
+      width: els.canvas.width,
+      height: els.canvas.height,
+      sortInterval: Number(els.sortInterval.value),
+    });
     state.wasmRenderer = renderer;
     state.backend = "wasm";
     state.wasmUnavailableReason = "";
-    renderer.setSortInterval(Number(els.sortInterval.value));
 
     const summary = renderer.sceneSummary();
     const surface = renderer.surfaceSize();
