@@ -32,6 +32,12 @@ jobs:
         run: cargo doc --workspace --no-deps
       - name: Web demo JavaScript syntax
         run: node --check apps/web-demo/src/main.js
+      - name: Web SDK JavaScript syntax
+        run: node --check apps/web-demo/gsplat-web-sdk/src/index.js
+      - name: Web wasm check
+        run: |
+          rustup target add wasm32-unknown-unknown
+          cargo check -p gsplat-web --target wasm32-unknown-unknown
       - name: Cargo check
         run: cargo check --workspace
       - name: Cargo test
@@ -55,3 +61,7 @@ jobs:
         run: bash apps/ios-demo/run-swift-smoke.sh
       - name: iOS simulator target build
         run: bash apps/ios-demo/build-ios-sim.sh
+      - name: iOS XCFramework build
+        run: bash apps/ios-demo/build-xcframework.sh
+      - name: GsplatKit package build
+        run: cd apps/ios-demo/GsplatKit && xcodebuild -scheme GsplatKit -destination 'generic/platform=iOS Simulator' build
