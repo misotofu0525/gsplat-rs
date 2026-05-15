@@ -21,7 +21,9 @@
 - Read `handbook/VERIFICATION.md` before changing scripts/commands or claiming completion.
 - Read `handbook/ROADMAP.md` when the task depends on current priorities, release scope, or non-goals.
 - Read `handbook/GOLDEN_PRINCIPLES.md` when work touches architecture taste, error handling, public API shape, or repeated design choices.
-- For Android or iOS work, also read the matching demo README under `apps/android-demo/` or `apps/ios-demo/`.
+- For Android, iOS, Web demo, or Web SDK work, also read the matching README
+  under `apps/android-demo/`, `apps/ios-demo/`, `apps/web-demo/`, or
+  `crates/gsplat-web/`.
 - For complex work, create or resume a plan bundle under `docs/plans/active/` and keep findings there.
 
 ## Project Hard Rules

@@ -5,6 +5,7 @@ members = [
   "crates/gsplat-sort",
   "crates/gsplat-render-wgpu",
   "crates/gsplat-ffi-c",
+  "crates/gsplat-web",
   "apps/desktop-demo",
   "tools/bench-runner",
 ]

@@ -16,7 +16,8 @@ Operational facts and command entrypoints live in `handbook/PROJECT_CONTEXT.md` 
 2. Expand conformance and performance coverage with real datasets before widening APIs.
 3. Keep C ABI, JNI, and Swift smoke paths boring, small, and in sync.
 4. Improve renderer quality and stability inside the existing crate boundaries.
-5. Keep handbook docs and verification commands aligned with the repository that actually exists.
+5. Bring the Rust/WASM Web renderer target up behind the shared `wgpu` Surface path before calling Web parity complete.
+6. Keep handbook docs and verification commands aligned with the repository that actually exists.
 
 ## Current Release Boundary
 
@@ -39,6 +40,8 @@ Operational facts and command entrypoints live in `handbook/PROJECT_CONTEXT.md` 
   - Android and iOS Surface renderer create/resize/camera-control/render/stats/destroy functions for the demo integration paths
 - The current C ABI does not cover scene-from-memory loading or runtime render-mode switching.
 - Mobile Surface functions are validation/demo support, not a commitment to a full mobile product API.
+- `crates/gsplat-web` is the active experimental Rust/WASM Web API boundary. It is not a stable v0.1 release surface; Web renderer changes require verified wasm build and browser smoke evidence.
+- The Web demo is validation/demo support for browser PLY loading, the WebGL2 fallback, and hosting the generated wasm package; it is not a polished web product surface.
 
 ## Release Bar
 
@@ -52,6 +55,5 @@ STABILITY_SECONDS=1800 bash tests/perf/run-long-stability.sh
 ## Explicitly Not Active Right Now
 
 - A custom internal binary scene/cache format
-- A Web demo app
 - Additional experimental blending/rendering backends
 - New top-level apps or docs-only placeholders

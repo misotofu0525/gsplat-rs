@@ -47,6 +47,63 @@ cargo run -p desktop-demo --features interactive-viewer -- tests/datasets/minima
 - Use the PNG path for deterministic local smoke output.
 - Use the interactive viewer when changing windowed presentation or camera interaction behavior.
 
+## Web Demo Smoke
+
+```bash
+node --check apps/web-demo/src/main.js
+python3 -m http.server 4173 --bind 127.0.0.1 --directory .
+```
+
+- Open `http://127.0.0.1:4173/apps/web-demo/` in a browser.
+- Do not use `file:///.../apps/web-demo/index.html`; the demo depends on HTTP
+  serving from the repository root so wasm imports and `/tests/...` dataset
+  fetches resolve correctly.
+- Expected startup state loads `tests/datasets/minimal_ascii.ply` and shows
+  non-zero `Visible` and `Drawn` counts plus an overlay with `surface=webgl2
+  realtime`, `state=rendering`, `camera=auto`, `dataset=minimal_ascii.ply`,
+  and `path=/tests/datasets/minimal_ascii.ply`.
+- Use the file picker or the `Flowers` button for larger local `.ply` smoke
+  checks. Use `?dataset=flowers` for repeatable automation against
+  `tests/datasets/external/nvidia_flowers_1/flowers_1/flowers_1.ply`. Without a
+  generated wasm package, this is WebGL2 fallback validation rather than proof
+  that the Rust `wgpu` renderer is compiled to WebAssembly.
+- For benchmark smoke, open:
+
+```text
+http://127.0.0.1:4173/apps/web-demo/?gsplat_benchmark=true&gsplat_benchmark_sync=true&gsplat_benchmark_frames=5&gsplat_benchmark_warmup_frames=1&gsplat_surface_sort_interval=2
+```
+
+- Expected benchmark output includes `BENCHMARK_RESULT dataset=minimal_ascii.ply`.
+- Optional flower fallback smoke:
+
+```text
+http://127.0.0.1:4173/apps/web-demo/?dataset=flowers&gsplat_benchmark=true&gsplat_benchmark_sync=true&gsplat_benchmark_frames=2&gsplat_benchmark_warmup_frames=0&gsplat_surface_sort_interval=2
+```
+
+- Expected benchmark output includes `BENCHMARK_RESULT dataset=flowers_1.ply`.
+
+## Web WASM Build
+
+Use this when changing `crates/gsplat-web/` or the browser canvas Surface entry
+in `crates/gsplat-render-wgpu/`:
+
+```bash
+cargo check -p gsplat-web --target wasm32-unknown-unknown
+bash apps/web-demo/build-wasm.sh
+```
+
+- `cargo check --workspace` still checks the host-side workspace and the
+  non-wasm stub for `gsplat-web`.
+- The wasm target must be installed separately with
+  `rustup target add wasm32-unknown-unknown`.
+- `apps/web-demo/build-wasm.sh` also requires the `wasm-bindgen` CLI and writes
+  generated files to ignored `apps/web-demo/pkg/`.
+- This is the proof path for the shared Rust `wgpu` renderer running in the
+  browser. After the package exists, reload
+  `http://127.0.0.1:4173/apps/web-demo/?dataset=flowers`; expected status should
+  report `surface=wasm-wgpu`, `renderer=wasm_wgpu_surface` in benchmark output,
+  and non-zero `Visible` / `Drawn` counts for `flowers_1.ply`.
+
 ## Mobile Builds and Simulator Smoke
 
 ```bash
@@ -133,6 +190,8 @@ STABILITY_SECONDS=1800 bash tests/perf/run-long-stability.sh
 - If you touch `apps/ios-demo/` or Swift/FFI integration, run `bash apps/ios-demo/run-swift-smoke.sh`; for realtime Surface or touch changes, also run `bash apps/ios-demo/run-ios-sim-app.sh`; for offscreen simulator smoke changes, run `bash apps/ios-demo/run-ios-sim-smoke.sh`.
 - If you touch PLY import or scene normalization, run `cargo test --workspace` and `cargo run -p desktop-demo -- tests/datasets/minimal_ascii.ply --png target/out.png`.
 - If you touch renderer, sorting, or perf-sensitive code, run `cargo run -p bench-runner -- tests/datasets/minimal_ascii.ply 120` and consider the long-stability script.
+- If you touch `apps/web-demo/`, run `node --check apps/web-demo/src/main.js` and the Web Demo smoke above.
+- If you touch `crates/gsplat-web/` or browser Surface creation in `crates/gsplat-render-wgpu/`, run `cargo check --workspace` and the Web WASM Build path above.
 - For spatial/tile/chunk feasibility checks on a loaded PLY, use:
 
 ```bash

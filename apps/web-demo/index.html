@@ -1,0 +1,183 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>gsplat-rs Web Demo</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='10' fill='%2320201c'/%3E%3Ctext x='32' y='39' font-size='23' text-anchor='middle' font-family='Arial,sans-serif' font-weight='700' fill='%23f2eee3'%3Egs%3C/text%3E%3C/svg%3E" />
+    <link rel="stylesheet" href="./styles.css" />
+    <script>
+      if (window.location.protocol === "file:") {
+        window.addEventListener("DOMContentLoaded", () => {
+          const status = document.getElementById("statusLine");
+          const scene = document.getElementById("sceneName");
+          const meta = document.getElementById("sceneMeta");
+          const mode = document.getElementById("renderMode");
+          if (scene) scene.textContent = "HTTP server required";
+          if (meta) meta.textContent = "redirecting";
+          if (mode) mode.textContent = "file:// cannot load wasm or shared datasets";
+          if (status) {
+            status.textContent =
+              "file:// is not supported for this demo. Redirecting to http://127.0.0.1:4173/apps/web-demo/";
+          }
+        });
+
+        const target = new URL("http://127.0.0.1:4173/apps/web-demo/");
+        target.search = window.location.search;
+        target.hash = window.location.hash;
+        window.location.replace(target.href);
+      }
+    </script>
+  </head>
+  <body>
+    <main class="shell">
+      <aside class="sidebar" aria-label="gsplat-rs web demo controls">
+        <header class="brand">
+          <div class="mark" aria-hidden="true">gs</div>
+          <div>
+            <h1>gsplat-rs Web Demo</h1>
+            <p>Web target preview</p>
+          </div>
+        </header>
+
+        <section class="panel">
+          <div class="panel-header">
+            <h2>Scene</h2>
+            <span id="formatBadge">idle</span>
+          </div>
+          <div class="button-row">
+            <button id="loadMinimal" type="button">Minimal</button>
+            <button id="loadFlowers" type="button">Flowers</button>
+          </div>
+          <label class="file-control">
+            <input id="fileInput" type="file" accept=".ply" />
+            <span>Open .ply</span>
+          </label>
+          <dl class="stats-grid">
+            <div>
+              <dt>Gaussians</dt>
+              <dd id="gaussianCount">-</dd>
+            </div>
+            <div>
+              <dt>SH</dt>
+              <dd id="shDegree">-</dd>
+            </div>
+            <div>
+              <dt>Visible</dt>
+              <dd id="visibleCount">-</dd>
+            </div>
+            <div>
+              <dt>Drawn</dt>
+              <dd id="drawnCount">-</dd>
+            </div>
+          </dl>
+        </section>
+
+        <section class="panel">
+          <div class="panel-header">
+            <h2>Render</h2>
+            <span id="backendBadge">checking</span>
+          </div>
+          <label class="range-control">
+            <span>Draw budget</span>
+            <output id="drawBudgetValue">120k</output>
+            <input id="drawBudget" type="range" min="5000" max="250000" step="5000" value="120000" />
+          </label>
+          <label class="range-control">
+            <span>Sort interval</span>
+            <output id="sortIntervalValue">2</output>
+            <input id="sortInterval" type="range" min="1" max="8" step="1" value="2" />
+          </label>
+          <label class="range-control">
+            <span>Splat scale</span>
+            <output id="pointScaleValue">1.20</output>
+            <input id="pointScale" type="range" min="0.2" max="5" step="0.05" value="1.2" />
+          </label>
+          <div class="button-row">
+            <button id="resetCamera" type="button">Reset</button>
+            <button id="toggleOrbit" type="button" aria-pressed="true">Orbit</button>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-header">
+            <h2>Benchmark</h2>
+            <span id="benchmarkStatus">idle</span>
+          </div>
+          <div class="field-grid">
+            <label>
+              <span>Frames</span>
+              <input id="benchmarkFrames" type="number" min="1" max="2000" value="120" />
+            </label>
+            <label>
+              <span>Warmup</span>
+              <input id="benchmarkWarmup" type="number" min="0" max="500" value="10" />
+            </label>
+          </div>
+          <label class="range-control compact-range">
+            <span>Yaw step</span>
+            <output id="benchmarkYawValue">0.001</output>
+            <input id="benchmarkYaw" type="range" min="0.0001" max="0.01" step="0.0001" value="0.001" />
+          </label>
+          <button id="runBenchmark" class="full-button" type="button">Run benchmark orbit</button>
+          <pre id="benchmarkResult" class="benchmark-result">No benchmark result yet.</pre>
+        </section>
+
+        <section class="panel">
+          <div class="panel-header">
+            <h2>Frame</h2>
+            <span id="gpuStatus">checking</span>
+          </div>
+          <dl class="stats-list">
+            <div>
+              <dt>Surface</dt>
+              <dd id="surfaceSize">-</dd>
+            </div>
+            <div>
+              <dt>Frames</dt>
+              <dd id="frameCount">-</dd>
+            </div>
+            <div>
+              <dt>FPS</dt>
+              <dd id="fpsValue">-</dd>
+            </div>
+            <div>
+              <dt>Preprocess</dt>
+              <dd id="preprocessMs">-</dd>
+            </div>
+            <div>
+              <dt>Sort</dt>
+              <dd id="sortMs">-</dd>
+            </div>
+            <div>
+              <dt>Upload</dt>
+              <dd id="uploadMs">-</dd>
+            </div>
+            <div>
+              <dt>Call</dt>
+              <dd id="callMs">-</dd>
+            </div>
+            <div>
+              <dt>Frame</dt>
+              <dd id="frameMs">-</dd>
+            </div>
+          </dl>
+        </section>
+      </aside>
+
+      <section class="viewport" aria-label="Gaussian splat viewport">
+        <canvas id="viewport"></canvas>
+        <div class="viewport-topbar">
+          <div>
+            <strong id="sceneName">No scene</strong>
+            <span id="sceneMeta">waiting</span>
+          </div>
+          <span id="renderMode">WebGL2 fallback · Rust/WASM Surface path builds from crates/gsplat-web</span>
+        </div>
+        <div id="statusLine" class="status-line" role="status">Booting renderer</div>
+      </section>
+    </main>
+
+    <script type="module" src="./src/main.js?v=wasm-flower-20260515"></script>
+  </body>
+</html>

@@ -1,17 +1,47 @@
 //! WGPU renderer with a SortedAlpha reference path.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(not(target_arch = "wasm32"))]
 use std::time::Instant;
 
 use bytemuck::{Pod, Zeroable};
 use gsplat_core::{Camera, ErrorCode, FrameStats, RenderMode, RendererConfig, SceneBuffers, Vec3f};
 use gsplat_sort::{CpuSortBackend, SortError};
+#[cfg(not(target_arch = "wasm32"))]
 use rayon::prelude::*;
+#[cfg(not(target_arch = "wasm32"))]
+use std::sync::atomic::{AtomicBool, Ordering};
 use thiserror::Error;
 use wgpu::util::DeviceExt;
 
+#[cfg(not(target_arch = "wasm32"))]
 const RENDER_TARGET_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 const SURFACE_INSTANCE_BUFFER_RING_CAPACITY: usize = 3;
+
+#[cfg(not(target_arch = "wasm32"))]
+type TimerInstant = Instant;
+
+#[cfg(target_arch = "wasm32")]
+type TimerInstant = f64;
+
+#[cfg(not(target_arch = "wasm32"))]
+fn timer_now() -> TimerInstant {
+    Instant::now()
+}
+
+#[cfg(target_arch = "wasm32")]
+fn timer_now() -> TimerInstant {
+    js_sys::Date::now()
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn timer_elapsed_ms(start: TimerInstant) -> f32 {
+    start.elapsed().as_secs_f32() * 1000.0
+}
+
+#[cfg(target_arch = "wasm32")]
+fn timer_elapsed_ms(start: TimerInstant) -> f32 {
+    (js_sys::Date::now() - start).max(0.0) as f32
+}
 
 #[cfg(target_os = "android")]
 const fn wgpu_label(_label: &'static str) -> Option<&'static str> {
@@ -126,6 +156,7 @@ pub struct Renderer {
     mode: RenderMode,
     config: RendererConfig,
     cpu_sort_backend: CpuSortBackend,
+    #[cfg(not(target_arch = "wasm32"))]
     gpu_rasterizer: Option<GpuRasterizer>,
     scene: Option<SceneBuffers>,
     world_covariances: Option<Vec<[[f32; 3]; 3]>>,
@@ -151,12 +182,14 @@ impl Renderer {
             .validate()
             .map_err(|_| RendererError::InvalidConfig)?;
 
+        #[cfg(not(target_arch = "wasm32"))]
         let gpu_rasterizer = GpuRasterizer::create(&config).ok();
 
         Ok(Self {
             mode: config.mode,
             config,
             cpu_sort_backend: CpuSortBackend::default(),
+            #[cfg(not(target_arch = "wasm32"))]
             gpu_rasterizer,
             scene: None,
             world_covariances: None,
@@ -196,7 +229,15 @@ impl Renderer {
     }
 
     pub fn has_gpu_rasterizer(&self) -> bool {
-        self.gpu_rasterizer.is_some()
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.gpu_rasterizer.is_some()
+        }
+
+        #[cfg(target_arch = "wasm32")]
+        {
+            false
+        }
     }
 
     pub fn load_scene(&mut self, scene: SceneBuffers) -> Result<(), RendererError> {
@@ -267,17 +308,17 @@ impl Renderer {
         camera: &Camera,
         instances: &mut Vec<GpuInstance>,
     ) -> Result<FrameStats, RendererError> {
-        let frame_start = Instant::now();
+        let frame_start = timer_now();
 
-        let preprocess_start = Instant::now();
+        let preprocess_start = timer_now();
         self.preprocess_visible_scratch(camera)?;
-        let preprocess_ms = preprocess_start.elapsed().as_secs_f32() * 1000.0;
+        let preprocess_ms = timer_elapsed_ms(preprocess_start);
 
-        let sort_start = Instant::now();
+        let sort_start = timer_now();
         self.sort_preprocessed_scratch()?;
-        let sort_ms = sort_start.elapsed().as_secs_f32() * 1000.0;
+        let sort_ms = timer_elapsed_ms(sort_start);
 
-        let raster_start = Instant::now();
+        let raster_start = timer_now();
         let scene = self.scene.as_ref().ok_or(RendererError::SceneNotLoaded)?;
         let world_covariances = self
             .world_covariances
@@ -297,10 +338,10 @@ impl Renderer {
             instances,
         );
         let drawn_count = instances.len() as u32;
-        let raster_ms = raster_start.elapsed().as_secs_f32() * 1000.0;
+        let raster_ms = timer_elapsed_ms(raster_start);
 
         let stats = FrameStats {
-            frame_ms: frame_start.elapsed().as_secs_f32() * 1000.0,
+            frame_ms: timer_elapsed_ms(frame_start),
             preprocess_ms,
             sort_ms,
             raster_ms,
@@ -324,17 +365,17 @@ impl Renderer {
         camera: &Camera,
         refresh_sort: bool,
     ) -> Result<FrameStats, RendererError> {
-        let frame_start = Instant::now();
+        let frame_start = timer_now();
 
         let refresh_sort = refresh_sort || self.preprocess_indices.is_empty();
         let (preprocess_ms, sort_ms) = if refresh_sort {
-            let preprocess_start = Instant::now();
+            let preprocess_start = timer_now();
             self.preprocess_visible_scratch(camera)?;
-            let preprocess_ms = preprocess_start.elapsed().as_secs_f32() * 1000.0;
+            let preprocess_ms = timer_elapsed_ms(preprocess_start);
 
-            let sort_start = Instant::now();
+            let sort_start = timer_now();
             self.sort_preprocessed_scratch()?;
-            let sort_ms = sort_start.elapsed().as_secs_f32() * 1000.0;
+            let sort_ms = timer_elapsed_ms(sort_start);
 
             (preprocess_ms, sort_ms)
         } else {
@@ -346,7 +387,7 @@ impl Renderer {
 
         let visible_count = self.preprocess_indices.len() as u32;
         let stats = FrameStats {
-            frame_ms: frame_start.elapsed().as_secs_f32() * 1000.0,
+            frame_ms: timer_elapsed_ms(frame_start),
             preprocess_ms,
             sort_ms,
             raster_ms: 0.0,
@@ -381,17 +422,17 @@ impl Renderer {
         instances: &mut Vec<GpuSurfaceInstance>,
         refresh_sort: bool,
     ) -> Result<FrameStats, RendererError> {
-        let frame_start = Instant::now();
+        let frame_start = timer_now();
 
         let refresh_sort = refresh_sort || self.preprocess_indices.is_empty();
         let (preprocess_ms, sort_ms) = if refresh_sort {
-            let preprocess_start = Instant::now();
+            let preprocess_start = timer_now();
             self.preprocess_visible_scratch(camera)?;
-            let preprocess_ms = preprocess_start.elapsed().as_secs_f32() * 1000.0;
+            let preprocess_ms = timer_elapsed_ms(preprocess_start);
 
-            let sort_start = Instant::now();
+            let sort_start = timer_now();
             self.sort_preprocessed_scratch()?;
-            let sort_ms = sort_start.elapsed().as_secs_f32() * 1000.0;
+            let sort_ms = timer_elapsed_ms(sort_start);
 
             (preprocess_ms, sort_ms)
         } else {
@@ -401,7 +442,7 @@ impl Renderer {
             (0.0, 0.0)
         };
 
-        let raster_start = Instant::now();
+        let raster_start = timer_now();
         let scene = self.scene.as_ref().ok_or(RendererError::SceneNotLoaded)?;
         let world_covariance_terms = self
             .world_covariance_terms
@@ -422,10 +463,10 @@ impl Renderer {
             instances,
         );
         let drawn_count = instances.len() as u32;
-        let raster_ms = raster_start.elapsed().as_secs_f32() * 1000.0;
+        let raster_ms = timer_elapsed_ms(raster_start);
 
         let stats = FrameStats {
-            frame_ms: frame_start.elapsed().as_secs_f32() * 1000.0,
+            frame_ms: timer_elapsed_ms(frame_start),
             preprocess_ms,
             sort_ms,
             raster_ms,
@@ -440,19 +481,19 @@ impl Renderer {
         &mut self,
         camera: &Camera,
     ) -> Result<(Vec<u32>, FrameStats), RendererError> {
-        let frame_start = Instant::now();
+        let frame_start = timer_now();
 
-        let preprocess_start = Instant::now();
+        let preprocess_start = timer_now();
         self.preprocess_visible_scratch(camera)?;
-        let preprocess_ms = preprocess_start.elapsed().as_secs_f32() * 1000.0;
+        let preprocess_ms = timer_elapsed_ms(preprocess_start);
 
-        let sort_start = Instant::now();
+        let sort_start = timer_now();
         self.sort_preprocessed_scratch()?;
-        let sort_ms = sort_start.elapsed().as_secs_f32() * 1000.0;
+        let sort_ms = timer_elapsed_ms(sort_start);
 
         let visible_count = self.preprocess_indices.len() as u32;
         let stats = FrameStats {
-            frame_ms: frame_start.elapsed().as_secs_f32() * 1000.0,
+            frame_ms: timer_elapsed_ms(frame_start),
             preprocess_ms,
             sort_ms,
             raster_ms: 0.0,
@@ -464,17 +505,17 @@ impl Renderer {
     }
 
     pub fn render_frame(&mut self, camera: &Camera) -> Result<FrameStats, RendererError> {
-        let frame_start = Instant::now();
+        let frame_start = timer_now();
 
-        let preprocess_start = Instant::now();
+        let preprocess_start = timer_now();
         self.preprocess_visible_scratch(camera)?;
-        let preprocess_ms = preprocess_start.elapsed().as_secs_f32() * 1000.0;
+        let preprocess_ms = timer_elapsed_ms(preprocess_start);
 
-        let sort_start = Instant::now();
+        let sort_start = timer_now();
         self.sort_preprocessed_scratch()?;
-        let sort_ms = sort_start.elapsed().as_secs_f32() * 1000.0;
+        let sort_ms = timer_elapsed_ms(sort_start);
 
-        let raster_start = Instant::now();
+        let raster_start = timer_now();
         let scene = self.scene.as_ref().ok_or(RendererError::SceneNotLoaded)?;
         let world_covariances = self
             .world_covariances
@@ -493,18 +534,21 @@ impl Renderer {
             self.config,
         );
 
-        if let Some(gpu_rasterizer) = self.gpu_rasterizer.as_mut() {
-            if gpu_rasterizer.render(self.config, &instances).is_err() {
-                // If GPU path fails during runtime, drop to CPU placeholder path.
-                self.gpu_rasterizer = None;
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            if let Some(gpu_rasterizer) = self.gpu_rasterizer.as_mut() {
+                if gpu_rasterizer.render(self.config, &instances).is_err() {
+                    // If GPU path fails during runtime, drop to CPU placeholder path.
+                    self.gpu_rasterizer = None;
+                }
             }
         }
 
         let drawn_count = instances.len() as u32;
-        let raster_ms = raster_start.elapsed().as_secs_f32() * 1000.0;
+        let raster_ms = timer_elapsed_ms(raster_start);
 
         let stats = FrameStats {
-            frame_ms: frame_start.elapsed().as_secs_f32() * 1000.0,
+            frame_ms: timer_elapsed_ms(frame_start),
             preprocess_ms,
             sort_ms,
             raster_ms,
@@ -521,13 +565,21 @@ impl Renderer {
     }
 
     pub fn readback_rgba8(&mut self) -> Result<Vec<u8>, RendererError> {
-        let rasterizer = self
-            .gpu_rasterizer
-            .as_mut()
-            .ok_or(RendererError::GpuRasterizerUnavailable)?;
-        rasterizer
-            .readback_rgba8()
-            .map_err(|_| RendererError::GpuReadback)
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let rasterizer = self
+                .gpu_rasterizer
+                .as_mut()
+                .ok_or(RendererError::GpuRasterizerUnavailable)?;
+            return rasterizer
+                .readback_rgba8()
+                .map_err(|_| RendererError::GpuReadback);
+        }
+
+        #[cfg(target_arch = "wasm32")]
+        {
+            Err(RendererError::GpuRasterizerUnavailable)
+        }
     }
 
     pub fn render_placeholder(&mut self) -> FrameStats {
@@ -682,6 +734,39 @@ impl SurfacePresenter {
             })
         }
         .map_err(|_| SurfacePresenterError::SurfaceCreation)?;
+
+        Self::from_surface_async(instance, surface, width, height, renderer).await
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    pub async fn from_canvas(
+        canvas: web_sys::HtmlCanvasElement,
+        width: u32,
+        height: u32,
+        renderer: &Renderer,
+    ) -> Result<Self, SurfacePresenterError> {
+        if width == 0 || height == 0 {
+            return Err(SurfacePresenterError::InvalidSurfaceSize);
+        }
+
+        let instance = create_surface_instance();
+        let surface = instance
+            .create_surface(wgpu::SurfaceTarget::Canvas(canvas))
+            .map_err(|_| SurfacePresenterError::SurfaceCreation)?;
+
+        Self::from_surface_async(instance, surface, width, height, renderer).await
+    }
+
+    async fn from_surface_async(
+        instance: wgpu::Instance,
+        surface: wgpu::Surface<'static>,
+        width: u32,
+        height: u32,
+        renderer: &Renderer,
+    ) -> Result<Self, SurfacePresenterError> {
+        if width == 0 || height == 0 {
+            return Err(SurfacePresenterError::InvalidSurfaceSize);
+        }
 
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
@@ -2172,14 +2257,51 @@ fn build_instances_into(
     }
 
     let sh_layout = ShColorLayout::new(scene);
-    let had_invalid = AtomicBool::new(false);
-    out.par_iter_mut()
-        .zip(indices.par_iter())
-        .for_each(|(slot, &idx)| {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let had_invalid = AtomicBool::new(false);
+        out.par_iter_mut()
+            .zip(indices.par_iter())
+            .for_each(|(slot, &idx)| {
+                let i = idx as usize;
+                let instance = if i < scene.len() {
+                    // SAFETY: the explicit bounds check above covers all scene-parallel arrays
+                    // because the caller validated equal lengths before entering this loop.
+                    unsafe {
+                        build_instance_unchecked(
+                            scene,
+                            world_covariances,
+                            alpha_values,
+                            i,
+                            camera,
+                            &params,
+                            sh_layout,
+                        )
+                    }
+                } else {
+                    None
+                };
+                if let Some(instance) = instance {
+                    *slot = instance;
+                } else {
+                    *slot = invalid_gpu_instance();
+                    had_invalid.store(true, Ordering::Relaxed);
+                }
+            });
+
+        if had_invalid.load(Ordering::Relaxed) {
+            out.retain(|instance| instance.color_rgba[3] >= 0.0);
+        }
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    {
+        let mut write_index = 0_usize;
+        for &idx in indices {
             let i = idx as usize;
             let instance = if i < scene.len() {
-                // SAFETY: the explicit bounds check above covers all scene-parallel arrays because
-                // the caller validated equal lengths before entering this loop.
+                // SAFETY: the explicit bounds check above covers all scene-parallel arrays
+                // because the caller validated equal lengths before entering this loop.
                 unsafe {
                     build_instance_unchecked(
                         scene,
@@ -2195,15 +2317,11 @@ fn build_instances_into(
                 None
             };
             if let Some(instance) = instance {
-                *slot = instance;
-            } else {
-                *slot = invalid_gpu_instance();
-                had_invalid.store(true, Ordering::Relaxed);
+                out[write_index] = instance;
+                write_index += 1;
             }
-        });
-
-    if had_invalid.load(Ordering::Relaxed) {
-        out.retain(|instance| instance.color_rgba[3] >= 0.0);
+        }
+        out.truncate(write_index);
     }
 }
 
@@ -2269,6 +2387,7 @@ unsafe fn build_instance_unchecked(
     })
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn invalid_gpu_instance() -> GpuInstance {
     GpuInstance {
         color_rgba: [0.0, 0.0, 0.0, -1.0],
@@ -2340,21 +2459,43 @@ fn build_surface_instances_scene_order_into(
         by_index.truncate(scene.len());
     }
 
-    by_index.par_iter_mut().enumerate().for_each(|(i, slot)| {
-        // SAFETY: this scene-order path iterates exactly over scene indices and the caller already
-        // validated equal-length side arrays.
-        let instance = unsafe {
-            build_surface_instance_unchecked(
-                scene,
-                world_covariance_terms,
-                alpha_values,
-                i,
-                camera,
-                params,
-            )
-        };
-        *slot = instance.unwrap_or_else(invalid_gpu_surface_instance);
-    });
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        by_index.par_iter_mut().enumerate().for_each(|(i, slot)| {
+            // SAFETY: this scene-order path iterates exactly over scene indices and the caller
+            // already validated equal-length side arrays.
+            let instance = unsafe {
+                build_surface_instance_unchecked(
+                    scene,
+                    world_covariance_terms,
+                    alpha_values,
+                    i,
+                    camera,
+                    params,
+                )
+            };
+            *slot = instance.unwrap_or_else(invalid_gpu_surface_instance);
+        });
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    {
+        for (i, slot) in by_index.iter_mut().enumerate() {
+            // SAFETY: this scene-order path iterates exactly over scene indices and the caller
+            // already validated equal-length side arrays.
+            let instance = unsafe {
+                build_surface_instance_unchecked(
+                    scene,
+                    world_covariance_terms,
+                    alpha_values,
+                    i,
+                    camera,
+                    params,
+                )
+            };
+            *slot = instance.unwrap_or_else(invalid_gpu_surface_instance);
+        }
+    }
 
     if out.len() < indices.len() {
         out.resize(indices.len(), GpuSurfaceInstance::zeroed());
@@ -2392,14 +2533,50 @@ fn build_surface_instances_index_order_into(
         out.truncate(indices.len());
     }
 
-    let had_invalid = AtomicBool::new(false);
-    out.par_iter_mut()
-        .zip(indices.par_iter())
-        .for_each(|(slot, &idx)| {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let had_invalid = AtomicBool::new(false);
+        out.par_iter_mut()
+            .zip(indices.par_iter())
+            .for_each(|(slot, &idx)| {
+                let i = idx as usize;
+                let instance = if i < scene.len() {
+                    // SAFETY: the explicit bounds check above covers all scene-parallel arrays
+                    // because the caller validated equal lengths before entering this loop.
+                    unsafe {
+                        build_surface_instance_unchecked(
+                            scene,
+                            world_covariance_terms,
+                            alpha_values,
+                            i,
+                            camera,
+                            &params,
+                        )
+                    }
+                } else {
+                    None
+                };
+                if let Some(instance) = instance {
+                    *slot = instance;
+                } else {
+                    *slot = invalid_gpu_surface_instance();
+                    had_invalid.store(true, Ordering::Relaxed);
+                }
+            });
+
+        if had_invalid.load(Ordering::Relaxed) {
+            out.retain(|instance| instance.axis_v_index_alpha[3] >= 0.0);
+        }
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    {
+        let mut write_index = 0_usize;
+        for &idx in indices {
             let i = idx as usize;
             let instance = if i < scene.len() {
-                // SAFETY: the explicit bounds check above covers all scene-parallel arrays because
-                // the caller validated equal lengths before entering this loop.
+                // SAFETY: the explicit bounds check above covers all scene-parallel arrays
+                // because the caller validated equal lengths before entering this loop.
                 unsafe {
                     build_surface_instance_unchecked(
                         scene,
@@ -2414,15 +2591,11 @@ fn build_surface_instances_index_order_into(
                 None
             };
             if let Some(instance) = instance {
-                *slot = instance;
-            } else {
-                *slot = invalid_gpu_surface_instance();
-                had_invalid.store(true, Ordering::Relaxed);
+                out[write_index] = instance;
+                write_index += 1;
             }
-        });
-
-    if had_invalid.load(Ordering::Relaxed) {
-        out.retain(|instance| instance.axis_v_index_alpha[3] >= 0.0);
+        }
+        out.truncate(write_index);
     }
 }
 
@@ -3230,6 +3403,7 @@ unsafe fn dot_sh_terms_neon(basis: &[f32; 24], rest: &[f32], count: usize) -> f3
     result
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[derive(Debug, Error)]
 enum GpuRasterError {
     #[error("no compatible wgpu adapter")]
@@ -3242,6 +3416,7 @@ enum GpuRasterError {
     ReadbackFailed,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 struct GpuRasterizer {
     device: wgpu::Device,
     queue: wgpu::Queue,
@@ -3255,6 +3430,7 @@ struct GpuRasterizer {
     bind_group: wgpu::BindGroup,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl GpuRasterizer {
     fn create(config: &RendererConfig) -> Result<Self, GpuRasterError> {
         pollster::block_on(Self::create_async(config))
@@ -3526,6 +3702,7 @@ impl GpuRasterizer {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn create_output_target(
     device: &wgpu::Device,
     width: u32,
@@ -3554,6 +3731,7 @@ fn create_output_target(
     Ok((texture, view))
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn create_instance_resources(
     device: &wgpu::Device,
     bind_group_layout: &wgpu::BindGroupLayout,
