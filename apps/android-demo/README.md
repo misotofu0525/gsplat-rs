@@ -4,17 +4,39 @@ Android integration demo.
 
 ## Integration boundary
 
-This is a thin Kotlin/JNI demo over the public C ABI in
-`crates/gsplat-ffi-c/include/gsplat.h`. It is useful as the Android starter
-path, but it is not a published AAR or a full Android SDK wrapper yet.
+This directory contains a local Android library module plus a demo app over the
+public C ABI in `crates/gsplat-ffi-c/include/gsplat.h`.
+`apps/android-demo/gsplat-android` can build an AAR for local consumption. It is
+not published to Maven and is not a full Android product SDK yet.
 
 The stable v0.1 render path is `GSPLAT_RENDER_MODE_SORTED_ALPHA`. Keep errors as
 integer `GsplatErrorCode` values at the native boundary and convert them to
 readable text with `gsplat_error_message()` or `NativeBridge.errorMessage()`.
 
-This demo provides two validation paths:
+This directory provides three validation and packaging paths:
 
-## 1) Host smoke (JNI)
+## 1) Android AAR build (arm64-v8a)
+
+Builds the Rust static library, JNI shared library, and Android library module:
+
+```bash
+bash apps/android-demo/build-aar.sh
+```
+
+Output:
+
+- AAR: `apps/android-demo/gsplat-android/build/outputs/aar/gsplat-android-release.aar`
+
+The library module namespace is `com.gsplat.android`. It packages the generated
+`libgsplat_jni.so` and exposes:
+
+- `NativeBridge`: low-level JNI calls matching the C ABI
+- `GsplatSurfaceRenderer`: typed Kotlin handle wrapper
+- `GsplatSurfaceOptions`: Surface A/B option bundle
+- `GsplatSurfaceStats`: typed frame stats
+- `GsplatException`: readable native error wrapper
+
+## 2) Host smoke (JNI)
 
 Validates Kotlin/JNI -> C ABI -> Rust on the host machine.
 
@@ -24,9 +46,10 @@ bash apps/android-demo/run-jni-smoke.sh
 
 Host-smoke Kotlin sources live under `apps/android-demo/host-smoke/`.
 
-## 2) Android APK build (arm64-v8a)
+## 3) Android APK build (arm64-v8a)
 
-Builds a real Android app container and packages `libgsplat_jni.so`.
+Builds a real Android app container that depends on the local
+`:gsplat-android` library module.
 The app UI is Kotlin-only and renders through `SurfaceView` -> JNI -> `ANativeWindow` -> `wgpu::Surface`.
 It does not use the old Android bitmap/readback preview path.
 The native Rust library is built with the Rust `release` profile by default so
@@ -71,7 +94,7 @@ bash apps/android-demo/build-apk.sh
 Outputs:
 
 - APK: `apps/android-demo/app/build/outputs/apk/debug/app-debug.apk`
-- JNI lib: `apps/android-demo/app/src/main/jniLibs/arm64-v8a/libgsplat_jni.so`
+- JNI lib: `apps/android-demo/gsplat-android/src/main/jniLibs/arm64-v8a/libgsplat_jni.so`
 
 Notes:
 
@@ -79,9 +102,11 @@ Notes:
 - Imported files come from the Android system picker as `content://` URIs and are copied into `files/imported_scene.ply` before crossing the JNI/C ABI boundary, which still receives a normal local file path.
 - On Android emulator, the `SurfaceView` buffer is capped to a 1600px maximum side. The Surface presenter does not sample or cap the sorted splat list; visual stability is preferred over artificial throughput wins.
 - The status overlay reports `drawn=<surface_instances>/<visible_instances>` for the Android Surface path.
-- Production Android packaging is intentionally not solved here yet. A future AAR should wrap the same C ABI rather than introduce a separate render contract.
+- Maven publishing, additional ABIs, and a higher-level `GsplatSurfaceView`
+  are intentionally not solved here yet. Future Android SDK work should keep
+  wrapping the same C ABI rather than introduce a separate render contract.
 
-## 3) Emulator flower smoke
+## 4) Emulator flower smoke
 
 After building the APK, push the shared flower dataset into app storage and launch:
 

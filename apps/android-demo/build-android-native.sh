@@ -69,7 +69,7 @@ if [[ ! -f "$RUST_STATIC_LIB" ]]; then
   exit 1
 fi
 
-OUT_DIR="$ROOT_DIR/apps/android-demo/app/src/main/jniLibs/arm64-v8a"
+OUT_DIR="$ROOT_DIR/apps/android-demo/gsplat-android/src/main/jniLibs/arm64-v8a"
 mkdir -p "$OUT_DIR"
 OUT_SO="$OUT_DIR/libgsplat_jni.so"
 

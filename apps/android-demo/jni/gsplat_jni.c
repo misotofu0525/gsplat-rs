@@ -16,7 +16,7 @@ JNIEXPORT jint JNICALL Java_com_gsplat_demo_GsplatJniSmoke_nativeVersionMajor(JN
   return (jint)gsplat_version_major();
 }
 
-JNIEXPORT jint JNICALL Java_com_gsplat_demo_NativeBridge_versionMajor(JNIEnv *env, jclass cls) {
+JNIEXPORT jint JNICALL Java_com_gsplat_android_NativeBridge_versionMajor(JNIEnv *env, jclass cls) {
   return Java_com_gsplat_demo_GsplatJniSmoke_nativeVersionMajor(env, cls);
 }
 
@@ -26,11 +26,11 @@ JNIEXPORT jint JNICALL Java_com_gsplat_demo_GsplatJniSmoke_nativeVersionMinor(JN
   return (jint)gsplat_version_minor();
 }
 
-JNIEXPORT jint JNICALL Java_com_gsplat_demo_NativeBridge_versionMinor(JNIEnv *env, jclass cls) {
+JNIEXPORT jint JNICALL Java_com_gsplat_android_NativeBridge_versionMinor(JNIEnv *env, jclass cls) {
   return Java_com_gsplat_demo_GsplatJniSmoke_nativeVersionMinor(env, cls);
 }
 
-JNIEXPORT jstring JNICALL Java_com_gsplat_demo_NativeBridge_errorMessage(JNIEnv *env, jclass cls, jint code) {
+JNIEXPORT jstring JNICALL Java_com_gsplat_android_NativeBridge_errorMessage(JNIEnv *env, jclass cls, jint code) {
   (void)cls;
   return (*env)->NewStringUTF(env, gsplat_error_message((int32_t)code));
 }
@@ -92,7 +92,7 @@ JNIEXPORT jint JNICALL Java_com_gsplat_demo_GsplatJniSmoke_nativeFfiSmoke(JNIEnv
   return 0;
 }
 
-JNIEXPORT jint JNICALL Java_com_gsplat_demo_NativeBridge_runFfiSmoke(
+JNIEXPORT jint JNICALL Java_com_gsplat_android_NativeBridge_runFfiSmoke(
     JNIEnv *env,
     jclass cls,
     jstring dataset_path) {
@@ -121,7 +121,7 @@ static AndroidSurfaceRendererHandle *android_handle_from_jlong(jlong native_hand
   return (AndroidSurfaceRendererHandle *)(intptr_t)native_handle;
 }
 
-JNIEXPORT jlong JNICALL Java_com_gsplat_demo_NativeBridge_createSurfaceRenderer(
+JNIEXPORT jlong JNICALL Java_com_gsplat_android_NativeBridge_createSurfaceRenderer(
     JNIEnv *env,
     jclass cls,
     jobject surface,
@@ -200,7 +200,7 @@ JNIEXPORT jlong JNICALL Java_com_gsplat_demo_NativeBridge_createSurfaceRenderer(
   return (jlong)(intptr_t)handle;
 }
 
-JNIEXPORT jint JNICALL Java_com_gsplat_demo_NativeBridge_resizeSurfaceRenderer(
+JNIEXPORT jint JNICALL Java_com_gsplat_android_NativeBridge_resizeSurfaceRenderer(
     JNIEnv *env,
     jclass cls,
     jlong native_handle,
@@ -220,7 +220,7 @@ JNIEXPORT jint JNICALL Java_com_gsplat_demo_NativeBridge_resizeSurfaceRenderer(
       (uint32_t)height);
 }
 
-JNIEXPORT jint JNICALL Java_com_gsplat_demo_NativeBridge_setSurfaceSortInterval(
+JNIEXPORT jint JNICALL Java_com_gsplat_android_NativeBridge_setSurfaceSortInterval(
     JNIEnv *env,
     jclass cls,
     jlong native_handle,
@@ -236,7 +236,7 @@ JNIEXPORT jint JNICALL Java_com_gsplat_demo_NativeBridge_setSurfaceSortInterval(
   return gsplat_surface_renderer_set_sort_interval(handle->renderer, (uint32_t)interval);
 }
 
-JNIEXPORT jint JNICALL Java_com_gsplat_demo_NativeBridge_setSurfaceGpuPreprojectEnabled(
+JNIEXPORT jint JNICALL Java_com_gsplat_android_NativeBridge_setSurfaceGpuPreprojectEnabled(
     JNIEnv *env,
     jclass cls,
     jlong native_handle,
@@ -254,7 +254,7 @@ JNIEXPORT jint JNICALL Java_com_gsplat_demo_NativeBridge_setSurfaceGpuPreproject
       enabled == JNI_TRUE ? 1u : 0u);
 }
 
-JNIEXPORT jint JNICALL Java_com_gsplat_demo_NativeBridge_setSurfaceGpuPreprojectDoubleBufferEnabled(
+JNIEXPORT jint JNICALL Java_com_gsplat_android_NativeBridge_setSurfaceGpuPreprojectDoubleBufferEnabled(
     JNIEnv *env,
     jclass cls,
     jlong native_handle,
@@ -272,7 +272,7 @@ JNIEXPORT jint JNICALL Java_com_gsplat_demo_NativeBridge_setSurfaceGpuPreproject
       enabled == JNI_TRUE ? 1u : 0u);
 }
 
-JNIEXPORT jint JNICALL Java_com_gsplat_demo_NativeBridge_setSurfaceStaticDirectEnabled(
+JNIEXPORT jint JNICALL Java_com_gsplat_android_NativeBridge_setSurfaceStaticDirectEnabled(
     JNIEnv *env,
     jclass cls,
     jlong native_handle,
@@ -290,7 +290,7 @@ JNIEXPORT jint JNICALL Java_com_gsplat_demo_NativeBridge_setSurfaceStaticDirectE
       enabled == JNI_TRUE ? 1u : 0u);
 }
 
-JNIEXPORT jint JNICALL Java_com_gsplat_demo_NativeBridge_setSurfaceAsyncSortEnabled(
+JNIEXPORT jint JNICALL Java_com_gsplat_android_NativeBridge_setSurfaceAsyncSortEnabled(
     JNIEnv *env,
     jclass cls,
     jlong native_handle,
@@ -308,7 +308,7 @@ JNIEXPORT jint JNICALL Java_com_gsplat_demo_NativeBridge_setSurfaceAsyncSortEnab
       enabled == JNI_TRUE ? 1u : 0u);
 }
 
-JNIEXPORT jint JNICALL Java_com_gsplat_demo_NativeBridge_setSurfaceAsyncGeometryEnabled(
+JNIEXPORT jint JNICALL Java_com_gsplat_android_NativeBridge_setSurfaceAsyncGeometryEnabled(
     JNIEnv *env,
     jclass cls,
     jlong native_handle,
@@ -326,7 +326,7 @@ JNIEXPORT jint JNICALL Java_com_gsplat_demo_NativeBridge_setSurfaceAsyncGeometry
       enabled == JNI_TRUE ? 1u : 0u);
 }
 
-JNIEXPORT jint JNICALL Java_com_gsplat_demo_NativeBridge_setSurfaceInstanceBufferCount(
+JNIEXPORT jint JNICALL Java_com_gsplat_android_NativeBridge_setSurfaceInstanceBufferCount(
     JNIEnv *env,
     jclass cls,
     jlong native_handle,
@@ -344,7 +344,7 @@ JNIEXPORT jint JNICALL Java_com_gsplat_demo_NativeBridge_setSurfaceInstanceBuffe
       (uint32_t)count);
 }
 
-JNIEXPORT jint JNICALL Java_com_gsplat_demo_NativeBridge_setSurfaceFrameLatency(
+JNIEXPORT jint JNICALL Java_com_gsplat_android_NativeBridge_setSurfaceFrameLatency(
     JNIEnv *env,
     jclass cls,
     jlong native_handle,
@@ -362,7 +362,7 @@ JNIEXPORT jint JNICALL Java_com_gsplat_demo_NativeBridge_setSurfaceFrameLatency(
       (uint32_t)latency);
 }
 
-JNIEXPORT jint JNICALL Java_com_gsplat_demo_NativeBridge_resetSurfaceCamera(
+JNIEXPORT jint JNICALL Java_com_gsplat_android_NativeBridge_resetSurfaceCamera(
     JNIEnv *env,
     jclass cls,
     jlong native_handle) {
@@ -377,7 +377,7 @@ JNIEXPORT jint JNICALL Java_com_gsplat_demo_NativeBridge_resetSurfaceCamera(
   return gsplat_surface_renderer_reset_camera(handle->renderer);
 }
 
-JNIEXPORT jint JNICALL Java_com_gsplat_demo_NativeBridge_orbitSurfaceRenderer(
+JNIEXPORT jint JNICALL Java_com_gsplat_android_NativeBridge_orbitSurfaceRenderer(
     JNIEnv *env,
     jclass cls,
     jlong native_handle,
@@ -397,7 +397,7 @@ JNIEXPORT jint JNICALL Java_com_gsplat_demo_NativeBridge_orbitSurfaceRenderer(
       (float)delta_pitch_radians);
 }
 
-JNIEXPORT jint JNICALL Java_com_gsplat_demo_NativeBridge_zoomSurfaceRenderer(
+JNIEXPORT jint JNICALL Java_com_gsplat_android_NativeBridge_zoomSurfaceRenderer(
     JNIEnv *env,
     jclass cls,
     jlong native_handle,
@@ -413,7 +413,7 @@ JNIEXPORT jint JNICALL Java_com_gsplat_demo_NativeBridge_zoomSurfaceRenderer(
   return gsplat_surface_renderer_zoom(handle->renderer, (float)distance_scale);
 }
 
-JNIEXPORT jint JNICALL Java_com_gsplat_demo_NativeBridge_panSurfaceRenderer(
+JNIEXPORT jint JNICALL Java_com_gsplat_android_NativeBridge_panSurfaceRenderer(
     JNIEnv *env,
     jclass cls,
     jlong native_handle,
@@ -433,7 +433,7 @@ JNIEXPORT jint JNICALL Java_com_gsplat_demo_NativeBridge_panSurfaceRenderer(
       (float)normalized_delta_y);
 }
 
-JNIEXPORT jint JNICALL Java_com_gsplat_demo_NativeBridge_renderSurfaceFrame(
+JNIEXPORT jint JNICALL Java_com_gsplat_android_NativeBridge_renderSurfaceFrame(
     JNIEnv *env,
     jclass cls,
     jlong native_handle) {
@@ -448,7 +448,7 @@ JNIEXPORT jint JNICALL Java_com_gsplat_demo_NativeBridge_renderSurfaceFrame(
   return gsplat_surface_renderer_render_frame(handle->renderer);
 }
 
-JNIEXPORT jint JNICALL Java_com_gsplat_demo_NativeBridge_getSurfaceStats(
+JNIEXPORT jint JNICALL Java_com_gsplat_android_NativeBridge_getSurfaceStats(
     JNIEnv *env,
     jclass cls,
     jlong native_handle,
@@ -481,7 +481,7 @@ JNIEXPORT jint JNICALL Java_com_gsplat_demo_NativeBridge_getSurfaceStats(
   return 0;
 }
 
-JNIEXPORT void JNICALL Java_com_gsplat_demo_NativeBridge_destroySurfaceRenderer(
+JNIEXPORT void JNICALL Java_com_gsplat_android_NativeBridge_destroySurfaceRenderer(
     JNIEnv *env,
     jclass cls,
     jlong native_handle) {

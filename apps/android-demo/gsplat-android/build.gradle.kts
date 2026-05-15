@@ -1,18 +1,14 @@
 plugins {
-    id("com.android.application")
+    id("com.android.library")
     id("org.jetbrains.kotlin.android")
 }
 
 android {
-    namespace = "com.gsplat.demo"
+    namespace = "com.gsplat.android"
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "com.gsplat.demo"
         minSdk = 24
-        targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0"
 
         ndk {
             abiFilters += "arm64-v8a"
@@ -32,6 +28,12 @@ android {
         }
     }
 
+    sourceSets {
+        getByName("main") {
+            jniLibs.srcDirs("src/main/jniLibs")
+        }
+    }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
@@ -40,8 +42,4 @@ android {
     kotlinOptions {
         jvmTarget = "17"
     }
-}
-
-dependencies {
-    implementation(project(":gsplat-android"))
 }

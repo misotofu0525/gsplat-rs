@@ -8,13 +8,15 @@ Operational facts and command entrypoints live in `handbook/PROJECT_CONTEXT.md` 
 - `gsplat-rs` is a cross-platform Gaussian Splatting renderer built with Rust + `wgpu`.
 - The project is on the `0.1.x` line and should stay small until the core render path is more thoroughly validated.
 - `SortedAlpha` is the only quality-guaranteed render mode.
-- Desktop and mobile demos are validation surfaces for shared crates, not separate product lines.
+- Desktop and mobile demos are validation surfaces for shared crates. Android
+  now also has a local library/AAR packaging slice, but it is not a
+  Maven-published product SDK.
 
 ## Near-Term Priorities
 
 1. Keep the PLY import -> `SceneBuffers` -> renderer path correct and well tested.
 2. Expand conformance and performance coverage with real datasets before widening APIs.
-3. Keep C ABI, JNI, and Swift smoke paths boring, small, and in sync.
+3. Keep C ABI, JNI, Android library packaging, and Swift smoke paths boring, small, and in sync.
 4. Improve renderer quality and stability inside the existing crate boundaries.
 5. Bring the Rust/WASM Web renderer target up behind the shared `wgpu` Surface path before calling Web parity complete.
 6. Keep handbook docs and verification commands aligned with the repository that actually exists.
@@ -39,7 +41,10 @@ Operational facts and command entrypoints live in `handbook/PROJECT_CONTEXT.md` 
   - `gsplat_context_get_stats`
   - Android and iOS Surface renderer create/resize/camera-control/render/stats/destroy functions for the demo integration paths
 - The current C ABI does not cover scene-from-memory loading or runtime render-mode switching.
-- Mobile Surface functions are validation/demo support, not a commitment to a full mobile product API.
+- Mobile Surface functions are validation/demo support, not a commitment to a
+  full mobile product API. The local Android AAR wraps the same C ABI for
+  starter consumption, but Maven publishing, multi-ABI distribution, and a
+  polished Android view API are still outside the current release contract.
 - `crates/gsplat-web` is the active experimental Rust/WASM Web API boundary. It is not a stable v0.1 release surface; Web renderer changes require verified wasm build and browser smoke evidence.
 - The Web demo is validation/demo support for browser PLY loading, the WebGL2 fallback, and hosting the generated wasm package; it is not a polished web product surface.
 

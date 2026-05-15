@@ -1,0 +1,12 @@
+package com.gsplat.android
+
+data class GsplatSurfaceOptions(
+    val sortInterval: Int = 2,
+    val gpuPreproject: Boolean = false,
+    val gpuPreprojectDoubleBuffer: Boolean = false,
+    val staticDirect: Boolean = false,
+    val asyncSort: Boolean = false,
+    val asyncGeometry: Boolean = false,
+    val instanceBufferCount: Int = 1,
+    val frameLatency: Int = 2
+)
