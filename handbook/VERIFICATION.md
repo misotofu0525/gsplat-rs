@@ -53,6 +53,7 @@ cargo run -p bench-runner -- tests/datasets/minimal_ascii.ply 120
 bash tests/ffi/run-ffi-smoke.sh
 bash apps/android-demo/run-jni-smoke.sh
 bash apps/ios-demo/run-swift-smoke.sh
+bash apps/ios-demo/build-xcframework.sh
 ```
 
 ## Desktop Smoke
@@ -131,6 +132,7 @@ bash apps/ios-demo/build-ios-device-app.sh
 IOS_DEVICE_ID=<coredevice-id-or-udid> bash apps/ios-demo/run-ios-device-app.sh
 IOS_DEVICE_ID=<coredevice-id-or-udid> bash apps/ios-demo/benchmark-ios-device-app.sh
 bash apps/ios-demo/build-ios-sim.sh
+bash apps/ios-demo/build-xcframework.sh
 bash apps/ios-demo/run-ios-sim-smoke.sh
 bash apps/android-demo/build-aar.sh
 bash apps/android-demo/build-apk.sh
@@ -146,6 +148,10 @@ bash apps/android-demo/build-apk.sh
   with `-O` by default so the iPhone path can be compared with Android's
   release-native APK. Use `IOS_RUST_PROFILE=dev` and
   `IOS_SWIFT_OPT_LEVEL=-Onone` only for debugging.
+- `apps/ios-demo/build-xcframework.sh` builds the local
+  `apps/ios-demo/GsplatKit/Binaries/GsplatFFI.xcframework` used by the
+  `GsplatKit` Swift package wrapper. It uses the host simulator architecture
+  by default; set `IOS_XCFRAMEWORK_SIM_TARGETS` for a wider simulator slice.
 - `apps/android-demo/build-apk.sh` builds a debug APK container, but compiles the Rust native library with the Rust `release` profile by default. Set `ANDROID_RUST_PROFILE=dev` only for native debugging.
 - `apps/android-demo/build-aar.sh` builds the local `gsplat-android` AAR at
   `apps/android-demo/gsplat-android/build/outputs/aar/gsplat-android-release.aar`.
@@ -213,7 +219,14 @@ STABILITY_SECONDS=1800 bash tests/perf/run-long-stability.sh
   `apps/android-demo/gsplat-android/`, also run
   `bash apps/android-demo/build-aar.sh` and `bash apps/android-demo/build-apk.sh`;
   for Surface changes, also run the Android Surface smoke above.
-- If you touch `apps/ios-demo/` or Swift/FFI integration, run `bash apps/ios-demo/run-swift-smoke.sh`; for realtime Surface or touch changes, also run `bash apps/ios-demo/run-ios-sim-app.sh`; for offscreen simulator smoke changes, run `bash apps/ios-demo/run-ios-sim-smoke.sh`.
+- If you touch `apps/ios-demo/` or Swift/FFI integration, run
+  `bash apps/ios-demo/run-swift-smoke.sh`; for `GsplatKit` or iOS packaging
+  changes, also run `bash apps/ios-demo/build-xcframework.sh` and
+  `cd apps/ios-demo/GsplatKit && swift package describe --type json` plus
+  `cd apps/ios-demo/GsplatKit && xcodebuild -scheme GsplatKit -destination 'generic/platform=iOS Simulator' build`;
+  for realtime Surface or touch changes, also run
+  `bash apps/ios-demo/run-ios-sim-app.sh`; for offscreen simulator smoke
+  changes, run `bash apps/ios-demo/run-ios-sim-smoke.sh`.
 - If you touch PLY import or scene normalization, run `cargo test --workspace` and `cargo run -p desktop-demo -- tests/datasets/minimal_ascii.ply --png target/out.png`.
 - If you touch renderer, sorting, or perf-sensitive code, run `cargo run -p bench-runner -- tests/datasets/minimal_ascii.ply 120` and consider the long-stability script.
 - If you touch `apps/web-demo/`, run `node --check apps/web-demo/src/main.js` and the Web Demo smoke above.

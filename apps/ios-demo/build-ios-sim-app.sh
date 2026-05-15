@@ -48,6 +48,7 @@ cp apps/ios-demo/app/Info.plist "$APP_BUNDLE/Info.plist"
 cp "$DATASET_ABS" "$APP_BUNDLE/flowers_1.ply"
 
 xcrun --sdk iphonesimulator swiftc \
+  apps/ios-demo/GsplatKit/Sources/GsplatKit/GsplatKit.swift \
   apps/ios-demo/app/GsplatIOSDemo.swift \
   -parse-as-library \
   -import-objc-header crates/gsplat-ffi-c/include/gsplat.h \

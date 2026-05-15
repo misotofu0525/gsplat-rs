@@ -88,6 +88,7 @@ cp "$PROVISIONING_PROFILE" "$APP_BUNDLE/embedded.mobileprovision"
   || /usr/libexec/PlistBuddy -c "Set :CFBundleSupportedPlatforms:0 iPhoneOS" "$APP_BUNDLE/Info.plist"
 
 xcrun --sdk iphoneos swiftc \
+  apps/ios-demo/GsplatKit/Sources/GsplatKit/GsplatKit.swift \
   apps/ios-demo/app/GsplatIOSDemo.swift \
   -parse-as-library \
   "$IOS_SWIFT_OPT_LEVEL" \

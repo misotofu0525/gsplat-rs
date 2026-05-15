@@ -9,7 +9,7 @@
 
 - The repository owns scene loading, sort backends, `wgpu` rendering, a small C ABI, experimental Rust/WASM Web bindings, and validation demos/tools around those pieces.
 - The repository does not own model training, a polished web product surface, or multiple polished render backends.
-- Main external dependencies are `wgpu`, platform toolchains for Swift/JNI validation, Android/iOS SDK tooling for mobile container builds, browser WebGL2 for the static Web demo, and `wasm-bindgen` for the experimental Web SDK path.
+- Main external dependencies are `wgpu`, platform toolchains for Swift/JNI validation, Android/iOS SDK tooling for mobile container builds and local package artifacts, browser WebGL2 for the static Web demo, and `wasm-bindgen` for the experimental Web SDK path.
 
 ## Runtime Topology
 
@@ -26,7 +26,7 @@
 - `crates/`: reusable library crates, the C ABI, and the experimental Web bindings
 - `apps/desktop-demo/`: desktop viewer and offscreen output harness
 - `apps/android-demo/`: Android `gsplat-android` library module, demo app, JNI bridge, and host smoke entrypoint
-- `apps/ios-demo/`: Swift smoke source, UIKit realtime Surface app, and iOS simulator/device build/run scripts
+- `apps/ios-demo/`: local `GsplatKit` Swift package wrapper, Swift smoke source, UIKit realtime Surface app, and iOS simulator/device build/run scripts
 - `apps/web-demo/`: static frontend demo for browser PLY loading, WebGL2 point-splat fallback, and generated wasm package hosting
 - `tools/`: CLI tools for performance validation
 - `tests/`: shared dataset, FFI smoke harness, and long-stability script
@@ -56,13 +56,14 @@
   packages the JNI library through `apps/android-demo/gsplat-android` for local AAR builds
 
 - iOS Surface flow:
-  starts at `apps/ios-demo/app/GsplatIOSDemo.swift`
+  starts at the local `apps/ios-demo/GsplatKit` wrapper or sample `apps/ios-demo/app/GsplatIOSDemo.swift`
   obtains a UIKit `UIView` backed by `CAMetalLayer`
   selects `Documents/imported_scene.ply`, bundled `flowers_1.ply`, or a generated minimal PLY
   passes the view through `gsplat_surface_renderer_create_uikit`
   creates a raw-handle `wgpu::Surface` in `crates/gsplat-render-wgpu/src/lib.rs`
   presents directly to the simulator Metal surface, not through offscreen readback
   uses the same Surface camera-control and benchmark option functions exposed through the C ABI
+  packages the C ABI as a local `GsplatFFI.xcframework` through `apps/ios-demo/build-xcframework.sh`
 
 - Web WASM renderer flow:
   starts at browser JavaScript that imports the generated `gsplat-web` wasm package
@@ -88,8 +89,9 @@
 - `SortedAlpha` is the only release-gated path and the default mode expected by validation flows.
 - The public C header and the Rust FFI implementation must stay in sync.
 - PLY input normalization is not optional: quaternion remapping and `RDF -> RUF` conversion happen at load time.
-- Mobile demo directories are integration validators. Android also has a local
-  library/AAR packaging slice, but it is not a Maven-published product SDK yet.
+- Mobile demo directories are integration validators. Android has a local
+  library/AAR packaging slice and iOS has a local `GsplatKit`/XCFramework
+  packaging slice, but neither path is a published product SDK yet.
 - `crates/gsplat-web` is the active experimental Rust/WASM target; Web renderer changes require the wasm build and browser smoke path before completion is claimed.
 - The Web demo directory stays a browser validator and generated wasm package host, not a polished web product surface.
 
@@ -100,6 +102,7 @@
 - `crates/gsplat-ffi-c/src/lib.rs` and `crates/gsplat-ffi-c/include/gsplat.h`: integration boundary stability
 - `crates/gsplat-web/src/`: browser `wasm-bindgen` API over the shared Surface renderer
 - `apps/android-demo/gsplat-android/src/main/kotlin/`, `apps/android-demo/app/src/main/kotlin/`, and `apps/android-demo/jni/gsplat_jni.c`: Android SDK wrapper, Surface lifecycle sample, and JNI bridge
+- `apps/ios-demo/GsplatKit/Sources/GsplatKit/GsplatKit.swift`: Swift wrapper over the v0.1 C ABI
 - `apps/ios-demo/app/GsplatIOSDemo.swift`: iOS Surface lifecycle and UIKit gesture bridge
 - `apps/web-demo/src/main.js`: browser PLY parsing, wasm-first renderer bootstrap, camera interaction, CPU depth sort fallback, benchmark orbit, and WebGL2 preview rendering
 - `tests/perf/run-long-stability.sh` and `tools/bench-runner/src/main.rs`: regression detection for perf and stability

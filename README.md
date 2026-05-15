@@ -14,8 +14,9 @@ without overstating SDK maturity.
 - Android status: a local Android library module can build an AAR at
   `apps/android-demo/gsplat-android/build/outputs/aar/gsplat-android-release.aar`;
   it is not published to Maven yet.
-- iOS status: the iOS path is a validation demo, not a packaged XCFramework or
-  Swift Package yet.
+- iOS status: `apps/ios-demo/GsplatKit` is a local Swift package wrapper and
+  `bash apps/ios-demo/build-xcframework.sh` builds a local
+  `GsplatFFI.xcframework`; it is not a published binary SwiftPM release yet.
 - Web status: `apps/web-demo` is a browser validation surface. The shared
   Rust/WASM renderer boundary lives in `crates/gsplat-web` and remains
   experimental until the wasm build and browser smoke path are verified.
@@ -50,8 +51,8 @@ Then open `http://127.0.0.1:4173/apps/web-demo/`.
 - `apps/desktop-demo`: desktop viewer and offscreen PNG harness
 - `apps/android-demo`: Android Surface demo plus host-side JNI smoke
   and the local `gsplat-android` library module
-- `apps/ios-demo`: Swift smoke path plus UIKit realtime Surface app and iOS
-  simulator/device scripts
+- `apps/ios-demo`: local `GsplatKit` Swift package wrapper, Swift smoke path,
+  UIKit realtime Surface app, and iOS simulator/device scripts
 - `apps/web-demo`: browser PLY loader, generated wasm package host, and WebGL2
   fallback preview
 - `tools/bench-runner`: perf and stability runner
@@ -92,11 +93,14 @@ The current mobile-facing contract is the C ABI in
   `gsplat_error_message()`.
 - Android Surface rendering is demonstrated by `apps/android-demo`.
 - The local Android AAR is built with `bash apps/android-demo/build-aar.sh`.
-- Swift/C ABI integration and a UIKit realtime simulator/device Surface demo
-  are demonstrated by `apps/ios-demo`.
+- Swift/C ABI integration, a local `GsplatKit` wrapper, local XCFramework
+  packaging, and a UIKit realtime simulator/device Surface demo are
+  demonstrated by `apps/ios-demo`.
+- The local iOS XCFramework is built with
+  `bash apps/ios-demo/build-xcframework.sh`.
 - Not in the v0.1 contract: scene-from-memory loading, runtime render-mode
   switching, Maven publishing, multi-ABI Android distribution, and
-  XCFramework packaging.
+  published binary SwiftPM/XCFramework distribution.
 
 ## Documentation
 

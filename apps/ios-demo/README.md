@@ -4,8 +4,9 @@ iOS integration demo.
 
 ## Integration boundary
 
-This directory validates Swift -> C ABI -> Rust. It is not a published
-XCFramework or Swift Package wrapper yet.
+This directory validates Swift -> C ABI -> Rust and includes a local
+`GsplatKit` Swift package wrapper. It is not a published binary SwiftPM release
+yet.
 
 The public native contract lives in `crates/gsplat-ffi-c/include/gsplat.h`.
 Use the helper functions and named constants from that header instead of copying
@@ -21,17 +22,46 @@ let message = String(cString: gsplat_error_message(rc))
 Scene loading is path-based today; scene-from-memory loading is outside the
 current mobile contract.
 
-This demo provides five validation paths:
+This demo provides six validation paths:
 
 ## 1) Host smoke (Swift)
 
-Validates Swift -> C ABI -> Rust on the host machine.
+Validates `GsplatKit` -> C ABI -> Rust on the host machine.
 
 ```bash
 bash apps/ios-demo/run-swift-smoke.sh
 ```
 
-## 2) iOS simulator realtime Surface app
+## 2) Local XCFramework and Swift package wrapper
+
+Builds the local C ABI XCFramework used by the `GsplatKit` Swift package:
+
+```bash
+bash apps/ios-demo/build-xcframework.sh
+```
+
+Outputs:
+
+- Swift package wrapper: `apps/ios-demo/GsplatKit`
+- Binary target: `apps/ios-demo/GsplatKit/Binaries/GsplatFFI.xcframework`
+- Module name: `GsplatFFI`
+
+The wrapper keeps raw `GsplatContext` and `GsplatSurfaceRenderer` pointers
+private and exposes Swift errors, version checks, frame stats, offscreen context
+rendering, and a thin UIKit Surface renderer wrapper.
+
+The default simulator slice follows the local host architecture. For a wider
+local artifact, set `IOS_XCFRAMEWORK_SIM_TARGETS`, for example:
+
+```bash
+IOS_XCFRAMEWORK_SIM_TARGETS="aarch64-apple-ios-sim x86_64-apple-ios" \
+  bash apps/ios-demo/build-xcframework.sh
+```
+
+This is still a local packaging slice. It does not publish a binary artifact,
+tagged SwiftPM release, or polished iOS product API.
+
+## 3) iOS simulator realtime Surface app
 
 Builds a real iOS simulator app bundle, packages the shared flower dataset, and
 presents through `UIView` -> UIKit raw window handle -> `wgpu::Surface`.
@@ -66,8 +96,9 @@ If the flower dataset is missing, fetch it first:
 bash tests/datasets/fetch-nvidia-flowers-1.sh
 ```
 
-This is a realtime validation app. It is still not a published XCFramework or
-Swift Package wrapper.
+This is a realtime validation app. It compiles alongside the local
+`GsplatKit` wrapper, but remains a demo app rather than a polished iOS product
+surface.
 
 Dataset priority matches the Android demo shape: the app uses
 `Documents/imported_scene.ply` when present, then the bundled `flowers_1.ply`,
@@ -96,7 +127,7 @@ Benchmark mode forces a tiny camera orbit each frame and prints a
 `BENCHMARK_RESULT` line to the simulator log. The Surface A/B args map to the
 same C ABI controls used by the Android demo.
 
-## 3) iOS simulator target build
+## 4) iOS simulator target build
 
 Cross-compiles the smoke binary and Rust FFI library for iOS simulator.
 
@@ -109,7 +140,7 @@ Outputs:
 - Binary: `target/ios-sim-smoke`
 - Rust target: `aarch64-apple-ios-sim` (on Apple Silicon hosts)
 
-## 4) iOS simulator offscreen flower smoke
+## 5) iOS simulator offscreen flower smoke
 
 Builds the simulator smoke binary, boots or reuses an iPhone simulator, and runs
 the Swift/C ABI smoke inside that simulator with the same flower dataset used by
@@ -142,7 +173,7 @@ This is an offscreen Swift -> C ABI -> Rust render smoke spawned inside the iOS
 Simulator. Use the realtime Surface app above when validating visual
 presentation or touch interaction.
 
-## 5) iOS device realtime Surface app
+## 6) iOS device realtime Surface app
 
 Builds and signs a real iPhone app bundle, packages the shared flower dataset,
 installs it with `devicectl`, and launches the same realtime UIKit Surface app

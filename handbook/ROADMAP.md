@@ -9,14 +9,15 @@ Operational facts and command entrypoints live in `handbook/PROJECT_CONTEXT.md` 
 - The project is on the `0.1.x` line and should stay small until the core render path is more thoroughly validated.
 - `SortedAlpha` is the only quality-guaranteed render mode.
 - Desktop and mobile demos are validation surfaces for shared crates. Android
-  now also has a local library/AAR packaging slice, but it is not a
-  Maven-published product SDK.
+  now has a local library/AAR packaging slice, and iOS has a local
+  `GsplatKit`/XCFramework packaging slice, but neither is a published product
+  SDK.
 
 ## Near-Term Priorities
 
 1. Keep the PLY import -> `SceneBuffers` -> renderer path correct and well tested.
 2. Expand conformance and performance coverage with real datasets before widening APIs.
-3. Keep C ABI, JNI, Android library packaging, and Swift smoke paths boring, small, and in sync.
+3. Keep C ABI, JNI, Android library packaging, iOS local XCFramework packaging, and Swift smoke paths boring, small, and in sync.
 4. Improve renderer quality and stability inside the existing crate boundaries.
 5. Bring the Rust/WASM Web renderer target up behind the shared `wgpu` Surface path before calling Web parity complete.
 6. Keep handbook docs and verification commands aligned with the repository that actually exists.
@@ -43,8 +44,10 @@ Operational facts and command entrypoints live in `handbook/PROJECT_CONTEXT.md` 
 - The current C ABI does not cover scene-from-memory loading or runtime render-mode switching.
 - Mobile Surface functions are validation/demo support, not a commitment to a
   full mobile product API. The local Android AAR wraps the same C ABI for
-  starter consumption, but Maven publishing, multi-ABI distribution, and a
-  polished Android view API are still outside the current release contract.
+  starter consumption, and the local iOS `GsplatKit` wrapper packages the same
+  C ABI for Swift consumption. Maven publishing, multi-ABI Android
+  distribution, published binary SwiftPM/XCFramework distribution, and polished
+  mobile view APIs are still outside the current release contract.
 - `crates/gsplat-web` is the active experimental Rust/WASM Web API boundary. It is not a stable v0.1 release surface; Web renderer changes require verified wasm build and browser smoke evidence.
 - The Web demo is validation/demo support for browser PLY loading, the WebGL2 fallback, and hosting the generated wasm package; it is not a polished web product surface.
 
@@ -62,3 +65,4 @@ STABILITY_SECONDS=1800 bash tests/perf/run-long-stability.sh
 - A custom internal binary scene/cache format
 - Additional experimental blending/rendering backends
 - New top-level apps or docs-only placeholders
+- Published Maven or binary SwiftPM SDK distribution

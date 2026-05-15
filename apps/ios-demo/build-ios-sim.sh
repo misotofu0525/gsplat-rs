@@ -28,6 +28,7 @@ LIB_DIR="$ROOT_DIR/target/$RUST_TARGET/debug"
 OUT_BIN="$ROOT_DIR/target/ios-sim-smoke"
 
 xcrun --sdk iphonesimulator swiftc \
+  apps/ios-demo/GsplatKit/Sources/GsplatKit/GsplatKit.swift \
   apps/ios-demo/smoke/main.swift \
   -import-objc-header crates/gsplat-ffi-c/include/gsplat.h \
   -sdk "$SDK_PATH" \

@@ -12,6 +12,7 @@ LIB_DIR="$ROOT_DIR/target/debug"
 OUT_BIN="$ROOT_DIR/target/ios-swift-smoke"
 
 swiftc \
+  apps/ios-demo/GsplatKit/Sources/GsplatKit/GsplatKit.swift \
   apps/ios-demo/smoke/main.swift \
   -import-objc-header crates/gsplat-ffi-c/include/gsplat.h \
   -L "$LIB_DIR" \
