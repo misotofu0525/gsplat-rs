@@ -19,6 +19,11 @@ var camera = gsplat_camera_default()
 let message = String(cString: gsplat_error_message(rc))
 ```
 
+Use `gsplat_last_error_message()` through `GsplatKitError` when you need the
+most recent operation detail. Raw native Surface handles are single-owner
+handles; `GsplatUIKitSurfaceRenderer` serializes access internally, and direct C
+callers should use one owner thread or queue.
+
 `GSPLAT_RENDER_MODE_SORTED_ALPHA` is the only release-gated render mode in v0.1.
 Scene loading is path-based today; scene-from-memory loading is outside the
 current mobile contract.
@@ -51,8 +56,10 @@ The wrapper keeps raw `GsplatContext` and `GsplatSurfaceRenderer` pointers
 private and exposes Swift errors, version checks, frame stats, offscreen context
 rendering, and a thin UIKit Surface renderer wrapper.
 
-The default simulator slice follows the local host architecture. For a wider
-local artifact, set `IOS_XCFRAMEWORK_SIM_TARGETS`, for example:
+The default simulator slice builds both Apple Silicon and Intel simulator
+targets: `aarch64-apple-ios-sim x86_64-apple-ios`. Override
+`IOS_XCFRAMEWORK_SIM_TARGETS` only when you deliberately want a narrower or
+custom simulator slice, for example:
 
 ```bash
 IOS_XCFRAMEWORK_SIM_TARGETS="aarch64-apple-ios-sim x86_64-apple-ios" \
@@ -193,17 +200,18 @@ Outputs:
 - Rust profile: `release` by default
 - Swift optimization: `-O` by default
 
-Signing defaults are tuned for the current local development machine:
+Signing is environment-specific. By default the build script searches local
+development provisioning profiles for one that matches `IOS_BUNDLE_ID` and
+picks an installed `Apple Development:` signing identity. Set these explicitly
+when the automatic selection is ambiguous:
 
-- Provisioning profile:
-  `~/Library/Developer/Xcode/UserData/Provisioning Profiles/0429b91f-847d-46c8-bc1b-722ae2d71cdb.mobileprovision`
-- Team ID: `KRRHW4GG3H`
-- Code signing identity:
-  `457B874995C77ADD7C65C03AF7B227A7FD4ADA37`
+- `IOS_PROVISIONING_PROFILE=/path/to/profile.mobileprovision`
+- `IOS_CODE_SIGN_IDENTITY="Apple Development: ..."`
+- `IOS_BUNDLE_ID=com.example.your.bundle`
+- `IOS_DEVICE_ID=<coredevice-id-or-udid>`
 
-Override those with `IOS_PROVISIONING_PROFILE`, `IOS_CODE_SIGN_IDENTITY`,
-`IOS_BUNDLE_ID`, and `IOS_DEVICE_ID` when using another phone or Apple
-developer account.
+`IOS_DEVICE_ID` is required for run and benchmark scripts. Use
+`xcrun devicectl list devices` to find the CoreDevice identifier or UDID.
 Set `IOS_RUST_PROFILE=dev` and `IOS_SWIFT_OPT_LEVEL=-Onone` only when debugging
 symbols or native build issues; the default device path is optimized so it can
 be compared with Android's default release-native APK build.

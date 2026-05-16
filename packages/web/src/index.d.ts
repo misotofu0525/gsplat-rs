@@ -60,7 +60,7 @@ export interface GsplatFrameStats {
 }
 
 export class GsplatWebRenderer {
-  readonly nativeRenderer: unknown;
+  readonly isDisposed: boolean;
   resize(width: number, height: number): void;
   resetCamera(): void;
   orbit(deltaYawRadians: number, deltaPitchRadians: number): void;
@@ -71,6 +71,7 @@ export class GsplatWebRenderer {
   sceneSummary(): GsplatSceneSummary;
   surfaceSize(): GsplatSurfaceSize;
   free(): void;
+  dispose(): void;
 }
 
 export const GSPLAT_WEB_SDK_VERSION: "0.1.0";

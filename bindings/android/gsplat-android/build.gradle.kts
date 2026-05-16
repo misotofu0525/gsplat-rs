@@ -3,6 +3,11 @@ plugins {
     id("org.jetbrains.kotlin.android")
 }
 
+val buildNativeGsplat by tasks.registering(Exec::class) {
+    workingDir = rootProject.projectDir.parentFile
+    commandLine("bash", rootProject.file("scripts/build-native.sh").absolutePath)
+}
+
 android {
     namespace = "com.gsplat.android"
     compileSdk = 35
@@ -42,4 +47,8 @@ android {
     kotlinOptions {
         jvmTarget = "17"
     }
+}
+
+tasks.matching { it.name == "preBuild" }.configureEach {
+    dependsOn(buildNativeGsplat)
 }

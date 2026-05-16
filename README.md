@@ -78,7 +78,8 @@ cargo fmt --check
 cargo clippy --workspace --all-targets -- -D warnings
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
 node --check examples/web/src/main.js
-node --check packages/web/src/index.js
+npm --prefix packages/web run check
+npm --prefix packages/web test
 ```
 
 Use `handbook/VERIFICATION.md` for the full validation matrix, including FFI,
@@ -94,8 +95,13 @@ The current mobile-facing contract is the C ABI in
 - Use `GSPLAT_RENDER_MODE_SORTED_ALPHA`; it is the only release-gated render
   mode in v0.1.
 - Treat non-zero returns as `GsplatErrorCode` values and pass them to
-  `gsplat_error_message()`.
-- Android Surface rendering is demonstrated by `examples/android`.
+  `gsplat_error_message()`. Use `gsplat_last_error_message()` when wrappers need
+  the most recent operation detail.
+- Treat native Surface handles as owned by one serialized thread or queue. The
+  Kotlin and Swift wrappers add locking around the raw C handles; direct C/JNI
+  callers should provide the same serialization.
+- Android Surface rendering is demonstrated by `examples/android`, with the
+  wrapper-first entrypoint in `bindings/android`.
 - The local Android AAR is built with `bash bindings/android/scripts/build-aar.sh`.
 - Swift/C ABI integration, a local `GsplatKit` wrapper, local XCFramework
   packaging, and a UIKit realtime simulator/device Surface example are

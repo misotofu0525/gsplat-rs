@@ -17,6 +17,9 @@ object NativeBridge {
     external fun errorMessage(code: Int): String
 
     @JvmStatic
+    external fun lastErrorMessage(): String
+
+    @JvmStatic
     external fun runFfiSmoke(datasetPath: String): Int
 
     @JvmStatic

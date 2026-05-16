@@ -12,7 +12,14 @@ extern "C" {
  *
  * All functions returning int32_t use GsplatErrorCode values. Handles are
  * opaque, owned by the caller after successful create, and must be released by
- * their matching destroy function. Destroy functions accept NULL.
+ * their matching destroy function. Destroy functions accept NULL. Handles are
+ * single-thread confined: call render, resize, camera, stats, option, and
+ * destroy functions from one serialized owner thread or queue.
+ *
+ * `gsplat_context_*` is the small stable v0.1 C ABI. `gsplat_surface_renderer_*`
+ * exists to validate Android/iOS realtime Surface integration and is not a full
+ * mobile product SDK. Surface A/B option setters are experimental benchmark
+ * knobs and may change before a published mobile SDK.
  */
 
 #define GSPLAT_API_VERSION_MAJOR_VALUE 0
@@ -63,6 +70,7 @@ typedef struct GsplatSurfaceRenderer GsplatSurfaceRenderer;
 uint32_t gsplat_version_major(void);
 uint32_t gsplat_version_minor(void);
 const char *gsplat_error_message(int32_t code);
+const char *gsplat_last_error_message(void);
 
 GsplatConfig gsplat_config_default(void);
 GsplatCamera gsplat_camera_default(void);
@@ -96,6 +104,7 @@ int32_t gsplat_surface_renderer_resize(
 int32_t gsplat_surface_renderer_set_sort_interval(
     GsplatSurfaceRenderer *renderer,
     uint32_t interval);
+/* Experimental benchmark knobs. Keep stable integrations on default values. */
 int32_t gsplat_surface_renderer_set_gpu_preproject(
     GsplatSurfaceRenderer *renderer,
     uint32_t enabled);

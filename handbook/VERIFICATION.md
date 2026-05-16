@@ -33,6 +33,7 @@ RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
 node --check examples/web/src/main.js
 npm --prefix packages/web run check
 npm --prefix packages/web test
+npm --prefix packages/web run pack:dry-run
 ```
 
 - Run these before opening a pull request that changes Rust code, public docs,
@@ -53,6 +54,7 @@ RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
 node --check examples/web/src/main.js
 npm --prefix packages/web run check
 npm --prefix packages/web test
+npm --prefix packages/web run pack:dry-run
 cargo run -p bench-runner -- tests/datasets/minimal_ascii.ply 120
 bash tests/ffi/run-ffi-smoke.sh
 bash bindings/android/scripts/run-jni-smoke.sh
@@ -115,6 +117,7 @@ cargo check -p gsplat-web --target wasm32-unknown-unknown
 bash packages/web/scripts/build-wasm.sh
 bash packages/web/scripts/build.sh
 node --check packages/web/dist/index.js
+npm --prefix packages/web run pack:dry-run
 ```
 
 - `cargo check --workspace` still checks the host-side workspace and the
@@ -147,24 +150,30 @@ bash bindings/android/scripts/build-sample-apk.sh
 ```
 
 - Run these when changing mobile packaging, simulator run scripts, or build scripts.
-- Check the matching app README for platform prerequisites before assuming SDK/NDK/Xcode state.
+- Check `bindings/android/README.md` or `bindings/apple/README.md` for platform
+  prerequisites before assuming SDK/NDK/Xcode state.
 - iOS device runs require a development provisioning profile whose device list
-  includes the target phone. The current local default is documented in
-  `bindings/apple/README.md`; override with `IOS_PROVISIONING_PROFILE`,
-  `IOS_CODE_SIGN_IDENTITY`, `IOS_BUNDLE_ID`, or `IOS_DEVICE_ID` when needed.
+  includes the target phone. `bindings/apple/scripts/build-ios-device-app.sh`
+  can auto-select a matching local development profile and `Apple Development:`
+  identity, or you can set `IOS_PROVISIONING_PROFILE`,
+  `IOS_CODE_SIGN_IDENTITY`, and `IOS_BUNDLE_ID` explicitly.
+- iOS run and benchmark scripts require `IOS_DEVICE_ID=<coredevice-id-or-udid>`.
+  Run `xcrun devicectl list devices` to inspect paired device identifiers.
 - `bindings/apple/scripts/build-ios-device-app.sh` builds Rust with `release` and Swift
   with `-O` by default so the iPhone path can be compared with Android's
   release-native APK. Use `IOS_RUST_PROFILE=dev` and
   `IOS_SWIFT_OPT_LEVEL=-Onone` only for debugging.
 - `bindings/apple/scripts/build-xcframework.sh` builds the local
   `bindings/apple/GsplatKit/Binaries/GsplatFFI.xcframework` used by the
-  `GsplatKit` Swift package wrapper. It uses the host simulator architecture
-  by default; set `IOS_XCFRAMEWORK_SIM_TARGETS` for a wider simulator slice.
+  `GsplatKit` Swift package wrapper. It builds both
+  `aarch64-apple-ios-sim` and `x86_64-apple-ios` simulator slices by default;
+  set `IOS_XCFRAMEWORK_SIM_TARGETS` for a custom simulator slice.
 - `bindings/android/scripts/build-sample-apk.sh` builds a debug APK container, but compiles the Rust native library with the Rust `release` profile by default. Set `ANDROID_RUST_PROFILE=dev` only for native debugging.
 - `bindings/android/scripts/build-aar.sh` builds the local `gsplat-android` AAR at
   `bindings/android/gsplat-android/build/outputs/aar/gsplat-android-release.aar`.
   It accepts `ANDROID_SDK_ROOT` or `ANDROID_HOME`, packages `arm64-v8a` only in
-  this slice, and is not a Maven publishing path.
+  this slice, uses Android native API level `24` by default, and is not a Maven
+  publishing path.
 
 ## Android Surface Smoke
 
@@ -174,7 +183,7 @@ Use this when changing Android Surface rendering, JNI surface glue, or `SurfaceP
 bash bindings/android/scripts/build-sample-apk.sh
 ANDROID_SDK_ROOT="${ANDROID_SDK_ROOT:-$HOME/Library/Android/sdk}"
 ADB="$ANDROID_SDK_ROOT/platform-tools/adb"
-"$ADB" install -r examples/android/app/build/outputs/apk/debug/app-debug.apk
+"$ADB" install -r examples/android/app/build/outputs/apk/debug/sample-app-debug.apk
 "$ADB" push tests/datasets/external/nvidia_flowers_1/flowers_1/flowers_1.ply /data/local/tmp/flowers_1.ply
 "$ADB" shell run-as com.gsplat.example mkdir -p files
 "$ADB" shell run-as com.gsplat.example cp /data/local/tmp/flowers_1.ply files/flowers_1.ply

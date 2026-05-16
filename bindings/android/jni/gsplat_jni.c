@@ -35,6 +35,11 @@ JNIEXPORT jstring JNICALL Java_com_gsplat_android_NativeBridge_errorMessage(JNIE
   return (*env)->NewStringUTF(env, gsplat_error_message((int32_t)code));
 }
 
+JNIEXPORT jstring JNICALL Java_com_gsplat_android_NativeBridge_lastErrorMessage(JNIEnv *env, jclass cls) {
+  (void)cls;
+  return (*env)->NewStringUTF(env, gsplat_last_error_message());
+}
+
 JNIEXPORT jint JNICALL Java_com_gsplat_example_GsplatJniSmoke_nativeFfiSmoke(JNIEnv *env, jclass cls, jstring dataset_path) {
   (void)cls;
 

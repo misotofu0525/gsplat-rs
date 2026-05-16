@@ -43,6 +43,6 @@ changing the small v0.1 C ABI.
 - `bash bindings/android/scripts/build-aar.sh` passed and produced
   `bindings/android/gsplat-android/build/outputs/aar/gsplat-android-release.aar`.
 - `bash bindings/android/scripts/build-sample-apk.sh` passed and produced
-  `examples/android/app/build/outputs/apk/debug/app-debug.apk`.
+  `examples/android/app/build/outputs/apk/debug/sample-app-debug.apk`.
 - AAR inspection confirmed `jni/arm64-v8a/libgsplat_jni.so` and the
   `com/gsplat/android` Kotlin wrapper classes are packaged.

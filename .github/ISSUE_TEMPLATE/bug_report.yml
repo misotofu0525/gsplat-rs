@@ -20,8 +20,11 @@ body:
         - Renderer
         - Sorting
         - C ABI
+        - Android binding or AAR
         - Android example
+        - GsplatKit or XCFramework
         - iOS example
+        - Web package
         - Web example
         - Web WASM
         - CI or scripts

@@ -33,6 +33,7 @@ Operational facts and command entrypoints live in `handbook/PROJECT_CONTEXT.md` 
   - `gsplat_version_major`
   - `gsplat_version_minor`
   - `gsplat_error_message`
+  - `gsplat_last_error_message`
   - `gsplat_config_default`
   - `gsplat_camera_default`
   - `gsplat_context_create`
@@ -44,6 +45,9 @@ Operational facts and command entrypoints live in `handbook/PROJECT_CONTEXT.md` 
   - `gsplat_context_get_stats`
   - Android and iOS Surface renderer create/resize/camera-control/render/stats/destroy functions for the example integration paths
 - The current C ABI does not cover scene-from-memory loading or runtime render-mode switching.
+- Native handles are single-owner handles and should be used from one serialized
+  thread or queue. Public wrappers may add locking, but this does not make the
+  raw C ABI a free-threaded API.
 - Mobile Surface functions are validation example support, not a commitment to a
   full mobile product API. The local Android AAR wraps the same C ABI for
   starter consumption, and the local iOS `GsplatKit` wrapper packages the same

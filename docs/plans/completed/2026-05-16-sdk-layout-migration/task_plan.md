@@ -1,5 +1,11 @@
 # Task Plan: SDK Layout Migration
 
+## Status
+
+- Completed. Current repository layout uses `examples/` for runnable validation
+  apps, `bindings/` for native SDK wrapper slices, and `packages/web/` for the
+  local browser package.
+
 ## Problem
 
 The old mixed application layout grouped three responsibilities together:
@@ -66,3 +72,21 @@ crates/
   `handbook/VERIFICATION.md` describe the new current layout only after the
   corresponding files actually move.
 - CI covers the moved package build paths.
+
+## Changed Paths
+
+- `examples/android/`, `examples/ios/`, `examples/web/`
+- `bindings/android/`, `bindings/apple/`
+- `packages/web/`
+- `.github/workflows/ci.yml`
+- `README.md`, `handbook/PROJECT_CONTEXT.md`, `handbook/ARCHITECTURE.md`, `handbook/VERIFICATION.md`
+
+## Verification Evidence
+
+- Layout migration was committed before this history note was updated.
+- Current follow-up verification is tracked in the repository verification
+  matrix and CI workflow under the new paths.
+
+## Known Gaps
+
+- Published Maven, binary SwiftPM, and npm distribution remain non-goals.

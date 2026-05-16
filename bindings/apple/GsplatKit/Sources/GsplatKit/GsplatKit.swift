@@ -101,6 +101,7 @@ public struct GsplatFrameStats: Equatable {
 
 public final class GsplatContextRenderer {
     private var context: OpaquePointer?
+    private let lock = NSLock()
 
     public init(configuration: GsplatRenderConfiguration = GsplatRenderConfiguration()) throws {
         try GsplatKitVersion.requireSupported()
@@ -125,6 +126,9 @@ public final class GsplatContextRenderer {
     }
 
     public func close() {
+        lock.lock()
+        defer { lock.unlock() }
+
         if let context {
             gsplat_context_destroy(context)
             self.context = nil
@@ -184,6 +188,9 @@ public final class GsplatContextRenderer {
         operation: String,
         _ body: (OpaquePointer) throws -> Result
     ) throws -> Result {
+        lock.lock()
+        defer { lock.unlock() }
+
         guard let context else {
             throw GsplatKitError(
                 code: gsplatInvalidArgument,
@@ -198,6 +205,7 @@ public final class GsplatContextRenderer {
 #if canImport(UIKit)
 public struct GsplatSurfaceOptions: Equatable {
     public var sortInterval: UInt32
+    // Experimental benchmark knobs; keep defaults for stable integrations.
     public var gpuPreproject: Bool
     public var gpuPreprojectDoubleBuffer: Bool
     public var staticDirect: Bool
@@ -229,6 +237,7 @@ public struct GsplatSurfaceOptions: Equatable {
 
 public final class GsplatUIKitSurfaceRenderer {
     private var renderer: OpaquePointer?
+    private let lock = NSLock()
 
     public init(
         view: UIView,
@@ -278,6 +287,9 @@ public final class GsplatUIKitSurfaceRenderer {
     }
 
     public func close() {
+        lock.lock()
+        defer { lock.unlock() }
+
         if let renderer {
             gsplat_surface_renderer_destroy(renderer)
             self.renderer = nil
@@ -350,6 +362,28 @@ public final class GsplatUIKitSurfaceRenderer {
     }
 
     private static func apply(options: GsplatSurfaceOptions, to renderer: OpaquePointer) throws {
+        guard options.sortInterval > 0 else {
+            throw GsplatKitError(
+                code: gsplatInvalidArgument,
+                operation: "GsplatSurfaceOptions",
+                detail: "sortInterval must be positive"
+            )
+        }
+        guard options.instanceBuffers > 0 else {
+            throw GsplatKitError(
+                code: gsplatInvalidArgument,
+                operation: "GsplatSurfaceOptions",
+                detail: "instanceBuffers must be positive"
+            )
+        }
+        guard options.frameLatency > 0 else {
+            throw GsplatKitError(
+                code: gsplatInvalidArgument,
+                operation: "GsplatSurfaceOptions",
+                detail: "frameLatency must be positive"
+            )
+        }
+
         let steps: [(String, Int32)] = [
             (
                 "gsplat_surface_renderer_set_sort_interval",
@@ -397,6 +431,9 @@ public final class GsplatUIKitSurfaceRenderer {
         operation: String,
         _ body: (OpaquePointer) throws -> Result
     ) throws -> Result {
+        lock.lock()
+        defer { lock.unlock() }
+
         guard let renderer else {
             throw GsplatKitError(
                 code: gsplatInvalidArgument,
@@ -411,6 +448,11 @@ public final class GsplatUIKitSurfaceRenderer {
 
 private func check(_ code: Int32, operation: String) throws {
     guard code == gsplatOk else {
-        throw GsplatKitError(code: code, operation: operation)
+        let detail = String(cString: gsplat_last_error_message())
+        throw GsplatKitError(
+            code: code,
+            operation: operation,
+            detail: detail == "ok" ? nil : detail
+        )
     }
 }

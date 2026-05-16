@@ -1,6 +1,8 @@
 //! Stable C ABI surface for mobile wrappers.
 
-use std::ffi::{CStr, c_char, c_void};
+use std::cell::RefCell;
+use std::ffi::{CStr, CString, c_char, c_void};
+use std::fmt::Display;
 use std::path::Path;
 use std::ptr::NonNull;
 use std::sync::Arc;
@@ -188,7 +190,19 @@ impl SurfaceAsyncSorter {
     }
 
     fn discard_in_flight(&mut self) {
-        self.in_flight = None;
+        self.drain_in_flight();
+    }
+
+    fn drain_in_flight(&mut self) {
+        if let Some(handle) = self.in_flight.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
+impl Drop for SurfaceAsyncSorter {
+    fn drop(&mut self) {
+        self.drain_in_flight();
     }
 }
 
@@ -238,7 +252,19 @@ impl SurfaceGeometryWorker {
     }
 
     fn discard_in_flight(&mut self) {
-        self.in_flight = None;
+        self.drain_in_flight();
+    }
+
+    fn drain_in_flight(&mut self) {
+        if let Some(handle) = self.in_flight.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
+impl Drop for SurfaceGeometryWorker {
+    fn drop(&mut self) {
+        self.drain_in_flight();
     }
 }
 
@@ -257,6 +283,41 @@ fn log_surface_error(message: &str) {
 
 fn static_cstr(bytes: &'static [u8]) -> *const c_char {
     bytes.as_ptr() as *const c_char
+}
+
+thread_local! {
+    static LAST_ERROR_MESSAGE: RefCell<CString> =
+        RefCell::new(CString::new("ok").expect("static ok string contains no nul"));
+}
+
+fn make_cstring(message: impl Into<String>) -> CString {
+    let bytes: Vec<u8> = message
+        .into()
+        .into_bytes()
+        .into_iter()
+        .filter(|byte| *byte != 0)
+        .collect();
+    CString::new(bytes).unwrap_or_else(|_| CString::new("internal error").unwrap())
+}
+
+fn set_last_error_message(message: impl Into<String>) {
+    LAST_ERROR_MESSAGE.with(|cell| {
+        *cell.borrow_mut() = make_cstring(message);
+    });
+}
+
+fn ffi_ok() -> i32 {
+    set_last_error_message("ok");
+    ErrorCode::Ok.as_i32()
+}
+
+fn ffi_error(code: ErrorCode, message: impl Into<String>) -> i32 {
+    set_last_error_message(message);
+    code.as_i32()
+}
+
+fn ffi_error_display(code: ErrorCode, operation: &str, error: impl Display) -> i32 {
+    ffi_error(code, format!("{operation}: {error}"))
 }
 
 #[unsafe(no_mangle)]
@@ -284,6 +345,11 @@ pub extern "C" fn gsplat_error_message(code: i32) -> *const c_char {
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn gsplat_last_error_message() -> *const c_char {
+    LAST_ERROR_MESSAGE.with(|cell| cell.borrow().as_ptr())
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn gsplat_config_default() -> GsplatConfig {
     GsplatConfig::default()
 }
@@ -305,7 +371,10 @@ pub unsafe extern "C" fn gsplat_context_create(
     out_ctx: *mut *mut GsplatContext,
 ) -> i32 {
     if out_ctx.is_null() {
-        return ErrorCode::InvalidArgument.as_i32();
+        return ffi_error(
+            ErrorCode::InvalidArgument,
+            "gsplat_context_create: out_ctx is null",
+        );
     }
 
     unsafe {
@@ -313,7 +382,10 @@ pub unsafe extern "C" fn gsplat_context_create(
     }
 
     if config.mode != RenderMode::SortedAlpha as u32 {
-        return ErrorCode::InvalidArgument.as_i32();
+        return ffi_error(
+            ErrorCode::InvalidArgument,
+            "gsplat_context_create: unsupported render mode",
+        );
     }
 
     let renderer_config = RendererConfig {
@@ -324,7 +396,7 @@ pub unsafe extern "C" fn gsplat_context_create(
 
     let renderer = match Renderer::with_config(renderer_config) {
         Ok(renderer) => renderer,
-        Err(err) => return err.code().as_i32(),
+        Err(err) => return ffi_error_display(err.code(), "gsplat_context_create", err),
     };
 
     let context = Box::new(GsplatContext {
@@ -336,7 +408,7 @@ pub unsafe extern "C" fn gsplat_context_create(
         *out_ctx = Box::into_raw(context);
     }
 
-    ErrorCode::Ok.as_i32()
+    ffi_ok()
 }
 
 /// Destroy a renderer context.
@@ -368,16 +440,24 @@ pub unsafe extern "C" fn gsplat_context_set_camera(
 ) -> i32 {
     let ctx = match unsafe { ctx.as_mut() } {
         Some(ctx) => ctx,
-        None => return ErrorCode::InvalidArgument.as_i32(),
+        None => {
+            return ffi_error(
+                ErrorCode::InvalidArgument,
+                "gsplat_context_set_camera: ctx is null",
+            );
+        }
     };
 
     let camera: Camera = camera.into();
     if camera.validate().is_err() {
-        return ErrorCode::InvalidArgument.as_i32();
+        return ffi_error(
+            ErrorCode::InvalidArgument,
+            "gsplat_context_set_camera: invalid camera",
+        );
     }
 
     ctx.camera = camera;
-    ErrorCode::Ok.as_i32()
+    ffi_ok()
 }
 
 /// Set the context camera to an automatically framed view of the loaded scene.
@@ -389,15 +469,20 @@ pub unsafe extern "C" fn gsplat_context_set_camera(
 pub unsafe extern "C" fn gsplat_context_set_auto_camera(ctx: *mut GsplatContext) -> i32 {
     let ctx = match unsafe { ctx.as_mut() } {
         Some(ctx) => ctx,
-        None => return ErrorCode::InvalidArgument.as_i32(),
+        None => {
+            return ffi_error(
+                ErrorCode::InvalidArgument,
+                "gsplat_context_set_auto_camera: ctx is null",
+            );
+        }
     };
 
     match auto_camera(&ctx.renderer) {
         Ok(camera) => {
             ctx.camera = camera;
-            ErrorCode::Ok.as_i32()
+            ffi_ok()
         }
-        Err(code) => code.as_i32(),
+        Err(code) => ffi_error(code, "gsplat_context_set_auto_camera: scene is not loaded"),
     }
 }
 
@@ -414,26 +499,39 @@ pub unsafe extern "C" fn gsplat_context_load_scene_path(
 ) -> i32 {
     let ctx = match unsafe { ctx.as_mut() } {
         Some(ctx) => ctx,
-        None => return ErrorCode::InvalidArgument.as_i32(),
+        None => {
+            return ffi_error(
+                ErrorCode::InvalidArgument,
+                "gsplat_context_load_scene_path: ctx is null",
+            );
+        }
     };
 
     if path.is_null() {
-        return ErrorCode::InvalidArgument.as_i32();
+        return ffi_error(
+            ErrorCode::InvalidArgument,
+            "gsplat_context_load_scene_path: path is null",
+        );
     }
 
     let path_str = match unsafe { CStr::from_ptr(path) }.to_str() {
         Ok(path) => path,
-        Err(_) => return ErrorCode::InvalidArgument.as_i32(),
+        Err(_) => {
+            return ffi_error(
+                ErrorCode::InvalidArgument,
+                "gsplat_context_load_scene_path: path is not valid UTF-8",
+            );
+        }
     };
 
     let loaded = match load_ply(Path::new(path_str)) {
         Ok(result) => result,
-        Err(err) => return err.code().as_i32(),
+        Err(err) => return ffi_error_display(err.code(), "gsplat_context_load_scene_path", err),
     };
 
     match ctx.renderer.load_scene(loaded.scene) {
-        Ok(()) => ErrorCode::Ok.as_i32(),
-        Err(err) => err.code().as_i32(),
+        Ok(()) => ffi_ok(),
+        Err(err) => ffi_error_display(err.code(), "gsplat_context_load_scene_path", err),
     }
 }
 
@@ -446,12 +544,17 @@ pub unsafe extern "C" fn gsplat_context_load_scene_path(
 pub unsafe extern "C" fn gsplat_context_render_frame(ctx: *mut GsplatContext) -> i32 {
     let ctx = match unsafe { ctx.as_mut() } {
         Some(ctx) => ctx,
-        None => return ErrorCode::InvalidArgument.as_i32(),
+        None => {
+            return ffi_error(
+                ErrorCode::InvalidArgument,
+                "gsplat_context_render_frame: ctx is null",
+            );
+        }
     };
 
     match ctx.renderer.render_frame(&ctx.camera) {
-        Ok(_) => ErrorCode::Ok.as_i32(),
-        Err(err) => err.code().as_i32(),
+        Ok(_) => ffi_ok(),
+        Err(err) => ffi_error_display(err.code(), "gsplat_context_render_frame", err),
     }
 }
 
@@ -468,18 +571,26 @@ pub unsafe extern "C" fn gsplat_context_get_stats(
 ) -> i32 {
     let ctx = match unsafe { ctx.as_ref() } {
         Some(ctx) => ctx,
-        None => return ErrorCode::InvalidArgument.as_i32(),
+        None => {
+            return ffi_error(
+                ErrorCode::InvalidArgument,
+                "gsplat_context_get_stats: ctx is null",
+            );
+        }
     };
 
     if out_stats.is_null() {
-        return ErrorCode::InvalidArgument.as_i32();
+        return ffi_error(
+            ErrorCode::InvalidArgument,
+            "gsplat_context_get_stats: out_stats is null",
+        );
     }
 
     unsafe {
         *out_stats = ctx.renderer.last_stats().into();
     }
 
-    ErrorCode::Ok.as_i32()
+    ffi_ok()
 }
 
 /// Create an Android Surface renderer from an `ANativeWindow`.
@@ -499,7 +610,10 @@ pub unsafe extern "C" fn gsplat_surface_renderer_create_android(
     out_renderer: *mut *mut GsplatSurfaceRenderer,
 ) -> i32 {
     if native_window.is_null() || path.is_null() || out_renderer.is_null() {
-        return ErrorCode::InvalidArgument.as_i32();
+        return ffi_error(
+            ErrorCode::InvalidArgument,
+            "gsplat_surface_renderer_create_android: native_window, path, or out_renderer is null",
+        );
     }
 
     unsafe {
@@ -508,7 +622,12 @@ pub unsafe extern "C" fn gsplat_surface_renderer_create_android(
 
     let path_str = match unsafe { CStr::from_ptr(path) }.to_str() {
         Ok(path) => path,
-        Err(_) => return ErrorCode::InvalidArgument.as_i32(),
+        Err(_) => {
+            return ffi_error(
+                ErrorCode::InvalidArgument,
+                "gsplat_surface_renderer_create_android: path is not valid UTF-8",
+            );
+        }
     };
 
     let mut renderer = match Renderer::with_config(RendererConfig {
@@ -517,20 +636,29 @@ pub unsafe extern "C" fn gsplat_surface_renderer_create_android(
         mode: RenderMode::SortedAlpha,
     }) {
         Ok(renderer) => renderer,
-        Err(err) => return err.code().as_i32(),
+        Err(err) => {
+            return ffi_error_display(err.code(), "gsplat_surface_renderer_create_android", err);
+        }
     };
 
     let loaded = match load_ply(Path::new(path_str)) {
         Ok(result) => result,
-        Err(err) => return err.code().as_i32(),
+        Err(err) => {
+            return ffi_error_display(err.code(), "gsplat_surface_renderer_create_android", err);
+        }
     };
     if let Err(err) = renderer.load_scene(loaded.scene) {
-        return err.code().as_i32();
+        return ffi_error_display(err.code(), "gsplat_surface_renderer_create_android", err);
     };
 
     let window = match NonNull::new(native_window) {
         Some(window) => window,
-        None => return ErrorCode::InvalidArgument.as_i32(),
+        None => {
+            return ffi_error(
+                ErrorCode::InvalidArgument,
+                "gsplat_surface_renderer_create_android: native_window is null",
+            );
+        }
     };
     let raw_display_handle =
         wgpu::rwh::RawDisplayHandle::Android(wgpu::rwh::AndroidDisplayHandle::new());
@@ -566,7 +694,10 @@ pub unsafe extern "C" fn gsplat_surface_renderer_create_uikit(
     out_renderer: *mut *mut GsplatSurfaceRenderer,
 ) -> i32 {
     if ui_view.is_null() || path.is_null() || out_renderer.is_null() {
-        return ErrorCode::InvalidArgument.as_i32();
+        return ffi_error(
+            ErrorCode::InvalidArgument,
+            "gsplat_surface_renderer_create_uikit: ui_view, path, or out_renderer is null",
+        );
     }
 
     unsafe {
@@ -575,7 +706,12 @@ pub unsafe extern "C" fn gsplat_surface_renderer_create_uikit(
 
     let path_str = match unsafe { CStr::from_ptr(path) }.to_str() {
         Ok(path) => path,
-        Err(_) => return ErrorCode::InvalidArgument.as_i32(),
+        Err(_) => {
+            return ffi_error(
+                ErrorCode::InvalidArgument,
+                "gsplat_surface_renderer_create_uikit: path is not valid UTF-8",
+            );
+        }
     };
 
     let mut renderer = match Renderer::with_config(RendererConfig {
@@ -584,20 +720,29 @@ pub unsafe extern "C" fn gsplat_surface_renderer_create_uikit(
         mode: RenderMode::SortedAlpha,
     }) {
         Ok(renderer) => renderer,
-        Err(err) => return err.code().as_i32(),
+        Err(err) => {
+            return ffi_error_display(err.code(), "gsplat_surface_renderer_create_uikit", err);
+        }
     };
 
     let loaded = match load_ply(Path::new(path_str)) {
         Ok(result) => result,
-        Err(err) => return err.code().as_i32(),
+        Err(err) => {
+            return ffi_error_display(err.code(), "gsplat_surface_renderer_create_uikit", err);
+        }
     };
     if let Err(err) = renderer.load_scene(loaded.scene) {
-        return err.code().as_i32();
+        return ffi_error_display(err.code(), "gsplat_surface_renderer_create_uikit", err);
     };
 
     let view = match NonNull::new(ui_view) {
         Some(view) => view,
-        None => return ErrorCode::InvalidArgument.as_i32(),
+        None => {
+            return ffi_error(
+                ErrorCode::InvalidArgument,
+                "gsplat_surface_renderer_create_uikit: ui_view is null",
+            );
+        }
     };
     let mut window_handle = wgpu::rwh::UiKitWindowHandle::new(view);
     window_handle.ui_view_controller = NonNull::new(ui_view_controller);
@@ -637,22 +782,32 @@ fn create_surface_renderer_from_raw_handles(
             log_surface_error(&format!(
                 "SurfacePresenter::from_raw_handles failed: {err:?}"
             ));
-            return err.code().as_i32();
+            return ffi_error_display(err.code(), "SurfacePresenter::from_raw_handles", err);
         }
     };
 
     let (surface_width, surface_height) = presenter.surface_size();
     if let Err(err) = renderer.set_size(surface_width, surface_height) {
-        return err.code().as_i32();
+        return ffi_error_display(err.code(), "gsplat_surface_renderer_set_size", err);
     }
     let camera_control = match auto_surface_camera_control(&renderer) {
         Ok(camera_control) => camera_control,
-        Err(code) => return code.as_i32(),
+        Err(code) => {
+            return ffi_error(
+                code,
+                "gsplat_surface_renderer_create: failed to create automatic camera",
+            );
+        }
     };
     let camera = surface_camera_from_control(camera_control, renderer.config());
     let async_sorter = match renderer.scene() {
         Some(scene) => SurfaceAsyncSorter::new(scene),
-        None => return ErrorCode::SceneNotLoaded.as_i32(),
+        None => {
+            return ffi_error(
+                ErrorCode::SceneNotLoaded,
+                "gsplat_surface_renderer_create: scene is not loaded",
+            );
+        }
     };
     let surface_renderer = Box::new(GsplatSurfaceRenderer {
         renderer,
@@ -677,7 +832,7 @@ fn create_surface_renderer_from_raw_handles(
         *out_renderer = Box::into_raw(surface_renderer);
     }
 
-    ErrorCode::Ok.as_i32()
+    ffi_ok()
 }
 
 /// Destroy a Surface renderer.
@@ -711,21 +866,34 @@ pub unsafe extern "C" fn gsplat_surface_renderer_resize(
 ) -> i32 {
     let renderer = match unsafe { renderer.as_mut() } {
         Some(renderer) => renderer,
-        None => return ErrorCode::InvalidArgument.as_i32(),
+        None => {
+            return ffi_error(
+                ErrorCode::InvalidArgument,
+                "gsplat_surface_renderer_resize: renderer is null",
+            );
+        }
     };
 
     if width == 0 || height == 0 {
-        return ErrorCode::InvalidArgument.as_i32();
+        return ffi_error(
+            ErrorCode::InvalidArgument,
+            "gsplat_surface_renderer_resize: width and height must be positive",
+        );
     }
 
     renderer.presenter.resize(width, height);
     let (surface_width, surface_height) = renderer.presenter.surface_size();
     if let Err(err) = renderer.renderer.set_size(surface_width, surface_height) {
-        return err.code().as_i32();
+        return ffi_error_display(err.code(), "gsplat_surface_renderer_resize", err);
     }
     renderer.camera_control = match auto_surface_camera_control(&renderer.renderer) {
         Ok(camera_control) => camera_control,
-        Err(code) => return code.as_i32(),
+        Err(code) => {
+            return ffi_error(
+                code,
+                "gsplat_surface_renderer_resize: failed to reset automatic camera",
+            );
+        }
     };
     renderer.camera =
         surface_camera_from_control(renderer.camera_control, renderer.renderer.config());
@@ -737,7 +905,7 @@ pub unsafe extern "C" fn gsplat_surface_renderer_resize(
     }
     renderer.render_error_logged = false;
 
-    ErrorCode::Ok.as_i32()
+    ffi_ok()
 }
 
 /// Set the Surface renderer sort interval in frames.
@@ -753,14 +921,26 @@ pub unsafe extern "C" fn gsplat_surface_renderer_set_sort_interval(
 ) -> i32 {
     let renderer = match unsafe { renderer.as_mut() } {
         Some(renderer) => renderer,
-        None => return ErrorCode::InvalidArgument.as_i32(),
+        None => {
+            return ffi_error(
+                ErrorCode::InvalidArgument,
+                "gsplat_surface_renderer_set_sort_interval: renderer is null",
+            );
+        }
     };
 
-    renderer.surface_sort_interval = interval.max(1);
+    if interval == 0 {
+        return ffi_error(
+            ErrorCode::InvalidArgument,
+            "gsplat_surface_renderer_set_sort_interval: interval must be positive",
+        );
+    }
+
+    renderer.surface_sort_interval = interval;
     renderer.surface_frames_since_sort = 0;
     renderer.uploaded_frame = false;
     renderer.render_error_logged = false;
-    ErrorCode::Ok.as_i32()
+    ffi_ok()
 }
 
 /// Enable or disable the experimental GPU preproject path.
@@ -776,7 +956,12 @@ pub unsafe extern "C" fn gsplat_surface_renderer_set_gpu_preproject(
 ) -> i32 {
     let renderer = match unsafe { renderer.as_mut() } {
         Some(renderer) => renderer,
-        None => return ErrorCode::InvalidArgument.as_i32(),
+        None => {
+            return ffi_error(
+                ErrorCode::InvalidArgument,
+                "gsplat_surface_renderer_set_gpu_preproject: renderer is null",
+            );
+        }
     };
 
     let enabled = enabled != 0;
@@ -789,7 +974,7 @@ pub unsafe extern "C" fn gsplat_surface_renderer_set_gpu_preproject(
         }
         renderer.render_error_logged = false;
     }
-    ErrorCode::Ok.as_i32()
+    ffi_ok()
 }
 
 /// Enable or disable double-buffering for the GPU preproject path.
@@ -805,7 +990,12 @@ pub unsafe extern "C" fn gsplat_surface_renderer_set_gpu_preproject_double_buffe
 ) -> i32 {
     let renderer = match unsafe { renderer.as_mut() } {
         Some(renderer) => renderer,
-        None => return ErrorCode::InvalidArgument.as_i32(),
+        None => {
+            return ffi_error(
+                ErrorCode::InvalidArgument,
+                "gsplat_surface_renderer_set_gpu_preproject_double_buffer: renderer is null",
+            );
+        }
     };
 
     let enabled = enabled != 0;
@@ -816,7 +1006,7 @@ pub unsafe extern "C" fn gsplat_surface_renderer_set_gpu_preproject_double_buffe
         renderer.uploaded_frame = false;
         renderer.render_error_logged = false;
     }
-    ErrorCode::Ok.as_i32()
+    ffi_ok()
 }
 
 /// Enable or disable the experimental static-direct Surface path.
@@ -832,7 +1022,12 @@ pub unsafe extern "C" fn gsplat_surface_renderer_set_static_direct(
 ) -> i32 {
     let renderer = match unsafe { renderer.as_mut() } {
         Some(renderer) => renderer,
-        None => return ErrorCode::InvalidArgument.as_i32(),
+        None => {
+            return ffi_error(
+                ErrorCode::InvalidArgument,
+                "gsplat_surface_renderer_set_static_direct: renderer is null",
+            );
+        }
     };
 
     let enabled = enabled != 0;
@@ -845,7 +1040,7 @@ pub unsafe extern "C" fn gsplat_surface_renderer_set_static_direct(
         }
         renderer.render_error_logged = false;
     }
-    ErrorCode::Ok.as_i32()
+    ffi_ok()
 }
 
 /// Enable or disable experimental async sorting.
@@ -861,7 +1056,12 @@ pub unsafe extern "C" fn gsplat_surface_renderer_set_async_sort(
 ) -> i32 {
     let renderer = match unsafe { renderer.as_mut() } {
         Some(renderer) => renderer,
-        None => return ErrorCode::InvalidArgument.as_i32(),
+        None => {
+            return ffi_error(
+                ErrorCode::InvalidArgument,
+                "gsplat_surface_renderer_set_async_sort: renderer is null",
+            );
+        }
     };
 
     let enabled = enabled != 0;
@@ -872,7 +1072,7 @@ pub unsafe extern "C" fn gsplat_surface_renderer_set_async_sort(
         renderer.uploaded_frame = false;
         renderer.render_error_logged = false;
     }
-    ErrorCode::Ok.as_i32()
+    ffi_ok()
 }
 
 /// Enable or disable experimental async geometry building.
@@ -888,14 +1088,25 @@ pub unsafe extern "C" fn gsplat_surface_renderer_set_async_geometry(
 ) -> i32 {
     let renderer = match unsafe { renderer.as_mut() } {
         Some(renderer) => renderer,
-        None => return ErrorCode::InvalidArgument.as_i32(),
+        None => {
+            return ffi_error(
+                ErrorCode::InvalidArgument,
+                "gsplat_surface_renderer_set_async_geometry: renderer is null",
+            );
+        }
     };
 
     let enabled = enabled != 0;
     if enabled && renderer.async_geometry.is_none() {
         let builder = match SurfaceInstanceBuilder::from_renderer(&renderer.renderer) {
             Ok(builder) => builder,
-            Err(err) => return err.code().as_i32(),
+            Err(err) => {
+                return ffi_error_display(
+                    err.code(),
+                    "gsplat_surface_renderer_set_async_geometry",
+                    err,
+                );
+            }
         };
         renderer.async_geometry = Some(SurfaceGeometryWorker::new(builder));
     }
@@ -908,7 +1119,7 @@ pub unsafe extern "C" fn gsplat_surface_renderer_set_async_geometry(
         renderer.uploaded_frame = false;
         renderer.render_error_logged = false;
     }
-    ErrorCode::Ok.as_i32()
+    ffi_ok()
 }
 
 /// Set the number of lazily allocated Surface instance buffers.
@@ -924,17 +1135,25 @@ pub unsafe extern "C" fn gsplat_surface_renderer_set_instance_buffer_count(
 ) -> i32 {
     let renderer = match unsafe { renderer.as_mut() } {
         Some(renderer) => renderer,
-        None => return ErrorCode::InvalidArgument.as_i32(),
+        None => {
+            return ffi_error(
+                ErrorCode::InvalidArgument,
+                "gsplat_surface_renderer_set_instance_buffer_count: renderer is null",
+            );
+        }
     };
 
     if count == 0 {
-        return ErrorCode::InvalidArgument.as_i32();
+        return ffi_error(
+            ErrorCode::InvalidArgument,
+            "gsplat_surface_renderer_set_instance_buffer_count: count must be positive",
+        );
     }
 
     renderer.presenter.set_instance_buffer_count(count);
     renderer.uploaded_frame = false;
     renderer.render_error_logged = false;
-    ErrorCode::Ok.as_i32()
+    ffi_ok()
 }
 
 /// Set the preferred Surface frame latency.
@@ -950,17 +1169,25 @@ pub unsafe extern "C" fn gsplat_surface_renderer_set_frame_latency(
 ) -> i32 {
     let renderer = match unsafe { renderer.as_mut() } {
         Some(renderer) => renderer,
-        None => return ErrorCode::InvalidArgument.as_i32(),
+        None => {
+            return ffi_error(
+                ErrorCode::InvalidArgument,
+                "gsplat_surface_renderer_set_frame_latency: renderer is null",
+            );
+        }
     };
 
     if latency == 0 {
-        return ErrorCode::InvalidArgument.as_i32();
+        return ffi_error(
+            ErrorCode::InvalidArgument,
+            "gsplat_surface_renderer_set_frame_latency: latency must be positive",
+        );
     }
 
     renderer.presenter.set_frame_latency(latency);
     renderer.uploaded_frame = false;
     renderer.render_error_logged = false;
-    ErrorCode::Ok.as_i32()
+    ffi_ok()
 }
 
 /// Reset the Surface camera to the automatic scene framing.
@@ -975,12 +1202,22 @@ pub unsafe extern "C" fn gsplat_surface_renderer_reset_camera(
 ) -> i32 {
     let renderer = match unsafe { renderer.as_mut() } {
         Some(renderer) => renderer,
-        None => return ErrorCode::InvalidArgument.as_i32(),
+        None => {
+            return ffi_error(
+                ErrorCode::InvalidArgument,
+                "gsplat_surface_renderer_reset_camera: renderer is null",
+            );
+        }
     };
 
     renderer.camera_control = match auto_surface_camera_control(&renderer.renderer) {
         Ok(camera_control) => camera_control,
-        Err(code) => return code.as_i32(),
+        Err(code) => {
+            return ffi_error(
+                code,
+                "gsplat_surface_renderer_reset_camera: failed to create automatic camera",
+            );
+        }
     };
     let rc = apply_surface_camera_control(renderer);
     if rc == ErrorCode::Ok.as_i32() {
@@ -1003,11 +1240,19 @@ pub unsafe extern "C" fn gsplat_surface_renderer_orbit(
 ) -> i32 {
     let renderer = match unsafe { renderer.as_mut() } {
         Some(renderer) => renderer,
-        None => return ErrorCode::InvalidArgument.as_i32(),
+        None => {
+            return ffi_error(
+                ErrorCode::InvalidArgument,
+                "gsplat_surface_renderer_orbit: renderer is null",
+            );
+        }
     };
 
     if !delta_yaw_radians.is_finite() || !delta_pitch_radians.is_finite() {
-        return ErrorCode::InvalidArgument.as_i32();
+        return ffi_error(
+            ErrorCode::InvalidArgument,
+            "gsplat_surface_renderer_orbit: deltas must be finite",
+        );
     }
 
     renderer.camera_control.yaw += delta_yaw_radians;
@@ -1029,11 +1274,19 @@ pub unsafe extern "C" fn gsplat_surface_renderer_zoom(
 ) -> i32 {
     let renderer = match unsafe { renderer.as_mut() } {
         Some(renderer) => renderer,
-        None => return ErrorCode::InvalidArgument.as_i32(),
+        None => {
+            return ffi_error(
+                ErrorCode::InvalidArgument,
+                "gsplat_surface_renderer_zoom: renderer is null",
+            );
+        }
     };
 
     if !distance_scale.is_finite() || distance_scale <= 0.0 {
-        return ErrorCode::InvalidArgument.as_i32();
+        return ffi_error(
+            ErrorCode::InvalidArgument,
+            "gsplat_surface_renderer_zoom: distance_scale must be finite and positive",
+        );
     }
 
     let min_distance =
@@ -1059,11 +1312,19 @@ pub unsafe extern "C" fn gsplat_surface_renderer_pan(
 ) -> i32 {
     let renderer = match unsafe { renderer.as_mut() } {
         Some(renderer) => renderer,
-        None => return ErrorCode::InvalidArgument.as_i32(),
+        None => {
+            return ffi_error(
+                ErrorCode::InvalidArgument,
+                "gsplat_surface_renderer_pan: renderer is null",
+            );
+        }
     };
 
     if !normalized_delta_x.is_finite() || !normalized_delta_y.is_finite() {
-        return ErrorCode::InvalidArgument.as_i32();
+        return ffi_error(
+            ErrorCode::InvalidArgument,
+            "gsplat_surface_renderer_pan: deltas must be finite",
+        );
     }
 
     let config = renderer.renderer.config();
@@ -1097,7 +1358,12 @@ pub unsafe extern "C" fn gsplat_surface_renderer_render_frame(
 ) -> i32 {
     let renderer = match unsafe { renderer.as_mut() } {
         Some(renderer) => renderer,
-        None => return ErrorCode::InvalidArgument.as_i32(),
+        None => {
+            return ffi_error(
+                ErrorCode::InvalidArgument,
+                "gsplat_surface_renderer_render_frame: renderer is null",
+            );
+        }
     };
 
     let result = if renderer.uploaded_frame && !renderer.surface_static_direct {
@@ -1105,7 +1371,12 @@ pub unsafe extern "C" fn gsplat_surface_renderer_render_frame(
     } else if renderer.surface_async_sort {
         match render_surface_frame_async_sort(renderer) {
             Ok(result) => Ok(Some(result)),
-            Err(code) => return code.as_i32(),
+            Err(code) => {
+                return ffi_error(
+                    code,
+                    "gsplat_surface_renderer_render_frame: async sort failed",
+                );
+            }
         }
     } else if renderer.surface_async_geometry
         && !renderer.surface_gpu_preproject
@@ -1113,7 +1384,12 @@ pub unsafe extern "C" fn gsplat_surface_renderer_render_frame(
     {
         match render_surface_frame_async_geometry(renderer) {
             Ok(result) => Ok(Some(result)),
-            Err(code) => return code.as_i32(),
+            Err(code) => {
+                return ffi_error(
+                    code,
+                    "gsplat_surface_renderer_render_frame: async geometry failed",
+                );
+            }
         }
     } else {
         let refresh_sort = renderer.surface_sort_interval <= 1
@@ -1125,7 +1401,13 @@ pub unsafe extern "C" fn gsplat_surface_renderer_render_frame(
                 .build_surface_sorted_indices_with_sort_refresh(&renderer.camera, refresh_sort)
             {
                 Ok(result) => result,
-                Err(err) => return err.code().as_i32(),
+                Err(err) => {
+                    return ffi_error_display(
+                        err.code(),
+                        "gsplat_surface_renderer_render_frame",
+                        err,
+                    );
+                }
             };
             let sorted_indices = renderer.renderer.current_sorted_indices();
             if let Err(err) = renderer.presenter.render_direct_sorted_indices(
@@ -1133,7 +1415,7 @@ pub unsafe extern "C" fn gsplat_surface_renderer_render_frame(
                 &renderer.camera,
                 refresh_sort,
             ) {
-                return err.code().as_i32();
+                return ffi_error_display(err.code(), "gsplat_surface_renderer_render_frame", err);
             }
             stats
         } else if renderer.surface_gpu_preproject {
@@ -1142,7 +1424,13 @@ pub unsafe extern "C" fn gsplat_surface_renderer_render_frame(
                 .build_surface_sorted_indices_with_sort_refresh(&renderer.camera, refresh_sort)
             {
                 Ok(result) => result,
-                Err(err) => return err.code().as_i32(),
+                Err(err) => {
+                    return ffi_error_display(
+                        err.code(),
+                        "gsplat_surface_renderer_render_frame",
+                        err,
+                    );
+                }
             };
             let sorted_indices = renderer.renderer.current_sorted_indices();
             if let Err(err) = renderer.presenter.render_sorted_indices(
@@ -1150,7 +1438,7 @@ pub unsafe extern "C" fn gsplat_surface_renderer_render_frame(
                 &renderer.camera,
                 refresh_sort,
             ) {
-                return err.code().as_i32();
+                return ffi_error_display(err.code(), "gsplat_surface_renderer_render_frame", err);
             }
             stats
         } else {
@@ -1162,13 +1450,19 @@ pub unsafe extern "C" fn gsplat_surface_renderer_render_frame(
                     refresh_sort,
                 ) {
                 Ok(result) => result,
-                Err(err) => return err.code().as_i32(),
+                Err(err) => {
+                    return ffi_error_display(
+                        err.code(),
+                        "gsplat_surface_renderer_render_frame",
+                        err,
+                    );
+                }
             };
             if let Err(err) = renderer
                 .presenter
                 .render_instances(&renderer.instances, &renderer.camera)
             {
-                return err.code().as_i32();
+                return ffi_error_display(err.code(), "gsplat_surface_renderer_render_frame", err);
             }
             stats
         };
@@ -1189,7 +1483,7 @@ pub unsafe extern "C" fn gsplat_surface_renderer_render_frame(
                 renderer.uploaded_frame = true;
             }
             renderer.render_error_logged = false;
-            ErrorCode::Ok.as_i32()
+            ffi_ok()
         }
         Err(err) => {
             if !renderer.render_error_logged {
@@ -1198,7 +1492,7 @@ pub unsafe extern "C" fn gsplat_surface_renderer_render_frame(
                 ));
                 renderer.render_error_logged = true;
             }
-            err.code().as_i32()
+            ffi_error_display(err.code(), "gsplat_surface_renderer_render_frame", err)
         }
     }
 }
@@ -1391,18 +1685,26 @@ pub unsafe extern "C" fn gsplat_surface_renderer_get_stats(
 ) -> i32 {
     let renderer = match unsafe { renderer.as_ref() } {
         Some(renderer) => renderer,
-        None => return ErrorCode::InvalidArgument.as_i32(),
+        None => {
+            return ffi_error(
+                ErrorCode::InvalidArgument,
+                "gsplat_surface_renderer_get_stats: renderer is null",
+            );
+        }
     };
 
     if out_stats.is_null() {
-        return ErrorCode::InvalidArgument.as_i32();
+        return ffi_error(
+            ErrorCode::InvalidArgument,
+            "gsplat_surface_renderer_get_stats: out_stats is null",
+        );
     }
 
     unsafe {
         *out_stats = renderer.surface_stats.into();
     }
 
-    ErrorCode::Ok.as_i32()
+    ffi_ok()
 }
 
 fn sort_positions_for_camera(
@@ -1527,13 +1829,16 @@ fn auto_surface_camera_control(renderer: &Renderer) -> Result<SurfaceCameraContr
 fn apply_surface_camera_control(renderer: &mut GsplatSurfaceRenderer) -> i32 {
     let camera = surface_camera_from_control(renderer.camera_control, renderer.renderer.config());
     if camera.validate().is_err() {
-        return ErrorCode::InvalidArgument.as_i32();
+        return ffi_error(
+            ErrorCode::InvalidArgument,
+            "surface camera control produced an invalid camera",
+        );
     }
 
     renderer.camera = camera;
     renderer.uploaded_frame = false;
     renderer.render_error_logged = false;
-    ErrorCode::Ok.as_i32()
+    ffi_ok()
 }
 
 fn surface_camera_from_control(control: SurfaceCameraControl, config: RendererConfig) -> Camera {
@@ -1678,11 +1983,12 @@ mod tests {
         gsplat_context_create, gsplat_context_destroy, gsplat_context_get_stats,
         gsplat_context_load_scene_path, gsplat_context_render_frame,
         gsplat_context_set_auto_camera, gsplat_context_set_camera, gsplat_error_message,
-        gsplat_surface_renderer_get_stats, gsplat_surface_renderer_orbit,
-        gsplat_surface_renderer_pan, gsplat_surface_renderer_render_frame,
-        gsplat_surface_renderer_reset_camera, gsplat_surface_renderer_resize,
-        gsplat_surface_renderer_set_async_geometry, gsplat_surface_renderer_set_async_sort,
-        gsplat_surface_renderer_set_frame_latency, gsplat_surface_renderer_set_gpu_preproject,
+        gsplat_last_error_message, gsplat_surface_renderer_get_stats,
+        gsplat_surface_renderer_orbit, gsplat_surface_renderer_pan,
+        gsplat_surface_renderer_render_frame, gsplat_surface_renderer_reset_camera,
+        gsplat_surface_renderer_resize, gsplat_surface_renderer_set_async_geometry,
+        gsplat_surface_renderer_set_async_sort, gsplat_surface_renderer_set_frame_latency,
+        gsplat_surface_renderer_set_gpu_preproject,
         gsplat_surface_renderer_set_gpu_preproject_double_buffer,
         gsplat_surface_renderer_set_instance_buffer_count,
         gsplat_surface_renderer_set_sort_interval, gsplat_surface_renderer_set_static_direct,
@@ -1709,6 +2015,20 @@ mod tests {
 
         let unknown = unsafe { std::ffi::CStr::from_ptr(gsplat_error_message(-1)) };
         assert_eq!(unknown.to_str().unwrap(), "unknown error");
+    }
+
+    #[test]
+    fn last_error_message_tracks_recent_failure() {
+        let rc = unsafe { gsplat_context_load_scene_path(ptr::null_mut(), ptr::null()) };
+        assert_eq!(rc, ErrorCode::InvalidArgument.as_i32());
+
+        let detail = unsafe { std::ffi::CStr::from_ptr(gsplat_last_error_message()) };
+        assert!(
+            detail
+                .to_str()
+                .unwrap()
+                .contains("gsplat_context_load_scene_path")
+        );
     }
 
     #[test]

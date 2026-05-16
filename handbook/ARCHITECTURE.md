@@ -49,6 +49,9 @@
   starts from C, Swift, or Kotlin/JNI host entrypoints
   crosses `crates/gsplat-ffi-c/include/gsplat.h` and `crates/gsplat-ffi-c/src/lib.rs`
   ends in the shared renderer and stats path
+  keeps each native handle owned by one serialized thread or queue; wrapper
+  APIs add their own locking, while direct C/JNI callers must provide the same
+  serialization
 
 - Android Surface flow:
   starts at the local `bindings/android/gsplat-android` library module or
@@ -93,6 +96,8 @@
 
 - `SortedAlpha` is the only release-gated path and the default mode expected by validation flows.
 - The public C header and the Rust FFI implementation must stay in sync.
+- Non-zero FFI returns should leave `gsplat_last_error_message()` with
+  operation-specific detail for Swift/Kotlin/Web wrapper errors.
 - PLY input normalization is not optional: quaternion remapping and `RDF -> RUF` conversion happen at load time.
 - Mobile examples are integration validators. Android and Apple packaging live
   under `bindings/`, but neither path is a published product SDK yet.

@@ -13,7 +13,9 @@ not published to Maven and is not a full Android product SDK yet.
 
 The stable v0.1 render path is `GSPLAT_RENDER_MODE_SORTED_ALPHA`. Keep errors as
 integer `GsplatErrorCode` values at the native boundary and convert them to
-readable text with `gsplat_error_message()` or `NativeBridge.errorMessage()`.
+readable text with `gsplat_error_message()` / `NativeBridge.errorMessage()`.
+Wrappers should prefer `gsplat_last_error_message()` /
+`NativeBridge.lastErrorMessage()` for operation-specific details.
 
 This directory provides three validation and packaging paths:
 
@@ -33,10 +35,41 @@ The library module namespace is `com.gsplat.android`. It packages the generated
 `libgsplat_jni.so` and exposes:
 
 - `NativeBridge`: low-level JNI calls matching the C ABI
+- `GsplatAndroidVersion`: runtime ABI compatibility guard
 - `GsplatSurfaceRenderer`: typed Kotlin handle wrapper
 - `GsplatSurfaceOptions`: Surface A/B option bundle
 - `GsplatSurfaceStats`: typed frame stats
 - `GsplatException`: readable native error wrapper
+
+Local Gradle consumers can depend on the module directly from this repository,
+or on the generated AAR through a local `flatDir` repository. In either case,
+build the AAR from this repository first:
+
+```bash
+bash bindings/android/scripts/build-aar.sh
+```
+
+Minimal wrapper-first usage from an Android `Surface`:
+
+```kotlin
+import com.gsplat.android.GsplatSurfaceRenderer
+
+val renderer = GsplatSurfaceRenderer.create(
+    surface = surface,
+    datasetPath = sceneFile.absolutePath,
+    width = width,
+    height = height
+)
+
+renderer.renderFrame()
+val stats = renderer.stats()
+renderer.close()
+```
+
+`GsplatSurfaceRenderer` serializes access to the native handle internally. If
+you call `NativeBridge` directly, keep each native Surface renderer handle owned
+by one serialized thread or queue and destroy it only after in-flight work has
+returned.
 
 ## 2) Host smoke (JNI)
 
@@ -87,6 +120,10 @@ Prereqs:
 - Android SDK installed. The scripts read `ANDROID_SDK_ROOT`, then
   `ANDROID_HOME`, then fall back to `~/Library/Android/sdk`.
 - Android NDK installed (default version used: `29.0.14206865`)
+- Android native API level defaults to `24`; override with
+  `ANDROID_API_LEVEL=<level>` when testing another compatible API level.
+- The repo-local scripts use a checksum-verified Gradle distribution helper
+  instead of assuming a checked-in wrapper.
 
 Build steps:
 
@@ -96,7 +133,7 @@ bash bindings/android/scripts/build-sample-apk.sh
 
 Outputs:
 
-- APK: `examples/android/app/build/outputs/apk/debug/app-debug.apk`
+- APK: `examples/android/app/build/outputs/apk/debug/sample-app-debug.apk`
 - JNI lib: `bindings/android/gsplat-android/src/main/jniLibs/arm64-v8a/libgsplat_jni.so`
 
 Notes:
@@ -105,6 +142,9 @@ Notes:
 - Imported files come from the Android system picker as `content://` URIs and are copied into `files/imported_scene.ply` before crossing the JNI/C ABI boundary, which still receives a normal local file path.
 - On Android emulator, the `SurfaceView` buffer is capped to a 1600px maximum side. The Surface presenter does not sample or cap the sorted splat list; visual stability is preferred over artificial throughput wins.
 - The status overlay reports `drawn=<surface_instances>/<visible_instances>` for the Android Surface path.
+- The Surface A/B options in `GsplatSurfaceOptions` are experimental benchmark
+  knobs. Leave their defaults in normal integrations unless you are comparing a
+  specific path.
 - Maven publishing, additional ABIs, and a higher-level `GsplatSurfaceView`
   are intentionally not solved here yet. Future Android SDK work should keep
   wrapping the same C ABI rather than introduce a separate render contract.
@@ -117,7 +157,7 @@ After building the APK, push the shared flower dataset into app storage and laun
 ANDROID_SDK_ROOT="${ANDROID_SDK_ROOT:-$HOME/Library/Android/sdk}"
 ADB="$ANDROID_SDK_ROOT/platform-tools/adb"
 
-"$ADB" install -r examples/android/app/build/outputs/apk/debug/app-debug.apk
+"$ADB" install -r examples/android/app/build/outputs/apk/debug/sample-app-debug.apk
 "$ADB" push tests/datasets/external/nvidia_flowers_1/flowers_1/flowers_1.ply /data/local/tmp/flowers_1.ply
 "$ADB" shell run-as com.gsplat.example mkdir -p files
 "$ADB" shell run-as com.gsplat.example cp /data/local/tmp/flowers_1.ply files/flowers_1.ply

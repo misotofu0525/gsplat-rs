@@ -52,6 +52,7 @@ jobs:
           cargo install wasm-bindgen-cli --version 0.2.121 --locked
           bash packages/web/scripts/build.sh
           node --check packages/web/dist/index.js
+          npm --prefix packages/web run pack:dry-run
       - name: Cargo check
         run: cargo check --workspace
       - name: Cargo test
@@ -64,6 +65,10 @@ jobs:
         run: |
           ANDROID_SDK_ROOT="$ANDROID_HOME" bash bindings/android/scripts/build-aar.sh
           test -f bindings/android/gsplat-android/build/outputs/aar/gsplat-android-release.aar
+      - name: Android sample APK build
+        run: |
+          ANDROID_SDK_ROOT="$ANDROID_HOME" bash bindings/android/scripts/build-sample-apk.sh
+          test -f examples/android/app/build/outputs/apk/debug/sample-app-debug.apk
       - name: Stability smoke (short)
         env:
           STABILITY_SECONDS: "5"

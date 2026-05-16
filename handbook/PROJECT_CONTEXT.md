@@ -77,6 +77,9 @@ For the broader command matrix, use `VERIFICATION.md`.
   API yet. iOS integration now has a local `GsplatKit` Swift package wrapper
   and local `GsplatFFI.xcframework` build path, but it is not a published
   binary SwiftPM release or polished iOS product API yet.
+- Native Surface handles are single-owner handles. Public wrappers serialize
+  access before calling the C ABI; direct C or JNI integrations should use the
+  same one-thread-or-queue ownership rule.
 - The Web example is a browser validation surface. The Rust/WASM renderer boundary
   is active in `crates/gsplat-web`, and `packages/web` provides
   a local ESM wrapper, but the Web SDK is not published to npm or stable in the

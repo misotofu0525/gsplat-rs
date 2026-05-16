@@ -21,6 +21,13 @@ if [[ ! -d "$NDK_ROOT" ]]; then
   exit 1
 fi
 
+ANDROID_API_LEVEL="${ANDROID_API_LEVEL:-24}"
+if ! [[ "$ANDROID_API_LEVEL" =~ ^[0-9]+$ ]] || [[ "$ANDROID_API_LEVEL" -lt 24 ]]; then
+  echo "Unsupported ANDROID_API_LEVEL: $ANDROID_API_LEVEL"
+  echo "Expected an integer >= 24 to match the Android minSdk contract"
+  exit 1
+fi
+
 case "$UNAME_S" in
   Darwin)
     if [[ "$(uname -m)" == "arm64" ]]; then
@@ -55,7 +62,7 @@ if [[ -z "$TOOLCHAIN_ROOT" ]]; then
   exit 1
 fi
 
-CLANG="$TOOLCHAIN_ROOT/bin/aarch64-linux-android35-clang"
+CLANG="$TOOLCHAIN_ROOT/bin/aarch64-linux-android${ANDROID_API_LEVEL}-clang"
 if [[ ! -x "$CLANG" ]]; then
   echo "Android clang not found: $CLANG"
   exit 1
@@ -124,4 +131,5 @@ cp "$OUT_SO" "$SYMBOLS_DIR/libgsplat_jni.so"
 "$STRIP" --strip-unneeded "$OUT_SO"
 
 echo "android native build complete"
+echo "android_api_level=$ANDROID_API_LEVEL"
 echo "so=$OUT_SO"

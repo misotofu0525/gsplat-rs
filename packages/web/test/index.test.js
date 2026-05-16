@@ -78,17 +78,7 @@ test("GsplatWebRenderer forwards commands and normalizes return values", () => {
   renderer.zoom(1.1);
   renderer.pan(0.05, -0.05);
   renderer.setSortInterval(2);
-  renderer.free();
 
-  assert.deepEqual(native.calls.slice(0, 7), [
-    ["resize", 640, 480],
-    ["resetCamera"],
-    ["orbit", 0.1, -0.2],
-    ["zoom", 1.1],
-    ["pan", 0.05, -0.05],
-    ["setSortInterval", 2],
-    ["free"],
-  ]);
   assert.deepEqual(renderer.renderFrame(), {
     frameMs: 1.25,
     preprocessMs: 0,
@@ -109,6 +99,20 @@ test("GsplatWebRenderer forwards commands and normalizes return values", () => {
     width: 640,
     height: 480,
   });
+  renderer.free();
+
+  assert.deepEqual(native.calls.slice(0, 8), [
+    ["resize", 640, 480],
+    ["resetCamera"],
+    ["orbit", 0.1, -0.2],
+    ["zoom", 1.1],
+    ["pan", 0.05, -0.05],
+    ["setSortInterval", 2],
+    ["renderFrame"],
+    ["free"],
+  ]);
+  assert.equal(renderer.isDisposed, true);
+  assert.throws(() => renderer.renderFrame(), /disposed/);
 });
 
 test("GsplatWebRenderer rejects invalid command arguments", () => {

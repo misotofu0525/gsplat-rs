@@ -26,13 +26,10 @@ case "$IOS_XCFRAMEWORK_PROFILE" in
     ;;
 esac
 
-ARCH="$(uname -m)"
 if [[ -n "${IOS_XCFRAMEWORK_SIM_TARGETS:-}" ]]; then
   read -r -a SIM_TARGETS <<<"$IOS_XCFRAMEWORK_SIM_TARGETS"
-elif [[ "$ARCH" == "arm64" ]]; then
-  SIM_TARGETS=(aarch64-apple-ios-sim)
 else
-  SIM_TARGETS=(x86_64-apple-ios)
+  SIM_TARGETS=(aarch64-apple-ios-sim x86_64-apple-ios)
 fi
 
 DEVICE_TARGET="aarch64-apple-ios"

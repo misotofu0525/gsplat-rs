@@ -6,68 +6,88 @@ import java.io.Closeable
 class GsplatSurfaceRenderer private constructor(
     private var nativeHandle: Long
 ) : Closeable {
+    private val lock = Any()
+
     val isClosed: Boolean
-        get() = nativeHandle == 0L
+        get() = synchronized(lock) { nativeHandle == 0L }
 
     fun resize(width: Int, height: Int) {
-        checkOpen()
-        checkResult(NativeBridge.resizeSurfaceRenderer(nativeHandle, width, height))
+        synchronized(lock) {
+            checkOpen()
+            checkResult(NativeBridge.resizeSurfaceRenderer(nativeHandle, width, height))
+        }
     }
 
     fun configure(options: GsplatSurfaceOptions) {
-        checkOpen()
-        checkResult(NativeBridge.setSurfaceSortInterval(nativeHandle, options.sortInterval))
-        checkResult(NativeBridge.setSurfaceGpuPreprojectEnabled(nativeHandle, options.gpuPreproject))
-        checkResult(
-            NativeBridge.setSurfaceGpuPreprojectDoubleBufferEnabled(
-                nativeHandle,
-                options.gpuPreprojectDoubleBuffer
+        synchronized(lock) {
+            checkOpen()
+            checkResult(NativeBridge.setSurfaceSortInterval(nativeHandle, options.sortInterval))
+            checkResult(NativeBridge.setSurfaceGpuPreprojectEnabled(nativeHandle, options.gpuPreproject))
+            checkResult(
+                NativeBridge.setSurfaceGpuPreprojectDoubleBufferEnabled(
+                    nativeHandle,
+                    options.gpuPreprojectDoubleBuffer
+                )
             )
-        )
-        checkResult(NativeBridge.setSurfaceStaticDirectEnabled(nativeHandle, options.staticDirect))
-        checkResult(NativeBridge.setSurfaceAsyncSortEnabled(nativeHandle, options.asyncSort))
-        checkResult(NativeBridge.setSurfaceAsyncGeometryEnabled(nativeHandle, options.asyncGeometry))
-        checkResult(NativeBridge.setSurfaceInstanceBufferCount(nativeHandle, options.instanceBufferCount))
-        checkResult(NativeBridge.setSurfaceFrameLatency(nativeHandle, options.frameLatency))
+            checkResult(NativeBridge.setSurfaceStaticDirectEnabled(nativeHandle, options.staticDirect))
+            checkResult(NativeBridge.setSurfaceAsyncSortEnabled(nativeHandle, options.asyncSort))
+            checkResult(NativeBridge.setSurfaceAsyncGeometryEnabled(nativeHandle, options.asyncGeometry))
+            checkResult(NativeBridge.setSurfaceInstanceBufferCount(nativeHandle, options.instanceBufferCount))
+            checkResult(NativeBridge.setSurfaceFrameLatency(nativeHandle, options.frameLatency))
+        }
     }
 
     fun resetCamera() {
-        checkOpen()
-        checkResult(NativeBridge.resetSurfaceCamera(nativeHandle))
+        synchronized(lock) {
+            checkOpen()
+            checkResult(NativeBridge.resetSurfaceCamera(nativeHandle))
+        }
     }
 
     fun orbit(deltaYawRadians: Float, deltaPitchRadians: Float) {
-        checkOpen()
-        checkResult(NativeBridge.orbitSurfaceRenderer(nativeHandle, deltaYawRadians, deltaPitchRadians))
+        synchronized(lock) {
+            checkOpen()
+            checkResult(NativeBridge.orbitSurfaceRenderer(nativeHandle, deltaYawRadians, deltaPitchRadians))
+        }
     }
 
     fun zoom(distanceScale: Float) {
-        checkOpen()
-        checkResult(NativeBridge.zoomSurfaceRenderer(nativeHandle, distanceScale))
+        synchronized(lock) {
+            checkOpen()
+            checkResult(NativeBridge.zoomSurfaceRenderer(nativeHandle, distanceScale))
+        }
     }
 
     fun pan(normalizedDeltaX: Float, normalizedDeltaY: Float) {
-        checkOpen()
-        checkResult(NativeBridge.panSurfaceRenderer(nativeHandle, normalizedDeltaX, normalizedDeltaY))
+        synchronized(lock) {
+            checkOpen()
+            checkResult(NativeBridge.panSurfaceRenderer(nativeHandle, normalizedDeltaX, normalizedDeltaY))
+        }
     }
 
     fun renderFrame() {
-        checkOpen()
-        checkResult(NativeBridge.renderSurfaceFrame(nativeHandle))
+        synchronized(lock) {
+            checkOpen()
+            checkResult(NativeBridge.renderSurfaceFrame(nativeHandle))
+        }
     }
 
     fun stats(): GsplatSurfaceStats {
-        checkOpen()
-        val raw = LongArray(6)
-        checkResult(NativeBridge.getSurfaceStats(nativeHandle, raw))
-        return GsplatSurfaceStats.fromRaw(raw)
+        synchronized(lock) {
+            checkOpen()
+            val raw = LongArray(6)
+            checkResult(NativeBridge.getSurfaceStats(nativeHandle, raw))
+            return GsplatSurfaceStats.fromRaw(raw)
+        }
     }
 
     override fun close() {
-        val handle = nativeHandle
-        nativeHandle = 0L
-        if (handle != 0L) {
-            NativeBridge.destroySurfaceRenderer(handle)
+        synchronized(lock) {
+            val handle = nativeHandle
+            nativeHandle = 0L
+            if (handle != 0L) {
+                NativeBridge.destroySurfaceRenderer(handle)
+            }
         }
     }
 
@@ -83,6 +103,8 @@ class GsplatSurfaceRenderer private constructor(
             height: Int,
             options: GsplatSurfaceOptions = GsplatSurfaceOptions()
         ): GsplatSurfaceRenderer {
+            GsplatAndroidVersion.requireSupported()
+
             val outError = IntArray(1)
             val handle = NativeBridge.createSurfaceRenderer(
                 surface,

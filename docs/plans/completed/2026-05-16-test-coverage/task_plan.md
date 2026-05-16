@@ -65,3 +65,4 @@
 - `cargo run -p desktop-example -- tests/datasets/minimal_ascii.ply --frames 1`
   - Passed with `visible_count=2` and `drawn_count=2`.
 - `node --check examples/web/src/main.js`
+  - Passed.

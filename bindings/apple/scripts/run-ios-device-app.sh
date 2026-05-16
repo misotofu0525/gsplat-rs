@@ -23,19 +23,12 @@ fi
 
 LAUNCH_ARGS=("$@")
 
-find_connected_device() {
-  xcrun devicectl list devices \
-    | awk '/connected/ && /iPhone/ {print $3; exit}'
-}
-
 DEVICE_ID="${IOS_DEVICE_ID:-}"
-if [[ -z "$DEVICE_ID" ]]; then
-  DEVICE_ID="$(find_connected_device)"
-fi
 
 if [[ -z "$DEVICE_ID" ]]; then
-  echo "no connected iPhone found" >&2
-  echo "connect and unlock the device, enable Developer Mode, then retry" >&2
+  echo "set IOS_DEVICE_ID to the target iPhone identifier" >&2
+  echo "available devices:" >&2
+  xcrun devicectl list devices >&2 || true
   exit 1
 fi
 

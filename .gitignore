@@ -2,12 +2,14 @@ target/
 .DS_Store
 .idea/
 bindings/android/.gradle/
+bindings/android/.kotlin/
 bindings/android/.idea/
 bindings/android/host-smoke/build/
 bindings/android/gsplat-android/build/
 bindings/android/gsplat-android/src/main/jniLibs/
 bindings/android/local.properties
 bindings/apple/GsplatKit/.swiftpm/
+bindings/apple/GsplatKit/.build/
 bindings/apple/GsplatKit/Binaries/
 examples/android/app/build/
 examples/android/app/src/main/jniLibs/

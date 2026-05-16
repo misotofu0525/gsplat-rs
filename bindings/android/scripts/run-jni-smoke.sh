@@ -45,17 +45,7 @@ clang \
   -lgsplat_ffi_c \
   -o "$JNI_LIB_DIR/libgsplat_jni.$JNI_LIB_EXT"
 
-GRADLE_VERSION="${GRADLE_VERSION:-8.7}"
-GRADLE_DIR="$ROOT_DIR/target/gradle-$GRADLE_VERSION"
-GRADLE_BIN="$GRADLE_DIR/bin/gradle"
-
-if [[ ! -x "$GRADLE_BIN" ]]; then
-  ZIP_PATH="$ROOT_DIR/target/gradle-$GRADLE_VERSION-bin.zip"
-  URL="https://services.gradle.org/distributions/gradle-$GRADLE_VERSION-bin.zip"
-  curl -fsSL "$URL" -o "$ZIP_PATH"
-  rm -rf "$GRADLE_DIR"
-  unzip -q "$ZIP_PATH" -d "$ROOT_DIR/target"
-fi
+GRADLE_BIN="$("$BINDINGS_DIR/scripts/ensure-gradle.sh")"
 
 "$GRADLE_BIN" \
   -p "$BINDINGS_DIR" \

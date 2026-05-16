@@ -51,23 +51,75 @@ if [[ ! -f "$DATASET_ABS" ]]; then
   exit 1
 fi
 
-DEFAULT_PROFILE="$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles/0429b91f-847d-46c8-bc1b-722ae2d71cdb.mobileprovision"
-PROVISIONING_PROFILE="${IOS_PROVISIONING_PROFILE:-$DEFAULT_PROFILE}"
-CODE_SIGN_IDENTITY="${IOS_CODE_SIGN_IDENTITY:-457B874995C77ADD7C65C03AF7B227A7FD4ADA37}"
+select_provisioning_profile() {
+  if [[ -n "${IOS_PROVISIONING_PROFILE:-}" ]]; then
+    echo "$IOS_PROVISIONING_PROFILE"
+    return 0
+  fi
+
+  local profiles_dir="$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles"
+  local profile plist app_identifier bundle_pattern get_task_allow
+  for profile in "$profiles_dir"/*.mobileprovision; do
+    [[ -f "$profile" ]] || continue
+    plist="$(mktemp)"
+    if security cms -D -i "$profile" >"$plist" 2>/dev/null; then
+      get_task_allow="$(/usr/libexec/PlistBuddy -c 'Print :Entitlements:get-task-allow' "$plist" 2>/dev/null || echo false)"
+      app_identifier="$(/usr/libexec/PlistBuddy -c 'Print :Entitlements:application-identifier' "$plist" 2>/dev/null || true)"
+      bundle_pattern="${app_identifier#*.}"
+      if [[ "$get_task_allow" == "true" && ( "$bundle_pattern" == "$BUNDLE_ID" || "$bundle_pattern" == "*" ) ]]; then
+        rm -f "$plist"
+        echo "$profile"
+        return 0
+      fi
+    fi
+    rm -f "$plist"
+  done
+
+  return 1
+}
+
+select_code_sign_identity() {
+  if [[ -n "${IOS_CODE_SIGN_IDENTITY:-}" ]]; then
+    echo "$IOS_CODE_SIGN_IDENTITY"
+    return 0
+  fi
+
+  security find-identity -v -p codesigning \
+    | sed -n 's/.*"\(Apple Development:[^"]*\)".*/\1/p' \
+    | head -n 1
+}
+
+PROVISIONING_PROFILE="$(select_provisioning_profile || true)"
+CODE_SIGN_IDENTITY="$(select_code_sign_identity || true)"
 
 if [[ ! -f "$PROVISIONING_PROFILE" ]]; then
-  echo "missing provisioning profile: $PROVISIONING_PROFILE" >&2
-  echo "set IOS_PROVISIONING_PROFILE to a development profile that matches $BUNDLE_ID" >&2
+  echo "missing provisioning profile for $BUNDLE_ID" >&2
+  echo "set IOS_PROVISIONING_PROFILE to a development profile that matches IOS_BUNDLE_ID" >&2
+  exit 1
+fi
+
+if [[ -z "$CODE_SIGN_IDENTITY" ]]; then
+  echo "missing code signing identity" >&2
+  echo "set IOS_CODE_SIGN_IDENTITY or install an Apple Development signing identity" >&2
   exit 1
 fi
 
 PROFILE_PLIST="$(mktemp)"
 security cms -D -i "$PROVISIONING_PROFILE" >"$PROFILE_PLIST"
 TEAM_ID="$(/usr/libexec/PlistBuddy -c 'Print :Entitlements:com.apple.developer.team-identifier' "$PROFILE_PLIST")"
+APP_IDENTIFIER="$(/usr/libexec/PlistBuddy -c 'Print :Entitlements:application-identifier' "$PROFILE_PLIST" 2>/dev/null || true)"
+BUNDLE_PATTERN="${APP_IDENTIFIER#*.}"
 GET_TASK_ALLOW="$(/usr/libexec/PlistBuddy -c 'Print :Entitlements:get-task-allow' "$PROFILE_PLIST" 2>/dev/null || echo false)"
 if [[ "$GET_TASK_ALLOW" != "true" ]]; then
   rm -f "$PROFILE_PLIST"
   echo "provisioning profile is not a development profile: $PROVISIONING_PROFILE" >&2
+  exit 1
+fi
+if [[ "$BUNDLE_PATTERN" != "$BUNDLE_ID" && "$BUNDLE_PATTERN" != "*" ]]; then
+  rm -f "$PROFILE_PLIST"
+  echo "provisioning profile App ID does not match bundle id" >&2
+  echo "profile_app_id=$APP_IDENTIFIER" >&2
+  echo "bundle_id=$BUNDLE_ID" >&2
   exit 1
 fi
 
@@ -138,5 +190,5 @@ echo "swift_target=$SWIFT_TARGET"
 echo "app=$APP_BUNDLE"
 echo "bundle_id=$BUNDLE_ID"
 echo "team_id=$TEAM_ID"
-echo "provisioning_profile=$PROVISIONING_PROFILE"
+echo "provisioning_profile=$(basename "$PROVISIONING_PROFILE")"
 echo "dataset=$DATASET_ABS"

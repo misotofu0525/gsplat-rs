@@ -22,6 +22,41 @@ The wrapper exposes:
 - `createGsplatRendererFromUrl()` for fetch-and-render flows
 - `GsplatWebRenderer` for camera controls, resize, stats, and disposal
 
+Minimal browser usage:
+
+```js
+import {
+  createGsplatRendererFromUrl,
+  initGsplatWeb,
+} from "./dist/index.js";
+
+await initGsplatWeb({
+  moduleUrl: "./dist/wasm/gsplat_web.js",
+  wasmUrl: "./dist/wasm/gsplat_web_bg.wasm",
+});
+
+const renderer = await createGsplatRendererFromUrl({
+  canvas: document.querySelector("canvas"),
+  url: "/models/scene.ply",
+});
+
+renderer.renderFrame();
+renderer.dispose();
+```
+
+Deploy `dist/index.js` and `dist/wasm/` together. Use `moduleUrl` and `wasmUrl`
+when your application serves the wasm-bindgen files from a different base path.
+`dispose()` and `free()` are equivalent; both release the native wasm renderer
+and mark the wrapper as disposed.
+
+Package-level checks:
+
+```bash
+npm --prefix packages/web run check
+npm --prefix packages/web test
+npm --prefix packages/web run pack:dry-run
+```
+
 Current limits:
 
 - browser ESM only

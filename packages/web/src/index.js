@@ -69,54 +69,66 @@ export async function createGsplatRendererFromUrl(options) {
 }
 
 export class GsplatWebRenderer {
+  #nativeRenderer;
+  #disposed = false;
+
   constructor(nativeRenderer) {
     if (!nativeRenderer) {
       throw new TypeError("GsplatWebRenderer requires a native renderer");
     }
-    this.nativeRenderer = nativeRenderer;
+    this.#nativeRenderer = nativeRenderer;
+  }
+
+  get isDisposed() {
+    return this.#disposed;
   }
 
   resize(width, height) {
+    const nativeRenderer = this.#requireNativeRenderer();
     assertPositiveInteger(width, "width");
     assertPositiveInteger(height, "height");
-    this.nativeRenderer.resize(width, height);
+    nativeRenderer.resize(width, height);
   }
 
   resetCamera() {
-    this.nativeRenderer.resetCamera();
+    this.#requireNativeRenderer().resetCamera();
   }
 
   orbit(deltaYawRadians, deltaPitchRadians) {
+    const nativeRenderer = this.#requireNativeRenderer();
     assertFinite(deltaYawRadians, "deltaYawRadians");
     assertFinite(deltaPitchRadians, "deltaPitchRadians");
-    this.nativeRenderer.orbit(deltaYawRadians, deltaPitchRadians);
+    nativeRenderer.orbit(deltaYawRadians, deltaPitchRadians);
   }
 
   zoom(distanceScale) {
+    const nativeRenderer = this.#requireNativeRenderer();
     assertFinite(distanceScale, "distanceScale");
     if (distanceScale <= 0) {
       throw new RangeError("distanceScale must be greater than zero");
     }
-    this.nativeRenderer.zoom(distanceScale);
+    nativeRenderer.zoom(distanceScale);
   }
 
   pan(normalizedDeltaX, normalizedDeltaY) {
+    const nativeRenderer = this.#requireNativeRenderer();
     assertFinite(normalizedDeltaX, "normalizedDeltaX");
     assertFinite(normalizedDeltaY, "normalizedDeltaY");
-    this.nativeRenderer.pan(normalizedDeltaX, normalizedDeltaY);
+    nativeRenderer.pan(normalizedDeltaX, normalizedDeltaY);
   }
 
   setSortInterval(interval) {
+    const nativeRenderer = this.#requireNativeRenderer();
     assertPositiveInteger(interval, "interval");
-    this.nativeRenderer.setSortInterval(interval);
+    nativeRenderer.setSortInterval(interval);
   }
 
   renderFrame() {
-    return normalizeFrameStats(this.nativeRenderer.renderFrame());
+    return normalizeFrameStats(this.#requireNativeRenderer().renderFrame());
   }
 
   sceneSummary() {
-    const summary = this.nativeRenderer.sceneSummary();
+    const summary = this.#requireNativeRenderer().sceneSummary();
     return {
       gaussians: numberOr(summary.gaussians, 0),
       shDegree: numberOr(summary.shDegree, 0),
@@ -125,7 +137,7 @@ export class GsplatWebRenderer {
   }
 
   surfaceSize() {
-    const surface = this.nativeRenderer.surfaceSize();
+    const surface = this.#requireNativeRenderer().surfaceSize();
     return {
       width: numberOr(surface.width, 0),
       height: numberOr(surface.height, 0),
@@ -133,7 +145,23 @@ export class GsplatWebRenderer {
   }
 
   free() {
-    this.nativeRenderer.free?.();
+    if (this.#disposed) {
+      return;
+    }
+    this.#nativeRenderer?.free?.();
+    this.#nativeRenderer = null;
+    this.#disposed = true;
+  }
+
+  dispose() {
+    this.free();
+  }
+
+  #requireNativeRenderer() {
+    if (this.#disposed || !this.#nativeRenderer) {
+      throw new Error("GsplatWebRenderer is disposed");
+    }
+    return this.#nativeRenderer;
   }
 }
 

@@ -17,6 +17,27 @@ body:
       description: Describe the smallest useful change.
     validations:
       required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Core Rust
+        - PLY import
+        - Renderer
+        - Sorting
+        - C ABI
+        - Android binding or AAR
+        - Android example
+        - GsplatKit or XCFramework
+        - iOS example
+        - Web package
+        - Web example
+        - Web WASM
+        - CI or scripts
+        - Documentation
+    validations:
+      required: true
   - type: textarea
     id: boundary
     attributes:

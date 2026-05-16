@@ -13,6 +13,7 @@
   "sideEffects": false,
   "scripts": {
     "check": "node --check src/index.js && node --check test/index.test.js",
-    "test": "node --test test/*.test.js"
+    "test": "node --test test/*.test.js",
+    "pack:dry-run": "npm pack --dry-run"
   }
 }
