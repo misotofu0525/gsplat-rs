@@ -4,7 +4,9 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$ROOT_DIR"
 
-ANDROID_SDK_ROOT="${ANDROID_SDK_ROOT:-$HOME/Library/Android/sdk}"
+UNAME_S="$(uname -s)"
+
+ANDROID_SDK_ROOT="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-$HOME/Library/Android/sdk}}"
 if [[ ! -d "$ANDROID_SDK_ROOT" ]]; then
   echo "ANDROID_SDK_ROOT not found: $ANDROID_SDK_ROOT"
   exit 1
@@ -17,14 +19,37 @@ if [[ ! -d "$NDK_ROOT" ]]; then
   exit 1
 fi
 
-if [[ -d "$NDK_ROOT/toolchains/llvm/prebuilt/darwin-arm64" ]]; then
-  TOOLCHAIN_ROOT="$NDK_ROOT/toolchains/llvm/prebuilt/darwin-arm64"
-else
-  TOOLCHAIN_ROOT="$NDK_ROOT/toolchains/llvm/prebuilt/darwin-x86_64"
-fi
+case "$UNAME_S" in
+  Darwin)
+    if [[ "$(uname -m)" == "arm64" ]]; then
+      TOOLCHAIN_HOST_CANDIDATES=(darwin-arm64 darwin-x86_64)
+    else
+      TOOLCHAIN_HOST_CANDIDATES=(darwin-x86_64 darwin-arm64)
+    fi
+    JNI_OS_INCLUDE="darwin"
+    ;;
+  Linux)
+    TOOLCHAIN_HOST_CANDIDATES=(linux-x86_64)
+    JNI_OS_INCLUDE="linux"
+    ;;
+  *)
+    echo "Unsupported host OS for Android native build: $UNAME_S"
+    exit 1
+    ;;
+esac
 
-if [[ ! -d "$TOOLCHAIN_ROOT" ]]; then
+TOOLCHAIN_ROOT=""
+for TOOLCHAIN_HOST in "${TOOLCHAIN_HOST_CANDIDATES[@]}"; do
+  CANDIDATE_TOOLCHAIN_ROOT="$NDK_ROOT/toolchains/llvm/prebuilt/$TOOLCHAIN_HOST"
+  if [[ -d "$CANDIDATE_TOOLCHAIN_ROOT" ]]; then
+    TOOLCHAIN_ROOT="$CANDIDATE_TOOLCHAIN_ROOT"
+    break
+  fi
+done
+
+if [[ -z "$TOOLCHAIN_ROOT" ]]; then
   echo "NDK toolchain not found under: $NDK_ROOT/toolchains/llvm/prebuilt"
+  echo "Expected one of: ${TOOLCHAIN_HOST_CANDIDATES[*]}"
   exit 1
 fi
 
@@ -40,7 +65,14 @@ if [[ ! -x "$STRIP" ]]; then
   exit 1
 fi
 
-JAVA_HOME="${JAVA_HOME:-$(/usr/libexec/java_home)}"
+if [[ -n "${JAVA_HOME:-}" ]]; then
+  JAVA_HOME="$JAVA_HOME"
+elif [[ "$UNAME_S" == "Darwin" ]]; then
+  JAVA_HOME="$(/usr/libexec/java_home)"
+else
+  JAVA_BIN="$(readlink -f "$(command -v java)")"
+  JAVA_HOME="$(cd "$(dirname "$JAVA_BIN")/.." && pwd)"
+fi
 
 ANDROID_RUST_PROFILE="${ANDROID_RUST_PROFILE:-release}"
 case "$ANDROID_RUST_PROFILE" in
@@ -79,7 +111,7 @@ OUT_SO="$OUT_DIR/libgsplat_jni.so"
   "$ROOT_DIR/apps/android-demo/jni/gsplat_jni.c" \
   "$RUST_STATIC_LIB" \
   -I"$JAVA_HOME/include" \
-  -I"$JAVA_HOME/include/darwin" \
+  -I"$JAVA_HOME/include/$JNI_OS_INCLUDE" \
   -o "$OUT_SO" \
   -landroid -llog -ldl -lm
 

@@ -6,7 +6,7 @@ cd "$ROOT_DIR"
 
 bash "$ROOT_DIR/apps/android-demo/build-android-native.sh"
 
-ANDROID_SDK_ROOT="${ANDROID_SDK_ROOT:-$HOME/Library/Android/sdk}"
+ANDROID_SDK_ROOT="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-$HOME/Library/Android/sdk}}"
 if [[ ! -d "$ANDROID_SDK_ROOT" ]]; then
   echo "ANDROID_SDK_ROOT not found: $ANDROID_SDK_ROOT"
   exit 1

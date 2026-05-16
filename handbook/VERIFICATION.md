@@ -161,7 +161,8 @@ bash apps/android-demo/build-apk.sh
 - `apps/android-demo/build-apk.sh` builds a debug APK container, but compiles the Rust native library with the Rust `release` profile by default. Set `ANDROID_RUST_PROFILE=dev` only for native debugging.
 - `apps/android-demo/build-aar.sh` builds the local `gsplat-android` AAR at
   `apps/android-demo/gsplat-android/build/outputs/aar/gsplat-android-release.aar`.
-  It packages `arm64-v8a` only in this slice and is not a Maven publishing path.
+  It accepts `ANDROID_SDK_ROOT` or `ANDROID_HOME`, packages `arm64-v8a` only in
+  this slice, and is not a Maven publishing path.
 
 ## Android Surface Smoke
 

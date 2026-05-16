@@ -82,7 +82,8 @@ Touch controls in the demo:
 
 Prereqs:
 
-- Android SDK installed (default path: `~/Library/Android/sdk`)
+- Android SDK installed. The scripts read `ANDROID_SDK_ROOT`, then
+  `ANDROID_HOME`, then fall back to `~/Library/Android/sdk`.
 - Android NDK installed (default version used: `29.0.14206865`)
 
 Build steps:

@@ -22,6 +22,13 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
+      - name: Install Android SDK packages
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
+            "platforms;android-35" \
+            "build-tools;35.0.0" \
+            "ndk;29.0.14206865"
       - name: Cargo fmt
         run: cargo fmt --check
       - name: Cargo clippy
@@ -38,6 +45,11 @@ jobs:
         run: |
           rustup target add wasm32-unknown-unknown
           cargo check -p gsplat-web --target wasm32-unknown-unknown
+      - name: Web SDK dist build
+        run: |
+          cargo install wasm-bindgen-cli --version 0.2.121 --locked
+          bash apps/web-demo/build-web-sdk.sh
+          node --check apps/web-demo/gsplat-web-sdk/dist/index.js
       - name: Cargo check
         run: cargo check --workspace
       - name: Cargo test
@@ -46,6 +58,10 @@ jobs:
         run: bash tests/ffi/run-ffi-smoke.sh
       - name: JNI smoke
         run: bash apps/android-demo/run-jni-smoke.sh
+      - name: Android AAR build
+        run: |
+          ANDROID_SDK_ROOT="$ANDROID_HOME" bash apps/android-demo/build-aar.sh
+          test -f apps/android-demo/gsplat-android/build/outputs/aar/gsplat-android-release.aar
       - name: Stability smoke (short)
         env:
           STABILITY_SECONDS: "5"
