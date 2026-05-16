@@ -12,12 +12,12 @@ without overstating SDK maturity.
 - Quality-gated render path: `SortedAlpha`
 - Native integration surface: `crates/gsplat-ffi-c/include/gsplat.h`
 - Android status: a local Android library module can build an AAR at
-  `apps/android-demo/gsplat-android/build/outputs/aar/gsplat-android-release.aar`;
+  `bindings/android/gsplat-android/build/outputs/aar/gsplat-android-release.aar`;
   it is not published to Maven yet.
-- iOS status: `apps/ios-demo/GsplatKit` is a local Swift package wrapper and
-  `bash apps/ios-demo/build-xcframework.sh` builds a local
+- iOS status: `bindings/apple/GsplatKit` is a local Swift package wrapper and
+  `bash bindings/apple/scripts/build-xcframework.sh` builds a local
   `GsplatFFI.xcframework`; it is not a published binary SwiftPM release yet.
-- Web status: `apps/web-demo/gsplat-web-sdk` is a local browser ESM wrapper
+- Web status: `packages/web` is a local browser ESM wrapper
   around the experimental `crates/gsplat-web` Rust/WASM renderer; it is not
   published to npm yet.
 
@@ -35,7 +35,7 @@ For the browser validation demo:
 python3 -m http.server 4173 --bind 127.0.0.1 --directory .
 ```
 
-Then open `http://127.0.0.1:4173/apps/web-demo/`.
+Then open `http://127.0.0.1:4173/examples/web/`.
 
 ## Repository Layout
 
@@ -48,13 +48,16 @@ Then open `http://127.0.0.1:4173/apps/web-demo/`.
   Surface presenters
 - `crates/gsplat-web`: experimental `wasm-bindgen` bindings over the shared
   `wgpu` Surface renderer
-- `apps/desktop-demo`: desktop viewer and offscreen PNG harness
-- `apps/android-demo`: Android Surface demo plus host-side JNI smoke
-  and the local `gsplat-android` library module
-- `apps/ios-demo`: local `GsplatKit` Swift package wrapper, Swift smoke path,
-  UIKit realtime Surface app, and iOS simulator/device scripts
-- `apps/web-demo`: browser PLY loader, local `@gsplat-rs/web` wrapper,
-  generated wasm package hosts, and WebGL2 fallback preview
+- `examples/desktop`: desktop viewer and offscreen PNG harness
+- `examples/android`: Android Surface sample app
+- `examples/ios`: UIKit realtime Surface sample app
+- `examples/web`: browser PLY loader, generated wasm package host, and WebGL2
+  fallback preview
+- `bindings/android`: local `gsplat-android` library module, JNI bridge,
+  host-side JNI smoke, and AAR/APK scripts
+- `bindings/apple`: local `GsplatKit` Swift package wrapper, Swift smoke path,
+  XCFramework scripts, and iOS simulator/device scripts
+- `packages/web`: local `@gsplat-rs/web` browser ESM wrapper
 - `tools/bench-runner`: perf and stability runner
 - `tests/`: sample dataset, FFI smoke harness, and perf scripts
 - `handbook/`: current project docs, architecture map, verification guide,
@@ -74,8 +77,8 @@ The CI-level local hygiene checks are:
 cargo fmt --check
 cargo clippy --workspace --all-targets -- -D warnings
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
-node --check apps/web-demo/src/main.js
-node --check apps/web-demo/gsplat-web-sdk/src/index.js
+node --check examples/web/src/main.js
+node --check packages/web/src/index.js
 ```
 
 Use `handbook/VERIFICATION.md` for the full validation matrix, including FFI,
@@ -92,16 +95,16 @@ The current mobile-facing contract is the C ABI in
   mode in v0.1.
 - Treat non-zero returns as `GsplatErrorCode` values and pass them to
   `gsplat_error_message()`.
-- Android Surface rendering is demonstrated by `apps/android-demo`.
-- The local Android AAR is built with `bash apps/android-demo/build-aar.sh`.
+- Android Surface rendering is demonstrated by `examples/android`.
+- The local Android AAR is built with `bash bindings/android/scripts/build-aar.sh`.
 - Swift/C ABI integration, a local `GsplatKit` wrapper, local XCFramework
   packaging, and a UIKit realtime simulator/device Surface demo are
-  demonstrated by `apps/ios-demo`.
+  split across `bindings/apple` and `examples/ios`.
 - The local iOS XCFramework is built with
-  `bash apps/ios-demo/build-xcframework.sh`.
+  `bash bindings/apple/scripts/build-xcframework.sh`.
 - Browser Rust/WASM integration and the local `@gsplat-rs/web` ESM wrapper are
-  demonstrated by `apps/web-demo`.
-- The local Web SDK wrapper is built with `bash apps/web-demo/build-web-sdk.sh`.
+  demonstrated by `examples/web`.
+- The local Web SDK wrapper is built with `bash packages/web/scripts/build.sh`.
 - Not in the v0.1 contract: scene-from-memory loading, runtime render-mode
   switching, Maven publishing, multi-ABI Android distribution, and
   published binary SwiftPM/XCFramework or npm distribution.

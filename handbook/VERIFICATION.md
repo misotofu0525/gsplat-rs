@@ -30,8 +30,8 @@ cargo test --workspace
 cargo fmt --check
 cargo clippy --workspace --all-targets -- -D warnings
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
-node --check apps/web-demo/src/main.js
-node --check apps/web-demo/gsplat-web-sdk/src/index.js
+node --check examples/web/src/main.js
+node --check packages/web/src/index.js
 ```
 
 - Run these before opening a pull request that changes Rust code, public docs,
@@ -49,13 +49,13 @@ cargo fmt --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
-node --check apps/web-demo/src/main.js
-node --check apps/web-demo/gsplat-web-sdk/src/index.js
+node --check examples/web/src/main.js
+node --check packages/web/src/index.js
 cargo run -p bench-runner -- tests/datasets/minimal_ascii.ply 120
 bash tests/ffi/run-ffi-smoke.sh
-bash apps/android-demo/run-jni-smoke.sh
-bash apps/ios-demo/run-swift-smoke.sh
-bash apps/ios-demo/build-xcframework.sh
+bash bindings/android/scripts/run-jni-smoke.sh
+bash bindings/apple/scripts/run-swift-smoke.sh
+bash bindings/apple/scripts/build-xcframework.sh
 ```
 
 ## Desktop Smoke
@@ -71,12 +71,12 @@ cargo run -p desktop-demo --features interactive-viewer -- tests/datasets/minima
 ## Web Demo Smoke
 
 ```bash
-node --check apps/web-demo/src/main.js
+node --check examples/web/src/main.js
 python3 -m http.server 4173 --bind 127.0.0.1 --directory .
 ```
 
-- Open `http://127.0.0.1:4173/apps/web-demo/` in a browser.
-- Do not use `file:///.../apps/web-demo/index.html`; the demo depends on HTTP
+- Open `http://127.0.0.1:4173/examples/web/` in a browser.
+- Do not use `file:///.../examples/web/index.html`; the demo depends on HTTP
   serving from the repository root so wasm imports and `/tests/...` dataset
   fetches resolve correctly.
 - Expected startup state loads `tests/datasets/minimal_ascii.ply` and shows
@@ -91,14 +91,14 @@ python3 -m http.server 4173 --bind 127.0.0.1 --directory .
 - For benchmark smoke, open:
 
 ```text
-http://127.0.0.1:4173/apps/web-demo/?gsplat_benchmark=true&gsplat_benchmark_sync=true&gsplat_benchmark_frames=5&gsplat_benchmark_warmup_frames=1&gsplat_surface_sort_interval=2
+http://127.0.0.1:4173/examples/web/?gsplat_benchmark=true&gsplat_benchmark_sync=true&gsplat_benchmark_frames=5&gsplat_benchmark_warmup_frames=1&gsplat_surface_sort_interval=2
 ```
 
 - Expected benchmark output includes `BENCHMARK_RESULT dataset=minimal_ascii.ply`.
 - Optional flower fallback smoke:
 
 ```text
-http://127.0.0.1:4173/apps/web-demo/?dataset=flowers&gsplat_benchmark=true&gsplat_benchmark_sync=true&gsplat_benchmark_frames=2&gsplat_benchmark_warmup_frames=0&gsplat_surface_sort_interval=2
+http://127.0.0.1:4173/examples/web/?dataset=flowers&gsplat_benchmark=true&gsplat_benchmark_sync=true&gsplat_benchmark_frames=2&gsplat_benchmark_warmup_frames=0&gsplat_surface_sort_interval=2
 ```
 
 - Expected benchmark output includes `BENCHMARK_RESULT dataset=flowers_1.ply`.
@@ -110,57 +110,57 @@ in `crates/gsplat-render-wgpu/`:
 
 ```bash
 cargo check -p gsplat-web --target wasm32-unknown-unknown
-bash apps/web-demo/build-wasm.sh
-bash apps/web-demo/build-web-sdk.sh
-node --check apps/web-demo/gsplat-web-sdk/dist/index.js
+bash packages/web/scripts/build-wasm.sh
+bash packages/web/scripts/build.sh
+node --check packages/web/dist/index.js
 ```
 
 - `cargo check --workspace` still checks the host-side workspace and the
   non-wasm stub for `gsplat-web`.
 - The wasm target must be installed separately with
   `rustup target add wasm32-unknown-unknown`.
-- `apps/web-demo/build-wasm.sh` also requires the `wasm-bindgen` CLI and writes
-  generated files to ignored `apps/web-demo/pkg/`.
-- `apps/web-demo/build-web-sdk.sh` writes the local ESM wrapper distribution to
-  ignored `apps/web-demo/gsplat-web-sdk/dist/`.
+- `packages/web/scripts/build-wasm.sh` also requires the `wasm-bindgen` CLI and writes
+  generated files to ignored `examples/web/pkg/`.
+- `packages/web/scripts/build.sh` writes the local ESM wrapper distribution to
+  ignored `packages/web/dist/`.
 - This is the proof path for the shared Rust `wgpu` renderer and local Web SDK
   wrapper running in the browser. After the package exists, reload
-  `http://127.0.0.1:4173/apps/web-demo/?dataset=flowers`; expected status should
+  `http://127.0.0.1:4173/examples/web/?dataset=flowers`; expected status should
   report `surface=wasm-wgpu`, `renderer=wasm_wgpu_surface` in benchmark output,
   and non-zero `Visible` / `Drawn` counts for `flowers_1.ply`.
 
 ## Mobile Builds and Simulator Smoke
 
 ```bash
-bash apps/ios-demo/build-ios-sim-app.sh
-bash apps/ios-demo/run-ios-sim-app.sh
-bash apps/ios-demo/build-ios-device-app.sh
-IOS_DEVICE_ID=<coredevice-id-or-udid> bash apps/ios-demo/run-ios-device-app.sh
-IOS_DEVICE_ID=<coredevice-id-or-udid> bash apps/ios-demo/benchmark-ios-device-app.sh
-bash apps/ios-demo/build-ios-sim.sh
-bash apps/ios-demo/build-xcframework.sh
-bash apps/ios-demo/run-ios-sim-smoke.sh
-bash apps/android-demo/build-aar.sh
-bash apps/android-demo/build-apk.sh
+bash bindings/apple/scripts/build-ios-sim-app.sh
+bash bindings/apple/scripts/run-ios-sim-app.sh
+bash bindings/apple/scripts/build-ios-device-app.sh
+IOS_DEVICE_ID=<coredevice-id-or-udid> bash bindings/apple/scripts/run-ios-device-app.sh
+IOS_DEVICE_ID=<coredevice-id-or-udid> bash bindings/apple/scripts/benchmark-ios-device-app.sh
+bash bindings/apple/scripts/build-ios-sim.sh
+bash bindings/apple/scripts/build-xcframework.sh
+bash bindings/apple/scripts/run-ios-sim-smoke.sh
+bash bindings/android/scripts/build-aar.sh
+bash bindings/android/scripts/build-sample-apk.sh
 ```
 
 - Run these when changing mobile packaging, simulator run scripts, or build scripts.
 - Check the matching app README for platform prerequisites before assuming SDK/NDK/Xcode state.
 - iOS device runs require a development provisioning profile whose device list
   includes the target phone. The current local default is documented in
-  `apps/ios-demo/README.md`; override with `IOS_PROVISIONING_PROFILE`,
+  `bindings/apple/README.md`; override with `IOS_PROVISIONING_PROFILE`,
   `IOS_CODE_SIGN_IDENTITY`, `IOS_BUNDLE_ID`, or `IOS_DEVICE_ID` when needed.
-- `apps/ios-demo/build-ios-device-app.sh` builds Rust with `release` and Swift
+- `bindings/apple/scripts/build-ios-device-app.sh` builds Rust with `release` and Swift
   with `-O` by default so the iPhone path can be compared with Android's
   release-native APK. Use `IOS_RUST_PROFILE=dev` and
   `IOS_SWIFT_OPT_LEVEL=-Onone` only for debugging.
-- `apps/ios-demo/build-xcframework.sh` builds the local
-  `apps/ios-demo/GsplatKit/Binaries/GsplatFFI.xcframework` used by the
+- `bindings/apple/scripts/build-xcframework.sh` builds the local
+  `bindings/apple/GsplatKit/Binaries/GsplatFFI.xcframework` used by the
   `GsplatKit` Swift package wrapper. It uses the host simulator architecture
   by default; set `IOS_XCFRAMEWORK_SIM_TARGETS` for a wider simulator slice.
-- `apps/android-demo/build-apk.sh` builds a debug APK container, but compiles the Rust native library with the Rust `release` profile by default. Set `ANDROID_RUST_PROFILE=dev` only for native debugging.
-- `apps/android-demo/build-aar.sh` builds the local `gsplat-android` AAR at
-  `apps/android-demo/gsplat-android/build/outputs/aar/gsplat-android-release.aar`.
+- `bindings/android/scripts/build-sample-apk.sh` builds a debug APK container, but compiles the Rust native library with the Rust `release` profile by default. Set `ANDROID_RUST_PROFILE=dev` only for native debugging.
+- `bindings/android/scripts/build-aar.sh` builds the local `gsplat-android` AAR at
+  `bindings/android/gsplat-android/build/outputs/aar/gsplat-android-release.aar`.
   It accepts `ANDROID_SDK_ROOT` or `ANDROID_HOME`, packages `arm64-v8a` only in
   this slice, and is not a Maven publishing path.
 
@@ -169,10 +169,10 @@ bash apps/android-demo/build-apk.sh
 Use this when changing Android Surface rendering, JNI surface glue, or `SurfacePresenter` behavior:
 
 ```bash
-bash apps/android-demo/build-apk.sh
+bash bindings/android/scripts/build-sample-apk.sh
 ANDROID_SDK_ROOT="${ANDROID_SDK_ROOT:-$HOME/Library/Android/sdk}"
 ADB="$ANDROID_SDK_ROOT/platform-tools/adb"
-"$ADB" install -r apps/android-demo/app/build/outputs/apk/debug/app-debug.apk
+"$ADB" install -r examples/android/app/build/outputs/apk/debug/app-debug.apk
 "$ADB" push tests/datasets/external/nvidia_flowers_1/flowers_1/flowers_1.ply /data/local/tmp/flowers_1.ply
 "$ADB" shell run-as com.gsplat.demo mkdir -p files
 "$ADB" shell run-as com.gsplat.demo cp /data/local/tmp/flowers_1.ply files/flowers_1.ply
@@ -181,7 +181,7 @@ ADB="$ANDROID_SDK_ROOT/platform-tools/adb"
 ```
 
 - Expected overlay includes `surface=wgpu realtime`, `state=rendering`, and `drawn=<surface_instances>/<visible_instances>`.
-- For repeatable perf checks, add the benchmark extras documented in `apps/android-demo/README.md` and read the `BENCHMARK_RESULT` logcat line.
+- For repeatable perf checks, add the benchmark extras documented in `bindings/android/README.md` and read the `BENCHMARK_RESULT` logcat line.
 - Android emulator storage can be tight after pushing the flower PLY. If `adb install -r` reports insufficient storage, uninstall `com.gsplat.demo`, reinstall, and push the dataset again.
 
 ## iOS Surface Smoke
@@ -190,8 +190,8 @@ Use this when changing iOS realtime rendering, UIKit surface glue, touch
 controls, mobile packaging, signing, or `SurfacePresenter` behavior:
 
 ```bash
-bash apps/ios-demo/run-ios-sim-app.sh
-IOS_DEVICE_ID=<coredevice-id-or-udid> bash apps/ios-demo/run-ios-device-app.sh
+bash bindings/apple/scripts/run-ios-sim-app.sh
+IOS_DEVICE_ID=<coredevice-id-or-udid> bash bindings/apple/scripts/run-ios-device-app.sh
 ```
 
 - Expected overlay includes `state=rendering`, `camera=<mode>`,
@@ -205,8 +205,8 @@ IOS_DEVICE_ID=<coredevice-id-or-udid> bash apps/ios-demo/run-ios-device-app.sh
   simulator. Pinch zoom and two-finger pan use the same C ABI camera-control
   functions.
 - For repeatable perf checks, add the benchmark args documented in
-  `apps/ios-demo/README.md` after `--`. Use
-  `apps/ios-demo/benchmark-ios-device-app.sh` on a physical iPhone to print the
+  `bindings/apple/README.md` after `--`. Use
+  `bindings/apple/scripts/benchmark-ios-device-app.sh` on a physical iPhone to print the
   `BENCHMARK_RESULT` line and keep the raw log under
   `target/ios-device-benchmarks/`.
 
@@ -221,27 +221,27 @@ STABILITY_SECONDS=1800 bash tests/perf/run-long-stability.sh
 ## Targeted Checks
 
 - If you touch `crates/gsplat-ffi-c/`, run `bash tests/ffi/run-ffi-smoke.sh`.
-- If you touch `apps/android-demo/` or JNI glue, run
-  `bash apps/android-demo/run-jni-smoke.sh`. If you touch Android packaging or
-  `apps/android-demo/gsplat-android/`, also run
-  `bash apps/android-demo/build-aar.sh` and `bash apps/android-demo/build-apk.sh`;
+- If you touch `bindings/android/`, `examples/android/`, or JNI glue, run
+  `bash bindings/android/scripts/run-jni-smoke.sh`. If you touch Android packaging or
+  `bindings/android/gsplat-android/`, also run
+  `bash bindings/android/scripts/build-aar.sh` and `bash bindings/android/scripts/build-sample-apk.sh`;
   for Surface changes, also run the Android Surface smoke above.
-- If you touch `apps/ios-demo/` or Swift/FFI integration, run
-  `bash apps/ios-demo/run-swift-smoke.sh`; for `GsplatKit` or iOS packaging
-  changes, also run `bash apps/ios-demo/build-xcframework.sh` and
-  `cd apps/ios-demo/GsplatKit && swift package describe --type json` plus
-  `cd apps/ios-demo/GsplatKit && xcodebuild -scheme GsplatKit -destination 'generic/platform=iOS Simulator' build`;
+- If you touch `bindings/apple/`, `examples/ios/`, or Swift/FFI integration, run
+  `bash bindings/apple/scripts/run-swift-smoke.sh`; for `GsplatKit` or iOS packaging
+  changes, also run `bash bindings/apple/scripts/build-xcframework.sh` and
+  `cd bindings/apple/GsplatKit && swift package describe --type json` plus
+  `cd bindings/apple/GsplatKit && xcodebuild -scheme GsplatKit -destination 'generic/platform=iOS Simulator' build`;
   for realtime Surface or touch changes, also run
-  `bash apps/ios-demo/run-ios-sim-app.sh`; for offscreen simulator smoke
-  changes, run `bash apps/ios-demo/run-ios-sim-smoke.sh`.
+  `bash bindings/apple/scripts/run-ios-sim-app.sh`; for offscreen simulator smoke
+  changes, run `bash bindings/apple/scripts/run-ios-sim-smoke.sh`.
 - If you touch PLY import or scene normalization, run `cargo test --workspace` and `cargo run -p desktop-demo -- tests/datasets/minimal_ascii.ply --png target/out.png`.
 - If you touch renderer, sorting, or perf-sensitive code, run `cargo run -p bench-runner -- tests/datasets/minimal_ascii.ply 120` and consider the long-stability script.
-- If you touch `apps/web-demo/`, run `node --check apps/web-demo/src/main.js`
+- If you touch `examples/web/`, run `node --check examples/web/src/main.js`
   and the Web Demo smoke above. If you touch
-  `apps/web-demo/gsplat-web-sdk/`, also run
-  `node --check apps/web-demo/gsplat-web-sdk/src/index.js`,
-  `bash apps/web-demo/build-web-sdk.sh`, and
-  `node --check apps/web-demo/gsplat-web-sdk/dist/index.js`.
+  `packages/web/`, also run
+  `node --check packages/web/src/index.js`,
+  `bash packages/web/scripts/build.sh`, and
+  `node --check packages/web/dist/index.js`.
 - If you touch `crates/gsplat-web/` or browser Surface creation in `crates/gsplat-render-wgpu/`, run `cargo check --workspace` and the Web WASM Build path above.
 - For spatial/tile/chunk feasibility checks on a loaded PLY, use:
 
@@ -259,6 +259,7 @@ cargo run -p bench-runner -- <scene.ply> --analyze-spatial
 
 ## Failure Triage
 
-- First inspect the failing script itself. The scripts in `tests/` and `apps/*-demo/` are the canonical source for environment assumptions.
+- First inspect the failing script itself. The scripts in `tests/`, `bindings/`,
+  and `packages/` are the canonical source for environment assumptions.
 - Common failure modes are missing platform toolchains, missing Android SDK/NDK state, Kotlin/JVM toolchain resolution, dynamic library path issues, and dataset path mistakes.
 - If a platform-specific path fails, rerun the exact repo-local script directly from the repo root and inspect the first failing command before widening the investigation.

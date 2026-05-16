@@ -6,7 +6,7 @@ members = [
   "crates/gsplat-render-wgpu",
   "crates/gsplat-ffi-c",
   "crates/gsplat-web",
-  "apps/desktop-demo",
+  "examples/desktop",
   "tools/bench-runner",
 ]
 resolver = "3"

@@ -28,18 +28,18 @@ cargo install wasm-bindgen-cli
 Then build the demo package from the repo root:
 
 ```bash
-bash apps/web-demo/build-wasm.sh
+bash packages/web/scripts/build-wasm.sh
 ```
 
-The generated browser package is written to `apps/web-demo/pkg/` and is ignored
+The generated browser package is written to `examples/web/pkg/` and is ignored
 by git.
 
 For a local npm-style wrapper, build:
 
 ```bash
-bash apps/web-demo/build-web-sdk.sh
+bash packages/web/scripts/build.sh
 ```
 
-That writes `apps/web-demo/gsplat-web-sdk/dist/` and keeps the generated wasm
+That writes `packages/web/dist/` and keeps the generated wasm
 module behind the `@gsplat-rs/web` ESM wrapper. This is still local-only and is
 not published to npm.

@@ -56,11 +56,11 @@ Pick the narrowest verification path that proves your change:
 - C ABI changes:
   `bash tests/ffi/run-ffi-smoke.sh`
 - Android JNI changes:
-  `bash apps/android-demo/run-jni-smoke.sh`
+  `bash bindings/android/scripts/run-jni-smoke.sh`
 - iOS Swift/FFI changes:
-  `bash apps/ios-demo/run-swift-smoke.sh`
+  `bash bindings/apple/scripts/run-swift-smoke.sh`
 - Web demo changes:
-  `node --check apps/web-demo/src/main.js` plus the browser smoke in
+  `node --check examples/web/src/main.js` plus the browser smoke in
   `handbook/VERIFICATION.md`
 - Renderer, sorting, or perf-sensitive changes:
   `cargo run -p bench-runner -- tests/datasets/minimal_ascii.ply 120`

@@ -22,8 +22,8 @@
 - Read `handbook/ROADMAP.md` when the task depends on current priorities, release scope, or non-goals.
 - Read `handbook/GOLDEN_PRINCIPLES.md` when work touches architecture taste, error handling, public API shape, or repeated design choices.
 - For Android, iOS, Web demo, or Web SDK work, also read the matching README
-  under `apps/android-demo/`, `apps/ios-demo/`, `apps/web-demo/`, or
-  `crates/gsplat-web/`.
+  under `bindings/android/`, `bindings/apple/`, `examples/android/`,
+  `examples/ios/`, `examples/web/`, `packages/web/`, or `crates/gsplat-web/`.
 - For complex work, create or resume a plan bundle under `docs/plans/active/` and keep findings there.
 
 ## Project Hard Rules

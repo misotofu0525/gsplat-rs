@@ -50,7 +50,7 @@ Operational facts and command entrypoints live in `handbook/PROJECT_CONTEXT.md` 
   C ABI for Swift consumption. Maven publishing, multi-ABI Android
   distribution, published binary SwiftPM/XCFramework distribution, and polished
   mobile view APIs are still outside the current release contract.
-- `crates/gsplat-web` plus `apps/web-demo/gsplat-web-sdk` form the local
+- `crates/gsplat-web` plus `packages/web` form the local
   experimental Web API boundary. They are not a stable v0.1 release surface;
   Web renderer changes require verified wasm build and browser smoke evidence.
 - The Web demo is validation/demo support for browser PLY loading, the WebGL2 fallback, and hosting the generated wasm package; it is not a polished web product surface.

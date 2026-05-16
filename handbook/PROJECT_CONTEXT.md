@@ -31,10 +31,13 @@
 - `crates/gsplat-render-wgpu`: preprocessing, raster path, Surface presenter, and GPU helper APIs
 - `crates/gsplat-ffi-c`: small C ABI surface over the renderer and mobile Surface presenters
 - `crates/gsplat-web`: experimental `wasm-bindgen` bindings over the shared `wgpu` Surface renderer
-- `apps/desktop-demo`: desktop viewer and offscreen PNG harness
-- `apps/android-demo`: local `gsplat-android` Android library module, Kotlin Android Surface demo, and host-side JNI smoke
-- `apps/ios-demo`: local `GsplatKit` Swift package wrapper, Swift smoke path, UIKit realtime Surface app, and iOS simulator/device build/run scripts
-- `apps/web-demo`: browser PLY loader, local `@gsplat-rs/web` wrapper, generated wasm package hosts, and WebGL2 SortedAlpha-style fallback preview
+- `examples/desktop`: desktop viewer and offscreen PNG harness
+- `examples/android`: Kotlin Android Surface sample app
+- `examples/ios`: UIKit realtime Surface sample app
+- `examples/web`: browser PLY loader, generated wasm package host, and WebGL2 SortedAlpha-style fallback preview
+- `bindings/android`: local `gsplat-android` Android library module, JNI bridge, host-side JNI smoke, and AAR/APK scripts
+- `bindings/apple`: local `GsplatKit` Swift package wrapper, Swift smoke path, XCFramework scripts, and iOS simulator/device build/run scripts
+- `packages/web`: local `@gsplat-rs/web` browser ESM wrapper
 - `tools/bench-runner`: perf and stability runner
 - `tests/`: sample dataset, FFI smoke harness, and perf scripts
 - `handbook/`: current project docs, architecture map, verification guide, roadmap, and project principles
@@ -74,8 +77,8 @@ For the broader command matrix, use `VERIFICATION.md`.
   API yet. iOS integration now has a local `GsplatKit` Swift package wrapper
   and local `GsplatFFI.xcframework` build path, but it is not a published
   binary SwiftPM release or polished iOS product API yet.
-- The Web demo is a browser validation surface. The Rust/WASM renderer boundary
-  is active in `crates/gsplat-web`, and `apps/web-demo/gsplat-web-sdk` provides
+- The Web example is a browser validation surface. The Rust/WASM renderer boundary
+  is active in `crates/gsplat-web`, and `packages/web` provides
   a local ESM wrapper, but the Web SDK is not published to npm or stable in the
   v0.1 contract yet.
 - Input PLY quaternion fields `rot_0..3` are interpreted as `w,x,y,z` and remapped internally to `x,y,z,w`.

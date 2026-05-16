@@ -2,7 +2,7 @@
 
 ## Problem
 
-`apps/*-demo` currently mixes three responsibilities:
+The old `apps/*-demo` layout mixed three responsibilities:
 
 - runnable validation demos
 - local SDK/package source slices
@@ -17,6 +17,7 @@ should read as examples that consume those SDKs.
 
 ```text
 examples/
+  desktop/
   android/
   ios/
   web/
@@ -39,16 +40,13 @@ crates/
 
 ## Migration Strategy
 
-1. Document the split and keep existing `apps/*-demo` paths working.
-2. Move the Web wrapper first from `apps/web-demo/gsplat-web-sdk` to
-   `packages/web`, because it has the smallest native-toolchain coupling.
-3. Move iOS package files to `bindings/apple` while keeping the UIKit sample
-   under `examples/ios`.
-4. Move Android library and JNI build scripts to `bindings/android` while
-   keeping the Kotlin sample app under `examples/android`.
-5. Update CI and handbook verification commands after each move.
-6. Keep compatibility wrapper scripts under the old `apps/*-demo/*.sh` paths
-   for one release cycle, then remove them in a documented breaking cleanup.
+1. Move sample apps to `examples/`.
+2. Move Android and Apple reusable bindings plus package scripts to
+   `bindings/`.
+3. Move the Web ESM wrapper to `packages/web`.
+4. Update CI, root docs, handbook docs, local READMEs, and verification
+   commands in the same change.
+5. Remove old `apps/` paths instead of adding compatibility wrappers.
 
 ## Non-Goals
 
@@ -62,9 +60,9 @@ crates/
 
 - External users can identify SDK/package entrypoints without opening demo app
   directories.
-- Existing local validation scripts keep working during the migration through
-  compatibility wrappers.
+- Existing local validation scripts have new canonical paths under
+  `bindings/` and `packages/`.
 - `handbook/PROJECT_CONTEXT.md`, `handbook/ARCHITECTURE.md`, and
   `handbook/VERIFICATION.md` describe the new current layout only after the
   corresponding files actually move.
-- CI covers the moved package build paths before old wrappers are removed.
+- CI covers the moved package build paths.
