@@ -689,6 +689,35 @@ mod tests {
     }
 
     #[test]
+    fn cpu_backend_keeps_empty_and_singleton_inputs() {
+        let mut backend = CpuSortBackend::default();
+        let mut empty_keys: [u32; 0] = [];
+        let mut empty_values: [u32; 0] = [];
+        backend
+            .sort_pairs(&mut empty_keys, &mut empty_values)
+            .unwrap();
+
+        let mut singleton_keys = [42_u32];
+        let mut singleton_values = [7_u32];
+        backend
+            .sort_pairs(&mut singleton_keys, &mut singleton_values)
+            .unwrap();
+
+        assert_eq!(singleton_keys, [42]);
+        assert_eq!(singleton_values, [7]);
+    }
+
+    #[test]
+    fn cpu_backend_rejects_value_sort_mismatch() {
+        let mut backend = CpuSortBackend::default();
+        let keys = [1_u32, 2];
+        let mut values = [1_u32];
+
+        let err = backend.sort_values_by_keys(&keys, &mut values).unwrap_err();
+        assert_eq!(err, SortError::LengthMismatch);
+    }
+
+    #[test]
     fn packed_pairs_match_scalar_reference() {
         let len = 257;
         let mut seed = 7_u32;

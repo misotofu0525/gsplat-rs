@@ -542,7 +542,14 @@ fn parse_field_f32_ascii(
 
 fn parse_field_f32_ascii_idx(values: &[&str], idx: usize) -> Result<f32, PlyLoadError> {
     let value = values.get(idx).ok_or(PlyLoadError::VertexFieldCount)?;
-    value.parse::<f32>().map_err(|_| PlyLoadError::ParseNumber)
+    let parsed = value
+        .parse::<f32>()
+        .map_err(|_| PlyLoadError::ParseNumber)?;
+    if parsed.is_finite() {
+        Ok(parsed)
+    } else {
+        Err(PlyLoadError::ParseNumber)
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -777,6 +784,20 @@ mod tests {
     }
 
     #[test]
+    fn rejects_ascii_non_finite_value() {
+        let broken = VALID_PLY.replacen("0.0 0.1", "NaN 0.1", 1);
+        let err = parse_ply_text(&broken).unwrap_err();
+        assert_eq!(err, PlyLoadError::ParseNumber);
+    }
+
+    #[test]
+    fn rejects_ascii_vertex_count_mismatch() {
+        let broken = VALID_PLY.replace("element vertex 1", "element vertex 2");
+        let err = parse_ply_text(&broken).unwrap_err();
+        assert_eq!(err, PlyLoadError::VertexCountMismatch);
+    }
+
+    #[test]
     fn parses_header_without_trailing_newline() {
         let no_newline = "ply\nformat ascii 1.0\nelement vertex 0\nproperty float x\nproperty float y\nproperty float z\nproperty float opacity\nproperty float scale_0\nproperty float scale_1\nproperty float scale_2\nproperty float rot_0\nproperty float rot_1\nproperty float rot_2\nproperty float rot_3\nproperty float f_dc_0\nproperty float f_dc_1\nproperty float f_dc_2\nend_header";
         let result = parse_ply_bytes(no_newline.as_bytes()).unwrap();
@@ -802,6 +823,71 @@ mod tests {
         assert_eq!(result.scene.positions[0].y, -0.1);
         assert_eq!(result.scene.opacity[0], 0.9);
         assert_eq!(result.scene.rotation_xyzw[0], [0.0, 0.0, 0.0, 1.0]);
+    }
+
+    #[test]
+    fn parses_binary_big_endian_ply() {
+        let header = "ply\nformat binary_big_endian 1.0\nelement vertex 1\nproperty float x\nproperty float y\nproperty float z\nproperty float opacity\nproperty float scale_0\nproperty float scale_1\nproperty float scale_2\nproperty float rot_0\nproperty float rot_1\nproperty float rot_2\nproperty float rot_3\nproperty float f_dc_0\nproperty float f_dc_1\nproperty float f_dc_2\nend_header\n";
+
+        let mut bytes = header.as_bytes().to_vec();
+        let values: [f32; 14] = [
+            0.0, 0.1, 1.0, 0.9, 1.0, 1.1, 1.2, 1.0, 0.0, 0.0, 0.0, 0.2, 0.3, 0.4,
+        ];
+        for v in values {
+            bytes.extend_from_slice(&v.to_be_bytes());
+        }
+
+        let result = parse_ply_bytes(&bytes).unwrap();
+        assert_eq!(result.summary.gaussians, 1);
+        assert_eq!(result.summary.sh_degree, 0);
+        assert_eq!(result.scene.positions[0].y, -0.1);
+        assert_eq!(result.scene.opacity[0], 0.9);
+        assert_eq!(result.scene.rotation_xyzw[0], [0.0, 0.0, 0.0, 1.0]);
+    }
+
+    #[test]
+    fn rejects_truncated_binary_body() {
+        let header = "ply\nformat binary_little_endian 1.0\nelement vertex 2\nproperty float x\nproperty float y\nproperty float z\nproperty float opacity\nproperty float scale_0\nproperty float scale_1\nproperty float scale_2\nproperty float rot_0\nproperty float rot_1\nproperty float rot_2\nproperty float rot_3\nproperty float f_dc_0\nproperty float f_dc_1\nproperty float f_dc_2\nend_header\n";
+
+        let mut bytes = header.as_bytes().to_vec();
+        let values: [f32; 14] = [
+            0.0, 0.1, 1.0, 0.9, 1.0, 1.1, 1.2, 1.0, 0.0, 0.0, 0.0, 0.2, 0.3, 0.4,
+        ];
+        for v in values {
+            bytes.extend_from_slice(&v.to_le_bytes());
+        }
+
+        let err = parse_ply_bytes(&bytes).unwrap_err();
+        assert_eq!(err, PlyLoadError::VertexCountMismatch);
+    }
+
+    #[test]
+    fn rejects_binary_non_finite_value() {
+        let header = "ply\nformat binary_little_endian 1.0\nelement vertex 1\nproperty float x\nproperty float y\nproperty float z\nproperty float opacity\nproperty float scale_0\nproperty float scale_1\nproperty float scale_2\nproperty float rot_0\nproperty float rot_1\nproperty float rot_2\nproperty float rot_3\nproperty float f_dc_0\nproperty float f_dc_1\nproperty float f_dc_2\nend_header\n";
+
+        let mut bytes = header.as_bytes().to_vec();
+        let values: [f32; 14] = [
+            f32::NAN,
+            0.1,
+            1.0,
+            0.9,
+            1.0,
+            1.1,
+            1.2,
+            1.0,
+            0.0,
+            0.0,
+            0.0,
+            0.2,
+            0.3,
+            0.4,
+        ];
+        for v in values {
+            bytes.extend_from_slice(&v.to_le_bytes());
+        }
+
+        let err = parse_ply_bytes(&bytes).unwrap_err();
+        assert_eq!(err, PlyLoadError::ParseNumber);
     }
 
     #[test]

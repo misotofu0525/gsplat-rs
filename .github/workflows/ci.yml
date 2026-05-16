@@ -40,7 +40,9 @@ jobs:
       - name: Web demo JavaScript syntax
         run: node --check examples/web/src/main.js
       - name: Web SDK JavaScript syntax
-        run: node --check packages/web/src/index.js
+        run: npm --prefix packages/web run check
+      - name: Web SDK JavaScript tests
+        run: npm --prefix packages/web test
       - name: Web wasm check
         run: |
           rustup target add wasm32-unknown-unknown

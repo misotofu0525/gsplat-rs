@@ -601,3 +601,132 @@ fn merge_max(current: Option<u64>, next: Option<u64>) -> Option<u64> {
         (None, None) => None,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use gsplat_core::{SceneBuffers, Vec3f};
+
+    use super::{
+        BenchConfig, grid_axis_index, grid_cell_index, merge_max, merge_min, percentile_f32,
+        percentile_index, percentile_u32, scene_bounds,
+    };
+
+    fn scene_with_positions(positions: Vec<Vec3f>) -> SceneBuffers {
+        let len = positions.len();
+        SceneBuffers {
+            positions,
+            opacity: vec![1.0; len],
+            scale_xyz: vec![[0.0, 0.0, 0.0]; len],
+            rotation_xyzw: vec![[0.0, 0.0, 0.0, 1.0]; len],
+            color_dc: vec![[0.1, 0.2, 0.3]; len],
+            sh_degree: 0,
+            sh_rest: None,
+        }
+    }
+
+    #[test]
+    fn bench_config_parse_defaults() {
+        let config = BenchConfig::parse(Vec::new()).unwrap();
+
+        assert_eq!(config.dataset_path, "tests/datasets/minimal_ascii.ply");
+        assert_eq!(config.iterations, 120);
+        assert_eq!(config.stability_seconds, None);
+        assert_eq!(config.rss_growth_limit_kib, 64 * 1024);
+        assert!(config.analysis.is_none());
+    }
+
+    #[test]
+    fn bench_config_parse_dataset_iterations_and_stability() {
+        let config = BenchConfig::parse(vec![
+            "scene.ply".to_owned(),
+            "42".to_owned(),
+            "--stability-seconds".to_owned(),
+            "5".to_owned(),
+            "--rss-growth-limit-kib".to_owned(),
+            "4096".to_owned(),
+        ])
+        .unwrap();
+
+        assert_eq!(config.dataset_path, "scene.ply");
+        assert_eq!(config.iterations, 42);
+        assert_eq!(config.stability_seconds, Some(5));
+        assert_eq!(config.rss_growth_limit_kib, 4096);
+    }
+
+    #[test]
+    fn bench_config_parse_spatial_flags_and_clamps() {
+        let config = BenchConfig::parse(vec![
+            "--analyze-spatial".to_owned(),
+            "--analysis-width".to_owned(),
+            "0".to_owned(),
+            "--analysis-height".to_owned(),
+            "720".to_owned(),
+            "--analysis-grid".to_owned(),
+            "999".to_owned(),
+            "--analysis-tiles".to_owned(),
+            "0".to_owned(),
+        ])
+        .unwrap();
+        let analysis = config.analysis.unwrap();
+
+        assert_eq!(analysis.width, 1);
+        assert_eq!(analysis.height, 720);
+        assert_eq!(analysis.grid_axis, 128);
+        assert_eq!(analysis.tile_axis, 1);
+    }
+
+    #[test]
+    fn bench_config_rejects_unknown_and_missing_option_values() {
+        let err = BenchConfig::parse(vec!["--nope".to_owned()]).unwrap_err();
+        assert_eq!(err, "unknown option: --nope");
+
+        let err = BenchConfig::parse(vec!["--analysis-width".to_owned()]).unwrap_err();
+        assert_eq!(err, "missing value for --analysis-width");
+    }
+
+    #[test]
+    fn scene_bounds_ignores_non_finite_positions() {
+        let scene = scene_with_positions(vec![
+            Vec3f::new(f32::NAN, 0.0, 0.0),
+            Vec3f::new(-1.0, 2.0, 3.0),
+            Vec3f::new(4.0, f32::INFINITY, 6.0),
+            Vec3f::new(2.0, -3.0, 5.0),
+        ]);
+
+        let (min, max) = scene_bounds(&scene).unwrap();
+
+        assert_eq!(min, Vec3f::new(-1.0, -3.0, 3.0));
+        assert_eq!(max, Vec3f::new(2.0, 2.0, 5.0));
+    }
+
+    #[test]
+    fn grid_indices_clamp_bounds() {
+        assert_eq!(grid_axis_index(-10.0, 0.0, 1.0, 4), 0);
+        assert_eq!(grid_axis_index(1.0, 0.0, 1.0, 4), 3);
+        assert_eq!(grid_axis_index(0.5, 0.0, 1.0, 4), 2);
+
+        let min = Vec3f::new(0.0, 0.0, 0.0);
+        let max = Vec3f::new(1.0, 1.0, 1.0);
+        assert_eq!(grid_cell_index(Vec3f::new(1.0, 1.0, 1.0), min, max, 2), 7);
+    }
+
+    #[test]
+    fn percentile_helpers_handle_empty_and_clamped_inputs() {
+        assert_eq!(percentile_u32(&[], 0.5), 0);
+        assert_eq!(percentile_f32(&[], 0.5), 0.0);
+        assert_eq!(percentile_index(4, -1.0), 0);
+        assert_eq!(percentile_index(4, 2.0), 3);
+        assert_eq!(percentile_u32(&[10, 20, 30, 40], 0.5), 30);
+        assert_eq!(percentile_f32(&[1.0, 2.0, 3.0], 0.5), 2.0);
+    }
+
+    #[test]
+    fn merge_min_and_max_preserve_known_measurements() {
+        assert_eq!(merge_min(None, Some(5)), Some(5));
+        assert_eq!(merge_min(Some(7), Some(5)), Some(5));
+        assert_eq!(merge_min(Some(7), None), Some(7));
+        assert_eq!(merge_max(None, Some(5)), Some(5));
+        assert_eq!(merge_max(Some(7), Some(5)), Some(7));
+        assert_eq!(merge_max(Some(7), None), Some(7));
+    }
+}

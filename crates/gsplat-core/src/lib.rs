@@ -232,6 +232,24 @@ impl SceneBuffers {
             return Err(ErrorCode::ParseFailed);
         }
 
+        if !self.positions.iter().all(|position| position.is_finite())
+            || !self.opacity.iter().all(|value| value.is_finite())
+            || !self
+                .scale_xyz
+                .iter()
+                .all(|scale| scale.iter().all(|value| value.is_finite()))
+            || !self
+                .rotation_xyzw
+                .iter()
+                .all(|rotation| rotation.iter().all(|value| value.is_finite()))
+            || !self
+                .color_dc
+                .iter()
+                .all(|color| color.iter().all(|value| value.is_finite()))
+        {
+            return Err(ErrorCode::ParseFailed);
+        }
+
         if self.sh_degree > 4 {
             return Err(ErrorCode::Unsupported);
         }
@@ -248,6 +266,9 @@ impl SceneBuffers {
                 if rest.len() != n.saturating_mul(stride) {
                     return Err(ErrorCode::ParseFailed);
                 }
+                if !rest.iter().all(|value| value.is_finite()) {
+                    return Err(ErrorCode::ParseFailed);
+                }
             }
         }
 
@@ -257,7 +278,19 @@ impl SceneBuffers {
 
 #[cfg(test)]
 mod tests {
-    use super::{Camera, ErrorCode, RenderMode, RendererConfig, SceneBuffers};
+    use super::{Camera, ErrorCode, RenderMode, RendererConfig, SceneBuffers, Vec3f};
+
+    fn valid_scene() -> SceneBuffers {
+        SceneBuffers {
+            positions: vec![Vec3f::new(0.0, 0.0, 1.0)],
+            opacity: vec![1.0],
+            scale_xyz: vec![[0.0, 0.0, 0.0]],
+            rotation_xyzw: vec![[0.0, 0.0, 0.0, 1.0]],
+            color_dc: vec![[0.1, 0.2, 0.3]],
+            sh_degree: 0,
+            sh_rest: None,
+        }
+    }
 
     #[test]
     fn render_mode_from_u32() {
@@ -324,7 +357,7 @@ mod tests {
     #[test]
     fn scene_buffer_validation_rejects_nonzero_sh_degree_without_rest() {
         let scene = SceneBuffers {
-            positions: vec![super::Vec3f::new(0.0, 0.0, 1.0)],
+            positions: vec![Vec3f::new(0.0, 0.0, 1.0)],
             opacity: vec![1.0],
             scale_xyz: vec![[1.0, 1.0, 1.0]],
             rotation_xyzw: vec![[0.0, 0.0, 0.0, 1.0]],
@@ -333,6 +366,58 @@ mod tests {
             sh_rest: None,
         };
 
+        assert_eq!(scene.validate(), Err(ErrorCode::ParseFailed));
+    }
+
+    #[test]
+    fn scene_buffer_validation_accepts_valid_sh_rest() {
+        let mut scene = valid_scene();
+        scene.sh_degree = 1;
+        scene.sh_rest = Some(vec![0.0; 9]);
+
+        assert_eq!(scene.validate(), Ok(()));
+    }
+
+    #[test]
+    fn scene_buffer_validation_rejects_degree_zero_with_rest() {
+        let mut scene = valid_scene();
+        scene.sh_rest = Some(vec![0.0]);
+
+        assert_eq!(scene.validate(), Err(ErrorCode::ParseFailed));
+    }
+
+    #[test]
+    fn scene_buffer_validation_rejects_rest_length_mismatch() {
+        let mut scene = valid_scene();
+        scene.sh_degree = 2;
+        scene.sh_rest = Some(vec![0.0; 23]);
+
+        assert_eq!(scene.validate(), Err(ErrorCode::ParseFailed));
+    }
+
+    #[test]
+    fn scene_buffer_validation_rejects_unsupported_sh_degree() {
+        let mut scene = valid_scene();
+        scene.sh_degree = 5;
+        scene.sh_rest = Some(vec![0.0; 105]);
+
+        assert_eq!(scene.validate(), Err(ErrorCode::Unsupported));
+    }
+
+    #[test]
+    fn scene_buffer_validation_rejects_non_finite_fields() {
+        let mut scene = valid_scene();
+        scene.positions[0].x = f32::NAN;
+        assert_eq!(scene.validate(), Err(ErrorCode::ParseFailed));
+
+        let mut scene = valid_scene();
+        scene.opacity[0] = f32::INFINITY;
+        assert_eq!(scene.validate(), Err(ErrorCode::ParseFailed));
+
+        let mut scene = valid_scene();
+        scene.sh_degree = 1;
+        scene.sh_rest = Some(vec![0.0; 9]);
+        scene.sh_rest.as_mut().unwrap()[3] = f32::NEG_INFINITY;
         assert_eq!(scene.validate(), Err(ErrorCode::ParseFailed));
     }
 }

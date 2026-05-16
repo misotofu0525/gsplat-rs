@@ -31,7 +31,8 @@ cargo fmt --check
 cargo clippy --workspace --all-targets -- -D warnings
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
 node --check examples/web/src/main.js
-node --check packages/web/src/index.js
+npm --prefix packages/web run check
+npm --prefix packages/web test
 ```
 
 - Run these before opening a pull request that changes Rust code, public docs,
@@ -50,7 +51,8 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
 node --check examples/web/src/main.js
-node --check packages/web/src/index.js
+npm --prefix packages/web run check
+npm --prefix packages/web test
 cargo run -p bench-runner -- tests/datasets/minimal_ascii.ply 120
 bash tests/ffi/run-ffi-smoke.sh
 bash bindings/android/scripts/run-jni-smoke.sh
@@ -239,7 +241,8 @@ STABILITY_SECONDS=1800 bash tests/perf/run-long-stability.sh
 - If you touch `examples/web/`, run `node --check examples/web/src/main.js`
   and the Web Demo smoke above. If you touch
   `packages/web/`, also run
-  `node --check packages/web/src/index.js`,
+  `npm --prefix packages/web run check`,
+  `npm --prefix packages/web test`,
   `bash packages/web/scripts/build.sh`, and
   `node --check packages/web/dist/index.js`.
 - If you touch `crates/gsplat-web/` or browser Surface creation in `crates/gsplat-render-wgpu/`, run `cargo check --workspace` and the Web WASM Build path above.

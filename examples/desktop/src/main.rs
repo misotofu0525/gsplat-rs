@@ -981,3 +981,124 @@ fn write_png(path: &Path, width: u32, height: u32, rgba: &[u8]) -> Result<(), St
         .map_err(|err| err.to_string())?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use gsplat_core::{RenderMode, RendererConfig, SceneBuffers, Vec3f};
+    use gsplat_render_wgpu::Renderer;
+
+    use super::{Args, auto_camera, scene_bounds, write_png};
+
+    fn parse_args(args: &[&str]) -> Result<Args, String> {
+        Args::parse(args.iter().map(|value| value.to_string()))
+    }
+
+    fn scene_with_positions(positions: Vec<Vec3f>) -> SceneBuffers {
+        let len = positions.len();
+        SceneBuffers {
+            positions,
+            opacity: vec![1.0; len],
+            scale_xyz: vec![[0.0, 0.0, 0.0]; len],
+            rotation_xyzw: vec![[0.0, 0.0, 0.0, 1.0]; len],
+            color_dc: vec![[0.1, 0.2, 0.3]; len],
+            sh_degree: 0,
+            sh_rest: None,
+        }
+    }
+
+    #[test]
+    fn args_parse_defaults_to_minimal_dataset() {
+        let args = parse_args(&[]).unwrap();
+
+        assert_eq!(
+            args.dataset_path,
+            std::path::PathBuf::from("tests/datasets/minimal_ascii.ply")
+        );
+        assert_eq!(args.config.width, 1280);
+        assert_eq!(args.config.height, 720);
+        assert_eq!(args.config.mode, RenderMode::SortedAlpha);
+        assert_eq!(args.frames, 1);
+        assert!(!args.orbit);
+        assert!(!args.auto_camera);
+        assert!(!args.interactive);
+        assert!(args.png_out.is_none());
+    }
+
+    #[test]
+    fn args_parse_flags_and_clamps_frames() {
+        let args = parse_args(&[
+            "scene.ply",
+            "--frames",
+            "0",
+            "--width",
+            "640",
+            "--height",
+            "480",
+            "--orbit",
+            "--auto-camera",
+            "--yaw-deg",
+            "15",
+            "--png",
+            "target/out.png",
+        ])
+        .unwrap();
+
+        assert_eq!(args.dataset_path, std::path::PathBuf::from("scene.ply"));
+        assert_eq!(args.frames, 1);
+        assert_eq!(args.config.width, 640);
+        assert_eq!(args.config.height, 480);
+        assert!(args.orbit);
+        assert!(args.auto_camera);
+        assert_eq!(args.yaw_deg, Some(15.0));
+        assert_eq!(
+            args.png_out,
+            Some(std::path::PathBuf::from("target/out.png"))
+        );
+    }
+
+    #[test]
+    fn args_parse_rejects_unknown_and_extra_args() {
+        let err = parse_args(&["--nope"]).unwrap_err();
+        assert!(err.contains("unknown flag: --nope"));
+
+        let err = parse_args(&["a.ply", "b.ply"]).unwrap_err();
+        assert!(err.contains("unexpected extra arg: b.ply"));
+    }
+
+    #[test]
+    fn scene_bounds_returns_min_and_max_positions() {
+        let scene = scene_with_positions(vec![
+            Vec3f::new(-1.0, 2.0, 0.5),
+            Vec3f::new(3.0, -4.0, 8.0),
+            Vec3f::new(0.0, 1.0, -2.0),
+        ]);
+
+        let (min, max) = scene_bounds(&scene).unwrap();
+
+        assert_eq!(min, Vec3f::new(-1.0, -4.0, -2.0));
+        assert_eq!(max, Vec3f::new(3.0, 2.0, 8.0));
+    }
+
+    #[test]
+    fn auto_camera_sets_valid_planes_for_deep_scene() {
+        let scene = scene_with_positions(vec![
+            Vec3f::new(-1.0, -1.0, 1.0),
+            Vec3f::new(1.0, 1.0, 20.0),
+        ]);
+        let mut renderer = Renderer::new(RenderMode::SortedAlpha).unwrap();
+        renderer.load_scene(scene).unwrap();
+
+        let camera = auto_camera(&renderer, RendererConfig::default());
+
+        assert!(camera.intrinsics.near_plane > 0.0);
+        assert!(camera.intrinsics.far_plane > camera.intrinsics.near_plane);
+        assert_eq!(camera.validate(), Ok(()));
+    }
+
+    #[test]
+    fn write_png_rejects_mismatched_rgba_len() {
+        let err = write_png(std::path::Path::new("target/unused.png"), 2, 2, &[0; 4]).unwrap_err();
+
+        assert_eq!(err, "png write failed: rgba buffer size mismatch");
+    }
+}

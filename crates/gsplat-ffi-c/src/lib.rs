@@ -1675,8 +1675,18 @@ mod tests {
     use super::{
         GsplatCamera, GsplatConfig, GsplatContext, SurfaceCameraControl,
         camera_rotation_looking_at, gsplat_camera_default, gsplat_config_default,
-        gsplat_context_create, gsplat_context_destroy, gsplat_context_set_camera,
-        gsplat_error_message, surface_camera_from_control,
+        gsplat_context_create, gsplat_context_destroy, gsplat_context_get_stats,
+        gsplat_context_load_scene_path, gsplat_context_render_frame,
+        gsplat_context_set_auto_camera, gsplat_context_set_camera, gsplat_error_message,
+        gsplat_surface_renderer_get_stats, gsplat_surface_renderer_orbit,
+        gsplat_surface_renderer_pan, gsplat_surface_renderer_render_frame,
+        gsplat_surface_renderer_reset_camera, gsplat_surface_renderer_resize,
+        gsplat_surface_renderer_set_async_geometry, gsplat_surface_renderer_set_async_sort,
+        gsplat_surface_renderer_set_frame_latency, gsplat_surface_renderer_set_gpu_preproject,
+        gsplat_surface_renderer_set_gpu_preproject_double_buffer,
+        gsplat_surface_renderer_set_instance_buffer_count,
+        gsplat_surface_renderer_set_sort_interval, gsplat_surface_renderer_set_static_direct,
+        gsplat_surface_renderer_zoom, surface_camera_from_control,
     };
 
     #[test]
@@ -1743,6 +1753,13 @@ mod tests {
     }
 
     #[test]
+    fn context_create_rejects_null_out_pointer() {
+        let rc = unsafe { gsplat_context_create(GsplatConfig::default(), ptr::null_mut()) };
+
+        assert_eq!(rc, ErrorCode::InvalidArgument.as_i32());
+    }
+
+    #[test]
     fn context_create_rejects_non_release_render_mode() {
         let mut ctx: *mut GsplatContext = ptr::null_mut();
         let config = GsplatConfig {
@@ -1772,5 +1789,128 @@ mod tests {
 
         assert_eq!(rc, ErrorCode::InvalidArgument.as_i32());
         unsafe { gsplat_context_destroy(ctx) };
+    }
+
+    #[test]
+    fn context_functions_reject_null_handles_and_outputs() {
+        let mut stats = super::GsplatStats::from(gsplat_core::FrameStats::zero());
+
+        assert_eq!(
+            unsafe { gsplat_context_set_auto_camera(ptr::null_mut()) },
+            ErrorCode::InvalidArgument.as_i32()
+        );
+        assert_eq!(
+            unsafe { gsplat_context_load_scene_path(ptr::null_mut(), ptr::null()) },
+            ErrorCode::InvalidArgument.as_i32()
+        );
+        assert_eq!(
+            unsafe { gsplat_context_render_frame(ptr::null_mut()) },
+            ErrorCode::InvalidArgument.as_i32()
+        );
+        assert_eq!(
+            unsafe { gsplat_context_get_stats(ptr::null(), &mut stats) },
+            ErrorCode::InvalidArgument.as_i32()
+        );
+        assert_eq!(
+            unsafe { gsplat_context_get_stats(ptr::null(), ptr::null_mut()) },
+            ErrorCode::InvalidArgument.as_i32()
+        );
+    }
+
+    #[test]
+    fn context_load_scene_path_rejects_null_path() {
+        let mut ctx: *mut GsplatContext = ptr::null_mut();
+        let create_rc = unsafe { gsplat_context_create(GsplatConfig::default(), &mut ctx) };
+        assert_eq!(create_rc, ErrorCode::Ok.as_i32());
+        assert!(!ctx.is_null());
+
+        let rc = unsafe { gsplat_context_load_scene_path(ctx, ptr::null()) };
+
+        assert_eq!(rc, ErrorCode::InvalidArgument.as_i32());
+        unsafe { gsplat_context_destroy(ctx) };
+    }
+
+    #[test]
+    fn context_get_stats_rejects_null_output() {
+        let mut ctx: *mut GsplatContext = ptr::null_mut();
+        let create_rc = unsafe { gsplat_context_create(GsplatConfig::default(), &mut ctx) };
+        assert_eq!(create_rc, ErrorCode::Ok.as_i32());
+        assert!(!ctx.is_null());
+
+        let rc = unsafe { gsplat_context_get_stats(ctx, ptr::null_mut()) };
+
+        assert_eq!(rc, ErrorCode::InvalidArgument.as_i32());
+        unsafe { gsplat_context_destroy(ctx) };
+    }
+
+    #[test]
+    fn surface_functions_reject_null_renderer() {
+        let mut stats = super::GsplatStats::from(gsplat_core::FrameStats::zero());
+        let expected = ErrorCode::InvalidArgument.as_i32();
+
+        assert_eq!(
+            unsafe { gsplat_surface_renderer_resize(ptr::null_mut(), 640, 480) },
+            expected
+        );
+        assert_eq!(
+            unsafe { gsplat_surface_renderer_set_sort_interval(ptr::null_mut(), 1) },
+            expected
+        );
+        assert_eq!(
+            unsafe { gsplat_surface_renderer_set_gpu_preproject(ptr::null_mut(), 1) },
+            expected
+        );
+        assert_eq!(
+            unsafe { gsplat_surface_renderer_set_gpu_preproject_double_buffer(ptr::null_mut(), 1) },
+            expected
+        );
+        assert_eq!(
+            unsafe { gsplat_surface_renderer_set_static_direct(ptr::null_mut(), 1) },
+            expected
+        );
+        assert_eq!(
+            unsafe { gsplat_surface_renderer_set_async_sort(ptr::null_mut(), 1) },
+            expected
+        );
+        assert_eq!(
+            unsafe { gsplat_surface_renderer_set_async_geometry(ptr::null_mut(), 1) },
+            expected
+        );
+        assert_eq!(
+            unsafe { gsplat_surface_renderer_set_instance_buffer_count(ptr::null_mut(), 2) },
+            expected
+        );
+        assert_eq!(
+            unsafe { gsplat_surface_renderer_set_frame_latency(ptr::null_mut(), 2) },
+            expected
+        );
+        assert_eq!(
+            unsafe { gsplat_surface_renderer_reset_camera(ptr::null_mut()) },
+            expected
+        );
+        assert_eq!(
+            unsafe { gsplat_surface_renderer_orbit(ptr::null_mut(), 0.1, 0.1) },
+            expected
+        );
+        assert_eq!(
+            unsafe { gsplat_surface_renderer_zoom(ptr::null_mut(), 1.1) },
+            expected
+        );
+        assert_eq!(
+            unsafe { gsplat_surface_renderer_pan(ptr::null_mut(), 0.1, 0.1) },
+            expected
+        );
+        assert_eq!(
+            unsafe { gsplat_surface_renderer_render_frame(ptr::null_mut()) },
+            expected
+        );
+        assert_eq!(
+            unsafe { gsplat_surface_renderer_get_stats(ptr::null(), &mut stats) },
+            expected
+        );
+        assert_eq!(
+            unsafe { gsplat_surface_renderer_get_stats(ptr::null(), ptr::null_mut()) },
+            expected
+        );
     }
 }

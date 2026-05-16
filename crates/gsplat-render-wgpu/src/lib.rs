@@ -3794,6 +3794,35 @@ mod tests {
     }
 
     #[test]
+    fn sorted_alpha_orders_visible_indices_back_to_front() {
+        let scene = SceneBuffers {
+            positions: vec![
+                Vec3f::new(0.0, 0.0, 0.5),
+                Vec3f::new(0.0, 0.0, 2.0),
+                Vec3f::new(0.0, 0.0, 1.0),
+                Vec3f::new(0.0, 0.0, -1.0),
+                Vec3f::new(0.0, 0.0, 2000.0),
+            ],
+            opacity: vec![1.0; 5],
+            scale_xyz: vec![[0.0, 0.0, 0.0]; 5],
+            rotation_xyzw: vec![[0.0, 0.0, 0.0, 1.0]; 5],
+            color_dc: vec![[0.2, 0.3, 0.4]; 5],
+            sh_degree: 0,
+            sh_rest: None,
+        };
+        let mut renderer = Renderer::new(RenderMode::SortedAlpha).unwrap();
+        renderer.load_scene(scene).unwrap();
+
+        let stats = renderer
+            .build_surface_sorted_indices_with_sort_refresh(&Camera::default(), true)
+            .unwrap();
+
+        assert_eq!(stats.visible_count, 3);
+        assert_eq!(stats.drawn_count, 3);
+        assert_eq!(renderer.current_sorted_indices(), &[1, 2, 0]);
+    }
+
+    #[test]
     fn preprocess_rejects_missing_scene() {
         let renderer = Renderer::new(RenderMode::SortedAlpha).unwrap();
         let err = renderer.preprocess_visible(&Camera::default()).unwrap_err();
