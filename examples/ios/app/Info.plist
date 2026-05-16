@@ -5,13 +5,13 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>en</string>
 	<key>CFBundleExecutable</key>
-	<string>GsplatIOSDemo</string>
+	<string>GsplatIOSExample</string>
 	<key>CFBundleIdentifier</key>
-	<string>com.gsplat.demo.ios</string>
+	<string>com.gsplat.example.ios</string>
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>
-	<string>Gsplat iOS Demo</string>
+	<string>Gsplat iOS Example</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>

@@ -2,7 +2,7 @@
 
 ## Goal
 
-Improve the physical iPhone realtime Surface demo performance and keep the comparison with Android honest.
+Improve the physical iPhone realtime Surface example performance and keep the comparison with Android honest.
 
 ## Baseline
 
@@ -21,7 +21,7 @@ Android APK builds the Rust native renderer with the Rust `release` profile by d
 
 ## Planned Changes
 
-- Make `apps/ios-demo/build-ios-device-app.sh` default to Rust `release` profile.
+- Make `bindings/apple/scripts/build-ios-device-app.sh` default to Rust `release` profile.
 - Compile the device Swift app with `-O` by default.
 - Keep env overrides for debug investigation.
 - Re-run the same benchmark on the same phone before changing renderer internals.
@@ -53,6 +53,6 @@ async_geometry: avg_call_ms=16.889 avg_frame_ms=8.204
 wall-clock `avg_call_ms` does not beat the default release path. Keep them as
 A/B knobs for now rather than promoting them to default.
 
-Added `apps/ios-demo/benchmark-ios-device-app.sh` so future device perf work can
+Added `bindings/apple/scripts/benchmark-ios-device-app.sh` so future device perf work can
 capture `BENCHMARK_RESULT` without repeating a long `devicectl --console`
 command by hand.

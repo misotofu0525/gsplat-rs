@@ -3,7 +3,7 @@
 ## Goal
 
 - Replace the Android bitmap/readback preview path with a real `SurfaceView` -> JNI -> Rust/wgpu surface presentation path.
-- Keep the Android demo as a validation surface for the shared renderer, not a separate product.
+- Keep the Android example as a validation surface for the shared renderer, not a separate product.
 
 ## Current Findings
 
@@ -24,6 +24,6 @@
 
 ## Evidence
 
-- `bash apps/android-demo/build-apk.sh` passed after the Surface path changes.
+- `bash bindings/android/scripts/build-sample-apk.sh` passed after the Surface path changes.
 - Emulator run rendered `tests/datasets/external/nvidia_flowers_1/flowers_1/flowers_1.ply` through `SurfaceView` -> JNI -> `ANativeWindow` -> `wgpu::Surface`.
 - Final screenshot: `target/android-screenshots/gsplat-flower-surface-real-final.png`.

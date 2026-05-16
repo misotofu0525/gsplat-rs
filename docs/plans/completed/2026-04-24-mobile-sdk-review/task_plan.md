@@ -18,7 +18,7 @@
 1. [done] Add named constants, default helpers, and error-message helper to the C header and Rust implementation.
 2. [done] Update C/JNI/Swift smoke paths to use the helper API instead of duplicating defaults.
 3. [done] Return Android Surface creation error codes to Kotlin and display readable diagnostics.
-4. [done] Refresh README/demo docs and roadmap to match the actual mobile contract.
+4. [done] Refresh README/example docs and roadmap to match the actual mobile contract.
 5. [done] Run canonical FFI/mobile smoke verification.
 
 ## Evidence
@@ -26,14 +26,14 @@
 - `cargo check --workspace` passed.
 - `cargo test --workspace` passed.
 - `bash tests/ffi/run-ffi-smoke.sh` passed.
-- `bash apps/android-demo/run-jni-smoke.sh` passed.
-- `bash apps/ios-demo/run-swift-smoke.sh` passed.
-- `bash apps/android-demo/build-apk.sh` passed.
-- `bash apps/ios-demo/build-ios-sim.sh` passed.
+- `bash bindings/android/scripts/run-jni-smoke.sh` passed.
+- `bash bindings/apple/scripts/run-swift-smoke.sh` passed.
+- `bash bindings/android/scripts/build-sample-apk.sh` passed.
+- `bash bindings/apple/scripts/build-ios-sim.sh` passed.
 
 ## Follow-up: Android Touch Controls
 
-- Goal: add real demo camera controls for mobile validation.
+- Goal: add real example camera controls for mobile validation.
 - Plan:
   1. [done] Add Surface renderer camera-control ABI for reset, orbit, zoom, and pan.
   2. [done] Wire JNI and Kotlin `NativeBridge` functions.
@@ -43,9 +43,9 @@
   - `cargo check --workspace` passed.
   - `cargo test --workspace` passed.
   - `bash tests/ffi/run-ffi-smoke.sh` passed.
-  - `bash apps/android-demo/run-jni-smoke.sh` passed.
-  - `bash apps/android-demo/build-apk.sh` passed.
-  - `bash apps/ios-demo/run-swift-smoke.sh` passed.
+  - `bash bindings/android/scripts/run-jni-smoke.sh` passed.
+  - `bash bindings/android/scripts/build-sample-apk.sh` passed.
+  - `bash bindings/apple/scripts/run-swift-smoke.sh` passed.
   - Real device `033ed212` installed and launched the APK successfully.
   - Simulated one-finger drag via ADB changed the overlay to `camera=orbit` while rendering `flowers_1.ply`.
   - Screenshot: `target/android-screenshots/gsplat-touch-real-device-20260424-162150.png`.

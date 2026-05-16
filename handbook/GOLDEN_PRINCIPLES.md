@@ -20,7 +20,7 @@
 - New placeholder apps, docs tracks, or experimental backends without a release-boundary reason.
 - Internal asset/cache formats without a measured runtime need and a real consumer.
 - Divergence between `crates/gsplat-ffi-c/include/gsplat.h` and `crates/gsplat-ffi-c/src/lib.rs`.
-- Mobile demo changes that hide shared-library or ABI issues behind platform-specific workaround code.
+- Mobile example changes that hide shared-library or ABI issues behind platform-specific workaround code.
 - Ad-hoc command sequences that bypass `VERIFICATION.md`.
 - Runtime assumptions that skip the documented PLY quaternion and coordinate-space normalization rules.
 

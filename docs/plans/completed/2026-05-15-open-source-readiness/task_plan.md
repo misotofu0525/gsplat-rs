@@ -16,7 +16,7 @@ testing, understanding, and contributing safely.
 - The repository lacked contributor guidance, security reporting policy,
   issue templates, and a pull request template.
 - CI covered build/test/smoke paths, but not rustfmt, clippy, rustdoc warning
-  checks, or Web demo JavaScript syntax.
+  checks, or Web example JavaScript syntax.
 - `cargo clippy --workspace --all-targets -- -D warnings` exposed only small
   mechanical issues, so it is practical to make clippy part of the quality bar.
 
@@ -36,7 +36,7 @@ testing, understanding, and contributing safely.
   license, and release boundary without overstating SDK maturity.
 - License files match the workspace license expression.
 - Contributors have issue/PR templates and a contribution guide.
-- CI runs formatting, clippy, docs, Web demo syntax, core Rust tests, and the
+- CI runs formatting, clippy, docs, Web example syntax, core Rust tests, and the
   existing smoke paths.
 - Fresh local verification evidence exists for the updated checks.
 
@@ -47,10 +47,10 @@ testing, understanding, and contributing safely.
 - `cargo check --workspace` passed.
 - `cargo clippy --workspace --all-targets -- -D warnings` passed.
 - `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` passed.
-- `node --check apps/web-demo/src/main.js` passed.
+- `node --check examples/web/src/main.js` passed.
 - `cargo test --workspace` passed.
 - `cargo run -p bench-runner -- tests/datasets/minimal_ascii.ply 120` passed
   with `avg_visible_count=2.00` and `avg_drawn_count=2.00`.
 - `bash tests/ffi/run-ffi-smoke.sh` passed with `drawn=2 visible=2`.
-- `bash apps/android-demo/run-jni-smoke.sh` passed.
-- `bash apps/ios-demo/run-swift-smoke.sh` passed with `drawn=2 visible=2`.
+- `bash bindings/android/scripts/run-jni-smoke.sh` passed.
+- `bash bindings/apple/scripts/run-swift-smoke.sh` passed with `drawn=2 visible=2`.

@@ -37,7 +37,7 @@ fn main() {
     };
 
     if let Err(err) = run(args) {
-        eprintln!("desktop-demo failed: {err}");
+        eprintln!("desktop-example failed: {err}");
         std::process::exit(1);
     }
 }
@@ -144,7 +144,7 @@ impl Args {
 
 fn usage() -> String {
     let lines = [
-        "usage: cargo run -p desktop-demo -- [dataset.ply] [flags]",
+        "usage: cargo run -p desktop-example -- [dataset.ply] [flags]",
         "",
         "flags:",
         "  --frames N       render N frames (default: 1)",
@@ -208,7 +208,7 @@ fn run_offscreen(args: &Args, mut renderer: Renderer, mut camera: Camera) -> Res
         println!("wrote_png={}", png_path.display());
     }
 
-    println!("desktop-demo ok");
+    println!("desktop-example ok");
     println!("dataset={}", args.dataset_path.display());
     println!("gpu_rasterizer={}", renderer.has_gpu_rasterizer());
     println!("frames={}", args.frames);
@@ -449,7 +449,7 @@ impl SurfacePresenter {
 
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
-                label: Some("desktop-demo-surface-device"),
+                label: Some("desktop-example-surface-device"),
                 required_features: wgpu::Features::empty(),
                 required_limits: wgpu::Limits::downlevel_defaults(),
                 experimental_features: wgpu::ExperimentalFeatures::disabled(),
@@ -487,7 +487,7 @@ impl SurfacePresenter {
         surface.configure(&device, &surface_config);
 
         let render_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("desktop-demo-splat-shader"),
+            label: Some("desktop-example-splat-shader"),
             source: wgpu::ShaderSource::Wgsl(
                 include_str!("../../../crates/gsplat-render-wgpu/shaders/splat.wgsl").into(),
             ),
@@ -495,7 +495,7 @@ impl SurfacePresenter {
 
         let render_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("desktop-demo-splat-bgl"),
+                label: Some("desktop-example-splat-bgl"),
                 entries: &[wgpu::BindGroupLayoutEntry {
                     binding: 0,
                     visibility: wgpu::ShaderStages::VERTEX,
@@ -510,13 +510,13 @@ impl SurfacePresenter {
 
         let render_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("desktop-demo-splat-bgl"),
+                label: Some("desktop-example-splat-bgl"),
                 bind_group_layouts: &[&render_bind_group_layout],
                 immediate_size: 0,
             });
 
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("desktop-demo-splat-rp"),
+            label: Some("desktop-example-splat-rp"),
             layout: Some(&render_pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &render_shader,
@@ -614,13 +614,13 @@ impl SurfacePresenter {
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("desktop-demo-surface-encoder"),
+                label: Some("desktop-example-surface-encoder"),
             });
         self.preprocessor
             .encode_dispatch(&mut encoder, instance_count);
         {
             let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("desktop-demo-surface-pass"),
+                label: Some("desktop-example-surface-pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &view,
                     depth_slice: None,
@@ -657,13 +657,13 @@ fn create_surface_instance_resources(
     let stride = std::mem::size_of::<GpuInstance>() as u64;
     let size = stride * (capacity.max(1) as u64);
     let buffer = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("desktop-demo-surface-instance-buffer"),
+        label: Some("desktop-example-surface-instance-buffer"),
         size,
         usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
     let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("desktop-demo-surface-bg"),
+        label: Some("desktop-example-surface-bg"),
         layout: bind_group_layout,
         entries: &[wgpu::BindGroupEntry {
             binding: 0,

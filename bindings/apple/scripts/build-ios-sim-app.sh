@@ -34,7 +34,7 @@ else
   SWIFT_TARGET="x86_64-apple-ios${IOS_VERSION}-simulator"
 fi
 
-APP_NAME="GsplatIOSDemo"
+APP_NAME="GsplatIOSExample"
 APP_BUNDLE="$ROOT_DIR/target/ios-sim-app/${APP_NAME}.app"
 STATIC_LIB="$ROOT_DIR/target/$RUST_TARGET/debug/libgsplat_ffi_c.a"
 SDK_PATH="$(xcrun --sdk iphonesimulator --show-sdk-path)"
@@ -49,7 +49,7 @@ cp "$DATASET_ABS" "$APP_BUNDLE/flowers_1.ply"
 
 xcrun --sdk iphonesimulator swiftc \
   bindings/apple/GsplatKit/Sources/GsplatKit/GsplatKit.swift \
-  examples/ios/app/GsplatIOSDemo.swift \
+  examples/ios/app/GsplatIOSExample.swift \
   -parse-as-library \
   -import-objc-header crates/gsplat-ffi-c/include/gsplat.h \
   -sdk "$SDK_PATH" \
@@ -71,5 +71,5 @@ echo "ios simulator app build complete"
 echo "rust_target=$RUST_TARGET"
 echo "swift_target=$SWIFT_TARGET"
 echo "app=$APP_BUNDLE"
-echo "bundle_id=com.gsplat.demo.ios"
+echo "bundle_id=com.gsplat.example.ios"
 echo "dataset=$DATASET_ABS"

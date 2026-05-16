@@ -1,4 +1,4 @@
-# gsplat-rs Web Demo
+# gsplat-rs Web Example
 
 This directory hosts the browser validation surface.
 
@@ -13,7 +13,7 @@ There are three Web paths:
 
 ## Run
 
-Serve the repository root so the demo can fetch shared test datasets:
+Serve the repository root so the example can fetch shared test datasets:
 
 ```bash
 python3 -m http.server 4173 --bind 127.0.0.1 --directory .
@@ -34,7 +34,7 @@ Open the larger flower smoke scene directly with:
 http://127.0.0.1:4173/examples/web/?dataset=flowers
 ```
 
-To build the experimental Rust/WASM package for this demo:
+To build the experimental Rust/WASM package for this example:
 
 ```bash
 bash packages/web/scripts/build-wasm.sh
@@ -49,7 +49,7 @@ bash packages/web/scripts/build.sh
 That script expects `wasm32-unknown-unknown` and the `wasm-bindgen` CLI to
 already be installed. It does not install toolchain components for you.
 
-The demo loads `tests/datasets/minimal_ascii.ply` on startup. Use the file
+The example loads `tests/datasets/minimal_ascii.ply` on startup. Use the file
 picker for local `.ply` files, or the `Flowers` button when the optional NVIDIA
 flower dataset is present under `tests/datasets/external/`.
 

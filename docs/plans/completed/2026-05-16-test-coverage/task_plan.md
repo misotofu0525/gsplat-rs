@@ -23,7 +23,7 @@
 ## Findings
 
 - Baseline `cargo test --workspace` was green before edits, but coverage was uneven:
-  `bench-runner`, `desktop-demo`, and `gsplat-web` had zero Rust tests.
+  `bench-runner`, `desktop-example`, and `gsplat-web` had zero Rust tests.
 - The current project is not test-complete in the strong sense. It has a useful
   core/smoke matrix, while real Surface/device/browser/perf evidence remains
   environment-dependent and should not be collapsed into `cargo test`.
@@ -33,7 +33,7 @@
   - `SceneBuffers` validation for SH rest shape, unsupported degree, and
     non-finite scene fields.
   - `bench-runner` CLI and spatial-analysis helper tests.
-  - `desktop-demo` CLI/auto-camera/PNG guard tests.
+  - `desktop-example` CLI/auto-camera/PNG guard tests.
   - FFI null-handle/null-output error-code tests.
   - Node-level tests for the local Web wrapper.
 - Added one behavior hardening change: ASCII PLY parsing now rejects `NaN` and
@@ -43,7 +43,7 @@
 - Remaining non-local gaps:
   - Android `SurfaceView` and iOS `CAMetalLayer` realtime smoke still require
     device/simulator/browser execution paths from `handbook/VERIFICATION.md`.
-  - Browser demo behavior still needs the documented HTTP + browser benchmark
+  - Browser example behavior still needs the documented HTTP + browser benchmark
     smoke; Node tests only cover the package wrapper.
   - Larger real datasets and long stability remain manual/nightly/release-bar
     evidence rather than PR-fast tests.
@@ -62,6 +62,6 @@
   - Passed with `drawn=2 visible=2`.
 - `cargo run -p bench-runner -- tests/datasets/minimal_ascii.ply 3`
   - Passed with `avg_visible_count=2.00` and `avg_drawn_count=2.00`.
-- `cargo run -p desktop-demo -- tests/datasets/minimal_ascii.ply --frames 1`
+- `cargo run -p desktop-example -- tests/datasets/minimal_ascii.ply --frames 1`
   - Passed with `visible_count=2` and `drawn_count=2`.
 - `node --check examples/web/src/main.js`

@@ -10,24 +10,24 @@
 
 #include "../../../crates/gsplat-ffi-c/include/gsplat.h"
 
-JNIEXPORT jint JNICALL Java_com_gsplat_demo_GsplatJniSmoke_nativeVersionMajor(JNIEnv *env, jclass cls) {
+JNIEXPORT jint JNICALL Java_com_gsplat_example_GsplatJniSmoke_nativeVersionMajor(JNIEnv *env, jclass cls) {
   (void)env;
   (void)cls;
   return (jint)gsplat_version_major();
 }
 
 JNIEXPORT jint JNICALL Java_com_gsplat_android_NativeBridge_versionMajor(JNIEnv *env, jclass cls) {
-  return Java_com_gsplat_demo_GsplatJniSmoke_nativeVersionMajor(env, cls);
+  return Java_com_gsplat_example_GsplatJniSmoke_nativeVersionMajor(env, cls);
 }
 
-JNIEXPORT jint JNICALL Java_com_gsplat_demo_GsplatJniSmoke_nativeVersionMinor(JNIEnv *env, jclass cls) {
+JNIEXPORT jint JNICALL Java_com_gsplat_example_GsplatJniSmoke_nativeVersionMinor(JNIEnv *env, jclass cls) {
   (void)env;
   (void)cls;
   return (jint)gsplat_version_minor();
 }
 
 JNIEXPORT jint JNICALL Java_com_gsplat_android_NativeBridge_versionMinor(JNIEnv *env, jclass cls) {
-  return Java_com_gsplat_demo_GsplatJniSmoke_nativeVersionMinor(env, cls);
+  return Java_com_gsplat_example_GsplatJniSmoke_nativeVersionMinor(env, cls);
 }
 
 JNIEXPORT jstring JNICALL Java_com_gsplat_android_NativeBridge_errorMessage(JNIEnv *env, jclass cls, jint code) {
@@ -35,7 +35,7 @@ JNIEXPORT jstring JNICALL Java_com_gsplat_android_NativeBridge_errorMessage(JNIE
   return (*env)->NewStringUTF(env, gsplat_error_message((int32_t)code));
 }
 
-JNIEXPORT jint JNICALL Java_com_gsplat_demo_GsplatJniSmoke_nativeFfiSmoke(JNIEnv *env, jclass cls, jstring dataset_path) {
+JNIEXPORT jint JNICALL Java_com_gsplat_example_GsplatJniSmoke_nativeFfiSmoke(JNIEnv *env, jclass cls, jstring dataset_path) {
   (void)cls;
 
   const char *dataset = (*env)->GetStringUTFChars(env, dataset_path, NULL);
@@ -96,7 +96,7 @@ JNIEXPORT jint JNICALL Java_com_gsplat_android_NativeBridge_runFfiSmoke(
     JNIEnv *env,
     jclass cls,
     jstring dataset_path) {
-  return Java_com_gsplat_demo_GsplatJniSmoke_nativeFfiSmoke(env, cls, dataset_path);
+  return Java_com_gsplat_example_GsplatJniSmoke_nativeFfiSmoke(env, cls, dataset_path);
 }
 
 #if defined(__ANDROID__)

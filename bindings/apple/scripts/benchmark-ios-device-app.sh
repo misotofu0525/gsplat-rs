@@ -62,8 +62,8 @@ else
   bash bindings/apple/scripts/build-ios-device-app.sh
 fi
 
-APP_BUNDLE="$ROOT_DIR/target/ios-device-app/GsplatIOSDemo.app"
-BUNDLE_ID="${IOS_BUNDLE_ID:-com.gsplat.demo.ios}"
+APP_BUNDLE="$ROOT_DIR/target/ios-device-app/GsplatIOSExample.app"
+BUNDLE_ID="${IOS_BUNDLE_ID:-com.gsplat.example.ios}"
 LOG_DIR="$ROOT_DIR/target/ios-device-benchmarks"
 mkdir -p "$LOG_DIR"
 LOG_FILE="$LOG_DIR/benchmark-$(date +%Y%m%d-%H%M%S).log"
@@ -77,7 +77,7 @@ cleanup() {
 
   local remote_pid
   remote_pid="$(xcrun devicectl device info processes --device "$DEVICE_ID" --columns '*' 2>/dev/null \
-    | awk '/GsplatIOSDemo/ {print $1; exit}')"
+    | awk '/GsplatIOSExample/ {print $1; exit}')"
   if [[ -n "$remote_pid" ]]; then
     xcrun devicectl device process terminate --device "$DEVICE_ID" --pid "$remote_pid" >/dev/null 2>&1 || true
   fi

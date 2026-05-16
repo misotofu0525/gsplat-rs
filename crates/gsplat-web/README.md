@@ -25,7 +25,7 @@ rustup target add wasm32-unknown-unknown
 cargo install wasm-bindgen-cli
 ```
 
-Then build the demo package from the repo root:
+Then build the example package from the repo root:
 
 ```bash
 bash packages/web/scripts/build-wasm.sh

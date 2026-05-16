@@ -3,7 +3,7 @@
 ## 2026-04-24
 
 - Created task bundle for Android SortedAlpha flower-scene performance optimization.
-- Read project entry docs and Android demo README.
+- Read project entry docs and Android example README.
 - Confirmed task constraints: benchmark first, optimize based on evidence, target >100% speedup, no visual quality shortcuts.
 - Inspected renderer/sort/FFI/JNI/Android telemetry code.
 - Added Android benchmark mode gated by intent extras; it forces camera movement to measure SortedAlpha rebuild cost and logs `BENCHMARK_RESULT`.
@@ -14,8 +14,8 @@
 - Rebuilt and re-ran the same true-device flower benchmark.
 - After-change result: `avg_call_ms=87.224`, `avg_frame_ms=83.529`, `avg_preprocess_ms=2.808`, `avg_sort_ms=6.694`, `avg_raster_ms=74.026`, `avg_visible=562974`, `avg_drawn=120000`.
 - Speedup so far: about 11.0x on Kotlin/JNI render-call wall time and 11.4x on native frame time.
-- Synced Android native release-profile behavior into `apps/android-demo/README.md` and `handbook/VERIFICATION.md`.
-- Verification passed: `cargo fmt --check`; `cargo check --workspace`; `cargo test -p gsplat-sort`; `cargo test --workspace`; `cargo run -p bench-runner -- tests/datasets/minimal_ascii.ply 120`; `bash apps/android-demo/run-jni-smoke.sh`; `bash apps/android-demo/build-apk.sh`; true-device Android flower benchmark.
+- Synced Android native release-profile behavior into `examples/android/README.md` and `handbook/VERIFICATION.md`.
+- Verification passed: `cargo fmt --check`; `cargo check --workspace`; `cargo test -p gsplat-sort`; `cargo test --workspace`; `cargo run -p bench-runner -- tests/datasets/minimal_ascii.ply 120`; `bash bindings/android/scripts/run-jni-smoke.sh`; `bash bindings/android/scripts/build-sample-apk.sh`; true-device Android flower benchmark.
 - Remaining bottleneck: CPU instance construction is now about 74ms of the 83.5ms native frame time. A future pass should consider moving Surface instance preparation onto the existing GPU preprocessor while preserving the current surface cap semantics.
 - User reported true-device interaction still felt low FPS.
 - Tried a Surface-specific sampled sorted-index path and benchmarked `avg_call_ms=33.380`, but user correctly identified the visual instability/flicker as an unacceptable quality compromise.
@@ -23,7 +23,7 @@
 - Rebuilt and installed APK after removal.
 - No-sampling true-device benchmark: `avg_call_ms=87.657`, `avg_frame_ms=83.714`, `avg_preprocess_ms=2.645`, `avg_sort_ms=6.566`, `avg_raster_ms=74.500`, `avg_visible=562974`, `avg_drawn=562974`.
 - Relaunched normal app mode. Overlay confirms `drawn=562974/562974`.
-- Follow-up verification after removal passed: `cargo fmt --check`; `cargo check --workspace`; `bash apps/android-demo/run-jni-smoke.sh`; `bash apps/android-demo/build-apk.sh`; true-device Android flower benchmark.
+- Follow-up verification after removal passed: `cargo fmt --check`; `cargo check --workspace`; `bash bindings/android/scripts/run-jni-smoke.sh`; `bash bindings/android/scripts/build-sample-apk.sh`; true-device Android flower benchmark.
 - Continued full 562,974-splat optimization after user reconnected the device.
 - Added CPU hot-path optimizations that preserve full `SortedAlpha` output:
   - AArch64 Neon unpack path for sorted key/value pairs.
@@ -52,7 +52,7 @@
 - First retained-code benchmark before the second pass: `avg_call_ms=49.971`, `avg_frame_ms=43.996`, `avg_preprocess_ms=3.021`, `avg_sort_ms=11.877`, `avg_raster_ms=29.096`, `avg_visible=562974`, `avg_drawn=562974`.
 - Best observed first-pass retained-code benchmark: `avg_call_ms=50.247`, `avg_frame_ms=43.796`, `avg_preprocess_ms=3.014`, `avg_sort_ms=12.361`, `avg_raster_ms=28.419`, `avg_visible=562974`, `avg_drawn=562974`.
 - Relative to the full-scene no-sampling baseline (`avg_frame_ms=83.714`), first-pass retained code was about 1.90x to 1.91x faster on native frame time. This was close to, but still below, the strict >100% improvement target.
-- First-pass verification passed: `cargo fmt`; `cargo test -p gsplat-sort -p gsplat-render-wgpu -p gsplat-ffi-c`; `cargo check --workspace`; `bash apps/android-demo/build-apk.sh`; true-device Android flower benchmark.
+- First-pass verification passed: `cargo fmt`; `cargo test -p gsplat-sort -p gsplat-render-wgpu -p gsplat-ffi-c`; `cargo check --workspace`; `bash bindings/android/scripts/build-sample-apk.sh`; true-device Android flower benchmark.
 - Relaunched normal app mode after that benchmark. Logs confirmed `state=rendering`, `visible=562974`, and `drawn=562974/562974`.
 - Continued after the user asked if any possibilities remained.
 - Added depth-only preprocess and renderer scratch reuse. This avoids computing unused camera-space x/y during preprocess and avoids reallocating large depth/index vectors every camera-change frame.
@@ -63,7 +63,7 @@
 - Preferred `Mailbox` present mode when the surface supports it, with FIFO fallback.
 - Latest retained-code benchmark: `avg_call_ms=51.001`, `avg_frame_ms=41.244`, `avg_preprocess_ms=2.411`, `avg_sort_ms=11.126`, `avg_raster_ms=27.705`, `avg_visible=562974`, `avg_drawn=562974`.
 - Relative to the no-sampling full-scene baseline (`avg_frame_ms=83.714`), native renderer frame time is now about 2.03x faster, crossing the strict >100% native-frame target. Kotlin/JNI call wall time still sits around 51ms, so further perceived-FPS work should target Surface upload/present pacing or a larger index-driven GPU geometry path.
-- Verification after the second pass passed: `cargo fmt`; `cargo test -p gsplat-sort -p gsplat-render-wgpu -p gsplat-ffi-c`; `cargo check --workspace`; `bash apps/android-demo/build-apk.sh`; true-device Android benchmark.
+- Verification after the second pass passed: `cargo fmt`; `cargo test -p gsplat-sort -p gsplat-render-wgpu -p gsplat-ffi-c`; `cargo check --workspace`; `bash bindings/android/scripts/build-sample-apk.sh`; true-device Android benchmark.
 - Relaunched normal app mode after the benchmark. Logs confirm `state=rendering`, `visible=562974`, and `drawn=562974/562974`.
 - Tried the user-requested sorted-index GPU geometry direction:
   - Compute-build variant uploaded sorted `u32` indices, built Surface instances from scene/covariance buffers in a compute shader, then used the existing Surface render shader. Result: `avg_call_ms=67.736`, `avg_frame_ms=67.709`, `avg_visible=562974`, `avg_drawn=562974`. This preserved full output but regressed versus the retained path.
@@ -92,8 +92,8 @@
 - Implemented the user-requested two-frame sort cadence experiment:
   - Added `Renderer::build_surface_instances_with_sort_refresh_into` so callers can reuse sorted indices while still rebuilding current-camera Surface geometry.
   - Added `gsplat_surface_renderer_set_sort_interval` to the C ABI, JNI bridge, and Android benchmark extras.
-  - Android demo default is now `gsplat_surface_sort_interval=2`; `1` restores per-frame sorting for A/B checks.
-- Verification passed: `cargo test -p gsplat-render-wgpu -p gsplat-ffi-c -p gsplat-sort`; `cargo check --workspace`; `bash apps/android-demo/build-apk.sh`; `bash tests/ffi/run-ffi-smoke.sh`; `bash apps/android-demo/run-jni-smoke.sh`.
+  - Android example default is now `gsplat_surface_sort_interval=2`; `1` restores per-frame sorting for A/B checks.
+- Verification passed: `cargo test -p gsplat-render-wgpu -p gsplat-ffi-c -p gsplat-sort`; `cargo check --workspace`; `bash bindings/android/scripts/build-sample-apk.sh`; `bash tests/ffi/run-ffi-smoke.sh`; `bash bindings/android/scripts/run-jni-smoke.sh`.
 - Installed the APK on Android device `033ed212`; existing `flowers_1.ply` remained in app storage.
 - Same-APK per-frame sort baseline: `samples=120 warmup=10 sort_interval=1 avg_call_ms=51.917 avg_frame_ms=43.810 avg_preprocess_ms=2.468 avg_sort_ms=11.731 avg_raster_ms=29.609 avg_visible=562974 avg_drawn=562974`.
 - Two-frame sort cadence benchmark: `samples=120 warmup=10 sort_interval=2 avg_call_ms=51.901 avg_frame_ms=38.830 avg_preprocess_ms=1.613 avg_sort_ms=7.342 avg_raster_ms=29.873 avg_visible=562974 avg_drawn=562974`.
@@ -118,7 +118,7 @@
   - Default retained path with `sort_interval=2`, `gpu_preproject=false`: `avg_call_ms=54.519`, `avg_frame_ms=35.934`, `avg_visible=562974`, `avg_drawn=562974`.
   - Default retained path with `sort_interval=1`, `gpu_preproject=false`: `avg_call_ms=52.988`, `avg_frame_ms=42.336`, `avg_visible=562974`, `avg_drawn=562974`.
 - Decision: keep GPU preproject as an opt-in experiment only. It proves that raw geometry/covariance data can be resident and that only sorted ids need to be uploaded, but on this device the added GPU compute/render synchronization is not a default performance win yet.
-- Verification after the GPU preproject work passed: `cargo test -p gsplat-render-wgpu -p gsplat-ffi-c -p gsplat-sort`; `cargo check --workspace`; `bash tests/ffi/run-ffi-smoke.sh`; `bash apps/android-demo/run-jni-smoke.sh`; `bash apps/android-demo/build-apk.sh`; true-device Android benchmark A/B.
+- Verification after the GPU preproject work passed: `cargo test -p gsplat-render-wgpu -p gsplat-ffi-c -p gsplat-sort`; `cargo check --workspace`; `bash tests/ffi/run-ffi-smoke.sh`; `bash bindings/android/scripts/run-jni-smoke.sh`; `bash bindings/android/scripts/build-sample-apk.sh`; true-device Android benchmark A/B.
 - Relaunched normal app mode after benchmarks. Logs confirmed `state=rendering`, `visible=562974`, and `drawn=562974/562974`.
 - Added async sort / double-buffered order experiment:
   - Added `SurfaceAsyncSorter` on the C ABI Surface renderer side.
@@ -134,7 +134,7 @@
   - `sort_interval=2`, `gpu_preproject=true`, `async_sort=true`: `avg_call_ms=53.485`.
   - `sort_interval=1`, `gpu_preproject=true`, `async_sort=true`: `avg_call_ms=53.613`.
 - Decision: async sort is useful as evidence and an opt-in A/B tool, but stays off by default. It moves sort out of the render call, yet call wall time remains dominated by Surface/present/upload/render pacing.
-- Verification after async-sort work passed: `cargo test -p gsplat-render-wgpu -p gsplat-ffi-c -p gsplat-sort`; `cargo check --workspace`; `bash tests/ffi/run-ffi-smoke.sh`; `bash apps/android-demo/run-jni-smoke.sh`; `bash apps/android-demo/build-apk.sh`; true-device Android A/B benchmarks.
+- Verification after async-sort work passed: `cargo test -p gsplat-render-wgpu -p gsplat-ffi-c -p gsplat-sort`; `cargo check --workspace`; `bash tests/ffi/run-ffi-smoke.sh`; `bash bindings/android/scripts/run-jni-smoke.sh`; `bash bindings/android/scripts/build-sample-apk.sh`; true-device Android A/B benchmarks.
 - Relaunched normal app mode after async-sort benchmarks. Logs confirmed `state=rendering`, `visible=562974`, and `drawn=562974/562974`.
 - Continued with remaining pacing and double-buffer experiments.
 - Added Android benchmark extras for Surface instance buffer count and frame latency.
@@ -181,8 +181,8 @@
 - Mature GPU sort feasibility check:
   - `wgpu_sort 0.1.0` is key-value but depends on `wgpu 0.19.1`, incompatible with the repo's `wgpu 28.0.0` without porting.
   - `wgpu-algorithms 0.1.0` uses `wgpu 28.0.0` but is key-only at the public sort API and reports CPU wins below 1M keys, so it is not a drop-in replacement for sorted index order.
-- Verification passed after the new code: `cargo fmt`; `cargo check --workspace`; `bash apps/android-demo/build-apk.sh`.
-- Targeted final verification passed: `cargo test -p gsplat-render-wgpu -p gsplat-ffi-c -p gsplat-sort`; `cargo run -p bench-runner -- tests/datasets/minimal_ascii.ply 120`; `bash tests/ffi/run-ffi-smoke.sh`; `bash apps/android-demo/run-jni-smoke.sh`.
+- Verification passed after the new code: `cargo fmt`; `cargo check --workspace`; `bash bindings/android/scripts/build-sample-apk.sh`.
+- Targeted final verification passed: `cargo test -p gsplat-render-wgpu -p gsplat-ffi-c -p gsplat-sort`; `cargo run -p bench-runner -- tests/datasets/minimal_ascii.ply 120`; `bash tests/ffi/run-ffi-smoke.sh`; `bash bindings/android/scripts/run-jni-smoke.sh`.
 - Same-APK true-device default baseline after adding the toggle: `samples=120 warmup=10 sort_interval=2 gpu_preproject=false gpu_preproject_double_buffer=false static_direct=false async_sort=false async_geometry=false instance_buffers=1 frame_latency=2 avg_call_ms=52.801 avg_frame_ms=35.311 avg_preprocess_ms=1.739 avg_sort_ms=6.989 avg_raster_ms=26.582 avg_visible=562974 avg_drawn=562974`.
 - Static direct draw benchmark: `samples=120 warmup=10 sort_interval=2 gpu_preproject=false gpu_preproject_double_buffer=false static_direct=true async_sort=false async_geometry=false instance_buffers=1 frame_latency=2 avg_call_ms=63.271 avg_frame_ms=10.952 avg_preprocess_ms=2.806 avg_sort_ms=8.145 avg_raster_ms=0.000 avg_visible=562974 avg_drawn=562974`.
 - Decision: static direct draw is retained only as an opt-in A/B path. It preserves full output and removes projected-instance upload, but the shader repeats projection/covariance work per quad vertex and regresses Android call wall time by about 10.5ms versus the same-APK default.

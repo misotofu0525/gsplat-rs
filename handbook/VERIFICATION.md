@@ -36,9 +36,9 @@ npm --prefix packages/web test
 ```
 
 - Run these before opening a pull request that changes Rust code, public docs,
-  or the Web demo.
+  or the Web example.
 - `node --check` is syntax validation only; browser behavior still requires
-  the Web Demo smoke path below.
+  the Web Example smoke path below.
 
 ## Day-to-Day Verification Set
 
@@ -63,14 +63,14 @@ bash bindings/apple/scripts/build-xcframework.sh
 ## Desktop Smoke
 
 ```bash
-cargo run -p desktop-demo -- tests/datasets/minimal_ascii.ply --png target/out.png
-cargo run -p desktop-demo --features interactive-viewer -- tests/datasets/minimal_ascii.ply --auto-camera --interactive
+cargo run -p desktop-example -- tests/datasets/minimal_ascii.ply --png target/out.png
+cargo run -p desktop-example --features interactive-viewer -- tests/datasets/minimal_ascii.ply --auto-camera --interactive
 ```
 
 - Use the PNG path for deterministic local smoke output.
 - Use the interactive viewer when changing windowed presentation or camera interaction behavior.
 
-## Web Demo Smoke
+## Web Example Smoke
 
 ```bash
 node --check examples/web/src/main.js
@@ -78,7 +78,7 @@ python3 -m http.server 4173 --bind 127.0.0.1 --directory .
 ```
 
 - Open `http://127.0.0.1:4173/examples/web/` in a browser.
-- Do not use `file:///.../examples/web/index.html`; the demo depends on HTTP
+- Do not use `file:///.../examples/web/index.html`; the example depends on HTTP
   serving from the repository root so wasm imports and `/tests/...` dataset
   fetches resolve correctly.
 - Expected startup state loads `tests/datasets/minimal_ascii.ply` and shows
@@ -176,15 +176,15 @@ ANDROID_SDK_ROOT="${ANDROID_SDK_ROOT:-$HOME/Library/Android/sdk}"
 ADB="$ANDROID_SDK_ROOT/platform-tools/adb"
 "$ADB" install -r examples/android/app/build/outputs/apk/debug/app-debug.apk
 "$ADB" push tests/datasets/external/nvidia_flowers_1/flowers_1/flowers_1.ply /data/local/tmp/flowers_1.ply
-"$ADB" shell run-as com.gsplat.demo mkdir -p files
-"$ADB" shell run-as com.gsplat.demo cp /data/local/tmp/flowers_1.ply files/flowers_1.ply
+"$ADB" shell run-as com.gsplat.example mkdir -p files
+"$ADB" shell run-as com.gsplat.example cp /data/local/tmp/flowers_1.ply files/flowers_1.ply
 "$ADB" shell rm -f /data/local/tmp/flowers_1.ply
-"$ADB" shell am start -n com.gsplat.demo/.MainActivity
+"$ADB" shell am start -n com.gsplat.example/.MainActivity
 ```
 
 - Expected overlay includes `surface=wgpu realtime`, `state=rendering`, and `drawn=<surface_instances>/<visible_instances>`.
 - For repeatable perf checks, add the benchmark extras documented in `bindings/android/README.md` and read the `BENCHMARK_RESULT` logcat line.
-- Android emulator storage can be tight after pushing the flower PLY. If `adb install -r` reports insufficient storage, uninstall `com.gsplat.demo`, reinstall, and push the dataset again.
+- Android emulator storage can be tight after pushing the flower PLY. If `adb install -r` reports insufficient storage, uninstall `com.gsplat.example`, reinstall, and push the dataset again.
 
 ## iOS Surface Smoke
 
@@ -198,8 +198,8 @@ IOS_DEVICE_ID=<coredevice-id-or-udid> bash bindings/apple/scripts/run-ios-device
 
 - Expected overlay includes `state=rendering`, `camera=<mode>`,
   `dataset=flowers_1.ply`, and `drawn=<surface_instances>/<visible_instances>`.
-- The simulator app bundle lives at `target/ios-sim-app/GsplatIOSDemo.app`; the
-  device app bundle lives at `target/ios-device-app/GsplatIOSDemo.app`. Both
+- The simulator app bundle lives at `target/ios-sim-app/GsplatIOSExample.app`; the
+  device app bundle lives at `target/ios-device-app/GsplatIOSExample.app`. Both
   package `flowers_1.ply` from the shared dataset directory.
 - The app uses `Documents/imported_scene.ply` when present, otherwise the
   bundled flower dataset, otherwise a generated minimal ASCII PLY fallback.
@@ -236,10 +236,10 @@ STABILITY_SECONDS=1800 bash tests/perf/run-long-stability.sh
   for realtime Surface or touch changes, also run
   `bash bindings/apple/scripts/run-ios-sim-app.sh`; for offscreen simulator smoke
   changes, run `bash bindings/apple/scripts/run-ios-sim-smoke.sh`.
-- If you touch PLY import or scene normalization, run `cargo test --workspace` and `cargo run -p desktop-demo -- tests/datasets/minimal_ascii.ply --png target/out.png`.
+- If you touch PLY import or scene normalization, run `cargo test --workspace` and `cargo run -p desktop-example -- tests/datasets/minimal_ascii.ply --png target/out.png`.
 - If you touch renderer, sorting, or perf-sensitive code, run `cargo run -p bench-runner -- tests/datasets/minimal_ascii.ply 120` and consider the long-stability script.
 - If you touch `examples/web/`, run `node --check examples/web/src/main.js`
-  and the Web Demo smoke above. If you touch
+  and the Web Example smoke above. If you touch
   `packages/web/`, also run
   `npm --prefix packages/web run check`,
   `npm --prefix packages/web test`,

@@ -10,8 +10,8 @@ if [[ "$(uname -s)" != "Darwin" ]]; then
 fi
 
 IOS_VERSION="${IOS_VERSION:-17.0}"
-BUNDLE_ID="${IOS_BUNDLE_ID:-com.gsplat.demo.ios}"
-APP_NAME="GsplatIOSDemo"
+BUNDLE_ID="${IOS_BUNDLE_ID:-com.gsplat.example.ios}"
+APP_NAME="GsplatIOSExample"
 APP_BUNDLE="$ROOT_DIR/target/ios-device-app/${APP_NAME}.app"
 RUST_TARGET="aarch64-apple-ios"
 SWIFT_TARGET="arm64-apple-ios${IOS_VERSION}"
@@ -89,7 +89,7 @@ cp "$PROVISIONING_PROFILE" "$APP_BUNDLE/embedded.mobileprovision"
 
 xcrun --sdk iphoneos swiftc \
   bindings/apple/GsplatKit/Sources/GsplatKit/GsplatKit.swift \
-  examples/ios/app/GsplatIOSDemo.swift \
+  examples/ios/app/GsplatIOSExample.swift \
   -parse-as-library \
   "$IOS_SWIFT_OPT_LEVEL" \
   -import-objc-header crates/gsplat-ffi-c/include/gsplat.h \

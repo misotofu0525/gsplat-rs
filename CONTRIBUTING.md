@@ -59,7 +59,7 @@ Pick the narrowest verification path that proves your change:
   `bash bindings/android/scripts/run-jni-smoke.sh`
 - iOS Swift/FFI changes:
   `bash bindings/apple/scripts/run-swift-smoke.sh`
-- Web demo changes:
+- Web example changes:
   `node --check examples/web/src/main.js` plus the browser smoke in
   `handbook/VERIFICATION.md`
 - Renderer, sorting, or perf-sensitive changes:

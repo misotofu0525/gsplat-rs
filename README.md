@@ -2,7 +2,7 @@
 
 `gsplat-rs` is a cross-platform Gaussian Splatting renderer built with Rust
 and `wgpu`. The project focuses on a small, verifiable core: PLY import,
-in-memory scene buffers, `SortedAlpha` rendering, a narrow C ABI, and demo
+in-memory scene buffers, `SortedAlpha` rendering, a narrow C ABI, and example
 surfaces that validate the stack on desktop, Android, iOS, and browser paths
 without overstating SDK maturity.
 
@@ -26,10 +26,10 @@ without overstating SDK maturity.
 ```bash
 cargo check --workspace
 cargo test --workspace
-cargo run -p desktop-demo -- tests/datasets/minimal_ascii.ply --png target/out.png
+cargo run -p desktop-example -- tests/datasets/minimal_ascii.ply --png target/out.png
 ```
 
-For the browser validation demo:
+For the browser validation example:
 
 ```bash
 python3 -m http.server 4173 --bind 127.0.0.1 --directory .
@@ -98,7 +98,7 @@ The current mobile-facing contract is the C ABI in
 - Android Surface rendering is demonstrated by `examples/android`.
 - The local Android AAR is built with `bash bindings/android/scripts/build-aar.sh`.
 - Swift/C ABI integration, a local `GsplatKit` wrapper, local XCFramework
-  packaging, and a UIKit realtime simulator/device Surface demo are
+  packaging, and a UIKit realtime simulator/device Surface example are
   split across `bindings/apple` and `examples/ios`.
 - The local iOS XCFramework is built with
   `bash bindings/apple/scripts/build-xcframework.sh`.

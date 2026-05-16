@@ -45,8 +45,8 @@ else
   bash bindings/apple/scripts/build-ios-device-app.sh
 fi
 
-APP_BUNDLE="$ROOT_DIR/target/ios-device-app/GsplatIOSDemo.app"
-BUNDLE_ID="${IOS_BUNDLE_ID:-com.gsplat.demo.ios}"
+APP_BUNDLE="$ROOT_DIR/target/ios-device-app/GsplatIOSExample.app"
+BUNDLE_ID="${IOS_BUNDLE_ID:-com.gsplat.example.ios}"
 
 xcrun devicectl device install app --device "$DEVICE_ID" "$APP_BUNDLE"
 if [[ ${#LAUNCH_ARGS[@]} -gt 0 ]]; then

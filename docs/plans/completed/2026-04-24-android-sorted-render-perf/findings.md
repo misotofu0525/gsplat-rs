@@ -12,8 +12,8 @@
 
 - Project docs define `SortedAlpha` as the only release-gated quality path.
 - Android Surface flow is `MainActivity.kt` -> JNI `ANativeWindow` -> `wgpu::Surface` -> shared renderer.
-- Android flower smoke path pushes `tests/datasets/external/nvidia_flowers_1/flowers_1/flowers_1.ply` to `files/flowers_1.ply`, launches `com.gsplat.demo/.MainActivity`, and expects overlay `surface=wgpu realtime`, `state=rendering`, and `drawn=<surface_instances>/<visible_instances>`.
-- Android demo is a validation surface over the C ABI, not a full mobile SDK.
+- Android flower smoke path pushes `tests/datasets/external/nvidia_flowers_1/flowers_1/flowers_1.ply` to `files/flowers_1.ply`, launches `com.gsplat.example/.MainActivity`, and expects overlay `surface=wgpu realtime`, `state=rendering`, and `drawn=<surface_instances>/<visible_instances>`.
+- Android example is a validation surface over the C ABI, not a full mobile SDK.
 - Prior memory notes say the current sorted path sorts visible original indices by camera-space z for `SortedAlpha`, and previous Android true-device validation used device id `033ed212` with `flowers_1.ply`.
 - Mobile-GS (2026) identifies depth sorting/alpha blending as the mobile bottleneck and removes sorting with depth-aware order-independent rendering plus neural enhancement/compression. This is useful directional evidence, but not directly acceptable for this task because it changes the SortedAlpha rendering contract and uses representation/pruning/distillation changes.
 - StopThePop (SIGGRAPH 2024) shows that better sorted/hierarchical rasterization can improve consistency and reduce required Gaussian count, but its pruning/reduction result is a training/model-side direction rather than a drop-in full-Ply Surface optimization.
@@ -107,13 +107,13 @@
 - `handbook/VERIFICATION.md`
 - `handbook/ROADMAP.md`
 - `handbook/GOLDEN_PRINCIPLES.md`
-- `apps/android-demo/README.md`
+- `examples/android/README.md`
 
 ## Benchmark Evidence
 
-- Baseline command: launch `com.gsplat.demo/.MainActivity` with `--ez gsplat_benchmark true --ei gsplat_benchmark_frames 120 --ei gsplat_benchmark_warmup_frames 10 --ef gsplat_benchmark_yaw_step 0.001`.
+- Baseline command: launch `com.gsplat.example/.MainActivity` with `--ez gsplat_benchmark true --ei gsplat_benchmark_frames 120 --ei gsplat_benchmark_warmup_frames 10 --ef gsplat_benchmark_yaw_step 0.001`.
 - Baseline device: `033ed212`, model `A065/Pong`, USB-connected.
-- Baseline scene: `flowers_1.ply`, copied to `/data/user/0/com.gsplat.demo/files/flowers_1.ply`.
+- Baseline scene: `flowers_1.ply`, copied to `/data/user/0/com.gsplat.example/files/flowers_1.ply`.
 - Baseline result: `samples=120 warmup=10 avg_call_ms=961.111 avg_frame_ms=950.421 avg_preprocess_ms=77.621 avg_sort_ms=461.753 avg_raster_ms=411.043 avg_visible=562974 avg_drawn=120000`.
 - Baseline load/create time was about 11.3s from `createSurfaceRenderer start` to `ok` for the 133MB PLY.
 - After release-native build + radix sort + preprocess camera-inverse reuse: `samples=120 warmup=10 avg_call_ms=87.224 avg_frame_ms=83.529 avg_preprocess_ms=2.808 avg_sort_ms=6.694 avg_raster_ms=74.026 avg_visible=562974 avg_drawn=120000`.

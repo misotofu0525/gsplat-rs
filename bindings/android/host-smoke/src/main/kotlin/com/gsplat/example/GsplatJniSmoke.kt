@@ -1,4 +1,4 @@
-package com.gsplat.demo
+package com.gsplat.example
 
 object GsplatJniSmoke {
     init {

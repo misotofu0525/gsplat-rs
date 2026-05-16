@@ -13,7 +13,7 @@ Phase 12
 ### Phase 1: Requirements & Discovery
 
 - [x] Capture user goal and hard constraints.
-- [x] Read project context, architecture, verification, roadmap, principles, and Android demo README.
+- [x] Read project context, architecture, verification, roadmap, principles, and Android example README.
 - [x] Inspect current renderer, sort, FFI, JNI, and Android timing/reporting code.
 - **Status:** complete
 
@@ -29,7 +29,7 @@ Phase 12
 
 - [x] Optimize the measured bottleneck without changing `SortedAlpha` semantics.
 - [x] Prefer existing crate boundaries and keep C ABI stable unless timing telemetry requires a small synchronized ABI update.
-- [x] Keep Android demo as validation surface rather than a new SDK surface.
+- [x] Keep Android example as validation surface rather than a new SDK surface.
 - **Status:** complete
 
 ### Phase 4: Verification

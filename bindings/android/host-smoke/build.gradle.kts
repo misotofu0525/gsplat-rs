@@ -7,7 +7,7 @@ plugins {
 }
 
 application {
-    mainClass.set("com.gsplat.demo.GsplatJniSmoke")
+    mainClass.set("com.gsplat.example.GsplatJniSmoke")
 }
 
 java {

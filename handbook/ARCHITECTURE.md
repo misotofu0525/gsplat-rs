@@ -7,9 +7,9 @@
 
 ## System Boundaries
 
-- The repository owns scene loading, sort backends, `wgpu` rendering, a small C ABI, experimental Rust/WASM Web bindings, and validation demos/tools around those pieces.
+- The repository owns scene loading, sort backends, `wgpu` rendering, a small C ABI, experimental Rust/WASM Web bindings, and validation examples/tools around those pieces.
 - The repository does not own model training, a polished web product surface, or multiple polished render backends.
-- Main external dependencies are `wgpu`, platform toolchains for Swift/JNI validation, Android/iOS SDK tooling for mobile container builds and local package artifacts, browser WebGL2 for the static Web demo, and `wasm-bindgen`/browser ESM tooling for the experimental Web SDK path.
+- Main external dependencies are `wgpu`, platform toolchains for Swift/JNI validation, Android/iOS SDK tooling for mobile container builds and local package artifacts, browser WebGL2 for the static Web example, and `wasm-bindgen`/browser ESM tooling for the experimental Web SDK path.
 
 ## Runtime Topology
 
@@ -27,7 +27,7 @@
 - `examples/desktop/`: desktop viewer and offscreen output harness
 - `examples/android/`: Android Surface sample app
 - `examples/ios/`: UIKit realtime Surface sample app
-- `examples/web/`: static frontend demo for browser PLY loading, WebGL2 point-splat fallback, and generated wasm package hosting
+- `examples/web/`: static frontend example for browser PLY loading, WebGL2 point-splat fallback, and generated wasm package hosting
 - `bindings/android/`: Android `gsplat-android` library module, JNI bridge, host smoke entrypoint, and AAR/APK scripts
 - `bindings/apple/`: local `GsplatKit` Swift package wrapper, Swift smoke source, XCFramework scripts, and iOS simulator/device build/run scripts
 - `packages/web/`: local `@gsplat-rs/web` ESM wrapper over generated wasm-bindgen output
@@ -52,14 +52,14 @@
 
 - Android Surface flow:
   starts at the local `bindings/android/gsplat-android` library module or
-  sample `examples/android/app/src/main/kotlin/com/gsplat/demo/MainActivity.kt`
+  sample `examples/android/app/src/main/kotlin/com/gsplat/example/MainActivity.kt`
   obtains a `SurfaceView` `Surface` and wraps it as an `ANativeWindow` in `bindings/android/jni/gsplat_jni.c`
   creates a raw-handle `wgpu::Surface` in `crates/gsplat-render-wgpu/src/lib.rs`
   presents directly to the Android swapchain, not through offscreen readback
   packages the JNI library through `bindings/android/gsplat-android` for local AAR builds
 
 - iOS Surface flow:
-  starts at the local `bindings/apple/GsplatKit` wrapper or sample `examples/ios/app/GsplatIOSDemo.swift`
+  starts at the local `bindings/apple/GsplatKit` wrapper or sample `examples/ios/app/GsplatIOSExample.swift`
   obtains a UIKit `UIView` backed by `CAMetalLayer`
   selects `Documents/imported_scene.ply`, bundled `flowers_1.ply`, or a generated minimal PLY
   passes the view through `gsplat_surface_renderer_create_uikit`
@@ -76,7 +76,7 @@
   creates a browser canvas `wgpu::Surface` through `SurfacePresenter::from_canvas`
   renders with the same Surface ellipse instance path used by Android/iOS by default
 
-- Web demo flow:
+- Web example flow:
   starts at `examples/web/index.html`
   loads `examples/web/src/main.js`
   imports generated `examples/web/pkg/gsplat_web.js` when present, routes it
@@ -110,7 +110,7 @@
 - `packages/web/src/index.js`: local browser ESM wrapper over the generated wasm-bindgen module
 - `bindings/android/gsplat-android/src/main/kotlin/`, `examples/android/app/src/main/kotlin/`, and `bindings/android/jni/gsplat_jni.c`: Android SDK wrapper, Surface lifecycle sample, and JNI bridge
 - `bindings/apple/GsplatKit/Sources/GsplatKit/GsplatKit.swift`: Swift wrapper over the v0.1 C ABI
-- `examples/ios/app/GsplatIOSDemo.swift`: iOS Surface lifecycle and UIKit gesture bridge
+- `examples/ios/app/GsplatIOSExample.swift`: iOS Surface lifecycle and UIKit gesture bridge
 - `examples/web/src/main.js`: browser PLY parsing, wasm-first renderer bootstrap, camera interaction, CPU depth sort fallback, benchmark orbit, and WebGL2 preview rendering
 - `tests/perf/run-long-stability.sh` and `tools/bench-runner/src/main.rs`: regression detection for perf and stability
 

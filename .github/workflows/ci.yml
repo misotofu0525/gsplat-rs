@@ -37,7 +37,7 @@ jobs:
         env:
           RUSTDOCFLAGS: "-D warnings"
         run: cargo doc --workspace --no-deps
-      - name: Web demo JavaScript syntax
+      - name: Web example JavaScript syntax
         run: node --check examples/web/src/main.js
       - name: Web SDK JavaScript syntax
         run: npm --prefix packages/web run check

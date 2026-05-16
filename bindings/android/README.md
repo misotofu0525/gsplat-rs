@@ -74,7 +74,7 @@ if (handle == 0L) {
 }
 ```
 
-Touch controls in the demo:
+Touch controls in the example:
 
 - one-finger drag: orbit around the loaded scene
 - two-finger pinch: zoom
@@ -101,7 +101,7 @@ Outputs:
 
 Notes:
 
-- This demo uses `files/imported_scene.ply` when present, then `files/flowers_1.ply` when present; otherwise it writes a minimal ASCII PLY into app internal storage.
+- This example uses `files/imported_scene.ply` when present, then `files/flowers_1.ply` when present; otherwise it writes a minimal ASCII PLY into app internal storage.
 - Imported files come from the Android system picker as `content://` URIs and are copied into `files/imported_scene.ply` before crossing the JNI/C ABI boundary, which still receives a normal local file path.
 - On Android emulator, the `SurfaceView` buffer is capped to a 1600px maximum side. The Surface presenter does not sample or cap the sorted splat list; visual stability is preferred over artificial throughput wins.
 - The status overlay reports `drawn=<surface_instances>/<visible_instances>` for the Android Surface path.
@@ -119,18 +119,18 @@ ADB="$ANDROID_SDK_ROOT/platform-tools/adb"
 
 "$ADB" install -r examples/android/app/build/outputs/apk/debug/app-debug.apk
 "$ADB" push tests/datasets/external/nvidia_flowers_1/flowers_1/flowers_1.ply /data/local/tmp/flowers_1.ply
-"$ADB" shell run-as com.gsplat.demo mkdir -p files
-"$ADB" shell run-as com.gsplat.demo cp /data/local/tmp/flowers_1.ply files/flowers_1.ply
+"$ADB" shell run-as com.gsplat.example mkdir -p files
+"$ADB" shell run-as com.gsplat.example cp /data/local/tmp/flowers_1.ply files/flowers_1.ply
 "$ADB" shell rm -f /data/local/tmp/flowers_1.ply
-"$ADB" shell am start -n com.gsplat.demo/.MainActivity
+"$ADB" shell am start -n com.gsplat.example/.MainActivity
 ```
 
 For repeatable Surface performance checks, launch with benchmark extras:
 
 ```bash
 "$ADB" logcat -c
-"$ADB" shell am force-stop com.gsplat.demo
-"$ADB" shell am start -n com.gsplat.demo/.MainActivity \
+"$ADB" shell am force-stop com.gsplat.example
+"$ADB" shell am start -n com.gsplat.example/.MainActivity \
   --ez gsplat_benchmark true \
   --ei gsplat_benchmark_frames 120 \
   --ei gsplat_benchmark_warmup_frames 10 \
@@ -143,13 +143,13 @@ For repeatable Surface performance checks, launch with benchmark extras:
   --ez gsplat_surface_async_geometry false \
   --ei gsplat_surface_instance_buffers 1 \
   --ei gsplat_surface_frame_latency 2
-"$ADB" logcat -d -s GsplatDemo:I | grep BENCHMARK_RESULT
+"$ADB" logcat -d -s GsplatExample:I | grep BENCHMARK_RESULT
 ```
 
 Benchmark mode forces a tiny camera orbit each frame so it measures sorted
 Surface rebuild cost, not cached static presentation.
 `gsplat_surface_sort_interval` controls how often the Surface path refreshes
-depth sorting during camera changes. The Android demo default is `2`, which
+depth sorting during camera changes. The Android example default is `2`, which
 reuses the previous sorted index order for one camera-change frame while still
 rebuilding current-camera geometry every frame; use `1` to force sorting every
 frame for comparison.

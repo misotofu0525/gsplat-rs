@@ -1,4 +1,4 @@
-package com.gsplat.demo
+package com.gsplat.example
 
 import android.app.Activity
 import android.content.Intent
@@ -779,7 +779,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
     }
 
     private fun buildStatusText(status: String): String = buildString {
-        appendLine("gsplat android demo")
+        appendLine("gsplat android example")
         appendLine("abi=${NativeBridge.versionMajor()}.${NativeBridge.versionMinor()}")
         appendLine("surface=wgpu realtime ${surfaceSizeLabel}")
         appendLine(status)
@@ -798,7 +798,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         String.format("%.2f", value.toDouble() / 1_000_000.0)
 
     private companion object {
-        private const val TAG = "GsplatDemo"
+        private const val TAG = "GsplatExample"
         private const val STATUS_INTERVAL_NS = 500_000_000L
         private const val ERROR_STATUS_INTERVAL = 120L
         private const val MAX_SURFACE_SIDE = 1600

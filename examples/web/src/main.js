@@ -1349,7 +1349,7 @@ function updateStatusOverlay(stats) {
 function buildStatusText() {
   const backend = usingWasm() ? "wasm-wgpu" : "webgl2";
   const lines = [
-    "gsplat web demo",
+    "gsplat web example",
     `api=${API_VERSION}`,
     `surface=${backend} realtime ${state.surfaceSizeLabel}`,
     state.rendererStatus,

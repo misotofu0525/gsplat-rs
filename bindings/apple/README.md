@@ -74,8 +74,8 @@ bash bindings/apple/scripts/run-ios-sim-app.sh
 
 Outputs:
 
-- App bundle: `target/ios-sim-app/GsplatIOSDemo.app`
-- Bundle ID: `com.gsplat.demo.ios`
+- App bundle: `target/ios-sim-app/GsplatIOSExample.app`
+- Bundle ID: `com.gsplat.example.ios`
 - Dataset: `tests/datasets/external/nvidia_flowers_1/flowers_1/flowers_1.ply`
 
 Touch controls in the simulator app:
@@ -101,7 +101,7 @@ This is a realtime validation app under `examples/ios/app`. It compiles
 alongside the local `GsplatKit` wrapper, but remains an example rather than a
 polished iOS product surface.
 
-Dataset priority matches the Android demo shape: the app uses
+Dataset priority matches the Android example shape: the app uses
 `Documents/imported_scene.ply` when present, then the bundled `flowers_1.ply`,
 then a generated `Documents/minimal_ascii.ply` fallback.
 
@@ -126,7 +126,7 @@ bash bindings/apple/scripts/run-ios-sim-app.sh -- \
 
 Benchmark mode forces a tiny camera orbit each frame and prints a
 `BENCHMARK_RESULT` line to the simulator log. The Surface A/B args map to the
-same C ABI controls used by the Android demo.
+same C ABI controls used by the Android example.
 
 ## 4) iOS simulator target build
 
@@ -187,8 +187,8 @@ IOS_DEVICE_ID=<coredevice-id-or-udid> bash bindings/apple/scripts/run-ios-device
 
 Outputs:
 
-- App bundle: `target/ios-device-app/GsplatIOSDemo.app`
-- Bundle ID: `com.gsplat.demo.ios`
+- App bundle: `target/ios-device-app/GsplatIOSExample.app`
+- Bundle ID: `com.gsplat.example.ios`
 - Rust target: `aarch64-apple-ios`
 - Rust profile: `release` by default
 - Swift optimization: `-O` by default

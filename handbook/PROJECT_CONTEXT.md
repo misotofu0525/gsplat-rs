@@ -3,7 +3,7 @@
 ## Overview
 
 - `gsplat-rs` is a cross-platform Gaussian Splatting rendering library built with Rust + `wgpu`.
-- The repo serves three audiences: Rust library consumers, native integrators through the C ABI, and maintainers validating the stack through demos and tooling.
+- The repo serves three audiences: Rust library consumers, native integrators through the C ABI, and maintainers validating the stack through examples and tooling.
 - The project is still on the `0.1.x` line, with a deliberately small release surface.
 
 ## Canonical Docs
@@ -21,7 +21,7 @@
 - The workspace builds and tests cleanly on the supported CI paths.
 - `SortedAlpha` remains the only quality-guaranteed render mode.
 - FFI smoke paths and mobile smoke integrations stay working.
-- Desktop and mobile demos remain validation surfaces for the shared crates, not separate product lines.
+- Desktop and mobile examples remain validation surfaces for the shared crates, not separate product lines.
 
 ## Current Repository Shape
 
@@ -41,7 +41,7 @@
 - `tools/bench-runner`: perf and stability runner
 - `tests/`: sample dataset, FFI smoke harness, and perf scripts
 - `handbook/`: current project docs, architecture map, verification guide, roadmap, and project principles
-- `docs/plans/`: task-scoped research and planning bundles
+- `docs/plans/`: task-scoped active and completed planning bundles
 - `.github/`: CI workflows plus issue and pull request templates
 
 ## Common Commands
@@ -51,7 +51,7 @@ cargo check --workspace
 cargo test --workspace
 cargo fmt --check
 cargo clippy --workspace --all-targets -- -D warnings
-cargo run -p desktop-demo -- tests/datasets/minimal_ascii.ply --png target/out.png
+cargo run -p desktop-example -- tests/datasets/minimal_ascii.ply --png target/out.png
 ```
 
 For the broader command matrix, use `VERIFICATION.md`.
@@ -87,4 +87,5 @@ For the broader command matrix, use `VERIFICATION.md`.
 ## Notes
 
 - Keep this file factual and current.
-- Put transient task detail under `docs/plans/active/`, not here.
+- Put transient task detail under `docs/plans/active/`, not here. Move
+  completed task history to `docs/plans/completed/`.

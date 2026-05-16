@@ -230,7 +230,7 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         }
 
         let window = UIWindow(windowScene: windowScene)
-        window.rootViewController = DemoViewController()
+        window.rootViewController = ExampleViewController()
         window.makeKeyAndVisible()
         self.window = window
     }
@@ -242,11 +242,11 @@ final class MetalSurfaceView: UIView {
     }
 }
 
-final class DemoViewController: UIViewController, UIGestureRecognizerDelegate, UIDocumentPickerDelegate {
+final class ExampleViewController: UIViewController, UIGestureRecognizerDelegate, UIDocumentPickerDelegate {
     private let surfaceView = MetalSurfaceView()
     private let statusLabel = UILabel()
     private let importButton = UIButton(type: .system)
-    private let renderQueue = DispatchQueue(label: "com.gsplat.demo.ios.render")
+    private let renderQueue = DispatchQueue(label: "com.gsplat.example.ios.render")
     private let commandLock = NSLock()
     private let renderStateLock = NSLock()
     private var benchmarkConfig = BenchmarkConfig.fromArguments(ProcessInfo.processInfo.arguments)
@@ -920,7 +920,7 @@ final class DemoViewController: UIViewController, UIGestureRecognizerDelegate, U
 
     private func buildStatusText() -> String {
         var lines = [
-            "gsplat ios demo",
+            "gsplat ios example",
             "abi=\(gsplat_version_major()).\(gsplat_version_minor())",
             "surface=wgpu realtime \(surfaceSizeLabel())",
             latestState,

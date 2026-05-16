@@ -10,7 +10,7 @@ integration, and maintenance changes.
 - Open-source maintenance docs: `CONTRIBUTING.md`, `SECURITY.md`, issue
   templates, and a pull request template.
 - Dual-license files for the existing `MIT OR Apache-2.0` package metadata.
-- CI hygiene coverage for rustfmt, clippy, rustdoc warnings, and Web demo
+- CI hygiene coverage for rustfmt, clippy, rustdoc warnings, and Web example
   JavaScript syntax.
 
 ### Changed

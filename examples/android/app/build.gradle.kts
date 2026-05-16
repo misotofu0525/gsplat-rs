@@ -4,11 +4,11 @@ plugins {
 }
 
 android {
-    namespace = "com.gsplat.demo"
+    namespace = "com.gsplat.example"
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "com.gsplat.demo"
+        applicationId = "com.gsplat.example"
         minSdk = 24
         targetSdk = 35
         versionCode = 1

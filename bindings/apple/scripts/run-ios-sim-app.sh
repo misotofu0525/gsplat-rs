@@ -69,8 +69,8 @@ else
   bash bindings/apple/scripts/build-ios-sim-app.sh
 fi
 
-APP_BUNDLE="$ROOT_DIR/target/ios-sim-app/GsplatIOSDemo.app"
-BUNDLE_ID="com.gsplat.demo.ios"
+APP_BUNDLE="$ROOT_DIR/target/ios-sim-app/GsplatIOSExample.app"
+BUNDLE_ID="com.gsplat.example.ios"
 
 xcrun simctl install "$SIMULATOR_ID" "$APP_BUNDLE"
 if [[ ${#LAUNCH_ARGS[@]} -gt 0 ]]; then

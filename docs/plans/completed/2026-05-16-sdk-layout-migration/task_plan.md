@@ -2,16 +2,16 @@
 
 ## Problem
 
-The old `apps/*-demo` layout mixed three responsibilities:
+The old mixed application layout grouped three responsibilities together:
 
-- runnable validation demos
+- runnable validation examples
 - local SDK/package source slices
 - build or release-like artifact scripts
 
 That shape was useful while proving Android, iOS, and Web integration quickly,
 but it is not ideal for external users. A third-party integrator expects SDK
-source and packaging scripts to live outside demo app directories, while demos
-should read as examples that consume those SDKs.
+source and packaging scripts to live outside example app directories, while the
+runnable surfaces should read as examples that consume those SDKs.
 
 ## Proposed Target Shape
 
@@ -46,19 +46,19 @@ crates/
 3. Move the Web ESM wrapper to `packages/web`.
 4. Update CI, root docs, handbook docs, local READMEs, and verification
    commands in the same change.
-5. Remove old `apps/` paths instead of adding compatibility wrappers.
+5. Remove old application-container paths instead of adding compatibility wrappers.
 
 ## Non-Goals
 
 - Do not publish Maven, npm, or binary SwiftPM artifacts as part of the layout
   move.
 - Do not widen the v0.1 C ABI while moving files.
-- Do not make demos product surfaces; they remain examples and validation
+- Do not make example apps product surfaces; they remain examples and validation
   surfaces.
 
 ## Acceptance Criteria
 
-- External users can identify SDK/package entrypoints without opening demo app
+- External users can identify SDK/package entrypoints without opening example app
   directories.
 - Existing local validation scripts have new canonical paths under
   `bindings/` and `packages/`.

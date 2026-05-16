@@ -8,7 +8,7 @@ Operational facts and command entrypoints live in `handbook/PROJECT_CONTEXT.md` 
 - `gsplat-rs` is a cross-platform Gaussian Splatting renderer built with Rust + `wgpu`.
 - The project is on the `0.1.x` line and should stay small until the core render path is more thoroughly validated.
 - `SortedAlpha` is the only quality-guaranteed render mode.
-- Desktop and mobile demos are validation surfaces for shared crates. Android
+- Desktop and mobile examples are validation surfaces for shared crates. Android
   now has a local library/AAR packaging slice, and iOS has a local
   `GsplatKit`/XCFramework packaging slice, but neither is a published product
   SDK.
@@ -42,9 +42,9 @@ Operational facts and command entrypoints live in `handbook/PROJECT_CONTEXT.md` 
   - `gsplat_context_load_scene_path`
   - `gsplat_context_render_frame`
   - `gsplat_context_get_stats`
-  - Android and iOS Surface renderer create/resize/camera-control/render/stats/destroy functions for the demo integration paths
+  - Android and iOS Surface renderer create/resize/camera-control/render/stats/destroy functions for the example integration paths
 - The current C ABI does not cover scene-from-memory loading or runtime render-mode switching.
-- Mobile Surface functions are validation/demo support, not a commitment to a
+- Mobile Surface functions are validation example support, not a commitment to a
   full mobile product API. The local Android AAR wraps the same C ABI for
   starter consumption, and the local iOS `GsplatKit` wrapper packages the same
   C ABI for Swift consumption. Maven publishing, multi-ABI Android
@@ -53,7 +53,7 @@ Operational facts and command entrypoints live in `handbook/PROJECT_CONTEXT.md` 
 - `crates/gsplat-web` plus `packages/web` form the local
   experimental Web API boundary. They are not a stable v0.1 release surface;
   Web renderer changes require verified wasm build and browser smoke evidence.
-- The Web demo is validation/demo support for browser PLY loading, the WebGL2 fallback, and hosting the generated wasm package; it is not a polished web product surface.
+- The Web example is validation example support for browser PLY loading, the WebGL2 fallback, and hosting the generated wasm package; it is not a polished web product surface.
 
 ## Release Bar
 

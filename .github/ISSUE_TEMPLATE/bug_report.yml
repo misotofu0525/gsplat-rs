@@ -20,9 +20,9 @@ body:
         - Renderer
         - Sorting
         - C ABI
-        - Android demo
-        - iOS demo
-        - Web demo
+        - Android example
+        - iOS example
+        - Web example
         - Web WASM
         - CI or scripts
         - Documentation
