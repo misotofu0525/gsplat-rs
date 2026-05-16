@@ -229,6 +229,19 @@ Before cutting a release, also run:
 STABILITY_SECONDS=1800 bash tests/perf/run-long-stability.sh
 ```
 
+## Current Manual Validation Gaps
+
+- Android true-device launch and benchmark are not implied by
+  `bash bindings/android/scripts/build-sample-apk.sh`; run the Android Surface
+  Smoke path on a physical device before claiming Android device validation.
+- iOS physical-device launch and benchmark are not implied by
+  `bash bindings/apple/scripts/build-ios-device-app.sh`; set
+  `IOS_DEVICE_ID=<coredevice-id-or-udid>` and run the iOS Surface Smoke or
+  benchmark path before claiming iPhone runtime validation.
+- Maven, remote binary SwiftPM/XCFramework, and npm publishing are release
+  distribution tasks. Local AAR/XCFramework/npm-pack checks prove packaging
+  shape, not public distribution readiness.
+
 ## Targeted Checks
 
 - If you touch `crates/gsplat-ffi-c/`, run `bash tests/ffi/run-ffi-smoke.sh`.

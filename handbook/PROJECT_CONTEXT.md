@@ -87,6 +87,21 @@ For the broader command matrix, use `VERIFICATION.md`.
 - Input PLY quaternion fields `rot_0..3` are interpreted as `w,x,y,z` and remapped internally to `x,y,z,w`.
 - Input 3DGS coordinates are treated as `RDF` and converted at load time to runtime `RUF`, including quaternion and SH sign transforms.
 
+## Known Open Gaps
+
+- Android external distribution: the local AAR is buildable but not published to
+  Maven, and the current package slice is `arm64-v8a` only.
+- iOS external distribution: `GsplatKit` is still a local binary Swift package
+  wrapper backed by a locally built XCFramework; no remote binary SwiftPM
+  artifact is published yet.
+- Web external distribution: `@gsplat-rs/web` has local build, test, and
+  `npm pack --dry-run` coverage, but it is not published to npm or treated as a
+  stable v0.1 public API.
+- Device runtime evidence: the latest validation covered Android APK/AAR build,
+  iOS simulator app launch, iOS simulator smoke, and iOS device app build/sign;
+  Android true-device launch and iOS physical-device launch/benchmark remain
+  manual validation gaps.
+
 ## Notes
 
 - Keep this file factual and current.

@@ -68,6 +68,20 @@ Operational facts and command entrypoints live in `handbook/PROJECT_CONTEXT.md` 
 STABILITY_SECONDS=1800 bash tests/perf/run-long-stability.sh
 ```
 
+## Open Release Gaps
+
+- Publishable Android SDK: add Maven publishing, multi-ABI packaging, and a
+  higher-level Android view/API only after the current C ABI wrapper remains
+  stable under device validation.
+- Publishable iOS SDK: add a remote binary SwiftPM/XCFramework distribution and
+  polished iOS product API only after the local `GsplatKit` slice is stable.
+- Publishable Web SDK: publish `@gsplat-rs/web` to npm only after the WASM
+  renderer has browser smoke evidence across target browsers and the package
+  API is promoted into the release contract.
+- Device proof: keep Android true-device launch and iOS physical-device
+  launch/benchmark as explicit release evidence, not implied by local
+  APK/app build success.
+
 ## Explicitly Not Active Right Now
 
 - A custom internal binary scene/cache format

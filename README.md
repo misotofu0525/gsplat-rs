@@ -115,6 +115,18 @@ The current mobile-facing contract is the C ABI in
   switching, Maven publishing, multi-ABI Android distribution, and
   published binary SwiftPM/XCFramework or npm distribution.
 
+## Known Gaps Before External Release
+
+- Android: the local AAR is not published to Maven and currently packages
+  `arm64-v8a` only.
+- iOS: `GsplatKit` is a local binary Swift package wrapper; there is no remote
+  binary SwiftPM release or published XCFramework artifact yet.
+- Web: `@gsplat-rs/web` builds and packs locally, but is not published to npm
+  and is not a stable v0.1 public contract.
+- Device validation: local build checks cover APK/AAR, iOS simulator, and iOS
+  device app signing, but Android true-device launch and iOS physical-device
+  launch/benchmark still require explicit device runs.
+
 ## Documentation
 
 - Project context: `handbook/PROJECT_CONTEXT.md`
