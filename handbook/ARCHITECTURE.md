@@ -77,7 +77,9 @@
   parses the PLY with `gsplat-io-ply::parse_ply_bytes`
   loads the scene into `gsplat-render-wgpu::Renderer`
   creates a browser canvas `wgpu::Surface` through `SurfacePresenter::from_canvas`
-  renders with the same Surface ellipse instance path used by Android/iOS by default
+  renders with the CPU-built Surface ellipse instance path (the native FFI
+  default is the static-direct path; the Web renderer does not expose that
+  toggle yet)
 
 - Web example flow:
   starts at `examples/web/index.html`

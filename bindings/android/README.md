@@ -178,7 +178,7 @@ For repeatable Surface performance checks, launch with benchmark extras:
   --ei gsplat_surface_sort_interval 2 \
   --ez gsplat_surface_gpu_preproject false \
   --ez gsplat_surface_gpu_preproject_double_buffer false \
-  --ez gsplat_surface_static_direct false \
+  --ez gsplat_surface_static_direct true \
   --ez gsplat_surface_async_sort false \
   --ez gsplat_surface_async_geometry false \
   --ei gsplat_surface_instance_buffers 1 \
@@ -202,10 +202,11 @@ path render the latest completed preproject buffer while submitting the next
 preproject compute pass. It requires `gsplat_surface_gpu_preproject=true` and
 `gsplat_surface_instance_buffers=2` or `3`; it is for A/B checks because it has
 one-frame geometry latency and does not currently beat the default path.
-`gsplat_surface_static_direct=true` enables an experimental path that draws from
-sorted splat ids and persistent GPU source buffers directly in the vertex
-shader. It removes projected-instance upload, but repeats projection/covariance
-work per quad vertex, so it is off by default and intended for A/B checks.
+`gsplat_surface_static_direct` controls the default render path: the vertex
+shader draws from sorted splat ids and persistent GPU source buffers directly,
+removing projected-instance upload. It is on by default because it benchmarks
+fastest on device after the 2026-06 shader optimizations; set it to `false` to
+fall back to the CPU instance-build path for A/B checks.
 `gsplat_surface_async_sort=true` enables an experimental background sort worker
 that double-buffers the latest completed order while the render thread continues
 with the previous order. It keeps the full splat count and is intended for

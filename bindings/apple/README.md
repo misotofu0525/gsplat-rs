@@ -124,7 +124,7 @@ bash bindings/apple/scripts/run-ios-sim-app.sh -- \
   --gsplat_surface_sort_interval 2 \
   --gsplat_surface_gpu_preproject false \
   --gsplat_surface_gpu_preproject_double_buffer false \
-  --gsplat_surface_static_direct false \
+  --gsplat_surface_static_direct true \
   --gsplat_surface_async_sort false \
   --gsplat_surface_async_geometry false \
   --gsplat_surface_instance_buffers 1 \

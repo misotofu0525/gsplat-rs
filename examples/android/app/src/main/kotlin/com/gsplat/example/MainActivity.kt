@@ -833,7 +833,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         private const val DEFAULT_SURFACE_SORT_INTERVAL = 2
         private const val DEFAULT_SURFACE_GPU_PREPROJECT = false
         private const val DEFAULT_SURFACE_GPU_PREPROJECT_DOUBLE_BUFFER = false
-        private const val DEFAULT_SURFACE_STATIC_DIRECT = false
+        private const val DEFAULT_SURFACE_STATIC_DIRECT = true
         private const val DEFAULT_SURFACE_ASYNC_SORT = false
         private const val DEFAULT_SURFACE_ASYNC_GEOMETRY = false
         private const val DEFAULT_SURFACE_INSTANCE_BUFFERS = 1

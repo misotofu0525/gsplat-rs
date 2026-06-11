@@ -37,7 +37,7 @@ private struct BenchmarkConfig {
     var sortInterval: UInt32 = 2
     var gpuPreproject = false
     var gpuPreprojectDoubleBuffer = false
-    var staticDirect = false
+    var staticDirect = true
     var asyncSort = false
     var asyncGeometry = false
     var instanceBuffers: UInt32 = 1

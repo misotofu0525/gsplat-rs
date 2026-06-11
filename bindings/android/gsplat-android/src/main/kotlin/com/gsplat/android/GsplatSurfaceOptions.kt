@@ -5,7 +5,8 @@ data class GsplatSurfaceOptions(
     // Experimental benchmark knobs; keep defaults for stable integrations.
     val gpuPreproject: Boolean = false,
     val gpuPreprojectDoubleBuffer: Boolean = false,
-    val staticDirect: Boolean = false,
+    // Static-direct is the default render path (fastest on device benchmarks).
+    val staticDirect: Boolean = true,
     val asyncSort: Boolean = false,
     val asyncGeometry: Boolean = false,
     val instanceBufferCount: Int = 1,

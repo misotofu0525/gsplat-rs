@@ -208,6 +208,7 @@ public struct GsplatSurfaceOptions: Equatable {
     // Experimental benchmark knobs; keep defaults for stable integrations.
     public var gpuPreproject: Bool
     public var gpuPreprojectDoubleBuffer: Bool
+    // Static-direct is the default render path (fastest on device benchmarks).
     public var staticDirect: Bool
     public var asyncSort: Bool
     public var asyncGeometry: Bool
@@ -218,7 +219,7 @@ public struct GsplatSurfaceOptions: Equatable {
         sortInterval: UInt32 = 2,
         gpuPreproject: Bool = false,
         gpuPreprojectDoubleBuffer: Bool = false,
-        staticDirect: Bool = false,
+        staticDirect: Bool = true,
         asyncSort: Bool = false,
         asyncGeometry: Bool = false,
         instanceBuffers: UInt32 = 1,

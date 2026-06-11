@@ -821,7 +821,10 @@ fn create_surface_renderer_from_raw_handles(
         surface_frames_since_sort: 0,
         surface_gpu_preproject: false,
         surface_gpu_preproject_double_buffer: false,
-        surface_static_direct: false,
+        // Static-direct is the default render path: the vertex shader reads
+        // static splat data on the GPU, which benchmarks fastest on device
+        // (see docs/plans/active/2026-06-10-android-gpu-render-perf).
+        surface_static_direct: true,
         surface_async_sort: false,
         surface_async_geometry: false,
         async_sorter,
@@ -1009,7 +1012,7 @@ pub unsafe extern "C" fn gsplat_surface_renderer_set_gpu_preproject_double_buffe
     ffi_ok()
 }
 
-/// Enable or disable the experimental static-direct Surface path.
+/// Enable or disable the static-direct Surface path (enabled by default).
 ///
 /// # Safety
 ///
