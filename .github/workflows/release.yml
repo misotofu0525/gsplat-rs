@@ -44,7 +44,7 @@ jobs:
         run: |
           ANDROID_SDK_ROOT="$ANDROID_HOME" bash bindings/android/scripts/build-aar.sh
           test -f bindings/android/gsplat-android/build/outputs/aar/gsplat-android-release.aar
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: gsplat-android-aar
           path: bindings/android/gsplat-android/build/outputs/aar/gsplat-android-release.aar
@@ -64,7 +64,7 @@ jobs:
           cargo install wasm-bindgen-cli --version 0.2.121 --locked
           bash packages/web/scripts/build.sh
           npm --prefix packages/web pack --pack-destination .
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: gsplat-web-npm
           path: gsplat-rs-web-*.tgz
@@ -81,7 +81,7 @@ jobs:
           ditto -c -k --keepParent \
             bindings/apple/GsplatKit/Binaries/GsplatFFI.xcframework \
             GsplatFFI.xcframework.zip
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: gsplat-ios-xcframework
           path: GsplatFFI.xcframework.zip
