@@ -3,7 +3,7 @@
 ## Requirements
 
 - Improve Android device render performance without changing SortedAlpha output.
-- Device: `033ed212` (model A065/Pong), dataset `flowers_1.ply` (562,974 splats).
+- Device: `android-test-device` (model A065/Pong), dataset `flowers_1.ply` (562,974 splats).
 - Validate with the repo Android benchmark path and image-diff evidence.
 
 ## Research Findings
@@ -40,7 +40,7 @@
 
 ## Benchmark Evidence
 
-- All runs: device `033ed212`, `flowers_1.ply`, 120 samples + 10 warmup,
+- All runs: device `android-test-device`, `flowers_1.ply`, 120 samples + 10 warmup,
   yaw_step 0.001, defaults unless noted.
 - Phase 0 baseline `sort_interval=2`: `avg_call_ms=51.955 avg_frame_ms=36.234
   avg_preprocess_ms=1.631 avg_sort_ms=6.818 avg_raster_ms=27.784
@@ -120,7 +120,7 @@
   `handbook/ARCHITECTURE.md` Web flow note.
 - Verification: cargo check/test/fmt/clippy green; FFI smoke ok; JNI smoke ok;
   Swift smoke ok; XCFramework build ok; GsplatKit iOS-simulator xcodebuild ok.
-- Device confirmation (033ed212, default extras, no static_direct flag):
+- Device confirmation (android-test-device, default extras, no static_direct flag):
   benchmark line reports `static_direct=true`, cold-state
   `avg_call_ms=29.973 avg_frame_ms=10.619` matching the earlier 29.820
   measurement; normal-mode launch renders correctly with `raster=0.00ms` and
@@ -131,7 +131,7 @@
   original A/B. Sustained-load thermal behavior of static_direct vs the CPU
   path is a known open question for a future pass.
 - iOS physical-device benchmark (iPhone 17 Pro Max,
-  522253DD-D7ED-583C-A70A-617AD5A38F0C, release Rust + -O Swift,
+  release Rust + -O Swift,
   flowers_1.ply): default config reports `static_direct=true` with
   `avg_call_ms=17.786 / 17.237` across two runs (`avg_frame_ms=5.5-6.2`,
   raster 0.000, drawn 562974/562974). Explicit

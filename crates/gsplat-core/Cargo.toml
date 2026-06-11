@@ -2,10 +2,14 @@
 name = "gsplat-core"
 version = "0.1.0"
 description = "Core data types and API contracts for gsplat-rs."
+readme = "README.md"
+keywords = ["gaussian-splatting", "3d", "graphics", "rendering"]
+categories = ["graphics", "rendering"]
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
+homepage.workspace = true
 rust-version.workspace = true
 
 [dependencies]

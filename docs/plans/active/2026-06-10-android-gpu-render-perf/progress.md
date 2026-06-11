@@ -2,7 +2,7 @@
 
 ## 2026-06-10
 
-- Created plan bundle. Phase 0: built/installed sample APK on `033ed212`,
+- Created plan bundle. Phase 0: built/installed sample APK on `android-test-device`,
   pushed `flowers_1.ply`, recorded baselines (interval 2: call 51.955 /
   frame 36.234; interval 1: call 52.308 / frame 41.586).
 - Phase 1: attribution diagnostics. SH=0 -> call 33.0 (~19ms VS SH cost);

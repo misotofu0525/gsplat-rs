@@ -14,6 +14,7 @@
 - Direction and scope: `ROADMAP.md`
 - Project taste guide: `GOLDEN_PRINCIPLES.md`
 - Contribution guide: `../CONTRIBUTING.md`
+- Code of conduct: `../CODE_OF_CONDUCT.md`
 - Security policy: `../SECURITY.md`
 
 ## Success Criteria
@@ -42,7 +43,8 @@
 - `tests/`: sample dataset, FFI smoke harness, and perf scripts
 - `handbook/`: current project docs, architecture map, verification guide, roadmap, and project principles
 - `docs/plans/`: task-scoped active and completed planning bundles
-- `.github/`: CI workflows plus issue and pull request templates
+- `docs/media/`: rendered images referenced by the README
+- `.github/`: CI and release workflows, issue and pull request templates, CODEOWNERS, and Dependabot config
 
 ## Common Commands
 
@@ -98,7 +100,7 @@ For the broader command matrix, use `VERIFICATION.md`.
   `npm pack --dry-run` coverage, but it is not published to npm or treated as a
   stable v0.1 public API.
 - Device runtime evidence: the latest validation covered Android APK/AAR build,
-  Android true-device launch and benchmark (device `033ed212`, flowers
+  Android true-device launch and benchmark (an Android test device, flowers
   dataset), iOS simulator app launch, iOS simulator smoke, iOS device app
   build/sign, and iOS physical-device benchmark (iPhone 17 Pro Max, flowers
   dataset).

@@ -17,10 +17,13 @@ Security-sensitive areas include:
 Do not open a public issue with exploit details, private datasets, tokens,
 credentials, or other sensitive material.
 
-Use GitHub private vulnerability reporting for this repository if it is
-available. If it is not available, contact the maintainers through a private
-channel first and share only the minimum reproduction details needed to
-establish impact.
+Report vulnerabilities privately through GitHub Security Advisories:
+<https://github.com/misotofu0525/gsplat-rs/security/advisories/new>.
+This is the only supported reporting channel. Share only the minimum
+reproduction details needed to establish impact.
+
+You should receive an initial response within 7 days. If you do not, follow up
+on the advisory thread rather than opening a public issue.
 
 Please include:
 

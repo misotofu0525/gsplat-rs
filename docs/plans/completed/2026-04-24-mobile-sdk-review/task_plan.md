@@ -46,6 +46,6 @@
   - `bash bindings/android/scripts/run-jni-smoke.sh` passed.
   - `bash bindings/android/scripts/build-sample-apk.sh` passed.
   - `bash bindings/apple/scripts/run-swift-smoke.sh` passed.
-  - Real device `033ed212` installed and launched the APK successfully.
+  - Real device `android-test-device` installed and launched the APK successfully.
   - Simulated one-finger drag via ADB changed the overlay to `camera=orbit` while rendering `flowers_1.ply`.
   - Screenshot: `target/android-screenshots/gsplat-touch-real-device-20260424-162150.png`.

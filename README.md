@@ -1,25 +1,35 @@
 # gsplat-rs
 
+[![CI](https://github.com/misotofu0525/gsplat-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/misotofu0525/gsplat-rs/actions/workflows/ci.yml)
+[![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
+[![MSRV: 1.93](https://img.shields.io/badge/MSRV-1.93-orange.svg)](rust-toolchain.toml)
+
 `gsplat-rs` is a cross-platform Gaussian Splatting renderer built with Rust
 and `wgpu`. The project focuses on a small, verifiable core: PLY import,
 in-memory scene buffers, `SortedAlpha` rendering, a narrow C ABI, and example
 surfaces that validate the stack on desktop, Android, iOS, and browser paths
 without overstating SDK maturity.
 
+![SortedAlpha render of the NVIDIA flowers dataset](docs/media/flowers.jpg)
+
+*562,974 splats rendered offscreen by `examples/desktop` through the
+`SortedAlpha` path, using the public NVIDIA `flowers_1` dataset
+(`bash tests/datasets/fetch-nvidia-flowers-1.sh`).*
+
+## Platform Support
+
+| Platform | Validation surface | Distribution status |
+| --- | --- | --- |
+| Desktop (Metal / Vulkan / DX12) | `examples/desktop` viewer and offscreen PNG harness | Build from source (Rust workspace) |
+| Android | `examples/android` app over the `bindings/android` library module | Local AAR build, `arm64-v8a` only; not on Maven yet |
+| iOS | `examples/ios` app over the `bindings/apple` `GsplatKit` package | Local XCFramework build; no binary SwiftPM release yet |
+| Web (WASM) | `examples/web` host over the `packages/web` ESM wrapper | Local build of experimental `crates/gsplat-web`; not on npm yet |
+
 ## Project Status
 
 - Release line: `0.1.x`
 - Quality-gated render path: `SortedAlpha`
 - Native integration surface: `crates/gsplat-ffi-c/include/gsplat.h`
-- Android status: a local Android library module can build an AAR at
-  `bindings/android/gsplat-android/build/outputs/aar/gsplat-android-release.aar`;
-  it is not published to Maven yet.
-- iOS status: `bindings/apple/GsplatKit` is a local Swift package wrapper and
-  `bash bindings/apple/scripts/build-xcframework.sh` builds a local
-  `GsplatFFI.xcframework`; it is not a published binary SwiftPM release yet.
-- Web status: `packages/web` is a local browser ESM wrapper
-  around the experimental `crates/gsplat-web` Rust/WASM renderer; it is not
-  published to npm yet.
 
 ## Quick Start
 
@@ -142,6 +152,9 @@ Read `CONTRIBUTING.md` before opening a pull request. The short version is:
 keep diffs small, preserve the documented release boundary, run the relevant
 verification path, and update handbook docs when repository structure or
 commands change.
+
+This project follows the [Contributor Covenant](CODE_OF_CONDUCT.md) code of
+conduct.
 
 ## Security
 

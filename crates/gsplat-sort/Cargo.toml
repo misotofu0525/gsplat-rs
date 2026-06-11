@@ -2,10 +2,14 @@
 name = "gsplat-sort"
 version = "0.1.0"
 description = "CPU and GPU sort backends for gsplat-rs render ordering."
+readme = "README.md"
+keywords = ["gaussian-splatting", "wgpu", "gpu", "sorting"]
+categories = ["algorithms", "graphics"]
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
+homepage.workspace = true
 rust-version.workspace = true
 
 [dependencies]

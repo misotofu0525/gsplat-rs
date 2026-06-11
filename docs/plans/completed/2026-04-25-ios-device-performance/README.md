@@ -6,7 +6,7 @@ Improve the physical iPhone realtime Surface example performance and keep the co
 
 ## Baseline
 
-Device: iPhone 17 Pro Max via CoreDevice `522253DD-D7ED-583C-A70A-617AD5A38F0C`.
+Device: iPhone 17 Pro Max (CoreDevice identifier redacted).
 Dataset: `tests/datasets/external/nvidia_flowers_1/flowers_1/flowers_1.ply`.
 
 Current device benchmark before this pass:

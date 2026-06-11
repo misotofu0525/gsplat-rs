@@ -16,6 +16,7 @@ edition = "2024"
 license = "MIT OR Apache-2.0"
 authors = ["gsplat-rs contributors"]
 repository = "https://github.com/misotofu0525/gsplat-rs"
+homepage = "https://github.com/misotofu0525/gsplat-rs"
 rust-version = "1.93"
 
 [workspace.dependencies]

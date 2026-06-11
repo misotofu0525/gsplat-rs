@@ -3,6 +3,9 @@
 Thanks for taking the time to improve `gsplat-rs`. This project values small,
 verified changes over broad rewrites.
 
+By participating in this project you agree to follow the
+[Code of Conduct](CODE_OF_CONDUCT.md).
+
 ## Before You Start
 
 - Read `README.md` for the public project status.

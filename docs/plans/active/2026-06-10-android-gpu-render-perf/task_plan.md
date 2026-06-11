@@ -20,7 +20,7 @@ Improve Android true-device SortedAlpha Surface render performance for
 ## Phases
 
 1. Phase 0: plan bundle, build/install sample APK, device baselines
-   (sort_interval 2 and 1) on device `033ed212`.
+   (sort_interval 2 and 1) on device `android-test-device`.
 2. Phase 1: GPU attribution diagnostics (temporary builds, not retained):
    forced `sh_degree=0`, global quad axis x0.5; local alpha histogram of
    `flowers_1.ply`.

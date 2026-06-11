@@ -2,10 +2,14 @@
 name = "gsplat-web"
 version = "0.1.0"
 description = "Experimental wasm-bindgen bindings for the gsplat-rs wgpu renderer."
+readme = "README.md"
+keywords = ["gaussian-splatting", "wasm", "webgpu", "wgpu"]
+categories = ["wasm", "graphics"]
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
+homepage.workspace = true
 rust-version.workspace = true
 
 [lib]

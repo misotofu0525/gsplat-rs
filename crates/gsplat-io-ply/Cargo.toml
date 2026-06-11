@@ -2,10 +2,14 @@
 name = "gsplat-io-ply"
 version = "0.1.0"
 description = "PLY import and scene-buffer construction for gsplat-rs."
+readme = "README.md"
+keywords = ["gaussian-splatting", "ply", "3d", "parser"]
+categories = ["parser-implementations", "graphics"]
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
+homepage.workspace = true
 rust-version.workspace = true
 
 [dependencies]

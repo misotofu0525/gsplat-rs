@@ -2,10 +2,14 @@
 name = "gsplat-render-wgpu"
 version = "0.1.0"
 description = "wgpu renderer and surface presentation paths for gsplat-rs."
+readme = "README.md"
+keywords = ["gaussian-splatting", "wgpu", "gpu", "3d", "rendering"]
+categories = ["graphics", "rendering::engine"]
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
+homepage.workspace = true
 rust-version.workspace = true
 
 [dependencies]
