@@ -52,6 +52,15 @@ fn quad_offset(vertex_index: u32) -> vec2<f32> {
   return offsets[vertex_index];
 }
 
+// fs_main discards fragments with alpha * exp(-4.5 * r2) <= 1/256, so the
+// quad only needs to cover r2 <= ln(256 * alpha) / 4.5. Scaling the offset and
+// the local coordinate by the same factor keeps the pixel -> gaussian mapping
+// identical while skipping rasterization of fragments that would be discarded.
+fn alpha_extent_scale(alpha: f32) -> f32 {
+  let s2 = log(max(alpha, 1e-12) * 256.0) / 4.5;
+  return sqrt(clamp(s2, 0.0, 1.0));
+}
+
 fn normalize3_or_default(v: vec3<f32>, fallback: vec3<f32>) -> vec3<f32> {
   let len2 = dot(v, v);
   if (len2 <= 1e-20) {
@@ -60,18 +69,21 @@ fn normalize3_or_default(v: vec3<f32>, fallback: vec3<f32>) -> vec3<f32> {
   return v * inverseSqrt(len2);
 }
 
-fn sh_rest_coeff(idx: u32, channel: u32, coeff: u32, degree: u32) -> f32 {
-  if (degree == 0u) {
-    return 0.0;
-  }
-  let coeff_total = (degree + 1u) * (degree + 1u);
-  let per_channel = coeff_total - 1u;
-  let stride = per_channel * 3u;
-  let base = idx * stride + channel * per_channel + coeff;
-  return sh_rest[base];
+// Reads one SH coefficient for all three color channels. The buffer layout is
+// channel-major per splat, so the three channel values for coefficient
+// `coeff` sit `per_channel` floats apart.
+fn sh_rest_vec3(base: u32, per_channel: u32, coeff: u32) -> vec3<f32> {
+  return vec3<f32>(
+    sh_rest[base + coeff],
+    sh_rest[base + per_channel + coeff],
+    sh_rest[base + 2u * per_channel + coeff],
+  );
 }
 
-fn eval_sh_channel(idx: u32, channel: u32, dc_coeff: f32, dir: vec3<f32>, degree: u32) -> f32 {
+// Evaluates all three channels together so the direction basis polynomials
+// are computed once per splat instead of once per channel. The per-channel
+// accumulation order matches the previous scalar evaluation exactly.
+fn eval_sh_rgb(idx: u32, dc: vec3<f32>, dir: vec3<f32>, degree: u32) -> vec3<f32> {
   let c0 = 0.28209479177387814;
   let c1 = 0.4886025119029199;
   let c2 = array<f32, 5>(
@@ -102,19 +114,23 @@ fn eval_sh_channel(idx: u32, channel: u32, dc_coeff: f32, dir: vec3<f32>, degree
     0.6258357354491761,
   );
 
-  var result = c0 * dc_coeff;
+  var result = c0 * dc;
   if (degree == 0u) {
     return result;
   }
+
+  let coeff_total = (degree + 1u) * (degree + 1u);
+  let per_channel = coeff_total - 1u;
+  let base = idx * per_channel * 3u;
 
   let x = dir.x;
   let y = dir.y;
   let z = dir.z;
 
   result = result
-    - c1 * y * sh_rest_coeff(idx, channel, 0u, degree)
-    + c1 * z * sh_rest_coeff(idx, channel, 1u, degree)
-    - c1 * x * sh_rest_coeff(idx, channel, 2u, degree);
+    - c1 * y * sh_rest_vec3(base, per_channel, 0u)
+    + c1 * z * sh_rest_vec3(base, per_channel, 1u)
+    - c1 * x * sh_rest_vec3(base, per_channel, 2u);
   if (degree == 1u) {
     return result;
   }
@@ -127,37 +143,37 @@ fn eval_sh_channel(idx: u32, channel: u32, dc_coeff: f32, dir: vec3<f32>, degree
   let xz = x * z;
 
   result = result
-    + c2[0] * xy * sh_rest_coeff(idx, channel, 3u, degree)
-    + c2[1] * yz * sh_rest_coeff(idx, channel, 4u, degree)
-    + c2[2] * (2.0 * zz - xx - yy) * sh_rest_coeff(idx, channel, 5u, degree)
-    + c2[3] * xz * sh_rest_coeff(idx, channel, 6u, degree)
-    + c2[4] * (xx - yy) * sh_rest_coeff(idx, channel, 7u, degree);
+    + c2[0] * xy * sh_rest_vec3(base, per_channel, 3u)
+    + c2[1] * yz * sh_rest_vec3(base, per_channel, 4u)
+    + c2[2] * (2.0 * zz - xx - yy) * sh_rest_vec3(base, per_channel, 5u)
+    + c2[3] * xz * sh_rest_vec3(base, per_channel, 6u)
+    + c2[4] * (xx - yy) * sh_rest_vec3(base, per_channel, 7u);
   if (degree == 2u) {
     return result;
   }
 
   result = result
-    + c3[0] * y * (3.0 * xx - yy) * sh_rest_coeff(idx, channel, 8u, degree)
-    + c3[1] * xy * z * sh_rest_coeff(idx, channel, 9u, degree)
-    + c3[2] * y * (4.0 * zz - xx - yy) * sh_rest_coeff(idx, channel, 10u, degree)
-    + c3[3] * z * (2.0 * zz - 3.0 * xx - 3.0 * yy) * sh_rest_coeff(idx, channel, 11u, degree)
-    + c3[4] * x * (4.0 * zz - xx - yy) * sh_rest_coeff(idx, channel, 12u, degree)
-    + c3[5] * z * (xx - yy) * sh_rest_coeff(idx, channel, 13u, degree)
-    + c3[6] * x * (xx - 3.0 * yy) * sh_rest_coeff(idx, channel, 14u, degree);
+    + c3[0] * y * (3.0 * xx - yy) * sh_rest_vec3(base, per_channel, 8u)
+    + c3[1] * xy * z * sh_rest_vec3(base, per_channel, 9u)
+    + c3[2] * y * (4.0 * zz - xx - yy) * sh_rest_vec3(base, per_channel, 10u)
+    + c3[3] * z * (2.0 * zz - 3.0 * xx - 3.0 * yy) * sh_rest_vec3(base, per_channel, 11u)
+    + c3[4] * x * (4.0 * zz - xx - yy) * sh_rest_vec3(base, per_channel, 12u)
+    + c3[5] * z * (xx - yy) * sh_rest_vec3(base, per_channel, 13u)
+    + c3[6] * x * (xx - 3.0 * yy) * sh_rest_vec3(base, per_channel, 14u);
   if (degree == 3u) {
     return result;
   }
 
   result = result
-    + c4[0] * xy * (xx - yy) * sh_rest_coeff(idx, channel, 15u, degree)
-    + c4[1] * yz * (3.0 * xx - yy) * sh_rest_coeff(idx, channel, 16u, degree)
-    + c4[2] * xy * (7.0 * zz - 1.0) * sh_rest_coeff(idx, channel, 17u, degree)
-    + c4[3] * yz * (7.0 * zz - 3.0) * sh_rest_coeff(idx, channel, 18u, degree)
-    + c4[4] * (zz * (35.0 * zz - 30.0) + 3.0) * sh_rest_coeff(idx, channel, 19u, degree)
-    + c4[5] * xz * (7.0 * zz - 3.0) * sh_rest_coeff(idx, channel, 20u, degree)
-    + c4[6] * (xx - yy) * (7.0 * zz - 1.0) * sh_rest_coeff(idx, channel, 21u, degree)
-    + c4[7] * xz * (xx - 3.0 * yy) * sh_rest_coeff(idx, channel, 22u, degree)
-    + c4[8] * (xx * (xx - 3.0 * yy) - yy * (3.0 * xx - yy)) * sh_rest_coeff(idx, channel, 23u, degree);
+    + c4[0] * xy * (xx - yy) * sh_rest_vec3(base, per_channel, 15u)
+    + c4[1] * yz * (3.0 * xx - yy) * sh_rest_vec3(base, per_channel, 16u)
+    + c4[2] * xy * (7.0 * zz - 1.0) * sh_rest_vec3(base, per_channel, 17u)
+    + c4[3] * yz * (7.0 * zz - 3.0) * sh_rest_vec3(base, per_channel, 18u)
+    + c4[4] * (zz * (35.0 * zz - 30.0) + 3.0) * sh_rest_vec3(base, per_channel, 19u)
+    + c4[5] * xz * (7.0 * zz - 3.0) * sh_rest_vec3(base, per_channel, 20u)
+    + c4[6] * (xx - yy) * (7.0 * zz - 1.0) * sh_rest_vec3(base, per_channel, 21u)
+    + c4[7] * xz * (xx - 3.0 * yy) * sh_rest_vec3(base, per_channel, 22u)
+    + c4[8] * (xx * (xx - 3.0 * yy) - yy * (3.0 * xx - yy)) * sh_rest_vec3(base, per_channel, 23u);
 
   return result;
 }
@@ -166,11 +182,7 @@ fn eval_color(idx: u32, alpha: f32) -> vec4<f32> {
   let elem = color_elems[idx];
   let dir = normalize3_or_default(elem.position.xyz - params.camera_pos.xyz, vec3<f32>(0.0, 0.0, 1.0));
   let degree = min(params.sh_degree, 4u);
-  let sh_rgb = vec3<f32>(
-    eval_sh_channel(idx, 0u, elem.color_dc.x, dir, degree),
-    eval_sh_channel(idx, 1u, elem.color_dc.y, dir, degree),
-    eval_sh_channel(idx, 2u, elem.color_dc.z, dir, degree),
-  );
+  let sh_rgb = eval_sh_rgb(idx, elem.color_dc.xyz, dir, degree);
   let rgb = clamp(sh_rgb + vec3<f32>(0.5), vec3<f32>(0.0), vec3<f32>(1.0));
   return vec4<f32>(rgb * alpha, alpha);
 }
@@ -181,17 +193,17 @@ fn vs_main(
   @builtin(vertex_index) vertex_index: u32,
 ) -> VsOut {
   let instance = instances[instance_index];
-  let quad = quad_offset(vertex_index);
   let center = instance.center_and_axis_u.xy;
   let axis_u = instance.center_and_axis_u.zw;
   let axis_v = instance.axis_v_index_alpha.xy;
-  let offset = axis_u * quad.x + axis_v * quad.y;
+  let local = quad_offset(vertex_index) * alpha_extent_scale(instance.axis_v_index_alpha.w);
+  let offset = axis_u * local.x + axis_v * local.y;
   let source_idx = u32(instance.axis_v_index_alpha.z + 0.5);
 
   var out: VsOut;
   out.position = vec4<f32>(center + offset, 0.0, 1.0);
   out.color = eval_color(source_idx, instance.axis_v_index_alpha.w);
-  out.local = quad;
+  out.local = local;
   return out;
 }
 

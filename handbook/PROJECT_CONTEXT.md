@@ -98,9 +98,10 @@ For the broader command matrix, use `VERIFICATION.md`.
   `npm pack --dry-run` coverage, but it is not published to npm or treated as a
   stable v0.1 public API.
 - Device runtime evidence: the latest validation covered Android APK/AAR build,
-  iOS simulator app launch, iOS simulator smoke, and iOS device app build/sign;
-  Android true-device launch and iOS physical-device launch/benchmark remain
-  manual validation gaps.
+  Android true-device launch and benchmark (device `033ed212`, flowers
+  dataset), iOS simulator app launch, iOS simulator smoke, iOS device app
+  build/sign, and iOS physical-device benchmark (iPhone 17 Pro Max, flowers
+  dataset).
 
 ## Notes
 
