@@ -94,9 +94,19 @@
   parses the PLY with `gsplat-io-ply::parse_ply_bytes`
   loads the scene into `gsplat-render-wgpu::Renderer`
   creates a browser canvas `wgpu::Surface` through `SurfacePresenter::from_canvas`
-  renders with the CPU-built Surface ellipse instance path (the native FFI
-  default is the static-direct path; the Web renderer does not expose that
-  toggle yet)
+  defaults to `SurfaceRasterPath::CpuInstances` (CPU-built Surface ellipse
+  instances each sort refresh)
+  opt-in `SurfaceRasterPath::SortedIndexDirect` keeps scene data GPU-resident
+  and uploads only sorted `u32` indices per refresh (`createRendererWithOptions`
+  / `sortedIndexDirect`, same shader family as mobile FFI `static_direct`)
+  sorting remains CPU radix for both Surface paths in this slice
+
+- Desktop offscreen raster paths:
+  `OffscreenRasterPath::CpuInstances` (default) builds and uploads full
+  `GpuInstance` buffers each frame
+  opt-in `OffscreenRasterPath::SortedIndexGpuPreproject` keeps scene data on
+  GPU and uses `GpuInstancePreprocessor` with sorted indices
+  (`desktop-example` / `bench-runner` `--sorted-index-direct`)
 
 - Web example flow:
   starts at `examples/web/index.html`

@@ -41,6 +41,7 @@ export async function createGsplatRenderer(options) {
     width = canvas?.width,
     height = canvas?.height,
     sortInterval = 2,
+    sortedIndexDirect = false,
     module,
   } = options ?? {};
 
@@ -49,9 +50,21 @@ export async function createGsplatRenderer(options) {
   assertPositiveInteger(height, "height");
   const bytes = normalizeBytes(plyBytes);
   const resolvedModule = module ?? loadedModule ?? (await initGsplatWeb());
-  const nativeRenderer = await resolvedModule.createRenderer(canvas, bytes, width, height);
+  const nativeRenderer =
+    typeof resolvedModule.createRendererWithOptions === "function"
+      ? await resolvedModule.createRendererWithOptions(
+          canvas,
+          bytes,
+          width,
+          height,
+          Boolean(sortedIndexDirect),
+        )
+      : await resolvedModule.createRenderer(canvas, bytes, width, height);
   const renderer = new GsplatWebRenderer(nativeRenderer);
   renderer.setSortInterval(sortInterval);
+  if (sortedIndexDirect && typeof renderer.setSortedIndexDirect === "function") {
+    renderer.setSortedIndexDirect(true);
+  }
   return renderer;
 }
 
@@ -125,6 +138,30 @@ export class GsplatWebRenderer {
     const nativeRenderer = this.#requireNativeRenderer();
     assertPositiveInteger(interval, "interval");
     nativeRenderer.setSortInterval(interval);
+  }
+
+  setSortedIndexDirect(enabled) {
+    const nativeRenderer = this.#requireNativeRenderer();
+    if (typeof nativeRenderer.setSortedIndexDirect !== "function") {
+      throw new TypeError("native renderer does not support setSortedIndexDirect");
+    }
+    nativeRenderer.setSortedIndexDirect(Boolean(enabled));
+  }
+
+  sortedIndexDirect() {
+    const nativeRenderer = this.#requireNativeRenderer();
+    if (typeof nativeRenderer.sortedIndexDirect !== "function") {
+      return false;
+    }
+    return Boolean(nativeRenderer.sortedIndexDirect());
+  }
+
+  rasterPath() {
+    const nativeRenderer = this.#requireNativeRenderer();
+    if (typeof nativeRenderer.rasterPath !== "function") {
+      return "cpu_instances";
+    }
+    return String(nativeRenderer.rasterPath());
   }
 
   renderFrame() {

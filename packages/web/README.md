@@ -21,6 +21,9 @@ The wrapper exposes:
 - `createGsplatRenderer()` for creating a canvas renderer from PLY bytes
 - `createGsplatRendererFromUrl()` for fetch-and-render flows
 - `GsplatWebRenderer` for camera controls, resize, stats, and disposal
+- optional `sortedIndexDirect: true` on create options (and
+  `setSortedIndexDirect` / `rasterPath`) for the experimental GPU-resident +
+  sorted-index Surface path; default remains CPU instance uploads
 
 Minimal browser usage:
 

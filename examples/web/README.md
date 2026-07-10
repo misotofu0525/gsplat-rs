@@ -87,6 +87,17 @@ the browser exits, add `gsplat_benchmark_sync=true`. Add `dataset=flowers` to
 run the same benchmark against
 `tests/datasets/external/nvidia_flowers_1/flowers_1/flowers_1.ply`.
 
+Opt into the experimental GPU-resident + sorted-index Surface path (CPU sort
+unchanged; default remains the CPU instance upload path). Studio has a
+checkbox, or use:
+
+```text
+http://127.0.0.1:4173/examples/web/?gsplat_sorted_index=1&gsplat_benchmark=true&gsplat_benchmark_sync=true&gsplat_benchmark_frames=5&gsplat_benchmark_warmup_frames=1
+```
+
+Benchmark output should report `renderer=wasm_sorted_index_direct` when the
+wasm Surface path is active with this option.
+
 ## Scope
 
 - Parses ASCII and binary PLY files in the browser for the WebGL2 fallback.
@@ -103,6 +114,8 @@ run the same benchmark against
   and routes renderer creation through `packages/web/src/index.js` before
   falling back to the WebGL2 point-splat path.
 - Supports benchmark orbit runs with `sort_interval` A/B checks.
+- Supports opt-in `gsplat_sorted_index=1` / Studio checkbox for
+  `SurfaceRasterPath::SortedIndexDirect` (GPU-resident scene + sorted indices).
 - Renders a WebGL2 point-splat preview rather than the full `wgpu` ellipse
   pipeline when the generated wasm package is missing or cannot create a
   browser Surface.

@@ -1,7 +1,7 @@
 import {
   createGsplatRenderer,
   initGsplatWeb,
-} from "../../../packages/web/src/index.js?v=showcase-20260710";
+} from "../../../packages/web/src/index.js?v=sorted-index-20260710";
 
 const API_VERSION = "0.1";
 const MAX_SURFACE_SIDE = 1600;
@@ -19,8 +19,8 @@ const DATASETS = {
   flowers: "/tests/datasets/external/nvidia_flowers_1/flowers_1/flowers_1.ply",
 };
 
-const WASM_ENTRY = new URL("../pkg/gsplat_web.js?v=showcase-20260710b", import.meta.url);
-const WASM_BINARY = new URL("../pkg/gsplat_web_bg.wasm?v=showcase-20260710b", import.meta.url);
+const WASM_ENTRY = new URL("../pkg/gsplat_web.js?v=sorted-index-20260710", import.meta.url);
+const WASM_BINARY = new URL("../pkg/gsplat_web_bg.wasm?v=sorted-index-20260710", import.meta.url);
 
 const REQUIRED_FIELDS = [
   "x",
@@ -94,6 +94,7 @@ const state = {
   surfaceSizeLabel: "pending",
   datasetPath: "pending",
   startDataset: "showcase",
+  sortedIndexDirect: false,
   benchmark: null,
   autoStartBenchmark: false,
   autoBenchmarkSync: false,
@@ -111,6 +112,7 @@ const els = {
   drawBudgetValue: document.getElementById("drawBudgetValue"),
   sortInterval: document.getElementById("sortInterval"),
   sortIntervalValue: document.getElementById("sortIntervalValue"),
+  sortedIndexDirect: document.getElementById("sortedIndexDirect"),
   pointScale: document.getElementById("pointScale"),
   pointScaleValue: document.getElementById("pointScaleValue"),
   benchmarkFrames: document.getElementById("benchmarkFrames"),
@@ -348,10 +350,12 @@ async function createWasmRenderer(scene) {
       width: els.canvas.width,
       height: els.canvas.height,
       sortInterval: Number(els.sortInterval.value),
+      sortedIndexDirect: state.sortedIndexDirect || Boolean(els.sortedIndexDirect?.checked),
     });
     state.wasmRenderer = renderer;
     state.backend = "wasm";
     state.wasmUnavailableReason = "";
+    state.sortedIndexDirect = Boolean(renderer.sortedIndexDirect?.() ?? els.sortedIndexDirect?.checked);
 
     const summary = renderer.sceneSummary();
     const surface = renderer.surfaceSize();
@@ -359,7 +363,11 @@ async function createWasmRenderer(scene) {
     els.gpuStatus.textContent = "wgpu";
     els.gaussianCount.textContent = formatNumber(summary.gaussians ?? scene.count);
     els.shDegree.textContent = String(summary.shDegree ?? scene.shDegree);
-    setRenderMode("Rust/WASM + wgpu Surface");
+    setRenderMode(
+      state.sortedIndexDirect
+        ? "Rust/WASM sorted-index direct"
+        : "Rust/WASM + wgpu Surface",
+    );
     updateBackendControls();
     return true;
   } catch (error) {
@@ -422,6 +430,19 @@ function bindEvents() {
   els.sortInterval.addEventListener("input", () => {
     invalidateSortedOrder();
     state.wasmRenderer?.setSortInterval(Number(els.sortInterval.value));
+  });
+  els.sortedIndexDirect?.addEventListener("change", () => {
+    state.sortedIndexDirect = Boolean(els.sortedIndexDirect.checked);
+    if (state.wasmRenderer?.setSortedIndexDirect) {
+      state.wasmRenderer.setSortedIndexDirect(state.sortedIndexDirect);
+      setRenderMode(
+        state.sortedIndexDirect
+          ? "Rust/WASM sorted-index direct"
+          : "Rust/WASM + wgpu Surface",
+      );
+    } else if (state.scene) {
+      void createWasmRenderer(state.scene);
+    }
   });
 
   els.canvas.addEventListener("pointerdown", handlePointerDown);
@@ -1308,6 +1329,12 @@ function applyUrlConfig() {
   setNumberInputFromParam(els.benchmarkYaw, params.get("gsplat_benchmark_yaw_step") ?? params.get("benchmark_yaw_step"));
   setNumberInputFromParam(els.sortInterval, params.get("gsplat_surface_sort_interval") ?? params.get("sort_interval"));
   setNumberInputFromParam(els.drawBudget, params.get("draw_budget"));
+  state.sortedIndexDirect = ["1", "true", "yes"].includes(
+    (params.get("gsplat_sorted_index") ?? params.get("sorted_index") ?? "").toLowerCase(),
+  );
+  if (els.sortedIndexDirect) {
+    els.sortedIndexDirect.checked = state.sortedIndexDirect;
+  }
   const dataset = (params.get("dataset") ?? params.get("scene") ?? "").toLowerCase();
   if (dataset === "flowers" || dataset === "flower") {
     state.startDataset = "flowers";
@@ -1372,13 +1399,23 @@ function finishBenchmark(benchmark) {
   setStatus(`state=benchmark_complete ${result}`);
 }
 
+function wasmRendererLabel() {
+  if (!usingWasm()) {
+    return "webgl2_point_splats";
+  }
+  if (state.sortedIndexDirect || state.wasmRenderer?.sortedIndexDirect?.()) {
+    return "wasm_sorted_index_direct";
+  }
+  return "wasm_wgpu_surface";
+}
+
 function benchmarkResultLine(benchmark) {
   const samples = Math.max(benchmark.samples, 1);
   const avg = (value) => (value / samples).toFixed(3);
   return (
     `BENCHMARK_RESULT dataset=${state.scene.name} ` +
     `samples=${benchmark.samples} warmup=${benchmark.warmupFrames} ` +
-    `sort_interval=${Number(els.sortInterval.value)} renderer=${usingWasm() ? "wasm_wgpu_surface" : "webgl2_point_splats"} ` +
+    `sort_interval=${Number(els.sortInterval.value)} renderer=${wasmRendererLabel()} ` +
     `draw_budget=${usingWasm() ? "full" : Number(els.drawBudget.value)} ` +
     `avg_call_ms=${avg(benchmark.totalCallMs)} ` +
     `avg_frame_ms=${avg(benchmark.totalFrameMs)} ` +

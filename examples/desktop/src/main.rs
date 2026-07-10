@@ -15,7 +15,7 @@ use gsplat_core::{Camera, RenderMode, RendererConfig, Vec3f};
 #[cfg(feature = "interactive-viewer")]
 use gsplat_core::{CameraIntrinsics, CameraPose};
 use gsplat_io_ply::load_ply;
-use gsplat_render_wgpu::Renderer;
+use gsplat_render_wgpu::{OffscreenRasterPath, Renderer};
 #[cfg(feature = "interactive-viewer")]
 use gsplat_render_wgpu::{GpuInstance, GpuInstancePreprocessor};
 #[cfg(feature = "interactive-viewer")]
@@ -52,6 +52,7 @@ struct Args {
     yaw_deg: Option<f32>,
     interactive: bool,
     png_out: Option<PathBuf>,
+    sorted_index_direct: bool,
 }
 
 impl Args {
@@ -67,6 +68,7 @@ impl Args {
         let mut yaw_deg: Option<f32> = None;
         let mut interactive = false;
         let mut png_out: Option<PathBuf> = None;
+        let mut sorted_index_direct = false;
 
         while let Some(arg) = args.next() {
             match arg.as_str() {
@@ -111,6 +113,7 @@ impl Args {
                     );
                 }
                 "--interactive" => interactive = true,
+                "--sorted-index-direct" => sorted_index_direct = true,
                 "--png" => {
                     let value = args
                         .next()
@@ -138,6 +141,7 @@ impl Args {
             yaw_deg,
             interactive,
             png_out,
+            sorted_index_direct,
         })
     }
 }
@@ -154,6 +158,7 @@ fn usage() -> String {
         "  --auto-camera    place camera based on dataset bounds",
         "  --yaw-deg A      set a fixed yaw angle in degrees for static frame rendering",
         "  --interactive    launch realtime on-screen viewer loop (feature: interactive-viewer)",
+        "  --sorted-index-direct  GPU-resident scene + sorted-index offscreen path (opt-in)",
         "  --png PATH       write the last rendered frame to PATH (requires GPU rasterizer)",
     ];
     lines.join("\n")
@@ -163,6 +168,9 @@ fn run(args: Args) -> Result<(), String> {
     let loaded = load_ply(Path::new(&args.dataset_path)).map_err(|err| err.to_string())?;
 
     let mut renderer = Renderer::with_config(args.config).map_err(|err| err.to_string())?;
+    if args.sorted_index_direct {
+        renderer.set_offscreen_raster_path(OffscreenRasterPath::SortedIndexGpuPreproject);
+    }
     renderer
         .load_scene(loaded.scene)
         .map_err(|err| err.to_string())?;
@@ -211,6 +219,10 @@ fn run_offscreen(args: &Args, mut renderer: Renderer, mut camera: Camera) -> Res
     println!("desktop-example ok");
     println!("dataset={}", args.dataset_path.display());
     println!("gpu_rasterizer={}", renderer.has_gpu_rasterizer());
+    println!(
+        "offscreen_raster_path={}",
+        renderer.offscreen_raster_path().as_str()
+    );
     println!("frames={}", args.frames);
     println!("elapsed_ms={:.4}", elapsed.as_secs_f32() * 1000.0);
     println!("frame_ms={:.4}", stats.frame_ms);
@@ -1021,6 +1033,7 @@ mod tests {
         assert!(!args.orbit);
         assert!(!args.auto_camera);
         assert!(!args.interactive);
+        assert!(!args.sorted_index_direct);
         assert!(args.png_out.is_none());
     }
 
@@ -1040,6 +1053,7 @@ mod tests {
             "15",
             "--png",
             "target/out.png",
+            "--sorted-index-direct",
         ])
         .unwrap();
 
@@ -1049,6 +1063,7 @@ mod tests {
         assert_eq!(args.config.height, 480);
         assert!(args.orbit);
         assert!(args.auto_camera);
+        assert!(args.sorted_index_direct);
         assert_eq!(args.yaw_deg, Some(15.0));
         assert_eq!(
             args.png_out,

@@ -59,6 +59,64 @@ pub struct PreprocessOutput {
     pub indices: Vec<u32>,
 }
 
+/// Surface present path for SortedAlpha.
+///
+/// `SortedIndexDirect` keeps scene data GPU-resident and uploads only sorted
+/// source indices each refresh (same idea as the mobile `static_direct` path).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[repr(u32)]
+pub enum SurfaceRasterPath {
+    #[default]
+    CpuInstances = 0,
+    SortedIndexDirect = 1,
+}
+
+impl SurfaceRasterPath {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::CpuInstances => "cpu_instances",
+            Self::SortedIndexDirect => "sorted_index_direct",
+        }
+    }
+
+    pub const fn from_u32(value: u32) -> Option<Self> {
+        match value {
+            0 => Some(Self::CpuInstances),
+            1 => Some(Self::SortedIndexDirect),
+            _ => None,
+        }
+    }
+}
+
+/// Offscreen / desktop PNG path for SortedAlpha.
+///
+/// `SortedIndexGpuPreproject` keeps scene buffers on the GPU and runs the
+/// existing instance preprocess compute from sorted indices each frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[repr(u32)]
+pub enum OffscreenRasterPath {
+    #[default]
+    CpuInstances = 0,
+    SortedIndexGpuPreproject = 1,
+}
+
+impl OffscreenRasterPath {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::CpuInstances => "cpu_instances",
+            Self::SortedIndexGpuPreproject => "sorted_index_gpu_preproject",
+        }
+    }
+
+    pub const fn from_u32(value: u32) -> Option<Self> {
+        match value {
+            0 => Some(Self::CpuInstances),
+            1 => Some(Self::SortedIndexGpuPreproject),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum RendererError {
     #[error("invalid renderer configuration")]
@@ -180,6 +238,8 @@ pub struct Renderer {
     cpu_sort_backend: CpuSortBackend,
     #[cfg(not(target_arch = "wasm32"))]
     gpu_rasterizer: Option<GpuRasterizer>,
+    #[cfg(not(target_arch = "wasm32"))]
+    offscreen_raster_path: OffscreenRasterPath,
     scene: Option<SceneBuffers>,
     world_covariances: Option<Vec<[[f32; 3]; 3]>>,
     world_covariance_terms: Option<Vec<CameraCovarianceTerms>>,
@@ -244,6 +304,8 @@ impl Renderer {
             cpu_sort_backend: CpuSortBackend::default(),
             #[cfg(not(target_arch = "wasm32"))]
             gpu_rasterizer: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            offscreen_raster_path: OffscreenRasterPath::CpuInstances,
             scene: None,
             world_covariances: None,
             world_covariance_terms: None,
@@ -287,6 +349,19 @@ impl Renderer {
     pub fn set_mode(&mut self, mode: RenderMode) {
         self.mode = mode;
         self.config.mode = mode;
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn offscreen_raster_path(&self) -> OffscreenRasterPath {
+        self.offscreen_raster_path
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn set_offscreen_raster_path(&mut self, path: OffscreenRasterPath) {
+        self.offscreen_raster_path = path;
+        if let Some(rasterizer) = self.gpu_rasterizer.as_mut() {
+            rasterizer.clear_instance_preprocessor();
+        }
     }
 
     pub fn has_gpu_rasterizer(&self) -> bool {
@@ -348,6 +423,10 @@ impl Renderer {
         self.world_covariances = Some(world_covariances);
         self.world_covariance_terms = Some(world_covariance_terms);
         self.alpha_values = Some(alpha_values);
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(rasterizer) = self.gpu_rasterizer.as_mut() {
+            rasterizer.clear_instance_preprocessor();
+        }
         Ok(())
     }
 
@@ -616,36 +695,59 @@ impl Renderer {
         let sort_ms = timer_elapsed_ms(sort_start);
 
         let raster_start = timer_now();
-        self.gpu_rasterizer
-            .as_ref()
-            .ok_or(RendererError::GpuRasterizerUnavailable)?
-            .validate_instance_capacity(self.preprocess_indices.len().max(1))
-            .map_err(RendererError::from)?;
-        let scene = self.scene.as_ref().ok_or(RendererError::SceneNotLoaded)?;
-        let world_covariances = self
-            .world_covariances
-            .as_deref()
-            .ok_or(RendererError::InvalidScene)?;
-        let alpha_values = self
-            .alpha_values
-            .as_deref()
-            .ok_or(RendererError::InvalidScene)?;
-        let instances = build_instances(
-            scene,
-            world_covariances,
-            alpha_values,
-            &self.preprocess_indices,
-            camera,
-            self.config,
-        );
+        let drawn_count = match self.offscreen_raster_path {
+            OffscreenRasterPath::CpuInstances => {
+                self.gpu_rasterizer
+                    .as_ref()
+                    .ok_or(RendererError::GpuRasterizerUnavailable)?
+                    .validate_instance_capacity(self.preprocess_indices.len().max(1))
+                    .map_err(RendererError::from)?;
+                let scene = self.scene.as_ref().ok_or(RendererError::SceneNotLoaded)?;
+                let world_covariances = self
+                    .world_covariances
+                    .as_deref()
+                    .ok_or(RendererError::InvalidScene)?;
+                let alpha_values = self
+                    .alpha_values
+                    .as_deref()
+                    .ok_or(RendererError::InvalidScene)?;
+                let instances = build_instances(
+                    scene,
+                    world_covariances,
+                    alpha_values,
+                    &self.preprocess_indices,
+                    camera,
+                    self.config,
+                );
 
-        self.gpu_rasterizer
-            .as_mut()
-            .ok_or(RendererError::GpuRasterizerUnavailable)?
-            .render(self.config, &instances)
-            .map_err(RendererError::from)?;
-
-        let drawn_count = instances.len() as u32;
+                self.gpu_rasterizer
+                    .as_mut()
+                    .ok_or(RendererError::GpuRasterizerUnavailable)?
+                    .render(self.config, &instances)
+                    .map_err(RendererError::from)?;
+                instances.len() as u32
+            }
+            OffscreenRasterPath::SortedIndexGpuPreproject => {
+                let scene = self.scene.as_ref().ok_or(RendererError::SceneNotLoaded)?;
+                let world_covariances = self
+                    .world_covariances
+                    .as_deref()
+                    .ok_or(RendererError::InvalidScene)?;
+                let sorted_indices = self.preprocess_indices.clone();
+                self.gpu_rasterizer
+                    .as_mut()
+                    .ok_or(RendererError::GpuRasterizerUnavailable)?
+                    .render_sorted_indices(
+                        self.config,
+                        &sorted_indices,
+                        camera,
+                        scene,
+                        world_covariances,
+                    )
+                    .map_err(RendererError::from)?;
+                sorted_indices.len() as u32
+            }
+        };
         let raster_ms = timer_elapsed_ms(raster_start);
 
         let stats = FrameStats {
@@ -3583,6 +3685,8 @@ struct GpuRasterizer {
     instance_buffer: wgpu::Buffer,
     instance_capacity: usize,
     bind_group: wgpu::BindGroup,
+    instance_preprocessor: Option<GpuInstancePreprocessor>,
+    preprocessor_scene_len: usize,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -3712,6 +3816,8 @@ impl GpuRasterizer {
             instance_buffer,
             instance_capacity: 1,
             bind_group,
+            instance_preprocessor: None,
+            preprocessor_scene_len: 0,
         })
     }
 
@@ -3756,6 +3862,107 @@ impl GpuRasterizer {
             rpass.set_bind_group(0, &self.bind_group, &[]);
             if !instances.is_empty() {
                 rpass.draw(0..6, 0..(instances.len() as u32));
+            }
+        }
+
+        self.queue.submit(Some(encoder.finish()));
+        Ok(())
+    }
+
+    fn clear_instance_preprocessor(&mut self) {
+        self.instance_preprocessor = None;
+        self.preprocessor_scene_len = 0;
+    }
+
+    fn render_sorted_indices(
+        &mut self,
+        config: RendererConfig,
+        sorted_indices: &[u32],
+        camera: &Camera,
+        scene: &SceneBuffers,
+        world_covariances: &[[[f32; 3]; 3]],
+    ) -> Result<(), GpuRasterError> {
+        self.ensure_output_target(config.width, config.height)?;
+        self.ensure_instance_capacity(sorted_indices.len().max(1))?;
+
+        let needs_new_preprocessor = self
+            .instance_preprocessor
+            .as_ref()
+            .is_none_or(|preprocessor| {
+                preprocessor.instance_capacity() != self.instance_capacity
+                    || preprocessor.sorted_capacity() < scene.len().max(1)
+                    || self.preprocessor_scene_len != scene.len()
+            });
+        if needs_new_preprocessor {
+            let preprocessor = GpuInstancePreprocessor::new(
+                &self.device,
+                scene,
+                world_covariances,
+                &self.instance_buffer,
+                self.instance_capacity,
+            )
+            .map_err(|err| match err {
+                GpuInstancePreprocessError::InvalidInstanceCapacity
+                | GpuInstancePreprocessError::InstanceBufferCapacityExceeded => {
+                    GpuRasterError::InstanceBufferUnsupported {
+                        requested_bytes: checked_instance_buffer_size(
+                            sorted_indices.len().max(1),
+                            self.max_instance_buffer_bytes,
+                        )
+                        .unwrap_or(self.max_instance_buffer_bytes + 1),
+                        max_bytes: self.max_instance_buffer_bytes,
+                    }
+                }
+                _ => GpuRasterError::DeviceCreation,
+            })?;
+            self.preprocessor_scene_len = scene.len();
+            self.instance_preprocessor = Some(preprocessor);
+        }
+
+        let preprocessor = self
+            .instance_preprocessor
+            .as_ref()
+            .ok_or(GpuRasterError::DeviceCreation)?;
+        let instance_count = preprocessor
+            .prepare(
+                &self.queue,
+                sorted_indices,
+                camera,
+                config.width,
+                config.height,
+            )
+            .map_err(|_| GpuRasterError::DeviceCreation)?;
+
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: wgpu_label("splat-sorted-index-encoder"),
+            });
+        if instance_count > 0 {
+            preprocessor.encode_dispatch(&mut encoder, instance_count);
+        }
+        {
+            let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: wgpu_label("splat-sorted-index-pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &self.output_view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                occlusion_query_set: None,
+                timestamp_writes: None,
+                multiview_mask: None,
+            });
+
+            rpass.set_pipeline(&self.pipeline);
+            rpass.set_bind_group(0, &self.bind_group, &[]);
+            if instance_count > 0 {
+                rpass.draw(0..6, 0..instance_count);
             }
         }
 
@@ -3885,6 +4092,7 @@ impl GpuRasterizer {
         self.instance_buffer = buffer;
         self.bind_group = bind_group;
         self.instance_capacity = new_capacity;
+        self.clear_instance_preprocessor();
         Ok(())
     }
 

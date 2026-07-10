@@ -75,10 +75,16 @@ bash bindings/apple/scripts/build-xcframework.sh
 
 ```bash
 cargo run -p desktop-example -- tests/datasets/minimal_ascii.ply --png target/out.png
+cargo run -p desktop-example -- tests/datasets/minimal_ascii.ply --png target/out-sorted-index.png --sorted-index-direct
 cargo run -p desktop-example --features interactive-viewer -- tests/datasets/minimal_ascii.ply --auto-camera --interactive
+cargo run --release -p bench-runner -- tests/datasets/minimal_ascii.ply 30 --warmup-iterations 5 --sorted-index-direct
 ```
 
 - Use the PNG path for deterministic local smoke output.
+- `--sorted-index-direct` exercises `OffscreenRasterPath::SortedIndexGpuPreproject`;
+  expect `offscreen_raster_path=sorted_index_gpu_preproject` in the log. Compare
+  against the default CPU-instance PNG with a mean RGB tolerance (not
+  byte-identical) when validating the opt-in path.
 - Use the interactive viewer when changing windowed presentation or camera interaction behavior.
 
 ## Web Example Smoke
@@ -115,6 +121,13 @@ http://127.0.0.1:4173/examples/web/?dataset=flowers&gsplat_benchmark=true&gsplat
 ```
 
 - Expected benchmark output includes `BENCHMARK_RESULT dataset=flowers_1.ply`.
+- Optional sorted-index Surface path smoke (after wasm build):
+
+```text
+http://127.0.0.1:4173/examples/web/?gsplat_sorted_index=1&gsplat_benchmark=true&gsplat_benchmark_sync=true&gsplat_benchmark_frames=5&gsplat_benchmark_warmup_frames=1
+```
+
+- Expected wasm benchmark output includes `renderer=wasm_sorted_index_direct`.
 
 ## Web WASM Build
 

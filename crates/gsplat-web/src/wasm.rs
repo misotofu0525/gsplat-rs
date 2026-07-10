@@ -3,7 +3,7 @@ use gsplat_core::{
     RendererConfig, SceneBuffers, Vec3f,
 };
 use gsplat_io_ply::{PlySceneSummary, parse_ply_bytes};
-use gsplat_render_wgpu::{GpuSurfaceInstance, Renderer, SurfacePresenter};
+use gsplat_render_wgpu::{GpuSurfaceInstance, Renderer, SurfacePresenter, SurfaceRasterPath};
 use js_sys::{Object, Reflect, Uint8Array};
 use wasm_bindgen::prelude::*;
 use web_sys::HtmlCanvasElement;
@@ -30,6 +30,17 @@ pub async fn create_renderer(
     width: u32,
     height: u32,
 ) -> Result<GsplatWebRenderer, JsValue> {
+    create_renderer_with_options(canvas, ply_bytes, width, height, false).await
+}
+
+#[wasm_bindgen(js_name = createRendererWithOptions)]
+pub async fn create_renderer_with_options(
+    canvas: HtmlCanvasElement,
+    ply_bytes: Uint8Array,
+    width: u32,
+    height: u32,
+    sorted_index_direct: bool,
+) -> Result<GsplatWebRenderer, JsValue> {
     let raw = ply_bytes.to_vec();
     let loaded = parse_ply_bytes(&raw).map_err(|err| js_error(err.to_string()))?;
     let summary = loaded.summary;
@@ -51,6 +62,11 @@ pub async fn create_renderer(
 
     let camera_control = auto_surface_camera_control(&renderer).map_err(error_code)?;
     let camera = surface_camera_from_control(camera_control, renderer.config());
+    let surface_raster_path = if sorted_index_direct {
+        SurfaceRasterPath::SortedIndexDirect
+    } else {
+        SurfaceRasterPath::CpuInstances
+    };
 
     Ok(GsplatWebRenderer {
         renderer,
@@ -63,6 +79,7 @@ pub async fn create_renderer(
         surface_sort_interval: DEFAULT_SURFACE_SORT_INTERVAL,
         surface_frames_since_sort: 0,
         uploaded_frame: false,
+        surface_raster_path,
     })
 }
 
@@ -78,6 +95,7 @@ pub struct GsplatWebRenderer {
     surface_sort_interval: u32,
     surface_frames_since_sort: u32,
     uploaded_frame: bool,
+    surface_raster_path: SurfaceRasterPath,
 }
 
 #[wasm_bindgen]
@@ -161,6 +179,29 @@ impl GsplatWebRenderer {
         self.invalidate_frame_cache();
     }
 
+    #[wasm_bindgen(js_name = setSortedIndexDirect)]
+    pub fn set_sorted_index_direct(&mut self, enabled: bool) {
+        let path = if enabled {
+            SurfaceRasterPath::SortedIndexDirect
+        } else {
+            SurfaceRasterPath::CpuInstances
+        };
+        if self.surface_raster_path != path {
+            self.surface_raster_path = path;
+            self.invalidate_frame_cache();
+        }
+    }
+
+    #[wasm_bindgen(js_name = sortedIndexDirect)]
+    pub fn sorted_index_direct(&self) -> bool {
+        self.surface_raster_path == SurfaceRasterPath::SortedIndexDirect
+    }
+
+    #[wasm_bindgen(js_name = rasterPath)]
+    pub fn raster_path(&self) -> String {
+        self.surface_raster_path.as_str().to_owned()
+    }
+
     #[wasm_bindgen(js_name = renderFrame)]
     pub fn render_frame(&mut self) -> Result<JsValue, JsValue> {
         if self.uploaded_frame {
@@ -173,17 +214,34 @@ impl GsplatWebRenderer {
         let refresh_sort = self.surface_sort_interval <= 1
             || self.surface_frames_since_sort == 0
             || self.surface_frames_since_sort >= self.surface_sort_interval;
-        let stats = self
-            .renderer
-            .build_surface_instances_with_sort_refresh_into(
-                &self.camera,
-                &mut self.instances,
-                refresh_sort,
-            )
-            .map_err(renderer_error)?;
-        self.presenter
-            .render_instances(&self.instances, &self.camera)
-            .map_err(|err| js_error(err.to_string()))?;
+
+        let stats = match self.surface_raster_path {
+            SurfaceRasterPath::CpuInstances => {
+                let stats = self
+                    .renderer
+                    .build_surface_instances_with_sort_refresh_into(
+                        &self.camera,
+                        &mut self.instances,
+                        refresh_sort,
+                    )
+                    .map_err(renderer_error)?;
+                self.presenter
+                    .render_instances(&self.instances, &self.camera)
+                    .map_err(|err| js_error(err.to_string()))?;
+                stats
+            }
+            SurfaceRasterPath::SortedIndexDirect => {
+                let stats = self
+                    .renderer
+                    .build_surface_sorted_indices_with_sort_refresh(&self.camera, refresh_sort)
+                    .map_err(renderer_error)?;
+                let sorted_indices = self.renderer.current_sorted_indices().to_vec();
+                self.presenter
+                    .render_direct_sorted_indices(&sorted_indices, &self.camera, refresh_sort)
+                    .map_err(|err| js_error(err.to_string()))?;
+                stats
+            }
+        };
 
         self.stats = stats;
         self.surface_frames_since_sort = if refresh_sort {

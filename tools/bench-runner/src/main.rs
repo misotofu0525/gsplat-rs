@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use gsplat_core::{Camera, FrameStats, RenderMode, RendererConfig, SceneBuffers, Vec3f};
 use gsplat_io_ply::load_ply;
-use gsplat_render_wgpu::Renderer;
+use gsplat_render_wgpu::{OffscreenRasterPath, Renderer};
 
 fn main() {
     if let Err(err) = run() {
@@ -26,10 +26,17 @@ fn run() -> Result<(), String> {
     }
 
     let mut renderer = Renderer::new(RenderMode::SortedAlpha).map_err(|err| err.to_string())?;
+    if config.sorted_index_direct {
+        renderer.set_offscreen_raster_path(OffscreenRasterPath::SortedIndexGpuPreproject);
+    }
     renderer
         .load_scene(loaded.scene)
         .map_err(|err| err.to_string())?;
     print_gpu_metadata(&renderer);
+    println!(
+        "offscreen_raster_path={}",
+        renderer.offscreen_raster_path().as_str()
+    );
 
     let camera = Camera::default();
 
@@ -356,6 +363,7 @@ struct BenchConfig {
     stability_seconds: Option<u64>,
     rss_growth_limit_kib: u64,
     analysis: Option<SpatialAnalysisConfig>,
+    sorted_index_direct: bool,
 }
 
 impl Default for BenchConfig {
@@ -368,6 +376,7 @@ impl Default for BenchConfig {
             stability_seconds: None,
             rss_growth_limit_kib: 64 * 1024,
             analysis: None,
+            sorted_index_direct: false,
         }
     }
 }
@@ -487,6 +496,9 @@ impl BenchConfig {
                     config.rss_growth_limit_kib = value
                         .parse::<u64>()
                         .map_err(|_| "invalid --rss-growth-limit-kib value")?;
+                }
+                "--sorted-index-direct" => {
+                    config.sorted_index_direct = true;
                 }
                 value if value.starts_with("--") => {
                     return Err(format!("unknown option: {value}"));
@@ -720,6 +732,7 @@ mod tests {
         assert_eq!(config.max_avg_gpu_complete_ms, None);
         assert_eq!(config.stability_seconds, None);
         assert_eq!(config.rss_growth_limit_kib, 64 * 1024);
+        assert!(!config.sorted_index_direct);
         assert!(config.analysis.is_none());
     }
 
@@ -736,6 +749,7 @@ mod tests {
             "3".to_owned(),
             "--max-avg-gpu-complete-ms".to_owned(),
             "12.5".to_owned(),
+            "--sorted-index-direct".to_owned(),
         ])
         .unwrap();
 
@@ -745,6 +759,7 @@ mod tests {
         assert_eq!(config.max_avg_gpu_complete_ms, Some(12.5));
         assert_eq!(config.stability_seconds, Some(5));
         assert_eq!(config.rss_growth_limit_kib, 4096);
+        assert!(config.sorted_index_direct);
     }
 
     #[test]
