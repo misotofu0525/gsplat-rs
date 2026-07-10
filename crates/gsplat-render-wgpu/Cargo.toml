@@ -1,6 +1,6 @@
 [package]
 name = "gsplat-render-wgpu"
-version = "0.1.1"
+version = "0.1.2"
 description = "wgpu renderer and surface presentation paths for gsplat-rs."
 readme = "README.md"
 keywords = ["gaussian-splatting", "wgpu", "gpu", "3d", "rendering"]
@@ -13,8 +13,8 @@ homepage.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-gsplat-core = { path = "../gsplat-core", version = "0.1.1" }
-gsplat-sort = { path = "../gsplat-sort", version = "0.1.1" }
+gsplat-core = { path = "../gsplat-core", version = "0.1.2" }
+gsplat-sort = { path = "../gsplat-sort", version = "0.1.2" }
 wgpu.workspace = true
 thiserror.workspace = true
 bytemuck = { version = "1.20.0", features = ["derive"] }
@@ -28,4 +28,4 @@ js-sys = "0.3.98"
 web-sys = { version = "0.3.98", features = ["HtmlCanvasElement"] }
 
 [dev-dependencies]
-gsplat-io-ply = { path = "../gsplat-io-ply", version = "0.1.1" }
+gsplat-io-ply = { path = "../gsplat-io-ply", version = "0.1.2" }
