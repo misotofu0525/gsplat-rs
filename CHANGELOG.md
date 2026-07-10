@@ -8,6 +8,28 @@ and this project adheres to
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-07-10
+
+### Added
+
+- Unified direct sorted-index Surface/offscreen path as the shared SortedAlpha
+  renderer across desktop, mobile, and Web (GPU-resident scene + sorted `u32`
+  indices; CPU radix sort retained).
+- 8-bit CPU radix with NEON/AVX2 multi-histogram counting in `gsplat-sort`, plus
+  key-bit-only sorting on the production `sort_values_by_keys` path.
+
+### Changed
+
+- Removed the selectable CPU-instance / preproject Surface raster alternatives
+  in favor of a single direct sorted-index pipeline.
+- Web and desktop validation surfaces now exercise the same resident-index
+  draw path used by Android/iOS.
+
+### Fixed
+
+- Web upload-bound frames on dense PLYs by stopping per-frame full instance
+  buffer uploads on the production Surface path.
+
 ## [0.1.2] - 2026-07-10
 
 ### Fixed

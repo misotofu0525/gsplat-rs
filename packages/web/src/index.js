@@ -1,4 +1,4 @@
-export const GSPLAT_WEB_SDK_VERSION = "0.1.2";
+export const GSPLAT_WEB_SDK_VERSION = "0.1.3";
 
 let loadedModule = null;
 let initPromise = null;

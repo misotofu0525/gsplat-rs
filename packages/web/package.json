@@ -1,6 +1,6 @@
 {
   "name": "@gsplat-rs/web",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Local browser wrapper for the experimental gsplat-rs Rust/WASM renderer.",
   "type": "module",
   "license": "MIT OR Apache-2.0",

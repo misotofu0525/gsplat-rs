@@ -1,6 +1,6 @@
 [package]
 name = "gsplat-io-ply"
-version = "0.1.2"
+version = "0.1.3"
 description = "PLY import and scene-buffer construction for gsplat-rs."
 readme = "README.md"
 keywords = ["gaussian-splatting", "ply", "3d", "parser"]
@@ -13,5 +13,5 @@ homepage.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-gsplat-core = { path = "../gsplat-core", version = "0.1.2" }
+gsplat-core = { path = "../gsplat-core", version = "0.1.3" }
 thiserror.workspace = true

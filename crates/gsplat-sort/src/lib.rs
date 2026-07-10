@@ -1,8 +1,11 @@
 //! Sort backend abstraction for depth ordering.
 
+mod radix;
+
 use std::sync::mpsc;
 
 use bytemuck::{Pod, Zeroable};
+use radix::{RADIX_SORT_BUCKETS, radix_sort_desc_u64, radix_sort_desc_u64_key_bits};
 use thiserror::Error;
 use wgpu::util::DeviceExt;
 
@@ -47,7 +50,8 @@ impl CpuSortBackend {
         self.prepare_scratch(len);
         let packed = &mut self.packed[..len];
         pack_pairs(keys, values, packed);
-        radix_sort_desc_u64(
+        // Production path packs ascending indices; key-bit-only stable radix is enough.
+        radix_sort_desc_u64_key_bits(
             packed,
             &mut self.scratch[..len],
             &mut self.counts[..RADIX_SORT_BUCKETS],
@@ -96,10 +100,6 @@ impl SortBackend for CpuSortBackend {
         Ok(())
     }
 }
-
-const RADIX_SORT_BITS: usize = 16;
-const RADIX_SORT_BUCKETS: usize = 1 << RADIX_SORT_BITS;
-const RADIX_SORT_MASK: u64 = (RADIX_SORT_BUCKETS as u64) - 1;
 
 #[inline]
 const fn pack_sort_pair(key: u32, value: u32) -> u64 {
@@ -174,52 +174,6 @@ fn unpack_values(packed: &[u64], values: &mut [u32]) {
     #[cfg(not(target_arch = "aarch64"))]
     for i in 0..packed.len() {
         values[i] = !(packed[i] as u32);
-    }
-}
-
-fn radix_sort_desc_u64(values: &mut [u64], scratch: &mut [u64], counts: &mut [usize]) {
-    debug_assert_eq!(values.len(), scratch.len());
-    debug_assert_eq!(counts.len(), RADIX_SORT_BUCKETS);
-
-    let mut values_to_scratch = true;
-    for shift in (0..64).step_by(RADIX_SORT_BITS) {
-        counts.fill(0);
-        if values_to_scratch {
-            count_radix_digits(values, shift, counts);
-            descending_prefix_offsets(counts);
-            scatter_radix_digits(values, scratch, shift, counts);
-        } else {
-            count_radix_digits(scratch, shift, counts);
-            descending_prefix_offsets(counts);
-            scatter_radix_digits(scratch, values, shift, counts);
-        }
-        values_to_scratch = !values_to_scratch;
-    }
-
-    debug_assert!(values_to_scratch);
-}
-
-fn count_radix_digits(input: &[u64], shift: usize, counts: &mut [usize]) {
-    for &value in input {
-        counts[((value >> shift) & RADIX_SORT_MASK) as usize] += 1;
-    }
-}
-
-fn descending_prefix_offsets(counts: &mut [usize]) {
-    let mut offset = 0_usize;
-    for count in counts.iter_mut().rev() {
-        let bucket_len = *count;
-        *count = offset;
-        offset += bucket_len;
-    }
-}
-
-fn scatter_radix_digits(input: &[u64], output: &mut [u64], shift: usize, offsets: &mut [usize]) {
-    for &value in input {
-        let digit = ((value >> shift) & RADIX_SORT_MASK) as usize;
-        let output_index = offsets[digit];
-        output[output_index] = value;
-        offsets[digit] = output_index + 1;
     }
 }
 
@@ -674,6 +628,51 @@ mod tests {
 
         let actual: Vec<(u32, u32)> = keys.into_iter().zip(values).collect();
         assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn cpu_backend_matches_reference_across_edge_lengths() {
+        let mut backend = CpuSortBackend::default();
+        for &len in &[0_usize, 1, 2, 255, 256, 257, 1024, 65537] {
+            let mut seed = 42_u32.wrapping_add(len as u32);
+            let mut keys: Vec<u32> = (0..len).map(|_| lcg_next(&mut seed)).collect();
+            let mut values: Vec<u32> = (0..len as u32).collect();
+            let mut expected: Vec<(u32, u32)> =
+                keys.iter().copied().zip(values.iter().copied()).collect();
+            expected.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+            backend.sort_pairs(&mut keys, &mut values).unwrap();
+            let actual: Vec<(u32, u32)> = keys.into_iter().zip(values).collect();
+            assert_eq!(actual, expected, "len={len}");
+        }
+    }
+
+    #[test]
+    fn cpu_backend_sort_values_microbench_200k() {
+        let len = 200_000_usize;
+        let mut seed = 99_u32;
+        let keys: Vec<u32> = (0..len).map(|_| lcg_next(&mut seed)).collect();
+        let mut values: Vec<u32> = (0..len as u32).collect();
+        let mut backend = CpuSortBackend::default();
+
+        // Warmup
+        backend.sort_values_by_keys(&keys, &mut values).unwrap();
+        values = (0..len as u32).collect();
+
+        let start = std::time::Instant::now();
+        const ITERS: u32 = 8;
+        for _ in 0..ITERS {
+            values = (0..len as u32).collect();
+            backend.sort_values_by_keys(&keys, &mut values).unwrap();
+        }
+        let avg_ms = start.elapsed().as_secs_f64() * 1000.0 / f64::from(ITERS);
+        eprintln!("cpu_sort_values_by_keys n={len} avg_ms={avg_ms:.3}");
+        assert!(avg_ms.is_finite());
+        // Sanity: still descending by key.
+        for window in values.windows(2) {
+            let left = keys[window[0] as usize];
+            let right = keys[window[1] as usize];
+            assert!(left >= right);
+        }
     }
 
     #[test]

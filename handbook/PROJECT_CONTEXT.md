@@ -5,7 +5,7 @@
 - `gsplat-rs` is a cross-platform Gaussian Splatting rendering library built with Rust + `wgpu`.
 - The repo serves three audiences: Rust library consumers, native integrators through the C ABI, and maintainers validating the stack through examples and tooling.
 - The project is still on the `0.1.x` line, with a deliberately small release surface.
-- The latest verified GitHub prerelease is `v0.1.2`; it provides checksum-listed
+- The latest verified GitHub prerelease is `v0.1.3`; it provides checksum-listed
   Android AAR, Apple XCFramework ZIP, and Web npm-compatible tarball artifacts
   without publishing them to package registries.
 

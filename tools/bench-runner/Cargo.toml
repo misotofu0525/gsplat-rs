@@ -1,6 +1,6 @@
 [package]
 name = "bench-runner"
-version = "0.1.2"
+version = "0.1.3"
 description = "Performance and stability validation runner for gsplat-rs."
 edition.workspace = true
 license.workspace = true
@@ -10,6 +10,6 @@ rust-version.workspace = true
 publish = false
 
 [dependencies]
-gsplat-core = { path = "../../crates/gsplat-core", version = "0.1.2" }
-gsplat-io-ply = { path = "../../crates/gsplat-io-ply", version = "0.1.2" }
-gsplat-render-wgpu = { path = "../../crates/gsplat-render-wgpu", version = "0.1.2" }
+gsplat-core = { path = "../../crates/gsplat-core", version = "0.1.3" }
+gsplat-io-ply = { path = "../../crates/gsplat-io-ply", version = "0.1.3" }
+gsplat-render-wgpu = { path = "../../crates/gsplat-render-wgpu", version = "0.1.3" }

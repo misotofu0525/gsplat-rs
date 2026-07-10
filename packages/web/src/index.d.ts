@@ -91,7 +91,7 @@ export class GsplatWebRenderer {
   dispose(): void;
 }
 
-export const GSPLAT_WEB_SDK_VERSION: "0.1.2";
+export const GSPLAT_WEB_SDK_VERSION: "0.1.3";
 
 export function initGsplatWeb(options?: InitGsplatWebOptions): Promise<GsplatWebModule>;
 export function getGsplatApiVersion(module?: GsplatWebModule): GsplatApiVersion;
