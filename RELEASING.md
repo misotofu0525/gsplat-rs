@@ -12,7 +12,7 @@ Before creating a tag:
    `SECURITY.md` accepts a new report.
 3. Confirm the release commit is on `main`, the worktree is clean, and all
    workspace/package versions match the intended tag. Verify locally with
-   `RELEASE_VERSION=0.1.0 bash tests/release/check-version.sh`.
+   `RELEASE_VERSION=0.1.1 bash tests/release/check-version.sh`.
 4. Move completed plan bundles out of `docs/plans/active/` and update
    `CHANGELOG.md`, `README.md`, and affected handbook pages.
 5. Run the full local verification matrix in `handbook/VERIFICATION.md`,
@@ -30,8 +30,8 @@ manual gates and are not mutated by repository scripts.
 Create an annotated semantic-version tag from the verified release commit:
 
 ```bash
-git tag -s v0.1.0 -m "gsplat-rs v0.1.0"
-git push origin v0.1.0
+git tag -s v0.1.1 -m "gsplat-rs v0.1.1"
+git push origin v0.1.1
 ```
 
 The tag workflow re-runs core checks, dependency policy, C ABI smoke, the

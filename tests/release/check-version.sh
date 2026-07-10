@@ -37,15 +37,15 @@ if [[ "$web_version" != "$VERSION" ]]; then
   exit 1
 fi
 
-if ! rg -Fq "GSPLAT_WEB_SDK_VERSION = \"$VERSION\"" packages/web/src/index.js; then
+if ! grep -Fq "GSPLAT_WEB_SDK_VERSION = \"$VERSION\"" packages/web/src/index.js; then
   echo "version mismatch: packages/web/src/index.js" >&2
   exit 1
 fi
-if ! rg -Fq "GSPLAT_WEB_SDK_VERSION: \"$VERSION\"" packages/web/src/index.d.ts; then
+if ! grep -Fq "GSPLAT_WEB_SDK_VERSION: \"$VERSION\"" packages/web/src/index.d.ts; then
   echo "version mismatch: packages/web/src/index.d.ts" >&2
   exit 1
 fi
-if ! rg -Fq "versionName = \"$VERSION\"" examples/android/app/build.gradle.kts; then
+if ! grep -Fq "versionName = \"$VERSION\"" examples/android/app/build.gradle.kts; then
   echo "version mismatch: examples/android/app/build.gradle.kts" >&2
   exit 1
 fi
@@ -53,23 +53,23 @@ fi
 major="${VERSION%%.*}"
 remainder="${VERSION#*.}"
 minor="${remainder%%.*}"
-if ! rg -q "GSPLAT_API_VERSION_MAJOR: u32 = $major;" crates/gsplat-core/src/lib.rs; then
+if ! grep -Fq "GSPLAT_API_VERSION_MAJOR: u32 = $major;" crates/gsplat-core/src/lib.rs; then
   echo "C API major version mismatch" >&2
   exit 1
 fi
-if ! rg -q "GSPLAT_API_VERSION_MINOR: u32 = $minor;" crates/gsplat-core/src/lib.rs; then
+if ! grep -Fq "GSPLAT_API_VERSION_MINOR: u32 = $minor;" crates/gsplat-core/src/lib.rs; then
   echo "C API minor version mismatch" >&2
   exit 1
 fi
-if ! rg -q "#define GSPLAT_API_VERSION_MAJOR_VALUE $major" crates/gsplat-ffi-c/include/gsplat.h; then
+if ! grep -Fq "#define GSPLAT_API_VERSION_MAJOR_VALUE $major" crates/gsplat-ffi-c/include/gsplat.h; then
   echo "C header major version mismatch" >&2
   exit 1
 fi
-if ! rg -q "#define GSPLAT_API_VERSION_MINOR_VALUE $minor" crates/gsplat-ffi-c/include/gsplat.h; then
+if ! grep -Fq "#define GSPLAT_API_VERSION_MINOR_VALUE $minor" crates/gsplat-ffi-c/include/gsplat.h; then
   echo "C header minor version mismatch" >&2
   exit 1
 fi
-if ! rg -Fq "const API_VERSION = \"$major.$minor\";" examples/web/src/main.js; then
+if ! grep -Fq "const API_VERSION = \"$major.$minor\";" examples/web/src/main.js; then
   echo "Web example API version mismatch" >&2
   exit 1
 fi

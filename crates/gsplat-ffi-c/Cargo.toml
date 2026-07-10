@@ -1,6 +1,6 @@
 [package]
 name = "gsplat-ffi-c"
-version = "0.1.0"
+version = "0.1.1"
 description = "Small C ABI over the gsplat-rs renderer and validation surface paths."
 readme = "README.md"
 keywords = ["gaussian-splatting", "ffi", "c-abi", "rendering"]
@@ -16,8 +16,8 @@ rust-version.workspace = true
 crate-type = ["rlib", "cdylib", "staticlib"]
 
 [dependencies]
-gsplat-core = { path = "../gsplat-core", version = "0.1.0" }
-gsplat-io-ply = { path = "../gsplat-io-ply", version = "0.1.0" }
-gsplat-render-wgpu = { path = "../gsplat-render-wgpu", version = "0.1.0" }
-gsplat-sort = { path = "../gsplat-sort", version = "0.1.0" }
+gsplat-core = { path = "../gsplat-core", version = "0.1.1" }
+gsplat-io-ply = { path = "../gsplat-io-ply", version = "0.1.1" }
+gsplat-render-wgpu = { path = "../gsplat-render-wgpu", version = "0.1.1" }
+gsplat-sort = { path = "../gsplat-sort", version = "0.1.1" }
 wgpu.workspace = true

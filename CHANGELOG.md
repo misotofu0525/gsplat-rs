@@ -8,6 +8,8 @@ and this project adheres to
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-07-10
+
 ### Added
 
 - Open-source maintenance docs: `CONTRIBUTING.md`, `SECURITY.md`, issue
@@ -57,3 +59,8 @@ and this project adheres to
   functions to `GSPLAT_ERROR_INTERNAL` with a thread-local detail message.
 - Updated `crossbeam-epoch` to 0.9.20 for `RUSTSEC-2026-0204` and documented
   scoped upstream-blocked advisory exceptions in `deny.toml`.
+
+### Fixed
+
+- Made release version validation portable to stock GitHub-hosted runners by
+  using POSIX `grep` instead of assuming `ripgrep` is preinstalled.
