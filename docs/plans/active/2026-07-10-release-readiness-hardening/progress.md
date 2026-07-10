@@ -117,10 +117,13 @@
   - Updated PR #13 to `Prepare gsplat-rs v0.1.0 prerelease`, replaced its body with the complete safety/release scope and current verification evidence, and marked it ready for review.
   - Used the first hosted CI run as feedback: dependency policy, Mesa Vulkan setup, and Metal pixel conformance passed, but checkout v4 emitted a Node 20 deprecation annotation.
   - Refreshed all JavaScript GitHub Actions to their current Node 24 releases while retaining immutable full-SHA pins.
+  - Verified the final PR head in both pull-request run `29074738616` and branch run `29074736895`; Linux, macOS/Swift, and dependency-policy jobs all passed.
+  - Squash-merged PR #13 into `main` as `63cd68c`, then verified main run `29075133347` passed all required jobs.
+  - Enabled private vulnerability reporting and protected `main` with strict GitHub Actions checks, one approving review, stale-review dismissal, resolved conversations, and force-push/deletion prevention.
+  - Created and locally verified an SSH-signed `v0.1.0` tag, then preserved it after release run `29075529426` exposed a runner portability defect in the version script.
+  - Replaced the release script's undeclared `rg` dependency with stock-runner `grep` and bumped all Cargo, Web, and Android package versions to patch release `0.1.1` as required by the immutable-tag rollback policy.
 - Remaining external evidence:
-  - Fresh GitHub CI/tag workflow execution requires committing and pushing this work.
-  - The 1800-second stability bar is enforced in the tag workflow; the local preflight covered 60 seconds.
-  - Private vulnerability reporting and protected-main settings remain unchanged pending explicit authorization.
+  - Patch release `v0.1.1` must pass protected-branch CI, the tag workflow's 1800-second stability gate, all platform packaging jobs, and final artifact checksum verification.
 
 ## Test Results
 
@@ -139,6 +142,12 @@
 | Release-mode benchmark with 120 frames | GPU completion is measured and portable threshold passes | final source: submit 0.4667 ms; GPU wait 1.7372 ms; GPU-complete 2.2042 ms; threshold 250 ms | pass |
 | `cargo deny check --hide-inclusion-graph` | Advisories, licenses, bans, and sources satisfy documented policy | all four checks passed; duplicate versions remain warnings | pass |
 | `RELEASE_VERSION=0.1.0 bash tests/release/check-version.sh` | Cargo/Web/Android/API versions agree | passed | pass |
+| `RELEASE_VERSION=0.1.1 bash tests/release/check-version.sh` | Portable release check accepts the patch versions without `rg` | passed | pass |
+| `cargo check --workspace` after patch bump | All local workspace crates resolve as `0.1.1` | passed | pass |
+| `npm --prefix packages/web test` after patch bump | Web wrapper remains correct and reports package `0.1.1` | 6 passed, 0 failed | pass |
+| PR #13 final hosted CI | Both push and PR events pass Linux, macOS/Swift, and dependency policy | runs `29074736895` and `29074738616` passed | pass |
+| Merged `main` hosted CI | Exact squash commit passes protected-branch contexts | run `29075133347` passed | pass |
+| First tag release workflow | Produce prerelease artifacts for signed `v0.1.0` | version check failed because `rg` was absent; tag retained immutably | fail, superseded by `v0.1.1` |
 | Workflow YAML parse + action-ref scan | YAML is valid and no mutable action tags remain | four workflows parsed; all actions SHA-pinned | pass |
 | Full Rust hygiene/test/doc matrix | fmt, warnings-as-errors Clippy/rustdoc, and workspace tests pass | 86 Rust tests passed; no lint/doc warnings | pass |
 | Web build/package matrix | JS, WASM target, release WASM/ESM build, tests, and dry pack pass | 6 JS tests; 8-file 0.1.0 package generated | pass |
@@ -172,13 +181,16 @@
 | 2026-07-10 | Optional local Linux-container verification could not start because the Docker/Colima daemon was not running | 1 | Did not mutate local daemon state; added the explicit Mesa Vulkan runtime to Linux CI and left fresh hosted-runner proof for the pushed workflow. |
 | 2026-07-10 | GitHub PR update returned 422 because `maintainer_can_modify` is only valid for cross-repository PRs | 1 | The title/body update was applied; omitted that field from subsequent same-repository operations and successfully marked PR #13 ready. |
 | 2026-07-10 | Hosted CI annotated pinned checkout v4 because its Node 20 runtime is deprecated and forcibly upgraded | 1 | Verified current official releases and upgraded checkout/setup/artifact/release actions to Node 24 versions pinned by full commit SHA. |
+| 2026-07-10 | `gh run watch` briefly failed with an API `EOF` while the workflow itself continued normally | 1 | Switched to single-run status polling; the underlying PR run completed successfully. |
+| 2026-07-10 | Release run `29075529426` failed at version consistency because stock Ubuntu lacked `rg` | 1 | Preserved `v0.1.0`, replaced `rg` with `grep`, bumped package versions to `0.1.1`, and reran focused local verification before the patch-release PR. |
+| 2026-07-10 | `npm --prefix packages/web pack --dry-run` resolved `package.json` from the repository root with this npm invocation | 1 | Ran the canonical command from `packages/web/`; the `0.1.1` eight-file tarball dry-run passed. |
 
 ## 5-Question Reboot Check
 
 | Question | Answer |
 |----------|--------|
 | Where am I? | Phase 6: full verification and final scope review. |
-| Where am I going? | Input/FFI safety, renderer semantics, executable conformance, release hardening, full verification. |
+| Where am I going? | Complete the protected-branch patch fix, signed `v0.1.1` release, artifact verification, and plan archival. |
 | What's the goal? | A safe, verifiable, adoptable prerelease with truthful Rust/C render contracts. |
 | What have I learned? | See `findings.md`. |
 | What have I done? | Completed code safety, renderer truthfulness, executable conformance/perf, supply-chain policy, and release/adoption documentation. |
