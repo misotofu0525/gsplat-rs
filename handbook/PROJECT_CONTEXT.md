@@ -5,6 +5,9 @@
 - `gsplat-rs` is a cross-platform Gaussian Splatting rendering library built with Rust + `wgpu`.
 - The repo serves three audiences: Rust library consumers, native integrators through the C ABI, and maintainers validating the stack through examples and tooling.
 - The project is still on the `0.1.x` line, with a deliberately small release surface.
+- The latest verified GitHub prerelease is `v0.1.2`; it provides checksum-listed
+  Android AAR, Apple XCFramework ZIP, and Web npm-compatible tarball artifacts
+  without publishing them to package registries.
 
 ## Canonical Docs
 
@@ -99,14 +102,13 @@ For the broader command matrix, use `VERIFICATION.md`.
 
 ## Known Open Gaps
 
-- Android external distribution: the local AAR is buildable but not published to
-  Maven, and the current package slice is `arm64-v8a` only.
-- iOS external distribution: `GsplatKit` is still a local binary Swift package
-  wrapper backed by a locally built XCFramework; no remote binary SwiftPM
-  artifact is published yet.
-- Web external distribution: `@gsplat-rs/web` has local build, test, and
-  `npm pack --dry-run` coverage, but it is not published to npm or treated as a
-  stable v0.1 public API.
+- Android external distribution: the GitHub prerelease attaches an AAR, but it
+  is not published to Maven and the current package slice is `arm64-v8a` only.
+- iOS external distribution: the GitHub prerelease attaches an XCFramework ZIP,
+  but `GsplatKit` is not a remote binary SwiftPM package.
+- Web external distribution: the GitHub prerelease attaches an npm-compatible
+  tarball, but `@gsplat-rs/web` is not published to npm or treated as a stable
+  v0.1 public API.
 - Device runtime evidence: the latest validation covered Android APK/AAR build,
   Android true-device launch and benchmark (an Android test device, flowers
   dataset), iOS simulator app launch, iOS simulator smoke, iOS device app

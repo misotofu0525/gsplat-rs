@@ -33,9 +33,9 @@
 - Files created/modified:
   - `crates/gsplat-io-ply/src/lib.rs`
   - `crates/gsplat-ffi-c/src/lib.rs`
-  - `docs/plans/active/2026-07-10-release-readiness-hardening/task_plan.md`
-  - `docs/plans/active/2026-07-10-release-readiness-hardening/findings.md`
-  - `docs/plans/active/2026-07-10-release-readiness-hardening/progress.md`
+  - `docs/plans/completed/2026-07-10-release-readiness-hardening/task_plan.md`
+  - `docs/plans/completed/2026-07-10-release-readiness-hardening/findings.md`
+  - `docs/plans/completed/2026-07-10-release-readiness-hardening/progress.md`
 
 ### Phase 3: Renderer Outcome Semantics
 
@@ -95,7 +95,7 @@
 
 ### Phase 6: Full Verification and Delivery
 
-- **Status:** in_progress
+- **Status:** complete
 - Actions taken:
   - Ran the complete local automated Rust hygiene/test/doc matrix after the dependency and renderer changes.
   - Built and dry-packed the Web WASM and ESM distributions.
@@ -126,8 +126,16 @@
   - Created and locally verified signed tag `v0.1.1`; release run `29076553454` proved the version-script fix, core checks, and dependency policy, then exposed two independent fresh-checkout packaging assumptions.
   - Cancelled the remaining long-running jobs after Android and Web had deterministically failed, preserving runner capacity while retaining both job logs.
   - Made Gradle bootstrap create the repository target directory and moved npm packing into the Web package working directory; bumped the next immutable patch candidate to `0.1.2`.
-- Remaining external evidence:
-  - Patch release `v0.1.2` must pass protected-branch CI, the tag workflow's 1800-second stability gate, all platform packaging jobs, and final artifact checksum verification.
+  - Merged PR #15 as `7cf6098` after both push and pull-request CI passed, then verified main run `29077341169` passed all protected contexts.
+  - Created and locally verified the SSH-signed `v0.1.2` tag at `7cf6098`.
+  - Verified release run `29077855574` passed core checks, dependency policy, isolated Android/Web/Apple packaging, the 1800-second GPU-complete stability gate, and final prerelease creation.
+  - Recorded hosted stability evidence on Apple Paravirtual/Metal: 170,001 frames at 94.44 FPS with 1,504 KiB RSS growth against the 65,536 KiB limit.
+  - Downloaded the four release assets, verified every payload against `SHA256SUMS`, confirmed both AAR/XCFramework archive integrity, and confirmed the Web tarball reports `@gsplat-rs/web` `0.1.2`.
+  - Re-ran the current-docs-sync audit; updated only the project release state and post-release checksum command because routing, architecture, roadmap boundaries, and canonical verification paths remain accurate.
+  - Archived this completed plan bundle under `docs/plans/completed/`.
+- Completion evidence:
+  - GitHub prerelease: `https://github.com/misotofu0525/gsplat-rs/releases/tag/v0.1.2`
+  - Successful tag workflow: `https://github.com/misotofu0525/gsplat-rs/actions/runs/29077855574`
 
 ## Test Results
 
@@ -157,6 +165,12 @@
 | `cargo check --workspace` after `0.1.2` bump | All local workspace crates and lockfile resolve consistently | passed | pass |
 | Web release build and package-directory dry-pack | Produce the expected eight-file `gsplat-rs-web-0.1.2.tgz` layout at the workflow destination | passed | pass |
 | Release workflow YAML parse | Split Web pack step and Android bootstrap changes remain valid workflow syntax | all four workflow files parsed | pass |
+| PR #15 final hosted CI | Both push and PR events pass Linux, macOS/Swift, and dependency policy | runs `29076938482` and `29076947720` passed | pass |
+| Final `main` hosted CI | Exact `v0.1.2` release commit passes all protected contexts | run `29077341169` passed | pass |
+| `v0.1.2` tag release workflow | All seven release jobs complete successfully | run `29077855574` passed | pass |
+| Hosted 1800-second release stability | GPU-complete workload stays below 64 MiB RSS growth | 170,001 frames; 94.44 FPS; 1,504 KiB growth | pass |
+| Downloaded release artifacts | AAR, XCFramework ZIP, Web tgz, and checksum manifest are complete and intact | three payload checksums OK; both ZIP containers valid; Web version `0.1.2` | pass |
+| GitHub repository safety gates | Private reports and protected-main policy match the documented release preconditions | enabled; strict three-check policy, one review, resolved discussions, no force-push/deletion | pass |
 | Workflow YAML parse + action-ref scan | YAML is valid and no mutable action tags remain | four workflows parsed; all actions SHA-pinned | pass |
 | Full Rust hygiene/test/doc matrix | fmt, warnings-as-errors Clippy/rustdoc, and workspace tests pass | 86 Rust tests passed; no lint/doc warnings | pass |
 | Web build/package matrix | JS, WASM target, release WASM/ESM build, tests, and dry pack pass | 6 JS tests; 8-file 0.1.0 package generated | pass |
@@ -195,13 +209,14 @@
 | 2026-07-10 | `npm --prefix packages/web pack --dry-run` resolved `package.json` from the repository root with this npm invocation | 1 | Ran the canonical command from `packages/web/`; the `0.1.1` eight-file tarball dry-run passed. |
 | 2026-07-10 | Release Android job failed with curl 23 because Gradle bootstrap wrote into a missing root `target/` directory | 1 | Added explicit target-directory creation before the checksum-pinned Gradle download. |
 | 2026-07-10 | Release Web job built WASM successfully, then npm resolved the nonexistent root `package.json` | 1 | Split packing into a package-directory step that writes the tarball to `GITHUB_WORKSPACE`. |
+| 2026-07-10 | Post-archive stale-path scan found three historical references to the former active plan location | 1 | Updated the references to the completed plan path and reran the structural scan. |
 
 ## 5-Question Reboot Check
 
 | Question | Answer |
 |----------|--------|
-| Where am I? | Phase 6: full verification and final scope review. |
-| Where am I going? | Complete the protected-branch patch fix, signed `v0.1.1` release, artifact verification, and plan archival. |
+| Where am I? | Complete: verified `v0.1.2` prerelease and archived rollout evidence. |
+| Where am I going? | Return to the roadmap's post-release conformance, device-proof, and SDK-distribution gaps. |
 | What's the goal? | A safe, verifiable, adoptable prerelease with truthful Rust/C render contracts. |
 | What have I learned? | See `findings.md`. |
-| What have I done? | Completed code safety, renderer truthfulness, executable conformance/perf, supply-chain policy, and release/adoption documentation. |
+| What have I done? | Completed code safety, renderer truthfulness, conformance/perf, supply-chain policy, protected repository settings, and a checksum-verified `v0.1.2` prerelease. |

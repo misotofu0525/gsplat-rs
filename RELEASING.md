@@ -44,6 +44,20 @@ Release. It attaches:
 
 Verify the GitHub Release contains all three artifacts and generated notes.
 Verify each artifact against the attached `SHA256SUMS` file.
+
+```bash
+VERSION=0.1.2
+VERIFY_DIR="target/release-verify-v$VERSION"
+gh release download "v$VERSION" --dir "$VERIFY_DIR"
+(cd "$VERIFY_DIR" && {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum -c SHA256SUMS
+  else
+    shasum -a 256 -c SHA256SUMS
+  fi
+})
+```
+
 Do not describe these files as Maven, SwiftPM, npm, or crates.io publication;
 they remain direct prerelease artifacts.
 

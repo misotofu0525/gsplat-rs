@@ -8,7 +8,7 @@ proved to produce pixels, and whose release path matches the documented bar.
 
 ## Current Phase
 
-Phase 6
+Complete
 
 ## Phases
 
@@ -59,10 +59,10 @@ Phase 6
 
 - [x] Run all relevant local Rust, FFI, Web, packaging, and platform smoke paths.
 - [x] Run the complete 1800-second GPU-complete stability bar locally.
-- [ ] Verify the fresh CI/release evidence covers every documented requirement.
+- [x] Verify the fresh CI/release evidence covers every documented requirement.
 - [x] Confirm the worktree diff contains no unrelated changes.
-- [ ] Archive this plan bundle only after the full objective is complete.
-- **Status:** in_progress
+- [x] Archive this plan bundle only after the full objective is complete.
+- **Status:** complete
 
 ## Decisions Made
 
