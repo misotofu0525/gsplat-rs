@@ -22,17 +22,7 @@ class GsplatSurfaceRenderer private constructor(
         synchronized(lock) {
             checkOpen()
             checkResult(NativeBridge.setSurfaceSortInterval(nativeHandle, options.sortInterval))
-            checkResult(NativeBridge.setSurfaceGpuPreprojectEnabled(nativeHandle, options.gpuPreproject))
-            checkResult(
-                NativeBridge.setSurfaceGpuPreprojectDoubleBufferEnabled(
-                    nativeHandle,
-                    options.gpuPreprojectDoubleBuffer
-                )
-            )
-            checkResult(NativeBridge.setSurfaceStaticDirectEnabled(nativeHandle, options.staticDirect))
             checkResult(NativeBridge.setSurfaceAsyncSortEnabled(nativeHandle, options.asyncSort))
-            checkResult(NativeBridge.setSurfaceAsyncGeometryEnabled(nativeHandle, options.asyncGeometry))
-            checkResult(NativeBridge.setSurfaceInstanceBufferCount(nativeHandle, options.instanceBufferCount))
             checkResult(NativeBridge.setSurfaceFrameLatency(nativeHandle, options.frameLatency))
         }
     }

@@ -37,7 +37,7 @@ The library module namespace is `com.gsplat.android`. It packages the generated
 - `NativeBridge`: low-level JNI calls matching the C ABI
 - `GsplatAndroidVersion`: runtime ABI compatibility guard
 - `GsplatSurfaceRenderer`: typed Kotlin handle wrapper
-- `GsplatSurfaceOptions`: Surface A/B option bundle
+- `GsplatSurfaceOptions`: CPU sort cadence, async sort, and frame-latency options
 - `GsplatSurfaceStats`: typed frame stats
 - `GsplatException`: readable native error wrapper
 
@@ -70,6 +70,11 @@ renderer.close()
 you call `NativeBridge` directly, keep each native Surface renderer handle owned
 by one serialized thread or queue and destroy it only after in-flight work has
 returned.
+
+The C handle is an adapter over the shared Rust `SurfaceRenderSession`, not a
+separate Android scheduler. CPU sort cadence, compact order uploads, direct
+drawing, and optional native async sorting therefore follow the same state
+machine as Web, iOS, and desktop Surface rendering.
 
 ## 2) Host smoke (JNI)
 
@@ -148,9 +153,8 @@ Notes:
 - Imported files come from the Android system picker as `content://` URIs and are copied into `files/imported_scene.ply` before crossing the JNI/C ABI boundary, which still receives a normal local file path.
 - On Android emulator, the `SurfaceView` buffer is capped to a 1600px maximum side. The Surface presenter does not sample or cap the sorted splat list; visual stability is preferred over artificial throughput wins.
 - The compact overlay reports the live splat count and frame time. The `Studio` panel retains `drawn=<surface_instances>/<visible_instances>` and the full Android Surface diagnostics.
-- The Surface A/B options in `GsplatSurfaceOptions` are experimental benchmark
-  knobs. Leave their defaults in normal integrations unless you are comparing a
-  specific path.
+- `GsplatSurfaceOptions` does not select a geometry path; Android always uses
+  the shared resident-scene direct renderer.
 - Maven publishing, additional ABIs, and a higher-level `GsplatSurfaceView`
   are intentionally not solved here yet. Future Android SDK work should keep
   wrapping the same C ABI rather than introduce a separate render contract.
@@ -178,46 +182,23 @@ For repeatable Surface performance checks, launch with benchmark extras:
   --ei gsplat_benchmark_warmup_frames 10 \
   --ef gsplat_benchmark_yaw_step 0.001 \
   --ei gsplat_surface_sort_interval 2 \
-  --ez gsplat_surface_gpu_preproject false \
-  --ez gsplat_surface_gpu_preproject_double_buffer false \
-  --ez gsplat_surface_static_direct true \
   --ez gsplat_surface_async_sort false \
-  --ez gsplat_surface_async_geometry false \
-  --ei gsplat_surface_instance_buffers 1 \
   --ei gsplat_surface_frame_latency 2
 "$ADB" logcat -d -s GsplatExample:I | grep BENCHMARK_RESULT
 ```
 
-Benchmark mode forces a tiny camera orbit each frame so it measures sorted
-Surface rebuild cost, not cached static presentation.
+Benchmark mode forces a tiny camera orbit each frame so it measures the shared
+CPU-sort + direct-render path rather than stationary presentation.
 `gsplat_surface_sort_interval` controls how often the Surface path refreshes
 depth sorting during camera changes. The Android example default is `2`, which
-reuses the previous sorted index order for one camera-change frame while still
-rebuilding current-camera geometry every frame; use `1` to force sorting every
-frame for comparison.
-`gsplat_surface_gpu_preproject=true` enables an experimental path that uploads
-only sorted splat ids and generates projected Surface geometry from persistent
-GPU source buffers. It is off by default because the current Android benchmark
-uses it only for A/B validation.
-`gsplat_surface_gpu_preproject_double_buffer=true` makes that GPU preproject
-path render the latest completed preproject buffer while submitting the next
-preproject compute pass. It requires `gsplat_surface_gpu_preproject=true` and
-`gsplat_surface_instance_buffers=2` or `3`; it is for A/B checks because it has
-one-frame geometry latency and does not currently beat the default path.
-`gsplat_surface_static_direct` controls the default render path: the vertex
-shader draws from sorted splat ids and persistent GPU source buffers directly,
-removing projected-instance upload. It is on by default because it benchmarks
-fastest on device after the 2026-06 shader optimizations; set it to `false` to
-fall back to the CPU instance-build path for A/B checks.
+reuses the previous sorted index order for one camera-change frame while the
+vertex shader still projects the current camera; use `1` to force sorting every
+camera-change frame for comparison.
+The direct pipeline always draws from sorted splat IDs and persistent GPU
+source buffers, so Android has no CPU-instance or compute-preproject A/B mode.
 `gsplat_surface_async_sort=true` enables an experimental background sort worker
 that double-buffers the latest completed order while the render thread continues
 with the previous order. It keeps the full splat count and is intended for
 interaction A/B checks.
-`gsplat_surface_async_geometry=true` enables an experimental background Surface
-instance builder. It keeps the full splat count but renders the latest completed
-geometry, so it is not a default quality path.
-`gsplat_surface_instance_buffers` controls the optional Surface instance buffer
-ring used by the A/B paths. The default is `1`; higher values are allocated
-only when requested.
 `gsplat_surface_frame_latency` maps to wgpu
 `desired_maximum_frame_latency`. The default is `2`.

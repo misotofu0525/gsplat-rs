@@ -54,13 +54,27 @@
   Surface clients use `Renderer::new_for_surface` or
   `Renderer::with_config_for_surface`, then let `SurfacePresenter` acquire the
   adapter/device compatible with the platform surface
-  dimension and instance-buffer limits are checked before `wgpu` resource
-  creation, and GPU submission/wait failures remain structured errors
+  render dimensions are checked before `wgpu` resource creation, and GPU
+  submission/wait failures remain structured errors
+
+- Shared Surface frame flow:
+  `SurfaceRenderSession` in
+  `crates/gsplat-render-wgpu/src/surface_session.rs` owns `Renderer`,
+  `SurfacePresenter`, camera revisions, CPU sort cadence, compact order-upload
+  state, and frame statistics
+  changed-camera frames advance the default interval schedule; identical
+  redraws do not repeatedly sort
+  PLY-derived positions, covariance terms, opacity, DC color, and SH data stay
+  GPU-resident; sort refreshes upload only sorted `u32` source IDs
+  every acquired swapchain image is rendered by the direct vertex/fragment
+  pipeline even when the scene and order buffers are already current
 
 - Native integration flow:
   starts from C, Swift, or Kotlin/JNI host entrypoints
   crosses `crates/gsplat-ffi-c/include/gsplat.h` and `crates/gsplat-ffi-c/src/lib.rs`
-  ends in the shared renderer and stats path
+  maps active v0.1 controls onto `SurfaceRenderSession` without widening the C
+  ABI; removed path-selection setters remain successful compatibility no-ops,
+  while native async CPU sorting stays behind the shared session
   keeps each native handle owned by one serialized thread or queue; wrapper
   APIs add their own locking, while direct C/JNI callers must provide the same
   serialization
@@ -94,19 +108,19 @@
   parses the PLY with `gsplat-io-ply::parse_ply_bytes`
   loads the scene into `gsplat-render-wgpu::Renderer`
   creates a browser canvas `wgpu::Surface` through `SurfacePresenter::from_canvas`
-  defaults to `SurfaceRasterPath::CpuInstances` (CPU-built Surface ellipse
-  instances each sort refresh)
-  opt-in `SurfaceRasterPath::SortedIndexDirect` keeps scene data GPU-resident
-  and uploads only sorted `u32` indices per refresh (`createRendererWithOptions`
-  / `sortedIndexDirect`, same shader family as mobile FFI `static_direct`)
-  sorting remains CPU radix for both Surface paths in this slice
+  hands both objects to `SurfaceRenderSession`, so the browser wrapper does not
+  own a second frame scheduler or sorted-index copy
+  always uses resident scene buffers plus compact sorted IDs; the legacy
+  `sortedIndexDirect` Web option/setter remains a direct-path compatibility shim
+  sorting remains CPU radix so Web shares the same production policy as native
 
-- Desktop offscreen raster paths:
-  `OffscreenRasterPath::CpuInstances` (default) builds and uploads full
-  `GpuInstance` buffers each frame
-  opt-in `OffscreenRasterPath::SortedIndexGpuPreproject` keeps scene data on
-  GPU and uses `GpuInstancePreprocessor` with sorted indices
-  (`desktop-example` / `bench-runner` `--sorted-index-direct`)
+- Desktop rendering flows:
+  the interactive viewer uses the same `SurfaceRenderSession` as Web/mobile;
+  direct sorted indices are its only geometry pipeline
+  native offscreen rendering uses the same direct shader/resource layout and
+  reads back its texture for PNG/conformance output
+  CPU-projected `GpuInstance` values remain only as a reference oracle for
+  conformance tests, not as a selectable runtime renderer
 
 - Web example flow:
   starts at `examples/web/index.html`
@@ -134,6 +148,10 @@
   decoded-scene budgets before allocation.
 - An offscreen renderer must not report successful rendering without a real GPU
   raster path; Surface-only construction is explicit.
+- Surface frame scheduling belongs in `SurfaceRenderSession`, not in Web, FFI,
+  desktop, Android, or Apple wrapper-specific state machines.
+- CPU depth sorting is shared by the sole production geometry pipeline across
+  Web, desktop, Android, and Apple; projection and SH evaluation stay on GPU.
 - PLY input normalization is not optional: quaternion remapping and `RDF -> RUF` conversion happen at load time.
 - Mobile examples are integration validators. Android and Apple packaging live
   under `bindings/`, but neither path is a published product SDK yet.
@@ -144,7 +162,8 @@
 
 ## Hotspots
 
-- `crates/gsplat-render-wgpu/src/lib.rs`: render behavior, GPU orchestration, and perf-sensitive logic
+- `crates/gsplat-render-wgpu/src/lib.rs`: resident direct-scene resources, presenter/offscreen rendering, CPU reference projection, and perf-sensitive GPU logic
+- `crates/gsplat-render-wgpu/src/surface_session.rs`: shared Surface lifecycle, CPU sort policy, order-upload state, native async sorting, and phase timings
 - `crates/gsplat-sort/src/lib.rs`: ordering correctness and performance
 - `crates/gsplat-ffi-c/src/lib.rs` and `crates/gsplat-ffi-c/include/gsplat.h`: integration boundary stability
 - `crates/gsplat-web/src/`: browser `wasm-bindgen` API over the shared Surface renderer

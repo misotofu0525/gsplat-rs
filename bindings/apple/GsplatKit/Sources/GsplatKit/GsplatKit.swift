@@ -205,33 +205,16 @@ public final class GsplatContextRenderer {
 #if canImport(UIKit)
 public struct GsplatSurfaceOptions: Equatable {
     public var sortInterval: UInt32
-    // Experimental benchmark knobs; keep defaults for stable integrations.
-    public var gpuPreproject: Bool
-    public var gpuPreprojectDoubleBuffer: Bool
-    // Static-direct is the default render path (fastest on device benchmarks).
-    public var staticDirect: Bool
     public var asyncSort: Bool
-    public var asyncGeometry: Bool
-    public var instanceBuffers: UInt32
     public var frameLatency: UInt32
 
     public init(
         sortInterval: UInt32 = 2,
-        gpuPreproject: Bool = false,
-        gpuPreprojectDoubleBuffer: Bool = false,
-        staticDirect: Bool = true,
         asyncSort: Bool = false,
-        asyncGeometry: Bool = false,
-        instanceBuffers: UInt32 = 1,
         frameLatency: UInt32 = 2
     ) {
         self.sortInterval = sortInterval
-        self.gpuPreproject = gpuPreproject
-        self.gpuPreprojectDoubleBuffer = gpuPreprojectDoubleBuffer
-        self.staticDirect = staticDirect
         self.asyncSort = asyncSort
-        self.asyncGeometry = asyncGeometry
-        self.instanceBuffers = instanceBuffers
         self.frameLatency = frameLatency
     }
 }
@@ -370,13 +353,6 @@ public final class GsplatUIKitSurfaceRenderer {
                 detail: "sortInterval must be positive"
             )
         }
-        guard options.instanceBuffers > 0 else {
-            throw GsplatKitError(
-                code: gsplatInvalidArgument,
-                operation: "GsplatSurfaceOptions",
-                detail: "instanceBuffers must be positive"
-            )
-        }
         guard options.frameLatency > 0 else {
             throw GsplatKitError(
                 code: gsplatInvalidArgument,
@@ -391,31 +367,8 @@ public final class GsplatUIKitSurfaceRenderer {
                 gsplat_surface_renderer_set_sort_interval(renderer, options.sortInterval)
             ),
             (
-                "gsplat_surface_renderer_set_gpu_preproject",
-                gsplat_surface_renderer_set_gpu_preproject(renderer, options.gpuPreproject ? 1 : 0)
-            ),
-            (
-                "gsplat_surface_renderer_set_gpu_preproject_double_buffer",
-                gsplat_surface_renderer_set_gpu_preproject_double_buffer(
-                    renderer,
-                    options.gpuPreprojectDoubleBuffer ? 1 : 0
-                )
-            ),
-            (
-                "gsplat_surface_renderer_set_static_direct",
-                gsplat_surface_renderer_set_static_direct(renderer, options.staticDirect ? 1 : 0)
-            ),
-            (
                 "gsplat_surface_renderer_set_async_sort",
                 gsplat_surface_renderer_set_async_sort(renderer, options.asyncSort ? 1 : 0)
-            ),
-            (
-                "gsplat_surface_renderer_set_async_geometry",
-                gsplat_surface_renderer_set_async_geometry(renderer, options.asyncGeometry ? 1 : 0)
-            ),
-            (
-                "gsplat_surface_renderer_set_instance_buffer_count",
-                gsplat_surface_renderer_set_instance_buffer_count(renderer, options.instanceBuffers)
             ),
             (
                 "gsplat_surface_renderer_set_frame_latency",

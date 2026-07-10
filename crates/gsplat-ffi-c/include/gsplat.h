@@ -104,7 +104,10 @@ int32_t gsplat_surface_renderer_resize(
 int32_t gsplat_surface_renderer_set_sort_interval(
     GsplatSurfaceRenderer *renderer,
     uint32_t interval);
-/* Experimental benchmark knobs. Keep stable integrations on default values. */
+/*
+ * v0.1 ABI compatibility no-ops. Rendering always uses the resident-scene
+ * direct sorted-index pipeline; new integrations should not call these.
+ */
 int32_t gsplat_surface_renderer_set_gpu_preproject(
     GsplatSurfaceRenderer *renderer,
     uint32_t enabled);
@@ -117,9 +120,11 @@ int32_t gsplat_surface_renderer_set_static_direct(
 int32_t gsplat_surface_renderer_set_async_sort(
     GsplatSurfaceRenderer *renderer,
     uint32_t enabled);
+/* v0.1 ABI compatibility no-op; CPU geometry expansion was removed. */
 int32_t gsplat_surface_renderer_set_async_geometry(
     GsplatSurfaceRenderer *renderer,
     uint32_t enabled);
+/* v0.1 ABI compatibility no-op; direct rendering has no instance-buffer ring. */
 int32_t gsplat_surface_renderer_set_instance_buffer_count(
     GsplatSurfaceRenderer *renderer,
     uint32_t count);

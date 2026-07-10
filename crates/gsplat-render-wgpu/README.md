@@ -3,8 +3,8 @@
 `wgpu` renderer and surface presentation paths for `gsplat-rs`.
 
 This is the rendering heart of the workspace. It implements the release-gated
-`SortedAlpha` path: per-frame preprocessing, depth sorting (via `gsplat-sort`),
-and instanced splat rasterization with WGSL shaders.
+`SortedAlpha` path: CPU visibility/depth sorting (via `gsplat-sort`) followed by
+direct GPU projection and splat rasterization from resident scene buffers.
 
 Main entry points:
 
@@ -14,10 +14,11 @@ Main entry points:
 - `Renderer::new_for_surface` / `Renderer::with_config_for_surface`: scene,
   preprocessing, and sorting state for a separate `SurfacePresenter`; these
   constructors intentionally do not create an offscreen GPU device
-- `SurfacePresenter` / `SurfaceInstanceBuilder`: realtime presentation onto a
-  native or browser surface (Android `Surface`, iOS `CAMetalLayer`, HTML
-  canvas)
-- `GpuInstancePreprocessor`: GPU-side instance preprocessing helpers
+- `SurfaceRenderSession` / `SurfacePresenter`: shared CPU-sort, compact-order
+  upload, and realtime presentation onto Android `Surface`, iOS
+  `CAMetalLayer`, desktop windows, or an HTML canvas
+- `GpuInstance` CPU projection helpers: reference/conformance oracle only; they
+  are not a selectable production renderer
 
 Shader sources live in [`shaders/`](shaders/) and are documented in
 [`shaders/README.md`](shaders/README.md).

@@ -84,10 +84,6 @@
                   <output id="sortIntervalValue">2</output>
                   <input id="sortInterval" type="range" min="1" max="8" step="1" value="2" />
                 </label>
-                <label class="toggle-control">
-                  <span>Sorted-index direct (GPU resident)</span>
-                  <input id="sortedIndexDirect" type="checkbox" />
-                </label>
                 <label class="range-control">
                   <span>Splat scale</span>
                   <output id="pointScaleValue">1.20</output>
@@ -134,7 +130,7 @@
                   <div><dt>Frames</dt><dd id="frameCount">-</dd></div>
                   <div><dt>Preprocess</dt><dd id="preprocessMs">-</dd></div>
                   <div><dt>Sort</dt><dd id="sortMs">-</dd></div>
-                  <div><dt>Raster</dt><dd id="uploadMs">-</dd></div>
+                  <div><dt>Geometry / submit</dt><dd id="geometrySubmitMs">-</dd></div>
                   <div><dt>Call</dt><dd id="callMs">-</dd></div>
                   <div><dt>Frame</dt><dd id="frameMs">-</dd></div>
                 </dl>

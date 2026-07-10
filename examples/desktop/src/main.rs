@@ -15,16 +15,16 @@ use gsplat_core::{Camera, RenderMode, RendererConfig, Vec3f};
 #[cfg(feature = "interactive-viewer")]
 use gsplat_core::{CameraIntrinsics, CameraPose};
 use gsplat_io_ply::load_ply;
-use gsplat_render_wgpu::{OffscreenRasterPath, Renderer};
+use gsplat_render_wgpu::Renderer;
 #[cfg(feature = "interactive-viewer")]
-use gsplat_render_wgpu::{GpuInstance, GpuInstancePreprocessor};
+use gsplat_render_wgpu::{SurfacePresenter, SurfaceRenderSession};
 #[cfg(feature = "interactive-viewer")]
 use winit::{
     dpi::PhysicalSize,
     event::{ElementState, Event, MouseButton, MouseScrollDelta, WindowEvent},
     event_loop::EventLoop,
     keyboard::{KeyCode, PhysicalKey},
-    window::{Window, WindowAttributes},
+    window::WindowAttributes,
 };
 
 fn main() {
@@ -52,7 +52,6 @@ struct Args {
     yaw_deg: Option<f32>,
     interactive: bool,
     png_out: Option<PathBuf>,
-    sorted_index_direct: bool,
 }
 
 impl Args {
@@ -68,7 +67,6 @@ impl Args {
         let mut yaw_deg: Option<f32> = None;
         let mut interactive = false;
         let mut png_out: Option<PathBuf> = None;
-        let mut sorted_index_direct = false;
 
         while let Some(arg) = args.next() {
             match arg.as_str() {
@@ -113,7 +111,6 @@ impl Args {
                     );
                 }
                 "--interactive" => interactive = true,
-                "--sorted-index-direct" => sorted_index_direct = true,
                 "--png" => {
                     let value = args
                         .next()
@@ -141,7 +138,6 @@ impl Args {
             yaw_deg,
             interactive,
             png_out,
-            sorted_index_direct,
         })
     }
 }
@@ -158,7 +154,6 @@ fn usage() -> String {
         "  --auto-camera    place camera based on dataset bounds",
         "  --yaw-deg A      set a fixed yaw angle in degrees for static frame rendering",
         "  --interactive    launch realtime on-screen viewer loop (feature: interactive-viewer)",
-        "  --sorted-index-direct  GPU-resident scene + sorted-index offscreen path (opt-in)",
         "  --png PATH       write the last rendered frame to PATH (requires GPU rasterizer)",
     ];
     lines.join("\n")
@@ -167,10 +162,12 @@ fn usage() -> String {
 fn run(args: Args) -> Result<(), String> {
     let loaded = load_ply(Path::new(&args.dataset_path)).map_err(|err| err.to_string())?;
 
-    let mut renderer = Renderer::with_config(args.config).map_err(|err| err.to_string())?;
-    if args.sorted_index_direct {
-        renderer.set_offscreen_raster_path(OffscreenRasterPath::SortedIndexGpuPreproject);
+    let mut renderer = if args.interactive {
+        Renderer::with_config_for_surface(args.config)
+    } else {
+        Renderer::with_config(args.config)
     }
+    .map_err(|err| err.to_string())?;
     renderer
         .load_scene(loaded.scene)
         .map_err(|err| err.to_string())?;
@@ -219,16 +216,13 @@ fn run_offscreen(args: &Args, mut renderer: Renderer, mut camera: Camera) -> Res
     println!("desktop-example ok");
     println!("dataset={}", args.dataset_path.display());
     println!("gpu_rasterizer={}", renderer.has_gpu_rasterizer());
-    println!(
-        "offscreen_raster_path={}",
-        renderer.offscreen_raster_path().as_str()
-    );
+    println!("offscreen_geometry_pipeline=sorted_index_direct");
     println!("frames={}", args.frames);
     println!("elapsed_ms={:.4}", elapsed.as_secs_f32() * 1000.0);
     println!("frame_ms={:.4}", stats.frame_ms);
     println!("preprocess_ms={:.4}", stats.preprocess_ms);
     println!("sort_ms={:.4}", stats.sort_ms);
-    println!("raster_ms={:.4}", stats.raster_ms);
+    println!("geometry_encode_submit_cpu_wall_ms={:.4}", stats.raster_ms);
     println!("visible_count={}", stats.visible_count);
     println!("drawn_count={}", stats.drawn_count);
 
@@ -236,7 +230,7 @@ fn run_offscreen(args: &Args, mut renderer: Renderer, mut camera: Camera) -> Res
 }
 
 #[cfg(feature = "interactive-viewer")]
-fn run_interactive(args: &Args, mut renderer: Renderer, camera: Camera) -> Result<(), String> {
+fn run_interactive(args: &Args, renderer: Renderer, camera: Camera) -> Result<(), String> {
     if args.png_out.is_some() {
         return Err("interactive mode does not support --png in surface-present path".to_owned());
     }
@@ -251,12 +245,22 @@ fn run_interactive(args: &Args, mut renderer: Renderer, camera: Camera) -> Resul
             )
             .map_err(|err| format!("window creation failed: {err}"))?,
     );
-    let mut presenter = pollster::block_on(SurfacePresenter::new(
+    let orbit_target = renderer
+        .scene()
+        .and_then(scene_center)
+        .unwrap_or(Vec3f::new(0.0, 0.0, 0.0));
+    let presenter = pollster::block_on(SurfacePresenter::from_window(
         window.clone(),
         args.config.width,
         args.config.height,
         &renderer,
-    ))?;
+    ))
+    .map_err(|err| err.to_string())?;
+    let mut session =
+        SurfaceRenderSession::new(renderer, presenter, camera).map_err(|err| err.to_string())?;
+    session
+        .set_sort_interval(1)
+        .map_err(|err| err.to_string())?;
 
     println!("interactive viewer controls:");
     println!("  mouse-left drag / arrow keys: orbit around scene");
@@ -264,10 +268,6 @@ fn run_interactive(args: &Args, mut renderer: Renderer, camera: Camera) -> Resul
     println!("  Q/E: down/up, Shift: faster, Ctrl: slower");
     println!("  Esc: exit");
 
-    let orbit_target = renderer
-        .scene()
-        .and_then(scene_center)
-        .unwrap_or(Vec3f::new(0.0, 0.0, 0.0));
     let mut controller = CameraController::new(camera, orbit_target);
     let mut input = InputState::default();
     let mut last_frame = Instant::now();
@@ -289,7 +289,12 @@ fn run_interactive(args: &Args, mut renderer: Renderer, camera: Camera) -> Resul
             } if id == window_id => match event {
                 WindowEvent::CloseRequested => target.exit(),
                 WindowEvent::Resized(size) => {
-                    presenter.resize(size.width, size.height);
+                    if let Err(err) = session.resize(size.width, size.height) {
+                        if let Ok(mut slot) = render_error_shared.lock() {
+                            *slot = Some(format!("interactive resize failed: {err}"));
+                        }
+                        target.exit();
+                    }
                 }
                 WindowEvent::KeyboardInput { event, .. } => {
                     if let PhysicalKey::Code(code) = event.physical_key {
@@ -344,24 +349,24 @@ fn run_interactive(args: &Args, mut renderer: Renderer, camera: Camera) -> Resul
                     }
 
                     let camera_now = controller.camera();
-                    let (sorted_indices, stats) = match renderer.build_sorted_indices(&camera_now) {
-                        Ok(v) => v,
+                    if let Err(err) = session.set_camera(camera_now) {
+                        if let Ok(mut slot) = render_error_shared.lock() {
+                            *slot = Some(format!("interactive camera update failed: {err}"));
+                        }
+                        target.exit();
+                        return;
+                    }
+                    let output = match session.render_frame() {
+                        Ok(output) => output,
                         Err(err) => {
                             if let Ok(mut slot) = render_error_shared.lock() {
-                                *slot = Some(format!("interactive prepare failed: {err}"));
+                                *slot = Some(format!("interactive render failed: {err}"));
                             }
                             target.exit();
                             return;
                         }
                     };
-
-                    if let Err(err) = presenter.render(&sorted_indices, &camera_now) {
-                        if let Ok(mut slot) = render_error_shared.lock() {
-                            *slot = Some(format!("interactive present failed: {err}"));
-                        }
-                        target.exit();
-                        return;
-                    }
+                    let stats = output.stats;
 
                     title_frames = title_frames.saturating_add(1);
                     let elapsed = title_timer.elapsed();
@@ -419,270 +424,6 @@ impl InputState {
         self.mouse_delta = (0.0, 0.0);
         self.scroll_y = 0.0;
     }
-}
-
-#[cfg(feature = "interactive-viewer")]
-struct SurfacePresenter {
-    surface: wgpu::Surface<'static>,
-    device: wgpu::Device,
-    queue: wgpu::Queue,
-    preprocessor: GpuInstancePreprocessor,
-    pipeline: wgpu::RenderPipeline,
-    surface_config: wgpu::SurfaceConfiguration,
-    _instance_buffer: wgpu::Buffer,
-    bind_group: wgpu::BindGroup,
-}
-
-#[cfg(feature = "interactive-viewer")]
-impl SurfacePresenter {
-    async fn new(
-        window: Arc<Window>,
-        width: u32,
-        height: u32,
-        renderer: &Renderer,
-    ) -> Result<Self, String> {
-        if width == 0 || height == 0 {
-            return Err("invalid surface size".to_owned());
-        }
-
-        let instance = wgpu::Instance::default();
-        let surface = instance
-            .create_surface(window)
-            .map_err(|err| format!("surface creation failed: {err}"))?;
-
-        let adapter = instance
-            .request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::HighPerformance,
-                compatible_surface: Some(&surface),
-                force_fallback_adapter: false,
-            })
-            .await
-            .map_err(|_| "surface adapter unavailable".to_owned())?;
-
-        let (device, queue) = adapter
-            .request_device(&wgpu::DeviceDescriptor {
-                label: Some("desktop-example-surface-device"),
-                required_features: wgpu::Features::empty(),
-                required_limits: wgpu::Limits::downlevel_defaults(),
-                experimental_features: wgpu::ExperimentalFeatures::disabled(),
-                memory_hints: wgpu::MemoryHints::Performance,
-                trace: wgpu::Trace::Off,
-            })
-            .await
-            .map_err(|err| format!("surface device creation failed: {err}"))?;
-
-        let caps = surface.get_capabilities(&adapter);
-        let Some(format) = caps.formats.first().copied() else {
-            return Err("surface has no compatible format".to_owned());
-        };
-        let present_mode = if caps.present_modes.contains(&wgpu::PresentMode::Mailbox) {
-            wgpu::PresentMode::Mailbox
-        } else {
-            wgpu::PresentMode::Fifo
-        };
-        let alpha_mode = caps
-            .alpha_modes
-            .first()
-            .copied()
-            .unwrap_or(wgpu::CompositeAlphaMode::Opaque);
-
-        let surface_config = wgpu::SurfaceConfiguration {
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-            format,
-            width,
-            height,
-            present_mode,
-            alpha_mode,
-            view_formats: vec![],
-            desired_maximum_frame_latency: 2,
-        };
-        surface.configure(&device, &surface_config);
-
-        let render_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("desktop-example-splat-shader"),
-            source: wgpu::ShaderSource::Wgsl(
-                include_str!("../../../crates/gsplat-render-wgpu/shaders/splat.wgsl").into(),
-            ),
-        });
-
-        let render_bind_group_layout =
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("desktop-example-splat-bgl"),
-                entries: &[wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: true },
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                }],
-            });
-
-        let render_pipeline_layout =
-            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("desktop-example-splat-bgl"),
-                bind_group_layouts: &[&render_bind_group_layout],
-                immediate_size: 0,
-            });
-
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("desktop-example-splat-rp"),
-            layout: Some(&render_pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &render_shader,
-                entry_point: Some("vs_main"),
-                buffers: &[],
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &render_shader,
-                entry_point: Some("fs_main"),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format,
-                    blend: Some(wgpu::BlendState {
-                        color: wgpu::BlendComponent {
-                            src_factor: wgpu::BlendFactor::One,
-                            dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
-                            operation: wgpu::BlendOperation::Add,
-                        },
-                        alpha: wgpu::BlendComponent {
-                            src_factor: wgpu::BlendFactor::One,
-                            dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
-                            operation: wgpu::BlendOperation::Add,
-                        },
-                    }),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-            }),
-            primitive: wgpu::PrimitiveState::default(),
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            multiview_mask: None,
-            cache: None,
-        });
-
-        let scene_len = renderer
-            .scene()
-            .map(|scene| scene.len().max(1))
-            .ok_or_else(|| "interactive mode requires a loaded scene".to_owned())?;
-        let (instance_buffer, bind_group) =
-            create_surface_instance_resources(&device, &render_bind_group_layout, scene_len);
-        let preprocessor = renderer
-            .create_gpu_instance_preprocessor(&device, &instance_buffer, scene_len)
-            .map_err(|err| format!("interactive preprocess init failed: {err}"))?;
-
-        Ok(Self {
-            surface,
-            device,
-            queue,
-            preprocessor,
-            pipeline,
-            surface_config,
-            _instance_buffer: instance_buffer,
-            bind_group,
-        })
-    }
-
-    fn resize(&mut self, width: u32, height: u32) {
-        if width == 0 || height == 0 {
-            return;
-        }
-        self.surface_config.width = width;
-        self.surface_config.height = height;
-        self.surface.configure(&self.device, &self.surface_config);
-    }
-
-    fn render(&mut self, sorted_indices: &[u32], camera: &Camera) -> Result<(), String> {
-        let instance_count = self
-            .preprocessor
-            .prepare(
-                &self.queue,
-                sorted_indices,
-                camera,
-                self.surface_config.width,
-                self.surface_config.height,
-            )
-            .map_err(|err| err.to_string())?;
-
-        let frame = match self.surface.get_current_texture() {
-            Ok(frame) => frame,
-            Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
-                self.surface.configure(&self.device, &self.surface_config);
-                return Ok(());
-            }
-            Err(wgpu::SurfaceError::Timeout) => return Ok(()),
-            Err(wgpu::SurfaceError::OutOfMemory) => {
-                return Err("surface out of memory".to_owned());
-            }
-            Err(wgpu::SurfaceError::Other) => return Err("surface acquire failed".to_owned()),
-        };
-        let view = frame
-            .texture
-            .create_view(&wgpu::TextureViewDescriptor::default());
-
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("desktop-example-surface-encoder"),
-            });
-        self.preprocessor
-            .encode_dispatch(&mut encoder, instance_count);
-        {
-            let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("desktop-example-surface-pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                occlusion_query_set: None,
-                timestamp_writes: None,
-                multiview_mask: None,
-            });
-            rpass.set_pipeline(&self.pipeline);
-            rpass.set_bind_group(0, &self.bind_group, &[]);
-            if instance_count > 0 {
-                rpass.draw(0..6, 0..instance_count);
-            }
-        }
-
-        self.queue.submit(Some(encoder.finish()));
-        frame.present();
-        Ok(())
-    }
-}
-
-#[cfg(feature = "interactive-viewer")]
-fn create_surface_instance_resources(
-    device: &wgpu::Device,
-    bind_group_layout: &wgpu::BindGroupLayout,
-    capacity: usize,
-) -> (wgpu::Buffer, wgpu::BindGroup) {
-    let stride = std::mem::size_of::<GpuInstance>() as u64;
-    let size = stride * (capacity.max(1) as u64);
-    let buffer = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("desktop-example-surface-instance-buffer"),
-        size,
-        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-        mapped_at_creation: false,
-    });
-    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("desktop-example-surface-bg"),
-        layout: bind_group_layout,
-        entries: &[wgpu::BindGroupEntry {
-            binding: 0,
-            resource: buffer.as_entire_binding(),
-        }],
-    });
-    (buffer, bind_group)
 }
 
 #[cfg(feature = "interactive-viewer")]
@@ -1033,7 +774,6 @@ mod tests {
         assert!(!args.orbit);
         assert!(!args.auto_camera);
         assert!(!args.interactive);
-        assert!(!args.sorted_index_direct);
         assert!(args.png_out.is_none());
     }
 
@@ -1053,7 +793,6 @@ mod tests {
             "15",
             "--png",
             "target/out.png",
-            "--sorted-index-direct",
         ])
         .unwrap();
 
@@ -1063,7 +802,6 @@ mod tests {
         assert_eq!(args.config.height, 480);
         assert!(args.orbit);
         assert!(args.auto_camera);
-        assert!(args.sorted_index_direct);
         assert_eq!(args.yaw_deg, Some(15.0));
         assert_eq!(
             args.png_out,

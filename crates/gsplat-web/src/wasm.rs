@@ -3,7 +3,7 @@ use gsplat_core::{
     RendererConfig, SceneBuffers, Vec3f,
 };
 use gsplat_io_ply::{PlySceneSummary, parse_ply_bytes};
-use gsplat_render_wgpu::{GpuSurfaceInstance, Renderer, SurfacePresenter, SurfaceRasterPath};
+use gsplat_render_wgpu::{Renderer, SurfaceFrameTimings, SurfacePresenter, SurfaceRenderSession};
 use js_sys::{Object, Reflect, Uint8Array};
 use wasm_bindgen::prelude::*;
 use web_sys::HtmlCanvasElement;
@@ -11,8 +11,6 @@ use web_sys::HtmlCanvasElement;
 const SURFACE_CAMERA_MAX_PITCH: f32 = 1.45;
 const SURFACE_CAMERA_MIN_DISTANCE_MULTIPLIER: f32 = 0.2;
 const SURFACE_CAMERA_MAX_DISTANCE_MULTIPLIER: f32 = 20.0;
-const DEFAULT_SURFACE_SORT_INTERVAL: u32 = 2;
-
 #[wasm_bindgen]
 pub fn api_version_major() -> u32 {
     GSPLAT_API_VERSION_MAJOR
@@ -39,7 +37,7 @@ pub async fn create_renderer_with_options(
     ply_bytes: Uint8Array,
     width: u32,
     height: u32,
-    sorted_index_direct: bool,
+    _sorted_index_direct: bool,
 ) -> Result<GsplatWebRenderer, JsValue> {
     let raw = ply_bytes.to_vec();
     let loaded = parse_ply_bytes(&raw).map_err(|err| js_error(err.to_string()))?;
@@ -62,60 +60,38 @@ pub async fn create_renderer_with_options(
 
     let camera_control = auto_surface_camera_control(&renderer).map_err(error_code)?;
     let camera = surface_camera_from_control(camera_control, renderer.config());
-    let surface_raster_path = if sorted_index_direct {
-        SurfaceRasterPath::SortedIndexDirect
-    } else {
-        SurfaceRasterPath::CpuInstances
-    };
+    let session = SurfaceRenderSession::new(renderer, presenter, camera).map_err(renderer_error)?;
 
     Ok(GsplatWebRenderer {
-        renderer,
-        presenter,
-        instances: Vec::new(),
-        camera,
+        session,
         camera_control,
         summary,
-        stats: FrameStats::zero(),
-        surface_sort_interval: DEFAULT_SURFACE_SORT_INTERVAL,
-        surface_frames_since_sort: 0,
-        uploaded_frame: false,
-        surface_raster_path,
     })
 }
 
 #[wasm_bindgen]
 pub struct GsplatWebRenderer {
-    renderer: Renderer,
-    presenter: SurfacePresenter,
-    instances: Vec<GpuSurfaceInstance>,
-    camera: Camera,
+    session: SurfaceRenderSession,
     camera_control: SurfaceCameraControl,
     summary: PlySceneSummary,
-    stats: FrameStats,
-    surface_sort_interval: u32,
-    surface_frames_since_sort: u32,
-    uploaded_frame: bool,
-    surface_raster_path: SurfaceRasterPath,
 }
 
 #[wasm_bindgen]
 impl GsplatWebRenderer {
     pub fn resize(&mut self, width: u32, height: u32) -> Result<(), JsValue> {
-        self.presenter.resize(width, height);
-        let (surface_width, surface_height) = self.presenter.surface_size();
-        self.renderer
-            .set_size(surface_width, surface_height)
-            .map_err(renderer_error)?;
-        self.camera = surface_camera_from_control(self.camera_control, self.renderer.config());
-        self.invalidate_frame_cache();
+        self.session.resize(width, height).map_err(renderer_error)?;
+        let camera =
+            surface_camera_from_control(self.camera_control, self.session.renderer().config());
+        self.session.set_camera(camera).map_err(renderer_error)?;
         Ok(())
     }
 
     #[wasm_bindgen(js_name = resetCamera)]
     pub fn reset_camera(&mut self) -> Result<(), JsValue> {
-        self.camera_control = auto_surface_camera_control(&self.renderer).map_err(error_code)?;
+        self.camera_control =
+            auto_surface_camera_control(self.session.renderer()).map_err(error_code)?;
         self.apply_camera_control()?;
-        self.surface_frames_since_sort = 0;
+        self.session.force_sort_refresh();
         Ok(())
     }
 
@@ -153,11 +129,11 @@ impl GsplatWebRenderer {
             return Err(error_code(ErrorCode::InvalidArgument));
         }
 
-        let config = self.renderer.config();
+        let config = self.session.renderer().config();
         let aspect = (config.width as f32 / config.height.max(1) as f32).max(1.0e-3);
         let view_height = 2.0
             * self.camera_control.distance
-            * (self.camera.intrinsics.vertical_fov_radians * 0.5).tan();
+            * (self.session.camera().intrinsics.vertical_fov_radians * 0.5).tan();
         let view_width = view_height * aspect;
         let camera = surface_camera_from_control(self.camera_control, config);
         let (right, up, _) = camera_basis(&camera, self.camera_control.target);
@@ -174,83 +150,32 @@ impl GsplatWebRenderer {
 
     #[wasm_bindgen(js_name = setSortInterval)]
     pub fn set_sort_interval(&mut self, interval: u32) {
-        self.surface_sort_interval = interval.max(1);
-        self.surface_frames_since_sort = 0;
-        self.invalidate_frame_cache();
+        // Preserve the existing Web API behavior by clamping zero to one.
+        let _ = self.session.set_sort_interval(interval.max(1));
     }
 
     #[wasm_bindgen(js_name = setSortedIndexDirect)]
-    pub fn set_sorted_index_direct(&mut self, enabled: bool) {
-        let path = if enabled {
-            SurfaceRasterPath::SortedIndexDirect
-        } else {
-            SurfaceRasterPath::CpuInstances
-        };
-        if self.surface_raster_path != path {
-            self.surface_raster_path = path;
-            self.invalidate_frame_cache();
-        }
-    }
+    pub fn set_sorted_index_direct(&mut self, _enabled: bool) {}
 
     #[wasm_bindgen(js_name = sortedIndexDirect)]
     pub fn sorted_index_direct(&self) -> bool {
-        self.surface_raster_path == SurfaceRasterPath::SortedIndexDirect
+        true
     }
 
     #[wasm_bindgen(js_name = rasterPath)]
     pub fn raster_path(&self) -> String {
-        self.surface_raster_path.as_str().to_owned()
+        "sorted_index_direct".to_owned()
     }
 
     #[wasm_bindgen(js_name = renderFrame)]
     pub fn render_frame(&mut self) -> Result<JsValue, JsValue> {
-        if self.uploaded_frame {
-            self.presenter
-                .render_current()
-                .map_err(|err| js_error(err.to_string()))?;
-            return frame_stats_object(self.stats, false, self.presenter.surface_size());
-        }
-
-        let refresh_sort = self.surface_sort_interval <= 1
-            || self.surface_frames_since_sort == 0
-            || self.surface_frames_since_sort >= self.surface_sort_interval;
-
-        let stats = match self.surface_raster_path {
-            SurfaceRasterPath::CpuInstances => {
-                let stats = self
-                    .renderer
-                    .build_surface_instances_with_sort_refresh_into(
-                        &self.camera,
-                        &mut self.instances,
-                        refresh_sort,
-                    )
-                    .map_err(renderer_error)?;
-                self.presenter
-                    .render_instances(&self.instances, &self.camera)
-                    .map_err(|err| js_error(err.to_string()))?;
-                stats
-            }
-            SurfaceRasterPath::SortedIndexDirect => {
-                let stats = self
-                    .renderer
-                    .build_surface_sorted_indices_with_sort_refresh(&self.camera, refresh_sort)
-                    .map_err(renderer_error)?;
-                let sorted_indices = self.renderer.current_sorted_indices().to_vec();
-                self.presenter
-                    .render_direct_sorted_indices(&sorted_indices, &self.camera, refresh_sort)
-                    .map_err(|err| js_error(err.to_string()))?;
-                stats
-            }
-        };
-
-        self.stats = stats;
-        self.surface_frames_since_sort = if refresh_sort {
-            1
-        } else {
-            self.surface_frames_since_sort.saturating_add(1)
-        };
-        self.uploaded_frame = refresh_sort;
-        frame_stats_object(stats, refresh_sort, self.presenter.surface_size())
+        let output = self.session.render_frame().map_err(renderer_error)?;
+        frame_stats_object(
+            output.stats,
+            output.timings,
+            output.sort_refreshed,
+            self.session.surface_size(),
+        )
     }
 
     #[wasm_bindgen(js_name = sceneSummary)]
@@ -264,7 +189,7 @@ impl GsplatWebRenderer {
 
     #[wasm_bindgen(js_name = surfaceSize)]
     pub fn surface_size(&self) -> Result<JsValue, JsValue> {
-        let (width, height) = self.presenter.surface_size();
+        let (width, height) = self.session.surface_size();
         let object = Object::new();
         set_u32(&object, "width", width)?;
         set_u32(&object, "height", height)?;
@@ -274,15 +199,9 @@ impl GsplatWebRenderer {
 
 impl GsplatWebRenderer {
     fn apply_camera_control(&mut self) -> Result<(), JsValue> {
-        let camera = surface_camera_from_control(self.camera_control, self.renderer.config());
-        camera.validate().map_err(error_code)?;
-        self.camera = camera;
-        self.invalidate_frame_cache();
-        Ok(())
-    }
-
-    fn invalidate_frame_cache(&mut self) {
-        self.uploaded_frame = false;
+        let camera =
+            surface_camera_from_control(self.camera_control, self.session.renderer().config());
+        self.session.set_camera(camera).map_err(renderer_error)
     }
 }
 
@@ -464,6 +383,7 @@ fn scene_bounds(scene: &SceneBuffers) -> Option<(Vec3f, Vec3f)> {
 
 fn frame_stats_object(
     stats: FrameStats,
+    timings: SurfaceFrameTimings,
     refresh_sort: bool,
     surface_size: (u32, u32),
 ) -> Result<JsValue, JsValue> {
@@ -472,6 +392,9 @@ fn frame_stats_object(
     set_f32(&object, "preprocessMs", stats.preprocess_ms)?;
     set_f32(&object, "sortMs", stats.sort_ms)?;
     set_f32(&object, "rasterMs", stats.raster_ms)?;
+    set_f32(&object, "cpuGeometryMs", timings.cpu_geometry_ms)?;
+    set_f32(&object, "renderSubmitMs", timings.render_submit_ms)?;
+    set_f32(&object, "frameWallMs", timings.frame_wall_ms)?;
     set_u32(&object, "visibleCount", stats.visible_count)?;
     set_u32(&object, "drawnCount", stats.drawn_count)?;
     set_bool(&object, "refreshSort", refresh_sort)?;

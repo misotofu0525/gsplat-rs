@@ -24,6 +24,11 @@ most recent operation detail. Raw native Surface handles are single-owner
 handles; `GsplatUIKitSurfaceRenderer` serializes access internally, and direct C
 callers should use one owner thread or queue.
 
+The C handle adapts the shared Rust `SurfaceRenderSession`; iOS does not own a
+separate frame scheduler. CPU sort cadence, compact order uploads, direct
+drawing, and optional native async sorting are shared with Android, Web, and
+desktop Surface rendering.
+
 `GSPLAT_RENDER_MODE_SORTED_ALPHA` is the only release-gated render mode in v0.1.
 Scene loading is path-based today; scene-from-memory loading is outside the
 current mobile contract.
@@ -127,18 +132,14 @@ bash bindings/apple/scripts/run-ios-sim-app.sh -- \
   --gsplat_benchmark_warmup_frames 10 \
   --gsplat_benchmark_yaw_step 0.001 \
   --gsplat_surface_sort_interval 2 \
-  --gsplat_surface_gpu_preproject false \
-  --gsplat_surface_gpu_preproject_double_buffer false \
-  --gsplat_surface_static_direct true \
   --gsplat_surface_async_sort false \
-  --gsplat_surface_async_geometry false \
-  --gsplat_surface_instance_buffers 1 \
   --gsplat_surface_frame_latency 2
 ```
 
 Benchmark mode forces a tiny camera orbit each frame and prints a
-`BENCHMARK_RESULT` line to the simulator log. The Surface A/B args map to the
-same C ABI controls used by the Android example.
+`BENCHMARK_RESULT` line to the simulator log. Every run uses the shared
+resident-scene direct pipeline; the remaining knobs cover CPU sort scheduling
+and frame latency.
 
 ## 4) iOS simulator target build
 

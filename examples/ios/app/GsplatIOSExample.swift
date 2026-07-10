@@ -39,12 +39,7 @@ private struct BenchmarkConfig {
     var warmupFrames = 10
     var yawStepRadians: Float = 0.001
     var sortInterval: UInt32 = 2
-    var gpuPreproject = false
-    var gpuPreprojectDoubleBuffer = false
-    var staticDirect = true
     var asyncSort = false
-    var asyncGeometry = false
-    var instanceBuffers: UInt32 = 1
     var frameLatency: UInt32 = 2
 
     static func fromArguments(_ arguments: [String]) -> BenchmarkConfig {
@@ -56,17 +51,7 @@ private struct BenchmarkConfig {
         let yawStep = args.float("gsplat_benchmark_yaw_step", default: config.yawStepRadians)
         config.yawStepRadians = yawStep.isFinite && yawStep != 0 ? yawStep : config.yawStepRadians
         config.sortInterval = UInt32(max(1, args.int("gsplat_surface_sort_interval", default: Int(config.sortInterval))))
-        config.gpuPreproject = args.bool("gsplat_surface_gpu_preproject", default: config.gpuPreproject)
-        config.gpuPreprojectDoubleBuffer = args.bool(
-            "gsplat_surface_gpu_preproject_double_buffer",
-            default: config.gpuPreprojectDoubleBuffer
-        )
-        config.staticDirect = args.bool("gsplat_surface_static_direct", default: config.staticDirect)
         config.asyncSort = args.bool("gsplat_surface_async_sort", default: config.asyncSort)
-        config.asyncGeometry = args.bool("gsplat_surface_async_geometry", default: config.asyncGeometry)
-        config.instanceBuffers = UInt32(
-            min(max(1, args.int("gsplat_surface_instance_buffers", default: Int(config.instanceBuffers))), 3)
-        )
         config.frameLatency = UInt32(
             min(max(1, args.int("gsplat_surface_frame_latency", default: Int(config.frameLatency))), 4)
         )
@@ -176,12 +161,8 @@ private final class SurfaceBenchmark {
             "samples=\(samples)",
             "warmup=\(config.warmupFrames)",
             "sort_interval=\(config.sortInterval)",
-            "gpu_preproject=\(config.gpuPreproject)",
-            "gpu_preproject_double_buffer=\(config.gpuPreprojectDoubleBuffer)",
-            "static_direct=\(config.staticDirect)",
             "async_sort=\(config.asyncSort)",
-            "async_geometry=\(config.asyncGeometry)",
-            "instance_buffers=\(config.instanceBuffers)",
+            "geometry_pipeline=sorted_index_direct",
             "frame_latency=\(config.frameLatency)",
             "avg_call_ms=\(format(totalCallMs / Double(safeSamples)))",
             "avg_frame_ms=\(format(totalFrameMs / Double(safeSamples)))",
@@ -542,18 +523,7 @@ final class ExampleViewController: UIViewController, UIGestureRecognizerDelegate
     private func configureRenderer(_ handle: OpaquePointer) -> Int32 {
         let steps: [(String, Int32)] = [
             ("sort_interval", gsplat_surface_renderer_set_sort_interval(handle, benchmarkConfig.sortInterval)),
-            ("gpu_preproject", gsplat_surface_renderer_set_gpu_preproject(handle, benchmarkConfig.gpuPreproject ? 1 : 0)),
-            (
-                "gpu_preproject_double_buffer",
-                gsplat_surface_renderer_set_gpu_preproject_double_buffer(
-                    handle,
-                    benchmarkConfig.gpuPreprojectDoubleBuffer ? 1 : 0
-                )
-            ),
-            ("static_direct", gsplat_surface_renderer_set_static_direct(handle, benchmarkConfig.staticDirect ? 1 : 0)),
             ("async_sort", gsplat_surface_renderer_set_async_sort(handle, benchmarkConfig.asyncSort ? 1 : 0)),
-            ("async_geometry", gsplat_surface_renderer_set_async_geometry(handle, benchmarkConfig.asyncGeometry ? 1 : 0)),
-            ("instance_buffers", gsplat_surface_renderer_set_instance_buffer_count(handle, benchmarkConfig.instanceBuffers)),
             ("frame_latency", gsplat_surface_renderer_set_frame_latency(handle, benchmarkConfig.frameLatency)),
         ]
 

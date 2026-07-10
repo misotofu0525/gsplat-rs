@@ -41,7 +41,6 @@ export async function createGsplatRenderer(options) {
     width = canvas?.width,
     height = canvas?.height,
     sortInterval = 2,
-    sortedIndexDirect = false,
     module,
   } = options ?? {};
 
@@ -57,14 +56,11 @@ export async function createGsplatRenderer(options) {
           bytes,
           width,
           height,
-          Boolean(sortedIndexDirect),
+          true,
         )
       : await resolvedModule.createRenderer(canvas, bytes, width, height);
   const renderer = new GsplatWebRenderer(nativeRenderer);
   renderer.setSortInterval(sortInterval);
-  if (sortedIndexDirect && typeof renderer.setSortedIndexDirect === "function") {
-    renderer.setSortedIndexDirect(true);
-  }
   return renderer;
 }
 
@@ -143,7 +139,7 @@ export class GsplatWebRenderer {
   setSortedIndexDirect(enabled) {
     const nativeRenderer = this.#requireNativeRenderer();
     if (typeof nativeRenderer.setSortedIndexDirect !== "function") {
-      throw new TypeError("native renderer does not support setSortedIndexDirect");
+      return;
     }
     nativeRenderer.setSortedIndexDirect(Boolean(enabled));
   }
@@ -151,7 +147,7 @@ export class GsplatWebRenderer {
   sortedIndexDirect() {
     const nativeRenderer = this.#requireNativeRenderer();
     if (typeof nativeRenderer.sortedIndexDirect !== "function") {
-      return false;
+      return true;
     }
     return Boolean(nativeRenderer.sortedIndexDirect());
   }
@@ -159,7 +155,7 @@ export class GsplatWebRenderer {
   rasterPath() {
     const nativeRenderer = this.#requireNativeRenderer();
     if (typeof nativeRenderer.rasterPath !== "function") {
-      return "cpu_instances";
+      return "sorted_index_direct";
     }
     return String(nativeRenderer.rasterPath());
   }
@@ -212,6 +208,9 @@ function normalizeFrameStats(raw) {
     preprocessMs: numberOr(raw.preprocessMs, 0),
     sortMs: numberOr(raw.sortMs, 0),
     rasterMs: numberOr(raw.rasterMs, 0),
+    cpuGeometryMs: numberOr(raw.cpuGeometryMs, raw.rasterMs),
+    renderSubmitMs: numberOr(raw.renderSubmitMs, 0),
+    frameWallMs: numberOr(raw.frameWallMs, raw.frameMs),
     visibleCount: numberOr(raw.visibleCount, 0),
     drawnCount: numberOr(raw.drawnCount, 0),
     refreshSort: Boolean(raw.refreshSort),

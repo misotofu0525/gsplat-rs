@@ -9,9 +9,10 @@ Browser WebAssembly bindings for the shared Rust `wgpu` Surface renderer.
 - It uses `wasm-bindgen` to expose a browser API that accepts an
   `HtmlCanvasElement` and PLY bytes.
 - Scene loading still goes through `gsplat-io-ply::parse_ply_bytes`.
-- Rendering still goes through `gsplat-render-wgpu::Renderer` and
-  `SurfacePresenter`, using the same Surface instance path as Android/iOS by
-  default.
+- Rendering goes through `gsplat-render-wgpu::SurfaceRenderSession`, which owns
+  `Renderer`, `SurfacePresenter`, CPU sort cadence, compact order uploads,
+  direct rendering, and phase timings. This is the same Surface lifecycle
+  used by Android/iOS and the interactive desktop viewer.
 - It is not part of the stable v0.1 public contract. Web changes must pass the
   WebGPU/WASM smoke path in `handbook/VERIFICATION.md` before completion is
   claimed.

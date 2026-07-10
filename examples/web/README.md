@@ -87,16 +87,12 @@ the browser exits, add `gsplat_benchmark_sync=true`. Add `dataset=flowers` to
 run the same benchmark against
 `tests/datasets/external/nvidia_flowers_1/flowers_1/flowers_1.ply`.
 
-Opt into the experimental GPU-resident + sorted-index Surface path (CPU sort
-unchanged; default remains the CPU instance upload path). Studio has a
-checkbox, or use:
-
-```text
-http://127.0.0.1:4173/examples/web/?gsplat_sorted_index=1&gsplat_benchmark=true&gsplat_benchmark_sync=true&gsplat_benchmark_frames=5&gsplat_benchmark_warmup_frames=1
-```
-
-Benchmark output should report `renderer=wasm_sorted_index_direct` when the
-wasm Surface path is active with this option.
+The Rust/WASM Surface path always uses GPU-resident scene data plus compact
+sorted IDs while keeping CPU sorting. Benchmark output reports
+`renderer=wasm_sorted_index_direct`. When motion stops, leave the page
+visible for at least three frames and confirm the canvas remains non-black with
+non-zero Visible/Drawn counts; this guards the direct-path cached-redraw
+regression.
 
 ## Scope
 
@@ -114,14 +110,15 @@ wasm Surface path is active with this option.
   and routes renderer creation through `packages/web/src/index.js` before
   falling back to the WebGL2 point-splat path.
 - Supports benchmark orbit runs with `sort_interval` A/B checks.
-- Supports opt-in `gsplat_sorted_index=1` / Studio checkbox for
-  `SurfaceRasterPath::SortedIndexDirect` (GPU-resident scene + sorted indices).
+- Uses resident scene buffers plus direct sorted-index rendering whenever the
+  Rust/WASM Surface path is active.
 - Renders a WebGL2 point-splat preview rather than the full `wgpu` ellipse
   pipeline when the generated wasm package is missing or cannot create a
   browser Surface.
 - The Rust/WASM package uses `gsplat-io-ply::parse_ply_bytes`,
-  `gsplat-render-wgpu::Renderer`, and `SurfacePresenter::from_canvas` so it can
-  share the same Surface ellipse renderer used by Android/iOS.
+  `gsplat-render-wgpu::Renderer`, `SurfacePresenter::from_canvas`, and
+  `SurfaceRenderSession` so it shares the complete Surface lifecycle used by
+  Android/iOS and the interactive desktop viewer.
 
 ## Web Integration Boundary
 

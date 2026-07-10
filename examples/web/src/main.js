@@ -94,7 +94,6 @@ const state = {
   surfaceSizeLabel: "pending",
   datasetPath: "pending",
   startDataset: "showcase",
-  sortedIndexDirect: false,
   benchmark: null,
   autoStartBenchmark: false,
   autoBenchmarkSync: false,
@@ -112,7 +111,6 @@ const els = {
   drawBudgetValue: document.getElementById("drawBudgetValue"),
   sortInterval: document.getElementById("sortInterval"),
   sortIntervalValue: document.getElementById("sortIntervalValue"),
-  sortedIndexDirect: document.getElementById("sortedIndexDirect"),
   pointScale: document.getElementById("pointScale"),
   pointScaleValue: document.getElementById("pointScaleValue"),
   benchmarkFrames: document.getElementById("benchmarkFrames"),
@@ -135,7 +133,7 @@ const els = {
   fpsValue: document.getElementById("fpsValue"),
   preprocessMs: document.getElementById("preprocessMs"),
   sortMs: document.getElementById("sortMs"),
-  uploadMs: document.getElementById("uploadMs"),
+  geometrySubmitMs: document.getElementById("geometrySubmitMs"),
   callMs: document.getElementById("callMs"),
   frameMs: document.getElementById("frameMs"),
   sceneName: document.getElementById("sceneName"),
@@ -350,12 +348,10 @@ async function createWasmRenderer(scene) {
       width: els.canvas.width,
       height: els.canvas.height,
       sortInterval: Number(els.sortInterval.value),
-      sortedIndexDirect: state.sortedIndexDirect || Boolean(els.sortedIndexDirect?.checked),
     });
     state.wasmRenderer = renderer;
     state.backend = "wasm";
     state.wasmUnavailableReason = "";
-    state.sortedIndexDirect = Boolean(renderer.sortedIndexDirect?.() ?? els.sortedIndexDirect?.checked);
 
     const summary = renderer.sceneSummary();
     const surface = renderer.surfaceSize();
@@ -363,11 +359,7 @@ async function createWasmRenderer(scene) {
     els.gpuStatus.textContent = "wgpu";
     els.gaussianCount.textContent = formatNumber(summary.gaussians ?? scene.count);
     els.shDegree.textContent = String(summary.shDegree ?? scene.shDegree);
-    setRenderMode(
-      state.sortedIndexDirect
-        ? "Rust/WASM sorted-index direct"
-        : "Rust/WASM + wgpu Surface",
-    );
+    setRenderMode("Rust/WASM sorted-index direct");
     updateBackendControls();
     return true;
   } catch (error) {
@@ -431,20 +423,6 @@ function bindEvents() {
     invalidateSortedOrder();
     state.wasmRenderer?.setSortInterval(Number(els.sortInterval.value));
   });
-  els.sortedIndexDirect?.addEventListener("change", () => {
-    state.sortedIndexDirect = Boolean(els.sortedIndexDirect.checked);
-    if (state.wasmRenderer?.setSortedIndexDirect) {
-      state.wasmRenderer.setSortedIndexDirect(state.sortedIndexDirect);
-      setRenderMode(
-        state.sortedIndexDirect
-          ? "Rust/WASM sorted-index direct"
-          : "Rust/WASM + wgpu Surface",
-      );
-    } else if (state.scene) {
-      void createWasmRenderer(state.scene);
-    }
-  });
-
   els.canvas.addEventListener("pointerdown", handlePointerDown);
   els.canvas.addEventListener("pointermove", handlePointerMove);
   els.canvas.addEventListener("pointerup", handlePointerEnd);
@@ -1051,7 +1029,7 @@ function renderWasm() {
       drawn: raw.drawnCount ?? 0,
       preprocessMs: raw.preprocessMs ?? 0,
       sortMs: raw.sortMs ?? 0,
-      uploadMs: raw.rasterMs ?? 0,
+      pipelineMs: (raw.cpuGeometryMs ?? raw.rasterMs ?? 0) + (raw.renderSubmitMs ?? 0),
       frameMs: raw.frameMs ?? callMs,
       callMs,
     };
@@ -1089,7 +1067,7 @@ function renderWebgl() {
   const buffer = fillDrawBuffer(orderInfo.order);
   gl.bindBuffer(gl.ARRAY_BUFFER, state.buffer);
   gl.bufferData(gl.ARRAY_BUFFER, buffer, gl.DYNAMIC_DRAW);
-  const uploadMs = performance.now() - uploadStart;
+  const pipelineMs = performance.now() - uploadStart;
 
   gl.useProgram(state.program);
   setUniforms(gl, state.program, camera);
@@ -1101,7 +1079,7 @@ function renderWebgl() {
     drawn: orderInfo.order.length,
     preprocessMs: orderInfo.preprocessMs,
     sortMs: orderInfo.sortMs,
-    uploadMs,
+    pipelineMs,
     frameMs,
     callMs: frameMs,
   };
@@ -1313,7 +1291,7 @@ function createBenchmarkState(enabled) {
     totalFrameMs: 0,
     totalPreprocessMs: 0,
     totalSortMs: 0,
-    totalUploadMs: 0,
+    totalPipelineMs: 0,
     totalVisible: 0,
     totalDrawn: 0,
   };
@@ -1329,12 +1307,6 @@ function applyUrlConfig() {
   setNumberInputFromParam(els.benchmarkYaw, params.get("gsplat_benchmark_yaw_step") ?? params.get("benchmark_yaw_step"));
   setNumberInputFromParam(els.sortInterval, params.get("gsplat_surface_sort_interval") ?? params.get("sort_interval"));
   setNumberInputFromParam(els.drawBudget, params.get("draw_budget"));
-  state.sortedIndexDirect = ["1", "true", "yes"].includes(
-    (params.get("gsplat_sorted_index") ?? params.get("sorted_index") ?? "").toLowerCase(),
-  );
-  if (els.sortedIndexDirect) {
-    els.sortedIndexDirect.checked = state.sortedIndexDirect;
-  }
   const dataset = (params.get("dataset") ?? params.get("scene") ?? "").toLowerCase();
   if (dataset === "flowers" || dataset === "flower") {
     state.startDataset = "flowers";
@@ -1384,7 +1356,7 @@ function accumulateBenchmark(benchmark, stats) {
   benchmark.totalFrameMs += stats.frameMs;
   benchmark.totalPreprocessMs += stats.preprocessMs;
   benchmark.totalSortMs += stats.sortMs;
-  benchmark.totalUploadMs += stats.uploadMs;
+  benchmark.totalPipelineMs += stats.pipelineMs;
   benchmark.totalVisible += stats.visible;
   benchmark.totalDrawn += stats.drawn;
 }
@@ -1403,10 +1375,7 @@ function wasmRendererLabel() {
   if (!usingWasm()) {
     return "webgl2_point_splats";
   }
-  if (state.sortedIndexDirect || state.wasmRenderer?.sortedIndexDirect?.()) {
-    return "wasm_sorted_index_direct";
-  }
-  return "wasm_wgpu_surface";
+  return "wasm_sorted_index_direct";
 }
 
 function benchmarkResultLine(benchmark) {
@@ -1421,7 +1390,7 @@ function benchmarkResultLine(benchmark) {
     `avg_frame_ms=${avg(benchmark.totalFrameMs)} ` +
     `avg_preprocess_ms=${avg(benchmark.totalPreprocessMs)} ` +
     `avg_sort_ms=${avg(benchmark.totalSortMs)} ` +
-    `avg_upload_ms=${avg(benchmark.totalUploadMs)} ` +
+    `avg_geometry_submit_cpu_wall_ms=${avg(benchmark.totalPipelineMs)} ` +
     `avg_visible=${Math.round(benchmark.totalVisible / samples)} ` +
     `avg_drawn=${Math.round(benchmark.totalDrawn / samples)}`
   );
@@ -1442,7 +1411,7 @@ function updateFrameStats(stats) {
   els.fpsValue.textContent = state.fps.toFixed(1);
   els.preprocessMs.textContent = `${stats.preprocessMs.toFixed(2)} ms`;
   els.sortMs.textContent = `${stats.sortMs.toFixed(2)} ms`;
-  els.uploadMs.textContent = `${stats.uploadMs.toFixed(2)} ms`;
+  els.geometrySubmitMs.textContent = `${stats.pipelineMs.toFixed(2)} ms`;
   els.callMs.textContent = `${stats.callMs.toFixed(2)} ms`;
   els.frameMs.textContent = `${stats.frameMs.toFixed(2)} ms`;
 }
@@ -1453,14 +1422,14 @@ function updateStatusOverlay(stats) {
       `state=rendering frames=${state.frameCounter}`,
       `visible=${stats.visible} drawn=${stats.drawn}/${stats.visible}`,
       `frame=${stats.frameMs.toFixed(2)}ms preprocess=${stats.preprocessMs.toFixed(2)}ms`,
-      `sort=${stats.sortMs.toFixed(2)}ms raster=${stats.uploadMs.toFixed(2)}ms call=${stats.callMs.toFixed(2)}ms`,
+      `sort=${stats.sortMs.toFixed(2)}ms geometry_submit=${stats.pipelineMs.toFixed(2)}ms call=${stats.callMs.toFixed(2)}ms`,
     ].join("\n");
   } else {
     state.rendererStatus =
       `state=rendering frames=${state.frameCounter} ` +
       `visible=${stats.visible} drawn=${stats.drawn}/${stats.visible} ` +
       `frame=${stats.frameMs.toFixed(2)}ms preprocess=${stats.preprocessMs.toFixed(2)}ms ` +
-      `sort=${stats.sortMs.toFixed(2)}ms raster=${stats.uploadMs.toFixed(2)}ms call=${stats.callMs.toFixed(2)}ms`;
+      `sort=${stats.sortMs.toFixed(2)}ms geometry_submit=${stats.pipelineMs.toFixed(2)}ms call=${stats.callMs.toFixed(2)}ms`;
   }
   els.statusLine.textContent = buildStatusText();
 }

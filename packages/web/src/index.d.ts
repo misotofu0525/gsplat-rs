@@ -34,7 +34,7 @@ export interface CreateRendererOptions {
   width?: number;
   height?: number;
   sortInterval?: number;
-  /** Opt-in GPU-resident scene + sorted-index Surface path. */
+  /** @deprecated Direct sorted-index rendering is always enabled. */
   sortedIndexDirect?: boolean;
   module?: GsplatWebModule;
 }
@@ -60,7 +60,11 @@ export interface GsplatFrameStats {
   frameMs: number;
   preprocessMs: number;
   sortMs: number;
+  /** Compatibility field; always zero for the direct production pipeline. */
   rasterMs: number;
+  cpuGeometryMs: number;
+  renderSubmitMs: number;
+  frameWallMs: number;
   visibleCount: number;
   drawnCount: number;
   refreshSort: boolean;
@@ -76,6 +80,7 @@ export class GsplatWebRenderer {
   zoom(distanceScale: number): void;
   pan(normalizedDeltaX: number, normalizedDeltaY: number): void;
   setSortInterval(interval: number): void;
+  /** @deprecated Direct sorted-index rendering is always enabled. */
   setSortedIndexDirect(enabled: boolean): void;
   sortedIndexDirect(): boolean;
   rasterPath(): string;

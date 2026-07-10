@@ -6,22 +6,17 @@ use std::fmt::Display;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::Path;
 use std::ptr::NonNull;
-use std::sync::Arc;
-use std::thread::{self, JoinHandle};
-use std::time::Instant;
 
 use gsplat_core::{
     Camera, CameraIntrinsics, CameraPose, ErrorCode, FrameStats, GSPLAT_API_VERSION_MAJOR,
     GSPLAT_API_VERSION_MINOR, RenderMode, RendererConfig, Vec3f,
 };
 use gsplat_io_ply::load_ply;
-use gsplat_render_wgpu::{GpuSurfaceInstance, Renderer, SurfaceInstanceBuilder, SurfacePresenter};
-use gsplat_sort::CpuSortBackend;
+use gsplat_render_wgpu::{Renderer, SurfacePresenter, SurfaceRenderSession};
 
 const SURFACE_CAMERA_MAX_PITCH: f32 = 1.45;
 const SURFACE_CAMERA_MIN_DISTANCE_MULTIPLIER: f32 = 0.2;
 const SURFACE_CAMERA_MAX_DISTANCE_MULTIPLIER: f32 = 20.0;
-const DEFAULT_SURFACE_SORT_INTERVAL: u32 = 2;
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -114,159 +109,9 @@ pub struct GsplatContext {
 }
 
 pub struct GsplatSurfaceRenderer {
-    renderer: Renderer,
-    presenter: SurfacePresenter,
-    instances: Vec<GpuSurfaceInstance>,
-    camera: Camera,
+    session: SurfaceRenderSession,
     camera_control: SurfaceCameraControl,
-    surface_stats: FrameStats,
-    uploaded_frame: bool,
-    surface_sort_interval: u32,
-    surface_frames_since_sort: u32,
-    surface_gpu_preproject: bool,
-    surface_gpu_preproject_double_buffer: bool,
-    surface_static_direct: bool,
-    surface_async_sort: bool,
-    surface_async_geometry: bool,
-    async_sorter: SurfaceAsyncSorter,
-    async_geometry: Option<SurfaceGeometryWorker>,
     render_error_logged: bool,
-}
-
-struct SurfaceAsyncSorter {
-    positions: Arc<[Vec3f]>,
-    in_flight: Option<JoinHandle<Result<AsyncSortResult, ErrorCode>>>,
-}
-
-struct AsyncSortResult {
-    indices: Vec<u32>,
-    preprocess_ms: f32,
-    sort_ms: f32,
-}
-
-struct SurfaceGeometryWorker {
-    builder: Arc<SurfaceInstanceBuilder>,
-    in_flight: Option<JoinHandle<Result<AsyncGeometryResult, ErrorCode>>>,
-}
-
-struct AsyncGeometryResult {
-    instances: Vec<GpuSurfaceInstance>,
-    build_ms: f32,
-}
-
-impl SurfaceAsyncSorter {
-    fn new(scene: &gsplat_core::SceneBuffers) -> Self {
-        Self {
-            positions: Arc::from(scene.positions.clone().into_boxed_slice()),
-            in_flight: None,
-        }
-    }
-
-    fn is_in_flight(&self) -> bool {
-        self.in_flight.is_some()
-    }
-
-    fn poll_result(&mut self) -> Option<Result<AsyncSortResult, ErrorCode>> {
-        let handle = self.in_flight.as_ref()?;
-        if !handle.is_finished() {
-            return None;
-        }
-
-        let handle = self.in_flight.take()?;
-        Some(match handle.join() {
-            Ok(result) => result,
-            Err(_) => Err(ErrorCode::Internal),
-        })
-    }
-
-    fn start(&mut self, camera: Camera) {
-        if self.in_flight.is_some() {
-            return;
-        }
-
-        let positions = Arc::clone(&self.positions);
-        self.in_flight = Some(thread::spawn(move || {
-            sort_positions_for_camera(&positions, camera)
-        }));
-    }
-
-    fn discard_in_flight(&mut self) {
-        self.drain_in_flight();
-    }
-
-    fn drain_in_flight(&mut self) {
-        if let Some(handle) = self.in_flight.take() {
-            let _ = handle.join();
-        }
-    }
-}
-
-impl Drop for SurfaceAsyncSorter {
-    fn drop(&mut self) {
-        self.drain_in_flight();
-    }
-}
-
-impl SurfaceGeometryWorker {
-    fn new(builder: SurfaceInstanceBuilder) -> Self {
-        Self {
-            builder: Arc::new(builder),
-            in_flight: None,
-        }
-    }
-
-    fn is_in_flight(&self) -> bool {
-        self.in_flight.is_some()
-    }
-
-    fn poll_result(&mut self) -> Option<Result<AsyncGeometryResult, ErrorCode>> {
-        let handle = self.in_flight.as_ref()?;
-        if !handle.is_finished() {
-            return None;
-        }
-
-        let handle = self.in_flight.take()?;
-        Some(match handle.join() {
-            Ok(result) => result,
-            Err(_) => Err(ErrorCode::Internal),
-        })
-    }
-
-    fn start(&mut self, camera: Camera, config: RendererConfig, indices: Vec<u32>) {
-        if self.in_flight.is_some() {
-            return;
-        }
-
-        let builder = Arc::clone(&self.builder);
-        self.in_flight = Some(thread::spawn(move || {
-            let build_start = Instant::now();
-            let mut by_index = Vec::new();
-            let mut instances = Vec::new();
-            builder
-                .build_into(&indices, &camera, config, &mut by_index, &mut instances)
-                .map_err(|err| err.code())?;
-            Ok(AsyncGeometryResult {
-                instances,
-                build_ms: build_start.elapsed().as_secs_f32() * 1000.0,
-            })
-        }));
-    }
-
-    fn discard_in_flight(&mut self) {
-        self.drain_in_flight();
-    }
-
-    fn drain_in_flight(&mut self) {
-        if let Some(handle) = self.in_flight.take() {
-            let _ = handle.join();
-        }
-    }
-}
-
-impl Drop for SurfaceGeometryWorker {
-    fn drop(&mut self) {
-        self.drain_in_flight();
-    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -887,35 +732,15 @@ fn create_surface_renderer_from_raw_handles(
         }
     };
     let camera = surface_camera_from_control(camera_control, renderer.config());
-    let async_sorter = match renderer.scene() {
-        Some(scene) => SurfaceAsyncSorter::new(scene),
-        None => {
-            return ffi_error(
-                ErrorCode::SceneNotLoaded,
-                "gsplat_surface_renderer_create: scene is not loaded",
-            );
+    let session = match SurfaceRenderSession::new(renderer, presenter, camera) {
+        Ok(session) => session,
+        Err(err) => {
+            return ffi_error_display(err.code(), "gsplat_surface_renderer_create", err);
         }
     };
     let surface_renderer = Box::new(GsplatSurfaceRenderer {
-        renderer,
-        presenter,
-        instances: Vec::new(),
-        camera,
+        session,
         camera_control,
-        surface_stats: FrameStats::zero(),
-        uploaded_frame: false,
-        surface_sort_interval: DEFAULT_SURFACE_SORT_INTERVAL,
-        surface_frames_since_sort: 0,
-        surface_gpu_preproject: false,
-        surface_gpu_preproject_double_buffer: false,
-        // Static-direct is the default render path: the vertex shader reads
-        // static splat data on the GPU, which benchmarks fastest on device
-        // (see docs/plans/active/2026-06-10-android-gpu-render-perf).
-        surface_static_direct: true,
-        surface_async_sort: false,
-        surface_async_geometry: false,
-        async_sorter,
-        async_geometry: None,
         render_error_logged: false,
     });
     unsafe {
@@ -974,12 +799,10 @@ pub unsafe extern "C" fn gsplat_surface_renderer_resize(
             );
         }
 
-        renderer.presenter.resize(width, height);
-        let (surface_width, surface_height) = renderer.presenter.surface_size();
-        if let Err(err) = renderer.renderer.set_size(surface_width, surface_height) {
+        if let Err(err) = renderer.session.resize(width, height) {
             return ffi_error_display(err.code(), "gsplat_surface_renderer_resize", err);
         }
-        renderer.camera_control = match auto_surface_camera_control(&renderer.renderer) {
+        renderer.camera_control = match auto_surface_camera_control(renderer.session.renderer()) {
             Ok(camera_control) => camera_control,
             Err(code) => {
                 return ffi_error(
@@ -988,13 +811,12 @@ pub unsafe extern "C" fn gsplat_surface_renderer_resize(
                 );
             }
         };
-        renderer.camera =
-            surface_camera_from_control(renderer.camera_control, renderer.renderer.config());
-        renderer.surface_stats = FrameStats::zero();
-        renderer.uploaded_frame = false;
-        renderer.surface_frames_since_sort = 0;
-        if let Some(async_geometry) = renderer.async_geometry.as_mut() {
-            async_geometry.discard_in_flight();
+        let camera = surface_camera_from_control(
+            renderer.camera_control,
+            renderer.session.renderer().config(),
+        );
+        if let Err(err) = renderer.session.set_camera(camera) {
+            return ffi_error_display(err.code(), "gsplat_surface_renderer_resize", err);
         }
         renderer.render_error_logged = false;
 
@@ -1031,15 +853,17 @@ pub unsafe extern "C" fn gsplat_surface_renderer_set_sort_interval(
             );
         }
 
-        renderer.surface_sort_interval = interval;
-        renderer.surface_frames_since_sort = 0;
-        renderer.uploaded_frame = false;
+        if let Err(err) = renderer.session.set_sort_interval(interval) {
+            return ffi_error_display(err.code(), "gsplat_surface_renderer_set_sort_interval", err);
+        }
         renderer.render_error_logged = false;
         ffi_ok()
     })
 }
 
-/// Enable or disable the experimental GPU preproject path.
+/// Compatibility no-op retained for the v0.1 ABI.
+///
+/// All Surface renderers use direct sorted-index rendering.
 ///
 /// # Safety
 ///
@@ -1061,21 +885,13 @@ pub unsafe extern "C" fn gsplat_surface_renderer_set_gpu_preproject(
             }
         };
 
-        let enabled = enabled != 0;
-        if renderer.surface_gpu_preproject != enabled {
-            renderer.surface_gpu_preproject = enabled;
-            renderer.surface_frames_since_sort = 0;
-            renderer.uploaded_frame = false;
-            if let Some(async_geometry) = renderer.async_geometry.as_mut() {
-                async_geometry.discard_in_flight();
-            }
-            renderer.render_error_logged = false;
-        }
+        let _ = enabled;
+        renderer.render_error_logged = false;
         ffi_ok()
     })
 }
 
-/// Enable or disable double-buffering for the GPU preproject path.
+/// Compatibility no-op retained for the v0.1 ABI.
 ///
 /// # Safety
 ///
@@ -1099,20 +915,16 @@ pub unsafe extern "C" fn gsplat_surface_renderer_set_gpu_preproject_double_buffe
                 }
             };
 
-            let enabled = enabled != 0;
-            if renderer.surface_gpu_preproject_double_buffer != enabled {
-                renderer.surface_gpu_preproject_double_buffer = enabled;
-                renderer.presenter.set_preproject_double_buffer(enabled);
-                renderer.surface_frames_since_sort = 0;
-                renderer.uploaded_frame = false;
-                renderer.render_error_logged = false;
-            }
+            let _ = enabled;
+            renderer.render_error_logged = false;
             ffi_ok()
         },
     )
 }
 
-/// Enable or disable the static-direct Surface path (enabled by default).
+/// Compatibility no-op retained for the v0.1 ABI.
+///
+/// Direct sorted-index rendering is always enabled.
 ///
 /// # Safety
 ///
@@ -1134,16 +946,8 @@ pub unsafe extern "C" fn gsplat_surface_renderer_set_static_direct(
             }
         };
 
-        let enabled = enabled != 0;
-        if renderer.surface_static_direct != enabled {
-            renderer.surface_static_direct = enabled;
-            renderer.surface_frames_since_sort = 0;
-            renderer.uploaded_frame = false;
-            if let Some(async_geometry) = renderer.async_geometry.as_mut() {
-                async_geometry.discard_in_flight();
-            }
-            renderer.render_error_logged = false;
-        }
+        let _ = enabled;
+        renderer.render_error_logged = false;
         ffi_ok()
     })
 }
@@ -1170,19 +974,15 @@ pub unsafe extern "C" fn gsplat_surface_renderer_set_async_sort(
             }
         };
 
-        let enabled = enabled != 0;
-        if renderer.surface_async_sort != enabled {
-            renderer.surface_async_sort = enabled;
-            renderer.async_sorter.discard_in_flight();
-            renderer.surface_frames_since_sort = 0;
-            renderer.uploaded_frame = false;
-            renderer.render_error_logged = false;
+        if let Err(err) = renderer.session.set_async_sort_enabled(enabled != 0) {
+            return ffi_error_display(err.code(), "gsplat_surface_renderer_set_async_sort", err);
         }
+        renderer.render_error_logged = false;
         ffi_ok()
     })
 }
 
-/// Enable or disable experimental async geometry building.
+/// Compatibility no-op retained for the v0.1 ABI.
 ///
 /// # Safety
 ///
@@ -1204,34 +1004,13 @@ pub unsafe extern "C" fn gsplat_surface_renderer_set_async_geometry(
             }
         };
 
-        let enabled = enabled != 0;
-        if enabled && renderer.async_geometry.is_none() {
-            let builder = match SurfaceInstanceBuilder::from_renderer(&renderer.renderer) {
-                Ok(builder) => builder,
-                Err(err) => {
-                    return ffi_error_display(
-                        err.code(),
-                        "gsplat_surface_renderer_set_async_geometry",
-                        err,
-                    );
-                }
-            };
-            renderer.async_geometry = Some(SurfaceGeometryWorker::new(builder));
-        }
-        if renderer.surface_async_geometry != enabled {
-            renderer.surface_async_geometry = enabled;
-            if let Some(async_geometry) = renderer.async_geometry.as_mut() {
-                async_geometry.discard_in_flight();
-            }
-            renderer.surface_frames_since_sort = 0;
-            renderer.uploaded_frame = false;
-            renderer.render_error_logged = false;
-        }
+        let _ = enabled;
+        renderer.render_error_logged = false;
         ffi_ok()
     })
 }
 
-/// Set the number of lazily allocated Surface instance buffers.
+/// Compatibility no-op retained for the v0.1 ABI.
 ///
 /// # Safety
 ///
@@ -1260,8 +1039,7 @@ pub unsafe extern "C" fn gsplat_surface_renderer_set_instance_buffer_count(
             );
         }
 
-        renderer.presenter.set_instance_buffer_count(count);
-        renderer.uploaded_frame = false;
+        let _ = count;
         renderer.render_error_logged = false;
         ffi_ok()
     })
@@ -1296,8 +1074,7 @@ pub unsafe extern "C" fn gsplat_surface_renderer_set_frame_latency(
             );
         }
 
-        renderer.presenter.set_frame_latency(latency);
-        renderer.uploaded_frame = false;
+        renderer.session.set_frame_latency(latency);
         renderer.render_error_logged = false;
         ffi_ok()
     })
@@ -1324,7 +1101,7 @@ pub unsafe extern "C" fn gsplat_surface_renderer_reset_camera(
             }
         };
 
-        renderer.camera_control = match auto_surface_camera_control(&renderer.renderer) {
+        renderer.camera_control = match auto_surface_camera_control(renderer.session.renderer()) {
             Ok(camera_control) => camera_control,
             Err(code) => {
                 return ffi_error(
@@ -1333,11 +1110,8 @@ pub unsafe extern "C" fn gsplat_surface_renderer_reset_camera(
                 );
             }
         };
-        let rc = apply_surface_camera_control(renderer);
-        if rc == ErrorCode::Ok.as_i32() {
-            renderer.surface_frames_since_sort = 0;
-        }
-        rc
+        renderer.session.force_sort_refresh();
+        apply_surface_camera_control(renderer)
     })
 }
 
@@ -1448,11 +1222,11 @@ pub unsafe extern "C" fn gsplat_surface_renderer_pan(
             );
         }
 
-        let config = renderer.renderer.config();
+        let config = renderer.session.renderer().config();
         let aspect = (config.width as f32 / config.height.max(1) as f32).max(1.0e-3);
         let view_height = 2.0
             * renderer.camera_control.distance
-            * (renderer.camera.intrinsics.vertical_fov_radians * 0.5).tan();
+            * (renderer.session.camera().intrinsics.vertical_fov_radians * 0.5).tan();
         let view_width = view_height * aspect;
         let camera = surface_camera_from_control(renderer.camera_control, config);
         let (right, up, _) = camera_basis(&camera, renderer.camera_control.target);
@@ -1489,134 +1263,8 @@ pub unsafe extern "C" fn gsplat_surface_renderer_render_frame(
             }
         };
 
-        let result = if renderer.uploaded_frame && !renderer.surface_static_direct {
-            renderer.presenter.render_current().map(|_| None)
-        } else if renderer.surface_async_sort {
-            match render_surface_frame_async_sort(renderer) {
-                Ok(result) => Ok(Some(result)),
-                Err(code) => {
-                    return ffi_error(
-                        code,
-                        "gsplat_surface_renderer_render_frame: async sort failed",
-                    );
-                }
-            }
-        } else if renderer.surface_async_geometry
-            && !renderer.surface_gpu_preproject
-            && !renderer.surface_static_direct
-        {
-            match render_surface_frame_async_geometry(renderer) {
-                Ok(result) => Ok(Some(result)),
-                Err(code) => {
-                    return ffi_error(
-                        code,
-                        "gsplat_surface_renderer_render_frame: async geometry failed",
-                    );
-                }
-            }
-        } else {
-            let refresh_sort = renderer.surface_sort_interval <= 1
-                || renderer.surface_frames_since_sort == 0
-                || renderer.surface_frames_since_sort >= renderer.surface_sort_interval;
-            let stats = if renderer.surface_static_direct {
-                let stats = match renderer
-                    .renderer
-                    .build_surface_sorted_indices_with_sort_refresh(&renderer.camera, refresh_sort)
-                {
-                    Ok(result) => result,
-                    Err(err) => {
-                        return ffi_error_display(
-                            err.code(),
-                            "gsplat_surface_renderer_render_frame",
-                            err,
-                        );
-                    }
-                };
-                let sorted_indices = renderer.renderer.current_sorted_indices();
-                if let Err(err) = renderer.presenter.render_direct_sorted_indices(
-                    sorted_indices,
-                    &renderer.camera,
-                    refresh_sort,
-                ) {
-                    return ffi_error_display(
-                        err.code(),
-                        "gsplat_surface_renderer_render_frame",
-                        err,
-                    );
-                }
-                stats
-            } else if renderer.surface_gpu_preproject {
-                let stats = match renderer
-                    .renderer
-                    .build_surface_sorted_indices_with_sort_refresh(&renderer.camera, refresh_sort)
-                {
-                    Ok(result) => result,
-                    Err(err) => {
-                        return ffi_error_display(
-                            err.code(),
-                            "gsplat_surface_renderer_render_frame",
-                            err,
-                        );
-                    }
-                };
-                let sorted_indices = renderer.renderer.current_sorted_indices();
-                if let Err(err) = renderer.presenter.render_sorted_indices(
-                    sorted_indices,
-                    &renderer.camera,
-                    refresh_sort,
-                ) {
-                    return ffi_error_display(
-                        err.code(),
-                        "gsplat_surface_renderer_render_frame",
-                        err,
-                    );
-                }
-                stats
-            } else {
-                let stats = match renderer
-                    .renderer
-                    .build_surface_instances_with_sort_refresh_into(
-                        &renderer.camera,
-                        &mut renderer.instances,
-                        refresh_sort,
-                    ) {
-                    Ok(result) => result,
-                    Err(err) => {
-                        return ffi_error_display(
-                            err.code(),
-                            "gsplat_surface_renderer_render_frame",
-                            err,
-                        );
-                    }
-                };
-                if let Err(err) = renderer
-                    .presenter
-                    .render_instances(&renderer.instances, &renderer.camera)
-                {
-                    return ffi_error_display(
-                        err.code(),
-                        "gsplat_surface_renderer_render_frame",
-                        err,
-                    );
-                }
-                stats
-            };
-            Ok(Some((stats, refresh_sort)))
-        };
-
-        match result {
-            Ok(stats) => {
-                if let Some((stats, refresh_sort)) = stats {
-                    renderer.surface_stats = stats;
-                    renderer.surface_frames_since_sort = if refresh_sort {
-                        1
-                    } else {
-                        renderer.surface_frames_since_sort.saturating_add(1)
-                    };
-                    renderer.uploaded_frame = refresh_sort;
-                } else {
-                    renderer.uploaded_frame = true;
-                }
+        match renderer.session.render_frame() {
+            Ok(_) => {
                 renderer.render_error_logged = false;
                 ffi_ok()
             }
@@ -1631,181 +1279,6 @@ pub unsafe extern "C" fn gsplat_surface_renderer_render_frame(
             }
         }
     })
-}
-
-fn render_surface_frame_async_sort(
-    renderer: &mut GsplatSurfaceRenderer,
-) -> Result<(FrameStats, bool), ErrorCode> {
-    let mut refresh_order_upload = false;
-    let mut async_sort_timing = None;
-    if let Some(result) = renderer.async_sorter.poll_result() {
-        let result = result?;
-        renderer
-            .renderer
-            .replace_surface_sorted_indices(result.indices)
-            .map_err(|err| err.code())?;
-        renderer.surface_frames_since_sort = 0;
-        refresh_order_upload = true;
-        async_sort_timing = Some((result.preprocess_ms, result.sort_ms));
-    }
-
-    if renderer.renderer.current_sorted_indices().is_empty() {
-        return render_surface_frame_sync_sort(renderer, true);
-    }
-
-    let interval = renderer.surface_sort_interval.max(1);
-    let should_schedule = !renderer.async_sorter.is_in_flight()
-        && renderer.surface_frames_since_sort.saturating_add(1) >= interval;
-
-    let mut stats = if renderer.surface_static_direct {
-        let stats = renderer
-            .renderer
-            .build_surface_sorted_indices_with_sort_refresh(&renderer.camera, false)
-            .map_err(|err| err.code())?;
-        let sorted_indices = renderer.renderer.current_sorted_indices();
-        renderer
-            .presenter
-            .render_direct_sorted_indices(sorted_indices, &renderer.camera, refresh_order_upload)
-            .map_err(|err| err.code())?;
-        stats
-    } else if renderer.surface_gpu_preproject {
-        let stats = renderer
-            .renderer
-            .build_surface_sorted_indices_with_sort_refresh(&renderer.camera, false)
-            .map_err(|err| err.code())?;
-        let sorted_indices = renderer.renderer.current_sorted_indices();
-        renderer
-            .presenter
-            .render_sorted_indices(sorted_indices, &renderer.camera, refresh_order_upload)
-            .map_err(|err| err.code())?;
-        stats
-    } else {
-        let stats = renderer
-            .renderer
-            .build_surface_instances_with_sort_refresh_into(
-                &renderer.camera,
-                &mut renderer.instances,
-                false,
-            )
-            .map_err(|err| err.code())?;
-        renderer
-            .presenter
-            .render_instances(&renderer.instances, &renderer.camera)
-            .map_err(|err| err.code())?;
-        stats
-    };
-
-    if let Some((preprocess_ms, sort_ms)) = async_sort_timing {
-        stats.preprocess_ms = preprocess_ms;
-        stats.sort_ms = sort_ms;
-    }
-
-    if should_schedule {
-        renderer.async_sorter.start(renderer.camera);
-    }
-
-    Ok((stats, !renderer.async_sorter.is_in_flight()))
-}
-
-fn render_surface_frame_async_geometry(
-    renderer: &mut GsplatSurfaceRenderer,
-) -> Result<(FrameStats, bool), ErrorCode> {
-    let mut completed_build_ms = None;
-    let async_geometry = renderer
-        .async_geometry
-        .as_mut()
-        .ok_or(ErrorCode::Internal)?;
-    if let Some(result) = async_geometry.poll_result() {
-        let result = result?;
-        renderer.instances = result.instances;
-        completed_build_ms = Some(result.build_ms);
-    }
-
-    let refresh_sort = renderer.surface_sort_interval <= 1
-        || renderer.surface_frames_since_sort == 0
-        || renderer.surface_frames_since_sort >= renderer.surface_sort_interval;
-    let mut stats = renderer
-        .renderer
-        .build_surface_sorted_indices_with_sort_refresh(&renderer.camera, refresh_sort)
-        .map_err(|err| err.code())?;
-
-    if renderer.instances.is_empty() {
-        stats = renderer
-            .renderer
-            .build_surface_instances_with_sort_refresh_into(
-                &renderer.camera,
-                &mut renderer.instances,
-                false,
-            )
-            .map_err(|err| err.code())?;
-        completed_build_ms = None;
-    }
-
-    renderer
-        .presenter
-        .render_instances(&renderer.instances, &renderer.camera)
-        .map_err(|err| err.code())?;
-
-    if let Some(build_ms) = completed_build_ms {
-        stats.raster_ms = build_ms;
-        stats.frame_ms = stats.preprocess_ms + stats.sort_ms + build_ms;
-        stats.drawn_count = renderer.instances.len() as u32;
-    }
-
-    let async_geometry = renderer
-        .async_geometry
-        .as_mut()
-        .ok_or(ErrorCode::Internal)?;
-    if !async_geometry.is_in_flight() {
-        let indices = renderer.renderer.current_sorted_indices().to_vec();
-        async_geometry.start(renderer.camera, renderer.renderer.config(), indices);
-    }
-
-    Ok((stats, refresh_sort))
-}
-
-fn render_surface_frame_sync_sort(
-    renderer: &mut GsplatSurfaceRenderer,
-    refresh_sort: bool,
-) -> Result<(FrameStats, bool), ErrorCode> {
-    let stats = if renderer.surface_static_direct {
-        let stats = renderer
-            .renderer
-            .build_surface_sorted_indices_with_sort_refresh(&renderer.camera, refresh_sort)
-            .map_err(|err| err.code())?;
-        let sorted_indices = renderer.renderer.current_sorted_indices();
-        renderer
-            .presenter
-            .render_direct_sorted_indices(sorted_indices, &renderer.camera, refresh_sort)
-            .map_err(|err| err.code())?;
-        stats
-    } else if renderer.surface_gpu_preproject {
-        let stats = renderer
-            .renderer
-            .build_surface_sorted_indices_with_sort_refresh(&renderer.camera, refresh_sort)
-            .map_err(|err| err.code())?;
-        let sorted_indices = renderer.renderer.current_sorted_indices();
-        renderer
-            .presenter
-            .render_sorted_indices(sorted_indices, &renderer.camera, refresh_sort)
-            .map_err(|err| err.code())?;
-        stats
-    } else {
-        let stats = renderer
-            .renderer
-            .build_surface_instances_with_sort_refresh_into(
-                &renderer.camera,
-                &mut renderer.instances,
-                refresh_sort,
-            )
-            .map_err(|err| err.code())?;
-        renderer
-            .presenter
-            .render_instances(&renderer.instances, &renderer.camera)
-            .map_err(|err| err.code())?;
-        stats
-    };
-    Ok((stats, refresh_sort))
 }
 
 /// Copy the last Surface renderer stats.
@@ -1838,85 +1311,11 @@ pub unsafe extern "C" fn gsplat_surface_renderer_get_stats(
         }
 
         unsafe {
-            *out_stats = renderer.surface_stats.into();
+            *out_stats = renderer.session.last_stats().into();
         }
 
         ffi_ok()
     })
-}
-
-fn sort_positions_for_camera(
-    positions: &[Vec3f],
-    camera: Camera,
-) -> Result<AsyncSortResult, ErrorCode> {
-    camera.validate()?;
-
-    let preprocess_start = Instant::now();
-    let camera_inv_q = async_quat_inverse(camera.pose.rotation_xyzw);
-    let view_rot = async_quat_to_mat3(camera_inv_q);
-    let depth_row = view_rot[2];
-    let camera_position = camera.pose.position;
-    let mut depth_keys = Vec::with_capacity(positions.len());
-    let mut indices = Vec::with_capacity(positions.len());
-    for (idx, &position) in positions.iter().enumerate() {
-        let p = vec3_sub(position, camera_position);
-        let depth_z = depth_row[0] * p.x + depth_row[1] * p.y + depth_row[2] * p.z;
-        if depth_z >= camera.intrinsics.near_plane && depth_z <= camera.intrinsics.far_plane {
-            indices.push(idx as u32);
-            depth_keys.push(async_depth_to_key(depth_z));
-        }
-    }
-    let preprocess_ms = preprocess_start.elapsed().as_secs_f32() * 1000.0;
-
-    let sort_start = Instant::now();
-    CpuSortBackend::default()
-        .sort_values_by_keys(&depth_keys, &mut indices)
-        .map_err(|_| ErrorCode::Internal)?;
-    let sort_ms = sort_start.elapsed().as_secs_f32() * 1000.0;
-
-    Ok(AsyncSortResult {
-        indices,
-        preprocess_ms,
-        sort_ms,
-    })
-}
-
-fn async_depth_to_key(depth_z: f32) -> u32 {
-    depth_z.max(0.0).to_bits()
-}
-
-fn async_quat_inverse(q: [f32; 4]) -> [f32; 4] {
-    let q = async_quat_normalize(q);
-    [-q[0], -q[1], -q[2], q[3]]
-}
-
-fn async_quat_normalize(q: [f32; 4]) -> [f32; 4] {
-    let norm2 = q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3];
-    if norm2 <= 0.0 || !norm2.is_finite() {
-        return [0.0, 0.0, 0.0, 1.0];
-    }
-    let inv = 1.0 / norm2.sqrt();
-    [q[0] * inv, q[1] * inv, q[2] * inv, q[3] * inv]
-}
-
-fn async_quat_to_mat3(q: [f32; 4]) -> [[f32; 3]; 3] {
-    let q = async_quat_normalize(q);
-    let (x, y, z, w) = (q[0], q[1], q[2], q[3]);
-    let xx = x * x;
-    let yy = y * y;
-    let zz = z * z;
-    let xy = x * y;
-    let xz = x * z;
-    let yz = y * z;
-    let wx = w * x;
-    let wy = w * y;
-    let wz = w * z;
-
-    [
-        [1.0 - 2.0 * (yy + zz), 2.0 * (xy - wz), 2.0 * (xz + wy)],
-        [2.0 * (xy + wz), 1.0 - 2.0 * (xx + zz), 2.0 * (yz - wx)],
-        [2.0 * (xz - wy), 2.0 * (yz + wx), 1.0 - 2.0 * (xx + yy)],
-    ]
 }
 
 fn auto_camera(renderer: &Renderer) -> Result<Camera, ErrorCode> {
@@ -1965,16 +1364,14 @@ fn auto_surface_camera_control(renderer: &Renderer) -> Result<SurfaceCameraContr
 }
 
 fn apply_surface_camera_control(renderer: &mut GsplatSurfaceRenderer) -> i32 {
-    let camera = surface_camera_from_control(renderer.camera_control, renderer.renderer.config());
-    if camera.validate().is_err() {
-        return ffi_error(
-            ErrorCode::InvalidArgument,
-            "surface camera control produced an invalid camera",
-        );
+    let camera = surface_camera_from_control(
+        renderer.camera_control,
+        renderer.session.renderer().config(),
+    );
+    if let Err(err) = renderer.session.set_camera(camera) {
+        return ffi_error_display(err.code(), "apply_surface_camera_control", err);
     }
 
-    renderer.camera = camera;
-    renderer.uploaded_frame = false;
     renderer.render_error_logged = false;
     ffi_ok()
 }

@@ -30,12 +30,7 @@ else
     --gsplat_benchmark_warmup_frames 5
     --gsplat_benchmark_yaw_step 0.001
     --gsplat_surface_sort_interval 2
-    --gsplat_surface_gpu_preproject false
-    --gsplat_surface_gpu_preproject_double_buffer false
-    --gsplat_surface_static_direct true
     --gsplat_surface_async_sort false
-    --gsplat_surface_async_geometry false
-    --gsplat_surface_instance_buffers 1
     --gsplat_surface_frame_latency 2
   )
 fi

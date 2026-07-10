@@ -34,7 +34,7 @@
 - `crates/gsplat-core`: shared public types, config, stats, and error codes
 - `crates/gsplat-io-ply`: PLY parsing and scene buffer construction
 - `crates/gsplat-sort`: GPU and CPU sort backends
-- `crates/gsplat-render-wgpu`: preprocessing, raster path, Surface presenter, and GPU helper APIs
+- `crates/gsplat-render-wgpu`: preprocessing, CPU sort scheduling, the shared direct sorted-index renderer/session/presenter, and offscreen GPU APIs
 - `crates/gsplat-ffi-c`: small C ABI surface over the renderer and mobile Surface presenters
 - `crates/gsplat-web`: experimental `wasm-bindgen` bindings over the shared `wgpu` Surface renderer
 - `examples/desktop`: desktop viewer and offscreen PNG harness
@@ -93,6 +93,10 @@ For the broader command matrix, use `VERIFICATION.md`.
 - Native Surface handles are single-owner handles. Public wrappers serialize
   access before calling the C ABI; direct C or JNI integrations should use the
   same one-thread-or-queue ownership rule.
+- Web, desktop interactive, Android, and iOS Surface clients delegate frame
+  cadence, CPU sort refreshes, compact order uploads, and presentation to the
+  shared `SurfaceRenderSession`. Every production target uses direct sorted
+  indices; mobile keeps the default CPU sort interval of 2.
 - The Web example is a browser validation surface. The Rust/WASM renderer boundary
   is active in `crates/gsplat-web`, and `packages/web` provides
   a local ESM wrapper, but the Web SDK is not published to npm or stable in the

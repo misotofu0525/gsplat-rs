@@ -38,22 +38,7 @@ object NativeBridge {
     external fun setSurfaceSortInterval(nativeHandle: Long, interval: Int): Int
 
     @JvmStatic
-    external fun setSurfaceGpuPreprojectEnabled(nativeHandle: Long, enabled: Boolean): Int
-
-    @JvmStatic
-    external fun setSurfaceGpuPreprojectDoubleBufferEnabled(nativeHandle: Long, enabled: Boolean): Int
-
-    @JvmStatic
-    external fun setSurfaceStaticDirectEnabled(nativeHandle: Long, enabled: Boolean): Int
-
-    @JvmStatic
     external fun setSurfaceAsyncSortEnabled(nativeHandle: Long, enabled: Boolean): Int
-
-    @JvmStatic
-    external fun setSurfaceAsyncGeometryEnabled(nativeHandle: Long, enabled: Boolean): Int
-
-    @JvmStatic
-    external fun setSurfaceInstanceBufferCount(nativeHandle: Long, count: Int): Int
 
     @JvmStatic
     external fun setSurfaceFrameLatency(nativeHandle: Long, latency: Int): Int
