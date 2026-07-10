@@ -120,7 +120,7 @@ checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
 
 [[package]]
 name = "bench-runner"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "gsplat-core",
  "gsplat-io-ply",
@@ -396,7 +396,7 @@ checksum = "f27ae1dd37df86211c42e150270f82743308803d90a6f6e6651cd730d5e1732f"
 
 [[package]]
 name = "desktop-example"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "gsplat-core",
  "gsplat-io-ply",
@@ -644,11 +644,11 @@ dependencies = [
 
 [[package]]
 name = "gsplat-core"
-version = "0.1.2"
+version = "0.1.3"
 
 [[package]]
 name = "gsplat-ffi-c"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "gsplat-core",
  "gsplat-io-ply",
@@ -659,7 +659,7 @@ dependencies = [
 
 [[package]]
 name = "gsplat-io-ply"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "gsplat-core",
  "thiserror 2.0.18",
@@ -667,7 +667,7 @@ dependencies = [
 
 [[package]]
 name = "gsplat-render-wgpu"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "bytemuck",
  "gsplat-core",
@@ -683,7 +683,7 @@ dependencies = [
 
 [[package]]
 name = "gsplat-sort"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "bytemuck",
  "pollster",
@@ -693,7 +693,7 @@ dependencies = [
 
 [[package]]
 name = "gsplat-web"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "gsplat-core",
  "gsplat-io-ply",

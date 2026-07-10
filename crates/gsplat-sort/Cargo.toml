@@ -1,6 +1,6 @@
 [package]
 name = "gsplat-sort"
-version = "0.1.2"
+version = "0.1.3"
 description = "CPU and GPU sort backends for gsplat-rs render ordering."
 readme = "README.md"
 keywords = ["gaussian-splatting", "wgpu", "gpu", "sorting"]
