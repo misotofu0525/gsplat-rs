@@ -18,11 +18,7 @@ pub fn radix_sort_desc_u64(values: &mut [u64], scratch: &mut [u64], counts: &mut
 /// low 32 bits preserves ascending index order among equal keys when the input
 /// was packed in ascending-index order (the `sort_values_by_keys` production
 /// path).
-pub fn radix_sort_desc_u64_key_bits(
-    values: &mut [u64],
-    scratch: &mut [u64],
-    counts: &mut [usize],
-) {
+pub fn radix_sort_desc_u64_key_bits(values: &mut [u64], scratch: &mut [u64], counts: &mut [usize]) {
     radix_sort_desc_u64_passes(values, scratch, counts, 32..64)
 }
 
