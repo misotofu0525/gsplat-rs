@@ -22,6 +22,11 @@ Report vulnerabilities privately through GitHub Security Advisories:
 This is the only supported reporting channel. Share only the minimum
 reproduction details needed to establish impact.
 
+Maintainers must verify that private vulnerability reporting is enabled before
+publishing a release tag. If the link above does not offer a private report
+form, the repository is not release-ready and exploit details must not be
+posted to a public issue.
+
 You should receive an initial response within 7 days. If you do not, follow up
 on the advisory thread rather than opening a public issue.
 
@@ -37,3 +42,20 @@ Please include:
 The project will coordinate disclosure after a fix or mitigation is available.
 Public advisories should avoid unnecessary exploit detail and should point to
 the fixed commit or release when available.
+
+## Dependency Policy
+
+Dependency advisories, licenses, duplicate versions, and source registries are
+checked with:
+
+```bash
+bash tests/security/run-cargo-deny.sh
+```
+
+The script downloads cargo-deny 0.20.2 from its official release and verifies
+the platform artifact against a pinned SHA-256 before running the policy in
+`deny.toml`. Advisory exceptions must include a scoped
+reachability or upstream-blocker reason and remain visible in audit output;
+new vulnerabilities fail the check. An exception is not evidence that an
+affected dependency is safe, and should be removed as soon as a compatible
+upstream fix is available.

@@ -1085,7 +1085,7 @@ mod tests {
             Vec3f::new(-1.0, -1.0, 1.0),
             Vec3f::new(1.0, 1.0, 20.0),
         ]);
-        let mut renderer = Renderer::new(RenderMode::SortedAlpha).unwrap();
+        let mut renderer = Renderer::new_for_surface(RenderMode::SortedAlpha).unwrap();
         renderer.load_scene(scene).unwrap();
 
         let camera = auto_camera(&renderer, RendererConfig::default());

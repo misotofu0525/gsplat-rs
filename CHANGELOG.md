@@ -22,7 +22,13 @@ and this project adheres to
 - Crate-level READMEs and crates.io metadata (`readme`, `keywords`,
   `categories`, `homepage`) for all publishable crates.
 - A rendered hero image in the README, produced by the desktop example from
-  the public NVIDIA `flowers_1` dataset.
+  Wakufactory's CC0 Kitsune scene, with source and checksum provenance.
+- Explicit PLY input/header/vertex/property/decoded-scene budgets with checked,
+  fallible scene allocation.
+- Pixel readback conformance with a tolerant 64x64 `SortedAlpha` image baseline.
+- `cargo-deny` policy for advisories, licenses, duplicate versions, and source
+  registries.
+- A maintainer release checklist and media provenance documentation.
 
 ### Changed
 
@@ -34,3 +40,20 @@ and this project adheres to
   supported private reporting channel.
 - Blank GitHub issues are disabled; reports are routed through the issue
   templates.
+- Offscreen renderer construction now requires a real GPU rasterizer, while
+  Android, Apple, and Web Surface paths use explicit Surface-only constructors.
+- GPU dimension and instance-buffer limits return structured errors before
+  `wgpu` resource creation; runtime raster failures are no longer reported as
+  successful frames.
+- Benchmarks now run in release mode and report CPU preparation, submission,
+  GPU wait, and GPU-complete latency with adapter metadata and optional
+  thresholds.
+- GitHub Actions use least-privilege permissions and immutable action SHAs;
+  tag releases include dependency policy and the 1800-second stability bar.
+
+### Security
+
+- All exported C ABI entrypoints catch Rust unwinds and convert error-code
+  functions to `GSPLAT_ERROR_INTERNAL` with a thread-local detail message.
+- Updated `crossbeam-epoch` to 0.9.20 for `RUSTSEC-2026-0204` and documented
+  scoped upstream-blocked advisory exceptions in `deny.toml`.

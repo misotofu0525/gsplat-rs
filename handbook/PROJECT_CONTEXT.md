@@ -11,6 +11,7 @@
 - Agent/project entrypoint: `../AGENTS.md`
 - Architecture map: `ARCHITECTURE.md`
 - Verification entrypoint: `VERIFICATION.md`
+- Release process and remote settings gates: `../RELEASING.md`
 - Direction and scope: `ROADMAP.md`
 - Project taste guide: `GOLDEN_PRINCIPLES.md`
 - Contribution guide: `../CONTRIBUTING.md`
@@ -22,6 +23,7 @@
 - The workspace builds and tests cleanly on the supported CI paths.
 - `SortedAlpha` remains the only quality-guaranteed render mode.
 - FFI smoke paths and mobile smoke integrations stay working.
+- Untrusted PLY input fails with bounded, structured errors before unchecked allocation.
 - Desktop and mobile examples remain validation surfaces for the shared crates, not separate product lines.
 
 ## Current Repository Shape
@@ -40,7 +42,7 @@
 - `bindings/apple`: local `GsplatKit` Swift package wrapper, Swift smoke path, XCFramework scripts, and iOS simulator/device build/run scripts
 - `packages/web`: local `@gsplat-rs/web` browser ESM wrapper
 - `tools/bench-runner`: perf and stability runner
-- `tests/`: sample dataset, FFI smoke harness, and perf scripts
+- `tests/`: sample dataset plus FFI, perf, release, and dependency-policy scripts
 - `handbook/`: current project docs, architecture map, verification guide, roadmap, and project principles
 - `docs/plans/`: task-scoped active and completed planning bundles
 - `docs/media/`: rendered images referenced by the README
@@ -67,12 +69,18 @@ For the broader command matrix, use `VERIFICATION.md`.
 - Harden the local iOS `GsplatKit`/XCFramework slice before treating it as a published SwiftPM binary SDK.
 - Harden the local Web `@gsplat-rs/web` wrapper around the shared Rust `wgpu` Surface renderer before treating it as a published npm SDK.
 - Keep the runtime scene path centered on validated in-memory `SceneBuffers` until a measured asset-pipeline need exists.
+- Keep release checks reproducible: pinned CI actions, checksum-verified policy tooling, version consistency, and GPU-backed conformance evidence.
 - Update the docs immediately when repository structure or responsibilities change.
 - Keep contributor-facing maintenance files aligned with the actual verification and release boundary.
 
 ## Constraints and Boundaries
 
 - `SortedAlpha` is the only release-gated render path right now.
+- Native offscreen `Renderer::new`/`Renderer::with_config` require a usable GPU;
+  Surface integrations use the surface-only constructors and acquire the device
+  through `SurfacePresenter`.
+- Default PLY loading is bounded by `PlyLoadLimits`; callers that intentionally
+  need a different budget must opt into the limit-aware APIs.
 - The current C ABI intentionally stays small and does not yet cover scene-from-memory loading or runtime render-mode switching.
 - Android Surface integration now has a local `gsplat-android` library module
   that builds an AAR, but it is not Maven-published or a broad Android product

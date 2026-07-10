@@ -20,9 +20,16 @@ cargo check --workspace
 
 ```bash
 cargo test --workspace
+GSPLAT_REQUIRE_GPU_CONFORMANCE=1 cargo test -p gsplat-render-wgpu --test conformance_sorted_alpha
 ```
 
 - Run this when changing shared types, parsing, render logic, or CLI behavior.
+- The workspace test may skip pixel conformance when no native adapter exists.
+  Set `GSPLAT_REQUIRE_GPU_CONFORMANCE=1` on a GPU-backed runner to make adapter
+  absence a failure; CI and release run this requirement on macOS/Metal.
+- Linux CI installs Mesa Vulkan/Lavapipe so GPU-required offscreen and C ABI
+  paths have a deterministic software adapter; it is compatibility evidence,
+  while the macOS jobs provide the required hardware-backed Metal evidence.
 
 ## Code Hygiene and Docs
 
@@ -50,12 +57,14 @@ cargo check --workspace
 cargo fmt --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
+GSPLAT_REQUIRE_GPU_CONFORMANCE=1 cargo test -p gsplat-render-wgpu --test conformance_sorted_alpha
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
+bash tests/security/run-cargo-deny.sh
 node --check examples/web/src/main.js
 npm --prefix packages/web run check
 npm --prefix packages/web test
 npm --prefix packages/web run pack:dry-run
-cargo run -p bench-runner -- tests/datasets/minimal_ascii.ply 120
+cargo run --release -p bench-runner -- tests/datasets/minimal_ascii.ply 120 --warmup-iterations 10 --max-avg-gpu-complete-ms 250
 bash tests/ffi/run-ffi-smoke.sh
 bash bindings/android/scripts/run-jni-smoke.sh
 bash bindings/apple/scripts/run-swift-smoke.sh
@@ -227,6 +236,7 @@ IOS_DEVICE_ID=<coredevice-id-or-udid> bash bindings/apple/scripts/run-ios-device
 Before cutting a release, also run:
 
 ```bash
+RELEASE_VERSION=<major.minor.patch> bash tests/release/check-version.sh
 STABILITY_SECONDS=1800 bash tests/perf/run-long-stability.sh
 ```
 
@@ -260,7 +270,7 @@ STABILITY_SECONDS=1800 bash tests/perf/run-long-stability.sh
   `bash bindings/apple/scripts/run-ios-sim-app.sh`; for offscreen simulator smoke
   changes, run `bash bindings/apple/scripts/run-ios-sim-smoke.sh`.
 - If you touch PLY import or scene normalization, run `cargo test --workspace` and `cargo run -p desktop-example -- tests/datasets/minimal_ascii.ply --png target/out.png`.
-- If you touch renderer, sorting, or perf-sensitive code, run `cargo run -p bench-runner -- tests/datasets/minimal_ascii.ply 120` and consider the long-stability script.
+- If you touch renderer, sorting, or perf-sensitive code, run `cargo run --release -p bench-runner -- tests/datasets/minimal_ascii.ply 120 --warmup-iterations 10 --max-avg-gpu-complete-ms 250` and consider the long-stability script. The runner reports CPU preprocessing, CPU sort, build/encode/submit, GPU wait, and GPU-complete frame time separately, together with adapter/backend/driver metadata.
 - If you touch `examples/web/`, run `node --check examples/web/src/main.js`
   and the Web Example smoke above. If you touch
   `packages/web/`, also run
@@ -282,6 +292,11 @@ cargo run -p bench-runner -- <scene.ply> --analyze-spatial
 - The lint and docs entrypoints are `cargo fmt --check`,
   `cargo clippy --workspace --all-targets -- -D warnings`, and
   `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps`.
+- Dependency advisory, license, duplicate-version, and source policy is
+  configured in `deny.toml` and checked with
+  `bash tests/security/run-cargo-deny.sh`.
+- The tag release contract and manual GitHub settings gates live in
+  `RELEASING.md`.
 
 ## Failure Triage
 

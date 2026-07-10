@@ -32,6 +32,28 @@ can be fetched with `bash tests/datasets/fetch-wakufactory-kitune.sh`.*
 - Quality-gated render path: `SortedAlpha`
 - Native integration surface: `crates/gsplat-ffi-c/include/gsplat.h`
 
+## Installation and Artifacts
+
+The repository is currently prerelease software. Rust crates are not yet on
+crates.io, and the Android, Apple, and Web packages are not published to Maven,
+SwiftPM, or npm registries.
+
+For source use, clone the repository, keep the pinned toolchain, and build the
+workspace or the validation surface you need:
+
+```bash
+git clone https://github.com/misotofu0525/gsplat-rs.git
+cd gsplat-rs
+cargo check --workspace
+```
+
+Tagged `0.1.x` prereleases attach an AAR, XCFramework ZIP, and npm-compatible
+tarball to the [GitHub Releases](https://github.com/misotofu0525/gsplat-rs/releases)
+page. These are direct prerelease artifacts; use the matching
+`bindings/android/README.md`, `bindings/apple/README.md`, or
+`packages/web/README.md` for integration details. Maintainers should follow
+`RELEASING.md` rather than creating or replacing artifacts manually.
+
 ## Quick Start
 
 ```bash
@@ -157,6 +179,8 @@ The current mobile-facing contract is the C ABI in
 - Verification commands: `handbook/VERIFICATION.md`
 - Current direction and release boundary: `handbook/ROADMAP.md`
 - Project principles: `handbook/GOLDEN_PRINCIPLES.md`
+- Release process: `RELEASING.md`
+- Media provenance: `docs/media/README.md`
 - Agent entrypoint: `AGENTS.md`
 
 ## Contributing

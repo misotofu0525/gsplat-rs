@@ -8,8 +8,12 @@ and instanced splat rasterization with WGSL shaders.
 
 Main entry points:
 
-- `Renderer`: offscreen rendering into a texture, with `FrameStats` reporting
-  (used by the desktop example for PNG output)
+- `Renderer::new` / `Renderer::with_config`: GPU-required offscreen rendering
+  into a texture, with `FrameStats` reporting and RGBA readback (used by the
+  desktop example for PNG output)
+- `Renderer::new_for_surface` / `Renderer::with_config_for_surface`: scene,
+  preprocessing, and sorting state for a separate `SurfacePresenter`; these
+  constructors intentionally do not create an offscreen GPU device
 - `SurfacePresenter` / `SurfaceInstanceBuilder`: realtime presentation onto a
   native or browser surface (Android `Surface`, iOS `CAMetalLayer`, HTML
   canvas)

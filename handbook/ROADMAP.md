@@ -14,6 +14,10 @@ Operational facts and command entrypoints live in `handbook/PROJECT_CONTEXT.md` 
   SDK.
 - Web has a local `@gsplat-rs/web` ESM wrapper over the experimental Rust/WASM
   renderer, but it is not a published npm SDK.
+- Tagged `0.1.x` prereleases may attach direct AAR, XCFramework ZIP, and
+  npm-compatible tarball artifacts to GitHub Releases. These artifacts are a
+  source-integration aid, not Maven, binary SwiftPM, npm, or crates.io
+  publication and do not widen the stable API boundary.
 
 ## Near-Term Priorities
 
@@ -62,9 +66,11 @@ Operational facts and command entrypoints live in `handbook/PROJECT_CONTEXT.md` 
 ## Release Bar
 
 - The canonical day-to-day verification set lives in `handbook/VERIFICATION.md`.
+- The complete manual and remote-settings gates live in `RELEASING.md`.
 - Before cutting a release, also run:
 
 ```bash
+RELEASE_VERSION=<major.minor.patch> bash tests/release/check-version.sh
 STABILITY_SECONDS=1800 bash tests/perf/run-long-stability.sh
 ```
 

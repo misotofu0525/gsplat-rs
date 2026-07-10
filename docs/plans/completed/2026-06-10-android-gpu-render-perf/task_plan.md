@@ -1,5 +1,12 @@
 # Task Plan: Android GPU Render Performance
 
+## Status
+
+Completed and archived. The retained shader optimizations and the
+`static_direct` default were committed in subsequent project work. Sustained
+thermal behavior remains a future device-performance study, not unfinished
+work in this bundle.
+
 ## Goal
 
 Improve Android true-device SortedAlpha Surface render performance for

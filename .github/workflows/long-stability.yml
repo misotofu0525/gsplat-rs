@@ -12,12 +12,15 @@ on:
         required: false
         default: "65536"
 
+permissions:
+  contents: read
+
 jobs:
   long-stability:
-    runs-on: ubuntu-latest
+    runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.93.0
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: dtolnay/rust-toolchain@45f5412a0cc5dee553bb061a37369fc8e63fa137 # 1.93.0
       - name: Long stability run
         env:
           STABILITY_SECONDS: ${{ github.event.inputs.duration_seconds }}

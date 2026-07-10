@@ -29,6 +29,7 @@ fn run() -> Result<(), String> {
     renderer
         .load_scene(loaded.scene)
         .map_err(|err| err.to_string())?;
+    print_gpu_metadata(&renderer);
 
     let camera = Camera::default();
 
@@ -46,6 +47,8 @@ fn run() -> Result<(), String> {
             &camera,
             &config.dataset_path,
             config.iterations,
+            config.warmup_iterations,
+            config.max_avg_gpu_complete_ms,
         )
     }
 }
@@ -55,32 +58,62 @@ fn run_iteration_mode(
     camera: &Camera,
     dataset_path: &str,
     iterations: usize,
+    warmup_iterations: usize,
+    max_avg_gpu_complete_ms: Option<f32>,
 ) -> Result<(), String> {
     let mut sum = FrameStats::zero();
+    let mut gpu_wait_ms = 0.0_f32;
+    let mut gpu_complete_frame_ms = 0.0_f32;
+
+    for _ in 0..warmup_iterations {
+        renderer
+            .render_frame(camera)
+            .map_err(|err| err.to_string())?;
+        renderer.wait_for_gpu().map_err(|err| err.to_string())?;
+    }
 
     for _ in 0..iterations {
+        let frame_start = Instant::now();
         let stats = renderer
             .render_frame(camera)
             .map_err(|err| err.to_string())?;
+        let submit_elapsed_ms = frame_start.elapsed().as_secs_f32() * 1000.0;
+        renderer.wait_for_gpu().map_err(|err| err.to_string())?;
+        let complete_elapsed_ms = frame_start.elapsed().as_secs_f32() * 1000.0;
         sum.frame_ms += stats.frame_ms;
         sum.preprocess_ms += stats.preprocess_ms;
         sum.sort_ms += stats.sort_ms;
         sum.raster_ms += stats.raster_ms;
         sum.visible_count += stats.visible_count;
         sum.drawn_count += stats.drawn_count;
+        gpu_wait_ms += (complete_elapsed_ms - submit_elapsed_ms).max(0.0);
+        gpu_complete_frame_ms += complete_elapsed_ms;
     }
 
     let n = iterations as f32;
+    let avg_gpu_complete_frame_ms = gpu_complete_frame_ms / n;
     println!("bench-runner complete");
     println!("mode=iterations");
     println!("dataset={dataset_path}");
     println!("iterations={iterations}");
-    println!("avg_frame_ms={:.4}", sum.frame_ms / n);
-    println!("avg_preprocess_ms={:.4}", sum.preprocess_ms / n);
-    println!("avg_sort_ms={:.4}", sum.sort_ms / n);
-    println!("avg_raster_ms={:.4}", sum.raster_ms / n);
+    println!("warmup_iterations={warmup_iterations}");
+    println!("avg_submit_frame_ms={:.4}", sum.frame_ms / n);
+    println!("avg_cpu_preprocess_ms={:.4}", sum.preprocess_ms / n);
+    println!("avg_cpu_sort_ms={:.4}", sum.sort_ms / n);
+    println!("avg_cpu_build_encode_submit_ms={:.4}", sum.raster_ms / n);
+    println!("avg_gpu_wait_ms={:.4}", gpu_wait_ms / n);
+    println!("avg_gpu_complete_frame_ms={avg_gpu_complete_frame_ms:.4}");
     println!("avg_visible_count={:.2}", sum.visible_count as f32 / n);
     println!("avg_drawn_count={:.2}", sum.drawn_count as f32 / n);
+
+    if let Some(limit_ms) = max_avg_gpu_complete_ms {
+        println!("max_avg_gpu_complete_ms={limit_ms:.4}");
+        if avg_gpu_complete_frame_ms > limit_ms {
+            return Err(format!(
+                "average GPU-complete frame time exceeded limit: actual={avg_gpu_complete_frame_ms:.4}ms limit={limit_ms:.4}ms"
+            ));
+        }
+    }
 
     Ok(())
 }
@@ -107,6 +140,7 @@ fn run_stability_mode(
         renderer
             .render_frame(camera)
             .map_err(|err| err.to_string())?;
+        renderer.wait_for_gpu().map_err(|err| err.to_string())?;
         frame_count += 1;
 
         if frame_count.is_multiple_of(60) {
@@ -147,6 +181,25 @@ fn run_stability_mode(
     }
 
     Ok(())
+}
+
+fn print_gpu_metadata(renderer: &Renderer) {
+    let Some(info) = renderer.gpu_adapter_info() else {
+        println!("gpu_adapter=unavailable");
+        return;
+    };
+
+    println!("gpu_adapter_name={}", single_line(&info.name));
+    println!("gpu_backend={:?}", info.backend);
+    println!("gpu_device_type={:?}", info.device_type);
+    println!("gpu_vendor_id={}", info.vendor);
+    println!("gpu_device_id={}", info.device);
+    println!("gpu_driver={}", single_line(&info.driver));
+    println!("gpu_driver_info={}", single_line(&info.driver_info));
+}
+
+fn single_line(value: &str) -> String {
+    value.replace(['\r', '\n'], " ")
 }
 
 fn run_spatial_analysis(
@@ -298,6 +351,8 @@ fn run_spatial_analysis(
 struct BenchConfig {
     dataset_path: String,
     iterations: usize,
+    warmup_iterations: usize,
+    max_avg_gpu_complete_ms: Option<f32>,
     stability_seconds: Option<u64>,
     rss_growth_limit_kib: u64,
     analysis: Option<SpatialAnalysisConfig>,
@@ -308,6 +363,8 @@ impl Default for BenchConfig {
         Self {
             dataset_path: "tests/datasets/minimal_ascii.ply".to_owned(),
             iterations: 120,
+            warmup_iterations: 10,
+            max_avg_gpu_complete_ms: None,
             stability_seconds: None,
             rss_growth_limit_kib: 64 * 1024,
             analysis: None,
@@ -400,6 +457,28 @@ impl BenchConfig {
                             .map_err(|_| "invalid --stability-seconds value")?,
                     );
                 }
+                "--warmup-iterations" => {
+                    i += 1;
+                    let value = args.get(i).ok_or("missing value for --warmup-iterations")?;
+                    config.warmup_iterations = value
+                        .parse::<usize>()
+                        .map_err(|_| "invalid --warmup-iterations value")?;
+                }
+                "--max-avg-gpu-complete-ms" => {
+                    i += 1;
+                    let value = args
+                        .get(i)
+                        .ok_or("missing value for --max-avg-gpu-complete-ms")?;
+                    let limit = value
+                        .parse::<f32>()
+                        .map_err(|_| "invalid --max-avg-gpu-complete-ms value")?;
+                    if !limit.is_finite() || limit <= 0.0 {
+                        return Err(
+                            "--max-avg-gpu-complete-ms must be finite and positive".to_owned()
+                        );
+                    }
+                    config.max_avg_gpu_complete_ms = Some(limit);
+                }
                 "--rss-growth-limit-kib" => {
                     i += 1;
                     let value = args
@@ -424,6 +503,13 @@ impl BenchConfig {
                 }
             }
             i += 1;
+        }
+
+        if config.iterations == 0 {
+            return Err("iterations must be greater than zero".to_owned());
+        }
+        if config.stability_seconds == Some(0) {
+            return Err("--stability-seconds must be greater than zero".to_owned());
         }
 
         Ok(config)
@@ -630,6 +716,8 @@ mod tests {
 
         assert_eq!(config.dataset_path, "tests/datasets/minimal_ascii.ply");
         assert_eq!(config.iterations, 120);
+        assert_eq!(config.warmup_iterations, 10);
+        assert_eq!(config.max_avg_gpu_complete_ms, None);
         assert_eq!(config.stability_seconds, None);
         assert_eq!(config.rss_growth_limit_kib, 64 * 1024);
         assert!(config.analysis.is_none());
@@ -644,11 +732,17 @@ mod tests {
             "5".to_owned(),
             "--rss-growth-limit-kib".to_owned(),
             "4096".to_owned(),
+            "--warmup-iterations".to_owned(),
+            "3".to_owned(),
+            "--max-avg-gpu-complete-ms".to_owned(),
+            "12.5".to_owned(),
         ])
         .unwrap();
 
         assert_eq!(config.dataset_path, "scene.ply");
         assert_eq!(config.iterations, 42);
+        assert_eq!(config.warmup_iterations, 3);
+        assert_eq!(config.max_avg_gpu_complete_ms, Some(12.5));
         assert_eq!(config.stability_seconds, Some(5));
         assert_eq!(config.rss_growth_limit_kib, 4096);
     }
@@ -682,6 +776,17 @@ mod tests {
 
         let err = BenchConfig::parse(vec!["--analysis-width".to_owned()]).unwrap_err();
         assert_eq!(err, "missing value for --analysis-width");
+
+        let err = BenchConfig::parse(vec!["--max-avg-gpu-complete-ms".to_owned(), "0".to_owned()])
+            .unwrap_err();
+        assert_eq!(err, "--max-avg-gpu-complete-ms must be finite and positive");
+
+        let err = BenchConfig::parse(vec!["scene.ply".to_owned(), "0".to_owned()]).unwrap_err();
+        assert_eq!(err, "iterations must be greater than zero");
+
+        let err =
+            BenchConfig::parse(vec!["--stability-seconds".to_owned(), "0".to_owned()]).unwrap_err();
+        assert_eq!(err, "--stability-seconds must be greater than zero");
     }
 
     #[test]

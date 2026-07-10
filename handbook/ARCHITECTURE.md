@@ -19,7 +19,9 @@
 - Rendering and GPU-facing orchestration live in `crates/gsplat-render-wgpu`.
 - Native embedding goes through `crates/gsplat-ffi-c`.
 - Browser WebAssembly embedding goes through `crates/gsplat-web`.
-- Validation entrypoints are `examples/desktop`, `examples/android`, `examples/ios`, `examples/web`, and `tools/bench-runner`.
+- Runtime validation entrypoints are `examples/desktop`, `examples/android`,
+  `examples/ios`, `examples/web`, and `tools/bench-runner`; release and
+  dependency-policy checks live under `tests/release/` and `tests/security/`.
 
 ## Key Directories
 
@@ -32,7 +34,7 @@
 - `bindings/apple/`: local `GsplatKit` Swift package wrapper, Swift smoke source, XCFramework scripts, and iOS simulator/device build/run scripts
 - `packages/web/`: local `@gsplat-rs/web` ESM wrapper over generated wasm-bindgen output
 - `tools/`: CLI tools for performance validation
-- `tests/`: shared dataset, FFI smoke harness, and long-stability script
+- `tests/`: shared dataset plus FFI, perf, release, and dependency-policy scripts
 - `handbook/`: current project docs, architecture map, verification guide, roadmap, and project principles
 - `docs/plans/`: active and completed task planning bundles
 - `.github/`: CI workflows and contributor templates
@@ -41,9 +43,19 @@
 
 - PLY render flow:
   starts at external `.ply` data or `tests/datasets/minimal_ascii.ply`
-  passes through `crates/gsplat-io-ply/src/lib.rs`
+  passes through the bounded default or explicit `PlyLoadLimits` APIs in
+  `crates/gsplat-io-ply/src/lib.rs`
   continues into `crates/gsplat-render-wgpu/src/lib.rs`
   is exercised by `examples/desktop/src/main.rs`, `tools/bench-runner/src/main.rs`, and `crates/gsplat-ffi-c/src/lib.rs`
+
+- Renderer construction flow:
+  native offscreen `Renderer::new` and `Renderer::with_config` acquire a GPU
+  adapter/device and fail when rasterization cannot be created
+  Surface clients use `Renderer::new_for_surface` or
+  `Renderer::with_config_for_surface`, then let `SurfacePresenter` acquire the
+  adapter/device compatible with the platform surface
+  dimension and instance-buffer limits are checked before `wgpu` resource
+  creation, and GPU submission/wait failures remain structured errors
 
 - Native integration flow:
   starts from C, Swift, or Kotlin/JNI host entrypoints
@@ -52,6 +64,8 @@
   keeps each native handle owned by one serialized thread or queue; wrapper
   APIs add their own locking, while direct C/JNI callers must provide the same
   serialization
+  catches Rust panics at every exported C ABI entrypoint so no unwind crosses
+  into foreign code
 
 - Android Surface flow:
   starts at the local `bindings/android/gsplat-android` library module or
@@ -105,6 +119,11 @@
 - The public C header and the Rust FFI implementation must stay in sync.
 - Non-zero FFI returns should leave `gsplat_last_error_message()` with
   operation-specific detail for Swift/Kotlin/Web wrapper errors.
+- Rust panics must not unwind across the C ABI boundary.
+- Default PLY imports must enforce explicit byte, header, vertex, property, and
+  decoded-scene budgets before allocation.
+- An offscreen renderer must not report successful rendering without a real GPU
+  raster path; Surface-only construction is explicit.
 - PLY input normalization is not optional: quaternion remapping and `RDF -> RUF` conversion happen at load time.
 - Mobile examples are integration validators. Android and Apple packaging live
   under `bindings/`, but neither path is a published product SDK yet.
@@ -132,3 +151,6 @@
 - Read first for import changes: `crates/gsplat-io-ply/src/lib.rs`
 - Read first for native integration changes: `crates/gsplat-ffi-c/src/lib.rs` and `crates/gsplat-ffi-c/include/gsplat.h`
 - Read first for verification flow: `VERIFICATION.md`
+- Read first for release/tag changes: `../RELEASING.md`
+- Read first for dependency policy: `../deny.toml` and
+  `../tests/security/run-cargo-deny.sh`

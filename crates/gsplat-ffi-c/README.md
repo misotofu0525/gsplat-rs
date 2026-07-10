@@ -16,6 +16,9 @@ boundary used by the Android JNI bridge and the iOS `GsplatKit` wrapper.
 - Treat non-zero returns as `GsplatErrorCode` values and pass them to
   `gsplat_error_message()`; use `gsplat_last_error_message()` for the most
   recent operation detail.
+- Exported entrypoints catch Rust unwinds before they cross the C boundary;
+  error-code functions report `GSPLAT_ERROR_INTERNAL`. This does not make
+  invalid pointers or other caller-side undefined behavior safe.
 - Native Surface handles are single-owner: serialize all access through one
   thread or queue.
 

@@ -71,8 +71,27 @@ pub enum RendererError {
     InvalidScene,
     #[error("gpu rasterizer unavailable")]
     GpuRasterizerUnavailable,
+    #[error("gpu device creation failed")]
+    GpuDeviceCreation,
+    #[error(
+        "render dimensions {width}x{height} exceed the device 2D texture limit {max_dimension}"
+    )]
+    GpuDimensionsUnsupported {
+        width: u32,
+        height: u32,
+        max_dimension: u32,
+    },
+    #[error(
+        "render instance buffer requires {requested_bytes} bytes but the device limit is {max_bytes}"
+    )]
+    GpuInstanceBufferUnsupported {
+        requested_bytes: u64,
+        max_bytes: u64,
+    },
     #[error("gpu readback failed")]
     GpuReadback,
+    #[error("waiting for gpu completion failed")]
+    GpuWait,
     #[error("sort backend error: {0}")]
     Sort(#[from] SortError),
     #[error("gpu instance preprocess error: {0}")]
@@ -88,8 +107,11 @@ impl RendererError {
                 ErrorCode::InvalidArgument
             }
             Self::SceneNotLoaded => ErrorCode::SceneNotLoaded,
-            Self::GpuRasterizerUnavailable => ErrorCode::Unsupported,
-            Self::GpuReadback => ErrorCode::Internal,
+            Self::GpuRasterizerUnavailable
+            | Self::GpuDeviceCreation
+            | Self::GpuDimensionsUnsupported { .. }
+            | Self::GpuInstanceBufferUnsupported { .. } => ErrorCode::Unsupported,
+            Self::GpuReadback | Self::GpuWait => ErrorCode::Internal,
             Self::Sort(_) => ErrorCode::Internal,
             Self::GpuInstancePreprocess(_) => ErrorCode::Internal,
             Self::SurfacePresenter(err) => err.code(),
@@ -183,14 +205,45 @@ impl Renderer {
             .map_err(|_| RendererError::InvalidConfig)?;
 
         #[cfg(not(target_arch = "wasm32"))]
-        let gpu_rasterizer = GpuRasterizer::create(&config).ok();
+        {
+            let gpu_rasterizer = GpuRasterizer::create(&config).map_err(RendererError::from)?;
+            let mut renderer = Self::from_validated_config(config);
+            renderer.gpu_rasterizer = Some(gpu_rasterizer);
+            Ok(renderer)
+        }
 
-        Ok(Self {
+        #[cfg(target_arch = "wasm32")]
+        {
+            Err(RendererError::GpuRasterizerUnavailable)
+        }
+    }
+
+    /// Create renderer state for a separate native or Web surface presenter.
+    ///
+    /// This constructor intentionally does not create the offscreen rasterizer
+    /// used by [`Self::render_frame`] and [`Self::readback_rgba8`]. Surface
+    /// clients render through [`SurfacePresenter`] instead.
+    pub fn with_config_for_surface(config: RendererConfig) -> Result<Self, RendererError> {
+        config
+            .validate()
+            .map_err(|_| RendererError::InvalidConfig)?;
+        Ok(Self::from_validated_config(config))
+    }
+
+    pub fn new_for_surface(mode: RenderMode) -> Result<Self, RendererError> {
+        Self::with_config_for_surface(RendererConfig {
+            mode,
+            ..RendererConfig::default()
+        })
+    }
+
+    fn from_validated_config(config: RendererConfig) -> Self {
+        Self {
             mode: config.mode,
             config,
             cpu_sort_backend: CpuSortBackend::default(),
             #[cfg(not(target_arch = "wasm32"))]
-            gpu_rasterizer,
+            gpu_rasterizer: None,
             scene: None,
             world_covariances: None,
             world_covariance_terms: None,
@@ -199,7 +252,7 @@ impl Renderer {
             preprocess_indices: Vec::new(),
             surface_instances_by_index: Vec::new(),
             last_stats: FrameStats::zero(),
-        })
+        }
     }
 
     pub fn config(&self) -> RendererConfig {
@@ -215,6 +268,14 @@ impl Renderer {
         config
             .validate()
             .map_err(|_| RendererError::InvalidConfig)?;
+
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(gpu_rasterizer) = self.gpu_rasterizer.as_mut() {
+            gpu_rasterizer
+                .ensure_output_target(width, height)
+                .map_err(RendererError::from)?;
+        }
+
         self.config = config;
         Ok(())
     }
@@ -237,6 +298,40 @@ impl Renderer {
         #[cfg(target_arch = "wasm32")]
         {
             false
+        }
+    }
+
+    pub fn gpu_adapter_info(&self) -> Option<&wgpu::AdapterInfo> {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.gpu_rasterizer
+                .as_ref()
+                .map(|rasterizer| &rasterizer.adapter_info)
+        }
+
+        #[cfg(target_arch = "wasm32")]
+        {
+            None
+        }
+    }
+
+    pub fn wait_for_gpu(&self) -> Result<(), RendererError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let rasterizer = self
+                .gpu_rasterizer
+                .as_ref()
+                .ok_or(RendererError::GpuRasterizerUnavailable)?;
+            rasterizer
+                .device
+                .poll(wgpu::PollType::wait_indefinitely())
+                .map_err(|_| RendererError::GpuWait)?;
+            Ok(())
+        }
+
+        #[cfg(target_arch = "wasm32")]
+        {
+            Err(RendererError::GpuRasterizerUnavailable)
         }
     }
 
@@ -504,7 +599,12 @@ impl Renderer {
         Ok((self.preprocess_indices.clone(), stats))
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn render_frame(&mut self, camera: &Camera) -> Result<FrameStats, RendererError> {
+        if self.gpu_rasterizer.is_none() {
+            return Err(RendererError::GpuRasterizerUnavailable);
+        }
+
         let frame_start = timer_now();
 
         let preprocess_start = timer_now();
@@ -516,6 +616,11 @@ impl Renderer {
         let sort_ms = timer_elapsed_ms(sort_start);
 
         let raster_start = timer_now();
+        self.gpu_rasterizer
+            .as_ref()
+            .ok_or(RendererError::GpuRasterizerUnavailable)?
+            .validate_instance_capacity(self.preprocess_indices.len().max(1))
+            .map_err(RendererError::from)?;
         let scene = self.scene.as_ref().ok_or(RendererError::SceneNotLoaded)?;
         let world_covariances = self
             .world_covariances
@@ -534,15 +639,11 @@ impl Renderer {
             self.config,
         );
 
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            if let Some(gpu_rasterizer) = self.gpu_rasterizer.as_mut()
-                && gpu_rasterizer.render(self.config, &instances).is_err()
-            {
-                // If GPU path fails during runtime, drop to CPU placeholder path.
-                self.gpu_rasterizer = None;
-            }
-        }
+        self.gpu_rasterizer
+            .as_mut()
+            .ok_or(RendererError::GpuRasterizerUnavailable)?
+            .render(self.config, &instances)
+            .map_err(RendererError::from)?;
 
         let drawn_count = instances.len() as u32;
         let raster_ms = timer_elapsed_ms(raster_start);
@@ -558,6 +659,11 @@ impl Renderer {
 
         self.last_stats = stats;
         Ok(stats)
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    pub fn render_frame(&mut self, _camera: &Camera) -> Result<FrameStats, RendererError> {
+        Err(RendererError::GpuRasterizerUnavailable)
     }
 
     pub fn last_stats(&self) -> FrameStats {
@@ -582,8 +688,8 @@ impl Renderer {
         }
     }
 
-    pub fn render_placeholder(&mut self) -> FrameStats {
-        self.render_frame(&Camera::default()).unwrap_or_default()
+    pub fn render_placeholder(&mut self) -> Result<FrameStats, RendererError> {
+        self.render_frame(&Camera::default())
     }
 
     fn preprocess_visible_scratch(&mut self, camera: &Camera) -> Result<(), RendererError> {
@@ -2211,6 +2317,7 @@ impl GpuInstancePreprocessor {
     }
 }
 
+#[cfg(any(not(target_arch = "wasm32"), test))]
 fn build_instances(
     scene: &SceneBuffers,
     world_covariances: &[[[f32; 3]; 3]],
@@ -3406,7 +3513,7 @@ unsafe fn dot_sh_terms_neon(basis: &[f32; 24], rest: &[f32], count: usize) -> f3
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[derive(Debug, Error)]
+#[derive(Debug, Error, PartialEq, Eq)]
 enum GpuRasterError {
     #[error("no compatible wgpu adapter")]
     AdapterUnavailable,
@@ -3414,12 +3521,56 @@ enum GpuRasterError {
     DeviceCreation,
     #[error("invalid render dimensions")]
     InvalidDimensions,
+    #[error(
+        "render dimensions {width}x{height} exceed the device 2D texture limit {max_dimension}"
+    )]
+    DimensionsUnsupported {
+        width: u32,
+        height: u32,
+        max_dimension: u32,
+    },
+    #[error(
+        "render instance buffer requires {requested_bytes} bytes but the device limit is {max_bytes}"
+    )]
+    InstanceBufferUnsupported {
+        requested_bytes: u64,
+        max_bytes: u64,
+    },
     #[error("failed to read back render target")]
     ReadbackFailed,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+impl From<GpuRasterError> for RendererError {
+    fn from(error: GpuRasterError) -> Self {
+        match error {
+            GpuRasterError::AdapterUnavailable => Self::GpuRasterizerUnavailable,
+            GpuRasterError::DeviceCreation => Self::GpuDeviceCreation,
+            GpuRasterError::InvalidDimensions => Self::InvalidConfig,
+            GpuRasterError::DimensionsUnsupported {
+                width,
+                height,
+                max_dimension,
+            } => Self::GpuDimensionsUnsupported {
+                width,
+                height,
+                max_dimension,
+            },
+            GpuRasterError::InstanceBufferUnsupported {
+                requested_bytes,
+                max_bytes,
+            } => Self::GpuInstanceBufferUnsupported {
+                requested_bytes,
+                max_bytes,
+            },
+            GpuRasterError::ReadbackFailed => Self::GpuReadback,
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 struct GpuRasterizer {
+    adapter_info: wgpu::AdapterInfo,
     device: wgpu::Device,
     queue: wgpu::Queue,
     pipeline: wgpu::RenderPipeline,
@@ -3427,6 +3578,8 @@ struct GpuRasterizer {
     output_texture: wgpu::Texture,
     output_view: wgpu::TextureView,
     output_size: (u32, u32),
+    max_texture_dimension_2d: u32,
+    max_instance_buffer_bytes: u64,
     instance_buffer: wgpu::Buffer,
     instance_capacity: usize,
     bind_group: wgpu::BindGroup,
@@ -3453,17 +3606,26 @@ impl GpuRasterizer {
             .await
             .map_err(|_| GpuRasterError::AdapterUnavailable)?;
 
+        let adapter_info = adapter.get_info();
+        let required_limits = offscreen_device_limits(config, &adapter.limits())?;
+
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 label: wgpu_label("gsplat-render-device"),
                 required_features: wgpu::Features::empty(),
-                required_limits: wgpu::Limits::downlevel_defaults(),
+                required_limits,
                 experimental_features: wgpu::ExperimentalFeatures::disabled(),
                 memory_hints: wgpu::MemoryHints::Performance,
                 trace: wgpu::Trace::Off,
             })
             .await
             .map_err(|_| GpuRasterError::DeviceCreation)?;
+
+        let device_limits = device.limits();
+        let max_texture_dimension_2d = device_limits.max_texture_dimension_2d;
+        let max_instance_buffer_bytes = device_limits
+            .max_buffer_size
+            .min(u64::from(device_limits.max_storage_buffer_binding_size));
 
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: wgpu_label("splat-shader"),
@@ -3527,12 +3689,17 @@ impl GpuRasterizer {
             cache: None,
         });
 
-        let (output_texture, output_view) =
-            create_output_target(&device, config.width, config.height)?;
+        let (output_texture, output_view) = create_output_target(
+            &device,
+            config.width,
+            config.height,
+            max_texture_dimension_2d,
+        )?;
         let (instance_buffer, bind_group) =
-            create_instance_resources(&device, &bind_group_layout, 1);
+            create_instance_resources(&device, &bind_group_layout, 1, max_instance_buffer_bytes)?;
 
         Ok(Self {
+            adapter_info,
             device,
             queue,
             pipeline,
@@ -3540,6 +3707,8 @@ impl GpuRasterizer {
             output_texture,
             output_view,
             output_size: (config.width, config.height),
+            max_texture_dimension_2d,
+            max_instance_buffer_bytes,
             instance_buffer,
             instance_capacity: 1,
             bind_group,
@@ -3552,7 +3721,7 @@ impl GpuRasterizer {
         instances: &[GpuInstance],
     ) -> Result<(), GpuRasterError> {
         self.ensure_output_target(config.width, config.height)?;
-        self.ensure_instance_capacity(instances.len().max(1));
+        self.ensure_instance_capacity(instances.len().max(1))?;
 
         if !instances.is_empty() {
             self.queue
@@ -3683,25 +3852,73 @@ impl GpuRasterizer {
             return Ok(());
         }
 
-        let (texture, view) = create_output_target(&self.device, width, height)?;
+        let (texture, view) =
+            create_output_target(&self.device, width, height, self.max_texture_dimension_2d)?;
         self.output_texture = texture;
         self.output_view = view;
         self.output_size = (width, height);
         Ok(())
     }
 
-    fn ensure_instance_capacity(&mut self, required: usize) {
+    fn ensure_instance_capacity(&mut self, required: usize) -> Result<(), GpuRasterError> {
         if required <= self.instance_capacity {
-            return;
+            return Ok(());
         }
 
-        let new_capacity = required.next_power_of_two();
-        let (buffer, bind_group) =
-            create_instance_resources(&self.device, &self.bind_group_layout, new_capacity);
+        self.validate_instance_capacity(required)?;
+
+        let stride = std::mem::size_of::<GpuInstance>() as u64;
+        let max_capacity = usize::try_from(self.max_instance_buffer_bytes / stride)
+            .unwrap_or(usize::MAX)
+            .max(1);
+        let new_capacity = required
+            .checked_next_power_of_two()
+            .unwrap_or(required)
+            .min(max_capacity)
+            .max(required);
+        let (buffer, bind_group) = create_instance_resources(
+            &self.device,
+            &self.bind_group_layout,
+            new_capacity,
+            self.max_instance_buffer_bytes,
+        )?;
         self.instance_buffer = buffer;
         self.bind_group = bind_group;
         self.instance_capacity = new_capacity;
+        Ok(())
     }
+
+    fn validate_instance_capacity(&self, required: usize) -> Result<(), GpuRasterError> {
+        checked_instance_buffer_size(required, self.max_instance_buffer_bytes).map(|_| ())
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn offscreen_device_limits(
+    config: &RendererConfig,
+    adapter_limits: &wgpu::Limits,
+) -> Result<wgpu::Limits, GpuRasterError> {
+    if config.width == 0 || config.height == 0 {
+        return Err(GpuRasterError::InvalidDimensions);
+    }
+
+    let requested_dimension = config.width.max(config.height);
+    if requested_dimension > adapter_limits.max_texture_dimension_2d {
+        return Err(GpuRasterError::DimensionsUnsupported {
+            width: config.width,
+            height: config.height,
+            max_dimension: adapter_limits.max_texture_dimension_2d,
+        });
+    }
+
+    let mut required_limits = wgpu::Limits::downlevel_defaults();
+    required_limits.max_texture_dimension_2d = required_limits
+        .max_texture_dimension_2d
+        .max(requested_dimension);
+    if !required_limits.check_limits(adapter_limits) {
+        return Err(GpuRasterError::DeviceCreation);
+    }
+    Ok(required_limits)
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -3709,9 +3926,17 @@ fn create_output_target(
     device: &wgpu::Device,
     width: u32,
     height: u32,
+    max_texture_dimension_2d: u32,
 ) -> Result<(wgpu::Texture, wgpu::TextureView), GpuRasterError> {
     if width == 0 || height == 0 {
         return Err(GpuRasterError::InvalidDimensions);
+    }
+    if width > max_texture_dimension_2d || height > max_texture_dimension_2d {
+        return Err(GpuRasterError::DimensionsUnsupported {
+            width,
+            height,
+            max_dimension: max_texture_dimension_2d,
+        });
     }
 
     let texture = device.create_texture(&wgpu::TextureDescriptor {
@@ -3738,9 +3963,9 @@ fn create_instance_resources(
     device: &wgpu::Device,
     bind_group_layout: &wgpu::BindGroupLayout,
     capacity: usize,
-) -> (wgpu::Buffer, wgpu::BindGroup) {
-    let stride = std::mem::size_of::<GpuInstance>() as u64;
-    let size = stride * (capacity.max(1) as u64);
+    max_instance_buffer_bytes: u64,
+) -> Result<(wgpu::Buffer, wgpu::BindGroup), GpuRasterError> {
+    let size = checked_instance_buffer_size(capacity, max_instance_buffer_bytes)?;
 
     let buffer = device.create_buffer(&wgpu::BufferDescriptor {
         label: wgpu_label("splat-instance-buffer"),
@@ -3758,13 +3983,40 @@ fn create_instance_resources(
         }],
     });
 
-    (buffer, bind_group)
+    Ok((buffer, bind_group))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn checked_instance_buffer_size(
+    capacity: usize,
+    max_instance_buffer_bytes: u64,
+) -> Result<u64, GpuRasterError> {
+    let capacity =
+        u64::try_from(capacity.max(1)).map_err(|_| GpuRasterError::InstanceBufferUnsupported {
+            requested_bytes: u64::MAX,
+            max_bytes: max_instance_buffer_bytes,
+        })?;
+    let size = (std::mem::size_of::<GpuInstance>() as u64)
+        .checked_mul(capacity)
+        .ok_or(GpuRasterError::InstanceBufferUnsupported {
+            requested_bytes: u64::MAX,
+            max_bytes: max_instance_buffer_bytes,
+        })?;
+    if size > max_instance_buffer_bytes {
+        return Err(GpuRasterError::InstanceBufferUnsupported {
+            requested_bytes: size,
+            max_bytes: max_instance_buffer_bytes,
+        });
+    }
+    Ok(size)
 }
 
 #[cfg(test)]
 mod tests {
     use gsplat_core::{Camera, ErrorCode, RenderMode, RendererConfig, SceneBuffers, Vec3f};
 
+    #[cfg(not(target_arch = "wasm32"))]
+    use super::{GpuRasterError, checked_instance_buffer_size, offscreen_device_limits};
     use super::{
         Renderer, build_instances, ellipse_axes_from_covariance, project_covariance_to_ndc,
         quat_inverse,
@@ -3783,14 +4035,15 @@ mod tests {
     }
 
     #[test]
-    fn sorted_alpha_pipeline_renders_visible_gaussians() {
-        let mut renderer = Renderer::new(RenderMode::SortedAlpha).unwrap();
+    fn sorted_alpha_pipeline_builds_visible_gaussians() {
+        let mut renderer = Renderer::new_for_surface(RenderMode::SortedAlpha).unwrap();
         renderer.load_scene(build_scene()).unwrap();
 
-        let stats = renderer.render_frame(&Camera::default()).unwrap();
+        let (instances, stats) = renderer.build_sorted_instances(&Camera::default()).unwrap();
 
         assert_eq!(stats.visible_count, 2);
         assert_eq!(stats.drawn_count, 2);
+        assert_eq!(instances.len(), 2);
     }
 
     #[test]
@@ -3810,7 +4063,7 @@ mod tests {
             sh_degree: 0,
             sh_rest: None,
         };
-        let mut renderer = Renderer::new(RenderMode::SortedAlpha).unwrap();
+        let mut renderer = Renderer::new_for_surface(RenderMode::SortedAlpha).unwrap();
         renderer.load_scene(scene).unwrap();
 
         let stats = renderer
@@ -3824,7 +4077,7 @@ mod tests {
 
     #[test]
     fn preprocess_rejects_missing_scene() {
-        let renderer = Renderer::new(RenderMode::SortedAlpha).unwrap();
+        let renderer = Renderer::new_for_surface(RenderMode::SortedAlpha).unwrap();
         let err = renderer.preprocess_visible(&Camera::default()).unwrap_err();
         assert_eq!(
             err.code() as i32,
@@ -3833,13 +4086,13 @@ mod tests {
     }
 
     #[test]
-    fn render_frame_rejects_invalid_camera() {
-        let mut renderer = Renderer::new(RenderMode::SortedAlpha).unwrap();
+    fn preprocess_rejects_invalid_camera() {
+        let mut renderer = Renderer::new_for_surface(RenderMode::SortedAlpha).unwrap();
         renderer.load_scene(build_scene()).unwrap();
         let mut camera = Camera::default();
         camera.intrinsics.vertical_fov_radians = 0.0;
 
-        let err = renderer.render_frame(&camera).unwrap_err();
+        let err = renderer.preprocess_visible(&camera).unwrap_err();
 
         assert_eq!(err.code(), ErrorCode::InvalidArgument);
     }
@@ -3850,9 +4103,99 @@ mod tests {
     }
 
     #[test]
-    fn renderer_constructs_without_required_gpu_adapter() {
-        let renderer = Renderer::new(RenderMode::SortedAlpha).unwrap();
-        let _ = renderer.has_gpu_rasterizer();
+    fn surface_renderer_constructs_without_offscreen_gpu() {
+        let renderer = Renderer::new_for_surface(RenderMode::SortedAlpha).unwrap();
+        assert!(!renderer.has_gpu_rasterizer());
+    }
+
+    #[test]
+    fn surface_renderer_rejects_offscreen_render() {
+        let mut renderer = Renderer::new_for_surface(RenderMode::SortedAlpha).unwrap();
+        renderer.load_scene(build_scene()).unwrap();
+
+        let err = renderer.render_frame(&Camera::default()).unwrap_err();
+
+        assert!(matches!(
+            err,
+            super::RendererError::GpuRasterizerUnavailable
+        ));
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn offscreen_limits_reject_unsupported_dimensions_before_device_creation() {
+        let adapter_limits = wgpu::Limits::downlevel_defaults();
+        let config = RendererConfig {
+            width: 4096,
+            height: 2160,
+            mode: RenderMode::SortedAlpha,
+        };
+
+        let err = offscreen_device_limits(&config, &adapter_limits).unwrap_err();
+
+        assert_eq!(
+            err,
+            GpuRasterError::DimensionsUnsupported {
+                width: 4096,
+                height: 2160,
+                max_dimension: 2048,
+            }
+        );
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn offscreen_limits_request_only_the_needed_texture_dimension() {
+        let mut adapter_limits = wgpu::Limits::downlevel_defaults();
+        adapter_limits.max_texture_dimension_2d = 8192;
+        let config = RendererConfig {
+            width: 4096,
+            height: 2160,
+            mode: RenderMode::SortedAlpha,
+        };
+
+        let requested = offscreen_device_limits(&config, &adapter_limits).unwrap();
+
+        assert_eq!(requested.max_texture_dimension_2d, 4096);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn instance_buffer_limit_is_reported_before_resource_creation() {
+        let stride = std::mem::size_of::<super::GpuInstance>() as u64;
+        let max_bytes = stride * 2;
+
+        let err = checked_instance_buffer_size(3, max_bytes).unwrap_err();
+
+        assert_eq!(
+            err,
+            GpuRasterError::InstanceBufferUnsupported {
+                requested_bytes: stride * 3,
+                max_bytes,
+            }
+        );
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn four_k_offscreen_construction_never_unwinds() {
+        let config = RendererConfig {
+            width: 4096,
+            height: 64,
+            mode: RenderMode::SortedAlpha,
+        };
+
+        let result = std::panic::catch_unwind(|| Renderer::with_config(config));
+
+        assert!(result.is_ok(), "4K construction must return a Result");
+        if let Err(error) = result.unwrap() {
+            assert!(matches!(
+                error,
+                super::RendererError::GpuRasterizerUnavailable
+                    | super::RendererError::GpuDeviceCreation
+                    | super::RendererError::GpuDimensionsUnsupported { .. }
+            ));
+        }
     }
 
     #[test]

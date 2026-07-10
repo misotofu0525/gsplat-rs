@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 use std::fs;
+use std::mem::size_of;
 use std::path::Path;
 
 use gsplat_core::{ErrorCode, SceneBuffers, Vec3f};
@@ -15,6 +16,35 @@ const REQUIRED_VERTEX_FIELDS: [&str; 14] = [
 // Scaniverse can encode exactly transparent/opaque splats as infinite logits.
 // A finite clamp preserves the post-sigmoid alpha while keeping SceneBuffers valid.
 const OPACITY_LOGIT_LIMIT: f32 = 16.0;
+const MIB: usize = 1024 * 1024;
+const GIB: usize = 1024 * MIB;
+
+/// Resource budgets applied while reading and decoding a PLY scene.
+///
+/// The defaults admit the repository's current large-scene validation corpus
+/// while rejecting forged headers that would otherwise request unbounded
+/// allocations. Applications with tighter memory budgets should pass smaller
+/// values through the limit-aware loading functions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PlyLoadLimits {
+    pub max_input_bytes: usize,
+    pub max_header_bytes: usize,
+    pub max_vertices: usize,
+    pub max_vertex_properties: usize,
+    pub max_scene_bytes: usize,
+}
+
+impl Default for PlyLoadLimits {
+    fn default() -> Self {
+        Self {
+            max_input_bytes: GIB,
+            max_header_bytes: MIB,
+            max_vertices: 5_000_000,
+            max_vertex_properties: 128,
+            max_scene_bytes: GIB,
+        }
+    }
+}
 
 // Common 3DGS PLYs (COLMAP/OpenCV-style) are authored in RDF coordinates:
 // +X right, +Y down, +Z forward. The runtime camera path in this workspace uses
@@ -116,6 +146,16 @@ pub enum PlyLoadError {
     VertexCountMismatch,
     #[error("parsed scene buffers are inconsistent")]
     InvalidScene,
+    #[error("PLY resource limit exceeded for {resource}: requested {requested}, limit {limit}")]
+    ResourceLimit {
+        resource: &'static str,
+        requested: usize,
+        limit: usize,
+    },
+    #[error("PLY resource size overflow while computing {0}")]
+    ResourceSizeOverflow(&'static str),
+    #[error("failed to reserve memory for PLY {0}")]
+    AllocationFailed(&'static str),
 }
 
 impl PlyLoadError {
@@ -129,31 +169,68 @@ impl PlyLoadError {
             | Self::ParseNumber
             | Self::VertexCountMismatch
             | Self::InvalidScene => ErrorCode::ParseFailed,
+            Self::ResourceLimit { .. } | Self::ResourceSizeOverflow(_) => ErrorCode::Unsupported,
+            Self::AllocationFailed(_) => ErrorCode::Internal,
         }
     }
 }
 
 pub fn load_ply(path: &Path) -> Result<PlyLoadResult, PlyLoadError> {
-    let raw = fs::read(path).map_err(|_| PlyLoadError::Io)?;
-    parse_ply_bytes(&raw)
+    load_ply_with_limits(path, PlyLoadLimits::default())
+}
+
+/// Load and decode a PLY scene with explicit resource budgets.
+pub fn load_ply_with_limits(
+    path: &Path,
+    limits: PlyLoadLimits,
+) -> Result<PlyLoadResult, PlyLoadError> {
+    let raw = read_ply_bytes_with_limits(path, limits)?;
+    parse_ply_bytes_with_limits(&raw, limits)
 }
 
 pub fn load_ply_summary(path: &Path) -> Result<PlySceneSummary, PlyLoadError> {
-    Ok(load_ply(path)?.summary)
+    load_ply_summary_with_limits(path, PlyLoadLimits::default())
+}
+
+/// Read PLY header metadata without constructing full scene buffers.
+pub fn load_ply_summary_with_limits(
+    path: &Path,
+    limits: PlyLoadLimits,
+) -> Result<PlySceneSummary, PlyLoadError> {
+    let raw = read_ply_bytes_with_limits(path, limits)?;
+    let (header, _) = split_header_body(&raw, limits)?;
+    summary_from_header(&header)
 }
 
 pub fn parse_ply_text(input: &str) -> Result<PlyLoadResult, PlyLoadError> {
+    parse_ply_text_with_limits(input, PlyLoadLimits::default())
+}
+
+/// Decode an ASCII PLY payload with explicit resource budgets.
+pub fn parse_ply_text_with_limits(
+    input: &str,
+    limits: PlyLoadLimits,
+) -> Result<PlyLoadResult, PlyLoadError> {
     // `parse_ply_text` is intended for textual PLY payloads; reject binary headers early to avoid
     // mis-parsing an ASCII body as binary bytes.
-    let (header, _) = split_header_body(input.as_bytes())?;
+    let (header, _) = split_header_body(input.as_bytes(), limits)?;
     if header.format != PlyFormat::Ascii {
         return Err(PlyLoadError::UnsupportedFormat);
     }
-    parse_ply_bytes(input.as_bytes())
+    parse_ply_bytes_with_limits(input.as_bytes(), limits)
 }
 
 pub fn parse_ply_bytes(input: &[u8]) -> Result<PlyLoadResult, PlyLoadError> {
-    let (header, body) = split_header_body(input)?;
+    parse_ply_bytes_with_limits(input, PlyLoadLimits::default())
+}
+
+/// Decode a PLY payload with explicit resource budgets.
+pub fn parse_ply_bytes_with_limits(
+    input: &[u8],
+    limits: PlyLoadLimits,
+) -> Result<PlyLoadResult, PlyLoadError> {
+    ensure_limit("input bytes", input.len(), limits.max_input_bytes)?;
+    let (header, body) = split_header_body(input, limits)?;
 
     let mut indices: HashMap<&str, usize> = HashMap::new();
     for (idx, prop) in header.vertex_properties.iter().enumerate() {
@@ -171,24 +248,15 @@ pub fn parse_ply_bytes(input: &[u8]) -> Result<PlyLoadResult, PlyLoadError> {
 
     let rest_stride = if has_sh_rest {
         let coeff_total = (sh_degree as usize + 1).pow(2);
-        3 * (coeff_total - 1)
+        3_usize
+            .checked_mul(coeff_total - 1)
+            .ok_or(PlyLoadError::ResourceSizeOverflow("SH coefficient stride"))?
     } else {
         0
     };
 
-    let mut scene = SceneBuffers {
-        positions: Vec::with_capacity(header.vertex_count),
-        opacity: Vec::with_capacity(header.vertex_count),
-        scale_xyz: Vec::with_capacity(header.vertex_count),
-        rotation_xyzw: Vec::with_capacity(header.vertex_count),
-        color_dc: Vec::with_capacity(header.vertex_count),
-        sh_degree,
-        sh_rest: if has_sh_rest {
-            Some(Vec::with_capacity(header.vertex_count * rest_stride))
-        } else {
-            None
-        },
-    };
+    validate_body_before_allocation(&header, body)?;
+    let mut scene = allocate_scene(&header, sh_degree, rest_stride, has_sh_rest, limits)?;
 
     match header.format {
         PlyFormat::Ascii => {
@@ -222,6 +290,141 @@ pub fn parse_ply_bytes(input: &[u8]) -> Result<PlyLoadResult, PlyLoadError> {
             has_sh_rest: scene.sh_rest.is_some(),
         },
         scene,
+    })
+}
+
+fn read_ply_bytes_with_limits(path: &Path, limits: PlyLoadLimits) -> Result<Vec<u8>, PlyLoadError> {
+    let metadata = fs::metadata(path).map_err(|_| PlyLoadError::Io)?;
+    let input_len = usize::try_from(metadata.len())
+        .map_err(|_| PlyLoadError::ResourceSizeOverflow("input bytes"))?;
+    ensure_limit("input bytes", input_len, limits.max_input_bytes)?;
+
+    let raw = fs::read(path).map_err(|_| PlyLoadError::Io)?;
+    ensure_limit("input bytes", raw.len(), limits.max_input_bytes)?;
+    Ok(raw)
+}
+
+fn ensure_limit(
+    resource: &'static str,
+    requested: usize,
+    limit: usize,
+) -> Result<(), PlyLoadError> {
+    if requested > limit {
+        Err(PlyLoadError::ResourceLimit {
+            resource,
+            requested,
+            limit,
+        })
+    } else {
+        Ok(())
+    }
+}
+
+fn try_vec_with_capacity<T>(
+    resource: &'static str,
+    capacity: usize,
+) -> Result<Vec<T>, PlyLoadError> {
+    let mut values = Vec::new();
+    values
+        .try_reserve_exact(capacity)
+        .map_err(|_| PlyLoadError::AllocationFailed(resource))?;
+    Ok(values)
+}
+
+fn allocate_scene(
+    header: &PlyHeader,
+    sh_degree: u8,
+    rest_stride: usize,
+    has_sh_rest: bool,
+    limits: PlyLoadLimits,
+) -> Result<SceneBuffers, PlyLoadError> {
+    let base_stride = size_of::<Vec3f>()
+        .checked_add(size_of::<f32>())
+        .and_then(|value| value.checked_add(size_of::<[f32; 3]>() * 2))
+        .and_then(|value| value.checked_add(size_of::<[f32; 4]>()))
+        .ok_or(PlyLoadError::ResourceSizeOverflow("base scene stride"))?;
+    let base_bytes = header
+        .vertex_count
+        .checked_mul(base_stride)
+        .ok_or(PlyLoadError::ResourceSizeOverflow("base scene bytes"))?;
+    let rest_capacity =
+        if has_sh_rest {
+            header.vertex_count.checked_mul(rest_stride).ok_or(
+                PlyLoadError::ResourceSizeOverflow("SH coefficient capacity"),
+            )?
+        } else {
+            0
+        };
+    let rest_bytes = rest_capacity
+        .checked_mul(size_of::<f32>())
+        .ok_or(PlyLoadError::ResourceSizeOverflow("SH coefficient bytes"))?;
+    let scene_bytes = base_bytes
+        .checked_add(rest_bytes)
+        .ok_or(PlyLoadError::ResourceSizeOverflow("total scene bytes"))?;
+    ensure_limit("decoded scene bytes", scene_bytes, limits.max_scene_bytes)?;
+
+    Ok(SceneBuffers {
+        positions: try_vec_with_capacity("positions", header.vertex_count)?,
+        opacity: try_vec_with_capacity("opacity", header.vertex_count)?,
+        scale_xyz: try_vec_with_capacity("scales", header.vertex_count)?,
+        rotation_xyzw: try_vec_with_capacity("rotations", header.vertex_count)?,
+        color_dc: try_vec_with_capacity("DC colors", header.vertex_count)?,
+        sh_degree,
+        sh_rest: if has_sh_rest {
+            Some(try_vec_with_capacity("SH coefficients", rest_capacity)?)
+        } else {
+            None
+        },
+    })
+}
+
+fn validate_body_before_allocation(header: &PlyHeader, body: &[u8]) -> Result<(), PlyLoadError> {
+    match header.format {
+        PlyFormat::Ascii => {
+            let body_text =
+                std::str::from_utf8(body).map_err(|_| PlyLoadError::UnsupportedFormat)?;
+            let available_rows = body_text
+                .lines()
+                .filter(|line| {
+                    let trimmed = line.trim();
+                    !trimmed.is_empty() && !trimmed.starts_with("comment")
+                })
+                .take(header.vertex_count)
+                .count();
+            if available_rows < header.vertex_count {
+                return Err(PlyLoadError::VertexCountMismatch);
+            }
+        }
+        PlyFormat::BinaryLittleEndian | PlyFormat::BinaryBigEndian => {
+            let (stride, _) = compute_vertex_layout(header)?;
+            let required_bytes = header
+                .vertex_count
+                .checked_mul(stride)
+                .ok_or(PlyLoadError::ResourceSizeOverflow("binary body bytes"))?;
+            if body.len() < required_bytes {
+                return Err(PlyLoadError::VertexCountMismatch);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn summary_from_header(header: &PlyHeader) -> Result<PlySceneSummary, PlyLoadError> {
+    for required in REQUIRED_VERTEX_FIELDS {
+        if !header
+            .vertex_properties
+            .iter()
+            .any(|property| property.name == required)
+        {
+            return Err(PlyLoadError::MissingField(required));
+        }
+    }
+
+    let (sh_degree, sh_rest_prop_indices) = infer_sh_rest_layout(header)?;
+    Ok(PlySceneSummary {
+        gaussians: header.vertex_count,
+        sh_degree,
+        has_sh_rest: sh_degree > 0 && sh_rest_prop_indices.is_some(),
     })
 }
 
@@ -268,24 +471,37 @@ struct PlyHeader {
     vertex_properties: Vec<PlyProperty>,
 }
 
-fn split_header_body(input: &[u8]) -> Result<(PlyHeader, &[u8]), PlyLoadError> {
+fn split_header_body(
+    input: &[u8],
+    limits: PlyLoadLimits,
+) -> Result<(PlyHeader, &[u8]), PlyLoadError> {
     // The header is always ASCII, even for binary PLY.
     let mut cursor = 0_usize;
     let mut header_end: Option<usize> = None;
     while cursor < input.len() {
-        let line_end = input[cursor..]
+        let scan_end = input.len().min(limits.max_header_bytes.saturating_add(1));
+        if cursor >= scan_end {
+            return Err(PlyLoadError::ResourceLimit {
+                resource: "header bytes",
+                requested: cursor.saturating_add(1),
+                limit: limits.max_header_bytes,
+            });
+        }
+        let line_end = input[cursor..scan_end]
             .iter()
             .position(|&b| b == b'\n')
             .map(|idx| cursor + idx)
-            .unwrap_or(input.len());
+            .unwrap_or(scan_end);
+        let next_cursor = if line_end < input.len() {
+            line_end + 1
+        } else {
+            line_end
+        };
+        ensure_limit("header bytes", next_cursor, limits.max_header_bytes)?;
         let line_bytes = &input[cursor..line_end];
         let line = std::str::from_utf8(line_bytes).map_err(|_| PlyLoadError::MalformedHeader)?;
         if line.trim_end_matches('\r').trim() == "end_header" {
-            header_end = Some(if line_end < input.len() {
-                line_end + 1
-            } else {
-                line_end
-            });
+            header_end = Some(next_cursor);
             break;
         }
         cursor = line_end.saturating_add(1);
@@ -294,11 +510,11 @@ fn split_header_body(input: &[u8]) -> Result<(PlyHeader, &[u8]), PlyLoadError> {
     let header_end = header_end.ok_or(PlyLoadError::MalformedHeader)?;
     let header_text =
         std::str::from_utf8(&input[..header_end]).map_err(|_| PlyLoadError::MalformedHeader)?;
-    let header = parse_header_text(header_text)?;
+    let header = parse_header_text(header_text, limits)?;
     Ok((header, &input[header_end..]))
 }
 
-fn parse_header_text(input: &str) -> Result<PlyHeader, PlyLoadError> {
+fn parse_header_text(input: &str, limits: PlyLoadLimits) -> Result<PlyHeader, PlyLoadError> {
     let mut lines = input.lines();
     if lines.next().map(str::trim) != Some("ply") {
         return Err(PlyLoadError::MalformedHeader);
@@ -339,10 +555,11 @@ fn parse_header_text(input: &str) -> Result<PlyHeader, PlyLoadError> {
 
                 in_vertex_element = element == Some("vertex");
                 if in_vertex_element {
-                    vertex_count = count
+                    let count = count
                         .and_then(|s| s.parse::<usize>().ok())
-                        .ok_or(PlyLoadError::MalformedHeader)
-                        .map(Some)?;
+                        .ok_or(PlyLoadError::MalformedHeader)?;
+                    ensure_limit("vertices", count, limits.max_vertices)?;
+                    vertex_count = Some(count);
                 }
             }
             Some("property") if in_vertex_element => {
@@ -352,6 +569,11 @@ fn parse_header_text(input: &str) -> Result<PlyHeader, PlyLoadError> {
                 }
                 let name = parts.next().ok_or(PlyLoadError::MalformedHeader)?;
                 let scalar_ty = parse_scalar_type(ty).ok_or(PlyLoadError::MalformedHeader)?;
+                ensure_limit(
+                    "vertex properties",
+                    vertex_properties.len().saturating_add(1),
+                    limits.max_vertex_properties,
+                )?;
                 vertex_properties.push(PlyProperty {
                     name: name.to_owned(),
                     ty: scalar_ty,
@@ -584,7 +806,10 @@ fn parse_binary_body(
     scene: &mut SceneBuffers,
 ) -> Result<(), PlyLoadError> {
     let (stride, offsets) = compute_vertex_layout(header)?;
-    let required_bytes = header.vertex_count.saturating_mul(stride);
+    let required_bytes = header
+        .vertex_count
+        .checked_mul(stride)
+        .ok_or(PlyLoadError::ResourceSizeOverflow("binary body bytes"))?;
     if body.len() < required_bytes {
         return Err(PlyLoadError::VertexCountMismatch);
     }
@@ -779,7 +1004,12 @@ fn normalize_opacity_logit(value: f32) -> Result<f32, PlyLoadError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{OPACITY_LOGIT_LIMIT, PlyLoadError, parse_ply_bytes, parse_ply_text};
+    use gsplat_core::ErrorCode;
+
+    use super::{
+        OPACITY_LOGIT_LIMIT, PlyFormat, PlyHeader, PlyLoadError, PlyLoadLimits, allocate_scene,
+        parse_ply_bytes, parse_ply_bytes_with_limits, parse_ply_text, parse_ply_text_with_limits,
+    };
 
     const VALID_PLY: &str = "ply\nformat ascii 1.0\nelement vertex 1\nproperty float x\nproperty float y\nproperty float z\nproperty float opacity\nproperty float scale_0\nproperty float scale_1\nproperty float scale_2\nproperty float rot_0\nproperty float rot_1\nproperty float rot_2\nproperty float rot_3\nproperty float f_dc_0\nproperty float f_dc_1\nproperty float f_dc_2\nend_header\n0.0 0.1 1.0 0.9 1.0 1.1 1.2 1.0 0.0 0.0 0.0 0.2 0.3 0.4\n";
     const VALID_PLY_NON_IDENTITY_QUAT: &str = "ply\nformat ascii 1.0\nelement vertex 1\nproperty float x\nproperty float y\nproperty float z\nproperty float opacity\nproperty float scale_0\nproperty float scale_1\nproperty float scale_2\nproperty float rot_0\nproperty float rot_1\nproperty float rot_2\nproperty float rot_3\nproperty float f_dc_0\nproperty float f_dc_1\nproperty float f_dc_2\nend_header\n0.0 0.1 1.0 0.9 1.0 1.1 1.2 0.9 0.2 0.3 0.4 0.2 0.3 0.4\n";
@@ -880,6 +1110,78 @@ mod tests {
     }
 
     #[test]
+    fn rejects_vertex_count_above_default_limit() {
+        let broken = VALID_PLY.replace("element vertex 1", "element vertex 5000001");
+        let err = parse_ply_text(&broken).unwrap_err();
+        assert_eq!(
+            err,
+            PlyLoadError::ResourceLimit {
+                resource: "vertices",
+                requested: 5_000_001,
+                limit: 5_000_000,
+            }
+        );
+        assert_eq!(err.code(), ErrorCode::Unsupported);
+    }
+
+    #[test]
+    fn enforces_custom_input_and_header_limits() {
+        let input_limit = PlyLoadLimits {
+            max_input_bytes: VALID_PLY.len() - 1,
+            ..PlyLoadLimits::default()
+        };
+        assert_eq!(
+            parse_ply_bytes_with_limits(VALID_PLY.as_bytes(), input_limit).unwrap_err(),
+            PlyLoadError::ResourceLimit {
+                resource: "input bytes",
+                requested: VALID_PLY.len(),
+                limit: VALID_PLY.len() - 1,
+            }
+        );
+
+        let header_limit = PlyLoadLimits {
+            max_header_bytes: 3,
+            ..PlyLoadLimits::default()
+        };
+        assert!(matches!(
+            parse_ply_text_with_limits(VALID_PLY, header_limit),
+            Err(PlyLoadError::ResourceLimit {
+                resource: "header bytes",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn enforces_custom_property_and_scene_limits() {
+        let property_limit = PlyLoadLimits {
+            max_vertex_properties: 13,
+            ..PlyLoadLimits::default()
+        };
+        assert_eq!(
+            parse_ply_text_with_limits(VALID_PLY, property_limit).unwrap_err(),
+            PlyLoadError::ResourceLimit {
+                resource: "vertex properties",
+                requested: 14,
+                limit: 13,
+            }
+        );
+
+        let scene_limit = PlyLoadLimits {
+            max_scene_bytes: 55,
+            ..PlyLoadLimits::default()
+        };
+        assert_eq!(
+            parse_ply_text_with_limits(VALID_PLY, scene_limit).unwrap_err(),
+            PlyLoadError::ResourceLimit {
+                resource: "decoded scene bytes",
+                requested: 56,
+                limit: 55,
+            }
+        );
+    }
+
+    #[test]
     fn parses_header_without_trailing_newline() {
         let no_newline = "ply\nformat ascii 1.0\nelement vertex 0\nproperty float x\nproperty float y\nproperty float z\nproperty float opacity\nproperty float scale_0\nproperty float scale_1\nproperty float scale_2\nproperty float rot_0\nproperty float rot_1\nproperty float rot_2\nproperty float rot_3\nproperty float f_dc_0\nproperty float f_dc_1\nproperty float f_dc_2\nend_header";
         let result = parse_ply_bytes(no_newline.as_bytes()).unwrap();
@@ -941,6 +1243,41 @@ mod tests {
 
         let err = parse_ply_bytes(&bytes).unwrap_err();
         assert_eq!(err, PlyLoadError::VertexCountMismatch);
+    }
+
+    #[test]
+    fn rejects_binary_body_size_overflow_before_allocation() {
+        let header = format!(
+            "ply\nformat binary_little_endian 1.0\nelement vertex {}\nproperty float x\nproperty float y\nproperty float z\nproperty float opacity\nproperty float scale_0\nproperty float scale_1\nproperty float scale_2\nproperty float rot_0\nproperty float rot_1\nproperty float rot_2\nproperty float rot_3\nproperty float f_dc_0\nproperty float f_dc_1\nproperty float f_dc_2\nend_header\n",
+            usize::MAX
+        );
+        let limits = PlyLoadLimits {
+            max_vertices: usize::MAX,
+            ..PlyLoadLimits::default()
+        };
+
+        let err = parse_ply_bytes_with_limits(header.as_bytes(), limits).unwrap_err();
+        assert_eq!(err, PlyLoadError::ResourceSizeOverflow("binary body bytes"));
+    }
+
+    #[test]
+    fn rejects_sh_capacity_overflow_before_allocation() {
+        let header = PlyHeader {
+            format: PlyFormat::Ascii,
+            vertex_count: usize::MAX / 56,
+            vertex_properties: Vec::new(),
+        };
+        let limits = PlyLoadLimits {
+            max_vertices: usize::MAX,
+            max_scene_bytes: usize::MAX,
+            ..PlyLoadLimits::default()
+        };
+
+        let err = allocate_scene(&header, 1, 64, true, limits).unwrap_err();
+        assert_eq!(
+            err,
+            PlyLoadError::ResourceSizeOverflow("SH coefficient capacity")
+        );
     }
 
     #[test]
