@@ -61,6 +61,11 @@
 - A cold release job compiles both debug conformance and release stability
   binaries before the 1800-second run, so a 40-minute timeout cannot reliably
   contain the documented gate; the job now allows 75 minutes.
+- Fresh hosted CI reported that the previously pinned checkout v4 runtime still
+  targeted deprecated Node 20 and was being forced onto Node 24. The current
+  official checkout v7, setup-node v6, setup-java v5, upload-artifact v7,
+  download-artifact v8, and action-gh-release v3 releases all declare Node 24;
+  their exact release commits are now pinned.
 
 ## Technical Decisions
 
@@ -89,6 +94,7 @@
 | Remove the unused Flowers image and document the CC0 Kitsune derivative | Only media with a clear redistribution basis should ship in the repository. |
 | Use software Vulkan for Linux compatibility and Metal for required GPU evidence | Headless Linux FFI tests remain executable without misrepresenting a software adapter as performance proof. |
 | Reject zero-work benchmark configurations | A performance gate must not pass by dividing empty measurements into NaN. |
+| Upgrade pinned Actions when hosted CI proves their embedded runtime is deprecated | Immutable SHAs prevent drift, but the pinned release still needs to match the supported runner runtime. |
 
 ## Required Regression Tests
 

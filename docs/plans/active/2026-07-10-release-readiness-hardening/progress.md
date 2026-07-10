@@ -115,6 +115,8 @@
   - Reran the final source matrix after all code/doc/workflow edits; Rust, Web, WASM, FFI, dependency, version, benchmark, short-stability, YAML, action-pin, and diff checks passed.
   - Committed the scoped release-readiness work as `ef4415b` and pushed `agent/kitsune-showcase` to origin.
   - Updated PR #13 to `Prepare gsplat-rs v0.1.0 prerelease`, replaced its body with the complete safety/release scope and current verification evidence, and marked it ready for review.
+  - Used the first hosted CI run as feedback: dependency policy, Mesa Vulkan setup, and Metal pixel conformance passed, but checkout v4 emitted a Node 20 deprecation annotation.
+  - Refreshed all JavaScript GitHub Actions to their current Node 24 releases while retaining immutable full-SHA pins.
 - Remaining external evidence:
   - Fresh GitHub CI/tag workflow execution requires committing and pushing this work.
   - The 1800-second stability bar is enforced in the tag workflow; the local preflight covered 60 seconds.
@@ -169,6 +171,7 @@
 | 2026-07-10 | Tried the removed cargo-deny `--disable-fetch` flag through the wrapper | 1 | Reran the canonical policy script without the unsupported flag; all checks passed. |
 | 2026-07-10 | Optional local Linux-container verification could not start because the Docker/Colima daemon was not running | 1 | Did not mutate local daemon state; added the explicit Mesa Vulkan runtime to Linux CI and left fresh hosted-runner proof for the pushed workflow. |
 | 2026-07-10 | GitHub PR update returned 422 because `maintainer_can_modify` is only valid for cross-repository PRs | 1 | The title/body update was applied; omitted that field from subsequent same-repository operations and successfully marked PR #13 ready. |
+| 2026-07-10 | Hosted CI annotated pinned checkout v4 because its Node 20 runtime is deprecated and forcibly upgraded | 1 | Verified current official releases and upgraded checkout/setup/artifact/release actions to Node 24 versions pinned by full commit SHA. |
 
 ## 5-Question Reboot Check
 
