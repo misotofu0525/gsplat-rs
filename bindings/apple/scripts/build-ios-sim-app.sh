@@ -11,8 +11,17 @@ fi
 
 ARCH="$(uname -m)"
 IOS_VERSION="${IOS_VERSION:-17.0}"
-DEFAULT_DATASET="tests/datasets/external/nvidia_flowers_1/flowers_1/flowers_1.ply"
-DATASET_PATH="${1:-$DEFAULT_DATASET}"
+KITSUNE_DATASET="tests/datasets/external/wakufactory_kitune/kitune1.ply"
+FLOWERS_DATASET="tests/datasets/external/nvidia_flowers_1/flowers_1/flowers_1.ply"
+DATASET_PATH="${1:-}"
+
+if [[ -z "$DATASET_PATH" ]]; then
+  if [[ -f "$ROOT_DIR/$KITSUNE_DATASET" ]]; then
+    DATASET_PATH="$KITSUNE_DATASET"
+  else
+    DATASET_PATH="$FLOWERS_DATASET"
+  fi
+fi
 
 case "$DATASET_PATH" in
   /*) DATASET_ABS="$DATASET_PATH" ;;
@@ -21,7 +30,9 @@ esac
 
 if [[ ! -f "$DATASET_ABS" ]]; then
   echo "missing dataset: $DATASET_PATH" >&2
-  echo "fetch the shared flower dataset first:" >&2
+  echo "fetch the default Kitsune showcase first:" >&2
+  echo "  bash tests/datasets/fetch-wakufactory-kitune.sh" >&2
+  echo "or fetch the Flowers fallback:" >&2
   echo "  bash tests/datasets/fetch-nvidia-flowers-1.sh" >&2
   exit 1
 fi
@@ -45,7 +56,8 @@ cargo build -p gsplat-ffi-c --target "$RUST_TARGET"
 rm -rf "$APP_BUNDLE"
 mkdir -p "$APP_BUNDLE"
 cp examples/ios/app/Info.plist "$APP_BUNDLE/Info.plist"
-cp "$DATASET_ABS" "$APP_BUNDLE/flowers_1.ply"
+cp "$DATASET_ABS" "$APP_BUNDLE/showcase.ply"
+basename "$DATASET_ABS" > "$APP_BUNDLE/showcase.name"
 
 xcrun --sdk iphonesimulator swiftc \
   bindings/apple/GsplatKit/Sources/GsplatKit/GsplatKit.swift \

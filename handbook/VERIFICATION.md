@@ -20,9 +20,16 @@ cargo check --workspace
 
 ```bash
 cargo test --workspace
+GSPLAT_REQUIRE_GPU_CONFORMANCE=1 cargo test -p gsplat-render-wgpu --test conformance_sorted_alpha
 ```
 
 - Run this when changing shared types, parsing, render logic, or CLI behavior.
+- The workspace test may skip pixel conformance when no native adapter exists.
+  Set `GSPLAT_REQUIRE_GPU_CONFORMANCE=1` on a GPU-backed runner to make adapter
+  absence a failure; CI and release run this requirement on macOS/Metal.
+- Linux CI installs Mesa Vulkan/Lavapipe so GPU-required offscreen and C ABI
+  paths have a deterministic software adapter; it is compatibility evidence,
+  while the macOS jobs provide the required hardware-backed Metal evidence.
 
 ## Code Hygiene and Docs
 
@@ -50,12 +57,14 @@ cargo check --workspace
 cargo fmt --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
+GSPLAT_REQUIRE_GPU_CONFORMANCE=1 cargo test -p gsplat-render-wgpu --test conformance_sorted_alpha
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
+bash tests/security/run-cargo-deny.sh
 node --check examples/web/src/main.js
 npm --prefix packages/web run check
 npm --prefix packages/web test
 npm --prefix packages/web run pack:dry-run
-cargo run -p bench-runner -- tests/datasets/minimal_ascii.ply 120
+cargo run --release -p bench-runner -- tests/datasets/minimal_ascii.ply 120 --warmup-iterations 10 --max-avg-gpu-complete-ms 250
 bash tests/ffi/run-ffi-smoke.sh
 bash bindings/android/scripts/run-jni-smoke.sh
 bash bindings/apple/scripts/run-swift-smoke.sh
@@ -184,16 +193,15 @@ bash bindings/android/scripts/build-sample-apk.sh
 ANDROID_SDK_ROOT="${ANDROID_SDK_ROOT:-$HOME/Library/Android/sdk}"
 ADB="$ANDROID_SDK_ROOT/platform-tools/adb"
 "$ADB" install -r examples/android/app/build/outputs/apk/debug/sample-app-debug.apk
-"$ADB" push tests/datasets/external/nvidia_flowers_1/flowers_1/flowers_1.ply /data/local/tmp/flowers_1.ply
-"$ADB" shell run-as com.gsplat.example mkdir -p files
-"$ADB" shell run-as com.gsplat.example cp /data/local/tmp/flowers_1.ply files/flowers_1.ply
-"$ADB" shell rm -f /data/local/tmp/flowers_1.ply
 "$ADB" shell am start -n com.gsplat.example/.MainActivity
 ```
 
-- Expected overlay includes `surface=wgpu realtime`, `state=rendering`, and `drawn=<surface_instances>/<visible_instances>`.
+- Expected first frame includes `Kitsune shrine`, `LIVE`, a non-zero splat count,
+  and frame time. Open `Studio` and confirm `surface=wgpu realtime`,
+  `state=rendering`, and `drawn=<surface_instances>/<visible_instances>`.
 - For repeatable perf checks, add the benchmark extras documented in `bindings/android/README.md` and read the `BENCHMARK_RESULT` logcat line.
-- Android emulator storage can be tight after pushing the flower PLY. If `adb install -r` reports insufficient storage, uninstall `com.gsplat.example`, reinstall, and push the dataset again.
+- The APK packages the selected scene as `assets/showcase.ply`. If `adb install -r`
+  reports insufficient storage, uninstall `com.gsplat.example` and reinstall.
 
 ## iOS Surface Smoke
 
@@ -205,13 +213,15 @@ bash bindings/apple/scripts/run-ios-sim-app.sh
 IOS_DEVICE_ID=<coredevice-id-or-udid> bash bindings/apple/scripts/run-ios-device-app.sh
 ```
 
-- Expected overlay includes `state=rendering`, `camera=<mode>`,
-  `dataset=flowers_1.ply`, and `drawn=<surface_instances>/<visible_instances>`.
+- Expected first frame includes `Kitsune shrine`, `LIVE`, `279199 SPLATS`, and
+  frame time. Open `Studio` and confirm `state=rendering`, `camera=<mode>`,
+  `dataset=kitune1.ply`, and `drawn=<surface_instances>/<visible_instances>`.
 - The simulator app bundle lives at `target/ios-sim-app/GsplatIOSExample.app`; the
   device app bundle lives at `target/ios-device-app/GsplatIOSExample.app`. Both
-  package `flowers_1.ply` from the shared dataset directory.
+  package the selected build-time dataset as `showcase.ply`, preferring Kitsune
+  and falling back to Flowers.
 - The app uses `Documents/imported_scene.ply` when present, otherwise the
-  bundled flower dataset, otherwise a generated minimal ASCII PLY fallback.
+  bundled showcase dataset, otherwise a generated minimal ASCII PLY fallback.
 - Touch smoke should include at least one one-finger swipe/orbit check in the
   simulator. Pinch zoom and two-finger pan use the same C ABI camera-control
   functions.
@@ -226,6 +236,7 @@ IOS_DEVICE_ID=<coredevice-id-or-udid> bash bindings/apple/scripts/run-ios-device
 Before cutting a release, also run:
 
 ```bash
+RELEASE_VERSION=<major.minor.patch> bash tests/release/check-version.sh
 STABILITY_SECONDS=1800 bash tests/perf/run-long-stability.sh
 ```
 
@@ -259,7 +270,7 @@ STABILITY_SECONDS=1800 bash tests/perf/run-long-stability.sh
   `bash bindings/apple/scripts/run-ios-sim-app.sh`; for offscreen simulator smoke
   changes, run `bash bindings/apple/scripts/run-ios-sim-smoke.sh`.
 - If you touch PLY import or scene normalization, run `cargo test --workspace` and `cargo run -p desktop-example -- tests/datasets/minimal_ascii.ply --png target/out.png`.
-- If you touch renderer, sorting, or perf-sensitive code, run `cargo run -p bench-runner -- tests/datasets/minimal_ascii.ply 120` and consider the long-stability script.
+- If you touch renderer, sorting, or perf-sensitive code, run `cargo run --release -p bench-runner -- tests/datasets/minimal_ascii.ply 120 --warmup-iterations 10 --max-avg-gpu-complete-ms 250` and consider the long-stability script. The runner reports CPU preprocessing, CPU sort, build/encode/submit, GPU wait, and GPU-complete frame time separately, together with adapter/backend/driver metadata.
 - If you touch `examples/web/`, run `node --check examples/web/src/main.js`
   and the Web Example smoke above. If you touch
   `packages/web/`, also run
@@ -281,6 +292,11 @@ cargo run -p bench-runner -- <scene.ply> --analyze-spatial
 - The lint and docs entrypoints are `cargo fmt --check`,
   `cargo clippy --workspace --all-targets -- -D warnings`, and
   `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps`.
+- Dependency advisory, license, duplicate-version, and source policy is
+  configured in `deny.toml` and checked with
+  `bash tests/security/run-cargo-deny.sh`.
+- The tag release contract and manual GitHub settings gates live in
+  `RELEASING.md`.
 
 ## Failure Triage
 

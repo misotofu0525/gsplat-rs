@@ -4,8 +4,9 @@ import QuartzCore
 import UIKit
 import UniformTypeIdentifiers
 
-private let bundleDatasetName = "flowers_1"
+private let bundleDatasetName = "showcase"
 private let bundleDatasetExtension = "ply"
+private let bundleDatasetLabelExtension = "name"
 private let importedPlyName = "imported_scene.ply"
 private let minimalPlyName = "minimal_ascii.ply"
 private let maxSurfaceSidePixels = 1600
@@ -13,6 +14,9 @@ private let orbitRadiansPerScreen: Float = 3.2
 private let touchEpsilon: Float = 0.0001
 private let zoomEpsilon: Float = 0.003
 private let targetFrameIntervalSeconds = 1.0 / 60.0
+private let showcaseText = UIColor(red: 0.96, green: 0.95, blue: 0.91, alpha: 1)
+private let showcaseMuted = UIColor(red: 0.72, green: 0.70, blue: 0.66, alpha: 1)
+private let showcaseAccent = UIColor(red: 0.83, green: 0.96, blue: 0.45, alpha: 1)
 
 private struct RenderCommand {
     var resize: (width: Int, height: Int)?
@@ -246,6 +250,10 @@ final class ExampleViewController: UIViewController, UIGestureRecognizerDelegate
     private let surfaceView = MetalSurfaceView()
     private let statusLabel = UILabel()
     private let importButton = UIButton(type: .system)
+    private let studioButton = UIButton(type: .system)
+    private let studioPanel = UIVisualEffectView(effect: UIBlurEffect(style: .systemUltraThinMaterialDark))
+    private let sceneTitleLabel = UILabel()
+    private let sceneMetaLabel = UILabel()
     private let renderQueue = DispatchQueue(label: "com.gsplat.example.ios.render")
     private let commandLock = NSLock()
     private let renderStateLock = NSLock()
@@ -270,8 +278,8 @@ final class ExampleViewController: UIViewController, UIGestureRecognizerDelegate
         view.backgroundColor = .black
         setDataset(resolveInitialDataset())
         configureSurfaceView()
-        configureStatusLabel()
         configureImportButton()
+        configureStatusLabel()
         configureGestures()
         setStatus("state=waiting_for_surface")
     }
@@ -305,30 +313,144 @@ final class ExampleViewController: UIViewController, UIGestureRecognizerDelegate
     }
 
     private func configureStatusLabel() {
+        let brandLabel = UILabel()
+        brandLabel.translatesAutoresizingMaskIntoConstraints = false
+        brandLabel.text = "gsplat.rs   /   METAL + WGPU"
+        brandLabel.textColor = showcaseAccent
+        brandLabel.font = .systemFont(ofSize: 11, weight: .bold)
+        brandLabel.adjustsFontForContentSizeCategory = true
+
+        let heroLabel = UILabel()
+        heroLabel.translatesAutoresizingMaskIntoConstraints = false
+        heroLabel.numberOfLines = 2
+        heroLabel.text = "Captured light.\nStill alive."
+        heroLabel.textColor = showcaseText
+        heroLabel.font = .systemFont(ofSize: 42, weight: .bold)
+        heroLabel.adjustsFontSizeToFitWidth = true
+        heroLabel.minimumScaleFactor = 0.78
+
+        let subtitleLabel = UILabel()
+        subtitleLabel.translatesAutoresizingMaskIntoConstraints = false
+        subtitleLabel.numberOfLines = 2
+        subtitleLabel.text = "A living Gaussian splat, rendered natively\nby Rust on your phone."
+        subtitleLabel.textColor = showcaseMuted
+        subtitleLabel.font = .systemFont(ofSize: 14, weight: .regular)
+
+        sceneTitleLabel.textColor = showcaseText
+        sceneTitleLabel.font = .systemFont(ofSize: 15, weight: .semibold)
+        sceneTitleLabel.adjustsFontSizeToFitWidth = true
+        sceneTitleLabel.minimumScaleFactor = 0.8
+        sceneMetaLabel.textColor = showcaseMuted
+        sceneMetaLabel.font = .monospacedSystemFont(ofSize: 10, weight: .medium)
+        sceneMetaLabel.adjustsFontSizeToFitWidth = true
+        sceneMetaLabel.minimumScaleFactor = 0.72
+
+        let sceneStack = UIStackView(arrangedSubviews: [sceneTitleLabel, sceneMetaLabel])
+        sceneStack.translatesAutoresizingMaskIntoConstraints = false
+        sceneStack.axis = .vertical
+        sceneStack.spacing = 5
+
+        let sceneCard = UIVisualEffectView(effect: UIBlurEffect(style: .systemUltraThinMaterialDark))
+        sceneCard.translatesAutoresizingMaskIntoConstraints = false
+        sceneCard.layer.cornerRadius = 14
+        sceneCard.layer.cornerCurve = .continuous
+        sceneCard.layer.masksToBounds = true
+        sceneCard.layer.borderWidth = 0.5
+        sceneCard.layer.borderColor = UIColor.white.withAlphaComponent(0.25).cgColor
+        sceneCard.isUserInteractionEnabled = false
+        sceneCard.contentView.addSubview(sceneStack)
+
+        studioButton.translatesAutoresizingMaskIntoConstraints = false
+        var studioConfiguration = UIButton.Configuration.plain()
+        studioConfiguration.title = "Studio"
+        studioConfiguration.baseForegroundColor = showcaseText
+        studioConfiguration.contentInsets = NSDirectionalEdgeInsets(top: 9, leading: 15, bottom: 9, trailing: 15)
+        var studioBackground = UIBackgroundConfiguration.clear()
+        studioBackground.backgroundColor = UIColor.black.withAlphaComponent(0.62)
+        studioBackground.cornerRadius = 20
+        studioBackground.strokeColor = UIColor.white.withAlphaComponent(0.25)
+        studioBackground.strokeWidth = 0.5
+        studioConfiguration.background = studioBackground
+        studioButton.configuration = studioConfiguration
+        studioButton.accessibilityLabel = "Toggle live diagnostics"
+        studioButton.addTarget(self, action: #selector(toggleStudioPanel), for: .touchUpInside)
+
+        studioPanel.translatesAutoresizingMaskIntoConstraints = false
+        studioPanel.layer.cornerRadius = 14
+        studioPanel.layer.cornerCurve = .continuous
+        studioPanel.layer.masksToBounds = true
+        studioPanel.layer.borderWidth = 0.5
+        studioPanel.layer.borderColor = UIColor.white.withAlphaComponent(0.25).cgColor
+        studioPanel.isHidden = true
+        studioPanel.accessibilityIdentifier = "studioDiagnosticsPanel"
+
+        let studioLabel = UILabel()
+        studioLabel.translatesAutoresizingMaskIntoConstraints = false
+        studioLabel.text = "STUDIO / LIVE DIAGNOSTICS"
+        studioLabel.textColor = showcaseAccent
+        studioLabel.font = .systemFont(ofSize: 10, weight: .bold)
+
         statusLabel.translatesAutoresizingMaskIntoConstraints = false
         statusLabel.numberOfLines = 0
-        statusLabel.textColor = .white
-        statusLabel.backgroundColor = UIColor.black.withAlphaComponent(0.5)
-        statusLabel.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
+        statusLabel.textColor = showcaseText
+        statusLabel.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
         statusLabel.isUserInteractionEnabled = false
         statusLabel.text = buildStatusText()
-        view.addSubview(statusLabel)
+        statusLabel.accessibilityIdentifier = "liveDiagnostics"
+
+        studioPanel.contentView.addSubview(studioLabel)
+        studioPanel.contentView.addSubview(statusLabel)
+        view.addSubview(brandLabel)
+        view.addSubview(heroLabel)
+        view.addSubview(subtitleLabel)
+        view.addSubview(sceneCard)
+        view.addSubview(studioPanel)
+        view.addSubview(studioButton)
         NSLayoutConstraint.activate([
-            statusLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            statusLabel.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            statusLabel.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
+            brandLabel.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 22),
+            brandLabel.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 18),
+            studioButton.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -18),
+            studioButton.centerYAnchor.constraint(equalTo: brandLabel.centerYAnchor),
+
+            heroLabel.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 22),
+            heroLabel.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -26),
+            heroLabel.topAnchor.constraint(equalTo: brandLabel.bottomAnchor, constant: 30),
+            subtitleLabel.leadingAnchor.constraint(equalTo: heroLabel.leadingAnchor, constant: 2),
+            subtitleLabel.trailingAnchor.constraint(equalTo: heroLabel.trailingAnchor),
+            subtitleLabel.topAnchor.constraint(equalTo: heroLabel.bottomAnchor, constant: 14),
+
+            sceneStack.leadingAnchor.constraint(equalTo: sceneCard.contentView.leadingAnchor, constant: 16),
+            sceneStack.trailingAnchor.constraint(equalTo: sceneCard.contentView.trailingAnchor, constant: -16),
+            sceneStack.topAnchor.constraint(equalTo: sceneCard.contentView.topAnchor, constant: 13),
+            sceneStack.bottomAnchor.constraint(equalTo: sceneCard.contentView.bottomAnchor, constant: -13),
+            sceneCard.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 18),
+            sceneCard.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -18),
+            sceneCard.trailingAnchor.constraint(lessThanOrEqualTo: importButton.leadingAnchor, constant: -10),
+            sceneCard.widthAnchor.constraint(lessThanOrEqualToConstant: 230),
+
+            studioPanel.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 18),
+            studioPanel.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -18),
+            studioPanel.topAnchor.constraint(equalTo: brandLabel.bottomAnchor, constant: 24),
+            studioLabel.leadingAnchor.constraint(equalTo: studioPanel.contentView.leadingAnchor, constant: 16),
+            studioLabel.trailingAnchor.constraint(equalTo: studioPanel.contentView.trailingAnchor, constant: -16),
+            studioLabel.topAnchor.constraint(equalTo: studioPanel.contentView.topAnchor, constant: 15),
+            statusLabel.leadingAnchor.constraint(equalTo: studioPanel.contentView.leadingAnchor, constant: 16),
+            statusLabel.trailingAnchor.constraint(equalTo: studioPanel.contentView.trailingAnchor, constant: -16),
+            statusLabel.topAnchor.constraint(equalTo: studioLabel.bottomAnchor, constant: 10),
+            statusLabel.bottomAnchor.constraint(equalTo: studioPanel.contentView.bottomAnchor, constant: -16),
         ])
+        updateShowcaseOverlay()
     }
 
     private func configureImportButton() {
         importButton.translatesAutoresizingMaskIntoConstraints = false
         var background = UIBackgroundConfiguration.clear()
-        background.backgroundColor = UIColor.black.withAlphaComponent(0.55)
-        background.cornerRadius = 8
+        background.backgroundColor = showcaseText
+        background.cornerRadius = 22
         var configuration = UIButton.Configuration.plain()
-        configuration.title = "Import PLY"
-        configuration.baseForegroundColor = .white
-        configuration.contentInsets = NSDirectionalEdgeInsets(top: 10, leading: 14, bottom: 10, trailing: 14)
+        configuration.title = "Open PLY  +"
+        configuration.baseForegroundColor = .black
+        configuration.contentInsets = NSDirectionalEdgeInsets(top: 11, leading: 17, bottom: 11, trailing: 17)
         configuration.background = background
         importButton.configuration = configuration
         importButton.addTarget(self, action: #selector(openPlyPicker), for: .touchUpInside)
@@ -668,7 +790,15 @@ final class ExampleViewController: UIViewController, UIGestureRecognizerDelegate
         }
 
         if let bundleURL = Bundle.main.url(forResource: bundleDatasetName, withExtension: bundleDatasetExtension) {
-            return DatasetSelection(path: bundleURL.path, label: bundleURL.lastPathComponent)
+            let labelURL = Bundle.main.url(
+                forResource: bundleDatasetName,
+                withExtension: bundleDatasetLabelExtension
+            )
+            let sourceLabel = labelURL
+                .flatMap { try? String(contentsOf: $0, encoding: .utf8) }
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .flatMap { $0.isEmpty ? nil : $0 }
+            return DatasetSelection(path: bundleURL.path, label: sourceLabel ?? bundleURL.lastPathComponent)
         }
 
         let minimalURL = documentsDirectory().appendingPathComponent(minimalPlyName)
@@ -904,7 +1034,7 @@ final class ExampleViewController: UIViewController, UIGestureRecognizerDelegate
                 return
             }
             self.latestState = state
-            self.statusLabel.text = self.buildStatusText()
+            self.updateShowcaseOverlay()
         }
     }
 
@@ -914,8 +1044,67 @@ final class ExampleViewController: UIViewController, UIGestureRecognizerDelegate
                 return
             }
             self.cameraState = state
-            self.statusLabel.text = self.buildStatusText()
+            self.updateShowcaseOverlay()
         }
+    }
+
+    private func updateShowcaseOverlay() {
+        statusLabel.text = buildStatusText()
+        sceneTitleLabel.text = sceneTitle()
+        sceneMetaLabel.text = compactSceneStatus()
+    }
+
+    private func sceneTitle() -> String {
+        if datasetLabel.hasPrefix("imported:") {
+            return "Imported memory"
+        }
+        if datasetLabel.localizedCaseInsensitiveContains("showcase") ||
+            datasetLabel.localizedCaseInsensitiveContains("kitune") {
+            return "Kitsune shrine"
+        }
+        if datasetLabel.localizedCaseInsensitiveContains("flower") {
+            return "Flowers / NVIDIA"
+        }
+        return "Gaussian scene"
+    }
+
+    private func compactSceneStatus() -> String {
+        if latestState.hasPrefix("state=rendering") {
+            let drawn = statusValue("drawn")?.split(separator: "/").first.map(String.init)
+            let frame = statusValue("frame_ms")
+            return [
+                "LIVE",
+                drawn.map { "\($0) SPLATS" },
+                frame.map { "\($0) MS" },
+            ].compactMap { $0 }.joined(separator: "  ·  ")
+        }
+        if latestState.contains("failed") || latestState.contains("error") {
+            return "ATTENTION  ·  OPEN STUDIO"
+        }
+        return "LOADING  ·  DRAG TO ORBIT"
+    }
+
+    private func statusValue(_ key: String) -> String? {
+        latestState
+            .split(separator: " ")
+            .first { $0.hasPrefix("\(key)=") }
+            .map { String($0.dropFirst(key.count + 1)) }
+    }
+
+    @objc private func toggleStudioPanel() {
+        let opening = studioPanel.isHidden
+        if opening {
+            studioPanel.alpha = 0
+            studioPanel.isHidden = false
+        }
+        studioButton.configuration?.title = opening ? "Close" : "Studio"
+        UIView.animate(withDuration: 0.2, animations: {
+            self.studioPanel.alpha = opening ? 1 : 0
+        }, completion: { _ in
+            if !opening {
+                self.studioPanel.isHidden = true
+            }
+        })
     }
 
     private func buildStatusText() -> String {

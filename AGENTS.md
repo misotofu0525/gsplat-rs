@@ -10,6 +10,7 @@
 - Project context: `handbook/PROJECT_CONTEXT.md`
 - Architecture map: `handbook/ARCHITECTURE.md`
 - Verification entrypoint: `handbook/VERIFICATION.md`
+- Release process and remote settings gates: `RELEASING.md`
 - Current direction and release boundary: `handbook/ROADMAP.md`
 - Project taste guide: `handbook/GOLDEN_PRINCIPLES.md`
 - Task planning bundles: `docs/plans/active/<yyyy-mm-dd>-<task>/`
@@ -20,6 +21,7 @@
 - Read `handbook/PROJECT_CONTEXT.md` first for any non-trivial task.
 - Read `handbook/ARCHITECTURE.md` when the task affects crate boundaries, render flow, FFI, or repo structure.
 - Read `handbook/VERIFICATION.md` before changing scripts/commands or claiming completion.
+- Read `RELEASING.md` before changing tag workflows, release artifacts, or GitHub release settings.
 - Read `handbook/ROADMAP.md` when the task depends on current priorities, release scope, or non-goals.
 - Read `handbook/GOLDEN_PRINCIPLES.md` when work touches architecture taste, error handling, public API shape, or repeated design choices.
 - For Android, iOS, Web example, or Web SDK work, also read the matching README

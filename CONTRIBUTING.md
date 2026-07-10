@@ -66,7 +66,8 @@ Pick the narrowest verification path that proves your change:
   `node --check examples/web/src/main.js` plus the browser smoke in
   `handbook/VERIFICATION.md`
 - Renderer, sorting, or perf-sensitive changes:
-  `cargo run -p bench-runner -- tests/datasets/minimal_ascii.ply 120`
+  `cargo run --release -p bench-runner -- tests/datasets/minimal_ascii.ply 120 --warmup-iterations 10 --max-avg-gpu-complete-ms 250`
+- Dependency or lockfile changes: `bash tests/security/run-cargo-deny.sh`
 
 For mobile Surface or true-device work, do not treat a successful build as a
 complete validation. Follow the matching Android or iOS smoke path in

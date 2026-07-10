@@ -16,10 +16,19 @@ APP_BUNDLE="$ROOT_DIR/target/ios-device-app/${APP_NAME}.app"
 RUST_TARGET="aarch64-apple-ios"
 SWIFT_TARGET="arm64-apple-ios${IOS_VERSION}"
 SDK_PATH="$(xcrun --sdk iphoneos --show-sdk-path)"
-DEFAULT_DATASET="tests/datasets/external/nvidia_flowers_1/flowers_1/flowers_1.ply"
-DATASET_PATH="${1:-$DEFAULT_DATASET}"
+KITSUNE_DATASET="tests/datasets/external/wakufactory_kitune/kitune1.ply"
+FLOWERS_DATASET="tests/datasets/external/nvidia_flowers_1/flowers_1/flowers_1.ply"
+DATASET_PATH="${1:-}"
 IOS_RUST_PROFILE="${IOS_RUST_PROFILE:-release}"
 IOS_SWIFT_OPT_LEVEL="${IOS_SWIFT_OPT_LEVEL:--O}"
+
+if [[ -z "$DATASET_PATH" ]]; then
+  if [[ -f "$ROOT_DIR/$KITSUNE_DATASET" ]]; then
+    DATASET_PATH="$KITSUNE_DATASET"
+  else
+    DATASET_PATH="$FLOWERS_DATASET"
+  fi
+fi
 
 case "$IOS_RUST_PROFILE" in
   release)
@@ -46,7 +55,9 @@ esac
 
 if [[ ! -f "$DATASET_ABS" ]]; then
   echo "missing dataset: $DATASET_PATH" >&2
-  echo "fetch the shared flower dataset first:" >&2
+  echo "fetch the default Kitsune showcase first:" >&2
+  echo "  bash tests/datasets/fetch-wakufactory-kitune.sh" >&2
+  echo "or fetch the Flowers fallback:" >&2
   echo "  bash tests/datasets/fetch-nvidia-flowers-1.sh" >&2
   exit 1
 fi
@@ -129,7 +140,8 @@ cargo build -p gsplat-ffi-c --target "$RUST_TARGET" "${CARGO_PROFILE_ARGS[@]}"
 rm -rf "$APP_BUNDLE"
 mkdir -p "$APP_BUNDLE"
 cp examples/ios/app/Info.plist "$APP_BUNDLE/Info.plist"
-cp "$DATASET_ABS" "$APP_BUNDLE/flowers_1.ply"
+cp "$DATASET_ABS" "$APP_BUNDLE/showcase.ply"
+basename "$DATASET_ABS" > "$APP_BUNDLE/showcase.name"
 cp "$PROVISIONING_PROFILE" "$APP_BUNDLE/embedded.mobileprovision"
 
 /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier $BUNDLE_ID" "$APP_BUNDLE/Info.plist"

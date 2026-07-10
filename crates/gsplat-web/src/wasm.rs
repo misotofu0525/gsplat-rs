@@ -33,7 +33,7 @@ pub async fn create_renderer(
     let raw = ply_bytes.to_vec();
     let loaded = parse_ply_bytes(&raw).map_err(|err| js_error(err.to_string()))?;
     let summary = loaded.summary;
-    let mut renderer = Renderer::with_config(RendererConfig {
+    let mut renderer = Renderer::with_config_for_surface(RendererConfig {
         width,
         height,
         mode: RenderMode::SortedAlpha,

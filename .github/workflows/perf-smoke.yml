@@ -3,13 +3,20 @@ name: Perf Smoke
 on:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   perf-smoke:
-    runs-on: ubuntu-latest
+    runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.93.0
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: dtolnay/rust-toolchain@45f5412a0cc5dee553bb061a37369fc8e63fa137 # 1.93.0
       - name: Cargo check
         run: cargo check --workspace
       - name: Run benchmark
-        run: cargo run -p bench-runner -- tests/datasets/minimal_ascii.ply 120
+        run: >-
+          cargo run --release -p bench-runner --
+          tests/datasets/minimal_ascii.ply 120
+          --warmup-iterations 10
+          --max-avg-gpu-complete-ms 250

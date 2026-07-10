@@ -6,7 +6,7 @@ let initPromise = null;
 export async function initGsplatWeb(options = {}) {
   const { module, moduleUrl = "./wasm/gsplat_web.js", wasmUrl } = options;
   if (module) {
-    await module.default(wasmUrl);
+    await module.default(wasmInitInput(wasmUrl));
     loadedModule = module;
     initPromise = Promise.resolve(module);
     return module;
@@ -14,12 +14,16 @@ export async function initGsplatWeb(options = {}) {
 
   if (!initPromise) {
     initPromise = import(moduleUrl).then(async (importedModule) => {
-      await importedModule.default(wasmUrl);
+      await importedModule.default(wasmInitInput(wasmUrl));
       loadedModule = importedModule;
       return importedModule;
     });
   }
   return initPromise;
+}
+
+function wasmInitInput(wasmUrl) {
+  return wasmUrl === undefined ? undefined : { module_or_path: wasmUrl };
 }
 
 export function getGsplatApiVersion(module = loadedModule) {

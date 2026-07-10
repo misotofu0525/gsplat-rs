@@ -2,26 +2,36 @@ name: CI
 
 on:
   push:
+    branches:
+      - "**"
   pull_request:
 
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   check-linux:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.93.0
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: dtolnay/rust-toolchain@45f5412a0cc5dee553bb061a37369fc8e63fa137 # 1.93.0
         with:
           components: rustfmt, clippy
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@0f481fcb613427c0f801b606911222b5b6f3083a # v5.5.0
         with:
           distribution: temurin
           java-version: "21"
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version: "22"
+      - name: Install headless Vulkan runtime
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends libvulkan1 mesa-vulkan-drivers
       - name: Install Android SDK packages
         run: |
           yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null
@@ -69,17 +79,21 @@ jobs:
         run: |
           ANDROID_SDK_ROOT="$ANDROID_HOME" bash bindings/android/scripts/build-sample-apk.sh
           test -f examples/android/app/build/outputs/apk/debug/sample-app-debug.apk
+
+  check-macos-swift:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: dtolnay/rust-toolchain@45f5412a0cc5dee553bb061a37369fc8e63fa137 # 1.93.0
+      - name: GPU pixel conformance
+        env:
+          GSPLAT_REQUIRE_GPU_CONFORMANCE: "1"
+        run: cargo test -p gsplat-render-wgpu --test conformance_sorted_alpha
       - name: Stability smoke (short)
         env:
           STABILITY_SECONDS: "5"
           RSS_GROWTH_LIMIT_KIB: "262144"
         run: bash tests/perf/run-long-stability.sh
-
-  check-macos-swift:
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.93.0
       - name: Swift smoke
         run: bash bindings/apple/scripts/run-swift-smoke.sh
       - name: iOS simulator target build
@@ -88,3 +102,11 @@ jobs:
         run: bash bindings/apple/scripts/build-xcframework.sh
       - name: GsplatKit package build
         run: cd bindings/apple/GsplatKit && xcodebuild -scheme GsplatKit -destination 'generic/platform=iOS Simulator' build
+
+  dependency-policy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: dtolnay/rust-toolchain@45f5412a0cc5dee553bb061a37369fc8e63fa137 # 1.93.0
+      - name: Cargo dependency policy
+        run: bash tests/security/run-cargo-deny.sh

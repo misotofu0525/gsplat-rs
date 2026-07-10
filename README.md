@@ -10,11 +10,12 @@ in-memory scene buffers, `SortedAlpha` rendering, a narrow C ABI, and example
 surfaces that validate the stack on desktop, Android, iOS, and browser paths
 without overstating SDK maturity.
 
-![SortedAlpha render of the NVIDIA flowers dataset](docs/media/flowers.jpg)
+![SortedAlpha render of the Wakufactory Kitsune scene](docs/media/kitune.jpg)
 
-*562,974 splats rendered offscreen by `examples/desktop` through the
-`SortedAlpha` path, using the public NVIDIA `flowers_1` dataset
-(`bash tests/datasets/fetch-nvidia-flowers-1.sh`).*
+*279,199 splats rendered offscreen by `examples/desktop` through the
+`SortedAlpha` path. The trimmed Kitsune scene is published by
+[Wakufactory](https://www.wakufactory.jp/wxr/splats/sample.html) under CC0 and
+can be fetched with `bash tests/datasets/fetch-wakufactory-kitune.sh`.*
 
 ## Platform Support
 
@@ -31,6 +32,28 @@ without overstating SDK maturity.
 - Quality-gated render path: `SortedAlpha`
 - Native integration surface: `crates/gsplat-ffi-c/include/gsplat.h`
 
+## Installation and Artifacts
+
+The repository is currently prerelease software. Rust crates are not yet on
+crates.io, and the Android, Apple, and Web packages are not published to Maven,
+SwiftPM, or npm registries.
+
+For source use, clone the repository, keep the pinned toolchain, and build the
+workspace or the validation surface you need:
+
+```bash
+git clone https://github.com/misotofu0525/gsplat-rs.git
+cd gsplat-rs
+cargo check --workspace
+```
+
+Tagged `0.1.x` prereleases attach an AAR, XCFramework ZIP, and npm-compatible
+tarball to the [GitHub Releases](https://github.com/misotofu0525/gsplat-rs/releases)
+page. These are direct prerelease artifacts; use the matching
+`bindings/android/README.md`, `bindings/apple/README.md`, or
+`packages/web/README.md` for integration details. Maintainers should follow
+`RELEASING.md` rather than creating or replacing artifacts manually.
+
 ## Quick Start
 
 ```bash
@@ -42,10 +65,22 @@ cargo run -p desktop-example -- tests/datasets/minimal_ascii.ply --png target/ou
 For the browser validation example:
 
 ```bash
+bash tests/datasets/fetch-wakufactory-kitune.sh
+bash packages/web/scripts/build-wasm.sh
 python3 -m http.server 4173 --bind 127.0.0.1 --directory .
 ```
 
 Then open `http://127.0.0.1:4173/examples/web/`.
+
+The same Kitsune showcase is the default native first frame on Android and iOS:
+
+```bash
+bash bindings/android/scripts/build-sample-apk.sh
+bash bindings/apple/scripts/run-ios-sim-app.sh
+```
+
+Both mobile build paths accept an explicit PLY file as their first argument,
+and fall back to the shared Flowers fixture when Kitsune is unavailable.
 
 ## Repository Layout
 
@@ -144,6 +179,8 @@ The current mobile-facing contract is the C ABI in
 - Verification commands: `handbook/VERIFICATION.md`
 - Current direction and release boundary: `handbook/ROADMAP.md`
 - Project principles: `handbook/GOLDEN_PRINCIPLES.md`
+- Release process: `RELEASING.md`
+- Media provenance: `docs/media/README.md`
 - Agent entrypoint: `AGENTS.md`
 
 ## Contributing

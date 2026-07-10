@@ -3,6 +3,8 @@ package com.gsplat.example
 import android.app.Activity
 import android.content.Intent
 import android.graphics.Color
+import android.graphics.Typeface
+import android.graphics.drawable.GradientDrawable
 import android.net.Uri
 import android.os.Bundle
 import android.os.SystemClock
@@ -16,6 +18,7 @@ import android.view.SurfaceView
 import android.view.View
 import android.widget.Button
 import android.widget.FrameLayout
+import android.widget.LinearLayout
 import android.widget.TextView
 import com.gsplat.android.NativeBridge
 import java.io.File
@@ -34,6 +37,10 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
     private lateinit var datasetPath: String
     private var datasetLabel = "pending"
     private lateinit var statusText: TextView
+    private lateinit var sceneTitleText: TextView
+    private lateinit var sceneMetaText: TextView
+    private lateinit var studioPanel: LinearLayout
+    private lateinit var studioButton: Button
     private var currentSurface: Surface? = null
     private var currentSurfaceWidth = 0
     private var currentSurfaceHeight = 0
@@ -70,14 +77,90 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
             holder.setFixedSize(renderSurfaceSize.first, renderSurfaceSize.second)
             setOnTouchListener(::handleTouch)
         }
+        val brandText = TextView(this).apply {
+            text = "gsplat.rs   /   RUST + WGPU"
+            setTextColor(SHOWCASE_ACCENT)
+            textSize = 11f
+            typeface = Typeface.create("sans-serif", Typeface.BOLD)
+            letterSpacing = 0.12f
+        }
+        val heroText = TextView(this).apply {
+            text = "Captured light.\nStill alive."
+            setTextColor(SHOWCASE_TEXT)
+            textSize = 38f
+            typeface = Typeface.create("sans-serif-condensed", Typeface.BOLD)
+            setLineSpacing(-dp(4).toFloat(), 0.92f)
+        }
+        val subtitleText = TextView(this).apply {
+            text = "A living Gaussian splat, rendered natively\nby Rust on your phone."
+            setTextColor(SHOWCASE_MUTED)
+            textSize = 14f
+            typeface = Typeface.create("sans-serif", Typeface.NORMAL)
+            setLineSpacing(dp(3).toFloat(), 1f)
+        }
+
+        sceneTitleText = TextView(this).apply {
+            setTextColor(SHOWCASE_TEXT)
+            textSize = 15f
+            typeface = Typeface.create("sans-serif", Typeface.BOLD)
+        }
+        sceneMetaText = TextView(this).apply {
+            setTextColor(SHOWCASE_MUTED)
+            textSize = 10f
+            typeface = Typeface.MONOSPACE
+            letterSpacing = 0.08f
+        }
+        val sceneCard = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(16), dp(13), dp(16), dp(13))
+            background = roundedBackground(SHOWCASE_GLASS, SHOWCASE_BORDER, 14f)
+            addView(sceneTitleText)
+            addView(sceneMetaText, LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { topMargin = dp(5) })
+        }
+
         statusText = TextView(this).apply {
-            setTextColor(Color.WHITE)
-            setBackgroundColor(0x66000000)
+            setTextColor(SHOWCASE_TEXT)
+            textSize = 11f
+            typeface = Typeface.MONOSPACE
             isClickable = false
             text = buildStatusText(latestStatus)
         }
+        val studioLabel = TextView(this).apply {
+            text = "STUDIO / LIVE DIAGNOSTICS"
+            setTextColor(SHOWCASE_ACCENT)
+            textSize = 10f
+            typeface = Typeface.create("sans-serif", Typeface.BOLD)
+            letterSpacing = 0.12f
+        }
+        studioPanel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            visibility = View.GONE
+            setPadding(dp(16), dp(15), dp(16), dp(16))
+            background = roundedBackground(Color.argb(235, 11, 13, 12), SHOWCASE_BORDER, 14f)
+            addView(studioLabel)
+            addView(statusText, LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { topMargin = dp(10) })
+        }
+
+        studioButton = showcaseButton("Studio").apply {
+            contentDescription = "Toggle live diagnostics"
+            setOnClickListener { toggleStudioPanel() }
+        }
         val importButton = Button(this).apply {
-            text = "Import PLY"
+            text = "Open PLY  +"
+            setTextColor(Color.BLACK)
+            textSize = 12f
+            typeface = Typeface.create("sans-serif", Typeface.BOLD)
+            isAllCaps = false
+            minWidth = 0
+            minHeight = 0
+            setPadding(dp(17), dp(11), dp(17), dp(11))
+            background = roundedBackground(SHOWCASE_TEXT, null, 24f)
             setOnClickListener { openPlyPicker() }
         }
 
@@ -90,13 +173,37 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                     FrameLayout.LayoutParams.MATCH_PARENT
                 )
             )
-            addView(
-                statusText,
-                FrameLayout.LayoutParams(
-                    FrameLayout.LayoutParams.MATCH_PARENT,
-                    FrameLayout.LayoutParams.WRAP_CONTENT
-                )
-            )
+            setBackgroundColor(Color.BLACK)
+            addView(brandText, FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                Gravity.TOP or Gravity.START
+            ).apply { setMargins(dp(24), dp(25), dp(96), 0) })
+            addView(studioButton, FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                Gravity.TOP or Gravity.END
+            ).apply { setMargins(0, dp(14), dp(18), 0) })
+            addView(heroText, FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                Gravity.TOP or Gravity.START
+            ).apply { setMargins(dp(24), dp(76), dp(42), 0) })
+            addView(subtitleText, FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                Gravity.TOP or Gravity.START
+            ).apply { setMargins(dp(26), dp(170), dp(42), 0) })
+            addView(studioPanel, FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                Gravity.TOP
+            ).apply { setMargins(dp(18), dp(68), dp(18), 0) })
+            addView(sceneCard, FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                Gravity.BOTTOM or Gravity.START
+            ).apply { setMargins(dp(18), 0, dp(148), dp(20)) })
             addView(
                 importButton,
                 FrameLayout.LayoutParams(
@@ -104,11 +211,12 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                     FrameLayout.LayoutParams.WRAP_CONTENT,
                     Gravity.BOTTOM or Gravity.END
                 ).apply {
-                    setMargins(24, 24, 24, 24)
+                    setMargins(0, 0, dp(18), dp(22))
                 }
             )
         }
         setContentView(root)
+        updateShowcaseOverlay()
     }
 
     override fun surfaceCreated(holder: SurfaceHolder) {
@@ -505,6 +613,35 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
             return DatasetSelection(importedDataset.absolutePath, importedDataset.name)
         }
 
+        val showcaseDataset = File(filesDir, SHOWCASE_PLY_NAME)
+        val bundledShowcaseReady = runCatching {
+            assets.openFd(SHOWCASE_PLY_NAME).use { descriptor ->
+                if (!showcaseDataset.exists() || showcaseDataset.length() != descriptor.length) {
+                    val temp = File(filesDir, "$SHOWCASE_PLY_NAME.tmp")
+                    temp.delete()
+                    assets.open(SHOWCASE_PLY_NAME).use { input ->
+                        temp.outputStream().use { output -> input.copyTo(output) }
+                    }
+                    temp.copyTo(showcaseDataset, overwrite = true)
+                    temp.delete()
+                }
+            }
+            true
+        }.onFailure {
+            Log.i(TAG, "bundled showcase not available; checking local fallbacks")
+        }.getOrDefault(false)
+        if (bundledShowcaseReady && showcaseDataset.exists()) {
+            val bundledLabel = runCatching {
+                assets.open(SHOWCASE_LABEL_NAME)
+                    .bufferedReader()
+                    .use { it.readLine()?.trim() }
+            }.getOrNull()?.takeIf { !it.isNullOrBlank() }
+            return DatasetSelection(
+                showcaseDataset.absolutePath,
+                bundledLabel ?: showcaseDataset.name
+            )
+        }
+
         val flowerDataset = File(filesDir, "flowers_1.ply")
         if (flowerDataset.exists()) {
             return DatasetSelection(flowerDataset.absolutePath, flowerDataset.name)
@@ -774,9 +911,73 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
     private fun updateStatus(status: String) {
         latestStatus = status
         runOnUiThread {
-            statusText.text = buildStatusText(latestStatus)
+            updateShowcaseOverlay()
         }
     }
+
+    private fun updateShowcaseOverlay() {
+        statusText.text = buildStatusText(latestStatus)
+        sceneTitleText.text = sceneTitle()
+        sceneMetaText.text = compactSceneStatus()
+    }
+
+    private fun sceneTitle(): String = when {
+        datasetLabel.startsWith("imported:") -> "Imported memory"
+        datasetLabel.contains("showcase", ignoreCase = true) ||
+            datasetLabel.contains("kitune", ignoreCase = true) -> "Kitsune shrine"
+        datasetLabel.contains("flower", ignoreCase = true) -> "Flowers / NVIDIA"
+        else -> "Gaussian scene"
+    }
+
+    private fun compactSceneStatus(): String {
+        if (latestStatus.startsWith("state=rendering")) {
+            val drawn = statusValue("drawn")?.substringBefore('/')
+            val frame = statusValue("frame")
+            return listOfNotNull(
+                "LIVE",
+                drawn?.let { "$it SPLATS" },
+                frame?.let { "$it MS" }
+            ).joinToString("  ·  ")
+        }
+        if (latestStatus.contains("failed") || latestStatus.contains("error")) {
+            return "ATTENTION  ·  OPEN STUDIO"
+        }
+        return "LOADING  ·  DRAG TO ORBIT"
+    }
+
+    private fun statusValue(key: String): String? =
+        Regex("(?:^| )${Regex.escape(key)}=([^ ]+)")
+            .find(latestStatus)
+            ?.groupValues
+            ?.getOrNull(1)
+
+    private fun toggleStudioPanel() {
+        val opening = studioPanel.visibility != View.VISIBLE
+        studioPanel.visibility = if (opening) View.VISIBLE else View.GONE
+        studioButton.text = if (opening) "Close" else "Studio"
+    }
+
+    private fun showcaseButton(label: String): Button = Button(this).apply {
+        text = label
+        setTextColor(SHOWCASE_TEXT)
+        textSize = 11f
+        typeface = Typeface.create("sans-serif", Typeface.BOLD)
+        isAllCaps = false
+        minWidth = 0
+        minHeight = 0
+        setPadding(dp(15), dp(9), dp(15), dp(9))
+        background = roundedBackground(SHOWCASE_GLASS, SHOWCASE_BORDER, 22f)
+    }
+
+    private fun roundedBackground(fillColor: Int, strokeColor: Int?, radiusDp: Float): GradientDrawable =
+        GradientDrawable().apply {
+            shape = GradientDrawable.RECTANGLE
+            setColor(fillColor)
+            cornerRadius = dp(radiusDp.toInt()).toFloat()
+            strokeColor?.let { setStroke(dp(1), it) }
+        }
+
+    private fun dp(value: Int): Int = (value * resources.displayMetrics.density).roundToInt()
 
     private fun buildStatusText(status: String): String = buildString {
         appendLine("gsplat android example")
@@ -814,6 +1015,8 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         private const val DOUBLE_TAP_SLOP_DP = 48f
         private const val REQUEST_IMPORT_PLY = 42
         private const val IMPORTED_PLY_NAME = "imported_scene.ply"
+        private const val SHOWCASE_PLY_NAME = "showcase.ply"
+        private const val SHOWCASE_LABEL_NAME = "showcase.name"
         private const val EXTRA_BENCHMARK = "gsplat_benchmark"
         private const val EXTRA_BENCHMARK_FRAMES = "gsplat_benchmark_frames"
         private const val EXTRA_BENCHMARK_WARMUP_FRAMES = "gsplat_benchmark_warmup_frames"
@@ -839,6 +1042,12 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         private const val DEFAULT_SURFACE_INSTANCE_BUFFERS = 1
         private const val DEFAULT_SURFACE_FRAME_LATENCY = 2
         private const val TARGET_FRAME_INTERVAL_NS = 16_666_667L
+
+        private val SHOWCASE_TEXT = Color.rgb(245, 241, 232)
+        private val SHOWCASE_MUTED = Color.rgb(181, 178, 169)
+        private val SHOWCASE_ACCENT = Color.rgb(211, 246, 113)
+        private val SHOWCASE_GLASS = Color.argb(200, 14, 16, 15)
+        private val SHOWCASE_BORDER = Color.argb(90, 245, 241, 232)
 
         private val MINIMAL_PLY = """
             ply

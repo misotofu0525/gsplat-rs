@@ -113,7 +113,8 @@ Touch controls in the example:
 - two-finger pinch: zoom
 - two-finger drag: pan
 - double tap: reset the auto camera
-- `Import PLY`: open the Android system file picker, copy the selected file into app internal storage, and restart the Surface renderer with that imported scene
+- `Open PLY +`: open the Android system file picker, copy the selected file into app internal storage, and restart the Surface renderer with that imported scene
+- `Studio`: reveal or hide the full live diagnostics panel
 
 Prereqs:
 
@@ -128,8 +129,13 @@ Prereqs:
 Build steps:
 
 ```bash
+bash tests/datasets/fetch-wakufactory-kitune.sh
 bash bindings/android/scripts/build-sample-apk.sh
 ```
+
+The script packages `tests/datasets/external/wakufactory_kitune/kitune1.ply`
+as `assets/showcase.ply` when available, falls back to the shared Flowers
+fixture, and accepts an explicit PLY path as its first argument.
 
 Outputs:
 
@@ -138,10 +144,10 @@ Outputs:
 
 Notes:
 
-- This example uses `files/imported_scene.ply` when present, then `files/flowers_1.ply` when present; otherwise it writes a minimal ASCII PLY into app internal storage.
+- This example uses `files/imported_scene.ply` when present, then extracts the bundled `assets/showcase.ply` into app storage, then checks `files/flowers_1.ply`; otherwise it writes a minimal ASCII PLY into app internal storage.
 - Imported files come from the Android system picker as `content://` URIs and are copied into `files/imported_scene.ply` before crossing the JNI/C ABI boundary, which still receives a normal local file path.
 - On Android emulator, the `SurfaceView` buffer is capped to a 1600px maximum side. The Surface presenter does not sample or cap the sorted splat list; visual stability is preferred over artificial throughput wins.
-- The status overlay reports `drawn=<surface_instances>/<visible_instances>` for the Android Surface path.
+- The compact overlay reports the live splat count and frame time. The `Studio` panel retains `drawn=<surface_instances>/<visible_instances>` and the full Android Surface diagnostics.
 - The Surface A/B options in `GsplatSurfaceOptions` are experimental benchmark
   knobs. Leave their defaults in normal integrations unless you are comparing a
   specific path.
@@ -158,10 +164,6 @@ ANDROID_SDK_ROOT="${ANDROID_SDK_ROOT:-$HOME/Library/Android/sdk}"
 ADB="$ANDROID_SDK_ROOT/platform-tools/adb"
 
 "$ADB" install -r examples/android/app/build/outputs/apk/debug/sample-app-debug.apk
-"$ADB" push tests/datasets/external/nvidia_flowers_1/flowers_1/flowers_1.ply /data/local/tmp/flowers_1.ply
-"$ADB" shell run-as com.gsplat.example mkdir -p files
-"$ADB" shell run-as com.gsplat.example cp /data/local/tmp/flowers_1.ply files/flowers_1.ply
-"$ADB" shell rm -f /data/local/tmp/flowers_1.ply
 "$ADB" shell am start -n com.gsplat.example/.MainActivity
 ```
 

@@ -13,7 +13,14 @@ There are three Web paths:
 
 ## Run
 
-Serve the repository root so the example can fetch shared test datasets:
+Fetch the default CC0 showcase scene and build the Rust/WASM renderer:
+
+```bash
+bash tests/datasets/fetch-wakufactory-kitune.sh
+bash packages/web/scripts/build-wasm.sh
+```
+
+Then serve the repository root so the example can fetch shared datasets:
 
 ```bash
 python3 -m http.server 4173 --bind 127.0.0.1 --directory .
@@ -28,10 +35,12 @@ http://127.0.0.1:4173/examples/web/
 Do not open `examples/web/index.html` with `file://`. Browser security rules
 block the wasm package and root-relative dataset fetches in that mode.
 
-Open the larger flower smoke scene directly with:
+Open a specific scene directly with:
 
 ```text
+http://127.0.0.1:4173/examples/web/?dataset=showcase
 http://127.0.0.1:4173/examples/web/?dataset=flowers
+http://127.0.0.1:4173/examples/web/?dataset=minimal
 ```
 
 To build the experimental Rust/WASM package for this example:
@@ -49,9 +58,15 @@ bash packages/web/scripts/build.sh
 That script expects `wasm32-unknown-unknown` and the `wasm-bindgen` CLI to
 already be installed. It does not install toolchain components for you.
 
-The example loads `tests/datasets/minimal_ascii.ply` on startup. Use the file
-picker for local `.ply` files, or the `Flowers` button when the optional NVIDIA
-flower dataset is present under `tests/datasets/external/`.
+The example first tries the trimmed Wakufactory Kitsune scene at
+`tests/datasets/external/wakufactory_kitune/kitune1.ply`. The source model is
+CC0, 65.9 MB, and contains 279,199 splats. If it is not installed, startup falls
+back to the optional NVIDIA Flowers scene and then to `minimal_ascii.ply`.
+
+Use the scene switcher to move between installed examples, or use `Open your
+PLY` to keep a local file entirely in the browser. The Studio panel contains
+renderer tuning, live frame timing, the benchmark runner, and diagnostics so
+the default view can remain focused on the scene.
 
 Touch and pointer controls mirror the Android validation app:
 
@@ -80,8 +95,10 @@ run the same benchmark against
 - CPU-sorts visible splat indices back-to-front before drawing.
 - Caps the browser drawing buffer to a 1600px maximum side, matching the Android
   emulator Surface cap.
-- Reports an Android-style realtime status overlay with state, camera mode,
-  dataset, path, surface size, and frame stats.
+- Presents an immersive full-viewport showcase with streamed loading progress,
+  theme switching, responsive controls, and a collapsible diagnostics studio.
+- Reports Android-style realtime state, camera mode, dataset, path, surface
+  size, and frame stats inside the Studio panel.
 - Imports the generated `examples/web/pkg/gsplat_web.js` package when present
   and routes renderer creation through `packages/web/src/index.js` before
   falling back to the WebGL2 point-splat path.
