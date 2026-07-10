@@ -8,6 +8,15 @@ and this project adheres to
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-07-10
+
+### Fixed
+
+- Made the Android AAR release job bootstrap Gradle from a fresh checkout where
+  the repository `target/` directory does not yet exist.
+- Packed the Web SDK from its package directory so npm emits the tarball at the
+  workflow artifact path instead of resolving a nonexistent root package.
+
 ## [0.1.1] - 2026-07-10
 
 ### Added

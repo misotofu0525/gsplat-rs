@@ -79,3 +79,4 @@ Phase 6
 |-------|------------|
 | Focused Clippy rejected an identity multiplication in scene-byte accounting | Removed the redundant multiplication and reran Clippy with warnings denied. |
 | The first `v0.1.0` tag run assumed `rg` existed on the stock Ubuntu runner | Preserved the immutable failed tag, replaced the release check with portable `grep`, and prepared patch release `v0.1.1`. |
+| The `v0.1.1` isolated package jobs exposed an uncreated Android `target/` directory and an npm pack working-directory error | Preserved the immutable tag, fixed both fresh-checkout assumptions, and prepared patch release `v0.1.2`. |

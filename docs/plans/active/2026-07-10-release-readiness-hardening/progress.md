@@ -122,8 +122,12 @@
   - Enabled private vulnerability reporting and protected `main` with strict GitHub Actions checks, one approving review, stale-review dismissal, resolved conversations, and force-push/deletion prevention.
   - Created and locally verified an SSH-signed `v0.1.0` tag, then preserved it after release run `29075529426` exposed a runner portability defect in the version script.
   - Replaced the release script's undeclared `rg` dependency with stock-runner `grep` and bumped all Cargo, Web, and Android package versions to patch release `0.1.1` as required by the immutable-tag rollback policy.
+  - Merged PR #14 as `9fb01f3` after both push and pull-request CI passed, then verified main run `29076185931` passed all protected contexts.
+  - Created and locally verified signed tag `v0.1.1`; release run `29076553454` proved the version-script fix, core checks, and dependency policy, then exposed two independent fresh-checkout packaging assumptions.
+  - Cancelled the remaining long-running jobs after Android and Web had deterministically failed, preserving runner capacity while retaining both job logs.
+  - Made Gradle bootstrap create the repository target directory and moved npm packing into the Web package working directory; bumped the next immutable patch candidate to `0.1.2`.
 - Remaining external evidence:
-  - Patch release `v0.1.1` must pass protected-branch CI, the tag workflow's 1800-second stability gate, all platform packaging jobs, and final artifact checksum verification.
+  - Patch release `v0.1.2` must pass protected-branch CI, the tag workflow's 1800-second stability gate, all platform packaging jobs, and final artifact checksum verification.
 
 ## Test Results
 
@@ -148,6 +152,11 @@
 | PR #13 final hosted CI | Both push and PR events pass Linux, macOS/Swift, and dependency policy | runs `29074736895` and `29074738616` passed | pass |
 | Merged `main` hosted CI | Exact squash commit passes protected-branch contexts | run `29075133347` passed | pass |
 | First tag release workflow | Produce prerelease artifacts for signed `v0.1.0` | version check failed because `rg` was absent; tag retained immutably | fail, superseded by `v0.1.1` |
+| Second tag release workflow | Produce prerelease artifacts for signed `v0.1.1` | core/version/dependency checks passed; isolated Android and Web package jobs exposed fresh-checkout assumptions | fail, superseded by `v0.1.2` |
+| `RELEASE_VERSION=0.1.2` with `/usr/bin:/bin` PATH | Version validation remains independent of ripgrep after the second bump | passed | pass |
+| `cargo check --workspace` after `0.1.2` bump | All local workspace crates and lockfile resolve consistently | passed | pass |
+| Web release build and package-directory dry-pack | Produce the expected eight-file `gsplat-rs-web-0.1.2.tgz` layout at the workflow destination | passed | pass |
+| Release workflow YAML parse | Split Web pack step and Android bootstrap changes remain valid workflow syntax | all four workflow files parsed | pass |
 | Workflow YAML parse + action-ref scan | YAML is valid and no mutable action tags remain | four workflows parsed; all actions SHA-pinned | pass |
 | Full Rust hygiene/test/doc matrix | fmt, warnings-as-errors Clippy/rustdoc, and workspace tests pass | 86 Rust tests passed; no lint/doc warnings | pass |
 | Web build/package matrix | JS, WASM target, release WASM/ESM build, tests, and dry pack pass | 6 JS tests; 8-file 0.1.0 package generated | pass |
@@ -184,6 +193,8 @@
 | 2026-07-10 | `gh run watch` briefly failed with an API `EOF` while the workflow itself continued normally | 1 | Switched to single-run status polling; the underlying PR run completed successfully. |
 | 2026-07-10 | Release run `29075529426` failed at version consistency because stock Ubuntu lacked `rg` | 1 | Preserved `v0.1.0`, replaced `rg` with `grep`, bumped package versions to `0.1.1`, and reran focused local verification before the patch-release PR. |
 | 2026-07-10 | `npm --prefix packages/web pack --dry-run` resolved `package.json` from the repository root with this npm invocation | 1 | Ran the canonical command from `packages/web/`; the `0.1.1` eight-file tarball dry-run passed. |
+| 2026-07-10 | Release Android job failed with curl 23 because Gradle bootstrap wrote into a missing root `target/` directory | 1 | Added explicit target-directory creation before the checksum-pinned Gradle download. |
+| 2026-07-10 | Release Web job built WASM successfully, then npm resolved the nonexistent root `package.json` | 1 | Split packing into a package-directory step that writes the tarball to `GITHUB_WORKSPACE`. |
 
 ## 5-Question Reboot Check
 
