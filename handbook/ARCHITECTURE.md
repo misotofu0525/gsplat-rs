@@ -59,15 +59,18 @@
   obtains a `SurfaceView` `Surface` and wraps it as an `ANativeWindow` in `bindings/android/jni/gsplat_jni.c`
   creates a raw-handle `wgpu::Surface` in `crates/gsplat-render-wgpu/src/lib.rs`
   presents directly to the Android swapchain, not through offscreen readback
+  packages the selected build-time scene as `assets/showcase.ply` plus its source-name metadata, preferring the CC0 Kitsune scene and falling back to Flowers
+  presents compact showcase telemetry while keeping the complete validation status behind the `Studio` control
   packages the JNI library through `bindings/android/gsplat-android` for local AAR builds
 
 - iOS Surface flow:
   starts at the local `bindings/apple/GsplatKit` wrapper or sample `examples/ios/app/GsplatIOSExample.swift`
   obtains a UIKit `UIView` backed by `CAMetalLayer`
-  selects `Documents/imported_scene.ply`, bundled `flowers_1.ply`, or a generated minimal PLY
+  selects `Documents/imported_scene.ply`, bundled `showcase.ply` with source-name metadata, or a generated minimal PLY
   passes the view through `gsplat_surface_renderer_create_uikit`
   creates a raw-handle `wgpu::Surface` in `crates/gsplat-render-wgpu/src/lib.rs`
   presents directly to the simulator Metal surface, not through offscreen readback
+  uses the same Kitsune-first editorial showcase and toggleable `Studio` diagnostics pattern as Android
   uses the same Surface camera-control and benchmark option functions exposed through the C ABI
   packages the C ABI as a local `GsplatFFI.xcframework` through `bindings/apple/scripts/build-xcframework.sh`
 
@@ -92,6 +95,8 @@
   applies the same RDF-to-RUF Y-axis flip, DC color, and opacity conventions as the Rust import/render path
   CPU-sorts visible indices back-to-front and presents a WebGL2 point-splat preview
   exposes Android-style orbit/zoom/pan/reset camera controls and benchmark query parameters
+  presents the default scene through a responsive showcase shell with loading progress,
+  scene switching, local PLY upload, and collapsible diagnostics
   falls back to WebGL2 when the generated wasm package is missing or Surface creation fails
 
 ## Invariants

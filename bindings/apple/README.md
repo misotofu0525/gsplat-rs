@@ -71,10 +71,11 @@ tagged SwiftPM release, or polished iOS product API.
 
 ## 3) iOS simulator realtime Surface app
 
-Builds a real iOS simulator app bundle, packages the shared flower dataset, and
+Builds a real iOS simulator app bundle, packages the Kitsune showcase, and
 presents through `UIView` -> UIKit raw window handle -> `wgpu::Surface`.
 
 ```bash
+bash tests/datasets/fetch-wakufactory-kitune.sh
 bash bindings/apple/scripts/build-ios-sim-app.sh
 bash bindings/apple/scripts/run-ios-sim-app.sh
 ```
@@ -83,7 +84,8 @@ Outputs:
 
 - App bundle: `target/ios-sim-app/GsplatIOSExample.app`
 - Bundle ID: `com.gsplat.example.ios`
-- Dataset: `tests/datasets/external/nvidia_flowers_1/flowers_1/flowers_1.ply`
+- Default dataset: `tests/datasets/external/wakufactory_kitune/kitune1.ply`
+- Bundled runtime name: `showcase.ply`
 
 Touch controls in the simulator app:
 
@@ -91,17 +93,20 @@ Touch controls in the simulator app:
 - two-finger pinch: zoom
 - two-finger drag: pan
 - double tap: reset the auto camera
-- `Import PLY`: open the iOS document picker, copy the selected file into the
+- `Open PLY +`: open the iOS document picker, copy the selected file into the
   app Documents directory, and restart the Surface renderer with that imported
   scene
+- `Studio`: reveal or hide the full live diagnostics panel
 
-Expected overlay includes `state=rendering`, `camera=<mode>`,
-`dataset=flowers_1.ply`, and `drawn=<surface_instances>/<visible_instances>`.
+Expected first frame includes `Kitsune shrine`, `LIVE`, a non-zero splat count,
+and frame time. The Studio panel includes `state=rendering`, `camera=<mode>`,
+`dataset=kitune1.ply`, and `drawn=<surface_instances>/<visible_instances>`.
 
-If the flower dataset is missing, fetch it first:
+If the Kitsune dataset is missing, the build falls back to Flowers. Fetch the
+showcase explicitly with:
 
 ```bash
-bash tests/datasets/fetch-nvidia-flowers-1.sh
+bash tests/datasets/fetch-wakufactory-kitune.sh
 ```
 
 This is a realtime validation app under `examples/ios/app`. It compiles
@@ -109,7 +114,7 @@ alongside the local `GsplatKit` wrapper, but remains an example rather than a
 polished iOS product surface.
 
 Dataset priority matches the Android example shape: the app uses
-`Documents/imported_scene.ply` when present, then the bundled `flowers_1.ply`,
+`Documents/imported_scene.ply` when present, then the bundled `showcase.ply`,
 then a generated `Documents/minimal_ascii.ply` fallback.
 
 For repeatable Surface performance checks, launch with benchmark args after
@@ -183,7 +188,7 @@ presentation or touch interaction.
 
 ## 6) iOS device realtime Surface app
 
-Builds and signs a real iPhone app bundle, packages the shared flower dataset,
+Builds and signs a real iPhone app bundle, packages the selected showcase dataset,
 installs it with `devicectl`, and launches the same realtime UIKit Surface app
 on a paired physical device.
 

@@ -184,16 +184,15 @@ bash bindings/android/scripts/build-sample-apk.sh
 ANDROID_SDK_ROOT="${ANDROID_SDK_ROOT:-$HOME/Library/Android/sdk}"
 ADB="$ANDROID_SDK_ROOT/platform-tools/adb"
 "$ADB" install -r examples/android/app/build/outputs/apk/debug/sample-app-debug.apk
-"$ADB" push tests/datasets/external/nvidia_flowers_1/flowers_1/flowers_1.ply /data/local/tmp/flowers_1.ply
-"$ADB" shell run-as com.gsplat.example mkdir -p files
-"$ADB" shell run-as com.gsplat.example cp /data/local/tmp/flowers_1.ply files/flowers_1.ply
-"$ADB" shell rm -f /data/local/tmp/flowers_1.ply
 "$ADB" shell am start -n com.gsplat.example/.MainActivity
 ```
 
-- Expected overlay includes `surface=wgpu realtime`, `state=rendering`, and `drawn=<surface_instances>/<visible_instances>`.
+- Expected first frame includes `Kitsune shrine`, `LIVE`, a non-zero splat count,
+  and frame time. Open `Studio` and confirm `surface=wgpu realtime`,
+  `state=rendering`, and `drawn=<surface_instances>/<visible_instances>`.
 - For repeatable perf checks, add the benchmark extras documented in `bindings/android/README.md` and read the `BENCHMARK_RESULT` logcat line.
-- Android emulator storage can be tight after pushing the flower PLY. If `adb install -r` reports insufficient storage, uninstall `com.gsplat.example`, reinstall, and push the dataset again.
+- The APK packages the selected scene as `assets/showcase.ply`. If `adb install -r`
+  reports insufficient storage, uninstall `com.gsplat.example` and reinstall.
 
 ## iOS Surface Smoke
 
@@ -205,13 +204,15 @@ bash bindings/apple/scripts/run-ios-sim-app.sh
 IOS_DEVICE_ID=<coredevice-id-or-udid> bash bindings/apple/scripts/run-ios-device-app.sh
 ```
 
-- Expected overlay includes `state=rendering`, `camera=<mode>`,
-  `dataset=flowers_1.ply`, and `drawn=<surface_instances>/<visible_instances>`.
+- Expected first frame includes `Kitsune shrine`, `LIVE`, `279199 SPLATS`, and
+  frame time. Open `Studio` and confirm `state=rendering`, `camera=<mode>`,
+  `dataset=kitune1.ply`, and `drawn=<surface_instances>/<visible_instances>`.
 - The simulator app bundle lives at `target/ios-sim-app/GsplatIOSExample.app`; the
   device app bundle lives at `target/ios-device-app/GsplatIOSExample.app`. Both
-  package `flowers_1.ply` from the shared dataset directory.
+  package the selected build-time dataset as `showcase.ply`, preferring Kitsune
+  and falling back to Flowers.
 - The app uses `Documents/imported_scene.ply` when present, otherwise the
-  bundled flower dataset, otherwise a generated minimal ASCII PLY fallback.
+  bundled showcase dataset, otherwise a generated minimal ASCII PLY fallback.
 - Touch smoke should include at least one one-finger swipe/orbit check in the
   simulator. Pinch zoom and two-finger pan use the same C ABI camera-control
   functions.

@@ -10,11 +10,12 @@ in-memory scene buffers, `SortedAlpha` rendering, a narrow C ABI, and example
 surfaces that validate the stack on desktop, Android, iOS, and browser paths
 without overstating SDK maturity.
 
-![SortedAlpha render of the NVIDIA flowers dataset](docs/media/flowers.jpg)
+![SortedAlpha render of the Wakufactory Kitsune scene](docs/media/kitune.jpg)
 
-*562,974 splats rendered offscreen by `examples/desktop` through the
-`SortedAlpha` path, using the public NVIDIA `flowers_1` dataset
-(`bash tests/datasets/fetch-nvidia-flowers-1.sh`).*
+*279,199 splats rendered offscreen by `examples/desktop` through the
+`SortedAlpha` path. The trimmed Kitsune scene is published by
+[Wakufactory](https://www.wakufactory.jp/wxr/splats/sample.html) under CC0 and
+can be fetched with `bash tests/datasets/fetch-wakufactory-kitune.sh`.*
 
 ## Platform Support
 
@@ -42,10 +43,22 @@ cargo run -p desktop-example -- tests/datasets/minimal_ascii.ply --png target/ou
 For the browser validation example:
 
 ```bash
+bash tests/datasets/fetch-wakufactory-kitune.sh
+bash packages/web/scripts/build-wasm.sh
 python3 -m http.server 4173 --bind 127.0.0.1 --directory .
 ```
 
 Then open `http://127.0.0.1:4173/examples/web/`.
+
+The same Kitsune showcase is the default native first frame on Android and iOS:
+
+```bash
+bash bindings/android/scripts/build-sample-apk.sh
+bash bindings/apple/scripts/run-ios-sim-app.sh
+```
+
+Both mobile build paths accept an explicit PLY file as their first argument,
+and fall back to the shared Flowers fixture when Kitsune is unavailable.
 
 ## Repository Layout
 

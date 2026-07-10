@@ -1,4 +1,7 @@
-import { createGsplatRenderer, initGsplatWeb } from "../../../packages/web/src/index.js";
+import {
+  createGsplatRenderer,
+  initGsplatWeb,
+} from "../../../packages/web/src/index.js?v=showcase-20260710";
 
 const API_VERSION = "0.1";
 const MAX_SURFACE_SIDE = 1600;
@@ -8,13 +11,16 @@ const DOUBLE_TAP_SLOP_PX = 48;
 const DEFAULT_BENCHMARK_FRAMES = 120;
 const DEFAULT_BENCHMARK_WARMUP_FRAMES = 10;
 const DEFAULT_BENCHMARK_YAW_STEP = 0.001;
+const OPACITY_LOGIT_LIMIT = 16;
 
 const DATASETS = {
+  showcase: "/tests/datasets/external/wakufactory_kitune/kitune1.ply",
   minimal: "/tests/datasets/minimal_ascii.ply",
   flowers: "/tests/datasets/external/nvidia_flowers_1/flowers_1/flowers_1.ply",
 };
 
-const WASM_ENTRY = new URL("../pkg/gsplat_web.js", import.meta.url);
+const WASM_ENTRY = new URL("../pkg/gsplat_web.js?v=showcase-20260710b", import.meta.url);
+const WASM_BINARY = new URL("../pkg/gsplat_web_bg.wasm?v=showcase-20260710b", import.meta.url);
 
 const REQUIRED_FIELDS = [
   "x",
@@ -87,7 +93,7 @@ const state = {
   rendererStatus: "state=booting",
   surfaceSizeLabel: "pending",
   datasetPath: "pending",
-  startDataset: "minimal",
+  startDataset: "showcase",
   benchmark: null,
   autoStartBenchmark: false,
   autoBenchmarkSync: false,
@@ -95,6 +101,7 @@ const state = {
 
 const els = {
   canvas: document.getElementById("viewport"),
+  loadShowcase: document.getElementById("loadShowcase"),
   loadMinimal: document.getElementById("loadMinimal"),
   loadFlowers: document.getElementById("loadFlowers"),
   fileInput: document.getElementById("fileInput"),
@@ -132,11 +139,18 @@ const els = {
   sceneName: document.getElementById("sceneName"),
   sceneMeta: document.getElementById("sceneMeta"),
   statusLine: document.getElementById("statusLine"),
+  themeToggle: document.getElementById("themeToggle"),
+  loadingOverlay: document.getElementById("loadingOverlay"),
+  loadingTitle: document.getElementById("loadingTitle"),
+  loadingMeta: document.getElementById("loadingMeta"),
+  loadingBar: document.getElementById("loadingBar"),
+  sceneButtons: Array.from(document.querySelectorAll(".scene-switcher button")),
 };
 
 void main();
 
 async function main() {
+  initTheme();
   applyUrlConfig();
   updateControlLabels();
   await initWasmModule();
@@ -145,12 +159,34 @@ async function main() {
   }
   bindEvents();
   resizeCanvas();
-  const initialDataset =
-    state.startDataset === "flowers"
-      ? { path: DATASETS.flowers, name: "flowers_1.ply" }
-      : { path: DATASETS.minimal, name: "minimal_ascii.ply" };
-  await loadDataset(initialDataset.path, initialDataset.name);
+  await loadStartupDataset();
   requestAnimationFrame(frame);
+}
+
+async function loadStartupDataset() {
+  const requested =
+    state.startDataset === "minimal"
+      ? [{ path: DATASETS.minimal, name: "minimal_ascii.ply" }]
+      : state.startDataset === "flowers"
+        ? [
+            { path: DATASETS.flowers, name: "flowers_1.ply" },
+            { path: DATASETS.minimal, name: "minimal_ascii.ply" },
+          ]
+        : [
+            { path: DATASETS.showcase, name: "kitune1.ply" },
+            { path: DATASETS.flowers, name: "flowers_1.ply" },
+            { path: DATASETS.minimal, name: "minimal_ascii.ply" },
+          ];
+
+  for (let index = 0; index < requested.length; index += 1) {
+    const dataset = requested[index];
+    const loaded = await loadDataset(dataset.path, dataset.name, {
+      allowFallback: index < requested.length - 1,
+    });
+    if (loaded) {
+      return;
+    }
+  }
 }
 
 async function initWasmModule() {
@@ -163,7 +199,7 @@ async function initWasmModule() {
     }
 
     const module = await import(WASM_ENTRY.href);
-    state.wasmModule = await initGsplatWeb({ module });
+    state.wasmModule = await initGsplatWeb({ module, wasmUrl: WASM_BINARY });
     state.backend = "wasm";
     els.gpuStatus.textContent = "wasm ready";
     setRenderMode("Rust/WASM + wgpu Surface");
@@ -266,7 +302,7 @@ function initRenderer() {
   gl.disable(gl.DEPTH_TEST);
   gl.enable(gl.BLEND);
   gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
-  gl.clearColor(0.082, 0.086, 0.078, 1.0);
+  gl.clearColor(0.047, 0.051, 0.059, 1.0);
   els.gpuStatus.textContent = "ready";
   setRenderMode("WebGL2 fallback point splats");
   updateBackendControls();
@@ -352,13 +388,16 @@ function resizeWasmRenderer() {
 
 function updateBackendControls() {
   const wasmActive = usingWasm();
-  els.backendBadge.textContent = state.backend === "wasm" ? "wasm surface" : "webgl fallback";
+  els.backendBadge.textContent = state.backend === "wasm" ? "WASM surface" : "WebGL fallback";
   els.drawBudget.disabled = wasmActive;
   els.pointScale.disabled = wasmActive;
 }
 
 function bindEvents() {
   window.addEventListener("resize", resizeCanvas);
+  els.loadShowcase.addEventListener("click", () =>
+    void loadDataset(DATASETS.showcase, "kitune1.ply"),
+  );
   els.loadMinimal.addEventListener("click", () => void loadDataset(DATASETS.minimal, "minimal_ascii.ply"));
   els.loadFlowers.addEventListener("click", () => void loadDataset(DATASETS.flowers, "flowers_1.ply"));
   els.fileInput.addEventListener("change", async (event) => {
@@ -370,6 +409,10 @@ function bindEvents() {
   });
   els.resetCamera.addEventListener("click", resetCamera);
   els.toggleOrbit.addEventListener("click", () => setAutoOrbit(!state.autoOrbit));
+  els.themeToggle.addEventListener("click", () => {
+    const next = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
+    setTheme(next, true);
+  });
   els.runBenchmark.addEventListener("click", startBenchmark);
 
   for (const input of [els.drawBudget, els.sortInterval, els.pointScale, els.benchmarkYaw]) {
@@ -567,34 +610,59 @@ function stopInteractiveOrbit() {
 function setAutoOrbit(enabled) {
   state.autoOrbit = enabled;
   els.toggleOrbit.setAttribute("aria-pressed", String(enabled));
+  els.toggleOrbit.textContent = enabled ? "Pause orbit" : "Play orbit";
   if (enabled) {
     state.cameraStatus = "camera=auto";
   }
 }
 
-async function loadDataset(path, name) {
+async function loadDataset(path, name, options = {}) {
+  const { allowFallback = false } = options;
+  setLoadingProgress(`Loading ${sceneTitle(name)}`, "Fetching scene data.", 0.04);
   setStatus(`state=loading dataset=${name}`);
   try {
     const response = await fetch(path);
     if (!response.ok) {
       throw new Error(`HTTP ${response.status}`);
     }
-    const bytes = new Uint8Array(await response.arrayBuffer());
+    const bytes = await readResponseBytes(response, name);
+    setLoadingProgress("Reading captured light", `${formatBytes(bytes.byteLength)} received.`, 0.76);
     const scene = parsePly(bytes, name, path);
+    setLoadingProgress(
+      "Building the scene",
+      `${formatNumber(scene.count)} Gaussians ready for the GPU.`,
+      0.86,
+    );
     await applyScene(scene);
+    return true;
   } catch (error) {
     setStatus(`state=load_failed dataset=${name} error=${compactMessage(error)}`);
+    if (allowFallback) {
+      setLoadingProgress(
+        `${sceneTitle(name)} is not installed`,
+        "Trying the next local scene.",
+        0.06,
+      );
+    } else {
+      setLoadingProgress("Scene could not load", compactMessage(error), 0);
+      window.setTimeout(hideLoading, 1400);
+    }
+    return false;
   }
 }
 
 async function loadFile(file) {
+  setLoadingProgress(`Opening ${file.name}`, "Reading the local PLY in your browser.", 0.12);
   setStatus(`state=loading dataset=${file.name}`);
   try {
     const bytes = new Uint8Array(await file.arrayBuffer());
+    setLoadingProgress("Reading captured light", `${formatBytes(bytes.byteLength)} received.`, 0.76);
     const scene = parsePly(bytes, file.name, `browser:${file.name}`);
     await applyScene(scene);
   } catch (error) {
     setStatus(`state=parse_failed dataset=${file.name} error=${compactMessage(error)}`);
+    setLoadingProgress("PLY could not open", compactMessage(error), 0);
+    window.setTimeout(hideLoading, 1400);
   }
 }
 
@@ -613,10 +681,14 @@ async function applyScene(scene) {
   els.formatBadge.textContent = scene.format.replace("_", " ");
   els.gaussianCount.textContent = formatNumber(scene.count);
   els.shDegree.textContent = String(scene.shDegree);
-  els.sceneName.textContent = scene.name;
-  els.sceneMeta.textContent = `${formatNumber(scene.count)} gaussians · ${scene.format}`;
+  els.sceneName.textContent = sceneTitle(scene.name);
+  els.sceneMeta.textContent = `${formatNumber(scene.count)} gaussians · ${formatLabel(scene.format)}`;
+  for (const button of els.sceneButtons) {
+    button.setAttribute("aria-pressed", String(button.dataset.scene === scene.name));
+  }
 
   if (state.wasmModule) {
+    setLoadingProgress("Uploading to the GPU", "Preparing the realtime surface.", 0.92);
     await createWasmRenderer(scene);
   } else {
     ensureFallbackRenderer();
@@ -624,6 +696,8 @@ async function applyScene(scene) {
   }
 
   setStatus(`state=scene_ready backend=${usingWasm() ? "wasm" : "webgl"}`);
+  setLoadingProgress("Scene ready", "Drag anywhere to explore.", 1);
+  hideLoading();
   if (state.autoStartBenchmark) {
     state.autoStartBenchmark = false;
     if (state.autoBenchmarkSync) {
@@ -760,7 +834,8 @@ function parseAsciiBody(bytes, bodyOffset, header, scene) {
     throw new Error("vertex count mismatch");
   }
 
-  const get = (values, name) => finiteNumber(Number(values[header.propertyMap.get(name).index]), name);
+  const read = (values, name) => parseNumericToken(values[header.propertyMap.get(name).index]);
+  const get = (values, name) => finiteNumber(read(values, name), name);
   for (let i = 0; i < header.vertexCount; i += 1) {
     const values = lines[i].trim().split(/\s+/);
     if (values.length < header.properties.length) {
@@ -770,7 +845,7 @@ function parseAsciiBody(bytes, bodyOffset, header, scene) {
       x: get(values, "x"),
       y: get(values, "y"),
       z: get(values, "z"),
-      opacity: get(values, "opacity"),
+      opacity: normalizeOpacityLogit(read(values, "opacity")),
       scale0: get(values, "scale_0"),
       scale1: get(values, "scale_1"),
       scale2: get(values, "scale_2"),
@@ -787,11 +862,14 @@ function parseBinaryBody(bytes, bodyOffset, header, scene, littleEndian) {
     throw new Error("binary body is shorter than declared vertex count");
   }
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-  const read = (base, name) =>
-    finiteNumber(
-      readProperty(view, base + header.propertyMap.get(name).offset, header.propertyMap.get(name).type, littleEndian),
-      name,
+  const readRaw = (base, name) =>
+    readProperty(
+      view,
+      base + header.propertyMap.get(name).offset,
+      header.propertyMap.get(name).type,
+      littleEndian,
     );
+  const read = (base, name) => finiteNumber(readRaw(base, name), name);
 
   for (let i = 0; i < header.vertexCount; i += 1) {
     const base = bodyOffset + i * header.stride;
@@ -799,7 +877,7 @@ function parseBinaryBody(bytes, bodyOffset, header, scene, littleEndian) {
       x: read(base, "x"),
       y: read(base, "y"),
       z: read(base, "z"),
-      opacity: read(base, "opacity"),
+      opacity: normalizeOpacityLogit(readRaw(base, "opacity")),
       scale0: read(base, "scale_0"),
       scale1: read(base, "scale_1"),
       scale2: read(base, "scale_2"),
@@ -1233,6 +1311,10 @@ function applyUrlConfig() {
   const dataset = (params.get("dataset") ?? params.get("scene") ?? "").toLowerCase();
   if (dataset === "flowers" || dataset === "flower") {
     state.startDataset = "flowers";
+  } else if (dataset === "minimal" || dataset === "smoke") {
+    state.startDataset = "minimal";
+  } else if (["showcase", "kitsune", "kitune", "fox"].includes(dataset)) {
+    state.startDataset = "showcase";
   }
   state.autoStartBenchmark = ["1", "true", "yes"].includes(
     (params.get("gsplat_benchmark") ?? params.get("benchmark") ?? "").toLowerCase(),
@@ -1419,6 +1501,29 @@ function finiteNumber(value, field) {
   return value;
 }
 
+function parseNumericToken(value) {
+  if (/^\+?inf(?:inity)?$/i.test(value)) {
+    return Number.POSITIVE_INFINITY;
+  }
+  if (/^-inf(?:inity)?$/i.test(value)) {
+    return Number.NEGATIVE_INFINITY;
+  }
+  return Number(value);
+}
+
+function normalizeOpacityLogit(value) {
+  if (Number.isFinite(value)) {
+    return value;
+  }
+  if (value === Number.POSITIVE_INFINITY) {
+    return OPACITY_LOGIT_LIMIT;
+  }
+  if (value === Number.NEGATIVE_INFINITY) {
+    return -OPACITY_LOGIT_LIMIT;
+  }
+  throw new Error("non-finite field opacity");
+}
+
 function finiteOrDefault(value, fallback) {
   return Number.isFinite(value) ? value : fallback;
 }
@@ -1463,6 +1568,96 @@ function formatCompact(value) {
 
 function formatNumber(value) {
   return new Intl.NumberFormat("en-US").format(value);
+}
+
+function formatLabel(value) {
+  return String(value).replaceAll("_", " ");
+}
+
+function formatBytes(value) {
+  if (value >= 1024 * 1024) {
+    return `${(value / (1024 * 1024)).toFixed(value >= 10 * 1024 * 1024 ? 0 : 1)} MB`;
+  }
+  if (value >= 1024) {
+    return `${Math.round(value / 1024)} KB`;
+  }
+  return `${value} B`;
+}
+
+function sceneTitle(name) {
+  if (name === "kitune1.ply") {
+    return "Kitsune shrine";
+  }
+  if (name === "flowers_1.ply") {
+    return "NVIDIA flowers";
+  }
+  if (name === "minimal_ascii.ply") {
+    return "Minimal smoke scene";
+  }
+  return name;
+}
+
+async function readResponseBytes(response, name) {
+  const total = Number(response.headers.get("content-length") ?? 0);
+  if (!response.body || !Number.isFinite(total) || total <= 0) {
+    return new Uint8Array(await response.arrayBuffer());
+  }
+
+  const bytes = new Uint8Array(total);
+  const reader = response.body.getReader();
+  let received = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) {
+      break;
+    }
+    if (received + value.byteLength > bytes.byteLength) {
+      throw new Error("scene response exceeded its declared size");
+    }
+    bytes.set(value, received);
+    received += value.byteLength;
+    setLoadingProgress(
+      `Loading ${sceneTitle(name)}`,
+      `${formatBytes(received)} of ${formatBytes(total)}`,
+      0.04 + (received / total) * 0.68,
+    );
+  }
+  return received === bytes.byteLength ? bytes : bytes.slice(0, received);
+}
+
+function setLoadingProgress(title, meta, progress) {
+  els.loadingTitle.textContent = title;
+  els.loadingMeta.textContent = meta;
+  els.loadingBar.style.width = `${clamp(progress, 0, 1) * 100}%`;
+  els.loadingOverlay.classList.remove("is-hidden");
+}
+
+function hideLoading() {
+  els.loadingOverlay.classList.add("is-hidden");
+}
+
+function initTheme() {
+  let stored = "";
+  try {
+    stored = window.localStorage.getItem("gsplat-showcase-theme") ?? "";
+  } catch {
+    stored = "";
+  }
+  setTheme(stored === "light" ? "light" : "dark", false);
+}
+
+function setTheme(theme, persist) {
+  document.documentElement.dataset.theme = theme;
+  const dark = theme === "dark";
+  els.themeToggle.textContent = dark ? "Light mode" : "Dark mode";
+  els.themeToggle.setAttribute("aria-label", dark ? "Switch to light mode" : "Switch to dark mode");
+  if (persist) {
+    try {
+      window.localStorage.setItem("gsplat-showcase-theme", theme);
+    } catch {
+      // The theme still applies when storage is unavailable.
+    }
+  }
 }
 
 function compactMessage(error) {

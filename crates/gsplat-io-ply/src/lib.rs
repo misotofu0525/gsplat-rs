@@ -12,6 +12,10 @@ const REQUIRED_VERTEX_FIELDS: [&str; 14] = [
     "f_dc_0", "f_dc_1", "f_dc_2",
 ];
 
+// Scaniverse can encode exactly transparent/opaque splats as infinite logits.
+// A finite clamp preserves the post-sigmoid alpha while keeping SceneBuffers valid.
+const OPACITY_LOGIT_LIMIT: f32 = 16.0;
+
 // Common 3DGS PLYs (COLMAP/OpenCV-style) are authored in RDF coordinates:
 // +X right, +Y down, +Z forward. The runtime camera path in this workspace uses
 // +X right, +Y up, +Z forward (RUF), so we convert once at load time.
@@ -493,9 +497,7 @@ fn parse_ascii_body(
         let z = parse_field_f32_ascii(&values, indices, "z")?;
         scene.positions.push(Vec3f::new(x, y, z));
 
-        scene
-            .opacity
-            .push(parse_field_f32_ascii(&values, indices, "opacity")?);
+        scene.opacity.push(parse_opacity_ascii(&values, indices)?);
 
         scene.scale_xyz.push([
             parse_field_f32_ascii(&values, indices, "scale_0")?,
@@ -552,6 +554,21 @@ fn parse_field_f32_ascii_idx(values: &[&str], idx: usize) -> Result<f32, PlyLoad
     }
 }
 
+fn parse_opacity_ascii(
+    values: &[&str],
+    indices: &HashMap<&str, usize>,
+) -> Result<f32, PlyLoadError> {
+    let idx = indices
+        .get("opacity")
+        .copied()
+        .ok_or(PlyLoadError::MalformedHeader)?;
+    let value = values.get(idx).ok_or(PlyLoadError::VertexFieldCount)?;
+    let parsed = value
+        .parse::<f32>()
+        .map_err(|_| PlyLoadError::ParseNumber)?;
+    normalize_opacity_logit(parsed)
+}
+
 #[derive(Clone, Copy)]
 enum Endian {
     Little,
@@ -581,8 +598,8 @@ fn parse_binary_body(
         let z = read_field_f32_binary(record, header, &offsets, indices, "z", endian)?;
         scene.positions.push(Vec3f::new(x, y, z));
 
-        scene.opacity.push(read_field_f32_binary(
-            record, header, &offsets, indices, "opacity", endian,
+        scene.opacity.push(read_opacity_binary(
+            record, header, &offsets, indices, endian,
         )?);
 
         scene.scale_xyz.push([
@@ -662,7 +679,42 @@ fn read_field_f32_binary_idx(
     read_scalar_f32(record, offset, prop.ty, endian)
 }
 
+fn read_opacity_binary(
+    record: &[u8],
+    header: &PlyHeader,
+    offsets: &[usize],
+    indices: &HashMap<&str, usize>,
+    endian: Endian,
+) -> Result<f32, PlyLoadError> {
+    let prop_index = indices
+        .get("opacity")
+        .copied()
+        .ok_or(PlyLoadError::MalformedHeader)?;
+    let prop = header
+        .vertex_properties
+        .get(prop_index)
+        .ok_or(PlyLoadError::MalformedHeader)?;
+    let offset = *offsets
+        .get(prop_index)
+        .ok_or(PlyLoadError::MalformedHeader)?;
+    normalize_opacity_logit(read_scalar_f32_raw(record, offset, prop.ty, endian)?)
+}
+
 fn read_scalar_f32(
+    record: &[u8],
+    offset: usize,
+    ty: PlyScalarType,
+    endian: Endian,
+) -> Result<f32, PlyLoadError> {
+    let value = read_scalar_f32_raw(record, offset, ty, endian)?;
+    if value.is_finite() {
+        Ok(value)
+    } else {
+        Err(PlyLoadError::ParseNumber)
+    }
+}
+
+fn read_scalar_f32_raw(
     record: &[u8],
     offset: usize,
     ty: PlyScalarType,
@@ -710,8 +762,16 @@ fn read_scalar_f32(
         }
     };
 
+    Ok(value)
+}
+
+fn normalize_opacity_logit(value: f32) -> Result<f32, PlyLoadError> {
     if value.is_finite() {
         Ok(value)
+    } else if value == f32::INFINITY {
+        Ok(OPACITY_LOGIT_LIMIT)
+    } else if value == f32::NEG_INFINITY {
+        Ok(-OPACITY_LOGIT_LIMIT)
     } else {
         Err(PlyLoadError::ParseNumber)
     }
@@ -719,7 +779,7 @@ fn read_scalar_f32(
 
 #[cfg(test)]
 mod tests {
-    use super::{PlyLoadError, parse_ply_bytes, parse_ply_text};
+    use super::{OPACITY_LOGIT_LIMIT, PlyLoadError, parse_ply_bytes, parse_ply_text};
 
     const VALID_PLY: &str = "ply\nformat ascii 1.0\nelement vertex 1\nproperty float x\nproperty float y\nproperty float z\nproperty float opacity\nproperty float scale_0\nproperty float scale_1\nproperty float scale_2\nproperty float rot_0\nproperty float rot_1\nproperty float rot_2\nproperty float rot_3\nproperty float f_dc_0\nproperty float f_dc_1\nproperty float f_dc_2\nend_header\n0.0 0.1 1.0 0.9 1.0 1.1 1.2 1.0 0.0 0.0 0.0 0.2 0.3 0.4\n";
     const VALID_PLY_NON_IDENTITY_QUAT: &str = "ply\nformat ascii 1.0\nelement vertex 1\nproperty float x\nproperty float y\nproperty float z\nproperty float opacity\nproperty float scale_0\nproperty float scale_1\nproperty float scale_2\nproperty float rot_0\nproperty float rot_1\nproperty float rot_2\nproperty float rot_3\nproperty float f_dc_0\nproperty float f_dc_1\nproperty float f_dc_2\nend_header\n0.0 0.1 1.0 0.9 1.0 1.1 1.2 0.9 0.2 0.3 0.4 0.2 0.3 0.4\n";
@@ -786,6 +846,28 @@ mod tests {
     #[test]
     fn rejects_ascii_non_finite_value() {
         let broken = VALID_PLY.replacen("0.0 0.1", "NaN 0.1", 1);
+        let err = parse_ply_text(&broken).unwrap_err();
+        assert_eq!(err, PlyLoadError::ParseNumber);
+    }
+
+    #[test]
+    fn normalizes_ascii_infinite_opacity_logits() {
+        let positive = VALID_PLY.replacen("0.0 0.1 1.0 0.9", "0.0 0.1 1.0 inf", 1);
+        let negative = VALID_PLY.replacen("0.0 0.1 1.0 0.9", "0.0 0.1 1.0 -inf", 1);
+
+        assert_eq!(
+            parse_ply_text(&positive).unwrap().scene.opacity[0],
+            OPACITY_LOGIT_LIMIT
+        );
+        assert_eq!(
+            parse_ply_text(&negative).unwrap().scene.opacity[0],
+            -OPACITY_LOGIT_LIMIT
+        );
+    }
+
+    #[test]
+    fn rejects_ascii_nan_opacity() {
+        let broken = VALID_PLY.replacen("0.0 0.1 1.0 0.9", "0.0 0.1 1.0 NaN", 1);
         let err = parse_ply_text(&broken).unwrap_err();
         assert_eq!(err, PlyLoadError::ParseNumber);
     }
@@ -888,6 +970,35 @@ mod tests {
 
         let err = parse_ply_bytes(&bytes).unwrap_err();
         assert_eq!(err, PlyLoadError::ParseNumber);
+    }
+
+    #[test]
+    fn normalizes_binary_infinite_opacity_logit() {
+        let header = "ply\nformat binary_little_endian 1.0\nelement vertex 1\nproperty float x\nproperty float y\nproperty float z\nproperty float opacity\nproperty float scale_0\nproperty float scale_1\nproperty float scale_2\nproperty float rot_0\nproperty float rot_1\nproperty float rot_2\nproperty float rot_3\nproperty float f_dc_0\nproperty float f_dc_1\nproperty float f_dc_2\nend_header\n";
+
+        let mut bytes = header.as_bytes().to_vec();
+        let values: [f32; 14] = [
+            0.0,
+            0.1,
+            1.0,
+            f32::INFINITY,
+            1.0,
+            1.1,
+            1.2,
+            1.0,
+            0.0,
+            0.0,
+            0.0,
+            0.2,
+            0.3,
+            0.4,
+        ];
+        for value in values {
+            bytes.extend_from_slice(&value.to_le_bytes());
+        }
+
+        let result = parse_ply_bytes(&bytes).unwrap();
+        assert_eq!(result.scene.opacity[0], OPACITY_LOGIT_LIMIT);
     }
 
     #[test]

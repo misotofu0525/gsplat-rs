@@ -190,8 +190,8 @@ test("createGsplatRenderer normalizes bytes and applies sort interval", async ()
 test("initGsplatWeb stores provided module for version lookup", async () => {
   let initializedWith;
   const module = {
-    async default(wasmUrl) {
-      initializedWith = wasmUrl;
+    async default(init) {
+      initializedWith = init;
     },
     api_version_major() {
       return 0;
@@ -204,6 +204,6 @@ test("initGsplatWeb stores provided module for version lookup", async () => {
   const resolved = await initGsplatWeb({ module, wasmUrl: "fixture.wasm" });
 
   assert.equal(resolved, module);
-  assert.equal(initializedWith, "fixture.wasm");
+  assert.deepEqual(initializedWith, { module_or_path: "fixture.wasm" });
   assert.deepEqual(getGsplatApiVersion(), { major: 0, minor: 1 });
 });
