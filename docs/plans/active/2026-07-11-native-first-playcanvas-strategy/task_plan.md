@@ -10,8 +10,8 @@ comparison gates have fresh evidence.
 ## Current Phase
 
 Implementation Phase B is complete under the matched `sort_interval=4`
-sync-orbit qualification protocol. Phase C (compressed sources / bounded
-decode) is next; first format candidate is Niantic SPZ (MIT, v4 ZSTD).
+sync-orbit qualification protocol. Phase C is complete under minimal-fixture
+exit evidence; Phase D (spatial pages / streaming LOD) is next.
 ## Phases
 
 ### Phase 1: Requirements and Evidence Refresh
@@ -60,7 +60,8 @@ decode) is next; first format candidate is Niantic SPZ (MIT, v4 ZSTD).
   matched sync-orbit `sort_interval=4` (Android kitsune 1.078; Android flowers
   0.383) plus existing iOS/desktop passes and `phase-b-peak-rss-index.json`.
   `sort_interval=2` sync residual (~1.12) remains a known non-qualification
-  stress case. Phases C-F remain gated.
+  stress case. Phase C is complete under minimal-fixture evidence; Phases D-F
+  remain gated.
 - Keep this bundle under `docs/plans/active/` while implementation is pending;
   move it to completed planning history only after the execution roadmap is
   delivered or explicitly superseded.
@@ -106,18 +107,18 @@ decode) is next; first format candidate is Niantic SPZ (MIT, v4 ZSTD).
       (`SourceResidencyCaches` / LRU byte budgets in `gsplat-io-spz`).
 - [x] Prove offscreen PLY-vs-SPZ image/count parity on the minimal degree-0
       fixture (`ply_vs_spz_offscreen_image_parity_gate_on_minimal_fixture`).
-- [ ] Device image parity for qualification scenes remains optional follow-up.
-- **Status:** in_progress; Phase B gate cleared; SPZ feasibility accepted (MIT,
-  interoperable, not a custom public format); synthetic SH decode covered
-  through degree 3; fixture + cancel/attribute gates landed unit-side;
-  CPU residency caches bounded with independent budgets; minimal offscreen
-  PLY↔SPZ image parity landed
+- [x] Record cold/warm load metrics and first-frame timing under
+      `target/benchmarks/phase-c/` for the minimal paired fixture.
+- **Status:** complete under minimal-fixture evidence (transport ~0.30× PLY,
+  logical peak lower, cancel + attribute + offscreen image gates). Deferred
+  outside this exit: FFI/examples wiring, device parity on larger scenes,
+  legacy gzip v1–3 / degree 4 / extension ILV.
 
 ### Phase D: Spatial Pages and Streaming LOD
 
 - [ ] Implement page scheduling, residency generations, and spatial/attribute LOD.
 - [ ] Prove bounded memory/queues, continuity, and large-scene gates.
-- **Status:** pending; blocked on Phase C exit gate
+- **Status:** pending; Phase C exit cleared under minimal-fixture evidence
 
 ### Phase E: Policy Optimization and Competitive Qualification
 

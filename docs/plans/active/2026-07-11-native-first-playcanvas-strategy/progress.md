@@ -4,7 +4,7 @@
 
 ### Implementation Phase C: Compressed Sources and Bounded Decode
 
-- **Status:** in_progress; SPZ v4 decode + fixture/cancel/attribute gates
+- **Status:** complete under minimal-fixture exit evidence; FFI/device follow-ups deferred
 - Actions taken:
   - Added workspace crate `gsplat-io-spz` with file and in-memory loading APIs,
     `SpzLoadLimits`, structured `thiserror` failures, and `SceneBuffers` output.
@@ -25,27 +25,23 @@
     `tests/datasets/minimal_v4_degree0.spz` (8 splats, degree 0, 331 B),
     PLY↔SPZ count/attribute mapping gate (RDF PLY inverse of RUF SPZ), and
     cancel/recovery unit evidence.
-  - `cargo test -p gsplat-io-spz`: 14 tests passed.
-  - `cargo check -p gsplat-io-spz` and `cargo clippy -p gsplat-io-spz
-    --all-targets -- -D warnings`: passed.
-  - **Slice 3:** `SourceResidencyCaches` with independent compressed/decoded
-    LRU byte budgets, `estimated_scene_bytes`, and eviction/oversize tests
-    (`cargo test -p gsplat-io-spz`: 19 passed; clippy `-D warnings` passed).
-  - **Slice 4:** Offscreen PLY-vs-SPZ image/count parity on
-    `minimal_v4_degree0.spz` via framed camera (`visible=8`, mean_abs_rgb=0);
-    `gsplat-io-spz` added as `gsplat-render-wgpu` dev-dependency.
-- Current boundary / remaining:
+  - **Slice 3 (`df59adc`):** `SourceResidencyCaches` with independent
+    compressed/decoded LRU byte budgets.
+  - **Slice 4 (`e7908c1`):** Offscreen PLY-vs-SPZ image/count parity on the
+    minimal fixture (`visible=8`, mean_abs_rgb=0).
+  - **Slice 5:** Cold/warm load metrics + TTFF artifacts under
+    `target/benchmarks/phase-c/` (SPZ transport 331 B vs PLY 1106 B ≈ 0.30×;
+    logical peak 779 vs 1554).
+- Current boundary / remaining (deferred, not Phase C exit blockers):
+  - FFI/examples SPZ load wiring.
   - Optional device image parity for larger qualification scenes.
-  - Degree 4 SH, legacy gzip v1-3, extension ILV, and FFI wiring remain deferred.
+  - Degree 4 SH, legacy gzip v1-3, extension ILV.
 - 5-question reboot:
-  - Where am I? Phase C decoder + fixture/cancel/attribute + CPU residency
-    caches + minimal offscreen PLY↔SPZ image parity landed.
-  - Where am I going? FFI/examples wiring and optional device parity.
-  - What's the goal? Phase C exit: compressed sources with bounded decode and
-    parity evidence.
+  - Where am I? Phase C exit satisfied on the minimal paired fixture.
+  - Where am I going? Phase D spatial pages / streaming LOD, plus optional SPZ FFI.
+  - What's the goal? Native-first competitive architecture through Phases A-F.
   - What have I learned? See `findings.md` Phase C section.
-  - What have I done? Decoder crate + fixture + cancel + PLY attribute gate +
-    bounded CPU residency caches + offscreen image parity.
+  - What have I done? Full Phase C decoder + gates + residency + metrics.
 
 ### Implementation Phase B: Packed Atlas Without Streaming
 
@@ -311,8 +307,8 @@
 
 | Question | Answer |
 |----------|--------|
-| Where am I? | Phase A and Phase B are complete; Phase C has decoder + fixture/cancel/attribute gates + bounded CPU residency caches + minimal offscreen PLY↔SPZ image parity. |
-| Where am I going? | FFI/examples wiring and optional device parity for larger scenes. |
+| Where am I? | Phase A–C complete under stated evidence; Phase D (spatial pages / streaming LOD) is next. |
+| Where am I going? | Phase D page scheduling and residency, plus optional SPZ FFI/examples. |
 | What's the goal? | Deliver the native-first competitive architecture through Phases A-F with evidence. |
 | What have I learned? | See `findings.md`. |
 | What have I done? | Froze Phase A, qualified Phase B, landed SPZ v4 decode, minimal fixture, cancel, and PLY attribute mapping. |

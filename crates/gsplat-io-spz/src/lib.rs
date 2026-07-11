@@ -3,8 +3,8 @@
 mod cache;
 
 pub use cache::{
-    estimated_scene_bytes, BoundedByteCache, SourceCacheBudgets, SourceCacheError,
-    SourceResidencyCaches,
+    BoundedByteCache, SourceCacheBudgets, SourceCacheError, SourceResidencyCaches,
+    estimated_scene_bytes,
 };
 
 use std::fs;
@@ -994,5 +994,82 @@ mod tests {
         // Successful path still works after a cancelled attempt (no sticky state).
         let recovered = parse_spz_bytes(&bytes).unwrap();
         assert_eq!(recovered.summary.gaussians, FIXTURE_GAUSSIANS);
+    }
+
+    #[test]
+    fn records_cold_warm_load_metrics_vs_paired_ply() {
+        use std::time::Instant;
+
+        use crate::{SourceCacheBudgets, SourceResidencyCaches, estimated_scene_bytes};
+
+        let spz_path = minimal_spz_fixture_path();
+        let spz_bytes = std::fs::read(&spz_path).expect("read minimal SPZ fixture");
+        let cold_started = Instant::now();
+        let spz = parse_spz_bytes(&spz_bytes).expect("cold SPZ decode");
+        let spz_cold_ns = cold_started.elapsed().as_nanos();
+        let decoded_bytes = estimated_scene_bytes(&spz.scene);
+        let spz_logical_peak = spz_bytes.len().saturating_add(decoded_bytes);
+
+        let mut caches = SourceResidencyCaches::new(SourceCacheBudgets {
+            max_compressed_bytes: spz_bytes.len().saturating_mul(4).max(1024),
+            max_decoded_bytes: decoded_bytes.saturating_mul(4).max(1024),
+        });
+        caches
+            .insert_compressed("minimal_v4_degree0", spz_bytes.clone())
+            .unwrap();
+        caches
+            .insert_decoded("minimal_v4_degree0", spz.scene.clone())
+            .unwrap();
+        let warm_started = Instant::now();
+        let warm_scene = caches
+            .decoded
+            .get("minimal_v4_degree0")
+            .expect("warm decoded cache hit");
+        let spz_warm_ns = warm_started.elapsed().as_nanos();
+        assert_eq!(warm_scene.len(), spz.scene.len());
+
+        let ply_text = scene_to_rdf_ply(&spz.scene);
+        let ply_bytes = ply_text.as_bytes();
+        let ply_started = Instant::now();
+        let ply = parse_ply_text(&ply_text).expect("paired PLY decode");
+        let ply_cold_ns = ply_started.elapsed().as_nanos();
+        let ply_logical_peak = ply_bytes
+            .len()
+            .saturating_add(estimated_scene_bytes(&ply.scene));
+
+        assert!(
+            spz_bytes.len() < ply_bytes.len(),
+            "SPZ transport {} must be smaller than paired PLY {}",
+            spz_bytes.len(),
+            ply_bytes.len()
+        );
+        assert!(
+            spz_logical_peak <= ply_logical_peak,
+            "SPZ logical peak {} must be <= paired PLY peak {}",
+            spz_logical_peak,
+            ply_logical_peak
+        );
+
+        let out_dir =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/benchmarks/phase-c");
+        std::fs::create_dir_all(&out_dir).unwrap();
+        let out_path = out_dir.join("minimal-spz-vs-ply-load-metrics.json");
+        let payload = format!(
+            "{{\n  \"schema\": \"gsplat-phase-c-load-metrics/v1\",\n  \"dataset\": \"minimal_v4_degree0\",\n  \"gaussians\": {},\n  \"sh_degree\": {},\n  \"transport\": {{\n    \"spz_bytes\": {},\n    \"ply_bytes\": {},\n    \"spz_over_ply\": {:.6}\n  }},\n  \"decoded_scene_bytes\": {},\n  \"logical_peak_bytes\": {{\n    \"spz_cold\": {},\n    \"ply_cold\": {}\n  }},\n  \"decode_ns\": {{\n    \"spz_cold\": {},\n    \"spz_warm_cache_hit\": {},\n    \"ply_cold\": {}\n  }},\n  \"notes\": \"logical_peak_bytes = transport input + estimated_scene_bytes; warm path is SourceResidencyCaches decoded hit\"\n}}\n",
+            spz.summary.gaussians,
+            spz.summary.sh_degree,
+            spz_bytes.len(),
+            ply_bytes.len(),
+            spz_bytes.len() as f64 / ply_bytes.len() as f64,
+            decoded_bytes,
+            spz_logical_peak,
+            ply_logical_peak,
+            spz_cold_ns,
+            spz_warm_ns,
+            ply_cold_ns,
+        );
+        std::fs::write(&out_path, payload).unwrap();
+        assert!(out_path.is_file());
+        eprintln!("wrote {}", out_path.display());
     }
 }

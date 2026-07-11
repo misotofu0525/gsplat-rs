@@ -557,7 +557,8 @@ quality profile, and date.
 - [x] Unit-level PLY-vs-SPZ count/attribute mapping gate passes.
 - [x] PLY-vs-compressed offscreen image parity passes on the minimal degree-0
       fixture (device qualification scenes remain optional).
-- [ ] Cold/warm bytes, time-to-first-frame, and peak memory are stored.
+- [x] Cold/warm bytes, time-to-first-frame, and peak memory are stored under
+      `target/benchmarks/phase-c/` for the minimal paired fixture.
 - [x] Reusable compressed/decoded CPU residency caches are bounded beyond
       single-load `SpzLoadLimits` (`SourceResidencyCaches` unit evidence).
 

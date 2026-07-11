@@ -441,7 +441,11 @@
   source bytes and decoded `SceneBuffers` (`estimated_scene_bytes`), so
   whole-scene SPZ residency can be bounded beyond per-load `SpzLoadLimits`
   without waiting for Phase D page scheduling.
-- Legacy gzip v1–3, extension ILV, degree 4, and FFI remain Phase C follow-up
-  work.
+- Minimal paired load metrics (stored under `target/benchmarks/phase-c/`):
+  SPZ transport 331 B vs PLY 1106 B (~0.30×); logical peak 779 vs 1554;
+  warm decoded cache hit recorded; first SortedAlpha frame TTFF recorded
+  adapter-dependently.
+- Legacy gzip v1–3, extension ILV, degree 4, FFI/examples, and larger-scene
+  device parity remain deferred outside the minimal-fixture Phase C exit.
 - Rust dependency selection pins pure-Rust `ruzstd` 0.8.3 in workspace
   dependencies and decodes each stream into its exact validated output size.

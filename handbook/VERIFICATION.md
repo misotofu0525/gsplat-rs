@@ -364,6 +364,11 @@ STABILITY_SECONDS=1800 bash tests/perf/run-long-stability.sh
   `bash bindings/apple/scripts/run-ios-sim-app.sh`; for offscreen simulator smoke
   changes, run `bash bindings/apple/scripts/run-ios-sim-smoke.sh`.
 - If you touch PLY import or scene normalization, run `cargo test --workspace` and `cargo run -p desktop-example -- tests/datasets/minimal_ascii.ply --png target/out.png`.
+- If you touch SPZ import (`crates/gsplat-io-spz/`), run
+  `cargo test -p gsplat-io-spz` and
+  `cargo test -p gsplat-render-wgpu ply_vs_spz_offscreen_image_parity_gate_on_minimal_fixture`.
+  Load metrics land under `target/benchmarks/phase-c/`
+  (`minimal-spz-vs-ply-load-metrics.json`, `minimal-spz-vs-ply-ttff.json`).
 - If you touch renderer, sorting, or perf-sensitive code, run `cargo run --release -p bench-runner -- tests/datasets/minimal_ascii.ply 120 --warmup-iterations 10 --max-avg-gpu-complete-ms 250` and consider the long-stability script. The runner reports CPU preprocessing, CPU sort, encode/submit CPU wall, GPU wait, GPU-complete, nearest-rank frame distributions, missed-frame counts, and structured direct-resource preflight together with adapter/backend/driver metadata. Use the artifact route above when the result will be retained or compared. Surface/WASM output additionally reports render/submit and frame-wall phases; compatibility CPU-geometry fields stay zero on the sole direct path.
 - If you touch `examples/web/`, run `node --check examples/web/src/main.js`
   and the Web Example smoke above. If you touch

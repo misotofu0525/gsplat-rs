@@ -4004,8 +4004,12 @@ mod tests {
         from_spz.load_scene(spz.scene.clone()).unwrap();
         from_ply.load_scene(ply.scene).unwrap();
         let camera = frame_camera_for_scene(&spz.scene, config.width, config.height);
+        let spz_ttff_started = std::time::Instant::now();
         let spz_stats = from_spz.render_frame(&camera).unwrap();
+        let spz_ttff_ms = spz_ttff_started.elapsed().as_secs_f64() * 1_000.0;
+        let ply_ttff_started = std::time::Instant::now();
         let ply_stats = from_ply.render_frame(&camera).unwrap();
+        let ply_ttff_ms = ply_ttff_started.elapsed().as_secs_f64() * 1_000.0;
         assert!(
             spz_stats.visible_count > 0,
             "framed SPZ fixture must produce visible splats"
@@ -4017,11 +4021,13 @@ mod tests {
             &from_ply.readback_rgba8().unwrap(),
         );
         eprintln!(
-            "PLY-vs-SPZ minimal fixture parity: mean_abs_rgb={:.6} frac_over_3_255={:.6} max_abs_rgb={:.6} visible={}",
+            "PLY-vs-SPZ minimal fixture parity: mean_abs_rgb={:.6} frac_over_3_255={:.6} max_abs_rgb={:.6} visible={} spz_ttff_ms={:.3} ply_ttff_ms={:.3}",
             metrics.mean_abs_rgb,
             metrics.frac_pixels_over_3_255,
             metrics.max_abs_rgb,
-            spz_stats.visible_count
+            spz_stats.visible_count,
+            spz_ttff_ms,
+            ply_ttff_ms
         );
         assert!(
             metrics.mean_abs_rgb <= 1.0 / 255.0,
@@ -4033,6 +4039,22 @@ mod tests {
             "frac over 3/255 {:.6} exceeded 0.1%",
             metrics.frac_pixels_over_3_255
         );
+
+        let out_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/benchmarks/phase-c");
+        std::fs::create_dir_all(&out_dir).unwrap();
+        let out_path = out_dir.join("minimal-spz-vs-ply-ttff.json");
+        let payload = format!(
+            "{{\n  \"schema\": \"gsplat-phase-c-ttff/v1\",\n  \"dataset\": \"minimal_v4_degree0\",\n  \"width\": {},\n  \"height\": {},\n  \"visible\": {},\n  \"drawn\": {},\n  \"ttff_ms\": {{\n    \"spz_first_frame\": {:.6},\n    \"ply_first_frame\": {:.6}\n  }},\n  \"notes\": \"ttff_ms measures first SortedAlpha render_frame after load_scene; adapter-dependent\"\n}}\n",
+            config.width,
+            config.height,
+            spz_stats.visible_count,
+            spz_stats.drawn_count,
+            spz_ttff_ms,
+            ply_ttff_ms,
+        );
+        std::fs::write(&out_path, payload).unwrap();
+        eprintln!("wrote {}", out_path.display());
     }
 
     #[test]
