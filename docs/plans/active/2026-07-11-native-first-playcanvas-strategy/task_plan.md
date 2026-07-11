@@ -104,11 +104,14 @@ decode) is next; first format candidate is Niantic SPZ (MIT, v4 ZSTD).
       count/attribute mapping and cooperative cancel evidence.
 - [x] Bound compressed/decoded CPU caches as a reusable residency layer
       (`SourceResidencyCaches` / LRU byte budgets in `gsplat-io-spz`).
-- [ ] Prove device/image parity for qualification scenes (offscreen first).
+- [x] Prove offscreen PLY-vs-SPZ image/count parity on the minimal degree-0
+      fixture (`ply_vs_spz_offscreen_image_parity_gate_on_minimal_fixture`).
+- [ ] Device image parity for qualification scenes remains optional follow-up.
 - **Status:** in_progress; Phase B gate cleared; SPZ feasibility accepted (MIT,
   interoperable, not a custom public format); synthetic SH decode covered
   through degree 3; fixture + cancel/attribute gates landed unit-side;
-  CPU residency caches bounded with independent budgets
+  CPU residency caches bounded with independent budgets; minimal offscreen
+  PLY↔SPZ image parity landed
 
 ### Phase D: Spatial Pages and Streaming LOD
 

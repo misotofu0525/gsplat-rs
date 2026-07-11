@@ -31,18 +31,21 @@
   - **Slice 3:** `SourceResidencyCaches` with independent compressed/decoded
     LRU byte budgets, `estimated_scene_bytes`, and eviction/oversize tests
     (`cargo test -p gsplat-io-spz`: 19 passed; clippy `-D warnings` passed).
+  - **Slice 4:** Offscreen PLY-vs-SPZ image/count parity on
+    `minimal_v4_degree0.spz` via framed camera (`visible=8`, mean_abs_rgb=0);
+    `gsplat-io-spz` added as `gsplat-render-wgpu` dev-dependency.
 - Current boundary / remaining:
-  - Device/offscreen image parity for PLY-vs-SPZ qualification scenes.
+  - Optional device image parity for larger qualification scenes.
   - Degree 4 SH, legacy gzip v1-3, extension ILV, and FFI wiring remain deferred.
 - 5-question reboot:
   - Where am I? Phase C decoder + fixture/cancel/attribute + CPU residency
-    caches landed.
-  - Where am I going? Offscreen/device PLY-vs-SPZ image parity, then FFI/examples.
+    caches + minimal offscreen PLY↔SPZ image parity landed.
+  - Where am I going? FFI/examples wiring and optional device parity.
   - What's the goal? Phase C exit: compressed sources with bounded decode and
     parity evidence.
   - What have I learned? See `findings.md` Phase C section.
   - What have I done? Decoder crate + fixture + cancel + PLY attribute gate +
-    bounded CPU residency caches.
+    bounded CPU residency caches + offscreen image parity.
 
 ### Implementation Phase B: Packed Atlas Without Streaming
 
@@ -308,8 +311,8 @@
 
 | Question | Answer |
 |----------|--------|
-| Where am I? | Phase A and Phase B are complete; Phase C has decoder + fixture/cancel/attribute gates + bounded CPU residency caches. |
-| Where am I going? | Offscreen/device PLY-vs-SPZ image parity, then FFI/examples. |
+| Where am I? | Phase A and Phase B are complete; Phase C has decoder + fixture/cancel/attribute gates + bounded CPU residency caches + minimal offscreen PLY↔SPZ image parity. |
+| Where am I going? | FFI/examples wiring and optional device parity for larger scenes. |
 | What's the goal? | Deliver the native-first competitive architecture through Phases A-F with evidence. |
 | What have I learned? | See `findings.md`. |
 | What have I done? | Froze Phase A, qualified Phase B, landed SPZ v4 decode, minimal fixture, cancel, and PLY attribute mapping. |

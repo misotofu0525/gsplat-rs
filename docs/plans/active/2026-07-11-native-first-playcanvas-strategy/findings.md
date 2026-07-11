@@ -431,7 +431,9 @@
   `GSPLAT_WRITE_SPZ_FIXTURE=1 cargo test -p gsplat-io-spz write_committed_minimal`.
 - Unit PLY↔SPZ attribute gate authors RDF PLY that inverts the PLY RDF→RUF path
   so recovered `SceneBuffers` match SPZ RUF output (quaternions compared up to
-  sign). Offscreen/device image parity remains open.
+  sign). Offscreen image parity on the same minimal fixture passes with a
+  framed camera (`visible=8`, zero RGB delta); device qualification-scene
+  parity remains optional follow-up.
 - Cooperative cancel polls between header validation, each attribute-stream
   decompress, allocation, and unpack; cancelled loads return
   `SpzLoadError::Cancelled` without publishing a scene.
@@ -439,7 +441,7 @@
   source bytes and decoded `SceneBuffers` (`estimated_scene_bytes`), so
   whole-scene SPZ residency can be bounded beyond per-load `SpzLoadLimits`
   without waiting for Phase D page scheduling.
-- Legacy gzip v1–3, extension ILV, degree 4, FFI, and offscreen/device image
-  parity remain Phase C follow-up work.
+- Legacy gzip v1–3, extension ILV, degree 4, and FFI remain Phase C follow-up
+  work.
 - Rust dependency selection pins pure-Rust `ruzstd` 0.8.3 in workspace
   dependencies and decodes each stream into its exact validated output size.

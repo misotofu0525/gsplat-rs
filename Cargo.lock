@@ -740,6 +740,7 @@ dependencies = [
  "bytemuck",
  "gsplat-core",
  "gsplat-io-ply",
+ "gsplat-io-spz",
  "gsplat-sort",
  "js-sys",
  "pollster",

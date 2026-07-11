@@ -3897,6 +3897,144 @@ mod tests {
         assert!(metrics.frac_pixels_over_3_255 <= 0.001);
     }
 
+    fn scene_to_rdf_ply_for_spz_parity(scene: &SceneBuffers) -> String {
+        // Mirror gsplat-io-spz attribute-gate authoring: emit RDF so PLY load
+        // recovers the same RUF SceneBuffers as the SPZ fixture.
+        let mut ply =
+            String::from("ply\nformat ascii 1.0\ncomment paired SPZ/PLY offscreen image parity\n");
+        ply.push_str(&format!("element vertex {}\n", scene.len()));
+        for property in [
+            "x", "y", "z", "opacity", "scale_0", "scale_1", "scale_2", "rot_0", "rot_1", "rot_2",
+            "rot_3", "f_dc_0", "f_dc_1", "f_dc_2",
+        ] {
+            ply.push_str("property float ");
+            ply.push_str(property);
+            ply.push('\n');
+        }
+        ply.push_str("end_header\n");
+        for index in 0..scene.len() {
+            let position = scene.positions[index];
+            let scale = scene.scale_xyz[index];
+            let rotation = scene.rotation_xyzw[index];
+            let color = scene.color_dc[index];
+            let ply_w = rotation[3];
+            let ply_x = -rotation[0];
+            let ply_y = rotation[1];
+            let ply_z = -rotation[2];
+            ply.push_str(&format!(
+                "{} {} {} {} {} {} {} {} {} {} {} {} {} {}\n",
+                position.x,
+                -position.y,
+                position.z,
+                scene.opacity[index],
+                scale[0],
+                scale[1],
+                scale[2],
+                ply_w,
+                ply_x,
+                ply_y,
+                ply_z,
+                color[0],
+                color[1],
+                color[2],
+            ));
+        }
+        ply
+    }
+
+    fn frame_camera_for_scene(scene: &SceneBuffers, width: u32, height: u32) -> Camera {
+        let mut min = Vec3f::new(f32::INFINITY, f32::INFINITY, f32::INFINITY);
+        let mut max = Vec3f::new(f32::NEG_INFINITY, f32::NEG_INFINITY, f32::NEG_INFINITY);
+        for position in &scene.positions {
+            min.x = min.x.min(position.x);
+            min.y = min.y.min(position.y);
+            min.z = min.z.min(position.z);
+            max.x = max.x.max(position.x);
+            max.y = max.y.max(position.y);
+            max.z = max.z.max(position.z);
+        }
+        let center = Vec3f::new(
+            0.5 * (min.x + max.x),
+            0.5 * (min.y + max.y),
+            0.5 * (min.z + max.z),
+        );
+        let half_x = ((max.x - min.x) * 0.5).max(1.0e-3);
+        let half_y = ((max.y - min.y) * 0.5).max(1.0e-3);
+        let half_z = ((max.z - min.z) * 0.5).max(1.0e-3);
+        let aspect = width as f32 / height.max(1) as f32;
+        let mut camera = Camera::default();
+        let vfov = camera.intrinsics.vertical_fov_radians.max(1.0e-3);
+        let hfov = 2.0 * ((vfov * 0.5).tan() * aspect).atan();
+        let dist_y = half_y / (vfov * 0.5).tan();
+        let dist_x = half_x / (hfov * 0.5).tan();
+        let distance = (dist_y.max(dist_x) + half_z) * 1.2;
+        let radius = half_x.max(half_y).max(half_z);
+        camera.pose.position = Vec3f::new(center.x, center.y, center.z - distance);
+        camera.intrinsics.near_plane = (distance - radius * 2.0).max(0.01);
+        camera.intrinsics.far_plane = (distance + radius * 8.0).max(100.0);
+        camera
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn ply_vs_spz_offscreen_image_parity_gate_on_minimal_fixture() {
+        let spz_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/datasets/minimal_v4_degree0.spz");
+        let spz = gsplat_io_spz::load_spz(&spz_path).expect("load minimal SPZ fixture");
+        let ply = gsplat_io_ply::parse_ply_text(&scene_to_rdf_ply_for_spz_parity(&spz.scene))
+            .expect("paired RDF PLY must parse");
+        assert_eq!(ply.summary.gaussians, spz.summary.gaussians);
+        assert_eq!(ply.scene.len(), spz.scene.len());
+
+        let config = RendererConfig {
+            width: 128,
+            height: 128,
+            mode: RenderMode::SortedAlpha,
+        };
+        let mut from_spz = match Renderer::with_config(config) {
+            Ok(renderer) => renderer,
+            Err(super::RendererError::GpuRasterizerUnavailable)
+            | Err(super::RendererError::GpuDeviceCreation) => {
+                eprintln!("skipping PLY-vs-SPZ image parity; adapter unavailable");
+                return;
+            }
+            Err(error) => panic!("renderer init: {error}"),
+        };
+        let mut from_ply = Renderer::with_config(config).expect("second renderer");
+        from_spz.load_scene(spz.scene.clone()).unwrap();
+        from_ply.load_scene(ply.scene).unwrap();
+        let camera = frame_camera_for_scene(&spz.scene, config.width, config.height);
+        let spz_stats = from_spz.render_frame(&camera).unwrap();
+        let ply_stats = from_ply.render_frame(&camera).unwrap();
+        assert!(
+            spz_stats.visible_count > 0,
+            "framed SPZ fixture must produce visible splats"
+        );
+        assert_eq!(spz_stats.visible_count, ply_stats.visible_count);
+        assert_eq!(spz_stats.drawn_count, ply_stats.drawn_count);
+        let metrics = rgba_image_parity_metrics(
+            &from_spz.readback_rgba8().unwrap(),
+            &from_ply.readback_rgba8().unwrap(),
+        );
+        eprintln!(
+            "PLY-vs-SPZ minimal fixture parity: mean_abs_rgb={:.6} frac_over_3_255={:.6} max_abs_rgb={:.6} visible={}",
+            metrics.mean_abs_rgb,
+            metrics.frac_pixels_over_3_255,
+            metrics.max_abs_rgb,
+            spz_stats.visible_count
+        );
+        assert!(
+            metrics.mean_abs_rgb <= 1.0 / 255.0,
+            "mean abs RGB {:.6} exceeded 1/255",
+            metrics.mean_abs_rgb
+        );
+        assert!(
+            metrics.frac_pixels_over_3_255 <= 0.001,
+            "frac over 3/255 {:.6} exceeded 0.1%",
+            metrics.frac_pixels_over_3_255
+        );
+    }
+
     #[test]
     fn packed_vs_direct_image_parity_gate_on_synthetic_degree3() {
         let count = 64usize;

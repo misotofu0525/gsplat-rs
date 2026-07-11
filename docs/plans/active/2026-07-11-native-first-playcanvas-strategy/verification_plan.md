@@ -555,7 +555,8 @@ quality profile, and date.
 - [x] Decoder corpus (synthetic degrees 0/1/3), malformed-input, cooperative
       cancellation, and per-load memory-bound tests pass in `gsplat-io-spz`.
 - [x] Unit-level PLY-vs-SPZ count/attribute mapping gate passes.
-- [ ] PLY-vs-compressed offscreen/device image parity passes.
+- [x] PLY-vs-compressed offscreen image parity passes on the minimal degree-0
+      fixture (device qualification scenes remain optional).
 - [ ] Cold/warm bytes, time-to-first-frame, and peak memory are stored.
 - [x] Reusable compressed/decoded CPU residency caches are bounded beyond
       single-load `SpzLoadLimits` (`SourceResidencyCaches` unit evidence).
