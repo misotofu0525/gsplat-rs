@@ -44,10 +44,7 @@ pub fn estimated_scene_bytes(scene: &SceneBuffers) -> usize {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SourceCacheError {
     /// A single insert exceeds the cache budget even after eviction.
-    EntryExceedsBudget {
-        requested: usize,
-        limit: usize,
-    },
+    EntryExceedsBudget { requested: usize, limit: usize },
 }
 
 #[derive(Debug)]
@@ -270,18 +267,14 @@ mod tests {
             max_compressed_bytes: 16,
             max_decoded_bytes: estimated_scene_bytes(&tiny_scene(1)) * 2,
         });
-        caches
-            .insert_compressed("src", vec![1_u8; 12])
-            .unwrap();
+        caches.insert_compressed("src", vec![1_u8; 12]).unwrap();
         caches.insert_decoded("src", tiny_scene(1)).unwrap();
         assert_eq!(caches.compressed.current_bytes(), 12);
         assert_eq!(
             caches.decoded.current_bytes(),
             estimated_scene_bytes(&tiny_scene(1))
         );
-        caches
-            .insert_compressed("other", vec![2_u8; 8])
-            .unwrap();
+        caches.insert_compressed("other", vec![2_u8; 8]).unwrap();
         assert!(!caches.compressed.contains_key("src"));
         assert!(caches.decoded.contains_key("src"));
     }
