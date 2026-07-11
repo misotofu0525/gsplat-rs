@@ -922,36 +922,6 @@ pub unsafe extern "C" fn gsplat_surface_renderer_set_gpu_preproject_double_buffe
     )
 }
 
-/// Compatibility no-op retained for the v0.1 ABI.
-///
-/// Direct sorted-index rendering is always enabled.
-///
-/// # Safety
-///
-/// `renderer` must be null or a live handle returned by a Surface renderer
-/// create function.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn gsplat_surface_renderer_set_static_direct(
-    renderer: *mut GsplatSurfaceRenderer,
-    enabled: u32,
-) -> i32 {
-    ffi_catch_i32("gsplat_surface_renderer_set_static_direct", || {
-        let renderer = match unsafe { renderer.as_mut() } {
-            Some(renderer) => renderer,
-            None => {
-                return ffi_error(
-                    ErrorCode::InvalidArgument,
-                    "gsplat_surface_renderer_set_static_direct: renderer is null",
-                );
-            }
-        };
-
-        let _ = enabled;
-        renderer.render_error_logged = false;
-        ffi_ok()
-    })
-}
-
 /// Enable or disable experimental async sorting.
 ///
 /// # Safety
@@ -1526,8 +1496,8 @@ mod tests {
         gsplat_surface_renderer_set_gpu_preproject,
         gsplat_surface_renderer_set_gpu_preproject_double_buffer,
         gsplat_surface_renderer_set_instance_buffer_count,
-        gsplat_surface_renderer_set_sort_interval, gsplat_surface_renderer_set_static_direct,
-        gsplat_surface_renderer_zoom, surface_camera_from_control,
+        gsplat_surface_renderer_set_sort_interval, gsplat_surface_renderer_zoom,
+        surface_camera_from_control,
     };
 
     #[test]
@@ -1731,10 +1701,6 @@ mod tests {
         );
         assert_eq!(
             unsafe { gsplat_surface_renderer_set_gpu_preproject_double_buffer(ptr::null_mut(), 1) },
-            expected
-        );
-        assert_eq!(
-            unsafe { gsplat_surface_renderer_set_static_direct(ptr::null_mut(), 1) },
             expected
         );
         assert_eq!(

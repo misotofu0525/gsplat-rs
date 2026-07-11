@@ -21,8 +21,7 @@ The wrapper exposes:
 - `createGsplatRenderer()` for creating a canvas renderer from PLY bytes
 - `createGsplatRendererFromUrl()` for fetch-and-render flows
 - `GsplatWebRenderer` for camera controls, resize, stats, and disposal
-- GPU-resident direct sorted-index rendering on every frame; the old
-  `sortedIndexDirect` option and setter remain compatibility no-ops, and
+- GPU-resident direct sorted-index rendering on every frame;
   `rasterPath()` reports `sorted_index_direct`
 - phase-specific frame stats: `renderSubmitMs` and `frameWallMs`;
   `cpuGeometryMs` and `rasterMs` remain zero-valued compatibility fields

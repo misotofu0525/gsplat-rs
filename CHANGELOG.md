@@ -8,6 +8,11 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Changed
+
+- Removed the obsolete `static_direct` / `sortedIndexDirect` path-selection APIs
+  now that direct sorted-index rendering is the only production pipeline.
+
 ## [0.1.3] - 2026-07-10
 
 ### Added
