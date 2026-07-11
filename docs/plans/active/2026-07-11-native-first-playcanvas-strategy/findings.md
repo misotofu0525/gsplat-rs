@@ -462,5 +462,8 @@
   stale tokens cannot republish into a reused slot.
 - CPU scheduler ranks by distance, keeps a coarse cover radius, and on camera
   jump replaces far residents while respecting resident/inflight budgets.
+- `PageAtlasCpu` packs extracted page scenes into fixed slots with generation
+  adoption for empty reused slots; degree-0 resident mix measures 20 B average
+  attributes before order/scratch.
 - GPU atlas upload/draw, SH hysteresis quality gates, network profiles, and
   large-scene attribute-byte averages remain open.

@@ -13,19 +13,22 @@
     attribute LOD on resident pages, LRU eviction helper.
   - Added `page_scheduler`: CPU distance-ranked coarse cover, request/evict
     under budgets, camera-jump unit gate.
-  - `cargo test -p gsplat-render-wgpu --lib`: 66 passed (1 ignored research
-    oracle).
+  - Added `page_atlas`: extract page `SceneBuffers`, pack into fixed CPU slots,
+    generation-aware install/clear, degree-0 average attribute-byte gate (20 B).
+  - `cargo test -p gsplat-render-wgpu --lib`: page modules green; clippy
+    `-D warnings` passed for the crate.
 - Current boundary / remaining:
   - GPU atlas upload/draw for resident pages.
   - Deterministic local-cache traces, network profile, SH hysteresis quality,
-    large-scene average attribute payload, 30-minute stability.
+    large-scene attribute payload, 30-minute stability.
 - 5-question reboot:
-  - Where am I? Phase D CPU residency/scheduling foundation landed.
+  - Where am I? Phase D CPU residency/scheduling/atlas staging landed.
   - Where am I going? GPU page upload + continuity/large-scene evidence.
   - What's the goal? Bounded paged atlas without persistent holes.
-  - What have I learned? Slot generation + scene revision must gate every async
-    publish before atlas mutation.
-  - What have I done? `spatial_pages` + `residency` + `page_scheduler` + tests.
+  - What have I learned? Atlas slot generations must adopt residency tokens on
+    empty slots after reuse, or installs race with eviction bumps.
+  - What have I done? `spatial_pages` + `residency` + `page_scheduler` +
+    `page_atlas` + tests.
 
 ### Implementation Phase C: Compressed Sources and Bounded Decode
 

@@ -2,6 +2,7 @@
 
 mod packed_atlas;
 mod packed_gpu;
+mod page_atlas;
 mod page_scheduler;
 mod residency;
 mod spatial_pages;
@@ -14,6 +15,9 @@ pub use packed_atlas::{
     dequantize_sh_rest, measured_hot_texture_bytes, measured_sh_sidecar_texture_bytes,
     pack_color_rgb10, pack_quat_smallest_three, pack_scene, sh_sidecar_atlas_dimensions,
     slot_to_texel, unpack_color_rgb10, unpack_quat_smallest_three,
+};
+pub use page_atlas::{
+    PageAtlasCpu, PageAtlasError, PageAtlasSlotCpu, attribute_bytes_for_lod, extract_page_scene,
 };
 pub use page_scheduler::{ScheduleOutcome, SchedulerConfig, SchedulerView, schedule_pages};
 pub use residency::{

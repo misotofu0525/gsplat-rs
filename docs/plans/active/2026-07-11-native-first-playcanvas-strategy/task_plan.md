@@ -121,10 +121,12 @@ exit evidence. Phase D (spatial pages / streaming LOD) is in progress.
       and stale async-token rejection (`residency`).
 - [x] Implement first CPU page scheduler with coarse cover + camera-jump unit
       gates (`page_scheduler`).
+- [x] CPU page atlas staging: extract/pack/install/clear with generation checks
+      and average attribute-byte accounting (`page_atlas`).
 - [ ] Wire pages into GPU atlas upload / draw path.
 - [ ] Prove bounded memory/queues, continuity, and large-scene gates.
 - [ ] Degree-aware SH residency hysteresis on resident pages beyond unit API.
-- **Status:** in_progress; CPU metadata/residency/scheduler slice landed
+- **Status:** in_progress; CPU metadata/residency/scheduler/atlas staging landed
 
 ### Phase E: Policy Optimization and Competitive Qualification
 
