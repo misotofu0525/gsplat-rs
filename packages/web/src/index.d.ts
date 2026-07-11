@@ -8,13 +8,6 @@ export interface GsplatWebModule {
     width: number,
     height: number,
   ): Promise<unknown>;
-  createRendererWithOptions?(
-    canvas: HTMLCanvasElement,
-    plyBytes: Uint8Array,
-    width: number,
-    height: number,
-    sortedIndexDirect: boolean,
-  ): Promise<unknown>;
 }
 
 export interface InitGsplatWebOptions {
@@ -34,8 +27,6 @@ export interface CreateRendererOptions {
   width?: number;
   height?: number;
   sortInterval?: number;
-  /** @deprecated Direct sorted-index rendering is always enabled. */
-  sortedIndexDirect?: boolean;
   module?: GsplatWebModule;
 }
 
@@ -80,9 +71,6 @@ export class GsplatWebRenderer {
   zoom(distanceScale: number): void;
   pan(normalizedDeltaX: number, normalizedDeltaY: number): void;
   setSortInterval(interval: number): void;
-  /** @deprecated Direct sorted-index rendering is always enabled. */
-  setSortedIndexDirect(enabled: boolean): void;
-  sortedIndexDirect(): boolean;
   rasterPath(): string;
   renderFrame(): GsplatFrameStats;
   sceneSummary(): GsplatSceneSummary;

@@ -110,8 +110,7 @@
   creates a browser canvas `wgpu::Surface` through `SurfacePresenter::from_canvas`
   hands both objects to `SurfaceRenderSession`, so the browser wrapper does not
   own a second frame scheduler or sorted-index copy
-  always uses resident scene buffers plus compact sorted IDs; the legacy
-  `sortedIndexDirect` Web option/setter remains a direct-path compatibility shim
+  always uses resident scene buffers plus compact sorted IDs
   sorting remains CPU radix so Web shares the same production policy as native
 
 - Desktop rendering flows:

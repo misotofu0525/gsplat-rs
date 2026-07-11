@@ -28,17 +28,6 @@ pub async fn create_renderer(
     width: u32,
     height: u32,
 ) -> Result<GsplatWebRenderer, JsValue> {
-    create_renderer_with_options(canvas, ply_bytes, width, height, false).await
-}
-
-#[wasm_bindgen(js_name = createRendererWithOptions)]
-pub async fn create_renderer_with_options(
-    canvas: HtmlCanvasElement,
-    ply_bytes: Uint8Array,
-    width: u32,
-    height: u32,
-    _sorted_index_direct: bool,
-) -> Result<GsplatWebRenderer, JsValue> {
     let raw = ply_bytes.to_vec();
     let loaded = parse_ply_bytes(&raw).map_err(|err| js_error(err.to_string()))?;
     let summary = loaded.summary;
@@ -152,14 +141,6 @@ impl GsplatWebRenderer {
     pub fn set_sort_interval(&mut self, interval: u32) {
         // Preserve the existing Web API behavior by clamping zero to one.
         let _ = self.session.set_sort_interval(interval.max(1));
-    }
-
-    #[wasm_bindgen(js_name = setSortedIndexDirect)]
-    pub fn set_sorted_index_direct(&mut self, _enabled: bool) {}
-
-    #[wasm_bindgen(js_name = sortedIndexDirect)]
-    pub fn sorted_index_direct(&self) -> bool {
-        true
     }
 
     #[wasm_bindgen(js_name = rasterPath)]

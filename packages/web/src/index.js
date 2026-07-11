@@ -49,16 +49,12 @@ export async function createGsplatRenderer(options) {
   assertPositiveInteger(height, "height");
   const bytes = normalizeBytes(plyBytes);
   const resolvedModule = module ?? loadedModule ?? (await initGsplatWeb());
-  const nativeRenderer =
-    typeof resolvedModule.createRendererWithOptions === "function"
-      ? await resolvedModule.createRendererWithOptions(
-          canvas,
-          bytes,
-          width,
-          height,
-          true,
-        )
-      : await resolvedModule.createRenderer(canvas, bytes, width, height);
+  const nativeRenderer = await resolvedModule.createRenderer(
+    canvas,
+    bytes,
+    width,
+    height,
+  );
   const renderer = new GsplatWebRenderer(nativeRenderer);
   renderer.setSortInterval(sortInterval);
   return renderer;
@@ -134,22 +130,6 @@ export class GsplatWebRenderer {
     const nativeRenderer = this.#requireNativeRenderer();
     assertPositiveInteger(interval, "interval");
     nativeRenderer.setSortInterval(interval);
-  }
-
-  setSortedIndexDirect(enabled) {
-    const nativeRenderer = this.#requireNativeRenderer();
-    if (typeof nativeRenderer.setSortedIndexDirect !== "function") {
-      return;
-    }
-    nativeRenderer.setSortedIndexDirect(Boolean(enabled));
-  }
-
-  sortedIndexDirect() {
-    const nativeRenderer = this.#requireNativeRenderer();
-    if (typeof nativeRenderer.sortedIndexDirect !== "function") {
-      return true;
-    }
-    return Boolean(nativeRenderer.sortedIndexDirect());
   }
 
   rasterPath() {
