@@ -465,5 +465,9 @@
 - `PageAtlasCpu` packs extracted page scenes into fixed slots with generation
   adoption for empty reused slots; degree-0 resident mix measures 20 B average
   attributes before order/scratch.
-- GPU atlas upload/draw, SH hysteresis quality gates, network profiles, and
-  large-scene attribute-byte averages remain open.
+- `PagedAtlasGpu` uploads pages into a fixed-capacity packed hot buffer using
+  shared scene bounds/log-scale encoding so the existing single-uniform packed
+  shader remains valid; stale tokens are rejected after clear/generation bump.
+- Full renderer draw integration over paged active indices, SH hysteresis
+  quality gates, network profiles, and large-scene attribute-byte averages
+  remain open.

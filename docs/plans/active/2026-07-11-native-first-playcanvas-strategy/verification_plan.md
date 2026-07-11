@@ -573,8 +573,8 @@ quality profile, and date.
 - [ ] Average attribute payload reaches 40-48 bytes on the large-scene trace
       without crossing the frozen quality threshold.
 - [ ] 30-minute queue, memory, and temporal-quality gates pass.
-- [ ] GPU atlas upload/draw integration for resident pages (CPU `page_atlas`
-      staging is in place).
+- [x] GPU atlas upload for resident pages (`PagedAtlasGpu` unit evidence;
+      renderer draw-loop integration still open).
 
 ### Phase E: Competitive Qualification
 

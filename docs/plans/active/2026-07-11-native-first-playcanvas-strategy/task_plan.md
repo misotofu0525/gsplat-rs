@@ -123,10 +123,12 @@ exit evidence. Phase D (spatial pages / streaming LOD) is in progress.
       gates (`page_scheduler`).
 - [x] CPU page atlas staging: extract/pack/install/clear with generation checks
       and average attribute-byte accounting (`page_atlas`).
-- [ ] Wire pages into GPU atlas upload / draw path.
+- [x] GPU page upload into fixed-capacity packed atlas slots (`paged_gpu`) with
+      shared scene encoding and stale-token rejection.
+- [ ] Full renderer draw path that sorts/draws only active paged global indices.
 - [ ] Prove bounded memory/queues, continuity, and large-scene gates.
 - [ ] Degree-aware SH residency hysteresis on resident pages beyond unit API.
-- **Status:** in_progress; CPU metadata/residency/scheduler/atlas staging landed
+- **Status:** in_progress; CPU path + GPU page upload slice landed
 
 ### Phase E: Policy Optimization and Competitive Qualification
 

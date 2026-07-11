@@ -431,6 +431,20 @@ pub fn dequantize_sh_rest(sidecar: &PackedShSidecar, scales: [f32; 3]) -> [f32; 
 pub fn pack_scene(scene: &SceneBuffers) -> PackedSceneCpu {
     let bounds = SceneBounds::from_positions(&scene.positions);
     let log_scale_range = LogScaleRange::from_scales(&scene.scale_xyz);
+    pack_scene_with_encoding(scene, bounds, log_scale_range, None)
+}
+
+/// Pack a scene (or page subset) using shared encoding ranges.
+///
+/// Phase D multi-page GPU draw keeps one shader bounds/log-scale uniform, so
+/// pages must encode positions/scales against the parent scene ranges rather
+/// than page-local AABBs.
+pub fn pack_scene_with_encoding(
+    scene: &SceneBuffers,
+    bounds: SceneBounds,
+    log_scale_range: LogScaleRange,
+    sh_scales: Option<[f32; 3]>,
+) -> PackedSceneCpu {
     let mut hot = Vec::with_capacity(scene.len());
     let mut sh_sidecars = Vec::with_capacity(scene.len());
     let rest = scene.sh_rest.as_deref().unwrap_or(&[]);
@@ -439,10 +453,8 @@ pub fn pack_scene(scene: &SceneBuffers) -> PackedSceneCpu {
         .min(15);
     let rest_stride = coeffs_per_channel * 3;
 
-    // Scene-level SH scales keep the per-splat sidecar at 48 bytes without an
-    // extra scale texture (Phase B: one page == whole scene).
-    let mut scene_scales = [1e-6_f32; 3];
-    if rest_stride > 0 {
+    let mut scene_scales = sh_scales.unwrap_or([1e-6_f32; 3]);
+    if sh_scales.is_none() && rest_stride > 0 {
         for index in 0..scene.len() {
             let base = index * rest_stride;
             if base + rest_stride > rest.len() {

@@ -299,6 +299,59 @@ impl PackedAtlasResources {
         );
     }
 
+    /// Upload tightly packed hot records starting at `global_slot`.
+    ///
+    /// `words` must contain `splat_count * HOT_RECORD_U32_WORDS` values.
+    pub fn write_hot_records_at(&mut self, queue: &wgpu::Queue, global_slot: usize, words: &[u32]) {
+        if words.is_empty() {
+            return;
+        }
+        debug_assert_eq!(words.len() % HOT_RECORD_U32_WORDS, 0);
+        let splat_count = words.len() / HOT_RECORD_U32_WORDS;
+        let end = global_slot.saturating_add(splat_count);
+        if end > self.capacity {
+            debug_assert!(end <= self.capacity);
+            return;
+        }
+        let word_start = global_slot * HOT_RECORD_U32_WORDS;
+        let word_end = end * HOT_RECORD_U32_WORDS;
+        self.hot_words[word_start..word_end].copy_from_slice(words);
+        let byte_offset = (word_start * std::mem::size_of::<u32>()) as u64;
+        queue.write_buffer(
+            &self.hot_buffer,
+            byte_offset,
+            bytemuck::cast_slice(&self.hot_words[word_start..word_end]),
+        );
+    }
+
+    /// Clear a half-open global slot range to zeros.
+    pub fn clear_hot_records_range(
+        &mut self,
+        queue: &wgpu::Queue,
+        global_slot_start: usize,
+        splat_count: usize,
+    ) {
+        if splat_count == 0 {
+            return;
+        }
+        let end = global_slot_start.saturating_add(splat_count);
+        if end > self.capacity {
+            debug_assert!(end <= self.capacity);
+            return;
+        }
+        let word_start = global_slot_start * HOT_RECORD_U32_WORDS;
+        let word_end = end * HOT_RECORD_U32_WORDS;
+        for word in &mut self.hot_words[word_start..word_end] {
+            *word = 0;
+        }
+        let byte_offset = (word_start * std::mem::size_of::<u32>()) as u64;
+        queue.write_buffer(
+            &self.hot_buffer,
+            byte_offset,
+            bytemuck::cast_slice(&self.hot_words[word_start..word_end]),
+        );
+    }
+
     pub fn prepare(
         &self,
         queue: &wgpu::Queue,

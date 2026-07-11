@@ -4,6 +4,7 @@ mod packed_atlas;
 mod packed_gpu;
 mod page_atlas;
 mod page_scheduler;
+mod paged_gpu;
 mod residency;
 mod spatial_pages;
 mod surface_session;
@@ -13,13 +14,14 @@ pub use packed_atlas::{
     HOT_RECORD_BYTES, HotStream, LogScaleRange, PackedAtlasCpuBuffers, PackedHotRecord,
     PackedSceneCpu, PackedShSidecar, SceneBounds, atlas_dimensions, decode_opacity_u8,
     dequantize_sh_rest, measured_hot_texture_bytes, measured_sh_sidecar_texture_bytes,
-    pack_color_rgb10, pack_quat_smallest_three, pack_scene, sh_sidecar_atlas_dimensions,
-    slot_to_texel, unpack_color_rgb10, unpack_quat_smallest_three,
+    pack_color_rgb10, pack_quat_smallest_three, pack_scene, pack_scene_with_encoding,
+    sh_sidecar_atlas_dimensions, slot_to_texel, unpack_color_rgb10, unpack_quat_smallest_three,
 };
 pub use page_atlas::{
     PageAtlasCpu, PageAtlasError, PageAtlasSlotCpu, attribute_bytes_for_lod, extract_page_scene,
 };
 pub use page_scheduler::{ScheduleOutcome, SchedulerConfig, SchedulerView, schedule_pages};
+pub use paged_gpu::{PagedAtlasGpu, PagedGpuError};
 pub use residency::{
     AsyncPageToken, AtlasSlot, AttributeLod, PageResidency, PageResidencyState, ResidencyBudgets,
     ResidencyError, ResidencyManager,
@@ -337,6 +339,16 @@ impl Renderer {
 
     pub fn geometry_path(&self) -> GeometryPath {
         self.geometry_path
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn device(&self) -> Option<&wgpu::Device> {
+        self.gpu_rasterizer.as_ref().map(|gpu| &gpu.device)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn queue(&self) -> Option<&wgpu::Queue> {
+        self.gpu_rasterizer.as_ref().map(|gpu| &gpu.queue)
     }
 
     pub fn set_geometry_path(&mut self, path: GeometryPath) {

@@ -15,20 +15,22 @@
     under budgets, camera-jump unit gate.
   - Added `page_atlas`: extract page `SceneBuffers`, pack into fixed CPU slots,
     generation-aware install/clear, degree-0 average attribute-byte gate (20 B).
-  - `cargo test -p gsplat-render-wgpu --lib`: page modules green; clippy
-    `-D warnings` passed for the crate.
+  - Added `paged_gpu`: fixed-capacity GPU atlas, shared-bounds page packing,
+    `write_hot_records_at` / clear, stale-token gates; upload test reports
+    4 pages / 8 resident splats matching whole-scene packed visible/drawn.
+  - `pack_scene_with_encoding` lets pages share parent scene bounds/log scales.
 - Current boundary / remaining:
-  - GPU atlas upload/draw for resident pages.
+  - Integrate paged active indices into the renderer SortedAlpha draw loop.
   - Deterministic local-cache traces, network profile, SH hysteresis quality,
     large-scene attribute payload, 30-minute stability.
 - 5-question reboot:
-  - Where am I? Phase D CPU residency/scheduling/atlas staging landed.
-  - Where am I going? GPU page upload + continuity/large-scene evidence.
+  - Where am I? Phase D CPU + GPU page upload foundation landed.
+  - Where am I going? Renderer draw integration + continuity/large-scene evidence.
   - What's the goal? Bounded paged atlas without persistent holes.
-  - What have I learned? Atlas slot generations must adopt residency tokens on
-    empty slots after reuse, or installs race with eviction bumps.
+  - What have I learned? Multi-page GPU draw needs shared encoding ranges while
+    the packed shader still has one bounds uniform.
   - What have I done? `spatial_pages` + `residency` + `page_scheduler` +
-    `page_atlas` + tests.
+    `page_atlas` + `paged_gpu` + tests.
 
 ### Implementation Phase C: Compressed Sources and Bounded Decode
 
@@ -335,8 +337,8 @@
 
 | Question | Answer |
 |----------|--------|
-| Where am I? | Phase A–C complete; Phase D CPU spatial pages, residency generations, and scheduler unit gates landed. |
-| Where am I going? | GPU atlas upload/draw for resident pages, then large-scene continuity evidence. |
+| Where am I? | Phase A–C complete; Phase D has CPU pages/residency/scheduler/atlas staging plus GPU page upload. |
+| Where am I going? | Wire paged active indices into the SortedAlpha draw loop, then large-scene continuity evidence. |
 | What's the goal? | Deliver the native-first competitive architecture through Phases A-F with evidence. |
 | What have I learned? | See `findings.md`. |
 | What have I done? | Froze Phase A, qualified Phase B, landed SPZ v4 decode, minimal fixture, cancel, and PLY attribute mapping. |
