@@ -4,7 +4,7 @@
 
 ### Implementation Phase D: Spatial Pages and Streaming LOD
 
-- **Status:** in_progress; CPU page metadata + residency + scheduler landed
+- **Status:** in_progress; offscreen paged SortedAlpha draw path landed
 - Actions taken:
   - Added `spatial_pages` module: uniform-grid partition into capacity-capped
     pages with AABB metadata (`DEFAULT_PAGE_CAPACITY = 65536`).
@@ -19,18 +19,24 @@
     `write_hot_records_at` / clear, stale-token gates; upload test reports
     4 pages / 8 resident splats matching whole-scene packed visible/drawn.
   - `pack_scene_with_encoding` lets pages share parent scene bounds/log scales.
+  - Wired `GeometryPath::PagedActiveAtlas` into offscreen `Renderer`: spatial
+    pages on load, preprocess over resident `(global, scene)` entries,
+    `ensure_paged_atlas` + `render_paged_sorted_indices` reuse packed pipeline.
+  - Surface presenter / FFI session explicitly reject paged path for now;
+    `bench-runner` accepts `--geometry-path paged`.
+  - Parity gate `paged_vs_packed_count_parity_on_minimal_scene`:
+    visible/drawn=2, mean_abs_rgb=0.
 - Current boundary / remaining:
-  - Integrate paged active indices into the renderer SortedAlpha draw loop.
-  - Deterministic local-cache traces, network profile, SH hysteresis quality,
-    large-scene attribute payload, 30-minute stability.
+  - Surface/FFI paged present, streaming residency in the draw loop (not
+    full-install bootstrap), SH color-refresh / hysteresis, network traces,
+    large-scene attribute/memory/30-min stability gates.
 - 5-question reboot:
-  - Where am I? Phase D CPU + GPU page upload foundation landed.
-  - Where am I going? Renderer draw integration + continuity/large-scene evidence.
+  - Where am I? Phase D offscreen draw integration complete.
+  - Where am I going? Continuity / streaming / large-scene evidence + surface.
   - What's the goal? Bounded paged atlas without persistent holes.
-  - What have I learned? Multi-page GPU draw needs shared encoding ranges while
-    the packed shader still has one bounds uniform.
-  - What have I done? `spatial_pages` + `residency` + `page_scheduler` +
-    `page_atlas` + `paged_gpu` + tests.
+  - What have I learned? Bootstrap full-install gives exact packed parity;
+    surface still needs a dedicated paged presenter path.
+  - What have I done? Page stack + offscreen SortedAlpha paged draw + parity.
 
 ### Implementation Phase C: Compressed Sources and Bounded Decode
 

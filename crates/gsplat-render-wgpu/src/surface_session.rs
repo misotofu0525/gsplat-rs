@@ -344,6 +344,11 @@ impl SurfaceRenderSession {
     /// path (experimental A/B benchmark knob; default remains
     /// [`GeometryPath::SortedIndexDirect`]).
     pub fn set_geometry_path(&mut self, path: GeometryPath) -> Result<(), RendererError> {
+        if path == GeometryPath::PagedActiveAtlas {
+            return Err(RendererError::SurfacePresenter(
+                crate::SurfacePresenterError::PagedAtlasUnsupported,
+            ));
+        }
         self.renderer.set_geometry_path(path);
         self.presenter.set_geometry_path(path, &self.renderer)?;
         self.frame_state.force_sort();

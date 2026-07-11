@@ -125,10 +125,11 @@ exit evidence. Phase D (spatial pages / streaming LOD) is in progress.
       and average attribute-byte accounting (`page_atlas`).
 - [x] GPU page upload into fixed-capacity packed atlas slots (`paged_gpu`) with
       shared scene encoding and stale-token rejection.
-- [ ] Full renderer draw path that sorts/draws only active paged global indices.
+- [x] Offscreen SortedAlpha draw path for `GeometryPath::PagedActiveAtlas`
+      (global atlas indices → packed shader; Surface presenter still rejects).
 - [ ] Prove bounded memory/queues, continuity, and large-scene gates.
 - [ ] Degree-aware SH residency hysteresis on resident pages beyond unit API.
-- **Status:** in_progress; CPU path + GPU page upload slice landed
+- **Status:** in_progress; draw-loop integration landed for offscreen
 
 ### Phase E: Policy Optimization and Competitive Qualification
 

@@ -721,6 +721,7 @@ fn geometry_path_label(path: GeometryPath) -> &'static str {
     match path {
         GeometryPath::SortedIndexDirect => "sorted_index_direct",
         GeometryPath::PackedAtlas => "packed_atlas",
+        GeometryPath::PagedActiveAtlas => "paged_active_atlas",
     }
 }
 
@@ -728,8 +729,9 @@ fn parse_geometry_path(value: &str) -> Result<GeometryPath, String> {
     match value {
         "direct" | "sorted_index_direct" => Ok(GeometryPath::SortedIndexDirect),
         "packed" | "packed_atlas" => Ok(GeometryPath::PackedAtlas),
+        "paged" | "paged_active_atlas" => Ok(GeometryPath::PagedActiveAtlas),
         other => Err(format!(
-            "invalid --geometry-path '{other}' (expected direct|packed)"
+            "invalid --geometry-path '{other}' (expected direct|packed|paged)"
         )),
     }
 }

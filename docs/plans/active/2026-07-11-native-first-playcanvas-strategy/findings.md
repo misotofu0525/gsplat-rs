@@ -468,6 +468,9 @@
 - `PagedAtlasGpu` uploads pages into a fixed-capacity packed hot buffer using
   shared scene bounds/log-scale encoding so the existing single-uniform packed
   shader remains valid; stale tokens are rejected after clear/generation bump.
-- Full renderer draw integration over paged active indices, SH hysteresis
-  quality gates, network profiles, and large-scene attribute-byte averages
-  remain open.
+- Offscreen `GeometryPath::PagedActiveAtlas` sorts/draws global atlas indices
+  through the packed pipeline after bootstrap-installing all pages (degree-0
+  hot colors). Minimal-scene parity vs packed is exact (`mean_abs_rgb=0`).
+- Surface presenter / session reject paged path until a dedicated presenter is
+  wired; SH color-refresh, streaming residency in-loop, network profiles, and
+  large-scene attribute-byte averages remain open.

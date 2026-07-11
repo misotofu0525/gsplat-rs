@@ -61,6 +61,8 @@ pub struct PagedAtlasGpu {
     pub page_capacity: usize,
     pub resources: PackedAtlasResources,
     slot_meta: Vec<GpuSlotMeta>,
+    /// Scene splat indices stored per atlas slot (length `page_capacity` when occupied).
+    slot_scene_indices: Vec<Vec<u32>>,
     scene_bounds: SceneBounds,
     log_scale_range: LogScaleRange,
     sh_scales: [f32; 3],
@@ -91,6 +93,7 @@ impl PagedAtlasGpu {
             page_capacity,
             resources,
             slot_meta: (0..slot_count).map(|_| GpuSlotMeta::empty(1)).collect(),
+            slot_scene_indices: (0..slot_count).map(|_| Vec::new()).collect(),
             scene_bounds,
             log_scale_range,
             sh_scales: template.sh_scales,
@@ -118,17 +121,55 @@ impl PagedAtlasGpu {
 
     /// Global atlas indices for all occupied page splats (stable slot order).
     pub fn active_global_indices(&self) -> Vec<u32> {
-        let mut indices = Vec::with_capacity(self.resident_splat_count());
+        self.active_entries()
+            .into_iter()
+            .map(|(global, _)| global)
+            .collect()
+    }
+
+    /// `(global_atlas_index, scene_splat_index)` pairs for resident splats.
+    pub fn active_entries(&self) -> Vec<(u32, u32)> {
+        let mut entries = Vec::with_capacity(self.resident_splat_count());
         for (slot, meta) in self.slot_meta.iter().enumerate() {
             if !meta.is_occupied() {
                 continue;
             }
             let base = (slot * self.page_capacity) as u32;
+            let scene_indices = &self.slot_scene_indices[slot];
             for local in 0..meta.splat_count {
-                indices.push(base + local as u32);
+                let scene_index = scene_indices.get(local).copied().unwrap_or(0);
+                entries.push((base + local as u32, scene_index));
             }
         }
-        indices
+        entries
+    }
+
+    /// Install a page without a residency token (bootstrap / full-resident load).
+    pub fn force_install_page(
+        &mut self,
+        queue: &wgpu::Queue,
+        atlas_slot: u32,
+        page: &SpatialPage,
+        scene: &SceneBuffers,
+        attribute_lod: AttributeLod,
+    ) -> Result<(), PagedGpuError> {
+        let generation = self
+            .slot_meta
+            .get(atlas_slot as usize)
+            .map(|slot| slot.generation)
+            .ok_or(PagedGpuError::SlotOutOfRange)?;
+        self.upload_page(
+            queue,
+            AsyncPageToken {
+                scene_revision: 0,
+                page_id: page.id,
+                slot: atlas_slot,
+                slot_generation: generation,
+            },
+            page,
+            scene,
+            attribute_lod,
+        )
     }
 
     pub fn upload_page(
@@ -179,6 +220,7 @@ impl PagedAtlasGpu {
         self.resources
             .clear_hot_records_range(queue, base, self.page_capacity);
         self.resources.write_hot_records_at(queue, base, &words);
+        self.slot_scene_indices[token.slot as usize] = page.splat_indices.clone();
         *slot = GpuSlotMeta {
             page_id: Some(token.page_id),
             generation: token.slot_generation,
@@ -202,6 +244,7 @@ impl PagedAtlasGpu {
         let base = token.slot as usize * self.page_capacity;
         self.resources
             .clear_hot_records_range(queue, base, self.page_capacity);
+        self.slot_scene_indices[token.slot as usize].clear();
         *slot = GpuSlotMeta::empty(slot.generation.saturating_add(1));
         Ok(())
     }

@@ -90,6 +90,8 @@ pub enum GeometryPath {
     #[default]
     SortedIndexDirect,
     PackedAtlas,
+    /// Phase D experimental path: spatial pages uploaded into a fixed GPU atlas.
+    PagedActiveAtlas,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -128,6 +130,8 @@ pub enum RendererError {
     SurfaceWorker,
     #[error("direct scene resource error: {0}")]
     DirectScene(#[from] DirectSceneError),
+    #[error("paged atlas error: {0:?}")]
+    PagedAtlas(String),
     #[error("sort backend error: {0}")]
     Sort(#[from] SortError),
     #[error("surface presenter error: {0}")]
@@ -148,7 +152,8 @@ impl RendererError {
             | Self::DirectScene(DirectSceneError::PackedResourceLimitExceeded(_))
             | Self::DirectScene(DirectSceneError::ResourceSizeOverflow) => ErrorCode::Unsupported,
             Self::GpuReadback | Self::GpuWait | Self::SurfaceWorker => ErrorCode::Internal,
-            Self::DirectScene(DirectSceneError::SortedIndexCapacityExceeded) => ErrorCode::Internal,
+            Self::DirectScene(DirectSceneError::SortedIndexCapacityExceeded)
+            | Self::PagedAtlas(_) => ErrorCode::Internal,
             Self::Sort(_) => ErrorCode::Internal,
             Self::SurfacePresenter(err) => err.code(),
         }
@@ -230,15 +235,18 @@ pub enum SurfacePresenterError {
     SurfaceOutOfMemory,
     #[error("direct scene resource error: {0}")]
     DirectScene(#[from] DirectSceneError),
+    #[error("paged active atlas is not yet supported on surface presenters")]
+    PagedAtlasUnsupported,
 }
 
 impl SurfacePresenterError {
     pub const fn code(&self) -> ErrorCode {
         match self {
             Self::InvalidSurfaceSize => ErrorCode::InvalidArgument,
-            Self::SurfaceCreation | Self::NoAdapter | Self::DeviceCreation(_) => {
-                ErrorCode::Unsupported
-            }
+            Self::SurfaceCreation
+            | Self::NoAdapter
+            | Self::DeviceCreation(_)
+            | Self::PagedAtlasUnsupported => ErrorCode::Unsupported,
             Self::SceneNotLoaded => ErrorCode::SceneNotLoaded,
             Self::NoSurfaceFormat
             | Self::SurfaceConfigure(_)
@@ -260,6 +268,8 @@ pub struct Renderer {
     #[cfg(not(target_arch = "wasm32"))]
     gpu_rasterizer: Option<GpuRasterizer>,
     scene: Option<SceneBuffers>,
+    /// Spatial page metadata for [`GeometryPath::PagedActiveAtlas`].
+    spatial_pages: Option<SpatialPageSet>,
     world_covariances: Option<Vec<[[f32; 3]; 3]>>,
     world_covariance_terms: Option<Vec<CameraCovarianceTerms>>,
     alpha_values: Option<Vec<f32>>,
@@ -324,6 +334,7 @@ impl Renderer {
             #[cfg(not(target_arch = "wasm32"))]
             gpu_rasterizer: None,
             scene: None,
+            spatial_pages: None,
             world_covariances: None,
             world_covariance_terms: None,
             alpha_values: None,
@@ -487,11 +498,19 @@ impl Renderer {
                 self.world_covariances = Some(world_covariances);
                 self.world_covariance_terms = Some(world_covariance_terms);
                 self.alpha_values = Some(alpha_values);
+                self.spatial_pages = None;
+            }
+            (GeometryPath::PagedActiveAtlas, Some(scene)) => {
+                self.world_covariances = None;
+                self.world_covariance_terms = None;
+                self.alpha_values = None;
+                self.spatial_pages = Some(default_spatial_pages(scene));
             }
             _ => {
                 self.world_covariances = None;
                 self.world_covariance_terms = None;
                 self.alpha_values = None;
+                self.spatial_pages = None;
             }
         }
     }
@@ -619,8 +638,27 @@ impl Renderer {
         indices: Vec<u32>,
     ) -> Result<(), RendererError> {
         let scene = self.scene.as_ref().ok_or(RendererError::SceneNotLoaded)?;
-        if indices.iter().any(|&idx| idx as usize >= scene.len()) {
-            return Err(RendererError::InvalidScene);
+        match self.geometry_path {
+            GeometryPath::PagedActiveAtlas => {
+                let max_index = self
+                    .spatial_pages
+                    .as_ref()
+                    .map(|pages| {
+                        pages
+                            .page_count()
+                            .saturating_mul(pages.page_capacity)
+                            .saturating_sub(1)
+                    })
+                    .unwrap_or(0) as u32;
+                if indices.iter().any(|&idx| idx > max_index) {
+                    return Err(RendererError::InvalidScene);
+                }
+            }
+            GeometryPath::SortedIndexDirect | GeometryPath::PackedAtlas => {
+                if indices.iter().any(|&idx| idx as usize >= scene.len()) {
+                    return Err(RendererError::InvalidScene);
+                }
+            }
         }
 
         self.preprocess_depth_keys.clear();
@@ -704,6 +742,13 @@ impl Renderer {
                     .render_packed_sorted_indices(self.config, sorted_indices, camera, scene)
                     .map_err(RendererError::from)?;
             }
+            GeometryPath::PagedActiveAtlas => {
+                self.gpu_rasterizer
+                    .as_mut()
+                    .ok_or(RendererError::GpuRasterizerUnavailable)?
+                    .render_paged_sorted_indices(self.config, sorted_indices, camera)
+                    .map_err(RendererError::from)?;
+            }
         }
         let drawn_count = sorted_indices.len() as u32;
         let raster_ms = timer_elapsed_ms(raster_start);
@@ -763,6 +808,13 @@ impl Renderer {
                     .render_packed_sorted_indices(self.config, sorted_indices, camera, scene)
                     .map_err(RendererError::from)?;
             }
+            GeometryPath::PagedActiveAtlas => {
+                self.gpu_rasterizer
+                    .as_mut()
+                    .ok_or(RendererError::GpuRasterizerUnavailable)?
+                    .render_paged_sorted_indices(self.config, sorted_indices, camera)
+                    .map_err(RendererError::from)?;
+            }
         }
         let raster_ms = timer_elapsed_ms(raster_start);
         let count = u32::try_from(sorted_indices.len()).unwrap_or(u32::MAX);
@@ -811,12 +863,45 @@ impl Renderer {
 
     fn preprocess_visible_scratch(&mut self, camera: &Camera) -> Result<(), RendererError> {
         let scene = self.scene.as_ref().ok_or(RendererError::SceneNotLoaded)?;
-        preprocess_visible_into(
-            scene,
-            camera,
-            &mut self.preprocess_depth_keys,
-            &mut self.preprocess_indices,
-        )
+        match self.geometry_path {
+            GeometryPath::PagedActiveAtlas => {
+                let pages = self
+                    .spatial_pages
+                    .as_ref()
+                    .ok_or(RendererError::InvalidScene)?;
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    let rasterizer = self
+                        .gpu_rasterizer
+                        .as_mut()
+                        .ok_or(RendererError::GpuRasterizerUnavailable)?;
+                    rasterizer.ensure_paged_atlas(scene, pages)?;
+                    let entries = rasterizer
+                        .paged_atlas
+                        .as_ref()
+                        .ok_or(RendererError::InvalidScene)?
+                        .active_entries();
+                    preprocess_paged_visible_into(
+                        scene,
+                        &entries,
+                        camera,
+                        &mut self.preprocess_depth_keys,
+                        &mut self.preprocess_indices,
+                    )
+                }
+                #[cfg(target_arch = "wasm32")]
+                {
+                    let _ = (pages, camera);
+                    Err(RendererError::GpuRasterizerUnavailable)
+                }
+            }
+            GeometryPath::SortedIndexDirect | GeometryPath::PackedAtlas => preprocess_visible_into(
+                scene,
+                camera,
+                &mut self.preprocess_depth_keys,
+                &mut self.preprocess_indices,
+            ),
+        }
     }
 
     fn sort_preprocessed_scratch(&mut self) -> Result<(), RendererError> {
@@ -1063,6 +1148,9 @@ impl SurfacePresenter {
                 )?;
                 (None, Some(packed_scene))
             }
+            GeometryPath::PagedActiveAtlas => {
+                return Err(SurfacePresenterError::PagedAtlasUnsupported);
+            }
         };
 
         Ok(Self {
@@ -1127,6 +1215,9 @@ impl SurfacePresenter {
         if self.geometry_path == path {
             return Ok(());
         }
+        if path == GeometryPath::PagedActiveAtlas {
+            return Err(SurfacePresenterError::PagedAtlasUnsupported);
+        }
 
         let scene = renderer
             .scene()
@@ -1165,6 +1256,9 @@ impl SurfacePresenter {
                     scene,
                 )?);
             }
+            GeometryPath::PagedActiveAtlas => {
+                unreachable!("rejected above");
+            }
         }
 
         Ok(())
@@ -1184,6 +1278,7 @@ impl SurfacePresenter {
             GeometryPath::PackedAtlas => {
                 self.render_packed_frame(scene, sorted_indices, camera, refresh_indices)
             }
+            GeometryPath::PagedActiveAtlas => Err(SurfacePresenterError::PagedAtlasUnsupported),
         }
     }
 
@@ -1841,6 +1936,49 @@ fn preprocess_visible_into(
     }
 
     Ok(())
+}
+
+fn preprocess_paged_visible_into(
+    scene: &SceneBuffers,
+    entries: &[(u32, u32)],
+    camera: &Camera,
+    depth_keys: &mut Vec<u32>,
+    indices: &mut Vec<u32>,
+) -> Result<(), RendererError> {
+    camera
+        .validate()
+        .map_err(|_| RendererError::InvalidCamera)?;
+    depth_keys.clear();
+    indices.clear();
+    if depth_keys.capacity() < entries.len() {
+        depth_keys.reserve(entries.len() - depth_keys.capacity());
+    }
+    if indices.capacity() < entries.len() {
+        indices.reserve(entries.len() - indices.capacity());
+    }
+
+    let camera_inv_q = quat_inverse(camera.pose.rotation_xyzw);
+    let view_rot = quat_to_mat3(camera_inv_q);
+    let depth_row = view_rot[2];
+    let camera_position = camera.pose.position;
+
+    for &(global_index, scene_index) in entries {
+        let Some(position) = scene.positions.get(scene_index as usize).copied() else {
+            continue;
+        };
+        let depth_z = world_to_camera_depth_with_view_row(position, camera_position, depth_row);
+        if is_visible(depth_z, camera) {
+            indices.push(global_index);
+            depth_keys.push(depth_to_key(depth_z));
+        }
+    }
+    Ok(())
+}
+
+fn default_spatial_pages(scene: &SceneBuffers) -> SpatialPageSet {
+    let page_capacity = (scene.len() / 4).clamp(1, DEFAULT_PAGE_CAPACITY);
+    let grid_axis = ((scene.len() as f32).cbrt().ceil() as usize).clamp(1, 8);
+    partition_scene_pages(scene, page_capacity, grid_axis)
 }
 
 fn world_to_camera_depth_with_view_row(
@@ -3121,6 +3259,7 @@ struct GpuRasterizer {
     packed_pipeline: wgpu::RenderPipeline,
     packed_bind_group_layout: wgpu::BindGroupLayout,
     packed_scene: Option<packed_gpu::PackedAtlasResources>,
+    paged_atlas: Option<PagedAtlasGpu>,
     /// Last camera position used for packed hot-color refresh.
     packed_color_refresh_position: Option<[f32; 3]>,
 }
@@ -3193,6 +3332,7 @@ impl GpuRasterizer {
             packed_pipeline,
             packed_bind_group_layout,
             packed_scene: None,
+            paged_atlas: None,
             packed_color_refresh_position: None,
         })
     }
@@ -3200,6 +3340,7 @@ impl GpuRasterizer {
     fn clear_scene_resources(&mut self) {
         self.direct_scene = None;
         self.packed_scene = None;
+        self.paged_atlas = None;
         self.packed_color_refresh_position = None;
     }
 
@@ -3353,6 +3494,94 @@ impl GpuRasterizer {
             });
             rpass.set_pipeline(&self.packed_pipeline);
             rpass.set_bind_group(0, &packed_scene.bind_group, &[]);
+            if instance_count > 0 {
+                rpass.draw(0..packed_gpu::PACKED_QUAD_VERTEX_COUNT, 0..instance_count);
+            }
+        }
+        self.queue.submit(Some(encoder.finish()));
+        Ok(())
+    }
+
+    fn ensure_paged_atlas(
+        &mut self,
+        scene: &SceneBuffers,
+        pages: &SpatialPageSet,
+    ) -> Result<(), RendererError> {
+        if self.paged_atlas.is_some() {
+            return Ok(());
+        }
+        let slot_count = pages.page_count().max(1);
+        let mut paged = PagedAtlasGpu::new(
+            &self.device,
+            &self.queue,
+            &self.packed_bind_group_layout,
+            slot_count,
+            pages.page_capacity,
+            scene,
+        )
+        .map_err(|err| RendererError::PagedAtlas(format!("{err:?}")))?;
+        for (slot, page) in pages.pages.iter().enumerate() {
+            paged
+                .force_install_page(&self.queue, slot as u32, page, scene, AttributeLod::Degree0)
+                .map_err(|err| RendererError::PagedAtlas(format!("{err:?}")))?;
+        }
+        self.paged_atlas = Some(paged);
+        Ok(())
+    }
+
+    fn render_paged_sorted_indices(
+        &mut self,
+        config: RendererConfig,
+        sorted_indices: &[u32],
+        camera: &Camera,
+    ) -> Result<(), GpuRasterError> {
+        self.ensure_output_target(config.width, config.height)?;
+        let paged = self
+            .paged_atlas
+            .as_mut()
+            .ok_or(GpuRasterError::DeviceCreation)?;
+        // Degree-0 hot colors are baked at page install; SH color-refresh for
+        // paged slots remains a follow-up once attribute LOD is wired.
+        let instance_count = paged
+            .resources
+            .prepare(
+                &self.queue,
+                sorted_indices,
+                camera,
+                config.width,
+                config.height,
+                true,
+            )
+            .map_err(|_| GpuRasterError::DeviceCreation)?;
+
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: wgpu_label("gsplat-offscreen-paged-encoder"),
+            });
+        {
+            let paged = self
+                .paged_atlas
+                .as_ref()
+                .ok_or(GpuRasterError::DeviceCreation)?;
+            let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: wgpu_label("gsplat-offscreen-paged-pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &self.output_view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                occlusion_query_set: None,
+                timestamp_writes: None,
+                multiview_mask: None,
+            });
+            rpass.set_pipeline(&self.packed_pipeline);
+            rpass.set_bind_group(0, &paged.resources.bind_group, &[]);
             if instance_count > 0 {
                 rpass.draw(0..packed_gpu::PACKED_QUAD_VERTEX_COUNT, 0..instance_count);
             }
@@ -3617,6 +3846,53 @@ mod tests {
         assert_eq!(direct_stats.visible_count, packed_stats.visible_count);
         assert_eq!(direct_stats.drawn_count, packed_stats.drawn_count);
         assert_eq!(direct_stats.visible_count, 2);
+    }
+
+    #[test]
+    fn paged_vs_packed_count_parity_on_minimal_scene() {
+        let config = RendererConfig {
+            width: 64,
+            height: 64,
+            mode: RenderMode::SortedAlpha,
+        };
+        let mut packed = match Renderer::with_config(config) {
+            Ok(renderer) => renderer,
+            Err(super::RendererError::GpuRasterizerUnavailable)
+            | Err(super::RendererError::GpuDeviceCreation) => {
+                eprintln!("skipping paged-vs-packed parity; adapter unavailable");
+                return;
+            }
+            Err(error) => panic!("renderer init: {error}"),
+        };
+        let mut paged = Renderer::with_config(config).expect("second renderer");
+        packed.set_geometry_path(super::GeometryPath::PackedAtlas);
+        paged.set_geometry_path(super::GeometryPath::PagedActiveAtlas);
+        let scene = build_scene();
+        packed.load_scene(scene.clone()).unwrap();
+        paged.load_scene(scene).unwrap();
+        let camera = Camera::default();
+        let packed_stats = packed.render_frame(&camera).unwrap();
+        let paged_stats = paged.render_frame(&camera).unwrap();
+        assert_eq!(packed_stats.visible_count, paged_stats.visible_count);
+        assert_eq!(packed_stats.drawn_count, paged_stats.drawn_count);
+        assert_eq!(packed_stats.visible_count, 2);
+        let packed_rgba = packed.readback_rgba8().unwrap();
+        let paged_rgba = paged.readback_rgba8().unwrap();
+        let metrics = rgba_image_parity_metrics(&packed_rgba, &paged_rgba);
+        eprintln!(
+            "paged vs packed parity: mean_abs_rgb={:.6} frac_over_3_255={:.6} max_abs_rgb={:.6}",
+            metrics.mean_abs_rgb, metrics.frac_pixels_over_3_255, metrics.max_abs_rgb
+        );
+        assert!(
+            metrics.mean_abs_rgb <= 1.0 / 255.0,
+            "mean abs RGB {:.6} exceeded 1/255",
+            metrics.mean_abs_rgb
+        );
+        assert!(
+            metrics.frac_pixels_over_3_255 <= 0.001,
+            "frac over 3/255 {:.6} exceeded 0.1%",
+            metrics.frac_pixels_over_3_255
+        );
     }
 
     #[derive(Debug, Clone, Copy)]
