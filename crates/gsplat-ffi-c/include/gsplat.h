@@ -40,6 +40,15 @@ typedef enum GsplatRenderMode {
   GSPLAT_RENDER_MODE_SORTED_ALPHA = 0,
 } GsplatRenderMode;
 
+/*
+ * Surface geometry A/B benchmark knob. GSPLAT_GEOMETRY_PATH_DIRECT is the
+ * release-gated default; GSPLAT_GEOMETRY_PATH_PACKED_ATLAS is experimental.
+ */
+typedef enum GsplatGeometryPath {
+  GSPLAT_GEOMETRY_PATH_DIRECT = 0,
+  GSPLAT_GEOMETRY_PATH_PACKED_ATLAS = 1,
+} GsplatGeometryPath;
+
 typedef struct GsplatConfig {
   uint32_t width;
   uint32_t height;
@@ -105,8 +114,18 @@ int32_t gsplat_surface_renderer_set_sort_interval(
     GsplatSurfaceRenderer *renderer,
     uint32_t interval);
 /*
+ * Experimental A/B benchmark knob: switch between the direct sorted-index
+ * pipeline (GSPLAT_GEOMETRY_PATH_DIRECT, default) and the packed-atlas
+ * pipeline (GSPLAT_GEOMETRY_PATH_PACKED_ATLAS). `path` is a GsplatGeometryPath
+ * value. May change before a published mobile SDK.
+ */
+int32_t gsplat_surface_renderer_set_geometry_path(
+    GsplatSurfaceRenderer *renderer,
+    uint32_t path);
+/*
  * v0.1 ABI compatibility no-ops. Rendering always uses the resident-scene
- * direct sorted-index pipeline; new integrations should not call these.
+ * sorted-index pipeline selected by gsplat_surface_renderer_set_geometry_path;
+ * new integrations should not call these.
  */
 int32_t gsplat_surface_renderer_set_gpu_preproject(
     GsplatSurfaceRenderer *renderer,

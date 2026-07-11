@@ -54,7 +54,9 @@ APP_BUNDLE="$ROOT_DIR/target/ios-device-app/GsplatIOSExample.app"
 BUNDLE_ID="${IOS_BUNDLE_ID:-com.gsplat.example.ios}"
 LOG_DIR="$ROOT_DIR/target/ios-device-benchmarks"
 mkdir -p "$LOG_DIR"
-LOG_FILE="$LOG_DIR/benchmark-$(date +%Y%m%d-%H%M%S).log"
+RUN_STAMP="$(date +%Y%m%d-%H%M%S)"
+LOG_FILE="$LOG_DIR/benchmark-$RUN_STAMP.log"
+ARTIFACT_DIR="${IOS_BENCHMARK_ARTIFACT_DIR:-$LOG_DIR/artifact-$RUN_STAMP}"
 DEVICECTL_PID=""
 
 cleanup() {
@@ -86,6 +88,10 @@ DEVICECTL_PID="$!"
 
 for _ in $(seq 1 120); do
   if rg -q 'BENCHMARK_RESULT' "$LOG_FILE"; then
+    python3 bindings/apple/scripts/extract-ios-benchmark-artifacts.py \
+      "$LOG_FILE" \
+      "$ARTIFACT_DIR" \
+      --validator tests/perf/validate-benchmark-artifacts.py
     rg 'BENCHMARK_RESULT' "$LOG_FILE"
     echo "log=$LOG_FILE"
     exit 0

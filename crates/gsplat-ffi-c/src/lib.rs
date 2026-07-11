@@ -12,7 +12,7 @@ use gsplat_core::{
     GSPLAT_API_VERSION_MINOR, RenderMode, RendererConfig, Vec3f,
 };
 use gsplat_io_ply::load_ply;
-use gsplat_render_wgpu::{Renderer, SurfacePresenter, SurfaceRenderSession};
+use gsplat_render_wgpu::{GeometryPath, Renderer, SurfacePresenter, SurfaceRenderSession};
 
 const SURFACE_CAMERA_MAX_PITCH: f32 = 1.45;
 const SURFACE_CAMERA_MIN_DISTANCE_MULTIPLIER: f32 = 0.2;
@@ -861,9 +861,55 @@ pub unsafe extern "C" fn gsplat_surface_renderer_set_sort_interval(
     })
 }
 
+/// Set the Surface renderer geometry path.
+///
+/// `path` must be `GSPLAT_GEOMETRY_PATH_DIRECT` (0) or
+/// `GSPLAT_GEOMETRY_PATH_PACKED_ATLAS` (1). This is an experimental A/B
+/// benchmark knob; the default remains the direct sorted-index path.
+///
+/// # Safety
+///
+/// `renderer` must be null or a live handle returned by a Surface renderer
+/// create function.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gsplat_surface_renderer_set_geometry_path(
+    renderer: *mut GsplatSurfaceRenderer,
+    path: u32,
+) -> i32 {
+    ffi_catch_i32("gsplat_surface_renderer_set_geometry_path", || {
+        let renderer = match unsafe { renderer.as_mut() } {
+            Some(renderer) => renderer,
+            None => {
+                return ffi_error(
+                    ErrorCode::InvalidArgument,
+                    "gsplat_surface_renderer_set_geometry_path: renderer is null",
+                );
+            }
+        };
+
+        let geometry_path = match path {
+            0 => GeometryPath::SortedIndexDirect,
+            1 => GeometryPath::PackedAtlas,
+            _ => {
+                return ffi_error(
+                    ErrorCode::InvalidArgument,
+                    "gsplat_surface_renderer_set_geometry_path: unsupported path",
+                );
+            }
+        };
+
+        if let Err(err) = renderer.session.set_geometry_path(geometry_path) {
+            return ffi_error_display(err.code(), "gsplat_surface_renderer_set_geometry_path", err);
+        }
+        renderer.render_error_logged = false;
+        ffi_ok()
+    })
+}
+
 /// Compatibility no-op retained for the v0.1 ABI.
 ///
-/// All Surface renderers use direct sorted-index rendering.
+/// CPU-sorted-index rendering is always used; `gsplat_surface_renderer_set_geometry_path`
+/// is the only supported geometry A/B knob.
 ///
 /// # Safety
 ///
@@ -1493,7 +1539,7 @@ mod tests {
         gsplat_surface_renderer_render_frame, gsplat_surface_renderer_reset_camera,
         gsplat_surface_renderer_resize, gsplat_surface_renderer_set_async_geometry,
         gsplat_surface_renderer_set_async_sort, gsplat_surface_renderer_set_frame_latency,
-        gsplat_surface_renderer_set_gpu_preproject,
+        gsplat_surface_renderer_set_geometry_path, gsplat_surface_renderer_set_gpu_preproject,
         gsplat_surface_renderer_set_gpu_preproject_double_buffer,
         gsplat_surface_renderer_set_instance_buffer_count,
         gsplat_surface_renderer_set_sort_interval, gsplat_surface_renderer_zoom,
@@ -1709,6 +1755,10 @@ mod tests {
         );
         assert_eq!(
             unsafe { gsplat_surface_renderer_set_async_geometry(ptr::null_mut(), 1) },
+            expected
+        );
+        assert_eq!(
+            unsafe { gsplat_surface_renderer_set_geometry_path(ptr::null_mut(), 1) },
             expected
         );
         assert_eq!(

@@ -33,7 +33,7 @@ private struct DatasetSelection {
     var label: String
 }
 
-private struct BenchmarkConfig {
+struct BenchmarkConfig {
     var enabled = false
     var frames = 120
     var warmupFrames = 10
@@ -41,6 +41,8 @@ private struct BenchmarkConfig {
     var sortInterval: UInt32 = 2
     var asyncSort = false
     var frameLatency: UInt32 = 2
+    /// Experimental A/B benchmark knob: "direct" (default) or "packed".
+    var geometryPath = "direct"
 
     static func fromArguments(_ arguments: [String]) -> BenchmarkConfig {
         let args = LaunchArguments(arguments)
@@ -55,8 +57,20 @@ private struct BenchmarkConfig {
         config.frameLatency = UInt32(
             min(max(1, args.int("gsplat_surface_frame_latency", default: Int(config.frameLatency))), 4)
         )
+        let geometryPath = args.string("gsplat_geometry_path", default: config.geometryPath).lowercased()
+        config.geometryPath = geometryPath == "packed" ? "packed" : "direct"
         return config
     }
+}
+
+/// Maps the experimental geometry-path label to the `GsplatGeometryPath` FFI value.
+func geometryPathValue(_ label: String) -> UInt32 {
+    label == "packed" ? 1 : 0
+}
+
+/// Maps the experimental geometry-path label to the artifact `renderer.path` name.
+func geometryPipelineName(_ label: String) -> String {
+    label == "packed" ? "packed_atlas" : "sorted_index_direct"
 }
 
 private struct LaunchArguments {
@@ -110,72 +124,12 @@ private struct LaunchArguments {
         values[normalize(key)].flatMap(Float.init) ?? defaultValue
     }
 
+    func string(_ key: String, default defaultValue: String) -> String {
+        values[normalize(key)] ?? defaultValue
+    }
+
     private func normalize(_ key: String) -> String {
         key.replacingOccurrences(of: "-", with: "_")
-    }
-}
-
-private final class SurfaceBenchmark {
-    let config: BenchmarkConfig
-    private(set) var complete = false
-    private var observedFrames = 0
-    private var samples = 0
-    private var totalCallMs: Double = 0
-    private var totalFrameMs: Double = 0
-    private var totalPreprocessMs: Double = 0
-    private var totalSortMs: Double = 0
-    private var totalRasterMs: Double = 0
-    private var totalVisible: UInt64 = 0
-    private var totalDrawn: UInt64 = 0
-
-    init(config: BenchmarkConfig) {
-        self.config = config
-    }
-
-    func record(stats: GsplatStats, renderCallNs: UInt64) {
-        guard config.enabled, !complete else {
-            return
-        }
-
-        observedFrames += 1
-        if observedFrames <= config.warmupFrames {
-            return
-        }
-
-        samples += 1
-        totalCallMs += Double(renderCallNs) / 1_000_000.0
-        totalFrameMs += Double(stats.frame_ms)
-        totalPreprocessMs += Double(stats.preprocess_ms)
-        totalSortMs += Double(stats.sort_ms)
-        totalRasterMs += Double(stats.raster_ms)
-        totalVisible += UInt64(stats.visible_count)
-        totalDrawn += UInt64(stats.drawn_count)
-        complete = samples >= config.frames
-    }
-
-    func resultLine(datasetLabel: String) -> String {
-        let safeSamples = max(samples, 1)
-        return [
-            "BENCHMARK_RESULT",
-            "dataset=\(datasetLabel)",
-            "samples=\(samples)",
-            "warmup=\(config.warmupFrames)",
-            "sort_interval=\(config.sortInterval)",
-            "async_sort=\(config.asyncSort)",
-            "geometry_pipeline=sorted_index_direct",
-            "frame_latency=\(config.frameLatency)",
-            "avg_call_ms=\(format(totalCallMs / Double(safeSamples)))",
-            "avg_frame_ms=\(format(totalFrameMs / Double(safeSamples)))",
-            "avg_preprocess_ms=\(format(totalPreprocessMs / Double(safeSamples)))",
-            "avg_sort_ms=\(format(totalSortMs / Double(safeSamples)))",
-            "avg_raster_ms=\(format(totalRasterMs / Double(safeSamples)))",
-            "avg_visible=\(totalVisible / UInt64(safeSamples))",
-            "avg_drawn=\(totalDrawn / UInt64(safeSamples))",
-        ].joined(separator: " ")
-    }
-
-    private func format(_ value: Double) -> String {
-        String(format: "%.3f", value)
     }
 }
 
@@ -525,6 +479,10 @@ final class ExampleViewController: UIViewController, UIGestureRecognizerDelegate
             ("sort_interval", gsplat_surface_renderer_set_sort_interval(handle, benchmarkConfig.sortInterval)),
             ("async_sort", gsplat_surface_renderer_set_async_sort(handle, benchmarkConfig.asyncSort ? 1 : 0)),
             ("frame_latency", gsplat_surface_renderer_set_frame_latency(handle, benchmarkConfig.frameLatency)),
+            (
+                "geometry_path",
+                gsplat_surface_renderer_set_geometry_path(handle, geometryPathValue(benchmarkConfig.geometryPath))
+            ),
         ]
 
         for (name, rc) in steps where rc != 0 {
@@ -572,8 +530,15 @@ final class ExampleViewController: UIViewController, UIGestureRecognizerDelegate
                 let statsRc = gsplat_surface_renderer_get_stats(renderer, &stats)
                 if statsRc == 0 {
                     if benchmark.config.enabled {
-                        benchmark.record(stats: stats, renderCallNs: renderCallNs)
+                        benchmark.record(stats: stats, renderCallNs: renderCallNs, frameStartNs: renderStartNs)
                         if benchmark.complete {
+                            let size = self.currentSurfaceSize ?? (width: 1, height: 1)
+                            benchmark.emitArtifacts(
+                                datasetPath: self.datasetPath,
+                                datasetLabel: self.datasetLabel,
+                                width: size.width,
+                                height: size.height
+                            )
                             let result = benchmark.resultLine(datasetLabel: self.datasetLabel)
                             print(result)
                             fflush(stdout)
@@ -1084,6 +1049,7 @@ final class ExampleViewController: UIViewController, UIGestureRecognizerDelegate
             "surface=wgpu realtime \(surfaceSizeLabel())",
             latestState,
             cameraState,
+            "geometry_pipeline=\(geometryPipelineName(benchmarkConfig.geometryPath))",
         ]
         if benchmarkConfig.enabled {
             lines.append("benchmark=orbit frames=\(benchmarkConfig.frames) warmup=\(benchmarkConfig.warmupFrames)")

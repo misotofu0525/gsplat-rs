@@ -153,6 +153,7 @@ cp "$PROVISIONING_PROFILE" "$APP_BUNDLE/embedded.mobileprovision"
 
 xcrun --sdk iphoneos swiftc \
   bindings/apple/GsplatKit/Sources/GsplatKit/GsplatKit.swift \
+  examples/ios/app/BenchmarkArtifact.swift \
   examples/ios/app/GsplatIOSExample.swift \
   -parse-as-library \
   "$IOS_SWIFT_OPT_LEVEL" \
@@ -165,6 +166,7 @@ xcrun --sdk iphoneos swiftc \
   -framework Metal \
   -framework CoreGraphics \
   -framework Foundation \
+  -framework CryptoKit \
   -framework Security \
   -lz \
   -lc++ \

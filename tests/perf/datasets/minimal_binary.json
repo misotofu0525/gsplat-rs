@@ -1,0 +1,17 @@
+{
+  "schema": "gsplat-dataset/v1",
+  "id": "minimal_binary",
+  "qualification_status": "qualified",
+  "local_path": "tests/datasets/minimal_binary.ply",
+  "source_url": null,
+  "license": "MIT OR Apache-2.0 generated repository fixture",
+  "redistribution": "repository fixture",
+  "sha256": "fd037cdc01c7be7bb5b4ff6f663a55b95f816463c61c0e503860892a97988596",
+  "bytes": 586,
+  "splat_count": 3,
+  "sh_degree": 0,
+  "bounds_min": [0.0, -0.1, -0.1],
+  "bounds_max": [0.1, 0.0, 1.2],
+  "conversion": "python3 tests/datasets/generate-minimal-binary.py",
+  "source_fixture": "tests/datasets/minimal_ascii.ply"
+}

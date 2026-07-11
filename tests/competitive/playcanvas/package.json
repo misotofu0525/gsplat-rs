@@ -1,0 +1,22 @@
+{
+  "name": "gsplat-rs-playcanvas-competitive-harness",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Pinned PlayCanvas dependency and preflight for gsplat-rs competitive verification.",
+  "type": "module",
+  "license": "UNLICENSED",
+  "packageManager": "npm@11.18.0",
+  "engines": {
+    "node": ">=18.3.0"
+  },
+  "scripts": {
+    "preflight": "node scripts/preflight.mjs",
+    "serve": "node scripts/server.mjs",
+    "smoke": "node scripts/run-browser-smoke.mjs",
+    "test": "node scripts/preflight.mjs"
+  },
+  "dependencies": {
+    "playcanvas": "2.21.0-beta.14",
+    "puppeteer-core": "24.15.0"
+  }
+}

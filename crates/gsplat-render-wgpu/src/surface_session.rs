@@ -9,7 +9,7 @@ use std::{
     thread::{self, JoinHandle},
 };
 
-use crate::{Renderer, RendererError, SurfacePresenter};
+use crate::{GeometryPath, Renderer, RendererError, SurfacePresenter};
 
 const DEFAULT_SURFACE_SORT_INTERVAL: u32 = 2;
 
@@ -249,6 +249,20 @@ impl SurfaceRenderSession {
         &self.renderer
     }
 
+    pub fn geometry_path(&self) -> GeometryPath {
+        self.renderer.geometry_path()
+    }
+
+    /// Switches the shared renderer and presenter to a different geometry
+    /// path (experimental A/B benchmark knob; default remains
+    /// [`GeometryPath::SortedIndexDirect`]).
+    pub fn set_geometry_path(&mut self, path: GeometryPath) -> Result<(), RendererError> {
+        self.renderer.set_geometry_path(path);
+        self.presenter.set_geometry_path(path, &self.renderer)?;
+        self.frame_state.force_sort();
+        Ok(())
+    }
+
     pub fn camera(&self) -> Camera {
         self.camera
     }
@@ -384,7 +398,9 @@ impl SurfaceRenderSession {
             .renderer
             .build_surface_sorted_indices_with_sort_refresh(&self.camera, plan.refresh_sort)?;
         let render_start = timer_now();
+        let scene = self.renderer.scene().ok_or(RendererError::SceneNotLoaded)?;
         self.presenter.render_sorted_indices(
+            scene,
             self.renderer.current_sorted_indices(),
             &self.camera,
             plan.upload_order,

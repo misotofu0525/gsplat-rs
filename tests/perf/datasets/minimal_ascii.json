@@ -1,0 +1,16 @@
+{
+  "schema": "gsplat-dataset/v1",
+  "id": "minimal_ascii",
+  "qualification_status": "qualified",
+  "local_path": "tests/datasets/minimal_ascii.ply",
+  "source_url": null,
+  "license": "MIT OR Apache-2.0 repository fixture",
+  "redistribution": "repository fixture",
+  "sha256": "6e4e0981ea7021c220d230c77053ba7428d96aeb4b6f2350d5006b298b0778ba",
+  "bytes": 566,
+  "splat_count": 3,
+  "sh_degree": 0,
+  "bounds_min": [0.0, -0.1, -0.1],
+  "bounds_max": [0.1, 0.0, 1.2],
+  "conversion": "none"
+}

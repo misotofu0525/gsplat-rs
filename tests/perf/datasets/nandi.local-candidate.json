@@ -1,0 +1,16 @@
+{
+  "schema": "gsplat-dataset/v1",
+  "id": "nandi",
+  "qualification_status": "local_candidate",
+  "local_path": "tests/datasets/external/candidates/loopce/nandi.ply",
+  "source_url": "https://loopce.com/gaussian-splats",
+  "license": null,
+  "redistribution": "blocked until source and license are verified",
+  "sha256": "e0457d226c40ab69857a89b84f56a03da69ddd81b49610d5c7f226dacb60c05d",
+  "bytes": 856603452,
+  "splat_count": 3454040,
+  "sh_degree": 3,
+  "bounds_min": [-79.179398, -59.651611, -74.109161],
+  "bounds_max": [76.388443, 99.979218, 64.020042],
+  "conversion": "none recorded"
+}

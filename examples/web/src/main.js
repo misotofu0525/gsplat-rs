@@ -2,6 +2,14 @@ import {
   createGsplatRenderer,
   initGsplatWeb,
 } from "../../../packages/web/src/index.js?v=sorted-index-20260710";
+import {
+  BENCHMARK_SCHEMA,
+  appendBenchmarkSample,
+  benchmarkSummary,
+  createBenchmarkCollector,
+  frameRecords,
+  legacyAverages,
+} from "./benchmark-artifact.mjs";
 
 const API_VERSION = "0.1";
 const MAX_SURFACE_SIDE = 1600;
@@ -12,6 +20,7 @@ const DEFAULT_BENCHMARK_FRAMES = 120;
 const DEFAULT_BENCHMARK_WARMUP_FRAMES = 10;
 const DEFAULT_BENCHMARK_YAW_STEP = 0.001;
 const OPACITY_LOGIT_LIMIT = 16;
+const DEFAULT_FRAME_BUDGET_MS = 1000 / 60;
 
 const DATASETS = {
   showcase: "/tests/datasets/external/wakufactory_kitune/kitune1.ply",
@@ -625,8 +634,11 @@ async function loadDataset(path, name, options = {}) {
       throw new Error(`HTTP ${response.status}`);
     }
     const bytes = await readResponseBytes(response, name);
+    const datasetSha256 = await sha256Hex(bytes);
     setLoadingProgress("Reading captured light", `${formatBytes(bytes.byteLength)} received.`, 0.76);
     const scene = parsePly(bytes, name, path);
+    scene.sourceBytes = bytes.byteLength;
+    scene.sourceSha256 = datasetSha256;
     setLoadingProgress(
       "Building the scene",
       `${formatNumber(scene.count)} Gaussians ready for the GPU.`,
@@ -655,8 +667,11 @@ async function loadFile(file) {
   setStatus(`state=loading dataset=${file.name}`);
   try {
     const bytes = new Uint8Array(await file.arrayBuffer());
+    const datasetSha256 = await sha256Hex(bytes);
     setLoadingProgress("Reading captured light", `${formatBytes(bytes.byteLength)} received.`, 0.76);
     const scene = parsePly(bytes, file.name, `browser:${file.name}`);
+    scene.sourceBytes = bytes.byteLength;
+    scene.sourceSha256 = datasetSha256;
     await applyScene(scene);
   } catch (error) {
     setStatus(`state=parse_failed dataset=${file.name} error=${compactMessage(error)}`);
@@ -1280,20 +1295,23 @@ function createBenchmarkState(enabled) {
   const frames = clampInt(Number(els.benchmarkFrames.value), 1, 2000, DEFAULT_BENCHMARK_FRAMES);
   const warmupFrames = clampInt(Number(els.benchmarkWarmup.value), 0, 500, DEFAULT_BENCHMARK_WARMUP_FRAMES);
   const yawStep = finiteOrDefault(Number(els.benchmarkYaw.value), DEFAULT_BENCHMARK_YAW_STEP);
+  const startedAt = new Date().toISOString();
+  const runId = globalThis.crypto?.randomUUID?.() ?? `web-${Date.now()}-${Math.trunc(performance.now() * 1000)}`;
   return {
     enabled,
+    frameWallSource: enabled
+      ? "request_animation_frame_interval"
+      : "synchronous_renderer_reported_frame_wall",
     frames,
     warmupFrames,
     yawStep,
     observedFrames: 0,
-    samples: 0,
-    totalCallMs: 0,
-    totalFrameMs: 0,
-    totalPreprocessMs: 0,
-    totalSortMs: 0,
-    totalPipelineMs: 0,
-    totalVisible: 0,
-    totalDrawn: 0,
+    measuredStartMs: null,
+    lastObservedFrameMs: null,
+    startedAt,
+    measurementStartedAt: null,
+    measurementEndedAt: null,
+    collector: createBenchmarkCollector({ runId, warmupCount: warmupFrames, frameBudgetMs: DEFAULT_FRAME_BUDGET_MS }),
   };
 }
 
@@ -1336,35 +1354,53 @@ function setNumberInputFromParam(input, value) {
 
 function recordBenchmark(stats) {
   const benchmark = state.benchmark;
+  const now = performance.now();
   benchmark.observedFrames += 1;
   if (benchmark.observedFrames <= benchmark.warmupFrames) {
+    benchmark.lastObservedFrameMs = now;
     return;
   }
 
-  accumulateBenchmark(benchmark, stats);
+  const frameWallMs = benchmark.lastObservedFrameMs === null ? stats.frameMs : now - benchmark.lastObservedFrameMs;
+  benchmark.lastObservedFrameMs = now;
+  accumulateBenchmark(benchmark, stats, frameWallMs, now);
 
-  if (benchmark.samples < benchmark.frames) {
+  if (benchmark.collector.samples.length < benchmark.frames) {
     return;
   }
 
   finishBenchmark(benchmark);
 }
 
-function accumulateBenchmark(benchmark, stats) {
-  benchmark.samples += 1;
-  benchmark.totalCallMs += stats.callMs;
-  benchmark.totalFrameMs += stats.frameMs;
-  benchmark.totalPreprocessMs += stats.preprocessMs;
-  benchmark.totalSortMs += stats.sortMs;
-  benchmark.totalPipelineMs += stats.pipelineMs;
-  benchmark.totalVisible += stats.visible;
-  benchmark.totalDrawn += stats.drawn;
+function accumulateBenchmark(benchmark, stats, frameWallMs = stats.frameMs, now = performance.now()) {
+  if (benchmark.measuredStartMs === null) {
+    benchmark.measuredStartMs = now;
+    benchmark.measurementStartedAt = new Date().toISOString();
+  }
+  appendBenchmarkSample(benchmark.collector, {
+    elapsed_ns: Math.round((now - benchmark.measuredStartMs) * 1_000_000),
+    call_ms: stats.callMs,
+    frame_wall_ms: frameWallMs,
+    renderer_frame_ms: stats.frameMs,
+    preprocess_ms: stats.preprocessMs,
+    sort_ms: stats.sortMs,
+    geometry_submit_ms: stats.pipelineMs,
+    gpu_wait_ms: null,
+    gpu_complete_ms: null,
+    visible: Math.max(0, Math.trunc(stats.visible)),
+    drawn: Math.max(0, Math.trunc(stats.drawn)),
+    sort_refreshed: null,
+  });
+  benchmark.measurementEndedAt = new Date().toISOString();
 }
 
 function finishBenchmark(benchmark) {
   benchmark.enabled = false;
   const result = benchmarkResultLine(benchmark);
   console.info(result);
+  void emitBenchmarkArtifacts(benchmark).catch((error) => {
+    console.error(`BENCHMARK_ARTIFACT_ERROR ${compactMessage(error)}`);
+  });
   els.benchmarkStatus.textContent = "complete";
   els.runBenchmark.disabled = false;
   els.benchmarkResult.textContent = result;
@@ -1379,21 +1415,105 @@ function wasmRendererLabel() {
 }
 
 function benchmarkResultLine(benchmark) {
-  const samples = Math.max(benchmark.samples, 1);
-  const avg = (value) => (value / samples).toFixed(3);
+  const averages = legacyAverages(benchmark.collector);
   return (
     `BENCHMARK_RESULT dataset=${state.scene.name} ` +
-    `samples=${benchmark.samples} warmup=${benchmark.warmupFrames} ` +
+    `samples=${averages.count} warmup=${benchmark.warmupFrames} ` +
     `sort_interval=${Number(els.sortInterval.value)} renderer=${wasmRendererLabel()} ` +
     `draw_budget=${usingWasm() ? "full" : Number(els.drawBudget.value)} ` +
-    `avg_call_ms=${avg(benchmark.totalCallMs)} ` +
-    `avg_frame_ms=${avg(benchmark.totalFrameMs)} ` +
-    `avg_preprocess_ms=${avg(benchmark.totalPreprocessMs)} ` +
-    `avg_sort_ms=${avg(benchmark.totalSortMs)} ` +
-    `avg_geometry_submit_cpu_wall_ms=${avg(benchmark.totalPipelineMs)} ` +
-    `avg_visible=${Math.round(benchmark.totalVisible / samples)} ` +
-    `avg_drawn=${Math.round(benchmark.totalDrawn / samples)}`
+    `avg_call_ms=${(averages.callMs ?? 0).toFixed(3)} ` +
+    `avg_frame_ms=${(averages.frameMs ?? 0).toFixed(3)} ` +
+    `avg_preprocess_ms=${(averages.preprocessMs ?? 0).toFixed(3)} ` +
+    `avg_sort_ms=${(averages.sortMs ?? 0).toFixed(3)} ` +
+    `avg_geometry_submit_cpu_wall_ms=${(averages.geometrySubmitMs ?? 0).toFixed(3)} ` +
+    `avg_visible=${Math.round(averages.visible ?? 0)} ` +
+    `avg_drawn=${Math.round(averages.drawn ?? 0)}`
   );
+}
+
+async function emitBenchmarkArtifacts(benchmark) {
+  const scene = state.scene;
+  const rendererPath = wasmRendererLabel();
+  const backend = usingWasm() ? "webgpu" : "webgl2";
+  const sortInterval = Number(els.sortInterval.value);
+  const surfaceWidth = els.canvas.width;
+  const surfaceHeight = els.canvas.height;
+  const traceText = `benchmark_orbit_v1 yaw_step=${benchmark.yawStep} frames=${benchmark.frames}`;
+  const traceSha256 = await sha256Hex(new TextEncoder().encode(traceText));
+  const unavailableFields = [
+    "build.repository_commit",
+    "build.dirty",
+    "environment.device",
+    "environment.adapter",
+    "environment.driver",
+    "frames[*].gpu_wait_ms",
+    "frames[*].gpu_complete_ms",
+    "frames[*].sort_refreshed",
+  ];
+  const manifest = {
+    schema: BENCHMARK_SCHEMA,
+    record_type: "manifest",
+    run_id: benchmark.collector.runId,
+    identity: {
+      series_id: "web-local",
+      started_at_utc: benchmark.startedAt,
+      ended_at_utc: new Date().toISOString(),
+      measurement_started_at_utc: benchmark.measurementStartedAt,
+      measurement_ended_at_utc: benchmark.measurementEndedAt,
+    },
+    build: {
+      repository_commit: globalThis.GSPLAT_BUILD_COMMIT ?? null,
+      dirty: globalThis.GSPLAT_BUILD_DIRTY ?? null,
+      profile: "browser",
+      package_version: API_VERSION,
+    },
+    dataset: {
+      id: scene.name,
+      sha256: scene.sourceSha256,
+      bytes: scene.sourceBytes,
+      splat_count: scene.count,
+      sh_degree: scene.shDegree,
+    },
+    trace: { id: "benchmark-orbit-v1", sha256: traceSha256 },
+    renderer: {
+      implementation: "gsplat-rs",
+      path: rendererPath,
+      backend,
+      sort_policy: `interval_${sortInterval}`,
+    },
+    timing: {
+      frame_wall_source: benchmark.frameWallSource,
+      renderer_frame_ms_included: true,
+    },
+    display: {
+      width: surfaceWidth,
+      height: surfaceHeight,
+      dpr: window.devicePixelRatio || 1,
+      refresh_hz: 60,
+      frame_budget_ms: benchmark.collector.frameBudgetMs,
+      refresh_hz_source: "configured",
+      frame_budget_source: "configured",
+    },
+    environment: {
+      platform: "web",
+      os: navigator.platform || "browser",
+      device: null,
+      browser: navigator.userAgent,
+      adapter: null,
+      driver: null,
+    },
+    unavailable_fields: unavailableFields,
+  };
+  console.info(`BENCHMARK_MANIFEST_JSON ${JSON.stringify(manifest)}`);
+  for (const frame of frameRecords(benchmark.collector)) {
+    console.info(`BENCHMARK_FRAME_JSON ${JSON.stringify(frame)}`);
+  }
+  console.info(`BENCHMARK_SUMMARY_JSON ${JSON.stringify(benchmarkSummary(benchmark.collector))}`);
+}
+
+async function sha256Hex(bytes) {
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  return Array.from(new Uint8Array(digest), (value) => value.toString(16).padStart(2, "0")).join("");
 }
 
 function updateControlLabels() {

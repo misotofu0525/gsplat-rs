@@ -1,0 +1,18 @@
+{
+  "schema": "gsplat-dataset/v1",
+  "id": "kitsune",
+  "qualification_status": "qualified",
+  "local_path": "tests/datasets/external/wakufactory_kitune/kitune1.ply",
+  "source_url": "https://www.wakufactory.jp/wxr/splats/sample.html",
+  "asset_url": "https://www.wakufactory.jp/wxr/splats/data/kitune1.ply",
+  "fetch_script": "tests/datasets/fetch-wakufactory-kitune.sh",
+  "license": "CC0",
+  "redistribution": "verify source terms again before publishing benchmark artifacts",
+  "sha256": "3bea1ec48ea91861fc8fad1df688a2cdb1db9b103735498b35d16d146f2551a2",
+  "bytes": 65892441,
+  "splat_count": 279199,
+  "sh_degree": 3,
+  "bounds_min": [-1.147705, -1.238525, -1.199707],
+  "bounds_max": [0.849854, 1.247559, 0.799561],
+  "conversion": "none"
+}

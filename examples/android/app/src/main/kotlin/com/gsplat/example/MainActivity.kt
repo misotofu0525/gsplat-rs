@@ -7,6 +7,8 @@ import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.net.Uri
 import android.os.Bundle
+import android.os.Build
+import android.os.PowerManager
 import android.os.SystemClock
 import android.provider.OpenableColumns
 import android.util.Log
@@ -22,11 +24,28 @@ import android.widget.LinearLayout
 import android.widget.TextView
 import com.gsplat.android.NativeBridge
 import java.io.File
+import java.text.SimpleDateFormat
+import java.security.MessageDigest
+import java.util.Date
+import java.util.Locale
+import java.util.TimeZone
+import java.util.UUID
+import org.json.JSONArray
+import org.json.JSONObject
 import kotlin.math.abs
 import kotlin.math.hypot
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
+
+private const val GSPLAT_GEOMETRY_PATH_DIRECT = 0
+private const val GSPLAT_GEOMETRY_PATH_PACKED_ATLAS = 1
+
+private fun geometryPathValue(label: String): Int =
+    if (label == "packed") GSPLAT_GEOMETRY_PATH_PACKED_ATLAS else GSPLAT_GEOMETRY_PATH_DIRECT
+
+private fun geometryPipelineName(label: String): String =
+    if (label == "packed") "packed_atlas" else "sorted_index_direct"
 
 class MainActivity : Activity(), SurfaceHolder.Callback {
     private val renderLock = Object()
@@ -353,6 +372,18 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                     updateStatus("state=create_failed rc=$frameLatencyRc error=$message")
                     return@Thread
                 }
+                val geometryPathRc = NativeBridge.setSurfaceGeometryPath(
+                    handle,
+                    geometryPathValue(benchmarkConfig.geometryPath)
+                )
+                if (geometryPathRc != 0) {
+                    val message = NativeBridge.errorMessage(geometryPathRc)
+                    Log.e(TAG, "setSurfaceGeometryPath failed rc=$geometryPathRc error=$message")
+                    NativeBridge.destroySurfaceRenderer(handle)
+                    running = false
+                    updateStatus("state=create_failed rc=$geometryPathRc error=$message")
+                    return@Thread
+                }
                 synchronized(renderLock) {
                     nativeRenderer = handle
                 }
@@ -362,7 +393,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                     var consecutiveErrors = 0L
                     var lastStatusAt = 0L
                     val stats = LongArray(6)
-                    val benchmark = SurfaceBenchmark(benchmarkConfig)
+                    val benchmark = SurfaceBenchmark(benchmarkConfig, currentThermalStatus())
                     while (running && !Thread.currentThread().isInterrupted) {
                         val renderStartNs = System.nanoTime()
                         val rc = synchronized(renderLock) {
@@ -401,6 +432,17 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                                     if (benchmark.complete) {
                                         val result = benchmark.resultLine(datasetLabel)
                                         Log.i(TAG, result)
+                                        benchmark.artifactLines(
+                                            datasetLabel = datasetLabel,
+                                            datasetPath = datasetPath,
+                                            surfaceWidth = currentSurfaceWidth,
+                                            surfaceHeight = currentSurfaceHeight,
+                                            density = resources.displayMetrics.density,
+                                            refreshHz = display?.refreshRate?.toDouble(),
+                                            thermalStatusEnd = currentThermalStatus()
+                                        ).forEach { (prefix, json) ->
+                                            Log.i(TAG, "$prefix$json")
+                                        }
                                         updateStatus("state=benchmark_complete $result")
                                         running = false
                                     }
@@ -918,12 +960,20 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
 
     private fun dp(value: Int): Int = (value * resources.displayMetrics.density).roundToInt()
 
+    private fun currentThermalStatus(): Int? =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            getSystemService(PowerManager::class.java)?.currentThermalStatus
+        } else {
+            null
+        }
+
     private fun buildStatusText(status: String): String = buildString {
         appendLine("gsplat android example")
         appendLine("abi=${NativeBridge.versionMajor()}.${NativeBridge.versionMinor()}")
         appendLine("surface=wgpu realtime ${surfaceSizeLabel}")
         appendLine(status)
         appendLine(cameraStatus)
+        appendLine("geometry_pipeline=${geometryPipelineName(benchmarkConfig.geometryPath)}")
         if (benchmarkConfig.enabled) {
             appendLine("benchmark=orbit frames=${benchmarkConfig.frames} warmup=${benchmarkConfig.warmupFrames}")
         }
@@ -963,13 +1013,18 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         private const val EXTRA_SURFACE_SORT_INTERVAL = "gsplat_surface_sort_interval"
         private const val EXTRA_SURFACE_ASYNC_SORT = "gsplat_surface_async_sort"
         private const val EXTRA_SURFACE_FRAME_LATENCY = "gsplat_surface_frame_latency"
+        private const val EXTRA_SURFACE_GEOMETRY_PATH = "gsplat_geometry_path"
         private const val DEFAULT_BENCHMARK_FRAMES = 120
         private const val DEFAULT_BENCHMARK_WARMUP_FRAMES = 10
         private const val DEFAULT_BENCHMARK_YAW_STEP = 0.001f
         private const val DEFAULT_SURFACE_SORT_INTERVAL = 2
         private const val DEFAULT_SURFACE_ASYNC_SORT = false
         private const val DEFAULT_SURFACE_FRAME_LATENCY = 2
+        private const val DEFAULT_SURFACE_GEOMETRY_PATH = "direct"
         private const val TARGET_FRAME_INTERVAL_NS = 16_666_667L
+        private const val BENCHMARK_MANIFEST_PREFIX = "GSPLAT_BENCHMARK_MANIFEST "
+        private const val BENCHMARK_FRAME_PREFIX = "GSPLAT_BENCHMARK_FRAME "
+        private const val BENCHMARK_SUMMARY_PREFIX = "GSPLAT_BENCHMARK_SUMMARY "
 
         private val SHOWCASE_TEXT = Color.rgb(245, 241, 232)
         private val SHOWCASE_MUTED = Color.rgb(181, 178, 169)
@@ -1027,7 +1082,9 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         val yawStepRadians: Float = DEFAULT_BENCHMARK_YAW_STEP,
         val sortInterval: Int = DEFAULT_SURFACE_SORT_INTERVAL,
         val asyncSort: Boolean = DEFAULT_SURFACE_ASYNC_SORT,
-        val frameLatency: Int = DEFAULT_SURFACE_FRAME_LATENCY
+        val frameLatency: Int = DEFAULT_SURFACE_FRAME_LATENCY,
+        // Experimental A/B benchmark knob: "direct" (default) or "packed".
+        val geometryPath: String = DEFAULT_SURFACE_GEOMETRY_PATH
     ) {
         companion object {
             fun fromIntent(intent: Intent): BenchmarkConfig {
@@ -1049,6 +1106,11 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                 val frameLatency = intent
                     .getIntExtra(EXTRA_SURFACE_FRAME_LATENCY, DEFAULT_SURFACE_FRAME_LATENCY)
                     .coerceIn(1, 4)
+                val geometryPath = intent.getStringExtra(EXTRA_SURFACE_GEOMETRY_PATH)
+                    ?.trim()
+                    ?.lowercase(Locale.US)
+                    ?.takeIf { it == "direct" || it == "packed" }
+                    ?: DEFAULT_SURFACE_GEOMETRY_PATH
                 return BenchmarkConfig(
                     enabled = intent.getBooleanExtra(EXTRA_BENCHMARK, false),
                     frames = frames,
@@ -1056,19 +1118,36 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                     yawStepRadians = yawStep,
                     sortInterval = sortInterval,
                     asyncSort = asyncSort,
-                    frameLatency = frameLatency
+                    frameLatency = frameLatency,
+                    geometryPath = geometryPath
                 )
             }
         }
     }
 
-    private class SurfaceBenchmark(val config: BenchmarkConfig) {
+    private class SurfaceBenchmark(
+        val config: BenchmarkConfig,
+        private val thermalStatusStart: Int?
+    ) {
         val enabled: Boolean = config.enabled
         var complete = false
             private set
 
+        private val runId = UUID.randomUUID().toString()
+        private val runStartedAtMs = System.currentTimeMillis()
+        private val callNs = LongArray(config.frames)
+        private val frameMicros = LongArray(config.frames)
+        private val preprocessMicros = LongArray(config.frames)
+        private val sortMicros = LongArray(config.frames)
+        private val rasterMicros = LongArray(config.frames)
+        private val visible = LongArray(config.frames)
+        private val drawn = LongArray(config.frames)
+        private val elapsedNs = LongArray(config.frames)
         private var observedFrames = 0
         private var samples = 0
+        private var measurementStartNs = 0L
+        private var measurementStartedAtMs = 0L
+        private var measurementEndedAtMs = 0L
         private var totalCallNs = 0L
         private var totalFrameMicros = 0L
         private var totalPreprocessMicros = 0L
@@ -1086,6 +1165,20 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                 return
             }
 
+            val nowNs = System.nanoTime()
+            if (samples == 0) {
+                measurementStartNs = nowNs
+                measurementStartedAtMs = System.currentTimeMillis()
+            }
+            val index = samples
+            callNs[index] = renderCallNs
+            frameMicros[index] = stats[2]
+            preprocessMicros[index] = stats[3]
+            sortMicros[index] = stats[4]
+            rasterMicros[index] = stats[5]
+            visible[index] = stats[0]
+            drawn[index] = stats[1]
+            elapsedNs[index] = nowNs - measurementStartNs
             samples += 1
             totalVisible += stats[0]
             totalDrawn += stats[1]
@@ -1095,6 +1188,9 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
             totalRasterMicros += stats[5]
             totalCallNs += renderCallNs
             complete = samples >= config.frames
+            if (complete) {
+                measurementEndedAtMs = System.currentTimeMillis()
+            }
         }
 
         fun resultLine(datasetLabel: String): String {
@@ -1102,7 +1198,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
             return "BENCHMARK_RESULT dataset=$datasetLabel " +
                 "samples=$samples warmup=${config.warmupFrames} sort_interval=${config.sortInterval} " +
                 "async_sort=${config.asyncSort} " +
-                "geometry_pipeline=sorted_index_direct " +
+                "geometry_pipeline=${geometryPipelineName(config.geometryPath)} " +
                 "frame_latency=${config.frameLatency} " +
                 "avg_call_ms=${avgNs(totalCallNs, safeSamples)} " +
                 "avg_frame_ms=${avgMicros(totalFrameMicros, safeSamples)} " +
@@ -1112,6 +1208,200 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                 "avg_visible=${totalVisible / safeSamples} " +
                 "avg_drawn=${totalDrawn / safeSamples}"
         }
+
+        fun artifactLines(
+            datasetLabel: String,
+            datasetPath: String,
+            surfaceWidth: Int,
+            surfaceHeight: Int,
+            density: Float,
+            refreshHz: Double?,
+            thermalStatusEnd: Int?
+        ): List<Pair<String, String>> {
+            check(complete) { "benchmark artifacts require a complete measurement" }
+            val validRefreshHz = refreshHz?.takeIf { it.isFinite() && it > 0.0 }
+            val frameBudgetMs = 1000.0 / (validRefreshHz ?: 60.0)
+            val datasetMetadata = datasetMetadata(File(datasetPath))
+            val traceId = "orbit-yaw-${config.yawStepRadians}"
+            val unavailable = mutableListOf(
+                "environment.browser",
+                "environment.adapter",
+                "environment.driver",
+                "frames[*].gpu_wait_ms",
+                "frames[*].gpu_complete_ms",
+                "frames[*].sort_refreshed",
+                "summary.distributions.gpu_wait_ms",
+                "summary.distributions.gpu_complete_ms"
+            )
+            if (thermalStatusStart == null) unavailable += "environment.thermal_status_start"
+            if (thermalStatusEnd == null) unavailable += "environment.thermal_status_end"
+
+            val manifest = JSONObject()
+                .put("schema", "gsplat-benchmark/v1")
+                .put("record_type", "manifest")
+                .put("run_id", runId)
+                .put("identity", JSONObject()
+                    .put("series_id", "android-native-orbit")
+                    .put("started_at_utc", utcTimestamp(runStartedAtMs))
+                    .put("ended_at_utc", utcTimestamp(System.currentTimeMillis()))
+                    .put("measurement_started_at_utc", utcTimestamp(measurementStartedAtMs))
+                    .put("measurement_ended_at_utc", utcTimestamp(measurementEndedAtMs)))
+                .put("build", JSONObject()
+                    .put("repository_commit", BuildConfig.REPOSITORY_COMMIT)
+                    .put("dirty", BuildConfig.REPOSITORY_DIRTY)
+                    .put("profile", if (BuildConfig.DEBUG) "debug" else "release")
+                    .put("package_version", BuildConfig.VERSION_NAME))
+                .put("dataset", JSONObject()
+                    .put("id", datasetLabel)
+                    .put("sha256", datasetMetadata.sha256)
+                    .put("bytes", datasetMetadata.bytes)
+                    .put("splat_count", datasetMetadata.splatCount)
+                    .put("sh_degree", datasetMetadata.shDegree))
+                .put("trace", JSONObject()
+                    .put("id", traceId)
+                    .put("sha256", sha256(traceId.toByteArray(Charsets.UTF_8))))
+                .put("renderer", JSONObject()
+                    .put("implementation", "gsplat-rs-native")
+                    .put("path", geometryPipelineName(config.geometryPath))
+                    .put("backend", "vulkan")
+                    .put("sort_policy", if (config.asyncSort) {
+                        "async_latest:${config.sortInterval}"
+                    } else {
+                        "interval:${config.sortInterval}"
+                    }))
+                .put("display", JSONObject()
+                    .put("width", surfaceWidth)
+                    .put("height", surfaceHeight)
+                    .put("dpr", density.toDouble())
+                    .put("refresh_hz", validRefreshHz ?: 60.0)
+                    .put("refresh_hz_source", if (validRefreshHz == null) "configured" else "observed")
+                    .put("frame_budget_ms", frameBudgetMs)
+                    .put("frame_budget_source", if (validRefreshHz == null) "configured" else "observed"))
+                .put("environment", JSONObject()
+                    .put("platform", "android-native")
+                    .put("os", "Android ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})")
+                    .put("device", "${Build.MANUFACTURER} ${Build.MODEL} (${Build.DEVICE})")
+                    .put("browser", JSONObject.NULL)
+                    .put("adapter", JSONObject.NULL)
+                    .put("driver", JSONObject.NULL)
+                    .put("hardware", Build.HARDWARE)
+                    .put("thermal_status_start", thermalStatusStart ?: JSONObject.NULL)
+                    .put("thermal_status_end", thermalStatusEnd ?: JSONObject.NULL))
+                .put("unavailable_fields", JSONArray(unavailable))
+
+            val lines = ArrayList<Pair<String, String>>(samples + 2)
+            lines += BENCHMARK_MANIFEST_PREFIX to manifest.toString()
+            for (index in 0 until samples) {
+                val frame = JSONObject()
+                    .put("schema", "gsplat-benchmark/v1")
+                    .put("record_type", "frame")
+                    .put("run_id", runId)
+                    .put("frame_index", index)
+                    .put("elapsed_ns", elapsedNs[index])
+                    .put("call_ms", callNs[index].toDouble() / 1_000_000.0)
+                    .put("frame_wall_ms", frameMicros[index].toDouble() / 1000.0)
+                    .put("preprocess_ms", preprocessMicros[index].toDouble() / 1000.0)
+                    .put("sort_ms", sortMicros[index].toDouble() / 1000.0)
+                    .put("geometry_submit_ms", rasterMicros[index].toDouble() / 1000.0)
+                    .put("gpu_wait_ms", JSONObject.NULL)
+                    .put("gpu_complete_ms", JSONObject.NULL)
+                    .put("visible", visible[index])
+                    .put("drawn", drawn[index])
+                    .put("sort_refreshed", JSONObject.NULL)
+                lines += BENCHMARK_FRAME_PREFIX to frame.toString()
+            }
+
+            var missedFrames = 0
+            for (index in 0 until samples) {
+                if (frameMicros[index].toDouble() / 1000.0 > frameBudgetMs) missedFrames += 1
+            }
+            val summary = JSONObject()
+                .put("schema", "gsplat-benchmark/v1")
+                .put("record_type", "summary")
+                .put("run_id", runId)
+                .put("sample_count", samples)
+                .put("warmup_count", config.warmupFrames)
+                .put("frame_budget_ms", frameBudgetMs)
+                .put("missed_frame_count", missedFrames)
+                .put("distributions", JSONObject()
+                    .put("call_ms", distributionJson(callNs, samples, 1_000_000.0))
+                    .put("frame_wall_ms", distributionJson(frameMicros, samples, 1000.0))
+                    .put("preprocess_ms", distributionJson(preprocessMicros, samples, 1000.0))
+                    .put("sort_ms", distributionJson(sortMicros, samples, 1000.0))
+                    .put("geometry_submit_ms", distributionJson(rasterMicros, samples, 1000.0))
+                    .put("gpu_wait_ms", JSONObject.NULL)
+                    .put("gpu_complete_ms", JSONObject.NULL))
+            lines += BENCHMARK_SUMMARY_PREFIX to summary.toString()
+            return lines
+        }
+
+        private fun distributionJson(values: LongArray, count: Int, divisor: Double): JSONObject {
+            val sorted = values.copyOf(count).also(LongArray::sort)
+            var sum = 0.0
+            for (index in 0 until count) sum += values[index].toDouble() / divisor
+            return JSONObject()
+                .put("count", count)
+                .put("mean", sum / count.toDouble())
+                .put("p50", BenchmarkMath.nearestRank(sorted, count, 0.50).toDouble() / divisor)
+                .put("p90", BenchmarkMath.nearestRank(sorted, count, 0.90).toDouble() / divisor)
+                .put("p95", BenchmarkMath.nearestRank(sorted, count, 0.95).toDouble() / divisor)
+                .put("p99", BenchmarkMath.nearestRank(sorted, count, 0.99).toDouble() / divisor)
+                .put("max", sorted[count - 1].toDouble() / divisor)
+        }
+
+        private fun utcTimestamp(epochMs: Long): String =
+            SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US).apply {
+                timeZone = TimeZone.getTimeZone("UTC")
+            }.format(Date(epochMs))
+
+        private fun datasetMetadata(file: File): DatasetArtifactMetadata {
+            check(file.isFile) { "benchmark dataset is unavailable: ${file.absolutePath}" }
+            val digest = MessageDigest.getInstance("SHA-256")
+            file.inputStream().buffered().use { input ->
+                val buffer = ByteArray(64 * 1024)
+                while (true) {
+                    val count = input.read(buffer)
+                    if (count < 0) break
+                    digest.update(buffer, 0, count)
+                }
+            }
+            var splatCount = 0L
+            var restProperties = 0
+            file.bufferedReader(Charsets.US_ASCII).use { reader ->
+                repeat(512) {
+                    val line = reader.readLine() ?: return@repeat
+                    if (line.startsWith("element vertex ")) {
+                        splatCount = line.substringAfterLast(' ').toLongOrNull() ?: 0L
+                    } else if (line.startsWith("property ") && line.substringAfterLast(' ').startsWith("f_rest_")) {
+                        restProperties += 1
+                    } else if (line == "end_header") {
+                        return@use
+                    }
+                }
+            }
+            val shDegree = (0..4).firstOrNull { degree ->
+                3 * (((degree + 1) * (degree + 1)) - 1) == restProperties
+            } ?: error("unsupported SH property count in benchmark dataset: $restProperties")
+            check(splatCount > 0L) { "benchmark dataset has no declared vertices" }
+            return DatasetArtifactMetadata(
+                sha256 = digest.digest().joinToString("") { "%02x".format(it) },
+                bytes = file.length(),
+                splatCount = splatCount,
+                shDegree = shDegree
+            )
+        }
+
+        private fun sha256(bytes: ByteArray): String =
+            MessageDigest.getInstance("SHA-256")
+                .digest(bytes)
+                .joinToString("") { "%02x".format(it) }
+
+        private data class DatasetArtifactMetadata(
+            val sha256: String,
+            val bytes: Long,
+            val splatCount: Long,
+            val shDegree: Int
+        )
 
         private fun avgMicros(total: Long, samples: Int): String =
             String.format("%.3f", total.toDouble() / samples.toDouble() / 1000.0)

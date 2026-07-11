@@ -1,0 +1,18 @@
+{
+  "schema": "gsplat-benchmark/v1",
+  "record_type": "summary",
+  "run_id": "fixture-valid-001",
+  "sample_count": 5,
+  "warmup_count": 2,
+  "frame_budget_ms": 3.5,
+  "missed_frame_count": 2,
+  "distributions": {
+    "call_ms": {"count": 5, "mean": 3.0, "p50": 3.0, "p90": 5.0, "p95": 5.0, "p99": 5.0, "max": 5.0},
+    "frame_wall_ms": {"count": 5, "mean": 3.0, "p50": 3.0, "p90": 5.0, "p95": 5.0, "p99": 5.0, "max": 5.0},
+    "preprocess_ms": {"count": 5, "mean": 0.3, "p50": 0.3, "p90": 0.5, "p95": 0.5, "p99": 0.5, "max": 0.5},
+    "sort_ms": {"count": 5, "mean": 0.6, "p50": 0.6, "p90": 1.0, "p95": 1.0, "p99": 1.0, "max": 1.0},
+    "geometry_submit_ms": {"count": 5, "mean": 0.9, "p50": 0.9, "p90": 1.5, "p95": 1.5, "p99": 1.5, "max": 1.5},
+    "gpu_wait_ms": null,
+    "gpu_complete_ms": null
+  }
+}

@@ -133,13 +133,22 @@ bash bindings/apple/scripts/run-ios-sim-app.sh -- \
   --gsplat_benchmark_yaw_step 0.001 \
   --gsplat_surface_sort_interval 2 \
   --gsplat_surface_async_sort false \
-  --gsplat_surface_frame_latency 2
+  --gsplat_surface_frame_latency 2 \
+  --gsplat_geometry_path direct
 ```
 
 Benchmark mode forces a tiny camera orbit each frame and prints a
-`BENCHMARK_RESULT` line to the simulator log. Every run uses the shared
-resident-scene direct pipeline; the remaining knobs cover CPU sort scheduling
-and frame latency.
+`BENCHMARK_RESULT` line to the simulator log. Measurement samples are stored in
+a preallocated numeric buffer; JSON serialization happens after measurement.
+Every run uses the shared resident-scene pipeline selected by
+`gsplat_geometry_path`; the remaining knobs cover CPU sort scheduling and
+frame latency.
+`gsplat_geometry_path` selects between the `direct` (default,
+release-gated `SortedIndexDirect`) and `packed` (experimental
+`PackedAtlas`) Surface geometry pipelines for on-device A/B benchmarking. The
+example resolves the value via `gsplat_surface_renderer_set_geometry_path`
+and records the resulting `renderer.path` (`sorted_index_direct` or
+`packed_atlas`) in the emitted benchmark artifact.
 
 ## 4) iOS simulator target build
 
@@ -234,4 +243,11 @@ IOS_DEVICE_ID=<coredevice-id-or-udid> bash bindings/apple/scripts/benchmark-ios-
 
 The benchmark script builds/signs the device app, installs it, launches with
 `devicectl --console`, prints the `BENCHMARK_RESULT` line, and stores the raw
-log under `target/ios-device-benchmarks/`.
+log under `target/ios-device-benchmarks/`. It also extracts an atomically
+published `gsplat-benchmark/v1` directory containing `manifest.json`,
+`frames.jsonl`, and `summary.json`, then runs the shared artifact validator.
+Set `IOS_BENCHMARK_ARTIFACT_DIR` to choose a fresh destination; existing
+destinations are rejected. The manifest records the thermal state before and
+after measurement. Build commit/dirty identity, browser, driver, GPU completion
+timing, and sort-refresh visibility are unavailable on this collector and are
+therefore emitted as `null` with explicit `unavailable_fields` entries.

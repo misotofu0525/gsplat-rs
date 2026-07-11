@@ -61,6 +61,7 @@ basename "$DATASET_ABS" > "$APP_BUNDLE/showcase.name"
 
 xcrun --sdk iphonesimulator swiftc \
   bindings/apple/GsplatKit/Sources/GsplatKit/GsplatKit.swift \
+  examples/ios/app/BenchmarkArtifact.swift \
   examples/ios/app/GsplatIOSExample.swift \
   -parse-as-library \
   -import-objc-header crates/gsplat-ffi-c/include/gsplat.h \
@@ -72,6 +73,7 @@ xcrun --sdk iphonesimulator swiftc \
   -framework Metal \
   -framework CoreGraphics \
   -framework Foundation \
+  -framework CryptoKit \
   -framework Security \
   -lz \
   -lc++ \

@@ -13,3 +13,7 @@ publish = false
 gsplat-core = { path = "../../crates/gsplat-core", version = "0.1.3" }
 gsplat-io-ply = { path = "../../crates/gsplat-io-ply", version = "0.1.3" }
 gsplat-render-wgpu = { path = "../../crates/gsplat-render-wgpu", version = "0.1.3" }
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+time.workspace = true

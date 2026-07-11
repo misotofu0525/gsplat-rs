@@ -65,6 +65,11 @@ npm --prefix packages/web run check
 npm --prefix packages/web test
 npm --prefix packages/web run pack:dry-run
 cargo run --release -p bench-runner -- tests/datasets/minimal_ascii.ply 120 --warmup-iterations 10 --max-avg-gpu-complete-ms 250
+bash tests/perf/test-benchmark-artifacts.sh
+python3 tests/perf/validate-dataset-manifests.py
+bash tests/perf/trace/test-trace-v1.sh
+npm ci --ignore-scripts --prefix tests/competitive/playcanvas
+npm test --prefix tests/competitive/playcanvas
 bash tests/ffi/run-ffi-smoke.sh
 bash bindings/android/scripts/run-jni-smoke.sh
 bash bindings/apple/scripts/run-swift-smoke.sh
@@ -86,6 +91,78 @@ cargo run --release -p bench-runner -- tests/datasets/minimal_ascii.ply 30 --war
 - Use the interactive viewer when changing windowed presentation or camera
   interaction behavior. It uses the same `SurfaceRenderSession` and direct
   shader/resource layout as Web and mobile.
+
+For a versioned raw-frame artifact, choose a fresh output directory; the runner
+refuses to overwrite or mix an existing run:
+
+```bash
+cargo run --release -p bench-runner -- tests/datasets/minimal_ascii.ply 120 \
+  --warmup-iterations 10 \
+  --artifact-dir target/benchmarks/local/minimal-v1 \
+  --series-id local \
+  --run-id minimal-v1 \
+  --frame-budget-ms 16.6666667 \
+  --refresh-hz 60
+python3 tests/perf/validate-benchmark-artifacts.py \
+  target/benchmarks/local/minimal-v1
+```
+
+The artifact contract is `tests/perf/benchmark-artifact-v1.md`. A valid run
+contains `manifest.json`, contiguous raw `frames.jsonl`, and recomputable
+`summary.json`. The manifest distinguishes configured display values from
+observed values and includes the direct resource preflight report.
+
+Committed dataset identities and the shared camera oracle have separate checks:
+
+```bash
+python3 tests/perf/validate-dataset-manifests.py
+python3 tests/perf/validate-dataset-manifests.py --verify-available
+bash tests/perf/trace/test-trace-v1.sh
+```
+
+- The first dataset command validates committed metadata and is safe in CI.
+- `--verify-available` additionally hashes and inspects every external asset
+  present in the local checkout.
+- The trace test regenerates the `gsplat-camera-trace/v1` fixture and rejects
+  hash or matrix-convention drift. A competitive harness must consume the
+  explicit matrices or prove its API reconstruction matches them.
+
+Android and Web collectors can also emit the same v1 artifact contract:
+
+```bash
+bash bindings/android/scripts/test-android-benchmark-artifact-extraction.sh
+# After a device benchmark, extract from logcat:
+# python3 bindings/android/scripts/extract-android-benchmark-artifacts.py \
+#   target/benchmarks/phase-a/android-kitsune-logcat.txt \
+#   target/benchmarks/phase-a/android-kitsune-pong-a065 \
+#   --validator tests/perf/validate-benchmark-artifacts.py
+
+# Desktop Web (requires Chrome + PlayCanvas harness puppeteer-core):
+# GSPLAT_ARTIFACT_DIR=target/benchmarks/phase-a/web-kitsune-desktop \
+#   node examples/web/scripts/collect-web-benchmark-artifact.mjs
+```
+
+## Competitive Harness Preflight
+
+The PlayCanvas harness freezes dependency identity and has a separate
+fail-closed browser path smoke. It is not yet a timed rendering benchmark:
+
+```bash
+npm ci --ignore-scripts --prefix tests/competitive/playcanvas
+npm test --prefix tests/competitive/playcanvas
+npm run smoke --prefix tests/competitive/playcanvas
+```
+
+- Use only the committed exact dependency and lockfile.
+- A passing preflight proves package version, tarball integrity, MIT license,
+  frozen full revision mapping, and runtime revision prefix.
+- The smoke additionally requires Chrome/Chromium WebGPU and proves the
+  selected backend, resolved and active GPU-sort renderer, source format,
+  canvas size, and a nonzero loaded splat count. Its result and pre-timing
+  screenshot are written below `target/benchmarks/playcanvas-path-smoke/`.
+- It does not prove matched rendering quality or performance. Those remain
+  Phase A gates until a shared trace and complete `gsplat-benchmark/v1`
+  artifact are captured for both implementations.
 
 ## Web Example Smoke
 
@@ -287,7 +364,7 @@ STABILITY_SECONDS=1800 bash tests/perf/run-long-stability.sh
   `bash bindings/apple/scripts/run-ios-sim-app.sh`; for offscreen simulator smoke
   changes, run `bash bindings/apple/scripts/run-ios-sim-smoke.sh`.
 - If you touch PLY import or scene normalization, run `cargo test --workspace` and `cargo run -p desktop-example -- tests/datasets/minimal_ascii.ply --png target/out.png`.
-- If you touch renderer, sorting, or perf-sensitive code, run `cargo run --release -p bench-runner -- tests/datasets/minimal_ascii.ply 120 --warmup-iterations 10 --max-avg-gpu-complete-ms 250` and consider the long-stability script. The runner reports CPU preprocessing, CPU sort, encode/submit CPU wall, GPU wait, and GPU-complete frame time separately, together with adapter/backend/driver metadata. Surface/WASM output additionally reports render/submit and frame-wall phases; compatibility CPU-geometry fields stay zero on the sole direct path.
+- If you touch renderer, sorting, or perf-sensitive code, run `cargo run --release -p bench-runner -- tests/datasets/minimal_ascii.ply 120 --warmup-iterations 10 --max-avg-gpu-complete-ms 250` and consider the long-stability script. The runner reports CPU preprocessing, CPU sort, encode/submit CPU wall, GPU wait, GPU-complete, nearest-rank frame distributions, missed-frame counts, and structured direct-resource preflight together with adapter/backend/driver metadata. Use the artifact route above when the result will be retained or compared. Surface/WASM output additionally reports render/submit and frame-wall phases; compatibility CPU-geometry fields stay zero on the sole direct path.
 - If you touch `examples/web/`, run `node --check examples/web/src/main.js`
   and the Web Example smoke above. If you touch
   `packages/web/`, also run

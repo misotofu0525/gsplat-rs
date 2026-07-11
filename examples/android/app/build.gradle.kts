@@ -3,6 +3,16 @@ plugins {
     id("org.jetbrains.kotlin.android")
 }
 
+fun gitOutput(vararg arguments: String): String =
+    providers.exec {
+        workingDir(rootProject.projectDir.resolve("../.."))
+        commandLine("git", *arguments)
+        isIgnoreExitValue = true
+    }.standardOutput.asText.get().trim()
+
+val repositoryCommit = gitOutput("rev-parse", "HEAD").ifEmpty { "unknown" }
+val repositoryDirty = gitOutput("status", "--porcelain").isNotEmpty()
+
 android {
     namespace = "com.gsplat.example"
     compileSdk = 35
@@ -13,6 +23,8 @@ android {
         targetSdk = 35
         versionCode = 1
         versionName = "0.1.3"
+        buildConfigField("String", "REPOSITORY_COMMIT", "\"$repositoryCommit\"")
+        buildConfigField("boolean", "REPOSITORY_DIRTY", repositoryDirty.toString())
 
         ndk {
             abiFilters += "arm64-v8a"
@@ -50,8 +62,13 @@ android {
     androidResources {
         noCompress += "ply"
     }
+
+    buildFeatures {
+        buildConfig = true
+    }
 }
 
 dependencies {
     implementation(project(":gsplat-android"))
+    testImplementation("junit:junit:4.13.2")
 }

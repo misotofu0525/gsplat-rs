@@ -1,0 +1,59 @@
+{
+  "schema": "gsplat-benchmark/v1",
+  "record_type": "manifest",
+  "run_id": "fixture-valid-001",
+  "identity": {
+    "series_id": "fixture-series",
+    "started_at_utc": "2026-07-11T00:00:00Z",
+    "ended_at_utc": "2026-07-11T00:00:01Z",
+    "measurement_started_at_utc": "2026-07-11T00:00:00.100Z",
+    "measurement_ended_at_utc": "2026-07-11T00:00:00.900Z"
+  },
+  "build": {
+    "repository_commit": "0123456789abcdef0123456789abcdef01234567",
+    "dirty": false,
+    "profile": "release",
+    "package_version": "0.1.3"
+  },
+  "dataset": {
+    "id": "fixture-five-frames",
+    "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "bytes": 128,
+    "splat_count": 2,
+    "sh_degree": 0
+  },
+  "trace": {
+    "id": "static",
+    "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  },
+  "renderer": {
+    "implementation": "gsplat-rs",
+    "path": "sorted_index_direct",
+    "backend": "fixture",
+    "sort_policy": "cpu_every_frame"
+  },
+  "display": {
+    "width": 640,
+    "height": 480,
+    "dpr": 1.0,
+    "refresh_hz": 60.0,
+    "frame_budget_ms": 3.5,
+    "refresh_hz_source": "configured",
+    "frame_budget_source": "configured"
+  },
+  "environment": {
+    "platform": "fixture",
+    "os": "fixture-os",
+    "device": "fixture-device",
+    "browser": null,
+    "adapter": "fixture-adapter",
+    "driver": null
+  },
+  "unavailable_fields": [
+    "environment.browser",
+    "environment.driver",
+    "frames[*].gpu_wait_ms",
+    "frames[*].gpu_complete_ms",
+    "frames[*].sort_refreshed"
+  ]
+}

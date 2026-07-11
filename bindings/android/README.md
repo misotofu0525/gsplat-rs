@@ -183,7 +183,8 @@ For repeatable Surface performance checks, launch with benchmark extras:
   --ef gsplat_benchmark_yaw_step 0.001 \
   --ei gsplat_surface_sort_interval 2 \
   --ez gsplat_surface_async_sort false \
-  --ei gsplat_surface_frame_latency 2
+  --ei gsplat_surface_frame_latency 2 \
+  --es gsplat_geometry_path direct
 "$ADB" logcat -d -s GsplatExample:I | grep BENCHMARK_RESULT
 ```
 
@@ -202,3 +203,10 @@ with the previous order. It keeps the full splat count and is intended for
 interaction A/B checks.
 `gsplat_surface_frame_latency` maps to wgpu
 `desired_maximum_frame_latency`. The default is `2`.
+`gsplat_geometry_path` selects between the `direct` (default,
+release-gated `SortedIndexDirect`) and `packed` (experimental
+`PackedAtlas`) Surface geometry pipelines for on-device A/B benchmarking.
+The example resolves the value via
+`gsplat_surface_renderer_set_geometry_path` and records the resulting
+`renderer.path` (`sorted_index_direct` or `packed_atlas`) in the emitted
+benchmark artifact.

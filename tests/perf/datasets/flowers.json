@@ -1,0 +1,19 @@
+{
+  "schema": "gsplat-dataset/v1",
+  "id": "flowers",
+  "qualification_status": "qualified",
+  "local_path": "tests/datasets/external/nvidia_flowers_1/flowers_1/flowers_1.ply",
+  "source_url": "https://developer.download.nvidia.com/ProGraphics/nvpro-samples/flowers_1.zip",
+  "fetch_script": "tests/datasets/fetch-nvidia-flowers-1.sh",
+  "license": "CC BY 4.0",
+  "attribution": "3D gaussian model of a bouquet of flowers by Jean-Eudes Marvie",
+  "license_file": "tests/datasets/external/nvidia_flowers_1/flowers_1/license_cc_by_4.0.html",
+  "redistribution": "retain attribution and recheck archive terms before publishing artifacts",
+  "sha256": "3641192d70d598894f4d6ad92e0890b4a7336b43aa6af47bd35842c3e2ee8765",
+  "bytes": 139619083,
+  "splat_count": 562974,
+  "sh_degree": 3,
+  "bounds_min": [-0.875705, -0.607782, -0.777395],
+  "bounds_max": [1.221174, 0.459142, 1.469875],
+  "conversion": "none"
+}

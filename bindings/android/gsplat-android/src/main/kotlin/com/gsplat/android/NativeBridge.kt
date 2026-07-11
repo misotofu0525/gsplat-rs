@@ -41,6 +41,9 @@ object NativeBridge {
     external fun setSurfaceAsyncSortEnabled(nativeHandle: Long, enabled: Boolean): Int
 
     @JvmStatic
+    external fun setSurfaceGeometryPath(nativeHandle: Long, path: Int): Int
+
+    @JvmStatic
     external fun setSurfaceFrameLatency(nativeHandle: Long, latency: Int): Int
 
     @JvmStatic
