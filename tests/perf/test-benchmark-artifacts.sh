@@ -89,4 +89,64 @@ if python3 "$VALIDATOR" "$TMP_DIR/unlisted-build-state" >"$TMP_DIR/unlisted-buil
 fi
 rg -q 'null build.dirty must be listed as unavailable' "$TMP_DIR/unlisted-build-state.out"
 
+cp -R "$VALID" "$TMP_DIR/async-valid"
+python3 - "$TMP_DIR/async-valid" <<'PY'
+import json, pathlib, sys
+root = pathlib.Path(sys.argv[1])
+manifest_path = root / "manifest.json"
+manifest = json.loads(manifest_path.read_text())
+manifest["renderer"]["sort_policy"] = "async_latest:2"
+manifest["unavailable_fields"] = [
+    field for field in manifest.get("unavailable_fields", [])
+    if field != "frames[*].sort_refreshed"
+]
+manifest_path.write_text(json.dumps(manifest))
+
+frames_path = root / "frames.jsonl"
+frames = [json.loads(line) for line in frames_path.read_text().splitlines() if line]
+for index, frame in enumerate(frames):
+    frame.update({
+        "sort_refreshed": True,
+        "camera_revision": index,
+        "applied_order_revision": index,
+        "presented_order_revision_lag": 0,
+        "async_sort_scheduled_revision": None,
+        "async_sort_completed_revision": None,
+        "async_sort_observed_result_lag": None,
+        "async_sort_scheduled": False,
+        "async_sort_result_applied": False,
+        "stale_async_sort_dropped": False,
+        "sync_sort_fallback": False,
+    })
+frames_path.write_text("\n".join(json.dumps(frame) for frame in frames) + "\n")
+summary_path = root / "summary.json"
+summary = json.loads(summary_path.read_text())
+summary["sort_telemetry"] = {
+    "scheduled_count": 0,
+    "completed_count": 0,
+    "applied_count": 0,
+    "dropped_count": 0,
+    "sync_fallback_count": 0,
+    "max_presented_revision_lag": 0,
+    "stale_applied_count": 0,
+}
+summary_path.write_text(json.dumps(summary))
+PY
+python3 "$VALIDATOR" "$TMP_DIR/async-valid"
+
+cp -R "$TMP_DIR/async-valid" "$TMP_DIR/async-bad-lag"
+python3 - "$TMP_DIR/async-bad-lag/frames.jsonl" <<'PY'
+import json, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+frames = [json.loads(line) for line in path.read_text().splitlines() if line]
+frames[-1]["applied_order_revision"] = frames[-1]["camera_revision"] - 3
+frames[-1]["presented_order_revision_lag"] = 3
+path.write_text("\n".join(json.dumps(frame) for frame in frames) + "\n")
+PY
+if python3 "$VALIDATOR" "$TMP_DIR/async-bad-lag" >"$TMP_DIR/async-bad-lag.out" 2>&1; then
+  echo "expected over-limit async order lag to fail" >&2
+  exit 1
+fi
+rg -q 'presented async order lag exceeds 2' "$TMP_DIR/async-bad-lag.out"
+
 echo "benchmark artifact fixture tests passed"

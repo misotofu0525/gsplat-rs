@@ -51,7 +51,7 @@ struct BenchmarkConfig {
         config.frames = max(1, args.int("gsplat_benchmark_frames", default: config.frames))
         config.warmupFrames = max(0, args.int("gsplat_benchmark_warmup_frames", default: config.warmupFrames))
         let yawStep = args.float("gsplat_benchmark_yaw_step", default: config.yawStepRadians)
-        config.yawStepRadians = yawStep.isFinite && yawStep != 0 ? yawStep : config.yawStepRadians
+        config.yawStepRadians = yawStep.isFinite ? yawStep : config.yawStepRadians
         config.sortInterval = UInt32(max(1, args.int("gsplat_surface_sort_interval", default: Int(config.sortInterval))))
         config.asyncSort = args.bool("gsplat_surface_async_sort", default: config.asyncSort)
         config.frameLatency = UInt32(

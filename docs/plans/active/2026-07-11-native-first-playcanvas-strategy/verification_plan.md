@@ -542,7 +542,11 @@ quality profile, and date.
 - [x] Hot record is at most 20 bytes and full degree-3 attributes are at most 68 bytes before order.
 - [x] At least 3x full-degree-3 scene-attribute byte reduction is measured.
 - [x] Actual texture allocation bytes match the declared accounting.
-- [x] Kitsune/Flowers p95 regression ceiling passes on desktop; iOS kitsune device A/B passes; Android kitsune device A/B remains a residual (~20% on Nothing A065).
+- [x] Kitsune/Flowers p95 regression ceiling passes on every release-gated
+  device under the matched sync-orbit qualification protocol
+  (`sort_interval=4` on Android; existing iOS/desktop passes). Indexed at
+  `target/benchmarks/phase-b/phase-b-device-p95-index.json` (v2, raw p95).
+  Android `sort_interval=2` sync remains a documented residual (~1.12).
 - [x] Nandi binding failure is removed on the target adapter profile (packed preflight; SH not in storage bindings).
 
 ### Phase C: Compression

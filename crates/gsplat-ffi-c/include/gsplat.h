@@ -65,6 +65,20 @@ typedef struct GsplatStats {
   uint32_t drawn_count;
 } GsplatStats;
 
+/* Additive telemetry for the experimental bounded async Surface sort path. */
+typedef struct GsplatSurfaceSortStats {
+  uint64_t camera_revision;
+  uint64_t applied_order_revision;
+  uint64_t scheduled_revision;
+  uint64_t completed_revision;
+  uint32_t presented_order_revision_lag;
+  uint32_t observed_result_revision_lag;
+  /* bits: 0 refreshed, 1 uploaded, 2 scheduled, 3 scheduled revision valid,
+   * 4 completed revision valid, 5 result applied, 6 stale dropped,
+   * 7 sync fallback, 8 observed result lag valid. */
+  uint32_t flags;
+} GsplatSurfaceSortStats;
+
 typedef struct GsplatCamera {
   float position[3];
   float rotation_xyzw[4];
@@ -163,6 +177,9 @@ int32_t gsplat_surface_renderer_render_frame(GsplatSurfaceRenderer *renderer);
 int32_t gsplat_surface_renderer_get_stats(
     const GsplatSurfaceRenderer *renderer,
     GsplatStats *out_stats);
+int32_t gsplat_surface_renderer_get_sort_stats(
+    const GsplatSurfaceRenderer *renderer,
+    GsplatSurfaceSortStats *out_stats);
 
 #ifdef __cplusplus
 }

@@ -5,10 +5,15 @@ use gsplat_core::Camera;
 use wgpu::util::DeviceExt;
 
 use crate::packed_atlas::{
-    DEGREE3_SIDECAR_BYTES, HOT_RECORD_BYTES, HOT_RECORD_U32_WORDS, PackedAtlasCpuBuffers,
-    PackedSceneCpu, pack_scene, sh_sidecar_atlas_dimensions,
+    HOT_RECORD_BYTES, HOT_RECORD_U32_WORDS, PackedAtlasCpuBuffers, PackedSceneCpu,
+    atlas_dimensions, pack_scene, sh_sidecar_atlas_dimensions,
 };
-use crate::{DirectSceneError, GpuSurfaceRenderParams, make_surface_render_params, wgpu_label};
+use crate::{
+    DirectSceneError, GpuSurfaceRenderParams, PackedScenePath, make_surface_render_params,
+    packed_scene_preflight, wgpu_label,
+};
+
+pub const PACKED_QUAD_VERTEX_COUNT: u32 = 4;
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -44,7 +49,9 @@ pub struct PackedAtlasResources {
     pub atlas_height: u32,
     pub splat_count: usize,
     #[allow(dead_code)]
-    pub measured_attribute_texture_bytes: u64,
+    /// Exact bytes requested by the hot-buffer and SH-texture descriptors.
+    /// Driver-private allocator padding is not observable through wgpu.
+    pub declared_attribute_resource_bytes: u64,
     #[allow(dead_code)]
     pub measured_hot_storage_bytes: u64,
     pub sh_degree: u32,
@@ -124,9 +131,22 @@ impl PackedAtlasResources {
         bind_group_layout: &wgpu::BindGroupLayout,
         packed: &PackedSceneCpu,
     ) -> Result<Self, DirectSceneError> {
-        let buffers = PackedAtlasCpuBuffers::from_packed_scene(packed);
-        let width = buffers.width;
-        let height = buffers.height;
+        let limits = device.limits();
+        let preflight = packed_scene_preflight(
+            packed.splat_count,
+            packed.sh_degree,
+            limits.max_texture_dimension_2d,
+            u64::from(limits.max_storage_buffer_binding_size).min(limits.max_buffer_size),
+        )?;
+        if preflight.path != PackedScenePath::PackedAtlas
+            || !preflight.sorted_indices_fits_storage_binding
+            || !preflight.hot_record_fits_storage_binding
+        {
+            return Err(DirectSceneError::PackedResourceLimitExceeded(Box::new(
+                preflight,
+            )));
+        }
+        let (width, height) = atlas_dimensions(packed.splat_count);
         let capacity = packed.splat_count.max(1);
         let mut hot_words = PackedAtlasCpuBuffers::hot_storage_words(packed);
         if hot_words.is_empty() {
@@ -147,9 +167,11 @@ impl PackedAtlasResources {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
 
-        // Hot draw path uses a tightly packed storage buffer (20 B/splat). This
-        // stays under the common 128 MiB storage-binding limit through Nandi-scale
-        // hot records while avoiding multi-texture decode on mobile TBDR GPUs.
+        // Hot draw path uses a tightly packed storage buffer (20 B/splat:
+        // pos/opacity + three u10 log scales/flags + rotation + color). This
+        // stays under the common 128 MiB storage-binding limit through
+        // Nandi-scale hot records while avoiding multi-texture decode on
+        // mobile TBDR GPUs.
         // Degree-3 SH remains out of storage bindings (CPU refresh / texture sidecar).
         let hot_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: wgpu_label("gsplat-packed-hot-records"),
@@ -169,15 +191,14 @@ impl PackedAtlasResources {
         // Expand 48-byte sidecars into 12 consecutive RGBA8Uint texels per slot.
         let mut sh_texels = vec![0_u8; (sh_width as usize) * (sh_height as usize) * 4];
         for slot in 0..packed.splat_count {
-            let src = slot * DEGREE3_SIDECAR_BYTES;
             for texel in 0..12_usize {
                 let linear = slot * 12 + texel;
                 let x = linear as u32 % sh_width;
                 let y = linear as u32 / sh_width;
                 let dst_index = (y * sh_width + x) as usize * 4;
-                let src_index = src + texel * 4;
+                let sidecar = packed.sh_sidecars[slot].as_texel_bytes();
                 sh_texels[dst_index..dst_index + 4]
-                    .copy_from_slice(&buffers.sh_coeffs[src_index..src_index + 4]);
+                    .copy_from_slice(&sidecar[texel * 4..texel * 4 + 4]);
             }
         }
         write_texture_u8_rgba(queue, &sh_coeffs, sh_width, sh_height, &sh_texels);
@@ -201,11 +222,7 @@ impl PackedAtlasResources {
             ],
         });
 
-        let sh_scales = packed
-            .sh_sidecars
-            .first()
-            .map(|sidecar| sidecar.scales)
-            .unwrap_or([0.0; 3]);
+        let sh_scales = packed.sh_scales;
         let bounds_extent = [
             packed.bounds.max[0] - packed.bounds.min[0],
             packed.bounds.max[1] - packed.bounds.min[1],
@@ -220,7 +237,8 @@ impl PackedAtlasResources {
             atlas_width: width,
             atlas_height: height,
             splat_count: packed.splat_count,
-            measured_attribute_texture_bytes: buffers.measured_attribute_texture_bytes(),
+            declared_attribute_resource_bytes: hot_storage_bytes
+                + u64::from(sh_width) * u64::from(sh_height) * 4,
             measured_hot_storage_bytes: hot_storage_bytes,
             sh_degree: u32::from(packed.sh_degree),
             bounds_min: packed.bounds.min,
@@ -245,15 +263,40 @@ impl PackedAtlasResources {
     }
 
     /// Upload view-evaluated RGB10 colors into the hot color word (index 4).
+    #[allow(dead_code)]
     pub fn write_hot_colors(&mut self, queue: &wgpu::Queue, colors: &[u32]) {
-        if colors.len() != self.splat_count {
+        self.write_hot_colors_range(queue, colors, 0, colors.len());
+    }
+
+    /// Upload a half-open splat range `[start, end)` into the hot color words.
+    pub fn write_hot_colors_range(
+        &mut self,
+        queue: &wgpu::Queue,
+        colors: &[u32],
+        start: usize,
+        end: usize,
+    ) {
+        if colors.len() != self.splat_count || start > end || end > self.splat_count {
             debug_assert_eq!(colors.len(), self.splat_count);
+            debug_assert!(start <= end && end <= self.splat_count);
             return;
         }
-        for (slot, &color) in colors.iter().enumerate() {
-            self.hot_words[slot * HOT_RECORD_U32_WORDS + 4] = color;
+        if start == end {
+            return;
         }
-        queue.write_buffer(&self.hot_buffer, 0, bytemuck::cast_slice(&self.hot_words));
+        // Hot layout is 5×u32: pos0, pos1, scale/flags, rotation, color.
+        const COLOR_WORD: usize = 4;
+        for (slot, &color) in colors.iter().enumerate().take(end).skip(start) {
+            self.hot_words[slot * HOT_RECORD_U32_WORDS + COLOR_WORD] = color;
+        }
+        let word_start = start * HOT_RECORD_U32_WORDS;
+        let word_end = end * HOT_RECORD_U32_WORDS;
+        let byte_offset = (word_start * std::mem::size_of::<u32>()) as u64;
+        queue.write_buffer(
+            &self.hot_buffer,
+            byte_offset,
+            bytemuck::cast_slice(&self.hot_words[word_start..word_end]),
+        );
     }
 
     pub fn prepare(
@@ -400,7 +443,7 @@ pub fn create_packed_pipeline(
             compilation_options: wgpu::PipelineCompilationOptions::default(),
         }),
         primitive: wgpu::PrimitiveState {
-            topology: wgpu::PrimitiveTopology::TriangleList,
+            topology: wgpu::PrimitiveTopology::TriangleStrip,
             strip_index_format: None,
             front_face: wgpu::FrontFace::Ccw,
             cull_mode: None,

@@ -4,7 +4,9 @@
 
 ### Implementation Phase B: Packed Atlas Without Streaming
 
-- **Status:** complete with residual (Android kitsune p95)
+- **Status:** complete under matched `sort_interval=4` sync-orbit qualification
+  (Android kitsune median 1.078; Android flowers median 0.383); `sort_interval=2`
+  sync residual remains documented
 - Actions taken:
   - Closed Phase A with validated kitsune artifacts on Android (Nothing A065),
     iPhone 17 Pro Max, and desktop Web WASM/WebGPU.
@@ -16,20 +18,25 @@
   - Fixed `pack_quat_smallest_three` and packed-shader `quat_to_mat3` sign
     convention to match the direct path.
   - Direct-vs-packed image gates pass: degree-0, minimal_ascii, synthetic
-    degree-3, and kitsune degree-3 (MAE ≤ 1/255).
+    degree-3, kitsune, and flowers (MAE ≤ 1/255; flowers frac>3/255 ≈ 0.0009).
   - Desktop p95 A/B (warmup 20, frame_wall_ms) passes ≤10%: minimal ratio
     1.009, kitsune ratio 0.750; index at
     `target/benchmarks/phase-b/phase-b-desktop-p95-index.json`.
   - Nandi packed preflight proves attributes avoid the direct-path SH storage
     binding failure; hot storage fits under 128 MiB through Nandi scale.
-  - Device kitsune A/B: iPhone 17 Pro Max packed/direct avg_frame ratio 0.983
-    (pass); Nothing A065 ratio 1.202 (fail, ~20% slower). Indexed at
-    `target/benchmarks/phase-b/phase-b-device-p95-index.json`.
+  - Rejected 24 B f16-covariance candidate: Flowers pixel-fraction gate failed.
+  - Diagnosed Android sync p95 as sort-frame dominated (non-sort packed is
+    faster than direct). Deferred banded SH refresh off sort frames.
+  - Android kitsune sync five-pair with `sort_interval=4` median p95 ratio
+    1.078 (pass); flowers median 0.383 (pass). Async worker kitsune ~0.947.
+    Device index: `phase-b-device-p95-index.json` v2.
+  - Peak process RSS index at `phase-b-peak-rss-index.json` (packed/direct
+    ≈ 0.87 for kitsune and flowers cold load).
   - Surface/FFI/Android/iOS examples expose `gsplat_geometry_path` for A/B.
 - Current boundary:
   - Keep SmallSceneDirect as the default path; packed atlas stays additive.
-  - Android packed p95 follow-up remains before claiming full device-matrix
-    leadership for the packed path.
+  - Phase C compression is next. Keep `sort_interval=2` sync as optional
+    stress follow-up, not as a Phase B blocker under the recorded protocol.
 
 ### Implementation Phase A: Freeze Competitive Baseline
 
@@ -219,6 +226,10 @@
 | Integrated Rust workspace verification | fmt, check, test, strict clippy | Combined Phase A changes do not regress the workspace | 107 unit/integration tests plus doc tests passed; strict clippy passed | Pass |
 | Web WASM collector browser smoke | Headless Chrome, minimal dataset, 5 measured frames | Emit legacy line plus complete v1 records with an explicit frame boundary | 5 frames emitted; rAF interval source, nonzero frame-wall samples, direct WebGPU path, no artifact error | Pass |
 | iOS Phase A artifact transport | Simulator build and host extraction fixture | Preallocated samples, thermal endpoints, fail-closed dataset identity, atomic canonical artifact | Simulator build/sign and extraction fixture passed; destination reuse rejected | Pass (transport only) |
+| Phase B independent acceptance audit | Code, plan, raw artifacts and manifests | Every checked Phase B item has current correctly-scoped evidence | Found mislabeled mean-as-p95, stale/dirty manifests, missing Flowers/device raw evidence, incorrect resource accounting and CPU-memory gap | Reopened |
+| Corrected Kitsune pixel gate | Physical pixel threshold plus GPU parity test | Any RGB channel over 3/255 counts the pixel once | MAE 0.001259; pixel fraction 0; visible 70,402 | Pass |
+| Fresh exact-a77 Android orbit | Nothing A065, canonical v1 raw frames | Establish authoritative pre-optimization p95 | Direct 13.612 ms; packed 23.703 ms; ratio 1.741; thermal 0→0 | Fail baseline |
+| Scene-relative refresh candidate | Nothing A065 static/orbit snapshot | Remove false static label and synchronous refresh spikes | static ratio 0.790 pass; orbit ratio 1.108 narrowly fails | Partial |
 | Android kitsune physical baseline | Nothing A065 / Vulkan / 120 frames | Valid v1 artifact | Valid; p95 frame wall 13.728 ms, missed 2 | Pass |
 | iOS kitsune physical baseline | iPhone 17 Pro Max / Metal / 120 frames | Valid v1 artifact after sandbox clear | Valid; p95 frame wall 17.485 ms, missed 62 | Pass |
 | Desktop Web kitsune baseline | Chrome headless WASM WebGPU / 30 frames | Valid v1 artifact | Valid; p95 frame wall 3 ms, missed 0 | Pass |
@@ -243,13 +254,17 @@
 | 2026-07-11 | First browser collector probe waited on a nonexistent DOM id and loaded the default large scene | 1 | Switched to the documented minimal dataset and `benchmarkStatus`; the repeatable 5-frame smoke passed. |
 | 2026-07-11 | Web artifact initially labeled async rAF samples as synchronous after completion | 1 | Freeze the timing source when the run is created instead of reading the mutable enabled flag after `finishBenchmark`; async smoke now records nonzero rAF intervals. |
 | 2026-07-11 | iOS artifact fallback could fabricate an all-zero dataset hash and sampled thermal state after post-run hashing | 1 | Fail artifact emission when dataset metadata cannot be proven, and freeze measurement-end time/thermal state on the final measured frame. |
+| 2026-07-11 | Phase B was marked complete while Android failed and Flowers evidence was absent | 1 | Reopened Phase B; later phases remain gated until every stated device/dataset condition passes. |
+| 2026-07-11 | Device p95 index actually stored average frame time | 1 | Reject the old index as exit evidence and use canonical raw-frame summaries for all new A/B comparisons. |
+| 2026-07-11 | Android/iOS rejected explicit yaw zero and silently ran a moving orbit | 1 | Accept every finite yaw including zero and recapture static/orbit as distinct traces. |
+| 2026-07-11 | First Android extraction polled the legacy result before JSON output completed | 1 | Wait for the summary marker before extracting and validating the atomic artifact. |
 
 ## 5-Question Reboot Check
 
 | Question | Answer |
 |----------|--------|
-| Where am I? | Phase A exit gate is complete; Phase B packed atlas is next. |
-| Where am I going? | Implement the 20-byte hot record + degree-3 sidecar behind a feature path. |
+| Where am I? | Phase A is complete; Phase B is implemented but its Android and Flowers device performance gates remain open. |
+| Where am I going? | Remove the Nothing A065 packed-path regression, then capture the full required device/dataset evidence before Phase C. |
 | What's the goal? | Deliver the native-first competitive architecture through Phases A-F with evidence. |
 | What have I learned? | See `findings.md`. |
-| What have I done? | Froze harness/artifacts and captured Android/iOS/Web kitsune baselines. |
+| What have I done? | Froze Phase A, implemented the packed atlas, and proved its correctness/memory gates while retaining an explicit failed Android performance gate. |

@@ -128,6 +128,7 @@ impl RendererError {
             | Self::GpuDeviceCreation
             | Self::GpuDimensionsUnsupported { .. }
             | Self::DirectScene(DirectSceneError::ResourceLimitExceeded(_))
+            | Self::DirectScene(DirectSceneError::PackedResourceLimitExceeded(_))
             | Self::DirectScene(DirectSceneError::ResourceSizeOverflow) => ErrorCode::Unsupported,
             Self::GpuReadback | Self::GpuWait | Self::SurfaceWorker => ErrorCode::Internal,
             Self::DirectScene(DirectSceneError::SortedIndexCapacityExceeded) => ErrorCode::Internal,
@@ -186,6 +187,8 @@ pub enum DirectSceneError {
     ResourceSizeOverflow,
     #[error("direct scene resources exceed effective device limits: {0:?}")]
     ResourceLimitExceeded(Box<DirectScenePreflight>),
+    #[error("packed scene resources require paging or exceed effective device limits: {0:?}")]
+    PackedResourceLimitExceeded(Box<PackedScenePreflight>),
 }
 
 #[derive(Debug, Error)]
@@ -225,6 +228,7 @@ impl SurfacePresenterError {
             | Self::SurfaceAcquire(_)
             | Self::SurfaceOutOfMemory => ErrorCode::Internal,
             Self::DirectScene(DirectSceneError::ResourceLimitExceeded(_))
+            | Self::DirectScene(DirectSceneError::PackedResourceLimitExceeded(_))
             | Self::DirectScene(DirectSceneError::ResourceSizeOverflow) => ErrorCode::Unsupported,
             Self::DirectScene(DirectSceneError::SortedIndexCapacityExceeded) => ErrorCode::Internal,
         }
@@ -323,6 +327,7 @@ impl Renderer {
     pub fn set_geometry_path(&mut self, path: GeometryPath) {
         if self.geometry_path != path {
             self.geometry_path = path;
+            self.rebuild_path_specific_cpu_data();
             #[cfg(not(target_arch = "wasm32"))]
             if let Some(rasterizer) = self.gpu_rasterizer.as_mut() {
                 rasterizer.clear_scene_resources();
@@ -433,22 +438,35 @@ impl Renderer {
 
     pub fn load_scene(&mut self, scene: SceneBuffers) -> Result<(), RendererError> {
         scene.validate().map_err(|_| RendererError::InvalidScene)?;
-        let world_covariances = precompute_world_covariances(&scene);
-        let world_covariance_terms = world_covariances
-            .iter()
-            .copied()
-            .map(CameraCovarianceTerms::from_matrix)
-            .collect();
-        let alpha_values = precompute_alpha_values(&scene);
         self.scene = Some(scene);
-        self.world_covariances = Some(world_covariances);
-        self.world_covariance_terms = Some(world_covariance_terms);
-        self.alpha_values = Some(alpha_values);
+        self.rebuild_path_specific_cpu_data();
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(rasterizer) = self.gpu_rasterizer.as_mut() {
             rasterizer.clear_scene_resources();
         }
         Ok(())
+    }
+
+    fn rebuild_path_specific_cpu_data(&mut self) {
+        match (self.geometry_path, self.scene.as_ref()) {
+            (GeometryPath::SortedIndexDirect, Some(scene)) => {
+                let world_covariances = precompute_world_covariances(scene);
+                let world_covariance_terms = world_covariances
+                    .iter()
+                    .copied()
+                    .map(CameraCovarianceTerms::from_matrix)
+                    .collect();
+                let alpha_values = precompute_alpha_values(scene);
+                self.world_covariances = Some(world_covariances);
+                self.world_covariance_terms = Some(world_covariance_terms);
+                self.alpha_values = Some(alpha_values);
+            }
+            _ => {
+                self.world_covariances = None;
+                self.world_covariance_terms = None;
+                self.alpha_values = None;
+            }
+        }
     }
 
     pub fn scene(&self) -> Option<&SceneBuffers> {
@@ -676,6 +694,63 @@ impl Renderer {
         Ok(stats)
     }
 
+    #[cfg(all(test, not(target_arch = "wasm32")))]
+    fn render_frame_with_external_order_for_test(
+        &mut self,
+        camera: &Camera,
+        sorted_indices: &[u32],
+    ) -> Result<FrameStats, RendererError> {
+        camera
+            .validate()
+            .map_err(|_| RendererError::InvalidCamera)?;
+        let frame_start = timer_now();
+        let raster_start = timer_now();
+        let scene = self.scene.as_ref().ok_or(RendererError::SceneNotLoaded)?;
+        match self.geometry_path {
+            GeometryPath::SortedIndexDirect => {
+                let world_covariance_terms = self
+                    .world_covariance_terms
+                    .as_deref()
+                    .ok_or(RendererError::InvalidScene)?;
+                let alpha_values = self
+                    .alpha_values
+                    .as_deref()
+                    .ok_or(RendererError::InvalidScene)?;
+                self.gpu_rasterizer
+                    .as_mut()
+                    .ok_or(RendererError::GpuRasterizerUnavailable)?
+                    .render_direct_sorted_indices(
+                        self.config,
+                        sorted_indices,
+                        camera,
+                        scene,
+                        world_covariance_terms,
+                        alpha_values,
+                    )
+                    .map_err(RendererError::from)?;
+            }
+            GeometryPath::PackedAtlas => {
+                self.gpu_rasterizer
+                    .as_mut()
+                    .ok_or(RendererError::GpuRasterizerUnavailable)?
+                    .render_packed_sorted_indices(self.config, sorted_indices, camera, scene)
+                    .map_err(RendererError::from)?;
+            }
+        }
+        let raster_ms = timer_elapsed_ms(raster_start);
+        let count = u32::try_from(sorted_indices.len()).unwrap_or(u32::MAX);
+        let stats = FrameStats {
+            frame_ms: timer_elapsed_ms(frame_start),
+            preprocess_ms: 0.0,
+            sort_ms: 0.0,
+            raster_ms,
+            visible_count: count,
+            drawn_count: count,
+        };
+        self.last_stats = stats;
+        Ok(stats)
+    }
+
     #[cfg(target_arch = "wasm32")]
     pub fn render_frame(&mut self, _camera: &Camera) -> Result<FrameStats, RendererError> {
         Err(RendererError::GpuRasterizerUnavailable)
@@ -740,8 +815,12 @@ pub struct SurfacePresenter {
     geometry_path: GeometryPath,
     direct_scene: Option<DirectSceneResources>,
     packed_scene: Option<packed_gpu::PackedAtlasResources>,
-    /// Last camera pose used for packed hot-color refresh (skip when unchanged).
-    packed_color_refresh_pose: Option<([f32; 3], [f32; 4])>,
+    /// Last camera position whose hot colors have been fully applied.
+    packed_color_refresh_position: Option<[f32; 3]>,
+    /// Next splat index for an in-flight banded refresh, if any.
+    packed_color_refresh_cursor: Option<usize>,
+    /// Camera position the in-flight banded refresh is converging toward.
+    packed_color_refresh_target: Option<[f32; 3]>,
 }
 
 impl SurfacePresenter {
@@ -853,11 +932,30 @@ impl SurfacePresenter {
 
         let adapter_info = adapter.get_info();
         let adapter_limits = adapter.limits();
+        let mut required_limits = wgpu::Limits::downlevel_defaults();
+        let mut required_texture_dimension = width.max(height);
+        // Surface sessions support runtime direct↔packed A/B switching, so the
+        // device must negotiate the loaded scene's packed sidecar requirement
+        // even when the presenter is initially created on the Direct path.
+        let scene = renderer
+            .scene()
+            .ok_or(SurfacePresenterError::SceneNotLoaded)?;
+        let (sh_width, sh_height) = sh_sidecar_atlas_dimensions(scene.len());
+        required_texture_dimension = required_texture_dimension.max(sh_width).max(sh_height);
+        if required_texture_dimension > adapter_limits.max_texture_dimension_2d {
+            return Err(SurfacePresenterError::DeviceCreation(format!(
+                "required texture dimension {required_texture_dimension} exceeds adapter limit {}",
+                adapter_limits.max_texture_dimension_2d
+            )));
+        }
+        required_limits.max_texture_dimension_2d = required_limits
+            .max_texture_dimension_2d
+            .max(required_texture_dimension);
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 label: wgpu_label("gsplat-surface-device"),
                 required_features: wgpu::Features::empty(),
-                required_limits: wgpu::Limits::downlevel_defaults(),
+                required_limits,
                 experimental_features: wgpu::ExperimentalFeatures::disabled(),
                 memory_hints: wgpu::MemoryHints::Performance,
                 trace: wgpu::Trace::Off,
@@ -954,7 +1052,9 @@ impl SurfacePresenter {
             geometry_path,
             direct_scene,
             packed_scene,
-            packed_color_refresh_pose: None,
+            packed_color_refresh_position: None,
+            packed_color_refresh_cursor: None,
+            packed_color_refresh_target: None,
         })
     }
 
@@ -1007,7 +1107,9 @@ impl SurfacePresenter {
 
         self.direct_scene = None;
         self.packed_scene = None;
-        self.packed_color_refresh_pose = None;
+        self.packed_color_refresh_position = None;
+        self.packed_color_refresh_cursor = None;
+        self.packed_color_refresh_target = None;
         self.geometry_path = path;
 
         match path {
@@ -1139,22 +1241,59 @@ impl SurfacePresenter {
                 scene,
             )?);
             force_refresh = true;
-            self.packed_color_refresh_pose = None;
+            self.packed_color_refresh_position = None;
+            self.packed_color_refresh_cursor = None;
+            self.packed_color_refresh_target = None;
         }
 
-        let pose_key = packed_color_refresh_pose_key(camera);
-        let needs_refresh =
-            force_refresh || packed_color_refresh_needed(self.packed_color_refresh_pose, camera);
-        if needs_refresh {
-            let queue = self.queue.clone();
+        let position_key = packed_color_refresh_position_key(camera);
+        {
             let packed_scene = self
                 .packed_scene
-                .as_mut()
+                .as_ref()
                 .ok_or(SurfacePresenterError::SceneNotLoaded)?;
-            // Design: color-refresh writes view-evaluated RGB into the hot record;
-            // the main draw then reads only the hot streams.
-            refresh_packed_hot_colors(&queue, packed_scene, scene, camera);
-            self.packed_color_refresh_pose = Some(pose_key);
+            let needs_refresh = force_refresh
+                || packed_color_refresh_needed(
+                    self.packed_color_refresh_position,
+                    camera,
+                    packed_scene.bounds_min,
+                    packed_scene.bounds_extent,
+                );
+            if force_refresh {
+                let queue = self.queue.clone();
+                let packed_scene = self
+                    .packed_scene
+                    .as_mut()
+                    .ok_or(SurfacePresenterError::SceneNotLoaded)?;
+                refresh_packed_hot_colors(&queue, packed_scene, scene, camera);
+                self.packed_color_refresh_position = Some(position_key);
+                self.packed_color_refresh_cursor = None;
+                self.packed_color_refresh_target = None;
+            } else if !refresh_indices
+                && (self.packed_color_refresh_cursor.is_some() || needs_refresh)
+            {
+                // Defer banded SH refresh off synchronous sort frames so p95
+                // does not stack a full CPU sort with SH eval/upload.
+                if self.packed_color_refresh_cursor.is_none() {
+                    self.packed_color_refresh_cursor = Some(0);
+                    self.packed_color_refresh_target = Some(position_key);
+                }
+                let start = self.packed_color_refresh_cursor.unwrap_or(0);
+                let end = (start + packed_color_refresh_band_size(scene.len())).min(scene.len());
+                let queue = self.queue.clone();
+                let packed_scene = self
+                    .packed_scene
+                    .as_mut()
+                    .ok_or(SurfacePresenterError::SceneNotLoaded)?;
+                refresh_packed_hot_colors_range(&queue, packed_scene, scene, camera, start, end);
+                if end >= scene.len() {
+                    self.packed_color_refresh_position = self.packed_color_refresh_target;
+                    self.packed_color_refresh_cursor = None;
+                    self.packed_color_refresh_target = None;
+                } else {
+                    self.packed_color_refresh_cursor = Some(end);
+                }
+            }
         }
 
         let instance_count = self
@@ -1207,7 +1346,7 @@ impl SurfacePresenter {
             rpass.set_pipeline(&self.packed_pipeline);
             rpass.set_bind_group(0, &packed_scene.bind_group, &[]);
             if instance_count > 0 {
-                rpass.draw(0..6, 0..instance_count);
+                rpass.draw(0..packed_gpu::PACKED_QUAD_VERTEX_COUNT, 0..instance_count);
             }
         }
 
@@ -2096,6 +2235,22 @@ fn refresh_packed_hot_colors(
     scene: &SceneBuffers,
     camera: &Camera,
 ) {
+    refresh_packed_hot_colors_range(queue, packed, scene, camera, 0, scene.len());
+}
+
+/// Refresh a half-open splat range so orbit p95 is not dominated by one full-scene
+/// SH evaluation + upload spike.
+fn refresh_packed_hot_colors_range(
+    queue: &wgpu::Queue,
+    packed: &mut packed_gpu::PackedAtlasResources,
+    scene: &SceneBuffers,
+    camera: &Camera,
+    start: usize,
+    end: usize,
+) {
+    if start >= end || end > scene.len() {
+        return;
+    }
     let layout = ShColorLayout::new(scene);
     let cam = [
         camera.pose.position.x,
@@ -2107,26 +2262,30 @@ fn refresh_packed_hot_colors(
     #[cfg(not(target_arch = "wasm32"))]
     {
         use rayon::prelude::*;
-        colors.par_iter_mut().enumerate().for_each(|(index, slot)| {
-            let position = scene.positions[index];
-            let dir = normalize_dir(
-                position.x - cam[0],
-                position.y - cam[1],
-                position.z - cam[2],
-            );
-            let rgb = unsafe { sh_color_unchecked(scene, index, dir, layout) };
-            let rgb = [
-                rgb[0].clamp(0.0, 1.0),
-                rgb[1].clamp(0.0, 1.0),
-                rgb[2].clamp(0.0, 1.0),
-            ];
-            *slot = pack_color_rgb10(rgb);
-        });
+        colors[start..end]
+            .par_iter_mut()
+            .enumerate()
+            .for_each(|(offset, slot)| {
+                let index = start + offset;
+                let position = scene.positions[index];
+                let dir = normalize_dir(
+                    position.x - cam[0],
+                    position.y - cam[1],
+                    position.z - cam[2],
+                );
+                let rgb = unsafe { sh_color_unchecked(scene, index, dir, layout) };
+                let rgb = [
+                    rgb[0].clamp(0.0, 1.0),
+                    rgb[1].clamp(0.0, 1.0),
+                    rgb[2].clamp(0.0, 1.0),
+                ];
+                *slot = pack_color_rgb10(rgb);
+            });
     }
 
     #[cfg(target_arch = "wasm32")]
     {
-        for (index, slot) in colors.iter_mut().enumerate() {
+        for (index, slot) in colors.iter_mut().enumerate().take(end).skip(start) {
             let position = scene.positions[index];
             let dir = normalize_dir(
                 position.x - cam[0],
@@ -2143,43 +2302,38 @@ fn refresh_packed_hot_colors(
         }
     }
 
-    packed.write_hot_colors(queue, &colors);
+    packed.write_hot_colors_range(queue, &colors, start, end);
 }
 
-fn packed_color_refresh_pose_key(camera: &Camera) -> ([f32; 3], [f32; 4]) {
-    (
-        [
-            camera.pose.position.x,
-            camera.pose.position.y,
-            camera.pose.position.z,
-        ],
-        camera.pose.rotation_xyzw,
-    )
+/// Upper bound on splats refreshed per frame during steady-state motion.
+/// Keeps synchronous orbit p95 from absorbing a full-scene SH spike.
+fn packed_color_refresh_band_size(splat_count: usize) -> usize {
+    const MIN_BAND: usize = 8_192;
+    const MAX_BAND: usize = 24_576;
+    let eighth = (splat_count + 7) / 8;
+    eighth.clamp(MIN_BAND, MAX_BAND).min(splat_count.max(1))
 }
 
-/// Design: refresh when camera direction crosses an angular threshold.
-/// ~2° keeps tiny benchmark yaw steps from rewriting the whole hot color atlas.
-const PACKED_COLOR_REFRESH_COS_THRESHOLD: f32 = 0.984_807_8; // cos(10°)
-
-fn camera_forward_from_quat(rotation_xyzw: [f32; 4]) -> [f32; 3] {
-    // Camera looks along local -Z; rotate by pose quaternion.
-    let q = quat_normalize(rotation_xyzw);
-    let x = q[0];
-    let y = q[1];
-    let z = q[2];
-    let w = q[3];
+fn packed_color_refresh_position_key(camera: &Camera) -> [f32; 3] {
     [
-        -2.0 * (x * z + w * y),
-        -2.0 * (y * z - w * x),
-        -(1.0 - 2.0 * (x * x + y * y)),
+        camera.pose.position.x,
+        camera.pose.position.y,
+        camera.pose.position.z,
     ]
 }
 
+/// Refresh when accumulated camera translation can change any scene-point view
+/// direction by roughly ten degrees. Camera rotation alone never changes SH
+/// color because SH is evaluated from source position to camera position.
+const PACKED_COLOR_REFRESH_COS_THRESHOLD: f32 = 0.984_807_8; // cos(10°)
+
 fn packed_color_refresh_needed(
-    previous: Option<([f32; 3], [f32; 4])>,
+    previous: Option<[f32; 3]>,
     camera: &Camera,
+    bounds_min: [f32; 3],
+    bounds_extent: [f32; 3],
 ) -> bool {
-    let Some((prev_pos, prev_rot)) = previous else {
+    let Some(prev_pos) = previous else {
         return true;
     };
     let pos = [
@@ -2192,13 +2346,39 @@ fn packed_color_refresh_needed(
         pos[1] - prev_pos[1],
         pos[2] - prev_pos[2],
     ];
-    if dp[0] * dp[0] + dp[1] * dp[1] + dp[2] * dp[2] > 1e-4 {
+    let displacement_sq = dp[0] * dp[0] + dp[1] * dp[1] + dp[2] * dp[2];
+    if displacement_sq <= f32::EPSILON {
+        return false;
+    }
+
+    let center = [
+        bounds_min[0] + bounds_extent[0] * 0.5,
+        bounds_min[1] + bounds_extent[1] * 0.5,
+        bounds_min[2] + bounds_extent[2] * 0.5,
+    ];
+    let radius = 0.5
+        * (bounds_extent[0] * bounds_extent[0]
+            + bounds_extent[1] * bounds_extent[1]
+            + bounds_extent[2] * bounds_extent[2])
+            .sqrt();
+    let center_delta = [
+        prev_pos[0] - center[0],
+        prev_pos[1] - center[1],
+        prev_pos[2] - center[2],
+    ];
+    let center_distance_sq = center_delta[0] * center_delta[0]
+        + center_delta[1] * center_delta[1]
+        + center_delta[2] * center_delta[2];
+    let clearance = center_distance_sq.sqrt() - radius;
+    if clearance <= 1e-6 {
         return true;
     }
-    let prev_fwd = camera_forward_from_quat(prev_rot);
-    let fwd = camera_forward_from_quat(camera.pose.rotation_xyzw);
-    let dot = prev_fwd[0] * fwd[0] + prev_fwd[1] * fwd[1] + prev_fwd[2] * fwd[2];
-    dot < PACKED_COLOR_REFRESH_COS_THRESHOLD
+    let sin_threshold = (1.0
+        - PACKED_COLOR_REFRESH_COS_THRESHOLD * PACKED_COLOR_REFRESH_COS_THRESHOLD)
+        .max(0.0)
+        .sqrt();
+    let allowed_displacement = clearance * sin_threshold;
+    displacement_sq > allowed_displacement * allowed_displacement
 }
 
 fn sh_color_rest_deg3(dir: [f32; 3], rest: &[f32]) -> [f32; 3] {
@@ -2582,7 +2762,9 @@ pub struct PackedScenePreflight {
     pub sh_atlas_height: u32,
     pub max_texture_dimension_2d: u32,
     pub sorted_indices_bytes: u64,
-    pub measured_attribute_texture_bytes: u64,
+    /// Exact bytes requested by the packed attribute resource descriptors.
+    /// This excludes driver-private allocator padding, which wgpu does not expose.
+    pub declared_attribute_resource_bytes: u64,
     /// Tightly packed hot-record storage bytes (`20 * splat_count`).
     pub hot_record_storage_bytes: u64,
     pub sorted_indices_fits_storage_binding: bool,
@@ -2613,12 +2795,14 @@ pub fn packed_scene_preflight(
         .max(1)
         .checked_mul(HOT_RECORD_BYTES as u64)
         .ok_or(DirectSceneError::ResourceSizeOverflow)?;
-    let measured_attribute_texture_bytes =
+    let declared_attribute_resource_bytes =
         measured_hot_texture_bytes(splat_count) + measured_sh_sidecar_texture_bytes(splat_count);
+    let storage_bindings_fit = sorted_indices_bytes <= max_storage_buffer_binding_size
+        && hot_record_storage_bytes <= max_storage_buffer_binding_size;
     Ok(PackedScenePreflight {
         splat_count: splat_count_u64,
         sh_degree,
-        path: if textures_fit {
+        path: if textures_fit && storage_bindings_fit {
             PackedScenePath::PackedAtlas
         } else {
             PackedScenePath::PagingRequired
@@ -2629,7 +2813,7 @@ pub fn packed_scene_preflight(
         sh_atlas_height: sh_h,
         max_texture_dimension_2d: max_dim,
         sorted_indices_bytes,
-        measured_attribute_texture_bytes,
+        declared_attribute_resource_bytes,
         hot_record_storage_bytes,
         sorted_indices_fits_storage_binding: sorted_indices_bytes
             <= max_storage_buffer_binding_size,
@@ -2910,8 +3094,8 @@ struct GpuRasterizer {
     packed_pipeline: wgpu::RenderPipeline,
     packed_bind_group_layout: wgpu::BindGroupLayout,
     packed_scene: Option<packed_gpu::PackedAtlasResources>,
-    /// Last camera pose used for packed hot-color refresh (skip when unchanged).
-    packed_color_refresh_pose: Option<([f32; 3], [f32; 4])>,
+    /// Last camera position used for packed hot-color refresh.
+    packed_color_refresh_position: Option<[f32; 3]>,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -2982,14 +3166,14 @@ impl GpuRasterizer {
             packed_pipeline,
             packed_bind_group_layout,
             packed_scene: None,
-            packed_color_refresh_pose: None,
+            packed_color_refresh_position: None,
         })
     }
 
     fn clear_scene_resources(&mut self) {
         self.direct_scene = None;
         self.packed_scene = None;
-        self.packed_color_refresh_pose = None;
+        self.packed_color_refresh_position = None;
     }
 
     fn render_direct_sorted_indices(
@@ -3075,11 +3259,20 @@ impl GpuRasterizer {
                 scene,
             )?);
             force_refresh = true;
-            self.packed_color_refresh_pose = None;
+            self.packed_color_refresh_position = None;
         }
-        let pose_key = packed_color_refresh_pose_key(camera);
-        let needs_refresh =
-            force_refresh || packed_color_refresh_needed(self.packed_color_refresh_pose, camera);
+        let position_key = packed_color_refresh_position_key(camera);
+        let packed_scene = self
+            .packed_scene
+            .as_ref()
+            .ok_or(GpuRasterError::DeviceCreation)?;
+        let needs_refresh = force_refresh
+            || packed_color_refresh_needed(
+                self.packed_color_refresh_position,
+                camera,
+                packed_scene.bounds_min,
+                packed_scene.bounds_extent,
+            );
         // Design: color-refresh writes view-evaluated RGB into the hot record;
         // the main draw then reads only the hot streams.
         if needs_refresh {
@@ -3089,7 +3282,7 @@ impl GpuRasterizer {
                 .as_mut()
                 .ok_or(GpuRasterError::DeviceCreation)?;
             refresh_packed_hot_colors(&queue, packed_scene, scene, camera);
-            self.packed_color_refresh_pose = Some(pose_key);
+            self.packed_color_refresh_position = Some(position_key);
         }
         let instance_count = self
             .packed_scene
@@ -3134,7 +3327,7 @@ impl GpuRasterizer {
             rpass.set_pipeline(&self.packed_pipeline);
             rpass.set_bind_group(0, &packed_scene.bind_group, &[]);
             if instance_count > 0 {
-                rpass.draw(0..6, 0..instance_count);
+                rpass.draw(0..packed_gpu::PACKED_QUAD_VERTEX_COUNT, 0..instance_count);
             }
         }
         self.queue.submit(Some(encoder.finish()));
@@ -3258,9 +3451,10 @@ fn offscreen_device_limits(
     }
 
     let mut required_limits = wgpu::Limits::downlevel_defaults();
-    required_limits.max_texture_dimension_2d = required_limits
-        .max_texture_dimension_2d
-        .max(requested_dimension);
+    // The offscreen renderer can switch to PackedAtlas after device creation,
+    // so retain the adapter's available 2D texture ceiling for later scene
+    // sidecars instead of freezing the device to the render-target size.
+    required_limits.max_texture_dimension_2d = adapter_limits.max_texture_dimension_2d;
     if !required_limits.check_limits(adapter_limits) {
         return Err(GpuRasterError::DeviceCreation);
     }
@@ -3410,10 +3604,11 @@ mod tests {
         assert_eq!(direct.len() % 4, 0);
         let pixels = direct.len() / 4;
         let mut sum = 0.0_f64;
-        let mut over = 0_u64;
+        let mut pixels_over = 0_u64;
         let mut max_abs = 0.0_f64;
         for index in 0..pixels {
             let base = index * 4;
+            let mut pixel_over = false;
             for channel in 0..3 {
                 let a = f64::from(direct[base + channel]) / 255.0;
                 let b = f64::from(packed[base + channel]) / 255.0;
@@ -3421,15 +3616,199 @@ mod tests {
                 sum += err;
                 max_abs = max_abs.max(err);
                 if err > 3.0 / 255.0 {
-                    over += 1;
+                    pixel_over = true;
                 }
             }
+            pixels_over += u64::from(pixel_over);
         }
         ImageParityMetrics {
             mean_abs_rgb: sum / ((pixels * 3) as f64).max(1.0),
-            frac_pixels_over_3_255: (over as f64) / ((pixels * 3) as f64).max(1.0),
+            frac_pixels_over_3_255: (pixels_over as f64) / (pixels as f64).max(1.0),
             max_abs_rgb: max_abs,
         }
+    }
+
+    #[test]
+    fn image_parity_threshold_counts_pixels_not_channels() {
+        let direct = [0_u8, 0, 0, 255, 0, 0, 0, 255];
+        let packed = [4_u8, 0, 0, 255, 0, 0, 0, 255];
+        let metrics = rgba_image_parity_metrics(&direct, &packed);
+        assert_eq!(metrics.frac_pixels_over_3_255, 0.5);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn orbit_camera_for_scene(scene: &SceneBuffers, config: RendererConfig, yaw: f32) -> Camera {
+        let first = *scene.positions.first().expect("non-empty scene");
+        let (mut min, mut max) = (first, first);
+        for position in &scene.positions[1..] {
+            min.x = min.x.min(position.x);
+            min.y = min.y.min(position.y);
+            min.z = min.z.min(position.z);
+            max.x = max.x.max(position.x);
+            max.y = max.y.max(position.y);
+            max.z = max.z.max(position.z);
+        }
+        let center = Vec3f::new(
+            (min.x + max.x) * 0.5,
+            (min.y + max.y) * 0.5,
+            (min.z + max.z) * 0.5,
+        );
+        let half_x = ((max.x - min.x) * 0.5).max(1e-3);
+        let half_y = ((max.y - min.y) * 0.5).max(1e-3);
+        let half_z = ((max.z - min.z) * 0.5).max(1e-3);
+        let aspect = config.width as f32 / config.height.max(1) as f32;
+        let vfov = Camera::default().intrinsics.vertical_fov_radians;
+        let hfov = 2.0 * ((vfov * 0.5).tan() * aspect).atan();
+        let distance =
+            ((half_y / (vfov * 0.5).tan()).max(half_x / (hfov * 0.5).tan()) + half_z) * 1.2;
+        let mut camera = Camera::default();
+        camera.pose.position = Vec3f::new(
+            center.x + yaw.sin() * distance,
+            center.y,
+            center.z - yaw.cos() * distance,
+        );
+        camera.pose.rotation_xyzw = [0.0, -(yaw * 0.5).sin(), 0.0, (yaw * 0.5).cos()];
+        let radius = half_x.max(half_y).max(half_z);
+        camera.intrinsics.near_plane = (distance - radius * 2.0).max(0.01);
+        camera.intrinsics.far_plane = (distance + radius * 8.0).max(100.0);
+        camera
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn assert_two_revision_stale_order_quality(scene: SceneBuffers, label: &str) {
+        let config = RendererConfig {
+            width: 128,
+            height: 128,
+            mode: RenderMode::SortedAlpha,
+        };
+        let mut reference = match Renderer::with_config(config) {
+            Ok(renderer) => renderer,
+            Err(super::RendererError::GpuRasterizerUnavailable)
+            | Err(super::RendererError::GpuDeviceCreation) => {
+                eprintln!("skipping {label} stale-order quality; adapter unavailable");
+                return;
+            }
+            Err(error) => panic!("renderer init: {error}"),
+        };
+        reference.set_geometry_path(super::GeometryPath::PackedAtlas);
+        let mut stale = Renderer::with_config(config).expect("second renderer");
+        stale.set_geometry_path(super::GeometryPath::PackedAtlas);
+        let old_camera = orbit_camera_for_scene(&scene, config, 0.0);
+        let current_camera = orbit_camera_for_scene(&scene, config, 0.002);
+        reference.load_scene(scene.clone()).unwrap();
+        stale.load_scene(scene).unwrap();
+
+        let (fresh_order, _) = reference.build_sorted_indices(&current_camera).unwrap();
+        let (stale_order, _) = stale.build_sorted_indices(&old_camera).unwrap();
+        let mut fresh_visible_set = fresh_order.clone();
+        let mut stale_visible_set = stale_order.clone();
+        fresh_visible_set.sort_unstable();
+        stale_visible_set.sort_unstable();
+        assert_eq!(
+            fresh_visible_set, stale_visible_set,
+            "{label} visible set changed across the two-revision quality envelope"
+        );
+
+        reference
+            .render_frame_with_external_order_for_test(&current_camera, &fresh_order)
+            .unwrap();
+        stale
+            .render_frame_with_external_order_for_test(&current_camera, &stale_order)
+            .unwrap();
+        let metrics = rgba_image_parity_metrics(
+            &reference.readback_rgba8().unwrap(),
+            &stale.readback_rgba8().unwrap(),
+        );
+        eprintln!(
+            "{label} two-revision stale-order parity: mean_abs_rgb={:.6} frac_over_3_255={:.6} max_abs_rgb={:.6}",
+            metrics.mean_abs_rgb, metrics.frac_pixels_over_3_255, metrics.max_abs_rgb
+        );
+        assert!(metrics.mean_abs_rgb <= 1.0 / 255.0);
+        assert!(metrics.frac_pixels_over_3_255 <= 0.001);
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    #[ignore = "temporal stale-order pixel-tail gate is not yet met; retained as a research oracle"]
+    fn bounded_async_two_revision_order_passes_kitsune_and_flowers_quality() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/datasets");
+        let datasets = [
+            (
+                "Kitsune",
+                root.join("external/wakufactory_kitune/kitune1.ply"),
+            ),
+            (
+                "Flowers",
+                root.join("external/nvidia_flowers_1/flowers_1/flowers_1.ply"),
+            ),
+        ];
+        for (label, path) in datasets {
+            if !path.is_file() {
+                eprintln!("skipping {label} stale-order quality; dataset missing");
+                continue;
+            }
+            let loaded = gsplat_io_ply::load_ply(&path)
+                .unwrap_or_else(|error| panic!("load {label} at {}: {error}", path.display()));
+            assert_two_revision_stale_order_quality(loaded.scene, label);
+        }
+    }
+
+    #[test]
+    fn packed_color_refresh_uses_scene_relative_translation_bound() {
+        let bounds_min = [-1.0, -1.0, -1.0];
+        let bounds_extent = [2.0, 2.0, 2.0];
+        let previous = [0.0, 0.0, -5.0];
+        let mut camera = Camera::default();
+        camera.pose.position = Vec3f::new(0.5, 0.0, -4.97);
+        assert!(!super::packed_color_refresh_needed(
+            Some(previous),
+            &camera,
+            bounds_min,
+            bounds_extent,
+        ));
+        camera.pose.position = Vec3f::new(0.8, 0.0, -4.93);
+        assert!(super::packed_color_refresh_needed(
+            Some(previous),
+            &camera,
+            bounds_min,
+            bounds_extent,
+        ));
+    }
+
+    #[test]
+    fn packed_color_refresh_ignores_rotation_at_fixed_position() {
+        let mut camera = Camera::default();
+        let previous = super::packed_color_refresh_position_key(&camera);
+        camera.pose.rotation_xyzw = [0.0, 0.707_106_77, 0.0, 0.707_106_77];
+        assert!(!super::packed_color_refresh_needed(
+            Some(previous),
+            &camera,
+            [-1.0; 3],
+            [2.0; 3],
+        ));
+    }
+
+    #[test]
+    fn packed_renderer_does_not_retain_direct_cpu_covariance_caches() {
+        let mut renderer = Renderer::with_config_for_surface(RendererConfig::default()).unwrap();
+        renderer.set_geometry_path(super::GeometryPath::PackedAtlas);
+        renderer.load_scene(build_scene()).unwrap();
+        assert!(renderer.world_covariances.is_none());
+        assert!(renderer.world_covariance_terms.is_none());
+        assert!(renderer.alpha_values.is_none());
+
+        renderer.set_geometry_path(super::GeometryPath::SortedIndexDirect);
+        assert_eq!(renderer.world_covariances.as_ref().map(Vec::len), Some(2));
+        assert_eq!(
+            renderer.world_covariance_terms.as_ref().map(Vec::len),
+            Some(2)
+        );
+        assert_eq!(renderer.alpha_values.as_ref().map(Vec::len), Some(2));
+
+        renderer.set_geometry_path(super::GeometryPath::PackedAtlas);
+        assert!(renderer.world_covariances.is_none());
+        assert!(renderer.world_covariance_terms.is_none());
+        assert!(renderer.alpha_values.is_none());
     }
 
     #[test]
@@ -3525,7 +3904,11 @@ mod tests {
             positions: (0..count)
                 .map(|i| {
                     let t = i as f32 / count as f32;
-                    Vec3f::new((t - 0.5) * 2.0, ((i % 8) as f32 - 3.5) * 0.15, 1.5 + (i / 8) as f32 * 0.05)
+                    Vec3f::new(
+                        (t - 0.5) * 2.0,
+                        ((i % 8) as f32 - 3.5) * 0.15,
+                        1.5 + (i / 8) as f32 * 0.05,
+                    )
                 })
                 .collect(),
             opacity: vec![2.0; count],
@@ -3641,6 +4024,66 @@ mod tests {
         assert!(
             metrics.frac_pixels_over_3_255 <= 0.001,
             "kitsune degree-3 frac over 3/255 {:.6} exceeded 0.1%",
+            metrics.frac_pixels_over_3_255
+        );
+    }
+
+    #[test]
+    fn packed_vs_direct_image_parity_gate_on_flowers_degree3() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/datasets/external/nvidia_flowers_1/flowers_1/flowers_1.ply");
+        if !path.is_file() {
+            eprintln!("skipping Flowers image parity; dataset missing");
+            return;
+        }
+        let loaded = gsplat_io_ply::load_ply(&path).expect("load Flowers");
+        assert_eq!(loaded.scene.sh_degree, 3);
+        let config = RendererConfig {
+            width: 128,
+            height: 128,
+            mode: RenderMode::SortedAlpha,
+        };
+        let mut direct = match Renderer::with_config(config) {
+            Ok(renderer) => renderer,
+            Err(super::RendererError::GpuRasterizerUnavailable)
+            | Err(super::RendererError::GpuDeviceCreation) => {
+                eprintln!("skipping Flowers image parity; adapter unavailable");
+                return;
+            }
+            Err(error) => panic!("renderer init: {error}"),
+        };
+        let mut packed = Renderer::with_config(config).expect("second renderer");
+        packed.set_geometry_path(super::GeometryPath::PackedAtlas);
+        direct.load_scene(loaded.scene.clone()).unwrap();
+        packed.load_scene(loaded.scene).unwrap();
+        let camera = Camera::default();
+        let direct_stats = direct.render_frame(&camera).unwrap();
+        let packed_stats = packed.render_frame(&camera).unwrap();
+        assert_eq!(direct_stats.visible_count, packed_stats.visible_count);
+        assert_eq!(direct_stats.drawn_count, packed_stats.drawn_count);
+        assert!(
+            direct_stats.visible_count > 0,
+            "Flowers parity camera must see splats"
+        );
+        let metrics = rgba_image_parity_metrics(
+            &direct.readback_rgba8().unwrap(),
+            &packed.readback_rgba8().unwrap(),
+        );
+        eprintln!(
+            "Flowers packed parity: mean_abs_rgb={:.6} frac_over_3_255={:.6} max_abs_rgb={:.6} visible={}",
+            metrics.mean_abs_rgb,
+            metrics.frac_pixels_over_3_255,
+            metrics.max_abs_rgb,
+            direct_stats.visible_count
+        );
+        assert!(
+            metrics.mean_abs_rgb <= 1.0 / 255.0,
+            "Flowers degree-3 MAE gate failed: mean_abs_rgb={:.6}",
+            metrics.mean_abs_rgb
+        );
+        assert!(
+            metrics.frac_pixels_over_3_255 <= 0.001,
+            "Flowers degree-3 frac over 3/255 {:.6} exceeded 0.1%",
             metrics.frac_pixels_over_3_255
         );
     }
@@ -3766,7 +4209,7 @@ mod tests {
 
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
-    fn offscreen_limits_request_only_the_needed_texture_dimension() {
+    fn offscreen_limits_preserve_adapter_texture_dimension_for_later_packed_scenes() {
         let mut adapter_limits = wgpu::Limits::downlevel_defaults();
         adapter_limits.max_texture_dimension_2d = 8192;
         let config = RendererConfig {
@@ -3777,7 +4220,7 @@ mod tests {
 
         let requested = offscreen_device_limits(&config, &adapter_limits).unwrap();
 
-        assert_eq!(requested.max_texture_dimension_2d, 4096);
+        assert_eq!(requested.max_texture_dimension_2d, 8192);
     }
 
     fn limits_with_storage_binding_limit(bytes: u32) -> wgpu::Limits {
@@ -3882,13 +4325,13 @@ mod tests {
         assert_eq!(nandi.path, PackedScenePath::PagingRequired);
         assert!(nandi.sh_atlas_height > max_dim);
         assert!(
-            nandi.measured_attribute_texture_bytes
+            nandi.declared_attribute_resource_bytes
                 < direct_nandi.requirements[1].required_bytes
                     + direct_nandi.requirements[2].required_bytes
         );
         let reduction = (direct_nandi.requirements[1].required_bytes
             + direct_nandi.requirements[2].required_bytes) as f64
-            / nandi.measured_attribute_texture_bytes as f64;
+            / nandi.declared_attribute_resource_bytes as f64;
         assert!(
             reduction >= 3.0,
             "packed Nandi attribute bytes should be ≥3x smaller than direct source+SH: {reduction}"

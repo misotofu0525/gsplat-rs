@@ -412,6 +412,40 @@ JNIEXPORT jint JNICALL Java_com_gsplat_android_NativeBridge_getSurfaceStats(
   return 0;
 }
 
+JNIEXPORT jint JNICALL Java_com_gsplat_android_NativeBridge_getSurfaceSortStats(
+    JNIEnv *env,
+    jclass cls,
+    jlong native_handle,
+    jlongArray out_stats) {
+  (void)cls;
+
+  AndroidSurfaceRendererHandle *handle = android_handle_from_jlong(native_handle);
+  if (handle == NULL || handle->renderer == NULL || out_stats == NULL) {
+    return 1;
+  }
+  if ((*env)->GetArrayLength(env, out_stats) < 7) {
+    return 1;
+  }
+
+  GsplatSurfaceSortStats stats;
+  memset(&stats, 0, sizeof(stats));
+  int32_t rc = gsplat_surface_renderer_get_sort_stats(handle->renderer, &stats);
+  if (rc != 0) {
+    return rc;
+  }
+
+  jlong values[7];
+  values[0] = (jlong)stats.camera_revision;
+  values[1] = (jlong)stats.applied_order_revision;
+  values[2] = (jlong)stats.scheduled_revision;
+  values[3] = (jlong)stats.completed_revision;
+  values[4] = (jlong)stats.presented_order_revision_lag;
+  values[5] = (jlong)stats.observed_result_revision_lag;
+  values[6] = (jlong)stats.flags;
+  (*env)->SetLongArrayRegion(env, out_stats, 0, 7, values);
+  return 0;
+}
+
 JNIEXPORT void JNICALL Java_com_gsplat_android_NativeBridge_destroySurfaceRenderer(
     JNIEnv *env,
     jclass cls,

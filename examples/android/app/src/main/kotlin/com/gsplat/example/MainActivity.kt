@@ -393,6 +393,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                     var consecutiveErrors = 0L
                     var lastStatusAt = 0L
                     val stats = LongArray(6)
+                    val sortStats = LongArray(7)
                     val benchmark = SurfaceBenchmark(benchmarkConfig, currentThermalStatus())
                     while (running && !Thread.currentThread().isInterrupted) {
                         val renderStartNs = System.nanoTime()
@@ -427,8 +428,9 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                             val now = System.nanoTime()
                             if (benchmark.enabled) {
                                 val statsRc = NativeBridge.getSurfaceStats(handle, stats)
-                                if (statsRc == 0) {
-                                    benchmark.record(stats, renderCallNs)
+                                val sortStatsRc = NativeBridge.getSurfaceSortStats(handle, sortStats)
+                                if (statsRc == 0 && sortStatsRc == 0) {
+                                    benchmark.record(stats, sortStats, renderCallNs)
                                     if (benchmark.complete) {
                                         val result = benchmark.resultLine(datasetLabel)
                                         Log.i(TAG, result)
@@ -447,8 +449,8 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                                         running = false
                                     }
                                 } else {
-                                    Log.e(TAG, "benchmark getSurfaceStats failed rc=$statsRc")
-                                    updateStatus("state=benchmark_stats_error rc=$statsRc")
+                                    Log.e(TAG, "benchmark stats failed stats_rc=$statsRc sort_stats_rc=$sortStatsRc")
+                                    updateStatus("state=benchmark_stats_error stats_rc=$statsRc sort_stats_rc=$sortStatsRc")
                                     running = false
                                 }
                             }
@@ -1096,7 +1098,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                     .coerceAtLeast(0)
                 val yawStep = intent
                     .getFloatExtra(EXTRA_BENCHMARK_YAW_STEP, DEFAULT_BENCHMARK_YAW_STEP)
-                    .takeIf { it.isFinite() && it != 0f }
+                    .takeIf { it.isFinite() }
                     ?: DEFAULT_BENCHMARK_YAW_STEP
                 val sortInterval = intent
                     .getIntExtra(EXTRA_SURFACE_SORT_INTERVAL, DEFAULT_SURFACE_SORT_INTERVAL)
@@ -1143,6 +1145,13 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         private val visible = LongArray(config.frames)
         private val drawn = LongArray(config.frames)
         private val elapsedNs = LongArray(config.frames)
+        private val cameraRevision = LongArray(config.frames)
+        private val appliedOrderRevision = LongArray(config.frames)
+        private val scheduledRevision = LongArray(config.frames)
+        private val completedRevision = LongArray(config.frames)
+        private val presentedOrderLag = LongArray(config.frames)
+        private val observedResultLag = LongArray(config.frames)
+        private val sortFlags = LongArray(config.frames)
         private var observedFrames = 0
         private var samples = 0
         private var measurementStartNs = 0L
@@ -1156,7 +1165,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         private var totalVisible = 0L
         private var totalDrawn = 0L
 
-        fun record(stats: LongArray, renderCallNs: Long) {
+        fun record(stats: LongArray, sortStats: LongArray, renderCallNs: Long) {
             if (!enabled || complete) {
                 return
             }
@@ -1179,6 +1188,13 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
             visible[index] = stats[0]
             drawn[index] = stats[1]
             elapsedNs[index] = nowNs - measurementStartNs
+            cameraRevision[index] = sortStats[0]
+            appliedOrderRevision[index] = sortStats[1]
+            scheduledRevision[index] = sortStats[2]
+            completedRevision[index] = sortStats[3]
+            presentedOrderLag[index] = sortStats[4]
+            observedResultLag[index] = sortStats[5]
+            sortFlags[index] = sortStats[6]
             samples += 1
             totalVisible += stats[0]
             totalDrawn += stats[1]
@@ -1229,7 +1245,6 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                 "environment.driver",
                 "frames[*].gpu_wait_ms",
                 "frames[*].gpu_complete_ms",
-                "frames[*].sort_refreshed",
                 "summary.distributions.gpu_wait_ms",
                 "summary.distributions.gpu_complete_ms"
             )
@@ -1292,6 +1307,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
             val lines = ArrayList<Pair<String, String>>(samples + 2)
             lines += BENCHMARK_MANIFEST_PREFIX to manifest.toString()
             for (index in 0 until samples) {
+                val flags = sortFlags[index]
                 val frame = JSONObject()
                     .put("schema", "gsplat-benchmark/v1")
                     .put("record_type", "frame")
@@ -1307,7 +1323,17 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                     .put("gpu_complete_ms", JSONObject.NULL)
                     .put("visible", visible[index])
                     .put("drawn", drawn[index])
-                    .put("sort_refreshed", JSONObject.NULL)
+                    .put("sort_refreshed", flags and 1L != 0L)
+                    .put("camera_revision", cameraRevision[index])
+                    .put("applied_order_revision", appliedOrderRevision[index])
+                    .put("presented_order_revision_lag", presentedOrderLag[index])
+                    .put("async_sort_scheduled_revision", if (flags and (1L shl 3) != 0L) scheduledRevision[index] else JSONObject.NULL)
+                    .put("async_sort_completed_revision", if (flags and (1L shl 4) != 0L) completedRevision[index] else JSONObject.NULL)
+                    .put("async_sort_observed_result_lag", if (flags and (1L shl 8) != 0L) observedResultLag[index] else JSONObject.NULL)
+                    .put("async_sort_scheduled", flags and (1L shl 2) != 0L)
+                    .put("async_sort_result_applied", flags and (1L shl 5) != 0L)
+                    .put("stale_async_sort_dropped", flags and (1L shl 6) != 0L)
+                    .put("sync_sort_fallback", flags and (1L shl 7) != 0L)
                 lines += BENCHMARK_FRAME_PREFIX to frame.toString()
             }
 
@@ -1331,8 +1357,35 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                     .put("geometry_submit_ms", distributionJson(rasterMicros, samples, 1000.0))
                     .put("gpu_wait_ms", JSONObject.NULL)
                     .put("gpu_complete_ms", JSONObject.NULL))
+                .put("sort_telemetry", sortTelemetrySummary())
             lines += BENCHMARK_SUMMARY_PREFIX to summary.toString()
             return lines
+        }
+
+        private fun sortTelemetrySummary(): JSONObject {
+            var scheduled = 0
+            var completed = 0
+            var applied = 0
+            var dropped = 0
+            var fallbacks = 0
+            var maxPresentedLag = 0L
+            for (index in 0 until samples) {
+                val flags = sortFlags[index]
+                if (flags and (1L shl 2) != 0L) scheduled += 1
+                if (flags and (1L shl 4) != 0L) completed += 1
+                if (flags and (1L shl 5) != 0L) applied += 1
+                if (flags and (1L shl 6) != 0L) dropped += 1
+                if (flags and (1L shl 7) != 0L) fallbacks += 1
+                maxPresentedLag = maxOf(maxPresentedLag, presentedOrderLag[index])
+            }
+            return JSONObject()
+                .put("scheduled_count", scheduled)
+                .put("completed_count", completed)
+                .put("applied_count", applied)
+                .put("dropped_count", dropped)
+                .put("sync_fallback_count", fallbacks)
+                .put("max_presented_revision_lag", maxPresentedLag)
+                .put("stale_applied_count", 0)
         }
 
         private fun distributionJson(values: LongArray, count: Int, divisor: Double): JSONObject {

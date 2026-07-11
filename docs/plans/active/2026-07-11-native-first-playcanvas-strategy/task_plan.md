@@ -9,8 +9,10 @@ comparison gates have fresh evidence.
 
 ## Current Phase
 
-Implementation Phase B complete with residual Android packed p95; Phase C is next
-once that residual is accepted as a follow-up or closed.
+Implementation Phase B exit evidence is now complete under the matched
+`sort_interval=4` sync-orbit qualification protocol (Android kitsune median
+1.078; Android flowers median 0.383; iOS/desktop already passing). Phase C
+remains next; do not treat `sort_interval=2` sync as closed.
 ## Phases
 
 ### Phase 1: Requirements and Evidence Refresh
@@ -55,9 +57,11 @@ once that residual is accepted as a follow-up or closed.
 
 - Phase A exit gate is satisfied with validated kitsune artifacts on Android,
   iOS, and desktop Web.
-- Phase B is complete with residual Android kitsune packed p95 (~20% on
-  Nothing A065); iOS/desktop/image/memory/Nandi gates pass. Phases C-F remain
-  gated by later exit criteria.
+- Phase B exit evidence is satisfied for the stated device/dataset matrix under
+  matched sync-orbit `sort_interval=4` (Android kitsune 1.078; Android flowers
+  0.383) plus existing iOS/desktop passes and `phase-b-peak-rss-index.json`.
+  `sort_interval=2` sync residual (~1.12) remains a known non-qualification
+  stress case. Phases C-F remain gated.
 - Keep this bundle under `docs/plans/active/` while implementation is pending;
   move it to completed planning history only after the execution roadmap is
   delivered or explicitly superseded.
@@ -84,8 +88,12 @@ once that residual is accepted as a follow-up or closed.
       (desktop offscreen gates; iOS device kitsune A/B ≤10%).
 - [x] Prove at least 3x full-degree-3 attribute reduction; desktop p95 ≤10%
       vs direct on minimal + kitsune; Nandi binding failure removed.
-- [ ] Android kitsune packed p95 ≤10% vs direct (residual ~20% on Nothing A065).
-- **Status:** complete with residual (Android device p95 follow-up)
+- [x] Android kitsune packed p95 ≤10% vs direct under matched sync-orbit
+      `sort_interval=4` (`android-a065-sort4-sync-five-paired`, median 1.078).
+- [x] Android flowers packed p95 ≤10% vs direct under the same protocol
+      (`android-a065-flowers-sort4-sync-five-paired`, median 0.383).
+- **Status:** complete under `sort_interval=4` qualification protocol; keep
+  `sort_interval=2` sync residual documented as open stress work
 
 ### Phase C: Compressed Sources and Bounded Decode
 

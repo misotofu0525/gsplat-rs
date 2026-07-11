@@ -250,6 +250,64 @@ def validate_summary(summary: dict[str, Any], frames: list[dict[str, Any]], run_
             close(actual.get(field), float(expected[field]), f"distributions.{metric}.{field}")
 
 
+def validate_async_sort_telemetry(frames: list[dict[str, Any]], summary: dict[str, Any]) -> None:
+    boolean_fields = (
+        "async_sort_scheduled",
+        "async_sort_result_applied",
+        "stale_async_sort_dropped",
+        "sync_sort_fallback",
+    )
+    scheduled = completed = applied = dropped = fallbacks = stale_applied = 0
+    max_presented_lag = 0
+    for index, frame in enumerate(frames):
+        camera_revision = require_int(frame, "camera_revision")
+        applied_revision = require_int(frame, "applied_order_revision")
+        presented_lag = require_int(frame, "presented_order_revision_lag")
+        if camera_revision < applied_revision:
+            fail(f"frame {index}: applied order revision exceeds camera revision")
+        if camera_revision - applied_revision != presented_lag:
+            fail(f"frame {index}: presented order lag does not match revisions")
+        if presented_lag > 2:
+            fail(f"frame {index}: presented async order lag exceeds 2")
+        max_presented_lag = max(max_presented_lag, presented_lag)
+        if not isinstance(frame.get("sort_refreshed"), bool):
+            fail(f"frame {index}: async sort_refreshed must be boolean")
+        for field in boolean_fields:
+            if not isinstance(frame.get(field), bool):
+                fail(f"frame {index}: {field} must be boolean")
+        scheduled_revision = frame.get("async_sort_scheduled_revision")
+        completed_revision = frame.get("async_sort_completed_revision")
+        observed_lag = frame.get("async_sort_observed_result_lag")
+        if scheduled_revision is not None and require_int(frame, "async_sort_scheduled_revision") > camera_revision:
+            fail(f"frame {index}: scheduled revision exceeds camera revision")
+        if completed_revision is not None and require_int(frame, "async_sort_completed_revision") > camera_revision:
+            fail(f"frame {index}: completed revision exceeds camera revision")
+        if observed_lag is not None and require_int(frame, "async_sort_observed_result_lag") < 0:
+            fail(f"frame {index}: observed result lag must be non-negative")
+        scheduled += int(frame["async_sort_scheduled"])
+        completed += int(completed_revision is not None)
+        applied += int(frame["async_sort_result_applied"])
+        dropped += int(frame["stale_async_sort_dropped"])
+        fallbacks += int(frame["sync_sort_fallback"])
+        stale_applied += int(frame["async_sort_result_applied"] and frame["stale_async_sort_dropped"])
+
+    telemetry = require_object(summary, "sort_telemetry")
+    expected = {
+        "scheduled_count": scheduled,
+        "completed_count": completed,
+        "applied_count": applied,
+        "dropped_count": dropped,
+        "sync_fallback_count": fallbacks,
+        "max_presented_revision_lag": max_presented_lag,
+        "stale_applied_count": stale_applied,
+    }
+    for field, value in expected.items():
+        if require_int(telemetry, field) != value:
+            fail(f"sort_telemetry.{field} mismatch: expected {value}")
+    if stale_applied != 0:
+        fail("async sort applied a result marked stale")
+
+
 def validate(directory: pathlib.Path) -> None:
     if not directory.is_dir():
         fail(f"artifact directory does not exist: {directory}")
@@ -258,6 +316,10 @@ def validate(directory: pathlib.Path) -> None:
     frames = load_frames(directory / "frames.jsonl", run_id)
     summary = load_json(directory / "summary.json")
     validate_summary(summary, frames, run_id)
+    renderer = require_object(manifest, "renderer")
+    sort_policy = require_string(renderer, "sort_policy")
+    if sort_policy.startswith("async_latest:"):
+        validate_async_sort_telemetry(frames, summary)
 
 
 def main() -> int:

@@ -73,5 +73,8 @@ object NativeBridge {
     external fun getSurfaceStats(nativeHandle: Long, outStats: LongArray): Int
 
     @JvmStatic
+    external fun getSurfaceSortStats(nativeHandle: Long, outStats: LongArray): Int
+
+    @JvmStatic
     external fun destroySurfaceRenderer(nativeHandle: Long)
 }

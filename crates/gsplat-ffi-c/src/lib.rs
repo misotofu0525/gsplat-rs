@@ -12,7 +12,9 @@ use gsplat_core::{
     GSPLAT_API_VERSION_MINOR, RenderMode, RendererConfig, Vec3f,
 };
 use gsplat_io_ply::load_ply;
-use gsplat_render_wgpu::{GeometryPath, Renderer, SurfacePresenter, SurfaceRenderSession};
+use gsplat_render_wgpu::{
+    GeometryPath, Renderer, SurfaceFrameOutput, SurfacePresenter, SurfaceRenderSession,
+};
 
 const SURFACE_CAMERA_MAX_PITCH: f32 = 1.45;
 const SURFACE_CAMERA_MIN_DISTANCE_MULTIPLIER: f32 = 0.2;
@@ -45,6 +47,42 @@ pub struct GsplatStats {
     pub raster_ms: f32,
     pub visible_count: u32,
     pub drawn_count: u32,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct GsplatSurfaceSortStats {
+    pub camera_revision: u64,
+    pub applied_order_revision: u64,
+    pub scheduled_revision: u64,
+    pub completed_revision: u64,
+    pub presented_order_revision_lag: u32,
+    pub observed_result_revision_lag: u32,
+    pub flags: u32,
+}
+
+impl From<SurfaceFrameOutput> for GsplatSurfaceSortStats {
+    fn from(output: SurfaceFrameOutput) -> Self {
+        let mut flags = 0_u32;
+        flags |= u32::from(output.sort_refreshed);
+        flags |= u32::from(output.order_uploaded) << 1;
+        flags |= u32::from(output.async_sort_scheduled) << 2;
+        flags |= u32::from(output.async_sort_scheduled_revision.is_some()) << 3;
+        flags |= u32::from(output.async_sort_completed_revision.is_some()) << 4;
+        flags |= u32::from(output.async_sort_result_applied) << 5;
+        flags |= u32::from(output.stale_async_sort_dropped) << 6;
+        flags |= u32::from(output.sync_sort_fallback) << 7;
+        flags |= u32::from(output.async_sort_revision_lag.is_some()) << 8;
+        Self {
+            camera_revision: output.camera_revision,
+            applied_order_revision: output.applied_order_revision,
+            scheduled_revision: output.async_sort_scheduled_revision.unwrap_or(0),
+            completed_revision: output.async_sort_completed_revision.unwrap_or(0),
+            presented_order_revision_lag: output.presented_order_revision_lag,
+            observed_result_revision_lag: output.async_sort_revision_lag.unwrap_or(0),
+            flags,
+        }
+    }
 }
 
 impl From<FrameStats> for GsplatStats {
@@ -112,6 +150,7 @@ pub struct GsplatSurfaceRenderer {
     session: SurfaceRenderSession,
     camera_control: SurfaceCameraControl,
     render_error_logged: bool,
+    last_sort_stats: GsplatSurfaceSortStats,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -742,6 +781,7 @@ fn create_surface_renderer_from_raw_handles(
         session,
         camera_control,
         render_error_logged: false,
+        last_sort_stats: GsplatSurfaceSortStats::default(),
     });
     unsafe {
         *out_renderer = Box::into_raw(surface_renderer);
@@ -1280,7 +1320,8 @@ pub unsafe extern "C" fn gsplat_surface_renderer_render_frame(
         };
 
         match renderer.session.render_frame() {
-            Ok(_) => {
+            Ok(output) => {
+                renderer.last_sort_stats = output.into();
                 renderer.render_error_logged = false;
                 ffi_ok()
             }
@@ -1330,6 +1371,40 @@ pub unsafe extern "C" fn gsplat_surface_renderer_get_stats(
             *out_stats = renderer.session.last_stats().into();
         }
 
+        ffi_ok()
+    })
+}
+
+/// Copy bounded async-sort telemetry for the last Surface frame.
+///
+/// # Safety
+///
+/// `renderer` must be null or a live Surface renderer. `out_stats` must be
+/// valid for one `GsplatSurfaceSortStats` write.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gsplat_surface_renderer_get_sort_stats(
+    renderer: *const GsplatSurfaceRenderer,
+    out_stats: *mut GsplatSurfaceSortStats,
+) -> i32 {
+    ffi_catch_i32("gsplat_surface_renderer_get_sort_stats", || {
+        let renderer = match unsafe { renderer.as_ref() } {
+            Some(renderer) => renderer,
+            None => {
+                return ffi_error(
+                    ErrorCode::InvalidArgument,
+                    "gsplat_surface_renderer_get_sort_stats: renderer is null",
+                );
+            }
+        };
+        if out_stats.is_null() {
+            return ffi_error(
+                ErrorCode::InvalidArgument,
+                "gsplat_surface_renderer_get_sort_stats: out_stats is null",
+            );
+        }
+        unsafe {
+            *out_stats = renderer.last_sort_stats;
+        }
         ffi_ok()
     })
 }

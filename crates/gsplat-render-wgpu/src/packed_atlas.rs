@@ -2,22 +2,21 @@
 //!
 //! Hot render record: 20 bytes/splat (position/opacity + scale/flags +
 //! rotation + color). Degree-3 SH sidecar: up to 48 bytes/splat. Full
-//! attributes before order: ≤68 bytes. This matches the design's 20-byte
-//! hot-record target (see `docs/plans/active/2026-07-11-native-first-playcanvas-strategy/design.md`).
+//! attributes before order: ≤68 bytes. This matches the design's compact
+//! hot-record target (see
+//! `docs/plans/active/2026-07-11-native-first-playcanvas-strategy/design.md`).
 //!
-//! World covariance is *not* precomputed on the CPU; the draw path rebuilds it
-//! per-vertex from log-encoded scale plus a smallest-three-packed quaternion,
-//! which keeps the hot record small and image-parity-accurate with the direct
-//! (unpacked) path.
+//! World covariance is rebuilt per vertex from scene-adaptive u10 log scales
+//! plus a smallest-three-packed quaternion. This keeps the hot record compact
+//! while matching the direct path's quaternion convention.
 
 use gsplat_core::{SceneBuffers, Vec3f};
 
 /// Bytes in the Phase B hot render record (position/opacity + scale/flags +
 /// rotation + color).
 ///
-/// This is the design's 20-byte hot-record target: the storage-buffer draw
-/// path rebuilds world covariance per-vertex from scale + rotation rather
-/// than carrying precomputed covariance terms in the hot record.
+/// The storage-buffer draw path rebuilds world covariance per vertex from
+/// scene-adaptive scale + rotation.
 pub const HOT_RECORD_BYTES: usize = 20;
 /// Maximum degree-3 SH sidecar bytes before order/scratch.
 pub const DEGREE3_SIDECAR_BYTES: usize = 48;
@@ -30,7 +29,7 @@ pub const DIRECT_DEGREE3_ATTRIBUTE_BYTES: usize = 64 + 180;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HotStream {
     PositionOpacity,
-    /// Three log-encoded scale bytes plus one format/LOD flags byte.
+    /// Three u10 log scales plus two format/LOD flag bits.
     ScaleFlags,
     /// Smallest-three-packed quaternion.
     Rotation,
@@ -50,8 +49,7 @@ impl HotStream {
     pub const fn wgpu_format(self) -> wgpu::TextureFormat {
         match self {
             Self::PositionOpacity => wgpu::TextureFormat::Rgba16Uint,
-            Self::ScaleFlags => wgpu::TextureFormat::Rgba8Uint,
-            Self::Rotation => wgpu::TextureFormat::R32Uint,
+            Self::ScaleFlags | Self::Rotation => wgpu::TextureFormat::R32Uint,
             Self::Color => wgpu::TextureFormat::R32Uint,
         }
     }
@@ -117,13 +115,13 @@ impl SceneBounds {
 ///
 /// Layout (20 bytes):
 /// - `position_opacity`: 8 B — bounds-relative xyz + opacity/flags
-/// - `scale_flags`: 4 B — three log-encoded scale bytes + one flags byte
+/// - `scale_flags`: 4 B — three u10 log scales + two flags
 /// - `rotation`: 4 B — smallest-three-packed quaternion
 /// - `color`: 4 B — view-evaluated RGB10 from color-refresh
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PackedHotRecord {
     pub position_opacity: [u16; 4],
-    pub scale_flags: [u8; 4],
+    pub scale_flags: u32,
     pub rotation: u32,
     pub color: u32,
 }
@@ -139,21 +137,15 @@ impl PackedHotRecord {
     pub fn to_storage_words(self) -> [u32; HOT_RECORD_U32_WORDS] {
         let po0 = u32::from(self.position_opacity[0]) | (u32::from(self.position_opacity[1]) << 16);
         let po1 = u32::from(self.position_opacity[2]) | (u32::from(self.position_opacity[3]) << 16);
-        let scale_flags = u32::from(self.scale_flags[0])
-            | (u32::from(self.scale_flags[1]) << 8)
-            | (u32::from(self.scale_flags[2]) << 16)
-            | (u32::from(self.scale_flags[3]) << 24);
-        [po0, po1, scale_flags, self.rotation, self.color]
+        [po0, po1, self.scale_flags, self.rotation, self.color]
     }
 }
 
-/// Quantized degree-3 SH sidecar (45 i8 coeffs + 3 pad) plus dequant scales.
+/// Quantized degree-3 SH sidecar (45 i8 coeffs + 3 pad).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PackedShSidecar {
     pub coeffs_i8: [i8; 45],
     pub pad: [i8; 3],
-    /// Absolute scale applied as `coeff = i8 * scale` per channel RGB.
-    pub scales: [f32; 3],
 }
 
 impl PackedShSidecar {
@@ -207,13 +199,13 @@ impl LogScaleRange {
         Self { min, max }
     }
 
-    pub fn encode_u8(self, log_scale: f32) -> u8 {
+    pub fn encode_u10(self, log_scale: f32) -> u32 {
         let t = ((log_scale - self.min) / (self.max - self.min).max(1e-6)).clamp(0.0, 1.0);
-        (t * 255.0).round() as u8
+        (t * 1023.0).round() as u32
     }
 
-    pub fn decode_u8(self, encoded: u8) -> f32 {
-        self.min + (f32::from(encoded) / 255.0) * (self.max - self.min)
+    pub fn decode_u10(self, encoded: u32) -> f32 {
+        self.min + ((encoded & 0x3ff) as f32 / 1023.0) * (self.max - self.min)
     }
 }
 
@@ -223,6 +215,8 @@ pub struct PackedSceneCpu {
     pub log_scale_range: LogScaleRange,
     pub hot: Vec<PackedHotRecord>,
     pub sh_sidecars: Vec<PackedShSidecar>,
+    /// Scene/page-wide dequant scales applied per RGB channel.
+    pub sh_scales: [f32; 3],
     pub sh_degree: u8,
     pub splat_count: usize,
 }
@@ -399,30 +393,32 @@ fn quat_normalize(q: [f32; 4]) -> [f32; 4] {
     [q[0] * inv, q[1] * inv, q[2] * inv, q[3] * inv]
 }
 
-fn quantize_sh_rest_with_scales(rest: &[f32], scales: [f32; 3]) -> PackedShSidecar {
+fn quantize_sh_rest_with_scales(
+    rest: &[f32],
+    coeffs_per_channel: usize,
+    scales: [f32; 3],
+) -> PackedShSidecar {
     let mut coeffs = [0_i8; 45];
     for (channel, scale) in scales.iter().enumerate() {
-        let base = channel * 15;
+        let source_base = channel * coeffs_per_channel;
+        let destination_base = channel * 15;
         let scale = scale.max(1e-6);
-        for lane in 0..15 {
-            let index = base + lane;
-            let value = rest.get(index).copied().unwrap_or(0.0);
+        for lane in 0..coeffs_per_channel.min(15) {
+            let value = rest.get(source_base + lane).copied().unwrap_or(0.0);
             let q = (value / scale * 127.0).round().clamp(-127.0, 127.0) as i8;
-            coeffs[index] = q;
+            coeffs[destination_base + lane] = q;
         }
     }
     PackedShSidecar {
         coeffs_i8: coeffs,
         pad: [0; 3],
-        scales,
     }
 }
 
-pub fn dequantize_sh_rest(sidecar: &PackedShSidecar) -> [f32; 45] {
+pub fn dequantize_sh_rest(sidecar: &PackedShSidecar, scales: [f32; 3]) -> [f32; 45] {
     let mut out = [0.0_f32; 45];
-    for channel in 0..3 {
+    for (channel, scale) in scales.into_iter().enumerate() {
         let base = channel * 15;
-        let scale = sidecar.scales[channel];
         for lane in 0..15 {
             let index = base + lane;
             out[index] = f32::from(sidecar.coeffs_i8[index]) / 127.0 * scale;
@@ -438,7 +434,10 @@ pub fn pack_scene(scene: &SceneBuffers) -> PackedSceneCpu {
     let mut hot = Vec::with_capacity(scene.len());
     let mut sh_sidecars = Vec::with_capacity(scene.len());
     let rest = scene.sh_rest.as_deref().unwrap_or(&[]);
-    let rest_stride = if scene.sh_degree >= 3 { 45 } else { 0 };
+    let coeffs_per_channel = ((scene.sh_degree as usize + 1).pow(2))
+        .saturating_sub(1)
+        .min(15);
+    let rest_stride = coeffs_per_channel * 3;
 
     // Scene-level SH scales keep the per-splat sidecar at 48 bytes without an
     // extra scale texture (Phase B: one page == whole scene).
@@ -450,8 +449,8 @@ pub fn pack_scene(scene: &SceneBuffers) -> PackedSceneCpu {
                 continue;
             }
             for (channel, scene_scale) in scene_scales.iter_mut().enumerate() {
-                let channel_base = base + channel * 15;
-                for lane in 0..15 {
+                let channel_base = base + channel * coeffs_per_channel;
+                for lane in 0..coeffs_per_channel {
                     *scene_scale = scene_scale.max(rest[channel_base + lane].abs());
                 }
             }
@@ -462,14 +461,11 @@ pub fn pack_scene(scene: &SceneBuffers) -> PackedSceneCpu {
         let position = scene.positions[index];
         let encoded_pos = bounds.encode_u16(position);
         let opacity = encode_opacity_u8(scene.opacity[index]);
-        let flags = 0_u8;
-        let scale_xyz = scene.scale_xyz[index];
-        let scale_flags = [
-            log_scale_range.encode_u8(scale_xyz[0]),
-            log_scale_range.encode_u8(scale_xyz[1]),
-            log_scale_range.encode_u8(scale_xyz[2]),
-            0_u8,
-        ];
+        let opacity_flags = 0_u8;
+        let scale = scene.scale_xyz[index];
+        let scale_flags = log_scale_range.encode_u10(scale[0])
+            | (log_scale_range.encode_u10(scale[1]) << 10)
+            | (log_scale_range.encode_u10(scale[2]) << 20);
         let rotation = pack_quat_smallest_three(scene.rotation_xyzw[index]);
         // Initial hot color is degree-0 bake; view-dependent refresh overwrites
         // this from float SH before draw (design: color-refresh → hot RGB).
@@ -485,7 +481,7 @@ pub fn pack_scene(scene: &SceneBuffers) -> PackedSceneCpu {
                 encoded_pos[0],
                 encoded_pos[1],
                 encoded_pos[2],
-                u16::from(opacity) | (u16::from(flags) << 8),
+                u16::from(opacity) | (u16::from(opacity_flags) << 8),
             ],
             scale_flags,
             rotation,
@@ -499,12 +495,15 @@ pub fn pack_scene(scene: &SceneBuffers) -> PackedSceneCpu {
             } else {
                 &[]
             };
-            sh_sidecars.push(quantize_sh_rest_with_scales(slice, scene_scales));
+            sh_sidecars.push(quantize_sh_rest_with_scales(
+                slice,
+                coeffs_per_channel,
+                scene_scales,
+            ));
         } else {
             sh_sidecars.push(PackedShSidecar {
                 coeffs_i8: [0; 45],
                 pad: [0; 3],
-                scales: [0.0; 3],
             });
         }
     }
@@ -514,8 +513,67 @@ pub fn pack_scene(scene: &SceneBuffers) -> PackedSceneCpu {
         log_scale_range,
         hot,
         sh_sidecars,
+        sh_scales: scene_scales,
         sh_degree: scene.sh_degree,
         splat_count: scene.len(),
+    }
+}
+
+/// Descriptor bytes requested for the tightly packed hot storage buffer.
+///
+/// The historical function name is retained for compatibility; the Phase B
+/// implementation uses a storage buffer rather than a hot texture.
+pub fn measured_hot_texture_bytes(splat_count: usize) -> u64 {
+    (splat_count.max(1) as u64) * (HOT_RECORD_BYTES as u64)
+}
+
+/// Descriptor bytes requested for the RGBA8Uint degree-3 SH sidecar texture,
+/// including final-row padding implied by its width and height.
+pub fn measured_sh_sidecar_texture_bytes(splat_count: usize) -> u64 {
+    let (width, height) = sh_sidecar_atlas_dimensions(splat_count);
+    u64::from(width) * u64::from(height) * 4
+}
+
+/// Flatten hot records into tightly packed atlas pixel buffers for GPU upload.
+pub struct PackedAtlasCpuBuffers {
+    pub width: u32,
+    pub height: u32,
+    pub sh_coeffs: Vec<u8>, // 48 bytes/texel occupancy in a byte buffer
+}
+
+impl PackedAtlasCpuBuffers {
+    pub fn from_packed_scene(scene: &PackedSceneCpu) -> Self {
+        let (width, height) = atlas_dimensions(scene.splat_count);
+        let texels = (width as usize) * (height as usize);
+        let mut sh_coeffs = vec![0_u8; texels * DEGREE3_SIDECAR_BYTES];
+
+        for (slot, sidecar) in scene.sh_sidecars.iter().enumerate() {
+            let (x, y) = slot_to_texel(slot as u32, width);
+            let texel = (y * width + x) as usize;
+            let sh_base = texel * DEGREE3_SIDECAR_BYTES;
+            sh_coeffs[sh_base..sh_base + DEGREE3_SIDECAR_BYTES]
+                .copy_from_slice(&sidecar.as_texel_bytes());
+        }
+
+        Self {
+            width,
+            height,
+            sh_coeffs,
+        }
+    }
+
+    pub fn declared_cpu_staging_bytes(&self) -> u64 {
+        self.sh_coeffs.len() as u64
+    }
+
+    /// Tightly packed hot records for a storage-buffer draw path: five `u32`
+    /// words per splat with no atlas padding.
+    pub fn hot_storage_words(scene: &PackedSceneCpu) -> Vec<u32> {
+        let mut words = Vec::with_capacity(scene.hot.len() * HOT_RECORD_U32_WORDS);
+        for record in &scene.hot {
+            words.extend_from_slice(&record.to_storage_words());
+        }
+        words
     }
 }
 
@@ -540,8 +598,9 @@ mod tests {
             sh_degree,
             sh_rest: None,
         };
-        if sh_degree >= 3 {
-            scene.sh_rest = Some(vec![0.01; count * 45]);
+        if sh_degree > 0 {
+            let rest_stride = ((sh_degree as usize + 1).pow(2) - 1) * 3;
+            scene.sh_rest = Some(vec![0.01; count * rest_stride]);
             for (index, value) in scene.sh_rest.as_mut().unwrap().iter_mut().enumerate() {
                 *value = ((index % 17) as f32 - 8.0) * 0.02;
             }
@@ -565,7 +624,6 @@ mod tests {
     fn degree3_sidecar_and_full_attribute_budgets() {
         assert_eq!(PackedShSidecar::byte_len(), 48);
         assert_eq!(FULL_DEGREE3_ATTRIBUTE_BYTES, 68);
-        assert!(FULL_DEGREE3_ATTRIBUTE_BYTES <= 68);
     }
 
     #[test]
@@ -634,11 +692,46 @@ mod tests {
         let packed = pack_scene(&scene);
         let original = scene.sh_rest.as_ref().unwrap();
         for index in 0..4 {
-            let restored = dequantize_sh_rest(&packed.sh_sidecars[index]);
+            let restored = dequantize_sh_rest(&packed.sh_sidecars[index], packed.sh_scales);
             let base = index * 45;
             for lane in 0..45 {
                 let err = (restored[lane] - original[base + lane]).abs();
                 assert!(err < 0.03, "coeff {lane} err {err}");
+            }
+        }
+    }
+
+    #[test]
+    fn sh_sidecar_transitions_preserve_degree_0_through_3_coefficients() {
+        for degree in 0_u8..=3 {
+            let scene = sample_scene(4, degree);
+            scene.validate().expect("sample scene must be valid");
+            let packed = pack_scene(&scene);
+            assert_eq!(packed.sh_degree, degree);
+            assert_eq!(packed.sh_sidecars.len(), scene.len());
+
+            let coeffs_per_channel = ((degree as usize + 1).pow(2) - 1).min(15);
+            let restored = dequantize_sh_rest(&packed.sh_sidecars[0], packed.sh_scales);
+            if degree == 0 {
+                assert!(restored.iter().all(|value| *value == 0.0));
+                continue;
+            }
+
+            let original = scene.sh_rest.as_ref().unwrap();
+            for channel in 0..3 {
+                for lane in 0..coeffs_per_channel {
+                    let source = original[channel * coeffs_per_channel + lane];
+                    let decoded = restored[channel * 15 + lane];
+                    assert!(
+                        (decoded - source).abs() < 0.03,
+                        "degree {degree} channel {channel} lane {lane}: {decoded} vs {source}"
+                    );
+                }
+                assert!(
+                    restored[channel * 15 + coeffs_per_channel..channel * 15 + 15]
+                        .iter()
+                        .all(|value| *value == 0.0)
+                );
             }
         }
     }
@@ -676,25 +769,6 @@ mod tests {
     }
 
     #[test]
-    fn scale_flags_roundtrip_stays_within_quantization_error() {
-        let scene = sample_scene(16, 0);
-        let packed = pack_scene(&scene);
-        for (index, record) in packed.hot.iter().enumerate() {
-            let original = scene.scale_xyz[index];
-            for axis in 0..3 {
-                let decoded = packed
-                    .log_scale_range
-                    .decode_u8(record.scale_flags[axis]);
-                assert!(
-                    (decoded - original[axis]).abs() < 0.05,
-                    "scale axis {axis} drift too large: {decoded} vs {}",
-                    original[axis]
-                );
-            }
-        }
-    }
-
-    #[test]
     fn opacity_and_scale_codecs_are_finite() {
         for value in [-4.0, -1.0, 0.0, 1.0, 3.0] {
             let encoded = encode_opacity_u8(value);
@@ -705,22 +779,40 @@ mod tests {
             max: 4.0,
         };
         for value in [-4.0, -1.0, 0.0, 1.0, 3.0] {
-            let encoded = range.encode_u8(value);
-            assert!((range.decode_u8(encoded) - value).abs() < 0.05);
+            let encoded = range.encode_u10(value);
+            assert!((range.decode_u10(encoded) - value).abs() < 0.01);
         }
     }
 
     #[test]
-    fn measured_texture_bytes_match_declared_accounting() {
+    fn scene_packs_u10_scales_rotation_and_color_into_words_two_through_four() {
+        let scene = sample_scene(1, 0);
+        let packed = pack_scene(&scene);
+        let record = packed.hot[0];
+        let words = record.to_storage_words();
+        assert_eq!(words.len(), 5);
+        assert_eq!(words[2], record.scale_flags);
+        assert_eq!(words[3], record.rotation);
+        assert_eq!(words[4], record.color);
+        for axis in 0..3 {
+            let encoded = (record.scale_flags >> (axis * 10)) & 0x3ff;
+            let decoded = packed.log_scale_range.decode_u10(encoded);
+            assert!((decoded - scene.scale_xyz[0][axis]).abs() < 0.01);
+        }
+    }
+
+    #[test]
+    fn descriptor_resource_bytes_match_created_buffer_and_texture_shapes() {
         for count in [1_usize, 100, 2048, 279_199] {
-            let (width, height) = atlas_dimensions(count);
-            let texels = u64::from(width) * u64::from(height);
-            let measured =
+            let capacity = count.max(1) as u64;
+            let (sh_width, sh_height) = sh_sidecar_atlas_dimensions(count);
+            let sh_texels = u64::from(sh_width) * u64::from(sh_height);
+            let descriptor_total =
                 measured_hot_texture_bytes(count) + measured_sh_sidecar_texture_bytes(count);
-            assert_eq!(measured_hot_texture_bytes(count), texels * 20);
-            assert_eq!(measured_sh_sidecar_texture_bytes(count), texels * 48);
-            assert_eq!(measured, texels * 68);
-            assert!(measured >= (count as u64) * 68);
+            assert_eq!(measured_hot_texture_bytes(count), capacity * 20);
+            assert_eq!(measured_sh_sidecar_texture_bytes(count), sh_texels * 4);
+            assert!(descriptor_total >= (count as u64) * 68);
+            assert!(descriptor_total - (count as u64) * 68 < u64::from(sh_width) * 4);
         }
     }
 
@@ -742,67 +834,8 @@ mod tests {
         assert_eq!(packed.attribute_bytes_per_splat(), 68);
         assert!(packed.degree3_reduction_factor() >= 3.0);
         assert_eq!(
-            buffers.measured_attribute_texture_bytes(),
-            measured_hot_texture_bytes(packed.splat_count)
-                + measured_sh_sidecar_texture_bytes(packed.splat_count)
+            buffers.declared_cpu_staging_bytes(),
+            buffers.sh_coeffs.len() as u64,
         );
-    }
-}
-
-/// GPU allocation bytes for the hot record streams (includes atlas padding).
-pub fn measured_hot_texture_bytes(splat_count: usize) -> u64 {
-    let (width, height) = atlas_dimensions(splat_count);
-    let texels = u64::from(width) * u64::from(height);
-    texels * (HOT_RECORD_BYTES as u64)
-}
-
-/// GPU texture allocation bytes for the degree-3 SH sidecar atlas (includes padding).
-pub fn measured_sh_sidecar_texture_bytes(splat_count: usize) -> u64 {
-    let (width, height) = atlas_dimensions(splat_count);
-    let texels = u64::from(width) * u64::from(height);
-    texels * (DEGREE3_SIDECAR_BYTES as u64)
-}
-
-/// Flatten hot records into tightly packed atlas pixel buffers for GPU upload.
-pub struct PackedAtlasCpuBuffers {
-    pub width: u32,
-    pub height: u32,
-    pub sh_coeffs: Vec<u8>, // 48 bytes/texel occupancy in a byte buffer
-}
-
-impl PackedAtlasCpuBuffers {
-    pub fn from_packed_scene(scene: &PackedSceneCpu) -> Self {
-        let (width, height) = atlas_dimensions(scene.splat_count);
-        let texels = (width as usize) * (height as usize);
-        let mut sh_coeffs = vec![0_u8; texels * DEGREE3_SIDECAR_BYTES];
-
-        for (slot, sidecar) in scene.sh_sidecars.iter().enumerate() {
-            let (x, y) = slot_to_texel(slot as u32, width);
-            let texel = (y * width + x) as usize;
-            let sh_base = texel * DEGREE3_SIDECAR_BYTES;
-            sh_coeffs[sh_base..sh_base + DEGREE3_SIDECAR_BYTES]
-                .copy_from_slice(&sidecar.as_texel_bytes());
-        }
-
-        Self {
-            width,
-            height,
-            sh_coeffs,
-        }
-    }
-
-    pub fn measured_attribute_texture_bytes(&self) -> u64 {
-        let texels = u64::from(self.width) * u64::from(self.height);
-        texels * (HOT_RECORD_BYTES as u64) + (self.sh_coeffs.len() as u64)
-    }
-
-    /// Tightly packed hot records for a storage-buffer draw path: five `u32`
-    /// words per splat with no atlas padding.
-    pub fn hot_storage_words(scene: &PackedSceneCpu) -> Vec<u32> {
-        let mut words = Vec::with_capacity(scene.hot.len() * HOT_RECORD_U32_WORDS);
-        for record in &scene.hot {
-            words.extend_from_slice(&record.to_storage_words());
-        }
-        words
     }
 }

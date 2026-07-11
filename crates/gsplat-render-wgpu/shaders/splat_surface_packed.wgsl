@@ -1,6 +1,6 @@
 // Packed active-atlas SortedAlpha path (Phase B, no streaming).
 // Hot records are a tightly packed storage buffer (5 x u32 = 20 bytes/splat):
-// position/opacity, scale/flags, rotation, color. World covariance is rebuilt
+// position/opacity, 3xu10 log-scale flags, rotation, color. World covariance is rebuilt
 // per-vertex from log-encoded scale plus a smallest-three-packed quaternion
 // rather than carried precomputed in the hot record.
 // View-dependent color is written into the hot color word by a CPU color-refresh
@@ -65,13 +65,11 @@ struct VsOut {
 };
 
 fn quad_offset(vertex_index: u32) -> vec2<f32> {
-  let offsets = array<vec2<f32>, 6>(
+  let offsets = array<vec2<f32>, 4>(
     vec2<f32>(-1.0, -1.0),
     vec2<f32>( 1.0, -1.0),
-    vec2<f32>( 1.0,  1.0),
-    vec2<f32>(-1.0, -1.0),
-    vec2<f32>( 1.0,  1.0),
     vec2<f32>(-1.0,  1.0),
+    vec2<f32>( 1.0,  1.0),
   );
   return offsets[vertex_index];
 }
@@ -144,7 +142,7 @@ fn unpack_color_rgb10(packed: u32) -> vec3<f32> {
 }
 
 fn decode_log_scale(encoded: u32) -> f32 {
-  return params.log_scale_min + (f32(encoded) / 255.0) * params.log_scale_extent;
+  return params.log_scale_min + (f32(encoded & 0x3ffu) / 1023.0) * params.log_scale_extent;
 }
 
 // Smallest-three quaternion decode (10+10+10 bits + 2-bit dropped-component
@@ -205,7 +203,8 @@ fn world_covariance_from_scale_rotation(scale_log: vec3<f32>, quat: vec4<f32>) -
   let sx2 = exp(2.0 * scale_log.x);
   let sy2 = exp(2.0 * scale_log.y);
   let sz2 = exp(2.0 * scale_log.z);
-  let rot = quat_to_mat3(normalize(quat));
+  // unpack_quat_smallest_three already returns a unit quaternion.
+  let rot = quat_to_mat3(quat);
   let r0 = rot[0];
   let r1 = rot[1];
   let r2 = rot[2];
@@ -233,9 +232,9 @@ fn load_source(slot: u32) -> UnpackedSource {
   ));
   let alpha = decode_opacity(po1 >> 16u);
   let scale_log = vec3<f32>(
-    decode_log_scale(scale_flags & 0xffu),
-    decode_log_scale((scale_flags >> 8u) & 0xffu),
-    decode_log_scale((scale_flags >> 16u) & 0xffu),
+    decode_log_scale(scale_flags),
+    decode_log_scale(scale_flags >> 10u),
+    decode_log_scale(scale_flags >> 20u),
   );
   let quat = unpack_quat_smallest_three(rotation_bits);
   let covariance = world_covariance_from_scale_rotation(scale_log, quat);

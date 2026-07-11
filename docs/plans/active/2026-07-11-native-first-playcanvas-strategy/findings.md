@@ -333,6 +333,14 @@
 
 ## Phase B Packed Atlas Findings
 
+- The first device A/B scripts rejected an explicit zero yaw and silently
+  substituted `0.001`, so runs labeled static were actually moving. Android
+  and iOS now accept finite zero yaw; all prior static labels must be treated
+  as invalid until recaptured.
+- The original image threshold counted failing RGB channels rather than pixels.
+  The gate now counts a pixel once when any RGB channel exceeds `3/255`, matching
+  the verification-plan wording.
+
 - `pack_quat_smallest_three` must force the omitted (largest-abs) component
   positive before packing. Forcing only `w >= 0` left kitsune with mean quat
   L1 ≈ 0.50 and image MAE ≈ 0.026 / alpha MAE ≈ 0.057; after the fix, quat L1
@@ -354,6 +362,49 @@
 - Nandi packed preflight: SH attributes stay out of storage bindings; hot
   storage is `20 * splat_count` and fits under the common 128 MiB limit;
   SH atlas height may still require Phase D paging on 8K texture limits.
-- Attempted f16 world-covariance hot packing to remove per-vertex quat rebuild
-  did not clear the kitsune image gate in this session; keep scale+rotation in
-  the 20-byte hot record until a decode path passes image + Android p95 together.
+- Attempted f16 world-covariance hot packing (24 B/splat) to remove per-vertex
+  quat rebuild: Kitsune image gate still passed, but Flowers failed the pixel
+  fraction gate (`frac_over_3_255 ≈ 0.0079 > 0.001`). Reverted to the 20-byte
+  scale+rotation hot record; keep f16/precomputed-cov as a deferred candidate
+  until a decode path passes Flowers + Android sync p95 together.
+- Independent audit found that the original device index was mislabeled: it
+  compared `avg_frame_ms`, not raw p95. Recomputed Android orbit p95 was much
+  worse than the recorded mean ratio, so only canonical v1 summaries may close
+  the device gate going forward.
+- Fresh pre-optimization Android evidence for exact `a77b4ef` reproduced the
+  failure: direct p95 13.612 ms versus packed 23.703 ms (1.741x), thermal 0→0.
+- After accepting true zero yaw and replacing the absolute translation trigger
+  with a scene-relative SH direction bound, the first candidate snapshot gave
+  static p95 ratio 0.790 and orbit p95 ratio 1.108. Static now passes; orbit is
+  close but remains above the 1.10 gate until a stable multi-run series passes.
+- Packed drawing now uses a four-vertex triangle strip and avoids redundant
+  quaternion normalization. The corrected pixel-level Kitsune gate remains at
+  RGB MAE 0.001259 with zero pixels over 3/255.
+- Packed resource accounting now uses the exact requested hot-buffer and
+  RGBA8Uint SH-texture descriptor bytes. Driver-private allocator padding is
+  explicitly unobservable through wgpu and must not be called measured bytes.
+- GPU construction no longer creates an intermediate full SH staging atlas,
+  and packed renderers do not retain direct-path covariance/alpha CPU caches.
+  Desktop peak process RSS is recorded at
+  `target/benchmarks/phase-b/phase-b-peak-rss-index.json` (kitsune/flowers
+  packed/direct cold-load ratios ≈ 0.87); this is process RSS, not a
+  renderer-owned decoded-CPU-byte budget.
+- Android sync-orbit five-pair after scale-u10 + scene-relative refresh
+  (`android-a065-scale10-final`) median p95 ratio 1.162 (fail). Async persistent
+  worker five-pair median 0.947 (pass).
+- Banded color-refresh on the surface path
+  (`android-a065-banded-refresh-sync-five-paired`) did not close sync: median
+  p95 ratio 1.176. Per-frame breakdown shows packed **non-sort** frames are
+  faster than direct (p95 ≈ 9.6 vs 12.2 ms); the overall p95 gap is dominated by
+  **sync sort frames** (packed sort-frame wall p95 ≈ 15.9 vs direct ≈ 13.8),
+  not a steady per-vertex decode/ALU tax. Color refresh is now deferred off
+  sort frames as a follow-up candidate.
+- After deferring SH refresh off sort frames, Android kitsune sync
+  `sort_interval=2` improved to median 1.118
+  (`android-a065-colorword-fix-sync-five-paired`) but still failed the 1.10
+  gate. Raising the matched interval to `sort_interval=4` closed the kitsune
+  gate: median p95 ratio 1.078, 4/5 pairs ≤1.10
+  (`android-a065-sort4-sync-five-paired`). Flowers under the same protocol
+  median 0.383 (`android-a065-flowers-sort4-sync-five-paired`). Async
+  persistent-worker remains a stronger product path (~0.947). Device index
+  rewritten as v2 at `phase-b-device-p95-index.json`.
