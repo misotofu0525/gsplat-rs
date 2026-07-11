@@ -7,6 +7,9 @@ xcuserdata/
 .gradle/
 .kotlin/
 local.properties
+__pycache__/
+*.py[cod]
+bindings/android/build/
 bindings/android/host-smoke/build/
 bindings/android/gsplat-android/build/
 bindings/android/gsplat-android/src/main/jniLibs/
