@@ -2,6 +2,9 @@
 
 mod packed_atlas;
 mod packed_gpu;
+mod page_scheduler;
+mod residency;
+mod spatial_pages;
 mod surface_session;
 
 pub use packed_atlas::{
@@ -11,6 +14,14 @@ pub use packed_atlas::{
     dequantize_sh_rest, measured_hot_texture_bytes, measured_sh_sidecar_texture_bytes,
     pack_color_rgb10, pack_quat_smallest_three, pack_scene, sh_sidecar_atlas_dimensions,
     slot_to_texel, unpack_color_rgb10, unpack_quat_smallest_three,
+};
+pub use page_scheduler::{ScheduleOutcome, SchedulerConfig, SchedulerView, schedule_pages};
+pub use residency::{
+    AsyncPageToken, AtlasSlot, AttributeLod, PageResidency, PageResidencyState, ResidencyBudgets,
+    ResidencyError, ResidencyManager,
+};
+pub use spatial_pages::{
+    DEFAULT_PAGE_CAPACITY, PageBounds, PageId, SpatialPage, SpatialPageSet, partition_scene_pages,
 };
 pub use surface_session::{
     SurfaceFrameOutput, SurfaceFrameTimings, SurfaceRenderSession, SurfaceSortSchedule,
@@ -2310,7 +2321,7 @@ fn refresh_packed_hot_colors_range(
 fn packed_color_refresh_band_size(splat_count: usize) -> usize {
     const MIN_BAND: usize = 8_192;
     const MAX_BAND: usize = 24_576;
-    let eighth = (splat_count + 7) / 8;
+    let eighth = splat_count.div_ceil(8);
     eighth.clamp(MIN_BAND, MAX_BAND).min(splat_count.max(1))
 }
 

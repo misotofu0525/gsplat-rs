@@ -2,6 +2,31 @@
 
 ## Session: 2026-07-11
 
+### Implementation Phase D: Spatial Pages and Streaming LOD
+
+- **Status:** in_progress; CPU page metadata + residency + scheduler landed
+- Actions taken:
+  - Added `spatial_pages` module: uniform-grid partition into capacity-capped
+    pages with AABB metadata (`DEFAULT_PAGE_CAPACITY = 65536`).
+  - Added `ResidencyManager`: Absent→…→Resident→Evicting state machine, atlas
+    slot generations, inflight/resident budgets, stale async-token rejection,
+    attribute LOD on resident pages, LRU eviction helper.
+  - Added `page_scheduler`: CPU distance-ranked coarse cover, request/evict
+    under budgets, camera-jump unit gate.
+  - `cargo test -p gsplat-render-wgpu --lib`: 66 passed (1 ignored research
+    oracle).
+- Current boundary / remaining:
+  - GPU atlas upload/draw for resident pages.
+  - Deterministic local-cache traces, network profile, SH hysteresis quality,
+    large-scene average attribute payload, 30-minute stability.
+- 5-question reboot:
+  - Where am I? Phase D CPU residency/scheduling foundation landed.
+  - Where am I going? GPU page upload + continuity/large-scene evidence.
+  - What's the goal? Bounded paged atlas without persistent holes.
+  - What have I learned? Slot generation + scene revision must gate every async
+    publish before atlas mutation.
+  - What have I done? `spatial_pages` + `residency` + `page_scheduler` + tests.
+
 ### Implementation Phase C: Compressed Sources and Bounded Decode
 
 - **Status:** complete under minimal-fixture exit evidence; FFI/device follow-ups deferred
@@ -307,8 +332,8 @@
 
 | Question | Answer |
 |----------|--------|
-| Where am I? | Phase A–C complete under stated evidence; Phase D (spatial pages / streaming LOD) is next. |
-| Where am I going? | Phase D page scheduling and residency, plus optional SPZ FFI/examples. |
+| Where am I? | Phase A–C complete; Phase D CPU spatial pages, residency generations, and scheduler unit gates landed. |
+| Where am I going? | GPU atlas upload/draw for resident pages, then large-scene continuity evidence. |
 | What's the goal? | Deliver the native-first competitive architecture through Phases A-F with evidence. |
 | What have I learned? | See `findings.md`. |
 | What have I done? | Froze Phase A, qualified Phase B, landed SPZ v4 decode, minimal fixture, cancel, and PLY attribute mapping. |

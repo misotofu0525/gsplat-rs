@@ -17,6 +17,8 @@
 - Scene import starts in `crates/gsplat-io-ply`.
 - Sorting lives in `crates/gsplat-sort`.
 - Rendering and GPU-facing orchestration live in `crates/gsplat-render-wgpu`.
+  Packed atlas, spatial page metadata, residency generations, and the CPU page
+  scheduler currently live in that crate as the Phase B/D large-scene path.
 - Native embedding goes through `crates/gsplat-ffi-c`.
 - Browser WebAssembly embedding goes through `crates/gsplat-web`.
 - Runtime validation entrypoints are `examples/desktop`, `examples/android`,

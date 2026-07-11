@@ -449,3 +449,18 @@
   device parity remain deferred outside the minimal-fixture Phase C exit.
 - Rust dependency selection pins pure-Rust `ruzstd` 0.8.3 in workspace
   dependencies and decodes each stream into its exact validated output size.
+
+## Phase D Streaming Findings
+
+- First CPU slice keeps page metadata inside `gsplat-render-wgpu` rather than a
+  new crate: `spatial_pages`, `residency`, and `page_scheduler`.
+- Uniform-grid partition + capacity packing preserves splat coverage without
+  duplicates; page capacity defaults to the design's 65,536 prototype but tests
+  use small capacities.
+- `ResidencyManager` requires matching `scene_revision`, `page_id`, and
+  `slot_generation` on every async advance; eviction bumps slot generation so
+  stale tokens cannot republish into a reused slot.
+- CPU scheduler ranks by distance, keeps a coarse cover radius, and on camera
+  jump replaces far residents while respecting resident/inflight budgets.
+- GPU atlas upload/draw, SH hysteresis quality gates, network profiles, and
+  large-scene attribute-byte averages remain open.

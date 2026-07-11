@@ -564,14 +564,16 @@ quality profile, and date.
 
 ### Phase D: Streaming LOD
 
-- [ ] Residency state and slot-generation stress tests pass.
-- [ ] Coarse coverage and camera-jump gates pass.
+- [x] Residency state and slot-generation stress tests pass (unit suite in
+      `gsplat-render-wgpu::residency`).
+- [x] Coarse coverage and camera-jump gates pass at CPU scheduler unit level.
 - [ ] Local-cache deterministic trace is reproducible.
 - [ ] Network-profile runs store bytes, latency, errors, and cache state.
 - [ ] Degree-aware SH residency passes transition quality and hysteresis gates.
 - [ ] Average attribute payload reaches 40-48 bytes on the large-scene trace
       without crossing the frozen quality threshold.
 - [ ] 30-minute queue, memory, and temporal-quality gates pass.
+- [ ] GPU atlas upload/draw integration for resident pages.
 
 ### Phase E: Competitive Qualification
 

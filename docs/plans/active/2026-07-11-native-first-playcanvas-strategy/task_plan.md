@@ -11,7 +11,7 @@ comparison gates have fresh evidence.
 
 Implementation Phase B is complete under the matched `sort_interval=4`
 sync-orbit qualification protocol. Phase C is complete under minimal-fixture
-exit evidence; Phase D (spatial pages / streaming LOD) is next.
+exit evidence. Phase D (spatial pages / streaming LOD) is in progress.
 ## Phases
 
 ### Phase 1: Requirements and Evidence Refresh
@@ -116,9 +116,15 @@ exit evidence; Phase D (spatial pages / streaming LOD) is next.
 
 ### Phase D: Spatial Pages and Streaming LOD
 
-- [ ] Implement page scheduling, residency generations, and spatial/attribute LOD.
+- [x] Implement spatial page partition metadata (`spatial_pages`).
+- [x] Implement `ResidencyManager` state machine, slot generations, budgets,
+      and stale async-token rejection (`residency`).
+- [x] Implement first CPU page scheduler with coarse cover + camera-jump unit
+      gates (`page_scheduler`).
+- [ ] Wire pages into GPU atlas upload / draw path.
 - [ ] Prove bounded memory/queues, continuity, and large-scene gates.
-- **Status:** pending; Phase C exit cleared under minimal-fixture evidence
+- [ ] Degree-aware SH residency hysteresis on resident pages beyond unit API.
+- **Status:** in_progress; CPU metadata/residency/scheduler slice landed
 
 ### Phase E: Policy Optimization and Competitive Qualification
 
