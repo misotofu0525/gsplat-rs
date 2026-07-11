@@ -100,11 +100,13 @@ decode) is next; first format candidate is Niantic SPZ (MIT, v4 ZSTD).
       independent ZSTD streams, and degree-0 `SceneBuffers` decode.
 - [x] Extend SPZ v4 decode to SH degrees 1–3 with RUB→RUF SH sign flips and
       PLY channel-major `sh_rest` layout.
-- [ ] Add real SPZ fixtures and image-parity evidence.
-- [ ] Bound compressed/decoded CPU caches and verify cancellation/recovery.
+- [x] Add a committed minimal SPZ v4 fixture plus unit-level PLY↔SPZ
+      count/attribute mapping and cooperative cancel evidence.
+- [ ] Bound compressed/decoded CPU caches as a reusable residency layer and
+      prove device/image parity for qualification scenes.
 - **Status:** in_progress; Phase B gate cleared; SPZ feasibility accepted (MIT,
   interoperable, not a custom public format); synthetic SH decode covered
-  through degree 3
+  through degree 3; fixture + cancel/attribute gates landed unit-side
 
 ### Phase D: Spatial Pages and Streaming LOD
 
@@ -166,6 +168,7 @@ decode) is next; first format candidate is Niantic SPZ (MIT, v4 ZSTD).
 | iOS create failed with parse error despite valid bundled PLY | 1 | Stale `imported_scene.ply` in Documents shadowed the bundle; uninstall cleared sandbox and kitsune benchmark passed. |
 | Phase C dependency fetch could not reach `index.crates.io` over TLS | 1 | Use a per-command reachable sparse registry endpoint without changing repository or user Cargo configuration. |
 | Initial Phase C formatting check reported rustfmt drift | 1 | Format only `gsplat-io-spz`, then rerun the focused checks. |
+| PLY↔SPZ attribute gate mismatched identity rotations | 1 | Invert PLY RDF→RUF quaternion flips when authoring paired PLY; compare quaternions up to sign. |
 
 ## Notes
 

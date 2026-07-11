@@ -32,6 +32,11 @@ let loaded = load_spz_with_limits(Path::new("scene.spz"), limits)?;
 # Ok::<(), gsplat_io_spz::SpzLoadError>(())
 ```
 
+Cooperative cancellation is available through `load_spz_cancellable` and
+`parse_spz_bytes_cancellable`. The cancel callback is polled between header
+validation, each ZSTD attribute-stream decompress, scene allocation, and during
+unpack. Cancelled loads return `SpzLoadError::Cancelled` and do not publish a
+scene.
 ## Input conventions
 
 - Extension-free SPZ stores coordinates as `RUB` (right, up, back).

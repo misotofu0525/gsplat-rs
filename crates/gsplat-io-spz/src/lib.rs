@@ -92,6 +92,8 @@ pub enum SpzLoadError {
     InvalidScene,
     #[error("failed to reserve memory for SPZ {0}")]
     AllocationFailed(&'static str),
+    #[error("SPZ load cancelled")]
+    Cancelled,
 }
 
 impl SpzLoadError {
@@ -108,6 +110,7 @@ impl SpzLoadError {
             | Self::DecompressionFailed
             | Self::InvalidScene => ErrorCode::ParseFailed,
             Self::AllocationFailed(_) => ErrorCode::Internal,
+            Self::Cancelled => ErrorCode::InvalidArgument,
         }
     }
 }
@@ -120,12 +123,26 @@ pub fn load_spz_with_limits(
     path: &Path,
     limits: SpzLoadLimits,
 ) -> Result<SpzLoadResult, SpzLoadError> {
+    load_spz_cancellable(path, limits, || false)
+}
+
+/// Load an SPZ file with cooperative cancellation.
+///
+/// `is_cancelled` is polled between header validation, each attribute-stream
+/// decompress, scene allocation, and during unpack. A cancelled load returns
+/// [`SpzLoadError::Cancelled`] without publishing a scene.
+pub fn load_spz_cancellable(
+    path: &Path,
+    limits: SpzLoadLimits,
+    mut is_cancelled: impl FnMut() -> bool,
+) -> Result<SpzLoadResult, SpzLoadError> {
+    check_cancelled(&mut is_cancelled)?;
     let metadata = fs::metadata(path).map_err(|_| SpzLoadError::Io)?;
     let input_len = usize::try_from(metadata.len())
         .map_err(|_| SpzLoadError::ResourceSizeOverflow("input bytes"))?;
     ensure_limit("input bytes", input_len, limits.max_input_bytes)?;
     let input = fs::read(path).map_err(|_| SpzLoadError::Io)?;
-    parse_spz_bytes_with_limits(&input, limits)
+    parse_spz_bytes_cancellable(&input, limits, is_cancelled)
 }
 
 pub fn parse_spz_bytes(input: &[u8]) -> Result<SpzLoadResult, SpzLoadError> {
@@ -136,12 +153,24 @@ pub fn parse_spz_bytes_with_limits(
     input: &[u8],
     limits: SpzLoadLimits,
 ) -> Result<SpzLoadResult, SpzLoadError> {
+    parse_spz_bytes_cancellable(input, limits, || false)
+}
+
+/// Parse in-memory SPZ bytes with cooperative cancellation.
+pub fn parse_spz_bytes_cancellable(
+    input: &[u8],
+    limits: SpzLoadLimits,
+    mut is_cancelled: impl FnMut() -> bool,
+) -> Result<SpzLoadResult, SpzLoadError> {
+    check_cancelled(&mut is_cancelled)?;
     ensure_limit("input bytes", input.len(), limits.max_input_bytes)?;
     let header = parse_header(input, limits)?;
+    check_cancelled(&mut is_cancelled)?;
     let expected_sizes = expected_stream_sizes(header)?;
-    let streams = decompress_streams(input, header, &expected_sizes)?;
+    let streams = decompress_streams(input, header, &expected_sizes, &mut is_cancelled)?;
+    check_cancelled(&mut is_cancelled)?;
     let mut scene = allocate_scene(header, limits)?;
-    unpack_scene(header, &streams, &mut scene)?;
+    unpack_scene(header, &streams, &mut scene, &mut is_cancelled)?;
     scene.validate().map_err(|_| SpzLoadError::InvalidScene)?;
 
     Ok(SpzLoadResult {
@@ -263,6 +292,7 @@ fn decompress_streams(
     input: &[u8],
     header: SpzHeader,
     expected_sizes: &[usize],
+    is_cancelled: &mut impl FnMut() -> bool,
 ) -> Result<Vec<Vec<u8>>, SpzLoadError> {
     if expected_sizes.len() != header.num_streams {
         return Err(SpzLoadError::InvalidStreamLayout);
@@ -303,6 +333,7 @@ fn decompress_streams(
 
     let mut streams = Vec::with_capacity(header.num_streams);
     for (index, &(start, end)) in ranges.iter().enumerate() {
+        check_cancelled(is_cancelled)?;
         let mut decoder = ruzstd::decoding::StreamingDecoder::new(Cursor::new(&input[start..end]))
             .map_err(|_| SpzLoadError::DecompressionFailed)?;
         let mut decoded = try_vec_with_capacity("decoded attribute stream", expected_sizes[index])?;
@@ -374,6 +405,7 @@ fn unpack_scene(
     header: SpzHeader,
     streams: &[Vec<u8>],
     scene: &mut SceneBuffers,
+    is_cancelled: &mut impl FnMut() -> bool,
 ) -> Result<(), SpzLoadError> {
     let sh_dim = dim_for_degree(header.sh_degree)?;
     let expected_streams = expected_stream_count(header.sh_degree);
@@ -383,6 +415,9 @@ fn unpack_scene(
 
     let position_scale = 2_f32.powi(-i32::from(header.fractional_bits));
     for point in 0..header.num_points {
+        if point % 64 == 0 {
+            check_cancelled(is_cancelled)?;
+        }
         let position_base = point * 9;
         let x = decode_i24(&streams[0][position_base..position_base + 3]) as f32 * position_scale;
         let y =
@@ -509,6 +544,14 @@ fn ensure_limit(
     }
 }
 
+fn check_cancelled(is_cancelled: &mut impl FnMut() -> bool) -> Result<(), SpzLoadError> {
+    if is_cancelled() {
+        Err(SpzLoadError::Cancelled)
+    } else {
+        Ok(())
+    }
+}
+
 fn try_vec_with_capacity<T>(
     resource: &'static str,
     capacity: usize,
@@ -522,14 +565,21 @@ fn try_vec_with_capacity<T>(
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use gsplat_core::SceneBuffers;
+    use gsplat_io_ply::parse_ply_text;
+
     use super::{
-        SH_FLIP_RUB_TO_RUF, SpzLoadError, SpzLoadLimits, dim_for_degree, parse_spz_bytes,
-        parse_spz_bytes_with_limits, unquantize_sh,
+        SH_FLIP_RUB_TO_RUF, SpzLoadError, SpzLoadLimits, dim_for_degree, load_spz, parse_spz_bytes,
+        parse_spz_bytes_cancellable, parse_spz_bytes_with_limits, unquantize_sh,
     };
 
     const HEADER_BYTES: usize = 32;
     const MAGIC: u32 = 0x5053_474e;
     const VERSION: u32 = 4;
+    const FIXTURE_GAUSSIANS: usize = 8;
 
     fn pack_i24(value: f32, fractional_bits: u8) -> [u8; 3] {
         let fixed = (value * (1_u32 << fractional_bits) as f32).round() as i32;
@@ -785,5 +835,157 @@ mod tests {
         // For point 0 / channel R / coeff 1 the packed byte is 128+1-20 = 109.
         let raw_coeff1 = unquantize_sh(109);
         assert_eq!(sh[1], -raw_coeff1);
+    }
+
+    fn datasets_dir() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/datasets")
+    }
+
+    fn minimal_spz_fixture_path() -> PathBuf {
+        datasets_dir().join("minimal_v4_degree0.spz")
+    }
+
+    #[test]
+    fn write_committed_minimal_v4_degree0_fixture_when_requested() {
+        if std::env::var_os("GSPLAT_WRITE_SPZ_FIXTURE").is_none() {
+            return;
+        }
+        let path = minimal_spz_fixture_path();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, synthetic_degree_0_spz(FIXTURE_GAUSSIANS)).unwrap();
+        assert!(path.is_file());
+    }
+
+    #[test]
+    fn loads_committed_minimal_v4_degree0_fixture() {
+        let path = minimal_spz_fixture_path();
+        let result = load_spz(&path).expect("committed minimal SPZ fixture must load");
+        assert_eq!(result.summary.gaussians, FIXTURE_GAUSSIANS);
+        assert_eq!(result.summary.sh_degree, 0);
+        assert_eq!(result.scene.len(), FIXTURE_GAUSSIANS);
+        assert!(result.scene.sh_rest.is_none());
+        assert!(result.scene.validate().is_ok());
+        assert_eq!(result.scene.positions[1].x, 0.25);
+        assert_eq!(result.scene.positions[1].y, -0.125);
+        assert_eq!(result.scene.positions[1].z, -(1.0 + 0.0625));
+    }
+
+    fn scene_to_rdf_ply(scene: &SceneBuffers) -> String {
+        // gsplat-io-ply converts RDF→RUF on load. Emit RDF so the recovered
+        // SceneBuffers match the SPZ RUF output for count/attribute mapping.
+        let mut ply = String::from(
+            "ply\nformat ascii 1.0\ncomment paired SPZ/PLY attribute mapping fixture\n",
+        );
+        ply.push_str(&format!("element vertex {}\n", scene.len()));
+        for property in [
+            "x", "y", "z", "opacity", "scale_0", "scale_1", "scale_2", "rot_0", "rot_1", "rot_2",
+            "rot_3", "f_dc_0", "f_dc_1", "f_dc_2",
+        ] {
+            ply.push_str("property float ");
+            ply.push_str(property);
+            ply.push('\n');
+        }
+        ply.push_str("end_header\n");
+        for index in 0..scene.len() {
+            let position = scene.positions[index];
+            let scale = scene.scale_xyz[index];
+            let rotation = scene.rotation_xyzw[index];
+            let color = scene.color_dc[index];
+            // PLY default rot layout is wxyz, then RDF→RUF flips x/z on xyzw.
+            // Emit the inverse so the recovered RUF quaternion matches SPZ.
+            let ply_w = rotation[3];
+            let ply_x = -rotation[0];
+            let ply_y = rotation[1];
+            let ply_z = -rotation[2];
+            ply.push_str(&format!(
+                "{} {} {} {} {} {} {} {} {} {} {} {} {} {}\n",
+                position.x,
+                -position.y,
+                position.z,
+                scene.opacity[index],
+                scale[0],
+                scale[1],
+                scale[2],
+                ply_w,
+                ply_x,
+                ply_y,
+                ply_z,
+                color[0],
+                color[1],
+                color[2],
+            ));
+        }
+        ply
+    }
+
+    fn assert_scenes_close(left: &SceneBuffers, right: &SceneBuffers) {
+        assert_eq!(left.len(), right.len());
+        assert_eq!(left.sh_degree, right.sh_degree);
+        assert_eq!(left.sh_rest.is_some(), right.sh_rest.is_some());
+        for index in 0..left.len() {
+            let lp = left.positions[index];
+            let rp = right.positions[index];
+            assert!((lp.x - rp.x).abs() < 1.0e-5);
+            assert!((lp.y - rp.y).abs() < 1.0e-5);
+            assert!((lp.z - rp.z).abs() < 1.0e-5);
+            assert!((left.opacity[index] - right.opacity[index]).abs() < 1.0e-5);
+            for axis in 0..3 {
+                assert!(
+                    (left.scale_xyz[index][axis] - right.scale_xyz[index][axis]).abs() < 1.0e-5
+                );
+                assert!((left.color_dc[index][axis] - right.color_dc[index][axis]).abs() < 1.0e-5);
+            }
+            let lq = left.rotation_xyzw[index];
+            let rq = right.rotation_xyzw[index];
+            let same_sign = (0..4).map(|i| (lq[i] - rq[i]).abs()).sum::<f32>() < 1.0e-4;
+            let flipped_sign = (0..4).map(|i| (lq[i] + rq[i]).abs()).sum::<f32>() < 1.0e-4;
+            assert!(
+                same_sign || flipped_sign,
+                "rotation mismatch at splat {index}: left={lq:?} right={rq:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn ply_vs_spz_count_and_attribute_mapping_gate() {
+        let spz = parse_spz_bytes(&synthetic_degree_0_spz(FIXTURE_GAUSSIANS)).unwrap();
+        let ply_text = scene_to_rdf_ply(&spz.scene);
+        let ply = parse_ply_text(&ply_text).expect("paired RDF PLY must parse");
+
+        assert_eq!(ply.summary.gaussians, spz.summary.gaussians);
+        assert_eq!(ply.summary.sh_degree, spz.summary.sh_degree);
+        assert_scenes_close(&spz.scene, &ply.scene);
+    }
+
+    #[test]
+    fn cancels_before_decode_when_flag_set() {
+        let bytes = synthetic_degree_0_spz(FIXTURE_GAUSSIANS);
+        let err = parse_spz_bytes_cancellable(&bytes, SpzLoadLimits::default(), || true)
+            .expect_err("pre-set cancel must abort");
+        assert_eq!(err, SpzLoadError::Cancelled);
+        assert_eq!(err.code(), gsplat_core::ErrorCode::InvalidArgument);
+    }
+
+    #[test]
+    fn cancels_between_attribute_stream_decompress() {
+        let bytes = synthetic_degree_0_spz(FIXTURE_GAUSSIANS);
+        let polls = AtomicUsize::new(0);
+        let err = parse_spz_bytes_cancellable(&bytes, SpzLoadLimits::default(), || {
+            // Allow header + first cancel checks, then abort before later streams.
+            polls.fetch_add(1, Ordering::Relaxed) >= 3
+        })
+        .expect_err("mid-decode cancel must abort");
+        assert_eq!(err, SpzLoadError::Cancelled);
+        assert!(polls.load(Ordering::Relaxed) >= 3);
+    }
+
+    #[test]
+    fn cancelled_load_does_not_publish_scene_buffers() {
+        let bytes = synthetic_degree_0_spz(FIXTURE_GAUSSIANS);
+        let result = parse_spz_bytes_cancellable(&bytes, SpzLoadLimits::default(), || true);
+        assert!(matches!(result, Err(SpzLoadError::Cancelled)));
+        // Successful path still works after a cancelled attempt (no sticky state).
+        let recovered = parse_spz_bytes(&bytes).unwrap();
+        assert_eq!(recovered.summary.gaussians, FIXTURE_GAUSSIANS);
     }
 }

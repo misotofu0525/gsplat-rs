@@ -551,10 +551,14 @@ quality profile, and date.
 
 ### Phase C: Compression
 
-- [ ] Decoder corpus, malformed-input, cancellation, and memory-bound tests pass.
-- [ ] PLY-vs-compressed image parity passes.
+- [x] Format compatibility/licensing decision is recorded (Niantic SPZ MIT, v4).
+- [x] Decoder corpus (synthetic degrees 0/1/3), malformed-input, cooperative
+      cancellation, and per-load memory-bound tests pass in `gsplat-io-spz`.
+- [x] Unit-level PLY-vs-SPZ count/attribute mapping gate passes.
+- [ ] PLY-vs-compressed offscreen/device image parity passes.
 - [ ] Cold/warm bytes, time-to-first-frame, and peak memory are stored.
-- [ ] Format compatibility/licensing decision is recorded.
+- [ ] Reusable compressed/decoded CPU residency caches are bounded beyond
+      single-load `SpzLoadLimits`.
 
 ### Phase D: Streaming LOD
 

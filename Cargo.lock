@@ -728,6 +728,7 @@ name = "gsplat-io-spz"
 version = "0.1.3"
 dependencies = [
  "gsplat-core",
+ "gsplat-io-ply",
  "ruzstd",
  "thiserror 2.0.18",
 ]

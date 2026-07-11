@@ -4,7 +4,7 @@
 
 ### Implementation Phase C: Compressed Sources and Bounded Decode
 
-- **Status:** in_progress; SPZ v4 decode covers degrees 0–3 with synthetic tests
+- **Status:** in_progress; SPZ v4 decode + fixture/cancel/attribute gates
 - Actions taken:
   - Added workspace crate `gsplat-io-spz` with file and in-memory loading APIs,
     `SpzLoadLimits`, structured `thiserror` failures, and `SceneBuffers` output.
@@ -18,15 +18,28 @@
     PLY channel-major `sh_rest`; degree 4 and wrong stream counts reject.
   - Added synthetic packing helpers and tests for degrees 0/1/3 plus header
     rejection cases.
-  - `cargo test -p gsplat-io-spz`: 8 tests passed.
-  - `cargo check -p gsplat-io-spz`: passed.
-  - **Slice 1 committed:** land Phase C SPZ v4 decoder crate + workspace + plan
-    docs (excluding android build / `__pycache__` artifacts).
-- Current boundary:
-  - Degree 4 SH, legacy gzip v1-3, extension ILV, FFI, and real fixture/image
-    parity remain out of this slice.
-  - Real SPZ fixtures, cache cancellation/recovery, and broader Phase C exit
-    evidence remain pending.
+  - **Slice 1 committed (`7b5943e`):** land Phase C SPZ v4 decoder crate +
+    workspace + plan docs (excluding android build / `__pycache__` artifacts).
+  - **Slice 2:** cooperative cancel APIs (`load_spz_cancellable` /
+    `parse_spz_bytes_cancellable`), committed fixture
+    `tests/datasets/minimal_v4_degree0.spz` (8 splats, degree 0, 331 B),
+    PLY↔SPZ count/attribute mapping gate (RDF PLY inverse of RUF SPZ), and
+    cancel/recovery unit evidence.
+  - `cargo test -p gsplat-io-spz`: 14 tests passed.
+  - `cargo check -p gsplat-io-spz` and `cargo clippy -p gsplat-io-spz
+    --all-targets -- -D warnings`: passed.
+- Current boundary / remaining:
+  - Device/offscreen image parity for PLY-vs-SPZ qualification scenes.
+  - Broader compressed/decoded CPU cache residency budgets beyond per-load
+    `SpzLoadLimits`.
+  - Degree 4 SH, legacy gzip v1-3, extension ILV, and FFI wiring remain deferred.
+- 5-question reboot:
+  - Where am I? Phase C unit fixture/cancel/attribute gates landed.
+  - Where am I going? Image parity + residency-cache evidence, then FFI/examples.
+  - What's the goal? Phase C exit: compressed sources with bounded decode and
+    parity evidence.
+  - What have I learned? See `findings.md` Phase C section.
+  - What have I done? Decoder crate + fixture + cancel + PLY attribute gate.
 
 ### Implementation Phase B: Packed Atlas Without Streaming
 
@@ -286,13 +299,14 @@
 | 2026-07-11 | First Android extraction polled the legacy result before JSON output completed | 1 | Wait for the summary marker before extracting and validating the atomic artifact. |
 | 2026-07-11 | Phase C dependency fetch could not reach `index.crates.io` over TLS | 1 | Fetch through a reachable per-command sparse registry endpoint; leave Cargo configuration unchanged. |
 | 2026-07-11 | Phase C formatting check found rustfmt drift | 1 | Format only `gsplat-io-spz`, then repeat focused verification. |
+| 2026-07-11 | PLY↔SPZ attribute gate mismatched identity rotations | 1 | Invert PLY RDF→RUF quaternion flips when authoring paired PLY; compare quaternions up to sign. |
 
 ## 5-Question Reboot Check
 
 | Question | Answer |
 |----------|--------|
-| Where am I? | Phase A and Phase B are complete; Phase C is in progress with the first bounded SPZ v4 slice implemented. |
-| Where am I going? | Add real SPZ fixtures, higher SH degrees, and bounded cache cancellation/recovery evidence. |
+| Where am I? | Phase A and Phase B are complete; Phase C has decoder + fixture/cancel/attribute unit gates. |
+| Where am I going? | Offscreen/device PLY-vs-SPZ image parity, residency-cache budgets, then FFI/examples. |
 | What's the goal? | Deliver the native-first competitive architecture through Phases A-F with evidence. |
 | What have I learned? | See `findings.md`. |
-| What have I done? | Froze Phase A, qualified Phase B, and added bounded degree-0 SPZ v4 decoding into RUF `SceneBuffers`. |
+| What have I done? | Froze Phase A, qualified Phase B, landed SPZ v4 decode, minimal fixture, cancel, and PLY attribute mapping. |

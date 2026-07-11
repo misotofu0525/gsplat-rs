@@ -426,7 +426,16 @@
   sixth SH stream, unquantize with `(byte - 128) / 128`, remap SPZ
   coeff-major RGB triples into PLY channel-major `sh_rest`, then apply the
   RUB→RUF SH flips. Degree 4 remains an explicit unsupported error.
-- Real `.spz` fixtures, legacy gzip v1–3, extension ILV, FFI, and image parity
-  remain Phase C follow-up work.
+- Committed minimal fixture: `tests/datasets/minimal_v4_degree0.spz` (8 splats,
+  degree 0, 331 bytes). Regenerate with
+  `GSPLAT_WRITE_SPZ_FIXTURE=1 cargo test -p gsplat-io-spz write_committed_minimal`.
+- Unit PLY↔SPZ attribute gate authors RDF PLY that inverts the PLY RDF→RUF path
+  so recovered `SceneBuffers` match SPZ RUF output (quaternions compared up to
+  sign). Offscreen/device image parity remains open.
+- Cooperative cancel polls between header validation, each attribute-stream
+  decompress, allocation, and unpack; cancelled loads return
+  `SpzLoadError::Cancelled` without publishing a scene.
+- Legacy gzip v1–3, extension ILV, degree 4, FFI, and residency-cache budgets
+  beyond per-load `SpzLoadLimits` remain Phase C follow-up work.
 - Rust dependency selection pins pure-Rust `ruzstd` 0.8.3 in workspace
   dependencies and decodes each stream into its exact validated output size.
