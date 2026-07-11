@@ -2,6 +2,32 @@
 
 ## Session: 2026-07-11
 
+### Implementation Phase C: Compressed Sources and Bounded Decode
+
+- **Status:** in_progress; SPZ v4 decode covers degrees 0–3 with synthetic tests
+- Actions taken:
+  - Added workspace crate `gsplat-io-spz` with file and in-memory loading APIs,
+    `SpzLoadLimits`, structured `thiserror` failures, and `SceneBuffers` output.
+  - Selected Niantic SPZ under MIT and version 4 (`NGSP`, plaintext 32-byte
+    header, independent ZSTD attribute streams).
+  - Added exact header, TOC, stream-size, input, point-count, and decoded-scene
+    validation before scene construction.
+  - Added RUB-to-RUF conversion for positions, `xyzw` rotations, and SH rest
+    coefficients using Niantic `coordinateConverter(RUB, RUF)` flips.
+  - Extended decode to SH degrees 1–3: 6th ZSTD stream, unquantize, remap to
+    PLY channel-major `sh_rest`; degree 4 and wrong stream counts reject.
+  - Added synthetic packing helpers and tests for degrees 0/1/3 plus header
+    rejection cases.
+  - `cargo test -p gsplat-io-spz`: 8 tests passed.
+  - `cargo check -p gsplat-io-spz`: passed.
+  - **Slice 1 committed:** land Phase C SPZ v4 decoder crate + workspace + plan
+    docs (excluding android build / `__pycache__` artifacts).
+- Current boundary:
+  - Degree 4 SH, legacy gzip v1-3, extension ILV, FFI, and real fixture/image
+    parity remain out of this slice.
+  - Real SPZ fixtures, cache cancellation/recovery, and broader Phase C exit
+    evidence remain pending.
+
 ### Implementation Phase B: Packed Atlas Without Streaming
 
 - **Status:** complete under matched `sort_interval=4` sync-orbit qualification
@@ -258,13 +284,15 @@
 | 2026-07-11 | Device p95 index actually stored average frame time | 1 | Reject the old index as exit evidence and use canonical raw-frame summaries for all new A/B comparisons. |
 | 2026-07-11 | Android/iOS rejected explicit yaw zero and silently ran a moving orbit | 1 | Accept every finite yaw including zero and recapture static/orbit as distinct traces. |
 | 2026-07-11 | First Android extraction polled the legacy result before JSON output completed | 1 | Wait for the summary marker before extracting and validating the atomic artifact. |
+| 2026-07-11 | Phase C dependency fetch could not reach `index.crates.io` over TLS | 1 | Fetch through a reachable per-command sparse registry endpoint; leave Cargo configuration unchanged. |
+| 2026-07-11 | Phase C formatting check found rustfmt drift | 1 | Format only `gsplat-io-spz`, then repeat focused verification. |
 
 ## 5-Question Reboot Check
 
 | Question | Answer |
 |----------|--------|
-| Where am I? | Phase A is complete; Phase B is implemented but its Android and Flowers device performance gates remain open. |
-| Where am I going? | Remove the Nothing A065 packed-path regression, then capture the full required device/dataset evidence before Phase C. |
+| Where am I? | Phase A and Phase B are complete; Phase C is in progress with the first bounded SPZ v4 slice implemented. |
+| Where am I going? | Add real SPZ fixtures, higher SH degrees, and bounded cache cancellation/recovery evidence. |
 | What's the goal? | Deliver the native-first competitive architecture through Phases A-F with evidence. |
 | What have I learned? | See `findings.md`. |
-| What have I done? | Froze Phase A, implemented the packed atlas, and proved its correctness/memory gates while retaining an explicit failed Android performance gate. |
+| What have I done? | Froze Phase A, qualified Phase B, and added bounded degree-0 SPZ v4 decoding into RUF `SceneBuffers`. |

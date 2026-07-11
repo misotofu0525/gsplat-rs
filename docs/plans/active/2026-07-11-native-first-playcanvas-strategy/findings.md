@@ -408,3 +408,25 @@
   median 0.383 (`android-a065-flowers-sort4-sync-five-paired`). Async
   persistent-worker remains a stronger product path (~0.947). Device index
   rewritten as v2 at `phase-b-device-p95-index.json`.
+
+## Phase C SPZ Findings
+
+- Niantic SPZ is MIT-licensed and interoperable; version 4 is the selected
+  first compressed source format rather than a repository-specific public
+  format.
+- SPZ v4 starts with a 32-byte plaintext `NGSP` header
+  (`magic = 0x5053474e`) and stores positions, alphas, colors, scales,
+  rotations, and optional SH as independently compressed ZSTD streams.
+- The first `gsplat-io-spz` slice validates input, point, decoded-scene, TOC,
+  and exact uncompressed-stream sizes before constructing `SceneBuffers`.
+- Extension-free SPZ defaults to RUB coordinates. Runtime `SceneBuffers` use
+  RUF, so this loader applies Niantic `coordinateConverter(RUB, RUF)` flips:
+  position Z, quaternion X/Y, and per-band SH sign flips.
+- Supported SH degrees are 0–3. Degree 0 keeps 5 streams; degrees 1–3 add the
+  sixth SH stream, unquantize with `(byte - 128) / 128`, remap SPZ
+  coeff-major RGB triples into PLY channel-major `sh_rest`, then apply the
+  RUB→RUF SH flips. Degree 4 remains an explicit unsupported error.
+- Real `.spz` fixtures, legacy gzip v1–3, extension ILV, FFI, and image parity
+  remain Phase C follow-up work.
+- Rust dependency selection pins pure-Rust `ruzstd` 0.8.3 in workspace
+  dependencies and decodes each stream into its exact validated output size.

@@ -9,10 +9,9 @@ comparison gates have fresh evidence.
 
 ## Current Phase
 
-Implementation Phase B exit evidence is now complete under the matched
-`sort_interval=4` sync-orbit qualification protocol (Android kitsune median
-1.078; Android flowers median 0.383; iOS/desktop already passing). Phase C
-remains next; do not treat `sort_interval=2` sync as closed.
+Implementation Phase B is complete under the matched `sort_interval=4`
+sync-orbit qualification protocol. Phase C (compressed sources / bounded
+decode) is next; first format candidate is Niantic SPZ (MIT, v4 ZSTD).
 ## Phases
 
 ### Phase 1: Requirements and Evidence Refresh
@@ -97,9 +96,15 @@ remains next; do not treat `sort_interval=2` sync as closed.
 
 ### Phase C: Compressed Sources and Bounded Decode
 
-- [ ] Add the selected interoperable compressed source path.
+- [x] Add the first bounded SPZ v4 source slice: plaintext header validation,
+      independent ZSTD streams, and degree-0 `SceneBuffers` decode.
+- [x] Extend SPZ v4 decode to SH degrees 1–3 with RUB→RUF SH sign flips and
+      PLY channel-major `sh_rest` layout.
+- [ ] Add real SPZ fixtures and image-parity evidence.
 - [ ] Bound compressed/decoded CPU caches and verify cancellation/recovery.
-- **Status:** pending; blocked on Phase B exit gate
+- **Status:** in_progress; Phase B gate cleared; SPZ feasibility accepted (MIT,
+  interoperable, not a custom public format); synthetic SH decode covered
+  through degree 3
 
 ### Phase D: Spatial Pages and Streaming LOD
 
@@ -159,6 +164,8 @@ remains next; do not treat `sort_interval=2` sync as closed.
 | PlayCanvas harness found a placement but reported no manager | 1 | Query `GSplatDirector.camerasMap` with the underlying `Camera` (`camera.camera.camera`), not the `CameraComponent`; the fixed harness proves `GSplatHybridRenderer` with GPU sorting active. |
 | Web collector represented unavailable git dirty state as `false` | 1 | Permit build commit/dirty to be null only when explicitly listed unavailable, update the validator, and add positive/negative fixtures. |
 | iOS create failed with parse error despite valid bundled PLY | 1 | Stale `imported_scene.ply` in Documents shadowed the bundle; uninstall cleared sandbox and kitsune benchmark passed. |
+| Phase C dependency fetch could not reach `index.crates.io` over TLS | 1 | Use a per-command reachable sparse registry endpoint without changing repository or user Cargo configuration. |
+| Initial Phase C formatting check reported rustfmt drift | 1 | Format only `gsplat-io-spz`, then rerun the focused checks. |
 
 ## Notes
 
