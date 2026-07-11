@@ -1,5 +1,12 @@
 //! SPZ scene loading and parsing utilities.
 
+mod cache;
+
+pub use cache::{
+    estimated_scene_bytes, BoundedByteCache, SourceCacheBudgets, SourceCacheError,
+    SourceResidencyCaches,
+};
+
 use std::fs;
 use std::io::{Cursor, Read};
 use std::mem::size_of;

@@ -435,7 +435,11 @@
 - Cooperative cancel polls between header validation, each attribute-stream
   decompress, allocation, and unpack; cancelled loads return
   `SpzLoadError::Cancelled` without publishing a scene.
-- Legacy gzip v1–3, extension ILV, degree 4, FFI, and residency-cache budgets
-  beyond per-load `SpzLoadLimits` remain Phase C follow-up work.
+- `SourceResidencyCaches` provides independent LRU byte budgets for compressed
+  source bytes and decoded `SceneBuffers` (`estimated_scene_bytes`), so
+  whole-scene SPZ residency can be bounded beyond per-load `SpzLoadLimits`
+  without waiting for Phase D page scheduling.
+- Legacy gzip v1–3, extension ILV, degree 4, FFI, and offscreen/device image
+  parity remain Phase C follow-up work.
 - Rust dependency selection pins pure-Rust `ruzstd` 0.8.3 in workspace
   dependencies and decodes each stream into its exact validated output size.

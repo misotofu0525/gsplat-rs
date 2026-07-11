@@ -557,8 +557,8 @@ quality profile, and date.
 - [x] Unit-level PLY-vs-SPZ count/attribute mapping gate passes.
 - [ ] PLY-vs-compressed offscreen/device image parity passes.
 - [ ] Cold/warm bytes, time-to-first-frame, and peak memory are stored.
-- [ ] Reusable compressed/decoded CPU residency caches are bounded beyond
-      single-load `SpzLoadLimits`.
+- [x] Reusable compressed/decoded CPU residency caches are bounded beyond
+      single-load `SpzLoadLimits` (`SourceResidencyCaches` unit evidence).
 
 ### Phase D: Streaming LOD
 

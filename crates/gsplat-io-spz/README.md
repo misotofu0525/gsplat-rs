@@ -37,6 +37,12 @@ Cooperative cancellation is available through `load_spz_cancellable` and
 validation, each ZSTD attribute-stream decompress, scene allocation, and during
 unpack. Cancelled loads return `SpzLoadError::Cancelled` and do not publish a
 scene.
+
+Bounded CPU residency helpers live in `SourceResidencyCaches`: independent
+compressed-source and decoded-`SceneBuffers` byte budgets with LRU eviction.
+Use them when the same SPZ bytes or decoded scene may be revisited without
+widening the per-load `SpzLoadLimits` contract.
+
 ## Input conventions
 
 - Extension-free SPZ stores coordinates as `RUB` (right, up, back).
