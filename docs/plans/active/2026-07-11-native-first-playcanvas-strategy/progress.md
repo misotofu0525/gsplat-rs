@@ -20,7 +20,7 @@
 - [x] G3 native Surface/Web usability
 - [x] G4 competitive evidence
 - [x] G5 local distribution and claim boundaries
-- [ ] G6 terminal audit
+- [x] G6 terminal audit
 
 ### G2 acceptance
 
@@ -126,11 +126,46 @@
 - **Current unique execution item:** G6 — terminal audit and final
   reconciliation.
 
-## Session: 2026-07-13 Phase D Reset
+### G6 terminal audit
+
+- Fresh final Rust matrix passed: fmt, workspace check, all workspace tests,
+  clippy with warnings denied, workspace docs, 79 renderer tests plus one
+  explicitly ignored research oracle, and hardware-backed Metal
+  `SortedAlpha` conformance.
+- Fresh Web/competition matrix passed: wasm target check and release build,
+  Web package check/tests/build, pinned PlayCanvas preflight and GPU-sort
+  browser smoke, benchmark artifact fixtures, camera-trace tests, all ten clean
+  Phase E artifact validators, and deterministic paired report reproduction.
+- Fresh integration matrix passed: browser `wasm_paged_active_atlas` rendered
+  `visible=drawn=3` for eight measured frames; C FFI, Android JNI, and Swift
+  host smokes passed. G5's local Web/Android/Apple consumer builds remain the
+  package evidence for the unchanged code.
+
+| Capability or claim | Final state | Evidence boundary |
+|---|---|---|
+| Total pages exceed fixed atlas slots with eviction and exclusion | Achieved | 27 pages, four slots, deterministic unit/offscreen gates |
+| Local-source paged Surface on native and Web | Achieved, experimental | Nothing A065/Vulkan plus Chrome/WebGPU non-zero smokes |
+| Desktop Web parity with PlayCanvas | Achieved narrowly | Chrome/WebGPU, Kitsune static, 640x480, five clean pairs only |
+| Local Web/AAR/XCFramework package consumption | Achieved | Local artifacts and consumers; no registry publication |
+| Native performance leadership | Not achieved | No paired mobile-browser matrix or sustained thermal evidence |
+| Production HTTP streaming, 10M scale, SOG/Streamed SOG | Not achieved | Explicitly deferred; local page source only |
+| Broad browser/dataset, memory, energy, or thermal leadership | Not achieved | Evidence does not cover these claims |
+| Stable paged/package public API | Not achieved | Direct `SortedAlpha` and small C ABI remain the stable v0.1 boundary |
+
+- G1-G5 commits exist on `refactor/packed-atlas-d-reset`; the final G6 change is
+  documentation reconciliation only. No push, tag, release, registry publish,
+  force operation, or git-config change occurred.
+- **Current unique execution item:** none — the initial Phase D-F Goal Breakdown
+  is complete at the bounded scopes above.
+
+## Historical execution log: 2026-07-13 Phase D Reset
+
+The entries below preserve time-ordered blockers and interim states. They are
+not current status; the G6 audit above is authoritative.
 
 ### D0 Functional Correctness Reboot
 
-- **Status:** in_progress; reset to checkpoint `05f649e`
+- **Status at reset:** in progress at checkpoint `05f649e`; closed by G2/G3.
 - Preserved boundary:
   - Phase B/C packed atlas and SPZ work remains intact.
   - Phase D keeps `spatial_pages`, `residency`, `page_scheduler`, `page_atlas`,

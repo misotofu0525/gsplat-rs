@@ -9,9 +9,8 @@ second, then steady-state memory and competitive performance.
 ## Current Phase
 
 Implementation Phases B and C remain complete at their recorded boundaries.
-The reset-line worktree contains candidate Phase D-F implementation and
-evidence, but it is not accepted until the Goal Breakdown below is verified and
-committed slice by slice. G4 is the only current execution item.
+The reset line has now accepted and committed G1-G5. G6's fresh terminal matrix
+also passes; this final docs-only reconciliation is the last execution item.
 
 ## Goal Breakdown
 
@@ -70,7 +69,7 @@ class, or restoring the abandoned telemetry/sidecar/adversarial-validator stack.
   - Soft observation: package sizes and unavailable registry/device publication
     are recorded; no npm, Maven, SwiftPM registry, tag, or push is performed.
   - Commit boundary: package wrapper/tests and canonical handbook/binding docs.
-- [ ] **G6 — Close the terminal audit.**
+- [x] **G6 — Close the terminal audit.**
   - Hard acceptance: G1-G5 commits exist on this branch, canonical regression
     checks pass, progress contains an achieved/not-achieved claim table, the
     worktree has no uncommitted task changes, and no unsupported broad claim is
@@ -87,8 +86,7 @@ class, or restoring the abandoned telemetry/sidecar/adversarial-validator stack.
   percentage wins, 30-minute RSS, 40–48-byte averages, complete device/browser
   matrices, energy/thermal wins, and large-scene headline scale. A miss narrows
   the claim and stays visible; it does not trigger endless implementation churn.
-- **Current unique execution item:** G6 — run the terminal requirement audit,
-  canonical regression matrix, and final docs-only reconciliation.
+- **Current unique execution item:** none — the Goal Breakdown is complete.
 
 ## Phases
 
@@ -139,10 +137,9 @@ class, or restoring the abandoned telemetry/sidecar/adversarial-validator stack.
   0.383) plus existing iOS/desktop passes and `phase-b-peak-rss-index.json`.
   `sort_interval=2` sync residual (~1.12) remains a known non-qualification
   stress case. Phase C is complete under minimal-fixture evidence; Phases D-F
-  remain gated.
-- Keep this bundle under `docs/plans/active/` while implementation is pending;
-  move it to completed planning history only after the execution roadmap is
-  delivered or explicitly superseded.
+  are complete at the bounded capability and claim scopes recorded below.
+- This bundle remains at its requested canonical path as the terminal reset-line
+  record. Archival, push, and publication are separate actions.
 
 ## Execution Phases
 

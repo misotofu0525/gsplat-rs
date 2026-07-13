@@ -881,17 +881,19 @@
   projection, color, opacity, and uncapped covariance path without image-space
   registration or threshold changes.
 
-# Phase E five-pair result (2026-07-13)
+# Phase E clean five-pair result (2026-07-13)
 
 - Five sequential randomized-order Kitsune static pairs each retained 120
   warmups, 3,600 measured frames, raw summaries, final images, and matched
   pair/order receipts. All ten v1 artifacts validate.
-- gsplat-rs / PlayCanvas frame-wall p95 median ratio is `1.0299999952` with a
+- Clean commit `440fb8f` produced gsplat-rs / PlayCanvas frame-wall p95 median
+  ratio `1.0200000048` with a
   deterministic 100,000-sample bootstrap 95% CI of
-  `[1.0100000143, 1.0404040356]`, below the `1.10` parity ceiling.
-- The p99 median ratio is `1.0485436847`, CI
-  `[1.0291262043, 1.0485436847]`, below the `1.20` ceiling. Minimum pair SSIM
-  is `0.9986567354`, above `0.99`; every run reported zero missed frames.
+  `[1.0099999905, 1.0200000048]`, below the `1.10` claim qualifier.
+- The p99 median ratio is `1.0291262275`, CI
+  `[1.0097087471, 1.0388349561]`, below the `1.20` qualifier. Minimum pair SSIM
+  is `0.9986570102`, above `0.99`; every run reported zero missed frames and
+  every manifest records `build.dirty=false`.
 - This earns only a local Chrome/WebGPU, Kitsune-static desktop parity result.
   The repository still has no current five-pair native-vs-mobile-Web matrix,
   broad Flowers/medium-1m browser matrix, 30-minute thermal/energy evidence,

@@ -2,9 +2,10 @@
 
 ## Status
 
-- **State:** proposed; ready for implementation planning
-- **Product position:** Android/iOS native performance leadership, desktop Web
-  performance parity, and one shared rendering core
+- **State:** bounded local-source Phase D-F slice implemented and qualified;
+  remote streaming and broader scalability targets remain proposed
+- **Product position:** one shared native/Web rendering core with narrow desktop
+  Web parity evidence; Android/iOS performance leadership remains unearned
 - **Release quality path:** `SortedAlpha`
 - **Public format policy:** consume ecosystem formats; do not introduce a
   gsplat-rs-specific public scene format in this plan
