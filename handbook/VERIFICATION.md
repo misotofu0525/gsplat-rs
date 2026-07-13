@@ -142,15 +142,16 @@ bash bindings/android/scripts/test-android-benchmark-artifact-extraction.sh
 #   node examples/web/scripts/collect-web-benchmark-artifact.mjs
 ```
 
-## Competitive Harness Preflight
+## Competitive Harness and Phase E Pairing
 
 The PlayCanvas harness freezes dependency identity and has a separate
-fail-closed browser path smoke. It is not yet a timed rendering benchmark:
+fail-closed browser path smoke plus a validated timed collector:
 
 ```bash
 npm ci --ignore-scripts --prefix tests/competitive/playcanvas
 npm test --prefix tests/competitive/playcanvas
 npm run smoke --prefix tests/competitive/playcanvas
+npm run benchmark:kitsune-static --prefix tests/competitive/playcanvas
 ```
 
 - Use only the committed exact dependency and lockfile.
@@ -160,9 +161,29 @@ npm run smoke --prefix tests/competitive/playcanvas
   selected backend, resolved and active GPU-sort renderer, source format,
   canvas size, and a nonzero loaded splat count. Its result and pre-timing
   screenshot are written below `target/benchmarks/playcanvas-path-smoke/`.
-- It does not prove matched rendering quality or performance. Those remain
-  Phase A gates until a shared trace and complete `gsplat-benchmark/v1`
-  artifact are captured for both implementations.
+- A single timed artifact does not prove a competitor claim. Phase E uses five
+  predeclared, sequential randomized-order pairs, 120 warmups and 3,600
+  measured frames per run, the shared Kitsune trace, and raw 640×480 images.
+- Store `pairing.pair_id`, `pairing.run_order`, and `pairing.position` in both
+  manifests with `PHASE_E_PAIR_ID`, `PHASE_E_PAIR_ORDER`, and
+  `PHASE_E_PAIR_POSITION`. Set `PLAYCANVAS_ARTIFACT_DIR` and
+  `GSPLAT_ARTIFACT_DIR` to fresh per-run directories.
+- Generate each pair's `image-diff.json` and the series result with:
+
+```bash
+node tests/perf/compare-image-ssim.mjs \
+  <pair>/playcanvas/final-frame.png \
+  <pair>/gsplat-rs/final-frame.png \
+  --threshold 0.99 --output <pair>/image-diff.json
+python3 tests/perf/compare-paired-benchmarks.py \
+  <five-pair-series> --output <five-pair-series>/comparison.json
+```
+
+- The paired comparator rejects mismatched dataset, trace, display, backend,
+  order, sample, warmup, or quality fields and reports deterministic bootstrap
+  confidence intervals. Its current claim scope is desktop Web Kitsune static
+  only; it does not prove native, broad browser/dataset, memory, thermal,
+  energy, or large-scene claims.
 
 ## Web Example Smoke
 

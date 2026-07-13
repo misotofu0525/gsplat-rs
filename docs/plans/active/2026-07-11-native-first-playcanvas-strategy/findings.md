@@ -43,6 +43,14 @@
   but not comparable preprocess/sort/submit/GPU phase timings. Its raw artifact
   therefore records those values as `null` with explicit unavailable paths;
   filling them with zero would create a false advantage.
+- A paired comparator must validate raw counts and renderer receipts, not only
+  trust matching manifest labels. The accepted static profile requires all
+  3,600 frames on each side to report the full dataset count and locks
+  PlayCanvas `GSplatHybridRenderer` / `raster_gpu_sort` against gsplat-rs
+  `wasm_sorted_index_direct`.
+- The image metric is a deterministic 8x8-window luma SSIM over decoded sRGB
+  bytes with an internal identity/opposite-image self-test. It is a parity
+  guard for this fixed view, not a perceptual-quality claim across scenes.
 
 ## Research Findings
 

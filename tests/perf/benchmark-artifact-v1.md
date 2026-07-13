@@ -37,6 +37,13 @@ Producers should add a `timing.frame_wall_source` field naming the presentation
 boundary or proxy. Synchronous throughput loops are smoke/microbenchmark data,
 not end-to-end frame-wall evidence.
 
+Phase E paired candidates additionally carry a `pairing` object with the same
+non-empty `pair_id` and `run_order` in both engine manifests plus complementary
+`position` values 1 and 2. `tests/perf/compare-paired-benchmarks.py` requires at
+least five pairs and rejects mismatched dataset, trace, display, WebGPU backend,
+sample count, warmup count, order, or image-quality evidence before computing
+paired ratios and deterministic bootstrap confidence intervals.
+
 `display.refresh_hz_source` and `display.frame_budget_source` identify whether
 each value was configured, observed, or supplied by an external harness. A
 configured refresh rate must not be presented as an observed display mode.
@@ -61,11 +68,13 @@ sort_refreshed
 ```
 
 Timing values are finite non-negative numbers or `null`; counts and
-`elapsed_ns` are non-negative integers. `call_ms`, `frame_wall_ms`,
-`preprocess_ms`, `sort_ms`, and `geometry_submit_ms` are required measurements
-and cannot be `null`. `gpu_wait_ms`, `gpu_complete_ms`, and `sort_refreshed`
-may be `null` when the platform cannot provide them. `elapsed_ns` must be
-monotonic.
+`elapsed_ns` are non-negative integers. `call_ms` and `frame_wall_ms` are
+required measurements and cannot be `null`. `preprocess_ms`, `sort_ms`,
+`geometry_submit_ms`, `gpu_wait_ms`, and `gpu_complete_ms` may be `null` when
+the producer cannot observe those boundaries. Each unavailable timing must list
+its `frames[*].<metric>` path in `manifest.unavailable_fields`; unavailable
+values must never be filled with zero. `sort_refreshed` may be `null` when the
+platform cannot provide it. `elapsed_ns` must be monotonic.
 
 ## Summary
 

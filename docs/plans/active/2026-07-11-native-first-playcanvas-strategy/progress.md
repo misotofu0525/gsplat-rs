@@ -75,6 +75,16 @@
   not a performance result.
 - **Current unique execution item:** G4 comparison slice — validate deterministic
   SSIM and fail-closed paired aggregation before clean evidence capture.
+- G4 comparison slice passed against the retained raw series: deterministic
+  8x8 luma SSIM reproduced pair 01 at `0.998659`; the paired comparator
+  reproduced the stored five-pair report and now also rejects wrong renderer
+  paths, non-640x480 images, or any frame whose counts are not the full 279,199
+  splats.
+- Artifact fixtures prove unavailable PlayCanvas phase timings must be both
+  `null` and declared; the canonical validator rejects undeclared nulls.
+- **Current unique execution item:** G4 clean evidence capture — execute five
+  sequential randomized-order pairs from committed collectors, then accept or
+  narrow the claim from that report.
 
 ## Session: 2026-07-13 Phase D Reset
 

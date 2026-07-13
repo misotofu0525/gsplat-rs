@@ -75,6 +75,43 @@ path.write_text(json.dumps(value))
 PY
 python3 "$VALIDATOR" "$TMP_DIR/unavailable-build-state"
 
+cp -R "$VALID" "$TMP_DIR/unavailable-phase-timings"
+python3 - "$TMP_DIR/unavailable-phase-timings" <<'PY'
+import json, pathlib, sys
+root = pathlib.Path(sys.argv[1])
+metrics = ("preprocess_ms", "sort_ms", "geometry_submit_ms")
+manifest_path = root / "manifest.json"
+manifest = json.loads(manifest_path.read_text())
+manifest["unavailable_fields"].extend(f"frames[*].{metric}" for metric in metrics)
+manifest_path.write_text(json.dumps(manifest))
+frames_path = root / "frames.jsonl"
+frames = [json.loads(line) for line in frames_path.read_text().splitlines() if line]
+for frame in frames:
+    for metric in metrics:
+        frame[metric] = None
+frames_path.write_text("\n".join(json.dumps(frame) for frame in frames) + "\n")
+summary_path = root / "summary.json"
+summary = json.loads(summary_path.read_text())
+for metric in metrics:
+    summary["distributions"][metric] = None
+summary_path.write_text(json.dumps(summary))
+PY
+python3 "$VALIDATOR" "$TMP_DIR/unavailable-phase-timings"
+
+cp -R "$TMP_DIR/unavailable-phase-timings" "$TMP_DIR/unlisted-phase-timing"
+python3 - "$TMP_DIR/unlisted-phase-timing/manifest.json" <<'PY'
+import json, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+value = json.loads(path.read_text())
+value["unavailable_fields"].remove("frames[*].sort_ms")
+path.write_text(json.dumps(value))
+PY
+if python3 "$VALIDATOR" "$TMP_DIR/unlisted-phase-timing" >"$TMP_DIR/unlisted-phase-timing.out" 2>&1; then
+  echo "expected unlisted null phase timing to fail" >&2
+  exit 1
+fi
+rg -q 'null sort_ms must be listed as unavailable' "$TMP_DIR/unlisted-phase-timing.out"
+
 cp -R "$TMP_DIR/unavailable-build-state" "$TMP_DIR/unlisted-build-state"
 python3 - "$TMP_DIR/unlisted-build-state/manifest.json" <<'PY'
 import json, pathlib, sys

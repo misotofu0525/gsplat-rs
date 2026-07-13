@@ -22,7 +22,7 @@ METRICS = (
     "gpu_wait_ms",
     "gpu_complete_ms",
 )
-REQUIRED_TIMINGS = set(METRICS[:5])
+REQUIRED_TIMINGS = {"call_ms", "frame_wall_ms"}
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 TOLERANCE = 1e-9
 
@@ -157,7 +157,7 @@ def validate_manifest(manifest: dict[str, Any]) -> str:
     return run_id
 
 
-def load_frames(path: pathlib.Path, run_id: str) -> list[dict[str, Any]]:
+def load_frames(path: pathlib.Path, run_id: str, unavailable: set[str]) -> list[dict[str, Any]]:
     frames: list[dict[str, Any]] = []
     try:
         lines = path.read_text(encoding="utf-8").splitlines()
@@ -178,7 +178,10 @@ def load_frames(path: pathlib.Path, run_id: str) -> list[dict[str, Any]]:
             fail(f"frame_index must be contiguous from zero; expected {expected_index}")
         require_int(frame, "elapsed_ns")
         for metric in METRICS:
-            require_number(frame, metric, nullable=metric not in REQUIRED_TIMINGS)
+            nullable = metric not in REQUIRED_TIMINGS
+            value = require_number(frame, metric, nullable=nullable)
+            if value is None and f"frames[*].{metric}" not in unavailable:
+                fail(f"null {metric} must be listed as unavailable")
         for key in ("visible", "drawn"):
             require_int(frame, key)
         if frame.get("sort_refreshed") is not None and not isinstance(frame.get("sort_refreshed"), bool):
@@ -313,7 +316,8 @@ def validate(directory: pathlib.Path) -> None:
         fail(f"artifact directory does not exist: {directory}")
     manifest = load_json(directory / "manifest.json")
     run_id = validate_manifest(manifest)
-    frames = load_frames(directory / "frames.jsonl", run_id)
+    unavailable = set(manifest["unavailable_fields"])
+    frames = load_frames(directory / "frames.jsonl", run_id, unavailable)
     summary = load_json(directory / "summary.json")
     validate_summary(summary, frames, run_id)
     renderer = require_object(manifest, "renderer")
