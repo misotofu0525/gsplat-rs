@@ -1028,6 +1028,87 @@ type SurfaceGeometryResources = (
     Option<SurfacePagedRuntime>,
 );
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SurfaceResourcePlan {
+    geometry_path: GeometryPath,
+    scene_splats: usize,
+    page_count: usize,
+    slot_count: usize,
+    resident_capacity: usize,
+    direct_preflight: DirectScenePreflight,
+    packed_preflight: PackedScenePreflight,
+    required_texture_dimension: u32,
+}
+
+impl SurfaceResourcePlan {
+    fn validate_selected_path(self) -> Result<(), DirectSceneError> {
+        match self.geometry_path {
+            GeometryPath::SortedIndexDirect
+                if self.direct_preflight.path == DirectScenePath::ActiveAtlasRequired =>
+            {
+                Err(DirectSceneError::ResourceLimitExceeded(Box::new(
+                    self.direct_preflight,
+                )))
+            }
+            GeometryPath::PackedAtlas | GeometryPath::PagedActiveAtlas
+                if self.packed_preflight.path == PackedScenePath::PagingRequired =>
+            {
+                Err(DirectSceneError::PackedResourceLimitExceeded(Box::new(
+                    self.packed_preflight,
+                )))
+            }
+            _ => Ok(()),
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn surface_resource_plan(
+    geometry_path: GeometryPath,
+    scene_splats: usize,
+    sh_degree: u8,
+    page_count: usize,
+    page_capacity: usize,
+    width: u32,
+    height: u32,
+    limits: &wgpu::Limits,
+) -> Result<SurfaceResourcePlan, DirectSceneError> {
+    let direct_preflight = direct_scene_preflight(scene_splats, sh_degree, limits)?;
+    let (slot_count, resident_capacity, packed_sh_degree) = match geometry_path {
+        GeometryPath::PagedActiveAtlas => {
+            let slot_count = page_count.clamp(1, DEFAULT_PAGED_ATLAS_SLOTS);
+            let resident_capacity = slot_count
+                .checked_mul(page_capacity.max(1))
+                .ok_or(DirectSceneError::ResourceSizeOverflow)?;
+            (slot_count, resident_capacity, 0)
+        }
+        GeometryPath::SortedIndexDirect | GeometryPath::PackedAtlas => (0, scene_splats, sh_degree),
+    };
+    let packed_preflight = packed_scene_preflight(
+        resident_capacity,
+        packed_sh_degree,
+        limits.max_texture_dimension_2d,
+        u64::from(limits.max_storage_buffer_binding_size),
+    )?;
+    let required_texture_dimension = width
+        .max(height)
+        .max(packed_preflight.hot_atlas_width)
+        .max(packed_preflight.hot_atlas_height)
+        .max(packed_preflight.sh_atlas_width)
+        .max(packed_preflight.sh_atlas_height);
+
+    Ok(SurfaceResourcePlan {
+        geometry_path,
+        scene_splats,
+        page_count,
+        slot_count,
+        resident_capacity,
+        direct_preflight,
+        packed_preflight,
+        required_texture_dimension,
+    })
+}
+
 fn try_prepare_then_commit<State, Prepared, Error>(
     state: &mut State,
     prepare: impl FnOnce(&State) -> Result<Prepared, Error>,
@@ -1148,7 +1229,6 @@ impl SurfacePresenter {
         let adapter_info = adapter.get_info();
         let adapter_limits = adapter.limits();
         let mut required_limits = wgpu::Limits::downlevel_defaults();
-        let mut required_texture_dimension = width.max(height);
         // Surface sessions support runtime direct↔packed A/B switching, so the
         // device must negotiate the loaded scene's packed sidecar requirement
         // even when the presenter is initially created on the Direct path.
@@ -1156,20 +1236,26 @@ impl SurfacePresenter {
             .scene()
             .ok_or(SurfacePresenterError::SceneNotLoaded)?;
         let geometry_path = renderer.geometry_path();
-        let packed_capacity = if geometry_path == GeometryPath::PagedActiveAtlas {
-            let pages = renderer
-                .spatial_pages
-                .as_ref()
-                .ok_or(SurfacePresenterError::SceneNotLoaded)?;
-            pages
-                .page_count()
-                .clamp(1, DEFAULT_PAGED_ATLAS_SLOTS)
-                .saturating_mul(pages.page_capacity)
-        } else {
-            scene.len()
-        };
-        let (sh_width, sh_height) = sh_sidecar_atlas_dimensions(packed_capacity);
-        required_texture_dimension = required_texture_dimension.max(sh_width).max(sh_height);
+        let (page_count, page_capacity) = renderer
+            .spatial_pages
+            .as_ref()
+            .map(|pages| (pages.page_count(), pages.page_capacity))
+            .unwrap_or_default();
+        if geometry_path == GeometryPath::PagedActiveAtlas && page_count == 0 {
+            return Err(SurfacePresenterError::SceneNotLoaded);
+        }
+        let resource_plan = surface_resource_plan(
+            geometry_path,
+            scene.len(),
+            scene.sh_degree,
+            page_count,
+            page_capacity,
+            width,
+            height,
+            &adapter_limits,
+        )?;
+        resource_plan.validate_selected_path()?;
+        let required_texture_dimension = resource_plan.required_texture_dimension;
         if required_texture_dimension > adapter_limits.max_texture_dimension_2d {
             return Err(SurfacePresenterError::DeviceCreation(format!(
                 "required texture dimension {required_texture_dimension} exceeds adapter limit {}",
@@ -4456,8 +4542,13 @@ mod tests {
         let queue = renderer.queue().unwrap().clone();
         let layout = super::packed_gpu::create_packed_bind_group_layout(&device);
         let pages = super::default_spatial_pages(&scene);
+        let page_count = pages.page_count();
+        let page_capacity = pages.page_capacity;
+        assert!(page_count > super::DEFAULT_PAGED_ATLAS_SLOTS);
         let mut runtime =
             super::SurfacePagedRuntime::new(&device, &queue, &layout, &scene, pages).unwrap();
+        assert_eq!(runtime.atlas.resources.capacity, 4 * page_capacity);
+        assert!(runtime.atlas.resources.capacity < scene.len());
 
         for position in [
             Vec3f::new(-3.0, -3.0, 0.0),
@@ -5436,6 +5527,65 @@ mod tests {
         assert_eq!(degree_three.requirements[2].required_bytes, 621_727_200);
         assert!(!degree_three.requirements[1].fits);
         assert!(!degree_three.requirements[2].fits);
+    }
+
+    #[test]
+    fn surface_resource_plan_selects_fixed_slots_for_over_direct_limit_nandi() {
+        let mut limits = limits_with_storage_binding_limit(128 * 1024 * 1024);
+        limits.max_texture_dimension_2d = 8192;
+        let scene_splats = 3_454_040_usize;
+        let page_capacity = 65_536_usize;
+        let page_count = scene_splats.div_ceil(page_capacity);
+
+        let direct = super::surface_resource_plan(
+            GeometryPath::SortedIndexDirect,
+            scene_splats,
+            3,
+            0,
+            0,
+            640,
+            480,
+            &limits,
+        )
+        .unwrap();
+        assert_eq!(
+            direct.direct_preflight.path,
+            DirectScenePath::ActiveAtlasRequired
+        );
+        assert_eq!(
+            direct.direct_preflight.limiting_resource,
+            DirectSceneResource::ShRest
+        );
+        assert_eq!(
+            direct.direct_preflight.requirements[2].required_bytes,
+            621_727_200
+        );
+        assert!(matches!(
+            direct.validate_selected_path(),
+            Err(DirectSceneError::ResourceLimitExceeded(_))
+        ));
+
+        let paged = super::surface_resource_plan(
+            GeometryPath::PagedActiveAtlas,
+            scene_splats,
+            3,
+            page_count,
+            page_capacity,
+            640,
+            480,
+            &limits,
+        )
+        .unwrap();
+        assert_eq!(page_count, 53);
+        assert_eq!(paged.page_count, 53);
+        assert_eq!(paged.slot_count, 4);
+        assert_eq!(paged.resident_capacity, 262_144);
+        assert!(paged.resident_capacity < paged.scene_splats);
+        assert_eq!(paged.packed_preflight.path, PackedScenePath::PackedAtlas);
+        assert_eq!(paged.packed_preflight.sorted_indices_bytes, 1_048_576);
+        assert_eq!(paged.packed_preflight.hot_record_storage_bytes, 5_242_880);
+        assert!(paged.required_texture_dimension <= 8192);
+        paged.validate_selected_path().unwrap();
     }
 
     #[test]

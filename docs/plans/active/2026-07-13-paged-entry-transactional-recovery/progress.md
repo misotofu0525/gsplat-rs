@@ -35,9 +35,18 @@
 
 ### Phase 3
 
+- **Status:** complete
+- Bound a pure resource plan to the actual Surface constructor before device
+  creation and allocation.
+- Proved Nandi metadata exceeds Direct limits while four paged slots fit.
+- Strengthened the real-GPU local runtime test with `page_count > slots`, fixed
+  resident capacity below scene size, and non-zero draw assertions.
+
+### Phase 4
+
 - **Status:** in_progress
-- Next action: bind a no-allocation over-Direct-limit resource plan to the real
-  Surface constructor and assert fixed-slot paged capacity for Nandi metadata.
+- Next action: commit one compact evidence index, run the terminal canonical
+  matrix, and reconcile final claims/deferred work.
 
 ## Test Results
 
@@ -60,6 +69,10 @@
 | presenter prepare failure non-commit unit | passed |
 | renderer rollback on presenter failure unit | passed |
 | `cargo test -p gsplat-render-wgpu -- --nocapture` | 83 passed, 1 existing ignored oracle; conformance passed |
+| over-Direct-limit Surface resource plan unit | passed; 53 pages, 4 slots, 262,144 resident capacity |
+| real-GPU Surface paged runtime unit | passed; fixed slots and non-zero draw |
+| `npm --prefix packages/web test` after constructor planner | 7 passed |
+| WASM target check after constructor planner | passed; existing target-specific warnings only |
 
 ## Error Log
 

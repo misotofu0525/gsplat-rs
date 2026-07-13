@@ -9,7 +9,7 @@ scene beyond the Direct resource gate can enter a fixed-slot paged Surface.
 
 ## Current Phase
 
-Phase 3 — over-Direct-limit paged Surface proof.
+Phase 4 — compact evidence and terminal regression.
 
 ## Hard Boundaries
 
@@ -56,13 +56,13 @@ Phase 3 — over-Direct-limit paged Surface proof.
 
 ### Phase 3: Prove an over-Direct-limit paged Surface entry
 
-- [ ] Create a deterministic synthetic scene/resource preflight whose full
+- [x] Create a deterministic synthetic scene/resource preflight whose full
       Direct representation exceeds the declared gate while paged slots fit.
-- [ ] Exercise the constructor-time Surface/Web path without allocating the
+- [x] Exercise the constructor-time Surface/Web path without allocating the
       whole Direct GPU representation.
-- [ ] Verify page count exceeds slots, fixed slot bounds, and non-zero draw or
+- [x] Verify page count exceeds slots, fixed slot bounds, and non-zero draw or
       equivalent presenter preparation without weakening quality checks.
-- **Status:** in_progress
+- **Status:** complete
 
 ### Phase 4: Persist compact evidence and close the audit
 
@@ -71,7 +71,7 @@ Phase 3 — over-Direct-limit paged Surface proof.
       ignored.
 - [ ] Run the canonical renderer/Web/FFI/platform regression matrix.
 - [ ] Reconcile achieved and still-deferred claims, then leave a clean worktree.
-- **Status:** pending
+- **Status:** in_progress
 
 ## Acceptance
 

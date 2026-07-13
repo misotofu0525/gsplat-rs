@@ -80,3 +80,20 @@ before constructor-time paged startup can be called bounded.
 - The recovery guarantee covers errors returned as `SurfacePresenterError`;
   it does not claim recovery from process-level allocation aborts or an
   unrecoverable GPU device loss.
+
+## Over-Limit Constructor Proof
+
+- The resource planner consumed by `SurfacePresenter` construction reports a
+  3,454,040-splat degree-3 scene as Direct-ineligible at a 128 MiB binding and
+  buffer limit: SH rest alone requires 621,727,200 bytes.
+- Partition metadata yields 53 pages at 65,536 splats/page. Paged construction
+  selects four slots and a 262,144-splat resident capacity; its packed hot
+  storage is 5,242,880 bytes and sorted IDs are 1,048,576 bytes.
+- The fixed-slot plan fits an 8192 texture limit and is accepted without
+  constructing a multi-million-splat `SceneBuffers` or Direct GPU allocation.
+- A separate real-GPU `SurfacePagedRuntime` test uses 27 pages over four slots,
+  asserts atlas capacity is below scene size, and produces non-zero draws over
+  a short camera trace.
+- This proves resource-plan eligibility plus presenter-equivalent GPU behavior;
+  it is not a device run of the full Nandi asset and does not prove out-of-core
+  PLY parsing.

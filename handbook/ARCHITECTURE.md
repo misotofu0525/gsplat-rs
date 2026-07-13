@@ -73,6 +73,9 @@
   the experimental paged branch instead schedules a fixed four-slot local
   active atlas in the presenter, sorts only resident entries, and reuses the
   packed shader for Surface draws
+  Surface construction runs one shared metadata-only resource plan before
+  device allocation, so over-Direct-limit paged scenes negotiate fixed-slot
+  resources without first allocating their Direct representation
 
 - Native integration flow:
   starts from C, Swift, or Kotlin/JNI host entrypoints
