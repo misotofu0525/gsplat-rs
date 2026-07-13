@@ -35,6 +35,14 @@
   camera must fit each scene while preserving identical 640x480 projection
   semantics on both renderers. Keeping them as trace fixtures avoids embedding
   renderer-specific camera constants in either collector.
+- The PlayCanvas manager must be inspected after the splat placement exists:
+  requesting the public GPU-sort enum alone is insufficient. The collector
+  fails unless the resolved and active enum, concrete renderer instance, and
+  `usesGpuSort` signal all agree.
+- PlayCanvas exposes browser frame spacing and an application frame boundary,
+  but not comparable preprocess/sort/submit/GPU phase timings. Its raw artifact
+  therefore records those values as `null` with explicit unavailable paths;
+  filling them with zero would create a false advantage.
 
 ## Research Findings
 

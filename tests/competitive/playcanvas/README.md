@@ -3,8 +3,8 @@
 This directory owns the reproducibility boundary for the PlayCanvas side of
 the gsplat-rs competitive verification plan. It locks dependency/runtime
 identity and includes a fail-closed Chrome smoke that renders a deterministic
-minimal scene through WebGPU. It does **not** collect timing data or provide a
-competitive performance result yet.
+minimal scene through WebGPU. It also provides a validated raw-frame collector;
+a single collector run is not a competitive result.
 
 ## Install and verify
 
@@ -15,6 +15,8 @@ qualification run:
 npm ci --prefix tests/competitive/playcanvas
 npm test --prefix tests/competitive/playcanvas
 npm run smoke --prefix tests/competitive/playcanvas
+npm run benchmark:smoke --prefix tests/competitive/playcanvas
+npm run benchmark:kitsune-static --prefix tests/competitive/playcanvas
 ```
 
 The preflight fails unless all of the following agree with
@@ -48,7 +50,24 @@ The first browser slice requests WebGPU explicitly, loads the repository
 writes a pre-timing screenshot plus path signals under
 `target/benchmarks/playcanvas-path-smoke/`. If Chrome, WebGPU, asset loading, or
 the actual renderer path is unavailable, it writes a blocker and exits nonzero.
-It deliberately collects no timing samples and supports no parity claim.
+The path smoke deliberately collects no timing samples and supports no parity
+claim. `benchmark:smoke` adds 30 warmup frames and 60 raw frame samples under
+`target/benchmarks/playcanvas-collector-smoke/`, then runs the canonical v1
+validator. It measures browser frame-wall spacing and the PlayCanvas
+`frameupdate`-to-`frameend` CPU boundary. Engine-internal phase and GPU timings
+that PlayCanvas does not expose remain null and are declared unavailable. This
+minimal static-camera run proves collector mechanics only; it is not a matched
+competitive qualification result.
+
+`benchmark:kitsune-static` consumes the shared canonical camera trace at
+`tests/perf/trace/fixtures/phase-e-kitsune-static-640x480-v1.json`, loads the
+exact Kitsune manifest asset, warms up for 120 frames, and measures 3,600
+fixed-camera frames. Its output is a Phase E paired candidate, not a result,
+until five predeclared sequential randomized-order pairs have matching receipts,
+an SSIM result for every pair, and a passing
+`tests/perf/compare-paired-benchmarks.py` result. The comparator intentionally
+limits its claim scope to desktop Web Kitsune static; it does not authorize
+broader PlayCanvas, native, memory, thermal, energy, or large-scene claims.
 
 The original repository minimal fixture is ASCII PLY, while the pinned
 PlayCanvas parser accepts only binary little-endian PLY. The harness therefore

@@ -13,6 +13,8 @@
     "preflight": "node scripts/preflight.mjs",
     "serve": "node scripts/server.mjs",
     "smoke": "node scripts/run-browser-smoke.mjs",
+    "benchmark:smoke": "node scripts/run-timed-benchmark.mjs",
+    "benchmark:kitsune-static": "PHASE_E_QUALIFICATION=kitsune-static-v1 node scripts/run-timed-benchmark.mjs",
     "test": "node scripts/preflight.mjs"
   },
   "dependencies": {

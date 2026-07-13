@@ -7,8 +7,12 @@ import { access, mkdir, writeFile, rename, rm } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { spawn } from 'node:child_process';
+import { execFile as execFileCallback, spawn } from 'node:child_process';
 import process from 'node:process';
+import os from 'node:os';
+import { promisify } from 'node:util';
+
+const execFile = promisify(execFileCallback);
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(scriptDir, '../../..');
@@ -21,14 +25,24 @@ const chromeCandidates = [
   '/usr/bin/chromium'
 ].filter(Boolean);
 
-const frames = Number(process.env.GSPLAT_BENCHMARK_FRAMES ?? 30);
-const warmup = Number(process.env.GSPLAT_BENCHMARK_WARMUP_FRAMES ?? 5);
-const dataset = process.env.GSPLAT_DATASET ?? '';
+const qualificationName = process.env.GSPLAT_PHASE_E_QUALIFICATION ?? '';
+const qualification = qualificationName.length > 0;
+const frames = Number(process.env.GSPLAT_BENCHMARK_FRAMES ?? (qualification ? 3600 : 30));
+const warmup = Number(process.env.GSPLAT_BENCHMARK_WARMUP_FRAMES ?? (qualification ? 120 : 5));
+const dataset = process.env.GSPLAT_DATASET ?? (
+  qualificationName === 'kitsune-static-v1'
+    ? 'kitsune'
+    : qualificationName === 'raster-diagnostic-v1' ? 'diagnostic' : 'minimal'
+);
 const outDir = resolve(
   process.env.GSPLAT_ARTIFACT_DIR ??
-    resolve(repoRoot, 'target/benchmarks/phase-a/web-minimal-v1')
+    resolve(
+      repoRoot,
+      qualification ? 'target/benchmarks/phase-e/gsplat-web-kitsune-static-v1' : 'target/benchmarks/phase-a/web-minimal-v1'
+    )
 );
 const port = Number(process.env.GSPLAT_HTTP_PORT ?? 4173);
+const geometryPath = process.env.GSPLAT_GEOMETRY_PATH ?? 'direct';
 
 async function findChrome() {
   for (const candidate of chromeCandidates) {
@@ -167,6 +181,19 @@ try {
     args: ['--enable-unsafe-webgpu', '--enable-gpu', '--ignore-gpu-blocklist']
   });
   const page = await browser.newPage();
+  const repositoryCommit = (await execFile('git', ['rev-parse', 'HEAD'], { cwd: repoRoot })).stdout.trim();
+  const dirty = (await execFile('git', ['status', '--porcelain'], { cwd: repoRoot })).stdout.trim().length > 0;
+  await page.evaluateOnNewDocument((commit, isDirty, device) => {
+    globalThis.GSPLAT_BUILD_COMMIT = commit;
+    globalThis.GSPLAT_BUILD_DIRTY = isDirty;
+    globalThis.GSPLAT_BENCHMARK_DEVICE = device;
+  }, repositoryCommit, dirty, os.hostname());
+  await page.evaluateOnNewDocument((pairId, pairOrder, pairPosition) => {
+    globalThis.GSPLAT_PHASE_E_PAIR_ID = pairId;
+    globalThis.GSPLAT_PHASE_E_PAIR_ORDER = pairOrder;
+    globalThis.GSPLAT_PHASE_E_PAIR_POSITION = pairPosition;
+  }, process.env.PHASE_E_PAIR_ID ?? null, process.env.PHASE_E_PAIR_ORDER ?? null,
+  Number(process.env.PHASE_E_PAIR_POSITION ?? 0) || null);
   page.on('console', (message) => {
     consoleLines.push(`${message.type()}: ${message.text()}`);
   });
@@ -175,12 +202,15 @@ try {
   });
   const params = new URLSearchParams({
     gsplat_benchmark: 'true',
-    gsplat_benchmark_sync: 'true',
+    gsplat_benchmark_sync: qualification ? 'false' : 'true',
     gsplat_benchmark_frames: String(frames),
     gsplat_benchmark_warmup_frames: String(warmup),
-    gsplat_surface_sort_interval: '2'
+    gsplat_surface_sort_interval: '2',
+    benchmark_yaw_step: qualification ? '0' : '0.001'
   });
   if (dataset) params.set('dataset', dataset);
+  params.set('gsplat_geometry_path', geometryPath);
+  if (qualification) params.set('gsplat_camera_trace', `phase-e-${qualificationName}`);
   const url = `http://127.0.0.1:${port}/examples/web/?${params.toString()}`;
   await page.goto(url, { waitUntil: 'networkidle0', timeout: 120_000 });
   await page.waitForFunction(
@@ -193,6 +223,10 @@ try {
   await new Promise((r) => setTimeout(r, 1500));
   const parsed = parseArtifacts(consoleLines);
   const artifactDir = await writeArtifact(parsed);
+  if (qualification) {
+    const dataUrl = await page.$eval('#viewport', (canvas) => canvas.toDataURL('image/png'));
+    await writeFile(resolve(artifactDir, 'final-frame.png'), Buffer.from(dataUrl.split(',')[1], 'base64'));
+  }
   const resultLine = consoleLines.find((line) => line.includes('BENCHMARK_RESULT '));
   console.log(JSON.stringify({ status: 'ok', artifact_dir: artifactDir, result: resultLine ?? null }));
 } catch (error) {

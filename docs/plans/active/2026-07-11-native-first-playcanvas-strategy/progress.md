@@ -65,6 +65,16 @@
   quality path.
 - **Current unique execution item:** G4 collector slice — land the fail-closed
   PlayCanvas and gsplat-rs collectors against these exact trace receipts.
+- G4 collector slice passed: pinned PlayCanvas `2.21.0-beta.14` / `d5fe888`
+  resolved WebGPU `GSplatHybridRenderer` with active `raster_gpu_sort` and
+  `usesGpuSort=true`; the generated diagnostic rendered non-zero through that
+  path.
+- A 20-frame gsplat-rs Kitsune collector smoke matched the frozen dataset and
+  trace hashes, fixed 640x480 display, full 279,199 drawn count, direct WebGPU
+  path, and explicit camera receipt. The short sample is mechanics evidence,
+  not a performance result.
+- **Current unique execution item:** G4 comparison slice — validate deterministic
+  SSIM and fail-closed paired aggregation before clean evidence capture.
 
 ## Session: 2026-07-13 Phase D Reset
 

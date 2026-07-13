@@ -10,12 +10,15 @@ const configuredPort = Number(process.env.PLAYCANVAS_HARNESS_PORT ?? 4174);
 const routes = [
   ['/vendor/playcanvas/', resolve(harnessRoot, 'node_modules/playcanvas/build/playcanvas')],
   ['/harness/', resolve(harnessRoot, 'public')],
-  ['/datasets/', resolve(repoRoot, 'tests/datasets')]
+  ['/datasets/', resolve(repoRoot, 'tests/datasets')],
+  ['/traces/', resolve(repoRoot, 'tests/perf/trace/fixtures')],
+  ['/perf/', resolve(repoRoot, 'tests/perf')]
 ];
 
 const mime = new Map([
   ['.html', 'text/html; charset=utf-8'],
   ['.js', 'text/javascript; charset=utf-8'],
+  ['.mjs', 'text/javascript; charset=utf-8'],
   ['.json', 'application/json; charset=utf-8'],
   ['.ply', 'application/octet-stream']
 ]);

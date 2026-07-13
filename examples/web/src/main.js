@@ -10,6 +10,7 @@ import {
   frameRecords,
   legacyAverages,
 } from "./benchmark-artifact.mjs";
+import { createRasterDiagnosticPly } from "../../../tests/perf/raster-diagnostic.mjs";
 
 const API_VERSION = "0.1";
 const MAX_SURFACE_SIDE = 1600;
@@ -26,6 +27,7 @@ const DATASETS = {
   showcase: "/tests/datasets/external/wakufactory_kitune/kitune1.ply",
   minimal: "/tests/datasets/minimal_ascii.ply",
   flowers: "/tests/datasets/external/nvidia_flowers_1/flowers_1/flowers_1.ply",
+  diagnostic: "generated:raster_diagnostic_v1",
 };
 
 const WASM_ENTRY = new URL("../pkg/gsplat_web.js?v=sorted-index-20260710", import.meta.url);
@@ -166,6 +168,7 @@ void main();
 async function main() {
   initTheme();
   applyUrlConfig();
+  await loadQualificationTrace();
   updateControlLabels();
   await initWasmModule();
   if (state.backend !== "wasm") {
@@ -177,9 +180,18 @@ async function main() {
   requestAnimationFrame(frame);
 }
 
+async function loadQualificationTrace() {
+  if (!state.qualificationTraceUrl) return;
+  const response = await fetch(state.qualificationTraceUrl, { cache: "no-store" });
+  if (!response.ok) throw new Error(`qualification trace HTTP ${response.status}`);
+  state.qualificationTrace = await response.json();
+}
+
 async function loadStartupDataset() {
   const requested =
-    state.startDataset === "minimal"
+    state.startDataset === "diagnostic"
+      ? [{ path: DATASETS.diagnostic, name: "raster_diagnostic_v1.ply" }]
+      : state.startDataset === "minimal"
       ? [{ path: DATASETS.minimal, name: "minimal_ascii.ply" }]
       : state.startDataset === "flowers"
         ? [
@@ -194,13 +206,24 @@ async function loadStartupDataset() {
 
   for (let index = 0; index < requested.length; index += 1) {
     const dataset = requested[index];
-    const loaded = await loadDataset(dataset.path, dataset.name, {
-      allowFallback: index < requested.length - 1,
-    });
+    const loaded = dataset.path === DATASETS.diagnostic
+      ? await loadGeneratedDiagnostic(dataset.name)
+      : await loadDataset(dataset.path, dataset.name, {
+        allowFallback: index < requested.length - 1,
+      });
     if (loaded) {
       return;
     }
   }
+}
+
+async function loadGeneratedDiagnostic(name) {
+  const bytes = createRasterDiagnosticPly();
+  const scene = parsePly(bytes, name, DATASETS.diagnostic);
+  scene.sourceBytes = bytes.byteLength;
+  scene.sourceSha256 = await sha256Hex(bytes);
+  await applyScene(scene);
+  return true;
 }
 
 async function initWasmModule() {
@@ -367,6 +390,19 @@ async function createWasmRenderer(scene) {
     state.wasmRenderer = renderer;
     state.backend = "wasm";
     state.wasmUnavailableReason = "";
+    if (state.qualificationTrace) {
+      const frame = state.qualificationTrace.frames[0];
+      renderer.setCamera({
+        position: frame.pose.position,
+        rotationXyzw: frame.pose.rotation_xyzw,
+        intrinsics: {
+          verticalFovRadians: frame.intrinsics.vertical_fov_radians,
+          nearPlane: frame.intrinsics.near_plane,
+          farPlane: frame.intrinsics.far_plane,
+        },
+      });
+      state.cameraReceipt = renderer.cameraReceipt();
+    }
 
     const summary = renderer.sceneSummary();
     const surface = renderer.surfaceSize();
@@ -966,6 +1002,19 @@ function computeBounds(scene) {
 }
 
 function fitCameraToScene(scene) {
+  if (state.qualificationTrace) {
+    const frame = state.qualificationTrace.frames[0];
+    state.camera.target = [frame.pose.position[0], frame.pose.position[1], frame.pose.position[2] + 1];
+    state.camera.distance = 1;
+    state.camera.yaw = 0;
+    state.camera.pitch = 0;
+    state.camera.fovY = frame.intrinsics.vertical_fov_radians;
+    state.camera.near = frame.intrinsics.near_plane;
+    state.camera.far = frame.intrinsics.far_plane;
+    state.cameraStatus = "camera=qualification_trace";
+    invalidateSortedOrder();
+    return;
+  }
   const min = scene.boundsMin;
   const max = scene.boundsMax;
   const center = [
@@ -1011,8 +1060,10 @@ function frame(now) {
   state.fps = dt > 0 ? 1 / dt : state.fps;
 
   if (state.benchmark?.enabled) {
-    orbitCamera(state.benchmark.yawStep, 0);
-    state.cameraStatus = "camera=benchmark_orbit";
+    if (state.benchmark.yawStep !== 0) {
+      orbitCamera(state.benchmark.yawStep, 0);
+      state.cameraStatus = "camera=benchmark_orbit";
+    }
   } else if (state.autoOrbit && state.scene) {
     orbitCamera(dt * 0.22, 0);
   }
@@ -1229,9 +1280,10 @@ function setUniforms(gl, program, camera) {
 }
 
 function resizeCanvas() {
-  const ratio = Math.min(window.devicePixelRatio || 1, 2);
-  let width = Math.max(1, Math.floor(els.canvas.clientWidth * ratio));
-  let height = Math.max(1, Math.floor(els.canvas.clientHeight * ratio));
+  const fixedDisplay = state.qualificationTrace?.display;
+  const ratio = fixedDisplay ? 1 : Math.min(window.devicePixelRatio || 1, 2);
+  let width = fixedDisplay?.width ?? Math.max(1, Math.floor(els.canvas.clientWidth * ratio));
+  let height = fixedDisplay?.height ?? Math.max(1, Math.floor(els.canvas.clientHeight * ratio));
   const maxSide = Math.max(width, height);
   if (maxSide > MAX_SURFACE_SIDE) {
     const scale = MAX_SURFACE_SIDE / maxSide;
@@ -1298,9 +1350,11 @@ function runBenchmarkSync() {
 }
 
 function createBenchmarkState(enabled) {
-  const frames = clampInt(Number(els.benchmarkFrames.value), 1, 2000, DEFAULT_BENCHMARK_FRAMES);
+  const frames = clampInt(Number(els.benchmarkFrames.value), 1, 5000, DEFAULT_BENCHMARK_FRAMES);
   const warmupFrames = clampInt(Number(els.benchmarkWarmup.value), 0, 500, DEFAULT_BENCHMARK_WARMUP_FRAMES);
-  const yawStep = finiteOrDefault(Number(els.benchmarkYaw.value), DEFAULT_BENCHMARK_YAW_STEP);
+  const yawStep = state.qualificationTrace
+    ? 0
+    : finiteOrDefault(Number(els.benchmarkYaw.value), DEFAULT_BENCHMARK_YAW_STEP);
   const startedAt = new Date().toISOString();
   const runId = globalThis.crypto?.randomUUID?.() ?? `web-${Date.now()}-${Math.trunc(performance.now() * 1000)}`;
   return {
@@ -1340,6 +1394,8 @@ function applyUrlConfig() {
     state.startDataset = "flowers";
   } else if (dataset === "minimal" || dataset === "smoke") {
     state.startDataset = "minimal";
+  } else if (dataset === "diagnostic" || dataset === "raster_diagnostic_v1") {
+    state.startDataset = "diagnostic";
   } else if (["showcase", "kitsune", "kitune", "fox"].includes(dataset)) {
     state.startDataset = "showcase";
   }
@@ -1349,6 +1405,17 @@ function applyUrlConfig() {
   state.autoBenchmarkSync = ["1", "true", "yes"].includes(
     (params.get("gsplat_benchmark_sync") ?? params.get("benchmark_sync") ?? "").toLowerCase(),
   );
+  const trace = params.get("gsplat_camera_trace");
+  if (trace === "phase-e-kitsune-static-v1") {
+    state.qualificationTraceUrl = "/tests/perf/trace/fixtures/phase-e-kitsune-static-640x480-v1.json";
+    state.qualificationDatasetId = "kitsune";
+  } else if (trace === "phase-e-minimal-static-v1") {
+    state.qualificationTraceUrl = "/tests/perf/trace/fixtures/phase-e-minimal-static-640x480-v1.json";
+    state.qualificationDatasetId = "minimal_ascii";
+  } else if (trace === "phase-e-raster-diagnostic-v1") {
+    state.qualificationTraceUrl = "/tests/perf/trace/fixtures/phase-e-minimal-static-640x480-v1.json";
+    state.qualificationDatasetId = "raster_diagnostic_v1";
+  }
 }
 
 function setNumberInputFromParam(input, value) {
@@ -1443,29 +1510,33 @@ function benchmarkResultLine(benchmark) {
 
 async function emitBenchmarkArtifacts(benchmark) {
   const scene = state.scene;
+  if (usingWasm()) {
+    state.cameraReceipt = state.wasmRenderer.cameraReceipt();
+  }
   const rendererPath = wasmRendererLabel();
   const backend = usingWasm() ? "webgpu" : "webgl2";
   const sortInterval = Number(els.sortInterval.value);
   const surfaceWidth = els.canvas.width;
   const surfaceHeight = els.canvas.height;
   const traceText = `benchmark_orbit_v1 yaw_step=${benchmark.yawStep} frames=${benchmark.frames}`;
-  const traceSha256 = await sha256Hex(new TextEncoder().encode(traceText));
+  const traceSha256 = state.qualificationTrace?.content_sha256 ??
+    await sha256Hex(new TextEncoder().encode(traceText));
   const unavailableFields = [
-    "build.repository_commit",
-    "build.dirty",
-    "environment.device",
     "environment.adapter",
     "environment.driver",
     "frames[*].gpu_wait_ms",
     "frames[*].gpu_complete_ms",
     "frames[*].sort_refreshed",
   ];
+  if (globalThis.GSPLAT_BUILD_COMMIT == null) unavailableFields.push("build.repository_commit");
+  if (globalThis.GSPLAT_BUILD_DIRTY == null) unavailableFields.push("build.dirty");
+  if (globalThis.GSPLAT_BENCHMARK_DEVICE == null) unavailableFields.push("environment.device");
   const manifest = {
     schema: BENCHMARK_SCHEMA,
     record_type: "manifest",
     run_id: benchmark.collector.runId,
     identity: {
-      series_id: "web-local",
+      series_id: state.qualificationTrace ? "phase-e-paired-kitsune-static-v1" : "web-local",
       started_at_utc: benchmark.startedAt,
       ended_at_utc: new Date().toISOString(),
       measurement_started_at_utc: benchmark.measurementStartedAt,
@@ -1478,13 +1549,16 @@ async function emitBenchmarkArtifacts(benchmark) {
       package_version: API_VERSION,
     },
     dataset: {
-      id: scene.name,
+      id: state.qualificationDatasetId ?? scene.name,
       sha256: scene.sourceSha256,
       bytes: scene.sourceBytes,
       splat_count: scene.count,
       sh_degree: scene.shDegree,
     },
-    trace: { id: "benchmark-orbit-v1", sha256: traceSha256 },
+    trace: {
+      id: state.qualificationTrace?.trace_id ?? "benchmark-orbit-v1",
+      sha256: traceSha256,
+    },
     renderer: {
       implementation: "gsplat-rs",
       path: rendererPath,
@@ -1495,6 +1569,11 @@ async function emitBenchmarkArtifacts(benchmark) {
       frame_wall_source: benchmark.frameWallSource,
       renderer_frame_ms_included: true,
     },
+    pairing: state.qualificationTrace ? {
+      pair_id: globalThis.GSPLAT_PHASE_E_PAIR_ID ?? null,
+      run_order: globalThis.GSPLAT_PHASE_E_PAIR_ORDER ?? null,
+      position: globalThis.GSPLAT_PHASE_E_PAIR_POSITION ?? null,
+    } : undefined,
     display: {
       width: surfaceWidth,
       height: surfaceHeight,
@@ -1507,12 +1586,19 @@ async function emitBenchmarkArtifacts(benchmark) {
     environment: {
       platform: "web",
       os: navigator.platform || "browser",
-      device: null,
+      device: globalThis.GSPLAT_BENCHMARK_DEVICE ?? null,
       browser: navigator.userAgent,
       adapter: null,
       driver: null,
     },
     unavailable_fields: unavailableFields,
+    qualification_scope: state.qualificationTrace ? "phase_e_paired_candidate" : "collector_smoke_only",
+    policies: state.qualificationTrace ? {
+      dynamicResolution: "disabled_fixed_640x480",
+      lod: "disabled_full_ply",
+      renderer: "sorted_index_direct",
+    } : undefined,
+    camera_receipt: state.cameraReceipt,
   };
   console.info(`BENCHMARK_MANIFEST_JSON ${JSON.stringify(manifest)}`);
   for (const frame of frameRecords(benchmark.collector)) {

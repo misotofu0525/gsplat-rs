@@ -49,7 +49,8 @@ try {
   const browserLog = [];
   page.on('console', (message) => browserLog.push(`${message.type()}: ${message.text()}`));
   page.on('pageerror', (error) => browserLog.push(`pageerror: ${error.stack ?? error.message}`));
-  await page.goto(`http://127.0.0.1:${port}/`, { waitUntil: 'networkidle0', timeout: 30_000 });
+  const query = process.env.PLAYCANVAS_SMOKE_QUERY ?? '';
+  await page.goto(`http://127.0.0.1:${port}/${query}`, { waitUntil: 'networkidle0', timeout: 120_000 });
   await page.waitForFunction(
     () => window.__PLAYCANVAS_HARNESS_RESULT__ || window.__PLAYCANVAS_HARNESS_ERROR__,
     { timeout: 30_000 }
@@ -62,7 +63,12 @@ try {
     process.exitCode = 2;
   } else {
     const screenshot = resolve(outputRoot, 'pre-timing.png');
-    await page.screenshot({ path: screenshot });
+    if (query.includes('qualification=')) {
+      const dataUrl = await page.$eval('#canvas', (canvas) => canvas.toDataURL('image/png'));
+      await writeFile(screenshot, Buffer.from(dataUrl.split(',')[1], 'base64'));
+    } else {
+      await page.screenshot({ path: screenshot });
+    }
     console.log(JSON.stringify({ ...outcome, screenshot }));
   }
 } catch (error) {
