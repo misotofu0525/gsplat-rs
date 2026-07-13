@@ -58,3 +58,12 @@ before choosing the exact API shape.
 only to obtain SH scales before creating its fixed-slot placeholder. That
 O(scene) hot/SH staging allocation must be replaced by metadata-only scans
 before constructor-time paged startup can be called bounded.
+
+## Startup Peak Resolution
+
+- `PagedAtlasGpu::new` now scans only scene bounds, log-scale range, and SH
+  quantization scales before allocating its fixed-slot placeholder.
+- Log-scale min/max no longer allocates and sorts `3 * splat_count` floats.
+- Metadata scans remain O(scene) time because the in-memory source must be
+  inspected, but their additional memory is O(1); page uploads remain bounded
+  by page capacity.

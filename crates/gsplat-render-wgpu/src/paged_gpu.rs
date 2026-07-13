@@ -10,7 +10,7 @@ use gsplat_core::SceneBuffers;
 use crate::DirectSceneError;
 use crate::packed_atlas::{
     LogScaleRange, PackedAtlasCpuBuffers, PackedHotRecord, PackedSceneCpu, PackedShSidecar,
-    SceneBounds, pack_scene_with_encoding,
+    SceneBounds, pack_scene_with_encoding, scene_sh_scales,
 };
 use crate::packed_gpu::PackedAtlasResources;
 use crate::page_atlas::extract_page_scene;
@@ -86,8 +86,8 @@ impl PagedAtlasGpu {
             ))?;
         let scene_bounds = SceneBounds::from_positions(&scene.positions);
         let log_scale_range = LogScaleRange::from_scales(&scene.scale_xyz);
-        let template = pack_scene_with_encoding(scene, scene_bounds, log_scale_range, None);
-        let placeholder = placeholder_packed(capacity, &template);
+        let sh_scales = scene_sh_scales(scene);
+        let placeholder = placeholder_packed(capacity, scene_bounds, log_scale_range, sh_scales);
         let resources = PackedAtlasResources::new(device, queue, bind_group_layout, &placeholder)?;
         Ok(Self {
             page_capacity,
@@ -96,7 +96,7 @@ impl PagedAtlasGpu {
             slot_scene_indices: (0..slot_count).map(|_| Vec::new()).collect(),
             scene_bounds,
             log_scale_range,
-            sh_scales: template.sh_scales,
+            sh_scales,
         })
     }
 
@@ -273,7 +273,12 @@ impl PagedAtlasGpu {
     }
 }
 
-fn placeholder_packed(capacity: usize, template: &PackedSceneCpu) -> PackedSceneCpu {
+fn placeholder_packed(
+    capacity: usize,
+    bounds: SceneBounds,
+    log_scale_range: LogScaleRange,
+    sh_scales: [f32; 3],
+) -> PackedSceneCpu {
     let zero = PackedHotRecord {
         position_opacity: [0; 4],
         scale_flags: 0,
@@ -281,8 +286,8 @@ fn placeholder_packed(capacity: usize, template: &PackedSceneCpu) -> PackedScene
         color: 0,
     };
     PackedSceneCpu {
-        bounds: template.bounds,
-        log_scale_range: template.log_scale_range,
+        bounds,
+        log_scale_range,
         hot: vec![zero; capacity.max(1)],
         sh_sidecars: vec![
             PackedShSidecar {
@@ -291,7 +296,7 @@ fn placeholder_packed(capacity: usize, template: &PackedSceneCpu) -> PackedScene
             };
             capacity.max(1)
         ],
-        sh_scales: template.sh_scales,
+        sh_scales,
         sh_degree: 0,
         splat_count: capacity.max(1),
     }

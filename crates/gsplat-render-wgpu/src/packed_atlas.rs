@@ -173,23 +173,22 @@ pub struct LogScaleRange {
 
 impl LogScaleRange {
     pub fn from_scales(scales: &[[f32; 3]]) -> Self {
-        let mut values = Vec::with_capacity(scales.len() * 3);
+        let mut min = f32::INFINITY;
+        let mut max = f32::NEG_INFINITY;
         for scale in scales {
             for value in scale {
                 if value.is_finite() {
-                    values.push(*value);
+                    min = min.min(*value);
+                    max = max.max(*value);
                 }
             }
         }
-        if values.is_empty() {
+        if !min.is_finite() || !max.is_finite() {
             return Self {
                 min: -8.0,
                 max: 8.0,
             };
         }
-        values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-        let min = values[0];
-        let max = values[values.len() - 1];
         if (max - min).abs() < 1e-6 {
             return Self {
                 min,
@@ -434,6 +433,33 @@ pub fn pack_scene(scene: &SceneBuffers) -> PackedSceneCpu {
     pack_scene_with_encoding(scene, bounds, log_scale_range, None)
 }
 
+/// Compute scene-wide SH quantization scales without building packed records.
+pub fn scene_sh_scales(scene: &SceneBuffers) -> [f32; 3] {
+    let rest = scene.sh_rest.as_deref().unwrap_or(&[]);
+    let coeffs_per_channel = ((scene.sh_degree as usize + 1).pow(2))
+        .saturating_sub(1)
+        .min(15);
+    let rest_stride = coeffs_per_channel * 3;
+    let mut scales = [1e-6_f32; 3];
+    if rest_stride == 0 {
+        return scales;
+    }
+
+    for index in 0..scene.len() {
+        let base = index * rest_stride;
+        if base + rest_stride > rest.len() {
+            continue;
+        }
+        for (channel, scale) in scales.iter_mut().enumerate() {
+            let channel_base = base + channel * coeffs_per_channel;
+            for lane in 0..coeffs_per_channel {
+                *scale = scale.max(rest[channel_base + lane].abs());
+            }
+        }
+    }
+    scales
+}
+
 /// Pack a scene (or page subset) using shared encoding ranges.
 ///
 /// Phase D multi-page GPU draw keeps one shader bounds/log-scale uniform, so
@@ -453,21 +479,7 @@ pub fn pack_scene_with_encoding(
         .min(15);
     let rest_stride = coeffs_per_channel * 3;
 
-    let mut scene_scales = sh_scales.unwrap_or([1e-6_f32; 3]);
-    if sh_scales.is_none() && rest_stride > 0 {
-        for index in 0..scene.len() {
-            let base = index * rest_stride;
-            if base + rest_stride > rest.len() {
-                continue;
-            }
-            for (channel, scene_scale) in scene_scales.iter_mut().enumerate() {
-                let channel_base = base + channel * coeffs_per_channel;
-                for lane in 0..coeffs_per_channel {
-                    *scene_scale = scene_scale.max(rest[channel_base + lane].abs());
-                }
-            }
-        }
-    }
+    let scene_scales = sh_scales.unwrap_or_else(|| scene_sh_scales(scene));
 
     for index in 0..scene.len() {
         let position = scene.positions[index];
@@ -652,6 +664,20 @@ mod tests {
         );
         // 244 / 68 ≈ 3.588
         assert!((factor - (244.0 / 68.0)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn metadata_only_scans_match_full_scene_packing() {
+        let mut scene = sample_scene(8, 3);
+        scene.scale_xyz[0] = [-7.0, -2.0, 4.0];
+        scene.scale_xyz[7] = [5.0, -3.0, 2.0];
+        let packed = pack_scene(&scene);
+
+        assert_eq!(
+            LogScaleRange::from_scales(&scene.scale_xyz),
+            packed.log_scale_range
+        );
+        assert_eq!(scene_sh_scales(&scene), packed.sh_scales);
     }
 
     #[test]

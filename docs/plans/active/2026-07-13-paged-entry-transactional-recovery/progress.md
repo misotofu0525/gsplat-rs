@@ -13,7 +13,7 @@
 
 ### Phase 1
 
-- **Status:** in_progress
+- **Status:** complete
 - Added an additive Web/WASM constructor-time selector while retaining the old
   Direct constructor unchanged.
 - Moved packed/paged selection ahead of scene path-specific derivation and
@@ -21,8 +21,14 @@
 - Added additive Android/UIKit C constructors, passed selection through JNI and
   both local wrappers, and retained the legacy Direct constructors unchanged.
 - Removed initial post-create switching from Android and iOS examples.
-- Next action: remove the full-scene packed staging allocation from fixed-slot
-  paged atlas initialization.
+- Replaced full-scene packed staging during paged atlas initialization with
+  allocation-free metadata scans plus fixed-slot placeholder allocation.
+
+### Phase 2
+
+- **Status:** in_progress
+- Next action: make presenter resource replacement prepare-then-commit and
+  roll renderer state back when presenter preparation returns an error.
 
 ## Test Results
 
@@ -39,6 +45,9 @@
 | `bash bindings/android/scripts/run-jni-smoke.sh` | passed |
 | Android sample APK build with minimal fixture | passed |
 | `bash bindings/apple/scripts/build-ios-sim-app.sh` | passed |
+| packed metadata-only equivalence unit | passed |
+| `cargo test -p gsplat-render-wgpu paged_gpu -- --nocapture` | 3 passed |
+| `cargo clippy -p gsplat-render-wgpu --all-targets -- -D warnings` | passed |
 
 ## Error Log
 

@@ -9,7 +9,7 @@ scene beyond the Direct resource gate can enter a fixed-slot paged Surface.
 
 ## Current Phase
 
-Phase 1 — constructor-time path selection.
+Phase 2 — transactional runtime path switching.
 
 ## Hard Boundaries
 
@@ -41,9 +41,9 @@ Phase 1 — constructor-time path selection.
 - [x] Apply the native path at the same constructor boundary.
 - [x] Prove direct remains the default and no full Direct CPU cache is created
       for a paged constructor.
-- [ ] Remove the full-scene packed staging allocation still performed while a
+- [x] Remove the full-scene packed staging allocation still performed while a
       paged atlas initializes its fixed-slot placeholder.
-- **Status:** in_progress
+- **Status:** complete
 
 ### Phase 2: Make runtime path switching transactional
 
@@ -52,7 +52,7 @@ Phase 1 — constructor-time path selection.
 - [ ] Commit both sides only after all fallible allocations succeed.
 - [ ] Add a deterministic allocation/failure test proving the old path remains
       usable after a failed switch.
-- **Status:** pending
+- **Status:** in_progress
 
 ### Phase 3: Prove an over-Direct-limit paged Surface entry
 
