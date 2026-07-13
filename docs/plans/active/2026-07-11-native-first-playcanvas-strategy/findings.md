@@ -51,6 +51,13 @@
 - The image metric is a deterministic 8x8-window luma SSIM over decoded sRGB
   bytes with an internal identity/opposite-image self-test. It is a parity
   guard for this fixed view, not a perceptual-quality claim across scenes.
+- Clean evidence from commit `440fb8f` improved the provisional ratios but does
+  not change the claim category: p95 ratio median `1.0200` (95% CI upper
+  `1.0200`), p99 `1.0291` (upper `1.0388`), and minimum SSIM `0.998657`.
+  This supports parity for one desktop static profile, not a general speed win.
+- Relative output roots are unsafe when producer scripts resolve from different
+  directories. The successful series used one absolute root; the documented
+  protocol should continue requiring fresh absolute per-pair destinations.
 
 ## Research Findings
 

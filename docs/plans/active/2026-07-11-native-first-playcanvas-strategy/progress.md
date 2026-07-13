@@ -18,7 +18,7 @@
 - [x] G1 plan reform
 - [x] G2 bounded paging correctness
 - [x] G3 native Surface/Web usability
-- [ ] G4 competitive evidence
+- [x] G4 competitive evidence
 - [ ] G5 local distribution and claim boundaries
 - [ ] G6 terminal audit
 
@@ -85,6 +85,24 @@
 - **Current unique execution item:** G4 clean evidence capture — execute five
   sequential randomized-order pairs from committed collectors, then accept or
   narrow the claim from that report.
+- The first clean-capture attempt was stopped during pair 01 because a relative
+  `PLAYCANVAS_ARTIFACT_DIR` resolved below the harness while the gsplat-rs path
+  resolved below the repository. No partial comparison was retained; rerun used
+  one absolute series root for both producers.
+- Clean commit `440fb8f` produced five sequential predeclared pairs in order
+  P-G, G-P, G-P, P-G, P-G. All ten 3,600-frame artifacts validate with
+  `build.dirty=false`, exact dataset/trace/display receipts, full 279,199
+  visible/drawn counts, WebGPU, and the expected renderer paths.
+- Final soft observations: gsplat-rs/PlayCanvas p95 frame-wall median ratio
+  `1.0200` (deterministic bootstrap 95% CI `1.0100-1.0200`), p99 `1.0291`
+  (`1.0097-1.0388`), minimum SSIM `0.998657`, and zero missed 16.67 ms frames
+  on both sides.
+- G4 claim is therefore limited to desktop Chrome/WebGPU Kitsune-static parity
+  under this 640x480 protocol. It does not establish native leadership, broad
+  browser/dataset parity, memory leadership, thermal/energy behavior, or 10M
+  scalability.
+- **Current unique execution item:** G5 — local distribution and stable claim
+  boundaries.
 
 ## Session: 2026-07-13 Phase D Reset
 

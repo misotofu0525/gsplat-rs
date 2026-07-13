@@ -54,7 +54,7 @@ class, or restoring the abandoned telemetry/sidecar/adversarial-validator stack.
     do not add remote streaming or telemetry infrastructure.
   - Commit boundary: Surface session, FFI/Android selector, Web wrapper/example,
     and their focused tests.
-- [ ] **G4 — Accept fair competitive evidence and a bounded claim.**
+- [x] **G4 — Accept fair competitive evidence and a bounded claim.**
   - Hard acceptance: pinned PlayCanvas WebGPU GPU-sort path, matched dataset and
     trace receipts, raw v1 artifacts, deterministic image metric, matched counts,
     and at least one reproducible paired report all validate.
@@ -87,8 +87,8 @@ class, or restoring the abandoned telemetry/sidecar/adversarial-validator stack.
   percentage wins, 30-minute RSS, 40–48-byte averages, complete device/browser
   matrices, energy/thermal wins, and large-scene headline scale. A miss narrows
   the claim and stays visible; it does not trigger endless implementation churn.
-- **Current unique execution item:** G4 — accept fair competitive evidence and
-  a bounded claim without turning soft performance observations into blockers.
+- **Current unique execution item:** G5 — accept local distribution and stable
+  claim boundaries without performing registry publication or push.
 
 ## Phases
 
@@ -241,8 +241,13 @@ class, or restoring the abandoned telemetry/sidecar/adversarial-validator stack.
       passes five randomized pairs; native leadership, broad dataset/browser
       parity, sustained thermal, energy, memory-leadership, and large-scene
       claims remain unearned and must not be promoted.
-- **Status:** candidate evidence exists but is not accepted until G4 verifies
-  the harness, receipts, artifacts, image metric, and paired report.
+- **Status:** complete for the explicitly qualified desktop Chrome/WebGPU
+  Kitsune-static scope; all broader performance claims remain withheld.
+- **Exit evidence:**
+  `target/benchmarks/phase-e/kitsune-five-paired-clean-440fb8f/` contains five
+  clean-commit, randomized-order 3,600-frame pairs with validated raw
+  artifacts, full-count receipts, per-pair SSIM, and a passing deterministic
+  bootstrap report.
 
 ### Phase F: Distribution and Claim Promotion
 
