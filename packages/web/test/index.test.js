@@ -192,8 +192,8 @@ test("createGsplatRenderer normalizes bytes and applies render options", async (
   const native = makeNativeRenderer();
   let captured;
   const module = {
-    async createRenderer(canvas, plyBytes, width, height) {
-      captured = { canvas, plyBytes, width, height };
+    async createRendererWithGeometryPath(canvas, plyBytes, width, height, geometryPath) {
+      captured = { canvas, plyBytes, width, height, geometryPath };
       return native;
     },
   };
@@ -213,8 +213,33 @@ test("createGsplatRenderer normalizes bytes and applies render options", async (
   assert.deepEqual(Array.from(captured.plyBytes), [1, 2, 3]);
   assert.equal(captured.width, 320);
   assert.equal(captured.height, 240);
+  assert.equal(captured.geometryPath, 1);
   assert.deepEqual(native.calls[0], ["setSortInterval", 3]);
-  assert.deepEqual(native.calls[1], ["setGeometryPath", 1]);
+  assert.equal(native.calls.length, 1);
+});
+
+test("createGsplatRenderer preserves the direct constructor by default", async () => {
+  const native = makeNativeRenderer();
+  let captured;
+  const module = {
+    async createRenderer(canvas, plyBytes, width, height) {
+      captured = { canvas, plyBytes, width, height };
+      return native;
+    },
+    async createRendererWithGeometryPath() {
+      throw new Error("should use the direct constructor");
+    },
+  };
+  const canvas = { width: 320, height: 240 };
+
+  await createGsplatRenderer({
+    canvas,
+    plyBytes: new Uint8Array([1, 2, 3]),
+    module,
+  });
+
+  assert.equal(captured.canvas, canvas);
+  assert.deepEqual(native.calls, [["setSortInterval", 2]]);
 });
 
 test("initGsplatWeb stores provided module for version lookup", async () => {

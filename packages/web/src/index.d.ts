@@ -8,6 +8,13 @@ export interface GsplatWebModule {
     width: number,
     height: number,
   ): Promise<unknown>;
+  createRendererWithGeometryPath?(
+    canvas: HTMLCanvasElement,
+    plyBytes: Uint8Array,
+    width: number,
+    height: number,
+    geometryPath: 0 | 1 | 2,
+  ): Promise<unknown>;
 }
 
 export interface InitGsplatWebOptions {

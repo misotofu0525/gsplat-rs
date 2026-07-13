@@ -55,17 +55,43 @@ export async function createGsplatRenderer(options) {
   assertPositiveInteger(width, "width");
   assertPositiveInteger(height, "height");
   const bytes = normalizeBytes(plyBytes);
+  const geometryPathId = resolveGeometryPathId(geometryPath);
   const resolvedModule = module ?? loadedModule ?? (await initGsplatWeb());
-  const nativeRenderer = await resolvedModule.createRenderer(
+  const nativeRenderer = geometryPathId === GEOMETRY_PATH_IDS.direct
+    ? await resolvedModule.createRenderer(canvas, bytes, width, height)
+    : await createRendererWithGeometryPath(
+        resolvedModule,
+        canvas,
+        bytes,
+        width,
+        height,
+        geometryPathId,
+      );
+  const renderer = new GsplatWebRenderer(nativeRenderer);
+  renderer.setSortInterval(sortInterval);
+  return renderer;
+}
+
+async function createRendererWithGeometryPath(
+  module,
+  canvas,
+  bytes,
+  width,
+  height,
+  geometryPathId,
+) {
+  if (typeof module.createRendererWithGeometryPath !== "function") {
+    throw new Error(
+      "the loaded gsplat-web module does not support constructor-time geometry selection",
+    );
+  }
+  return module.createRendererWithGeometryPath(
     canvas,
     bytes,
     width,
     height,
+    geometryPathId,
   );
-  const renderer = new GsplatWebRenderer(nativeRenderer);
-  renderer.setSortInterval(sortInterval);
-  renderer.setGeometryPath(geometryPath);
-  return renderer;
 }
 
 export async function createGsplatRendererFromUrl(options) {
@@ -175,10 +201,7 @@ export class GsplatWebRenderer {
   }
 
   setGeometryPath(path) {
-    const id = GEOMETRY_PATH_IDS[path];
-    if (id === undefined) {
-      throw new TypeError("geometryPath must be direct, packed, or paged");
-    }
+    const id = resolveGeometryPathId(path);
     this.#requireNativeRenderer().setGeometryPath(id);
   }
 
@@ -230,6 +253,14 @@ export class GsplatWebRenderer {
     }
     return this.#nativeRenderer;
   }
+}
+
+function resolveGeometryPathId(path) {
+  const id = GEOMETRY_PATH_IDS[path];
+  if (id === undefined) {
+    throw new TypeError("geometryPath must be direct, packed, or paged");
+  }
+  return id;
 }
 
 function normalizeFrameStats(raw) {

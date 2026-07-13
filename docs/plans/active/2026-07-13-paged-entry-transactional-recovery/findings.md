@@ -32,3 +32,12 @@ The smallest safe native entry is likely an additive experimental
 `*_with_geometry_path` constructor that preserves existing direct constructor
 signatures. Confirm the existing create-function fan-out and JNI call graph
 before choosing the exact API shape.
+
+## Web Constructor Decision
+
+- Preserve generated `createRenderer(canvas, bytes, width, height)` as the
+  Direct-only compatibility entry.
+- Add `createRendererWithGeometryPath(..., path)` for experimental packed/paged
+  construction. The Rust binding sets the path before `Renderer::load_scene`.
+- The ESM wrapper validates the selector before construction and no longer
+  creates Direct first and calls `setGeometryPath` afterwards.

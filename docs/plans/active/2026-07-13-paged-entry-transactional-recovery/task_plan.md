@@ -33,10 +33,12 @@ Phase 1 — constructor-time path selection.
 
 ### Phase 1: Select paged before scene derivation and presenter creation
 
-- [ ] Add an experimental constructor-time geometry selector for Web and native
-      Surface clients while preserving existing direct constructors.
-- [ ] Apply the path before `Renderer::load_scene` path-specific derivation and
-      before `SurfacePresenter` resource/limit selection.
+- [x] Add an experimental constructor-time Web geometry selector while
+      preserving the existing direct constructor.
+- [ ] Add the equivalent additive native Surface selector.
+- [x] Apply the Web path before `Renderer::load_scene` path-specific derivation
+      and before `SurfacePresenter` resource/limit selection.
+- [ ] Apply the native path at the same constructor boundary.
 - [ ] Prove direct remains the default and no full Direct resource is created
       for a paged constructor.
 - **Status:** in_progress

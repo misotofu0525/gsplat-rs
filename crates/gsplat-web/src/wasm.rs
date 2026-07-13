@@ -30,6 +30,35 @@ pub async fn create_renderer(
     width: u32,
     height: u32,
 ) -> Result<GsplatWebRenderer, JsValue> {
+    create_renderer_for_path(
+        canvas,
+        ply_bytes,
+        width,
+        height,
+        GeometryPath::SortedIndexDirect,
+    )
+    .await
+}
+
+#[wasm_bindgen(js_name = createRendererWithGeometryPath)]
+pub async fn create_renderer_with_geometry_path(
+    canvas: HtmlCanvasElement,
+    ply_bytes: Uint8Array,
+    width: u32,
+    height: u32,
+    geometry_path: u32,
+) -> Result<GsplatWebRenderer, JsValue> {
+    let geometry_path = geometry_path_from_id(geometry_path)?;
+    create_renderer_for_path(canvas, ply_bytes, width, height, geometry_path).await
+}
+
+async fn create_renderer_for_path(
+    canvas: HtmlCanvasElement,
+    ply_bytes: Uint8Array,
+    width: u32,
+    height: u32,
+    geometry_path: GeometryPath,
+) -> Result<GsplatWebRenderer, JsValue> {
     let raw = ply_bytes.to_vec();
     let loaded = parse_ply_bytes(&raw).map_err(|err| js_error(err.to_string()))?;
     let summary = loaded.summary;
@@ -39,6 +68,7 @@ pub async fn create_renderer(
         mode: RenderMode::SortedAlpha,
     })
     .map_err(renderer_error)?;
+    renderer.set_geometry_path(geometry_path);
     renderer.load_scene(loaded.scene).map_err(renderer_error)?;
 
     let presenter = SurfacePresenter::from_canvas(canvas, width, height, &renderer)
@@ -154,12 +184,7 @@ impl GsplatWebRenderer {
 
     #[wasm_bindgen(js_name = setGeometryPath)]
     pub fn set_geometry_path(&mut self, path: u32) -> Result<(), JsValue> {
-        let path = match path {
-            0 => GeometryPath::SortedIndexDirect,
-            1 => GeometryPath::PackedAtlas,
-            2 => GeometryPath::PagedActiveAtlas,
-            _ => return Err(error_code(ErrorCode::InvalidArgument)),
-        };
+        let path = geometry_path_from_id(path)?;
         self.session.set_geometry_path(path).map_err(renderer_error)
     }
 
@@ -238,6 +263,15 @@ impl GsplatWebRenderer {
         set_u32(&object, "width", width)?;
         set_u32(&object, "height", height)?;
         Ok(object.into())
+    }
+}
+
+fn geometry_path_from_id(path: u32) -> Result<GeometryPath, JsValue> {
+    match path {
+        0 => Ok(GeometryPath::SortedIndexDirect),
+        1 => Ok(GeometryPath::PackedAtlas),
+        2 => Ok(GeometryPath::PagedActiveAtlas),
+        _ => Err(error_code(ErrorCode::InvalidArgument)),
     }
 }
 
