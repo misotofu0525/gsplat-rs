@@ -284,12 +284,22 @@ impl PackedAtlasResources {
         if start == end {
             return;
         }
+        self.write_hot_colors_at(queue, start, &colors[start..end]);
+    }
+
+    /// Upload view-evaluated RGB10 colors at a global atlas-slot offset.
+    pub fn write_hot_colors_at(&mut self, queue: &wgpu::Queue, global_slot: usize, colors: &[u32]) {
+        let end = global_slot.saturating_add(colors.len());
+        if colors.is_empty() || end > self.capacity {
+            debug_assert!(end <= self.capacity);
+            return;
+        }
         // Hot layout is 5×u32: pos0, pos1, scale/flags, rotation, color.
         const COLOR_WORD: usize = 4;
-        for (slot, &color) in colors.iter().enumerate().take(end).skip(start) {
-            self.hot_words[slot * HOT_RECORD_U32_WORDS + COLOR_WORD] = color;
+        for (offset, &color) in colors.iter().enumerate() {
+            self.hot_words[(global_slot + offset) * HOT_RECORD_U32_WORDS + COLOR_WORD] = color;
         }
-        let word_start = start * HOT_RECORD_U32_WORDS;
+        let word_start = global_slot * HOT_RECORD_U32_WORDS;
         let word_end = end * HOT_RECORD_U32_WORDS;
         let byte_offset = (word_start * std::mem::size_of::<u32>()) as u64;
         queue.write_buffer(

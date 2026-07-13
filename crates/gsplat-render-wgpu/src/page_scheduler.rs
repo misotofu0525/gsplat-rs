@@ -66,21 +66,43 @@ pub fn schedule_pages(
 
     let cover_radius2 = config.coarse_cover_radius * config.coarse_cover_radius;
     let mut visible = Vec::new();
-    let mut retain = Vec::new();
     for &(page_id, distance2) in &ranked {
         if distance2 <= cover_radius2 {
             visible.push(page_id);
-            retain.push(page_id);
-            manager.mark_visible(page_id)?;
         }
     }
-    // Always keep the nearest page as a coarse cover seed when any pages exist.
-    if retain.is_empty()
-        && let Some(&(page_id, _)) = ranked.first()
-    {
-        retain.push(page_id);
-        visible.push(page_id);
+    // Keep current coarse coverage while it remains close to the target cutoff,
+    // then fill empty budget from the nearest pages. The squared cover radius
+    // acts as a deterministic retention margin for small camera motion.
+    let target = config.target_resident_pages.max(1);
+    let cutoff = ranked
+        .get(target.saturating_sub(1).min(ranked.len().saturating_sub(1)))
+        .map(|&(_, distance2)| distance2)
+        .unwrap_or(0.0);
+    let residents = manager.resident_page_ids();
+    let mut retain: Vec<PageId> = ranked
+        .iter()
+        .filter(|&&(page_id, distance2)| {
+            residents.contains(&page_id) && distance2 <= cutoff + cover_radius2
+        })
+        .take(target)
+        .map(|&(page_id, _)| page_id)
+        .collect();
+    for &(page_id, _) in &ranked {
+        if retain.len() >= target {
+            break;
+        }
+        if !retain.contains(&page_id) {
+            retain.push(page_id);
+        }
+    }
+    for &page_id in &retain {
         manager.mark_visible(page_id)?;
+    }
+    if visible.is_empty()
+        && let Some(&page_id) = retain.first()
+    {
+        visible.push(page_id);
     }
 
     let mut requested = Vec::new();

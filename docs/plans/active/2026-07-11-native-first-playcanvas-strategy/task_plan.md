@@ -37,7 +37,7 @@ class, or restoring the abandoned telemetry/sidecar/adversarial-validator stack.
     from performance observations and name one current item.
   - Soft observation: none; this slice changes policy only.
   - Commit boundary: planning bundle only.
-- [ ] **G2 — Accept bounded large-scene paging correctness.**
+- [x] **G2 — Accept bounded large-scene paging correctness.**
   - Hard acceptance: total pages exceed four slots; active/resident counts never
     exceed the slot budget; eviction/refinement preserves non-zero coarse cover;
     non-resident pages never draw; cancel/stale token/slot generation cannot
@@ -87,8 +87,8 @@ class, or restoring the abandoned telemetry/sidecar/adversarial-validator stack.
   percentage wins, 30-minute RSS, 40–48-byte averages, complete device/browser
   matrices, energy/thermal wins, and large-scene headline scale. A miss narrows
   the claim and stays visible; it does not trigger endless implementation churn.
-- **Current unique execution item:** G2 — accept bounded large-scene paging
-  correctness before staging Surface/Web or competitive work.
+- **Current unique execution item:** G3 — accept native Surface and Web paged
+  usability without restoring remote streaming or telemetry infrastructure.
 
 ## Phases
 

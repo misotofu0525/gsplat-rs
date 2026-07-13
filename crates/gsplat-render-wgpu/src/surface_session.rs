@@ -344,10 +344,9 @@ impl SurfaceRenderSession {
     /// path (experimental A/B benchmark knob; default remains
     /// [`GeometryPath::SortedIndexDirect`]).
     pub fn set_geometry_path(&mut self, path: GeometryPath) -> Result<(), RendererError> {
+        #[cfg(not(target_arch = "wasm32"))]
         if path == GeometryPath::PagedActiveAtlas {
-            return Err(RendererError::SurfacePresenter(
-                crate::SurfacePresenterError::PagedAtlasUnsupported,
-            ));
+            self.set_async_sort_enabled(false)?;
         }
         self.renderer.set_geometry_path(path);
         self.presenter.set_geometry_path(path, &self.renderer)?;
@@ -468,7 +467,7 @@ impl SurfaceRenderSession {
 
     pub fn render_frame(&mut self) -> Result<SurfaceFrameOutput, RendererError> {
         #[cfg(not(target_arch = "wasm32"))]
-        if self.async_sort_enabled {
+        if self.async_sort_enabled && self.geometry_path() != GeometryPath::PagedActiveAtlas {
             return self.render_frame_async_sort();
         }
         self.render_frame_sync()
@@ -493,22 +492,34 @@ impl SurfaceRenderSession {
         sort_refreshed: bool,
     ) -> Result<SurfaceFrameOutput, RendererError> {
         let frame_start = timer_now();
-        let mut stats = self
-            .renderer
-            .build_surface_sorted_indices_with_sort_refresh(&self.camera, plan.refresh_sort)?;
+        let paged = self.geometry_path() == GeometryPath::PagedActiveAtlas;
+        let mut stats = if paged {
+            FrameStats::zero()
+        } else {
+            self.renderer
+                .build_surface_sorted_indices_with_sort_refresh(&self.camera, plan.refresh_sort)?
+        };
         let render_start = timer_now();
         let scene = self.renderer.scene().ok_or(RendererError::SceneNotLoaded)?;
-        self.presenter.render_sorted_indices(
-            scene,
-            self.renderer.current_sorted_indices(),
-            &self.camera,
-            plan.upload_order,
-        )?;
+        if paged {
+            self.presenter
+                .render_sorted_indices(scene, &[], &self.camera, true)?;
+            stats.visible_count = self.presenter.instance_count();
+            stats.drawn_count = self.presenter.instance_count();
+        } else {
+            self.presenter.render_sorted_indices(
+                scene,
+                self.renderer.current_sorted_indices(),
+                &self.camera,
+                plan.upload_order,
+            )?;
+        }
         let render_submit_ms = timer_elapsed_ms(render_start);
         let frame_wall_ms = timer_elapsed_ms(frame_start);
         stats.frame_ms = frame_wall_ms;
         self.last_stats = stats;
-        self.frame_state.finish_frame(plan, plan.upload_order);
+        self.frame_state
+            .finish_frame(plan, paged || plan.upload_order);
         Ok(SurfaceFrameOutput {
             stats,
             timings: SurfaceFrameTimings {
@@ -516,8 +527,8 @@ impl SurfaceRenderSession {
                 render_submit_ms,
                 frame_wall_ms,
             },
-            sort_refreshed,
-            order_uploaded: plan.upload_order,
+            sort_refreshed: paged || sort_refreshed,
+            order_uploaded: paged || plan.upload_order,
             async_sort_revision_lag: None,
             stale_async_sort_dropped: false,
             async_sort_scheduled: false,

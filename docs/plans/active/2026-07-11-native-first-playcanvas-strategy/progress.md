@@ -16,11 +16,26 @@
 ### Goal Breakdown status
 
 - [x] G1 plan reform
-- [ ] G2 bounded paging correctness
+- [x] G2 bounded paging correctness
 - [ ] G3 native Surface/Web usability
 - [ ] G4 competitive evidence
 - [ ] G5 local distribution and claim boundaries
 - [ ] G6 terminal audit
+
+### G2 acceptance
+
+- Focused paged suite: 9 passed, including 27 pages over four atlas slots,
+  eviction, non-resident draw exclusion, zero-error 64-splat degree-3 parity,
+  small-motion non-zero cover, cancelled/stale-token rejection, stable local
+  Surface preparation, and the deterministic 512-frame bound.
+- Residency suite: 6 passed; scheduler suite: 2 passed.
+- Full renderer suite: 79 passed, one pre-existing research oracle ignored;
+  hardware-backed Metal `SortedAlpha` conformance, focused check, fmt, and diff
+  hygiene passed.
+- Soft observations retained without becoming blockers: the earlier two-minute
+  Android run kept non-zero draw beyond 9,397 frames; PSS grew 4,065 KiB and RSS
+  grew 5,532 KiB. No 30-minute or fixed-percentage claim is inferred.
+- **Current unique execution item:** G3 — native Surface and Web usability.
 
 ## Current status: Phase D-F complete (2026-07-13)
 

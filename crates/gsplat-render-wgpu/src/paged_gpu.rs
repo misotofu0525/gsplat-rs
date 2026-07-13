@@ -14,7 +14,7 @@ use crate::packed_atlas::{
 };
 use crate::packed_gpu::PackedAtlasResources;
 use crate::page_atlas::extract_page_scene;
-use crate::residency::{AsyncPageToken, AttributeLod};
+use crate::residency::{AsyncPageToken, AttributeLod, ResidencyManager};
 use crate::spatial_pages::{PageId, SpatialPage};
 
 #[derive(Debug)]
@@ -109,6 +109,14 @@ impl PagedAtlasGpu {
             .iter()
             .filter(|slot| slot.is_occupied())
             .count()
+    }
+
+    pub fn contains_token(&self, token: AsyncPageToken) -> bool {
+        self.slot_meta.get(token.slot as usize).is_some_and(|slot| {
+            slot.is_occupied()
+                && slot.page_id == Some(token.page_id)
+                && slot.generation == token.slot_generation
+        })
     }
 
     pub fn resident_splat_count(&self) -> usize {
@@ -227,6 +235,21 @@ impl PagedAtlasGpu {
             splat_count: page.splat_count(),
         };
         Ok(())
+    }
+
+    pub fn upload_page_if_current(
+        &mut self,
+        queue: &wgpu::Queue,
+        manager: &ResidencyManager,
+        token: AsyncPageToken,
+        page: &SpatialPage,
+        scene: &SceneBuffers,
+        attribute_lod: AttributeLod,
+    ) -> Result<(), PagedGpuError> {
+        manager
+            .validate_token(token)
+            .map_err(|_| PagedGpuError::StaleToken)?;
+        self.upload_page(queue, token, page, scene, attribute_lod)
     }
 
     pub fn clear_slot(
@@ -351,7 +374,14 @@ mod tests {
             manager.advance_to_decoded_ready(token).unwrap();
             manager.advance_to_uploading(token).unwrap();
             paged
-                .upload_page(&queue, token, page, &scene, AttributeLod::Degree0)
+                .upload_page_if_current(
+                    &queue,
+                    &manager,
+                    token,
+                    page,
+                    &scene,
+                    AttributeLod::Degree0,
+                )
                 .unwrap();
             manager.complete_resident(token).unwrap();
         }
@@ -428,8 +458,67 @@ mod tests {
         paged.clear_slot(&queue, evict).unwrap();
         manager.finish_evict(evict).unwrap();
         assert!(matches!(
-            paged.upload_page(&queue, token, page, &scene, AttributeLod::Degree0),
+            paged.upload_page_if_current(
+                &queue,
+                &manager,
+                token,
+                page,
+                &scene,
+                AttributeLod::Degree0,
+            ),
             Err(PagedGpuError::StaleToken)
         ));
+        assert!(paged.active_entries().is_empty());
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn paged_gpu_cancelled_token_never_enters_active_draw_set() {
+        let scene = sample_scene(4);
+        let pages = partition_scene_pages(&scene, 2, 2);
+        let config = RendererConfig {
+            width: 64,
+            height: 64,
+            mode: RenderMode::SortedAlpha,
+        };
+        let renderer = match Renderer::with_config(config) {
+            Ok(renderer) => renderer,
+            Err(RendererError::GpuRasterizerUnavailable)
+            | Err(RendererError::GpuDeviceCreation) => {
+                eprintln!("skipping paged GPU cancel test; adapter unavailable");
+                return;
+            }
+            Err(error) => panic!("renderer init: {error}"),
+        };
+        let device = renderer.device().unwrap().clone();
+        let queue = renderer.queue().unwrap().clone();
+        let layout = create_packed_bind_group_layout(&device);
+        let mut manager = ResidencyManager::new(
+            &pages,
+            ResidencyBudgets {
+                max_resident_pages: 1,
+                max_inflight_pages: 1,
+            },
+        );
+        let mut paged = PagedAtlasGpu::new(&device, &queue, &layout, 1, 2, &scene).unwrap();
+        let page = &pages.pages[0];
+        let token = manager.request_page(page.id).unwrap();
+        manager.advance_to_compressed_ready(token).unwrap();
+        manager.advance_to_decoded_ready(token).unwrap();
+        manager.advance_to_uploading(token).unwrap();
+        manager.cancel_inflight(token).unwrap();
+
+        assert!(matches!(
+            paged.upload_page_if_current(
+                &queue,
+                &manager,
+                token,
+                page,
+                &scene,
+                AttributeLod::Degree0,
+            ),
+            Err(PagedGpuError::StaleToken)
+        ));
+        assert!(paged.active_entries().is_empty());
     }
 }

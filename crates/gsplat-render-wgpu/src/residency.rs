@@ -194,6 +194,24 @@ impl ResidencyManager {
             .collect()
     }
 
+    pub fn resident_tokens(&self) -> Vec<AsyncPageToken> {
+        let mut tokens: Vec<_> = self
+            .pages
+            .values()
+            .filter(|page| page.state == PageResidencyState::Resident)
+            .filter_map(|page| {
+                Some(AsyncPageToken {
+                    scene_revision: self.scene_revision,
+                    page_id: page.page_id,
+                    slot: page.slot?,
+                    slot_generation: page.slot_generation,
+                })
+            })
+            .collect();
+        tokens.sort_by_key(|token| token.slot);
+        tokens
+    }
+
     pub fn inflight_count(&self) -> usize {
         self.pages
             .values()
@@ -281,6 +299,39 @@ impl ResidencyManager {
     pub fn complete_resident(&mut self, token: AsyncPageToken) -> Result<(), ResidencyError> {
         self.validate_token(token)?;
         self.transition(token.page_id, PageResidencyState::Resident)
+    }
+
+    pub fn cancel_inflight(&mut self, token: AsyncPageToken) -> Result<(), ResidencyError> {
+        self.validate_token(token)?;
+        let page = self
+            .pages
+            .get_mut(&token.page_id.0)
+            .ok_or(ResidencyError::UnknownPage)?;
+        if !matches!(
+            page.state,
+            PageResidencyState::Requested
+                | PageResidencyState::CompressedReady
+                | PageResidencyState::DecodedReady
+                | PageResidencyState::Uploading
+        ) {
+            return Err(ResidencyError::InvalidTransition {
+                from: page.state,
+                to: PageResidencyState::Absent,
+            });
+        }
+        page.state = PageResidencyState::Absent;
+        page.slot = None;
+        page.slot_generation = 0;
+        page.attribute_lod = AttributeLod::Degree0;
+
+        let slot = &mut self.slots[token.slot as usize];
+        if slot.generation != token.slot_generation || slot.page_id != Some(token.page_id) {
+            return Err(ResidencyError::StaleAsyncResult);
+        }
+        slot.page_id = None;
+        slot.generation = slot.generation.saturating_add(1);
+        self.free_slots.push_back(token.slot);
+        Ok(())
     }
 
     pub fn begin_evict(&mut self, page_id: PageId) -> Result<AsyncPageToken, ResidencyError> {
@@ -515,6 +566,28 @@ mod tests {
             manager.advance_to_compressed_ready(token),
             Err(ResidencyError::StaleAsyncResult)
         );
+    }
+
+    #[test]
+    fn cancel_invalidates_inflight_token_and_releases_slot_generation() {
+        let pages = sample_pages(6);
+        let mut manager = ResidencyManager::new(
+            &pages,
+            ResidencyBudgets {
+                max_resident_pages: 1,
+                max_inflight_pages: 1,
+            },
+        );
+        let cancelled = manager.request_page(pages.pages[0].id).unwrap();
+        manager.advance_to_compressed_ready(cancelled).unwrap();
+        manager.cancel_inflight(cancelled).unwrap();
+        assert_eq!(
+            manager.advance_to_decoded_ready(cancelled),
+            Err(ResidencyError::StaleAsyncResult)
+        );
+        let replacement = manager.request_page(pages.pages[1].id).unwrap();
+        assert_eq!(replacement.slot, cancelled.slot);
+        assert!(replacement.slot_generation > cancelled.slot_generation);
     }
 
     #[test]

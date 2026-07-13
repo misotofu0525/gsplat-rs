@@ -868,3 +868,17 @@
 - Existing uncommitted D-F code is not accepted merely because prior notes say
   complete. Each Goal Breakdown slice must receive focused verification and its
   own commit before the terminal audit can mark the initial goal achieved.
+
+# G2 bounded paging acceptance (2026-07-13)
+
+- The renderer slice is one compile-time unit: fixed-slot GPU resources,
+  scheduler/residency semantics, offscreen gates, and presenter-owned paged
+  resources meet in `gsplat-render-wgpu`. Splitting `lib.rs` merely to separate
+  Surface construction from paging tests would create an unbuildable commit, so
+  the renderer-owned local Surface resource stays in G2 while platform/Web
+  integration remains G3.
+- Hard evidence passes with page count greater than four slots, resident/active
+  bounds at four, deterministic eviction and retained cover, no draw from
+  non-resident pages, and generation-checked rejection before GPU mutation.
+- The 512-frame and Android memory values are useful boundedness observations,
+  not a requirement to pass a 30-minute or percentage-growth headline.
