@@ -203,19 +203,28 @@ public final class GsplatContextRenderer {
 }
 
 #if canImport(UIKit)
+public enum GsplatGeometryPath: UInt32, Equatable {
+    case direct = 0
+    case packedAtlas = 1
+    case pagedActiveAtlas = 2
+}
+
 public struct GsplatSurfaceOptions: Equatable {
     public var sortInterval: UInt32
     public var asyncSort: Bool
     public var frameLatency: UInt32
+    public var geometryPath: GsplatGeometryPath
 
     public init(
         sortInterval: UInt32 = 2,
         asyncSort: Bool = false,
-        frameLatency: UInt32 = 2
+        frameLatency: UInt32 = 2,
+        geometryPath: GsplatGeometryPath = .direct
     ) {
         self.sortInterval = sortInterval
         self.asyncSort = asyncSort
         self.frameLatency = frameLatency
+        self.geometryPath = geometryPath
     }
 }
 
@@ -238,21 +247,22 @@ public final class GsplatUIKitSurfaceRenderer {
         let controllerPointer = Unmanaged.passUnretained(viewController).toOpaque()
         try datasetPath.withCString { pathPointer in
             try check(
-                gsplat_surface_renderer_create_uikit(
+                gsplat_surface_renderer_create_uikit_with_geometry_path(
                     viewPointer,
                     controllerPointer,
                     pathPointer,
                     width,
                     height,
+                    options.geometryPath.rawValue,
                     &handle
                 ),
-                operation: "gsplat_surface_renderer_create_uikit"
+                operation: "gsplat_surface_renderer_create_uikit_with_geometry_path"
             )
         }
         guard let handle else {
             throw GsplatKitError(
                 code: gsplatInvalidArgument,
-                operation: "gsplat_surface_renderer_create_uikit",
+                operation: "gsplat_surface_renderer_create_uikit_with_geometry_path",
                 detail: "native renderer was nil after a successful create call"
             )
         }

@@ -41,3 +41,20 @@ before choosing the exact API shape.
   construction. The Rust binding sets the path before `Renderer::load_scene`.
 - The ESM wrapper validates the selector before construction and no longer
   creates Direct first and calls `setGeometryPath` afterwards.
+
+## Native Constructor Decision
+
+- Keep the existing Android/UIKit C create functions ABI-compatible and fixed
+  to Direct; add sibling `*_with_geometry_path` experimental constructors.
+- Android JNI and both local SDK wrappers now pass the requested path at create
+  time. Android and iOS examples no longer perform their initial path selection
+  after the Surface session already exists.
+- A preselected paged renderer builds spatial pages without retaining Direct
+  covariance or alpha caches.
+
+## Remaining Startup Peak
+
+`PagedAtlasGpu::new` still calls `pack_scene_with_encoding` for the full scene
+only to obtain SH scales before creating its fixed-slot placeholder. That
+O(scene) hot/SH staging allocation must be replaced by metadata-only scans
+before constructor-time paged startup can be called bounded.

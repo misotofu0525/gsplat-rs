@@ -96,11 +96,12 @@ class GsplatSurfaceRenderer private constructor(
             GsplatAndroidVersion.requireSupported()
 
             val outError = IntArray(1)
-            val handle = NativeBridge.createSurfaceRenderer(
+            val handle = NativeBridge.createSurfaceRendererWithGeometryPath(
                 surface,
                 datasetPath,
                 width,
                 height,
+                options.geometryPath.nativeValue,
                 outError
             )
             if (handle == 0L) {

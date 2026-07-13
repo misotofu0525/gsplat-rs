@@ -32,6 +32,16 @@ object NativeBridge {
     ): Long
 
     @JvmStatic
+    external fun createSurfaceRendererWithGeometryPath(
+        surface: Surface,
+        datasetPath: String,
+        width: Int,
+        height: Int,
+        geometryPath: Int,
+        outError: IntArray
+    ): Long
+
+    @JvmStatic
     external fun resizeSurfaceRenderer(nativeHandle: Long, width: Int, height: Int): Int
 
     @JvmStatic

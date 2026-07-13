@@ -331,10 +331,17 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         running = true
         renderThread = Thread(
             {
-                Log.i(TAG, "createSurfaceRenderer start size=${width}x$height dataset=$datasetPath")
+                Log.i(TAG, "createSurfaceRenderer start size=${width}x$height geometry=${benchmarkConfig.geometryPath} dataset=$datasetPath")
                 updateStatus("state=creating size=${width}x$height")
                 val createError = IntArray(1)
-                val handle = NativeBridge.createSurfaceRenderer(surface, datasetPath, width, height, createError)
+                val handle = NativeBridge.createSurfaceRendererWithGeometryPath(
+                    surface,
+                    datasetPath,
+                    width,
+                    height,
+                    geometryPathValue(benchmarkConfig.geometryPath),
+                    createError
+                )
                 if (handle == 0L) {
                     val rc = createError[0]
                     val message = NativeBridge.errorMessage(rc)
@@ -379,18 +386,6 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                     NativeBridge.destroySurfaceRenderer(handle)
                     running = false
                     updateStatus("state=create_failed rc=$frameLatencyRc error=$message")
-                    return@Thread
-                }
-                val geometryPathRc = NativeBridge.setSurfaceGeometryPath(
-                    handle,
-                    geometryPathValue(benchmarkConfig.geometryPath)
-                )
-                if (geometryPathRc != 0) {
-                    val message = NativeBridge.errorMessage(geometryPathRc)
-                    Log.e(TAG, "setSurfaceGeometryPath failed rc=$geometryPathRc error=$message")
-                    NativeBridge.destroySurfaceRenderer(handle)
-                    running = false
-                    updateStatus("state=create_failed rc=$geometryPathRc error=$message")
                     return@Thread
                 }
                 synchronized(renderLock) {

@@ -41,7 +41,7 @@ struct BenchmarkConfig {
     var sortInterval: UInt32 = 2
     var asyncSort = false
     var frameLatency: UInt32 = 2
-    /// Experimental A/B benchmark knob: "direct" (default) or "packed".
+    /// Experimental A/B benchmark knob: "direct" (default), "packed", or "paged".
     var geometryPath = "direct"
 
     static func fromArguments(_ arguments: [String]) -> BenchmarkConfig {
@@ -58,19 +58,27 @@ struct BenchmarkConfig {
             min(max(1, args.int("gsplat_surface_frame_latency", default: Int(config.frameLatency))), 4)
         )
         let geometryPath = args.string("gsplat_geometry_path", default: config.geometryPath).lowercased()
-        config.geometryPath = geometryPath == "packed" ? "packed" : "direct"
+        config.geometryPath = ["packed", "paged"].contains(geometryPath) ? geometryPath : "direct"
         return config
     }
 }
 
 /// Maps the experimental geometry-path label to the `GsplatGeometryPath` FFI value.
 func geometryPathValue(_ label: String) -> UInt32 {
-    label == "packed" ? 1 : 0
+    switch label {
+    case "packed": return 1
+    case "paged": return 2
+    default: return 0
+    }
 }
 
 /// Maps the experimental geometry-path label to the artifact `renderer.path` name.
 func geometryPipelineName(_ label: String) -> String {
-    label == "packed" ? "packed_atlas" : "sorted_index_direct"
+    switch label {
+    case "packed": return "packed_atlas"
+    case "paged": return "paged_active_atlas"
+    default: return "sorted_index_direct"
+    }
 }
 
 private struct LaunchArguments {
@@ -443,12 +451,13 @@ final class ExampleViewController: UIViewController, UIGestureRecognizerDelegate
         let viewPointer = Unmanaged.passUnretained(surfaceView).toOpaque()
         let controllerPointer = Unmanaged.passUnretained(self).toOpaque()
         let rc = datasetPath.withCString { path in
-            gsplat_surface_renderer_create_uikit(
+            gsplat_surface_renderer_create_uikit_with_geometry_path(
                 viewPointer,
                 controllerPointer,
                 path,
                 UInt32(size.width),
                 UInt32(size.height),
+                geometryPathValue(benchmarkConfig.geometryPath),
                 &handle
             )
         }
@@ -479,10 +488,6 @@ final class ExampleViewController: UIViewController, UIGestureRecognizerDelegate
             ("sort_interval", gsplat_surface_renderer_set_sort_interval(handle, benchmarkConfig.sortInterval)),
             ("async_sort", gsplat_surface_renderer_set_async_sort(handle, benchmarkConfig.asyncSort ? 1 : 0)),
             ("frame_latency", gsplat_surface_renderer_set_frame_latency(handle, benchmarkConfig.frameLatency)),
-            (
-                "geometry_path",
-                gsplat_surface_renderer_set_geometry_path(handle, geometryPathValue(benchmarkConfig.geometryPath))
-            ),
         ]
 
         for (name, rc) in steps where rc != 0 {

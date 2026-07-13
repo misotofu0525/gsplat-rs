@@ -568,13 +568,72 @@ pub unsafe extern "C" fn gsplat_surface_renderer_create_android(
     height: u32,
     out_renderer: *mut *mut GsplatSurfaceRenderer,
 ) -> i32 {
-    ffi_catch_i32("gsplat_surface_renderer_create_android", || {
+    unsafe {
+        create_android_surface_renderer(
+            native_window,
+            path,
+            width,
+            height,
+            0,
+            out_renderer,
+            "gsplat_surface_renderer_create_android",
+        )
+    }
+}
+
+/// Create an Android Surface renderer with a preselected experimental geometry path.
+///
+/// # Safety
+///
+/// The pointer requirements match [`gsplat_surface_renderer_create_android`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gsplat_surface_renderer_create_android_with_geometry_path(
+    native_window: *mut c_void,
+    path: *const c_char,
+    width: u32,
+    height: u32,
+    geometry_path: u32,
+    out_renderer: *mut *mut GsplatSurfaceRenderer,
+) -> i32 {
+    unsafe {
+        create_android_surface_renderer(
+            native_window,
+            path,
+            width,
+            height,
+            geometry_path,
+            out_renderer,
+            "gsplat_surface_renderer_create_android_with_geometry_path",
+        )
+    }
+}
+
+unsafe fn create_android_surface_renderer(
+    native_window: *mut c_void,
+    path: *const c_char,
+    width: u32,
+    height: u32,
+    geometry_path: u32,
+    out_renderer: *mut *mut GsplatSurfaceRenderer,
+    operation: &'static str,
+) -> i32 {
+    ffi_catch_i32(operation, || {
         if native_window.is_null() || path.is_null() || out_renderer.is_null() {
             return ffi_error(
                 ErrorCode::InvalidArgument,
-                "gsplat_surface_renderer_create_android: native_window, path, or out_renderer is null",
+                format!("{operation}: native_window, path, or out_renderer is null"),
             );
         }
+
+        let geometry_path = match geometry_path_from_ffi(geometry_path) {
+            Some(path) => path,
+            None => {
+                return ffi_error(
+                    ErrorCode::InvalidArgument,
+                    format!("{operation}: unsupported geometry path"),
+                );
+            }
+        };
 
         unsafe {
             *out_renderer = std::ptr::null_mut();
@@ -585,7 +644,7 @@ pub unsafe extern "C" fn gsplat_surface_renderer_create_android(
             Err(_) => {
                 return ffi_error(
                     ErrorCode::InvalidArgument,
-                    "gsplat_surface_renderer_create_android: path is not valid UTF-8",
+                    format!("{operation}: path is not valid UTF-8"),
                 );
             }
         };
@@ -597,26 +656,19 @@ pub unsafe extern "C" fn gsplat_surface_renderer_create_android(
         }) {
             Ok(renderer) => renderer,
             Err(err) => {
-                return ffi_error_display(
-                    err.code(),
-                    "gsplat_surface_renderer_create_android",
-                    err,
-                );
+                return ffi_error_display(err.code(), operation, err);
             }
         };
+        renderer.set_geometry_path(geometry_path);
 
         let loaded = match load_ply(Path::new(path_str)) {
             Ok(result) => result,
             Err(err) => {
-                return ffi_error_display(
-                    err.code(),
-                    "gsplat_surface_renderer_create_android",
-                    err,
-                );
+                return ffi_error_display(err.code(), operation, err);
             }
         };
         if let Err(err) = renderer.load_scene(loaded.scene) {
-            return ffi_error_display(err.code(), "gsplat_surface_renderer_create_android", err);
+            return ffi_error_display(err.code(), operation, err);
         };
 
         let window = match NonNull::new(native_window) {
@@ -624,7 +676,7 @@ pub unsafe extern "C" fn gsplat_surface_renderer_create_android(
             None => {
                 return ffi_error(
                     ErrorCode::InvalidArgument,
-                    "gsplat_surface_renderer_create_android: native_window is null",
+                    format!("{operation}: native_window is null"),
                 );
             }
         };
@@ -662,13 +714,76 @@ pub unsafe extern "C" fn gsplat_surface_renderer_create_uikit(
     height: u32,
     out_renderer: *mut *mut GsplatSurfaceRenderer,
 ) -> i32 {
-    ffi_catch_i32("gsplat_surface_renderer_create_uikit", || {
+    unsafe {
+        create_uikit_surface_renderer(
+            ui_view,
+            ui_view_controller,
+            path,
+            width,
+            height,
+            0,
+            out_renderer,
+            "gsplat_surface_renderer_create_uikit",
+        )
+    }
+}
+
+/// Create a UIKit Surface renderer with a preselected experimental geometry path.
+///
+/// # Safety
+///
+/// The pointer requirements match [`gsplat_surface_renderer_create_uikit`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gsplat_surface_renderer_create_uikit_with_geometry_path(
+    ui_view: *mut c_void,
+    ui_view_controller: *mut c_void,
+    path: *const c_char,
+    width: u32,
+    height: u32,
+    geometry_path: u32,
+    out_renderer: *mut *mut GsplatSurfaceRenderer,
+) -> i32 {
+    unsafe {
+        create_uikit_surface_renderer(
+            ui_view,
+            ui_view_controller,
+            path,
+            width,
+            height,
+            geometry_path,
+            out_renderer,
+            "gsplat_surface_renderer_create_uikit_with_geometry_path",
+        )
+    }
+}
+
+unsafe fn create_uikit_surface_renderer(
+    ui_view: *mut c_void,
+    ui_view_controller: *mut c_void,
+    path: *const c_char,
+    width: u32,
+    height: u32,
+    geometry_path: u32,
+    out_renderer: *mut *mut GsplatSurfaceRenderer,
+    operation: &'static str,
+) -> i32 {
+    ffi_catch_i32(operation, || {
         if ui_view.is_null() || path.is_null() || out_renderer.is_null() {
             return ffi_error(
                 ErrorCode::InvalidArgument,
-                "gsplat_surface_renderer_create_uikit: ui_view, path, or out_renderer is null",
+                format!("{operation}: ui_view, path, or out_renderer is null"),
             );
         }
+
+        let geometry_path = match geometry_path_from_ffi(geometry_path) {
+            Some(path) => path,
+            None => {
+                return ffi_error(
+                    ErrorCode::InvalidArgument,
+                    format!("{operation}: unsupported geometry path"),
+                );
+            }
+        };
 
         unsafe {
             *out_renderer = std::ptr::null_mut();
@@ -679,7 +794,7 @@ pub unsafe extern "C" fn gsplat_surface_renderer_create_uikit(
             Err(_) => {
                 return ffi_error(
                     ErrorCode::InvalidArgument,
-                    "gsplat_surface_renderer_create_uikit: path is not valid UTF-8",
+                    format!("{operation}: path is not valid UTF-8"),
                 );
             }
         };
@@ -691,18 +806,19 @@ pub unsafe extern "C" fn gsplat_surface_renderer_create_uikit(
         }) {
             Ok(renderer) => renderer,
             Err(err) => {
-                return ffi_error_display(err.code(), "gsplat_surface_renderer_create_uikit", err);
+                return ffi_error_display(err.code(), operation, err);
             }
         };
+        renderer.set_geometry_path(geometry_path);
 
         let loaded = match load_ply(Path::new(path_str)) {
             Ok(result) => result,
             Err(err) => {
-                return ffi_error_display(err.code(), "gsplat_surface_renderer_create_uikit", err);
+                return ffi_error_display(err.code(), operation, err);
             }
         };
         if let Err(err) = renderer.load_scene(loaded.scene) {
-            return ffi_error_display(err.code(), "gsplat_surface_renderer_create_uikit", err);
+            return ffi_error_display(err.code(), operation, err);
         };
 
         let view = match NonNull::new(ui_view) {
@@ -710,7 +826,7 @@ pub unsafe extern "C" fn gsplat_surface_renderer_create_uikit(
             None => {
                 return ffi_error(
                     ErrorCode::InvalidArgument,
-                    "gsplat_surface_renderer_create_uikit: ui_view is null",
+                    format!("{operation}: ui_view is null"),
                 );
             }
         };
@@ -928,11 +1044,9 @@ pub unsafe extern "C" fn gsplat_surface_renderer_set_geometry_path(
             }
         };
 
-        let geometry_path = match path {
-            0 => GeometryPath::SortedIndexDirect,
-            1 => GeometryPath::PackedAtlas,
-            2 => GeometryPath::PagedActiveAtlas,
-            _ => {
+        let geometry_path = match geometry_path_from_ffi(path) {
+            Some(path) => path,
+            None => {
                 return ffi_error(
                     ErrorCode::InvalidArgument,
                     "gsplat_surface_renderer_set_geometry_path: unsupported path",
@@ -946,6 +1060,15 @@ pub unsafe extern "C" fn gsplat_surface_renderer_set_geometry_path(
         renderer.render_error_logged = false;
         ffi_ok()
     })
+}
+
+fn geometry_path_from_ffi(path: u32) -> Option<GeometryPath> {
+    match path {
+        0 => Some(GeometryPath::SortedIndexDirect),
+        1 => Some(GeometryPath::PackedAtlas),
+        2 => Some(GeometryPath::PagedActiveAtlas),
+        _ => None,
+    }
 }
 
 /// Compatibility no-op retained for the v0.1 ABI.
@@ -1604,12 +1727,13 @@ mod tests {
     use std::ptr;
 
     use gsplat_core::ErrorCode;
+    use gsplat_render_wgpu::GeometryPath;
 
     use super::{
         GsplatCamera, GsplatConfig, GsplatContext, SurfaceCameraControl,
-        camera_rotation_looking_at, ffi_catch_i32, gsplat_camera_default, gsplat_config_default,
-        gsplat_context_create, gsplat_context_destroy, gsplat_context_get_stats,
-        gsplat_context_load_scene_path, gsplat_context_render_frame,
+        camera_rotation_looking_at, ffi_catch_i32, geometry_path_from_ffi, gsplat_camera_default,
+        gsplat_config_default, gsplat_context_create, gsplat_context_destroy,
+        gsplat_context_get_stats, gsplat_context_load_scene_path, gsplat_context_render_frame,
         gsplat_context_set_auto_camera, gsplat_context_set_camera, gsplat_error_message,
         gsplat_last_error_message, gsplat_surface_renderer_get_stats,
         gsplat_surface_renderer_orbit, gsplat_surface_renderer_pan,
@@ -1634,6 +1758,20 @@ mod tests {
         assert_eq!(camera.rotation_xyzw, [0.0, 0.0, 0.0, 1.0]);
         assert_eq!(camera.near_plane, 0.01);
         assert_eq!(camera.far_plane, 1000.0);
+    }
+
+    #[test]
+    fn geometry_path_ids_cover_the_experimental_constructor_contract() {
+        assert_eq!(
+            geometry_path_from_ffi(0),
+            Some(GeometryPath::SortedIndexDirect)
+        );
+        assert_eq!(geometry_path_from_ffi(1), Some(GeometryPath::PackedAtlas));
+        assert_eq!(
+            geometry_path_from_ffi(2),
+            Some(GeometryPath::PagedActiveAtlas)
+        );
+        assert_eq!(geometry_path_from_ffi(3), None);
     }
 
     #[test]

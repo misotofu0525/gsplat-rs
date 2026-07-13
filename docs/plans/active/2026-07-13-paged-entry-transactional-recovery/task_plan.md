@@ -35,12 +35,14 @@ Phase 1 — constructor-time path selection.
 
 - [x] Add an experimental constructor-time Web geometry selector while
       preserving the existing direct constructor.
-- [ ] Add the equivalent additive native Surface selector.
+- [x] Add the equivalent additive native Surface selector.
 - [x] Apply the Web path before `Renderer::load_scene` path-specific derivation
       and before `SurfacePresenter` resource/limit selection.
-- [ ] Apply the native path at the same constructor boundary.
-- [ ] Prove direct remains the default and no full Direct resource is created
+- [x] Apply the native path at the same constructor boundary.
+- [x] Prove direct remains the default and no full Direct CPU cache is created
       for a paged constructor.
+- [ ] Remove the full-scene packed staging allocation still performed while a
+      paged atlas initializes its fixed-slot placeholder.
 - **Status:** in_progress
 
 ### Phase 2: Make runtime path switching transactional
@@ -85,6 +87,7 @@ evidence index survives a fresh clone.
 | Preserve existing direct constructors and add only an explicitly experimental preselected path | Avoids changing stable default behavior or silently widening v0.1 semantics. |
 | Keep full CPU `SceneBuffers` out-of-core work deferred | This goal fixes the proven startup Direct-resource bug; production source streaming remains a separate architecture phase. |
 | Persist a compact evidence index, not raw 36,000-frame artifacts | Makes claims auditable from a commit without reintroducing an artifact army. |
+| Treat full-scene packed staging inside paged startup as a blocker | A fixed-slot atlas is not a bounded working set if initialization transiently packs every splat. |
 
 ## Errors Encountered
 

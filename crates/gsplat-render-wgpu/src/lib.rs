@@ -4696,6 +4696,27 @@ mod tests {
     }
 
     #[test]
+    fn paged_renderer_preselection_builds_pages_without_direct_cpu_caches() {
+        let mut renderer = Renderer::with_config_for_surface(RendererConfig::default()).unwrap();
+        renderer.set_geometry_path(super::GeometryPath::PagedActiveAtlas);
+        renderer.load_scene(build_scene()).unwrap();
+
+        assert_eq!(
+            renderer.geometry_path(),
+            super::GeometryPath::PagedActiveAtlas
+        );
+        assert!(renderer.world_covariances.is_none());
+        assert!(renderer.world_covariance_terms.is_none());
+        assert!(renderer.alpha_values.is_none());
+        assert!(
+            renderer
+                .spatial_pages
+                .as_ref()
+                .is_some_and(|pages| !pages.pages.is_empty())
+        );
+    }
+
+    #[test]
     fn packed_vs_direct_image_parity_gate_on_degree0_scene() {
         let config = RendererConfig {
             width: 128,

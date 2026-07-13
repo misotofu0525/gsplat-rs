@@ -77,9 +77,10 @@
 - Native integration flow:
   starts from C, Swift, or Kotlin/JNI host entrypoints
   crosses `crates/gsplat-ffi-c/include/gsplat.h` and `crates/gsplat-ffi-c/src/lib.rs`
-  maps active v0.1 controls onto `SurfaceRenderSession`; the existing
-  experimental geometry-path setter accepts direct, packed, or local paged
-  atlas values while native async CPU sorting stays behind the shared session
+  maps active v0.1 controls onto `SurfaceRenderSession`; additive experimental
+  constructors can select direct, packed, or local paged atlas before scene
+  derivation and Surface allocation, while the runtime setter remains an A/B
+  control and native async CPU sorting stays behind the shared session
   keeps each native handle owned by one serialized thread or queue; wrapper
   APIs add their own locking, while direct C/JNI callers must provide the same
   serialization
@@ -92,8 +93,9 @@
   obtains a `SurfaceView` `Surface` and wraps it as an `ANativeWindow` in `bindings/android/jni/gsplat_jni.c`
   creates a raw-handle `wgpu::Surface` in `crates/gsplat-render-wgpu/src/lib.rs`
   presents directly to the Android swapchain, not through offscreen readback
-  accepts `gsplat_geometry_path=paged` for the experimental local PLY-backed
-  fixed-slot Surface path; direct remains the default and release-gated path
+  accepts `gsplat_geometry_path=paged` at construction for the experimental
+  local PLY-backed fixed-slot Surface path; direct remains the default and
+  release-gated path
   packages the selected build-time scene as `assets/showcase.ply` plus its source-name metadata, preferring the CC0 Kitsune scene and falling back to Flowers
   presents compact showcase telemetry while keeping the complete validation status behind the `Studio` control
   packages the JNI library through `bindings/android/gsplat-android` for local AAR builds
@@ -102,7 +104,8 @@
   starts at the local `bindings/apple/GsplatKit` wrapper or sample `examples/ios/app/GsplatIOSExample.swift`
   obtains a UIKit `UIView` backed by `CAMetalLayer`
   selects `Documents/imported_scene.ply`, bundled `showcase.ply` with source-name metadata, or a generated minimal PLY
-  passes the view through `gsplat_surface_renderer_create_uikit`
+  passes the view through the additive constructor-time geometry entry while
+  preserving `gsplat_surface_renderer_create_uikit` as the Direct default
   creates a raw-handle `wgpu::Surface` in `crates/gsplat-render-wgpu/src/lib.rs`
   presents directly to the simulator Metal surface, not through offscreen readback
   uses the same Kitsune-first editorial showcase and toggleable `Studio` diagnostics pattern as Android
@@ -113,6 +116,8 @@
   starts at browser JavaScript that imports the local `packages/web` wrapper or generated `gsplat-web` wasm package
   passes an `HtmlCanvasElement`, PLY bytes, and dimensions through `wasm-bindgen`
   parses the PLY with `gsplat-io-ply::parse_ply_bytes`
+  applies an experimental packed/paged selector before scene derivation while
+  preserving the existing Direct constructor as the default
   loads the scene into `gsplat-render-wgpu::Renderer`
   creates a browser canvas `wgpu::Surface` through `SurfacePresenter::from_canvas`
   hands both objects to `SurfaceRenderSession`, so the browser wrapper does not

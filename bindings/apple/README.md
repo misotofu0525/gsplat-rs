@@ -143,12 +143,12 @@ a preallocated numeric buffer; JSON serialization happens after measurement.
 Every run uses the shared resident-scene pipeline selected by
 `gsplat_geometry_path`; the remaining knobs cover CPU sort scheduling and
 frame latency.
-`gsplat_geometry_path` selects between the `direct` (default,
-release-gated `SortedIndexDirect`) and `packed` (experimental
-`PackedAtlas`) Surface geometry pipelines for on-device A/B benchmarking. The
-example resolves the value via `gsplat_surface_renderer_set_geometry_path`
-and records the resulting `renderer.path` (`sorted_index_direct` or
-`packed_atlas`) in the emitted benchmark artifact.
+`gsplat_geometry_path` selects `direct` (default, release-gated
+`SortedIndexDirect`), `packed` (experimental `PackedAtlas`), or `paged`
+(experimental local-source `PagedActiveAtlas`) before scene derivation and
+Surface resource creation. The example records the resulting `renderer.path`
+(`sorted_index_direct`, `packed_atlas`, or `paged_active_atlas`) in the emitted
+benchmark artifact.
 
 ## 4) iOS simulator target build
 

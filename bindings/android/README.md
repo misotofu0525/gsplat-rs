@@ -153,9 +153,9 @@ Notes:
 - Imported files come from the Android system picker as `content://` URIs and are copied into `files/imported_scene.ply` before crossing the JNI/C ABI boundary, which still receives a normal local file path.
 - On Android emulator, the `SurfaceView` buffer is capped to a 1600px maximum side. The Surface presenter does not sample or cap the sorted splat list; visual stability is preferred over artificial throughput wins.
 - The compact overlay reports the live splat count and frame time. The `Studio` panel retains `drawn=<surface_instances>/<visible_instances>` and the full Android Surface diagnostics.
-- `GsplatSurfaceOptions` does not select a geometry path. The sample benchmark
-  intent can use the existing experimental C setter for `direct`, `packed`, or
-  local-source `paged`; direct remains the default release-gated path.
+- `GsplatSurfaceOptions.geometryPath` selects `DIRECT` by default or the
+  experimental `PACKED_ATLAS` / local-source `PAGED_ACTIVE_ATLAS` before scene
+  derivation and Surface resource creation.
 - Maven publishing, additional ABIs, and a higher-level `GsplatSurfaceView`
   are intentionally not solved here yet. Future Android SDK work should keep
   wrapping the same C ABI rather than introduce a separate render contract.
@@ -208,8 +208,6 @@ interaction A/B checks.
 `SortedIndexDirect`), `packed` (experimental `PackedAtlas`), or `paged`
 (experimental four-slot local-source `PagedActiveAtlas`) for on-device smoke
 and A/B checks.
-The example resolves the value via
-`gsplat_surface_renderer_set_geometry_path` and records the resulting
-`renderer.path` (`sorted_index_direct`, `packed_atlas`, or
-`paged_active_atlas`) in the emitted
-benchmark artifact.
+The example passes the value to the additive constructor-time geometry entry
+and records the resulting `renderer.path` (`sorted_index_direct`,
+`packed_atlas`, or `paged_active_atlas`) in the emitted benchmark artifact.

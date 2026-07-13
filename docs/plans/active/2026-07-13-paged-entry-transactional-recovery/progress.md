@@ -18,8 +18,11 @@
   Direct constructor unchanged.
 - Moved packed/paged selection ahead of scene path-specific derivation and
   presenter creation; removed the post-create selector from ESM construction.
-- Next action: add the equivalent native Surface constructor entry through the
-  C ABI and Android wrapper without widening the stable default.
+- Added additive Android/UIKit C constructors, passed selection through JNI and
+  both local wrappers, and retained the legacy Direct constructors unchanged.
+- Removed initial post-create switching from Android and iOS examples.
+- Next action: remove the full-scene packed staging allocation from fixed-slot
+  paged atlas initialization.
 
 ## Test Results
 
@@ -30,6 +33,12 @@
 | `npm --prefix packages/web test` | 7 passed |
 | `cargo check -p gsplat-web --target wasm32-unknown-unknown` | passed |
 | `cargo fmt --check` | passed; existing target-specific dead-code warnings only |
+| `cargo test -p gsplat-ffi-c` | 15 passed |
+| paged renderer preselection unit test | passed; pages present and Direct CPU caches absent |
+| `bash tests/ffi/run-ffi-smoke.sh` | passed; drawn=2, visible=2 |
+| `bash bindings/android/scripts/run-jni-smoke.sh` | passed |
+| Android sample APK build with minimal fixture | passed |
+| `bash bindings/apple/scripts/build-ios-sim-app.sh` | passed |
 
 ## Error Log
 
