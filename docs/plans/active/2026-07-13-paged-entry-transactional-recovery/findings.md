@@ -67,3 +67,16 @@ before constructor-time paged startup can be called bounded.
 - Metadata scans remain O(scene) time because the in-memory source must be
   inspected, but their additional memory is O(1); page uploads remain bounded
   by page capacity.
+
+## Transactional Switch Resolution
+
+- `SurfacePresenter` prepares the complete target resource tuple from an
+  immutable view of the current presenter and only replaces resources after
+  preparation succeeds.
+- `SurfaceRenderSession` rebuilds target renderer CPU state for preparation,
+  then restores the previous path and caches if presenter preparation fails.
+- Async sort shutdown, frame dirtiness, instance count, and packed color state
+  change only after a successful path commit.
+- The recovery guarantee covers errors returned as `SurfacePresenterError`;
+  it does not claim recovery from process-level allocation aborts or an
+  unrecoverable GPU device loss.

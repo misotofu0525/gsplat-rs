@@ -26,9 +26,18 @@
 
 ### Phase 2
 
+- **Status:** complete
+- Changed presenter switching to prepare-then-commit without clearing the old
+  path on returned errors.
+- Added renderer rollback and delayed async/frame-state mutation until commit.
+- Added deterministic injected-failure tests for presenter non-commit and
+  renderer cache/path restoration.
+
+### Phase 3
+
 - **Status:** in_progress
-- Next action: make presenter resource replacement prepare-then-commit and
-  roll renderer state back when presenter preparation returns an error.
+- Next action: bind a no-allocation over-Direct-limit resource plan to the real
+  Surface constructor and assert fixed-slot paged capacity for Nandi metadata.
 
 ## Test Results
 
@@ -48,6 +57,9 @@
 | packed metadata-only equivalence unit | passed |
 | `cargo test -p gsplat-render-wgpu paged_gpu -- --nocapture` | 3 passed |
 | `cargo clippy -p gsplat-render-wgpu --all-targets -- -D warnings` | passed |
+| presenter prepare failure non-commit unit | passed |
+| renderer rollback on presenter failure unit | passed |
+| `cargo test -p gsplat-render-wgpu -- --nocapture` | 83 passed, 1 existing ignored oracle; conformance passed |
 
 ## Error Log
 

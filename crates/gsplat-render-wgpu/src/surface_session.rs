@@ -286,6 +286,24 @@ pub struct SurfaceRenderSession {
     async_sorter: Option<SurfaceAsyncSorter>,
 }
 
+fn try_switch_renderer_geometry_path<Error>(
+    renderer: &mut Renderer,
+    target: GeometryPath,
+    prepare_presenter: impl FnOnce(&Renderer) -> Result<(), Error>,
+) -> Result<bool, Error> {
+    let previous = renderer.geometry_path();
+    if previous == target {
+        return Ok(false);
+    }
+
+    renderer.set_geometry_path(target);
+    if let Err(error) = prepare_presenter(renderer) {
+        renderer.set_geometry_path(previous);
+        return Err(error);
+    }
+    Ok(true)
+}
+
 impl SurfaceRenderSession {
     pub fn new(
         renderer: Renderer,
@@ -297,6 +315,9 @@ impl SurfaceRenderSession {
             .map_err(|_| RendererError::InvalidCamera)?;
         if renderer.scene().is_none() {
             return Err(RendererError::SceneNotLoaded);
+        }
+        if renderer.geometry_path() != presenter.geometry_path() {
+            return Err(RendererError::InvalidConfig);
         }
         let scene = renderer.scene().ok_or(RendererError::SceneNotLoaded)?;
         let mut min = [f32::INFINITY; 3];
@@ -344,12 +365,16 @@ impl SurfaceRenderSession {
     /// path (experimental A/B benchmark knob; default remains
     /// [`GeometryPath::SortedIndexDirect`]).
     pub fn set_geometry_path(&mut self, path: GeometryPath) -> Result<(), RendererError> {
+        let changed = try_switch_renderer_geometry_path(&mut self.renderer, path, |renderer| {
+            self.presenter.set_geometry_path(path, renderer)
+        })?;
+        if !changed {
+            return Ok(());
+        }
         #[cfg(not(target_arch = "wasm32"))]
         if path == GeometryPath::PagedActiveAtlas {
-            self.set_async_sort_enabled(false)?;
+            self.disable_async_sort();
         }
-        self.renderer.set_geometry_path(path);
-        self.presenter.set_geometry_path(path, &self.renderer)?;
         self.frame_state.force_sort();
         Ok(())
     }
@@ -454,10 +479,17 @@ impl SurfaceRenderSession {
         if enabled {
             self.async_sorter = Some(SurfaceAsyncSorter::new(&self.renderer)?);
         } else {
-            self.async_sorter = None;
+            self.disable_async_sort();
+            return Ok(());
         }
         self.async_sort_enabled = enabled;
         Ok(())
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn disable_async_sort(&mut self) {
+        self.async_sorter = None;
+        self.async_sort_enabled = false;
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -717,9 +749,10 @@ fn async_order_pose_compatible(
 mod tests {
     use super::{
         MAX_ASYNC_SORT_REVISION_LAG, SurfaceFrameState, SurfaceSortSchedule,
-        async_order_pose_compatible, async_schedule_threshold,
+        async_order_pose_compatible, async_schedule_threshold, try_switch_renderer_geometry_path,
     };
-    use gsplat_core::{Camera, Vec3f};
+    use crate::{GeometryPath, Renderer};
+    use gsplat_core::{Camera, RendererConfig, SceneBuffers, Vec3f};
 
     #[test]
     fn sort_schedule_exposes_interval_for_sync_and_async_policies() {
@@ -728,6 +761,38 @@ mod tests {
             SurfaceSortSchedule::AsyncLatest { interval: 3 }.interval(),
             3
         );
+    }
+
+    #[test]
+    fn failed_presenter_prepare_rolls_renderer_back_to_working_path() {
+        let scene = SceneBuffers {
+            positions: vec![Vec3f::new(0.0, 0.0, 1.0), Vec3f::new(0.1, 0.0, 1.2)],
+            opacity: vec![1.0; 2],
+            scale_xyz: vec![[-3.0; 3]; 2],
+            rotation_xyzw: vec![[0.0, 0.0, 0.0, 1.0]; 2],
+            color_dc: vec![[0.0; 3]; 2],
+            sh_degree: 0,
+            sh_rest: None,
+        };
+        let mut renderer = Renderer::with_config_for_surface(RendererConfig::default()).unwrap();
+        renderer.load_scene(scene).unwrap();
+        assert_eq!(renderer.world_covariances.as_ref().map(Vec::len), Some(2));
+
+        let result = try_switch_renderer_geometry_path(
+            &mut renderer,
+            GeometryPath::PagedActiveAtlas,
+            |prepared| {
+                assert_eq!(prepared.geometry_path(), GeometryPath::PagedActiveAtlas);
+                assert!(prepared.world_covariances.is_none());
+                assert!(prepared.spatial_pages.is_some());
+                Err::<(), _>("injected presenter allocation failure")
+            },
+        );
+
+        assert_eq!(result, Err("injected presenter allocation failure"));
+        assert_eq!(renderer.geometry_path(), GeometryPath::SortedIndexDirect);
+        assert_eq!(renderer.world_covariances.as_ref().map(Vec::len), Some(2));
+        assert!(renderer.spatial_pages.is_none());
     }
 
     #[test]

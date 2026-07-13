@@ -9,7 +9,7 @@ scene beyond the Direct resource gate can enter a fixed-slot paged Surface.
 
 ## Current Phase
 
-Phase 2 — transactional runtime path switching.
+Phase 3 — over-Direct-limit paged Surface proof.
 
 ## Hard Boundaries
 
@@ -47,12 +47,12 @@ Phase 2 — transactional runtime path switching.
 
 ### Phase 2: Make runtime path switching transactional
 
-- [ ] Build prospective renderer/presenter state without clearing the current
+- [x] Build prospective renderer/presenter state without clearing the current
       working path.
-- [ ] Commit both sides only after all fallible allocations succeed.
-- [ ] Add a deterministic allocation/failure test proving the old path remains
+- [x] Commit both sides only after all fallible allocations succeed.
+- [x] Add a deterministic allocation/failure test proving the old path remains
       usable after a failed switch.
-- **Status:** in_progress
+- **Status:** complete
 
 ### Phase 3: Prove an over-Direct-limit paged Surface entry
 
@@ -62,7 +62,7 @@ Phase 2 — transactional runtime path switching.
       whole Direct GPU representation.
 - [ ] Verify page count exceeds slots, fixed slot bounds, and non-zero draw or
       equivalent presenter preparation without weakening quality checks.
-- **Status:** pending
+- **Status:** in_progress
 
 ### Phase 4: Persist compact evidence and close the audit
 

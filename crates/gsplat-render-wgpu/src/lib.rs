@@ -1022,6 +1022,22 @@ pub struct SurfacePresenter {
     packed_color_refresh_target: Option<[f32; 3]>,
 }
 
+type SurfaceGeometryResources = (
+    Option<DirectSceneResources>,
+    Option<packed_gpu::PackedAtlasResources>,
+    Option<SurfacePagedRuntime>,
+);
+
+fn try_prepare_then_commit<State, Prepared, Error>(
+    state: &mut State,
+    prepare: impl FnOnce(&State) -> Result<Prepared, Error>,
+    commit: impl FnOnce(&mut State, Prepared),
+) -> Result<(), Error> {
+    let prepared = prepare(state)?;
+    commit(state, prepared);
+    Ok(())
+}
+
 impl SurfacePresenter {
     /// Creates a presenter for an owned native window target.
     #[cfg(not(target_arch = "wasm32"))]
@@ -1327,19 +1343,32 @@ impl SurfacePresenter {
             return Ok(());
         }
 
+        try_prepare_then_commit(
+            self,
+            |presenter| presenter.prepare_geometry_resources(path, renderer),
+            |presenter, (direct_scene, packed_scene, paged_scene)| {
+                presenter.direct_scene = direct_scene;
+                presenter.packed_scene = packed_scene;
+                presenter.paged_scene = paged_scene;
+                presenter.packed_color_refresh_position = None;
+                presenter.packed_color_refresh_cursor = None;
+                presenter.packed_color_refresh_target = None;
+                presenter.instance_count = 0;
+                presenter.geometry_path = path;
+            },
+        )
+    }
+
+    fn prepare_geometry_resources(
+        &self,
+        path: GeometryPath,
+        renderer: &Renderer,
+    ) -> Result<SurfaceGeometryResources, SurfacePresenterError> {
         let scene = renderer
             .scene()
             .ok_or(SurfacePresenterError::SceneNotLoaded)?;
 
-        self.direct_scene = None;
-        self.packed_scene = None;
-        self.paged_scene = None;
-        self.packed_color_refresh_position = None;
-        self.packed_color_refresh_cursor = None;
-        self.packed_color_refresh_target = None;
-        self.geometry_path = path;
-
-        match path {
+        let resources = match path {
             GeometryPath::SortedIndexDirect => {
                 let world_covariance_terms = renderer
                     .world_covariance_terms
@@ -1349,38 +1378,40 @@ impl SurfacePresenter {
                     .alpha_values
                     .as_deref()
                     .ok_or(SurfacePresenterError::SceneNotLoaded)?;
-                self.direct_scene = Some(DirectSceneResources::new(
+                let direct_scene = DirectSceneResources::new(
                     &self.device,
                     &self.direct_bind_group_layout,
                     scene,
                     world_covariance_terms,
                     alpha_values,
-                )?);
+                )?;
+                (Some(direct_scene), None, None)
             }
             GeometryPath::PackedAtlas => {
-                self.packed_scene = Some(packed_gpu::PackedAtlasResources::from_scene(
+                let packed_scene = packed_gpu::PackedAtlasResources::from_scene(
                     &self.device,
                     &self.queue,
                     &self.packed_bind_group_layout,
                     scene,
-                )?);
+                )?;
+                (None, Some(packed_scene), None)
             }
             GeometryPath::PagedActiveAtlas => {
                 let pages = renderer
                     .spatial_pages
                     .clone()
                     .ok_or(SurfacePresenterError::SceneNotLoaded)?;
-                self.paged_scene = Some(SurfacePagedRuntime::new(
+                let paged_scene = SurfacePagedRuntime::new(
                     &self.device,
                     &self.queue,
                     &self.packed_bind_group_layout,
                     scene,
                     pages,
-                )?);
+                )?;
+                (None, None, Some(paged_scene))
             }
-        }
-
-        Ok(())
+        };
+        Ok(resources)
     }
 
     pub fn render_sorted_indices(
@@ -4051,9 +4082,9 @@ mod tests {
 
     use super::{
         DirectSceneError, DirectScenePath, DirectSceneRemediation, DirectSceneResource,
-        PackedScenePath, Renderer, build_instances, direct_scene_preflight,
+        GeometryPath, PackedScenePath, Renderer, build_instances, direct_scene_preflight,
         ellipse_axes_from_covariance, packed_scene_preflight, project_covariance_to_ndc,
-        quat_inverse,
+        quat_inverse, try_prepare_then_commit,
     };
     #[cfg(not(target_arch = "wasm32"))]
     use super::{GpuRasterError, offscreen_device_limits};
@@ -4068,6 +4099,38 @@ mod tests {
             sh_degree: 0,
             sh_rest: None,
         }
+    }
+
+    #[test]
+    fn failed_geometry_resource_prepare_does_not_commit_partial_state() {
+        #[derive(Debug, Clone, PartialEq, Eq)]
+        struct State {
+            path: GeometryPath,
+            direct: Option<&'static str>,
+            packed: Option<&'static str>,
+            paged: Option<&'static str>,
+        }
+
+        let mut state = State {
+            path: GeometryPath::SortedIndexDirect,
+            direct: Some("working-direct"),
+            packed: None,
+            paged: None,
+        };
+        let original = state.clone();
+        let result = try_prepare_then_commit(
+            &mut state,
+            |_| Err::<(Option<&str>, Option<&str>, Option<&str>), _>("injected allocation failure"),
+            |state, (direct, packed, paged)| {
+                state.path = GeometryPath::PagedActiveAtlas;
+                state.direct = direct;
+                state.packed = packed;
+                state.paged = paged;
+            },
+        );
+
+        assert_eq!(result, Err("injected allocation failure"));
+        assert_eq!(state, original);
     }
 
     #[test]

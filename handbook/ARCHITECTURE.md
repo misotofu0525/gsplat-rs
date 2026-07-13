@@ -80,7 +80,8 @@
   maps active v0.1 controls onto `SurfaceRenderSession`; additive experimental
   constructors can select direct, packed, or local paged atlas before scene
   derivation and Surface allocation, while the runtime setter remains an A/B
-  control and native async CPU sorting stays behind the shared session
+  control that preserves the old session when target resource preparation
+  returns an error; native async CPU sorting stays behind the shared session
   keeps each native handle owned by one serialized thread or queue; wrapper
   APIs add their own locking, while direct C/JNI callers must provide the same
   serialization
