@@ -1,5 +1,134 @@
 # Progress Log
 
+## 2026-07-13 Goal Breakdown execution restart
+
+- Reset-line branch and HEAD confirmed before staging:
+  `refactor/packed-atlas-d-reset` at `05f649e396b2`.
+- The prior `refactor/packed-atlas` work remains isolated in
+  `stash@{0}: pre-d-reset-2026-07-13`; no telemetry/sidecar/adversarial-validator
+  stack will be restored.
+- The worktree contains uncommitted D-F candidate slices from the prior run.
+  They are treated as pending until individually staged, freshly verified, and
+  committed under G2-G5.
+- G1 plan gate reform passed plan-scope diff hygiene and consistency checks.
+- **Current unique execution item:** G2 — bounded paging correctness.
+
+### Goal Breakdown status
+
+- [x] G1 plan reform
+- [ ] G2 bounded paging correctness
+- [ ] G3 native Surface/Web usability
+- [ ] G4 competitive evidence
+- [ ] G5 local distribution and claim boundaries
+- [ ] G6 terminal audit
+
+## Current status: Phase D-F complete (2026-07-13)
+
+- Phase D D0/D1 is complete: five functional-correctness gates, fixed four-slot
+  residency, deterministic failure/continuity semantics, non-zero Surface path,
+  bounded 512-frame trace, and two-minute Android smoke all passed.
+- Phase E is complete as a qualification decision. Five sequential randomized
+  Kitsune-static Web pairs passed the narrow parity gate; every native, broad
+  browser/dataset, memory, thermal/energy, and 10M claim remains withheld.
+- Phase F local consumption passed for the Web tarball, Android AAR/APK, and
+  Apple XCFramework/Swift Package. Canonical checks passed; no registry publish,
+  git commit, or push was performed.
+- No current blocker remains inside the agreed D-F scope.
+
+## Session: 2026-07-13 Phase D Reset
+
+### D0 Functional Correctness Reboot
+
+- **Status:** in_progress; reset to checkpoint `05f649e`
+- Preserved boundary:
+  - Phase B/C packed atlas and SPZ work remains intact.
+  - Phase D keeps `spatial_pages`, `residency`, `page_scheduler`, `page_atlas`,
+    `paged_gpu`, and offscreen `PagedActiveAtlas` rendering/parity bootstrap.
+- Reopened correctness gaps:
+  - The checkpoint allocates `page_count` atlas slots and force-installs every
+    page, so it is a parity bootstrap rather than true bounded streaming.
+  - Surface still rejects `PagedActiveAtlas` and has no non-zero drawn smoke.
+  - Continuity and expired-page draw prevention need deterministic D0 gates.
+- Frozen until D0 is complete:
+  - long Android RSS/queue runs, network-adversarial validation, telemetry
+    sidecars/C ABI receipts, 10M and PlayCanvas qualification, SOG decoders.
+- **Current single blocker:** D0-1 offscreen `PagedActiveAtlas` vs `PackedAtlas`
+  count + image parity on the minimal scene and deterministic multi-page
+  qualification-small scene.
+- Working rules: one blocker at a time; unrelated features frozen; prefer less
+  than 800 net new lines and at most two new files per slice; evidence must ship
+  with the function it proves; no commit or push without user confirmation.
+- D0-1 audit: the reset branch has count + image parity only for the inline
+  two-splat scene; the qualification-small paged parity gate is missing and is
+  the active implementation gap.
+- D0-1 completed:
+  - Added a deterministic 64-splat, degree-3, multi-page paged-vs-packed gate.
+  - Added paged active-slot SH hot-color refresh through the existing packed
+    RGB10 hot-record path.
+  - Minimal and qualification-small count/image parity are exact.
+  - `cargo test -p gsplat-render-wgpu`: 73 passed, 1 existing ignored oracle;
+    SortedAlpha conformance passed.
+  - `cargo check -p gsplat-render-wgpu`: passed.
+- **Current single blocker:** D0-2 fixed atlas-slot budget, active-subset
+  residency, eviction, and non-resident-page draw exclusion.
+- D0-2 completed:
+  - Replaced `page_count * capacity` bootstrap allocation with four fixed slots.
+  - Integrated the existing scheduler and generation-checked residency manager
+    with GPU clear/upload transitions.
+  - Added a 27-page gate proving active-subset draw, camera-jump eviction, and
+    exclusion of every non-resident source splat from active draw entries.
+  - `cargo test -p gsplat-render-wgpu`: 74 passed, 1 existing ignored oracle;
+    conformance passed. Focused fmt/check and `git diff --check` passed.
+- **Current single blocker:** D0-3 retained coarse coverage during small camera
+  motion with a deterministic short trace and no zero-draw holes.
+- D0-3 completed:
+  - Added deterministic resident-set hysteresis around the nearest-page cutoff.
+  - Added a four-frame small-motion trace proving retained coarse coverage,
+    non-zero drawn count, and non-transparent output on every frame.
+  - `cargo test -p gsplat-render-wgpu`: 75 passed, 1 existing ignored oracle;
+    conformance passed.
+- **Current single blocker:** D0-4 reject cancel/stale/generation results before
+  an expired page can enter the active draw set.
+- D0-4 completed:
+  - Added `cancel_inflight` with slot release and generation invalidation.
+  - Added residency-guarded GPU upload immediately before slot mutation.
+  - Tests prove cancelled and stale tokens cannot enter `active_entries`.
+  - `cargo test -p gsplat-render-wgpu`: 77 passed, 1 existing ignored oracle;
+    conformance passed.
+- **Current single blocker:** D0-5 smallest usable local-source Surface paged
+  path with stable non-zero drawn output.
+- D0-5 completed:
+  - Added presenter-owned fixed-slot local paged runtime and Surface draw pass.
+  - Added Surface session paged ordering/stats path without restoring old
+    source-streaming or telemetry stacks.
+  - Extended the existing experimental C/Android geometry selector with paged
+    value 2; C FFI smoke, JNI smoke, and APK build passed.
+  - Physical Nothing A065 / Vulkan smoke: 8 measured frames, every frame
+    `geometry_pipeline=paged_active_atlas visible=3 drawn=3`, zero missed frames.
+- D0 completion matrix: all five correctness gates complete. Workspace check,
+  fmt, strict clippy, render/FFI tests, conformance, FFI/JNI smoke, APK build,
+  and Android Surface smoke passed.
+- **Current single blocker:** D1 bounded four-slot/active-set invariants plus a
+  two-minute Android Kitsune paged steady-state run; no 30-minute gate.
+- D1 completed:
+  - Deterministic 512-frame trace kept slot/resident/active counts ≤4 with
+    non-zero drawn output on every frame.
+  - Physical Android Kitsune local paged Surface ran beyond 9,397 frames.
+  - 120-second PSS: `291272 -> 295337 KiB` (+4,065 KiB).
+  - Endpoint RSS: `417000 -> 422532 KiB` (+5,532 KiB), below 64 MiB.
+  - No network profile was needed; 30-minute qualification remains deferred.
+  - Full render suite: 79 passed, 1 existing ignored oracle; conformance, fmt,
+    and diff hygiene passed.
+- Phase D complete (D0 + D1).
+- **Current single blocker:** Phase E revalidate the pinned PlayCanvas harness
+  and freeze the first fair paired Kitsune protocol before measurements.
+- Phase E harness identity/path revalidation completed:
+  - `npm ci --ignore-scripts`: 82 packages, zero vulnerabilities.
+  - preflight passed exact version/revision/license/integrity.
+  - browser smoke passed WebGPU + active GPU-sort path with 3 visible splats.
+- **Current single blocker:** add timed PlayCanvas v1 raw-frame collection with
+  frozen identity/dataset/trace/backend/path fields; no claim before this exists.
+
 ## Session: 2026-07-11
 
 ### Implementation Phase D: Spatial Pages and Streaming LOD
@@ -314,8 +443,81 @@
 
 ## Error Log
 
+- 2026-07-13: The first Phase F external Web consumer probe used
+  `npm pack --prefix packages/web`; npm still resolved `package.json` from the
+  repository root for this subcommand, so no tarball was created and the
+  dependent install/import steps failed. Run `npm pack` with `packages/web` as
+  the actual working directory, then install its tarball into an isolated
+  `target/` consumer.
+- 2026-07-13: The static qualification URL requested yaw zero through an HTML
+  range whose minimum is `0.0001`; the browser clamped it and the first orbit
+  cleared the native trace-camera override. Force yaw zero from qualification
+  state rather than routing static trace semantics through the UI control.
+
+## 2026-07-13 Phase E Kitsune five-pair qualification
+
+- The first complete concurrent diagnostic pair produced 3,600 valid frames
+  per engine, SSIM `0.9986559132`, PlayCanvas p95/p99 frame wall
+  `16.6/17.2 ms`, and gsplat-rs `12.7/15.1 ms`. It is not included in the
+  randomized claim series because the engines ran concurrently.
+- Predeclared sequential pair order before measurement:
+  `01 playcanvas-first`, `02 gsplat-rs-first`, `03 gsplat-rs-first`,
+  `04 playcanvas-first`, `05 playcanvas-first`. Each run uses 120 warmups and
+  3,600 measured rAF frames and records pair id/order/position in its manifest.
+- 2026-07-13: A diagnostic SSIM wrapper tried to assign zsh's read-only
+  `status` variable after emitting a valid `0.6931295175` result. The metric
+  result is retained; future wrappers use a different exit-code variable.
+- 2026-07-13: The generated diagnostic Blob loaded but produced no PlayCanvas
+  gsplat resource because its object URL has no `.ply` suffix. Keep the bytes
+  unchanged and provide an explicit `raster_diagnostic_v1.ply` asset filename
+  so PlayCanvas selects its PLY parser.
+- 2026-07-13: The first generated raster-diagnostic smoke timed out because the
+  harness server did not declare `.mjs` as JavaScript for the shared module.
+  Added the explicit MIME mapping before retrying; no benchmark evidence was
+  emitted from the timed-out run.
+- 2026-07-13: The first raster-diagnostic patch assumed a runtime signal
+  assignment that does not exist in `main.js`; it was rejected atomically.
+  Split module/server, PlayCanvas, Web example, and collector edits and used the
+  actual signal initialization path.
+- 2026-07-13: The first combined minimal-trace patch used stale nearby context
+  in `examples/web/src/main.js` and was rejected atomically. Re-read exact
+  state/config/collector sections and applied smaller context-accurate patches.
+- 2026-07-13: Canonical matched-image SSIM failed at `0.8713640084 < 0.99`.
+  Kept Phase E open and moved diagnosis from camera/metric plumbing to raster
+  semantics; no threshold or geometry compensation was applied.
+- 2026-07-13: System Python did not provide Pillow for image-bound analysis.
+  Used the installed ImageMagick CLI read-only instead; no dependency was added.
+- 2026-07-13: The first PlayCanvas Kitsune candidate captured all frames but
+  failed artifact validation because the shared camera contract uses
+  `trace_id`, while the smoke descriptor uses `id`. Accept both explicit forms
+  in the producer and rerun; the invalid candidate is not evidence.
+- 2026-07-13: The first shared static-trace hash was calculated from integer
+  JSON literals while the committed audit-friendly file used equivalent float
+  literals. Accepted the validator's canonical hash for the actual file and
+  updated the protocol before any run.
+- 2026-07-13: A Phase E search included nonexistent `technical_design.md`.
+  Continued with the actual plan files and recorded no result from that path.
+- 2026-07-13: Phase E status patch expected `**Status:**` without the file's
+  list marker. Re-read the exact section and applied a context-accurate patch.
+
 | Timestamp | Error | Attempt | Resolution |
 |-----------|-------|---------|------------|
+| 2026-07-13 | Phase E harness inspection requested nonexistent `public/main.mjs`; actual file is `public/main.js`, so later chained reads did not run | 1 | Use `rg --files` result and read `main.js` plus `server.mjs` explicitly. |
+| 2026-07-13 | D1 512-frame bound assertion required rustfmt wrapping | 1 | Apply rustfmt before running the deterministic bound gate. |
+| 2026-07-13 | D0-5 local Surface runtime gate required rustfmt compaction | 1 | Apply rustfmt, then run the focused non-zero-draw gate. |
+| 2026-07-13 | D0-5 focused rustfmt check requested standard compaction/wrapping in the new Surface runtime and session branch | 1 | Apply rustfmt before the first D0-5 compile. |
+| 2026-07-13 | D0-5 Surface match edit temporarily left both the old rejection arm and new paged render arm | 1 | Remove the old `PagedAtlasUnsupported` arm before compiling; no partial behavior claim. |
+| 2026-07-13 | D0-4 focused compile could not resolve `ResidencyManager` in the new guarded GPU upload signature | 1 | Add it to `paged_gpu.rs` residency imports and rerun the identical focused test command. |
+| 2026-07-13 | New D0-2 assertions required standard rustfmt wrapping | 1 | Apply rustfmt before running the focused eviction test. |
+| 2026-07-13 | Four-page qualification fixture restored count 64 but put every splat at identical depth, so scheduler slot remapping changed undefined equal-depth alpha order; MAE `0.002070`, pixel tail `0.045410` | 1 | Keep four pages but assign the four spatial groups distinct deterministic depths, then rerun the same parity gates. |
+| 2026-07-13 | Qualification-small slot-count assertion referenced the private parent constant without qualification | 1 | Use `super::DEFAULT_PAGED_ATLAS_SLOTS` and rerun the focused parity command. |
+| 2026-07-13 | First full test after the four-slot D0-2 integration drew 16 of 64 qualification-small splats because the fixture occupied more than four pages | 1 | Keep the fixed budget; reshape the deterministic degree-3 fixture to exactly four spatial pages so D0-1 remains an all-resident multi-page gate. |
+| 2026-07-13 | D0-2 focused rustfmt check requested one line wrap in the new resident-page lookup | 1 | Apply rustfmt and rerun before compiling. |
+| 2026-07-13 | First combined D0-2 patch found a stale `ensure_paged_atlas` call-site context and was rejected atomically | 1 | Re-locate exact formatted call sites and apply residency, scheduler, and rasterizer changes as smaller patches. |
+| 2026-07-13 | Full render-wgpu test compile could not resolve private parent helper `default_spatial_pages` from the nested test module | 1 | Qualify it as `super::default_spatial_pages` and rerun the same full crate test command. |
+| 2026-07-13 | Focused `cargo fmt --check -p gsplat-render-wgpu` requested one signature compaction in `packed_gpu.rs` | 1 | Apply repository rustfmt, then rerun the focused check before tests. |
+| 2026-07-13 | D0-1 deterministic multi-page degree-3 parity preserved all 64 visible/drawn splats but failed image thresholds: MAE `0.014751`, pixel tail `0.450562` | 1 | Add camera-dependent SH hot-color refresh for occupied paged slots, then rerun the same two paged parity gates. |
+| 2026-07-13 | D0-1 Kitsune paged parity could not allocate the bootstrap atlas: 11,468,800 entries required a 229,376,000-byte hot binding and preflight returned `PagingRequired` | 1 | Do not repeat the full-scene bootstrap attempt. Define D0-1 with a deterministic multi-page qualification-small fixture; retain Kitsune for fixed-budget D0-2/D1 evidence. |
 | 2026-07-11 | Findings patch context did not match generated file | 1 | Re-read the file and applied a context-accurate patch. |
 | 2026-07-11 | Broad unsupported-claim scan matched intentional warning text | 1 | Classified as expected and replaced with a placeholder-only final scan. |
 | 2026-07-11 | Revised broad placeholder scan matched the historical test-log row itself | 1 | Scope placeholder terms away from progress history and remove the superseded numeric literal from the log before rerunning. |
@@ -343,8 +545,112 @@
 
 | Question | Answer |
 |----------|--------|
-| Where am I? | Phase A–C complete; Phase D has CPU pages/residency/scheduler/atlas staging plus GPU page upload. |
-| Where am I going? | Wire paged active indices into the SortedAlpha draw loop, then large-scene continuity evidence. |
-| What's the goal? | Deliver the native-first competitive architecture through Phases A-F with evidence. |
-| What have I learned? | See `findings.md`. |
-| What have I done? | Froze Phase A, qualified Phase B, landed SPZ v4 decode, minimal fixture, cancel, and PLY attribute mapping. |
+| Where am I? | Phase A–C remain at their recorded boundaries; Phase D is reset to `05f649e` and D0 is open. |
+| Where am I going? | Close D0 in order: offscreen parity, true bounded residency, continuity, failure semantics, then Surface non-zero draw. |
+| What's the goal? | A minimal correctly streaming paged product path before steady-state or competitive qualification. |
+| What have I learned? | Full-install parity is only a bootstrap; validator volume and long-run telemetry do not substitute for streaming correctness. |
+| What have I done? | Preserved the Phase B/C boundary, discarded post-checkpoint code from the active branch, and rewrote the Phase D gates. |
+## 2026-07-13 Phase E raw-frame collector blocker
+
+- Inspected the complete v1 validator call path, fixture suite, and artifact
+  contract before changing the PlayCanvas harness.
+- Found that the contract incorrectly forces competitor-internal phase timings
+  to be non-null. Current action: correct nullable timing semantics and prove
+  them with positive and negative fixture tests before implementing collection.
+- The nullable phase-timing contract correction passed the deterministic v1
+  fixture suite, including rejection of an unlisted null `sort_ms`.
+- Confirmed the existing production module import and PlayCanvas event
+  boundaries to use for the collector. No engine patch or second browser stack
+  is needed.
+- Added `benchmark:smoke` to the pinned PlayCanvas harness. A fresh headless
+  Chrome WebGPU run captured 60 raw frames after 30 warmups and passed the v1
+  validator under `target/benchmarks/playcanvas-collector-smoke/`.
+- The artifact freezes dataset hash, static camera descriptor hash, display,
+  backend, active GPU-sort renderer, dependency identity, and timing sources.
+  It is explicitly `collector_smoke_only`; no competitive claim is derived.
+- Closed the raw-frame collector blocker. The next and only Phase E blocker is
+  the paired qualification protocol shared by gsplat-rs and PlayCanvas.
+- Began the paired-protocol blocker by reconciling the existing verification
+  plan with available datasets and collectors. Kitsune is selected as the first
+  nontrivial degree-3 pair; minimal remains smoke-only.
+- Audited the gsplat-rs Web collector and rejected its current synchronous,
+  locally generated orbit as paired evidence. The protocol must first add a
+  common camera input and rAF mode before collecting competitor numbers.
+- Added and validated the shared Kitsune static trace, then captured a valid
+  PlayCanvas candidate: 3,600 raw frames, 120 warmups, 30.001 seconds, exact
+  dataset/trace/path/display identities, and zero missed configured-budget
+  frames. No cross-engine result is claimed yet.
+- Found and scoped the gsplat-rs paired-camera gap: the public WASM wrapper
+  cannot accept an explicit camera. Current action is the smallest existing-
+  module bridge for exact pose/intrinsics, followed by rAF collector wiring.
+- Captured the first gsplat-rs candidate successfully, then rejected it as the
+  final pair because the dataset ID and available build/device identity were
+  not normalized. Added fail-closed normalization and canvas-only capture for
+  the next paired quality check.
+- The normalized recapture produced an exact dataset/trace/display identity
+  match. Rejected overlay-contaminated element screenshots and changed both
+  collectors to write the raw canvas backing PNG before running image parity.
+- Diagnosed the inverted PlayCanvas canvas from local source: gsplat-rs performs
+  RDF-to-RUF conversion during PLY load, while the PlayCanvas scene retained
+  RDF. Added and recorded an entity Y reflection for the paired input boundary;
+  the candidate must be recaptured and rechecked visually/numerically.
+- The recaptured PlayCanvas image is now upright, but the projected bounds are
+  still smaller. Added a PlayCanvas camera/projection receipt and a
+  qualification query option to the existing fast smoke so the mismatch can be
+  diagnosed without another 30-second timing run.
+- Added a tested WASM camera receipt and recaptured gsplat-rs. The receipt
+  proves exact pose/intrinsics application, so the remaining paired blocker is
+  raster-quality alignment. After correcting the metric interpretation and
+  camera basis, similarity is about 0.95362 versus the frozen 0.99 target; no
+  performance gate is evaluated.
+- Reconciled the two Gaussian support formulas and avoided an invalid scale
+  compensation. Added a fixed PlayCanvas quality profile matching gsplat-rs's
+  no-LOD/no-contribution-cull, 1/256 alpha, 0.3-pixel-floor semantics and black
+  background; a fast raw-canvas smoke will decide whether this closes SSIM.
+- The fixed PlayCanvas quality/basis profile improved the pair substantially.
+  A gsplat-rs Gaussian-support rewrite did not close the remaining gap and was
+  reverted after a one-frame quality probe.
+- Found that the upright PlayCanvas image was still horizontally mirrored.
+  Replaced the incomplete Y-only bridge with a source Y/Z plus camera-Z basis
+  conversion and will re-run the fast raw-canvas quality probe before timing.
+- Projection audit found the remaining scale mismatch: the static Web benchmark
+  inadvertently replaced the trace camera via `orbit(0, 0)`. Changed the frame
+  loop to preserve the explicit trace when yaw is zero; rebuilding and probing
+  this fix is the current quality gate.
+- Completed the camera/projection audit with receipts on both engines. The
+  remaining cross-engine similarity is about 0.9536 and fails the existing
+  0.99 gate due to systematic raster footprint differences.
+- Invalidated the exploratory Phase E timing candidates and retained only the
+  collector/contract implementation. Phase E remains open on one blocker:
+  achieve honest raster-quality parity without camera/geometry compensation or
+  threshold gaming.
+- Removed all invalid exploratory Phase E paired artifacts from `target/` so
+  they cannot be mistaken for claim evidence. Collector smoke artifacts remain
+  clearly scoped as smoke.
+- Fresh post-diagnosis verification passes: workspace check; render-wgpu/Web/C
+  FFI tests (79 render tests passed, one research oracle ignored; conformance
+  passed; 14 FFI tests passed); strict clippy; Web package tests; pinned
+  PlayCanvas preflight/path smoke; v1 artifact fixtures; both camera-trace
+  validators; formatting and diff hygiene.
+- Reopened the quality score itself as part of the same blocker: local
+  ImageMagick aliases SSIM/DSSIM output semantics, so the previously reported
+  0.9536 conversion is not qualification-grade. Current action is to freeze a
+  deterministic one-for-identical SSIM implementation before further tuning.
+- Ran the first canonical `ssim-luma-srgb-window8` pair: score
+  `0.8713640084`, gate fail. Confirmed Surface camera uniforms refresh every
+  frame and ruled out double opacity activation plus zero-yaw fallback.
+- Ran a diagnostic-only scale sweep and overlay. Best resize is ~88% with SSIM
+  ~0.957, while rigid features remain doubled at native scale. No transformed
+  image is accepted as evidence; next action is a source-center-bounds receipt.
+- Added a PlayCanvas source-center-bounds receipt; it matches Kitsune exactly
+  after basis conversion. Also verified Rust/WGSL uniform layout. Next probe is
+  the existing minimal scene under a new shared static trace, not more Kitsune
+  tuning.
+- Added and validated a shared minimal static trace. Its exact-camera pair
+  scores `0.9580970409`; visual inspection shows only Gaussian gradient/support
+  differences. Current experiment changes that one variable on direct Surface.
+- Re-tested normalized PlayCanvas-style support under the minimal trace; score
+  dropped to `0.9493355401`, so the shader experiment was fully reverted.
+- Identified the minimal fixture's positive log scales as cap-saturating. Closed
+  this diagnostic slice (canonical SSIM + shared minimal trace) and moved to an
+  uncapped small-scale fixture as the next single action.

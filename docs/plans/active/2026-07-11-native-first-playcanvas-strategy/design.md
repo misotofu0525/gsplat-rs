@@ -544,6 +544,12 @@ Promote only after:
 
 ## Implementation Phases
 
+The exit gates below use hard correctness and safety as phase blockers.
+Performance ratios, 30-minute stability, byte bands, energy/thermal wins, and
+full device matrices qualify claims and guide later optimization; a miss is
+reported and narrows the claim rather than forcing quality reductions or an
+unbounded optimization loop.
+
 ### Phase A: Freeze Competitive Baseline
 
 - Extend metrics and percentile output without changing rendering behavior.
@@ -561,10 +567,9 @@ device, and desktop Web; current behavior remains unchanged.
 - Reuse global CPU sorting and direct sorted slot IDs.
 - Compare direct and packed paths under identical cameras.
 
-**Exit gate:** image/count parity, at least 3x measured scene-payload reduction,
-a hot record no larger than 20 bytes, full degree-3 attributes no larger than 68
-bytes before order, no p95 regression greater than 10% on any release-gated
-device, and no direct path regression.
+**Exit gate:** image/count parity, valid bounded resource accounting, and no
+direct-path regression. Payload reduction, record sizes, and device p95 ratios
+remain reported optimization/claim observations.
 
 ### Phase C: Compressed Sources and Bounded Decode
 
@@ -573,8 +578,9 @@ device, and no direct path regression.
 - Decode directly into page-aligned staging buffers and upload slots.
 - Record cold/warm load phases and peak memory.
 
-**Exit gate:** lower transport/storage bytes and lower or equal peak memory than
-PLY for the qualification scenes; cancellation and failure recovery pass.
+**Exit gate:** bounded decode, cancellation, failure recovery, and attribute /
+image compatibility pass. Transport and peak-memory deltas are reported rather
+than required to beat PLY in every environment.
 
 ### Phase D: Spatial Pages and Streaming LOD
 
@@ -584,10 +590,11 @@ PLY for the qualification scenes; cancellation and failure recovery pass.
 - Select SH degree independently from spatial page detail.
 - Extend global sorting across all active slots.
 
-**Exit gate:** Nandi-class and larger scenes no longer fail because of a single
-attribute binding; camera traces show bounded memory, bounded queue growth, no
-persistent holes, stable active budgets, and a measured average attribute
-payload of 40-48 bytes without crossing the frozen image-quality threshold.
+**Exit gate:** page count can exceed fixed atlas slots; camera traces show fixed
+active/resident bounds, no non-resident draw, no persistent holes, safe stale /
+cancel/generation behavior, non-zero Surface output, and frozen image quality.
+Nandi/10M scale, long-run memory, and the 40–48-byte band are observations that
+qualify scalability claims.
 
 ### Phase E: Policy Optimization
 
@@ -596,14 +603,20 @@ payload of 40-48 bytes without crossing the frozen image-quality threshold.
 - Add camera-motion prediction and adaptive upload/sort budgets.
 - Run sustained thermal/energy qualification.
 
-**Exit gate:** native leadership and desktop Web parity gates in the companion
-verification plan pass on the declared device matrix.
+**Exit gate:** fair matched artifacts and quality receipts exist, performance is
+reported, and claim language is restricted to the tested dataset/browser/device
+scope. Native leadership, broad Web parity, thermal, and energy numbers qualify
+those specific claims but do not block the underlying comparison capability.
 
 ### Phase F: Distribution and Claim Promotion
 
 - Qualify AAR/XCFramework/Web package consumption paths.
 - Freeze supported formats, lifecycle, telemetry, and error semantics.
 - Publish only the claims earned by stored benchmark artifacts.
+
+**Exit gate:** existing local AAR/XCFramework/Web package consumption paths pass
+and canonical docs freeze the stable/experimental boundary plus earned and
+withheld claims. Registry publication is not required.
 
 ## Expected Repository Impact
 

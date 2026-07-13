@@ -2,16 +2,94 @@
 
 ## Goal
 
-Implement and qualify the repository-backed native-first architecture: win on
-Android/iOS native performance, keep desktop Web performance-competitive, and
-advance only when each phase's correctness, memory, performance, stability, and
-comparison gates have fresh evidence.
+Implement and qualify the repository-backed native-first architecture in the
+required order: rendering correctness first, boundary and failure semantics
+second, then steady-state memory and competitive performance.
 
 ## Current Phase
 
-Implementation Phase B is complete under the matched `sort_interval=4`
-sync-orbit qualification protocol. Phase C is complete under minimal-fixture
-exit evidence. Phase D (spatial pages / streaming LOD) is in progress.
+Implementation Phases B and C remain complete at their recorded boundaries.
+The reset-line worktree contains candidate Phase D-F implementation and
+evidence, but it is not accepted until the Goal Breakdown below is verified and
+committed slice by slice. G1 is the only current execution item.
+
+## Goal Breakdown
+
+### Terminal Definition
+
+The initial native-first goal is achieved when the reset line has committed,
+verified capabilities for: a page count larger than a fixed atlas-slot budget;
+resident-subset rendering with eviction and no non-resident draw; deterministic
+continuity and stale/cancel/generation safety; usable native Surface and Web
+paths; a fair PlayCanvas comparison with raw evidence; local AAR,
+XCFramework/Swift Package, and Web tarball consumption; and canonical claim
+language that says exactly what the evidence does and does not support.
+
+Completion means capability landed, evidence retained, and claims bounded. It
+does not require winning every performance target, completing every device
+class, or restoring the abandoned telemetry/sidecar/adversarial-validator stack.
+
+### Ordered Subgoals
+
+- [x] **G1 — Reform gates and freeze this Goal Breakdown.**
+  - Hard acceptance: `task_plan.md`, `verification_plan.md`, `design.md`,
+    `progress.md`, and `findings.md` consistently separate correctness gates
+    from performance observations and name one current item.
+  - Soft observation: none; this slice changes policy only.
+  - Commit boundary: planning bundle only.
+- [ ] **G2 — Accept bounded large-scene paging correctness.**
+  - Hard acceptance: total pages exceed four slots; active/resident counts never
+    exceed the slot budget; eviction/refinement preserves non-zero coarse cover;
+    non-resident pages never draw; cancel/stale token/slot generation cannot
+    publish; paged-vs-packed count and small-scene image gates pass; no crash.
+  - Soft observation: report the 512-frame bounds and available short Android
+    memory/frame measurements without treating a fixed percentage as blocking.
+  - Commit boundary: page scheduler/residency/atlas/GPU renderer correctness and
+    focused tests.
+- [ ] **G3 — Accept native Surface and Web paged usability.**
+  - Hard acceptance: local-source paged Surface produces stable non-zero draws;
+    the experimental C/Android selector is consistent; Web camera/Surface path
+    remains usable and browser smoke is non-zero; direct remains default.
+  - Soft observation: report frame timing and unavailable device/browser gaps;
+    do not add remote streaming or telemetry infrastructure.
+  - Commit boundary: Surface session, FFI/Android selector, Web wrapper/example,
+    and their focused tests.
+- [ ] **G4 — Accept fair competitive evidence and a bounded claim.**
+  - Hard acceptance: pinned PlayCanvas WebGPU GPU-sort path, matched dataset and
+    trace receipts, raw v1 artifacts, deterministic image metric, matched counts,
+    and at least one reproducible paired report all validate.
+  - Soft observation: p95/p99 ratios, confidence intervals, missed frames,
+    thermal/energy/device gaps, and additional datasets are reported rather than
+    optimized until a number turns green.
+  - Commit boundary: comparison harness, collectors, validators, trace/quality
+    fixtures, and protocol documentation.
+- [ ] **G5 — Accept local distribution and stable claim boundaries.**
+  - Hard acceptance: Web tarball external import, Android JNI/AAR/APK, Apple
+    host/XCFramework/Swift Package consumer paths pass; stable v0.1 versus
+    experimental APIs/formats/lifecycle/errors are explicit.
+  - Soft observation: package sizes and unavailable registry/device publication
+    are recorded; no npm, Maven, SwiftPM registry, tag, or push is performed.
+  - Commit boundary: package wrapper/tests and canonical handbook/binding docs.
+- [ ] **G6 — Close the terminal audit.**
+  - Hard acceptance: G1-G5 commits exist on this branch, canonical regression
+    checks pass, progress contains an achieved/not-achieved claim table, the
+    worktree has no uncommitted task changes, and no unsupported broad claim is
+    present.
+  - Soft observation: retain all measured regressions and environment gaps.
+  - Commit boundary: final plan/progress/findings reconciliation only.
+
+### Gate Policy
+
+- **Hard gates:** `SortedAlpha` correctness; count/image parity where declared;
+  no persistent short-trace holes; stale/cancel/generation exclusion; fixed slot
+  bounds with non-resident draw exclusion; non-zero Surface/Web output; no crash.
+- **Soft observations / claim qualifiers:** fixed performance ratios or
+  percentage wins, 30-minute RSS, 40–48-byte averages, complete device/browser
+  matrices, energy/thermal wins, and large-scene headline scale. A miss narrows
+  the claim and stays visible; it does not trigger endless implementation churn.
+- **Current unique execution item:** G2 — accept bounded large-scene paging
+  correctness before staging Surface/Web or competitive work.
+
 ## Phases
 
 ### Phase 1: Requirements and Evidence Refresh
@@ -114,34 +192,68 @@ exit evidence. Phase D (spatial pages / streaming LOD) is in progress.
   outside this exit: FFI/examples wiring, device parity on larger scenes,
   legacy gzip v1–3 / degree 4 / extension ILV.
 
-### Phase D: Spatial Pages and Streaming LOD
+### Phase D: Minimal Correct Streaming Pages
 
-- [x] Implement spatial page partition metadata (`spatial_pages`).
-- [x] Implement `ResidencyManager` state machine, slot generations, budgets,
-      and stale async-token rejection (`residency`).
-- [x] Implement first CPU page scheduler with coarse cover + camera-jump unit
-      gates (`page_scheduler`).
-- [x] CPU page atlas staging: extract/pack/install/clear with generation checks
-      and average attribute-byte accounting (`page_atlas`).
-- [x] GPU page upload into fixed-capacity packed atlas slots (`paged_gpu`) with
-      shared scene encoding and stale-token rejection.
-- [x] Offscreen SortedAlpha draw path for `GeometryPath::PagedActiveAtlas`
-      (global atlas indices → packed shader; Surface presenter still rejects).
-- [ ] Prove bounded memory/queues, continuity, and large-scene gates.
-- [ ] Degree-aware SH residency hysteresis on resident pages beyond unit API.
-- **Status:** in_progress; draw-loop integration landed for offscreen
+#### D0: Functional Correctness
+
+- [x] Prove offscreen `PagedActiveAtlas` vs `PackedAtlas` count and image parity
+      on the minimal scene and a deterministic multi-page, degree-3
+      qualification-small scene using the existing thresholds.
+- [x] Replace bootstrap full-install with a fixed atlas-slot budget, active-subset
+      residency, eviction, and a unit gate proving non-resident pages never draw.
+- [x] Prove no persistent holes during small camera motion through coarse-cover,
+      ancestor retention, or an equivalent deterministic short-trace policy.
+- [x] Prove cancel, stale-token, and generation failures cannot publish or draw
+      an expired page.
+- [x] Add the smallest usable Surface paged path, initially with a local page
+      source, and prove stable non-zero drawn output.
+- **Status:** complete; all five D0 correctness gates have fresh local and
+  Android Surface evidence
+
+#### D1: Steady-State Qualification
+
+- [x] After D0 is fully green, prove bounded memory and queues over a short
+      steady-state run of several minutes; add an optional network profile only
+      if it serves this gate.
+- [x] Keep any 30-minute gate in D1 or Phase E; it does not define functional
+      correctness.
+- **Status:** complete; deterministic 512-frame bounds and a two-minute Android
+  Kitsune steady state pass without requiring a network profile
+
+#### Deferred Until D0 Completion
+
+- 30-minute Android RSS or queue runs.
+- Network-adversarial validators, telemetry sidecars, C ABI telemetry receipts,
+  and artifact-hardening work.
+- 10M qualification datasets and PlayCanvas competitive gates (Phase E).
+- SOG and Streamed SOG decoders.
 
 ### Phase E: Policy Optimization and Competitive Qualification
 
-- [ ] Tune device profiles and evaluate optional GPU culling/sort only by evidence.
-- [ ] Pass native leadership, Web parity, sustained thermal, and energy gates.
-- **Status:** pending; blocked on Phase D exit gate
+- [x] Pin and revalidate the PlayCanvas WebGPU GPU-sort path.
+- [x] Add a validated v1 PlayCanvas raw-frame collector without fabricating
+      unavailable engine-internal timings.
+- [x] Freeze and execute a matched dataset, camera, display, quality, backend,
+      warmup, and sampling protocol for gsplat-rs and PlayCanvas.
+- [x] Evaluate optional GPU culling/sort only by evidence; no additional policy
+      was needed for the qualified Kitsune static Web scope.
+- [x] Resolve the claim decision: desktop Chrome/WebGPU Kitsune-static parity
+      passes five randomized pairs; native leadership, broad dataset/browser
+      parity, sustained thermal, energy, memory-leadership, and large-scene
+      claims remain unearned and must not be promoted.
+- **Status:** complete for the explicitly qualified narrow claim scope
+- **Exit evidence:** `target/benchmarks/phase-e/kitsune-five-paired/` records
+  five 3,600-frame pairs, per-pair SSIM, and deterministic bootstrap statistics.
 
 ### Phase F: Distribution and Claim Promotion
 
-- [ ] Qualify package consumption, freeze stable semantics, and publish only
+- [x] Qualify package consumption, freeze stable semantics, and publish only
       evidence-backed claims.
-- **Status:** pending; blocked on Phase E exit gate
+- **Status:** complete within the existing local-artifact release boundary
+- **Exit evidence:** Web tarball external install/import, Android JNI/AAR/APK,
+  Apple host smoke/XCFramework/Swift Package simulator build, browser WASM
+  smoke, full workspace tests/conformance/clippy/docs, and claim-scope docs all
+  pass. Public npm/Maven/binary SwiftPM publication remains out of scope.
 
 ## Key Questions
 
@@ -166,6 +278,8 @@ exit evidence. Phase D (spatial pages / streaming LOD) is in progress.
 | Revise the packed target around a 20-byte hot record | PlayCanvas's pinned compact stream declarations sum to 24 bytes, and its work buffer excludes source SH/order/scratch; gsplat-rs can target lower total residency through a canonical atlas and attribute LOD. |
 | Execute sequentially from Phase A | Later performance and memory claims require a versioned baseline and raw artifact contract first. |
 | Use subagents for isolated exploration and independent acceptance review | The user explicitly authorized parallel subagents; read-only audits avoid write conflicts while the primary agent integrates implementation. |
+| Reset Phase D to `05f649e` and make D0 correctness the only active goal | The later streaming/telemetry proof stack grew before functional streaming and Surface output were established. |
+| Enforce one D0 blocker at a time | Feature work unrelated to the current blocker stays frozen; each slice should add fewer than 800 net lines and at most two new files unless justified first. |
 
 ## Errors Encountered
 
@@ -189,8 +303,11 @@ exit evidence. Phase D (spatial pages / streaming LOD) is in progress.
 
 ## Notes
 
-- Preserve the existing untracked `bindings/android/build/` directory.
-- The user authorized implementation of Phases A-F and parallel subagent help.
-- Do not mark a phase complete when a required physical-device, quality, memory,
-  or competitor gate lacks fresh evidence; record it as pending or blocked.
+- Phase D work follows unit tests, offscreen parity, deterministic short traces,
+  then device smoke; device long runs come last.
+- Evidence ships with the functional slice it proves; documentation-only
+  evidence recording is not progress.
+- Do not restore the post-`05f649e` streaming telemetry stack before D0 is
+  complete and the user explicitly requests it.
+- Never commit or push Phase D work without explicit user confirmation.
 - Re-read this plan before major architecture and verification decisions.
