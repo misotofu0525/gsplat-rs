@@ -716,8 +716,7 @@ pub unsafe extern "C" fn gsplat_surface_renderer_create_uikit(
 ) -> i32 {
     unsafe {
         create_uikit_surface_renderer(
-            ui_view,
-            ui_view_controller,
+            (ui_view, ui_view_controller),
             path,
             width,
             height,
@@ -745,8 +744,7 @@ pub unsafe extern "C" fn gsplat_surface_renderer_create_uikit_with_geometry_path
 ) -> i32 {
     unsafe {
         create_uikit_surface_renderer(
-            ui_view,
-            ui_view_controller,
+            (ui_view, ui_view_controller),
             path,
             width,
             height,
@@ -758,8 +756,7 @@ pub unsafe extern "C" fn gsplat_surface_renderer_create_uikit_with_geometry_path
 }
 
 unsafe fn create_uikit_surface_renderer(
-    ui_view: *mut c_void,
-    ui_view_controller: *mut c_void,
+    ui_target: (*mut c_void, *mut c_void),
     path: *const c_char,
     width: u32,
     height: u32,
@@ -768,6 +765,7 @@ unsafe fn create_uikit_surface_renderer(
     operation: &'static str,
 ) -> i32 {
     ffi_catch_i32(operation, || {
+        let (ui_view, ui_view_controller) = ui_target;
         if ui_view.is_null() || path.is_null() || out_renderer.is_null() {
             return ffi_error(
                 ErrorCode::InvalidArgument,

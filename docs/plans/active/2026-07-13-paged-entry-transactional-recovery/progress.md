@@ -78,4 +78,4 @@
 
 | Error | Attempt | Resolution |
 |---|---:|---|
-| None | 0 | — |
+| `cargo clippy --workspace --all-targets -- -D warnings` rejected an 8-argument private UIKit helper | 1 | Grouped the two UIKit target pointers into one tuple; public constructors unchanged. |

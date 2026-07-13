@@ -93,4 +93,4 @@ evidence index survives a fresh clone.
 
 | Error | Attempt | Resolution |
 |---|---:|---|
-| None | 0 | — |
+| Workspace clippy rejected the private UIKit create helper's eight arguments | 1 | Grouped the view/controller pointers into one internal target tuple; public ABI unchanged. |
