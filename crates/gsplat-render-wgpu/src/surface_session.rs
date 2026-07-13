@@ -536,8 +536,10 @@ impl SurfaceRenderSession {
         if paged {
             self.presenter
                 .render_sorted_indices(scene, &[], &self.camera, true)?;
-            stats.visible_count = self.presenter.instance_count();
-            stats.drawn_count = self.presenter.instance_count();
+            let (visible_count, drawn_count) =
+                paged_surface_counts(scene.len(), self.presenter.instance_count());
+            stats.visible_count = visible_count;
+            stats.drawn_count = drawn_count;
         } else {
             self.presenter.render_sorted_indices(
                 scene,
@@ -682,6 +684,10 @@ impl SurfaceRenderSession {
     }
 }
 
+fn paged_surface_counts(source_count: usize, drawn_count: u32) -> (u32, u32) {
+    (u32::try_from(source_count).unwrap_or(u32::MAX), drawn_count)
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 fn sort_positions_for_camera(
     positions: &[Vec3f],
@@ -749,7 +755,8 @@ fn async_order_pose_compatible(
 mod tests {
     use super::{
         MAX_ASYNC_SORT_REVISION_LAG, SurfaceFrameState, SurfaceSortSchedule,
-        async_order_pose_compatible, async_schedule_threshold, try_switch_renderer_geometry_path,
+        async_order_pose_compatible, async_schedule_threshold, paged_surface_counts,
+        try_switch_renderer_geometry_path,
     };
     use crate::{GeometryPath, Renderer};
     use gsplat_core::{Camera, RendererConfig, SceneBuffers, Vec3f};
@@ -761,6 +768,11 @@ mod tests {
             SurfaceSortSchedule::AsyncLatest { interval: 3 }.interval(),
             3
         );
+    }
+
+    #[test]
+    fn paged_surface_counts_report_source_total_and_active_drawn() {
+        assert_eq!(paged_surface_counts(279_199, 262_144), (279_199, 262_144));
     }
 
     #[test]

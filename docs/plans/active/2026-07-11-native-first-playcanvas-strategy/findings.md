@@ -1,5 +1,13 @@
 # Findings and Decisions
 
+## 2026-07-13 G7 final-review resolutions
+
+- Independent review caught a wasm32 correctness bug before commit: `sample.saturating_mul(source_len)` collapsed most Kitsune-scale coarse-cover samples once the 32-bit product saturated. The repair uses a `u128` intermediate and a wasm32-scale uniqueness regression.
+- Rank-uniform sampling alone was density-weighted, not a spatial coverage guarantee. The resolved builder seeds every occupied coarse cell when capacity permits; a 262,144-to-one density-skew regression proves the isolated final cell remains represented.
+- Final docs and Android logs use `loaded-source total`, not camera-visible, for the paged denominator; `225,784 / 279,199` is retained as the observed initial A065 receipt rather than a cross-camera invariant, and the claim is limited to the tested initial/orbit short trace.
+- Scheduler inspection located a pressure bug in the synchronous request loop rather than the residency generation state machine. It now leaves inflight pressure unchanged and errors explicitly, selects only resident IDs outside `retain` for slot replacement, propagates retries, and records completed victims in `evicted`.
+- Final independent review found no G7 blocker: state/claim wording, screenshot hashes, fixed-slot arithmetic, API compatibility, format/diff hygiene, and focused regressions are consistent. The existing v1 raw-frame JSON still names the reused ABI field `visible`; paged human logs and docs are truthful, but a future paged benchmark schema should split `loaded_source` from camera-visible before treating that JSON as competitive evidence.
+
 ## Requirements
 
 - Document an overall technical strategy for competing with PlayCanvas.
@@ -941,3 +949,146 @@
   non-resident pages, and generation-checked rejection before GPU mutation.
 - The 512-frame and Android memory values are useful boundedness observations,
   not a requirement to pass a 30-minute or percentage-growth headline.
+
+# G7 Android real-scene completeness regression (2026-07-13)
+
+- The source asset is a real Kitsune PLY, not the generated minimal fallback:
+  the explicit build input is 63 MiB and matches the repository's known
+  Kitsune hash. Asset identity still needs to be checked inside the installed
+  app before excluding copy/import truncation.
+- The paged Surface path is alive and presenting, but its truthful visible and
+  drawn counts remain in the low thousands and its image is visibly
+  fragmented. Therefore constructor/JNI success and non-zero draw were
+  insufficient D0 acceptance criteria for a real multi-page scene.
+- The previous four-page qualification-small parity gate exercised an
+  all-resident scene. It did not prove that a scene with far more pages than
+  four slots converges to coherent coverage, and the 512-frame bound gate
+  proved bounds rather than completeness.
+- No telemetry, sidecar, network source, or validator expansion is justified.
+  The repair must stay in the shared paging/scheduling/rendering modules and be
+  protected by a deterministic correctness test plus the existing Android
+  Surface smoke.
+- Code inspection exposes a concrete design mismatch. `default_spatial_pages`
+  chooses an 8x8x8 uniform grid for Kitsune, `partition_scene_pages` emits one
+  page for every non-empty cell even when each cell is tiny, and the four-slot
+  scheduler retains only the four page centers nearest the camera. It has no
+  hierarchical/coarse representative page and does not rank by camera
+  orientation or projected coverage. A low-thousands active set is therefore
+  an expected consequence of the current algorithm, not a device-only glitch.
+- The so-called continuity gate only proves that a small camera motion retains
+  the same four residents and never reaches zero. It does not prove spatially
+  complete coverage. Likewise Surface statistics set both visible and drawn to
+  the active atlas instance count, so `2528/2528` means "all selected resident
+  splats drew," not "all 279,199 source splats were represented."
+- The smallest credible repair must address both halves: form bounded pages
+  that use slot capacity effectively and reserve/retain an explicit coarse
+  scene cover (or an equivalent non-duplicating LOD) while fine pages refine
+  the current view. Merely raising the non-zero threshold or relabeling the UI
+  would leave the rendering bug intact.
+- Asset truncation is now excluded. The installed debug app's
+  `files/showcase.ply` is 65,892,441 bytes and has the exact source SHA-256
+  `3bea1ec48ea91861fc8fad1df688a2cdb1db9b103735498b35d16d146f2551a2`.
+  The app process remained alive during the probe.
+- Fresh repository spatial analysis loads exactly 279,199 splats and reports
+  all 279,199 centers in view at the deterministic center camera. At a finer
+  16-axis diagnostic grid, 791 cells are non-empty with median/p90/p99/max
+  occupancies `188/954/2456/3409`. This distribution independently explains
+  why choosing four raw grid cells yields only a few thousand splats despite a
+  65,536-splat atlas slot capacity.
+- The regression was encoded into the tests. `paged_eviction_scene` contains
+  one splat per page; consequently the 512-frame bound test asserts active
+  *splats* are at most four and passes only because its pages are singletons.
+  The small-motion test calls an unchanged nearest-page set "coarse cover" and
+  checks only non-zero alpha. Neither test contains a whole-scene coverage
+  invariant or realistic underfilled pages.
+- Commit `f151544` described "retain coarse coverage" but introduced no coarse
+  page, ancestor, or multi-resolution representation. Its scheduler change
+  merely retains current nearest raw pages inside a distance margin. The
+  architecture boundary (fixed atlas + generation-safe uploads) remains useful;
+  the page formation and selection policy must be corrected rather than
+  reverting the entire slice.
+- GPU atlas slots already support any page up to `page_capacity`, preserve
+  source-index identity, and exclude cleared/stale slots. A non-duplicating
+  coarse page plus balanced fine pages can therefore fit the existing upload,
+  sort, and shader paths without a new crate or telemetry stack.
+- Exact reproduction closes the causal chain: Kitsune becomes 175 pages at
+  grid axis 8; the portrait auto-camera's four nearest pages contain
+  `784 + 811 + 464 + 469 = 2,528` splats. Four logical 65,536-entry slots are
+  only 0.964% utilized. This exactly matches the first Android frame, and the
+  unchanged stationary retain set proves there is no background convergence.
+- All 279,199 centers are inside the auto-camera view. Missing content is not
+  a frustum decision. The current scheduler ignores rotation/FOV/projected
+  contribution, and its computed `visible`/radius set is discarded by the
+  rendering path.
+- Capacity arithmetic must remain explicit: `4 * 65,536 = 262,144`, less than
+  279,199. Exact simultaneous full-source count cannot be a four-slot gate.
+  G7 instead requires a globally distributed, disjoint coarse cover plus
+  densely packed refinements, truthful `active/total` reporting, and a coherent
+  image. Increasing slots solely to make Kitsune fit would hide rather than
+  repair the general pages-greater-than-slots case.
+- `SpatialPage::grid_cell` has no runtime consumers outside page policy, so a
+  dense page can span multiple cells and `u32::MAX` can remain an internal
+  global-cover sentinel without adding a required public struct field. Existing
+  residency, atlas, and stale-token code keys only on `PageId` and source indices.
+- Regression sequence is fixed: first a CPU page-packing test with many sparse
+  cells must reject one-cell-per-page under-utilization; then a scheduler test
+  must prove one pinned cover page contains disjoint samples from every macro
+  region while all selected source indices remain unique. Only after those
+  tests are red will the page builder/scheduler change.
+- Dense cross-cell packing is now green: the 512-cell regression produces eight
+  full 64-splat pages, and a 640-splat/128-capacity scheduler fixture produces
+  five pages with four resident pages holding 512 unique splats. The atlas and
+  residency bounds are unchanged.
+- The old 512-frame assertion was corrected from `active <= 4` to the real
+  `active <= slot_count * page_capacity`, plus equality to resident splat
+  count. Page-slot bounds remain four. This is a test-semantics repair, not a
+  larger memory budget.
+- A coarse page is not implemented speculatively. With Kitsune now reduced
+  from 175 sparse pages to five dense pages, the physical-device image decides
+  whether the one non-resident page causes a persistent visible hole. If so,
+  coarse coverage becomes the next single blocker.
+- Fresh A065 evidence after dense packing: paged startup reports 262,144 active
+  and drawn splats (the exact four-slot capacity), up from 2,528; steady frames
+  are about 20.3-20.6 ms in this interactive debug APK. The captured portrait
+  clearly shows the complete fox statue, plinth, stone base, and surrounding
+  ground rather than disconnected fragments. No coarse-page implementation is
+  justified by the initial view.
+- The remaining correctness issue is receipt semantics: the UI/log still says
+  `visible=262144 drawn=262144/262144`, while source total is 279,199. Dense
+  rendering is now coherent, but the denominator must expose the loaded-source
+  total so bounded residency is not mistaken for full installation.
+- A roughly 0.75-radian horizontal orbit remained coherent at 262,144 active
+  splats and about 20.0 ms; the fox, plinth, base, and ground stayed connected.
+  This short trace does not justify adding a coarse representation for Kitsune.
+- The existing six-field C/JNI stats ABI can remain unchanged. For the paged
+  path only, `visible_count` will become the loaded source count (the truthful
+  working-set denominator) while `drawn_count` remains active resident draw.
+  Direct/packed semantics remain unchanged. Android's compact overlay can then
+  render `drawn / total SPLATS` without parsing the PLY or adding platform-only
+  state. Documentation must call out this experimental paged interpretation.
+- The rebuilt A065 app confirms the receipt/UI fix: first frame logs
+  `visible=279199 drawn=262144/279199`, and the compact card displays
+  `262144 / 279199 SPLATS` while the coherent shrine remains visible.
+- Dense packing fixes the observed 99% slot waste but is not a general ancestor
+  strategy. A scene with many dense pages can still omit an entire spatial
+  range indefinitely. The next hard blocker therefore remains within D0 scope:
+  reserve and pin one globally sampled disjoint cover page, and use the other
+  three slots for dense refinements. This is not optional telemetry or a
+  performance optimization.
+- The coarse representation now uses only original source indices and is
+  disjoint from every refinement page. Over-slot scenes reserve up to one full
+  page with occupied-cell seeds plus overflow-safe proportional fill; remaining
+  indices are balanced into dense refinement pages. Scenes that fit the four-slot budget
+  keep their previous all-resident layout and parity behavior.
+- Scheduler pinning is explicit rather than radius-based: cover IDs consume
+  their slot budget first, and distance/hysteresis ranks only refinements. A
+  test with an intentionally distant cover proves four nearer leaves cannot
+  evict it.
+- Final A065 cover-path receipts are `loaded=279199` and
+  `drawn=225784/279199`, matching one 65,536-splat cover plus three
+  53,416-splat refinements. Initial and horizontal-orbit screenshots remain
+  coherent with no persistent region-sized hole or zero frame.
+- The correctness choice has a measured soft cost: steady interactive frame
+  wall on this A065 rose from roughly 20 ms for four dense leaves to about
+  36-38 ms with globally distributed cover indices. This does not reopen D0;
+  it narrows the performance statement and is deferred to later policy work.

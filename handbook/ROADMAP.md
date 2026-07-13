@@ -73,12 +73,18 @@ Operational facts and command entrypoints live in `handbook/PROJECT_CONTEXT.md` 
 ## Phase D-F Evidence Boundary (2026-07-13)
 
 - The experimental local-source paged path has fixed four-slot active
-  residency, eviction, deterministic continuity and stale/cancel/generation
-  tests, direct-vs-paged offscreen parity, non-zero Surface output, and a short
-  bounded steady-state/device smoke. Web, Android, and UIKit can select it
+  residency, dense cross-cell pages, one pinned disjoint global cover for
+  over-slot scenes, eviction, deterministic continuity and
+  stale/cancel/generation tests, direct-vs-paged small-scene offscreen parity,
+  non-zero Surface output, and a short bounded steady-state/device smoke. Web,
+  Android, and UIKit can select it
   before Direct scene derivation and Surface allocation; returned runtime
   switch errors preserve the old session. It still retains full in-memory
   `SceneBuffers` and is not production source or network streaming.
+- A fresh Android Kitsune smoke draws a truthful bounded working set of
+  `225784/279199` splats with coherent initial and orbit views. This is local
+  real-scene correctness evidence, not a performance or arbitrary-scale claim;
+  the observed interactive frame wall was roughly 36-38 ms on the tested A065.
 - Five sequential randomized-order Chrome/WebGPU pairs pass the Kitsune-static
   desktop parity band at 640×480: gsplat-rs/PlayCanvas frame-wall p95 median
   ratio `1.0200` (bootstrap 95% CI `1.0100-1.0200`), p99 median `1.0291`

@@ -2275,7 +2275,12 @@ fn preprocess_paged_visible_into(
 fn default_spatial_pages(scene: &SceneBuffers) -> SpatialPageSet {
     let page_capacity = (scene.len() / 4).clamp(1, DEFAULT_PAGE_CAPACITY);
     let grid_axis = ((scene.len() as f32).cbrt().ceil() as usize).clamp(1, 8);
-    partition_scene_pages(scene, page_capacity, grid_axis)
+    spatial_pages::partition_scene_pages_with_coarse_cover(
+        scene,
+        page_capacity,
+        grid_axis,
+        DEFAULT_PAGED_ATLAS_SLOTS,
+    )
 }
 
 fn world_to_camera_depth_with_view_row(
@@ -4419,7 +4424,7 @@ mod tests {
         renderer.load_scene(scene).unwrap();
 
         let mut first_camera = Camera::default();
-        first_camera.pose.position = Vec3f::new(-3.0, -3.0, 0.0);
+        first_camera.pose.position = Vec3f::new(0.0, 0.0, -30.0);
         let first_stats = renderer.render_frame(&first_camera).unwrap();
         let (first_residents, first_entries) = {
             let rasterizer = renderer.gpu_rasterizer.as_ref().unwrap();
@@ -4438,7 +4443,8 @@ mod tests {
         assert!(first_entries.len() < pages.total_splats());
 
         let mut jumped_camera = Camera::default();
-        jumped_camera.pose.position = Vec3f::new(3.0, 3.0, 0.0);
+        jumped_camera.pose.position = Vec3f::new(0.0, 0.0, 30.0);
+        jumped_camera.pose.rotation_xyzw = [0.0, 1.0, 0.0, 0.0];
         let jumped_stats = renderer.render_frame(&jumped_camera).unwrap();
         let (jumped_residents, jumped_entries) = {
             let rasterizer = renderer.gpu_rasterizer.as_ref().unwrap();
@@ -4604,7 +4610,8 @@ mod tests {
             assert_eq!(atlas.slot_count(), super::DEFAULT_PAGED_ATLAS_SLOTS);
             assert!(atlas.occupied_slot_count() <= super::DEFAULT_PAGED_ATLAS_SLOTS);
             assert!(manager.resident_count() <= super::DEFAULT_PAGED_ATLAS_SLOTS);
-            assert!(active <= super::DEFAULT_PAGED_ATLAS_SLOTS);
+            assert!(active <= atlas.slot_count().saturating_mul(atlas.page_capacity));
+            assert_eq!(active, atlas.resident_splat_count());
             assert_eq!(stats.drawn_count as usize, active);
             assert!(
                 stats.drawn_count > 0,

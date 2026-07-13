@@ -152,7 +152,12 @@ Notes:
 - This example uses `files/imported_scene.ply` when present, then extracts the bundled `assets/showcase.ply` into app storage, then checks `files/flowers_1.ply`; otherwise it writes a minimal ASCII PLY into app internal storage.
 - Imported files come from the Android system picker as `content://` URIs and are copied into `files/imported_scene.ply` before crossing the JNI/C ABI boundary, which still receives a normal local file path.
 - On Android emulator, the `SurfaceView` buffer is capped to a 1600px maximum side. The Surface presenter does not sample or cap the sorted splat list; visual stability is preferred over artificial throughput wins.
-- The compact overlay reports the live splat count and frame time. The `Studio` panel retains `drawn=<surface_instances>/<visible_instances>` and the full Android Surface diagnostics.
+- The compact overlay reports the live splat count and frame time. Direct and
+  packed paths retain `drawn=<surface_instances>/<visible_instances>`. The
+  experimental paged path reports `drawn=<active_resident>/<loaded_source>` so
+  a bounded working set cannot be mistaken for full installation; its compact
+  overlay shows the same ratio. The `Studio` panel retains the full Android
+  Surface diagnostics.
 - `GsplatSurfaceOptions.geometryPath` selects `DIRECT` by default or the
   experimental `PACKED_ATLAS` / local-source `PAGED_ACTIVE_ATLAS` before scene
   derivation and Surface resource creation.

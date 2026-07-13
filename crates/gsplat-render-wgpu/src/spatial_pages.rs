@@ -72,13 +72,18 @@ pub struct SpatialPage {
     pub bounds: PageBounds,
     /// Indices into the source `SceneBuffers`.
     pub splat_indices: Vec<u32>,
-    /// Grid cell this page was packed from (for coarse coverage tests).
+    /// First grid cell in this page's stable spatial packing order.
+    /// `u32::MAX` is reserved internally for the global coarse-cover page.
     pub grid_cell: u32,
 }
 
 impl SpatialPage {
     pub fn splat_count(&self) -> usize {
         self.splat_indices.len()
+    }
+
+    pub(crate) fn is_coarse_cover(&self) -> bool {
+        self.grid_cell == u32::MAX
     }
 }
 
@@ -94,6 +99,11 @@ pub struct SpatialPageSet {
 impl SpatialPageSet {
     pub fn page(&self, id: PageId) -> Option<&SpatialPage> {
         self.pages.iter().find(|page| page.id == id)
+    }
+
+    #[cfg(test)]
+    pub fn page_mut(&mut self, id: PageId) -> Option<&mut SpatialPage> {
+        self.pages.iter_mut().find(|page| page.id == id)
     }
 
     pub fn page_count(&self) -> usize {
@@ -128,29 +138,154 @@ pub fn partition_scene_pages(
         cell_indices[cell].push(index as u32);
     }
 
-    let mut pages = Vec::new();
-    let mut next_page_id = 0_u32;
-    for (cell, indices) in cell_indices.into_iter().enumerate() {
-        if indices.is_empty() {
-            continue;
-        }
-        for chunk in indices.chunks(page_capacity) {
-            let splat_indices = chunk.to_vec();
-            let bounds = PageBounds::from_positions(&scene.positions, &splat_indices);
-            pages.push(SpatialPage {
-                id: PageId(next_page_id),
-                bounds,
-                splat_indices,
-                grid_cell: cell as u32,
-            });
-            next_page_id = next_page_id.saturating_add(1);
-        }
+    // Preserve deterministic cell order for spatial locality, but pack across
+    // cell boundaries. Emitting one page per sparse cell leaves almost every
+    // fixed-capacity atlas slot empty on real scenes such as Kitsune.
+    let spatial_indices: Vec<u32> = cell_indices.into_iter().flatten().collect();
+    let mut pages = Vec::with_capacity(spatial_indices.len().div_ceil(page_capacity));
+    for (page_index, chunk) in spatial_indices.chunks(page_capacity).enumerate() {
+        let splat_indices = chunk.to_vec();
+        let bounds = PageBounds::from_positions(&scene.positions, &splat_indices);
+        let grid_cell = chunk
+            .first()
+            .map(|&index| {
+                grid_cell_index(scene.positions[index as usize], &scene_bounds, grid_axis)
+            })
+            .unwrap_or(0) as u32;
+        pages.push(SpatialPage {
+            id: PageId(page_index as u32),
+            bounds,
+            splat_indices,
+            grid_cell,
+        });
     }
 
     SpatialPageSet {
         scene_bounds,
         page_capacity,
         grid_axis,
+        pages,
+    }
+}
+
+pub(crate) fn partition_scene_pages_with_coarse_cover(
+    scene: &SceneBuffers,
+    page_capacity: usize,
+    grid_axis: usize,
+    resident_slots: usize,
+) -> SpatialPageSet {
+    let dense = partition_scene_pages(scene, page_capacity, grid_axis);
+    if dense.page_count() <= resident_slots.max(1) || dense.pages.is_empty() {
+        return dense;
+    }
+
+    let spatial_indices: Vec<u32> = dense
+        .pages
+        .iter()
+        .flat_map(|page| page.splat_indices.iter().copied())
+        .collect();
+    let cover_count = dense.page_capacity.min(spatial_indices.len());
+    let occupied_ranges = occupied_cell_ranges(
+        scene,
+        &dense.scene_bounds,
+        dense.grid_axis,
+        &spatial_indices,
+    );
+    let mut cover_positions = vec![false; spatial_indices.len()];
+    let mut selected_count = 0usize;
+    if occupied_ranges.len() <= cover_count {
+        // A fixed global cover must not lose a sparse region merely because a
+        // different cell contains most of the scene. Seed every occupied cell
+        // when the page budget permits, then fill the rest proportionally.
+        for range in &occupied_ranges {
+            let position = range.start + range.len() / 2;
+            cover_positions[position] = true;
+            selected_count += 1;
+        }
+        for sample in 0..cover_count {
+            if selected_count == cover_count {
+                break;
+            }
+            let position = proportional_sample_position(sample, spatial_indices.len(), cover_count);
+            if !cover_positions[position] {
+                cover_positions[position] = true;
+                selected_count += 1;
+            }
+        }
+        if selected_count < cover_count {
+            for selected in &mut cover_positions {
+                if selected_count == cover_count {
+                    break;
+                }
+                if !*selected {
+                    *selected = true;
+                    selected_count += 1;
+                }
+            }
+        }
+    } else {
+        // A page cannot represent more occupied cells than it has entries.
+        // Choose cell ranges themselves (including both spatial extremes)
+        // rather than letting dense cells monopolize the cover.
+        for sample in 0..cover_count {
+            let range_index =
+                proportional_endpoint_position(sample, occupied_ranges.len(), cover_count);
+            let range = &occupied_ranges[range_index];
+            cover_positions[range.start + range.len() / 2] = true;
+            selected_count += 1;
+        }
+    }
+    debug_assert_eq!(selected_count, cover_count);
+    let cover_indices: Vec<u32> = spatial_indices
+        .iter()
+        .copied()
+        .enumerate()
+        .filter_map(|(position, index)| cover_positions[position].then_some(index))
+        .collect();
+    let refinement_indices: Vec<u32> = spatial_indices
+        .iter()
+        .copied()
+        .enumerate()
+        .filter_map(|(position, index)| (!cover_positions[position]).then_some(index))
+        .collect();
+
+    let mut pages = vec![SpatialPage {
+        id: PageId(0),
+        bounds: PageBounds::from_positions(&scene.positions, &cover_indices),
+        splat_indices: cover_indices,
+        grid_cell: u32::MAX,
+    }];
+
+    let refinement_page_count = refinement_indices.len().div_ceil(dense.page_capacity);
+    let mut offset = 0usize;
+    for page_index in 0..refinement_page_count {
+        let pages_left = refinement_page_count - page_index;
+        let chunk_len = (refinement_indices.len() - offset).div_ceil(pages_left);
+        let chunk = &refinement_indices[offset..offset + chunk_len];
+        let splat_indices = chunk.to_vec();
+        let grid_cell = chunk
+            .first()
+            .map(|&index| {
+                grid_cell_index(
+                    scene.positions[index as usize],
+                    &dense.scene_bounds,
+                    dense.grid_axis,
+                )
+            })
+            .unwrap_or(0) as u32;
+        pages.push(SpatialPage {
+            id: PageId((page_index + 1) as u32),
+            bounds: PageBounds::from_positions(&scene.positions, &splat_indices),
+            splat_indices,
+            grid_cell,
+        });
+        offset += chunk_len;
+    }
+
+    SpatialPageSet {
+        scene_bounds: dense.scene_bounds,
+        page_capacity: dense.page_capacity,
+        grid_axis: dense.grid_axis,
         pages,
     }
 }
@@ -168,6 +303,48 @@ fn grid_cell_index(position: Vec3f, bounds: &SceneBounds, grid_axis: usize) -> u
         (((position.z - bounds.min[2]) / extent[2]).clamp(0.0, 0.999_999) * axis as f32) as usize,
     ];
     coords[0] + coords[1] * axis + coords[2] * axis * axis
+}
+
+fn proportional_sample_position(sample: usize, source_len: usize, sample_count: usize) -> usize {
+    debug_assert!(sample_count > 0);
+    debug_assert!(sample < sample_count);
+    // Use a wider intermediate: `sample * source_len` overflows `usize` for
+    // ordinary large scenes on wasm32 even though the final quotient fits.
+    ((sample as u128 * source_len as u128) / sample_count as u128) as usize
+}
+
+fn proportional_endpoint_position(sample: usize, source_len: usize, sample_count: usize) -> usize {
+    debug_assert!(source_len >= sample_count);
+    debug_assert!(sample < sample_count);
+    if sample_count == 1 {
+        return source_len / 2;
+    }
+    ((sample as u128 * (source_len - 1) as u128) / (sample_count - 1) as u128) as usize
+}
+
+fn occupied_cell_ranges(
+    scene: &SceneBuffers,
+    bounds: &SceneBounds,
+    grid_axis: usize,
+    spatial_indices: &[u32],
+) -> Vec<std::ops::Range<usize>> {
+    let Some(&first_index) = spatial_indices.first() else {
+        return Vec::new();
+    };
+    let mut ranges = Vec::new();
+    let mut range_start = 0usize;
+    let mut current_cell =
+        grid_cell_index(scene.positions[first_index as usize], bounds, grid_axis);
+    for (position, &index) in spatial_indices.iter().enumerate().skip(1) {
+        let cell = grid_cell_index(scene.positions[index as usize], bounds, grid_axis);
+        if cell != current_cell {
+            ranges.push(range_start..position);
+            range_start = position;
+            current_cell = cell;
+        }
+    }
+    ranges.push(range_start..spatial_indices.len());
+    ranges
 }
 
 #[cfg(test)]
@@ -228,5 +405,151 @@ mod tests {
         let page = pages.page(PageId(0)).unwrap();
         assert_eq!(page.splat_count(), 8);
         assert!(page.bounds.contains_point(page.bounds.center()));
+    }
+
+    #[test]
+    fn sparse_grid_cells_are_packed_into_dense_pages() {
+        let grid_axis = 8usize;
+        let positions: Vec<_> = (0..grid_axis)
+            .flat_map(|z| {
+                (0..grid_axis).flat_map(move |y| {
+                    (0..grid_axis).map(move |x| Vec3f::new(x as f32, y as f32, z as f32 + 1.0))
+                })
+            })
+            .collect();
+        let count = positions.len();
+        let scene = SceneBuffers {
+            positions,
+            opacity: vec![0.0; count],
+            scale_xyz: vec![[-4.0, -4.0, -4.0]; count],
+            rotation_xyzw: vec![[0.0, 0.0, 0.0, 1.0]; count],
+            color_dc: vec![[0.0, 0.0, 0.0]; count],
+            sh_degree: 0,
+            sh_rest: None,
+        };
+
+        let pages = partition_scene_pages(&scene, 64, grid_axis);
+        assert_eq!(pages.total_splats(), count);
+        assert_eq!(
+            pages.page_count(),
+            8,
+            "512 singleton cells should fill eight pages"
+        );
+        assert!(pages.pages.iter().all(|page| page.splat_count() == 64));
+    }
+
+    #[test]
+    fn over_slot_scene_has_one_disjoint_global_coarse_cover() {
+        let grid_axis = 8usize;
+        let mut positions: Vec<_> = (0..grid_axis)
+            .flat_map(|z| {
+                (0..grid_axis).flat_map(move |y| {
+                    (0..grid_axis).map(move |x| Vec3f::new(x as f32, y as f32, z as f32 + 1.0))
+                })
+            })
+            .collect();
+        positions.extend_from_within(..128);
+        let count = positions.len();
+        let scene = SceneBuffers {
+            positions,
+            opacity: vec![0.0; count],
+            scale_xyz: vec![[-4.0, -4.0, -4.0]; count],
+            rotation_xyzw: vec![[0.0, 0.0, 0.0, 1.0]; count],
+            color_dc: vec![[0.0, 0.0, 0.0]; count],
+            sh_degree: 0,
+            sh_rest: None,
+        };
+
+        let pages = partition_scene_pages_with_coarse_cover(&scene, 128, grid_axis, 4);
+        assert!(pages.page_count() > 4);
+        let covers: Vec<_> = pages
+            .pages
+            .iter()
+            .filter(|page| page.is_coarse_cover())
+            .collect();
+        assert_eq!(
+            covers.len(),
+            1,
+            "over-slot scenes need one pinned cover page"
+        );
+        assert!(covers[0].splat_count() <= 128);
+
+        let mut octants = [false; 8];
+        for &index in &covers[0].splat_indices {
+            let position = scene.positions[index as usize];
+            let x = usize::from(position.x >= 3.5);
+            let y = usize::from(position.y >= 3.5);
+            let z = usize::from(position.z >= 4.5);
+            octants[x | (y << 1) | (z << 2)] = true;
+        }
+        assert!(octants.into_iter().all(|covered| covered));
+
+        let all_indices: Vec<_> = pages
+            .pages
+            .iter()
+            .flat_map(|page| page.splat_indices.iter().copied())
+            .collect();
+        let unique: std::collections::HashSet<_> = all_indices.iter().copied().collect();
+        assert_eq!(all_indices.len(), count);
+        assert_eq!(
+            unique.len(),
+            count,
+            "cover and refinement pages must be disjoint"
+        );
+    }
+
+    #[test]
+    fn proportional_cover_sampling_is_unique_at_wasm32_scene_scale() {
+        const SOURCE_LEN: usize = 279_199;
+        const COVER_COUNT: usize = 65_536;
+
+        let positions: Vec<_> = (0..COVER_COUNT)
+            .map(|sample| proportional_sample_position(sample, SOURCE_LEN, COVER_COUNT))
+            .collect();
+        let unique: std::collections::HashSet<_> = positions.iter().copied().collect();
+
+        assert_eq!(unique.len(), COVER_COUNT);
+        assert!(positions.windows(2).all(|pair| pair[0] < pair[1]));
+        assert!(
+            positions
+                .last()
+                .is_some_and(|&position| position < SOURCE_LEN)
+        );
+
+        // Reproduce the former wasm32 arithmetic: saturation starts while the
+        // requested cover is still far from complete, collapsing most samples.
+        let saturated_unique: std::collections::HashSet<_> = (0..COVER_COUNT as u32)
+            .map(|sample| sample.saturating_mul(SOURCE_LEN as u32) / COVER_COUNT as u32)
+            .collect();
+        assert!(saturated_unique.len() < COVER_COUNT);
+    }
+
+    #[test]
+    fn coarse_cover_keeps_an_isolated_occupied_cell_under_extreme_density_skew() {
+        const DENSE_COUNT: usize = 262_144;
+        let mut positions = vec![Vec3f::new(0.0, 0.0, 1.0); DENSE_COUNT];
+        positions.push(Vec3f::new(7.0, 7.0, 8.0));
+        let count = positions.len();
+        let scene = SceneBuffers {
+            positions,
+            opacity: vec![0.0; count],
+            scale_xyz: vec![[-4.0, -4.0, -4.0]; count],
+            rotation_xyzw: vec![[0.0, 0.0, 0.0, 1.0]; count],
+            color_dc: vec![[0.0, 0.0, 0.0]; count],
+            sh_degree: 0,
+            sh_rest: None,
+        };
+
+        let pages = partition_scene_pages_with_coarse_cover(&scene, 65_536, 8, 4);
+        let cover = pages
+            .pages
+            .iter()
+            .find(|page| page.is_coarse_cover())
+            .expect("over-slot scene should have a coarse cover");
+
+        assert!(
+            cover.splat_indices.contains(&(DENSE_COUNT as u32)),
+            "the only splat in the isolated occupied cell must stay in the pinned cover"
+        );
     }
 }

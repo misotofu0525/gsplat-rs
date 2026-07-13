@@ -1,5 +1,26 @@
 # Progress Log
 
+## 2026-07-13 — G7 final review and closure
+
+- **Current unique execution item:** none — G7 is complete and the repaired app remains open on the A065 for inspection.
+- Review stopped the pending commit: the existing Android 64-bit receipt remains valid, but Web would duplicate cover samples under 32-bit arithmetic and a density-skewed sparse region could be absent from the pinned cover.
+- Red-first proof captured: `coarse_cover_keeps_an_isolated_occupied_cell_under_extreme_density_skew` failed because the only splat in the final occupied cell was absent from the cover. The fixture uses 262,144 splats in the first cell plus one isolated splat in the last under the production 65,536 capacity and four-slot budget.
+- Coarse-cover repair is now green in focused verification: all 7 `spatial_pages` tests pass. Sampling uses a wide intermediate, seeds every occupied grid cell when capacity permits, and samples occupied cell ranges including both spatial extremes when it does not; cover/refinement indices remain disjoint.
+- Independent transaction review also found the remaining current blocker in scheduler pressure handling: inflight-budget exhaustion must not trigger resident eviction, `NoFreeSlot` may evict only a non-retained victim, retry errors must not be swallowed, and successful replacements must be reported in `ScheduleOutcome.evicted`.
+- The renderer propagates scheduler errors as `RendererError::PagedAtlas`, so an honest `BudgetExceeded` is preferable to evicting a valid working set and returning a false-success outcome. Normal frame sync uses `target_resident_pages == paged.slot_count()`, while the public scheduler still needs deterministic protection for adversarial budget states.
+- Added red-first scheduler pressure and full-slot camera-jump regressions. Their first run stopped at compile time because removing the experimental coarse builder from the crate-root API also removed the unqualified name used by `default_spatial_pages`; fix the internal module-qualified call before evaluating the intended red assertions.
+- After correcting the internal call, both scheduler regressions failed for the intended reasons: inflight pressure returned `Ok` with absent IDs in `retained`, and a three-page full-slot replacement reported zero evictions. This captures both false-success and missing-accounting behavior before the scheduler repair.
+- Scheduler pressure repair is green across all 6 scheduler tests. Inflight exhaustion now returns `BudgetExceeded` without changing the resident working set; slot replacement selects the oldest non-retained resident deterministically, never the pinned cover; retry errors propagate; and all three camera-jump refinement evictions are reported while the cover slot/generation remains stable.
+- Public API compatibility was restored before completion: the new required `SpatialPage.role` field and root-level experimental builder export were removed. The existing `grid_cell` field reserves `u32::MAX` internally for the global cover, so downstream four-field `SpatialPage` literals remain source-compatible.
+- Android paged status and benchmark text now labels the reused stats denominator as `loaded` / `avg_loaded_source`; direct and packed paths retain `visible` wording. The first final formatting check requested only standard rustfmt wrapping in the repaired Rust modules; apply rustfmt and repeat the check.
+- Final host renderer gate is green after rustfmt: `cargo fmt --all -- --check` passed; `cargo test -p gsplat-render-wgpu --lib` passed 93 tests with the one pre-existing research oracle ignored; and renderer clippy passed all targets with `-D warnings`. The code slice is net +672 lines with no new files, below the stated `<800` code budget.
+- Cross-platform gates pass: `cargo check --workspace`, wasm32 `gsplat-web` check, Android JNI smoke, and `git diff --check` are green; the wasm check reports only pre-existing cfg-specific dead-code warnings. A fresh release JNI/debug APK build succeeded with the explicit 279,199-splat Kitsune input and is ready for final A065 installation.
+- Fresh post-review A065 install/launch passes on device `033ed212` (Nothing A065): the app is top-resumed with PID 19149 and paged geometry path 2. Initial and steady receipts use the truthful label `loaded=279199 drawn=225784/279199`; steady frame wall is about 36.4-37.5 ms after the 170.9 ms first frame. The initial screenshot is `/tmp/gsplat-android-kitsune-final-initial.png` (SHA-256 `86b11f9e13b278c9ddadda3c234bdeab5638f090dc62a80a8ae9496e2798ad59`).
+- Manual inspection of the initial screenshot confirms a coherent fox, plinth, stone base, and ground with no fragmented strip or region-sized hole. A fresh horizontal swipe/orbit kept the process top-resumed and the receipt stable through frame 1162; `/tmp/gsplat-android-kitsune-final-orbit.png` has SHA-256 `9af8257b64c85179468ca60503ac453bee47db6b3a97ef68e31261d6967a5cfc`.
+- Manual inspection of the orbit screenshot confirms the rear/side view remains coherent with connected statue, plinth, base, and ground and no zero or persistent region-sized hole. G7 is closed; the measured 36-38 ms cost remains a soft observation rather than a performance-win claim.
+- Final post-reconciliation verification remains green: full `cargo test -p gsplat-render-wgpu` passed 93 library tests plus the SortedAlpha conformance test, with only the one documented research oracle ignored; rustfmt, diff hygiene, and the A065 foreground check also pass.
+- Independent final review reports no blocker and authorizes the G7 local commit. No telemetry, sidecar, network validator, new file, stable ABI/header change, or unrelated work entered the slice; no push is authorized.
+
 ## 2026-07-13 Goal Breakdown execution restart
 
 - Reset-line branch and HEAD confirmed before staging:
@@ -161,7 +182,7 @@
 ## Historical execution log: 2026-07-13 Phase D Reset
 
 The entries below preserve time-ordered blockers and interim states. They are
-not current status; the G6 audit above is authoritative.
+not current status; the G7 closure above is authoritative.
 
 ### D0 Functional Correctness Reboot
 
@@ -780,3 +801,127 @@ not current status; the G6 audit above is authoritative.
 - Identified the minimal fixture's positive log scales as cap-saturating. Closed
   this diagnostic slice (canonical SSIM + shared minimal trace) and moved to an
   uncapped small-scale fixture as the next single action.
+
+## 2026-07-13 G7 Android real-scene paging regression
+
+- Reopened the terminal Goal Breakdown after a fresh physical-device run
+  contradicted the prior D0/D1 completeness claim.
+- Built the sample APK explicitly from
+  `tests/datasets/external/wakufactory_kitune/kitune1.ply` (63 MiB; SHA-256
+  `3bea1ec48ea91861fc8fad1df688a2cdb1db9b103735498b35d16d146f2551a2`)
+  and installed it on the connected Nothing A065 (`033ed212`).
+- Launched `com.gsplat.example/.MainActivity` with
+  `gsplat_geometry_path=paged`. JNI reported `geometry_path=2`, the Surface
+  renderer created successfully, and the app stayed foreground without a
+  crash.
+- The first stable receipt was only `visible=2528 drawn=2528/2528`; one orbit
+  changed it to about `4661` while the screenshot remained a few disconnected
+  fragments rather than a coherent Kitsune shrine. This is a hard correctness
+  failure, not a soft performance observation.
+- **Current unique execution item:** trace the real-scene page selection and
+  coverage path until a deterministic host test reproduces the fragmented
+  fixed-slot result.
+- Static trace is now localized to shared renderer logic: an 8-axis grid can
+  produce hundreds of underfilled pages, while the four-slot scheduler uses
+  camera-position distance only. Next, measure Kitsune page occupancy and add
+  a host regression that rejects pathological slot utilization and missing
+  coarse coverage before changing the implementation.
+- The asset/count check passed (installed SHA matches; source count 279,199),
+  and spatial analysis confirms extremely underfilled grid cells. The current
+  action is now the red regression test for bounded page packing plus retained
+  coarse coverage.
+- Existing tests and `f151544` were audited. The repair can stay inside
+  `spatial_pages.rs`, `page_scheduler.rs`, and focused tests because atlas
+  upload/generation safety already carries arbitrary source-index subsets.
+- Exact CPU reproduction now matches Android at 2,528 active splats and 0.964%
+  slot utilization. The selected repair policy is fixed four slots with one
+  pinned, globally distributed disjoint coarse page and three densely packed
+  view refinements; exact 279,199 simultaneous draw is not claimed because the
+  fixed capacity is 262,144.
+- Current action: add and run the CPU red tests for dense cross-cell packing and
+  pinned coarse-region coverage; no GPU or Android code will change until the
+  policy fails deterministically on host.
+- Dense packing red/green cycle is complete. Focused spatial-page tests pass
+  4/4 and scheduler tests pass 3/3; the fixed four-slot budget and source-index
+  uniqueness remain enforced.
+- **Current unique execution item:** run the full renderer suite and rebuild the
+  A065 Kitsune paged APK; inspect truthful count and image before deciding the
+  coarse-cover slice.
+- Full renderer tests pass 86/86 with one existing research oracle ignored.
+  The rebuilt A065 APK now draws exactly 262,144 splats and presents a coherent
+  Kitsune shrine at roughly 20.4 ms steady frame wall.
+- **Current unique execution item:** orbit the real scene through a short
+  deterministic device trace, then correct paged Surface stats to report
+  active drawn splats against the loaded-source total 279,199.
+- Horizontal orbit remained visually coherent with no zero/fragmented frame.
+  The sole current action is the paged stats/UI denominator correction using
+  the existing ABI fields, followed by focused host/JNI and A065 verification.
+- Count semantics are green on host and device: the focused helper test passes,
+  JNI smoke passes, the APK builds/installs, and A065 reports/draws
+  `262144/279199` with the ratio visible in the compact overlay.
+- **Current unique execution item:** add the CPU red gate for a pinned,
+  globally distributed, non-overlapping coarse cover; then implement it only
+  in existing paging/scheduler modules.
+- Coarse builder and scheduler red/green cycles pass: the cover spans all eight
+  test octants, all 640 source IDs occur exactly once across cover/refinements,
+  and a deliberately far cover stays resident inside the four-slot budget.
+- **Current unique execution item:** run formatting plus the complete renderer
+  suite, then remeasure Kitsune count/image/orbit on A065 with the pinned cover.
+- Full renderer verification passes 89/89 with one pre-existing research oracle
+  ignored. The rebuilt A065 cover path reports `225784/279199`; initial and
+  orbit screenshots are coherent, the process stays foreground, and frame wall
+  is truthfully recorded at roughly 36-38 ms.
+- **Current unique execution item:** run workspace/clippy/WASM/JNI/diff hygiene,
+  reconcile G7 status and claim boundaries, then commit the completed repair
+  slice without pushing.
+
+### G7 errors
+
+- The first post-launch `adb shell pidof` ran before Android had published the
+  process and returned exit 1 even though installation/start succeeded. Logcat
+  and `dumpsys activity` then proved PID 5245 active and rendering; future
+  launch probes poll renderer creation instead of treating immediate `pidof`
+  as authoritative.
+- The new CPU regression intentionally failed before implementation:
+  `sparse_grid_cells_are_packed_into_dense_pages` observed 512 one-splat pages
+  instead of eight 64-splat pages. This is the expected red state and directly
+  captures the production under-utilization mechanism.
+- The first full renderer test after dense packing exposed the known false
+  invariant in `paged_bounded_trace_keeps_slot_resident_and_active_counts_fixed`:
+  it bounded active splats by four page slots. Replace it with the real fixed
+  capacity `slot_count * page_capacity` and equality to resident splats; do not
+  weaken the slot/residency bounds.
+- The first formatting check requested standard rustfmt wrapping in the two new
+  CPU tests and one page-builder closure. Apply repository rustfmt, then rerun
+  the same check; no hand-formatted workaround is needed.
+- The paged count-semantics regression intentionally failed before the fix:
+  production helper returned `(262144, 262144)` for a 279,199-source/
+  262,144-active frame. It now saturates the source length into the existing
+  `visible_count` denominator while preserving active `drawn_count`.
+- The post-stats formatting check requested one standard tuple compaction in
+  `paged_surface_counts`. Apply rustfmt and repeat the full check/test command.
+- The first combined coarse implementation patch used a stale one-line export
+  context and was rejected atomically. Re-read the actual wrapped export and
+  applied the page builder, export/default wiring, and progress update as
+  separate context-accurate patches.
+- The coarse-cover regression intentionally failed in its scaffold state: the
+  over-slot fixture found zero cover pages instead of one. The implementation
+  now samples one full page evenly across stable spatial order, removes those
+  source indices from balanced refinement pages, and activates it only when
+  dense page count exceeds the resident-slot budget.
+- The scheduler pin regression intentionally failed before selection changed:
+  four nearer refinement pages displaced a deliberately distant cover page.
+  Scheduling now reserves cover IDs first and applies distance/hysteresis only
+  to the remaining refinement budget.
+- The first post-cover formatting check requested only standard wrapping in the
+  scheduler iterator/import/assertion and coarse tests. Apply rustfmt, then run
+  the full renderer suite.
+- The first full suite with a pinned cover failed the old eviction fixture:
+  its `(-3,-3)` to `(3,3)` move remained inside the deliberate 2-unit
+  hysteresis of the same three balanced refinements, so no eviction occurred.
+  Keep the eviction invariant but use an unambiguous `(-30,-30)` to `(30,30)`
+  jump; the cover must stay pinned while at least one refinement changes.
+- The larger XY jump repeated the same failure because this 3x3x3 fixture's
+  balanced refinement chunks each span the full XY extent and differ along Z.
+  The second attempt therefore moves from Z=-30 facing +Z to Z=+30 facing -Z,
+  exercising the actual page-center separation while keeping splats visible.

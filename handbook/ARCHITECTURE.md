@@ -71,8 +71,12 @@
   every acquired swapchain image is rendered by the direct vertex/fragment
   pipeline even when the scene and order buffers are already current
   the experimental paged branch instead schedules a fixed four-slot local
-  active atlas in the presenter, sorts only resident entries, and reuses the
-  packed shader for Surface draws
+  active atlas in the presenter, densely packs stable spatial cell order across
+  page boundaries, pins one globally sampled source-index-disjoint cover page
+  when total pages exceed the slot budget, and uses the remaining slots for
+  view-ranked refinements; it sorts only resident entries and reuses the packed
+  shader for Surface draws, while paged frame stats expose active draw against
+  loaded source count so fixed residency remains visible to clients
   Surface construction runs one shared metadata-only resource plan before
   device allocation, so over-Direct-limit paged scenes negotiate fixed-slot
   resources without first allocating their Direct representation

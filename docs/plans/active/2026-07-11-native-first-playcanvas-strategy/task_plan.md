@@ -9,8 +9,12 @@ second, then steady-state memory and competitive performance.
 ## Current Phase
 
 Implementation Phases B and C remain complete at their recorded boundaries.
-The reset line has now accepted and committed G1-G5. G6's fresh terminal matrix
-also passes; this final docs-only reconciliation is the last execution item.
+The reset line has accepted G1-G7. The 2026-07-13 Android Kitsune run exposed
+and then closed a release-blocking paged-rendering regression: a roughly
+279k-splat source that had produced only 2.5k-4.6k fragmented draws now uses a
+bounded, region-covered working set with truthful loaded/active receipts. The
+terminal claim remains limited to local-source paging and the tested short
+trace; it does not claim network streaming or arbitrary-scale performance.
 
 ## Goal Breakdown
 
@@ -76,6 +80,19 @@ class, or restoring the abandoned telemetry/sidecar/adversarial-validator stack.
     present.
   - Soft observation: retain all measured regressions and environment gaps.
   - Commit boundary: final plan/progress/findings reconciliation only.
+- [x] **G7 — Repair Android real-scene paged completeness.**
+  - Hard acceptance: identify the shared-renderer root cause; keep the fixed
+    atlas-slot budget and non-resident draw exclusion; make a real Kitsune
+    initial/orbit short trace remain spatially coherent without a persistent
+    region-sized hole rather than showing a small fragmented subset; preserve
+    stale/cancel/generation safety; add deterministic regressions that fail on
+    the observed behavior and skewed sparse-region cases; pass focused
+    Rust/offscreen checks and an A065 interactive device run with a visually
+    coherent manual screenshot observation and truthful active/loaded receipts.
+  - Soft observation: frame time, transient active count, and loading latency
+    are reported but do not replace correctness.
+  - Commit boundary: one root-cause repair slice plus its tests and evidence;
+    no telemetry/sidecar/network-validator restoration and no push.
 
 ### Gate Policy
 
@@ -86,7 +103,8 @@ class, or restoring the abandoned telemetry/sidecar/adversarial-validator stack.
   percentage wins, 30-minute RSS, 40–48-byte averages, complete device/browser
   matrices, energy/thermal wins, and large-scene headline scale. A miss narrows
   the claim and stays visible; it does not trigger endless implementation churn.
-- **Current unique execution item:** none — the Goal Breakdown is complete.
+- **Current unique execution item:** none — G7 and the initial Phase D-F Goal
+  Breakdown are complete at the bounded claim above.
 
 ## Phases
 

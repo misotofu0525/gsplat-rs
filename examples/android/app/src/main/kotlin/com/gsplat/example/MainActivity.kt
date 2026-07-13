@@ -462,8 +462,13 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                                 lastStatusAt = now
                                 val statsRc = NativeBridge.getSurfaceStats(handle, stats)
                                 val detail = if (statsRc == 0) {
+                                    val counts = if (benchmarkConfig.geometryPath == "paged") {
+                                        "loaded=${stats[0]} drawn=${stats[1]}/${stats[0]}"
+                                    } else {
+                                        "visible=${stats[0]} drawn=${stats[1]}/${stats[0]}"
+                                    }
                                     "state=rendering frames=$frameCount " +
-                                        "visible=${stats[0]} drawn=${stats[1]}/${stats[0]} " +
+                                        "$counts " +
                                         "frame=${formatMicros(stats[2])}ms " +
                                         "preprocess=${formatMicros(stats[3])}ms " +
                                         "sort=${formatMicros(stats[4])}ms " +
@@ -918,11 +923,16 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
 
     private fun compactSceneStatus(): String {
         if (latestStatus.startsWith("state=rendering")) {
-            val drawn = statusValue("drawn")?.substringBefore('/')
+            val drawn = statusValue("drawn")
             val frame = statusValue("frame")
+            val splats = if (benchmarkConfig.geometryPath == "paged") {
+                drawn?.replace("/", " / ")
+            } else {
+                drawn?.substringBefore('/')
+            }
             return listOfNotNull(
                 "LIVE",
-                drawn?.let { "$it SPLATS" },
+                splats?.let { "$it SPLATS" },
                 frame?.let { "$it MS" }
             ).joinToString("  ·  ")
         }
@@ -1215,6 +1225,11 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
 
         fun resultLine(datasetLabel: String): String {
             val safeSamples = samples.coerceAtLeast(1)
+            val averageCount = if (config.geometryPath == "paged") {
+                "avg_loaded_source=${totalVisible / safeSamples}"
+            } else {
+                "avg_visible=${totalVisible / safeSamples}"
+            }
             return "BENCHMARK_RESULT dataset=$datasetLabel " +
                 "samples=$samples warmup=${config.warmupFrames} sort_interval=${config.sortInterval} " +
                 "async_sort=${config.asyncSort} " +
@@ -1225,7 +1240,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                 "avg_preprocess_ms=${avgMicros(totalPreprocessMicros, safeSamples)} " +
                 "avg_sort_ms=${avgMicros(totalSortMicros, safeSamples)} " +
                 "avg_raster_ms=${avgMicros(totalRasterMicros, safeSamples)} " +
-                "avg_visible=${totalVisible / safeSamples} " +
+                "$averageCount " +
                 "avg_drawn=${totalDrawn / safeSamples}"
         }
 

@@ -324,11 +324,22 @@ ANDROID_SDK_ROOT="${ANDROID_SDK_ROOT:-$HOME/Library/Android/sdk}"
 ADB="$ANDROID_SDK_ROOT/platform-tools/adb"
 "$ADB" install -r examples/android/app/build/outputs/apk/debug/sample-app-debug.apk
 "$ADB" shell am start -n com.gsplat.example/.MainActivity
+# Experimental local paged path:
+"$ADB" shell am start -n com.gsplat.example/.MainActivity \
+  --es gsplat_geometry_path paged
 ```
 
 - Expected first frame includes `Kitsune shrine`, `LIVE`, a non-zero splat count,
-  and frame time. Open `Studio` and confirm `surface=wgpu realtime`,
-  `state=rendering`, and `drawn=<surface_instances>/<visible_instances>`.
+  and frame time. Open `Studio` and confirm `surface=wgpu realtime` and
+  `state=rendering`. Direct/packed receipts use
+  `drawn=<surface_instances>/<visible_instances>`; paged receipts use
+  `drawn=<active_resident>/<loaded_source>`.
+- For the paged Kitsune smoke, expect dense fixed-slot residency rather than a
+  fragmented low-thousands subset. The 2026-07-13 A065 initial-view smoke
+  observed `drawn=225784/279199`: one global cover plus three balanced
+  refinements. A different camera may select the 53,415-entry final refinement
+  and report one fewer active splat. The denominator is loaded source splats,
+  not a claim that every source splat is simultaneously resident.
 - For repeatable perf checks, add the benchmark extras documented in `bindings/android/README.md` and read the `BENCHMARK_RESULT` logcat line.
 - The APK packages the selected scene as `assets/showcase.ply`. If `adb install -r`
   reports insufficient storage, uninstall `com.gsplat.example` and reinstall.
