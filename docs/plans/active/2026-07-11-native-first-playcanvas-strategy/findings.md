@@ -58,6 +58,14 @@
 - Relative output roots are unsafe when producer scripts resolve from different
   directories. The successful series used one absolute root; the documented
   protocol should continue requiring fresh absolute per-pair destinations.
+- Local distribution evidence must distinguish import/build consumption from
+  registry availability. The Web tarball, Android AAR/APK, and Apple binary
+  target all consume locally, but none proves npm, Maven, remote binary SwiftPM,
+  signing/notarization, multi-ABI Android, or public upgrade compatibility.
+- The stable claim is intentionally narrower than the artifacts: direct
+  `SortedAlpha`, bounded PLY/SceneBuffers, structured lifecycle/errors, and
+  serialized native ownership are v0.1 semantics. Paged residency and package
+  convenience APIs remain experimental even though their local smokes pass.
 
 ## Research Findings
 

@@ -49,6 +49,13 @@ Operational facts and command entrypoints live in `handbook/PROJECT_CONTEXT.md` 
   - `gsplat_context_get_stats`
   - Android and iOS Surface renderer create/resize/camera-control/render/stats/destroy functions for the example integration paths
 - The current C ABI does not cover scene-from-memory loading or runtime render-mode switching.
+- Stable v0.1 semantics are the bounded PLY-to-`SceneBuffers` path, offscreen
+  context lifecycle and structured errors, `SortedAlpha` direct rendering, and
+  single-owner native handles used from one serialized thread or queue.
+- Packed/paged geometry selectors, atlas layouts, local page scheduling,
+  benchmark artifact schemas, Web package APIs, and mobile Surface convenience
+  wrappers remain experimental. They may change without widening the stable
+  v0.1 contract; direct remains their default.
 - Native handles are single-owner handles and should be used from one serialized
   thread or queue. Public wrappers may add locking, but this does not make the
   raw C ABI a free-threaded API.
@@ -62,6 +69,24 @@ Operational facts and command entrypoints live in `handbook/PROJECT_CONTEXT.md` 
   experimental Web API boundary. They are not a stable v0.1 release surface;
   Web renderer changes require verified wasm build and browser smoke evidence.
 - The Web example is validation example support for browser PLY loading, the WebGL2 fallback, and hosting the generated wasm package; it is not a polished web product surface.
+
+## Phase D-F Evidence Boundary (2026-07-13)
+
+- The experimental local-source paged path has fixed four-slot active
+  residency, eviction, deterministic continuity and stale/cancel/generation
+  tests, direct-vs-paged offscreen parity, non-zero Surface output, and a short
+  bounded steady-state/device smoke. It is not production network streaming.
+- Five sequential randomized-order Chrome/WebGPU pairs pass the Kitsune-static
+  desktop parity band at 640×480: gsplat-rs/PlayCanvas frame-wall p95 median
+  ratio `1.0200` (bootstrap 95% CI `1.0100-1.0200`), p99 median `1.0291`
+  (`1.0097-1.0388`), and minimum SSIM `0.998657`.
+- That result is deliberately scoped to the measured local Chrome/WebGPU,
+  Kitsune-static profile. It does not establish native leadership, broad
+  browser or dataset parity, competitor memory leadership, sustained
+  thermal/energy behavior, or 10M scalability.
+- Local AAR, XCFramework/Swift Package, and npm-compatible tarball consumption
+  paths are qualification surfaces only. Registry publication and a widened
+  stable SDK contract remain outside the release boundary.
 
 ## Release Bar
 

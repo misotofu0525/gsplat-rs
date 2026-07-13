@@ -34,7 +34,7 @@
 - `crates/gsplat-core`: shared public types, config, stats, and error codes
 - `crates/gsplat-io-ply`: PLY parsing and scene buffer construction
 - `crates/gsplat-sort`: GPU and CPU sort backends
-- `crates/gsplat-render-wgpu`: preprocessing, CPU sort scheduling, the shared direct sorted-index renderer/session/presenter, and offscreen GPU APIs
+- `crates/gsplat-render-wgpu`: preprocessing, CPU sort scheduling, shared Surface/offscreen rendering, packed atlas, and the experimental fixed-budget local paged runtime
 - `crates/gsplat-ffi-c`: small C ABI surface over the renderer and mobile Surface presenters
 - `crates/gsplat-web`: experimental `wasm-bindgen` bindings over the shared `wgpu` Surface renderer
 - `examples/desktop`: desktop viewer and offscreen PNG harness
@@ -71,7 +71,7 @@ For the broader command matrix, use `VERIFICATION.md`.
 - Turn Android integration into a local AAR/module shape before widening it into a published SDK.
 - Harden the local iOS `GsplatKit`/XCFramework slice before treating it as a published SwiftPM binary SDK.
 - Harden the local Web `@gsplat-rs/web` wrapper around the shared Rust `wgpu` Surface renderer before treating it as a published npm SDK.
-- Keep the runtime scene path centered on validated in-memory `SceneBuffers` until a measured asset-pipeline need exists.
+- Keep validated in-memory `SceneBuffers` as the stable path while the experimental local paged runtime proves bounded active residency behind the same renderer lifecycle.
 - Keep release checks reproducible: pinned CI actions, checksum-verified policy tooling, version consistency, and GPU-backed conformance evidence.
 - Update the docs immediately when repository structure or responsibilities change.
 - Keep contributor-facing maintenance files aligned with the actual verification and release boundary.
@@ -95,8 +95,10 @@ For the broader command matrix, use `VERIFICATION.md`.
   same one-thread-or-queue ownership rule.
 - Web, desktop interactive, Android, and iOS Surface clients delegate frame
   cadence, CPU sort refreshes, compact order uploads, and presentation to the
-  shared `SurfaceRenderSession`. Every production target uses direct sorted
-  indices; mobile keeps the default CPU sort interval of 2.
+  shared `SurfaceRenderSession`. Direct sorted indices remain the stable path;
+  the experimental paged path owns a fixed four-slot local active atlas and is
+  qualified only for local-source D0 browser and Android Surface smoke. Mobile
+  keeps the default CPU sort interval of 2.
 - The Web example is a browser validation surface. The Rust/WASM renderer boundary
   is active in `crates/gsplat-web`, and `packages/web` provides
   a local ESM wrapper, but the Web SDK is not published to npm or stable in the

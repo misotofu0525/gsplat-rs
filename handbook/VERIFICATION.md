@@ -258,6 +258,21 @@ npm --prefix packages/web run pack:dry-run
   report `surface=wasm-wgpu`, `renderer=wasm_sorted_index_direct` in benchmark output,
   and non-zero `Visible` / `Drawn` counts for `flowers_1.ply`.
 
+For a local external-consumer check, build the distribution, pack from the
+package directory, install the resulting tarball into a fresh directory, and
+import its public ESM entrypoint. This proves tarball shape and local
+consumption only; it does not publish to npm or make the Web API stable.
+
+```bash
+bash packages/web/scripts/build.sh
+mkdir -p target/qualification/web-pack target/qualification/web-consumer
+(cd packages/web && npm pack --pack-destination ../../target/qualification/web-pack)
+npm install --prefix target/qualification/web-consumer \
+  "$PWD/target/qualification/web-pack/gsplat-rs-web-0.1.3.tgz"
+node --input-type=module -e \
+  "import('./target/qualification/web-consumer/node_modules/@gsplat-rs/web/dist/index.js').then(m => console.log(m.GSPLAT_WEB_SDK_VERSION))"
+```
+
 ## Mobile Builds and Simulator Smoke
 
 ```bash

@@ -19,7 +19,7 @@
 - [x] G2 bounded paging correctness
 - [x] G3 native Surface/Web usability
 - [x] G4 competitive evidence
-- [ ] G5 local distribution and claim boundaries
+- [x] G5 local distribution and claim boundaries
 - [ ] G6 terminal audit
 
 ### G2 acceptance
@@ -103,6 +103,28 @@
   scalability.
 - **Current unique execution item:** G5 — local distribution and stable claim
   boundaries.
+
+### G5 acceptance
+
+- The built Web package produced a 202,877-byte npm-compatible tarball. A fresh
+  external directory installed and imported `@gsplat-rs/web@0.1.3`, including
+  the experimental geometry selector. The first pack invocation used an npm
+  `--prefix` form that still resolved the repository root and failed; rerunning
+  from `packages/web/` passed without source changes.
+- Android JNI smoke, arm64-v8a AAR (3,392,105 bytes), and sample APK
+  (76,088,709 bytes) all passed fresh builds.
+- Apple host Swift smoke, release XCFramework (89 MiB with device plus arm64/
+  x86_64 simulator slices), `swift package describe`, and generic iOS Simulator
+  `xcodebuild` consumer all passed. The first Apple command used a root-relative
+  script from the package directory and failed before building; rerunning from
+  the repository root passed.
+- Canonical docs now separate stable v0.1 PLY/SceneBuffers, direct
+  `SortedAlpha`, lifecycle/error/thread-ownership semantics from experimental
+  packed/paged selectors, package wrappers, and benchmark formats.
+- No npm, Maven, binary SwiftPM registry, GitHub release, tag, push, or force
+  operation was performed.
+- **Current unique execution item:** G6 — terminal audit and final
+  reconciliation.
 
 ## Session: 2026-07-13 Phase D Reset
 

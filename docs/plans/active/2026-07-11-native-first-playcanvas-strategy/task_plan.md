@@ -63,7 +63,7 @@ class, or restoring the abandoned telemetry/sidecar/adversarial-validator stack.
     optimized until a number turns green.
   - Commit boundary: comparison harness, collectors, validators, trace/quality
     fixtures, and protocol documentation.
-- [ ] **G5 — Accept local distribution and stable claim boundaries.**
+- [x] **G5 — Accept local distribution and stable claim boundaries.**
   - Hard acceptance: Web tarball external import, Android JNI/AAR/APK, Apple
     host/XCFramework/Swift Package consumer paths pass; stable v0.1 versus
     experimental APIs/formats/lifecycle/errors are explicit.
@@ -87,8 +87,8 @@ class, or restoring the abandoned telemetry/sidecar/adversarial-validator stack.
   percentage wins, 30-minute RSS, 40–48-byte averages, complete device/browser
   matrices, energy/thermal wins, and large-scene headline scale. A miss narrows
   the claim and stays visible; it does not trigger endless implementation churn.
-- **Current unique execution item:** G5 — accept local distribution and stable
-  claim boundaries without performing registry publication or push.
+- **Current unique execution item:** G6 — run the terminal requirement audit,
+  canonical regression matrix, and final docs-only reconciliation.
 
 ## Phases
 
@@ -251,10 +251,11 @@ class, or restoring the abandoned telemetry/sidecar/adversarial-validator stack.
 
 ### Phase F: Distribution and Claim Promotion
 
-- [ ] Qualify package consumption, freeze stable semantics, and publish only
+- [x] Qualify package consumption, freeze stable semantics, and publish only
       evidence-backed claims.
-- **Status:** candidate local-consumption evidence exists but is not accepted
-  until G5 reruns the package consumers and reconciles canonical claims.
+- **Status:** complete within the local-artifact boundary. Web external tarball
+  import, Android JNI/AAR/APK, and Apple host/XCFramework/Swift Package
+  simulator consumer checks pass; no registry publication or push occurred.
 
 ## Key Questions
 
