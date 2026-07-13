@@ -9,7 +9,7 @@ scene beyond the Direct resource gate can enter a fixed-slot paged Surface.
 
 ## Current Phase
 
-Phase 4 — compact evidence and terminal regression.
+Complete — all recovery acceptance gates passed.
 
 ## Hard Boundaries
 
@@ -66,12 +66,12 @@ Phase 4 — compact evidence and terminal regression.
 
 ### Phase 4: Persist compact evidence and close the audit
 
-- [ ] Commit a small machine-readable evidence index containing commands,
+- [x] Commit a small machine-readable evidence index containing commands,
       commit, hashes/receipts, and measured outcomes; keep bulky raw output
       ignored.
-- [ ] Run the canonical renderer/Web/FFI/platform regression matrix.
-- [ ] Reconcile achieved and still-deferred claims, then leave a clean worktree.
-- **Status:** in_progress
+- [x] Run the canonical renderer/Web/FFI/platform regression matrix.
+- [x] Reconcile achieved and still-deferred claims, then leave a clean worktree.
+- **Status:** complete
 
 ## Acceptance
 
@@ -94,3 +94,4 @@ evidence index survives a fresh clone.
 | Error | Attempt | Resolution |
 |---|---:|---|
 | Workspace clippy rejected the private UIKit create helper's eight arguments | 1 | Grouped the view/controller pointers into one internal target tuple; public ABI unchanged. |
+| Initial Android device enumeration expanded an inline SDK assignment too early | 1 | Assigned `ADB` on its own line, then found and exercised the connected A065 device. |

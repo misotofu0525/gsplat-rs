@@ -97,3 +97,16 @@ before constructor-time paged startup can be called bounded.
 - This proves resource-plan eligibility plus presenter-equivalent GPU behavior;
   it is not a device run of the full Nandi asset and does not prove out-of-core
   PLY parsing.
+
+## Terminal Evidence
+
+- Compact evidence is committed at `evidence/paged-entry-v1.json`; it binds the
+  code-under-test commit to source and dataset hashes, exact over-limit resource
+  values, runtime receipts, commands, and claim boundaries.
+- Browser WebGPU rendered both Kitsune and minimal through
+  `wasm_paged_active_atlas` with non-zero drawn counts and no browser errors.
+- Android A065 logged constructor `geometry_path=2` before rendering minimal;
+  iOS simulator rendered Kitsune through `paged_active_atlas`.
+- Performance values are observations only. The iOS five-frame sample included
+  one missed frame and does not become an optimization blocker or leadership
+  claim.

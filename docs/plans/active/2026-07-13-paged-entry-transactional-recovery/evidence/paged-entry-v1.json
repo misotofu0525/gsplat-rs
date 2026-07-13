@@ -1,0 +1,138 @@
+{
+  "schema": "gsplat-paged-entry-evidence/v1",
+  "recorded_at_utc": "2026-07-13T04:11:22Z",
+  "branch": "refactor/packed-atlas-d-reset",
+  "source_commit": "9406d4cfa8dc2a166dc11070407ecb02fb44d797",
+  "baseline_commit": "3bc246ef7e31621f1b4af5a45d715899610a5695",
+  "change_size": {
+    "files": 23,
+    "insertions": 1105,
+    "deletions": 175,
+    "net_lines": 930,
+    "implementation_slices": 6,
+    "note": "Includes the recovery plan and documentation; no new runtime crate or telemetry stack."
+  },
+  "source_sha256": {
+    "crates/gsplat-render-wgpu/src/lib.rs": "94f013c9d6cfb114ef5df60b5e30f467a2f565c8c1844ed2576c93b779cca2a7",
+    "crates/gsplat-web/src/wasm.rs": "ef237c14eee92c2ca1fd8257125a2c5d90d2bd05a4288cd5cc9dfa5ae1498ceb",
+    "packages/web/src/index.js": "d14da8d834aa92c2396658bd7dba0ad4cb654121873ea9419f4aadc21c9c0a92"
+  },
+  "constructor_ordering": {
+    "direct_default_preserved": true,
+    "web_preselected_before_load_scene": true,
+    "android_preselected_before_load_scene": true,
+    "uikit_preselected_before_load_scene": true,
+    "paged_direct_cpu_caches_retained": false,
+    "paged_full_scene_packed_staging_removed": true,
+    "paged_metadata_scan_extra_memory": "O(1)",
+    "full_scene_source_buffers_retained": true
+  },
+  "over_direct_limit_proof": {
+    "test": "tests::surface_resource_plan_selects_fixed_slots_for_over_direct_limit_nandi",
+    "scene_splats": 3454040,
+    "sh_degree": 3,
+    "storage_binding_limit_bytes": 134217728,
+    "max_buffer_size_bytes": 134217728,
+    "max_texture_dimension_2d": 8192,
+    "direct_path": "active_atlas_required",
+    "direct_limiting_resource": "sh_rest",
+    "direct_sh_rest_required_bytes": 621727200,
+    "page_capacity": 65536,
+    "page_count": 53,
+    "atlas_slots": 4,
+    "resident_capacity_splats": 262144,
+    "paged_sorted_indices_bytes": 1048576,
+    "paged_hot_record_storage_bytes": 5242880,
+    "paged_plan": "packed_atlas_fits",
+    "allocated_large_scene": false
+  },
+  "transactional_switch_proof": {
+    "presenter_test": "tests::failed_geometry_resource_prepare_does_not_commit_partial_state",
+    "renderer_test": "surface_session::tests::failed_presenter_prepare_rolls_renderer_back_to_working_path",
+    "returned_error_preserves_old_presenter_resources": true,
+    "returned_error_restores_renderer_path_and_caches": true,
+    "scope": "Errors returned through SurfacePresenterError; excludes process allocation abort and unrecoverable device loss."
+  },
+  "runtime_smoke": {
+    "web_kitsune": {
+      "backend": "webgpu",
+      "renderer": "wasm_paged_active_atlas",
+      "dataset_sha256": "3bea1ec48ea91861fc8fad1df688a2cdb1db9b103735498b35d16d146f2551a2",
+      "splat_count": 279199,
+      "measured_frames": 5,
+      "warmup_frames": 1,
+      "average_visible": 2528,
+      "average_drawn": 2528,
+      "browser_errors": 0
+    },
+    "web_minimal": {
+      "backend": "webgpu",
+      "renderer": "wasm_paged_active_atlas",
+      "dataset_sha256": "6e4e0981ea7021c220d230c77053ba7428d96aeb4b6f2350d5006b298b0778ba",
+      "splat_count": 3,
+      "measured_frames": 5,
+      "average_visible": 3,
+      "average_drawn": 3
+    },
+    "android_device_minimal": {
+      "device": "A065",
+      "constructor_geometry_path_id": 2,
+      "renderer": "paged_active_atlas",
+      "dataset_sha256": "6e4e0981ea7021c220d230c77053ba7428d96aeb4b6f2350d5006b298b0778ba",
+      "measured_frames": 5,
+      "warmup_frames": 1,
+      "average_frame_ms": 0.94,
+      "average_visible": 3,
+      "average_drawn": 3
+    },
+    "ios_simulator_kitsune": {
+      "backend": "metal",
+      "renderer": "paged_active_atlas",
+      "dataset_sha256": "3bea1ec48ea91861fc8fad1df688a2cdb1db9b103735498b35d16d146f2551a2",
+      "splat_count": 279199,
+      "measured_frames": 5,
+      "warmup_frames": 1,
+      "average_frame_ms": 10.551,
+      "average_visible": 2528,
+      "average_drawn": 2528,
+      "missed_frame_count": 1
+    }
+  },
+  "package_receipt": {
+    "name": "@gsplat-rs/web",
+    "version": "0.1.3",
+    "dry_run_tarball": "gsplat-rs-web-0.1.3.tgz",
+    "dry_run_shasum": "9c98be29bb95d06735a41a00cdfcd9dd8072b7c2",
+    "unpacked_size_display": "598.4 kB"
+  },
+  "verification": [
+    { "command": "cargo fmt --all -- --check", "status": "passed" },
+    { "command": "cargo check --workspace", "status": "passed" },
+    { "command": "cargo test --workspace", "status": "passed", "render_tests": "84 passed, 1 existing ignored research oracle, conformance passed" },
+    { "command": "cargo clippy --workspace --all-targets -- -D warnings", "status": "passed" },
+    { "command": "npm --prefix packages/web test", "status": "passed", "tests": 7 },
+    { "command": "cargo check -p gsplat-web --target wasm32-unknown-unknown", "status": "passed_with_existing_target_specific_dead_code_warnings" },
+    { "command": "bash packages/web/scripts/build.sh", "status": "passed" },
+    { "command": "npm --prefix packages/web run pack:dry-run", "status": "passed" },
+    { "command": "bash tests/ffi/run-ffi-smoke.sh", "status": "passed", "visible": 2, "drawn": 2 },
+    { "command": "bash bindings/android/scripts/run-jni-smoke.sh", "status": "passed" },
+    { "command": "bash bindings/android/scripts/build-sample-apk.sh tests/datasets/minimal_ascii.ply", "status": "passed" },
+    { "command": "bash bindings/apple/scripts/run-swift-smoke.sh", "status": "passed", "visible": 2, "drawn": 2 },
+    { "command": "bash bindings/apple/scripts/build-ios-sim-app.sh", "status": "passed" }
+  ],
+  "claims": {
+    "proved": [
+      "Experimental Web, Android, and UIKit callers can select paged before scene-specific Direct CPU derivation and Surface GPU allocation.",
+      "The paged Surface planner admits a scene whose page count exceeds atlas slots and whose Direct representation exceeds the declared resource limit.",
+      "Fixed-slot paged runtime draws a non-zero resident subset on real GPU paths in browser, Android, and iOS simulator smoke.",
+      "A returned runtime path-switch preparation error preserves the previous session state."
+    ],
+    "deferred": [
+      "Out-of-core PLY parsing and removal of the full in-memory SceneBuffers source.",
+      "HTTP or adversarial network streaming, SOG or Streamed SOG decoding, and 10M qualification.",
+      "A full Nandi asset device render, 30-minute RSS or thermal gates, and broad device/browser coverage.",
+      "Recovery from process allocation aborts or unrecoverable GPU device loss.",
+      "Registry publication or promotion of packed/paged selectors into the stable v0.1 API."
+    ]
+  }
+}

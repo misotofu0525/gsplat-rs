@@ -75,7 +75,10 @@ Operational facts and command entrypoints live in `handbook/PROJECT_CONTEXT.md` 
 - The experimental local-source paged path has fixed four-slot active
   residency, eviction, deterministic continuity and stale/cancel/generation
   tests, direct-vs-paged offscreen parity, non-zero Surface output, and a short
-  bounded steady-state/device smoke. It is not production network streaming.
+  bounded steady-state/device smoke. Web, Android, and UIKit can select it
+  before Direct scene derivation and Surface allocation; returned runtime
+  switch errors preserve the old session. It still retains full in-memory
+  `SceneBuffers` and is not production source or network streaming.
 - Five sequential randomized-order Chrome/WebGPU pairs pass the Kitsune-static
   desktop parity band at 640×480: gsplat-rs/PlayCanvas frame-wall p95 median
   ratio `1.0200` (bootstrap 95% CI `1.0100-1.0200`), p99 median `1.0291`

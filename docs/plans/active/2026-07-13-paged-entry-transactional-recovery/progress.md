@@ -44,9 +44,16 @@
 
 ### Phase 4
 
-- **Status:** in_progress
-- Next action: commit one compact evidence index, run the terminal canonical
-  matrix, and reconcile final claims/deferred work.
+- **Status:** complete
+- Added `evidence/paged-entry-v1.json` with source/dataset hashes, exact
+  over-limit plan values, terminal commands, runtime receipts, and bounded
+  claims.
+- Completed workspace, Web/WASM package, FFI/JNI, Android APK/device, Swift,
+  iOS simulator build/runtime, and browser WebGPU verification.
+- Final claim: constructor-time fixed-slot local paging and returned-error
+  transaction safety are proven; source parsing remains full-resident and
+  network/10M/long-run/registry work remains deferred.
+- Next action: none for this goal.
 
 ## Test Results
 
@@ -73,9 +80,17 @@
 | real-GPU Surface paged runtime unit | passed; fixed slots and non-zero draw |
 | `npm --prefix packages/web test` after constructor planner | 7 passed |
 | WASM target check after constructor planner | passed; existing target-specific warnings only |
+| `cargo check --workspace` | passed |
+| `cargo test --workspace` | passed; renderer 84 passed, 1 existing ignored oracle; conformance passed |
+| `cargo clippy --workspace --all-targets -- -D warnings` | passed after private helper shape fix |
+| Web package build + dry-run pack | passed; tarball shasum `9c98be29bb95d06735a41a00cdfcd9dd8072b7c2` |
+| Browser WebGPU paged Kitsune smoke | passed; `2528` visible / `2528` drawn, no console errors |
+| Android A065 paged constructor smoke | passed; path id `2`, `3` visible / `3` drawn |
+| iOS simulator paged Kitsune smoke | passed; `2528` visible / `2528` drawn |
 
 ## Error Log
 
 | Error | Attempt | Resolution |
 |---|---:|---|
 | `cargo clippy --workspace --all-targets -- -D warnings` rejected an 8-argument private UIKit helper | 1 | Grouped the two UIKit target pointers into one tuple; public constructors unchanged. |
+| Android device enumeration resolved `/platform-tools/adb` from an inline assignment | 1 | Assigned the SDK-derived executable first; retry found A065 and paged smoke passed. |
