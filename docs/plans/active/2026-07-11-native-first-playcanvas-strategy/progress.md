@@ -55,6 +55,17 @@
 - **Current unique execution item:** G4 — fair competitive evidence and bounded
   claim.
 
+### G4 execution
+
+- Existing five-pair artifacts revalidate and reproduce their stored report,
+  but their manifests identify the old `05f649e` dirty worktree. They remain a
+  useful provisional observation, not the final clean-build claim source.
+- The matched Phase E static camera contracts are frozen as canonical
+  `gsplat-camera-trace/v1` fixtures for Kitsune and the minimal/diagnostic
+  quality path.
+- **Current unique execution item:** G4 collector slice — land the fail-closed
+  PlayCanvas and gsplat-rs collectors against these exact trace receipts.
+
 ## Session: 2026-07-13 Phase D Reset
 
 ### D0 Functional Correctness Reboot

@@ -25,6 +25,17 @@
 - No telemetry sidecar, remote source, network-adversarial validator, or new
   public asset format was introduced for G3.
 
+## G4 Execution Findings (2026-07-13)
+
+- The retained five-pair series is internally valid and deterministic, but its
+  `build.dirty=true` receipts correctly prevent treating it as clean-commit
+  publication evidence. G4 will land the protocol in small slices, then rerun
+  from the committed harness rather than rewriting those receipts.
+- Separate Kitsune and minimal static traces are necessary because the shared
+  camera must fit each scene while preserving identical 640x480 projection
+  semantics on both renderers. Keeping them as trace fixtures avoids embedding
+  renderer-specific camera constants in either collector.
+
 ## Research Findings
 
 - Current gsplat-rs production targets share `SurfaceRenderSession`, direct

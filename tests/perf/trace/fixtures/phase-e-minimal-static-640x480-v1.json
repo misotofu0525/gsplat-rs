@@ -1,0 +1,45 @@
+{
+  "schema": "gsplat-camera-trace/v1",
+  "trace_id": "phase-e-minimal-static-640x480-v1",
+  "coordinate_system": {"handedness": "right", "axes": "RUF", "camera_forward": "+Z"},
+  "matrix_convention": {
+    "storage_order": "row-major",
+    "vector_convention": "column",
+    "composition": "projection * view * world_position",
+    "ndc_xy": "[-1,1]",
+    "ndc_z": "[0,1]",
+    "clip_w": "camera_z"
+  },
+  "display": {"width": 640, "height": 480},
+  "frames": [
+    {
+      "frame_index": 0,
+      "timestamp_ns": 0,
+      "pose": {"position": [0.0, 0.0, -3.0], "rotation_xyzw": [0.0, 0.0, 0.0, 1.0]},
+      "intrinsics": {
+        "vertical_fov_radians": 1.0471975511965976,
+        "near_plane": 0.01,
+        "far_plane": 100.0
+      },
+      "view_matrix": [
+        1.0, 0.0, 0.0, -0.0,
+        0.0, 1.0, 0.0, -0.0,
+        0.0, 0.0, 1.0, 3.0,
+        0.0, 0.0, 0.0, 1.0
+      ],
+      "projection_matrix": [
+        1.2990381056766582, 0.0, 0.0, 0.0,
+        0.0, 1.7320508075688776, 0.0, 0.0,
+        0.0, 0.0, 1.0001000100010002, -0.010001000100010003,
+        0.0, 0.0, 1.0, 0.0
+      ],
+      "view_projection_matrix": [
+        1.2990381056766582, 0.0, 0.0, 0.0,
+        0.0, 1.7320508075688776, 0.0, 0.0,
+        0.0, 0.0, 1.0001000100010002, 2.9902990299029906,
+        0.0, 0.0, 1.0, 3.0
+      ]
+    }
+  ],
+  "content_sha256": "f092e7f628c369037b8e7e32e2c7a988a6ec9a63d0ec395631cb847c7885f217"
+}
