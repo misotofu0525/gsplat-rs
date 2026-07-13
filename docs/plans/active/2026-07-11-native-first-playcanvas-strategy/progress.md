@@ -17,7 +17,7 @@
 
 - [x] G1 plan reform
 - [x] G2 bounded paging correctness
-- [ ] G3 native Surface/Web usability
+- [x] G3 native Surface/Web usability
 - [ ] G4 competitive evidence
 - [ ] G5 local distribution and claim boundaries
 - [ ] G6 terminal audit
@@ -37,18 +37,23 @@
   grew 5,532 KiB. No 30-minute or fixed-percentage claim is inferred.
 - **Current unique execution item:** G3 — native Surface and Web usability.
 
-## Current status: Phase D-F complete (2026-07-13)
+### G3 acceptance
 
-- Phase D D0/D1 is complete: five functional-correctness gates, fixed four-slot
-  residency, deterministic failure/continuity semantics, non-zero Surface path,
-  bounded 512-frame trace, and two-minute Android smoke all passed.
-- Phase E is complete as a qualification decision. Five sequential randomized
-  Kitsune-static Web pairs passed the narrow parity gate; every native, broad
-  browser/dataset, memory, thermal/energy, and 10M claim remains withheld.
-- Phase F local consumption passed for the Web tarball, Android AAR/APK, and
-  Apple XCFramework/Swift Package. Canonical checks passed; no registry publish,
-  git commit, or push was performed.
-- No current blocker remains inside the agreed D-F scope.
+- Web API and WASM Surface now accept `direct`, `packed`, or `paged`; direct
+  remains the default, invalid values fail, and the runtime receipt reports the
+  actual path rather than a fixed label.
+- Headless Chrome paged smoke validated eight measured frames on
+  `minimal_ascii.ply`: `renderer=wasm_paged_active_atlas`, `visible=3`,
+  `drawn=3`, with a valid v1 artifact.
+- Physical Nothing A065 / Vulkan paged Surface smoke validated 30 measured
+  Kitsune frames: `geometry_pipeline=paged_active_atlas`, average call
+  0.720 ms, frame 0.712 ms, and non-zero `visible=drawn=2528`.
+- C ABI tests (14), FFI smoke, JNI smoke, Web tests (6), wasm target check,
+  Web/WASM builds, npm dry pack, Android AAR, and sample APK all passed.
+- These short timings are usability observations, not sustained performance or
+  broad device/browser claims.
+- **Current unique execution item:** G4 — fair competitive evidence and bounded
+  claim.
 
 ## Session: 2026-07-13 Phase D Reset
 

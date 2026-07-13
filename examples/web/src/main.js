@@ -106,6 +106,11 @@ const state = {
   benchmark: null,
   autoStartBenchmark: false,
   autoBenchmarkSync: false,
+  qualificationTrace: null,
+  qualificationTraceUrl: null,
+  qualificationDatasetId: null,
+  cameraReceipt: null,
+  geometryPath: "direct",
 };
 
 const els = {
@@ -357,6 +362,7 @@ async function createWasmRenderer(scene) {
       width: els.canvas.width,
       height: els.canvas.height,
       sortInterval: Number(els.sortInterval.value),
+      geometryPath: state.geometryPath,
     });
     state.wasmRenderer = renderer;
     state.backend = "wasm";
@@ -368,7 +374,7 @@ async function createWasmRenderer(scene) {
     els.gpuStatus.textContent = "wgpu";
     els.gaussianCount.textContent = formatNumber(summary.gaussians ?? scene.count);
     els.shDegree.textContent = String(summary.shDegree ?? scene.shDegree);
-    setRenderMode("Rust/WASM sorted-index direct");
+    setRenderMode(`Rust/WASM ${renderer.rasterPath()}`);
     updateBackendControls();
     return true;
   } catch (error) {
@@ -1326,6 +1332,10 @@ function applyUrlConfig() {
   setNumberInputFromParam(els.sortInterval, params.get("gsplat_surface_sort_interval") ?? params.get("sort_interval"));
   setNumberInputFromParam(els.drawBudget, params.get("draw_budget"));
   const dataset = (params.get("dataset") ?? params.get("scene") ?? "").toLowerCase();
+  const geometryPath = (params.get("gsplat_geometry_path") ?? "direct").toLowerCase();
+  if (["direct", "packed", "paged"].includes(geometryPath)) {
+    state.geometryPath = geometryPath;
+  }
   if (dataset === "flowers" || dataset === "flower") {
     state.startDataset = "flowers";
   } else if (dataset === "minimal" || dataset === "smoke") {
@@ -1411,7 +1421,7 @@ function wasmRendererLabel() {
   if (!usingWasm()) {
     return "webgl2_point_splats";
   }
-  return "wasm_sorted_index_direct";
+  return `wasm_${state.wasmRenderer.rasterPath()}`;
 }
 
 function benchmarkResultLine(benchmark) {

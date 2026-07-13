@@ -27,6 +27,8 @@ export interface CreateRendererOptions {
   width?: number;
   height?: number;
   sortInterval?: number;
+  /** Experimental geometry selector. The default release path remains `direct`. */
+  geometryPath?: "direct" | "packed" | "paged";
   module?: GsplatWebModule;
 }
 
@@ -71,6 +73,7 @@ export class GsplatWebRenderer {
   zoom(distanceScale: number): void;
   pan(normalizedDeltaX: number, normalizedDeltaY: number): void;
   setSortInterval(interval: number): void;
+  setGeometryPath(path: "direct" | "packed" | "paged"): void;
   rasterPath(): string;
   renderFrame(): GsplatFrameStats;
   sceneSummary(): GsplatSceneSummary;

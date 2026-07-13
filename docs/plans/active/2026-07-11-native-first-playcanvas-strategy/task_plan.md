@@ -11,7 +11,7 @@ second, then steady-state memory and competitive performance.
 Implementation Phases B and C remain complete at their recorded boundaries.
 The reset-line worktree contains candidate Phase D-F implementation and
 evidence, but it is not accepted until the Goal Breakdown below is verified and
-committed slice by slice. G1 is the only current execution item.
+committed slice by slice. G4 is the only current execution item.
 
 ## Goal Breakdown
 
@@ -46,7 +46,7 @@ class, or restoring the abandoned telemetry/sidecar/adversarial-validator stack.
     memory/frame measurements without treating a fixed percentage as blocking.
   - Commit boundary: page scheduler/residency/atlas/GPU renderer correctness and
     focused tests.
-- [ ] **G3 — Accept native Surface and Web paged usability.**
+- [x] **G3 — Accept native Surface and Web paged usability.**
   - Hard acceptance: local-source paged Surface produces stable non-zero draws;
     the experimental C/Android selector is consistent; Web camera/Surface path
     remains usable and browser smoke is non-zero; direct remains default.
@@ -87,8 +87,8 @@ class, or restoring the abandoned telemetry/sidecar/adversarial-validator stack.
   percentage wins, 30-minute RSS, 40–48-byte averages, complete device/browser
   matrices, energy/thermal wins, and large-scene headline scale. A miss narrows
   the claim and stays visible; it does not trigger endless implementation churn.
-- **Current unique execution item:** G3 — accept native Surface and Web paged
-  usability without restoring remote streaming or telemetry infrastructure.
+- **Current unique execution item:** G4 — accept fair competitive evidence and
+  a bounded claim without turning soft performance observations into blockers.
 
 ## Phases
 
@@ -241,19 +241,15 @@ class, or restoring the abandoned telemetry/sidecar/adversarial-validator stack.
       passes five randomized pairs; native leadership, broad dataset/browser
       parity, sustained thermal, energy, memory-leadership, and large-scene
       claims remain unearned and must not be promoted.
-- **Status:** complete for the explicitly qualified narrow claim scope
-- **Exit evidence:** `target/benchmarks/phase-e/kitsune-five-paired/` records
-  five 3,600-frame pairs, per-pair SSIM, and deterministic bootstrap statistics.
+- **Status:** candidate evidence exists but is not accepted until G4 verifies
+  the harness, receipts, artifacts, image metric, and paired report.
 
 ### Phase F: Distribution and Claim Promotion
 
-- [x] Qualify package consumption, freeze stable semantics, and publish only
+- [ ] Qualify package consumption, freeze stable semantics, and publish only
       evidence-backed claims.
-- **Status:** complete within the existing local-artifact release boundary
-- **Exit evidence:** Web tarball external install/import, Android JNI/AAR/APK,
-  Apple host smoke/XCFramework/Swift Package simulator build, browser WASM
-  smoke, full workspace tests/conformance/clippy/docs, and claim-scope docs all
-  pass. Public npm/Maven/binary SwiftPM publication remains out of scope.
+- **Status:** candidate local-consumption evidence exists but is not accepted
+  until G5 reruns the package consumers and reconciles canonical claims.
 
 ## Key Questions
 

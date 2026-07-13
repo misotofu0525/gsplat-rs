@@ -40,12 +40,21 @@ import kotlin.math.roundToInt
 
 private const val GSPLAT_GEOMETRY_PATH_DIRECT = 0
 private const val GSPLAT_GEOMETRY_PATH_PACKED_ATLAS = 1
+private const val GSPLAT_GEOMETRY_PATH_PAGED_ACTIVE_ATLAS = 2
 
 private fun geometryPathValue(label: String): Int =
-    if (label == "packed") GSPLAT_GEOMETRY_PATH_PACKED_ATLAS else GSPLAT_GEOMETRY_PATH_DIRECT
+    when (label) {
+        "packed" -> GSPLAT_GEOMETRY_PATH_PACKED_ATLAS
+        "paged" -> GSPLAT_GEOMETRY_PATH_PAGED_ACTIVE_ATLAS
+        else -> GSPLAT_GEOMETRY_PATH_DIRECT
+    }
 
 private fun geometryPipelineName(label: String): String =
-    if (label == "packed") "packed_atlas" else "sorted_index_direct"
+    when (label) {
+        "packed" -> "packed_atlas"
+        "paged" -> "paged_active_atlas"
+        else -> "sorted_index_direct"
+    }
 
 class MainActivity : Activity(), SurfaceHolder.Callback {
     private val renderLock = Object()
@@ -1085,7 +1094,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         val sortInterval: Int = DEFAULT_SURFACE_SORT_INTERVAL,
         val asyncSort: Boolean = DEFAULT_SURFACE_ASYNC_SORT,
         val frameLatency: Int = DEFAULT_SURFACE_FRAME_LATENCY,
-        // Experimental A/B benchmark knob: "direct" (default) or "packed".
+        // Experimental A/B benchmark knob: "direct" (default), "packed", or "paged".
         val geometryPath: String = DEFAULT_SURFACE_GEOMETRY_PATH
     ) {
         companion object {
@@ -1111,7 +1120,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                 val geometryPath = intent.getStringExtra(EXTRA_SURFACE_GEOMETRY_PATH)
                     ?.trim()
                     ?.lowercase(Locale.US)
-                    ?.takeIf { it == "direct" || it == "packed" }
+                    ?.takeIf { it == "direct" || it == "packed" || it == "paged" }
                     ?: DEFAULT_SURFACE_GEOMETRY_PATH
                 return BenchmarkConfig(
                     enabled = intent.getBooleanExtra(EXTRA_BENCHMARK, false),

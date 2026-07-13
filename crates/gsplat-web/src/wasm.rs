@@ -3,8 +3,10 @@ use gsplat_core::{
     RendererConfig, SceneBuffers, Vec3f,
 };
 use gsplat_io_ply::{PlySceneSummary, parse_ply_bytes};
-use gsplat_render_wgpu::{Renderer, SurfaceFrameTimings, SurfacePresenter, SurfaceRenderSession};
-use js_sys::{Object, Reflect, Uint8Array};
+use gsplat_render_wgpu::{
+    GeometryPath, Renderer, SurfaceFrameTimings, SurfacePresenter, SurfaceRenderSession,
+};
+use js_sys::{Float32Array, Object, Reflect, Uint8Array};
 use wasm_bindgen::prelude::*;
 use web_sys::HtmlCanvasElement;
 
@@ -54,6 +56,7 @@ pub async fn create_renderer(
     Ok(GsplatWebRenderer {
         session,
         camera_control,
+        camera_override: None,
         summary,
     })
 }
@@ -62,6 +65,7 @@ pub async fn create_renderer(
 pub struct GsplatWebRenderer {
     session: SurfaceRenderSession,
     camera_control: SurfaceCameraControl,
+    camera_override: Option<Camera>,
     summary: PlySceneSummary,
 }
 
@@ -69,14 +73,16 @@ pub struct GsplatWebRenderer {
 impl GsplatWebRenderer {
     pub fn resize(&mut self, width: u32, height: u32) -> Result<(), JsValue> {
         self.session.resize(width, height).map_err(renderer_error)?;
-        let camera =
-            surface_camera_from_control(self.camera_control, self.session.renderer().config());
+        let camera = self.camera_override.unwrap_or_else(|| {
+            surface_camera_from_control(self.camera_control, self.session.renderer().config())
+        });
         self.session.set_camera(camera).map_err(renderer_error)?;
         Ok(())
     }
 
     #[wasm_bindgen(js_name = resetCamera)]
     pub fn reset_camera(&mut self) -> Result<(), JsValue> {
+        self.camera_override = None;
         self.camera_control =
             auto_surface_camera_control(self.session.renderer()).map_err(error_code)?;
         self.apply_camera_control()?;
@@ -93,6 +99,7 @@ impl GsplatWebRenderer {
             return Err(error_code(ErrorCode::InvalidArgument));
         }
 
+        self.camera_override = None;
         self.camera_control.yaw += delta_yaw_radians;
         self.camera_control.pitch = (self.camera_control.pitch + delta_pitch_radians)
             .clamp(-SURFACE_CAMERA_MAX_PITCH, SURFACE_CAMERA_MAX_PITCH);
@@ -104,6 +111,7 @@ impl GsplatWebRenderer {
             return Err(error_code(ErrorCode::InvalidArgument));
         }
 
+        self.camera_override = None;
         let min_distance =
             (self.camera_control.radius * SURFACE_CAMERA_MIN_DISTANCE_MULTIPLIER).max(0.01);
         let max_distance =
@@ -118,6 +126,7 @@ impl GsplatWebRenderer {
             return Err(error_code(ErrorCode::InvalidArgument));
         }
 
+        self.camera_override = None;
         let config = self.session.renderer().config();
         let aspect = (config.width as f32 / config.height.max(1) as f32).max(1.0e-3);
         let view_height = 2.0
@@ -143,9 +152,63 @@ impl GsplatWebRenderer {
         let _ = self.session.set_sort_interval(interval.max(1));
     }
 
+    #[wasm_bindgen(js_name = setGeometryPath)]
+    pub fn set_geometry_path(&mut self, path: u32) -> Result<(), JsValue> {
+        let path = match path {
+            0 => GeometryPath::SortedIndexDirect,
+            1 => GeometryPath::PackedAtlas,
+            2 => GeometryPath::PagedActiveAtlas,
+            _ => return Err(error_code(ErrorCode::InvalidArgument)),
+        };
+        self.session.set_geometry_path(path).map_err(renderer_error)
+    }
+
+    #[wasm_bindgen(js_name = setCamera)]
+    pub fn set_camera(&mut self, values: Float32Array) -> Result<(), JsValue> {
+        let values = values.to_vec();
+        if values.len() != 10 || values.iter().any(|value| !value.is_finite()) {
+            return Err(error_code(ErrorCode::InvalidArgument));
+        }
+        let mut camera = Camera::default();
+        camera.pose.position = Vec3f::new(values[0], values[1], values[2]);
+        camera.pose.rotation_xyzw = [values[3], values[4], values[5], values[6]];
+        camera.intrinsics.vertical_fov_radians = values[7];
+        camera.intrinsics.near_plane = values[8];
+        camera.intrinsics.far_plane = values[9];
+        self.session.set_camera(camera).map_err(renderer_error)?;
+        self.session.force_sort_refresh();
+        self.camera_override = Some(camera);
+        Ok(())
+    }
+
+    #[wasm_bindgen(js_name = cameraReceipt)]
+    pub fn camera_receipt(&self) -> Float32Array {
+        let camera = self.session.camera();
+        Float32Array::from(
+            [
+                camera.pose.position.x,
+                camera.pose.position.y,
+                camera.pose.position.z,
+                camera.pose.rotation_xyzw[0],
+                camera.pose.rotation_xyzw[1],
+                camera.pose.rotation_xyzw[2],
+                camera.pose.rotation_xyzw[3],
+                camera.intrinsics.vertical_fov_radians,
+                camera.intrinsics.near_plane,
+                camera.intrinsics.far_plane,
+            ]
+            .as_slice(),
+        )
+    }
+
     #[wasm_bindgen(js_name = rasterPath)]
     pub fn raster_path(&self) -> String {
-        "sorted_index_direct".to_owned()
+        match self.session.geometry_path() {
+            GeometryPath::SortedIndexDirect => "sorted_index_direct",
+            GeometryPath::PackedAtlas => "packed_atlas",
+            GeometryPath::PagedActiveAtlas => "paged_active_atlas",
+        }
+        .to_owned()
     }
 
     #[wasm_bindgen(js_name = renderFrame)]

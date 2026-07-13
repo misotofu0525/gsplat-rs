@@ -1,5 +1,11 @@
 export const GSPLAT_WEB_SDK_VERSION = "0.1.3";
 
+const GEOMETRY_PATH_IDS = Object.freeze({
+  direct: 0,
+  packed: 1,
+  paged: 2,
+});
+
 let loadedModule = null;
 let initPromise = null;
 
@@ -41,6 +47,7 @@ export async function createGsplatRenderer(options) {
     width = canvas?.width,
     height = canvas?.height,
     sortInterval = 2,
+    geometryPath = "direct",
     module,
   } = options ?? {};
 
@@ -57,6 +64,7 @@ export async function createGsplatRenderer(options) {
   );
   const renderer = new GsplatWebRenderer(nativeRenderer);
   renderer.setSortInterval(sortInterval);
+  renderer.setGeometryPath(geometryPath);
   return renderer;
 }
 
@@ -103,6 +111,40 @@ export class GsplatWebRenderer {
     this.#requireNativeRenderer().resetCamera();
   }
 
+  setCamera(camera) {
+    const position = camera?.position;
+    const rotation = camera?.rotationXyzw;
+    const intrinsics = camera?.intrinsics;
+    if (!Array.isArray(position) || position.length !== 3) {
+      throw new TypeError("camera.position must contain three numbers");
+    }
+    if (!Array.isArray(rotation) || rotation.length !== 4) {
+      throw new TypeError("camera.rotationXyzw must contain four numbers");
+    }
+    const values = [
+      ...position,
+      ...rotation,
+      intrinsics?.verticalFovRadians,
+      intrinsics?.nearPlane,
+      intrinsics?.farPlane,
+    ];
+    values.forEach((value, index) => assertFinite(value, `camera value ${index}`));
+    this.#requireNativeRenderer().setCamera(new Float32Array(values));
+  }
+
+  cameraReceipt() {
+    const values = Array.from(this.#requireNativeRenderer().cameraReceipt());
+    return {
+      position: values.slice(0, 3),
+      rotationXyzw: values.slice(3, 7),
+      intrinsics: {
+        verticalFovRadians: values[7],
+        nearPlane: values[8],
+        farPlane: values[9],
+      },
+    };
+  }
+
   orbit(deltaYawRadians, deltaPitchRadians) {
     const nativeRenderer = this.#requireNativeRenderer();
     assertFinite(deltaYawRadians, "deltaYawRadians");
@@ -130,6 +172,14 @@ export class GsplatWebRenderer {
     const nativeRenderer = this.#requireNativeRenderer();
     assertPositiveInteger(interval, "interval");
     nativeRenderer.setSortInterval(interval);
+  }
+
+  setGeometryPath(path) {
+    const id = GEOMETRY_PATH_IDS[path];
+    if (id === undefined) {
+      throw new TypeError("geometryPath must be direct, packed, or paged");
+    }
+    this.#requireNativeRenderer().setGeometryPath(id);
   }
 
   rasterPath() {

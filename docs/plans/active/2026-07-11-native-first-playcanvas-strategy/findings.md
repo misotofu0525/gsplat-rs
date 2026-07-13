@@ -10,6 +10,21 @@
   an executable verification plan.
 - Keep claims evidence-backed and distinguish existing behavior from proposed work.
 
+## G3 Acceptance Findings (2026-07-13)
+
+- The renderer-owned local paged Surface resource from G2 was already usable by
+  native sessions; the missing cross-platform piece was a Web geometry selector
+  and an honest runtime path receipt.
+- The C ABI, Android intent parser, WASM binding, and Web package now use the
+  same numeric mapping: direct `0`, packed `1`, paged `2`. Direct remains the
+  default and the alternatives remain explicitly experimental.
+- Fresh physical Android and headless Chrome runs both exercised
+  `paged_active_atlas` and produced non-zero draws. This proves local-source
+  Surface usability only; it does not imply HTTP source streaming, long-run
+  stability, or competitive performance.
+- No telemetry sidecar, remote source, network-adversarial validator, or new
+  public asset format was introduced for G3.
+
 ## Research Findings
 
 - Current gsplat-rs production targets share `SurfaceRenderSession`, direct

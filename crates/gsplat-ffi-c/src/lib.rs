@@ -903,8 +903,9 @@ pub unsafe extern "C" fn gsplat_surface_renderer_set_sort_interval(
 
 /// Set the Surface renderer geometry path.
 ///
-/// `path` must be `GSPLAT_GEOMETRY_PATH_DIRECT` (0) or
-/// `GSPLAT_GEOMETRY_PATH_PACKED_ATLAS` (1). This is an experimental A/B
+/// `path` must be `GSPLAT_GEOMETRY_PATH_DIRECT` (0),
+/// `GSPLAT_GEOMETRY_PATH_PACKED_ATLAS` (1), or
+/// `GSPLAT_GEOMETRY_PATH_PAGED_ACTIVE_ATLAS` (2). This is an experimental A/B
 /// benchmark knob; the default remains the direct sorted-index path.
 ///
 /// # Safety
@@ -930,6 +931,7 @@ pub unsafe extern "C" fn gsplat_surface_renderer_set_geometry_path(
         let geometry_path = match path {
             0 => GeometryPath::SortedIndexDirect,
             1 => GeometryPath::PackedAtlas,
+            2 => GeometryPath::PagedActiveAtlas,
             _ => {
                 return ffi_error(
                     ErrorCode::InvalidArgument,

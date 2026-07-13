@@ -18,6 +18,12 @@ function makeNativeRenderer(overrides = {}) {
     resetCamera() {
       calls.push(["resetCamera"]);
     },
+    setCamera(values) {
+      calls.push(["setCamera", ...values]);
+    },
+    cameraReceipt() {
+      return new Float32Array([1, 2, 3, 0, 0, 0, 1, Math.PI / 3, 0.1, 100]);
+    },
     orbit(deltaYawRadians, deltaPitchRadians) {
       calls.push(["orbit", deltaYawRadians, deltaPitchRadians]);
     },
@@ -29,6 +35,9 @@ function makeNativeRenderer(overrides = {}) {
     },
     setSortInterval(interval) {
       calls.push(["setSortInterval", interval]);
+    },
+    setGeometryPath(path) {
+      calls.push(["setGeometryPath", path]);
     },
     renderFrame() {
       calls.push(["renderFrame"]);
@@ -77,10 +86,16 @@ test("GsplatWebRenderer forwards commands and normalizes return values", () => {
 
   renderer.resize(640, 480);
   renderer.resetCamera();
+  renderer.setCamera({
+    position: [1, 2, 3],
+    rotationXyzw: [0, 0, 0, 1],
+    intrinsics: { verticalFovRadians: 1, nearPlane: 0.1, farPlane: 100 },
+  });
   renderer.orbit(0.1, -0.2);
   renderer.zoom(1.1);
   renderer.pan(0.05, -0.05);
   renderer.setSortInterval(2);
+  renderer.setGeometryPath("paged");
 
   assert.deepEqual(renderer.renderFrame(), {
     frameMs: 1.25,
@@ -105,15 +120,21 @@ test("GsplatWebRenderer forwards commands and normalizes return values", () => {
     width: 640,
     height: 480,
   });
+  const cameraReceipt = renderer.cameraReceipt();
+  assert.deepEqual(cameraReceipt.position, [1, 2, 3]);
+  assert.deepEqual(cameraReceipt.rotationXyzw, [0, 0, 0, 1]);
+  assert.ok(Math.abs(cameraReceipt.intrinsics.verticalFovRadians - Math.PI / 3) < 1e-6);
   renderer.free();
 
-  assert.deepEqual(native.calls.slice(0, 8), [
+  assert.deepEqual(native.calls.slice(0, 10), [
     ["resize", 640, 480],
     ["resetCamera"],
+    ["setCamera", 1, 2, 3, 0, 0, 0, 1, 1, Math.fround(0.1), 100],
     ["orbit", 0.1, -0.2],
     ["zoom", 1.1],
     ["pan", 0.05, -0.05],
     ["setSortInterval", 2],
+    ["setGeometryPath", 2],
     ["renderFrame"],
     ["free"],
   ]);
@@ -129,6 +150,7 @@ test("GsplatWebRenderer rejects invalid command arguments", () => {
   assert.throws(() => renderer.zoom(0), RangeError);
   assert.throws(() => renderer.pan(0, Number.POSITIVE_INFINITY), TypeError);
   assert.throws(() => renderer.setSortInterval(1.5), RangeError);
+  assert.throws(() => renderer.setGeometryPath("unknown"), TypeError);
 });
 
 test("createGsplatRenderer validates inputs before creating native renderer", async () => {
@@ -166,7 +188,7 @@ test("createGsplatRenderer validates inputs before creating native renderer", as
   );
 });
 
-test("createGsplatRenderer normalizes bytes and applies sort interval", async () => {
+test("createGsplatRenderer normalizes bytes and applies render options", async () => {
   const native = makeNativeRenderer();
   let captured;
   const module = {
@@ -182,6 +204,7 @@ test("createGsplatRenderer normalizes bytes and applies sort interval", async ()
     canvas,
     plyBytes: buffer,
     sortInterval: 3,
+    geometryPath: "packed",
     module,
   });
 
@@ -191,6 +214,7 @@ test("createGsplatRenderer normalizes bytes and applies sort interval", async ()
   assert.equal(captured.width, 320);
   assert.equal(captured.height, 240);
   assert.deepEqual(native.calls[0], ["setSortInterval", 3]);
+  assert.deepEqual(native.calls[1], ["setGeometryPath", 1]);
 });
 
 test("initGsplatWeb stores provided module for version lookup", async () => {

@@ -153,8 +153,9 @@ Notes:
 - Imported files come from the Android system picker as `content://` URIs and are copied into `files/imported_scene.ply` before crossing the JNI/C ABI boundary, which still receives a normal local file path.
 - On Android emulator, the `SurfaceView` buffer is capped to a 1600px maximum side. The Surface presenter does not sample or cap the sorted splat list; visual stability is preferred over artificial throughput wins.
 - The compact overlay reports the live splat count and frame time. The `Studio` panel retains `drawn=<surface_instances>/<visible_instances>` and the full Android Surface diagnostics.
-- `GsplatSurfaceOptions` does not select a geometry path; Android always uses
-  the shared resident-scene direct renderer.
+- `GsplatSurfaceOptions` does not select a geometry path. The sample benchmark
+  intent can use the existing experimental C setter for `direct`, `packed`, or
+  local-source `paged`; direct remains the default release-gated path.
 - Maven publishing, additional ABIs, and a higher-level `GsplatSurfaceView`
   are intentionally not solved here yet. Future Android SDK work should keep
   wrapping the same C ABI rather than introduce a separate render contract.
@@ -203,10 +204,12 @@ with the previous order. It keeps the full splat count and is intended for
 interaction A/B checks.
 `gsplat_surface_frame_latency` maps to wgpu
 `desired_maximum_frame_latency`. The default is `2`.
-`gsplat_geometry_path` selects between the `direct` (default,
-release-gated `SortedIndexDirect`) and `packed` (experimental
-`PackedAtlas`) Surface geometry pipelines for on-device A/B benchmarking.
+`gsplat_geometry_path` selects `direct` (default, release-gated
+`SortedIndexDirect`), `packed` (experimental `PackedAtlas`), or `paged`
+(experimental four-slot local-source `PagedActiveAtlas`) for on-device smoke
+and A/B checks.
 The example resolves the value via
 `gsplat_surface_renderer_set_geometry_path` and records the resulting
-`renderer.path` (`sorted_index_direct` or `packed_atlas`) in the emitted
+`renderer.path` (`sorted_index_direct`, `packed_atlas`, or
+`paged_active_atlas`) in the emitted
 benchmark artifact.

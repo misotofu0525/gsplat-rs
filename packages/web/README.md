@@ -21,8 +21,9 @@ The wrapper exposes:
 - `createGsplatRenderer()` for creating a canvas renderer from PLY bytes
 - `createGsplatRendererFromUrl()` for fetch-and-render flows
 - `GsplatWebRenderer` for camera controls, resize, stats, and disposal
-- GPU-resident direct sorted-index rendering on every frame;
-  `rasterPath()` reports `sorted_index_direct`
+- GPU-resident direct sorted-index rendering by default, plus experimental
+  `packed` and local-source `paged` geometry selectors; `rasterPath()` reports
+  the active pipeline
 - phase-specific frame stats: `renderSubmitMs` and `frameWallMs`;
   `cpuGeometryMs` and `rasterMs` remain zero-valued compatibility fields
 
@@ -42,6 +43,8 @@ await initGsplatWeb({
 const renderer = await createGsplatRendererFromUrl({
   canvas: document.querySelector("canvas"),
   url: "/models/scene.ply",
+  // Optional experimental selector: "packed" or "paged". Default: "direct".
+  geometryPath: "direct",
 });
 
 renderer.renderFrame();
