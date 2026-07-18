@@ -92,9 +92,9 @@ next blocker.
 - [x] Reconcile handbook/plan facts with the implemented boundary.
 - [ ] Deliver architecture diagrams, deletion/move list, commits, fresh
       evidence, device gaps, and remaining risks.
-- **Status:** reopened; prior Web/mobile binaries and logs are not reliably
-  bound to final commit `eb12e68`, Surface paged coverage prepares but does not
-  present, and no fixed-camera over-slot baseline/final image comparison exists.
+- **Status:** F evidence harness prepared; prior Web/mobile binaries and logs
+  remain historical only. Exact final-HEAD core/Web/mobile rebuilds, real iOS
+  Surface presentation, and the fixed-camera over-slot comparison are pending.
 
 ### Corrective Execution A-F
 
@@ -121,6 +121,25 @@ next blocker.
       Direct+Paged, and available iOS Surface. Add fixed-camera over-slot Paged
       count/image comparison for `3150b7b` versus final HEAD. Missing hardware
       produces a partial result, never an overall-complete claim.
+
+### F Evidence Method
+
+- Freeze the evidence HEAD only after the task-local plan and the desktop
+  evidence switch are committed; every raw-log directory is named with and
+  contains `git rev-parse HEAD` plus clean-worktree status.
+- Use `desktop-example --geometry-path paged` with the 279,199-splat Kitsune
+  scene, 640x360 output, one frame, auto camera, and zero yaw for the over-slot
+  comparison. Record the actual pipeline plus visible/drawn counts, PNG hashes,
+  and ImageMagick SSIM.
+- Run the baseline in a disposable worktree at `3150b7b` with only the desktop
+  evidence-switch commit applied. Require an empty renderer diff against
+  `3150b7b`; the synthetic harness commit is not a renderer baseline change.
+- Treat ignored build outputs as evidence only when their raw build/run logs
+  and manifest are generated from the exact frozen HEAD. Do not infer
+  provenance from artifact timestamps.
+- A device build is compatibility evidence, not a device-run substitute.
+  Record Android Direct/Paged as unavailable when `adb devices -l` exposes no
+  target, and do not promote the overall goal to complete.
 
 ## Acceptance Matrix
 

@@ -590,6 +590,27 @@ architecture cleanup after the independent audit.
   product decision may add one named Auto option consistently across Rust,
   Web, C, Kotlin, and Swift; this thread does not invent it.
 
+## F Evidence Harness and Over-Slot Fixture
+
+- The desktop example already owns deterministic auto-camera and PNG output,
+  so an explicit geometry-path CLI switch is the smallest same-camera evidence
+  seam. It is example-only and leaves the renderer, SDKs, C ABI, and default
+  Direct behavior unchanged.
+- The local Kitsune fixture declares 279,199 source splats, exceeding the
+  current four slots times 65,536 splats (262,144). A fixed 640x360, one-frame,
+  zero-yaw Paged probe selected `paged_active_atlas`, wrote a 91 KiB PNG, and
+  reported 225,784 visible and drawn active splats.
+- `3150b7b` predates the CLI switch but the desktop example was otherwise
+  unchanged through the pre-harness final state. Applying only the harness
+  commit in a disposable worktree and requiring no renderer diff isolates the
+  renderer comparison from evidence plumbing.
+- An ignored PNG or platform binary cannot prove its source revision. The
+  accepted provenance is a clean exact HEAD captured in a text manifest plus
+  raw command logs in a HEAD-named evidence directory.
+- The local Android device list is empty. A final APK/JNI build can prove
+  toolchain compatibility but cannot replace Direct/Paged Surface execution;
+  this keeps overall completion unavailable unless hardware appears.
+
 ## Prior Evidence — Not Terminal HEAD-Bound Proof
 
 - The earlier `cargo test --workspace` run passed. The renderer reported 96
@@ -629,8 +650,12 @@ architecture cleanup after the independent audit.
 - Android Paged is materially slower than Direct in this fresh run. No
   performance threshold is claimed, and no telemetry/sidecar/network
   validator machinery was restored to disguise that result.
-- Android evidence is physical-device evidence; iOS evidence is simulator-only.
-  A physical iOS rerun remains useful before a release-level mobile claim.
-- Production code is currently 200 lines above the accepted baseline, automatic
-  selection can use incompatible limits, decoded page payloads are
-  under-validated, and no production consumer exercises the automatic path.
+- Earlier Android evidence used a physical device but is not terminal-HEAD
+  proof; current Android Direct/Paged acceptance is unavailable without a
+  connected target. iOS terminal proof can cover a simulator Surface only, and
+  a physical-iOS rerun remains useful before a release-level mobile claim.
+- Production cleanup now passes at 7,607 lines versus the 7,621-line baseline.
+  Auto selection now uses effective requested-device limits, and decoded page
+  payloads have typed lookup and structural bounds validation. The remaining
+  product gap is the deliberately unexpanded public Auto option, not those
+  corrected implementation defects.

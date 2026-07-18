@@ -268,6 +268,31 @@
 - No source, header, generated binding, C ABI, default path, or binary changed.
   The review boundary is recorded for a future product/API decision.
 
+## 2026-07-18 — F Final-Evidence Harness
+
+- **Status:** harness complete; exact final-HEAD regression is the sole current
+  blocker.
+- Added an example-only `--geometry-path direct|packed|paged` switch to the
+  desktop PNG runner. The default remains Direct, the runner reports the actual
+  offscreen pipeline, and focused CLI tests cover both the default and explicit
+  Paged selection. No renderer API, SDK option, C ABI, or product default
+  changed.
+- Fresh harness verification passed six desktop CLI tests, workspace check,
+  strict desktop clippy, formatting, and diff hygiene before commit
+  `bf756e3`.
+- A current Paged probe loaded the 279,199-splat Kitsune scene through
+  `paged_active_atlas` at 640x360 with the fixed auto camera and zero yaw. It
+  emitted a PNG and reported `visible_count=drawn_count=225784`, proving the
+  chosen fixture exceeds the four-slot 262,144 source capacity while retaining
+  a nonzero active set.
+- Baseline proof will use a disposable `3150b7b` worktree with only `bf756e3`
+  applied and an empty renderer diff. Final proof will rerun the identical
+  command, compare PNG SHA-256 plus SSIM, and retain commit-tagged raw text.
+- `adb devices -l` currently exposes no device. Android can still be rebuilt
+  and host-smoked from the final HEAD, but Direct/Paged device acceptance will
+  remain partial unless a target appears. A booted iPhone 17 Pro simulator is
+  available for real Surface Direct/Paged presentation evidence.
+
 ## Error Log
 
 | Error | Attempt | Resolution |
@@ -300,8 +325,8 @@
 
 | Question | Answer |
 |----------|--------|
-| Where am I? | E API-boundary blocker recorded; F final proof is current |
+| Where am I? | F harness is committed; exact final-HEAD proof is current |
 | Where am I going? | Bind final workspace/platform and over-slot parity evidence to final HEAD |
 | What's the goal? | Restore a clear Direct/default vs oversized/Paged architecture while reducing proven waste |
 | What have I learned? | See `findings.md` |
-| What have I done? | Preserved S1-S5, completed corrective A-E, and kept overall acceptance open for F |
+| What have I done? | Preserved S1-S5, completed corrective A-E, added a reproducible over-slot harness, and kept overall acceptance open for F |
