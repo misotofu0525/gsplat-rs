@@ -1792,12 +1792,12 @@ fn refresh_packed_hot_colors_range(
         camera.pose.position.y,
         camera.pose.position.z,
     ];
-    let mut colors = vec![0_u32; scene.len()];
+    let mut colors = vec![0_u32; end - start];
 
     #[cfg(not(target_arch = "wasm32"))]
     {
         use rayon::prelude::*;
-        colors[start..end]
+        colors
             .par_iter_mut()
             .enumerate()
             .for_each(|(offset, slot)| {
@@ -1820,7 +1820,8 @@ fn refresh_packed_hot_colors_range(
 
     #[cfg(target_arch = "wasm32")]
     {
-        for (index, slot) in colors.iter_mut().enumerate().take(end).skip(start) {
+        for (offset, slot) in colors.iter_mut().enumerate() {
+            let index = start + offset;
             let position = scene.positions[index];
             let dir = normalize_dir(
                 position.x - cam[0],
@@ -1837,7 +1838,7 @@ fn refresh_packed_hot_colors_range(
         }
     }
 
-    packed.write_hot_colors_range(queue, &colors, start, end);
+    packed.write_hot_colors_at(queue, start, &colors);
 }
 
 fn refresh_paged_hot_colors(
@@ -2516,51 +2517,7 @@ impl DirectSceneResources {
 }
 
 fn create_direct_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
-    device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-        label: wgpu_label("gsplat-direct-bgl"),
-        entries: &[
-            wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Storage { read_only: true },
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            },
-            wgpu::BindGroupLayoutEntry {
-                binding: 1,
-                visibility: wgpu::ShaderStages::VERTEX,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Storage { read_only: true },
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            },
-            wgpu::BindGroupLayoutEntry {
-                binding: 2,
-                visibility: wgpu::ShaderStages::VERTEX,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Storage { read_only: true },
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            },
-            wgpu::BindGroupLayoutEntry {
-                binding: 3,
-                visibility: wgpu::ShaderStages::VERTEX,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            },
-        ],
-    })
+    draw_pass::create_splat_bind_group_layout(device, "gsplat-direct-bgl", 3)
 }
 
 fn create_direct_pipeline(
@@ -2568,53 +2525,18 @@ fn create_direct_pipeline(
     bind_group_layout: &wgpu::BindGroupLayout,
     format: wgpu::TextureFormat,
 ) -> wgpu::RenderPipeline {
-    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: wgpu_label("gsplat-direct-shader"),
-        source: wgpu::ShaderSource::Wgsl(
-            include_str!("../shaders/splat_surface_direct.wgsl").into(),
-        ),
-    });
-    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-        label: wgpu_label("gsplat-direct-pipeline-layout"),
-        bind_group_layouts: &[bind_group_layout],
-        immediate_size: 0,
-    });
-    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-        label: wgpu_label("gsplat-direct-pipeline"),
-        layout: Some(&pipeline_layout),
-        vertex: wgpu::VertexState {
-            module: &shader,
-            entry_point: Some("vs_main"),
-            buffers: &[],
-            compilation_options: wgpu::PipelineCompilationOptions::default(),
+    draw_pass::create_splat_pipeline(
+        device,
+        bind_group_layout,
+        format,
+        draw_pass::SplatPipeline {
+            shader_label: "gsplat-direct-shader",
+            shader_source: include_str!("../shaders/splat_surface_direct.wgsl"),
+            layout_label: "gsplat-direct-pipeline-layout",
+            pipeline_label: "gsplat-direct-pipeline",
+            topology: wgpu::PrimitiveTopology::TriangleList,
         },
-        fragment: Some(wgpu::FragmentState {
-            module: &shader,
-            entry_point: Some("fs_main"),
-            targets: &[Some(wgpu::ColorTargetState {
-                format,
-                blend: Some(wgpu::BlendState {
-                    color: wgpu::BlendComponent {
-                        src_factor: wgpu::BlendFactor::One,
-                        dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
-                        operation: wgpu::BlendOperation::Add,
-                    },
-                    alpha: wgpu::BlendComponent {
-                        src_factor: wgpu::BlendFactor::One,
-                        dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
-                        operation: wgpu::BlendOperation::Add,
-                    },
-                }),
-                write_mask: wgpu::ColorWrites::ALL,
-            })],
-            compilation_options: wgpu::PipelineCompilationOptions::default(),
-        }),
-        primitive: wgpu::PrimitiveState::default(),
-        depth_stencil: None,
-        multisample: wgpu::MultisampleState::default(),
-        multiview_mask: None,
-        cache: None,
-    })
+    )
 }
 
 #[cfg(not(target_arch = "wasm32"))]

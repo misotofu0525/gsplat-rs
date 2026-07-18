@@ -4,13 +4,14 @@ use bytemuck::{Pod, Zeroable};
 use gsplat_core::Camera;
 use wgpu::util::DeviceExt;
 
+use crate::draw_pass::{SplatPipeline, create_splat_bind_group_layout, create_splat_pipeline};
 use crate::packed_atlas::{
-    HOT_RECORD_BYTES, HOT_RECORD_U32_WORDS, PackedAtlasCpuBuffers, PackedSceneCpu,
-    atlas_dimensions, pack_scene, sh_sidecar_atlas_dimensions,
+    HOT_RECORD_U32_WORDS, PackedAtlasCpuBuffers, PackedSceneCpu, atlas_dimensions, pack_scene,
+    sh_sidecar_atlas_dimensions,
 };
 use crate::{
-    DirectSceneError, GpuSurfaceRenderParams, PackedScenePath, make_surface_render_params,
-    packed_scene_preflight, wgpu_label,
+    DirectSceneError, PackedScenePath, make_surface_render_params, packed_scene_preflight,
+    wgpu_label,
 };
 
 pub const PACKED_QUAD_VERTEX_COUNT: u32 = 4;
@@ -45,15 +46,7 @@ pub struct PackedAtlasResources {
     pub bind_group: wgpu::BindGroup,
     pub capacity: usize,
     pub atlas_width: u32,
-    #[allow(dead_code)]
-    pub atlas_height: u32,
     pub splat_count: usize,
-    #[allow(dead_code)]
-    /// Exact bytes requested by the hot-buffer and SH-texture descriptors.
-    /// Driver-private allocator padding is not observable through wgpu.
-    pub declared_attribute_resource_bytes: u64,
-    #[allow(dead_code)]
-    pub measured_hot_storage_bytes: u64,
     pub sh_degree: u32,
     pub bounds_min: [f32; 3],
     pub bounds_extent: [f32; 3],
@@ -146,15 +139,13 @@ impl PackedAtlasResources {
                 preflight,
             )));
         }
-        let (width, height) = atlas_dimensions(packed.splat_count);
+        let width = atlas_dimensions(packed.splat_count).0;
         let capacity = packed.splat_count.max(1);
         let mut hot_words = PackedAtlasCpuBuffers::hot_storage_words(packed);
         if hot_words.is_empty() {
             // wgpu rejects zero-sized buffers; keep one empty hot record slot.
             hot_words.resize(HOT_RECORD_U32_WORDS, 0);
         }
-        let hot_storage_bytes = (capacity as u64) * (HOT_RECORD_BYTES as u64);
-
         let sorted_indices_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: wgpu_label("gsplat-packed-sorted-indices"),
             size: (capacity as u64) * (std::mem::size_of::<u32>() as u64),
@@ -235,11 +226,7 @@ impl PackedAtlasResources {
             bind_group,
             capacity,
             atlas_width: width,
-            atlas_height: height,
             splat_count: packed.splat_count,
-            declared_attribute_resource_bytes: hot_storage_bytes
-                + u64::from(sh_width) * u64::from(sh_height) * 4,
-            measured_hot_storage_bytes: hot_storage_bytes,
             sh_degree: u32::from(packed.sh_degree),
             bounds_min: packed.bounds.min,
             bounds_extent,
@@ -260,31 +247,6 @@ impl PackedAtlasResources {
     ) -> Result<Self, DirectSceneError> {
         let packed = pack_scene(scene);
         Self::new(device, queue, bind_group_layout, &packed)
-    }
-
-    /// Upload view-evaluated RGB10 colors into the hot color word (index 4).
-    #[allow(dead_code)]
-    pub fn write_hot_colors(&mut self, queue: &wgpu::Queue, colors: &[u32]) {
-        self.write_hot_colors_range(queue, colors, 0, colors.len());
-    }
-
-    /// Upload a half-open splat range `[start, end)` into the hot color words.
-    pub fn write_hot_colors_range(
-        &mut self,
-        queue: &wgpu::Queue,
-        colors: &[u32],
-        start: usize,
-        end: usize,
-    ) {
-        if colors.len() != self.splat_count || start > end || end > self.splat_count {
-            debug_assert_eq!(colors.len(), self.splat_count);
-            debug_assert!(start <= end && end <= self.splat_count);
-            return;
-        }
-        if start == end {
-            return;
-        }
-        self.write_hot_colors_at(queue, start, &colors[start..end]);
     }
 
     /// Upload view-evaluated RGB10 colors at a global atlas-slot offset.
@@ -415,48 +377,13 @@ impl PackedAtlasResources {
             atlas_width: self.atlas_width,
             _pad0: 0,
         };
-        let _ = GpuSurfaceRenderParams::zeroed();
         queue.write_buffer(&self.params_buffer, 0, bytemuck::bytes_of(&params));
         Ok(instance_count)
     }
 }
 
 pub fn create_packed_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
-    device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-        label: wgpu_label("gsplat-packed-bgl"),
-        entries: &[
-            wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Storage { read_only: true },
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            },
-            wgpu::BindGroupLayoutEntry {
-                binding: 1,
-                visibility: wgpu::ShaderStages::VERTEX,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Storage { read_only: true },
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            },
-            wgpu::BindGroupLayoutEntry {
-                binding: 2,
-                visibility: wgpu::ShaderStages::VERTEX,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            },
-        ],
-    })
+    create_splat_bind_group_layout(device, "gsplat-packed-bgl", 2)
 }
 
 pub fn create_packed_pipeline(
@@ -464,59 +391,16 @@ pub fn create_packed_pipeline(
     bind_group_layout: &wgpu::BindGroupLayout,
     target_format: wgpu::TextureFormat,
 ) -> wgpu::RenderPipeline {
-    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: wgpu_label("gsplat-packed-shader"),
-        source: wgpu::ShaderSource::Wgsl(
-            include_str!("../shaders/splat_surface_packed.wgsl").into(),
-        ),
-    });
-    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-        label: wgpu_label("gsplat-packed-pipeline-layout"),
-        bind_group_layouts: &[bind_group_layout],
-        immediate_size: 0,
-    });
-    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-        label: wgpu_label("gsplat-packed-pipeline"),
-        layout: Some(&pipeline_layout),
-        vertex: wgpu::VertexState {
-            module: &shader,
-            entry_point: Some("vs_main"),
-            buffers: &[],
-            compilation_options: wgpu::PipelineCompilationOptions::default(),
-        },
-        fragment: Some(wgpu::FragmentState {
-            module: &shader,
-            entry_point: Some("fs_main"),
-            targets: &[Some(wgpu::ColorTargetState {
-                format: target_format,
-                blend: Some(wgpu::BlendState {
-                    color: wgpu::BlendComponent {
-                        src_factor: wgpu::BlendFactor::One,
-                        dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
-                        operation: wgpu::BlendOperation::Add,
-                    },
-                    alpha: wgpu::BlendComponent {
-                        src_factor: wgpu::BlendFactor::One,
-                        dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
-                        operation: wgpu::BlendOperation::Add,
-                    },
-                }),
-                write_mask: wgpu::ColorWrites::ALL,
-            })],
-            compilation_options: wgpu::PipelineCompilationOptions::default(),
-        }),
-        primitive: wgpu::PrimitiveState {
+    create_splat_pipeline(
+        device,
+        bind_group_layout,
+        target_format,
+        SplatPipeline {
+            shader_label: "gsplat-packed-shader",
+            shader_source: include_str!("../shaders/splat_surface_packed.wgsl"),
+            layout_label: "gsplat-packed-pipeline-layout",
+            pipeline_label: "gsplat-packed-pipeline",
             topology: wgpu::PrimitiveTopology::TriangleStrip,
-            strip_index_format: None,
-            front_face: wgpu::FrontFace::Ccw,
-            cull_mode: None,
-            unclipped_depth: false,
-            polygon_mode: wgpu::PolygonMode::Fill,
-            conservative: false,
         },
-        depth_stencil: None,
-        multisample: wgpu::MultisampleState::default(),
-        multiview_mask: None,
-        cache: None,
-    })
+    )
 }

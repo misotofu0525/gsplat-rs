@@ -435,6 +435,44 @@ architecture cleanup after the independent audit.
   check, strict renderer clippy, wasm32 Web check, FFI smoke, formatting, and
   diff hygiene. The wasm route retains only existing cfg-specific warnings.
 
+## D2 Audit — Shared Pipeline/Layout Construction and Dead Packed State
+
+- Direct and Packed pipeline factories repeat the same shader/module/layout,
+  premultiplied-alpha target, vertex/fragment state, multisampling, and cache
+  construction. Their only semantic differences are labels, shader source, and
+  primitive topology. The shared draw module can own that invariant while the
+  existing Direct/Packed wrappers preserve call sites and labels.
+- Direct and Packed bind-group-layout factories repeat read-only vertex storage
+  entries followed by one vertex uniform entry; only the number of storage
+  bindings and label differ. One private builder can preserve binding numbers
+  and visibility exactly.
+- `PackedAtlasResources::{atlas_height, declared_attribute_resource_bytes,
+  measured_hot_storage_bytes}` have no reader anywhere in the private module's
+  reachable crate graph, and `write_hot_colors` is hidden behind an explicit
+  dead-code allowance while the range method only forwards to the already-used
+  offset writer. Reference search plus strict clippy after removal is the
+  deletion proof; public Rust API and C ABI cannot name this private module.
+- D2 is limited to those exact construction and dead-state duplicates. It adds
+  no file, preserves shader/primitive/label values, and must show a further
+  production-line reduction before an independent commit.
+
+## D2 Accepted Result — Shared GPU Construction
+
+- The draw owner now builds the shared storage-plus-uniform bind-group-layout
+  shape and common premultiplied-alpha pipeline state. Direct and Packed keep
+  small named wrappers specifying the original label set, shader source, and
+  TriangleList/TriangleStrip topology respectively.
+- Removed three private Packed accounting/dimension fields with no reader and
+  the dead full/range color forwarding APIs. Banded refresh now allocates only
+  its compact range and calls the existing checked offset writer directly.
+- Production accounting moved from 7,866 to 7,769 lines (-97), with all 3,129
+  test/fixture lines retained and no new file. D has removed 209 production
+  lines in total and still needs at least 149 more to finish at 7,620 or below.
+- Fresh final D2 verification passed 100 renderer tests plus one retained
+  ignored research oracle, required Metal SortedAlpha conformance, workspace
+  check, strict renderer clippy, wasm32 Web check, FFI smoke, formatting, and
+  diff hygiene. Existing wasm cfg-only warnings remain unchanged.
+
 ## Prior Evidence — Not Terminal HEAD-Bound Proof
 
 - The earlier `cargo test --workspace` run passed. The renderer reported 96

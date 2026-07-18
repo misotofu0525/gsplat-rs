@@ -75,6 +75,9 @@
 | D1 renderer/SortedAlpha | shared draw and Surface ownership preserve every path | 100 passed, 1 ignored; conformance 1 passed on Metal | pass |
 | D1 workspace/platform | workspace, strict clippy, wasm32, FFI, fmt, diff | passed; FFI `drawn=2 visible=2` | pass |
 | D1 production size | remove duplication and retain tests | 7,978 -> 7,866 production; tests remain 3,129 | pass for slice; D gate open |
+| D2 renderer/SortedAlpha | shared construction preserves Direct/Packed/Paged images | 100 passed, 1 ignored; conformance 1 passed on Metal | pass |
+| D2 workspace/platform | workspace, strict clippy, wasm32, FFI, fmt, diff | passed; FFI `drawn=2 visible=2` | pass |
+| D2 production size | remove construction/dead state and retain tests | 7,866 -> 7,769 production; tests remain 3,129 | pass for slice; D gate open |
 
 ## 2026-07-18 — S1 Surface Ownership Split
 
@@ -231,6 +234,10 @@
   check, strict clippy, wasm32, FFI smoke, formatting, and diff hygiene.
   Production code is 7,866 lines and tests remain 3,129; Surface production is
   918 lines. D still needs at least 246 production-line deletions.
+- D2 final verification passed the same renderer/Metal/workspace/clippy/wasm/
+  FFI/hygiene gates. Shared pipeline/layout construction plus dead private
+  Packed state moved production to 7,769 while tests remain 3,129. D3 audit is
+  now the sole next action; at least 149 production lines remain.
 
 ## Error Log
 
@@ -258,6 +265,7 @@
 | B format check found one non-canonical wrapped test call | 1 | Applied standard rustfmt before full verification. |
 | First full B verification failed strict clippy on `too_many_arguments` after earlier gates passed | 1 | Replace three adapter-related parameters with one private context, then rerun every B gate. |
 | First D1 full verification failed strict clippy on `large_enum_variant` | 1 | Box only the private Paged runtime variant, then rerun every D1 gate from renderer tests. |
+| First D2 per-revision line-count shell used zsh's reserved `path` parameter as a loop variable | 1 | The temporary shell lost command lookup only; use task-specific `source_file` and rerun before making deletion decisions. |
 
 ## 5-Question Reboot Check
 

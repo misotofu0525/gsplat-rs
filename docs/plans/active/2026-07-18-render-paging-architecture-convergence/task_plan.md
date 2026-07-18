@@ -319,6 +319,7 @@ no production consumer. The diagram records the useful module seam only.
 | B format check requested canonical wrapping for the strengthened regression call | 1 | Applied rustfmt and reran the complete B verification sequence. |
 | First full B verification reached strict clippy with an 8-argument private Surface constructor | 1 | Renderer tests, Metal conformance, and workspace check had passed; grouped adapter info/limits/effective limits into one private context and reran the full sequence without a lint allow. |
 | First D1 full verification failed strict clippy on the size gap inside the single-active Surface geometry enum | 1 | Box only the private Paged runtime variant, then rerun every D1 gate from renderer tests. |
+| First D2 per-revision line-count shell reused zsh's special `path` parameter | 1 | No repository state changed; renamed it `source_file` and used only the successful rerun for the audit. |
 
 ## Notes
 
