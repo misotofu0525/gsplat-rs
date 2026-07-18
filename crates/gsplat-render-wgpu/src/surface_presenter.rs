@@ -187,10 +187,6 @@ fn create_geometry_resources(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct SurfaceResourcePlan {
     pub(crate) geometry_path: GeometryPath,
-    pub(crate) scene_splats: usize,
-    pub(crate) page_count: usize,
-    pub(crate) slot_count: usize,
-    pub(crate) resident_capacity: usize,
     pub(crate) direct_preflight: DirectScenePreflight,
     pub(crate) packed_preflight: PackedScenePreflight,
     pub(crate) required_texture_dimension: u32,
@@ -230,15 +226,15 @@ pub(crate) fn surface_resource_plan(
     limits: &wgpu::Limits,
 ) -> Result<SurfaceResourcePlan, DirectSceneError> {
     let direct_preflight = direct_scene_preflight(scene_splats, sh_degree, limits)?;
-    let (slot_count, resident_capacity, packed_sh_degree) = match geometry_path {
+    let (resident_capacity, packed_sh_degree) = match geometry_path {
         GeometryPath::PagedActiveAtlas => {
             let slot_count = page_count.clamp(1, DEFAULT_PAGED_ATLAS_SLOTS);
             let resident_capacity = slot_count
                 .checked_mul(page_capacity.max(1))
                 .ok_or(DirectSceneError::ResourceSizeOverflow)?;
-            (slot_count, resident_capacity, 0)
+            (resident_capacity, 0)
         }
-        GeometryPath::SortedIndexDirect | GeometryPath::PackedAtlas => (0, scene_splats, sh_degree),
+        GeometryPath::SortedIndexDirect | GeometryPath::PackedAtlas => (scene_splats, sh_degree),
     };
     let packed_preflight = packed_scene_preflight(
         resident_capacity,
@@ -255,10 +251,6 @@ pub(crate) fn surface_resource_plan(
 
     Ok(SurfaceResourcePlan {
         geometry_path,
-        scene_splats,
-        page_count,
-        slot_count,
-        resident_capacity,
         direct_preflight,
         packed_preflight,
         required_texture_dimension,
@@ -273,17 +265,6 @@ pub(crate) fn try_prepare_then_commit<State, Prepared, Error>(
     let prepared = prepare(state)?;
     commit(state, prepared);
     Ok(())
-}
-
-fn select_automatic_surface_geometry_path_for_adapter(
-    scene_splats: usize,
-    sh_degree: u8,
-    adapter_limits: &wgpu::Limits,
-) -> Result<GeometryPath, SurfacePresenterError> {
-    let effective_device_limits = surface_effective_device_limits(adapter_limits)?;
-    let direct_preflight =
-        direct_scene_preflight(scene_splats, sh_degree, &effective_device_limits)?;
-    Ok(select_automatic_surface_geometry_path(&direct_preflight))
 }
 
 fn surface_effective_device_limits(
@@ -498,11 +479,12 @@ impl SurfacePresenter {
             let scene = renderer
                 .scene()
                 .ok_or(SurfacePresenterError::SceneNotLoaded)?;
-            let selected = select_automatic_surface_geometry_path_for_adapter(
+            let direct_preflight = direct_scene_preflight(
                 scene.len(),
                 scene.sh_degree,
-                &adapter_context.limits,
+                &adapter_context.effective_device_limits,
             )?;
+            let selected = select_automatic_surface_geometry_path(&direct_preflight);
             renderer.set_geometry_path(selected);
         }
         let renderer = match &selection {
@@ -731,107 +713,61 @@ impl SurfacePresenter {
         camera: &Camera,
         refresh_indices: bool,
     ) -> Result<(), SurfacePresenterError> {
-        match self.geometry.path() {
-            GeometryPath::SortedIndexDirect => {
-                self.render_direct_frame(sorted_indices, camera, refresh_indices)
+        self.instance_count = match &mut self.geometry {
+            SurfaceGeometry::Direct(direct) => direct.prepare(
+                &self.queue,
+                sorted_indices,
+                camera,
+                self.surface_config.width,
+                self.surface_config.height,
+                refresh_indices,
+            )?,
+            SurfaceGeometry::Packed(packed) => {
+                let needs_refresh = packed_color_refresh_needed(
+                    self.packed_color_refresh_position,
+                    camera,
+                    packed.bounds_min,
+                    packed.bounds_extent,
+                );
+                if !refresh_indices && (self.packed_color_refresh_cursor.is_some() || needs_refresh)
+                {
+                    // Defer banded SH refresh off synchronous sort frames so
+                    // p95 does not stack a full CPU sort with SH eval/upload.
+                    if self.packed_color_refresh_cursor.is_none() {
+                        self.packed_color_refresh_cursor = Some(0);
+                        self.packed_color_refresh_target =
+                            Some(packed_color_refresh_position_key(camera));
+                    }
+                    let start = self.packed_color_refresh_cursor.unwrap_or(0);
+                    let end =
+                        (start + packed_color_refresh_band_size(scene.len())).min(scene.len());
+                    refresh_packed_hot_colors_range(&self.queue, packed, scene, camera, start, end);
+                    if end >= scene.len() {
+                        self.packed_color_refresh_position = self.packed_color_refresh_target;
+                        self.packed_color_refresh_cursor = None;
+                        self.packed_color_refresh_target = None;
+                    } else {
+                        self.packed_color_refresh_cursor = Some(end);
+                    }
+                }
+                packed.prepare(
+                    &self.queue,
+                    sorted_indices,
+                    camera,
+                    self.surface_config.width,
+                    self.surface_config.height,
+                    refresh_indices,
+                )?
             }
-            GeometryPath::PackedAtlas => {
-                self.render_packed_frame(scene, sorted_indices, camera, refresh_indices)
-            }
-            GeometryPath::PagedActiveAtlas => self.render_paged_frame(scene, camera).map(|_| ()),
-        }
-    }
-
-    fn render_direct_frame(
-        &mut self,
-        sorted_indices: &[u32],
-        camera: &Camera,
-        refresh_indices: bool,
-    ) -> Result<(), SurfacePresenterError> {
-        let SurfaceGeometry::Direct(direct) = &self.geometry else {
-            return Err(SurfacePresenterError::SceneNotLoaded);
+            SurfaceGeometry::Paged(paged) => paged.prepare(
+                &self.queue,
+                scene,
+                camera,
+                self.surface_config.width,
+                self.surface_config.height,
+            )?,
         };
-        self.instance_count = direct.prepare(
-            &self.queue,
-            sorted_indices,
-            camera,
-            self.surface_config.width,
-            self.surface_config.height,
-            refresh_indices,
-        )?;
         self.present_geometry()
-    }
-
-    fn render_packed_frame(
-        &mut self,
-        scene: &SceneBuffers,
-        sorted_indices: &[u32],
-        camera: &Camera,
-        refresh_indices: bool,
-    ) -> Result<(), SurfacePresenterError> {
-        let position_key = packed_color_refresh_position_key(camera);
-        let SurfaceGeometry::Packed(packed) = &self.geometry else {
-            return Err(SurfacePresenterError::SceneNotLoaded);
-        };
-        let needs_refresh = packed_color_refresh_needed(
-            self.packed_color_refresh_position,
-            camera,
-            packed.bounds_min,
-            packed.bounds_extent,
-        );
-        if !refresh_indices && (self.packed_color_refresh_cursor.is_some() || needs_refresh) {
-            // Defer banded SH refresh off synchronous sort frames so p95 does
-            // not stack a full CPU sort with SH eval/upload.
-            if self.packed_color_refresh_cursor.is_none() {
-                self.packed_color_refresh_cursor = Some(0);
-                self.packed_color_refresh_target = Some(position_key);
-            }
-            let start = self.packed_color_refresh_cursor.unwrap_or(0);
-            let end = (start + packed_color_refresh_band_size(scene.len())).min(scene.len());
-            let SurfaceGeometry::Packed(packed) = &mut self.geometry else {
-                return Err(SurfacePresenterError::SceneNotLoaded);
-            };
-            refresh_packed_hot_colors_range(&self.queue, packed, scene, camera, start, end);
-            if end >= scene.len() {
-                self.packed_color_refresh_position = self.packed_color_refresh_target;
-                self.packed_color_refresh_cursor = None;
-                self.packed_color_refresh_target = None;
-            } else {
-                self.packed_color_refresh_cursor = Some(end);
-            }
-        }
-
-        let SurfaceGeometry::Packed(packed) = &self.geometry else {
-            return Err(SurfacePresenterError::SceneNotLoaded);
-        };
-        self.instance_count = packed.prepare(
-            &self.queue,
-            sorted_indices,
-            camera,
-            self.surface_config.width,
-            self.surface_config.height,
-            refresh_indices,
-        )?;
-        self.present_geometry()
-    }
-
-    fn render_paged_frame(
-        &mut self,
-        scene: &SceneBuffers,
-        camera: &Camera,
-    ) -> Result<u32, SurfacePresenterError> {
-        let SurfaceGeometry::Paged(paged) = &mut self.geometry else {
-            return Err(SurfacePresenterError::SceneNotLoaded);
-        };
-        self.instance_count = paged.prepare(
-            &self.queue,
-            scene,
-            camera,
-            self.surface_config.width,
-            self.surface_config.height,
-        )?;
-        self.present_geometry()?;
-        Ok(self.instance_count)
     }
 
     fn present_geometry(&mut self) -> Result<(), SurfacePresenterError> {
@@ -948,12 +884,7 @@ mod tests {
             crate::DirectScenePath::ActiveAtlasRequired
         );
 
-        let selected = super::select_automatic_surface_geometry_path_for_adapter(
-            3_000_000,
-            0,
-            &adapter_limits,
-        )
-        .unwrap();
+        let selected = crate::select_automatic_surface_geometry_path(&effective_preflight);
 
         assert_eq!(selected, crate::GeometryPath::PagedActiveAtlas);
     }

@@ -81,6 +81,9 @@
 | D3 renderer/SortedAlpha | compact color/validation paths preserve all renders | 100 passed, 1 ignored; conformance 1 passed on Metal | pass |
 | D3 workspace/platform | workspace, strict clippy, wasm32, FFI, fmt, diff | passed; FFI `drawn=2 visible=2` | pass |
 | D3 production size | retain only abstractions that delete code | 7,769 -> 7,732 production; tests remain 3,129 | pass for slice; D gate open |
+| D4 renderer/SortedAlpha | direct errors and single geometry dispatch preserve behavior | 100 passed, 1 ignored; conformance 1 passed on Metal | pass |
+| D4 workspace/platform | workspace, strict clippy, wasm32, FFI, fmt, diff | passed; FFI `drawn=2 visible=2` | pass |
+| D final production size | finish below 7,621 and retain D tests | 7,607 production; tests remain 3,129 | pass |
 
 ## 2026-07-18 — S1 Surface Ownership Split
 
@@ -219,10 +222,10 @@
   no file or public API/C ABI surface was added. D is the sole current blocker
   and must remove at least 358 production lines.
 
-## 2026-07-18 — D Production Cleanup Audit
+## 2026-07-18 — D Production Cleanup
 
-- **Status:** in progress; D1 is independently verified, and D2 duplicate-owner
-  selection is the sole next action after the D1 commit.
+- **Status:** complete after D4 verification; E automatic-consumer boundary is
+  the sole next blocker after the D4 commit.
 - Baseline for D is 7,978 production / 3,129 test-fixture lines. Acceptance is
   7,620 production lines or fewer with all tests retained.
 - Six duplicated render-pass bodies and the three-Option-plus-path Surface
@@ -245,6 +248,11 @@
   renderer/Metal/workspace/clippy/wasm/FFI/hygiene sequence with the remaining
   compact color and validation changes. Production is 7,732, tests are 3,129,
   and D4 must remove at least 112 more production lines.
+- D4 removed the duplicate offscreen error facade and double Surface geometry
+  dispatch, then passed the full renderer/Metal/workspace/clippy/wasm/FFI/
+  hygiene sequence. Final D accounting is 7,607 production / 3,129 tests:
+  production is 14 lines below `3150b7b`, and D retained its complete test
+  corpus. Overall architecture convergence remains in progress at E.
 
 ## Error Log
 
@@ -278,8 +286,8 @@
 
 | Question | Answer |
 |----------|--------|
-| Where am I? | Corrective A docs-only reset; overall in progress |
-| Where am I going? | B Auto limits, C payload validation, D production cleanup, E consumer boundary, F final proof |
+| Where am I? | D production cleanup complete; E consumer boundary is current |
+| Where am I going? | Assess/connect one real Auto consumer, then produce final HEAD-bound proof |
 | What's the goal? | Restore a clear Direct/default vs oversized/Paged architecture while reducing proven waste |
 | What have I learned? | See `findings.md` |
-| What have I done? | Preserved S1-S5, accepted the audit, withdrew the broad completion claim, and froze corrected gates |
+| What have I done? | Preserved S1-S5, completed corrective A-D, and kept overall acceptance open for E-F |

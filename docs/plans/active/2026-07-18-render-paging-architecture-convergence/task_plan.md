@@ -12,8 +12,9 @@ move is backed by fresh correctness and platform evidence.
 Architecture convergence remains **in progress**. S1-S5 completed a useful
 module-responsibility split, but an independent audit invalidated the prior
 overall-complete claim. Corrective A reset acceptance, B fixed automatic
-selection against requested device limits, and C added typed page-source and
-payload validation. D production-code convergence is the single next blocker.
+selection against requested device limits, C added typed page-source and
+payload validation, and D finished the production cleanup gate at 7,607 lines.
+E automatic-consumer boundary assessment is the single next blocker.
 
 ## Guardrails
 
@@ -84,7 +85,7 @@ payload validation. D production-code convergence is the single next blocker.
 
 - [ ] Run workspace, focused renderer, offscreen parity, Surface, FFI, Web, and
       available Android/iOS verification according to touched scope.
-- [ ] Compare production renderer line counts, excluding terminal
+- [x] Compare production renderer line counts, excluding terminal
       `#[cfg(test)] mod tests`, and finish below the 7,621-line baseline.
 - [x] Reconcile handbook/plan facts with the implemented boundary.
 - [ ] Deliver architecture diagrams, deletion/move list, commits, fresh
@@ -104,12 +105,12 @@ payload validation. D production-code convergence is the single next blocker.
 - [x] **C — Payload boundary:** add typed failure plus payload/source bounds and
       encoding/atlas validation while keeping `LocalScenePageSource`, public
       Rust API, and C ABI behavior stable; verify and commit independently.
-- [ ] **D — Current blocker, production cleanup:** reduce renderer production code below 7,621
+- [x] **D — Production cleanup:** reduce renderer production code below 7,621
       lines without deleting tests or shifting the same responsibilities into
       another large file. Prefer smaller Surface policy/device/resource/draw
       owners and proven duplicate removal; keep each slice below 800 net-new
       lines and at most two new files.
-- [ ] **E — Real automatic consumer:** assess the SDK boundary, then connect
+- [ ] **E — Current blocker, real automatic consumer:** assess the SDK boundary, then connect
       automatic oversized routing to one minimal real consumer only if that
       does not silently widen the C ABI or product surface. Otherwise record a
       reviewable blocker and stop before API expansion.

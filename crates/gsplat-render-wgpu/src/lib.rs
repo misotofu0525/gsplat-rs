@@ -318,7 +318,7 @@ impl Renderer {
 
         #[cfg(not(target_arch = "wasm32"))]
         {
-            let gpu_rasterizer = GpuRasterizer::create(&config).map_err(RendererError::from)?;
+            let gpu_rasterizer = GpuRasterizer::create(&config)?;
             let mut renderer = Self::from_validated_config(config);
             renderer.gpu_rasterizer = Some(gpu_rasterizer);
             Ok(renderer)
@@ -409,9 +409,7 @@ impl Renderer {
 
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(gpu_rasterizer) = self.gpu_rasterizer.as_mut() {
-            gpu_rasterizer
-                .ensure_output_target(width, height)
-                .map_err(RendererError::from)?;
+            gpu_rasterizer.ensure_output_target(width, height)?;
         }
 
         self.config = config;
@@ -731,7 +729,6 @@ impl Renderer {
                 rasterizer.render_paged_sorted_indices(self.config, sorted_indices, camera, scene)
             }
         }
-        .map_err(RendererError::from)
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -2525,51 +2522,6 @@ fn create_direct_pipeline(
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[derive(Debug, Error, PartialEq, Eq)]
-enum GpuRasterError {
-    #[error("no compatible wgpu adapter")]
-    AdapterUnavailable,
-    #[error("wgpu device creation failed")]
-    DeviceCreation,
-    #[error("invalid render dimensions")]
-    InvalidDimensions,
-    #[error(
-        "render dimensions {width}x{height} exceed the device 2D texture limit {max_dimension}"
-    )]
-    DimensionsUnsupported {
-        width: u32,
-        height: u32,
-        max_dimension: u32,
-    },
-    #[error("failed to read back render target")]
-    ReadbackFailed,
-    #[error("direct scene resource error: {0}")]
-    DirectScene(#[from] DirectSceneError),
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-impl From<GpuRasterError> for RendererError {
-    fn from(error: GpuRasterError) -> Self {
-        match error {
-            GpuRasterError::AdapterUnavailable => Self::GpuRasterizerUnavailable,
-            GpuRasterError::DeviceCreation => Self::GpuDeviceCreation,
-            GpuRasterError::InvalidDimensions => Self::InvalidConfig,
-            GpuRasterError::DimensionsUnsupported {
-                width,
-                height,
-                max_dimension,
-            } => Self::GpuDimensionsUnsupported {
-                width,
-                height,
-                max_dimension,
-            },
-            GpuRasterError::ReadbackFailed => Self::GpuReadback,
-            GpuRasterError::DirectScene(error) => Self::DirectScene(error),
-        }
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
 struct GpuRasterizer {
     adapter_info: wgpu::AdapterInfo,
     device: wgpu::Device,
@@ -2591,15 +2543,11 @@ struct GpuRasterizer {
 
 #[cfg(not(target_arch = "wasm32"))]
 impl GpuRasterizer {
-    fn create(config: &RendererConfig) -> Result<Self, GpuRasterError> {
+    fn create(config: &RendererConfig) -> Result<Self, RendererError> {
         pollster::block_on(Self::create_async(config))
     }
 
-    async fn create_async(config: &RendererConfig) -> Result<Self, GpuRasterError> {
-        if config.width == 0 || config.height == 0 {
-            return Err(GpuRasterError::InvalidDimensions);
-        }
-
+    async fn create_async(config: &RendererConfig) -> Result<Self, RendererError> {
         let instance = wgpu::Instance::default();
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
@@ -2608,7 +2556,7 @@ impl GpuRasterizer {
                 force_fallback_adapter: false,
             })
             .await
-            .map_err(|_| GpuRasterError::AdapterUnavailable)?;
+            .map_err(|_| RendererError::GpuRasterizerUnavailable)?;
 
         let adapter_info = adapter.get_info();
         let required_limits = offscreen_device_limits(config, &adapter.limits())?;
@@ -2623,7 +2571,7 @@ impl GpuRasterizer {
                 trace: wgpu::Trace::Off,
             })
             .await
-            .map_err(|_| GpuRasterError::DeviceCreation)?;
+            .map_err(|_| RendererError::GpuDeviceCreation)?;
 
         let max_texture_dimension_2d = device.limits().max_texture_dimension_2d;
 
@@ -2677,7 +2625,7 @@ impl GpuRasterizer {
         scene: &SceneBuffers,
         world_covariance_terms: &[CameraCovarianceTerms],
         alpha_values: &[f32],
-    ) -> Result<(), GpuRasterError> {
+    ) -> Result<(), RendererError> {
         self.ensure_output_target(config.width, config.height)?;
         if self.direct_scene.is_none() {
             self.direct_scene = Some(DirectSceneResources::new(
@@ -2691,7 +2639,7 @@ impl GpuRasterizer {
         let direct_scene = self
             .direct_scene
             .as_ref()
-            .ok_or(GpuRasterError::DeviceCreation)?;
+            .ok_or(RendererError::GpuDeviceCreation)?;
         let instance_count = direct_scene
             .prepare(
                 &self.queue,
@@ -2701,7 +2649,7 @@ impl GpuRasterizer {
                 config.height,
                 true,
             )
-            .map_err(|_| GpuRasterError::DeviceCreation)?;
+            .map_err(|_| RendererError::GpuDeviceCreation)?;
 
         let commands = draw_pass::encode_splat_draw(
             &self.device,
@@ -2726,7 +2674,7 @@ impl GpuRasterizer {
         sorted_indices: &[u32],
         camera: &Camera,
         scene: &SceneBuffers,
-    ) -> Result<(), GpuRasterError> {
+    ) -> Result<(), RendererError> {
         self.ensure_output_target(config.width, config.height)?;
         let mut force_refresh = false;
         if self.packed_scene.is_none() {
@@ -2743,7 +2691,7 @@ impl GpuRasterizer {
         let packed_scene = self
             .packed_scene
             .as_ref()
-            .ok_or(GpuRasterError::DeviceCreation)?;
+            .ok_or(RendererError::GpuDeviceCreation)?;
         let needs_refresh = force_refresh
             || packed_color_refresh_needed(
                 self.packed_color_refresh_position,
@@ -2758,14 +2706,14 @@ impl GpuRasterizer {
             let packed_scene = self
                 .packed_scene
                 .as_mut()
-                .ok_or(GpuRasterError::DeviceCreation)?;
+                .ok_or(RendererError::GpuDeviceCreation)?;
             refresh_packed_hot_colors(&queue, packed_scene, scene, camera);
             self.packed_color_refresh_position = Some(position_key);
         }
         let instance_count = self
             .packed_scene
             .as_ref()
-            .ok_or(GpuRasterError::DeviceCreation)?
+            .ok_or(RendererError::GpuDeviceCreation)?
             .prepare(
                 &self.queue,
                 sorted_indices,
@@ -2774,12 +2722,12 @@ impl GpuRasterizer {
                 config.height,
                 true,
             )
-            .map_err(|_| GpuRasterError::DeviceCreation)?;
+            .map_err(|_| RendererError::GpuDeviceCreation)?;
 
         let packed_scene = self
             .packed_scene
             .as_ref()
-            .ok_or(GpuRasterError::DeviceCreation)?;
+            .ok_or(RendererError::GpuDeviceCreation)?;
         let commands = draw_pass::encode_splat_draw(
             &self.device,
             draw_pass::SplatDraw {
@@ -2825,12 +2773,12 @@ impl GpuRasterizer {
         sorted_indices: &[u32],
         camera: &Camera,
         scene: &SceneBuffers,
-    ) -> Result<(), GpuRasterError> {
+    ) -> Result<(), RendererError> {
         self.ensure_output_target(config.width, config.height)?;
         let paged = self
             .paged_active_set
             .as_mut()
-            .ok_or(GpuRasterError::DeviceCreation)?;
+            .ok_or(RendererError::GpuDeviceCreation)?;
         refresh_paged_hot_colors(&self.queue, &mut paged.atlas, scene, camera);
         let instance_count = paged
             .atlas
@@ -2843,12 +2791,12 @@ impl GpuRasterizer {
                 config.height,
                 true,
             )
-            .map_err(|_| GpuRasterError::DeviceCreation)?;
+            .map_err(|_| RendererError::GpuDeviceCreation)?;
 
         let paged = self
             .paged_active_set
             .as_ref()
-            .ok_or(GpuRasterError::DeviceCreation)?;
+            .ok_or(RendererError::GpuDeviceCreation)?;
         let commands = draw_pass::encode_splat_draw(
             &self.device,
             draw_pass::SplatDraw {
@@ -2866,12 +2814,12 @@ impl GpuRasterizer {
         Ok(())
     }
 
-    fn readback_rgba8(&mut self) -> Result<Vec<u8>, GpuRasterError> {
+    fn readback_rgba8(&mut self) -> Result<Vec<u8>, RendererError> {
         use std::sync::mpsc;
 
         let (width, height) = self.output_size;
         if width == 0 || height == 0 {
-            return Err(GpuRasterError::InvalidDimensions);
+            return Err(RendererError::InvalidConfig);
         }
 
         let bytes_per_pixel = 4_u32;
@@ -2926,7 +2874,7 @@ impl GpuRasterizer {
 
         match rx.recv() {
             Ok(Ok(())) => {}
-            _ => return Err(GpuRasterError::ReadbackFailed),
+            _ => return Err(RendererError::GpuReadback),
         }
 
         let mapped = slice.get_mapped_range();
@@ -2946,11 +2894,7 @@ impl GpuRasterizer {
         Ok(out)
     }
 
-    fn ensure_output_target(&mut self, width: u32, height: u32) -> Result<(), GpuRasterError> {
-        if width == 0 || height == 0 {
-            return Err(GpuRasterError::InvalidDimensions);
-        }
-
+    fn ensure_output_target(&mut self, width: u32, height: u32) -> Result<(), RendererError> {
         if self.output_size == (width, height) {
             return Ok(());
         }
@@ -2968,14 +2912,14 @@ impl GpuRasterizer {
 fn offscreen_device_limits(
     config: &RendererConfig,
     adapter_limits: &wgpu::Limits,
-) -> Result<wgpu::Limits, GpuRasterError> {
+) -> Result<wgpu::Limits, RendererError> {
     if config.width == 0 || config.height == 0 {
-        return Err(GpuRasterError::InvalidDimensions);
+        return Err(RendererError::InvalidConfig);
     }
 
     let requested_dimension = config.width.max(config.height);
     if requested_dimension > adapter_limits.max_texture_dimension_2d {
-        return Err(GpuRasterError::DimensionsUnsupported {
+        return Err(RendererError::GpuDimensionsUnsupported {
             width: config.width,
             height: config.height,
             max_dimension: adapter_limits.max_texture_dimension_2d,
@@ -2988,7 +2932,7 @@ fn offscreen_device_limits(
     // sidecars instead of freezing the device to the render-target size.
     required_limits.max_texture_dimension_2d = adapter_limits.max_texture_dimension_2d;
     if !required_limits.check_limits(adapter_limits) {
-        return Err(GpuRasterError::DeviceCreation);
+        return Err(RendererError::GpuDeviceCreation);
     }
     Ok(required_limits)
 }
@@ -2999,12 +2943,9 @@ fn create_output_target(
     width: u32,
     height: u32,
     max_texture_dimension_2d: u32,
-) -> Result<(wgpu::Texture, wgpu::TextureView), GpuRasterError> {
-    if width == 0 || height == 0 {
-        return Err(GpuRasterError::InvalidDimensions);
-    }
+) -> Result<(wgpu::Texture, wgpu::TextureView), RendererError> {
     if width > max_texture_dimension_2d || height > max_texture_dimension_2d {
-        return Err(GpuRasterError::DimensionsUnsupported {
+        return Err(RendererError::GpuDimensionsUnsupported {
             width,
             height,
             max_dimension: max_texture_dimension_2d,
@@ -3036,14 +2977,15 @@ mod tests {
         Camera, ErrorCode, FrameStats, RenderMode, RendererConfig, SceneBuffers, Vec3f,
     };
 
+    #[cfg(not(target_arch = "wasm32"))]
+    use super::offscreen_device_limits;
     use super::{
         DirectSceneError, DirectScenePath, DirectSceneRemediation, DirectSceneResource,
-        GeometryPath, PackedScenePath, Renderer, build_instances, direct_scene_preflight,
-        ellipse_axes_from_covariance, packed_scene_preflight, project_covariance_to_ndc,
-        quat_inverse, select_automatic_surface_geometry_path, try_prepare_then_commit,
+        GeometryPath, PackedScenePath, Renderer, RendererError, build_instances,
+        direct_scene_preflight, ellipse_axes_from_covariance, packed_scene_preflight,
+        project_covariance_to_ndc, quat_inverse, select_automatic_surface_geometry_path,
+        try_prepare_then_commit,
     };
-    #[cfg(not(target_arch = "wasm32"))]
-    use super::{GpuRasterError, offscreen_device_limits};
 
     fn build_scene() -> SceneBuffers {
         SceneBuffers {
@@ -4145,14 +4087,14 @@ mod tests {
 
         let err = offscreen_device_limits(&config, &adapter_limits).unwrap_err();
 
-        assert_eq!(
+        assert!(matches!(
             err,
-            GpuRasterError::DimensionsUnsupported {
+            RendererError::GpuDimensionsUnsupported {
                 width: 4096,
                 height: 2160,
                 max_dimension: 2048,
             }
-        );
+        ));
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -4303,10 +4245,14 @@ mod tests {
         )
         .unwrap();
         assert_eq!(page_count, 53);
-        assert_eq!(paged.page_count, 53);
-        assert_eq!(paged.slot_count, 4);
-        assert_eq!(paged.resident_capacity, 262_144);
-        assert!(paged.resident_capacity < paged.scene_splats);
+        assert_eq!(page_capacity, 65_536);
+        let slot_count = page_count.min(super::DEFAULT_PAGED_ATLAS_SLOTS);
+        assert_eq!(slot_count, 4);
+        assert!(slot_count < page_count);
+        let resident_capacity = slot_count.saturating_mul(page_capacity);
+        assert_eq!(resident_capacity / page_capacity, slot_count);
+        assert_eq!(resident_capacity, 262_144);
+        assert!(resident_capacity < scene_splats);
         assert_eq!(paged.packed_preflight.path, PackedScenePath::PackedAtlas);
         assert_eq!(paged.packed_preflight.sorted_indices_bytes, 1_048_576);
         assert_eq!(paged.packed_preflight.hot_record_storage_bytes, 5_242_880);

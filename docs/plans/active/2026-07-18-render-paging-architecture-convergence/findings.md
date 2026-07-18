@@ -512,6 +512,57 @@ architecture cleanup after the independent audit.
   check, strict renderer clippy, wasm32 Web check, FFI smoke, formatting, and
   diff hygiene. Existing wasm cfg-only warnings remain unchanged.
 
+## D4 Audit — Remove Duplicate Render Orchestration State
+
+- Private `GpuRasterError` is a complete one-for-one facade over existing
+  `RendererError` variants, followed immediately by `From` translation at all
+  caller boundaries. Returning `RendererError` directly preserves public error
+  codes and payloads while deleting the duplicate enum and mapping owner.
+- The offscreen creation path checks non-zero dimensions in the validated
+  `RendererConfig`, `create_async`, `offscreen_device_limits`, output-target
+  creation, and resize target setup. All private callers enter through config
+  validation or `offscreen_device_limits`; retaining those boundary checks and
+  the device-limit check makes the inner repeated zero checks unreachable.
+- `SurfacePresenter::render_sorted_indices` dispatches by the path derived from
+  `SurfaceGeometry`, then each private render method matches the same enum again
+  and can only return `SceneNotLoaded` on an impossible mismatch. One enum
+  dispatch can prepare the active resource, set the count, and present once.
+- Auto selection currently computes effective device limits before building
+  `SurfaceAdapterContext`, then recomputes them in a second private adapter
+  helper. Selecting from the already-derived effective limits preserves B's
+  regression and deletes the duplicate calculation.
+- Four `SurfaceResourcePlan` fields cache local inputs used only by one test;
+  the tested resident capacity is already observable through exact packed
+  preflight byte assertions. Removing the cached copies keeps the gate while
+  shrinking runtime state. `PackedAtlasResources::splat_count` likewise has no
+  reader after D2 and is private to an unexported module.
+
+## D4 Accepted Result — Production Cleanup Gate Passed
+
+- Offscreen internals now return the existing public `RendererError` directly;
+  the private mirror enum and complete translation impl are gone. Error codes
+  and dimension payloads are unchanged, and the existing limit regression now
+  asserts the public error variant.
+- Surface preparation now matches the single active geometry once, updates the
+  shared instance count, and presents once. Impossible second path/resource
+  mismatch checks and three private render-method shells are gone.
+- Auto selection consumes the already-derived effective device limits; the B
+  regression still proves the 256 MiB adapter / downlevel requested-limit case
+  chooses Paged. Resource-plan cached test inputs and the unread private Packed
+  splat count were removed while explicit slot/capacity assertions were retained.
+- Production accounting moved from 7,732 to 7,607 lines (-125), with all 3,129
+  D-baseline test/fixture lines retained and no new file. Across D, production
+  moved 7,978 -> 7,607 (-371); against `3150b7b`, production is 7,621 -> 7,607
+  (-14), so the corrected cleanup gate now passes without test deletion.
+- `SurfacePresenter` production code is 843 lines, down from the independent
+  audit's 1,011 and D's 1,033-line starting point. Adapter negotiation remains
+  in the module, but draw ownership, resource construction, and path-specific
+  frame preparation no longer exist as six repeated bodies or parallel options.
+- Fresh final D4 verification passed 100 renderer tests plus one retained
+  ignored research oracle, required Metal SortedAlpha conformance, workspace
+  check, strict renderer clippy, wasm32 Web check, FFI smoke, formatting, and
+  diff hygiene. Existing wasm cfg-only warnings remain unchanged.
+
 ## Prior Evidence — Not Terminal HEAD-Bound Proof
 
 - The earlier `cargo test --workspace` run passed. The renderer reported 96
