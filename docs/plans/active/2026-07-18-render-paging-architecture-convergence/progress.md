@@ -84,6 +84,7 @@
 | D4 renderer/SortedAlpha | direct errors and single geometry dispatch preserve behavior | 100 passed, 1 ignored; conformance 1 passed on Metal | pass |
 | D4 workspace/platform | workspace, strict clippy, wasm32, FFI, fmt, diff | passed; FFI `drawn=2 visible=2` | pass |
 | D final production size | finish below 7,621 and retain D tests | 7,607 production; tests remain 3,129 | pass |
+| E consumer boundary | connect without changing Direct/API, or record blocker | every real SDK needs a new Auto option/ABI value | accepted API blocker; no code change |
 
 ## 2026-07-18 — S1 Surface Ownership Split
 
@@ -254,6 +255,19 @@
   production is 14 lines below `3150b7b`, and D retained its complete test
   corpus. Overall architecture convergence remains in progress at E.
 
+## 2026-07-18 — E Automatic Consumer Boundary
+
+- **Status:** complete as the explicitly permitted API-boundary blocker; F
+  final HEAD-bound proof is the sole next blocker.
+- Read Web/WASM, C ABI, Android, and Apple construction code and SDK READMEs.
+  Each scene is available before Surface construction, but every public option
+  names Direct/Packed/Paged only and documents Direct as the default.
+- Reusing the Rust Auto constructors would require a new JS/WASM option/export
+  or C enum/function propagated into Kotlin and Swift. No existing private
+  opt-in consumer can request Auto without changing product semantics.
+- No source, header, generated binding, C ABI, default path, or binary changed.
+  The review boundary is recorded for a future product/API decision.
+
 ## Error Log
 
 | Error | Attempt | Resolution |
@@ -286,8 +300,8 @@
 
 | Question | Answer |
 |----------|--------|
-| Where am I? | D production cleanup complete; E consumer boundary is current |
-| Where am I going? | Assess/connect one real Auto consumer, then produce final HEAD-bound proof |
+| Where am I? | E API-boundary blocker recorded; F final proof is current |
+| Where am I going? | Bind final workspace/platform and over-slot parity evidence to final HEAD |
 | What's the goal? | Restore a clear Direct/default vs oversized/Paged architecture while reducing proven waste |
 | What have I learned? | See `findings.md` |
-| What have I done? | Preserved S1-S5, completed corrective A-D, and kept overall acceptance open for E-F |
+| What have I done? | Preserved S1-S5, completed corrective A-E, and kept overall acceptance open for F |

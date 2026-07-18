@@ -14,7 +14,9 @@ module-responsibility split, but an independent audit invalidated the prior
 overall-complete claim. Corrective A reset acceptance, B fixed automatic
 selection against requested device limits, C added typed page-source and
 payload validation, and D finished the production cleanup gate at 7,607 lines.
-E automatic-consumer boundary assessment is the single next blocker.
+E found that every real SDK needs a new public Auto option or ABI value and
+stopped at the authorized API boundary. F final HEAD-bound proof is the single
+next blocker.
 
 ## Guardrails
 
@@ -110,11 +112,11 @@ E automatic-consumer boundary assessment is the single next blocker.
       another large file. Prefer smaller Surface policy/device/resource/draw
       owners and proven duplicate removal; keep each slice below 800 net-new
       lines and at most two new files.
-- [ ] **E — Current blocker, real automatic consumer:** assess the SDK boundary, then connect
+- [x] **E — Real automatic consumer:** assess the SDK boundary, then connect
       automatic oversized routing to one minimal real consumer only if that
       does not silently widen the C ABI or product surface. Otherwise record a
       reviewable blocker and stop before API expansion.
-- [ ] **F — Final HEAD-bound proof:** rebuild and retain commit-tagged text
+- [ ] **F — Current blocker, final HEAD-bound proof:** rebuild and retain commit-tagged text
       manifests/logs for workspace, renderer, conformance, FFI, Web, Android
       Direct+Paged, and available iOS Surface. Add fixed-camera over-slot Paged
       count/image comparison for `3150b7b` versus final HEAD. Missing hardware

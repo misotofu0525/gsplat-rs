@@ -563,6 +563,33 @@ architecture cleanup after the independent audit.
   check, strict renderer clippy, wasm32 Web check, FFI smoke, formatting, and
   diff hygiene. Existing wasm cfg-only warnings remain unchanged.
 
+## E API Boundary Audit — Automatic Consumer Blocked by Product Surface
+
+- All real SDKs load the scene before presenter construction, so the internal
+  Rust Auto constructors are technically usable at the correct point. The
+  blocker is not scene timing or adapter availability; it is the public choice
+  required to request Auto without changing stable Direct semantics.
+- Web's `createRenderer` and wrapper `geometryPath` default explicitly to
+  Direct, while the optional constructor accepts only IDs 0/1/2 and the public
+  type accepts only `direct | packed | paged`. Calling `from_canvas_auto`
+  requires a new wasm-bindgen export or an `auto` option, both additive JS/WASM
+  product API changes. Reinterpreting `direct` would violate its documented
+  explicit/default meaning.
+- The C ABI defines `GsplatGeometryPath` as Direct/Packed/Paged, default mobile
+  constructors pass Direct ID 0, and `geometry_path_from_ffi` rejects every
+  other value. Calling `from_raw_handles_auto` requires a new enum value or C
+  constructor. Android and Apple mirror that enum in Kotlin/Swift and default
+  `GsplatSurfaceOptions.geometryPath` to Direct, so the ABI change necessarily
+  widens both SDK product surfaces and regenerated binary/header artifacts.
+- Runtime `setGeometryPath` is also explicitly 0/1/2 and cannot represent the
+  constructor-time adapter-limit policy without adding the same public value.
+  Silently treating an existing value as Auto would make Direct non-explicit
+  and break existing A/B behavior.
+- E therefore records an accepted API-boundary blocker and makes no code,
+  C-header, generated artifact, or default-behavior change. A future reviewed
+  product decision may add one named Auto option consistently across Rust,
+  Web, C, Kotlin, and Swift; this thread does not invent it.
+
 ## Prior Evidence — Not Terminal HEAD-Bound Proof
 
 - The earlier `cargo test --workspace` run passed. The renderer reported 96
