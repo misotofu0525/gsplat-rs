@@ -39,6 +39,10 @@
 | S1 SortedAlpha conformance | required GPU path remains correct | 1 passed on Metal | pass |
 | S1 FFI smoke | public C consumer renders | `drawn=2 visible=2` | pass |
 | S1 hygiene | fmt, strict renderer clippy, diff check | passed | pass |
+| S2 workspace check | shared owner compiles across consumers | passed | pass |
+| S2 renderer lib suite | parity, safety, Surface local gate | 93 passed, 1 ignored | pass |
+| S2 SortedAlpha conformance | global quality path unchanged | 1 passed on Metal | pass |
+| S2 hygiene | fmt, strict renderer clippy, diff check | passed | pass |
 
 ## 2026-07-18 — S1 Surface Ownership Split
 
@@ -50,6 +54,17 @@
   lines.
 - Next: S2 shared paged active-set owner; no policy/source behavior changes yet.
 
+## 2026-07-18 — S2 Shared Paged Active Set
+
+- **Status:** complete
+- Replaced Surface/offscreen atlas-residency setup with one internal
+  `PagedActiveSet` owner while keeping public paging types intact.
+- Fresh verification: workspace check, 93 renderer tests, required Metal
+  conformance, strict clippy, fmt, and diff hygiene all passed.
+- Code-size result: one 105-line file, net +26 renderer Rust lines from S1;
+  terminal net deletion remains open.
+- Next: S3 Direct-first automatic policy seam.
+
 ## Error Log
 
 | Error | Attempt | Resolution |
@@ -58,13 +73,16 @@
 | S1 first format check: import order drift | 1 | Applied the exact rustfmt ordering. |
 | S1 post-dedup format check: one call wrapping difference | 1 | Applied rustfmt's requested compaction and reran hygiene. |
 | S1 completion-record patch context mismatch | 1 | Re-read the active files and applied smaller exact patches. |
+| S2 first test compile: old paged field names in fixtures | 1 | Routed assertions through the new shared owner and reran test compilation. |
+| S2 first format check: standard ordering/wrapping drift | 1 | Applied rustfmt's requested layout before verification. |
+| S2 completion-record patch context mismatch | 1 | Re-read the active files and applied smaller exact patches. |
 
 ## 5-Question Reboot Check
 
 | Question | Answer |
 |----------|--------|
-| Where am I? | Phase 2 / S2 shared paged active-set runtime |
-| Where am I going? | S2-S5 incremental implementation and fresh verification |
+| Where am I? | Phase 3 / S3 Direct-first automatic path policy |
+| Where am I going? | S3-S5 incremental implementation and fresh verification |
 | What's the goal? | Restore a clear Direct/default vs oversized/Paged architecture while reducing proven waste |
 | What have I learned? | See `findings.md` |
 | What have I done? | Loaded canonical context and captured initial code/branch facts |

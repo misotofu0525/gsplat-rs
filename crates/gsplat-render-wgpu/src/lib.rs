@@ -4,6 +4,7 @@ mod packed_atlas;
 mod packed_gpu;
 mod page_atlas;
 mod page_scheduler;
+mod paged_active_set;
 mod paged_gpu;
 mod residency;
 mod spatial_pages;
@@ -884,11 +885,12 @@ impl Renderer {
                         .gpu_rasterizer
                         .as_mut()
                         .ok_or(RendererError::GpuRasterizerUnavailable)?;
-                    rasterizer.ensure_paged_atlas(scene, pages, camera)?;
+                    rasterizer.ensure_paged_active_set(scene, pages, camera)?;
                     let entries = rasterizer
-                        .paged_atlas
+                        .paged_active_set
                         .as_ref()
                         .ok_or(RendererError::InvalidScene)?
+                        .atlas
                         .active_entries();
                     preprocess_paged_visible_into(
                         scene,
@@ -1945,54 +1947,6 @@ fn refresh_paged_hot_colors(
         .write_hot_colors_at(queue, run_start, &colors);
 }
 
-fn sync_paged_active_set(
-    queue: &wgpu::Queue,
-    pages: &SpatialPageSet,
-    manager: &mut ResidencyManager,
-    paged: &mut PagedAtlasGpu,
-    scene: &SceneBuffers,
-    camera: &Camera,
-) -> Result<(), RendererError> {
-    let previous = manager.resident_tokens();
-    schedule_pages(
-        pages,
-        manager,
-        SchedulerView {
-            position: camera.pose.position,
-        },
-        SchedulerConfig {
-            target_resident_pages: paged.slot_count(),
-            coarse_cover_radius: 2.0,
-        },
-    )
-    .map_err(|err| RendererError::PagedAtlas(format!("{err:?}")))?;
-    let current = manager.resident_tokens();
-
-    for token in previous {
-        if !current.iter().any(|resident| {
-            resident.page_id == token.page_id
-                && resident.slot == token.slot
-                && resident.slot_generation == token.slot_generation
-        }) {
-            paged
-                .clear_slot(queue, token)
-                .map_err(|err| RendererError::PagedAtlas(format!("{err:?}")))?;
-        }
-    }
-    for token in current {
-        if paged.contains_token(token) {
-            continue;
-        }
-        let page = pages
-            .page(token.page_id)
-            .ok_or(RendererError::InvalidScene)?;
-        paged
-            .upload_page_if_current(queue, manager, token, page, scene, AttributeLod::Degree0)
-            .map_err(|err| RendererError::PagedAtlas(format!("{err:?}")))?;
-    }
-    Ok(())
-}
-
 /// Upper bound on splats refreshed per frame during steady-state motion.
 /// Keeps synchronous orbit p95 from absorbing a full-scene SH spike.
 fn packed_color_refresh_band_size(splat_count: usize) -> usize {
@@ -2782,8 +2736,7 @@ struct GpuRasterizer {
     packed_pipeline: wgpu::RenderPipeline,
     packed_bind_group_layout: wgpu::BindGroupLayout,
     packed_scene: Option<packed_gpu::PackedAtlasResources>,
-    paged_atlas: Option<PagedAtlasGpu>,
-    paged_residency: Option<ResidencyManager>,
+    paged_active_set: Option<paged_active_set::PagedActiveSet>,
     /// Last camera position used for packed hot-color refresh.
     packed_color_refresh_position: Option<[f32; 3]>,
 }
@@ -2856,8 +2809,7 @@ impl GpuRasterizer {
             packed_pipeline,
             packed_bind_group_layout,
             packed_scene: None,
-            paged_atlas: None,
-            paged_residency: None,
+            paged_active_set: None,
             packed_color_refresh_position: None,
         })
     }
@@ -2865,8 +2817,7 @@ impl GpuRasterizer {
     fn clear_scene_resources(&mut self) {
         self.direct_scene = None;
         self.packed_scene = None;
-        self.paged_atlas = None;
-        self.paged_residency = None;
+        self.paged_active_set = None;
         self.packed_color_refresh_position = None;
     }
 
@@ -3028,43 +2979,26 @@ impl GpuRasterizer {
         Ok(())
     }
 
-    fn ensure_paged_atlas(
+    fn ensure_paged_active_set(
         &mut self,
         scene: &SceneBuffers,
         pages: &SpatialPageSet,
         camera: &Camera,
     ) -> Result<(), RendererError> {
-        let slot_count = pages.page_count().clamp(1, DEFAULT_PAGED_ATLAS_SLOTS);
-        if self.paged_atlas.is_none() {
-            self.paged_atlas = Some(
-                PagedAtlasGpu::new(
-                    &self.device,
-                    &self.queue,
-                    &self.packed_bind_group_layout,
-                    slot_count,
-                    pages.page_capacity,
-                    scene,
-                )
-                .map_err(|err| RendererError::PagedAtlas(format!("{err:?}")))?,
-            );
-            self.paged_residency = Some(ResidencyManager::new(
-                pages,
-                ResidencyBudgets {
-                    max_resident_pages: slot_count,
-                    max_inflight_pages: slot_count,
-                },
-            ));
+        if self.paged_active_set.is_none() {
+            self.paged_active_set = Some(paged_active_set::PagedActiveSet::new(
+                &self.device,
+                &self.queue,
+                &self.packed_bind_group_layout,
+                scene,
+                pages.clone(),
+            )?);
         }
 
-        let manager = self
-            .paged_residency
+        self.paged_active_set
             .as_mut()
-            .ok_or(RendererError::InvalidScene)?;
-        let paged = self
-            .paged_atlas
-            .as_mut()
-            .ok_or(RendererError::InvalidScene)?;
-        sync_paged_active_set(&self.queue, pages, manager, paged, scene, camera)
+            .ok_or(RendererError::InvalidScene)?
+            .sync(&self.queue, scene, camera)
     }
 
     fn render_paged_sorted_indices(
@@ -3076,11 +3010,12 @@ impl GpuRasterizer {
     ) -> Result<(), GpuRasterError> {
         self.ensure_output_target(config.width, config.height)?;
         let paged = self
-            .paged_atlas
+            .paged_active_set
             .as_mut()
             .ok_or(GpuRasterError::DeviceCreation)?;
-        refresh_paged_hot_colors(&self.queue, paged, scene, camera);
+        refresh_paged_hot_colors(&self.queue, &mut paged.atlas, scene, camera);
         let instance_count = paged
+            .atlas
             .resources
             .prepare(
                 &self.queue,
@@ -3099,7 +3034,7 @@ impl GpuRasterizer {
             });
         {
             let paged = self
-                .paged_atlas
+                .paged_active_set
                 .as_ref()
                 .ok_or(GpuRasterError::DeviceCreation)?;
             let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -3119,7 +3054,7 @@ impl GpuRasterizer {
                 multiview_mask: None,
             });
             rpass.set_pipeline(&self.packed_pipeline);
-            rpass.set_bind_group(0, &paged.resources.bind_group, &[]);
+            rpass.set_bind_group(0, &paged.atlas.resources.bind_group, &[]);
             if instance_count > 0 {
                 rpass.draw(0..packed_gpu::PACKED_QUAD_VERTEX_COUNT, 0..instance_count);
             }
@@ -3553,8 +3488,9 @@ mod tests {
         let first_stats = renderer.render_frame(&first_camera).unwrap();
         let (first_residents, first_entries) = {
             let rasterizer = renderer.gpu_rasterizer.as_ref().unwrap();
-            let atlas = rasterizer.paged_atlas.as_ref().unwrap();
-            let manager = rasterizer.paged_residency.as_ref().unwrap();
+            let active_set = rasterizer.paged_active_set.as_ref().unwrap();
+            let atlas = &active_set.atlas;
+            let manager = &active_set.residency;
             assert_eq!(atlas.slot_count(), super::DEFAULT_PAGED_ATLAS_SLOTS);
             assert_eq!(
                 atlas.occupied_slot_count(),
@@ -3573,8 +3509,9 @@ mod tests {
         let jumped_stats = renderer.render_frame(&jumped_camera).unwrap();
         let (jumped_residents, jumped_entries) = {
             let rasterizer = renderer.gpu_rasterizer.as_ref().unwrap();
-            let atlas = rasterizer.paged_atlas.as_ref().unwrap();
-            let manager = rasterizer.paged_residency.as_ref().unwrap();
+            let active_set = rasterizer.paged_active_set.as_ref().unwrap();
+            let atlas = &active_set.atlas;
+            let manager = &active_set.residency;
             assert_eq!(atlas.slot_count(), super::DEFAULT_PAGED_ATLAS_SLOTS);
             assert_eq!(
                 atlas.occupied_slot_count(),
@@ -3636,9 +3573,10 @@ mod tests {
                 .gpu_rasterizer
                 .as_ref()
                 .unwrap()
-                .paged_residency
+                .paged_active_set
                 .as_ref()
                 .unwrap()
+                .residency
                 .resident_page_ids();
             residents.sort_by_key(|page_id| page_id.0);
             if let Some(baseline) = &baseline_residents {
@@ -3678,8 +3616,11 @@ mod tests {
         assert!(page_count > super::DEFAULT_PAGED_ATLAS_SLOTS);
         let mut runtime =
             super::SurfacePagedRuntime::new(&device, &queue, &layout, &scene, pages).unwrap();
-        assert_eq!(runtime.atlas.resources.capacity, 4 * page_capacity);
-        assert!(runtime.atlas.resources.capacity < scene.len());
+        assert_eq!(
+            runtime.active_set.atlas.resources.capacity,
+            4 * page_capacity
+        );
+        assert!(runtime.active_set.atlas.resources.capacity < scene.len());
 
         for position in [
             Vec3f::new(-3.0, -3.0, 0.0),
@@ -3695,9 +3636,12 @@ mod tests {
                 drawn > 0,
                 "Surface paged runtime must prepare non-zero draw"
             );
-            assert_eq!(runtime.atlas.slot_count(), super::DEFAULT_PAGED_ATLAS_SLOTS);
             assert_eq!(
-                runtime.atlas.occupied_slot_count(),
+                runtime.active_set.atlas.slot_count(),
+                super::DEFAULT_PAGED_ATLAS_SLOTS
+            );
+            assert_eq!(
+                runtime.active_set.atlas.occupied_slot_count(),
                 super::DEFAULT_PAGED_ATLAS_SLOTS
             );
         }
@@ -3729,8 +3673,9 @@ mod tests {
             camera.pose.position = Vec3f::new(phase.sin() * 3.0, phase.cos() * 3.0, 0.0);
             let stats = renderer.render_frame(&camera).unwrap();
             let rasterizer = renderer.gpu_rasterizer.as_ref().unwrap();
-            let atlas = rasterizer.paged_atlas.as_ref().unwrap();
-            let manager = rasterizer.paged_residency.as_ref().unwrap();
+            let active_set = rasterizer.paged_active_set.as_ref().unwrap();
+            let atlas = &active_set.atlas;
+            let manager = &active_set.residency;
             let active = atlas.active_entries().len();
             assert_eq!(atlas.slot_count(), super::DEFAULT_PAGED_ATLAS_SLOTS);
             assert!(atlas.occupied_slot_count() <= super::DEFAULT_PAGED_ATLAS_SLOTS);

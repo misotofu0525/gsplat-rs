@@ -155,3 +155,21 @@
   oracle ignored; GPU-required Metal conformance passed; FFI smoke rendered
   `drawn=2 visible=2`; strict renderer clippy, formatting, and diff hygiene
   passed.
+
+## S2 Accepted Result
+
+- `PagedActiveSet` is now the single internal owner for page metadata,
+  `ResidencyManager`, `PagedAtlasGpu`, scheduling, evicted-slot clearing, and
+  generation-checked page publication.
+- Surface and offscreen paths both delegate active-set synchronization to that
+  owner. The old offscreen `paged_atlas` / `paged_residency` pair and the root
+  `sync_paged_active_set` function were removed.
+- Public `PagedAtlasGpu`, residency, scheduler, CPU atlas, and fixture APIs were
+  preserved. Controlled assertions now inspect the same state through the
+  shared owner.
+- The slice added one 105-line file and reduced the two consumers, for a net
+  +26 renderer Rust lines versus S1 (+20 versus the original baseline). This is
+  within the per-slice budget but not the terminal net-deletion target.
+- S2 fresh proof: workspace check; renderer lib 93 passed / 1 ignored; all
+  offscreen parity and paging safety cases; local Surface paged non-zero test;
+  GPU-required Metal conformance; strict clippy, fmt, and diff hygiene.

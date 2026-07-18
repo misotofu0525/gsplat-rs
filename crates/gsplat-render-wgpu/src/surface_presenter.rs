@@ -4,22 +4,20 @@ use gsplat_core::{Camera, SceneBuffers};
 use gsplat_sort::CpuSortBackend;
 
 use crate::packed_gpu;
+use crate::paged_active_set::PagedActiveSet;
 use crate::{
     DEFAULT_PAGED_ATLAS_SLOTS, DirectSceneError, DirectScenePath, DirectScenePreflight,
-    DirectSceneResources, GeometryPath, PackedScenePath, PackedScenePreflight, PagedAtlasGpu,
-    Renderer, ResidencyBudgets, ResidencyManager, SpatialPageSet, SurfacePresenterError,
-    create_direct_bind_group_layout, create_direct_pipeline, create_surface_instance,
-    direct_scene_preflight, fit_surface_size, packed_color_refresh_band_size,
-    packed_color_refresh_needed, packed_color_refresh_position_key, packed_scene_preflight,
-    preprocess_paged_visible_into, refresh_packed_hot_colors, refresh_packed_hot_colors_range,
-    refresh_paged_hot_colors, select_present_mode, surface_error_to_presenter,
-    sync_paged_active_set, wgpu_label,
+    DirectSceneResources, GeometryPath, PackedScenePath, PackedScenePreflight, Renderer,
+    SpatialPageSet, SurfacePresenterError, create_direct_bind_group_layout, create_direct_pipeline,
+    create_surface_instance, direct_scene_preflight, fit_surface_size,
+    packed_color_refresh_band_size, packed_color_refresh_needed, packed_color_refresh_position_key,
+    packed_scene_preflight, preprocess_paged_visible_into, refresh_packed_hot_colors,
+    refresh_packed_hot_colors_range, refresh_paged_hot_colors, select_present_mode,
+    surface_error_to_presenter, wgpu_label,
 };
 
 pub(crate) struct SurfacePagedRuntime {
-    pages: SpatialPageSet,
-    pub(crate) atlas: PagedAtlasGpu,
-    residency: ResidencyManager,
+    pub(crate) active_set: PagedActiveSet,
     sort_backend: CpuSortBackend,
     depth_keys: Vec<u32>,
     sorted_indices: Vec<u32>,
@@ -33,27 +31,10 @@ impl SurfacePagedRuntime {
         scene: &SceneBuffers,
         pages: SpatialPageSet,
     ) -> Result<Self, SurfacePresenterError> {
-        let slot_count = pages.page_count().clamp(1, DEFAULT_PAGED_ATLAS_SLOTS);
-        let atlas = PagedAtlasGpu::new(
-            device,
-            queue,
-            layout,
-            slot_count,
-            pages.page_capacity,
-            scene,
-        )
-        .map_err(|err| SurfacePresenterError::PagedAtlas(format!("{err:?}")))?;
-        let residency = ResidencyManager::new(
-            &pages,
-            ResidencyBudgets {
-                max_resident_pages: slot_count,
-                max_inflight_pages: slot_count,
-            },
-        );
+        let active_set = PagedActiveSet::new(device, queue, layout, scene, pages)
+            .map_err(|err| SurfacePresenterError::PagedAtlas(err.to_string()))?;
         Ok(Self {
-            pages,
-            atlas,
-            residency,
+            active_set,
             sort_backend: CpuSortBackend::default(),
             depth_keys: Vec::new(),
             sorted_indices: Vec::new(),
@@ -68,16 +49,10 @@ impl SurfacePagedRuntime {
         width: u32,
         height: u32,
     ) -> Result<u32, SurfacePresenterError> {
-        sync_paged_active_set(
-            queue,
-            &self.pages,
-            &mut self.residency,
-            &mut self.atlas,
-            scene,
-            camera,
-        )
-        .map_err(|err| SurfacePresenterError::PagedAtlas(err.to_string()))?;
-        let entries = self.atlas.active_entries();
+        self.active_set
+            .sync(queue, scene, camera)
+            .map_err(|err| SurfacePresenterError::PagedAtlas(err.to_string()))?;
+        let entries = self.active_set.atlas.active_entries();
         preprocess_paged_visible_into(
             scene,
             &entries,
@@ -89,8 +64,9 @@ impl SurfacePagedRuntime {
         self.sort_backend
             .sort_values_by_keys(&self.depth_keys, &mut self.sorted_indices)
             .map_err(|err| SurfacePresenterError::PagedAtlas(err.to_string()))?;
-        refresh_paged_hot_colors(queue, &mut self.atlas, scene, camera);
-        self.atlas
+        refresh_paged_hot_colors(queue, &mut self.active_set.atlas, scene, camera);
+        self.active_set
+            .atlas
             .resources
             .prepare(queue, &self.sorted_indices, camera, width, height, true)
             .map_err(SurfacePresenterError::from)
@@ -835,7 +811,7 @@ impl SurfacePresenter {
                 multiview_mask: None,
             });
             rpass.set_pipeline(&self.packed_pipeline);
-            rpass.set_bind_group(0, &paged_scene.atlas.resources.bind_group, &[]);
+            rpass.set_bind_group(0, &paged_scene.active_set.atlas.resources.bind_group, &[]);
             if instance_count > 0 {
                 rpass.draw(0..packed_gpu::PACKED_QUAD_VERTEX_COUNT, 0..instance_count);
             }

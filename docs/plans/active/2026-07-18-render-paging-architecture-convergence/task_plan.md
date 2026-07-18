@@ -9,8 +9,8 @@ move is backed by fresh correctness and platform evidence.
 
 ## Current Phase
 
-Phase 2 / Slice S2 — consolidate paged active-set orchestration under one
-internal owner without changing public paging APIs.
+Phase 3 / Slice S3 — define and integrate additive Direct-first automatic path
+selection without changing stable Direct defaults or the C ABI.
 
 ## Guardrails
 
@@ -51,9 +51,9 @@ internal owner without changing public paging APIs.
       root without changing public API or runtime behavior.
 - [x] Remove the duplicated Surface geometry-resource construction match.
 - [x] Repeat the S1 workspace/renderer/conformance/FFI/hygiene verification.
-- [ ] Consolidate offscreen and Surface paged active-set orchestration.
-- [ ] Repeat the minimum relevant verification after S2.
-- **Status:** in_progress
+- [x] Consolidate offscreen and Surface paged active-set orchestration.
+- [x] Repeat the S2 path/safety/image/conformance/hygiene verification.
+- **Status:** complete
 
 ### Phase 3: Direct/Paged Selection Boundary
 
@@ -62,7 +62,7 @@ internal owner without changing public paging APIs.
       within the documented capacity/headroom policy or an explicit diagnostic
       override is requested.
 - [ ] Preserve structured preflight errors and transactional Surface switching.
-- **Status:** pending
+- **Status:** in_progress
 
 ### Phase 4: Paged Architecture Boundary
 
@@ -161,7 +161,9 @@ draw, residency, or public platform lifecycles.
 - Verify: focused scheduler/residency/paged GPU tests, all Direct/Packed/Paged
   offscreen parity gates, local Surface non-zero test, workspace check, and
   conformance.
-- **Status:** in_progress.
+- **Status:** complete; one 105-line internal owner replaced duplicated fields,
+  initialization, and root synchronization. Net source change from S1 was +26
+  lines, so later cleanup must recover this and end below the original total.
 
 ### S3 — Explicit path-selection policy
 
@@ -229,6 +231,9 @@ draw, residency, or public platform lifecycles.
 | First S1 format check requested standard import ordering | 1 | Applied rustfmt's import grouping and reran the same check. |
 | Post-dedup S1 format check requested one standard call compaction | 1 | Applied the exact rustfmt layout; all behavior tests had already passed. |
 | First S1 completion-record patch used a stale context line | 1 | Re-read the active bundle and applied smaller context-accurate updates. |
+| First S2 test compile still referenced the replaced paged atlas/residency fields | 1 | Updated controlled tests to inspect the same state through `PagedActiveSet`. |
+| First S2 format check requested canonical module/import/call layout | 1 | Applied the exact rustfmt output and reran hygiene. |
+| First S2 completion-record patch used a stale progress-table context | 1 | Re-read the active bundle and applied smaller context-accurate updates. |
 
 ## Notes
 
