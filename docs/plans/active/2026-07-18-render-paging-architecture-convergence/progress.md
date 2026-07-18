@@ -373,6 +373,32 @@
   have the required physical Direct/Paged run because `adb devices -l` remains
   empty.
 
+## 2026-07-18 — Physical Android Completion and Final Record
+
+- **Status:** all A-F acceptance evidence passes on `64f704d`; the final
+  status-only record commit must receive one post-commit exact-HEAD rerun before
+  the Goal is marked complete.
+- Physical Nothing A065 (`033ed212`, Pong, API 35, Adreno Vulkan) reconnected
+  over USB. The exact-`64f704d` Kitsune APK rebuilt, installed cleanly, and has
+  SHA-256 `c995c5310b6212d59c14642825104cc0e87b579fbeba9253657beeb55626b0f8`.
+- Direct completed 120 measured frames with
+  `geometry_pipeline=sorted_index_direct`, `avg_visible=avg_drawn=279199`, and
+  `avg_frame_ms=11.330`. Its extracted v1 artifact passed the canonical
+  validator.
+- Paged completed 120 measured frames with
+  `geometry_pipeline=paged_active_atlas`, `avg_loaded_source=279199`,
+  `avg_drawn=225784`, and `avg_frame_ms=23.626`. Its extracted v1 artifact also
+  passed. This fixed-slot prototype is slower on the tested device; no
+  performance threshold or streaming claim is promoted.
+- The exact-`64f704d` completion audit also passed workspace tests, renderer
+  100/1, required Metal, strict clippy, rustdoc, FFI, Web/WASM, production
+  recount (7,607), physical iOS Direct/Paged, and current-head over-slot PNG
+  parity (identical SHA-256 and SSIM 1.0 versus `3150b7b`).
+- This plan update is the final tracked change. After it is committed, all
+  local and four physical device paths are rerun into a HEAD-named ignored
+  evidence directory. A failing post-commit route keeps the Goal open; a fully
+  valid manifest permits the completion claim without another tracked edit.
+
 ## Error Log
 
 | Error | Attempt | Resolution |
@@ -409,13 +435,14 @@
 | First physical-iOS wrapper used zsh's read-only `status` variable after the run | 1 | Inspected the preserved raw log, then used a task-specific `rc` variable on retry. |
 | Physical-iOS benchmark could not launch while the paired phone was locked | 2 | Retained the failed logs, then reran after CoreDevice reported unlocked; Direct/Paged both passed on `ca27053`. |
 | First bounded SH-rest upload experiment still crashed in wgpu queue-copy memory | 1 | Reverted the complete uncommitted slice; retained the AVD log and did not add an emulator-specific workaround. |
+| Historical plans named a missing Android device benchmark wrapper | 1 | Confirmed the current tree has no such script; used the canonical README adb arguments plus the checked-in extractor and validator. |
 
 ## 5-Question Reboot Check
 
 | Question | Answer |
 |----------|--------|
-| Where am I? | Physical iOS Direct/Paged and all local gates pass; physical Android is the only remaining acceptance gap |
-| Where am I going? | Run physical Android Direct/Paged when a target is connected, then freeze the true final evidence HEAD |
+| Where am I? | All A-F candidate gates pass, including physical Android and iOS |
+| Where am I going? | Commit this final status-only record and run the exact-HEAD final manifest |
 | What's the goal? | Restore a clear Direct/default vs oversized/Paged architecture while reducing proven waste |
 | What have I learned? | See `findings.md` |
-| What have I done? | Preserved S1-S5, completed corrective A-E, proved physical iOS, rejected an ineffective AVD upload workaround, and kept F open only for physical Android |
+| What have I done? | Preserved S1-S5, completed corrective A-F, proved both physical platforms, and froze the final no-further-edit verification protocol |

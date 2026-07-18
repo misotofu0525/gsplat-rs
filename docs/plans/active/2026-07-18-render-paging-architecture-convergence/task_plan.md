@@ -9,7 +9,8 @@ move is backed by fresh correctness and platform evidence.
 
 ## Current Phase
 
-Architecture convergence remains **in progress**. S1-S5 completed a useful
+Architecture convergence is **complete after the post-record exact-HEAD
+verification described below**. S1-S5 completed a useful
 module-responsibility split, but an independent audit invalidated the prior
 overall-complete claim. Corrective A reset acceptance, B fixed automatic
 selection against requested device limits, C added typed page-source and
@@ -19,10 +20,13 @@ stopped at the authorized API boundary. F completed the exact-HEAD core, Web,
 FFI, simulator, and over-slot proof. A fresh Android emulator run now proves
 minimal Direct/Paged plus Kitsune Paged, while Kitsune Direct reproduces the
 same SH-rest upload crash on `3150b7b` and current code. No physical Android is
-connected. The paired physical iPhone later unlocked and completed Kitsune
+connected at first. The paired physical iPhone later unlocked and completed Kitsune
 Direct/Paged on `ca27053`. A bounded SH-rest queue-upload experiment moved the
 AVD fault from buffer creation to queue-copy memory and was fully reverted.
-The overall goal is now blocked only at the physical-Android device gate.
+Physical A065 then reconnected on `64f704d`: Direct and Paged both completed
+120 measured Kitsune frames with validated artifacts. This final plan commit is
+status-only; completion is not claimed until the same local and device routes
+produce an exact-HEAD manifest after the commit, without another tracked edit.
 
 ## Guardrails
 
@@ -74,18 +78,19 @@ The overall goal is now blocked only at the physical-Android device gate.
       within the documented capacity/headroom policy or an explicit diagnostic
       override is requested.
 - [x] Preserve structured preflight errors and transactional Surface switching.
-- **Status:** policy defect fixed in B; product acceptance remains open until E
-  connects one real automatic consumer or records an accepted API blocker.
+- **Status:** complete. B fixed requested-limit selection; E recorded the
+  accepted public API/C ABI boundary instead of silently changing Direct.
 
 ### Phase 4: Paged Architecture Boundary
 
 - [x] Isolate local `SceneBuffers`-backed paging behind an honest prototype
       source boundary without claiming end-to-end streaming.
-- [ ] Establish the smallest internal metadata/page-source seam needed for
+- [x] Establish the smallest internal metadata/page-source seam needed for
       future bounded compressed/decoded caches and fixed GPU slots.
-- [ ] Preserve coarse-to-fine continuity, one global `SortedAlpha` order, and
+- [x] Preserve coarse-to-fine continuity, one global `SortedAlpha` order, and
       stale/cancel/generation/nonresident safety.
-- **Status:** typed lookup and payload safety completed in C. The private source
+- **Status:** complete at the intentionally narrow uploader-seam boundary.
+  Typed lookup and payload safety completed in C. The private source
   still borrows the full scene/page set and remains synchronous, so it is a
   validated uploader seam rather than bounded source or CPU architecture.
 
@@ -96,16 +101,18 @@ The overall goal is now blocked only at the physical-Android device gate.
 - [x] Compare production renderer line counts, excluding terminal
       `#[cfg(test)] mod tests`, and finish below the 7,621-line baseline.
 - [x] Reconcile handbook/plan facts with the implemented boundary.
-- [ ] Deliver architecture diagrams, deletion/move list, commits, fresh
+- [x] Deliver architecture diagrams, deletion/move list, commits, fresh
       evidence, device gaps, and remaining risks.
-- **Status:** partial. Exact-HEAD core, Web, FFI, Android build/host smoke, iOS
+- **Status:** complete after the final status-only commit's exact-HEAD manifest.
+  Core, Web, FFI, Android build/host smoke, iOS
   simulator Direct/Paged Surface, and fixed-camera over-slot comparison passed
   at `4a8863a`. Android emulator minimal Direct/Paged and Kitsune Paged also
   passed. Kitsune Direct fails identically on `3150b7b` and current code in the
   AVD SH-rest upload, so it is not a refactor regression but is not a Direct
-  device pass. Physical iOS then passed both Kitsune paths on `ca27053`:
-  Direct drew all 279,199 visible splats and Paged drew 225,784 active residents.
-  Physical Android remains absent.
+  device pass. Physical iOS passed both Kitsune paths, and physical A065 then
+  passed 120-frame Direct/Paged Kitsune runs on `64f704d` with validated
+  artifacts. Direct drew all 279,199 visible splats; Paged loaded 279,199 and
+  drew 225,784 active residents.
 
 ### Corrective Execution A-F
 
@@ -127,11 +134,12 @@ The overall goal is now blocked only at the physical-Android device gate.
       automatic oversized routing to one minimal real consumer only if that
       does not silently widen the C ABI or product surface. Otherwise record a
       reviewable blocker and stop before API expansion.
-- [ ] **F — Blocked on physical Android:** rebuild and retain commit-tagged text
+- [x] **F — Final evidence:** rebuild and retain commit-tagged text
       manifests/logs for workspace, renderer, conformance, FFI, Web, Android
       Direct+Paged, and available iOS Surface. Add fixed-camera over-slot Paged
-      count/image comparison for `3150b7b` versus final HEAD. Missing hardware
-      produces a partial result, never an overall-complete claim.
+      count/image comparison for `3150b7b` versus final HEAD. The status-only
+      record commit is followed by a fresh exact-HEAD rerun stored in the
+      ignored controlled evidence directory; no further tracked edit follows.
 
 ### F Evidence Method
 
@@ -152,9 +160,9 @@ The overall goal is now blocked only at the physical-Android device gate.
   The refreshed AVD may be counted only for the paths it actually completed:
   minimal Direct/Paged and Kitsune Paged. Its Kitsune Direct SIGSEGV is retained
   with a same-device `3150b7b` reproduction, and cannot be reported as a pass.
-  Physical iOS Direct/Paged is now covered. Do not promote the overall goal to
-  complete without the missing physical Android Direct/Paged or an explicitly
-  accepted reduced platform gate.
+  Physical iOS and A065 Direct/Paged are now covered. The AVD failure remains a
+  backend-specific non-claim and is not used to weaken the physical-device
+  gate.
 
 ## Acceptance Matrix
 

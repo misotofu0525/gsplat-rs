@@ -650,8 +650,8 @@ architecture cleanup after the independent audit.
   refactor regression.
 - The A/B result narrows the claim but does not convert failure into success:
   Android final evidence now contains minimal Direct/Paged and over-slot Paged,
-  while large-scene Direct still needs a physical-device run or a separately
-  reviewed upload-hardening slice.
+  while large-scene Direct required a physical-device run rather than a
+  SwiftShader-specific upload workaround. The later A065 run supplies it.
 - Physical iOS initially failed while locked, then later exposed a connected
   tunnel and unlocked state. Exact-`ca27053` Kitsune Direct and Paged runs both
   completed 30 measured frames with the expected 279,199 source-visible count;
@@ -663,6 +663,23 @@ architecture cleanup after the independent audit.
   Therefore simple chunking is not a valid fix for this SwiftShader mapped-
   memory behavior; the experiment was reverted instead of adding workaround
   complexity to the Direct default.
+
+## F Physical Android Final Evidence
+
+- The reconnected Nothing A065 is a real API 35 / Adreno Vulkan target. A
+  clean install of the exact-`64f704d` Kitsune APK completed both constructor-
+  selected Surface paths with 120 measured frames and canonical v1 artifacts.
+- Direct retained the intended small/default implementation and drew all
+  279,199 visible splats at an observed 11.330 ms/frame. Paged loaded the full
+  279,199 local source while drawing the fixed active set of 225,784 at 23.626
+  ms/frame. Counts match desktop, simulator, and physical-iOS evidence.
+- Paged is about 2.1x slower in this observation despite drawing fewer splats.
+  That result reinforces the honest boundary: fixed GPU slots and validated
+  residency are complete, but this is not yet metadata-first bounded streaming
+  or a performance win.
+- The AVD large-buffer crash is not a platform regression claim: physical
+  Direct succeeds, baseline/current fail identically only on SwiftShader, and
+  the ineffective queue-chunk experiment remains reverted.
 
 ## Prior Evidence — Not Terminal HEAD-Bound Proof
 
@@ -705,10 +722,9 @@ architecture cleanup after the independent audit.
   comparison is valid. No threshold is claimed, and no telemetry/sidecar/
   network validator machinery was restored to disguise that result.
 - Earlier Android evidence used a physical device but is not terminal-HEAD
-  proof. Current Android evidence covers minimal Direct/Paged and Kitsune Paged
-  on an AVD, but not large-scene Direct or physical Android. Physical iOS now
-  covers both Kitsune paths on `ca27053`; physical Android remains the sole
-  platform acceptance gap.
+  proof. Fresh A065 evidence now covers both 120-frame Kitsune paths on
+  `64f704d`, and physical iOS covers both paths as well. The final status-only
+  commit still requires its exact-HEAD rerun before completion is declared.
 - Production cleanup now passes at 7,607 lines versus the 7,621-line baseline.
   Auto selection now uses effective requested-device limits, and decoded page
   payloads have typed lookup and structural bounds validation. The remaining
