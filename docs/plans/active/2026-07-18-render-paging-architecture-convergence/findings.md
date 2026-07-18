@@ -610,6 +610,24 @@ architecture cleanup after the independent audit.
 - The local Android device list is empty. A final APK/JNI build can prove
   toolchain compatibility but cannot replace Direct/Paged Surface execution;
   this keeps overall completion unavailable unless hardware appears.
+- Candidate core evidence passed all workspace tests, required Metal
+  SortedAlpha conformance, strict workspace clippy, rustdoc, FFI smoke, and
+  focused parity/safety/continuity/payload suites. The production-only recount
+  exactly reproduces `7,621 -> 7,607`; renderer tests remained 3,129 lines
+  throughout D even though the earlier audited start contained 3,175.
+- Candidate Web output was rebuilt and hashed after seven package tests. The
+  Android JNI host smoke and Kitsune APK build passed, but there is no device
+  run. On the available iPhone 17 Pro simulator, real Direct and Paged Surface
+  runs both created successfully and completed 120 measured frames.
+- The iOS count split is path-correct: Direct drew all 279,199 visible splats;
+  Paged saw the 279,199 source-visible splats and drew its 225,784 active
+  residents. Paged was about 5.4x slower in this simulator observation, so no
+  performance improvement or threshold is claimed.
+- The same over-slot Paged camera on `3150b7b` and the candidate produced
+  225,784 visible/drawn splats, byte-identical 640x360 PNGs, zero absolute
+  pixel error, and repository SSIM 1.0. The renderer comparison is isolated
+  because the temporary baseline worktree applied only the desktop CLI harness
+  and had an empty `crates/gsplat-render-wgpu` diff.
 
 ## Prior Evidence — Not Terminal HEAD-Bound Proof
 

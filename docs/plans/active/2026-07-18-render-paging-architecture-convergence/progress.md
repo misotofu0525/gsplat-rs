@@ -270,8 +270,9 @@
 
 ## 2026-07-18 — F Final-Evidence Harness
 
-- **Status:** harness complete; exact final-HEAD regression is the sole current
-  blocker.
+- **Status:** locally executable candidate proof complete; Android device
+  Direct/Paged is the remaining hardware blocker. Exact final-HEAD rerun follows
+  the no-code evidence-record commit.
 - Added an example-only `--geometry-path direct|packed|paged` switch to the
   desktop PNG runner. The default remains Direct, the runner reports the actual
   offscreen pipeline, and focused CLI tests cover both the default and explicit
@@ -292,6 +293,29 @@
   and host-smoked from the final HEAD, but Direct/Paged device acceptance will
   remain partial unless a target appears. A booted iPhone 17 Pro simulator is
   available for real Surface Direct/Paged presentation evidence.
+- Candidate-head core proof passed workspace tests, 100/1 renderer tests,
+  required Metal conformance, workspace check, strict clippy, rustdoc, format,
+  and diff hygiene. Focused parity, stale/cancel/generation/nonresident,
+  continuity, and payload-boundary suites all passed; FFI smoke drew the same
+  two visible splats.
+- Web candidate proof passed wasm32 check, seven package tests, dry-run pack,
+  release WASM/SDK build, syntax checks, and output hashing. Android host JNI
+  smoke and a Kitsune sample APK build passed, but the empty device list means
+  neither Direct nor Paged Surface executed on Android.
+- The iPhone 17 Pro simulator presented 120 measured Kitsune frames on both
+  paths. Direct reported `sorted_index_direct` and 279,199 visible/drawn;
+  Paged reported `paged_active_atlas`, 279,199 visible, and 225,784 drawn.
+  Paged averaged 98.752 ms/frame versus Direct 18.186 ms/frame; this is an
+  honest observation, not a performance pass.
+- The disposable `3150b7b` worktree had no renderer diff after applying only
+  the CLI harness. Baseline and candidate both reported 225,784 visible/drawn,
+  emitted the identical PNG SHA-256
+  `eb41d85b6e93f8b5682fd4f7d6c7791e1a65fb482a1ee512cc196bd14c7bbffb`,
+  zero absolute-error pixels, and repository SSIM 1.0 over 3,600 windows.
+- Production accounting reran from Git objects: `3150b7b` is 7,621 production
+  plus 3,175 test/fixture lines; the candidate is 7,607 plus 3,129. The cleanup
+  gate therefore remains a 14-line production reduction without test deletion
+  during D.
 
 ## Error Log
 
@@ -320,13 +344,15 @@
 | First full B verification failed strict clippy on `too_many_arguments` after earlier gates passed | 1 | Replace three adapter-related parameters with one private context, then rerun every B gate. |
 | First D1 full verification failed strict clippy on `large_enum_variant` | 1 | Box only the private Paged runtime variant, then rerun every D1 gate from renderer tests. |
 | First D2 per-revision line-count shell used zsh's reserved `path` parameter as a loop variable | 1 | The temporary shell lost command lookup only; use task-specific `source_file` and rerun before making deletion decisions. |
+| First F provenance manifest passed `head=HEAD` as a revision | 1 | Git rejected it without changing state; regenerated the log with the full HEAD SHA and retained only the corrected manifest. |
+| First final-evidence record patch used a stale error-table context | 1 | No file changed in that failed patch; re-read exact sections and applied smaller hunks. |
 
 ## 5-Question Reboot Check
 
 | Question | Answer |
 |----------|--------|
-| Where am I? | F harness is committed; exact final-HEAD proof is current |
-| Where am I going? | Bind final workspace/platform and over-slot parity evidence to final HEAD |
+| Where am I? | F candidate proof is complete; Android device execution is unavailable |
+| Where am I going? | Rerun every available proof on the no-code final HEAD and retain the Android hardware gap |
 | What's the goal? | Restore a clear Direct/default vs oversized/Paged architecture while reducing proven waste |
 | What have I learned? | See `findings.md` |
-| What have I done? | Preserved S1-S5, completed corrective A-E, added a reproducible over-slot harness, and kept overall acceptance open for F |
+| What have I done? | Preserved S1-S5, completed corrective A-E, proved the F candidate across available platforms, and kept overall acceptance open for Android hardware |

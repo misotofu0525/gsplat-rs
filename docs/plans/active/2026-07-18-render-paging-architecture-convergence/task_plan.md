@@ -15,8 +15,9 @@ overall-complete claim. Corrective A reset acceptance, B fixed automatic
 selection against requested device limits, C added typed page-source and
 payload validation, and D finished the production cleanup gate at 7,607 lines.
 E found that every real SDK needs a new public Auto option or ABI value and
-stopped at the authorized API boundary. F final HEAD-bound proof is the single
-next blocker.
+stopped at the authorized API boundary. F completed every locally executable
+proof route; Android Direct/Paged device execution remains unavailable, so the
+overall goal stays in progress and the hardware gate is the single blocker.
 
 ## Guardrails
 
@@ -85,16 +86,17 @@ next blocker.
 
 ### Phase 5: Full Regression and Handoff
 
-- [ ] Run workspace, focused renderer, offscreen parity, Surface, FFI, Web, and
+- [x] Run workspace, focused renderer, offscreen parity, Surface, FFI, Web, and
       available Android/iOS verification according to touched scope.
 - [x] Compare production renderer line counts, excluding terminal
       `#[cfg(test)] mod tests`, and finish below the 7,621-line baseline.
 - [x] Reconcile handbook/plan facts with the implemented boundary.
 - [ ] Deliver architecture diagrams, deletion/move list, commits, fresh
       evidence, device gaps, and remaining risks.
-- **Status:** F evidence harness prepared; prior Web/mobile binaries and logs
-  remain historical only. Exact final-HEAD core/Web/mobile rebuilds, real iOS
-  Surface presentation, and the fixed-camera over-slot comparison are pending.
+- **Status:** partial. Core, Web, FFI, final Android build/host smoke, iOS
+  Direct/Paged Surface, and fixed-camera over-slot comparison passed on the
+  evidence candidate. The no-code record commit must be followed by the exact
+  final-HEAD rerun. Android device execution remains unavailable.
 
 ### Corrective Execution A-F
 
@@ -116,7 +118,7 @@ next blocker.
       automatic oversized routing to one minimal real consumer only if that
       does not silently widen the C ABI or product surface. Otherwise record a
       reviewable blocker and stop before API expansion.
-- [ ] **F — Current blocker, final HEAD-bound proof:** rebuild and retain commit-tagged text
+- [ ] **F — Partial, hardware blocker remains:** rebuild and retain commit-tagged text
       manifests/logs for workspace, renderer, conformance, FFI, Web, Android
       Direct+Paged, and available iOS Surface. Add fixed-camera over-slot Paged
       count/image comparison for `3150b7b` versus final HEAD. Missing hardware
@@ -342,6 +344,8 @@ no production consumer. The diagram records the useful module seam only.
 | First full B verification reached strict clippy with an 8-argument private Surface constructor | 1 | Renderer tests, Metal conformance, and workspace check had passed; grouped adapter info/limits/effective limits into one private context and reran the full sequence without a lint allow. |
 | First D1 full verification failed strict clippy on the size gap inside the single-active Surface geometry enum | 1 | Box only the private Paged runtime variant, then rerun every D1 gate from renderer tests. |
 | First D2 per-revision line-count shell reused zsh's special `path` parameter | 1 | No repository state changed; renamed it `source_file` and used only the successful rerun for the audit. |
+| First F manifest used `git rev-parse head=HEAD`, which Git treated as an invalid revision | 1 | No repository state changed; overwrote the generated log with `git rev-parse HEAD` piped through a label and verified the full SHA. |
+| First final-evidence record patch used one stale progress-table context | 1 | No plan file changed; re-read the three exact sections and applied smaller context-accurate patches. |
 
 ## Notes
 
