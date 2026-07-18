@@ -1,11 +1,12 @@
 //! Shared fixed-slot active-set ownership for the local paged prototype.
 //!
-//! This module owns GPU atlas residency and scheduling only. Page payloads are
-//! still extracted from a complete in-memory `SceneBuffers`; a later source
-//! boundary will replace that coupling without changing this owner.
+//! This module owns GPU atlas residency and scheduling. The current caller
+//! still supplies a complete in-memory `SceneBuffers` through the explicitly
+//! local page-source adapter; only decoded payloads reach GPU upload.
 
 use gsplat_core::{Camera, SceneBuffers};
 
+use crate::page_source::{LocalScenePageSource, PageEncoding, PageSource};
 use crate::{
     AttributeLod, DEFAULT_PAGED_ATLAS_SLOTS, PagedAtlasGpu, RendererError, ResidencyBudgets,
     ResidencyManager, SchedulerConfig, SchedulerView, SpatialPageSet, schedule_pages,
@@ -26,13 +27,13 @@ impl PagedActiveSet {
         pages: SpatialPageSet,
     ) -> Result<Self, RendererError> {
         let slot_count = pages.page_count().clamp(1, DEFAULT_PAGED_ATLAS_SLOTS);
-        let atlas = PagedAtlasGpu::new(
+        let atlas = PagedAtlasGpu::new_with_encoding(
             device,
             queue,
             layout,
             slot_count,
             pages.page_capacity,
-            scene,
+            PageEncoding::from_scene(scene),
         )
         .map_err(|err| RendererError::PagedAtlas(format!("{err:?}")))?;
         let residency = ResidencyManager::new(
@@ -55,20 +56,31 @@ impl PagedActiveSet {
         scene: &SceneBuffers,
         camera: &Camera,
     ) -> Result<(), RendererError> {
-        let previous = self.residency.resident_tokens();
+        let source = LocalScenePageSource::new(scene, &self.pages, self.atlas.encoding());
+        Self::sync_from_source(queue, &mut self.residency, &mut self.atlas, &source, camera)
+    }
+
+    fn sync_from_source(
+        queue: &wgpu::Queue,
+        residency: &mut ResidencyManager,
+        atlas: &mut PagedAtlasGpu,
+        source: &impl PageSource,
+        camera: &Camera,
+    ) -> Result<(), RendererError> {
+        let previous = residency.resident_tokens();
         schedule_pages(
-            &self.pages,
-            &mut self.residency,
+            source.pages(),
+            residency,
             SchedulerView {
                 position: camera.pose.position,
             },
             SchedulerConfig {
-                target_resident_pages: self.atlas.slot_count(),
+                target_resident_pages: atlas.slot_count(),
                 coarse_cover_radius: 2.0,
             },
         )
         .map_err(|err| RendererError::PagedAtlas(format!("{err:?}")))?;
-        let current = self.residency.resident_tokens();
+        let current = residency.resident_tokens();
 
         for token in previous {
             if !current.iter().any(|resident| {
@@ -76,28 +88,20 @@ impl PagedActiveSet {
                     && resident.slot == token.slot
                     && resident.slot_generation == token.slot_generation
             }) {
-                self.atlas
+                atlas
                     .clear_slot(queue, token)
                     .map_err(|err| RendererError::PagedAtlas(format!("{err:?}")))?;
             }
         }
         for token in current {
-            if self.atlas.contains_token(token) {
+            if atlas.contains_token(token) {
                 continue;
             }
-            let page = self
-                .pages
-                .page(token.page_id)
+            let payload = source
+                .decode_page(token.page_id, AttributeLod::Degree0)
                 .ok_or(RendererError::InvalidScene)?;
-            self.atlas
-                .upload_page_if_current(
-                    queue,
-                    &self.residency,
-                    token,
-                    page,
-                    scene,
-                    AttributeLod::Degree0,
-                )
+            atlas
+                .upload_decoded_page_if_current(queue, residency, token, &payload)
                 .map_err(|err| RendererError::PagedAtlas(format!("{err:?}")))?;
         }
         Ok(())

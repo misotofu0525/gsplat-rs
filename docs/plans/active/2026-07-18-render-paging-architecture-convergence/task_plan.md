@@ -9,8 +9,8 @@ move is backed by fresh correctness and platform evidence.
 
 ## Current Phase
 
-Phase 4 / Slice S4 — isolate the full-resident local page source from decoded
-page payloads consumed by the shared fixed-slot GPU runtime.
+Phase 5 / Slice S5 — prove terminal cleanup, reconcile canonical architecture
+docs, and run the complete platform-appropriate regression matrix.
 
 ## Guardrails
 
@@ -66,13 +66,13 @@ page payloads consumed by the shared fixed-slot GPU runtime.
 
 ### Phase 4: Paged Architecture Boundary
 
-- [ ] Isolate local `SceneBuffers`-backed paging behind an honest prototype
+- [x] Isolate local `SceneBuffers`-backed paging behind an honest prototype
       source boundary without claiming end-to-end streaming.
-- [ ] Establish the smallest internal metadata/page-source seam needed for
+- [x] Establish the smallest internal metadata/page-source seam needed for
       future bounded compressed/decoded caches and fixed GPU slots.
-- [ ] Preserve coarse-to-fine continuity, one global `SortedAlpha` order, and
+- [x] Preserve coarse-to-fine continuity, one global `SortedAlpha` order, and
       stale/cancel/generation/nonresident safety.
-- **Status:** in_progress
+- **Status:** complete
 
 ### Phase 5: Full Regression and Handoff
 
@@ -82,7 +82,7 @@ page payloads consumed by the shared fixed-slot GPU runtime.
 - [ ] Reconcile handbook/plan facts with the implemented boundary.
 - [ ] Deliver architecture diagrams, deletion/move list, commits, fresh
       evidence, device gaps, and remaining risks.
-- **Status:** pending
+- **Status:** in_progress
 
 ## Acceptance Matrix
 
@@ -194,6 +194,11 @@ draw, residency, or public platform lifecycles.
 - Rollback: independent commit; compatibility wrappers retain public methods.
 - Verify: payload equivalence, cache bounds if added, stale/cancel/generation,
   nonresident exclusion, count/image parity, Surface smoke, and conformance.
+- **Status:** complete; `LocalScenePageSource` performs extraction and packing,
+  and the shared runtime hands only `DecodedPagePayload` to GPU upload. No
+  decoded cache was added because payloads are synchronous and transient;
+  caching would duplicate the already-full-resident local source without
+  evidence of benefit.
 
 ### S5 — Proven cleanup, docs, and platform regression
 
@@ -240,6 +245,9 @@ draw, residency, or public platform lifecycles.
 | First S2 completion-record patch used a stale progress-table context | 1 | Re-read the active bundle and applied smaller context-accurate updates. |
 | First S3 format check requested one standard selection-call compaction | 1 | Applied rustfmt's exact layout before adding policy tests. |
 | One S3 focused-test command supplied two Cargo filter arguments | 1 | Recorded the command error and reran each focused test with one filter. |
+| First S4 audit search named a non-existent `paged_atlas_gpu.rs` path | 1 | Used the discovered `paged_gpu.rs` module and reran targeted inspection. |
+| First S4 format check reported standard import and wrapping differences | 1 | Applied rustfmt, then reran compile and verification. |
+| FFI command discovery searched a non-existent top-level `scripts/` directory | 1 | Used `handbook/VERIFICATION.md`'s canonical `tests/ffi/run-ffi-smoke.sh` route. |
 
 ## Notes
 

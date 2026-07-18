@@ -49,6 +49,13 @@
 | S3 Web check | additive canvas API compiles for wasm32 | passed; existing cfg-only warnings | pass |
 | S3 public docs | new Rust API links and safety docs are valid | `-D warnings` passed | pass |
 | S3 hygiene | workspace, fmt, strict renderer clippy, diff check | passed | pass |
+| S4 payload equivalence | source output matches existing shared encoding and LOD rules | passed | pass |
+| S4 renderer lib suite | decoded-payload path preserves all parity/safety gates | 96 passed, 1 ignored | pass |
+| S4 SortedAlpha conformance | global quality path unchanged | 1 passed on Metal | pass |
+| S4 Surface/paging safety | local Surface, stale/cancel/generation/nonresident gates | passed in full suite | pass |
+| S4 FFI smoke | stable C consumer remains non-zero | `drawn=2 visible=2` | pass |
+| S4 Web check | source/payload boundary compiles for wasm32 | passed; existing cfg-only warnings | pass |
+| S4 hygiene | workspace, fmt, strict renderer clippy, diff check | passed | pass |
 
 ## 2026-07-18 — S1 Surface Ownership Split
 
@@ -87,6 +94,27 @@
   renderer clippy; rustdoc with warnings denied; formatting and diff hygiene.
 - Next: S4 local page-source/payload boundary.
 
+## 2026-07-18 — S4 Local Page-Source Boundary
+
+- **Status:** complete
+- Added one private `page_source.rs` module. `LocalScenePageSource` explicitly
+  borrows the full in-memory scene and page metadata, performs page extraction,
+  shared-range packing, and attribute-LOD reduction, and returns a decoded
+  payload with stable source indices.
+- `PagedAtlasGpu` now has an internal decoded-payload upload path. Existing
+  public scene/page upload methods remain unchanged compatibility wrappers.
+- The shared active set schedules against source metadata and sends one
+  transient payload at a time to fixed GPU slots. No source/decoded cache was
+  added; the current adapter remains unbounded at source residency and is not
+  described as streaming.
+- Fresh verification: workspace check; payload equivalence; 96 renderer tests
+  plus one retained ignored oracle; required Metal conformance; local Surface,
+  parity and safety gates; FFI smoke; wasm32 check; strict clippy; fmt/diff.
+- Code-size result: one 166-line file and +201 renderer Rust lines from S3.
+  Final source is currently 11,296 lines versus the 10,796-line start, so S5
+  must recover at least 501 lines to satisfy terminal net deletion.
+- Next: S5 proven cleanup and final regression.
+
 ## Error Log
 
 | Error | Attempt | Resolution |
@@ -100,13 +128,16 @@
 | S2 completion-record patch context mismatch | 1 | Re-read the active files and applied smaller exact patches. |
 | S3 first format check: one auto-selection call wrap | 1 | Applied the standard layout and continued with policy proof. |
 | S3 focused-test command rejected a second test filter | 1 | Ran the two tests as separate Cargo commands; both passed. |
+| S4 audit search included a guessed `paged_atlas_gpu.rs` file | 1 | Inspected the actual `paged_gpu.rs` found by repository search. |
+| S4 first format check found import/wrapping drift | 1 | Applied rustfmt before the focused compile and tests. |
+| S4 FFI discovery search included a missing `scripts/` root | 1 | Followed the canonical handbook command under `tests/ffi/`. |
 
 ## 5-Question Reboot Check
 
 | Question | Answer |
 |----------|--------|
-| Where am I? | Phase 4 / S4 local page-source boundary |
-| Where am I going? | S4-S5 incremental implementation and fresh verification |
+| Where am I? | Phase 5 / S5 proven cleanup and full regression |
+| Where am I going? | Terminal source reduction, docs, platform regression, handoff |
 | What's the goal? | Restore a clear Direct/default vs oversized/Paged architecture while reducing proven waste |
 | What have I learned? | See `findings.md` |
 | What have I done? | Loaded canonical context and captured initial code/branch facts |

@@ -192,3 +192,29 @@
 - S3 adds no file and is +279 renderer Rust lines relative to S2, remaining
   under the slice budget. This policy clarity has a real code cost; S4/S5 must
   still bring the final renderer total below the 10,796-line starting point.
+
+## S4 Accepted Result
+
+- `LocalScenePageSource` is an explicitly local, borrowed adapter over the full
+  `SceneBuffers` plus `SpatialPageSet`. It owns extraction, shared scene-range
+  encoding, SH scale reuse, and attribute-LOD reduction.
+- `DecodedPagePayload` contains only page identity, source-index mapping, and
+  packed page buffers. The new internal GPU upload accepts this payload and has
+  no source-container parameter. Existing public `PagedAtlasGpu::new`,
+  `upload_page`, and `upload_page_if_current` signatures remain intact as local
+  compatibility wrappers.
+- The active-set runtime decodes and uploads one page at a time; the payload is
+  dropped after each upload and fixed GPU slot bounds remain enforced. A
+  decoded cache was intentionally not added because the current source already
+  retains the entire scene and no A/B evidence justifies duplicate residency.
+- This is not metadata-first streaming: page metadata still embeds source
+  indices, scheduling remains synchronous, and full source data remains
+  resident for sorting and view-dependent color refresh. Those limitations are
+  now on the local adapter side instead of hidden inside GPU upload.
+- Fresh proof passed: payload equivalence, workspace check, 96 renderer tests
+  plus one retained ignored oracle, all Direct/Packed/Paged count/image and
+  paging safety gates, local Surface non-zero preparation, required Metal
+  conformance, FFI smoke, wasm32 check, strict clippy, fmt, and diff hygiene.
+- S4 is one new 166-line file and +201 renderer Rust lines from S3. Total is
+  11,296 lines, 500 above the 10,796-line starting point; S5 needs at least 501
+  lines of proven deletion for a terminal net decrease.

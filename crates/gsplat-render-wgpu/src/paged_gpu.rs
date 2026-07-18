@@ -9,11 +9,10 @@ use gsplat_core::SceneBuffers;
 
 use crate::DirectSceneError;
 use crate::packed_atlas::{
-    LogScaleRange, PackedAtlasCpuBuffers, PackedHotRecord, PackedSceneCpu, PackedShSidecar,
-    SceneBounds, pack_scene_with_encoding, scene_sh_scales,
+    PackedAtlasCpuBuffers, PackedHotRecord, PackedSceneCpu, PackedShSidecar,
 };
 use crate::packed_gpu::PackedAtlasResources;
-use crate::page_atlas::extract_page_scene;
+use crate::page_source::{DecodedPagePayload, PageEncoding};
 use crate::residency::{AsyncPageToken, AttributeLod, ResidencyManager};
 use crate::spatial_pages::{PageId, SpatialPage};
 
@@ -63,9 +62,7 @@ pub struct PagedAtlasGpu {
     slot_meta: Vec<GpuSlotMeta>,
     /// Scene splat indices stored per atlas slot (length `page_capacity` when occupied).
     slot_scene_indices: Vec<Vec<u32>>,
-    scene_bounds: SceneBounds,
-    log_scale_range: LogScaleRange,
-    sh_scales: [f32; 3],
+    encoding: PageEncoding,
 }
 
 impl PagedAtlasGpu {
@@ -77,6 +74,24 @@ impl PagedAtlasGpu {
         page_capacity: usize,
         scene: &SceneBuffers,
     ) -> Result<Self, PagedGpuError> {
+        Self::new_with_encoding(
+            device,
+            queue,
+            bind_group_layout,
+            slot_count,
+            page_capacity,
+            PageEncoding::from_scene(scene),
+        )
+    }
+
+    pub(crate) fn new_with_encoding(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        bind_group_layout: &wgpu::BindGroupLayout,
+        slot_count: usize,
+        page_capacity: usize,
+        encoding: PageEncoding,
+    ) -> Result<Self, PagedGpuError> {
         let slot_count = slot_count.max(1);
         let page_capacity = page_capacity.max(1);
         let capacity = slot_count
@@ -84,20 +99,19 @@ impl PagedAtlasGpu {
             .ok_or(PagedGpuError::Direct(
                 DirectSceneError::SortedIndexCapacityExceeded,
             ))?;
-        let scene_bounds = SceneBounds::from_positions(&scene.positions);
-        let log_scale_range = LogScaleRange::from_scales(&scene.scale_xyz);
-        let sh_scales = scene_sh_scales(scene);
-        let placeholder = placeholder_packed(capacity, scene_bounds, log_scale_range, sh_scales);
+        let placeholder = placeholder_packed(capacity, encoding);
         let resources = PackedAtlasResources::new(device, queue, bind_group_layout, &placeholder)?;
         Ok(Self {
             page_capacity,
             resources,
             slot_meta: (0..slot_count).map(|_| GpuSlotMeta::empty(1)).collect(),
             slot_scene_indices: (0..slot_count).map(|_| Vec::new()).collect(),
-            scene_bounds,
-            log_scale_range,
-            sh_scales,
+            encoding,
         })
+    }
+
+    pub(crate) fn encoding(&self) -> PageEncoding {
+        self.encoding
     }
 
     pub fn slot_count(&self) -> usize {
@@ -188,10 +202,31 @@ impl PagedAtlasGpu {
         scene: &SceneBuffers,
         attribute_lod: AttributeLod,
     ) -> Result<(), PagedGpuError> {
+        let payload =
+            DecodedPagePayload::from_local_scene(scene, page, self.encoding, attribute_lod);
+        self.upload_decoded_page(queue, token, &payload)
+    }
+
+    pub(crate) fn upload_decoded_page(
+        &mut self,
+        queue: &wgpu::Queue,
+        token: AsyncPageToken,
+        payload: &DecodedPagePayload,
+    ) -> Result<(), PagedGpuError> {
         let slot = self
             .slot_meta
             .get_mut(token.slot as usize)
             .ok_or(PagedGpuError::SlotOutOfRange)?;
+        if payload.page_id != token.page_id {
+            return Err(PagedGpuError::StaleToken);
+        }
+        if payload.packed.splat_count != payload.source_indices.len()
+            || payload.packed.hot.len() != payload.source_indices.len()
+        {
+            return Err(PagedGpuError::Direct(
+                DirectSceneError::ResourceSizeOverflow,
+            ));
+        }
         if slot.is_occupied() {
             if slot.generation != token.slot_generation || slot.page_id != Some(token.page_id) {
                 return Err(PagedGpuError::StaleToken);
@@ -201,38 +236,28 @@ impl PagedAtlasGpu {
         } else {
             slot.generation = token.slot_generation;
         }
-        if page.splat_count() == 0 {
+        let splat_count = payload.source_indices.len();
+        if splat_count == 0 {
             return Err(PagedGpuError::EmptyPage);
         }
-        if page.splat_count() > self.page_capacity {
+        if splat_count > self.page_capacity {
             return Err(PagedGpuError::PageTooLarge {
-                splat_count: page.splat_count(),
+                splat_count,
                 page_capacity: self.page_capacity,
             });
         }
 
-        let extracted = extract_page_scene(scene, page);
-        let mut packed = pack_scene_with_encoding(
-            &extracted,
-            self.scene_bounds,
-            self.log_scale_range,
-            Some(self.sh_scales),
-        );
-        if attribute_lod == AttributeLod::Degree0 {
-            packed.sh_degree = 0;
-            packed.sh_sidecars.clear();
-        }
-        let words = PackedAtlasCpuBuffers::hot_storage_words(&packed);
+        let words = PackedAtlasCpuBuffers::hot_storage_words(&payload.packed);
         let base = token.slot as usize * self.page_capacity;
         // Clear the whole page slot first so stale trailing splats disappear.
         self.resources
             .clear_hot_records_range(queue, base, self.page_capacity);
         self.resources.write_hot_records_at(queue, base, &words);
-        self.slot_scene_indices[token.slot as usize] = page.splat_indices.clone();
+        self.slot_scene_indices[token.slot as usize].clone_from(&payload.source_indices);
         *slot = GpuSlotMeta {
             page_id: Some(token.page_id),
             generation: token.slot_generation,
-            splat_count: page.splat_count(),
+            splat_count,
         };
         Ok(())
     }
@@ -250,6 +275,19 @@ impl PagedAtlasGpu {
             .validate_token(token)
             .map_err(|_| PagedGpuError::StaleToken)?;
         self.upload_page(queue, token, page, scene, attribute_lod)
+    }
+
+    pub(crate) fn upload_decoded_page_if_current(
+        &mut self,
+        queue: &wgpu::Queue,
+        manager: &ResidencyManager,
+        token: AsyncPageToken,
+        payload: &DecodedPagePayload,
+    ) -> Result<(), PagedGpuError> {
+        manager
+            .validate_token(token)
+            .map_err(|_| PagedGpuError::StaleToken)?;
+        self.upload_decoded_page(queue, token, payload)
     }
 
     pub fn clear_slot(
@@ -273,12 +311,7 @@ impl PagedAtlasGpu {
     }
 }
 
-fn placeholder_packed(
-    capacity: usize,
-    bounds: SceneBounds,
-    log_scale_range: LogScaleRange,
-    sh_scales: [f32; 3],
-) -> PackedSceneCpu {
+fn placeholder_packed(capacity: usize, encoding: PageEncoding) -> PackedSceneCpu {
     let zero = PackedHotRecord {
         position_opacity: [0; 4],
         scale_flags: 0,
@@ -286,8 +319,8 @@ fn placeholder_packed(
         color: 0,
     };
     PackedSceneCpu {
-        bounds,
-        log_scale_range,
+        bounds: encoding.scene_bounds,
+        log_scale_range: encoding.log_scale_range,
         hot: vec![zero; capacity.max(1)],
         sh_sidecars: vec![
             PackedShSidecar {
@@ -296,7 +329,7 @@ fn placeholder_packed(
             };
             capacity.max(1)
         ],
-        sh_scales,
+        sh_scales: encoding.sh_scales,
         sh_degree: 0,
         splat_count: capacity.max(1),
     }

@@ -4,6 +4,7 @@ mod packed_atlas;
 mod packed_gpu;
 mod page_atlas;
 mod page_scheduler;
+mod page_source;
 mod paged_active_set;
 mod paged_gpu;
 mod residency;
