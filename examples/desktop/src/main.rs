@@ -15,7 +15,7 @@ use gsplat_core::{Camera, RenderMode, RendererConfig, Vec3f};
 #[cfg(feature = "interactive-viewer")]
 use gsplat_core::{CameraIntrinsics, CameraPose};
 use gsplat_io_ply::load_ply;
-use gsplat_render_wgpu::Renderer;
+use gsplat_render_wgpu::{GeometryPath, Renderer};
 #[cfg(feature = "interactive-viewer")]
 use gsplat_render_wgpu::{SurfacePresenter, SurfaceRenderSession};
 #[cfg(feature = "interactive-viewer")]
@@ -51,6 +51,7 @@ struct Args {
     auto_camera: bool,
     yaw_deg: Option<f32>,
     interactive: bool,
+    geometry_path: GeometryPath,
     png_out: Option<PathBuf>,
 }
 
@@ -66,6 +67,7 @@ impl Args {
         let mut auto_camera = false;
         let mut yaw_deg: Option<f32> = None;
         let mut interactive = false;
+        let mut geometry_path = GeometryPath::SortedIndexDirect;
         let mut png_out: Option<PathBuf> = None;
 
         while let Some(arg) = args.next() {
@@ -111,6 +113,12 @@ impl Args {
                     );
                 }
                 "--interactive" => interactive = true,
+                "--geometry-path" => {
+                    let value = args
+                        .next()
+                        .ok_or_else(|| "missing value for --geometry-path".to_owned())?;
+                    geometry_path = parse_geometry_path(&value)?;
+                }
                 "--png" => {
                     let value = args
                         .next()
@@ -137,6 +145,7 @@ impl Args {
             auto_camera,
             yaw_deg,
             interactive,
+            geometry_path,
             png_out,
         })
     }
@@ -154,6 +163,7 @@ fn usage() -> String {
         "  --auto-camera    place camera based on dataset bounds",
         "  --yaw-deg A      set a fixed yaw angle in degrees for static frame rendering",
         "  --interactive    launch realtime on-screen viewer loop (feature: interactive-viewer)",
+        "  --geometry-path P use direct, packed, or paged geometry (default: direct)",
         "  --png PATH       write the last rendered frame to PATH (requires GPU rasterizer)",
     ];
     lines.join("\n")
@@ -168,6 +178,7 @@ fn run(args: Args) -> Result<(), String> {
         Renderer::with_config(args.config)
     }
     .map_err(|err| err.to_string())?;
+    renderer.set_geometry_path(args.geometry_path);
     renderer
         .load_scene(loaded.scene)
         .map_err(|err| err.to_string())?;
@@ -216,7 +227,10 @@ fn run_offscreen(args: &Args, mut renderer: Renderer, mut camera: Camera) -> Res
     println!("desktop-example ok");
     println!("dataset={}", args.dataset_path.display());
     println!("gpu_rasterizer={}", renderer.has_gpu_rasterizer());
-    println!("offscreen_geometry_pipeline=sorted_index_direct");
+    println!(
+        "offscreen_geometry_pipeline={}",
+        geometry_path_label(args.geometry_path)
+    );
     println!("frames={}", args.frames);
     println!("elapsed_ms={:.4}", elapsed.as_secs_f32() * 1000.0);
     println!("frame_ms={:.4}", stats.frame_ms);
@@ -227,6 +241,25 @@ fn run_offscreen(args: &Args, mut renderer: Renderer, mut camera: Camera) -> Res
     println!("drawn_count={}", stats.drawn_count);
 
     Ok(())
+}
+
+fn parse_geometry_path(value: &str) -> Result<GeometryPath, String> {
+    match value {
+        "direct" => Ok(GeometryPath::SortedIndexDirect),
+        "packed" => Ok(GeometryPath::PackedAtlas),
+        "paged" => Ok(GeometryPath::PagedActiveAtlas),
+        _ => Err(format!(
+            "invalid --geometry-path '{value}' (expected direct|packed|paged)"
+        )),
+    }
+}
+
+const fn geometry_path_label(path: GeometryPath) -> &'static str {
+    match path {
+        GeometryPath::SortedIndexDirect => "sorted_index_direct",
+        GeometryPath::PackedAtlas => "packed_atlas",
+        GeometryPath::PagedActiveAtlas => "paged_active_atlas",
+    }
 }
 
 #[cfg(feature = "interactive-viewer")]
@@ -738,7 +771,7 @@ fn write_png(path: &Path, width: u32, height: u32, rgba: &[u8]) -> Result<(), St
 #[cfg(test)]
 mod tests {
     use gsplat_core::{RenderMode, RendererConfig, SceneBuffers, Vec3f};
-    use gsplat_render_wgpu::Renderer;
+    use gsplat_render_wgpu::{GeometryPath, Renderer};
 
     use super::{Args, auto_camera, scene_bounds, write_png};
 
@@ -774,6 +807,7 @@ mod tests {
         assert!(!args.orbit);
         assert!(!args.auto_camera);
         assert!(!args.interactive);
+        assert_eq!(args.geometry_path, GeometryPath::SortedIndexDirect);
         assert!(args.png_out.is_none());
     }
 
@@ -791,6 +825,8 @@ mod tests {
             "--auto-camera",
             "--yaw-deg",
             "15",
+            "--geometry-path",
+            "paged",
             "--png",
             "target/out.png",
         ])
@@ -803,6 +839,7 @@ mod tests {
         assert!(args.orbit);
         assert!(args.auto_camera);
         assert_eq!(args.yaw_deg, Some(15.0));
+        assert_eq!(args.geometry_path, GeometryPath::PagedActiveAtlas);
         assert_eq!(
             args.png_out,
             Some(std::path::PathBuf::from("target/out.png"))
