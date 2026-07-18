@@ -629,6 +629,34 @@ architecture cleanup after the independent audit.
   because the temporary baseline worktree applied only the desktop CLI harness
   and had an empty `crates/gsplat-render-wgpu` diff.
 
+## F Device Refresh — Android A/B and Physical-iOS Boundary
+
+- The API 36 arm64 AVD is useful only after a cold boot. Its saved quickboot
+  state exposed a launcher in package metadata but rejected the same explicit
+  activity; cold boot restored normal package-manager resolution. A separate
+  temporary user-data image avoided modifying the user's stored AVD and
+  provided enough installation space for the 90 MiB APK.
+- Minimal Direct and Paged both complete on the same gfxstream/SwiftShader
+  backend, so the backend is not generally incapable of running the renderer.
+  Kitsune Paged also completes with the expected 279,199 source / 225,784
+  resident-drawn split, proving the final fixed-slot Surface path executes on
+  Android even though it is extremely slow in software rendering.
+- Kitsune Direct crashes before presentation in wgpu buffer creation. The
+  caller return addresses distinguish the three `create_buffer_init` calls:
+  params returns at `0x32a0d4`, source at `0x32a150`, and the failing SH-rest
+  call at `0x32a19c`. Degree-3 Kitsune SH-rest is 50,255,820 bytes. The same
+  final and `3150b7b` APKs fault at `0x7b02fe98d0`, so this AVD behavior is a
+  baseline-equivalent large mapped-upload limitation, not evidence of a
+  refactor regression.
+- The A/B result narrows the claim but does not convert failure into success:
+  Android final evidence now contains minimal Direct/Paged and over-slot Paged,
+  while large-scene Direct still needs a physical-device run or a separately
+  reviewed upload-hardening slice.
+- Physical iOS build/sign/install succeeds against the connected paired phone,
+  but CoreDevice first lost its provider and then acquired a tunnel only for
+  SpringBoard to deny launch while locked. A build or install cannot substitute
+  for Direct/Paged presentation; no physical-iOS render claim is made.
+
 ## Prior Evidence — Not Terminal HEAD-Bound Proof
 
 - The earlier `cargo test --workspace` run passed. The renderer reported 96
@@ -665,13 +693,15 @@ architecture cleanup after the independent audit.
   future work.
 - Paged uses four fixed GPU slots and a global SortedAlpha order over the active
   set, but it is not an end-to-end bounded CPU/source/GPU streaming pipeline.
-- Android Paged is materially slower than Direct in this fresh run. No
-  performance threshold is claimed, and no telemetry/sidecar/network
-  validator machinery was restored to disguise that result.
+- Android Kitsune Paged averaged 3,364 ms/frame on the software-rendered AVD;
+  large-scene Direct crashed before rendering, so no same-scene performance
+  comparison is valid. No threshold is claimed, and no telemetry/sidecar/
+  network validator machinery was restored to disguise that result.
 - Earlier Android evidence used a physical device but is not terminal-HEAD
-  proof; current Android Direct/Paged acceptance is unavailable without a
-  connected target. iOS terminal proof can cover a simulator Surface only, and
-  a physical-iOS rerun remains useful before a release-level mobile claim.
+  proof. Current Android evidence covers minimal Direct/Paged and Kitsune Paged
+  on an AVD, but not large-scene Direct or physical Android. iOS terminal proof
+  covers a simulator Surface; the paired physical phone was locked at launch,
+  so an unlocked rerun remains required before a release-level mobile claim.
 - Production cleanup now passes at 7,607 lines versus the 7,621-line baseline.
   Auto selection now uses effective requested-device limits, and decoded page
   payloads have typed lookup and structural bounds validation. The remaining

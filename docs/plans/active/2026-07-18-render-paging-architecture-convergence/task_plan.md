@@ -15,9 +15,12 @@ overall-complete claim. Corrective A reset acceptance, B fixed automatic
 selection against requested device limits, C added typed page-source and
 payload validation, and D finished the production cleanup gate at 7,607 lines.
 E found that every real SDK needs a new public Auto option or ABI value and
-stopped at the authorized API boundary. F completed every locally executable
-proof route; Android Direct/Paged device execution remains unavailable, so the
-overall goal stays in progress and the hardware gate is the single blocker.
+stopped at the authorized API boundary. F completed the exact-HEAD core, Web,
+FFI, simulator, and over-slot proof. A fresh Android emulator run now proves
+minimal Direct/Paged plus Kitsune Paged, while Kitsune Direct reproduces the
+same SH-rest upload crash on `3150b7b` and current code. No physical Android is
+connected, and the available physical iPhone installed but could not launch
+while locked. The overall goal therefore stays in progress at the device gate.
 
 ## Guardrails
 
@@ -93,10 +96,13 @@ overall goal stays in progress and the hardware gate is the single blocker.
 - [x] Reconcile handbook/plan facts with the implemented boundary.
 - [ ] Deliver architecture diagrams, deletion/move list, commits, fresh
       evidence, device gaps, and remaining risks.
-- **Status:** partial. Core, Web, FFI, final Android build/host smoke, iOS
-  Direct/Paged Surface, and fixed-camera over-slot comparison passed on the
-  evidence candidate. The no-code record commit must be followed by the exact
-  final-HEAD rerun. Android device execution remains unavailable.
+- **Status:** partial. Exact-HEAD core, Web, FFI, Android build/host smoke, iOS
+  simulator Direct/Paged Surface, and fixed-camera over-slot comparison passed
+  at `4a8863a`. Android emulator minimal Direct/Paged and Kitsune Paged also
+  passed. Kitsune Direct fails identically on `3150b7b` and current code in the
+  AVD SH-rest upload, so it is not a refactor regression but is not a Direct
+  device pass. Physical Android remains absent; physical iOS is paired but was
+  locked at launch.
 
 ### Corrective Execution A-F
 
@@ -118,7 +124,7 @@ overall goal stays in progress and the hardware gate is the single blocker.
       automatic oversized routing to one minimal real consumer only if that
       does not silently widen the C ABI or product surface. Otherwise record a
       reviewable blocker and stop before API expansion.
-- [ ] **F — Partial, hardware blocker remains:** rebuild and retain commit-tagged text
+- [ ] **F — Partial, device blocker remains:** rebuild and retain commit-tagged text
       manifests/logs for workspace, renderer, conformance, FFI, Web, Android
       Direct+Paged, and available iOS Surface. Add fixed-camera over-slot Paged
       count/image comparison for `3150b7b` versus final HEAD. Missing hardware
@@ -140,8 +146,12 @@ overall goal stays in progress and the hardware gate is the single blocker.
   and manifest are generated from the exact frozen HEAD. Do not infer
   provenance from artifact timestamps.
 - A device build is compatibility evidence, not a device-run substitute.
-  Record Android Direct/Paged as unavailable when `adb devices -l` exposes no
-  target, and do not promote the overall goal to complete.
+  The refreshed AVD may be counted only for the paths it actually completed:
+  minimal Direct/Paged and Kitsune Paged. Its Kitsune Direct SIGSEGV is retained
+  with a same-device `3150b7b` reproduction, and cannot be reported as a pass.
+  Do not promote the overall goal to complete without the missing physical
+  Android Direct/Paged and an unlocked physical-iOS run or an explicitly
+  accepted reduced platform gate.
 
 ## Acceptance Matrix
 

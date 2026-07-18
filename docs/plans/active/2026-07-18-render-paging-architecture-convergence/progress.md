@@ -317,6 +317,36 @@
   gate therefore remains a 14-line production reduction without test deletion
   during D.
 
+## 2026-07-18 — F Device Refresh After Exact-HEAD Proof
+
+- **Status:** partial. Android emulator evidence expanded, but the physical
+  device gate remains open and overall architecture convergence is still
+  `in_progress`.
+- Exact-HEAD proof at `4a8863a` already passed workspace/renderer/required
+  Metal/clippy/rustdoc/FFI/Web, iOS simulator Direct/Paged, production recount,
+  and baseline/final over-slot PNG parity. This refresh does not replace those
+  logs or turn ignored binaries into provenance.
+- A cold-started API 36 arm64 AVD on gfxstream/SwiftShader used a fresh
+  temporary data image. A final-code minimal fixture completed 30 measured
+  frames on Direct (`avg_visible=avg_drawn=3`) and Paged
+  (`avg_loaded_source=avg_drawn=3`).
+- The same final code and AVD completed Kitsune Paged for 30 measured frames:
+  `geometry_pipeline=paged_active_atlas`, `avg_loaded_source=279199`, and
+  `avg_drawn=225784`. The emulator averaged 3,364 ms/frame; this is a slow
+  compatibility observation, not a performance pass.
+- Kitsune Direct reproducibly SIGSEGVs during `DirectSceneResources::new`.
+  Symbolization and disassembly place the failing call at the 50,255,820-byte
+  degree-3 SH-rest `create_buffer_init`, after the smaller params/source calls.
+  A disposable `3150b7b` APK failed on the same AVD with the same signal and
+  fault address, so the emulator failure is not introduced by this refactor.
+  It still cannot be reported as a final Direct device pass.
+- A paired physical iPhone was discovered and the current app built, signed,
+  and installed. The first CoreDevice attempt disconnected; the retry acquired
+  a tunnel but SpringBoard rejected launch because the device was locked. No
+  physical-iOS Direct/Paged renderer result exists.
+- The temporary AVD data image and detached baseline worktree were removed.
+  The primary worktree remained clean at `4a8863a` before this docs update.
+
 ## Error Log
 
 | Error | Attempt | Resolution |
@@ -346,13 +376,19 @@
 | First D2 per-revision line-count shell used zsh's reserved `path` parameter as a loop variable | 1 | The temporary shell lost command lookup only; use task-specific `source_file` and rerun before making deletion decisions. |
 | First F provenance manifest passed `head=HEAD` as a revision | 1 | Git rejected it without changing state; regenerated the log with the full HEAD SHA and retained only the corrected manifest. |
 | First final-evidence record patch used a stale error-table context | 1 | No file changed in that failed patch; re-read exact sections and applied smaller hunks. |
+| Guessed `cmdline-tools/latest/bin/avdmanager` was absent | 1 | Located the installed emulator and existing AVD from the SDK/AVD files instead of inventing a tool path. |
+| Existing AVD quickboot had stale package-manager launcher state | 1 | A non-destructive cold boot restored launcher resolution. |
+| Existing AVD data partition could not stage the APK | 1 | Used a disposable fresh data image with 5 GiB free; the original AVD data was not wiped. |
+| First baseline Android build set `CARGO_TARGET_DIR`, but the repo script requires its root-local archive path | 1 | Re-ran unmodified in the disposable worktree and retained the failed attempt in the raw build log. |
+| First physical-iOS wrapper used zsh's read-only `status` variable after the run | 1 | Inspected the preserved raw log, then used a task-specific `rc` variable on retry. |
+| Physical-iOS benchmark could not launch while the paired phone was locked | 2 | Retain build/install and CoreDevice errors as partial evidence; require an unlocked rerun before any device claim. |
 
 ## 5-Question Reboot Check
 
 | Question | Answer |
 |----------|--------|
-| Where am I? | F candidate proof is complete; Android device execution is unavailable |
-| Where am I going? | Rerun every available proof on the no-code final HEAD and retain the Android hardware gap |
+| Where am I? | Exact-HEAD local proof is complete; refreshed Android is partial and physical device acceptance remains open |
+| Where am I going? | Rerun physical Android Direct/Paged and unlocked physical iOS, then freeze the true final evidence HEAD |
 | What's the goal? | Restore a clear Direct/default vs oversized/Paged architecture while reducing proven waste |
 | What have I learned? | See `findings.md` |
-| What have I done? | Preserved S1-S5, completed corrective A-E, proved the F candidate across available platforms, and kept overall acceptance open for Android hardware |
+| What have I done? | Preserved S1-S5, completed corrective A-E, proved local F routes, isolated an AVD Direct failure as baseline-equivalent, and kept overall acceptance open for physical devices |
