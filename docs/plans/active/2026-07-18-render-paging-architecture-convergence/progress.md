@@ -56,13 +56,13 @@
 | S4 FFI smoke | stable C consumer remains non-zero | `drawn=2 visible=2` | pass |
 | S4 Web check | source/payload boundary compiles for wasm32 | passed; existing cfg-only warnings | pass |
 | S4 hygiene | workspace, fmt, strict renderer clippy, diff check | passed | pass |
-| S5 full workspace tests | all crates and doctests pass | passed; renderer 96 passed, 1 retained ignored | pass |
+| S5 full workspace tests | all crates and doctests pass | passed; renderer 96 passed, 1 retained ignored | historical pass; final rerun pending |
 | S5 required SortedAlpha | GPU-required conformance remains correct | 1 passed on Apple M4 Pro / Metal | pass |
 | S5 native Direct PNG | final counts/image equal baseline | `visible=2`, `drawn=2`, identical SHA-256 | pass |
 | S5 native Direct benchmark | Direct path, non-zero draw, no miss | mean 1.8581 ms; p95 3.1114 ms; 0 misses | observation |
-| S5 Android real model | rebuilt physical-device Direct/Paged runs complete | Direct 14.969 ms; Paged 36.587 ms | pass/observation |
-| S5 iOS available route | rebuilt simulator Direct Surface run completes | 18.992 ms; 279199 visible/drawn | pass/simulator |
-| S5 Web | wasm build/check/tests and real browser Surface | 7 tests; `wasm_sorted_index_direct`, 3 visible/drawn | pass |
+| S5 Android real model | physical-device Direct/Paged runs completed before final commit | Direct 14.969 ms; Paged 36.587 ms | historical observation; provenance gap |
+| S5 iOS available route | simulator Direct Surface run completed before final commit | 18.992 ms; 279199 visible/drawn | historical simulator observation; provenance gap |
+| S5 Web | earlier wasm build/check/tests and browser Surface | 7 tests; `wasm_sorted_index_direct`, 3 visible/drawn | historical pass; ignored output predates final commit |
 | S5 hygiene | fmt, workspace check, strict clippy, rustdoc, diff check | passed | pass |
 
 ## 2026-07-18 — S1 Surface Ownership Split
@@ -125,22 +125,37 @@
 
 ## 2026-07-18 — S5 Cleanup, Documentation, and Platform Regression
 
-- **Status:** complete
+- **Status:** module slice complete; overall acceptance invalidated by later audit
 - Unified renderer timing/stat/raster logic, Surface constructor setup, and
   repeated test fixtures. The four touched test modules retain identical test
   counts before/after, and all original image/safety thresholds remain.
 - Reconciled project context, architecture, roadmap, and golden principles with
   the implemented Direct/default, opt-in oversized/Paged, and explicit
   diagnostic Packed boundary.
-- Fresh final proof includes full workspace tests, required Metal conformance,
-  exact baseline PNG parity, FFI, Web WASM/browser, physical Android Kitsune,
-  and iOS simulator Kitsune.
-- Code-size result: S5 has no new file and is net -375 lines. Across the full
-  task, renderer Rust source is 10,792 versus 10,796 at baseline; `lib.rs` is
-  4,648 versus 5,792. Overall source is smaller even after adding the two
-  ownership modules and the page-source boundary.
+- The slice produced workspace, Metal, PNG, FFI, Web, Android, and simulator
+  observations, but Web/mobile binaries and raw logs were not reliably bound to
+  final `eb12e68`; they are historical evidence only and must be repeated in F.
+- Code-size result: aggregate source is 10,792 versus 10,796, but the corrected
+  production-only measure is 7,821 versus 7,621 (+200), while tests/fixtures
+  fell from 3,175 to 2,971 (-204). Production cleanup remains open.
 - No platform-specific fix was required, no public baseline API/C ABI changed,
   and no push was performed.
+
+## 2026-07-18 — Independent Audit Reopens Overall Acceptance
+
+- **Status:** corrective A complete in this docs-only boundary; overall
+  architecture convergence `in_progress`; B is the sole current blocker.
+- Confirmed a clean `refactor/packed-atlas-d-reset@eb12e68`; preserved all five
+  verified S1-S5 commits and did not switch to the old expanded branch.
+- Recorded the corrected production/test split, synchronous full-source page
+  contract, 1,011-line Surface responsibility hotspot, absent automatic
+  production consumer, effective-device-limits defect, missing payload bounds,
+  and final-evidence provenance gaps.
+- Froze A-F in strict sequence. No code, API, C ABI, generated artifact, or
+  platform binary changes belong to A.
+- Next: B starts with a failing pure logic regression for adapter limits above
+  the requested downlevel storage limit, followed by the smallest effective
+  device-limits selection fix and focused verification.
 
 ## Error Log
 
@@ -161,13 +176,15 @@
 | S5 duplicate-search used a backreference unsupported by default `rg` regex | 1 | Re-ran with `rg --pcre2` and used the successful result only. |
 | First iOS simulator run did not preserve app stdout | 1 | Used the rebuilt installed app with `simctl --console` to capture the benchmark. |
 | Browser documentation exceeded one response | 1 | Read the full 40,171-character contract in seven bounded chunks before navigation. |
+| Aggregate `10,796 -> 10,792` was used as an overall cleanup gate | 1 | Independent audit split production from terminal test modules and found production `7,621 -> 7,821`; overall completion was withdrawn. |
+| Platform observations were called final without commit-tagged raw provenance | 1 | Reclassified them as historical and added final-HEAD manifests/logs plus baseline/final over-slot comparison to F. |
 
 ## 5-Question Reboot Check
 
 | Question | Answer |
 |----------|--------|
-| Where am I? | Phase 5 complete; final verified commit and handoff |
-| Where am I going? | Local commit, clean-state proof, and bounded final report |
+| Where am I? | Corrective A docs-only reset; overall in progress |
+| Where am I going? | B Auto limits, C payload validation, D production cleanup, E consumer boundary, F final proof |
 | What's the goal? | Restore a clear Direct/default vs oversized/Paged architecture while reducing proven waste |
 | What have I learned? | See `findings.md` |
-| What have I done? | Completed S1-S5, full regression, device/browser checks, and net source reduction |
+| What have I done? | Preserved S1-S5, accepted the audit, withdrew the broad completion claim, and froze corrected gates |

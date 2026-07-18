@@ -9,8 +9,11 @@ move is backed by fresh correctness and platform evidence.
 
 ## Current Phase
 
-Complete — S1-S5 are independently committed or ready to commit, canonical
-docs match the implemented boundary, and the final regression matrix is green.
+Architecture convergence remains **in progress**. S1-S5 completed a useful
+module-responsibility split, but an independent audit invalidated the prior
+overall-complete claim. Corrective slice A is this docs-only acceptance reset;
+the single current implementation blocker is B, automatic selection against
+the effective device limits that will actually be requested.
 
 ## Guardrails
 
@@ -58,31 +61,65 @@ docs match the implemented boundary, and the final regression matrix is green.
 ### Phase 3: Direct/Paged Selection Boundary
 
 - [x] Make `SmallSceneDirect` the explicit default low-overhead path.
-- [x] Route to `PagedActiveAtlas` only when Direct resource preflight cannot fit
+- [ ] Route to `PagedActiveAtlas` only when Direct resource preflight cannot fit
       within the documented capacity/headroom policy or an explicit diagnostic
       override is requested.
 - [x] Preserve structured preflight errors and transactional Surface switching.
-- **Status:** complete
+- **Status:** reopened; the automatic constructor preflights adapter limits but
+  later requests lower effective device limits, so an oversized scene can be
+  misclassified as Direct and fail during Direct resource creation.
 
 ### Phase 4: Paged Architecture Boundary
 
 - [x] Isolate local `SceneBuffers`-backed paging behind an honest prototype
       source boundary without claiming end-to-end streaming.
-- [x] Establish the smallest internal metadata/page-source seam needed for
+- [ ] Establish the smallest internal metadata/page-source seam needed for
       future bounded compressed/decoded caches and fixed GPU slots.
-- [x] Preserve coarse-to-fine continuity, one global `SortedAlpha` order, and
+- [ ] Preserve coarse-to-fine continuity, one global `SortedAlpha` order, and
       stale/cancel/generation/nonresident safety.
-- **Status:** complete
+- **Status:** reopened; the current private synchronous `Option` source seam
+  borrows the full scene/page set and the decoded payload lacks typed
+  source/encoding/atlas validation. It is an uploader seam, not bounded source
+  or CPU architecture.
 
 ### Phase 5: Full Regression and Handoff
 
-- [x] Run workspace, focused renderer, offscreen parity, Surface, FFI, Web, and
+- [ ] Run workspace, focused renderer, offscreen parity, Surface, FFI, Web, and
       available Android/iOS verification according to touched scope.
-- [x] Compare renderer line counts and ownership before/after.
+- [ ] Compare production renderer line counts, excluding terminal
+      `#[cfg(test)] mod tests`, and finish below the 7,621-line baseline.
 - [x] Reconcile handbook/plan facts with the implemented boundary.
-- [x] Deliver architecture diagrams, deletion/move list, commits, fresh
+- [ ] Deliver architecture diagrams, deletion/move list, commits, fresh
       evidence, device gaps, and remaining risks.
-- **Status:** complete
+- **Status:** reopened; prior Web/mobile binaries and logs are not reliably
+  bound to final commit `eb12e68`, Surface paged coverage prepares but does not
+  present, and no fixed-camera over-slot baseline/final image comparison exists.
+
+### Corrective Execution A-F
+
+- [x] **A — Acceptance reset:** record the independent audit, restore overall
+      `in_progress`, freeze remaining gates, and commit docs only.
+- [ ] **B — Current blocker:** reproduce the Auto effective-device-limits bug
+      with a pure logic test, apply the smallest fix without API expansion, and
+      freshly run renderer lib, required Metal conformance, workspace check,
+      strict clippy, formatting, and diff hygiene before an isolated commit.
+- [ ] **C — Payload boundary:** add typed failure plus payload/source bounds and
+      encoding/atlas validation while keeping `LocalScenePageSource`, public
+      Rust API, and C ABI behavior stable; verify and commit independently.
+- [ ] **D — Production cleanup:** reduce renderer production code below 7,621
+      lines without deleting tests or shifting the same responsibilities into
+      another large file. Prefer smaller Surface policy/device/resource/draw
+      owners and proven duplicate removal; keep each slice below 800 net-new
+      lines and at most two new files.
+- [ ] **E — Real automatic consumer:** assess the SDK boundary, then connect
+      automatic oversized routing to one minimal real consumer only if that
+      does not silently widen the C ABI or product surface. Otherwise record a
+      reviewable blocker and stop before API expansion.
+- [ ] **F — Final HEAD-bound proof:** rebuild and retain commit-tagged text
+      manifests/logs for workspace, renderer, conformance, FFI, Web, Android
+      Direct+Paged, and available iOS Surface. Add fixed-camera over-slot Paged
+      count/image comparison for `3150b7b` versus final HEAD. Missing hardware
+      produces a partial result, never an overall-complete claim.
 
 ## Acceptance Matrix
 
@@ -95,6 +132,13 @@ docs match the implemented boundary, and the final regression matrix is green.
 | Surface | stable non-zero direct and paged Surface smoke |
 | ABI/platform | FFI smoke and touched Web/mobile routes; device claims only from fresh runs |
 | Architecture | smaller renderer root, explicit ownership, no unsupported streaming claim |
+| Production size | renderer non-test production code below 7,621 lines; tests/fixtures retained |
+| Auto selection | pure logic regression proves selection uses the limits requested from the device |
+| Page payload | typed failure for missing page, source-index bounds, count, encoding, and atlas compatibility |
+| Surface ownership | `SurfacePresenter` no longer owns negotiation, policy, all resources, refresh, schedule, and draw in one 1,011-line unit |
+| Product entry | one real SDK consumer routes oversized scenes automatically, or an explicit API-boundary blocker is accepted |
+| Evidence provenance | small commit-tagged text manifest/logs generated from final HEAD; no ignored binary timestamp inference |
+| Over-slot image | fixed-camera `3150b7b` vs final Paged count plus image hash/SSIM comparison |
 
 ## Architecture Before and Target
 
@@ -114,7 +158,7 @@ flowchart TD
     OR --> FS
 ```
 
-### After
+### Implemented Partial State
 
 ```mermaid
 flowchart TD
@@ -132,9 +176,10 @@ flowchart TD
     ACTIVE --> SA
 ```
 
-The target does not claim that the local adapter is streaming. It creates the
-ownership seam and shared runtime needed to replace it without changing the
-draw, residency, or public platform lifecycles.
+This is not the accepted target yet. The local adapter still borrows full
+`SceneBuffers`, `SpatialPageSet` stores a source index for every splat, decode,
+packing, sort, and SH refresh remain synchronous, and automatic selection has
+no production consumer. The diagram records the useful module seam only.
 
 ## Implementation Slices and Rollback Points
 
@@ -177,11 +222,13 @@ draw, residency, or public platform lifecycles.
 - Verify: small/limit/over-limit policy tests, transactional failure tests,
   Direct/Paged Surface construction paths, FFI smoke, Web WASM check if its
   constructor is touched.
-- **Status:** complete; stable constructors and `GeometryPath::default()`
+- **Status:** module slice complete, product acceptance reopened; stable
+  constructors and `GeometryPath::default()`
   remain Direct. Opt-in `*_auto` constructors call
   `select_automatic_surface_geometry_path` only after the compatible adapter
-  reports Direct `ActiveAtlasRequired`, and restore the previous renderer path
-  on preparation failure.
+  reports Direct `ActiveAtlasRequired`, but selection currently uses adapter
+  limits rather than the lower effective limits requested for the device, and
+  no production consumer calls these constructors.
 
 ### S4 — Honest local page-source seam
 
@@ -195,11 +242,13 @@ draw, residency, or public platform lifecycles.
 - Rollback: independent commit; compatibility wrappers retain public methods.
 - Verify: payload equivalence, cache bounds if added, stale/cancel/generation,
   nonresident exclusion, count/image parity, Surface smoke, and conformance.
-- **Status:** complete; `LocalScenePageSource` performs extraction and packing,
+- **Status:** module slice complete, architecture acceptance reopened;
+  `LocalScenePageSource` performs extraction and packing,
   and the shared runtime hands only `DecodedPagePayload` to GPU upload. No
   decoded cache was added because payloads are synchronous and transient;
   caching would duplicate the already-full-resident local source without
-  evidence of benefit.
+  evidence of benefit. The contract remains private, synchronous, and
+  full-source-backed, and payload validation is incomplete.
 
 ### S5 — Proven cleanup, docs, and platform regression
 
@@ -211,11 +260,15 @@ draw, residency, or public platform lifecycles.
 - Run final workspace/full renderer/FFI/Web and available mobile checks, then
   compare production lines and commits.
 - Rollback: documentation/cleanup commit separate from platform-specific fixes.
-- **Status:** complete; shared renderer timing/raster helpers, Surface
+- **Status:** module cleanup complete, overall cleanup rejected; shared
+  renderer timing/raster helpers, Surface
   constructor helpers, test fixtures, canonical docs, and this proof record
   add 620 lines while deleting 995 in the slice. No new file or test was
   removed. Final renderer Rust source is 10,792 lines versus 10,796 at the
-  start; `lib.rs` is 4,648 versus 5,792.
+  start, but production code grew from 7,621 to 7,821 while test/fixture code
+  fell from 3,175 to 2,971. `lib.rs` is 4,648 versus 5,792, while
+  `surface_presenter.rs` has grown to 1,011 lines and still owns too many
+  responsibilities.
 
 ## Key Questions
 
@@ -237,6 +290,8 @@ draw, residency, or public platform lifecycles.
 | Keep public CPU atlas/reference-oracle APIs even when local production references are absent | Repository reference analysis cannot prove downstream users do not depend on public symbols, and controlled fixtures are explicitly protected. |
 | Make automatic path selection additive while retaining Direct defaults and explicit A/B overrides | This restores the product boundary without changing stable constructor behavior or losing small-fixture parity coverage. |
 | Split Surface ownership before changing paged policy/source semantics | Mechanical movement and duplicate removal can be verified independently from behavior changes. |
+| Measure cleanup using production lines excluding terminal test modules | Aggregate source totals hid +200 production lines behind -204 test/fixture lines, so they cannot prove the required cleanup. |
+| Execute one blocker at a time in A-F order | The reopened gates are coupled enough that parallel changes would weaken attribution and commit-level verification. |
 
 ## Errors Encountered
 
@@ -257,6 +312,7 @@ draw, residency, or public platform lifecycles.
 | S5 duplicate-search used an unsupported default-regex backreference | 1 | Re-ran the reference audit with `rg --pcre2`; no deletion decision depended on the failed search. |
 | The first iOS simulator runner did not retain application stdout | 1 | Re-ran the rebuilt app with `simctl --console` and captured the 120-frame result. |
 | Browser runtime documentation initially exceeded one tool response | 1 | Read the complete 40,171-character browser contract in bounded chunks before controlling the local page. |
+| Overall completion was inferred from aggregate renderer lines and platform runs not reliably bound to final HEAD | 1 | Independent audit invalidated the claim; reopened Phases 3-5 and froze corrective A-F acceptance before further code changes. |
 
 ## Notes
 

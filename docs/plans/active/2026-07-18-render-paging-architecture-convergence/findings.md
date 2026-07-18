@@ -221,6 +221,9 @@
 
 ## S5 Accepted Result
 
+The S5 module cleanup remains useful, but it is **not** accepted as terminal
+architecture cleanup after the independent audit.
+
 - Surface exact/automatic window, raw-handle, and canvas constructors now share
   selection-specific private helpers. Existing signatures and default behavior
   are unchanged; automatic selection is exposed only by the additive
@@ -242,10 +245,58 @@
   10,792 lines versus 10,796 at the start (net -4), while the responsibility
   hotspot `lib.rs` is 4,648 versus 5,792 (net -1,144).
 
-## Final Fresh Evidence
+## Independent Audit Reassessment — New Acceptance Facts
 
-- Full `cargo test --workspace` passed. The renderer reported 96 passed and one
-  explicitly retained research oracle ignored; the required Metal
+- Aggregate renderer lines hid the wrong movement. From `3150b7b` to
+  `eb12e68`, total Rust lines changed 10,796 to 10,792, but excluding each
+  file's terminal `#[cfg(test)] mod tests` changes production code from 7,621
+  to 7,821 (+200) and tests/fixtures from 3,175 to 2,971 (-204). The required
+  production cleanup has not passed; final acceptance requires production
+  source below 7,621 without deleting controlled tests or moving bulk code.
+- `PageSource` is still a private synchronous `Option` contract that borrows a
+  complete `SceneBuffers` and `SpatialPageSet`. The page set retains source
+  indices for every splat, and each frame still performs synchronous decode,
+  packing, global sort, and SH refresh. This is an uploader seam, not bounded
+  source/CPU architecture.
+- `SurfacePresenter` is 1,011 lines and still combines adapter/device
+  negotiation, path policy, Direct/Packed/Paged resources, SH refresh, paged
+  scheduling, and draw submission. Moving code out of `lib.rs` did not finish
+  the responsibility split.
+- The additive automatic constructors and selector have no production
+  consumer. Web, C, Android, and iOS continue to pass explicit paths, so a
+  scene over Direct capacity does not automatically reach Paged end to end.
+- Auto selection has a concrete limits defect: `from_surface_async` preflights
+  adapter limits, while `from_surface_with_adapter_async` requests
+  `downlevel_defaults` with only `max_texture_dimension_2d` raised. A device
+  exposes requested limits, so an adapter with storage limits above 128 MiB can
+  be classified Direct and then rejected by `DirectSceneResources` under the
+  lower actual device limits. B must first reproduce this in pure logic, then
+  select against the effective limits that will be requested.
+- `DecodedPagePayload` validates count only. It does not prove source indices
+  are within the scene or that encoding and atlas contracts match; a future
+  source can therefore cause `refresh_paged_hot_colors` to index out of bounds.
+  C requires structured typed boundary failure without a streaming claim.
+- Previous platform evidence is not terminal evidence: ignored Web/WASM build
+  outputs, Android APK, and iOS app were built before `eb12e68`, and raw logs
+  were not retained. The Surface paged unit test prepares resources but does
+  not present, and no fixed-camera over-slot Paged count/image comparison binds
+  `3150b7b` to final HEAD.
+
+## Corrected Acceptance Consequences
+
+- S1-S5 commits remain preserved as verified module-level work; none should be
+  reverted solely because the overall claim was too broad.
+- Overall state is `in_progress`. B is the only current code blocker, followed
+  strictly by C, production cleanup D, consumer boundary E, and final evidence
+  F.
+- Production line accounting, typed page-source validation, real consumer
+  reachability, and commit-tagged final artifacts are hard gates. Total source
+  size, prepare-only Surface tests, or binary timestamps cannot substitute.
+
+## Prior Evidence — Not Terminal HEAD-Bound Proof
+
+- The earlier `cargo test --workspace` run passed. The renderer reported 96
+  passed and one explicitly retained research oracle ignored; the required Metal
   `SortedAlpha` conformance test passed again with
   `GSPLAT_REQUIRE_GPU_CONFORMANCE=1`.
 - Final canonical 1280x720 Direct PNG reported `visible=2`, `drawn=2`, and the
@@ -255,16 +306,18 @@
   `sorted_index_direct`, mean GPU-complete 1.8581 ms, p95 3.1114 ms, p99
   3.1361 ms, with zero misses. This is a correctness/regression observation,
   not a performance guarantee.
-- Android device `A065` rebuilt and ran the real 279,199-splat Kitsune model.
+- Android device `A065` ran the real 279,199-splat Kitsune model during the
+  earlier slice, but the APK/logs are not reliably bound to `eb12e68`.
   Direct completed 120 frames at 14.969 ms average frame time; the four-slot
   Paged prototype completed at 36.587 ms and drew 225,784 active splats on
   average. The slower Paged result is retained as evidence that fixed local
   residency is not yet a performance win or true streaming.
-- A freshly rebuilt iPhone 17 Pro simulator app completed a 120-frame Kitsune
+- An iPhone 17 Pro simulator app completed a 120-frame Kitsune
   Direct Surface run with `avg_frame_ms=18.992`, `avg_visible=279199`, and
   `avg_drawn=279199`. This is simulator evidence, not a physical-iOS-device
   claim.
-- Web WASM build, package check, and seven package tests passed. The local
+- Web WASM build, package check, and seven package tests passed earlier. The
+  ignored build output predates `eb12e68`, so it must be rebuilt for F. The local
   showcase then reported `renderer=wasm_sorted_index_direct`, `avg_visible=3`,
   and `avg_drawn=3` from the real Rust/WASM Surface path.
 
@@ -281,3 +334,6 @@
   validator machinery was restored to disguise that result.
 - Android evidence is physical-device evidence; iOS evidence is simulator-only.
   A physical iOS rerun remains useful before a release-level mobile claim.
+- Production code is currently 200 lines above the accepted baseline, automatic
+  selection can use incompatible limits, decoded page payloads are
+  under-validated, and no production consumer exercises the automatic path.
