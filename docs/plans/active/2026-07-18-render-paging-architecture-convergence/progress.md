@@ -347,6 +347,32 @@
 - The temporary AVD data image and detached baseline worktree were removed.
   The primary worktree remained clean at `4a8863a` before this docs update.
 
+## 2026-07-18 — Physical iOS Completion and Android Upload Audit
+
+- **Status:** physical iOS complete on `ca27053`; F remains incomplete only
+  because no physical Android is connected.
+- CoreDevice later reported a connected tunnel, developer services available,
+  `passcodeRequired=false`, and `unlockedSinceBoot=true`. The exact `ca27053`
+  app then built, signed, installed, and completed 30 measured Kitsune frames
+  on both physical-iPhone Surface paths.
+- Direct reported `geometry_pipeline=sorted_index_direct`,
+  `avg_visible=avg_drawn=279199`, and `avg_frame_ms=14.650`. Paged reported
+  `geometry_pipeline=paged_active_atlas`, `avg_visible=279199`,
+  `avg_drawn=225784`, and `avg_frame_ms=19.677`. These are compatibility and
+  count observations, not performance thresholds.
+- A non-trivial 236,178-splat Sakura Direct probe reproduced the AVD crash with
+  a 42,512,040-byte SH-rest buffer. A narrow experimental replacement used an
+  unmapped storage buffer plus 4 MiB `Queue::write_buffer` chunks while keeping
+  production accounting at 7,615 lines, below the 7,621 gate.
+- The experiment still SIGSEGVed, now inside wgpu queue-write `memcpy` rather
+  than buffer-init `memset`. This proves simple chunking does not avoid the
+  AVD/SwiftShader mapped-memory failure. The entire uncommitted experiment was
+  reverted; no production code, API, C ABI, path policy, or line count changed.
+- Android remains covered by minimal Direct/Paged, Kitsune Paged, and a
+  same-device `3150b7b`/current large-Direct failure comparison. It does not
+  have the required physical Direct/Paged run because `adb devices -l` remains
+  empty.
+
 ## Error Log
 
 | Error | Attempt | Resolution |
@@ -381,14 +407,15 @@
 | Existing AVD data partition could not stage the APK | 1 | Used a disposable fresh data image with 5 GiB free; the original AVD data was not wiped. |
 | First baseline Android build set `CARGO_TARGET_DIR`, but the repo script requires its root-local archive path | 1 | Re-ran unmodified in the disposable worktree and retained the failed attempt in the raw build log. |
 | First physical-iOS wrapper used zsh's read-only `status` variable after the run | 1 | Inspected the preserved raw log, then used a task-specific `rc` variable on retry. |
-| Physical-iOS benchmark could not launch while the paired phone was locked | 2 | Retain build/install and CoreDevice errors as partial evidence; require an unlocked rerun before any device claim. |
+| Physical-iOS benchmark could not launch while the paired phone was locked | 2 | Retained the failed logs, then reran after CoreDevice reported unlocked; Direct/Paged both passed on `ca27053`. |
+| First bounded SH-rest upload experiment still crashed in wgpu queue-copy memory | 1 | Reverted the complete uncommitted slice; retained the AVD log and did not add an emulator-specific workaround. |
 
 ## 5-Question Reboot Check
 
 | Question | Answer |
 |----------|--------|
-| Where am I? | Exact-HEAD local proof is complete; refreshed Android is partial and physical device acceptance remains open |
-| Where am I going? | Rerun physical Android Direct/Paged and unlocked physical iOS, then freeze the true final evidence HEAD |
+| Where am I? | Physical iOS Direct/Paged and all local gates pass; physical Android is the only remaining acceptance gap |
+| Where am I going? | Run physical Android Direct/Paged when a target is connected, then freeze the true final evidence HEAD |
 | What's the goal? | Restore a clear Direct/default vs oversized/Paged architecture while reducing proven waste |
 | What have I learned? | See `findings.md` |
-| What have I done? | Preserved S1-S5, completed corrective A-E, proved local F routes, isolated an AVD Direct failure as baseline-equivalent, and kept overall acceptance open for physical devices |
+| What have I done? | Preserved S1-S5, completed corrective A-E, proved physical iOS, rejected an ineffective AVD upload workaround, and kept F open only for physical Android |

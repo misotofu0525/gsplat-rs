@@ -652,10 +652,17 @@ architecture cleanup after the independent audit.
   Android final evidence now contains minimal Direct/Paged and over-slot Paged,
   while large-scene Direct still needs a physical-device run or a separately
   reviewed upload-hardening slice.
-- Physical iOS build/sign/install succeeds against the connected paired phone,
-  but CoreDevice first lost its provider and then acquired a tunnel only for
-  SpringBoard to deny launch while locked. A build or install cannot substitute
-  for Direct/Paged presentation; no physical-iOS render claim is made.
+- Physical iOS initially failed while locked, then later exposed a connected
+  tunnel and unlocked state. Exact-`ca27053` Kitsune Direct and Paged runs both
+  completed 30 measured frames with the expected 279,199 source-visible count;
+  Direct drew 279,199 and Paged drew 225,784 active residents.
+- Sakura narrows the Android AVD issue beyond one dataset: its 236,178 splats
+  require 42,512,040 SH-rest bytes and fail in the same Direct resource stage.
+  Replacing the single mapped buffer initialization with an unmapped buffer and
+  4 MiB queue-write chunks moved the SIGSEGV into wgpu queue-write `memcpy`.
+  Therefore simple chunking is not a valid fix for this SwiftShader mapped-
+  memory behavior; the experiment was reverted instead of adding workaround
+  complexity to the Direct default.
 
 ## Prior Evidence — Not Terminal HEAD-Bound Proof
 
@@ -699,9 +706,9 @@ architecture cleanup after the independent audit.
   network validator machinery was restored to disguise that result.
 - Earlier Android evidence used a physical device but is not terminal-HEAD
   proof. Current Android evidence covers minimal Direct/Paged and Kitsune Paged
-  on an AVD, but not large-scene Direct or physical Android. iOS terminal proof
-  covers a simulator Surface; the paired physical phone was locked at launch,
-  so an unlocked rerun remains required before a release-level mobile claim.
+  on an AVD, but not large-scene Direct or physical Android. Physical iOS now
+  covers both Kitsune paths on `ca27053`; physical Android remains the sole
+  platform acceptance gap.
 - Production cleanup now passes at 7,607 lines versus the 7,621-line baseline.
   Auto selection now uses effective requested-device limits, and decoded page
   payloads have typed lookup and structural bounds validation. The remaining

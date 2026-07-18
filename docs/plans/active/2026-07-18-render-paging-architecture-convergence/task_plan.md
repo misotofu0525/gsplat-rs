@@ -19,8 +19,10 @@ stopped at the authorized API boundary. F completed the exact-HEAD core, Web,
 FFI, simulator, and over-slot proof. A fresh Android emulator run now proves
 minimal Direct/Paged plus Kitsune Paged, while Kitsune Direct reproduces the
 same SH-rest upload crash on `3150b7b` and current code. No physical Android is
-connected, and the available physical iPhone installed but could not launch
-while locked. The overall goal therefore stays in progress at the device gate.
+connected. The paired physical iPhone later unlocked and completed Kitsune
+Direct/Paged on `ca27053`. A bounded SH-rest queue-upload experiment moved the
+AVD fault from buffer creation to queue-copy memory and was fully reverted.
+The overall goal is now blocked only at the physical-Android device gate.
 
 ## Guardrails
 
@@ -101,8 +103,9 @@ while locked. The overall goal therefore stays in progress at the device gate.
   at `4a8863a`. Android emulator minimal Direct/Paged and Kitsune Paged also
   passed. Kitsune Direct fails identically on `3150b7b` and current code in the
   AVD SH-rest upload, so it is not a refactor regression but is not a Direct
-  device pass. Physical Android remains absent; physical iOS is paired but was
-  locked at launch.
+  device pass. Physical iOS then passed both Kitsune paths on `ca27053`:
+  Direct drew all 279,199 visible splats and Paged drew 225,784 active residents.
+  Physical Android remains absent.
 
 ### Corrective Execution A-F
 
@@ -124,7 +127,7 @@ while locked. The overall goal therefore stays in progress at the device gate.
       automatic oversized routing to one minimal real consumer only if that
       does not silently widen the C ABI or product surface. Otherwise record a
       reviewable blocker and stop before API expansion.
-- [ ] **F — Partial, device blocker remains:** rebuild and retain commit-tagged text
+- [ ] **F — Blocked on physical Android:** rebuild and retain commit-tagged text
       manifests/logs for workspace, renderer, conformance, FFI, Web, Android
       Direct+Paged, and available iOS Surface. Add fixed-camera over-slot Paged
       count/image comparison for `3150b7b` versus final HEAD. Missing hardware
@@ -149,8 +152,8 @@ while locked. The overall goal therefore stays in progress at the device gate.
   The refreshed AVD may be counted only for the paths it actually completed:
   minimal Direct/Paged and Kitsune Paged. Its Kitsune Direct SIGSEGV is retained
   with a same-device `3150b7b` reproduction, and cannot be reported as a pass.
-  Do not promote the overall goal to complete without the missing physical
-  Android Direct/Paged and an unlocked physical-iOS run or an explicitly
+  Physical iOS Direct/Paged is now covered. Do not promote the overall goal to
+  complete without the missing physical Android Direct/Paged or an explicitly
   accepted reduced platform gate.
 
 ## Acceptance Matrix
