@@ -318,6 +318,7 @@ no production consumer. The diagram records the useful module seam only.
 | First B fix patch used a shortened texture-limit assignment as context | 1 | Patch verification made no code changes; reapplied the same minimal fix in smaller context-accurate hunks. |
 | B format check requested canonical wrapping for the strengthened regression call | 1 | Applied rustfmt and reran the complete B verification sequence. |
 | First full B verification reached strict clippy with an 8-argument private Surface constructor | 1 | Renderer tests, Metal conformance, and workspace check had passed; grouped adapter info/limits/effective limits into one private context and reran the full sequence without a lint allow. |
+| First D1 full verification failed strict clippy on the size gap inside the single-active Surface geometry enum | 1 | Box only the private Paged runtime variant, then rerun every D1 gate from renderer tests. |
 
 ## Notes
 

@@ -72,6 +72,9 @@
 | C invalid GPU payload | reject before GPU write/active publication | active entries remained empty | pass |
 | C renderer/SortedAlpha | full renderer plus required Metal conformance | 100 passed, 1 ignored; conformance 1 passed | pass |
 | C workspace/platform hygiene | workspace, strict clippy, wasm32, fmt, diff | passed; existing wasm cfg warnings only | pass |
+| D1 renderer/SortedAlpha | shared draw and Surface ownership preserve every path | 100 passed, 1 ignored; conformance 1 passed on Metal | pass |
+| D1 workspace/platform | workspace, strict clippy, wasm32, FFI, fmt, diff | passed; FFI `drawn=2 visible=2` | pass |
+| D1 production size | remove duplication and retain tests | 7,978 -> 7,866 production; tests remain 3,129 | pass for slice; D gate open |
 
 ## 2026-07-18 — S1 Surface Ownership Split
 
@@ -210,6 +213,25 @@
   no file or public API/C ABI surface was added. D is the sole current blocker
   and must remove at least 358 production lines.
 
+## 2026-07-18 — D Production Cleanup Audit
+
+- **Status:** in progress; D1 is independently verified, and D2 duplicate-owner
+  selection is the sole next action after the D1 commit.
+- Baseline for D is 7,978 production / 3,129 test-fixture lines. Acceptance is
+  7,620 production lines or fewer with all tests retained.
+- Six duplicated render-pass bodies and the three-Option-plus-path Surface
+  resource invariant are the first proven deletion targets. No code move alone
+  will count toward acceptance.
+- D1's first verification reached 100 renderer tests plus one retained ignored
+  oracle, required Metal conformance, and workspace check. Strict clippy then
+  rejected the large size gap in the single-active geometry enum; those earlier
+  passes are not the final D1 evidence. The private Paged runtime alone is now
+  boxed, and every D1 gate must rerun.
+- Final D1 rerun passed renderer 100/1, required Metal conformance, workspace
+  check, strict clippy, wasm32, FFI smoke, formatting, and diff hygiene.
+  Production code is 7,866 lines and tests remain 3,129; Surface production is
+  918 lines. D still needs at least 246 production-line deletions.
+
 ## Error Log
 
 | Error | Attempt | Resolution |
@@ -235,6 +257,7 @@
 | First B fix patch used stale shortened context around the texture-limit assignment | 1 | No code hunk applied; split the fix into exact smaller patches. |
 | B format check found one non-canonical wrapped test call | 1 | Applied standard rustfmt before full verification. |
 | First full B verification failed strict clippy on `too_many_arguments` after earlier gates passed | 1 | Replace three adapter-related parameters with one private context, then rerun every B gate. |
+| First D1 full verification failed strict clippy on `large_enum_variant` | 1 | Box only the private Paged runtime variant, then rerun every D1 gate from renderer tests. |
 
 ## 5-Question Reboot Check
 

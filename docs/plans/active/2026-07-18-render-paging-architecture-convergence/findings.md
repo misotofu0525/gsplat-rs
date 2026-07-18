@@ -386,6 +386,55 @@ architecture cleanup after the independent audit.
   lines to finish below the 7,621 baseline; none of that reduction may come
   from deleting these new safety tests.
 
+## D Audit — Production Ownership and Proven Duplication
+
+- `SurfacePresenter` is now 1,033 production lines after B/C. It represents
+  exactly one active geometry path but stores three `Option` resources plus a
+  separate `geometry_path`, forcing repeated path/resource checks and reset
+  logic. A private enum can encode the invariant and remove duplicate state;
+  this is structural deletion, not a file move.
+- Surface Direct, Packed, and Paged each repeat the same acquire/view/encoder/
+  render-pass/submit/present sequence. Offscreen Direct, Packed, and Paged
+  repeat the same render-pass descriptor and draw sequence again. One shared
+  command encoder helper can replace six copies while preserving clear color,
+  pipeline, bind group, vertex count, and instance count as explicit inputs.
+- Surface packed refresh stores three independent `Option` fields and clears
+  them in multiple places. It should become one small owned state value only if
+  doing so removes repeated transitions; moving the same lines to a new file is
+  not sufficient.
+- The first D slice will combine a shared render-pass encoder with the
+  single-active Surface geometry enum. It may add at most two small files, must
+  reduce total production lines materially, keep every test, and repeat full
+  renderer/Metal/workspace/clippy verification before commit.
+- Remaining production reduction after that slice must come from another
+  proven duplicate owner, likely shared packed refresh or pipeline/resource
+  construction. D acceptance remains numeric: 7,620 or lower, regardless of
+  how much smaller `surface_presenter.rs` becomes.
+
+## D1 Accepted Result — Shared Draw and Single Surface Geometry
+
+- One 44-line private draw encoder now owns the sole `begin_render_pass` in the
+  renderer source. Surface and offscreen Direct/Packed/Paged pass explicit
+  labels, target, pipeline, bind group, clear color, vertex count, and instance
+  count, preserving all six prior draw configurations without repeated pass
+  descriptors.
+- `SurfacePresenter` now owns exactly one `SurfaceGeometry` variant rather than
+  a path plus three independently optional resources. The private Paged runtime
+  alone is boxed to keep the enum compact; public constructors, methods, path
+  values, Rust API, and C ABI are unchanged.
+- The former Surface Packed fallback allocation was unreachable under both
+  constructor and transactional path switching: every Packed presenter already
+  owned Packed resources. Deleting that branch preserves first-frame refresh
+  behavior and removes a second resource-construction path.
+- Production accounting moved from 7,978 to 7,866 lines (-112), with all 3,129
+  test/fixture lines retained. `SurfacePresenter` production code moved from
+  1,033 to 918 lines. D still needs at least 246 more production-line deletions
+  to finish at 7,620 or below.
+- Fresh final D1 verification passed 100 renderer tests plus one retained
+  ignored research oracle, required Metal SortedAlpha conformance, workspace
+  check, strict renderer clippy, wasm32 Web check, FFI smoke, formatting, and
+  diff hygiene. The wasm route retains only existing cfg-specific warnings.
+
 ## Prior Evidence — Not Terminal HEAD-Bound Proof
 
 - The earlier `cargo test --workspace` run passed. The renderer reported 96

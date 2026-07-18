@@ -3,6 +3,7 @@
 use gsplat_core::{Camera, SceneBuffers};
 use gsplat_sort::CpuSortBackend;
 
+use crate::draw_pass::{SplatDraw, encode_splat_draw};
 use crate::packed_gpu;
 use crate::paged_active_set::PagedActiveSet;
 use crate::{
@@ -11,10 +12,9 @@ use crate::{
     SpatialPageSet, SurfacePresenterError, create_direct_bind_group_layout, create_direct_pipeline,
     create_surface_instance, direct_scene_preflight, fit_surface_size,
     packed_color_refresh_band_size, packed_color_refresh_needed, packed_color_refresh_position_key,
-    packed_scene_preflight, preprocess_paged_visible_into, refresh_packed_hot_colors,
-    refresh_packed_hot_colors_range, refresh_paged_hot_colors,
-    select_automatic_surface_geometry_path, select_present_mode, surface_error_to_presenter,
-    wgpu_label,
+    packed_scene_preflight, preprocess_paged_visible_into, refresh_packed_hot_colors_range,
+    refresh_paged_hot_colors, select_automatic_surface_geometry_path, select_present_mode,
+    surface_error_to_presenter, wgpu_label,
 };
 
 enum SurfacePathSelection<'a> {
@@ -107,10 +107,7 @@ pub struct SurfacePresenter {
     surface_config: wgpu::SurfaceConfiguration,
     max_texture_dimension_2d: u32,
     instance_count: u32,
-    geometry_path: GeometryPath,
-    direct_scene: Option<DirectSceneResources>,
-    packed_scene: Option<packed_gpu::PackedAtlasResources>,
-    paged_scene: Option<SurfacePagedRuntime>,
+    geometry: SurfaceGeometry,
     /// Last camera position whose hot colors have been fully applied.
     packed_color_refresh_position: Option<[f32; 3]>,
     /// Next splat index for an in-flight banded refresh, if any.
@@ -119,11 +116,21 @@ pub struct SurfacePresenter {
     packed_color_refresh_target: Option<[f32; 3]>,
 }
 
-type SurfaceGeometryResources = (
-    Option<DirectSceneResources>,
-    Option<packed_gpu::PackedAtlasResources>,
-    Option<SurfacePagedRuntime>,
-);
+enum SurfaceGeometry {
+    Direct(DirectSceneResources),
+    Packed(packed_gpu::PackedAtlasResources),
+    Paged(Box<SurfacePagedRuntime>),
+}
+
+impl SurfaceGeometry {
+    const fn path(&self) -> GeometryPath {
+        match self {
+            Self::Direct(_) => GeometryPath::SortedIndexDirect,
+            Self::Packed(_) => GeometryPath::PackedAtlas,
+            Self::Paged(_) => GeometryPath::PagedActiveAtlas,
+        }
+    }
+}
 
 fn create_geometry_resources(
     device: &wgpu::Device,
@@ -132,7 +139,7 @@ fn create_geometry_resources(
     packed_bind_group_layout: &wgpu::BindGroupLayout,
     path: GeometryPath,
     renderer: &Renderer,
-) -> Result<SurfaceGeometryResources, SurfacePresenterError> {
+) -> Result<SurfaceGeometry, SurfacePresenterError> {
     let scene = renderer
         .scene()
         .ok_or(SurfacePresenterError::SceneNotLoaded)?;
@@ -154,7 +161,7 @@ fn create_geometry_resources(
                 world_covariance_terms,
                 alpha_values,
             )?;
-            Ok((Some(direct_scene), None, None))
+            Ok(SurfaceGeometry::Direct(direct_scene))
         }
         GeometryPath::PackedAtlas => {
             let packed_scene = packed_gpu::PackedAtlasResources::from_scene(
@@ -163,7 +170,7 @@ fn create_geometry_resources(
                 packed_bind_group_layout,
                 scene,
             )?;
-            Ok((None, Some(packed_scene), None))
+            Ok(SurfaceGeometry::Packed(packed_scene))
         }
         GeometryPath::PagedActiveAtlas => {
             let pages = renderer
@@ -172,7 +179,7 @@ fn create_geometry_resources(
                 .ok_or(SurfacePresenterError::SceneNotLoaded)?;
             let paged_scene =
                 SurfacePagedRuntime::new(device, queue, packed_bind_group_layout, scene, pages)?;
-            Ok((None, None, Some(paged_scene)))
+            Ok(SurfaceGeometry::Paged(Box::new(paged_scene)))
         }
     }
 }
@@ -630,7 +637,7 @@ impl SurfacePresenter {
         let packed_bind_group_layout = packed_gpu::create_packed_bind_group_layout(&device);
         let packed_pipeline =
             packed_gpu::create_packed_pipeline(&device, &packed_bind_group_layout, format);
-        let (direct_scene, packed_scene, paged_scene) = create_geometry_resources(
+        let geometry = create_geometry_resources(
             &device,
             &queue,
             &direct_bind_group_layout,
@@ -650,10 +657,7 @@ impl SurfacePresenter {
             surface_config,
             max_texture_dimension_2d,
             instance_count: 0,
-            geometry_path,
-            direct_scene,
-            packed_scene,
-            paged_scene,
+            geometry,
             packed_color_refresh_position: None,
             packed_color_refresh_cursor: None,
             packed_color_refresh_target: None,
@@ -685,7 +689,7 @@ impl SurfacePresenter {
     }
 
     pub const fn geometry_path(&self) -> GeometryPath {
-        self.geometry_path
+        self.geometry.path()
     }
 
     /// Switches the Surface geometry path, clearing and rebuilding the GPU
@@ -699,22 +703,19 @@ impl SurfacePresenter {
         path: GeometryPath,
         renderer: &Renderer,
     ) -> Result<(), SurfacePresenterError> {
-        if self.geometry_path == path {
+        if self.geometry.path() == path {
             return Ok(());
         }
 
         try_prepare_then_commit(
             self,
             |presenter| presenter.prepare_geometry_resources(path, renderer),
-            |presenter, (direct_scene, packed_scene, paged_scene)| {
-                presenter.direct_scene = direct_scene;
-                presenter.packed_scene = packed_scene;
-                presenter.paged_scene = paged_scene;
+            |presenter, geometry| {
+                presenter.geometry = geometry;
                 presenter.packed_color_refresh_position = None;
                 presenter.packed_color_refresh_cursor = None;
                 presenter.packed_color_refresh_target = None;
                 presenter.instance_count = 0;
-                presenter.geometry_path = path;
             },
         )
     }
@@ -723,7 +724,7 @@ impl SurfacePresenter {
         &self,
         path: GeometryPath,
         renderer: &Renderer,
-    ) -> Result<SurfaceGeometryResources, SurfacePresenterError> {
+    ) -> Result<SurfaceGeometry, SurfacePresenterError> {
         create_geometry_resources(
             &self.device,
             &self.queue,
@@ -741,7 +742,7 @@ impl SurfacePresenter {
         camera: &Camera,
         refresh_indices: bool,
     ) -> Result<(), SurfacePresenterError> {
-        match self.geometry_path {
+        match self.geometry.path() {
             GeometryPath::SortedIndexDirect => {
                 self.render_direct_frame(sorted_indices, camera, refresh_indices)
             }
@@ -758,63 +759,18 @@ impl SurfacePresenter {
         camera: &Camera,
         refresh_indices: bool,
     ) -> Result<(), SurfacePresenterError> {
-        let instance_count = self
-            .direct_scene
-            .as_ref()
-            .ok_or(SurfacePresenterError::SceneNotLoaded)?
-            .prepare(
-                &self.queue,
-                sorted_indices,
-                camera,
-                self.surface_config.width,
-                self.surface_config.height,
-                refresh_indices,
-            )?;
-        self.instance_count = instance_count;
-
-        let Some(frame) = self.acquire_surface_texture()? else {
-            return Ok(());
+        let SurfaceGeometry::Direct(direct) = &self.geometry else {
+            return Err(SurfacePresenterError::SceneNotLoaded);
         };
-        let view = frame
-            .texture
-            .create_view(&wgpu::TextureViewDescriptor::default());
-
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: wgpu_label("gsplat-surface-direct-encoder"),
-            });
-        {
-            let direct_scene = self
-                .direct_scene
-                .as_ref()
-                .ok_or(SurfacePresenterError::SceneNotLoaded)?;
-            let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: wgpu_label("gsplat-surface-direct-pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                occlusion_query_set: None,
-                timestamp_writes: None,
-                multiview_mask: None,
-            });
-            rpass.set_pipeline(&self.direct_pipeline);
-            rpass.set_bind_group(0, &direct_scene.bind_group, &[]);
-            if instance_count > 0 {
-                rpass.draw(0..6, 0..instance_count);
-            }
-        }
-
-        self.queue.submit(Some(encoder.finish()));
-        frame.present();
-        Ok(())
+        self.instance_count = direct.prepare(
+            &self.queue,
+            sorted_indices,
+            camera,
+            self.surface_config.width,
+            self.surface_config.height,
+            refresh_indices,
+        )?;
+        self.present_geometry()
     }
 
     fn render_packed_frame(
@@ -824,127 +780,50 @@ impl SurfacePresenter {
         camera: &Camera,
         refresh_indices: bool,
     ) -> Result<(), SurfacePresenterError> {
-        let mut force_refresh = false;
-        if self.packed_scene.is_none() {
-            self.packed_scene = Some(packed_gpu::PackedAtlasResources::from_scene(
-                &self.device,
-                &self.queue,
-                &self.packed_bind_group_layout,
-                scene,
-            )?);
-            force_refresh = true;
-            self.packed_color_refresh_position = None;
-            self.packed_color_refresh_cursor = None;
-            self.packed_color_refresh_target = None;
-        }
-
         let position_key = packed_color_refresh_position_key(camera);
-        {
-            let packed_scene = self
-                .packed_scene
-                .as_ref()
-                .ok_or(SurfacePresenterError::SceneNotLoaded)?;
-            let needs_refresh = force_refresh
-                || packed_color_refresh_needed(
-                    self.packed_color_refresh_position,
-                    camera,
-                    packed_scene.bounds_min,
-                    packed_scene.bounds_extent,
-                );
-            if force_refresh {
-                let queue = self.queue.clone();
-                let packed_scene = self
-                    .packed_scene
-                    .as_mut()
-                    .ok_or(SurfacePresenterError::SceneNotLoaded)?;
-                refresh_packed_hot_colors(&queue, packed_scene, scene, camera);
-                self.packed_color_refresh_position = Some(position_key);
+        let SurfaceGeometry::Packed(packed) = &self.geometry else {
+            return Err(SurfacePresenterError::SceneNotLoaded);
+        };
+        let needs_refresh = packed_color_refresh_needed(
+            self.packed_color_refresh_position,
+            camera,
+            packed.bounds_min,
+            packed.bounds_extent,
+        );
+        if !refresh_indices && (self.packed_color_refresh_cursor.is_some() || needs_refresh) {
+            // Defer banded SH refresh off synchronous sort frames so p95 does
+            // not stack a full CPU sort with SH eval/upload.
+            if self.packed_color_refresh_cursor.is_none() {
+                self.packed_color_refresh_cursor = Some(0);
+                self.packed_color_refresh_target = Some(position_key);
+            }
+            let start = self.packed_color_refresh_cursor.unwrap_or(0);
+            let end = (start + packed_color_refresh_band_size(scene.len())).min(scene.len());
+            let SurfaceGeometry::Packed(packed) = &mut self.geometry else {
+                return Err(SurfacePresenterError::SceneNotLoaded);
+            };
+            refresh_packed_hot_colors_range(&self.queue, packed, scene, camera, start, end);
+            if end >= scene.len() {
+                self.packed_color_refresh_position = self.packed_color_refresh_target;
                 self.packed_color_refresh_cursor = None;
                 self.packed_color_refresh_target = None;
-            } else if !refresh_indices
-                && (self.packed_color_refresh_cursor.is_some() || needs_refresh)
-            {
-                // Defer banded SH refresh off synchronous sort frames so p95
-                // does not stack a full CPU sort with SH eval/upload.
-                if self.packed_color_refresh_cursor.is_none() {
-                    self.packed_color_refresh_cursor = Some(0);
-                    self.packed_color_refresh_target = Some(position_key);
-                }
-                let start = self.packed_color_refresh_cursor.unwrap_or(0);
-                let end = (start + packed_color_refresh_band_size(scene.len())).min(scene.len());
-                let queue = self.queue.clone();
-                let packed_scene = self
-                    .packed_scene
-                    .as_mut()
-                    .ok_or(SurfacePresenterError::SceneNotLoaded)?;
-                refresh_packed_hot_colors_range(&queue, packed_scene, scene, camera, start, end);
-                if end >= scene.len() {
-                    self.packed_color_refresh_position = self.packed_color_refresh_target;
-                    self.packed_color_refresh_cursor = None;
-                    self.packed_color_refresh_target = None;
-                } else {
-                    self.packed_color_refresh_cursor = Some(end);
-                }
+            } else {
+                self.packed_color_refresh_cursor = Some(end);
             }
         }
 
-        let instance_count = self
-            .packed_scene
-            .as_ref()
-            .ok_or(SurfacePresenterError::SceneNotLoaded)?
-            .prepare(
-                &self.queue,
-                sorted_indices,
-                camera,
-                self.surface_config.width,
-                self.surface_config.height,
-                refresh_indices,
-            )?;
-        self.instance_count = instance_count;
-
-        let Some(frame) = self.acquire_surface_texture()? else {
-            return Ok(());
+        let SurfaceGeometry::Packed(packed) = &self.geometry else {
+            return Err(SurfacePresenterError::SceneNotLoaded);
         };
-        let view = frame
-            .texture
-            .create_view(&wgpu::TextureViewDescriptor::default());
-
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: wgpu_label("gsplat-surface-packed-encoder"),
-            });
-        {
-            let packed_scene = self
-                .packed_scene
-                .as_ref()
-                .ok_or(SurfacePresenterError::SceneNotLoaded)?;
-            let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: wgpu_label("gsplat-surface-packed-pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                occlusion_query_set: None,
-                timestamp_writes: None,
-                multiview_mask: None,
-            });
-            rpass.set_pipeline(&self.packed_pipeline);
-            rpass.set_bind_group(0, &packed_scene.bind_group, &[]);
-            if instance_count > 0 {
-                rpass.draw(0..packed_gpu::PACKED_QUAD_VERTEX_COUNT, 0..instance_count);
-            }
-        }
-
-        self.queue.submit(Some(encoder.finish()));
-        frame.present();
-        Ok(())
+        self.instance_count = packed.prepare(
+            &self.queue,
+            sorted_indices,
+            camera,
+            self.surface_config.width,
+            self.surface_config.height,
+            refresh_indices,
+        )?;
+        self.present_geometry()
     }
 
     fn render_paged_frame(
@@ -952,60 +831,66 @@ impl SurfacePresenter {
         scene: &SceneBuffers,
         camera: &Camera,
     ) -> Result<u32, SurfacePresenterError> {
-        let instance_count = self
-            .paged_scene
-            .as_mut()
-            .ok_or(SurfacePresenterError::SceneNotLoaded)?
-            .prepare(
-                &self.queue,
-                scene,
-                camera,
-                self.surface_config.width,
-                self.surface_config.height,
-            )?;
-        self.instance_count = instance_count;
+        let SurfaceGeometry::Paged(paged) = &mut self.geometry else {
+            return Err(SurfacePresenterError::SceneNotLoaded);
+        };
+        self.instance_count = paged.prepare(
+            &self.queue,
+            scene,
+            camera,
+            self.surface_config.width,
+            self.surface_config.height,
+        )?;
+        self.present_geometry()?;
+        Ok(self.instance_count)
+    }
 
+    fn present_geometry(&mut self) -> Result<(), SurfacePresenterError> {
         let Some(frame) = self.acquire_surface_texture()? else {
-            return Ok(instance_count);
+            return Ok(());
         };
         let view = frame
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: wgpu_label("gsplat-surface-paged-encoder"),
-            });
-        {
-            let paged_scene = self
-                .paged_scene
-                .as_ref()
-                .ok_or(SurfacePresenterError::SceneNotLoaded)?;
-            let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: wgpu_label("gsplat-surface-paged-pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                occlusion_query_set: None,
-                timestamp_writes: None,
-                multiview_mask: None,
-            });
-            rpass.set_pipeline(&self.packed_pipeline);
-            rpass.set_bind_group(0, &paged_scene.active_set.atlas.resources.bind_group, &[]);
-            if instance_count > 0 {
-                rpass.draw(0..packed_gpu::PACKED_QUAD_VERTEX_COUNT, 0..instance_count);
-            }
-        }
-        self.queue.submit(Some(encoder.finish()));
+        let (pipeline, bind_group, vertex_count, encoder_label, pass_label) = match &self.geometry {
+            SurfaceGeometry::Direct(direct) => (
+                &self.direct_pipeline,
+                &direct.bind_group,
+                6,
+                "gsplat-surface-direct-encoder",
+                "gsplat-surface-direct-pass",
+            ),
+            SurfaceGeometry::Packed(packed) => (
+                &self.packed_pipeline,
+                &packed.bind_group,
+                packed_gpu::PACKED_QUAD_VERTEX_COUNT,
+                "gsplat-surface-packed-encoder",
+                "gsplat-surface-packed-pass",
+            ),
+            SurfaceGeometry::Paged(paged) => (
+                &self.packed_pipeline,
+                &paged.active_set.atlas.resources.bind_group,
+                packed_gpu::PACKED_QUAD_VERTEX_COUNT,
+                "gsplat-surface-paged-encoder",
+                "gsplat-surface-paged-pass",
+            ),
+        };
+        let commands = encode_splat_draw(
+            &self.device,
+            SplatDraw {
+                encoder_label,
+                pass_label,
+                view: &view,
+                pipeline,
+                bind_group,
+                clear: wgpu::Color::BLACK,
+                vertex_count,
+                instance_count: self.instance_count,
+            },
+        );
+        self.queue.submit(Some(commands));
         frame.present();
-        Ok(instance_count)
+        Ok(())
     }
 
     fn acquire_surface_texture(

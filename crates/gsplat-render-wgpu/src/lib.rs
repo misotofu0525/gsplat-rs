@@ -1,5 +1,6 @@
 //! WGPU renderer with a SortedAlpha reference path.
 
+mod draw_pass;
 mod packed_atlas;
 mod packed_gpu;
 mod page_atlas;
@@ -2795,35 +2796,20 @@ impl GpuRasterizer {
             )
             .map_err(|_| GpuRasterError::DeviceCreation)?;
 
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: wgpu_label("gsplat-offscreen-direct-encoder"),
-            });
-        {
-            let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: wgpu_label("gsplat-offscreen-direct-pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &self.output_view,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                occlusion_query_set: None,
-                timestamp_writes: None,
-                multiview_mask: None,
-            });
-            rpass.set_pipeline(&self.direct_pipeline);
-            rpass.set_bind_group(0, &direct_scene.bind_group, &[]);
-            if instance_count > 0 {
-                rpass.draw(0..6, 0..instance_count);
-            }
-        }
-        self.queue.submit(Some(encoder.finish()));
+        let commands = draw_pass::encode_splat_draw(
+            &self.device,
+            draw_pass::SplatDraw {
+                encoder_label: "gsplat-offscreen-direct-encoder",
+                pass_label: "gsplat-offscreen-direct-pass",
+                view: &self.output_view,
+                pipeline: &self.direct_pipeline,
+                bind_group: &direct_scene.bind_group,
+                clear: wgpu::Color::TRANSPARENT,
+                vertex_count: 6,
+                instance_count,
+            },
+        );
+        self.queue.submit(Some(commands));
         Ok(())
     }
 
@@ -2883,39 +2869,24 @@ impl GpuRasterizer {
             )
             .map_err(|_| GpuRasterError::DeviceCreation)?;
 
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: wgpu_label("gsplat-offscreen-packed-encoder"),
-            });
-        {
-            let packed_scene = self
-                .packed_scene
-                .as_ref()
-                .ok_or(GpuRasterError::DeviceCreation)?;
-            let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: wgpu_label("gsplat-offscreen-packed-pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &self.output_view,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                occlusion_query_set: None,
-                timestamp_writes: None,
-                multiview_mask: None,
-            });
-            rpass.set_pipeline(&self.packed_pipeline);
-            rpass.set_bind_group(0, &packed_scene.bind_group, &[]);
-            if instance_count > 0 {
-                rpass.draw(0..packed_gpu::PACKED_QUAD_VERTEX_COUNT, 0..instance_count);
-            }
-        }
-        self.queue.submit(Some(encoder.finish()));
+        let packed_scene = self
+            .packed_scene
+            .as_ref()
+            .ok_or(GpuRasterError::DeviceCreation)?;
+        let commands = draw_pass::encode_splat_draw(
+            &self.device,
+            draw_pass::SplatDraw {
+                encoder_label: "gsplat-offscreen-packed-encoder",
+                pass_label: "gsplat-offscreen-packed-pass",
+                view: &self.output_view,
+                pipeline: &self.packed_pipeline,
+                bind_group: &packed_scene.bind_group,
+                clear: wgpu::Color::TRANSPARENT,
+                vertex_count: packed_gpu::PACKED_QUAD_VERTEX_COUNT,
+                instance_count,
+            },
+        );
+        self.queue.submit(Some(commands));
         Ok(())
     }
 
@@ -2967,39 +2938,24 @@ impl GpuRasterizer {
             )
             .map_err(|_| GpuRasterError::DeviceCreation)?;
 
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: wgpu_label("gsplat-offscreen-paged-encoder"),
-            });
-        {
-            let paged = self
-                .paged_active_set
-                .as_ref()
-                .ok_or(GpuRasterError::DeviceCreation)?;
-            let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: wgpu_label("gsplat-offscreen-paged-pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &self.output_view,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                occlusion_query_set: None,
-                timestamp_writes: None,
-                multiview_mask: None,
-            });
-            rpass.set_pipeline(&self.packed_pipeline);
-            rpass.set_bind_group(0, &paged.atlas.resources.bind_group, &[]);
-            if instance_count > 0 {
-                rpass.draw(0..packed_gpu::PACKED_QUAD_VERTEX_COUNT, 0..instance_count);
-            }
-        }
-        self.queue.submit(Some(encoder.finish()));
+        let paged = self
+            .paged_active_set
+            .as_ref()
+            .ok_or(GpuRasterError::DeviceCreation)?;
+        let commands = draw_pass::encode_splat_draw(
+            &self.device,
+            draw_pass::SplatDraw {
+                encoder_label: "gsplat-offscreen-paged-encoder",
+                pass_label: "gsplat-offscreen-paged-pass",
+                view: &self.output_view,
+                pipeline: &self.packed_pipeline,
+                bind_group: &paged.atlas.resources.bind_group,
+                clear: wgpu::Color::TRANSPARENT,
+                vertex_count: packed_gpu::PACKED_QUAD_VERTEX_COUNT,
+                instance_count,
+            },
+        );
+        self.queue.submit(Some(commands));
         Ok(())
     }
 
