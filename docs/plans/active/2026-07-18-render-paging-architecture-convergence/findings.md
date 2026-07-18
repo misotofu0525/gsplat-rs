@@ -293,6 +293,50 @@ architecture cleanup after the independent audit.
   reachability, and commit-tagged final artifacts are hard gates. Total source
   size, prepare-only Surface tests, or binary timestamps cannot substitute.
 
+## B Audit — Effective Surface Device Limits
+
+- `direct_scene_preflight` selects from
+  `min(max_storage_buffer_binding_size, max_buffer_size)`. The Surface device
+  descriptor starts from `wgpu::Limits::downlevel_defaults()` and raises only
+  `max_texture_dimension_2d`; therefore its effective storage ceiling remains
+  the downlevel value even when the adapter advertises more.
+- Automatic selection currently runs before `surface_resource_plan`, using
+  `adapter.limits()` directly. The later resource plan is validated against the
+  same adapter limits, but `DirectSceneResources::new` observes the lower
+  limits of the requested device. This confirms the audit's exact mismatch.
+- The minimal fix boundary is private Surface limit planning, not the public
+  selector or constructors: derive the limits that the device descriptor will
+  request, use those limits for Auto Direct preflight and resource-plan
+  validation, and keep adapter limits only for checking that the request is
+  supported.
+- A pure logic regression can use a scene between the downlevel and an elevated
+  adapter storage ceiling. It must demonstrate that adapter-limit preflight
+  says Direct while effective-request-limit preflight says
+  `ActiveAtlasRequired` before the implementation is changed.
+
+## B Accepted Result
+
+- Red proof ran one exact module-qualified test: a 3,000,000-splat degree-0
+  scene on a synthetic 256 MiB adapter produced `SortedIndexDirect` when Paged
+  was required by the later device request.
+- `surface_effective_device_limits` now starts from downlevel defaults, retains
+  only the adapter's requestable texture ceiling for resource planning, and
+  rejects adapters that cannot satisfy the base request. Auto Direct preflight
+  and `surface_resource_plan` use those effective storage/buffer limits; the
+  final descriptor lowers texture capacity to the path's required dimension.
+- Adapter info, advertised limits, and effective limits travel through one
+  private `SurfaceAdapterContext`, keeping the constructor below the strict
+  clippy argument threshold. No public selector/constructor, Rust baseline API,
+  or C ABI changed.
+- Green proof passed the strengthened regression, all 97 active renderer tests
+  with one retained oracle ignored, required Metal SortedAlpha conformance,
+  `cargo check --workspace`, strict renderer clippy, formatting, and diff
+  hygiene.
+- B adds no file and changes renderer accounting from 7,821 production / 2,971
+  test-fixture lines to 7,864 / 3,003. The +43 production lines are the explicit
+  correctness cost; D must now remove at least 244 production lines to finish
+  below 7,621 rather than hiding this work in test deletion.
+
 ## Prior Evidence — Not Terminal HEAD-Bound Proof
 
 - The earlier `cargo test --workspace` run passed. The renderer reported 96

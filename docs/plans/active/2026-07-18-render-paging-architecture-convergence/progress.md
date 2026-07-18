@@ -64,6 +64,10 @@
 | S5 iOS available route | simulator Direct Surface run completed before final commit | 18.992 ms; 279199 visible/drawn | historical simulator observation; provenance gap |
 | S5 Web | earlier wasm build/check/tests and browser Surface | 7 tests; `wasm_sorted_index_direct`, 3 visible/drawn | historical pass; ignored output predates final commit |
 | S5 hygiene | fmt, workspace check, strict clippy, rustdoc, diff check | passed | pass |
+| B red regression | synthetic adapter/requested storage mismatch fails before fix | exact test failed Direct vs Paged | expected red |
+| B renderer lib | effective-limits fix preserves path/safety/image tests | 97 passed, 1 retained ignored | pass |
+| B SortedAlpha | required native GPU conformance | 1 passed on Apple M4 Pro / Metal | pass |
+| B workspace/hygiene | workspace check, strict renderer clippy, fmt, diff | passed | pass |
 
 ## 2026-07-18 — S1 Surface Ownership Split
 
@@ -157,6 +161,32 @@
   the requested downlevel storage limit, followed by the smallest effective
   device-limits selection fix and focused verification.
 
+## 2026-07-18 — B Auto Effective-Device-Limits Audit
+
+- **Status:** complete; independently verified code/docs commit boundary.
+- Confirmed the mismatch in code: Auto preflight and resource planning consume
+  full adapter limits, while `request_device` starts from downlevel defaults
+  and raises only the required 2D texture dimension.
+- Chosen minimal boundary: one private effective-limits helper shared by Auto
+  selection, resource planning, and device request. Public selectors,
+  constructors, path defaults, and C ABI remain unchanged.
+- Red proof: the module-qualified pure logic regression ran exactly one test
+  and failed with `left: SortedIndexDirect`, `right: PagedActiveAtlas` for a
+  3,000,000-splat degree-0 scene on a synthetic 256 MiB adapter, reproducing the
+  adapter/requested-storage mismatch before the fix.
+- Green focused proof: the same test now confirms adapter preflight is Direct,
+  effective requested-device preflight is `ActiveAtlasRequired`, and Auto
+  selects Paged. Full B verification is still pending.
+- First full run reached 97 passed / 1 ignored renderer tests, required Metal
+  conformance pass, and workspace check pass. Strict clippy then rejected the
+  newly eight-argument private constructor; no later chained hygiene command is
+  counted yet. The fix is a private adapter context, not a lint suppression.
+- Final full rerun passed renderer 97/1, required Metal conformance, workspace
+  check, strict clippy, formatting, and diff hygiene. No public API/C ABI or
+  stable Direct default changed.
+- Production accounting after B is 7,864 lines with 3,003 test/fixture lines;
+  no file was added. C is now the only current blocker.
+
 ## Error Log
 
 | Error | Attempt | Resolution |
@@ -178,6 +208,10 @@
 | Browser documentation exceeded one response | 1 | Read the full 40,171-character contract in seven bounded chunks before navigation. |
 | Aggregate `10,796 -> 10,792` was used as an overall cleanup gate | 1 | Independent audit split production from terminal test modules and found production `7,621 -> 7,821`; overall completion was withdrawn. |
 | Platform observations were called final without commit-tagged raw provenance | 1 | Reclassified them as historical and added final-HEAD manifests/logs plus baseline/final over-slot comparison to F. |
+| First B focused-test command matched zero tests because `--exact` received an unqualified name | 1 | Rerun with `surface_presenter::tests::automatic_selection_uses_effective_requested_storage_limits`; zero-test output is not evidence. |
+| First B fix patch used stale shortened context around the texture-limit assignment | 1 | No code hunk applied; split the fix into exact smaller patches. |
+| B format check found one non-canonical wrapped test call | 1 | Applied standard rustfmt before full verification. |
+| First full B verification failed strict clippy on `too_many_arguments` after earlier gates passed | 1 | Replace three adapter-related parameters with one private context, then rerun every B gate. |
 
 ## 5-Question Reboot Check
 

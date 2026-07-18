@@ -11,9 +11,9 @@ move is backed by fresh correctness and platform evidence.
 
 Architecture convergence remains **in progress**. S1-S5 completed a useful
 module-responsibility split, but an independent audit invalidated the prior
-overall-complete claim. Corrective slice A is this docs-only acceptance reset;
-the single current implementation blocker is B, automatic selection against
-the effective device limits that will actually be requested.
+overall-complete claim. Corrective A reset acceptance and B fixed automatic
+selection against the limits actually requested from the device. C typed page
+payload validation is the single next blocker.
 
 ## Guardrails
 
@@ -61,13 +61,12 @@ the effective device limits that will actually be requested.
 ### Phase 3: Direct/Paged Selection Boundary
 
 - [x] Make `SmallSceneDirect` the explicit default low-overhead path.
-- [ ] Route to `PagedActiveAtlas` only when Direct resource preflight cannot fit
+- [x] Route to `PagedActiveAtlas` only when Direct resource preflight cannot fit
       within the documented capacity/headroom policy or an explicit diagnostic
       override is requested.
 - [x] Preserve structured preflight errors and transactional Surface switching.
-- **Status:** reopened; the automatic constructor preflights adapter limits but
-  later requests lower effective device limits, so an oversized scene can be
-  misclassified as Direct and fail during Direct resource creation.
+- **Status:** policy defect fixed in B; product acceptance remains open until E
+  connects one real automatic consumer or records an accepted API blocker.
 
 ### Phase 4: Paged Architecture Boundary
 
@@ -99,11 +98,11 @@ the effective device limits that will actually be requested.
 
 - [x] **A — Acceptance reset:** record the independent audit, restore overall
       `in_progress`, freeze remaining gates, and commit docs only.
-- [ ] **B — Current blocker:** reproduce the Auto effective-device-limits bug
+- [x] **B — Auto effective limits:** reproduce the bug
       with a pure logic test, apply the smallest fix without API expansion, and
       freshly run renderer lib, required Metal conformance, workspace check,
       strict clippy, formatting, and diff hygiene before an isolated commit.
-- [ ] **C — Payload boundary:** add typed failure plus payload/source bounds and
+- [ ] **C — Current blocker, payload boundary:** add typed failure plus payload/source bounds and
       encoding/atlas validation while keeping `LocalScenePageSource`, public
       Rust API, and C ABI behavior stable; verify and commit independently.
 - [ ] **D — Production cleanup:** reduce renderer production code below 7,621
@@ -222,13 +221,13 @@ no production consumer. The diagram records the useful module seam only.
 - Verify: small/limit/over-limit policy tests, transactional failure tests,
   Direct/Paged Surface construction paths, FFI smoke, Web WASM check if its
   constructor is touched.
-- **Status:** module slice complete, product acceptance reopened; stable
+- **Status:** policy slice complete, product entry pending E; stable
   constructors and `GeometryPath::default()`
   remain Direct. Opt-in `*_auto` constructors call
   `select_automatic_surface_geometry_path` only after the compatible adapter
-  reports Direct `ActiveAtlasRequired`, but selection currently uses adapter
-  limits rather than the lower effective limits requested for the device, and
-  no production consumer calls these constructors.
+  reports Direct `ActiveAtlasRequired`. B now derives the effective downlevel
+  storage/buffer limits used by the device descriptor before Auto preflight and
+  resource planning. No production consumer calls these constructors yet.
 
 ### S4 — Honest local page-source seam
 
@@ -313,6 +312,10 @@ no production consumer. The diagram records the useful module seam only.
 | The first iOS simulator runner did not retain application stdout | 1 | Re-ran the rebuilt app with `simctl --console` and captured the 120-frame result. |
 | Browser runtime documentation initially exceeded one tool response | 1 | Read the complete 40,171-character browser contract in bounded chunks before controlling the local page. |
 | Overall completion was inferred from aggregate renderer lines and platform runs not reliably bound to final HEAD | 1 | Independent audit invalidated the claim; reopened Phases 3-5 and froze corrective A-F acceptance before further code changes. |
+| First B focused-test command used `--exact` with an unqualified unit-test name | 1 | Cargo matched zero tests; rerun uses the full module-qualified test name and the zero-test command is not counted as evidence. |
+| First B fix patch used a shortened texture-limit assignment as context | 1 | Patch verification made no code changes; reapplied the same minimal fix in smaller context-accurate hunks. |
+| B format check requested canonical wrapping for the strengthened regression call | 1 | Applied rustfmt and reran the complete B verification sequence. |
+| First full B verification reached strict clippy with an 8-argument private Surface constructor | 1 | Renderer tests, Metal conformance, and workspace check had passed; grouped adapter info/limits/effective limits into one private context and reran the full sequence without a lint allow. |
 
 ## Notes
 
