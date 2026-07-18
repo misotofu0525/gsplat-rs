@@ -33,6 +33,7 @@ impl PagedActiveSet {
             layout,
             slot_count,
             pages.page_capacity,
+            scene.len(),
             PageEncoding::from_scene(scene),
         )
         .map_err(|err| RendererError::PagedAtlas(format!("{err:?}")))?;
@@ -99,7 +100,7 @@ impl PagedActiveSet {
             }
             let payload = source
                 .decode_page(token.page_id, AttributeLod::Degree0)
-                .ok_or(RendererError::InvalidScene)?;
+                .map_err(|err| RendererError::PagedAtlas(format!("{err:?}")))?;
             atlas
                 .upload_decoded_page_if_current(queue, residency, token, &payload)
                 .map_err(|err| RendererError::PagedAtlas(format!("{err:?}")))?;

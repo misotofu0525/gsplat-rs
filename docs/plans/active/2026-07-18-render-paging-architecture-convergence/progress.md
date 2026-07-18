@@ -68,6 +68,10 @@
 | B renderer lib | effective-limits fix preserves path/safety/image tests | 97 passed, 1 retained ignored | pass |
 | B SortedAlpha | required native GPU conformance | 1 passed on Apple M4 Pro / Metal | pass |
 | B workspace/hygiene | workspace check, strict renderer clippy, fmt, diff | passed | pass |
+| C source/payload validation | missing, bounds, count, capacity, encoding, sidecar typed gates | 3 focused pure tests passed | pass |
+| C invalid GPU payload | reject before GPU write/active publication | active entries remained empty | pass |
+| C renderer/SortedAlpha | full renderer plus required Metal conformance | 100 passed, 1 ignored; conformance 1 passed | pass |
+| C workspace/platform hygiene | workspace, strict clippy, wasm32, fmt, diff | passed; existing wasm cfg warnings only | pass |
 
 ## 2026-07-18 — S1 Surface Ownership Split
 
@@ -186,6 +190,25 @@
   stable Direct default changed.
 - Production accounting after B is 7,864 lines with 3,003 test/fixture lines;
   no file was added. C is now the only current blocker.
+
+## 2026-07-18 — C Page Boundary Audit
+
+- **Status:** complete; independently verified code/docs commit boundary.
+- Confirmed missing pages are untyped `Option`, malformed local page indices can
+  reach extraction before a bounds check, the atlas lacks source scene length,
+  and decoded payloads carry no encoding identity.
+- Public `PagedGpuError`, `PagedAtlasGpu` methods, and C ABI will remain stable.
+  C uses private typed errors and maps them only at the existing public error
+  boundary.
+- Focused proof passed three source/payload tests plus a GPU-backed rejection
+  test. Missing pages and malformed local indices are typed, count/capacity/
+  source bounds/payload encoding/packed encoding/sidecars are validated, and an
+  invalid payload leaves the active draw set empty.
+- Full rerun passed renderer 100/1, required Metal conformance, workspace
+  check, strict clippy, wasm32 Web check, formatting, and diff hygiene.
+- Production accounting is now 7,978 lines and test/fixture accounting 3,129;
+  no file or public API/C ABI surface was added. D is the sole current blocker
+  and must remove at least 358 production lines.
 
 ## Error Log
 

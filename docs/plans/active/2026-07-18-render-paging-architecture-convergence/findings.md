@@ -337,6 +337,55 @@ architecture cleanup after the independent audit.
   correctness cost; D must now remove at least 244 production lines to finish
   below 7,621 rather than hiding this work in test deletion.
 
+## C Audit — Typed Page Source and Payload Boundary
+
+- `PageSource::decode_page` returns `Option`, so a missing page is flattened
+  into `RendererError::InvalidScene`; it cannot distinguish source lookup from
+  payload validation failure.
+- `DecodedPagePayload::from_local_scene` calls `extract_page_scene` before any
+  bounds check. Because `SpatialPage` and its source indices are public, an
+  invalid index can panic before reaching GPU upload.
+- `upload_decoded_page` checks only page/token identity and equality among
+  packed count, hot count, and source-index count. It does not know the source
+  scene length and cannot reject an out-of-range index before
+  `refresh_paged_hot_colors` indexes `scene.positions[index]`.
+- `PagedAtlasGpu` stores `PageEncoding` but the decoded payload does not. The
+  packed bounds, log-scale range, and SH scales can therefore disagree with the
+  atlas contract while still passing the current count check.
+- `PagedGpuError` is public and re-exported. Adding a public payload-error enum
+  variant would change exhaustive downstream matches, so C will keep that API
+  stable: private `PageSourceError`/`PagePayloadError` provide typed internal
+  failures, while existing public GPU methods map them to existing variants.
+- Minimal validation state is the source splat count stored by the atlas, its
+  fixed page capacity, and its encoding. The payload must carry its encoding
+  and validate counts, non-empty/capacity, source-index bounds, packed encoding,
+  and SH sidecar shape before any GPU write or active-entry publication.
+
+## C Accepted Result
+
+- `PageSource::decode_page` now returns private typed `PageSourceError` values
+  for missing pages and invalid local source indices. Local extraction cannot
+  index a malformed public `SpatialPage` before the bounds check.
+- `DecodedPagePayload` carries its `PageEncoding` and validates non-empty/page
+  capacity, packed/hot/source counts, every source index against the atlas's
+  stored scene length, payload and packed encoding against the atlas, and SH
+  sidecar shape.
+- `PagedAtlasGpu` validates before slot generation mutation, GPU writes, or
+  active-entry publication. A GPU-backed regression confirms a future invalid
+  payload maps through the existing public error surface and leaves the active
+  draw set empty.
+- Public `PagedGpuError`, public `PagedAtlasGpu` method signatures, Rust
+  baseline API, C ABI, and `LocalScenePageSource` behavior remain unchanged.
+  Typed private errors map to existing public variants at that boundary.
+- Fresh gates passed 100 renderer tests with one retained ignored oracle,
+  required Metal SortedAlpha conformance, workspace check, strict renderer
+  clippy, wasm32 Web check, formatting, and diff hygiene. The wasm build retains
+  only previously existing cfg-only warnings.
+- C adds no file and moves accounting from 7,864 production / 3,003
+  test-fixture lines to 7,978 / 3,129. D must delete at least 358 production
+  lines to finish below the 7,621 baseline; none of that reduction may come
+  from deleting these new safety tests.
+
 ## Prior Evidence — Not Terminal HEAD-Bound Proof
 
 - The earlier `cargo test --workspace` run passed. The renderer reported 96

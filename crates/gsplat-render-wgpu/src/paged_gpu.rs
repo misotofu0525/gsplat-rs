@@ -7,7 +7,7 @@ use crate::packed_atlas::{
     PackedAtlasCpuBuffers, PackedHotRecord, PackedSceneCpu, PackedShSidecar,
 };
 use crate::packed_gpu::PackedAtlasResources;
-use crate::page_source::{DecodedPagePayload, PageEncoding};
+use crate::page_source::{DecodedPagePayload, PageEncoding, PagePayloadError, PageSourceError};
 use crate::residency::{AsyncPageToken, AttributeLod, ResidencyManager};
 use crate::spatial_pages::{PageId, SpatialPage};
 
@@ -57,6 +57,7 @@ pub struct PagedAtlasGpu {
     slot_meta: Vec<GpuSlotMeta>,
     /// Scene splat indices stored per atlas slot (length `page_capacity` when occupied).
     slot_scene_indices: Vec<Vec<u32>>,
+    source_splat_count: usize,
     encoding: PageEncoding,
 }
 
@@ -75,6 +76,7 @@ impl PagedAtlasGpu {
             bind_group_layout,
             slot_count,
             page_capacity,
+            scene.len(),
             PageEncoding::from_scene(scene),
         )
     }
@@ -85,6 +87,7 @@ impl PagedAtlasGpu {
         bind_group_layout: &wgpu::BindGroupLayout,
         slot_count: usize,
         page_capacity: usize,
+        source_splat_count: usize,
         encoding: PageEncoding,
     ) -> Result<Self, PagedGpuError> {
         let slot_count = slot_count.max(1);
@@ -101,6 +104,7 @@ impl PagedAtlasGpu {
             resources,
             slot_meta: (0..slot_count).map(|_| GpuSlotMeta::empty(1)).collect(),
             slot_scene_indices: (0..slot_count).map(|_| Vec::new()).collect(),
+            source_splat_count,
             encoding,
         })
     }
@@ -198,7 +202,8 @@ impl PagedAtlasGpu {
         attribute_lod: AttributeLod,
     ) -> Result<(), PagedGpuError> {
         let payload =
-            DecodedPagePayload::from_local_scene(scene, page, self.encoding, attribute_lod);
+            DecodedPagePayload::from_local_scene(scene, page, self.encoding, attribute_lod)
+                .map_err(page_source_error_to_gpu)?;
         self.upload_decoded_page(queue, token, &payload)
     }
 
@@ -208,20 +213,20 @@ impl PagedAtlasGpu {
         token: AsyncPageToken,
         payload: &DecodedPagePayload,
     ) -> Result<(), PagedGpuError> {
+        if self.slot_meta.get(token.slot as usize).is_none() {
+            return Err(PagedGpuError::SlotOutOfRange);
+        }
+        if payload.page_id != token.page_id {
+            return Err(PagedGpuError::StaleToken);
+        }
+        payload
+            .validate(self.source_splat_count, self.page_capacity, self.encoding)
+            .map_err(page_payload_error_to_gpu)?;
+        let splat_count = payload.source_indices.len();
         let slot = self
             .slot_meta
             .get_mut(token.slot as usize)
             .ok_or(PagedGpuError::SlotOutOfRange)?;
-        if payload.page_id != token.page_id {
-            return Err(PagedGpuError::StaleToken);
-        }
-        if payload.packed.splat_count != payload.source_indices.len()
-            || payload.packed.hot.len() != payload.source_indices.len()
-        {
-            return Err(PagedGpuError::Direct(
-                DirectSceneError::ResourceSizeOverflow,
-            ));
-        }
         if slot.is_occupied() {
             if slot.generation != token.slot_generation || slot.page_id != Some(token.page_id) {
                 return Err(PagedGpuError::StaleToken);
@@ -230,16 +235,6 @@ impl PagedAtlasGpu {
             return Err(PagedGpuError::StaleToken);
         } else {
             slot.generation = token.slot_generation;
-        }
-        let splat_count = payload.source_indices.len();
-        if splat_count == 0 {
-            return Err(PagedGpuError::EmptyPage);
-        }
-        if splat_count > self.page_capacity {
-            return Err(PagedGpuError::PageTooLarge {
-                splat_count,
-                page_capacity: self.page_capacity,
-            });
         }
 
         let words = PackedAtlasCpuBuffers::hot_storage_words(&payload.packed);
@@ -303,6 +298,29 @@ impl PagedAtlasGpu {
         self.slot_scene_indices[token.slot as usize].clear();
         *slot = GpuSlotMeta::empty(slot.generation.saturating_add(1));
         Ok(())
+    }
+}
+
+fn page_source_error_to_gpu(_error: PageSourceError) -> PagedGpuError {
+    PagedGpuError::Direct(DirectSceneError::ResourceSizeOverflow)
+}
+
+fn page_payload_error_to_gpu(error: PagePayloadError) -> PagedGpuError {
+    match error {
+        PagePayloadError::EmptyPage => PagedGpuError::EmptyPage,
+        PagePayloadError::PageTooLarge {
+            splat_count,
+            page_capacity,
+        } => PagedGpuError::PageTooLarge {
+            splat_count,
+            page_capacity,
+        },
+        PagePayloadError::CountMismatch { .. }
+        | PagePayloadError::SourceIndexOutOfBounds { .. }
+        | PagePayloadError::EncodingMismatch
+        | PagePayloadError::SidecarCountMismatch { .. } => {
+            PagedGpuError::Direct(DirectSceneError::ResourceSizeOverflow)
+        }
     }
 }
 
@@ -448,6 +466,46 @@ mod tests {
             whole_stats.visible_count,
             whole_stats.drawn_count
         );
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn paged_gpu_rejects_invalid_payload_before_active_publication() {
+        let scene = sample_scene(4);
+        let pages = partition_scene_pages(&scene, 2, 2);
+        let config = RendererConfig {
+            width: 64,
+            height: 64,
+            mode: RenderMode::SortedAlpha,
+        };
+        let Some((_renderer, device, queue, layout)) =
+            gpu_context(config, "paged GPU payload validation")
+        else {
+            return;
+        };
+        let mut manager = manager(&pages, 1);
+        let mut paged = PagedAtlasGpu::new(&device, &queue, &layout, 1, 2, &scene).unwrap();
+        let page = &pages.pages[0];
+        let token = manager.request_page(page.id).unwrap();
+        manager.advance_to_compressed_ready(token).unwrap();
+        manager.advance_to_decoded_ready(token).unwrap();
+        manager.advance_to_uploading(token).unwrap();
+        let mut payload = DecodedPagePayload::from_local_scene(
+            &scene,
+            page,
+            paged.encoding(),
+            AttributeLod::Degree0,
+        )
+        .unwrap();
+        payload.source_indices[0] = scene.len() as u32;
+
+        assert!(matches!(
+            paged.upload_decoded_page_if_current(&queue, &manager, token, &payload),
+            Err(PagedGpuError::Direct(
+                DirectSceneError::ResourceSizeOverflow
+            ))
+        ));
+        assert!(paged.active_entries().is_empty());
     }
 
     #[cfg(not(target_arch = "wasm32"))]

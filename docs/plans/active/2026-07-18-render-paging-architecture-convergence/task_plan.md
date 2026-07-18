@@ -11,9 +11,9 @@ move is backed by fresh correctness and platform evidence.
 
 Architecture convergence remains **in progress**. S1-S5 completed a useful
 module-responsibility split, but an independent audit invalidated the prior
-overall-complete claim. Corrective A reset acceptance and B fixed automatic
-selection against the limits actually requested from the device. C typed page
-payload validation is the single next blocker.
+overall-complete claim. Corrective A reset acceptance, B fixed automatic
+selection against requested device limits, and C added typed page-source and
+payload validation. D production-code convergence is the single next blocker.
 
 ## Guardrails
 
@@ -76,10 +76,9 @@ payload validation is the single next blocker.
       future bounded compressed/decoded caches and fixed GPU slots.
 - [ ] Preserve coarse-to-fine continuity, one global `SortedAlpha` order, and
       stale/cancel/generation/nonresident safety.
-- **Status:** reopened; the current private synchronous `Option` source seam
-  borrows the full scene/page set and the decoded payload lacks typed
-  source/encoding/atlas validation. It is an uploader seam, not bounded source
-  or CPU architecture.
+- **Status:** typed lookup and payload safety completed in C. The private source
+  still borrows the full scene/page set and remains synchronous, so it is a
+  validated uploader seam rather than bounded source or CPU architecture.
 
 ### Phase 5: Full Regression and Handoff
 
@@ -102,10 +101,10 @@ payload validation is the single next blocker.
       with a pure logic test, apply the smallest fix without API expansion, and
       freshly run renderer lib, required Metal conformance, workspace check,
       strict clippy, formatting, and diff hygiene before an isolated commit.
-- [ ] **C — Current blocker, payload boundary:** add typed failure plus payload/source bounds and
+- [x] **C — Payload boundary:** add typed failure plus payload/source bounds and
       encoding/atlas validation while keeping `LocalScenePageSource`, public
       Rust API, and C ABI behavior stable; verify and commit independently.
-- [ ] **D — Production cleanup:** reduce renderer production code below 7,621
+- [ ] **D — Current blocker, production cleanup:** reduce renderer production code below 7,621
       lines without deleting tests or shifting the same responsibilities into
       another large file. Prefer smaller Surface policy/device/resource/draw
       owners and proven duplicate removal; keep each slice below 800 net-new
@@ -241,13 +240,16 @@ no production consumer. The diagram records the useful module seam only.
 - Rollback: independent commit; compatibility wrappers retain public methods.
 - Verify: payload equivalence, cache bounds if added, stale/cancel/generation,
   nonresident exclusion, count/image parity, Surface smoke, and conformance.
-- **Status:** module slice complete, architecture acceptance reopened;
+- **Status:** validated local-source slice complete, bounded architecture remains
+  a non-claim;
   `LocalScenePageSource` performs extraction and packing,
   and the shared runtime hands only `DecodedPagePayload` to GPU upload. No
   decoded cache was added because payloads are synchronous and transient;
   caching would duplicate the already-full-resident local source without
-  evidence of benefit. The contract remains private, synchronous, and
-  full-source-backed, and payload validation is incomplete.
+  evidence of benefit. C changed lookup to typed failure, rejects malformed
+  local indices before extraction, and validates payload count, capacity,
+  source bounds, encoding, and sidecars before GPU writes. The contract remains
+  private, synchronous, and full-source-backed.
 
 ### S5 — Proven cleanup, docs, and platform regression
 
