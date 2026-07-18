@@ -1763,6 +1763,26 @@ fn normalize_dir(dx: f32, dy: f32, dz: f32) -> [f32; 3] {
     [dx * inv, dy * inv, dz * inv]
 }
 
+fn packed_color_word(
+    scene: &SceneBuffers,
+    index: usize,
+    camera_position: [f32; 3],
+    layout: ShColorLayout<'_>,
+) -> u32 {
+    let position = scene.positions[index];
+    let dir = normalize_dir(
+        position.x - camera_position[0],
+        position.y - camera_position[1],
+        position.z - camera_position[2],
+    );
+    let rgb = unsafe { sh_color_unchecked(scene, index, dir, layout) };
+    pack_color_rgb10([
+        rgb[0].clamp(0.0, 1.0),
+        rgb[1].clamp(0.0, 1.0),
+        rgb[2].clamp(0.0, 1.0),
+    ])
+}
+
 /// Color-refresh: evaluate float SH into the packed hot RGB10 stream.
 fn refresh_packed_hot_colors(
     queue: &wgpu::Queue,
@@ -1802,19 +1822,7 @@ fn refresh_packed_hot_colors_range(
             .enumerate()
             .for_each(|(offset, slot)| {
                 let index = start + offset;
-                let position = scene.positions[index];
-                let dir = normalize_dir(
-                    position.x - cam[0],
-                    position.y - cam[1],
-                    position.z - cam[2],
-                );
-                let rgb = unsafe { sh_color_unchecked(scene, index, dir, layout) };
-                let rgb = [
-                    rgb[0].clamp(0.0, 1.0),
-                    rgb[1].clamp(0.0, 1.0),
-                    rgb[2].clamp(0.0, 1.0),
-                ];
-                *slot = pack_color_rgb10(rgb);
+                *slot = packed_color_word(scene, index, cam, layout);
             });
     }
 
@@ -1822,19 +1830,7 @@ fn refresh_packed_hot_colors_range(
     {
         for (offset, slot) in colors.iter_mut().enumerate() {
             let index = start + offset;
-            let position = scene.positions[index];
-            let dir = normalize_dir(
-                position.x - cam[0],
-                position.y - cam[1],
-                position.z - cam[2],
-            );
-            let rgb = unsafe { sh_color_unchecked(scene, index, dir, layout) };
-            let rgb = [
-                rgb[0].clamp(0.0, 1.0),
-                rgb[1].clamp(0.0, 1.0),
-                rgb[2].clamp(0.0, 1.0),
-            ];
-            *slot = pack_color_rgb10(rgb);
+            *slot = packed_color_word(scene, index, cam, layout);
         }
     }
 
@@ -1870,18 +1866,7 @@ fn refresh_paged_hot_colors(
             run_start = global_index as usize;
         }
         let index = scene_index as usize;
-        let position = scene.positions[index];
-        let dir = normalize_dir(
-            position.x - cam[0],
-            position.y - cam[1],
-            position.z - cam[2],
-        );
-        let rgb = unsafe { sh_color_unchecked(scene, index, dir, layout) };
-        colors.push(pack_color_rgb10([
-            rgb[0].clamp(0.0, 1.0),
-            rgb[1].clamp(0.0, 1.0),
-            rgb[2].clamp(0.0, 1.0),
-        ]));
+        colors.push(packed_color_word(scene, index, cam, layout));
         expected_global = global_index.saturating_add(1);
     }
     paged

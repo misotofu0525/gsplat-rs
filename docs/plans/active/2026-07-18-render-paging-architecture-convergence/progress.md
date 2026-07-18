@@ -78,6 +78,9 @@
 | D2 renderer/SortedAlpha | shared construction preserves Direct/Packed/Paged images | 100 passed, 1 ignored; conformance 1 passed on Metal | pass |
 | D2 workspace/platform | workspace, strict clippy, wasm32, FFI, fmt, diff | passed; FFI `drawn=2 visible=2` | pass |
 | D2 production size | remove construction/dead state and retain tests | 7,866 -> 7,769 production; tests remain 3,129 | pass for slice; D gate open |
+| D3 renderer/SortedAlpha | compact color/validation paths preserve all renders | 100 passed, 1 ignored; conformance 1 passed on Metal | pass |
+| D3 workspace/platform | workspace, strict clippy, wasm32, FFI, fmt, diff | passed; FFI `drawn=2 visible=2` | pass |
+| D3 production size | retain only abstractions that delete code | 7,769 -> 7,732 production; tests remain 3,129 | pass for slice; D gate open |
 
 ## 2026-07-18 — S1 Surface Ownership Split
 
@@ -238,6 +241,10 @@
   FFI/hygiene gates. Shared pipeline/layout construction plus dead private
   Packed state moved production to 7,769 while tests remain 3,129. D3 audit is
   now the sole next action; at least 149 production lines remain.
+- D3 discarded two abstractions that did not reduce code, then passed the full
+  renderer/Metal/workspace/clippy/wasm/FFI/hygiene sequence with the remaining
+  compact color and validation changes. Production is 7,732, tests are 3,129,
+  and D4 must remove at least 112 more production lines.
 
 ## Error Log
 

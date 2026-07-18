@@ -352,10 +352,6 @@ impl SurfacePresenter {
     where
         T: Into<wgpu::SurfaceTarget<'static>>,
     {
-        if width == 0 || height == 0 {
-            return Err(SurfacePresenterError::InvalidSurfaceSize);
-        }
-
         let instance = create_surface_instance();
         let surface = instance
             .create_surface(target)
@@ -414,10 +410,6 @@ impl SurfacePresenter {
         height: u32,
         selection: SurfacePathSelection<'_>,
     ) -> Result<Self, SurfacePresenterError> {
-        if width == 0 || height == 0 {
-            return Err(SurfacePresenterError::InvalidSurfaceSize);
-        }
-
         let instance = create_surface_instance();
         let surface = unsafe {
             instance.create_surface_unsafe(wgpu::SurfaceTargetUnsafe::RawHandle {
@@ -464,9 +456,6 @@ impl SurfacePresenter {
         height: u32,
         selection: SurfacePathSelection<'_>,
     ) -> Result<Self, SurfacePresenterError> {
-        if width == 0 || height == 0 {
-            return Err(SurfacePresenterError::InvalidSurfaceSize);
-        }
         let instance = create_surface_instance();
         let surface = instance
             .create_surface(wgpu::SurfaceTarget::Canvas(canvas))

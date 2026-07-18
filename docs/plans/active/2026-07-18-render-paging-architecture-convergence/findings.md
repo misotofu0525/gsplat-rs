@@ -473,6 +473,45 @@ architecture cleanup after the independent audit.
   check, strict renderer clippy, wasm32 Web check, FFI smoke, formatting, and
   diff hygiene. Existing wasm cfg-only warnings remain unchanged.
 
+## D3 Audit — Shared Frame Preparation
+
+- Direct and paged visibility preprocessing duplicate camera validation,
+  scratch reset/reserve, view-depth-row construction, visibility testing, and
+  depth-key emission. Only the mapping from draw index to source index differs;
+  one iterator-based private helper can preserve both mappings.
+- Native packed, wasm packed, and paged hot-color refresh repeat the identical
+  position-to-camera direction, SH evaluation, clamp, and RGB10 pack sequence.
+  A single source-index color helper removes those copies without changing
+  parallelism, iteration order, or upload grouping.
+- Direct and Packed resource `prepare` methods duplicate sorted-index capacity
+  validation and optional queue upload. The draw owner can return the same
+  instance count before each path writes its distinct uniform payload.
+- The three target-specific selected constructors reject zero dimensions before
+  calling `from_surface_async`, which performs the same check before adapter
+  negotiation. Keeping the lower common check preserves the exact error while
+  deleting unreachable duplicate validation.
+- wgpu 28's `BlendState::PREMULTIPLIED_ALPHA_BLENDING` exactly equals the
+  hand-written One/OneMinusSrcAlpha/Add color and alpha components used by the
+  shared pipeline. Using the dependency's named constant is source-equivalent.
+
+## D3 Accepted Result — Compact Color and Validation Paths
+
+- Measurement rejected two initially prototyped abstractions before
+  verification: the visibility mapper added one production line, and the
+  sorted-order helper added roughly eight. Both were removed rather than
+  retaining indirection that failed the cleanup objective.
+- The accepted slice keeps one shared source-index SH-to-RGB10 evaluator for
+  native packed, wasm packed, and paged refresh; uses wgpu's exact named
+  premultiplied-alpha constant; and keeps zero-size validation only at the
+  common pre-adapter boundary.
+- Production accounting moved from 7,769 to 7,732 lines (-37), with all 3,129
+  test/fixture lines retained and no new file. D has removed 246 production
+  lines in total and still needs at least 112 more to finish at 7,620 or below.
+- Fresh final D3 verification passed 100 renderer tests plus one retained
+  ignored research oracle, required Metal SortedAlpha conformance, workspace
+  check, strict renderer clippy, wasm32 Web check, FFI smoke, formatting, and
+  diff hygiene. Existing wasm cfg-only warnings remain unchanged.
+
 ## Prior Evidence — Not Terminal HEAD-Bound Proof
 
 - The earlier `cargo test --workspace` run passed. The renderer reported 96
