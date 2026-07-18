@@ -1,9 +1,4 @@
-//! GPU upload helpers for Phase D paged atlas slots.
-//!
-//! Pages are packed against shared scene encoding ranges and written into a
-//! fixed-capacity [`PackedAtlasResources`] buffer at
-//! `atlas_slot * page_capacity`. This keeps the existing packed shader's single
-//! bounds/log-scale uniform valid across resident pages.
+//! Fixed-slot GPU atlas for decoded page payloads using shared scene encoding.
 
 use gsplat_core::SceneBuffers;
 
@@ -340,7 +335,7 @@ mod tests {
     use super::*;
     use crate::packed_gpu::create_packed_bind_group_layout;
     use crate::residency::{ResidencyBudgets, ResidencyManager};
-    use crate::spatial_pages::partition_scene_pages;
+    use crate::spatial_pages::{SpatialPageSet, partition_scene_pages};
     use crate::{GeometryPath, Renderer, RendererConfig, RendererError};
     use gsplat_core::{Camera, RenderMode, Vec3f};
 
@@ -359,6 +354,36 @@ mod tests {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
+    fn gpu_context(
+        config: RendererConfig,
+        label: &str,
+    ) -> Option<(Renderer, wgpu::Device, wgpu::Queue, wgpu::BindGroupLayout)> {
+        let renderer = match Renderer::with_config(config) {
+            Ok(renderer) => renderer,
+            Err(RendererError::GpuRasterizerUnavailable)
+            | Err(RendererError::GpuDeviceCreation) => {
+                eprintln!("skipping {label}; adapter unavailable");
+                return None;
+            }
+            Err(error) => panic!("renderer init: {error}"),
+        };
+        let device = renderer.device().unwrap().clone();
+        let queue = renderer.queue().unwrap().clone();
+        let layout = create_packed_bind_group_layout(&device);
+        Some((renderer, device, queue, layout))
+    }
+
+    fn manager(pages: &SpatialPageSet, limit: usize) -> ResidencyManager {
+        ResidencyManager::new(
+            pages,
+            ResidencyBudgets {
+                max_resident_pages: limit,
+                max_inflight_pages: limit,
+            },
+        )
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn paged_gpu_upload_matches_whole_scene_packed_counts() {
         let scene = sample_scene(8);
@@ -368,34 +393,13 @@ mod tests {
             height: 128,
             mode: RenderMode::SortedAlpha,
         };
-        let mut whole = match Renderer::with_config(config) {
-            Ok(renderer) => renderer,
-            Err(RendererError::GpuRasterizerUnavailable)
-            | Err(RendererError::GpuDeviceCreation) => {
-                eprintln!("skipping paged GPU upload test; adapter unavailable");
-                return;
-            }
-            Err(error) => panic!("renderer init: {error}"),
+        let Some((mut whole, device, queue, layout)) = gpu_context(config, "paged GPU upload test")
+        else {
+            return;
         };
         whole.set_geometry_path(GeometryPath::PackedAtlas);
         whole.load_scene(scene.clone()).unwrap();
-
-        let device = whole
-            .device()
-            .expect("offscreen renderer has a device")
-            .clone();
-        let queue = whole
-            .queue()
-            .expect("offscreen renderer has a queue")
-            .clone();
-        let layout = create_packed_bind_group_layout(&device);
-        let mut manager = ResidencyManager::new(
-            &pages,
-            ResidencyBudgets {
-                max_resident_pages: pages.page_count().max(1),
-                max_inflight_pages: pages.page_count().max(1),
-            },
-        );
+        let mut manager = manager(&pages, pages.page_count().max(1));
         let mut paged = PagedAtlasGpu::new(
             &device,
             &queue,
@@ -456,31 +460,12 @@ mod tests {
             height: 64,
             mode: RenderMode::SortedAlpha,
         };
-        let renderer = match Renderer::with_config(config) {
-            Ok(renderer) => renderer,
-            Err(RendererError::GpuRasterizerUnavailable)
-            | Err(RendererError::GpuDeviceCreation) => {
-                eprintln!("skipping paged GPU stale-token test; adapter unavailable");
-                return;
-            }
-            Err(error) => panic!("renderer init: {error}"),
+        let Some((_renderer, device, queue, layout)) =
+            gpu_context(config, "paged GPU stale-token test")
+        else {
+            return;
         };
-        let device = renderer
-            .device()
-            .expect("offscreen renderer has a device")
-            .clone();
-        let queue = renderer
-            .queue()
-            .expect("offscreen renderer has a queue")
-            .clone();
-        let layout = create_packed_bind_group_layout(&device);
-        let mut manager = ResidencyManager::new(
-            &pages,
-            ResidencyBudgets {
-                max_resident_pages: 2,
-                max_inflight_pages: 2,
-            },
-        );
+        let mut manager = manager(&pages, 2);
         let mut paged = PagedAtlasGpu::new(&device, &queue, &layout, 2, 2, &scene).unwrap();
         let page = &pages.pages[0];
         let token = manager.request_page(page.id).unwrap();
@@ -519,25 +504,11 @@ mod tests {
             height: 64,
             mode: RenderMode::SortedAlpha,
         };
-        let renderer = match Renderer::with_config(config) {
-            Ok(renderer) => renderer,
-            Err(RendererError::GpuRasterizerUnavailable)
-            | Err(RendererError::GpuDeviceCreation) => {
-                eprintln!("skipping paged GPU cancel test; adapter unavailable");
-                return;
-            }
-            Err(error) => panic!("renderer init: {error}"),
+        let Some((_renderer, device, queue, layout)) = gpu_context(config, "paged GPU cancel test")
+        else {
+            return;
         };
-        let device = renderer.device().unwrap().clone();
-        let queue = renderer.queue().unwrap().clone();
-        let layout = create_packed_bind_group_layout(&device);
-        let mut manager = ResidencyManager::new(
-            &pages,
-            ResidencyBudgets {
-                max_resident_pages: 1,
-                max_inflight_pages: 1,
-            },
-        );
+        let mut manager = manager(&pages, 1);
         let mut paged = PagedAtlasGpu::new(&device, &queue, &layout, 1, 2, &scene).unwrap();
         let page = &pages.pages[0];
         let token = manager.request_page(page.id).unwrap();

@@ -70,7 +70,7 @@ Operational facts and command entrypoints live in `handbook/PROJECT_CONTEXT.md` 
   Web renderer changes require verified wasm build and browser smoke evidence.
 - The Web example is validation example support for browser PLY loading, the WebGL2 fallback, and hosting the generated wasm package; it is not a polished web product surface.
 
-## Phase D-F Evidence Boundary (2026-07-13)
+## Paged Evidence Boundary (updated 2026-07-18)
 
 - The experimental local-source paged path has fixed four-slot active
   residency, dense cross-cell pages, one pinned disjoint global cover for
@@ -81,6 +81,15 @@ Operational facts and command entrypoints live in `handbook/PROJECT_CONTEXT.md` 
   before Direct scene derivation and Surface allocation; returned runtime
   switch errors preserve the old session. It still retains full in-memory
   `SceneBuffers` and is not production source or network streaming.
+- Stable/default constructors remain Direct. The additive Rust automatic
+  constructors select Paged only after compatible-adapter preflight proves the
+  scene exceeds Direct capacity; they restore the previous renderer path if
+  Surface preparation fails. This does not widen the C ABI.
+- Local extraction and packing now sit behind a page-source payload boundary,
+  so GPU slots no longer accept arbitrary source containers. This remains a
+  synchronous full-source prototype: metadata-first loading, bounded source
+  and CPU caches, asynchronous decode, and true arbitrary-scale streaming are
+  still future work.
 - A fresh Android Kitsune smoke draws a truthful bounded working set of
   `225784/279199` splats with coherent initial and orbit views. This is local
   real-scene correctness evidence, not a performance or arbitrary-scale claim;

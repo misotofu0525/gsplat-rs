@@ -12,7 +12,7 @@ use std::{
     thread::{self, JoinHandle},
 };
 
-use crate::{GeometryPath, Renderer, RendererError, SurfacePresenter};
+use crate::{GeometryPath, Renderer, RendererError, SurfacePresenter, timer_elapsed_ms, timer_now};
 
 const DEFAULT_SURFACE_SORT_INTERVAL: u32 = 2;
 /// Maximum number of camera revisions an asynchronously produced order may lag
@@ -39,32 +39,6 @@ impl SurfaceSortSchedule {
 
 fn async_schedule_threshold(sort_interval: u32) -> u32 {
     sort_interval.saturating_sub(1).max(1)
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-type TimerInstant = std::time::Instant;
-
-#[cfg(target_arch = "wasm32")]
-type TimerInstant = f64;
-
-#[cfg(not(target_arch = "wasm32"))]
-fn timer_now() -> TimerInstant {
-    std::time::Instant::now()
-}
-
-#[cfg(target_arch = "wasm32")]
-fn timer_now() -> TimerInstant {
-    js_sys::Date::now()
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn timer_elapsed_ms(start: TimerInstant) -> f32 {
-    start.elapsed().as_secs_f32() * 1000.0
-}
-
-#[cfg(target_arch = "wasm32")]
-fn timer_elapsed_ms(start: TimerInstant) -> f32 {
-    (js_sys::Date::now() - start).max(0.0) as f32
 }
 
 #[cfg(not(target_arch = "wasm32"))]

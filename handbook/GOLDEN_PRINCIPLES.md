@@ -13,6 +13,9 @@
 - Validate data at repository boundaries: PLY import, FFI, JNI, Swift, and CLI arguments.
 - Keep public native integration boring and stable. C header changes must move with the Rust FFI implementation and smoke coverage.
 - Prefer explicit render-mode contracts over partially supported branches. `SortedAlpha` is the release-gated path today.
+- Keep small scenes on Direct by default. Route to Paged only after capacity
+  preflight or an explicit diagnostic request, and never describe a
+  full-`SceneBuffers` page adapter as streaming.
 - Keep frame scheduling and resource dirtiness in the shared render layer;
   platform wrappers adapt handles and controls, not rendering state machines.
 - Make verification executable. Use repo-local scripts and commands instead of prose-only confidence.

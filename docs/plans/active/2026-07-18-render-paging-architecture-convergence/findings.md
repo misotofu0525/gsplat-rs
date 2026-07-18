@@ -176,8 +176,8 @@
 
 ## S3 Accepted Result
 
-- `GeometryPathRequest::default()` and every pre-existing Surface constructor
-  retain exact Direct/default behavior. Packed and forced Paged remain explicit
+- `GeometryPath::default()` and every pre-existing Surface constructor retain
+  exact Direct/default behavior. Packed and forced Paged remain explicit
   diagnostic controls rather than automatic product choices.
 - New opt-in `from_window_auto`, `from_raw_handles_auto`, and
   `from_canvas_auto` constructors request a compatible adapter first, then use
@@ -218,3 +218,66 @@
 - S4 is one new 166-line file and +201 renderer Rust lines from S3. Total is
   11,296 lines, 500 above the 10,796-line starting point; S5 needs at least 501
   lines of proven deletion for a terminal net decrease.
+
+## S5 Accepted Result
+
+- Surface exact/automatic window, raw-handle, and canvas constructors now share
+  selection-specific private helpers. Existing signatures and default behavior
+  are unchanged; automatic selection is exposed only by the additive
+  `*_auto` constructors and one focused selector function.
+- Renderer preprocessing/sort timing, frame-stat recording, and path-specific
+  raster submission now have one implementation each. `render_frame` retains
+  its sorted-index allocation by moving the vector out and restoring it before
+  propagating raster errors; it does not introduce a per-frame clone.
+- The duplicate timers in `surface_session.rs` were removed in favor of the
+  crate's existing native/wasm timer helpers. Page scheduler, residency, paged
+  GPU, and renderer tests share fixtures without removing test names, scenes,
+  image thresholds, safety assertions, or the retained research oracle.
+- Canonical handbook docs now say exactly what the code implements: Direct is
+  the stable/default path, automatic Paged is opt-in and oversized-only,
+  Packed is diagnostic, and `LocalScenePageSource` is a full-source local
+  prototype rather than streaming.
+- S5 adds no file and, including canonical docs and the final proof record,
+  adds 620 lines while deleting 995 (net -375). Final renderer Rust source is
+  10,792 lines versus 10,796 at the start (net -4), while the responsibility
+  hotspot `lib.rs` is 4,648 versus 5,792 (net -1,144).
+
+## Final Fresh Evidence
+
+- Full `cargo test --workspace` passed. The renderer reported 96 passed and one
+  explicitly retained research oracle ignored; the required Metal
+  `SortedAlpha` conformance test passed again with
+  `GSPLAT_REQUIRE_GPU_CONFORMANCE=1`.
+- Final canonical 1280x720 Direct PNG reported `visible=2`, `drawn=2`, and the
+  same SHA-256 as fresh main/current baselines:
+  `c17f90b23a73b466348150266b610bbd54b5438408d5ab8975a261cfcb9c3c53`.
+- Final 120-frame native Direct observation used
+  `sorted_index_direct`, mean GPU-complete 1.8581 ms, p95 3.1114 ms, p99
+  3.1361 ms, with zero misses. This is a correctness/regression observation,
+  not a performance guarantee.
+- Android device `A065` rebuilt and ran the real 279,199-splat Kitsune model.
+  Direct completed 120 frames at 14.969 ms average frame time; the four-slot
+  Paged prototype completed at 36.587 ms and drew 225,784 active splats on
+  average. The slower Paged result is retained as evidence that fixed local
+  residency is not yet a performance win or true streaming.
+- A freshly rebuilt iPhone 17 Pro simulator app completed a 120-frame Kitsune
+  Direct Surface run with `avg_frame_ms=18.992`, `avg_visible=279199`, and
+  `avg_drawn=279199`. This is simulator evidence, not a physical-iOS-device
+  claim.
+- Web WASM build, package check, and seven package tests passed. The local
+  showcase then reported `renderer=wasm_sorted_index_direct`, `avg_visible=3`,
+  and `avg_drawn=3` from the real Rust/WASM Surface path.
+
+## Remaining Risks and Explicit Non-Claims
+
+- `LocalScenePageSource` still retains complete `SceneBuffers` and page index
+  vectors; scheduler state changes are synchronous. Metadata-first source I/O,
+  bounded compressed/decoded caches, and asynchronous cancellation remain
+  future work.
+- Paged uses four fixed GPU slots and a global SortedAlpha order over the active
+  set, but it is not an end-to-end bounded CPU/source/GPU streaming pipeline.
+- Android Paged is materially slower than Direct in this fresh run. No
+  performance threshold is claimed, and no telemetry/sidecar/network
+  validator machinery was restored to disguise that result.
+- Android evidence is physical-device evidence; iOS evidence is simulator-only.
+  A physical iOS rerun remains useful before a release-level mobile claim.

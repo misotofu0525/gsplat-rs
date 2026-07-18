@@ -1,9 +1,4 @@
-//! Spatial page metadata for the Phase D paged active-atlas path.
-//!
-//! Pages are built by assigning splats to a uniform grid over the scene AABB,
-//! then packing each non-empty cell into one or more pages of at most
-//! `page_capacity` splat indices. This is CPU metadata only; GPU atlas upload
-//! remains a later Phase D slice.
+//! Local spatial metadata built from a full scene for the paged prototype.
 
 use gsplat_core::{SceneBuffers, Vec3f};
 

@@ -102,31 +102,15 @@ pub enum GeometryPath {
     PagedActiveAtlas,
 }
 
-/// Product-level Surface path request.
-///
-/// Stable constructors continue to use [`Self::DefaultDirect`]. Automatic
-/// selection is additive and chooses paging only when Direct resource
-/// preflight reports that an active atlas is required. Explicit alternatives
-/// remain diagnostic/A-B controls.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum GeometryPathRequest {
-    #[default]
-    DefaultDirect,
-    Automatic,
-    Explicit(GeometryPath),
-}
-
-pub fn select_surface_geometry_path(
-    request: GeometryPathRequest,
+/// Selects Paged only when an explicit automatic Surface request cannot fit
+/// Direct. Stable constructors and [`GeometryPath::default`] remain Direct;
+/// Packed and forced Paged continue through explicit [`GeometryPath`] control.
+pub fn select_automatic_surface_geometry_path(
     direct_preflight: &DirectScenePreflight,
 ) -> GeometryPath {
-    match request {
-        GeometryPathRequest::DefaultDirect => GeometryPath::SortedIndexDirect,
-        GeometryPathRequest::Automatic => match direct_preflight.path {
-            DirectScenePath::Direct => GeometryPath::SortedIndexDirect,
-            DirectScenePath::ActiveAtlasRequired => GeometryPath::PagedActiveAtlas,
-        },
-        GeometryPathRequest::Explicit(path) => path,
+    match direct_preflight.path {
+        DirectScenePath::Direct => GeometryPath::SortedIndexDirect,
+        DirectScenePath::ActiveAtlasRequired => GeometryPath::PagedActiveAtlas,
     }
 }
 
@@ -581,6 +565,35 @@ impl Renderer {
         Ok((instances, stats))
     }
 
+    fn preprocess_and_sort_timed(&mut self, camera: &Camera) -> Result<(f32, f32), RendererError> {
+        let started = timer_now();
+        self.preprocess_visible_scratch(camera)?;
+        let preprocess_ms = timer_elapsed_ms(started);
+        let started = timer_now();
+        self.sort_preprocessed_scratch()?;
+        Ok((preprocess_ms, timer_elapsed_ms(started)))
+    }
+
+    fn record_stats(
+        &mut self,
+        frame_start: TimerInstant,
+        preprocess_ms: f32,
+        sort_ms: f32,
+        raster_ms: f32,
+        drawn_count: u32,
+    ) -> FrameStats {
+        let stats = FrameStats {
+            frame_ms: timer_elapsed_ms(frame_start),
+            preprocess_ms,
+            sort_ms,
+            raster_ms,
+            visible_count: self.preprocess_indices.len() as u32,
+            drawn_count,
+        };
+        self.last_stats = stats;
+        stats
+    }
+
     pub fn build_sorted_instances_into(
         &mut self,
         camera: &Camera,
@@ -588,13 +601,7 @@ impl Renderer {
     ) -> Result<FrameStats, RendererError> {
         let frame_start = timer_now();
 
-        let preprocess_start = timer_now();
-        self.preprocess_visible_scratch(camera)?;
-        let preprocess_ms = timer_elapsed_ms(preprocess_start);
-
-        let sort_start = timer_now();
-        self.sort_preprocessed_scratch()?;
-        let sort_ms = timer_elapsed_ms(sort_start);
+        let (preprocess_ms, sort_ms) = self.preprocess_and_sort_timed(camera)?;
 
         let raster_start = timer_now();
         let scene = self.scene.as_ref().ok_or(RendererError::SceneNotLoaded)?;
@@ -618,16 +625,7 @@ impl Renderer {
         let drawn_count = instances.len() as u32;
         let raster_ms = timer_elapsed_ms(raster_start);
 
-        let stats = FrameStats {
-            frame_ms: timer_elapsed_ms(frame_start),
-            preprocess_ms,
-            sort_ms,
-            raster_ms,
-            visible_count: self.preprocess_indices.len() as u32,
-            drawn_count,
-        };
-        self.last_stats = stats;
-        Ok(stats)
+        Ok(self.record_stats(frame_start, preprocess_ms, sort_ms, raster_ms, drawn_count))
     }
 
     pub fn build_surface_sorted_indices_with_sort_refresh(
@@ -639,15 +637,7 @@ impl Renderer {
 
         let refresh_sort = refresh_sort || self.preprocess_indices.is_empty();
         let (preprocess_ms, sort_ms) = if refresh_sort {
-            let preprocess_start = timer_now();
-            self.preprocess_visible_scratch(camera)?;
-            let preprocess_ms = timer_elapsed_ms(preprocess_start);
-
-            let sort_start = timer_now();
-            self.sort_preprocessed_scratch()?;
-            let sort_ms = timer_elapsed_ms(sort_start);
-
-            (preprocess_ms, sort_ms)
+            self.preprocess_and_sort_timed(camera)?
         } else {
             camera
                 .validate()
@@ -655,17 +645,8 @@ impl Renderer {
             (0.0, 0.0)
         };
 
-        let visible_count = self.preprocess_indices.len() as u32;
-        let stats = FrameStats {
-            frame_ms: timer_elapsed_ms(frame_start),
-            preprocess_ms,
-            sort_ms,
-            raster_ms: 0.0,
-            visible_count,
-            drawn_count: visible_count,
-        };
-        self.last_stats = stats;
-        Ok(stats)
+        let drawn_count = self.preprocess_indices.len() as u32;
+        Ok(self.record_stats(frame_start, preprocess_ms, sort_ms, 0.0, drawn_count))
     }
 
     pub fn current_sorted_indices(&self) -> &[u32] {
@@ -711,25 +692,45 @@ impl Renderer {
     ) -> Result<(Vec<u32>, FrameStats), RendererError> {
         let frame_start = timer_now();
 
-        let preprocess_start = timer_now();
-        self.preprocess_visible_scratch(camera)?;
-        let preprocess_ms = timer_elapsed_ms(preprocess_start);
+        let (preprocess_ms, sort_ms) = self.preprocess_and_sort_timed(camera)?;
 
-        let sort_start = timer_now();
-        self.sort_preprocessed_scratch()?;
-        let sort_ms = timer_elapsed_ms(sort_start);
-
-        let visible_count = self.preprocess_indices.len() as u32;
-        let stats = FrameStats {
-            frame_ms: timer_elapsed_ms(frame_start),
-            preprocess_ms,
-            sort_ms,
-            raster_ms: 0.0,
-            visible_count,
-            drawn_count: visible_count,
-        };
-        self.last_stats = stats;
+        let drawn_count = self.preprocess_indices.len() as u32;
+        let stats = self.record_stats(frame_start, preprocess_ms, sort_ms, 0.0, drawn_count);
         Ok((self.preprocess_indices.clone(), stats))
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn raster_sorted_indices(
+        &mut self,
+        camera: &Camera,
+        sorted_indices: &[u32],
+    ) -> Result<(), RendererError> {
+        let scene = self.scene.as_ref().ok_or(RendererError::SceneNotLoaded)?;
+        let rasterizer = self
+            .gpu_rasterizer
+            .as_mut()
+            .ok_or(RendererError::GpuRasterizerUnavailable)?;
+        match self.geometry_path {
+            GeometryPath::SortedIndexDirect => rasterizer.render_direct_sorted_indices(
+                self.config,
+                sorted_indices,
+                camera,
+                scene,
+                self.world_covariance_terms
+                    .as_deref()
+                    .ok_or(RendererError::InvalidScene)?,
+                self.alpha_values
+                    .as_deref()
+                    .ok_or(RendererError::InvalidScene)?,
+            ),
+            GeometryPath::PackedAtlas => {
+                rasterizer.render_packed_sorted_indices(self.config, sorted_indices, camera, scene)
+            }
+            GeometryPath::PagedActiveAtlas => {
+                rasterizer.render_paged_sorted_indices(self.config, sorted_indices, camera, scene)
+            }
+        }
+        .map_err(RendererError::from)
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -740,69 +741,17 @@ impl Renderer {
 
         let frame_start = timer_now();
 
-        let preprocess_start = timer_now();
-        self.preprocess_visible_scratch(camera)?;
-        let preprocess_ms = timer_elapsed_ms(preprocess_start);
-
-        let sort_start = timer_now();
-        self.sort_preprocessed_scratch()?;
-        let sort_ms = timer_elapsed_ms(sort_start);
+        let (preprocess_ms, sort_ms) = self.preprocess_and_sort_timed(camera)?;
 
         let raster_start = timer_now();
-        let scene = self.scene.as_ref().ok_or(RendererError::SceneNotLoaded)?;
-        let sorted_indices = &self.preprocess_indices;
-        match self.geometry_path {
-            GeometryPath::SortedIndexDirect => {
-                let world_covariance_terms = self
-                    .world_covariance_terms
-                    .as_deref()
-                    .ok_or(RendererError::InvalidScene)?;
-                let alpha_values = self
-                    .alpha_values
-                    .as_deref()
-                    .ok_or(RendererError::InvalidScene)?;
-                self.gpu_rasterizer
-                    .as_mut()
-                    .ok_or(RendererError::GpuRasterizerUnavailable)?
-                    .render_direct_sorted_indices(
-                        self.config,
-                        sorted_indices,
-                        camera,
-                        scene,
-                        world_covariance_terms,
-                        alpha_values,
-                    )
-                    .map_err(RendererError::from)?;
-            }
-            GeometryPath::PackedAtlas => {
-                self.gpu_rasterizer
-                    .as_mut()
-                    .ok_or(RendererError::GpuRasterizerUnavailable)?
-                    .render_packed_sorted_indices(self.config, sorted_indices, camera, scene)
-                    .map_err(RendererError::from)?;
-            }
-            GeometryPath::PagedActiveAtlas => {
-                self.gpu_rasterizer
-                    .as_mut()
-                    .ok_or(RendererError::GpuRasterizerUnavailable)?
-                    .render_paged_sorted_indices(self.config, sorted_indices, camera, scene)
-                    .map_err(RendererError::from)?;
-            }
-        }
+        let sorted_indices = std::mem::take(&mut self.preprocess_indices);
+        let raster_result = self.raster_sorted_indices(camera, &sorted_indices);
         let drawn_count = sorted_indices.len() as u32;
+        self.preprocess_indices = sorted_indices;
+        raster_result?;
         let raster_ms = timer_elapsed_ms(raster_start);
 
-        let stats = FrameStats {
-            frame_ms: timer_elapsed_ms(frame_start),
-            preprocess_ms,
-            sort_ms,
-            raster_ms,
-            visible_count: self.preprocess_indices.len() as u32,
-            drawn_count,
-        };
-
-        self.last_stats = stats;
-        Ok(stats)
+        Ok(self.record_stats(frame_start, preprocess_ms, sort_ms, raster_ms, drawn_count))
     }
 
     #[cfg(all(test, not(target_arch = "wasm32")))]
@@ -816,45 +765,7 @@ impl Renderer {
             .map_err(|_| RendererError::InvalidCamera)?;
         let frame_start = timer_now();
         let raster_start = timer_now();
-        let scene = self.scene.as_ref().ok_or(RendererError::SceneNotLoaded)?;
-        match self.geometry_path {
-            GeometryPath::SortedIndexDirect => {
-                let world_covariance_terms = self
-                    .world_covariance_terms
-                    .as_deref()
-                    .ok_or(RendererError::InvalidScene)?;
-                let alpha_values = self
-                    .alpha_values
-                    .as_deref()
-                    .ok_or(RendererError::InvalidScene)?;
-                self.gpu_rasterizer
-                    .as_mut()
-                    .ok_or(RendererError::GpuRasterizerUnavailable)?
-                    .render_direct_sorted_indices(
-                        self.config,
-                        sorted_indices,
-                        camera,
-                        scene,
-                        world_covariance_terms,
-                        alpha_values,
-                    )
-                    .map_err(RendererError::from)?;
-            }
-            GeometryPath::PackedAtlas => {
-                self.gpu_rasterizer
-                    .as_mut()
-                    .ok_or(RendererError::GpuRasterizerUnavailable)?
-                    .render_packed_sorted_indices(self.config, sorted_indices, camera, scene)
-                    .map_err(RendererError::from)?;
-            }
-            GeometryPath::PagedActiveAtlas => {
-                self.gpu_rasterizer
-                    .as_mut()
-                    .ok_or(RendererError::GpuRasterizerUnavailable)?
-                    .render_paged_sorted_indices(self.config, sorted_indices, camera, scene)
-                    .map_err(RendererError::from)?;
-            }
-        }
+        self.raster_sorted_indices(camera, sorted_indices)?;
         let raster_ms = timer_elapsed_ms(raster_start);
         let count = u32::try_from(sorted_indices.len()).unwrap_or(u32::MAX);
         let stats = FrameStats {
@@ -3258,14 +3169,15 @@ fn create_output_target(
 
 #[cfg(test)]
 mod tests {
-    use gsplat_core::{Camera, ErrorCode, RenderMode, RendererConfig, SceneBuffers, Vec3f};
+    use gsplat_core::{
+        Camera, ErrorCode, FrameStats, RenderMode, RendererConfig, SceneBuffers, Vec3f,
+    };
 
     use super::{
         DirectSceneError, DirectScenePath, DirectSceneRemediation, DirectSceneResource,
-        GeometryPath, GeometryPathRequest, PackedScenePath, Renderer, build_instances,
-        direct_scene_preflight, ellipse_axes_from_covariance, packed_scene_preflight,
-        project_covariance_to_ndc, quat_inverse, select_surface_geometry_path,
-        try_prepare_then_commit,
+        GeometryPath, PackedScenePath, Renderer, build_instances, direct_scene_preflight,
+        ellipse_axes_from_covariance, packed_scene_preflight, project_covariance_to_ndc,
+        quat_inverse, select_automatic_surface_geometry_path, try_prepare_then_commit,
     };
     #[cfg(not(target_arch = "wasm32"))]
     use super::{GpuRasterError, offscreen_device_limits};
@@ -3280,6 +3192,79 @@ mod tests {
             sh_degree: 0,
             sh_rest: None,
         }
+    }
+
+    fn test_config(size: u32) -> RendererConfig {
+        RendererConfig {
+            width: size,
+            height: size,
+            mode: RenderMode::SortedAlpha,
+        }
+    }
+
+    fn test_renderer(config: RendererConfig, label: &str) -> Option<Renderer> {
+        match Renderer::with_config(config) {
+            Ok(renderer) => Some(renderer),
+            Err(super::RendererError::GpuRasterizerUnavailable)
+            | Err(super::RendererError::GpuDeviceCreation) => {
+                eprintln!("skipping {label}; adapter unavailable");
+                None
+            }
+            Err(error) => panic!("renderer init: {error}"),
+        }
+    }
+
+    struct RenderPair {
+        first_stats: FrameStats,
+        second_stats: FrameStats,
+        first_rgba: Vec<u8>,
+        second_rgba: Vec<u8>,
+    }
+
+    fn render_path_pair(
+        scene: SceneBuffers,
+        config: RendererConfig,
+        camera: &Camera,
+        first_path: GeometryPath,
+        second_path: GeometryPath,
+        label: &str,
+    ) -> Option<RenderPair> {
+        let mut first = test_renderer(config, label)?;
+        let mut second = Renderer::with_config(config).expect("second renderer");
+        first.set_geometry_path(first_path);
+        second.set_geometry_path(second_path);
+        first.load_scene(scene.clone()).unwrap();
+        second.load_scene(scene).unwrap();
+        let first_stats = first.render_frame(camera).unwrap();
+        let second_stats = second.render_frame(camera).unwrap();
+        Some(RenderPair {
+            first_stats,
+            second_stats,
+            first_rgba: first.readback_rgba8().unwrap(),
+            second_rgba: second.readback_rgba8().unwrap(),
+        })
+    }
+
+    fn render_direct_packed(scene: SceneBuffers, size: u32, label: &str) -> Option<RenderPair> {
+        render_path_pair(
+            scene,
+            test_config(size),
+            &Camera::default(),
+            GeometryPath::SortedIndexDirect,
+            GeometryPath::PackedAtlas,
+            label,
+        )
+    }
+
+    fn render_packed_paged(scene: SceneBuffers, size: u32, label: &str) -> Option<RenderPair> {
+        render_path_pair(
+            scene,
+            test_config(size),
+            &Camera::default(),
+            GeometryPath::PackedAtlas,
+            GeometryPath::PagedActiveAtlas,
+            label,
+        )
     }
 
     #[test]
@@ -3328,19 +3313,9 @@ mod tests {
 
     #[test]
     fn packed_atlas_offscreen_smoke_preserves_counts() {
-        let config = RendererConfig {
-            width: 64,
-            height: 64,
-            mode: RenderMode::SortedAlpha,
-        };
-        let mut renderer = match Renderer::with_config(config) {
-            Ok(renderer) => renderer,
-            Err(super::RendererError::GpuRasterizerUnavailable)
-            | Err(super::RendererError::GpuDeviceCreation) => {
-                eprintln!("skipping packed atlas GPU smoke; adapter unavailable");
-                return;
-            }
-            Err(error) => panic!("renderer init: {error}"),
+        let config = test_config(64);
+        let Some(mut renderer) = test_renderer(config, "packed atlas GPU smoke") else {
+            return;
         };
         renderer.set_geometry_path(super::GeometryPath::PackedAtlas);
         renderer.load_scene(build_scene()).unwrap();
@@ -3356,77 +3331,32 @@ mod tests {
 
     #[test]
     fn packed_vs_direct_count_parity_on_minimal_scene() {
-        let config = RendererConfig {
-            width: 64,
-            height: 64,
-            mode: RenderMode::SortedAlpha,
+        let Some(pair) = render_direct_packed(build_scene(), 64, "packed-vs-direct parity") else {
+            return;
         };
-        let mut direct = match Renderer::with_config(config) {
-            Ok(renderer) => renderer,
-            Err(super::RendererError::GpuRasterizerUnavailable)
-            | Err(super::RendererError::GpuDeviceCreation) => {
-                eprintln!("skipping packed-vs-direct parity; adapter unavailable");
-                return;
-            }
-            Err(error) => panic!("renderer init: {error}"),
-        };
-        let mut packed = Renderer::with_config(config).expect("second renderer");
-        packed.set_geometry_path(super::GeometryPath::PackedAtlas);
-        let scene = build_scene();
-        direct.load_scene(scene.clone()).unwrap();
-        packed.load_scene(scene).unwrap();
-        let camera = Camera::default();
-        let direct_stats = direct.render_frame(&camera).unwrap();
-        let packed_stats = packed.render_frame(&camera).unwrap();
-        assert_eq!(direct_stats.visible_count, packed_stats.visible_count);
-        assert_eq!(direct_stats.drawn_count, packed_stats.drawn_count);
-        assert_eq!(direct_stats.visible_count, 2);
+        assert_eq!(
+            pair.first_stats.visible_count,
+            pair.second_stats.visible_count
+        );
+        assert_eq!(pair.first_stats.drawn_count, pair.second_stats.drawn_count);
+        assert_eq!(pair.first_stats.visible_count, 2);
     }
 
     #[test]
     fn paged_vs_packed_count_parity_on_minimal_scene() {
-        let config = RendererConfig {
-            width: 64,
-            height: 64,
-            mode: RenderMode::SortedAlpha,
+        let Some(pair) = render_packed_paged(build_scene(), 64, "paged-vs-packed parity") else {
+            return;
         };
-        let mut packed = match Renderer::with_config(config) {
-            Ok(renderer) => renderer,
-            Err(super::RendererError::GpuRasterizerUnavailable)
-            | Err(super::RendererError::GpuDeviceCreation) => {
-                eprintln!("skipping paged-vs-packed parity; adapter unavailable");
-                return;
-            }
-            Err(error) => panic!("renderer init: {error}"),
-        };
-        let mut paged = Renderer::with_config(config).expect("second renderer");
-        packed.set_geometry_path(super::GeometryPath::PackedAtlas);
-        paged.set_geometry_path(super::GeometryPath::PagedActiveAtlas);
-        let scene = build_scene();
-        packed.load_scene(scene.clone()).unwrap();
-        paged.load_scene(scene).unwrap();
-        let camera = Camera::default();
-        let packed_stats = packed.render_frame(&camera).unwrap();
-        let paged_stats = paged.render_frame(&camera).unwrap();
-        assert_eq!(packed_stats.visible_count, paged_stats.visible_count);
-        assert_eq!(packed_stats.drawn_count, paged_stats.drawn_count);
-        assert_eq!(packed_stats.visible_count, 2);
-        let packed_rgba = packed.readback_rgba8().unwrap();
-        let paged_rgba = paged.readback_rgba8().unwrap();
-        let metrics = rgba_image_parity_metrics(&packed_rgba, &paged_rgba);
-        eprintln!(
-            "paged vs packed parity: mean_abs_rgb={:.6} frac_over_3_255={:.6} max_abs_rgb={:.6}",
-            metrics.mean_abs_rgb, metrics.frac_pixels_over_3_255, metrics.max_abs_rgb
+        assert_eq!(
+            pair.first_stats.visible_count,
+            pair.second_stats.visible_count
         );
-        assert!(
-            metrics.mean_abs_rgb <= 1.0 / 255.0,
-            "mean abs RGB {:.6} exceeded 1/255",
-            metrics.mean_abs_rgb
-        );
-        assert!(
-            metrics.frac_pixels_over_3_255 <= 0.001,
-            "frac over 3/255 {:.6} exceeded 0.1%",
-            metrics.frac_pixels_over_3_255
+        assert_eq!(pair.first_stats.drawn_count, pair.second_stats.drawn_count);
+        assert_eq!(pair.first_stats.visible_count, 2);
+        assert_image_parity(
+            "paged vs packed parity",
+            &pair.first_rgba,
+            &pair.second_rgba,
         );
     }
 
@@ -3440,54 +3370,22 @@ mod tests {
             "qualification-small scene must fill the fixed multi-page budget"
         );
         assert_eq!(pages.total_splats(), scene.len());
-        let config = RendererConfig {
-            width: 128,
-            height: 128,
-            mode: RenderMode::SortedAlpha,
+        let Some(pair) = render_packed_paged(scene, 128, "paged qualification parity") else {
+            return;
         };
-        let mut packed = match Renderer::with_config(config) {
-            Ok(renderer) => renderer,
-            Err(super::RendererError::GpuRasterizerUnavailable)
-            | Err(super::RendererError::GpuDeviceCreation) => {
-                eprintln!("skipping paged qualification parity; adapter unavailable");
-                return;
-            }
-            Err(error) => panic!("renderer init: {error}"),
-        };
-        let mut paged = Renderer::with_config(config).expect("second renderer");
-        packed.set_geometry_path(super::GeometryPath::PackedAtlas);
-        paged.set_geometry_path(super::GeometryPath::PagedActiveAtlas);
-        let camera = Camera::default();
-        packed.load_scene(scene.clone()).unwrap();
-        paged.load_scene(scene).unwrap();
-        let packed_stats = packed.render_frame(&camera).unwrap();
-        let paged_stats = paged.render_frame(&camera).unwrap();
-        assert_eq!(packed_stats.visible_count, paged_stats.visible_count);
-        assert_eq!(packed_stats.drawn_count, paged_stats.drawn_count);
+        assert_eq!(
+            pair.first_stats.visible_count,
+            pair.second_stats.visible_count
+        );
+        assert_eq!(pair.first_stats.drawn_count, pair.second_stats.drawn_count);
         assert!(
-            packed_stats.visible_count > 0,
+            pair.first_stats.visible_count > 0,
             "qualification-small parity camera must see splats"
         );
-        let metrics = rgba_image_parity_metrics(
-            &packed.readback_rgba8().unwrap(),
-            &paged.readback_rgba8().unwrap(),
-        );
-        eprintln!(
-            "qualification-small paged parity: mean_abs_rgb={:.6} frac_over_3_255={:.6} max_abs_rgb={:.6} visible={}",
-            metrics.mean_abs_rgb,
-            metrics.frac_pixels_over_3_255,
-            metrics.max_abs_rgb,
-            packed_stats.visible_count
-        );
-        assert!(
-            metrics.mean_abs_rgb <= 1.0 / 255.0,
-            "qualification-small paged MAE gate failed: mean_abs_rgb={:.6}",
-            metrics.mean_abs_rgb
-        );
-        assert!(
-            metrics.frac_pixels_over_3_255 <= 0.001,
-            "qualification-small paged frac over 3/255 {:.6} exceeded 0.1%",
-            metrics.frac_pixels_over_3_255
+        assert_image_parity(
+            "qualification-small paged parity",
+            &pair.first_rgba,
+            &pair.second_rgba,
         );
     }
 
@@ -3496,19 +3394,9 @@ mod tests {
         let scene = paged_eviction_scene();
         let pages = super::default_spatial_pages(&scene);
         assert!(pages.page_count() > super::DEFAULT_PAGED_ATLAS_SLOTS);
-        let config = RendererConfig {
-            width: 64,
-            height: 64,
-            mode: RenderMode::SortedAlpha,
-        };
-        let mut renderer = match Renderer::with_config(config) {
-            Ok(renderer) => renderer,
-            Err(super::RendererError::GpuRasterizerUnavailable)
-            | Err(super::RendererError::GpuDeviceCreation) => {
-                eprintln!("skipping paged fixed-budget gate; adapter unavailable");
-                return;
-            }
-            Err(error) => panic!("renderer init: {error}"),
+        let config = test_config(64);
+        let Some(mut renderer) = test_renderer(config, "paged fixed-budget gate") else {
+            return;
         };
         renderer.set_geometry_path(super::GeometryPath::PagedActiveAtlas);
         renderer.load_scene(scene).unwrap();
@@ -3562,19 +3450,9 @@ mod tests {
     #[test]
     fn paged_small_motion_trace_retains_cover_without_zero_draw_holes() {
         let scene = paged_eviction_scene();
-        let config = RendererConfig {
-            width: 64,
-            height: 64,
-            mode: RenderMode::SortedAlpha,
-        };
-        let mut renderer = match Renderer::with_config(config) {
-            Ok(renderer) => renderer,
-            Err(super::RendererError::GpuRasterizerUnavailable)
-            | Err(super::RendererError::GpuDeviceCreation) => {
-                eprintln!("skipping paged small-motion trace; adapter unavailable");
-                return;
-            }
-            Err(error) => panic!("renderer init: {error}"),
+        let config = test_config(64);
+        let Some(mut renderer) = test_renderer(config, "paged small-motion trace") else {
+            return;
         };
         renderer.set_geometry_path(super::GeometryPath::PagedActiveAtlas);
         renderer.load_scene(scene).unwrap();
@@ -3623,19 +3501,9 @@ mod tests {
     #[test]
     fn surface_paged_local_runtime_prepares_stable_nonzero_draws() {
         let scene = paged_eviction_scene();
-        let config = RendererConfig {
-            width: 64,
-            height: 64,
-            mode: RenderMode::SortedAlpha,
-        };
-        let renderer = match Renderer::with_config(config) {
-            Ok(renderer) => renderer,
-            Err(super::RendererError::GpuRasterizerUnavailable)
-            | Err(super::RendererError::GpuDeviceCreation) => {
-                eprintln!("skipping Surface paged runtime gate; adapter unavailable");
-                return;
-            }
-            Err(error) => panic!("renderer init: {error}"),
+        let config = test_config(64);
+        let Some(renderer) = test_renderer(config, "Surface paged runtime gate") else {
+            return;
         };
         let device = renderer.device().unwrap().clone();
         let queue = renderer.queue().unwrap().clone();
@@ -3680,19 +3548,9 @@ mod tests {
     #[test]
     fn paged_bounded_trace_keeps_slot_resident_and_active_counts_fixed() {
         let scene = paged_eviction_scene();
-        let config = RendererConfig {
-            width: 64,
-            height: 64,
-            mode: RenderMode::SortedAlpha,
-        };
-        let mut renderer = match Renderer::with_config(config) {
-            Ok(renderer) => renderer,
-            Err(super::RendererError::GpuRasterizerUnavailable)
-            | Err(super::RendererError::GpuDeviceCreation) => {
-                eprintln!("skipping paged bounded trace; adapter unavailable");
-                return;
-            }
-            Err(error) => panic!("renderer init: {error}"),
+        let config = test_config(64);
+        let Some(mut renderer) = test_renderer(config, "paged bounded trace") else {
+            return;
         };
         renderer.set_geometry_path(super::GeometryPath::PagedActiveAtlas);
         renderer.load_scene(scene).unwrap();
@@ -3773,6 +3631,25 @@ mod tests {
         }
     }
 
+    fn assert_image_parity(label: &str, first: &[u8], second: &[u8]) -> ImageParityMetrics {
+        let metrics = rgba_image_parity_metrics(first, second);
+        eprintln!(
+            "{label}: mean_abs_rgb={:.6} frac_over_3_255={:.6} max_abs_rgb={:.6}",
+            metrics.mean_abs_rgb, metrics.frac_pixels_over_3_255, metrics.max_abs_rgb
+        );
+        assert!(
+            metrics.mean_abs_rgb <= 1.0 / 255.0,
+            "{label} mean abs RGB {:.6} exceeded 1/255",
+            metrics.mean_abs_rgb
+        );
+        assert!(
+            metrics.frac_pixels_over_3_255 <= 0.001,
+            "{label} frac over 3/255 {:.6} exceeded 0.1%",
+            metrics.frac_pixels_over_3_255
+        );
+        metrics
+    }
+
     #[test]
     fn image_parity_threshold_counts_pixels_not_channels() {
         let direct = [0_u8, 0, 0, 255, 0, 0, 0, 255];
@@ -3821,19 +3698,9 @@ mod tests {
 
     #[cfg(not(target_arch = "wasm32"))]
     fn assert_two_revision_stale_order_quality(scene: SceneBuffers, label: &str) {
-        let config = RendererConfig {
-            width: 128,
-            height: 128,
-            mode: RenderMode::SortedAlpha,
-        };
-        let mut reference = match Renderer::with_config(config) {
-            Ok(renderer) => renderer,
-            Err(super::RendererError::GpuRasterizerUnavailable)
-            | Err(super::RendererError::GpuDeviceCreation) => {
-                eprintln!("skipping {label} stale-order quality; adapter unavailable");
-                return;
-            }
-            Err(error) => panic!("renderer init: {error}"),
+        let config = test_config(128);
+        let Some(mut reference) = test_renderer(config, "{label} stale-order quality") else {
+            return;
         };
         reference.set_geometry_path(super::GeometryPath::PackedAtlas);
         let mut stale = Renderer::with_config(config).expect("second renderer");
@@ -3979,48 +3846,15 @@ mod tests {
 
     #[test]
     fn packed_vs_direct_image_parity_gate_on_degree0_scene() {
-        let config = RendererConfig {
-            width: 128,
-            height: 128,
-            mode: RenderMode::SortedAlpha,
+        let Some(pair) = render_direct_packed(build_scene(), 128, "packed image parity") else {
+            return;
         };
-        let mut direct = match Renderer::with_config(config) {
-            Ok(renderer) => renderer,
-            Err(super::RendererError::GpuRasterizerUnavailable)
-            | Err(super::RendererError::GpuDeviceCreation) => {
-                eprintln!("skipping packed image parity; adapter unavailable");
-                return;
-            }
-            Err(error) => panic!("renderer init: {error}"),
-        };
-        let mut packed = Renderer::with_config(config).expect("second renderer");
-        packed.set_geometry_path(super::GeometryPath::PackedAtlas);
-        let scene = build_scene();
-        direct.load_scene(scene.clone()).unwrap();
-        packed.load_scene(scene).unwrap();
-        let camera = Camera::default();
-        let direct_stats = direct.render_frame(&camera).unwrap();
-        let packed_stats = packed.render_frame(&camera).unwrap();
-        assert_eq!(direct_stats.visible_count, packed_stats.visible_count);
-        assert_eq!(direct_stats.drawn_count, packed_stats.drawn_count);
-        let direct_rgba = direct.readback_rgba8().unwrap();
-        let packed_rgba = packed.readback_rgba8().unwrap();
-        let metrics = rgba_image_parity_metrics(&direct_rgba, &packed_rgba);
-        eprintln!(
-            "packed image parity: mean_abs_rgb={:.6} frac_over_3_255={:.6} max_abs_rgb={:.6}",
-            metrics.mean_abs_rgb, metrics.frac_pixels_over_3_255, metrics.max_abs_rgb
+        assert_eq!(
+            pair.first_stats.visible_count,
+            pair.second_stats.visible_count
         );
-        // Provisional Phase B gate from verification_plan.md.
-        assert!(
-            metrics.mean_abs_rgb <= 1.0 / 255.0,
-            "mean abs RGB {:.6} exceeded 1/255",
-            metrics.mean_abs_rgb
-        );
-        assert!(
-            metrics.frac_pixels_over_3_255 <= 0.001,
-            "frac over 3/255 {:.6} exceeded 0.1%",
-            metrics.frac_pixels_over_3_255
-        );
+        assert_eq!(pair.first_stats.drawn_count, pair.second_stats.drawn_count);
+        assert_image_parity("packed image parity", &pair.first_rgba, &pair.second_rgba);
     }
 
     #[test]
@@ -4028,39 +3862,20 @@ mod tests {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../tests/datasets/minimal_ascii.ply");
         let loaded = gsplat_io_ply::load_ply(&path).expect("load minimal_ascii");
-        let config = RendererConfig {
-            width: 128,
-            height: 128,
-            mode: RenderMode::SortedAlpha,
+        let Some(pair) = render_direct_packed(loaded.scene, 128, "minimal_ascii image parity")
+        else {
+            return;
         };
-        let mut direct = match Renderer::with_config(config) {
-            Ok(renderer) => renderer,
-            Err(super::RendererError::GpuRasterizerUnavailable)
-            | Err(super::RendererError::GpuDeviceCreation) => {
-                eprintln!("skipping minimal_ascii image parity; adapter unavailable");
-                return;
-            }
-            Err(error) => panic!("renderer init: {error}"),
-        };
-        let mut packed = Renderer::with_config(config).expect("second renderer");
-        packed.set_geometry_path(super::GeometryPath::PackedAtlas);
-        direct.load_scene(loaded.scene.clone()).unwrap();
-        packed.load_scene(loaded.scene).unwrap();
-        let camera = Camera::default();
-        let direct_stats = direct.render_frame(&camera).unwrap();
-        let packed_stats = packed.render_frame(&camera).unwrap();
-        assert_eq!(direct_stats.visible_count, packed_stats.visible_count);
-        assert_eq!(direct_stats.drawn_count, packed_stats.drawn_count);
-        let metrics = rgba_image_parity_metrics(
-            &direct.readback_rgba8().unwrap(),
-            &packed.readback_rgba8().unwrap(),
+        assert_eq!(
+            pair.first_stats.visible_count,
+            pair.second_stats.visible_count
         );
-        eprintln!(
-            "minimal_ascii packed parity: mean_abs_rgb={:.6} frac_over_3_255={:.6} max_abs_rgb={:.6}",
-            metrics.mean_abs_rgb, metrics.frac_pixels_over_3_255, metrics.max_abs_rgb
+        assert_eq!(pair.first_stats.drawn_count, pair.second_stats.drawn_count);
+        assert_image_parity(
+            "minimal_ascii packed parity",
+            &pair.first_rgba,
+            &pair.second_rgba,
         );
-        assert!(metrics.mean_abs_rgb <= 1.0 / 255.0);
-        assert!(metrics.frac_pixels_over_3_255 <= 0.001);
     }
 
     fn scene_to_rdf_ply_for_spz_parity(scene: &SceneBuffers) -> String {
@@ -4152,19 +3967,9 @@ mod tests {
         assert_eq!(ply.summary.gaussians, spz.summary.gaussians);
         assert_eq!(ply.scene.len(), spz.scene.len());
 
-        let config = RendererConfig {
-            width: 128,
-            height: 128,
-            mode: RenderMode::SortedAlpha,
-        };
-        let mut from_spz = match Renderer::with_config(config) {
-            Ok(renderer) => renderer,
-            Err(super::RendererError::GpuRasterizerUnavailable)
-            | Err(super::RendererError::GpuDeviceCreation) => {
-                eprintln!("skipping PLY-vs-SPZ image parity; adapter unavailable");
-                return;
-            }
-            Err(error) => panic!("renderer init: {error}"),
+        let config = test_config(128);
+        let Some(mut from_spz) = test_renderer(config, "PLY-vs-SPZ image parity") else {
+            return;
         };
         let mut from_ply = Renderer::with_config(config).expect("second renderer");
         from_spz.load_scene(spz.scene.clone()).unwrap();
@@ -4271,38 +4076,16 @@ mod tests {
 
     #[test]
     fn packed_vs_direct_image_parity_gate_on_synthetic_degree3() {
-        let scene = synthetic_degree3_scene();
-        let config = RendererConfig {
-            width: 128,
-            height: 128,
-            mode: RenderMode::SortedAlpha,
+        let Some(pair) =
+            render_direct_packed(synthetic_degree3_scene(), 128, "synthetic degree3 parity")
+        else {
+            return;
         };
-        let mut direct = match Renderer::with_config(config) {
-            Ok(renderer) => renderer,
-            Err(super::RendererError::GpuRasterizerUnavailable)
-            | Err(super::RendererError::GpuDeviceCreation) => {
-                eprintln!("skipping synthetic degree3 parity; adapter unavailable");
-                return;
-            }
-            Err(error) => panic!("renderer init: {error}"),
-        };
-        let mut packed = Renderer::with_config(config).expect("second renderer");
-        packed.set_geometry_path(super::GeometryPath::PackedAtlas);
-        direct.load_scene(scene.clone()).unwrap();
-        packed.load_scene(scene).unwrap();
-        let camera = Camera::default();
-        let _ = direct.render_frame(&camera).unwrap();
-        let _ = packed.render_frame(&camera).unwrap();
-        let metrics = rgba_image_parity_metrics(
-            &direct.readback_rgba8().unwrap(),
-            &packed.readback_rgba8().unwrap(),
+        assert_image_parity(
+            "synthetic degree3 packed parity",
+            &pair.first_rgba,
+            &pair.second_rgba,
         );
-        eprintln!(
-            "synthetic degree3 packed parity: mean_abs_rgb={:.6} frac_over_3_255={:.6} max_abs_rgb={:.6}",
-            metrics.mean_abs_rgb, metrics.frac_pixels_over_3_255, metrics.max_abs_rgb
-        );
-        assert!(metrics.mean_abs_rgb <= 1.0 / 255.0);
-        assert!(metrics.frac_pixels_over_3_255 <= 0.001);
     }
 
     #[test]
@@ -4315,42 +4098,37 @@ mod tests {
         }
         let loaded = gsplat_io_ply::load_ply(&path).expect("load kitsune");
         assert_eq!(loaded.scene.sh_degree, 3);
-        let config = RendererConfig {
-            width: 128,
-            height: 128,
-            mode: RenderMode::SortedAlpha,
+        let Some(pair) = render_direct_packed(loaded.scene, 128, "kitsune image parity") else {
+            return;
         };
-        let mut direct = match Renderer::with_config(config) {
-            Ok(renderer) => renderer,
-            Err(super::RendererError::GpuRasterizerUnavailable)
-            | Err(super::RendererError::GpuDeviceCreation) => {
-                eprintln!("skipping kitsune image parity; adapter unavailable");
-                return;
-            }
-            Err(error) => panic!("renderer init: {error}"),
-        };
-        let mut packed = Renderer::with_config(config).expect("second renderer");
-        packed.set_geometry_path(super::GeometryPath::PackedAtlas);
-        direct.load_scene(loaded.scene.clone()).unwrap();
-        packed.load_scene(loaded.scene).unwrap();
-        let camera = Camera::default();
-        let direct_stats = direct.render_frame(&camera).unwrap();
-        let packed_stats = packed.render_frame(&camera).unwrap();
-        assert_eq!(direct_stats.visible_count, packed_stats.visible_count);
-        assert_eq!(direct_stats.drawn_count, packed_stats.drawn_count);
-        let direct_rgba = direct.readback_rgba8().unwrap();
-        let packed_rgba = packed.readback_rgba8().unwrap();
-        let metrics = rgba_image_parity_metrics(&direct_rgba, &packed_rgba);
+        assert_eq!(
+            pair.first_stats.visible_count,
+            pair.second_stats.visible_count
+        );
+        assert_eq!(pair.first_stats.drawn_count, pair.second_stats.drawn_count);
+        let metrics = assert_image_parity(
+            "kitsune degree-3 parity",
+            &pair.first_rgba,
+            &pair.second_rgba,
+        );
         // Also report alpha-channel MAE to separate coverage vs color error.
         let mut sum_a = 0.0_f64;
         let mut n = 0_u64;
-        for (d, p) in direct_rgba.chunks_exact(4).zip(packed_rgba.chunks_exact(4)) {
+        for (d, p) in pair
+            .first_rgba
+            .chunks_exact(4)
+            .zip(pair.second_rgba.chunks_exact(4))
+        {
             sum_a += (d[3] as f64 - p[3] as f64).abs() / 255.0;
             n += 1;
         }
         let mut sum_direct_a = 0.0_f64;
         let mut sum_packed_a = 0.0_f64;
-        for (d, p) in direct_rgba.chunks_exact(4).zip(packed_rgba.chunks_exact(4)) {
+        for (d, p) in pair
+            .first_rgba
+            .chunks_exact(4)
+            .zip(pair.second_rgba.chunks_exact(4))
+        {
             sum_direct_a += d[3] as f64 / 255.0;
             sum_packed_a += p[3] as f64 / 255.0;
         }
@@ -4362,17 +4140,7 @@ mod tests {
             sum_packed_a / n as f64,
             metrics.frac_pixels_over_3_255,
             metrics.max_abs_rgb,
-            direct_stats.visible_count
-        );
-        assert!(
-            metrics.mean_abs_rgb <= 1.0 / 255.0,
-            "kitsune degree-3 MAE gate failed: mean_abs_rgb={:.6}",
-            metrics.mean_abs_rgb
-        );
-        assert!(
-            metrics.frac_pixels_over_3_255 <= 0.001,
-            "kitsune degree-3 frac over 3/255 {:.6} exceeded 0.1%",
-            metrics.frac_pixels_over_3_255
+            pair.first_stats.visible_count
         );
     }
 
@@ -4386,53 +4154,22 @@ mod tests {
         }
         let loaded = gsplat_io_ply::load_ply(&path).expect("load Flowers");
         assert_eq!(loaded.scene.sh_degree, 3);
-        let config = RendererConfig {
-            width: 128,
-            height: 128,
-            mode: RenderMode::SortedAlpha,
+        let Some(pair) = render_direct_packed(loaded.scene, 128, "Flowers image parity") else {
+            return;
         };
-        let mut direct = match Renderer::with_config(config) {
-            Ok(renderer) => renderer,
-            Err(super::RendererError::GpuRasterizerUnavailable)
-            | Err(super::RendererError::GpuDeviceCreation) => {
-                eprintln!("skipping Flowers image parity; adapter unavailable");
-                return;
-            }
-            Err(error) => panic!("renderer init: {error}"),
-        };
-        let mut packed = Renderer::with_config(config).expect("second renderer");
-        packed.set_geometry_path(super::GeometryPath::PackedAtlas);
-        direct.load_scene(loaded.scene.clone()).unwrap();
-        packed.load_scene(loaded.scene).unwrap();
-        let camera = Camera::default();
-        let direct_stats = direct.render_frame(&camera).unwrap();
-        let packed_stats = packed.render_frame(&camera).unwrap();
-        assert_eq!(direct_stats.visible_count, packed_stats.visible_count);
-        assert_eq!(direct_stats.drawn_count, packed_stats.drawn_count);
+        assert_eq!(
+            pair.first_stats.visible_count,
+            pair.second_stats.visible_count
+        );
+        assert_eq!(pair.first_stats.drawn_count, pair.second_stats.drawn_count);
         assert!(
-            direct_stats.visible_count > 0,
+            pair.first_stats.visible_count > 0,
             "Flowers parity camera must see splats"
         );
-        let metrics = rgba_image_parity_metrics(
-            &direct.readback_rgba8().unwrap(),
-            &packed.readback_rgba8().unwrap(),
-        );
-        eprintln!(
-            "Flowers packed parity: mean_abs_rgb={:.6} frac_over_3_255={:.6} max_abs_rgb={:.6} visible={}",
-            metrics.mean_abs_rgb,
-            metrics.frac_pixels_over_3_255,
-            metrics.max_abs_rgb,
-            direct_stats.visible_count
-        );
-        assert!(
-            metrics.mean_abs_rgb <= 1.0 / 255.0,
-            "Flowers degree-3 MAE gate failed: mean_abs_rgb={:.6}",
-            metrics.mean_abs_rgb
-        );
-        assert!(
-            metrics.frac_pixels_over_3_255 <= 0.001,
-            "Flowers degree-3 frac over 3/255 {:.6} exceeded 0.1%",
-            metrics.frac_pixels_over_3_255
+        assert_image_parity(
+            "Flowers degree-3 parity",
+            &pair.first_rgba,
+            &pair.second_rgba,
         );
     }
 
@@ -4641,34 +4378,16 @@ mod tests {
         let limits = limits_with_storage_binding_limit(128 * 1024 * 1024);
         let small = direct_scene_preflight(279_199, 3, &limits).unwrap();
         assert_eq!(small.path, DirectScenePath::Direct);
+        assert_eq!(GeometryPath::default(), GeometryPath::SortedIndexDirect);
         assert_eq!(
-            GeometryPathRequest::default(),
-            GeometryPathRequest::DefaultDirect
-        );
-        assert_eq!(
-            select_surface_geometry_path(GeometryPathRequest::DefaultDirect, &small),
+            select_automatic_surface_geometry_path(&small),
             GeometryPath::SortedIndexDirect
-        );
-        assert_eq!(
-            select_surface_geometry_path(GeometryPathRequest::Automatic, &small),
-            GeometryPath::SortedIndexDirect
-        );
-        assert_eq!(
-            select_surface_geometry_path(
-                GeometryPathRequest::Explicit(GeometryPath::PackedAtlas),
-                &small,
-            ),
-            GeometryPath::PackedAtlas
         );
 
         let oversized = direct_scene_preflight(3_454_040, 3, &limits).unwrap();
         assert_eq!(oversized.path, DirectScenePath::ActiveAtlasRequired);
         assert_eq!(
-            select_surface_geometry_path(GeometryPathRequest::DefaultDirect, &oversized),
-            GeometryPath::SortedIndexDirect
-        );
-        assert_eq!(
-            select_surface_geometry_path(GeometryPathRequest::Automatic, &oversized),
+            select_automatic_surface_geometry_path(&oversized),
             GeometryPath::PagedActiveAtlas
         );
     }

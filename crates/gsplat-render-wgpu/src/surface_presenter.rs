@@ -7,13 +7,14 @@ use crate::packed_gpu;
 use crate::paged_active_set::PagedActiveSet;
 use crate::{
     DEFAULT_PAGED_ATLAS_SLOTS, DirectSceneError, DirectScenePath, DirectScenePreflight,
-    DirectSceneResources, GeometryPath, GeometryPathRequest, PackedScenePath, PackedScenePreflight,
-    Renderer, SpatialPageSet, SurfacePresenterError, create_direct_bind_group_layout,
-    create_direct_pipeline, create_surface_instance, direct_scene_preflight, fit_surface_size,
+    DirectSceneResources, GeometryPath, PackedScenePath, PackedScenePreflight, Renderer,
+    SpatialPageSet, SurfacePresenterError, create_direct_bind_group_layout, create_direct_pipeline,
+    create_surface_instance, direct_scene_preflight, fit_surface_size,
     packed_color_refresh_band_size, packed_color_refresh_needed, packed_color_refresh_position_key,
     packed_scene_preflight, preprocess_paged_visible_into, refresh_packed_hot_colors,
-    refresh_packed_hot_colors_range, refresh_paged_hot_colors, select_present_mode,
-    select_surface_geometry_path, surface_error_to_presenter, wgpu_label,
+    refresh_packed_hot_colors_range, refresh_paged_hot_colors,
+    select_automatic_surface_geometry_path, select_present_mode, surface_error_to_presenter,
+    wgpu_label,
 };
 
 enum SurfacePathSelection<'a> {
@@ -273,22 +274,8 @@ impl SurfacePresenter {
     where
         T: Into<wgpu::SurfaceTarget<'static>>,
     {
-        if width == 0 || height == 0 {
-            return Err(SurfacePresenterError::InvalidSurfaceSize);
-        }
-
-        let instance = create_surface_instance();
-        let surface = instance
-            .create_surface(target)
-            .map_err(|_| SurfacePresenterError::SurfaceCreation)?;
-        Self::from_surface_async(
-            instance,
-            surface,
-            width,
-            height,
-            SurfacePathSelection::Exact(renderer),
-        )
-        .await
+        Self::from_window_selected(target, width, height, SurfacePathSelection::Exact(renderer))
+            .await
     }
 
     /// Creates a Surface presenter and selects Paged only when Direct cannot
@@ -306,6 +293,25 @@ impl SurfacePresenter {
     where
         T: Into<wgpu::SurfaceTarget<'static>>,
     {
+        Self::from_window_selected(
+            target,
+            width,
+            height,
+            SurfacePathSelection::Automatic(renderer),
+        )
+        .await
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn from_window_selected<T>(
+        target: T,
+        width: u32,
+        height: u32,
+        selection: SurfacePathSelection<'_>,
+    ) -> Result<Self, SurfacePresenterError>
+    where
+        T: Into<wgpu::SurfaceTarget<'static>>,
+    {
         if width == 0 || height == 0 {
             return Err(SurfacePresenterError::InvalidSurfaceSize);
         }
@@ -314,14 +320,7 @@ impl SurfacePresenter {
         let surface = instance
             .create_surface(target)
             .map_err(|_| SurfacePresenterError::SurfaceCreation)?;
-        Self::from_surface_async(
-            instance,
-            surface,
-            width,
-            height,
-            SurfacePathSelection::Automatic(renderer),
-        )
-        .await
+        Self::from_surface_async(instance, surface, width, height, selection).await
     }
 
     /// Creates a presenter from raw handles supplied by an embedding platform.
@@ -337,12 +336,12 @@ impl SurfacePresenter {
         height: u32,
         renderer: &Renderer,
     ) -> Result<Self, SurfacePresenterError> {
-        pollster::block_on(Self::from_raw_handles_async(
+        pollster::block_on(Self::from_raw_handles_selected(
             raw_display_handle,
             raw_window_handle,
             width,
             height,
-            renderer,
+            SurfacePathSelection::Exact(renderer),
         ))
     }
 
@@ -359,21 +358,21 @@ impl SurfacePresenter {
         height: u32,
         renderer: &mut Renderer,
     ) -> Result<Self, SurfacePresenterError> {
-        pollster::block_on(Self::from_raw_handles_auto_async(
+        pollster::block_on(Self::from_raw_handles_selected(
             raw_display_handle,
             raw_window_handle,
             width,
             height,
-            renderer,
+            SurfacePathSelection::Automatic(renderer),
         ))
     }
 
-    async fn from_raw_handles_async(
+    async fn from_raw_handles_selected(
         raw_display_handle: wgpu::rwh::RawDisplayHandle,
         raw_window_handle: wgpu::rwh::RawWindowHandle,
         width: u32,
         height: u32,
-        renderer: &Renderer,
+        selection: SurfacePathSelection<'_>,
     ) -> Result<Self, SurfacePresenterError> {
         if width == 0 || height == 0 {
             return Err(SurfacePresenterError::InvalidSurfaceSize);
@@ -388,44 +387,7 @@ impl SurfacePresenter {
         }
         .map_err(|_| SurfacePresenterError::SurfaceCreation)?;
 
-        Self::from_surface_async(
-            instance,
-            surface,
-            width,
-            height,
-            SurfacePathSelection::Exact(renderer),
-        )
-        .await
-    }
-
-    async fn from_raw_handles_auto_async(
-        raw_display_handle: wgpu::rwh::RawDisplayHandle,
-        raw_window_handle: wgpu::rwh::RawWindowHandle,
-        width: u32,
-        height: u32,
-        renderer: &mut Renderer,
-    ) -> Result<Self, SurfacePresenterError> {
-        if width == 0 || height == 0 {
-            return Err(SurfacePresenterError::InvalidSurfaceSize);
-        }
-
-        let instance = create_surface_instance();
-        let surface = unsafe {
-            instance.create_surface_unsafe(wgpu::SurfaceTargetUnsafe::RawHandle {
-                raw_display_handle,
-                raw_window_handle,
-            })
-        }
-        .map_err(|_| SurfacePresenterError::SurfaceCreation)?;
-
-        Self::from_surface_async(
-            instance,
-            surface,
-            width,
-            height,
-            SurfacePathSelection::Automatic(renderer),
-        )
-        .await
+        Self::from_surface_async(instance, surface, width, height, selection).await
     }
 
     #[cfg(target_arch = "wasm32")]
@@ -435,23 +397,8 @@ impl SurfacePresenter {
         height: u32,
         renderer: &Renderer,
     ) -> Result<Self, SurfacePresenterError> {
-        if width == 0 || height == 0 {
-            return Err(SurfacePresenterError::InvalidSurfaceSize);
-        }
-
-        let instance = create_surface_instance();
-        let surface = instance
-            .create_surface(wgpu::SurfaceTarget::Canvas(canvas))
-            .map_err(|_| SurfacePresenterError::SurfaceCreation)?;
-
-        Self::from_surface_async(
-            instance,
-            surface,
-            width,
-            height,
-            SurfacePathSelection::Exact(renderer),
-        )
-        .await
+        Self::from_canvas_selected(canvas, width, height, SurfacePathSelection::Exact(renderer))
+            .await
     }
 
     #[cfg(target_arch = "wasm32")]
@@ -461,23 +408,30 @@ impl SurfacePresenter {
         height: u32,
         renderer: &mut Renderer,
     ) -> Result<Self, SurfacePresenterError> {
-        if width == 0 || height == 0 {
-            return Err(SurfacePresenterError::InvalidSurfaceSize);
-        }
-
-        let instance = create_surface_instance();
-        let surface = instance
-            .create_surface(wgpu::SurfaceTarget::Canvas(canvas))
-            .map_err(|_| SurfacePresenterError::SurfaceCreation)?;
-
-        Self::from_surface_async(
-            instance,
-            surface,
+        Self::from_canvas_selected(
+            canvas,
             width,
             height,
             SurfacePathSelection::Automatic(renderer),
         )
         .await
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    async fn from_canvas_selected(
+        canvas: web_sys::HtmlCanvasElement,
+        width: u32,
+        height: u32,
+        selection: SurfacePathSelection<'_>,
+    ) -> Result<Self, SurfacePresenterError> {
+        if width == 0 || height == 0 {
+            return Err(SurfacePresenterError::InvalidSurfaceSize);
+        }
+        let instance = create_surface_instance();
+        let surface = instance
+            .create_surface(wgpu::SurfaceTarget::Canvas(canvas))
+            .map_err(|_| SurfacePresenterError::SurfaceCreation)?;
+        Self::from_surface_async(instance, surface, width, height, selection).await
     }
 
     async fn from_surface_async(
@@ -512,8 +466,7 @@ impl SurfacePresenter {
                 .ok_or(SurfacePresenterError::SceneNotLoaded)?;
             let direct_preflight =
                 direct_scene_preflight(scene.len(), scene.sh_degree, &adapter_limits)?;
-            let selected =
-                select_surface_geometry_path(GeometryPathRequest::Automatic, &direct_preflight);
+            let selected = select_automatic_surface_geometry_path(&direct_preflight);
             renderer.set_geometry_path(selected);
         }
         let renderer = match &selection {

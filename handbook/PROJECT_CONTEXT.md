@@ -99,6 +99,14 @@ For the broader command matrix, use `VERIFICATION.md`.
   the experimental paged path owns a fixed four-slot local active atlas and is
   qualified only for local-source D0 browser and Android Surface smoke. Mobile
   keeps the default CPU sort interval of 2.
+- Existing Surface constructors and `GeometryPath::default()` stay Direct.
+  Experimental Rust `*_auto` constructors are opt-in and select Paged only
+  when the compatible adapter's Direct preflight reports
+  `ActiveAtlasRequired`; explicit Packed/Paged selection remains an A/B tool.
+- Local paging now decodes page payloads behind `LocalScenePageSource` before
+  fixed-slot GPU upload. The adapter still borrows the complete `SceneBuffers`,
+  page metadata still stores source indices, and scheduling is synchronous, so
+  this is an architecture seam rather than end-to-end streaming.
 - The Web example is a browser validation surface. The Rust/WASM renderer boundary
   is active in `crates/gsplat-web`, and `packages/web` provides
   a local ESM wrapper, but the Web SDK is not published to npm or stable in the

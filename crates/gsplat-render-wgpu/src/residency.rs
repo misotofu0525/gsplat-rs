@@ -519,16 +519,24 @@ mod tests {
         Ok(token)
     }
 
+    fn manager(
+        pages: &SpatialPageSet,
+        max_resident_pages: usize,
+        max_inflight_pages: usize,
+    ) -> ResidencyManager {
+        ResidencyManager::new(
+            pages,
+            ResidencyBudgets {
+                max_resident_pages,
+                max_inflight_pages,
+            },
+        )
+    }
+
     #[test]
     fn happy_path_reaches_resident_and_rejects_stale_generation() {
         let pages = sample_pages(8);
-        let mut manager = ResidencyManager::new(
-            &pages,
-            ResidencyBudgets {
-                max_resident_pages: 4,
-                max_inflight_pages: 4,
-            },
-        );
+        let mut manager = manager(&pages, 4, 4);
         let page_id = pages.pages[0].id;
         let token = drive_to_resident(&mut manager, page_id).unwrap();
         assert_eq!(
@@ -553,13 +561,7 @@ mod tests {
     #[test]
     fn scene_revision_invalidates_inflight_tokens() {
         let pages = sample_pages(6);
-        let mut manager = ResidencyManager::new(
-            &pages,
-            ResidencyBudgets {
-                max_resident_pages: 4,
-                max_inflight_pages: 4,
-            },
-        );
+        let mut manager = manager(&pages, 4, 4);
         let token = manager.request_page(pages.pages[0].id).unwrap();
         manager.bump_scene_revision();
         assert_eq!(
@@ -571,13 +573,7 @@ mod tests {
     #[test]
     fn cancel_invalidates_inflight_token_and_releases_slot_generation() {
         let pages = sample_pages(6);
-        let mut manager = ResidencyManager::new(
-            &pages,
-            ResidencyBudgets {
-                max_resident_pages: 1,
-                max_inflight_pages: 1,
-            },
-        );
+        let mut manager = manager(&pages, 1, 1);
         let cancelled = manager.request_page(pages.pages[0].id).unwrap();
         manager.advance_to_compressed_ready(cancelled).unwrap();
         manager.cancel_inflight(cancelled).unwrap();
@@ -593,13 +589,7 @@ mod tests {
     #[test]
     fn inflight_budget_is_enforced() {
         let pages = sample_pages(10);
-        let mut manager = ResidencyManager::new(
-            &pages,
-            ResidencyBudgets {
-                max_resident_pages: 8,
-                max_inflight_pages: 1,
-            },
-        );
+        let mut manager = manager(&pages, 8, 1);
         manager.request_page(pages.pages[0].id).unwrap();
         assert_eq!(
             manager.request_page(pages.pages[1].id),
@@ -610,13 +600,7 @@ mod tests {
     #[test]
     fn lru_eviction_prefers_older_visibility() {
         let pages = sample_pages(8);
-        let mut manager = ResidencyManager::new(
-            &pages,
-            ResidencyBudgets {
-                max_resident_pages: 2,
-                max_inflight_pages: 2,
-            },
-        );
+        let mut manager = manager(&pages, 2, 2);
         let a = pages.pages[0].id;
         let b = pages.pages[1].id;
         drive_to_resident(&mut manager, a).unwrap();
@@ -636,13 +620,7 @@ mod tests {
     #[test]
     fn attribute_lod_only_on_resident_pages() {
         let pages = sample_pages(4);
-        let mut manager = ResidencyManager::new(
-            &pages,
-            ResidencyBudgets {
-                max_resident_pages: 2,
-                max_inflight_pages: 2,
-            },
-        );
+        let mut manager = manager(&pages, 2, 2);
         let page_id = pages.pages[0].id;
         assert!(
             manager

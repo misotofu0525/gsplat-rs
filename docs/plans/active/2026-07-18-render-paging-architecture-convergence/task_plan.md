@@ -9,8 +9,8 @@ move is backed by fresh correctness and platform evidence.
 
 ## Current Phase
 
-Phase 5 / Slice S5 — prove terminal cleanup, reconcile canonical architecture
-docs, and run the complete platform-appropriate regression matrix.
+Complete — S1-S5 are independently committed or ready to commit, canonical
+docs match the implemented boundary, and the final regression matrix is green.
 
 ## Guardrails
 
@@ -76,13 +76,13 @@ docs, and run the complete platform-appropriate regression matrix.
 
 ### Phase 5: Full Regression and Handoff
 
-- [ ] Run workspace, focused renderer, offscreen parity, Surface, FFI, Web, and
+- [x] Run workspace, focused renderer, offscreen parity, Surface, FFI, Web, and
       available Android/iOS verification according to touched scope.
-- [ ] Compare production line counts and ownership before/after.
-- [ ] Reconcile handbook/plan facts with the implemented boundary.
-- [ ] Deliver architecture diagrams, deletion/move list, commits, fresh
+- [x] Compare renderer line counts and ownership before/after.
+- [x] Reconcile handbook/plan facts with the implemented boundary.
+- [x] Deliver architecture diagrams, deletion/move list, commits, fresh
       evidence, device gaps, and remaining risks.
-- **Status:** in_progress
+- **Status:** complete
 
 ## Acceptance Matrix
 
@@ -114,7 +114,7 @@ flowchart TD
     OR --> FS
 ```
 
-### Target for this task
+### After
 
 ```mermaid
 flowchart TD
@@ -177,10 +177,11 @@ draw, residency, or public platform lifecycles.
 - Verify: small/limit/over-limit policy tests, transactional failure tests,
   Direct/Paged Surface construction paths, FFI smoke, Web WASM check if its
   constructor is touched.
-- **Status:** complete; stable constructors and `GeometryPathRequest::default()`
-  remain Direct. Opt-in `*_auto` constructors select Paged only after the
-  compatible adapter reports Direct `ActiveAtlasRequired`, and restore the
-  previous renderer path on preparation failure.
+- **Status:** complete; stable constructors and `GeometryPath::default()`
+  remain Direct. Opt-in `*_auto` constructors call
+  `select_automatic_surface_geometry_path` only after the compatible adapter
+  reports Direct `ActiveAtlasRequired`, and restore the previous renderer path
+  on preparation failure.
 
 ### S4 — Honest local page-source seam
 
@@ -210,6 +211,11 @@ draw, residency, or public platform lifecycles.
 - Run final workspace/full renderer/FFI/Web and available mobile checks, then
   compare production lines and commits.
 - Rollback: documentation/cleanup commit separate from platform-specific fixes.
+- **Status:** complete; shared renderer timing/raster helpers, Surface
+  constructor helpers, test fixtures, canonical docs, and this proof record
+  add 620 lines while deleting 995 in the slice. No new file or test was
+  removed. Final renderer Rust source is 10,792 lines versus 10,796 at the
+  start; `lib.rs` is 4,648 versus 5,792.
 
 ## Key Questions
 
@@ -248,6 +254,9 @@ draw, residency, or public platform lifecycles.
 | First S4 audit search named a non-existent `paged_atlas_gpu.rs` path | 1 | Used the discovered `paged_gpu.rs` module and reran targeted inspection. |
 | First S4 format check reported standard import and wrapping differences | 1 | Applied rustfmt, then reran compile and verification. |
 | FFI command discovery searched a non-existent top-level `scripts/` directory | 1 | Used `handbook/VERIFICATION.md`'s canonical `tests/ffi/run-ffi-smoke.sh` route. |
+| S5 duplicate-search used an unsupported default-regex backreference | 1 | Re-ran the reference audit with `rg --pcre2`; no deletion decision depended on the failed search. |
+| The first iOS simulator runner did not retain application stdout | 1 | Re-ran the rebuilt app with `simctl --console` and captured the 120-frame result. |
+| Browser runtime documentation initially exceeded one tool response | 1 | Read the complete 40,171-character browser contract in bounded chunks before controlling the local page. |
 
 ## Notes
 

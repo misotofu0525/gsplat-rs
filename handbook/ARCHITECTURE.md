@@ -17,8 +17,9 @@
 - Scene import starts in `crates/gsplat-io-ply`.
 - Sorting lives in `crates/gsplat-sort`.
 - Rendering and GPU-facing orchestration live in `crates/gsplat-render-wgpu`.
-  Packed atlas, spatial page metadata, residency generations, and the CPU page
-  scheduler currently live in that crate as the Phase B/D large-scene path.
+  `lib.rs` owns renderer/public entrypoints, `surface_presenter.rs` owns Surface
+  resources, `paged_active_set.rs` owns fixed-slot scheduling/residency, and
+  `page_source.rs` separates local extraction/packing from GPU page upload.
 - Native embedding goes through `crates/gsplat-ffi-c`.
 - Browser WebAssembly embedding goes through `crates/gsplat-web`.
 - Runtime validation entrypoints are `examples/desktop`, `examples/android`,
@@ -58,6 +59,9 @@
   adapter/device compatible with the platform surface
   render dimensions are checked before `wgpu` resource creation, and GPU
   submission/wait failures remain structured errors
+  stable Surface constructors remain Direct; opt-in Rust `*_auto` constructors
+  request a compatible adapter first and choose Paged only when Direct
+  preflight reports `ActiveAtlasRequired`
 
 - Shared Surface frame flow:
   `SurfaceRenderSession` in
@@ -80,6 +84,10 @@
   Surface construction runs one shared metadata-only resource plan before
   device allocation, so over-Direct-limit paged scenes negotiate fixed-slot
   resources without first allocating their Direct representation
+  `LocalScenePageSource` extracts and packs one transient decoded payload at a
+  time, while `PagedAtlasGpu` consumes only that payload; the local adapter
+  still depends on fully resident `SceneBuffers` for source data, global sort,
+  and view-dependent color refresh
 
 - Native integration flow:
   starts from C, Swift, or Kotlin/JNI host entrypoints
@@ -99,7 +107,8 @@
   starts at the local `bindings/android/gsplat-android` library module or
   sample `examples/android/app/src/main/kotlin/com/gsplat/example/MainActivity.kt`
   obtains a `SurfaceView` `Surface` and wraps it as an `ANativeWindow` in `bindings/android/jni/gsplat_jni.c`
-  creates a raw-handle `wgpu::Surface` in `crates/gsplat-render-wgpu/src/lib.rs`
+  creates a raw-handle `wgpu::Surface` in
+  `crates/gsplat-render-wgpu/src/surface_presenter.rs`
   presents directly to the Android swapchain, not through offscreen readback
   accepts `gsplat_geometry_path=paged` at construction for the experimental
   local PLY-backed fixed-slot Surface path; direct remains the default and
@@ -114,7 +123,8 @@
   selects `Documents/imported_scene.ply`, bundled `showcase.ply` with source-name metadata, or a generated minimal PLY
   passes the view through the additive constructor-time geometry entry while
   preserving `gsplat_surface_renderer_create_uikit` as the Direct default
-  creates a raw-handle `wgpu::Surface` in `crates/gsplat-render-wgpu/src/lib.rs`
+  creates a raw-handle `wgpu::Surface` in
+  `crates/gsplat-render-wgpu/src/surface_presenter.rs`
   presents directly to the simulator Metal surface, not through offscreen readback
   uses the same Kitsune-first editorial showcase and toggleable `Studio` diagnostics pattern as Android
   uses the same Surface camera-control and benchmark option functions exposed through the C ABI

@@ -1,14 +1,6 @@
-//! Private packed active-atlas layout for Phase B (no streaming yet).
-//!
-//! Hot render record: 20 bytes/splat (position/opacity + scale/flags +
-//! rotation + color). Degree-3 SH sidecar: up to 48 bytes/splat. Full
-//! attributes before order: ≤68 bytes. This matches the design's compact
-//! hot-record target (see
-//! `docs/plans/active/2026-07-11-native-first-playcanvas-strategy/design.md`).
-//!
-//! World covariance is rebuilt per vertex from scene-adaptive u10 log scales
-//! plus a smallest-three-packed quaternion. This keeps the hot record compact
-//! while matching the direct path's quaternion convention.
+//! Compact packed-atlas encoding shared by diagnostic Packed and paged slots.
+//! The 20-byte hot record rebuilds covariance from quantized scale/rotation;
+//! optional degree-3 SH sidecars add at most 48 bytes per splat.
 
 use gsplat_core::{SceneBuffers, Vec3f};
 

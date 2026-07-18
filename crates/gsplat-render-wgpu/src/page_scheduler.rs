@@ -253,28 +253,43 @@ mod tests {
         };
     }
 
+    fn manager(
+        pages: &SpatialPageSet,
+        max_resident_pages: usize,
+        max_inflight_pages: usize,
+    ) -> ResidencyManager {
+        ResidencyManager::new(
+            pages,
+            ResidencyBudgets {
+                max_resident_pages,
+                max_inflight_pages,
+            },
+        )
+    }
+
+    fn schedule_at(
+        pages: &SpatialPageSet,
+        manager: &mut ResidencyManager,
+        position: Vec3f,
+        target_resident_pages: usize,
+        coarse_cover_radius: f32,
+    ) -> Result<ScheduleOutcome, ResidencyError> {
+        schedule_pages(
+            pages,
+            manager,
+            SchedulerView { position },
+            SchedulerConfig {
+                target_resident_pages,
+                coarse_cover_radius,
+            },
+        )
+    }
+
     #[test]
     fn schedule_requests_near_pages_and_keeps_coarse_cover() {
         let pages = line_scene(6);
-        let mut manager = ResidencyManager::new(
-            &pages,
-            ResidencyBudgets {
-                max_resident_pages: 3,
-                max_inflight_pages: 3,
-            },
-        );
-        let outcome = schedule_pages(
-            &pages,
-            &mut manager,
-            SchedulerView {
-                position: Vec3f::new(0.0, 0.0, 0.0),
-            },
-            SchedulerConfig {
-                target_resident_pages: 2,
-                coarse_cover_radius: 4.0,
-            },
-        )
-        .unwrap();
+        let mut manager = manager(&pages, 3, 3);
+        let outcome = schedule_at(&pages, &mut manager, Vec3f::new(0.0, 0.0, 0.0), 2, 4.0).unwrap();
         assert!(!outcome.retained.is_empty());
         assert!(manager.resident_count() <= 3);
         assert!(manager.resident_count() >= 1);
@@ -289,39 +304,11 @@ mod tests {
     #[test]
     fn camera_jump_replaces_far_residents_with_new_cover() {
         let pages = line_scene(8);
-        let mut manager = ResidencyManager::new(
-            &pages,
-            ResidencyBudgets {
-                max_resident_pages: 2,
-                max_inflight_pages: 2,
-            },
-        );
-        let first = schedule_pages(
-            &pages,
-            &mut manager,
-            SchedulerView {
-                position: Vec3f::new(0.0, 0.0, 0.0),
-            },
-            SchedulerConfig {
-                target_resident_pages: 2,
-                coarse_cover_radius: 3.5,
-            },
-        )
-        .unwrap();
+        let mut manager = manager(&pages, 2, 2);
+        let first = schedule_at(&pages, &mut manager, Vec3f::new(0.0, 0.0, 0.0), 2, 3.5).unwrap();
         assert!(!first.retained.is_empty());
 
-        let jumped = schedule_pages(
-            &pages,
-            &mut manager,
-            SchedulerView {
-                position: Vec3f::new(21.0, 0.0, 0.0),
-            },
-            SchedulerConfig {
-                target_resident_pages: 2,
-                coarse_cover_radius: 3.5,
-            },
-        )
-        .unwrap();
+        let jumped = schedule_at(&pages, &mut manager, Vec3f::new(21.0, 0.0, 0.0), 2, 3.5).unwrap();
         assert!(!jumped.retained.is_empty());
         // New cover should include a page near the jumped camera.
         let near_jump = pages
@@ -372,25 +359,9 @@ mod tests {
         let pages = partition_scene_pages(&scene, 128, grid_axis);
         assert_eq!(pages.page_count(), 5);
 
-        let mut manager = ResidencyManager::new(
-            &pages,
-            ResidencyBudgets {
-                max_resident_pages: 4,
-                max_inflight_pages: 4,
-            },
-        );
-        let outcome = schedule_pages(
-            &pages,
-            &mut manager,
-            SchedulerView {
-                position: Vec3f::new(3.5, 3.5, -6.0),
-            },
-            SchedulerConfig {
-                target_resident_pages: 4,
-                coarse_cover_radius: 2.0,
-            },
-        )
-        .unwrap();
+        let mut manager = manager(&pages, 4, 4);
+        let outcome =
+            schedule_at(&pages, &mut manager, Vec3f::new(3.5, 3.5, -6.0), 4, 2.0).unwrap();
 
         assert_eq!(outcome.retained.len(), 4);
         assert_eq!(manager.resident_count(), 4);
@@ -439,26 +410,8 @@ mod tests {
             min: [100.0, 100.0, 100.0],
             max: [101.0, 101.0, 101.0],
         };
-        let mut manager = ResidencyManager::new(
-            &pages,
-            ResidencyBudgets {
-                max_resident_pages: 4,
-                max_inflight_pages: 4,
-            },
-        );
-
-        let outcome = schedule_pages(
-            &pages,
-            &mut manager,
-            SchedulerView {
-                position: Vec3f::new(0.0, 0.0, 0.0),
-            },
-            SchedulerConfig {
-                target_resident_pages: 4,
-                coarse_cover_radius: 2.0,
-            },
-        )
-        .unwrap();
+        let mut manager = manager(&pages, 4, 4);
+        let outcome = schedule_at(&pages, &mut manager, Vec3f::new(0.0, 0.0, 0.0), 4, 2.0).unwrap();
 
         assert!(outcome.retained.contains(&cover_id));
         assert_eq!(manager.resident_count(), 4);
@@ -482,30 +435,14 @@ mod tests {
         ] {
             set_page_x(&mut pages, page_id, x);
         }
-        let mut manager = ResidencyManager::new(
-            &pages,
-            ResidencyBudgets {
-                max_resident_pages: 4,
-                max_inflight_pages: 1,
-            },
-        );
+        let mut manager = manager(&pages, 4, 1);
         let cover_token = drive_to_resident(&mut manager, PageId(0));
         drive_to_resident(&mut manager, PageId(1));
         let pending = manager.request_page(PageId(6)).unwrap();
         let mut residents_before = manager.resident_page_ids();
         residents_before.sort_by_key(|page_id| page_id.0);
 
-        let result = schedule_pages(
-            &pages,
-            &mut manager,
-            SchedulerView {
-                position: Vec3f::new(0.0, 0.0, 0.0),
-            },
-            SchedulerConfig {
-                target_resident_pages: 4,
-                coarse_cover_radius: 0.0,
-            },
-        );
+        let result = schedule_at(&pages, &mut manager, Vec3f::new(0.0, 0.0, 0.0), 4, 0.0);
 
         assert_eq!(result, Err(ResidencyError::BudgetExceeded));
         let mut residents_after = manager.resident_page_ids();
@@ -534,44 +471,18 @@ mod tests {
         ] {
             set_page_x(&mut pages, page_id, x);
         }
-        let mut manager = ResidencyManager::new(
-            &pages,
-            ResidencyBudgets {
-                max_resident_pages: 4,
-                max_inflight_pages: 4,
-            },
-        );
+        let mut manager = manager(&pages, 4, 4);
 
-        let first = schedule_pages(
-            &pages,
-            &mut manager,
-            SchedulerView {
-                position: Vec3f::new(-100.0, 0.0, 0.0),
-            },
-            SchedulerConfig {
-                target_resident_pages: 4,
-                coarse_cover_radius: 0.0,
-            },
-        )
-        .unwrap();
+        let first =
+            schedule_at(&pages, &mut manager, Vec3f::new(-100.0, 0.0, 0.0), 4, 0.0).unwrap();
         let cover_before = manager
             .resident_tokens()
             .into_iter()
             .find(|token| token.page_id == PageId(0))
             .unwrap();
 
-        let jumped = schedule_pages(
-            &pages,
-            &mut manager,
-            SchedulerView {
-                position: Vec3f::new(100.0, 0.0, 0.0),
-            },
-            SchedulerConfig {
-                target_resident_pages: 4,
-                coarse_cover_radius: 0.0,
-            },
-        )
-        .unwrap();
+        let jumped =
+            schedule_at(&pages, &mut manager, Vec3f::new(100.0, 0.0, 0.0), 4, 0.0).unwrap();
 
         let as_set =
             |ids: &[PageId]| -> std::collections::HashSet<_> { ids.iter().copied().collect() };
