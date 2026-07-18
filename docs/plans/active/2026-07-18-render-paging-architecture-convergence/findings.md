@@ -173,3 +173,22 @@
 - S2 fresh proof: workspace check; renderer lib 93 passed / 1 ignored; all
   offscreen parity and paging safety cases; local Surface paged non-zero test;
   GPU-required Metal conformance; strict clippy, fmt, and diff hygiene.
+
+## S3 Accepted Result
+
+- `GeometryPathRequest::default()` and every pre-existing Surface constructor
+  retain exact Direct/default behavior. Packed and forced Paged remain explicit
+  diagnostic controls rather than automatic product choices.
+- New opt-in `from_window_auto`, `from_raw_handles_auto`, and
+  `from_canvas_auto` constructors request a compatible adapter first, then use
+  that adapter's limits with the existing Direct preflight. A fitting scene
+  remains Direct; only `ActiveAtlasRequired` selects Paged.
+- The automatic path is selected before scene GPU resources are allocated. If
+  resource preparation fails after selection, renderer state rolls back to the
+  previous path; structured preflight failures propagate without mutation.
+- No C ABI function or existing Rust signature changed. Host and wasm32 builds,
+  strict public rustdoc, FFI smoke, the 95-test renderer suite, and required
+  Metal SortedAlpha conformance all passed freshly.
+- S3 adds no file and is +279 renderer Rust lines relative to S2, remaining
+  under the slice budget. This policy clarity has a real code cost; S4/S5 must
+  still bring the final renderer total below the 10,796-line starting point.

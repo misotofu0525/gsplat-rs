@@ -43,6 +43,12 @@
 | S2 renderer lib suite | parity, safety, Surface local gate | 93 passed, 1 ignored | pass |
 | S2 SortedAlpha conformance | global quality path unchanged | 1 passed on Metal | pass |
 | S2 hygiene | fmt, strict renderer clippy, diff check | passed | pass |
+| S3 renderer lib suite | policy plus all existing path/safety gates pass | 95 passed, 1 ignored | pass |
+| S3 SortedAlpha conformance | global quality path unchanged | 1 passed on Metal | pass |
+| S3 FFI smoke | stable C consumer remains Direct and non-zero | `drawn=2 visible=2` | pass |
+| S3 Web check | additive canvas API compiles for wasm32 | passed; existing cfg-only warnings | pass |
+| S3 public docs | new Rust API links and safety docs are valid | `-D warnings` passed | pass |
+| S3 hygiene | workspace, fmt, strict renderer clippy, diff check | passed | pass |
 
 ## 2026-07-18 — S1 Surface Ownership Split
 
@@ -65,6 +71,22 @@
   terminal net deletion remains open.
 - Next: S3 Direct-first automatic policy seam.
 
+## 2026-07-18 — S3 Direct-First Automatic Policy
+
+- **Status:** complete
+- Added an explicit request policy whose default remains Direct; automatic
+  selection is opt-in through new Surface constructors.
+- Automatic construction waits for compatible-adapter limits, uses the
+  existing structured Direct preflight, and selects Paged only for
+  `ActiveAtlasRequired`.
+- Failed automatic preparation restores the renderer's prior geometry path.
+  Existing constructors, explicit diagnostic paths, and the C ABI are
+  unchanged.
+- Fresh verification: workspace check; 95 renderer tests plus one retained
+  ignored oracle; required Metal conformance; FFI smoke; wasm32 check; strict
+  renderer clippy; rustdoc with warnings denied; formatting and diff hygiene.
+- Next: S4 local page-source/payload boundary.
+
 ## Error Log
 
 | Error | Attempt | Resolution |
@@ -76,13 +98,15 @@
 | S2 first test compile: old paged field names in fixtures | 1 | Routed assertions through the new shared owner and reran test compilation. |
 | S2 first format check: standard ordering/wrapping drift | 1 | Applied rustfmt's requested layout before verification. |
 | S2 completion-record patch context mismatch | 1 | Re-read the active files and applied smaller exact patches. |
+| S3 first format check: one auto-selection call wrap | 1 | Applied the standard layout and continued with policy proof. |
+| S3 focused-test command rejected a second test filter | 1 | Ran the two tests as separate Cargo commands; both passed. |
 
 ## 5-Question Reboot Check
 
 | Question | Answer |
 |----------|--------|
-| Where am I? | Phase 3 / S3 Direct-first automatic path policy |
-| Where am I going? | S3-S5 incremental implementation and fresh verification |
+| Where am I? | Phase 4 / S4 local page-source boundary |
+| Where am I going? | S4-S5 incremental implementation and fresh verification |
 | What's the goal? | Restore a clear Direct/default vs oversized/Paged architecture while reducing proven waste |
 | What have I learned? | See `findings.md` |
 | What have I done? | Loaded canonical context and captured initial code/branch facts |

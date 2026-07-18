@@ -9,8 +9,8 @@ move is backed by fresh correctness and platform evidence.
 
 ## Current Phase
 
-Phase 3 / Slice S3 — define and integrate additive Direct-first automatic path
-selection without changing stable Direct defaults or the C ABI.
+Phase 4 / Slice S4 — isolate the full-resident local page source from decoded
+page payloads consumed by the shared fixed-slot GPU runtime.
 
 ## Guardrails
 
@@ -57,12 +57,12 @@ selection without changing stable Direct defaults or the C ABI.
 
 ### Phase 3: Direct/Paged Selection Boundary
 
-- [ ] Make `SmallSceneDirect` the explicit default low-overhead path.
-- [ ] Route to `PagedActiveAtlas` only when Direct resource preflight cannot fit
+- [x] Make `SmallSceneDirect` the explicit default low-overhead path.
+- [x] Route to `PagedActiveAtlas` only when Direct resource preflight cannot fit
       within the documented capacity/headroom policy or an explicit diagnostic
       override is requested.
-- [ ] Preserve structured preflight errors and transactional Surface switching.
-- **Status:** in_progress
+- [x] Preserve structured preflight errors and transactional Surface switching.
+- **Status:** complete
 
 ### Phase 4: Paged Architecture Boundary
 
@@ -72,7 +72,7 @@ selection without changing stable Direct defaults or the C ABI.
       future bounded compressed/decoded caches and fixed GPU slots.
 - [ ] Preserve coarse-to-fine continuity, one global `SortedAlpha` order, and
       stale/cancel/generation/nonresident safety.
-- **Status:** pending
+- **Status:** in_progress
 
 ### Phase 5: Full Regression and Handoff
 
@@ -177,6 +177,10 @@ draw, residency, or public platform lifecycles.
 - Verify: small/limit/over-limit policy tests, transactional failure tests,
   Direct/Paged Surface construction paths, FFI smoke, Web WASM check if its
   constructor is touched.
+- **Status:** complete; stable constructors and `GeometryPathRequest::default()`
+  remain Direct. Opt-in `*_auto` constructors select Paged only after the
+  compatible adapter reports Direct `ActiveAtlasRequired`, and restore the
+  previous renderer path on preparation failure.
 
 ### S4 — Honest local page-source seam
 
@@ -234,6 +238,8 @@ draw, residency, or public platform lifecycles.
 | First S2 test compile still referenced the replaced paged atlas/residency fields | 1 | Updated controlled tests to inspect the same state through `PagedActiveSet`. |
 | First S2 format check requested canonical module/import/call layout | 1 | Applied the exact rustfmt output and reran hygiene. |
 | First S2 completion-record patch used a stale progress-table context | 1 | Re-read the active bundle and applied smaller context-accurate updates. |
+| First S3 format check requested one standard selection-call compaction | 1 | Applied rustfmt's exact layout before adding policy tests. |
+| One S3 focused-test command supplied two Cargo filter arguments | 1 | Recorded the command error and reran each focused test with one filter. |
 
 ## Notes
 

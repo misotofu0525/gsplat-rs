@@ -101,6 +101,34 @@ pub enum GeometryPath {
     PagedActiveAtlas,
 }
 
+/// Product-level Surface path request.
+///
+/// Stable constructors continue to use [`Self::DefaultDirect`]. Automatic
+/// selection is additive and chooses paging only when Direct resource
+/// preflight reports that an active atlas is required. Explicit alternatives
+/// remain diagnostic/A-B controls.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum GeometryPathRequest {
+    #[default]
+    DefaultDirect,
+    Automatic,
+    Explicit(GeometryPath),
+}
+
+pub fn select_surface_geometry_path(
+    request: GeometryPathRequest,
+    direct_preflight: &DirectScenePreflight,
+) -> GeometryPath {
+    match request {
+        GeometryPathRequest::DefaultDirect => GeometryPath::SortedIndexDirect,
+        GeometryPathRequest::Automatic => match direct_preflight.path {
+            DirectScenePath::Direct => GeometryPath::SortedIndexDirect,
+            DirectScenePath::ActiveAtlasRequired => GeometryPath::PagedActiveAtlas,
+        },
+        GeometryPathRequest::Explicit(path) => path,
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PreprocessOutput {
     pub depth_keys: Vec<u32>,
@@ -3233,9 +3261,10 @@ mod tests {
 
     use super::{
         DirectSceneError, DirectScenePath, DirectSceneRemediation, DirectSceneResource,
-        GeometryPath, PackedScenePath, Renderer, build_instances, direct_scene_preflight,
-        ellipse_axes_from_covariance, packed_scene_preflight, project_covariance_to_ndc,
-        quat_inverse, try_prepare_then_commit,
+        GeometryPath, GeometryPathRequest, PackedScenePath, Renderer, build_instances,
+        direct_scene_preflight, ellipse_axes_from_covariance, packed_scene_preflight,
+        project_covariance_to_ndc, quat_inverse, select_surface_geometry_path,
+        try_prepare_then_commit,
     };
     #[cfg(not(target_arch = "wasm32"))]
     use super::{GpuRasterError, offscreen_device_limits};
@@ -4604,6 +4633,43 @@ mod tests {
         assert_eq!(degree_three.requirements[2].required_bytes, 621_727_200);
         assert!(!degree_three.requirements[1].fits);
         assert!(!degree_three.requirements[2].fits);
+    }
+
+    #[test]
+    fn surface_path_request_keeps_default_direct_and_limits_auto_to_oversized_scenes() {
+        let limits = limits_with_storage_binding_limit(128 * 1024 * 1024);
+        let small = direct_scene_preflight(279_199, 3, &limits).unwrap();
+        assert_eq!(small.path, DirectScenePath::Direct);
+        assert_eq!(
+            GeometryPathRequest::default(),
+            GeometryPathRequest::DefaultDirect
+        );
+        assert_eq!(
+            select_surface_geometry_path(GeometryPathRequest::DefaultDirect, &small),
+            GeometryPath::SortedIndexDirect
+        );
+        assert_eq!(
+            select_surface_geometry_path(GeometryPathRequest::Automatic, &small),
+            GeometryPath::SortedIndexDirect
+        );
+        assert_eq!(
+            select_surface_geometry_path(
+                GeometryPathRequest::Explicit(GeometryPath::PackedAtlas),
+                &small,
+            ),
+            GeometryPath::PackedAtlas
+        );
+
+        let oversized = direct_scene_preflight(3_454_040, 3, &limits).unwrap();
+        assert_eq!(oversized.path, DirectScenePath::ActiveAtlasRequired);
+        assert_eq!(
+            select_surface_geometry_path(GeometryPathRequest::DefaultDirect, &oversized),
+            GeometryPath::SortedIndexDirect
+        );
+        assert_eq!(
+            select_surface_geometry_path(GeometryPathRequest::Automatic, &oversized),
+            GeometryPath::PagedActiveAtlas
+        );
     }
 
     #[test]
