@@ -53,6 +53,16 @@ jobs:
         run: npm --prefix packages/web run check
       - name: Web SDK JavaScript tests
         run: npm --prefix packages/web test
+      - name: Benchmark evidence contracts
+        run: |
+          bash tests/perf/test-benchmark-artifacts.sh
+          python3 tests/perf/validate-dataset-manifests.py
+          bash tests/perf/trace/test-trace-v1.sh
+          node --test examples/web/test/benchmark-artifact.test.mjs
+          bash bindings/android/scripts/test-android-benchmark-artifact-extraction.sh
+          bash bindings/apple/scripts/test-ios-benchmark-artifact-extraction.sh
+          npm ci --ignore-scripts --prefix tests/competitive/playcanvas
+          npm test --prefix tests/competitive/playcanvas
       - name: Web wasm check
         run: |
           rustup target add wasm32-unknown-unknown
@@ -79,6 +89,10 @@ jobs:
         run: |
           ANDROID_SDK_ROOT="$ANDROID_HOME" bash bindings/android/scripts/build-sample-apk.sh
           test -f examples/android/app/build/outputs/apk/debug/sample-app-debug.apk
+      - name: Android benchmark unit tests
+        run: |
+          GRADLE_BIN="$(bindings/android/scripts/ensure-gradle.sh)"
+          ANDROID_SDK_ROOT="$ANDROID_HOME" "$GRADLE_BIN" -p bindings/android :sample-app:testDebugUnitTest
 
   check-macos-swift:
     runs-on: macos-latest

@@ -21,7 +21,6 @@ pub(crate) struct PagedActiveSet {
 impl PagedActiveSet {
     pub(crate) fn new(
         device: &wgpu::Device,
-        queue: &wgpu::Queue,
         layout: &wgpu::BindGroupLayout,
         scene: &SceneBuffers,
         pages: SpatialPageSet,
@@ -29,7 +28,6 @@ impl PagedActiveSet {
         let slot_count = pages.page_count().clamp(1, DEFAULT_PAGED_ATLAS_SLOTS);
         let atlas = PagedAtlasGpu::new_with_encoding(
             device,
-            queue,
             layout,
             slot_count,
             pages.page_capacity,

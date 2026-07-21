@@ -8,10 +8,33 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Added
+
+- Added an experimental, bounded Niantic SPZ v4 loader with cancellation,
+  coordinate/SH conversion, and isolated source-residency helpers.
+- Added versioned benchmark artifacts, dataset manifests, a shared camera
+  trace contract, extraction tools for Web/Android/iOS, and a pinned
+  PlayCanvas comparison harness with paired statistics and SSIM checks.
+- Added explicit experimental Packed and fixed four-slot local Paged geometry
+  paths while keeping Direct as the release-gated default.
+
 ### Changed
 
 - Removed the obsolete `static_direct` / `sortedIndexDirect` path-selection APIs
   now that direct sorted-index rendering is the only production pipeline.
+- Kept local Paged selection explicit and removed unused automatic Surface
+  constructors so prototype policy does not widen the v0.1 API.
+- Archived completed Packed/Paged research plans and made the next performance
+  priority Direct-path GPU compaction, portable radix sorting, and indirect
+  drawing backed by real-dataset evidence.
+
+### Fixed
+
+- Removed an unread 48-byte-per-splat Packed SH GPU texture, the unconsumed
+  CPU sidecar staging on the GPU hot-record path, and obsolete texture-dimension
+  preflight so valid storage-buffer scenes are not forced into Paged.
+- Ensured Packed Surface rendering applies complete view-dependent color on
+  its first frame and uses one frozen camera across every band of a refresh.
 
 ## [0.1.3] - 2026-07-10
 

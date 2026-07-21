@@ -475,9 +475,9 @@ not current status; the G7 closure above is authoritative.
   - Audited the current bench runner and deterministic platform benchmark hooks;
     identified percentile, memory, streaming, and thermal telemetry gaps.
 - Files created/modified:
-  - `docs/plans/active/2026-07-11-native-first-playcanvas-strategy/task_plan.md`
-  - `docs/plans/active/2026-07-11-native-first-playcanvas-strategy/findings.md`
-  - `docs/plans/active/2026-07-11-native-first-playcanvas-strategy/progress.md`
+  - `docs/plans/completed/2026-07-11-native-first-playcanvas-strategy/task_plan.md`
+  - `docs/plans/completed/2026-07-11-native-first-playcanvas-strategy/findings.md`
+  - `docs/plans/completed/2026-07-11-native-first-playcanvas-strategy/progress.md`
 
 ### Phase 2: Competitive Architecture Design
 
@@ -489,7 +489,7 @@ not current status; the G7 closure above is authoritative.
     API/ABI, failure-mode, and rollback boundaries.
   - Wrote `design.md` with the staged implementation and exit gates.
 - Files created/modified:
-  - `docs/plans/active/2026-07-11-native-first-playcanvas-strategy/design.md`
+  - `docs/plans/completed/2026-07-11-native-first-playcanvas-strategy/design.md`
 
 ### Phase 3: Verification and Benchmark Design
 
@@ -501,7 +501,7 @@ not current status; the G7 closure above is authoritative.
   - Wrote `verification_plan.md`, separating existing commands from proposed
     harness work.
 - Files created/modified:
-  - `docs/plans/active/2026-07-11-native-first-playcanvas-strategy/verification_plan.md`
+  - `docs/plans/completed/2026-07-11-native-first-playcanvas-strategy/verification_plan.md`
 
 ### Phase 4: Documentation Delivery
 
@@ -513,8 +513,8 @@ not current status; the G7 closure above is authoritative.
   - Cross-linked the design, verification plan, and canonical verification
     guide without changing canonical project facts.
 - Files created/modified:
-  - `docs/plans/active/2026-07-11-native-first-playcanvas-strategy/design.md`
-  - `docs/plans/active/2026-07-11-native-first-playcanvas-strategy/verification_plan.md`
+  - `docs/plans/completed/2026-07-11-native-first-playcanvas-strategy/design.md`
+  - `docs/plans/completed/2026-07-11-native-first-playcanvas-strategy/verification_plan.md`
 
 ### Phase 5: Document Verification and Handoff
 
@@ -538,10 +538,10 @@ not current status; the G7 closure above is authoritative.
   - Confirmed the proposed `Rgba16Uint`, `Rgba8Uint`, and `R32Uint` candidates
     exist in the repository's current `wgpu-types 28.0.0` dependency.
 - Files created/modified:
-  - `docs/plans/active/2026-07-11-native-first-playcanvas-strategy/design.md`
-  - `docs/plans/active/2026-07-11-native-first-playcanvas-strategy/verification_plan.md`
-  - `docs/plans/active/2026-07-11-native-first-playcanvas-strategy/findings.md`
-  - `docs/plans/active/2026-07-11-native-first-playcanvas-strategy/task_plan.md`
+  - `docs/plans/completed/2026-07-11-native-first-playcanvas-strategy/design.md`
+  - `docs/plans/completed/2026-07-11-native-first-playcanvas-strategy/verification_plan.md`
+  - `docs/plans/completed/2026-07-11-native-first-playcanvas-strategy/findings.md`
+  - `docs/plans/completed/2026-07-11-native-first-playcanvas-strategy/task_plan.md`
 
 ## Test Results
 

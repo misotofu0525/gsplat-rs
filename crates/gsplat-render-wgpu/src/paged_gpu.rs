@@ -1,11 +1,13 @@
 //! Fixed-slot GPU atlas for decoded page payloads using shared scene encoding.
 
+// The frozen paging diagnostic keeps explicit test hooks for stale/cancelled
+// uploads. Keep them crate-private without turning them into compatibility API.
+#![allow(dead_code)]
+
 use gsplat_core::SceneBuffers;
 
 use crate::DirectSceneError;
-use crate::packed_atlas::{
-    PackedAtlasCpuBuffers, PackedHotRecord, PackedSceneCpu, PackedShSidecar,
-};
+use crate::packed_atlas::{PackedAtlasCpuBuffers, PackedHotRecord, PackedSceneCpu};
 use crate::packed_gpu::PackedAtlasResources;
 use crate::page_source::{DecodedPagePayload, PageEncoding, PagePayloadError, PageSourceError};
 use crate::residency::{AsyncPageToken, AttributeLod, ResidencyManager};
@@ -64,7 +66,6 @@ pub struct PagedAtlasGpu {
 impl PagedAtlasGpu {
     pub fn new(
         device: &wgpu::Device,
-        queue: &wgpu::Queue,
         bind_group_layout: &wgpu::BindGroupLayout,
         slot_count: usize,
         page_capacity: usize,
@@ -72,7 +73,6 @@ impl PagedAtlasGpu {
     ) -> Result<Self, PagedGpuError> {
         Self::new_with_encoding(
             device,
-            queue,
             bind_group_layout,
             slot_count,
             page_capacity,
@@ -83,7 +83,6 @@ impl PagedAtlasGpu {
 
     pub(crate) fn new_with_encoding(
         device: &wgpu::Device,
-        queue: &wgpu::Queue,
         bind_group_layout: &wgpu::BindGroupLayout,
         slot_count: usize,
         page_capacity: usize,
@@ -98,7 +97,7 @@ impl PagedAtlasGpu {
                 DirectSceneError::SortedIndexCapacityExceeded,
             ))?;
         let placeholder = placeholder_packed(capacity, encoding);
-        let resources = PackedAtlasResources::new(device, queue, bind_group_layout, &placeholder)?;
+        let resources = PackedAtlasResources::new(device, bind_group_layout, &placeholder)?;
         Ok(Self {
             page_capacity,
             resources,
@@ -335,13 +334,7 @@ fn placeholder_packed(capacity: usize, encoding: PageEncoding) -> PackedSceneCpu
         bounds: encoding.scene_bounds,
         log_scale_range: encoding.log_scale_range,
         hot: vec![zero; capacity.max(1)],
-        sh_sidecars: vec![
-            PackedShSidecar {
-                coeffs_i8: [0; 45],
-                pad: [0; 3],
-            };
-            capacity.max(1)
-        ],
+        sh_sidecars: Vec::new(),
         sh_scales: encoding.sh_scales,
         sh_degree: 0,
         splat_count: capacity.max(1),
@@ -418,15 +411,8 @@ mod tests {
         whole.set_geometry_path(GeometryPath::PackedAtlas);
         whole.load_scene(scene.clone()).unwrap();
         let mut manager = manager(&pages, pages.page_count().max(1));
-        let mut paged = PagedAtlasGpu::new(
-            &device,
-            &queue,
-            &layout,
-            pages.page_count().max(1),
-            3,
-            &scene,
-        )
-        .expect("allocate paged GPU atlas");
+        let mut paged = PagedAtlasGpu::new(&device, &layout, pages.page_count().max(1), 3, &scene)
+            .expect("allocate paged GPU atlas");
 
         for page in &pages.pages {
             let token = manager.request_page(page.id).unwrap();
@@ -484,7 +470,7 @@ mod tests {
             return;
         };
         let mut manager = manager(&pages, 1);
-        let mut paged = PagedAtlasGpu::new(&device, &queue, &layout, 1, 2, &scene).unwrap();
+        let mut paged = PagedAtlasGpu::new(&device, &layout, 1, 2, &scene).unwrap();
         let page = &pages.pages[0];
         let token = manager.request_page(page.id).unwrap();
         manager.advance_to_compressed_ready(token).unwrap();
@@ -524,7 +510,7 @@ mod tests {
             return;
         };
         let mut manager = manager(&pages, 2);
-        let mut paged = PagedAtlasGpu::new(&device, &queue, &layout, 2, 2, &scene).unwrap();
+        let mut paged = PagedAtlasGpu::new(&device, &layout, 2, 2, &scene).unwrap();
         let page = &pages.pages[0];
         let token = manager.request_page(page.id).unwrap();
         manager.advance_to_compressed_ready(token).unwrap();
@@ -567,7 +553,7 @@ mod tests {
             return;
         };
         let mut manager = manager(&pages, 1);
-        let mut paged = PagedAtlasGpu::new(&device, &queue, &layout, 1, 2, &scene).unwrap();
+        let mut paged = PagedAtlasGpu::new(&device, &layout, 1, 2, &scene).unwrap();
         let page = &pages.pages[0];
         let token = manager.request_page(page.id).unwrap();
         manager.advance_to_compressed_ready(token).unwrap();

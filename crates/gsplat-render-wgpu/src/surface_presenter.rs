@@ -12,31 +12,15 @@ use crate::{
     SpatialPageSet, SurfacePresenterError, create_direct_bind_group_layout, create_direct_pipeline,
     create_surface_instance, direct_scene_preflight, fit_surface_size,
     packed_color_refresh_band_size, packed_color_refresh_needed, packed_color_refresh_position_key,
-    packed_scene_preflight, preprocess_paged_visible_into, refresh_packed_hot_colors_range,
-    refresh_paged_hot_colors, select_automatic_surface_geometry_path, select_present_mode,
+    packed_scene_preflight, preprocess_paged_visible_into, refresh_packed_hot_colors,
+    refresh_packed_hot_colors_range, refresh_paged_hot_colors, select_present_mode,
     surface_error_to_presenter, wgpu_label,
 };
-
-enum SurfacePathSelection<'a> {
-    Exact(&'a Renderer),
-    Automatic(&'a mut Renderer),
-}
 
 struct SurfaceAdapterContext {
     info: wgpu::AdapterInfo,
     limits: wgpu::Limits,
     effective_device_limits: wgpu::Limits,
-}
-
-fn restore_renderer_path_on_error<T, E>(
-    renderer: &mut Renderer,
-    previous_path: GeometryPath,
-    result: Result<T, E>,
-) -> Result<T, E> {
-    if result.is_err() {
-        renderer.set_geometry_path(previous_path);
-    }
-    result
 }
 
 pub(crate) struct SurfacePagedRuntime {
@@ -49,12 +33,11 @@ pub(crate) struct SurfacePagedRuntime {
 impl SurfacePagedRuntime {
     pub(crate) fn new(
         device: &wgpu::Device,
-        queue: &wgpu::Queue,
         layout: &wgpu::BindGroupLayout,
         scene: &SceneBuffers,
         pages: SpatialPageSet,
     ) -> Result<Self, SurfacePresenterError> {
-        let active_set = PagedActiveSet::new(device, queue, layout, scene, pages)
+        let active_set = PagedActiveSet::new(device, layout, scene, pages)
             .map_err(|err| SurfacePresenterError::PagedAtlas(err.to_string()))?;
         Ok(Self {
             active_set,
@@ -108,12 +91,52 @@ pub struct SurfacePresenter {
     max_texture_dimension_2d: u32,
     instance_count: u32,
     geometry: SurfaceGeometry,
+    packed_color_refresh: PackedColorRefreshState,
+}
+
+#[derive(Debug, Default)]
+struct PackedColorRefreshState {
     /// Last camera position whose hot colors have been fully applied.
-    packed_color_refresh_position: Option<[f32; 3]>,
+    applied_position: Option<[f32; 3]>,
     /// Next splat index for an in-flight banded refresh, if any.
-    packed_color_refresh_cursor: Option<usize>,
-    /// Camera position the in-flight banded refresh is converging toward.
-    packed_color_refresh_target: Option<[f32; 3]>,
+    cursor: Option<usize>,
+    /// Frozen camera for the whole in-flight refresh.
+    target_camera: Option<Camera>,
+}
+
+impl PackedColorRefreshState {
+    fn needs_full_refresh(&self) -> bool {
+        self.applied_position.is_none()
+    }
+
+    fn mark_full_refresh(&mut self, camera: &Camera) {
+        self.applied_position = Some(packed_color_refresh_position_key(camera));
+        self.cursor = None;
+        self.target_camera = None;
+    }
+
+    fn begin_banded_refresh(&mut self, camera: &Camera) {
+        debug_assert!(self.cursor.is_none());
+        self.cursor = Some(0);
+        self.target_camera = Some(*camera);
+    }
+
+    fn batch(&self, splat_count: usize) -> Option<(usize, usize, Camera)> {
+        let start = self.cursor?;
+        let target = self.target_camera?;
+        let end = (start + packed_color_refresh_band_size(splat_count)).min(splat_count);
+        Some((start, end, target))
+    }
+
+    fn finish_batch(&mut self, end: usize, splat_count: usize) {
+        if end >= splat_count {
+            if let Some(target) = self.target_camera {
+                self.mark_full_refresh(&target);
+            }
+        } else {
+            self.cursor = Some(end);
+        }
+    }
 }
 
 enum SurfaceGeometry {
@@ -134,7 +157,6 @@ impl SurfaceGeometry {
 
 fn create_geometry_resources(
     device: &wgpu::Device,
-    queue: &wgpu::Queue,
     direct_bind_group_layout: &wgpu::BindGroupLayout,
     packed_bind_group_layout: &wgpu::BindGroupLayout,
     path: GeometryPath,
@@ -166,7 +188,6 @@ fn create_geometry_resources(
         GeometryPath::PackedAtlas => {
             let packed_scene = packed_gpu::PackedAtlasResources::from_scene(
                 device,
-                queue,
                 packed_bind_group_layout,
                 scene,
             )?;
@@ -178,7 +199,7 @@ fn create_geometry_resources(
                 .clone()
                 .ok_or(SurfacePresenterError::SceneNotLoaded)?;
             let paged_scene =
-                SurfacePagedRuntime::new(device, queue, packed_bind_group_layout, scene, pages)?;
+                SurfacePagedRuntime::new(device, packed_bind_group_layout, scene, pages)?;
             Ok(SurfaceGeometry::Paged(Box::new(paged_scene)))
         }
     }
@@ -239,15 +260,9 @@ pub(crate) fn surface_resource_plan(
     let packed_preflight = packed_scene_preflight(
         resident_capacity,
         packed_sh_degree,
-        limits.max_texture_dimension_2d,
-        u64::from(limits.max_storage_buffer_binding_size),
+        u64::from(limits.max_storage_buffer_binding_size).min(limits.max_buffer_size),
     )?;
-    let required_texture_dimension = width
-        .max(height)
-        .max(packed_preflight.hot_atlas_width)
-        .max(packed_preflight.hot_atlas_height)
-        .max(packed_preflight.sh_atlas_width)
-        .max(packed_preflight.sh_atlas_height);
+    let required_texture_dimension = width.max(height);
 
     Ok(SurfaceResourcePlan {
         geometry_path,
@@ -295,32 +310,7 @@ impl SurfacePresenter {
     where
         T: Into<wgpu::SurfaceTarget<'static>>,
     {
-        Self::from_window_selected(target, width, height, SurfacePathSelection::Exact(renderer))
-            .await
-    }
-
-    /// Creates a Surface presenter and selects Paged only when Direct cannot
-    /// fit the resource limits requested from the compatible adapter.
-    ///
-    /// The renderer remains on its previous path when presenter preparation
-    /// fails. Stable constructors do not opt into this policy implicitly.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub async fn from_window_auto<T>(
-        target: T,
-        width: u32,
-        height: u32,
-        renderer: &mut Renderer,
-    ) -> Result<Self, SurfacePresenterError>
-    where
-        T: Into<wgpu::SurfaceTarget<'static>>,
-    {
-        Self::from_window_selected(
-            target,
-            width,
-            height,
-            SurfacePathSelection::Automatic(renderer),
-        )
-        .await
+        Self::from_window_selected(target, width, height, renderer).await
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -328,7 +318,7 @@ impl SurfacePresenter {
         target: T,
         width: u32,
         height: u32,
-        selection: SurfacePathSelection<'_>,
+        renderer: &Renderer,
     ) -> Result<Self, SurfacePresenterError>
     where
         T: Into<wgpu::SurfaceTarget<'static>>,
@@ -337,7 +327,7 @@ impl SurfacePresenter {
         let surface = instance
             .create_surface(target)
             .map_err(|_| SurfacePresenterError::SurfaceCreation)?;
-        Self::from_surface_async(instance, surface, width, height, selection).await
+        Self::from_surface_async(instance, surface, width, height, renderer).await
     }
 
     /// Creates a presenter from raw handles supplied by an embedding platform.
@@ -358,29 +348,7 @@ impl SurfacePresenter {
             raw_window_handle,
             width,
             height,
-            SurfacePathSelection::Exact(renderer),
-        ))
-    }
-
-    /// Auto-selecting counterpart to [`Self::from_raw_handles`].
-    ///
-    /// # Safety
-    ///
-    /// The raw handles must satisfy the same lifetime requirements as
-    /// [`Self::from_raw_handles`].
-    pub unsafe fn from_raw_handles_auto(
-        raw_display_handle: wgpu::rwh::RawDisplayHandle,
-        raw_window_handle: wgpu::rwh::RawWindowHandle,
-        width: u32,
-        height: u32,
-        renderer: &mut Renderer,
-    ) -> Result<Self, SurfacePresenterError> {
-        pollster::block_on(Self::from_raw_handles_selected(
-            raw_display_handle,
-            raw_window_handle,
-            width,
-            height,
-            SurfacePathSelection::Automatic(renderer),
+            renderer,
         ))
     }
 
@@ -389,7 +357,7 @@ impl SurfacePresenter {
         raw_window_handle: wgpu::rwh::RawWindowHandle,
         width: u32,
         height: u32,
-        selection: SurfacePathSelection<'_>,
+        renderer: &Renderer,
     ) -> Result<Self, SurfacePresenterError> {
         let instance = create_surface_instance();
         let surface = unsafe {
@@ -400,7 +368,7 @@ impl SurfacePresenter {
         }
         .map_err(|_| SurfacePresenterError::SurfaceCreation)?;
 
-        Self::from_surface_async(instance, surface, width, height, selection).await
+        Self::from_surface_async(instance, surface, width, height, renderer).await
     }
 
     #[cfg(target_arch = "wasm32")]
@@ -410,24 +378,7 @@ impl SurfacePresenter {
         height: u32,
         renderer: &Renderer,
     ) -> Result<Self, SurfacePresenterError> {
-        Self::from_canvas_selected(canvas, width, height, SurfacePathSelection::Exact(renderer))
-            .await
-    }
-
-    #[cfg(target_arch = "wasm32")]
-    pub async fn from_canvas_auto(
-        canvas: web_sys::HtmlCanvasElement,
-        width: u32,
-        height: u32,
-        renderer: &mut Renderer,
-    ) -> Result<Self, SurfacePresenterError> {
-        Self::from_canvas_selected(
-            canvas,
-            width,
-            height,
-            SurfacePathSelection::Automatic(renderer),
-        )
-        .await
+        Self::from_canvas_selected(canvas, width, height, renderer).await
     }
 
     #[cfg(target_arch = "wasm32")]
@@ -435,13 +386,13 @@ impl SurfacePresenter {
         canvas: web_sys::HtmlCanvasElement,
         width: u32,
         height: u32,
-        selection: SurfacePathSelection<'_>,
+        renderer: &Renderer,
     ) -> Result<Self, SurfacePresenterError> {
         let instance = create_surface_instance();
         let surface = instance
             .create_surface(wgpu::SurfaceTarget::Canvas(canvas))
             .map_err(|_| SurfacePresenterError::SurfaceCreation)?;
-        Self::from_surface_async(instance, surface, width, height, selection).await
+        Self::from_surface_async(instance, surface, width, height, renderer).await
     }
 
     async fn from_surface_async(
@@ -449,7 +400,7 @@ impl SurfacePresenter {
         surface: wgpu::Surface<'static>,
         width: u32,
         height: u32,
-        mut selection: SurfacePathSelection<'_>,
+        renderer: &Renderer,
     ) -> Result<Self, SurfacePresenterError> {
         if width == 0 || height == 0 {
             return Err(SurfacePresenterError::InvalidSurfaceSize);
@@ -471,27 +422,7 @@ impl SurfacePresenter {
             limits: adapter_limits,
             effective_device_limits,
         };
-        let previous_path = match &selection {
-            SurfacePathSelection::Exact(renderer) => renderer.geometry_path(),
-            SurfacePathSelection::Automatic(renderer) => renderer.geometry_path(),
-        };
-        if let SurfacePathSelection::Automatic(renderer) = &mut selection {
-            let scene = renderer
-                .scene()
-                .ok_or(SurfacePresenterError::SceneNotLoaded)?;
-            let direct_preflight = direct_scene_preflight(
-                scene.len(),
-                scene.sh_degree,
-                &adapter_context.effective_device_limits,
-            )?;
-            let selected = select_automatic_surface_geometry_path(&direct_preflight);
-            renderer.set_geometry_path(selected);
-        }
-        let renderer = match &selection {
-            SurfacePathSelection::Exact(renderer) => *renderer,
-            SurfacePathSelection::Automatic(renderer) => &**renderer,
-        };
-        let result = Self::from_surface_with_adapter_async(
+        Self::from_surface_with_adapter_async(
             adapter,
             surface,
             width,
@@ -499,11 +430,7 @@ impl SurfacePresenter {
             renderer,
             adapter_context,
         )
-        .await;
-        if let SurfacePathSelection::Automatic(renderer) = &mut selection {
-            return restore_renderer_path_on_error(renderer, previous_path, result);
-        }
-        result
+        .await
     }
 
     async fn from_surface_with_adapter_async(
@@ -519,9 +446,8 @@ impl SurfacePresenter {
             limits: adapter_limits,
             effective_device_limits,
         } = adapter_context;
-        // Surface sessions support runtime direct↔packed A/B switching, so the
-        // device must negotiate the loaded scene's packed sidecar requirement
-        // even when the presenter is initially created on the Direct path.
+        // Surface sessions support runtime direct↔packed A/B switching, so
+        // preflight both storage layouts before creating the shared device.
         let scene = renderer
             .scene()
             .ok_or(SurfacePresenterError::SceneNotLoaded)?;
@@ -610,7 +536,6 @@ impl SurfacePresenter {
             packed_gpu::create_packed_pipeline(&device, &packed_bind_group_layout, format);
         let geometry = create_geometry_resources(
             &device,
-            &queue,
             &direct_bind_group_layout,
             &packed_bind_group_layout,
             geometry_path,
@@ -629,9 +554,7 @@ impl SurfacePresenter {
             max_texture_dimension_2d,
             instance_count: 0,
             geometry,
-            packed_color_refresh_position: None,
-            packed_color_refresh_cursor: None,
-            packed_color_refresh_target: None,
+            packed_color_refresh: PackedColorRefreshState::default(),
         })
     }
 
@@ -683,9 +606,7 @@ impl SurfacePresenter {
             |presenter| presenter.prepare_geometry_resources(path, renderer),
             |presenter, geometry| {
                 presenter.geometry = geometry;
-                presenter.packed_color_refresh_position = None;
-                presenter.packed_color_refresh_cursor = None;
-                presenter.packed_color_refresh_target = None;
+                presenter.packed_color_refresh = PackedColorRefreshState::default();
                 presenter.instance_count = 0;
             },
         )
@@ -698,7 +619,6 @@ impl SurfacePresenter {
     ) -> Result<SurfaceGeometry, SurfacePresenterError> {
         create_geometry_resources(
             &self.device,
-            &self.queue,
             &self.direct_bind_group_layout,
             &self.packed_bind_group_layout,
             path,
@@ -723,31 +643,37 @@ impl SurfacePresenter {
                 refresh_indices,
             )?,
             SurfaceGeometry::Packed(packed) => {
+                if self.packed_color_refresh.needs_full_refresh() {
+                    // Packed records are initialized with DC only. The first
+                    // presented frame must receive complete view-dependent SH
+                    // colors even though it also uploads the initial order.
+                    refresh_packed_hot_colors(&self.queue, packed, scene, camera);
+                    self.packed_color_refresh.mark_full_refresh(camera);
+                }
                 let needs_refresh = packed_color_refresh_needed(
-                    self.packed_color_refresh_position,
+                    self.packed_color_refresh.applied_position,
                     camera,
                     packed.bounds_min,
                     packed.bounds_extent,
                 );
-                if !refresh_indices && (self.packed_color_refresh_cursor.is_some() || needs_refresh)
+                if !refresh_indices && (self.packed_color_refresh.cursor.is_some() || needs_refresh)
                 {
                     // Defer banded SH refresh off synchronous sort frames so
                     // p95 does not stack a full CPU sort with SH eval/upload.
-                    if self.packed_color_refresh_cursor.is_none() {
-                        self.packed_color_refresh_cursor = Some(0);
-                        self.packed_color_refresh_target =
-                            Some(packed_color_refresh_position_key(camera));
+                    if self.packed_color_refresh.cursor.is_none() {
+                        self.packed_color_refresh.begin_banded_refresh(camera);
                     }
-                    let start = self.packed_color_refresh_cursor.unwrap_or(0);
-                    let end =
-                        (start + packed_color_refresh_band_size(scene.len())).min(scene.len());
-                    refresh_packed_hot_colors_range(&self.queue, packed, scene, camera, start, end);
-                    if end >= scene.len() {
-                        self.packed_color_refresh_position = self.packed_color_refresh_target;
-                        self.packed_color_refresh_cursor = None;
-                        self.packed_color_refresh_target = None;
-                    } else {
-                        self.packed_color_refresh_cursor = Some(end);
+                    if let Some((start, end, target)) = self.packed_color_refresh.batch(scene.len())
+                    {
+                        refresh_packed_hot_colors_range(
+                            &self.queue,
+                            packed,
+                            scene,
+                            &target,
+                            start,
+                            end,
+                        );
+                        self.packed_color_refresh.finish_batch(end, scene.len());
                     }
                 }
                 packed.prepare(
@@ -843,27 +769,59 @@ impl SurfacePresenter {
 
 #[cfg(test)]
 mod tests {
-    use gsplat_core::RenderMode;
+    use gsplat_core::Vec3f;
 
     use super::*;
 
-    #[test]
-    fn automatic_selection_failure_restores_the_previous_renderer_path() {
-        let mut renderer = Renderer::new_for_surface(RenderMode::SortedAlpha).unwrap();
-        renderer.set_geometry_path(GeometryPath::PackedAtlas);
-        let previous_path = renderer.geometry_path();
-        renderer.set_geometry_path(GeometryPath::PagedActiveAtlas);
-        let result = restore_renderer_path_on_error(
-            &mut renderer,
-            previous_path,
-            Err::<(), _>("surface preparation failed"),
-        );
-        assert_eq!(result, Err("surface preparation failed"));
-        assert_eq!(renderer.geometry_path(), GeometryPath::PackedAtlas);
+    fn camera_at(x: f32) -> Camera {
+        let mut camera = Camera::default();
+        camera.pose.position = Vec3f::new(x, 0.0, 0.0);
+        camera
     }
 
     #[test]
-    fn automatic_selection_uses_effective_requested_storage_limits() {
+    fn packed_color_refresh_requires_a_complete_first_frame() {
+        let mut state = PackedColorRefreshState::default();
+        let camera = camera_at(1.0);
+
+        assert!(state.needs_full_refresh());
+        state.mark_full_refresh(&camera);
+        assert!(!state.needs_full_refresh());
+        assert_eq!(
+            state.applied_position,
+            Some(packed_color_refresh_position_key(&camera))
+        );
+    }
+
+    #[test]
+    fn packed_banded_color_refresh_keeps_one_frozen_camera() {
+        let mut state = PackedColorRefreshState::default();
+        let target = camera_at(1.0);
+        let later_camera = camera_at(2.0);
+        let splat_count = packed_color_refresh_band_size(100_000) * 2;
+
+        state.begin_banded_refresh(&target);
+        let mut batches = 0;
+        while let Some((_, end, batch_target)) = state.batch(splat_count) {
+            // A newer camera may arrive while this refresh is in flight, but
+            // every remaining band must still use the original target.
+            assert_eq!(batch_target, target);
+            assert_ne!(batch_target, later_camera);
+            state.finish_batch(end, splat_count);
+            batches += 1;
+        }
+
+        assert!(batches > 1);
+        assert_eq!(
+            state.applied_position,
+            Some(packed_color_refresh_position_key(&target))
+        );
+        assert!(state.cursor.is_none());
+        assert!(state.target_camera.is_none());
+    }
+
+    #[test]
+    fn surface_preflight_uses_effective_requested_storage_limits() {
         let mut adapter_limits = wgpu::Limits::downlevel_defaults();
         adapter_limits.max_storage_buffer_binding_size = 256 * 1024 * 1024;
         adapter_limits.max_buffer_size = 256 * 1024 * 1024;
@@ -883,9 +841,5 @@ mod tests {
             effective_preflight.path,
             crate::DirectScenePath::ActiveAtlasRequired
         );
-
-        let selected = crate::select_automatic_surface_geometry_path(&effective_preflight);
-
-        assert_eq!(selected, crate::GeometryPath::PagedActiveAtlas);
     }
 }

@@ -425,6 +425,17 @@ pub fn pack_scene(scene: &SceneBuffers) -> PackedSceneCpu {
     pack_scene_with_encoding(scene, bounds, log_scale_range, None)
 }
 
+/// Pack only the records consumed by the current GPU draw path.
+///
+/// Full SH stays in `SceneBuffers` for view-dependent CPU color refresh, so
+/// building the quantized sidecar here would add peak memory and load work
+/// without producing a bound GPU resource.
+pub(crate) fn pack_scene_hot_records(scene: &SceneBuffers) -> PackedSceneCpu {
+    let bounds = SceneBounds::from_positions(&scene.positions);
+    let log_scale_range = LogScaleRange::from_scales(&scene.scale_xyz);
+    pack_scene_with_encoding_mode(scene, bounds, log_scale_range, None, false)
+}
+
 /// Compute scene-wide SH quantization scales without building packed records.
 pub fn scene_sh_scales(scene: &SceneBuffers) -> [f32; 3] {
     let rest = scene.sh_rest.as_deref().unwrap_or(&[]);
@@ -463,15 +474,33 @@ pub fn pack_scene_with_encoding(
     log_scale_range: LogScaleRange,
     sh_scales: Option<[f32; 3]>,
 ) -> PackedSceneCpu {
+    pack_scene_with_encoding_mode(scene, bounds, log_scale_range, sh_scales, true)
+}
+
+fn pack_scene_with_encoding_mode(
+    scene: &SceneBuffers,
+    bounds: SceneBounds,
+    log_scale_range: LogScaleRange,
+    sh_scales: Option<[f32; 3]>,
+    include_sh_sidecars: bool,
+) -> PackedSceneCpu {
     let mut hot = Vec::with_capacity(scene.len());
-    let mut sh_sidecars = Vec::with_capacity(scene.len());
+    let mut sh_sidecars = if include_sh_sidecars {
+        Vec::with_capacity(scene.len())
+    } else {
+        Vec::new()
+    };
     let rest = scene.sh_rest.as_deref().unwrap_or(&[]);
     let coeffs_per_channel = ((scene.sh_degree as usize + 1).pow(2))
         .saturating_sub(1)
         .min(15);
     let rest_stride = coeffs_per_channel * 3;
 
-    let scene_scales = sh_scales.unwrap_or_else(|| scene_sh_scales(scene));
+    let scene_scales = if include_sh_sidecars {
+        sh_scales.unwrap_or_else(|| scene_sh_scales(scene))
+    } else {
+        sh_scales.unwrap_or([1e-6; 3])
+    };
 
     for index in 0..scene.len() {
         let position = scene.positions[index];
@@ -504,6 +533,9 @@ pub fn pack_scene_with_encoding(
             color: pack_color_rgb10(rgb),
         });
 
+        if !include_sh_sidecars {
+            continue;
+        }
         if rest_stride > 0 {
             let base = index * rest_stride;
             let slice = if base + rest_stride <= rest.len() {
@@ -670,6 +702,18 @@ mod tests {
             packed.log_scale_range
         );
         assert_eq!(scene_sh_scales(&scene), packed.sh_scales);
+    }
+
+    #[test]
+    fn gpu_hot_only_pack_skips_unbound_sh_sidecars() {
+        let scene = sample_scene(8, 3);
+        let full = pack_scene(&scene);
+        let hot_only = pack_scene_hot_records(&scene);
+
+        assert_eq!(hot_only.hot, full.hot);
+        assert_eq!(hot_only.splat_count, scene.len());
+        assert_eq!(hot_only.sh_degree, scene.sh_degree);
+        assert!(hot_only.sh_sidecars.is_empty());
     }
 
     #[test]

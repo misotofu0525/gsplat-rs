@@ -21,18 +21,10 @@ pub use packed_atlas::{
     pack_color_rgb10, pack_quat_smallest_three, pack_scene, pack_scene_with_encoding,
     sh_sidecar_atlas_dimensions, slot_to_texel, unpack_color_rgb10, unpack_quat_smallest_three,
 };
-pub use page_atlas::{
-    PageAtlasCpu, PageAtlasError, PageAtlasSlotCpu, attribute_bytes_for_lod, extract_page_scene,
-};
-pub use page_scheduler::{ScheduleOutcome, SchedulerConfig, SchedulerView, schedule_pages};
-pub use paged_gpu::{PagedAtlasGpu, PagedGpuError};
-pub use residency::{
-    AsyncPageToken, AtlasSlot, AttributeLod, PageResidency, PageResidencyState, ResidencyBudgets,
-    ResidencyError, ResidencyManager,
-};
-pub use spatial_pages::{
-    DEFAULT_PAGE_CAPACITY, PageBounds, PageId, SpatialPage, SpatialPageSet, partition_scene_pages,
-};
+pub(crate) use page_scheduler::{SchedulerConfig, SchedulerView, schedule_pages};
+pub(crate) use paged_gpu::PagedAtlasGpu;
+pub(crate) use residency::{AttributeLod, ResidencyBudgets, ResidencyManager};
+pub(crate) use spatial_pages::{DEFAULT_PAGE_CAPACITY, SpatialPageSet};
 pub use surface_presenter::SurfacePresenter;
 #[cfg(test)]
 use surface_presenter::{SurfacePagedRuntime, surface_resource_plan, try_prepare_then_commit};
@@ -101,18 +93,6 @@ pub enum GeometryPath {
     PackedAtlas,
     /// Phase D experimental path: spatial pages uploaded into a fixed GPU atlas.
     PagedActiveAtlas,
-}
-
-/// Selects Paged only when an explicit automatic Surface request cannot fit
-/// Direct. Stable constructors and [`GeometryPath::default`] remain Direct;
-/// Packed and forced Paged continue through explicit [`GeometryPath`] control.
-pub fn select_automatic_surface_geometry_path(
-    direct_preflight: &DirectScenePreflight,
-) -> GeometryPath {
-    match direct_preflight.path {
-        DirectScenePath::Direct => GeometryPath::SortedIndexDirect,
-        DirectScenePath::ActiveAtlasRequired => GeometryPath::PagedActiveAtlas,
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2313,7 +2293,7 @@ pub fn direct_scene_preflight(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PackedScenePath {
     PackedAtlas,
-    /// Texture dimensions exceed the device 2D limit; Phase D paging required.
+    /// A compact storage binding exceeds the device limit; paging is required.
     PagingRequired,
 }
 
@@ -2322,14 +2302,10 @@ pub struct PackedScenePreflight {
     pub splat_count: u64,
     pub sh_degree: u8,
     pub path: PackedScenePath,
-    pub hot_atlas_width: u32,
-    pub hot_atlas_height: u32,
-    pub sh_atlas_width: u32,
-    pub sh_atlas_height: u32,
-    pub max_texture_dimension_2d: u32,
     pub sorted_indices_bytes: u64,
-    /// Exact bytes requested by the packed attribute resource descriptors.
-    /// This excludes driver-private allocator padding, which wgpu does not expose.
+    /// Exact bytes requested by the packed hot-record GPU descriptor.
+    /// Full SH remains in the CPU scene for view-dependent color refresh and
+    /// is not duplicated into an unread GPU texture.
     pub declared_attribute_resource_bytes: u64,
     /// Tightly packed hot-record storage bytes (`20 * splat_count`).
     pub hot_record_storage_bytes: u64,
@@ -2344,15 +2320,10 @@ pub struct PackedScenePreflight {
 pub fn packed_scene_preflight(
     splat_count: usize,
     sh_degree: u8,
-    max_texture_dimension_2d: u32,
     max_storage_buffer_binding_size: u64,
 ) -> Result<PackedScenePreflight, DirectSceneError> {
     let splat_count_u64 =
         u64::try_from(splat_count).map_err(|_| DirectSceneError::ResourceSizeOverflow)?;
-    let (hot_w, hot_h) = atlas_dimensions(splat_count);
-    let (sh_w, sh_h) = sh_sidecar_atlas_dimensions(splat_count);
-    let max_dim = max_texture_dimension_2d.max(1);
-    let textures_fit = hot_w <= max_dim && hot_h <= max_dim && sh_w <= max_dim && sh_h <= max_dim;
     let sorted_indices_bytes = splat_count_u64
         .max(1)
         .checked_mul(std::mem::size_of::<u32>() as u64)
@@ -2361,23 +2332,17 @@ pub fn packed_scene_preflight(
         .max(1)
         .checked_mul(HOT_RECORD_BYTES as u64)
         .ok_or(DirectSceneError::ResourceSizeOverflow)?;
-    let declared_attribute_resource_bytes =
-        measured_hot_texture_bytes(splat_count) + measured_sh_sidecar_texture_bytes(splat_count);
+    let declared_attribute_resource_bytes = hot_record_storage_bytes;
     let storage_bindings_fit = sorted_indices_bytes <= max_storage_buffer_binding_size
         && hot_record_storage_bytes <= max_storage_buffer_binding_size;
     Ok(PackedScenePreflight {
         splat_count: splat_count_u64,
         sh_degree,
-        path: if textures_fit && storage_bindings_fit {
+        path: if storage_bindings_fit {
             PackedScenePath::PackedAtlas
         } else {
             PackedScenePath::PagingRequired
         },
-        hot_atlas_width: hot_w,
-        hot_atlas_height: hot_h,
-        sh_atlas_width: sh_w,
-        sh_atlas_height: sh_h,
-        max_texture_dimension_2d: max_dim,
         sorted_indices_bytes,
         declared_attribute_resource_bytes,
         hot_record_storage_bytes,
@@ -2385,7 +2350,7 @@ pub fn packed_scene_preflight(
             <= max_storage_buffer_binding_size,
         hot_record_fits_storage_binding: hot_record_storage_bytes
             <= max_storage_buffer_binding_size,
-        // SH sidecars stay out of storage bindings; hot records use compact storage.
+        // Full SH stays out of storage bindings; hot records use compact storage.
         attributes_avoid_storage_binding: true,
     })
 }
@@ -2680,7 +2645,6 @@ impl GpuRasterizer {
         if self.packed_scene.is_none() {
             self.packed_scene = Some(packed_gpu::PackedAtlasResources::from_scene(
                 &self.device,
-                &self.queue,
                 &self.packed_bind_group_layout,
                 scene,
             )?);
@@ -2754,7 +2718,6 @@ impl GpuRasterizer {
         if self.paged_active_set.is_none() {
             self.paged_active_set = Some(paged_active_set::PagedActiveSet::new(
                 &self.device,
-                &self.queue,
                 &self.packed_bind_group_layout,
                 scene,
                 pages.clone(),
@@ -2973,6 +2936,7 @@ fn create_output_target(
 
 #[cfg(test)]
 mod tests {
+    use crate::spatial_pages::PageId;
     use gsplat_core::{
         Camera, ErrorCode, FrameStats, RenderMode, RendererConfig, SceneBuffers, Vec3f,
     };
@@ -2983,8 +2947,7 @@ mod tests {
         DirectSceneError, DirectScenePath, DirectSceneRemediation, DirectSceneResource,
         GeometryPath, PackedScenePath, Renderer, RendererError, build_instances,
         direct_scene_preflight, ellipse_axes_from_covariance, packed_scene_preflight,
-        project_covariance_to_ndc, quat_inverse, select_automatic_surface_geometry_path,
-        try_prepare_then_commit,
+        project_covariance_to_ndc, quat_inverse, try_prepare_then_commit,
     };
 
     fn build_scene() -> SceneBuffers {
@@ -3317,8 +3280,7 @@ mod tests {
         let page_count = pages.page_count();
         let page_capacity = pages.page_capacity;
         assert!(page_count > super::DEFAULT_PAGED_ATLAS_SLOTS);
-        let mut runtime =
-            super::SurfacePagedRuntime::new(&device, &queue, &layout, &scene, pages).unwrap();
+        let mut runtime = super::SurfacePagedRuntime::new(&device, &layout, &scene, pages).unwrap();
         assert_eq!(
             runtime.active_set.atlas.resources.capacity,
             4 * page_capacity
@@ -3385,7 +3347,7 @@ mod tests {
 
     fn assert_active_entries_are_resident(
         pages: &super::SpatialPageSet,
-        resident_pages: &[super::PageId],
+        resident_pages: &[PageId],
         active_entries: &[(u32, u32)],
     ) {
         let resident_scene_indices: std::collections::HashSet<u32> = resident_pages
@@ -4179,22 +4141,15 @@ mod tests {
     }
 
     #[test]
-    fn surface_path_request_keeps_default_direct_and_limits_auto_to_oversized_scenes() {
+    fn default_surface_path_stays_direct_while_preflight_reports_oversized_scenes() {
         let limits = limits_with_storage_binding_limit(128 * 1024 * 1024);
         let small = direct_scene_preflight(279_199, 3, &limits).unwrap();
         assert_eq!(small.path, DirectScenePath::Direct);
         assert_eq!(GeometryPath::default(), GeometryPath::SortedIndexDirect);
-        assert_eq!(
-            select_automatic_surface_geometry_path(&small),
-            GeometryPath::SortedIndexDirect
-        );
 
         let oversized = direct_scene_preflight(3_454_040, 3, &limits).unwrap();
         assert_eq!(oversized.path, DirectScenePath::ActiveAtlasRequired);
-        assert_eq!(
-            select_automatic_surface_geometry_path(&oversized),
-            GeometryPath::PagedActiveAtlas
-        );
+        assert_eq!(GeometryPath::default(), GeometryPath::SortedIndexDirect);
     }
 
     #[test]
@@ -4263,9 +4218,8 @@ mod tests {
     #[test]
     fn packed_scene_preflight_removes_nandi_attribute_binding_failure() {
         let binding_limit = 128 * 1024 * 1024_u64;
-        let max_dim = 8192_u32;
-        let kitsune = packed_scene_preflight(279_199, 3, max_dim, binding_limit).unwrap();
-        let nandi = packed_scene_preflight(3_454_040, 3, max_dim, binding_limit).unwrap();
+        let kitsune = packed_scene_preflight(279_199, 3, binding_limit).unwrap();
+        let nandi = packed_scene_preflight(3_454_040, 3, binding_limit).unwrap();
         let direct_nandi = direct_scene_preflight(
             3_454_040,
             3,
@@ -4292,10 +4246,14 @@ mod tests {
         assert!(kitsune.sorted_indices_fits_storage_binding);
         assert!(nandi.sorted_indices_fits_storage_binding);
         assert_eq!(kitsune.path, PackedScenePath::PackedAtlas);
-        // Nandi SH atlas height exceeds common 8K 2D limits → paging (Phase D),
-        // not a storage-binding failure.
-        assert_eq!(nandi.path, PackedScenePath::PagingRequired);
-        assert!(nandi.sh_atlas_height > max_dim);
+        // The packed shader reads only the 20 B hot storage record. Full SH is
+        // evaluated on the CPU, so no hypothetical texture dimension may
+        // force this otherwise-valid scene into the slower paged path.
+        assert_eq!(nandi.path, PackedScenePath::PackedAtlas);
+        assert_eq!(
+            nandi.declared_attribute_resource_bytes,
+            nandi.hot_record_storage_bytes
+        );
         assert!(
             nandi.declared_attribute_resource_bytes
                 < direct_nandi.requirements[1].required_bytes
@@ -4311,19 +4269,14 @@ mod tests {
     }
 
     #[test]
-    fn packed_scene_preflight_accepts_kitsune_and_flowers_on_mobile_limits() {
+    fn packed_scene_preflight_accepts_kitsune_and_flowers_on_mobile_binding_limits() {
         let binding_limit = 128 * 1024 * 1024_u64;
-        // Mobile downlevel defaults commonly expose 4096 or 8192.
-        for max_dim in [4096_u32, 8192_u32] {
-            for count in [279_199_usize, 562_974_usize] {
-                let report = packed_scene_preflight(count, 3, max_dim, binding_limit).unwrap();
-                assert_eq!(report.path, PackedScenePath::PackedAtlas);
-                assert!(report.attributes_avoid_storage_binding);
-                assert!(report.hot_record_fits_storage_binding);
-                assert!(report.sorted_indices_fits_storage_binding);
-                assert!(report.hot_atlas_height <= max_dim);
-                assert!(report.sh_atlas_height <= max_dim);
-            }
+        for count in [279_199_usize, 562_974_usize] {
+            let report = packed_scene_preflight(count, 3, binding_limit).unwrap();
+            assert_eq!(report.path, PackedScenePath::PackedAtlas);
+            assert!(report.attributes_avoid_storage_binding);
+            assert!(report.hot_record_fits_storage_binding);
+            assert!(report.sorted_indices_fits_storage_binding);
         }
     }
 

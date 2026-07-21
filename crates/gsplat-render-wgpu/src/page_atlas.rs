@@ -4,6 +4,10 @@
 //! record. This slice validates extract/pack/install/clear and average
 //! attribute-byte accounting before GPU upload wiring.
 
+// The frozen paging diagnostic retains test-only transitions and accounting
+// helpers, but none of them should become public API merely to silence lints.
+#![allow(dead_code)]
+
 use gsplat_core::SceneBuffers;
 
 use crate::packed_atlas::{

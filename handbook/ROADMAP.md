@@ -21,11 +21,16 @@ Operational facts and command entrypoints live in `handbook/PROJECT_CONTEXT.md` 
 
 ## Near-Term Priorities
 
-1. Keep the PLY import -> `SceneBuffers` -> renderer path correct and well tested.
-2. Expand conformance and performance coverage with real datasets before widening APIs.
-3. Keep C ABI, JNI, Android library packaging, iOS local XCFramework packaging, and Swift smoke paths boring, small, and in sync.
-4. Improve renderer quality and stability inside the existing crate boundaries.
-5. Harden the local Web wrapper and Rust/WASM renderer target behind the shared `wgpu` Surface path before calling Web parity complete.
+1. Keep the bounded PLY -> `SceneBuffers` -> Direct renderer path correct and well tested.
+2. Move Direct toward capability-gated GPU visible compaction, portable radix
+   sorting, and indirect drawing without forking platform renderers.
+3. Expand conformance and performance evidence across real scenes and
+   representative desktop/mobile resolutions, including stage timings and
+   image-quality comparisons, before widening APIs or making competitor claims.
+4. Keep C ABI, JNI, Android packaging, Apple packaging, and Web wrappers small,
+   boring, and synchronized around the shared renderer lifecycle.
+5. Decide SPZ consumer integration separately from its isolated loader; do not
+   widen C/Web/mobile APIs merely because the parser exists.
 6. Keep handbook docs and verification commands aligned with the repository that actually exists.
 
 ## Current Release Boundary
@@ -56,6 +61,8 @@ Operational facts and command entrypoints live in `handbook/PROJECT_CONTEXT.md` 
   benchmark artifact schemas, Web package APIs, and mobile Surface convenience
   wrappers remain experimental. They may change without widening the stable
   v0.1 contract; direct remains their default.
+- `crates/gsplat-io-spz` is an experimental, bounded import component. It is
+  not yet connected to the stable C, Web, mobile, or default application path.
 - Native handles are single-owner handles and should be used from one serialized
   thread or queue. Public wrappers may add locking, but this does not make the
   raw C ABI a free-threaded API.
@@ -70,41 +77,35 @@ Operational facts and command entrypoints live in `handbook/PROJECT_CONTEXT.md` 
   Web renderer changes require verified wasm build and browser smoke evidence.
 - The Web example is validation example support for browser PLY loading, the WebGL2 fallback, and hosting the generated wasm package; it is not a polished web product surface.
 
-## Paged Evidence Boundary (updated 2026-07-18)
+## Packed/Paged Evidence Boundary (closed 2026-07-21)
 
-- The experimental local-source paged path has fixed four-slot active
-  residency, dense cross-cell pages, one pinned disjoint global cover for
-  over-slot scenes, eviction, deterministic continuity and
-  stale/cancel/generation tests, direct-vs-paged small-scene offscreen parity,
-  non-zero Surface output, and a short bounded steady-state/device smoke. Web,
-  Android, and UIKit can select it
-  before Direct scene derivation and Surface allocation; returned runtime
-  switch errors preserve the old session. It still retains full in-memory
-  `SceneBuffers` and is not production source or network streaming.
-- Stable/default constructors remain Direct. The additive Rust automatic
-  constructors select Paged only after compatible-adapter preflight proves the
-  scene exceeds Direct capacity; they restore the previous renderer path if
-  Surface preparation fails. This does not widen the C ABI.
-- Local extraction and packing now sit behind a page-source payload boundary,
-  so GPU slots no longer accept arbitrary source containers. This remains a
-  synchronous full-source prototype: metadata-first loading, bounded source
-  and CPU caches, asynchronous decode, and true arbitrary-scale streaming are
-  still future work.
-- A fresh Android Kitsune smoke draws a truthful bounded working set of
-  `225784/279199` splats with coherent initial and orbit views. This is local
-  real-scene correctness evidence, not a performance or arbitrary-scale claim;
-  the observed interactive frame wall was roughly 36-38 ms on the tested A065.
-- Five sequential randomized-order Chrome/WebGPU pairs pass the Kitsune-static
-  desktop parity band at 640×480: gsplat-rs/PlayCanvas frame-wall p95 median
-  ratio `1.0200` (bootstrap 95% CI `1.0100-1.0200`), p99 median `1.0291`
-  (`1.0097-1.0388`), and minimum SSIM `0.998657`.
-- That result is deliberately scoped to the measured local Chrome/WebGPU,
-  Kitsune-static profile. It does not establish native leadership, broad
-  browser or dataset parity, competitor memory leadership, sustained
-  thermal/energy behavior, or 10M scalability.
-- Local AAR, XCFramework/Swift Package, and npm-compatible tarball consumption
-  paths are qualification surfaces only. Registry publication and a widened
-  stable SDK contract remain outside the release boundary.
+- Packed remains an explicit experimental geometry path. Its retained value is
+  the 20-byte hot record, resource preflight, image/count gates, and a reusable
+  resource layout—not an automatic replacement for Direct.
+- The unread 48-byte-per-splat SH GPU texture, its full-scene CPU staging, and
+  the fictitious hot-texture dimension gate were removed. Packed now evaluates
+  view-dependent color into its hot record, completes that color before the
+  first presented frame, and freezes one camera across a banded refresh.
+- The fixed four-slot local Paged runtime remains available for explicit
+  diagnostics, but further productization is frozen. It retains complete
+  `SceneBuffers` and source-index metadata and performs synchronous scheduling,
+  extraction, packing, sorting, and color work; it is neither end-to-end
+  streaming nor evidence of arbitrary-scale or memory-bounded loading.
+- Unused automatic Surface constructors were removed. Capacity preflight can
+  report that Direct does not fit, but the library does not silently select
+  the local Paged prototype as product policy.
+- Historical physical A065 evidence recorded Direct drawing 279,199 splats at
+  11.330 ms/frame and Paged drawing 225,784 active splats at 23.626 ms/frame.
+  This proves Paged execution and bounded GPU slots, not a performance win.
+- Historical five-pair Chrome/WebGPU Kitsune-static evidence at 640×480
+  reported a gsplat-rs/PlayCanvas frame-wall p95 median ratio of `1.0200` and
+  minimum SSIM `0.998657`. It predates this closeout commit and does not prove
+  broad browser/native leadership, competitor memory leadership, sustained
+  thermal behavior, or 10M scalability.
+- A future streaming track must start from metadata-first loading, bounded
+  compressed/decoded caches, asynchronous decode, spatial hierarchy/LOD, and
+  measured source/CPU/GPU residency. It should not grow out of the current
+  four-slot prototype by terminology alone.
 
 ## Release Bar
 
@@ -134,6 +135,10 @@ STABILITY_SECONDS=1800 bash tests/perf/run-long-stability.sh
 ## Explicitly Not Active Right Now
 
 - A custom internal binary scene/cache format
+- Further optimization of the fixed four-slot local Paged prototype as a
+  primary performance track
+- Metadata-first or remote streaming before the Direct GPU pipeline and
+  real-dataset evidence matrix are established
 - Additional experimental blending/rendering backends
 - New top-level apps or docs-only placeholders
 - Published Maven, binary SwiftPM, or npm SDK distribution

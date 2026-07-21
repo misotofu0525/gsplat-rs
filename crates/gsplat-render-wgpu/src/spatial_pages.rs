@@ -1,5 +1,9 @@
 //! Local spatial metadata built from a full scene for the paged prototype.
 
+// The frozen diagnostic retains a few analysis helpers used only by tests.
+// Keep them internal without exposing them as a compatibility surface.
+#![allow(dead_code)]
+
 use gsplat_core::{SceneBuffers, Vec3f};
 
 use crate::packed_atlas::SceneBounds;

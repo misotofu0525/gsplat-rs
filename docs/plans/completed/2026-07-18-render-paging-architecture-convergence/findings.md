@@ -61,7 +61,7 @@
 - `handbook/VERIFICATION.md`
 - `handbook/ROADMAP.md`
 - `handbook/GOLDEN_PRINCIPLES.md`
-- `docs/plans/active/2026-07-11-native-first-playcanvas-strategy/`
+- `docs/plans/completed/2026-07-11-native-first-playcanvas-strategy/`
 
 ## Code Audit — Renderer Ownership and Deletion Safety
 

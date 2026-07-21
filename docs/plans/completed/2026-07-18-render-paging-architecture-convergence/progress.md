@@ -17,9 +17,9 @@
     exact PNG comparison; then removed the temporary worktree.
   - Froze S1-S5 with independent rollback and verification boundaries.
 - Files created:
-  - `docs/plans/active/2026-07-18-render-paging-architecture-convergence/task_plan.md`
-  - `docs/plans/active/2026-07-18-render-paging-architecture-convergence/findings.md`
-  - `docs/plans/active/2026-07-18-render-paging-architecture-convergence/progress.md`
+  - `docs/plans/completed/2026-07-18-render-paging-architecture-convergence/task_plan.md`
+  - `docs/plans/completed/2026-07-18-render-paging-architecture-convergence/findings.md`
+  - `docs/plans/completed/2026-07-18-render-paging-architecture-convergence/progress.md`
 
 ## Test Results
 

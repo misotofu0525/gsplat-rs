@@ -5,10 +5,12 @@
 [![MSRV: 1.93](https://img.shields.io/badge/MSRV-1.93-orange.svg)](rust-toolchain.toml)
 
 `gsplat-rs` is a cross-platform Gaussian Splatting renderer built with Rust
-and `wgpu`. The project focuses on a small, verifiable core: PLY import,
-in-memory scene buffers, `SortedAlpha` rendering, a narrow C ABI, and example
-surfaces that validate the stack on desktop, Android, iOS, and browser paths
-without overstating SDK maturity.
+and `wgpu`. The project focuses on a small, verifiable core: bounded PLY
+import, in-memory scene buffers, `SortedAlpha` rendering, a narrow C ABI, and
+example surfaces that validate the stack on desktop, Android, iOS, and browser
+paths without overstating SDK maturity. A bounded SPZ v4 loader and alternate
+Packed/Paged geometry paths are experimental and stay outside the v0.1
+integration contract.
 
 ![SortedAlpha render of the Wakufactory Kitsune scene](docs/media/kitune.jpg)
 
@@ -86,6 +88,8 @@ and fall back to the shared Flowers fixture when Kitsune is unavailable.
 
 - `crates/gsplat-core`: shared public types, config, stats, and error codes
 - `crates/gsplat-io-ply`: PLY parsing and scene buffer construction
+- `crates/gsplat-io-spz`: experimental bounded Niantic SPZ v4 parsing and
+  scene buffer construction
 - `crates/gsplat-sort`: CPU and GPU sort backends
 - `crates/gsplat-render-wgpu`: preprocessing, raster path, Surface presenter,
   and GPU helper APIs
@@ -104,7 +108,8 @@ and fall back to the shared Flowers fixture when Kitsune is unavailable.
   XCFramework scripts, and iOS simulator/device scripts
 - `packages/web`: local `@gsplat-rs/web` browser ESM wrapper
 - `tools/bench-runner`: perf and stability runner
-- `tests/`: sample dataset, FFI smoke harness, and perf scripts
+- `tests/`: dataset manifests, FFI smoke harness, benchmark artifact/trace
+  contracts, and the pinned PlayCanvas comparison harness
 - `handbook/`: current project docs, architecture map, verification guide,
   roadmap, and project principles
 
@@ -125,6 +130,9 @@ RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
 node --check examples/web/src/main.js
 npm --prefix packages/web run check
 npm --prefix packages/web test
+bash tests/perf/test-benchmark-artifacts.sh
+python3 tests/perf/validate-dataset-manifests.py
+bash tests/perf/trace/test-trace-v1.sh
 ```
 
 Use `handbook/VERIFICATION.md` for the full validation matrix, including FFI,
@@ -156,9 +164,10 @@ The current mobile-facing contract is the C ABI in
 - Browser Rust/WASM integration and the local `@gsplat-rs/web` ESM wrapper are
   demonstrated by `examples/web`.
 - The local Web SDK wrapper is built with `bash packages/web/scripts/build.sh`.
-- Not in the v0.1 contract: scene-from-memory loading, runtime render-mode
-  switching, Maven publishing, multi-ABI Android distribution, and
-  published binary SwiftPM/XCFramework or npm distribution.
+- Not in the v0.1 contract: SPZ consumer wiring, automatic geometry-path
+  selection, scene-from-memory loading, runtime render-mode switching, Maven
+  publishing, multi-ABI Android distribution, and published binary
+  SwiftPM/XCFramework or npm distribution.
 
 ## Known Gaps Before External Release
 

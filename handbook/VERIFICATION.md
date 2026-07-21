@@ -68,6 +68,9 @@ cargo run --release -p bench-runner -- tests/datasets/minimal_ascii.ply 120 --wa
 bash tests/perf/test-benchmark-artifacts.sh
 python3 tests/perf/validate-dataset-manifests.py
 bash tests/perf/trace/test-trace-v1.sh
+node --test examples/web/test/benchmark-artifact.test.mjs
+bash bindings/android/scripts/test-android-benchmark-artifact-extraction.sh
+bash bindings/apple/scripts/test-ios-benchmark-artifact-extraction.sh
 npm ci --ignore-scripts --prefix tests/competitive/playcanvas
 npm test --prefix tests/competitive/playcanvas
 bash tests/ffi/run-ffi-smoke.sh
@@ -127,10 +130,12 @@ bash tests/perf/trace/test-trace-v1.sh
   hash or matrix-convention drift. A competitive harness must consume the
   explicit matrices or prove its API reconstruction matches them.
 
-Android and Web collectors can also emit the same v1 artifact contract:
+Android, Apple, and Web collectors can also emit the same v1 artifact contract:
 
 ```bash
 bash bindings/android/scripts/test-android-benchmark-artifact-extraction.sh
+bash bindings/apple/scripts/test-ios-benchmark-artifact-extraction.sh
+node --test examples/web/test/benchmark-artifact.test.mjs
 # After a device benchmark, extract from logcat:
 # python3 bindings/android/scripts/extract-android-benchmark-artifacts.py \
 #   target/benchmarks/phase-a/android-kitsune-logcat.txt \
@@ -400,7 +405,9 @@ STABILITY_SECONDS=1800 bash tests/perf/run-long-stability.sh
 - If you touch `bindings/android/`, `examples/android/`, or JNI glue, run
   `bash bindings/android/scripts/run-jni-smoke.sh`. If you touch Android packaging or
   `bindings/android/gsplat-android/`, also run
-  `bash bindings/android/scripts/build-aar.sh` and `bash bindings/android/scripts/build-sample-apk.sh`;
+  `bash bindings/android/scripts/build-aar.sh`,
+  `bash bindings/android/scripts/build-sample-apk.sh`, and
+  `GRADLE_BIN="$(bindings/android/scripts/ensure-gradle.sh)"; "$GRADLE_BIN" -p bindings/android :sample-app:testDebugUnitTest`;
   for Surface changes, also run the Android Surface smoke above.
 - If you touch `bindings/apple/`, `examples/ios/`, or Swift/FFI integration, run
   `bash bindings/apple/scripts/run-swift-smoke.sh`; for `GsplatKit` or iOS packaging

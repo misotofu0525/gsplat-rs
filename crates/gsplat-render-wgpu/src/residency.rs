@@ -4,6 +4,10 @@
 //! and `slot_generation`. Stale results are rejected before they can mutate
 //! atlas slots or published order.
 
+// Some transitions remain as research/test oracles while this prototype is
+// frozen. They are intentionally internal rather than exported API.
+#![allow(dead_code)]
+
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use crate::spatial_pages::{PageId, SpatialPageSet};

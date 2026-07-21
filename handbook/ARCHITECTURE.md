@@ -14,7 +14,8 @@
 ## Runtime Topology
 
 - Core data types live in `crates/gsplat-core`.
-- Scene import starts in `crates/gsplat-io-ply`.
+- Stable scene import starts in `crates/gsplat-io-ply`; the isolated
+  experimental SPZ v4 loader lives in `crates/gsplat-io-spz`.
 - Sorting lives in `crates/gsplat-sort`.
 - Rendering and GPU-facing orchestration live in `crates/gsplat-render-wgpu`.
   `lib.rs` owns renderer/public entrypoints, `surface_presenter.rs` owns Surface
@@ -37,7 +38,7 @@
 - `bindings/apple/`: local `GsplatKit` Swift package wrapper, Swift smoke source, XCFramework scripts, and iOS simulator/device build/run scripts
 - `packages/web/`: local `@gsplat-rs/web` ESM wrapper over generated wasm-bindgen output
 - `tools/`: CLI tools for performance validation
-- `tests/`: shared dataset plus FFI, perf, release, and dependency-policy scripts
+- `tests/`: dataset identities plus FFI, benchmark/competitive, release, and dependency-policy scripts
 - `handbook/`: current project docs, architecture map, verification guide, roadmap, and project principles
 - `docs/plans/`: active and completed task planning bundles
 - `.github/`: CI workflows and contributor templates
@@ -51,6 +52,13 @@
   continues into `crates/gsplat-render-wgpu/src/lib.rs`
   is exercised by `examples/desktop/src/main.rs`, `tools/bench-runner/src/main.rs`, and `crates/gsplat-ffi-c/src/lib.rs`
 
+- Experimental SPZ import flow:
+  starts from plaintext-header Niantic SPZ v4 bytes
+  passes through bounded/cancellable APIs in `crates/gsplat-io-spz/src/lib.rs`
+  converts RUB positions, rotations, and SH data into runtime RUF
+  produces the same validated `SceneBuffers` shape as PLY, but currently has
+  no C, Web, mobile, or default application consumer
+
 - Renderer construction flow:
   native offscreen `Renderer::new` and `Renderer::with_config` acquire a GPU
   adapter/device and fail when rasterization cannot be created
@@ -59,9 +67,9 @@
   adapter/device compatible with the platform surface
   render dimensions are checked before `wgpu` resource creation, and GPU
   submission/wait failures remain structured errors
-  stable Surface constructors remain Direct; opt-in Rust `*_auto` constructors
-  request a compatible adapter first and choose Paged only when Direct
-  preflight reports `ActiveAtlasRequired`
+  stable Surface constructors and `GeometryPath::default()` remain Direct;
+  Packed/Paged paths require explicit diagnostic selection, while resource
+  preflight reports capacity without silently changing product policy
 
 - Shared Surface frame flow:
   `SurfaceRenderSession` in
@@ -70,8 +78,9 @@
   state, and frame statistics
   changed-camera frames advance the default interval schedule; identical
   redraws do not repeatedly sort
-  PLY-derived positions, covariance terms, opacity, DC color, and SH data stay
-  GPU-resident; sort refreshes upload only sorted `u32` source IDs
+  on Direct, scene-derived positions, covariance terms, opacity, DC color, and
+  SH data stay GPU-resident; sort refreshes upload only sorted `u32` source IDs
+  Packed keeps full SH in `SceneBuffers` and uploads refreshed RGB hot words
   every acquired swapchain image is rendered by the direct vertex/fragment
   pipeline even when the scene and order buffers are already current
   the experimental paged branch instead schedules a fixed four-slot local
@@ -87,7 +96,7 @@
   `LocalScenePageSource` extracts and packs one transient decoded payload at a
   time, while `PagedAtlasGpu` consumes only that payload; the local adapter
   still depends on fully resident `SceneBuffers` for source data, global sort,
-  and view-dependent color refresh
+  and view-dependent color refresh, so this path is not end-to-end streaming
 
 - Native integration flow:
   starts from C, Swift, or Kotlin/JNI host entrypoints
@@ -182,7 +191,10 @@
   desktop, Android, or Apple wrapper-specific state machines.
 - CPU depth sorting is shared by the release-gated direct geometry pipeline
   across Web, desktop, Android, and Apple; the packed/paged selectors remain
-  experimental, and projection plus SH evaluation stay on GPU.
+  experimental. Direct keeps projection and SH evaluation on GPU; Packed/Paged
+  project on GPU but refresh view-dependent hot color from CPU `SceneBuffers`.
+- The SPZ loader is an experimental import component, not part of the v0.1 C,
+  Web, or mobile integration contract.
 - PLY input normalization is not optional: quaternion remapping and `RDF -> RUF` conversion happen at load time.
 - Mobile examples are integration validators. Android and Apple packaging live
   under `bindings/`, but neither path is a published product SDK yet.
@@ -196,6 +208,7 @@
 - `crates/gsplat-render-wgpu/src/lib.rs`: resident direct-scene resources, presenter/offscreen rendering, CPU reference projection, and perf-sensitive GPU logic
 - `crates/gsplat-render-wgpu/src/surface_session.rs`: shared Surface lifecycle, CPU sort policy, order-upload state, native async sorting, and phase timings
 - `crates/gsplat-sort/src/lib.rs`: ordering correctness and performance
+- `crates/gsplat-io-spz/src/lib.rs`: bounded/cancellable SPZ v4 parsing, coordinate conversion, and source caches
 - `crates/gsplat-ffi-c/src/lib.rs` and `crates/gsplat-ffi-c/include/gsplat.h`: integration boundary stability
 - `crates/gsplat-web/src/`: browser `wasm-bindgen` API over the shared Surface renderer
 - `packages/web/src/index.js`: local browser ESM wrapper over the generated wasm-bindgen module
@@ -208,7 +221,8 @@
 ## Useful Entry Points
 
 - Read first for renderer changes: `crates/gsplat-render-wgpu/src/lib.rs`
-- Read first for import changes: `crates/gsplat-io-ply/src/lib.rs`
+- Read first for import changes: `crates/gsplat-io-ply/src/lib.rs` or
+  `crates/gsplat-io-spz/src/lib.rs`, depending on the format
 - Read first for native integration changes: `crates/gsplat-ffi-c/src/lib.rs` and `crates/gsplat-ffi-c/include/gsplat.h`
 - Read first for verification flow: `VERIFICATION.md`
 - Read first for release/tag changes: `../RELEASING.md`

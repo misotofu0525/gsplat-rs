@@ -13,7 +13,6 @@ struct Params {
   view_rot_row2: vec4<f32>,
   bounds_min: vec4<f32>,
   bounds_extent: vec4<f32>,
-  sh_scales: vec4<f32>,
   log_scale_min: f32,
   log_scale_extent: f32,
   vertical_fov_radians: f32,
@@ -24,8 +23,8 @@ struct Params {
   height: u32,
   sh_degree: u32,
   len: u32,
-  atlas_width: u32,
   _pad0: u32,
+  _pad1: u32,
 };
 
 struct CovTerms {

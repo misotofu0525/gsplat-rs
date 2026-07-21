@@ -26,13 +26,15 @@
 - The workspace builds and tests cleanly on the supported CI paths.
 - `SortedAlpha` remains the only quality-guaranteed render mode.
 - FFI smoke paths and mobile smoke integrations stay working.
-- Untrusted PLY input fails with bounded, structured errors before unchecked allocation.
+- Untrusted PLY input and the experimental SPZ loader fail with bounded,
+  structured errors before unchecked allocation.
 - Desktop and mobile examples remain validation surfaces for the shared crates, not separate product lines.
 
 ## Current Repository Shape
 
 - `crates/gsplat-core`: shared public types, config, stats, and error codes
 - `crates/gsplat-io-ply`: PLY parsing and scene buffer construction
+- `crates/gsplat-io-spz`: experimental bounded SPZ v4 parsing and scene buffer construction
 - `crates/gsplat-sort`: GPU and CPU sort backends
 - `crates/gsplat-render-wgpu`: preprocessing, CPU sort scheduling, shared Surface/offscreen rendering, packed atlas, and the experimental fixed-budget local paged runtime
 - `crates/gsplat-ffi-c`: small C ABI surface over the renderer and mobile Surface presenters
@@ -45,7 +47,7 @@
 - `bindings/apple`: local `GsplatKit` Swift package wrapper, Swift smoke path, XCFramework scripts, and iOS simulator/device build/run scripts
 - `packages/web`: local `@gsplat-rs/web` browser ESM wrapper
 - `tools/bench-runner`: perf and stability runner
-- `tests/`: sample dataset plus FFI, perf, release, and dependency-policy scripts
+- `tests/`: dataset manifests plus FFI, benchmark/competitive, release, and dependency-policy scripts
 - `handbook/`: current project docs, architecture map, verification guide, roadmap, and project principles
 - `docs/plans/`: task-scoped active and completed planning bundles
 - `docs/media/`: rendered images referenced by the README
@@ -67,11 +69,15 @@ For the broader command matrix, use `VERIFICATION.md`.
 
 - Keep the day-to-day verification paths passing and the release bar lightweight but real.
 - Expand conformance and perf coverage with real datasets before widening the public API surface.
+- Move Direct toward GPU-visible compaction, portable radix sorting, and
+  indirect drawing before investing further in local paging.
 - Improve mobile integration only while the shared C ABI stays simple and stable.
 - Turn Android integration into a local AAR/module shape before widening it into a published SDK.
 - Harden the local iOS `GsplatKit`/XCFramework slice before treating it as a published SwiftPM binary SDK.
 - Harden the local Web `@gsplat-rs/web` wrapper around the shared Rust `wgpu` Surface renderer before treating it as a published npm SDK.
-- Keep validated in-memory `SceneBuffers` as the stable path while the experimental local paged runtime proves bounded active residency behind the same renderer lifecycle.
+- Keep validated in-memory `SceneBuffers` as the stable path. Retain the
+  fixed-slot local Paged runtime only as an explicit diagnostic until a future
+  metadata-first design proves bounded source, CPU, and GPU residency.
 - Keep release checks reproducible: pinned CI actions, checksum-verified policy tooling, version consistency, and GPU-backed conformance evidence.
 - Update the docs immediately when repository structure or responsibilities change.
 - Keep contributor-facing maintenance files aligned with the actual verification and release boundary.
@@ -100,9 +106,8 @@ For the broader command matrix, use `VERIFICATION.md`.
   qualified only for local-source D0 browser and Android Surface smoke. Mobile
   keeps the default CPU sort interval of 2.
 - Existing Surface constructors and `GeometryPath::default()` stay Direct.
-  Experimental Rust `*_auto` constructors are opt-in and select Paged only
-  when the compatible adapter's Direct preflight reports
-  `ActiveAtlasRequired`; explicit Packed/Paged selection remains an A/B tool.
+  Packed/Paged selection is explicit and remains an A/B diagnostic; the repo
+  does not automatically promote an oversized Direct scene into Paged.
 - Local paging now decodes page payloads behind `LocalScenePageSource` before
   fixed-slot GPU upload. The adapter still borrows the complete `SceneBuffers`,
   page metadata still stores source indices, and scheduling is synchronous, so
@@ -111,6 +116,8 @@ For the broader command matrix, use `VERIFICATION.md`.
   is active in `crates/gsplat-web`, and `packages/web` provides
   a local ESM wrapper, but the Web SDK is not published to npm or stable in the
   v0.1 contract yet.
+- The bounded SPZ v4 loader is isolated in `crates/gsplat-io-spz`; no C, Web,
+  mobile, or default application entrypoint consumes it yet.
 - Input PLY quaternion fields `rot_0..3` are interpreted as `w,x,y,z` and remapped internally to `x,y,z,w`.
 - Input 3DGS coordinates are treated as `RDF` and converted at load time to runtime `RUF`, including quaternion and SH sign transforms.
 
@@ -123,6 +130,8 @@ For the broader command matrix, use `VERIFICATION.md`.
 - Web external distribution: the GitHub prerelease attaches an npm-compatible
   tarball, but `@gsplat-rs/web` is not published to npm or treated as a stable
   v0.1 public API.
+- SPZ product integration: the loader is tested, but choosing where it enters
+  desktop, C, mobile, or Web APIs remains a separate product decision.
 - Device runtime evidence: the latest validation covered Android APK/AAR build,
   Android true-device launch and benchmark (an Android test device, flowers
   dataset), iOS simulator app launch, iOS simulator smoke, iOS device app

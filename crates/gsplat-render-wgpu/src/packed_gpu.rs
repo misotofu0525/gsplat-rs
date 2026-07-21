@@ -6,8 +6,7 @@ use wgpu::util::DeviceExt;
 
 use crate::draw_pass::{SplatPipeline, create_splat_bind_group_layout, create_splat_pipeline};
 use crate::packed_atlas::{
-    HOT_RECORD_U32_WORDS, PackedAtlasCpuBuffers, PackedSceneCpu, atlas_dimensions, pack_scene,
-    sh_sidecar_atlas_dimensions,
+    HOT_RECORD_U32_WORDS, PackedAtlasCpuBuffers, PackedSceneCpu, pack_scene_hot_records,
 };
 use crate::{
     DirectSceneError, PackedScenePath, make_surface_render_params, packed_scene_preflight,
@@ -25,7 +24,6 @@ pub struct GpuPackedRenderParams {
     view_rot_row2: [f32; 4],
     bounds_min: [f32; 4],
     bounds_extent: [f32; 4],
-    sh_scales: [f32; 4],
     log_scale_min: f32,
     log_scale_extent: f32,
     vertical_fov_radians: f32,
@@ -36,8 +34,8 @@ pub struct GpuPackedRenderParams {
     height: u32,
     sh_degree: u32,
     len: u32,
-    atlas_width: u32,
     _pad0: u32,
+    _pad1: u32,
 }
 
 pub struct PackedAtlasResources {
@@ -45,81 +43,19 @@ pub struct PackedAtlasResources {
     pub params_buffer: wgpu::Buffer,
     pub bind_group: wgpu::BindGroup,
     pub capacity: usize,
-    pub atlas_width: u32,
     pub sh_degree: u32,
     pub bounds_min: [f32; 3],
     pub bounds_extent: [f32; 3],
     pub log_scale_min: f32,
     pub log_scale_extent: f32,
-    pub sh_scales: [f32; 3],
     hot_buffer: wgpu::Buffer,
     /// CPU mirror of tightly packed hot words; color refresh mutates word 4.
     hot_words: Vec<u32>,
-    /// Retained for degree-3 byte accounting / future streaming residency.
-    _sh_coeffs: wgpu::Texture,
-}
-
-fn create_uint_texture(
-    device: &wgpu::Device,
-    label: &'static str,
-    width: u32,
-    height: u32,
-    format: wgpu::TextureFormat,
-) -> wgpu::Texture {
-    device.create_texture(&wgpu::TextureDescriptor {
-        label: wgpu_label(label),
-        size: wgpu::Extent3d {
-            width,
-            height,
-            depth_or_array_layers: 1,
-        },
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format,
-        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-        view_formats: &[],
-    })
-}
-
-fn write_texture_u8_rgba(
-    queue: &wgpu::Queue,
-    texture: &wgpu::Texture,
-    width: u32,
-    height: u32,
-    data: &[u8],
-) {
-    queue.write_texture(
-        wgpu::TexelCopyTextureInfo {
-            texture,
-            mip_level: 0,
-            origin: wgpu::Origin3d::ZERO,
-            aspect: wgpu::TextureAspect::All,
-        },
-        data,
-        wgpu::TexelCopyBufferLayout {
-            offset: 0,
-            bytes_per_row: Some(width * 4),
-            rows_per_image: Some(height),
-        },
-        wgpu::Extent3d {
-            width,
-            height,
-            depth_or_array_layers: 1,
-        },
-    );
-}
-
-/// SH sidecar stored as tightly packed RGBA8Uint texels (12 texels = 48 bytes
-/// per splat) in row-major order across a 2048-wide atlas.
-fn sh_sidecar_atlas_size(splat_count: usize) -> (u32, u32) {
-    sh_sidecar_atlas_dimensions(splat_count)
 }
 
 impl PackedAtlasResources {
     pub fn new(
         device: &wgpu::Device,
-        queue: &wgpu::Queue,
         bind_group_layout: &wgpu::BindGroupLayout,
         packed: &PackedSceneCpu,
     ) -> Result<Self, DirectSceneError> {
@@ -127,7 +63,6 @@ impl PackedAtlasResources {
         let preflight = packed_scene_preflight(
             packed.splat_count,
             packed.sh_degree,
-            limits.max_texture_dimension_2d,
             u64::from(limits.max_storage_buffer_binding_size).min(limits.max_buffer_size),
         )?;
         if preflight.path != PackedScenePath::PackedAtlas
@@ -138,7 +73,6 @@ impl PackedAtlasResources {
                 preflight,
             )));
         }
-        let width = atlas_dimensions(packed.splat_count).0;
         let capacity = packed.splat_count.max(1);
         let mut hot_words = PackedAtlasCpuBuffers::hot_storage_words(packed);
         if hot_words.is_empty() {
@@ -162,36 +96,14 @@ impl PackedAtlasResources {
         // stays under the common 128 MiB storage-binding limit through
         // Nandi-scale hot records while avoiding multi-texture decode on
         // mobile TBDR GPUs.
-        // Degree-3 SH remains out of storage bindings (CPU refresh / texture sidecar).
+        // Degree-3 SH stays in the validated CPU scene and is evaluated into
+        // the hot color word. Do not allocate a second GPU copy that the
+        // packed shader cannot bind or read.
         let hot_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: wgpu_label("gsplat-packed-hot-records"),
             contents: bytemuck::cast_slice(&hot_words),
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         });
-
-        let (sh_width, sh_height) = sh_sidecar_atlas_size(packed.splat_count);
-        let sh_coeffs = create_uint_texture(
-            device,
-            "gsplat-packed-sh-coeffs",
-            sh_width,
-            sh_height,
-            wgpu::TextureFormat::Rgba8Uint,
-        );
-
-        // Expand 48-byte sidecars into 12 consecutive RGBA8Uint texels per slot.
-        let mut sh_texels = vec![0_u8; (sh_width as usize) * (sh_height as usize) * 4];
-        for slot in 0..packed.splat_count {
-            for texel in 0..12_usize {
-                let linear = slot * 12 + texel;
-                let x = linear as u32 % sh_width;
-                let y = linear as u32 / sh_width;
-                let dst_index = (y * sh_width + x) as usize * 4;
-                let sidecar = packed.sh_sidecars[slot].as_texel_bytes();
-                sh_texels[dst_index..dst_index + 4]
-                    .copy_from_slice(&sidecar[texel * 4..texel * 4 + 4]);
-            }
-        }
-        write_texture_u8_rgba(queue, &sh_coeffs, sh_width, sh_height, &sh_texels);
 
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: wgpu_label("gsplat-packed-bind-group"),
@@ -212,7 +124,6 @@ impl PackedAtlasResources {
             ],
         });
 
-        let sh_scales = packed.sh_scales;
         let bounds_extent = [
             packed.bounds.max[0] - packed.bounds.min[0],
             packed.bounds.max[1] - packed.bounds.min[1],
@@ -224,27 +135,23 @@ impl PackedAtlasResources {
             params_buffer,
             bind_group,
             capacity,
-            atlas_width: width,
             sh_degree: u32::from(packed.sh_degree),
             bounds_min: packed.bounds.min,
             bounds_extent,
             log_scale_min: packed.log_scale_range.min,
             log_scale_extent: (packed.log_scale_range.max - packed.log_scale_range.min).max(1e-6),
-            sh_scales,
             hot_buffer,
             hot_words,
-            _sh_coeffs: sh_coeffs,
         })
     }
 
     pub fn from_scene(
         device: &wgpu::Device,
-        queue: &wgpu::Queue,
         bind_group_layout: &wgpu::BindGroupLayout,
         scene: &gsplat_core::SceneBuffers,
     ) -> Result<Self, DirectSceneError> {
-        let packed = pack_scene(scene);
-        Self::new(device, queue, bind_group_layout, &packed)
+        let packed = pack_scene_hot_records(scene);
+        Self::new(device, bind_group_layout, &packed)
     }
 
     /// Upload view-evaluated RGB10 colors at a global atlas-slot offset.
@@ -361,7 +268,6 @@ impl PackedAtlasResources {
                 self.bounds_extent[2],
                 0.0,
             ],
-            sh_scales: [self.sh_scales[0], self.sh_scales[1], self.sh_scales[2], 0.0],
             log_scale_min: self.log_scale_min,
             log_scale_extent: self.log_scale_extent,
             vertical_fov_radians: base.vertical_fov_radians,
@@ -372,8 +278,8 @@ impl PackedAtlasResources {
             height: base.height,
             sh_degree: base.sh_degree,
             len: base.len,
-            atlas_width: self.atlas_width,
             _pad0: 0,
+            _pad1: 0,
         };
         queue.write_buffer(&self.params_buffer, 0, bytemuck::bytes_of(&params));
         Ok(instance_count)
