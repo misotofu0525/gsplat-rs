@@ -1,0 +1,234 @@
+{
+  "schema": "gsplat-adaptive-order-experiment/v1",
+  "measurement": {
+    "device": "Nothing A065 (Pong)",
+    "os": "Android 15 (API 35)",
+    "soc": "QTI SM8475",
+    "gpu": "Adreno 730",
+    "surface": "716x1600",
+    "refresh_hz": 60.000004,
+    "frame_budget_ms": 16.666666,
+    "trace": "orbit-yaw-0.001",
+    "frame_latency": 2,
+    "async_sort": false,
+    "thermal_status": 0,
+    "apk_sha256": "d3ad6c250ecb50b56160f6dd6e09a67f418169b51fea09bd345a7be1d92948b1",
+    "native_library_sha256": "9cf918d972f99dbdb3ee9d2b7f07bebd9d9ee00b668e84c2c2c3f4ed55d6a148",
+    "artifact_commit": "68af377b3c47bc578d81efff4a117dc893d845e1",
+    "artifact_worktree_dirty": true,
+    "retained_runs": 78,
+    "measured_frames": 5040,
+    "warmup_frames": 1560
+  },
+  "primary_interval_1": [
+    {
+      "splats": 50000,
+      "dataset_sha256": "13d269d0bdfb062356cf3479ffef894f27818e6b4730c40d5a78b85177a4c2e2",
+      "cpu_mean_ms": [1.594, 1.614, 1.566],
+      "gpu_mean_ms": [4.069, 3.929, 3.876],
+      "cpu_p95_ms": [1.776, 1.931, 1.817],
+      "gpu_p95_ms": [4.440, 4.364, 4.371],
+      "cpu_missed": [0, 0, 0],
+      "gpu_missed": [0, 0, 0],
+      "paired_gpu_minus_cpu_median_ms": 2.315,
+      "paired_gpu_slower_median_percent": 147.4
+    },
+    {
+      "splats": 100000,
+      "dataset_sha256": "a43504db2fa95ed84e410b84f1fa95c6a8eb89b3236772d54a1bf4896dbe813b",
+      "cpu_mean_ms": [3.118, 3.061, 3.055],
+      "gpu_mean_ms": [7.826, 7.836, 7.767],
+      "cpu_p95_ms": [3.262, 3.214, 3.303],
+      "gpu_p95_ms": [8.844, 8.850, 8.364],
+      "cpu_missed": [0, 0, 0],
+      "gpu_missed": [0, 0, 0],
+      "paired_gpu_minus_cpu_median_ms": 4.712,
+      "paired_gpu_slower_median_percent": 154.3
+    },
+    {
+      "splats": 200000,
+      "dataset_sha256": "d1285c6f4e404eedc11898786c2da7344c6ebb467e982d8d71c0b55df61ecb9f",
+      "cpu_mean_ms": [6.668, 6.775, 6.601],
+      "gpu_mean_ms": [15.231, 15.456, 15.365],
+      "cpu_p95_ms": [7.090, 7.369, 6.963],
+      "gpu_p95_ms": [16.523, 16.746, 16.703],
+      "cpu_missed": [0, 0, 0],
+      "gpu_missed": [2, 4, 4],
+      "paired_gpu_minus_cpu_median_ms": 8.681,
+      "paired_gpu_slower_median_percent": 128.4
+    },
+    {
+      "splats": 300000,
+      "dataset_sha256": "48addd1364bec7ad3d1537f8d24449c7f98ce7ba4e9de40bc0280b96cb210f71",
+      "cpu_mean_ms": [15.279, 15.108, 15.453],
+      "gpu_mean_ms": [29.270, 29.704, 27.146],
+      "cpu_p95_ms": [18.040, 15.782, 17.567],
+      "gpu_p95_ms": [30.836, 32.406, 28.326],
+      "cpu_missed": [4, 0, 5],
+      "gpu_missed": [60, 60, 60],
+      "paired_gpu_minus_cpu_median_ms": 13.991,
+      "paired_gpu_slower_median_percent": 91.6
+    },
+    {
+      "splats": 500000,
+      "dataset_sha256": "c746faee344589a6c6da11d99b8bfb84c225009d3d0e50c451b9da2456dd10dc",
+      "cpu_mean_ms": [37.703, 38.068, 38.396],
+      "gpu_mean_ms": [59.187, 59.124, 59.510],
+      "cpu_p95_ms": [38.854, 39.131, 39.567],
+      "gpu_p95_ms": [60.433, 60.284, 61.229],
+      "cpu_missed": [60, 60, 60],
+      "gpu_missed": [60, 60, 60],
+      "paired_gpu_minus_cpu_median_ms": 21.114,
+      "paired_gpu_slower_median_percent": 55.3
+    },
+    {
+      "splats": 700000,
+      "dataset_sha256": "4cb9568310f872073fe8e992fbf6d944ac4bfd54a62bdaf436289d3f2a693d2c",
+      "cpu_mean_ms": [63.738, 63.713, 63.837],
+      "gpu_mean_ms": [94.098, 94.258, 94.699],
+      "cpu_p95_ms": [64.849, 64.908, 65.058],
+      "gpu_p95_ms": [95.392, 96.041, 96.182],
+      "cpu_missed": [60, 60, 60],
+      "gpu_missed": [60, 60, 60],
+      "paired_gpu_minus_cpu_median_ms": 30.545,
+      "paired_gpu_slower_median_percent": 47.9
+    }
+  ],
+  "forced_interval_2": [
+    {
+      "splats": 200000,
+      "cpu_mean_ms": [6.851, 6.733, 7.056],
+      "gpu_mean_ms": [10.337, 10.425, 10.465],
+      "cpu_p95_ms": [10.024, 7.942, 9.563],
+      "gpu_p95_ms": [16.214, 16.398, 16.286],
+      "cpu_missed": [0, 0, 0],
+      "gpu_missed": [0, 0, 0],
+      "paired_gpu_minus_cpu_median_ms": 3.486,
+      "paired_gpu_slower_median_percent": 50.9
+    },
+    {
+      "splats": 500000,
+      "cpu_mean_ms": [36.141, 35.278, 36.438],
+      "gpu_mean_ms": [45.749, 46.954, 47.069],
+      "cpu_p95_ms": [39.303, 39.285, 40.286],
+      "gpu_p95_ms": [59.339, 60.582, 60.950],
+      "cpu_missed": [60, 60, 60],
+      "gpu_missed": [60, 60, 60],
+      "paired_gpu_minus_cpu_median_ms": 10.630,
+      "paired_gpu_slower_median_percent": 29.2
+    },
+    {
+      "splats": 700000,
+      "cpu_mean_ms": [60.281, 60.280, 59.701],
+      "gpu_mean_ms": [75.479, 75.403, 75.231],
+      "cpu_p95_ms": [64.726, 64.787, 64.442],
+      "gpu_p95_ms": [95.579, 95.573, 95.110],
+      "cpu_missed": [60, 60, 60],
+      "gpu_missed": [60, 60, 60],
+      "paired_gpu_minus_cpu_median_ms": 15.198,
+      "paired_gpu_slower_median_percent": 25.2
+    }
+  ],
+  "adaptive_interval_2_80_frames": [
+    {
+      "splats": 200000,
+      "mean_ms": [7.291, 7.228, 7.360],
+      "p95_ms": [10.488, 13.397, 13.385],
+      "p99_ms": [15.195, 17.123, 15.430],
+      "missed": [0, 1, 0],
+      "cpu_frames_per_run": 72,
+      "gpu_frames_per_run": 8,
+      "switches_per_run": 1,
+      "fallbacks_per_run": 0,
+      "final_state": "cpu_stable"
+    },
+    {
+      "splats": 500000,
+      "mean_ms": [37.943, 38.143, 37.108],
+      "p95_ms": [41.557, 42.594, 40.200],
+      "p99_ms": [61.237, 60.659, 61.173],
+      "missed": [80, 80, 80],
+      "cpu_frames_per_run": 72,
+      "gpu_frames_per_run": 8,
+      "switches_per_run": 1,
+      "fallbacks_per_run": 0,
+      "final_state": "cpu_stable"
+    },
+    {
+      "splats": 700000,
+      "mean_ms": [61.255, 61.357, 61.777],
+      "p95_ms": [65.346, 65.695, 65.050],
+      "p99_ms": [94.632, 94.905, 94.582],
+      "missed": [80, 80, 80],
+      "cpu_frames_per_run": 72,
+      "gpu_frames_per_run": 8,
+      "switches_per_run": 1,
+      "fallbacks_per_run": 0,
+      "final_state": "cpu_stable"
+    }
+  ],
+  "adaptive_interval_2_200k_120_frame_reprobe": {
+    "mean_ms": [7.544, 7.470, 7.504],
+    "missed": [0, 0, 0],
+    "cpu_frames_per_run": 104,
+    "gpu_frames_per_run": 16,
+    "switches_per_run": 3,
+    "fallbacks_per_run": 0,
+    "final_state": "cpu_stable"
+  },
+  "full_model_anchors_interval_1": [
+    {
+      "scene": "Kitsune",
+      "splats": 279199,
+      "dataset_sha256": "3bea1ec48ea91861fc8fad1df688a2cdb1db9b103735498b35d16d146f2551a2",
+      "cpu_mean_ms": [11.493, 11.547, 11.500],
+      "cpu_p95_ms": [12.125, 12.036, 12.018],
+      "gpu_mean_ms": [24.250, 24.063, 24.166],
+      "gpu_p95_ms": [25.526, 25.265, 25.648],
+      "cpu_missed": [0, 0, 0],
+      "gpu_missed": [60, 60, 60],
+      "paired_gpu_minus_cpu_median_ms": 12.666,
+      "paired_gpu_slower_median_percent": 110.1
+    },
+    {
+      "scene": "Flowers",
+      "splats": 562974,
+      "dataset_sha256": "3641192d70d598894f4d6ad92e0890b4a7336b43aa6af47bd35842c3e2ee8765",
+      "cpu_mean_ms": [53.500, 53.544, 53.470],
+      "cpu_p95_ms": [54.875, 55.057, 54.649],
+      "gpu_mean_ms": [75.700, 75.720, 75.707],
+      "gpu_p95_ms": [76.996, 77.550, 77.086],
+      "cpu_missed": [60, 60, 60],
+      "gpu_missed": [60, 60, 60],
+      "paired_gpu_minus_cpu_median_ms": 22.200,
+      "paired_gpu_slower_median_percent": 41.5
+    }
+  ],
+  "direct_capacity": {
+    "effective_storage_binding_limit_bytes": 134217728,
+    "degree_3_sh_rest_bytes_per_splat": 180,
+    "calculated_max_direct_splats": 745654,
+    "probes": [
+      {"splats": 700000, "result": "complete"},
+      {"splats": 750000, "result": "unsupported"},
+      {"splats": 1000000, "result": "unsupported"},
+      {"splats": 1500000, "result": "unsupported"},
+      {"splats": 2000000, "result": "unsupported"}
+    ]
+  },
+  "correctness": {
+    "android_crop_tier_splats": 50000,
+    "cpu_crop_sha256": "91dec5b0cf4a5adc6070f448fbc0c95f39be2177db51f22e512c1d0e3126b9ee",
+    "gpu_crop_sha256": "91dec5b0cf4a5adc6070f448fbc0c95f39be2177db51f22e512c1d0e3126b9ee",
+    "psnr": "infinity",
+    "ssim": 1.0,
+    "scope": "single Android device, one 50k tier, one stationary camera, rendered crop"
+  },
+  "source_artifact_globs": [
+    "target/android-sort-benchmarks/retained-v2-i1-*",
+    "target/android-sort-benchmarks/retained-v2-i2-*",
+    "target/android-sort-benchmarks/retained-v2-adaptive80-i2-*",
+    "target/android-sort-benchmarks/retained-v2-adaptive-i2-200k",
+    "target/android-sort-benchmarks/retained-v2-anchor-i1-*"
+  ]
+}

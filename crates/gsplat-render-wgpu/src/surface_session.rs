@@ -22,11 +22,360 @@ const DEFAULT_SURFACE_SORT_INTERVAL: u32 = 2;
 const MAX_ASYNC_SORT_REVISION_LAG: u64 = 2;
 const MAX_ASYNC_SORT_ROTATION_DELTA_RADIANS: f32 = 0.01;
 const MAX_ASYNC_SORT_TRANSLATION_DIAGONAL_FRACTION: f32 = 0.02;
+const ADAPTIVE_CPU_BOOTSTRAP_SAMPLES: u32 = 6;
+const ADAPTIVE_INITIAL_PROBE_DELAY: u32 = 4;
+const ADAPTIVE_PROBE_SAMPLES: u32 = 4;
+const ADAPTIVE_REPROBE_INTERVAL: u32 = 48;
+const ADAPTIVE_GPU_PROMOTION_RATIO: f32 = 0.88;
+const ADAPTIVE_CPU_PROMOTION_RATIO: f32 = 0.92;
+const ADAPTIVE_EMERGENCY_DEMOTION_RATIO: f32 = 1.25;
+const ADAPTIVE_GPU_FAILURE_COOLDOWN: u32 = 96;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SurfaceSortSchedule {
     Interval(u32),
     AsyncLatest { interval: u32 },
+}
+
+/// Selects where a required Direct order refresh is computed. This is
+/// independent from [`SurfaceSortSchedule`], which decides *when* to refresh.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SurfaceOrderBackend {
+    #[default]
+    Cpu,
+    Gpu,
+    Adaptive,
+}
+
+/// Backend that actually supplied the order presented by one frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SurfaceOrderBackendUsed {
+    Cpu,
+    Gpu,
+}
+
+/// Coarse policy state retained in benchmark telemetry. Thresholds are
+/// exploration controls rather than fixed CPU/GPU crossover decisions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SurfaceAdaptiveState {
+    #[default]
+    Disabled,
+    CpuLearning,
+    CpuStable,
+    GpuProbe,
+    GpuStable,
+    CpuProbe,
+    Cooldown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AdaptivePhase {
+    CpuLearning,
+    CpuStable,
+    GpuProbe { remaining: u32, skip_warmup: bool },
+    GpuStable,
+    CpuProbe { remaining: u32 },
+    Cooldown { remaining: u32 },
+}
+
+#[derive(Debug, Clone, Copy)]
+struct RollingEstimate {
+    samples: [f32; 16],
+    len: usize,
+    cursor: usize,
+}
+
+impl Default for RollingEstimate {
+    fn default() -> Self {
+        Self {
+            samples: [0.0; 16],
+            len: 0,
+            cursor: 0,
+        }
+    }
+}
+
+impl RollingEstimate {
+    fn clear(&mut self) {
+        self.len = 0;
+        self.cursor = 0;
+    }
+
+    fn push(&mut self, sample_ms: f32) {
+        if !sample_ms.is_finite() || sample_ms < 0.0 {
+            return;
+        }
+        self.samples[self.cursor] = sample_ms;
+        self.cursor = (self.cursor + 1) % self.samples.len();
+        self.len = self.len.saturating_add(1).min(self.samples.len());
+    }
+
+    fn p75(&self) -> Option<f32> {
+        if self.len == 0 {
+            return None;
+        }
+        let mut sorted = self.samples;
+        sorted[..self.len].sort_by(f32::total_cmp);
+        let index = (self.len - 1) * 3 / 4;
+        Some(sorted[index])
+    }
+}
+
+#[derive(Debug, Default)]
+struct AdaptiveTimingEstimate {
+    refresh: RollingEstimate,
+    reuse: RollingEstimate,
+}
+
+impl AdaptiveTimingEstimate {
+    fn clear(&mut self) {
+        self.refresh.clear();
+        self.reuse.clear();
+    }
+
+    fn push(&mut self, sample_ms: f32, refresh: bool) {
+        if refresh {
+            self.refresh.push(sample_ms);
+        } else {
+            self.reuse.push(sample_ms);
+        }
+    }
+
+    /// Estimates the end-to-end cost at the configured cadence. Keeping the
+    /// refresh and reuse tails separate prevents a costly refresh from falling
+    /// below p75 merely because the sort interval is four or greater.
+    fn cadence_score(&self, sort_interval: u32) -> Option<f32> {
+        match (self.refresh.p75(), self.reuse.p75()) {
+            (Some(refresh), Some(reuse)) if sort_interval > 1 => {
+                let reuse_weight = sort_interval.saturating_sub(1) as f32;
+                Some((refresh + reuse * reuse_weight) / sort_interval as f32)
+            }
+            (Some(refresh), _) => Some(refresh),
+            (None, Some(reuse)) => Some(reuse),
+            (None, None) => None,
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+struct AdaptiveOrderPolicy {
+    phase: Option<AdaptivePhase>,
+    cpu: AdaptiveTimingEstimate,
+    gpu: AdaptiveTimingEstimate,
+    refreshes_since_probe: u32,
+    cpu_bootstrap_refreshes: u32,
+    next_gpu_probe_after: u32,
+    gpu_initialized: bool,
+}
+
+impl AdaptiveOrderPolicy {
+    fn reset(&mut self) {
+        *self = Self {
+            phase: Some(AdaptivePhase::CpuLearning),
+            next_gpu_probe_after: ADAPTIVE_INITIAL_PROBE_DELAY,
+            ..Self::default()
+        };
+    }
+
+    fn state(&self) -> SurfaceAdaptiveState {
+        match self.phase {
+            None => SurfaceAdaptiveState::Disabled,
+            Some(AdaptivePhase::CpuLearning) => SurfaceAdaptiveState::CpuLearning,
+            Some(AdaptivePhase::CpuStable) => SurfaceAdaptiveState::CpuStable,
+            Some(AdaptivePhase::GpuProbe { .. }) => SurfaceAdaptiveState::GpuProbe,
+            Some(AdaptivePhase::GpuStable) => SurfaceAdaptiveState::GpuStable,
+            Some(AdaptivePhase::CpuProbe { .. }) => SurfaceAdaptiveState::CpuProbe,
+            Some(AdaptivePhase::Cooldown { .. }) => SurfaceAdaptiveState::Cooldown,
+        }
+    }
+
+    fn choose_refresh_backend(&mut self) -> SurfaceOrderBackendUsed {
+        let phase = self.phase.get_or_insert(AdaptivePhase::CpuLearning);
+        match *phase {
+            AdaptivePhase::CpuLearning | AdaptivePhase::Cooldown { .. } => {
+                SurfaceOrderBackendUsed::Cpu
+            }
+            AdaptivePhase::CpuStable => {
+                if self.cpu.refresh.len >= ADAPTIVE_CPU_BOOTSTRAP_SAMPLES as usize
+                    && self.refreshes_since_probe >= self.next_gpu_probe_after
+                {
+                    self.gpu.clear();
+                    *phase = AdaptivePhase::GpuProbe {
+                        remaining: ADAPTIVE_PROBE_SAMPLES,
+                        skip_warmup: !self.gpu_initialized,
+                    };
+                    SurfaceOrderBackendUsed::Gpu
+                } else {
+                    SurfaceOrderBackendUsed::Cpu
+                }
+            }
+            AdaptivePhase::GpuProbe { .. } | AdaptivePhase::GpuStable => {
+                if matches!(*phase, AdaptivePhase::GpuStable)
+                    && self.refreshes_since_probe >= ADAPTIVE_REPROBE_INTERVAL
+                {
+                    self.cpu.clear();
+                    *phase = AdaptivePhase::CpuProbe {
+                        remaining: ADAPTIVE_PROBE_SAMPLES,
+                    };
+                    SurfaceOrderBackendUsed::Cpu
+                } else {
+                    SurfaceOrderBackendUsed::Gpu
+                }
+            }
+            AdaptivePhase::CpuProbe { .. } => SurfaceOrderBackendUsed::Cpu,
+        }
+    }
+
+    fn observe_frame(
+        &mut self,
+        backend: SurfaceOrderBackendUsed,
+        frame_ms: f32,
+        refresh: bool,
+        sort_interval: u32,
+    ) {
+        let Some(phase) = self.phase else {
+            return;
+        };
+        let skip_sample = matches!(
+            phase,
+            AdaptivePhase::GpuProbe {
+                skip_warmup: true,
+                ..
+            }
+        );
+        if !skip_sample {
+            match backend {
+                SurfaceOrderBackendUsed::Cpu => self.cpu.push(frame_ms, refresh),
+                SurfaceOrderBackendUsed::Gpu => self.gpu.push(frame_ms, refresh),
+            }
+        }
+        match phase {
+            AdaptivePhase::CpuLearning => {
+                if refresh {
+                    self.cpu_bootstrap_refreshes = self.cpu_bootstrap_refreshes.saturating_add(1);
+                }
+                if self.cpu_bootstrap_refreshes >= ADAPTIVE_CPU_BOOTSTRAP_SAMPLES {
+                    self.phase = Some(AdaptivePhase::CpuStable);
+                    self.refreshes_since_probe = 0;
+                }
+            }
+            AdaptivePhase::CpuStable => {
+                if refresh {
+                    self.refreshes_since_probe = self.refreshes_since_probe.saturating_add(1);
+                }
+            }
+            AdaptivePhase::GpuProbe {
+                mut remaining,
+                skip_warmup,
+            } => {
+                self.gpu_initialized = true;
+                if skip_warmup && refresh {
+                    self.phase = Some(AdaptivePhase::GpuProbe {
+                        remaining,
+                        skip_warmup: false,
+                    });
+                    return;
+                }
+                if skip_warmup {
+                    return;
+                }
+                if !refresh {
+                    return;
+                }
+                remaining = remaining.saturating_sub(1);
+                if remaining == 0 {
+                    let gpu_wins = match (
+                        self.cpu.cadence_score(sort_interval),
+                        self.gpu.cadence_score(sort_interval),
+                    ) {
+                        (Some(cpu), Some(gpu)) => gpu < cpu * ADAPTIVE_GPU_PROMOTION_RATIO,
+                        _ => false,
+                    };
+                    self.phase = Some(if gpu_wins {
+                        self.next_gpu_probe_after = ADAPTIVE_REPROBE_INTERVAL;
+                        AdaptivePhase::GpuStable
+                    } else {
+                        self.next_gpu_probe_after =
+                            if self.next_gpu_probe_after < ADAPTIVE_REPROBE_INTERVAL {
+                                ADAPTIVE_REPROBE_INTERVAL
+                            } else {
+                                self.next_gpu_probe_after.saturating_mul(2).min(384)
+                            };
+                        AdaptivePhase::CpuStable
+                    });
+                    self.refreshes_since_probe = 0;
+                } else {
+                    self.phase = Some(AdaptivePhase::GpuProbe {
+                        remaining,
+                        skip_warmup: false,
+                    });
+                }
+            }
+            AdaptivePhase::GpuStable => {
+                if refresh {
+                    self.refreshes_since_probe = self.refreshes_since_probe.saturating_add(1);
+                }
+                if backend == SurfaceOrderBackendUsed::Gpu
+                    && matches!(
+                        (
+                            self.cpu.cadence_score(sort_interval),
+                            self.gpu.cadence_score(sort_interval),
+                        ),
+                        (Some(cpu), Some(gpu))
+                            if gpu > cpu * ADAPTIVE_EMERGENCY_DEMOTION_RATIO
+                    )
+                {
+                    self.phase = Some(AdaptivePhase::CpuStable);
+                    self.refreshes_since_probe = 0;
+                }
+            }
+            AdaptivePhase::CpuProbe { mut remaining } => {
+                if !refresh {
+                    return;
+                }
+                remaining = remaining.saturating_sub(1);
+                if remaining == 0 {
+                    let cpu_wins = match (
+                        self.cpu.cadence_score(sort_interval),
+                        self.gpu.cadence_score(sort_interval),
+                    ) {
+                        (Some(cpu), Some(gpu)) => cpu < gpu * ADAPTIVE_CPU_PROMOTION_RATIO,
+                        _ => true,
+                    };
+                    self.phase = Some(if cpu_wins {
+                        AdaptivePhase::CpuStable
+                    } else {
+                        AdaptivePhase::GpuStable
+                    });
+                    self.refreshes_since_probe = 0;
+                } else {
+                    self.phase = Some(AdaptivePhase::CpuProbe { remaining });
+                }
+            }
+            AdaptivePhase::Cooldown { mut remaining } => {
+                if !refresh {
+                    return;
+                }
+                remaining = remaining.saturating_sub(1);
+                self.phase = Some(if remaining == 0 {
+                    self.refreshes_since_probe = 0;
+                    self.next_gpu_probe_after = 0;
+                    AdaptivePhase::CpuStable
+                } else {
+                    AdaptivePhase::Cooldown { remaining }
+                });
+            }
+        }
+    }
+
+    fn gpu_failed(&mut self) {
+        self.phase = Some(AdaptivePhase::Cooldown {
+            remaining: ADAPTIVE_GPU_FAILURE_COOLDOWN,
+        });
+        self.refreshes_since_probe = 0;
+        self.next_gpu_probe_after = ADAPTIVE_GPU_FAILURE_COOLDOWN;
+        self.gpu.clear();
+    }
 }
 
 impl SurfaceSortSchedule {
@@ -152,6 +501,9 @@ pub struct SurfaceFrameTimings {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SurfaceFrameOutput {
+    /// CPU ordering phases are populated for CPU frames. The GPU-order path
+    /// currently reports those unavailable phase fields as zero; use
+    /// `timings.frame_wall_ms` plus `order_backend` for backend comparisons.
     pub stats: FrameStats,
     pub timings: SurfaceFrameTimings,
     pub sort_refreshed: bool,
@@ -169,6 +521,11 @@ pub struct SurfaceFrameOutput {
     pub async_sort_completed_revision: Option<u64>,
     pub async_sort_result_applied: bool,
     pub sync_sort_fallback: bool,
+    pub order_backend: SurfaceOrderBackendUsed,
+    /// True when a requested GPU refresh failed and the same frame recovered
+    /// through the deterministic CPU path.
+    pub gpu_sort_fallback: bool,
+    pub adaptive_state: SurfaceAdaptiveState,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -238,16 +595,22 @@ impl SurfaceFrameState {
     }
 }
 
-/// Owns the CPU-sort + direct GPU draw lifecycle shared by every Surface client.
+/// Owns the ordering + direct GPU draw lifecycle shared by every Surface client.
 ///
-/// PLY-derived scene attributes stay GPU-resident. Each sort refresh uploads only
-/// compact source IDs; the vertex shader fetches and projects the corresponding
-/// Gaussian directly for Web, desktop, Android, and iOS.
+/// PLY-derived scene attributes stay GPU-resident. CPU refreshes upload compact
+/// source IDs, while GPU refreshes keep stable `(depth_key, source_id)` pairs on
+/// the renderer device and draw their source IDs directly. The vertex shader
+/// fetches and projects the corresponding Gaussian for Web, desktop, Android,
+/// and iOS.
 pub struct SurfaceRenderSession {
     renderer: Renderer,
     presenter: SurfacePresenter,
     camera: Camera,
     sort_interval: u32,
+    order_backend: SurfaceOrderBackend,
+    presented_order_backend: SurfaceOrderBackendUsed,
+    gpu_order_initialized: bool,
+    adaptive_policy: AdaptiveOrderPolicy,
     camera_revision: u64,
     applied_order_revision: u64,
     applied_order_camera: Camera,
@@ -314,6 +677,10 @@ impl SurfaceRenderSession {
             presenter,
             camera,
             sort_interval: DEFAULT_SURFACE_SORT_INTERVAL,
+            order_backend: SurfaceOrderBackend::Cpu,
+            presented_order_backend: SurfaceOrderBackendUsed::Cpu,
+            gpu_order_initialized: false,
+            adaptive_policy: AdaptiveOrderPolicy::default(),
             camera_revision: 0,
             applied_order_revision: 0,
             applied_order_camera: camera,
@@ -339,6 +706,10 @@ impl SurfaceRenderSession {
     /// path (experimental A/B benchmark knob; default remains
     /// [`GeometryPath::SortedIndexDirect`]).
     pub fn set_geometry_path(&mut self, path: GeometryPath) -> Result<(), RendererError> {
+        if path != GeometryPath::SortedIndexDirect && self.order_backend != SurfaceOrderBackend::Cpu
+        {
+            return Err(RendererError::InvalidConfig);
+        }
         let changed = try_switch_renderer_geometry_path(&mut self.renderer, path, |renderer| {
             self.presenter.set_geometry_path(path, renderer)
         })?;
@@ -349,6 +720,9 @@ impl SurfaceRenderSession {
         if path == GeometryPath::PagedActiveAtlas {
             self.disable_async_sort();
         }
+        self.gpu_order_initialized = false;
+        self.adaptive_policy.reset();
+        self.presented_order_backend = SurfaceOrderBackendUsed::Cpu;
         self.frame_state.force_sort();
         Ok(())
     }
@@ -383,6 +757,49 @@ impl SurfaceRenderSession {
         self.sort_interval
     }
 
+    pub const fn order_backend(&self) -> SurfaceOrderBackend {
+        self.order_backend
+    }
+
+    pub fn set_order_backend(&mut self, backend: SurfaceOrderBackend) -> Result<(), RendererError> {
+        if self.order_backend == backend {
+            return Ok(());
+        }
+        if backend != SurfaceOrderBackend::Cpu
+            && self.geometry_path() != GeometryPath::SortedIndexDirect
+        {
+            return Err(RendererError::InvalidConfig);
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        if backend != SurfaceOrderBackend::Cpu && self.async_sort_enabled {
+            return Err(RendererError::InvalidConfig);
+        }
+        let gpu_prepare_error = if backend == SurfaceOrderBackend::Cpu {
+            None
+        } else {
+            self.presenter.prepare_direct_gpu_order().err()
+        };
+        let gpu_prepare_failed = match (backend, gpu_prepare_error) {
+            (SurfaceOrderBackend::Gpu, Some(error)) => return Err(error.into()),
+            (SurfaceOrderBackend::Adaptive, Some(_)) => true,
+            _ => false,
+        };
+        self.order_backend = backend;
+        self.adaptive_policy.reset();
+        if backend == SurfaceOrderBackend::Adaptive {
+            if gpu_prepare_failed {
+                self.adaptive_policy.gpu_failed();
+            } else {
+                // Pipeline/buffer creation has already happened outside frame
+                // measurement; the first probe no longer needs a compile-jank
+                // sample exclusion.
+                self.adaptive_policy.gpu_initialized = true;
+            }
+        }
+        self.frame_state.force_sort();
+        Ok(())
+    }
+
     pub fn sort_schedule(&self) -> SurfaceSortSchedule {
         #[cfg(not(target_arch = "wasm32"))]
         if self.async_sort_enabled {
@@ -397,25 +814,34 @@ impl SurfaceRenderSession {
         &mut self,
         schedule: SurfaceSortSchedule,
     ) -> Result<(), RendererError> {
+        if schedule.interval() == 0 {
+            return Err(RendererError::InvalidConfig);
+        }
         #[cfg(target_arch = "wasm32")]
         if matches!(schedule, SurfaceSortSchedule::AsyncLatest { .. }) {
             return Err(RendererError::InvalidConfig);
         }
-        self.set_sort_interval(schedule.interval())?;
+        #[cfg(not(target_arch = "wasm32"))]
+        if matches!(schedule, SurfaceSortSchedule::AsyncLatest { .. })
+            && self.order_backend != SurfaceOrderBackend::Cpu
+        {
+            return Err(RendererError::InvalidConfig);
+        }
         match schedule {
-            SurfaceSortSchedule::Interval(_) => {
+            SurfaceSortSchedule::Interval(interval) => {
                 #[cfg(not(target_arch = "wasm32"))]
                 self.set_async_sort_enabled(false)?;
-                Ok(())
+                self.set_sort_interval(interval)
             }
-            SurfaceSortSchedule::AsyncLatest { .. } => {
+            SurfaceSortSchedule::AsyncLatest { interval } => {
                 #[cfg(not(target_arch = "wasm32"))]
                 {
                     self.set_async_sort_enabled(true)?;
-                    Ok(())
+                    self.set_sort_interval(interval)
                 }
                 #[cfg(target_arch = "wasm32")]
                 {
+                    let _ = interval;
                     unreachable!("async schedules are rejected before mutation")
                 }
             }
@@ -451,6 +877,9 @@ impl SurfaceRenderSession {
             return Ok(());
         }
         if enabled {
+            if self.order_backend != SurfaceOrderBackend::Cpu {
+                return Err(RendererError::InvalidConfig);
+            }
             self.async_sorter = Some(SurfaceAsyncSorter::new(&self.renderer)?);
         } else {
             self.disable_async_sort();
@@ -473,23 +902,137 @@ impl SurfaceRenderSession {
 
     pub fn render_frame(&mut self) -> Result<SurfaceFrameOutput, RendererError> {
         #[cfg(not(target_arch = "wasm32"))]
-        if self.async_sort_enabled && self.geometry_path() != GeometryPath::PagedActiveAtlas {
+        if self.async_sort_enabled
+            && self.order_backend == SurfaceOrderBackend::Cpu
+            && self.geometry_path() != GeometryPath::PagedActiveAtlas
+        {
             return self.render_frame_async_sort();
         }
         self.render_frame_sync()
     }
 
     fn render_frame_sync(&mut self) -> Result<SurfaceFrameOutput, RendererError> {
-        let has_order = !self.renderer.current_sorted_indices().is_empty();
+        let frame_start = timer_now();
+        let has_order = match self.presented_order_backend {
+            SurfaceOrderBackendUsed::Cpu => !self.renderer.current_sorted_indices().is_empty(),
+            SurfaceOrderBackendUsed::Gpu => self.gpu_order_initialized,
+        };
         let plan = self.frame_state.plan(has_order, self.sort_interval);
-        let mut output = self.render_with_plan(plan, plan.refresh_sort)?;
-        if plan.refresh_sort {
+        let requested_backend = if !plan.refresh_sort {
+            self.presented_order_backend
+        } else {
+            match self.order_backend {
+                SurfaceOrderBackend::Cpu => SurfaceOrderBackendUsed::Cpu,
+                SurfaceOrderBackend::Gpu => SurfaceOrderBackendUsed::Gpu,
+                SurfaceOrderBackend::Adaptive => self.adaptive_policy.choose_refresh_backend(),
+            }
+        };
+        let mut gpu_failed = false;
+        let mut output = if requested_backend == SurfaceOrderBackendUsed::Gpu
+            && self.geometry_path() == GeometryPath::SortedIndexDirect
+        {
+            match self.render_gpu_with_plan(plan) {
+                Ok(output) => output,
+                Err(_) => {
+                    gpu_failed = true;
+                    self.frame_state.force_sort();
+                    let fallback_plan = self.frame_state.plan(
+                        !self.renderer.current_sorted_indices().is_empty(),
+                        self.sort_interval,
+                    );
+                    let mut output = self.render_with_plan(fallback_plan, true)?;
+                    output.gpu_sort_fallback = true;
+                    output
+                }
+            }
+        } else {
+            self.render_with_plan(plan, plan.refresh_sort)?
+        };
+        // Keep one outer wall clock so a failed GPU attempt plus CPU fallback
+        // is measured as the frame the caller actually experienced.
+        let frame_wall_ms = timer_elapsed_ms(frame_start);
+        output.timings.frame_wall_ms = frame_wall_ms;
+        output.stats.frame_ms = frame_wall_ms;
+        self.last_stats = output.stats;
+        if self.order_backend == SurfaceOrderBackend::Adaptive {
+            if gpu_failed {
+                self.adaptive_policy.gpu_failed();
+            }
+            self.adaptive_policy.observe_frame(
+                output.order_backend,
+                output.timings.frame_wall_ms,
+                output.sort_refreshed,
+                self.sort_interval,
+            );
+        }
+        output.adaptive_state = if self.order_backend == SurfaceOrderBackend::Adaptive {
+            self.adaptive_policy.state()
+        } else {
+            SurfaceAdaptiveState::Disabled
+        };
+        if output.sort_refreshed {
             self.applied_order_revision = self.camera_revision;
             self.applied_order_camera = self.camera;
             output.applied_order_revision = self.applied_order_revision;
             output.presented_order_revision_lag = 0;
         }
         Ok(output)
+    }
+
+    fn render_gpu_with_plan(
+        &mut self,
+        plan: SurfaceFramePlan,
+    ) -> Result<SurfaceFrameOutput, RendererError> {
+        let frame_start = timer_now();
+        let render_start = timer_now();
+        self.presenter
+            .render_direct_gpu_order(&self.camera, plan.refresh_sort)?;
+        let render_submit_ms = timer_elapsed_ms(render_start);
+        let frame_wall_ms = timer_elapsed_ms(frame_start);
+        let count = self
+            .renderer
+            .scene()
+            .map(|scene| u32::try_from(scene.len()).unwrap_or(u32::MAX))
+            .ok_or(RendererError::SceneNotLoaded)?;
+        let stats = FrameStats {
+            frame_ms: frame_wall_ms,
+            preprocess_ms: 0.0,
+            sort_ms: 0.0,
+            raster_ms: 0.0,
+            visible_count: count,
+            drawn_count: count,
+        };
+        self.last_stats = stats;
+        self.gpu_order_initialized |= plan.refresh_sort;
+        self.presented_order_backend = SurfaceOrderBackendUsed::Gpu;
+        self.frame_state.finish_frame(plan, false);
+        Ok(SurfaceFrameOutput {
+            stats,
+            timings: SurfaceFrameTimings {
+                cpu_geometry_ms: 0.0,
+                render_submit_ms,
+                frame_wall_ms,
+            },
+            sort_refreshed: plan.refresh_sort,
+            order_uploaded: false,
+            async_sort_revision_lag: None,
+            stale_async_sort_dropped: false,
+            async_sort_scheduled: false,
+            camera_revision: self.camera_revision,
+            applied_order_revision: self.applied_order_revision,
+            presented_order_revision_lag: u32::try_from(
+                self.camera_revision
+                    .saturating_sub(self.applied_order_revision),
+            )
+            .unwrap_or(u32::MAX),
+            async_sort_scheduled_revision: None,
+            async_sort_completed_revision: None,
+            async_sort_result_applied: false,
+            sync_sort_fallback: false,
+            order_backend: SurfaceOrderBackendUsed::Gpu,
+            gpu_sort_fallback: false,
+            adaptive_state: SurfaceAdaptiveState::Disabled,
+        })
     }
 
     fn render_with_plan(
@@ -526,6 +1069,7 @@ impl SurfaceRenderSession {
         let frame_wall_ms = timer_elapsed_ms(frame_start);
         stats.frame_ms = frame_wall_ms;
         self.last_stats = stats;
+        self.presented_order_backend = SurfaceOrderBackendUsed::Cpu;
         self.frame_state
             .finish_frame(plan, paged || plan.upload_order);
         Ok(SurfaceFrameOutput {
@@ -551,6 +1095,9 @@ impl SurfaceRenderSession {
             async_sort_completed_revision: None,
             async_sort_result_applied: false,
             sync_sort_fallback: false,
+            order_backend: SurfaceOrderBackendUsed::Cpu,
+            gpu_sort_fallback: false,
+            adaptive_state: SurfaceAdaptiveState::Disabled,
         })
     }
 
@@ -728,9 +1275,11 @@ fn async_order_pose_compatible(
 #[cfg(test)]
 mod tests {
     use super::{
-        MAX_ASYNC_SORT_REVISION_LAG, SurfaceFrameState, SurfaceSortSchedule,
-        async_order_pose_compatible, async_schedule_threshold, paged_surface_counts,
-        try_switch_renderer_geometry_path,
+        ADAPTIVE_GPU_FAILURE_COOLDOWN, ADAPTIVE_INITIAL_PROBE_DELAY, ADAPTIVE_PROBE_SAMPLES,
+        ADAPTIVE_REPROBE_INTERVAL, AdaptiveOrderPolicy, AdaptivePhase, AdaptiveTimingEstimate,
+        MAX_ASYNC_SORT_REVISION_LAG, SurfaceAdaptiveState, SurfaceFrameState,
+        SurfaceOrderBackendUsed, SurfaceSortSchedule, async_order_pose_compatible,
+        async_schedule_threshold, paged_surface_counts, try_switch_renderer_geometry_path,
     };
     use crate::{GeometryPath, Renderer};
     use gsplat_core::{Camera, RendererConfig, SceneBuffers, Vec3f};
@@ -845,5 +1394,181 @@ mod tests {
         assert_eq!(async_schedule_threshold(1), 1);
         assert_eq!(async_schedule_threshold(2), 1);
         assert_eq!(async_schedule_threshold(3), 2);
+    }
+
+    fn feed_cpu_bootstrap(policy: &mut AdaptiveOrderPolicy, frame_ms: f32) {
+        policy.reset();
+        for _ in 0..super::ADAPTIVE_CPU_BOOTSTRAP_SAMPLES {
+            assert_eq!(
+                policy.choose_refresh_backend(),
+                SurfaceOrderBackendUsed::Cpu
+            );
+            policy.observe_frame(SurfaceOrderBackendUsed::Cpu, frame_ms, true, 1);
+        }
+        for _ in 0..ADAPTIVE_INITIAL_PROBE_DELAY {
+            assert_eq!(
+                policy.choose_refresh_backend(),
+                SurfaceOrderBackendUsed::Cpu
+            );
+            policy.observe_frame(SurfaceOrderBackendUsed::Cpu, frame_ms, true, 1);
+        }
+    }
+
+    #[test]
+    fn adaptive_policy_keeps_cpu_when_gpu_probe_loses() {
+        let mut policy = AdaptiveOrderPolicy::default();
+        feed_cpu_bootstrap(&mut policy, 10.0);
+        assert_eq!(
+            policy.choose_refresh_backend(),
+            SurfaceOrderBackendUsed::Gpu
+        );
+        policy.observe_frame(SurfaceOrderBackendUsed::Gpu, 30.0, true, 1); // compile/warmup sample
+        for _ in 0..ADAPTIVE_PROBE_SAMPLES {
+            assert_eq!(
+                policy.choose_refresh_backend(),
+                SurfaceOrderBackendUsed::Gpu
+            );
+            policy.observe_frame(SurfaceOrderBackendUsed::Gpu, 20.0, true, 1);
+        }
+        assert_eq!(policy.state(), SurfaceAdaptiveState::CpuStable);
+    }
+
+    #[test]
+    fn adaptive_policy_samples_presented_backend_during_interval_reuse() {
+        let mut policy = AdaptiveOrderPolicy::default();
+        feed_cpu_bootstrap(&mut policy, 10.0);
+        assert_eq!(
+            policy.choose_refresh_backend(),
+            SurfaceOrderBackendUsed::Gpu
+        );
+        policy.observe_frame(SurfaceOrderBackendUsed::Gpu, 30.0, true, 2);
+        for _ in 0..ADAPTIVE_PROBE_SAMPLES {
+            policy.observe_frame(SurfaceOrderBackendUsed::Gpu, 20.0, true, 2);
+        }
+        assert_eq!(policy.state(), SurfaceAdaptiveState::CpuStable);
+
+        let cpu_refresh_samples = policy.cpu.refresh.len;
+        let cpu_reuse_samples = policy.cpu.reuse.len;
+        let gpu_reuse_samples = policy.gpu.reuse.len;
+        policy.observe_frame(SurfaceOrderBackendUsed::Gpu, 21.0, false, 2);
+
+        assert_eq!(policy.state(), SurfaceAdaptiveState::CpuStable);
+        assert_eq!(policy.cpu.refresh.len, cpu_refresh_samples);
+        assert_eq!(policy.cpu.reuse.len, cpu_reuse_samples);
+        assert_eq!(policy.gpu.reuse.len, gpu_reuse_samples + 1);
+    }
+
+    #[test]
+    fn adaptive_policy_backs_off_after_losing_gpu_probe() {
+        let mut policy = AdaptiveOrderPolicy::default();
+        feed_cpu_bootstrap(&mut policy, 10.0);
+        assert_eq!(
+            policy.choose_refresh_backend(),
+            SurfaceOrderBackendUsed::Gpu
+        );
+        policy.observe_frame(SurfaceOrderBackendUsed::Gpu, 30.0, true, 1);
+        for _ in 0..ADAPTIVE_PROBE_SAMPLES {
+            policy.observe_frame(SurfaceOrderBackendUsed::Gpu, 20.0, true, 1);
+        }
+
+        for _ in 0..ADAPTIVE_REPROBE_INTERVAL {
+            assert_eq!(
+                policy.choose_refresh_backend(),
+                SurfaceOrderBackendUsed::Cpu
+            );
+            policy.observe_frame(SurfaceOrderBackendUsed::Cpu, 10.0, true, 1);
+        }
+        assert_eq!(
+            policy.choose_refresh_backend(),
+            SurfaceOrderBackendUsed::Gpu
+        );
+    }
+
+    #[test]
+    fn adaptive_policy_does_not_misattribute_cpu_reuse_after_cpu_probe() {
+        let mut policy = AdaptiveOrderPolicy::default();
+        policy.reset();
+        policy.cpu.push(12.0, true);
+        policy.gpu.push(10.0, true);
+        policy.phase = Some(AdaptivePhase::CpuProbe { remaining: 1 });
+
+        policy.observe_frame(SurfaceOrderBackendUsed::Cpu, 12.0, true, 2);
+        assert_eq!(policy.state(), SurfaceAdaptiveState::GpuStable);
+        let cpu_reuse_samples = policy.cpu.reuse.len;
+        let gpu_reuse_samples = policy.gpu.reuse.len;
+
+        policy.observe_frame(SurfaceOrderBackendUsed::Cpu, 12.0, false, 2);
+        assert_eq!(policy.state(), SurfaceAdaptiveState::GpuStable);
+        assert_eq!(policy.cpu.reuse.len, cpu_reuse_samples + 1);
+        assert_eq!(policy.gpu.reuse.len, gpu_reuse_samples);
+    }
+
+    #[test]
+    fn adaptive_cadence_score_keeps_expensive_refresh_visible_at_long_intervals() {
+        let mut cpu = AdaptiveTimingEstimate::default();
+        let mut gpu = AdaptiveTimingEstimate::default();
+        for _ in 0..4 {
+            cpu.push(12.0, true);
+            gpu.push(80.0, true);
+        }
+        for _ in 0..16 {
+            cpu.push(10.0, false);
+            gpu.push(5.0, false);
+        }
+
+        assert!(
+            gpu.cadence_score(8).unwrap() > cpu.cadence_score(8).unwrap(),
+            "the cheaper GPU reuse frames must not hide its much slower refresh"
+        );
+    }
+
+    #[test]
+    fn adaptive_policy_promotes_gpu_only_after_sustained_win() {
+        let mut policy = AdaptiveOrderPolicy::default();
+        feed_cpu_bootstrap(&mut policy, 20.0);
+        assert_eq!(
+            policy.choose_refresh_backend(),
+            SurfaceOrderBackendUsed::Gpu
+        );
+        policy.observe_frame(SurfaceOrderBackendUsed::Gpu, 40.0, true, 1); // ignored warmup
+        for _ in 0..ADAPTIVE_PROBE_SAMPLES {
+            policy.observe_frame(SurfaceOrderBackendUsed::Gpu, 15.0, true, 1);
+        }
+        assert_eq!(policy.state(), SurfaceAdaptiveState::GpuStable);
+        assert_eq!(
+            policy.choose_refresh_backend(),
+            SurfaceOrderBackendUsed::Gpu
+        );
+    }
+
+    #[test]
+    fn adaptive_gpu_failure_enters_cpu_cooldown() {
+        let mut policy = AdaptiveOrderPolicy::default();
+        policy.reset();
+        policy.gpu_failed();
+        assert_eq!(policy.state(), SurfaceAdaptiveState::Cooldown);
+        assert_eq!(
+            policy.choose_refresh_backend(),
+            SurfaceOrderBackendUsed::Cpu
+        );
+    }
+
+    #[test]
+    fn adaptive_gpu_failure_retries_after_one_cooldown_period() {
+        let mut policy = AdaptiveOrderPolicy::default();
+        policy.reset();
+        policy.gpu_failed();
+        for _ in 0..ADAPTIVE_GPU_FAILURE_COOLDOWN {
+            assert_eq!(
+                policy.choose_refresh_backend(),
+                SurfaceOrderBackendUsed::Cpu
+            );
+            policy.observe_frame(SurfaceOrderBackendUsed::Cpu, 10.0, true, 1);
+        }
+        assert_eq!(policy.state(), SurfaceAdaptiveState::CpuStable);
+        assert_eq!(
+            policy.choose_refresh_backend(),
+            SurfaceOrderBackendUsed::Gpu
+        );
     }
 }

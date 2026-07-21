@@ -12,8 +12,11 @@ use gsplat_core::{
     GSPLAT_API_VERSION_MINOR, RenderMode, RendererConfig, Vec3f,
 };
 use gsplat_io_ply::load_ply;
+#[cfg(target_os = "android")]
+use gsplat_render_wgpu::SurfaceOrderBackend;
 use gsplat_render_wgpu::{
-    GeometryPath, Renderer, SurfaceFrameOutput, SurfacePresenter, SurfaceRenderSession,
+    GeometryPath, Renderer, SurfaceAdaptiveState, SurfaceFrameOutput, SurfaceOrderBackendUsed,
+    SurfacePresenter, SurfaceRenderSession,
 };
 
 const SURFACE_CAMERA_MAX_PITCH: f32 = 1.45;
@@ -73,6 +76,20 @@ impl From<SurfaceFrameOutput> for GsplatSurfaceSortStats {
         flags |= u32::from(output.stale_async_sort_dropped) << 6;
         flags |= u32::from(output.sync_sort_fallback) << 7;
         flags |= u32::from(output.async_sort_revision_lag.is_some()) << 8;
+        flags |= match output.order_backend {
+            SurfaceOrderBackendUsed::Cpu => 0,
+            SurfaceOrderBackendUsed::Gpu => 1,
+        } << 9;
+        flags |= u32::from(output.gpu_sort_fallback) << 11;
+        flags |= match output.adaptive_state {
+            SurfaceAdaptiveState::Disabled => 0,
+            SurfaceAdaptiveState::CpuLearning => 1,
+            SurfaceAdaptiveState::CpuStable => 2,
+            SurfaceAdaptiveState::GpuProbe => 3,
+            SurfaceAdaptiveState::GpuStable => 4,
+            SurfaceAdaptiveState::CpuProbe => 5,
+            SurfaceAdaptiveState::Cooldown => 6,
+        } << 12;
         Self {
             camera_revision: output.camera_revision,
             applied_order_revision: output.applied_order_revision,
@@ -1155,6 +1172,47 @@ pub unsafe extern "C" fn gsplat_surface_renderer_set_async_sort(
 
         if let Err(err) = renderer.session.set_async_sort_enabled(enabled != 0) {
             return ffi_error_display(err.code(), "gsplat_surface_renderer_set_async_sort", err);
+        }
+        renderer.render_error_logged = false;
+        ffi_ok()
+    })
+}
+
+/// Android sample-only forced backend knob used to collect paired benchmark
+/// evidence without widening the published v0.1 header.
+#[cfg(target_os = "android")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gsplat_android_benchmark_set_order_backend(
+    renderer: *mut GsplatSurfaceRenderer,
+    backend: u32,
+) -> i32 {
+    ffi_catch_i32("gsplat_android_benchmark_set_order_backend", || {
+        let renderer = match unsafe { renderer.as_mut() } {
+            Some(renderer) => renderer,
+            None => {
+                return ffi_error(
+                    ErrorCode::InvalidArgument,
+                    "gsplat_android_benchmark_set_order_backend: renderer is null",
+                );
+            }
+        };
+        let backend = match backend {
+            0 => SurfaceOrderBackend::Cpu,
+            1 => SurfaceOrderBackend::Gpu,
+            2 => SurfaceOrderBackend::Adaptive,
+            _ => {
+                return ffi_error(
+                    ErrorCode::InvalidArgument,
+                    "gsplat_android_benchmark_set_order_backend: unsupported backend",
+                );
+            }
+        };
+        if let Err(err) = renderer.session.set_order_backend(backend) {
+            return ffi_error_display(
+                err.code(),
+                "gsplat_android_benchmark_set_order_backend",
+                err,
+            );
         }
         renderer.render_error_logged = false;
         ffi_ok()

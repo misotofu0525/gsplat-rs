@@ -67,9 +67,11 @@ npm --prefix packages/web run pack:dry-run
 cargo run --release -p bench-runner -- tests/datasets/minimal_ascii.ply 120 --warmup-iterations 10 --max-avg-gpu-complete-ms 250
 bash tests/perf/test-benchmark-artifacts.sh
 python3 tests/perf/validate-dataset-manifests.py
+python3 tests/datasets/test_dataset_tools.py
 bash tests/perf/trace/test-trace-v1.sh
 node --test examples/web/test/benchmark-artifact.test.mjs
 bash bindings/android/scripts/test-android-benchmark-artifact-extraction.sh
+python3 bindings/android/scripts/test_android_sort_benchmark_collector.py
 bash bindings/apple/scripts/test-ios-benchmark-artifact-extraction.sh
 npm ci --ignore-scripts --prefix tests/competitive/playcanvas
 npm test --prefix tests/competitive/playcanvas
@@ -118,12 +120,17 @@ observed values and includes the direct resource preflight report.
 Committed dataset identities and the shared camera oracle have separate checks:
 
 ```bash
+python3 tests/datasets/test_dataset_tools.py
 python3 tests/perf/validate-dataset-manifests.py
 python3 tests/perf/validate-dataset-manifests.py --verify-available
 bash tests/perf/trace/test-trace-v1.sh
 ```
 
-- The first dataset command validates committed metadata and is safe in CI.
+- The dataset-tool test proves deterministic fixed-record PLY tier selection,
+  header/non-vertex preservation, provenance checks, and streaming HTTP range
+  extraction against tiny local fixtures; it never downloads a large model.
+- The manifest command without `--verify-available` validates committed metadata
+  and is safe in CI.
 - `--verify-available` additionally hashes and inspects every external asset
   present in the local checkout.
 - The trace test regenerates the `gsplat-camera-trace/v1` fixture and rejects
@@ -142,10 +149,33 @@ node --test examples/web/test/benchmark-artifact.test.mjs
 #   target/benchmarks/phase-a/android-kitsune-pong-a065 \
 #   --validator tests/perf/validate-benchmark-artifacts.py
 
+# Reproducible paired CPU/GPU device collection (output must be fresh):
+# Add --prepare-apk only to the first tier after app/native code changes.
+# python3 bindings/android/scripts/collect-android-sort-benchmarks.py \
+#   --serial <adb-serial> --ply <dataset.ply> \
+#   --backend cpu --backend gpu --repetitions 5 \
+#   --randomize-order --seed 20260722 --sort-interval 1 \
+#   --cooldown-seconds 10 --max-thermal-status 0 \
+#   --output target/android-sort-benchmarks/<series-id>
+
 # Desktop Web (requires Chrome + PlayCanvas harness puppeteer-core):
 # GSPLAT_ARTIFACT_DIR=target/benchmarks/phase-a/web-kitsune-desktop \
 #   node examples/web/scripts/collect-web-benchmark-artifact.mjs
 ```
+
+- The Android collector defaults to reusing an already installed debuggable
+  sample APK only after its `base.apk` SHA-256 and byte count exactly match the
+  local APK; `--prepare-apk` performs the one-time build/install with the tiny
+  `minimal_ascii.ply` bootstrap asset when required, never with the measured
+  tier.
+  For each dataset experiment it pushes one hash-addressed PLY under the exact
+  `/data/local/tmp/gsplat-benchmark-<sha256>.ply` path, clears only
+  `com.gsplat.example` before each run, copies the fixture to
+  `files/imported_scene.ply` with `run-as`, and verifies that internal file
+  before launch. It cleans only its exact staged path, records a seeded paired
+  schedule, full tagged logcat, thermal observations, and validated v1
+  artifacts, and refuses to overwrite an existing output root. Use `--dry-run`
+  to inspect every command without changing the device.
 
 ## Competitive Harness and Phase E Pairing
 

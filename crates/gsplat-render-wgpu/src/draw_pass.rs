@@ -103,6 +103,11 @@ pub(crate) fn encode_splat_draw(device: &wgpu::Device, draw: SplatDraw<'_>) -> w
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
         label: wgpu_label(draw.encoder_label),
     });
+    encode_splat_draw_into(&mut encoder, &draw);
+    encoder.finish()
+}
+
+pub(crate) fn encode_splat_draw_into(encoder: &mut wgpu::CommandEncoder, draw: &SplatDraw<'_>) {
     {
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: wgpu_label(draw.pass_label),
@@ -126,5 +131,4 @@ pub(crate) fn encode_splat_draw(device: &wgpu::Device, draw: SplatDraw<'_>) -> w
             pass.draw(0..draw.vertex_count, 0..draw.instance_count);
         }
     }
-    encoder.finish()
 }

@@ -194,6 +194,65 @@ For repeatable Surface performance checks, launch with benchmark extras:
 "$ADB" logcat -d -s GsplatExample:I | grep BENCHMARK_RESULT
 ```
 
+For retained CPU/GPU/adaptive comparisons, use the repository collector instead
+of assembling ad-hoc `adb` commands. The example below runs five randomized
+pairs with a fixed seed and waits for Android thermal status `0` before each
+run:
+
+```bash
+python3 bindings/android/scripts/collect-android-sort-benchmarks.py \
+  --serial <adb-serial> \
+  --ply tests/datasets/external/wakufactory_kitune/kitune1.ply \
+  --prepare-apk \
+  --backend cpu \
+  --backend gpu \
+  --repetitions 5 \
+  --randomize-order \
+  --seed 20260722 \
+  --sort-interval 1 \
+  --frames 80 \
+  --warmup 20 \
+  --cooldown-seconds 10 \
+  --max-thermal-status 0 \
+  --output target/android-sort-benchmarks/kitsune-paired-v1
+```
+
+Add `--backend adaptive` to include the runtime selector in every repetition.
+The collector defaults to 80 measured frames so the final indexed JSONL burst
+stays below conservative Android `logd` per-tag quotas. Larger values are
+allowed, but the artifact validator rejects the run if `logd` drops even one
+frame record; split longer policy observations into repetitions when needed.
+Use `--prepare-apk` only for the first experiment after native/app code changes;
+it builds and installs the debuggable sample APK once with only the tiny
+`tests/datasets/minimal_ascii.ply` bootstrap asset. The measured `--ply` is
+always injected separately and therefore never forces an APK rebuild. For
+every additional point-count tier, omit `--prepare-apk`: the collector resolves
+the existing local debug APK and requires the device's installed `base.apk`
+SHA-256 and byte count to match it exactly. A mismatch fails closed instead of
+silently installing, uninstalling, or benchmarking a stale binary. `--apk
+<path>` can select an explicit prebuilt APK for this comparison.
+
+Use `--dry-run` to inspect the complete schedule and launch arguments without
+building, installing, pushing a dataset, clearing app data, or creating the
+output directory.
+Run `--help` for frame latency, yaw, timeout, thermal polling, and explicit
+`adb` options.
+
+The collector pushes each experiment's PLY exactly once to
+`/data/local/tmp/gsplat-benchmark-<sha256>.ply`. Before every paired run it
+clears only `com.gsplat.example`, copies that staged file with `run-as` to the
+app-priority path `files/imported_scene.ply`, and verifies the internal file's
+SHA-256 and byte count before launch. The exact temporary file is removed on
+success and on collection failures; no broad temporary-directory cleanup is
+performed. This avoids package-manager replacement broadcasts between tiers
+and prevents a bundled or previously imported scene from silently replacing
+the intended fixture. Each run retains the complete tagged logcat stream, a
+validated `gsplat-benchmark/v1` artifact, and `run.json` under a fresh run
+directory. The experiment root also contains the seeded schedule, dataset/APK
+hashes, device identity, thermal observations, and progress in
+`experiment.json`. Existing output roots and artifact directories are never
+overwritten.
+
 Benchmark mode forces a tiny camera orbit each frame so it measures the shared
 CPU-sort + direct-render path rather than stationary presentation.
 `gsplat_surface_sort_interval` controls how often the Surface path refreshes
@@ -201,8 +260,14 @@ depth sorting during camera changes. The Android example default is `2`, which
 reuses the previous sorted index order for one camera-change frame while the
 vertex shader still projects the current camera; use `1` to force sorting every
 camera-change frame for comparison.
-The direct pipeline always draws from sorted splat IDs and persistent GPU
-source buffers, so Android has no CPU-instance or compute-preproject A/B mode.
+All three choices use the same persistent Direct source buffers and Direct
+draw shaders, but they compare complete ordering strategies rather than an
+isolated sort kernel. CPU refreshes apply the near/far candidate filter, sort
+on CPU, and upload compact source IDs. GPU refreshes generate and stably sort
+all `(depth_key, source_id)` pairs on the renderer device and let the vertex
+shader clip invalid depths. They do not select an older CPU-instance or
+compute-preproject render path. This is a sample-only benchmark control, not a
+new stable Android SDK option.
 `gsplat_surface_async_sort=true` enables an experimental background sort worker
 that double-buffers the latest completed order while the render thread continues
 with the previous order. It keeps the full splat count and is intended for

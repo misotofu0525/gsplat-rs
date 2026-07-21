@@ -3,7 +3,7 @@
 use gsplat_core::{Camera, SceneBuffers};
 use gsplat_sort::CpuSortBackend;
 
-use crate::draw_pass::{SplatDraw, encode_splat_draw};
+use crate::draw_pass::{SplatDraw, encode_splat_draw, encode_splat_draw_into};
 use crate::packed_gpu;
 use crate::paged_active_set::PagedActiveSet;
 use crate::{
@@ -634,7 +634,7 @@ impl SurfacePresenter {
         refresh_indices: bool,
     ) -> Result<(), SurfacePresenterError> {
         self.instance_count = match &mut self.geometry {
-            SurfaceGeometry::Direct(direct) => direct.prepare(
+            SurfaceGeometry::Direct(direct) => direct.prepare_cpu(
                 &self.queue,
                 sorted_indices,
                 camera,
@@ -696,6 +696,96 @@ impl SurfacePresenter {
         self.present_geometry()
     }
 
+    /// Pre-creates the Direct GPU ordering pipelines and buffers outside a
+    /// measured/presented frame. No sorting or drawing happens here.
+    pub(crate) fn prepare_direct_gpu_order(&mut self) -> Result<(), SurfacePresenterError> {
+        match &mut self.geometry {
+            SurfaceGeometry::Direct(direct) => {
+                direct.ensure_gpu_order(&self.device, &self.direct_bind_group_layout)?
+            }
+            SurfaceGeometry::Packed(_) | SurfaceGeometry::Paged(_) => {
+                return Err(SurfacePresenterError::GpuOrderUnsupported);
+            }
+        }
+        Ok(())
+    }
+
+    /// Generates and stably sorts Direct depth pairs on this presenter's GPU,
+    /// then draws from the resident pair buffer in the same submission.
+    pub(crate) fn render_direct_gpu_order(
+        &mut self,
+        camera: &Camera,
+        refresh_order: bool,
+    ) -> Result<(), SurfacePresenterError> {
+        self.instance_count = match &mut self.geometry {
+            SurfaceGeometry::Direct(direct) => direct.prepare_gpu(
+                &self.device,
+                &self.direct_bind_group_layout,
+                &self.queue,
+                camera,
+                self.surface_config.width,
+                self.surface_config.height,
+            )?,
+            SurfaceGeometry::Packed(_) | SurfaceGeometry::Paged(_) => {
+                return Err(SurfacePresenterError::GpuOrderUnsupported);
+            }
+        };
+
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: wgpu_label("gsplat-surface-direct-gpu-order-encoder"),
+            });
+        {
+            let direct = match &self.geometry {
+                SurfaceGeometry::Direct(direct) => direct,
+                SurfaceGeometry::Packed(_) | SurfaceGeometry::Paged(_) => unreachable!(),
+            };
+            let gpu_order = direct
+                .gpu_order()
+                .ok_or(SurfacePresenterError::GpuOrderUnsupported)?;
+            if refresh_order {
+                gpu_order.sorter.encode(&mut encoder);
+            }
+        }
+
+        let Some(frame) = self.acquire_surface_texture()? else {
+            // A swapchain timeout must not discard a requested order refresh:
+            // submit the compute work so the next acquired frame never reads
+            // an uninitialized pair buffer.
+            if refresh_order {
+                self.queue.submit(Some(encoder.finish()));
+            }
+            return Ok(());
+        };
+        let view = frame
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
+        let direct = match &self.geometry {
+            SurfaceGeometry::Direct(direct) => direct,
+            SurfaceGeometry::Packed(_) | SurfaceGeometry::Paged(_) => unreachable!(),
+        };
+        let gpu_order = direct
+            .gpu_order()
+            .ok_or(SurfacePresenterError::GpuOrderUnsupported)?;
+        encode_splat_draw_into(
+            &mut encoder,
+            &SplatDraw {
+                encoder_label: "gsplat-surface-direct-gpu-order-encoder",
+                pass_label: "gsplat-surface-direct-gpu-order-draw-pass",
+                view: &view,
+                pipeline: &self.direct_pipeline,
+                bind_group: &gpu_order.bind_group,
+                clear: wgpu::Color::BLACK,
+                vertex_count: 6,
+                instance_count: self.instance_count,
+            },
+        );
+        self.queue.submit(Some(encoder.finish()));
+        frame.present();
+        Ok(())
+    }
+
     fn present_geometry(&mut self) -> Result<(), SurfacePresenterError> {
         let Some(frame) = self.acquire_surface_texture()? else {
             return Ok(());
@@ -706,7 +796,7 @@ impl SurfacePresenter {
         let (pipeline, bind_group, vertex_count, encoder_label, pass_label) = match &self.geometry {
             SurfaceGeometry::Direct(direct) => (
                 &self.direct_pipeline,
-                &direct.bind_group,
+                &direct.cpu_bind_group,
                 6,
                 "gsplat-surface-direct-encoder",
                 "gsplat-surface-direct-pass",

@@ -18,6 +18,10 @@ struct Params {
   height: u32,
   sh_degree: u32,
   len: u32,
+  order_stride_words: u32,
+  order_id_offset_words: u32,
+  _order_pad0: u32,
+  _order_pad1: u32,
 };
 
 struct CovTerms {
@@ -37,7 +41,7 @@ struct ProjectedSplat {
 };
 
 @group(0) @binding(0)
-var<storage, read> sorted_indices: array<u32>;
+var<storage, read> sorted_index_words: array<u32>;
 @group(0) @binding(1)
 var<storage, read> source_elems: array<SurfaceSourceElem>;
 @group(0) @binding(2)
@@ -334,7 +338,9 @@ fn vs_main(
   @builtin(instance_index) instance_index: u32,
   @builtin(vertex_index) vertex_index: u32,
 ) -> VsOut {
-  let idx = sorted_indices[instance_index];
+  let order_word = instance_index * params.order_stride_words
+    + params.order_id_offset_words;
+  let idx = sorted_index_words[order_word];
   let source = source_elems[idx];
   let projected = project_splat(source);
   let local = quad_offset(vertex_index) * alpha_extent_scale(projected.alpha);

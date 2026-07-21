@@ -12,6 +12,9 @@ fun gitOutput(vararg arguments: String): String =
 
 val repositoryCommit = gitOutput("rev-parse", "HEAD").ifEmpty { "unknown" }
 val repositoryDirty = gitOutput("status", "--porcelain").isNotEmpty()
+val nativeRustProfile = providers.environmentVariable("ANDROID_RUST_PROFILE")
+    .orElse("release")
+    .get()
 
 android {
     namespace = "com.gsplat.example"
@@ -25,6 +28,7 @@ android {
         versionName = "0.1.3"
         buildConfigField("String", "REPOSITORY_COMMIT", "\"$repositoryCommit\"")
         buildConfigField("boolean", "REPOSITORY_DIRTY", repositoryDirty.toString())
+        buildConfigField("String", "NATIVE_RUST_PROFILE", "\"$nativeRustProfile\"")
 
         ndk {
             abiFilters += "arm64-v8a"

@@ -41,6 +41,9 @@ import kotlin.math.roundToInt
 private const val GSPLAT_GEOMETRY_PATH_DIRECT = 0
 private const val GSPLAT_GEOMETRY_PATH_PACKED_ATLAS = 1
 private const val GSPLAT_GEOMETRY_PATH_PAGED_ACTIVE_ATLAS = 2
+private const val GSPLAT_ORDER_BACKEND_CPU = 0
+private const val GSPLAT_ORDER_BACKEND_GPU = 1
+private const val GSPLAT_ORDER_BACKEND_ADAPTIVE = 2
 
 private fun geometryPathValue(label: String): Int =
     when (label) {
@@ -54,6 +57,24 @@ private fun geometryPipelineName(label: String): String =
         "packed" -> "packed_atlas"
         "paged" -> "paged_active_atlas"
         else -> "sorted_index_direct"
+    }
+
+private fun orderBackendValue(label: String): Int =
+    when (label) {
+        "gpu" -> GSPLAT_ORDER_BACKEND_GPU
+        "adaptive" -> GSPLAT_ORDER_BACKEND_ADAPTIVE
+        else -> GSPLAT_ORDER_BACKEND_CPU
+    }
+
+private fun adaptiveStateName(flags: Long): String =
+    when ((flags shr 12) and 7L) {
+        1L -> "cpu_learning"
+        2L -> "cpu_stable"
+        3L -> "gpu_probe"
+        4L -> "gpu_stable"
+        5L -> "cpu_probe"
+        6L -> "cooldown"
+        else -> "disabled"
     }
 
 class MainActivity : Activity(), SurfaceHolder.Callback {
@@ -374,6 +395,18 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                     NativeBridge.destroySurfaceRenderer(handle)
                     running = false
                     updateStatus("state=create_failed rc=$asyncSortRc error=$message")
+                    return@Thread
+                }
+                val orderBackendRc = BenchmarkBridge.setSurfaceOrderBackend(
+                    handle,
+                    orderBackendValue(benchmarkConfig.orderBackend)
+                )
+                if (orderBackendRc != 0) {
+                    val message = NativeBridge.errorMessage(orderBackendRc)
+                    Log.e(TAG, "setSurfaceOrderBackend failed rc=$orderBackendRc error=$message")
+                    NativeBridge.destroySurfaceRenderer(handle)
+                    running = false
+                    updateStatus("state=create_failed rc=$orderBackendRc error=$message")
                     return@Thread
                 }
                 val frameLatencyRc = NativeBridge.setSurfaceFrameLatency(
@@ -990,6 +1023,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         appendLine(status)
         appendLine(cameraStatus)
         appendLine("geometry_pipeline=${geometryPipelineName(benchmarkConfig.geometryPath)}")
+        appendLine("order_backend=${benchmarkConfig.orderBackend}")
         if (benchmarkConfig.enabled) {
             appendLine("benchmark=orbit frames=${benchmarkConfig.frames} warmup=${benchmarkConfig.warmupFrames}")
         }
@@ -1030,6 +1064,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         private const val EXTRA_SURFACE_ASYNC_SORT = "gsplat_surface_async_sort"
         private const val EXTRA_SURFACE_FRAME_LATENCY = "gsplat_surface_frame_latency"
         private const val EXTRA_SURFACE_GEOMETRY_PATH = "gsplat_geometry_path"
+        private const val EXTRA_SURFACE_ORDER_BACKEND = "gsplat_surface_order_backend"
         private const val DEFAULT_BENCHMARK_FRAMES = 120
         private const val DEFAULT_BENCHMARK_WARMUP_FRAMES = 10
         private const val DEFAULT_BENCHMARK_YAW_STEP = 0.001f
@@ -1037,6 +1072,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         private const val DEFAULT_SURFACE_ASYNC_SORT = false
         private const val DEFAULT_SURFACE_FRAME_LATENCY = 2
         private const val DEFAULT_SURFACE_GEOMETRY_PATH = "direct"
+        private const val DEFAULT_SURFACE_ORDER_BACKEND = "cpu"
         private const val TARGET_FRAME_INTERVAL_NS = 16_666_667L
         private const val BENCHMARK_MANIFEST_PREFIX = "GSPLAT_BENCHMARK_MANIFEST "
         private const val BENCHMARK_FRAME_PREFIX = "GSPLAT_BENCHMARK_FRAME "
@@ -1099,6 +1135,8 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         val sortInterval: Int = DEFAULT_SURFACE_SORT_INTERVAL,
         val asyncSort: Boolean = DEFAULT_SURFACE_ASYNC_SORT,
         val frameLatency: Int = DEFAULT_SURFACE_FRAME_LATENCY,
+        // Sample-only A/B knob: "cpu", "gpu", or "adaptive".
+        val orderBackend: String = DEFAULT_SURFACE_ORDER_BACKEND,
         // Experimental A/B benchmark knob: "direct" (default), "packed", or "paged".
         val geometryPath: String = DEFAULT_SURFACE_GEOMETRY_PATH
     ) {
@@ -1127,6 +1165,11 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                     ?.lowercase(Locale.US)
                     ?.takeIf { it == "direct" || it == "packed" || it == "paged" }
                     ?: DEFAULT_SURFACE_GEOMETRY_PATH
+                val orderBackend = intent.getStringExtra(EXTRA_SURFACE_ORDER_BACKEND)
+                    ?.trim()
+                    ?.lowercase(Locale.US)
+                    ?.takeIf { it == "cpu" || it == "gpu" || it == "adaptive" }
+                    ?: DEFAULT_SURFACE_ORDER_BACKEND
                 return BenchmarkConfig(
                     enabled = intent.getBooleanExtra(EXTRA_BENCHMARK, false),
                     frames = frames,
@@ -1135,6 +1178,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                     sortInterval = sortInterval,
                     asyncSort = asyncSort,
                     frameLatency = frameLatency,
+                    orderBackend = orderBackend,
                     geometryPath = geometryPath
                 )
             }
@@ -1173,9 +1217,6 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         private var measurementEndedAtMs = 0L
         private var totalCallNs = 0L
         private var totalFrameMicros = 0L
-        private var totalPreprocessMicros = 0L
-        private var totalSortMicros = 0L
-        private var totalRasterMicros = 0L
         private var totalVisible = 0L
         private var totalDrawn = 0L
 
@@ -1213,9 +1254,6 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
             totalVisible += stats[0]
             totalDrawn += stats[1]
             totalFrameMicros += stats[2]
-            totalPreprocessMicros += stats[3]
-            totalSortMicros += stats[4]
-            totalRasterMicros += stats[5]
             totalCallNs += renderCallNs
             complete = samples >= config.frames
             if (complete) {
@@ -1225,6 +1263,22 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
 
         fun resultLine(datasetLabel: String): String {
             val safeSamples = samples.coerceAtLeast(1)
+            var cpuTimingSamples = 0
+            var cpuPreprocessMicros = 0L
+            var cpuSortMicros = 0L
+            var cpuRasterMicros = 0L
+            for (index in 0 until samples) {
+                if (((sortFlags[index] shr 9) and 3L) != 1L) {
+                    cpuTimingSamples += 1
+                    cpuPreprocessMicros += preprocessMicros[index]
+                    cpuSortMicros += sortMicros[index]
+                    cpuRasterMicros += rasterMicros[index]
+                }
+            }
+            val cpuDivisor = cpuTimingSamples.coerceAtLeast(1)
+            val averageCpuPreprocess = if (cpuTimingSamples == 0) "n/a" else avgMicros(cpuPreprocessMicros, cpuDivisor)
+            val averageCpuSort = if (cpuTimingSamples == 0) "n/a" else avgMicros(cpuSortMicros, cpuDivisor)
+            val averageCpuRaster = if (cpuTimingSamples == 0) "n/a" else avgMicros(cpuRasterMicros, cpuDivisor)
             val averageCount = if (config.geometryPath == "paged") {
                 "avg_loaded_source=${totalVisible / safeSamples}"
             } else {
@@ -1233,13 +1287,15 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
             return "BENCHMARK_RESULT dataset=$datasetLabel " +
                 "samples=$samples warmup=${config.warmupFrames} sort_interval=${config.sortInterval} " +
                 "async_sort=${config.asyncSort} " +
+                "order_backend=${config.orderBackend} " +
                 "geometry_pipeline=${geometryPipelineName(config.geometryPath)} " +
                 "frame_latency=${config.frameLatency} " +
                 "avg_call_ms=${avgNs(totalCallNs, safeSamples)} " +
                 "avg_frame_ms=${avgMicros(totalFrameMicros, safeSamples)} " +
-                "avg_preprocess_ms=${avgMicros(totalPreprocessMicros, safeSamples)} " +
-                "avg_sort_ms=${avgMicros(totalSortMicros, safeSamples)} " +
-                "avg_raster_ms=${avgMicros(totalRasterMicros, safeSamples)} " +
+                "cpu_timing_samples=$cpuTimingSamples " +
+                "avg_cpu_preprocess_ms=$averageCpuPreprocess " +
+                "avg_cpu_sort_ms=$averageCpuSort " +
+                "avg_cpu_raster_ms=$averageCpuRaster " +
                 "$averageCount " +
                 "avg_drawn=${totalDrawn / safeSamples}"
         }
@@ -1258,15 +1314,24 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
             val frameBudgetMs = 1000.0 / (validRefreshHz ?: 60.0)
             val datasetMetadata = datasetMetadata(File(datasetPath))
             val traceId = "orbit-yaw-${config.yawStepRadians}"
+            val hasGpuFrames = (0 until samples).any { index ->
+                ((sortFlags[index] shr 9) and 3L) == 1L
+            }
             val unavailable = mutableListOf(
                 "environment.browser",
                 "environment.adapter",
                 "environment.driver",
+                "frames[*].geometry_submit_ms",
                 "frames[*].gpu_wait_ms",
                 "frames[*].gpu_complete_ms",
+                "summary.distributions.geometry_submit_ms",
                 "summary.distributions.gpu_wait_ms",
                 "summary.distributions.gpu_complete_ms"
             )
+            if (hasGpuFrames) {
+                unavailable += "frames[*].preprocess_ms"
+                unavailable += "frames[*].sort_ms"
+            }
             if (thermalStatusStart == null) unavailable += "environment.thermal_status_start"
             if (thermalStatusEnd == null) unavailable += "environment.thermal_status_end"
 
@@ -1283,7 +1348,9 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                 .put("build", JSONObject()
                     .put("repository_commit", BuildConfig.REPOSITORY_COMMIT)
                     .put("dirty", BuildConfig.REPOSITORY_DIRTY)
-                    .put("profile", if (BuildConfig.DEBUG) "debug" else "release")
+                    .put("profile", "android-${if (BuildConfig.DEBUG) "debug" else "release"}+rust-${BuildConfig.NATIVE_RUST_PROFILE}")
+                    .put("android_variant", if (BuildConfig.DEBUG) "debug" else "release")
+                    .put("native_rust_profile", BuildConfig.NATIVE_RUST_PROFILE)
                     .put("package_version", BuildConfig.VERSION_NAME))
                 .put("dataset", JSONObject()
                     .put("id", datasetLabel)
@@ -1298,6 +1365,8 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                     .put("implementation", "gsplat-rs-native")
                     .put("path", geometryPipelineName(config.geometryPath))
                     .put("backend", "vulkan")
+                    .put("order_backend_requested", config.orderBackend)
+                    .put("gpu_count_semantics", "source_count_upper_bound; sort-all/draw-all")
                     .put("sort_policy", if (config.asyncSort) {
                         "async_latest:${config.sortInterval}"
                     } else {
@@ -1327,6 +1396,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
             lines += BENCHMARK_MANIFEST_PREFIX to manifest.toString()
             for (index in 0 until samples) {
                 val flags = sortFlags[index]
+                val gpuBackend = ((flags shr 9) and 3L) == 1L
                 val frame = JSONObject()
                     .put("schema", "gsplat-benchmark/v1")
                     .put("record_type", "frame")
@@ -1335,9 +1405,9 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                     .put("elapsed_ns", elapsedNs[index])
                     .put("call_ms", callNs[index].toDouble() / 1_000_000.0)
                     .put("frame_wall_ms", frameMicros[index].toDouble() / 1000.0)
-                    .put("preprocess_ms", preprocessMicros[index].toDouble() / 1000.0)
-                    .put("sort_ms", sortMicros[index].toDouble() / 1000.0)
-                    .put("geometry_submit_ms", rasterMicros[index].toDouble() / 1000.0)
+                    .put("preprocess_ms", if (gpuBackend) JSONObject.NULL else preprocessMicros[index].toDouble() / 1000.0)
+                    .put("sort_ms", if (gpuBackend) JSONObject.NULL else sortMicros[index].toDouble() / 1000.0)
+                    .put("geometry_submit_ms", JSONObject.NULL)
                     .put("gpu_wait_ms", JSONObject.NULL)
                     .put("gpu_complete_ms", JSONObject.NULL)
                     .put("visible", visible[index])
@@ -1353,6 +1423,9 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                     .put("async_sort_result_applied", flags and (1L shl 5) != 0L)
                     .put("stale_async_sort_dropped", flags and (1L shl 6) != 0L)
                     .put("sync_sort_fallback", flags and (1L shl 7) != 0L)
+                    .put("order_backend", if (((flags shr 9) and 3L) == 1L) "gpu" else "cpu")
+                    .put("gpu_sort_fallback", flags and (1L shl 11) != 0L)
+                    .put("adaptive_state", adaptiveStateName(flags))
                 lines += BENCHMARK_FRAME_PREFIX to frame.toString()
             }
 
@@ -1371,9 +1444,9 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                 .put("distributions", JSONObject()
                     .put("call_ms", distributionJson(callNs, samples, 1_000_000.0))
                     .put("frame_wall_ms", distributionJson(frameMicros, samples, 1000.0))
-                    .put("preprocess_ms", distributionJson(preprocessMicros, samples, 1000.0))
-                    .put("sort_ms", distributionJson(sortMicros, samples, 1000.0))
-                    .put("geometry_submit_ms", distributionJson(rasterMicros, samples, 1000.0))
+                    .put("preprocess_ms", cpuTimingDistribution(preprocessMicros))
+                    .put("sort_ms", cpuTimingDistribution(sortMicros))
+                    .put("geometry_submit_ms", JSONObject.NULL)
                     .put("gpu_wait_ms", JSONObject.NULL)
                     .put("gpu_complete_ms", JSONObject.NULL))
                 .put("sort_telemetry", sortTelemetrySummary())
@@ -1387,6 +1460,11 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
             var applied = 0
             var dropped = 0
             var fallbacks = 0
+            var cpuFrames = 0
+            var gpuFrames = 0
+            var gpuFallbacks = 0
+            var backendSwitches = 0
+            var previousBackend = -1L
             var maxPresentedLag = 0L
             for (index in 0 until samples) {
                 val flags = sortFlags[index]
@@ -1395,6 +1473,11 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                 if (flags and (1L shl 5) != 0L) applied += 1
                 if (flags and (1L shl 6) != 0L) dropped += 1
                 if (flags and (1L shl 7) != 0L) fallbacks += 1
+                val backend = (flags shr 9) and 3L
+                if (backend == 1L) gpuFrames += 1 else cpuFrames += 1
+                if (previousBackend >= 0L && backend != previousBackend) backendSwitches += 1
+                previousBackend = backend
+                if (flags and (1L shl 11) != 0L) gpuFallbacks += 1
                 maxPresentedLag = maxOf(maxPresentedLag, presentedOrderLag[index])
             }
             return JSONObject()
@@ -1403,6 +1486,15 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                 .put("applied_count", applied)
                 .put("dropped_count", dropped)
                 .put("sync_fallback_count", fallbacks)
+                .put("cpu_frame_count", cpuFrames)
+                .put("gpu_frame_count", gpuFrames)
+                .put("gpu_sort_fallback_count", gpuFallbacks)
+                .put("backend_switch_count", backendSwitches)
+                .put("adaptive_final_state", if (samples > 0) {
+                    adaptiveStateName(sortFlags[samples - 1])
+                } else {
+                    "disabled"
+                })
                 .put("max_presented_revision_lag", maxPresentedLag)
                 .put("stale_applied_count", 0)
         }
@@ -1419,6 +1511,22 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                 .put("p95", BenchmarkMath.nearestRank(sorted, count, 0.95).toDouble() / divisor)
                 .put("p99", BenchmarkMath.nearestRank(sorted, count, 0.99).toDouble() / divisor)
                 .put("max", sorted[count - 1].toDouble() / divisor)
+        }
+
+        private fun cpuTimingDistribution(values: LongArray): Any {
+            val filtered = LongArray(samples)
+            var count = 0
+            for (index in 0 until samples) {
+                if (((sortFlags[index] shr 9) and 3L) != 1L) {
+                    filtered[count] = values[index]
+                    count += 1
+                }
+            }
+            return if (count == 0) {
+                JSONObject.NULL
+            } else {
+                distributionJson(filtered, count, 1000.0)
+            }
         }
 
         private fun utcTimestamp(epochMs: Long): String =

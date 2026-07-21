@@ -10,6 +10,12 @@
 
 #include "../../../crates/gsplat-ffi-c/include/gsplat.h"
 
+/* Internal benchmark symbol; intentionally absent from the published v0.1
+ * header and Android library options. */
+extern int32_t gsplat_android_benchmark_set_order_backend(
+    GsplatSurfaceRenderer *renderer,
+    uint32_t backend);
+
 JNIEXPORT jint JNICALL Java_com_gsplat_example_GsplatJniSmoke_nativeVersionMajor(JNIEnv *env, jclass cls) {
   (void)env;
   (void)cls;
@@ -314,6 +320,23 @@ JNIEXPORT jint JNICALL Java_com_gsplat_android_NativeBridge_setSurfaceAsyncSortE
   return gsplat_surface_renderer_set_async_sort(
       handle->renderer,
       enabled == JNI_TRUE ? 1u : 0u);
+}
+
+JNIEXPORT jint JNICALL Java_com_gsplat_example_BenchmarkBridge_setSurfaceOrderBackend(
+    JNIEnv *env,
+    jclass cls,
+    jlong native_handle,
+    jint backend) {
+  (void)env;
+  (void)cls;
+
+  AndroidSurfaceRendererHandle *handle = android_handle_from_jlong(native_handle);
+  if (handle == NULL || handle->renderer == NULL || backend < 0 || backend > 2) {
+    return GSPLAT_ERROR_INVALID_ARGUMENT;
+  }
+  return gsplat_android_benchmark_set_order_backend(
+      handle->renderer,
+      (uint32_t)backend);
 }
 
 JNIEXPORT jint JNICALL Java_com_gsplat_android_NativeBridge_setSurfaceFrameLatency(

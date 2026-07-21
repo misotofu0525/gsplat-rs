@@ -21,3 +21,8 @@ engines that do not accept ASCII PLY. Regenerate it with:
 ```bash
 python3 tests/datasets/generate-minimal-binary.py
 ```
+
+Point-count scaling tiers are generated from a qualified full scene rather than
+committed as independent quality datasets. See `tests/datasets/README.md` and
+`tests/datasets/ply_ladder.py`; each generated ladder has its own source/output
+SHA-256 provenance document.

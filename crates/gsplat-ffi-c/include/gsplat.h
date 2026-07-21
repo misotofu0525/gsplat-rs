@@ -76,7 +76,10 @@ typedef struct GsplatSurfaceSortStats {
   uint32_t observed_result_revision_lag;
   /* bits: 0 refreshed, 1 uploaded, 2 scheduled, 3 scheduled revision valid,
    * 4 completed revision valid, 5 result applied, 6 stale dropped,
-   * 7 sync fallback, 8 observed result lag valid. */
+   * 7 sync fallback, 8 observed result lag valid, 9-10 actual order backend
+   * (0 CPU, 1 GPU), 11 GPU-to-CPU fallback, 12-14 adaptive state
+   * (0 disabled, 1 CPU learning, 2 CPU stable, 3 GPU probe, 4 GPU stable,
+   * 5 CPU probe, 6 cooldown). */
   uint32_t flags;
 } GsplatSurfaceSortStats;
 

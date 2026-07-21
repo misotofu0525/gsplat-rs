@@ -1,5 +1,6 @@
 //! WGPU renderer with a SortedAlpha reference path.
 
+mod direct_gpu_order;
 mod draw_pass;
 mod packed_atlas;
 mod packed_gpu;
@@ -29,7 +30,8 @@ pub use surface_presenter::SurfacePresenter;
 #[cfg(test)]
 use surface_presenter::{SurfacePagedRuntime, surface_resource_plan, try_prepare_then_commit};
 pub use surface_session::{
-    SurfaceFrameOutput, SurfaceFrameTimings, SurfaceRenderSession, SurfaceSortSchedule,
+    SurfaceAdaptiveState, SurfaceFrameOutput, SurfaceFrameTimings, SurfaceOrderBackend,
+    SurfaceOrderBackendUsed, SurfaceRenderSession, SurfaceSortSchedule,
 };
 
 const DEFAULT_PAGED_ATLAS_SLOTS: usize = 4;
@@ -154,6 +156,7 @@ impl RendererError {
             | Self::DirectScene(DirectSceneError::ResourceSizeOverflow) => ErrorCode::Unsupported,
             Self::GpuReadback | Self::GpuWait | Self::SurfaceWorker => ErrorCode::Internal,
             Self::DirectScene(DirectSceneError::SortedIndexCapacityExceeded)
+            | Self::DirectScene(DirectSceneError::GpuOrderInitialization(_))
             | Self::PagedAtlas(_) => ErrorCode::Internal,
             Self::Sort(_) => ErrorCode::Internal,
             Self::SurfacePresenter(err) => err.code(),
@@ -206,6 +209,8 @@ pub struct DirectScenePreflight {
 pub enum DirectSceneError {
     #[error("sorted index buffer capacity exceeded")]
     SortedIndexCapacityExceeded,
+    #[error("gpu order initialization failed: {0}")]
+    GpuOrderInitialization(String),
     #[error("direct scene resource size overflow")]
     ResourceSizeOverflow,
     #[error("direct scene resources exceed effective device limits: {0:?}")]
@@ -240,6 +245,8 @@ pub enum SurfacePresenterError {
     PagedAtlas(String),
     #[error("paged active atlas is not yet supported on surface presenters")]
     PagedAtlasUnsupported,
+    #[error("gpu ordering is only available for the direct geometry path")]
+    GpuOrderUnsupported,
 }
 
 impl SurfacePresenterError {
@@ -249,7 +256,8 @@ impl SurfacePresenterError {
             Self::SurfaceCreation
             | Self::NoAdapter
             | Self::DeviceCreation(_)
-            | Self::PagedAtlasUnsupported => ErrorCode::Unsupported,
+            | Self::PagedAtlasUnsupported
+            | Self::GpuOrderUnsupported => ErrorCode::Unsupported,
             Self::SceneNotLoaded => ErrorCode::SceneNotLoaded,
             Self::NoSurfaceFormat
             | Self::SurfaceConfigure(_)
@@ -259,7 +267,8 @@ impl SurfacePresenterError {
             Self::DirectScene(DirectSceneError::ResourceLimitExceeded(_))
             | Self::DirectScene(DirectSceneError::PackedResourceLimitExceeded(_))
             | Self::DirectScene(DirectSceneError::ResourceSizeOverflow) => ErrorCode::Unsupported,
-            Self::DirectScene(DirectSceneError::SortedIndexCapacityExceeded) => ErrorCode::Internal,
+            Self::DirectScene(DirectSceneError::SortedIndexCapacityExceeded)
+            | Self::DirectScene(DirectSceneError::GpuOrderInitialization(_)) => ErrorCode::Internal,
         }
     }
 }
@@ -904,6 +913,9 @@ pub(crate) fn make_surface_render_params(
         height,
         sh_degree,
         len,
+        order_stride_words: 1,
+        order_id_offset_words: 0,
+        _order_pad: [0; 2],
     }
 }
 
@@ -998,6 +1010,9 @@ pub(crate) struct GpuSurfaceRenderParams {
     height: u32,
     sh_degree: u32,
     len: u32,
+    order_stride_words: u32,
+    order_id_offset_words: u32,
+    _order_pad: [u32; 2],
 }
 
 #[cfg(test)]
@@ -2358,11 +2373,18 @@ pub fn packed_scene_preflight(
 struct DirectSceneResources {
     sorted_indices_buffer: wgpu::Buffer,
     params_buffer: wgpu::Buffer,
-    bind_group: wgpu::BindGroup,
+    cpu_bind_group: wgpu::BindGroup,
     capacity: usize,
+    count: usize,
     sh_degree: u32,
-    _source_buffer: wgpu::Buffer,
-    _sh_rest_buffer: wgpu::Buffer,
+    source_buffer: wgpu::Buffer,
+    sh_rest_buffer: wgpu::Buffer,
+    gpu_order: Option<DirectGpuSceneOrder>,
+}
+
+struct DirectGpuSceneOrder {
+    sorter: direct_gpu_order::DirectGpuOrder,
+    bind_group: wgpu::BindGroup,
 }
 
 impl DirectSceneResources {
@@ -2402,41 +2424,30 @@ impl DirectSceneResources {
             contents: bytemuck::cast_slice(sh_rest),
             usage: wgpu::BufferUsages::STORAGE,
         });
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: wgpu_label("gsplat-direct-bind-group"),
-            layout: bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: sorted_indices_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: source_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: sh_rest_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: params_buffer.as_entire_binding(),
-                },
-            ],
-        });
+        let cpu_bind_group = create_direct_bind_group(
+            device,
+            bind_group_layout,
+            "gsplat-direct-cpu-order-bind-group",
+            &sorted_indices_buffer,
+            &source_buffer,
+            &sh_rest_buffer,
+            &params_buffer,
+        );
 
         Ok(Self {
             sorted_indices_buffer,
             params_buffer,
-            bind_group,
+            cpu_bind_group,
             capacity,
+            count: scene.len(),
             sh_degree: scene.sh_degree as u32,
-            _source_buffer: source_buffer,
-            _sh_rest_buffer: sh_rest_buffer,
+            source_buffer,
+            sh_rest_buffer,
+            gpu_order: None,
         })
     }
 
-    fn prepare(
+    fn prepare_cpu(
         &self,
         queue: &wgpu::Queue,
         sorted_indices: &[u32],
@@ -2461,6 +2472,114 @@ impl DirectSceneResources {
         queue.write_buffer(&self.params_buffer, 0, bytemuck::bytes_of(&params));
         Ok(instance_count)
     }
+
+    fn ensure_gpu_order(
+        &mut self,
+        device: &wgpu::Device,
+        bind_group_layout: &wgpu::BindGroupLayout,
+    ) -> Result<(), DirectSceneError> {
+        if self.gpu_order.is_some() {
+            return Ok(());
+        }
+        let count =
+            u32::try_from(self.count).map_err(|_| DirectSceneError::SortedIndexCapacityExceeded)?;
+        let capacity = u32::try_from(self.capacity)
+            .map_err(|_| DirectSceneError::SortedIndexCapacityExceeded)?;
+        direct_gpu_order::DirectGpuOrder::validate_dispatch_limits(device, capacity, count)?;
+        #[cfg(not(target_arch = "wasm32"))]
+        let (validation_scope, oom_scope, internal_scope) = (
+            device.push_error_scope(wgpu::ErrorFilter::Validation),
+            device.push_error_scope(wgpu::ErrorFilter::OutOfMemory),
+            device.push_error_scope(wgpu::ErrorFilter::Internal),
+        );
+        let sorter = direct_gpu_order::DirectGpuOrder::new(
+            device,
+            &self.source_buffer,
+            &self.params_buffer,
+            capacity,
+            count,
+        )?;
+        let bind_group = create_direct_bind_group(
+            device,
+            bind_group_layout,
+            "gsplat-direct-gpu-order-bind-group",
+            sorter.final_pairs(),
+            &self.source_buffer,
+            &self.sh_rest_buffer,
+            &self.params_buffer,
+        );
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(error) = [
+            pollster::block_on(internal_scope.pop()),
+            pollster::block_on(oom_scope.pop()),
+            pollster::block_on(validation_scope.pop()),
+        ]
+        .into_iter()
+        .flatten()
+        .next()
+        {
+            return Err(DirectSceneError::GpuOrderInitialization(error.to_string()));
+        }
+        self.gpu_order = Some(DirectGpuSceneOrder { sorter, bind_group });
+        Ok(())
+    }
+
+    fn prepare_gpu(
+        &mut self,
+        device: &wgpu::Device,
+        bind_group_layout: &wgpu::BindGroupLayout,
+        queue: &wgpu::Queue,
+        camera: &Camera,
+        width: u32,
+        height: u32,
+    ) -> Result<u32, DirectSceneError> {
+        self.ensure_gpu_order(device, bind_group_layout)?;
+        let instance_count =
+            u32::try_from(self.count).map_err(|_| DirectSceneError::SortedIndexCapacityExceeded)?;
+        let mut params =
+            make_surface_render_params(camera, width, height, instance_count, self.sh_degree);
+        params.order_stride_words = 2;
+        params.order_id_offset_words = 1;
+        queue.write_buffer(&self.params_buffer, 0, bytemuck::bytes_of(&params));
+        Ok(instance_count)
+    }
+
+    fn gpu_order(&self) -> Option<&DirectGpuSceneOrder> {
+        self.gpu_order.as_ref()
+    }
+}
+
+fn create_direct_bind_group(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    label: &'static str,
+    order_buffer: &wgpu::Buffer,
+    source_buffer: &wgpu::Buffer,
+    sh_rest_buffer: &wgpu::Buffer,
+    params_buffer: &wgpu::Buffer,
+) -> wgpu::BindGroup {
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: wgpu_label(label),
+        layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: order_buffer.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: source_buffer.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: sh_rest_buffer.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 3,
+                resource: params_buffer.as_entire_binding(),
+            },
+        ],
+    })
 }
 
 fn create_direct_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
@@ -2606,7 +2725,7 @@ impl GpuRasterizer {
             .as_ref()
             .ok_or(RendererError::GpuDeviceCreation)?;
         let instance_count = direct_scene
-            .prepare(
+            .prepare_cpu(
                 &self.queue,
                 sorted_indices,
                 camera,
@@ -2623,7 +2742,7 @@ impl GpuRasterizer {
                 pass_label: "gsplat-offscreen-direct-pass",
                 view: &self.output_view,
                 pipeline: &self.direct_pipeline,
-                bind_group: &direct_scene.bind_group,
+                bind_group: &direct_scene.cpu_bind_group,
                 clear: wgpu::Color::TRANSPARENT,
                 vertex_count: 6,
                 instance_count,
