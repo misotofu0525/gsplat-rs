@@ -20,7 +20,6 @@ use crate::{
 struct SurfaceAdapterContext {
     info: wgpu::AdapterInfo,
     limits: wgpu::Limits,
-    effective_device_limits: wgpu::Limits,
 }
 
 pub(crate) struct SurfacePagedRuntime {
@@ -282,20 +281,53 @@ pub(crate) fn try_prepare_then_commit<State, Prepared, Error>(
     Ok(())
 }
 
-fn surface_effective_device_limits(
+fn surface_required_device_limits(
     adapter_limits: &wgpu::Limits,
+    resource_plan: &SurfaceResourcePlan,
 ) -> Result<wgpu::Limits, SurfacePresenterError> {
-    let mut effective_limits = wgpu::Limits::downlevel_defaults();
-    // Surface resource planning may raise this field to any dimension the
-    // adapter supports. Storage and buffer limits remain exactly what the
-    // subsequent device descriptor will request.
-    effective_limits.max_texture_dimension_2d = adapter_limits.max_texture_dimension_2d;
-    if !effective_limits.check_limits(adapter_limits) {
-        return Err(SurfacePresenterError::DeviceCreation(
-            "surface downlevel limits exceed adapter capabilities".to_string(),
-        ));
+    resource_plan.validate_selected_path()?;
+    if resource_plan.required_texture_dimension > adapter_limits.max_texture_dimension_2d {
+        return Err(SurfacePresenterError::DeviceCreation(format!(
+            "required texture dimension {} exceeds adapter limit {}",
+            resource_plan.required_texture_dimension, adapter_limits.max_texture_dimension_2d
+        )));
     }
-    Ok(effective_limits)
+
+    let required_storage_bytes = match resource_plan.geometry_path {
+        GeometryPath::SortedIndexDirect => resource_plan
+            .direct_preflight
+            .requirements
+            .iter()
+            .map(|requirement| requirement.required_bytes)
+            .max()
+            .unwrap_or(0),
+        GeometryPath::PackedAtlas | GeometryPath::PagedActiveAtlas => resource_plan
+            .packed_preflight
+            .sorted_indices_bytes
+            .max(resource_plan.packed_preflight.hot_record_storage_bytes),
+    };
+    let required_storage_binding_size = u32::try_from(required_storage_bytes).map_err(|_| {
+        SurfacePresenterError::DeviceCreation(format!(
+            "selected geometry path requires a {required_storage_bytes}-byte storage binding, exceeding the wgpu limit representation"
+        ))
+    })?;
+
+    let mut required_limits = wgpu::Limits::downlevel_defaults();
+    // Preserve the adapter's full resize headroom. SurfacePresenter may be
+    // created for a small window and later resized to a larger display; only
+    // storage/buffer limits are intentionally requested scene-by-scene.
+    required_limits.max_texture_dimension_2d = adapter_limits.max_texture_dimension_2d;
+    required_limits.max_storage_buffer_binding_size = required_limits
+        .max_storage_buffer_binding_size
+        .max(required_storage_binding_size);
+    required_limits.max_buffer_size = required_limits.max_buffer_size.max(required_storage_bytes);
+
+    if !required_limits.check_limits(adapter_limits) {
+        return Err(SurfacePresenterError::DeviceCreation(format!(
+            "surface requirements exceed adapter capabilities; requested={required_limits:?}; adapter={adapter_limits:?}"
+        )));
+    }
+    Ok(required_limits)
 }
 
 impl SurfacePresenter {
@@ -416,11 +448,9 @@ impl SurfacePresenter {
             .map_err(|_| SurfacePresenterError::NoAdapter)?;
 
         let adapter_limits = adapter.limits();
-        let effective_device_limits = surface_effective_device_limits(&adapter_limits)?;
         let adapter_context = SurfaceAdapterContext {
             info: adapter.get_info(),
             limits: adapter_limits,
-            effective_device_limits,
         };
         Self::from_surface_with_adapter_async(
             adapter,
@@ -444,10 +474,10 @@ impl SurfacePresenter {
         let SurfaceAdapterContext {
             info: adapter_info,
             limits: adapter_limits,
-            effective_device_limits,
         } = adapter_context;
-        // Surface sessions support runtime direct↔packed A/B switching, so
-        // preflight both storage layouts before creating the shared device.
+        // Plan against the adapter's physical limits first. Device creation
+        // then requests only the selected path's exact increase above portable
+        // defaults rather than copying the adapter maximum wholesale.
         let scene = renderer
             .scene()
             .ok_or(SurfacePresenterError::SceneNotLoaded)?;
@@ -468,20 +498,9 @@ impl SurfacePresenter {
             page_capacity,
             width,
             height,
-            &effective_device_limits,
+            &adapter_limits,
         )?;
-        resource_plan.validate_selected_path()?;
-        let required_texture_dimension = resource_plan.required_texture_dimension;
-        if required_texture_dimension > adapter_limits.max_texture_dimension_2d {
-            return Err(SurfacePresenterError::DeviceCreation(format!(
-                "required texture dimension {required_texture_dimension} exceeds adapter limit {}",
-                adapter_limits.max_texture_dimension_2d
-            )));
-        }
-        let mut required_limits = effective_device_limits;
-        required_limits.max_texture_dimension_2d = wgpu::Limits::downlevel_defaults()
-            .max_texture_dimension_2d
-            .max(required_texture_dimension);
+        let required_limits = surface_required_device_limits(&adapter_limits, &resource_plan)?;
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 label: wgpu_label("gsplat-surface-device"),
@@ -591,7 +610,9 @@ impl SurfacePresenter {
     ///
     /// This is an experimental A/B benchmark knob: callers must keep
     /// `renderer`'s loaded scene in sync with the presenter that was created
-    /// from it.
+    /// from it. The device was sized for the initially selected path, so a
+    /// target path needing larger bindings can return an error; preparation is
+    /// transactional and leaves the current path intact in that case.
     pub fn set_geometry_path(
         &mut self,
         path: GeometryPath,
@@ -910,26 +931,174 @@ mod tests {
         assert!(state.target_camera.is_none());
     }
 
-    #[test]
-    fn surface_preflight_uses_effective_requested_storage_limits() {
+    fn adapter_limits(storage_bytes: u32, buffer_bytes: u64) -> wgpu::Limits {
         let mut adapter_limits = wgpu::Limits::downlevel_defaults();
-        adapter_limits.max_storage_buffer_binding_size = 256 * 1024 * 1024;
-        adapter_limits.max_buffer_size = 256 * 1024 * 1024;
-        let adapter_preflight = crate::direct_scene_preflight(3_000_000, 0, &adapter_limits)
-            .expect("adapter preflight");
-        assert_eq!(adapter_preflight.path, crate::DirectScenePath::Direct);
+        adapter_limits.max_storage_buffer_binding_size = storage_bytes;
+        adapter_limits.max_buffer_size = buffer_bytes;
+        adapter_limits
+    }
 
-        let effective_limits = super::surface_effective_device_limits(&adapter_limits)
-            .expect("effective device limits");
+    fn resource_plan(
+        path: GeometryPath,
+        scene_splats: usize,
+        sh_degree: u8,
+        page_count: usize,
+        page_capacity: usize,
+        limits: &wgpu::Limits,
+    ) -> SurfaceResourcePlan {
+        surface_resource_plan(
+            path,
+            scene_splats,
+            sh_degree,
+            page_count,
+            page_capacity,
+            716,
+            1_600,
+            limits,
+        )
+        .expect("resource plan")
+    }
+
+    #[test]
+    fn small_direct_scene_keeps_portable_limits_on_larger_adapter() {
+        let mut adapter = adapter_limits(256 << 20, 512 << 20);
+        adapter.max_texture_dimension_2d = 16_384;
+        let plan = resource_plan(GeometryPath::SortedIndexDirect, 279_199, 3, 0, 0, &adapter);
+
+        let requested = surface_required_device_limits(&adapter, &plan).expect("limits");
+
+        assert_eq!(requested.max_texture_dimension_2d, 16_384);
         assert_eq!(
-            effective_limits.max_storage_buffer_binding_size,
+            requested.max_storage_buffer_binding_size,
             wgpu::Limits::downlevel_defaults().max_storage_buffer_binding_size
         );
-        let effective_preflight = crate::direct_scene_preflight(3_000_000, 0, &effective_limits)
-            .expect("effective preflight");
         assert_eq!(
-            effective_preflight.path,
-            crate::DirectScenePath::ActiveAtlasRequired
+            requested.max_buffer_size,
+            wgpu::Limits::downlevel_defaults().max_buffer_size
+        );
+    }
+
+    #[test]
+    fn larger_adapter_requests_exact_750k_degree_three_binding() {
+        let adapter = adapter_limits(256 << 20, 512 << 20);
+        let plan = resource_plan(GeometryPath::SortedIndexDirect, 750_000, 3, 0, 0, &adapter);
+
+        let requested = surface_required_device_limits(&adapter, &plan).expect("limits");
+
+        assert_eq!(requested.max_storage_buffer_binding_size, 135_000_000);
+        assert_eq!(requested.max_buffer_size, 256 << 20);
+        assert_eq!(
+            crate::direct_scene_preflight(750_000, 3, &requested)
+                .expect("preflight")
+                .path,
+            crate::DirectScenePath::Direct
+        );
+    }
+
+    #[test]
+    fn surface_larger_than_adapter_texture_limit_is_rejected() {
+        let adapter = adapter_limits(256 << 20, 512 << 20);
+        let plan = surface_resource_plan(
+            GeometryPath::SortedIndexDirect,
+            279_199,
+            3,
+            0,
+            0,
+            adapter.max_texture_dimension_2d + 1,
+            1_600,
+            &adapter,
+        )
+        .expect("resource plan");
+
+        let error = surface_required_device_limits(&adapter, &plan).unwrap_err();
+
+        assert!(matches!(error, SurfacePresenterError::DeviceCreation(_)));
+        assert!(error.to_string().contains("required texture dimension"));
+    }
+
+    #[test]
+    fn physical_128_mib_adapter_rejects_750k_degree_three_scene() {
+        let adapter = wgpu::Limits::downlevel_defaults();
+        let plan = resource_plan(GeometryPath::SortedIndexDirect, 750_000, 3, 0, 0, &adapter);
+
+        let error = surface_required_device_limits(&adapter, &plan).unwrap_err();
+        let SurfacePresenterError::DirectScene(DirectSceneError::ResourceLimitExceeded(report)) =
+            error
+        else {
+            panic!("unexpected error: {error:?}");
+        };
+        assert_eq!(report.effective_storage_binding_limit, 128 << 20);
+        assert_eq!(report.max_direct_splats, 745_654);
+        assert_eq!(report.requirements[2].required_bytes, 135_000_000);
+    }
+
+    #[test]
+    fn direct_scene_above_256_mib_raises_binding_and_buffer_exactly() {
+        let adapter = adapter_limits(512 << 20, 512 << 20);
+        let plan = resource_plan(
+            GeometryPath::SortedIndexDirect,
+            1_500_000,
+            3,
+            0,
+            0,
+            &adapter,
+        );
+
+        let requested = surface_required_device_limits(&adapter, &plan).expect("limits");
+
+        assert_eq!(requested.max_storage_buffer_binding_size, 270_000_000);
+        assert_eq!(requested.max_buffer_size, 270_000_000);
+    }
+
+    #[test]
+    fn packed_selection_does_not_request_oversized_direct_binding() {
+        let adapter = adapter_limits(512 << 20, 512 << 20);
+        let plan = resource_plan(GeometryPath::PackedAtlas, 3_000_000, 3, 0, 0, &adapter);
+
+        let requested = surface_required_device_limits(&adapter, &plan).expect("limits");
+
+        assert_eq!(
+            plan.direct_preflight.path,
+            DirectScenePath::ActiveAtlasRequired
+        );
+        assert_eq!(plan.packed_preflight.hot_record_storage_bytes, 60_000_000);
+        assert_eq!(
+            requested.max_storage_buffer_binding_size,
+            wgpu::Limits::downlevel_defaults().max_storage_buffer_binding_size
+        );
+        assert_eq!(
+            requested.max_buffer_size,
+            wgpu::Limits::downlevel_defaults().max_buffer_size
+        );
+    }
+
+    #[test]
+    fn paged_selection_requests_only_fixed_resident_capacity() {
+        let adapter = wgpu::Limits::downlevel_defaults();
+        let page_capacity = 65_536;
+        let scene_splats = 10_000_000;
+        let plan = resource_plan(
+            GeometryPath::PagedActiveAtlas,
+            scene_splats,
+            3,
+            scene_splats.div_ceil(page_capacity),
+            page_capacity,
+            &adapter,
+        );
+
+        let requested = surface_required_device_limits(&adapter, &plan).expect("limits");
+
+        assert_eq!(
+            plan.packed_preflight.hot_record_storage_bytes,
+            4 * 65_536 * 20
+        );
+        assert_eq!(
+            requested.max_storage_buffer_binding_size,
+            wgpu::Limits::downlevel_defaults().max_storage_buffer_binding_size
+        );
+        assert_eq!(
+            requested.max_buffer_size,
+            wgpu::Limits::downlevel_defaults().max_buffer_size
         );
     }
 }

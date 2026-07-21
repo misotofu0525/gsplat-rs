@@ -365,8 +365,10 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                 )
                 if (handle == 0L) {
                     val rc = createError[0]
-                    val message = NativeBridge.errorMessage(rc)
-                    Log.e(TAG, "createSurfaceRenderer failed rc=$rc error=$message")
+                    val detail = NativeBridge.lastErrorMessage()
+                        .ifBlank { NativeBridge.errorMessage(rc) }
+                    val message = detail.replace('\n', ' ').take(240)
+                    Log.e(TAG, "createSurfaceRenderer failed rc=$rc error=$detail")
                     running = false
                     updateStatus("state=create_failed rc=$rc error=$message")
                     return@Thread
