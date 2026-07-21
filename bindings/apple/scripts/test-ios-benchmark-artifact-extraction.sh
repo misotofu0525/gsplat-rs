@@ -35,5 +35,5 @@ if python3 bindings/apple/scripts/extract-ios-benchmark-artifacts.py \
   echo "extractor unexpectedly reused an existing destination" >&2
   exit 1
 fi
-rg -q 'destination already exists' "$TMP_DIR/reuse.stderr"
+grep -Fq 'destination already exists' "$TMP_DIR/reuse.stderr"
 echo "iOS benchmark artifact extraction tests passed"

@@ -24,7 +24,7 @@ if python3 "$VALIDATOR" "$TMP_DIR/bad-schema" >"$TMP_DIR/bad-schema.out" 2>&1; t
   echo "expected bad schema to fail" >&2
   exit 1
 fi
-rg -q 'schema must equal' "$TMP_DIR/bad-schema.out"
+grep -Fq 'schema must equal' "$TMP_DIR/bad-schema.out"
 
 cp -R "$VALID" "$TMP_DIR/bad-count"
 python3 - "$TMP_DIR/bad-count/summary.json" <<'PY'
@@ -38,7 +38,7 @@ if python3 "$VALIDATOR" "$TMP_DIR/bad-count" >"$TMP_DIR/bad-count.out" 2>&1; the
   echo "expected bad count to fail" >&2
   exit 1
 fi
-rg -q 'sample_count does not match' "$TMP_DIR/bad-count.out"
+grep -Fq 'sample_count does not match' "$TMP_DIR/bad-count.out"
 
 cp -R "$VALID" "$TMP_DIR/bad-percentile"
 python3 - "$TMP_DIR/bad-percentile/summary.json" <<'PY'
@@ -52,7 +52,7 @@ if python3 "$VALIDATOR" "$TMP_DIR/bad-percentile" >"$TMP_DIR/bad-percentile.out"
   echo "expected bad percentile to fail" >&2
   exit 1
 fi
-rg -q 'frame_wall_ms.p95 mismatch' "$TMP_DIR/bad-percentile.out"
+grep -Fq 'frame_wall_ms.p95 mismatch' "$TMP_DIR/bad-percentile.out"
 
 cp -R "$VALID" "$TMP_DIR/bad-nonfinite"
 sed -i.bak '1s/"call_ms":1.0/"call_ms":NaN/' "$TMP_DIR/bad-nonfinite/frames.jsonl"
@@ -61,7 +61,7 @@ if python3 "$VALIDATOR" "$TMP_DIR/bad-nonfinite" >"$TMP_DIR/bad-nonfinite.out" 2
   echo "expected non-finite sample to fail" >&2
   exit 1
 fi
-rg -q 'non-finite JSON number is forbidden' "$TMP_DIR/bad-nonfinite.out"
+grep -Fq 'non-finite JSON number is forbidden' "$TMP_DIR/bad-nonfinite.out"
 
 cp -R "$VALID" "$TMP_DIR/unavailable-build-state"
 python3 - "$TMP_DIR/unavailable-build-state/manifest.json" <<'PY'
@@ -110,7 +110,7 @@ if python3 "$VALIDATOR" "$TMP_DIR/unlisted-phase-timing" >"$TMP_DIR/unlisted-pha
   echo "expected unlisted null phase timing to fail" >&2
   exit 1
 fi
-rg -q 'null sort_ms must be listed as unavailable' "$TMP_DIR/unlisted-phase-timing.out"
+grep -Fq 'null sort_ms must be listed as unavailable' "$TMP_DIR/unlisted-phase-timing.out"
 
 cp -R "$TMP_DIR/unavailable-build-state" "$TMP_DIR/unlisted-build-state"
 python3 - "$TMP_DIR/unlisted-build-state/manifest.json" <<'PY'
@@ -124,7 +124,7 @@ if python3 "$VALIDATOR" "$TMP_DIR/unlisted-build-state" >"$TMP_DIR/unlisted-buil
   echo "expected unlisted null build state to fail" >&2
   exit 1
 fi
-rg -q 'null build.dirty must be listed as unavailable' "$TMP_DIR/unlisted-build-state.out"
+grep -Fq 'null build.dirty must be listed as unavailable' "$TMP_DIR/unlisted-build-state.out"
 
 cp -R "$VALID" "$TMP_DIR/async-valid"
 python3 - "$TMP_DIR/async-valid" <<'PY'
@@ -184,6 +184,6 @@ if python3 "$VALIDATOR" "$TMP_DIR/async-bad-lag" >"$TMP_DIR/async-bad-lag.out" 2
   echo "expected over-limit async order lag to fail" >&2
   exit 1
 fi
-rg -q 'presented async order lag exceeds 2' "$TMP_DIR/async-bad-lag.out"
+grep -Fq 'presented async order lag exceeds 2' "$TMP_DIR/async-bad-lag.out"
 
 echo "benchmark artifact fixture tests passed"
