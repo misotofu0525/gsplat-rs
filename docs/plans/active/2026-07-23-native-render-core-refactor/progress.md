@@ -15,18 +15,22 @@ their own single block in the same format.
 A0 = Accepted
 A1 = Accept
 A2 = Accepted
+A3 = Active
 <!-- gsplat-program-task-states: end -->
 
 ## Program status
 
 - Plan bundle: committed at `c478252246733f6dc209686091caf183e1ef7f06`.
 - Implementation: Package A started; A1 guardrails and the complete A2
-  strategy-free data/API extraction are root-accepted.
+  strategy-free data/API extraction are root-accepted. A3a is active in an
+  isolated worktree.
 - Current work package: A — responsibility extraction.
-- Active package task: none between accepted package boundaries.
+- Active package task: A3a — Resident CPU ownership, ABI layout and encoder
+  extraction.
 - Last completed task: A2 — strategy-free data/layout/view and stable API leaf
   extraction.
-- Next eligible task: A3 — scene ownership, Resident layout and preflight.
+- Next eligible task after acceptance: A3b — Direct/Packed resource accounting
+  and preflight ownership.
 - Integration branch: `codex/native-render-core-refactor`.
 - Frozen source implementation closeout:
   `5db2520e0d7a0ef1c68a78bdb9abc6fc588c5186`.
@@ -76,6 +80,75 @@ Then record the code commit (if any), evidence paths, commands, result and next
 eligible task. Do not rewrite the architecture in this ledger.
 
 ## Current task
+
+### A3a — Extract Resident CPU ownership, ABI layout and encoder
+
+- Parent task state: A3 Active
+- Subtask state: Active
+- Started: 2026-07-23 21:02 CST
+- Production baseline commit:
+  `e03a26901fc92e7b449cbf07ca38c80eb0a06963`
+- Exact source baseline before production edits:
+  - `crates/gsplat-render-wgpu/src/resident_scene.rs`: 1,881 physical LOC
+  - architecture grandfather baseline: 1,881 physical LOC
+- Hypothesis: the exact Resident CPU owner, fixed GPU ABI layout, transactional
+  encoder and their tests can move into small private `scene/` and existing
+  `data/layout.rs` modules without changing one encoded bit, source order,
+  upload-staging lifecycle, public crate-root path, allocation behavior,
+  render/preflight policy or any GPU command.
+- Dependencies: A2 Accepted at
+  `d041a4a3cbefaa70f8647f65ff575727acbb3589`; root closeout commit
+  `e03a26901fc92e7b449cbf07ca38c80eb0a06963` is the task production baseline.
+- Allowed scope:
+  - private focused modules under `crates/gsplat-render-wgpu/src/scene/` for
+    Resident CPU ownership, builder/codec, the existing CPU byte-accounting
+    value, and split tests; every new Rust file remains below 800 physical LOC
+  - move the existing Resident ABI constants and `repr(C)` storage structs into
+    `data/layout.rs`, with compile-time size/alignment/offset assertions
+  - delete or reduce `resident_scene.rs` to a temporary compatibility facade;
+    no duplicated owner or implementation may remain
+  - private module declarations/re-exports and compilation-required mechanical
+    imports in `lib.rs`, `resident_gpu.rs` and existing Resident tests
+  - this ledger and the exact A1 architecture-policy ratchet entry for
+    `resident_scene.rs`; remove the entry only if the legacy file is removed or
+    is below the declared target
+- Forbidden scope:
+  - Direct/Packed selection, resource limits, requested wgpu limits, preflight
+    formulas or error policy; these belong to A3b
+  - GPU buffers, bind groups, queue submission, shaders, projection, raster,
+    sort, visibility, point membership, SH degree/precision, camera, resolution
+    or platform lifecycle
+  - new runtime/renderer/plan owner types, public `scene`/`data` namespaces,
+    public signature/semantic changes, C ABI/header, JNI/Kotlin, Swift, Web API,
+    examples, Cargo dependencies/features, benchmarks or device experiments
+  - moving unrelated `packed_atlas` tests, merging, rebasing, pushing or editing
+    another worktree
+- Required preservation:
+  - every existing public crate-root Resident name, derive, field, error
+    variant/message and numeric layout remains source-compatible
+  - SH0/1/2/3 encoded bytes, chunk metadata, covariance, source ordering,
+    reports, overflow/allocation errors and upload-staging release behavior are
+    bit-for-bit unchanged
+  - `ResidentCpuByteAccounting` may move but its formula and result remain
+    unchanged; A3a does not expand it into the A3b preflight model
+- Hard gates:
+  - architecture checker/self-tests pass; the 1,881-line grandfather entry is
+    removed or ratcheted exactly and every replacement production file is below
+    800 physical LOC
+  - format, locked workspace check/tests/clippy/rustdoc, render-wgpu tests, wasm
+    check and FFI smoke pass
+  - a repository-external temporary crate imports the existing public Resident
+    root names and validates ABI sizes/offsets
+  - `git diff --check`, exact scope and single-definition audits pass
+- Performance observations: none; A3a is a behavior-only ownership extraction
+- Required endpoints for claim: none in the writer task. Root acceptance owns a
+  forced real-GPU conformance run; A065 full-count validation is deferred to
+  the A3 package boundary after A3b.
+- Performance correction used: no
+- Known correctness issues: none
+- Closeout requirement: record the fixed implementation SHA, exact file sizes,
+  verification and result here, but keep `A3 = Active`; only root acceptance of
+  A3b may close the parent package.
 
 ### A2b — Extract the stable API leaf
 
