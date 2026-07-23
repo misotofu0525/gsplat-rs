@@ -72,30 +72,105 @@ struct ScanLevel {
     dynamic_offset: u32,
 }
 
-pub(crate) struct GpuPrefixScan {
+#[derive(Clone, Copy)]
+pub(super) struct GpuPrefixScanKernelProfile {
+    pub(super) bind_group_layout: &'static str,
+    pub(super) shader: &'static str,
+    pub(super) pipeline_layout: &'static str,
+    pub(super) scan_pipeline: &'static str,
+    pub(super) add_offsets_pipeline: &'static str,
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct GpuPrefixScanGraphProfile {
+    pub(super) sums: &'static str,
+    pub(super) params: &'static str,
+    pub(super) bind_group: &'static str,
+    pub(super) sums_usage: wgpu::BufferUsages,
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct GpuPrefixScanPassLabels {
+    pub(super) scan: &'static str,
+    pub(super) add_offsets: &'static str,
+}
+
+pub(super) struct GpuPrefixScanKernel {
+    layout: wgpu::BindGroupLayout,
     scan_pipeline: wgpu::ComputePipeline,
     add_offsets_pipeline: wgpu::ComputePipeline,
+}
+
+pub(super) struct GpuPrefixScanGraph {
     levels: Vec<ScanLevel>,
     _sums: Vec<wgpu::Buffer>,
     _params: wgpu::Buffer,
 }
 
-impl GpuPrefixScan {
-    pub(crate) fn new(
+pub(crate) struct GpuPrefixScan {
+    kernel: GpuPrefixScanKernel,
+    graph: GpuPrefixScanGraph,
+}
+
+impl GpuPrefixScanKernel {
+    pub(super) fn new(device: &wgpu::Device, profile: GpuPrefixScanKernelProfile) -> Self {
+        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: wgpu_label(profile.bind_group_layout),
+            entries: &[
+                storage_layout(0, false),
+                storage_layout(1, false),
+                uniform_layout(2, true, NonZeroU64::new(size_of::<ScanParams>() as u64)),
+            ],
+        });
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: wgpu_label(profile.shader),
+            source: wgpu::ShaderSource::Wgsl(
+                include_str!("../../shaders/gpu_prefix_scan.wgsl").into(),
+            ),
+        });
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: wgpu_label(profile.pipeline_layout),
+            bind_group_layouts: &[&layout],
+            immediate_size: 0,
+        });
+        let scan_pipeline = create_compute_pipeline(
+            device,
+            &shader,
+            &pipeline_layout,
+            "scan_blocks",
+            profile.scan_pipeline,
+        );
+        let add_offsets_pipeline = create_compute_pipeline(
+            device,
+            &shader,
+            &pipeline_layout,
+            "add_block_offsets",
+            profile.add_offsets_pipeline,
+        );
+        Self {
+            layout,
+            scan_pipeline,
+            add_offsets_pipeline,
+        }
+    }
+
+    pub(super) fn create_graph(
+        &self,
         device: &wgpu::Device,
         data: &wgpu::Buffer,
         count: u32,
         dispatch_limit: u32,
-    ) -> Result<Self, ResidentGpuError> {
+        profile: GpuPrefixScanGraphProfile,
+    ) -> Result<GpuPrefixScanGraph, ResidentGpuError> {
         let level_counts = scan_level_counts(count);
         let sums = level_counts
             .iter()
             .map(|&(_, groups)| {
                 storage_buffer(
                     device,
-                    "gsplat-external-radix-scan-sums",
+                    profile.sums,
                     u64::from(groups) * WORD_BYTES,
-                    wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+                    profile.sums_usage,
                 )
             })
             .collect::<Vec<_>>();
@@ -113,43 +188,10 @@ impl GpuPrefixScan {
                 .copy_from_slice(bytemuck::bytes_of(&params));
         }
         let params = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: wgpu_label("gsplat-external-radix-scan-params"),
+            label: wgpu_label(profile.params),
             contents: &params_bytes,
             usage: wgpu::BufferUsages::UNIFORM,
         });
-        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: wgpu_label("gsplat-external-radix-scan-bgl"),
-            entries: &[
-                storage_layout(0, false),
-                storage_layout(1, false),
-                uniform_layout(2, true, NonZeroU64::new(size_of::<ScanParams>() as u64)),
-            ],
-        });
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: wgpu_label("gsplat-external-radix-scan-shader"),
-            source: wgpu::ShaderSource::Wgsl(
-                include_str!("../../shaders/gpu_prefix_scan.wgsl").into(),
-            ),
-        });
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: wgpu_label("gsplat-external-radix-scan-pipeline-layout"),
-            bind_group_layouts: &[&layout],
-            immediate_size: 0,
-        });
-        let scan_pipeline = create_compute_pipeline(
-            device,
-            &shader,
-            &pipeline_layout,
-            "scan_blocks",
-            "gsplat-external-radix-scan-pipeline",
-        );
-        let add_offsets_pipeline = create_compute_pipeline(
-            device,
-            &shader,
-            &pipeline_layout,
-            "add_block_offsets",
-            "gsplat-external-radix-add-offsets-pipeline",
-        );
         let levels = level_counts
             .iter()
             .enumerate()
@@ -158,50 +200,98 @@ impl GpuPrefixScan {
                 Ok(ScanLevel {
                     bind_group: create_scan_bind_group(
                         device,
-                        &layout,
+                        &self.layout,
                         scan_data,
                         &sums[level],
                         &params,
+                        profile.bind_group,
                     ),
                     dispatch: Dispatch2d::for_workgroups(groups, dispatch_limit)?,
                     dynamic_offset: level as u32 * stride,
                 })
             })
             .collect::<Result<Vec<_>, ResidentGpuError>>()?;
-        Ok(Self {
-            scan_pipeline,
-            add_offsets_pipeline,
+        Ok(GpuPrefixScanGraph {
             levels,
             _sums: sums,
             _params: params,
         })
     }
 
-    pub(crate) fn encode(&self, encoder: &mut wgpu::CommandEncoder) {
-        for level in &self.levels {
+    pub(super) fn encode(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        graph: &GpuPrefixScanGraph,
+        labels: GpuPrefixScanPassLabels,
+    ) {
+        for level in &graph.levels {
             encode_compute(
                 encoder,
                 &self.scan_pipeline,
                 &level.bind_group,
                 &[level.dynamic_offset],
                 level.dispatch,
-                "gsplat-external-radix-scan-pass",
+                labels.scan,
             );
         }
-        for level in self.levels[..self.levels.len() - 1].iter().rev() {
+        for level in graph.levels[..graph.levels.len() - 1].iter().rev() {
             encode_compute(
                 encoder,
                 &self.add_offsets_pipeline,
                 &level.bind_group,
                 &[level.dynamic_offset],
                 level.dispatch,
-                "gsplat-external-radix-add-offsets-pass",
+                labels.add_offsets,
             );
         }
     }
 }
 
-fn scan_level_counts(mut count: u32) -> Vec<(u32, u32)> {
+impl GpuPrefixScan {
+    pub(crate) fn new(
+        device: &wgpu::Device,
+        data: &wgpu::Buffer,
+        count: u32,
+        dispatch_limit: u32,
+    ) -> Result<Self, ResidentGpuError> {
+        let kernel = GpuPrefixScanKernel::new(
+            device,
+            GpuPrefixScanKernelProfile {
+                bind_group_layout: "gsplat-external-radix-scan-bgl",
+                shader: "gsplat-external-radix-scan-shader",
+                pipeline_layout: "gsplat-external-radix-scan-pipeline-layout",
+                scan_pipeline: "gsplat-external-radix-scan-pipeline",
+                add_offsets_pipeline: "gsplat-external-radix-add-offsets-pipeline",
+            },
+        );
+        let graph = kernel.create_graph(
+            device,
+            data,
+            count,
+            dispatch_limit,
+            GpuPrefixScanGraphProfile {
+                sums: "gsplat-external-radix-scan-sums",
+                params: "gsplat-external-radix-scan-params",
+                bind_group: "gsplat-external-radix-scan-bg",
+                sums_usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            },
+        )?;
+        Ok(Self { kernel, graph })
+    }
+
+    pub(crate) fn encode(&self, encoder: &mut wgpu::CommandEncoder) {
+        self.kernel.encode(
+            encoder,
+            &self.graph,
+            GpuPrefixScanPassLabels {
+                scan: "gsplat-external-radix-scan-pass",
+                add_offsets: "gsplat-external-radix-add-offsets-pass",
+            },
+        );
+    }
+}
+
+pub(super) fn scan_level_counts(mut count: u32) -> Vec<(u32, u32)> {
     debug_assert!(count > 0);
     let mut levels = Vec::new();
     loop {
@@ -220,9 +310,10 @@ fn create_scan_bind_group(
     data: &wgpu::Buffer,
     sums: &wgpu::Buffer,
     params: &wgpu::Buffer,
+    label: &'static str,
 ) -> wgpu::BindGroup {
     device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: wgpu_label("gsplat-external-radix-scan-bg"),
+        label: wgpu_label(label),
         layout,
         entries: &[
             entry(0, data),
