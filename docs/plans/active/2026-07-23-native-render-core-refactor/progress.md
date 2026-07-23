@@ -16,6 +16,7 @@ A0 = Accepted
 A1 = Accept
 A2 = Accepted
 A3 = Accepted
+A4 = Active
 <!-- gsplat-program-task-states: end -->
 
 ## Program status
@@ -25,11 +26,12 @@ A3 = Accepted
   strategy-free data/API extraction and the complete A3 scene/resource
   ownership extraction are root-accepted.
 - Current work package: A — responsibility extraction.
-- Active package task: none; A3 is closed and A4 has not yet been activated.
-- Last completed task: A3b — GPU resource planning and Direct/Packed preflight
-  ownership extraction.
-- Next eligible task: A4 — existing CPU order primitives, to be activated in a
-  separate plan-only commit and isolated worktree.
+- Active package task: A4a — `gsplat-sort` CPU backend/SIMD/radix ownership
+  extraction in an isolated worktree.
+- Last completed task: A3 — scene ownership, Resident layout and resource
+  preflight extraction.
+- Next eligible task: A4a only. A4b and every later package remain inactive
+  until root review accepts A4a.
 - Integration branch: `codex/native-render-core-refactor`.
 - Frozen source implementation closeout:
   `5db2520e0d7a0ef1c68a78bdb9abc6fc588c5186`.
@@ -96,6 +98,89 @@ eligible task. Do not rewrite the architecture in this ledger.
   this section and the current policy are authoritative for later tasks.
 
 ## Current task
+
+### A4a — Extract the existing `gsplat-sort` CPU owner
+
+- Parent task state: A4 Active
+- Subtask state: Active
+- Started: 2026-07-23
+- Production baseline commit:
+  `3128b5e` (`docs: accept A3 scene resource extraction`)
+- Exact source baseline before production edits:
+  - `crates/gsplat-sort/src/lib.rs`: 870 physical LOC
+  - `crates/gsplat-sort/src/radix.rs`: 455 physical LOC
+- Hypothesis: the existing `CpuSortBackend`, reusable scratch, packed-pair
+  scalar/NEON/AVX2 helpers and stable serial/Rayon radix implementation can be
+  moved behind focused private modules while keeping the crate-root API and
+  every sorted bit unchanged. The historical `GpuOddEvenSortBackend` may move
+  mechanically into one compatibility module so `lib.rs` becomes a real
+  facade; it does not become a product GPU candidate.
+- Dependencies: A3 Accepted at `3128b5e`; A2's strategy-free data/API leaves
+  remain unchanged. No A4b/A5 or later task is active.
+- Required dependency direction:
+  - crate root owns the public facade and re-exports only;
+  - one private CPU backend/workspace owner composes packed-pair and radix
+    leaves;
+  - packed-pair helpers own only the current scalar and target-gated NEON/AVX2
+    bit packing/unpacking;
+  - radix owns only the current stable serial/Rayon histogram, prefix and
+    scatter mechanics;
+  - the odd-even WGPU tool remains isolated compatibility/conformance code and
+    cannot be imported by CPU modules.
+- Allowed production scope:
+  - exact file allowlist: `crates/gsplat-sort/src/lib.rs`, new private
+    `src/cpu.rs`, existing `src/radix.rs`, new private
+    `src/gpu_odd_even.rs`, and tests colocated in those same modules;
+  - `crates/gsplat-sort/README.md` only when needed to describe the unchanged
+    ownership;
+  - mechanical visibility/import/re-export changes that preserve every public
+    crate-root name, signature, trait implementation, error and behavior;
+  - the A4 architecture grandfather entry may be lowered or removed only when
+    its semantic exit condition is actually satisfied. Physical LOC is review
+    information, not the decision.
+- Forbidden scope:
+  - renderer files, Surface/offscreen lifecycle, FFI/JNI/Swift/Web consumers,
+    examples, `crates/gsplat-sort/Cargo.toml`, `Cargo.lock`,
+    `shaders/odd_even_sort.wgsl`, Cargo dependencies/features or benchmark
+    protocol;
+  - depth/key preprocess, camera math or Rayon chunking currently owned by the
+    renderer; those belong to a later A4b;
+  - any radix bit width, bucket count, parallel threshold/chunk cap, tie rule,
+    packed key/value representation, target-feature detection, unsafe
+    instruction sequence or allocation/reuse behavior change;
+  - any change to the compatibility GPU sorter's O(N^2) algorithm, 4,096-item
+    ceiling, lazy initialization, device limits, submit/readback lifecycle or
+    `BackendUnavailable`/`BackendFailure` behavior;
+  - new SIMD kernels, calibration, performance selection, CPU/GPU/Adaptive
+    policy, optimization claim, merge/rebase/push or edits in another worktree.
+- Hard gates:
+  - pre/post public API and trait compile probes match, including
+    `SortBackend`, `SortError`, `CpuSortBackend` and
+    `GpuOddEvenSortBackend`;
+  - pre/post test names and assertions migrate without loss, including empty,
+    singleton, non-lane multiples, mismatch errors, every radix digit, large
+    parallel inputs, immutable keys, nonsequential values, duplicate-key
+    stability and full-64-bit pair ordering;
+  - deterministic scalar reference parity holds for scalar/SIMD/Rayon serial
+    and parallel paths; the WASM path remains serial;
+  - existing AArch64 NEON execution is exercised on the Apple M4 and the crate
+    still checks for wasm32; x86 AVX2 remains compile-gated unless an x86
+    endpoint is actually available;
+  - `cargo test -p gsplat-sort --lib`, the unchanged
+    `gsplat-render-wgpu --lib` consumer tests, format, architecture policy,
+    locked workspace tests, all-target Clippy, Rustdoc and WASM pass;
+  - source size follows responsibility: advisory notices are allowed and only
+    the shared 2,500-line mixed-owner circuit breaker needs a finite exception.
+    Do not split or move tests to hit a numeric threshold.
+- Performance observations: none. A4a is a behavior-preserving ownership task;
+  its manual microbench remains ignored and no speed percentage is a gate.
+- Required endpoints for claim: Apple M4 native unit path plus wasm32 compile;
+  root may use A065 later at the A4 package boundary, not in the writer task.
+- Performance correction used: no
+- Known correctness issues: none
+- Closeout requirement: root reviews one fixed writer SHA, proves symbol/test
+  inventory and public API parity, records final responsibilities, then either
+  Accepts/Rejects/Defers A4a. A4b is activated only in a later plan-only commit.
 
 ### A3b — Extract GPU resource planning and Direct/Packed preflight
 
