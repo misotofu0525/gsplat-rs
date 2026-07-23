@@ -6,11 +6,17 @@
 
 ## Program status
 
-- Plan bundle: written locally on 2026-07-23.
+- Plan bundle: committed at `c478252246733f6dc209686091caf183e1ef7f06`.
 - Implementation: not started under this plan.
 - Current work package: A — responsibility extraction.
 - Active package task: none.
-- Next eligible task: A0 — freeze integration baseline and evidence inventory.
+- Last completed task: A0 — Accepted.
+- Next eligible task: A1 — add source-size and dependency ratchet.
+- Integration branch: `codex/native-render-core-refactor`.
+- Frozen source implementation closeout:
+  `5db2520e0d7a0ef1c68a78bdb9abc6fc588c5186`.
+- Frozen plan/A0 parent:
+  `c478252246733f6dc209686091caf183e1ef7f06`.
 - Current checked-out branch when the plan was written:
   `codex/full-quality-native-rendering`.
 - Current checked-out commit when the plan was written:
@@ -19,9 +25,10 @@
   `28f77d041d70fe3a11713590591ac57a122e1599`.
 - Worktree was clean before this plan bundle was added.
 
-The branch relationship is intentionally not resolved by the documentation
-task. A0 must choose and record the implementation baseline before A1 or any
-source extraction begins.
+The branch relationship is resolved in [a0-baseline.md](a0-baseline.md). A0
+created a dedicated integration branch from the complete local full-quality
+tip. No merge into `main`, rebase, cherry-pick, push or production change was
+performed.
 
 ## One-active-task rule
 
@@ -53,50 +60,79 @@ eligible task. Do not rewrite the architecture in this ledger.
 
 No implementation task is active.
 
-Use this template when A0 starts:
-
-```markdown
 ### A0 — Freeze integration baseline and evidence inventory
 
-- State: Active
-- Started: YYYY-MM-DD HH:MM TZ
-- Baseline commit: `<sha>`
-- Worktree before task: clean / described changes
-- Hypothesis: one sentence
+- State: Accepted
+- Started: 2026-07-23 18:38 CST
+- Ended: 2026-07-23 18:43 CST
+- Baseline commit: `c478252246733f6dc209686091caf183e1ef7f06`
+- Worktree before task: clean detached checkout at the baseline commit
+- Hypothesis: because full-quality is a strict linear descendant of the
+  unchanged `main`, a dedicated integration branch can preserve evidence
+  identities and isolate Package A without a merge or history rewrite.
 - Dependencies: none
 - Allowed scope:
-  - ...
+  - this progress ledger
+  - `a0-baseline.md`
+  - read-only Git, evidence and document inspection
 - Forbidden scope:
-  - production renderer changes
-  - new performance optimization
+  - production renderer or platform changes
+  - other plan contracts, handbook, CI or benchmark-schema changes
+  - new performance optimization or device performance collection
 - Hard gates:
-  - ...
+  - PASS local and live-remote ref identities are explicit
+  - PASS ancestry and all seven post-main commit identities are unambiguous
+  - PASS all observed worktrees were clean before branching
+  - PASS inherited accepted/rejected/deferred evidence is indexed
+  - PASS canonical evidence authorities exist at the frozen commit
+  - PASS final diff contains only the two A0-owned documentation files
 - Observations:
-  - ...
+  - `main`, cached `origin/main` and live remote `main` all equal `28f77d0`
+  - full-quality is seven commits ahead and zero behind `main`
+  - the full-quality ref has no live remote branch
+  - no device or performance observation was collected
 - Required endpoints for claim:
-  - ...
+  - none; A0 makes a repository-topology and document-identity claim
 - Performance correction used: no
-- Known correctness issues: none / list
+- Known correctness issues: none
 - Commands:
-  - pending
+  - `git status --porcelain=v2 --branch --untracked-files=all`
+  - `git worktree list --porcelain`
+  - `git ls-remote --heads origin main codex/full-quality-native-rendering`
+  - `git merge-base` and `git rev-list --left-right --count` for the three refs
+  - `git log --reverse --format=... main..codex/full-quality-native-rendering`
+  - `git cat-file -t` for the seven named commits
+  - `shasum -a 256` for canonical evidence authorities
+  - active-plan local Markdown link validation
+  - `python3 -m json.tool tests/perf/full-quality-matrix-plan-v1.json`
+  - `python3 tests/perf/validate-full-quality-experiment.py
+    tests/perf/full-quality-matrix-plan-v1.json --allow-incomplete`
+  - `git diff --check`
 - Evidence:
-  - pending
-- Decision: pending
-- Decision reason: pending
-- Commit: pending
-- Next eligible task: pending
-```
+  - [A0 baseline and evidence inventory](a0-baseline.md)
+- Decision: use `codex/native-render-core-refactor`, created from `c478252`;
+  do not merge to `main`, rebase or cherry-pick before A1
+- Decision reason: the history is already linear; the dedicated branch keeps
+  `main` unchanged, preserves artifact-linked commit identities and provides a
+  reversible package boundary.
+- Commit: this A0 documentation commit; exact SHA is reported in the task
+  handoff because a commit cannot contain its own object ID
+- Next eligible task: A1 — add source-size and dependency ratchet
 
 ## Decision ledger
 
 | Task | State | Commit | Evidence/report | Decision summary |
 | --- | --- | --- | --- | --- |
-| Plan bundle | Accepted | uncommitted at creation | this directory | complete route, architecture, protocol and finite-task ledger written |
-| A0 | Not started | — | — | freeze implementation baseline before code work |
+| Plan bundle | Accepted | `c478252` | this directory | complete route, architecture, protocol and finite-task ledger written |
+| A0 | Accepted | this commit | [a0-baseline.md](a0-baseline.md) | dedicated integration branch from `c478252`; no merge/rebase/cherry-pick |
 
 ## Baseline evidence inherited, not rerun by default
 
 A0 should validate identities and links, then reuse these completed records:
+
+The validation and terminal inventory are now recorded in
+[a0-baseline.md](a0-baseline.md). The links below remain the detailed evidence
+sources.
 
 - [completed task plan](../../completed/2026-07-22-full-quality-native-rendering/task_plan.md)
 - [completed final report](../../completed/2026-07-22-full-quality-native-rendering/final-report.md)
