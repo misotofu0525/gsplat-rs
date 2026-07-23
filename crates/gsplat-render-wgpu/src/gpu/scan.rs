@@ -95,6 +95,21 @@ pub(super) struct GpuPrefixScanPassLabels {
     pub(super) add_offsets: &'static str,
 }
 
+#[derive(Clone, Copy)]
+pub(crate) struct GpuPrefixScanProfile {
+    pub(crate) bind_group_layout: &'static str,
+    pub(crate) shader: &'static str,
+    pub(crate) pipeline_layout: &'static str,
+    pub(crate) scan_pipeline: &'static str,
+    pub(crate) add_offsets_pipeline: &'static str,
+    pub(crate) sums: &'static str,
+    pub(crate) params: &'static str,
+    pub(crate) bind_group: &'static str,
+    pub(crate) sums_usage: wgpu::BufferUsages,
+    pub(crate) scan_pass: &'static str,
+    pub(crate) add_offsets_pass: &'static str,
+}
+
 pub(super) struct GpuPrefixScanKernel {
     layout: wgpu::BindGroupLayout,
     scan_pipeline: wgpu::ComputePipeline,
@@ -103,13 +118,14 @@ pub(super) struct GpuPrefixScanKernel {
 
 pub(super) struct GpuPrefixScanGraph {
     levels: Vec<ScanLevel>,
-    _sums: Vec<wgpu::Buffer>,
+    sums: Vec<wgpu::Buffer>,
     _params: wgpu::Buffer,
 }
 
 pub(crate) struct GpuPrefixScan {
     kernel: GpuPrefixScanKernel,
     graph: GpuPrefixScanGraph,
+    pass_labels: GpuPrefixScanPassLabels,
 }
 
 impl GpuPrefixScanKernel {
@@ -213,16 +229,16 @@ impl GpuPrefixScanKernel {
             .collect::<Result<Vec<_>, ResidentGpuError>>()?;
         Ok(GpuPrefixScanGraph {
             levels,
-            _sums: sums,
+            sums,
             _params: params,
         })
     }
 
-    pub(super) fn encode(
+    pub(super) fn encode_forward(
         &self,
         encoder: &mut wgpu::CommandEncoder,
         graph: &GpuPrefixScanGraph,
-        labels: GpuPrefixScanPassLabels,
+        label: &'static str,
     ) {
         for level in &graph.levels {
             encode_compute(
@@ -231,9 +247,17 @@ impl GpuPrefixScanKernel {
                 &level.bind_group,
                 &[level.dynamic_offset],
                 level.dispatch,
-                labels.scan,
+                label,
             );
         }
+    }
+
+    pub(super) fn encode_reverse(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        graph: &GpuPrefixScanGraph,
+        label: &'static str,
+    ) {
         for level in graph.levels[..graph.levels.len() - 1].iter().rev() {
             encode_compute(
                 encoder,
@@ -241,9 +265,19 @@ impl GpuPrefixScanKernel {
                 &level.bind_group,
                 &[level.dynamic_offset],
                 level.dispatch,
-                labels.add_offsets,
+                label,
             );
         }
+    }
+
+    pub(super) fn encode(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        graph: &GpuPrefixScanGraph,
+        labels: GpuPrefixScanPassLabels,
+    ) {
+        self.encode_forward(encoder, graph, labels.scan);
+        self.encode_reverse(encoder, graph, labels.add_offsets);
     }
 }
 
@@ -254,14 +288,42 @@ impl GpuPrefixScan {
         count: u32,
         dispatch_limit: u32,
     ) -> Result<Self, ResidentGpuError> {
-        let kernel = GpuPrefixScanKernel::new(
+        Self::new_profiled(
             device,
-            GpuPrefixScanKernelProfile {
+            data,
+            count,
+            dispatch_limit,
+            GpuPrefixScanProfile {
                 bind_group_layout: "gsplat-external-radix-scan-bgl",
                 shader: "gsplat-external-radix-scan-shader",
                 pipeline_layout: "gsplat-external-radix-scan-pipeline-layout",
                 scan_pipeline: "gsplat-external-radix-scan-pipeline",
                 add_offsets_pipeline: "gsplat-external-radix-add-offsets-pipeline",
+                sums: "gsplat-external-radix-scan-sums",
+                params: "gsplat-external-radix-scan-params",
+                bind_group: "gsplat-external-radix-scan-bg",
+                sums_usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+                scan_pass: "gsplat-external-radix-scan-pass",
+                add_offsets_pass: "gsplat-external-radix-add-offsets-pass",
+            },
+        )
+    }
+
+    pub(crate) fn new_profiled(
+        device: &wgpu::Device,
+        data: &wgpu::Buffer,
+        count: u32,
+        dispatch_limit: u32,
+        profile: GpuPrefixScanProfile,
+    ) -> Result<Self, ResidentGpuError> {
+        let kernel = GpuPrefixScanKernel::new(
+            device,
+            GpuPrefixScanKernelProfile {
+                bind_group_layout: profile.bind_group_layout,
+                shader: profile.shader,
+                pipeline_layout: profile.pipeline_layout,
+                scan_pipeline: profile.scan_pipeline,
+                add_offsets_pipeline: profile.add_offsets_pipeline,
             },
         );
         let graph = kernel.create_graph(
@@ -270,24 +332,41 @@ impl GpuPrefixScan {
             count,
             dispatch_limit,
             GpuPrefixScanGraphProfile {
-                sums: "gsplat-external-radix-scan-sums",
-                params: "gsplat-external-radix-scan-params",
-                bind_group: "gsplat-external-radix-scan-bg",
-                sums_usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+                sums: profile.sums,
+                params: profile.params,
+                bind_group: profile.bind_group,
+                sums_usage: profile.sums_usage,
             },
         )?;
-        Ok(Self { kernel, graph })
+        Ok(Self {
+            kernel,
+            graph,
+            pass_labels: GpuPrefixScanPassLabels {
+                scan: profile.scan_pass,
+                add_offsets: profile.add_offsets_pass,
+            },
+        })
     }
 
     pub(crate) fn encode(&self, encoder: &mut wgpu::CommandEncoder) {
-        self.kernel.encode(
-            encoder,
-            &self.graph,
-            GpuPrefixScanPassLabels {
-                scan: "gsplat-external-radix-scan-pass",
-                add_offsets: "gsplat-external-radix-add-offsets-pass",
-            },
-        );
+        self.kernel.encode(encoder, &self.graph, self.pass_labels);
+    }
+
+    pub(crate) fn encode_forward(&self, encoder: &mut wgpu::CommandEncoder) {
+        self.kernel
+            .encode_forward(encoder, &self.graph, self.pass_labels.scan);
+    }
+
+    pub(crate) fn encode_reverse(&self, encoder: &mut wgpu::CommandEncoder) {
+        self.kernel
+            .encode_reverse(encoder, &self.graph, self.pass_labels.add_offsets);
+    }
+
+    pub(crate) fn exact_count_buffer_and_offset(&self) -> (&wgpu::Buffer, u64) {
+        (
+            self.graph.sums.last().expect("scan hierarchy is non-empty"),
+            0,
+        )
     }
 }
 

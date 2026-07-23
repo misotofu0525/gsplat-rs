@@ -12,4 +12,4 @@ pub(crate) use radix::{
     FULL32_SCAN_WORKGROUP_STORAGE_BYTES, StableFull32Radix, StableFull32RadixProfile,
     StableFull32RadixTimestampRange, full32_scan_level_counts, full32_workgroup_count,
 };
-pub(crate) use scan::GpuPrefixScan;
+pub(crate) use scan::{GpuPrefixScan, GpuPrefixScanProfile};

@@ -11,6 +11,7 @@ use bytemuck::{Pod, Zeroable};
 use wgpu::util::DeviceExt;
 
 use crate::draw_pass::{SplatPipeline, create_splat_pipeline};
+use crate::gpu::{GpuPrefixScan, GpuPrefixScanProfile};
 use crate::gpu_error::ResidentGpuError;
 use crate::projected_draw_telemetry::SurfaceProjectedDrawExecution;
 use crate::resident_gpu::{RESIDENT_QUAD_VERTEX_COUNT, ResidentGpuResources};
@@ -32,15 +33,6 @@ struct DrawIndirectArgs {
     first_instance: u32,
 }
 
-#[repr(C)]
-#[derive(Clone, Copy, Pod, Zeroable)]
-struct ScanParams {
-    count: u32,
-    _pad0: u32,
-    _pad1: u32,
-    _pad2: u32,
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Dispatch2d {
     x: u32,
@@ -48,17 +40,6 @@ struct Dispatch2d {
 }
 
 impl Dispatch2d {
-    fn for_workgroups(workgroups: u32, limit: u32) -> Result<Self, ResidentGpuError> {
-        let limit = limit.max(1);
-        let workgroups = workgroups.max(1);
-        let x = workgroups.min(limit);
-        let y = workgroups.div_ceil(x);
-        if y > limit {
-            return Err(ResidentGpuError::DispatchLimitExceeded);
-        }
-        Ok(Self { x, y })
-    }
-
     fn for_items(items: u32, limit: u32) -> Result<Self, ResidentGpuError> {
         if items == 0 {
             return Ok(Self { x: 1, y: 1 });
@@ -77,19 +58,8 @@ impl Dispatch2d {
 pub(crate) type ProjectedDrawExecution = SurfaceProjectedDrawExecution;
 
 #[cfg_attr(not(test), allow(dead_code))]
-struct ScanLevel {
-    bind_group: wgpu::BindGroup,
-    dispatch: Dispatch2d,
-    dynamic_offset: u32,
-}
-
-#[cfg_attr(not(test), allow(dead_code))]
 struct ProjectedContributorCounter {
-    scan_pipeline: wgpu::ComputePipeline,
-    add_offsets_pipeline: wgpu::ComputePipeline,
-    scan_levels: Vec<ScanLevel>,
-    scan_sums: Vec<wgpu::Buffer>,
-    _scan_params: wgpu::Buffer,
+    scan: GpuPrefixScan,
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
@@ -645,36 +615,15 @@ impl ProjectedQuadsGpu {
 #[cfg_attr(not(test), allow(dead_code))]
 impl ProjectedContributorCounter {
     fn encode_forward_scan(&self, encoder: &mut wgpu::CommandEncoder) {
-        for level in &self.scan_levels {
-            encode_compute_stage(
-                encoder,
-                &self.scan_pipeline,
-                &level.bind_group,
-                &[level.dynamic_offset],
-                level.dispatch,
-                "gsplat-projected-contributor-scan-pass",
-            );
-        }
+        self.scan.encode_forward(encoder);
     }
 
     fn encode_reverse_offsets(&self, encoder: &mut wgpu::CommandEncoder) {
-        for level in self.scan_levels[..self.scan_levels.len() - 1].iter().rev() {
-            encode_compute_stage(
-                encoder,
-                &self.add_offsets_pipeline,
-                &level.bind_group,
-                &[level.dynamic_offset],
-                level.dispatch,
-                "gsplat-projected-contributor-add-offsets-pass",
-            );
-        }
+        self.scan.encode_reverse(encoder);
     }
 
     fn exact_count_buffer_and_offset(&self) -> (&wgpu::Buffer, u64) {
-        (
-            self.scan_sums.last().expect("scan hierarchy is non-empty"),
-            0,
-        )
+        self.scan.exact_count_buffer_and_offset()
     }
 }
 
@@ -807,100 +756,27 @@ fn create_contributor_counter(
     contributor_group_offsets: &wgpu::Buffer,
 ) -> ProjectedContributorCounter {
     debug_assert!(contributor_scan_supported(device));
-    let scan_level_counts = scan_level_counts(offset_count);
-    let scan_sums = scan_level_counts
-        .iter()
-        .map(|&(_, groups)| {
-            storage_buffer_with_usage(
-                device,
-                "gsplat-projected-contributor-scan-sums",
-                u64::from(groups) * size_of::<u32>() as u64,
-                wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
-            )
-        })
-        .collect::<Vec<_>>();
-    let scan_stride = device.limits().min_uniform_buffer_offset_alignment.max(16);
-    let mut scan_params_bytes = vec![0_u8; scan_stride as usize * scan_level_counts.len()];
-    for (level, &(count, _)) in scan_level_counts.iter().enumerate() {
-        let params = ScanParams {
-            count,
-            _pad0: 0,
-            _pad1: 0,
-            _pad2: 0,
-        };
-        let offset = level * scan_stride as usize;
-        scan_params_bytes[offset..offset + size_of::<ScanParams>()]
-            .copy_from_slice(bytemuck::bytes_of(&params));
-    }
-    let scan_params = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: wgpu_label("gsplat-projected-contributor-scan-params"),
-        contents: &scan_params_bytes,
-        usage: wgpu::BufferUsages::UNIFORM,
-    });
-    let scan_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-        label: wgpu_label("gsplat-projected-contributor-scan-bgl"),
-        entries: &[
-            storage_layout(0, false, wgpu::ShaderStages::COMPUTE),
-            storage_layout(1, false, wgpu::ShaderStages::COMPUTE),
-            uniform_layout(2, true, NonZeroU64::new(size_of::<ScanParams>() as u64)),
-        ],
-    });
-    let scan_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: wgpu_label("gsplat-projected-contributor-scan-shader"),
-        source: wgpu::ShaderSource::Wgsl(include_str!("../shaders/gpu_prefix_scan.wgsl").into()),
-    });
-    let scan_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-        label: wgpu_label("gsplat-projected-contributor-scan-pipeline-layout"),
-        bind_group_layouts: &[&scan_layout],
-        immediate_size: 0,
-    });
-    let scan_pipeline = create_compute_pipeline(
+    let scan = GpuPrefixScan::new_profiled(
         device,
-        &scan_shader,
-        &scan_pipeline_layout,
-        "scan_blocks",
-        "gsplat-projected-contributor-scan-pipeline",
-    );
-    let add_offsets_pipeline = create_compute_pipeline(
-        device,
-        &scan_shader,
-        &scan_pipeline_layout,
-        "add_block_offsets",
-        "gsplat-projected-contributor-add-offsets-pipeline",
-    );
-    let scan_levels = scan_level_counts
-        .iter()
-        .enumerate()
-        .map(|(level, &(_, groups))| {
-            let data = if level == 0 {
-                contributor_group_offsets
-            } else {
-                &scan_sums[level - 1]
-            };
-            ScanLevel {
-                bind_group: create_scan_bind_group(
-                    device,
-                    &scan_layout,
-                    data,
-                    &scan_sums[level],
-                    &scan_params,
-                ),
-                dispatch: Dispatch2d::for_workgroups(
-                    groups,
-                    device.limits().max_compute_workgroups_per_dimension,
-                )
-                .expect("scan hierarchy was admitted by the projection dispatch guard"),
-                dynamic_offset: level as u32 * scan_stride,
-            }
-        })
-        .collect();
-    ProjectedContributorCounter {
-        scan_pipeline,
-        add_offsets_pipeline,
-        scan_levels,
-        scan_sums,
-        _scan_params: scan_params,
-    }
+        contributor_group_offsets,
+        offset_count,
+        device.limits().max_compute_workgroups_per_dimension,
+        GpuPrefixScanProfile {
+            bind_group_layout: "gsplat-projected-contributor-scan-bgl",
+            shader: "gsplat-projected-contributor-scan-shader",
+            pipeline_layout: "gsplat-projected-contributor-scan-pipeline-layout",
+            scan_pipeline: "gsplat-projected-contributor-scan-pipeline",
+            add_offsets_pipeline: "gsplat-projected-contributor-add-offsets-pipeline",
+            sums: "gsplat-projected-contributor-scan-sums",
+            params: "gsplat-projected-contributor-scan-params",
+            bind_group: "gsplat-projected-contributor-scan-bg",
+            sums_usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            scan_pass: "gsplat-projected-contributor-scan-pass",
+            add_offsets_pass: "gsplat-projected-contributor-add-offsets-pass",
+        },
+    )
+    .expect("scan hierarchy was admitted by the projection dispatch guard");
+    ProjectedContributorCounter { scan }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1024,48 +900,6 @@ fn create_contributor_compaction(
         contributor_args,
         draw_pipeline,
         draw_bind_group,
-    })
-}
-
-fn scan_workgroup_count(count: u32) -> u32 {
-    count.div_ceil(SCAN_ITEMS_PER_GROUP).max(1)
-}
-
-fn scan_level_counts(mut count: u32) -> Vec<(u32, u32)> {
-    debug_assert!(count > 0);
-    let mut levels = Vec::new();
-    loop {
-        let groups = scan_workgroup_count(count);
-        levels.push((count, groups));
-        if groups == 1 {
-            return levels;
-        }
-        count = groups;
-    }
-}
-
-fn create_scan_bind_group(
-    device: &wgpu::Device,
-    layout: &wgpu::BindGroupLayout,
-    data: &wgpu::Buffer,
-    sums: &wgpu::Buffer,
-    params: &wgpu::Buffer,
-) -> wgpu::BindGroup {
-    device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: wgpu_label("gsplat-projected-contributor-scan-bg"),
-        layout,
-        entries: &[
-            entry(0, data),
-            entry(1, sums),
-            wgpu::BindGroupEntry {
-                binding: 2,
-                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                    buffer: params,
-                    offset: 0,
-                    size: NonZeroU64::new(size_of::<ScanParams>() as u64),
-                }),
-            },
-        ],
     })
 }
 
