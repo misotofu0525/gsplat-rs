@@ -104,8 +104,9 @@ This distinction matters in the current evidence:
 - Mac complete Truck 1920x1080: the paired policy cohort has CPU
   42.464/41.898/41.924 FPS versus GPU 38.515/38.434/37.812 FPS and Adaptive
   uses 76 CPU / 4 GPU measured frames. The later current CPU-only cohort is
-  43.321/43.169/43.748 FPS; forced GPU/Adaptive still need a current-binary
-  rerun.
+  43.321/43.169/43.748 FPS. This is the historical PostSort policy baseline;
+  the later same-binary PostSort/Preproject cohort is recorded separately and
+  does not change the parity contract.
 - Nothing A065 complete Truck 2412x1080: current CPU median 179.335038 ms
   (5.576 FPS) versus GPU median 203.805100 ms (4.907 FPS); each of three
   Adaptive runs uses 69 CPU / 11 GPU measured frames and ends `cpu_stable`.

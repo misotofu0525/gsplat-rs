@@ -1,10 +1,11 @@
 # Phase 2 production producer A/B checkpoint
 
-> Status: the direct `S -> C -> stable full32 radix -> D` producer is now
-> transactionally reachable through the core Surface session as an explicit
-> diagnostic A/B choice. The qualified post-sort producer remains the default.
-> This checkpoint does not promote the new producer, change platform bindings,
-> or claim a device-level performance win.
+> Status: implementation and same-binary A/B complete. The direct
+> `S -> C -> stable full32 radix -> D` producer is transactionally reachable
+> through the core Surface session and desktop, Web, C, JNI and Kotlin
+> diagnostics. Exact A/B favors Preproject on all three tested GPU endpoints,
+> while the qualified PostSort producer remains the universal default pending
+> a composite-plan runtime controller.
 
 ## Outcome
 
@@ -27,7 +28,8 @@ Preproject (diagnostic):
 inside the GPU ordering lane. It does not remove or replace
 `SurfaceOrderBackend::{Cpu, Gpu, Adaptive}`. The selector defaults to
 `PostSort`, so constructing a session without using the new API has unchanged
-behavior and allocation.
+behavior and allocation. Current Adaptive learns CPU versus GPU ordering while
+using PostSort; it does not yet learn the producer axis.
 
 The Preproject graph remains lazy. A Packed session pays its additional static
 allocation only after an explicit prepare/select request.
@@ -161,49 +163,42 @@ The implementation preserves the Phase 2 architectural gates:
 - no sampling, top-K, LOD, SH reduction, point dropping, dynamic resolution,
   upscaling, or early blend exit is introduced.
 
-## Fresh verification on 2026-07-23
+## Final A/B evidence on 2026-07-23
 
-The production wiring and its lower-level oracle passed:
+All retained runs use complete 2,541,226-point SH3 Truck, Packed,
+ProjectedQuadsExact, forced Compact, stable full-32-bit order, fixed formal
+resolution, and the same binary within each endpoint cohort. Every formal
+ticket closes with exact `S/C/D` evidence and no failure.
 
-```text
-cargo fmt --all
-cargo clippy -p gsplat-render-wgpu --lib --tests -- -D warnings
+| Endpoint | Cohort | Preproject / PostSort mean completion | Exact image gate |
+| --- | --- | ---: | --- |
+| M4 Metal | 6 balanced AB/BA pairs, 20 warmup + 80 measured | median `0.83405`, 95% bootstrap CI `0.81787--0.86388` | all 12 PNGs byte-identical, SHA `0291965b...` |
+| Chrome/WebGPU on M4 | 4 balanced AB/BA pairs, 20 + 80 | pair ratios `0.87552/0.84455/0.88351/0.88042`, median `0.87797` | all 8 PNGs byte-identical, SHA `9f602220...` |
+| A065/Adreno 730 | 2 interleaved descriptive AB/BA pairs, 20 + 80 | queue completion `213.648/401.465 ms`, ratio `0.53217` | rendered Truck/background region unchanged; whole screenshot differs only in Android UI timing |
 
-cargo test -p gsplat-render-wgpu --lib gpu_producer_telemetry::tests
-  4 passed, including a real queue-terminal GPU readback
+The valid clean evidence identity is `7cabb6e`. The earlier
+`desktop-m4-truck-producer-ab-006e37e` attempt is excluded. Android's per-run
+`pairing` metadata is null, so its cohort is a controlled descriptive A/B, not
+a self-contained formal paired statistic. All Android runs use identical
+source, APK/native hash, camera and resolution and report thermal status 0.
 
-cargo test -p gsplat-render-wgpu --lib preproject_gpu::tests
-  5 passed, including full32 CPU-order parity, exact source-ID image parity,
-  full/zero/full reuse, and current-C/stale-D non-refresh behavior
+## Retain decision
 
-cargo test -p gsplat-render-wgpu --lib preproject_
-  8 passed, including first-frame/invalidation fail-closed behavior,
-  selector compatibility/idempotence, and failed web-scope publication
+Preproject is retained: it is production-reachable, transactional,
+count-observable, image/order exact, and materially faster in all currently
+tested GPU cohorts. It is not promoted globally in this branch because its
+admission is intentionally narrower, its graph adds lazy resources, it has
+only complete-Truck A/B, and there is no producer-level Adaptive/fallback
+controller.
 
-cargo test -p gsplat-render-wgpu --lib
-  272 passed, 5 ignored, 0 failed
+The next policy unit must therefore be a whole execution plan, not an
+independent producer toggle:
 
-cargo check --workspace
-  passed (the existing desktop-example unused-field warning remains)
+1. `PostSort + Candidate`;
+2. `PostSort + Compact`;
+3. `Preproject + Compact`.
 
-cargo check -p gsplat-web --target wasm32-unknown-unknown
-  passed
-
-cargo fmt --all -- --check
-  passed
-```
-
-## Evidence boundary and next experiment
-
-This checkpoint proves that the alternative graph is production-reachable,
-transactional, count-observable, and image/order exact in the retained GPU
-oracles. It does not yet prove that Preproject is faster on Metal, Adreno, or
-WebGPU, and it deliberately does not change the default.
-
-The next A/B cohort should hold scene, camera trace, Surface resolution,
-present mode, CPU/GPU/Adaptive policy, and forced Compact draw policy fixed,
-then randomize `PostSort` and `Preproject` runs in the same binary. Promotion
-requires paired queue-complete receipts plus screenshot/count gates across the
-scene-size ladder. A fixed point-count crossover must not be inferred from
-one device; any later automatic producer selection belongs in the existing
-measured Adaptive framework.
+After selecting the best supported GPU plan with measured completion,
+hysteresis, cooldown, periodic reprobe and transactional fallback, the outer
+CPU/GPU Adaptive layer can compare that winner against CPU. No point-count
+threshold or quality fallback follows from the current evidence.

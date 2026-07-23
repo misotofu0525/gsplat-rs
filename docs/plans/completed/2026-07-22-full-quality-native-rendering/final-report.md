@@ -1,12 +1,11 @@
-# Working Report: Full-Quality Native Rendering
+# Final Report: Full-Quality Native Rendering
 
-> Status: active. This report records the retained implementation and the
-> current full-resolution evidence as of 2026-07-23. It is intentionally not
-> labeled complete: final-code cross-platform point-count ladders, sustained
-> Garden/Bicycle device cohorts, physical-iPhone performance, desktop
-> five-stage artifact telemetry, final repository verification, and the branch
-> commit are still open. Failed or incomplete artifacts are excluded rather
-> than averaged into the result.
+> Status: completed on `codex/full-quality-native-rendering`. This report
+> records the retained implementation and terminal full-resolution evidence as
+> of 2026-07-23. Every available endpoint has a fresh exact-count result;
+> unavailable physical-iPhone performance and intentionally deferred follow-up
+> work are explicit non-claims, not substitutes for evidence. Failed or
+> incomplete artifacts are excluded rather than averaged into the result.
 
 ## Executive result
 
@@ -35,11 +34,28 @@ pixel matched. At present, the honest conclusion is “correct full-resolution
 renderer with a remaining raster/per-frame-work gap and a promising competitor
 topology to borrow,” not competitor parity.
 
+The production A/B also established that the current GPU producer is not the
+right universal default. With complete Truck, stable full-32-bit order, forced
+exact contributor compaction and identical output, `Preproject` is faster than
+`PostSort` on every tested GPU endpoint: about 16.6% by paired mean completion
+on M4, 12.2% in Chrome/WebGPU, and 46.8% on the A065. It is not promoted
+globally yet because it is currently available only for Packed +
+ProjectedQuadsExact + Compact, owns additional buffers, and lacks a production
+producer-level fallback controller. The next product controller must compare
+whole GPU plans, then let the existing outer CPU/GPU Adaptive policy compare
+the winning GPU plan against CPU.
+
 Complete Garden (5.835M) and Bicycle (6.132M) now load and render at 1920x1080
 on Mac Metal and Chrome/WebGPU. Web Bicycle is important policy evidence: GPU
 completion is about 67.6 ms versus CPU about 130.6 ms, and a 100-frame
 Adaptive schedule becomes GPU-dominant. Android instead chooses CPU at every
 measured rung. The selector must remain runtime-measured.
+
+Fresh A065 capacity receipts extend that statement to the physical Android
+device: Garden 5,834,784 and Bicycle 6,131,954 are both fully resident and
+drawn at native 2412x1080 with SH3 and no quality fallback. Their four-frame
+CPU means are 648.735 ms and 630.352 ms respectively. This proves exact-count
+capacity through 6.13M on the device, not interactive performance.
 
 ## Retained architecture
 
@@ -251,6 +267,54 @@ and `.../1000000/`. The sibling `.../200000/` run is excluded: experiment
 status `failed`, first run unfinished, and no complete artifact. The corrected
 `200000-v2` rerun is the evidence.
 
+The first continuous-motion Adaptive run on `7cabb6e` exposed a real
+arbitration bug: projected-draw learning retained the shared probe owner while
+every frame changed the camera, so order learning remained `cpu_learning` for
+240/240 CPU frames. Commit `28f79ee` gives projected learning one grace turn,
+then yields without consuming its sample until a stable frame exists; order
+learning similarly releases ownership only after its terminal ticket.
+
+Two fresh 120-frame full-Truck runs prove the fix. Each run uses 108 CPU and 12
+GPU measured frames, ends `cpu_stable`, schedules and completes 140/140 order
+measurements (128 CPU + 12 GPU), has zero failure, fallback, unsampled or
+dropped receipts, and keeps maximum revision lag at zero. Frame means are
+174.131 and 167.533 ms; GPU completion remains slower than CPU completion in
+both runs, so the selected result is evidence-driven rather than a hard-coded
+point threshold. The earlier logcat-truncated 240-frame rerun is excluded; only
+`target/full-quality-final-v4/android-a065-truck-adaptive-moving-fixed-120x2-28f79ee/`
+is retained.
+
+### Exact GPU producer A/B
+
+`PostSort` and `Preproject` were compared in the same binaries with complete
+Truck, full SH3, every-frame full-32 stable order, forced Compact draw,
+ProjectedQuadsExact, and fixed formal resolution. All formal producer tickets
+closed with exact `S/C/D` receipts and no failure.
+
+| Endpoint | Cohort | Preproject / PostSort mean completion | Image gate |
+| --- | --- | ---: | --- |
+| M4 Metal | 6 balanced AB/BA pairs, 20 + 80 frames | median ratio `0.83405` (about 16.6% faster), 95% bootstrap CI `0.81787--0.86388` | all 12 PNGs byte-identical |
+| Chrome/WebGPU on M4 | 4 balanced AB/BA pairs, 20 + 80 frames | median ratio about `0.87797` (about 12.2% faster) | all 8 PNGs byte-identical |
+| A065/Adreno 730 | 2 interleaved descriptive pairs, 20 + 80 frames | combined ratio `0.53217` (about 46.8% faster) | Truck/background render crops byte-identical; whole-screen differences are Android UI timing only |
+
+The Android cohort is descriptive rather than a formal paired series because
+its artifact pairing field is null. It nevertheless uses identical source,
+APK/native hashes, camera, resolution and thermal status 0. The complete paths
+are under `target/full-quality-final-v4/*-truck-producer-ab-7cabb6e/`.
+
+This result does not replace CPU/GPU Adaptive with “always Preproject”. It
+changes what the GPU lane should eventually compare. The product-level plan is
+a composite controller over:
+
+1. `PostSort + Candidate`;
+2. `PostSort + Compact`;
+3. `Preproject + Compact`.
+
+The best supported GPU plan is then compared with CPU by the existing outer
+Adaptive policy. Until that controller has transactional admission, fallback,
+failure cooldown and per-device evidence, the universal product default stays
+`PostSort`; `Preproject` remains an exact opt-in diagnostic.
+
 ### Available Apple runtime
 
 The iPhone 17 Pro simulator loads complete Truck at 2622x1206 through CPU and
@@ -299,6 +363,18 @@ Artifacts:
 - `target/full-quality-final/mac-large-scenes-current-20260723/`
 - `target/full-quality-final/web-large-scenes-current-20260723/`
 
+The same scenes also pass final-code A065 capacity runs at native 2412x1080:
+
+| Scene | source = resident | mean frame | mean CPU preprocess / sort | mean visible / contributor / drawn |
+| --- | ---: | ---: | ---: | --- |
+| Garden | 5,834,784 | 648.735 ms | 30.287 / 38.348 ms | 4,417,918 / 2,266,042 / 4,417,918 |
+| Bicycle | 6,131,954 | 630.352 ms | 33.817 / 44.794 ms | 4,124,855 / 1,701,309 / 4,124,855 |
+
+Both use two warmups and four measured moving frames, preserve all five scene
+counts and SH3, report thermal status 0, and have no quality fallback. They are
+capacity/correctness receipts rather than sustained performance cohorts:
+`target/full-quality-final-v4/android-a065-{garden,bicycle}-capacity-76a9267/`.
+
 ## Competitor comparison
 
 The pinned PlayCanvas run uses complete Truck, 1920x1080, 600 measured terminal
@@ -324,6 +400,14 @@ has SSIM 0.938175, normalized RGB MAE 0.028223, and exact alpha. That does not
 rank either image; it confirms they are not the same numerical/visual profile.
 Primary-source links and exact artifact fields are recorded in `findings.md`.
 
+The available A065 reference reaches a queue-terminal cadence of 73.821 ms per
+frame (13.546 FPS) for complete Truck at native 2412x1080. This renderer's
+exact Preproject cohort has a mean frame wall of about 101.620 ms (9.84 FPS).
+The fields are not identical—PlayCanvas does not expose per-frame GPU
+completion or exact contributor/drawn counts in this path—so this is a
+directional gap, not a strict percentage ranking. It still shows that the
+large remaining cost is real even after the new producer win.
+
 Competitor research still supports compact planar residency, visible-work
 generation, hierarchical scans, stable radix, and tile-aware raster work. It
 does not justify sampling, LOD, reduced SH, reduced resolution, or incomplete
@@ -331,42 +415,54 @@ pages under this project's full-quality label. The next performance work must
 reduce real projection/raster/per-frame cost while preserving the current
 count, SH, image, and resolution receipts.
 
-The concrete Phase 2 direction is documented in
-[phase2-preproject-c-architecture.md](phase2-preproject-c-architecture.md):
-build exact deterministic `C` before GPU sorting, run stable full32 radix only
-over `C`, and retain hardware raster plus the existing CPU/GPU/Adaptive product
-choices. Direct `S -> C` and optional `S -> V -> C` are measured as explicit
-alternatives; tiled compute is conditional no-drop research, not the default.
-Mixed platform results close as retain, target-gate, or reject outcomes rather
-than becoming an indefinite performance blocker.
+The concrete Phase 2 design documented in
+[phase2-preproject-c-architecture.md](phase2-preproject-c-architecture.md)
+is now implemented and measured: build exact deterministic `C` before GPU
+sorting, run stable full32 radix only over `C`, and retain hardware raster plus
+the existing CPU/GPU/Adaptive product choices. Tiled compute remains
+conditional no-drop research, not the default.
 
-## Open work before completion
+## Known limits and follow-up work
 
-- Run final retained code across the complete point-count ladder on Mac and
-  Chrome/WebGPU. Android has an earlier complete ladder and current 200k/1M/
-  Truck anchors, but still needs final-code values at every rung.
-- Extend current Garden/Bicycle Mac/Web runability receipts into sustained
-  CPU/GPU/Adaptive cohorts; run them on Android or record a structured capacity
-  failure.
-- Obtain a physical iPhone run before making any iOS performance claim.
-- Investigate the Android GPU radix-8 failure with per-stage source-ID
-  readback; keep portable exact radix-4/base-16 until qualification proves the
-  wider pass correct.
-- Add decoded/encoded/addressable counts to desktop artifacts and keep failed,
-  partial, mismatched-hash, or missing-terminal artifacts out of aggregates.
+These items are deliberately outside this branch's completion boundary. None
+permits a quality fallback in the completed path:
+
+- Add the composite GPU plan controller described above. `PostSort` remains
+  the default until that controller can admit, measure, cool down and fall back
+  transactionally; `Preproject` remains limited to Packed +
+  ProjectedQuadsExact + forced Compact.
 - Continue exact contributor/raster/per-frame-work optimization. Define an
   explicitly named competitor precision and SH-update profile before any
-  equal-quality parity claim; reject changes that only win by lowering quality.
-- Run the full repository verification suite, record the commit identity, and
-  move this plan to completed only after all required evidence is terminal.
+  equal-quality parity claim; reject changes that win by lowering quality.
+- Keep radix-8 enabled only on qualified platforms. Android/Web/iOS retain the
+  portable exact radix-4/base-16 path until wider-pass qualification proves the
+  same source-ID order and image.
+- Remove SPZ's duplicate wide `SceneBuffers` peak in a separate loader change.
+  PLY already transcodes directly to Resident; SPZ remains exact but not yet
+  peak-memory optimal.
+- Add decoded/encoded/addressable fields to the desktop text receipt. The
+  fail-closed resident path already enforces them, but the text artifact does
+  not repeat all five values.
+- Obtain a physical iPhone and signing identity before making an iOS device
+  performance claim. Simulator integration is terminal evidence only for the
+  runtime that was actually available.
+- Turn the short Garden/Bicycle capacity cohorts into sustained thermal/power
+  cohorts when product tuning begins. Current results prove exact admission
+  and rendering, not interactive frame rate.
 
 ## Explicit non-claims
 
 - 640x360 is not the target presentation resolution.
 - The renderer has not yet caught PlayCanvas's observed throughput, and the
   current PlayCanvas number is not a strict equal-quality denominator.
-- Current Garden/Bicycle Mac/Web runs prove full-resolution runability; the
-  four-frame cohorts are not sustained product FPS results.
+- Current Garden/Bicycle Mac/Web/Android runs prove full-resolution runability;
+  the short capacity cohorts are not sustained product FPS results.
+- Current Adaptive selects CPU versus GPU ordering while using the qualified
+  `PostSort` default; it does not yet learn the PostSort/Preproject producer
+  axis.
+- Producer, arbitration and final capacity cohorts use distinct clean evidence
+  commits (`7cabb6e`, `28f79ee`, and `76a9267`); they are not misrepresented as
+  one final-binary performance cohort.
 - The iOS simulator is not an iPhone performance proxy.
 - No LOD, sampling, lower SH, lower resolution, or incomplete paging result may
   be reported as full quality.

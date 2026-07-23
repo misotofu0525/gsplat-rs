@@ -58,7 +58,9 @@ runs, so CPU is the current choice for this host/workload. Adaptive is
 CPU-dominant and pays only a bounded four-frame GPU exploration cost during
 this short window. Ending in `gpu_probe` records that a probe was in progress;
 it does not mean GPU won. The current CPU-only rerun above strengthens that
-choice, while a current-binary forced GPU/Adaptive rerun remains open.
+choice. This table is retained as the PostSort policy baseline. The later same-binary
+PostSort/Preproject cohort is the terminal GPU-plan result; see
+`phase2-production-producer-ab-checkpoint.md` and `final-report.md`.
 
 Raw artifacts:
 
@@ -212,13 +214,14 @@ The earlier `TiledExact` and 3840x2160 pressure experiments likewise remain
 oracle/runability diagnostics. They do not replace the current
 `ProjectedQuadsExact` 1920x1080 result and do not establish a backend policy.
 
-## Remaining desktop work
+## Follow-up desktop work
 
 - Re-run the current point-count ladder with the retained raster code; older
   codec/order-only crossover tables are not final.
 - Extend current Garden/Bicycle from short runability receipts to sustained
   CPU/GPU/Adaptive cohorts and add the five-stage exactness fields to desktop
   artifacts.
-- Re-run forced GPU and Adaptive Truck with the current preprocessing binary.
+- Add the composite GPU-plan controller before publishing a new current-binary
+  CPU/GPU/Adaptive product ratio.
 - Continue exact raster/per-frame optimization and define an explicitly
   matched competitor quality profile before making a parity claim.

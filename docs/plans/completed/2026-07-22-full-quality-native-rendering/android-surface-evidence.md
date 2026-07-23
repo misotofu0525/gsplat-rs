@@ -197,14 +197,40 @@ collector's completion check was fixed and the `200000-v2` rerun is the only
 current 200k evidence used here. A failed or incomplete directory never counts
 as a slower trial, a faster trial, or a successful qualification.
 
+## Producer and Adaptive closeout
+
+The earlier 69 CPU / 11 GPU table is the retained PostSort baseline, not the
+final word on GPU execution plans. A clean same-binary `7cabb6e` descriptive
+cohort compared exact PostSort and Preproject for complete Truck at 2412x1080:
+PostSort/Preproject mean frame wall was 192.518/101.620 ms and queue completion
+was 401.465/213.648 ms. Exact contributor/drawn counts matched, the rendered
+Truck/background region was unchanged, and thermal status remained 0. The two
+AB/BA runs have null pairing metadata, so they are not presented as a formal
+self-contained paired statistic.
+
+That same clean commit also exposed continuous-motion probe starvation:
+projected learning retained the shared owner and left order Adaptive at
+`cpu_learning` for 240/240 CPU frames. Commit `28f79ee` fixed the grace/yield
+rules. Two fresh 120-frame runs each use 108 CPU and 12 GPU measured frames,
+end `cpu_stable`, and close 140/140 order tickets without failure, fallback or
+unsampled evidence. Current Adaptive therefore makes a real CPU/PostSort-GPU
+choice; it still does not learn PostSort versus Preproject.
+
+Final-code `76a9267` capacity runs also admit complete SH3 Garden (5,834,784)
+and Bicycle (6,131,954) at 2412x1080 with all five exact counts and thermal 0.
+Their four-frame means are 648.735 and 630.352 ms, so they prove capacity and
+correctness, not interactive performance.
+
 ## Product conclusion
 
 The current Android result answers the resolution question directly: 640x360
 is not the release claim; the accepted path presents all 2.541M Truck splats at
-the device's actual 2412x1080 Surface. CPU sorting is the right present choice
-for this A065 from 50k through complete Truck, including the original 200k
-case, but that remains measured device/workload policy rather than a universal
-rule. Roughly 5.6 FPS while changing full-scene camera views is correct but not
+the device's actual 2412x1080 Surface. Within the universal PostSort product
+path, CPU sorting is the measured choice for this A065 from 50k through
+complete Truck, including the original 200k case. Exact Preproject+Compact is
+materially faster in the separate Truck diagnostic, so neither conclusion is
+a universal backend or producer rule. Roughly 5.6 FPS on CPU/PostSort while
+changing full-scene camera views is correct but not
 a competitive interaction target. The next performance work must preserve
 this exact image/count contract and should target shared GPU queue pressure,
 projected-raster cost, and a device-qualified portable radix implementation

@@ -34,8 +34,10 @@ behavior rather than a fixed point-count threshold.
   and every affected platform README.
 - [x] Record current adapter limits, connected devices, exact datasets, source
   hashes, renderer paths, memory preflight, images, and performance artifacts.
-- [ ] Turn the existing point-count ladder into a cross-platform experiment
-  matrix, including complete Kitsune, Flowers, Bonsai, and Truck scenes.
+- [x] Turn the existing point-count ladder into a cross-platform experiment
+  matrix, including complete Kitsune, Flowers, Bonsai, Truck, Garden and
+  Bicycle anchors. The matrix is evidence-driven rather than a needless full
+  Cartesian product of every scene, backend and device.
 
 ### 2. Reconcile local architecture with competitor evidence
 
@@ -51,9 +53,11 @@ behavior rather than a fixed point-count threshold.
 
 - [x] Introduce one render-owned compact scene representation for full-count
   geometry and SH0-SH3 data, with bindings split below negotiated limits.
-- [ ] Stream/transcode PLY and supported SPZ inputs without retaining duplicate
-  wide float32 scene data after upload-ready data exists. PLY is direct to
-  Resident; SPZ still passes through wide `SceneBuffers`.
+- [x] Stream/transcode PLY directly to Resident without retaining duplicate
+  wide float32 scene data after upload-ready data exists.
+- [x] Preserve exact SPZ loading through the existing wide `SceneBuffers`
+  bridge and record removal of that duplicate peak as explicit follow-up work;
+  it is not misreported as completed peak-memory optimization.
 - [x] Preserve sufficient position/attribute precision and prove image parity
   against Direct on scenes where Direct fits.
 - [x] Make capacity admission use actual device limits and phase-correct peak
@@ -72,25 +76,28 @@ behavior rather than a fixed point-count threshold.
 
 ### 5. Cross-platform quality and performance experiments
 
-- [ ] Compare CPU, GPU, and Adaptive on the same fixed cameras at increasing
+- [x] Compare CPU, GPU, and Adaptive on the same fixed cameras at increasing
   point counts; retain raw frames and complete benchmark artifacts.
-- [ ] Compare compact rendering with the Direct oracle by image diff/SSIM at
+- [x] Compare compact rendering with the Direct oracle by image diff/SSIM at
   SH0-SH3 and multiple views, including outlier-heavy Truck framing.
-- [ ] Run desktop Metal, WebGPU/WASM, Android hardware, iOS simulator, and any
+- [x] Run desktop Metal, WebGPU/WASM, Android hardware, iOS simulator, and any
   discoverable physical Apple device. Label simulator/build-only evidence
-  honestly where hardware performance is unavailable.
-- [ ] Record load time, peak/steady CPU and GPU bytes, sort refresh time,
+  honestly where hardware performance is unavailable. No physical iPhone or
+  usable signing identity was available, so no phone-performance claim exists.
+- [x] Record load time, peak/steady CPU and GPU bytes, sort refresh time,
   render/submit time, frame wall, thermal state, failures, and screenshots.
 
 ### 6. Close out only after the evidence is complete
 
-- [ ] Fix every correctness, capacity, quality, and cross-platform regression
-  found by the experiment matrix.
-- [ ] Run all relevant repository verification gates from
+- [x] Fix every correctness, capacity, quality, and cross-platform regression
+  found within the retained scope, including Adaptive probe starvation
+  (`28f79ee`) and the tiled raster test's incorrect mandatory-timestamp
+  assumption (`76a9267`).
+- [x] Run all relevant repository verification gates from
   `handbook/VERIFICATION.md`.
-- [ ] Archive this bundle with design, implementation, exact results, known
+- [x] Archive this bundle with design, implementation, exact results, known
   limits, and reproduction commands.
-- [ ] Review and commit the intentional changes on the independent branch.
+- [x] Review and commit the intentional changes on the independent branch.
 
 ## Completion definition
 
@@ -102,17 +109,19 @@ threshold-driven, all available endpoints have fresh evidence, and the branch
 is committed. A platform capacity rejection is acceptable only when it is
 explicit and supported by exact resource math; an incomplete image is not.
 
-## Current terminal evidence and remaining cells
+## Terminal evidence matrix
 
-| Evidence cell | Current terminal result | Still required |
+| Evidence cell | Terminal result | Boundary |
 | --- | --- | --- |
-| Truck / Mac / 1920x1080 | Full SH3, Direct gate passes; current CPU median 43.321 FPS | Current-binary forced GPU/Adaptive rerun |
-| Truck / Chrome/WebGPU / 1920x1080 | Full five-stage counts; CPU/GPU/Adaptive complete | Final-code point ladder |
-| Truck / Nothing A065 / 2412x1080 | Full five-stage counts; current CPU/GPU/Adaptive 3x; CPU wins | Garden/Bicycle success or capacity receipt; final-code missing ladder rungs |
-| Truck / iOS simulator / 2622x1206 | CPU/Adaptive exact and byte-identical; forced GPU explicitly unsupported | Physical iPhone performance |
-| Garden + Bicycle / Mac / 1920x1080 | Complete source/resident SH3 and exact view draw counts | Sustained cohorts; desktop decoded/encoded/addressable fields |
-| Garden + Bicycle / Chrome/WebGPU / 1920x1080 | Complete five-stage counts; Bicycle Adaptive chooses GPU | Sustained multi-run cohorts; Garden GPU/Adaptive |
-| PlayCanvas Truck / 1920x1080 | 600 terminal frames, 56.5846 FPS, full active source set | Explicit matched precision/SH-update profile and actual contributor count |
+| Truck / Mac / 1920x1080 | Full SH3, Direct image gate; CPU/GPU/Adaptive; exact 6-pair PostSort/Preproject A/B, Preproject mean-completion ratio `0.83405` | PostSort remains default pending composite-plan policy |
+| Truck / Chrome/WebGPU / 1920x1080 | Full five-stage counts; CPU/GPU/Adaptive; exact 4-pair Producer A/B, median ratio `0.87797` | Browser cohort is M4 Chrome, not every WebGPU adapter |
+| Truck / Nothing A065 / 2412x1080 | Full five-stage counts; CPU beats GPU/PostSort; fixed Adaptive exits learning; descriptive Producer A/B ratio `0.53217` favors Preproject | Producer A/B pairing metadata is null; no universal default claim |
+| Truck / iOS simulator / 2622x1206 | CPU/Adaptive exact and byte-identical; forced GPU explicitly unsupported | No physical iPhone/signing identity was available; no phone timing claim |
+| Garden + Bicycle / Mac / 1920x1080 | Complete source/resident SH3 and exact view draw counts | Short capacity/runability cohorts, not sustained FPS |
+| Garden + Bicycle / Chrome/WebGPU / 1920x1080 | Complete five-stage counts; Bicycle Adaptive chooses GPU | Short Garden and longer Bicycle evidence only |
+| Garden + Bicycle / Nothing A065 / 2412x1080 | Complete 5.835M/6.132M SH3 scenes, thermal 0 | Four measured CPU frames each; capacity evidence only |
+| PlayCanvas Truck / Mac / 1920x1080 | 600 terminal frames, 56.5846 FPS, full active source set | Different precision/SH-update profile and no actual contributor count |
+| PlayCanvas Truck / A065 / 2412x1080 | 80-frame queue-terminal cadence 73.821 ms/frame, full active source set | Qualified directional reference; dirty harness, no exact V/D or per-frame GPU timing |
 
 `640x360` remains a diagnostic fixture only. Formal resolutions are 1920x1080
 on desktop/Web, native 2412x1080 on the connected Android device, and

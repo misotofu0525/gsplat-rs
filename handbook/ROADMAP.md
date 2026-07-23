@@ -24,8 +24,10 @@ Operational facts and command entrypoints live in `handbook/PROJECT_CONTEXT.md` 
 1. Keep bounded PLY import, the Direct-f32 oracle, and direct-to-Resident
    exact-count Packed loading correct and well tested.
 2. Keep portable GPU visibility/radix/indirect draw and measured CPU/GPU
-   Adaptive selection shared across platforms; do not replace them with a
-   fixed point-count threshold.
+   Adaptive selection shared across platforms; next compare complete GPU
+   execution plans (`PostSort+Candidate`, `PostSort+Compact`, and
+   `Preproject+Compact`) before the outer CPU/GPU choice. Do not replace either
+   decision with a fixed point-count threshold.
 3. Expand conformance and performance evidence across real scenes and
    representative desktop/mobile resolutions, including stage timings and
    image-quality comparisons, before widening APIs or making competitor claims.
@@ -79,12 +81,14 @@ Operational facts and command entrypoints live in `handbook/PROJECT_CONTEXT.md` 
   Web renderer changes require verified wasm build and browser smoke evidence.
 - The Web example is validation example support for browser PLY loading, the WebGL2 fallback, and hosting the generated wasm package; it is not a polished web product surface.
 
-## Full-Count Resident Evidence Boundary (active 2026-07-22)
+## Full-Count Resident Evidence Boundary (completed 2026-07-23)
 
 The exact resident representation, Direct-oracle quality gate, default exact
-projected-quads raster, and lazy exact tiled diagnostic are in place, but
-terminal Adaptive evidence and final-code cross-platform reruns remain open.
-Historical global-quad timings below are context, not closeout evidence.
+projected-quads raster, lazy exact tiled diagnostic, terminal Adaptive
+evidence, and available-endpoint cross-platform evidence are in place.
+Historical global-quad timings below are context, not closeout evidence. The
+completed design and experiments live under
+`docs/plans/completed/2026-07-22-full-quality-native-rendering/`.
 
 - Product examples and SDK wrappers explicitly select Packed, whose
   implementation is now one exact-count compact Resident scene rather than the
@@ -103,6 +107,14 @@ Historical global-quad timings below are context, not closeout evidence.
   indirect count without readback. Adaptive uses paired measurement,
   hysteresis, cooldown, and periodic re-probe; it does not hard-code a
   scene-size switch.
+- The production diagnostic can A/B PostSort against exact Preproject in the
+  same binary. Complete-Truck cohorts preserve byte-identical rendered output
+  while Preproject lowers the measured GPU-plan completion cost on M4 Metal,
+  Chrome/WebGPU, and the Nothing A065. PostSort remains the universal product
+  default because Preproject currently requires Packed + ProjectedQuadsExact +
+  Compact, owns an additional lazy graph, and lacks producer-level
+  Adaptive/fallback. Current Adaptive learns CPU versus GPU ordering, not the
+  producer axis.
 - Projected cache reuse is fail-closed: only an identical order generation and
   owner, complete camera, viewport, and draw-count guard may skip projection.
   Motion, refresh, CPU/GPU transition, resize, or count change recomputes the
@@ -121,6 +133,10 @@ Historical global-quad timings below are context, not closeout evidence.
   streaming nor evidence of arbitrary-scale or memory-bounded loading.
 - Capacity preflight or allocation failure never silently selects the local
   Paged prototype, samples points, or lowers SH degree.
+- Complete SH3 Garden (5.835M) and Bicycle (6.132M) also load and render on the
+  physical A065 at native 2412x1080 with exact five-stage counts and no quality
+  fallback. Their short runs are capacity evidence, not interactive-FPS or
+  sustained-thermal claims.
 - Historical physical A065 evidence recorded Direct drawing 279,199 splats at
   11.330 ms/frame and Paged drawing 225,784 active splats at 23.626 ms/frame.
   This proves Paged execution and bounded GPU slots, not a performance win.

@@ -160,12 +160,12 @@ safety, and RGBA bytes for the tested oracle cohort. It also proves that the
 sorter is reused as a separate component rather than duplicated inside the
 projection graph.
 
-It does not yet prove a frame-time win, cross-platform shader admission, or
-formal-resolution quality/performance parity. Those require transactional
-candidate construction and same-binary device experiments on Metal, WebGPU,
-and Adreno before any Presenter publication decision.
+At this checkpoint it did not yet prove a frame-time win, cross-platform shader
+admission, or formal-resolution parity. The subsequent transactional producer
+implementation and same-binary Metal, WebGPU and Adreno experiments completed
+those gates; see `phase2-production-producer-ab-checkpoint.md`.
 
-## Next falsifiable slice
+## Subsequent falsifiable slice (completed)
 
 Keep both old and new GPU graphs in one binary behind a diagnostic-only owner,
 record `S/C/D`, projection/scan/radix/draw completion timings, and compare

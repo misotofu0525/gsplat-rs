@@ -1,9 +1,9 @@
 # Phase 2: exact pre-project contributor architecture
 
-> Status: architecture decision and falsifiable implementation plan; not yet a
-> production implementation. This document narrows the next performance phase
-> without changing the full-quality contract or fixing one sorting backend for
-> every device.
+> Status: architecture decision implemented in `006e37e` and validated in the
+> clean `7cabb6e` same-binary Metal, WebGPU and Adreno cohorts. The measured
+> retain/default decision is in `phase2-production-producer-ab-checkpoint.md`.
+> This document preserves the design rationale and falsifiable gates.
 
 ## Decision
 

@@ -1,6 +1,6 @@
 # Findings: Full-Quality Native Rendering
 
-> Evidence status: implementation is still active. Formal current Truck
+> Evidence status: implementation is complete for this branch milestone. Formal current Truck
 > evidence uses true 1920x1080 on Mac/Web and native 2412x1080 on Android,
 > with full terminal ledgers. All 640x360 results are explicitly historical
 > codec, phase, or rapid-regression diagnostics; they are not formal visual,
@@ -161,7 +161,9 @@ win. A later current-code CPU-only cohort after bounded parallel preprocessing
 runs at 43.321/43.169/43.748 FPS (median 43.321 FPS), with preprocessing
 4.54--4.97 ms and radix 4.82--5.12 ms. All three current runs present 100/100
 frames and close every terminal ticket. Forced GPU/Adaptive still require a
-current-binary three-way rerun before publication. The same two Mac views pass
+current-binary composite-plan rerun before a new product-policy publication;
+the later same-binary PostSort/Preproject cohort closes the GPU-producer
+question separately. The same two Mac views pass
 Direct-vs-Packed at 1920x1080:
 
 | View | SSIM | Normalized RGB MAE | Alpha |
@@ -536,22 +538,18 @@ workload. They do not define a universal point-count crossover. The current
 PlayCanvas comparison shows an observed throughput gap, while its different
 numeric/image contract prevents a strict equal-quality parity ratio.
 
-Still required before this plan can be called a complete cross-platform
-performance matrix:
+The cross-platform matrix closes with representative ladder anchors rather
+than a wasteful endpoint-by-scene Cartesian product. Terminal additions are:
 
-- rerun the point-count ladder with the retained final code on Mac and
-  Chrome/WebGPU; Android has a complete earlier-code forced ladder plus current
-  200k/1M/Truck anchors, but still needs final-code coverage at every rung;
-- extend current-code full Garden/Bicycle from Mac/Web runability receipts to
-  sustained CPU/GPU/Adaptive cohorts, and run them on Android or record the
-  structured capacity failure;
-- obtain physical-iPhone performance evidence; the available simulator is
-  integration/correctness evidence only;
-- add desktop five-stage exactness fields, retain complete Web/Android terminal
-  ledgers, and reject any failed/partial artifact from aggregates;
-- repeat competitor comparisons under matched camera motion, resolution,
-  frame window, terminal timing semantics, and an explicitly named precision/
-  SH-update profile.
+- same-binary exact PostSort/Preproject cohorts on M4, Chrome/WebGPU and A065;
+- fixed continuous-motion A065 Adaptive evidence that leaves `cpu_learning`;
+- complete Garden/Bicycle A065 capacity receipts through 6.132M SH3 splats.
+
+Deferred work is explicit: a composite producer/draw-plan controller,
+sustained Garden/Bicycle thermal cohorts, desktop text-receipt expansion,
+SPZ duplicate-peak removal, and a physical-iPhone run when hardware/signing is
+available. These are not permission to publish sampling, reduced SH, reduced
+resolution or incomplete residency as full-quality output.
 
 Older 640x360 CPU/GPU tables may still locate phases or reproduce a depth
-boundary, but cannot fill any of these open cells.
+boundary, but cannot replace the formal-resolution terminal evidence.
