@@ -295,13 +295,6 @@
       "exit_condition": "Separate immutable receipt types from bounded observer storage and polling lifecycle."
     },
     {
-      "path": "crates/gsplat-render-wgpu/src/external_prefix_radix.rs",
-      "a0_physical_loc": 1123,
-      "baseline_physical_loc": 1123,
-      "owner_task": "A5",
-      "exit_condition": "Consolidate scan and radix mechanics into strategy-free GPU owners with explicit scratch and dispatch boundaries."
-    },
-    {
       "path": "crates/gsplat-render-wgpu/src/projected_draw_telemetry.rs",
       "a0_physical_loc": 836,
       "baseline_physical_loc": 836,
