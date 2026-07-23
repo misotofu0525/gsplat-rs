@@ -99,26 +99,31 @@ eligible task. Do not rewrite the architecture in this ledger.
   geometry path, requested device limit, allocation or GPU command.
 - Dependencies: A3a Accepted at `0562cfe`; no later package is active.
 - Required dependency direction:
-  - keep `scene/budget.rs` as the pure CPU Resident payload ledger; it must not
-    acquire `wgpu`, projected-kernel or GPU execution dependencies;
-  - add a private `gpu_error.rs` leaf for the existing `ResidentGpuError`, moved
-    mechanically with all variants, derives and Display text unchanged;
-  - add a private `resource_plan.rs` leaf for `ResidentGpuBytePlan`, projected
-    contributor byte arithmetic, Direct/Packed preflight types/functions and
-    `DirectSceneError`;
-  - make `resource_plan.rs` the single source for projected cache/scan planning
-    constants and `RESIDENT_COLOR_STORAGE_BINDINGS`; GPU consumers may import or
-    privately re-export them, but must not duplicate numeric definitions;
+  - extend private `scene/budget.rs` from its existing CPU payload ledger into
+    the single owner of `ResidentGpuBytePlan`, projected-contributor byte
+    arithmetic and the Resident/projected descriptor constants; it remains
+    pure resource math and must not own GPU buffers, commands or policy;
+  - add private `scene/preflight.rs` for the Direct/Packed public capacity
+    reports, paths, remediation/failure types, `DirectSceneError` and three
+    preflight functions;
+  - add a private top-level `gpu_error.rs` leaf for the existing
+    `ResidentGpuError`, moved mechanically with all variants, derives and
+    Display text unchanged;
+  - make `scene/budget.rs` the single source for projected cache/scan planning
+    constants and `RESIDENT_COLOR_STORAGE_BINDINGS`; GPU consumers may import
+    or privately re-export them, but must not duplicate numeric definitions;
   - preserve every current crate-root public re-export and method signature.
 - Allowed production scope:
-  - new private `crates/gsplat-render-wgpu/src/gpu_error.rs` and
-    `crates/gsplat-render-wgpu/src/resource_plan.rs`;
+  - extend private `crates/gsplat-render-wgpu/src/scene/budget.rs`, add private
+    `scene/preflight.rs`, and add private top-level `gpu_error.rs`;
+  - private `scene/mod.rs` re-exports needed to preserve root API;
   - mechanical module declarations, root re-exports and removal of the moved
     declarations/implementations from `lib.rs` and `resident_gpu.rs`;
   - only constant/import/re-export changes required in
     `projected_quads_gpu.rs` and `surface_presenter.rs`;
   - move the existing pure byte-plan/limit and Direct/Packed preflight tests to
-    focused tests owned by `resource_plan.rs` without weakening assertions;
+    focused `scene/tests/budget.rs` and `scene/tests/preflight.rs` modules
+    without weakening assertions;
   - exact A1 architecture-policy grandfather entries for legacy files that
     physically shrink; normal modules use the advisory size profile.
 - Must remain with existing owners:
@@ -152,8 +157,8 @@ eligible task. Do not rewrite the architecture in this ledger.
     bindings, 128 MiB boundaries, `u32` draw count and `usize::MAX` overflow;
   - architecture checker/self-tests, format, locked workspace check/tests,
     all-target Clippy, Rustdoc, WASM and FFI smoke pass;
-  - 800 LOC is an advisory review target. A cohesive 800--1,200-line
-    `resource_plan.rs` is acceptable; only a file above 1,200 needs a finite
+  - 800 LOC is an advisory review target. A cohesive 800--1,200-line budget or
+    preflight module is acceptable; only a file above 1,200 needs a finite
     documented exception. Do not split at 799 lines or game physical LOC.
 - Performance observations: none; A3b is a behavior-only responsibility
   extraction.
