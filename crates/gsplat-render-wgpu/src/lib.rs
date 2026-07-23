@@ -22,10 +22,14 @@ mod page_source;
 mod paged_active_set;
 mod paged_gpu;
 #[cfg_attr(not(test), allow(dead_code))]
+mod plans;
+#[cfg_attr(not(test), allow(dead_code))]
 mod preproject_gpu;
 mod projected_draw_telemetry;
 mod projected_quads_gpu;
 mod raster;
+#[cfg_attr(not(test), allow(dead_code))]
+mod renderer;
 mod residency;
 mod resident_gpu;
 mod scene;

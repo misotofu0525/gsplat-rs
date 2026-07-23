@@ -5,6 +5,7 @@ mod builder;
 mod codec;
 mod preflight;
 mod resident;
+mod runtime;
 
 #[cfg(test)]
 mod tests;
@@ -27,3 +28,4 @@ pub use preflight::{
 pub use resident::{
     ResidentEncodingReport, ResidentSceneCpu, ResidentSceneError, ResidentSourceSplat,
 };
+pub(crate) use runtime::SceneRuntime;

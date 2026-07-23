@@ -173,7 +173,7 @@
     "growth_tolerance_lines": 32
   },
   "top_level_orchestration": {
-    "enabled": false,
+    "enabled": true,
     "target_lt": 150,
     "enforce_target": false,
     "activation_task": "E1",
@@ -181,8 +181,13 @@
       "crates/gsplat-render-wgpu/src/renderer.rs",
       "crates/gsplat-render-wgpu/src/renderer/mod.rs"
     ],
-    "reason": "The A0 legacy tree has no single reliable top-level render function boundary; E1 must name exact functions when renderer/mod.rs is introduced.",
-    "functions": []
+    "reason": "E1 introduces one private shadow renderer frame boundary; product routing remains on the legacy renderer until migration.",
+    "functions": [
+      {
+        "path": "crates/gsplat-render-wgpu/src/renderer/mod.rs",
+        "name": "execute_frame"
+      }
+    ]
   },
   "grandfather": [
     {
@@ -311,7 +316,16 @@
       ],
       "activation_task": "E1",
       "reason": "Any plan file with a per-frame boundary forbids pipeline creation and environment reads across the whole file; only exclusively preparation-only files may contain them.",
-      "per_frame_functions": [],
+      "per_frame_functions": [
+        {
+          "path": "crates/gsplat-render-wgpu/src/plans/mod.rs",
+          "name": "execute"
+        },
+        {
+          "path": "crates/gsplat-render-wgpu/src/plans/cpu_post.rs",
+          "name": "execute"
+        }
+      ],
       "preparation_only_files": []
     },
     "platform_hosts": {

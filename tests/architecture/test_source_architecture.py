@@ -64,6 +64,18 @@ class SourceArchitectureFixtureTests(unittest.TestCase):
                 policy = copy.deepcopy(self.base_policy)
                 policy["grandfather"] = copy.deepcopy(case.get("grandfather", []))
                 policy["exceptions"] = copy.deepcopy(case.get("exceptions", []))
+                # Fixtures describe isolated synthetic trees. Clear the real
+                # E1 boundaries before applying each case-specific activation
+                # so repository paths are not required in unrelated fixtures.
+                policy["top_level_orchestration"].update(
+                    {
+                        "enabled": False,
+                        "reason": "fixture has no activated renderer boundary",
+                        "functions": [],
+                    }
+                )
+                policy["dependency_rules"]["plans"]["per_frame_functions"] = []
+                policy["dependency_rules"]["plans"]["preparation_only_files"] = []
                 # The repository policy carries only the currently executing
                 # writer pair. Fixtures opt into their own exact execution.
                 policy["program_task_state"]["parallel_execution"] = None
@@ -241,16 +253,36 @@ class SourceArchitectureFixtureTests(unittest.TestCase):
             {"growth_tolerance_lines": 32},
         )
         orchestration = self.base_policy["top_level_orchestration"]
-        self.assertFalse(orchestration["enabled"])
+        self.assertTrue(orchestration["enabled"])
         self.assertEqual(orchestration["target_lt"], 150)
         self.assertFalse(orchestration["enforce_target"])
         self.assertEqual(orchestration["activation_task"], "E1")
         self.assertTrue(orchestration["reason"])
-        self.assertEqual(orchestration["functions"], [])
+        self.assertEqual(
+            orchestration["functions"],
+            [
+                {
+                    "path": "crates/gsplat-render-wgpu/src/renderer/mod.rs",
+                    "name": "execute_frame",
+                }
+            ],
+        )
         plans = self.base_policy["dependency_rules"]["plans"]
         self.assertEqual(plans["activation_task"], "E1")
         self.assertTrue(plans["reason"])
-        self.assertEqual(plans["per_frame_functions"], [])
+        self.assertEqual(
+            plans["per_frame_functions"],
+            [
+                {
+                    "path": "crates/gsplat-render-wgpu/src/plans/mod.rs",
+                    "name": "execute",
+                },
+                {
+                    "path": "crates/gsplat-render-wgpu/src/plans/cpu_post.rs",
+                    "name": "execute",
+                },
+            ],
+        )
         self.assertEqual(plans["preparation_only_files"], [])
         self.assertIn("crates/gsplat-render-wgpu/src/plans.rs", plans["include"])
         self.assertIn(
