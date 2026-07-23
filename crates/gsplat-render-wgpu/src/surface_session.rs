@@ -13,6 +13,7 @@ use std::{
     thread::{self, JoinHandle},
 };
 
+pub use crate::api::SurfaceOrderBackendUsed;
 use crate::evidence::BoundedEvidenceRing;
 use crate::gpu_telemetry::{SurfaceCpuOrderMeasurement, TelemetrySubmission};
 use crate::surface_presenter::{CpuCompletionSampleRequest, ProjectedDrawSampleRequest};
@@ -118,13 +119,6 @@ fn gpu_producer_measurement_context_is_valid(
     geometry_path == GeometryPath::PackedAtlas
         && raster_plan == SurfaceRasterExecutionPlan::ProjectedQuadsExact
         && projected_policy == SurfaceProjectedDrawPolicy::Compact
-}
-
-/// Backend that actually supplied the order presented by one frame.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SurfaceOrderBackendUsed {
-    Cpu,
-    Gpu,
 }
 
 /// Why a requested order measurement did not reserve a ticket.
