@@ -5,13 +5,13 @@
 //! per visible rank, and the existing premultiplied SortedAlpha hardware draw
 //! consumes those planes without a readback.
 
-use std::{mem::size_of, num::NonZeroU64};
+use std::mem::size_of;
 
 use bytemuck::{Pod, Zeroable};
 use wgpu::util::DeviceExt;
 
 use crate::draw_pass::{SplatPipeline, create_splat_pipeline};
-use crate::gpu::{GpuPrefixScan, GpuPrefixScanProfile};
+use crate::gpu::{GpuPrefixScan, GpuPrefixScanProfile, StableContributorCompactor};
 use crate::gpu_error::ResidentGpuError;
 use crate::projected_draw_telemetry::SurfaceProjectedDrawExecution;
 use crate::resident_gpu::{RESIDENT_QUAD_VERTEX_COUNT, ResidentGpuResources};
@@ -64,11 +64,7 @@ struct ProjectedContributorCounter {
 
 #[cfg_attr(not(test), allow(dead_code))]
 struct ProjectedContributorCompaction {
-    compact_pipeline: wgpu::ComputePipeline,
-    finalize_pipeline: wgpu::ComputePipeline,
-    compact_bind_group: wgpu::BindGroup,
-    contributor_ranks: wgpu::Buffer,
-    contributor_args: wgpu::Buffer,
+    compute: StableContributorCompactor,
     draw_pipeline: wgpu::RenderPipeline,
     draw_bind_group: wgpu::BindGroup,
 }
@@ -496,11 +492,7 @@ impl ProjectedQuadsGpu {
         };
         if execution == ProjectedDrawExecution::Compact {
             let compaction = self.contributor_compaction.as_ref().expect("checked above");
-            encoder.clear_buffer(
-                &compaction.contributor_args,
-                size_of::<u32>() as u64,
-                Some(size_of::<u32>() as u64),
-            );
+            compaction.compute.reset_instance_count(encoder);
         }
         self.encode_projection(encoder, project_bind_group, dispatch_items)?;
         if let Some(counter) = &self.contributor_counter {
@@ -588,14 +580,14 @@ impl ProjectedQuadsGpu {
     pub(crate) fn contributor_indirect_args(&self) -> Option<&wgpu::Buffer> {
         self.contributor_compaction
             .as_ref()
-            .map(|compaction| &compaction.contributor_args)
+            .map(|compaction| compaction.compute.indirect_args())
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn contributor_ranks(&self) -> Option<&wgpu::Buffer> {
         self.contributor_compaction
             .as_ref()
-            .map(|compaction| &compaction.contributor_ranks)
+            .map(|compaction| compaction.compute.contributor_ranks())
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
@@ -635,24 +627,11 @@ impl ProjectedContributorCompaction {
         dispatch_items: u32,
         dispatch_limit: u32,
     ) -> Result<(), ResidentGpuError> {
-        if dispatch_items > 0 {
-            encode_compute_stage(
-                encoder,
-                &self.compact_pipeline,
-                &self.compact_bind_group,
-                &[],
-                Dispatch2d::for_items(dispatch_items, dispatch_limit)?,
-                "gsplat-projected-contributor-compact-pass",
-            );
-        }
-        encode_compute_stage(
-            encoder,
-            &self.finalize_pipeline,
-            &self.compact_bind_group,
-            &[],
-            Dispatch2d { x: 1, y: 1 },
-            "gsplat-projected-contributor-finalize-pass",
-        );
+        let compact_dispatch = (dispatch_items > 0)
+            .then(|| Dispatch2d::for_items(dispatch_items, dispatch_limit))
+            .transpose()?
+            .map(|dispatch| (dispatch.x, dispatch.y));
+        self.compute.encode(encoder, compact_dispatch);
         Ok(())
     }
 }
@@ -789,76 +768,14 @@ fn create_contributor_compaction(
     projected_axes: &wgpu::Buffer,
     contributor_group_offsets: &wgpu::Buffer,
 ) -> Result<ProjectedContributorCompaction, ResidentGpuError> {
-    let contributor_ranks = storage_buffer_with_usage(
+    let compute = StableContributorCompactor::new(
         device,
-        "gsplat-projected-contributor-ranks",
-        contributor_rank_bytes.max(size_of::<u32>() as u64),
-        wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+        contributor_rank_bytes,
+        RESIDENT_QUAD_VERTEX_COUNT,
+        projected_center_source,
+        contributor_group_offsets,
+        &resident.draw_params_buffer,
     );
-    let contributor_args = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: wgpu_label("gsplat-projected-contributor-draw-args"),
-        contents: bytemuck::bytes_of(&DrawIndirectArgs {
-            vertex_count: RESIDENT_QUAD_VERTEX_COUNT,
-            instance_count: 0,
-            first_vertex: 0,
-            first_instance: 0,
-        }),
-        usage: wgpu::BufferUsages::STORAGE
-            | wgpu::BufferUsages::INDIRECT
-            | wgpu::BufferUsages::COPY_SRC
-            | wgpu::BufferUsages::COPY_DST,
-    });
-
-    let compact_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-        label: wgpu_label("gsplat-projected-contributor-compact-bgl"),
-        entries: &[
-            storage_layout(0, true, wgpu::ShaderStages::COMPUTE),
-            storage_layout(1, true, wgpu::ShaderStages::COMPUTE),
-            storage_layout(2, false, wgpu::ShaderStages::COMPUTE),
-            storage_layout(3, false, wgpu::ShaderStages::COMPUTE),
-            uniform_layout(
-                4,
-                false,
-                NonZeroU64::new(size_of::<crate::GpuSurfaceRenderParams>() as u64),
-            ),
-        ],
-    });
-    let compact_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: wgpu_label("gsplat-projected-contributor-compact-shader"),
-        source: wgpu::ShaderSource::Wgsl(
-            include_str!("../shaders/projected_quads_compact.wgsl").into(),
-        ),
-    });
-    let compact_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-        label: wgpu_label("gsplat-projected-contributor-compact-pipeline-layout"),
-        bind_group_layouts: &[&compact_layout],
-        immediate_size: 0,
-    });
-    let compact_pipeline = create_compute_pipeline(
-        device,
-        &compact_shader,
-        &compact_pipeline_layout,
-        "compact_contributor_ranks",
-        "gsplat-projected-contributor-compact-pipeline",
-    );
-    let finalize_pipeline = create_compute_pipeline(
-        device,
-        &compact_shader,
-        &compact_pipeline_layout,
-        "finalize_contributor_args",
-        "gsplat-projected-contributor-finalize-pipeline",
-    );
-    let compact_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: wgpu_label("gsplat-projected-contributor-compact-bg"),
-        layout: &compact_layout,
-        entries: &[
-            entry(0, projected_center_source),
-            entry(1, contributor_group_offsets),
-            entry(2, &contributor_ranks),
-            entry(3, &contributor_args),
-            entry(4, &resident.draw_params_buffer),
-        ],
-    });
 
     let draw_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: wgpu_label("gsplat-projected-contributor-draw-bgl"),
@@ -888,71 +805,15 @@ fn create_contributor_compaction(
             entry(0, projected_center_source),
             entry(1, projected_axes),
             entry(2, &resident.resolved_color_buffer),
-            entry(3, &contributor_ranks),
+            entry(3, compute.contributor_ranks()),
         ],
     });
 
     Ok(ProjectedContributorCompaction {
-        compact_pipeline,
-        finalize_pipeline,
-        compact_bind_group,
-        contributor_ranks,
-        contributor_args,
+        compute,
         draw_pipeline,
         draw_bind_group,
     })
-}
-
-fn uniform_layout(
-    binding: u32,
-    dynamic: bool,
-    min_binding_size: Option<NonZeroU64>,
-) -> wgpu::BindGroupLayoutEntry {
-    wgpu::BindGroupLayoutEntry {
-        binding,
-        visibility: wgpu::ShaderStages::COMPUTE,
-        ty: wgpu::BindingType::Buffer {
-            ty: wgpu::BufferBindingType::Uniform,
-            has_dynamic_offset: dynamic,
-            min_binding_size,
-        },
-        count: None,
-    }
-}
-
-fn create_compute_pipeline(
-    device: &wgpu::Device,
-    shader: &wgpu::ShaderModule,
-    layout: &wgpu::PipelineLayout,
-    entry_point: &'static str,
-    label: &'static str,
-) -> wgpu::ComputePipeline {
-    device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-        label: wgpu_label(label),
-        layout: Some(layout),
-        module: shader,
-        entry_point: Some(entry_point),
-        compilation_options: wgpu::PipelineCompilationOptions::default(),
-        cache: None,
-    })
-}
-
-#[cfg_attr(not(test), allow(dead_code))]
-fn encode_compute_stage(
-    encoder: &mut wgpu::CommandEncoder,
-    pipeline: &wgpu::ComputePipeline,
-    bind_group: &wgpu::BindGroup,
-    dynamic_offsets: &[u32],
-    dispatch: Dispatch2d,
-    label: &'static str,
-) {
-    let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-        label: wgpu_label(label),
-        timestamp_writes: None,
-    });
-    pass.set_pipeline(pipeline);
-    pass.set_bind_group(0, bind_group, dynamic_offsets);
-    pass.dispatch_workgroups(dispatch.x, dispatch.y, 1);
 }
 
 fn storage_buffer(device: &wgpu::Device, label: &'static str, size: u64) -> wgpu::Buffer {
