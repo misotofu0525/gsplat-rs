@@ -1,6 +1,8 @@
+mod compact;
 mod radix;
 mod scan;
 
+pub(crate) use compact::StableContributorCompactor;
 #[cfg(test)]
 pub(crate) use radix::{EXTERNAL_RADIX_TILE_SIZE, ExternalPrefixControl};
 pub(crate) use radix::{ExternalPrefixRadix, ExternalPrefixRadixBytePlan};
