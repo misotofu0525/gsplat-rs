@@ -86,8 +86,8 @@ eligible task. Do not rewrite the architecture in this ledger.
 ## Cross-cutting LOC guardrail correction
 
 - Corrected: 2026-07-23 after explicit owner review.
-- There is no 890-line rule. The 800/600/200/800/350/150 values are advisory
-  review signals, not task completion gates.
+- The 800/600/200/800/350/150 values are advisory review signals, not task
+  completion gates. In particular, 800 LOC is not a hard file limit.
 - A cohesive file may exceed a review target when the closeout explains its
   responsibility, dependency direction, test boundary and why another split
   would make ownership worse. No task may split at 799/999/1,199 or move tests
@@ -195,7 +195,7 @@ eligible task. Do not rewrite the architecture in this ledger.
     architecture checks, locked renderer/workspace tests, all-target Clippy,
     Rustdoc, wasm32 and forced Apple M4 Metal conformance. Root alone adjusts a
     grandfather baseline after semantic acceptance.
-- Flexible LOC rule: no 800/890 gate applies. This task succeeds only if it
+- Flexible LOC rule: no 800-line gate applies. This task succeeds only if it
   removes duplicate scan ownership without inventing a generic compaction
   framework; final cohesive owner sizes are review evidence, not pass/fail
   numbers.
@@ -305,7 +305,7 @@ eligible task. Do not rewrite the architecture in this ledger.
     all-target Clippy and Rustdoc with warnings denied, wasm32 check and forced
     Apple M4 Metal conformance pass. Root alone updates the exact grandfather
     baseline after semantic review.
-- Flexible LOC rule: there is no 800/890 completion gate. A cohesive radix
+- Flexible LOC rule: there is no 800-line completion gate. A cohesive radix
   owner may exceed any review target; responsibility, dependency direction and
   executable tests decide the boundary. Only a new multi-thousand-line mixed
   owner requires a finite exception or redesign.
@@ -342,9 +342,9 @@ eligible task. Do not rewrite the architecture in this ledger.
   - `gpu/mod.rs`: 15 LOC, private facade.
 - Flexible size decision: the 1,724-LOC radix owner is accepted intact. Its
   buffer graph, profiles, final-A contract and executable GPU oracles form one
-  responsibility; splitting for 800/890 would add coupling without creating a
-  new owner. The architecture notice remains advisory, while dependency and
-  legacy-growth rules remain hard.
+  responsibility; splitting only to satisfy the advisory 800 target would add
+  coupling without creating a new owner. The architecture notice remains
+  advisory, while dependency and legacy-growth rules remain hard.
 - Root integrated gates:
   - PASS exact 101-label set comparison and five frozen WGSL hashes;
   - PASS unchanged Direct 16-test/four-ignored and A5a five-test inventories;
@@ -418,7 +418,7 @@ eligible task. Do not rewrite the architecture in this ledger.
   - adopting a different Direct/Projected scan, deduplicating merely similar
     algorithms, touching CPU/GPU/Adaptive policy, adding a new algorithm or
     claiming performance gains;
-  - splitting or moving code to satisfy 800, 890 or any other fixed line count.
+  - splitting or moving code to satisfy 800 or any other fixed line count.
     Cohesion, dependency direction and independently executable tests decide
     the module boundary.
 - Hard gates:
@@ -463,7 +463,8 @@ eligible task. Do not rewrite the architecture in this ledger.
 - Flexible size decision: `gpu/radix.rs` remains one 810-LOC owner because its
   ABI, byte plan, ping-pong graph, eight passes and direct tests form one
   responsibility. The architecture checker emits a non-blocking notice; no
-  split was made to satisfy 799/800/890 or another numeric target.
+  split was made merely to satisfy the advisory 800 target or another numeric
+  target.
 - Root integrated gates:
   - PASS architecture checker/self-tests; the obsolete 1,123-LOC grandfather
     entry is removed after its semantic exit condition was met;
