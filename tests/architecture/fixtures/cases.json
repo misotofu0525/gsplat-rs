@@ -80,6 +80,7 @@
       "grandfather": [
         {
           "path": "crates/demo/src/legacy.rs",
+          "a0_physical_loc": 800,
           "baseline_physical_loc": 800,
           "owner_task": "A9",
           "exit_condition": "Reduce below target."
@@ -90,7 +91,7 @@
       ]
     },
     {
-      "name": "grandfather_shrink_is_allowed",
+      "name": "grandfather_shrink_requires_same_change_baseline_update",
       "files": {
         "crates/demo/src/legacy.rs": {
           "physical_lines": 799
@@ -99,14 +100,52 @@
       "grandfather": [
         {
           "path": "crates/demo/src/legacy.rs",
+          "a0_physical_loc": 801,
           "baseline_physical_loc": 801,
           "owner_task": "A9",
           "exit_condition": "Reduce below target."
         }
       ],
-      "expected_error_codes": [],
-      "expected_notice_codes": [
-        "size.grandfather_shrink"
+      "expected_error_codes": [
+        "size.grandfather_baseline_stale"
+      ]
+    },
+    {
+      "name": "grandfather_shrink_with_lowered_baseline_is_allowed",
+      "files": {
+        "crates/demo/src/legacy.rs": {
+          "physical_lines": 799
+        }
+      },
+      "grandfather": [
+        {
+          "path": "crates/demo/src/legacy.rs",
+          "a0_physical_loc": 801,
+          "baseline_physical_loc": 799,
+          "owner_task": "A9",
+          "exit_condition": "Reduce below target."
+        }
+      ],
+      "expected_error_codes": []
+    },
+    {
+      "name": "grandfather_baseline_cannot_exceed_a0_loc",
+      "files": {
+        "crates/demo/src/legacy.rs": {
+          "physical_lines": 802
+        }
+      },
+      "grandfather": [
+        {
+          "path": "crates/demo/src/legacy.rs",
+          "a0_physical_loc": 801,
+          "baseline_physical_loc": 802,
+          "owner_task": "A9",
+          "exit_condition": "Reduce below target."
+        }
+      ],
+      "expected_error_codes": [
+        "config.invalid_grandfather"
       ]
     },
     {
@@ -119,12 +158,15 @@
       "grandfather": [
         {
           "path": "crates/demo/src/legacy.rs",
+          "a0_physical_loc": 800,
           "baseline_physical_loc": 800,
           "owner_task": "A5",
           "exit_condition": "Reduce below target."
         }
       ],
-      "progress": "### A5 closeout\n\n- Final state: Rejected\n",
+      "task_states": [
+        "A5 = Reject"
+      ],
       "expected_error_codes": [
         "grandfather.exit_due"
       ]
@@ -139,6 +181,7 @@
       "grandfather": [
         {
           "path": "crates/demo/src/legacy.rs",
+          "a0_physical_loc": 800,
           "baseline_physical_loc": 800,
           "owner_task": "IO-1",
           "exit_condition": "Reduce below target.",
@@ -146,9 +189,44 @@
           "review_action": "Register a dedicated follow-up before Package A closes."
         }
       ],
-      "progress": "### A9 closeout\n\n- Final state: Accepted\n",
+      "task_states": [
+        "A9 = Defer"
+      ],
       "expected_error_codes": [
         "grandfather.review_due"
+      ]
+    },
+    {
+      "name": "uncataloged_expiry_tasks_fail_closed",
+      "files": {
+        "crates/demo/src/legacy.rs": {
+          "physical_lines": 800
+        },
+        "crates/demo/src/temporary.rs": {
+          "physical_lines": 1201
+        }
+      },
+      "grandfather": [
+        {
+          "path": "crates/demo/src/legacy.rs",
+          "a0_physical_loc": 800,
+          "baseline_physical_loc": 800,
+          "owner_task": "IO-UNKNOWN",
+          "exit_condition": "Reduce below target."
+        }
+      ],
+      "exceptions": [
+        {
+          "path": "crates/demo/src/temporary.rs",
+          "baseline_physical_loc": 1200,
+          "max_temporary_delta": 1,
+          "reason": "Temporary transition shim.",
+          "removal_task": "IO-UNKNOWN"
+        }
+      ],
+      "expected_error_codes": [
+        "config.untracked_exception_removal",
+        "config.untracked_grandfather_owner"
       ]
     },
     {
@@ -205,10 +283,118 @@
           "removal_task": "A2"
         }
       ],
-      "progress": "### A2 closeout\n\n- Final state: Accepted\n",
+      "task_states": [
+        "A2 = Accept"
+      ],
       "expected_error_codes": [
         "exception.expired",
         "size.hard_ceiling"
+      ]
+    },
+    {
+      "name": "archived_master_and_secondary_m_ledger_expire_m_owner",
+      "files": {
+        "crates/demo/src/legacy.rs": {
+          "physical_lines": 800
+        }
+      },
+      "grandfather": [
+        {
+          "path": "crates/demo/src/legacy.rs",
+          "a0_physical_loc": 800,
+          "baseline_physical_loc": 800,
+          "owner_task": "M1",
+          "exit_condition": "Reduce below target."
+        }
+      ],
+      "ledgers": {
+        "docs/plans/completed/2026-07-23-native-render-core-refactor/progress.md": "<!-- gsplat-program-task-states: begin -->\nA1 = Deferred\n<!-- gsplat-program-task-states: end -->\n",
+        "docs/plans/active/2026-07-23-native-render-core-migration/progress.md": "<!-- gsplat-program-task-states: begin -->\nM1 = Accept\n<!-- gsplat-program-task-states: end -->\n"
+      },
+      "expected_error_codes": [
+        "grandfather.exit_due"
+      ]
+    },
+    {
+      "name": "missing_program_state_source_fails_closed",
+      "files": {},
+      "ledgers": {},
+      "expected_error_codes": [
+        "program_state.missing"
+      ]
+    },
+    {
+      "name": "selected_package_ledger_requires_machine_state_block",
+      "files": {},
+      "ledgers": {
+        "docs/plans/active/2026-07-23-native-render-core-refactor/progress.md": "### A1 prose only\n\n- Final state: Accepted\n"
+      },
+      "expected_error_codes": [
+        "program_state.invalid_block"
+      ]
+    },
+    {
+      "name": "narrative_state_text_is_ignored_outside_machine_block",
+      "files": {},
+      "task_states": [
+        "A1 = Accept"
+      ],
+      "progress_prose": "### A1 repeated in prose\n\n- Final state: Rejected\n\n| A1 | Deferred | prose |\n",
+      "expected_error_codes": []
+    },
+    {
+      "name": "active_and_completed_package_ledgers_are_ambiguous",
+      "files": {},
+      "ledgers": {
+        "docs/plans/active/2026-07-23-native-render-core-refactor/progress.md": "# Active A\n",
+        "docs/plans/completed/2026-07-23-native-render-core-refactor/progress.md": "# Completed A\n"
+      },
+      "expected_error_codes": [
+        "program_state.ambiguous_package_ledger"
+      ]
+    },
+    {
+      "name": "conflicting_task_states_fail_closed",
+      "files": {},
+      "task_states": [
+        "A1 = Accepted",
+        "A1 = Rejected"
+      ],
+      "expected_error_codes": [
+        "program_state.conflict"
+      ]
+    },
+    {
+      "name": "duplicate_task_state_fails_closed",
+      "files": {},
+      "task_states": [
+        "A1 = Accepted",
+        "A1 = Accept"
+      ],
+      "expected_error_codes": [
+        "program_state.duplicate_task"
+      ]
+    },
+    {
+      "name": "unknown_task_and_state_fail_closed",
+      "files": {},
+      "task_states": [
+        "A42 = Accepted",
+        "A2 = Done"
+      ],
+      "expected_error_codes": [
+        "program_state.unknown_state",
+        "program_state.unknown_task"
+      ]
+    },
+    {
+      "name": "task_state_in_wrong_package_fails_closed",
+      "files": {},
+      "task_states": [
+        "M1 = Accept"
+      ],
+      "expected_error_codes": [
+        "program_state.wrong_package"
       ]
     },
     {
@@ -229,6 +415,62 @@
         "dependency.gpu.plans",
         "dependency.gpu.platform_host",
         "dependency.gpu.policy",
+        "dependency.gpu.renderer"
+      ]
+    },
+    {
+      "name": "gpu_crate_root_alias_cannot_bypass_forbidden_prefixes",
+      "files": {
+        "crates/gsplat-render-wgpu/src/gpu/project.rs": {
+          "lines": [
+            "use crate as root;",
+            "use root::renderer::Renderer;"
+          ]
+        }
+      },
+      "expected_error_codes": [
+        "dependency.gpu.crate_alias"
+      ]
+    },
+    {
+      "name": "gpu_grouped_super_imports_with_aliases_are_resolved",
+      "files": {
+        "crates/gsplat-render-wgpu/src/gpu/project.rs": {
+          "lines": [
+            "use super::super::{renderer::Renderer as R, plans::{PlanSet as P}};"
+          ]
+        }
+      },
+      "expected_error_codes": [
+        "dependency.gpu.plans",
+        "dependency.gpu.renderer"
+      ]
+    },
+    {
+      "name": "gpu_grouped_crate_and_self_imports_are_resolved",
+      "files": {
+        "crates/gsplat-render-wgpu/src/gpu/project.rs": {
+          "lines": [
+            "use crate::{plans::PlanSet as P};",
+            "use self::{super::super::renderer::Renderer as R};"
+          ]
+        }
+      },
+      "expected_error_codes": [
+        "dependency.gpu.plans",
+        "dependency.gpu.renderer"
+      ]
+    },
+    {
+      "name": "single_file_gpu_module_is_guarded",
+      "files": {
+        "crates/gsplat-render-wgpu/src/gpu.rs": {
+          "lines": [
+            "use crate::renderer::Renderer;"
+          ]
+        }
+      },
+      "expected_error_codes": [
         "dependency.gpu.renderer"
       ]
     },
@@ -266,6 +508,63 @@
       ]
     },
     {
+      "name": "per_frame_checks_follow_same_file_helpers_with_rust_signatures",
+      "files": {
+        "crates/gsplat-render-wgpu/src/plans.rs": {
+          "lines": [
+            "fn encode<'a, T>(&'a self, value: T) -> [u8; 4] where T: Copy {",
+            "    frame_helper();",
+            "    self.pipeline_helper();",
+            "    [0; 4]",
+            "}",
+            "fn frame_helper() {",
+            "    let _ = std::env::var(\"GSPLAT_PLAN\");",
+            "}",
+            "fn pipeline_helper(&self) {",
+            "    let _ = self.device.create_render_pipeline(&descriptor);",
+            "}"
+          ]
+        }
+      },
+      "plan_rules": {
+        "per_frame_functions": [
+          {
+            "path": "crates/gsplat-render-wgpu/src/plans.rs",
+            "name": "encode"
+          }
+        ]
+      },
+      "expected_error_codes": [
+        "dependency.plan.env",
+        "dependency.plan.pipeline"
+      ]
+    },
+    {
+      "name": "unreachable_preparation_helpers_may_create_pipelines",
+      "files": {
+        "crates/gsplat-render-wgpu/src/plans/cpu_post.rs": {
+          "lines": [
+            "fn new() { prepare(); }",
+            "fn prepare() {",
+            "    let _ = std::env::var(\"GSPLAT_PLAN\");",
+            "    let _ = device.create_compute_pipeline(&descriptor);",
+            "}",
+            "fn encode() { frame_helper(); }",
+            "fn frame_helper() {}"
+          ]
+        }
+      },
+      "plan_rules": {
+        "per_frame_functions": [
+          {
+            "path": "crates/gsplat-render-wgpu/src/plans/cpu_post.rs",
+            "name": "encode"
+          }
+        ]
+      },
+      "expected_error_codes": []
+    },
+    {
       "name": "future_plan_requires_explicit_frame_boundary",
       "files": {
         "crates/gsplat-render-wgpu/src/plans/gpu_post.rs": {
@@ -298,6 +597,32 @@
       ]
     },
     {
+      "name": "single_file_hosts_reject_plain_plan_cache_and_controller_fields",
+      "files": {
+        "crates/gsplat-render-wgpu/src/surface.rs": {
+          "lines": [
+            "struct SurfaceHost {",
+            "    plan: PlanId,",
+            "    cache_gen: u64,",
+            "    controller: Controller,",
+            "}"
+          ]
+        },
+        "crates/gsplat-render-wgpu/src/offscreen.rs": {
+          "lines": [
+            "struct OffscreenHost {",
+            "    controller: Controller,",
+            "}"
+          ]
+        }
+      },
+      "expected_error_codes": [
+        "dependency.host.cache_generation",
+        "dependency.host.plan_selection",
+        "dependency.host.plan_selection"
+      ]
+    },
+    {
       "name": "runtime_pass_vector_and_public_render_plan_trait",
       "files": {
         "crates/demo/src/runtime.rs": {
@@ -320,7 +645,8 @@
           "lines": [
             "use crate::data::layout::Splat;",
             "// use crate::renderer::Renderer;",
-            "const TEXT: &str = r#\"use crate::plans::PlanSet;\"#;"
+            "// use crate as root; use root::renderer::Renderer;",
+            "const TEXT: &str = r#\"use crate as root; use root::plans::PlanSet;\"#;"
           ]
         },
         "crates/gsplat-render-wgpu/src/plans/cpu_post.rs": {
@@ -369,16 +695,18 @@
       "expected_error_codes": []
     },
     {
-      "name": "future_orchestration_path_requires_activation",
+      "name": "single_file_renderer_enforces_size_and_orchestration_activation",
       "files": {
-        "crates/gsplat-render-wgpu/src/renderer/mod.rs": {
-          "lines": [
+        "crates/gsplat-render-wgpu/src/renderer.rs": {
+          "physical_lines": 800,
+          "prefix": [
             "pub struct Renderer;"
           ]
         }
       },
       "expected_error_codes": [
-        "orchestration.activation_due"
+        "orchestration.activation_due",
+        "size.target_exceeded"
       ]
     },
     {

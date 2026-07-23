@@ -59,12 +59,8 @@ class SourceArchitectureFixtureTests(unittest.TestCase):
                 root = pathlib.Path(directory)
                 for relative, spec in case["files"].items():
                     materialize_file(root, relative, spec)
-                (root / "progress.md").write_text(
-                    case.get("progress", "# Fixture progress\n"), encoding="utf-8"
-                )
 
                 policy = copy.deepcopy(self.base_policy)
-                policy["progress_file"] = "progress.md"
                 policy["grandfather"] = copy.deepcopy(case.get("grandfather", []))
                 policy["exceptions"] = copy.deepcopy(case.get("exceptions", []))
                 if "top_level_orchestration" in case:
@@ -77,6 +73,32 @@ class SourceArchitectureFixtureTests(unittest.TestCase):
                         policy["dependency_rules"]["plans"],
                         case["plan_rules"],
                     )
+                if "program_task_state" in case:
+                    deep_update(
+                        policy["program_task_state"],
+                        case["program_task_state"],
+                    )
+
+                default_ledger = policy["program_task_state"]["package_ledgers"]["A"][
+                    "active"
+                ]
+                default_content = "\n".join(
+                    [
+                        "# Fixture progress",
+                        checker.TASK_STATE_BLOCK_BEGIN,
+                        *case.get("task_states", []),
+                        checker.TASK_STATE_BLOCK_END,
+                        case.get("progress_prose", ""),
+                    ]
+                )
+                ledgers = case.get(
+                    "ledgers",
+                    {default_ledger: default_content},
+                )
+                for relative, content in ledgers.items():
+                    path = root / relative
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_text(content, encoding="utf-8")
 
                 issues, _ = checker.check_repository(root, policy)
                 error_codes = sorted(
@@ -114,11 +136,13 @@ class SourceArchitectureFixtureTests(unittest.TestCase):
         grandfather = {
             entry["path"]: entry for entry in policy["grandfather"]
         }
-        self.assertEqual(set(grandfather), set(breached))
-        for path, loc in breached.items():
+        self.assertEqual(set(breached), set(grandfather))
+        for path, entry in grandfather.items():
+            loc = checker.physical_loc(REPO_ROOT / path)
+            self.assertGreaterEqual(entry["a0_physical_loc"], loc)
             self.assertEqual(grandfather[path]["baseline_physical_loc"], loc)
-            self.assertTrue(grandfather[path]["owner_task"])
-            self.assertTrue(grandfather[path]["exit_condition"])
+            self.assertTrue(entry["owner_task"])
+            self.assertTrue(entry["exit_condition"])
 
     def test_declared_guardrail_values_and_future_activation(self) -> None:
         limits = self.base_policy["limits"]
@@ -144,6 +168,34 @@ class SourceArchitectureFixtureTests(unittest.TestCase):
         self.assertTrue(plans["reason"])
         self.assertEqual(plans["per_frame_functions"], [])
         self.assertEqual(plans["preparation_only_files"], [])
+        self.assertIn("crates/gsplat-render-wgpu/src/plans.rs", plans["include"])
+        self.assertIn(
+            "crates/gsplat-render-wgpu/src/gpu.rs",
+            self.base_policy["dependency_rules"]["gpu"]["include"],
+        )
+        hosts = self.base_policy["dependency_rules"]["platform_hosts"]["include"]
+        self.assertIn("crates/gsplat-render-wgpu/src/surface.rs", hosts)
+        self.assertIn("crates/gsplat-render-wgpu/src/offscreen.rs", hosts)
+        self.assertIn(
+            "crates/gsplat-render-wgpu/src/renderer.rs",
+            limits["renderer_orchestrator"]["paths"],
+        )
+
+        state = self.base_policy["program_task_state"]
+        self.assertEqual(set(state["package_ledgers"]), {"A", "E", "M", "B", "S", "Q"})
+        self.assertEqual(set(state["task_catalog"].values()), {"A", "E", "M", "B", "S", "Q"})
+        expected_tasks = {
+            *(f"A{index}" for index in range(10)),
+            *(f"E{index}" for index in range(14)),
+            *(f"M{index}" for index in range(9)),
+            *(f"B{index}" for index in range(7)),
+            *(f"S{index}" for index in range(8)),
+            *(f"Q{index}" for index in range(5)),
+        }
+        self.assertEqual(set(state["task_catalog"]), expected_tasks)
+        for package, pair in state["package_ledgers"].items():
+            self.assertEqual(set(pair), {"active", "completed"}, package)
+            self.assertNotEqual(pair["active"], pair["completed"])
 
         external = {
             entry["owner_task"]: entry

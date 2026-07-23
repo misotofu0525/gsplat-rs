@@ -4,6 +4,18 @@
 > Architecture: [architecture.md](architecture.md)
 > Verification: [benchmark_protocol.md](benchmark_protocol.md)
 
+## Machine task-state registry
+
+The architecture checker reads only the delimited records below, never prose
+headings or the decision table. Future E/M/B/S/Q package ledgers use the static
+active/completed paths declared in the source-architecture policy and contain
+their own single block in the same format.
+
+<!-- gsplat-program-task-states: begin -->
+A0 = Accepted
+A1 = Accept
+<!-- gsplat-program-task-states: end -->
+
 ## Program status
 
 - Plan bundle: committed at `c478252246733f6dc209686091caf183e1ef7f06`.
@@ -53,6 +65,10 @@ When the task ends, replace `Active` with exactly one of:
 - `Accepted`;
 - `Rejected`;
 - `Deferred`.
+
+The same closeout change must add exactly one normalized record to that
+package ledger's machine task-state block. Narrative state text and the
+decision table are human-readable mirrors, not checker inputs.
 
 Then record the code commit (if any), evidence paths, commands, result and next
 eligible task. Do not rewrite the architecture in this ledger.
@@ -121,7 +137,7 @@ No implementation task is active.
 
 ### A0 evidence-boundary follow-up
 
-- State: Accepted
+- Outcome: Accepted
 - Started: 2026-07-23 18:52 CST
 - Ended: 2026-07-23 18:57 CST
 - Baseline: `2aef9f0e209c36fc24c706c284e02a181d275b8c`
@@ -140,12 +156,11 @@ No implementation task is active.
 - Device/performance work: none
 - Decision: A0 remains Accepted with narrower evidence claims; the integration
   baseline and A1 eligibility are unchanged
-- Commit: this follow-up commit; exact SHA is reported in the handoff
+- Commit: `9df0d6cb2e7e7df7ddc95e85d16c416e4e91d4b0`
 - Next eligible task: A1 — add source-size and dependency ratchet
 
 ### A1 — Add source-size and dependency ratchet
 
-- State: Accepted
 - Final state: Accept
 - Started: 2026-07-23 18:59 CST
 - Ended: 2026-07-23 19:14 CST
@@ -169,24 +184,41 @@ No implementation task is active.
   - PASS physical LOC counts comments, blank lines and embedded tests
   - PASS all current target breaches are checked exactly: 21 production Rust
     files plus 3 WGSL files, each with A0 LOC, owner task and exit condition
-  - PASS grandfather entries may shrink and may not exceed their checked
-    baseline; owner closeout while still over target is detectable
+  - PASS every grandfather entry retains immutable A0 LOC plus a checked
+    ratchet baseline; shrink without lowering that baseline in the same change
+    fails, growth above it fails, and owner closeout while over target is
+    detectable
   - PASS production Rust `<800` target / `1,200` hard ceiling, concrete plan
     `<600` target / `1,000` hard ceiling, render `lib.rs <200`, future renderer
     orchestrator `<800`, and WGSL `<350` are encoded
   - PASS the top-level orchestration `<150` rule is explicitly disabled because
     A0 has no reliable single-function boundary; creation of
-    `renderer/mod.rs` or E1 closeout forces exact function activation
+    `renderer.rs` / `renderer/mod.rs` or E1 closeout forces exact function
+    activation
   - PASS exceptions require baseline LOC, maximum temporary delta, reason and
     removal task; terminal removal-task closeout expires them
-  - PASS future `gpu/` imports of renderer/plans/policy/evidence/platform hosts,
-    plan submit/present/poll/map, host plan/cache/adaptive ownership, runtime
-    `Vec<Box<dyn ...Pass>>` and public `RenderPlan` are covered by positive and
-    negative fixtures
-  - PASS plan environment reads and pipeline creation are checked only inside
-    exact configured per-frame function bodies; constructors/preparation are
-    legal, and a new plan file without an explicit frame/preparation boundary
+  - PASS future `gpu.rs` / `gpu/` imports of
+    renderer/plans/policy/evidence/platform hosts, plan submit/present/poll/map,
+    host plan/cache/adaptive ownership, runtime `Vec<Box<dyn ...Pass>>` and
+    public `RenderPlan` are covered by positive and negative fixtures
+  - PASS crate-root aliases fail closed and grouped `crate/self/super` imports,
+    including nested groups and item aliases, resolve before direction checks
+  - PASS plan environment reads and pipeline creation are checked through the
+    same-file helper graph reachable from exact per-frame functions;
+    constructors and unreachable preparation helpers remain legal, and a new
+    `plans.rs` / `plans/` file without an explicit frame/preparation boundary
     fails closed
+  - PASS function boundaries accept array-return semicolons plus
+    generic/lifetime signatures instead of using a first-semicolon heuristic
+  - PASS `surface.rs` / `surface/` and `offscreen.rs` / `offscreen/` host fields
+    cover plain `plan`, `cache_gen` and controller names/types
+  - PASS the static A/E/M/B/S/Q task catalog aggregates one active/completed
+    ledger per opened package; missing global state sources, duplicate package
+    ledgers, duplicate/conflicting tasks, unknown task/state and wrong-package
+    records fail closed
+  - PASS task state is read only from one explicit machine block per ledger;
+    `Accept/Reject/Defer` and `Accepted/Rejected/Deferred` normalize to terminal
+    states without scanning narrative prose
   - PASS source discovery enumerates configured include globs directly and does
     not walk repository-wide `target/`, `node_modules/` or datasets
   - PASS checker self-tests and checker against the real A0 tree
@@ -195,7 +227,7 @@ No implementation task is active.
 - Observations:
   - real-tree checker reports `38 production Rust, 25 WGSL, 24 grandfathered`
   - warm real-tree timing after the directed-glob/lexer fix was `0.17 s` and
-    `0.16 s` in consecutive `/usr/bin/time -p` runs
+    `0.17 s` in consecutive `/usr/bin/time -p` correction runs
   - generic Rust and plan targets are reported notices until their hard
     ceilings; specialized render `lib.rs`, renderer and WGSL targets are errors
   - no renderer timing, FPS, device, browser or competitor observation was
@@ -220,9 +252,9 @@ No implementation task is active.
   - `IO-PLY-1` and `IO-SPZ-1` are deliberately outside the current native-core
     work-package map; each entry has `review_task: A9`
   - once A9 reaches any terminal closeout, an unchanged entry fails with
-    `grandfather.review_due`; A9 must therefore register a dedicated plan and
-    ledger, reassign an explicitly scheduled owner, or remove the entry after
-    meeting its exit condition
+    `grandfather.review_due`; A9 must therefore add that IO task and a static
+    active/completed ledger pair to `program_task_state`, reassign an already
+    cataloged owner, or remove the entry after meeting its exit condition
 - Claim boundary:
   - dependency checks are deterministic lexical architecture checks, not a
     complete Rust type resolver; comments and literals are removed before
@@ -233,12 +265,14 @@ No implementation task is active.
 - Decision reason: every declared A1 guardrail is executable on fixtures and
   the real A0 tree, all required local gates pass, and the diff remains inside
   the checker/test/config/ledger boundary.
-- Result commit: this A1 commit; exact SHA is reported in the handoff
+- Result identity: `9df0d6c..codex/native-render-a1-ratchet`; resolve the
+  branch tip SHA when integrating the correction
 - Next eligible task: A2 — extract `api.rs` and strategy-free
   `data/{layout,view}.rs` types
 - A2 input:
-  - start from this A1 commit and keep the checker passing before and after the
-    extraction
+  - start from the resolved tip of
+    `9df0d6c..codex/native-render-a1-ratchet` and keep the checker passing before
+    and after the extraction
   - keep new production Rust below the declared target, shrink legacy owners,
     and lower a checked grandfather baseline in the same task when it shrinks
   - A2 does not need to activate future `plans/` or `renderer/mod.rs`; if it
@@ -246,14 +280,34 @@ No implementation task is active.
     suppressing the activation failure
   - moving embedded tests alone is not evidence that an A2 responsibility moved
 
+### Reviewer correction after A1
+
+- Outcome: Accepted
+- Baseline: `b87c17fd901012ea5ca583e25af125902d100036`
+- Scope: checker, static policy, adversarial fixtures/self-tests and this ledger
+  only; no production, shader, API, FFI, platform, benchmark-schema, CI or
+  handbook change
+- Result identity: `9df0d6c..codex/native-render-a1-ratchet`; the integration
+  handoff must record the resolved branch-tip SHA because a commit cannot
+  truthfully contain its own object ID
+- Verification:
+  - PASS 39-case fixture matrix
+  - PASS real-tree checker: `38 production Rust, 25 WGSL, 24 grandfathered`
+  - PASS two real-tree timing observations at `0.17 s`
+  - PASS `cargo check --workspace --locked`
+  - PASS JSON, Python syntax and whitespace checks
+- Decision: keep A1 Accepted after the reviewer-blocking ratchet, dependency,
+  function-boundary and cross-package expiry cases pass locally
+- Next eligible task: A2, from the resolved correction tip
+
 ## Decision ledger
 
 | Task | State | Commit | Evidence/report | Decision summary |
 | --- | --- | --- | --- | --- |
 | Plan bundle | Accepted | `c478252` | this directory | complete route, architecture, protocol and finite-task ledger written |
 | A0 | Accepted | `2aef9f0` | [a0-baseline.md](a0-baseline.md) | dedicated integration branch from `c478252`; no merge/rebase/cherry-pick |
-| A0 evidence audit | Accepted | this follow-up | [a0-baseline.md](a0-baseline.md) | evidence classes and artifact identity limits tightened; integration decision unchanged |
-| A1 | Accepted | this commit | `tests/architecture/` and this ledger | physical-LOC/dependency ratchet passes on fixtures and the A0 tree; A2 is eligible |
+| A0 evidence audit | Accepted | `9df0d6c` | [a0-baseline.md](a0-baseline.md) | evidence classes and artifact identity limits tightened; integration decision unchanged |
+| A1 | Accepted | `9df0d6c..codex/native-render-a1-ratchet` (resolve tip at integration) | `tests/architecture/` and this ledger | reviewer-hardened physical-LOC/dependency ratchet passes on fixtures and the A0 tree; A2 is eligible |
 
 ## Baseline evidence inherited, not rerun by default
 
