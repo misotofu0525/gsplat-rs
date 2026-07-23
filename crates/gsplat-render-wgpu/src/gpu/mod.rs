@@ -1,9 +1,14 @@
+mod color;
 mod compact;
 mod preproject_compact;
 mod radix;
 mod scan;
 mod visible_compact;
 
+pub(crate) use color::{
+    ResidentColorKernel, create_resident_color_bind_group_layout,
+    create_resident_color_params_buffer, create_resident_color_pipeline,
+};
 pub(crate) use compact::StableContributorCompactor;
 #[cfg(test)]
 pub(crate) use preproject_compact::PreprojectDrawIndirectArgs;

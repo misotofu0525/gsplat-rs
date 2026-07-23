@@ -1,19 +1,22 @@
 //! GPU resources for the exact-count compact resident scene.
 
-use bytemuck::{Pod, Zeroable};
+use bytemuck::Zeroable;
 use gsplat_core::Camera;
 use wgpu::util::DeviceExt;
 
 use crate::data::{RESIDENT_SH_PLANES, ResidentChunkMeta};
 use crate::direct_gpu_order::DirectGpuOrder;
 use crate::draw_pass::{SplatPipeline, create_splat_bind_group_layout, create_splat_pipeline};
+use crate::gpu::{ResidentColorKernel, create_resident_color_params_buffer};
+pub(crate) use crate::gpu::{
+    create_resident_color_bind_group_layout, create_resident_color_pipeline,
+};
 pub(crate) use crate::gpu_error::ResidentGpuError;
 pub(crate) use crate::scene::RESIDENT_COLOR_STORAGE_BINDINGS;
 use crate::scene::{ResidentGpuBytePlan, ResidentSceneCpu};
 use crate::{GpuSurfaceRenderParams, make_surface_render_params, wgpu_label};
 
 pub const RESIDENT_QUAD_VERTEX_COUNT: u32 = 4;
-const COLOR_WORKGROUP_SIZE: u32 = 128;
 
 #[cfg(any(not(target_arch = "wasm32"), test))]
 fn classify_gpu_order_scope_errors(
@@ -25,16 +28,6 @@ fn classify_gpu_order_scope_errors(
         .map(ResidentGpuError::GpuOrderOutOfMemory)
         .or_else(|| internal.map(ResidentGpuError::GpuOrderInternal))
         .or_else(|| validation.map(ResidentGpuError::GpuOrderValidation))
-}
-
-#[repr(C)]
-#[derive(Clone, Copy, Pod, Zeroable)]
-struct GpuResidentColorParams {
-    camera_pos: [f32; 4],
-    len: u32,
-    sh_degree: u32,
-    _reserved0: u32,
-    _pad: u32,
 }
 
 pub struct ResidentGpuResources {
@@ -154,11 +147,7 @@ impl ResidentGpuResources {
             contents: bytemuck::bytes_of(&GpuSurfaceRenderParams::zeroed()),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
-        let color_params_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: wgpu_label("gsplat-resident-color-params"),
-            contents: bytemuck::bytes_of(&GpuResidentColorParams::zeroed()),
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-        });
+        let color_params_buffer = create_resident_color_params_buffer(device);
 
         let draw_bind_group = create_resident_draw_bind_group(
             device,
@@ -366,44 +355,18 @@ impl ResidentGpuResources {
         if self.last_resolved_camera_position == Some(position) {
             return Ok(false);
         }
-        let params = GpuResidentColorParams {
-            camera_pos: [position[0], position[1], position[2], 0.0],
-            len: u32::try_from(self.capacity)
-                .map_err(|_| ResidentGpuError::AddressSpaceExceeded)?,
+        ResidentColorKernel {
+            pipeline,
+            bind_group: &self.color_bind_group,
+            params_buffer: &self.color_params_buffer,
+            splat_count: self.capacity,
             sh_degree: self.sh_degree,
-            _reserved0: 0,
-            _pad: 0,
-        };
-        queue.write_buffer(&self.color_params_buffer, 0, bytemuck::bytes_of(&params));
-        let (groups_x, groups_y) = dispatch_2d(
-            self.capacity.div_ceil(COLOR_WORKGROUP_SIZE as usize),
             max_workgroups_per_dimension,
-        )?;
-        if self.capacity > 0 {
-            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: wgpu_label("gsplat-resident-color-resolve-pass"),
-                timestamp_writes: None,
-            });
-            pass.set_pipeline(pipeline);
-            pass.set_bind_group(0, &self.color_bind_group, &[]);
-            pass.dispatch_workgroups(groups_x, groups_y, 1);
         }
+        .encode(queue, encoder, position)?;
         self.last_resolved_camera_position = Some(position);
         Ok(true)
     }
-}
-
-fn dispatch_2d(groups: usize, limit: u32) -> Result<(u32, u32), ResidentGpuError> {
-    if groups == 0 {
-        return Ok((1, 1));
-    }
-    let limit = limit.max(1) as usize;
-    let x = groups.min(limit);
-    let y = groups.div_ceil(x);
-    if y > limit {
-        return Err(ResidentGpuError::DispatchLimitExceeded);
-    }
-    Ok((x as u32, y as u32))
 }
 
 fn create_storage_init(
@@ -484,69 +447,12 @@ pub fn create_resident_draw_pipeline(
     )
 }
 
-pub fn create_resident_color_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
-    let mut entries = Vec::with_capacity(9);
-    for binding in 0..8 {
-        entries.push(wgpu::BindGroupLayoutEntry {
-            binding,
-            visibility: wgpu::ShaderStages::COMPUTE,
-            ty: wgpu::BindingType::Buffer {
-                ty: wgpu::BufferBindingType::Storage {
-                    read_only: binding != 7,
-                },
-                has_dynamic_offset: false,
-                min_binding_size: None,
-            },
-            count: None,
-        });
-    }
-    entries.push(wgpu::BindGroupLayoutEntry {
-        binding: 8,
-        visibility: wgpu::ShaderStages::COMPUTE,
-        ty: wgpu::BindingType::Buffer {
-            ty: wgpu::BufferBindingType::Uniform,
-            has_dynamic_offset: false,
-            min_binding_size: None,
-        },
-        count: None,
-    });
-    device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-        label: wgpu_label("gsplat-resident-color-bgl"),
-        entries: &entries,
-    })
-}
-
-pub fn create_resident_color_pipeline(
-    device: &wgpu::Device,
-    bind_group_layout: &wgpu::BindGroupLayout,
-) -> wgpu::ComputePipeline {
-    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: wgpu_label("gsplat-resident-color-shader"),
-        source: wgpu::ShaderSource::Wgsl(
-            include_str!("../shaders/resident_color_resolve.wgsl").into(),
-        ),
-    });
-    let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-        label: wgpu_label("gsplat-resident-color-pipeline-layout"),
-        bind_group_layouts: &[bind_group_layout],
-        immediate_size: 0,
-    });
-    device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-        label: wgpu_label("gsplat-resident-color-pipeline"),
-        layout: Some(&layout),
-        module: &shader,
-        entry_point: Some("main"),
-        compilation_options: wgpu::PipelineCompilationOptions::default(),
-        cache: None,
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[cfg(not(target_arch = "wasm32"))]
-    fn test_device() -> Option<wgpu::Device> {
+    fn test_device() -> Option<(wgpu::Device, wgpu::Queue)> {
         pollster::block_on(async {
             let instance = wgpu::Instance::default();
             let adapter = instance
@@ -573,7 +479,6 @@ mod tests {
                 })
                 .await
                 .ok()
-                .map(|(device, _)| device)
         })
     }
 
@@ -619,7 +524,7 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn failed_lazy_gpu_order_validation_is_transactional_and_retryable() {
-        let Some(device) = test_device() else {
+        let Some((device, _queue)) = test_device() else {
             return;
         };
         let scene = tiny_resident_scene();
@@ -645,7 +550,7 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn complete_gpu_order_candidate_stays_unpublished_until_commit() {
-        let Some(device) = test_device() else {
+        let Some((device, _queue)) = test_device() else {
             return;
         };
         let scene = tiny_resident_scene();
@@ -663,15 +568,69 @@ mod tests {
         assert!(resources.gpu_order().is_some());
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     #[test]
-    fn dispatch_flattens_across_two_dimensions() {
-        assert_eq!(dispatch_2d(0, 7).unwrap(), (1, 1));
-        assert_eq!(dispatch_2d(7, 7).unwrap(), (7, 1));
-        assert_eq!(dispatch_2d(8, 7).unwrap(), (7, 2));
-        assert_eq!(dispatch_2d(49, 7).unwrap(), (7, 7));
-        assert!(matches!(
-            dispatch_2d(50, 7),
-            Err(ResidentGpuError::DispatchLimitExceeded)
-        ));
+    fn camera_position_cache_skips_rotation_only_and_empty_scene_resolves() {
+        let Some((device, queue)) = test_device() else {
+            return;
+        };
+        let draw_layout = create_resident_draw_bind_group_layout(&device);
+        let color_layout = create_resident_color_bind_group_layout(&device);
+        let color_pipeline = create_resident_color_pipeline(&device, &color_layout);
+        let max_workgroups = device.limits().max_compute_workgroups_per_dimension;
+
+        for scene in [
+            tiny_resident_scene(),
+            ResidentSceneCpu::encode(&gsplat_core::SceneBuffers::default())
+                .expect("empty resident scene"),
+        ] {
+            let mut resources =
+                ResidentGpuResources::new(&device, &draw_layout, &color_layout, &scene)
+                    .expect("resident resources");
+            let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("resident-color-cache-test-encoder"),
+            });
+            let mut camera = Camera::default();
+
+            assert!(
+                resources
+                    .encode_color_resolve_if_needed(
+                        &queue,
+                        &color_pipeline,
+                        &mut encoder,
+                        &camera,
+                        max_workgroups,
+                    )
+                    .expect("first color resolve")
+            );
+            camera.pose.rotation_xyzw = [0.0, 0.0, 1.0, 0.0];
+            assert!(
+                !resources
+                    .encode_color_resolve_if_needed(
+                        &queue,
+                        &color_pipeline,
+                        &mut encoder,
+                        &camera,
+                        max_workgroups,
+                    )
+                    .expect("rotation-only cache reuse")
+            );
+            camera.pose.position.x = 1.0;
+            assert!(
+                resources
+                    .encode_color_resolve_if_needed(
+                        &queue,
+                        &color_pipeline,
+                        &mut encoder,
+                        &camera,
+                        max_workgroups,
+                    )
+                    .expect("moved-camera color resolve")
+            );
+            queue.submit(Some(encoder.finish()));
+            device
+                .poll(wgpu::PollType::wait_indefinitely())
+                .expect("resident color cache test poll");
+        }
     }
 }
