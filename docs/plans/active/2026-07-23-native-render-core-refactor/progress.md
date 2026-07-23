@@ -40,11 +40,11 @@ A8 = Active
   projection in `gpu/project.rs`. A5, A6 and A7 are now closed and accepted;
   A8 remains open for separately activated lifecycle slices.
 - Current work package: A — responsibility extraction.
-- Active package task: A8. A8c is integrated and accepted; no implementation
-  writer is active while the root task records the A8d activation baseline.
+- Active package task: A8, with one isolated writer assigned to A8d. A single
+  active task does not use the multi-writer lane registry.
 - Last completed tasks: A8c — Surface configuration/resize transaction;
   A8b — Surface acquire/recovery/present lifecycle; A7 package closeout.
-- Next implementation: A8d — native Surface capture ownership. It follows
+- Current implementation: A8d — native Surface capture ownership. It follows
   A8c sequentially because both responsibilities mechanically rewire the same
   presenter owner.
 - Integration branch: `codex/native-render-core-refactor`.
@@ -122,6 +122,80 @@ eligible task. Do not rewrite the architecture in this ledger.
 - Dependency/ownership rules and the legacy giant-file growth ratchet remain
   hard. Historical A1 entries below record the then-current implementation;
   this section and the current policy are authoritative for later tasks.
+
+## Current task
+
+### A8d — Extract native Surface capture transaction
+
+- Parent task state: A8 Active; A8a offscreen target/readback, A8b Surface
+  acquire/recovery/present and A8c Surface configuration are accepted.
+- Subtask state: Active.
+- Activation commit and production baseline:
+  `5b1dea591daa0cb293c904193c0d518254bdfe12`.
+- Hypothesis: native one-shot Surface capture is one cohesive transaction owner
+  spanning armed buffer state, copy encoding, successful-presentation
+  publication and blocking row readback; Presenter should orchestrate it with
+  Configuration and Lifecycle rather than own those mechanics directly.
+- Exact writer allowlist:
+  - `crates/gsplat-render-wgpu/src/surface/mod.rs`;
+  - new `crates/gsplat-render-wgpu/src/surface/capture.rs`;
+  - `crates/gsplat-render-wgpu/src/surface_presenter.rs`.
+- Required capture ownership:
+  - keep public `SurfaceFrameCapture` fields, derives and crate-root path
+    compatible through the existing presenter re-export;
+  - native-only capture state owns pending buffer, dimensions, format, aligned
+    layout and encoded/presented flags;
+  - own capability/format/overflow/device-limit admission, buffer preparation,
+    copy encoding, successful-present transition, cancel, map/poll, row unpack
+    and BGRA-to-RGBA conversion;
+  - keep `SurfaceFrameCapture` available to wasm consumers while native GPU
+    capture state remains cfg-gated.
+- Presenter retains the public request/cancel/take facade, device/queue/frame
+  orchestration, all five existing copy insertion points, resize pending guard
+  and the sequence `queue.submit -> Lifecycle.present -> Capture.mark_presented`.
+- Configuration remains the sole Surface configuration/COPY_SRC upgrade,
+  rollback and fail-closed owner. Lifecycle remains the sole acquire,
+  Lost/Outdated one-retry and primitive-present owner. Capture may not call raw
+  configure or primitive present.
+- Preserve request order exactly: validate configuration and no pending request;
+  verify COPY_SRC capability and RGBA/BGRA format; compute checked layout;
+  validate device buffer limit; allocate an unpublished buffer under existing
+  scopes; perform Configuration COPY_SRC upgrade; publish pending capture only
+  after upgrade success.
+- Preserve render/readback behavior exactly: copy stays in the same command
+  buffer before submit; no extra submit/pass/wait; Timeout keeps capture armed;
+  pre-present failure permits a fresh copy encode; only successful present
+  publishes; take before encoded/presented fails without removal; successful
+  take consumes before `map_async -> device.poll(wait) -> receive -> unpack ->
+  unmap`; RGBA is unchanged and BGRA swaps only red/blue.
+- Frozen baseline identities:
+  - `surface/configuration.rs`:
+    `d0409cb412809f2d5ec1df25cd60b86ebbe1da76be8e57a394ef81cfab0d93d2`;
+  - `surface/lifecycle.rs`:
+    `383d49ac10c530f6906d5b93f61d274ae3c2ed112c7c7e5e81edd06c5053702b`;
+  - frozen `lib.rs`:
+    `01e6e99f2d8760578df8769f0b9183c3f6315dfd5b08f085aeeacdc505933029`;
+  - frozen `surface_session.rs`:
+    `82688f1cf29c4459ef0adb830c6e8700d11934a7d7aac8f2a34727f953b9bb05`;
+  - frozen WGSL aggregate:
+    `478f64b3ca9606d75ac96b6efba398052d638fe1c4e330321aad0e522b6addd1`.
+- Forbidden: configuration/lifecycle, lib/session, offscreen, evidence,
+  scene/GPU/raster/shaders, FFI/JNI/Swift/Web wrappers/examples, Cargo,
+  benchmark schemas and policy/plan edits by the writer. Do not change public
+  API/ABI, error variants/strings, rendering, ordering, allocation policy or
+  platform selection.
+- Focused writer gates: exact scope/frozen hashes, capture layout/overflow/
+  buffer-limit/unpack/state tests, presenter capture/resize tests, format/diff,
+  architecture checker/self-tests, locked renderer library tests, desktop
+  interactive check and wasm32 Web check. Root owns fixed-SHA review and the
+  combined workspace/Clippy/Rustdoc/FFI/Metal matrix.
+- Required endpoint claim: none. This is a behavior-preserving ownership slice;
+  no A065, FPS or competitor claim is made.
+- Performance correction allowance: none; no performance hypothesis exists.
+- Known correctness issues at activation: zero.
+- Source-size rule: no fixed LOC number is a task instruction, review signal or
+  completion gate. Boundaries are judged by single ownership, dependency
+  direction, compatibility, testability, navigability and maintenance risk.
 
 ## Latest completed task
 
