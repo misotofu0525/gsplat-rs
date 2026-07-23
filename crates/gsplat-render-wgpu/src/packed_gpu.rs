@@ -4,11 +4,9 @@ use bytemuck::{Pod, Zeroable};
 use gsplat_core::Camera;
 use wgpu::util::DeviceExt;
 
-use crate::draw_pass::{SplatPipeline, create_splat_bind_group_layout, create_splat_pipeline};
 use crate::packed_atlas::{HOT_RECORD_U32_WORDS, PackedAtlasCpuBuffers, PackedSceneCpu};
+use crate::raster::{SplatPipeline, create_splat_bind_group_layout, create_splat_pipeline};
 use crate::{DirectSceneError, make_surface_render_params, wgpu_label};
-
-pub const PACKED_QUAD_VERTEX_COUNT: u32 = 4;
 
 /// Byte plan for the legacy compact atlas used only by the explicit Paged
 /// diagnostic path. Production `GeometryPath::PackedAtlas` uses

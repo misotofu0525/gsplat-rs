@@ -6,17 +6,15 @@ use wgpu::util::DeviceExt;
 
 use crate::data::{RESIDENT_SH_PLANES, ResidentChunkMeta};
 use crate::direct_gpu_order::DirectGpuOrder;
-use crate::draw_pass::{SplatPipeline, create_splat_bind_group_layout, create_splat_pipeline};
 use crate::gpu::{ResidentColorKernel, create_resident_color_params_buffer};
 pub(crate) use crate::gpu::{
     create_resident_color_bind_group_layout, create_resident_color_pipeline,
 };
 pub(crate) use crate::gpu_error::ResidentGpuError;
+use crate::raster::{SplatPipeline, create_splat_bind_group_layout, create_splat_pipeline};
 pub(crate) use crate::scene::RESIDENT_COLOR_STORAGE_BINDINGS;
 use crate::scene::{ResidentGpuBytePlan, ResidentSceneCpu};
 use crate::{GpuSurfaceRenderParams, make_surface_render_params, wgpu_label};
-
-pub const RESIDENT_QUAD_VERTEX_COUNT: u32 = 4;
 
 #[cfg(any(not(target_arch = "wasm32"), test))]
 fn classify_gpu_order_scope_errors(

@@ -10,14 +10,13 @@ use std::{mem::size_of, num::NonZeroU64};
 
 use gsplat_core::Camera;
 
-use crate::draw_pass::{SplatPipeline, create_splat_pipeline};
 use crate::gpu::{
     ExternalPrefixRadix, ExternalPrefixRadixBytePlan, GpuPrefixScan,
     PREPROJECT_DRAW_INDIRECT_ARGS_BYTES, PreprojectKeyIdCompactor,
 };
+use crate::raster::{QUAD_VERTEX_COUNT, SplatPipeline, create_splat_pipeline};
 use crate::resident_gpu::{
-    RESIDENT_COLOR_STORAGE_BINDINGS, RESIDENT_QUAD_VERTEX_COUNT, ResidentGpuError,
-    ResidentGpuResources,
+    RESIDENT_COLOR_STORAGE_BINDINGS, ResidentGpuError, ResidentGpuResources,
 };
 use crate::{make_surface_render_params, wgpu_label};
 
@@ -354,7 +353,7 @@ impl PreprojectedGpuOrder {
             &contributor_offsets,
             &radix,
             &resident.draw_params_buffer,
-            RESIDENT_QUAD_VERTEX_COUNT,
+            QUAD_VERTEX_COUNT,
         );
         let offset_count = capacity
             .div_ceil(PREPROJECT_WORKGROUP_SIZE)
@@ -616,10 +615,10 @@ mod tests {
     use gsplat_core::{CameraIntrinsics, RenderMode, RendererConfig, SceneBuffers, Vec3f};
 
     use super::*;
-    use crate::draw_pass::{SplatIndirectDraw, encode_splat_indirect_draw_into};
     use crate::gpu::{EXTERNAL_RADIX_TILE_SIZE, ExternalPrefixControl, PreprojectDrawIndirectArgs};
     use crate::projected_draw_telemetry::SurfaceProjectedDrawExecution;
     use crate::projected_quads_gpu::ProjectedQuadsGpu;
+    use crate::raster::{SplatIndirectDraw, encode_splat_indirect_draw_into};
     use crate::{
         ResidentCovariance0, ResidentCovariance1, ResidentPositionAlpha, ResidentSceneCpu,
     };
@@ -1213,7 +1212,7 @@ mod tests {
             actual.control.count.div_ceil(EXTERNAL_RADIX_TILE_SIZE)
         );
         assert_eq!(actual.draw.instance_count, actual.control.count);
-        assert_eq!(actual.draw.vertex_count, RESIDENT_QUAD_VERTEX_COUNT);
+        assert_eq!(actual.draw.vertex_count, QUAD_VERTEX_COUNT);
         assert_eq!(
             actual
                 .keys

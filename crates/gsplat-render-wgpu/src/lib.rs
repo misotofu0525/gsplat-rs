@@ -6,7 +6,6 @@ mod api;
 mod cpu_order;
 mod data;
 mod direct_gpu_order;
-mod draw_pass;
 mod evidence;
 #[cfg_attr(not(test), allow(dead_code))]
 mod gpu;
@@ -26,6 +25,7 @@ mod paged_gpu;
 mod preproject_gpu;
 mod projected_draw_telemetry;
 mod projected_quads_gpu;
+mod raster;
 mod residency;
 mod resident_gpu;
 mod scene;
@@ -2571,7 +2571,7 @@ fn create_direct_bind_group(
 }
 
 fn create_direct_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
-    draw_pass::create_splat_bind_group_layout(device, "gsplat-direct-bgl", 3)
+    raster::create_splat_bind_group_layout(device, "gsplat-direct-bgl", 3)
 }
 
 fn create_direct_pipeline(
@@ -2579,11 +2579,11 @@ fn create_direct_pipeline(
     bind_group_layout: &wgpu::BindGroupLayout,
     format: wgpu::TextureFormat,
 ) -> wgpu::RenderPipeline {
-    draw_pass::create_splat_pipeline(
+    raster::create_splat_pipeline(
         device,
         bind_group_layout,
         format,
-        draw_pass::SplatPipeline {
+        raster::SplatPipeline {
             shader_label: "gsplat-direct-shader",
             shader_source: include_str!("../shaders/splat_surface_direct.wgsl"),
             layout_label: "gsplat-direct-pipeline-layout",
@@ -2746,16 +2746,16 @@ impl GpuRasterizer {
             )
             .map_err(|_| RendererError::GpuDeviceCreation)?;
 
-        let commands = draw_pass::encode_splat_draw(
+        let commands = raster::encode_splat_draw(
             &self.device,
             "gsplat-offscreen-direct-encoder",
-            draw_pass::SplatDraw {
+            raster::SplatDraw {
                 pass_label: "gsplat-offscreen-direct-pass",
                 view: self.output_view(),
                 pipeline: &self.direct_pipeline,
                 bind_group: &direct_scene.cpu_bind_group,
                 clear: wgpu::Color::TRANSPARENT,
-                vertex_count: resident_gpu::RESIDENT_QUAD_VERTEX_COUNT,
+                vertex_count: raster::QUAD_VERTEX_COUNT,
                 instance_count,
             },
         );
@@ -2821,15 +2821,15 @@ impl GpuRasterizer {
             .resident_scene
             .as_ref()
             .ok_or(RendererError::GpuDeviceCreation)?;
-        draw_pass::encode_splat_draw_into(
+        raster::encode_splat_draw_into(
             &mut encoder,
-            &draw_pass::SplatDraw {
+            &raster::SplatDraw {
                 pass_label: "gsplat-offscreen-resident-pass",
                 view: self.output_view(),
                 pipeline: &resident_pipelines.draw_pipeline,
                 bind_group: &resident.draw_bind_group,
                 clear: wgpu::Color::TRANSPARENT,
-                vertex_count: resident_gpu::RESIDENT_QUAD_VERTEX_COUNT,
+                vertex_count: raster::QUAD_VERTEX_COUNT,
                 instance_count,
             },
         );
@@ -2888,16 +2888,16 @@ impl GpuRasterizer {
             .paged_active_set
             .as_ref()
             .ok_or(RendererError::GpuDeviceCreation)?;
-        let commands = draw_pass::encode_splat_draw(
+        let commands = raster::encode_splat_draw(
             &self.device,
             "gsplat-offscreen-paged-encoder",
-            draw_pass::SplatDraw {
+            raster::SplatDraw {
                 pass_label: "gsplat-offscreen-paged-pass",
                 view: self.output_view(),
                 pipeline: &self.packed_pipeline,
                 bind_group: &paged.atlas.resources.bind_group,
                 clear: wgpu::Color::TRANSPARENT,
-                vertex_count: packed_gpu::PACKED_QUAD_VERTEX_COUNT,
+                vertex_count: raster::QUAD_VERTEX_COUNT,
                 instance_count,
             },
         );

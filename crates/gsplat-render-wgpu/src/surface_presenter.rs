@@ -5,9 +5,6 @@ use gsplat_sort::CpuSortBackend;
 
 use crate::SurfaceRasterExecutionPlan;
 use crate::direct_gpu_order::GpuOrderTimestampRange;
-use crate::draw_pass::{
-    SplatDraw, SplatIndirectDraw, encode_splat_draw_into, encode_splat_indirect_draw_into,
-};
 use crate::gpu_producer_telemetry::{
     GpuProducerCountSource, GpuProducerSampleMetadata, GpuProducerTelemetry,
     GpuProducerTelemetryPoll, SurfaceGpuOrderProducer, SurfaceGpuProducerDrawScope,
@@ -26,6 +23,10 @@ use crate::projected_draw_telemetry::{
     ProjectedDrawTelemetryPoll,
 };
 use crate::projected_quads_gpu::{ProjectedDrawExecution, ProjectedQuadsGpu};
+use crate::raster::{
+    QUAD_VERTEX_COUNT, SplatDraw, SplatIndirectDraw, encode_splat_draw_into,
+    encode_splat_indirect_draw_into,
+};
 use crate::resident_gpu;
 use crate::tiled_resident_gpu::{ResidentTiledFinish, ResidentTiledGpu};
 use crate::{
@@ -2884,10 +2885,9 @@ impl SurfacePresenter {
                     let order = direct
                         .gpu_order()
                         .ok_or(SurfacePresenterError::GpuOrderUnsupported)?;
-                    order.sorter.set_indirect_vertex_count(
-                        &self.queue,
-                        resident_gpu::RESIDENT_QUAD_VERTEX_COUNT,
-                    );
+                    order
+                        .sorter
+                        .set_indirect_vertex_count(&self.queue, QUAD_VERTEX_COUNT);
                     encode_splat_indirect_draw_into(
                         &mut encoder,
                         &SplatIndirectDraw {
@@ -2905,10 +2905,9 @@ impl SurfacePresenter {
                         .resident
                         .gpu_order()
                         .ok_or(SurfacePresenterError::GpuOrderUnsupported)?;
-                    order.sorter.set_indirect_vertex_count(
-                        &self.queue,
-                        resident_gpu::RESIDENT_QUAD_VERTEX_COUNT,
-                    );
+                    order
+                        .sorter
+                        .set_indirect_vertex_count(&self.queue, QUAD_VERTEX_COUNT);
                     match packed.raster_plan {
                         SurfaceRasterExecutionPlan::ProjectedQuadsExact
                             if projected_draw_execution == ProjectedDrawExecution::Compact =>
@@ -4018,7 +4017,7 @@ impl SurfacePresenter {
                     pipeline: &self.direct_pipeline,
                     bind_group: &direct.cpu_bind_group,
                     clear: wgpu::Color::BLACK,
-                    vertex_count: resident_gpu::RESIDENT_QUAD_VERTEX_COUNT,
+                    vertex_count: QUAD_VERTEX_COUNT,
                     instance_count: self.instance_count,
                 },
             ),
@@ -4060,7 +4059,7 @@ impl SurfacePresenter {
                         pipeline: packed.projected.draw_pipeline(),
                         bind_group: packed.projected.draw_bind_group(),
                         clear: wgpu::Color::BLACK,
-                        vertex_count: resident_gpu::RESIDENT_QUAD_VERTEX_COUNT,
+                        vertex_count: QUAD_VERTEX_COUNT,
                         instance_count: self.instance_count,
                     },
                 );
@@ -4074,7 +4073,7 @@ impl SurfacePresenter {
                         .ok_or_else(|| resident_pipelines_unavailable(storage_bindings))?,
                     bind_group: &packed.resident.draw_bind_group,
                     clear: wgpu::Color::BLACK,
-                    vertex_count: resident_gpu::RESIDENT_QUAD_VERTEX_COUNT,
+                    vertex_count: QUAD_VERTEX_COUNT,
                     instance_count: self.instance_count,
                 },
             ),
@@ -4086,7 +4085,7 @@ impl SurfacePresenter {
                     pipeline: &self.packed_pipeline,
                     bind_group: &paged.active_set.atlas.resources.bind_group,
                     clear: wgpu::Color::BLACK,
-                    vertex_count: packed_gpu::PACKED_QUAD_VERTEX_COUNT,
+                    vertex_count: QUAD_VERTEX_COUNT,
                     instance_count: self.instance_count,
                 },
             ),
