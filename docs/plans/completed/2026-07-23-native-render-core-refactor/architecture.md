@@ -745,12 +745,12 @@ when its dependency/ownership assertions also pass.
 
 The new architecture must reuse and reference these completed records:
 
-- [full-quality design](../../completed/2026-07-22-full-quality-native-rendering/design.md)
-- [final report](../../completed/2026-07-22-full-quality-native-rendering/final-report.md)
-- [findings and competitor audit](../../completed/2026-07-22-full-quality-native-rendering/findings.md)
-- [Preproject architecture](../../completed/2026-07-22-full-quality-native-rendering/phase2-preproject-c-architecture.md)
-- [exact contributor evidence](../../completed/2026-07-22-full-quality-native-rendering/exact-contributor-evidence.md)
-- [parallel CPU radix](../../completed/2026-07-22-full-quality-native-rendering/cpu-parallel-radix.md)
+- [full-quality design](../2026-07-22-full-quality-native-rendering/design.md)
+- [final report](../2026-07-22-full-quality-native-rendering/final-report.md)
+- [findings and competitor audit](../2026-07-22-full-quality-native-rendering/findings.md)
+- [Preproject architecture](../2026-07-22-full-quality-native-rendering/phase2-preproject-c-architecture.md)
+- [exact contributor evidence](../2026-07-22-full-quality-native-rendering/exact-contributor-evidence.md)
+- [parallel CPU radix](../2026-07-22-full-quality-native-rendering/cpu-parallel-radix.md)
 
 Already accepted or rejected experiments are not rerun under a new name. In
 particular:

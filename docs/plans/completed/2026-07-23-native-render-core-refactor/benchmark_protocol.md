@@ -478,9 +478,9 @@ This plan reuses rather than forks:
 - `tests/perf/full-quality-matrix-plan-v1.json`;
 - `tests/competitive/playcanvas/README.md`;
 - the completed full-quality
-  [final report](../../completed/2026-07-22-full-quality-native-rendering/final-report.md);
+  [final report](../2026-07-22-full-quality-native-rendering/final-report.md);
 - the completed competitor
-  [findings](../../completed/2026-07-22-full-quality-native-rendering/findings.md).
+  [findings](../2026-07-22-full-quality-native-rendering/findings.md).
 
 A0 records which current validators remain canonical. A later task updates the
 schemas only before claiming a new evidence field, never after seeing a desired

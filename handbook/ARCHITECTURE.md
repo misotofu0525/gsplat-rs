@@ -26,10 +26,15 @@
   `projected_quads_gpu.rs` owns the default exact projection cache and
   instanced draw, `preproject_gpu.rs` owns the lazy diagnostic direct
   contributor producer, and `gpu_producer_telemetry.rs` owns its independent
-  A/B receipts. `tiled_resident_gpu.rs` is the lazy exact tiled oracle, while
-  `surface_presenter.rs`/`surface_session.rs` own presentation and runtime
-  CPU/GPU/Adaptive plus Packed GPU-producer selection. Paged files remain an
-  explicit diagnostic seam.
+  A/B receipts. `tiled_resident_gpu.rs` is the lazy exact tiled oracle.
+  `surface/lifecycle.rs`, `surface/configuration.rs` and `surface/capture.rs`
+  respectively own swapchain acquire/retry/present, transactional
+  configuration/resize and native one-shot capture/readback;
+  `offscreen/target.rs` and `offscreen/readback.rs` own the equivalent
+  offscreen leaves. `surface_presenter.rs` remains the legacy frame
+  orchestration facade and `surface_session.rs` owns runtime CPU/GPU/Adaptive
+  plus Packed GPU-producer selection. Paged files remain an explicit
+  diagnostic seam.
 - Native embedding goes through `crates/gsplat-ffi-c`.
 - Browser WebAssembly embedding goes through `crates/gsplat-web`.
 - Runtime validation entrypoints are `examples/desktop`, `examples/android`,
@@ -88,6 +93,11 @@
   `crates/gsplat-render-wgpu/src/surface_session.rs` owns `Renderer`,
   `SurfacePresenter`, camera revisions, CPU/GPU order state, Adaptive probes,
   ticketed measurements, and frame statistics
+  SurfacePresenter delegates swapchain acquire/retry/present to
+  `surface/lifecycle.rs`, configuration and resize publication to
+  `surface/configuration.rs`, and pending capture/copy/readback to
+  `surface/capture.rs`; successful presentation is the publication boundary
+  for both frame and capture receipts
   changed-camera frames advance the default interval schedule; identical
   redraws do not repeatedly sort
   Direct keeps wide scene-derived positions, covariance, opacity, DC, and SH

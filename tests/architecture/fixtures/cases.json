@@ -457,6 +457,42 @@
       ]
     },
     {
+      "name": "a9_closeout_with_e0_active_and_m8_io_review_is_valid",
+      "files": {
+        "crates/demo/src/ply.rs": {
+          "physical_lines": 800
+        },
+        "crates/demo/src/spz.rs": {
+          "physical_lines": 800
+        }
+      },
+      "grandfather": [
+        {
+          "path": "crates/demo/src/ply.rs",
+          "a0_physical_loc": 800,
+          "baseline_physical_loc": 800,
+          "owner_task": "IO-PLY-1",
+          "exit_condition": "Resolve PLY ownership by responsibility.",
+          "review_task": "M8",
+          "review_action": "Single renewal; open the independent IO plan."
+        },
+        {
+          "path": "crates/demo/src/spz.rs",
+          "a0_physical_loc": 800,
+          "baseline_physical_loc": 800,
+          "owner_task": "IO-SPZ-1",
+          "exit_condition": "Resolve SPZ ownership by responsibility.",
+          "review_task": "M8",
+          "review_action": "Single renewal; open the independent IO plan."
+        }
+      ],
+      "ledgers": {
+        "docs/plans/completed/2026-07-23-native-render-core-refactor/progress.md": "<!-- gsplat-program-task-states: begin -->\nA9 = Accepted\n<!-- gsplat-program-task-states: end -->\n",
+        "docs/plans/active/2026-07-23-native-render-exact-core/progress.md": "<!-- gsplat-program-task-states: begin -->\nE0 = Active\n<!-- gsplat-program-task-states: end -->\n"
+      },
+      "expected_error_codes": []
+    },
+    {
       "name": "deleted_m_ledger_cannot_revive_m7_grandfather",
       "files": {
         "crates/demo/src/legacy.rs": {

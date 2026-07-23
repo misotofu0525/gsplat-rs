@@ -20,13 +20,14 @@ A4 = Accepted
 A5 = Accepted
 A6 = Accepted
 A7 = Accepted
-A8 = Active
+A8 = Accepted
+A9 = Accepted
 <!-- gsplat-program-task-states: end -->
 
 ## Program status
 
 - Plan bundle: committed at `c478252246733f6dc209686091caf183e1ef7f06`.
-- Implementation: Package A is in progress; A1 guardrails and the complete A2
+- Implementation: Package A is complete; A1 guardrails and the complete A2
   data/API, A3 scene/resource and A4 CPU order ownership extractions are
   root-accepted. A5a's strategy-free scan/radix leaves are also root-accepted;
   A5b's Direct/Resident stable-radix mechanics and A5c1's Projected scan reuse
@@ -37,16 +38,15 @@ A8 = Active
   places stateless execution identities in the API leaf, A7d owns immutable
   projected terminal receipts, A7e owns producer identities and immutable
   receipts, A5f owns Resident color-kernel mechanics, and A5g owns rank
-  projection in `gpu/project.rs`. A5, A6 and A7 are now closed and accepted;
-  A8 remains open for separately activated lifecycle slices.
-- Current work package: A — responsibility extraction.
-- Active package task: A8, with one isolated writer assigned to A8d. A single
-  active task does not use the multi-writer lane registry.
-- Last completed tasks: A8c — Surface configuration/resize transaction;
-  A8b — Surface acquire/recovery/present lifecycle; A7 package closeout.
-- Current implementation: A8d — native Surface capture ownership. It follows
-  A8c sequentially because both responsibilities mechanically rewire the same
-  presenter owner.
+  projection in `gpu/project.rs`. A5, A6 and A7 are closed and accepted. A8a
+  owns offscreen target/readback, A8b owns Surface acquire/retry/present, A8c
+  owns Surface configuration/resize transactions and A8d owns native capture.
+- Completed work package: A — responsibility extraction.
+- Active package task: none. Package E starts in its own ledger with E0 only.
+- Last completed tasks: A8d — native Surface capture transaction; A8 —
+  Surface/offscreen lifecycle extraction; A9 — Package A closeout.
+- Next implementation: E0 freezes the Exact prepared-plan contract and
+  migration oracle in a separate user-visible task and isolated worktree.
 - Integration branch: `codex/native-render-core-refactor`.
 - Frozen source implementation closeout:
   `5db2520e0d7a0ef1c68a78bdb9abc6fc588c5186`.
@@ -123,15 +123,17 @@ eligible task. Do not rewrite the architecture in this ledger.
   hard. Historical A1 entries below record the then-current implementation;
   this section and the current policy are authoritative for later tasks.
 
-## Current task
+## Package closeout
 
 ### A8d — Extract native Surface capture transaction
 
-- Parent task state: A8 Active; A8a offscreen target/readback, A8b Surface
+- Parent task state: A8 Accepted; A8a offscreen target/readback, A8b Surface
   acquire/recovery/present and A8c Surface configuration are accepted.
-- Subtask state: Active.
+- Subtask state: Accepted.
 - Activation commit and production baseline:
-  `5b1dea591daa0cb293c904193c0d518254bdfe12`.
+  `0eaff17e73923b0eb6aa99f8ce9503783c8f1727`.
+- Candidate/integration commit:
+  `ad0cc484a9764bcf0d2fd861af1bffc454050c24`.
 - Hypothesis: native one-shot Surface capture is one cohesive transaction owner
   spanning armed buffer state, copy encoding, successful-presentation
   publication and blocking row readback; Presenter should orchestrate it with
@@ -196,6 +198,40 @@ eligible task. Do not rewrite the architecture in this ledger.
 - Source-size rule: no fixed LOC number is a task instruction, review signal or
   completion gate. Boundaries are judged by single ownership, dependency
   direction, compatibility, testability, navigability and maintenance risk.
+- Fixed-SHA review: Accepted with zero P0/P1/P2 findings. The exact change set
+  contains only `surface/capture.rs`, `surface/mod.rs` and presenter wiring;
+  configuration, lifecycle, session, offscreen, shaders, ABI and platform
+  consumers remained frozen.
+- Root shared matrix: architecture checker/self-tests, format/diff, locked
+  workspace check/test, Clippy, Rustdoc, wasm32 Web check, required Metal
+  SortedAlpha conformance and C FFI smoke all passed. Renderer library result:
+  306 passed and five pre-existing research/device tests ignored.
+- Result: capture state, copy encoding, successful-present publication and
+  row readback now have one owner. Public API/ABI, errors, frame ordering,
+  pixels and platform selection are unchanged.
+
+### A9 — Close responsibility-extraction package
+
+- State: Accepted.
+- Production-code change: none.
+- Mutable-owner audit:
+  - `surface/lifecycle.rs` uniquely owns acquire, one-retry recovery and
+    primitive present;
+  - `surface/configuration.rs` uniquely owns Surface configuration, resize,
+    COPY_SRC upgrade and rollback/fail-closed publication;
+  - `surface/capture.rs` uniquely owns pending native capture and readback;
+  - `offscreen/target.rs` and `offscreen/readback.rs` own the corresponding
+    offscreen target and readback leaves;
+  - the legacy presenter remains the frame-orchestration facade and retains a
+    no-growth M7 record rather than being falsely declared migrated.
+- The PLY/SPZ import owners remain real outstanding responsibilities. Their
+  no-growth records are renewed once to M8, where an independent IO plan must
+  open; this does not block E and is not a numeric file-size completion gate.
+- Package report: [final-report.md](final-report.md).
+- Verification: A8d's integrated production matrix above plus A9 architecture
+  policy/self-tests, machine-ledger dependency fixtures, JSON, Markdown links,
+  `git diff --check` and clean commit scope.
+- Next eligible task: E0 in the separate Exact-core ledger.
 
 ## Latest completed task
 
@@ -2384,6 +2420,9 @@ rebase, push, main or ledger edits.
 | A6 | Accepted | `008d4dd` | A6a record above and merged full matrix | raster facade, pipeline preparation and draw encoding have explicit cohesive owners, duplicate quad constants are gone and the completed A6 grandfather record is retired |
 | A8b | Accepted | `71bb0c6` + `6e2a7ef` | A7f/A8b closeout above and fixed-SHA review | Surface acquire, one-retry recovery and primitive present now have a lifecycle leaf; resize, capture and frame orchestration remain with the presenter |
 | A8c | Accepted | `b676df4` | A8c closeout above and fixed-SHA review | Surface configuration identity, resize, COPY_SRC upgrade and rollback/fail-closed transitions now have one configuration owner; capture state and frame orchestration remain with the presenter |
+| A8d | Accepted | `ad0cc48` | A8d closeout above, fixed-SHA review and root shared matrix | native pending capture, copy/publication and row readback now have one capture owner; public behavior and pixels remain unchanged |
+| A8 | Accepted | `ad0cc48` | A8a--A8d records and root shared matrix | Surface acquire/configuration/capture and offscreen target/readback have explicit owners around the unchanged presenter facade |
+| A9 | Accepted | closeout commit | [final-report.md](final-report.md) | Package A closes with no duplicate lifecycle owner, truthful legacy ratchets and E0 activated in its own ledger |
 
 ## Baseline evidence inherited, not rerun by default
 
@@ -2393,13 +2432,13 @@ The validation and terminal inventory are now recorded in
 [a0-baseline.md](a0-baseline.md). The links below remain the detailed evidence
 sources.
 
-- [completed task plan](../../completed/2026-07-22-full-quality-native-rendering/task_plan.md)
-- [completed final report](../../completed/2026-07-22-full-quality-native-rendering/final-report.md)
-- [completed design](../../completed/2026-07-22-full-quality-native-rendering/design.md)
-- [completed findings](../../completed/2026-07-22-full-quality-native-rendering/findings.md)
-- [CPU parallel radix](../../completed/2026-07-22-full-quality-native-rendering/cpu-parallel-radix.md)
-- [Preproject architecture](../../completed/2026-07-22-full-quality-native-rendering/phase2-preproject-c-architecture.md)
-- [Android evidence](../../completed/2026-07-22-full-quality-native-rendering/android-surface-evidence.md)
+- [completed task plan](../2026-07-22-full-quality-native-rendering/task_plan.md)
+- [completed final report](../2026-07-22-full-quality-native-rendering/final-report.md)
+- [completed design](../2026-07-22-full-quality-native-rendering/design.md)
+- [completed findings](../2026-07-22-full-quality-native-rendering/findings.md)
+- [CPU parallel radix](../2026-07-22-full-quality-native-rendering/cpu-parallel-radix.md)
+- [Preproject architecture](../2026-07-22-full-quality-native-rendering/phase2-preproject-c-architecture.md)
+- [Android evidence](../2026-07-22-full-quality-native-rendering/android-surface-evidence.md)
 
 Key inherited facts:
 

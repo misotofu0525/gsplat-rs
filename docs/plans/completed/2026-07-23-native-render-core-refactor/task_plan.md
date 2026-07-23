@@ -75,10 +75,10 @@ The refactor starts from evidence, not from an assumption that all previous work
 was useless.
 
 Historical detail remains in the completed
-[task plan](../../completed/2026-07-22-full-quality-native-rendering/task_plan.md),
-[final report](../../completed/2026-07-22-full-quality-native-rendering/final-report.md),
-[design](../../completed/2026-07-22-full-quality-native-rendering/design.md) and
-[findings](../../completed/2026-07-22-full-quality-native-rendering/findings.md).
+[task plan](../2026-07-22-full-quality-native-rendering/task_plan.md),
+[final report](../2026-07-22-full-quality-native-rendering/final-report.md),
+[design](../2026-07-22-full-quality-native-rendering/design.md) and
+[findings](../2026-07-22-full-quality-native-rendering/findings.md).
 This active plan links to those records instead of copying their long result
 tables.
 

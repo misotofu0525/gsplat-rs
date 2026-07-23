@@ -328,7 +328,9 @@ class SourceArchitectureFixtureTests(unittest.TestCase):
         }
         self.assertEqual(set(external), {"IO-PLY-1", "IO-SPZ-1"})
         for entry in external.values():
-            self.assertEqual(entry["review_task"], "A9")
+            self.assertEqual(entry["review_task"], "M8")
+            self.assertIn("single renewal", entry["review_action"])
+            self.assertIn("fixed line count", entry["review_action"])
             self.assertTrue(entry["review_action"])
 
 

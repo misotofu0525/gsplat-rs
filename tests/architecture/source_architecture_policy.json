@@ -202,7 +202,7 @@
     {
       "path": "crates/gsplat-render-wgpu/src/surface_presenter.rs",
       "a0_physical_loc": 5091,
-      "baseline_physical_loc": 5091,
+      "baseline_physical_loc": 4631,
       "owner_task": "M7",
       "exit_condition": "After Surface cutover, delete the legacy presenter owner or retain only adapter and presentation-host responsibilities."
     },
@@ -226,8 +226,8 @@
       "baseline_physical_loc": 2852,
       "owner_task": "IO-PLY-1",
       "exit_condition": "Separate PLY metadata, bounded decode and import policy responsibilities without changing import behavior.",
-      "review_task": "A9",
-      "review_action": "Before Package A closeout, add IO-PLY-1 and its static active/completed ledger pair to program_task_state, replace it with an already cataloged task, or meet the exit condition and remove this entry; an unchanged entry fails once A9 closes."
+      "review_task": "M8",
+      "review_action": "Open an independent IO ownership plan no later than M8 and either split metadata, bounded decode and import policy into cohesive owners or re-prove one responsibility. This is the single renewal; do not renew it again and do not use a fixed line count as the completion condition."
     },
     {
       "path": "crates/gsplat-render-wgpu/src/tiled_resident_gpu.rs",
@@ -256,8 +256,8 @@
       "baseline_physical_loc": 1310,
       "owner_task": "IO-SPZ-1",
       "exit_condition": "Separate SPZ metadata, bounded decode and import policy while preserving the isolated format contract.",
-      "review_task": "A9",
-      "review_action": "Before Package A closeout, add IO-SPZ-1 and its static active/completed ledger pair to program_task_state, replace it with an already cataloged task, or meet the exit condition and remove this entry; an unchanged entry fails once A9 closes."
+      "review_task": "M8",
+      "review_action": "Open an independent IO ownership plan no later than M8 and either split metadata, bounded decode and import policy into cohesive owners or re-prove one responsibility. This is the single renewal; do not renew it again and do not use a fixed line count as the completion condition."
     },
     {
       "path": "tools/bench-runner/src/main.rs",
