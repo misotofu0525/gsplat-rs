@@ -2064,10 +2064,18 @@ mod tests {
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: wgpu::TextureFormat::Rgba8Unorm,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
             view_formats: &[],
         });
         let target_view = target.create_view(&wgpu::TextureViewDescriptor::default());
+        let padded_bytes_per_row = (96_u32 * 4).div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)
+            * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+        let target_readback = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("resident-tiled-test-target-readback"),
+            size: u64::from(padded_bytes_per_row) * 64,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
         let validation = device.push_error_scope(wgpu::ErrorFilter::Validation);
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("resident-tiled-test-finish"),
@@ -2085,28 +2093,63 @@ mod tests {
                 &mut encoder,
             )
             .expect("finish encode");
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture: &target,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &target_readback,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(padded_bytes_per_row),
+                    rows_per_image: Some(64),
+                },
+            },
+            wgpu::Extent3d {
+                width: 96,
+                height: 64,
+                depth_or_array_layers: 1,
+            },
+        );
         queue.submit(Some(encoder.finish()));
         device
             .poll(wgpu::PollType::wait_indefinitely())
             .expect("GPU wait");
         assert!(pollster::block_on(validation.pop()).is_none());
         assert_eq!(tiled.active_entry_count(), entry_count);
+        let target_bytes = read_buffer_blocking(
+            &device,
+            &target_readback,
+            u64::from(padded_bytes_per_row) * 64,
+        )
+        .expect("target image readback");
+        let row_bytes = usize::try_from(padded_bytes_per_row).expect("row byte count");
+        assert!(target_bytes.chunks_exact(row_bytes).any(|row| {
+            row[..96 * 4]
+                .chunks_exact(4)
+                .any(|pixel| pixel[..3].iter().any(|channel| *channel != 0))
+        }));
         if device.features().contains(wgpu::Features::TIMESTAMP_QUERY) {
             let timings = tiled
                 .read_phase_timings_blocking(&device, &queue)
                 .expect("phase timestamp readback")
                 .expect("timestamp query resources");
             eprintln!("resident tiled test phase timings: {timings:?}");
-            assert!(timings.project_ms.is_some_and(f32::is_finite));
-            assert!(timings.count_scan_ms.is_some_and(f32::is_finite));
-            assert!(timings.scatter_tile_scan_ms.is_some_and(f32::is_finite));
-            assert!(timings.tile_radix_ms.is_some_and(f32::is_finite));
-            assert!(timings.raster_ms.is_some_and(f32::is_finite));
-            if device
-                .features()
-                .contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS)
+            for phase_ms in [
+                timings.project_ms,
+                timings.count_scan_ms,
+                timings.scatter_tile_scan_ms,
+                timings.tile_radix_ms,
+                timings.raster_ms,
+                timings.blit_ms,
+            ]
+            .into_iter()
+            .flatten()
             {
-                assert!(timings.blit_ms.is_some_and(f32::is_finite));
+                assert!(phase_ms.is_finite() && phase_ms >= 0.0);
             }
         }
     }
