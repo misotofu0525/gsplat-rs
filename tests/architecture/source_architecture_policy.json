@@ -6,7 +6,34 @@
       "IO-PLY-1",
       "IO-SPZ-1"
     ],
-    "parallel_execution": null,
+    "parallel_execution": {
+      "activation_commit": "8e5d6cc0413260fa2bd9f127421c58e91e9ab50e",
+      "members": [
+        {
+          "task": "A7",
+          "lane": "A7d",
+          "write_allowlist": [
+            "crates/gsplat-render-wgpu/src/evidence/mod.rs",
+            "crates/gsplat-render-wgpu/src/evidence/projected.rs",
+            "crates/gsplat-render-wgpu/src/projected_draw_telemetry.rs"
+          ]
+        },
+        {
+          "task": "A5",
+          "lane": "A5g",
+          "write_allowlist": [
+            "crates/gsplat-render-wgpu/src/gpu/mod.rs",
+            "crates/gsplat-render-wgpu/src/gpu/project.rs",
+            "crates/gsplat-render-wgpu/src/projected_quads_gpu.rs"
+          ]
+        }
+      ],
+      "integration_order": [
+        "A7d",
+        "A5g"
+      ],
+      "reason": "A7d moves only immutable projected receipt declarations into evidence while A5g moves only rank-projection resources and encoding mechanics into a strategy-free GPU leaf; their exact write sets and dependencies are disjoint."
+    },
     "task_catalog": {
       "A0": "A",
       "A1": "A",

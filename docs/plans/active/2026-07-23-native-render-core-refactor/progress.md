@@ -17,7 +17,15 @@ A1 = Accept
 A2 = Accepted
 A3 = Accepted
 A4 = Accepted
+A5 = Active
+A7 = Active
 <!-- gsplat-program-task-states: end -->
+
+<!-- gsplat-program-active-lanes: begin -->
+activation_commit = 8e5d6cc0413260fa2bd9f127421c58e91e9ab50e
+A5 = A5g
+A7 = A7d
+<!-- gsplat-program-active-lanes: end -->
 
 ## Program status
 
@@ -34,12 +42,12 @@ A4 = Accepted
   Resident color-kernel mechanics in `gpu/color.rs`. The parent A5, A7 and A8
   packages remain open for later, separately activated slices.
 - Current work package: A — responsibility extraction.
-- Active package tasks: none while the root closes the accepted A7c/A5f lease.
+- Active package tasks: A7d and A5g under the exact disjoint parallel lease
+  recorded by the architecture policy and machine lane block.
 - Last completed tasks: A7c — stateless execution identities; A5f — Resident
   color-kernel mechanics.
-- Next eligible implementation: A7d immutable projected receipts and A5g rank
-  projector ownership may run concurrently from the same clean activation
-  baseline in separate user-visible tasks/worktrees.
+- Next eligible implementation: only the two active lanes below. No dependent
+  writer starts until both fixed candidates are root-reviewed and integrated.
 - Integration branch: `codex/native-render-core-refactor`.
 - Frozen source implementation closeout:
   `5db2520e0d7a0ef1c68a78bdb9abc6fc588c5186`.
@@ -107,6 +115,86 @@ eligible task. Do not rewrite the architecture in this ledger.
 - Dependency/ownership rules and the legacy giant-file growth ratchet remain
   hard. Historical A1 entries below record the then-current implementation;
   this section and the current policy are authoritative for later tasks.
+
+## Current task
+
+### Parallel writer lanes — A7d and A5g
+
+- Activation baseline:
+  `8e5d6cc0413260fa2bd9f127421c58e91e9ab50e`.
+- Isolation: two user-visible Codex tasks in separate worktrees, each with its
+  own goal and exact write allowlist. Collaboration subagents are restricted to
+  read-only audits and fixed-SHA review; they are not implementation writers.
+- Integration order: A7d, then A5g, followed by one combined root matrix.
+- Source size is never a writer, split, review or completion requirement. The
+  boundary is accepted only by responsibility cohesion, dependency direction,
+  compatibility, behavior and executable evidence.
+
+### A7d — Move immutable projected receipts into evidence
+
+- Parent task state: A7 Active.
+- Subtask state: Active.
+- Hypothesis: the three immutable projected terminal value types can move into
+  `evidence/projected.rs` while telemetry retains tickets, slots, callbacks,
+  readback, generation validation, V/C/D checks and mandatory failure delivery.
+- Exact writer allowlist:
+  - `crates/gsplat-render-wgpu/src/evidence/mod.rs`;
+  - new `crates/gsplat-render-wgpu/src/evidence/projected.rs`;
+  - `crates/gsplat-render-wgpu/src/projected_draw_telemetry.rs`.
+- Required declarations, mechanically unchanged:
+  `SurfaceProjectedDrawMeasurement`,
+  `SurfaceProjectedDrawMeasurementFailureReason`, and
+  `SurfaceProjectedDrawMeasurementFailure`. The new leaf imports execution
+  identities directly from `crate::api`; the telemetry owner compatibility
+  re-exports preserve every existing internal and crate-root path.
+- Forbidden: policy/controller/submission moves; ticket/ring/slot/readback,
+  generation or V/C/D logic changes; `lib.rs`, session, presenter, FFI/header,
+  Web/platform consumer, GPU, shader or benchmark changes.
+- Frozen baseline hashes: `api.rs` `d3792d4e...cfc38`, `surface_session.rs`
+  `dfb06f3d...90187`, telemetry `b8280b79...fa88`, evidence facade
+  `de146576...74e5`, `lib.rs` `81e3509b...c7842`, C implementation/header
+  `2f777c0e...a3bc` / `69e1f1fb...a455`, and Web consumer
+  `8f46e4f8...45a4`.
+- Correctness gates: declaration/derive/field/variant inventory, old crate-root
+  and telemetry paths, all five telemetry tests, session Adaptive tests, FFI v1
+  ABI and smoke, architecture, format/diff, locked workspace, Clippy, Rustdoc
+  and wasm32. Root owns the combined Metal conformance run.
+
+### A5g — Extract the rank projector GPU leaf
+
+- Parent task state: A5 Active.
+- Subtask state: Active.
+- Hypothesis: rank-indexed projection buffers, ABI, layout/pipeline and compute
+  encoding can move into a strategy-free `gpu/project.rs`, while
+  `ProjectedQuadsGpu` retains Candidate/Compact admission, scan/compaction,
+  transactional GPU-order publication, raster and telemetry count semantics.
+- Exact writer allowlist:
+  - `crates/gsplat-render-wgpu/src/projected_quads_gpu.rs`;
+  - `crates/gsplat-render-wgpu/src/gpu/mod.rs`;
+  - new `crates/gsplat-render-wgpu/src/gpu/project.rs`.
+- Required owner: one private projector owns the 16-byte indirect args ABI,
+  two projected output planes, contributor offsets, CPU args, nine-binding
+  project layout/pipeline/bind groups, offset reset, zero-item behavior,
+  two-dimensional dispatch and project pass. It accepts raw buffers or a
+  strategy-free binding view and cannot depend on Resident/Scene/Surface,
+  policy, telemetry or evidence owners.
+- `ProjectedQuadsGpu` retains the exact top-level pass order, optional Compact
+  graph, forward/reverse scans, publication/cache semantics, both raster
+  pipelines and Candidate `D=V` / Compact `D=C` count source.
+- Frozen baseline hashes: Projected owner `84760e99...d5d6c`, GPU facade
+  `5f73fb75...40f0`, Resident owner `dd659dd0...b842`, color leaf
+  `b75e76e0...eea6`, compact `7162207f...125`, scan
+  `08afa1da...b6ab`, draw pass `e218a06d...2865` and all four Projected
+  shaders `7c224f1f...dd3d` / `e8348a65...1822` /
+  `ed48658f...1529` / `d9d648de...8024`.
+- Correctness gates: unchanged nine bindings, labels, usages, allocations,
+  zero/short/full and CPU/GPU order semantics; all 13 existing Projected tests
+  including three byte-exact image oracles; architecture, format/diff, locked
+  workspace, Clippy, Rustdoc, wasm32, Metal conformance and C FFI smoke.
+
+Neither lane has an FPS, competitor, device-performance or source-size gate.
+Both produce one fixed candidate SHA without merge, rebase, push, main or
+plan/policy edits.
 
 ## Recently integrated tasks
 
