@@ -8,12 +8,13 @@
 
 use std::{mem::size_of, num::NonZeroU64};
 
-use bytemuck::{Pod, Zeroable};
 use gsplat_core::Camera;
-use wgpu::util::DeviceExt;
 
 use crate::draw_pass::{SplatPipeline, create_splat_pipeline};
-use crate::gpu::{ExternalPrefixRadix, ExternalPrefixRadixBytePlan, GpuPrefixScan};
+use crate::gpu::{
+    ExternalPrefixRadix, ExternalPrefixRadixBytePlan, GpuPrefixScan,
+    PREPROJECT_DRAW_INDIRECT_ARGS_BYTES, PreprojectKeyIdCompactor,
+};
 use crate::resident_gpu::{
     RESIDENT_COLOR_STORAGE_BINDINGS, RESIDENT_QUAD_VERTEX_COUNT, ResidentGpuError,
     ResidentGpuResources,
@@ -24,15 +25,6 @@ pub(crate) const PREPROJECT_WORKGROUP_SIZE: u32 = 128;
 const SOURCE_CACHE_PLANE_BYTES: u64 = 16;
 const WORD_BYTES: u64 = size_of::<u32>() as u64;
 const SCAN_ITEMS_PER_GROUP: u32 = 512;
-
-#[repr(C)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Pod, Zeroable)]
-struct PreprojectDrawIndirectArgs {
-    vertex_count: u32,
-    instance_count: u32,
-    first_vertex: u32,
-    first_instance: u32,
-}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Dispatch2d {
@@ -109,7 +101,7 @@ impl PreprojectGpuBytePlan {
             limits.min_uniform_buffer_offset_alignment.max(16),
         )?;
         let radix = ExternalPrefixRadixBytePlan::for_capacity(capacity, limits)?;
-        let draw_args = size_of::<PreprojectDrawIndirectArgs>() as u64;
+        let draw_args = PREPROJECT_DRAW_INDIRECT_ARGS_BYTES;
         let total_static = [
             source_plane,
             source_plane,
@@ -245,11 +237,8 @@ pub(crate) struct PreprojectedGpuOrder {
     capacity: u32,
     project_dispatch: Dispatch2d,
     project_pipeline: wgpu::ComputePipeline,
-    compact_pipeline: wgpu::ComputePipeline,
-    finalize_pipeline: wgpu::ComputePipeline,
     project_bind_group: wgpu::BindGroup,
-    empty_bind_group: wgpu::BindGroup,
-    compact_bind_group: wgpu::BindGroup,
+    key_id_compactor: PreprojectKeyIdCompactor,
     candidate_offsets: wgpu::Buffer,
     candidate_count_offset: u64,
     candidate_scan: GpuPrefixScan,
@@ -259,7 +248,6 @@ pub(crate) struct PreprojectedGpuOrder {
     source_center_alpha_key: wgpu::Buffer,
     source_axes: wgpu::Buffer,
     radix: ExternalPrefixRadix,
-    draw_args: wgpu::Buffer,
     draw_pipeline: wgpu::RenderPipeline,
     draw_bind_group: wgpu::BindGroup,
     _byte_plan: PreprojectGpuBytePlan,
@@ -309,19 +297,6 @@ impl PreprojectedGpuOrder {
                 | wgpu::BufferUsages::COPY_SRC,
         );
         let radix = ExternalPrefixRadix::new(device, capacity)?;
-        let draw_args = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: wgpu_label("gsplat-preproject-draw-args"),
-            contents: bytemuck::bytes_of(&PreprojectDrawIndirectArgs {
-                vertex_count: RESIDENT_QUAD_VERTEX_COUNT,
-                instance_count: 0,
-                first_vertex: 0,
-                first_instance: 0,
-            }),
-            usage: wgpu::BufferUsages::STORAGE
-                | wgpu::BufferUsages::INDIRECT
-                | wgpu::BufferUsages::COPY_DST
-                | wgpu::BufferUsages::COPY_SRC,
-        });
 
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: wgpu_label("gsplat-preproject-contributor-shader"),
@@ -345,40 +320,10 @@ impl PreprojectedGpuOrder {
                 storage_layout(7, false, wgpu::ShaderStages::COMPUTE),
             ],
         });
-        let compact_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: wgpu_label("gsplat-preproject-compact-bgl"),
-            entries: &[
-                storage_layout(0, true, wgpu::ShaderStages::COMPUTE),
-                storage_layout(1, true, wgpu::ShaderStages::COMPUTE),
-                storage_layout(2, false, wgpu::ShaderStages::COMPUTE),
-                storage_layout(3, false, wgpu::ShaderStages::COMPUTE),
-                storage_layout(4, false, wgpu::ShaderStages::COMPUTE),
-                storage_layout(5, false, wgpu::ShaderStages::COMPUTE),
-                uniform_layout(
-                    6,
-                    NonZeroU64::new(size_of::<crate::GpuSurfaceRenderParams>() as u64),
-                ),
-            ],
-        });
-        let empty_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: wgpu_label("gsplat-preproject-empty-bgl"),
-            entries: &[],
-        });
-        let empty_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: wgpu_label("gsplat-preproject-empty-bg"),
-            layout: &empty_layout,
-            entries: &[],
-        });
         let project_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: wgpu_label("gsplat-preproject-project-pipeline-layout"),
                 bind_group_layouts: &[&project_layout],
-                immediate_size: 0,
-            });
-        let compact_pipeline_layout =
-            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: wgpu_label("gsplat-preproject-compact-pipeline-layout"),
-                bind_group_layouts: &[&empty_layout, &compact_layout],
                 immediate_size: 0,
             });
         let project_pipeline = create_compute_pipeline(
@@ -387,20 +332,6 @@ impl PreprojectedGpuOrder {
             &project_pipeline_layout,
             "project_count",
             "gsplat-preproject-project-pipeline",
-        );
-        let compact_pipeline = create_compute_pipeline(
-            device,
-            &shader,
-            &compact_pipeline_layout,
-            "compact_key_id",
-            "gsplat-preproject-compact-pipeline",
-        );
-        let finalize_pipeline = create_compute_pipeline(
-            device,
-            &shader,
-            &compact_pipeline_layout,
-            "finalize_compaction",
-            "gsplat-preproject-finalize-pipeline",
         );
         let project_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: wgpu_label("gsplat-preproject-project-bg"),
@@ -416,19 +347,15 @@ impl PreprojectedGpuOrder {
                 entry(7, &candidate_offsets),
             ],
         });
-        let compact_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: wgpu_label("gsplat-preproject-compact-bg"),
-            layout: &compact_layout,
-            entries: &[
-                entry(0, &source_center_alpha_key),
-                entry(1, &contributor_offsets),
-                entry(2, radix.input_keys()),
-                entry(3, radix.input_source_ids()),
-                entry(4, radix.control()),
-                entry(5, &draw_args),
-                entry(6, &resident.draw_params_buffer),
-            ],
-        });
+        let key_id_compactor = PreprojectKeyIdCompactor::new(
+            device,
+            &shader,
+            &source_center_alpha_key,
+            &contributor_offsets,
+            &radix,
+            &resident.draw_params_buffer,
+            RESIDENT_QUAD_VERTEX_COUNT,
+        );
         let offset_count = capacity
             .div_ceil(PREPROJECT_WORKGROUP_SIZE)
             .checked_add(1)
@@ -475,11 +402,8 @@ impl PreprojectedGpuOrder {
             capacity,
             project_dispatch,
             project_pipeline,
-            compact_pipeline,
-            finalize_pipeline,
             project_bind_group,
-            empty_bind_group,
-            compact_bind_group,
+            key_id_compactor,
             candidate_offsets,
             candidate_count_offset: count_offset,
             candidate_scan,
@@ -489,7 +413,6 @@ impl PreprojectedGpuOrder {
             source_center_alpha_key,
             source_axes,
             radix,
-            draw_args,
             draw_pipeline,
             draw_bind_group,
             _byte_plan: byte_plan,
@@ -509,23 +432,9 @@ impl PreprojectedGpuOrder {
         height: u32,
     ) {
         self.encode_projection_and_count(queue, encoder, resident, camera, width, height);
-        if self.capacity > 0 {
-            encode_compute_with_empty_group(
-                encoder,
-                &self.compact_pipeline,
-                &self.empty_bind_group,
-                &self.compact_bind_group,
-                self.project_dispatch,
-                "gsplat-preproject-compact-pass",
-            );
-        }
-        encode_compute_with_empty_group(
+        self.key_id_compactor.encode(
             encoder,
-            &self.finalize_pipeline,
-            &self.empty_bind_group,
-            &self.compact_bind_group,
-            Dispatch2d { x: 1, y: 1 },
-            "gsplat-preproject-finalize-pass",
+            (self.capacity > 0).then_some((self.project_dispatch.x, self.project_dispatch.y)),
         );
         self.radix.encode(encoder);
     }
@@ -576,7 +485,7 @@ impl PreprojectedGpuOrder {
     }
 
     pub(crate) fn draw_args(&self) -> &wgpu::Buffer {
-        &self.draw_args
+        self.key_id_compactor.draw_args()
     }
 
     pub(crate) fn final_keys(&self) -> &wgpu::Buffer {
@@ -679,24 +588,6 @@ fn encode_compute(
     pass.dispatch_workgroups(dispatch.x, dispatch.y, 1);
 }
 
-fn encode_compute_with_empty_group(
-    encoder: &mut wgpu::CommandEncoder,
-    pipeline: &wgpu::ComputePipeline,
-    empty_bind_group: &wgpu::BindGroup,
-    bind_group: &wgpu::BindGroup,
-    dispatch: Dispatch2d,
-    label: &'static str,
-) {
-    let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-        label: wgpu_label(label),
-        timestamp_writes: None,
-    });
-    pass.set_pipeline(pipeline);
-    pass.set_bind_group(0, empty_bind_group, &[]);
-    pass.set_bind_group(1, bind_group, &[]);
-    pass.dispatch_workgroups(dispatch.x, dispatch.y, 1);
-}
-
 fn storage_buffer(
     device: &wgpu::Device,
     label: &'static str,
@@ -726,7 +617,7 @@ mod tests {
 
     use super::*;
     use crate::draw_pass::{SplatIndirectDraw, encode_splat_indirect_draw_into};
-    use crate::gpu::{EXTERNAL_RADIX_TILE_SIZE, ExternalPrefixControl};
+    use crate::gpu::{EXTERNAL_RADIX_TILE_SIZE, ExternalPrefixControl, PreprojectDrawIndirectArgs};
     use crate::projected_draw_telemetry::SurfaceProjectedDrawExecution;
     use crate::projected_quads_gpu::ProjectedQuadsGpu;
     use crate::{
