@@ -13,6 +13,7 @@ use std::{
     thread::{self, JoinHandle},
 };
 
+use crate::evidence::BoundedEvidenceRing;
 use crate::gpu_telemetry::{SurfaceCpuOrderMeasurement, TelemetrySubmission};
 use crate::surface_presenter::{CpuCompletionSampleRequest, ProjectedDrawSampleRequest};
 use crate::{
@@ -1714,11 +1715,12 @@ pub struct SurfaceRenderSession {
     last_stats: FrameStats,
     latest_cpu_order_measurement: Option<SurfaceCpuOrderMeasurement>,
     latest_gpu_order_measurement: Option<SurfaceOrderMeasurement>,
-    completed_cpu_order_measurements: VecDeque<SurfaceCpuOrderMeasurement>,
-    completed_order_measurements: VecDeque<SurfaceOrderMeasurement>,
-    completed_order_measurement_failures: VecDeque<SurfaceOrderMeasurementFailure>,
-    completed_projected_draw_measurements: VecDeque<SurfaceProjectedDrawMeasurement>,
-    completed_projected_draw_measurement_failures: VecDeque<SurfaceProjectedDrawMeasurementFailure>,
+    completed_cpu_order_measurements: BoundedEvidenceRing<SurfaceCpuOrderMeasurement>,
+    completed_order_measurements: BoundedEvidenceRing<SurfaceOrderMeasurement>,
+    completed_order_measurement_failures: BoundedEvidenceRing<SurfaceOrderMeasurementFailure>,
+    completed_projected_draw_measurements: BoundedEvidenceRing<SurfaceProjectedDrawMeasurement>,
+    completed_projected_draw_measurement_failures:
+        BoundedEvidenceRing<SurfaceProjectedDrawMeasurementFailure>,
     completed_gpu_producer_measurements: VecDeque<SurfaceGpuProducerMeasurement>,
     completed_gpu_producer_measurement_failures: VecDeque<SurfaceGpuProducerMeasurementFailure>,
     #[cfg(not(target_arch = "wasm32"))]
@@ -1807,11 +1809,11 @@ impl SurfaceRenderSession {
         // Prepare the only eagerly allocated session-owned collection before
         // staging release. Nothing after the handoff below allocates or can
         // fail before the completed session value is returned.
-        let completed_order_measurements = VecDeque::with_capacity(64);
-        let completed_cpu_order_measurements = VecDeque::with_capacity(64);
-        let completed_order_measurement_failures = VecDeque::with_capacity(64);
-        let completed_projected_draw_measurements = VecDeque::with_capacity(64);
-        let completed_projected_draw_measurement_failures = VecDeque::with_capacity(64);
+        let completed_order_measurements = BoundedEvidenceRing::new();
+        let completed_cpu_order_measurements = BoundedEvidenceRing::new();
+        let completed_order_measurement_failures = BoundedEvidenceRing::new();
+        let completed_projected_draw_measurements = BoundedEvidenceRing::new();
+        let completed_projected_draw_measurement_failures = BoundedEvidenceRing::new();
         let completed_gpu_producer_measurements = VecDeque::with_capacity(64);
         let completed_gpu_producer_measurement_failures = VecDeque::with_capacity(64);
 
@@ -2581,32 +2583,28 @@ impl SurfaceRenderSession {
 
     /// Drains completed CPU order measurements in ticket order.
     pub fn drain_cpu_order_measurements(&mut self) -> Vec<SurfaceCpuOrderMeasurement> {
-        self.completed_cpu_order_measurements.drain(..).collect()
+        self.completed_cpu_order_measurements.drain().collect()
     }
 
     /// Drains exact asynchronous GPU timing/count receipts in ticket order.
     pub fn drain_order_measurements(&mut self) -> Vec<SurfaceOrderMeasurement> {
-        self.completed_order_measurements.drain(..).collect()
+        self.completed_order_measurements.drain().collect()
     }
 
     /// Drains terminal failure receipts for issued GPU measurement tickets.
     pub fn drain_order_measurement_failures(&mut self) -> Vec<SurfaceOrderMeasurementFailure> {
-        self.completed_order_measurement_failures
-            .drain(..)
-            .collect()
+        self.completed_order_measurement_failures.drain().collect()
     }
 
     pub fn drain_projected_draw_measurements(&mut self) -> Vec<SurfaceProjectedDrawMeasurement> {
-        self.completed_projected_draw_measurements
-            .drain(..)
-            .collect()
+        self.completed_projected_draw_measurements.drain().collect()
     }
 
     pub fn drain_projected_draw_measurement_failures(
         &mut self,
     ) -> Vec<SurfaceProjectedDrawMeasurementFailure> {
         self.completed_projected_draw_measurement_failures
-            .drain(..)
+            .drain()
             .collect()
     }
 
@@ -3054,10 +3052,7 @@ impl SurfaceRenderSession {
         for measurement in cpu_telemetry.completed {
             self.observe_cpu_completion_measurement(measurement);
             self.latest_cpu_order_measurement = Some(measurement);
-            if self.completed_cpu_order_measurements.len() == 64 {
-                self.completed_cpu_order_measurements.pop_front();
-            }
-            self.completed_cpu_order_measurements.push_back(measurement);
+            self.completed_cpu_order_measurements.push(measurement);
         }
         let mut newest_failure = None;
         for failure in cpu_telemetry.failures {
@@ -3065,10 +3060,7 @@ impl SurfaceRenderSession {
                 self.adaptive_policy
                     .observe_cpu_measurement_failure(failure);
             }
-            if self.completed_order_measurement_failures.len() == 64 {
-                self.completed_order_measurement_failures.pop_front();
-            }
-            self.completed_order_measurement_failures.push_back(failure);
+            self.completed_order_measurement_failures.push(failure);
             newest_failure = Some(failure);
         }
         let telemetry = self.presenter.poll_gpu_order_telemetry();
@@ -3078,10 +3070,7 @@ impl SurfaceRenderSession {
                 self.adaptive_policy.observe_gpu_measurement(measurement);
             }
             self.latest_gpu_order_measurement = Some(measurement);
-            if self.completed_order_measurements.len() == 64 {
-                self.completed_order_measurements.pop_front();
-            }
-            self.completed_order_measurements.push_back(measurement);
+            self.completed_order_measurements.push(measurement);
             newest = Some(measurement);
         }
         for failure in telemetry.failures {
@@ -3089,10 +3078,7 @@ impl SurfaceRenderSession {
                 self.adaptive_policy
                     .observe_gpu_measurement_failure(failure);
             }
-            if self.completed_order_measurement_failures.len() == 64 {
-                self.completed_order_measurement_failures.pop_front();
-            }
-            self.completed_order_measurement_failures.push_back(failure);
+            self.completed_order_measurement_failures.push(failure);
             newest_failure = Some(failure);
         }
         (newest, newest_failure)
@@ -3113,11 +3099,7 @@ impl SurfaceRenderSession {
                 self.projected_policy_mut(measurement.order_backend)
                     .observe_measurement(measurement);
             }
-            if self.completed_projected_draw_measurements.len() == 64 {
-                self.completed_projected_draw_measurements.pop_front();
-            }
-            self.completed_projected_draw_measurements
-                .push_back(measurement);
+            self.completed_projected_draw_measurements.push(measurement);
             newest = Some(measurement);
         }
         let mut newest_failure = None;
@@ -3128,12 +3110,8 @@ impl SurfaceRenderSession {
                 self.projected_policy_mut(failure.order_backend)
                     .observe_failure(failure);
             }
-            if self.completed_projected_draw_measurement_failures.len() == 64 {
-                self.completed_projected_draw_measurement_failures
-                    .pop_front();
-            }
             self.completed_projected_draw_measurement_failures
-                .push_back(failure);
+                .push(failure);
             newest_failure = Some(failure);
         }
         self.refresh_adaptive_probe_owner();
