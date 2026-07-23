@@ -1,9 +1,15 @@
 mod compact;
+mod preproject_compact;
 mod radix;
 mod scan;
 mod visible_compact;
 
 pub(crate) use compact::StableContributorCompactor;
+#[cfg(test)]
+pub(crate) use preproject_compact::PreprojectDrawIndirectArgs;
+pub(crate) use preproject_compact::{
+    PREPROJECT_DRAW_INDIRECT_ARGS_BYTES, PreprojectKeyIdCompactor,
+};
 #[cfg(test)]
 pub(crate) use radix::{EXTERNAL_RADIX_TILE_SIZE, ExternalPrefixControl};
 pub(crate) use radix::{ExternalPrefixRadix, ExternalPrefixRadixBytePlan};
