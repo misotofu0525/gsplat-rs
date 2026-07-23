@@ -26,14 +26,14 @@ A5 = Active
 - Implementation: Package A is in progress; A1 guardrails and the complete A2
   data/API, A3 scene/resource and A4 CPU order ownership extractions are
   root-accepted. A5a's strategy-free scan/radix leaves are also root-accepted;
-  the parent A5 package remains active for its later consumer slices.
+  A5b's Direct/Resident stable-radix mechanics are now accepted behind those
+  owners. The parent A5 package remains active for its later consumer slices.
 - Current work package: A — responsibility extraction.
-- Active package task: A5b — extract the existing Direct/Resident stable-radix
-  mechanics behind the accepted private GPU owners.
-- Last completed task: A5a — strategy-free external-prefix scan/radix ownership
-  extraction.
-- Next eligible task: A5b only. A5c, A5d, A6 and later packages remain
-  inactive until root review closes A5b.
+- Active package task: none. A5c requires a separate plan-only activation
+  commit before any production edit.
+- Last completed task: A5b — Direct/Resident stable-radix mechanics extraction.
+- Next eligible task: A5c only. A5d, A6 and later packages remain inactive
+  until A5c is separately scoped, activated and root-reviewed.
 - Integration branch: `codex/native-render-core-refactor`.
 - Frozen source implementation closeout:
   `5db2520e0d7a0ef1c68a78bdb9abc6fc588c5186`.
@@ -104,8 +104,9 @@ eligible task. Do not rewrite the architecture in this ledger.
 ### A5b — Extract Direct/Resident stable-radix mechanics
 
 - Parent task state: A5 Active
-- Subtask state: Active
+- Subtask state: Accepted
 - Started: 2026-07-23
+- Ended: 2026-07-24
 - Production baseline commit:
   `3b726b0` (`docs: accept A5a GPU primitive extraction`).
 - Exact source baseline before production edits:
@@ -208,6 +209,48 @@ eligible task. Do not rewrite the architecture in this ledger.
 - Closeout requirement: one isolated writer produces a fixed SHA; root checks
   the exact inventory, hashes, mechanics and integrated gates before
   Accept/Reject/Defer. Acceptance activates no later A5 slice automatically.
+- Writer commit:
+  `835b01e6238e7c81b701ca540dffa7f9bd990cae` (`refactor: extract
+  stable full32 GPU radix owner`).
+- Integration merge commit:
+  `0fd16a84cd8ad24d576afcd338a9e4a9eea024ad` (`merge: integrate
+  A5b stable radix owners`).
+- Fixed-SHA review:
+  - the first candidate had one P2 documentation defect: the radix module
+    overview described only ExternalPrefix after the owner had gained the
+    Direct and Resident profiles;
+  - the writer amended only that overview, and independent re-review of the
+    fixed commit concluded P0/P1/P2 = 0/0/0;
+  - the parent is exactly `c9df391`, only the four allowed files changed, all
+    five shader hashes match, and forbidden consumers are byte-identical.
+- Final ownership and physical LOC:
+  - `direct_gpu_order.rs`: 2,010 LOC, retaining key generation, visibility,
+    indirect reset, Resident visible compaction and top-level orchestration;
+  - `gpu/scan.rs`: 416 LOC, one portable hierarchical scan kernel/graph owner;
+  - `gpu/radix.rs`: 1,724 LOC, one stable full32 radix owner covering the
+    external-prefix, Direct/fallback and qualified Resident profiles;
+  - `gpu/mod.rs`: 15 LOC, private facade.
+- Flexible size decision: the 1,724-LOC radix owner is accepted intact. Its
+  buffer graph, profiles, final-A contract and executable GPU oracles form one
+  responsibility; splitting for 800/890 would add coupling without creating a
+  new owner. The architecture notice remains advisory, while dependency and
+  legacy-growth rules remain hard.
+- Root integrated gates:
+  - PASS exact 101-label set comparison and five frozen WGSL hashes;
+  - PASS unchanged Direct 16-test/four-ignored and A5a five-test inventories;
+  - PASS architecture checker (`59 production Rust, 25 WGSL, 19
+    grandfathered`) plus its three fixture tests after lowering only the
+    `direct_gpu_order.rs` ratchet baseline from 2,855 to 2,010;
+  - PASS format, `git diff --check`, locked workspace check and tests; renderer
+    result is 281 passed / 5 ignored;
+  - PASS all-target Clippy and Rustdoc with warnings denied;
+  - PASS wasm32 `gsplat-web` check, forced Apple M4 Metal SortedAlpha
+    conformance and C ABI smoke (`drawn=2`, `visible=2`).
+- Required endpoint decision: A065 remains at the A5 package boundary because
+  this ownership-only slice cannot alter product behavior, shader bytes,
+  target selection or the rendered point set.
+- Decision: Accept A5b. A5 remains Active; A5c is merely eligible and is not
+  activated by this closeout.
 
 ### A5a — Extract external-prefix scan and stable radix owners
 
@@ -1393,6 +1436,7 @@ eligible task. Do not rewrite the architecture in this ledger.
 | A3 | Accepted | `3fe4c3e` | A3a/A3b records above | Resident CPU ownership, GPU resource arithmetic, Direct/Packed preflight and errors have one explicit owner; exact-count cross-target evidence retained |
 | A4 | Accepted | `0cf228f` + `b47d08c` | A4a/A4b records above and A065 exactness artifact | Existing CPU/SIMD/Rayon sort and renderer visibility/depth/key primitives have focused owners; behavior and full-count native rendering remain unchanged |
 | A5a | Accepted | `53eb004` + `53d7d57` | A5a record above, fixed-SHA review and integrated gates | External-prefix scan and stable radix now have strategy-free GPU owners; product admission and behavior remain unchanged; A5 stays Active |
+| A5b | Accepted | `835b01e` + `0fd16a8` | A5b record above, fixed-SHA review and integrated gates | Direct/fallback and qualified Resident stable full32 radix mechanics now share the private radix/scan owners; labels, resources, shaders, policy and behavior remain unchanged; A5 stays Active |
 
 ## Baseline evidence inherited, not rerun by default
 

@@ -223,7 +223,7 @@
     {
       "path": "crates/gsplat-render-wgpu/src/direct_gpu_order.rs",
       "a0_physical_loc": 2862,
-      "baseline_physical_loc": 2855,
+      "baseline_physical_loc": 2010,
       "owner_task": "A5",
       "exit_condition": "Extract strategy-free GPU order primitives and leave this owner with one independently testable orchestration responsibility."
     },
