@@ -28,15 +28,16 @@ use crate::raster::{
     encode_splat_indirect_draw_into,
 };
 use crate::resident_gpu;
+use crate::surface::{SurfaceLifecycle, create_surface_instance, select_present_mode};
 use crate::tiled_resident_gpu::{ResidentTiledFinish, ResidentTiledGpu};
 use crate::{
     DEFAULT_PAGED_ATLAS_SLOTS, DirectGpuSceneOrder, DirectSceneError, DirectScenePath,
     DirectScenePreflight, DirectSceneResources, GeometryPath, PackedScenePath,
     PackedScenePreflight, PreparedRendererGeometryPath, Renderer, ResidentGpuBytePlan,
     ResidentSceneCpu, SpatialPageSet, SurfacePresenterError, TimerInstant,
-    create_direct_bind_group_layout, create_direct_pipeline, create_surface_instance,
-    direct_scene_preflight, packed_scene_preflight_with_limits, preprocess_paged_visible_into,
-    refresh_paged_hot_colors, select_present_mode, surface_error_to_presenter, wgpu_label,
+    create_direct_bind_group_layout, create_direct_pipeline, direct_scene_preflight,
+    packed_scene_preflight_with_limits, preprocess_paged_visible_into, refresh_paged_hot_colors,
+    wgpu_label,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use crate::{timer_elapsed_ms, timer_now};
@@ -137,7 +138,7 @@ pub struct SurfacePresenter {
     resident_color_pipeline: Option<wgpu::ComputePipeline>,
     resident_color_bind_group_layout: Option<wgpu::BindGroupLayout>,
     surface_config: wgpu::SurfaceConfiguration,
-    surface_configuration_valid: bool,
+    surface_lifecycle: SurfaceLifecycle,
     #[cfg(not(target_arch = "wasm32"))]
     surface_copy_src_supported: bool,
     #[cfg(not(target_arch = "wasm32"))]
@@ -161,8 +162,6 @@ pub struct SurfacePresenter {
     projected_probe_generation: u64,
     projected_draw_sample_request: Option<ProjectedDrawSampleRequest>,
     last_projected_draw_submission: TelemetrySubmission,
-    last_frame_presented: bool,
-    last_presented_size: Option<(u32, u32)>,
 }
 
 #[derive(Clone, Copy)]
@@ -1155,7 +1154,7 @@ impl SurfacePresenter {
             resident_color_pipeline,
             resident_color_bind_group_layout,
             surface_config,
-            surface_configuration_valid: true,
+            surface_lifecycle: SurfaceLifecycle::new_configured(),
             #[cfg(not(target_arch = "wasm32"))]
             surface_copy_src_supported: caps.usages.contains(wgpu::TextureUsages::COPY_SRC),
             #[cfg(not(target_arch = "wasm32"))]
@@ -1183,8 +1182,6 @@ impl SurfacePresenter {
             projected_probe_generation: 0,
             projected_draw_sample_request: None,
             last_projected_draw_submission: TelemetrySubmission::NotRequested,
-            last_frame_presented: false,
-            last_presented_size: None,
         })
     }
 
@@ -1205,7 +1202,7 @@ impl SurfacePresenter {
                 max_dimension: self.max_texture_dimension_2d,
             });
         }
-        if self.surface_size() == (width, height) && self.surface_configuration_valid {
+        if self.surface_size() == (width, height) && self.surface_lifecycle.configuration_valid() {
             return Ok(());
         }
         #[cfg(target_arch = "wasm32")]
@@ -1223,7 +1220,7 @@ impl SurfacePresenter {
             self.surface_config.width = width;
             self.surface_config.height = height;
             self.surface.configure(&self.device, &self.surface_config);
-            self.surface_configuration_valid = true;
+            self.surface_lifecycle.mark_configuration_valid();
             if let SurfaceGeometry::Packed(packed) = &mut self.geometry {
                 packed.preproject_state.invalidate_order();
             }
@@ -1284,7 +1281,7 @@ impl SurfacePresenter {
         ) {
             return Err(SurfacePresenterError::SurfaceResizeUnsupported);
         }
-        if self.surface_size() == (width, height) && self.surface_configuration_valid {
+        if self.surface_size() == (width, height) && self.surface_lifecycle.configuration_valid() {
             return Ok(());
         }
 
@@ -1295,20 +1292,19 @@ impl SurfacePresenter {
         if let Some(resize_error) = self.configure_surface_scoped(&candidate).await {
             let resize_message = resize_error.to_string();
             if let Some(rollback_error) = self.configure_surface_scoped(&previous).await {
-                self.surface_configuration_valid = false;
+                self.surface_lifecycle.mark_configuration_invalid();
                 return Err(SurfacePresenterError::SurfaceResizeRollbackFailed {
                     resize_error: resize_message,
                     rollback_error: rollback_error.to_string(),
                 });
             }
-            self.surface_configuration_valid = true;
+            self.surface_lifecycle.mark_configuration_valid();
             return Err(resize_error);
         }
 
         self.surface_config = candidate;
-        self.surface_configuration_valid = true;
-        self.last_frame_presented = false;
-        self.last_presented_size = None;
+        self.surface_lifecycle.mark_configuration_valid();
+        self.surface_lifecycle.begin_frame();
         if let SurfaceGeometry::Packed(packed) = &mut self.geometry {
             packed.projected_cache.key = None;
             packed.preproject_state.invalidate_order();
@@ -1332,7 +1328,7 @@ impl SurfacePresenter {
     /// caller explicitly opts into this diagnostic path.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn request_surface_capture(&mut self) -> Result<(), SurfacePresenterError> {
-        if !self.surface_configuration_valid {
+        if !self.surface_lifecycle.configuration_valid() {
             return Err(SurfacePresenterError::SurfaceCaptureState(
                 "the Surface configuration is invalid".into(),
             ));
@@ -1425,18 +1421,18 @@ impl SurfacePresenter {
                 if let Some(rollback_error) =
                     rollback_internal.or(rollback_oom).or(rollback_validation)
                 {
-                    self.surface_configuration_valid = false;
+                    self.surface_lifecycle.mark_configuration_invalid();
                     return Err(SurfacePresenterError::SurfaceCaptureState(format!(
                         "COPY_SRC reconfiguration failed: {error}; restoring the previous Surface configuration also failed: {rollback_error}"
                     )));
                 }
-                self.surface_configuration_valid = true;
+                self.surface_lifecycle.mark_configuration_valid();
                 return Err(SurfacePresenterError::SurfaceCaptureUnsupported(format!(
                     "COPY_SRC reconfiguration failed: {error}"
                 )));
             }
             self.surface_config = candidate;
-            self.surface_configuration_valid = true;
+            self.surface_lifecycle.mark_configuration_valid();
         }
         self.pending_surface_capture = Some(PendingSurfaceCapture {
             buffer,
@@ -1562,11 +1558,11 @@ impl SurfacePresenter {
     /// drawable. Exact-count preparation, timeouts, and errors leave this
     /// false.
     pub(crate) const fn last_frame_presented(&self) -> bool {
-        self.last_frame_presented
+        self.surface_lifecycle.last_frame_presented()
     }
 
     pub(crate) const fn last_presented_size(&self) -> Option<(u32, u32)> {
-        self.last_presented_size
+        self.surface_lifecycle.last_presented_size()
     }
 
     /// Current raster execution plan. Packed defaults to exact preprojected
@@ -2017,8 +2013,7 @@ impl SurfacePresenter {
         camera: &Camera,
         refresh_indices: bool,
     ) -> Result<(), SurfacePresenterError> {
-        self.last_frame_presented = false;
-        self.last_presented_size = None;
+        self.surface_lifecycle.begin_frame();
         if !matches!(self.geometry, SurfaceGeometry::Paged(_)) {
             return self.render_cpu_sorted_indices(sorted_indices, camera, refresh_indices);
         }
@@ -2054,8 +2049,7 @@ impl SurfacePresenter {
         refresh_indices: bool,
         completion: Option<CpuCompletionSampleRequest>,
     ) -> Result<TelemetrySubmission, SurfacePresenterError> {
-        self.last_frame_presented = false;
-        self.last_presented_size = None;
+        self.surface_lifecycle.begin_frame();
         #[cfg(target_arch = "wasm32")]
         if matches!(
             self.geometry,
@@ -2626,8 +2620,7 @@ impl SurfacePresenter {
         camera_revision: u64,
         completion_started: TimerInstant,
     ) -> Result<TelemetrySubmission, SurfacePresenterError> {
-        self.last_frame_presented = false;
-        self.last_presented_size = None;
+        self.surface_lifecycle.begin_frame();
         let projected_sample_request = self.projected_draw_sample_request.take();
         self.last_projected_draw_submission = TelemetrySubmission::NotRequested;
         self.last_gpu_producer_submission = TelemetrySubmission::NotRequested;
@@ -4206,24 +4199,8 @@ impl SurfacePresenter {
     fn acquire_surface_texture(
         &mut self,
     ) -> Result<Option<wgpu::SurfaceTexture>, SurfacePresenterError> {
-        if !self.surface_configuration_valid {
-            return Err(SurfacePresenterError::SurfaceConfigure(
-                "surface is fail-closed after a resize rollback failure".into(),
-            ));
-        }
-        match self.surface.get_current_texture() {
-            Ok(frame) => Ok(Some(frame)),
-            Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
-                self.surface.configure(&self.device, &self.surface_config);
-                match self.surface.get_current_texture() {
-                    Ok(frame) => Ok(Some(frame)),
-                    Err(wgpu::SurfaceError::Timeout) => Ok(None),
-                    Err(err) => Err(surface_error_to_presenter(err)),
-                }
-            }
-            Err(wgpu::SurfaceError::Timeout) => Ok(None),
-            Err(err) => Err(surface_error_to_presenter(err)),
-        }
+        self.surface_lifecycle
+            .acquire(&self.surface, &self.device, &self.surface_config)
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -4270,9 +4247,7 @@ impl SurfacePresenter {
     }
 
     fn present_frame(&mut self, frame: wgpu::SurfaceTexture) {
-        self.last_presented_size = Some((frame.texture.width(), frame.texture.height()));
-        frame.present();
-        self.last_frame_presented = true;
+        self.surface_lifecycle.present(frame);
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(pending) = self.pending_surface_capture.as_mut()
             && pending.encoded
