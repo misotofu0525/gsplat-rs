@@ -7,6 +7,7 @@ mod cpu_order;
 mod data;
 mod direct_gpu_order;
 mod draw_pass;
+mod evidence;
 #[cfg_attr(not(test), allow(dead_code))]
 mod gpu;
 mod gpu_error;
