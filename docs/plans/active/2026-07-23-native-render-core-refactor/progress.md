@@ -17,15 +17,7 @@ A1 = Accept
 A2 = Accepted
 A3 = Accepted
 A4 = Accepted
-A5 = Active
-A8 = Active
 <!-- gsplat-program-task-states: end -->
-
-<!-- gsplat-program-active-lanes: begin -->
-activation_commit = 962c5c2544c4d087a3a4203e14e41d3fea12f7d7
-A5 = A5c2
-A8 = A8a
-<!-- gsplat-program-active-lanes: end -->
 
 ## Program status
 
@@ -34,15 +26,15 @@ A8 = A8a
   data/API, A3 scene/resource and A4 CPU order ownership extractions are
   root-accepted. A5a's strategy-free scan/radix leaves are also root-accepted;
   A5b's Direct/Resident stable-radix mechanics and A5c1's Projected scan reuse
-  are now accepted behind those owners. The parent A5 package remains active
-  for its later consumer slices.
+  are now accepted behind those owners. A5c2's contributor compactor and A8a's
+  offscreen lifecycle leaves are integrated and accepted. The parent A5 and A8
+  packages remain open for later, separately activated slices.
 - Current work package: A — responsibility extraction.
-- Active package tasks: A5 and A8 under the explicit disjoint parallel set in
-  the architecture policy. The concrete writer lanes are A5c2 and A8a below.
-- Last completed task: A5c1 — Projected contributor prefix-scan reuse.
-- Next eligible implementation: the recorded A5c2 and A8a writer lanes may run
-  concurrently. A7 remains read-only until A8a is integrated because both
-  implementation slices would otherwise need `lib.rs`. Remaining
+- Active package tasks: none during this root-owned combined closeout.
+- Last completed tasks: A5c2 — Projected contributor compactor; A8a — offscreen
+  target/readback lifecycle leaves.
+- Next eligible implementation: A7a immutable evidence values, after its exact
+  writer boundary is recorded from the combined accepted baseline. Remaining
   Direct/Preproject compaction slices, A5d, A6 and later packages stay inactive.
 - Integration branch: `codex/native-render-core-refactor`.
 - Frozen source implementation closeout:
@@ -112,10 +104,28 @@ eligible task. Do not rewrite the architecture in this ledger.
   hard. Historical A1 entries below record the then-current implementation;
   this section and the current policy are authoritative for later tasks.
 
-## Current task
+## Last integrated tasks
 
 ### Parallel writer lanes — A5c2 and A8a
 
+- State: Accepted
+- Activated from:
+  `962c5c2544c4d087a3a4203e14e41d3fea12f7d7`.
+- Root governance correction:
+  `14ef3a6d6b4ccb74c24e085e39720cc7d297ee24`.
+- Integrated in the declared order:
+  - A5c2 candidate `bee15d0a0de08e46158efc0ce1d22c6c5439fafc`
+    via merge `57fa8e5`;
+  - A8a candidate `fa4f01bf0d4a56301039c6273e485197faa7389f`
+    via merge `cd4a618`.
+- Both writers ran as user-visible Codex tasks in isolated worktrees. The
+  collaboration subagent performed read-only fixed-SHA review only.
+- Fixed-SHA review: both candidates reported P0/P1/P2 = 0, exact allowlists,
+  preserved resource/pass/submit/map ordering, unchanged shader and public ABI
+  boundaries.
+- Combined gates: architecture checker/self-tests, format/diff, renderer and
+  locked workspace tests, all-target Clippy, Rustdoc, wasm32, C FFI smoke and
+  required Apple Metal SortedAlpha conformance all pass.
 - Parallel execution: exact lanes `A5c2` and `A8a`; policy members, normalized
   write allowlists, activation commit, integration order and machine lane
   records are bound together. A parent task name alone grants no parallelism.
@@ -134,8 +144,17 @@ eligible task. Do not rewrite the architecture in this ledger.
 
 ### A5c2 — Extract the Projected strategy-free compute compactor
 
-- Parent task state: A5 Active
-- Subtask state: Active
+- Parent task state: A5 remains open for later slices
+- Subtask state: Accepted
+- Started: 2026-07-24
+- Ended: 2026-07-24
+- Candidate: `bee15d0a0de08e46158efc0ce1d22c6c5439fafc`.
+- Integrated: `57fa8e5`.
+- Result: `StableContributorCompactor` now exclusively owns contributor ranks,
+  compact/finalize resources and encoding. Projected retains admission,
+  preparation/publication, strategy choice and raster orchestration. The final
+  owner files are 2,055 lines for `projected_quads_gpu.rs` and 252 lines for
+  `gpu/compact.rs`; these counts are descriptive, not gates.
 - Production baseline: `32b277e1181a76ac8442e263e5a0be39162edb39`;
   activation parent is the current ledger commit.
 - Hypothesis: Projected's stable rank compaction and indirect-argument compute
@@ -179,8 +198,17 @@ eligible task. Do not rewrite the architecture in this ledger.
 
 ### A8a — Extract the offscreen target/readback leaf
 
-- Parent task state: A8 Active
-- Subtask state: Active
+- Parent task state: A8 remains open for later Surface slices
+- Subtask state: Accepted
+- Started: 2026-07-24
+- Ended: 2026-07-24
+- Candidate: `fa4f01bf0d4a56301039c6273e485197faa7389f`.
+- Integrated: `cd4a618`.
+- Result: private `OffscreenTarget` owns texture/view/size and transactional
+  reuse; the readback leaf owns row alignment, copy/map/poll and padding
+  removal. `GpuRasterizer` still owns device/queue/pipelines, command ordering
+  and submit. `lib.rs` is now 4,716 lines; this count is descriptive, not a
+  completion condition.
 - Baseline: current activation commit; worktree must start clean.
 - Hypothesis: offscreen target allocation/reuse and synchronous RGBA8 readback
   can become private lifecycle leaves without changing Renderer ownership,

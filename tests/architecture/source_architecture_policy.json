@@ -6,35 +6,7 @@
       "IO-PLY-1",
       "IO-SPZ-1"
     ],
-    "parallel_execution": {
-      "activation_commit": "962c5c2544c4d087a3a4203e14e41d3fea12f7d7",
-      "members": [
-        {
-          "task": "A5",
-          "lane": "A5c2",
-          "write_allowlist": [
-            "crates/gsplat-render-wgpu/src/projected_quads_gpu.rs",
-            "crates/gsplat-render-wgpu/src/gpu/mod.rs",
-            "crates/gsplat-render-wgpu/src/gpu/compact.rs"
-          ]
-        },
-        {
-          "task": "A8",
-          "lane": "A8a",
-          "write_allowlist": [
-            "crates/gsplat-render-wgpu/src/lib.rs",
-            "crates/gsplat-render-wgpu/src/offscreen/mod.rs",
-            "crates/gsplat-render-wgpu/src/offscreen/target.rs",
-            "crates/gsplat-render-wgpu/src/offscreen/readback.rs"
-          ]
-        }
-      ],
-      "integration_order": [
-        "A5c2",
-        "A8a"
-      ],
-      "reason": "The exact A5c2 and A8a writer allowlists are disjoint; root integrates in the declared order and reruns shared gates."
-    },
+    "parallel_execution": null,
     "task_catalog": {
       "A0": "A",
       "A1": "A",
@@ -216,7 +188,7 @@
     {
       "path": "crates/gsplat-render-wgpu/src/lib.rs",
       "a0_physical_loc": 5680,
-      "baseline_physical_loc": 4828,
+      "baseline_physical_loc": 4716,
       "owner_task": "M7",
       "exit_condition": "Remove legacy renderer ownership so lib.rs contains only crate wiring and public re-exports."
     },
@@ -267,7 +239,7 @@
     {
       "path": "crates/gsplat-render-wgpu/src/projected_quads_gpu.rs",
       "a0_physical_loc": 2358,
-      "baseline_physical_loc": 2194,
+      "baseline_physical_loc": 2055,
       "owner_task": "A5",
       "exit_condition": "Extract reusable project, compact, scan and indirect primitives so the legacy file has one plan-execution responsibility or is removed."
     },
