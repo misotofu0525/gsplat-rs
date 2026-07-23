@@ -6,42 +6,7 @@
       "IO-PLY-1",
       "IO-SPZ-1"
     ],
-    "parallel_execution": {
-      "activation_commit": "796ac0532114e0a5468e35b8d638e4be3ecab2fd",
-      "members": [
-        {
-          "task": "A7",
-          "lane": "A7e",
-          "write_allowlist": [
-            "crates/gsplat-render-wgpu/src/api.rs",
-            "crates/gsplat-render-wgpu/src/evidence/mod.rs",
-            "crates/gsplat-render-wgpu/src/evidence/producer.rs",
-            "crates/gsplat-render-wgpu/src/gpu_producer_telemetry.rs"
-          ]
-        },
-        {
-          "task": "A6",
-          "lane": "A6a",
-          "write_allowlist": [
-            "crates/gsplat-render-wgpu/src/raster/mod.rs",
-            "crates/gsplat-render-wgpu/src/raster/pipeline.rs",
-            "crates/gsplat-render-wgpu/src/raster/encode.rs",
-            "crates/gsplat-render-wgpu/src/draw_pass.rs",
-            "crates/gsplat-render-wgpu/src/lib.rs",
-            "crates/gsplat-render-wgpu/src/resident_gpu.rs",
-            "crates/gsplat-render-wgpu/src/packed_gpu.rs",
-            "crates/gsplat-render-wgpu/src/projected_quads_gpu.rs",
-            "crates/gsplat-render-wgpu/src/preproject_gpu.rs",
-            "crates/gsplat-render-wgpu/src/surface_presenter.rs"
-          ]
-        }
-      ],
-      "integration_order": [
-        "A7e",
-        "A6a"
-      ],
-      "reason": "A7e moves only the producer selector and immutable producer receipts between API/evidence/telemetry owners while A6a moves only canonical raster pipeline and encoding mechanics; their exact write sets and dependencies are disjoint."
-    },
+    "parallel_execution": null,
     "task_catalog": {
       "A0": "A",
       "A1": "A",
@@ -314,13 +279,6 @@
       "baseline_physical_loc": 813,
       "owner_task": "A7",
       "exit_condition": "Separate immutable projected-draw receipts from bounded observer storage and adaptive lifecycle."
-    },
-    {
-      "path": "crates/gsplat-render-wgpu/shaders/splat_surface_direct.wgsl",
-      "a0_physical_loc": 370,
-      "baseline_physical_loc": 370,
-      "owner_task": "A6",
-      "exit_condition": "Consolidate the accepted canonical raster math into a single owned contract without changing pixels."
     }
   ],
   "exceptions": [],
