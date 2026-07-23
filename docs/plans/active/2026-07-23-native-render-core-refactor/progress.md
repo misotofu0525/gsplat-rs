@@ -29,11 +29,12 @@ A5 = Active
   A5b's Direct/Resident stable-radix mechanics are now accepted behind those
   owners. The parent A5 package remains active for its later consumer slices.
 - Current work package: A — responsibility extraction.
-- Active package task: none. A5c requires a separate plan-only activation
-  commit before any production edit.
+- Active package task: A5c1 — migrate the duplicate Projected contributor
+  prefix scan to the accepted strategy-free scan owner.
 - Last completed task: A5b — Direct/Resident stable-radix mechanics extraction.
-- Next eligible task: A5c only. A5d, A6 and later packages remain inactive
-  until A5c is separately scoped, activated and root-reviewed.
+- Next eligible task: A5c1 only. A5c2, the remaining Direct/Preproject
+  compaction slices, A5d, A6 and later packages remain inactive until A5c1 is
+  root-reviewed and closed.
 - Integration branch: `codex/native-render-core-refactor`.
 - Frozen source implementation closeout:
   `5db2520e0d7a0ef1c68a78bdb9abc6fc588c5186`.
@@ -100,6 +101,115 @@ eligible task. Do not rewrite the architecture in this ledger.
   this section and the current policy are authoritative for later tasks.
 
 ## Current task
+
+### A5c1 — Reuse the accepted scan owner for Projected contributor counts
+
+- Parent task state: A5 Active
+- Subtask state: Active
+- Started: 2026-07-24
+- Baseline commit:
+  `e687614fbd9b973d060904978d2b5aebde898959` (`docs: accept A5b
+  stable radix extraction`).
+- Exact source baseline before production edits:
+  - `projected_quads_gpu.rs`: 2,360 physical LOC;
+  - `gpu/scan.rs`: 416 physical LOC;
+  - `gpu/mod.rs`: 15 physical LOC;
+  - architecture grandfather baseline for `projected_quads_gpu.rs`: 2,358.
+- Frozen source identities:
+  - `projected_quads_gpu.rs`:
+    `1dc7b2f7b9d5e0b99e6d968f8c952a66c303308359ff8c5d96030f9f49d4c217`;
+  - `gpu/scan.rs`:
+    `f70a0ec9acd056e49a181cd94678eca05512b9f73dd2d52a05560ad7f5c0b4fb`;
+  - `gpu/mod.rs`:
+    `ff673dfe17496ea287e210b7e7b821dab42075f55b4254ef4cff61f5ef6e1c6a`.
+- Frozen shader identities:
+  - `gpu_prefix_scan.wgsl`:
+    `f58e3e47ef6175965f88c48e95f0df8eb1b380d847b7d5f65d45ad1a7537fc61`;
+  - `projected_quads_project.wgsl`:
+    `7c224f1f1e9380d8427da714fd17134203049bf96334b5ef7119efcba0eadd3d`;
+  - `projected_quads_compact.wgsl`:
+    `e8348a6535c39da1ebcd0a18d59fa3b84d36f865505b7a8f15e6d6f8eef01822`;
+  - `projected_quads_draw.wgsl`:
+    `ed48658f0008728368206b5c59637e42be580e861e17c7eef6f1f89a5ee71529`;
+  - `projected_quads_draw_compacted.wgsl`:
+    `d9d648dedd06c9af441691ec9a0adb441e2c2b4f45495e6788712076dc4b8024`.
+- Hypothesis: the Projected contributor counter's duplicate hierarchical
+  prefix-scan construction and forward/reverse encode loops can delegate to
+  the accepted `gpu::scan` owner while preserving every label, allocation,
+  usage, pass and exact V/C/D result. Projected remains the sole owner of
+  projection, Candidate/Compact admission, transactional publication,
+  contributor rank compaction and both raster pipelines.
+- Read-only scope conclusion:
+  - Direct Resident-visible, Projected contributor and Preproject key/ID
+    compaction are not one interchangeable ABI or resource graph;
+  - Direct is an S-to-V producer coupled to radix control, target allowlists
+    and timestamp boundaries; Projected is a sorted V-rank-to-C-rank producer
+    whose Candidate path keeps D=V; Preproject has separate S/V/C identity and
+    must preserve stale D on non-refresh frames;
+  - therefore A5c is split. A5c1 removes only the proven duplicate scan. Later
+    compact owners require separate plan-only activation per consumer rather
+    than one generic graph.
+- Allowed production scope:
+  - `crates/gsplat-render-wgpu/src/projected_quads_gpu.rs`;
+  - `crates/gsplat-render-wgpu/src/gpu/scan.rs` for a strategy-free profiled
+    constructor, separate forward/reverse encoding and exact-count access;
+  - `crates/gsplat-render-wgpu/src/gpu/mod.rs` for the minimum crate-private
+    re-export;
+  - existing Projected tests remain in place; no test is moved for size.
+- Required responsibility boundary:
+  - the existing `GpuPrefixScan::new` and `encode` behavior used by A5a and
+    Preproject remains source-compatible and resource-identical;
+  - a profiled scan may accept static labels and sums usage, expose forward and
+    reverse phases, and expose the final count buffer/offset without importing
+    Projected, Scene, Surface, policy or telemetry types;
+  - `ProjectedQuadsGpu` retains scan capability admission, downlevel sentinel
+    fallback, Candidate/Compact choice, prepared/publish lifecycle, dispatch
+    ordering, compaction resources and raster ownership.
+- Forbidden scope:
+  - every WGSL file; `direct_gpu_order.rs`, `preproject_gpu.rs`,
+    `gpu/radix.rs`, `lib.rs`, Resident/Scene, Surface/session/presenter,
+    telemetry/policy, raster helpers, API/FFI/platform/example/Cargo/benchmark
+    files and architecture policy/ledger files in the writer worktree;
+  - creating `gpu/compact.rs`, moving any compact/finalize/draw pipeline,
+    changing Candidate/Compact behavior, V/C/D semantics, transactional
+    optional-resource publication, limits, errors, target admission or shader
+    math;
+  - changing scan workgroup size, hierarchy, scratch sizes/usages, uniform
+    stride, bind groups, dynamic offsets, pass labels/order, dispatch shape or
+    exact-count location; line-count-only splitting or test relocation.
+- Hard gates:
+  - all five frozen shader hashes and forbidden consumer files remain
+    byte-identical;
+  - the complete `gsplat-*` resource/pass label set for Projected plus scan is
+    identical, and sums/params/binding/usage/dispatch receipts match the
+    baseline;
+  - Candidate encodes project plus forward count only and still draws D=V;
+    Compact adds reverse offsets, stable rank compact and finalize in the same
+    order and still proves D=C<=V;
+  - adapters below the current scan floor retain the sentinel exact-count path
+    and never lose Candidate; optional Compact construction/publication remains
+    transactional;
+  - the exact 13 Projected tests and zero ignored tests remain, with no weakened
+    assertion; A5a/A5b scan/radix inventories also remain unchanged;
+  - fixed-SHA review and root integration run format, whitespace,
+    architecture checks, locked renderer/workspace tests, all-target Clippy,
+    Rustdoc, wasm32 and forced Apple M4 Metal conformance. Root alone adjusts a
+    grandfather baseline after semantic acceptance.
+- Flexible LOC rule: no 800/890 gate applies. This task succeeds only if it
+  removes duplicate scan ownership without inventing a generic compaction
+  framework; final cohesive owner sizes are review evidence, not pass/fail
+  numbers.
+- Performance observations: none. A5c1 is behavior-preserving ownership work
+  and makes no speed claim.
+- Required endpoints for claim: Apple M4 executes existing Projected image and
+  count oracles plus forced SortedAlpha conformance; wasm32 compiles. A065 stays
+  at the A5 package boundary because shader bytes and product routing cannot
+  change here.
+- Performance correction used: no
+- Known correctness issues: none
+- Closeout requirement: one isolated writer produces a fixed SHA; root reviews
+  the exact graph and integrated gates before Accept/Reject/Defer. No later
+  compaction slice activates automatically.
 
 ### A5b — Extract Direct/Resident stable-radix mechanics
 
