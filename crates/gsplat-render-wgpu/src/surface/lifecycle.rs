@@ -1,8 +1,11 @@
+use super::SurfaceConfigurationOwner;
 use crate::SurfacePresenterError;
 
-/// Fail-closed acquisition and presentation state for one WGPU Surface host.
+/// Acquisition and presentation state for one WGPU Surface host.
+///
+/// Configuration admission and recovery actions stay delegated to the
+/// configuration owner.
 pub(crate) struct SurfaceLifecycle {
-    configuration_valid: bool,
     last_frame_presented: bool,
     last_presented_size: Option<(u32, u32)>,
 }
@@ -21,24 +24,11 @@ enum SurfaceAcquireDecision {
 }
 
 impl SurfaceLifecycle {
-    pub(crate) const fn new_configured() -> Self {
+    pub(crate) const fn new() -> Self {
         Self {
-            configuration_valid: true,
             last_frame_presented: false,
             last_presented_size: None,
         }
-    }
-
-    pub(crate) const fn configuration_valid(&self) -> bool {
-        self.configuration_valid
-    }
-
-    pub(crate) fn mark_configuration_valid(&mut self) {
-        self.configuration_valid = true;
-    }
-
-    pub(crate) fn mark_configuration_invalid(&mut self) {
-        self.configuration_valid = false;
     }
 
     pub(crate) fn begin_frame(&mut self) {
@@ -58,9 +48,9 @@ impl SurfaceLifecycle {
         &self,
         surface: &wgpu::Surface<'_>,
         device: &wgpu::Device,
-        config: &wgpu::SurfaceConfiguration,
+        configuration: &SurfaceConfigurationOwner,
     ) -> Result<Option<wgpu::SurfaceTexture>, SurfacePresenterError> {
-        self.ensure_configuration_valid()?;
+        configuration.ensure_valid()?;
 
         let mut attempt = SurfaceAcquireAttempt::Initial;
         loop {
@@ -68,7 +58,7 @@ impl SurfaceLifecycle {
                 Ok(frame) => return Ok(Some(frame)),
                 Err(error) => match surface_acquire_decision(&error, attempt) {
                     SurfaceAcquireDecision::ReconfigureAndRetry => {
-                        surface.configure(device, config);
+                        configuration.reconfigure_current(surface, device);
                         attempt = SurfaceAcquireAttempt::Retry;
                     }
                     SurfaceAcquireDecision::Unavailable => return Ok(None),
@@ -83,16 +73,6 @@ impl SurfaceLifecycle {
     pub(crate) fn present(&mut self, frame: wgpu::SurfaceTexture) -> (u32, u32) {
         let size = (frame.texture.width(), frame.texture.height());
         self.present_with(size, || frame.present())
-    }
-
-    fn ensure_configuration_valid(&self) -> Result<(), SurfacePresenterError> {
-        if self.configuration_valid {
-            Ok(())
-        } else {
-            Err(SurfacePresenterError::SurfaceConfigure(
-                "surface is fail-closed after a resize rollback failure".into(),
-            ))
-        }
     }
 
     fn present_with(&mut self, size: (u32, u32), present: impl FnOnce()) -> (u32, u32) {
@@ -190,9 +170,8 @@ mod tests {
     }
 
     #[test]
-    fn frame_attempt_present_and_invalid_configuration_state_fail_closed() {
-        let mut lifecycle = SurfaceLifecycle::new_configured();
-        assert!(lifecycle.configuration_valid());
+    fn frame_attempt_and_present_receipt_are_owned_by_lifecycle() {
+        let mut lifecycle = SurfaceLifecycle::new();
         assert!(!lifecycle.last_frame_presented());
         assert_eq!(lifecycle.last_presented_size(), None);
 
@@ -208,18 +187,6 @@ mod tests {
         lifecycle.begin_frame();
         assert!(!lifecycle.last_frame_presented());
         assert_eq!(lifecycle.last_presented_size(), None);
-
-        lifecycle.mark_configuration_invalid();
-        let error = lifecycle
-            .ensure_configuration_valid()
-            .expect_err("invalid configuration must fail closed");
-        assert!(matches!(
-            error,
-            SurfacePresenterError::SurfaceConfigure(ref message)
-                if message == "surface is fail-closed after a resize rollback failure"
-        ));
-        lifecycle.mark_configuration_valid();
-        assert!(lifecycle.ensure_configuration_valid().is_ok());
     }
 
     #[test]
@@ -269,5 +236,14 @@ mod tests {
             surface_error_to_presenter(wgpu::SurfaceError::Other),
             SurfacePresenterError::SurfaceAcquire(ref message) if message == "Other"
         ));
+    }
+
+    #[test]
+    fn lifecycle_has_no_raw_surface_configuration_or_configure_action() {
+        let source = include_str!("lifecycle.rs");
+        let raw_configuration_type = ["wgpu::Surface", "Configuration"].concat();
+        let raw_configure_call = [".", "configure("].concat();
+        assert!(!source.contains(&raw_configuration_type));
+        assert!(!source.contains(&raw_configure_call));
     }
 }

@@ -28,7 +28,9 @@ use crate::raster::{
     encode_splat_indirect_draw_into,
 };
 use crate::resident_gpu;
-use crate::surface::{SurfaceLifecycle, create_surface_instance, select_present_mode};
+use crate::surface::{
+    SurfaceConfigurationOwner, SurfaceLifecycle, create_surface_instance, select_present_mode,
+};
 use crate::tiled_resident_gpu::{ResidentTiledFinish, ResidentTiledGpu};
 use crate::{
     DEFAULT_PAGED_ATLAS_SLOTS, DirectGpuSceneOrder, DirectSceneError, DirectScenePath,
@@ -137,13 +139,12 @@ pub struct SurfacePresenter {
     resident_draw_bind_group_layout: Option<wgpu::BindGroupLayout>,
     resident_color_pipeline: Option<wgpu::ComputePipeline>,
     resident_color_bind_group_layout: Option<wgpu::BindGroupLayout>,
-    surface_config: wgpu::SurfaceConfiguration,
+    surface_configuration: SurfaceConfigurationOwner,
     surface_lifecycle: SurfaceLifecycle,
     #[cfg(not(target_arch = "wasm32"))]
     surface_copy_src_supported: bool,
     #[cfg(not(target_arch = "wasm32"))]
     pending_surface_capture: Option<PendingSurfaceCapture>,
-    max_texture_dimension_2d: u32,
     adapter_max_storage_buffers_per_shader_stage: u32,
     adapter_max_storage_buffer_binding_size: u64,
     indirect_execution_supported: bool,
@@ -445,25 +446,6 @@ fn classify_surface_geometry_scope_errors(
         .or_else(|| {
             validation
                 .map(|message| SurfacePresenterError::SurfaceGeometryValidation { path, message })
-        })
-}
-
-#[cfg(any(target_arch = "wasm32", test))]
-fn classify_surface_configure_scope_errors(
-    internal: Option<String>,
-    out_of_memory: Option<String>,
-    validation: Option<String>,
-) -> Option<SurfacePresenterError> {
-    out_of_memory
-        .map(|_| SurfacePresenterError::SurfaceOutOfMemory)
-        .or_else(|| {
-            internal
-                .map(|error| SurfacePresenterError::SurfaceConfigure(format!("internal: {error}")))
-        })
-        .or_else(|| {
-            validation.map(|error| {
-                SurfacePresenterError::SurfaceConfigure(format!("validation: {error}"))
-            })
         })
 }
 
@@ -1045,21 +1027,17 @@ impl SurfacePresenter {
         let max_texture_dimension_2d = device.limits().max_texture_dimension_2d.max(1);
         let (surface_width, surface_height) = (width, height);
 
-        let surface_config = wgpu::SurfaceConfiguration {
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+        let surface_configuration = SurfaceConfigurationOwner::new_configured(
+            &surface,
+            &device,
             format,
-            width: surface_width,
-            height: surface_height,
+            surface_width,
+            surface_height,
             present_mode,
             alpha_mode,
-            view_formats: vec![],
-            desired_maximum_frame_latency: 2,
-        };
-        let error_scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
-        surface.configure(&device, &surface_config);
-        if let Some(err) = error_scope.pop().await {
-            return Err(SurfacePresenterError::SurfaceConfigure(err.to_string()));
-        }
+            max_texture_dimension_2d,
+        )
+        .await?;
 
         // Every shared pipeline/layout and the selected geometry is one
         // unpublished candidate. WebGPU reports constructor failures only
@@ -1153,13 +1131,12 @@ impl SurfacePresenter {
             resident_draw_bind_group_layout,
             resident_color_pipeline,
             resident_color_bind_group_layout,
-            surface_config,
-            surface_lifecycle: SurfaceLifecycle::new_configured(),
+            surface_configuration,
+            surface_lifecycle: SurfaceLifecycle::new(),
             #[cfg(not(target_arch = "wasm32"))]
             surface_copy_src_supported: caps.usages.contains(wgpu::TextureUsages::COPY_SRC),
             #[cfg(not(target_arch = "wasm32"))]
             pending_surface_capture: None,
-            max_texture_dimension_2d,
             adapter_max_storage_buffers_per_shader_stage: adapter_limits
                 .max_storage_buffers_per_shader_stage,
             adapter_max_storage_buffer_binding_size: u64::from(
@@ -1192,17 +1169,8 @@ impl SurfacePresenter {
                 "cannot resize while a capture is pending".into(),
             ));
         }
-        if width == 0 || height == 0 {
-            return Err(SurfacePresenterError::InvalidSurfaceSize);
-        }
-        if width > self.max_texture_dimension_2d || height > self.max_texture_dimension_2d {
-            return Err(SurfacePresenterError::GpuDimensionsUnsupported {
-                width,
-                height,
-                max_dimension: self.max_texture_dimension_2d,
-            });
-        }
-        if self.surface_size() == (width, height) && self.surface_lifecycle.configuration_valid() {
+        self.surface_configuration.validate_size(width, height)?;
+        if !self.surface_configuration.resize_required(width, height) {
             return Ok(());
         }
         #[cfg(target_arch = "wasm32")]
@@ -1217,10 +1185,8 @@ impl SurfacePresenter {
                 }
                 packed.phase_trace_emitted = 0;
             }
-            self.surface_config.width = width;
-            self.surface_config.height = height;
-            self.surface.configure(&self.device, &self.surface_config);
-            self.surface_lifecycle.mark_configuration_valid();
+            self.surface_configuration
+                .resize_native(&self.surface, &self.device, width, height);
             if let SurfaceGeometry::Packed(packed) = &mut self.geometry {
                 packed.preproject_state.invalidate_order();
             }
@@ -1230,27 +1196,6 @@ impl SurfacePresenter {
             self.gpu_producer_telemetry.invalidate_generation();
             Ok(())
         }
-    }
-
-    #[cfg(target_arch = "wasm32")]
-    async fn configure_surface_scoped(
-        &self,
-        config: &wgpu::SurfaceConfiguration,
-    ) -> Option<SurfacePresenterError> {
-        let (validation_scope, oom_scope, internal_scope) = (
-            self.device.push_error_scope(wgpu::ErrorFilter::Validation),
-            self.device.push_error_scope(wgpu::ErrorFilter::OutOfMemory),
-            self.device.push_error_scope(wgpu::ErrorFilter::Internal),
-        );
-        self.surface.configure(&self.device, config);
-        let internal_error = internal_scope.pop().await;
-        let oom_error = oom_scope.pop().await;
-        let validation_error = validation_scope.pop().await;
-        classify_surface_configure_scope_errors(
-            internal_error.map(|error| error.to_string()),
-            oom_error.map(|error| error.to_string()),
-            validation_error.map(|error| error.to_string()),
-        )
     }
 
     /// Transactionally reconfigures the browser Surface for the production
@@ -1264,16 +1209,7 @@ impl SurfacePresenter {
         width: u32,
         height: u32,
     ) -> Result<(), SurfacePresenterError> {
-        if width == 0 || height == 0 {
-            return Err(SurfacePresenterError::InvalidSurfaceSize);
-        }
-        if width > self.max_texture_dimension_2d || height > self.max_texture_dimension_2d {
-            return Err(SurfacePresenterError::GpuDimensionsUnsupported {
-                width,
-                height,
-                max_dimension: self.max_texture_dimension_2d,
-            });
-        }
+        self.surface_configuration.validate_size(width, height)?;
         if !matches!(
             &self.geometry,
             SurfaceGeometry::Packed(packed)
@@ -1281,29 +1217,13 @@ impl SurfacePresenter {
         ) {
             return Err(SurfacePresenterError::SurfaceResizeUnsupported);
         }
-        if self.surface_size() == (width, height) && self.surface_lifecycle.configuration_valid() {
+        if !self.surface_configuration.resize_required(width, height) {
             return Ok(());
         }
 
-        let previous = self.surface_config.clone();
-        let mut candidate = previous.clone();
-        candidate.width = width;
-        candidate.height = height;
-        if let Some(resize_error) = self.configure_surface_scoped(&candidate).await {
-            let resize_message = resize_error.to_string();
-            if let Some(rollback_error) = self.configure_surface_scoped(&previous).await {
-                self.surface_lifecycle.mark_configuration_invalid();
-                return Err(SurfacePresenterError::SurfaceResizeRollbackFailed {
-                    resize_error: resize_message,
-                    rollback_error: rollback_error.to_string(),
-                });
-            }
-            self.surface_lifecycle.mark_configuration_valid();
-            return Err(resize_error);
-        }
-
-        self.surface_config = candidate;
-        self.surface_lifecycle.mark_configuration_valid();
+        self.surface_configuration
+            .resize_transactionally(&self.surface, &self.device, width, height)
+            .await?;
         self.surface_lifecycle.begin_frame();
         if let SurfaceGeometry::Packed(packed) = &mut self.geometry {
             packed.projected_cache.key = None;
@@ -1319,7 +1239,7 @@ impl SurfacePresenter {
     }
 
     pub const fn surface_size(&self) -> (u32, u32) {
-        (self.surface_config.width, self.surface_config.height)
+        self.surface_configuration.size()
     }
 
     /// Arms a one-shot exact framebuffer readback for the next presented
@@ -1328,11 +1248,7 @@ impl SurfacePresenter {
     /// caller explicitly opts into this diagnostic path.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn request_surface_capture(&mut self) -> Result<(), SurfacePresenterError> {
-        if !self.surface_lifecycle.configuration_valid() {
-            return Err(SurfacePresenterError::SurfaceCaptureState(
-                "the Surface configuration is invalid".into(),
-            ));
-        }
+        self.surface_configuration.ensure_capture_valid()?;
         if self.pending_surface_capture.is_some() {
             return Err(SurfacePresenterError::SurfaceCaptureState(
                 "a previous capture has not been taken".into(),
@@ -1343,14 +1259,15 @@ impl SurfacePresenter {
                 "the adapter does not expose COPY_SRC for this Surface".into(),
             ));
         }
-        if !surface_capture_format_supported(self.surface_config.format) {
+        let (width, height) = self.surface_configuration.size();
+        let format = self.surface_configuration.format();
+        if !surface_capture_format_supported(format) {
             return Err(SurfacePresenterError::SurfaceCaptureUnsupported(format!(
                 "format {:?} is not an RGBA8/BGRA8 format",
-                self.surface_config.format
+                format
             )));
         }
-        let (padded_bytes_per_row, buffer_size) =
-            surface_capture_layout(self.surface_config.width, self.surface_config.height)?;
+        let (padded_bytes_per_row, buffer_size) = surface_capture_layout(width, height)?;
         validate_surface_capture_buffer_size(buffer_size, self.device.limits().max_buffer_size)?;
 
         // Allocate the unpublished readback resource first. Device creation
@@ -1382,64 +1299,16 @@ impl SurfacePresenter {
             )));
         }
 
-        if !self
-            .surface_config
-            .usage
-            .contains(wgpu::TextureUsages::COPY_SRC)
-        {
-            let previous = self.surface_config.clone();
-            let mut candidate = previous.clone();
-            candidate.usage |= wgpu::TextureUsages::COPY_SRC;
-            let (validation_scope, oom_scope, internal_scope) = (
-                self.device.push_error_scope(wgpu::ErrorFilter::Validation),
-                self.device.push_error_scope(wgpu::ErrorFilter::OutOfMemory),
-                self.device.push_error_scope(wgpu::ErrorFilter::Internal),
-            );
-            self.surface.configure(&self.device, &candidate);
-            let (internal_error, oom_error, validation_error) = pollster::block_on(async {
-                (
-                    internal_scope.pop().await,
-                    oom_scope.pop().await,
-                    validation_scope.pop().await,
-                )
-            });
-            if let Some(error) = internal_error.or(oom_error).or(validation_error) {
-                let (validation_scope, oom_scope, internal_scope) = (
-                    self.device.push_error_scope(wgpu::ErrorFilter::Validation),
-                    self.device.push_error_scope(wgpu::ErrorFilter::OutOfMemory),
-                    self.device.push_error_scope(wgpu::ErrorFilter::Internal),
-                );
-                self.surface.configure(&self.device, &previous);
-                let (rollback_internal, rollback_oom, rollback_validation) =
-                    pollster::block_on(async {
-                        (
-                            internal_scope.pop().await,
-                            oom_scope.pop().await,
-                            validation_scope.pop().await,
-                        )
-                    });
-                if let Some(rollback_error) =
-                    rollback_internal.or(rollback_oom).or(rollback_validation)
-                {
-                    self.surface_lifecycle.mark_configuration_invalid();
-                    return Err(SurfacePresenterError::SurfaceCaptureState(format!(
-                        "COPY_SRC reconfiguration failed: {error}; restoring the previous Surface configuration also failed: {rollback_error}"
-                    )));
-                }
-                self.surface_lifecycle.mark_configuration_valid();
-                return Err(SurfacePresenterError::SurfaceCaptureUnsupported(format!(
-                    "COPY_SRC reconfiguration failed: {error}"
-                )));
-            }
-            self.surface_config = candidate;
-            self.surface_lifecycle.mark_configuration_valid();
-        }
+        pollster::block_on(
+            self.surface_configuration
+                .ensure_copy_src(&self.surface, &self.device),
+        )?;
         self.pending_surface_capture = Some(PendingSurfaceCapture {
             buffer,
-            width: self.surface_config.width,
-            height: self.surface_config.height,
+            width,
+            height,
             padded_bytes_per_row,
-            format: self.surface_config.format,
+            format,
             encoded: false,
             presented: false,
         });
@@ -1537,13 +1406,12 @@ impl SurfacePresenter {
     }
 
     pub fn set_frame_latency(&mut self, latency: u32) {
-        let latency = latency.clamp(1, 4);
-        if self.surface_config.desired_maximum_frame_latency == latency {
+        if !self
+            .surface_configuration
+            .update_frame_latency(&self.surface, &self.device, latency)
+        {
             return;
         }
-
-        self.surface_config.desired_maximum_frame_latency = latency;
-        self.surface.configure(&self.device, &self.surface_config);
         self.gpu_order_telemetry.invalidate_generation();
         self.cpu_order_completion_telemetry.invalidate_generation();
         self.projected_draw_telemetry.invalidate_generation();
@@ -1666,7 +1534,11 @@ impl SurfacePresenter {
             return Ok(PreparedSurfaceGpuProducer::AlreadyPrepared);
         }
         Ok(PreparedSurfaceGpuProducer::Preproject(Box::new(
-            PreprojectedGpuOrder::new(&self.device, self.surface_config.format, &packed.resident)?,
+            PreprojectedGpuOrder::new(
+                &self.device,
+                self.surface_configuration.format(),
+                &packed.resident,
+            )?,
         )))
     }
 
@@ -1781,10 +1653,10 @@ impl SurfacePresenter {
                 if plan == SurfaceRasterExecutionPlan::TiledExact {
                     let tiled = ResidentTiledGpu::new(
                         &self.device,
-                        self.surface_config.format,
+                        self.surface_configuration.format(),
                         &packed.resident,
-                        self.surface_config.width,
-                        self.surface_config.height,
+                        self.surface_configuration.size().0,
+                        self.surface_configuration.size().1,
                     )?;
                     // Publish only after complete construction succeeds.
                     packed.tiled = Some(tiled);
@@ -1912,9 +1784,9 @@ impl SurfacePresenter {
                     resident_color_bind_group_layout: self
                         .resident_color_bind_group_layout
                         .as_ref(),
-                    surface_format: self.surface_config.format,
-                    width: self.surface_config.width,
-                    height: self.surface_config.height,
+                    surface_format: self.surface_configuration.format(),
+                    width: self.surface_configuration.size().0,
+                    height: self.surface_configuration.size().1,
                 },
                 path,
                 renderer,
@@ -1944,7 +1816,7 @@ impl SurfacePresenter {
         let mut geometry = geometry_result?;
         prepare_optional_projected_compaction(
             &self.device,
-            self.surface_config.format,
+            self.surface_configuration.format(),
             self.indirect_execution_supported,
             &mut geometry,
             require_projected_compaction,
@@ -1982,9 +1854,9 @@ impl SurfacePresenter {
                 packed_bind_group_layout: &self.packed_bind_group_layout,
                 resident_draw_bind_group_layout: self.resident_draw_bind_group_layout.as_ref(),
                 resident_color_bind_group_layout: self.resident_color_bind_group_layout.as_ref(),
-                surface_format: self.surface_config.format,
-                width: self.surface_config.width,
-                height: self.surface_config.height,
+                surface_format: self.surface_configuration.format(),
+                width: self.surface_configuration.size().0,
+                height: self.surface_configuration.size().1,
             },
             path,
             renderer,
@@ -1997,7 +1869,7 @@ impl SurfacePresenter {
             && let SurfaceGeometry::Packed(packed) = &mut geometry
             && let Some(candidate) = packed.projected.create_contributor_compaction_candidate(
                 &self.device,
-                self.surface_config.format,
+                self.surface_configuration.format(),
                 &packed.resident,
             )?
         {
@@ -2022,8 +1894,8 @@ impl SurfacePresenter {
                 &self.queue,
                 scene,
                 camera,
-                self.surface_config.width,
-                self.surface_config.height,
+                self.surface_configuration.size().0,
+                self.surface_configuration.size().1,
             )?,
             SurfaceGeometry::Direct(_) | SurfaceGeometry::Packed(_) => unreachable!(),
         };
@@ -2068,8 +1940,8 @@ impl SurfacePresenter {
                 &self.queue,
                 sorted_indices,
                 camera,
-                self.surface_config.width,
-                self.surface_config.height,
+                self.surface_configuration.size().0,
+                self.surface_configuration.size().1,
                 refresh_indices,
             )?,
             SurfaceGeometry::Packed(packed) => {
@@ -2077,8 +1949,8 @@ impl SurfacePresenter {
                     &self.queue,
                     sorted_indices,
                     camera,
-                    self.surface_config.width,
-                    self.surface_config.height,
+                    self.surface_configuration.size().0,
+                    self.surface_configuration.size().1,
                     refresh_indices,
                 )?;
                 // The rank-indexed projection cache is valid only for the
@@ -2385,8 +2257,8 @@ impl SurfacePresenter {
                 &self.queue,
                 sorted_indices,
                 camera,
-                self.surface_config.width,
-                self.surface_config.height,
+                self.surface_configuration.size().0,
+                self.surface_configuration.size().1,
                 refresh_indices,
             )?
         };
@@ -2644,8 +2516,8 @@ impl SurfacePresenter {
                 &self.direct_bind_group_layout,
                 &self.queue,
                 camera,
-                self.surface_config.width,
-                self.surface_config.height,
+                self.surface_configuration.size().0,
+                self.surface_configuration.size().1,
             )?,
             SurfaceGeometry::Packed(packed) => {
                 let count = u32::try_from(packed.resident.capacity)
@@ -2657,8 +2529,8 @@ impl SurfacePresenter {
                     &self.queue,
                     resident_gpu::ResidentGpuOrderDraw {
                         camera,
-                        width: self.surface_config.width,
-                        height: self.surface_config.height,
+                        width: self.surface_configuration.size().0,
+                        height: self.surface_configuration.size().1,
                         instance_count: count,
                         order_stride_words: 1,
                         order_id_offset_words: 0,
@@ -2802,8 +2674,8 @@ impl SurfacePresenter {
             order_source: ProjectedOrderSource::Gpu,
             order_generation: projected_order_generation,
             camera: *camera,
-            width: self.surface_config.width,
-            height: self.surface_config.height,
+            width: self.surface_configuration.size().0,
+            height: self.surface_configuration.size().1,
             // GPU projection dispatches resident capacity and guards ranks
             // with the authoritative indirect visible count. Any change to
             // that count comes from an order refresh, which invalidates the
@@ -3252,8 +3124,8 @@ impl SurfacePresenter {
                     &mut encoder,
                     &packed.resident,
                     camera,
-                    self.surface_config.width,
-                    self.surface_config.height,
+                    self.surface_configuration.size().0,
+                    self.surface_configuration.size().1,
                 );
             } else {
                 // Projection and the complete-S count scan are current even
@@ -3263,8 +3135,8 @@ impl SurfacePresenter {
                     &mut encoder,
                     &packed.resident,
                     camera,
-                    self.surface_config.width,
-                    self.surface_config.height,
+                    self.surface_configuration.size().0,
+                    self.surface_configuration.size().1,
                 );
             }
             packed.preproject_state.record_projection(refresh_order);
@@ -3972,8 +3844,8 @@ impl SurfacePresenter {
             order_source: ProjectedOrderSource::Cpu,
             order_generation: projected_order_generation,
             camera: *camera,
-            width: self.surface_config.width,
-            height: self.surface_config.height,
+            width: self.surface_configuration.size().0,
+            height: self.surface_configuration.size().1,
             draw_count_guard: self.instance_count,
             draw_execution: projected_draw_execution,
             probe_generation: self.projected_probe_generation,
@@ -4200,7 +4072,7 @@ impl SurfacePresenter {
         &mut self,
     ) -> Result<Option<wgpu::SurfaceTexture>, SurfacePresenterError> {
         self.surface_lifecycle
-            .acquire(&self.surface, &self.device, &self.surface_config)
+            .acquire(&self.surface, &self.device, &self.surface_configuration)
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -4775,31 +4647,6 @@ mod tests {
         assert!(
             classify_surface_geometry_scope_errors(GeometryPath::PackedAtlas, None, None, None,)
                 .is_none()
-        );
-    }
-
-    #[test]
-    fn surface_resize_scope_errors_prioritize_oom_and_keep_validation_structured() {
-        assert!(matches!(
-            classify_surface_configure_scope_errors(
-                Some("internal".into()),
-                Some("oom".into()),
-                Some("validation".into()),
-            ),
-            Some(SurfacePresenterError::SurfaceOutOfMemory)
-        ));
-        assert!(matches!(
-            classify_surface_configure_scope_errors(
-                None,
-                None,
-                Some("invalid resize".into()),
-            ),
-            Some(SurfacePresenterError::SurfaceConfigure(message))
-                if message == "validation: invalid resize"
-        ));
-        assert!(
-            classify_surface_configure_scope_errors(None, None, None).is_none(),
-            "successful configure must not fabricate a resize failure"
         );
     }
 
