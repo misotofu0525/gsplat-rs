@@ -16,22 +16,21 @@ A0 = Accepted
 A1 = Accept
 A2 = Accepted
 A3 = Accepted
-A4 = Active
+A4 = Accepted
 <!-- gsplat-program-task-states: end -->
 
 ## Program status
 
 - Plan bundle: committed at `c478252246733f6dc209686091caf183e1ef7f06`.
-- Implementation: Package A started; A1 guardrails, the complete A2
-  strategy-free data/API extraction and the complete A3 scene/resource
-  ownership extraction are root-accepted.
+- Implementation: Package A is in progress; A1 guardrails and the complete A2
+  data/API, A3 scene/resource and A4 CPU order ownership extractions are
+  root-accepted.
 - Current work package: A — responsibility extraction.
-- Active package task: A4b — renderer CPU visibility/depth/key primitive
-  extraction in an isolated worktree.
-- Last completed task: A4a — `gsplat-sort` CPU backend/SIMD/radix ownership
-  extraction.
-- Next eligible task: A4b only. A5 and every later package remain inactive
-  until root review accepts A4b and closes A4.
+- Active package task: none; A4 is closed and A5 has not yet been activated.
+- Last completed task: A4b — renderer CPU visibility/depth/key primitive
+  ownership extraction.
+- Next eligible task: A5 — existing GPU project/compact/scan/radix/color
+  primitive ownership, to be activated in a separate plan-only commit.
 - Integration branch: `codex/native-render-core-refactor`.
 - Frozen source implementation closeout:
   `5db2520e0d7a0ef1c68a78bdb9abc6fc588c5186`.
@@ -101,9 +100,10 @@ eligible task. Do not rewrite the architecture in this ledger.
 
 ### A4b — Extract renderer CPU visibility/depth/key primitives
 
-- Parent task state: A4 Active
-- Subtask state: Active
+- Parent task state: A4 Accepted
+- Subtask state: Accepted
 - Started: 2026-07-23
+- Ended: 2026-07-23
 - Production baseline commit:
   `7650c59449736b560e051ceefecf67d5dcd6db13` (`docs: accept A4a CPU sort
   ownership extraction`)
@@ -187,11 +187,46 @@ eligible task. Do not rewrite the architecture in this ledger.
   the writer task; A065 Vulkan exactness is owned by root closeout.
 - Performance correction used: no
 - Known correctness issues: none
-- Closeout requirement: root reviews one fixed writer SHA, proves definition,
-  test and internal-path parity, runs integrated gates and lowers only the exact
-  `lib.rs` baseline while preserving its immutable A0 LOC, M7 owner and exit
-  condition. It then Accepts/Rejects/Defers A4b. Accept also closes parent A4;
-  A5 is activated only in a later plan-only commit.
+- Writer commit:
+  `a835e5536f059aabb436715ba525d1c26a95af12` (`refactor: extract renderer
+  CPU order primitives`). The first candidate was not accepted because it
+  narrowed existing private root aliases/cfg availability; the fixed commit
+  restores those contracts without weakening the gate.
+- Integration commit: `0cf228ffb32e19d3e84af599b7f896e1790b1dd6`.
+- Architecture-ratchet commit: `b47d08c4a0def082971127f4e6a06fa815d73b82`.
+  Only the current `lib.rs` baseline changed from 5,004 to 4,828; its immutable
+  A0 LOC, M7 owner and semantic exit condition remain unchanged.
+- Final responsibilities and physical LOC:
+  - `cpu_order.rs`: 192 LOC; the cohesive visibility/depth/key/chunk primitive
+    leaf named by this task
+  - `lib.rs`: 4,828 LOC; Renderer workspace, orchestration, timing, sorting,
+    camera math and all consumers remain in their previous owner
+- Independent fixed-SHA review: P0/P1/P2 = 0 after correction. It confirmed one
+  definition of each primitive, byte-identical moved bodies after path and
+  indentation normalization, unchanged constants/cfg gates and no numeric-LOC
+  split.
+- Root verification:
+  - PASS format, whitespace, architecture checker and all three checker
+    self-tests; `packed_atlas.rs` at 916 LOC remains a non-blocking review
+    notice because it is one cohesive quantization/compatibility owner;
+  - PASS locked workspace check/tests, all-target Clippy and Rustdoc with
+    warnings denied, locked wasm32 check, C ABI smoke and forced Metal
+    SortedAlpha conformance;
+  - PASS renderer inventory: 280 passed and the same 5 external/research
+    oracles ignored; `gsplat-sort`: 16 passed and the same manual microbenchmark
+    ignored;
+  - PASS clean-build A065 artifact at
+    `target/benchmarks/native-render-core-refactor/a4-a065-truck-exactness/`:
+    complete 630,225,580-byte Truck, 2,541,226 source/decoded/encoded/resident/
+    addressable splats, SH3, sampling/LOD/upscaling disabled, two trace views,
+    and requested/Surface/internal/presented dimensions all 2412x1080.
+- Performance observation: the four retained full-Candidate CPU frames averaged
+  about 166 ms on A065. This short exactness run is not a performance claim and
+  no FPS or competitor percentage is an A4 gate.
+- Decision: Accept A4b and close A4. Existing CPU/SIMD/Rayon behavior now has
+  explicit ownership without changing algorithm, allocation, ordering,
+  public API, shader, platform lifecycle or product policy. A5 remains inactive
+  until a separate plan-only activation commit.
 
 ### A4a — Extract the existing `gsplat-sort` CPU owner
 
@@ -1131,6 +1166,7 @@ eligible task. Do not rewrite the architecture in this ledger.
 | A2b | Complete | `d041a4a3cbefaa70f8647f65ff575727acbb3589` | `api.rs` and this ledger | root-accepted stable API leaves; public root paths preserved and `lib.rs` ratchet lowered exactly |
 | A2 | Accepted | `d041a4a3cbefaa70f8647f65ff575727acbb3589` | A2a/A2b records above | data and API leaf extraction complete without owner, policy, shader, FFI or lifecycle changes; A3 is eligible |
 | A3 | Accepted | `3fe4c3e` | A3a/A3b records above | Resident CPU ownership, GPU resource arithmetic, Direct/Packed preflight and errors have one explicit owner; exact-count cross-target evidence retained |
+| A4 | Accepted | `0cf228f` + `b47d08c` | A4a/A4b records above and A065 exactness artifact | Existing CPU/SIMD/Rayon sort and renderer visibility/depth/key primitives have focused owners; behavior and full-count native rendering remain unchanged |
 
 ## Baseline evidence inherited, not rerun by default
 
