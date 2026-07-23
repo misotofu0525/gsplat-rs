@@ -256,13 +256,6 @@
       "exit_condition": "Keep the Web consumer as lifecycle/API adaptation and split it into files below 800 physical LOC."
     },
     {
-      "path": "crates/gsplat-render-wgpu/src/resident_scene.rs",
-      "a0_physical_loc": 1881,
-      "baseline_physical_loc": 1881,
-      "owner_task": "A3",
-      "exit_condition": "Extract scene ownership, Resident layout, and preflight into focused modules below 800 physical LOC."
-    },
-    {
       "path": "crates/gsplat-render-wgpu/src/preproject_gpu.rs",
       "a0_physical_loc": 1731,
       "baseline_physical_loc": 1731,

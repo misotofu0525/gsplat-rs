@@ -4,6 +4,105 @@ use std::mem::{align_of, offset_of, size_of};
 
 use bytemuck::{Pod, Zeroable};
 
+pub const RESIDENT_CHUNK_SPLATS: usize = 256;
+pub const RESIDENT_COVARIANCE0_FLOATS: usize = 4;
+pub const RESIDENT_COVARIANCE1_FLOATS: usize = 2;
+pub const RESIDENT_COLOR_AUX_WORDS: usize = 2;
+pub const RESIDENT_SH_PLANES: usize = 4;
+pub const RESIDENT_SH_WORDS_PER_PLANE: usize = 4;
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Pod, Zeroable)]
+pub struct ResidentPositionAlpha {
+    pub position_alpha: [f32; 4],
+}
+
+const _: () = {
+    assert!(size_of::<ResidentPositionAlpha>() == 16);
+    assert!(align_of::<ResidentPositionAlpha>() == 4);
+    assert!(offset_of!(ResidentPositionAlpha, position_alpha) == 0);
+};
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Pod, Zeroable)]
+pub struct ResidentCovariance0 {
+    /// Canonical world-covariance terms xx, xy, xz and yy.
+    pub values: [f32; RESIDENT_COVARIANCE0_FLOATS],
+}
+
+const _: () = {
+    assert!(size_of::<ResidentCovariance0>() == 16);
+    assert!(align_of::<ResidentCovariance0>() == 4);
+    assert!(offset_of!(ResidentCovariance0, values) == 0);
+};
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Pod, Zeroable)]
+pub struct ResidentCovariance1 {
+    /// Canonical world-covariance terms yz and zz.
+    pub values: [f32; RESIDENT_COVARIANCE1_FLOATS],
+}
+
+const _: () = {
+    assert!(size_of::<ResidentCovariance1>() == 8);
+    assert!(align_of::<ResidentCovariance1>() == 4);
+    assert!(offset_of!(ResidentCovariance1, values) == 0);
+};
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Pod, Zeroable)]
+pub struct ResidentColorAux {
+    /// Chunk-local SH DC u16x3. The high half of the second word is reserved.
+    pub words: [u32; RESIDENT_COLOR_AUX_WORDS],
+}
+
+const _: () = {
+    assert!(size_of::<ResidentColorAux>() == 8);
+    assert!(align_of::<ResidentColorAux>() == 4);
+    assert!(offset_of!(ResidentColorAux, words) == 0);
+};
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Pod, Zeroable)]
+pub struct ResidentShPlane {
+    /// Four packed words. Across all four planes, 45 SH3 values use signed
+    /// 11-bit quantization in coefficient-major RGB order. Three 5-bit
+    /// per-point band-scale ratios occupy bits 495 through 509; the final two
+    /// bits stay reserved. Lower degrees place their active scale ratios
+    /// immediately after their last coefficient in the final active plane.
+    pub words: [u32; RESIDENT_SH_WORDS_PER_PLANE],
+}
+
+const _: () = {
+    assert!(size_of::<ResidentShPlane>() == 16);
+    assert!(align_of::<ResidentShPlane>() == 4);
+    assert!(offset_of!(ResidentShPlane, words) == 0);
+};
+
+/// Five `vec4<f32>` values. The fourth lane is reserved and kept zero so the
+/// Rust layout exactly matches WGSL storage-buffer alignment.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Pod, Zeroable)]
+pub struct ResidentChunkMeta {
+    pub dc_min: [f32; 4],
+    pub dc_extent: [f32; 4],
+    pub sh_scale_l1: [f32; 4],
+    pub sh_scale_l2: [f32; 4],
+    pub sh_scale_l3: [f32; 4],
+}
+
+const _: () = {
+    assert!(size_of::<ResidentChunkMeta>() == 80);
+    assert!(align_of::<ResidentChunkMeta>() == 4);
+    assert!(offset_of!(ResidentChunkMeta, dc_min) == 0);
+    assert!(offset_of!(ResidentChunkMeta, dc_extent) == 16);
+    assert!(offset_of!(ResidentChunkMeta, sh_scale_l1) == 32);
+    assert!(offset_of!(ResidentChunkMeta, sh_scale_l2) == 48);
+    assert!(offset_of!(ResidentChunkMeta, sh_scale_l3) == 64);
+};
+
+pub const RESIDENT_CHUNK_META_BYTES: usize = size_of::<ResidentChunkMeta>();
+
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 pub struct GpuInstance {

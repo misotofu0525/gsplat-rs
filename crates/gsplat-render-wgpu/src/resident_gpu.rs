@@ -5,12 +5,13 @@ use gsplat_core::Camera;
 use thiserror::Error;
 use wgpu::util::DeviceExt;
 
+use crate::data::{
+    RESIDENT_CHUNK_SPLATS, RESIDENT_SH_PLANES, ResidentChunkMeta, ResidentColorAux,
+    ResidentCovariance0, ResidentCovariance1, ResidentPositionAlpha, ResidentShPlane,
+};
 use crate::direct_gpu_order::DirectGpuOrder;
 use crate::draw_pass::{SplatPipeline, create_splat_bind_group_layout, create_splat_pipeline};
-use crate::resident_scene::{
-    RESIDENT_SH_PLANES, ResidentChunkMeta, ResidentColorAux, ResidentCovariance0,
-    ResidentCovariance1, ResidentPositionAlpha, ResidentSceneCpu, ResidentShPlane,
-};
+use crate::scene::ResidentSceneCpu;
 use crate::{GpuSurfaceRenderParams, make_surface_render_params, wgpu_label};
 
 pub const RESIDENT_QUAD_VERTEX_COUNT: u32 = 4;
@@ -183,7 +184,7 @@ impl ResidentGpuBytePlan {
             return Err(ResidentGpuError::UnsupportedShPlaneCount(sh_plane_count));
         }
         let n = u64::try_from(splat_count).map_err(|_| ResidentGpuError::AddressSpaceExceeded)?;
-        let chunks = n.div_ceil(crate::resident_scene::RESIDENT_CHUNK_SPLATS as u64);
+        let chunks = n.div_ceil(RESIDENT_CHUNK_SPLATS as u64);
         let position_alpha = n
             .checked_mul(std::mem::size_of::<ResidentPositionAlpha>() as u64)
             .ok_or(ResidentGpuError::AddressSpaceExceeded)?;
@@ -985,12 +986,12 @@ mod tests {
         assert_eq!(plan.projected_contributor_args, 16);
         assert_eq!(
             plan.chunk_metadata,
-            80 * n.div_ceil(crate::resident_scene::RESIDENT_CHUNK_SPLATS as u64)
+            80 * n.div_ceil(RESIDENT_CHUNK_SPLATS as u64)
         );
         assert_eq!(
             plan.total_static,
             (16 + 16 + 8 + 8 + 4 * 16 + 8 + 4 + 16 + 16) * n
-                + 80 * n.div_ceil(crate::resident_scene::RESIDENT_CHUNK_SPLATS as u64)
+                + 80 * n.div_ceil(RESIDENT_CHUNK_SPLATS as u64)
                 + plan.projected_contributor_group_offsets
                 + plan.projected_contributor_ranks
                 + plan.projected_contributor_scan_sums
