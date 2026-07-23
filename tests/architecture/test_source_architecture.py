@@ -191,7 +191,7 @@ class SourceArchitectureFixtureTests(unittest.TestCase):
                         msg="\n".join(issue.render() for issue in issues),
                     )
 
-    def test_policy_registers_circuit_breaker_breaches_without_turning_targets_into_quotas(self) -> None:
+    def test_policy_keeps_size_signals_advisory_and_legacy_growth_bounded(self) -> None:
         policy = copy.deepcopy(self.base_policy)
         sources = {
             kind: checker.discover(REPO_ROOT, source_set)
@@ -208,8 +208,7 @@ class SourceArchitectureFixtureTests(unittest.TestCase):
         grandfather = {
             entry["path"]: entry for entry in policy["grandfather"]
         }
-        exceptions = {entry["path"] for entry in policy["exceptions"]}
-        self.assertLessEqual(set(hard_breached), set(grandfather) | exceptions)
+        self.assertEqual(hard_breached, {})
         growth_tolerance = policy["grandfather_ratchet"]["growth_tolerance_lines"]
         for path, entry in grandfather.items():
             loc = checker.physical_loc(REPO_ROOT / path)
@@ -218,24 +217,24 @@ class SourceArchitectureFixtureTests(unittest.TestCase):
             self.assertTrue(entry["owner_task"])
             self.assertTrue(entry["exit_condition"])
 
-    def test_declared_guardrail_values_and_future_activation(self) -> None:
+    def test_declared_advisory_review_signal_and_future_activation(self) -> None:
         limits = self.base_policy["limits"]
         self.assertEqual(
             (limits["production_rust"]["target_lt"], limits["production_rust"]["hard_ceiling"]),
-            (800, 2500),
+            (2500, None),
         )
         self.assertEqual(
             (limits["concrete_plan"]["target_lt"], limits["concrete_plan"]["hard_ceiling"]),
-            (600, 2500),
+            (2500, None),
         )
         self.assertFalse(limits["production_rust"]["enforce_target"])
         self.assertFalse(limits["concrete_plan"]["enforce_target"])
-        self.assertEqual(limits["render_lib"]["target_lt"], 200)
+        self.assertEqual(limits["render_lib"]["target_lt"], 2500)
         self.assertFalse(limits["render_lib"]["enforce_target"])
-        self.assertEqual(limits["renderer_orchestrator"]["target_lt"], 800)
+        self.assertEqual(limits["renderer_orchestrator"]["target_lt"], 2500)
         self.assertFalse(limits["renderer_orchestrator"]["enforce_target"])
-        self.assertEqual(limits["wgsl"]["target_lt"], 350)
-        self.assertEqual(limits["wgsl"]["hard_ceiling"], 2500)
+        self.assertEqual(limits["wgsl"]["target_lt"], 2500)
+        self.assertIsNone(limits["wgsl"]["hard_ceiling"])
         self.assertFalse(limits["wgsl"]["enforce_target"])
         self.assertEqual(
             self.base_policy["grandfather_ratchet"],

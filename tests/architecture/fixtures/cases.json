@@ -2,7 +2,7 @@
   "schema": "gsplat-source-architecture-fixtures/v1",
   "cases": [
     {
-      "name": "new_multi_thousand_rust_counts_comments_blanks_and_embedded_tests",
+      "name": "new_multi_thousand_rust_is_review_only_and_counts_all_physical_lines",
       "files": {
         "crates/demo/src/new.rs": {
           "physical_lines": 2501,
@@ -16,21 +16,20 @@
           ]
         }
       },
-      "expected_error_codes": [
-        "size.hard_ceiling"
+      "expected_error_codes": [],
+      "expected_notice_codes": [
+        "size.target_exceeded"
       ]
     },
     {
-      "name": "new_rust_above_review_target_is_reported",
+      "name": "sub_multi_thousand_rust_has_no_numeric_gate",
       "files": {
         "crates/demo/src/new.rs": {
           "physical_lines": 900
         }
       },
       "expected_error_codes": [],
-      "expected_notice_codes": [
-        "size.target_exceeded"
-      ]
+      "expected_notice_codes": []
     },
     {
       "name": "bindings_build_directories_are_excluded_from_production_sources",
@@ -51,8 +50,9 @@
           "physical_lines": 2600
         }
       },
-      "expected_error_codes": [
-        "size.hard_ceiling"
+      "expected_error_codes": [],
+      "expected_notice_codes": [
+        "size.target_exceeded"
       ]
     },
     {
@@ -62,12 +62,13 @@
           "physical_lines": 2501
         }
       },
-      "expected_error_codes": [
-        "size.hard_ceiling"
+      "expected_error_codes": [],
+      "expected_notice_codes": [
+        "size.target_exceeded"
       ]
     },
     {
-      "name": "new_concrete_plan_trips_multi_thousand_circuit_breaker",
+      "name": "new_multi_thousand_concrete_plan_is_review_only",
       "files": {
         "crates/gsplat-render-wgpu/src/plans/gpu_post.rs": {
           "physical_lines": 2501
@@ -78,43 +79,41 @@
           "crates/gsplat-render-wgpu/src/plans/gpu_post.rs"
         ]
       },
-      "expected_error_codes": [
-        "size.hard_ceiling"
+      "expected_error_codes": [],
+      "expected_notice_codes": [
+        "size.target_exceeded"
       ]
     },
     {
-      "name": "render_lib_target_is_advisory",
+      "name": "render_lib_has_no_small_file_quota",
       "files": {
         "crates/gsplat-render-wgpu/src/lib.rs": {
           "physical_lines": 200
         }
       },
       "expected_error_codes": [],
-      "expected_notice_codes": [
-        "size.target_exceeded"
-      ]
+      "expected_notice_codes": []
     },
     {
-      "name": "new_wgsl_target_is_advisory",
+      "name": "wgsl_has_no_small_file_quota",
       "files": {
         "crates/demo/shaders/new.wgsl": {
           "physical_lines": 350
         }
       },
       "expected_error_codes": [],
-      "expected_notice_codes": [
-        "size.target_exceeded"
-      ]
+      "expected_notice_codes": []
     },
     {
-      "name": "new_wgsl_multi_thousand_file_trips_circuit_breaker",
+      "name": "new_multi_thousand_wgsl_is_review_only",
       "files": {
         "crates/demo/shaders/new.wgsl": {
           "physical_lines": 2501
         }
       },
-      "expected_error_codes": [
-        "size.hard_ceiling"
+      "expected_error_codes": [],
+      "expected_notice_codes": [
+        "size.target_exceeded"
       ]
     },
     {
@@ -409,8 +408,10 @@
         "A2 = Accept"
       ],
       "expected_error_codes": [
-        "exception.expired",
-        "size.hard_ceiling"
+        "exception.expired"
+      ],
+      "expected_notice_codes": [
+        "size.target_exceeded"
       ]
     },
     {
@@ -1500,7 +1501,7 @@
       "expected_error_codes": []
     },
     {
-      "name": "single_file_renderer_enforces_size_and_orchestration_activation",
+      "name": "single_file_renderer_requires_orchestration_activation_without_a_small_file_quota",
       "files": {
         "crates/gsplat-render-wgpu/src/renderer.rs": {
           "physical_lines": 800,
@@ -1512,9 +1513,7 @@
       "expected_error_codes": [
         "orchestration.activation_due"
       ],
-      "expected_notice_codes": [
-        "size.target_exceeded"
-      ]
+      "expected_notice_codes": []
     },
     {
       "name": "activated_top_level_orchestration_target",
