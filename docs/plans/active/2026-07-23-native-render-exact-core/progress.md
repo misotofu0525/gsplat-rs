@@ -27,6 +27,13 @@ E2 = Active
   new exact baseline. Later E4/NEON and E5/AVX2 lanes require E3's
   platform-leaf interface; E6/E7 remain sequential because both own
   engine/workspace decisions.
+- Next safe parallel batch: after E2 is Accepted and integrated, start E3's CPU
+  order-engine seam and the finite GPU runtime adapter as two user-visible
+  tasks from the same exact root SHA. Their production allowlists and mutable
+  owners are disjoint; root alone owns shared architecture policy/ledger edits
+  and the integration matrix. Resume E8 only after the adapter is Accepted.
+  Never create parallel writers for the same mutable owner merely to increase
+  concurrency.
 - Source-size rule: no fixed LOC quota, split trigger or completion gate. Module
   boundaries follow responsibility, dependency direction, compatibility,
   testability and maintenance risk. A new mixed-responsibility multi-thousand
