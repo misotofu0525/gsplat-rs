@@ -6,15 +6,35 @@
       "IO-PLY-1",
       "IO-SPZ-1"
     ],
-    "parallel_active_sets": [
-      {
-        "tasks": [
-          "A5",
-          "A8"
-        ],
-        "reason": "A5c2 owns only Projected compute-compaction files while A8a owns only offscreen target/readback files; root records integration order and reruns shared gates."
-      }
-    ],
+    "parallel_execution": {
+      "activation_commit": "962c5c2544c4d087a3a4203e14e41d3fea12f7d7",
+      "members": [
+        {
+          "task": "A5",
+          "lane": "A5c2",
+          "write_allowlist": [
+            "crates/gsplat-render-wgpu/src/projected_quads_gpu.rs",
+            "crates/gsplat-render-wgpu/src/gpu/mod.rs",
+            "crates/gsplat-render-wgpu/src/gpu/compact.rs"
+          ]
+        },
+        {
+          "task": "A8",
+          "lane": "A8a",
+          "write_allowlist": [
+            "crates/gsplat-render-wgpu/src/lib.rs",
+            "crates/gsplat-render-wgpu/src/offscreen/mod.rs",
+            "crates/gsplat-render-wgpu/src/offscreen/target.rs",
+            "crates/gsplat-render-wgpu/src/offscreen/readback.rs"
+          ]
+        }
+      ],
+      "integration_order": [
+        "A5c2",
+        "A8a"
+      ],
+      "reason": "The exact A5c2 and A8a writer allowlists are disjoint; root integrates in the declared order and reruns shared gates."
+    },
     "task_catalog": {
       "A0": "A",
       "A1": "A",
@@ -178,8 +198,7 @@
     }
   },
   "grandfather_ratchet": {
-    "growth_tolerance_lines": 32,
-    "shrink_checkpoint_lines": 100
+    "growth_tolerance_lines": 32
   },
   "top_level_orchestration": {
     "enabled": false,

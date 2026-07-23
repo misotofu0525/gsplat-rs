@@ -21,6 +21,12 @@ A5 = Active
 A8 = Active
 <!-- gsplat-program-task-states: end -->
 
+<!-- gsplat-program-active-lanes: begin -->
+activation_commit = 962c5c2544c4d087a3a4203e14e41d3fea12f7d7
+A5 = A5c2
+A8 = A8a
+<!-- gsplat-program-active-lanes: end -->
+
 ## Program status
 
 - Plan bundle: committed at `c478252246733f6dc209686091caf183e1ef7f06`.
@@ -110,8 +116,9 @@ eligible task. Do not rewrite the architecture in this ledger.
 
 ### Parallel writer lanes — A5c2 and A8a
 
-- Parallel set: `A5`, `A8`; policy reason and machine task states are recorded
-  in the same activation commit.
+- Parallel execution: exact lanes `A5c2` and `A8a`; policy members, normalized
+  write allowlists, activation commit, integration order and machine lane
+  records are bound together. A parent task name alone grants no parallelism.
 - Isolation: separate user-visible Codex tasks and separate worktrees from this
   exact activation commit; neither writer edits this ledger or architecture
   policy.
@@ -1157,8 +1164,8 @@ eligible task. Do not rewrite the architecture in this ledger.
     `gsplat_render_wgpu::PreprocessOutput` remain valid; no
     `gsplat_render_wgpu::api::*` path is introduced and consumers need no edits
 - Hard gates:
-  - architecture checker/self-tests pass and the exact formatted shrink
-    baseline lands in the same commit without changing A0 count, owner or exit
+  - architecture checker/self-tests pass; shrink never requires code padding
+    or a same-task numeric checkpoint update
   - format, locked workspace check/tests/clippy/rustdoc, render-wgpu lib tests,
     wasm check and FFI smoke all pass
   - a repository-external temporary crate imports both existing root names and
@@ -1306,8 +1313,8 @@ eligible task. Do not rewrite the architecture in this ledger.
     boundary without moving either copy point and without cloning an `Arc` or
     scene per frame.
 - Hard gates:
-  - architecture checker and its self-test pass; lowered shrink baselines land
-    in the same commit
+  - architecture checker and its self-test pass; ownership movement is judged
+    by symbols, dependencies and tests rather than a numeric shrink checkpoint
   - GPU ABI retains `repr(C)`, `Pod`/`Zeroable`, exact size/alignment and field
     offset assertions; `Vec3f` is not made an ABI/Pod type
   - `GpuInstance` remains available at the existing public crate-root path and
@@ -1493,9 +1500,9 @@ eligible task. Do not rewrite the architecture in this ledger.
   - PASS all current target breaches are checked exactly: 21 production Rust
     files plus 3 WGSL files, each with A0 LOC, owner task and exit condition
   - PASS every grandfather entry retains immutable A0 LOC plus a checked
-    ratchet baseline; shrink without lowering that baseline in the same change
-    fails, growth above it fails, and owner closeout while over target is
-    detectable
+    no-growth baseline; any amount of shrink is accepted without forcing code
+    padding or metadata churn, and owner closeout while over the normal profile
+    remains detectable
   - PASS production Rust `<800` target / `1,200` hard ceiling, concrete plan
     `<600` target / `1,000` hard ceiling, render `lib.rs <200`, future renderer
     orchestrator `<800`, and WGSL `<350` are encoded
@@ -1589,8 +1596,8 @@ eligible task. Do not rewrite the architecture in this ledger.
   - start from accepted A1 commit
     `f6180844bbaf910b74ff5ecfe81c9b9588c88561` and keep the checker passing
     before and after the extraction
-  - keep new production Rust below the declared target, shrink legacy owners,
-    and lower a checked grandfather baseline in the same task when it shrinks
+  - use responsibility cohesion, dependency direction, navigation and test
+    seams for module boundaries; numeric size notices are diagnostic only
   - A2 does not need to activate future `plans/` or `renderer/mod.rs`; if it
     introduces either path, it must configure the exact boundary rather than
     suppressing the activation failure

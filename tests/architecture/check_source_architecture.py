@@ -13,6 +13,7 @@ import argparse
 import json
 import pathlib
 import re
+import subprocess
 import sys
 from dataclasses import dataclass
 from typing import Any, Iterable
@@ -34,6 +35,8 @@ TERMINAL_STATES = {"accepted", "rejected", "deferred"}
 RAW_STRING_START_RE = re.compile(r"(?:br|rb|r)(?P<hashes>#{0,255})\"")
 TASK_STATE_BLOCK_BEGIN = "<!-- gsplat-program-task-states: begin -->"
 TASK_STATE_BLOCK_END = "<!-- gsplat-program-task-states: end -->"
+ACTIVE_LANE_BLOCK_BEGIN = "<!-- gsplat-program-active-lanes: begin -->"
+ACTIVE_LANE_BLOCK_END = "<!-- gsplat-program-active-lanes: end -->"
 
 
 @dataclass(frozen=True)
@@ -357,6 +360,62 @@ def task_state_observations(
     return observations, issues
 
 
+def active_lane_observations(
+    progress: str, path: str
+) -> tuple[str | None, list[tuple[str, str, int]], list[Issue]]:
+    """Read the optional exact writer-lane block used during parallel work."""
+
+    lines = progress.splitlines()
+    begins = [index for index, line in enumerate(lines) if line.strip() == ACTIVE_LANE_BLOCK_BEGIN]
+    ends = [index for index, line in enumerate(lines) if line.strip() == ACTIVE_LANE_BLOCK_END]
+    if not begins and not ends:
+        return None, [], []
+    if len(begins) != 1 or len(ends) != 1 or begins[0] >= ends[0]:
+        message = "package ledger requires at most one ordered machine active-lane block"
+        return None, [], [error("program_state.invalid_active_lane_block", path, message)]
+    activation_commit: str | None = None
+    observations: list[tuple[str, str, int]] = []
+    issues: list[Issue] = []
+    for index in range(begins[0] + 1, ends[0]):
+        line = lines[index].strip()
+        if not line:
+            continue
+        activation = re.fullmatch(r"activation_commit\s*=\s*(?P<commit>[0-9a-f]{40})", line)
+        if activation:
+            if activation_commit is not None:
+                issues.append(
+                    error(
+                        "program_state.duplicate_activation_commit",
+                        path,
+                        "machine active-lane block repeats activation_commit",
+                        index + 1,
+                    )
+                )
+            else:
+                activation_commit = activation.group("commit")
+            continue
+        record = re.fullmatch(
+            r"(?P<task>[A-Za-z][A-Za-z0-9.-]*)\s*=\s*(?P<lane>[A-Za-z][A-Za-z0-9.-]*)",
+            line,
+        )
+        if not record:
+            message = "machine active-lane records must use `TASK = LANE`"
+            issues.append(
+                error("program_state.invalid_active_lane_record", path, message, index + 1)
+            )
+            continue
+        observations.append((record.group("task"), record.group("lane"), index + 1))
+    if activation_commit is None:
+        issues.append(
+            error(
+                "program_state.missing_activation_commit",
+                path,
+                "machine active-lane block requires activation_commit",
+            )
+        )
+    return activation_commit, observations, issues
+
+
 def size_profile(path: str, kind: str, policy: dict[str, Any]) -> dict[str, Any]:
     limits = policy["limits"]
     if kind == "wgsl":
@@ -438,13 +497,6 @@ def check_sizes(
         name="growth_tolerance_lines",
         minimum=0,
         fallback=0,
-        issues=issues,
-    )
-    shrink_checkpoint = policy_integer(
-        ratchet.get("shrink_checkpoint_lines"),
-        name="shrink_checkpoint_lines",
-        minimum=1,
-        fallback=1,
         issues=issues,
     )
     grandfather: dict[str, dict[str, Any]] = {}
@@ -556,17 +608,6 @@ def check_sizes(
                             f"plus {growth_tolerance}-line mechanical tolerance",
                         )
                     )
-                elif baseline - loc >= shrink_checkpoint:
-                    issues.append(
-                        Issue(
-                            "error",
-                            "size.grandfather_baseline_stale",
-                            path,
-                            f"source shrank to {loc} physical LOC, at least {shrink_checkpoint} "
-                            f"lines below checkpoint {baseline}; lower baseline_physical_loc "
-                            "in the same architectural change",
-                        )
-                    )
             else:
                 issues.append(Issue("error", "config.invalid_grandfather", path, "baseline_physical_loc must be positive"))
             owner = entry.get("owner_task")
@@ -607,12 +648,19 @@ def check_sizes(
             )
         elif loc >= profile["target"]:
             severity = "error" if profile["target_error"] else "notice"
+            message = (
+                f"{loc} physical LOC exceeds enforced {profile['name']} target "
+                f"< {profile['target']}"
+                if severity == "error"
+                else f"{loc} physical LOC crosses the advisory {profile['name']} "
+                f"review signal {profile['target']}; this is not a completion gate"
+            )
             issues.append(
                 Issue(
                     severity,
                     "size.target_exceeded",
                     path,
-                    f"{loc} physical LOC misses {profile['name']} target < {profile['target']}",
+                    message,
                 )
             )
     return issues
@@ -1064,12 +1112,18 @@ def check_orchestration(
             )
         elif locs[0] >= target:
             enforce_target = entry.get("enforce_target", rule.get("enforce_target", False))
+            message = (
+                f"fn {name} is {locs[0]} physical lines; enforced target is < {target}"
+                if enforce_target
+                else f"fn {name} is {locs[0]} physical lines and crosses advisory review "
+                f"signal {target}; this is not a completion gate"
+            )
             issues.append(
                 Issue(
                     "error" if enforce_target else "notice",
                     "orchestration.target_exceeded",
                     path,
-                    f"fn {name} is {locs[0]} physical lines; target is < {target}",
+                    message,
                 )
             )
     return issues
@@ -1091,76 +1145,170 @@ def load_program_task_states(
         issues.append(error("config.invalid_package_ledgers", "<policy>", "package_ledgers must be a non-empty package map"))
         return set(), "<program-task-state>", issues
 
+    expected_config_keys = {
+        "external_owner_review_allowlist",
+        "parallel_execution",
+        "task_catalog",
+        "package_ledgers",
+    }
+    if set(config) != expected_config_keys:
+        issues.append(
+            error(
+                "config.invalid_program_task_state",
+                "<policy>",
+                f"program_task_state requires exactly {sorted(expected_config_keys)}",
+            )
+        )
+
     known_packages = set(packages)
     for task, package in catalog.items():
         if not isinstance(task, str) or not isinstance(package, str) or package not in known_packages:
             issues.append(error("config.invalid_task_catalog", "<policy>", f"invalid catalog entry {task!r}: {package!r}"))
 
-    parallel_sets = config.get("parallel_active_sets", [])
-    allowed_parallel: set[tuple[str, tuple[str, ...]]] = set()
-    if not isinstance(parallel_sets, list):
-        issues.append(
-            error(
-                "config.invalid_parallel_active_sets",
-                "<policy>",
-                "program_task_state.parallel_active_sets must be a list",
-            )
-        )
-        parallel_sets = []
-    for index, entry in enumerate(parallel_sets):
-        path = f"<policy>.program_task_state.parallel_active_sets[{index}]"
-        if not isinstance(entry, dict):
+    parallel_execution = config.get("parallel_execution")
+    parallel_key: tuple[tuple[str, str], ...] | None = None
+    if parallel_execution is not None:
+        path = "<policy>.program_task_state.parallel_execution"
+        expected_keys = {"activation_commit", "members", "integration_order", "reason"}
+        if not isinstance(parallel_execution, dict) or set(parallel_execution) != expected_keys:
             issues.append(
                 error(
-                    "config.invalid_parallel_active_sets",
+                    "config.invalid_parallel_execution",
                     path,
-                    "parallel active set must be an object",
+                    f"parallel_execution requires exactly {sorted(expected_keys)}",
                 )
             )
-            continue
-        tasks = entry.get("tasks")
-        reason = entry.get("reason")
-        if (
-            not isinstance(tasks, list)
-            or len(tasks) < 2
-            or any(not isinstance(task, str) or not task for task in tasks)
-            or len(set(tasks)) != len(tasks)
-            or not isinstance(reason, str)
-            or not reason.strip()
-        ):
-            issues.append(
-                error(
-                    "config.invalid_parallel_active_sets",
-                    path,
-                    "parallel active set requires unique task IDs and a non-empty reason",
+        else:
+            activation_commit = parallel_execution["activation_commit"]
+            members = parallel_execution["members"]
+            integration_order = parallel_execution["integration_order"]
+            reason = parallel_execution["reason"]
+            valid = True
+            if (
+                not isinstance(activation_commit, str)
+                or re.fullmatch(r"[0-9a-f]{40}", activation_commit) is None
+            ):
+                issues.append(
+                    error(
+                        "config.invalid_parallel_execution",
+                        path,
+                        "activation_commit must be a full lowercase commit SHA",
+                    )
                 )
-            )
-            continue
-        unknown = [task for task in tasks if task not in catalog]
-        task_packages = {catalog.get(task) for task in tasks}
-        if unknown or len(task_packages) != 1 or None in task_packages:
-            issues.append(
-                error(
-                    "config.invalid_parallel_active_sets",
-                    path,
-                    "parallel active tasks must be cataloged in the same package",
-                )
-            )
-            continue
-        package = next(iter(task_packages))
-        key = (package, tuple(sorted(tasks)))
-        if key in allowed_parallel:
-            issues.append(
-                error(
-                    "config.invalid_parallel_active_sets",
-                    path,
-                    "duplicate parallel active task set",
-                )
-            )
-            continue
-        allowed_parallel.add(key)
+                valid = False
+            else:
+                try:
+                    exists = subprocess.run(
+                        ["git", "-C", str(root), "cat-file", "-e", f"{activation_commit}^{{commit}}"],
+                        check=False,
+                        capture_output=True,
+                    ).returncode == 0
+                    ancestor = exists and subprocess.run(
+                        ["git", "-C", str(root), "merge-base", "--is-ancestor", activation_commit, "HEAD"],
+                        check=False,
+                        capture_output=True,
+                    ).returncode == 0
+                except OSError:
+                    exists = False
+                    ancestor = False
+                if not exists or not ancestor:
+                    issues.append(
+                        error(
+                            "config.invalid_parallel_activation_commit",
+                            path,
+                            "activation_commit must exist and be an ancestor of current HEAD",
+                        )
+                    )
+                    valid = False
+            if not isinstance(reason, str) or not reason.strip():
+                issues.append(error("config.invalid_parallel_execution", path, "reason must be non-empty"))
+                valid = False
+            member_pairs: list[tuple[str, str]] = []
+            claimed_write_paths: dict[str, str] = {}
+            if not isinstance(members, list) or len(members) < 2:
+                issues.append(error("config.invalid_parallel_execution", path, "members must contain at least two writer lanes"))
+                valid = False
+            else:
+                for index, member in enumerate(members):
+                    member_path = f"{path}.members[{index}]"
+                    member_keys = {"task", "lane", "write_allowlist"}
+                    if not isinstance(member, dict) or set(member) != member_keys:
+                        issues.append(error("config.invalid_parallel_execution", member_path, f"member requires exactly {sorted(member_keys)}"))
+                        valid = False
+                        continue
+                    task = member["task"]
+                    lane = member["lane"]
+                    write_allowlist = member["write_allowlist"]
+                    if (
+                        not isinstance(task, str)
+                        or task not in catalog
+                        or not isinstance(lane, str)
+                        or re.fullmatch(r"[A-Za-z][A-Za-z0-9.-]*", lane) is None
+                    ):
+                        issues.append(error("config.invalid_parallel_execution", member_path, "task must be cataloged and lane must be a stable identifier"))
+                        valid = False
+                        continue
+                    if (
+                        not isinstance(write_allowlist, list)
+                        or not write_allowlist
+                        or any(not isinstance(item, str) or not item for item in write_allowlist)
+                        or len(set(write_allowlist)) != len(write_allowlist)
+                    ):
+                        issues.append(error("config.invalid_parallel_execution", member_path, "write_allowlist must contain unique non-empty paths"))
+                        valid = False
+                        continue
+                    member_pairs.append((task, lane))
+                    for item in write_allowlist:
+                        pure = pathlib.PurePosixPath(item)
+                        if (
+                            pure.is_absolute()
+                            or ".." in pure.parts
+                            or pure.as_posix() != item
+                            or any(character in item for character in "*?[]")
+                            or (root / item).is_dir()
+                        ):
+                            issues.append(
+                                error(
+                                    "config.invalid_parallel_execution",
+                                    member_path,
+                                    f"write allowlist item must be one normalized exact file path: {item!r}",
+                                )
+                            )
+                            valid = False
+                            continue
+                        for prior_path, prior_lane in claimed_write_paths.items():
+                            prior_parts = pathlib.PurePosixPath(prior_path).parts
+                            item_parts = pure.parts
+                            common = min(len(prior_parts), len(item_parts))
+                            if prior_parts[:common] == item_parts[:common]:
+                                issues.append(
+                                    error(
+                                        "config.parallel_write_overlap",
+                                        member_path,
+                                        f"{item} overlaps {prior_path} owned by lane {prior_lane}",
+                                    )
+                                )
+                                valid = False
+                                break
+                        else:
+                            claimed_write_paths[item] = lane
+            if len(set(member_pairs)) != len(member_pairs) or len({lane for _, lane in member_pairs}) != len(member_pairs):
+                issues.append(error("config.invalid_parallel_execution", path, "member task/lane identifiers must be unique"))
+                valid = False
+            expected_order = [lane for _, lane in member_pairs]
+            if (
+                not isinstance(integration_order, list)
+                or any(not isinstance(item, str) for item in integration_order)
+                or len(integration_order) != len(expected_order)
+                or set(integration_order) != set(expected_order)
+            ):
+                issues.append(error("config.invalid_parallel_execution", path, "integration_order must be a permutation of member lanes"))
+                valid = False
+            if valid:
+                parallel_key = tuple(sorted(member_pairs))
 
     selected: list[tuple[str, str, bool]] = []
+    selected_paths: dict[str, str] = {}
     present_packages: set[str] = set()
     claimed_paths: dict[str, str] = {}
     for package, pair in packages.items():
@@ -1193,13 +1341,26 @@ def load_program_task_states(
             issues.append(error("program_state.ambiguous_package_ledger", package, f"active and completed ledgers both exist: {', '.join(existing)}"))
         elif existing:
             selected.append((package, existing[0], existing[0] == pair["completed"]))
+            selected_paths[package] = existing[0]
 
     states: dict[str, tuple[str, str, int]] = {}
-    active: dict[str, list[str]] = {}
+    active: list[str] = []
+    lane_records: list[tuple[str, str, str, int, bool]] = []
+    lane_activation_commits: dict[str, str] = {}
     for package, path, completed_ledger in selected:
         progress = (root / path).read_text(encoding="utf-8")
         observations, block_issues = task_state_observations(progress, path)
         issues.extend(block_issues)
+        lane_activation_commit, lane_observations, lane_issues = active_lane_observations(
+            progress, path
+        )
+        issues.extend(lane_issues)
+        if lane_activation_commit is not None:
+            lane_activation_commits[package] = lane_activation_commit
+        lane_records.extend(
+            (package, task, lane, line, completed_ledger)
+            for task, lane, line in lane_observations
+        )
         for task, raw_state, line in observations:
             state = STATE_ALIASES.get(raw_state)
             if task not in catalog:
@@ -1223,25 +1384,62 @@ def load_program_task_states(
                 continue
             states[task] = (state, path, line)
             if state == "active":
-                active.setdefault(package, []).append(task)
+                active.append(task)
                 if completed_ledger:
                     issues.append(error("program_state.active_in_completed_ledger", path, f"completed package ledger leaves {task} Active", line))
-    for package, tasks in active.items():
-        key = (package, tuple(sorted(tasks)))
-        if len(tasks) > 1 and key not in allowed_parallel:
-            issues.append(
-                error(
-                    "program_state.multiple_active",
-                    package,
-                    f"multiple Active tasks lack an explicit parallel set: {', '.join(tasks)}",
+    active_lanes: dict[str, str] = {}
+    for package, task, lane, line, completed_ledger in lane_records:
+        path = selected_paths.get(package, package)
+        if completed_ledger:
+            issues.append(error("program_state.stale_active_lane", path, f"completed ledger retains active lane {task} = {lane}", line))
+        if task not in catalog:
+            issues.append(error("program_state.unknown_task", path, f"lane task {task} is not cataloged", line))
+            continue
+        if catalog[task] != package:
+            issues.append(error("program_state.wrong_package", path, f"lane task {task} belongs to {catalog[task]}, not {package}", line))
+            continue
+        if task in active_lanes:
+            issues.append(error("program_state.duplicate_active_lane", path, f"task {task} has more than one active lane", line))
+            continue
+        active_lanes[task] = lane
+        if states.get(task, (None, "", 0))[0] != "active":
+            issues.append(error("program_state.stale_active_lane", path, f"lane {task} = {lane} does not name an Active task", line))
+
+    if len(active) > 1:
+        missing_lanes = [task for task in active if task not in active_lanes]
+        key = tuple(sorted((task, active_lanes[task]) for task in active if task in active_lanes))
+        if missing_lanes or parallel_key != key:
+            detail = f"active tasks {', '.join(sorted(active))} do not match the exact parallel execution"
+            if missing_lanes:
+                detail += f"; missing lane records for {', '.join(sorted(missing_lanes))}"
+            issues.append(error("program_state.multiple_active", "<program-task-state>", detail))
+        elif isinstance(parallel_execution, dict):
+            expected_commit = parallel_execution.get("activation_commit")
+            active_packages = {catalog[task] for task in active}
+            recorded_commits = {
+                lane_activation_commits.get(package) for package in active_packages
+            }
+            if recorded_commits != {expected_commit}:
+                issues.append(
+                    error(
+                        "program_state.parallel_activation_mismatch",
+                        "<program-task-state>",
+                        "every active package lane block must repeat parallel_execution activation_commit",
+                    )
                 )
-            )
+    elif parallel_execution is not None:
+        issues.append(error("program_state.stale_parallel_execution", "<policy>", "parallel_execution must be removed unless its exact multi-task set is Active"))
+    if len(active) <= 1 and active_lanes:
+        issues.append(error("program_state.stale_active_lane", "<program-task-state>", "active-lane records are only valid for an exact parallel execution"))
+
     closed = {task for task, (state, _, _) in states.items() if state in TERMINAL_STATES}
     for package, pair in packages.items():
         if not isinstance(pair, dict) or "required_after" not in pair:
             continue
         trigger = pair["required_after"]
-        if (trigger is None or trigger in closed) and package not in present_packages:
+        if trigger is not None and trigger not in closed and package in present_packages:
+            issues.append(error("program_state.package_started_before_dependency", package, f"package ledger exists before {trigger} became terminal"))
+        elif (trigger is None or trigger in closed) and package not in present_packages:
             reason = "always" if trigger is None else f"after {trigger} became terminal"
             issues.append(error("program_state.required_package_missing", package, f"package {package} ledger is required {reason}"))
     return closed, ", ".join(path for _, path, _ in selected), issues

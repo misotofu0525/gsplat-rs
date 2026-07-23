@@ -156,7 +156,7 @@
       "expected_error_codes": []
     },
     {
-      "name": "grandfather_large_shrink_requires_checkpoint_update",
+      "name": "grandfather_large_shrink_never_requires_padding_or_checkpoint_churn",
       "files": {
         "crates/demo/src/legacy.rs": {
           "physical_lines": 701
@@ -171,9 +171,7 @@
           "exit_condition": "Reduce below target."
         }
       ],
-      "expected_error_codes": [
-        "size.grandfather_baseline_stale"
-      ]
+      "expected_error_codes": []
     },
     {
       "name": "grandfather_small_shrink_without_checkpoint_update_is_allowed",
@@ -432,7 +430,8 @@
         }
       ],
       "ledgers": {
-        "docs/plans/completed/2026-07-23-native-render-core-refactor/progress.md": "<!-- gsplat-program-task-states: begin -->\nA1 = Deferred\n<!-- gsplat-program-task-states: end -->\n",
+        "docs/plans/completed/2026-07-23-native-render-core-refactor/progress.md": "<!-- gsplat-program-task-states: begin -->\nA1 = Deferred\nA9 = Accepted\n<!-- gsplat-program-task-states: end -->\n",
+        "docs/plans/completed/2026-07-23-native-render-exact-core/progress.md": "<!-- gsplat-program-task-states: begin -->\nE13 = Accepted\n<!-- gsplat-program-task-states: end -->\n",
         "docs/plans/active/2026-07-23-native-render-core-migration/progress.md": "<!-- gsplat-program-task-states: begin -->\nM1 = Accept\n<!-- gsplat-program-task-states: end -->\n"
       },
       "expected_error_codes": [
@@ -485,6 +484,9 @@
           "removal_task": "M7"
         }
       ],
+      "task_states": [
+        "A9 = Accepted"
+      ],
       "package_task_states": {
         "E": [
           "E13 = Accepted"
@@ -497,6 +499,9 @@
     {
       "name": "b_s_q_ledgers_are_each_required_after_m8_terminal",
       "files": {},
+      "task_states": [
+        "A9 = Accepted"
+      ],
       "package_task_states": {
         "E": [
           "E13 = Accepted"
@@ -526,21 +531,382 @@
       "name": "explicit_disjoint_parallel_active_set_is_allowed",
       "files": {},
       "program_task_state": {
-        "parallel_active_sets": [
-          {
-            "tasks": [
-              "A2",
-              "A3"
-            ],
-            "reason": "Fixture tasks have disjoint writer allowlists."
-          }
-        ]
+        "parallel_execution": {
+          "activation_commit": "0000000000000000000000000000000000000000",
+          "members": [
+            {
+              "task": "A2",
+              "lane": "A2a",
+              "write_allowlist": [
+                "LICENSE-MIT"
+              ]
+            },
+            {
+              "task": "A3",
+              "lane": "A3a",
+              "write_allowlist": [
+                "crates/demo/src/a3.rs"
+              ]
+            }
+          ],
+          "integration_order": [
+            "A2a",
+            "A3a"
+          ],
+          "reason": "Fixture writer allowlists are exact and disjoint."
+        }
       },
       "task_states": [
         "A2 = Active",
         "A3 = Active"
       ],
+      "active_lanes": [
+        "A2 = A2a",
+        "A3 = A3a"
+      ],
       "expected_error_codes": []
+    },
+    {
+      "name": "parallel_execution_with_overlapping_write_allowlists_fails_closed",
+      "files": {},
+      "program_task_state": {
+        "parallel_execution": {
+          "activation_commit": "0000000000000000000000000000000000000000",
+          "members": [
+            {
+              "task": "A2",
+              "lane": "A2a",
+              "write_allowlist": [
+                "crates/demo/src/shared.rs"
+              ]
+            },
+            {
+              "task": "A3",
+              "lane": "A3a",
+              "write_allowlist": [
+                "crates/demo/src/shared.rs"
+              ]
+            }
+          ],
+          "integration_order": [
+            "A2a",
+            "A3a"
+          ],
+          "reason": "This invalid fixture deliberately overlaps ownership."
+        }
+      },
+      "task_states": [
+        "A2 = Active",
+        "A3 = Active"
+      ],
+      "active_lanes": [
+        "A2 = A2a",
+        "A3 = A3a"
+      ],
+      "expected_error_codes": [
+        "config.parallel_write_overlap",
+        "program_state.multiple_active"
+      ]
+    },
+    {
+      "name": "stale_parallel_execution_is_not_a_future_parent_task_grant",
+      "files": {},
+      "program_task_state": {
+        "parallel_execution": {
+          "activation_commit": "0000000000000000000000000000000000000000",
+          "members": [
+            {
+              "task": "A2",
+              "lane": "A2a",
+              "write_allowlist": [
+                "crates/demo/src/a2.rs"
+              ]
+            },
+            {
+              "task": "A3",
+              "lane": "A3a",
+              "write_allowlist": [
+                "crates/demo/src/a3.rs"
+              ]
+            }
+          ],
+          "integration_order": [
+            "A2a",
+            "A3a"
+          ],
+          "reason": "The grant must disappear with the exact execution."
+        }
+      },
+      "task_states": [
+        "A2 = Active",
+        "A3 = Accepted"
+      ],
+      "expected_error_codes": [
+        "program_state.stale_parallel_execution"
+      ]
+    },
+    {
+      "name": "parallel_activation_commit_must_exist_in_current_history",
+      "files": {},
+      "activation_commit": "1111111111111111111111111111111111111111",
+      "program_task_state": {
+        "parallel_execution": {
+          "activation_commit": "1111111111111111111111111111111111111111",
+          "members": [
+            {
+              "task": "A2",
+              "lane": "A2a",
+              "write_allowlist": [
+                "crates/demo/src/a2.rs"
+              ]
+            },
+            {
+              "task": "A3",
+              "lane": "A3a",
+              "write_allowlist": [
+                "crates/demo/src/a3.rs"
+              ]
+            }
+          ],
+          "integration_order": [
+            "A2a",
+            "A3a"
+          ],
+          "reason": "A fabricated activation commit must fail closed."
+        }
+      },
+      "task_states": [
+        "A2 = Active",
+        "A3 = Active"
+      ],
+      "active_lanes": [
+        "A2 = A2a",
+        "A3 = A3a"
+      ],
+      "expected_error_codes": [
+        "config.invalid_parallel_activation_commit",
+        "program_state.multiple_active"
+      ]
+    },
+    {
+      "name": "parallel_lane_block_must_repeat_policy_activation_commit",
+      "files": {},
+      "activation_commit": "ffffffffffffffffffffffffffffffffffffffff",
+      "program_task_state": {
+        "parallel_execution": {
+          "activation_commit": "0000000000000000000000000000000000000000",
+          "members": [
+            {
+              "task": "A2",
+              "lane": "A2a",
+              "write_allowlist": [
+                "crates/demo/src/a2.rs"
+              ]
+            },
+            {
+              "task": "A3",
+              "lane": "A3a",
+              "write_allowlist": [
+                "crates/demo/src/a3.rs"
+              ]
+            }
+          ],
+          "integration_order": [
+            "A2a",
+            "A3a"
+          ],
+          "reason": "Ledger and policy must name the same activation."
+        }
+      },
+      "task_states": [
+        "A2 = Active",
+        "A3 = Active"
+      ],
+      "active_lanes": [
+        "A2 = A2a",
+        "A3 = A3a"
+      ],
+      "expected_error_codes": [
+        "program_state.parallel_activation_mismatch"
+      ]
+    },
+    {
+      "name": "parallel_write_allowlist_rejects_glob_scope",
+      "files": {},
+      "program_task_state": {
+        "parallel_execution": {
+          "activation_commit": "0000000000000000000000000000000000000000",
+          "members": [
+            {
+              "task": "A2",
+              "lane": "A2a",
+              "write_allowlist": [
+                "crates/demo/**"
+              ]
+            },
+            {
+              "task": "A3",
+              "lane": "A3a",
+              "write_allowlist": [
+                "crates/demo/src/a3.rs"
+              ]
+            }
+          ],
+          "integration_order": [
+            "A2a",
+            "A3a"
+          ],
+          "reason": "Glob ownership is not an exact writer scope."
+        }
+      },
+      "task_states": [
+        "A2 = Active",
+        "A3 = Active"
+      ],
+      "active_lanes": [
+        "A2 = A2a",
+        "A3 = A3a"
+      ],
+      "expected_error_codes": [
+        "config.invalid_parallel_execution",
+        "program_state.multiple_active"
+      ]
+    },
+    {
+      "name": "parallel_write_allowlist_rejects_directory_scope",
+      "files": {
+        "crates/demo/src/marker.rs": {
+          "lines": [
+            "fn marker() {}"
+          ]
+        }
+      },
+      "program_task_state": {
+        "parallel_execution": {
+          "activation_commit": "0000000000000000000000000000000000000000",
+          "members": [
+            {
+              "task": "A2",
+              "lane": "A2a",
+              "write_allowlist": [
+                "crates/demo/src"
+              ]
+            },
+            {
+              "task": "A3",
+              "lane": "A3a",
+              "write_allowlist": [
+                "crates/demo/src/a3.rs"
+              ]
+            }
+          ],
+          "integration_order": [
+            "A2a",
+            "A3a"
+          ],
+          "reason": "Directory ownership can conceal overlap."
+        }
+      },
+      "task_states": [
+        "A2 = Active",
+        "A3 = Active"
+      ],
+      "active_lanes": [
+        "A2 = A2a",
+        "A3 = A3a"
+      ],
+      "expected_error_codes": [
+        "config.invalid_parallel_execution",
+        "program_state.multiple_active"
+      ]
+    },
+    {
+      "name": "parallel_schema_wrong_member_and_order_types_fail_stably",
+      "files": {},
+      "program_task_state": {
+        "parallel_execution": {
+          "activation_commit": "0000000000000000000000000000000000000000",
+          "members": [
+            {
+              "task": [
+                "A2"
+              ],
+              "lane": "A2a",
+              "write_allowlist": [
+                "crates/demo/src/a2.rs"
+              ]
+            },
+            {
+              "task": "A3",
+              "lane": "A3a",
+              "write_allowlist": [
+                "crates/demo/src/a3.rs"
+              ]
+            }
+          ],
+          "integration_order": [
+            [
+              "A2a"
+            ],
+            "A3a"
+          ],
+          "reason": "Malformed JSON types must produce structured errors."
+        }
+      },
+      "task_states": [
+        "A2 = Active",
+        "A3 = Active"
+      ],
+      "active_lanes": [
+        "A2 = A2a",
+        "A3 = A3a"
+      ],
+      "expected_error_codes": [
+        "config.invalid_parallel_execution",
+        "config.invalid_parallel_execution",
+        "program_state.multiple_active"
+      ]
+    },
+    {
+      "name": "downstream_package_cannot_start_before_required_task_closes",
+      "files": {},
+      "task_states": [
+        "A5 = Accepted"
+      ],
+      "package_task_states": {
+        "E": [
+          "E1 = Active"
+        ]
+      },
+      "expected_error_codes": [
+        "program_state.package_started_before_dependency"
+      ]
+    },
+    {
+      "name": "cross_package_parallelism_cannot_bypass_dependency_or_authorization",
+      "files": {},
+      "task_states": [
+        "A5 = Active"
+      ],
+      "package_task_states": {
+        "E": [
+          "E1 = Active"
+        ]
+      },
+      "expected_error_codes": [
+        "program_state.multiple_active",
+        "program_state.package_started_before_dependency"
+      ]
+    },
+    {
+      "name": "unknown_program_state_schema_key_fails_closed",
+      "files": {},
+      "program_task_state": {
+        "unexpected_parallel_hint": true
+      },
+      "expected_error_codes": [
+        "config.invalid_program_task_state"
+      ]
     },
     {
       "name": "selected_package_ledger_requires_machine_state_block",
@@ -900,6 +1266,9 @@
           "crates/gsplat-render-wgpu/src/plans/prepare.rs"
         ]
       },
+      "task_states": [
+        "A9 = Accepted"
+      ],
       "package_task_states": {
         "E": [
           "E1 = Accepted"

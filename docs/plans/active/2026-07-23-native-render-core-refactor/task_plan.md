@@ -417,14 +417,12 @@ and must not repeat a fixed line-count target. The finite exception mechanism
 exists so even a multi-thousand-line review trigger cannot create an endless
 split loop for a cohesive generated, table-heavy or transitional owner.
 
-Legacy-file LOC baselines are coarse architecture checkpoints, not exact
-formatting budgets. The checker tolerates up to 32 lines of mechanical drift
-from a checkpoint and only requires a lower checkpoint after a reduction of at
-least 100 lines. Closing the responsible extraction task removes the legacy
-entry and returns the file to its normal profile; it does not require an
-otherwise cohesive module to land on an arbitrary round number. Legacy exit
-conditions describe responsibility removal rather than a precise LOC finish
-line. Dependency direction, single ownership and independently testable
+Legacy-file LOC baselines are coarse one-way no-growth checkpoints, not exact
+formatting budgets. The checker tolerates small mechanical growth, accepts any
+amount of shrink without requiring code padding or a same-task checkpoint
+update, and removes the legacy entry when its responsibility exit condition is
+met. It never requires an otherwise cohesive module to land on an arbitrary
+number. Dependency direction, single ownership and independently testable
 behavior remain the decisive gates.
 
 ## 9. Work-package map

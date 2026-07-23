@@ -6,6 +6,7 @@ from __future__ import annotations
 import copy
 import json
 import pathlib
+import subprocess
 import tempfile
 import unittest
 
@@ -63,6 +64,9 @@ class SourceArchitectureFixtureTests(unittest.TestCase):
                 policy = copy.deepcopy(self.base_policy)
                 policy["grandfather"] = copy.deepcopy(case.get("grandfather", []))
                 policy["exceptions"] = copy.deepcopy(case.get("exceptions", []))
+                # The repository policy carries only the currently executing
+                # writer pair. Fixtures opt into their own exact execution.
+                policy["program_task_state"]["parallel_execution"] = None
                 if "top_level_orchestration" in case:
                     deep_update(
                         policy["top_level_orchestration"],
@@ -82,15 +86,23 @@ class SourceArchitectureFixtureTests(unittest.TestCase):
                 default_ledger = policy["program_task_state"]["package_ledgers"]["A"][
                     "active"
                 ]
-                default_content = "\n".join(
-                    [
-                        "# Fixture progress",
-                        checker.TASK_STATE_BLOCK_BEGIN,
-                        *case.get("task_states", []),
-                        checker.TASK_STATE_BLOCK_END,
-                        case.get("progress_prose", ""),
-                    ]
-                )
+                default_lines = [
+                    "# Fixture progress",
+                    checker.TASK_STATE_BLOCK_BEGIN,
+                    *case.get("task_states", []),
+                    checker.TASK_STATE_BLOCK_END,
+                ]
+                if "active_lanes" in case:
+                    default_lines.extend(
+                        [
+                            checker.ACTIVE_LANE_BLOCK_BEGIN,
+                            f"activation_commit = {case.get('activation_commit', '0' * 40)}",
+                            *case["active_lanes"],
+                            checker.ACTIVE_LANE_BLOCK_END,
+                        ]
+                    )
+                default_lines.append(case.get("progress_prose", ""))
+                default_content = "\n".join(default_lines)
                 ledgers = case.get(
                     "ledgers",
                     {default_ledger: default_content},
@@ -112,6 +124,53 @@ class SourceArchitectureFixtureTests(unittest.TestCase):
                     path = root / relative
                     path.parent.mkdir(parents=True, exist_ok=True)
                     path.write_text(content, encoding="utf-8")
+
+                execution = policy["program_task_state"]["parallel_execution"]
+                if execution is not None:
+                    subprocess.run(
+                        ["git", "init", "--quiet"],
+                        cwd=root,
+                        check=True,
+                    )
+                    subprocess.run(
+                        ["git", "add", "."],
+                        cwd=root,
+                        check=True,
+                    )
+                    subprocess.run(
+                        [
+                            "git",
+                            "-c",
+                            "user.name=gsplat-fixture",
+                            "-c",
+                            "user.email=fixture@example.invalid",
+                            "commit",
+                            "--quiet",
+                            "-m",
+                            "fixture",
+                        ],
+                        cwd=root,
+                        check=True,
+                    )
+                    fixture_head = subprocess.run(
+                        ["git", "rev-parse", "HEAD"],
+                        cwd=root,
+                        check=True,
+                        capture_output=True,
+                        text=True,
+                    ).stdout.strip()
+                    if execution["activation_commit"] == "0" * 40:
+                        execution["activation_commit"] = fixture_head
+                        for relative in ledgers:
+                            ledger_path = root / relative
+                            ledger_text = ledger_path.read_text(encoding="utf-8")
+                            ledger_path.write_text(
+                                ledger_text.replace(
+                                    f"activation_commit = {'0' * 40}",
+                                    f"activation_commit = {fixture_head}",
+                                ),
+                                encoding="utf-8",
+                            )
 
                 issues, _ = checker.check_repository(root, policy)
                 error_codes = sorted(
@@ -152,12 +211,10 @@ class SourceArchitectureFixtureTests(unittest.TestCase):
         exceptions = {entry["path"] for entry in policy["exceptions"]}
         self.assertLessEqual(set(hard_breached), set(grandfather) | exceptions)
         growth_tolerance = policy["grandfather_ratchet"]["growth_tolerance_lines"]
-        shrink_checkpoint = policy["grandfather_ratchet"]["shrink_checkpoint_lines"]
         for path, entry in grandfather.items():
             loc = checker.physical_loc(REPO_ROOT / path)
             baseline = entry["baseline_physical_loc"]
             self.assertLessEqual(loc, baseline + growth_tolerance)
-            self.assertLess(baseline - loc, shrink_checkpoint)
             self.assertTrue(entry["owner_task"])
             self.assertTrue(entry["exit_condition"])
 
@@ -182,7 +239,7 @@ class SourceArchitectureFixtureTests(unittest.TestCase):
         self.assertFalse(limits["wgsl"]["enforce_target"])
         self.assertEqual(
             self.base_policy["grandfather_ratchet"],
-            {"growth_tolerance_lines": 32, "shrink_checkpoint_lines": 100},
+            {"growth_tolerance_lines": 32},
         )
         orchestration = self.base_policy["top_level_orchestration"]
         self.assertFalse(orchestration["enabled"])
@@ -213,6 +270,15 @@ class SourceArchitectureFixtureTests(unittest.TestCase):
         self.assertNotIn("exclude_dir_names", rust_sources)
 
         state = self.base_policy["program_task_state"]
+        self.assertEqual(
+            set(state),
+            {
+                "external_owner_review_allowlist",
+                "parallel_execution",
+                "task_catalog",
+                "package_ledgers",
+            },
+        )
         self.assertEqual(set(state["package_ledgers"]), {"A", "E", "M", "B", "S", "Q"})
         self.assertEqual(set(state["task_catalog"].values()), {"A", "E", "M", "B", "S", "Q"})
         expected_tasks = {
@@ -238,11 +304,17 @@ class SourceArchitectureFixtureTests(unittest.TestCase):
             set(state["external_owner_review_allowlist"]),
             {"IO-PLY-1", "IO-SPZ-1"},
         )
+        execution = state["parallel_execution"]
+        self.assertEqual(execution["activation_commit"], "962c5c2544c4d087a3a4203e14e41d3fea12f7d7")
         self.assertEqual(
-            [entry["tasks"] for entry in state["parallel_active_sets"]],
-            [["A5", "A8"]],
+            [(member["task"], member["lane"]) for member in execution["members"]],
+            [("A5", "A5c2"), ("A8", "A8a")],
         )
-        self.assertTrue(state["parallel_active_sets"][0]["reason"])
+        self.assertEqual(execution["integration_order"], ["A5c2", "A8a"])
+        self.assertTrue(execution["reason"])
+        write_sets = [set(member["write_allowlist"]) for member in execution["members"]]
+        self.assertTrue(all(write_sets))
+        self.assertFalse(write_sets[0] & write_sets[1])
 
         external = {
             entry["owner_task"]: entry
