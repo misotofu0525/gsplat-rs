@@ -14,17 +14,19 @@ their own single block in the same format.
 <!-- gsplat-program-task-states: begin -->
 A0 = Accepted
 A1 = Accept
-A2 = Active
+A2 = Accepted
 <!-- gsplat-program-task-states: end -->
 
 ## Program status
 
 - Plan bundle: committed at `c478252246733f6dc209686091caf183e1ef7f06`.
-- Implementation: Package A started; A1 guardrails, A2a data leaves and the A2b API leaf are complete.
+- Implementation: Package A started; A1 guardrails and the complete A2
+  strategy-free data/API extraction are root-accepted.
 - Current work package: A — responsibility extraction.
-- Active package task: A2 — remains Active after the completed A2a subtask.
-- Current subtask: A2b complete; A2 remains Active pending root-task acceptance and direction.
-- Last completed subtask: A2a — strategy-free data/layout/view leaf extraction.
+- Active package task: none between accepted package boundaries.
+- Last completed task: A2 — strategy-free data/layout/view and stable API leaf
+  extraction.
+- Next eligible task: A3 — scene ownership, Resident layout and preflight.
 - Integration branch: `codex/native-render-core-refactor`.
 - Frozen source implementation closeout:
   `5db2520e0d7a0ef1c68a78bdb9abc6fc588c5186`.
@@ -77,8 +79,8 @@ eligible task. Do not rewrite the architecture in this ledger.
 
 ### A2b — Extract the stable API leaf
 
-- Parent task state: A2 Active; A2b completion will not close A2 before root-task acceptance.
-- Subtask state: Complete; A2 remains Active
+- Parent task state: A2 Accepted after fixed-SHA root-task acceptance.
+- Subtask state: Complete and root-accepted
 - Started: 2026-07-23 20:46 CST
 - Ended: 2026-07-23 20:54 CST
 - Baseline commit: `4e110e4e02291dc0a8d77046e8f6b9d123d0ff69`
@@ -182,16 +184,30 @@ eligible task. Do not rewrite the architecture in this ledger.
     using the normal Cargo cache without modifying user or repository config
   - PASS exact declaration comparison against baseline, private-module rustdoc
     audit, `git diff --check`, exact LOC/policy audit and declared-scope audit
-- Not run by A2b: device runs, browser runtime smoke, performance benchmarks
-  and root GPU/API/FFI acceptance; these are explicitly outside this subtask
+- Not run by the A2b writer: device runs, browser runtime smoke and performance
+  benchmarks; the root task separately ran the required GPU/API/FFI acceptance
 - Scope audit: the final repository diff contains only `api.rs`, `lib.rs`, this
   ledger and the exact `lib.rs` architecture baseline; no consumer, error,
   preflight, resource, lifecycle, shader, data, FFI, binding, example, tool or
   Cargo file changed
-- Decision: complete the independently verifiable A2b result and keep
-  `A2 = Active`; root-task acceptance determines later A2 direction
-- Result identity: resolve the single `codex/native-render-a2b-api` branch-tip
-  SHA after commit
+- Root acceptance:
+  - independent fixed-SHA review found no P0, P1 or P2 issue
+  - PASS `GSPLAT_REQUIRE_GPU_CONFORMANCE=1 cargo test -p
+    gsplat-render-wgpu --test conformance_sorted_alpha --locked -- --nocapture`
+    with one Metal test executed and no skip
+  - PASS root architecture checker/self-tests, exact four-file scope, private
+    module/public root-path audit, LOC/policy audit and `git diff --check`
+  - PASS root wasm target check and FFI smoke (`drawn=2`, `visible=2`)
+  - the writer's repository-external consumer probe passed offline against the
+    exact committed tree; the root review independently verified its source,
+    exhaustive variants and private-module rejection
+- Decision: accept A2. The data/layout/view leaves and the stable API leaf now
+  satisfy A2's behavior-preserving extraction contract. Owner-coupled errors,
+  preflight implementation and the legacy frame result remain explicitly with
+  A3/A7/A8 rather than creating a new API dependency cycle.
+- Result identity: `d041a4a3cbefaa70f8647f65ff575727acbb3589`,
+  accepted and fast-forwarded unchanged into
+  `codex/native-render-core-refactor`
 
 ### A2a — Extract strategy-free data/layout/view leaves
 
@@ -635,8 +651,9 @@ eligible task. Do not rewrite the architecture in this ledger.
 | A0 | Accepted | `2aef9f0` | [a0-baseline.md](a0-baseline.md) | dedicated integration branch from `c478252`; no merge/rebase/cherry-pick |
 | A0 evidence audit | Accepted | `9df0d6c` | [a0-baseline.md](a0-baseline.md) | evidence classes and artifact identity limits tightened; integration decision unchanged |
 | A1 | Accepted | `f6180844bbaf910b74ff5ecfe81c9b9588c88561` | `tests/architecture/` and this ledger | root-accepted physical-LOC/dependency ratchet passes 56 fixtures and the A0 tree; A2a is eligible |
-| A2a | Complete (A2 Active) | `3758fd614bc09c5f330210cf87a120dd9fd0ccdd` | `data/{layout,view}.rs` and this ledger | root-accepted strategy-free ABI and real data views; API/Resident/shader/lifecycle unchanged |
-| A2b | Complete (A2 Active) | resolve branch tip | `api.rs` and this ledger | stable API leaves moved unchanged behind private module; root paths preserved and `lib.rs` ratchet lowered exactly |
+| A2a | Complete | `3758fd614bc09c5f330210cf87a120dd9fd0ccdd` | `data/{layout,view}.rs` and this ledger | root-accepted strategy-free ABI and real data views; API/Resident/shader/lifecycle unchanged |
+| A2b | Complete | `d041a4a3cbefaa70f8647f65ff575727acbb3589` | `api.rs` and this ledger | root-accepted stable API leaves; public root paths preserved and `lib.rs` ratchet lowered exactly |
+| A2 | Accepted | `d041a4a3cbefaa70f8647f65ff575727acbb3589` | A2a/A2b records above | data and API leaf extraction complete without owner, policy, shader, FFI or lifecycle changes; A3 is eligible |
 
 ## Baseline evidence inherited, not rerun by default
 
