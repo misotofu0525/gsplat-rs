@@ -28,11 +28,12 @@ A5 = Active
   root-accepted. A5a's strategy-free scan/radix leaves are also root-accepted;
   the parent A5 package remains active for its later consumer slices.
 - Current work package: A — responsibility extraction.
-- Active package task: none. A5b has not been activated yet.
+- Active package task: A5b — extract the existing Direct/Resident stable-radix
+  mechanics behind the accepted private GPU owners.
 - Last completed task: A5a — strategy-free external-prefix scan/radix ownership
   extraction.
-- Next eligible task: A5b only, after a separate plan-only activation commit.
-  A5c, A5d, A6 and later packages remain inactive.
+- Next eligible task: A5b only. A5c, A5d, A6 and later packages remain
+  inactive until root review closes A5b.
 - Integration branch: `codex/native-render-core-refactor`.
 - Frozen source implementation closeout:
   `5db2520e0d7a0ef1c68a78bdb9abc6fc588c5186`.
@@ -99,6 +100,114 @@ eligible task. Do not rewrite the architecture in this ledger.
   this section and the current policy are authoritative for later tasks.
 
 ## Current task
+
+### A5b — Extract Direct/Resident stable-radix mechanics
+
+- Parent task state: A5 Active
+- Subtask state: Active
+- Started: 2026-07-23
+- Production baseline commit:
+  `3b726b0` (`docs: accept A5a GPU primitive extraction`).
+- Exact source baseline before production edits:
+  - `crates/gsplat-render-wgpu/src/direct_gpu_order.rs`: 2,855 physical LOC;
+  - `crates/gsplat-render-wgpu/src/gpu/scan.rs`: 325 physical LOC;
+  - `crates/gsplat-render-wgpu/src/gpu/radix.rs`: 810 physical LOC;
+  - architecture grandfather baseline for `direct_gpu_order.rs`: 2,855.
+- Frozen source/shader identities:
+  - `direct_gpu_order.rs`:
+    `e18e233a18bcfc68ff9f79dc8a649e8c40ae6ff4a1c427525ff55404625d104f`;
+  - `direct_gpu_order.wgsl`:
+    `4531b652f74f7ba9763256be9f151cef24225385d2f3a486d802f89d658f4f6a`;
+  - `gpu_prefix_scan.wgsl`:
+    `f58e3e47ef6175965f88c48e95f0df8eb1b380d847b7d5f65d45ad1a7537fc61`;
+  - `resident_gpu_order_radix8.wgsl`:
+    `cb31ba454379eac6243bc77754095f566c11cbfe67303037dc17767aedfbebf7`;
+  - `resident_gpu_order_visible_radix8.wgsl`:
+    `3afe4e7c011172f973527f3130bd2ff8a89195938135a2eddb2da5cf92c583a5`;
+  - `resident_gpu_order_compact.wgsl`:
+    `e59efc1ae0cf3771d311bf97f36bafbe6a26dce5f35f330a76181cf10f71c526`.
+- Hypothesis: Direct's eight-pass stable 4-bit path and the qualified
+  Resident four-pass stable 8-bit path can move mechanically behind the
+  strategy-free `gpu::radix` owner and accepted `gpu::scan` primitive, while
+  `DirectGpuOrder` remains the sole consumer/orchestrator and every target,
+  resource, pass-order, count and error result remains unchanged.
+- Dependencies: A2 Accepted and A5a Accepted at `3b726b0`. A5c, A5d, A6 and
+  later tasks are inactive.
+- Required responsibility boundary:
+  - `direct_gpu_order.rs` retains `DirectGpuOrder`, all existing crate-private
+    consumer signatures, `GpuOrderTimestampRange`, key generation/visibility,
+    indirect-count reset, top-level timestamp/pass ordering and exact
+    `DirectSceneError` mapping;
+  - it also retains the two current target allowlists and
+    `ResidentVisibleCompaction`, including its control/indirect handoff. Those
+    are policy and A5c responsibilities, not radix mechanics;
+  - `gpu/scan.rs` remains the one portable hierarchical prefix-scan owner;
+  - `gpu/radix.rs` owns stable full32 radix mechanics: pass parameters,
+    key/source-ID ping-pong, prefix/pass buffers, pipeline/bind-group
+    construction, stable LSD passes, final-A contract and the optional legacy
+    pair pack;
+  - private children under `gpu/radix/` are allowed only when they express a
+    real portable-vs-Resident algorithm/resource responsibility. They may not
+    be created to satisfy a physical line number.
+- Allowed production scope:
+  - `crates/gsplat-render-wgpu/src/direct_gpu_order.rs`;
+  - `crates/gsplat-render-wgpu/src/gpu/mod.rs`;
+  - `crates/gsplat-render-wgpu/src/gpu/radix.rs` and responsibility-justified
+    private children under `src/gpu/radix/`;
+  - `crates/gsplat-render-wgpu/src/gpu/scan.rs` only for the minimum explicit
+    label/usage/profile parameterization required to reproduce both accepted
+    graphs byte-for-byte in resources and pass order. Its A5a API, graph and
+    tests otherwise remain frozen;
+  - existing tests may move only with the exact radix/scan mechanic they
+    directly verify.
+- Forbidden scope:
+  - every WGSL file; `lib.rs`, `resident_gpu.rs`, `surface_presenter.rs`,
+    `surface_session.rs`, `preproject_gpu.rs`, `projected_quads_gpu.rs`, Scene,
+    data/API, FFI/JNI/Swift/Web/examples, Cargo, benchmark and architecture
+    policy/ledger files in the writer worktree;
+  - moving or changing `ResidentVisibleCompaction`, contributor/project
+    compaction, V/C/D semantics, Resident SH/color resolve or canonical raster;
+  - changing shader math, workgroup size, radix width/pass count, binding,
+    buffer size/usage, dynamic offset, dispatch, ping-pong parity, final-A,
+    compatibility allocation/omission, submit/map/readback, target allowlist,
+    error text, timestamp interval, CPU/GPU/Adaptive policy or performance;
+  - sharing merely similar code when exact resource/pass equivalence cannot be
+    proved; line-count-only splitting, compression or test relocation.
+- Hard gates:
+  - all five frozen shader hashes remain identical and the A5a
+    `ExternalPrefixRadix` API, byte plan, graph and test inventory do not
+    change;
+  - Direct and the four-binding fallback still execute eight stable 4-bit LSD
+    passes; qualified macOS Resident still executes four stable 8-bit passes;
+    every other target allowlist and fallback remains identical;
+  - full32 ordering, equal-depth/source-ID stability, zero/one/non-power/tail
+    handling, final IDs in A, legacy pair allocation/omission, SoA storage
+    limit errors, exact indirect count and timestamp begin/end remain exact;
+  - `lib.rs`, `resident_gpu.rs` and `surface_presenter.rs` are byte-identical to
+    the baseline, proving existing consumers and crate-private paths did not
+    migrate in this slice;
+  - the exact baseline inventory of 16 `direct_gpu_order` tests and four
+    ignored external/pressure oracles is preserved with no weakened assertion;
+  - fixed-SHA review proves production mechanics are equivalent after only
+    path, visibility and explicit leaf-input normalization;
+  - format, whitespace, architecture checks, locked renderer/workspace tests,
+    all-target Clippy and Rustdoc with warnings denied, wasm32 check and forced
+    Apple M4 Metal conformance pass. Root alone updates the exact grandfather
+    baseline after semantic review.
+- Flexible LOC rule: there is no 800/890 completion gate. A cohesive radix
+  owner may exceed any review target; responsibility, dependency direction and
+  executable tests decide the boundary. Only a new multi-thousand-line mixed
+  owner requires a finite exception or redesign.
+- Performance observations: none. A5b changes ownership only; FPS, elapsed
+  milliseconds and competitor ratios are not acceptance gates or claims.
+- Required endpoints for claim: Apple M4 executes the existing native GPU
+  oracles and forced SortedAlpha conformance; wasm32 compiles. A065 is retained
+  for the A5 package boundary because this slice cannot change product behavior.
+- Performance correction used: no
+- Known correctness issues: none
+- Closeout requirement: one isolated writer produces a fixed SHA; root checks
+  the exact inventory, hashes, mechanics and integrated gates before
+  Accept/Reject/Defer. Acceptance activates no later A5 slice automatically.
 
 ### A5a — Extract external-prefix scan and stable radix owners
 
