@@ -723,7 +723,7 @@ mod tests {
     use crate::external_prefix_radix::{EXTERNAL_RADIX_TILE_SIZE, ExternalPrefixControl};
     use crate::projected_draw_telemetry::SurfaceProjectedDrawExecution;
     use crate::projected_quads_gpu::ProjectedQuadsGpu;
-    use crate::resident_scene::{
+    use crate::{
         ResidentCovariance0, ResidentCovariance1, ResidentPositionAlpha, ResidentSceneCpu,
     };
 

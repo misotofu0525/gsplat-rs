@@ -1878,10 +1878,10 @@ mod tests {
 
     use super::*;
     use crate::{
+        ResidentSceneCpu,
         resident_gpu::{
             create_resident_color_bind_group_layout, create_resident_draw_bind_group_layout,
         },
-        resident_scene::ResidentSceneCpu,
     };
 
     #[test]

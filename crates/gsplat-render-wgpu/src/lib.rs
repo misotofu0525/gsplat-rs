@@ -23,19 +23,24 @@ mod projected_draw_telemetry;
 mod projected_quads_gpu;
 mod residency;
 mod resident_gpu;
-mod resident_scene;
+mod scene;
 mod spatial_pages;
 mod surface_presenter;
 mod surface_session;
 mod tiled_resident_gpu;
 
 pub use api::{GeometryPath, PreprocessOutput};
-pub use data::GpuInstance;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use data::OwnedCpuOrderInput;
 pub(crate) use data::{
     CameraCovarianceTerms, GpuSortPair, GpuSurfaceRenderParams, GpuSurfaceSourceElem,
     ShColorLayout, SplatSetView,
+};
+pub use data::{
+    GpuInstance, RESIDENT_CHUNK_META_BYTES, RESIDENT_CHUNK_SPLATS, RESIDENT_COLOR_AUX_WORDS,
+    RESIDENT_COVARIANCE0_FLOATS, RESIDENT_COVARIANCE1_FLOATS, RESIDENT_SH_PLANES,
+    RESIDENT_SH_WORDS_PER_PLANE, ResidentChunkMeta, ResidentColorAux, ResidentCovariance0,
+    ResidentCovariance1, ResidentPositionAlpha, ResidentShPlane,
 };
 pub use gpu_producer_telemetry::{
     SurfaceGpuOrderProducer, SurfaceGpuProducerDrawScope, SurfaceGpuProducerMeasurement,
@@ -61,13 +66,9 @@ pub use projected_draw_telemetry::{
 };
 pub(crate) use residency::{AttributeLod, ResidencyBudgets, ResidencyManager};
 pub use resident_gpu::{ResidentGpuBytePlan, ResidentGpuError};
-pub use resident_scene::{
-    RESIDENT_CHUNK_META_BYTES, RESIDENT_CHUNK_SPLATS, RESIDENT_COLOR_AUX_WORDS,
-    RESIDENT_COVARIANCE0_FLOATS, RESIDENT_COVARIANCE1_FLOATS, RESIDENT_SH_PLANES,
-    RESIDENT_SH_WORDS_PER_PLANE, ResidentChunkMeta, ResidentColorAux, ResidentCovariance0,
-    ResidentCovariance1, ResidentCpuByteAccounting, ResidentEncodingReport, ResidentPositionAlpha,
-    ResidentSceneBuilder, ResidentSceneCpu, ResidentSceneError, ResidentShPlane,
-    ResidentSourceSplat, resident_sh_plane_count,
+pub use scene::{
+    ResidentCpuByteAccounting, ResidentEncodingReport, ResidentSceneBuilder, ResidentSceneCpu,
+    ResidentSceneError, ResidentSourceSplat, resident_sh_plane_count,
 };
 pub(crate) use spatial_pages::{DEFAULT_PAGE_CAPACITY, SpatialPageSet};
 pub use surface_presenter::{SurfaceFrameCapture, SurfacePresenter};
