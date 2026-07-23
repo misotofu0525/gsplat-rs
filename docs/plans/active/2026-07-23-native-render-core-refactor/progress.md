@@ -176,8 +176,8 @@ eligible task. Do not rewrite the architecture in this ledger.
     currently present;
   - `cargo fmt --all -- --check`, `git diff --check`, locked renderer/workspace
     tests, all-target Clippy with warnings denied, Rustdoc with warnings denied,
-    wasm32 check and architecture checks pass after the root task closes the
-    completed `lib.rs` ratchet separately;
+    wasm32 check and architecture checks pass after the root task lowers the
+    current `lib.rs` ratchet baseline separately;
   - Apple M4 native exercises the Rayon/scalar oracle. Root owns a fresh A065
     exact-count/full-quality receipt at the A4 package boundary after accepting
     the writer SHA; no FPS or speed percentage is a gate.
@@ -188,9 +188,10 @@ eligible task. Do not rewrite the architecture in this ledger.
 - Performance correction used: no
 - Known correctness issues: none
 - Closeout requirement: root reviews one fixed writer SHA, proves definition,
-  test and internal-path parity, runs integrated gates, updates/removes only the
-  exact completed `lib.rs` ratchet, then Accepts/Rejects/Defers A4b. Accept also
-  closes parent A4; A5 is activated only in a later plan-only commit.
+  test and internal-path parity, runs integrated gates and lowers only the exact
+  `lib.rs` baseline while preserving its immutable A0 LOC, M7 owner and exit
+  condition. It then Accepts/Rejects/Defers A4b. Accept also closes parent A4;
+  A5 is activated only in a later plan-only commit.
 
 ### A4a — Extract the existing `gsplat-sort` CPU owner
 
