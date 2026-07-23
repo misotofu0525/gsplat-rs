@@ -17,6 +17,7 @@ A1 = Accept
 A2 = Accepted
 A3 = Accepted
 A4 = Accepted
+A5 = Active
 <!-- gsplat-program-task-states: end -->
 
 ## Program status
@@ -26,11 +27,12 @@ A4 = Accepted
   data/API, A3 scene/resource and A4 CPU order ownership extractions are
   root-accepted.
 - Current work package: A — responsibility extraction.
-- Active package task: none; A4 is closed and A5 has not yet been activated.
+- Active package task: A5a — strategy-free external-prefix scan/radix ownership
+  extraction in an isolated worktree.
 - Last completed task: A4b — renderer CPU visibility/depth/key primitive
   ownership extraction.
-- Next eligible task: A5 — existing GPU project/compact/scan/radix/color
-  primitive ownership, to be activated in a separate plan-only commit.
+- Next eligible task: A5a only. Later A5 slices and A6 remain inactive until
+  root review accepts or closes A5a.
 - Integration branch: `codex/native-render-core-refactor`.
 - Frozen source implementation closeout:
   `5db2520e0d7a0ef1c68a78bdb9abc6fc588c5186`.
@@ -97,6 +99,95 @@ eligible task. Do not rewrite the architecture in this ledger.
   this section and the current policy are authoritative for later tasks.
 
 ## Current task
+
+### A5a — Extract external-prefix scan and stable radix owners
+
+- Parent task state: A5 Active
+- Subtask state: Active
+- Started: 2026-07-23
+- Production baseline commit:
+  `41c3b31` (`docs: accept A4 CPU order ownership extraction`)
+- Exact source baseline before production edits:
+  - `crates/gsplat-render-wgpu/src/external_prefix_radix.rs`: 1,123 physical LOC
+  - architecture grandfather baseline: 1,123 physical LOC
+- Hypothesis: the existing hierarchical prefix scan and portable eight-pass
+  stable 4-bit external-prefix radix graph can move unchanged behind private
+  strategy-free GPU leaves, while the Preproject caller retains Resident
+  admission policy and every key, source-ID, byte-plan, dispatch and error
+  result remains unchanged.
+- Dependencies: A2 Accepted and A4 Accepted at `41c3b31`. A5b, A5c, A5d, A6
+  and later work are inactive.
+- Required responsibility boundary:
+  - private `gpu/scan.rs` owns the current scan parameters, hierarchy, scratch,
+    2D dispatch and encode sequence;
+  - private `gpu/radix.rs` owns the current external control ABI, radix
+    constants, exact byte plan, ping-pong buffers, eight stable LSD passes and
+    final A-buffer contract;
+  - a small `gpu/dispatch.rs` is allowed only if it contains the exact shared
+    checked 2D workgroup calculation; otherwise that helper stays with scan;
+  - `preproject_gpu.rs` continues to own the Preproject plan, its two producer
+    scans, Resident capability admission, resource aggregation, pipelines,
+    command order and diagnostic publication;
+  - `gpu/radix.rs` validates only the shader's actual kernel limits. The
+    Preproject caller retains the product's current eight-storage-binding
+    Resident/Packed floor. A generic kernel may not import a
+    Scene/Resident/Surface policy constant, and this extraction may not broaden
+    or narrow product admission.
+- Allowed production scope:
+  - `crates/gsplat-render-wgpu/src/lib.rs` only for private module wiring;
+  - `crates/gsplat-render-wgpu/src/external_prefix_radix.rs`, which may become
+    a compatibility facade or be removed after all current private paths are
+    migrated;
+  - new private `crates/gsplat-render-wgpu/src/gpu/{mod,scan,radix}.rs` and an
+    optional `gpu/dispatch.rs` under the responsibility rule above;
+  - `crates/gsplat-render-wgpu/src/preproject_gpu.rs` only for mechanical
+    imports plus the explicit unchanged Resident binding-floor handoff;
+  - existing tests may move only with the primitive they directly verify.
+- Forbidden scope:
+  - `direct_gpu_order.rs`, `projected_quads_gpu.rs`, `resident_gpu.rs`,
+    `surface_presenter.rs`, `surface_session.rs`, Scene/data/API modules,
+    shaders, FFI/JNI/Swift/Web/examples, Cargo manifests/lockfile, benchmark
+    protocols or architecture policy/ledger in the writer worktree;
+  - editing `gpu_prefix_scan.wgsl` or `external_prefix_radix.wgsl`, changing
+    workgroup sizes, 2D dispatch shape, scan hierarchy, pass count, radix width,
+    stable tie order, buffer usage, ping-pong parity, dynamic offsets, binding
+    layouts, allocation sizes, submit/map/readback/device ownership or errors;
+  - adopting a different Direct/Projected scan, deduplicating merely similar
+    algorithms, touching CPU/GPU/Adaptive policy, adding a new algorithm or
+    claiming performance gains;
+  - splitting or moving code to satisfy 800, 890 or any other fixed line count.
+    Cohesion, dependency direction and independently executable tests decide
+    the module boundary.
+- Hard gates:
+  - fixed-SHA review proves shader bytes unchanged and production/test bodies
+    mechanically preserved after path, visibility and explicit-policy-argument
+    normalization;
+  - `gpu/**` imports no Scene, Surface, Presenter, Session, Preproject plan or
+    Resident admission constant; it owns no queue submission, polling, map or
+    adapter/device creation;
+  - the Preproject caller still requires the same eight storage bindings; a
+    focused seven-binding limits test returns the unchanged
+    `StorageBindingCountUnsupported(7)` result;
+  - exact byte plans and execution cover zero/one, scan boundaries, non-powers
+    of two, non-workgroup tails, duplicate/all-equal/zero/MAX keys, stable
+    source-ID ties, poisoned capacity tails, high-water reuse and 2D dispatch;
+  - all existing external-prefix and Preproject count/image tests remain, with
+    the same ignored inventory and no weakened assertion;
+  - format, whitespace, architecture checks, locked renderer/workspace tests,
+    all-target Clippy and Rustdoc with warnings denied, wasm32 check and forced
+    Metal GPU conformance pass. The root task alone may lower/remove the exact
+    architecture grandfather entry after semantic review.
+- Performance observations: none. A5a is an ownership extraction and neither
+  FPS nor a competitor percentage is a completion gate.
+- Required endpoints for claim: Apple M4 Metal executes the existing scan/radix
+  GPU oracles; wasm32 compiles. A065 and broader cross-endpoint evidence are
+  package-boundary responsibilities, not an excuse to expand this writer task.
+- Performance correction used: no
+- Known correctness issues: none
+- Closeout requirement: root reviews one fixed writer SHA, symbol/test/shader
+  inventories, the explicit Resident-admission handoff and integrated gates,
+  then Accepts/Rejects/Defers A5a. A later plan-only commit may activate the
+  next single A5 consumer slice; acceptance of A5a does not close A5.
 
 ### A4b — Extract renderer CPU visibility/depth/key primitives
 
