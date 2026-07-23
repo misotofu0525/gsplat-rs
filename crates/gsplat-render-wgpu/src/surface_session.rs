@@ -13,8 +13,6 @@ use std::{
     thread::{self, JoinHandle},
 };
 
-#[cfg(not(target_arch = "wasm32"))]
-use crate::SurfaceFrameCapture;
 use crate::gpu_telemetry::{SurfaceCpuOrderMeasurement, TelemetrySubmission};
 use crate::surface_presenter::{CpuCompletionSampleRequest, ProjectedDrawSampleRequest};
 use crate::{
@@ -24,6 +22,8 @@ use crate::{
     SurfaceProjectedDrawMeasurement, SurfaceProjectedDrawMeasurementFailure,
     SurfaceRasterExecutionPlan, SurfaceTimingSource, timer_elapsed_ms, timer_now,
 };
+#[cfg(not(target_arch = "wasm32"))]
+use crate::{OwnedCpuOrderInput, SurfaceFrameCapture};
 
 const DEFAULT_SURFACE_SORT_INTERVAL: u32 = 1;
 /// Maximum number of camera revisions an asynchronously produced order may lag
@@ -1450,18 +1450,15 @@ impl SurfaceAsyncSorter {
         let (request_tx, request_rx) = sync_channel::<Option<(Camera, u64)>>(1);
         let (result_tx, result_rx) = sync_channel(1);
         let worker = thread::spawn(move || {
+            let mut positions = positions;
             while let Ok(request) = request_rx.recv() {
                 let Some((camera, camera_revision)) = request else {
                     break;
                 };
-                if result_tx
-                    .send(sort_positions_for_camera(
-                        &positions,
-                        camera,
-                        camera_revision,
-                    ))
-                    .is_err()
-                {
+                let input = OwnedCpuOrderInput::new(positions, camera);
+                let result = sort_positions_for_camera(&input, camera_revision);
+                positions = input.into_positions();
+                if result_tx.send(result).is_err() {
                     break;
                 }
             }
@@ -3608,10 +3605,11 @@ fn paged_surface_counts(source_count: usize, drawn_count: u32) -> (u32, u32) {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn sort_positions_for_camera(
-    positions: &[Vec3f],
-    camera: Camera,
+    input: &OwnedCpuOrderInput,
     camera_revision: u64,
 ) -> Result<AsyncSortResult, RendererError> {
+    let positions = input.positions();
+    let camera = input.camera();
     camera
         .validate()
         .map_err(|_| RendererError::InvalidCamera)?;

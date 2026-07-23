@@ -12,7 +12,7 @@ use std::{mem::size_of, num::NonZeroU64};
 use bytemuck::{Pod, Zeroable};
 use wgpu::util::DeviceExt;
 
-use crate::{DirectSceneError, GpuSurfaceRenderParams, wgpu_label};
+use crate::{DirectSceneError, GpuSortPair, GpuSurfaceRenderParams, wgpu_label};
 
 const WORKGROUP_SIZE: u32 = 128;
 const ITEMS_PER_THREAD: u32 = 8;
@@ -86,13 +86,6 @@ impl Dispatch2d {
         let y = workgroups.div_ceil(x);
         (y <= limit).then_some(Self { x, y })
     }
-}
-
-#[repr(C)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Pod, Zeroable)]
-pub(crate) struct GpuSortPair {
-    pub(crate) key: u32,
-    pub(crate) id: u32,
 }
 
 #[repr(C)]

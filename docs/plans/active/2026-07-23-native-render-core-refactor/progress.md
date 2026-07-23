@@ -14,17 +14,17 @@ their own single block in the same format.
 <!-- gsplat-program-task-states: begin -->
 A0 = Accepted
 A1 = Accept
+A2 = Active
 <!-- gsplat-program-task-states: end -->
 
 ## Program status
 
 - Plan bundle: committed at `c478252246733f6dc209686091caf183e1ef7f06`.
-- Implementation: Package A started; A1 guardrails are Accepted.
+- Implementation: Package A started; A1 guardrails and the A2a data leaf are complete.
 - Current work package: A — responsibility extraction.
-- Active package task: none.
-- Last completed task: A1 — Accepted.
-- Next eligible task: A2 — extract `api.rs` and strategy-free
-  `data/{layout,view}.rs` types.
+- Active package task: A2 — remains Active after the completed A2a subtask.
+- Last completed subtask: A2a — strategy-free data/layout/view leaf extraction.
+- Next eligible subtask: A2b API/legacy-session boundary under root-task direction.
 - Integration branch: `codex/native-render-core-refactor`.
 - Frozen source implementation closeout:
   `5db2520e0d7a0ef1c68a78bdb9abc6fc588c5186`.
@@ -75,7 +75,140 @@ eligible task. Do not rewrite the architecture in this ledger.
 
 ## Current task
 
-No implementation task is active.
+### A2a — Extract strategy-free data/layout/view leaves
+
+- Parent task state: A2 Active; A2a completion does not close A2.
+- Subtask state: Complete; A2 remains Active
+- Started: 2026-07-23 20:18 CST
+- Ended: 2026-07-23 20:33 CST
+- Baseline commit: `304ab0ee115e7cc1bb939922ac531376b90d3796`
+- Worktree before task: clean detached checkout at the exact baseline; branch
+  `codex/native-render-a2a-data` was created before the first edit
+- Hypothesis: the legacy owner can shed its strategy-free kernel ABI and narrow
+  data views without changing render behavior, public paths, asynchronous copy
+  timing, shader math, FFI or lifecycle ownership.
+- Dependencies: A1 Accepted and integrated at the stated baseline
+- Allowed scope:
+  - new `crates/gsplat-render-wgpu/src/data/{mod.rs,layout.rs,view.rs}`
+  - mechanical `mod`, import and root re-export changes in render-wgpu
+  - `lib.rs`-resident `GpuInstance`, `GpuSurfaceSourceElem` and
+    `GpuSurfaceRenderParams`
+  - the single-definition strategy-free `GpuSortPair` ABI if its move remains
+    confined to `direct_gpu_order.rs`
+  - private `CameraCovarianceTerms`, `ShColorLayout<'a>`, a real Direct upload
+    `SplatSetView<'a>` parameter bundle and the existing native async worker's
+    `OwnedCpuOrderInput`
+  - this ledger and only the A1 grandfather baselines for legacy files that
+    physically shrink in this extraction
+- Forbidden scope:
+  - `api.rs`, `SurfaceFrameOutput`, public signature changes or new public API
+  - Resident types/constants, `resident_scene.rs`, `resident_gpu.rs`, their
+    ownership/preflight, or either Resident grandfather baseline
+  - shaders, render/sort/projection/raster math, precision, membership, camera,
+    resolution, C ABI, JNI, Swift, Web API or platform lifecycle
+  - `Renderer`, `SceneRuntime`, `PlanSet`, controller, evidence owner,
+    `FrameSnapshot`, `InstanceBuildParams` or `PreparedRendererGeometryPath`
+  - activating `plans/` or `renderer/mod.rs`, changing product defaults, GPU
+    conformance/device collection, merging the integration branch or pushing
+- Symbol and dependency inventory before production edits:
+  - `GpuInstance` is a 48-byte public `repr(C)`/`Pod` instance record defined
+    in `lib.rs`; all in-tree consumers are the legacy CPU reference path. Its
+    existing crate-root public path must remain a root re-export.
+  - `GpuSurfaceSourceElem` is the 64-byte Direct source upload record defined in
+    `lib.rs`; `make_surface_source_elems` packs it and Direct GPU-order tests
+    construct it through the parent module. Moving it to a sibling leaf
+    requires crate-only field visibility, not public exposure.
+  - `GpuSurfaceRenderParams` is the 112-byte shared Direct/Resident/projected
+    uniform defined in `lib.rs`; `lib.rs`, `direct_gpu_order.rs`,
+    `resident_gpu.rs`, `preproject_gpu.rs` and `projected_quads_gpu.rs` consume
+    the existing crate-root path. A crate-root re-export preserves those uses.
+  - `GpuSortPair` is one 8-byte `repr(C)`/`Pod` key-ID record defined only in
+    `direct_gpu_order.rs`; moving this definition and importing it back is a
+    single-file mechanical A5-owner edit with no shader or algorithm change.
+  - five private `ScanParams` definitions and three differently named indirect
+    draw records span `direct_gpu_order.rs`, `external_prefix_radix.rs`,
+    `projected_quads_gpu.rs`, `preproject_gpu.rs`, `tiled_gpu.rs` and
+    `tiled_resident_gpu.rs`. Even where byte layouts match, unifying them crosses
+    several A5-owned modules, so A2a defers that work to A5.
+  - `CameraCovarianceTerms` is a six-f32 private value used by the legacy owner
+    and a Preproject CPU oracle through the crate-root path; `ShColorLayout` is
+    a borrow-only SH slice/stride view used only during current color packing.
+  - current Direct source packing passes `SceneBuffers`, covariance terms and
+    alpha slices separately. `SplatSetView` will replace that real packing
+    bundle for the duration of the call only; it will not be stored.
+  - native async ordering currently clones the Resident position `Arc` or makes
+    the Direct position copy exactly once in `SurfaceAsyncSorter::new`, then
+    copies `Camera` per request. `OwnedCpuOrderInput` must wrap that worker
+    boundary without moving either copy point and without cloning an `Arc` or
+    scene per frame.
+- Hard gates:
+  - architecture checker and its self-test pass; lowered shrink baselines land
+    in the same commit
+  - GPU ABI retains `repr(C)`, `Pod`/`Zeroable`, exact size/alignment and field
+    offset assertions; `Vec3f` is not made an ABI/Pod type
+  - `GpuInstance` remains available at the existing public crate-root path and
+    all other visibility remains no wider than before
+  - async Direct copy occurs once at sorter construction; Resident uses the
+    existing `Arc::clone`; no retained borrowed view or per-frame scene clone
+  - format/check/workspace tests/clippy/rustdoc and affected wasm/FFI entrypoints
+    from `handbook/VERIFICATION.md` pass
+  - final diff contains only the declared extraction/ledger/policy scope
+- Performance observations: none planned; A2a is behavior-only extraction
+- Required endpoints for claim: none; GPU conformance and real-device evidence
+  remain root-task responsibilities and will be reported as not run
+- Performance correction used: no
+- Known correctness issues: none
+- Result:
+  - `data/layout.rs` now owns `GpuInstance`, `GpuSurfaceSourceElem`,
+    `GpuSurfaceRenderParams` and the single-definition `GpuSortPair`; every ABI
+    retains `repr(C)` plus `Pod`/`Zeroable` and compile-time size, alignment and
+    per-field offset assertions
+  - `data/view.rs` now owns the existing covariance/SH views, one borrow-only
+    `SplatSetView` consumed immediately by Direct source packing, and
+    `OwnedCpuOrderInput` at the native async sort worker boundary
+  - `GpuInstance` remains documented at `gsplat_render_wgpu::GpuInstance`; all
+    other moved symbols remain crate-only
+  - Resident ordering still performs `Arc::clone(&scene.positions)` and Direct
+    still copies positions once in `SurfaceAsyncSorter::new`; the worker moves
+    that same Arc into and back out of each owned input without an Arc or scene
+    clone per request
+  - duplicate `ScanParams` and indirect draw records remain in place and are
+    explicitly deferred to A5 rather than unified across A5-owned modules
+- Source-size ratchet:
+  - `lib.rs`: 5,680 -> 5,601 physical LOC
+  - `direct_gpu_order.rs`: 2,862 -> 2,855 physical LOC
+  - `surface_session.rs`: 5,044 -> 5,042 physical LOC
+  - new `data/mod.rs`, `layout.rs`, and `view.rs`: 10, 98, and 130 physical LOC
+  - all three changed grandfather baselines exactly match those final counts;
+    Resident baselines are unchanged
+- Verification:
+  - PASS `PYTHONDONTWRITEBYTECODE=1 tests/architecture/check_source_architecture.py`
+  - PASS `PYTHONDONTWRITEBYTECODE=1 tests/architecture/test_source_architecture.py`
+  - PASS `cargo fmt --all -- --check`
+  - PASS `cargo check --workspace --locked`
+  - PASS `cargo test -p gsplat-render-wgpu --lib --locked` (280 passed, 5 ignored)
+  - PASS `cargo test --workspace --locked`, including the available non-required
+    SortedAlpha conformance invocation and all workspace/doc tests
+  - PASS `cargo clippy --workspace --all-targets --locked -- -D warnings`
+  - PASS `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --locked`
+  - PASS `cargo check -p gsplat-web --target wasm32-unknown-unknown --locked`
+  - PASS `bash tests/ffi/run-ffi-smoke.sh` (`drawn=2`, `visible=2`)
+  - PASS policy JSON parse, public rustdoc-path inspection, exact LOC audit,
+    async Arc/copy-site audit and `git diff --check`
+- Environment note: the first workspace check failed with `No space left on
+  device (os error 28)`. Only rebuildable Cargo caches were cleared; after the
+  disk-space issue was resolved, the exact workspace check and all later gates
+  passed.
+- Not run by A2a: `GSPLAT_REQUIRE_GPU_CONFORMANCE=1`, formal GPU conformance,
+  browser runtime smoke, Android/iOS physical-device runs and performance
+  collection; the root task owns those endpoints.
+- Scope audit: no `api.rs`, `SurfaceFrameOutput`, Resident source/baseline,
+  shader, FFI source/header, platform wrapper, renderer owner, policy owner or
+  product-default change is present.
+- Decision: complete the independently verifiable A2a result and leave the
+  machine registry at `A2 = Active`; do not claim overall A2 acceptance.
+- Result identity: `304ab0e..codex/native-render-a2a-data`; resolve the branch
+  tip SHA after the single closeout commit is created.
 
 ### A0 — Freeze integration baseline and evidence inventory
 
@@ -373,6 +506,7 @@ No implementation task is active.
 | A0 | Accepted | `2aef9f0` | [a0-baseline.md](a0-baseline.md) | dedicated integration branch from `c478252`; no merge/rebase/cherry-pick |
 | A0 evidence audit | Accepted | `9df0d6c` | [a0-baseline.md](a0-baseline.md) | evidence classes and artifact identity limits tightened; integration decision unchanged |
 | A1 | Accepted | `f6180844bbaf910b74ff5ecfe81c9b9588c88561` | `tests/architecture/` and this ledger | root-accepted physical-LOC/dependency ratchet passes 56 fixtures and the A0 tree; A2a is eligible |
+| A2a | Complete (A2 Active) | branch tip pending | `data/{layout,view}.rs` and this ledger | strategy-free ABI and real data views extracted; API/Resident/shader/lifecycle unchanged |
 
 ## Baseline evidence inherited, not rerun by default
 

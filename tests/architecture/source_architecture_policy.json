@@ -182,7 +182,7 @@
     {
       "path": "crates/gsplat-render-wgpu/src/lib.rs",
       "a0_physical_loc": 5680,
-      "baseline_physical_loc": 5680,
+      "baseline_physical_loc": 5601,
       "owner_task": "M7",
       "exit_condition": "Remove the legacy owner and leave lib.rs as public re-exports below 200 physical LOC."
     },
@@ -203,7 +203,7 @@
     {
       "path": "crates/gsplat-render-wgpu/src/surface_session.rs",
       "a0_physical_loc": 5044,
-      "baseline_physical_loc": 5044,
+      "baseline_physical_loc": 5042,
       "owner_task": "M7",
       "exit_condition": "Delete the legacy session/controller owner after product cutover and reduce or remove this file below 800 physical LOC."
     },
@@ -217,7 +217,7 @@
     {
       "path": "crates/gsplat-render-wgpu/src/direct_gpu_order.rs",
       "a0_physical_loc": 2862,
-      "baseline_physical_loc": 2862,
+      "baseline_physical_loc": 2855,
       "owner_task": "A5",
       "exit_condition": "Extract strategy-free GPU order primitives and leave no file at or above 800 physical LOC."
     },

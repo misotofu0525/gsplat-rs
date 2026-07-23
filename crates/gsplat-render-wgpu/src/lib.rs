@@ -2,6 +2,7 @@
 
 //! WGPU renderer with a SortedAlpha reference path.
 
+mod data;
 mod direct_gpu_order;
 mod draw_pass;
 #[cfg_attr(not(test), allow(dead_code))]
@@ -27,6 +28,13 @@ mod surface_presenter;
 mod surface_session;
 mod tiled_resident_gpu;
 
+pub use data::GpuInstance;
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) use data::OwnedCpuOrderInput;
+pub(crate) use data::{
+    CameraCovarianceTerms, GpuSortPair, GpuSurfaceRenderParams, GpuSurfaceSourceElem,
+    ShColorLayout, SplatSetView,
+};
 pub use gpu_producer_telemetry::{
     SurfaceGpuOrderProducer, SurfaceGpuProducerDrawScope, SurfaceGpuProducerMeasurement,
     SurfaceGpuProducerMeasurementFailure, SurfaceGpuProducerMeasurementFailureReason,
@@ -84,7 +92,7 @@ const MAX_PARALLEL_PREPROCESS_CHUNKS: usize = 4;
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::Instant;
 
-use bytemuck::{Pod, Zeroable};
+use bytemuck::Zeroable;
 use gsplat_core::{Camera, ErrorCode, FrameStats, RenderMode, RendererConfig, SceneBuffers, Vec3f};
 use gsplat_sort::{CpuSortBackend, SortError};
 #[cfg(not(target_arch = "wasm32"))]
@@ -1350,31 +1358,29 @@ impl Renderer {
     }
 }
 
-fn make_surface_source_elems(
-    scene: &SceneBuffers,
-    world_covariance_terms: &[CameraCovarianceTerms],
-    alpha_values: &[f32],
-) -> Vec<GpuSurfaceSourceElem> {
-    if scene.positions.is_empty() {
+fn make_surface_source_elems(splats: SplatSetView<'_>) -> Vec<GpuSurfaceSourceElem> {
+    if splats.is_empty() {
         return vec![GpuSurfaceSourceElem::zeroed()];
     }
 
-    (0..scene.positions.len())
+    (0..splats.len())
         .map(|i| {
-            let position = scene.positions[i];
-            let color_dc = scene.color_dc.get(i).copied().unwrap_or([0.0, 0.0, 0.0]);
-            let cov = world_covariance_terms
-                .get(i)
-                .copied()
-                .unwrap_or(CameraCovarianceTerms {
-                    xx: 0.0,
-                    xy: 0.0,
-                    xz: 0.0,
-                    yy: 0.0,
-                    yz: 0.0,
-                    zz: 0.0,
-                });
-            let alpha = alpha_values.get(i).copied().unwrap_or(0.0);
+            let position = splats.positions()[i];
+            let color_dc = splats.color_dc().get(i).copied().unwrap_or([0.0, 0.0, 0.0]);
+            let cov =
+                splats
+                    .world_covariance_terms()
+                    .get(i)
+                    .copied()
+                    .unwrap_or(CameraCovarianceTerms {
+                        xx: 0.0,
+                        xy: 0.0,
+                        xz: 0.0,
+                        yy: 0.0,
+                        yz: 0.0,
+                        zz: 0.0,
+                    });
+            let alpha = splats.alpha_values().get(i).copied().unwrap_or(0.0);
             GpuSurfaceSourceElem {
                 position: [position.x, position.y, position.z, 0.0],
                 covariance0: [cov.xx, cov.xy, cov.xz, cov.yy],
@@ -1461,47 +1467,6 @@ fn is_visible(depth_z: f32, camera: &Camera) -> bool {
 fn depth_to_key(depth_z: f32) -> u32 {
     // Positive finite depth values preserve a monotonic relationship when using IEEE-754 bits.
     depth_z.max(0.0).to_bits()
-}
-
-#[repr(C)]
-#[derive(Clone, Copy, Pod, Zeroable)]
-pub struct GpuInstance {
-    // xy = center in NDC, zw = major axis in NDC
-    pub center_and_axis_u: [f32; 4],
-    // xy = minor axis in NDC, zw = reserved
-    pub axis_v_and_pad: [f32; 4],
-    // Premultiplied RGB + alpha
-    pub color_rgba: [f32; 4],
-}
-
-#[repr(C)]
-#[derive(Clone, Copy, Pod, Zeroable)]
-struct GpuSurfaceSourceElem {
-    position: [f32; 4],
-    covariance0: [f32; 4],
-    covariance1: [f32; 4],
-    color_dc: [f32; 4],
-}
-
-#[repr(C)]
-#[derive(Clone, Copy, Pod, Zeroable)]
-pub(crate) struct GpuSurfaceRenderParams {
-    camera_pos: [f32; 4],
-    view_rot_row0: [f32; 4],
-    view_rot_row1: [f32; 4],
-    view_rot_row2: [f32; 4],
-    vertical_fov_radians: f32,
-    near_plane: f32,
-    far_plane: f32,
-    aspect: f32,
-    width: u32,
-    height: u32,
-    sh_degree: u32,
-    len: u32,
-    order_stride_words: u32,
-    order_id_offset_words: u32,
-    source_position_stride_words: u32,
-    source_position_offset_words: u32,
 }
 
 #[cfg(test)]
@@ -2078,29 +2043,6 @@ fn project_camera_covariance_to_ndc(
     Some(cov2)
 }
 
-#[derive(Clone, Copy)]
-struct CameraCovarianceTerms {
-    xx: f32,
-    xy: f32,
-    xz: f32,
-    yy: f32,
-    yz: f32,
-    zz: f32,
-}
-
-impl CameraCovarianceTerms {
-    fn from_matrix(cov: [[f32; 3]; 3]) -> Self {
-        Self {
-            xx: cov[0][0],
-            xy: cov[0][1],
-            xz: cov[0][2],
-            yy: cov[1][1],
-            yz: cov[1][2],
-            zz: cov[2][2],
-        }
-    }
-}
-
 fn transform_covariance_terms_to_camera(
     cov: CameraCovarianceTerms,
     view_rot: [[f32; 3]; 3],
@@ -2266,32 +2208,6 @@ pub(crate) fn rotation_has_finite_nonzero_norm(rotation_xyzw: [f32; 4]) -> bool 
         .map(|value| value * value)
         .sum::<f32>();
     norm2.is_finite() && norm2 > 0.0
-}
-
-#[derive(Clone, Copy)]
-struct ShColorLayout<'a> {
-    rest: Option<&'a [f32]>,
-    degree: u8,
-    per_channel: usize,
-    stride: usize,
-}
-
-impl<'a> ShColorLayout<'a> {
-    fn new(scene: &'a SceneBuffers) -> Self {
-        let rest = scene.sh_rest.as_deref();
-        let coeff_total = if rest.is_some() {
-            (scene.sh_degree as usize + 1).pow(2)
-        } else {
-            1
-        };
-        let per_channel = coeff_total.saturating_sub(1);
-        Self {
-            rest,
-            degree: if rest.is_some() { scene.sh_degree } else { 0 },
-            per_channel,
-            stride: per_channel * 3,
-        }
-    }
 }
 
 unsafe fn sh_color_unchecked(
@@ -3009,7 +2925,12 @@ impl DirectSceneResources {
             contents: bytemuck::bytes_of(&GpuSurfaceRenderParams::zeroed()),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
-        let source_elems = make_surface_source_elems(scene, world_covariance_terms, alpha_values);
+        let source_elems = make_surface_source_elems(SplatSetView::new(
+            &scene.positions,
+            &scene.color_dc,
+            world_covariance_terms,
+            alpha_values,
+        ));
         let source_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: wgpu_label("gsplat-direct-source"),
             contents: bytemuck::cast_slice(&source_elems),
