@@ -6,7 +6,44 @@
       "IO-PLY-1",
       "IO-SPZ-1"
     ],
-    "parallel_execution": null,
+    "parallel_execution": {
+      "activation_commit": "1ac92e114378065eadbb0537da5a416a68faee0b",
+      "members": [
+        {
+          "task": "E3",
+          "lane": "E3-cpu-order",
+          "write_allowlist": [
+            "crates/gsplat-core/src/lib.rs",
+            "crates/gsplat-render-wgpu/src/lib.rs",
+            "crates/gsplat-render-wgpu/src/data/mod.rs",
+            "crates/gsplat-render-wgpu/src/data/view.rs",
+            "crates/gsplat-render-wgpu/src/cpu_order.rs",
+            "crates/gsplat-render-wgpu/src/cpu/mod.rs",
+            "crates/gsplat-render-wgpu/src/cpu/workspace.rs",
+            "crates/gsplat-render-wgpu/src/cpu/preprocess.rs",
+            "crates/gsplat-render-wgpu/src/cpu/preprocess/scalar.rs",
+            "crates/gsplat-render-wgpu/src/cpu/preprocess/aarch64.rs",
+            "crates/gsplat-render-wgpu/src/cpu/preprocess/x86_64.rs",
+            "crates/gsplat-render-wgpu/src/plans/cpu_post.rs",
+            "crates/gsplat-render-wgpu/src/surface_session.rs"
+          ]
+        },
+        {
+          "task": "E8",
+          "lane": "E8a-gpu-adapter",
+          "write_allowlist": [
+            "crates/gsplat-render-wgpu/src/renderer/mod.rs",
+            "crates/gsplat-render-wgpu/src/renderer/gpu_prepare.rs",
+            "crates/gsplat-render-wgpu/src/scene/runtime.rs"
+          ]
+        }
+      ],
+      "integration_order": [
+        "E8a-gpu-adapter",
+        "E3-cpu-order"
+      ],
+      "reason": "E3 owns CPU ordering and platform preprocess leaves while E8a owns only the GPU runtime preparation seam; exact production write paths and mutable owners are disjoint, and root owns ledger, policy, review, integration and shared gates."
+    },
     "task_catalog": {
       "A0": "A",
       "A1": "A",

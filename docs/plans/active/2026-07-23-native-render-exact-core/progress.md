@@ -8,30 +8,39 @@
 <!-- gsplat-program-task-states: begin -->
 E0 = Accepted
 E1 = Accepted
-E2 = Active
+E2 = Accepted
+E3 = Active
+E8 = Active
 <!-- gsplat-program-task-states: end -->
+
+<!-- gsplat-program-active-lanes: begin -->
+activation_commit = 1ac92e114378065eadbb0537da5a416a68faee0b
+E3 = E3-cpu-order
+E8 = E8a-gpu-adapter
+<!-- gsplat-program-active-lanes: end -->
 
 ## Package status
 
 - Package: E — Exact prepared plans and native execution, still shadowed.
-- Active task: E2 — CPU shadow oracle.
-- Last completed task: E1 — private transactional Exact runtime skeleton.
+- Active tasks: E3 CPU order-engine seam and E8a GPU runtime adapter under the
+  exact disjoint parallel contract below.
+- Last completed task: E2 — CPU shadow oracle.
 - E1 state: Accepted after root fixed-SHA review and fast-forward integration
   of candidate `0496266cc73de5fc84acb7c393606fa68eb77623`.
 - Dependency: Package A/A9 Accepted.
 - Product default: unchanged legacy renderer/session path.
 - E8 feasibility audit: stopped without changes after proving that the E1
   runtime lacks a real device-owned GPU scene/preparation/encoder seam. E8 is
-  not terminal and is not currently Active. After E2 is integrated, one finite
-  GPU runtime adapter is prepared and accepted before E8 is reactivated from a
-  new exact baseline. Later E4/NEON and E5/AVX2 lanes require E3's
+  now Active only as the finite E8a adapter lane; the actual GPU PostSort plan
+  resumes from a fresh exact root baseline only after that adapter is Accepted.
+  Later E4/NEON and E5/AVX2 lanes require E3's
   platform-leaf interface; E6/E7 remain sequential because both own
   engine/workspace decisions.
-- Next safe parallel batch: after E2 is Accepted and integrated, start E3's CPU
-  order-engine seam and the finite GPU runtime adapter as two user-visible
-  tasks from the same exact root SHA. Their production allowlists and mutable
-  owners are disjoint; root alone owns shared architecture policy/ledger edits
-  and the integration matrix. Resume E8 only after the adapter is Accepted.
+- Current safe parallel batch: E3's CPU order-engine seam and E8a's finite GPU
+  runtime adapter run as two user-visible tasks from one exact root SHA. Their
+  production allowlists and mutable owners are disjoint; root alone owns shared
+  architecture policy/ledger edits and the integration matrix. Resume the GPU
+  PostSort implementation only after the adapter is Accepted.
   Never create parallel writers for the same mutable owner merely to increase
   concurrency.
 - Source-size rule: no fixed LOC quota, split trigger or completion gate. Module
@@ -166,7 +175,7 @@ E2 = Active
   needs a real device-owned projected-view/preparation adapter; E1 intentionally
   did not invent a GPU owner, fake raster or host-visible indirect count.
 
-## E2 / E8 parallel active contract
+## E2 / E8 original activation contract (historical)
 
 - Shared baseline and activation commit:
   `0496266cc73de5fc84acb7c393606fa68eb77623`.
@@ -194,9 +203,67 @@ E2 = Active
   raster/WGSL or existing GPU-primitive edits, it stops inside its allowlist
   and reports the exact missing adapter. E2 continues independently; root then
   activates one finite adapter before resuming E8.
-- Integration order is E2-shadow then E8-gpu-post, followed by one root-owned
-  shared workspace/Metal/WASM/FFI matrix. Writer tasks run focused gates only.
+- Declared integration order was E2-shadow then E8-gpu-post. E8 correctly
+  stopped before producing a candidate when it proved the missing adapter;
+  E2 continued independently and is now Accepted.
 - No fixed LOC, FPS or competitor percentage is a writer or acceptance gate.
+
+## E2 closeout
+
+- Final state: Accepted.
+- Exact writer parent:
+  `708b538f0f6d4517acfdd98003e3d8573ea2c0ee`.
+- Accepted candidate:
+  `55c7ab7bfa2a4b1509974e6b17d8ca8e8bf6fd4c`.
+- Root integration commit:
+  `1ac92e114378065eadbb0537da5a416a68faee0b`.
+- Scope: exactly five allowlisted paths. New shadow code is native test-only;
+  product routing, public API/ABI, WGSL, GPU primitives and raster semantics
+  are unchanged.
+- Result: the legacy Direct/Packed raster and the private E1 CPU PostSort handoff
+  have byte-identical offscreen RGBA coverage for SH0--SH3 while preserving
+  full source/resident/work counts, inclusive near/far, stable full32 depth and
+  source-ID ties. Contributor/drawn counts remain unavailable rather than
+  fabricated before their owners exist.
+- Review history: two earlier candidates were rejected, not integrated. The
+  first lacked legacy renderer scene/path/mode/config identity. The second did
+  not bind the paired shadow scene and could combine renderer A with a fresh
+  same-contract frame from replaced slot B. The accepted immutable receipt
+  binds both sides, full backing identity and runtime scene generation, and
+  rejects every stale combination before external-order raster while
+  preserving the prior image.
+- Independent final fixed-SHA review: P0/P1/P2 all zero.
+- Root shared verification: workspace tests, strict all-target Clippy,
+  warning-free Rustdoc, wasm32 Web check, required Metal SortedAlpha, five
+  shadow GPU tests, architecture checker/self-tests, format/diff and C FFI
+  smoke all pass.
+
+## E3 / E8a parallel active contract
+
+- Activation code commit:
+  `1ac92e114378065eadbb0537da5a416a68faee0b`.
+- Writer model: two user-visible Codex tasks in separate worktrees. No
+  collaboration subagent edits production code.
+- E3 owns only the CPU order engine, reusable workspace, scalar dispatcher and
+  empty AArch64/x86 platform leaves, its CPU PostSort adapter, legacy sync/
+  async CPU-order call sites, and the private `Vec3f` layout proof listed in
+  the architecture policy.
+- E8a owns only `renderer/mod.rs`, new `renderer/gpu_prepare.rs`, and
+  `scene/runtime.rs`. It prepares one exact device-owned GPU scene/plan seam;
+  it does not implement the later GPU plan, submit/poll/map/readback/present,
+  raster/WGSL, controller or product policy.
+- Root alone owns this ledger and architecture-policy edits. The writer
+  allowlists have no exact-file or mutable-owner overlap.
+- Integration order: E8a adapter, then E3 CPU engine. Each candidate receives
+  a fixed-SHA review before integration; root runs the shared matrix once on
+  the combined result.
+- E3 stop conditions: no public API/C ABI/platform-wrapper changes, no point/
+  SH/resolution/order changes, no Adaptive scheduling change and no duplicate
+  radix implementation. E8a stops if a truthful adapter requires raster,
+  shader, Surface host or submission ownership.
+- Module size is reviewed by responsibility cohesion and maintenance risk;
+  800, the mistyped 890 and every other fixed LOC number are explicitly absent
+  from writer and acceptance gates.
 
 ## E8 feasibility stop and adapter dependency
 
@@ -214,19 +281,18 @@ E2 = Active
   `ProjectedRankProjector` external projection, and existing Exact resident
   resources. No shader, raster math or GPU algorithm change is required by the
   adapter.
-- The finite adapter starts only after E2 because both require
-  `renderer/mod.rs`. Its implementation allowlist is:
+- The finite adapter is now active after E2 because both required
+  `renderer/mod.rs`. Its writer implementation allowlist is:
   - `crates/gsplat-render-wgpu/src/renderer/mod.rs`;
   - new `crates/gsplat-render-wgpu/src/renderer/gpu_prepare.rs`;
-  - `crates/gsplat-render-wgpu/src/scene/runtime.rs`;
-  - `tests/architecture/source_architecture_policy.json`;
-  - `tests/architecture/test_source_architecture.py`.
+  - `crates/gsplat-render-wgpu/src/scene/runtime.rs`.
+  Root, not the writer, owns any later architecture policy registration.
 - Adapter contract: one transactional CPU/GPU scene candidate; async scoped
   device preparation; one resolved-color owner; capacity/count/SH0--SH3
   agreement; a frame seam that receives queue and an existing encoder but can
   never submit, poll, map, read back or present. Unsupported GPU preparation
   omits the GPU entry while preserving the prepared Exact CPU fallback.
-- E8 is reactivated only from the accepted E2+adapter root SHA in a fresh
-  worktree. Its original plans-only allowlist then resumes and must still prove
+- The GPU PostSort implementation resumes only from the accepted E2+adapter
+  root SHA in a fresh worktree. Its original plans-only allowlist must still prove
   complete membership, original SH degree, inclusive visibility, stable
   full32 ordering, `D=V`, exact generation guards and unchanged product routing.
