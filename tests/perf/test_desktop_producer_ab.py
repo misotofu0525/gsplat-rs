@@ -77,7 +77,8 @@ def synthetic_records(producer: str = "post_sort") -> dict[str, list[dict[str, s
     producer_times = (1.8, 2.2, 2.4)
     for index in range(3):
         measured = index >= WARMUP
-        revision = index + 10
+        # The runtime's first applied camera state is revision zero.
+        revision = index
         order_ticket = index + 100
         producer_ticket = index + 200
         frames.append(

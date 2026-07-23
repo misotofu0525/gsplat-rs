@@ -367,7 +367,11 @@ def validate_run_log(
     order_issued: dict[int, tuple[int, bool, int]] = {}
     producer_issued: dict[int, tuple[int, bool, int]] = {}
     for frame in scheduled:
-        camera_revision = parse_uint(frame.get("camera_revision", ""), "frame.camera_revision", positive=True)
+        # Camera revisions are monotonically increasing identities, but the
+        # first applied trace frame is legitimately revision zero.
+        camera_revision = parse_uint(
+            frame.get("camera_revision", ""), "frame.camera_revision"
+        )
         is_measured = frame["phase"] == "measure"
         order_ticket = parse_uint(
             frame.get("measurement_ticket_submitted", ""), "frame.measurement_ticket_submitted", positive=True
