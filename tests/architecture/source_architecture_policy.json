@@ -182,7 +182,7 @@
     {
       "path": "crates/gsplat-render-wgpu/src/lib.rs",
       "a0_physical_loc": 5680,
-      "baseline_physical_loc": 5601,
+      "baseline_physical_loc": 5588,
       "owner_task": "M7",
       "exit_condition": "Remove the legacy owner and leave lib.rs as public re-exports below 200 physical LOC."
     },

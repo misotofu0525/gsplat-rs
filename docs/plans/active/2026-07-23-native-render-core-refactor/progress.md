@@ -20,11 +20,11 @@ A2 = Active
 ## Program status
 
 - Plan bundle: committed at `c478252246733f6dc209686091caf183e1ef7f06`.
-- Implementation: Package A started; A1 guardrails and the A2a data leaf are complete.
+- Implementation: Package A started; A1 guardrails, A2a data leaves and the A2b API leaf are complete.
 - Current work package: A — responsibility extraction.
 - Active package task: A2 — remains Active after the completed A2a subtask.
+- Current subtask: A2b complete; A2 remains Active pending root-task acceptance and direction.
 - Last completed subtask: A2a — strategy-free data/layout/view leaf extraction.
-- Next eligible subtask: A2b API/legacy-session boundary under root-task direction.
 - Integration branch: `codex/native-render-core-refactor`.
 - Frozen source implementation closeout:
   `5db2520e0d7a0ef1c68a78bdb9abc6fc588c5186`.
@@ -74,6 +74,124 @@ Then record the code commit (if any), evidence paths, commands, result and next
 eligible task. Do not rewrite the architecture in this ledger.
 
 ## Current task
+
+### A2b — Extract the stable API leaf
+
+- Parent task state: A2 Active; A2b completion will not close A2 before root-task acceptance.
+- Subtask state: Complete; A2 remains Active
+- Started: 2026-07-23 20:46 CST
+- Ended: 2026-07-23 20:54 CST
+- Baseline commit: `4e110e4e02291dc0a8d77046e8f6b9d123d0ff69`
+- Worktree before task: clean detached checkout at the exact baseline; branch
+  `codex/native-render-a2b-api` was created and checked out before the first edit
+- Exact source baseline before production edits:
+  - `crates/gsplat-render-wgpu/src/lib.rs`: 5,601 physical LOC
+  - architecture grandfather baseline for `lib.rs`: 5,601 physical LOC
+- Hypothesis: `GeometryPath` and `PreprocessOutput` are strategy-independent,
+  stable API leaves that can move byte-for-byte to one small private `api.rs`
+  while crate-root re-exports preserve every existing public path and all
+  render, preflight, FFI, shader, resource and platform-lifecycle behavior.
+- Dependencies: A1 Accepted; A2a complete and root-accepted at the stated baseline
+- Allowed scope:
+  - new private `crates/gsplat-render-wgpu/src/api.rs`
+  - move the existing `GeometryPath` and `PreprocessOutput` declarations from
+    `lib.rs` without changing derives, variants, default, docs, fields or types
+  - private `mod api;`, root `pub use api::{GeometryPath, PreprocessOutput};`,
+    and only compilation-required mechanical imports
+  - this A2b ledger record
+  - exact formatted `lib.rs` physical-LOC ratchet reduction in
+    `tests/architecture/source_architecture_policy.json`; immutable A0 LOC,
+    owner task and exit condition remain unchanged
+- Forbidden scope:
+  - `RendererError`, `SurfacePresenterError`, Direct/Packed preflight or error
+    clusters; these remain deferred to A3, A6 and A8 ownership
+  - `SurfaceFrameOutput`, `SurfaceFrameTimings`, session/controller/adaptive,
+    evidence or receipt types; these remain deferred to A7/A8 ownership
+  - `Renderer` ownership, preflight functions, resource calculations,
+    `surface_session.rs`, `surface_presenter.rs`, Resident/Paged/Tiled/GPU order,
+    project/raster modules, `data/`, shaders or tests
+  - C FFI/header, JNI/Kotlin, Swift, Web/Wasm, examples, tools, Cargo
+    dependencies/features, public signatures, FFI numeric mappings, defaults,
+    camera, point count, SH, resolution or ordering behavior
+  - public `api` module exposure, a future placeholder/renderer owner, test
+    relocation, merge, rebase, push or another worktree
+- Required preservation:
+  - `GeometryPath` retains `Debug, Clone, Copy, PartialEq, Eq, Default`, exact
+    variant order, `SortedIndexDirect` default, variant documentation and
+    semantics; no `repr` or explicit discriminants
+  - `PreprocessOutput` retains `Debug, Clone, PartialEq, Eq`, both public fields
+    and their exact types
+  - `gsplat_render_wgpu::GeometryPath` and
+    `gsplat_render_wgpu::PreprocessOutput` remain valid; no
+    `gsplat_render_wgpu::api::*` path is introduced and consumers need no edits
+- Hard gates:
+  - architecture checker/self-tests pass and the exact formatted shrink
+    baseline lands in the same commit without changing A0 count, owner or exit
+  - format, locked workspace check/tests/clippy/rustdoc, render-wgpu lib tests,
+    wasm check and FFI smoke all pass
+  - a repository-external temporary crate imports both existing root names and
+    exhaustively matches all three `GeometryPath` variants
+  - `git diff --check`, exact physical LOC, declaration/path visibility and
+    declared-scope audits pass
+- Performance observations: none planned; A2b is a behavior-only extraction
+- Required endpoints for claim: none; GPU/API/FFI critical acceptance remains
+  the root task's responsibility, and device/browser/performance runs are out
+  of scope
+- Performance correction used: no
+- Deferred ownership:
+  - A3: Resident ownership/layout/preflight and related error responsibilities
+  - A6: canonical raster ownership
+  - A7: immutable evidence/receipt types and observer storage
+  - A8: Surface/offscreen lifecycle plus legacy session/presenter boundary
+- Known correctness issues: none
+- Result:
+  - private `api.rs` owns only the byte-for-byte moved `GeometryPath` and
+    `PreprocessOutput` declarations; it contains no placeholder or renderer owner
+  - `lib.rs` declares `mod api;` and publicly re-exports both names from the
+    crate root, so existing consumers compile unchanged and no public
+    `gsplat_render_wgpu::api::*` namespace exists
+  - `GeometryPath` derive list, variant order, `SortedIndexDirect` default,
+    documentation and semantics are unchanged; no representation or
+    discriminant was added
+  - `PreprocessOutput` derive list, public fields and field types are unchanged
+- Source-size ratchet:
+  - `lib.rs`: 5,601 -> 5,588 formatted physical LOC
+  - new `api.rs`: 14 formatted physical LOC
+  - only the `lib.rs` `baseline_physical_loc` changed from 5,601 to 5,588;
+    immutable A0 LOC 5,680, owner task M7 and exit condition are unchanged
+- Verification:
+  - PASS `PYTHONDONTWRITEBYTECODE=1 python3
+    tests/architecture/test_source_architecture.py` (3 tests)
+  - PASS `PYTHONDONTWRITEBYTECODE=1 python3
+    tests/architecture/check_source_architecture.py` (42 production Rust, 25
+    WGSL, 24 grandfathered)
+  - PASS `cargo fmt --all -- --check`
+  - PASS `cargo check --workspace --locked`
+  - PASS `cargo test -p gsplat-render-wgpu --lib --locked` (280 passed, 5 ignored)
+  - PASS `cargo test --workspace --locked`, including one SortedAlpha
+    conformance test and all workspace/doc tests
+  - PASS `cargo clippy --workspace --all-targets --locked -- -D warnings`
+  - PASS `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --locked`
+  - PASS `cargo check -p gsplat-web --target wasm32-unknown-unknown --locked`
+  - PASS `bash tests/ffi/run-ffi-smoke.sh` (`drawn=2`, `visible=2`)
+  - PASS repository-external temporary crate compile probe importing
+    `gsplat_render_wgpu::{GeometryPath, PreprocessOutput}` and exhaustively
+    matching all three geometry variants; the initial networked invocation was
+    safely interrupted at exit 130 while downloading, then the repository lock
+    was copied into the temporary directory and `cargo check --offline` passed
+    using the normal Cargo cache without modifying user or repository config
+  - PASS exact declaration comparison against baseline, private-module rustdoc
+    audit, `git diff --check`, exact LOC/policy audit and declared-scope audit
+- Not run by A2b: device runs, browser runtime smoke, performance benchmarks
+  and root GPU/API/FFI acceptance; these are explicitly outside this subtask
+- Scope audit: the final repository diff contains only `api.rs`, `lib.rs`, this
+  ledger and the exact `lib.rs` architecture baseline; no consumer, error,
+  preflight, resource, lifecycle, shader, data, FFI, binding, example, tool or
+  Cargo file changed
+- Decision: complete the independently verifiable A2b result and keep
+  `A2 = Active`; root-task acceptance determines later A2 direction
+- Result identity: resolve the single `codex/native-render-a2b-api` branch-tip
+  SHA after commit
 
 ### A2a — Extract strategy-free data/layout/view leaves
 
@@ -518,6 +636,7 @@ eligible task. Do not rewrite the architecture in this ledger.
 | A0 evidence audit | Accepted | `9df0d6c` | [a0-baseline.md](a0-baseline.md) | evidence classes and artifact identity limits tightened; integration decision unchanged |
 | A1 | Accepted | `f6180844bbaf910b74ff5ecfe81c9b9588c88561` | `tests/architecture/` and this ledger | root-accepted physical-LOC/dependency ratchet passes 56 fixtures and the A0 tree; A2a is eligible |
 | A2a | Complete (A2 Active) | `3758fd614bc09c5f330210cf87a120dd9fd0ccdd` | `data/{layout,view}.rs` and this ledger | root-accepted strategy-free ABI and real data views; API/Resident/shader/lifecycle unchanged |
+| A2b | Complete (A2 Active) | resolve branch tip | `api.rs` and this ledger | stable API leaves moved unchanged behind private module; root paths preserved and `lib.rs` ratchet lowered exactly |
 
 ## Baseline evidence inherited, not rerun by default
 

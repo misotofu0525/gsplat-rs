@@ -2,6 +2,7 @@
 
 //! WGPU renderer with a SortedAlpha reference path.
 
+mod api;
 mod data;
 mod direct_gpu_order;
 mod draw_pass;
@@ -28,6 +29,7 @@ mod surface_presenter;
 mod surface_session;
 mod tiled_resident_gpu;
 
+pub use api::{GeometryPath, PreprocessOutput};
 pub use data::GpuInstance;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use data::OwnedCpuOrderInput;
@@ -142,21 +144,6 @@ pub(crate) const fn wgpu_label(_label: &'static str) -> Option<&'static str> {
 #[cfg(not(target_os = "android"))]
 pub(crate) const fn wgpu_label(label: &'static str) -> Option<&'static str> {
     Some(label)
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum GeometryPath {
-    #[default]
-    SortedIndexDirect,
-    PackedAtlas,
-    /// Phase D experimental path: spatial pages uploaded into a fixed GPU atlas.
-    PagedActiveAtlas,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PreprocessOutput {
-    pub depth_keys: Vec<u32>,
-    pub indices: Vec<u32>,
 }
 
 #[derive(Debug, Error)]
