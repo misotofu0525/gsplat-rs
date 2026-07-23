@@ -9,29 +9,24 @@
 E0 = Accepted
 E1 = Accepted
 E2 = Active
-E8 = Active
 <!-- gsplat-program-task-states: end -->
-
-<!-- gsplat-program-active-lanes: begin -->
-activation_commit = 0496266cc73de5fc84acb7c393606fa68eb77623
-E2 = E2-shadow
-E8 = E8-gpu-post
-<!-- gsplat-program-active-lanes: end -->
 
 ## Package status
 
 - Package: E — Exact prepared plans and native execution, still shadowed.
-- Active tasks: E2 — CPU shadow oracle; E8 — prepared GPU PostSort plan.
+- Active task: E2 — CPU shadow oracle.
 - Last completed task: E1 — private transactional Exact runtime skeleton.
 - E1 state: Accepted after root fixed-SHA review and fast-forward integration
   of candidate `0496266cc73de5fc84acb7c393606fa68eb77623`.
 - Dependency: Package A/A9 Accepted.
 - Product default: unchanged legacy renderer/session path.
-- Parallel writer lanes: E2-shadow and E8-gpu-post, activated from exact commit
-  `0496266cc73de5fc84acb7c393606fa68eb77623`. Their machine-enforced file
-  allowlists are disjoint and integration order is E2 then E8. Later E4/NEON
-  and E5/AVX2 lanes require E3's platform-leaf interface; E6/E7 remain
-  sequential because both own engine/workspace decisions.
+- E8 feasibility audit: stopped without changes after proving that the E1
+  runtime lacks a real device-owned GPU scene/preparation/encoder seam. E8 is
+  not terminal and is not currently Active. After E2 is integrated, one finite
+  GPU runtime adapter is prepared and accepted before E8 is reactivated from a
+  new exact baseline. Later E4/NEON and E5/AVX2 lanes require E3's
+  platform-leaf interface; E6/E7 remain sequential because both own
+  engine/workspace decisions.
 - Source-size rule: no fixed LOC quota, split trigger or completion gate. Module
   boundaries follow responsibility, dependency direction, compatibility,
   testability and maintenance risk. A new mixed-responsibility multi-thousand
@@ -195,3 +190,36 @@ E8 = E8-gpu-post
 - Integration order is E2-shadow then E8-gpu-post, followed by one root-owned
   shared workspace/Metal/WASM/FFI matrix. Writer tasks run focused gates only.
 - No fixed LOC, FPS or competitor percentage is a writer or acceptance gate.
+
+## E8 feasibility stop and adapter dependency
+
+- Audit branch: `codex/e8-gpu-post-plan` at exact activation commit
+  `708b538f0f6d4517acfdd98003e3d8573ea2c0ee`.
+- Result: no candidate commit and a clean tree. The task did not create a fake
+  GPU plan, widen its plans-only allowlist or change product behavior.
+- Proven missing seam: `PreparedRuntime`/`SceneRuntime` own CPU resident data
+  only; preparation has no device-owned `ResidentGpuResources`, shared
+  resolved-color owner or scoped GPU error transaction, while frame execution
+  has no queue/encoder input. Consequently a real GPU entry cannot be prepared
+  and published by `PlanSet` alone.
+- Reusable primitives remain sufficient: resident-SoA `DirectGpuOrder`, stable
+  full32 radix and source-ID ties, sorter-owned indirect arguments,
+  `ProjectedRankProjector` external projection, and existing Exact resident
+  resources. No shader, raster math or GPU algorithm change is required by the
+  adapter.
+- The finite adapter starts only after E2 because both require
+  `renderer/mod.rs`. Its implementation allowlist is:
+  - `crates/gsplat-render-wgpu/src/renderer/mod.rs`;
+  - new `crates/gsplat-render-wgpu/src/renderer/gpu_prepare.rs`;
+  - `crates/gsplat-render-wgpu/src/scene/runtime.rs`;
+  - `tests/architecture/source_architecture_policy.json`;
+  - `tests/architecture/test_source_architecture.py`.
+- Adapter contract: one transactional CPU/GPU scene candidate; async scoped
+  device preparation; one resolved-color owner; capacity/count/SH0--SH3
+  agreement; a frame seam that receives queue and an existing encoder but can
+  never submit, poll, map, read back or present. Unsupported GPU preparation
+  omits the GPU entry while preserving the prepared Exact CPU fallback.
+- E8 is reactivated only from the accepted E2+adapter root SHA in a fresh
+  worktree. Its original plans-only allowlist then resumes and must still prove
+  complete membership, original SH degree, inclusive visibility, stable
+  full32 ordering, `D=V`, exact generation guards and unchanged product routing.

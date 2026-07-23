@@ -6,38 +6,7 @@
       "IO-PLY-1",
       "IO-SPZ-1"
     ],
-    "parallel_execution": {
-      "activation_commit": "0496266cc73de5fc84acb7c393606fa68eb77623",
-      "members": [
-        {
-          "task": "E2",
-          "lane": "E2-shadow",
-          "write_allowlist": [
-            "crates/gsplat-render-wgpu/src/offscreen/mod.rs",
-            "crates/gsplat-render-wgpu/src/offscreen/shadow.rs",
-            "crates/gsplat-render-wgpu/src/renderer/mod.rs",
-            "crates/gsplat-render-wgpu/src/renderer/contract_tests.rs",
-            "crates/gsplat-render-wgpu/src/renderer/tests.rs"
-          ]
-        },
-        {
-          "task": "E8",
-          "lane": "E8-gpu-post",
-          "write_allowlist": [
-            "crates/gsplat-render-wgpu/src/plans/mod.rs",
-            "crates/gsplat-render-wgpu/src/plans/gpu_post.rs",
-            "crates/gsplat-render-wgpu/src/plans/gpu_post/tests.rs",
-            "tests/architecture/source_architecture_policy.json",
-            "tests/architecture/test_source_architecture.py"
-          ]
-        }
-      ],
-      "integration_order": [
-        "E2-shadow",
-        "E8-gpu-post"
-      ],
-      "reason": "E2 owns only the CPU shadow oracle and common contract tests while E8 owns only GPU PostSort plan registration and architecture boundary records; the exact file sets are disjoint."
-    },
+    "parallel_execution": null,
     "task_catalog": {
       "A0": "A",
       "A1": "A",
