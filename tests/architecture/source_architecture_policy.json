@@ -6,34 +6,7 @@
       "IO-PLY-1",
       "IO-SPZ-1"
     ],
-    "parallel_execution": {
-      "activation_commit": "8e5d6cc0413260fa2bd9f127421c58e91e9ab50e",
-      "members": [
-        {
-          "task": "A7",
-          "lane": "A7d",
-          "write_allowlist": [
-            "crates/gsplat-render-wgpu/src/evidence/mod.rs",
-            "crates/gsplat-render-wgpu/src/evidence/projected.rs",
-            "crates/gsplat-render-wgpu/src/projected_draw_telemetry.rs"
-          ]
-        },
-        {
-          "task": "A5",
-          "lane": "A5g",
-          "write_allowlist": [
-            "crates/gsplat-render-wgpu/src/gpu/mod.rs",
-            "crates/gsplat-render-wgpu/src/gpu/project.rs",
-            "crates/gsplat-render-wgpu/src/projected_quads_gpu.rs"
-          ]
-        }
-      ],
-      "integration_order": [
-        "A7d",
-        "A5g"
-      ],
-      "reason": "A7d moves only immutable projected receipt declarations into evidence while A5g moves only rank-projection resources and encoding mechanics into a strategy-free GPU leaf; their exact write sets and dependencies are disjoint."
-    },
+    "parallel_execution": null,
     "task_catalog": {
       "A0": "A",
       "A1": "A",
@@ -248,13 +221,6 @@
       "exit_condition": "Separate desktop host, CLI and benchmark responsibilities so main.rs is composition only."
     },
     {
-      "path": "crates/gsplat-render-wgpu/src/direct_gpu_order.rs",
-      "a0_physical_loc": 2862,
-      "baseline_physical_loc": 1864,
-      "owner_task": "A5",
-      "exit_condition": "Extract strategy-free GPU order primitives and leave this owner with one independently testable orchestration responsibility."
-    },
-    {
       "path": "crates/gsplat-io-ply/src/lib.rs",
       "a0_physical_loc": 2852,
       "baseline_physical_loc": 2852,
@@ -262,13 +228,6 @@
       "exit_condition": "Separate PLY metadata, bounded decode and import policy responsibilities without changing import behavior.",
       "review_task": "A9",
       "review_action": "Before Package A closeout, add IO-PLY-1 and its static active/completed ledger pair to program_task_state, replace it with an already cataloged task, or meet the exit condition and remove this entry; an unchanged entry fails once A9 closes."
-    },
-    {
-      "path": "crates/gsplat-render-wgpu/src/projected_quads_gpu.rs",
-      "a0_physical_loc": 2358,
-      "baseline_physical_loc": 2055,
-      "owner_task": "A5",
-      "exit_condition": "Extract reusable project, compact, scan and indirect primitives so the legacy file has one plan-execution responsibility or is removed."
     },
     {
       "path": "crates/gsplat-render-wgpu/src/tiled_resident_gpu.rs",
@@ -283,13 +242,6 @@
       "baseline_physical_loc": 2139,
       "owner_task": "M4",
       "exit_condition": "Keep the Web consumer limited to lifecycle and API adaptation with parsing, receipts and renderer ownership separated."
-    },
-    {
-      "path": "crates/gsplat-render-wgpu/src/preproject_gpu.rs",
-      "a0_physical_loc": 1731,
-      "baseline_physical_loc": 1638,
-      "owner_task": "A5",
-      "exit_condition": "Extract reusable GPU project, compact and radix primitives and leave one diagnostic responsibility or remove the legacy file."
     },
     {
       "path": "crates/gsplat-render-wgpu/src/tiled_gpu.rs",
@@ -329,25 +281,11 @@
       "exit_condition": "Separate immutable projected-draw receipts from bounded observer storage and adaptive lifecycle."
     },
     {
-      "path": "crates/gsplat-render-wgpu/shaders/preproject_contributors.wgsl",
-      "a0_physical_loc": 433,
-      "baseline_physical_loc": 433,
-      "owner_task": "A5",
-      "exit_condition": "Extract reusable GPU mechanics so this shader owns one contributor-generation stage without duplicated scan or raster contracts."
-    },
-    {
       "path": "crates/gsplat-render-wgpu/shaders/splat_surface_direct.wgsl",
       "a0_physical_loc": 370,
       "baseline_physical_loc": 370,
       "owner_task": "A6",
       "exit_condition": "Consolidate the accepted canonical raster math into a single owned contract without changing pixels."
-    },
-    {
-      "path": "crates/gsplat-render-wgpu/shaders/direct_gpu_order.wgsl",
-      "a0_physical_loc": 363,
-      "baseline_physical_loc": 363,
-      "owner_task": "A5",
-      "exit_condition": "Extract portable GPU order kernels by stage with one owner for shared key and radix contracts."
     }
   ],
   "exceptions": [],

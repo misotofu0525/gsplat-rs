@@ -17,15 +17,9 @@ A1 = Accept
 A2 = Accepted
 A3 = Accepted
 A4 = Accepted
-A5 = Active
+A5 = Accepted
 A7 = Active
 <!-- gsplat-program-task-states: end -->
-
-<!-- gsplat-program-active-lanes: begin -->
-activation_commit = 8e5d6cc0413260fa2bd9f127421c58e91e9ab50e
-A5 = A5g
-A7 = A7d
-<!-- gsplat-program-active-lanes: end -->
 
 ## Program status
 
@@ -38,16 +32,16 @@ A7 = A7d
   offscreen lifecycle leaves are integrated and accepted. A7a/A7b now own
   immutable order receipts and bounded external evidence retention; A5d/A5e
   now own Direct Resident-visible and Preproject key/ID compaction. A7c now
-  places stateless execution identities in the API leaf, and A5f places
-  Resident color-kernel mechanics in `gpu/color.rs`. The parent A5, A7 and A8
-  packages remain open for later, separately activated slices.
+  places stateless execution identities in the API leaf, A7d owns immutable
+  projected terminal receipts, A5f owns Resident color-kernel mechanics, and
+  A5g owns rank projection in `gpu/project.rs`. A5 is now closed and accepted;
+  A7 and A8 remain open for later, separately activated slices.
 - Current work package: A — responsibility extraction.
-- Active package tasks: A7d and A5g under the exact disjoint parallel lease
-  recorded by the architecture policy and machine lane block.
-- Last completed tasks: A7c — stateless execution identities; A5f — Resident
-  color-kernel mechanics.
-- Next eligible implementation: only the two active lanes below. No dependent
-  writer starts until both fixed candidates are root-reviewed and integrated.
+- Active package task: A7. There is no writer lane during this closeout commit.
+- Last completed tasks: A7d — immutable projected receipts; A5g — rank
+  projection; A5 package closeout — full-count A065 exactness regression.
+- Next eligible implementation: after this closeout is committed, activate
+  disjoint A6a and A7e writer lanes from one exact baseline.
 - Integration branch: `codex/native-render-core-refactor`.
 - Frozen source implementation closeout:
   `5db2520e0d7a0ef1c68a78bdb9abc6fc588c5186`.
@@ -126,83 +120,45 @@ eligible task. Do not rewrite the architecture in this ledger.
 
 ## Current task
 
-### Parallel writer lanes — A7d and A5g
+### A7d + A5g parallel batch closeout
 
+- State: Accepted.
 - Activation baseline:
   `8e5d6cc0413260fa2bd9f127421c58e91e9ab50e`.
-- Isolation: two user-visible Codex tasks in separate worktrees, each with its
-  own goal and exact write allowlist. Collaboration subagents are restricted to
-  read-only audits and fixed-SHA review; they are not implementation writers.
-- Integration order: A7d, then A5g, followed by one combined root matrix.
-- Source size is never a writer, split, review or completion requirement. The
-  boundary is accepted only by responsibility cohesion, dependency direction,
-  compatibility, behavior and executable evidence.
-
-### A7d — Move immutable projected receipts into evidence
-
-- Parent task state: A7 Active.
-- Subtask state: Active.
-- Hypothesis: the three immutable projected terminal value types can move into
-  `evidence/projected.rs` while telemetry retains tickets, slots, callbacks,
-  readback, generation validation, V/C/D checks and mandatory failure delivery.
-- Exact writer allowlist:
-  - `crates/gsplat-render-wgpu/src/evidence/mod.rs`;
-  - new `crates/gsplat-render-wgpu/src/evidence/projected.rs`;
-  - `crates/gsplat-render-wgpu/src/projected_draw_telemetry.rs`.
-- Required declarations, mechanically unchanged:
-  `SurfaceProjectedDrawMeasurement`,
-  `SurfaceProjectedDrawMeasurementFailureReason`, and
-  `SurfaceProjectedDrawMeasurementFailure`. The new leaf imports execution
-  identities directly from `crate::api`; the telemetry owner compatibility
-  re-exports preserve every existing internal and crate-root path.
-- Forbidden: policy/controller/submission moves; ticket/ring/slot/readback,
-  generation or V/C/D logic changes; `lib.rs`, session, presenter, FFI/header,
-  Web/platform consumer, GPU, shader or benchmark changes.
-- Frozen baseline hashes: `api.rs` `d3792d4e...cfc38`, `surface_session.rs`
-  `dfb06f3d...90187`, telemetry `b8280b79...fa88`, evidence facade
-  `de146576...74e5`, `lib.rs` `81e3509b...c7842`, C implementation/header
-  `2f777c0e...a3bc` / `69e1f1fb...a455`, and Web consumer
-  `8f46e4f8...45a4`.
-- Correctness gates: declaration/derive/field/variant inventory, old crate-root
-  and telemetry paths, all five telemetry tests, session Adaptive tests, FFI v1
-  ABI and smoke, architecture, format/diff, locked workspace, Clippy, Rustdoc
-  and wasm32. Root owns the combined Metal conformance run.
-
-### A5g — Extract the rank projector GPU leaf
-
-- Parent task state: A5 Active.
-- Subtask state: Active.
-- Hypothesis: rank-indexed projection buffers, ABI, layout/pipeline and compute
-  encoding can move into a strategy-free `gpu/project.rs`, while
-  `ProjectedQuadsGpu` retains Candidate/Compact admission, scan/compaction,
-  transactional GPU-order publication, raster and telemetry count semantics.
-- Exact writer allowlist:
-  - `crates/gsplat-render-wgpu/src/projected_quads_gpu.rs`;
-  - `crates/gsplat-render-wgpu/src/gpu/mod.rs`;
-  - new `crates/gsplat-render-wgpu/src/gpu/project.rs`.
-- Required owner: one private projector owns the 16-byte indirect args ABI,
-  two projected output planes, contributor offsets, CPU args, nine-binding
-  project layout/pipeline/bind groups, offset reset, zero-item behavior,
-  two-dimensional dispatch and project pass. It accepts raw buffers or a
-  strategy-free binding view and cannot depend on Resident/Scene/Surface,
-  policy, telemetry or evidence owners.
-- `ProjectedQuadsGpu` retains the exact top-level pass order, optional Compact
-  graph, forward/reverse scans, publication/cache semantics, both raster
-  pipelines and Candidate `D=V` / Compact `D=C` count source.
-- Frozen baseline hashes: Projected owner `84760e99...d5d6c`, GPU facade
-  `5f73fb75...40f0`, Resident owner `dd659dd0...b842`, color leaf
-  `b75e76e0...eea6`, compact `7162207f...125`, scan
-  `08afa1da...b6ab`, draw pass `e218a06d...2865` and all four Projected
-  shaders `7c224f1f...dd3d` / `e8348a65...1822` /
-  `ed48658f...1529` / `d9d648de...8024`.
-- Correctness gates: unchanged nine bindings, labels, usages, allocations,
-  zero/short/full and CPU/GPU order semantics; all 13 existing Projected tests
-  including three byte-exact image oracles; architecture, format/diff, locked
-  workspace, Clippy, Rustdoc, wasm32, Metal conformance and C FFI smoke.
-
-Neither lane has an FPS, competitor, device-performance or source-size gate.
-Both produce one fixed candidate SHA without merge, rebase, push, main or
-plan/policy edits.
+- Writers: two user-visible Codex tasks in isolated worktrees. Collaboration
+  subagents performed only read-only scope audits and fixed-SHA reviews.
+- A7d candidate `decc57291cd02cbe61072cf8f0ca982435082b2f` was accepted with
+  no P0/P1/P2 finding and integrated as `389a538`; immutable projected terminal
+  receipts now live in `evidence/projected.rs`, while ticket, slot, callback,
+  generation and V/C/D behavior remains in telemetry.
+- A5g candidate `9c72cf1bc888551ef63cf4c1a619f1bdf3a7a344` was accepted with
+  no P0/P1/P2 finding and integrated as `41ab3b7`; rank projection resources,
+  layout, pipeline and encoding now live in `gpu/project.rs`, while
+  Candidate/Compact policy, publication, raster and count semantics remain in
+  `ProjectedQuadsGpu`.
+- Root combined matrix: architecture self-tests and real-tree checker, format,
+  locked workspace check/tests, Clippy, Rustdoc, wasm32, forced Metal
+  SortedAlpha conformance and C FFI smoke all passed. Renderer tests reported
+  292 passed and five existing research tests ignored.
+- A5 boundary device evidence: full SH3 Truck, 2,541,226 source/resident points,
+  native 2412x1080 on A065. CPU Candidate, GPU Candidate and GPU Compact all
+  passed canonical artifact and camera-receipt validation without fallback;
+  Candidate proved `D=V`, Compact proved `D=C<=V`, with views 0/1 alternating.
+- Evidence:
+  - `target/benchmarks/native-render-core-refactor/a5-a065-truck-exact-count-41ab3b7/order`;
+  - `target/benchmarks/native-render-core-refactor/a5-a065-truck-exact-count-41ab3b7/compact`;
+  - the initial SDK-environment failure is retained separately under
+    `order-sdk-env-failure` and is not accepted evidence.
+- Claim boundary: this is exact-count correctness and architecture evidence,
+  not a device-performance or competitor claim. Timing observations do not
+  gate acceptance.
+- A5 decision: Accepted. Shared scan, stable radix, visibility/contributor/key
+  compaction, Resident color and rank projection have strategy-free owners;
+  legacy Direct, Projected and Preproject files retain one orchestration or
+  explicit diagnostic responsibility. The five completed A5 grandfather
+  entries are removed from architecture policy.
+- Next activation: A6a canonical raster owner and A7e producer-selector/
+  immutable-receipt owner, in separate worktrees with disjoint write sets.
 
 ## Recently integrated tasks
 
@@ -2109,6 +2065,9 @@ plan/policy edits.
 | A5b | Accepted | `835b01e` + `0fd16a8` | A5b record above, fixed-SHA review and integrated gates | Direct/fallback and qualified Resident stable full32 radix mechanics now share the private radix/scan owners; labels, resources, shaders, policy and behavior remain unchanged; A5 stays Active |
 | A7c | Accepted | `0ff65ff` + `371e87c` | A7c record above and fixed-SHA review | stateless execution identities now live in the API leaf with old public/internal paths and all receipt/controller behavior unchanged; A7 remains open |
 | A5f | Accepted | `4498514` + `a26c8f1` | A5f record above, fixed-SHA review and combined gates | Resident color ABI/pipeline/dispatch mechanics now have a strategy-free GPU owner; scene resources, cache policy, shader and output remain unchanged; A5 remains open |
+| A7d | Accepted | `decc572` + `389a538` | A7d/A5g closeout above and fixed-SHA review | immutable projected terminal receipts now have an evidence leaf; ticket, generation, count validation and delivery remain telemetry responsibilities; A7 remains open |
+| A5g | Accepted | `9c72cf1` + `41ab3b7` | A7d/A5g closeout above, combined matrix and A065 evidence | rank projection now has a strategy-free GPU owner with Projected Candidate/Compact semantics unchanged |
+| A5 | Accepted | `41ab3b7` | A5a--A5g records and full-count A065 exactness artifacts | shared GPU mechanics have explicit leaves, orchestration boundaries remain coherent, shader bytes are unchanged and the completed A5 grandfather entries are retired |
 
 ## Baseline evidence inherited, not rerun by default
 
