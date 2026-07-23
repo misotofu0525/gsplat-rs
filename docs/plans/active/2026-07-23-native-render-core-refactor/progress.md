@@ -40,11 +40,11 @@ A8 = Active
   projection in `gpu/project.rs`. A5, A6 and A7 are now closed and accepted;
   A8 remains open for separately activated lifecycle slices.
 - Current work package: A — responsibility extraction.
-- Active package task: A8. No writer lane remains active after the accepted
-  A7f/A8b parallel batch.
+- Active package task: A8, with one isolated writer assigned to A8c. A single
+  active task does not use the multi-writer lane registry.
 - Last completed tasks: A7f — submission identities; A8b — Surface
   acquire/recovery/present lifecycle; A7 package closeout — merged full matrix.
-- Next eligible implementation: A8c — Surface configuration/resize transaction
+- Current implementation: A8c — Surface configuration/resize transaction
   ownership. Surface capture remains a later sequential A8d slice because both
   responsibilities must mechanically rewire the same presenter owner.
 - Integration branch: `codex/native-render-core-refactor`.
@@ -122,6 +122,75 @@ eligible task. Do not rewrite the architecture in this ledger.
 - Dependency/ownership rules and the legacy giant-file growth ratchet remain
   hard. Historical A1 entries below record the then-current implementation;
   this section and the current policy are authoritative for later tasks.
+
+## Current task
+
+### A8c — Extract Surface configuration transaction state
+
+- Parent task state: A8 Active; A8a offscreen target/readback and A8b Surface
+  acquire/recovery/present are accepted.
+- Subtask state: Active.
+- Production baseline:
+  `66e3631251bbbf7821d96a11b4cbb73f64ab41de`.
+- Hypothesis: Surface configuration identity, validity, size admission and
+  configure/rollback form one host-lifecycle transaction owner; Presenter
+  should coordinate geometry/cache invalidation around that owner rather than
+  duplicating native, Web and capture reconfiguration mechanics.
+- Exact writer allowlist:
+  - `crates/gsplat-render-wgpu/src/surface/mod.rs`;
+  - new `crates/gsplat-render-wgpu/src/surface/configuration.rs`;
+  - `crates/gsplat-render-wgpu/src/surface/lifecycle.rs`;
+  - `crates/gsplat-render-wgpu/src/surface_presenter.rs`.
+- Required owner boundary:
+  - the configuration leaf owns `wgpu::SurfaceConfiguration`, valid/invalid
+    state, max-dimension admission, candidate descriptors, configure error
+    scopes and exact rollback/fail-closed transitions;
+  - native resize, awaited Web resize and the native capture `COPY_SRC`
+    upgrade reuse that owner without changing their public contracts;
+  - lifecycle continues to own acquire/one-retry/present and reads
+    configuration validity through the configuration owner;
+  - Presenter retains device/queue, geometry resize, projected/preproject cache
+    invalidation, telemetry generations, capture buffer/encode/publication and
+    frame orchestration.
+- Preserve exactly:
+  - native versus wasm cfg routing, public sync/async resize APIs and every
+    existing error variant/string;
+  - zero/adapter-limit rejection, no-op same-size behavior and the
+    configure/rollback/fail-closed order;
+  - geometry resize success before size publication and subsequent cache/
+    telemetry invalidation order;
+  - capture buffer allocation before `COPY_SRC` upgrade, and a failed upgrade
+    leaving no published pending capture;
+  - submit-before-present, actual presented size, full-resolution and capture
+    after-present semantics.
+- Frozen baseline identities:
+  - `surface/mod.rs`:
+    `424ffeb9120c8264334cc95e16e1dbe09a7aa9ed5061b005189d6a7d04a5719c`;
+  - `surface/lifecycle.rs`:
+    `5bb7808bb67b78e57662999cd5af79d09652f80c56d124bb7dfb6865c1bbb0b6`;
+  - `surface_presenter.rs`:
+    `fe1c2c197ecb0f5f503817fa93875d6bc5bdf475f49f9164e952628e7f271820`;
+  - frozen `lib.rs`:
+    `01e6e99f2d8760578df8769f0b9183c3f6315dfd5b08f085aeeacdc505933029`;
+  - frozen `surface_session.rs`:
+    `82688f1cf29c4459ef0adb830c6e8700d11934a7d7aac8f2a34727f953b9bb05`;
+  - frozen WGSL aggregate:
+    `478f64b3ca9606d75ac96b6efba398052d638fe1c4e330321aad0e522b6addd1`.
+- Forbidden: `lib.rs`, session, offscreen, evidence, scene/GPU/raster/shaders,
+  FFI/JNI/Swift/Web wrappers/examples, Cargo, benchmark schemas and policy/
+  plan edits by the writer. Do not move capture pending state, layout,
+  copy/map/unpack or publication; those belong to A8d.
+- Focused writer gates: exact scope/frozen hashes, new configuration state and
+  transaction tests, existing presenter resize/capture tests, format/diff,
+  architecture, locked renderer check/test and wasm32. Root owns the fixed-SHA
+  review and shared workspace/Clippy/Rustdoc/FFI/Metal matrix.
+- Required endpoint claim: none. This is a behavior-preserving ownership slice;
+  it makes no FPS, device or competitor claim.
+- Performance correction allowance: none; no performance hypothesis exists.
+- Known correctness issues at activation: zero.
+- Source-size rule: no 800, 890 or other fixed LOC target. Accept only on
+  cohesive ownership, preserved dependency direction and executable lifecycle
+  tests; do not split or move tests to satisfy a count.
 
 ## Latest integrated batch
 
