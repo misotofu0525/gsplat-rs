@@ -102,7 +102,8 @@ eligible task. Do not rewrite the architecture in this ledger.
 - Allowed scope:
   - private focused modules under `crates/gsplat-render-wgpu/src/scene/` for
     Resident CPU ownership, builder/codec, the existing CPU byte-accounting
-    value, and split tests; every new Rust file remains below 800 physical LOC
+    value, and focused tests; split by responsibility rather than an arbitrary
+    line quota
   - move the existing Resident ABI constants and `repr(C)` storage structs into
     `data/layout.rs`, with compile-time size/alignment/offset assertions
   - delete or reduce `resident_scene.rs` to a temporary compatibility facade;
@@ -133,8 +134,9 @@ eligible task. Do not rewrite the architecture in this ledger.
     unchanged; A3a does not expand it into the A3b preflight model
 - Hard gates:
   - architecture checker/self-tests pass; the 1,881-line grandfather entry is
-    removed or ratcheted exactly and every replacement production file is below
-    800 physical LOC
+    removed or ratcheted exactly; 800 physical LOC is a review target, while
+    the existing 1,200-line default ceiling and finite exception mechanism
+    prevent a new multi-thousand-line owner without forcing artificial splits
   - format, locked workspace check/tests/clippy/rustdoc, render-wgpu tests, wasm
     check and FFI smoke pass
   - a repository-external temporary crate imports the existing public Resident

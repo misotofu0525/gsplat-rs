@@ -387,6 +387,15 @@ A1 creates a lightweight checker. From that point:
 - production paths may not use a runtime vector of boxed passes or a public
   render-plan trait.
 
+These numbers are architecture-smell thresholds, not file-sharding quotas.
+Responsibility, dependency direction and testability decide module boundaries.
+A cohesive production module between 800 and 1,200 lines is reviewable and may
+be accepted when another split would add cycles, duplicate abstractions or hide
+the real owner. A file must not be split merely to satisfy a line count. The
+default 1,200-line ceiling exists to stop new multi-thousand-line mixed owners;
+the explicit, finite exception mechanism covers the rare case where a larger
+cohesive generated/table-heavy implementation is genuinely clearer.
+
 ## 9. Work-package map
 
 This document is a program roadmap, not one long Codex goal. Implementation is
