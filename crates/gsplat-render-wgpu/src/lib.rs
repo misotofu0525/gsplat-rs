@@ -8,7 +8,7 @@ mod data;
 mod direct_gpu_order;
 mod draw_pass;
 #[cfg_attr(not(test), allow(dead_code))]
-mod external_prefix_radix;
+mod gpu;
 mod gpu_error;
 mod gpu_producer_telemetry;
 mod gpu_telemetry;
