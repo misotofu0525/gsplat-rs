@@ -7,22 +7,30 @@
 
 <!-- gsplat-program-task-states: begin -->
 E0 = Accepted
-E1 = Active
+E1 = Accepted
+E2 = Active
+E8 = Active
 <!-- gsplat-program-task-states: end -->
+
+<!-- gsplat-program-active-lanes: begin -->
+activation_commit = 0496266cc73de5fc84acb7c393606fa68eb77623
+E2 = E2-shadow
+E8 = E8-gpu-post
+<!-- gsplat-program-active-lanes: end -->
 
 ## Package status
 
 - Package: E — Exact prepared plans and native execution, still shadowed.
-- Active task: E1 — private transactional Exact runtime skeleton.
-- Last completed task: E0 — Exact prepared-plan contract and migration oracle.
-- E1 state: Active after root fixed-SHA review and fast-forward integration of
-  E0 candidate `787068f3621bb51b81c5f25e3a5f2138109be6ee`.
+- Active tasks: E2 — CPU shadow oracle; E8 — prepared GPU PostSort plan.
+- Last completed task: E1 — private transactional Exact runtime skeleton.
+- E1 state: Accepted after root fixed-SHA review and fast-forward integration
+  of candidate `0496266cc73de5fc84acb7c393606fa68eb77623`.
 - Dependency: Package A/A9 Accepted.
 - Product default: unchanged legacy renderer/session path.
-- Parallel writer lanes: none. E0 and E1 are serial shared foundations.
-  Disjoint E2/E8 lanes begin only after E1 is integrated. Later E4/NEON and
-  E5/AVX2 lanes require E3's platform-leaf interface; a non-CPU E8/E9 lane is
-  allowed alongside them only with an exact non-overlap proof. E6/E7 remain
+- Parallel writer lanes: E2-shadow and E8-gpu-post, activated from exact commit
+  `0496266cc73de5fc84acb7c393606fa68eb77623`. Their machine-enforced file
+  allowlists are disjoint and integration order is E2 then E8. Later E4/NEON
+  and E5/AVX2 lanes require E3's platform-leaf interface; E6/E7 remain
   sequential because both own engine/workspace decisions.
 - Source-size rule: no fixed LOC quota, split trigger or completion gate. Module
   boundaries follow responsibility, dependency direction, compatibility,
@@ -81,7 +89,7 @@ E1 = Active
 - E0 handoff left E1 eligible but inactive; root activated E1 only after the
   candidate passed fixed-SHA review and integration.
 
-## E1 active contract
+## E1 closeout
 
 - Objective: introduce the private, shadow-only foundation frozen by E0:
   `PreparedRuntime`, an Exact resident scene owner, a closed fail-closed
@@ -137,3 +145,53 @@ E1 = Active
     renderer/offscreen;
   - either task stops and requests a smaller adapter task if it needs the
     other's files.
+
+- Final state: Accepted.
+- Exact parent: `83755c78fa62e4d650bfd9846e47faf5f6a67c08`.
+- Accepted candidate: `0496266cc73de5fc84acb7c393606fa68eb77623`.
+- Scope: exactly the nine paths in the active contract; 174 frozen files and
+  every product route, public API/ABI, GPU primitive, raster owner and WGSL
+  blob remained unchanged.
+- Root fixed-SHA review: P0/P1/P2 blocking findings all zero. The review
+  confirmed single resident-scene ownership, fail-closed `PlanSet`, reusable
+  CPU workspace, inclusive visibility, stable full32/source-ID ordering,
+  transactional runtime and camera/viewport publication, and unavailable C/D
+  rather than fabricated values.
+- Fresh evidence: architecture checker/self-tests, format/diff, renderer and
+  plan focused tests, all 328 library tests (323 passed, five existing external
+  data/GPU tests ignored), strict all-target Clippy and wasm32 Web check passed.
+- Honest seam boundary: E2 has enough plan-independent CPU accessors. E8 still
+  needs a real device-owned projected-view/preparation adapter; E1 intentionally
+  did not invent a GPU owner, fake raster or host-visible indirect count.
+
+## E2 / E8 parallel active contract
+
+- Shared baseline and activation commit:
+  `0496266cc73de5fc84acb7c393606fa68eb77623`.
+- Writer model: two user-visible Codex tasks, each with its own worktree and
+  unbudgeted goal. Collaboration subagents remain read-only reviewers.
+- E2-shadow owns only:
+  - `crates/gsplat-render-wgpu/src/offscreen/mod.rs`;
+  - new `crates/gsplat-render-wgpu/src/offscreen/shadow.rs`;
+  - `crates/gsplat-render-wgpu/src/renderer/mod.rs` for test-module wiring only;
+  - new `crates/gsplat-render-wgpu/src/renderer/contract_tests.rs`;
+  - new `crates/gsplat-render-wgpu/src/renderer/tests.rs`.
+- E8-gpu-post owns only:
+  - `crates/gsplat-render-wgpu/src/plans/mod.rs`;
+  - new `crates/gsplat-render-wgpu/src/plans/gpu_post.rs` and optional
+    `plans/gpu_post/tests.rs`;
+  - `tests/architecture/source_architecture_policy.json` and
+    `tests/architecture/test_source_architecture.py` only to register a real
+    per-frame GPU-plan boundary.
+- E2 proves membership, SH0--SH3, CPU order, generation/currentness and
+  Direct/Packed offscreen pixel parity without changing production routing.
+- E8 reuses existing `DirectGpuOrder`, Resident GPU resources and
+  `ProjectedRankProjector`; it may not absorb `ProjectedQuadsGpu`, raster,
+  submit/readback/present, controller or product policy.
+- E8 stop condition: if a complete GPU plan requires renderer/offscreen,
+  raster/WGSL or existing GPU-primitive edits, it stops inside its allowlist
+  and reports the exact missing adapter. E2 continues independently; root then
+  activates one finite adapter before resuming E8.
+- Integration order is E2-shadow then E8-gpu-post, followed by one root-owned
+  shared workspace/Metal/WASM/FFI matrix. Writer tasks run focused gates only.
+- No fixed LOC, FPS or competitor percentage is a writer or acceptance gate.
