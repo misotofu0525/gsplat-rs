@@ -1,6 +1,7 @@
 mod compact;
 mod radix;
 mod scan;
+mod visible_compact;
 
 pub(crate) use compact::StableContributorCompactor;
 #[cfg(test)]
@@ -15,3 +16,8 @@ pub(crate) use radix::{
     StableFull32RadixTimestampRange, full32_scan_level_counts, full32_workgroup_count,
 };
 pub(crate) use scan::{GpuPrefixScan, GpuPrefixScanProfile};
+#[cfg(all(test, not(target_arch = "wasm32")))]
+pub(crate) use visible_compact::ResidentOrderControl;
+pub(crate) use visible_compact::{
+    ResidentVisibleCompaction, ResidentVisibleCompactionBindings, ResidentVisibleCompactionSeed,
+};
