@@ -198,10 +198,7 @@ class SourceArchitectureFixtureTests(unittest.TestCase):
         )
         rust_sources = self.base_policy["source_sets"]["rust"]
         self.assertNotIn("bindings/**/*.rs", rust_sources["include"])
-        self.assertEqual(
-            set(rust_sources["exclude_dir_names"]),
-            {"target", "node_modules", ".build", "build"},
-        )
+        self.assertNotIn("exclude_dir_names", rust_sources)
 
         state = self.base_policy["program_task_state"]
         self.assertEqual(set(state["package_ledgers"]), {"A", "E", "M", "B", "S", "Q"})

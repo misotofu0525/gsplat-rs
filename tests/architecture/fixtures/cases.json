@@ -56,6 +56,17 @@
       ]
     },
     {
+      "name": "legitimate_production_src_build_directory_is_checked",
+      "files": {
+        "crates/demo/src/build/mod.rs": {
+          "physical_lines": 1201
+        }
+      },
+      "expected_error_codes": [
+        "size.hard_ceiling"
+      ]
+    },
+    {
       "name": "new_concrete_plan_over_hard_ceiling",
       "files": {
         "crates/gsplat-render-wgpu/src/plans/gpu_post.rs": {
@@ -493,6 +504,16 @@
       ]
     },
     {
+      "name": "completed_package_ledger_cannot_leave_task_active",
+      "files": {},
+      "ledgers": {
+        "docs/plans/completed/2026-07-23-native-render-core-refactor/progress.md": "# Completed A\n<!-- gsplat-program-task-states: begin -->\nA2 = Active\n<!-- gsplat-program-task-states: end -->"
+      },
+      "expected_error_codes": [
+        "program_state.active_in_completed_ledger"
+      ]
+    },
+    {
       "name": "conflicting_task_states_fail_closed",
       "files": {},
       "task_states": [
@@ -576,7 +597,21 @@
       "files": {
         "crates/gsplat-render-wgpu/src/gpu/project.rs": {
           "lines": [
-            "use super::super as root;",
+            "use super::super::{self as root};",
+            "use root::renderer::Renderer;"
+          ]
+        }
+      },
+      "expected_error_codes": [
+        "dependency.gpu.root_module_alias"
+      ]
+    },
+    {
+      "name": "gpu_outer_grouped_root_alias_cannot_bypass_forbidden_prefixes",
+      "files": {
+        "crates/gsplat-render-wgpu/src/gpu/project.rs": {
+          "lines": [
+            "use {crate::{self as root}, std::mem};",
             "use root::renderer::Renderer;"
           ]
         }
@@ -893,6 +928,21 @@
         }
       },
       "expected_error_codes": []
+    },
+    {
+      "name": "host_cache_generation_with_domain_prefix_is_forbidden",
+      "files": {
+        "crates/gsplat-render-wgpu/src/surface.rs": {
+          "lines": [
+            "struct SurfaceHost {",
+            "    order_cache_generation: u64,",
+            "}"
+          ]
+        }
+      },
+      "expected_error_codes": [
+        "dependency.host.cache_generation"
+      ]
     },
     {
       "name": "runtime_pass_vector_and_public_render_plan_trait",

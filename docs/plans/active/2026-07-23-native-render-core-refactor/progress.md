@@ -223,10 +223,11 @@ No implementation task is active.
   - PASS task state is read only from one explicit machine block per ledger;
     `Accept/Reject/Defer` and `Accepted/Rejected/Deferred` normalize to terminal
     states without scanning narrative prose
-  - PASS source discovery enumerates configured include globs directly and does
-    not walk repository-wide build output; binding source globs exclude embedded
-    `target`, `node_modules`, `.build` and `build` directories
-  - PASS the checker itself is 1,194 physical lines and self-ratcheted below
+  - PASS source discovery enumerates configured source-root globs directly and
+    does not walk repository-wide build output; binding-root build products use
+    explicit path exclusions without hiding legitimate production modules such
+    as `crates/*/src/build/`
+  - PASS the checker itself is 1,192 physical lines and self-ratcheted below
     1,200 after deleting the incomplete helper call graph
   - PASS checker self-tests and checker against the real A0 tree
   - PASS `cargo check --workspace --locked`
@@ -335,6 +336,33 @@ No implementation task is active.
 - Decision: keep A1 Accepted; the final rules are simpler, fail closed at
   package/file boundaries and have no remaining reviewer-blocking parser path
 - Next eligible task: A2, from the resolved final correction tip
+
+### Root acceptance correction after A1
+
+- Outcome: Accepted
+- Baseline: `958587121370e89a077f32f8dafcb5b7f05faf87`
+- Scope: the same five A1-owned checker/policy/fixture/self-test/ledger files;
+  the root coordinator took over final acceptance and changed no production,
+  shader, API, FFI, platform or benchmark behavior
+- Closed review gaps:
+  - binding-root build products are excluded by exact paths without hiding a
+    legitimate production `src/build/` module
+  - platform hosts reject domain-prefixed cache generations while continuing
+    to allow presentation identity generations
+  - valid outer-group and `super::super::{self as root}` aliases cannot hide a
+    forbidden GPU dependency
+  - a completed package ledger cannot retain an Active task
+- Verification:
+  - PASS 56-case fixture matrix and all checker self-tests
+  - PASS real-tree checker: `38 production Rust, 25 WGSL, 24 grandfathered`
+  - PASS checker self-ratchet at 1,192 physical lines
+  - PASS `cargo check --workspace --locked`
+  - PASS JSON, in-memory Python compilation and whitespace checks
+- Result identity: `9585871..codex/native-render-a1-ratchet`; resolve the final
+  root-acceptance tip SHA during integration
+- Decision: A1 is eligible for fast-forward integration only with this root
+  acceptance correction included
+- Next eligible task: A2a, the strategy-free data/layout/view extraction
 
 ## Decision ledger
 

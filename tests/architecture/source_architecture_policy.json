@@ -112,13 +112,16 @@
         "bindings/apple/*/src/*.rs",
         "bindings/apple/*/src/**/*.rs"
       ],
-      "exclude_dir_names": [
-        "target",
-        "node_modules",
-        ".build",
-        "build"
-      ],
-      "exclude": []
+      "exclude": [
+        "bindings/android/target/**/*.rs",
+        "bindings/android/node_modules/**/*.rs",
+        "bindings/android/.build/**/*.rs",
+        "bindings/android/build/**/*.rs",
+        "bindings/apple/target/**/*.rs",
+        "bindings/apple/node_modules/**/*.rs",
+        "bindings/apple/.build/**/*.rs",
+        "bindings/apple/build/**/*.rs"
+      ]
     },
     "wgsl": {
       "include": [

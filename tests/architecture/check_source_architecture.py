@@ -72,7 +72,6 @@ def path_matches(path: str, patterns: Iterable[str]) -> bool:
 def discover(root: pathlib.Path, source_set: dict[str, Any]) -> list[str]:
     includes = source_set.get("include", [])
     excludes = source_set.get("exclude", [])
-    excluded_dirs = set(source_set.get("exclude_dir_names", []))
     found: list[str] = []
     # Enumerate only declared source roots. A repository-wide rglob would walk
     # target/, node_modules/, external datasets, and ignored build products.
@@ -80,9 +79,8 @@ def discover(root: pathlib.Path, source_set: dict[str, Any]) -> list[str]:
         for candidate in root.glob(pattern):
             if not candidate.is_file():
                 continue
-            relative_path = candidate.relative_to(root)
-            relative = relative_path.as_posix()
-            if excluded_dirs.isdisjoint(relative_path.parts) and not path_matches(relative, excludes):
+            relative = candidate.relative_to(root).as_posix()
+            if not path_matches(relative, excludes):
                 found.append(relative)
     return sorted(set(found))
 
@@ -214,8 +212,8 @@ ROOT_MODULE_ALIAS_RE = re.compile(
     r"\b(?:"
     r"(?:use\s+(?:crate|self|super(?:\s*::\s*super)*)|extern\s+crate\s+self)"
     r"\s+as\s+(?:r#)?[A-Za-z_]\w*\s*;"
-    r"|use\s+(?:crate|self|super(?:\s*::\s*super)*)\s*::\s*\{"
-    r"[^;]*\b(?:crate|self|super)\s+as\s+(?:r#)?[A-Za-z_]\w*[^;]*\}\s*;"
+    r"|use\s+[^;]*\b(?:crate|self|super(?:\s*::\s*super)*)\s*::\s*\{"
+    r"[^;]*\bself\s+as\s+(?:r#)?[A-Za-z_]\w*[^;]*;"
     r")",
     re.DOTALL,
 )
@@ -883,13 +881,11 @@ def check_dependencies(
                     ),
                     (
                         "cache_generation",
-                        lowered
-                        in {
-                            "cache_generation",
-                            "cache_gen",
-                            "renderer_generation",
-                            "renderer_cache_generation",
-                        }
+                        lowered == "renderer_generation"
+                        or (
+                            "cache" in lowered
+                            and ("generation" in lowered or lowered.endswith("_gen"))
+                        )
                         or bool(
                             re.search(
                                 r"\b(?:CacheGeneration|RendererGeneration|RendererCacheGeneration)\b",
@@ -1059,7 +1055,7 @@ def load_program_task_states(
         if not isinstance(task, str) or not isinstance(package, str) or package not in known_packages:
             issues.append(error("config.invalid_task_catalog", "<policy>", f"invalid catalog entry {task!r}: {package!r}"))
 
-    selected: list[tuple[str, str]] = []
+    selected: list[tuple[str, str, bool]] = []
     present_packages: set[str] = set()
     claimed_paths: dict[str, str] = {}
     for package, pair in packages.items():
@@ -1091,11 +1087,11 @@ def load_program_task_states(
         if len(existing) > 1:
             issues.append(error("program_state.ambiguous_package_ledger", package, f"active and completed ledgers both exist: {', '.join(existing)}"))
         elif existing:
-            selected.append((package, existing[0]))
+            selected.append((package, existing[0], existing[0] == pair["completed"]))
 
     states: dict[str, tuple[str, str, int]] = {}
     active: dict[str, list[str]] = {}
-    for package, path in selected:
+    for package, path, completed_ledger in selected:
         progress = (root / path).read_text(encoding="utf-8")
         observations, block_issues = task_state_observations(progress, path)
         issues.extend(block_issues)
@@ -1123,6 +1119,8 @@ def load_program_task_states(
             states[task] = (state, path, line)
             if state == "active":
                 active.setdefault(package, []).append(task)
+                if completed_ledger:
+                    issues.append(error("program_state.active_in_completed_ledger", path, f"completed package ledger leaves {task} Active", line))
     for package, tasks in active.items():
         if len(tasks) > 1:
             issues.append(error("program_state.multiple_active", package, f"multiple Active tasks: {', '.join(tasks)}"))
@@ -1134,7 +1132,7 @@ def load_program_task_states(
         if (trigger is None or trigger in closed) and package not in present_packages:
             reason = "always" if trigger is None else f"after {trigger} became terminal"
             issues.append(error("program_state.required_package_missing", package, f"package {package} ledger is required {reason}"))
-    return closed, ", ".join(path for _, path in selected), issues
+    return closed, ", ".join(path for _, path, _ in selected), issues
 
 
 def check_repository(root: pathlib.Path, policy: dict[str, Any]) -> tuple[list[Issue], dict[str, int]]:
