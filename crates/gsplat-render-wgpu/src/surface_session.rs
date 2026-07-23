@@ -1305,6 +1305,27 @@ const fn defer_projected_formal_choice(
         )
 }
 
+const fn projected_probe_claims_owner(
+    choice: ProjectedAdaptiveChoice,
+    order_changed: bool,
+    choice_was_pending: bool,
+) -> bool {
+    projected_formal_sample_requested(choice, order_changed)
+        || (defer_projected_formal_choice(choice, order_changed) && !choice_was_pending)
+}
+
+const fn order_probe_owner_should_yield(
+    owner: Option<AdaptiveProbeOwner>,
+    order_pending: bool,
+    refresh_sort: bool,
+    order_wants_formal_sample: bool,
+) -> bool {
+    matches!(owner, Some(AdaptiveProbeOwner::Order))
+        && !order_pending
+        && !refresh_sort
+        && !order_wants_formal_sample
+}
+
 const fn should_reset_order_for_projected_incumbent_change(
     order_backend: SurfaceOrderBackend,
     projected_draw_policy: SurfaceProjectedDrawPolicy,
@@ -2680,6 +2701,20 @@ impl SurfaceRenderSession {
                 }
             })
         });
+        let order_wants_formal_sample =
+            adaptive_choice.is_some_and(|choice| choice.sample.is_some());
+        if order_probe_owner_should_yield(
+            self.adaptive_probe_owner,
+            self.adaptive_policy.pending.is_some(),
+            plan.refresh_sort,
+            order_wants_formal_sample,
+        ) {
+            // Order cohorts advance only on actual refreshes. Once their last
+            // ticket is terminal, a stable frame would otherwise leave Order
+            // owning an idle cohort and starve the projected learner. Yield
+            // only the owner; phase/history resume on the next refresh.
+            self.adaptive_probe_owner = None;
+        }
         let planned_backend = match adaptive_choice {
             Some(choice) => choice.backend,
             None if !plan.refresh_sort => self.presented_order_backend,
@@ -2691,6 +2726,7 @@ impl SurfaceRenderSession {
         };
         let requested_backend = self.pending_tiled_backend.unwrap_or(planned_backend);
         let compact_available = self.presenter.projected_contributor_indirect_draw_enabled();
+        let projected_choice_was_pending = self.pending_projected_choice.is_some();
         let mut projected_choice = self.pending_projected_choice.unwrap_or_else(|| {
             match self.projected_draw_policy {
                 SurfaceProjectedDrawPolicy::Candidate => {
@@ -2727,9 +2763,42 @@ impl SurfaceRenderSession {
                     .choose(compact_available)
             }
         });
-        let order_wants_formal_sample =
-            adaptive_choice.is_some_and(|choice| choice.sample.is_some());
         let projected_owner = Self::projected_probe_owner(requested_backend);
+        let projected_order_changed_this_frame = match requested_backend {
+            SurfaceOrderBackendUsed::Cpu => {
+                projected_order_changed(plan.refresh_sort, plan.upload_order, plan.refresh_sort)
+            }
+            SurfaceOrderBackendUsed::Gpu => {
+                gpu_projected_order_changed(plan.refresh_sort, plan.refresh_sort)
+            }
+        };
+        let projected_formal_sample_deferred =
+            defer_projected_formal_choice(projected_choice, projected_order_changed_this_frame);
+        let projected_claims_owner = projected_probe_claims_owner(
+            projected_choice,
+            projected_order_changed_this_frame,
+            projected_choice_was_pending,
+        );
+        let projected_wants_transition_warmup = matches!(
+            projected_choice.sample,
+            Some(ProjectedAdaptiveSampleKind::TransitionWarmup)
+        );
+        if self.adaptive_probe_owner == Some(projected_owner)
+            && projected_formal_sample_deferred
+            && projected_choice_was_pending
+        {
+            // The first changed-order frame gives a new projected formal
+            // choice one grace turn: the choice becomes pending so a following
+            // cached-order frame can issue it. A second changed-order frame
+            // must release ownership, otherwise continuous camera motion can
+            // starve the order learner forever. Clear only the session ticket
+            // request; the projected policy has not consumed its sample index
+            // and will reissue it after Order finishes. Preserve execution so
+            // a warmed challenger is not changed mid-frame.
+            self.adaptive_probe_owner = None;
+            self.pending_projected_choice = None;
+            projected_choice.sample = None;
+        }
         if matches!(
             self.adaptive_probe_owner,
             Some(AdaptiveProbeOwner::ProjectedCpu | AdaptiveProbeOwner::ProjectedGpu)
@@ -2741,7 +2810,21 @@ impl SurfaceRenderSession {
             });
         } else if self.adaptive_probe_owner.is_none()
             && order_wants_formal_sample
-            && projected_choice.sample.is_some()
+            && projected_wants_transition_warmup
+        {
+            // A transition warmup may run while the order changes, but it is
+            // not a formal projected ticket and must not retain arbitration
+            // ownership. Delay the order sample for only this one frame so its
+            // FrameCompletion evidence is not polluted by a raster-lane
+            // transition.
+            self.blocked_order_choice = adaptive_choice;
+            adaptive_choice = adaptive_choice.map(|choice| AdaptiveRefreshChoice {
+                backend: choice.backend,
+                sample: None,
+            });
+        } else if self.adaptive_probe_owner.is_none()
+            && order_wants_formal_sample
+            && projected_claims_owner
         {
             // Stabilize the exact raster lane for the target order backend
             // before timing that order choice. The order policy has not
@@ -2758,7 +2841,7 @@ impl SurfaceRenderSession {
             self.blocked_order_choice = None;
             self.adaptive_probe_owner =
                 arbitrate_new_probe_owner(self.adaptive_probe_owner, true, false, projected_owner);
-        } else if self.adaptive_probe_owner.is_none() && projected_choice.sample.is_some() {
+        } else if self.adaptive_probe_owner.is_none() && projected_claims_owner {
             self.adaptive_probe_owner =
                 arbitrate_new_probe_owner(self.adaptive_probe_owner, false, true, projected_owner);
         }
@@ -3598,8 +3681,9 @@ mod tests {
         adaptive_gpu_order_failure_reason, adaptive_primary_metric, arbitrate_new_probe_owner,
         async_order_pose_compatible, async_schedule_threshold, defer_projected_formal_choice,
         gpu_producer_measurement_context_is_valid, gpu_projected_order_changed,
-        paged_surface_counts, probe_sequence_backend, projected_formal_sample_requested,
-        projected_order_changed, projected_policy_can_sample, projected_probe_sequence_execution,
+        order_probe_owner_should_yield, paged_surface_counts, probe_sequence_backend,
+        projected_formal_sample_requested, projected_order_changed, projected_policy_can_sample,
+        projected_probe_claims_owner, projected_probe_sequence_execution,
         reset_adaptive_for_gpu_producer_measurement_transition,
         reset_adaptive_for_raster_transition, retain_gpu_producer_terminal,
         should_measure_cpu_refresh, should_reset_order_for_projected_incumbent_change,
@@ -4413,20 +4497,164 @@ mod tests {
     }
 
     #[test]
-    fn projected_lane_preempts_order_when_both_request_one_formal_ticket() {
-        assert_eq!(
-            arbitrate_new_probe_owner(None, true, true, AdaptiveProbeOwner::ProjectedCpu,),
-            Some(AdaptiveProbeOwner::ProjectedCpu),
-        );
-        assert_eq!(
-            arbitrate_new_probe_owner(None, true, false, AdaptiveProbeOwner::ProjectedCpu,),
-            Some(AdaptiveProbeOwner::Order),
-        );
+    fn first_changed_then_cached_order_preserves_one_projected_grace_turn() {
+        let mut lane = AdaptiveProjectedDrawPolicy::default();
+        let formal = lane.choose(true);
+        let projected_owner = AdaptiveProbeOwner::ProjectedCpu;
+
+        // On the first required sort, the formal projected choice cannot be
+        // measured yet. It nevertheless owns one grace turn and is retained
+        // as pending so a static second frame can issue the exact ticket.
+        assert!(!projected_formal_sample_requested(formal, true));
+        assert!(defer_projected_formal_choice(formal, true));
+        assert!(projected_probe_claims_owner(formal, true, false));
+        let owner = arbitrate_new_probe_owner(None, true, true, projected_owner);
+        assert_eq!(owner, Some(projected_owner));
+
+        // The retained choice becomes eligible when the next frame reuses the
+        // exact same order. Projected remains owner and the blocked order
+        // sample cannot contaminate its timing cohort.
+        assert!(projected_formal_sample_requested(formal, false));
+        assert!(projected_probe_claims_owner(formal, false, true));
+        assert_eq!(owner, Some(projected_owner));
         assert!(!projected_policy_can_sample(
             Some(AdaptiveProbeOwner::Order),
-            AdaptiveProbeOwner::ProjectedCpu,
+            projected_owner,
             true,
         ));
+    }
+
+    #[test]
+    fn repeated_changed_orders_release_projected_grace_and_advance_order_learning() {
+        let mut projected = AdaptiveProjectedDrawPolicy::default();
+        let mut formal = projected.choose(true);
+        let projected_owner = AdaptiveProbeOwner::ProjectedCpu;
+        let mut pending_projected_choice = Some(formal);
+
+        let mut owner = arbitrate_new_probe_owner(
+            None,
+            true,
+            projected_probe_claims_owner(formal, true, false),
+            projected_owner,
+        );
+        assert_eq!(owner, Some(projected_owner));
+
+        // The same pending formal choice sees a second order change. Its one
+        // grace turn is exhausted, so production releases Projected and Order
+        // receives the still-unconsumed bootstrap sample.
+        assert!(defer_projected_formal_choice(formal, true));
+        if owner == Some(projected_owner) && pending_projected_choice.is_some() {
+            owner = None;
+            pending_projected_choice = None;
+            formal.sample = None;
+        }
+        assert!(pending_projected_choice.is_none());
+        assert!(formal.sample.is_none());
+        assert!(!projected_probe_claims_owner(formal, true, true));
+        owner = arbitrate_new_probe_owner(owner, true, false, projected_owner);
+        assert_eq!(owner, Some(AdaptiveProbeOwner::Order));
+
+        // Once Order owns the cohort, a finite number of successful bootstrap
+        // receipts necessarily leaves CpuLearning instead of livelocking.
+        let mut order = AdaptiveOrderPolicy::default();
+        order.reset(AdaptiveMetric::FrameCompletion);
+        for _ in 0..super::ADAPTIVE_CPU_BOOTSTRAP_SAMPLES {
+            let choice = order.choose_refresh_backend();
+            assert_eq!(choice.sample, Some(AdaptiveSampleKind::CpuBootstrap));
+            order.complete_synchronous_sample(choice, 10.0);
+        }
+        assert_eq!(order.state(), SurfaceAdaptiveState::CpuStable);
+    }
+
+    #[test]
+    fn yielded_projected_choice_stays_unsampled_until_order_cohort_releases() {
+        let mut projected = AdaptiveProjectedDrawPolicy::default();
+        let formal = projected.choose(true);
+        let projected_owner = AdaptiveProbeOwner::ProjectedCpu;
+
+        // refresh -> refresh: the first frame grants grace; the second yields
+        // to Order and removes the session-level pending ticket.
+        let mut owner = Some(projected_owner);
+        let mut pending_projected_choice = Some(formal);
+        let mut yielded = pending_projected_choice.expect("grace choice");
+        if owner == Some(projected_owner)
+            && defer_projected_formal_choice(yielded, true)
+            && pending_projected_choice.is_some()
+        {
+            owner = None;
+            pending_projected_choice = None;
+            yielded.sample = None;
+        }
+        owner = arbitrate_new_probe_owner(owner, true, false, projected_owner);
+        assert_eq!(owner, Some(AdaptiveProbeOwner::Order));
+        assert!(pending_projected_choice.is_none());
+        assert!(yielded.sample.is_none());
+
+        // A following stable frame cannot steal ownership while the Order
+        // ticket from the second refresh is still pending.
+        let mut order = AdaptiveOrderPolicy::default();
+        order.reset(AdaptiveMetric::FrameCompletion);
+        let order_choice = order.choose_refresh_backend();
+        order.register_pending_sample(order_choice, 77);
+        assert!(!order_probe_owner_should_yield(
+            owner,
+            order.pending.is_some(),
+            false,
+            false,
+        ));
+        let held = projected.held_choice();
+        assert!(held.sample.is_none());
+        assert!(!projected_probe_claims_owner(held, false, false));
+        assert_eq!(owner, Some(AdaptiveProbeOwner::Order));
+        assert!(projected.pending.is_none());
+
+        // Once that ticket is terminal, Order has no work on a stable frame
+        // and yields without losing its CpuLearning phase or first sample.
+        assert!(order.complete_pending_sample(SurfaceOrderBackendUsed::Cpu, 77, 10.0,));
+        assert!(order_probe_owner_should_yield(
+            owner,
+            order.pending.is_some(),
+            false,
+            false,
+        ));
+        owner = None;
+        assert_eq!(order.state(), SurfaceAdaptiveState::CpuLearning);
+
+        // Projected now reissues the exact same unconsumed bootstrap kind and
+        // the cached order makes its formal ticket eligible.
+        let reissued = projected.choose(true);
+        assert_eq!(reissued.sample, formal.sample);
+        assert!(projected_formal_sample_requested(reissued, false));
+        owner = arbitrate_new_probe_owner(
+            owner,
+            false,
+            projected_probe_claims_owner(reissued, false, false),
+            projected_owner,
+        );
+        assert_eq!(owner, Some(projected_owner));
+    }
+
+    #[test]
+    fn projected_transition_warmup_delays_order_once_without_claiming_owner() {
+        let mut lane = AdaptiveProjectedDrawPolicy {
+            phase: ProjectedAdaptivePhase::Probe {
+                incumbent: SurfaceProjectedDrawExecution::Candidate,
+                next_sample: 1,
+                active_execution: SurfaceProjectedDrawExecution::Candidate,
+            },
+            ..AdaptiveProjectedDrawPolicy::default()
+        };
+        let transition_warmup = lane.choose(true);
+        assert!(!projected_formal_sample_requested(transition_warmup, false));
+        assert!(!projected_probe_claims_owner(
+            transition_warmup,
+            false,
+            false,
+        ));
+        assert_eq!(
+            arbitrate_new_probe_owner(None, true, false, AdaptiveProbeOwner::ProjectedCpu),
+            Some(AdaptiveProbeOwner::Order),
+        );
     }
 
     #[test]
