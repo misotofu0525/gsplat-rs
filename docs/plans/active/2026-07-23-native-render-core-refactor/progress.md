@@ -17,6 +17,7 @@ A1 = Accept
 A2 = Accepted
 A3 = Accepted
 A4 = Accepted
+A7 = Active
 <!-- gsplat-program-task-states: end -->
 
 ## Program status
@@ -30,11 +31,12 @@ A4 = Accepted
   offscreen lifecycle leaves are integrated and accepted. The parent A5 and A8
   packages remain open for later, separately activated slices.
 - Current work package: A — responsibility extraction.
-- Active package tasks: none during this root-owned combined closeout.
+- Active package task: A7 through the exact A7a order-receipt value lane below.
 - Last completed tasks: A5c2 — Projected contributor compactor; A8a — offscreen
   target/readback lifecycle leaves.
-- Next eligible implementation: A7a immutable evidence values, after its exact
-  writer boundary is recorded from the combined accepted baseline. Remaining
+- Next eligible implementation: A7a is active from the clean combined accepted
+  baseline. A disjoint second writer may start only after root records its exact
+  task, allowlist, dependency state and integration order. Remaining
   Direct/Preproject compaction slices, A5d, A6 and later packages stay inactive.
 - Integration branch: `codex/native-render-core-refactor`.
 - Frozen source implementation closeout:
@@ -103,6 +105,55 @@ eligible task. Do not rewrite the architecture in this ledger.
 - Dependency/ownership rules and the legacy giant-file growth ratchet remain
   hard. Historical A1 entries below record the then-current implementation;
   this section and the current policy are authoritative for later tasks.
+
+## Current task
+
+### A7a — Extract the immutable order-receipt value cluster
+
+- Parent task state: A7 Active
+- Subtask state: Active
+- Activation baseline:
+  `2e2e211` (`docs: accept parallel extraction slices`).
+- Hypothesis: the closed order-receipt value cluster can move behind one
+  private evidence leaf without moving transport, tickets, readback,
+  invalidation, controller policy or the public crate-root API.
+- Writer execution: one user-visible Codex task in an isolated worktree. A
+  collaboration subagent may review the fixed candidate SHA but must not edit.
+- Exact writer allowlist:
+  - `crates/gsplat-render-wgpu/src/lib.rs`, only to add private
+    `mod evidence;` while preserving the existing root export text and path;
+  - new `crates/gsplat-render-wgpu/src/evidence/mod.rs`;
+  - new `crates/gsplat-render-wgpu/src/evidence/order.rs`;
+  - `crates/gsplat-render-wgpu/src/gpu_telemetry.rs`, only to remove the five
+    declarations below and re-export them from the private evidence facade.
+- Exact moved declarations, with visibility, derives, docs, variant order,
+  field names, field order and field types unchanged:
+  - `SurfaceTimingSource`;
+  - `SurfaceOrderMeasurement`;
+  - `SurfaceOrderMeasurementFailureReason`;
+  - `SurfaceOrderMeasurementFailure`;
+  - `SurfaceCpuOrderMeasurement`.
+- Frozen source hashes at activation:
+  - `lib.rs`: `6f969ce3dc24186ba80ce555671b21ea5af7229fa52b129bb3b3a40affcd019e`;
+  - `gpu_telemetry.rs`: `6ea2ff9ac75a31aee400f931d28ff93a6951212aae0f34b566a5f9c2afb98154`;
+  - `projected_draw_telemetry.rs`: `3653a37f3132a0bab595185bbc46657ea6344c36572cdf788780c6eb9d33fc54`;
+  - `gpu_producer_telemetry.rs`: `190fa41de9cbefd59c025c660456d8f89d931496f14fcfdc40b4b5ce5946fa54`;
+  - `surface_presenter.rs`: `7b44a87f960dbf944b00d969477b8494afd9603d48229746866e3d6d0cc1e2aa`;
+  - `surface_session.rs`: `7ed8b08dc13d5ccd97d4e6007de204211c7d208d00c894f5f9b6d363a99ef702`.
+- Forbidden: Projected/producer receipt declarations; ticket namespaces and
+  counters; slots/rings/poll/reservation; count sources; readback/query/map,
+  callback, arm/cancel/fail/invalidate/poll/timestamp code; submissions,
+  adaptive/controller state; `surface_presenter.rs`, `surface_session.rs`, API,
+  FFI/header/bindings/examples/Cargo, GPU/raster/offscreen/shaders and this
+  plan/policy. No observer ring or new public module/path.
+- Hard gates: mechanical declaration equivalence; existing root imports,
+  construction and pattern matching compile unchanged; private evidence path
+  is not public; frozen forbidden hashes; format/diff, architecture,
+  renderer/workspace tests, all-target Clippy, Rustdoc, wasm32 and C FFI smoke.
+  No device run or performance percentage is required because behavior and
+  execution are unchanged.
+- Source size: reported only as review context; no fixed line count is a task
+  requirement, split criterion or completion gate.
 
 ## Last integrated tasks
 
