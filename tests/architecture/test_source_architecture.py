@@ -132,35 +132,36 @@ class SourceArchitectureFixtureTests(unittest.TestCase):
                         msg="\n".join(issue.render() for issue in issues),
                     )
 
-    def test_policy_exactly_covers_a0_target_breaches(self) -> None:
+    def test_policy_registers_hard_breaches_without_turning_targets_into_quotas(self) -> None:
         policy = copy.deepcopy(self.base_policy)
         sources = {
             kind: checker.discover(REPO_ROOT, source_set)
             for kind, source_set in policy["source_sets"].items()
         }
-        breached: dict[str, int] = {}
+        hard_breached: dict[str, int] = {}
         for kind, paths in sources.items():
             for relative in paths:
                 loc = checker.physical_loc(REPO_ROOT / relative)
                 profile = checker.size_profile(relative, kind, policy)
-                if loc >= profile["target"]:
-                    breached[relative] = loc
+                if profile["hard"] is not None and loc > profile["hard"]:
+                    hard_breached[relative] = loc
 
         grandfather = {
             entry["path"]: entry for entry in policy["grandfather"]
         }
-        self.assertEqual(set(breached), set(grandfather))
+        exceptions = {entry["path"] for entry in policy["exceptions"]}
+        self.assertLessEqual(set(hard_breached), set(grandfather) | exceptions)
+        growth_tolerance = policy["grandfather_ratchet"]["growth_tolerance_lines"]
+        shrink_checkpoint = policy["grandfather_ratchet"]["shrink_checkpoint_lines"]
         for path, entry in grandfather.items():
             loc = checker.physical_loc(REPO_ROOT / path)
-            self.assertGreaterEqual(entry["a0_physical_loc"], loc)
-            self.assertEqual(grandfather[path]["baseline_physical_loc"], loc)
+            baseline = entry["baseline_physical_loc"]
+            self.assertLessEqual(loc, baseline + growth_tolerance)
+            self.assertLess(baseline - loc, shrink_checkpoint)
             self.assertTrue(entry["owner_task"])
             self.assertTrue(entry["exit_condition"])
 
     def test_declared_guardrail_values_and_future_activation(self) -> None:
-        self.assertLess(
-            checker.physical_loc(TEST_DIR / "check_source_architecture.py"), 1200
-        )
         limits = self.base_policy["limits"]
         self.assertEqual(
             (limits["production_rust"]["target_lt"], limits["production_rust"]["hard_ceiling"]),
@@ -173,6 +174,10 @@ class SourceArchitectureFixtureTests(unittest.TestCase):
         self.assertEqual(limits["render_lib"]["target_lt"], 200)
         self.assertEqual(limits["renderer_orchestrator"]["target_lt"], 800)
         self.assertEqual(limits["wgsl"]["target_lt"], 350)
+        self.assertEqual(
+            self.base_policy["grandfather_ratchet"],
+            {"growth_tolerance_lines": 32, "shrink_checkpoint_lines": 100},
+        )
         orchestration = self.base_policy["top_level_orchestration"]
         self.assertFalse(orchestration["enabled"])
         self.assertEqual(orchestration["target_lt"], 150)

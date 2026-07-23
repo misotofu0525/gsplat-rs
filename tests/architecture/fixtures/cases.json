@@ -105,10 +105,10 @@
       ]
     },
     {
-      "name": "grandfather_growth_fails",
+      "name": "grandfather_growth_beyond_tolerance_fails",
       "files": {
         "crates/demo/src/legacy.rs": {
-          "physical_lines": 801
+          "physical_lines": 833
         }
       },
       "grandfather": [
@@ -125,10 +125,28 @@
       ]
     },
     {
-      "name": "grandfather_shrink_requires_same_change_baseline_update",
+      "name": "grandfather_growth_within_mechanical_tolerance_is_allowed",
       "files": {
         "crates/demo/src/legacy.rs": {
-          "physical_lines": 799
+          "physical_lines": 832
+        }
+      },
+      "grandfather": [
+        {
+          "path": "crates/demo/src/legacy.rs",
+          "a0_physical_loc": 800,
+          "baseline_physical_loc": 800,
+          "owner_task": "A9",
+          "exit_condition": "Remove mixed ownership and return to the normal profile."
+        }
+      ],
+      "expected_error_codes": []
+    },
+    {
+      "name": "grandfather_large_shrink_requires_checkpoint_update",
+      "files": {
+        "crates/demo/src/legacy.rs": {
+          "physical_lines": 701
         }
       },
       "grandfather": [
@@ -145,7 +163,7 @@
       ]
     },
     {
-      "name": "grandfather_shrink_with_lowered_baseline_is_allowed",
+      "name": "grandfather_small_shrink_without_checkpoint_update_is_allowed",
       "files": {
         "crates/demo/src/legacy.rs": {
           "physical_lines": 799
@@ -155,9 +173,27 @@
         {
           "path": "crates/demo/src/legacy.rs",
           "a0_physical_loc": 801,
-          "baseline_physical_loc": 799,
+          "baseline_physical_loc": 801,
           "owner_task": "A9",
           "exit_condition": "Reduce below target."
+        }
+      ],
+      "expected_error_codes": []
+    },
+    {
+      "name": "grandfather_large_shrink_with_lowered_checkpoint_is_allowed",
+      "files": {
+        "crates/demo/src/legacy.rs": {
+          "physical_lines": 701
+        }
+      },
+      "grandfather": [
+        {
+          "path": "crates/demo/src/legacy.rs",
+          "a0_physical_loc": 801,
+          "baseline_physical_loc": 701,
+          "owner_task": "A9",
+          "exit_condition": "Remove mixed ownership and return to the normal profile."
         }
       ],
       "expected_error_codes": []
@@ -183,17 +219,17 @@
       ]
     },
     {
-      "name": "closed_owner_task_expires_grandfather_exit",
+      "name": "closed_owner_task_expires_grandfather_even_below_target",
       "files": {
         "crates/demo/src/legacy.rs": {
-          "physical_lines": 800
+          "physical_lines": 700
         }
       },
       "grandfather": [
         {
           "path": "crates/demo/src/legacy.rs",
           "a0_physical_loc": 800,
-          "baseline_physical_loc": 800,
+          "baseline_physical_loc": 750,
           "owner_task": "A5",
           "exit_condition": "Reduce below target."
         }

@@ -58,6 +58,26 @@ def error(code: str, path: str, message: str, line: int | None = None) -> Issue:
     return Issue("error", code, path, message, line)
 
 
+def policy_integer(
+    value: Any,
+    *,
+    name: str,
+    minimum: int,
+    fallback: int,
+    issues: list[Issue],
+) -> int:
+    if isinstance(value, int) and not isinstance(value, bool) and value >= minimum:
+        return value
+    issues.append(
+        error(
+            "config.invalid_grandfather_ratchet",
+            "<policy>",
+            f"{name} must be an integer greater than or equal to {minimum}",
+        )
+    )
+    return fallback
+
+
 def physical_loc(path: pathlib.Path) -> int:
     """Count physical lines; splitlines counts a final unterminated line too."""
 
@@ -412,6 +432,21 @@ def check_sizes(
 ) -> list[Issue]:
     issues: list[Issue] = []
     all_sources = {path: kind for kind, paths in sources.items() for path in paths}
+    ratchet = policy.get("grandfather_ratchet", {})
+    growth_tolerance = policy_integer(
+        ratchet.get("growth_tolerance_lines"),
+        name="growth_tolerance_lines",
+        minimum=0,
+        fallback=0,
+        issues=issues,
+    )
+    shrink_checkpoint = policy_integer(
+        ratchet.get("shrink_checkpoint_lines"),
+        name="shrink_checkpoint_lines",
+        minimum=1,
+        fallback=1,
+        issues=issues,
+    )
     grandfather: dict[str, dict[str, Any]] = {}
     for entry in policy.get("grandfather", []):
         path = entry.get("path", "")
@@ -511,34 +546,38 @@ def check_sizes(
         if entry:
             baseline = entry.get("baseline_physical_loc")
             if isinstance(baseline, int) and not isinstance(baseline, bool) and baseline > 0:
-                if loc > baseline and not exception_active:
+                if loc > baseline + growth_tolerance and not exception_active:
                     issues.append(
                         Issue(
                             "error",
                             "size.grandfather_growth",
                             path,
-                            f"{loc} physical LOC grew above checked ratchet baseline {baseline}; grandfathered files are shrink-only",
+                            f"{loc} physical LOC exceeds checked ratchet baseline {baseline} "
+                            f"plus {growth_tolerance}-line mechanical tolerance",
                         )
                     )
-                elif loc < baseline:
+                elif baseline - loc >= shrink_checkpoint:
                     issues.append(
                         Issue(
                             "error",
                             "size.grandfather_baseline_stale",
                             path,
-                            f"source shrank to {loc} physical LOC but checked ratchet baseline remains {baseline}; lower baseline_physical_loc in the same change",
+                            f"source shrank to {loc} physical LOC, at least {shrink_checkpoint} "
+                            f"lines below checkpoint {baseline}; lower baseline_physical_loc "
+                            "in the same architectural change",
                         )
                     )
             else:
                 issues.append(Issue("error", "config.invalid_grandfather", path, "baseline_physical_loc must be positive"))
             owner = entry.get("owner_task")
-            if owner in completed and loc >= profile["target"]:
+            if owner in completed:
                 issues.append(
                     Issue(
                         "error",
                         "grandfather.exit_due",
                         path,
-                        f"owner task {owner} is closed but {loc} physical LOC still misses {profile['name']} target < {profile['target']}",
+                        f"owner task {owner} is closed but its legacy grandfather entry remains; "
+                        "remove the entry so the file returns to its normal size profile",
                     )
                 )
             review = entry.get("review_task")

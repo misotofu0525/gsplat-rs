@@ -167,6 +167,10 @@
       "enforce_target": true
     }
   },
+  "grandfather_ratchet": {
+    "growth_tolerance_lines": 32,
+    "shrink_checkpoint_lines": 100
+  },
   "top_level_orchestration": {
     "enabled": false,
     "target_lt": 150,

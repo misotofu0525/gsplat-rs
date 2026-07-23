@@ -396,6 +396,14 @@ default 1,200-line ceiling exists to stop new multi-thousand-line mixed owners;
 the explicit, finite exception mechanism covers the rare case where a larger
 cohesive generated/table-heavy implementation is genuinely clearer.
 
+Legacy-file LOC baselines are coarse architecture checkpoints, not exact
+formatting budgets. The checker tolerates up to 32 lines of mechanical drift
+from a checkpoint and only requires a lower checkpoint after a reduction of at
+least 100 lines. Closing the responsible extraction task removes the legacy
+entry and returns the file to its normal profile; it does not require an
+otherwise cohesive module to land on exactly 799 lines. Dependency direction,
+single ownership and independently testable behavior remain the decisive gates.
+
 ## 9. Work-package map
 
 This document is a program roadmap, not one long Codex goal. Implementation is
