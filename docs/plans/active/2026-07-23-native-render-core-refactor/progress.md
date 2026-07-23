@@ -17,15 +17,7 @@ A1 = Accept
 A2 = Accepted
 A3 = Accepted
 A4 = Accepted
-A5 = Active
-A7 = Active
 <!-- gsplat-program-task-states: end -->
-
-<!-- gsplat-program-active-lanes: begin -->
-activation_commit = f1c8f1c87e534443fecc09bb80d896317637b038
-A5 = A5f
-A7 = A7c
-<!-- gsplat-program-active-lanes: end -->
 
 ## Program status
 
@@ -37,17 +29,17 @@ A7 = A7c
   are now accepted behind those owners. A5c2's contributor compactor and A8a's
   offscreen lifecycle leaves are integrated and accepted. A7a/A7b now own
   immutable order receipts and bounded external evidence retention; A5d/A5e
-  now own Direct Resident-visible and Preproject key/ID compaction. The parent
-  A5, A7 and A8 packages remain open for later, separately activated slices.
+  now own Direct Resident-visible and Preproject key/ID compaction. A7c now
+  places stateless execution identities in the API leaf, and A5f places
+  Resident color-kernel mechanics in `gpu/color.rs`. The parent A5, A7 and A8
+  packages remain open for later, separately activated slices.
 - Current work package: A — responsibility extraction.
-- Active package tasks: A7c and A5f under the exact disjoint parallel lease
-  recorded by the architecture policy and machine lane block.
-- Last completed tasks: A7b — bounded external evidence retention; A5e —
-  Preproject key/ID compaction owner.
-- Next eligible implementation: A7c API identity ownership and A5f Resident
-  color-kernel ownership may run concurrently from the same clean activation
-  baseline in separate user-visible tasks/worktrees. No other writer slice is
-  active.
+- Active package tasks: none while the root closes the accepted A7c/A5f lease.
+- Last completed tasks: A7c — stateless execution identities; A5f — Resident
+  color-kernel mechanics.
+- Next eligible implementation: A7d immutable projected receipts and A5g rank
+  projector ownership may run concurrently from the same clean activation
+  baseline in separate user-visible tasks/worktrees.
 - Integration branch: `codex/native-render-core-refactor`.
 - Frozen source implementation closeout:
   `5db2520e0d7a0ef1c68a78bdb9abc6fc588c5186`.
@@ -116,10 +108,11 @@ eligible task. Do not rewrite the architecture in this ledger.
   hard. Historical A1 entries below record the then-current implementation;
   this section and the current policy are authoritative for later tasks.
 
-## Current task
+## Recently integrated tasks
 
 ### Parallel writer lanes — A7c and A5f
 
+- State: Accepted.
 - Activation baseline:
   `f1c8f1c87e534443fecc09bb80d896317637b038`.
 - Isolation: two user-visible Codex tasks, two isolated worktrees and exact
@@ -133,8 +126,8 @@ eligible task. Do not rewrite the architecture in this ledger.
 
 ### A7c — Move stateless execution identities into the API leaf
 
-- Parent task state: A7 Active.
-- Subtask state: Active.
+- Parent task state: A7 remains open for a later explicit slice.
+- Subtask state: Accepted.
 - Hypothesis: two already-public, strategy-free identity enums can live in the
   existing API leaf while their legacy owner modules privately re-export them,
   preserving every crate-root path and receipt/controller behavior.
@@ -164,11 +157,15 @@ eligible task. Do not rewrite the architecture in this ledger.
   exact forbidden hashes; format/diff, architecture, locked renderer/workspace
   tests, all-target Clippy, Rustdoc, wasm32 and C FFI smoke. No device or
   performance gate is required for this declaration-only ownership move.
+- Candidate: `0ff65ff7185f6d66c5d2400b8dfc78f899b95814`.
+- Root merge: `371e87c44f9574b2fdaa28d1f3b2d7950a5ddcc2`.
+- Independent fixed-SHA review: P0/P1/P2 = 0; exact three-file allowlist,
+  declaration semantics, compatibility paths and forbidden hashes passed.
 
 ### A5f — Extract Resident color-kernel mechanics
 
-- Parent task state: A5 Active.
-- Subtask state: Active.
+- Parent task state: A5 remains open for a later explicit slice.
+- Subtask state: Accepted.
 - Hypothesis: Resident's color parameter ABI, bind-group layout/pipeline
   construction and compute dispatch can move behind one strategy-free GPU leaf
   while Resident retains all data resources, bind groups, camera cache and
@@ -202,8 +199,20 @@ eligible task. Do not rewrite the architecture in this ledger.
   renderer/workspace tests, all-target Clippy, Rustdoc, wasm32 and required
   Apple Metal SortedAlpha conformance. This behavior-preserving ownership slice
   makes no device or performance claim.
-
-## Recently integrated tasks
+- Candidate: `449851441b6a512fb6bfe44dd7bb6f5c099e0303`.
+- Root merge: `a26c8f14eb813b0995d664f7e06c403762f7bb27`.
+- Independent fixed-SHA review: P0/P1/P2 = 0; exact three-file allowlist,
+  nine-binding color ABI, labels, dispatch, camera cache and frozen hashes
+  passed.
+- Combined root verification after both merges: architecture self-tests and
+  checker, format/diff, locked workspace check/tests, all-target Clippy,
+  warnings-denied Rustdoc, wasm32 `gsplat-web`, required Metal SortedAlpha and
+  C FFI smoke all passed. Renderer inventory: 292 passed, five existing
+  research/external-data tests ignored.
+- Source-size note: the accepted declaration move reduced
+  `surface_session.rs` to 5,014 lines and `projected_draw_telemetry.rs` to 813;
+  their legacy ratchets were lowered exactly. These counts were not writer,
+  review, split or completion gates.
 
 ### Parallel writer lanes — A7b and A5e
 
@@ -2002,6 +2011,8 @@ eligible task. Do not rewrite the architecture in this ledger.
 | A4 | Accepted | `0cf228f` + `b47d08c` | A4a/A4b records above and A065 exactness artifact | Existing CPU/SIMD/Rayon sort and renderer visibility/depth/key primitives have focused owners; behavior and full-count native rendering remain unchanged |
 | A5a | Accepted | `53eb004` + `53d7d57` | A5a record above, fixed-SHA review and integrated gates | External-prefix scan and stable radix now have strategy-free GPU owners; product admission and behavior remain unchanged; A5 stays Active |
 | A5b | Accepted | `835b01e` + `0fd16a8` | A5b record above, fixed-SHA review and integrated gates | Direct/fallback and qualified Resident stable full32 radix mechanics now share the private radix/scan owners; labels, resources, shaders, policy and behavior remain unchanged; A5 stays Active |
+| A7c | Accepted | `0ff65ff` + `371e87c` | A7c record above and fixed-SHA review | stateless execution identities now live in the API leaf with old public/internal paths and all receipt/controller behavior unchanged; A7 remains open |
+| A5f | Accepted | `4498514` + `a26c8f1` | A5f record above, fixed-SHA review and combined gates | Resident color ABI/pipeline/dispatch mechanics now have a strategy-free GPU owner; scene resources, cache policy, shader and output remain unchanged; A5 remains open |
 
 ## Baseline evidence inherited, not rerun by default
 
