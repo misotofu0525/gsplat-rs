@@ -188,7 +188,7 @@
     {
       "path": "crates/gsplat-render-wgpu/src/lib.rs",
       "a0_physical_loc": 5680,
-      "baseline_physical_loc": 5004,
+      "baseline_physical_loc": 4828,
       "owner_task": "M7",
       "exit_condition": "Remove legacy renderer ownership so lib.rs contains only crate wiring and public re-exports."
     },
