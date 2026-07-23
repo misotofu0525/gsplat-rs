@@ -1,0 +1,252 @@
+{
+  "schema": "gsplat-camera-trace/v1",
+  "trace_id": "candidate-truck-quality-2view-2622x1206-v1",
+  "coordinate_system": {
+    "handedness": "right",
+    "axes": "RUF",
+    "camera_forward": "+Z"
+  },
+  "matrix_convention": {
+    "storage_order": "row-major",
+    "vector_convention": "column",
+    "composition": "projection * view * world_position",
+    "ndc_xy": "[-1,1]",
+    "ndc_z": "[0,1]",
+    "clip_w": "camera_z"
+  },
+  "display": {
+    "width": 2622,
+    "height": 1206
+  },
+  "derivation": {
+    "status": "candidate_requires_manual_image_review",
+    "source_path": "tests/datasets/external/inria_3dgs/truck/point_cloud.ply",
+    "source_sha256": "65ecf4058135a030cddd2198326f67172a4101344b0b54a3fa370cf45ea9688c",
+    "source_bytes": 630225580,
+    "source_splat_count": 2541226,
+    "source_sh_degree": 3,
+    "source_coordinate_system": "RDF",
+    "runtime_coordinate_system": "RUF",
+    "position_sampling": "stratified-midpoint-integer/v1",
+    "position_sample_count": 200000,
+    "lower_percentile": 20.0,
+    "upper_percentile": 80.0,
+    "robust_bounds_min_ruf": [
+      -12.671863937377925,
+      -0.6082556247711182,
+      -8.021650505065915
+    ],
+    "robust_bounds_max_ruf": [
+      7.845879650115975,
+      6.193839740753175,
+      8.154864311218262
+    ],
+    "robust_center_ruf": [
+      -2.4129921436309747,
+      2.7927920579910284,
+      0.06660690307617312
+    ],
+    "framing_method": "official_training_camera_pose_with_robust_far_plane",
+    "fit_margin": null,
+    "views": [
+      {
+        "source_camera_id": 0,
+        "source_image_name": "000001",
+        "source_width": 1957,
+        "source_height": 1091,
+        "source_fx": 1163.2547280302354,
+        "source_fy": 1156.2804049882861,
+        "source_horizontal_fov_radians": 1.3986958653070056,
+        "source_vertical_fov_radians": 0.881621552836618,
+        "frame_index": 0,
+        "camera_metadata_index": 0,
+        "distance_to_robust_center": 7.173596299147782
+      },
+      {
+        "source_camera_id": 125,
+        "source_image_name": "000108",
+        "source_width": 1957,
+        "source_height": 1091,
+        "source_fx": 1163.2547280302354,
+        "source_fy": 1156.2804049882861,
+        "source_horizontal_fov_radians": 1.3986958653070056,
+        "source_vertical_fov_radians": 0.881621552836618,
+        "frame_index": 1,
+        "camera_metadata_index": 125,
+        "distance_to_robust_center": 6.884187258483031
+      }
+    ],
+    "note": "Global extrema do not affect framing distance. The far plane uses a conservative multiple of robust radius; every source Gaussian remains loaded even when outside the selected view frustum.",
+    "official_camera_metadata": {
+      "local_path": "tests/datasets/external/inria_3dgs/truck/cameras.json",
+      "sha256": "802e9eb9ee7deb034309baecca6d7de2a02b0cb70897a06bdb9ae36ba5bfd5c6",
+      "bytes": 100406,
+      "entry_count": 251,
+      "coordinate_conversion": "R_ruf=diag(1,-1,1)*R_rdf*diag(1,-1,1); position_ruf=(x,-y,z)"
+    },
+    "display_variant": {
+      "source_trace_id": "candidate-truck-quality-2view-1920x1080-v1",
+      "source_trace_sha256": "34d47dbddf73d915bfd55431b33da9430882767a40d9d74c636c508f7d7a5ab3",
+      "source_display": {
+        "width": 1920,
+        "height": 1080
+      },
+      "policy": "same_pose_fov_clip_reprojected_for_exact_target_aspect"
+    }
+  },
+  "frames": [
+    {
+      "frame_index": 0,
+      "timestamp_ns": 0,
+      "pose": {
+        "position": [
+          3.398962270047007,
+          -0.683534043426368,
+          -2.29915441055627
+        ],
+        "rotation_xyzw": [
+          -0.03458227550890978,
+          -0.3269484852594975,
+          0.0032672478788591,
+          0.9444035574363557
+        ]
+      },
+      "intrinsics": {
+        "vertical_fov_radians": 0.881621552836618,
+        "near_plane": 0.01,
+        "far_plane": 682.139306023212
+      },
+      "view_matrix": [
+        0.7861880261556364,
+        0.02878444622857118,
+        0.6173166474223895,
+        -1.233241996516337,
+        0.016442044149287495,
+        0.9975867826238479,
+        -0.06745569151963769,
+        0.4709075888152065,
+        -0.6177686028875999,
+        0.06318280453979654,
+        0.783817508414292,
+        3.9450772522386552,
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "projection_matrix": [
+        0.9749515440567216,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        2.119670769914365,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0000146599770918,
+        -0.010000146599770918,
+        0.0,
+        0.0,
+        1.0,
+        0.0
+      ],
+      "view_projection_matrix": [
+        0.7664952300193439,
+        0.02806344029536315,
+        0.6018538185763774,
+        -1.2023511886991969,
+        0.0348517203808862,
+        2.114555543580686,
+        -0.14298385757853632,
+        0.9981690513424459,
+        -0.6177776593611664,
+        0.06318373079826368,
+        0.7838289991610096,
+        3.935134940381028,
+        -0.6177686028875999,
+        0.06318280453979654,
+        0.783817508414292,
+        3.9450772522386552
+      ]
+    },
+    {
+      "frame_index": 1,
+      "timestamp_ns": 16666667,
+      "pose": {
+        "position": [
+          2.8829987521200047,
+          0.3668563599035546,
+          3.7353056684053323
+        ],
+        "rotation_xyzw": [
+          0.04350732169111665,
+          0.9629948951209648,
+          -0.12257088877838794,
+          -0.23605999693786284
+        ]
+      },
+      "intrinsics": {
+        "vertical_fov_radians": 0.881621552836618,
+        "near_plane": 0.01,
+        "far_plane": 681.8498969825473
+      },
+      "view_matrix": [
+        -0.884765581609924,
+        0.14166282463725668,
+        0.4439836818107702,
+        0.8403933961728223,
+        0.02592649011846715,
+        0.9661669803666835,
+        -0.2566109568184135,
+        0.5293298214440129,
+        -0.46531460616295983,
+        -0.21552960391769505,
+        -0.8585041101395448,
+        4.627345103809242,
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "projection_matrix": [
+        0.9749515440567216,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        2.119670769914365,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0000146661995641,
+        -0.010000146661995642,
+        0.0,
+        0.0,
+        1.0,
+        0.0
+      ],
+      "view_projection_matrix": [
+        -0.8626035699188387,
+        0.13811438961553,
+        0.4328625761173986,
+        0.8193428392137652,
+        0.054955623270588436,
+        2.047955907139685,
+        -0.5439307444077484,
+        1.122004950158864,
+        -0.46532143055983394,
+        -0.2155327649178781,
+        -0.8585167011321507,
+        4.617412822713992,
+        -0.46531460616295983,
+        -0.21552960391769505,
+        -0.8585041101395448,
+        4.627345103809242
+      ]
+    }
+  ],
+  "content_sha256": "4a4491515e89e96f07f2b20dc8fc38ed8a0a007833e659e20e4c586d3d4fe6f1"
+}

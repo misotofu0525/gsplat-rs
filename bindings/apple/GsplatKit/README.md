@@ -45,8 +45,58 @@ let renderer = try GsplatUIKitSurfaceRenderer(
     height: UInt32(surfaceView.bounds.height)
 )
 try renderer.renderFrame()
+let exactness = try renderer.exactness()
+let presentation = try renderer.presentation()
+let orderStatus = try renderer.orderStatus()
+let orderSubmission = try renderer.orderSubmission()
+let cpuOrderReceipts = try renderer.drainCpuOrderMeasurements()
+let orderReceipts = try renderer.drainOrderMeasurements()
+let orderFailures = try renderer.drainOrderMeasurementFailures()
+let projectedSubmission = try renderer.projectedDrawSubmission()
+let projectedTerminals = try renderer.drainProjectedDrawTerminals()
 renderer.close()
 ```
+
+UIKit defaults to exact resident `.packedAtlas`, `.adaptive` CPU/GPU ordering,
+and a sort interval of `1`. Pass `GsplatSurfaceOptions` to force `.cpu`, `.gpu`,
+or another explicit diagnostic configuration. GPU receipt collection is
+non-blocking: timestamp-query-capable devices populate phase timing, while
+completion-only devices leave those optional fields `nil`.
+`exactness.isFullQuality` requires source/decoded/encoded/resident/addressable
+count equality, source SH degree preservation, and the native no-sampling,
+no-LOD, non-partial publication guarantees. Diagnostic `.pagedActiveAtlas`
+does not claim full quality.
+Every exact non-Paged CPU refresh requests a queue-completion ticket, so forced
+CPU/GPU and Adaptive comparisons use frame-start-to-queue-done timing instead
+of CPU submit wall time. Every issued CPU/GPU ticket reaches exactly one
+success/failure drain
+while the live renderer continues to render. `orderStatus.adaptiveGpuFailure`
+also makes a pre-ticket Adaptive GPU fallback explicit.
+Projected-draw execution is independently `.adaptive` by default. It compares
+the full Candidate draw (`D == V`) with exact stable contributor compaction
+(`D == C`) on each active CPU/GPU ordering lane without changing source
+membership, SH degree, camera, or render resolution. Forced `.candidate` and
+`.compact` are diagnostic controls; call `setProjectedDrawPolicy(_:)` to change
+them at runtime. Adaptive formal probes expose a submission ticket followed by
+exactly one terminal success or failure. A success is returned together with
+its same-ticket V/C/D receipt so callers cannot accidentally join counts from a
+different camera or projection generation.
+For strict evidence, snapshot `orderSubmission()` after every successful
+warmup, measured, and terminal-flush frame before draining receipts; reject
+ring-busy, Surface-unavailable, dropped-prior, terminal failure, fallback, or
+incomplete tickets.
+Apply the same rule to `projectedDrawSubmission()`: retain every issued ticket,
+drain both projected terminal queues, and reject unsampled, dropped, failed, or
+missing V/C/D evidence.
+`drainProjectedDrawTerminals()` holds the renderer ownership lock across both
+terminal queues and takes each success's V/C/D receipt before another native
+poll. All V1 calls initialize and verify `struct_size/version`; projected
+tickets are also rejected unless they remain in the independent, JavaScript-safe
+`[2^52, 2^53 - 1]` namespace. Forced Candidate/Compact receipts must report the
+same actual execution, disabled Adaptive state, and no fabricated ticket.
+`presentation.fullResolution` is true only after an actual presentation whose
+requested, Surface, internal-render, and presented pixel dimensions all match;
+the native Surface path does not use dynamic resolution or upscaling.
 
 Current limits:
 

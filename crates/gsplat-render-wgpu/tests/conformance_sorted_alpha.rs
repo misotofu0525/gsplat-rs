@@ -67,10 +67,14 @@ fn sorted_alpha_conformance_baseline() {
     }
     let denominator = (config.width as f32) * (config.height as f32) * 255.0;
     let channel_means = channel_sums.map(|sum| sum as f32 / denominator);
-    let expected_means = [0.4194_f32, 0.3234, 0.3073, 0.5712];
+    // This baseline reflects the release-gated INRIA raster contract: 0.3
+    // pixel^2 covariance blur, lower-only SH color clamp, premultiplied alpha,
+    // alpha capped at 0.99, and the strict 1/255 fragment cutoff. The older
+    // baseline encoded the former 0.3-pixel blur and early RGB clamp instead.
+    let expected_means = [0.6705_f32, 0.5094, 0.4836, 0.9054];
     for (channel, (actual, expected)) in channel_means.into_iter().zip(expected_means).enumerate() {
         assert!(
-            (actual - expected).abs() <= 0.035,
+            (actual - expected).abs() <= 0.02,
             "channel {channel} mean {actual:.4} exceeded tolerance around {expected:.4}"
         );
     }

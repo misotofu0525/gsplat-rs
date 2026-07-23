@@ -1,0 +1,220 @@
+{
+  "schema": "gsplat-camera-trace/v1",
+  "trace_id": "candidate-flowers-quality-2view-1920x1080-v1",
+  "coordinate_system": {
+    "handedness": "right",
+    "axes": "RUF",
+    "camera_forward": "+Z"
+  },
+  "matrix_convention": {
+    "storage_order": "row-major",
+    "vector_convention": "column",
+    "composition": "projection * view * world_position",
+    "ndc_xy": "[-1,1]",
+    "ndc_z": "[0,1]",
+    "clip_w": "camera_z"
+  },
+  "display": {
+    "width": 1920,
+    "height": 1080
+  },
+  "derivation": {
+    "status": "candidate_requires_manual_image_review",
+    "source_path": "tests/datasets/external/nvidia_flowers_1/flowers_1/flowers_1.ply",
+    "source_sha256": "3641192d70d598894f4d6ad92e0890b4a7336b43aa6af47bd35842c3e2ee8765",
+    "source_bytes": 139619083,
+    "source_splat_count": 562974,
+    "source_sh_degree": 3,
+    "source_coordinate_system": "RDF",
+    "runtime_coordinate_system": "RUF",
+    "position_sampling": "stratified-midpoint-integer/v1",
+    "position_sample_count": 200000,
+    "lower_percentile": 5.0,
+    "upper_percentile": 95.0,
+    "robust_bounds_min_ruf": [
+      -0.6089932739734649,
+      -0.45711282789707186,
+      -0.5748196423053741
+    ],
+    "robust_bounds_max_ruf": [
+      0.8707378596067428,
+      0.26251600086688986,
+      1.0372983694076539
+    ],
+    "robust_center_ruf": [
+      0.13087229281663892,
+      -0.097298413515091,
+      0.2312393635511399
+    ],
+    "framing_method": "robust_quantile_box_fit",
+    "fit_margin": 1.2,
+    "views": [
+      {
+        "frame_index": 0,
+        "yaw_degrees": 0.0,
+        "distance": 1.9266270648893138
+      },
+      {
+        "frame_index": 1,
+        "yaw_degrees": 25.0,
+        "distance": 2.081298375158151
+      }
+    ],
+    "note": "Global extrema do not affect framing distance. The far plane uses a conservative multiple of robust radius; every source Gaussian remains loaded even when outside the selected view frustum."
+  },
+  "frames": [
+    {
+      "frame_index": 0,
+      "timestamp_ns": 0,
+      "pose": {
+        "position": [
+          0.13087229281663892,
+          -0.097298413515091,
+          -1.695387701338174
+        ],
+        "rotation_xyzw": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      },
+      "intrinsics": {
+        "vertical_fov_radians": 0.9599310885968813,
+        "near_plane": 0.01,
+        "far_plane": 100.0
+      },
+      "view_matrix": [
+        1.0,
+        0.0,
+        0.0,
+        -0.13087229281663892,
+        0.0,
+        1.0,
+        0.0,
+        0.097298413515091,
+        0.0,
+        0.0,
+        1.0,
+        1.695387701338174,
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "projection_matrix": [
+        1.080552446421281,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.920982126971166,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0001000100010002,
+        -0.010001000100010003,
+        0.0,
+        0.0,
+        1.0,
+        0.0
+      ],
+      "view_projection_matrix": [
+        1.080552446421281,
+        0.0,
+        0.0,
+        -0.14141437617178143,
+        0.0,
+        1.920982126971166,
+        0.0,
+        0.18690851334513955,
+        0.0,
+        0.0,
+        1.0001000100010002,
+        1.6855562569638707,
+        0.0,
+        0.0,
+        1.0,
+        1.695387701338174
+      ]
+    },
+    {
+      "frame_index": 1,
+      "timestamp_ns": 16666667,
+      "pose": {
+        "position": [
+          -0.748722408656441,
+          -0.097298413515091,
+          -1.6550575610014193
+        ],
+        "rotation_xyzw": [
+          0.0,
+          0.21643961393810288,
+          0.0,
+          0.9762960071199334
+        ]
+      },
+      "intrinsics": {
+        "vertical_fov_radians": 0.9599310885968813,
+        "near_plane": 0.01,
+        "far_plane": 100.0
+      },
+      "view_matrix": [
+        0.9063077870366499,
+        0.0,
+        -0.42261826174069944,
+        -0.020884600217052074,
+        0.0,
+        1.0,
+        0.0,
+        0.097298413515091,
+        0.42261826174069944,
+        0.0,
+        0.9063077870366499,
+        1.8164153184021663,
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "projection_matrix": [
+        1.080552446421281,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.920982126971166,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0001000100010002,
+        -0.010001000100010003,
+        0.0,
+        0.0,
+        1.0,
+        0.0
+      ],
+      "view_projection_matrix": [
+        0.9793130964931095,
+        0.0,
+        -0.45666119662622207,
+        -0.022566905857066034,
+        0.0,
+        1.920982126971166,
+        0.0,
+        0.18690851334513955,
+        0.42266052779347885,
+        0.0,
+        0.906398426879338,
+        1.8065959779999665,
+        0.42261826174069944,
+        0.0,
+        0.9063077870366499,
+        1.8164153184021663
+      ]
+    }
+  ],
+  "content_sha256": "c09b06c7d8609421e7e016e65dc36966141d49ada63484c68f7350dd6f8054af"
+}

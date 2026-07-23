@@ -4,9 +4,13 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import binascii
+import hashlib
 import json
 import os
 import pathlib
+import re
 import shutil
 import subprocess
 import sys
@@ -16,6 +20,8 @@ import tempfile
 MANIFEST_PREFIX = "GSPLAT_BENCHMARK_MANIFEST "
 FRAME_PREFIX = "GSPLAT_BENCHMARK_FRAME "
 SUMMARY_PREFIX = "GSPLAT_BENCHMARK_SUMMARY "
+CHUNK_PREFIX = "GSPLAT_BENCHMARK_CHUNK "
+CHUNK_SHA256 = re.compile(r"[0-9a-f]{64}")
 
 
 def extract_payload(line: str, prefix: str) -> str | None:
@@ -25,12 +31,57 @@ def extract_payload(line: str, prefix: str) -> str | None:
     return line[marker + len(prefix) :]
 
 
+def parse_chunk(payload: str) -> tuple[tuple[str, str, str, int], int, bytes]:
+    metadata_text, separator, encoded = payload.partition(" payload=")
+    if not separator or not encoded:
+        raise ValueError("chunk is missing its payload")
+    fields: dict[str, str] = {}
+    for item in metadata_text.split():
+        key, separator, value = item.partition("=")
+        if not separator or not key or not value or key in fields:
+            raise ValueError("chunk metadata is malformed")
+        fields[key] = value
+    required = {"record", "run_id", "index", "total", "encoding", "sha256"}
+    if set(fields) != required:
+        raise ValueError(f"chunk metadata fields differ: {sorted(fields)}")
+    if fields["record"] not in {"manifest", "frame", "summary"}:
+        raise ValueError("chunk record type is unknown")
+    if fields["encoding"] != "base64":
+        raise ValueError("chunk encoding is not base64")
+    if CHUNK_SHA256.fullmatch(fields["sha256"]) is None:
+        raise ValueError("chunk SHA-256 is malformed")
+    try:
+        index = int(fields["index"])
+        total = int(fields["total"])
+    except ValueError as error:
+        raise ValueError("chunk index/total is not an integer") from error
+    if total < 1 or total > 100_000 or index < 0 or index >= total:
+        raise ValueError("chunk index/total is out of range")
+    try:
+        decoded = base64.b64decode(encoded, validate=True)
+    except (binascii.Error, ValueError) as error:
+        raise ValueError("chunk payload is invalid base64") from error
+    if not decoded:
+        raise ValueError("chunk payload is empty")
+    key = (fields["record"], fields["run_id"], fields["sha256"], total)
+    return key, index, decoded
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("log", type=pathlib.Path)
     parser.add_argument("destination", type=pathlib.Path)
     parser.add_argument("--validator", type=pathlib.Path, required=True)
+    parser.add_argument("--camera-trace", type=pathlib.Path)
+    parser.add_argument("--camera-validator", type=pathlib.Path)
     args = parser.parse_args()
+
+    if (args.camera_trace is None) != (args.camera_validator is None):
+        parser.error("--camera-trace and --camera-validator must be provided together")
+    if args.camera_trace is not None and not args.camera_trace.is_file():
+        parser.error(f"camera trace does not exist: {args.camera_trace}")
+    if args.camera_validator is not None and not args.camera_validator.is_file():
+        parser.error(f"camera validator does not exist: {args.camera_validator}")
 
     if args.destination.exists():
         parser.error(f"destination already exists: {args.destination}")
@@ -38,6 +89,7 @@ def main() -> int:
     manifests: list[str] = []
     frames: list[str] = []
     summaries: list[str] = []
+    chunk_groups: dict[tuple[str, str, str, int], dict[int, bytes]] = {}
     for line in args.log.read_text(encoding="utf-8", errors="replace").splitlines():
         if payload := extract_payload(line, MANIFEST_PREFIX):
             manifests.append(payload)
@@ -45,6 +97,46 @@ def main() -> int:
             frames.append(payload)
         elif payload := extract_payload(line, SUMMARY_PREFIX):
             summaries.append(payload)
+        elif CHUNK_PREFIX in line:
+            payload = extract_payload(line, CHUNK_PREFIX)
+            assert payload is not None
+            try:
+                key, index, decoded = parse_chunk(payload)
+            except ValueError as error:
+                parser.error(f"invalid benchmark chunk: {error}")
+            group = chunk_groups.setdefault(key, {})
+            if index in group:
+                parser.error(
+                    f"duplicate benchmark chunk record={key[0]} "
+                    f"run_id={key[1]} index={index}"
+                )
+            group[index] = decoded
+
+    reconstructed: dict[str, list[str]] = {
+        "manifest": manifests,
+        "frame": frames,
+        "summary": summaries,
+    }
+    for (record, run_id, expected_sha256, total), chunks in chunk_groups.items():
+        missing = sorted(set(range(total)) - chunks.keys())
+        if missing:
+            parser.error(
+                f"incomplete benchmark chunk record={record} run_id={run_id}: "
+                f"missing={missing}"
+            )
+        raw = b"".join(chunks[index] for index in range(total))
+        actual_sha256 = hashlib.sha256(raw).hexdigest()
+        if actual_sha256 != expected_sha256:
+            parser.error(
+                f"benchmark chunk SHA-256 mismatch record={record} run_id={run_id}"
+            )
+        try:
+            decoded = raw.decode("utf-8")
+        except UnicodeDecodeError as error:
+            parser.error(
+                f"benchmark chunk is not UTF-8 record={record} run_id={run_id}: {error}"
+            )
+        reconstructed[record].append(decoded)
 
     if len(manifests) != 1 or len(summaries) != 1 or not frames:
         parser.error(
@@ -72,6 +164,17 @@ def main() -> int:
         (staging / "summary.json").write_text(summaries[0] + "\n", encoding="utf-8")
         (staging / "frames.jsonl").write_text("\n".join(frames) + "\n", encoding="utf-8")
         subprocess.run([sys.executable, str(args.validator), str(staging)], check=True)
+        if args.camera_trace is not None:
+            assert args.camera_validator is not None
+            subprocess.run(
+                [
+                    sys.executable,
+                    str(args.camera_validator),
+                    str(staging),
+                    str(args.camera_trace),
+                ],
+                check=True,
+            )
         os.rename(staging, args.destination)
     except BaseException:
         shutil.rmtree(staging, ignore_errors=True)

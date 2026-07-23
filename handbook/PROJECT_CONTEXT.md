@@ -28,15 +28,21 @@
 - FFI smoke paths and mobile smoke integrations stay working.
 - Untrusted PLY input and the experimental SPZ loader fail with bounded,
   structured errors before unchecked allocation.
+- Production Packed rendering keeps the complete source point set and source
+  SH0-SH3 degree; an inadmissible scene fails before publication rather than
+  sampling, paging, or silently lowering quality.
 - Desktop and mobile examples remain validation surfaces for the shared crates, not separate product lines.
 
 ## Current Repository Shape
 
 - `crates/gsplat-core`: shared public types, config, stats, and error codes
-- `crates/gsplat-io-ply`: PLY parsing and scene buffer construction
+- `crates/gsplat-io-ply`: bounded/incremental PLY parsing, wide Direct scene
+  construction, and one-splat-at-a-time visitors for compact Resident loading
 - `crates/gsplat-io-spz`: experimental bounded SPZ v4 parsing and scene buffer construction
-- `crates/gsplat-sort`: GPU and CPU sort backends
-- `crates/gsplat-render-wgpu`: preprocessing, CPU sort scheduling, shared Surface/offscreen rendering, packed atlas, and the experimental fixed-budget local paged runtime
+- `crates/gsplat-sort`: stable CPU radix ordering and shared sort utilities
+- `crates/gsplat-render-wgpu`: exact-count compact Resident scenes, CPU/GPU
+  ordering, measured Adaptive selection, shared Surface/offscreen rendering,
+  the Direct-f32 oracle, and the explicit diagnostic Paged runtime
 - `crates/gsplat-ffi-c`: small C ABI surface over the renderer and mobile Surface presenters
 - `crates/gsplat-web`: experimental `wasm-bindgen` bindings over the shared `wgpu` Surface renderer
 - `examples/desktop`: desktop viewer and offscreen PNG harness
@@ -69,15 +75,21 @@ For the broader command matrix, use `VERIFICATION.md`.
 
 - Keep the day-to-day verification paths passing and the release bar lightweight but real.
 - Expand conformance and perf coverage with real datasets before widening the public API surface.
-- Move Direct toward GPU-visible compaction, portable radix sorting, and
-  indirect drawing before investing further in local paging.
+- Keep the exact-count Resident path, portable GPU visibility/radix/indirect
+  draw, default exact projected-quads raster with strictly invalidated
+  stationary-frame cache reuse, and runtime CPU/GPU Adaptive policy covered by
+  real-scene evidence.
+- Keep GlobalQuads as the exact Resident oracle and lazy TiledExact as a
+  diagnostic. Promote raster optimizations only when they preserve complete
+  membership, SH, resolution, order, draw count, and the image gate.
 - Improve mobile integration only while the shared C ABI stays simple and stable.
 - Turn Android integration into a local AAR/module shape before widening it into a published SDK.
 - Harden the local iOS `GsplatKit`/XCFramework slice before treating it as a published SwiftPM binary SDK.
 - Harden the local Web `@gsplat-rs/web` wrapper around the shared Rust `wgpu` Surface renderer before treating it as a published npm SDK.
-- Keep validated in-memory `SceneBuffers` as the stable path. Retain the
-  fixed-slot local Paged runtime only as an explicit diagnostic until a future
-  metadata-first design proves bounded source, CPU, and GPU residency.
+- Keep validated in-memory `SceneBuffers` as the Direct reference owner and
+  use direct-to-Resident PLY loading for production Packed. Retain the
+  fixed-slot local Paged runtime only as an explicit non-full-quality
+  diagnostic.
 - Keep release checks reproducible: pinned CI actions, checksum-verified policy tooling, version consistency, and GPU-backed conformance evidence.
 - Update the docs immediately when repository structure or responsibilities change.
 - Keep contributor-facing maintenance files aligned with the actual verification and release boundary.
@@ -100,18 +112,21 @@ For the broader command matrix, use `VERIFICATION.md`.
   access before calling the C ABI; direct C or JNI integrations should use the
   same one-thread-or-queue ownership rule.
 - Web, desktop interactive, Android, and iOS Surface clients delegate frame
-  cadence, CPU sort refreshes, compact order uploads, and presentation to the
-  shared `SurfaceRenderSession`. Direct sorted indices remain the stable path;
-  the experimental paged path owns a fixed four-slot local active atlas and is
-  qualified only for local-source D0 browser and Android Surface smoke. Mobile
-  keeps the default CPU sort interval of 2.
-- Existing Surface constructors and `GeometryPath::default()` stay Direct.
-  Packed/Paged selection is explicit and remains an A/B diagnostic; the repo
-  does not automatically promote an oversized Direct scene into Paged.
-- Local paging now decodes page payloads behind `LocalScenePageSource` before
+  cadence, camera revisions, CPU/GPU ordering, Adaptive probes, ticketed GPU
+  timing, and presentation to the shared `SurfaceRenderSession`. Product
+  examples and SDK wrappers select full-resident Packed with sort interval 1
+  and Adaptive ordering; Direct remains the explicit wide-f32 oracle.
+- Existing low-level Surface constructors and `GeometryPath::default()` stay
+  Direct for compatibility. Packed and Paged are explicit selections, but only
+  Packed can emit the production exactness receipt. An oversized scene is
+  never silently promoted into Paged.
+- Local paging decodes page payloads behind `LocalScenePageSource` before
   fixed-slot GPU upload. The adapter still borrows the complete `SceneBuffers`,
   page metadata still stores source indices, and scheduling is synchronous, so
   this is an architecture seam rather than end-to-end streaming.
+- Packed PLY loading is end-to-end incremental into the final resident planes.
+  SPZ still constructs wide `SceneBuffers` before Resident conversion and has
+  a correspondingly higher documented CPU peak.
 - The Web example is a browser validation surface. The Rust/WASM renderer boundary
   is active in `crates/gsplat-web`, and `packages/web` provides
   a local ESM wrapper, but the Web SDK is not published to npm or stable in the

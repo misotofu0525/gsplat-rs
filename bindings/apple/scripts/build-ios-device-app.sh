@@ -21,6 +21,12 @@ FLOWERS_DATASET="tests/datasets/external/nvidia_flowers_1/flowers_1/flowers_1.pl
 DATASET_PATH="${1:-}"
 IOS_RUST_PROFILE="${IOS_RUST_PROFILE:-release}"
 IOS_SWIFT_OPT_LEVEL="${IOS_SWIFT_OPT_LEVEL:--O}"
+GSPLAT_REPOSITORY_COMMIT="$(git rev-parse HEAD)"
+if [[ -n "$(git status --porcelain)" ]]; then
+  GSPLAT_REPOSITORY_DIRTY=true
+else
+  GSPLAT_REPOSITORY_DIRTY=false
+fi
 
 if [[ -z "$DATASET_PATH" ]]; then
   if [[ -f "$ROOT_DIR/$KITSUNE_DATASET" ]]; then
@@ -140,8 +146,17 @@ cargo build -p gsplat-ffi-c --target "$RUST_TARGET" "${CARGO_PROFILE_ARGS[@]}"
 rm -rf "$APP_BUNDLE"
 mkdir -p "$APP_BUNDLE"
 cp examples/ios/app/Info.plist "$APP_BUNDLE/Info.plist"
+/usr/libexec/PlistBuddy -c "Add :GsplatRepositoryCommit string $GSPLAT_REPOSITORY_COMMIT" "$APP_BUNDLE/Info.plist"
+/usr/libexec/PlistBuddy -c "Add :GsplatRepositoryDirty bool $GSPLAT_REPOSITORY_DIRTY" "$APP_BUNDLE/Info.plist"
+/usr/libexec/PlistBuddy -c "Add :GsplatBuildProfile string ios-device+rust-$IOS_RUST_PROFILE" "$APP_BUNDLE/Info.plist"
 cp "$DATASET_ABS" "$APP_BUNDLE/showcase.ply"
 basename "$DATASET_ABS" > "$APP_BUNDLE/showcase.name"
+CAMERA_TRACE_PATH="${GSPLAT_CAMERA_TRACE_PATH:-tests/perf/trace/fixtures/camera-trace-v1.json}"
+case "$CAMERA_TRACE_PATH" in
+  /*) CAMERA_TRACE_ABS="$CAMERA_TRACE_PATH" ;;
+  *) CAMERA_TRACE_ABS="$ROOT_DIR/$CAMERA_TRACE_PATH" ;;
+esac
+cp "$CAMERA_TRACE_ABS" "$APP_BUNDLE/camera_trace.json"
 cp "$PROVISIONING_PROFILE" "$APP_BUNDLE/embedded.mobileprovision"
 
 /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier $BUNDLE_ID" "$APP_BUNDLE/Info.plist"
@@ -206,3 +221,4 @@ echo "bundle_id=$BUNDLE_ID"
 echo "team_id=$TEAM_ID"
 echo "provisioning_profile=$(basename "$PROVISIONING_PROFILE")"
 echo "dataset=$DATASET_ABS"
+echo "camera_trace=$CAMERA_TRACE_ABS"

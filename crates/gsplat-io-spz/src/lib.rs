@@ -7,18 +7,18 @@ pub use cache::{
     estimated_scene_bytes,
 };
 
-use std::fs;
-use std::io::{Cursor, Read};
+use std::fs::File;
+use std::io::{BufReader, Cursor, Read};
 use std::mem::size_of;
 use std::path::Path;
 
 use gsplat_core::{ErrorCode, SceneBuffers, Vec3f};
 use thiserror::Error;
 
-const MIB: usize = 1024 * 1024;
-const GIB: usize = 1024 * MIB;
 const HEADER_BYTES: usize = 32;
 const TOC_ENTRY_BYTES: usize = 16;
+const MAX_STREAMS: usize = 6;
+const DECODE_BLOCK_BYTES: usize = 64 * 1024;
 const SPZ_MAGIC: u32 = 0x5053_474e;
 const SPZ_VERSION: u32 = 4;
 const FLAG_ANTIALIASED: u8 = 0x1;
@@ -38,7 +38,11 @@ const SH_FLIP_RUB_TO_RUF: [f32; 15] = [
     1.0, -1.0, 1.0, -1.0, 1.0, -1.0, 1.0, // degree 3
 ];
 
-/// Resource budgets applied while reading and decoding an SPZ scene.
+/// Optional resource budgets applied while reading and decoding an SPZ scene.
+///
+/// [`Default`] does not impose policy caps beyond SPZ v4 and host-size
+/// representability. Set individual fields when an application has a tighter
+/// memory or content policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SpzLoadLimits {
     pub max_input_bytes: usize,
@@ -49,9 +53,12 @@ pub struct SpzLoadLimits {
 impl Default for SpzLoadLimits {
     fn default() -> Self {
         Self {
-            max_input_bytes: GIB,
-            max_points: 5_000_000,
-            max_scene_bytes: GIB,
+            // The format already bounds the point count to `u32`. Default
+            // loading must not silently reject otherwise valid large scenes;
+            // allocation failure and checked size overflow remain explicit.
+            max_input_bytes: usize::MAX,
+            max_points: usize::MAX,
+            max_scene_bytes: usize::MAX,
         }
     }
 }
@@ -135,21 +142,22 @@ pub fn load_spz_with_limits(
 
 /// Load an SPZ file with cooperative cancellation.
 ///
-/// `is_cancelled` is polled between header validation, each attribute-stream
-/// decompress, scene allocation, and during unpack. A cancelled load returns
-/// [`SpzLoadError::Cancelled`] without publishing a scene.
+/// `is_cancelled` is polled between header validation, scene allocation, each
+/// attribute stream, and bounded decode blocks. A cancelled load returns
+/// [`SpzLoadError::Cancelled`] without publishing a partial scene.
 pub fn load_spz_cancellable(
     path: &Path,
     limits: SpzLoadLimits,
     mut is_cancelled: impl FnMut() -> bool,
 ) -> Result<SpzLoadResult, SpzLoadError> {
     check_cancelled(&mut is_cancelled)?;
-    let metadata = fs::metadata(path).map_err(|_| SpzLoadError::Io)?;
+    let file = File::open(path).map_err(|_| SpzLoadError::Io)?;
+    let metadata = file.metadata().map_err(|_| SpzLoadError::Io)?;
     let input_len = usize::try_from(metadata.len())
         .map_err(|_| SpzLoadError::ResourceSizeOverflow("input bytes"))?;
     ensure_limit("input bytes", input_len, limits.max_input_bytes)?;
-    let input = fs::read(path).map_err(|_| SpzLoadError::Io)?;
-    parse_spz_bytes_cancellable(&input, limits, is_cancelled)
+    let mut reader = BufReader::with_capacity(DECODE_BLOCK_BYTES, file);
+    parse_spz_reader(&mut reader, input_len, limits, &mut is_cancelled)
 }
 
 pub fn parse_spz_bytes(input: &[u8]) -> Result<SpzLoadResult, SpzLoadError> {
@@ -170,14 +178,34 @@ pub fn parse_spz_bytes_cancellable(
     mut is_cancelled: impl FnMut() -> bool,
 ) -> Result<SpzLoadResult, SpzLoadError> {
     check_cancelled(&mut is_cancelled)?;
-    ensure_limit("input bytes", input.len(), limits.max_input_bytes)?;
-    let header = parse_header(input, limits)?;
-    check_cancelled(&mut is_cancelled)?;
+    let mut reader = Cursor::new(input);
+    parse_spz_reader(&mut reader, input.len(), limits, &mut is_cancelled)
+}
+
+fn parse_spz_reader(
+    reader: &mut impl Read,
+    input_len: usize,
+    limits: SpzLoadLimits,
+    is_cancelled: &mut impl FnMut() -> bool,
+) -> Result<SpzLoadResult, SpzLoadError> {
+    ensure_limit("input bytes", input_len, limits.max_input_bytes)?;
+    if input_len < HEADER_BYTES {
+        return Err(SpzLoadError::MalformedHeader);
+    }
+
+    let mut header_bytes = [0_u8; HEADER_BYTES];
+    reader
+        .read_exact(&mut header_bytes)
+        .map_err(|_| SpzLoadError::MalformedHeader)?;
+    let header = parse_header(&header_bytes, limits)?;
+    check_cancelled(is_cancelled)?;
+
     let expected_sizes = expected_stream_sizes(header)?;
-    let streams = decompress_streams(input, header, &expected_sizes, &mut is_cancelled)?;
-    check_cancelled(&mut is_cancelled)?;
+    let entries = read_stream_table(reader, input_len, header, &expected_sizes)?;
+    check_cancelled(is_cancelled)?;
     let mut scene = allocate_scene(header, limits)?;
-    unpack_scene(header, &streams, &mut scene, &mut is_cancelled)?;
+    check_cancelled(is_cancelled)?;
+    decode_scene_streams(reader, header, &entries, &mut scene, is_cancelled)?;
     scene.validate().map_err(|_| SpzLoadError::InvalidScene)?;
 
     Ok(SpzLoadResult {
@@ -266,44 +294,45 @@ fn parse_header(input: &[u8], limits: SpzLoadLimits) -> Result<SpzHeader, SpzLoa
     })
 }
 
-fn expected_stream_sizes(header: SpzHeader) -> Result<Vec<usize>, SpzLoadError> {
+fn expected_stream_sizes(header: SpzHeader) -> Result<[usize; MAX_STREAMS], SpzLoadError> {
     let count = header.num_points;
     let sh_dim = dim_for_degree(header.sh_degree)?;
-    let mut sizes = vec![
-        count
-            .checked_mul(9)
-            .ok_or(SpzLoadError::ResourceSizeOverflow("position stream"))?,
-        count,
-        count
-            .checked_mul(3)
-            .ok_or(SpzLoadError::ResourceSizeOverflow("color stream"))?,
-        count
-            .checked_mul(3)
-            .ok_or(SpzLoadError::ResourceSizeOverflow("scale stream"))?,
-        count
-            .checked_mul(4)
-            .ok_or(SpzLoadError::ResourceSizeOverflow("rotation stream"))?,
-    ];
+    let mut sizes = [0; MAX_STREAMS];
+    sizes[0] = count
+        .checked_mul(9)
+        .ok_or(SpzLoadError::ResourceSizeOverflow("position stream"))?;
+    sizes[1] = count;
+    sizes[2] = count
+        .checked_mul(3)
+        .ok_or(SpzLoadError::ResourceSizeOverflow("color stream"))?;
+    sizes[3] = count
+        .checked_mul(3)
+        .ok_or(SpzLoadError::ResourceSizeOverflow("scale stream"))?;
+    sizes[4] = count
+        .checked_mul(4)
+        .ok_or(SpzLoadError::ResourceSizeOverflow("rotation stream"))?;
     if sh_dim > 0 {
-        sizes.push(
-            count
-                .checked_mul(sh_dim)
-                .and_then(|value| value.checked_mul(3))
-                .ok_or(SpzLoadError::ResourceSizeOverflow("SH stream"))?,
-        );
+        sizes[5] = count
+            .checked_mul(sh_dim)
+            .and_then(|value| value.checked_mul(3))
+            .ok_or(SpzLoadError::ResourceSizeOverflow("SH stream"))?;
     }
     Ok(sizes)
 }
 
-fn decompress_streams(
-    input: &[u8],
+#[derive(Debug, Clone, Copy)]
+struct StreamEntry {
+    compressed_size: usize,
+}
+
+const EMPTY_STREAM_ENTRY: StreamEntry = StreamEntry { compressed_size: 0 };
+
+fn read_stream_table(
+    reader: &mut impl Read,
+    input_len: usize,
     header: SpzHeader,
-    expected_sizes: &[usize],
-    is_cancelled: &mut impl FnMut() -> bool,
-) -> Result<Vec<Vec<u8>>, SpzLoadError> {
-    if expected_sizes.len() != header.num_streams {
-        return Err(SpzLoadError::InvalidStreamLayout);
-    }
+    expected_sizes: &[usize; MAX_STREAMS],
+) -> Result<[StreamEntry; MAX_STREAMS], SpzLoadError> {
     let toc_bytes = header
         .num_streams
         .checked_mul(TOC_ENTRY_BYTES)
@@ -312,53 +341,97 @@ fn decompress_streams(
         .toc_byte_offset
         .checked_add(toc_bytes)
         .ok_or(SpzLoadError::ResourceSizeOverflow("TOC end"))?;
-    if toc_end > input.len() {
+    if toc_end > input_len || toc_bytes > MAX_STREAMS * TOC_ENTRY_BYTES {
         return Err(SpzLoadError::InvalidStreamLayout);
     }
 
-    let mut compressed_offset = toc_end;
-    let mut ranges = Vec::with_capacity(header.num_streams);
-    for (index, expected_size) in expected_sizes.iter().copied().enumerate() {
-        let entry_offset = header.toc_byte_offset + index * TOC_ENTRY_BYTES;
-        let compressed_size = read_u64_as_usize(input, entry_offset)?;
-        let uncompressed_size = read_u64_as_usize(input, entry_offset + 8)?;
+    let mut toc = [0_u8; MAX_STREAMS * TOC_ENTRY_BYTES];
+    reader
+        .read_exact(&mut toc[..toc_bytes])
+        .map_err(|_| SpzLoadError::InvalidStreamLayout)?;
+
+    let mut entries = [EMPTY_STREAM_ENTRY; MAX_STREAMS];
+    let mut encoded_end = toc_end;
+    for index in 0..header.num_streams {
+        let entry_offset = index
+            .checked_mul(TOC_ENTRY_BYTES)
+            .ok_or(SpzLoadError::ResourceSizeOverflow("TOC entry offset"))?;
+        let size_offset = entry_offset
+            .checked_add(8)
+            .ok_or(SpzLoadError::ResourceSizeOverflow("TOC size offset"))?;
+        let compressed_size = read_u64_as_usize(&toc[..toc_bytes], entry_offset)?;
+        let uncompressed_size = read_u64_as_usize(&toc[..toc_bytes], size_offset)?;
+        let expected_size = expected_sizes[index];
         if uncompressed_size != expected_size {
             return Err(SpzLoadError::InvalidStreamLayout);
         }
-        let compressed_end = compressed_offset
+        encoded_end = encoded_end
             .checked_add(compressed_size)
             .ok_or(SpzLoadError::ResourceSizeOverflow("compressed stream end"))?;
-        if compressed_end > input.len() {
+        if encoded_end > input_len {
             return Err(SpzLoadError::InvalidStreamLayout);
         }
-        ranges.push((compressed_offset, compressed_end));
-        compressed_offset = compressed_end;
+        entries[index] = StreamEntry { compressed_size };
     }
-    if compressed_offset != input.len() {
+    if encoded_end != input_len {
         return Err(SpzLoadError::InvalidStreamLayout);
     }
+    Ok(entries)
+}
 
-    let mut streams = Vec::with_capacity(header.num_streams);
-    for (index, &(start, end)) in ranges.iter().enumerate() {
-        check_cancelled(is_cancelled)?;
-        let mut decoder = ruzstd::decoding::StreamingDecoder::new(Cursor::new(&input[start..end]))
-            .map_err(|_| SpzLoadError::DecompressionFailed)?;
-        let mut decoded = try_vec_with_capacity("decoded attribute stream", expected_sizes[index])?;
-        decoded.resize(expected_sizes[index], 0);
-        decoder
-            .read_exact(&mut decoded)
-            .map_err(|_| SpzLoadError::DecompressionFailed)?;
-        let mut extra = [0_u8; 1];
-        if decoder
-            .read(&mut extra)
-            .map_err(|_| SpzLoadError::DecompressionFailed)?
-            != 0
-        {
-            return Err(SpzLoadError::DecompressionFailed);
-        }
-        streams.push(decoded);
+fn decode_stream_records(
+    reader: &mut impl Read,
+    entry: StreamEntry,
+    record_size: usize,
+    record_count: usize,
+    decode_block: &mut [u8],
+    is_cancelled: &mut impl FnMut() -> bool,
+    mut decode_record: impl FnMut(&[u8]) -> Result<(), SpzLoadError>,
+) -> Result<(), SpzLoadError> {
+    if record_size == 0 || record_size > decode_block.len() {
+        return Err(SpzLoadError::InvalidStreamLayout);
     }
-    Ok(streams)
+    let _decoded_size =
+        record_size
+            .checked_mul(record_count)
+            .ok_or(SpzLoadError::ResourceSizeOverflow(
+                "decoded attribute stream",
+            ))?;
+    let compressed_limit = u64::try_from(entry.compressed_size)
+        .map_err(|_| SpzLoadError::ResourceSizeOverflow("compressed stream size"))?;
+    let limited = reader.take(compressed_limit);
+    let mut decoder = ruzstd::decoding::StreamingDecoder::new(limited)
+        .map_err(|_| SpzLoadError::DecompressionFailed)?;
+    let records_per_block = decode_block.len() / record_size;
+    let mut remaining = record_count;
+    while remaining != 0 {
+        check_cancelled(is_cancelled)?;
+        let records = remaining.min(records_per_block);
+        let bytes = records
+            .checked_mul(record_size)
+            .ok_or(SpzLoadError::ResourceSizeOverflow("decode block bytes"))?;
+        decoder
+            .read_exact(&mut decode_block[..bytes])
+            .map_err(|_| SpzLoadError::DecompressionFailed)?;
+        for record in decode_block[..bytes].chunks_exact(record_size) {
+            decode_record(record)?;
+        }
+        remaining -= records;
+    }
+
+    let mut extra = [0_u8; 1];
+    if decoder
+        .read(&mut extra)
+        .map_err(|_| SpzLoadError::DecompressionFailed)?
+        != 0
+    {
+        return Err(SpzLoadError::DecompressionFailed);
+    }
+    let limited = decoder.into_inner();
+    if limited.limit() != 0 {
+        return Err(SpzLoadError::InvalidStreamLayout);
+    }
+    Ok(())
 }
 
 fn allocate_scene(header: SpzHeader, limits: SpzLoadLimits) -> Result<SceneBuffers, SpzLoadError> {
@@ -408,79 +481,136 @@ fn allocate_scene(header: SpzHeader, limits: SpzLoadLimits) -> Result<SceneBuffe
     })
 }
 
-fn unpack_scene(
+fn decode_scene_streams(
+    reader: &mut impl Read,
     header: SpzHeader,
-    streams: &[Vec<u8>],
+    entries: &[StreamEntry; MAX_STREAMS],
     scene: &mut SceneBuffers,
     is_cancelled: &mut impl FnMut() -> bool,
 ) -> Result<(), SpzLoadError> {
     let sh_dim = dim_for_degree(header.sh_degree)?;
-    let expected_streams = expected_stream_count(header.sh_degree);
-    if streams.len() != expected_streams {
-        return Err(SpzLoadError::InvalidStreamLayout);
-    }
-
+    let mut decode_block = try_vec_with_capacity("decode block", DECODE_BLOCK_BYTES)?;
+    decode_block.resize(DECODE_BLOCK_BYTES, 0);
     let position_scale = 2_f32.powi(-i32::from(header.fractional_bits));
-    for point in 0..header.num_points {
-        if point % 64 == 0 {
-            check_cancelled(is_cancelled)?;
-        }
-        let position_base = point * 9;
-        let x = decode_i24(&streams[0][position_base..position_base + 3]) as f32 * position_scale;
-        let y =
-            decode_i24(&streams[0][position_base + 3..position_base + 6]) as f32 * position_scale;
-        let z =
-            decode_i24(&streams[0][position_base + 6..position_base + 9]) as f32 * position_scale;
-        // Extension-free SPZ v4 stores RUB. Runtime SceneBuffers use RUF, so flip Z once on load.
-        scene.positions.push(Vec3f::new(x, y, -z));
+    decode_stream_records(
+        reader,
+        entries[0],
+        9,
+        header.num_points,
+        &mut decode_block,
+        is_cancelled,
+        |record| {
+            let x = decode_i24(&record[..3]) as f32 * position_scale;
+            let y = decode_i24(&record[3..6]) as f32 * position_scale;
+            let z = decode_i24(&record[6..9]) as f32 * position_scale;
+            // Extension-free SPZ v4 stores RUB. Runtime SceneBuffers use RUF,
+            // so flip Z once on load.
+            scene.positions.push(Vec3f::new(x, y, -z));
+            Ok(())
+        },
+    )?;
+    decode_stream_records(
+        reader,
+        entries[1],
+        1,
+        header.num_points,
+        &mut decode_block,
+        is_cancelled,
+        |record| {
+            let alpha = f32::from(record[0]) / 255.0;
+            scene.opacity.push(if alpha <= 0.0 {
+                -OPACITY_LOGIT_LIMIT
+            } else if alpha >= 1.0 {
+                OPACITY_LOGIT_LIMIT
+            } else {
+                (alpha / (1.0 - alpha)).ln()
+            });
+            Ok(())
+        },
+    )?;
+    decode_stream_records(
+        reader,
+        entries[2],
+        3,
+        header.num_points,
+        &mut decode_block,
+        is_cancelled,
+        |record| {
+            scene.color_dc.push([
+                decode_color(record[0]),
+                decode_color(record[1]),
+                decode_color(record[2]),
+            ]);
+            Ok(())
+        },
+    )?;
+    decode_stream_records(
+        reader,
+        entries[3],
+        3,
+        header.num_points,
+        &mut decode_block,
+        is_cancelled,
+        |record| {
+            scene.scale_xyz.push([
+                f32::from(record[0]) / 16.0 - 10.0,
+                f32::from(record[1]) / 16.0 - 10.0,
+                f32::from(record[2]) / 16.0 - 10.0,
+            ]);
+            Ok(())
+        },
+    )?;
+    decode_stream_records(
+        reader,
+        entries[4],
+        4,
+        header.num_points,
+        &mut decode_block,
+        is_cancelled,
+        |record| {
+            let mut rotation = decode_smallest_three(record)?;
+            // RUB -> RUF is a Z-axis reflection. For an xyzw quaternion this
+            // flips x and y.
+            rotation[0] = -rotation[0];
+            rotation[1] = -rotation[1];
+            scene.rotation_xyzw.push(rotation);
+            Ok(())
+        },
+    )?;
 
-        let alpha = f32::from(streams[1][point]) / 255.0;
-        scene.opacity.push(if alpha <= 0.0 {
-            -OPACITY_LOGIT_LIMIT
-        } else if alpha >= 1.0 {
-            OPACITY_LOGIT_LIMIT
-        } else {
-            (alpha / (1.0 - alpha)).ln()
-        });
-
-        let base3 = point * 3;
-        scene.color_dc.push([
-            decode_color(streams[2][base3]),
-            decode_color(streams[2][base3 + 1]),
-            decode_color(streams[2][base3 + 2]),
-        ]);
-        scene.scale_xyz.push([
-            f32::from(streams[3][base3]) / 16.0 - 10.0,
-            f32::from(streams[3][base3 + 1]) / 16.0 - 10.0,
-            f32::from(streams[3][base3 + 2]) / 16.0 - 10.0,
-        ]);
-
-        let rotation_base = point * 4;
-        let mut rotation = decode_smallest_three(&streams[4][rotation_base..rotation_base + 4])?;
-        // RUB -> RUF is a Z-axis reflection. For an xyzw quaternion this flips x and y.
-        rotation[0] = -rotation[0];
-        rotation[1] = -rotation[1];
-        scene.rotation_xyzw.push(rotation);
-
-        if let Some(rest_out) = scene.sh_rest.as_mut() {
-            let sh_stream = &streams[5];
-            let sh_base = point * sh_dim * 3;
-            // SPZ stores coeff-major RGB triples; SceneBuffers use PLY channel-major rest order.
-            for channel in 0..3 {
-                for coeff in 0..sh_dim {
-                    let packed = sh_stream[sh_base + coeff * 3 + channel];
-                    let value = unquantize_sh(packed) * SH_FLIP_RUB_TO_RUF[coeff];
-                    rest_out.push(value);
+    if sh_dim != 0 {
+        let rest_out = scene.sh_rest.as_mut().ok_or(SpzLoadError::InvalidScene)?;
+        let record_size = sh_dim
+            .checked_mul(3)
+            .ok_or(SpzLoadError::ResourceSizeOverflow("SH record bytes"))?;
+        decode_stream_records(
+            reader,
+            entries[5],
+            record_size,
+            header.num_points,
+            &mut decode_block,
+            is_cancelled,
+            |record| {
+                // SPZ stores coeff-major RGB triples; SceneBuffers use PLY
+                // channel-major rest order.
+                for channel in 0..3 {
+                    for (coeff, flip) in SH_FLIP_RUB_TO_RUF.iter().copied().enumerate().take(sh_dim)
+                    {
+                        let packed = record[coeff * 3 + channel];
+                        rest_out.push(unquantize_sh(packed) * flip);
+                    }
                 }
-            }
-        }
+                Ok(())
+            },
+        )?;
     }
     Ok(())
 }
 
 fn decode_smallest_three(bytes: &[u8]) -> Result<[f32; 4], SpzLoadError> {
-    let mut packed_bytes = [0_u8; 4];
-    packed_bytes.copy_from_slice(bytes);
+    let packed_bytes: [u8; 4] = bytes
+        .try_into()
+        .map_err(|_| SpzLoadError::InvalidStreamLayout)?;
     let mut packed = u32::from_le_bytes(packed_bytes);
     let largest = (packed >> 30) as usize;
     let mut rotation = [0.0_f32; 4];
@@ -521,17 +651,29 @@ fn unquantize_sh(value: u8) -> f32 {
 }
 
 fn read_u32(input: &[u8], offset: usize) -> Result<u32, SpzLoadError> {
+    let end = offset
+        .checked_add(4)
+        .ok_or(SpzLoadError::ResourceSizeOverflow("header field offset"))?;
     let bytes = input
-        .get(offset..offset + 4)
+        .get(offset..end)
         .ok_or(SpzLoadError::MalformedHeader)?;
-    Ok(u32::from_le_bytes(bytes.try_into().unwrap()))
+    let bytes: [u8; 4] = bytes
+        .try_into()
+        .map_err(|_| SpzLoadError::MalformedHeader)?;
+    Ok(u32::from_le_bytes(bytes))
 }
 
 fn read_u64_as_usize(input: &[u8], offset: usize) -> Result<usize, SpzLoadError> {
+    let end = offset
+        .checked_add(8)
+        .ok_or(SpzLoadError::ResourceSizeOverflow("stream field offset"))?;
     let bytes = input
-        .get(offset..offset + 8)
+        .get(offset..end)
         .ok_or(SpzLoadError::InvalidStreamLayout)?;
-    usize::try_from(u64::from_le_bytes(bytes.try_into().unwrap()))
+    let bytes: [u8; 8] = bytes
+        .try_into()
+        .map_err(|_| SpzLoadError::InvalidStreamLayout)?;
+    usize::try_from(u64::from_le_bytes(bytes))
         .map_err(|_| SpzLoadError::ResourceSizeOverflow("stream size"))
 }
 
@@ -572,6 +714,7 @@ fn try_vec_with_capacity<T>(
 
 #[cfg(test)]
 mod tests {
+    use std::io::{Cursor, Read};
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -579,8 +722,9 @@ mod tests {
     use gsplat_io_ply::parse_ply_text;
 
     use super::{
-        SH_FLIP_RUB_TO_RUF, SpzLoadError, SpzLoadLimits, dim_for_degree, load_spz, parse_spz_bytes,
-        parse_spz_bytes_cancellable, parse_spz_bytes_with_limits, unquantize_sh,
+        SH_FLIP_RUB_TO_RUF, SpzLoadError, SpzLoadLimits, dim_for_degree, load_spz, parse_header,
+        parse_spz_bytes, parse_spz_bytes_cancellable, parse_spz_bytes_with_limits,
+        parse_spz_reader, unquantize_sh,
     };
 
     const HEADER_BYTES: usize = 32;
@@ -607,6 +751,7 @@ mod tests {
         let mut sh = Vec::with_capacity(count * sh_dim * 3);
 
         for index in 0..count {
+            let sample = (index % 8) as u8;
             let coords = [
                 index as f32 * 0.25,
                 index as f32 * -0.125,
@@ -615,15 +760,15 @@ mod tests {
             for coordinate in coords {
                 positions.extend_from_slice(&pack_i24(coordinate, 12));
             }
-            alphas.push(32 + index as u8 * 20);
-            colors.extend_from_slice(&[96 + index as u8, 112 + index as u8, 128 + index as u8]);
-            scales.extend_from_slice(&[144 + index as u8, 152, 160 - index as u8]);
+            alphas.push(32 + sample * 20);
+            colors.extend_from_slice(&[96 + sample, 112 + sample, 128 + sample]);
+            scales.extend_from_slice(&[144 + sample, 152, 160 - sample]);
             rotations.extend_from_slice(&[0, 0, 0, 0]);
 
             for coeff in 0..sh_dim {
                 for channel in 0..3 {
                     let packed =
-                        128_i16 + ((index as i16 + coeff as i16 + channel as i16) % 40) - 20;
+                        128_i16 + (((index % 40) as i16 + coeff as i16 + channel as i16) % 40) - 20;
                     sh.push(packed.clamp(0, 255) as u8);
                 }
             }
@@ -673,13 +818,38 @@ mod tests {
             for channel in 0..3 {
                 for (coeff, flip) in SH_FLIP_RUB_TO_RUF.iter().copied().enumerate().take(sh_dim) {
                     let packed =
-                        128_i16 + ((index as i16 + coeff as i16 + channel as i16) % 40) - 20;
+                        128_i16 + (((index % 40) as i16 + coeff as i16 + channel as i16) % 40) - 20;
                     let packed = packed.clamp(0, 255) as u8;
                     expected.push(unquantize_sh(packed) * flip);
                 }
             }
         }
         expected
+    }
+
+    struct ChunkedReader {
+        inner: Cursor<Vec<u8>>,
+        max_chunk: usize,
+        max_returned: usize,
+    }
+
+    impl ChunkedReader {
+        fn new(bytes: Vec<u8>, max_chunk: usize) -> Self {
+            Self {
+                inner: Cursor::new(bytes),
+                max_chunk,
+                max_returned: 0,
+            }
+        }
+    }
+
+    impl Read for ChunkedReader {
+        fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
+            let limit = output.len().min(self.max_chunk);
+            let read = self.inner.read(&mut output[..limit])?;
+            self.max_returned = self.max_returned.max(read);
+            Ok(read)
+        }
     }
 
     #[test]
@@ -737,6 +907,60 @@ mod tests {
                 resource: "decoded scene bytes",
                 ..
             })
+        ));
+    }
+
+    #[test]
+    fn default_limits_do_not_impose_legacy_one_gib_or_five_million_point_caps() {
+        let limits = SpzLoadLimits::default();
+        assert_eq!(limits.max_input_bytes, usize::MAX);
+        assert_eq!(limits.max_points, usize::MAX);
+        assert_eq!(limits.max_scene_bytes, usize::MAX);
+
+        let mut bytes = synthetic_degree_0_spz(8);
+        bytes[8..12].copy_from_slice(&5_000_001_u32.to_le_bytes());
+        let header = parse_header(&bytes[..HEADER_BYTES], limits)
+            .expect("default header validation must not retain the old point cap");
+        assert_eq!(header.num_points, 5_000_001);
+    }
+
+    #[test]
+    fn sequential_reader_accepts_short_reads_without_staging_the_input() {
+        let bytes = synthetic_spz(2_048, 3);
+        let input_len = bytes.len();
+        let mut reader = ChunkedReader::new(bytes, 7);
+        let mut cancelled = || false;
+        let result = parse_spz_reader(
+            &mut reader,
+            input_len,
+            SpzLoadLimits::default(),
+            &mut cancelled,
+        )
+        .expect("streaming parser must tolerate arbitrary reader chunk boundaries");
+
+        assert_eq!(result.scene.len(), 2_048);
+        assert_eq!(result.scene.sh_rest.as_ref().unwrap().len(), 2_048 * 45);
+        assert_eq!(reader.inner.position(), input_len as u64);
+        assert!(reader.max_returned <= 7);
+    }
+
+    #[test]
+    fn rejects_trailing_bytes_not_described_by_the_stream_table() {
+        let mut bytes = synthetic_degree_0_spz(8);
+        bytes.push(0);
+        assert_eq!(
+            parse_spz_bytes(&bytes),
+            Err(SpzLoadError::InvalidStreamLayout)
+        );
+    }
+
+    #[test]
+    fn reports_checked_overflow_for_impossible_stream_extent() {
+        let mut bytes = synthetic_degree_0_spz(8);
+        bytes[HEADER_BYTES..HEADER_BYTES + 8].copy_from_slice(&u64::MAX.to_le_bytes());
+        assert!(matches!(
+            parse_spz_bytes(&bytes),
+            Err(SpzLoadError::ResourceSizeOverflow(_))
         ));
     }
 
@@ -826,6 +1050,16 @@ mod tests {
         assert_eq!(sh.as_slice(), expected_sh_rest(8, 1).as_slice());
         assert!(sh.iter().all(|value| value.is_finite()));
         assert_eq!(result.scene.positions[2].z, -(1.0 + 2.0 * 0.0625));
+    }
+
+    #[test]
+    fn decodes_degree_2_synthetic_v4_without_dropping_coefficients() {
+        let result = parse_spz_bytes(&synthetic_spz(8, 2)).unwrap();
+        assert_eq!(result.summary.gaussians, 8);
+        assert_eq!(result.summary.sh_degree, 2);
+        let sh = result.scene.sh_rest.as_ref().unwrap();
+        assert_eq!(sh.len(), 8 * 24);
+        assert_eq!(sh.as_slice(), expected_sh_rest(8, 2).as_slice());
     }
 
     #[test]
@@ -978,12 +1212,13 @@ mod tests {
         let bytes = synthetic_degree_0_spz(FIXTURE_GAUSSIANS);
         let polls = AtomicUsize::new(0);
         let err = parse_spz_bytes_cancellable(&bytes, SpzLoadLimits::default(), || {
-            // Allow header + first cancel checks, then abort before later streams.
-            polls.fetch_add(1, Ordering::Relaxed) >= 3
+            // Allow validation, allocation, and the position stream, then
+            // abort before the opacity stream is decoded.
+            polls.fetch_add(1, Ordering::Relaxed) >= 5
         })
         .expect_err("mid-decode cancel must abort");
         assert_eq!(err, SpzLoadError::Cancelled);
-        assert!(polls.load(Ordering::Relaxed) >= 3);
+        assert!(polls.load(Ordering::Relaxed) >= 6);
     }
 
     #[test]

@@ -5,7 +5,10 @@ mod radix;
 use std::sync::mpsc;
 
 use bytemuck::{Pod, Zeroable};
-use radix::{RADIX_SORT_BUCKETS, radix_sort_desc_u64, radix_sort_desc_u64_key_bits};
+use radix::{
+    RADIX_PARALLEL_COUNT_SLOTS, RADIX_SORT_BUCKETS, radix_sort_desc_u64,
+    radix_sort_desc_u64_key_bits,
+};
 use thiserror::Error;
 use wgpu::util::DeviceExt;
 
@@ -30,9 +33,15 @@ pub struct CpuSortBackend {
     packed: Vec<u64>,
     scratch: Vec<u64>,
     counts: Vec<usize>,
+    parallel_counts: Vec<usize>,
 }
 
 impl CpuSortBackend {
+    /// Stably orders `values` by the complete 32-bit keys, descending.
+    ///
+    /// Equal keys retain their input order. Renderer inputs enumerate source
+    /// IDs in ascending order, so exact-depth ties remain source-ID ascending
+    /// on both the serial and parallel radix paths.
     pub fn sort_values_by_keys(
         &mut self,
         keys: &[u32],
@@ -55,6 +64,7 @@ impl CpuSortBackend {
             packed,
             &mut self.scratch[..len],
             &mut self.counts[..RADIX_SORT_BUCKETS],
+            &mut self.parallel_counts[..RADIX_PARALLEL_COUNT_SLOTS],
         );
         unpack_values(packed, values);
         Ok(())
@@ -69,6 +79,9 @@ impl CpuSortBackend {
         }
         if self.counts.len() < RADIX_SORT_BUCKETS {
             self.counts.resize(RADIX_SORT_BUCKETS, 0);
+        }
+        if self.parallel_counts.len() < RADIX_PARALLEL_COUNT_SLOTS {
+            self.parallel_counts.resize(RADIX_PARALLEL_COUNT_SLOTS, 0);
         }
     }
 }
@@ -95,6 +108,7 @@ impl SortBackend for CpuSortBackend {
             packed,
             &mut self.scratch[..len],
             &mut self.counts[..RADIX_SORT_BUCKETS],
+            &mut self.parallel_counts[..RADIX_PARALLEL_COUNT_SLOTS],
         );
         unpack_pairs(packed, keys, values);
         Ok(())
@@ -647,6 +661,63 @@ mod tests {
     }
 
     #[test]
+    fn cpu_backend_parallel_key_sort_is_stable_for_nonsequential_values() {
+        let len = 300_017_usize;
+        let mut seed = 123_u32;
+        let keys: Vec<u32> = (0..len).map(|_| lcg_next(&mut seed) & 1023).collect();
+        let mut values: Vec<u32> = (0..len as u32).map(|index| index.reverse_bits()).collect();
+        let mut expected: Vec<(u32, u32)> =
+            keys.iter().copied().zip(values.iter().copied()).collect();
+        // Stable key-only reference: equal depths retain input/source order.
+        expected.sort_by(|a, b| b.0.cmp(&a.0));
+
+        CpuSortBackend::default()
+            .sort_values_by_keys(&keys, &mut values)
+            .unwrap();
+
+        let actual: Vec<(u32, u32)> = values
+            .into_iter()
+            .map(|value| {
+                let input_index = value.reverse_bits() as usize;
+                (keys[input_index], value)
+            })
+            .collect();
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn cpu_backend_parallel_pair_sort_matches_full_total_order() {
+        let len = 300_017_usize;
+        let mut seed = 456_u32;
+        let mut keys: Vec<u32> = (0..len).map(|_| lcg_next(&mut seed) & 4095).collect();
+        let mut values: Vec<u32> = (0..len as u32).map(|index| index.reverse_bits()).collect();
+        let mut expected: Vec<(u32, u32)> =
+            keys.iter().copied().zip(values.iter().copied()).collect();
+        expected.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+
+        CpuSortBackend::default()
+            .sort_pairs(&mut keys, &mut values)
+            .unwrap();
+
+        let actual: Vec<(u32, u32)> = keys.into_iter().zip(values).collect();
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn cpu_backend_parallel_equal_key_tie_is_source_id_ascending() {
+        let len = 300_017_usize;
+        let mut keys = vec![0x7fc0_0001_u32; len];
+        let mut values: Vec<u32> = (0..len as u32).rev().collect();
+
+        CpuSortBackend::default()
+            .sort_pairs(&mut keys, &mut values)
+            .unwrap();
+
+        assert!(keys.iter().all(|&key| key == 0x7fc0_0001));
+        assert_eq!(values, (0..len as u32).collect::<Vec<_>>());
+    }
+
+    #[test]
     fn cpu_backend_sort_values_microbench_200k() {
         let len = 200_000_usize;
         let mut seed = 99_u32;
@@ -672,6 +743,41 @@ mod tests {
             let left = keys[window[0] as usize];
             let right = keys[window[1] as usize];
             assert!(left >= right);
+        }
+    }
+
+    #[test]
+    #[ignore = "manual native CPU radix crossover benchmark"]
+    fn cpu_backend_sort_values_size_ladder_microbench() {
+        const ITERS: usize = 9;
+        for len in [
+            200_000_usize,
+            300_000,
+            500_000,
+            700_000,
+            1_000_000,
+            1_800_000,
+        ] {
+            let mut seed = 99_u32.wrapping_add(len as u32);
+            let keys: Vec<u32> = (0..len).map(|_| lcg_next(&mut seed)).collect();
+            let mut values: Vec<u32> = (0..len as u32).collect();
+            let mut backend = CpuSortBackend::default();
+            backend.sort_values_by_keys(&keys, &mut values).unwrap();
+
+            let mut samples_ms = [0.0_f64; ITERS];
+            for sample in &mut samples_ms {
+                for (index, value) in values.iter_mut().enumerate() {
+                    *value = index as u32;
+                }
+                let started = std::time::Instant::now();
+                backend.sort_values_by_keys(&keys, &mut values).unwrap();
+                *sample = started.elapsed().as_secs_f64() * 1000.0;
+            }
+            samples_ms.sort_by(f64::total_cmp);
+            eprintln!(
+                "cpu_sort_values_by_keys_ladder n={len} median_ms={:.3}",
+                samples_ms[ITERS / 2]
+            );
         }
     }
 

@@ -29,6 +29,37 @@ separate frame scheduler. CPU sort cadence, compact order uploads, direct
 drawing, and optional native async sorting are shared with Android, Web, and
 desktop Surface rendering.
 
+`GsplatSurfaceOptions` defaults to exact resident `.packedAtlas`, runtime
+`.adaptive` ordering, and sort interval `1`. `.direct` remains the wide-float
+oracle. `pollOrderMeasurement()` returns one GPU order receipt or `nil` without
+blocking; `drainOrderMeasurements()` drains the current ticket-ordered queue.
+Receipts distinguish timestamp-query timing from queue-completion timing and
+keep unavailable GPU phase values `nil`.
+Every issued CPU/GPU measurement ticket terminates in one success or
+`GsplatOrderMeasurementFailure`; use `drainCpuOrderMeasurements()` and
+`drainOrderMeasurementFailures()` beside the GPU success drain. Every exact
+non-Paged CPU refresh reports frame-start-to-queue-completion timing so forced
+CPU/GPU and Adaptive evidence share one metric. `orderSubmission()` snapshots the last successful frame's
+revision, ticket, backend context, and explicit ring-busy state; strict
+collectors call it after warmup, measured, and terminal-flush frames before
+draining receipts; ring-busy and Surface-unavailable are distinct unsampled
+reasons. `orderStatus().adaptiveGpuFailure` reports eager GPU
+preparation failures even when Adaptive remains on CPU and issues no ticket.
+Both Swift success types expose revision-safe `visibleCount`,
+`contributorCount`, `drawnCount`, and `exactContributorCompaction`. The wrapper
+takes the additive count receipt immediately after its matching terminal timing
+receipt and rejects a ticket/revision mismatch. The shared invariant is
+`0 <= C <= V`; exact compaction requires `D=C`, while Direct/downlevel
+execution requires `D=V`.
+`exactness()` returns source/decoded/encoded/resident/addressable counts,
+source/resident SH degree, no-sampling/no-LOD policy bits, and the physical
+adapter limits used for admission. `isFullQuality` is true only for an exact
+full-resident publication; diagnostic `.pagedActiveAtlas` does not claim it.
+`presentation()` returns the native pixel path and actual-present receipt. Its
+`fullResolution` flag requires the last frame to be presented with requested,
+Surface, internal-render, and presented dimensions equal, with dynamic
+resolution and upscaling disabled.
+
 `GSPLAT_RENDER_MODE_SORTED_ALPHA` is the only release-gated render mode in v0.1.
 Scene loading is path-based today; scene-from-memory loading is outside the
 current mobile contract.
@@ -131,24 +162,42 @@ bash bindings/apple/scripts/run-ios-sim-app.sh -- \
   --gsplat_benchmark_frames 120 \
   --gsplat_benchmark_warmup_frames 10 \
   --gsplat_benchmark_yaw_step 0.001 \
-  --gsplat_surface_sort_interval 2 \
+  --gsplat_surface_sort_interval 1 \
   --gsplat_surface_async_sort false \
   --gsplat_surface_frame_latency 2 \
-  --gsplat_geometry_path direct
+  --gsplat_surface_order_backend adaptive \
+  --gsplat_surface_projected_policy adaptive \
+  --gsplat_geometry_path packed
 ```
 
 Benchmark mode forces a tiny camera orbit each frame and prints a
 `BENCHMARK_RESULT` line to the simulator log. Measurement samples are stored in
 a preallocated numeric buffer; JSON serialization happens after measurement.
 Every run uses the shared resident-scene pipeline selected by
-`gsplat_geometry_path`; the remaining knobs cover CPU sort scheduling and
-frame latency.
-`gsplat_geometry_path` selects `direct` (default, release-gated
-`SortedIndexDirect`), `packed` (experimental `PackedAtlas`), or `paged`
-(experimental local-source `PagedActiveAtlas`) before scene derivation and
-Surface resource creation. The example records the resulting `renderer.path`
+`gsplat_geometry_path`; the remaining knobs cover CPU/GPU/adaptive ordering,
+sort scheduling, and frame latency.
+`gsplat_surface_projected_policy` independently selects `candidate`, `compact`,
+or `adaptive` (the default). Forced policies execute without manufacturing a
+measurement ticket. Adaptive runs record requested/actual execution and state
+on every frame, retain independent projected submission/success/failure
+ledgers, and join every success to its immediately consumed V/C/D receipt.
+Formal artifact publication rejects ring-busy or Surface-unavailable probes,
+dropped or failed terminals, missing counts, ticket/revision/generation
+identity drift, an order/projected ticket on the same frame, `Candidate D != V`,
+or `Compact D != C`.
+`gsplat_geometry_path` selects exact resident `packed` (default), the `direct`
+wide-float oracle, or diagnostic local-source `paged` before scene derivation
+and Surface resource creation. A preselected packed path streams the path-backed
+PLY directly into exact resident planes instead of constructing a temporary
+wide scene. The example records the resulting `renderer.path`
 (`sorted_index_direct`, `packed_atlas`, or `paged_active_atlas`) in the emitted
 benchmark artifact.
+
+GPU ordering also requires the adapter's indirect-execution capability. On a
+simulator adapter that omits it, `.adaptive` remains on CPU and a forced `.gpu`
+request returns a structured unsupported error instead of triggering a wgpu
+validation failure. Simulator runs qualify API and visual compatibility; use a
+physical iOS device for performance conclusions.
 
 ## 4) iOS simulator target build
 
@@ -251,3 +300,5 @@ destinations are rejected. The manifest records the thermal state before and
 after measurement. Build commit/dirty identity, browser, driver, GPU completion
 timing, and sort-refresh visibility are unavailable on this collector and are
 therefore emitted as `null` with explicit `unavailable_fields` entries.
+The extractor runs both the shared benchmark-v1 validator and the Apple
+projected-evidence validator before atomically publishing the destination.

@@ -25,6 +25,7 @@ METRICS = (
 REQUIRED_TIMINGS = {"call_ms", "frame_wall_ms"}
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 TOLERANCE = 1e-9
+COUNT_SEMANTICS = "candidate_visible_contributor_issued_v1"
 
 
 class ValidationError(ValueError):
@@ -139,6 +140,12 @@ def validate_manifest(manifest: dict[str, Any]) -> str:
     renderer = manifest["renderer"]
     for key in ("implementation", "path", "backend", "sort_policy"):
         require_string(renderer, key)
+    count_semantics = renderer.get("count_semantics")
+    if count_semantics is not None and count_semantics != COUNT_SEMANTICS:
+        fail(
+            "renderer.count_semantics must equal "
+            f"{COUNT_SEMANTICS!r} when present"
+        )
     display = manifest["display"]
     for key in ("width", "height"):
         if require_int(display, key) == 0:
@@ -157,7 +164,13 @@ def validate_manifest(manifest: dict[str, Any]) -> str:
     return run_id
 
 
-def load_frames(path: pathlib.Path, run_id: str, unavailable: set[str]) -> list[dict[str, Any]]:
+def load_frames(
+    path: pathlib.Path,
+    run_id: str,
+    unavailable: set[str],
+    count_semantics: str | None = None,
+    source_count: int | None = None,
+) -> list[dict[str, Any]]:
     frames: list[dict[str, Any]] = []
     try:
         lines = path.read_text(encoding="utf-8").splitlines()
@@ -182,8 +195,58 @@ def load_frames(path: pathlib.Path, run_id: str, unavailable: set[str]) -> list[
             value = require_number(frame, metric, nullable=nullable)
             if value is None and f"frames[*].{metric}" not in unavailable:
                 fail(f"null {metric} must be listed as unavailable")
+        count_values: dict[str, int | None] = {}
         for key in ("visible", "drawn"):
-            require_int(frame, key)
+            if key not in frame:
+                fail(f"frame must contain {key}")
+            if frame[key] is None:
+                if f"frames[*].{key}" not in unavailable:
+                    fail(f"null {key} must be listed as unavailable")
+                count_values[key] = None
+            else:
+                count_values[key] = require_int(frame, key)
+                if source_count is not None and count_values[key] > source_count:
+                    fail(f"{key} must not exceed dataset.splat_count")
+        if (count_values["visible"] is None) != (count_values["drawn"] is None):
+            fail("visible and drawn must be unavailable together")
+        if "active_splats" in frame:
+            active_splats = require_int(frame, "active_splats")
+            if source_count is not None and active_splats > source_count:
+                fail("active_splats must not exceed dataset.splat_count")
+        contributor_present = "contributor" in frame
+        compaction_present = "exact_contributor_compaction" in frame
+        if contributor_present != compaction_present:
+            fail(
+                "contributor and exact_contributor_compaction must be emitted together"
+            )
+        if count_semantics == COUNT_SEMANTICS and count_values["visible"] is None:
+            fail("renderer count_semantics forbids unavailable visible/drawn counts")
+        if count_semantics == COUNT_SEMANTICS and not contributor_present:
+            fail(
+                "renderer count_semantics requires contributor and "
+                "exact_contributor_compaction on every frame"
+            )
+        if contributor_present and count_semantics != COUNT_SEMANTICS:
+            fail(
+                "contributor fields require renderer.count_semantics="
+                f"{COUNT_SEMANTICS!r}"
+            )
+        if contributor_present:
+            if count_values["visible"] is None or count_values["drawn"] is None:
+                fail("contributor fields require available visible/drawn counts")
+            contributor = require_int(frame, "contributor")
+            if not isinstance(frame.get("exact_contributor_compaction"), bool):
+                fail("exact_contributor_compaction must be boolean")
+            if contributor > count_values["visible"]:
+                fail("contributor must not exceed visible candidates")
+            if frame["exact_contributor_compaction"]:
+                if count_values["drawn"] != contributor:
+                    fail("exact contributor draw requires drawn == contributor")
+            elif count_values["drawn"] != count_values["visible"]:
+                fail("non-compacted draw requires drawn == visible")
+        elif count_values["visible"] is not None and \
+                count_values["drawn"] != count_values["visible"]:
+            fail("legacy frame requires drawn == visible; a draw budget is forbidden")
         if frame.get("sort_refreshed") is not None and not isinstance(frame.get("sort_refreshed"), bool):
             fail("sort_refreshed must be boolean or null")
         if frames and frame["elapsed_ns"] < frames[-1]["elapsed_ns"]:
@@ -317,10 +380,16 @@ def validate(directory: pathlib.Path) -> None:
     manifest = load_json(directory / "manifest.json")
     run_id = validate_manifest(manifest)
     unavailable = set(manifest["unavailable_fields"])
-    frames = load_frames(directory / "frames.jsonl", run_id, unavailable)
+    renderer = require_object(manifest, "renderer")
+    frames = load_frames(
+        directory / "frames.jsonl",
+        run_id,
+        unavailable,
+        count_semantics=renderer.get("count_semantics"),
+        source_count=require_int(require_object(manifest, "dataset"), "splat_count"),
+    )
     summary = load_json(directory / "summary.json")
     validate_summary(summary, frames, run_id)
-    renderer = require_object(manifest, "renderer")
     sort_policy = require_string(renderer, "sort_policy")
     if sort_policy.startswith("async_latest:"):
         validate_async_sort_telemetry(frames, summary)

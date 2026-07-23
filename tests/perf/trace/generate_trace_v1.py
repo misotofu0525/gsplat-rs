@@ -11,9 +11,7 @@ import pathlib
 from trace_v1 import SCHEMA, mat4_multiply, projection_matrix, view_matrix, with_content_hash
 
 
-def generate() -> dict:
-    width = 640
-    height = 360
+def generate(width: int = 640, height: int = 360) -> dict:
     intrinsics = {
         "vertical_fov_radians": math.pi / 2.0,
         "near_plane": 0.1,
@@ -42,7 +40,11 @@ def generate() -> dict:
         })
     return with_content_hash({
         "schema": SCHEMA,
-        "trace_id": "contract-lateral-three-frame-v1",
+        "trace_id": (
+            "contract-lateral-three-frame-v1"
+            if (width, height) == (640, 360)
+            else f"contract-lateral-three-frame-{width}x{height}-v1"
+        ),
         "coordinate_system": {
             "handedness": "right",
             "axes": "RUF",
@@ -64,9 +66,16 @@ def generate() -> dict:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", required=True, type=pathlib.Path)
+    parser.add_argument("--width", type=int, default=640)
+    parser.add_argument("--height", type=int, default=360)
     args = parser.parse_args()
+    if args.width <= 0 or args.height <= 0:
+        parser.error("--width and --height must be positive")
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.output.write_text(json.dumps(generate(), indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    args.output.write_text(
+        json.dumps(generate(args.width, args.height), indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
     print(args.output)
     return 0
 

@@ -430,6 +430,7 @@ pub fn pack_scene(scene: &SceneBuffers) -> PackedSceneCpu {
 /// Full SH stays in `SceneBuffers` for view-dependent CPU color refresh, so
 /// building the quantized sidecar here would add peak memory and load work
 /// without producing a bound GPU resource.
+#[cfg(test)]
 pub(crate) fn pack_scene_hot_records(scene: &SceneBuffers) -> PackedSceneCpu {
     let bounds = SceneBounds::from_positions(&scene.positions);
     let log_scale_range = LogScaleRange::from_scales(&scene.scale_xyz);

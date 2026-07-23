@@ -15,6 +15,9 @@ import tempfile
 
 
 PREFIX = "BENCHMARK_ARTIFACT "
+PROJECTED_VALIDATOR = pathlib.Path(__file__).with_name(
+    "validate-ios-projected-artifacts.py"
+)
 
 
 def main() -> int:
@@ -50,6 +53,7 @@ def main() -> int:
         (staging / "summary.json").write_bytes(records["summary"][0] + b"\n")
         (staging / "frames.jsonl").write_bytes(b"\n".join(records["frame"]) + b"\n")
         subprocess.run([sys.executable, str(args.validator), str(staging)], check=True)
+        subprocess.run([sys.executable, str(PROJECTED_VALIDATOR), str(staging)], check=True)
         os.rename(staging, args.destination)
     except BaseException:
         shutil.rmtree(staging, ignore_errors=True)

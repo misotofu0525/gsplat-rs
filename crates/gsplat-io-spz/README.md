@@ -10,14 +10,22 @@ This first loader slice accepts Niantic SPZ version 4 files with the plaintext
 use gsplat_io_spz::load_spz;
 use std::path::Path;
 
-let loaded = load_spz(Path::new("scene.spz")).expect("valid degree-0 SPZ v4");
+let loaded = load_spz(Path::new("scene.spz")).expect("valid SPZ v4");
 println!("splats: {}", loaded.summary.gaussians);
 // loaded.scene is a gsplat_core::SceneBuffers
 ```
 
-`parse_spz_bytes` covers in-memory input. The default entrypoints bound input
-bytes, point count, and decoded scene bytes. Applications with tighter memory
-requirements can use the matching limit-aware functions:
+`load_spz` reads the header and small stream table first, then decompresses one
+attribute stream at a time in bounded blocks directly into the final
+`SceneBuffers`. It does not retain the whole compressed file or a second copy
+of all decoded attributes. `parse_spz_bytes` applies the same decoder to a
+caller-owned byte slice without copying that input.
+
+The default entrypoints accept every size representable by SPZ v4 and the host
+architecture; checked size arithmetic and fallible scene-buffer reservations
+still turn overflow or allocation failure into structured errors. Applications
+that intentionally enforce tighter policy budgets can use the matching
+limit-aware functions:
 
 ```rust,no_run
 use gsplat_io_spz::{SpzLoadLimits, load_spz_with_limits};
@@ -34,9 +42,9 @@ let loaded = load_spz_with_limits(Path::new("scene.spz"), limits)?;
 
 Cooperative cancellation is available through `load_spz_cancellable` and
 `parse_spz_bytes_cancellable`. The cancel callback is polled between header
-validation, each ZSTD attribute-stream decompress, scene allocation, and during
-unpack. Cancelled loads return `SpzLoadError::Cancelled` and do not publish a
-scene.
+validation, scene allocation, each ZSTD attribute stream, and bounded decode
+blocks. Cancelled loads return `SpzLoadError::Cancelled` and do not publish a
+partial scene.
 
 Bounded CPU residency helpers live in `SourceResidencyCaches`: independent
 compressed-source and decoded-`SceneBuffers` byte budgets with LRU eviction.

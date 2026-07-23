@@ -16,7 +16,9 @@ case "$IOS_XCFRAMEWORK_PROFILE" in
     CARGO_TARGET_DIR_NAME="release"
     ;;
   dev|debug)
-    CARGO_PROFILE_ARGS=()
+    # Keep this non-empty for macOS's Bash 3.2 under `set -u`; expanding an
+    # empty array there is treated as an unbound variable.
+    CARGO_PROFILE_ARGS=(--profile dev)
     CARGO_TARGET_DIR_NAME="debug"
     ;;
   *)

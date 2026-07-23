@@ -33,6 +33,9 @@ can be fetched with `bash tests/datasets/fetch-wakufactory-kitune.sh`.*
 - Release line: `0.1.x`
 - Quality-gated render path: `SortedAlpha`
 - Native integration surface: `crates/gsplat-ffi-c/include/gsplat.h`
+- Full-quality benchmark counts: `S/V/C/D` (source, candidate-visible,
+  conservative contributor, issued draw), joined by order ticket and camera
+  revision; see `handbook/VERIFICATION.md`
 
 ## Installation and Artifacts
 

@@ -14,8 +14,11 @@
     "serve": "node scripts/server.mjs",
     "smoke": "node scripts/run-browser-smoke.mjs",
     "benchmark:smoke": "node scripts/run-timed-benchmark.mjs",
+    "benchmark:android-presentation": "PHASE_E_QUALIFICATION=minimal-presentation-2412x1080-v1 node scripts/run-timed-benchmark.mjs",
     "benchmark:kitsune-static": "PHASE_E_QUALIFICATION=kitsune-static-v1 node scripts/run-timed-benchmark.mjs",
-    "test": "node scripts/preflight.mjs"
+    "benchmark:truck-1080p": "PHASE_E_QUALIFICATION=truck-quality-1080p-v1 node scripts/run-timed-benchmark.mjs",
+    "benchmark:truck-2412x1080": "PHASE_E_QUALIFICATION=truck-quality-2412x1080-v1 node scripts/run-timed-benchmark.mjs",
+    "test": "node scripts/preflight.mjs && node --test test/*.test.mjs"
   },
   "dependencies": {
     "playcanvas": "2.21.0-beta.14",

@@ -1,0 +1,252 @@
+{
+  "schema": "gsplat-camera-trace/v1",
+  "trace_id": "candidate-bicycle-quality-2view-2622x1206-v1",
+  "coordinate_system": {
+    "handedness": "right",
+    "axes": "RUF",
+    "camera_forward": "+Z"
+  },
+  "matrix_convention": {
+    "storage_order": "row-major",
+    "vector_convention": "column",
+    "composition": "projection * view * world_position",
+    "ndc_xy": "[-1,1]",
+    "ndc_z": "[0,1]",
+    "clip_w": "camera_z"
+  },
+  "display": {
+    "width": 2622,
+    "height": 1206
+  },
+  "derivation": {
+    "status": "candidate_requires_manual_image_review",
+    "source_path": "tests/datasets/external/inria_3dgs/bicycle/point_cloud.ply",
+    "source_sha256": "64d357cb25bd85f710f8551a18d830f8497277fbd8c5805adfd72ffe9ca78227",
+    "source_bytes": 1520726124,
+    "source_splat_count": 6131954,
+    "source_sh_degree": 3,
+    "source_coordinate_system": "RDF",
+    "runtime_coordinate_system": "RUF",
+    "position_sampling": "stratified-midpoint-integer/v1",
+    "position_sample_count": 200000,
+    "lower_percentile": 20.0,
+    "upper_percentile": 80.0,
+    "robust_bounds_min_ruf": [
+      -7.148519515991211,
+      -1.3137402534484863,
+      -6.899536800384521
+    ],
+    "robust_bounds_max_ruf": [
+      4.9136326789855955,
+      5.027439403533936,
+      3.7535323143005375
+    ],
+    "robust_center_ruf": [
+      -1.1174434185028077,
+      1.856849575042725,
+      -1.5730022430419917
+    ],
+    "framing_method": "official_training_camera_pose_with_robust_far_plane",
+    "fit_margin": null,
+    "views": [
+      {
+        "source_camera_id": 0,
+        "source_image_name": "_DSC8679",
+        "source_width": 4946,
+        "source_height": 3286,
+        "source_fx": 4649.505977743847,
+        "source_fy": 4627.300372546341,
+        "source_horizontal_fov_radians": 0.9776572722270749,
+        "source_vertical_fov_radians": 0.6823627613872614,
+        "frame_index": 0,
+        "camera_metadata_index": 0,
+        "distance_to_robust_center": 3.8204414927118786
+      },
+      {
+        "source_camera_id": 145,
+        "source_image_name": "_DSC8818",
+        "source_width": 4946,
+        "source_height": 3286,
+        "source_fx": 4649.505977743847,
+        "source_fy": 4627.300372546341,
+        "source_horizontal_fov_radians": 0.9776572722270749,
+        "source_vertical_fov_radians": 0.6823627613872614,
+        "frame_index": 1,
+        "camera_metadata_index": 145,
+        "distance_to_robust_center": 2.097597422109218
+      }
+    ],
+    "note": "Global extrema do not affect framing distance. The far plane uses a conservative multiple of robust radius; every source Gaussian remains loaded even when outside the selected view frustum.",
+    "official_camera_metadata": {
+      "local_path": "tests/datasets/external/inria_3dgs/bicycle/cameras.json",
+      "sha256": "5f0ebcb6b33e415061a485ed9961fb277cf7e875586f0d82d88b746d9d9fd502",
+      "bytes": 77427,
+      "entry_count": 194,
+      "coordinate_conversion": "R_ruf=diag(1,-1,1)*R_rdf*diag(1,-1,1); position_ruf=(x,-y,z)"
+    },
+    "display_variant": {
+      "source_trace_id": "candidate-bicycle-quality-2view-1920x1080-v1",
+      "source_trace_sha256": "176166a00f8fc645875be4315a643e9ac420726c46e295a05399f45c6e80f95d",
+      "source_display": {
+        "width": 1920,
+        "height": 1080
+      },
+      "policy": "same_pose_fov_clip_reprojected_for_exact_target_aspect"
+    }
+  },
+  "frames": [
+    {
+      "frame_index": 0,
+      "timestamp_ns": 0,
+      "pose": {
+        "position": [
+          -3.0026817933840073,
+          -1.4007726437615275,
+          -2.2284005560263305
+        ],
+        "rotation_xyzw": [
+          -0.07139971739406101,
+          0.4232897078625928,
+          -0.054624079377334545,
+          0.9015232185173202
+        ]
+      },
+      "intrinsics": {
+        "vertical_fov_radians": 0.6823627613872614,
+        "near_plane": 0.01,
+        "far_plane": 436.2510403892055
+      },
+      "view_matrix": [
+        0.6356840663395591,
+        -0.15893528273200797,
+        -0.7554107119341769,
+        0.002767125660239067,
+        0.0380442206631929,
+        0.9838365806164537,
+        -0.174980627256432,
+        1.102439129716195,
+        0.7710112872559867,
+        0.0824933848488519,
+        0.6314558071472982,
+        3.837792503277776,
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "projection_matrix": [
+        1.2954025536278513,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        2.816372716096373,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0000229231068931,
+        -0.01000022923106893,
+        0.0,
+        0.0,
+        1.0,
+        0.0
+      ],
+      "view_projection_matrix": [
+        0.8234667628368013,
+        -0.20588517111260765,
+        -0.9785609652773658,
+        0.0035845416464828413,
+        0.10714670508096635,
+        2.77085050274573,
+        -0.4928106644504444,
+        3.104879486089722,
+        0.7710289612301402,
+        0.08249527585353075,
+        0.6314702820762638,
+        3.8278802481744933,
+        0.7710112872559867,
+        0.0824933848488519,
+        0.6314558071472982,
+        3.837792503277776
+      ]
+    },
+    {
+      "frame_index": 1,
+      "timestamp_ns": 16666667,
+      "pose": {
+        "position": [
+          -2.7721869018154672,
+          0.6253403853741775,
+          -1.1920507166827443
+        ],
+        "rotation_xyzw": [
+          0.1312673905053373,
+          0.5186773439579531,
+          -0.22333808531420601,
+          0.8147777517230248
+        ]
+      },
+      "intrinsics": {
+        "vertical_fov_radians": 0.6823627613872614,
+        "near_plane": 0.01,
+        "far_plane": 434.52819631860285
+      },
+      "view_matrix": [
+        0.36218782502581537,
+        -0.22777096314166817,
+        -0.9038475356787705,
+        0.06905462372384541,
+        0.5001126489640673,
+        0.8657779436762074,
+        -0.01777331116988007,
+        0.8238131336256005,
+        0.7865795050401536,
+        -0.44558830841182834,
+        0.427485370109285,
+        2.968774007419449,
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "projection_matrix": [
+        1.2954025536278513,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        2.816372716096373,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0000230139959263,
+        -0.010000230139959264,
+        0.0,
+        0.0,
+        1.0,
+        0.0
+      ],
+      "view_projection_matrix": [
+        0.4691790334313586,
+        -0.2950550872959921,
+        -1.1708464058085197,
+        0.08945353591167975,
+        1.4085036195170821,
+        2.438353378767693,
+        -0.05005626865354114,
+        2.320164832704997,
+        0.7865976073776784,
+        -0.44559856317934293,
+        0.42749520825585124,
+        2.9588421006324026,
+        0.7865795050401536,
+        -0.44558830841182834,
+        0.427485370109285,
+        2.968774007419449
+      ]
+    }
+  ],
+  "content_sha256": "5d40bbb5ed84eb666c4bf1ab07454fcb4327974adf011b451045d5ebf819a947"
+}

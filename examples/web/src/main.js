@@ -1,19 +1,34 @@
 import {
   createGsplatRenderer,
+  createGsplatRendererFromStream,
+  createGsplatRendererFromUrl,
+  GsplatWebError,
   initGsplatWeb,
 } from "../../../packages/web/src/index.js?v=sorted-index-20260710";
 import {
   BENCHMARK_SCHEMA,
   appendBenchmarkSample,
+  benchmarkResolutionEvidence,
   benchmarkSummary,
   createBenchmarkCollector,
   frameRecords,
   legacyAverages,
 } from "./benchmark-artifact.mjs";
 import { createRasterDiagnosticPly } from "../../../tests/perf/raster-diagnostic.mjs";
+import {
+  cameraBasisFromTraceFrame,
+  cameraTraceFrame,
+  createCameraTraceSequence,
+  validateCameraTraceV1,
+} from "../../../tests/perf/trace/camera-trace-v1.mjs";
+import { monotonicOrderingWindow } from "./benchmark-order-evidence.mjs";
+import {
+  rendererFailurePolicy,
+  sampledWebglOptIn,
+} from "./renderer-policy.mjs";
+import { LatestAsyncRequestCoordinator } from "./latest-async-request.mjs";
 
 const API_VERSION = "0.1";
-const MAX_SURFACE_SIDE = 1600;
 const ORBIT_RADIANS_PER_SCREEN = 3.2;
 const DOUBLE_TAP_TIMEOUT_MS = 300;
 const DOUBLE_TAP_SLOP_PX = 48;
@@ -22,11 +37,24 @@ const DEFAULT_BENCHMARK_WARMUP_FRAMES = 10;
 const DEFAULT_BENCHMARK_YAW_STEP = 0.001;
 const OPACITY_LOGIT_LIMIT = 16;
 const DEFAULT_FRAME_BUDGET_MS = 1000 / 60;
+const reportedStructuredFailures = new WeakSet();
 
 const DATASETS = {
   showcase: "/tests/datasets/external/wakufactory_kitune/kitune1.ply",
   minimal: "/tests/datasets/minimal_ascii.ply",
   flowers: "/tests/datasets/external/nvidia_flowers_1/flowers_1/flowers_1.ply",
+  bonsai: "/tests/datasets/external/inria_3dgs/bonsai/point_cloud.ply",
+  truck: "/tests/datasets/external/inria_3dgs/truck/point_cloud.ply",
+  garden: "/tests/datasets/external/inria_3dgs/garden/point_cloud.ply",
+  bicycle: "/tests/datasets/external/inria_3dgs/bicycle/point_cloud.ply",
+  "truck-50000": "/tests/datasets/external/ladder/inria-truck/point_cloud-n50000.ply",
+  "truck-100000": "/tests/datasets/external/ladder/inria-truck/point_cloud-n100000.ply",
+  "truck-200000": "/tests/datasets/external/ladder/inria-truck/point_cloud-n200000.ply",
+  "truck-300000": "/tests/datasets/external/ladder/inria-truck/point_cloud-n300000.ply",
+  "truck-500000": "/tests/datasets/external/ladder/inria-truck/point_cloud-n500000.ply",
+  "truck-1000000": "/tests/datasets/external/ladder/inria-truck/point_cloud-n1000000.ply",
+  "truck-1500000": "/tests/datasets/external/ladder/inria-truck/point_cloud-n1500000.ply",
+  "truck-2000000": "/tests/datasets/external/ladder/inria-truck/point_cloud-n2000000.ply",
   diagnostic: "generated:raster_diagnostic_v1",
 };
 
@@ -77,6 +105,7 @@ const state = {
   wasmModule: null,
   wasmRenderer: null,
   wasmUnavailableReason: "",
+  wasmFatalError: "",
   scene: null,
   scratchDepths: new Float32Array(0),
   drawBuffer: new Float32Array(0),
@@ -102,17 +131,34 @@ const state = {
   fps: 0,
   cameraStatus: "camera=auto",
   rendererStatus: "state=booting",
+  gpuOrderPreparationPending: false,
   surfaceSizeLabel: "pending",
   datasetPath: "pending",
   startDataset: "showcase",
   benchmark: null,
   autoStartBenchmark: false,
+  strictBenchmarkMode: false,
   autoBenchmarkSync: false,
   qualificationTrace: null,
   qualificationTraceUrl: null,
+  qualificationTraceFrameIndex: 0,
+  qualificationTraceSequenceEnabled: false,
+  qualificationTraceFrameIndices: null,
+  qualificationTraceWarmupFrames: null,
+  qualificationTraceMeasuredFrames: null,
+  qualificationTraceLoops: 1,
+  qualificationTraceSequence: null,
+  qualificationCamera: null,
   qualificationDatasetId: null,
   cameraReceipt: null,
-  geometryPath: "direct",
+  geometryPath: "packed",
+  requestedOrderBackend: "adaptive",
+  requestedProjectedPolicy: "adaptive",
+  orderCompletionProtocol: "isolated_terminal",
+  sampledWebglEnabled: false,
+  resizeMeasurePending: false,
+  resizePending: false,
+  lastLoadError: "",
 };
 
 const els = {
@@ -163,7 +209,59 @@ const els = {
   sceneButtons: Array.from(document.querySelectorAll(".scene-switcher button")),
 };
 
-void main();
+let resizeMeasureFrame = null;
+let canvasResizeObserver = null;
+const wasmResizeCoordinator = new LatestAsyncRequestCoordinator({
+  async perform(request) {
+    await request.renderer.resize(request.width, request.height);
+    return request.renderer.surfaceSize();
+  },
+  publish(request, surface) {
+    if (state.wasmRenderer !== request.renderer) return;
+    if (surface.width !== request.width || surface.height !== request.height) {
+      throw new GsplatWebError(
+        new Error(
+          `wrapper resize published ${surface.width}x${surface.height}; ` +
+          `requested ${request.width}x${request.height}`,
+        ),
+        "resize",
+        { scenePublished: true },
+      );
+    }
+    if (els.canvas.width !== request.width || els.canvas.height !== request.height) {
+      throw new GsplatWebError(
+        new Error(
+          `canvas backing remained ${els.canvas.width}x${els.canvas.height}; ` +
+          `transaction published ${request.width}x${request.height}`,
+        ),
+        "resize",
+        { scenePublished: true },
+      );
+    }
+    request.renderer.setSortInterval(Number(els.sortInterval.value));
+    state.surfaceSizeLabel = `${surface.width}x${surface.height}`;
+    els.surfaceSize.textContent = state.surfaceSizeLabel;
+  },
+  onError(error) {
+    failClosedWasmResize(error);
+  },
+  onPendingChange(pending) {
+    state.resizePending = pending;
+  },
+});
+
+void main().catch(reportStartupFailure);
+
+function reportStartupFailure(error) {
+  const reason = compactMessage(error);
+  emitStructuredSceneFailure(state.startDataset, error);
+  state.lastLoadError = reason;
+  setStatus(`state=startup_failed dataset=${state.startDataset} error=${reason}`);
+  setLoadingProgress("Scene could not load", reason, 0);
+  els.benchmarkStatus.textContent = "failed";
+  els.benchmarkResult.textContent = `STARTUP_FAILURE dataset=${state.startDataset} error=${reason}`;
+  console.error(`STARTUP_FAILURE dataset=${state.startDataset} error=${reason}`);
+}
 
 async function main() {
   initTheme();
@@ -172,7 +270,14 @@ async function main() {
   updateControlLabels();
   await initWasmModule();
   if (state.backend !== "wasm") {
-    initRenderer();
+    if (webglFailurePolicy() === "sampled_webgl_diagnostic") {
+      initRenderer();
+    } else {
+      throw new Error(
+        `exact WebGPU renderer unavailable: ${state.wasmUnavailableReason || "unknown reason"}; ` +
+        "sampled WebGL is diagnostic-only and requires gsplat_allow_sampled_webgl=true",
+      );
+    }
   }
   bindEvents();
   resizeCanvas();
@@ -184,11 +289,51 @@ async function loadQualificationTrace() {
   if (!state.qualificationTraceUrl) return;
   const response = await fetch(state.qualificationTraceUrl, { cache: "no-store" });
   if (!response.ok) throw new Error(`qualification trace HTTP ${response.status}`);
-  state.qualificationTrace = await response.json();
+  state.qualificationTrace = validateCameraTraceV1(await response.json());
+  if (state.qualificationTraceSequenceEnabled) {
+    state.qualificationTraceSequence = createCameraTraceSequence(state.qualificationTrace, {
+      frameIndices: state.qualificationTraceFrameIndices ?? undefined,
+      warmupFrames: state.qualificationTraceWarmupFrames ?? 0,
+      measuredFrames: state.qualificationTraceMeasuredFrames ?? undefined,
+      loops: state.qualificationTraceLoops,
+    });
+    const lastIndex = state.qualificationTraceSequence.frameIndices.at(-1);
+    state.qualificationCamera = cameraTraceFrame(state.qualificationTrace, lastIndex);
+  } else {
+    state.qualificationCamera = cameraTraceFrame(
+      state.qualificationTrace,
+      state.qualificationTraceFrameIndex,
+    );
+  }
+  const selected = state.qualificationTraceSequenceEnabled
+    ? state.qualificationTraceSequence.frameIndices.join(",")
+    : String(state.qualificationTraceFrameIndex);
+  const selectedFrame = state.qualificationTraceSequenceEnabled
+    ? state.qualificationTrace.frames[state.qualificationTraceSequence.frameIndices[0]]
+    : state.qualificationTrace.frames[state.qualificationTraceFrameIndex];
+  console.info(
+    `CAMERA_TRACE trace_id=${state.qualificationTrace.trace_id} ` +
+    `trace_sha256=${state.qualificationTrace.content_sha256} ` +
+    `mode=${state.qualificationTraceSequenceEnabled ? "trace_sequence" : "fixed_frame"} ` +
+    `frame_indices=${selected} frame_index=${selectedFrame.frame_index} ` +
+    `timestamp_ns=${selectedFrame.timestamp_ns} requested_backend=${state.requestedOrderBackend}`,
+  );
 }
 
 async function loadStartupDataset() {
-  const requested =
+  const strictRequestedDataset = state.autoStartBenchmark;
+  const ladderCount = /^truck-(\d+)$/.exec(state.startDataset)?.[1] ?? null;
+  const largeDataset = ["bonsai", "truck", "garden", "bicycle"].includes(state.startDataset)
+    ? state.startDataset
+    : null;
+  const requested = ladderCount
+    ? [{ path: DATASETS[state.startDataset], name: `point_cloud-n${ladderCount}.ply` }]
+    : largeDataset
+      ? [
+          { path: DATASETS[largeDataset], name: `${largeDataset}.ply` },
+          { path: DATASETS.minimal, name: "minimal_ascii.ply" },
+        ]
+    :
     state.startDataset === "diagnostic"
       ? [{ path: DATASETS.diagnostic, name: "raster_diagnostic_v1.ply" }]
       : state.startDataset === "minimal"
@@ -206,15 +351,22 @@ async function loadStartupDataset() {
 
   for (let index = 0; index < requested.length; index += 1) {
     const dataset = requested[index];
+    const allowFallback = !strictRequestedDataset && index < requested.length - 1;
     const loaded = dataset.path === DATASETS.diagnostic
       ? await loadGeneratedDiagnostic(dataset.name)
       : await loadDataset(dataset.path, dataset.name, {
-        allowFallback: index < requested.length - 1,
+        allowFallback,
       });
     if (loaded) {
       return;
     }
+    if (!allowFallback) {
+      break;
+    }
   }
+  throw new Error(
+    `exact requested dataset ${state.startDataset} did not load: ${state.lastLoadError || "unknown load failure"}`,
+  );
 }
 
 async function loadGeneratedDiagnostic(name) {
@@ -230,8 +382,8 @@ async function initWasmModule() {
   try {
     const response = await fetch(WASM_ENTRY, { method: "HEAD" });
     if (!response.ok) {
-      state.backend = "webgl";
       state.wasmUnavailableReason = `pkg_missing_http_${response.status}`;
+      state.backend = webglFailurePolicy() === "sampled_webgl_diagnostic" ? "webgl" : "none";
       return;
     }
 
@@ -243,8 +395,8 @@ async function initWasmModule() {
     updateBackendControls();
     setStatus("state=wasm_ready");
   } catch (error) {
-    state.backend = "webgl";
     state.wasmUnavailableReason = compactMessage(error);
+    state.backend = webglFailurePolicy() === "sampled_webgl_diagnostic" ? "webgl" : "none";
   }
 }
 
@@ -341,7 +493,7 @@ function initRenderer() {
   gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
   gl.clearColor(0.047, 0.051, 0.059, 1.0);
   els.gpuStatus.textContent = "ready";
-  setRenderMode("WebGL2 fallback point splats");
+  setRenderMode("WebGL2 sampled diagnostic point splats");
   updateBackendControls();
   setStatus("state=waiting_for_scene");
 }
@@ -355,19 +507,38 @@ function usingWasm() {
 }
 
 function ensureFallbackRenderer() {
+  if (webglFailurePolicy() !== "sampled_webgl_diagnostic") {
+    state.backend = "none";
+    return false;
+  }
   state.backend = "webgl";
   initRenderer();
   if (state.gl && state.program) {
     els.gpuStatus.textContent = "ready";
-    setRenderMode("WebGL2 fallback point splats");
+    setRenderMode("WebGL2 sampled diagnostic point splats");
     updateBackendControls();
   }
+  return Boolean(state.gl && state.program);
 }
 
-function disposeWasmRenderer() {
+function formalWebgpuEvidenceRequested() {
+  return Boolean(state.strictBenchmarkMode || state.qualificationTraceUrl || state.qualificationTrace);
+}
+
+function webglFailurePolicy() {
+  return rendererFailurePolicy({
+    sampledWebglEnabled: state.sampledWebglEnabled,
+    formalEvidenceRequested: formalWebgpuEvidenceRequested(),
+  });
+}
+
+async function disposeWasmRenderer() {
+  wasmResizeCoordinator.invalidate();
   const renderer = state.wasmRenderer;
   state.wasmRenderer = null;
+  state.wasmFatalError = "";
   renderer?.free?.();
+  await wasmResizeCoordinator.whenIdle();
 }
 
 async function createWasmRenderer(scene) {
@@ -375,7 +546,7 @@ async function createWasmRenderer(scene) {
     return false;
   }
 
-  disposeWasmRenderer();
+  await disposeWasmRenderer();
   setStatus(`state=wasm_creating dataset=${scene.name}`);
   try {
     const renderer = await createGsplatRenderer({
@@ -385,37 +556,26 @@ async function createWasmRenderer(scene) {
       width: els.canvas.width,
       height: els.canvas.height,
       sortInterval: Number(els.sortInterval.value),
+      orderBackend: state.requestedOrderBackend,
+      projectedPolicy: state.requestedProjectedPolicy,
       geometryPath: state.geometryPath,
     });
-    state.wasmRenderer = renderer;
-    state.backend = "wasm";
-    state.wasmUnavailableReason = "";
-    if (state.qualificationTrace) {
-      const frame = state.qualificationTrace.frames[0];
-      renderer.setCamera({
-        position: frame.pose.position,
-        rotationXyzw: frame.pose.rotation_xyzw,
-        intrinsics: {
-          verticalFovRadians: frame.intrinsics.vertical_fov_radians,
-          nearPlane: frame.intrinsics.near_plane,
-          farPlane: frame.intrinsics.far_plane,
-        },
-      });
-      state.cameraReceipt = renderer.cameraReceipt();
-    }
-
-    const summary = renderer.sceneSummary();
-    const surface = renderer.surfaceSize();
-    state.surfaceSizeLabel = `${surface.width}x${surface.height}`;
-    els.gpuStatus.textContent = "wgpu";
-    els.gaussianCount.textContent = formatNumber(summary.gaussians ?? scene.count);
-    els.shDegree.textContent = String(summary.shDegree ?? scene.shDegree);
-    setRenderMode(`Rust/WASM ${renderer.rasterPath()}`);
-    updateBackendControls();
+    adoptWasmRenderer(renderer, scene);
     return true;
   } catch (error) {
-    state.wasmUnavailableReason = compactMessage(error);
-    disposeWasmRenderer();
+    const reason = compactMessage(error);
+    emitStructuredSceneFailure(scene.name, error);
+    await disposeWasmRenderer();
+    state.wasmUnavailableReason = reason;
+    if (webglFailurePolicy() !== "sampled_webgl_diagnostic") {
+      state.backend = "none";
+      state.wasmFatalError = `wasm_create_failed:${reason}`;
+      els.gpuStatus.textContent = "failed";
+      els.benchmarkStatus.textContent = "failed";
+      updateBackendControls();
+      setStatus(`state=wasm_create_failed fail_closed=true error=${reason}`);
+      throw error;
+    }
     ensureFallbackRenderer();
     updateBackendControls();
     setStatus(`state=wasm_create_failed fallback=webgl error=${state.wasmUnavailableReason}`);
@@ -423,29 +583,66 @@ async function createWasmRenderer(scene) {
   }
 }
 
-function resizeWasmRenderer() {
-  if (!state.wasmRenderer) {
-    return;
+function adoptWasmRenderer(renderer, scene) {
+  state.wasmRenderer = renderer;
+  state.backend = "wasm";
+  state.wasmUnavailableReason = "";
+  state.wasmFatalError = "";
+  if (state.qualificationCamera) {
+    renderer.setCamera(state.qualificationCamera);
+    state.cameraReceipt = renderer.cameraReceipt();
   }
-  try {
-    state.wasmRenderer.resize(els.canvas.width, els.canvas.height);
-    const surface = state.wasmRenderer.surfaceSize();
-    state.surfaceSizeLabel = `${surface.width}x${surface.height}`;
-  } catch (error) {
-    state.wasmUnavailableReason = compactMessage(error);
-    setStatus(`state=wasm_resize_failed error=${state.wasmUnavailableReason}`);
+
+  const summary = renderer.sceneSummary();
+  const surface = renderer.surfaceSize();
+  state.surfaceSizeLabel = `${surface.width}x${surface.height}`;
+  els.gpuStatus.textContent = "wgpu";
+  els.gaussianCount.textContent = formatNumber(summary.gaussians ?? scene.count);
+  els.shDegree.textContent = String(summary.shDegree ?? scene.shDegree);
+  setRenderMode(`Rust/WASM ${renderer.rasterPath()}`);
+  updateBackendControls();
+}
+
+function requestWasmRendererResize(width, height) {
+  const renderer = state.wasmRenderer;
+  if (!renderer || state.wasmFatalError) return;
+  wasmResizeCoordinator.request({ renderer, width, height });
+}
+
+function failClosedWasmResize(error) {
+  const failure = error instanceof GsplatWebError
+      && error.stage === "resize"
+      && error.scene_published === true
+    ? error
+    : new GsplatWebError(error, "resize", { scenePublished: true });
+  const reason = compactMessage(failure);
+  state.wasmUnavailableReason = reason;
+  state.wasmFatalError = `wasm_resize_failed:${reason}`;
+  if (state.benchmark) {
+    state.benchmark.enabled = false;
+    state.benchmark.failure = state.wasmFatalError;
   }
+  els.gpuStatus.textContent = "resize failed";
+  els.benchmarkStatus.textContent = "failed";
+  els.runBenchmark.disabled = true;
+  els.benchmarkResult.textContent = `WASM_RESIZE_FAILURE error=${reason}`;
+  setStatus(`state=wasm_resize_failed fatal=true fallback=disabled error=${reason}`);
+  emitStructuredResizeFailure(failure);
 }
 
 function updateBackendControls() {
   const wasmActive = usingWasm();
-  els.backendBadge.textContent = state.backend === "wasm" ? "WASM surface" : "WebGL fallback";
+  els.backendBadge.textContent = state.backend === "wasm" ? "WASM surface" : "WebGL diagnostic";
   els.drawBudget.disabled = wasmActive;
   els.pointScale.disabled = wasmActive;
 }
 
 function bindEvents() {
-  window.addEventListener("resize", resizeCanvas);
+  window.addEventListener("resize", scheduleCanvasResize);
+  if (typeof ResizeObserver === "function") {
+    canvasResizeObserver = new ResizeObserver(scheduleCanvasResize);
+    canvasResizeObserver.observe(els.canvas);
+  }
   els.loadShowcase.addEventListener("click", () =>
     void loadDataset(DATASETS.showcase, "kitune1.ply"),
   );
@@ -472,6 +669,7 @@ function bindEvents() {
   els.drawBudget.addEventListener("input", invalidateSortedOrder);
   els.sortInterval.addEventListener("input", () => {
     invalidateSortedOrder();
+    if (wasmResizeCoordinator.pending) return;
     state.wasmRenderer?.setSortInterval(Number(els.sortInterval.value));
   });
   els.canvas.addEventListener("pointerdown", handlePointerDown);
@@ -624,6 +822,7 @@ function pointerFocus(points) {
 }
 
 function panCamera(normalizedDeltaX, normalizedDeltaY) {
+  if (state.qualificationCamera || wasmResizeCoordinator.pending) return;
   state.wasmRenderer?.pan(normalizedDeltaX, normalizedDeltaY);
 
   const basis = buildCameraBasis();
@@ -638,6 +837,7 @@ function panCamera(normalizedDeltaX, normalizedDeltaY) {
 }
 
 function orbitCamera(deltaYaw, deltaPitch) {
+  if (state.qualificationCamera || wasmResizeCoordinator.pending) return;
   state.wasmRenderer?.orbit(deltaYaw, deltaPitch);
   state.camera.yaw += deltaYaw;
   state.camera.pitch = clamp(state.camera.pitch + deltaPitch, -1.35, 1.35);
@@ -645,6 +845,7 @@ function orbitCamera(deltaYaw, deltaPitch) {
 }
 
 function zoomCamera(distanceScale) {
+  if (state.qualificationCamera || wasmResizeCoordinator.pending) return;
   state.wasmRenderer?.zoom(distanceScale);
   state.camera.distance = clamp(state.camera.distance * distanceScale, 0.02, 10000);
   invalidateSortedOrder();
@@ -668,6 +869,9 @@ function setAutoOrbit(enabled) {
 
 async function loadDataset(path, name, options = {}) {
   const { allowFallback = false } = options;
+  if (state.wasmModule && state.geometryPath === "packed") {
+    return loadPackedDatasetStream(path, name, allowFallback);
+  }
   setLoadingProgress(`Loading ${sceneTitle(name)}`, "Fetching scene data.", 0.04);
   setStatus(`state=loading dataset=${name}`);
   try {
@@ -689,7 +893,10 @@ async function loadDataset(path, name, options = {}) {
     await applyScene(scene);
     return true;
   } catch (error) {
-    setStatus(`state=load_failed dataset=${name} error=${compactMessage(error)}`);
+    state.lastLoadError = compactMessage(error);
+    emitStructuredSceneFailure(name, error);
+    console.error(`SCENE_LOAD_FAILURE dataset=${name} error=${state.lastLoadError}`);
+    setStatus(`state=load_failed dataset=${name} error=${state.lastLoadError}`);
     if (allowFallback) {
       setLoadingProgress(
         `${sceneTitle(name)} is not installed`,
@@ -704,10 +911,170 @@ async function loadDataset(path, name, options = {}) {
   }
 }
 
+async function loadPackedDatasetStream(path, name, allowFallback) {
+  setLoadingProgress(`Loading ${sceneTitle(name)}`, "Streaming the complete PLY into WASM.", 0.04);
+  setStatus(`state=loading_stream dataset=${name}`);
+  await disposeWasmRenderer();
+  try {
+    const renderer = await createGsplatRendererFromUrl({
+      module: state.wasmModule,
+      canvas: els.canvas,
+      url: path,
+      width: els.canvas.width,
+      height: els.canvas.height,
+      sortInterval: Number(els.sortInterval.value),
+      orderBackend: state.requestedOrderBackend,
+      projectedPolicy: state.requestedProjectedPolicy,
+      geometryPath: "packed",
+      onProgress: ({ receivedBytes, totalBytes }) => {
+        const detail = totalBytes == null
+          ? `${formatBytes(receivedBytes)} received`
+          : `${formatBytes(receivedBytes)} of ${formatBytes(totalBytes)}`;
+        const fraction = totalBytes == null ? 0.35 : receivedBytes / totalBytes;
+        setLoadingProgress(`Loading ${sceneTitle(name)}`, detail, 0.04 + fraction * 0.72);
+      },
+    });
+    installStreamedWasmScene(renderer, name, path);
+    return true;
+  } catch (error) {
+    state.wasmUnavailableReason = compactMessage(error);
+    state.lastLoadError = state.wasmUnavailableReason;
+    emitStructuredSceneFailure(name, error);
+    console.error(`SCENE_LOAD_FAILURE dataset=${name} error=${state.wasmUnavailableReason}`);
+    await disposeWasmRenderer();
+    setStatus(`state=load_failed dataset=${name} error=${state.wasmUnavailableReason}`);
+    if (webglFailurePolicy() === "sampled_webgl_diagnostic") {
+      // The exact streaming attempt consumed its response. Explicit
+      // diagnostic opt-in permits one fresh fetch through the sampled parser;
+      // default/product mode never takes this branch.
+      state.wasmModule = null;
+      ensureFallbackRenderer();
+      return loadDataset(path, name, { allowFallback });
+    }
+    if (allowFallback) {
+      setLoadingProgress(
+        `${sceneTitle(name)} is not installed`,
+        "Trying the next complete local scene.",
+        0.06,
+      );
+    } else {
+      setLoadingProgress("Scene could not load", state.wasmUnavailableReason, 0);
+      window.setTimeout(hideLoading, 1400);
+    }
+    return false;
+  }
+}
+
+function installStreamedWasmScene(renderer, name, sourcePath) {
+  const summary = renderer.sceneSummary();
+  const receipt = renderer.loadReceipt();
+  if (!receipt?.streamed
+      || receipt.sourceCount !== summary.gaussians
+      || receipt.decodedCount !== summary.gaussians
+      || receipt.encodedCount !== summary.gaussians
+      || receipt.residentCount !== summary.gaussians
+      || receipt.addressableCount !== summary.gaussians
+      || receipt.sourceShDegree !== summary.shDegree
+      || receipt.residentShDegree !== summary.shDegree
+      || receipt.shDegree !== summary.shDegree
+      || receipt.fullQuality !== true
+      || receipt.sourceMembership !== "all"
+      || receipt.samplingEnabled
+      || receipt.lodEnabled
+      || receipt.partialScenePublished) {
+    renderer.free();
+    throw new Error("streamed scene count/SH receipt is incomplete or inconsistent");
+  }
+  const scene = {
+    name,
+    sourcePath,
+    format: "streamed_ply",
+    shDegree: summary.shDegree,
+    count: summary.gaussians,
+    sourceBytes: receipt.transportBytes,
+    sourceSha256: receipt.inputSha256,
+    exactnessReceipt: receipt,
+    rawBytes: null,
+  };
+  state.scene = scene;
+  state.datasetPath = sourcePath;
+  state.frameCounter = 0;
+  state.benchmark = null;
+  state.scratchDepths = new Float32Array(0);
+  invalidateSortedOrder();
+  els.benchmarkStatus.textContent = "idle";
+  els.runBenchmark.disabled = false;
+  els.formatBadge.textContent = "streamed ply";
+  els.gaussianCount.textContent = formatNumber(scene.count);
+  els.shDegree.textContent = String(scene.shDegree);
+  els.sceneName.textContent = sceneTitle(scene.name);
+  els.sceneMeta.textContent = `${formatNumber(scene.count)} gaussians · full streamed PLY`;
+  for (const button of els.sceneButtons) {
+    button.setAttribute("aria-pressed", String(button.dataset.scene === scene.name));
+  }
+  adoptWasmRenderer(renderer, scene);
+  console.info(`SCENE_LOAD_RECEIPT_JSON ${JSON.stringify({
+    dataset: name,
+    source_path: sourcePath,
+    source_bytes: receipt.transportBytes,
+    input_sha256: receipt.inputSha256,
+    peak_decoder_buffer_bytes: receipt.peakDecoderBufferBytes,
+    streamed: receipt.streamed,
+    source_count: receipt.sourceCount,
+    decoded_count: receipt.decodedCount,
+    encoded_count: receipt.encodedCount,
+    resident_count: receipt.residentCount,
+    addressable_count: receipt.addressableCount,
+    source_sh_degree: receipt.sourceShDegree,
+    resident_sh_degree: receipt.residentShDegree,
+    sh_degree: receipt.shDegree,
+    full_quality: receipt.fullQuality,
+    source_membership: receipt.sourceMembership,
+    sampling_enabled: receipt.samplingEnabled,
+    lod_enabled: receipt.lodEnabled,
+    partial_scene_published: receipt.partialScenePublished,
+  })}`);
+  setStatus(
+    `state=scene_ready backend=wasm source=${receipt.sourceCount} ` +
+    `resident=${receipt.residentCount} peak_decoder_bytes=${receipt.peakDecoderBufferBytes}`,
+  );
+  setLoadingProgress("Scene ready", "Complete source count is resident on the GPU.", 1);
+  hideLoading();
+  if (state.autoStartBenchmark) {
+    state.autoStartBenchmark = false;
+    if (state.autoBenchmarkSync) runBenchmarkSync();
+    else startBenchmark();
+  }
+}
+
 async function loadFile(file) {
   setLoadingProgress(`Opening ${file.name}`, "Reading the local PLY in your browser.", 0.12);
   setStatus(`state=loading dataset=${file.name}`);
   try {
+    if (state.wasmModule && state.geometryPath === "packed" && typeof file.stream === "function") {
+      await disposeWasmRenderer();
+      const renderer = await createGsplatRendererFromStream({
+        module: state.wasmModule,
+        canvas: els.canvas,
+        stream: file.stream(),
+        totalBytes: file.size,
+        width: els.canvas.width,
+        height: els.canvas.height,
+        sortInterval: Number(els.sortInterval.value),
+        orderBackend: state.requestedOrderBackend,
+        projectedPolicy: state.requestedProjectedPolicy,
+        geometryPath: "packed",
+        onProgress: ({ receivedBytes, totalBytes }) => {
+          setLoadingProgress(
+            `Opening ${file.name}`,
+            `${formatBytes(receivedBytes)} of ${formatBytes(totalBytes ?? file.size)}`,
+            0.12 + (receivedBytes / Math.max(totalBytes ?? file.size, 1)) * 0.7,
+          );
+        },
+      });
+      installStreamedWasmScene(renderer, file.name, `browser:${file.name}`);
+      return;
+    }
     const bytes = new Uint8Array(await file.arrayBuffer());
     const datasetSha256 = await sha256Hex(bytes);
     setLoadingProgress("Reading captured light", `${formatBytes(bytes.byteLength)} received.`, 0.76);
@@ -716,6 +1083,7 @@ async function loadFile(file) {
     scene.sourceSha256 = datasetSha256;
     await applyScene(scene);
   } catch (error) {
+    emitStructuredSceneFailure(file.name, error);
     setStatus(`state=parse_failed dataset=${file.name} error=${compactMessage(error)}`);
     setLoadingProgress("PLY could not open", compactMessage(error), 0);
     window.setTimeout(hideLoading, 1400);
@@ -745,8 +1113,26 @@ async function applyScene(scene) {
 
   if (state.wasmModule) {
     setLoadingProgress("Uploading to the GPU", "Preparing the realtime surface.", 0.92);
-    await createWasmRenderer(scene);
+    const wasmReady = await createWasmRenderer(scene);
+    if (!wasmReady && (state.strictBenchmarkMode || state.qualificationTraceUrl || state.qualificationTrace)) {
+      state.autoStartBenchmark = false;
+      els.runBenchmark.disabled = true;
+      setLoadingProgress("Exact renderer failed", state.wasmUnavailableReason, 0);
+      return;
+    }
   } else {
+    if (webglFailurePolicy() !== "sampled_webgl_diagnostic") {
+      state.autoStartBenchmark = false;
+      state.wasmFatalError = "wasm_module_unavailable";
+      els.gpuStatus.textContent = "failed";
+      els.benchmarkStatus.textContent = "failed";
+      els.runBenchmark.disabled = true;
+      setStatus("state=wasm_unavailable qualification=failed");
+      setLoadingProgress("Exact renderer unavailable", "WASM/WebGPU is required for qualification.", 0);
+      throw new Error(
+        `exact WebGPU renderer unavailable: ${state.wasmUnavailableReason || "WASM module unavailable"}`,
+      );
+    }
     ensureFallbackRenderer();
     updateBackendControls();
   }
@@ -1002,15 +1388,13 @@ function computeBounds(scene) {
 }
 
 function fitCameraToScene(scene) {
-  if (state.qualificationTrace) {
-    const frame = state.qualificationTrace.frames[0];
-    state.camera.target = [frame.pose.position[0], frame.pose.position[1], frame.pose.position[2] + 1];
-    state.camera.distance = 1;
-    state.camera.yaw = 0;
-    state.camera.pitch = 0;
-    state.camera.fovY = frame.intrinsics.vertical_fov_radians;
-    state.camera.near = frame.intrinsics.near_plane;
-    state.camera.far = frame.intrinsics.far_plane;
+  if (state.qualificationCamera) {
+    const camera = state.qualificationCamera;
+    state.camera.fovY = camera.intrinsics.verticalFovRadians;
+    state.camera.near = camera.intrinsics.nearPlane;
+    state.camera.far = camera.intrinsics.farPlane;
+    state.wasmRenderer?.setCamera(camera);
+    setAutoOrbit(false);
     state.cameraStatus = "camera=qualification_trace";
     invalidateSortedOrder();
     return;
@@ -1046,11 +1430,15 @@ function fitCameraToScene(scene) {
 }
 
 function resetCamera() {
-  if (!state.scene) {
+  if (!state.scene || wasmResizeCoordinator.pending) {
     return;
   }
   fitCameraToScene(state.scene);
-  state.wasmRenderer?.resetCamera();
+  if (state.qualificationCamera) {
+    state.wasmRenderer?.setCamera(state.qualificationCamera);
+  } else {
+    state.wasmRenderer?.resetCamera();
+  }
   state.cameraStatus = "camera=reset";
 }
 
@@ -1059,12 +1447,46 @@ function frame(now) {
   state.lastFrameTime = now;
   state.fps = dt > 0 ? 1 / dt : state.fps;
 
-  if (state.benchmark?.enabled) {
-    if (state.benchmark.yawStep !== 0) {
+  // resizeAsync holds the wasm renderer mutably until WebGPU error scopes
+  // complete. Never submit or poll a frame against an in-flight/unknown size.
+  if (state.resizeMeasurePending || wasmResizeCoordinator.pending) {
+    requestAnimationFrame(frame);
+    return;
+  }
+
+  const benchmarkWaitingForTerminal = state.benchmark?.enabled
+    && (state.benchmark.pendingOrderSample != null
+      || state.benchmark.pendingProjectedSample != null);
+  if (usingWasm() && benchmarkWaitingForTerminal
+      && state.benchmark.orderCompletionProtocol === "isolated_terminal") {
+    pollPendingBenchmarkReceipts(state.benchmark);
+    requestAnimationFrame(frame);
+    return;
+  }
+  if (!state.gpuOrderPreparationPending && state.benchmark?.enabled
+      && !benchmarkWaitingForTerminal) {
+    if (state.benchmark.traceSequence) {
+      applyBenchmarkTraceStep(state.benchmark);
+    } else if (state.benchmark.fixedCameraPrimePending && state.qualificationCamera) {
+      const alternateIndex = state.qualificationTraceFrameIndex === 0 ? 1 : 0;
+      state.wasmRenderer?.setCamera(
+        cameraTraceFrame(state.qualificationTrace, alternateIndex),
+      );
+      state.benchmark.fixedCameraPrimePending = false;
+      state.benchmark.primingOrder = true;
+      state.cameraStatus = "camera=qualification_preflight";
+    } else if (state.benchmark.fixedCameraApplyPending && state.qualificationCamera) {
+      // Apply the fixed trace on the same RAF turn as its first formal draw.
+      // This mirrors sequence playback and prevents a constructor/startup
+      // boundary from standing in for the benchmark's order invalidation.
+      state.wasmRenderer?.setCamera(state.qualificationCamera);
+      state.benchmark.fixedCameraApplyPending = false;
+      state.cameraStatus = "camera=qualification_trace";
+    } else if (state.benchmark.yawStep !== 0) {
       orbitCamera(state.benchmark.yawStep, 0);
       state.cameraStatus = "camera=benchmark_orbit";
     }
-  } else if (state.autoOrbit && state.scene) {
+  } else if (!state.gpuOrderPreparationPending && state.autoOrbit && state.scene) {
     orbitCamera(dt * 0.22, 0);
   }
 
@@ -1076,10 +1498,302 @@ function frame(now) {
 }
 
 function render() {
+  if (state.resizeMeasurePending || wasmResizeCoordinator.pending) {
+    return null;
+  }
   if (usingWasm()) {
+    if (state.wasmFatalError) return null;
     return renderWasm();
   }
   return renderWebgl();
+}
+
+function emitOrderMeasurements(measurements, adaptiveState) {
+  for (const measurement of measurements) {
+    const terminalAtMonotonicMs = performance.now();
+    console.info(`ORDER_MEASUREMENT_JSON ${JSON.stringify({
+      requested_backend: state.requestedOrderBackend,
+      // SurfaceOrderMeasurement is emitted only by the GPU telemetry ring.
+      // The frame that harvests it may already be a CPU frame during an
+      // Adaptive ABBA probe, so the harvesting frame backend is not the
+      // backend that produced this receipt.
+      actual_backend: measurement.actualBackend ?? "gpu",
+      adaptive_state: adaptiveState,
+      ticket: measurement.ticket,
+      camera_revision: measurement.cameraRevision,
+      timing_source: measurement.timingSource,
+      gpu_preprocess_ms: measurement.gpuPreprocessMs,
+      gpu_radix_ms: measurement.gpuRadixMs,
+      gpu_order_ms: measurement.gpuOrderMs,
+      gpu_complete_ms: measurement.gpuCompleteMs,
+      timestamp_period_ns: measurement.timestampPeriodNs,
+      below_timestamp_resolution: measurement.belowTimestampResolution,
+      count_semantics: measurement.countSemantics ?? "candidate_visible_contributor_issued_v1",
+      visible: measurement.visibleCount,
+      contributor: measurement.contributorCount,
+      drawn: measurement.drawnCount,
+      exact_contributor_compaction: Boolean(measurement.exactContributorCompaction),
+      terminal_at_monotonic_ms: terminalAtMonotonicMs,
+    })}`);
+    recordOrderTerminalReceipt(
+      measurement.actualBackend ?? "gpu",
+      measurement.ticket,
+      measurement.cameraRevision,
+      "success",
+      terminalAtMonotonicMs,
+    );
+  }
+}
+
+function emitCpuOrderMeasurements(measurements, adaptiveState) {
+  for (const measurement of measurements) {
+    const terminalAtMonotonicMs = performance.now();
+    console.info(`CPU_ORDER_MEASUREMENT_JSON ${JSON.stringify({
+      requested_backend: state.requestedOrderBackend,
+      actual_backend: "cpu",
+      adaptive_state: adaptiveState,
+      ticket: measurement.ticket,
+      camera_revision: measurement.cameraRevision,
+      preprocess_ms: measurement.preprocessMs,
+      sort_ms: measurement.sortMs,
+      frame_complete_ms: measurement.frameCompleteMs,
+      count_semantics: measurement.countSemantics ?? "candidate_visible_contributor_issued_v1",
+      visible: measurement.visibleCount,
+      contributor: measurement.contributorCount,
+      drawn: measurement.drawnCount,
+      exact_contributor_compaction: Boolean(measurement.exactContributorCompaction),
+      terminal_at_monotonic_ms: terminalAtMonotonicMs,
+    })}`);
+    recordOrderTerminalReceipt(
+      "cpu",
+      measurement.ticket,
+      measurement.cameraRevision,
+      "success",
+      terminalAtMonotonicMs,
+    );
+  }
+}
+
+function emitOrderMeasurementFailures(failures, adaptiveState) {
+  for (const failure of failures) {
+    const terminalAtMonotonicMs = performance.now();
+    console.error(`ORDER_MEASUREMENT_FAILURE_JSON ${JSON.stringify({
+      requested_backend: state.requestedOrderBackend,
+      actual_backend: failure.actualBackend ?? (failure.ticket % 2 === 0 ? "cpu" : "gpu"),
+      adaptive_state: adaptiveState,
+      ticket: failure.ticket,
+      camera_revision: failure.cameraRevision,
+      reason: failure.reason,
+      terminal_at_monotonic_ms: terminalAtMonotonicMs,
+    })}`);
+    recordOrderTerminalReceipt(
+      failure.actualBackend ?? (failure.ticket % 2 === 0 ? "cpu" : "gpu"),
+      failure.ticket,
+      failure.cameraRevision,
+      "failure",
+      terminalAtMonotonicMs,
+    );
+  }
+}
+
+function emitProjectedMeasurements(measurements, adaptiveState) {
+  for (const measurement of measurements) {
+    const terminalAtMonotonicMs = performance.now();
+    console.info(`PROJECTED_MEASUREMENT_JSON ${JSON.stringify({
+      run_id: state.benchmark?.collector.runId ?? null,
+      requested_policy: state.requestedProjectedPolicy,
+      execution: measurement.execution,
+      order_backend: measurement.orderBackend,
+      adaptive_state: adaptiveState,
+      ticket: measurement.ticket,
+      camera_revision: measurement.cameraRevision,
+      projection_generation: measurement.projectionGeneration,
+      probe_generation: measurement.probeGeneration,
+      projection_rebuilt: measurement.projectionRebuilt,
+      order_refreshed: measurement.orderRefreshed,
+      frame_complete_ms: measurement.frameCompleteMs,
+      count_semantics:
+        measurement.countSemantics ?? "candidate_visible_contributor_issued_v1",
+      visible: measurement.visibleCount,
+      contributor: measurement.contributorCount,
+      drawn: measurement.drawnCount,
+      exact_contributor_compaction: Boolean(measurement.exactContributorCompaction),
+      terminal_at_monotonic_ms: terminalAtMonotonicMs,
+    })}`);
+    recordProjectedTerminalReceipt(
+      measurement.execution,
+      measurement.orderBackend,
+      measurement.ticket,
+      measurement.cameraRevision,
+      "success",
+      terminalAtMonotonicMs,
+    );
+  }
+}
+
+function emitProjectedMeasurementFailures(failures, adaptiveState) {
+  for (const failure of failures) {
+    const terminalAtMonotonicMs = performance.now();
+    console.error(`PROJECTED_MEASUREMENT_FAILURE_JSON ${JSON.stringify({
+      run_id: state.benchmark?.collector.runId ?? null,
+      requested_policy: state.requestedProjectedPolicy,
+      execution: failure.execution,
+      order_backend: failure.orderBackend,
+      adaptive_state: adaptiveState,
+      ticket: failure.ticket,
+      camera_revision: failure.cameraRevision,
+      projection_generation: failure.projectionGeneration,
+      probe_generation: failure.probeGeneration,
+      reason: failure.reason,
+      terminal_at_monotonic_ms: terminalAtMonotonicMs,
+    })}`);
+    recordProjectedTerminalReceipt(
+      failure.execution,
+      failure.orderBackend,
+      failure.ticket,
+      failure.cameraRevision,
+      "failure",
+      terminalAtMonotonicMs,
+    );
+  }
+}
+
+function recordProjectedTerminalReceipt(
+  execution,
+  orderBackend,
+  ticket,
+  revision,
+  outcome,
+  terminalAtMonotonicMs,
+) {
+  const benchmark = state.benchmark;
+  if (!benchmark) return;
+  const submission = benchmark.issuedProjectedTickets.get(ticket);
+  if (!submission) return;
+  if (submission.execution !== execution
+      || submission.orderBackend !== orderBackend
+      || submission.revision !== revision) {
+    failStrictBenchmarkForOrderEvidence(
+      `projected terminal ticket=${ticket} identity mismatch issued=` +
+      `${submission.execution}/${submission.orderBackend}/${submission.revision} terminal=` +
+      `${execution}/${orderBackend}/${revision}`,
+    );
+    return;
+  }
+  if (benchmark.terminalProjectedTickets.has(ticket)) {
+    failStrictBenchmarkForOrderEvidence(
+      `projected ticket=${ticket} produced more than one terminal receipt`,
+    );
+    return;
+  }
+  benchmark.terminalProjectedTickets.set(ticket, outcome);
+  benchmark.projectedTerminalRecords.push({
+    execution,
+    order_backend: orderBackend,
+    ticket,
+    camera_revision: revision,
+    outcome,
+    terminal_at_monotonic_ms: terminalAtMonotonicMs,
+  });
+  globalThis.GSPLAT_PROJECTED_LEDGER_COMPLETE =
+    benchmark.issuedProjectedTickets.size === benchmark.terminalProjectedTickets.size;
+}
+
+function recordOrderTerminalReceipt(backend, ticket, revision, outcome, terminalAtMonotonicMs) {
+  const benchmark = state.benchmark;
+  if (!benchmark) return;
+  const submission = benchmark.issuedOrderTickets.get(ticket);
+  if (!submission) return;
+  if (submission.backend !== backend || submission.revision !== revision) {
+    failStrictBenchmarkForOrderEvidence(
+      `terminal ticket=${ticket} backend/revision mismatch issued=${submission.backend}/` +
+      `${submission.revision} terminal=${backend}/${revision}`,
+    );
+    return;
+  }
+  if (benchmark.terminalOrderTickets.has(ticket)) {
+    failStrictBenchmarkForOrderEvidence(`ticket=${ticket} produced more than one terminal receipt`);
+    return;
+  }
+  benchmark.terminalOrderTickets.set(ticket, outcome);
+  benchmark.orderTerminalRecords.push({
+    actual_backend: backend,
+    ticket,
+    camera_revision: revision,
+    outcome,
+    terminal_at_monotonic_ms: terminalAtMonotonicMs,
+  });
+  globalThis.GSPLAT_ORDER_LEDGER_COMPLETE = benchmark.issuedOrderTickets.size > 0
+    && benchmark.terminalOrderTickets.size === benchmark.issuedOrderTickets.size;
+  maybeEmitMonotonicOrderingWindow(benchmark);
+}
+
+function maybeEmitMonotonicOrderingWindow(benchmark) {
+  if (benchmark.enabled || benchmark.monotonicOrderingWindowEmitted) return;
+  const measuredSubmissions = benchmark.orderSubmissionRecords.filter(
+    (submission) => submission.phase === "measured",
+  );
+  const terminalTickets = new Set(
+    benchmark.orderTerminalRecords.map((terminal) => terminal.ticket),
+  );
+  if (measuredSubmissions.some((submission) => !terminalTickets.has(submission.ticket))) return;
+  const window = monotonicOrderingWindow({
+    submissions: benchmark.orderSubmissionRecords,
+    terminals: benchmark.orderTerminalRecords,
+  });
+  benchmark.monotonicOrderingWindowEmitted = true;
+  console.info(`ORDERING_WINDOW_MONOTONIC_JSON ${JSON.stringify({
+    schema: BENCHMARK_SCHEMA,
+    record_type: "ordering_window_monotonic",
+    measured_submit_count: measuredSubmissions.length,
+    measured_terminal_count: measuredSubmissions.length,
+    ...window,
+  })}`);
+}
+
+function failStrictBenchmarkForOrderEvidence(message, failures = null) {
+  const benchmark = state.benchmark;
+  if (!benchmark) return;
+  if (!benchmark.enabled && failures) {
+    const matchesIssuedTicket = failures.some(
+      (failure) => benchmark.issuedOrderTickets.get(failure.ticket)?.revision === failure.cameraRevision,
+    );
+    if (!matchesIssuedTicket) return;
+  }
+  benchmark.enabled = false;
+  benchmark.failure = message;
+  els.benchmarkStatus.textContent = "failed";
+  els.runBenchmark.disabled = false;
+  els.benchmarkResult.textContent = `STRICT_ORDER_EVIDENCE_FAILURE ${message}`;
+  setStatus(`state=benchmark_failed ${message}`);
+  console.error(`STRICT_ORDER_EVIDENCE_FAILURE ${message}`);
+}
+
+function failClosedWasmRender(error) {
+  const reason = compactMessage(error);
+  let drainError = "";
+  try {
+    const receipts = state.wasmRenderer?.drainOrderMeasurementReceipts();
+    emitCpuOrderMeasurements(receipts?.completedCpuOrderMeasurements ?? [], "render_failed");
+    emitOrderMeasurements(receipts?.completedOrderMeasurements ?? [], "render_failed");
+    emitOrderMeasurementFailures(receipts?.failedOrderMeasurements ?? [], "render_failed");
+    emitProjectedMeasurements(receipts?.completedProjectedMeasurements ?? [], "render_failed");
+    emitProjectedMeasurementFailures(
+      receipts?.failedProjectedMeasurements ?? [],
+      "render_failed",
+    );
+  } catch (drainFailure) {
+    drainError = compactMessage(drainFailure);
+  }
+  state.wasmUnavailableReason = reason;
+  state.wasmFatalError = reason;
+  if (state.benchmark) state.benchmark.enabled = false;
+  els.benchmarkStatus.textContent = "failed";
+  els.runBenchmark.disabled = false;
+  els.benchmarkResult.textContent = `WASM_RENDER_FAILURE error=${reason}`;
+  const drainDetail = drainError ? ` receipt_drain_error=${drainError}` : "";
+  setStatus(`state=wasm_render_failed fatal=true fallback=disabled error=${reason}${drainDetail}`);
+  console.error(`WASM_RENDER_FAILURE fallback=disabled error=${reason}${drainDetail}`);
 }
 
 function renderWasm() {
@@ -1096,25 +1810,222 @@ function renderWasm() {
     const surfaceHeight = raw.surfaceHeight ?? els.canvas.height;
     state.surfaceSizeLabel = `${surfaceWidth}x${surfaceHeight}`;
 
+    const gpuOrderPreparationPending = Boolean(
+      raw.gpuOrderPreparationPending ?? raw.tiledPreparationPending,
+    );
     const stats = {
       visible: raw.visibleCount ?? 0,
+      contributor: raw.contributorCount ?? null,
       drawn: raw.drawnCount ?? 0,
+      exactContributorCompaction: raw.exactContributorCompaction ?? null,
       preprocessMs: raw.preprocessMs ?? 0,
       sortMs: raw.sortMs ?? 0,
       pipelineMs: (raw.cpuGeometryMs ?? raw.rasterMs ?? 0) + (raw.renderSubmitMs ?? 0),
       frameMs: raw.frameMs ?? callMs,
       callMs,
+      framePresented: raw.framePresented !== false,
+      gpuOrderPreparationPending,
+      tiledPreparationPending: gpuOrderPreparationPending,
+      rasterExecutionPlan: raw.rasterExecutionPlan ?? "global_quads",
+      surfaceWidth,
+      surfaceHeight,
+      internalRenderWidth: raw.internalRenderWidth ?? null,
+      internalRenderHeight: raw.internalRenderHeight ?? null,
+      presentedWidth: raw.presentedWidth ?? null,
+      presentedHeight: raw.presentedHeight ?? null,
+      orderBackend: raw.orderBackend ?? "cpu",
+      adaptiveGpuFailure: raw.adaptiveGpuFailure ?? null,
+      gpuSortFallback: Boolean(raw.gpuSortFallback),
+      refreshSort: Boolean(raw.refreshSort),
+      adaptiveState: raw.adaptiveState ?? "disabled",
+      projectedPolicy: raw.projectedPolicy ?? "adaptive",
+      projectedExecution: raw.projectedExecution ?? "candidate",
+      projectedAdaptiveState: raw.projectedAdaptiveState ?? "disabled",
+      projectedMeasurementSubmission:
+        raw.projectedMeasurementSubmission ?? "not_requested",
+      projectedMeasurementTicket: raw.projectedMeasurementTicket ?? null,
+      projectedMeasurementExecution: raw.projectedMeasurementExecution ?? null,
+      projectedMeasurementUnsampledReason:
+        raw.projectedMeasurementUnsampledReason ?? null,
+      cameraRevision: raw.cameraRevision ?? 0,
+      appliedOrderRevision: raw.appliedOrderRevision ?? 0,
+      presentedOrderRevisionLag: raw.presentedOrderRevisionLag ?? 0,
+      submittedMeasurementTicket: raw.submittedMeasurementTicket ?? null,
+      submittedMeasurementBackend: raw.submittedMeasurementBackend ?? null,
+      measurementUnsampledReason: raw.measurementUnsampledReason ?? null,
+      visibleCountRevision: raw.visibleCountRevision ?? null,
+      visibleCountPending: Boolean(raw.visibleCountPending),
+      gpuTimestampQueriesEnabled: Boolean(raw.gpuTimestampQueriesEnabled),
+      completedMeasurementAvailable: Boolean(raw.completedMeasurementAvailable),
+      completedMeasurementTicket: raw.completedMeasurementTicket ?? null,
+      completedMeasurementRevision: raw.completedMeasurementRevision ?? null,
+      completedMeasurementTimingSource: raw.completedMeasurementTimingSource ?? null,
+      gpuPreprocessMs: raw.gpuPreprocessMs ?? null,
+      gpuRadixMs: raw.gpuRadixMs ?? null,
+      gpuOrderMs: raw.gpuOrderMs ?? null,
+      gpuCompleteMs: raw.gpuCompleteMs ?? null,
+      gpuTimestampPeriodNs: raw.gpuTimestampPeriodNs ?? null,
+      gpuBelowTimestampResolution: raw.gpuBelowTimestampResolution ?? null,
+      completedVisibleCount: raw.completedVisibleCount ?? null,
+      completedContributorCount: raw.completedContributorCount ?? null,
+      completedDrawnCount: raw.completedDrawnCount ?? null,
+      completedExactContributorCompaction:
+        raw.completedExactContributorCompaction ?? null,
+      failedMeasurementAvailable: Boolean(raw.failedMeasurementAvailable),
+      failedMeasurementTicket: raw.failedMeasurementTicket ?? null,
+      failedMeasurementRevision: raw.failedMeasurementRevision ?? null,
+      failedMeasurementReason: raw.failedMeasurementReason ?? null,
+      completedProjectedMeasurementAvailable:
+        Boolean(raw.completedProjectedMeasurementAvailable),
+      completedProjectedMeasurementTicket:
+        raw.completedProjectedMeasurementTicket ?? null,
+      completedProjectedMeasurementRevision:
+        raw.completedProjectedMeasurementRevision ?? null,
+      completedProjectedMeasurementExecution:
+        raw.completedProjectedMeasurementExecution ?? null,
+      completedProjectedMeasurementOrderBackend:
+        raw.completedProjectedMeasurementOrderBackend ?? null,
+      completedProjectedProjectionGeneration:
+        raw.completedProjectedProjectionGeneration ?? null,
+      completedProjectedProbeGeneration:
+        raw.completedProjectedProbeGeneration ?? null,
+      completedProjectedProjectionRebuilt:
+        raw.completedProjectedProjectionRebuilt ?? null,
+      completedProjectedOrderRefreshed:
+        raw.completedProjectedOrderRefreshed ?? null,
+      completedProjectedFrameCompleteMs:
+        raw.completedProjectedFrameCompleteMs ?? null,
+      completedProjectedVisibleCount: raw.completedProjectedVisibleCount ?? null,
+      completedProjectedContributorCount:
+        raw.completedProjectedContributorCount ?? null,
+      completedProjectedDrawnCount: raw.completedProjectedDrawnCount ?? null,
+      completedProjectedExactContributorCompaction:
+        raw.completedProjectedExactContributorCompaction ?? null,
+      failedProjectedMeasurementAvailable:
+        Boolean(raw.failedProjectedMeasurementAvailable),
+      failedProjectedMeasurementTicket: raw.failedProjectedMeasurementTicket ?? null,
+      failedProjectedMeasurementRevision:
+        raw.failedProjectedMeasurementRevision ?? null,
+      failedProjectedMeasurementExecution:
+        raw.failedProjectedMeasurementExecution ?? null,
+      failedProjectedMeasurementOrderBackend:
+        raw.failedProjectedMeasurementOrderBackend ?? null,
+      failedProjectedProjectionGeneration:
+        raw.failedProjectedProjectionGeneration ?? null,
+      failedProjectedProbeGeneration: raw.failedProjectedProbeGeneration ?? null,
+      failedProjectedMeasurementReason: raw.failedProjectedMeasurementReason ?? null,
     };
+    state.gpuOrderPreparationPending = stats.gpuOrderPreparationPending;
+    const completedMeasurements = Array.isArray(raw.completedOrderMeasurements)
+      ? raw.completedOrderMeasurements
+      : stats.completedMeasurementAvailable
+        ? [{
+            ticket: stats.completedMeasurementTicket,
+            cameraRevision: stats.completedMeasurementRevision,
+            timingSource: stats.completedMeasurementTimingSource,
+            gpuPreprocessMs: stats.gpuPreprocessMs,
+            gpuRadixMs: stats.gpuRadixMs,
+            gpuOrderMs: stats.gpuOrderMs,
+            gpuCompleteMs: stats.gpuCompleteMs,
+            timestampPeriodNs: stats.gpuTimestampPeriodNs,
+            belowTimestampResolution: stats.gpuBelowTimestampResolution,
+            visibleCount: stats.completedVisibleCount,
+            contributorCount: stats.completedContributorCount,
+            drawnCount: stats.completedDrawnCount,
+            exactContributorCompaction: stats.completedExactContributorCompaction,
+          }]
+        : [];
+    const completedCpuMeasurements = Array.isArray(raw.completedCpuOrderMeasurements)
+      ? raw.completedCpuOrderMeasurements
+      : [];
+    const failedMeasurements = Array.isArray(raw.failedOrderMeasurements)
+      ? raw.failedOrderMeasurements
+      : stats.failedMeasurementAvailable
+        ? [{
+            ticket: stats.failedMeasurementTicket,
+            cameraRevision: stats.failedMeasurementRevision,
+            reason: stats.failedMeasurementReason,
+          }]
+        : [];
+    const completedProjectedMeasurements = Array.isArray(raw.completedProjectedMeasurements)
+      ? raw.completedProjectedMeasurements
+      : stats.completedProjectedMeasurementAvailable
+        ? [{
+            ticket: stats.completedProjectedMeasurementTicket,
+            cameraRevision: stats.completedProjectedMeasurementRevision,
+            execution: stats.completedProjectedMeasurementExecution,
+            orderBackend: stats.completedProjectedMeasurementOrderBackend,
+            projectionGeneration: stats.completedProjectedProjectionGeneration,
+            probeGeneration: stats.completedProjectedProbeGeneration,
+            projectionRebuilt: stats.completedProjectedProjectionRebuilt,
+            orderRefreshed: stats.completedProjectedOrderRefreshed,
+            frameCompleteMs: stats.completedProjectedFrameCompleteMs,
+            visibleCount: stats.completedProjectedVisibleCount,
+            contributorCount: stats.completedProjectedContributorCount,
+            drawnCount: stats.completedProjectedDrawnCount,
+            exactContributorCompaction:
+              stats.completedProjectedExactContributorCompaction,
+          }]
+        : [];
+    const failedProjectedMeasurements = Array.isArray(raw.failedProjectedMeasurements)
+      ? raw.failedProjectedMeasurements
+      : stats.failedProjectedMeasurementAvailable
+        ? [{
+            ticket: stats.failedProjectedMeasurementTicket,
+            cameraRevision: stats.failedProjectedMeasurementRevision,
+            execution: stats.failedProjectedMeasurementExecution,
+            orderBackend: stats.failedProjectedMeasurementOrderBackend,
+            projectionGeneration: stats.failedProjectedProjectionGeneration,
+            probeGeneration: stats.failedProjectedProbeGeneration,
+            reason: stats.failedProjectedMeasurementReason,
+          }]
+        : [];
+    emitCpuOrderMeasurements(completedCpuMeasurements, stats.adaptiveState);
+    emitOrderMeasurements(completedMeasurements, stats.adaptiveState);
+    emitOrderMeasurementFailures(failedMeasurements, stats.adaptiveState);
+    emitProjectedMeasurements(completedProjectedMeasurements, stats.projectedAdaptiveState);
+    emitProjectedMeasurementFailures(
+      failedProjectedMeasurements,
+      stats.projectedAdaptiveState,
+    );
+    if (stats.adaptiveGpuFailure) {
+      console.error(`ADAPTIVE_GPU_FAILURE_JSON ${JSON.stringify({
+        requested_backend: state.requestedOrderBackend,
+        camera_revision: stats.cameraRevision,
+        reason: stats.adaptiveGpuFailure,
+      })}`);
+    }
+    if (failedProjectedMeasurements.length > 0) {
+      const failure = failedProjectedMeasurements[0];
+      failStrictBenchmarkForOrderEvidence(
+        `projected ticket=${failure.ticket} revision=${failure.cameraRevision} ` +
+        `reason=${failure.reason}`,
+      );
+    }
     updateFrameStats(stats);
     updateStatusOverlay(stats);
+    if (failedMeasurements.length > 0) {
+      const failure = failedMeasurements[0];
+      failStrictBenchmarkForOrderEvidence(
+        `ticket=${failure.ticket} revision=${failure.cameraRevision} reason=${failure.reason}`,
+        failedMeasurements,
+      );
+    }
+    if (stats.adaptiveGpuFailure) {
+      failStrictBenchmarkForOrderEvidence(
+        `adaptive_gpu_failure=${stats.adaptiveGpuFailure} revision=${stats.cameraRevision}`,
+      );
+    }
+    if (state.benchmark?.failure) {
+      setStatus(`state=benchmark_failed ${state.benchmark.failure}`);
+    }
     return stats;
   } catch (error) {
-    state.wasmUnavailableReason = compactMessage(error);
-    state.wasmRenderer = null;
-    ensureFallbackRenderer();
-    updateBackendControls();
-    setStatus(`state=wasm_render_failed fallback=webgl error=${state.wasmUnavailableReason}`);
-    return renderWebgl();
+    // Once an exact-count WASM scene exists, a render failure is terminal for
+    // that scene. Keep its handle alive so terminal telemetry can still drain;
+    // silently switching to the sampled WebGL preview would falsify quality.
+    failClosedWasmRender(error);
+    return null;
   }
 }
 
@@ -1154,6 +2065,25 @@ function renderWebgl() {
     pipelineMs,
     frameMs,
     callMs: frameMs,
+    orderBackend: "cpu",
+    gpuSortFallback: false,
+    framePresented: true,
+    gpuOrderPreparationPending: false,
+    tiledPreparationPending: false,
+    rasterExecutionPlan: "global_quads",
+    projectedPolicy: state.requestedProjectedPolicy,
+    projectedExecution: "candidate",
+    projectedAdaptiveState: "disabled",
+    projectedMeasurementSubmission: "not_requested",
+    projectedMeasurementTicket: null,
+    projectedMeasurementExecution: null,
+    projectedMeasurementUnsampledReason: null,
+    surfaceWidth: gl.drawingBufferWidth,
+    surfaceHeight: gl.drawingBufferHeight,
+    internalRenderWidth: gl.drawingBufferWidth,
+    internalRenderHeight: gl.drawingBufferHeight,
+    presentedWidth: gl.drawingBufferWidth,
+    presentedHeight: gl.drawingBufferHeight,
   };
   updateFrameStats(stats);
   updateStatusOverlay(stats);
@@ -1244,6 +2174,9 @@ function fillDrawBuffer(order) {
 }
 
 function buildCameraBasis() {
+  if (state.qualificationCamera) {
+    return cameraBasisFromTraceFrame(state.qualificationCamera);
+  }
   const camera = state.camera;
   const cosPitch = Math.cos(camera.pitch);
   const eye = [
@@ -1279,69 +2212,144 @@ function setUniforms(gl, program, camera) {
   gl.uniform1f(gl.getUniformLocation(program, "uFar"), state.camera.far);
 }
 
+function scheduleCanvasResize() {
+  state.resizeMeasurePending = true;
+  if (resizeMeasureFrame !== null) return;
+  resizeMeasureFrame = requestAnimationFrame(() => {
+    resizeMeasureFrame = null;
+    try {
+      resizeCanvas();
+    } finally {
+      state.resizeMeasurePending = false;
+    }
+  });
+}
+
 function resizeCanvas() {
   const fixedDisplay = state.qualificationTrace?.display;
-  const ratio = fixedDisplay ? 1 : Math.min(window.devicePixelRatio || 1, 2);
-  let width = fixedDisplay?.width ?? Math.max(1, Math.floor(els.canvas.clientWidth * ratio));
-  let height = fixedDisplay?.height ?? Math.max(1, Math.floor(els.canvas.clientHeight * ratio));
-  const maxSide = Math.max(width, height);
-  if (maxSide > MAX_SURFACE_SIDE) {
-    const scale = MAX_SURFACE_SIDE / maxSide;
-    width = Math.max(1, Math.floor(width * scale));
-    height = Math.max(1, Math.floor(height * scale));
-  }
+  const ratio = fixedDisplay ? 1 : (window.devicePixelRatio || 1);
+  const width = fixedDisplay?.width ?? Math.max(1, Math.floor(els.canvas.clientWidth * ratio));
+  const height = fixedDisplay?.height ?? Math.max(1, Math.floor(els.canvas.clientHeight * ratio));
 
   if (els.canvas.width !== width || els.canvas.height !== height) {
-    els.canvas.width = width;
-    els.canvas.height = height;
-    state.surfaceSizeLabel = `${width}x${height}`;
     if (usingWasm()) {
-      resizeWasmRenderer();
+      requestWasmRendererResize(width, height);
     } else {
+      // Before a WASM renderer exists this establishes its constructor size;
+      // WebGL likewise owns its backing store directly. An active WASM Surface
+      // is changed only by the awaited transaction above.
+      els.canvas.width = width;
+      els.canvas.height = height;
+      state.surfaceSizeLabel = `${width}x${height}`;
       invalidateSortedOrder();
     }
   }
   els.surfaceSize.textContent = state.surfaceSizeLabel;
-  if (state.scene && state.frameCounter === 0) {
+  if (state.scene && state.frameCounter === 0 && !wasmResizeCoordinator.pending) {
     fitCameraToScene(state.scene);
   }
 }
 
 function startBenchmark() {
+  if (state.resizeMeasurePending || wasmResizeCoordinator.pending) {
+    setStatus("state=benchmark_waiting_for_resize");
+    els.benchmarkResult.textContent = "Waiting for the pending surface resize...";
+    return;
+  }
   if (!state.scene) {
     setStatus("state=benchmark_waiting_for_scene");
     return;
   }
 
+  if (!usingWasm() && (state.strictBenchmarkMode || state.qualificationTrace)) {
+    setStatus("state=benchmark_error exact_wasm_required=true unavailable_on=webgl2");
+    els.benchmarkStatus.textContent = "failed";
+    return;
+  }
+  if (!usingWasm() && state.requestedOrderBackend !== "cpu") {
+    setStatus(`state=benchmark_error requested_backend=${state.requestedOrderBackend} unavailable_on=webgl2`);
+    return;
+  }
+  if (state.wasmFatalError) {
+    setStatus(`state=benchmark_error renderer_failed=${state.wasmFatalError}`);
+    els.benchmarkStatus.textContent = "failed";
+    return;
+  }
   const benchmark = createBenchmarkState(true);
+  if (state.qualificationCamera && !benchmark.traceSequence) {
+    // The qualification camera is installed while the streamed scene is
+    // adopted. Re-enter it from the renderer's scene camera so a fixed-frame
+    // run starts from an explicit post-publication camera revision instead of
+    // depending on constructor dirtiness or a previously cached order.
+    state.wasmRenderer?.resetCamera();
+    fitCameraToScene(state.scene);
+  }
   state.benchmark = benchmark;
   setAutoOrbit(false);
   els.benchmarkStatus.textContent = "running";
   els.runBenchmark.disabled = true;
-  els.benchmarkResult.textContent = "Running benchmark orbit...";
+  els.benchmarkResult.textContent = benchmark.traceSequence
+    ? "Running camera-trace sequence benchmark..."
+    : state.qualificationCamera
+    ? "Running fixed-camera benchmark..."
+    : "Running benchmark orbit...";
   setStatus(`state=benchmark_running frames=${benchmark.frames} warmup=${benchmark.warmupFrames}`);
 }
 
 function runBenchmarkSync() {
+  if (state.resizeMeasurePending || wasmResizeCoordinator.pending) {
+    setStatus("state=benchmark_waiting_for_resize");
+    els.benchmarkResult.textContent = "Waiting for the pending surface resize...";
+    return;
+  }
   if (!state.scene) {
     setStatus("state=benchmark_waiting_for_scene");
     return;
   }
 
+  if (!usingWasm() && state.requestedOrderBackend !== "cpu") {
+    setStatus(`state=benchmark_error requested_backend=${state.requestedOrderBackend} unavailable_on=webgl2`);
+    return;
+  }
+  if (state.wasmFatalError) {
+    setStatus(`state=benchmark_error renderer_failed=${state.wasmFatalError}`);
+    els.benchmarkStatus.textContent = "failed";
+    return;
+  }
+  // WebGPU completion, map, and timestamp-query callbacks are delivered only
+  // after JavaScript yields back to the browser. A tight synchronous loop can
+  // submit every measured frame before a single exact visible-count/timing
+  // receipt is observable, producing a misleading all-zero artifact. Exact
+  // tiled CPU-order frames also read their entry count asynchronously, so all
+  // WASM benchmark modes use the requestAnimationFrame event loop.
+  if (usingWasm()) {
+    startBenchmark();
+    return;
+  }
   const benchmark = createBenchmarkState(false);
+  if (state.qualificationCamera && !benchmark.traceSequence) fitCameraToScene(state.scene);
   setAutoOrbit(false);
   els.benchmarkStatus.textContent = "running";
   els.runBenchmark.disabled = true;
-  els.benchmarkResult.textContent = "Running sync benchmark orbit...";
+  els.benchmarkResult.textContent = benchmark.traceSequence
+    ? "Running camera-trace sequence sync benchmark..."
+    : state.qualificationCamera
+    ? "Running fixed-camera sync benchmark..."
+    : "Running sync benchmark orbit...";
 
   const totalFrames = benchmark.frames + benchmark.warmupFrames;
   for (let i = 0; i < totalFrames; i += 1) {
-    orbitCamera(benchmark.yawStep, 0);
-    state.cameraStatus = "camera=benchmark_orbit";
+    if (benchmark.traceSequence) {
+      applyBenchmarkTraceStep(benchmark);
+    } else if (benchmark.yawStep !== 0) {
+      orbitCamera(benchmark.yawStep, 0);
+      state.cameraStatus = "camera=benchmark_orbit";
+    }
     const stats = render();
+    if (state.wasmFatalError) return;
     benchmark.observedFrames += 1;
     if (stats && i >= benchmark.warmupFrames) {
-      accumulateBenchmark(benchmark, stats);
+      accumulateBenchmark(benchmark, stats, undefined, undefined, benchmark.currentTraceStep);
     }
   }
 
@@ -1350,22 +2358,60 @@ function runBenchmarkSync() {
 }
 
 function createBenchmarkState(enabled) {
-  const frames = clampInt(Number(els.benchmarkFrames.value), 1, 5000, DEFAULT_BENCHMARK_FRAMES);
-  const warmupFrames = clampInt(Number(els.benchmarkWarmup.value), 0, 500, DEFAULT_BENCHMARK_WARMUP_FRAMES);
+  const traceSequence = state.qualificationTraceSequenceEnabled
+    ? state.qualificationTraceSequence
+    : null;
+  const frames = traceSequence
+    ? traceSequence.measuredSampleCount
+    : clampInt(Number(els.benchmarkFrames.value), 1, 5000, DEFAULT_BENCHMARK_FRAMES);
+  const warmupFrames = traceSequence
+    ? traceSequence.warmupFrames
+    : clampInt(Number(els.benchmarkWarmup.value), 0, 500, DEFAULT_BENCHMARK_WARMUP_FRAMES);
   const yawStep = state.qualificationTrace
     ? 0
     : finiteOrDefault(Number(els.benchmarkYaw.value), DEFAULT_BENCHMARK_YAW_STEP);
   const startedAt = new Date().toISOString();
   const runId = globalThis.crypto?.randomUUID?.() ?? `web-${Date.now()}-${Math.trunc(performance.now() * 1000)}`;
+  globalThis.GSPLAT_ORDER_LEDGER_COMPLETE = false;
+  globalThis.GSPLAT_PROJECTED_LEDGER_COMPLETE = true;
   return {
     enabled,
     frameWallSource: enabled
-      ? "request_animation_frame_interval"
+      ? state.orderCompletionProtocol === "isolated_terminal"
+        ? "isolated_terminal_progression"
+        : "request_animation_frame_interval"
       : "synchronous_renderer_reported_frame_wall",
     frames,
     warmupFrames,
     yawStep,
+    traceSequence,
+    orderCompletionProtocol: state.orderCompletionProtocol,
+    fixedCameraPrimePending: state.qualificationTrace != null
+      && traceSequence == null
+      && state.requestedOrderBackend !== "cpu"
+      && state.qualificationTrace.frames.length > 1,
+    fixedCameraApplyPending: state.qualificationTrace != null && traceSequence == null,
+    primingOrder: false,
+    currentTraceStep: null,
+    frameReceipts: [],
+    requestedWidth: els.canvas.width,
+    requestedHeight: els.canvas.height,
+    issuedOrderTickets: new Map(),
+    terminalOrderTickets: new Map(),
+    orderSubmissionRecords: [],
+    orderTerminalRecords: [],
+    issuedProjectedTickets: new Map(),
+    terminalProjectedTickets: new Map(),
+    projectedSubmissionRecords: [],
+    projectedTerminalRecords: [],
+    monotonicOrderingWindowEmitted: false,
+    pendingOrderSample: null,
+    pendingProjectedSample: null,
+    presentedSubmissionCount: 0,
+    terminalPollCount: 0,
+    failure: null,
     observedFrames: 0,
+    presentationPending: false,
     measuredStartMs: null,
     lastObservedFrameMs: null,
     startedAt,
@@ -1375,23 +2421,50 @@ function createBenchmarkState(enabled) {
   };
 }
 
+function applyBenchmarkTraceStep(benchmark) {
+  const step = benchmark.traceSequence.step(benchmark.observedFrames);
+  benchmark.currentTraceStep = step;
+  state.qualificationCamera = step.camera;
+  state.camera.fovY = step.camera.intrinsics.verticalFovRadians;
+  state.camera.near = step.camera.intrinsics.nearPlane;
+  state.camera.far = step.camera.intrinsics.farPlane;
+  state.wasmRenderer?.setCamera(step.camera);
+  invalidateSortedOrder();
+  state.cameraStatus = `camera=trace_sequence frame=${step.traceFrameIndex}`;
+  console.info(
+    `CAMERA_TRACE_FRAME trace_id=${state.qualificationTrace.trace_id} ` +
+    `trace_sha256=${state.qualificationTrace.content_sha256} phase=${step.phase} ` +
+    `loop=${step.loopIndex} phase_frame=${step.phaseFrameIndex} ` +
+    `frame_index=${step.traceFrameIndex} timestamp_ns=${step.timestampNs} ` +
+    `requested_backend=${state.requestedOrderBackend}`,
+  );
+}
+
 function applyUrlConfig() {
   const params = new URLSearchParams(window.location.search);
-  setNumberInputFromParam(els.benchmarkFrames, params.get("gsplat_benchmark_frames") ?? params.get("benchmark_frames"));
+  state.sampledWebglEnabled = sampledWebglOptIn(params);
+  const benchmarkFramesParam = params.get("gsplat_benchmark_frames") ?? params.get("benchmark_frames");
+  const benchmarkWarmupParam = params.get("gsplat_benchmark_warmup_frames") ?? params.get("benchmark_warmup");
+  const sortIntervalParam = params.get("gsplat_surface_sort_interval") ?? params.get("sort_interval");
+  setNumberInputFromParam(els.benchmarkFrames, benchmarkFramesParam);
   setNumberInputFromParam(
     els.benchmarkWarmup,
-    params.get("gsplat_benchmark_warmup_frames") ?? params.get("benchmark_warmup"),
+    benchmarkWarmupParam,
   );
   setNumberInputFromParam(els.benchmarkYaw, params.get("gsplat_benchmark_yaw_step") ?? params.get("benchmark_yaw_step"));
-  setNumberInputFromParam(els.sortInterval, params.get("gsplat_surface_sort_interval") ?? params.get("sort_interval"));
+  setNumberInputFromParam(els.sortInterval, sortIntervalParam);
   setNumberInputFromParam(els.drawBudget, params.get("draw_budget"));
   const dataset = (params.get("dataset") ?? params.get("scene") ?? "").toLowerCase();
-  const geometryPath = (params.get("gsplat_geometry_path") ?? "direct").toLowerCase();
+  const geometryPath = (params.get("gsplat_geometry_path") ?? "packed").toLowerCase();
   if (["direct", "packed", "paged"].includes(geometryPath)) {
     state.geometryPath = geometryPath;
   }
   if (dataset === "flowers" || dataset === "flower") {
     state.startDataset = "flowers";
+  } else if (["bonsai", "truck", "garden", "bicycle"].includes(dataset)) {
+    state.startDataset = dataset;
+  } else if (/^truck-(?:50000|100000|200000|300000|500000|1000000|1500000|2000000)$/.test(dataset)) {
+    state.startDataset = dataset;
   } else if (dataset === "minimal" || dataset === "smoke") {
     state.startDataset = "minimal";
   } else if (dataset === "diagnostic" || dataset === "raster_diagnostic_v1") {
@@ -1402,10 +2475,75 @@ function applyUrlConfig() {
   state.autoStartBenchmark = ["1", "true", "yes"].includes(
     (params.get("gsplat_benchmark") ?? params.get("benchmark") ?? "").toLowerCase(),
   );
+  state.strictBenchmarkMode = state.autoStartBenchmark;
   state.autoBenchmarkSync = ["1", "true", "yes"].includes(
     (params.get("gsplat_benchmark_sync") ?? params.get("benchmark_sync") ?? "").toLowerCase(),
   );
   const trace = params.get("gsplat_camera_trace");
+  const traceUrl = params.get("gsplat_camera_trace_url");
+  state.qualificationTraceSequenceEnabled = ["1", "true", "yes"].includes(
+    (params.get("gsplat_camera_trace_sequence") ?? "").toLowerCase(),
+  );
+  const frameIndicesText = params.get("gsplat_camera_frame_indices");
+  state.qualificationTraceFrameIndices = frameIndicesText == null
+    ? null
+    : parseTraceFrameIndices(frameIndicesText);
+  const traceWarmup = params.get("gsplat_camera_trace_warmup_frames") ?? benchmarkWarmupParam;
+  const traceMeasured = params.get("gsplat_camera_trace_measured_frames") ?? benchmarkFramesParam;
+  state.qualificationTraceWarmupFrames = traceWarmup == null
+    ? null
+    : clampInt(Number(traceWarmup), 0, 5000, 0);
+  state.qualificationTraceMeasuredFrames = traceMeasured == null
+    ? null
+    : clampInt(Number(traceMeasured), 1, 5000, 1);
+  state.qualificationTraceLoops = clampInt(
+    Number(params.get("gsplat_camera_trace_loops") ?? 1),
+    1,
+    1000,
+    1,
+  );
+  const requestedBackend = (params.get("gsplat_surface_order_backend") ?? "adaptive").toLowerCase();
+  if (!["cpu", "gpu", "adaptive"].includes(requestedBackend)) {
+    throw new TypeError("gsplat_surface_order_backend must be cpu, gpu, or adaptive");
+  }
+  state.requestedOrderBackend = requestedBackend;
+  const requestedProjectedPolicy = (
+    params.get("gsplat_surface_projected_policy") ?? "adaptive"
+  ).toLowerCase();
+  if (!["candidate", "compact", "adaptive"].includes(requestedProjectedPolicy)) {
+    throw new TypeError(
+      "gsplat_surface_projected_policy must be candidate, compact, or adaptive",
+    );
+  }
+  state.requestedProjectedPolicy = requestedProjectedPolicy;
+  const orderCompletionProtocol = (
+    params.get("gsplat_order_completion_protocol") ?? "isolated_terminal"
+  ).toLowerCase();
+  if (!["isolated_terminal", "sustained_window"].includes(orderCompletionProtocol)) {
+    throw new TypeError(
+      "gsplat_order_completion_protocol must be isolated_terminal or sustained_window",
+    );
+  }
+  state.orderCompletionProtocol = orderCompletionProtocol;
+  if (state.qualificationTraceSequenceEnabled) {
+    if (params.has("gsplat_camera_frame")) {
+      throw new TypeError("gsplat_camera_frame cannot be combined with gsplat_camera_trace_sequence");
+    }
+    if (sortIntervalParam != null && Number(sortIntervalParam) !== 1) {
+      throw new TypeError("camera trace sequence requires gsplat_surface_sort_interval=1");
+    }
+    els.sortInterval.value = "1";
+  } else if (frameIndicesText != null || params.has("gsplat_camera_trace_loops")
+      || params.has("gsplat_camera_trace_warmup_frames")
+      || params.has("gsplat_camera_trace_measured_frames")) {
+    throw new TypeError("camera trace sequence parameters require gsplat_camera_trace_sequence=true");
+  }
+  state.qualificationTraceFrameIndex = clampInt(
+    Number(params.get("gsplat_camera_frame") ?? 0),
+    0,
+    Number.MAX_SAFE_INTEGER,
+    0,
+  );
   if (trace === "phase-e-kitsune-static-v1") {
     state.qualificationTraceUrl = "/tests/perf/trace/fixtures/phase-e-kitsune-static-640x480-v1.json";
     state.qualificationDatasetId = "kitsune";
@@ -1415,7 +2553,21 @@ function applyUrlConfig() {
   } else if (trace === "phase-e-raster-diagnostic-v1") {
     state.qualificationTraceUrl = "/tests/perf/trace/fixtures/phase-e-minimal-static-640x480-v1.json";
     state.qualificationDatasetId = "raster_diagnostic_v1";
+  } else if (trace && /^(?:https?:\/\/|\/|\.\/|\.\.\/)/.test(trace)) {
+    state.qualificationTraceUrl = trace;
   }
+  if (traceUrl) state.qualificationTraceUrl = traceUrl;
+}
+
+function parseTraceFrameIndices(value) {
+  if (value.trim() === "") throw new TypeError("gsplat_camera_frame_indices must not be empty");
+  return value.split(",").map((part) => {
+    const index = Number(part.trim());
+    if (!Number.isSafeInteger(index) || index < 0) {
+      throw new TypeError("gsplat_camera_frame_indices must contain non-negative integers");
+    }
+    return index;
+  });
 }
 
 function setNumberInputFromParam(input, value) {
@@ -1432,6 +2584,228 @@ function setNumberInputFromParam(input, value) {
 function recordBenchmark(stats) {
   const benchmark = state.benchmark;
   const now = performance.now();
+  // GPU-order preparation has no drawable and no ticket identity yet. Record
+  // that invariant explicitly, yield to WebGPU, then retry the same trace step
+  // on the next RAF. A visible/drawn value of zero here is hidden state, not a
+  // presented frame or benchmark sample.
+  if (!stats.framePresented || stats.gpuOrderPreparationPending) {
+    console.info(`GPU_ORDER_PREPARATION_JSON ${JSON.stringify({
+      schema: "gsplat-benchmark/v1",
+      record_type: "gpu_order_preparation",
+      camera_revision: stats.cameraRevision,
+      frame_presented: stats.framePresented,
+      gpu_order_preparation_pending: stats.gpuOrderPreparationPending,
+      submitted_measurement_ticket: stats.submittedMeasurementTicket,
+      submitted_measurement_backend: stats.submittedMeasurementBackend,
+      projected_policy: stats.projectedPolicy,
+      projected_execution: stats.projectedExecution,
+      projected_measurement_submission: stats.projectedMeasurementSubmission,
+      projected_measurement_ticket: stats.projectedMeasurementTicket,
+      visible: stats.visible,
+      drawn: stats.drawn,
+      surface_width: stats.surfaceWidth,
+      surface_height: stats.surfaceHeight,
+      raster_execution_plan: stats.rasterExecutionPlan,
+    })}`);
+    benchmark.presentationPending = true;
+    return;
+  }
+  benchmark.presentationPending = false;
+  benchmark.presentedSubmissionCount += 1;
+  if (benchmark.pendingOrderSample) {
+    const pending = benchmark.pendingOrderSample;
+    if (!benchmark.terminalOrderTickets.has(pending.ticket)) return;
+    benchmark.pendingOrderSample = null;
+    if (pending.priming) return;
+    acceptBenchmarkFrame(
+      benchmark,
+      pending.stats,
+      now,
+      pending.traceStep,
+    );
+    return;
+  }
+  if (benchmark.pendingProjectedSample) {
+    const pending = benchmark.pendingProjectedSample;
+    if (!benchmark.terminalProjectedTickets.has(pending.ticket)) return;
+    benchmark.pendingProjectedSample = null;
+    acceptBenchmarkFrame(benchmark, pending.stats, now, pending.traceStep);
+    return;
+  }
+
+  if (benchmark.primingOrder && stats.refreshSort !== true) {
+    failStrictBenchmarkForOrderEvidence("fixed-camera GPU preflight did not refresh order");
+    return;
+  }
+  if (!trackBenchmarkOrderSubmission(benchmark, stats)) return;
+  if (!trackBenchmarkProjectedSubmission(benchmark, stats)) return;
+  if (stats.refreshSort === true
+      && (benchmark.primingOrder
+        || benchmark.orderCompletionProtocol === "isolated_terminal")) {
+    benchmark.pendingOrderSample = {
+      ticket: stats.submittedMeasurementTicket,
+      stats,
+      traceStep: benchmark.currentTraceStep,
+      priming: benchmark.primingOrder,
+    };
+    benchmark.primingOrder = false;
+    return;
+  }
+  if (stats.projectedMeasurementSubmission === "issued"
+      && benchmark.orderCompletionProtocol === "isolated_terminal") {
+    benchmark.pendingProjectedSample = {
+      ticket: stats.projectedMeasurementTicket,
+      stats,
+      traceStep: benchmark.currentTraceStep,
+    };
+    return;
+  }
+  acceptBenchmarkFrame(benchmark, stats, now, benchmark.currentTraceStep);
+}
+
+function pollPendingBenchmarkReceipts(benchmark) {
+  const pendingOrder = benchmark.pendingOrderSample;
+  const pendingProjected = benchmark.pendingProjectedSample;
+  if (pendingOrder && pendingProjected) {
+    failStrictBenchmarkForOrderEvidence(
+      "one frame exposed simultaneous order and projected formal tickets",
+    );
+    return;
+  }
+  const pending = pendingOrder ?? pendingProjected;
+  if (!pending) return;
+  try {
+    benchmark.terminalPollCount += 1;
+    const receipts = state.wasmRenderer.drainOrderMeasurementReceipts();
+    const adaptiveState = pending.stats.adaptiveState ?? "disabled";
+    emitCpuOrderMeasurements(receipts?.completedCpuOrderMeasurements ?? [], adaptiveState);
+    emitOrderMeasurements(receipts?.completedOrderMeasurements ?? [], adaptiveState);
+    emitOrderMeasurementFailures(receipts?.failedOrderMeasurements ?? [], adaptiveState);
+    const projectedAdaptiveState = pending.stats.projectedAdaptiveState ?? "disabled";
+    emitProjectedMeasurements(
+      receipts?.completedProjectedMeasurements ?? [],
+      projectedAdaptiveState,
+    );
+    emitProjectedMeasurementFailures(
+      receipts?.failedProjectedMeasurements ?? [],
+      projectedAdaptiveState,
+    );
+  } catch (error) {
+    failStrictBenchmarkForOrderEvidence(
+      `standalone order receipt poll failed: ${compactMessage(error)}`,
+    );
+    return;
+  }
+  const terminalObserved = pendingOrder
+    ? benchmark.terminalOrderTickets.has(pending.ticket)
+    : benchmark.terminalProjectedTickets.has(pending.ticket);
+  if (!benchmark.enabled || !terminalObserved) return;
+  if (pendingOrder) benchmark.pendingOrderSample = null;
+  else benchmark.pendingProjectedSample = null;
+  if (pending.priming) return;
+  acceptBenchmarkFrame(
+    benchmark,
+    pending.stats,
+    performance.now(),
+    pending.traceStep,
+  );
+}
+
+function trackBenchmarkProjectedSubmission(benchmark, stats) {
+  if (!usingWasm()) return true;
+  const submission = stats.projectedMeasurementSubmission;
+  const ticket = stats.projectedMeasurementTicket;
+  const execution = stats.projectedMeasurementExecution;
+  const revision = stats.cameraRevision;
+  const orderBackend = stats.orderBackend;
+  if (stats.projectedPolicy !== state.requestedProjectedPolicy) {
+    failStrictBenchmarkForOrderEvidence(
+      `projected policy mismatch requested=${state.requestedProjectedPolicy} ` +
+      `reported=${stats.projectedPolicy ?? "missing"}`,
+    );
+    return false;
+  }
+  if (state.requestedProjectedPolicy !== "adaptive") {
+    if (stats.projectedExecution !== state.requestedProjectedPolicy
+        || stats.projectedAdaptiveState !== "disabled"
+        || submission !== "not_requested" || ticket !== null
+        || execution !== null || stats.projectedMeasurementUnsampledReason !== null) {
+      failStrictBenchmarkForOrderEvidence(
+        `forced projected policy ${state.requestedProjectedPolicy} reported inconsistent ` +
+        `execution/state or exposed measurement identity`,
+      );
+      return false;
+    }
+    return true;
+  }
+  if (submission === "not_requested") {
+    if (ticket !== null || execution !== null
+        || stats.projectedMeasurementUnsampledReason !== null) {
+      failStrictBenchmarkForOrderEvidence(
+        "not-requested projected sample exposed ticket, execution, or unsampled reason",
+      );
+      return false;
+    }
+    return true;
+  }
+  if (submission === "unsampled") {
+    if (ticket !== null
+        || !["candidate", "compact"].includes(execution)
+        || execution !== stats.projectedExecution
+        || !["ring_busy", "surface_unavailable"].includes(
+          stats.projectedMeasurementUnsampledReason,
+        )) {
+      failStrictBenchmarkForOrderEvidence(
+        "unsampled projected request exposed invalid ticket, execution, or reason",
+      );
+      return false;
+    }
+    return true;
+  }
+  if (submission !== "issued"
+      || !Number.isSafeInteger(ticket) || ticket < 2 ** 52
+      || !Number.isSafeInteger(revision) || revision < 0
+      || !["candidate", "compact"].includes(execution)
+      || !["cpu", "gpu"].includes(orderBackend)
+      || execution !== stats.projectedExecution
+      || stats.projectedMeasurementUnsampledReason !== null) {
+    failStrictBenchmarkForOrderEvidence(
+      `projected sample lacks a valid matching ticket/execution/backend/revision ` +
+      `ticket=${ticket} execution=${execution} frame_execution=${stats.projectedExecution} ` +
+      `backend=${orderBackend} revision=${revision}`,
+    );
+      return false;
+  }
+  if (stats.submittedMeasurementTicket !== null) {
+    failStrictBenchmarkForOrderEvidence(
+      "one frame exposed simultaneous order and projected formal tickets",
+    );
+    return false;
+  }
+  if (benchmark.issuedProjectedTickets.has(ticket)) {
+    failStrictBenchmarkForOrderEvidence(`duplicate issued projected ticket=${ticket}`);
+    return false;
+  }
+  const phase = benchmark.observedFrames < benchmark.warmupFrames ? "warmup" : "measured";
+  const submittedAtMonotonicMs = performance.now();
+  benchmark.issuedProjectedTickets.set(ticket, { revision, execution, orderBackend });
+  globalThis.GSPLAT_PROJECTED_LEDGER_COMPLETE = false;
+  const record = {
+    run_id: benchmark.collector.runId,
+    requested_policy: state.requestedProjectedPolicy,
+    execution,
+    order_backend: orderBackend,
+    ticket,
+    camera_revision: revision,
+    phase,
+    submitted_at_monotonic_ms: submittedAtMonotonicMs,
+  };
+  benchmark.projectedSubmissionRecords.push(record);
+  console.info(`PROJECTED_MEASUREMENT_SUBMISSION_JSON ${JSON.stringify(record)}`);
+  return true;
+}
+
+function acceptBenchmarkFrame(benchmark, stats, now, traceStep) {
   benchmark.observedFrames += 1;
   if (benchmark.observedFrames <= benchmark.warmupFrames) {
     benchmark.lastObservedFrameMs = now;
@@ -1440,7 +2814,7 @@ function recordBenchmark(stats) {
 
   const frameWallMs = benchmark.lastObservedFrameMs === null ? stats.frameMs : now - benchmark.lastObservedFrameMs;
   benchmark.lastObservedFrameMs = now;
-  accumulateBenchmark(benchmark, stats, frameWallMs, now);
+  accumulateBenchmark(benchmark, stats, frameWallMs, now, traceStep);
 
   if (benchmark.collector.samples.length < benchmark.frames) {
     return;
@@ -1449,7 +2823,57 @@ function recordBenchmark(stats) {
   finishBenchmark(benchmark);
 }
 
-function accumulateBenchmark(benchmark, stats, frameWallMs = stats.frameMs, now = performance.now()) {
+function trackBenchmarkOrderSubmission(benchmark, stats) {
+  if (stats.refreshSort !== true) return true;
+  const ticket = stats.submittedMeasurementTicket;
+  const revision = stats.cameraRevision;
+  const backend = stats.submittedMeasurementBackend;
+  if (stats.measurementUnsampledReason) {
+    failStrictBenchmarkForOrderEvidence(
+      `${stats.orderBackend} sort refresh was unsampled: ${stats.measurementUnsampledReason}`,
+    );
+    return false;
+  }
+  if (!Number.isSafeInteger(ticket) || ticket <= 0
+      || !Number.isSafeInteger(revision) || revision < 0
+      || (backend !== "cpu" && backend !== "gpu")
+      || backend !== stats.orderBackend) {
+    failStrictBenchmarkForOrderEvidence(
+      `sort refresh lacks a valid matching ticket/backend/revision ` +
+      `ticket=${ticket} backend=${backend} frame_backend=${stats.orderBackend} revision=${revision}`,
+    );
+    return false;
+  }
+  if (benchmark.issuedOrderTickets.has(ticket)) {
+    failStrictBenchmarkForOrderEvidence(`duplicate issued order measurement ticket=${ticket}`);
+    return false;
+  }
+  const phase = benchmark.primingOrder
+    ? "preflight"
+    : benchmark.observedFrames < benchmark.warmupFrames ? "warmup" : "measured";
+  const submittedAtMonotonicMs = performance.now();
+  benchmark.issuedOrderTickets.set(ticket, { revision, backend });
+  globalThis.GSPLAT_ORDER_LEDGER_COMPLETE = false;
+  const submissionRecord = {
+    requested_backend: state.requestedOrderBackend,
+    actual_backend: backend,
+    ticket,
+    camera_revision: revision,
+    phase,
+    submitted_at_monotonic_ms: submittedAtMonotonicMs,
+  };
+  benchmark.orderSubmissionRecords.push(submissionRecord);
+  console.info(`ORDER_MEASUREMENT_SUBMISSION_JSON ${JSON.stringify(submissionRecord)}`);
+  return true;
+}
+
+function accumulateBenchmark(
+  benchmark,
+  stats,
+  frameWallMs = stats.frameMs,
+  now = performance.now(),
+  traceStep = null,
+) {
   if (benchmark.measuredStartMs === null) {
     benchmark.measuredStartMs = now;
     benchmark.measurementStartedAt = new Date().toISOString();
@@ -1463,25 +2887,82 @@ function accumulateBenchmark(benchmark, stats, frameWallMs = stats.frameMs, now 
     sort_ms: stats.sortMs,
     geometry_submit_ms: stats.pipelineMs,
     gpu_wait_ms: null,
-    gpu_complete_ms: null,
+    gpu_complete_ms: stats.gpuCompleteMs ?? null,
     visible: Math.max(0, Math.trunc(stats.visible)),
+    contributor: stats.contributor == null
+      ? null
+      : Math.max(0, Math.trunc(stats.contributor)),
     drawn: Math.max(0, Math.trunc(stats.drawn)),
-    sort_refreshed: null,
+    exact_contributor_compaction: stats.exactContributorCompaction,
+    sort_refreshed: stats.refreshSort ?? null,
+  });
+  benchmark.frameReceipts.push({
+    traceStep,
+    rasterExecutionPlan: stats.rasterExecutionPlan ?? "global_quads",
+    orderBackend: stats.orderBackend ?? "cpu",
+    adaptiveGpuFailure: stats.adaptiveGpuFailure ?? null,
+    gpuSortFallback: Boolean(stats.gpuSortFallback),
+    adaptiveState: stats.adaptiveState ?? "disabled",
+    projectedPolicy: stats.projectedPolicy ?? "adaptive",
+    projectedExecution: stats.projectedExecution ?? "candidate",
+    projectedAdaptiveState: stats.projectedAdaptiveState ?? "disabled",
+    projectedMeasurementSubmission:
+      stats.projectedMeasurementSubmission ?? "not_requested",
+    projectedMeasurementTicket: stats.projectedMeasurementTicket ?? null,
+    projectedMeasurementExecution: stats.projectedMeasurementExecution ?? null,
+    projectedMeasurementUnsampledReason:
+      stats.projectedMeasurementUnsampledReason ?? null,
+    cameraRevision: stats.cameraRevision ?? null,
+    appliedOrderRevision: stats.appliedOrderRevision ?? null,
+    presentedOrderRevisionLag: stats.presentedOrderRevisionLag ?? null,
+    submittedMeasurementTicket: stats.submittedMeasurementTicket ?? null,
+    submittedMeasurementBackend: stats.submittedMeasurementBackend ?? null,
+    measurementUnsampledReason: stats.measurementUnsampledReason ?? null,
+    completedMeasurementTicket: stats.completedMeasurementTicket ?? null,
+    completedMeasurementRevision: stats.completedMeasurementRevision ?? null,
+    completedMeasurementTimingSource: stats.completedMeasurementTimingSource ?? null,
+    gpuPreprocessMs: stats.gpuPreprocessMs ?? null,
+    gpuRadixMs: stats.gpuRadixMs ?? null,
+    gpuOrderMs: stats.gpuOrderMs ?? null,
+    gpuCompleteMs: stats.gpuCompleteMs ?? null,
+    completedVisibleCount: stats.completedVisibleCount ?? null,
+    completedContributorCount: stats.completedContributorCount ?? null,
+    completedDrawnCount: stats.completedDrawnCount ?? null,
+    completedExactContributorCompaction:
+      stats.completedExactContributorCompaction ?? null,
+    visibleCountRevision: stats.visibleCountRevision ?? null,
+    visibleCountPending: Boolean(stats.visibleCountPending),
+    surfaceWidth: stats.surfaceWidth ?? null,
+    surfaceHeight: stats.surfaceHeight ?? null,
+    internalRenderWidth: stats.internalRenderWidth ?? null,
+    internalRenderHeight: stats.internalRenderHeight ?? null,
+    presentedWidth: stats.presentedWidth ?? null,
+    presentedHeight: stats.presentedHeight ?? null,
   });
   benchmark.measurementEndedAt = new Date().toISOString();
 }
 
 function finishBenchmark(benchmark) {
   benchmark.enabled = false;
+  maybeEmitMonotonicOrderingWindow(benchmark);
   const result = benchmarkResultLine(benchmark);
   console.info(result);
-  void emitBenchmarkArtifacts(benchmark).catch((error) => {
-    console.error(`BENCHMARK_ARTIFACT_ERROR ${compactMessage(error)}`);
+  els.benchmarkStatus.textContent = "validating";
+  els.benchmarkResult.textContent = "Validating exact frame-count and full-resolution evidence...";
+  void emitBenchmarkArtifacts(benchmark).then(() => {
+    els.benchmarkStatus.textContent = "complete";
+    els.runBenchmark.disabled = false;
+    els.benchmarkResult.textContent = result;
+    setStatus(`state=benchmark_complete ${result}`);
+  }).catch((error) => {
+    const reason = compactMessage(error);
+    benchmark.failure = `artifact validation failed: ${reason}`;
+    els.benchmarkStatus.textContent = "failed";
+    els.runBenchmark.disabled = false;
+    els.benchmarkResult.textContent = `BENCHMARK_ARTIFACT_ERROR ${reason}`;
+    setStatus(`state=benchmark_failed ${benchmark.failure}`);
+    console.error(`BENCHMARK_ARTIFACT_ERROR ${reason}`);
   });
-  els.benchmarkStatus.textContent = "complete";
-  els.runBenchmark.disabled = false;
-  els.benchmarkResult.textContent = result;
-  setStatus(`state=benchmark_complete ${result}`);
 }
 
 function wasmRendererLabel() {
@@ -1497,6 +2978,8 @@ function benchmarkResultLine(benchmark) {
     `BENCHMARK_RESULT dataset=${state.scene.name} ` +
     `samples=${averages.count} warmup=${benchmark.warmupFrames} ` +
     `sort_interval=${Number(els.sortInterval.value)} renderer=${wasmRendererLabel()} ` +
+    `requested_backend=${state.requestedOrderBackend} ` +
+    `projected_policy=${state.requestedProjectedPolicy} ` +
     `draw_budget=${usingWasm() ? "full" : Number(els.drawBudget.value)} ` +
     `avg_call_ms=${(averages.callMs ?? 0).toFixed(3)} ` +
     `avg_frame_ms=${(averages.frameMs ?? 0).toFixed(3)} ` +
@@ -1516,8 +2999,13 @@ async function emitBenchmarkArtifacts(benchmark) {
   const rendererPath = wasmRendererLabel();
   const backend = usingWasm() ? "webgpu" : "webgl2";
   const sortInterval = Number(els.sortInterval.value);
-  const surfaceWidth = els.canvas.width;
-  const surfaceHeight = els.canvas.height;
+  const resolution = benchmarkResolutionEvidence(
+    benchmark.frameReceipts,
+    benchmark.requestedWidth,
+    benchmark.requestedHeight,
+  );
+  const surfaceWidth = resolution.surface_width;
+  const surfaceHeight = resolution.surface_height;
   const traceText = `benchmark_orbit_v1 yaw_step=${benchmark.yawStep} frames=${benchmark.frames}`;
   const traceSha256 = state.qualificationTrace?.content_sha256 ??
     await sha256Hex(new TextEncoder().encode(traceText));
@@ -1526,8 +3014,10 @@ async function emitBenchmarkArtifacts(benchmark) {
     "environment.driver",
     "frames[*].gpu_wait_ms",
     "frames[*].gpu_complete_ms",
-    "frames[*].sort_refreshed",
   ];
+  if (!usingWasm()) {
+    unavailableFields.push("frames[*].sort_refreshed");
+  }
   if (globalThis.GSPLAT_BUILD_COMMIT == null) unavailableFields.push("build.repository_commit");
   if (globalThis.GSPLAT_BUILD_DIRTY == null) unavailableFields.push("build.dirty");
   if (globalThis.GSPLAT_BENCHMARK_DEVICE == null) unavailableFields.push("environment.device");
@@ -1536,7 +3026,9 @@ async function emitBenchmarkArtifacts(benchmark) {
     record_type: "manifest",
     run_id: benchmark.collector.runId,
     identity: {
-      series_id: state.qualificationTrace ? "phase-e-paired-kitsune-static-v1" : "web-local",
+      series_id: state.qualificationTraceSequenceEnabled
+        ? "web-camera-trace-sequence-v1"
+        : state.qualificationTrace ? "web-fixed-camera-v1" : "web-local",
       started_at_utc: benchmark.startedAt,
       ended_at_utc: new Date().toISOString(),
       measurement_started_at_utc: benchmark.measurementStartedAt,
@@ -1555,19 +3047,62 @@ async function emitBenchmarkArtifacts(benchmark) {
       splat_count: scene.count,
       sh_degree: scene.shDegree,
     },
-    trace: {
+    exactness: {
+      source_splat_count: scene.exactnessReceipt?.sourceCount ?? null,
+      decoded_splat_count: scene.exactnessReceipt?.decodedCount ?? null,
+      encoded_splat_count: scene.exactnessReceipt?.encodedCount ?? null,
+      resident_splat_count: scene.exactnessReceipt?.residentCount ?? null,
+      addressable_splat_count: scene.exactnessReceipt?.addressableCount ?? null,
+      source_sh_degree: scene.exactnessReceipt?.sourceShDegree ?? null,
+      resident_sh_degree: scene.exactnessReceipt?.residentShDegree ?? null,
+      source_membership: scene.exactnessReceipt?.sourceMembership ?? "unknown",
+      sampling: scene.exactnessReceipt?.samplingEnabled === false ? "disabled" : "enabled",
+      lod: scene.exactnessReceipt?.lodEnabled === false ? "disabled" : "enabled",
+      sh_degree_policy: "source",
+      partial_scene_published: scene.exactnessReceipt?.partialScenePublished ?? null,
+      full_quality: scene.exactnessReceipt?.fullQuality ?? false,
+    },
+    trace: state.qualificationTraceSequenceEnabled ? {
+      id: state.qualificationTrace.trace_id,
+      sha256: traceSha256,
+      reference_width: state.qualificationTrace.display.width,
+      reference_height: state.qualificationTrace.display.height,
+      require_display_match: true,
+      display_policy: "trace_display_exact",
+      quality_comparable: true,
+      frame_indices: [...benchmark.traceSequence.frameIndices],
+    } : {
       id: state.qualificationTrace?.trace_id ?? "benchmark-orbit-v1",
       sha256: traceSha256,
+      reference_width: state.qualificationTrace?.display.width ?? null,
+      reference_height: state.qualificationTrace?.display.height ?? null,
+      require_display_match: state.qualificationTrace != null,
+      display_policy: state.qualificationTrace ? "trace_display_exact" : "endpoint_orbit",
+      quality_comparable: state.qualificationTrace != null,
+      frame_index: state.qualificationTrace ? state.qualificationTraceFrameIndex : null,
     },
     renderer: {
       implementation: "gsplat-rs",
       path: rendererPath,
       backend,
+      order_backend_requested: state.requestedOrderBackend,
+      projected_policy_requested: state.requestedProjectedPolicy,
+      sort_interval: sortInterval,
       sort_policy: `interval_${sortInterval}`,
+      raster_execution_plan: benchmark.frameReceipts[0]?.rasterExecutionPlan ?? null,
+      count_semantics: usingWasm()
+        ? "candidate_visible_contributor_issued_v1"
+        : undefined,
     },
     timing: {
       frame_wall_source: benchmark.frameWallSource,
       renderer_frame_ms_included: true,
+    },
+    ordering_window: {
+      completion_protocol: benchmark.orderCompletionProtocol,
+      presented_submit_count: benchmark.presentedSubmissionCount,
+      terminal_poll_count: benchmark.terminalPollCount,
+      expected_logical_frame_count: benchmark.warmupFrames + benchmark.frames,
     },
     pairing: state.qualificationTrace ? {
       pair_id: globalThis.GSPLAT_PHASE_E_PAIR_ID ?? null,
@@ -1583,6 +3118,7 @@ async function emitBenchmarkArtifacts(benchmark) {
       refresh_hz_source: "configured",
       frame_budget_source: "configured",
     },
+    resolution,
     environment: {
       platform: "web",
       os: navigator.platform || "browser",
@@ -1594,15 +3130,62 @@ async function emitBenchmarkArtifacts(benchmark) {
     unavailable_fields: unavailableFields,
     qualification_scope: state.qualificationTrace ? "phase_e_paired_candidate" : "collector_smoke_only",
     policies: state.qualificationTrace ? {
-      dynamicResolution: "disabled_fixed_640x480",
+      dynamicResolution: `disabled_fixed_${surfaceWidth}x${surfaceHeight}`,
       lod: "disabled_full_ply",
-      renderer: "sorted_index_direct",
+      renderer: state.geometryPath,
+      membership: "source_equals_decoded_equals_resident_no_sampling",
     } : undefined,
     camera_receipt: state.cameraReceipt,
   };
   console.info(`BENCHMARK_MANIFEST_JSON ${JSON.stringify(manifest)}`);
-  for (const frame of frameRecords(benchmark.collector)) {
-    console.info(`BENCHMARK_FRAME_JSON ${JSON.stringify(frame)}`);
+  for (const [index, frame] of frameRecords(benchmark.collector).entries()) {
+    const receipt = benchmark.frameReceipts[index];
+    console.info(`BENCHMARK_FRAME_JSON ${JSON.stringify({
+      ...frame,
+      trace_frame_index: receipt?.traceStep?.traceFrameIndex ?? null,
+      trace_timestamp_ns: receipt?.traceStep?.timestampNs ?? null,
+      order_backend_requested: state.requestedOrderBackend,
+      order_backend: receipt?.orderBackend ?? "cpu",
+      raster_execution_plan: receipt?.rasterExecutionPlan ?? null,
+      surface_width: receipt?.surfaceWidth ?? null,
+      surface_height: receipt?.surfaceHeight ?? null,
+      internal_render_width: receipt?.internalRenderWidth ?? null,
+      internal_render_height: receipt?.internalRenderHeight ?? null,
+      presented_width: receipt?.presentedWidth ?? null,
+      presented_height: receipt?.presentedHeight ?? null,
+      adaptive_gpu_failure: receipt?.adaptiveGpuFailure ?? null,
+      gpu_sort_fallback: receipt?.gpuSortFallback ?? false,
+      adaptive_state: receipt?.adaptiveState ?? "disabled",
+      projected_policy: receipt?.projectedPolicy ?? "adaptive",
+      projected_execution: receipt?.projectedExecution ?? "candidate",
+      projected_adaptive_state: receipt?.projectedAdaptiveState ?? "disabled",
+      projected_measurement_submission:
+        receipt?.projectedMeasurementSubmission ?? "not_requested",
+      projected_measurement_ticket: receipt?.projectedMeasurementTicket ?? null,
+      projected_measurement_execution:
+        receipt?.projectedMeasurementExecution ?? null,
+      projected_measurement_unsampled_reason:
+        receipt?.projectedMeasurementUnsampledReason ?? null,
+      camera_revision: receipt?.cameraRevision ?? null,
+      applied_order_revision: receipt?.appliedOrderRevision ?? null,
+      presented_order_revision_lag: receipt?.presentedOrderRevisionLag ?? null,
+      submitted_measurement_ticket: receipt?.submittedMeasurementTicket ?? null,
+      submitted_measurement_backend: receipt?.submittedMeasurementBackend ?? null,
+      measurement_unsampled_reason: receipt?.measurementUnsampledReason ?? null,
+      visible_count_revision: receipt?.visibleCountRevision ?? null,
+      visible_count_pending: receipt?.visibleCountPending ?? false,
+      completed_measurement_ticket: receipt?.completedMeasurementTicket ?? null,
+      completed_measurement_revision: receipt?.completedMeasurementRevision ?? null,
+      completed_measurement_timing_source: receipt?.completedMeasurementTimingSource ?? null,
+      gpu_preprocess_ms: receipt?.gpuPreprocessMs ?? null,
+      gpu_radix_ms: receipt?.gpuRadixMs ?? null,
+      gpu_order_ms: receipt?.gpuOrderMs ?? null,
+      completed_visible: receipt?.completedVisibleCount ?? null,
+      completed_contributor: receipt?.completedContributorCount ?? null,
+      completed_drawn: receipt?.completedDrawnCount ?? null,
+      completed_exact_contributor_compaction:
+        receipt?.completedExactContributorCompaction ?? null,
+    })}`);
   }
   console.info(`BENCHMARK_SUMMARY_JSON ${JSON.stringify(benchmarkSummary(benchmark.collector))}`);
 }
@@ -1637,6 +3220,7 @@ function updateStatusOverlay(stats) {
     state.rendererStatus = [
       `state=rendering frames=${state.frameCounter}`,
       `visible=${stats.visible} drawn=${stats.drawn}/${stats.visible}`,
+      `projected=${stats.projectedPolicy}/${stats.projectedExecution} state=${stats.projectedAdaptiveState}`,
       `frame=${stats.frameMs.toFixed(2)}ms preprocess=${stats.preprocessMs.toFixed(2)}ms`,
       `sort=${stats.sortMs.toFixed(2)}ms geometry_submit=${stats.pipelineMs.toFixed(2)}ms call=${stats.callMs.toFixed(2)}ms`,
     ].join("\n");
@@ -1644,6 +3228,8 @@ function updateStatusOverlay(stats) {
     state.rendererStatus =
       `state=rendering frames=${state.frameCounter} ` +
       `visible=${stats.visible} drawn=${stats.drawn}/${stats.visible} ` +
+      `projected=${stats.projectedPolicy}/${stats.projectedExecution} ` +
+      `projected_state=${stats.projectedAdaptiveState} ` +
       `frame=${stats.frameMs.toFixed(2)}ms preprocess=${stats.preprocessMs.toFixed(2)}ms ` +
       `sort=${stats.sortMs.toFixed(2)}ms geometry_submit=${stats.pipelineMs.toFixed(2)}ms call=${stats.callMs.toFixed(2)}ms`;
   }
@@ -1816,6 +3402,9 @@ function sceneTitle(name) {
   if (name === "minimal_ascii.ply") {
     return "Minimal smoke scene";
   }
+  if (["bonsai.ply", "truck.ply", "garden.ply", "bicycle.ply"].includes(name)) {
+    return `INRIA ${name.slice(0, -4)}`;
+  }
   return name;
 }
 
@@ -1886,4 +3475,56 @@ function compactMessage(error) {
   return String(error?.message ?? error ?? "unknown")
     .replaceAll("\n", " ")
     .slice(0, 160);
+}
+
+function emitStructuredSceneFailure(dataset, error) {
+  if (!error || typeof error !== "object" || reportedStructuredFailures.has(error)) {
+    return;
+  }
+  if (typeof error.stage !== "string"
+      || typeof error.error_code !== "string"
+      || typeof error.error_message !== "string"
+      || error.scene_published !== false) {
+    return;
+  }
+  reportedStructuredFailures.add(error);
+  const resource = error.resource && typeof error.resource === "object"
+    ? {
+        kind: String(error.resource.kind),
+        required_bytes: Number(error.resource.required_bytes),
+        limit_bytes: Number(error.resource.limit_bytes),
+      }
+    : null;
+  console.error(`SCENE_LOAD_FAILURE_JSON ${JSON.stringify({
+    record_type: "scene_construction_failure",
+    dataset,
+    stage: error.stage,
+    error_code: error.error_code,
+    error_message: error.error_message,
+    scene_published: false,
+    ...(resource ? { resource } : {}),
+  })}`);
+}
+
+function emitStructuredResizeFailure(error) {
+  if (!error || typeof error !== "object" || reportedStructuredFailures.has(error)) {
+    return;
+  }
+  if (error.stage !== "resize"
+      || typeof error.error_code !== "string"
+      || typeof error.error_message !== "string"
+      || error.scene_published !== true) {
+    return;
+  }
+  reportedStructuredFailures.add(error);
+  console.error(`RUNTIME_RESIZE_FAILURE_JSON ${JSON.stringify({
+    record_type: "runtime_resize_failure",
+    dataset: state.scene?.name ?? null,
+    stage: "resize",
+    error_code: error.error_code,
+    error_message: error.error_message,
+    scene_published: true,
+    previous_surface_size: state.surfaceSizeLabel,
+    ...(error.resource ? { resource: error.resource } : {}),
+  })}`);
 }

@@ -1,12 +1,28 @@
 use gsplat_core::{
     Camera, ErrorCode, FrameStats, GSPLAT_API_VERSION_MAJOR, GSPLAT_API_VERSION_MINOR, RenderMode,
-    RendererConfig, SceneBuffers, Vec3f,
+    RendererConfig, Vec3f,
 };
-use gsplat_io_ply::{PlySceneSummary, parse_ply_bytes};
+use gsplat_io_ply::{
+    DecodedPlySplat, IncrementalPlyDecoder, PlySceneSummary, parse_ply_bytes,
+    parse_ply_bytes_summary, visit_ply_bytes_splats,
+};
 use gsplat_render_wgpu::{
-    GeometryPath, Renderer, SurfaceFrameTimings, SurfacePresenter, SurfaceRenderSession,
+    GeometryPath, Renderer, ResidentSceneBuilder, ResidentSourceSplat,
+    SurfaceAdaptiveGpuFailureReason, SurfaceAdaptiveState, SurfaceCpuOrderMeasurement,
+    SurfaceFrameOutput, SurfaceGpuOrderProducer, SurfaceGpuProducerDrawScope,
+    SurfaceGpuProducerMeasurement, SurfaceGpuProducerMeasurementFailure,
+    SurfaceGpuProducerMeasurementFailureReason, SurfaceGpuProducerMeasurementSubmission,
+    SurfaceGpuProducerMeasurementUnsampledReason, SurfaceOrderBackend, SurfaceOrderBackendUsed,
+    SurfaceOrderMeasurement, SurfaceOrderMeasurementFailure, SurfaceOrderMeasurementFailureReason,
+    SurfaceOrderMeasurementSubmission, SurfaceOrderMeasurementUnsampledReason, SurfacePresenter,
+    SurfaceProjectedDrawAdaptiveState, SurfaceProjectedDrawExecution,
+    SurfaceProjectedDrawMeasurement, SurfaceProjectedDrawMeasurementFailure,
+    SurfaceProjectedDrawMeasurementFailureReason, SurfaceProjectedDrawMeasurementSubmission,
+    SurfaceProjectedDrawMeasurementUnsampledReason, SurfaceProjectedDrawPolicy,
+    SurfaceRasterExecutionPlan, SurfaceRenderSession, SurfaceTimingSource,
 };
-use js_sys::{Float32Array, Object, Reflect, Uint8Array};
+use js_sys::{Array, Float32Array, Object, Reflect, Uint8Array};
+use sha2::{Digest, Sha256};
 use wasm_bindgen::prelude::*;
 use web_sys::HtmlCanvasElement;
 
@@ -30,14 +46,7 @@ pub async fn create_renderer(
     width: u32,
     height: u32,
 ) -> Result<GsplatWebRenderer, JsValue> {
-    create_renderer_for_path(
-        canvas,
-        ply_bytes,
-        width,
-        height,
-        GeometryPath::SortedIndexDirect,
-    )
-    .await
+    create_renderer_for_path(canvas, ply_bytes, width, height, GeometryPath::PackedAtlas).await
 }
 
 #[wasm_bindgen(js_name = createRendererWithGeometryPath)]
@@ -60,8 +69,6 @@ async fn create_renderer_for_path(
     geometry_path: GeometryPath,
 ) -> Result<GsplatWebRenderer, JsValue> {
     let raw = ply_bytes.to_vec();
-    let loaded = parse_ply_bytes(&raw).map_err(|err| js_error(err.to_string()))?;
-    let summary = loaded.summary;
     let mut renderer = Renderer::with_config_for_surface(RendererConfig {
         width,
         height,
@@ -69,11 +76,54 @@ async fn create_renderer_for_path(
     })
     .map_err(renderer_error)?;
     renderer.set_geometry_path(geometry_path);
-    renderer.load_scene(loaded.scene).map_err(renderer_error)?;
+    let (source_summary, decoded_summary) = load_ply_bytes_into_renderer(&raw, &mut renderer)?;
 
+    finish_surface_renderer(
+        canvas,
+        width,
+        height,
+        renderer,
+        decoded_summary,
+        WebLoadReceipt {
+            transport_bytes: raw.len() as u64,
+            peak_decoder_buffer_bytes: raw.len() as u64,
+            streamed: false,
+            input_sha256: format!("{:x}", Sha256::digest(&raw)),
+            source_count: source_summary.gaussians,
+            decoded_count: decoded_summary.gaussians,
+            source_sh_degree: source_summary.sh_degree,
+            encoded_count: 0,
+            resident_count: 0,
+            addressable_count: 0,
+            resident_sh_degree: 0,
+        },
+    )
+    .await
+}
+
+async fn finish_surface_renderer(
+    canvas: HtmlCanvasElement,
+    width: u32,
+    height: u32,
+    mut renderer: Renderer,
+    summary: PlySceneSummary,
+    load_receipt: WebLoadReceipt,
+) -> Result<GsplatWebRenderer, JsValue> {
+    let encoded_count = renderer
+        .resident_scene()
+        .map(|scene| scene.report.encoded_count)
+        .or_else(|| renderer.scene_len())
+        .ok_or_else(|| js_error("renderer has no resident scene after loading"))?;
+    let resident_count = renderer
+        .scene_len()
+        .ok_or_else(|| js_error("renderer has no resident scene after loading"))?;
+    let resident_sh_degree = renderer
+        .scene_sh_degree()
+        .ok_or_else(|| js_error("renderer has no resident SH degree after loading"))?;
     let presenter = SurfacePresenter::from_canvas(canvas, width, height, &renderer)
         .await
         .map_err(|err| js_error(err.to_string()))?;
+    let addressable_count = presenter.addressable_splat_count();
     let (surface_width, surface_height) = presenter.surface_size();
     renderer
         .set_size(surface_width, surface_height)
@@ -88,7 +138,279 @@ async fn create_renderer_for_path(
         camera_control,
         camera_override: None,
         summary,
+        load_receipt: WebLoadReceipt {
+            encoded_count,
+            resident_count,
+            addressable_count,
+            resident_sh_degree,
+            ..load_receipt
+        },
     })
+}
+
+fn load_ply_bytes_into_renderer(
+    input: &[u8],
+    renderer: &mut Renderer,
+) -> Result<(PlySceneSummary, PlySceneSummary), JsValue> {
+    if renderer.geometry_path() != GeometryPath::PackedAtlas {
+        let source = parse_ply_bytes_summary(input).map_err(|error| js_error(error.to_string()))?;
+        let loaded = parse_ply_bytes(input).map_err(|error| js_error(error.to_string()))?;
+        let summary = loaded.summary;
+        if summary != source {
+            return Err(js_error(format!(
+                "PLY summary changed while decoding: expected {source:?}, decoded {summary:?}"
+            )));
+        }
+        renderer.load_scene(loaded.scene).map_err(renderer_error)?;
+        return Ok((source, summary));
+    }
+
+    let expected = parse_ply_bytes_summary(input).map_err(|error| js_error(error.to_string()))?;
+    let mut builder = ResidentSceneBuilder::new(expected.gaussians, expected.sh_degree)
+        .map_err(|error| js_error(error.to_string()))?;
+    let mut builder_error = None;
+    let decoded = visit_ply_bytes_splats(input, |splat| {
+        if builder_error.is_none() {
+            builder_error = builder.push(resident_source_splat(splat)).err();
+        }
+    })
+    .map_err(|error| js_error(error.to_string()))?;
+    if let Some(error) = builder_error {
+        return Err(js_error(error.to_string()));
+    }
+    if decoded != expected {
+        return Err(js_error(format!(
+            "PLY summary changed while decoding: expected {expected:?}, decoded {decoded:?}"
+        )));
+    }
+    let resident = builder
+        .finish()
+        .map_err(|error| js_error(error.to_string()))?;
+    renderer
+        .load_resident_scene(resident)
+        .map_err(renderer_error)?;
+    Ok((expected, decoded))
+}
+
+fn resident_source_splat(splat: &DecodedPlySplat) -> ResidentSourceSplat {
+    ResidentSourceSplat {
+        position: splat.position_ruf,
+        opacity_logit: splat.opacity_logit,
+        log_scale: splat.log_scale_xyz,
+        rotation_xyzw: splat.rotation_xyzw,
+        color_dc: splat.color_dc,
+        sh_rest: splat.sh_rest,
+        sh_len: splat.sh_rest_len,
+        sh_degree: splat.sh_degree,
+    }
+}
+
+#[derive(Debug, Clone)]
+struct WebLoadReceipt {
+    transport_bytes: u64,
+    peak_decoder_buffer_bytes: u64,
+    streamed: bool,
+    input_sha256: String,
+    /// Header-declared source count, captured before body publication.
+    source_count: usize,
+    /// Rows actually accepted by the decoder.
+    decoded_count: usize,
+    /// Records actually committed by the resident encoder.
+    encoded_count: usize,
+    /// Records retained by the renderer after transactional publication.
+    resident_count: usize,
+    /// Records allocated by the selected GPU geometry resources.
+    addressable_count: usize,
+    source_sh_degree: u8,
+    resident_sh_degree: u8,
+}
+
+/// Stateful browser transport boundary for exact Packed PLY loading.
+///
+/// JavaScript feeds `ReadableStream` chunks here. Only the incomplete PLY
+/// header/row/record and one reusable JS-copy scratch buffer are retained;
+/// decoded splats go directly into the final exact-count resident builder.
+#[wasm_bindgen(js_name = PackedPlyStream)]
+pub struct GsplatWebPackedPlyStream {
+    canvas: Option<HtmlCanvasElement>,
+    width: u32,
+    height: u32,
+    decoder: IncrementalPlyDecoder,
+    builder: Option<ResidentSceneBuilder>,
+    summary: Option<PlySceneSummary>,
+    scratch: Vec<u8>,
+    input_hasher: Sha256,
+    finished: bool,
+}
+
+#[wasm_bindgen(js_name = createPackedPlyStream)]
+pub fn create_packed_ply_stream(
+    canvas: HtmlCanvasElement,
+    width: u32,
+    height: u32,
+) -> Result<GsplatWebPackedPlyStream, JsValue> {
+    if width == 0 || height == 0 {
+        return Err(error_code(ErrorCode::InvalidArgument));
+    }
+    Ok(GsplatWebPackedPlyStream {
+        canvas: Some(canvas),
+        width,
+        height,
+        decoder: IncrementalPlyDecoder::default(),
+        builder: None,
+        summary: None,
+        scratch: Vec::new(),
+        input_hasher: Sha256::new(),
+        finished: false,
+    })
+}
+
+#[wasm_bindgen]
+impl GsplatWebPackedPlyStream {
+    #[wasm_bindgen(js_name = pushChunk)]
+    pub fn push_chunk(&mut self, chunk: Uint8Array) -> Result<(), JsValue> {
+        if self.finished {
+            return Err(js_error("packed PLY stream has already been finished"));
+        }
+        let len = usize::try_from(chunk.length())
+            .map_err(|_| js_error("PLY transport chunk exceeds addressable memory"))?;
+        if self.scratch.len() < len {
+            self.scratch
+                .try_reserve(len - self.scratch.len())
+                .map_err(|_| js_error("failed to reserve PLY transport scratch memory"))?;
+            self.scratch.resize(len, 0);
+        } else {
+            self.scratch.truncate(len);
+        }
+        chunk.copy_to(&mut self.scratch);
+        self.input_hasher.update(&self.scratch);
+
+        let header = feed_incremental_ply(&mut self.decoder, &self.scratch, self.builder.as_mut())?;
+        if let Some(summary) = header {
+            if self.summary.is_some() || self.builder.is_some() {
+                return Err(js_error("PLY stream emitted more than one header"));
+            }
+            self.builder = Some(
+                ResidentSceneBuilder::new(summary.gaussians, summary.sh_degree)
+                    .map_err(|error| js_error(error.to_string()))?,
+            );
+            self.summary = Some(summary);
+            let repeated_header =
+                feed_incremental_ply(&mut self.decoder, &[], self.builder.as_mut())?;
+            if repeated_header.is_some() {
+                return Err(js_error("PLY stream emitted more than one header"));
+            }
+        }
+        Ok(())
+    }
+
+    #[wasm_bindgen(js_name = inputBytes)]
+    pub fn input_bytes(&self) -> u64 {
+        self.decoder.total_input_bytes() as u64
+    }
+
+    #[wasm_bindgen(js_name = peakDecoderBufferBytes)]
+    pub fn peak_decoder_buffer_bytes(&self) -> u64 {
+        self.decoder.peak_buffered_bytes() as u64
+    }
+
+    pub async fn finish(&mut self) -> Result<GsplatWebRenderer, JsValue> {
+        if self.finished {
+            return Err(js_error("packed PLY stream has already been finished"));
+        }
+        let mut builder = self
+            .builder
+            .take()
+            .ok_or_else(|| js_error("PLY stream ended before a complete header"))?;
+        let mut builder_error = None;
+        let decoded = self
+            .decoder
+            .finish(|splat| {
+                if builder_error.is_none() {
+                    builder_error = builder.push(resident_source_splat(splat)).err();
+                }
+            })
+            .map_err(|error| js_error(error.to_string()))?;
+        if let Some(error) = builder_error {
+            return Err(js_error(error.to_string()));
+        }
+        let expected = self
+            .summary
+            .ok_or_else(|| js_error("PLY stream has no validated summary"))?;
+        if decoded != expected {
+            return Err(js_error(format!(
+                "PLY summary changed while streaming: expected {expected:?}, decoded {decoded:?}"
+            )));
+        }
+        let resident = builder
+            .finish()
+            .map_err(|error| js_error(error.to_string()))?;
+        let mut renderer = Renderer::with_config_for_surface(RendererConfig {
+            width: self.width,
+            height: self.height,
+            mode: RenderMode::SortedAlpha,
+        })
+        .map_err(renderer_error)?;
+        renderer.set_geometry_path(GeometryPath::PackedAtlas);
+        renderer
+            .load_resident_scene(resident)
+            .map_err(renderer_error)?;
+
+        self.finished = true;
+        let canvas = self
+            .canvas
+            .take()
+            .ok_or_else(|| js_error("packed PLY stream canvas has already been consumed"))?;
+        finish_surface_renderer(
+            canvas,
+            self.width,
+            self.height,
+            renderer,
+            decoded,
+            WebLoadReceipt {
+                transport_bytes: self.decoder.total_input_bytes() as u64,
+                peak_decoder_buffer_bytes: self.decoder.peak_buffered_bytes() as u64,
+                streamed: true,
+                input_sha256: format!("{:x}", self.input_hasher.clone().finalize()),
+                source_count: expected.gaussians,
+                decoded_count: decoded.gaussians,
+                source_sh_degree: expected.sh_degree,
+                encoded_count: 0,
+                resident_count: 0,
+                addressable_count: 0,
+                resident_sh_degree: 0,
+            },
+        )
+        .await
+    }
+}
+
+fn feed_incremental_ply(
+    decoder: &mut IncrementalPlyDecoder,
+    input: &[u8],
+    mut builder: Option<&mut ResidentSceneBuilder>,
+) -> Result<Option<PlySceneSummary>, JsValue> {
+    let mut builder_error = None;
+    let mut missing_builder = false;
+    let summary = decoder
+        .push(input, |splat| {
+            if builder_error.is_some() || missing_builder {
+                return;
+            }
+            if let Some(builder) = builder.as_deref_mut() {
+                builder_error = builder.push(resident_source_splat(splat)).err();
+            } else {
+                missing_builder = true;
+            }
+        })
+        .map_err(|error| js_error(error.to_string()))?;
+    if missing_builder {
+        return Err(js_error("PLY body was decoded before its validated header"));
+    }
+    if let Some(error) = builder_error {
+        return Err(js_error(error.to_string()));
+    }
+    Ok(summary)
 }
 
 #[wasm_bindgen]
@@ -97,15 +419,42 @@ pub struct GsplatWebRenderer {
     camera_control: SurfaceCameraControl,
     camera_override: Option<Camera>,
     summary: PlySceneSummary,
+    load_receipt: WebLoadReceipt,
 }
 
 #[wasm_bindgen]
 impl GsplatWebRenderer {
+    /// Compatibility entrypoint. Browser size changes are asynchronous; a
+    /// changed size fails closed here and must use `resizeAsync`.
     pub fn resize(&mut self, width: u32, height: u32) -> Result<(), JsValue> {
         self.session.resize(width, height).map_err(renderer_error)?;
         let camera = self.camera_override.unwrap_or_else(|| {
             surface_camera_from_control(self.camera_control, self.session.renderer().config())
         });
+        self.session.set_camera(camera).map_err(renderer_error)?;
+        Ok(())
+    }
+
+    /// Transactionally reconfigures the production Packed + Projected WebGPU
+    /// Surface and publishes the new renderer/camera dimensions only after
+    /// validation/OOM/internal error scopes complete.
+    #[wasm_bindgen(js_name = resizeAsync)]
+    pub async fn resize_async(&mut self, width: u32, height: u32) -> Result<(), JsValue> {
+        let candidate_config = RendererConfig {
+            width,
+            height,
+            ..self.session.renderer().config()
+        };
+        candidate_config.validate().map_err(error_code)?;
+        let camera = self
+            .camera_override
+            .unwrap_or_else(|| surface_camera_from_control(self.camera_control, candidate_config));
+        camera.validate().map_err(error_code)?;
+
+        self.session
+            .resize_async(width, height)
+            .await
+            .map_err(renderer_error)?;
         self.session.set_camera(camera).map_err(renderer_error)?;
         Ok(())
     }
@@ -188,6 +537,92 @@ impl GsplatWebRenderer {
         self.session.set_geometry_path(path).map_err(renderer_error)
     }
 
+    /// Transactionally switches between the full-quality Direct oracle and
+    /// Packed production geometry. The renderer's CPU derivations and the
+    /// complete GPU resource graph are published only after WebGPU
+    /// validation/OOM/internal error scopes complete. Paged remains an
+    /// explicit constructor-time diagnostic.
+    #[wasm_bindgen(js_name = setGeometryPathAsync)]
+    pub async fn set_geometry_path_async(&mut self, path: u32) -> Result<(), JsValue> {
+        let path = geometry_path_from_id(path)?;
+        self.session
+            .set_geometry_path_async(path)
+            .await
+            .map_err(renderer_error)
+    }
+
+    /// Builds the complete GPU sorter and its draw/projection bindings under
+    /// asynchronous WebGPU error scopes. This does not change the active
+    /// backend; callers then select GPU or Adaptive with `setOrderBackend`.
+    #[wasm_bindgen(js_name = prepareGpuOrder)]
+    pub async fn prepare_gpu_order(&mut self) -> Result<(), JsValue> {
+        self.session
+            .prepare_gpu_order()
+            .await
+            .map_err(renderer_error)
+    }
+
+    #[wasm_bindgen(js_name = setOrderBackend)]
+    pub fn set_order_backend(&mut self, backend: u32) -> Result<(), JsValue> {
+        let backend = match backend {
+            0 => SurfaceOrderBackend::Cpu,
+            1 => SurfaceOrderBackend::Gpu,
+            2 => SurfaceOrderBackend::Adaptive,
+            _ => return Err(error_code(ErrorCode::InvalidArgument)),
+        };
+        self.session
+            .set_order_backend(backend)
+            .map_err(renderer_error)
+    }
+
+    /// Selects Candidate, Compact, or Adaptive projected drawing. The shared
+    /// session validates the complete Compact graph before changing policy,
+    /// so a rejected request leaves the previously published policy live.
+    #[wasm_bindgen(js_name = setProjectedPolicy)]
+    pub fn set_projected_policy(&mut self, policy: u32) -> Result<(), JsValue> {
+        let policy = projected_policy_from_id(policy)?;
+        self.session
+            .set_projected_draw_policy(policy)
+            .map_err(renderer_error)
+    }
+
+    /// Builds the complete dormant Packed GPU-producer graph under WebGPU
+    /// error scopes without changing the producer currently used by GPU
+    /// frames. The diagnostic is intentionally admitted only for the exact
+    /// Packed + ProjectedQuadsExact + forced Compact experiment context.
+    #[wasm_bindgen(js_name = prepareGpuOrderProducer)]
+    pub async fn prepare_gpu_order_producer(&mut self, producer: u32) -> Result<(), JsValue> {
+        let producer = gpu_order_producer_from_id(producer)?;
+        require_gpu_producer_experiment_context(&self.session)?;
+        self.session
+            .prepare_gpu_order_producer(producer)
+            .await
+            .map_err(renderer_error)
+    }
+
+    /// Transactionally prepares and selects only the producer inside the GPU
+    /// ordering lane. CPU/GPU/Adaptive selection is not changed. Producer
+    /// receipts are enabled only after the complete target graph has been
+    /// published successfully, so a failed switch leaves the previous graph
+    /// and measurement state live.
+    #[wasm_bindgen(js_name = setGpuOrderProducerAsync)]
+    pub async fn set_gpu_order_producer_async(&mut self, producer: u32) -> Result<(), JsValue> {
+        let producer = gpu_order_producer_from_id(producer)?;
+        require_gpu_producer_experiment_context(&self.session)?;
+        self.session
+            .set_gpu_order_producer_async(producer)
+            .await
+            .map_err(renderer_error)?;
+        self.session
+            .set_gpu_producer_measurement_enabled(true)
+            .map_err(renderer_error)
+    }
+
+    #[wasm_bindgen(js_name = gpuOrderProducer)]
+    pub fn gpu_order_producer(&self) -> String {
+        gpu_order_producer_label(self.session.gpu_order_producer()).to_owned()
+    }
+
     #[wasm_bindgen(js_name = setCamera)]
     pub fn set_camera(&mut self, values: Float32Array) -> Result<(), JsValue> {
         let values = values.to_vec();
@@ -239,11 +674,51 @@ impl GsplatWebRenderer {
     #[wasm_bindgen(js_name = renderFrame)]
     pub fn render_frame(&mut self) -> Result<JsValue, JsValue> {
         let output = self.session.render_frame().map_err(renderer_error)?;
+        let completed_cpu_order_measurements = self.session.drain_cpu_order_measurements();
+        let completed_order_measurements = self.session.drain_order_measurements();
+        let failed_order_measurements = self.session.drain_order_measurement_failures();
+        let completed_projected_measurements = self.session.drain_projected_draw_measurements();
+        let failed_projected_measurements =
+            self.session.drain_projected_draw_measurement_failures();
+        let completed_gpu_producer_measurements = self.session.drain_gpu_producer_measurements();
+        let failed_gpu_producer_measurements =
+            self.session.drain_gpu_producer_measurement_failures();
         frame_stats_object(
-            output.stats,
-            output.timings,
-            output.sort_refreshed,
+            output,
             self.session.surface_size(),
+            self.session.internal_render_size(),
+            self.session.last_presented_size(),
+            &completed_cpu_order_measurements,
+            &completed_order_measurements,
+            &failed_order_measurements,
+            &completed_projected_measurements,
+            &failed_projected_measurements,
+            &completed_gpu_producer_measurements,
+            &failed_gpu_producer_measurements,
+        )
+    }
+
+    /// Drains terminal order and projected-draw receipts independently of rendering.
+    /// JS calls this after a fail-closed render error so a receipt collected at
+    /// frame start cannot be stranded behind the failed presentation.
+    #[wasm_bindgen(js_name = drainOrderMeasurementReceipts)]
+    pub fn drain_order_measurement_receipts(&mut self) -> Result<JsValue, JsValue> {
+        self.session.poll_order_measurement_receipts();
+        let completed_cpu = self.session.drain_cpu_order_measurements();
+        let completed_gpu = self.session.drain_order_measurements();
+        let failed = self.session.drain_order_measurement_failures();
+        let completed_projected = self.session.drain_projected_draw_measurements();
+        let failed_projected = self.session.drain_projected_draw_measurement_failures();
+        let completed_gpu_producer = self.session.drain_gpu_producer_measurements();
+        let failed_gpu_producer = self.session.drain_gpu_producer_measurement_failures();
+        measurement_receipts_object(
+            &completed_cpu,
+            &completed_gpu,
+            &failed,
+            &completed_projected,
+            &failed_projected,
+            &completed_gpu_producer,
+            &failed_gpu_producer,
         )
     }
 
@@ -253,6 +728,91 @@ impl GsplatWebRenderer {
         set_u32(&object, "gaussians", self.summary.gaussians as u32)?;
         set_u32(&object, "shDegree", self.summary.sh_degree as u32)?;
         set_bool(&object, "hasShRest", self.summary.has_sh_rest)?;
+        Ok(object.into())
+    }
+
+    #[wasm_bindgen(js_name = loadReceipt)]
+    pub fn load_receipt(&self) -> Result<JsValue, JsValue> {
+        let object = Object::new();
+        set_f64(
+            &object,
+            "transportBytes",
+            self.load_receipt.transport_bytes as f64,
+        )?;
+        set_f64(
+            &object,
+            "peakDecoderBufferBytes",
+            self.load_receipt.peak_decoder_buffer_bytes as f64,
+        )?;
+        set_bool(&object, "streamed", self.load_receipt.streamed)?;
+        set_string(&object, "inputSha256", &self.load_receipt.input_sha256)?;
+        set_f64(
+            &object,
+            "sourceCount",
+            self.load_receipt.source_count as f64,
+        )?;
+        set_f64(
+            &object,
+            "decodedCount",
+            self.load_receipt.decoded_count as f64,
+        )?;
+        set_f64(
+            &object,
+            "encodedCount",
+            self.load_receipt.encoded_count as f64,
+        )?;
+        set_f64(
+            &object,
+            "residentCount",
+            self.load_receipt.resident_count as f64,
+        )?;
+        set_f64(
+            &object,
+            "addressableCount",
+            self.load_receipt.addressable_count as f64,
+        )?;
+        set_u32(
+            &object,
+            "sourceShDegree",
+            self.load_receipt.source_sh_degree as u32,
+        )?;
+        set_u32(
+            &object,
+            "residentShDegree",
+            self.load_receipt.resident_sh_degree as u32,
+        )?;
+        // Compatibility alias retained for 0.1.x callers.
+        set_u32(
+            &object,
+            "shDegree",
+            self.load_receipt.resident_sh_degree as u32,
+        )?;
+        let paged = self.session.geometry_path() == GeometryPath::PagedActiveAtlas;
+        let full_quality = self.load_receipt.source_count == self.load_receipt.decoded_count
+            && self.load_receipt.decoded_count == self.load_receipt.encoded_count
+            && self.load_receipt.encoded_count == self.load_receipt.resident_count
+            && self.load_receipt.resident_count == self.load_receipt.addressable_count
+            && self.load_receipt.source_sh_degree == self.load_receipt.resident_sh_degree
+            && !paged;
+        set_bool(&object, "fullQuality", full_quality)?;
+        set_string(
+            &object,
+            "sourceMembership",
+            if full_quality {
+                "all"
+            } else if paged {
+                "active_subset"
+            } else {
+                "incomplete"
+            },
+        )?;
+        set_bool(&object, "samplingEnabled", false)?;
+        set_bool(&object, "lodEnabled", false)?;
+        set_bool(
+            &object,
+            "partialScenePublished",
+            paged || self.load_receipt.resident_count != self.load_receipt.addressable_count,
+        )?;
         Ok(object.into())
     }
 
@@ -275,6 +835,35 @@ fn geometry_path_from_id(path: u32) -> Result<GeometryPath, JsValue> {
     }
 }
 
+fn projected_policy_from_id(policy: u32) -> Result<SurfaceProjectedDrawPolicy, JsValue> {
+    match policy {
+        0 => Ok(SurfaceProjectedDrawPolicy::Candidate),
+        1 => Ok(SurfaceProjectedDrawPolicy::Compact),
+        2 => Ok(SurfaceProjectedDrawPolicy::Adaptive),
+        _ => Err(error_code(ErrorCode::InvalidArgument)),
+    }
+}
+
+fn gpu_order_producer_from_id(producer: u32) -> Result<SurfaceGpuOrderProducer, JsValue> {
+    match producer {
+        0 => Ok(SurfaceGpuOrderProducer::PostSort),
+        1 => Ok(SurfaceGpuOrderProducer::Preproject),
+        _ => Err(error_code(ErrorCode::InvalidArgument)),
+    }
+}
+
+fn require_gpu_producer_experiment_context(session: &SurfaceRenderSession) -> Result<(), JsValue> {
+    if session.geometry_path() != GeometryPath::PackedAtlas
+        || session.raster_execution_plan() != SurfaceRasterExecutionPlan::ProjectedQuadsExact
+        || session.projected_draw_policy() != SurfaceProjectedDrawPolicy::Compact
+    {
+        return Err(js_error(
+            "GPU producer diagnostics require Packed geometry, ProjectedQuadsExact raster, and forced Compact projected drawing",
+        ));
+    }
+    Ok(())
+}
+
 impl GsplatWebRenderer {
     fn apply_camera_control(&mut self) -> Result<(), JsValue> {
         let camera =
@@ -293,10 +882,10 @@ struct SurfaceCameraControl {
 }
 
 fn auto_surface_camera_control(renderer: &Renderer) -> Result<SurfaceCameraControl, ErrorCode> {
-    let Some(scene) = renderer.scene() else {
+    let Some(positions) = renderer.positions() else {
         return Err(ErrorCode::SceneNotLoaded);
     };
-    let Some((min, max)) = scene_bounds(scene) else {
+    let Some((min, max)) = scene_bounds(positions) else {
         return Err(ErrorCode::InvalidArgument);
     };
 
@@ -442,13 +1031,13 @@ fn vec3_normalize(v: Vec3f) -> Option<Vec3f> {
     Some(vec3_scale(v, 1.0 / len))
 }
 
-fn scene_bounds(scene: &SceneBuffers) -> Option<(Vec3f, Vec3f)> {
-    if scene.positions.is_empty() {
+fn scene_bounds(positions: &[Vec3f]) -> Option<(Vec3f, Vec3f)> {
+    if positions.is_empty() {
         return None;
     }
     let mut min = Vec3f::new(f32::INFINITY, f32::INFINITY, f32::INFINITY);
     let mut max = Vec3f::new(f32::NEG_INFINITY, f32::NEG_INFINITY, f32::NEG_INFINITY);
-    for p in &scene.positions {
+    for p in positions {
         min.x = min.x.min(p.x);
         min.y = min.y.min(p.y);
         min.z = min.z.min(p.z);
@@ -460,11 +1049,20 @@ fn scene_bounds(scene: &SceneBuffers) -> Option<(Vec3f, Vec3f)> {
 }
 
 fn frame_stats_object(
-    stats: FrameStats,
-    timings: SurfaceFrameTimings,
-    refresh_sort: bool,
+    output: SurfaceFrameOutput,
     surface_size: (u32, u32),
+    internal_render_size: (u32, u32),
+    presented_size: Option<(u32, u32)>,
+    completed_cpu_order_measurements: &[SurfaceCpuOrderMeasurement],
+    completed_order_measurements: &[SurfaceOrderMeasurement],
+    failed_order_measurements: &[SurfaceOrderMeasurementFailure],
+    completed_projected_measurements: &[SurfaceProjectedDrawMeasurement],
+    failed_projected_measurements: &[SurfaceProjectedDrawMeasurementFailure],
+    completed_gpu_producer_measurements: &[SurfaceGpuProducerMeasurement],
+    failed_gpu_producer_measurements: &[SurfaceGpuProducerMeasurementFailure],
 ) -> Result<JsValue, JsValue> {
+    let stats: FrameStats = output.stats;
+    let timings = output.timings;
     let object = Object::new();
     set_f32(&object, "frameMs", stats.frame_ms)?;
     set_f32(&object, "preprocessMs", stats.preprocess_ms)?;
@@ -473,12 +1071,994 @@ fn frame_stats_object(
     set_f32(&object, "cpuGeometryMs", timings.cpu_geometry_ms)?;
     set_f32(&object, "renderSubmitMs", timings.render_submit_ms)?;
     set_f32(&object, "frameWallMs", timings.frame_wall_ms)?;
+    set_bool(&object, "framePresented", output.frame_presented)?;
+    set_bool(
+        &object,
+        "gpuOrderPreparationPending",
+        output.gpu_order_preparation_pending,
+    )?;
+    set_bool(
+        &object,
+        "tiledPreparationPending",
+        output.tiled_preparation_pending,
+    )?;
+    set_string(
+        &object,
+        "rasterExecutionPlan",
+        match output.raster_execution_plan {
+            SurfaceRasterExecutionPlan::GlobalQuads => "global_quads",
+            SurfaceRasterExecutionPlan::ProjectedQuadsExact => "projected_quads_exact",
+            SurfaceRasterExecutionPlan::TiledExact => "tiled_exact",
+        },
+    )?;
     set_u32(&object, "visibleCount", stats.visible_count)?;
     set_u32(&object, "drawnCount", stats.drawn_count)?;
-    set_bool(&object, "refreshSort", refresh_sort)?;
+    set_bool(&object, "refreshSort", output.sort_refreshed)?;
+    set_string(
+        &object,
+        "orderBackend",
+        match output.order_backend {
+            SurfaceOrderBackendUsed::Cpu => "cpu",
+            SurfaceOrderBackendUsed::Gpu => "gpu",
+        },
+    )?;
+    set_optional_string(
+        &object,
+        "adaptiveGpuFailure",
+        output.adaptive_gpu_failure.map(|reason| match reason {
+            SurfaceAdaptiveGpuFailureReason::Unsupported => "unsupported",
+            SurfaceAdaptiveGpuFailureReason::Initialization => "initialization",
+            SurfaceAdaptiveGpuFailureReason::OutOfMemory => "out_of_memory",
+            SurfaceAdaptiveGpuFailureReason::Validation => "validation",
+        }),
+    )?;
+    set_bool(&object, "gpuSortFallback", output.gpu_sort_fallback)?;
+    set_string(
+        &object,
+        "adaptiveState",
+        match output.adaptive_state {
+            SurfaceAdaptiveState::Disabled => "disabled",
+            SurfaceAdaptiveState::CpuLearning => "cpu_learning",
+            SurfaceAdaptiveState::CpuStable => "cpu_stable",
+            SurfaceAdaptiveState::GpuProbe => "gpu_probe",
+            SurfaceAdaptiveState::GpuStable => "gpu_stable",
+            SurfaceAdaptiveState::CpuProbe => "cpu_probe",
+            SurfaceAdaptiveState::Cooldown => "cooldown",
+        },
+    )?;
+    set_string(
+        &object,
+        "projectedPolicy",
+        projected_policy_label(output.projected_draw_policy),
+    )?;
+    set_string(
+        &object,
+        "projectedExecution",
+        projected_execution_label(output.projected_draw_execution),
+    )?;
+    set_string(
+        &object,
+        "projectedAdaptiveState",
+        projected_adaptive_state_label(output.projected_draw_adaptive_state),
+    )?;
+    match output.projected_draw_measurement_submission {
+        SurfaceProjectedDrawMeasurementSubmission::NotRequested => {
+            set_string(&object, "projectedMeasurementSubmission", "not_requested")?;
+            set_null(&object, "projectedMeasurementTicket")?;
+            set_null(&object, "projectedMeasurementExecution")?;
+            set_null(&object, "projectedMeasurementUnsampledReason")?;
+        }
+        SurfaceProjectedDrawMeasurementSubmission::Issued { execution, ticket } => {
+            set_string(&object, "projectedMeasurementSubmission", "issued")?;
+            set_u64(&object, "projectedMeasurementTicket", ticket)?;
+            set_string(
+                &object,
+                "projectedMeasurementExecution",
+                projected_execution_label(execution),
+            )?;
+            set_null(&object, "projectedMeasurementUnsampledReason")?;
+        }
+        SurfaceProjectedDrawMeasurementSubmission::Unsampled { execution, reason } => {
+            set_string(&object, "projectedMeasurementSubmission", "unsampled")?;
+            set_null(&object, "projectedMeasurementTicket")?;
+            set_string(
+                &object,
+                "projectedMeasurementExecution",
+                projected_execution_label(execution),
+            )?;
+            set_string(
+                &object,
+                "projectedMeasurementUnsampledReason",
+                projected_unsampled_reason_label(reason),
+            )?;
+        }
+    }
+    set_optional_string(
+        &object,
+        "gpuOrderProducer",
+        output.gpu_order_producer.map(gpu_order_producer_label),
+    )?;
+    match output.gpu_producer_measurement_submission {
+        SurfaceGpuProducerMeasurementSubmission::NotRequested => {
+            set_string(&object, "gpuProducerMeasurementSubmission", "not_requested")?;
+            set_null(&object, "gpuProducerMeasurementTicket")?;
+            set_null(&object, "gpuProducerMeasurementProducer")?;
+            set_null(&object, "gpuProducerMeasurementUnsampledReason")?;
+        }
+        SurfaceGpuProducerMeasurementSubmission::Issued { producer, ticket } => {
+            set_string(&object, "gpuProducerMeasurementSubmission", "issued")?;
+            set_u64(&object, "gpuProducerMeasurementTicket", ticket)?;
+            set_string(
+                &object,
+                "gpuProducerMeasurementProducer",
+                gpu_order_producer_label(producer),
+            )?;
+            set_null(&object, "gpuProducerMeasurementUnsampledReason")?;
+        }
+        SurfaceGpuProducerMeasurementSubmission::Unsampled { producer, reason } => {
+            set_string(&object, "gpuProducerMeasurementSubmission", "unsampled")?;
+            set_null(&object, "gpuProducerMeasurementTicket")?;
+            set_string(
+                &object,
+                "gpuProducerMeasurementProducer",
+                gpu_order_producer_label(producer),
+            )?;
+            set_string(
+                &object,
+                "gpuProducerMeasurementUnsampledReason",
+                gpu_producer_unsampled_reason_label(reason),
+            )?;
+        }
+    }
+    set_u64(&object, "cameraRevision", output.camera_revision)?;
+    set_u64(
+        &object,
+        "appliedOrderRevision",
+        output.applied_order_revision,
+    )?;
+    set_u32(
+        &object,
+        "presentedOrderRevisionLag",
+        output.presented_order_revision_lag,
+    )?;
+    set_optional_u64(
+        &object,
+        "submittedMeasurementTicket",
+        output.submitted_measurement_ticket,
+    )?;
+    match output.order_measurement_submission {
+        SurfaceOrderMeasurementSubmission::NotRequested => {
+            set_null(&object, "submittedMeasurementBackend")?;
+            set_null(&object, "measurementUnsampledReason")?;
+        }
+        SurfaceOrderMeasurementSubmission::Issued { backend, .. } => {
+            set_string(
+                &object,
+                "submittedMeasurementBackend",
+                order_backend_label(backend),
+            )?;
+            set_null(&object, "measurementUnsampledReason")?;
+        }
+        SurfaceOrderMeasurementSubmission::Unsampled { backend, reason } => {
+            set_string(
+                &object,
+                "submittedMeasurementBackend",
+                order_backend_label(backend),
+            )?;
+            set_string(
+                &object,
+                "measurementUnsampledReason",
+                match reason {
+                    SurfaceOrderMeasurementUnsampledReason::RingBusy => "ring_busy",
+                    SurfaceOrderMeasurementUnsampledReason::SurfaceUnavailable => {
+                        "surface_unavailable"
+                    }
+                },
+            )?;
+        }
+    }
+    set_optional_u64(
+        &object,
+        "visibleCountRevision",
+        output.visible_count_revision,
+    )?;
+    set_bool(&object, "visibleCountPending", output.visible_count_pending)?;
+    set_bool(
+        &object,
+        "gpuTimestampQueriesEnabled",
+        output.gpu_timestamp_queries_enabled,
+    )?;
+    if let Some(measurement) = output.completed_order_measurement {
+        set_bool(&object, "completedMeasurementAvailable", true)?;
+        set_u64(&object, "completedMeasurementTicket", measurement.ticket)?;
+        set_u64(
+            &object,
+            "completedMeasurementRevision",
+            measurement.camera_revision,
+        )?;
+        set_string(
+            &object,
+            "completedMeasurementTimingSource",
+            match measurement.timing_source {
+                SurfaceTimingSource::TimestampQuery => "timestamp_query",
+                SurfaceTimingSource::CompletionOnly => "completion_only",
+            },
+        )?;
+        set_optional_f32(&object, "gpuPreprocessMs", measurement.gpu_preprocess_ms)?;
+        set_optional_f32(&object, "gpuRadixMs", measurement.gpu_radix_ms)?;
+        set_optional_f32(&object, "gpuOrderMs", measurement.gpu_order_ms)?;
+        set_f32(&object, "gpuCompleteMs", measurement.gpu_complete_ms)?;
+        set_optional_f32(
+            &object,
+            "gpuTimestampPeriodNs",
+            measurement.timestamp_period_ns,
+        )?;
+        set_bool(
+            &object,
+            "gpuBelowTimestampResolution",
+            measurement.below_timestamp_resolution,
+        )?;
+        set_u32(&object, "completedVisibleCount", measurement.visible_count)?;
+        set_u32(
+            &object,
+            "completedContributorCount",
+            measurement.contributor_count,
+        )?;
+        set_u32(&object, "completedDrawnCount", measurement.drawn_count)?;
+        set_bool(
+            &object,
+            "completedExactContributorCompaction",
+            measurement.exact_contributor_compaction,
+        )?;
+    } else {
+        set_bool(&object, "completedMeasurementAvailable", false)?;
+        for key in [
+            "completedMeasurementTicket",
+            "completedMeasurementRevision",
+            "completedMeasurementTimingSource",
+            "gpuPreprocessMs",
+            "gpuRadixMs",
+            "gpuOrderMs",
+            "gpuCompleteMs",
+            "gpuTimestampPeriodNs",
+            "gpuBelowTimestampResolution",
+            "completedVisibleCount",
+            "completedContributorCount",
+            "completedDrawnCount",
+            "completedExactContributorCompaction",
+        ] {
+            set_null(&object, key)?;
+        }
+    }
+    if let Some(failure) = output.completed_order_measurement_failure {
+        set_bool(&object, "failedMeasurementAvailable", true)?;
+        set_u64(&object, "failedMeasurementTicket", failure.ticket)?;
+        set_u64(
+            &object,
+            "failedMeasurementRevision",
+            failure.camera_revision,
+        )?;
+        set_string(
+            &object,
+            "failedMeasurementReason",
+            order_measurement_failure_reason(failure.reason),
+        )?;
+    } else {
+        set_bool(&object, "failedMeasurementAvailable", false)?;
+        for key in [
+            "failedMeasurementTicket",
+            "failedMeasurementRevision",
+            "failedMeasurementReason",
+        ] {
+            set_null(&object, key)?;
+        }
+    }
+    if let Some(measurement) = output.completed_projected_draw_measurement {
+        set_bool(&object, "completedProjectedMeasurementAvailable", true)?;
+        set_u64(
+            &object,
+            "completedProjectedMeasurementTicket",
+            measurement.ticket,
+        )?;
+        set_u64(
+            &object,
+            "completedProjectedMeasurementRevision",
+            measurement.camera_revision,
+        )?;
+        set_string(
+            &object,
+            "completedProjectedMeasurementExecution",
+            projected_execution_label(measurement.execution),
+        )?;
+        set_string(
+            &object,
+            "completedProjectedMeasurementOrderBackend",
+            order_backend_label(measurement.order_backend),
+        )?;
+        set_u64(
+            &object,
+            "completedProjectedProjectionGeneration",
+            measurement.projection_generation,
+        )?;
+        set_u64(
+            &object,
+            "completedProjectedProbeGeneration",
+            measurement.probe_generation,
+        )?;
+        set_bool(
+            &object,
+            "completedProjectedProjectionRebuilt",
+            measurement.projection_rebuilt,
+        )?;
+        set_bool(
+            &object,
+            "completedProjectedOrderRefreshed",
+            measurement.order_refreshed,
+        )?;
+        set_f32(
+            &object,
+            "completedProjectedFrameCompleteMs",
+            measurement.frame_complete_ms,
+        )?;
+        set_u32(
+            &object,
+            "completedProjectedVisibleCount",
+            measurement.visible_count,
+        )?;
+        set_u32(
+            &object,
+            "completedProjectedContributorCount",
+            measurement.contributor_count,
+        )?;
+        set_u32(
+            &object,
+            "completedProjectedDrawnCount",
+            measurement.drawn_count,
+        )?;
+        set_bool(
+            &object,
+            "completedProjectedExactContributorCompaction",
+            measurement.exact_contributor_compaction,
+        )?;
+    } else {
+        set_bool(&object, "completedProjectedMeasurementAvailable", false)?;
+        for key in [
+            "completedProjectedMeasurementTicket",
+            "completedProjectedMeasurementRevision",
+            "completedProjectedMeasurementExecution",
+            "completedProjectedMeasurementOrderBackend",
+            "completedProjectedProjectionGeneration",
+            "completedProjectedProbeGeneration",
+            "completedProjectedProjectionRebuilt",
+            "completedProjectedOrderRefreshed",
+            "completedProjectedFrameCompleteMs",
+            "completedProjectedVisibleCount",
+            "completedProjectedContributorCount",
+            "completedProjectedDrawnCount",
+            "completedProjectedExactContributorCompaction",
+        ] {
+            set_null(&object, key)?;
+        }
+    }
+    if let Some(failure) = output.completed_projected_draw_measurement_failure {
+        set_bool(&object, "failedProjectedMeasurementAvailable", true)?;
+        set_u64(&object, "failedProjectedMeasurementTicket", failure.ticket)?;
+        set_u64(
+            &object,
+            "failedProjectedMeasurementRevision",
+            failure.camera_revision,
+        )?;
+        set_string(
+            &object,
+            "failedProjectedMeasurementExecution",
+            projected_execution_label(failure.execution),
+        )?;
+        set_string(
+            &object,
+            "failedProjectedMeasurementOrderBackend",
+            order_backend_label(failure.order_backend),
+        )?;
+        set_u64(
+            &object,
+            "failedProjectedProjectionGeneration",
+            failure.projection_generation,
+        )?;
+        set_u64(
+            &object,
+            "failedProjectedProbeGeneration",
+            failure.probe_generation,
+        )?;
+        set_string(
+            &object,
+            "failedProjectedMeasurementReason",
+            projected_failure_reason_label(failure.reason),
+        )?;
+    } else {
+        set_bool(&object, "failedProjectedMeasurementAvailable", false)?;
+        for key in [
+            "failedProjectedMeasurementTicket",
+            "failedProjectedMeasurementRevision",
+            "failedProjectedMeasurementExecution",
+            "failedProjectedMeasurementOrderBackend",
+            "failedProjectedProjectionGeneration",
+            "failedProjectedProbeGeneration",
+            "failedProjectedMeasurementReason",
+        ] {
+            set_null(&object, key)?;
+        }
+    }
+    if let Some(measurement) = output.completed_gpu_producer_measurement {
+        set_bool(&object, "completedGpuProducerMeasurementAvailable", true)?;
+        set_u64(
+            &object,
+            "completedGpuProducerMeasurementTicket",
+            measurement.ticket,
+        )?;
+        set_u64(
+            &object,
+            "completedGpuProducerMeasurementRevision",
+            measurement.camera_revision,
+        )?;
+        set_string(
+            &object,
+            "completedGpuProducerMeasurementProducer",
+            gpu_order_producer_label(measurement.producer),
+        )?;
+        set_u64(
+            &object,
+            "completedGpuProducerOrderGeneration",
+            measurement.order_generation,
+        )?;
+        set_u64(
+            &object,
+            "completedGpuProducerProjectionGeneration",
+            measurement.projection_generation,
+        )?;
+        set_u32(
+            &object,
+            "completedGpuProducerSourceCount",
+            measurement.source_count,
+        )?;
+        set_u32(
+            &object,
+            "completedGpuProducerContributorCount",
+            measurement.contributor_count,
+        )?;
+        set_u32(
+            &object,
+            "completedGpuProducerDrawnCount",
+            measurement.drawn_count,
+        )?;
+        set_bool(
+            &object,
+            "completedGpuProducerOrderRefreshed",
+            measurement.order_refreshed,
+        )?;
+        set_string(
+            &object,
+            "completedGpuProducerDrawScope",
+            gpu_producer_draw_scope_label(measurement.draw_scope),
+        )?;
+        set_bool(
+            &object,
+            "completedGpuProducerExactCurrentContributorDraw",
+            measurement.exact_current_contributor_draw(),
+        )?;
+        set_bool(
+            &object,
+            "completedGpuProducerStaleOrder",
+            measurement.stale_order(),
+        )?;
+        set_f32(
+            &object,
+            "completedGpuProducerQueueCompleteMs",
+            measurement.frame_complete_ms,
+        )?;
+    } else {
+        set_bool(&object, "completedGpuProducerMeasurementAvailable", false)?;
+        for key in [
+            "completedGpuProducerMeasurementTicket",
+            "completedGpuProducerMeasurementRevision",
+            "completedGpuProducerMeasurementProducer",
+            "completedGpuProducerOrderGeneration",
+            "completedGpuProducerProjectionGeneration",
+            "completedGpuProducerSourceCount",
+            "completedGpuProducerContributorCount",
+            "completedGpuProducerDrawnCount",
+            "completedGpuProducerOrderRefreshed",
+            "completedGpuProducerDrawScope",
+            "completedGpuProducerExactCurrentContributorDraw",
+            "completedGpuProducerStaleOrder",
+            "completedGpuProducerQueueCompleteMs",
+        ] {
+            set_null(&object, key)?;
+        }
+    }
+    if let Some(failure) = output.completed_gpu_producer_measurement_failure {
+        set_bool(&object, "failedGpuProducerMeasurementAvailable", true)?;
+        set_u64(
+            &object,
+            "failedGpuProducerMeasurementTicket",
+            failure.ticket,
+        )?;
+        set_u64(
+            &object,
+            "failedGpuProducerMeasurementRevision",
+            failure.camera_revision,
+        )?;
+        set_string(
+            &object,
+            "failedGpuProducerMeasurementProducer",
+            gpu_order_producer_label(failure.producer),
+        )?;
+        set_u64(
+            &object,
+            "failedGpuProducerOrderGeneration",
+            failure.order_generation,
+        )?;
+        set_u64(
+            &object,
+            "failedGpuProducerProjectionGeneration",
+            failure.projection_generation,
+        )?;
+        set_string(
+            &object,
+            "failedGpuProducerMeasurementReason",
+            gpu_producer_failure_reason_label(failure.reason),
+        )?;
+    } else {
+        set_bool(&object, "failedGpuProducerMeasurementAvailable", false)?;
+        for key in [
+            "failedGpuProducerMeasurementTicket",
+            "failedGpuProducerMeasurementRevision",
+            "failedGpuProducerMeasurementProducer",
+            "failedGpuProducerOrderGeneration",
+            "failedGpuProducerProjectionGeneration",
+            "failedGpuProducerMeasurementReason",
+        ] {
+            set_null(&object, key)?;
+        }
+    }
+    let receipts = measurement_receipts_object(
+        completed_cpu_order_measurements,
+        completed_order_measurements,
+        failed_order_measurements,
+        completed_projected_measurements,
+        failed_projected_measurements,
+        completed_gpu_producer_measurements,
+        failed_gpu_producer_measurements,
+    )?;
+    for key in [
+        "completedCpuOrderMeasurements",
+        "completedOrderMeasurements",
+        "failedOrderMeasurements",
+        "completedProjectedMeasurements",
+        "failedProjectedMeasurements",
+        "completedGpuProducerMeasurements",
+        "failedGpuProducerMeasurements",
+    ] {
+        Reflect::set(
+            &object,
+            &JsValue::from_str(key),
+            &Reflect::get(&receipts, &JsValue::from_str(key))?,
+        )?;
+    }
     set_u32(&object, "surfaceWidth", surface_size.0)?;
     set_u32(&object, "surfaceHeight", surface_size.1)?;
+    set_u32(&object, "internalRenderWidth", internal_render_size.0)?;
+    set_u32(&object, "internalRenderHeight", internal_render_size.1)?;
+    set_optional_u64(
+        &object,
+        "presentedWidth",
+        presented_size.map(|size| u64::from(size.0)),
+    )?;
+    set_optional_u64(
+        &object,
+        "presentedHeight",
+        presented_size.map(|size| u64::from(size.1)),
+    )?;
     Ok(object.into())
+}
+
+fn measurement_receipts_object(
+    completed_cpu_order_measurements: &[SurfaceCpuOrderMeasurement],
+    completed_order_measurements: &[SurfaceOrderMeasurement],
+    failed_order_measurements: &[SurfaceOrderMeasurementFailure],
+    completed_projected_measurements: &[SurfaceProjectedDrawMeasurement],
+    failed_projected_measurements: &[SurfaceProjectedDrawMeasurementFailure],
+    completed_gpu_producer_measurements: &[SurfaceGpuProducerMeasurement],
+    failed_gpu_producer_measurements: &[SurfaceGpuProducerMeasurementFailure],
+) -> Result<JsValue, JsValue> {
+    let object = Object::new();
+    let completed_cpu = Array::new();
+    for measurement in completed_cpu_order_measurements {
+        completed_cpu.push(&cpu_order_measurement_object(*measurement)?.into());
+    }
+    Reflect::set(
+        &object,
+        &JsValue::from_str("completedCpuOrderMeasurements"),
+        &completed_cpu,
+    )?;
+    let completed = Array::new();
+    for measurement in completed_order_measurements {
+        completed.push(&order_measurement_object(*measurement)?.into());
+    }
+    Reflect::set(
+        &object,
+        &JsValue::from_str("completedOrderMeasurements"),
+        &completed,
+    )?;
+    let failed = Array::new();
+    for failure in failed_order_measurements {
+        failed.push(&order_measurement_failure_object(*failure)?.into());
+    }
+    Reflect::set(
+        &object,
+        &JsValue::from_str("failedOrderMeasurements"),
+        &failed,
+    )?;
+    let completed_projected = Array::new();
+    for measurement in completed_projected_measurements {
+        completed_projected.push(&projected_measurement_object(*measurement)?.into());
+    }
+    Reflect::set(
+        &object,
+        &JsValue::from_str("completedProjectedMeasurements"),
+        &completed_projected,
+    )?;
+    let failed_projected = Array::new();
+    for failure in failed_projected_measurements {
+        failed_projected.push(&projected_failure_object(*failure)?.into());
+    }
+    Reflect::set(
+        &object,
+        &JsValue::from_str("failedProjectedMeasurements"),
+        &failed_projected,
+    )?;
+    let completed_gpu_producer = Array::new();
+    for measurement in completed_gpu_producer_measurements {
+        completed_gpu_producer.push(&gpu_producer_measurement_object(*measurement)?.into());
+    }
+    Reflect::set(
+        &object,
+        &JsValue::from_str("completedGpuProducerMeasurements"),
+        &completed_gpu_producer,
+    )?;
+    let failed_gpu_producer = Array::new();
+    for failure in failed_gpu_producer_measurements {
+        failed_gpu_producer.push(&gpu_producer_failure_object(*failure)?.into());
+    }
+    Reflect::set(
+        &object,
+        &JsValue::from_str("failedGpuProducerMeasurements"),
+        &failed_gpu_producer,
+    )?;
+    Ok(object.into())
+}
+
+fn order_measurement_failure_object(
+    failure: SurfaceOrderMeasurementFailure,
+) -> Result<Object, JsValue> {
+    let object = Object::new();
+    set_u64(&object, "ticket", failure.ticket)?;
+    set_u64(&object, "cameraRevision", failure.camera_revision)?;
+    set_string(
+        &object,
+        "actualBackend",
+        if failure.ticket & 1 == 0 {
+            "cpu"
+        } else {
+            "gpu"
+        },
+    )?;
+    set_string(
+        &object,
+        "reason",
+        order_measurement_failure_reason(failure.reason),
+    )?;
+    Ok(object)
+}
+
+fn cpu_order_measurement_object(
+    measurement: SurfaceCpuOrderMeasurement,
+) -> Result<Object, JsValue> {
+    let object = Object::new();
+    set_u64(&object, "ticket", measurement.ticket)?;
+    set_u64(&object, "cameraRevision", measurement.camera_revision)?;
+    set_string(&object, "actualBackend", "cpu")?;
+    set_f32(&object, "preprocessMs", measurement.preprocess_ms)?;
+    set_f32(&object, "sortMs", measurement.sort_ms)?;
+    set_f32(&object, "frameCompleteMs", measurement.frame_complete_ms)?;
+    set_string(
+        &object,
+        "countSemantics",
+        "candidate_visible_contributor_issued_v1",
+    )?;
+    set_u32(&object, "visibleCount", measurement.visible_count)?;
+    set_u32(&object, "contributorCount", measurement.contributor_count)?;
+    set_u32(&object, "drawnCount", measurement.drawn_count)?;
+    set_bool(
+        &object,
+        "exactContributorCompaction",
+        measurement.exact_contributor_compaction,
+    )?;
+    Ok(object)
+}
+
+const fn order_backend_label(backend: SurfaceOrderBackendUsed) -> &'static str {
+    match backend {
+        SurfaceOrderBackendUsed::Cpu => "cpu",
+        SurfaceOrderBackendUsed::Gpu => "gpu",
+    }
+}
+
+const fn order_measurement_failure_reason(
+    reason: SurfaceOrderMeasurementFailureReason,
+) -> &'static str {
+    match reason {
+        SurfaceOrderMeasurementFailureReason::ReadbackMap => "readback_map",
+        SurfaceOrderMeasurementFailureReason::GenerationInvalidated => "generation_invalidated",
+    }
+}
+
+fn order_measurement_object(measurement: SurfaceOrderMeasurement) -> Result<Object, JsValue> {
+    let object = Object::new();
+    set_u64(&object, "ticket", measurement.ticket)?;
+    set_u64(&object, "cameraRevision", measurement.camera_revision)?;
+    set_string(&object, "actualBackend", "gpu")?;
+    set_string(
+        &object,
+        "timingSource",
+        match measurement.timing_source {
+            SurfaceTimingSource::TimestampQuery => "timestamp_query",
+            SurfaceTimingSource::CompletionOnly => "completion_only",
+        },
+    )?;
+    set_optional_f32(&object, "gpuPreprocessMs", measurement.gpu_preprocess_ms)?;
+    set_optional_f32(&object, "gpuRadixMs", measurement.gpu_radix_ms)?;
+    set_optional_f32(&object, "gpuOrderMs", measurement.gpu_order_ms)?;
+    set_f32(&object, "gpuCompleteMs", measurement.gpu_complete_ms)?;
+    set_optional_f32(
+        &object,
+        "timestampPeriodNs",
+        measurement.timestamp_period_ns,
+    )?;
+    set_bool(
+        &object,
+        "belowTimestampResolution",
+        measurement.below_timestamp_resolution,
+    )?;
+    set_string(
+        &object,
+        "countSemantics",
+        "candidate_visible_contributor_issued_v1",
+    )?;
+    set_u32(&object, "visibleCount", measurement.visible_count)?;
+    set_u32(&object, "contributorCount", measurement.contributor_count)?;
+    set_u32(&object, "drawnCount", measurement.drawn_count)?;
+    set_bool(
+        &object,
+        "exactContributorCompaction",
+        measurement.exact_contributor_compaction,
+    )?;
+    Ok(object)
+}
+
+fn projected_measurement_object(
+    measurement: SurfaceProjectedDrawMeasurement,
+) -> Result<Object, JsValue> {
+    let object = Object::new();
+    set_u64(&object, "ticket", measurement.ticket)?;
+    set_u64(&object, "cameraRevision", measurement.camera_revision)?;
+    set_string(
+        &object,
+        "execution",
+        projected_execution_label(measurement.execution),
+    )?;
+    set_string(
+        &object,
+        "orderBackend",
+        order_backend_label(measurement.order_backend),
+    )?;
+    set_u64(
+        &object,
+        "projectionGeneration",
+        measurement.projection_generation,
+    )?;
+    set_u64(&object, "probeGeneration", measurement.probe_generation)?;
+    set_bool(&object, "projectionRebuilt", measurement.projection_rebuilt)?;
+    set_bool(&object, "orderRefreshed", measurement.order_refreshed)?;
+    set_f32(&object, "frameCompleteMs", measurement.frame_complete_ms)?;
+    set_string(
+        &object,
+        "countSemantics",
+        "candidate_visible_contributor_issued_v1",
+    )?;
+    set_u32(&object, "visibleCount", measurement.visible_count)?;
+    set_u32(&object, "contributorCount", measurement.contributor_count)?;
+    set_u32(&object, "drawnCount", measurement.drawn_count)?;
+    set_bool(
+        &object,
+        "exactContributorCompaction",
+        measurement.exact_contributor_compaction,
+    )?;
+    Ok(object)
+}
+
+fn projected_failure_object(
+    failure: SurfaceProjectedDrawMeasurementFailure,
+) -> Result<Object, JsValue> {
+    let object = Object::new();
+    set_u64(&object, "ticket", failure.ticket)?;
+    set_u64(&object, "cameraRevision", failure.camera_revision)?;
+    set_string(
+        &object,
+        "execution",
+        projected_execution_label(failure.execution),
+    )?;
+    set_string(
+        &object,
+        "orderBackend",
+        order_backend_label(failure.order_backend),
+    )?;
+    set_u64(
+        &object,
+        "projectionGeneration",
+        failure.projection_generation,
+    )?;
+    set_u64(&object, "probeGeneration", failure.probe_generation)?;
+    set_string(
+        &object,
+        "reason",
+        projected_failure_reason_label(failure.reason),
+    )?;
+    Ok(object)
+}
+
+fn gpu_producer_measurement_object(
+    measurement: SurfaceGpuProducerMeasurement,
+) -> Result<Object, JsValue> {
+    let object = Object::new();
+    set_u64(&object, "ticket", measurement.ticket)?;
+    set_u64(&object, "cameraRevision", measurement.camera_revision)?;
+    set_string(
+        &object,
+        "producer",
+        gpu_order_producer_label(measurement.producer),
+    )?;
+    set_u64(&object, "orderGeneration", measurement.order_generation)?;
+    set_u64(
+        &object,
+        "projectionGeneration",
+        measurement.projection_generation,
+    )?;
+    set_string(&object, "countSemantics", "source_contributor_issued_v1")?;
+    set_u32(&object, "sourceCount", measurement.source_count)?;
+    set_u32(&object, "contributorCount", measurement.contributor_count)?;
+    set_u32(&object, "drawnCount", measurement.drawn_count)?;
+    set_bool(&object, "orderRefreshed", measurement.order_refreshed)?;
+    set_string(
+        &object,
+        "drawScope",
+        gpu_producer_draw_scope_label(measurement.draw_scope),
+    )?;
+    set_bool(
+        &object,
+        "exactCurrentContributorDraw",
+        measurement.exact_current_contributor_draw(),
+    )?;
+    set_bool(&object, "staleOrder", measurement.stale_order())?;
+    set_f32(&object, "queueCompleteMs", measurement.frame_complete_ms)?;
+    Ok(object)
+}
+
+fn gpu_producer_failure_object(
+    failure: SurfaceGpuProducerMeasurementFailure,
+) -> Result<Object, JsValue> {
+    let object = Object::new();
+    set_u64(&object, "ticket", failure.ticket)?;
+    set_u64(&object, "cameraRevision", failure.camera_revision)?;
+    set_string(
+        &object,
+        "producer",
+        gpu_order_producer_label(failure.producer),
+    )?;
+    set_u64(&object, "orderGeneration", failure.order_generation)?;
+    set_u64(
+        &object,
+        "projectionGeneration",
+        failure.projection_generation,
+    )?;
+    set_string(
+        &object,
+        "reason",
+        gpu_producer_failure_reason_label(failure.reason),
+    )?;
+    Ok(object)
+}
+
+const fn gpu_order_producer_label(producer: SurfaceGpuOrderProducer) -> &'static str {
+    match producer {
+        SurfaceGpuOrderProducer::PostSort => "post-sort",
+        SurfaceGpuOrderProducer::Preproject => "preproject",
+    }
+}
+
+const fn gpu_producer_draw_scope_label(scope: SurfaceGpuProducerDrawScope) -> &'static str {
+    match scope {
+        SurfaceGpuProducerDrawScope::ExactCurrentContributors => "exact_current_contributors",
+        SurfaceGpuProducerDrawScope::StaleOrderCandidates => "stale_order_candidates",
+    }
+}
+
+const fn gpu_producer_unsampled_reason_label(
+    reason: SurfaceGpuProducerMeasurementUnsampledReason,
+) -> &'static str {
+    match reason {
+        SurfaceGpuProducerMeasurementUnsampledReason::RingBusy => "ring_busy",
+        SurfaceGpuProducerMeasurementUnsampledReason::SurfaceUnavailable => "surface_unavailable",
+    }
+}
+
+const fn gpu_producer_failure_reason_label(
+    reason: SurfaceGpuProducerMeasurementFailureReason,
+) -> &'static str {
+    match reason {
+        SurfaceGpuProducerMeasurementFailureReason::ReadbackMap => "readback_map",
+        SurfaceGpuProducerMeasurementFailureReason::GenerationInvalidated => {
+            "generation_invalidated"
+        }
+        SurfaceGpuProducerMeasurementFailureReason::InvariantViolation => "invariant_violation",
+    }
+}
+
+const fn projected_policy_label(policy: SurfaceProjectedDrawPolicy) -> &'static str {
+    match policy {
+        SurfaceProjectedDrawPolicy::Candidate => "candidate",
+        SurfaceProjectedDrawPolicy::Compact => "compact",
+        SurfaceProjectedDrawPolicy::Adaptive => "adaptive",
+    }
+}
+
+const fn projected_execution_label(execution: SurfaceProjectedDrawExecution) -> &'static str {
+    match execution {
+        SurfaceProjectedDrawExecution::Candidate => "candidate",
+        SurfaceProjectedDrawExecution::Compact => "compact",
+    }
+}
+
+const fn projected_adaptive_state_label(state: SurfaceProjectedDrawAdaptiveState) -> &'static str {
+    match state {
+        SurfaceProjectedDrawAdaptiveState::Disabled => "disabled",
+        SurfaceProjectedDrawAdaptiveState::CandidateLearning => "candidate_learning",
+        SurfaceProjectedDrawAdaptiveState::CandidateStable => "candidate_stable",
+        SurfaceProjectedDrawAdaptiveState::CompactProbe => "compact_probe",
+        SurfaceProjectedDrawAdaptiveState::CompactStable => "compact_stable",
+        SurfaceProjectedDrawAdaptiveState::CandidateProbe => "candidate_probe",
+        SurfaceProjectedDrawAdaptiveState::CandidateOnly => "candidate_only",
+        SurfaceProjectedDrawAdaptiveState::Cooldown => "cooldown",
+    }
+}
+
+const fn projected_unsampled_reason_label(
+    reason: SurfaceProjectedDrawMeasurementUnsampledReason,
+) -> &'static str {
+    match reason {
+        SurfaceProjectedDrawMeasurementUnsampledReason::RingBusy => "ring_busy",
+        SurfaceProjectedDrawMeasurementUnsampledReason::SurfaceUnavailable => "surface_unavailable",
+    }
+}
+
+const fn projected_failure_reason_label(
+    reason: SurfaceProjectedDrawMeasurementFailureReason,
+) -> &'static str {
+    match reason {
+        SurfaceProjectedDrawMeasurementFailureReason::ReadbackMap => "readback_map",
+        SurfaceProjectedDrawMeasurementFailureReason::GenerationInvalidated => {
+            "generation_invalidated"
+        }
+        SurfaceProjectedDrawMeasurementFailureReason::InvariantViolation => "invariant_violation",
+    }
 }
 
 fn set_f32(object: &Object, key: &str, value: f32) -> Result<(), JsValue> {
@@ -488,6 +2068,45 @@ fn set_f32(object: &Object, key: &str, value: f32) -> Result<(), JsValue> {
         &JsValue::from_f64(value as f64),
     )
     .map(|_| ())
+}
+
+fn set_f64(object: &Object, key: &str, value: f64) -> Result<(), JsValue> {
+    Reflect::set(object, &JsValue::from_str(key), &JsValue::from_f64(value)).map(|_| ())
+}
+
+fn set_optional_f32(object: &Object, key: &str, value: Option<f32>) -> Result<(), JsValue> {
+    match value {
+        Some(value) => set_f32(object, key, value),
+        None => set_null(object, key),
+    }
+}
+
+fn set_optional_u64(object: &Object, key: &str, value: Option<u64>) -> Result<(), JsValue> {
+    match value {
+        Some(value) => set_u64(object, key, value),
+        None => set_null(object, key),
+    }
+}
+
+fn set_u64(object: &Object, key: &str, value: u64) -> Result<(), JsValue> {
+    const MAX_JAVASCRIPT_SAFE_INTEGER: u64 = (1_u64 << 53) - 1;
+    if value > MAX_JAVASCRIPT_SAFE_INTEGER {
+        return Err(js_error(format!(
+            "{key} exceeds JavaScript's exact integer range"
+        )));
+    }
+    set_f64(object, key, value as f64)
+}
+
+fn set_optional_string(object: &Object, key: &str, value: Option<&str>) -> Result<(), JsValue> {
+    match value {
+        Some(value) => set_string(object, key, value),
+        None => set_null(object, key),
+    }
+}
+
+fn set_null(object: &Object, key: &str) -> Result<(), JsValue> {
+    Reflect::set(object, &JsValue::from_str(key), &JsValue::NULL).map(|_| ())
 }
 
 fn set_u32(object: &Object, key: &str, value: u32) -> Result<(), JsValue> {
@@ -501,6 +2120,10 @@ fn set_u32(object: &Object, key: &str, value: u32) -> Result<(), JsValue> {
 
 fn set_bool(object: &Object, key: &str, value: bool) -> Result<(), JsValue> {
     Reflect::set(object, &JsValue::from_str(key), &JsValue::from_bool(value)).map(|_| ())
+}
+
+fn set_string(object: &Object, key: &str, value: &str) -> Result<(), JsValue> {
+    Reflect::set(object, &JsValue::from_str(key), &JsValue::from_str(value)).map(|_| ())
 }
 
 fn renderer_error(err: gsplat_render_wgpu::RendererError) -> JsValue {

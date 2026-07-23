@@ -1,0 +1,252 @@
+{
+  "schema": "gsplat-camera-trace/v1",
+  "trace_id": "candidate-bonsai-quality-2view-2412x1080-v1",
+  "coordinate_system": {
+    "handedness": "right",
+    "axes": "RUF",
+    "camera_forward": "+Z"
+  },
+  "matrix_convention": {
+    "storage_order": "row-major",
+    "vector_convention": "column",
+    "composition": "projection * view * world_position",
+    "ndc_xy": "[-1,1]",
+    "ndc_z": "[0,1]",
+    "clip_w": "camera_z"
+  },
+  "display": {
+    "width": 2412,
+    "height": 1080
+  },
+  "derivation": {
+    "status": "candidate_requires_manual_image_review",
+    "source_path": "tests/datasets/external/inria_3dgs/bonsai/point_cloud.ply",
+    "source_sha256": "a16af6d8815498ffbf9eb5d5ee93f5bcc9dca34c4e3eb6f7a796ef9e97c0d273",
+    "source_bytes": 308716644,
+    "source_splat_count": 1244819,
+    "source_sh_degree": 3,
+    "source_coordinate_system": "RDF",
+    "runtime_coordinate_system": "RUF",
+    "position_sampling": "stratified-midpoint-integer/v1",
+    "position_sample_count": 200000,
+    "lower_percentile": 20.0,
+    "upper_percentile": 80.0,
+    "robust_bounds_min_ruf": [
+      -7.9490478515625,
+      -5.753737926483154,
+      1.0294810533523562
+    ],
+    "robust_bounds_max_ruf": [
+      3.125606584548954,
+      1.818236899375921,
+      9.381352996826173
+    ],
+    "robust_center_ruf": [
+      -2.411720633506773,
+      -1.9677505135536166,
+      5.205417025089265
+    ],
+    "framing_method": "official_training_camera_pose_with_robust_far_plane",
+    "fit_margin": null,
+    "views": [
+      {
+        "source_camera_id": 0,
+        "source_image_name": "DSCF5565",
+        "source_width": 3118,
+        "source_height": 2078,
+        "source_fx": 3222.7010797592447,
+        "source_fy": 3222.7010797592447,
+        "source_horizontal_fov_radians": 0.9011358354744409,
+        "source_vertical_fov_radians": 0.62375764619403,
+        "frame_index": 0,
+        "camera_metadata_index": 0,
+        "distance_to_robust_center": 5.653377328606323
+      },
+      {
+        "source_camera_id": 146,
+        "source_image_name": "DSCF5690",
+        "source_width": 3118,
+        "source_height": 2078,
+        "source_fx": 3222.7010797592447,
+        "source_fy": 3222.7010797592447,
+        "source_horizontal_fov_radians": 0.9011358354744409,
+        "source_vertical_fov_radians": 0.62375764619403,
+        "frame_index": 1,
+        "camera_metadata_index": 146,
+        "distance_to_robust_center": 8.114572265920405
+      }
+    ],
+    "note": "Global extrema do not affect framing distance. The far plane uses a conservative multiple of robust radius; every source Gaussian remains loaded even when outside the selected view frustum.",
+    "official_camera_metadata": {
+      "local_path": "tests/datasets/external/inria_3dgs/bonsai/cameras.json",
+      "sha256": "41e623748141d5b1a292c2bcafbf9e897a3876f90c11a14618e9ac6190b05af3",
+      "bytes": 116695,
+      "entry_count": 292,
+      "coordinate_conversion": "R_ruf=diag(1,-1,1)*R_rdf*diag(1,-1,1); position_ruf=(x,-y,z)"
+    },
+    "display_variant": {
+      "source_trace_id": "candidate-bonsai-quality-2view-1920x1080-v1",
+      "source_trace_sha256": "8f0c419cdd090bc93bdfd46d5876f954c46b6d189e4f72d34c8a0fa475a87ef3",
+      "source_display": {
+        "width": 1920,
+        "height": 1080
+      },
+      "policy": "same_pose_fov_clip_reprojected_for_exact_target_aspect"
+    }
+  },
+  "frames": [
+    {
+      "frame_index": 0,
+      "timestamp_ns": 0,
+      "pose": {
+        "position": [
+          -3.7212285514226,
+          -1.9830705231664232,
+          -0.2941856450880261
+        ],
+        "rotation_xyzw": [
+          -0.22333718016162854,
+          0.4477111438334024,
+          -0.26663545302478603,
+          0.8237601415673775
+        ]
+      },
+      "intrinsics": {
+        "vertical_fov_radians": 0.62375764619403,
+        "near_plane": 0.01,
+        "far_plane": 400.7297454232063
+      },
+      "view_matrix": [
+        0.45692053375530717,
+        -0.6392684058425379,
+        -0.618513970031644,
+        0.25063347265386066,
+        0.2393062282797804,
+        0.7580520782954387,
+        -0.6067038616149328,
+        2.2153003337941177,
+        0.8567124108703403,
+        0.1292012069738753,
+        0.49935047128967747,
+        3.5911395293175796,
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "projection_matrix": [
+        1.388835883998353,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        3.1017334742629883,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0000249550967084,
+        -0.010000249550967084,
+        0.0,
+        0.0,
+        1.0,
+        0.0
+      ],
+      "view_projection_matrix": [
+        0.6345876334150513,
+        -0.8878389015405389,
+        -0.859014396334229,
+        0.3480887605528016,
+        0.7422641388550151,
+        2.35127550648359,
+        -1.881833676535657,
+        6.871271200875187,
+        0.8567337902114049,
+        0.12920443120249017,
+        0.4993629326289799,
+        3.58122889700086,
+        0.8567124108703403,
+        0.1292012069738753,
+        0.49935047128967747,
+        3.5911395293175796
+      ]
+    },
+    {
+      "frame_index": 1,
+      "timestamp_ns": 16666667,
+      "pose": {
+        "position": [
+          4.496632992754057,
+          -0.4765015548479711,
+          1.2182990463315768
+        ],
+        "rotation_xyzw": [
+          -0.12458685245271023,
+          -0.6636449804867531,
+          0.3654551987122982,
+          0.6406995815550517
+        ]
+      },
+      "intrinsics": {
+        "vertical_fov_radians": 0.62375764619403,
+        "near_plane": 0.01,
+        "far_plane": 403.19094036052036
+      },
+      "view_matrix": [
+        -0.14796432478221666,
+        0.6336568643139452,
+        0.7593322967578564,
+        0.042185932663114545,
+        -0.30293110725440575,
+        0.7018412278601625,
+        -0.6447105049038361,
+        2.482048641027748,
+        -0.9414559484380363,
+        -0.32541952796898643,
+        0.08810691214132738,
+        3.9709784008789217,
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "projection_matrix": [
+        1.388835883998353,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        3.1017334742629883,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0000248027597511,
+        -0.01000024802759751,
+        0.0,
+        0.0,
+        1.0,
+        0.0
+      ],
+      "view_projection_matrix": [
+        -0.20549816380912928,
+        0.8800453913010825,
+        1.0545879416161972,
+        0.05858933708247168,
+        -0.9396115557665419,
+        2.176924430071703,
+        -1.999720154269221,
+        7.698653354624725,
+        -0.9414792991437416,
+        -0.325427599271357,
+        0.08810909743590163,
+        3.9610766440745784,
+        -0.9414559484380363,
+        -0.32541952796898643,
+        0.08810691214132738,
+        3.9709784008789217
+      ]
+    }
+  ],
+  "content_sha256": "b189dc06ac35f0a4e3805b5f53d7caab5a40c3e06e042836c848cb4aa185975f"
+}

@@ -47,12 +47,14 @@ point-count scaling rather than an incrementally growing scene.
 
 `fetch_inria_3dgs_scenes.py` extracts only requested
 `iteration_30000/point_cloud.ply` entries from the official 14.66 GB Zip64
-archive. It does not download the complete archive and does not hold a large
-compressed or decompressed scene in memory. Each request is streamed to a
-temporary file, checked against pinned archive CRC/size/count metadata and the
-PLY SH layout, then atomically renamed. All four selected PLYs also have a
-committed expected SHA-256; a `source.json` beside the PLY records the verified
-identity and provenance.
+archive. With `--include-cameras`, it also extracts each selected scene's small
+official `cameras.json` so image-quality traces can use real training views.
+It does not download the complete archive and does not hold a large compressed
+or decompressed scene in memory. Each request is streamed to a temporary file,
+checked against pinned archive CRC/size/count metadata and the PLY SH layout,
+then atomically renamed. All selected PLY and camera metadata files have
+committed expected SHA-256 values; ignored local source receipts record the
+verified identity and provenance.
 
 Repeating a command re-hashes and verifies an existing scene locally instead of
 downloading it again. Use `--overwrite` only to replace a failed or intentionally
@@ -63,6 +65,7 @@ temporary file and leaves any previously verified PLY untouched.
 python3 tests/datasets/fetch_inria_3dgs_scenes.py --list
 python3 tests/datasets/fetch_inria_3dgs_scenes.py \
   --scenes bonsai truck garden bicycle \
+  --include-cameras \
   --acknowledge-local-use-only
 ```
 

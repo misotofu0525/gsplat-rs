@@ -26,3 +26,8 @@ Point-count scaling tiers are generated from a qualified full scene rather than
 committed as independent quality datasets. See `tests/datasets/README.md` and
 `tests/datasets/ply_ladder.py`; each generated ladder has its own source/output
 SHA-256 provenance document.
+
+The cross-platform small-to-large coverage plan and its strict full-residency
+receipts live in `tests/perf/full-quality-matrix-plan-v1.json` and
+`tests/perf/full-quality-experiment-v1.md`. Scaling tiers remain performance
+inputs only; full-scene anchors provide image-quality evidence.

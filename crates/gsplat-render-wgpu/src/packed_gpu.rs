@@ -5,15 +5,59 @@ use gsplat_core::Camera;
 use wgpu::util::DeviceExt;
 
 use crate::draw_pass::{SplatPipeline, create_splat_bind_group_layout, create_splat_pipeline};
-use crate::packed_atlas::{
-    HOT_RECORD_U32_WORDS, PackedAtlasCpuBuffers, PackedSceneCpu, pack_scene_hot_records,
-};
-use crate::{
-    DirectSceneError, PackedScenePath, make_surface_render_params, packed_scene_preflight,
-    wgpu_label,
-};
+use crate::packed_atlas::{HOT_RECORD_U32_WORDS, PackedAtlasCpuBuffers, PackedSceneCpu};
+use crate::{DirectSceneError, make_surface_render_params, wgpu_label};
 
 pub const PACKED_QUAD_VERTEX_COUNT: u32 = 4;
+
+/// Byte plan for the legacy compact atlas used only by the explicit Paged
+/// diagnostic path. Production `GeometryPath::PackedAtlas` uses
+/// `ResidentGpuBytePlan` instead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PagedCompactBytePlan {
+    pub(crate) sorted_indices_bytes: u64,
+    pub(crate) hot_record_storage_bytes: u64,
+    pub(crate) effective_binding_limit: u64,
+}
+
+impl PagedCompactBytePlan {
+    pub(crate) fn for_count(
+        splat_count: usize,
+        effective_binding_limit: u64,
+    ) -> Result<Self, DirectSceneError> {
+        let splat_count =
+            u64::try_from(splat_count).map_err(|_| DirectSceneError::ResourceSizeOverflow)?;
+        let capacity = splat_count.max(1);
+        let sorted_indices_bytes = capacity
+            .checked_mul(std::mem::size_of::<u32>() as u64)
+            .ok_or(DirectSceneError::ResourceSizeOverflow)?;
+        let hot_record_storage_bytes = capacity
+            .checked_mul(crate::HOT_RECORD_BYTES as u64)
+            .ok_or(DirectSceneError::ResourceSizeOverflow)?;
+        Ok(Self {
+            sorted_indices_bytes,
+            hot_record_storage_bytes,
+            effective_binding_limit,
+        })
+    }
+
+    pub(crate) const fn fits(self) -> bool {
+        self.sorted_indices_bytes <= self.effective_binding_limit
+            && self.hot_record_storage_bytes <= self.effective_binding_limit
+    }
+
+    pub(crate) fn validate(self) -> Result<Self, DirectSceneError> {
+        if self.fits() {
+            Ok(self)
+        } else {
+            Err(DirectSceneError::PagedAtlasResourceLimitExceeded {
+                sorted_indices_bytes: self.sorted_indices_bytes,
+                hot_record_storage_bytes: self.hot_record_storage_bytes,
+                limit_bytes: self.effective_binding_limit,
+            })
+        }
+    }
+}
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -60,19 +104,11 @@ impl PackedAtlasResources {
         packed: &PackedSceneCpu,
     ) -> Result<Self, DirectSceneError> {
         let limits = device.limits();
-        let preflight = packed_scene_preflight(
+        PagedCompactBytePlan::for_count(
             packed.splat_count,
-            packed.sh_degree,
             u64::from(limits.max_storage_buffer_binding_size).min(limits.max_buffer_size),
-        )?;
-        if preflight.path != PackedScenePath::PackedAtlas
-            || !preflight.sorted_indices_fits_storage_binding
-            || !preflight.hot_record_fits_storage_binding
-        {
-            return Err(DirectSceneError::PackedResourceLimitExceeded(Box::new(
-                preflight,
-            )));
-        }
+        )?
+        .validate()?;
         let capacity = packed.splat_count.max(1);
         let mut hot_words = PackedAtlasCpuBuffers::hot_storage_words(packed);
         if hot_words.is_empty() {
@@ -143,15 +179,6 @@ impl PackedAtlasResources {
             hot_buffer,
             hot_words,
         })
-    }
-
-    pub fn from_scene(
-        device: &wgpu::Device,
-        bind_group_layout: &wgpu::BindGroupLayout,
-        scene: &gsplat_core::SceneBuffers,
-    ) -> Result<Self, DirectSceneError> {
-        let packed = pack_scene_hot_records(scene);
-        Self::new(device, bind_group_layout, &packed)
     }
 
     /// Upload view-evaluated RGB10 colors at a global atlas-slot offset.

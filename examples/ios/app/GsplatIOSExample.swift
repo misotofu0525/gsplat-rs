@@ -4,19 +4,38 @@ import QuartzCore
 import UIKit
 import UniformTypeIdentifiers
 
+// Example-only qualification symbol. It is deliberately not part of gsplat.h
+// or the stable v0.1 C ABI.
+@_silgen_name("gsplat_benchmark_set_surface_camera_trace_frame_with_display_policy")
+private func gsplatBenchmarkSetSurfaceCameraTraceFrameWithDisplayPolicy(
+    _ renderer: OpaquePointer?,
+    _ tracePath: UnsafePointer<CChar>?,
+    _ frameIndex: UInt32,
+    _ requireTraceDisplayMatch: UInt32
+) -> Int32
+
 private let bundleDatasetName = "showcase"
 private let bundleDatasetExtension = "ply"
 private let bundleDatasetLabelExtension = "name"
 private let importedPlyName = "imported_scene.ply"
 private let minimalPlyName = "minimal_ascii.ply"
-private let maxSurfaceSidePixels = 1600
 private let orbitRadiansPerScreen: Float = 3.2
 private let touchEpsilon: Float = 0.0001
 private let zoomEpsilon: Float = 0.003
 private let targetFrameIntervalSeconds = 1.0 / 60.0
+private let firstProjectedDrawTicket: UInt64 = 1 << 52
+private let maximumJavaScriptSafeInteger: UInt64 = (1 << 53) - 1
 private let showcaseText = UIColor(red: 0.96, green: 0.95, blue: 0.91, alpha: 1)
 private let showcaseMuted = UIColor(red: 0.72, green: 0.70, blue: 0.66, alpha: 1)
 private let showcaseAccent = UIColor(red: 0.83, green: 0.96, blue: 0.45, alpha: 1)
+
+private func validProjectedV1Header(size: UInt32, version: UInt32, expected: Int) -> Bool {
+    size == UInt32(expected) && version == 1
+}
+
+private func isProjectedTicket(_ ticket: UInt64) -> Bool {
+    (firstProjectedDrawTicket...maximumJavaScriptSafeInteger).contains(ticket)
+}
 
 private struct RenderCommand {
     var resize: (width: Int, height: Int)?
@@ -38,29 +57,150 @@ struct BenchmarkConfig {
     var frames = 120
     var warmupFrames = 10
     var yawStepRadians: Float = 0.001
-    var sortInterval: UInt32 = 2
+    var sortInterval: UInt32 = 1
     var asyncSort = false
     var frameLatency: UInt32 = 2
-    /// Experimental A/B benchmark knob: "direct" (default), "packed", or "paged".
-    var geometryPath = "direct"
+    var orderBackend = "adaptive"
+    var projectedPolicy = "adaptive"
+    /// Complete resident production path by default; Direct and Paged remain explicit A/B knobs.
+    var geometryPath = "packed"
+    var cameraTracePath: String?
+    var cameraTraceFrame = 0
+    var cameraTraceSequence = false
+    var cameraTraceFrameIndices: [Int] = []
+    var cameraTraceLoops = 1
+    var requireTraceDisplayMatch = true
+    var cameraTraceMetadata: CameraTraceMetadata?
+
+    var measuredSampleCount: Int {
+        cameraTraceSequence ? frames * cameraTraceLoops : frames
+    }
 
     static func fromArguments(_ arguments: [String]) -> BenchmarkConfig {
         let args = LaunchArguments(arguments)
         var config = BenchmarkConfig()
         config.enabled = args.bool("gsplat_benchmark", default: false)
-        config.frames = max(1, args.int("gsplat_benchmark_frames", default: config.frames))
-        config.warmupFrames = max(0, args.int("gsplat_benchmark_warmup_frames", default: config.warmupFrames))
         let yawStep = args.float("gsplat_benchmark_yaw_step", default: config.yawStepRadians)
         config.yawStepRadians = yawStep.isFinite ? yawStep : config.yawStepRadians
-        config.sortInterval = UInt32(max(1, args.int("gsplat_surface_sort_interval", default: Int(config.sortInterval))))
         config.asyncSort = args.bool("gsplat_surface_async_sort", default: config.asyncSort)
         config.frameLatency = UInt32(
             min(max(1, args.int("gsplat_surface_frame_latency", default: Int(config.frameLatency))), 4)
         )
         let geometryPath = args.string("gsplat_geometry_path", default: config.geometryPath).lowercased()
         config.geometryPath = ["packed", "paged"].contains(geometryPath) ? geometryPath : "direct"
+        let orderBackend = args.string("gsplat_surface_order_backend", default: config.orderBackend).lowercased()
+        precondition(["cpu", "gpu", "adaptive"].contains(orderBackend), "invalid gsplat_surface_order_backend")
+        config.orderBackend = orderBackend
+        let projectedPolicy = args.string(
+            "gsplat_surface_projected_policy",
+            default: config.projectedPolicy
+        ).lowercased()
+        precondition(
+            ["candidate", "compact", "adaptive"].contains(projectedPolicy),
+            "invalid gsplat_surface_projected_policy"
+        )
+        config.projectedPolicy = projectedPolicy
+        let tracePath = args.string("gsplat_camera_trace", default: "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if !tracePath.isEmpty {
+            config.cameraTracePath = tracePath.hasPrefix("/")
+                ? tracePath
+                : (Bundle.main.path(forResource: tracePath, ofType: nil) ?? tracePath)
+            config.cameraTraceMetadata = try? CameraTraceMetadata.load(path: config.cameraTracePath!)
+            precondition(config.cameraTraceMetadata != nil, "invalid camera trace at \(config.cameraTracePath!)")
+        }
+        config.cameraTraceSequence = args.bool("gsplat_camera_trace_sequence", default: false)
+        precondition(!config.cameraTraceSequence || config.cameraTraceMetadata != nil,
+                     "gsplat_camera_trace_sequence requires gsplat_camera_trace")
+        precondition(!config.cameraTraceSequence || !args.contains("gsplat_camera_trace_frame"),
+                     "gsplat_camera_trace_frame cannot be combined with sequence playback")
+        let frameIndicesText = args.string("gsplat_camera_frame_indices", default: "")
+        if config.cameraTraceSequence {
+            config.cameraTraceFrameIndices = frameIndicesText.isEmpty
+                ? Array(config.cameraTraceMetadata!.timestamps.indices)
+                : parseCameraTraceFrameIndices(frameIndicesText)
+            precondition(config.cameraTraceFrameIndices.count >= 2,
+                         "camera trace sequence requires at least two frame indices")
+            precondition(
+                config.cameraTraceFrameIndices.allSatisfy(config.cameraTraceMetadata!.timestamps.indices.contains),
+                "camera trace frame index is out of range"
+            )
+        } else {
+            precondition(frameIndicesText.isEmpty && !args.contains("gsplat_camera_trace_loops"),
+                         "camera trace sequence options require gsplat_camera_trace_sequence")
+        }
+        let defaultFrames = config.cameraTraceSequence ? config.cameraTraceFrameIndices.count : config.frames
+        config.frames = max(1, args.int("gsplat_benchmark_frames", default: defaultFrames))
+        let defaultWarmup = config.cameraTraceSequence ? 0 : config.warmupFrames
+        config.warmupFrames = max(0, args.int("gsplat_benchmark_warmup_frames", default: defaultWarmup))
+        let defaultSortInterval = config.cameraTraceSequence ? 1 : Int(config.sortInterval)
+        config.sortInterval = UInt32(max(1, args.int("gsplat_surface_sort_interval", default: defaultSortInterval)))
+        precondition(!config.cameraTraceSequence || config.sortInterval == 1,
+                     "camera trace sequence requires gsplat_surface_sort_interval=1")
+        config.cameraTraceLoops = max(1, args.int("gsplat_camera_trace_loops", default: 1))
+        config.requireTraceDisplayMatch = args.bool("gsplat_require_trace_display_match", default: true)
+        config.cameraTraceFrame = max(0, args.int("gsplat_camera_trace_frame", default: 0))
+        if !config.cameraTraceSequence, let metadata = config.cameraTraceMetadata {
+            precondition(metadata.timestamps.indices.contains(config.cameraTraceFrame),
+                         "camera trace frame index is out of range")
+        }
         return config
     }
+}
+
+private func parseCameraTraceFrameIndices(_ value: String) -> [Int] {
+    let indices = value.split(separator: ",", omittingEmptySubsequences: false).map { part -> Int in
+        guard let index = Int(part.trimmingCharacters(in: .whitespaces)), index >= 0 else {
+            preconditionFailure("gsplat_camera_frame_indices must contain non-negative integers")
+        }
+        return index
+    }
+    precondition(!indices.isEmpty && Set(indices).count == indices.count,
+                 "gsplat_camera_frame_indices must be non-empty and unique")
+    return indices
+}
+
+struct CameraTraceMetadata {
+    let id: String
+    let sha256: String
+    let width: Int
+    let height: Int
+    let timestamps: [UInt64]
+
+    static func load(path: String) throws -> CameraTraceMetadata {
+        let data = try Data(contentsOf: URL(fileURLWithPath: path))
+        guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              root["schema"] as? String == "gsplat-camera-trace/v1",
+              let id = root["trace_id"] as? String, !id.isEmpty,
+              let sha256 = root["content_sha256"] as? String,
+              sha256.range(of: "^[0-9a-f]{64}$", options: .regularExpression) != nil,
+              let display = root["display"] as? [String: Any],
+              let width = display["width"] as? Int, width > 0,
+              let height = display["height"] as? Int, height > 0,
+              let frames = root["frames"] as? [[String: Any]], !frames.isEmpty else {
+            throw CameraTraceMetadataError.invalid
+        }
+        var timestamps: [UInt64] = []
+        for (index, frame) in frames.enumerated() {
+            guard frame["frame_index"] as? Int == index,
+                  let timestamp = (frame["timestamp_ns"] as? NSNumber)?.uint64Value,
+                  timestamps.last.map({ timestamp > $0 }) ?? true else {
+                throw CameraTraceMetadataError.invalid
+            }
+            timestamps.append(timestamp)
+        }
+        return CameraTraceMetadata(id: id, sha256: sha256, width: width, height: height, timestamps: timestamps)
+    }
+}
+
+private enum CameraTraceMetadataError: Error { case invalid }
+
+struct CameraTraceStep {
+    let phase: String
+    let loopIndex: Int
+    let phaseFrameIndex: Int
+    let measuredSampleIndex: Int?
+    let traceFrameIndex: Int
+    let timestampNs: UInt64
 }
 
 /// Maps the experimental geometry-path label to the `GsplatGeometryPath` FFI value.
@@ -78,6 +218,22 @@ func geometryPipelineName(_ label: String) -> String {
     case "packed": return "packed_atlas"
     case "paged": return "paged_active_atlas"
     default: return "sorted_index_direct"
+    }
+}
+
+func orderBackendValue(_ label: String) -> UInt32 {
+    switch label {
+    case "gpu": return 1
+    case "adaptive": return 2
+    default: return 0
+    }
+}
+
+func projectedPolicyValue(_ label: String) -> UInt32 {
+    switch label {
+    case "candidate": return 1
+    case "compact": return 2
+    default: return 3
     }
 }
 
@@ -126,6 +282,10 @@ private struct LaunchArguments {
 
     func int(_ key: String, default defaultValue: Int) -> Int {
         values[normalize(key)].flatMap(Int.init) ?? defaultValue
+    }
+
+    func contains(_ key: String) -> Bool {
+        values[normalize(key)] != nil
     }
 
     func float(_ key: String, default defaultValue: Float) -> Float {
@@ -203,6 +363,7 @@ final class ExampleViewController: UIViewController, UIGestureRecognizerDelegate
     private var benchmarkConfig = BenchmarkConfig.fromArguments(ProcessInfo.processInfo.arguments)
     private var renderer: OpaquePointer?
     private var currentSurfaceSize: (width: Int, height: Int)?
+    private var surfaceExactness: GsplatSurfaceExactness?
     private var datasetPath = ""
     private var datasetLabel = "pending"
     private var latestState = "state=launching"
@@ -215,6 +376,15 @@ final class ExampleViewController: UIViewController, UIGestureRecognizerDelegate
     private var pendingZoomScale: Float = 1
     private var pendingPanX: Float = 0
     private var pendingPanY: Float = 0
+    private var lastAdaptiveGpuFailureReason: UInt32?
+
+    override var supportedInterfaceOrientations: UIInterfaceOrientationMask {
+        benchmarkConfig.enabled ? .landscape : .allButUpsideDown
+    }
+
+    override var preferredInterfaceOrientationForPresentation: UIInterfaceOrientation {
+        benchmarkConfig.enabled ? .landscapeRight : .portrait
+    }
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -229,12 +399,27 @@ final class ExampleViewController: UIViewController, UIGestureRecognizerDelegate
 
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
+        requestBenchmarkLandscapeOrientation()
         createRendererIfNeeded()
     }
 
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
+        if benchmarkConfig.enabled, renderer == nil, view.window != nil {
+            createRendererIfNeeded()
+        }
         resizeRendererIfNeeded()
+    }
+
+    private func requestBenchmarkLandscapeOrientation() {
+        guard benchmarkConfig.enabled else { return }
+        setNeedsUpdateOfSupportedInterfaceOrientations()
+        view.window?.windowScene?.requestGeometryUpdate(
+            .iOS(interfaceOrientations: .landscape)
+        ) { error in
+            print("IOS_BENCHMARK_ORIENTATION_FAILED error=\(error.localizedDescription)")
+            fflush(stdout)
+        }
     }
 
     override func viewWillDisappear(_ animated: Bool) {
@@ -446,6 +631,10 @@ final class ExampleViewController: UIViewController, UIGestureRecognizerDelegate
             setStatus("state=surface_not_ready")
             return
         }
+        guard !benchmarkConfig.enabled || size.width > size.height else {
+            setStatus("state=waiting_for_landscape_surface size=\(size.width)x\(size.height)")
+            return
+        }
 
         var handle: OpaquePointer?
         let viewPointer = Unmanaged.passUnretained(surfaceView).toOpaque()
@@ -475,7 +664,42 @@ final class ExampleViewController: UIViewController, UIGestureRecognizerDelegate
             return
         }
 
+        var exactness = GsplatSurfaceExactness()
+        let exactnessRc = gsplat_surface_renderer_get_exactness(handle, &exactness)
+        guard exactnessRc == 0 else {
+            gsplat_surface_renderer_destroy(handle)
+            print(
+                "IOS_SURFACE_EXACTNESS_FAILED rc=\(exactnessRc) " +
+                "error=\(errorMessage(exactnessRc))"
+            )
+            fflush(stdout)
+            setStatus("state=create_failed rc=\(exactnessRc) error=\(errorMessage(exactnessRc))")
+            return
+        }
+        let fullQualityFlags: UInt32 = 0b1_1111
+        if benchmarkConfig.geometryPath != "paged" &&
+            exactness.quality_flags & fullQualityFlags != fullQualityFlags {
+            gsplat_surface_renderer_destroy(handle)
+            print("IOS_SURFACE_EXACTNESS_REJECTED flags=\(exactness.quality_flags)")
+            fflush(stdout)
+            setStatus("state=exactness_rejected")
+            return
+        }
+        print(
+            "SURFACE_EXACTNESS source=\(exactness.source_splat_count) " +
+            "decoded=\(exactness.decoded_splat_count) encoded=\(exactness.encoded_splat_count) " +
+            "resident=\(exactness.resident_splat_count) " +
+            "addressable=\(exactness.addressable_splat_count) " +
+            "source_sh=\(exactness.source_sh_degree) resident_sh=\(exactness.resident_sh_degree) " +
+            "flags=\(exactness.quality_flags) " +
+            "max_storage_buffers_per_shader_stage=" +
+            "\(exactness.max_storage_buffers_per_shader_stage) " +
+            "max_storage_buffer_binding_size=\(exactness.max_storage_buffer_binding_size)"
+        )
+        fflush(stdout)
+
         renderer = handle
+        surfaceExactness = exactness
         currentSurfaceSize = size
         setStatus("state=rendering")
         print("IOS_SURFACE_CREATE_OK dataset=\(datasetLabel) size=\(size.width)x\(size.height)")
@@ -486,14 +710,57 @@ final class ExampleViewController: UIViewController, UIGestureRecognizerDelegate
     private func configureRenderer(_ handle: OpaquePointer) -> Int32 {
         let steps: [(String, Int32)] = [
             ("sort_interval", gsplat_surface_renderer_set_sort_interval(handle, benchmarkConfig.sortInterval)),
+            ("order_backend", gsplat_surface_renderer_set_order_backend(
+                handle,
+                orderBackendValue(benchmarkConfig.orderBackend)
+            )),
             ("async_sort", gsplat_surface_renderer_set_async_sort(handle, benchmarkConfig.asyncSort ? 1 : 0)),
             ("frame_latency", gsplat_surface_renderer_set_frame_latency(handle, benchmarkConfig.frameLatency)),
+            ("projected_policy_v1", gsplat_surface_renderer_set_projected_policy_v1(
+                handle,
+                projectedPolicyValue(benchmarkConfig.projectedPolicy)
+            )),
         ]
 
         for (name, rc) in steps where rc != 0 {
             print("IOS_SURFACE_CONFIG_FAILED option=\(name) rc=\(rc) error=\(errorMessage(rc))")
             fflush(stdout)
             return rc
+        }
+
+        if let tracePath = benchmarkConfig.cameraTracePath {
+            let initialFrame = benchmarkConfig.cameraTraceSequence
+                ? benchmarkConfig.cameraTraceFrameIndices.last!
+                : benchmarkConfig.cameraTraceFrame
+            let traceRc = tracePath.withCString { path in
+                gsplatBenchmarkSetSurfaceCameraTraceFrameWithDisplayPolicy(
+                    handle,
+                    path,
+                    UInt32(initialFrame),
+                    benchmarkConfig.requireTraceDisplayMatch ? 1 : 0
+                )
+            }
+            if traceRc != 0 {
+                print("IOS_SURFACE_CONFIG_FAILED option=camera_trace rc=\(traceRc) error=\(errorMessage(traceRc))")
+                fflush(stdout)
+                return traceRc
+            }
+            let metadata = benchmarkConfig.cameraTraceMetadata!
+            let mode = benchmarkConfig.cameraTraceSequence ? "trace_sequence" : "fixed_frame"
+            let selected = benchmarkConfig.cameraTraceSequence
+                ? benchmarkConfig.cameraTraceFrameIndices.map(String.init).joined(separator: ",")
+                : String(benchmarkConfig.cameraTraceFrame)
+            let receiptFrame = benchmarkConfig.cameraTraceSequence
+                ? benchmarkConfig.cameraTraceFrameIndices.first!
+                : benchmarkConfig.cameraTraceFrame
+            setCameraState("camera=trace mode=\(mode) frames=\(selected)")
+            print(
+                "CAMERA_TRACE trace_id=\(metadata.id) trace_sha256=\(metadata.sha256) " +
+                "mode=\(mode) frame_indices=\(selected) frame_index=\(receiptFrame) " +
+                "timestamp_ns=\(metadata.timestamps[receiptFrame]) " +
+                "requested_backend=\(benchmarkConfig.orderBackend)"
+            )
+            fflush(stdout)
         }
 
         return 0
@@ -510,9 +777,19 @@ final class ExampleViewController: UIViewController, UIGestureRecognizerDelegate
             let benchmark = SurfaceBenchmark(config: self.benchmarkConfig)
             var frameIndex = 0
             while self.isRenderLoopActive() {
+                let traceStep = benchmark.nextTraceStep()
                 let renderStartNs = DispatchTime.now().uptimeNanoseconds
                 var rc: Int32 = 0
-                if benchmark.config.enabled {
+                if let traceStep, let tracePath = benchmark.config.cameraTracePath {
+                    rc = tracePath.withCString { path in
+                        gsplatBenchmarkSetSurfaceCameraTraceFrameWithDisplayPolicy(
+                            renderer,
+                            path,
+                            UInt32(traceStep.traceFrameIndex),
+                            benchmark.config.requireTraceDisplayMatch ? 1 : 0
+                        )
+                    }
+                } else if benchmark.config.enabled && benchmark.config.cameraTracePath == nil {
                     rc = gsplat_surface_renderer_orbit(renderer, benchmark.config.yawStepRadians, 0)
                 } else {
                     rc = self.applyPendingCommand(renderer)
@@ -535,15 +812,75 @@ final class ExampleViewController: UIViewController, UIGestureRecognizerDelegate
                 let statsRc = gsplat_surface_renderer_get_stats(renderer, &stats)
                 if statsRc == 0 {
                     if benchmark.config.enabled {
-                        benchmark.record(stats: stats, renderCallNs: renderCallNs, frameStartNs: renderStartNs)
+                        guard let orderFrame = self.readOrderFrameState(renderer) else {
+                            self.setStatus("state=order_status_error")
+                            break
+                        }
+                        benchmark.recordOrderSubmission(orderFrame.submission)
+                        benchmark.recordProjectedSubmission(
+                            orderFrame.projectedSubmission,
+                            orderSubmission: orderFrame.submission
+                        )
+                        self.logAdaptiveGpuStatus(orderFrame.stats)
+                        if !self.logCompletedProjectedMeasurements(
+                            renderer,
+                            benchmark: benchmark
+                        ) {
+                            self.setStatus("state=benchmark_projected_measurement_error")
+                            break
+                        }
+                        if !self.logCompletedOrderMeasurements(renderer, benchmark: benchmark) {
+                            self.setStatus("state=benchmark_measurement_error")
+                            break
+                        }
+                        if let traceStep {
+                            let metadata = benchmark.config.cameraTraceMetadata!
+                            print(
+                                "CAMERA_TRACE_FRAME trace_id=\(metadata.id) trace_sha256=\(metadata.sha256) " +
+                                "phase=\(traceStep.phase) loop=\(traceStep.loopIndex) " +
+                                "phase_frame=\(traceStep.phaseFrameIndex) " +
+                                "frame_index=\(traceStep.traceFrameIndex) " +
+                                "timestamp_ns=\(traceStep.timestampNs) " +
+                                "requested_backend=\(benchmark.config.orderBackend)"
+                            )
+                            fflush(stdout)
+                        }
+                        benchmark.record(
+                            stats: stats,
+                            sortStats: orderFrame.stats,
+                            submission: orderFrame.submission,
+                            projectedSubmission: orderFrame.projectedSubmission,
+                            renderCallNs: renderCallNs,
+                            frameStartNs: renderStartNs,
+                            traceStep: traceStep
+                        )
                         if benchmark.complete {
+                            guard self.flushTerminalLedgers(renderer, benchmark: benchmark) else {
+                                self.setStatus("state=benchmark_terminal_ledger_error")
+                                break
+                            }
                             let size = self.currentSurfaceSize ?? (width: 1, height: 1)
-                            benchmark.emitArtifacts(
+                            guard let exactness = self.surfaceExactness else {
+                                self.setStatus("state=benchmark_exactness_missing")
+                                print("BENCHMARK_ARTIFACT_ERROR native exactness receipt is missing")
+                                fflush(stdout)
+                                break
+                            }
+                            guard let presentation = self.readSurfacePresentation(renderer) else {
+                                self.setStatus("state=benchmark_presentation_missing")
+                                break
+                            }
+                            guard benchmark.emitArtifacts(
                                 datasetPath: self.datasetPath,
                                 datasetLabel: self.datasetLabel,
                                 width: size.width,
-                                height: size.height
-                            )
+                                height: size.height,
+                                exactness: exactness,
+                                presentation: presentation
+                            ) else {
+                                self.setStatus("state=benchmark_artifact_error")
+                                break
+                            }
                             let result = benchmark.resultLine(datasetLabel: self.datasetLabel)
                             print(result)
                             fflush(stdout)
@@ -569,15 +906,524 @@ final class ExampleViewController: UIViewController, UIGestureRecognizerDelegate
             DispatchQueue.main.async { [weak self] in
                 if self?.renderer == renderer {
                     self?.renderer = nil
+                    self?.surfaceExactness = nil
                 }
             }
         }
+    }
+
+    private func logCompletedProjectedMeasurements(
+        _ renderer: OpaquePointer,
+        benchmark: SurfaceBenchmark? = nil
+    ) -> Bool {
+        while true {
+            var measurement = GsplatSurfaceProjectedMeasurementV1()
+            measurement.struct_size = UInt32(
+                MemoryLayout<GsplatSurfaceProjectedMeasurementV1>.size
+            )
+            measurement.version = 1
+            var available: UInt32 = 0
+            let rc = gsplat_surface_renderer_poll_projected_measurement_v1(
+                renderer,
+                &measurement,
+                &available
+            )
+            guard rc == 0,
+                  available <= 1,
+                  validProjectedV1Header(
+                      size: measurement.struct_size,
+                      version: measurement.version,
+                      expected: MemoryLayout<GsplatSurfaceProjectedMeasurementV1>.size
+                  ) else {
+                print(
+                    "IOS_PROJECTED_MEASUREMENT_FAILED rc=\(rc) available=\(available) " +
+                        "error=\(errorMessage(rc))"
+                )
+                fflush(stdout)
+                return false
+            }
+            if available == 0 { break }
+
+            // The V/C/D ledger is bounded. Take the matching counts before any
+            // other poll or render call can progress another completion.
+            guard let counts = takeProjectedCounts(
+                renderer,
+                ticket: measurement.ticket,
+                cameraRevision: measurement.camera_revision
+            ) else { return false }
+            guard isProjectedTicket(measurement.ticket),
+                  measurement.frame_complete_ms.isFinite,
+                  measurement.frame_complete_ms >= 0,
+                  (1...2).contains(measurement.execution),
+                  measurement.order_backend <= 1,
+                  measurement.flags & ~UInt32(0b1111) == 0,
+                  measurement.flags & 1 != 0,
+                  measurement.flags & (1 << 1) == 0,
+                  counts.flags & ~UInt32(0b1) == 0,
+                  counts.contributor_count <= counts.visible_count,
+                  (measurement.execution == 1
+                    ? (measurement.flags & (1 << 2) == 0 &&
+                        counts.flags & 1 == 0 &&
+                        counts.drawn_count == counts.visible_count)
+                    : (measurement.flags & (1 << 2) != 0 &&
+                        counts.flags & 1 != 0 &&
+                        counts.drawn_count == counts.contributor_count)) else {
+                print("IOS_PROJECTED_MEASUREMENT_FAILED invalid identity or V/C/D contract")
+                fflush(stdout)
+                return false
+            }
+            print(
+                "PROJECTED_MEASUREMENT ticket=\(measurement.ticket) " +
+                    "camera_revision=\(measurement.camera_revision) " +
+                    "projection_generation=\(measurement.projection_generation) " +
+                    "probe_generation=\(measurement.probe_generation) " +
+                    "execution=\(measurement.execution) " +
+                    "order_backend=\(measurement.order_backend) " +
+                    "frame_complete_ms=\(measurement.frame_complete_ms) " +
+                    "visible=\(counts.visible_count) contributor=\(counts.contributor_count) " +
+                    "drawn=\(counts.drawn_count) flags=\(measurement.flags)"
+            )
+            fflush(stdout)
+            benchmark?.recordProjectedMeasurement(measurement, counts: counts)
+            if measurement.flags & (1 << 3) != 0 {
+                print("IOS_PROJECTED_MEASUREMENT_FAILED dropped_prior=true")
+                fflush(stdout)
+                return false
+            }
+        }
+
+        while true {
+            var failure = GsplatSurfaceProjectedFailureV1()
+            failure.struct_size = UInt32(MemoryLayout<GsplatSurfaceProjectedFailureV1>.size)
+            failure.version = 1
+            var available: UInt32 = 0
+            let rc = gsplat_surface_renderer_poll_projected_failure_v1(
+                renderer,
+                &failure,
+                &available
+            )
+            guard rc == 0,
+                  available <= 1,
+                  validProjectedV1Header(
+                      size: failure.struct_size,
+                      version: failure.version,
+                      expected: MemoryLayout<GsplatSurfaceProjectedFailureV1>.size
+                  ) else {
+                print(
+                    "IOS_PROJECTED_FAILURE_POLL_FAILED rc=\(rc) available=\(available) " +
+                        "error=\(errorMessage(rc))"
+                )
+                fflush(stdout)
+                return false
+            }
+            if available == 0 { return true }
+            guard isProjectedTicket(failure.ticket),
+                  (1...3).contains(failure.reason),
+                  (1...2).contains(failure.execution),
+                  failure.order_backend <= 1,
+                  failure.flags & ~UInt32(0b1) == 0 else {
+                print("IOS_PROJECTED_FAILURE_POLL_FAILED invalid terminal identity")
+                fflush(stdout)
+                return false
+            }
+            benchmark?.recordProjectedMeasurementFailure(failure)
+            print(
+                "PROJECTED_MEASUREMENT_FAILURE ticket=\(failure.ticket) " +
+                    "camera_revision=\(failure.camera_revision) " +
+                    "projection_generation=\(failure.projection_generation) " +
+                    "probe_generation=\(failure.probe_generation) " +
+                    "reason=\(failure.reason) execution=\(failure.execution) " +
+                    "order_backend=\(failure.order_backend) flags=\(failure.flags)"
+            )
+            fflush(stdout)
+            return false
+        }
+    }
+
+    private func takeProjectedCounts(
+        _ renderer: OpaquePointer,
+        ticket: UInt64,
+        cameraRevision: UInt64
+    ) -> GsplatSurfaceProjectedCountsV1? {
+        var counts = GsplatSurfaceProjectedCountsV1()
+        counts.struct_size = UInt32(MemoryLayout<GsplatSurfaceProjectedCountsV1>.size)
+        counts.version = 1
+        var available: UInt32 = 0
+        let rc = gsplat_surface_renderer_take_projected_counts_v1(
+            renderer,
+            ticket,
+            &counts,
+            &available
+        )
+        guard rc == 0,
+              available == 1,
+              validProjectedV1Header(
+                  size: counts.struct_size,
+                  version: counts.version,
+                  expected: MemoryLayout<GsplatSurfaceProjectedCountsV1>.size
+              ),
+              counts.ticket == ticket,
+              counts.camera_revision == cameraRevision else {
+            print(
+                "IOS_PROJECTED_COUNTS_FAILED rc=\(rc) available=\(available) " +
+                    "ticket=\(ticket) revision=\(cameraRevision) error=\(errorMessage(rc))"
+            )
+            fflush(stdout)
+            return nil
+        }
+        return counts
+    }
+
+    private func logCompletedOrderMeasurements(
+        _ renderer: OpaquePointer,
+        benchmark: SurfaceBenchmark? = nil
+    ) -> Bool {
+        while true {
+            var measurement = GsplatSurfaceCpuOrderMeasurement()
+            var available: UInt32 = 0
+            let rc = gsplat_surface_renderer_poll_cpu_order_measurement(
+                renderer,
+                &measurement,
+                &available
+            )
+            if rc != 0 {
+                print("IOS_CPU_ORDER_MEASUREMENT_FAILED rc=\(rc) error=\(errorMessage(rc))")
+                fflush(stdout)
+                return false
+            }
+            if available == 0 { break }
+            guard let counts = takeOrderCounts(
+                renderer,
+                ticket: measurement.ticket,
+                cameraRevision: measurement.camera_revision
+            ) else { return false }
+            print(
+                "CPU_ORDER_MEASUREMENT ticket=\(measurement.ticket) " +
+                "camera_revision=\(measurement.camera_revision) " +
+                "requested_backend=\(measurement.requested_backend) " +
+                "actual_backend=\(measurement.actual_backend) " +
+                "adaptive_state=\(measurement.adaptive_state) " +
+                "preprocess_ms=\(measurement.preprocess_ms) sort_ms=\(measurement.sort_ms) " +
+                "frame_complete_ms=\(measurement.frame_complete_ms) " +
+                "count_semantics=candidate_visible_contributor_issued_v1 " +
+                "visible=\(counts.visible_count) contributor=\(counts.contributor_count) " +
+                "drawn=\(counts.drawn_count) " +
+                "exact_contributor_compaction=\(counts.flags & 1 != 0) " +
+                "flags=\(measurement.flags)"
+            )
+            fflush(stdout)
+            benchmark?.recordCpuOrderMeasurement(measurement, counts: counts)
+        }
+
+        while true {
+            var measurement = GsplatSurfaceOrderMeasurement()
+            var available: UInt32 = 0
+            let rc = gsplat_surface_renderer_poll_order_measurement(
+                renderer,
+                &measurement,
+                &available
+            )
+            if rc != 0 {
+                print("IOS_ORDER_MEASUREMENT_FAILED rc=\(rc) error=\(errorMessage(rc))")
+                fflush(stdout)
+                return false
+            }
+            if available == 0 {
+                break
+            }
+            guard let counts = takeOrderCounts(
+                renderer,
+                ticket: measurement.ticket,
+                cameraRevision: measurement.camera_revision
+            ) else { return false }
+
+            func optionalValue(_ value: Float, _ bit: UInt32) -> String {
+                (measurement.flags & (1 << bit)) != 0 ? String(value) : "null"
+            }
+            let timingSource: String
+            switch measurement.timing_source {
+            case 1: timingSource = "timestamp_query"
+            case 2: timingSource = "completion"
+            default: timingSource = "unknown"
+            }
+            print(
+                "ORDER_MEASUREMENT ticket=\(measurement.ticket) " +
+                "camera_revision=\(measurement.camera_revision) timing_source=\(timingSource) " +
+                "requested_backend=\(measurement.requested_backend) " +
+                "actual_backend=\(measurement.actual_backend) adaptive_state=\(measurement.adaptive_state) " +
+                "gpu_preprocess_ms=\(optionalValue(measurement.gpu_preprocess_ms, 0)) " +
+                "gpu_radix_ms=\(optionalValue(measurement.gpu_radix_ms, 1)) " +
+                "gpu_order_ms=\(optionalValue(measurement.gpu_order_ms, 2)) " +
+                "gpu_complete_ms=\(measurement.gpu_complete_ms) " +
+                "timestamp_period_ns=\(optionalValue(measurement.timestamp_period_ns, 3)) " +
+                "count_semantics=candidate_visible_contributor_issued_v1 " +
+                "visible=\(counts.visible_count) contributor=\(counts.contributor_count) " +
+                "drawn=\(counts.drawn_count) " +
+                "exact_contributor_compaction=\(counts.flags & 1 != 0) " +
+                "flags=\(measurement.flags)"
+            )
+            fflush(stdout)
+            benchmark?.recordOrderMeasurement(measurement, counts: counts)
+        }
+
+        var sawFailure = false
+        while true {
+            var failure = GsplatSurfaceOrderMeasurementFailure()
+            var available: UInt32 = 0
+            let rc = gsplat_surface_renderer_poll_order_measurement_failure(
+                renderer,
+                &failure,
+                &available
+            )
+            if rc != 0 {
+                print("IOS_ORDER_MEASUREMENT_FAILURE_POLL_FAILED rc=\(rc) error=\(errorMessage(rc))")
+                fflush(stdout)
+                return false
+            }
+            if available == 0 {
+                return !sawFailure
+            }
+            sawFailure = true
+            benchmark?.recordOrderMeasurementFailure(failure)
+            let reason: String
+            switch failure.reason {
+            case 1: reason = "readback_map"
+            case 2: reason = "generation_invalidated"
+            default: reason = "unknown_\(failure.reason)"
+            }
+            print(
+                "ORDER_MEASUREMENT_FAILURE ticket=\(failure.ticket) " +
+                "camera_revision=\(failure.camera_revision) reason=\(reason) " +
+                "requested_backend=\(failure.requested_backend) " +
+                "actual_backend=\(failure.actual_backend) " +
+                "adaptive_state=\(failure.adaptive_state) flags=\(failure.flags)"
+            )
+            fflush(stdout)
+        }
+    }
+
+    private func takeOrderCounts(
+        _ renderer: OpaquePointer,
+        ticket: UInt64,
+        cameraRevision: UInt64
+    ) -> GsplatSurfaceOrderCounts? {
+        var counts = GsplatSurfaceOrderCounts()
+        var available: UInt32 = 0
+        let rc = gsplat_surface_renderer_take_order_counts(
+            renderer,
+            ticket,
+            &counts,
+            &available
+        )
+        guard rc == 0, available != 0,
+              counts.ticket == ticket,
+              counts.camera_revision == cameraRevision else {
+            print(
+                "IOS_ORDER_COUNTS_FAILED rc=\(rc) available=\(available) " +
+                "ticket=\(ticket) revision=\(cameraRevision) error=\(errorMessage(rc))"
+            )
+            fflush(stdout)
+            return nil
+        }
+        return counts
+    }
+
+    private func readOrderFrameState(
+        _ renderer: OpaquePointer
+    ) -> (
+        stats: GsplatSurfaceSortStats,
+        submission: GsplatSurfaceOrderSubmission,
+        projectedSubmission: GsplatSurfaceProjectedSubmissionV1
+    )? {
+        var stats = GsplatSurfaceSortStats()
+        let statsRc = gsplat_surface_renderer_get_sort_stats(renderer, &stats)
+        guard statsRc == 0 else {
+            print("IOS_ORDER_STATUS_FAILED rc=\(statsRc) error=\(errorMessage(statsRc))")
+            fflush(stdout)
+            return nil
+        }
+        var submission = GsplatSurfaceOrderSubmission()
+        let submissionRc = gsplat_surface_renderer_get_order_submission(renderer, &submission)
+        guard submissionRc == 0 else {
+            print(
+                "IOS_ORDER_SUBMISSION_FAILED rc=\(submissionRc) " +
+                "error=\(errorMessage(submissionRc))"
+            )
+            fflush(stdout)
+            return nil
+        }
+        guard let projectedSubmission = readProjectedSubmission(renderer) else {
+            return nil
+        }
+        guard projectedSubmission.camera_revision == submission.camera_revision,
+              projectedSubmission.order_backend == submission.actual_backend else {
+            print(
+                "IOS_PROJECTED_SUBMISSION_FAILED projected/order frame identity mismatch"
+            )
+            fflush(stdout)
+            return nil
+        }
+        if projectedSubmission.flags & 1 != 0 && submission.flags & (1 << 1) != 0 {
+            print("IOS_PROJECTED_SUBMISSION_FAILED frame issued order and projected tickets")
+            fflush(stdout)
+            return nil
+        }
+        return (stats, submission, projectedSubmission)
+    }
+
+    private func readProjectedSubmission(
+        _ renderer: OpaquePointer
+    ) -> GsplatSurfaceProjectedSubmissionV1? {
+        var submission = GsplatSurfaceProjectedSubmissionV1()
+        submission.struct_size = UInt32(MemoryLayout<GsplatSurfaceProjectedSubmissionV1>.size)
+        submission.version = 1
+        let rc = gsplat_surface_renderer_get_projected_submission_v1(renderer, &submission)
+        guard rc == 0,
+              validProjectedV1Header(
+                  size: submission.struct_size,
+                  version: submission.version,
+                  expected: MemoryLayout<GsplatSurfaceProjectedSubmissionV1>.size
+              ),
+              submission.requested_policy == projectedPolicyValue(benchmarkConfig.projectedPolicy),
+              (1...2).contains(submission.actual_execution),
+              submission.order_backend <= 1,
+              submission.adaptive_state <= 7,
+              submission.flags & ~UInt32(0b111) == 0,
+              submission.reserved == 0 else {
+            print(
+                "IOS_PROJECTED_SUBMISSION_FAILED rc=\(rc) error=\(errorMessage(rc))"
+            )
+            fflush(stdout)
+            return nil
+        }
+        let ticketIssued = submission.flags & 1 != 0
+        let ringBusy = submission.flags & (1 << 1) != 0
+        let surfaceUnavailable = submission.flags & (1 << 2) != 0
+        guard !(ringBusy && surfaceUnavailable),
+              ticketIssued
+                ? (isProjectedTicket(submission.ticket) && !ringBusy && !surfaceUnavailable)
+                : submission.ticket == 0 else {
+            print("IOS_PROJECTED_SUBMISSION_FAILED invalid ticket/unsampled flags")
+            fflush(stdout)
+            return nil
+        }
+        if submission.requested_policy != 3 {
+            guard submission.actual_execution == submission.requested_policy,
+                  submission.adaptive_state == 0,
+                  !ticketIssued,
+                  !ringBusy,
+                  !surfaceUnavailable else {
+                print("IOS_PROJECTED_SUBMISSION_FAILED forced policy fabricated telemetry")
+                fflush(stdout)
+                return nil
+            }
+        }
+        return submission
+    }
+
+    private func logAdaptiveGpuStatus(_ status: GsplatSurfaceSortStats) {
+        let reason = (status.flags & (1 << 15)) != 0
+            ? (status.flags >> 16) & 0b111
+            : nil
+        if reason != lastAdaptiveGpuFailureReason {
+            lastAdaptiveGpuFailureReason = reason
+            let label: String
+            switch reason {
+            case 1: label = "unsupported"
+            case 2: label = "initialization"
+            case 3: label = "out_of_memory"
+            case 4: label = "validation"
+            case nil: label = "none"
+            default: label = "unknown_\(reason!)"
+            }
+            print(
+                "ADAPTIVE_GPU_STATUS failure=\(label) " +
+                "actual_backend=\((status.flags >> 9) & 0b11) " +
+                "adaptive_state=\((status.flags >> 12) & 0b111)"
+            )
+            fflush(stdout)
+        }
+    }
+
+    private func flushTerminalLedgers(
+        _ renderer: OpaquePointer,
+        benchmark: SurfaceBenchmark,
+        maxFrames: Int = 120
+    ) -> Bool {
+        if benchmark.terminalLedgersWaitFinished {
+            if let error = benchmark.orderLedgerError {
+                print("BENCHMARK_TERMINAL_LEDGER_ERROR \(error)")
+                fflush(stdout)
+                return false
+            }
+            if let error = benchmark.projectedLedgerError {
+                print("BENCHMARK_PROJECTED_TERMINAL_LEDGER_ERROR \(error)")
+                fflush(stdout)
+                return false
+            }
+            return true
+        }
+        for _ in 0..<maxFrames {
+            let rc = gsplat_surface_renderer_render_frame(renderer)
+            guard rc == 0 else {
+                print("BENCHMARK_TERMINAL_FLUSH_RENDER_FAILED rc=\(rc) error=\(errorMessage(rc))")
+                fflush(stdout)
+                return false
+            }
+            guard let orderFrame = readOrderFrameState(renderer) else { return false }
+            benchmark.recordOrderSubmission(orderFrame.submission)
+            benchmark.recordProjectedSubmission(
+                orderFrame.projectedSubmission,
+                orderSubmission: orderFrame.submission
+            )
+            logAdaptiveGpuStatus(orderFrame.stats)
+            if !logCompletedProjectedMeasurements(renderer, benchmark: benchmark) {
+                return false
+            }
+            if !logCompletedOrderMeasurements(renderer, benchmark: benchmark) {
+                return false
+            }
+            if benchmark.terminalLedgersWaitFinished { break }
+        }
+        guard benchmark.terminalLedgersWaitFinished else {
+            print("BENCHMARK_TERMINAL_LEDGER_TIMEOUT issued tickets remain pending")
+            fflush(stdout)
+            return false
+        }
+        if let error = benchmark.orderLedgerError {
+            print("BENCHMARK_TERMINAL_LEDGER_ERROR \(error)")
+            fflush(stdout)
+            return false
+        }
+        if let error = benchmark.projectedLedgerError {
+            print("BENCHMARK_PROJECTED_TERMINAL_LEDGER_ERROR \(error)")
+            fflush(stdout)
+            return false
+        }
+        return true
+    }
+
+    private func readSurfacePresentation(
+        _ renderer: OpaquePointer
+    ) -> GsplatSurfacePresentation? {
+        var presentation = GsplatSurfacePresentation()
+        let rc = gsplat_surface_renderer_get_presentation(renderer, &presentation)
+        guard rc == 0 else {
+            print(
+                "BENCHMARK_PRESENTATION_ERROR rc=\(rc) error=\(errorMessage(rc))"
+            )
+            fflush(stdout)
+            return nil
+        }
+        return presentation
     }
 
     private func stopRenderer() {
         setRenderLoopActive(false)
         renderer = nil
         currentSurfaceSize = nil
+        surfaceExactness = nil
+        lastAdaptiveGpuFailureReason = nil
     }
 
     private func restartRendererForDataset() {
@@ -611,14 +1457,11 @@ final class ExampleViewController: UIViewController, UIGestureRecognizerDelegate
         }
 
         let screenScale = surfaceView.window?.screen.scale ?? UIScreen.main.scale
-        var width = max(1, Int((surfaceView.bounds.width * screenScale).rounded()))
-        var height = max(1, Int((surfaceView.bounds.height * screenScale).rounded()))
-        let maxSide = max(width, height)
-        if maxSide > maxSurfaceSidePixels {
-            let scale = CGFloat(maxSurfaceSidePixels) / CGFloat(maxSide)
-            width = max(1, Int((CGFloat(width) * scale).rounded()))
-            height = max(1, Int((CGFloat(height) * scale).rounded()))
-        }
+        // Camera traces define camera motion and a reference viewport, not an
+        // internal render resolution. Always render at the real CAMetalLayer
+        // pixel size so a low-resolution trace cannot silently upscale.
+        let width = max(1, Int((surfaceView.bounds.width * screenScale).rounded()))
+        let height = max(1, Int((surfaceView.bounds.height * screenScale).rounded()))
 
         if let layer = surfaceView.layer as? CAMetalLayer {
             layer.contentsScale = screenScale
@@ -1057,7 +1900,18 @@ final class ExampleViewController: UIViewController, UIGestureRecognizerDelegate
             "geometry_pipeline=\(geometryPipelineName(benchmarkConfig.geometryPath))",
         ]
         if benchmarkConfig.enabled {
-            lines.append("benchmark=orbit frames=\(benchmarkConfig.frames) warmup=\(benchmarkConfig.warmupFrames)")
+            let cameraMode: String
+            if benchmarkConfig.cameraTraceSequence {
+                cameraMode = "trace_sequence"
+            } else if benchmarkConfig.cameraTracePath == nil {
+                cameraMode = "orbit"
+            } else {
+                cameraMode = "fixed_camera"
+            }
+            lines.append(
+                "benchmark=\(cameraMode) frames=\(benchmarkConfig.frames) " +
+                "warmup=\(benchmarkConfig.warmupFrames) loops=\(benchmarkConfig.cameraTraceLoops)"
+            )
         }
         lines.append("dataset=\(datasetLabel)")
         lines.append("path=\(datasetPath)")
@@ -1072,6 +1926,12 @@ final class ExampleViewController: UIViewController, UIGestureRecognizerDelegate
     }
 
     private func errorMessage(_ code: Int32) -> String {
+        if let detail = gsplat_last_error_message() {
+            let message = String(cString: detail)
+            if !message.isEmpty && message != "ok" {
+                return message
+            }
+        }
         guard let message = gsplat_error_message(code) else {
             return "unknown"
         }

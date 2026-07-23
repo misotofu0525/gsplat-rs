@@ -21,9 +21,11 @@ Operational facts and command entrypoints live in `handbook/PROJECT_CONTEXT.md` 
 
 ## Near-Term Priorities
 
-1. Keep the bounded PLY -> `SceneBuffers` -> Direct renderer path correct and well tested.
-2. Move Direct toward capability-gated GPU visible compaction, portable radix
-   sorting, and indirect drawing without forking platform renderers.
+1. Keep bounded PLY import, the Direct-f32 oracle, and direct-to-Resident
+   exact-count Packed loading correct and well tested.
+2. Keep portable GPU visibility/radix/indirect draw and measured CPU/GPU
+   Adaptive selection shared across platforms; do not replace them with a
+   fixed point-count threshold.
 3. Expand conformance and performance evidence across real scenes and
    representative desktop/mobile resolutions, including stage timings and
    image-quality comparisons, before widening APIs or making competitor claims.
@@ -57,7 +59,7 @@ Operational facts and command entrypoints live in `handbook/PROJECT_CONTEXT.md` 
 - Stable v0.1 semantics are the bounded PLY-to-`SceneBuffers` path, offscreen
   context lifecycle and structured errors, `SortedAlpha` direct rendering, and
   single-owner native handles used from one serialized thread or queue.
-- Packed/paged geometry selectors, atlas layouts, local page scheduling,
+- Packed/Direct/Paged geometry selectors, Resident layouts, local page scheduling,
   benchmark artifact schemas, Web package APIs, and mobile Surface convenience
   wrappers remain experimental. They may change without widening the stable
   v0.1 contract; direct remains their default.
@@ -77,23 +79,48 @@ Operational facts and command entrypoints live in `handbook/PROJECT_CONTEXT.md` 
   Web renderer changes require verified wasm build and browser smoke evidence.
 - The Web example is validation example support for browser PLY loading, the WebGL2 fallback, and hosting the generated wasm package; it is not a polished web product surface.
 
-## Packed/Paged Evidence Boundary (closed 2026-07-21)
+## Full-Count Resident Evidence Boundary (active 2026-07-22)
 
-- Packed remains an explicit experimental geometry path. Its retained value is
-  the 20-byte hot record, resource preflight, image/count gates, and a reusable
-  resource layout—not an automatic replacement for Direct.
-- The unread 48-byte-per-splat SH GPU texture, its full-scene CPU staging, and
-  the fictitious hot-texture dimension gate were removed. Packed now evaluates
-  view-dependent color into its hot record, completes that color before the
-  first presented frame, and freezes one camera across a banded refresh.
+The exact resident representation, Direct-oracle quality gate, default exact
+projected-quads raster, and lazy exact tiled diagnostic are in place, but
+terminal Adaptive evidence and final-code cross-platform reruns remain open.
+Historical global-quad timings below are context, not closeout evidence.
+
+- Product examples and SDK wrappers explicitly select Packed, whose
+  implementation is now one exact-count compact Resident scene rather than the
+  old 20-byte partial atlas. Direct remains the wide-f32 image oracle and the
+  low-level compatibility default.
+- Packed keeps exact f32 position/alpha/world covariance, compact DC, complete
+  source SH0-SH3, resolved RGB18E8 high-dynamic-range color, and one source ID per point. A 256-point chunk
+  is only a color-quantization metadata unit; it is never a draw/residency cap.
+- Direct-f32 comparisons on two views each of complete Truck, Garden, and
+  Bicycle pass the fixed SSIM/RGB/alpha gate. The 6.132M Bicycle model is a
+  required large-scene proof, not an extrapolation from small showcase assets.
+- CPU and GPU order share exact visibility/depth/tie semantics and one
+  authoritative visible order. The default raster projects each visible splat
+  once into two 16-byte-per-splat planes and then uses exact hardware-instanced
+  SortedAlpha quads; CPU supplies the direct count and GPU reuses the sorter's
+  indirect count without readback. Adaptive uses paired measurement,
+  hysteresis, cooldown, and periodic re-probe; it does not hard-code a
+  scene-size switch.
+- Projected cache reuse is fail-closed: only an identical order generation and
+  owner, complete camera, viewport, and draw-count guard may skip projection.
+  Motion, refresh, CPU/GPU transition, resize, or count change recomputes the
+  exact cache before drawing.
+- GlobalQuads remains an exact Resident oracle. TiledExact is lazy and
+  diagnostic; neither plan is allowed to sample, lower SH, change resolution,
+  or reduce the authoritative visible draw count.
+- Packed preflight accounts for the final degree-specific planes, eight
+  color-resolve storage bindings, binding/buffer limits, and u32 draw
+  addressability. Validation/OOM/internal failures reject before publication;
+  forced GPU never silently falls back.
 - The fixed four-slot local Paged runtime remains available for explicit
   diagnostics, but further productization is frozen. It retains complete
   `SceneBuffers` and source-index metadata and performs synchronous scheduling,
   extraction, packing, sorting, and color work; it is neither end-to-end
   streaming nor evidence of arbitrary-scale or memory-bounded loading.
-- Unused automatic Surface constructors were removed. Capacity preflight can
-  report that Direct does not fit, but the library does not silently select
-  the local Paged prototype as product policy.
+- Capacity preflight or allocation failure never silently selects the local
+  Paged prototype, samples points, or lowers SH degree.
 - Historical physical A065 evidence recorded Direct drawing 279,199 splats at
   11.330 ms/frame and Paged drawing 225,784 active splats at 23.626 ms/frame.
   This proves Paged execution and bounded GPU slots, not a performance win.
@@ -102,10 +129,10 @@ Operational facts and command entrypoints live in `handbook/PROJECT_CONTEXT.md` 
   minimum SSIM `0.998657`. It predates this closeout commit and does not prove
   broad browser/native leadership, competitor memory leadership, sustained
   thermal behavior, or 10M scalability.
-- A future streaming track must start from metadata-first loading, bounded
+- A future remote/hierarchical streaming track must start from metadata-first loading, bounded
   compressed/decoded caches, asynchronous decode, spatial hierarchy/LOD, and
-  measured source/CPU/GPU residency. It should not grow out of the current
-  four-slot prototype by terminology alone.
+  measured source/CPU/GPU residency. Any LOD mode must be separately labeled
+  and cannot masquerade as this full-quality contract.
 
 ## Release Bar
 
@@ -137,8 +164,8 @@ STABILITY_SECONDS=1800 bash tests/perf/run-long-stability.sh
 - A custom internal binary scene/cache format
 - Further optimization of the fixed four-slot local Paged prototype as a
   primary performance track
-- Metadata-first or remote streaming before the Direct GPU pipeline and
-  real-dataset evidence matrix are established
+- Metadata-first remote hierarchy/LOD without a separately labeled quality
+  contract and its own real-dataset evidence matrix
 - Additional experimental blending/rendering backends
 - New top-level apps or docs-only placeholders
 - Published Maven, binary SwiftPM, or npm SDK distribution

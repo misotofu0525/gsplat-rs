@@ -73,11 +73,6 @@ fn quad_offset(vertex_index: u32) -> vec2<f32> {
   return offsets[vertex_index];
 }
 
-fn alpha_extent_scale(alpha: f32) -> f32 {
-  let s2 = log(max(alpha, 1e-12) * 256.0) / 4.5;
-  return sqrt(clamp(s2, 0.0, 1.0));
-}
-
 fn normalize2_or_default(v: vec2<f32>, fallback: vec2<f32>) -> vec2<f32> {
   let len2 = dot(v, v);
   if (len2 <= 1e-20) {
@@ -283,11 +278,11 @@ fn project_splat(source: UnpackedSource) -> ProjectedSplat {
   let b = cov01;
   var c = j11 * j11 * cov_cam.yy + 2.0 * j11 * j12 * cov_cam.yz + j12 * j12 * cov_cam.zz;
 
-  let blur_pixels = 0.3;
+  let blur_variance_pixels = 0.3;
   let px_ndc_x = 2.0 / max(f32(params.width), 1.0);
   let px_ndc_y = 2.0 / max(f32(params.height), 1.0);
-  a = a + pow(blur_pixels * px_ndc_x, 2.0);
-  c = c + pow(blur_pixels * px_ndc_y, 2.0);
+  a = a + blur_variance_pixels * px_ndc_x * px_ndc_x;
+  c = c + blur_variance_pixels * px_ndc_y * px_ndc_y;
 
   let apco2 = (a + c) * 0.5;
   let amco2 = (a - c) * 0.5;
@@ -329,12 +324,12 @@ fn vs_main(
   let idx = sorted_indices[instance_index];
   let source = load_source(idx);
   let projected = project_splat(source);
-  let local = quad_offset(vertex_index) * alpha_extent_scale(projected.alpha);
+  let local = quad_offset(vertex_index);
   let offset = projected.axis_u * local.x + projected.axis_v * local.y;
 
   var out: VsOut;
   out.position = vec4<f32>(projected.center + offset, 0.0, 1.0);
-  out.color = vec4<f32>(source.color_rgb * projected.alpha, projected.alpha);
+  out.color = vec4<f32>(source.color_rgb, projected.alpha);
   out.local = local;
   return out;
 }
@@ -342,14 +337,10 @@ fn vs_main(
 @fragment
 fn fs_main(input: VsOut) -> @location(0) vec4<f32> {
   let r2 = dot(input.local, input.local);
-  if (r2 > 1.0) {
-    discard;
-  }
-
   let g = exp(-4.5 * r2);
-  let alpha = input.color.a * g;
-  if (alpha <= (1.0 / 256.0)) {
+  let alpha = min(0.99, input.color.a * g);
+  if (alpha < (1.0 / 255.0)) {
     discard;
   }
-  return vec4<f32>(input.color.rgb * g, alpha);
+  return vec4<f32>(input.color.rgb * alpha, alpha);
 }

@@ -52,3 +52,7 @@ android {
 tasks.matching { it.name == "preBuild" }.configureEach {
     dependsOn(buildNativeGsplat)
 }
+
+dependencies {
+    testImplementation("junit:junit:4.13.2")
+}

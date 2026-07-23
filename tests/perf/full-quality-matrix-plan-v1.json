@@ -1,0 +1,876 @@
+{
+  "schema": "gsplat-full-quality-experiment/v1",
+  "suite_id": "cross-platform-full-quality-native-display-20260723-v1",
+  "status": "planned",
+  "pre_run_requirements": [
+    "Resolve the exact Git commit and dirty state after the implementation is frozen.",
+    "Manually review both endpoint-sized views for every formal full-scene trace and retain the accepted images; never substitute the 640x360 diagnostic fixtures.",
+    "Record the Android SurfaceView and iOS CAMetalLayer drawable dimensions again immediately before collection; regenerate the same-pose/FOV trace if either native size changes.",
+    "Make every endpoint consume trace_sequence frame_indices in order instead of recreating a local yaw orbit.",
+    "Require exact load, four-stage resolution, requested/actual backend, terminal sort-ticket, and no-fallback receipts from every retained run."
+  ],
+  "renderer_path": "packed_atlas",
+  "build": {
+    "repository_commit": null,
+    "working_tree_dirty": null
+  },
+  "quality_contract": {
+    "blend_mode": "sorted_alpha",
+    "source_membership": "all",
+    "sampling": "disabled",
+    "lod": "disabled",
+    "sh_degree": "source",
+    "resolution_scale": 1,
+    "capacity_failure": "reject_before_publish"
+  },
+  "traces": [
+    {
+      "id": "candidate-kitsune-quality-2view-1920x1080-v1",
+      "sha256": "8821c193506cdf7d67aa200248a45088c4750a3cd128ee29f6e2dc2d3a5bdb99",
+      "width": 1920,
+      "height": 1080,
+      "frame_count": 2,
+      "local_path": "tests/perf/trace/fixtures/quality/candidate-kitsune-quality-1920x1080-v1.json",
+      "evidence_class": "formal_full_quality",
+      "dataset_id": "kitsune-full",
+      "camera_family": "candidate-kitsune-quality-2view-v1",
+      "pose_intrinsics_sha256": "bc96d99c785ae65c06fe390a8f47d4d09b18111822c4a26e08e23b8b093d4774"
+    },
+    {
+      "id": "candidate-kitsune-quality-2view-2412x1080-v1",
+      "sha256": "0775baeda60585a2668a415c63702b0c51c6efc643f1779b0ac5e3c82067f56a",
+      "width": 2412,
+      "height": 1080,
+      "frame_count": 2,
+      "local_path": "tests/perf/trace/fixtures/quality/candidate-kitsune-quality-2412x1080-v1.json",
+      "evidence_class": "formal_full_quality",
+      "dataset_id": "kitsune-full",
+      "camera_family": "candidate-kitsune-quality-2view-v1",
+      "pose_intrinsics_sha256": "bc96d99c785ae65c06fe390a8f47d4d09b18111822c4a26e08e23b8b093d4774"
+    },
+    {
+      "id": "candidate-kitsune-quality-2view-2622x1206-v1",
+      "sha256": "18bacc60328fb113ae3f9cc928428d300d98617de22f4c7b178595a187b64f2b",
+      "width": 2622,
+      "height": 1206,
+      "frame_count": 2,
+      "local_path": "tests/perf/trace/fixtures/quality/candidate-kitsune-quality-2622x1206-v1.json",
+      "evidence_class": "formal_full_quality",
+      "dataset_id": "kitsune-full",
+      "camera_family": "candidate-kitsune-quality-2view-v1",
+      "pose_intrinsics_sha256": "bc96d99c785ae65c06fe390a8f47d4d09b18111822c4a26e08e23b8b093d4774"
+    },
+    {
+      "id": "candidate-flowers-quality-2view-1920x1080-v1",
+      "sha256": "c09b06c7d8609421e7e016e65dc36966141d49ada63484c68f7350dd6f8054af",
+      "width": 1920,
+      "height": 1080,
+      "frame_count": 2,
+      "local_path": "tests/perf/trace/fixtures/quality/candidate-flowers-quality-1920x1080-v1.json",
+      "evidence_class": "formal_full_quality",
+      "dataset_id": "flowers-full",
+      "camera_family": "candidate-flowers-quality-2view-v1",
+      "pose_intrinsics_sha256": "485a7e5ceb8475347469cee60b96536a87f3638d399143d61c10c38c0f0b2cba"
+    },
+    {
+      "id": "candidate-flowers-quality-2view-2412x1080-v1",
+      "sha256": "b4e637acad0d624b4bb60a8c7f569934d3fbc2a43961a1d75e7ae07b336d5ae5",
+      "width": 2412,
+      "height": 1080,
+      "frame_count": 2,
+      "local_path": "tests/perf/trace/fixtures/quality/candidate-flowers-quality-2412x1080-v1.json",
+      "evidence_class": "formal_full_quality",
+      "dataset_id": "flowers-full",
+      "camera_family": "candidate-flowers-quality-2view-v1",
+      "pose_intrinsics_sha256": "485a7e5ceb8475347469cee60b96536a87f3638d399143d61c10c38c0f0b2cba"
+    },
+    {
+      "id": "candidate-flowers-quality-2view-2622x1206-v1",
+      "sha256": "8cac27b9ff5f14e25dcd2f7b40cc6458d565256c75acaad4a10cf62f1f2e6e0a",
+      "width": 2622,
+      "height": 1206,
+      "frame_count": 2,
+      "local_path": "tests/perf/trace/fixtures/quality/candidate-flowers-quality-2622x1206-v1.json",
+      "evidence_class": "formal_full_quality",
+      "dataset_id": "flowers-full",
+      "camera_family": "candidate-flowers-quality-2view-v1",
+      "pose_intrinsics_sha256": "485a7e5ceb8475347469cee60b96536a87f3638d399143d61c10c38c0f0b2cba"
+    },
+    {
+      "id": "candidate-bonsai-quality-2view-1920x1080-v1",
+      "sha256": "8f0c419cdd090bc93bdfd46d5876f954c46b6d189e4f72d34c8a0fa475a87ef3",
+      "width": 1920,
+      "height": 1080,
+      "frame_count": 2,
+      "local_path": "tests/perf/trace/fixtures/quality/candidate-bonsai-quality-1920x1080-v1.json",
+      "evidence_class": "formal_full_quality",
+      "dataset_id": "bonsai-full",
+      "camera_family": "candidate-bonsai-quality-2view-v1",
+      "pose_intrinsics_sha256": "958daa641ae7cd2718e3f49d98e69b64a2c32a81789d619952728cadaad3820c"
+    },
+    {
+      "id": "candidate-bonsai-quality-2view-2412x1080-v1",
+      "sha256": "b189dc06ac35f0a4e3805b5f53d7caab5a40c3e06e042836c848cb4aa185975f",
+      "width": 2412,
+      "height": 1080,
+      "frame_count": 2,
+      "local_path": "tests/perf/trace/fixtures/quality/candidate-bonsai-quality-2412x1080-v1.json",
+      "evidence_class": "formal_full_quality",
+      "dataset_id": "bonsai-full",
+      "camera_family": "candidate-bonsai-quality-2view-v1",
+      "pose_intrinsics_sha256": "958daa641ae7cd2718e3f49d98e69b64a2c32a81789d619952728cadaad3820c"
+    },
+    {
+      "id": "candidate-bonsai-quality-2view-2622x1206-v1",
+      "sha256": "e9422e65d15a33b77f00e3cae2ce8a4366f3beb7dfd8bd591a47d2926afaeeb9",
+      "width": 2622,
+      "height": 1206,
+      "frame_count": 2,
+      "local_path": "tests/perf/trace/fixtures/quality/candidate-bonsai-quality-2622x1206-v1.json",
+      "evidence_class": "formal_full_quality",
+      "dataset_id": "bonsai-full",
+      "camera_family": "candidate-bonsai-quality-2view-v1",
+      "pose_intrinsics_sha256": "958daa641ae7cd2718e3f49d98e69b64a2c32a81789d619952728cadaad3820c"
+    },
+    {
+      "id": "candidate-truck-quality-2view-1920x1080-v1",
+      "sha256": "34d47dbddf73d915bfd55431b33da9430882767a40d9d74c636c508f7d7a5ab3",
+      "width": 1920,
+      "height": 1080,
+      "frame_count": 2,
+      "local_path": "tests/perf/trace/fixtures/quality/candidate-truck-quality-1920x1080-v1.json",
+      "evidence_class": "formal_full_quality",
+      "dataset_id": "truck-full",
+      "camera_family": "candidate-truck-quality-2view-v1",
+      "pose_intrinsics_sha256": "f2bebe5dcee7b41ef957cf6041d3ac9a9f06e19296a08ff128947c03a78d4db3"
+    },
+    {
+      "id": "candidate-truck-quality-2view-2412x1080-v1",
+      "sha256": "0331bc277c7061a9fec5a026335dc6cf6a2c177d237be6e9a54c60330c1e3dfc",
+      "width": 2412,
+      "height": 1080,
+      "frame_count": 2,
+      "local_path": "tests/perf/trace/fixtures/quality/candidate-truck-quality-2412x1080-v1.json",
+      "evidence_class": "formal_full_quality",
+      "dataset_id": "truck-full",
+      "camera_family": "candidate-truck-quality-2view-v1",
+      "pose_intrinsics_sha256": "f2bebe5dcee7b41ef957cf6041d3ac9a9f06e19296a08ff128947c03a78d4db3"
+    },
+    {
+      "id": "candidate-truck-quality-2view-2622x1206-v1",
+      "sha256": "4a4491515e89e96f07f2b20dc8fc38ed8a0a007833e659e20e4c586d3d4fe6f1",
+      "width": 2622,
+      "height": 1206,
+      "frame_count": 2,
+      "local_path": "tests/perf/trace/fixtures/quality/candidate-truck-quality-2622x1206-v1.json",
+      "evidence_class": "formal_full_quality",
+      "dataset_id": "truck-full",
+      "camera_family": "candidate-truck-quality-2view-v1",
+      "pose_intrinsics_sha256": "f2bebe5dcee7b41ef957cf6041d3ac9a9f06e19296a08ff128947c03a78d4db3"
+    },
+    {
+      "id": "candidate-garden-quality-2view-1920x1080-v1",
+      "sha256": "1b1aa0a0e1f4a4b9744a4c681fa46a7cd0f50d5390a7260812712e81721f5518",
+      "width": 1920,
+      "height": 1080,
+      "frame_count": 2,
+      "local_path": "tests/perf/trace/fixtures/quality/candidate-garden-quality-1920x1080-v1.json",
+      "evidence_class": "formal_full_quality",
+      "dataset_id": "garden-full",
+      "camera_family": "candidate-garden-quality-2view-v1",
+      "pose_intrinsics_sha256": "98b6125b5be34c9c76ca9dcca9a27f3e9bc606b1f442b28868a1a88cc12e50f1"
+    },
+    {
+      "id": "candidate-garden-quality-2view-2412x1080-v1",
+      "sha256": "79ef4fbca52eef61051566594473b5777585ee2bcd29380d06c356bf9c26be48",
+      "width": 2412,
+      "height": 1080,
+      "frame_count": 2,
+      "local_path": "tests/perf/trace/fixtures/quality/candidate-garden-quality-2412x1080-v1.json",
+      "evidence_class": "formal_full_quality",
+      "dataset_id": "garden-full",
+      "camera_family": "candidate-garden-quality-2view-v1",
+      "pose_intrinsics_sha256": "98b6125b5be34c9c76ca9dcca9a27f3e9bc606b1f442b28868a1a88cc12e50f1"
+    },
+    {
+      "id": "candidate-garden-quality-2view-2622x1206-v1",
+      "sha256": "a7a297b8764d151c5daa51c43ec8fc573bce8956a8474c8435b7d411b0246736",
+      "width": 2622,
+      "height": 1206,
+      "frame_count": 2,
+      "local_path": "tests/perf/trace/fixtures/quality/candidate-garden-quality-2622x1206-v1.json",
+      "evidence_class": "formal_full_quality",
+      "dataset_id": "garden-full",
+      "camera_family": "candidate-garden-quality-2view-v1",
+      "pose_intrinsics_sha256": "98b6125b5be34c9c76ca9dcca9a27f3e9bc606b1f442b28868a1a88cc12e50f1"
+    },
+    {
+      "id": "candidate-bicycle-quality-2view-1920x1080-v1",
+      "sha256": "176166a00f8fc645875be4315a643e9ac420726c46e295a05399f45c6e80f95d",
+      "width": 1920,
+      "height": 1080,
+      "frame_count": 2,
+      "local_path": "tests/perf/trace/fixtures/quality/candidate-bicycle-quality-1920x1080-v1.json",
+      "evidence_class": "formal_full_quality",
+      "dataset_id": "bicycle-full",
+      "camera_family": "candidate-bicycle-quality-2view-v1",
+      "pose_intrinsics_sha256": "71ccce4a6e8f7d4cda2318123d8876008fc562c9e6c66df0f591698eb9d39481"
+    },
+    {
+      "id": "candidate-bicycle-quality-2view-2412x1080-v1",
+      "sha256": "73b9f3400ebd4ebe309858cba485772c03614abefb7012f9d5e371768dbab31d",
+      "width": 2412,
+      "height": 1080,
+      "frame_count": 2,
+      "local_path": "tests/perf/trace/fixtures/quality/candidate-bicycle-quality-2412x1080-v1.json",
+      "evidence_class": "formal_full_quality",
+      "dataset_id": "bicycle-full",
+      "camera_family": "candidate-bicycle-quality-2view-v1",
+      "pose_intrinsics_sha256": "71ccce4a6e8f7d4cda2318123d8876008fc562c9e6c66df0f591698eb9d39481"
+    },
+    {
+      "id": "candidate-bicycle-quality-2view-2622x1206-v1",
+      "sha256": "5d40bbb5ed84eb666c4bf1ab07454fcb4327974adf011b451045d5ebf819a947",
+      "width": 2622,
+      "height": 1206,
+      "frame_count": 2,
+      "local_path": "tests/perf/trace/fixtures/quality/candidate-bicycle-quality-2622x1206-v1.json",
+      "evidence_class": "formal_full_quality",
+      "dataset_id": "bicycle-full",
+      "camera_family": "candidate-bicycle-quality-2view-v1",
+      "pose_intrinsics_sha256": "71ccce4a6e8f7d4cda2318123d8876008fc562c9e6c66df0f591698eb9d39481"
+    }
+  ],
+  "datasets": [
+    {
+      "id": "kitsune-full",
+      "role": "full_scene",
+      "local_path": "tests/datasets/external/wakufactory_kitune/kitune1.ply",
+      "sha256": "3bea1ec48ea91861fc8fad1df688a2cdb1db9b103735498b35d16d146f2551a2",
+      "bytes": 65892441,
+      "splat_count": 279199,
+      "sh_degree": 3
+    },
+    {
+      "id": "flowers-full",
+      "role": "full_scene",
+      "local_path": "tests/datasets/external/nvidia_flowers_1/flowers_1/flowers_1.ply",
+      "sha256": "3641192d70d598894f4d6ad92e0890b4a7336b43aa6af47bd35842c3e2ee8765",
+      "bytes": 139619083,
+      "splat_count": 562974,
+      "sh_degree": 3
+    },
+    {
+      "id": "bonsai-full",
+      "role": "full_scene",
+      "local_path": "tests/datasets/external/inria_3dgs/bonsai/point_cloud.ply",
+      "sha256": "a16af6d8815498ffbf9eb5d5ee93f5bcc9dca34c4e3eb6f7a796ef9e97c0d273",
+      "bytes": 308716644,
+      "splat_count": 1244819,
+      "sh_degree": 3
+    },
+    {
+      "id": "truck-full",
+      "role": "full_scene",
+      "local_path": "tests/datasets/external/inria_3dgs/truck/point_cloud.ply",
+      "sha256": "65ecf4058135a030cddd2198326f67172a4101344b0b54a3fa370cf45ea9688c",
+      "bytes": 630225580,
+      "splat_count": 2541226,
+      "sh_degree": 3
+    },
+    {
+      "id": "garden-full",
+      "role": "full_scene",
+      "local_path": "tests/datasets/external/inria_3dgs/garden/point_cloud.ply",
+      "sha256": "16701d5e0630dfaca74f8794ed7ce2aa23fa922f87dc09a7e37484e8d3f82d5a",
+      "bytes": 1447027964,
+      "splat_count": 5834784,
+      "sh_degree": 3
+    },
+    {
+      "id": "bicycle-full",
+      "role": "full_scene",
+      "local_path": "tests/datasets/external/inria_3dgs/bicycle/point_cloud.ply",
+      "sha256": "64d357cb25bd85f710f8551a18d830f8497277fbd8c5805adfd72ffe9ca78227",
+      "bytes": 1520726124,
+      "splat_count": 6131954,
+      "sh_degree": 3
+    },
+    {
+      "id": "truck-050k",
+      "role": "scaling_tier",
+      "source_dataset_id": "truck-full",
+      "selection_algorithm": "stratified-midpoint-integer/v1",
+      "claim_scope": "performance_scaling_only",
+      "local_path": "tests/datasets/external/ladder/inria-truck/point_cloud-n50000.ply",
+      "sha256": "13d269d0bdfb062356cf3479ffef894f27818e6b4730c40d5a78b85177a4c2e2",
+      "bytes": 12401530,
+      "splat_count": 50000,
+      "sh_degree": 3
+    },
+    {
+      "id": "truck-100k",
+      "role": "scaling_tier",
+      "source_dataset_id": "truck-full",
+      "selection_algorithm": "stratified-midpoint-integer/v1",
+      "claim_scope": "performance_scaling_only",
+      "local_path": "tests/datasets/external/ladder/inria-truck/point_cloud-n100000.ply",
+      "sha256": "a43504db2fa95ed84e410b84f1fa95c6a8eb89b3236772d54a1bf4896dbe813b",
+      "bytes": 24801531,
+      "splat_count": 100000,
+      "sh_degree": 3
+    },
+    {
+      "id": "truck-200k",
+      "role": "scaling_tier",
+      "source_dataset_id": "truck-full",
+      "selection_algorithm": "stratified-midpoint-integer/v1",
+      "claim_scope": "performance_scaling_only",
+      "local_path": "tests/datasets/external/ladder/inria-truck/point_cloud-n200000.ply",
+      "sha256": "d1285c6f4e404eedc11898786c2da7344c6ebb467e982d8d71c0b55df61ecb9f",
+      "bytes": 49601531,
+      "splat_count": 200000,
+      "sh_degree": 3
+    },
+    {
+      "id": "truck-300k",
+      "role": "scaling_tier",
+      "source_dataset_id": "truck-full",
+      "selection_algorithm": "stratified-midpoint-integer/v1",
+      "claim_scope": "performance_scaling_only",
+      "local_path": "tests/datasets/external/ladder/inria-truck/point_cloud-n300000.ply",
+      "sha256": "48addd1364bec7ad3d1537f8d24449c7f98ce7ba4e9de40bc0280b96cb210f71",
+      "bytes": 74401531,
+      "splat_count": 300000,
+      "sh_degree": 3
+    },
+    {
+      "id": "truck-500k",
+      "role": "scaling_tier",
+      "source_dataset_id": "truck-full",
+      "selection_algorithm": "stratified-midpoint-integer/v1",
+      "claim_scope": "performance_scaling_only",
+      "local_path": "tests/datasets/external/ladder/inria-truck/point_cloud-n500000.ply",
+      "sha256": "c746faee344589a6c6da11d99b8bfb84c225009d3d0e50c451b9da2456dd10dc",
+      "bytes": 124001531,
+      "splat_count": 500000,
+      "sh_degree": 3
+    },
+    {
+      "id": "truck-1m",
+      "role": "scaling_tier",
+      "source_dataset_id": "truck-full",
+      "selection_algorithm": "stratified-midpoint-integer/v1",
+      "claim_scope": "performance_scaling_only",
+      "local_path": "tests/datasets/external/ladder/inria-truck/point_cloud-n1000000.ply",
+      "sha256": "53599efdeed2f9295b452cad209d4ae78822e8493c648968c2e6e8dbc505a96a",
+      "bytes": 248001532,
+      "splat_count": 1000000,
+      "sh_degree": 3
+    },
+    {
+      "id": "truck-1p5m",
+      "role": "scaling_tier",
+      "source_dataset_id": "truck-full",
+      "selection_algorithm": "stratified-midpoint-integer/v1",
+      "claim_scope": "performance_scaling_only",
+      "local_path": "tests/datasets/external/ladder/inria-truck/point_cloud-n1500000.ply",
+      "sha256": "df1e9d30bded96ca2d31f70d6e3a6aed7fe4c8ce575dd1302aa4970f488b113e",
+      "bytes": 372001532,
+      "splat_count": 1500000,
+      "sh_degree": 3
+    },
+    {
+      "id": "truck-2m",
+      "role": "scaling_tier",
+      "source_dataset_id": "truck-full",
+      "selection_algorithm": "stratified-midpoint-integer/v1",
+      "claim_scope": "performance_scaling_only",
+      "local_path": "tests/datasets/external/ladder/inria-truck/point_cloud-n2000000.ply",
+      "sha256": "333a37d7fd680df1af9cdf96b9f848fb9598983f1bdfde0e49dbec04b7a514f3",
+      "bytes": 496001532,
+      "splat_count": 2000000,
+      "sh_degree": 3
+    }
+  ],
+  "endpoints": [
+    {
+      "id": "macos-m4-metal",
+      "availability": "available",
+      "artifact_platform": "macos",
+      "execution_class": "physical",
+      "performance_evidence": true,
+      "formal_display": {
+        "width": 1920,
+        "height": 1080,
+        "source": "declared_1080p_product_target"
+      }
+    },
+    {
+      "id": "chrome-m4-webgpu",
+      "availability": "available",
+      "artifact_platform": "web",
+      "execution_class": "browser",
+      "performance_evidence": true,
+      "formal_display": {
+        "width": 1920,
+        "height": 1080,
+        "source": "declared_1080p_product_target"
+      }
+    },
+    {
+      "id": "android-a065-vulkan",
+      "availability": "available",
+      "artifact_platform": "android-native",
+      "execution_class": "physical",
+      "performance_evidence": true,
+      "formal_display": {
+        "width": 2412,
+        "height": 1080,
+        "source": "adb_observed_surfaceview_20260722"
+      }
+    },
+    {
+      "id": "ios-17-pro-simulator-metal",
+      "availability": "available",
+      "artifact_platform": "ios",
+      "execution_class": "simulator",
+      "performance_evidence": false,
+      "formal_display": {
+        "width": 2622,
+        "height": 1206,
+        "source": "cametal_layer_drawable_observed_20260722"
+      }
+    },
+    {
+      "id": "ios-physical-metal",
+      "availability": "unavailable",
+      "artifact_platform": "ios",
+      "execution_class": "physical",
+      "performance_evidence": true,
+      "probe": "xcrun devicectl list devices",
+      "reason": "No paired physical Apple device was reported during the 2026-07-22 inventory."
+    }
+  ],
+  "protocols": [
+    {
+      "id": "fixed-quality-desktop-web-1080p",
+      "evidence_class": "formal_full_quality",
+      "dataset_ids": [
+        "kitsune-full",
+        "flowers-full",
+        "bonsai-full",
+        "truck-full",
+        "garden-full",
+        "bicycle-full"
+      ],
+      "endpoint_ids": [
+        "macos-m4-metal",
+        "chrome-m4-webgpu"
+      ],
+      "sort_policies": [
+        "cpu",
+        "gpu"
+      ],
+      "repetitions": 1,
+      "warmup_frames": 20,
+      "measured_frames": 80,
+      "sort_interval": 1,
+      "randomization_seed": 20260723,
+      "randomize_policy_order": true,
+      "sort_refresh": "first_frame_then_reuse",
+      "require_image": true,
+      "display": {
+        "width": 1920,
+        "height": 1080
+      },
+      "camera": {
+        "mode": "fixed_frame",
+        "trace_by_dataset": {
+          "kitsune-full": "candidate-kitsune-quality-2view-1920x1080-v1",
+          "flowers-full": "candidate-flowers-quality-2view-1920x1080-v1",
+          "bonsai-full": "candidate-bonsai-quality-2view-1920x1080-v1",
+          "truck-full": "candidate-truck-quality-2view-1920x1080-v1",
+          "garden-full": "candidate-garden-quality-2view-1920x1080-v1",
+          "bicycle-full": "candidate-bicycle-quality-2view-1920x1080-v1"
+        },
+        "frame_indices": [
+          0,
+          1
+        ],
+        "require_display_match": true,
+        "display_policy": "trace_display_exact",
+        "quality_comparable": true
+      }
+    },
+    {
+      "id": "fixed-quality-android-native",
+      "evidence_class": "formal_full_quality",
+      "dataset_ids": [
+        "kitsune-full",
+        "flowers-full",
+        "bonsai-full",
+        "truck-full",
+        "garden-full",
+        "bicycle-full"
+      ],
+      "endpoint_ids": [
+        "android-a065-vulkan"
+      ],
+      "sort_policies": [
+        "cpu",
+        "gpu"
+      ],
+      "repetitions": 1,
+      "warmup_frames": 20,
+      "measured_frames": 80,
+      "sort_interval": 1,
+      "randomization_seed": 20260723,
+      "randomize_policy_order": true,
+      "sort_refresh": "first_frame_then_reuse",
+      "require_image": true,
+      "display": {
+        "width": 2412,
+        "height": 1080
+      },
+      "camera": {
+        "mode": "fixed_frame",
+        "trace_by_dataset": {
+          "kitsune-full": "candidate-kitsune-quality-2view-2412x1080-v1",
+          "flowers-full": "candidate-flowers-quality-2view-2412x1080-v1",
+          "bonsai-full": "candidate-bonsai-quality-2view-2412x1080-v1",
+          "truck-full": "candidate-truck-quality-2view-2412x1080-v1",
+          "garden-full": "candidate-garden-quality-2view-2412x1080-v1",
+          "bicycle-full": "candidate-bicycle-quality-2view-2412x1080-v1"
+        },
+        "frame_indices": [
+          0,
+          1
+        ],
+        "require_display_match": true,
+        "display_policy": "trace_display_exact",
+        "quality_comparable": true
+      }
+    },
+    {
+      "id": "fixed-quality-ios-simulator-native",
+      "evidence_class": "formal_full_quality",
+      "dataset_ids": [
+        "kitsune-full",
+        "flowers-full",
+        "bonsai-full",
+        "truck-full",
+        "garden-full",
+        "bicycle-full"
+      ],
+      "endpoint_ids": [
+        "ios-17-pro-simulator-metal"
+      ],
+      "sort_policies": [
+        "cpu",
+        "gpu"
+      ],
+      "repetitions": 1,
+      "warmup_frames": 20,
+      "measured_frames": 80,
+      "sort_interval": 1,
+      "randomization_seed": 20260723,
+      "randomize_policy_order": true,
+      "sort_refresh": "first_frame_then_reuse",
+      "require_image": true,
+      "display": {
+        "width": 2622,
+        "height": 1206
+      },
+      "camera": {
+        "mode": "fixed_frame",
+        "trace_by_dataset": {
+          "kitsune-full": "candidate-kitsune-quality-2view-2622x1206-v1",
+          "flowers-full": "candidate-flowers-quality-2view-2622x1206-v1",
+          "bonsai-full": "candidate-bonsai-quality-2view-2622x1206-v1",
+          "truck-full": "candidate-truck-quality-2view-2622x1206-v1",
+          "garden-full": "candidate-garden-quality-2view-2622x1206-v1",
+          "bicycle-full": "candidate-bicycle-quality-2view-2622x1206-v1"
+        },
+        "frame_indices": [
+          0,
+          1
+        ],
+        "require_display_match": true,
+        "display_policy": "trace_display_exact",
+        "quality_comparable": true
+      }
+    },
+    {
+      "id": "forced-sort-crossover-desktop-web-1080p",
+      "evidence_class": "formal_full_quality",
+      "dataset_ids": [
+        "truck-050k",
+        "truck-100k",
+        "truck-200k",
+        "truck-300k",
+        "truck-500k",
+        "truck-1m",
+        "truck-1p5m",
+        "truck-2m",
+        "truck-full"
+      ],
+      "endpoint_ids": [
+        "macos-m4-metal",
+        "chrome-m4-webgpu"
+      ],
+      "sort_policies": [
+        "cpu",
+        "gpu"
+      ],
+      "repetitions": 3,
+      "warmup_frames": 20,
+      "measured_frames": 80,
+      "sort_interval": 1,
+      "randomization_seed": 20260723,
+      "randomize_policy_order": true,
+      "sort_refresh": "every_camera_revision",
+      "require_image": false,
+      "display": {
+        "width": 1920,
+        "height": 1080
+      },
+      "camera": {
+        "mode": "trace_sequence",
+        "trace_id": "candidate-truck-quality-2view-1920x1080-v1",
+        "frame_indices": [
+          0,
+          1
+        ],
+        "require_display_match": true,
+        "display_policy": "trace_display_exact",
+        "quality_comparable": true
+      }
+    },
+    {
+      "id": "forced-sort-crossover-android-native",
+      "evidence_class": "formal_full_quality",
+      "dataset_ids": [
+        "truck-050k",
+        "truck-100k",
+        "truck-200k",
+        "truck-300k",
+        "truck-500k",
+        "truck-1m",
+        "truck-1p5m",
+        "truck-2m",
+        "truck-full"
+      ],
+      "endpoint_ids": [
+        "android-a065-vulkan"
+      ],
+      "sort_policies": [
+        "cpu",
+        "gpu"
+      ],
+      "repetitions": 3,
+      "warmup_frames": 20,
+      "measured_frames": 80,
+      "sort_interval": 1,
+      "randomization_seed": 20260723,
+      "randomize_policy_order": true,
+      "sort_refresh": "every_camera_revision",
+      "require_image": false,
+      "display": {
+        "width": 2412,
+        "height": 1080
+      },
+      "camera": {
+        "mode": "trace_sequence",
+        "trace_id": "candidate-truck-quality-2view-2412x1080-v1",
+        "frame_indices": [
+          0,
+          1
+        ],
+        "require_display_match": true,
+        "display_policy": "trace_display_exact",
+        "quality_comparable": true
+      }
+    },
+    {
+      "id": "forced-sort-crossover-ios-simulator-native",
+      "evidence_class": "formal_full_quality",
+      "dataset_ids": [
+        "truck-050k",
+        "truck-100k",
+        "truck-200k",
+        "truck-300k",
+        "truck-500k",
+        "truck-1m",
+        "truck-1p5m",
+        "truck-2m",
+        "truck-full"
+      ],
+      "endpoint_ids": [
+        "ios-17-pro-simulator-metal"
+      ],
+      "sort_policies": [
+        "cpu",
+        "gpu"
+      ],
+      "repetitions": 1,
+      "warmup_frames": 5,
+      "measured_frames": 20,
+      "sort_interval": 1,
+      "randomization_seed": 20260723,
+      "randomize_policy_order": true,
+      "sort_refresh": "every_camera_revision",
+      "require_image": false,
+      "display": {
+        "width": 2622,
+        "height": 1206
+      },
+      "camera": {
+        "mode": "trace_sequence",
+        "trace_id": "candidate-truck-quality-2view-2622x1206-v1",
+        "frame_indices": [
+          0,
+          1
+        ],
+        "require_display_match": true,
+        "display_policy": "trace_display_exact",
+        "quality_comparable": true
+      }
+    },
+    {
+      "id": "adaptive-policy-desktop-web-1080p",
+      "evidence_class": "formal_full_quality",
+      "dataset_ids": [
+        "truck-050k",
+        "truck-100k",
+        "truck-200k",
+        "truck-300k",
+        "truck-500k",
+        "truck-1m",
+        "truck-1p5m",
+        "truck-2m",
+        "truck-full"
+      ],
+      "endpoint_ids": [
+        "macos-m4-metal",
+        "chrome-m4-webgpu"
+      ],
+      "sort_policies": [
+        "adaptive"
+      ],
+      "repetitions": 2,
+      "warmup_frames": 20,
+      "measured_frames": 80,
+      "sort_interval": 1,
+      "randomization_seed": 20260723,
+      "randomize_policy_order": false,
+      "sort_refresh": "every_camera_revision",
+      "require_image": false,
+      "display": {
+        "width": 1920,
+        "height": 1080
+      },
+      "camera": {
+        "mode": "trace_sequence",
+        "trace_id": "candidate-truck-quality-2view-1920x1080-v1",
+        "frame_indices": [
+          0,
+          1
+        ],
+        "require_display_match": true,
+        "display_policy": "trace_display_exact",
+        "quality_comparable": true
+      }
+    },
+    {
+      "id": "adaptive-policy-android-native",
+      "evidence_class": "formal_full_quality",
+      "dataset_ids": [
+        "truck-050k",
+        "truck-100k",
+        "truck-200k",
+        "truck-300k",
+        "truck-500k",
+        "truck-1m",
+        "truck-1p5m",
+        "truck-2m",
+        "truck-full"
+      ],
+      "endpoint_ids": [
+        "android-a065-vulkan"
+      ],
+      "sort_policies": [
+        "adaptive"
+      ],
+      "repetitions": 2,
+      "warmup_frames": 20,
+      "measured_frames": 80,
+      "sort_interval": 1,
+      "randomization_seed": 20260723,
+      "randomize_policy_order": false,
+      "sort_refresh": "every_camera_revision",
+      "require_image": false,
+      "display": {
+        "width": 2412,
+        "height": 1080
+      },
+      "camera": {
+        "mode": "trace_sequence",
+        "trace_id": "candidate-truck-quality-2view-2412x1080-v1",
+        "frame_indices": [
+          0,
+          1
+        ],
+        "require_display_match": true,
+        "display_policy": "trace_display_exact",
+        "quality_comparable": true
+      }
+    },
+    {
+      "id": "adaptive-policy-ios-simulator-native",
+      "evidence_class": "formal_full_quality",
+      "dataset_ids": [
+        "truck-050k",
+        "truck-100k",
+        "truck-200k",
+        "truck-300k",
+        "truck-500k",
+        "truck-1m",
+        "truck-1p5m",
+        "truck-2m",
+        "truck-full"
+      ],
+      "endpoint_ids": [
+        "ios-17-pro-simulator-metal"
+      ],
+      "sort_policies": [
+        "adaptive"
+      ],
+      "repetitions": 1,
+      "warmup_frames": 5,
+      "measured_frames": 20,
+      "sort_interval": 1,
+      "randomization_seed": 20260723,
+      "randomize_policy_order": false,
+      "sort_refresh": "every_camera_revision",
+      "require_image": false,
+      "display": {
+        "width": 2622,
+        "height": 1206
+      },
+      "camera": {
+        "mode": "trace_sequence",
+        "trace_id": "candidate-truck-quality-2view-2622x1206-v1",
+        "frame_indices": [
+          0,
+          1
+        ],
+        "require_display_match": true,
+        "display_policy": "trace_display_exact",
+        "quality_comparable": true
+      }
+    }
+  ],
+  "capacity_rejections": [],
+  "runs": []
+}

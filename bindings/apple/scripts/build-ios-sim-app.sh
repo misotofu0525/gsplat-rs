@@ -49,6 +49,12 @@ APP_NAME="GsplatIOSExample"
 APP_BUNDLE="$ROOT_DIR/target/ios-sim-app/${APP_NAME}.app"
 STATIC_LIB="$ROOT_DIR/target/$RUST_TARGET/debug/libgsplat_ffi_c.a"
 SDK_PATH="$(xcrun --sdk iphonesimulator --show-sdk-path)"
+GSPLAT_REPOSITORY_COMMIT="$(git rev-parse HEAD)"
+if [[ -n "$(git status --porcelain)" ]]; then
+  GSPLAT_REPOSITORY_DIRTY=true
+else
+  GSPLAT_REPOSITORY_DIRTY=false
+fi
 
 rustup target add "$RUST_TARGET" >/dev/null
 cargo build -p gsplat-ffi-c --target "$RUST_TARGET"
@@ -56,8 +62,17 @@ cargo build -p gsplat-ffi-c --target "$RUST_TARGET"
 rm -rf "$APP_BUNDLE"
 mkdir -p "$APP_BUNDLE"
 cp examples/ios/app/Info.plist "$APP_BUNDLE/Info.plist"
+/usr/libexec/PlistBuddy -c "Add :GsplatRepositoryCommit string $GSPLAT_REPOSITORY_COMMIT" "$APP_BUNDLE/Info.plist"
+/usr/libexec/PlistBuddy -c "Add :GsplatRepositoryDirty bool $GSPLAT_REPOSITORY_DIRTY" "$APP_BUNDLE/Info.plist"
+/usr/libexec/PlistBuddy -c "Add :GsplatBuildProfile string ios-simulator+rust-debug" "$APP_BUNDLE/Info.plist"
 cp "$DATASET_ABS" "$APP_BUNDLE/showcase.ply"
 basename "$DATASET_ABS" > "$APP_BUNDLE/showcase.name"
+CAMERA_TRACE_PATH="${GSPLAT_CAMERA_TRACE_PATH:-tests/perf/trace/fixtures/camera-trace-v1.json}"
+case "$CAMERA_TRACE_PATH" in
+  /*) CAMERA_TRACE_ABS="$CAMERA_TRACE_PATH" ;;
+  *) CAMERA_TRACE_ABS="$ROOT_DIR/$CAMERA_TRACE_PATH" ;;
+esac
+cp "$CAMERA_TRACE_ABS" "$APP_BUNDLE/camera_trace.json"
 
 xcrun --sdk iphonesimulator swiftc \
   bindings/apple/GsplatKit/Sources/GsplatKit/GsplatKit.swift \
@@ -87,3 +102,4 @@ echo "swift_target=$SWIFT_TARGET"
 echo "app=$APP_BUNDLE"
 echo "bundle_id=com.gsplat.example.ios"
 echo "dataset=$DATASET_ABS"
+echo "camera_trace=$CAMERA_TRACE_ABS"

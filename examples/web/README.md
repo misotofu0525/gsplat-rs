@@ -4,8 +4,8 @@ This directory hosts the browser validation surface.
 
 There are three Web paths:
 
-- Static WebGL2 fallback: `index.html` + `src/main.js`, useful without a wasm
-  build.
+- Static sampled WebGL2 diagnostic: `index.html` + `src/main.js`, available
+  only through the explicit `?gsplat_allow_sampled_webgl=true` opt-in.
 - Experimental Rust/WASM renderer package: `crates/gsplat-web`, built into
   `examples/web/pkg/` with the script below.
 - Local browser SDK wrapper: `packages/web`, built into
@@ -31,6 +31,29 @@ Then open:
 ```text
 http://127.0.0.1:4173/examples/web/
 ```
+
+The default/product path fails closed when WASM/WebGPU construction or exact
+scene admission fails. To inspect the non-equivalent sampled WebGL2 diagnostic
+when WebGPU is unavailable, opt in explicitly:
+
+```text
+http://127.0.0.1:4173/examples/web/?gsplat_allow_sampled_webgl=true
+```
+
+This flag is ignored for formal benchmark/qualification runs; it cannot turn a
+sampled preview into quality or performance evidence.
+
+Exact construction failures emit `SCENE_LOAD_FAILURE_JSON` with the stable
+`stage`, `error_code`, `error_message`, and `scene_published=false` fields.
+Capacity failures also carry the limiting resource and byte requirement when
+the native error reports them.
+
+Live canvas resizing uses the native asynchronous Surface transaction. Resize
+events are coalesced to the newest requested backing size and processed one at
+a time; rendering is paused until the transaction publishes. Runtime failures
+emit `RUNTIME_RESIZE_FAILURE_JSON` with `stage="resize"` and
+`scene_published=true`, reflecting that the complete scene remains owned at
+the last successfully published size even though presentation is fail-closed.
 
 Do not open `examples/web/index.html` with `file://`. Browser security rules
 block the wasm package and root-relative dataset fetches in that mode.
@@ -81,44 +104,159 @@ For repeatable browser performance checks, use Android-style query parameters:
 http://127.0.0.1:4173/examples/web/?gsplat_benchmark=true&gsplat_benchmark_frames=120&gsplat_benchmark_warmup_frames=10&gsplat_benchmark_yaw_step=0.001&gsplat_surface_sort_interval=2
 ```
 
+Use the same `gsplat-camera-trace/v1` file and frame as native runs with:
+
+```text
+http://127.0.0.1:4173/examples/web/?dataset=minimal&gsplat_camera_trace_url=/tests/perf/trace/fixtures/camera-trace-v1.json&gsplat_camera_frame=0&gsplat_benchmark=true
+```
+
+The browser validates the trace contract, locks the camera, uses the trace's
+device-pixel display size, and applies the exact camera-to-world quaternion to
+the Rust/WASM path. Qualification flags always require that exact path; the
+sampled WebGL2 diagnostic cannot satisfy a trace run. There is no preview-size
+cap, dynamic-resolution fallback, or implicit upscale. Unsupported dimensions
+fail capability admission instead of being silently reduced.
+
+Formal Web evidence uses exactly `1920x1080` and only the Rust/WASM Direct or
+full-resident Packed path. Every accepted frame must prove
+`requested = Surface = internal render = presented = 1920x1080`,
+`source = decoded = encoded = resident = addressable` membership, and the
+complete source SH degree. Sampling, LOD, dynamic resolution, and upscaling are
+forbidden. The sampled WebGL2 point-splat fallback and Paged path remain useful
+smoke/diagnostic paths, but neither can produce formal quality or competitor
+evidence. The 640x360/640x480 traces and historical comparisons are likewise
+smoke-only.
+
+Use ordered moving-camera playback for sort benchmarks with:
+
+```text
+http://127.0.0.1:4173/examples/web/?dataset=minimal&gsplat_camera_trace_url=/tests/perf/trace/fixtures/camera-trace-v1.json&gsplat_camera_trace_sequence=true&gsplat_surface_sort_interval=1&gsplat_surface_order_backend=cpu&gsplat_benchmark=true&gsplat_benchmark_sync=true
+```
+
+The default sequence applies every trace revision once, with no warmup and one
+loop. `gsplat_camera_frame_indices=0,1,2`,
+`gsplat_camera_trace_warmup_frames`,
+`gsplat_camera_trace_measured_frames`, and `gsplat_camera_trace_loops` make the
+schedule explicit. The standard benchmark warmup/frame parameters are aliases
+for the trace warmup/measured counts when the sequence-specific values are
+absent. Sequence mode requires sort interval `1`. The requested backend may be
+`cpu`, `gpu`, or `adaptive`; a non-CPU request fails closed if only the WebGL2
+fallback is available. Console receipts identify every applied source frame
+and timestamp.
+
+Projected drawing is selected independently with
+`gsplat_surface_projected_policy=candidate|compact|adaptive` (default
+`adaptive`). Forced Candidate/Compact frames report the requested policy and
+actual execution but never manufacture a projected ticket. Adaptive frames
+report issued, not-requested, or explicitly unsampled status; issued high-range
+JavaScript-safe tickets terminate exactly once as a success or structured
+failure.
+
+For a moving-camera throughput run, set
+`gsplat_order_completion_protocol=sustained_window`. This keeps submitting the
+trace at animation-frame cadence and drains every ordering receipt after the
+last measured submission. `isolated_terminal` instead waits for each ticket
+before accepting the corresponding frame and is useful for per-frame terminal
+latency, not sustained FPS. The collector derives `submit_span_ms`,
+`terminal_tail_ms`, and `terminal_window_ms` exclusively from the page's
+monotonic `performance.now()` clock; UTC timestamps are run identity metadata
+and are never subtracted for performance results.
+
 The result is printed in the Benchmark panel and to the browser console as a
 `BENCHMARK_RESULT` line. For headless smoke tests that need the result before
 the browser exits, add `gsplat_benchmark_sync=true`. Add `dataset=flowers` to
 run the same benchmark against
 `tests/datasets/external/nvidia_flowers_1/flowers_1/flowers_1.ply`.
 
-The Rust/WASM Surface path always uses GPU-resident scene data plus compact
-sorted IDs while keeping CPU sorting. Benchmark output reports
-`renderer=wasm_sorted_index_direct`. When motion stops, leave the page
-visible for at least three frames and confirm the canvas remains non-black with
-non-zero Visible/Drawn counts; this guards the direct-path cached-redraw
-regression.
+The Rust/WASM product path streams into an exact-count GPU-resident Packed
+scene and supports forced CPU, forced GPU, or measured Adaptive ordering.
+Benchmark output reports `renderer=wasm_packed_atlas`. When motion stops, leave
+the page visible for at least three frames and confirm the canvas remains
+non-black with non-zero Visible/Drawn counts; this guards cached-order redraw.
+Ordering artifacts require every submitted CPU or GPU measurement ticket to
+complete and match its backend and camera revision; one animation frame may
+drain multiple receipts. Every frame with `sort_refreshed=true` must carry a
+positive namespaced ticket. A ticket must terminate exactly once as either a
+successful measurement or a structured `readback_map` /
+`generation_invalidated` failure; strict GPU/Adaptive benchmarks reject the
+failure instead of manufacturing a timing/count sample. An explicit Adaptive
+GPU setup fallback is likewise recorded and rejected by the strict collector.
+The separate `order-measurement-submissions.jsonl` ledger includes preflight,
+warmup, and measured CPU/GPU submissions, so every ticket issued during the
+benchmark must have exactly one terminal receipt even when it is not part of
+the measured-frame summary. The first browser-only Packed GPU-order preparation
+is hidden: it presents no frame, allocates no ticket, and is recorded separately
+in `gpu-order-preparations.jsonl` before the same camera revision is retried.
+
+Successful CPU and GPU terminal receipts expose the same `S/V/C/D` evidence:
+complete source/residency `S`, near/far candidates `V`, strict conservative
+post-projection contributors `C`, and issued draw count `D`. The collector
+joins them only by the same ticket and camera revision, declares
+`candidate_visible_contributor_issued_v1`, and enforces
+`0 <= C <= V <= S`. Exact compaction must explicitly report `D=C`; otherwise
+the portable Direct/downlevel rule remains `D=V`. Provisional frame counters
+cannot fill a missing terminal receipt.
+Because an asynchronous frame can initially expose the preceding receipt's
+counts, the collector replaces GPU submission-frame `visible`, `drawn`, and
+GPU-order timing fields from the matching terminal receipt, records the count
+source/revision/ticket, and rebuilds `summary.json` from those post-join
+frames. Frames without a current CPU revision or a joined GPU submission are
+marked ineligible and excluded from `summary.json.count_evidence`; harvested
+GPU completion timing is likewise cleared from non-submitting frames to avoid
+double-counting. Only the collector-written `frames.jsonl` and rebuilt
+`summary.json` are final evidence; the corresponding live console-frame counts
+are provisional. `ordering-window-monotonic.json` is the page-side window, and
+the collector independently recomputes and exactly field-checks the same window
+before accepting the artifact.
+Adaptive compares CPU and GPU with the same `FrameCompletion` interval from
+frame start through queue completion, including sorting, projection,
+rasterization, submission, and queueing. Order-stage timestamps remain
+diagnostic only. A raster-plan change resets the learned comparison state.
+
+The retained browser artifact adds `projected_policy`,
+`projected_execution`, `projected_adaptive_state`, and projected submission
+identity to every frame. Separate `projected-measurement-submissions.jsonl`,
+`projected-measurements.jsonl`, and `projected-measurement-failures.jsonl`
+files preserve the one-ticket/one-terminal ledger with V/C/D,
+projection/probe generations, and frame-completion timings.
 
 ## Scope
 
-- Parses ASCII and binary PLY files in the browser for the WebGL2 fallback.
+- Parses ASCII and binary PLY files in the browser. Packed URL, File, and custom
+  stream inputs feed the incremental Rust decoder directly into final Resident
+  planes; the sampled WebGL2 diagnostic retains its JavaScript parser.
 - Applies the same RDF-to-RUF Y-axis flip used by `gsplat-io-ply`.
 - Uses the same DC color and opacity conventions as the Rust renderer.
-- CPU-sorts visible splat indices back-to-front before drawing.
-- Caps the browser drawing buffer to a 1600px maximum side, matching the Android
-  emulator Surface cap.
+- Uses shared CPU/GPU/Adaptive exact ordering in the Rust/WASM path. The
+  sampled WebGL2 diagnostic is CPU-sorted and is not accepted as GPU benchmark
+  evidence.
+- Uses the canvas's actual device-pixel dimensions for interactive and fixed
+  trace rendering. Unsupported dimensions fail capability admission instead
+  of being silently reduced.
 - Presents an immersive full-viewport showcase with streamed loading progress,
   theme switching, responsive controls, and a collapsible diagnostics studio.
 - Reports Android-style realtime state, camera mode, dataset, path, surface
   size, and frame stats inside the Studio panel.
 - Imports the generated `examples/web/pkg/gsplat_web.js` package when present
-  and routes renderer creation through `packages/web/src/index.js` before
-  falling back to the WebGL2 point-splat path.
+  and routes renderer creation through `packages/web/src/index.js`. The
+  WebGL2 point-splat diagnostic requires explicit opt-in and is never selected
+  by the default/product path.
 - Supports benchmark orbit runs with `sort_interval` A/B checks.
-- Uses resident scene buffers plus direct sorted-index rendering whenever the
-  Rust/WASM Surface path is active.
+- Uses one exact-count Resident scene and one SortedAlpha draw path for both
+  CPU-uploaded IDs and GPU-generated indirect order.
 - Renders a WebGL2 point-splat preview rather than the full `wgpu` ellipse
-  pipeline when the generated wasm package is missing or cannot create a
-  browser Surface.
-- The Rust/WASM package uses `gsplat-io-ply::parse_ply_bytes`,
-  `gsplat-render-wgpu::Renderer`, `SurfacePresenter::from_canvas`, and
-  `SurfaceRenderSession` so it shares the complete Surface lifecycle used by
-  Android/iOS and the interactive desktop viewer.
+  pipeline only after `gsplat_allow_sampled_webgl=true`, when the generated
+  wasm package is missing or cannot create a browser Surface before an exact
+  scene becomes active. Once an exact-count
+  WASM scene exists, a render error is terminal for that scene: the example
+  retains the WASM handle for receipt draining, reports a structured failure,
+  and does not switch to the sampled WebGL2 preview. The standalone receipt
+  drain preserves both successes and failures even when presentation fails
+  after telemetry collection.
+- The Rust/WASM package uses the incremental `gsplat-io-ply` decoder,
+  `ResidentSceneBuilder`, `SurfacePresenter::from_canvas`, and
+  `SurfaceRenderSession`, so it shares scene ownership, order policy, and the
+  complete Surface lifecycle used by Android/iOS and the desktop viewer.
 
 ## Web Integration Boundary
 

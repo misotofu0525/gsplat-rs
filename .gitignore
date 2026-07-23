@@ -21,3 +21,5 @@ examples/android/app/src/main/jniLibs/
 examples/web/pkg/
 packages/web/dist/
 tests/datasets/external/
+output/playwright/
+tests/competitive/playcanvas/android-harness/app/build/

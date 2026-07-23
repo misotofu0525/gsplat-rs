@@ -48,6 +48,12 @@ paired ratios and deterministic bootstrap confidence intervals.
 each value was configured, observed, or supplied by an external harness. A
 configured refresh rate must not be presented as an observed display mode.
 
+Full-quality suites require the manifest's additional `resolution` receipt
+defined by `full-quality-experiment-v1.md`. Its requested, Surface, internal
+render, and presented dimensions must all equal `display.width/height`, with
+dynamic resolution and upscaling disabled. A browser CSS size or physical
+panel size is not a substitute for the backing texture dimensions.
+
 ## Frames
 
 Each non-empty line in `frames.jsonl` is one `record_type: "frame"` object.
@@ -67,14 +73,41 @@ drawn
 sort_refreshed
 ```
 
-Timing values are finite non-negative numbers or `null`; counts and
+Timing values are finite non-negative numbers or `null`; available counts and
 `elapsed_ns` are non-negative integers. `call_ms` and `frame_wall_ms` are
 required measurements and cannot be `null`. `preprocess_ms`, `sort_ms`,
 `geometry_submit_ms`, `gpu_wait_ms`, and `gpu_complete_ms` may be `null` when
 the producer cannot observe those boundaries. Each unavailable timing must list
 its `frames[*].<metric>` path in `manifest.unavailable_fields`; unavailable
-values must never be filled with zero. `sort_refreshed` may be `null` when the
-platform cannot provide it. `elapsed_ns` must be monotonic.
+values must never be filled with zero. An external renderer that cannot observe
+its actual post-cull `visible` and issued `drawn` counts sets both to `null` and
+lists `frames[*].visible` plus `frames[*].drawn` in `unavailable_fields`; the
+pair must be unavailable together. It may add `active_splats` for a separately
+observed source/resident active count, but that field is `S`, not `V`, `C`, or
+`D`. `sort_refreshed` may be `null` when the platform cannot provide it.
+`elapsed_ns` must be monotonic.
+
+New exact-count renderer artifacts set
+`renderer.count_semantics: "candidate_visible_contributor_issued_v1"` and add
+both `contributor` and `exact_contributor_compaction` to every frame. Their
+count chain is `S/V/C/D`: `S` is the manifest's complete
+source/resident/addressable count, `visible` is near/far candidate `V`,
+`contributor` is strictly conservative post-projection `C` in stable candidate
+rank order, and `drawn` is issued instance count `D`.
+
+Every new-contract frame proves `0 <= C <= V <= S`. With
+`exact_contributor_compaction=true`, it must prove `D=C`; this is exact work
+elimination, not a point budget or LOD. With the flag false, Direct/downlevel
+execution must issue every candidate and prove `D=V`. The contributor and flag
+fields are inseparable. Older artifacts remain valid, but the full-quality
+suite retains their legacy `D=V` rule; omitted fields never authorize `D<V`.
+The new exact-count contract requires observable `V/C/D`; it cannot be combined
+with nullable `visible`/`drawn` fields.
+
+Native Surface producers may additionally emit `cpu_frame_complete_ms` and its
+summary distribution. This is a ticketed frame-start-to-graphics-queue-done
+measurement used for like-for-like CPU/GPU ordering comparisons; CPU submit or
+render-call wall time must not be substituted for it.
 
 ## Summary
 
@@ -111,3 +144,11 @@ Run the standard-library validator and deterministic fixture suite with:
 python3 tests/perf/validate-benchmark-artifacts.py tests/perf/fixtures/v1/valid
 bash tests/perf/test-benchmark-artifacts.sh
 ```
+
+For full-count CPU/GPU/Adaptive coverage across multiple datasets and
+endpoints, wrap these per-run artifacts with
+`tests/perf/full-quality-experiment-v1.md`. The suite-level validator adds
+exact source/decoded/encoded/resident/addressable count receipts, SH-degree
+preservation, fixed trace/display matching, unbiased policy scheduling, image
+receipts, and explicit pre-publish capacity rejection without changing this v1
+run schema.

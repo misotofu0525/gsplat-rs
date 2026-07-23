@@ -53,10 +53,19 @@ async function loadPuppeteer() {
 function parseArguments(argv) {
   const positional = [];
   let threshold = null;
+  let maxRgbMaeNormalized = null;
+  let maxPixelsOver3Fraction = null;
+  let requireAlphaExact = false;
   let output = null;
   for (let index = 0; index < argv.length; index += 1) {
     if (argv[index] === '--threshold') {
       threshold = Number(argv[++index]);
+    } else if (argv[index] === '--max-rgb-mae-normalized') {
+      maxRgbMaeNormalized = Number(argv[++index]);
+    } else if (argv[index] === '--max-pixels-over3-fraction') {
+      maxPixelsOver3Fraction = Number(argv[++index]);
+    } else if (argv[index] === '--require-alpha-exact') {
+      requireAlphaExact = true;
     } else if (argv[index] === '--output') {
       output = resolve(argv[++index]);
     } else {
@@ -64,12 +73,28 @@ function parseArguments(argv) {
     }
   }
   if (positional.length !== 2) {
-    throw new Error('usage: compare-image-ssim.mjs <reference.png> <candidate.png> [--threshold 0.99] [--output result.json]');
+    throw new Error('usage: compare-image-ssim.mjs <reference.png> <candidate.png> [--threshold 0.9999] [--max-rgb-mae-normalized 0.00005] [--max-pixels-over3-fraction 0.001] [--require-alpha-exact] [--output result.json]');
   }
   if (threshold !== null && (!Number.isFinite(threshold) || threshold < -1 || threshold > 1)) {
     throw new Error('--threshold must be a finite number between -1 and 1');
   }
-  return { reference: resolve(positional[0]), candidate: resolve(positional[1]), threshold, output };
+  for (const [name, value] of [
+    ['--max-rgb-mae-normalized', maxRgbMaeNormalized],
+    ['--max-pixels-over3-fraction', maxPixelsOver3Fraction]
+  ]) {
+    if (value !== null && (!Number.isFinite(value) || value < 0 || value > 1)) {
+      throw new Error(`${name} must be a finite number between 0 and 1`);
+    }
+  }
+  return {
+    reference: resolve(positional[0]),
+    candidate: resolve(positional[1]),
+    threshold,
+    maxRgbMaeNormalized,
+    maxPixelsOver3Fraction,
+    requireAlphaExact,
+    output
+  };
 }
 
 const args = parseArguments(process.argv.slice(2));
@@ -143,6 +168,27 @@ try {
       throw new Error(`image dimensions differ: ${reference.width}x${reference.height} vs ${candidate.width}x${candidate.height}`);
     }
 
+    const pixelCount = reference.width * reference.height;
+    let rgbAbsoluteError = 0;
+    let rgbSquaredError = 0;
+    let alphaAbsoluteError = 0;
+    let pixelsOverThree = 0;
+    let maxRgbError = 0;
+    for (let pixel = 0; pixel < pixelCount; pixel += 1) {
+      const offset = pixel * 4;
+      let pixelOverThree = false;
+      for (let channel = 0; channel < 3; channel += 1) {
+        const error = Math.abs(reference.rgba[offset + channel] - candidate.rgba[offset + channel]);
+        rgbAbsoluteError += error;
+        rgbSquaredError += error * error;
+        maxRgbError = Math.max(maxRgbError, error);
+        pixelOverThree ||= error > 3;
+      }
+      alphaAbsoluteError += Math.abs(reference.rgba[offset + 3] - candidate.rgba[offset + 3]);
+      pixelsOverThree += Number(pixelOverThree);
+    }
+    const rgbMse8bit = rgbSquaredError / (pixelCount * 3);
+
     const scores = [];
     for (let top = 0; top < reference.height; top += WINDOW_SIZE) {
       for (let left = 0; left < reference.width; left += WINDOW_SIZE) {
@@ -169,13 +215,32 @@ try {
       height: reference.height,
       windowSize: WINDOW_SIZE,
       windowCount: scores.length,
-      score: scores.reduce((sum, score) => sum + score, 0) / scores.length
+      score: scores.reduce((sum, score) => sum + score, 0) / scores.length,
+      rgbMae8bit: rgbAbsoluteError / (pixelCount * 3),
+      rgbMaeNormalized: rgbAbsoluteError / (pixelCount * 3 * 255),
+      rgbPsnrDb: rgbMse8bit === 0 ? null : 10 * Math.log10((255 * 255) / rgbMse8bit),
+      maxRgbError8bit: maxRgbError,
+      pixelsOver3Over255: pixelsOverThree,
+      pixelsOver3Over255Fraction: pixelsOverThree / pixelCount,
+      alphaMae8bit: alphaAbsoluteError / pixelCount,
+      alphaMaeNormalized: alphaAbsoluteError / (pixelCount * 255)
     };
   }, {
     referenceBase64: referenceBytes.toString('base64'),
     candidateBase64: candidateBytes.toString('base64')
   });
 
+  const checks = {
+    ssim: args.threshold === null ? null : result.score >= args.threshold,
+    rgbMae: args.maxRgbMaeNormalized === null
+      ? null
+      : result.rgbMaeNormalized <= args.maxRgbMaeNormalized,
+    rgbTail: args.maxPixelsOver3Fraction === null
+      ? null
+      : result.pixelsOver3Over255Fraction <= args.maxPixelsOver3Fraction,
+    alphaExact: args.requireAlphaExact ? result.alphaMae8bit === 0 : null
+  };
+  const configuredChecks = Object.values(checks).filter((value) => value !== null);
   const output = {
     schema: 'gsplat-image-parity/v1',
     metric: 'ssim-luma-srgb-window8',
@@ -184,7 +249,11 @@ try {
     candidate: args.candidate,
     ...result,
     threshold: args.threshold,
-    pass: args.threshold === null ? null : result.score >= args.threshold
+    maxRgbMaeNormalizedThreshold: args.maxRgbMaeNormalized,
+    maxPixelsOver3FractionThreshold: args.maxPixelsOver3Fraction,
+    requireAlphaExact: args.requireAlphaExact,
+    checks,
+    pass: configuredChecks.length === 0 ? null : configuredChecks.every(Boolean)
   };
   if (args.output) await writeFile(args.output, `${JSON.stringify(output, null, 2)}\n`);
   console.log(JSON.stringify(output));

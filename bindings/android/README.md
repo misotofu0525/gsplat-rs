@@ -37,7 +37,31 @@ The library module namespace is `com.gsplat.android`. It packages the generated
 - `NativeBridge`: low-level JNI calls matching the C ABI
 - `GsplatAndroidVersion`: runtime ABI compatibility guard
 - `GsplatSurfaceRenderer`: typed Kotlin handle wrapper
-- `GsplatSurfaceOptions`: CPU sort cadence, async sort, and frame-latency options
+- `GsplatSurfaceOptions`: exact packed residency plus adaptive ordering by
+  default, with independent Candidate/Compact/Adaptive projected-draw policy,
+  explicit CPU/GPU/adaptive ordering, cadence, async-sort, and frame-latency
+  controls
+- `GsplatSurfaceProjectedSubmission`: last successful frame's requested policy,
+  actual execution, order backend, Adaptive state, and honest ticket/unsampled
+  identity
+- `GsplatSurfaceProjectedMeasurement`: terminal projected-draw completion joined
+  by ticket with exact visible/contributor/drawn (`V/C/D`) counts
+- `GsplatSurfaceProjectedMeasurementFailure`: terminal readback, invalidation,
+  or invariant failure for an issued projected-draw ticket
+- `GsplatSurfaceOrderMeasurement`: non-blocking GPU timestamp/completion plus
+  revision-safe candidate/contributor/issued (`V/C/D`) counts
+- `GsplatSurfaceCpuOrderMeasurement`: CPU preprocess/sort plus comparable
+  frame-start-to-graphics-queue-completion timing and the same `V/C/D` counts
+- `GsplatSurfaceOrderMeasurementFailure`: terminal readback/invalidation
+  failures for issued CPU/GPU tickets
+- `GsplatSurfaceOrderSubmission`: last successful frame's revision, issued
+  ticket, backend context, and explicit ring-busy state
+- `GsplatSurfaceOrderStatus`: last-frame backend/revision state plus a typed
+  Adaptive GPU-unavailable reason
+- `GsplatSurfaceExactness`: source/decoded/encoded/resident/addressable counts,
+  SH preservation, no-sampling/no-LOD policy bits, and adapter admission limits
+- `GsplatSurfacePresentation`: requested, Surface, internal-render, and actual
+  presented pixels, with fail-closed full-resolution/presentation flags
 - `GsplatSurfaceStats`: typed frame stats
 - `GsplatException`: readable native error wrapper
 
@@ -63,8 +87,65 @@ val renderer = GsplatSurfaceRenderer.create(
 
 renderer.renderFrame()
 val stats = renderer.stats()
+val exactness = renderer.exactness()
+val presentation = renderer.presentation()
+val orderStatus = renderer.orderStatus()
+val orderSubmission = renderer.orderSubmission()
+val projectedSubmission = renderer.projectedSubmission()
+val projectedReceipts = renderer.drainProjectedMeasurements()
+val projectedFailures = renderer.drainProjectedMeasurementFailures()
+val cpuOrderReceipts = renderer.drainCpuOrderMeasurements()
+val orderReceipts = renderer.drainOrderMeasurements()
+val orderFailures = renderer.drainOrderMeasurementFailures()
 renderer.close()
 ```
+
+The product defaults are `PACKED_ATLAS`, `ADAPTIVE`, and sort interval `1`.
+Projected execution independently defaults to
+`GsplatSurfaceProjectedPolicy.ADAPTIVE`. `setProjectedPolicy()` can force the
+exact Candidate path (`D=V`) or exact Compact path (`D=C`) without changing the
+CPU/GPU ordering backend. A rejected Compact request throws `GsplatException`
+and leaves the live native policy unchanged.
+`DIRECT` remains the wide-float oracle. A diagnostic `PAGED_ACTIVE_ATLAS`
+configuration must explicitly select the CPU backend; it is not a full-quality
+resident fallback. `pollOrderMeasurement()` returns one receipt or `null`
+without blocking, while `drainOrderMeasurements()` drains the current native
+queue in ticket order. Optional GPU phase fields are populated only when the
+device exposes valid timestamp queries; `GPU_COMPLETION` receipts keep those
+fields null instead of presenting submit-wall time as GPU work.
+`exactness().isFullQuality` is true only when all source splats were decoded,
+encoded, resident, and GPU-addressable at the source SH degree with sampling
+and LOD disabled. The diagnostic Paged path intentionally does not set it.
+Every exact non-Paged CPU refresh and every GPU refresh requests a measurement
+ticket. CPU tickets report frame-start-to-queue-completion timing, not submit
+wall time. Every issued CPU/GPU ticket must appear in exactly one success or
+failure queue. `orderStatus().adaptiveGpuFailure` also exposes an eager GPU
+preparation failure when Adaptive correctly stays on CPU and no ticket exists.
+Strict benchmark collectors call `orderSubmission()` after every successful
+render (including warmup and terminal-flush frames), then continue rendering
+until every issued ticket has exactly one terminal receipt. Ring-busy,
+Surface-unavailable, dropped-prior, failure, and fallback evidence invalidates
+the run.
+Both typed success receipts expose `visibleCount`, `contributorCount`,
+`drawnCount`, and `exactContributorCompaction`. JNI takes the additive count
+receipt immediately after the matching terminal timing receipt and verifies
+its ticket and camera revision. Consumers enforce `0 <= C <= V`; exact
+compaction requires `D=C`, and all other execution requires `D=V`.
+
+The projected `_v1` lane is a separate receipt contract. JNI initializes every
+versioned output with its exact native `struct_size` and `version=1` before the
+C call. When a projected success is available, JNI immediately takes its V/C/D
+receipt by the same non-zero ticket and verifies ticket, camera revision,
+execution, and count invariants before publishing one Kotlin object. Missing or
+expired counts fail closed; no timing-only success escapes to Kotlin. Forced
+Candidate/Compact controls execution but does not request measurement tickets,
+so `projectedSubmission().ticket` remains null and is never synthesized.
+Adaptive probe tickets must terminate in exactly one projected success or
+failure; dropped-prior, ring-busy, Surface-unavailable, or invariant evidence
+invalidates strict retained runs.
+`presentation().fullResolution` additionally requires the last frame to have
+actually reached `present()`, with requested, Surface, internal-render, and
+presented dimensions equal and no dynamic resolution or upscaling.
 
 `GsplatSurfaceRenderer` serializes access to the native handle internally. If
 you call `NativeBridge` directly, keep each native Surface renderer handle owned
@@ -158,9 +239,12 @@ Notes:
   a bounded working set cannot be mistaken for full installation; its compact
   overlay shows the same ratio. The `Studio` panel retains the full Android
   Surface diagnostics.
-- `GsplatSurfaceOptions.geometryPath` selects `DIRECT` by default or the
-  experimental `PACKED_ATLAS` / local-source `PAGED_ACTIVE_ATLAS` before scene
-  derivation and Surface resource creation.
+- `GsplatSurfaceOptions.geometryPath` selects exact resident `PACKED_ATLAS` by
+  default, or the `DIRECT` oracle / local-source diagnostic
+  `PAGED_ACTIVE_ATLAS` before scene
+  derivation and Surface resource creation. A preselected `PACKED_ATLAS` path
+  streams the local PLY directly into exact resident planes instead of first
+  constructing wide scene buffers.
 - Maven publishing, additional ABIs, and a higher-level `GsplatSurfaceView`
   are intentionally not solved here yet. Future Android SDK work should keep
   wrapping the same C ABI rather than introduce a separate render contract.
@@ -187,10 +271,11 @@ For repeatable Surface performance checks, launch with benchmark extras:
   --ei gsplat_benchmark_frames 120 \
   --ei gsplat_benchmark_warmup_frames 10 \
   --ef gsplat_benchmark_yaw_step 0.001 \
-  --ei gsplat_surface_sort_interval 2 \
+  --ei gsplat_surface_sort_interval 1 \
   --ez gsplat_surface_async_sort false \
   --ei gsplat_surface_frame_latency 2 \
-  --es gsplat_geometry_path direct
+  --es gsplat_surface_order_backend adaptive \
+  --es gsplat_geometry_path packed
 "$ADB" logcat -d -s GsplatExample:I | grep BENCHMARK_RESULT
 ```
 
@@ -210,6 +295,9 @@ python3 bindings/android/scripts/collect-android-sort-benchmarks.py \
   --randomize-order \
   --seed 20260722 \
   --sort-interval 1 \
+  --geometry-path packed \
+  --camera-trace tests/perf/trace/fixtures/quality/candidate-kitsune-quality-2412x1080-v1.json \
+  --camera-frame-indices 0,1 \
   --frames 80 \
   --warmup 20 \
   --cooldown-seconds 10 \
@@ -218,6 +306,14 @@ python3 bindings/android/scripts/collect-android-sort-benchmarks.py \
 ```
 
 Add `--backend adaptive` to include the runtime selector in every repetition.
+Use `--camera-frame 0` or `--camera-frame 1` instead of
+`--camera-frame-indices` for a static-view run. Static and sequence playback
+produce the same post-present native camera receipt and pass through the same
+external-trace validator.
+The collector defaults to `--geometry-path packed`, which selects the complete
+Resident scene and its production `ProjectedQuadsExact` Surface raster plan.
+`--geometry-path direct` is retained only for an explicit wide-f32 oracle run;
+the collector records and strictly validates the selected renderer path.
 The collector defaults to 80 measured frames so the final indexed JSONL burst
 stays below conservative Android `logd` per-tag quotas. Larger values are
 allowed, but the artifact validator rejects the run if `logd` drops even one
@@ -253,31 +349,87 @@ hashes, device identity, thermal observations, and progress in
 `experiment.json`. Existing output roots and artifact directories are never
 overwritten.
 
-Benchmark mode forces a tiny camera orbit each frame so it measures the shared
-CPU-sort + direct-render path rather than stationary presentation.
+Benchmark mode forces a tiny camera orbit each frame so it measures the selected
+ordering backend and exact resident draw path rather than stationary
+presentation.
+For a cross-platform fixed-camera run, generate or select a validated trace
+whose `display` exactly matches the Activity's real `SurfaceView` pixels, copy
+it into the app sandbox, and pass its path and frame index. Fixed-camera mode
+skips the synthetic orbit and fails closed on a display mismatch:
+
+```bash
+TRACE_PATH=/absolute/path/to/trace-matching-the-surface.json
+adb push "$TRACE_PATH" /data/local/tmp/camera-trace-v1.json
+adb shell run-as com.gsplat.example cp /data/local/tmp/camera-trace-v1.json files/camera_trace.json
+adb shell am start -n com.gsplat.example/.MainActivity \
+  --ez gsplat_benchmark true \
+  --es gsplat_camera_trace_path /data/user/0/com.gsplat.example/files/camera_trace.json \
+  --ei gsplat_camera_trace_frame 0
+```
+
+The emitted manifest records the trace ID, declared content hash, exact trace
+file SHA-256, selected frame/schedule, canonical coordinate and matrix
+conventions, and the f32 comparison tolerance. Every measured frame carries a
+native post-present camera receipt: actual pose/intrinsics, row-major
+view/projection/view-projection matrices, Surface dimensions, and equal
+current/presented camera revisions. The formal collector compares all of those
+fields against the separately supplied expected trace; a missing field, wrong
+index, stale revision, matrix mutation, or trace-file mismatch rejects the
+run. The matrices come from the live Surface session through
+`GsplatSurfaceCameraReceiptV1`, not from copying trace JSON into the artifact.
+The manifest also records `require_display_match=true`,
+`display_policy=trace_display_exact`, and `quality_comparable=true`. Trace
+scheduling remains a sample-only qualification route; order
+backend selection, non-blocking order receipts, and exactness receipts are
+public Android AAR and C ABI APIs.
+
+To exercise trace loading on an arbitrary device with a differently sized
+fixture, explicitly add `--ez gsplat_require_trace_display_match false`. This
+is smoke-only: the trace pose and vertical FOV are reprojected at the native
+aspect, and the emitted `native_aspect_reprojection` artifact is rejected by
+the full-quality experiment collector.
+
+For the moving-camera sort protocol, add:
+
+```bash
+adb shell am start -n com.gsplat.example/.MainActivity \
+  --ez gsplat_benchmark true \
+  --es gsplat_camera_trace_path /data/user/0/com.gsplat.example/files/camera_trace.json \
+  --ez gsplat_camera_trace_sequence true \
+  --es gsplat_camera_frame_indices 0,1,2 \
+  --ei gsplat_surface_sort_interval 1 \
+  --es gsplat_surface_order_backend cpu
+```
+
+With no frame list or benchmark counts, sequence mode applies every revision
+once, with zero warmup and one loop. Existing
+`gsplat_benchmark_warmup_frames`/`gsplat_benchmark_frames` set warmup and
+measured revisions; `gsplat_camera_trace_loops` repeats the measured schedule.
+Every applied revision logs its trace ID/hash, frame index, timestamp, phase,
+loop, and requested backend. Fixed-frame mode remains the screenshot path.
 `gsplat_surface_sort_interval` controls how often the Surface path refreshes
-depth sorting during camera changes. The Android example default is `2`, which
-reuses the previous sorted index order for one camera-change frame while the
-vertex shader still projects the current camera; use `1` to force sorting every
-camera-change frame for comparison.
-All three choices use the same persistent Direct source buffers and Direct
-draw shaders, but they compare complete ordering strategies rather than an
-isolated sort kernel. CPU refreshes apply the near/far candidate filter, sort
-on CPU, and upload compact source IDs. GPU refreshes generate and stably sort
-all `(depth_key, source_id)` pairs on the renderer device and let the vertex
-shader clip invalid depths. They do not select an older CPU-instance or
-compute-preproject render path. This is a sample-only benchmark control, not a
-new stable Android SDK option.
+depth sorting during camera changes. The Android library and example default
+to `1`, so every changed-camera frame requests a current order. CPU refreshes
+apply the same visibility contract, sort on CPU, and upload compact source IDs.
+GPU refreshes generate and stably sort all `(depth_key, source_id)` pairs on the
+renderer device. Adaptive runs bounded repeated CPU/GPU probes and retains
+hysteresis instead of hard-coding a point-count crossover. All choices feed the
+same exact resident draw path; the public receipt collector exposes which
+backend actually ran and whether its GPU timing came from timestamp queries or
+queue completion. GPU benchmark frames are joined to asynchronous receipts by
+camera revision and ticket; a missing, duplicate, or dropped receipt rejects
+the artifact instead of converting pending counts into zero. Any terminal
+readback/invalidation failure also rejects the artifact with its ticket,
+revision, and reason.
 `gsplat_surface_async_sort=true` enables an experimental background sort worker
 that double-buffers the latest completed order while the render thread continues
 with the previous order. It keeps the full splat count and is intended for
 interaction A/B checks.
 `gsplat_surface_frame_latency` maps to wgpu
 `desired_maximum_frame_latency`. The default is `2`.
-`gsplat_geometry_path` selects `direct` (default, release-gated
-`SortedIndexDirect`), `packed` (experimental `PackedAtlas`), or `paged`
-(experimental four-slot local-source `PagedActiveAtlas`) for on-device smoke
-and A/B checks.
+`gsplat_geometry_path` selects exact resident `packed` (default), the `direct`
+wide-float oracle, or diagnostic `paged` local-source active atlas for
+on-device checks.
 The example passes the value to the additive constructor-time geometry entry
 and records the resulting `renderer.path` (`sorted_index_direct`,
 `packed_atlas`, or `paged_active_atlas`) in the emitted benchmark artifact.

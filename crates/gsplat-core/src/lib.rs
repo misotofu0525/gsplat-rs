@@ -1,5 +1,7 @@
 //! Core types shared by all gsplat-rs crates.
 
+pub mod camera_trace;
+
 pub const GSPLAT_API_VERSION_MAJOR: u32 = 0;
 pub const GSPLAT_API_VERSION_MINOR: u32 = 1;
 const CAMERA_ROTATION_NORM2_TOLERANCE: f32 = 1.0e-3;

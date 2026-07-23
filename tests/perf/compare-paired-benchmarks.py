@@ -108,10 +108,28 @@ def read_pair(pair_dir: Path) -> dict[str, Any]:
     expected_count = pc_manifest["dataset"]["splat_count"]
     for label, frames in (("PlayCanvas", pc_frames), ("gsplat-rs", gs_frames)):
         require(len(frames) == 3600, f"{pair_id}: {label} frame record count mismatch")
-        require(
-            all(frame["visible"] == expected_count and frame["drawn"] == expected_count for frame in frames),
-            f"{pair_id}: {label} count receipt is not full-dataset parity",
+    pc_unavailable = set(pc_manifest.get("unavailable_fields", []))
+    pc_legacy_full_counts = all(
+        frame.get("visible") == expected_count and frame.get("drawn") == expected_count
+        for frame in pc_frames
+    )
+    pc_observed_source_counts = (
+        {"frames[*].visible", "frames[*].drawn"}.issubset(pc_unavailable)
+        and all(
+            frame.get("active_splats") == expected_count
+            and frame.get("visible") is None
+            and frame.get("drawn") is None
+            for frame in pc_frames
         )
+    )
+    require(
+        pc_legacy_full_counts or pc_observed_source_counts,
+        f"{pair_id}: PlayCanvas source/resident count receipt is not full-dataset parity",
+    )
+    require(
+        all(frame["visible"] == expected_count and frame["drawn"] == expected_count for frame in gs_frames),
+        f"{pair_id}: gsplat-rs count receipt is not full-dataset parity",
+    )
 
     pc_wall = pc_summary["distributions"]["frame_wall_ms"]
     gs_wall = gs_summary["distributions"]["frame_wall_ms"]

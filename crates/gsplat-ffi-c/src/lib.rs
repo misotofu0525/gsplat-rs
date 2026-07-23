@@ -1,22 +1,33 @@
 //! Stable C ABI surface for mobile wrappers.
 
 use std::cell::RefCell;
+use std::collections::VecDeque;
 use std::ffi::{CStr, CString, c_char, c_void};
 use std::fmt::Display;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::Path;
 use std::ptr::NonNull;
 
+#[cfg(any(target_os = "android", target_os = "ios"))]
+use gsplat_core::camera_trace::CameraTrace;
 use gsplat_core::{
     Camera, CameraIntrinsics, CameraPose, ErrorCode, FrameStats, GSPLAT_API_VERSION_MAJOR,
     GSPLAT_API_VERSION_MINOR, RenderMode, RendererConfig, Vec3f,
 };
-use gsplat_io_ply::load_ply;
-#[cfg(target_os = "android")]
-use gsplat_render_wgpu::SurfaceOrderBackend;
+use gsplat_io_ply::{
+    DecodedPlySplat, PlyLoadError, PlySceneSummary, load_ply, load_ply_summary, visit_ply_splats,
+};
 use gsplat_render_wgpu::{
-    GeometryPath, Renderer, SurfaceAdaptiveState, SurfaceFrameOutput, SurfaceOrderBackendUsed,
-    SurfacePresenter, SurfaceRenderSession,
+    GeometryPath, Renderer, RendererError, ResidentSceneBuilder, ResidentSceneError,
+    ResidentSourceSplat, SurfaceAdaptiveGpuFailureReason, SurfaceAdaptiveState,
+    SurfaceCpuOrderMeasurement, SurfaceFrameOutput, SurfaceOrderBackend, SurfaceOrderBackendUsed,
+    SurfaceOrderMeasurement, SurfaceOrderMeasurementFailure, SurfaceOrderMeasurementFailureReason,
+    SurfaceOrderMeasurementSubmission, SurfaceOrderMeasurementUnsampledReason, SurfacePresenter,
+    SurfaceProjectedDrawAdaptiveState, SurfaceProjectedDrawExecution,
+    SurfaceProjectedDrawMeasurement, SurfaceProjectedDrawMeasurementFailure,
+    SurfaceProjectedDrawMeasurementFailureReason, SurfaceProjectedDrawMeasurementSubmission,
+    SurfaceProjectedDrawMeasurementUnsampledReason, SurfaceProjectedDrawPolicy,
+    SurfaceRenderSession, SurfaceTimingSource,
 };
 
 const SURFACE_CAMERA_MAX_PITCH: f32 = 1.45;
@@ -64,6 +75,886 @@ pub struct GsplatSurfaceSortStats {
     pub flags: u32,
 }
 
+/// One completed, non-blocking GPU order receipt.
+///
+/// Optional floating-point fields are zero when their corresponding validity
+/// bit is clear. This is a new additive type; the layout of
+/// [`GsplatSurfaceSortStats`] remains unchanged.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct GsplatSurfaceOrderMeasurement {
+    pub ticket: u64,
+    pub camera_revision: u64,
+    pub gpu_preprocess_ms: f32,
+    pub gpu_radix_ms: f32,
+    pub gpu_order_ms: f32,
+    pub gpu_complete_ms: f32,
+    pub timestamp_period_ns: f32,
+    pub visible_count: u32,
+    pub drawn_count: u32,
+    pub timing_source: u32,
+    pub requested_backend: u32,
+    pub actual_backend: u32,
+    pub adaptive_state: u32,
+    pub flags: u32,
+}
+
+/// One completed CPU order refresh measured through graphics-queue completion.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct GsplatSurfaceCpuOrderMeasurement {
+    pub ticket: u64,
+    pub camera_revision: u64,
+    pub preprocess_ms: f32,
+    pub sort_ms: f32,
+    pub frame_complete_ms: f32,
+    pub requested_backend: u32,
+    pub actual_backend: u32,
+    pub adaptive_state: u32,
+    pub flags: u32,
+    pub reserved: u32,
+}
+
+/// Ticket-addressed V/C/D receipt shared by CPU and GPU terminal successes.
+/// This additive type leaves both legacy measurement layouts unchanged.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct GsplatSurfaceOrderCounts {
+    pub ticket: u64,
+    pub camera_revision: u64,
+    pub visible_count: u32,
+    pub contributor_count: u32,
+    pub drawn_count: u32,
+    pub flags: u32,
+}
+
+/// Terminal failure receipt for one issued CPU or GPU order measurement ticket.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct GsplatSurfaceOrderMeasurementFailure {
+    pub ticket: u64,
+    pub camera_revision: u64,
+    pub reason: u32,
+    pub requested_backend: u32,
+    pub actual_backend: u32,
+    pub adaptive_state: u32,
+    pub flags: u32,
+    pub reserved: u32,
+}
+
+/// Submission identity for the last successful Surface render call.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct GsplatSurfaceOrderSubmission {
+    pub ticket: u64,
+    pub camera_revision: u64,
+    pub requested_backend: u32,
+    pub actual_backend: u32,
+    pub adaptive_state: u32,
+    pub flags: u32,
+}
+
+const SURFACE_PROJECTED_ABI_VERSION_V1: u32 = 1;
+
+/// Versioned submission identity for the independent projected-draw policy.
+///
+/// Callers initialize `struct_size` and `version` before every getter call.
+/// A ticket is public only when `TICKET_ISSUED` is set.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GsplatSurfaceProjectedSubmissionV1 {
+    pub struct_size: u32,
+    pub version: u32,
+    pub ticket: u64,
+    pub camera_revision: u64,
+    pub requested_policy: u32,
+    pub actual_execution: u32,
+    pub order_backend: u32,
+    pub adaptive_state: u32,
+    pub flags: u32,
+    pub reserved: u32,
+}
+
+impl Default for GsplatSurfaceProjectedSubmissionV1 {
+    fn default() -> Self {
+        Self {
+            struct_size: std::mem::size_of::<Self>() as u32,
+            version: SURFACE_PROJECTED_ABI_VERSION_V1,
+            ticket: 0,
+            camera_revision: 0,
+            requested_policy: 0,
+            actual_execution: 0,
+            order_backend: 0,
+            adaptive_state: 0,
+            flags: 0,
+            reserved: 0,
+        }
+    }
+}
+
+/// Versioned terminal success for one projected-draw ticket.
+/// Exact V/C/D values are taken separately by the same ticket.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct GsplatSurfaceProjectedMeasurementV1 {
+    pub struct_size: u32,
+    pub version: u32,
+    pub ticket: u64,
+    pub camera_revision: u64,
+    pub projection_generation: u64,
+    pub probe_generation: u64,
+    pub frame_complete_ms: f32,
+    pub execution: u32,
+    pub order_backend: u32,
+    pub flags: u32,
+}
+
+impl Default for GsplatSurfaceProjectedMeasurementV1 {
+    fn default() -> Self {
+        Self {
+            struct_size: std::mem::size_of::<Self>() as u32,
+            version: SURFACE_PROJECTED_ABI_VERSION_V1,
+            ticket: 0,
+            camera_revision: 0,
+            projection_generation: 0,
+            probe_generation: 0,
+            frame_complete_ms: 0.0,
+            execution: 0,
+            order_backend: 0,
+            flags: 0,
+        }
+    }
+}
+
+/// Versioned, ticket-addressed V/C/D receipt for projected-draw success.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GsplatSurfaceProjectedCountsV1 {
+    pub struct_size: u32,
+    pub version: u32,
+    pub ticket: u64,
+    pub camera_revision: u64,
+    pub visible_count: u32,
+    pub contributor_count: u32,
+    pub drawn_count: u32,
+    pub flags: u32,
+}
+
+impl Default for GsplatSurfaceProjectedCountsV1 {
+    fn default() -> Self {
+        Self {
+            struct_size: std::mem::size_of::<Self>() as u32,
+            version: SURFACE_PROJECTED_ABI_VERSION_V1,
+            ticket: 0,
+            camera_revision: 0,
+            visible_count: 0,
+            contributor_count: 0,
+            drawn_count: 0,
+            flags: 0,
+        }
+    }
+}
+
+/// Versioned terminal failure for one projected-draw ticket.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GsplatSurfaceProjectedFailureV1 {
+    pub struct_size: u32,
+    pub version: u32,
+    pub ticket: u64,
+    pub camera_revision: u64,
+    pub projection_generation: u64,
+    pub probe_generation: u64,
+    pub reason: u32,
+    pub execution: u32,
+    pub order_backend: u32,
+    pub flags: u32,
+}
+
+impl Default for GsplatSurfaceProjectedFailureV1 {
+    fn default() -> Self {
+        Self {
+            struct_size: std::mem::size_of::<Self>() as u32,
+            version: SURFACE_PROJECTED_ABI_VERSION_V1,
+            ticket: 0,
+            camera_revision: 0,
+            projection_generation: 0,
+            probe_generation: 0,
+            reason: 0,
+            execution: 0,
+            order_backend: 0,
+            flags: 0,
+        }
+    }
+}
+
+/// Source-to-GPU exactness and adapter-admission receipt for the Surface
+/// renderer's current geometry path.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct GsplatSurfaceExactness {
+    pub source_splat_count: u64,
+    pub decoded_splat_count: u64,
+    pub encoded_splat_count: u64,
+    pub resident_splat_count: u64,
+    pub addressable_splat_count: u64,
+    pub source_sh_degree: u32,
+    pub resident_sh_degree: u32,
+    pub quality_flags: u32,
+    pub max_storage_buffers_per_shader_stage: u32,
+    pub max_storage_buffer_binding_size: u64,
+}
+
+/// Pixel-resolution receipt for the current native Surface presentation path.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct GsplatSurfacePresentation {
+    pub requested_width: u32,
+    pub requested_height: u32,
+    pub surface_width: u32,
+    pub surface_height: u32,
+    pub internal_render_width: u32,
+    pub internal_render_height: u32,
+    pub presented_width: u32,
+    pub presented_height: u32,
+    pub presented_camera_revision: u64,
+    pub flags: u32,
+    pub reserved: u32,
+}
+
+const SURFACE_CAMERA_RECEIPT_ABI_VERSION_V1: u32 = 1;
+
+/// Versioned read-only receipt for the camera state actually owned by the
+/// shared Surface session after a render call.
+///
+/// The canonical matrices are derived from this f32 state and the current
+/// Surface aspect. They are never copied from a camera-trace payload.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct GsplatSurfaceCameraReceiptV1 {
+    pub struct_size: u32,
+    pub version: u32,
+    pub camera_revision: u64,
+    pub presented_camera_revision: u64,
+    pub surface_width: u32,
+    pub surface_height: u32,
+    pub flags: u32,
+    pub reserved: u32,
+    pub position: [f32; 3],
+    pub rotation_xyzw: [f32; 4],
+    pub vertical_fov_radians: f32,
+    pub near_plane: f32,
+    pub far_plane: f32,
+    pub view_matrix: [f32; 16],
+    pub projection_matrix: [f32; 16],
+    pub view_projection_matrix: [f32; 16],
+}
+
+impl Default for GsplatSurfaceCameraReceiptV1 {
+    fn default() -> Self {
+        Self {
+            struct_size: std::mem::size_of::<Self>() as u32,
+            version: SURFACE_CAMERA_RECEIPT_ABI_VERSION_V1,
+            camera_revision: 0,
+            presented_camera_revision: 0,
+            surface_width: 0,
+            surface_height: 0,
+            flags: 0,
+            reserved: 0,
+            position: [0.0; 3],
+            rotation_xyzw: [0.0; 4],
+            vertical_fov_radians: 0.0,
+            near_plane: 0.0,
+            far_plane: 0.0,
+            view_matrix: [0.0; 16],
+            projection_matrix: [0.0; 16],
+            view_projection_matrix: [0.0; 16],
+        }
+    }
+}
+
+const SURFACE_ORDER_MEASUREMENT_PREPROCESS_VALID: u32 = 1 << 0;
+const SURFACE_ORDER_MEASUREMENT_RADIX_VALID: u32 = 1 << 1;
+const SURFACE_ORDER_MEASUREMENT_ORDER_VALID: u32 = 1 << 2;
+const SURFACE_ORDER_MEASUREMENT_TIMESTAMP_PERIOD_VALID: u32 = 1 << 3;
+const SURFACE_ORDER_MEASUREMENT_BELOW_TIMESTAMP_RESOLUTION: u32 = 1 << 4;
+const SURFACE_ORDER_MEASUREMENT_DROPPED_PRIOR: u32 = 1 << 5;
+const SURFACE_ORDER_MEASUREMENT_EXACT_CONTRIBUTOR_DRAW: u32 = 1 << 6;
+const SURFACE_CPU_ORDER_MEASUREMENT_DROPPED_PRIOR: u32 = 1 << 0;
+const SURFACE_CPU_ORDER_MEASUREMENT_EXACT_CONTRIBUTOR_DRAW: u32 = 1 << 1;
+const SURFACE_CPU_ORDER_MEASUREMENT_CONTRIBUTOR_COUNT_VALID: u32 = 1 << 2;
+const SURFACE_ORDER_COUNTS_EXACT_CONTRIBUTOR_DRAW: u32 = 1 << 0;
+const SURFACE_ORDER_MEASUREMENT_FAILURE_DROPPED_PRIOR: u32 = 1 << 0;
+const SURFACE_ORDER_SUBMISSION_GPU_REFRESH: u32 = 1 << 0;
+const SURFACE_ORDER_SUBMISSION_TICKET_ISSUED: u32 = 1 << 1;
+const SURFACE_ORDER_SUBMISSION_UNSAMPLED_RING_BUSY: u32 = 1 << 2;
+const SURFACE_ORDER_SUBMISSION_CPU_FRAME_COMPLETION_SAMPLE: u32 = 1 << 3;
+const SURFACE_ORDER_SUBMISSION_UNSAMPLED_SURFACE_UNAVAILABLE: u32 = 1 << 4;
+const SURFACE_ORDER_MEASUREMENT_QUEUE_CAPACITY: usize = 64;
+// CPU and GPU terminal-success queues are independently bounded. Preserve a
+// matching count receipt for the full combined backlog.
+const SURFACE_ORDER_COUNT_LEDGER_CAPACITY: usize = 2 * SURFACE_ORDER_MEASUREMENT_QUEUE_CAPACITY;
+
+const SURFACE_PROJECTED_SUBMISSION_TICKET_ISSUED: u32 = 1 << 0;
+const SURFACE_PROJECTED_SUBMISSION_UNSAMPLED_RING_BUSY: u32 = 1 << 1;
+const SURFACE_PROJECTED_SUBMISSION_UNSAMPLED_SURFACE_UNAVAILABLE: u32 = 1 << 2;
+const SURFACE_PROJECTED_MEASUREMENT_PROJECTION_REBUILT: u32 = 1 << 0;
+const SURFACE_PROJECTED_MEASUREMENT_ORDER_REFRESHED: u32 = 1 << 1;
+const SURFACE_PROJECTED_MEASUREMENT_EXACT_CONTRIBUTOR_DRAW: u32 = 1 << 2;
+const SURFACE_PROJECTED_MEASUREMENT_DROPPED_PRIOR: u32 = 1 << 3;
+const SURFACE_PROJECTED_COUNTS_EXACT_CONTRIBUTOR_DRAW: u32 = 1 << 0;
+const SURFACE_PROJECTED_FAILURE_DROPPED_PRIOR: u32 = 1 << 0;
+const SURFACE_PROJECTED_MEASUREMENT_QUEUE_CAPACITY: usize = 64;
+
+const SURFACE_EXACTNESS_SOURCE_MEMBERSHIP_ALL: u32 = 1 << 0;
+const SURFACE_EXACTNESS_SAMPLING_DISABLED: u32 = 1 << 1;
+const SURFACE_EXACTNESS_LOD_DISABLED: u32 = 1 << 2;
+const SURFACE_EXACTNESS_SH_DEGREE_SOURCE: u32 = 1 << 3;
+const SURFACE_EXACTNESS_PARTIAL_SCENE_NOT_PUBLISHED: u32 = 1 << 4;
+const SURFACE_EXACTNESS_FULL_QUALITY_FLAGS: u32 = SURFACE_EXACTNESS_SOURCE_MEMBERSHIP_ALL
+    | SURFACE_EXACTNESS_SAMPLING_DISABLED
+    | SURFACE_EXACTNESS_LOD_DISABLED
+    | SURFACE_EXACTNESS_SH_DEGREE_SOURCE
+    | SURFACE_EXACTNESS_PARTIAL_SCENE_NOT_PUBLISHED;
+const SURFACE_PRESENTATION_LAST_FRAME_PRESENTED: u32 = 1 << 0;
+const SURFACE_PRESENTATION_EVER_PRESENTED: u32 = 1 << 1;
+const SURFACE_PRESENTATION_DYNAMIC_RESOLUTION_DISABLED: u32 = 1 << 2;
+const SURFACE_PRESENTATION_UPSCALING_DISABLED: u32 = 1 << 3;
+const SURFACE_PRESENTATION_FULL_RESOLUTION: u32 = 1 << 4;
+const SURFACE_CAMERA_RECEIPT_FRAME_PRESENTED: u32 = 1 << 0;
+const SURFACE_CAMERA_RECEIPT_CURRENT_REVISION_PRESENTED: u32 = 1 << 1;
+
+fn surface_order_backend_to_ffi(backend: SurfaceOrderBackend) -> u32 {
+    match backend {
+        SurfaceOrderBackend::Cpu => 0,
+        SurfaceOrderBackend::Gpu => 1,
+        SurfaceOrderBackend::Adaptive => 2,
+    }
+}
+
+fn surface_order_backend_used_to_ffi(backend: SurfaceOrderBackendUsed) -> u32 {
+    match backend {
+        SurfaceOrderBackendUsed::Cpu => 0,
+        SurfaceOrderBackendUsed::Gpu => 1,
+    }
+}
+
+fn surface_projected_policy_to_ffi(policy: SurfaceProjectedDrawPolicy) -> u32 {
+    match policy {
+        SurfaceProjectedDrawPolicy::Candidate => 1,
+        SurfaceProjectedDrawPolicy::Compact => 2,
+        SurfaceProjectedDrawPolicy::Adaptive => 3,
+    }
+}
+
+fn surface_projected_policy_from_ffi(value: u32) -> Option<SurfaceProjectedDrawPolicy> {
+    match value {
+        // Zero is the versioned ABI's legacy/default selector. Existing C
+        // clients did not choose this independent policy, and the Rust
+        // session's compatibility default is Adaptive.
+        0 | 3 => Some(SurfaceProjectedDrawPolicy::Adaptive),
+        1 => Some(SurfaceProjectedDrawPolicy::Candidate),
+        2 => Some(SurfaceProjectedDrawPolicy::Compact),
+        _ => None,
+    }
+}
+
+fn surface_projected_execution_to_ffi(execution: SurfaceProjectedDrawExecution) -> u32 {
+    match execution {
+        SurfaceProjectedDrawExecution::Candidate => 1,
+        SurfaceProjectedDrawExecution::Compact => 2,
+    }
+}
+
+fn surface_projected_adaptive_state_to_ffi(state: SurfaceProjectedDrawAdaptiveState) -> u32 {
+    match state {
+        SurfaceProjectedDrawAdaptiveState::Disabled => 0,
+        SurfaceProjectedDrawAdaptiveState::CandidateLearning => 1,
+        SurfaceProjectedDrawAdaptiveState::CandidateStable => 2,
+        SurfaceProjectedDrawAdaptiveState::CompactProbe => 3,
+        SurfaceProjectedDrawAdaptiveState::CompactStable => 4,
+        SurfaceProjectedDrawAdaptiveState::CandidateProbe => 5,
+        SurfaceProjectedDrawAdaptiveState::Cooldown => 6,
+        SurfaceProjectedDrawAdaptiveState::CandidateOnly => 7,
+    }
+}
+
+#[repr(C)]
+struct GsplatV1Header {
+    struct_size: u32,
+    version: u32,
+}
+
+fn validate_v1_output<T>(output: *mut T, operation: &'static str) -> Result<(), i32> {
+    if output.is_null() {
+        return Err(ffi_error(
+            ErrorCode::InvalidArgument,
+            format!("{operation}: output is null"),
+        ));
+    }
+    let header = unsafe { &*output.cast::<GsplatV1Header>() };
+    let expected_size = std::mem::size_of::<T>() as u32;
+    if header.version != SURFACE_PROJECTED_ABI_VERSION_V1 {
+        return Err(ffi_error(
+            ErrorCode::InvalidArgument,
+            format!(
+                "{operation}: unsupported version {} (expected {})",
+                header.version, SURFACE_PROJECTED_ABI_VERSION_V1
+            ),
+        ));
+    }
+    if header.struct_size < expected_size {
+        return Err(ffi_error(
+            ErrorCode::InvalidArgument,
+            format!(
+                "{operation}: struct_size {} is smaller than {}",
+                header.struct_size, expected_size
+            ),
+        ));
+    }
+    Ok(())
+}
+
+fn surface_projected_submission_to_ffi(
+    output: SurfaceFrameOutput,
+) -> GsplatSurfaceProjectedSubmissionV1 {
+    let (ticket, unsampled_reason) = match output.projected_draw_measurement_submission {
+        SurfaceProjectedDrawMeasurementSubmission::NotRequested => (None, None),
+        SurfaceProjectedDrawMeasurementSubmission::Issued { ticket, .. } => (Some(ticket), None),
+        SurfaceProjectedDrawMeasurementSubmission::Unsampled { reason, .. } => (None, Some(reason)),
+    };
+    let mut flags = u32::from(ticket.is_some()) * SURFACE_PROJECTED_SUBMISSION_TICKET_ISSUED;
+    flags |= u32::from(
+        unsampled_reason == Some(SurfaceProjectedDrawMeasurementUnsampledReason::RingBusy),
+    ) * SURFACE_PROJECTED_SUBMISSION_UNSAMPLED_RING_BUSY;
+    flags |= u32::from(
+        unsampled_reason
+            == Some(SurfaceProjectedDrawMeasurementUnsampledReason::SurfaceUnavailable),
+    ) * SURFACE_PROJECTED_SUBMISSION_UNSAMPLED_SURFACE_UNAVAILABLE;
+    GsplatSurfaceProjectedSubmissionV1 {
+        ticket: ticket.unwrap_or(0),
+        camera_revision: output.camera_revision,
+        requested_policy: surface_projected_policy_to_ffi(output.projected_draw_policy),
+        actual_execution: surface_projected_execution_to_ffi(output.projected_draw_execution),
+        order_backend: surface_order_backend_used_to_ffi(output.order_backend),
+        adaptive_state: surface_projected_adaptive_state_to_ffi(
+            output.projected_draw_adaptive_state,
+        ),
+        flags,
+        ..Default::default()
+    }
+}
+
+fn surface_projected_measurement_to_ffi(
+    measurement: SurfaceProjectedDrawMeasurement,
+) -> GsplatSurfaceProjectedMeasurementV1 {
+    let mut flags = 0;
+    flags |= u32::from(measurement.projection_rebuilt)
+        * SURFACE_PROJECTED_MEASUREMENT_PROJECTION_REBUILT;
+    flags |= u32::from(measurement.order_refreshed) * SURFACE_PROJECTED_MEASUREMENT_ORDER_REFRESHED;
+    flags |= u32::from(measurement.exact_contributor_compaction)
+        * SURFACE_PROJECTED_MEASUREMENT_EXACT_CONTRIBUTOR_DRAW;
+    GsplatSurfaceProjectedMeasurementV1 {
+        ticket: measurement.ticket,
+        camera_revision: measurement.camera_revision,
+        projection_generation: measurement.projection_generation,
+        probe_generation: measurement.probe_generation,
+        frame_complete_ms: measurement.frame_complete_ms,
+        execution: surface_projected_execution_to_ffi(measurement.execution),
+        order_backend: surface_order_backend_used_to_ffi(measurement.order_backend),
+        flags,
+        ..Default::default()
+    }
+}
+
+fn surface_projected_counts(
+    measurement: SurfaceProjectedDrawMeasurement,
+) -> GsplatSurfaceProjectedCountsV1 {
+    GsplatSurfaceProjectedCountsV1 {
+        ticket: measurement.ticket,
+        camera_revision: measurement.camera_revision,
+        visible_count: measurement.visible_count,
+        contributor_count: measurement.contributor_count,
+        drawn_count: measurement.drawn_count,
+        flags: u32::from(measurement.exact_contributor_compaction)
+            * SURFACE_PROJECTED_COUNTS_EXACT_CONTRIBUTOR_DRAW,
+        ..Default::default()
+    }
+}
+
+fn surface_projected_failure_to_ffi(
+    failure: SurfaceProjectedDrawMeasurementFailure,
+) -> GsplatSurfaceProjectedFailureV1 {
+    GsplatSurfaceProjectedFailureV1 {
+        ticket: failure.ticket,
+        camera_revision: failure.camera_revision,
+        projection_generation: failure.projection_generation,
+        probe_generation: failure.probe_generation,
+        reason: match failure.reason {
+            SurfaceProjectedDrawMeasurementFailureReason::ReadbackMap => 1,
+            SurfaceProjectedDrawMeasurementFailureReason::GenerationInvalidated => 2,
+            SurfaceProjectedDrawMeasurementFailureReason::InvariantViolation => 3,
+        },
+        execution: surface_projected_execution_to_ffi(failure.execution),
+        order_backend: surface_order_backend_used_to_ffi(failure.order_backend),
+        ..Default::default()
+    }
+}
+
+fn push_surface_projected_counts(
+    ledger: &mut VecDeque<GsplatSurfaceProjectedCountsV1>,
+    counts: GsplatSurfaceProjectedCountsV1,
+) {
+    if let Some(index) = ledger
+        .iter()
+        .position(|entry| entry.ticket == counts.ticket)
+    {
+        ledger.remove(index);
+    }
+    if ledger.len() == SURFACE_PROJECTED_MEASUREMENT_QUEUE_CAPACITY {
+        ledger.pop_front();
+    }
+    ledger.push_back(counts);
+}
+
+fn take_surface_projected_counts(
+    ledger: &mut VecDeque<GsplatSurfaceProjectedCountsV1>,
+    ticket: u64,
+) -> Option<GsplatSurfaceProjectedCountsV1> {
+    ledger
+        .iter()
+        .position(|entry| entry.ticket == ticket)
+        .and_then(|index| ledger.remove(index))
+}
+
+fn surface_adaptive_state_to_ffi(state: SurfaceAdaptiveState) -> u32 {
+    match state {
+        SurfaceAdaptiveState::Disabled => 0,
+        SurfaceAdaptiveState::CpuLearning => 1,
+        SurfaceAdaptiveState::CpuStable => 2,
+        SurfaceAdaptiveState::GpuProbe => 3,
+        SurfaceAdaptiveState::GpuStable => 4,
+        SurfaceAdaptiveState::CpuProbe => 5,
+        SurfaceAdaptiveState::Cooldown => 6,
+    }
+}
+
+fn surface_adaptive_gpu_failure_flags(failure: Option<SurfaceAdaptiveGpuFailureReason>) -> u32 {
+    let Some(failure) = failure else {
+        return 0;
+    };
+    let reason = match failure {
+        SurfaceAdaptiveGpuFailureReason::Unsupported => 1,
+        SurfaceAdaptiveGpuFailureReason::Initialization => 2,
+        SurfaceAdaptiveGpuFailureReason::OutOfMemory => 3,
+        SurfaceAdaptiveGpuFailureReason::Validation => 4,
+    };
+    (1 << 15) | (reason << 16)
+}
+
+fn surface_order_measurement_to_ffi(
+    measurement: SurfaceOrderMeasurement,
+    context: SurfaceOrderMeasurementContext,
+) -> GsplatSurfaceOrderMeasurement {
+    let mut flags = 0_u32;
+    let gpu_preprocess_ms = measurement.gpu_preprocess_ms.unwrap_or(0.0);
+    flags |= u32::from(measurement.gpu_preprocess_ms.is_some())
+        * SURFACE_ORDER_MEASUREMENT_PREPROCESS_VALID;
+    let gpu_radix_ms = measurement.gpu_radix_ms.unwrap_or(0.0);
+    flags |= u32::from(measurement.gpu_radix_ms.is_some()) * SURFACE_ORDER_MEASUREMENT_RADIX_VALID;
+    let gpu_order_ms = measurement.gpu_order_ms.unwrap_or(0.0);
+    flags |= u32::from(measurement.gpu_order_ms.is_some()) * SURFACE_ORDER_MEASUREMENT_ORDER_VALID;
+    let timestamp_period_ns = measurement.timestamp_period_ns.unwrap_or(0.0);
+    flags |= u32::from(measurement.timestamp_period_ns.is_some())
+        * SURFACE_ORDER_MEASUREMENT_TIMESTAMP_PERIOD_VALID;
+    flags |= u32::from(measurement.below_timestamp_resolution)
+        * SURFACE_ORDER_MEASUREMENT_BELOW_TIMESTAMP_RESOLUTION;
+    flags |= u32::from(measurement.exact_contributor_compaction)
+        * SURFACE_ORDER_MEASUREMENT_EXACT_CONTRIBUTOR_DRAW;
+
+    GsplatSurfaceOrderMeasurement {
+        ticket: measurement.ticket,
+        camera_revision: measurement.camera_revision,
+        gpu_preprocess_ms,
+        gpu_radix_ms,
+        gpu_order_ms,
+        gpu_complete_ms: measurement.gpu_complete_ms,
+        timestamp_period_ns,
+        visible_count: measurement.visible_count,
+        drawn_count: measurement.drawn_count,
+        timing_source: match measurement.timing_source {
+            SurfaceTimingSource::TimestampQuery => 1,
+            SurfaceTimingSource::CompletionOnly => 2,
+        },
+        requested_backend: surface_order_backend_to_ffi(context.requested_backend),
+        actual_backend: surface_order_backend_used_to_ffi(context.actual_backend),
+        adaptive_state: surface_adaptive_state_to_ffi(context.adaptive_state),
+        flags,
+    }
+}
+
+fn surface_cpu_order_measurement_to_ffi(
+    measurement: SurfaceCpuOrderMeasurement,
+    context: SurfaceOrderMeasurementContext,
+) -> GsplatSurfaceCpuOrderMeasurement {
+    let mut flags = SURFACE_CPU_ORDER_MEASUREMENT_CONTRIBUTOR_COUNT_VALID;
+    flags |= u32::from(measurement.exact_contributor_compaction)
+        * SURFACE_CPU_ORDER_MEASUREMENT_EXACT_CONTRIBUTOR_DRAW;
+    GsplatSurfaceCpuOrderMeasurement {
+        ticket: measurement.ticket,
+        camera_revision: measurement.camera_revision,
+        preprocess_ms: measurement.preprocess_ms,
+        sort_ms: measurement.sort_ms,
+        frame_complete_ms: measurement.frame_complete_ms,
+        requested_backend: surface_order_backend_to_ffi(context.requested_backend),
+        actual_backend: surface_order_backend_used_to_ffi(context.actual_backend),
+        adaptive_state: surface_adaptive_state_to_ffi(context.adaptive_state),
+        flags,
+        // ABI-preserving additive payload: C lives in the existing reserved
+        // word. V/D remain the same-ticket frame stats and must be joined by
+        // both ticket and camera_revision.
+        reserved: measurement.contributor_count,
+    }
+}
+
+fn surface_order_counts(
+    ticket: u64,
+    camera_revision: u64,
+    visible_count: u32,
+    contributor_count: u32,
+    drawn_count: u32,
+    exact_contributor_compaction: bool,
+) -> GsplatSurfaceOrderCounts {
+    GsplatSurfaceOrderCounts {
+        ticket,
+        camera_revision,
+        visible_count,
+        contributor_count,
+        drawn_count,
+        flags: u32::from(exact_contributor_compaction)
+            * SURFACE_ORDER_COUNTS_EXACT_CONTRIBUTOR_DRAW,
+    }
+}
+
+fn push_surface_order_counts(
+    ledger: &mut VecDeque<GsplatSurfaceOrderCounts>,
+    counts: GsplatSurfaceOrderCounts,
+) {
+    if let Some(index) = ledger
+        .iter()
+        .position(|entry| entry.ticket == counts.ticket)
+    {
+        ledger.remove(index);
+    }
+    if ledger.len() == SURFACE_ORDER_COUNT_LEDGER_CAPACITY {
+        ledger.pop_front();
+    }
+    ledger.push_back(counts);
+}
+
+fn take_surface_order_counts(
+    ledger: &mut VecDeque<GsplatSurfaceOrderCounts>,
+    ticket: u64,
+) -> Option<GsplatSurfaceOrderCounts> {
+    ledger
+        .iter()
+        .position(|entry| entry.ticket == ticket)
+        .and_then(|index| ledger.remove(index))
+}
+
+fn discard_surface_order_counts(ledger: &mut VecDeque<GsplatSurfaceOrderCounts>, ticket: u64) {
+    ledger.retain(|counts| counts.ticket != ticket);
+}
+
+fn surface_order_measurement_failure_to_ffi(
+    failure: SurfaceOrderMeasurementFailure,
+    context: SurfaceOrderMeasurementContext,
+) -> GsplatSurfaceOrderMeasurementFailure {
+    GsplatSurfaceOrderMeasurementFailure {
+        ticket: failure.ticket,
+        camera_revision: failure.camera_revision,
+        reason: match failure.reason {
+            SurfaceOrderMeasurementFailureReason::ReadbackMap => 1,
+            SurfaceOrderMeasurementFailureReason::GenerationInvalidated => 2,
+        },
+        requested_backend: surface_order_backend_to_ffi(context.requested_backend),
+        actual_backend: surface_order_backend_used_to_ffi(context.actual_backend),
+        adaptive_state: surface_adaptive_state_to_ffi(context.adaptive_state),
+        flags: 0,
+        reserved: 0,
+    }
+}
+
+fn surface_order_submission_to_ffi(
+    output: SurfaceFrameOutput,
+    requested_backend: SurfaceOrderBackend,
+) -> GsplatSurfaceOrderSubmission {
+    let (measurement_backend, ticket, unsampled_reason) = match output.order_measurement_submission
+    {
+        SurfaceOrderMeasurementSubmission::NotRequested => (None, None, None),
+        SurfaceOrderMeasurementSubmission::Issued { backend, ticket } => {
+            (Some(backend), Some(ticket), None)
+        }
+        SurfaceOrderMeasurementSubmission::Unsampled { backend, reason } => {
+            (Some(backend), None, Some(reason))
+        }
+    };
+    debug_assert_eq!(ticket, output.submitted_measurement_ticket);
+    let mut flags = match measurement_backend {
+        Some(SurfaceOrderBackendUsed::Gpu) => SURFACE_ORDER_SUBMISSION_GPU_REFRESH,
+        Some(SurfaceOrderBackendUsed::Cpu) => SURFACE_ORDER_SUBMISSION_CPU_FRAME_COMPLETION_SAMPLE,
+        None => 0,
+    };
+    flags |= u32::from(ticket.is_some()) * SURFACE_ORDER_SUBMISSION_TICKET_ISSUED;
+    flags |= u32::from(unsampled_reason == Some(SurfaceOrderMeasurementUnsampledReason::RingBusy))
+        * SURFACE_ORDER_SUBMISSION_UNSAMPLED_RING_BUSY;
+    flags |= u32::from(
+        unsampled_reason == Some(SurfaceOrderMeasurementUnsampledReason::SurfaceUnavailable),
+    ) * SURFACE_ORDER_SUBMISSION_UNSAMPLED_SURFACE_UNAVAILABLE;
+    GsplatSurfaceOrderSubmission {
+        ticket: ticket.unwrap_or(0),
+        camera_revision: output.camera_revision,
+        requested_backend: surface_order_backend_to_ffi(requested_backend),
+        actual_backend: surface_order_backend_used_to_ffi(output.order_backend),
+        adaptive_state: surface_adaptive_state_to_ffi(output.adaptive_state),
+        flags,
+    }
+}
+
+fn take_surface_order_measurement_context(
+    contexts: &mut VecDeque<SurfaceOrderMeasurementContext>,
+    ticket: u64,
+    requested_backend: SurfaceOrderBackend,
+    fallback_actual_backend: SurfaceOrderBackendUsed,
+    adaptive_state: SurfaceAdaptiveState,
+) -> SurfaceOrderMeasurementContext {
+    contexts
+        .iter()
+        .position(|context| context.ticket == ticket)
+        .and_then(|index| contexts.remove(index))
+        .unwrap_or(SurfaceOrderMeasurementContext {
+            ticket,
+            requested_backend,
+            actual_backend: fallback_actual_backend,
+            adaptive_state,
+        })
+}
+
+fn pump_surface_order_measurement_receipts(
+    renderer: &mut GsplatSurfaceRenderer,
+    fallback_adaptive_state: SurfaceAdaptiveState,
+) {
+    let requested_backend = renderer.session.order_backend();
+    for measurement in renderer.session.drain_cpu_order_measurements() {
+        push_surface_order_counts(
+            &mut renderer.pending_order_counts,
+            surface_order_counts(
+                measurement.ticket,
+                measurement.camera_revision,
+                measurement.visible_count,
+                measurement.contributor_count,
+                measurement.drawn_count,
+                measurement.exact_contributor_compaction,
+            ),
+        );
+        let context = take_surface_order_measurement_context(
+            &mut renderer.pending_order_measurement_contexts,
+            measurement.ticket,
+            requested_backend,
+            SurfaceOrderBackendUsed::Cpu,
+            fallback_adaptive_state,
+        );
+        let mut receipt = surface_cpu_order_measurement_to_ffi(measurement, context);
+        if renderer.pending_cpu_order_measurements.len() == SURFACE_ORDER_MEASUREMENT_QUEUE_CAPACITY
+        {
+            renderer.pending_cpu_order_measurements.pop_front();
+            receipt.flags |= SURFACE_CPU_ORDER_MEASUREMENT_DROPPED_PRIOR;
+        }
+        renderer.pending_cpu_order_measurements.push_back(receipt);
+    }
+    for measurement in renderer.session.drain_order_measurements() {
+        push_surface_order_counts(
+            &mut renderer.pending_order_counts,
+            surface_order_counts(
+                measurement.ticket,
+                measurement.camera_revision,
+                measurement.visible_count,
+                measurement.contributor_count,
+                measurement.drawn_count,
+                measurement.exact_contributor_compaction,
+            ),
+        );
+        let context = take_surface_order_measurement_context(
+            &mut renderer.pending_order_measurement_contexts,
+            measurement.ticket,
+            requested_backend,
+            SurfaceOrderBackendUsed::Gpu,
+            fallback_adaptive_state,
+        );
+        let mut receipt = surface_order_measurement_to_ffi(measurement, context);
+        if renderer.pending_order_measurements.len() == SURFACE_ORDER_MEASUREMENT_QUEUE_CAPACITY {
+            renderer.pending_order_measurements.pop_front();
+            receipt.flags |= SURFACE_ORDER_MEASUREMENT_DROPPED_PRIOR;
+        }
+        renderer.pending_order_measurements.push_back(receipt);
+    }
+    for failure in renderer.session.drain_order_measurement_failures() {
+        // A terminal failure must never leave count evidence addressable under
+        // the same ticket, especially across generation invalidation.
+        discard_surface_order_counts(&mut renderer.pending_order_counts, failure.ticket);
+        let context = take_surface_order_measurement_context(
+            &mut renderer.pending_order_measurement_contexts,
+            failure.ticket,
+            requested_backend,
+            if failure.ticket & 1 == 0 {
+                SurfaceOrderBackendUsed::Cpu
+            } else {
+                SurfaceOrderBackendUsed::Gpu
+            },
+            fallback_adaptive_state,
+        );
+        let mut receipt = surface_order_measurement_failure_to_ffi(failure, context);
+        if renderer.pending_order_measurement_failures.len()
+            == SURFACE_ORDER_MEASUREMENT_QUEUE_CAPACITY
+        {
+            renderer.pending_order_measurement_failures.pop_front();
+            receipt.flags |= SURFACE_ORDER_MEASUREMENT_FAILURE_DROPPED_PRIOR;
+        }
+        renderer
+            .pending_order_measurement_failures
+            .push_back(receipt);
+    }
+}
+
+fn pump_surface_projected_measurement_receipts(renderer: &mut GsplatSurfaceRenderer) {
+    for measurement in renderer.session.drain_projected_draw_measurements() {
+        push_surface_projected_counts(
+            &mut renderer.pending_projected_counts,
+            surface_projected_counts(measurement),
+        );
+        let mut receipt = surface_projected_measurement_to_ffi(measurement);
+        if renderer.pending_projected_measurements.len()
+            == SURFACE_PROJECTED_MEASUREMENT_QUEUE_CAPACITY
+        {
+            renderer.pending_projected_measurements.pop_front();
+            receipt.flags |= SURFACE_PROJECTED_MEASUREMENT_DROPPED_PRIOR;
+        }
+        renderer.pending_projected_measurements.push_back(receipt);
+    }
+    for failure in renderer.session.drain_projected_draw_measurement_failures() {
+        renderer
+            .pending_projected_counts
+            .retain(|counts| counts.ticket != failure.ticket);
+        let mut receipt = surface_projected_failure_to_ffi(failure);
+        if renderer.pending_projected_failures.len() == SURFACE_PROJECTED_MEASUREMENT_QUEUE_CAPACITY
+        {
+            renderer.pending_projected_failures.pop_front();
+            receipt.flags |= SURFACE_PROJECTED_FAILURE_DROPPED_PRIOR;
+        }
+        renderer.pending_projected_failures.push_back(receipt);
+    }
+}
+
 impl From<SurfaceFrameOutput> for GsplatSurfaceSortStats {
     fn from(output: SurfaceFrameOutput) -> Self {
         let mut flags = 0_u32;
@@ -90,6 +981,11 @@ impl From<SurfaceFrameOutput> for GsplatSurfaceSortStats {
             SurfaceAdaptiveState::CpuProbe => 5,
             SurfaceAdaptiveState::Cooldown => 6,
         } << 12;
+        flags |= surface_adaptive_gpu_failure_flags(output.adaptive_gpu_failure);
+        flags |= u32::from(
+            output.order_backend == SurfaceOrderBackendUsed::Gpu
+                && output.submitted_measurement_ticket.is_some(),
+        ) << 19;
         Self {
             camera_revision: output.camera_revision,
             applied_order_revision: output.applied_order_revision,
@@ -165,9 +1061,41 @@ pub struct GsplatContext {
 
 pub struct GsplatSurfaceRenderer {
     session: SurfaceRenderSession,
+    exactness: GsplatSurfaceExactness,
+    requested_surface_width: u32,
+    requested_surface_height: u32,
+    last_presented_camera_revision: u64,
+    last_frame_presented: bool,
+    ever_presented: bool,
     camera_control: SurfaceCameraControl,
     render_error_logged: bool,
     last_sort_stats: GsplatSurfaceSortStats,
+    last_order_submission: GsplatSurfaceOrderSubmission,
+    last_projected_submission: GsplatSurfaceProjectedSubmissionV1,
+    pending_cpu_order_measurements: VecDeque<GsplatSurfaceCpuOrderMeasurement>,
+    pending_order_measurements: VecDeque<GsplatSurfaceOrderMeasurement>,
+    pending_order_counts: VecDeque<GsplatSurfaceOrderCounts>,
+    pending_order_measurement_failures: VecDeque<GsplatSurfaceOrderMeasurementFailure>,
+    pending_order_measurement_contexts: VecDeque<SurfaceOrderMeasurementContext>,
+    pending_projected_measurements: VecDeque<GsplatSurfaceProjectedMeasurementV1>,
+    pending_projected_counts: VecDeque<GsplatSurfaceProjectedCountsV1>,
+    pending_projected_failures: VecDeque<GsplatSurfaceProjectedFailureV1>,
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    benchmark_camera_trace: Option<BenchmarkCameraTraceCache>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct SurfaceOrderMeasurementContext {
+    ticket: u64,
+    requested_backend: SurfaceOrderBackend,
+    actual_backend: SurfaceOrderBackendUsed,
+    adaptive_state: SurfaceAdaptiveState,
+}
+
+#[cfg(any(target_os = "android", target_os = "ios"))]
+struct BenchmarkCameraTraceCache {
+    path: String,
+    trace: CameraTrace,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -220,6 +1148,92 @@ fn ffi_error(code: ErrorCode, message: impl Into<String>) -> i32 {
 
 fn ffi_error_display(code: ErrorCode, operation: &str, error: impl Display) -> i32 {
     ffi_error(code, format!("{operation}: {error}"))
+}
+
+#[derive(Debug)]
+enum PathSceneLoadError {
+    Ply(PlyLoadError),
+    Renderer(RendererError),
+    SummaryChanged {
+        expected: PlySceneSummary,
+        decoded: PlySceneSummary,
+    },
+}
+
+impl PathSceneLoadError {
+    fn code(&self) -> ErrorCode {
+        match self {
+            Self::Ply(error) => error.code(),
+            Self::Renderer(error) => error.code(),
+            Self::SummaryChanged { .. } => ErrorCode::ParseFailed,
+        }
+    }
+}
+
+impl std::fmt::Display for PathSceneLoadError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Ply(error) => error.fmt(formatter),
+            Self::Renderer(error) => error.fmt(formatter),
+            Self::SummaryChanged { expected, decoded } => write!(
+                formatter,
+                "PLY changed while loading: expected {expected:?}, decoded {decoded:?}"
+            ),
+        }
+    }
+}
+
+fn load_ply_path_into_renderer(
+    path: &Path,
+    renderer: &mut Renderer,
+) -> Result<PlySceneSummary, PathSceneLoadError> {
+    if renderer.geometry_path() != GeometryPath::PackedAtlas {
+        let loaded = load_ply(path).map_err(PathSceneLoadError::Ply)?;
+        let summary = loaded.summary;
+        renderer
+            .load_scene(loaded.scene)
+            .map_err(PathSceneLoadError::Renderer)?;
+        return Ok(summary);
+    }
+
+    let expected = load_ply_summary(path).map_err(PathSceneLoadError::Ply)?;
+    let mut builder = ResidentSceneBuilder::new(expected.gaussians, expected.sh_degree)
+        .map_err(RendererError::from)
+        .map_err(PathSceneLoadError::Renderer)?;
+    let mut builder_error: Option<ResidentSceneError> = None;
+    let decoded = visit_ply_splats(path, |splat| {
+        if builder_error.is_none() {
+            builder_error = builder.push(resident_source_splat(splat)).err();
+        }
+    })
+    .map_err(PathSceneLoadError::Ply)?;
+    if let Some(error) = builder_error {
+        return Err(PathSceneLoadError::Renderer(RendererError::from(error)));
+    }
+    if decoded != expected {
+        return Err(PathSceneLoadError::SummaryChanged { expected, decoded });
+    }
+    let resident = builder
+        .finish()
+        .map_err(RendererError::from)
+        .map_err(PathSceneLoadError::Renderer)?;
+    renderer
+        .load_resident_scene(resident)
+        .map_err(PathSceneLoadError::Renderer)?;
+    Ok(decoded)
+}
+
+fn resident_source_splat(splat: &DecodedPlySplat) -> ResidentSourceSplat {
+    ResidentSourceSplat {
+        position: splat.position_ruf,
+        opacity_logit: splat.opacity_logit,
+        log_scale: splat.log_scale_xyz,
+        rotation_xyzw: splat.rotation_xyzw,
+        color_dc: splat.color_dc,
+        sh_rest: splat.sh_rest,
+        sh_len: splat.sh_rest_len,
+        sh_degree: splat.sh_degree,
+    }
 }
 
 fn record_ffi_panic(operation: &str) {
@@ -493,15 +1507,8 @@ pub unsafe extern "C" fn gsplat_context_load_scene_path(
             }
         };
 
-        let loaded = match load_ply(Path::new(path_str)) {
-            Ok(result) => result,
-            Err(err) => {
-                return ffi_error_display(err.code(), "gsplat_context_load_scene_path", err);
-            }
-        };
-
-        match ctx.renderer.load_scene(loaded.scene) {
-            Ok(()) => ffi_ok(),
+        match load_ply_path_into_renderer(Path::new(path_str), &mut ctx.renderer) {
+            Ok(_) => ffi_ok(),
             Err(err) => ffi_error_display(err.code(), "gsplat_context_load_scene_path", err),
         }
     })
@@ -591,7 +1598,7 @@ pub unsafe extern "C" fn gsplat_surface_renderer_create_android(
             path,
             width,
             height,
-            0,
+            1,
             out_renderer,
             "gsplat_surface_renderer_create_android",
         )
@@ -678,13 +1685,7 @@ unsafe fn create_android_surface_renderer(
         };
         renderer.set_geometry_path(geometry_path);
 
-        let loaded = match load_ply(Path::new(path_str)) {
-            Ok(result) => result,
-            Err(err) => {
-                return ffi_error_display(err.code(), operation, err);
-            }
-        };
-        if let Err(err) = renderer.load_scene(loaded.scene) {
+        if let Err(err) = load_ply_path_into_renderer(Path::new(path_str), &mut renderer) {
             return ffi_error_display(err.code(), operation, err);
         };
 
@@ -737,7 +1738,7 @@ pub unsafe extern "C" fn gsplat_surface_renderer_create_uikit(
             path,
             width,
             height,
-            0,
+            1,
             out_renderer,
             "gsplat_surface_renderer_create_uikit",
         )
@@ -826,13 +1827,7 @@ unsafe fn create_uikit_surface_renderer(
         };
         renderer.set_geometry_path(geometry_path);
 
-        let loaded = match load_ply(Path::new(path_str)) {
-            Ok(result) => result,
-            Err(err) => {
-                return ffi_error_display(err.code(), operation, err);
-            }
-        };
-        if let Err(err) = renderer.load_scene(loaded.scene) {
+        if let Err(err) = load_ply_path_into_renderer(Path::new(path_str), &mut renderer) {
             return ffi_error_display(err.code(), operation, err);
         };
 
@@ -862,6 +1857,285 @@ unsafe fn create_uikit_surface_renderer(
     })
 }
 
+fn surface_exactness_receipt(
+    renderer: &Renderer,
+    presenter: &SurfacePresenter,
+) -> Result<GsplatSurfaceExactness, String> {
+    let source_count = renderer
+        .scene_len()
+        .ok_or_else(|| "surface exactness source count is unavailable".to_owned())?;
+    let source_sh_degree = renderer
+        .scene_sh_degree()
+        .ok_or_else(|| "surface exactness source SH degree is unavailable".to_owned())?;
+    let addressable_count = presenter.addressable_splat_count();
+
+    let (decoded_count, encoded_count, resident_count, resident_sh_degree, quality_flags) =
+        match renderer.geometry_path() {
+            GeometryPath::PackedAtlas => {
+                let resident = renderer.resident_scene().ok_or_else(|| {
+                    "packed Surface exactness resident scene is unavailable".to_owned()
+                })?;
+                (
+                    resident.report.encoded_count,
+                    resident.report.encoded_count,
+                    resident.len(),
+                    resident.sh_degree,
+                    SURFACE_EXACTNESS_FULL_QUALITY_FLAGS,
+                )
+            }
+            GeometryPath::SortedIndexDirect => (
+                source_count,
+                source_count,
+                source_count,
+                source_sh_degree,
+                SURFACE_EXACTNESS_FULL_QUALITY_FLAGS,
+            ),
+            // Paged is intentionally diagnostic and does not claim complete
+            // residency, source SH, or a non-partial publication contract.
+            GeometryPath::PagedActiveAtlas => (
+                source_count,
+                source_count,
+                0,
+                0,
+                SURFACE_EXACTNESS_SAMPLING_DISABLED,
+            ),
+        };
+
+    if quality_flags == SURFACE_EXACTNESS_FULL_QUALITY_FLAGS
+        && (decoded_count != source_count
+            || encoded_count != source_count
+            || resident_count != source_count
+            || addressable_count != source_count
+            || resident_sh_degree != source_sh_degree)
+    {
+        return Err(format!(
+            "full-quality Surface exactness mismatch: source={source_count} decoded={decoded_count} encoded={encoded_count} resident={resident_count} addressable={addressable_count} source_sh={source_sh_degree} resident_sh={resident_sh_degree}"
+        ));
+    }
+
+    let count = |value: usize| {
+        u64::try_from(value).map_err(|_| "surface exactness count exceeds u64".to_owned())
+    };
+    Ok(GsplatSurfaceExactness {
+        source_splat_count: count(source_count)?,
+        decoded_splat_count: count(decoded_count)?,
+        encoded_splat_count: count(encoded_count)?,
+        resident_splat_count: count(resident_count)?,
+        addressable_splat_count: count(addressable_count)?,
+        source_sh_degree: u32::from(source_sh_degree),
+        resident_sh_degree: u32::from(resident_sh_degree),
+        quality_flags,
+        max_storage_buffers_per_shader_stage: presenter
+            .adapter_max_storage_buffers_per_shader_stage(),
+        max_storage_buffer_binding_size: presenter.adapter_max_storage_buffer_binding_size(),
+    })
+}
+
+fn update_surface_exactness_for_geometry_path(
+    exactness: &mut GsplatSurfaceExactness,
+    geometry_path: GeometryPath,
+) {
+    match geometry_path {
+        GeometryPath::SortedIndexDirect | GeometryPath::PackedAtlas => {
+            exactness.decoded_splat_count = exactness.source_splat_count;
+            exactness.encoded_splat_count = exactness.source_splat_count;
+            exactness.resident_splat_count = exactness.source_splat_count;
+            exactness.addressable_splat_count = exactness.source_splat_count;
+            exactness.resident_sh_degree = exactness.source_sh_degree;
+            exactness.quality_flags = SURFACE_EXACTNESS_FULL_QUALITY_FLAGS;
+        }
+        // Paged remains a diagnostic path. Do not publish residency,
+        // addressability, source-SH, or complete-scene guarantees that its
+        // active atlas does not establish.
+        GeometryPath::PagedActiveAtlas => {
+            exactness.decoded_splat_count = exactness.source_splat_count;
+            exactness.encoded_splat_count = exactness.source_splat_count;
+            exactness.resident_splat_count = 0;
+            exactness.addressable_splat_count = 0;
+            exactness.resident_sh_degree = 0;
+            exactness.quality_flags = SURFACE_EXACTNESS_SAMPLING_DISABLED;
+        }
+    }
+}
+
+fn surface_presentation_receipt(renderer: &GsplatSurfaceRenderer) -> GsplatSurfacePresentation {
+    let (surface_width, surface_height) = renderer.session.surface_size();
+    let (internal_render_width, internal_render_height) = renderer.session.internal_render_size();
+    let presented_size = renderer.session.last_presented_size();
+    let (presented_width, presented_height) = presented_size.unwrap_or((0, 0));
+    let full_resolution = renderer.last_frame_presented
+        && renderer.requested_surface_width == surface_width
+        && renderer.requested_surface_height == surface_height
+        && internal_render_width == surface_width
+        && internal_render_height == surface_height
+        && presented_size == Some((surface_width, surface_height));
+
+    let mut flags =
+        SURFACE_PRESENTATION_DYNAMIC_RESOLUTION_DISABLED | SURFACE_PRESENTATION_UPSCALING_DISABLED;
+    flags |= u32::from(renderer.last_frame_presented) * SURFACE_PRESENTATION_LAST_FRAME_PRESENTED;
+    flags |= u32::from(renderer.ever_presented) * SURFACE_PRESENTATION_EVER_PRESENTED;
+    flags |= u32::from(full_resolution) * SURFACE_PRESENTATION_FULL_RESOLUTION;
+
+    GsplatSurfacePresentation {
+        requested_width: renderer.requested_surface_width,
+        requested_height: renderer.requested_surface_height,
+        surface_width,
+        surface_height,
+        internal_render_width,
+        internal_render_height,
+        presented_width,
+        presented_height,
+        presented_camera_revision: renderer.last_presented_camera_revision,
+        flags,
+        reserved: 0,
+    }
+}
+
+fn normalize_quaternion_f32(quaternion: [f32; 4]) -> [f32; 4] {
+    let norm2 = quaternion[0] * quaternion[0]
+        + quaternion[1] * quaternion[1]
+        + quaternion[2] * quaternion[2]
+        + quaternion[3] * quaternion[3];
+    if norm2 <= 0.0 || !norm2.is_finite() {
+        return [0.0, 0.0, 0.0, 1.0];
+    }
+    let inverse_norm = 1.0 / norm2.sqrt();
+    quaternion.map(|value| value * inverse_norm)
+}
+
+fn canonical_view_matrix_f32(camera: Camera) -> [f32; 16] {
+    // This is the same normalized inverse-quaternion rotation used by the
+    // Surface render parameters. Keep the arithmetic explicitly f32: the
+    // receipt describes what the runtime adopted, not the source trace's f64
+    // oracle values.
+    let [x, y, z, w] = normalize_quaternion_f32(camera.pose.rotation_xyzw);
+    let [x, y, z, w] = normalize_quaternion_f32([-x, -y, -z, w]);
+    let xx = x * x;
+    let yy = y * y;
+    let zz = z * z;
+    let xy = x * y;
+    let xz = x * z;
+    let yz = y * z;
+    let wx = w * x;
+    let wy = w * y;
+    let wz = w * z;
+    let rotation = [
+        1.0 - 2.0 * (yy + zz),
+        2.0 * (xy - wz),
+        2.0 * (xz + wy),
+        2.0 * (xy + wz),
+        1.0 - 2.0 * (xx + zz),
+        2.0 * (yz - wx),
+        2.0 * (xz - wy),
+        2.0 * (yz + wx),
+        1.0 - 2.0 * (xx + yy),
+    ];
+    let position = [
+        camera.pose.position.x,
+        camera.pose.position.y,
+        camera.pose.position.z,
+    ];
+    let translation = std::array::from_fn::<_, 3, _>(|row| {
+        -rotation[row * 3 + 2].mul_add(
+            position[2],
+            rotation[row * 3 + 1].mul_add(position[1], rotation[row * 3] * position[0]),
+        )
+    });
+    [
+        rotation[0],
+        rotation[1],
+        rotation[2],
+        translation[0],
+        rotation[3],
+        rotation[4],
+        rotation[5],
+        translation[1],
+        rotation[6],
+        rotation[7],
+        rotation[8],
+        translation[2],
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+    ]
+}
+
+fn canonical_projection_matrix_f32(camera: Camera, aspect: f32) -> [f32; 16] {
+    let focal = 1.0 / (camera.intrinsics.vertical_fov_radians * 0.5).tan();
+    let depth =
+        camera.intrinsics.far_plane / (camera.intrinsics.far_plane - camera.intrinsics.near_plane);
+    [
+        focal / aspect,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        focal,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        depth,
+        -camera.intrinsics.near_plane * depth,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+    ]
+}
+
+fn multiply_mat4_f32(left: [f32; 16], right: [f32; 16]) -> [f32; 16] {
+    std::array::from_fn(|index| {
+        let row = index / 4;
+        let column = index % 4;
+        left[row * 4 + 3].mul_add(
+            right[12 + column],
+            left[row * 4 + 2].mul_add(
+                right[8 + column],
+                left[row * 4 + 1].mul_add(right[4 + column], left[row * 4] * right[column]),
+            ),
+        )
+    })
+}
+
+fn surface_camera_receipt(renderer: &GsplatSurfaceRenderer) -> GsplatSurfaceCameraReceiptV1 {
+    let camera = renderer.session.camera();
+    let camera_revision = renderer.session.camera_revision();
+    let (surface_width, surface_height) = renderer.session.surface_size();
+    let aspect = surface_width as f32 / surface_height.max(1) as f32;
+    let view_matrix = canonical_view_matrix_f32(camera);
+    let projection_matrix = canonical_projection_matrix_f32(camera, aspect);
+    let current_revision_presented = renderer.last_frame_presented
+        && renderer.last_presented_camera_revision == camera_revision
+        && renderer.last_sort_stats.camera_revision == camera_revision;
+    let mut flags =
+        u32::from(renderer.last_frame_presented) * SURFACE_CAMERA_RECEIPT_FRAME_PRESENTED;
+    flags |=
+        u32::from(current_revision_presented) * SURFACE_CAMERA_RECEIPT_CURRENT_REVISION_PRESENTED;
+
+    GsplatSurfaceCameraReceiptV1 {
+        camera_revision,
+        presented_camera_revision: renderer.last_presented_camera_revision,
+        surface_width,
+        surface_height,
+        flags,
+        position: [
+            camera.pose.position.x,
+            camera.pose.position.y,
+            camera.pose.position.z,
+        ],
+        rotation_xyzw: camera.pose.rotation_xyzw,
+        vertical_fov_radians: camera.intrinsics.vertical_fov_radians,
+        near_plane: camera.intrinsics.near_plane,
+        far_plane: camera.intrinsics.far_plane,
+        view_matrix,
+        projection_matrix,
+        view_projection_matrix: multiply_mat4_f32(projection_matrix, view_matrix),
+        ..Default::default()
+    }
+}
+
 fn create_surface_renderer_from_raw_handles(
     mut renderer: Renderer,
     raw_display_handle: wgpu::rwh::RawDisplayHandle,
@@ -888,6 +2162,10 @@ fn create_surface_renderer_from_raw_handles(
         }
     };
 
+    let exactness = match surface_exactness_receipt(&renderer, &presenter) {
+        Ok(exactness) => exactness,
+        Err(message) => return ffi_error(ErrorCode::Internal, message),
+    };
     let (surface_width, surface_height) = presenter.surface_size();
     if let Err(err) = renderer.set_size(surface_width, surface_height) {
         return ffi_error_display(err.code(), "gsplat_surface_renderer_set_size", err);
@@ -902,17 +2180,54 @@ fn create_surface_renderer_from_raw_handles(
         }
     };
     let camera = surface_camera_from_control(camera_control, renderer.config());
-    let session = match SurfaceRenderSession::new(renderer, presenter, camera) {
+    let mut session = match SurfaceRenderSession::new(renderer, presenter, camera) {
         Ok(session) => session,
         Err(err) => {
             return ffi_error_display(err.code(), "gsplat_surface_renderer_create", err);
         }
     };
+    if session.geometry_path() != GeometryPath::PagedActiveAtlas
+        && let Err(err) = session.set_order_backend(SurfaceOrderBackend::Adaptive)
+    {
+        return ffi_error_display(err.code(), "gsplat_surface_renderer_set_order_backend", err);
+    }
     let surface_renderer = Box::new(GsplatSurfaceRenderer {
         session,
+        exactness,
+        requested_surface_width: width,
+        requested_surface_height: height,
+        last_presented_camera_revision: 0,
+        last_frame_presented: false,
+        ever_presented: false,
         camera_control,
         render_error_logged: false,
         last_sort_stats: GsplatSurfaceSortStats::default(),
+        last_order_submission: GsplatSurfaceOrderSubmission::default(),
+        last_projected_submission: GsplatSurfaceProjectedSubmissionV1::default(),
+        pending_cpu_order_measurements: VecDeque::with_capacity(
+            SURFACE_ORDER_MEASUREMENT_QUEUE_CAPACITY,
+        ),
+        pending_order_measurements: VecDeque::with_capacity(
+            SURFACE_ORDER_MEASUREMENT_QUEUE_CAPACITY,
+        ),
+        pending_order_counts: VecDeque::with_capacity(SURFACE_ORDER_COUNT_LEDGER_CAPACITY),
+        pending_order_measurement_failures: VecDeque::with_capacity(
+            SURFACE_ORDER_MEASUREMENT_QUEUE_CAPACITY,
+        ),
+        pending_order_measurement_contexts: VecDeque::with_capacity(
+            SURFACE_ORDER_MEASUREMENT_QUEUE_CAPACITY,
+        ),
+        pending_projected_measurements: VecDeque::with_capacity(
+            SURFACE_PROJECTED_MEASUREMENT_QUEUE_CAPACITY,
+        ),
+        pending_projected_counts: VecDeque::with_capacity(
+            SURFACE_PROJECTED_MEASUREMENT_QUEUE_CAPACITY,
+        ),
+        pending_projected_failures: VecDeque::with_capacity(
+            SURFACE_PROJECTED_MEASUREMENT_QUEUE_CAPACITY,
+        ),
+        #[cfg(any(target_os = "android", target_os = "ios"))]
+        benchmark_camera_trace: None,
     });
     unsafe {
         *out_renderer = Box::into_raw(surface_renderer);
@@ -989,6 +2304,9 @@ pub unsafe extern "C" fn gsplat_surface_renderer_resize(
         if let Err(err) = renderer.session.set_camera(camera) {
             return ffi_error_display(err.code(), "gsplat_surface_renderer_resize", err);
         }
+        renderer.requested_surface_width = width;
+        renderer.requested_surface_height = height;
+        renderer.last_frame_presented = false;
         renderer.render_error_logged = false;
 
         ffi_ok()
@@ -1037,7 +2355,8 @@ pub unsafe extern "C" fn gsplat_surface_renderer_set_sort_interval(
 /// `path` must be `GSPLAT_GEOMETRY_PATH_DIRECT` (0),
 /// `GSPLAT_GEOMETRY_PATH_PACKED_ATLAS` (1), or
 /// `GSPLAT_GEOMETRY_PATH_PAGED_ACTIVE_ATLAS` (2). This is an experimental A/B
-/// benchmark knob; the default remains the direct sorted-index path.
+/// benchmark knob. Mobile constructors default to the exact packed path;
+/// Direct remains the wide-float oracle and Paged is diagnostic-only.
 ///
 /// # Safety
 ///
@@ -1072,6 +2391,7 @@ pub unsafe extern "C" fn gsplat_surface_renderer_set_geometry_path(
         if let Err(err) = renderer.session.set_geometry_path(geometry_path) {
             return ffi_error_display(err.code(), "gsplat_surface_renderer_set_geometry_path", err);
         }
+        update_surface_exactness_for_geometry_path(&mut renderer.exactness, geometry_path);
         renderer.render_error_logged = false;
         ffi_ok()
     })
@@ -1088,8 +2408,9 @@ fn geometry_path_from_ffi(path: u32) -> Option<GeometryPath> {
 
 /// Compatibility no-op retained for the v0.1 ABI.
 ///
-/// CPU-sorted-index rendering is always used; `gsplat_surface_renderer_set_geometry_path`
-/// is the only supported geometry A/B knob.
+/// This legacy preprojection knob no longer selects ordering behavior. Use
+/// `gsplat_surface_renderer_set_order_backend` for CPU/GPU/adaptive ordering
+/// and `gsplat_surface_renderer_set_geometry_path` for geometry selection.
 ///
 /// # Safety
 ///
@@ -1178,21 +2499,122 @@ pub unsafe extern "C" fn gsplat_surface_renderer_set_async_sort(
     })
 }
 
-/// Android sample-only forced backend knob used to collect paired benchmark
-/// evidence without widening the published v0.1 header.
+/// Select whether Surface order refreshes run on the CPU, GPU, or adaptive
+/// runtime policy.
+///
+/// # Safety
+///
+/// `renderer` must be null or a live handle returned by a Surface renderer
+/// create function. `backend` must be a `GsplatSurfaceOrderBackend` value.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gsplat_surface_renderer_set_order_backend(
+    renderer: *mut GsplatSurfaceRenderer,
+    backend: u32,
+) -> i32 {
+    unsafe {
+        set_surface_order_backend(
+            renderer,
+            backend,
+            "gsplat_surface_renderer_set_order_backend",
+        )
+    }
+}
+
+/// Select Candidate, Compact, or Adaptive projected-draw execution.
+///
+/// Policy zero preserves the pre-v1/default behavior and maps to Adaptive;
+/// values 1, 2, and 3 select Candidate, Compact, and Adaptive respectively.
+/// A rejected Compact request is transactional and leaves the live policy and
+/// learned lanes untouched.
+///
+/// # Safety
+///
+/// `renderer` must be null or a live Surface renderer.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gsplat_surface_renderer_set_projected_policy_v1(
+    renderer: *mut GsplatSurfaceRenderer,
+    policy: u32,
+) -> i32 {
+    ffi_catch_i32("gsplat_surface_renderer_set_projected_policy_v1", || {
+        let renderer = match unsafe { renderer.as_mut() } {
+            Some(renderer) => renderer,
+            None => {
+                return ffi_error(
+                    ErrorCode::InvalidArgument,
+                    "gsplat_surface_renderer_set_projected_policy_v1: renderer is null",
+                );
+            }
+        };
+        let Some(policy) = surface_projected_policy_from_ffi(policy) else {
+            return ffi_error(
+                ErrorCode::InvalidArgument,
+                "gsplat_surface_renderer_set_projected_policy_v1: unsupported policy",
+            );
+        };
+        if let Err(err) = renderer.session.set_projected_draw_policy(policy) {
+            return ffi_error_display(
+                err.code(),
+                "gsplat_surface_renderer_set_projected_policy_v1",
+                err,
+            );
+        }
+        renderer.render_error_logged = false;
+        ffi_ok()
+    })
+}
+
+/// Compatibility alias retained for existing Android benchmark APKs.
+///
+/// # Safety
+///
+/// `renderer` must be a live Surface renderer for the duration of this call.
 #[cfg(target_os = "android")]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn gsplat_android_benchmark_set_order_backend(
     renderer: *mut GsplatSurfaceRenderer,
     backend: u32,
 ) -> i32 {
-    ffi_catch_i32("gsplat_android_benchmark_set_order_backend", || {
+    unsafe {
+        set_surface_order_backend(
+            renderer,
+            backend,
+            "gsplat_android_benchmark_set_order_backend",
+        )
+    }
+}
+
+/// Compatibility alias retained for existing mobile qualification apps.
+///
+/// # Safety
+///
+/// `renderer` must be a live Surface renderer for the duration of this call.
+#[cfg(any(target_os = "android", target_os = "ios"))]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gsplat_benchmark_set_surface_order_backend(
+    renderer: *mut GsplatSurfaceRenderer,
+    backend: u32,
+) -> i32 {
+    unsafe {
+        set_surface_order_backend(
+            renderer,
+            backend,
+            "gsplat_benchmark_set_surface_order_backend",
+        )
+    }
+}
+
+unsafe fn set_surface_order_backend(
+    renderer: *mut GsplatSurfaceRenderer,
+    backend: u32,
+    operation: &'static str,
+) -> i32 {
+    ffi_catch_i32(operation, || {
         let renderer = match unsafe { renderer.as_mut() } {
             Some(renderer) => renderer,
             None => {
                 return ffi_error(
                     ErrorCode::InvalidArgument,
-                    "gsplat_android_benchmark_set_order_backend: renderer is null",
+                    format!("{operation}: renderer is null"),
                 );
             }
         };
@@ -1203,17 +2625,185 @@ pub unsafe extern "C" fn gsplat_android_benchmark_set_order_backend(
             _ => {
                 return ffi_error(
                     ErrorCode::InvalidArgument,
-                    "gsplat_android_benchmark_set_order_backend: unsupported backend",
+                    format!("{operation}: unsupported backend"),
                 );
             }
         };
         if let Err(err) = renderer.session.set_order_backend(backend) {
-            return ffi_error_display(
-                err.code(),
-                "gsplat_android_benchmark_set_order_backend",
-                err,
+            return ffi_error_display(err.code(), operation, err);
+        }
+        renderer.render_error_logged = false;
+        ffi_ok()
+    })
+}
+
+/// Mobile example-only fixed camera-trace entrypoint used by qualification
+/// benchmarks. It is intentionally absent from the published v0.1 header.
+///
+/// # Safety
+///
+/// `renderer` must be a live Surface renderer and `trace_path` must point to a
+/// readable nul-terminated UTF-8 string for the duration of this call.
+#[cfg(any(target_os = "android", target_os = "ios"))]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gsplat_benchmark_set_surface_camera_trace_frame(
+    renderer: *mut GsplatSurfaceRenderer,
+    trace_path: *const c_char,
+    frame_index: u32,
+) -> i32 {
+    unsafe {
+        set_surface_camera_trace_frame_with_display_policy(
+            renderer,
+            trace_path,
+            frame_index,
+            1,
+            "gsplat_benchmark_set_surface_camera_trace_frame",
+        )
+    }
+}
+
+/// Mobile example-only trace entrypoint with an explicit display policy.
+///
+/// `require_trace_display_match == 1` is the formal qualification policy.
+/// `0` permits native-aspect reprojection for smoke testing only. This symbol
+/// remains absent from the published v0.1 header.
+///
+/// # Safety
+///
+/// `renderer` must be a live Surface renderer and `trace_path` must point to a
+/// readable nul-terminated UTF-8 string for the duration of this call.
+#[cfg(any(target_os = "android", target_os = "ios"))]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gsplat_benchmark_set_surface_camera_trace_frame_with_display_policy(
+    renderer: *mut GsplatSurfaceRenderer,
+    trace_path: *const c_char,
+    frame_index: u32,
+    require_trace_display_match: u32,
+) -> i32 {
+    unsafe {
+        set_surface_camera_trace_frame_with_display_policy(
+            renderer,
+            trace_path,
+            frame_index,
+            require_trace_display_match,
+            "gsplat_benchmark_set_surface_camera_trace_frame_with_display_policy",
+        )
+    }
+}
+
+#[cfg(any(target_os = "android", target_os = "ios"))]
+unsafe fn set_surface_camera_trace_frame_with_display_policy(
+    renderer: *mut GsplatSurfaceRenderer,
+    trace_path: *const c_char,
+    frame_index: u32,
+    require_trace_display_match: u32,
+    operation: &'static str,
+) -> i32 {
+    ffi_catch_i32(operation, || {
+        let renderer = match unsafe { renderer.as_mut() } {
+            Some(renderer) => renderer,
+            None => {
+                return ffi_error(
+                    ErrorCode::InvalidArgument,
+                    format!("{operation}: renderer is null"),
+                );
+            }
+        };
+        let require_trace_display_match = match require_trace_display_match {
+            0 => false,
+            1 => true,
+            _ => {
+                return ffi_error(
+                    ErrorCode::InvalidArgument,
+                    format!("{operation}: require_trace_display_match must equal 0 or 1"),
+                );
+            }
+        };
+        if trace_path.is_null() {
+            return ffi_error(
+                ErrorCode::InvalidArgument,
+                format!("{operation}: trace_path is null"),
             );
         }
+        let path = match unsafe { CStr::from_ptr(trace_path) }.to_str() {
+            Ok(path) if !path.is_empty() => path,
+            _ => {
+                return ffi_error(
+                    ErrorCode::InvalidArgument,
+                    format!("{operation}: invalid trace path"),
+                );
+            }
+        };
+        let needs_load = renderer
+            .benchmark_camera_trace
+            .as_ref()
+            .is_none_or(|cached| cached.path != path);
+        if needs_load {
+            let bytes = match std::fs::read(path) {
+                Ok(bytes) => bytes,
+                Err(error) => {
+                    let code = if error.kind() == std::io::ErrorKind::NotFound {
+                        ErrorCode::NotFound
+                    } else {
+                        ErrorCode::Internal
+                    };
+                    return ffi_error(code, format!("{operation}: cannot read trace: {error}"));
+                }
+            };
+            let trace = match CameraTrace::from_json_slice(&bytes) {
+                Ok(trace) => trace,
+                Err(error) => {
+                    return ffi_error(
+                        ErrorCode::ParseFailed,
+                        format!("{operation}: invalid trace: {error}"),
+                    );
+                }
+            };
+            renderer.benchmark_camera_trace = Some(BenchmarkCameraTraceCache {
+                path: path.to_owned(),
+                trace,
+            });
+        }
+        let trace = &renderer
+            .benchmark_camera_trace
+            .as_ref()
+            .expect("camera trace cache was initialized")
+            .trace;
+        if require_trace_display_match {
+            let (surface_width, surface_height) = renderer.session.surface_size();
+            if (trace.display.width, trace.display.height) != (surface_width, surface_height) {
+                return ffi_error(
+                    ErrorCode::InvalidArgument,
+                    format!(
+                        concat!(
+                            "{}: trace display {}x{} must match Surface {}x{}; ",
+                            "use a matching trace for formal qualification"
+                        ),
+                        operation,
+                        trace.display.width,
+                        trace.display.height,
+                        surface_width,
+                        surface_height,
+                    ),
+                );
+            }
+        }
+        let frame = match trace.frame(frame_index as usize) {
+            Ok(frame) => frame,
+            Err(error) => {
+                return ffi_error_display(ErrorCode::InvalidArgument, operation, error);
+            }
+        };
+        let camera = match frame.camera() {
+            Ok(camera) => camera,
+            Err(error) => {
+                return ffi_error_display(ErrorCode::InvalidArgument, operation, error);
+            }
+        };
+        if let Err(error) = renderer.session.set_camera(camera) {
+            return ffi_error_display(error.code(), operation, error);
+        }
+        renderer.session.force_sort_refresh();
         renderer.render_error_logged = false;
         ffi_ok()
     })
@@ -1500,13 +3090,46 @@ pub unsafe extern "C" fn gsplat_surface_renderer_render_frame(
             }
         };
 
-        match renderer.session.render_frame() {
+        let result = renderer.session.render_frame();
+        let fallback_adaptive_state = result
+            .as_ref()
+            .map_or(SurfaceAdaptiveState::Disabled, |output| {
+                output.adaptive_state
+            });
+        // A Surface/draw error can happen after the session harvested an
+        // earlier ticket. Pump terminal receipts on both success and error so
+        // issued tickets cannot become unreachable behind a failing frame.
+        pump_surface_order_measurement_receipts(renderer, fallback_adaptive_state);
+        pump_surface_projected_measurement_receipts(renderer);
+
+        match result {
             Ok(output) => {
+                renderer.last_frame_presented = output.frame_presented;
+                if output.frame_presented {
+                    renderer.last_presented_camera_revision = output.camera_revision;
+                    renderer.ever_presented = true;
+                }
+                renderer.last_order_submission =
+                    surface_order_submission_to_ffi(output, renderer.session.order_backend());
+                renderer.last_projected_submission = surface_projected_submission_to_ffi(output);
+                if let SurfaceOrderMeasurementSubmission::Issued { backend, ticket } =
+                    output.order_measurement_submission
+                {
+                    renderer.pending_order_measurement_contexts.push_back(
+                        SurfaceOrderMeasurementContext {
+                            ticket,
+                            requested_backend: renderer.session.order_backend(),
+                            actual_backend: backend,
+                            adaptive_state: output.adaptive_state,
+                        },
+                    );
+                }
                 renderer.last_sort_stats = output.into();
                 renderer.render_error_logged = false;
                 ffi_ok()
             }
             Err(err) => {
+                renderer.last_frame_presented = false;
                 if !renderer.render_error_logged {
                     log_surface_error(&format!(
                         "gsplat_surface_renderer_render_frame failed: {err:?}"
@@ -1556,6 +3179,118 @@ pub unsafe extern "C" fn gsplat_surface_renderer_get_stats(
     })
 }
 
+/// Copy the exactness and adapter-admission receipt for the renderer's current
+/// geometry path. A successful geometry-path switch updates this receipt.
+///
+/// # Safety
+///
+/// `renderer` must be null or a live Surface renderer. `out_exactness` must be
+/// valid for one `GsplatSurfaceExactness` write.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gsplat_surface_renderer_get_exactness(
+    renderer: *const GsplatSurfaceRenderer,
+    out_exactness: *mut GsplatSurfaceExactness,
+) -> i32 {
+    ffi_catch_i32("gsplat_surface_renderer_get_exactness", || {
+        let renderer = match unsafe { renderer.as_ref() } {
+            Some(renderer) => renderer,
+            None => {
+                return ffi_error(
+                    ErrorCode::InvalidArgument,
+                    "gsplat_surface_renderer_get_exactness: renderer is null",
+                );
+            }
+        };
+        if out_exactness.is_null() {
+            return ffi_error(
+                ErrorCode::InvalidArgument,
+                "gsplat_surface_renderer_get_exactness: out_exactness is null",
+            );
+        }
+        unsafe {
+            *out_exactness = renderer.exactness;
+        }
+        ffi_ok()
+    })
+}
+
+/// Copy the native pixel-resolution and presentation receipt.
+///
+/// The internal render size is the renderer's real target size. This native
+/// path does not use dynamic resolution or an upscaler. `FULL_RESOLUTION` is
+/// set only when the last frame was actually presented and requested, Surface,
+/// internal-render, and presented dimensions all match.
+///
+/// # Safety
+///
+/// `renderer` must be null or a live Surface renderer. `out_presentation` must
+/// be valid for one `GsplatSurfacePresentation` write.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gsplat_surface_renderer_get_presentation(
+    renderer: *const GsplatSurfaceRenderer,
+    out_presentation: *mut GsplatSurfacePresentation,
+) -> i32 {
+    ffi_catch_i32("gsplat_surface_renderer_get_presentation", || {
+        let renderer = match unsafe { renderer.as_ref() } {
+            Some(renderer) => renderer,
+            None => {
+                return ffi_error(
+                    ErrorCode::InvalidArgument,
+                    "gsplat_surface_renderer_get_presentation: renderer is null",
+                );
+            }
+        };
+        if out_presentation.is_null() {
+            return ffi_error(
+                ErrorCode::InvalidArgument,
+                "gsplat_surface_renderer_get_presentation: out_presentation is null",
+            );
+        }
+        unsafe {
+            *out_presentation = surface_presentation_receipt(renderer);
+        }
+        ffi_ok()
+    })
+}
+
+/// Copy the f32 camera state and canonical matrices used by the current
+/// Surface session.
+///
+/// The caller initializes the v1 header. The receipt remains available for
+/// diagnostics before presentation, but strict benchmark evidence requires
+/// both camera-receipt flags and equal current/presented revisions.
+///
+/// # Safety
+///
+/// `renderer` must be null or a live Surface renderer. `out_receipt` must
+/// describe a writable, initialized v1 structure.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gsplat_surface_renderer_get_camera_receipt_v1(
+    renderer: *const GsplatSurfaceRenderer,
+    out_receipt: *mut GsplatSurfaceCameraReceiptV1,
+) -> i32 {
+    ffi_catch_i32("gsplat_surface_renderer_get_camera_receipt_v1", || {
+        let renderer = match unsafe { renderer.as_ref() } {
+            Some(renderer) => renderer,
+            None => {
+                return ffi_error(
+                    ErrorCode::InvalidArgument,
+                    "gsplat_surface_renderer_get_camera_receipt_v1: renderer is null",
+                );
+            }
+        };
+        if let Err(code) =
+            validate_v1_output(out_receipt, "gsplat_surface_renderer_get_camera_receipt_v1")
+        {
+            return code;
+        }
+        unsafe {
+            *out_receipt = surface_camera_receipt(renderer);
+        }
+        ffi_ok()
+    })
+}
+
 /// Copy bounded async-sort telemetry for the last Surface frame.
 ///
 /// # Safety
@@ -1590,6 +3325,427 @@ pub unsafe extern "C" fn gsplat_surface_renderer_get_sort_stats(
     })
 }
 
+/// Copy the CPU/GPU measurement submission identity for the last successful render call.
+///
+/// A measured refresh with `TICKET_ISSUED` has a non-zero ticket that must
+/// terminate in exactly one success/failure receipt. Either UNSAMPLED reason
+/// means no ticket was issued and a strict benchmark must reject that refresh.
+///
+/// # Safety
+///
+/// `renderer` must be null or a live Surface renderer. `out_submission` must be
+/// valid for one `GsplatSurfaceOrderSubmission` write.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gsplat_surface_renderer_get_order_submission(
+    renderer: *const GsplatSurfaceRenderer,
+    out_submission: *mut GsplatSurfaceOrderSubmission,
+) -> i32 {
+    ffi_catch_i32("gsplat_surface_renderer_get_order_submission", || {
+        let renderer = match unsafe { renderer.as_ref() } {
+            Some(renderer) => renderer,
+            None => {
+                return ffi_error(
+                    ErrorCode::InvalidArgument,
+                    "gsplat_surface_renderer_get_order_submission: renderer is null",
+                );
+            }
+        };
+        if out_submission.is_null() {
+            return ffi_error(
+                ErrorCode::InvalidArgument,
+                "gsplat_surface_renderer_get_order_submission: out_submission is null",
+            );
+        }
+        unsafe {
+            *out_submission = renderer.last_order_submission;
+        }
+        ffi_ok()
+    })
+}
+
+/// Copy the projected-draw submission identity for the last successful render call.
+///
+/// The caller must initialize `out_submission->struct_size` to at least
+/// `sizeof(GsplatSurfaceProjectedSubmissionV1)` and `version` to 1.
+///
+/// # Safety
+///
+/// `renderer` must be null or a live Surface renderer. `out_submission` must
+/// describe a writable, initialized v1 structure.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gsplat_surface_renderer_get_projected_submission_v1(
+    renderer: *const GsplatSurfaceRenderer,
+    out_submission: *mut GsplatSurfaceProjectedSubmissionV1,
+) -> i32 {
+    ffi_catch_i32(
+        "gsplat_surface_renderer_get_projected_submission_v1",
+        || {
+            let renderer = match unsafe { renderer.as_ref() } {
+                Some(renderer) => renderer,
+                None => {
+                    return ffi_error(
+                        ErrorCode::InvalidArgument,
+                        "gsplat_surface_renderer_get_projected_submission_v1: renderer is null",
+                    );
+                }
+            };
+            if let Err(code) = validate_v1_output(
+                out_submission,
+                "gsplat_surface_renderer_get_projected_submission_v1",
+            ) {
+                return code;
+            }
+            unsafe {
+                *out_submission = renderer.last_projected_submission;
+            }
+            ffi_ok()
+        },
+    )
+}
+
+fn poll_and_pump_surface_receipts(renderer: &mut GsplatSurfaceRenderer) {
+    renderer.session.poll_order_measurement_receipts();
+    let adaptive_state = renderer.session.adaptive_state();
+    pump_surface_order_measurement_receipts(renderer, adaptive_state);
+    pump_surface_projected_measurement_receipts(renderer);
+}
+
+/// Drain one terminal projected-draw success without blocking.
+///
+/// The caller initializes the v1 header. When the queue is empty this writes
+/// an otherwise-zero v1 receipt and sets `out_available` to zero.
+///
+/// # Safety
+///
+/// All pointers must be null or valid for the documented writes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gsplat_surface_renderer_poll_projected_measurement_v1(
+    renderer: *mut GsplatSurfaceRenderer,
+    out_measurement: *mut GsplatSurfaceProjectedMeasurementV1,
+    out_available: *mut u32,
+) -> i32 {
+    ffi_catch_i32(
+        "gsplat_surface_renderer_poll_projected_measurement_v1",
+        || {
+            let renderer = match unsafe { renderer.as_mut() } {
+                Some(renderer) => renderer,
+                None => {
+                    return ffi_error(
+                        ErrorCode::InvalidArgument,
+                        "gsplat_surface_renderer_poll_projected_measurement_v1: renderer is null",
+                    );
+                }
+            };
+            if out_available.is_null() {
+                return ffi_error(
+                    ErrorCode::InvalidArgument,
+                    "gsplat_surface_renderer_poll_projected_measurement_v1: out_available is null",
+                );
+            }
+            if let Err(code) = validate_v1_output(
+                out_measurement,
+                "gsplat_surface_renderer_poll_projected_measurement_v1",
+            ) {
+                return code;
+            }
+            // Drain-before-progress: an already queued oldest receipt must be
+            // returned before pumping another completion can overflow the
+            // bounded queue and evict it.
+            if renderer.pending_projected_measurements.is_empty() {
+                poll_and_pump_surface_receipts(renderer);
+            }
+            let measurement = renderer.pending_projected_measurements.pop_front();
+            unsafe {
+                *out_measurement = measurement.unwrap_or_default();
+                *out_available = u32::from(measurement.is_some());
+            }
+            ffi_ok()
+        },
+    )
+}
+
+/// Take the V/C/D receipt for one successful projected-draw ticket.
+///
+/// # Safety
+///
+/// All pointers must be null or valid for the documented writes. `ticket`
+/// must be non-zero.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gsplat_surface_renderer_take_projected_counts_v1(
+    renderer: *mut GsplatSurfaceRenderer,
+    ticket: u64,
+    out_counts: *mut GsplatSurfaceProjectedCountsV1,
+    out_available: *mut u32,
+) -> i32 {
+    ffi_catch_i32("gsplat_surface_renderer_take_projected_counts_v1", || {
+        let renderer = match unsafe { renderer.as_mut() } {
+            Some(renderer) => renderer,
+            None => {
+                return ffi_error(
+                    ErrorCode::InvalidArgument,
+                    "gsplat_surface_renderer_take_projected_counts_v1: renderer is null",
+                );
+            }
+        };
+        if ticket == 0 {
+            return ffi_error(
+                ErrorCode::InvalidArgument,
+                "gsplat_surface_renderer_take_projected_counts_v1: ticket is zero",
+            );
+        }
+        if out_available.is_null() {
+            return ffi_error(
+                ErrorCode::InvalidArgument,
+                "gsplat_surface_renderer_take_projected_counts_v1: out_available is null",
+            );
+        }
+        if let Err(code) = validate_v1_output(
+            out_counts,
+            "gsplat_surface_renderer_take_projected_counts_v1",
+        ) {
+            return code;
+        }
+        // Counts are materialized before the matching terminal success is
+        // published. Taking one must not pump unrelated completions: doing so
+        // could evict the requested oldest ticket from the bounded ledger.
+        let counts = take_surface_projected_counts(&mut renderer.pending_projected_counts, ticket);
+        unsafe {
+            *out_counts = counts.unwrap_or_default();
+            *out_available = u32::from(counts.is_some());
+        }
+        ffi_ok()
+    })
+}
+
+/// Drain one terminal projected-draw failure without blocking.
+///
+/// # Safety
+///
+/// All pointers must be null or valid for the documented writes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gsplat_surface_renderer_poll_projected_failure_v1(
+    renderer: *mut GsplatSurfaceRenderer,
+    out_failure: *mut GsplatSurfaceProjectedFailureV1,
+    out_available: *mut u32,
+) -> i32 {
+    ffi_catch_i32("gsplat_surface_renderer_poll_projected_failure_v1", || {
+        let renderer = match unsafe { renderer.as_mut() } {
+            Some(renderer) => renderer,
+            None => {
+                return ffi_error(
+                    ErrorCode::InvalidArgument,
+                    "gsplat_surface_renderer_poll_projected_failure_v1: renderer is null",
+                );
+            }
+        };
+        if out_available.is_null() {
+            return ffi_error(
+                ErrorCode::InvalidArgument,
+                "gsplat_surface_renderer_poll_projected_failure_v1: out_available is null",
+            );
+        }
+        if let Err(code) = validate_v1_output(
+            out_failure,
+            "gsplat_surface_renderer_poll_projected_failure_v1",
+        ) {
+            return code;
+        }
+        // Match success polling's drain-before-progress rule so a call cannot
+        // evict the failure it was about to return.
+        if renderer.pending_projected_failures.is_empty() {
+            poll_and_pump_surface_receipts(renderer);
+        }
+        let failure = renderer.pending_projected_failures.pop_front();
+        unsafe {
+            *out_failure = failure.unwrap_or_default();
+            *out_available = u32::from(failure.is_some());
+        }
+        ffi_ok()
+    })
+}
+
+/// Drain the oldest completed CPU order measurement without blocking.
+///
+/// The receipt reports frame-start through graphics-queue completion, not CPU
+/// submit-wall time. It is therefore directly comparable with GPU completion
+/// evidence. A successful call writes `1` to `out_available` when a receipt was
+/// written, or `0` when the queue is empty.
+///
+/// # Safety
+///
+/// `renderer` must be null or a live Surface renderer. `out_measurement` and
+/// `out_available` must each be valid for one write.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gsplat_surface_renderer_poll_cpu_order_measurement(
+    renderer: *mut GsplatSurfaceRenderer,
+    out_measurement: *mut GsplatSurfaceCpuOrderMeasurement,
+    out_available: *mut u32,
+) -> i32 {
+    ffi_catch_i32("gsplat_surface_renderer_poll_cpu_order_measurement", || {
+        let renderer = match unsafe { renderer.as_mut() } {
+            Some(renderer) => renderer,
+            None => {
+                return ffi_error(
+                    ErrorCode::InvalidArgument,
+                    "gsplat_surface_renderer_poll_cpu_order_measurement: renderer is null",
+                );
+            }
+        };
+        if out_measurement.is_null() || out_available.is_null() {
+            return ffi_error(
+                ErrorCode::InvalidArgument,
+                "gsplat_surface_renderer_poll_cpu_order_measurement: output is null",
+            );
+        }
+
+        let measurement = renderer.pending_cpu_order_measurements.pop_front();
+        unsafe {
+            *out_measurement = measurement.unwrap_or_default();
+            *out_available = u32::from(measurement.is_some());
+        }
+        ffi_ok()
+    })
+}
+
+/// Drain the oldest completed GPU order measurement without blocking.
+///
+/// A successful call writes `1` to `out_available` and one receipt to
+/// `out_measurement`, or writes `0` and a zeroed receipt when no GPU work has
+/// completed yet. Repeated calls drain all currently available receipts in
+/// ticket order.
+///
+/// # Safety
+///
+/// `renderer` must be null or a live Surface renderer. `out_measurement` and
+/// `out_available` must each be valid for one write.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gsplat_surface_renderer_poll_order_measurement(
+    renderer: *mut GsplatSurfaceRenderer,
+    out_measurement: *mut GsplatSurfaceOrderMeasurement,
+    out_available: *mut u32,
+) -> i32 {
+    ffi_catch_i32("gsplat_surface_renderer_poll_order_measurement", || {
+        let renderer = match unsafe { renderer.as_mut() } {
+            Some(renderer) => renderer,
+            None => {
+                return ffi_error(
+                    ErrorCode::InvalidArgument,
+                    "gsplat_surface_renderer_poll_order_measurement: renderer is null",
+                );
+            }
+        };
+        if out_measurement.is_null() || out_available.is_null() {
+            return ffi_error(
+                ErrorCode::InvalidArgument,
+                "gsplat_surface_renderer_poll_order_measurement: output is null",
+            );
+        }
+
+        let measurement = renderer.pending_order_measurements.pop_front();
+        unsafe {
+            *out_measurement = measurement.unwrap_or_default();
+            *out_available = u32::from(measurement.is_some());
+        }
+        ffi_ok()
+    })
+}
+
+/// Take the terminal V/C/D receipt for one successful CPU or GPU ticket.
+///
+/// The ledger is bounded and each receipt is returned at most once. Consumers
+/// must join on both `ticket` and `camera_revision`; this avoids associating a
+/// moving-camera frame with counts completed for an older revision.
+///
+/// # Safety
+///
+/// `renderer` must be null or a live Surface renderer. `out_counts` and
+/// `out_available` must each be valid for one write. `ticket` must be non-zero.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gsplat_surface_renderer_take_order_counts(
+    renderer: *mut GsplatSurfaceRenderer,
+    ticket: u64,
+    out_counts: *mut GsplatSurfaceOrderCounts,
+    out_available: *mut u32,
+) -> i32 {
+    ffi_catch_i32("gsplat_surface_renderer_take_order_counts", || {
+        let renderer = match unsafe { renderer.as_mut() } {
+            Some(renderer) => renderer,
+            None => {
+                return ffi_error(
+                    ErrorCode::InvalidArgument,
+                    "gsplat_surface_renderer_take_order_counts: renderer is null",
+                );
+            }
+        };
+        if ticket == 0 {
+            return ffi_error(
+                ErrorCode::InvalidArgument,
+                "gsplat_surface_renderer_take_order_counts: ticket is zero",
+            );
+        }
+        if out_counts.is_null() || out_available.is_null() {
+            return ffi_error(
+                ErrorCode::InvalidArgument,
+                "gsplat_surface_renderer_take_order_counts: output is null",
+            );
+        }
+
+        let counts = take_surface_order_counts(&mut renderer.pending_order_counts, ticket);
+        unsafe {
+            *out_counts = counts.unwrap_or_default();
+            *out_available = u32::from(counts.is_some());
+        }
+        ffi_ok()
+    })
+}
+
+/// Drain the oldest terminal CPU/GPU order-measurement failure without blocking.
+///
+/// A successful call writes `1` to `out_available` and one failure receipt to
+/// `out_failure`, or writes `0` and a zeroed receipt when none is available.
+/// Every issued CPU/GPU measurement ticket eventually appears in exactly one of
+/// the success or failure polling queues while the renderer remains live and
+/// continues to be pumped.
+///
+/// # Safety
+///
+/// `renderer` must be null or a live Surface renderer. `out_failure` and
+/// `out_available` must each be valid for one write.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gsplat_surface_renderer_poll_order_measurement_failure(
+    renderer: *mut GsplatSurfaceRenderer,
+    out_failure: *mut GsplatSurfaceOrderMeasurementFailure,
+    out_available: *mut u32,
+) -> i32 {
+    ffi_catch_i32(
+        "gsplat_surface_renderer_poll_order_measurement_failure",
+        || {
+            let renderer = match unsafe { renderer.as_mut() } {
+                Some(renderer) => renderer,
+                None => {
+                    return ffi_error(
+                        ErrorCode::InvalidArgument,
+                        "gsplat_surface_renderer_poll_order_measurement_failure: renderer is null",
+                    );
+                }
+            };
+            if out_failure.is_null() || out_available.is_null() {
+                return ffi_error(
+                    ErrorCode::InvalidArgument,
+                    "gsplat_surface_renderer_poll_order_measurement_failure: output is null",
+                );
+            }
+
+            let failure = renderer.pending_order_measurement_failures.pop_front();
+            unsafe {
+                *out_failure = failure.unwrap_or_default();
+                *out_available = u32::from(failure.is_some());
+            }
+            ffi_ok()
+        },
+    )
+}
+
 fn auto_camera(renderer: &Renderer) -> Result<Camera, ErrorCode> {
     let camera_control = auto_surface_camera_control(renderer)?;
     Ok(surface_camera_from_control(
@@ -1599,10 +3755,10 @@ fn auto_camera(renderer: &Renderer) -> Result<Camera, ErrorCode> {
 }
 
 fn auto_surface_camera_control(renderer: &Renderer) -> Result<SurfaceCameraControl, ErrorCode> {
-    let Some(scene) = renderer.scene() else {
+    let Some(positions) = renderer.positions() else {
         return Err(ErrorCode::SceneNotLoaded);
     };
-    let Some((min, max)) = scene_bounds(scene) else {
+    let Some((min, max)) = scene_bounds(positions) else {
         return Err(ErrorCode::InvalidArgument);
     };
 
@@ -1761,13 +3917,13 @@ fn vec3_normalize(v: Vec3f) -> Option<Vec3f> {
     Some(vec3_scale(v, 1.0 / len))
 }
 
-fn scene_bounds(scene: &gsplat_core::SceneBuffers) -> Option<(Vec3f, Vec3f)> {
-    if scene.positions.is_empty() {
+fn scene_bounds(positions: &[Vec3f]) -> Option<(Vec3f, Vec3f)> {
+    if positions.is_empty() {
         return None;
     }
     let mut min = Vec3f::new(f32::INFINITY, f32::INFINITY, f32::INFINITY);
     let mut max = Vec3f::new(f32::NEG_INFINITY, f32::NEG_INFINITY, f32::NEG_INFINITY);
-    for p in &scene.positions {
+    for p in positions {
         min.x = min.x.min(p.x);
         min.y = min.y.min(p.y);
         min.z = min.z.min(p.z);
@@ -1780,27 +3936,55 @@ fn scene_bounds(scene: &gsplat_core::SceneBuffers) -> Option<(Vec3f, Vec3f)> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::VecDeque;
+    use std::path::Path;
     use std::ptr;
 
-    use gsplat_core::ErrorCode;
-    use gsplat_render_wgpu::GeometryPath;
+    use gsplat_core::{ErrorCode, RendererConfig};
+    use gsplat_render_wgpu::{
+        GeometryPath, Renderer, SurfaceAdaptiveGpuFailureReason, SurfaceAdaptiveState,
+        SurfaceCpuOrderMeasurement, SurfaceOrderBackend, SurfaceOrderBackendUsed,
+        SurfaceOrderMeasurement, SurfaceOrderMeasurementFailure,
+        SurfaceOrderMeasurementFailureReason, SurfaceProjectedDrawExecution,
+        SurfaceProjectedDrawMeasurement, SurfaceTimingSource,
+    };
 
     use super::{
-        GsplatCamera, GsplatConfig, GsplatContext, SurfaceCameraControl,
-        camera_rotation_looking_at, ffi_catch_i32, geometry_path_from_ffi, gsplat_camera_default,
-        gsplat_config_default, gsplat_context_create, gsplat_context_destroy,
-        gsplat_context_get_stats, gsplat_context_load_scene_path, gsplat_context_render_frame,
+        GsplatCamera, GsplatConfig, GsplatContext, GsplatSurfaceCameraReceiptV1,
+        GsplatSurfaceCpuOrderMeasurement, GsplatSurfaceExactness, GsplatSurfaceOrderCounts,
+        GsplatSurfaceOrderMeasurement, GsplatSurfaceOrderMeasurementFailure,
+        GsplatSurfaceOrderSubmission, GsplatSurfacePresentation, GsplatSurfaceProjectedCountsV1,
+        GsplatSurfaceProjectedFailureV1, GsplatSurfaceProjectedMeasurementV1,
+        GsplatSurfaceProjectedSubmissionV1, SURFACE_EXACTNESS_FULL_QUALITY_FLAGS,
+        SURFACE_EXACTNESS_SAMPLING_DISABLED, SurfaceCameraControl, camera_rotation_looking_at,
+        canonical_projection_matrix_f32, canonical_view_matrix_f32, discard_surface_order_counts,
+        ffi_catch_i32, geometry_path_from_ffi, gsplat_camera_default, gsplat_config_default,
+        gsplat_context_create, gsplat_context_destroy, gsplat_context_get_stats,
+        gsplat_context_load_scene_path, gsplat_context_render_frame,
         gsplat_context_set_auto_camera, gsplat_context_set_camera, gsplat_error_message,
-        gsplat_last_error_message, gsplat_surface_renderer_get_stats,
+        gsplat_last_error_message, gsplat_surface_renderer_get_camera_receipt_v1,
+        gsplat_surface_renderer_get_exactness, gsplat_surface_renderer_get_order_submission,
+        gsplat_surface_renderer_get_presentation, gsplat_surface_renderer_get_stats,
         gsplat_surface_renderer_orbit, gsplat_surface_renderer_pan,
+        gsplat_surface_renderer_poll_cpu_order_measurement,
+        gsplat_surface_renderer_poll_order_measurement,
+        gsplat_surface_renderer_poll_order_measurement_failure,
         gsplat_surface_renderer_render_frame, gsplat_surface_renderer_reset_camera,
         gsplat_surface_renderer_resize, gsplat_surface_renderer_set_async_geometry,
         gsplat_surface_renderer_set_async_sort, gsplat_surface_renderer_set_frame_latency,
         gsplat_surface_renderer_set_geometry_path, gsplat_surface_renderer_set_gpu_preproject,
         gsplat_surface_renderer_set_gpu_preproject_double_buffer,
         gsplat_surface_renderer_set_instance_buffer_count,
-        gsplat_surface_renderer_set_sort_interval, gsplat_surface_renderer_zoom,
-        surface_camera_from_control,
+        gsplat_surface_renderer_set_order_backend, gsplat_surface_renderer_set_sort_interval,
+        gsplat_surface_renderer_take_order_counts, gsplat_surface_renderer_zoom,
+        load_ply_path_into_renderer, multiply_mat4_f32, push_surface_order_counts,
+        push_surface_projected_counts, surface_adaptive_gpu_failure_flags,
+        surface_camera_from_control, surface_cpu_order_measurement_to_ffi, surface_order_counts,
+        surface_order_measurement_failure_to_ffi, surface_order_measurement_to_ffi,
+        surface_projected_counts, surface_projected_measurement_to_ffi,
+        surface_projected_policy_from_ffi, take_surface_order_counts,
+        take_surface_projected_counts, update_surface_exactness_for_geometry_path,
+        validate_v1_output,
     };
 
     #[test]
@@ -1814,6 +3998,201 @@ mod tests {
         assert_eq!(camera.rotation_xyzw, [0.0, 0.0, 0.0, 1.0]);
         assert_eq!(camera.near_plane, 0.01);
         assert_eq!(camera.far_plane, 1000.0);
+        assert_eq!(std::mem::size_of::<super::GsplatSurfaceSortStats>(), 48);
+        assert_eq!(std::mem::size_of::<GsplatSurfaceOrderMeasurement>(), 64);
+        assert_eq!(std::mem::size_of::<GsplatSurfaceCpuOrderMeasurement>(), 48);
+        assert_eq!(std::mem::size_of::<GsplatSurfaceOrderCounts>(), 32);
+        assert_eq!(
+            std::mem::size_of::<GsplatSurfaceOrderMeasurementFailure>(),
+            40
+        );
+        assert_eq!(std::mem::size_of::<GsplatSurfaceOrderSubmission>(), 32);
+        assert_eq!(
+            std::mem::size_of::<GsplatSurfaceProjectedSubmissionV1>(),
+            48
+        );
+        assert_eq!(
+            std::mem::size_of::<GsplatSurfaceProjectedMeasurementV1>(),
+            56
+        );
+        assert_eq!(std::mem::size_of::<GsplatSurfaceProjectedCountsV1>(), 40);
+        assert_eq!(std::mem::size_of::<GsplatSurfaceProjectedFailureV1>(), 56);
+        assert_eq!(
+            std::mem::offset_of!(GsplatSurfaceProjectedSubmissionV1, ticket),
+            8
+        );
+        assert_eq!(
+            std::mem::offset_of!(GsplatSurfaceProjectedSubmissionV1, flags),
+            40
+        );
+        assert_eq!(
+            std::mem::offset_of!(GsplatSurfaceProjectedMeasurementV1, frame_complete_ms),
+            40
+        );
+        assert_eq!(
+            std::mem::offset_of!(GsplatSurfaceProjectedCountsV1, visible_count),
+            24
+        );
+        assert_eq!(
+            std::mem::offset_of!(GsplatSurfaceProjectedFailureV1, reason),
+            40
+        );
+        assert_eq!(
+            std::mem::align_of::<GsplatSurfaceProjectedSubmissionV1>(),
+            std::mem::align_of::<u64>()
+        );
+        assert_eq!(
+            std::mem::align_of::<GsplatSurfaceProjectedMeasurementV1>(),
+            std::mem::align_of::<u64>()
+        );
+        assert_eq!(
+            std::mem::align_of::<GsplatSurfaceProjectedCountsV1>(),
+            std::mem::align_of::<u64>()
+        );
+        assert_eq!(
+            std::mem::align_of::<GsplatSurfaceProjectedFailureV1>(),
+            std::mem::align_of::<u64>()
+        );
+        assert_eq!(std::mem::size_of::<GsplatSurfaceExactness>(), 64);
+        assert_eq!(std::mem::size_of::<GsplatSurfacePresentation>(), 48);
+        assert_eq!(std::mem::size_of::<GsplatSurfaceCameraReceiptV1>(), 272);
+        assert_eq!(
+            std::mem::offset_of!(GsplatSurfaceCameraReceiptV1, camera_revision),
+            8
+        );
+        assert_eq!(
+            std::mem::offset_of!(GsplatSurfaceCameraReceiptV1, view_matrix),
+            80
+        );
+        assert_eq!(
+            std::mem::align_of::<GsplatSurfaceCameraReceiptV1>(),
+            std::mem::align_of::<u64>()
+        );
+    }
+
+    #[test]
+    fn canonical_camera_receipt_matrices_follow_row_major_projection_times_view() {
+        let camera = gsplat_core::Camera::default();
+        let view = canonical_view_matrix_f32(camera);
+        assert_eq!(
+            view,
+            [
+                1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+            ]
+        );
+        let projection = canonical_projection_matrix_f32(camera, 16.0 / 9.0);
+        let view_projection = multiply_mat4_f32(projection, view);
+        assert_eq!(view_projection, projection);
+        assert!(projection[0] > 0.0 && projection[5] > projection[0]);
+        assert_eq!(projection[14], 1.0);
+    }
+
+    #[test]
+    fn projected_v1_policy_and_success_receipts_preserve_identity_and_counts() {
+        assert_eq!(
+            surface_projected_policy_from_ffi(0),
+            Some(gsplat_render_wgpu::SurfaceProjectedDrawPolicy::Adaptive)
+        );
+        assert_eq!(
+            surface_projected_policy_from_ffi(1),
+            Some(gsplat_render_wgpu::SurfaceProjectedDrawPolicy::Candidate)
+        );
+        assert_eq!(
+            surface_projected_policy_from_ffi(2),
+            Some(gsplat_render_wgpu::SurfaceProjectedDrawPolicy::Compact)
+        );
+        assert_eq!(surface_projected_policy_from_ffi(4), None);
+
+        let measurement = SurfaceProjectedDrawMeasurement {
+            ticket: 1_u64 << 52,
+            camera_revision: 17,
+            execution: SurfaceProjectedDrawExecution::Compact,
+            order_backend: SurfaceOrderBackendUsed::Gpu,
+            projection_generation: 9,
+            probe_generation: 4,
+            projection_rebuilt: true,
+            order_refreshed: false,
+            frame_complete_ms: 3.5,
+            visible_count: 123,
+            contributor_count: 87,
+            drawn_count: 87,
+            exact_contributor_compaction: true,
+        };
+        let receipt = surface_projected_measurement_to_ffi(measurement);
+        assert_eq!(
+            receipt.struct_size as usize,
+            std::mem::size_of_val(&receipt)
+        );
+        assert_eq!(receipt.version, 1);
+        assert_eq!(receipt.ticket, 1_u64 << 52);
+        assert_eq!(receipt.execution, 2);
+        assert_eq!(receipt.order_backend, 1);
+        assert_eq!(receipt.flags, 0b101);
+
+        let counts = surface_projected_counts(measurement);
+        assert_eq!(
+            (
+                counts.visible_count,
+                counts.contributor_count,
+                counts.drawn_count
+            ),
+            (123, 87, 87)
+        );
+        assert_eq!(counts.flags, 1);
+    }
+
+    #[test]
+    fn projected_v1_output_requires_initialized_compatible_header() {
+        let mut receipt = GsplatSurfaceProjectedMeasurementV1::default();
+        assert!(validate_v1_output(&mut receipt, "test").is_ok());
+
+        receipt.version = 2;
+        assert_eq!(
+            validate_v1_output(&mut receipt, "test"),
+            Err(ErrorCode::InvalidArgument.as_i32())
+        );
+        receipt.version = 1;
+        receipt.struct_size -= 1;
+        assert_eq!(
+            validate_v1_output(&mut receipt, "test"),
+            Err(ErrorCode::InvalidArgument.as_i32())
+        );
+    }
+
+    #[test]
+    fn projected_counts_are_consumed_before_new_completion_can_evict_front() {
+        let mut ledger = VecDeque::new();
+        for ticket in 1..=super::SURFACE_PROJECTED_MEASUREMENT_QUEUE_CAPACITY as u64 {
+            push_surface_projected_counts(
+                &mut ledger,
+                GsplatSurfaceProjectedCountsV1 {
+                    ticket,
+                    camera_revision: ticket + 100,
+                    visible_count: 200,
+                    contributor_count: 150,
+                    drawn_count: 150,
+                    ..Default::default()
+                },
+            );
+        }
+        let oldest = take_surface_projected_counts(&mut ledger, 1).expect("oldest receipt");
+        push_surface_projected_counts(
+            &mut ledger,
+            GsplatSurfaceProjectedCountsV1 {
+                ticket: 65,
+                camera_revision: 165,
+                visible_count: 200,
+                contributor_count: 150,
+                drawn_count: 150,
+                ..Default::default()
+            },
+        );
+        assert_eq!(oldest.ticket, 1);
+        assert_eq!(
+            ledger.len(),
+            super::SURFACE_PROJECTED_MEASUREMENT_QUEUE_CAPACITY
+        );
+        assert!(ledger.iter().any(|counts| counts.ticket == 65));
     }
 
     #[test]
@@ -1828,6 +4207,251 @@ mod tests {
             Some(GeometryPath::PagedActiveAtlas)
         );
         assert_eq!(geometry_path_from_ffi(3), None);
+    }
+
+    #[test]
+    fn geometry_path_switch_updates_exactness_without_publishing_partial_as_full() {
+        let mut exactness = GsplatSurfaceExactness {
+            source_splat_count: 42,
+            decoded_splat_count: 42,
+            encoded_splat_count: 42,
+            resident_splat_count: 42,
+            addressable_splat_count: 42,
+            source_sh_degree: 3,
+            resident_sh_degree: 3,
+            quality_flags: SURFACE_EXACTNESS_FULL_QUALITY_FLAGS,
+            max_storage_buffers_per_shader_stage: 8,
+            max_storage_buffer_binding_size: 128 * 1024 * 1024,
+        };
+
+        update_surface_exactness_for_geometry_path(&mut exactness, GeometryPath::PagedActiveAtlas);
+        assert_eq!(exactness.decoded_splat_count, 42);
+        assert_eq!(exactness.encoded_splat_count, 42);
+        assert_eq!(exactness.resident_splat_count, 0);
+        assert_eq!(exactness.addressable_splat_count, 0);
+        assert_eq!(exactness.resident_sh_degree, 0);
+        assert_eq!(exactness.quality_flags, SURFACE_EXACTNESS_SAMPLING_DISABLED);
+
+        update_surface_exactness_for_geometry_path(&mut exactness, GeometryPath::PackedAtlas);
+        assert_eq!(exactness.resident_splat_count, 42);
+        assert_eq!(exactness.addressable_splat_count, 42);
+        assert_eq!(exactness.resident_sh_degree, 3);
+        assert_eq!(
+            exactness.quality_flags,
+            SURFACE_EXACTNESS_FULL_QUALITY_FLAGS
+        );
+        assert_eq!(exactness.max_storage_buffers_per_shader_stage, 8);
+        assert_eq!(exactness.max_storage_buffer_binding_size, 128 * 1024 * 1024);
+    }
+
+    #[test]
+    fn gpu_order_measurement_preserves_timing_validity_and_policy_identity() {
+        let receipt = surface_order_measurement_to_ffi(
+            SurfaceOrderMeasurement {
+                ticket: 41,
+                camera_revision: 17,
+                timing_source: SurfaceTimingSource::TimestampQuery,
+                gpu_preprocess_ms: Some(0.25),
+                gpu_radix_ms: Some(1.5),
+                gpu_order_ms: Some(1.75),
+                gpu_complete_ms: 2.25,
+                timestamp_period_ns: Some(1.0),
+                below_timestamp_resolution: true,
+                visible_count: 123,
+                contributor_count: 100,
+                drawn_count: 100,
+                exact_contributor_compaction: true,
+            },
+            super::SurfaceOrderMeasurementContext {
+                ticket: 41,
+                requested_backend: SurfaceOrderBackend::Adaptive,
+                actual_backend: SurfaceOrderBackendUsed::Gpu,
+                adaptive_state: SurfaceAdaptiveState::GpuProbe,
+            },
+        );
+
+        assert_eq!(receipt.ticket, 41);
+        assert_eq!(receipt.camera_revision, 17);
+        assert_eq!(receipt.timing_source, 1);
+        assert_eq!(receipt.requested_backend, 2);
+        assert_eq!(receipt.actual_backend, 1);
+        assert_eq!(receipt.adaptive_state, 3);
+        assert_eq!(receipt.visible_count, 123);
+        assert_eq!(receipt.drawn_count, 100);
+        assert_eq!(receipt.flags, 0b101_1111);
+        assert_eq!(receipt.gpu_order_ms, 1.75);
+    }
+
+    #[test]
+    fn completion_only_order_measurement_leaves_timestamp_fields_invalid() {
+        let receipt = surface_order_measurement_to_ffi(
+            SurfaceOrderMeasurement {
+                ticket: 7,
+                camera_revision: 3,
+                timing_source: SurfaceTimingSource::CompletionOnly,
+                gpu_preprocess_ms: None,
+                gpu_radix_ms: None,
+                gpu_order_ms: None,
+                gpu_complete_ms: 4.5,
+                timestamp_period_ns: None,
+                below_timestamp_resolution: false,
+                visible_count: 90,
+                contributor_count: 90,
+                drawn_count: 90,
+                exact_contributor_compaction: false,
+            },
+            super::SurfaceOrderMeasurementContext {
+                ticket: 7,
+                requested_backend: SurfaceOrderBackend::Gpu,
+                actual_backend: SurfaceOrderBackendUsed::Gpu,
+                adaptive_state: SurfaceAdaptiveState::Disabled,
+            },
+        );
+
+        assert_eq!(receipt.timing_source, 2);
+        assert_eq!(receipt.flags, 0);
+        assert_eq!(receipt.gpu_preprocess_ms, 0.0);
+        assert_eq!(receipt.gpu_radix_ms, 0.0);
+        assert_eq!(receipt.gpu_order_ms, 0.0);
+        assert_eq!(receipt.timestamp_period_ns, 0.0);
+        assert_eq!(receipt.gpu_complete_ms, 4.5);
+    }
+
+    #[test]
+    fn cpu_order_measurement_preserves_queue_completion_and_policy_identity() {
+        let receipt = surface_cpu_order_measurement_to_ffi(
+            SurfaceCpuOrderMeasurement {
+                ticket: 12,
+                camera_revision: 5,
+                preprocess_ms: 0.75,
+                sort_ms: 2.5,
+                frame_complete_ms: 5.25,
+                visible_count: 90,
+                contributor_count: 75,
+                drawn_count: 75,
+                exact_contributor_compaction: true,
+            },
+            super::SurfaceOrderMeasurementContext {
+                ticket: 12,
+                requested_backend: SurfaceOrderBackend::Adaptive,
+                actual_backend: SurfaceOrderBackendUsed::Cpu,
+                adaptive_state: SurfaceAdaptiveState::CpuLearning,
+            },
+        );
+
+        assert_eq!(receipt.ticket, 12);
+        assert_eq!(receipt.camera_revision, 5);
+        assert_eq!(receipt.preprocess_ms, 0.75);
+        assert_eq!(receipt.sort_ms, 2.5);
+        assert_eq!(receipt.frame_complete_ms, 5.25);
+        assert_eq!(receipt.requested_backend, 2);
+        assert_eq!(receipt.actual_backend, 0);
+        assert_eq!(receipt.adaptive_state, 1);
+        assert_eq!(receipt.flags, 0b110);
+        assert_eq!(receipt.reserved, 75);
+    }
+
+    #[test]
+    fn order_count_ledger_is_ticket_addressed_bounded_and_take_once() {
+        let mut ledger = VecDeque::new();
+        // Fill the two independent success queues' worst case exactly:
+        // 64 even CPU tickets plus 64 odd GPU tickets.
+        for ticket in 1..=super::SURFACE_ORDER_COUNT_LEDGER_CAPACITY as u64 {
+            push_surface_order_counts(
+                &mut ledger,
+                surface_order_counts(ticket, ticket + 100, 200, 150, 150, ticket == 2),
+            );
+        }
+        assert_eq!(ledger.len(), super::SURFACE_ORDER_COUNT_LEDGER_CAPACITY);
+        for ticket in 1..=super::SURFACE_ORDER_COUNT_LEDGER_CAPACITY as u64 {
+            assert!(ledger.iter().any(|counts| counts.ticket == ticket));
+        }
+        push_surface_order_counts(
+            &mut ledger,
+            surface_order_counts(
+                super::SURFACE_ORDER_COUNT_LEDGER_CAPACITY as u64 + 1,
+                999,
+                200,
+                150,
+                150,
+                false,
+            ),
+        );
+        assert!(take_surface_order_counts(&mut ledger, 1).is_none());
+        let counts = take_surface_order_counts(&mut ledger, 2).expect("ticket two counts");
+        assert_eq!(counts.camera_revision, 102);
+        assert_eq!(
+            (
+                counts.visible_count,
+                counts.contributor_count,
+                counts.drawn_count
+            ),
+            (200, 150, 150),
+        );
+        assert_eq!(counts.flags, 1);
+        assert!(take_surface_order_counts(&mut ledger, 2).is_none());
+        assert!(
+            ledger.iter().any(|counts| counts.ticket & 1 == 0)
+                && ledger.iter().any(|counts| counts.ticket & 1 == 1),
+            "the combined ledger must retain interleaved CPU/even and GPU/odd tickets",
+        );
+
+        let failed_ticket = ledger.front().expect("remaining count").ticket;
+        discard_surface_order_counts(&mut ledger, failed_ticket);
+        assert!(take_surface_order_counts(&mut ledger, failed_ticket).is_none());
+    }
+
+    #[test]
+    fn gpu_order_failure_preserves_terminal_reason_and_policy_identity() {
+        let receipt = surface_order_measurement_failure_to_ffi(
+            SurfaceOrderMeasurementFailure {
+                ticket: 9,
+                camera_revision: 8,
+                reason: SurfaceOrderMeasurementFailureReason::GenerationInvalidated,
+            },
+            super::SurfaceOrderMeasurementContext {
+                ticket: 9,
+                requested_backend: SurfaceOrderBackend::Adaptive,
+                actual_backend: SurfaceOrderBackendUsed::Gpu,
+                adaptive_state: SurfaceAdaptiveState::GpuProbe,
+            },
+        );
+
+        assert_eq!(receipt.ticket, 9);
+        assert_eq!(receipt.camera_revision, 8);
+        assert_eq!(receipt.reason, 2);
+        assert_eq!(receipt.requested_backend, 2);
+        assert_eq!(receipt.actual_backend, 1);
+        assert_eq!(receipt.adaptive_state, 3);
+        assert_eq!(receipt.flags, 0);
+        assert_eq!(receipt.reserved, 0);
+    }
+
+    #[test]
+    fn adaptive_gpu_failure_reason_uses_additive_sort_status_bits() {
+        assert_eq!(surface_adaptive_gpu_failure_flags(None), 0);
+        assert_eq!(
+            surface_adaptive_gpu_failure_flags(Some(SurfaceAdaptiveGpuFailureReason::Unsupported)),
+            (1 << 15) | (1 << 16)
+        );
+        assert_eq!(
+            surface_adaptive_gpu_failure_flags(Some(SurfaceAdaptiveGpuFailureReason::Validation)),
+            (1 << 15) | (4 << 16)
+        );
+    }
+
+    #[test]
+    fn ffi_packed_path_loader_publishes_only_exact_resident_scene() {
+        let path =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/datasets/minimal_ascii.ply");
+        let mut renderer = Renderer::with_config_for_surface(RendererConfig::default()).unwrap();
+        renderer.set_geometry_path(GeometryPath::PackedAtlas);
+
+        let summary = load_ply_path_into_renderer(&path, &mut renderer).unwrap();
+        assert_eq!(renderer.scene_len(), Some(summary.gaussians));
+        assert_eq!(renderer.scene_sh_degree(), Some(summary.sh_degree));
+        assert!(renderer.scene().is_none());
+        assert!(renderer.resident_scene().is_some());
     }
 
     #[test]
@@ -2002,6 +4626,15 @@ mod tests {
     #[test]
     fn surface_functions_reject_null_renderer() {
         let mut stats = super::GsplatStats::from(gsplat_core::FrameStats::zero());
+        let mut measurement = GsplatSurfaceOrderMeasurement::default();
+        let mut cpu_measurement = GsplatSurfaceCpuOrderMeasurement::default();
+        let mut counts = GsplatSurfaceOrderCounts::default();
+        let mut failure = GsplatSurfaceOrderMeasurementFailure::default();
+        let mut submission = GsplatSurfaceOrderSubmission::default();
+        let mut exactness = GsplatSurfaceExactness::default();
+        let mut presentation = GsplatSurfacePresentation::default();
+        let mut camera_receipt = GsplatSurfaceCameraReceiptV1::default();
+        let mut available = 0_u32;
         let expected = ErrorCode::InvalidArgument.as_i32();
 
         assert_eq!(
@@ -2010,6 +4643,10 @@ mod tests {
         );
         assert_eq!(
             unsafe { gsplat_surface_renderer_set_sort_interval(ptr::null_mut(), 1) },
+            expected
+        );
+        assert_eq!(
+            unsafe { gsplat_surface_renderer_set_order_backend(ptr::null_mut(), 2) },
             expected
         );
         assert_eq!(
@@ -2066,6 +4703,65 @@ mod tests {
         );
         assert_eq!(
             unsafe { gsplat_surface_renderer_get_stats(ptr::null(), ptr::null_mut()) },
+            expected
+        );
+        assert_eq!(
+            unsafe { gsplat_surface_renderer_get_exactness(ptr::null(), &mut exactness) },
+            expected
+        );
+        assert_eq!(
+            unsafe { gsplat_surface_renderer_get_presentation(ptr::null(), &mut presentation) },
+            expected
+        );
+        assert_eq!(
+            unsafe {
+                gsplat_surface_renderer_get_camera_receipt_v1(ptr::null(), &mut camera_receipt)
+            },
+            expected
+        );
+        assert_eq!(
+            unsafe { gsplat_surface_renderer_get_order_submission(ptr::null(), &mut submission) },
+            expected
+        );
+        assert_eq!(
+            unsafe {
+                gsplat_surface_renderer_poll_cpu_order_measurement(
+                    ptr::null_mut(),
+                    &mut cpu_measurement,
+                    &mut available,
+                )
+            },
+            expected
+        );
+        assert_eq!(
+            unsafe {
+                gsplat_surface_renderer_poll_order_measurement(
+                    ptr::null_mut(),
+                    &mut measurement,
+                    &mut available,
+                )
+            },
+            expected
+        );
+        assert_eq!(
+            unsafe {
+                gsplat_surface_renderer_take_order_counts(
+                    ptr::null_mut(),
+                    1,
+                    &mut counts,
+                    &mut available,
+                )
+            },
+            expected
+        );
+        assert_eq!(
+            unsafe {
+                gsplat_surface_renderer_poll_order_measurement_failure(
+                    ptr::null_mut(),
+                    &mut failure,
+                    &mut available,
+                )
+            },
             expected
         );
     }

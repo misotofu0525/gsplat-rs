@@ -22,8 +22,38 @@ class GsplatSurfaceRenderer private constructor(
         synchronized(lock) {
             checkOpen()
             checkResult(NativeBridge.setSurfaceSortInterval(nativeHandle, options.sortInterval))
-            checkResult(NativeBridge.setSurfaceAsyncSortEnabled(nativeHandle, options.asyncSort))
+            if (options.asyncSort) {
+                checkResult(
+                    NativeBridge.setSurfaceOrderBackend(
+                        nativeHandle,
+                        GsplatSurfaceOrderBackend.CPU.nativeValue
+                    )
+                )
+                checkResult(NativeBridge.setSurfaceAsyncSortEnabled(nativeHandle, true))
+            } else {
+                checkResult(NativeBridge.setSurfaceAsyncSortEnabled(nativeHandle, false))
+                checkResult(
+                    NativeBridge.setSurfaceOrderBackend(
+                        nativeHandle,
+                        options.orderBackend.nativeValue
+                    )
+                )
+            }
             checkResult(NativeBridge.setSurfaceFrameLatency(nativeHandle, options.frameLatency))
+            checkResult(
+                NativeBridge.setSurfaceProjectedPolicyV1(
+                    nativeHandle,
+                    options.projectedPolicy.nativeValue
+                )
+            )
+        }
+    }
+
+    /** Changes exact Candidate/Compact/Adaptive projected-draw execution. */
+    fun setProjectedPolicy(policy: GsplatSurfaceProjectedPolicy) {
+        synchronized(lock) {
+            checkOpen()
+            checkResult(NativeBridge.setSurfaceProjectedPolicyV1(nativeHandle, policy.nativeValue))
         }
     }
 
@@ -68,6 +98,181 @@ class GsplatSurfaceRenderer private constructor(
             val raw = LongArray(6)
             checkResult(NativeBridge.getSurfaceStats(nativeHandle, raw))
             return GsplatSurfaceStats.fromRaw(raw)
+        }
+    }
+
+    /** Returns the last frame's ordering backend, revisions, and Adaptive GPU status. */
+    fun orderStatus(): GsplatSurfaceOrderStatus {
+        synchronized(lock) {
+            checkOpen()
+            val raw = LongArray(GsplatSurfaceOrderStatus.RAW_VALUE_COUNT)
+            checkResult(NativeBridge.getSurfaceSortStats(nativeHandle, raw))
+            return GsplatSurfaceOrderStatus.fromRaw(raw)
+        }
+    }
+
+    /** Returns the CPU/GPU measurement submission identity for the last successful frame. */
+    fun orderSubmission(): GsplatSurfaceOrderSubmission {
+        synchronized(lock) {
+            checkOpen()
+            val raw = LongArray(GsplatSurfaceOrderSubmission.RAW_VALUE_COUNT)
+            checkResult(NativeBridge.getSurfaceOrderSubmission(nativeHandle, raw))
+            return GsplatSurfaceOrderSubmission.fromRaw(raw)
+        }
+    }
+
+    /** Returns projected-draw identity for the last successful frame. */
+    fun projectedSubmission(): GsplatSurfaceProjectedSubmission {
+        synchronized(lock) {
+            checkOpen()
+            val raw = LongArray(GsplatSurfaceProjectedSubmission.RAW_VALUE_COUNT)
+            checkResult(NativeBridge.getSurfaceProjectedSubmissionV1(nativeHandle, raw))
+            return GsplatSurfaceProjectedSubmission.fromRaw(raw)
+        }
+    }
+
+    /** Returns one terminal projected-draw success with its exact V/C/D counts. */
+    fun pollProjectedMeasurement(): GsplatSurfaceProjectedMeasurement? {
+        synchronized(lock) {
+            checkOpen()
+            val raw = LongArray(GsplatSurfaceProjectedMeasurement.RAW_VALUE_COUNT)
+            checkResult(NativeBridge.pollSurfaceProjectedMeasurementV1(nativeHandle, raw))
+            return GsplatSurfaceProjectedMeasurement.fromRaw(raw)
+        }
+    }
+
+    /** Drains currently available projected-draw successes in ticket order. */
+    fun drainProjectedMeasurements(): List<GsplatSurfaceProjectedMeasurement> {
+        synchronized(lock) {
+            checkOpen()
+            val completed = mutableListOf<GsplatSurfaceProjectedMeasurement>()
+            while (true) {
+                val raw = LongArray(GsplatSurfaceProjectedMeasurement.RAW_VALUE_COUNT)
+                checkResult(NativeBridge.pollSurfaceProjectedMeasurementV1(nativeHandle, raw))
+                val measurement = GsplatSurfaceProjectedMeasurement.fromRaw(raw) ?: break
+                completed += measurement
+            }
+            return completed
+        }
+    }
+
+    /** Returns one terminal projected-draw failure, or null without blocking. */
+    fun pollProjectedMeasurementFailure(): GsplatSurfaceProjectedMeasurementFailure? {
+        synchronized(lock) {
+            checkOpen()
+            val raw = LongArray(GsplatSurfaceProjectedMeasurementFailure.RAW_VALUE_COUNT)
+            checkResult(NativeBridge.pollSurfaceProjectedFailureV1(nativeHandle, raw))
+            return GsplatSurfaceProjectedMeasurementFailure.fromRaw(raw)
+        }
+    }
+
+    /** Drains currently available projected-draw terminal failures. */
+    fun drainProjectedMeasurementFailures(): List<GsplatSurfaceProjectedMeasurementFailure> {
+        synchronized(lock) {
+            checkOpen()
+            val failures = mutableListOf<GsplatSurfaceProjectedMeasurementFailure>()
+            while (true) {
+                val raw = LongArray(GsplatSurfaceProjectedMeasurementFailure.RAW_VALUE_COUNT)
+                checkResult(NativeBridge.pollSurfaceProjectedFailureV1(nativeHandle, raw))
+                val failure = GsplatSurfaceProjectedMeasurementFailure.fromRaw(raw) ?: break
+                failures += failure
+            }
+            return failures
+        }
+    }
+
+    /** Returns the current exactness/capability receipt for this Surface. */
+    fun exactness(): GsplatSurfaceExactness {
+        synchronized(lock) {
+            checkOpen()
+            val raw = LongArray(GsplatSurfaceExactness.RAW_VALUE_COUNT)
+            checkResult(NativeBridge.getSurfaceExactness(nativeHandle, raw))
+            return GsplatSurfaceExactness.fromRaw(raw)
+        }
+    }
+
+    /** Returns native requested/Surface/internal/presented pixel dimensions. */
+    fun presentation(): GsplatSurfacePresentation {
+        synchronized(lock) {
+            checkOpen()
+            val raw = LongArray(GsplatSurfacePresentation.RAW_VALUE_COUNT)
+            checkResult(NativeBridge.getSurfacePresentation(nativeHandle, raw))
+            return GsplatSurfacePresentation.fromRaw(raw)
+        }
+    }
+
+    /** Returns one completed GPU order receipt, or null without blocking. */
+    fun pollOrderMeasurement(): GsplatSurfaceOrderMeasurement? {
+        synchronized(lock) {
+            checkOpen()
+            val raw = LongArray(GsplatSurfaceOrderMeasurement.RAW_VALUE_COUNT)
+            checkResult(NativeBridge.pollSurfaceOrderMeasurement(nativeHandle, raw))
+            return GsplatSurfaceOrderMeasurement.fromRaw(raw)
+        }
+    }
+
+    /** Drains all GPU order receipts currently available in native ticket order. */
+    fun drainOrderMeasurements(): List<GsplatSurfaceOrderMeasurement> {
+        synchronized(lock) {
+            checkOpen()
+            val completed = mutableListOf<GsplatSurfaceOrderMeasurement>()
+            while (true) {
+                val raw = LongArray(GsplatSurfaceOrderMeasurement.RAW_VALUE_COUNT)
+                checkResult(NativeBridge.pollSurfaceOrderMeasurement(nativeHandle, raw))
+                val measurement = GsplatSurfaceOrderMeasurement.fromRaw(raw) ?: break
+                completed += measurement
+            }
+            return completed
+        }
+    }
+
+    /** Returns one CPU frame-start-to-queue-completion receipt, or null without blocking. */
+    fun pollCpuOrderMeasurement(): GsplatSurfaceCpuOrderMeasurement? {
+        synchronized(lock) {
+            checkOpen()
+            val raw = LongArray(GsplatSurfaceCpuOrderMeasurement.RAW_VALUE_COUNT)
+            checkResult(NativeBridge.pollSurfaceCpuOrderMeasurement(nativeHandle, raw))
+            return GsplatSurfaceCpuOrderMeasurement.fromRaw(raw)
+        }
+    }
+
+    /** Drains all currently available CPU queue-completion receipts in ticket order. */
+    fun drainCpuOrderMeasurements(): List<GsplatSurfaceCpuOrderMeasurement> {
+        synchronized(lock) {
+            checkOpen()
+            val completed = mutableListOf<GsplatSurfaceCpuOrderMeasurement>()
+            while (true) {
+                val raw = LongArray(GsplatSurfaceCpuOrderMeasurement.RAW_VALUE_COUNT)
+                checkResult(NativeBridge.pollSurfaceCpuOrderMeasurement(nativeHandle, raw))
+                val measurement = GsplatSurfaceCpuOrderMeasurement.fromRaw(raw) ?: break
+                completed += measurement
+            }
+            return completed
+        }
+    }
+
+    /** Returns one terminal CPU/GPU measurement failure, or null without blocking. */
+    fun pollOrderMeasurementFailure(): GsplatSurfaceOrderMeasurementFailure? {
+        synchronized(lock) {
+            checkOpen()
+            val raw = LongArray(GsplatSurfaceOrderMeasurementFailure.RAW_VALUE_COUNT)
+            checkResult(NativeBridge.pollSurfaceOrderMeasurementFailure(nativeHandle, raw))
+            return GsplatSurfaceOrderMeasurementFailure.fromRaw(raw)
+        }
+    }
+
+    /** Drains all terminal CPU/GPU measurement failures currently available. */
+    fun drainOrderMeasurementFailures(): List<GsplatSurfaceOrderMeasurementFailure> {
+        synchronized(lock) {
+            checkOpen()
+            val failures = mutableListOf<GsplatSurfaceOrderMeasurementFailure>()
+            while (true) {
+                val raw = LongArray(GsplatSurfaceOrderMeasurementFailure.RAW_VALUE_COUNT)
+                checkResult(NativeBridge.pollSurfaceOrderMeasurementFailure(nativeHandle, raw))
+                val failure = GsplatSurfaceOrderMeasurementFailure.fromRaw(raw) ?: break
+                failures += failure
+            }
+            return failures
         }
     }
 

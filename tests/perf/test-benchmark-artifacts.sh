@@ -98,6 +98,101 @@ summary_path.write_text(json.dumps(summary))
 PY
 python3 "$VALIDATOR" "$TMP_DIR/unavailable-phase-timings"
 
+cp -R "$VALID" "$TMP_DIR/unavailable-render-counts"
+python3 - "$TMP_DIR/unavailable-render-counts" <<'PY'
+import json, pathlib, sys
+root = pathlib.Path(sys.argv[1])
+manifest_path = root / "manifest.json"
+manifest = json.loads(manifest_path.read_text())
+manifest["unavailable_fields"].extend(["frames[*].visible", "frames[*].drawn"])
+manifest_path.write_text(json.dumps(manifest))
+frames_path = root / "frames.jsonl"
+frames = [json.loads(line) for line in frames_path.read_text().splitlines() if line]
+for frame in frames:
+    frame["active_splats"] = frame["visible"]
+    frame["visible"] = None
+    frame["drawn"] = None
+frames_path.write_text("\n".join(json.dumps(frame) for frame in frames) + "\n")
+PY
+python3 "$VALIDATOR" "$TMP_DIR/unavailable-render-counts"
+
+cp -R "$TMP_DIR/unavailable-render-counts" "$TMP_DIR/unlisted-render-counts"
+python3 - "$TMP_DIR/unlisted-render-counts/manifest.json" <<'PY'
+import json, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+value = json.loads(path.read_text())
+value["unavailable_fields"].remove("frames[*].drawn")
+path.write_text(json.dumps(value))
+PY
+if python3 "$VALIDATOR" "$TMP_DIR/unlisted-render-counts" >"$TMP_DIR/unlisted-render-counts.out" 2>&1; then
+  echo "expected unlisted null render count to fail" >&2
+  exit 1
+fi
+grep -Fq 'null drawn must be listed as unavailable' "$TMP_DIR/unlisted-render-counts.out"
+
+cp -R "$VALID" "$TMP_DIR/exact-contributor-valid"
+python3 - "$TMP_DIR/exact-contributor-valid" <<'PY'
+import json, pathlib, sys
+root = pathlib.Path(sys.argv[1])
+manifest_path = root / "manifest.json"
+manifest = json.loads(manifest_path.read_text())
+manifest["renderer"]["count_semantics"] = "candidate_visible_contributor_issued_v1"
+manifest_path.write_text(json.dumps(manifest))
+frames_path = root / "frames.jsonl"
+frames = [json.loads(line) for line in frames_path.read_text().splitlines() if line]
+for frame in frames:
+    frame.update({
+        "visible": 2,
+        "contributor": 1,
+        "drawn": 1,
+        "exact_contributor_compaction": True,
+    })
+frames_path.write_text("\n".join(json.dumps(frame) for frame in frames) + "\n")
+PY
+python3 "$VALIDATOR" "$TMP_DIR/exact-contributor-valid"
+
+cp -R "$TMP_DIR/exact-contributor-valid" "$TMP_DIR/exact-contributor-missing-flag"
+python3 - "$TMP_DIR/exact-contributor-missing-flag/frames.jsonl" <<'PY'
+import json, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+frames = [json.loads(line) for line in path.read_text().splitlines() if line]
+frames[0].pop("exact_contributor_compaction")
+path.write_text("\n".join(json.dumps(frame) for frame in frames) + "\n")
+PY
+if python3 "$VALIDATOR" "$TMP_DIR/exact-contributor-missing-flag" >"$TMP_DIR/exact-contributor-missing-flag.out" 2>&1; then
+  echo "expected exact contributor receipt missing its flag to fail" >&2
+  exit 1
+fi
+grep -Fq 'must be emitted together' "$TMP_DIR/exact-contributor-missing-flag.out"
+
+cp -R "$TMP_DIR/exact-contributor-valid" "$TMP_DIR/exact-contributor-bad-draw"
+python3 - "$TMP_DIR/exact-contributor-bad-draw/frames.jsonl" <<'PY'
+import json, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+frames = [json.loads(line) for line in path.read_text().splitlines() if line]
+frames[0]["drawn"] = 2
+path.write_text("\n".join(json.dumps(frame) for frame in frames) + "\n")
+PY
+if python3 "$VALIDATOR" "$TMP_DIR/exact-contributor-bad-draw" >"$TMP_DIR/exact-contributor-bad-draw.out" 2>&1; then
+  echo "expected exact contributor receipt with D != C to fail" >&2
+  exit 1
+fi
+grep -Fq 'drawn == contributor' "$TMP_DIR/exact-contributor-bad-draw.out"
+
+cp -R "$VALID" "$TMP_DIR/legacy-budgeted-draw"
+python3 - "$TMP_DIR/legacy-budgeted-draw/frames.jsonl" <<'PY'
+import json, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+frames = [json.loads(line) for line in path.read_text().splitlines() if line]
+frames[0]["drawn"] = 1
+path.write_text("\n".join(json.dumps(frame) for frame in frames) + "\n")
+PY
+if python3 "$VALIDATOR" "$TMP_DIR/legacy-budgeted-draw" >"$TMP_DIR/legacy-budgeted-draw.out" 2>&1; then
+  echo "expected legacy D < V to fail" >&2
+  exit 1
+fi
+grep -Fq 'legacy frame requires drawn == visible' "$TMP_DIR/legacy-budgeted-draw.out"
+
 cp -R "$TMP_DIR/unavailable-phase-timings" "$TMP_DIR/unlisted-phase-timing"
 python3 - "$TMP_DIR/unlisted-phase-timing/manifest.json" <<'PY'
 import json, pathlib, sys
@@ -185,5 +280,9 @@ if python3 "$VALIDATOR" "$TMP_DIR/async-bad-lag" >"$TMP_DIR/async-bad-lag.out" 2
   exit 1
 fi
 grep -Fq 'presented async order lag exceeds 2' "$TMP_DIR/async-bad-lag.out"
+
+python3 tests/perf/test_full_quality_experiment.py
+python3 tests/perf/validate-full-quality-experiment.py \
+  tests/perf/full-quality-matrix-plan-v1.json --allow-incomplete
 
 echo "benchmark artifact fixture tests passed"

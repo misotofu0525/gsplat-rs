@@ -2,6 +2,7 @@ package com.gsplat.example
 
 import android.app.Activity
 import android.content.Intent
+import android.content.pm.ActivityInfo
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
@@ -12,6 +13,7 @@ import android.os.PowerManager
 import android.os.SystemClock
 import android.provider.OpenableColumns
 import android.util.Log
+import android.util.Base64
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.Surface
@@ -44,6 +46,11 @@ private const val GSPLAT_GEOMETRY_PATH_PAGED_ACTIVE_ATLAS = 2
 private const val GSPLAT_ORDER_BACKEND_CPU = 0
 private const val GSPLAT_ORDER_BACKEND_GPU = 1
 private const val GSPLAT_ORDER_BACKEND_ADAPTIVE = 2
+private const val GPU_MEASUREMENT_EXACT_CONTRIBUTOR_DRAW = 1 shl 6
+private const val CPU_MEASUREMENT_EXACT_CONTRIBUTOR_DRAW = 1 shl 1
+private const val CPU_MEASUREMENT_CONTRIBUTOR_COUNT_VALID = 1 shl 2
+private const val ORDER_COUNTS_EXACT_CONTRIBUTOR_DRAW = 1 shl 0
+private const val COUNT_SEMANTICS = "candidate_visible_contributor_issued_v1"
 
 private fun geometryPathValue(label: String): Int =
     when (label) {
@@ -76,6 +83,473 @@ private fun adaptiveStateName(flags: Long): String =
         6L -> "cooldown"
         else -> "disabled"
     }
+
+private fun adaptiveGpuFailureName(flags: Long): String? {
+    if (flags and (1L shl 15) == 0L) return null
+    return when ((flags shr 16) and 7L) {
+        1L -> "unsupported"
+        2L -> "initialization"
+        3L -> "out_of_memory"
+        4L -> "validation"
+        else -> "unknown"
+    }
+}
+
+private fun requireContributorCountContract(
+    visible: Long,
+    contributor: Long?,
+    drawn: Long,
+    exactContributorCompaction: Boolean,
+    context: String
+) {
+    check(visible >= 0L && drawn >= 0L) { "$context reported a negative V/D count" }
+    if (contributor != null) {
+        check(contributor in 0L..visible) {
+            "$context violates 0 <= C <= V: V=$visible C=$contributor"
+        }
+    }
+    if (exactContributorCompaction) {
+        checkNotNull(contributor) { "$context exact contributor draw omitted C" }
+        check(drawn == contributor) {
+            "$context exact contributor draw requires D=C: V=$visible C=$contributor D=$drawn"
+        }
+    } else {
+        check(drawn == visible) {
+            "$context legacy/downlevel draw requires D=V: V=$visible D=$drawn"
+        }
+    }
+}
+
+private data class BenchmarkOrderMeasurement(
+    val ticket: Long,
+    val cameraRevision: Long,
+    val timingSource: String,
+    val requestedBackend: Int,
+    val actualBackend: Int,
+    val adaptiveState: Int,
+    val gpuPreprocessMs: Float?,
+    val gpuRadixMs: Float?,
+    val gpuOrderMs: Float?,
+    val gpuCompleteMs: Float,
+    val timestampPeriodNs: Float?,
+    val visible: Long,
+    val contributor: Long,
+    val drawn: Long,
+    val exactContributorCompaction: Boolean,
+    val flags: Int
+)
+
+private data class BenchmarkOrderMeasurementFailure(
+    val ticket: Long,
+    val cameraRevision: Long,
+    val reason: String,
+    val requestedBackend: Int,
+    val actualBackend: Int,
+    val adaptiveState: Int,
+    val flags: Int
+)
+
+private data class BenchmarkCpuOrderMeasurement(
+    val ticket: Long,
+    val cameraRevision: Long,
+    val preprocessMs: Float,
+    val sortMs: Float,
+    val frameCompleteMs: Float,
+    val requestedBackend: Int,
+    val actualBackend: Int,
+    val adaptiveState: Int,
+    val visible: Long,
+    val contributor: Long,
+    val drawn: Long,
+    val exactContributorCompaction: Boolean,
+    val flags: Int
+)
+
+private data class IssuedOrderTicket(val cameraRevision: Long, val backend: Int)
+
+private data class BenchmarkOrderSubmission(
+    val ticket: Long?,
+    val cameraRevision: Long,
+    val requestedBackend: Int,
+    val actualBackend: Int,
+    val adaptiveState: Int,
+    val gpuRefresh: Boolean,
+    val cpuFrameCompletionSample: Boolean,
+    val unsampledReason: String?,
+    val flags: Int
+) {
+    val measurementBackend: Int?
+        get() = when {
+            gpuRefresh -> GSPLAT_ORDER_BACKEND_GPU
+            cpuFrameCompletionSample -> GSPLAT_ORDER_BACKEND_CPU
+            else -> null
+        }
+
+    companion object {
+        fun query(handle: Long): Result<BenchmarkOrderSubmission> {
+            val raw = LongArray(6)
+            val rc = NativeBridge.getSurfaceOrderSubmission(handle, raw)
+            if (rc != 0) {
+                return Result.failure(
+                    IllegalStateException(
+                        "getSurfaceOrderSubmission failed rc=$rc " +
+                            "error=${NativeBridge.lastErrorMessage()}"
+                    )
+                )
+            }
+            val flags = raw[5].toInt()
+            val issued = flags and (1 shl 1) != 0
+            return Result.success(
+                BenchmarkOrderSubmission(
+                    ticket = raw[0].takeIf { issued },
+                    cameraRevision = raw[1],
+                    requestedBackend = raw[2].toInt(),
+                    actualBackend = raw[3].toInt(),
+                    adaptiveState = raw[4].toInt(),
+                    gpuRefresh = flags and 1 != 0,
+                    cpuFrameCompletionSample = flags and (1 shl 3) != 0,
+                    unsampledReason = when {
+                        flags and (1 shl 2) != 0 -> "ring_busy"
+                        flags and (1 shl 4) != 0 -> "surface_unavailable"
+                        else -> null
+                    },
+                    flags = flags
+                )
+            )
+        }
+    }
+}
+
+private data class BenchmarkExactnessReceipt(
+    val source: Long,
+    val decoded: Long,
+    val encoded: Long,
+    val resident: Long,
+    val addressable: Long,
+    val sourceShDegree: Int,
+    val residentShDegree: Int,
+    val qualityFlags: Int,
+    val maxStorageBuffersPerShaderStage: Int,
+    val maxStorageBufferBindingSize: Long
+) {
+    val fullQuality: Boolean
+        get() = qualityFlags and 0b1_1111 == 0b1_1111 &&
+            source == decoded && source == encoded && source == resident &&
+            source == addressable && sourceShDegree == residentShDegree
+
+    companion object {
+        fun query(handle: Long): Result<BenchmarkExactnessReceipt> {
+            val raw = LongArray(10)
+            val rc = NativeBridge.getSurfaceExactness(handle, raw)
+            if (rc != 0) {
+                return Result.failure(
+                    IllegalStateException(
+                        "getSurfaceExactness failed rc=$rc error=${NativeBridge.lastErrorMessage()}"
+                    )
+                )
+            }
+            return Result.success(
+                BenchmarkExactnessReceipt(
+                    source = raw[0], decoded = raw[1], encoded = raw[2],
+                    resident = raw[3], addressable = raw[4],
+                    sourceShDegree = raw[5].toInt(), residentShDegree = raw[6].toInt(),
+                    qualityFlags = raw[7].toInt(),
+                    maxStorageBuffersPerShaderStage = raw[8].toInt(),
+                    maxStorageBufferBindingSize = raw[9]
+                )
+            )
+        }
+    }
+}
+
+private data class BenchmarkPresentationReceipt(
+    val requestedWidth: Int,
+    val requestedHeight: Int,
+    val surfaceWidth: Int,
+    val surfaceHeight: Int,
+    val internalRenderWidth: Int,
+    val internalRenderHeight: Int,
+    val presentedWidth: Int,
+    val presentedHeight: Int,
+    val presentedCameraRevision: Long,
+    val lastFramePresented: Boolean,
+    val everPresented: Boolean,
+    val dynamicResolutionDisabled: Boolean,
+    val upscalingDisabled: Boolean,
+    val fullResolution: Boolean,
+    val flags: Int
+) {
+    val dimensionsMatch: Boolean
+        get() = requestedWidth == surfaceWidth && requestedHeight == surfaceHeight &&
+            surfaceWidth == internalRenderWidth && surfaceHeight == internalRenderHeight &&
+            internalRenderWidth == presentedWidth && internalRenderHeight == presentedHeight
+
+    fun requireFormal(viewportWidth: Int, viewportHeight: Int) {
+        check(requestedWidth > requestedHeight) {
+            "formal Android benchmark requires a settled landscape Surface"
+        }
+        check(requestedWidth == viewportWidth && requestedHeight == viewportHeight) {
+            "native requested size does not match the Activity Surface viewport"
+        }
+        check(lastFramePresented && everPresented) {
+            "the terminal benchmark frame was not presented"
+        }
+        check(dynamicResolutionDisabled && upscalingDisabled) {
+            "formal benchmark forbids dynamic resolution and upscaling"
+        }
+        check(fullResolution && dimensionsMatch) {
+            "formal benchmark requires requested=Surface=internal=presented pixels"
+        }
+    }
+
+    companion object {
+        fun query(handle: Long): Result<BenchmarkPresentationReceipt> {
+            val raw = LongArray(11)
+            val rc = NativeBridge.getSurfacePresentation(handle, raw)
+            if (rc != 0) {
+                return Result.failure(
+                    IllegalStateException(
+                        "getSurfacePresentation failed rc=$rc error=${NativeBridge.lastErrorMessage()}"
+                    )
+                )
+            }
+            val flags = raw[9].toInt()
+            return Result.success(
+                BenchmarkPresentationReceipt(
+                    requestedWidth = raw[0].toInt(),
+                    requestedHeight = raw[1].toInt(),
+                    surfaceWidth = raw[2].toInt(),
+                    surfaceHeight = raw[3].toInt(),
+                    internalRenderWidth = raw[4].toInt(),
+                    internalRenderHeight = raw[5].toInt(),
+                    presentedWidth = raw[6].toInt(),
+                    presentedHeight = raw[7].toInt(),
+                    presentedCameraRevision = raw[8],
+                    lastFramePresented = flags and 1 != 0,
+                    everPresented = flags and (1 shl 1) != 0,
+                    dynamicResolutionDisabled = flags and (1 shl 2) != 0,
+                    upscalingDisabled = flags and (1 shl 3) != 0,
+                    fullResolution = flags and (1 shl 4) != 0,
+                    flags = flags
+                )
+            ).onSuccess { receipt ->
+                check(raw[10] == 0L) { "native presentation reserved field is non-zero" }
+                check(receipt.requestedWidth > 0 && receipt.requestedHeight > 0)
+                check(receipt.surfaceWidth > 0 && receipt.surfaceHeight > 0)
+                check(receipt.internalRenderWidth > 0 && receipt.internalRenderHeight > 0)
+            }
+        }
+    }
+}
+
+private fun logCompletedCpuOrderMeasurements(
+    handle: Long,
+    consume: (BenchmarkCpuOrderMeasurement) -> Unit = {}
+): Int {
+    var count = 0
+    while (true) {
+        val raw = LongArray(15)
+        val rc = NativeBridge.pollSurfaceCpuOrderMeasurement(handle, raw)
+        if (rc != 0) {
+            Log.e(
+                "GsplatExample",
+                "pollSurfaceCpuOrderMeasurement failed rc=$rc error=${NativeBridge.lastErrorMessage()}"
+            )
+            return -1
+        }
+        if (raw[0] == 0L) return count
+        val flags = raw[9].toInt()
+        val countsFlags = raw[14].toInt()
+        val exactContributorCompaction =
+            countsFlags and ORDER_COUNTS_EXACT_CONTRIBUTOR_DRAW != 0
+        check(exactContributorCompaction ==
+            (flags and CPU_MEASUREMENT_EXACT_CONTRIBUTOR_DRAW != 0)) {
+            "CPU timing and V/C/D receipts disagree on exact compaction"
+        }
+        check(flags and CPU_MEASUREMENT_CONTRIBUTOR_COUNT_VALID != 0 && raw[10] == raw[12]) {
+            "CPU compatibility receipt disagrees with V/C/D contributor count"
+        }
+        requireContributorCountContract(
+            raw[11], raw[12], raw[13], exactContributorCompaction, "CPU order receipt ${raw[1]}"
+        )
+        val measurement = BenchmarkCpuOrderMeasurement(
+            ticket = raw[1],
+            cameraRevision = raw[2],
+            preprocessMs = Float.fromBits(raw[3].toInt()),
+            sortMs = Float.fromBits(raw[4].toInt()),
+            frameCompleteMs = Float.fromBits(raw[5].toInt()),
+            requestedBackend = raw[6].toInt(),
+            actualBackend = raw[7].toInt(),
+            adaptiveState = raw[8].toInt(),
+            visible = raw[11],
+            contributor = raw[12],
+            drawn = raw[13],
+            exactContributorCompaction = exactContributorCompaction,
+            flags = flags
+        )
+        Log.i(
+            "GsplatExample",
+            "CPU_ORDER_MEASUREMENT ticket=${measurement.ticket} " +
+                "camera_revision=${measurement.cameraRevision} " +
+                "requested_backend=${measurement.requestedBackend} " +
+                "actual_backend=${measurement.actualBackend} " +
+                "adaptive_state=${measurement.adaptiveState} " +
+                "preprocess_ms=${measurement.preprocessMs} sort_ms=${measurement.sortMs} " +
+                "frame_complete_ms=${measurement.frameCompleteMs} " +
+                "visible=${measurement.visible} contributor=${measurement.contributor} " +
+                "drawn=${measurement.drawn} " +
+                "exact_contributor_compaction=${measurement.exactContributorCompaction} " +
+                "flags=${measurement.flags}"
+        )
+        consume(measurement)
+        count += 1
+    }
+}
+
+private fun logCompletedOrderMeasurements(
+    handle: Long,
+    consume: (BenchmarkOrderMeasurement) -> Unit = {}
+): Int {
+    var count = 0
+    val raw = LongArray(19)
+    while (true) {
+        val rc = NativeBridge.pollSurfaceOrderMeasurement(handle, raw)
+        if (rc != 0) {
+            Log.e("GsplatExample", "pollSurfaceOrderMeasurement failed rc=$rc error=${NativeBridge.lastErrorMessage()}")
+            return -1
+        }
+        if (raw[0] == 0L) return count
+
+        val flags = raw[14].toInt()
+        fun optionalValue(index: Int, bit: Int): Float? =
+            if ((flags and (1 shl bit)) != 0) Float.fromBits(raw[index].toInt()) else null
+        val timingSource = when (raw[10].toInt()) {
+            1 -> "timestamp_query"
+            2 -> "completion"
+            else -> "unknown"
+        }
+        val countsFlags = raw[18].toInt()
+        val exactContributorCompaction =
+            countsFlags and ORDER_COUNTS_EXACT_CONTRIBUTOR_DRAW != 0
+        check(exactContributorCompaction ==
+            (flags and GPU_MEASUREMENT_EXACT_CONTRIBUTOR_DRAW != 0)) {
+            "GPU timing and V/C/D receipts disagree on exact compaction"
+        }
+        check(raw[8] == raw[15] && raw[9] == raw[17]) {
+            "GPU timing and V/C/D receipts disagree on visible/drawn counts"
+        }
+        requireContributorCountContract(
+            raw[15], raw[16], raw[17], exactContributorCompaction, "GPU order receipt ${raw[1]}"
+        )
+        val measurement = BenchmarkOrderMeasurement(
+            ticket = raw[1],
+            cameraRevision = raw[2],
+            timingSource = timingSource,
+            requestedBackend = raw[11].toInt(),
+            actualBackend = raw[12].toInt(),
+            adaptiveState = raw[13].toInt(),
+            gpuPreprocessMs = optionalValue(3, 0),
+            gpuRadixMs = optionalValue(4, 1),
+            gpuOrderMs = optionalValue(5, 2),
+            gpuCompleteMs = Float.fromBits(raw[6].toInt()),
+            timestampPeriodNs = optionalValue(7, 3),
+            visible = raw[15],
+            contributor = raw[16],
+            drawn = raw[17],
+            exactContributorCompaction = exactContributorCompaction,
+            flags = flags
+        )
+        Log.i(
+            "GsplatExample",
+            "ORDER_MEASUREMENT ticket=${measurement.ticket} camera_revision=${measurement.cameraRevision} " +
+                "timing_source=${measurement.timingSource} requested_backend=${measurement.requestedBackend} " +
+                "actual_backend=${measurement.actualBackend} adaptive_state=${measurement.adaptiveState} " +
+                "gpu_preprocess_ms=${measurement.gpuPreprocessMs ?: "null"} " +
+                "gpu_radix_ms=${measurement.gpuRadixMs ?: "null"} " +
+                "gpu_order_ms=${measurement.gpuOrderMs ?: "null"} " +
+                "gpu_complete_ms=${measurement.gpuCompleteMs} " +
+                "timestamp_period_ns=${measurement.timestampPeriodNs ?: "null"} " +
+                "visible=${measurement.visible} contributor=${measurement.contributor} " +
+                "drawn=${measurement.drawn} " +
+                "exact_contributor_compaction=${measurement.exactContributorCompaction} " +
+                "flags=${measurement.flags}"
+        )
+        consume(measurement)
+        count += 1
+    }
+}
+
+private fun logCompletedOrderMeasurementFailures(
+    handle: Long,
+    consume: (BenchmarkOrderMeasurementFailure) -> Unit = {}
+): Int {
+    var count = 0
+    val raw = LongArray(8)
+    while (true) {
+        val rc = NativeBridge.pollSurfaceOrderMeasurementFailure(handle, raw)
+        if (rc != 0) {
+            Log.e(
+                "GsplatExample",
+                "pollSurfaceOrderMeasurementFailure failed rc=$rc error=${NativeBridge.lastErrorMessage()}"
+            )
+            return -1
+        }
+        if (raw[0] == 0L) return count
+
+        val failure = BenchmarkOrderMeasurementFailure(
+            ticket = raw[1],
+            cameraRevision = raw[2],
+            reason = when (raw[3].toInt()) {
+                1 -> "readback_map"
+                2 -> "generation_invalidated"
+                else -> "unknown_${raw[3]}"
+            },
+            requestedBackend = raw[4].toInt(),
+            actualBackend = raw[5].toInt(),
+            adaptiveState = raw[6].toInt(),
+            flags = raw[7].toInt()
+        )
+        Log.e(
+            "GsplatExample",
+            "ORDER_MEASUREMENT_FAILURE ticket=${failure.ticket} " +
+                "camera_revision=${failure.cameraRevision} reason=${failure.reason} " +
+                "requested_backend=${failure.requestedBackend} " +
+                "actual_backend=${failure.actualBackend} " +
+                "adaptive_state=${failure.adaptiveState} flags=${failure.flags}"
+        )
+        consume(failure)
+        count += 1
+    }
+}
+
+private fun flushCompletedOrderMeasurements(
+    handle: Long,
+    maxFrames: Int = 120,
+    consume: (BenchmarkOrderMeasurement) -> Unit = {},
+    consumeCpu: (BenchmarkCpuOrderMeasurement) -> Unit = {},
+    consumeFailure: (BenchmarkOrderMeasurementFailure) -> Unit = {},
+    consumeSubmission: (BenchmarkOrderSubmission) -> Unit,
+    terminalsComplete: () -> Boolean
+): Boolean {
+    if (terminalsComplete()) return true
+    repeat(maxFrames) {
+        val rc = NativeBridge.renderSurfaceFrame(handle)
+        if (rc != 0) {
+            Log.e("GsplatExample", "order measurement flush render failed rc=$rc")
+            return false
+        }
+        val submission = BenchmarkOrderSubmission.query(handle).getOrElse { error ->
+            Log.e("GsplatExample", "order submission flush query failed", error)
+            return false
+        }
+        consumeSubmission(submission)
+        if (logCompletedCpuOrderMeasurements(handle, consumeCpu) < 0) return false
+        if (logCompletedOrderMeasurements(handle, consume) < 0) return false
+        if (logCompletedOrderMeasurementFailures(handle, consumeFailure) < 0) return false
+        if (terminalsComplete()) return true
+    }
+    return terminalsComplete()
+}
 
 class MainActivity : Activity(), SurfaceHolder.Callback {
     private val renderLock = Object()
@@ -117,13 +591,14 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         super.onCreate(savedInstanceState)
 
         benchmarkConfig = BenchmarkConfig.fromIntent(intent)
+        if (benchmarkConfig.enabled) {
+            requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+        }
         setDataset(resolveInitialDataset())
 
-        val renderSurfaceSize = preferredSurfaceSize()
-        surfaceSizeLabel = "${renderSurfaceSize.first}x${renderSurfaceSize.second}"
+        surfaceSizeLabel = "window"
         val surfaceView = SurfaceView(this).apply {
             holder.addCallback(this@MainActivity)
-            holder.setFixedSize(renderSurfaceSize.first, renderSurfaceSize.second)
             setOnTouchListener(::handleTouch)
         }
         val brandText = TextView(this).apply {
@@ -288,6 +763,11 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         currentSurfaceHeight = height
         surfaceSizeLabel = "${width}x${height}"
         updateStatus("state=surface_changed size=${width}x$height")
+        if (benchmarkConfig.enabled && width <= height) {
+            Log.i(TAG, "benchmark waiting for landscape Surface size=${width}x$height")
+            updateStatus("state=waiting_for_landscape size=${width}x$height")
+            return
+        }
         synchronized(renderLock) {
             if (nativeRenderer != 0L) {
                 val rc = NativeBridge.resizeSurfaceRenderer(nativeRenderer, width, height)
@@ -387,6 +867,18 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                     updateStatus("state=create_failed rc=$sortIntervalRc error=$message")
                     return@Thread
                 }
+                val orderBackendRc = NativeBridge.setSurfaceOrderBackend(
+                    handle,
+                    orderBackendValue(benchmarkConfig.orderBackend)
+                )
+                if (orderBackendRc != 0) {
+                    val message = NativeBridge.errorMessage(orderBackendRc)
+                    Log.e(TAG, "setSurfaceOrderBackend failed rc=$orderBackendRc error=$message")
+                    NativeBridge.destroySurfaceRenderer(handle)
+                    running = false
+                    updateStatus("state=create_failed rc=$orderBackendRc error=$message")
+                    return@Thread
+                }
                 val asyncSortRc = NativeBridge.setSurfaceAsyncSortEnabled(
                     handle,
                     benchmarkConfig.asyncSort
@@ -397,18 +889,6 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                     NativeBridge.destroySurfaceRenderer(handle)
                     running = false
                     updateStatus("state=create_failed rc=$asyncSortRc error=$message")
-                    return@Thread
-                }
-                val orderBackendRc = BenchmarkBridge.setSurfaceOrderBackend(
-                    handle,
-                    orderBackendValue(benchmarkConfig.orderBackend)
-                )
-                if (orderBackendRc != 0) {
-                    val message = NativeBridge.errorMessage(orderBackendRc)
-                    Log.e(TAG, "setSurfaceOrderBackend failed rc=$orderBackendRc error=$message")
-                    NativeBridge.destroySurfaceRenderer(handle)
-                    running = false
-                    updateStatus("state=create_failed rc=$orderBackendRc error=$message")
                     return@Thread
                 }
                 val frameLatencyRc = NativeBridge.setSurfaceFrameLatency(
@@ -423,6 +903,51 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                     updateStatus("state=create_failed rc=$frameLatencyRc error=$message")
                     return@Thread
                 }
+                val cameraTraceRc = benchmarkConfig.cameraTracePath?.let { tracePath ->
+                    val initialFrame = if (benchmarkConfig.cameraTraceSequence) {
+                        benchmarkConfig.cameraTraceFrameIndices.last()
+                    } else {
+                        benchmarkConfig.cameraTraceFrame
+                    }
+                    BenchmarkBridge.setSurfaceCameraTraceFrame(
+                        handle,
+                        tracePath,
+                        initialFrame,
+                        benchmarkConfig.requireTraceDisplayMatch
+                    )
+                } ?: 0
+                if (cameraTraceRc != 0) {
+                    val detail = NativeBridge.lastErrorMessage()
+                        .ifBlank { NativeBridge.errorMessage(cameraTraceRc) }
+                    val message = detail.replace('\n', ' ').take(240)
+                    Log.e(TAG, "setSurfaceCameraTraceFrame failed rc=$cameraTraceRc error=$detail")
+                    NativeBridge.destroySurfaceRenderer(handle)
+                    running = false
+                    updateStatus("state=create_failed rc=$cameraTraceRc error=$message")
+                    return@Thread
+                }
+                if (benchmarkConfig.cameraTracePath != null) {
+                    val metadata = checkNotNull(benchmarkConfig.cameraTraceMetadata)
+                    val mode = if (benchmarkConfig.cameraTraceSequence) "trace_sequence" else "fixed_frame"
+                    val selected = if (benchmarkConfig.cameraTraceSequence) {
+                        benchmarkConfig.cameraTraceFrameIndices.joinToString(",")
+                    } else {
+                        benchmarkConfig.cameraTraceFrame.toString()
+                    }
+                    val receiptFrame = if (benchmarkConfig.cameraTraceSequence) {
+                        benchmarkConfig.cameraTraceFrameIndices.first()
+                    } else {
+                        benchmarkConfig.cameraTraceFrame
+                    }
+                    cameraStatus = "camera=trace mode=$mode frames=$selected"
+                    Log.i(
+                        TAG,
+                        "CAMERA_TRACE trace_id=${metadata.id} trace_sha256=${metadata.sha256} " +
+                            "mode=$mode frame_indices=$selected frame_index=$receiptFrame " +
+                            "timestamp_ns=${metadata.timestamps[receiptFrame]} " +
+                            "requested_backend=${benchmarkConfig.orderBackend}"
+                    )
+                }
                 synchronized(renderLock) {
                     nativeRenderer = handle
                 }
@@ -433,11 +958,51 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                     var lastStatusAt = 0L
                     val stats = LongArray(6)
                     val sortStats = LongArray(7)
-                    val benchmark = SurfaceBenchmark(benchmarkConfig, currentThermalStatus())
+                    val exactness = BenchmarkExactnessReceipt.query(handle).getOrElse { error ->
+                        Log.e(TAG, "SURFACE_EXACTNESS_FAILED ${error.message}")
+                        updateStatus("state=exactness_error error=${error.message}")
+                        running = false
+                        return@Thread
+                    }
+                    Log.i(
+                        TAG,
+                        "SURFACE_EXACTNESS source=${exactness.source} decoded=${exactness.decoded} " +
+                            "encoded=${exactness.encoded} resident=${exactness.resident} " +
+                            "addressable=${exactness.addressable} source_sh=${exactness.sourceShDegree} " +
+                            "resident_sh=${exactness.residentShDegree} flags=${exactness.qualityFlags} " +
+                            "max_storage_buffers_per_shader_stage=${exactness.maxStorageBuffersPerShaderStage} " +
+                            "max_storage_buffer_binding_size=${exactness.maxStorageBufferBindingSize}"
+                    )
+                    if (benchmarkConfig.geometryPath != "paged" && !exactness.fullQuality) {
+                        Log.e(TAG, "SURFACE_EXACTNESS_REJECTED full-quality invariant failed")
+                        updateStatus("state=exactness_rejected")
+                        running = false
+                        return@Thread
+                    }
+                    val benchmark = SurfaceBenchmark(
+                        benchmarkConfig,
+                        currentThermalStatus(),
+                        exactness
+                    )
                     while (running && !Thread.currentThread().isInterrupted) {
+                        val traceStep = benchmark.nextTraceStep()
                         val renderStartNs = System.nanoTime()
                         val rc = synchronized(renderLock) {
-                            val cameraRc = if (benchmark.enabled) {
+                            val cameraRc = if (
+                                traceStep != null && benchmark.config.cameraTraceSequence
+                            ) {
+                                BenchmarkBridge.setSurfaceCameraTraceFrame(
+                                    handle,
+                                    checkNotNull(benchmark.config.cameraTracePath),
+                                    traceStep.traceFrameIndex,
+                                    benchmark.config.requireTraceDisplayMatch
+                                )
+                            } else if (traceStep != null) {
+                                // Fixed-trace mode was applied transactionally before the
+                                // render loop. Do not force a fresh sort every frame merely
+                                // to attach the same trace identity to its runtime receipt.
+                                0
+                            } else if (benchmark.enabled && benchmark.config.cameraTracePath == null) {
                                 NativeBridge.orbitSurfaceRenderer(
                                     handle,
                                     benchmark.config.yawStepRadians,
@@ -466,23 +1031,118 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                             consecutiveErrors = 0L
                             val now = System.nanoTime()
                             if (benchmark.enabled) {
+                                val cameraReceiptResult = BenchmarkCameraReceipt.query(handle)
+                                if (cameraReceiptResult.isFailure) {
+                                    Log.e(
+                                        TAG,
+                                        "benchmark camera receipt query failed",
+                                        cameraReceiptResult.exceptionOrNull()
+                                    )
+                                    updateStatus("state=benchmark_camera_receipt_error")
+                                    running = false
+                                    continue
+                                }
+                                val cameraReceipt = cameraReceiptResult.getOrThrow()
+                                val submissionResult = BenchmarkOrderSubmission.query(handle)
+                                if (submissionResult.isFailure) {
+                                    Log.e(
+                                        TAG,
+                                        "benchmark order submission query failed",
+                                        submissionResult.exceptionOrNull()
+                                    )
+                                    updateStatus("state=benchmark_submission_error")
+                                    running = false
+                                    continue
+                                }
+                                val submission = submissionResult.getOrThrow()
+                                benchmark.recordOrderSubmission(submission)
                                 val statsRc = NativeBridge.getSurfaceStats(handle, stats)
                                 val sortStatsRc = NativeBridge.getSurfaceSortStats(handle, sortStats)
                                 if (statsRc == 0 && sortStatsRc == 0) {
-                                    benchmark.record(stats, sortStats, renderCallNs)
+                                    if (logCompletedCpuOrderMeasurements(
+                                            handle,
+                                            benchmark::recordCpuOrderMeasurement
+                                        ) < 0
+                                        || logCompletedOrderMeasurements(
+                                            handle,
+                                            benchmark::recordOrderMeasurement
+                                        ) < 0
+                                        || logCompletedOrderMeasurementFailures(
+                                            handle,
+                                            benchmark::recordOrderMeasurementFailure
+                                        ) < 0
+                                    ) {
+                                        updateStatus("state=benchmark_measurement_error")
+                                        running = false
+                                        continue
+                                    }
+                                    if (traceStep != null) {
+                                        val metadata = checkNotNull(benchmark.config.cameraTraceMetadata)
+                                        Log.i(
+                                            TAG,
+                                            "CAMERA_TRACE_FRAME trace_id=${metadata.id} " +
+                                                "trace_sha256=${metadata.sha256} phase=${traceStep.phase} " +
+                                                "loop=${traceStep.loopIndex} phase_frame=${traceStep.phaseFrameIndex} " +
+                                                "frame_index=${traceStep.traceFrameIndex} " +
+                                                "timestamp_ns=${traceStep.timestampNs} " +
+                                                "requested_backend=${benchmark.config.orderBackend}"
+                                        )
+                                    }
+                                    benchmark.record(
+                                        stats,
+                                        sortStats,
+                                        submission,
+                                        renderCallNs,
+                                        traceStep,
+                                        cameraReceipt
+                                    )
                                     if (benchmark.complete) {
+                                        if (
+                                            !flushCompletedOrderMeasurements(
+                                                handle,
+                                                consume = benchmark::recordOrderMeasurement,
+                                                consumeCpu = benchmark::recordCpuOrderMeasurement,
+                                                consumeFailure = benchmark::recordOrderMeasurementFailure,
+                                                consumeSubmission = benchmark::recordOrderSubmission,
+                                                terminalsComplete = benchmark::orderTerminalsComplete
+                                            )
+                                        ) {
+                                            updateStatus("state=benchmark_measurement_flush_error")
+                                            running = false
+                                            continue
+                                        }
                                         val result = benchmark.resultLine(datasetLabel)
                                         Log.i(TAG, result)
-                                        benchmark.artifactLines(
-                                            datasetLabel = datasetLabel,
-                                            datasetPath = datasetPath,
-                                            surfaceWidth = currentSurfaceWidth,
-                                            surfaceHeight = currentSurfaceHeight,
-                                            density = resources.displayMetrics.density,
-                                            refreshHz = display?.refreshRate?.toDouble(),
-                                            thermalStatusEnd = currentThermalStatus()
-                                        ).forEach { (prefix, json) ->
-                                            Log.i(TAG, "$prefix$json")
+                                        val artifactResult = runCatching {
+                                            val presentation = BenchmarkPresentationReceipt
+                                                .query(handle)
+                                                .getOrThrow()
+                                            presentation.requireFormal(
+                                                currentSurfaceWidth,
+                                                currentSurfaceHeight
+                                            )
+                                            benchmark.artifactLines(
+                                                datasetLabel = datasetLabel,
+                                                datasetPath = datasetPath,
+                                                presentation = presentation,
+                                                physicalDisplayWidth = display?.mode?.physicalWidth,
+                                                physicalDisplayHeight = display?.mode?.physicalHeight,
+                                                density = resources.displayMetrics.density,
+                                                refreshHz = display?.refreshRate?.toDouble(),
+                                                thermalStatusEnd = currentThermalStatus()
+                                            ).forEach { (prefix, json) ->
+                                                logBenchmarkArtifact(prefix, json)
+                                            }
+                                        }
+                                        if (artifactResult.isFailure) {
+                                            val error = artifactResult.exceptionOrNull()
+                                            Log.e(TAG, "formal benchmark artifact rejected", error)
+                                            updateStatus(
+                                                "state=benchmark_artifact_error " +
+                                                    "error=${compactMessage(checkNotNull(error))}"
+                                            )
+                                            running = false
+                                            continue
                                         }
                                         updateStatus("state=benchmark_complete $result")
                                         running = false
@@ -493,7 +1153,13 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                                     running = false
                                 }
                             }
-                            if (now - lastStatusAt > STATUS_INTERVAL_NS) {
+                            if (
+                                BenchmarkUiState.shouldPublishPeriodicRenderStatus(
+                                    running = running,
+                                    elapsedSinceLastStatusNs = now - lastStatusAt,
+                                    statusIntervalNs = STATUS_INTERVAL_NS
+                                )
+                            ) {
                                 lastStatusAt = now
                                 val statsRc = NativeBridge.getSurfaceStats(handle, stats)
                                 val detail = if (statsRc == 0) {
@@ -697,17 +1363,45 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
             .replace('\n', ' ')
             .take(160)
 
-    private fun preferredSurfaceSize(): Pair<Int, Int> {
-        val metrics = resources.displayMetrics
-        val width = metrics.widthPixels.coerceAtLeast(1)
-        val height = metrics.heightPixels.coerceAtLeast(1)
-        val maxSide = MAX_SURFACE_SIDE
-        if (width <= maxSide && height <= maxSide) {
-            return width to height
+    /**
+     * logd truncates a single entry at roughly 4 KiB. A complete terminal
+     * ticket ledger is legitimately larger, so oversized artifact records are
+     * emitted as indexed base64 chunks with one whole-record SHA-256 receipt.
+     */
+    private fun logBenchmarkArtifact(prefix: String, json: String) {
+        val direct = "$prefix$json"
+        if (direct.toByteArray(Charsets.UTF_8).size <= BENCHMARK_LOG_DIRECT_MAX_BYTES) {
+            Log.i(TAG, direct)
+            return
         }
 
-        val scale = maxSide.toDouble() / max(width, height).toDouble()
-        return max(1, (width * scale).roundToInt()) to max(1, (height * scale).roundToInt())
+        val record = when (prefix) {
+            BENCHMARK_MANIFEST_PREFIX -> "manifest"
+            BENCHMARK_FRAME_PREFIX -> "frame"
+            BENCHMARK_SUMMARY_PREFIX -> "summary"
+            else -> error("unknown benchmark artifact prefix")
+        }
+        val runId = JSONObject(json).getString("run_id")
+        val bytes = json.toByteArray(Charsets.UTF_8)
+        val digest = MessageDigest.getInstance("SHA-256")
+            .digest(bytes)
+            .joinToString("") { "%02x".format(it) }
+        val total = (bytes.size + BENCHMARK_LOG_CHUNK_BYTES - 1) /
+            BENCHMARK_LOG_CHUNK_BYTES
+        for (index in 0 until total) {
+            val start = index * BENCHMARK_LOG_CHUNK_BYTES
+            val end = minOf(start + BENCHMARK_LOG_CHUNK_BYTES, bytes.size)
+            val payload = Base64.encodeToString(
+                bytes.copyOfRange(start, end),
+                Base64.NO_WRAP
+            )
+            Log.i(
+                TAG,
+                "$BENCHMARK_CHUNK_PREFIX" +
+                    "record=$record run_id=$runId index=$index total=$total " +
+                    "encoding=base64 sha256=$digest payload=$payload"
+            )
+        }
     }
 
     private fun handleTouch(view: View, event: MotionEvent): Boolean {
@@ -957,6 +1651,13 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
     }
 
     private fun compactSceneStatus(): String {
+        if (latestStatus.startsWith("state=benchmark_complete")) {
+            return BenchmarkUiState.completeSceneStatus(
+                residentSplats = statusValue("resident_splats"),
+                drawnSplats = statusValue("avg_drawn"),
+                avgFrameMs = statusValue("avg_frame_ms")
+            )
+        }
         if (latestStatus.startsWith("state=rendering")) {
             val drawn = statusValue("drawn")
             val frame = statusValue("frame")
@@ -1027,7 +1728,15 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         appendLine("geometry_pipeline=${geometryPipelineName(benchmarkConfig.geometryPath)}")
         appendLine("order_backend=${benchmarkConfig.orderBackend}")
         if (benchmarkConfig.enabled) {
-            appendLine("benchmark=orbit frames=${benchmarkConfig.frames} warmup=${benchmarkConfig.warmupFrames}")
+            val cameraMode = when {
+                benchmarkConfig.cameraTraceSequence -> "trace_sequence"
+                benchmarkConfig.cameraTracePath != null -> "fixed_camera"
+                else -> "orbit"
+            }
+            appendLine(
+                "benchmark=$cameraMode frames=${benchmarkConfig.frames} " +
+                    "warmup=${benchmarkConfig.warmupFrames} loops=${benchmarkConfig.cameraTraceLoops}"
+            )
         }
         appendLine("dataset=$datasetLabel")
         append("path=$datasetPath")
@@ -1043,7 +1752,6 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         private const val TAG = "GsplatExample"
         private const val STATUS_INTERVAL_NS = 500_000_000L
         private const val ERROR_STATUS_INTERVAL = 120L
-        private const val MAX_SURFACE_SIDE = 1600
         private const val ORBIT_RADIANS_PER_SCREEN = 3.2f
         private const val PINCH_MIN_SPAN = 24f
         private const val MIN_ZOOM_STEP = 0.5f
@@ -1062,6 +1770,12 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         private const val EXTRA_BENCHMARK_FRAMES = "gsplat_benchmark_frames"
         private const val EXTRA_BENCHMARK_WARMUP_FRAMES = "gsplat_benchmark_warmup_frames"
         private const val EXTRA_BENCHMARK_YAW_STEP = "gsplat_benchmark_yaw_step"
+        private const val EXTRA_CAMERA_TRACE_PATH = "gsplat_camera_trace_path"
+        private const val EXTRA_CAMERA_TRACE_FRAME = "gsplat_camera_trace_frame"
+        private const val EXTRA_CAMERA_TRACE_SEQUENCE = "gsplat_camera_trace_sequence"
+        private const val EXTRA_CAMERA_TRACE_FRAME_INDICES = "gsplat_camera_frame_indices"
+        private const val EXTRA_CAMERA_TRACE_LOOPS = "gsplat_camera_trace_loops"
+        private const val EXTRA_REQUIRE_TRACE_DISPLAY_MATCH = "gsplat_require_trace_display_match"
         private const val EXTRA_SURFACE_SORT_INTERVAL = "gsplat_surface_sort_interval"
         private const val EXTRA_SURFACE_ASYNC_SORT = "gsplat_surface_async_sort"
         private const val EXTRA_SURFACE_FRAME_LATENCY = "gsplat_surface_frame_latency"
@@ -1070,15 +1784,19 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         private const val DEFAULT_BENCHMARK_FRAMES = 120
         private const val DEFAULT_BENCHMARK_WARMUP_FRAMES = 10
         private const val DEFAULT_BENCHMARK_YAW_STEP = 0.001f
-        private const val DEFAULT_SURFACE_SORT_INTERVAL = 2
+        private const val DEFAULT_SURFACE_SORT_INTERVAL = 1
         private const val DEFAULT_SURFACE_ASYNC_SORT = false
         private const val DEFAULT_SURFACE_FRAME_LATENCY = 2
-        private const val DEFAULT_SURFACE_GEOMETRY_PATH = "direct"
-        private const val DEFAULT_SURFACE_ORDER_BACKEND = "cpu"
+        private const val DEFAULT_SURFACE_GEOMETRY_PATH = "packed"
+        private const val DEFAULT_SURFACE_ORDER_BACKEND = "adaptive"
         private const val TARGET_FRAME_INTERVAL_NS = 16_666_667L
         private const val BENCHMARK_MANIFEST_PREFIX = "GSPLAT_BENCHMARK_MANIFEST "
         private const val BENCHMARK_FRAME_PREFIX = "GSPLAT_BENCHMARK_FRAME "
         private const val BENCHMARK_SUMMARY_PREFIX = "GSPLAT_BENCHMARK_SUMMARY "
+        private const val BENCHMARK_CHUNK_PREFIX = "GSPLAT_BENCHMARK_CHUNK "
+        private const val BENCHMARK_LOG_DIRECT_MAX_BYTES = 3_500
+        private const val BENCHMARK_LOG_CHUNK_BYTES = 1_800
+        private const val CAMERA_RECEIPT_TOLERANCE = 5.0e-5
 
         private val SHOWCASE_TEXT = Color.rgb(245, 241, 232)
         private val SHOWCASE_MUTED = Color.rgb(181, 178, 169)
@@ -1139,24 +1857,67 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         val frameLatency: Int = DEFAULT_SURFACE_FRAME_LATENCY,
         // Sample-only A/B knob: "cpu", "gpu", or "adaptive".
         val orderBackend: String = DEFAULT_SURFACE_ORDER_BACKEND,
-        // Experimental A/B benchmark knob: "direct" (default), "packed", or "paged".
-        val geometryPath: String = DEFAULT_SURFACE_GEOMETRY_PATH
+        // Complete resident production path by default; Direct and Paged remain explicit A/B knobs.
+        val geometryPath: String = DEFAULT_SURFACE_GEOMETRY_PATH,
+        val cameraTracePath: String? = null,
+        val cameraTraceFrame: Int = 0,
+        val cameraTraceSequence: Boolean = false,
+        val cameraTraceFrameIndices: List<Int> = emptyList(),
+        val cameraTraceLoops: Int = 1,
+        val requireTraceDisplayMatch: Boolean = true,
+        val cameraTraceMetadata: CameraTraceMetadata? = null
     ) {
         companion object {
             fun fromIntent(intent: Intent): BenchmarkConfig {
+                val cameraTracePath = intent.getStringExtra(EXTRA_CAMERA_TRACE_PATH)
+                    ?.trim()
+                    ?.takeIf(String::isNotEmpty)
+                val cameraTraceMetadata = cameraTracePath?.let(CameraTraceMetadata::load)
+                val cameraTraceSequence = intent.getBooleanExtra(EXTRA_CAMERA_TRACE_SEQUENCE, false)
+                check(!cameraTraceSequence || cameraTraceMetadata != null) {
+                    "$EXTRA_CAMERA_TRACE_SEQUENCE requires $EXTRA_CAMERA_TRACE_PATH"
+                }
+                check(!cameraTraceSequence || !intent.hasExtra(EXTRA_CAMERA_TRACE_FRAME)) {
+                    "$EXTRA_CAMERA_TRACE_FRAME cannot be combined with $EXTRA_CAMERA_TRACE_SEQUENCE"
+                }
+                val frameIndicesText = intent.getStringExtra(EXTRA_CAMERA_TRACE_FRAME_INDICES)
+                val cameraTraceFrameIndices = if (cameraTraceSequence) {
+                    frameIndicesText?.let(::parseFrameIndices)
+                        ?: cameraTraceMetadata!!.timestamps.indices.toList()
+                } else {
+                    check(frameIndicesText == null && !intent.hasExtra(EXTRA_CAMERA_TRACE_LOOPS)) {
+                        "camera trace sequence extras require $EXTRA_CAMERA_TRACE_SEQUENCE=true"
+                    }
+                    emptyList()
+                }
+                check(!cameraTraceSequence || cameraTraceFrameIndices.size >= 2) {
+                    "camera trace sequence requires at least two frame indices"
+                }
+                cameraTraceMetadata?.validateFrameIndices(cameraTraceFrameIndices)
+
+                val defaultFrames = if (cameraTraceSequence) {
+                    cameraTraceFrameIndices.size
+                } else {
+                    DEFAULT_BENCHMARK_FRAMES
+                }
                 val frames = intent
-                    .getIntExtra(EXTRA_BENCHMARK_FRAMES, DEFAULT_BENCHMARK_FRAMES)
+                    .getIntExtra(EXTRA_BENCHMARK_FRAMES, defaultFrames)
                     .coerceAtLeast(1)
+                val defaultWarmup = if (cameraTraceSequence) 0 else DEFAULT_BENCHMARK_WARMUP_FRAMES
                 val warmupFrames = intent
-                    .getIntExtra(EXTRA_BENCHMARK_WARMUP_FRAMES, DEFAULT_BENCHMARK_WARMUP_FRAMES)
+                    .getIntExtra(EXTRA_BENCHMARK_WARMUP_FRAMES, defaultWarmup)
                     .coerceAtLeast(0)
                 val yawStep = intent
                     .getFloatExtra(EXTRA_BENCHMARK_YAW_STEP, DEFAULT_BENCHMARK_YAW_STEP)
                     .takeIf { it.isFinite() }
                     ?: DEFAULT_BENCHMARK_YAW_STEP
+                val defaultSortInterval = if (cameraTraceSequence) 1 else DEFAULT_SURFACE_SORT_INTERVAL
                 val sortInterval = intent
-                    .getIntExtra(EXTRA_SURFACE_SORT_INTERVAL, DEFAULT_SURFACE_SORT_INTERVAL)
+                    .getIntExtra(EXTRA_SURFACE_SORT_INTERVAL, defaultSortInterval)
                     .coerceAtLeast(1)
+                check(!cameraTraceSequence || sortInterval == 1) {
+                    "camera trace sequence requires $EXTRA_SURFACE_SORT_INTERVAL=1"
+                }
                 val asyncSort = intent
                     .getBooleanExtra(EXTRA_SURFACE_ASYNC_SORT, DEFAULT_SURFACE_ASYNC_SORT)
                 val frameLatency = intent
@@ -1172,6 +1933,19 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                     ?.lowercase(Locale.US)
                     ?.takeIf { it == "cpu" || it == "gpu" || it == "adaptive" }
                     ?: DEFAULT_SURFACE_ORDER_BACKEND
+                val cameraTraceFrame = intent
+                    .getIntExtra(EXTRA_CAMERA_TRACE_FRAME, 0)
+                    .coerceAtLeast(0)
+                if (!cameraTraceSequence && cameraTraceMetadata != null) {
+                    cameraTraceMetadata.validateFrameIndices(listOf(cameraTraceFrame))
+                }
+                val cameraTraceLoops = intent
+                    .getIntExtra(EXTRA_CAMERA_TRACE_LOOPS, 1)
+                    .coerceAtLeast(1)
+                val requireTraceDisplayMatch = intent.getBooleanExtra(
+                    EXTRA_REQUIRE_TRACE_DISPLAY_MATCH,
+                    true
+                )
                 return BenchmarkConfig(
                     enabled = intent.getBooleanExtra(EXTRA_BENCHMARK, false),
                     frames = frames,
@@ -1181,37 +1955,134 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                     asyncSort = asyncSort,
                     frameLatency = frameLatency,
                     orderBackend = orderBackend,
-                    geometryPath = geometryPath
+                    geometryPath = geometryPath,
+                    cameraTracePath = cameraTracePath,
+                    cameraTraceFrame = cameraTraceFrame,
+                    cameraTraceSequence = cameraTraceSequence,
+                    cameraTraceFrameIndices = cameraTraceFrameIndices,
+                    cameraTraceLoops = cameraTraceLoops,
+                    requireTraceDisplayMatch = requireTraceDisplayMatch,
+                    cameraTraceMetadata = cameraTraceMetadata
                 )
+            }
+
+            private fun parseFrameIndices(value: String): List<Int> {
+                check(value.isNotBlank()) { "$EXTRA_CAMERA_TRACE_FRAME_INDICES must not be empty" }
+                val indices = value.split(',').map { part ->
+                    part.trim().toIntOrNull()?.takeIf { it >= 0 }
+                        ?: error("$EXTRA_CAMERA_TRACE_FRAME_INDICES must contain non-negative integers")
+                }
+                check(indices.toSet().size == indices.size) {
+                    "$EXTRA_CAMERA_TRACE_FRAME_INDICES contains duplicates"
+                }
+                return indices
             }
         }
     }
 
+    private data class CameraTraceMetadata(
+        val id: String,
+        val sha256: String,
+        val fileSha256: String,
+        val width: Int,
+        val height: Int,
+        val timestamps: LongArray
+    ) {
+        fun validateFrameIndices(indices: List<Int>) {
+            check(indices.all { it in timestamps.indices }) {
+                "camera trace frame index is out of range for ${timestamps.size} frames"
+            }
+        }
+
+        companion object {
+            fun load(path: String): CameraTraceMetadata {
+                val bytes = File(path).readBytes()
+                val root = JSONObject(bytes.toString(Charsets.UTF_8))
+                check(root.getString("schema") == "gsplat-camera-trace/v1")
+                val id = root.getString("trace_id")
+                val sha256 = root.getString("content_sha256")
+                check(id.isNotEmpty() && sha256.matches(Regex("[0-9a-f]{64}")))
+                val coordinateSystem = root.getJSONObject("coordinate_system")
+                check(coordinateSystem.getString("handedness") == "right")
+                check(coordinateSystem.getString("axes") == "RUF")
+                check(coordinateSystem.getString("camera_forward") == "+Z")
+                val convention = root.getJSONObject("matrix_convention")
+                check(convention.getString("storage_order") == "row-major")
+                check(convention.getString("vector_convention") == "column")
+                check(
+                    convention.getString("composition") ==
+                        "projection * view * world_position"
+                )
+                check(convention.getString("ndc_xy") == "[-1,1]")
+                check(convention.getString("ndc_z") == "[0,1]")
+                check(convention.getString("clip_w") == "camera_z")
+                val display = root.getJSONObject("display")
+                val width = display.getInt("width")
+                val height = display.getInt("height")
+                check(width > 0 && height > 0)
+                val frames = root.getJSONArray("frames")
+                check(frames.length() > 0)
+                val timestamps = LongArray(frames.length()) { index ->
+                    val frame = frames.getJSONObject(index)
+                    check(frame.getInt("frame_index") == index)
+                    frame.getLong("timestamp_ns")
+                }
+                check(timestamps.indices.drop(1).all { timestamps[it] > timestamps[it - 1] })
+                val fileSha256 = MessageDigest.getInstance("SHA-256")
+                    .digest(bytes)
+                    .joinToString("") { "%02x".format(it) }
+                return CameraTraceMetadata(id, sha256, fileSha256, width, height, timestamps)
+            }
+        }
+    }
+
+    private data class CameraTraceStep(
+        val phase: String,
+        val loopIndex: Int,
+        val phaseFrameIndex: Int,
+        val measuredSampleIndex: Int?,
+        val traceFrameIndex: Int,
+        val timestampNs: Long
+    )
+
     private class SurfaceBenchmark(
         val config: BenchmarkConfig,
-        private val thermalStatusStart: Int?
+        private val thermalStatusStart: Int?,
+        private val exactness: BenchmarkExactnessReceipt
     ) {
         val enabled: Boolean = config.enabled
         var complete = false
             private set
 
+        private val measuredSampleCount = if (config.cameraTraceSequence) {
+            Math.multiplyExact(config.frames, config.cameraTraceLoops)
+        } else {
+            config.frames
+        }
+
         private val runId = UUID.randomUUID().toString()
         private val runStartedAtMs = System.currentTimeMillis()
-        private val callNs = LongArray(config.frames)
-        private val frameMicros = LongArray(config.frames)
-        private val preprocessMicros = LongArray(config.frames)
-        private val sortMicros = LongArray(config.frames)
-        private val rasterMicros = LongArray(config.frames)
-        private val visible = LongArray(config.frames)
-        private val drawn = LongArray(config.frames)
-        private val elapsedNs = LongArray(config.frames)
-        private val cameraRevision = LongArray(config.frames)
-        private val appliedOrderRevision = LongArray(config.frames)
-        private val scheduledRevision = LongArray(config.frames)
-        private val completedRevision = LongArray(config.frames)
-        private val presentedOrderLag = LongArray(config.frames)
-        private val observedResultLag = LongArray(config.frames)
-        private val sortFlags = LongArray(config.frames)
+        private val callNs = LongArray(measuredSampleCount)
+        private val frameMicros = LongArray(measuredSampleCount)
+        private val preprocessMicros = LongArray(measuredSampleCount)
+        private val sortMicros = LongArray(measuredSampleCount)
+        private val rasterMicros = LongArray(measuredSampleCount)
+        private val visible = LongArray(measuredSampleCount)
+        private val drawn = LongArray(measuredSampleCount)
+        private val elapsedNs = LongArray(measuredSampleCount)
+        private val cameraRevision = LongArray(measuredSampleCount)
+        private val appliedOrderRevision = LongArray(measuredSampleCount)
+        private val scheduledRevision = LongArray(measuredSampleCount)
+        private val completedRevision = LongArray(measuredSampleCount)
+        private val presentedOrderLag = LongArray(measuredSampleCount)
+        private val observedResultLag = LongArray(measuredSampleCount)
+        private val sortFlags = LongArray(measuredSampleCount)
+        private val orderSubmissionTicket = LongArray(measuredSampleCount)
+        private val orderSubmissionFlags = LongArray(measuredSampleCount)
+        private val traceFrameIndex = IntArray(measuredSampleCount) { -1 }
+        private val traceTimestampNs = LongArray(measuredSampleCount) { -1L }
+        private val traceLoopIndex = IntArray(measuredSampleCount) { -1 }
+        private val cameraReceipts = arrayOfNulls<BenchmarkCameraReceipt>(measuredSampleCount)
         private var observedFrames = 0
         private var samples = 0
         private var measurementStartNs = 0L
@@ -1221,10 +2092,381 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         private var totalFrameMicros = 0L
         private var totalVisible = 0L
         private var totalDrawn = 0L
+        private val orderMeasurementsByRevision = LinkedHashMap<Long, BenchmarkOrderMeasurement>()
+        private val orderMeasurementsByTicket = LinkedHashMap<Long, BenchmarkOrderMeasurement>()
+        private val cpuOrderMeasurementsByRevision =
+            LinkedHashMap<Long, BenchmarkCpuOrderMeasurement>()
+        private val cpuOrderMeasurementsByTicket = LinkedHashMap<Long, BenchmarkCpuOrderMeasurement>()
+        private val orderFailuresByRevision = LinkedHashMap<Long, BenchmarkOrderMeasurementFailure>()
+        private val orderFailuresByTicket = LinkedHashMap<Long, BenchmarkOrderMeasurementFailure>()
+        private val issuedOrderTickets = LinkedHashMap<Long, IssuedOrderTicket>()
+        private val unsampledOrderRequests = ArrayList<String>()
 
-        fun record(stats: LongArray, sortStats: LongArray, renderCallNs: Long) {
+        fun recordOrderSubmission(submission: BenchmarkOrderSubmission) {
+            check(submission.requestedBackend == orderBackendValue(config.orderBackend)) {
+                "order submission requested backend does not match the benchmark"
+            }
+            check(submission.adaptiveState in 0..6) {
+                "order submission reports unknown adaptive state ${submission.adaptiveState}"
+            }
+            check(!(submission.gpuRefresh && submission.cpuFrameCompletionSample)) {
+                "order submission requested both CPU and GPU measurement"
+            }
+            val backend = submission.measurementBackend
+            if (backend == null) {
+                check(submission.ticket == null && submission.unsampledReason == null) {
+                    "non-measured frame published measurement state"
+                }
+                return
+            }
+            check(submission.actualBackend == backend) {
+                "order measurement backend $backend does not match frame ${submission.actualBackend}"
+            }
+            val ticket = submission.ticket
+            if (ticket == null) {
+                check(submission.unsampledReason != null) {
+                    "order measurement request omitted a ticket without unsampled evidence"
+                }
+                unsampledOrderRequests +=
+                    "backend=$backend revision=${submission.cameraRevision} reason=${submission.unsampledReason}"
+                return
+            }
+            check(submission.unsampledReason == null) {
+                "order measurement both issued a ticket and reported unsampled"
+            }
+            check(ticket > 0L) { "order measurement ticket must be positive" }
+            val previous = issuedOrderTickets.put(
+                ticket,
+                IssuedOrderTicket(submission.cameraRevision, backend)
+            )
+            check(previous == null) {
+                "order measurement ticket $ticket was issued more than once"
+            }
+        }
+
+        fun recordOrderMeasurement(measurement: BenchmarkOrderMeasurement) {
+            check(
+                issuedOrderTickets[measurement.ticket] ==
+                    IssuedOrderTicket(measurement.cameraRevision, GSPLAT_ORDER_BACKEND_GPU)
+            ) {
+                "GPU success terminal does not match an issued ticket/revision"
+            }
+            check(measurement.actualBackend == GSPLAT_ORDER_BACKEND_GPU) {
+                "GPU order receipt reports non-GPU backend ${measurement.actualBackend}"
+            }
+            check(measurement.requestedBackend == orderBackendValue(config.orderBackend)) {
+                "GPU order receipt requested backend does not match the benchmark"
+            }
+            check(measurement.adaptiveState in 0..6) {
+                "GPU order receipt reports unknown adaptive state ${measurement.adaptiveState}"
+            }
+            requireContributorCountContract(
+                measurement.visible,
+                measurement.contributor,
+                measurement.drawn,
+                measurement.exactContributorCompaction,
+                "GPU order receipt ${measurement.ticket}"
+            )
+            check(measurement.visible <= exactness.source) {
+                "GPU order receipt count exceeds source count"
+            }
+            check(measurement.flags and (1 shl 5) == 0) {
+                "GPU order receipt queue dropped an older measurement"
+            }
+            check(orderFailuresByTicket[measurement.ticket] == null) {
+                "GPU order ticket ${measurement.ticket} produced both success and failure"
+            }
+            val previousTicket = orderMeasurementsByTicket.put(measurement.ticket, measurement)
+            check(previousTicket == null) {
+                "GPU order ticket ${measurement.ticket} produced multiple success receipts"
+            }
+            val previous = orderMeasurementsByRevision.put(measurement.cameraRevision, measurement)
+            check(previous == null || previous.ticket == measurement.ticket) {
+                "multiple GPU order tickets reported camera revision ${measurement.cameraRevision}"
+            }
+        }
+
+        fun recordCpuOrderMeasurement(measurement: BenchmarkCpuOrderMeasurement) {
+            check(
+                issuedOrderTickets[measurement.ticket] ==
+                    IssuedOrderTicket(measurement.cameraRevision, GSPLAT_ORDER_BACKEND_CPU)
+            ) {
+                "CPU success terminal does not match an issued ticket/revision"
+            }
+            check(measurement.actualBackend == GSPLAT_ORDER_BACKEND_CPU) {
+                "CPU order receipt reports non-CPU backend ${measurement.actualBackend}"
+            }
+            check(measurement.requestedBackend == orderBackendValue(config.orderBackend)) {
+                "CPU order receipt requested backend does not match the benchmark"
+            }
+            check(measurement.adaptiveState in 0..6) {
+                "CPU order receipt reports unknown adaptive state ${measurement.adaptiveState}"
+            }
+            check(
+                measurement.preprocessMs.isFinite() && measurement.preprocessMs >= 0f &&
+                    measurement.sortMs.isFinite() && measurement.sortMs >= 0f &&
+                    measurement.frameCompleteMs.isFinite() && measurement.frameCompleteMs >= 0f
+            ) { "CPU order receipt contains invalid timing" }
+            requireContributorCountContract(
+                measurement.visible,
+                measurement.contributor,
+                measurement.drawn,
+                measurement.exactContributorCompaction,
+                "CPU order receipt ${measurement.ticket}"
+            )
+            check(measurement.visible <= exactness.source) {
+                "CPU order receipt count exceeds source count"
+            }
+            check(measurement.flags and 1 == 0) {
+                "CPU order receipt queue dropped an older measurement"
+            }
+            check(orderFailuresByTicket[measurement.ticket] == null) {
+                "CPU order ticket ${measurement.ticket} produced both success and failure"
+            }
+            check(orderMeasurementsByTicket[measurement.ticket] == null) {
+                "CPU order ticket ${measurement.ticket} produced CPU and GPU success"
+            }
+            val previous = cpuOrderMeasurementsByTicket.put(measurement.ticket, measurement)
+            check(previous == null) {
+                "CPU order ticket ${measurement.ticket} produced multiple success receipts"
+            }
+            val previousRevision = cpuOrderMeasurementsByRevision.put(
+                measurement.cameraRevision,
+                measurement
+            )
+            check(previousRevision == null || previousRevision.ticket == measurement.ticket) {
+                "multiple CPU order tickets reported camera revision ${measurement.cameraRevision}"
+            }
+        }
+
+        fun recordOrderMeasurementFailure(failure: BenchmarkOrderMeasurementFailure) {
+            val issued = checkNotNull(issuedOrderTickets[failure.ticket]) {
+                "order failure terminal does not match an issued ticket"
+            }
+            check(issued.cameraRevision == failure.cameraRevision) {
+                "order failure terminal revision does not match its issued ticket"
+            }
+            check(failure.actualBackend == issued.backend) {
+                "order failure backend does not match its issued ticket"
+            }
+            check(failure.requestedBackend == orderBackendValue(config.orderBackend)) {
+                "GPU order failure requested backend does not match the benchmark"
+            }
+            check(failure.adaptiveState in 0..6) {
+                "GPU order failure reports unknown adaptive state ${failure.adaptiveState}"
+            }
+            check(failure.reason == "readback_map" || failure.reason == "generation_invalidated") {
+                "order failure reports unknown reason ${failure.reason}"
+            }
+            check(issued.backend != GSPLAT_ORDER_BACKEND_CPU || failure.reason != "readback_map") {
+                "CPU order ticket reported a GPU-only readback failure"
+            }
+            check(failure.flags and 1 == 0) {
+                "GPU order failure queue dropped an older terminal receipt"
+            }
+            check(
+                orderMeasurementsByTicket[failure.ticket] == null &&
+                    cpuOrderMeasurementsByTicket[failure.ticket] == null
+            ) {
+                "order ticket ${failure.ticket} produced both success and failure"
+            }
+            val previousTicket = orderFailuresByTicket.put(failure.ticket, failure)
+            check(previousTicket == null) {
+                "GPU order ticket ${failure.ticket} produced multiple failure receipts"
+            }
+            val previous = orderFailuresByRevision.put(failure.cameraRevision, failure)
+            check(previous == null || previous.ticket == failure.ticket) {
+                "multiple GPU order failures reported camera revision ${failure.cameraRevision}"
+            }
+        }
+
+        private fun orderMeasurement(index: Int): BenchmarkOrderMeasurement? {
+            val revision = if (sortFlags[index] and 1L != 0L) {
+                cameraRevision[index]
+            } else {
+                appliedOrderRevision[index]
+            }
+            return orderMeasurementsByRevision[revision]
+        }
+
+        private fun cpuOrderMeasurement(index: Int): BenchmarkCpuOrderMeasurement? {
+            val revision = if (sortFlags[index] and 1L != 0L) {
+                cameraRevision[index]
+            } else {
+                appliedOrderRevision[index]
+            }
+            return cpuOrderMeasurementsByRevision[revision]
+        }
+
+        fun orderTerminalsComplete(): Boolean {
+            if (unsampledOrderRequests.isNotEmpty()) return true
+            return issuedOrderTickets.keys.all { ticket ->
+                orderMeasurementsByTicket[ticket] != null ||
+                    cpuOrderMeasurementsByTicket[ticket] != null ||
+                    orderFailuresByTicket[ticket] != null
+            }
+        }
+
+        private fun resolvedVisible(index: Int): Long =
+            orderMeasurement(index)?.visible
+                ?: cpuOrderMeasurement(index)?.visible
+                ?: error("frame $index lacks a revision-matched terminal V count")
+
+        private fun resolvedDrawn(index: Int): Long =
+            orderMeasurement(index)?.drawn
+                ?: cpuOrderMeasurement(index)?.drawn
+                ?: error("frame $index lacks a revision-matched terminal D count")
+
+        private fun resolvedContributor(index: Int): Long? {
+            orderMeasurement(index)?.let { return it.contributor }
+            return cpuOrderMeasurement(index)?.contributor
+        }
+
+        private fun resolvedExactContributorCompaction(index: Int): Boolean {
+            orderMeasurement(index)?.let { return it.exactContributorCompaction }
+            return cpuOrderMeasurement(index)?.exactContributorCompaction == true
+        }
+
+        private fun requireOrderMeasurements() {
+            check(unsampledOrderRequests.isEmpty()) {
+                "order measurement was unsampled: $unsampledOrderRequests"
+            }
+            for ((ticket, issued) in issuedOrderTickets) {
+                val gpuSuccess = orderMeasurementsByTicket[ticket]
+                val cpuSuccess = cpuOrderMeasurementsByTicket[ticket]
+                val failure = orderFailuresByTicket[ticket]
+                val terminalCount = listOf(gpuSuccess, cpuSuccess, failure).count { it != null }
+                check(terminalCount == 1) {
+                    "issued order ticket $ticket revision ${issued.cameraRevision} " +
+                        "did not produce exactly one terminal receipt"
+                }
+                val terminalRevision = gpuSuccess?.cameraRevision
+                    ?: cpuSuccess?.cameraRevision
+                    ?: failure?.cameraRevision
+                check(terminalRevision == issued.cameraRevision) {
+                    "order ticket $ticket terminal revision does not match its submission"
+                }
+            }
+            check(orderFailuresByTicket.isEmpty()) {
+                val failure = orderFailuresByTicket.values.first()
+                "order measurement failed: ticket=${failure.ticket} " +
+                    "camera_revision=${failure.cameraRevision} reason=${failure.reason}"
+            }
+            val seenTickets = HashSet<Long>()
+            for (index in 0 until samples) {
+                val gpuFrame = ((sortFlags[index] shr 9) and 3L) == 1L
+                val refreshed = sortFlags[index] and 1L != 0L
+                if (!gpuFrame) {
+                    if (refreshed && config.geometryPath != "paged") {
+                        check(orderSubmissionFlags[index] and (1L shl 3) != 0L) {
+                            "CPU order refresh did not request comparable queue-completion timing"
+                        }
+                        check(orderSubmissionFlags[index] and (1L shl 1) != 0L) {
+                            "CPU order refresh did not issue a measurement ticket"
+                        }
+                    }
+                    val measurement = checkNotNull(cpuOrderMeasurement(index)) {
+                        "missing CPU completion receipt for presented revision " +
+                            appliedOrderRevision[index]
+                    }
+                    if (refreshed) {
+                        check(orderSubmissionTicket[index] == measurement.ticket) {
+                            "CPU terminal ticket does not match measured frame submission"
+                        }
+                    }
+                    check(!refreshed || seenTickets.add(measurement.ticket)) {
+                        "duplicate CPU order receipt ticket ${measurement.ticket}"
+                    }
+                    requireContributorCountContract(
+                        measurement.visible,
+                        measurement.contributor,
+                        measurement.drawn,
+                        measurement.exactContributorCompaction,
+                        "CPU frame $index ticket ${measurement.ticket}"
+                    )
+                    continue
+                }
+                if (refreshed) {
+                    check(orderSubmissionFlags[index] and 1L != 0L) {
+                        "GPU order refresh did not request GPU timing"
+                    }
+                    check(orderSubmissionFlags[index] and (1L shl 1) != 0L) {
+                        "GPU order refresh did not issue a measurement ticket"
+                    }
+                    check(orderFailuresByRevision[cameraRevision[index]] == null) {
+                        "GPU order ticket failed for camera revision ${cameraRevision[index]}"
+                    }
+                }
+                val measurement = checkNotNull(orderMeasurement(index)) {
+                    "missing GPU order receipt for presented revision ${appliedOrderRevision[index]}"
+                }
+                if (refreshed) {
+                    check(orderSubmissionTicket[index] == measurement.ticket) {
+                        "GPU terminal ticket does not match the measured frame submission"
+                    }
+                }
+                check(!refreshed || seenTickets.add(measurement.ticket)) {
+                    "duplicate GPU order receipt ticket ${measurement.ticket}"
+                }
+                check(measurement.requestedBackend == orderBackendValue(config.orderBackend)) {
+                    "GPU order receipt requested backend does not match the benchmark"
+                }
+            }
+        }
+
+        fun nextTraceStep(): CameraTraceStep? {
+            if (!enabled || complete || config.cameraTraceMetadata == null) return null
+            val metadata = checkNotNull(config.cameraTraceMetadata)
+            val playbackIndex = observedFrames
+            val measuredIndex = playbackIndex - config.warmupFrames
+            val warmup = measuredIndex < 0
+            val loopIndex = if (warmup || !config.cameraTraceSequence) {
+                0
+            } else {
+                measuredIndex / config.frames
+            }
+            val phaseFrameIndex = if (warmup) playbackIndex else measuredIndex % config.frames
+            val traceFrameIndex = if (config.cameraTraceSequence) {
+                config.cameraTraceFrameIndices[
+                    phaseFrameIndex % config.cameraTraceFrameIndices.size
+                ]
+            } else {
+                config.cameraTraceFrame
+            }
+            return CameraTraceStep(
+                phase = if (warmup) "warmup" else "measure",
+                loopIndex = loopIndex,
+                phaseFrameIndex = phaseFrameIndex,
+                measuredSampleIndex = if (warmup) null else measuredIndex,
+                traceFrameIndex = traceFrameIndex,
+                timestampNs = metadata.timestamps[traceFrameIndex]
+            )
+        }
+
+        fun record(
+            stats: LongArray,
+            sortStats: LongArray,
+            submission: BenchmarkOrderSubmission,
+            renderCallNs: Long,
+            traceStep: CameraTraceStep?,
+            cameraReceipt: BenchmarkCameraReceipt
+        ) {
             if (!enabled || complete) {
                 return
+            }
+            cameraReceipt.requirePresented(sortStats[0])
+            config.cameraTraceMetadata?.let { metadata ->
+                if (config.requireTraceDisplayMatch) {
+                    check(
+                        cameraReceipt.surfaceWidth == metadata.width &&
+                            cameraReceipt.surfaceHeight == metadata.height
+                    ) {
+                        "native camera receipt Surface does not match the trace display"
+                    }
+                }
+                check(traceStep != null) {
+                    "trace benchmark frame omitted its playback identity"
+                }
             }
             observedFrames += 1
             if (observedFrames <= config.warmupFrames) {
@@ -1246,29 +2488,49 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
             drawn[index] = stats[1]
             elapsedNs[index] = nowNs - measurementStartNs
             cameraRevision[index] = sortStats[0]
+            check(submission.cameraRevision == sortStats[0]) {
+                "order submission revision does not match frame sort telemetry"
+            }
+            check(submission.actualBackend == ((sortStats[6] shr 9) and 3L).toInt()) {
+                "order submission backend does not match frame sort telemetry"
+            }
             appliedOrderRevision[index] = sortStats[1]
             scheduledRevision[index] = sortStats[2]
             completedRevision[index] = sortStats[3]
             presentedOrderLag[index] = sortStats[4]
             observedResultLag[index] = sortStats[5]
             sortFlags[index] = sortStats[6]
+            orderSubmissionTicket[index] = submission.ticket ?: 0L
+            orderSubmissionFlags[index] = submission.flags.toLong()
+            cameraReceipts[index] = cameraReceipt
+            if (traceStep != null) {
+                check(traceStep.phase == "measure" && traceStep.measuredSampleIndex == index)
+                traceFrameIndex[index] = traceStep.traceFrameIndex
+                traceTimestampNs[index] = traceStep.timestampNs
+                traceLoopIndex[index] = traceStep.loopIndex
+            }
             samples += 1
             totalVisible += stats[0]
             totalDrawn += stats[1]
             totalFrameMicros += stats[2]
             totalCallNs += renderCallNs
-            complete = samples >= config.frames
+            complete = samples >= measuredSampleCount
             if (complete) {
                 measurementEndedAtMs = System.currentTimeMillis()
             }
         }
 
         fun resultLine(datasetLabel: String): String {
+            requireOrderMeasurements()
             val safeSamples = samples.coerceAtLeast(1)
             var cpuTimingSamples = 0
             var cpuPreprocessMicros = 0L
             var cpuSortMicros = 0L
             var cpuRasterMicros = 0L
+            var cpuQueueCompleteMs = 0.0
+            var cpuQueueCompleteSamples = 0
+            var gpuQueueCompleteMs = 0.0
+            var gpuQueueCompleteSamples = 0
             for (index in 0 until samples) {
                 if (((sortFlags[index] shr 9) and 3L) != 1L) {
                     cpuTimingSamples += 1
@@ -1276,73 +2538,159 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                     cpuSortMicros += sortMicros[index]
                     cpuRasterMicros += rasterMicros[index]
                 }
+                val ticket = orderSubmissionTicket[index].takeIf { it > 0L } ?: continue
+                cpuOrderMeasurementsByTicket[ticket]?.let {
+                    cpuQueueCompleteMs += it.frameCompleteMs
+                    cpuQueueCompleteSamples += 1
+                }
+                orderMeasurementsByTicket[ticket]?.let {
+                    gpuQueueCompleteMs += it.gpuCompleteMs
+                    gpuQueueCompleteSamples += 1
+                }
             }
             val cpuDivisor = cpuTimingSamples.coerceAtLeast(1)
             val averageCpuPreprocess = if (cpuTimingSamples == 0) "n/a" else avgMicros(cpuPreprocessMicros, cpuDivisor)
             val averageCpuSort = if (cpuTimingSamples == 0) "n/a" else avgMicros(cpuSortMicros, cpuDivisor)
             val averageCpuRaster = if (cpuTimingSamples == 0) "n/a" else avgMicros(cpuRasterMicros, cpuDivisor)
-            val averageCount = if (config.geometryPath == "paged") {
-                "avg_loaded_source=${totalVisible / safeSamples}"
+            val averageCpuQueueComplete = if (cpuQueueCompleteSamples == 0) {
+                "n/a"
             } else {
-                "avg_visible=${totalVisible / safeSamples}"
+                "%.3f".format(Locale.US, cpuQueueCompleteMs / cpuQueueCompleteSamples)
+            }
+            val averageGpuQueueComplete = if (gpuQueueCompleteSamples == 0) {
+                "n/a"
+            } else {
+                "%.3f".format(Locale.US, gpuQueueCompleteMs / gpuQueueCompleteSamples)
+            }
+            var resolvedVisibleTotal = 0L
+            var resolvedContributorTotal = 0L
+            var resolvedContributorSamples = 0
+            var resolvedDrawnTotal = 0L
+            for (index in 0 until samples) {
+                resolvedVisibleTotal += resolvedVisible(index)
+                resolvedContributor(index)?.let {
+                    resolvedContributorTotal += it
+                    resolvedContributorSamples += 1
+                }
+                resolvedDrawnTotal += resolvedDrawn(index)
+            }
+            val averageCount = if (config.geometryPath == "paged") {
+                "avg_loaded_source=${resolvedVisibleTotal / safeSamples}"
+            } else {
+                "avg_visible=${resolvedVisibleTotal / safeSamples}"
             }
             return "BENCHMARK_RESULT dataset=$datasetLabel " +
                 "samples=$samples warmup=${config.warmupFrames} sort_interval=${config.sortInterval} " +
+                "loops=${config.cameraTraceLoops} " +
                 "async_sort=${config.asyncSort} " +
                 "order_backend=${config.orderBackend} " +
                 "geometry_pipeline=${geometryPipelineName(config.geometryPath)} " +
                 "frame_latency=${config.frameLatency} " +
+                "source_splats=${exactness.source} " +
+                "resident_splats=${exactness.resident} " +
                 "avg_call_ms=${avgNs(totalCallNs, safeSamples)} " +
                 "avg_frame_ms=${avgMicros(totalFrameMicros, safeSamples)} " +
                 "cpu_timing_samples=$cpuTimingSamples " +
                 "avg_cpu_preprocess_ms=$averageCpuPreprocess " +
                 "avg_cpu_sort_ms=$averageCpuSort " +
                 "avg_cpu_raster_ms=$averageCpuRaster " +
+                "avg_cpu_queue_complete_ms=$averageCpuQueueComplete " +
+                "avg_gpu_queue_complete_ms=$averageGpuQueueComplete " +
                 "$averageCount " +
-                "avg_drawn=${totalDrawn / safeSamples}"
+                (if (resolvedContributorSamples == samples) {
+                    "avg_contributor=${resolvedContributorTotal / safeSamples} "
+                } else {
+                    "avg_contributor=n/a "
+                }) +
+                "avg_drawn=${resolvedDrawnTotal / safeSamples}"
         }
 
         fun artifactLines(
             datasetLabel: String,
             datasetPath: String,
-            surfaceWidth: Int,
-            surfaceHeight: Int,
+            presentation: BenchmarkPresentationReceipt,
+            physicalDisplayWidth: Int?,
+            physicalDisplayHeight: Int?,
             density: Float,
             refreshHz: Double?,
             thermalStatusEnd: Int?
         ): List<Pair<String, String>> {
             check(complete) { "benchmark artifacts require a complete measurement" }
+            requireOrderMeasurements()
+            presentation.requireFormal(
+                presentation.requestedWidth,
+                presentation.requestedHeight
+            )
             val validRefreshHz = refreshHz?.takeIf { it.isFinite() && it > 0.0 }
             val frameBudgetMs = 1000.0 / (validRefreshHz ?: 60.0)
             val datasetMetadata = datasetMetadata(File(datasetPath))
-            val traceId = "orbit-yaw-${config.yawStepRadians}"
+            check(datasetMetadata.splatCount == exactness.source) {
+                "native exactness source count does not match the selected dataset"
+            }
+            check(datasetMetadata.shDegree == exactness.sourceShDegree) {
+                "native exactness source SH degree does not match the selected dataset"
+            }
+            val cameraTrace = config.cameraTraceMetadata
+            val exactnessReceiptId = exactnessReceiptId()
+            val traceId = cameraTrace?.id ?: "orbit-yaw-${config.yawStepRadians}"
+            val traceSha256 = cameraTrace?.sha256
+                ?: sha256(traceId.toByteArray(Charsets.UTF_8))
             val hasGpuFrames = (0 until samples).any { index ->
                 ((sortFlags[index] shr 9) and 3L) == 1L
             }
-            val unavailable = mutableListOf(
+            val hasCpuFrames = (0 until samples).any { index ->
+                ((sortFlags[index] shr 9) and 3L) != 1L
+            }
+            val unavailable = linkedSetOf(
                 "environment.browser",
                 "environment.adapter",
                 "environment.driver",
                 "frames[*].geometry_submit_ms",
                 "frames[*].gpu_wait_ms",
-                "frames[*].gpu_complete_ms",
                 "summary.distributions.geometry_submit_ms",
-                "summary.distributions.gpu_wait_ms",
-                "summary.distributions.gpu_complete_ms"
+                "summary.distributions.gpu_wait_ms"
             )
             if (hasGpuFrames) {
                 unavailable += "frames[*].preprocess_ms"
                 unavailable += "frames[*].sort_ms"
             }
+            if (hasCpuFrames) {
+                unavailable += "frames[*].gpu_complete_ms"
+            }
+            if (!hasGpuFrames) {
+                unavailable += "summary.distributions.gpu_complete_ms"
+            }
+            if (hasGpuFrames) {
+                unavailable += "frames[*].cpu_frame_complete_ms"
+            }
+            if (cpuOrderMeasurementsByTicket.isEmpty()) {
+                unavailable += "summary.distributions.cpu_frame_complete_ms"
+            }
             if (thermalStatusStart == null) unavailable += "environment.thermal_status_start"
             if (thermalStatusEnd == null) unavailable += "environment.thermal_status_end"
+            val contributorContract = (0 until samples).all { index ->
+                resolvedContributor(index) != null
+            }
+            for (index in 0 until samples) {
+                requireContributorCountContract(
+                    resolvedVisible(index),
+                    resolvedContributor(index),
+                    resolvedDrawn(index),
+                    resolvedExactContributorCompaction(index),
+                    "artifact frame $index"
+                )
+            }
 
             val manifest = JSONObject()
                 .put("schema", "gsplat-benchmark/v1")
                 .put("record_type", "manifest")
                 .put("run_id", runId)
                 .put("identity", JSONObject()
-                    .put("series_id", "android-native-orbit")
+                    .put("series_id", when {
+                        config.cameraTraceSequence -> "android-native-camera-trace-sequence"
+                        cameraTrace != null -> "android-native-fixed-camera"
+                        else -> "android-native-orbit"
+                    })
                     .put("started_at_utc", utcTimestamp(runStartedAtMs))
                     .put("ended_at_utc", utcTimestamp(System.currentTimeMillis()))
                     .put("measurement_started_at_utc", utcTimestamp(measurementStartedAtMs))
@@ -1360,23 +2708,123 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                     .put("bytes", datasetMetadata.bytes)
                     .put("splat_count", datasetMetadata.splatCount)
                     .put("sh_degree", datasetMetadata.shDegree))
+                .put("exactness", JSONObject()
+                    .put("receipt_id", exactnessReceiptId)
+                    .put("source_splat_count", exactness.source)
+                    .put("decoded_splat_count", exactness.decoded)
+                    .put("encoded_splat_count", exactness.encoded)
+                    .put("resident_splat_count", exactness.resident)
+                    .put("addressable_splat_count", exactness.addressable)
+                    .put("source_sh_degree", exactness.sourceShDegree)
+                    .put("resident_sh_degree", exactness.residentShDegree)
+                    .put("source_membership", if (exactness.qualityFlags and 1 != 0) "all" else "partial")
+                    .put("sampling", if (exactness.qualityFlags and (1 shl 1) != 0) "disabled" else "enabled")
+                    .put("lod", if (exactness.qualityFlags and (1 shl 2) != 0) "disabled" else "enabled")
+                    .put("sh_degree_policy", if (exactness.qualityFlags and (1 shl 3) != 0) "source" else "reduced")
+                    .put("partial_scene_published", exactness.qualityFlags and (1 shl 4) == 0)
+                    .put("full_quality", exactness.fullQuality))
                 .put("trace", JSONObject()
+                    .put("schema", cameraTrace?.let { "gsplat-camera-trace/v1" } ?: JSONObject.NULL)
                     .put("id", traceId)
-                    .put("sha256", sha256(traceId.toByteArray(Charsets.UTF_8))))
+                    .put("sha256", traceSha256)
+                    .put("file_sha256", cameraTrace?.fileSha256 ?: JSONObject.NULL)
+                    .put("reference_width", cameraTrace?.width ?: JSONObject.NULL)
+                    .put("reference_height", cameraTrace?.height ?: JSONObject.NULL)
+                    .put("playback_mode", when {
+                        config.cameraTraceSequence -> "sequence"
+                        cameraTrace != null -> "fixed"
+                        else -> "endpoint_orbit"
+                    })
+                    .put(
+                        "measured_frames_per_loop",
+                        if (cameraTrace != null) config.frames else JSONObject.NULL
+                    )
+                    .put(
+                        "loops",
+                        if (cameraTrace != null) config.cameraTraceLoops else JSONObject.NULL
+                    )
+                    .put("require_display_match", cameraTrace != null && config.requireTraceDisplayMatch)
+                    .put("display_policy", when {
+                        cameraTrace == null -> "endpoint_orbit"
+                        config.requireTraceDisplayMatch -> "trace_display_exact"
+                        else -> "native_aspect_reprojection"
+                    })
+                    .put("quality_comparable", cameraTrace != null && config.requireTraceDisplayMatch)
+                    .put("coordinate_system", if (cameraTrace == null) {
+                        JSONObject.NULL
+                    } else {
+                        JSONObject()
+                            .put("handedness", "right")
+                            .put("axes", "RUF")
+                            .put("camera_forward", "+Z")
+                    })
+                    .put("matrix_convention", if (cameraTrace == null) {
+                        JSONObject.NULL
+                    } else {
+                        JSONObject()
+                            .put("storage_order", "row-major")
+                            .put("vector_convention", "column")
+                            .put("composition", "projection * view * world_position")
+                            .put("ndc_xy", "[-1,1]")
+                            .put("ndc_z", "[0,1]")
+                            .put("clip_w", "camera_z")
+                    })
+                    .put("runtime_camera_receipt", if (cameraTrace == null) {
+                        JSONObject.NULL
+                    } else {
+                        JSONObject()
+                            .put("schema", "gsplat-surface-camera-receipt/v1")
+                            .put("source", "native_runtime_after_present")
+                            .put("scalar_storage", "float32")
+                            .put("absolute_tolerance", CAMERA_RECEIPT_TOLERANCE)
+                            .put("relative_tolerance", CAMERA_RECEIPT_TOLERANCE)
+                    })
+                    .also { traceJson ->
+                        when {
+                            config.cameraTraceSequence -> traceJson.put(
+                                "frame_indices",
+                                JSONArray(config.cameraTraceFrameIndices)
+                            )
+                            cameraTrace != null -> traceJson.put("frame_index", config.cameraTraceFrame)
+                            else -> traceJson.put("frame_index", JSONObject.NULL)
+                        }
+                    })
                 .put("renderer", JSONObject()
                     .put("implementation", "gsplat-rs-native")
                     .put("path", geometryPipelineName(config.geometryPath))
                     .put("backend", "vulkan")
+                    .put("max_storage_buffers_per_shader_stage", exactness.maxStorageBuffersPerShaderStage)
+                    .put("max_storage_buffer_binding_size", exactness.maxStorageBufferBindingSize)
                     .put("order_backend_requested", config.orderBackend)
+                    .put("sort_interval", config.sortInterval)
                     .put("gpu_count_semantics", "source_count_upper_bound; sort-all/draw-all")
                     .put("sort_policy", if (config.asyncSort) {
                         "async_latest:${config.sortInterval}"
                     } else {
                         "interval:${config.sortInterval}"
-                    }))
+                    })
+                    .also { renderer ->
+                        if (contributorContract) {
+                            renderer.put("count_semantics", COUNT_SEMANTICS)
+                        }
+                    })
+                .put("resolution", JSONObject()
+                    .put("requested_width", presentation.requestedWidth)
+                    .put("requested_height", presentation.requestedHeight)
+                    .put("surface_width", presentation.surfaceWidth)
+                    .put("surface_height", presentation.surfaceHeight)
+                    .put("internal_render_width", presentation.internalRenderWidth)
+                    .put("internal_render_height", presentation.internalRenderHeight)
+                    .put("presented_width", presentation.presentedWidth)
+                    .put("presented_height", presentation.presentedHeight)
+                    .put("presented_camera_revision", presentation.presentedCameraRevision)
+                    .put("dynamic_resolution", "disabled")
+                    .put("upscaling", "disabled")
+                    .put("full_resolution", presentation.fullResolution)
+                    .put("native_flags", presentation.flags))
                 .put("display", JSONObject()
-                    .put("width", surfaceWidth)
-                    .put("height", surfaceHeight)
+                    .put("width", presentation.presentedWidth)
+                    .put("height", presentation.presentedHeight)
                     .put("dpr", density.toDouble())
                     .put("refresh_hz", validRefreshHz ?: 60.0)
                     .put("refresh_hz_source", if (validRefreshHz == null) "configured" else "observed")
@@ -1390,6 +2838,9 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                     .put("adapter", JSONObject.NULL)
                     .put("driver", JSONObject.NULL)
                     .put("hardware", Build.HARDWARE)
+                    .put("orientation", "landscape")
+                    .put("physical_display_width", physicalDisplayWidth ?: JSONObject.NULL)
+                    .put("physical_display_height", physicalDisplayHeight ?: JSONObject.NULL)
                     .put("thermal_status_start", thermalStatusStart ?: JSONObject.NULL)
                     .put("thermal_status_end", thermalStatusEnd ?: JSONObject.NULL))
                 .put("unavailable_fields", JSONArray(unavailable))
@@ -1399,6 +2850,22 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
             for (index in 0 until samples) {
                 val flags = sortFlags[index]
                 val gpuBackend = ((flags shr 9) and 3L) == 1L
+                val orderMeasurement = if (gpuBackend) {
+                    checkNotNull(orderMeasurement(index))
+                } else {
+                    null
+                }
+                val cpuMeasurement = if (!gpuBackend) {
+                    checkNotNull(cpuOrderMeasurement(index))
+                } else {
+                    null
+                }
+                val terminalTicket = orderMeasurement?.ticket ?: cpuMeasurement?.ticket
+                val terminalRevision = orderMeasurement?.cameraRevision
+                    ?: cpuMeasurement?.cameraRevision
+                val contributor = resolvedContributor(index)
+                val exactContributorCompaction =
+                    resolvedExactContributorCompaction(index)
                 val frame = JSONObject()
                     .put("schema", "gsplat-benchmark/v1")
                     .put("record_type", "frame")
@@ -1411,9 +2878,10 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                     .put("sort_ms", if (gpuBackend) JSONObject.NULL else sortMicros[index].toDouble() / 1000.0)
                     .put("geometry_submit_ms", JSONObject.NULL)
                     .put("gpu_wait_ms", JSONObject.NULL)
-                    .put("gpu_complete_ms", JSONObject.NULL)
-                    .put("visible", visible[index])
-                    .put("drawn", drawn[index])
+                    .put("gpu_complete_ms", orderMeasurement?.gpuCompleteMs?.toDouble() ?: JSONObject.NULL)
+                    .put("cpu_frame_complete_ms", cpuMeasurement?.frameCompleteMs?.toDouble() ?: JSONObject.NULL)
+                    .put("visible", resolvedVisible(index))
+                    .put("drawn", resolvedDrawn(index))
                     .put("sort_refreshed", flags and 1L != 0L)
                     .put("camera_revision", cameraRevision[index])
                     .put("applied_order_revision", appliedOrderRevision[index])
@@ -1428,6 +2896,37 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                     .put("order_backend", if (((flags shr 9) and 3L) == 1L) "gpu" else "cpu")
                     .put("gpu_sort_fallback", flags and (1L shl 11) != 0L)
                     .put("adaptive_state", adaptiveStateName(flags))
+                    .put("adaptive_gpu_failure", adaptiveGpuFailureName(flags) ?: JSONObject.NULL)
+                    .put("trace_frame_index", if (traceFrameIndex[index] >= 0) traceFrameIndex[index] else JSONObject.NULL)
+                    .put("trace_timestamp_ns", if (traceTimestampNs[index] >= 0L) traceTimestampNs[index] else JSONObject.NULL)
+                    .put("trace_loop_index", if (traceLoopIndex[index] >= 0) traceLoopIndex[index] else JSONObject.NULL)
+                    .put(
+                        "camera_receipt",
+                        cameraReceiptJson(checkNotNull(cameraReceipts[index]))
+                    )
+                    .put("order_backend_requested", config.orderBackend)
+                    .put("order_measurement_ticket", terminalTicket ?: JSONObject.NULL)
+                    .put("order_measurement_ticket_issued", orderSubmissionFlags[index] and (1L shl 1) != 0L)
+                    .put("order_submission_ticket", orderSubmissionTicket[index].takeIf { it > 0L } ?: JSONObject.NULL)
+                    .put("order_submission_flags", orderSubmissionFlags[index])
+                    .put("order_measurement_camera_revision", terminalRevision ?: JSONObject.NULL)
+                    .put("order_timing_source", orderMeasurement?.timingSource ?: JSONObject.NULL)
+                    .put("gpu_preprocess_ms", orderMeasurement?.gpuPreprocessMs?.toDouble() ?: JSONObject.NULL)
+                    .put("gpu_radix_ms", orderMeasurement?.gpuRadixMs?.toDouble() ?: JSONObject.NULL)
+                    .put("gpu_order_ms", orderMeasurement?.gpuOrderMs?.toDouble() ?: JSONObject.NULL)
+                    .put("gpu_timestamp_period_ns", orderMeasurement?.timestampPeriodNs?.toDouble() ?: JSONObject.NULL)
+                    .put("order_measurement_flags", orderMeasurement?.flags ?: JSONObject.NULL)
+                    .put("cpu_order_measurement_flags", cpuMeasurement?.flags ?: JSONObject.NULL)
+                    .also { frameJson ->
+                        if (contributorContract) {
+                            frameJson
+                                .put("contributor", checkNotNull(contributor))
+                                .put(
+                                    "exact_contributor_compaction",
+                                    exactContributorCompaction
+                                )
+                        }
+                    }
                 lines += BENCHMARK_FRAME_PREFIX to frame.toString()
             }
 
@@ -1450,11 +2949,42 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                     .put("sort_ms", cpuTimingDistribution(sortMicros))
                     .put("geometry_submit_ms", JSONObject.NULL)
                     .put("gpu_wait_ms", JSONObject.NULL)
-                    .put("gpu_complete_ms", JSONObject.NULL))
+                    .put("gpu_complete_ms", gpuMeasurementDistribution { it.gpuCompleteMs.toDouble() })
+                    .put("cpu_frame_complete_ms", cpuMeasurementDistribution())
+                    .put("gpu_preprocess_ms", gpuMeasurementDistribution { it.gpuPreprocessMs?.toDouble() })
+                    .put("gpu_radix_ms", gpuMeasurementDistribution { it.gpuRadixMs?.toDouble() })
+                    .put("gpu_order_ms", gpuMeasurementDistribution { it.gpuOrderMs?.toDouble() }))
                 .put("sort_telemetry", sortTelemetrySummary())
+                .put("order_terminal_ledger", orderTerminalLedger(exactnessReceiptId))
             lines += BENCHMARK_SUMMARY_PREFIX to summary.toString()
             return lines
         }
+
+        private fun cameraReceiptJson(receipt: BenchmarkCameraReceipt): JSONObject =
+            JSONObject()
+                .put("schema", "gsplat-surface-camera-receipt/v1")
+                .put("source", "native_runtime_after_present")
+                .put("camera_revision", receipt.cameraRevision)
+                .put("presented_camera_revision", receipt.presentedCameraRevision)
+                .put("surface_width", receipt.surfaceWidth)
+                .put("surface_height", receipt.surfaceHeight)
+                .put("flags", receipt.flags)
+                .put("pose", JSONObject()
+                    .put("position", JSONArray(receipt.position.map { it.toDouble() }))
+                    .put("rotation_xyzw", JSONArray(receipt.rotationXyzw.map { it.toDouble() })))
+                .put("intrinsics", JSONObject()
+                    .put("vertical_fov_radians", receipt.verticalFovRadians.toDouble())
+                    .put("near_plane", receipt.nearPlane.toDouble())
+                    .put("far_plane", receipt.farPlane.toDouble()))
+                .put("view_matrix", JSONArray(receipt.viewMatrix.map { it.toDouble() }))
+                .put(
+                    "projection_matrix",
+                    JSONArray(receipt.projectionMatrix.map { it.toDouble() })
+                )
+                .put(
+                    "view_projection_matrix",
+                    JSONArray(receipt.viewProjectionMatrix.map { it.toDouble() })
+                )
 
         private fun sortTelemetrySummary(): JSONObject {
             var scheduled = 0
@@ -1466,8 +2996,13 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
             var gpuFrames = 0
             var gpuFallbacks = 0
             var backendSwitches = 0
+            var adaptiveGpuFailureFrames = 0
             var previousBackend = -1L
             var maxPresentedLag = 0L
+            var gpuReceipts = 0
+            var gpuTimestampReceipts = 0
+            var gpuCompletionReceipts = 0
+            var gpuDroppedReceipts = 0
             for (index in 0 until samples) {
                 val flags = sortFlags[index]
                 if (flags and (1L shl 2) != 0L) scheduled += 1
@@ -1480,8 +3015,24 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                 if (previousBackend >= 0L && backend != previousBackend) backendSwitches += 1
                 previousBackend = backend
                 if (flags and (1L shl 11) != 0L) gpuFallbacks += 1
+                if (adaptiveGpuFailureName(flags) != null) adaptiveGpuFailureFrames += 1
                 maxPresentedLag = maxOf(maxPresentedLag, presentedOrderLag[index])
             }
+            for ((ticket, issued) in issuedOrderTickets) {
+                if (issued.backend != GSPLAT_ORDER_BACKEND_GPU) continue
+                val measurement = orderMeasurementsByTicket[ticket] ?: continue
+                gpuReceipts += 1
+                if (measurement.timingSource == "timestamp_query") {
+                    gpuTimestampReceipts += 1
+                } else if (measurement.timingSource == "completion") {
+                    gpuCompletionReceipts += 1
+                }
+                if (measurement.flags and (1 shl 5) != 0) gpuDroppedReceipts += 1
+            }
+            val issuedCpuCount = issuedOrderTickets.values.count {
+                it.backend == GSPLAT_ORDER_BACKEND_CPU
+            }
+            val issuedGpuCount = issuedOrderTickets.size - issuedCpuCount
             return JSONObject()
                 .put("scheduled_count", scheduled)
                 .put("completed_count", completed)
@@ -1491,7 +3042,23 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                 .put("cpu_frame_count", cpuFrames)
                 .put("gpu_frame_count", gpuFrames)
                 .put("gpu_sort_fallback_count", gpuFallbacks)
+                .put("order_measurement_scheduled_count", issuedOrderTickets.size)
+                .put("cpu_order_measurement_scheduled_count", issuedCpuCount)
+                .put("cpu_order_measurement_completed_count", cpuOrderMeasurementsByTicket.size)
+                .put("gpu_order_measurement_scheduled_count", issuedGpuCount)
+                .put("gpu_order_measurement_completed_count", gpuReceipts)
+                .put("gpu_order_measurement_timestamp_count", gpuTimestampReceipts)
+                .put("gpu_order_measurement_completion_count", gpuCompletionReceipts)
+                .put("gpu_order_measurement_dropped_count", gpuDroppedReceipts)
+                .put("order_measurement_terminal_failure_count", orderFailuresByTicket.size)
+                .put("order_measurement_unsampled_count", unsampledOrderRequests.size)
                 .put("backend_switch_count", backendSwitches)
+                .put("adaptive_gpu_failure_frame_count", adaptiveGpuFailureFrames)
+                .put("adaptive_gpu_failure_final", if (samples > 0) {
+                    adaptiveGpuFailureName(sortFlags[samples - 1]) ?: JSONObject.NULL
+                } else {
+                    JSONObject.NULL
+                })
                 .put("adaptive_final_state", if (samples > 0) {
                     adaptiveStateName(sortFlags[samples - 1])
                 } else {
@@ -1500,6 +3067,67 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                 .put("max_presented_revision_lag", maxPresentedLag)
                 .put("stale_applied_count", 0)
         }
+
+        private fun orderTerminalLedger(exactnessReceiptId: String): JSONArray {
+            val ledger = JSONArray()
+            issuedOrderTickets.keys.sorted().forEach { ticket ->
+                val issued = checkNotNull(issuedOrderTickets[ticket])
+                val record = JSONObject()
+                    .put("ticket", ticket)
+                    .put("camera_revision", issued.cameraRevision)
+                    .put("backend", if (issued.backend == GSPLAT_ORDER_BACKEND_GPU) "gpu" else "cpu")
+                    .put("exactness_receipt_id", exactnessReceiptId)
+                when {
+                    orderMeasurementsByTicket[ticket] != null -> {
+                        val measurement = checkNotNull(orderMeasurementsByTicket[ticket])
+                        record
+                            .put("outcome", "success")
+                            .put("frame_complete_ms", measurement.gpuCompleteMs.toDouble())
+                            .put("visible", measurement.visible)
+                            .put("contributor", measurement.contributor)
+                            .put("drawn", measurement.drawn)
+                            .put(
+                                "exact_contributor_compaction",
+                                measurement.exactContributorCompaction
+                            )
+                    }
+                    cpuOrderMeasurementsByTicket[ticket] != null -> {
+                        val measurement = checkNotNull(cpuOrderMeasurementsByTicket[ticket])
+                        record
+                            .put("outcome", "success")
+                            .put("frame_complete_ms", measurement.frameCompleteMs.toDouble())
+                            .put("visible", measurement.visible)
+                            .put("contributor", measurement.contributor)
+                            .put("drawn", measurement.drawn)
+                            .put(
+                                "exact_contributor_compaction",
+                                measurement.exactContributorCompaction
+                            )
+                    }
+                    orderFailuresByTicket[ticket] != null -> {
+                        val failure = checkNotNull(orderFailuresByTicket[ticket])
+                        record
+                            .put("outcome", "failure")
+                            .put("failure_reason", failure.reason)
+                    }
+                    else -> record.put("outcome", "pending")
+                }
+                ledger.put(record)
+            }
+            return ledger
+        }
+
+        private fun exactnessReceiptId(): String = listOf(
+            "native-exactness-v1",
+            exactness.source,
+            exactness.decoded,
+            exactness.encoded,
+            exactness.resident,
+            exactness.addressable,
+            exactness.sourceShDegree,
+            exactness.residentShDegree,
+            exactness.qualityFlags
+        ).joinToString(":")
 
         private fun distributionJson(values: LongArray, count: Int, divisor: Double): JSONObject {
             val sorted = values.copyOf(count).also(LongArray::sort)
@@ -1529,6 +3157,53 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
             } else {
                 distributionJson(filtered, count, 1000.0)
             }
+        }
+
+        private fun gpuMeasurementDistribution(
+            select: (BenchmarkOrderMeasurement) -> Double?
+        ): Any {
+            val values = ArrayList<Double>()
+            for (index in 0 until samples) {
+                val measurement = orderMeasurement(index) ?: continue
+                select(measurement)?.let(values::add)
+            }
+            if (values.isEmpty()) return JSONObject.NULL
+            values.sort()
+            val sum = values.sum()
+            fun nearestRank(fraction: Double): Double {
+                val index = maxOf(kotlin.math.ceil(fraction * values.size).toInt() - 1, 0)
+                return values[index]
+            }
+            return JSONObject()
+                .put("count", values.size)
+                .put("mean", sum / values.size.toDouble())
+                .put("p50", nearestRank(0.50))
+                .put("p90", nearestRank(0.90))
+                .put("p95", nearestRank(0.95))
+                .put("p99", nearestRank(0.99))
+                .put("max", values.last())
+        }
+
+        private fun cpuMeasurementDistribution(): Any {
+            val values = ArrayList<Double>()
+            for (index in 0 until samples) {
+                val ticket = orderSubmissionTicket[index].takeIf { it > 0L } ?: continue
+                cpuOrderMeasurementsByTicket[ticket]?.frameCompleteMs?.toDouble()?.let(values::add)
+            }
+            values.sort()
+            if (values.isEmpty()) return JSONObject.NULL
+            fun nearestRank(fraction: Double): Double {
+                val index = maxOf(kotlin.math.ceil(fraction * values.size).toInt() - 1, 0)
+                return values[index]
+            }
+            return JSONObject()
+                .put("count", values.size)
+                .put("mean", values.sum() / values.size.toDouble())
+                .put("p50", nearestRank(0.50))
+                .put("p90", nearestRank(0.90))
+                .put("p95", nearestRank(0.95))
+                .put("p99", nearestRank(0.99))
+                .put("max", values.last())
         }
 
         private fun utcTimestamp(epochMs: Long): String =

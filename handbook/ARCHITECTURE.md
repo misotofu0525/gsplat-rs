@@ -18,9 +18,17 @@
   experimental SPZ v4 loader lives in `crates/gsplat-io-spz`.
 - Sorting lives in `crates/gsplat-sort`.
 - Rendering and GPU-facing orchestration live in `crates/gsplat-render-wgpu`.
-  `lib.rs` owns renderer/public entrypoints, `surface_presenter.rs` owns Surface
-  resources, `paged_active_set.rs` owns fixed-slot scheduling/residency, and
-  `page_source.rs` separates local extraction/packing from GPU page upload.
+  `lib.rs` owns renderer/public entrypoints, `resident_scene.rs` owns the
+  exact-count compact CPU encoding, `resident_gpu.rs` owns its GPU planes and
+  coherent SH resolve, `direct_gpu_order.rs` owns portable GPU
+  visibility/radix/indirect draw, `gpu_telemetry.rs` owns ticketed completion,
+  `projected_quads_gpu.rs` owns the default exact projection cache and
+  instanced draw, `preproject_gpu.rs` owns the lazy diagnostic direct
+  contributor producer, and `gpu_producer_telemetry.rs` owns its independent
+  A/B receipts. `tiled_resident_gpu.rs` is the lazy exact tiled oracle, while
+  `surface_presenter.rs`/`surface_session.rs` own presentation and runtime
+  CPU/GPU/Adaptive plus Packed GPU-producer selection. Paged files remain an
+  explicit diagnostic seam.
 - Native embedding goes through `crates/gsplat-ffi-c`.
 - Browser WebAssembly embedding goes through `crates/gsplat-web`.
 - Runtime validation entrypoints are `examples/desktop`, `examples/android`,
@@ -67,22 +75,56 @@
   adapter/device compatible with the platform surface
   render dimensions are checked before `wgpu` resource creation, and GPU
   submission/wait failures remain structured errors
-  stable Surface constructors and `GeometryPath::default()` remain Direct;
-  Packed/Paged paths require explicit diagnostic selection, while resource
-  preflight reports capacity without silently changing product policy
+  low-level Surface constructors and `GeometryPath::default()` remain Direct
+  for compatibility; product examples and SDK wrappers explicitly select
+  exact-count Packed, while Direct is the wide-f32 oracle and Paged is
+  diagnostic only
+  resource preflight reports capacity without silently changing geometry,
+  membership, SH degree, or ordering backend
 
 - Shared Surface frame flow:
   `SurfaceRenderSession` in
   `crates/gsplat-render-wgpu/src/surface_session.rs` owns `Renderer`,
-  `SurfacePresenter`, camera revisions, CPU sort cadence, compact order-upload
-  state, and frame statistics
+  `SurfacePresenter`, camera revisions, CPU/GPU order state, Adaptive probes,
+  ticketed measurements, and frame statistics
   changed-camera frames advance the default interval schedule; identical
   redraws do not repeatedly sort
-  on Direct, scene-derived positions, covariance terms, opacity, DC color, and
-  SH data stay GPU-resident; sort refreshes upload only sorted `u32` source IDs
-  Packed keeps full SH in `SceneBuffers` and uploads refreshed RGB hot words
-  every acquired swapchain image is rendered by the direct vertex/fragment
-  pipeline even when the scene and order buffers are already current
+  Direct keeps wide scene-derived positions, covariance, opacity, DC, and SH
+  GPU-resident as the f32 image oracle
+  production Packed keeps every source point in planar Resident GPU buffers:
+  exact f32 position/alpha/covariance, compact DC and complete source SH0-SH3,
+  resolved RGB18E8 high-dynamic-range color, and source IDs
+  camera-position changes run one coherent all-point SH resolve; rotation-only
+  changes can reuse color
+  CPU ordering uploads compact sorted IDs; GPU ordering generates exact
+  visibility and stable order on the GPU and draws through indirect arguments
+  the qualified Packed GPU path remains the default post-sort producer; an
+  explicit diagnostic Preproject selector instead projects every source,
+  compacts exact contributors in source order, and stable-full32-sorts only
+  that contributor prefix. It is lazy, transactionally published, restricted
+  to forced Compact projected draws, and does not replace CPU/GPU/Adaptive
+  both CPU and GPU order backends feed the same authoritative visible order into the
+  default `ProjectedQuadsExact` plan: one compute projection per visible splat
+  writes two separate 16-byte rank-indexed planes, followed by a four-vertex
+  `TriangleStrip` hardware-instanced premultiplied-alpha draw; CPU order
+  supplies an exact direct count and GPU order reuses the sorter's exact
+  indirect count without readback
+  Adaptive compares CPU and GPU with the same `FrameCompletion` interval,
+  measured from frame start through queue completion; that interval includes
+  ordering, projection, rasterization, submission, and queued GPU work
+  order-stage timestamps remain diagnostics and never drive backend selection;
+  changing the raster execution plan resets Adaptive learning because samples
+  from different raster plans are not comparable
+  the projected planes persist across frames and are reused only while order
+  ownership/generation, complete camera, viewport, and draw-count guard remain
+  identical; any order refresh, CPU/GPU transition, camera change, resize, or
+  count change invalidates them before the next draw
+  `GlobalQuads` remains an exact Resident image/performance oracle and
+  `TiledExact` is allocated lazily as an exact diagnostic, never as a capacity
+  fallback; all plans preserve source membership, SH, resolution, and order
+  every acquired swapchain image executes the selected exact draw; a stationary
+  Projected frame may reuse its already exact rank-indexed projection instead
+  of recomputing identical values
   the experimental paged branch instead schedules a fixed four-slot local
   active atlas in the presenter, densely packs stable spatial cell order across
   page boundaries, pins one globally sampled source-index-disjoint cover page
@@ -90,9 +132,13 @@
   view-ranked refinements; it sorts only resident entries and reuses the packed
   shader for Surface draws, while paged frame stats expose active draw against
   loaded source count so fixed residency remains visible to clients
-  Surface construction runs one shared metadata-only resource plan before
-  device allocation, so over-Direct-limit paged scenes negotiate fixed-slot
-  resources without first allocating their Direct representation
+  Packed Surface construction preflights the actual final planes and eight
+  color-resolve storage bindings plus two projected-cache bindings before
+  device allocation; each projected plane is `16 * splat_count` bytes so the
+  portable 128 MiB per-binding limit reaches 8,388,608 splats; validation/OOM/
+  internal scopes publish resources only after complete success
+  successful Surface handoff releases Packed upload staging while retaining
+  exact CPU positions for CPU/Adaptive sorting; failed handoff is transactional
   `LocalScenePageSource` extracts and packs one transient decoded payload at a
   time, while `PagedAtlasGpu` consumes only that payload; the local adapter
   still depends on fully resident `SceneBuffers` for source data, global sort,
@@ -102,10 +148,14 @@
   starts from C, Swift, or Kotlin/JNI host entrypoints
   crosses `crates/gsplat-ffi-c/include/gsplat.h` and `crates/gsplat-ffi-c/src/lib.rs`
   maps active v0.1 controls onto `SurfaceRenderSession`; additive experimental
-  constructors can select direct, packed, or local paged atlas before scene
-  derivation and Surface allocation, while the runtime setter remains an A/B
-  control that preserves the old session when target resource preparation
-  returns an error; native async CPU sorting stays behind the shared session
+  constructors can select Direct, full-resident Packed, or local Paged before
+  scene derivation and Surface allocation; runtime geometry/backend setters
+  preserve the old session when target preparation returns an error; native
+  async CPU sorting and lazy GPU-order creation stay behind the shared session
+  exposes exactness, adapter-limit, requested/actual backend, and completed GPU
+  order receipts without moving scheduling policy into JNI or Swift; the
+  versioned read-only camera receipt derives canonical matrices from the live
+  f32 session camera and joins them to the current/presented revision
   keeps each native handle owned by one serialized thread or queue; wrapper
   APIs add their own locking, while direct C/JNI callers must provide the same
   serialization
@@ -119,11 +169,15 @@
   creates a raw-handle `wgpu::Surface` in
   `crates/gsplat-render-wgpu/src/surface_presenter.rs`
   presents directly to the Android swapchain, not through offscreen readback
-  accepts `gsplat_geometry_path=paged` at construction for the experimental
-  local PLY-backed fixed-slot Surface path; direct remains the default and
-  release-gated path
+  selects full-resident Packed plus Adaptive ordering in the product example;
+  Direct remains available as an oracle and `gsplat_geometry_path=paged`
+  remains an explicit non-full-quality diagnostic
   packages the selected build-time scene as `assets/showcase.ply` plus its source-name metadata, preferring the CC0 Kitsune scene and falling back to Flowers
   presents compact showcase telemetry while keeping the complete validation status behind the `Studio` control
+  formal trace artifacts read the native post-present camera receipt for every
+  measured frame and are checked against the separately supplied trace by
+  index, timestamp, pose, intrinsics, matrices, Surface size, revision, and
+  exact trace-file hash; trace JSON is not reused as runtime matrix evidence
   packages the JNI library through `bindings/android/gsplat-android` for local AAR builds
 
 - iOS Surface flow:
@@ -141,23 +195,34 @@
 
 - Web WASM renderer flow:
   starts at browser JavaScript that imports the local `packages/web` wrapper or generated `gsplat-web` wasm package
-  passes an `HtmlCanvasElement`, PLY bytes, and dimensions through `wasm-bindgen`
-  parses the PLY with `gsplat-io-ply::parse_ply_bytes`
-  applies an experimental packed/paged selector before scene derivation while
-  preserving the existing Direct constructor as the default
+  passes an `HtmlCanvasElement`, dimensions, and in-memory or streamed PLY
+  chunks through `wasm-bindgen`
+  production URL/File/custom-stream input feeds the incremental PLY decoder
+  directly into `ResidentSceneBuilder`; it does not materialize a second wide
+  WASM scene
+  defaults to full-resident Packed plus Adaptive ordering while preserving an
+  explicit Direct compatibility/oracle constructor and diagnostic Paged choice
   loads the scene into `gsplat-render-wgpu::Renderer`
   creates a browser canvas `wgpu::Surface` through `SurfacePresenter::from_canvas`
   hands both objects to `SurfaceRenderSession`, so the browser wrapper does not
   own a second frame scheduler or sorted-index copy
-  defaults to resident scene buffers plus compact sorted IDs; the experimental
-  selector may instead use the same fixed four-slot local paged atlas as native
-  sorting remains CPU radix so Web shares the same production policy as native
+  prepares GPU-order resources, Direct/Packed runtime geometry changes, and
+  production Packed + Projected Surface resizes through raw async wasm
+  transactions; geometry CPU derivations and complete target GPU graphs stay
+  unpublished until validation/OOM/internal scopes complete, changed-path
+  synchronous setters fail closed, and Paged remains a constructor-time-only
+  diagnostic; resize failure restores the old Surface configuration, while
+  rollback failure makes presentation fail closed
+  CPU and GPU order feed the same Resident draw path; Adaptive measures both
+  using the shared policy
+  every `renderFrame` drains all newly completed GPU receipts, which browser
+  evidence joins to submitted frames by ticket and camera revision
 
 - Desktop rendering flows:
   the interactive viewer uses the same `SurfaceRenderSession` as Web/mobile;
-  direct sorted indices are its only geometry pipeline
-  native offscreen rendering uses the same direct shader/resource layout and
-  reads back its texture for PNG/conformance output
+  it defaults to Packed/Adaptive and accepts forced CPU/GPU plus Direct oracle
+  native offscreen rendering accepts Direct or Packed, reads back its texture,
+  and supplies deterministic PNG/conformance comparisons
   CPU-projected `GpuInstance` values remain only as a reference oracle for
   conformance tests, not as a selectable runtime renderer
 
@@ -189,10 +254,22 @@
   raster path; Surface-only construction is explicit.
 - Surface frame scheduling belongs in `SurfaceRenderSession`, not in Web, FFI,
   desktop, Android, or Apple wrapper-specific state machines.
-- CPU depth sorting is shared by the release-gated direct geometry pipeline
-  across Web, desktop, Android, and Apple; the packed/paged selectors remain
-  experimental. Direct keeps projection and SH evaluation on GPU; Packed/Paged
-  project on GPU but refresh view-dependent hot color from CPU `SceneBuffers`.
+- Production Packed keeps complete source membership and SH degree. CPU and
+  GPU order must share visibility/depth/tie semantics, authoritative visible
+  order, and the same exact raster contract; backend selection may not alter
+  quality, resolution, residency, or draw count. Forced GPU errors are
+  structured; only Adaptive may continue on CPU and later re-probe.
+- Direct remains the wide-f32 oracle. Paged remains an explicitly selected
+  partial-residency diagnostic and cannot emit a full-quality receipt.
+- Formal full-quality evidence has one endpoint-specific resolution contract:
+  desktop and Web use `1920x1080`, the Nothing A065 uses its native
+  `2412x1080` Surface, and the iPhone 17 Pro simulator uses its native
+  `2622x1206` drawable. Every accepted frame proves
+  `requested = Surface = internal render = presented` pixels and preserves all
+  source points, complete source SH degree, and authoritative membership.
+  Sampling, LOD, dynamic resolution, and upscaling are forbidden. The Paged
+  path and the sampled WebGL preview are smoke/diagnostic paths and cannot
+  satisfy this contract; unsupported capacity fails explicitly.
 - The SPZ loader is an experimental import component, not part of the v0.1 C,
   Web, or mobile integration contract.
 - PLY input normalization is not optional: quaternion remapping and `RDF -> RUF` conversion happen at load time.
@@ -205,8 +282,19 @@
 
 ## Hotspots
 
-- `crates/gsplat-render-wgpu/src/lib.rs`: resident direct-scene resources, presenter/offscreen rendering, CPU reference projection, and perf-sensitive GPU logic
-- `crates/gsplat-render-wgpu/src/surface_session.rs`: shared Surface lifecycle, CPU sort policy, order-upload state, native async sorting, and phase timings
+- `crates/gsplat-render-wgpu/src/resident_scene.rs`: exact-count compact planes,
+  checked byte plans, codec reports, and adapter preflight
+- `crates/gsplat-render-wgpu/src/resident_gpu.rs`: Resident uploads, coherent
+  color resolve, and shared CPU/GPU-order draw bindings
+- `crates/gsplat-render-wgpu/src/projected_quads_gpu.rs`: exact one-projection-
+  per-visible-splat cache, CPU direct count, GPU indirect count, and instanced
+  SortedAlpha drawing
+- `crates/gsplat-render-wgpu/src/tiled_resident_gpu.rs`: lazily allocated exact
+  tiled diagnostic and phase telemetry
+- `crates/gsplat-render-wgpu/src/direct_gpu_order.rs`: exact GPU visibility,
+  hierarchical scan, stable radix, and indirect draw
+- `crates/gsplat-render-wgpu/src/surface_session.rs`: shared Surface lifecycle,
+  CPU/GPU/Adaptive policy, revisions, failure cooldown, and timings
 - `crates/gsplat-sort/src/lib.rs`: ordering correctness and performance
 - `crates/gsplat-io-spz/src/lib.rs`: bounded/cancellable SPZ v4 parsing, coordinate conversion, and source caches
 - `crates/gsplat-ffi-c/src/lib.rs` and `crates/gsplat-ffi-c/include/gsplat.h`: integration boundary stability

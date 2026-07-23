@@ -43,9 +43,9 @@ MANIFEST_SCHEMA = "gsplat-external-scene/v1"
 USER_AGENT = "gsplat-rs-dataset-fetch/1"
 
 
-# These archive-entry identities were read from the official Zip64 central
-# directory. They make a changed upstream object fail closed; extraction also
-# records the full PLY SHA-256 in the ignored local source.json evidence.
+# These PLY and cameras.json archive-entry identities were read from the
+# official Zip64 central directory. They make a changed upstream object fail
+# closed; extraction also records full SHA-256 receipts beside ignored assets.
 SCENES: dict[str, dict[str, Any]] = {
     "bonsai": {
         "family": "Mip-NeRF 360 indoor",
@@ -55,6 +55,11 @@ SCENES: dict[str, dict[str, Any]] = {
         "compressed_bytes": 260_603_022,
         "archive_crc32": "3088ffa4",
         "splat_count": 1_244_819,
+        "camera_sha256": "41e623748141d5b1a292c2bcafbf9e897a3876f90c11a14618e9ac6190b05af3",
+        "camera_bytes": 116_695,
+        "camera_compressed_bytes": 37_076,
+        "camera_archive_crc32": "f963b75c",
+        "camera_count": 292,
     },
     "truck": {
         "family": "Tanks and Temples",
@@ -67,6 +72,11 @@ SCENES: dict[str, dict[str, Any]] = {
         "compressed_bytes": 550_481_900,
         "archive_crc32": "44027887",
         "splat_count": 2_541_226,
+        "camera_sha256": "802e9eb9ee7deb034309baecca6d7de2a02b0cb70897a06bdb9ae36ba5bfd5c6",
+        "camera_bytes": 100_406,
+        "camera_compressed_bytes": 32_225,
+        "camera_archive_crc32": "820f7d65",
+        "camera_count": 251,
     },
     "garden": {
         "family": "Mip-NeRF 360 outdoor",
@@ -76,6 +86,11 @@ SCENES: dict[str, dict[str, Any]] = {
         "compressed_bytes": 1_290_779_747,
         "archive_crc32": "2d0a09ee",
         "splat_count": 5_834_784,
+        "camera_sha256": "60986440d8fdc73b9e8e2493a9b745016e20bf5275963f1c49ee64f8e616a391",
+        "camera_bytes": 73_600,
+        "camera_compressed_bytes": 23_981,
+        "camera_archive_crc32": "0389df27",
+        "camera_count": 185,
     },
     "bicycle": {
         "family": "Mip-NeRF 360 outdoor",
@@ -85,6 +100,11 @@ SCENES: dict[str, dict[str, Any]] = {
         "compressed_bytes": 1_353_363_151,
         "archive_crc32": "ebf2474a",
         "splat_count": 6_131_954,
+        "camera_sha256": "5f0ebcb6b33e415061a485ed9961fb277cf7e875586f0d82d88b746d9d9fd502",
+        "camera_bytes": 77_427,
+        "camera_compressed_bytes": 25_147,
+        "camera_archive_crc32": "fd1d74d3",
+        "camera_count": 194,
     },
 }
 
@@ -302,6 +322,15 @@ def _scene_entry(scene: str, entries: list[ZipEntry]) -> ZipEntry:
     return matches[0]
 
 
+def _camera_entry(scene: str, entries: list[ZipEntry]) -> ZipEntry:
+    matches = [entry for entry in entries if entry.name.strip("/") == f"{scene}/cameras.json"]
+    if len(matches) != 1:
+        raise DownloadError(
+            f"expected exactly one cameras.json for {scene!r}, found {len(matches)}"
+        )
+    return matches[0]
+
+
 def _copy_inflated(
     source: BinaryIO,
     destination: BinaryIO,
@@ -389,6 +418,20 @@ def _validate_entry(scene: str, entry: ZipEntry, expected: dict[str, Any]) -> No
         )
 
 
+def _validate_camera_entry(scene: str, entry: ZipEntry, expected: dict[str, Any]) -> None:
+    actual = (entry.compressed_bytes, entry.uncompressed_bytes, entry.crc32)
+    pinned = (
+        expected["camera_compressed_bytes"],
+        expected["camera_bytes"],
+        int(expected["camera_archive_crc32"], 16),
+    )
+    if actual != pinned:
+        raise DownloadError(
+            f"{scene}: camera metadata archive identity mismatch "
+            f"expected={pinned} actual={actual}"
+        )
+
+
 def _write_json(path: pathlib.Path, value: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile(
@@ -415,6 +458,121 @@ def _hash_and_crc(path: pathlib.Path) -> tuple[str, int, int]:
             crc32 = binascii.crc32(chunk, crc32)
             byte_count += len(chunk)
     return digest.hexdigest(), byte_count, crc32 & 0xFFFFFFFF
+
+
+def _entry_data_offset(url: str, scene: str, entry: ZipEntry) -> int:
+    local_header = _read_range(url, entry.local_header_offset, 30)
+    if local_header[:4] != b"PK\x03\x04":
+        raise DownloadError(f"{scene}: invalid local ZIP header for {entry.name}")
+    local_flags = struct.unpack_from("<H", local_header, 6)[0]
+    local_compression = struct.unpack_from("<H", local_header, 8)[0]
+    name_length = struct.unpack_from("<H", local_header, 26)[0]
+    extra_length = struct.unpack_from("<H", local_header, 28)[0]
+    if local_flags != entry.flags or local_compression != entry.compression:
+        raise DownloadError(
+            f"{scene}: local and central ZIP headers disagree for {entry.name}"
+        )
+    return entry.local_header_offset + 30 + name_length + extra_length
+
+
+def download_camera_metadata(
+    url: str,
+    scene: str,
+    entry: ZipEntry,
+    output_dir: pathlib.Path,
+    expected: dict[str, Any],
+    *,
+    overwrite: bool = False,
+) -> dict[str, Any]:
+    """Extract and pin the official camera-to-world metadata for quality views."""
+
+    scene_dir = output_dir.resolve() / scene
+    scene_dir.mkdir(parents=True, exist_ok=True)
+    destination = scene_dir / "cameras.json"
+    manifest_path = scene_dir / "cameras.source.json"
+    _validate_camera_entry(scene, entry, expected)
+
+    if destination.exists() and not overwrite:
+        digest, output_bytes, crc32 = _hash_and_crc(destination)
+    else:
+        if entry.flags & 1:
+            raise DownloadError(f"{scene}: encrypted camera metadata is unsupported")
+        if entry.compression not in {0, 8}:
+            raise DownloadError(
+                f"{scene}: unsupported camera metadata compression {entry.compression}"
+            )
+        temporary: pathlib.Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w+b",
+                prefix=f".{destination.name}.",
+                suffix=".tmp",
+                dir=scene_dir,
+                delete=False,
+            ) as handle:
+                temporary = pathlib.Path(handle.name)
+                data_offset = _entry_data_offset(url, scene, entry)
+                with _open_range(url, data_offset, entry.compressed_bytes) as response:
+                    digest, output_bytes, crc32 = _copy_inflated(
+                        response, handle, entry.compressed_bytes, entry.compression
+                    )
+                handle.flush()
+                os.fsync(handle.fileno())
+        except BaseException:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
+            raise
+        if temporary is None:
+            raise AssertionError("temporary cameras.json path was not initialized")
+        try:
+            if output_bytes != entry.uncompressed_bytes or crc32 != entry.crc32:
+                raise DownloadError(
+                    f"{scene}: camera metadata ZIP size/CRC identity mismatch"
+                )
+            os.replace(temporary, destination)
+        except BaseException:
+            temporary.unlink(missing_ok=True)
+            raise
+
+    expected_identity = (
+        expected["camera_sha256"],
+        expected["camera_bytes"],
+        int(expected["camera_archive_crc32"], 16),
+    )
+    actual_identity = (digest, output_bytes, crc32)
+    if actual_identity != expected_identity:
+        raise DownloadError(
+            f"{scene}: camera metadata identity mismatch "
+            f"expected={expected_identity} actual={actual_identity}"
+        )
+    try:
+        cameras = json.loads(destination.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise DownloadError(f"{scene}: invalid official cameras.json: {error}") from error
+    if not isinstance(cameras, list) or len(cameras) != expected["camera_count"]:
+        raise DownloadError(
+            f"{scene}: expected {expected['camera_count']} official cameras, "
+            f"got {len(cameras) if isinstance(cameras, list) else 'non-array'}"
+        )
+
+    manifest = {
+        "schema": "gsplat-external-camera-metadata/v1",
+        "id": f"inria-3dgs-{scene}-official-cameras",
+        "identity_status": "verified-pinned",
+        "local_path": _portable_path(destination),
+        "source_url": url,
+        "archive_entry": entry.name,
+        "source_repository": SOURCE_REPOSITORY,
+        "license": "NOASSERTION",
+        "allowed_use": "local research/evaluation only",
+        "sha256": digest,
+        "bytes": output_bytes,
+        "archive_crc32": f"{crc32:08x}",
+        "camera_count": len(cameras),
+        "pose_semantics": "camera-to-world matrix in source RDF coordinates",
+    }
+    _write_json(manifest_path, manifest)
+    return manifest
 
 
 def _scene_manifest(
@@ -611,6 +769,11 @@ def main() -> int:
         action="store_true",
         help="acknowledge NOASSERTION rights and local research/evaluation-only use",
     )
+    parser.add_argument(
+        "--include-cameras",
+        action="store_true",
+        help="also extract pinned official cameras.json metadata for quality traces",
+    )
     parser.add_argument("--overwrite", action="store_true")
     args = parser.parse_args()
 
@@ -634,6 +797,33 @@ def main() -> int:
         archive_bytes, entries = read_zip_entries(MODELS_ZIP_URL)
         print(f"archive_bytes={archive_bytes} entries={len(entries)}")
         for scene in args.scenes:
+            if args.include_cameras:
+                camera_entry = _camera_entry(scene, entries)
+                _validate_camera_entry(scene, camera_entry, SCENES[scene])
+                camera_destination = args.output_dir.resolve() / scene / "cameras.json"
+                camera_action = (
+                    "verifying" if camera_destination.exists() and not args.overwrite else "extracting"
+                )
+                print(
+                    f"{camera_action}_cameras={scene} "
+                    f"compressed_bytes={camera_entry.compressed_bytes} "
+                    f"archive_entry={camera_entry.name}",
+                    flush=True,
+                )
+                camera_manifest = download_camera_metadata(
+                    MODELS_ZIP_URL,
+                    scene,
+                    camera_entry,
+                    args.output_dir,
+                    SCENES[scene],
+                    overwrite=args.overwrite,
+                )
+                print(
+                    f"cameras={camera_manifest['local_path']} "
+                    f"count={camera_manifest['camera_count']} "
+                    f"sha256={camera_manifest['sha256']}",
+                    flush=True,
+                )
             entry = _scene_entry(scene, entries)
             _validate_entry(scene, entry, SCENES[scene])
             destination = args.output_dir.resolve() / scene / "point_cloud.ply"

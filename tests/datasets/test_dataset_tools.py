@@ -80,6 +80,13 @@ class DatasetToolTests(unittest.TestCase):
             self.assertGreater(value["compressed_bytes"], 0, msg=scene)
             self.assertRegex(value["archive_crc32"], r"^[0-9a-f]{8}$", msg=scene)
             self.assertGreater(value["splat_count"], 0, msg=scene)
+            self.assertRegex(value["camera_sha256"], r"^[0-9a-f]{64}$", msg=scene)
+            self.assertGreater(value["camera_bytes"], 0, msg=scene)
+            self.assertGreater(value["camera_compressed_bytes"], 0, msg=scene)
+            self.assertRegex(
+                value["camera_archive_crc32"], r"^[0-9a-f]{8}$", msg=scene
+            )
+            self.assertGreater(value["camera_count"], 0, msg=scene)
 
     def test_midpoint_ladder_is_deterministic_and_preserves_layout(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -205,6 +212,20 @@ class DatasetToolTests(unittest.TestCase):
 
     def test_range_extraction_streams_and_records_identity(self) -> None:
         scene_bytes = scene_binary_ply()
+        camera_bytes = json.dumps(
+            [
+                {
+                    "id": 0,
+                    "img_name": "fixture",
+                    "width": 640,
+                    "height": 360,
+                    "position": [0.0, 0.0, -3.0],
+                    "rotation": [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+                    "fx": 500.0,
+                    "fy": 500.0,
+                }
+            ]
+        ).encode("utf-8")
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)
             archive = root / "models.zip"
@@ -213,6 +234,7 @@ class DatasetToolTests(unittest.TestCase):
             )
             with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as handle:
                 handle.writestr(archive_entry, scene_bytes)
+                handle.writestr("bonsai/cameras.json", camera_bytes)
                 handle.writestr("unrelated/readme.txt", b"not selected")
 
             handler = range_handler(archive.read_bytes())
@@ -223,6 +245,7 @@ class DatasetToolTests(unittest.TestCase):
                 archive_size, entries = inria.read_zip_entries(url)
                 self.assertEqual(archive_size, archive.stat().st_size)
                 entry = inria._scene_entry("bonsai", entries)
+                camera_entry = inria._camera_entry("bonsai", entries)
                 expected = {
                     "family": "fixture",
                     "upstream_dataset_url": "https://example.invalid/dataset",
@@ -231,8 +254,28 @@ class DatasetToolTests(unittest.TestCase):
                     "compressed_bytes": entry.compressed_bytes,
                     "archive_crc32": f"{entry.crc32:08x}",
                     "splat_count": 3,
+                    "camera_sha256": hashlib.sha256(camera_bytes).hexdigest(),
+                    "camera_bytes": len(camera_bytes),
+                    "camera_compressed_bytes": camera_entry.compressed_bytes,
+                    "camera_archive_crc32": f"{camera_entry.crc32:08x}",
+                    "camera_count": 1,
                 }
                 inria._validate_entry("bonsai", entry, expected)
+                inria._validate_camera_entry("bonsai", camera_entry, expected)
+                camera_manifest = inria.download_camera_metadata(
+                    url,
+                    "bonsai",
+                    camera_entry,
+                    root / "output",
+                    expected,
+                )
+                reused_camera = inria.download_camera_metadata(
+                    url,
+                    "bonsai",
+                    camera_entry,
+                    root / "output",
+                    expected,
+                )
                 manifest = inria.download_scene(
                     url,
                     "bonsai",
@@ -251,7 +294,12 @@ class DatasetToolTests(unittest.TestCase):
                 thread.join(timeout=5)
 
             output = root / "output/bonsai/point_cloud.ply"
+            camera_output = root / "output/bonsai/cameras.json"
             self.assertEqual(output.read_bytes(), scene_bytes)
+            self.assertEqual(camera_output.read_bytes(), camera_bytes)
+            self.assertEqual(camera_manifest, reused_camera)
+            self.assertEqual(camera_manifest["camera_count"], 1)
+            self.assertEqual(camera_manifest["sha256"], expected["camera_sha256"])
             self.assertEqual(manifest["sha256"], expected["sha256"])
             self.assertEqual(reused, manifest)
             self.assertEqual(manifest["identity_status"], "verified-pinned")

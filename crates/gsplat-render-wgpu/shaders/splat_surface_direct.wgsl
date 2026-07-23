@@ -20,8 +20,8 @@ struct Params {
   len: u32,
   order_stride_words: u32,
   order_id_offset_words: u32,
-  _order_pad0: u32,
-  _order_pad1: u32,
+  source_position_stride_words: u32,
+  source_position_offset_words: u32,
 };
 
 struct CovTerms {
@@ -56,24 +56,29 @@ struct VsOut {
 };
 
 fn quad_offset(vertex_index: u32) -> vec2<f32> {
-  let offsets = array<vec2<f32>, 6>(
+  // Canonical four-vertex triangle strip: BL, BR, TL, TR.
+  let offsets = array<vec2<f32>, 4>(
     vec2<f32>(-1.0, -1.0),
     vec2<f32>( 1.0, -1.0),
-    vec2<f32>( 1.0,  1.0),
-    vec2<f32>(-1.0, -1.0),
-    vec2<f32>( 1.0,  1.0),
     vec2<f32>(-1.0,  1.0),
+    vec2<f32>( 1.0,  1.0),
   );
   return offsets[vertex_index];
 }
 
-// fs_main discards fragments with alpha * exp(-4.5 * r2) <= 1/256, so the
-// quad only needs to cover r2 <= ln(256 * alpha) / 4.5. Scaling the offset and
-// the local coordinate by the same factor keeps the pixel -> gaussian mapping
-// identical while skipping rasterization of fragments that would be discarded.
+// Conservatively bound rasterization by the 1/256 opacity iso-contour. The
+// fragment threshold is 1/255, so every potentially contributing sample stays
+// covered while guaranteed-discard work is removed without changing the draw
+// instance count or pixel-to-Gaussian mapping.
 fn alpha_extent_scale(alpha: f32) -> f32 {
-  let s2 = log(max(alpha, 1e-12) * 256.0) / 4.5;
-  return sqrt(clamp(s2, 0.0, 1.0));
+  return sqrt(clamp(log(max(alpha, 1e-12) * 256.0) / 4.5, 0.0, 1.0));
+}
+
+// Keep projection depth bit-identical to CPU preprocessing and GPU key
+// generation. Native `dot` contraction is backend-dependent at clip planes.
+fn canonical_dot3(left: vec3<f32>, right: vec3<f32>) -> f32 {
+  let xy = fma(left.y, right.y, left.x * right.x);
+  return fma(left.z, right.z, xy);
 }
 
 fn normalize2_or_default(v: vec2<f32>, fallback: vec2<f32>) -> vec2<f32> {
@@ -133,10 +138,12 @@ fn project_splat(source: SurfaceSourceElem) -> ProjectedSplat {
   let r0 = params.view_rot_row0.xyz;
   let r1 = params.view_rot_row1.xyz;
   let r2 = params.view_rot_row2.xyz;
-  let p_cam = vec3<f32>(dot(r0, rel), dot(r1, rel), dot(r2, rel));
-  if (p_cam.z < params.near_plane ||
-      p_cam.z > params.far_plane ||
-      p_cam.z <= 1e-6) {
+  let p_cam = vec3<f32>(
+    canonical_dot3(r0, rel),
+    canonical_dot3(r1, rel),
+    canonical_dot3(r2, rel),
+  );
+  if (p_cam.z < params.near_plane || p_cam.z > params.far_plane) {
     return invalid_splat();
   }
 
@@ -178,11 +185,11 @@ fn project_splat(source: SurfaceSourceElem) -> ProjectedSplat {
   let b = cov01;
   var c = j11 * j11 * cov_cam.yy + 2.0 * j11 * j12 * cov_cam.yz + j12 * j12 * cov_cam.zz;
 
-  let blur_pixels = 0.3;
+  let blur_variance_pixels = 0.3;
   let px_ndc_x = 2.0 / max(f32(params.width), 1.0);
   let px_ndc_y = 2.0 / max(f32(params.height), 1.0);
-  a = a + pow(blur_pixels * px_ndc_x, 2.0);
-  c = c + pow(blur_pixels * px_ndc_y, 2.0);
+  a = a + blur_variance_pixels * px_ndc_x * px_ndc_x;
+  c = c + blur_variance_pixels * px_ndc_y * px_ndc_y;
 
   let apco2 = (a + c) * 0.5;
   let amco2 = (a - c) * 0.5;
@@ -198,9 +205,8 @@ fn project_splat(source: SurfaceSourceElem) -> ProjectedSplat {
   }
   let axis_v_dir = vec2<f32>(-axis_u_dir.y, axis_u_dir.x);
 
-  var major_radius = clamp(sqrt(major) * 3.0, 1e-4, 2.0);
-  let minor_radius = clamp(sqrt(minor) * 3.0, 1e-4, 2.0);
-  major_radius = min(major_radius, minor_radius * 64.0);
+  let major_radius = max(sqrt(major) * 3.0, 1e-4);
+  let minor_radius = max(sqrt(minor) * 3.0, 1e-4);
   let axis_u = axis_u_dir * major_radius;
   let axis_v = axis_v_dir * minor_radius;
 
@@ -329,8 +335,8 @@ fn eval_color(idx: u32, source: SurfaceSourceElem, alpha: f32) -> vec4<f32> {
   let dir = normalize3_or_default(source.position.xyz - params.camera_pos.xyz, vec3<f32>(0.0, 0.0, 1.0));
   let degree = min(params.sh_degree, 4u);
   let sh_rgb = eval_sh_rgb(idx, source.color_dc.xyz, dir, degree);
-  let rgb = clamp(sh_rgb + vec3<f32>(0.5), vec3<f32>(0.0), vec3<f32>(1.0));
-  return vec4<f32>(rgb * alpha, alpha);
+  let rgb = max(sh_rgb + vec3<f32>(0.5), vec3<f32>(0.0));
+  return vec4<f32>(rgb, alpha);
 }
 
 @vertex
@@ -343,10 +349,9 @@ fn vs_main(
   let idx = sorted_index_words[order_word];
   let source = source_elems[idx];
   let projected = project_splat(source);
+  var out: VsOut;
   let local = quad_offset(vertex_index) * alpha_extent_scale(projected.alpha);
   let offset = projected.axis_u * local.x + projected.axis_v * local.y;
-
-  var out: VsOut;
   out.position = vec4<f32>(projected.center + offset, 0.0, 1.0);
   out.color = eval_color(idx, source, projected.alpha);
   out.local = local;
@@ -356,14 +361,10 @@ fn vs_main(
 @fragment
 fn fs_main(input: VsOut) -> @location(0) vec4<f32> {
   let r2 = dot(input.local, input.local);
-  if (r2 > 1.0) {
-    discard;
-  }
-
   let g = exp(-4.5 * r2);
-  let alpha = input.color.a * g;
-  if (alpha <= (1.0 / 256.0)) {
+  let alpha = min(0.99, input.color.a * g);
+  if (alpha < (1.0 / 255.0)) {
     discard;
   }
-  return vec4<f32>(input.color.rgb * g, alpha);
+  return vec4<f32>(input.color.rgb * alpha, alpha);
 }

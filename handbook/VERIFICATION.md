@@ -124,6 +124,9 @@ python3 tests/datasets/test_dataset_tools.py
 python3 tests/perf/validate-dataset-manifests.py
 python3 tests/perf/validate-dataset-manifests.py --verify-available
 bash tests/perf/trace/test-trace-v1.sh
+python3 tests/perf/test_full_quality_experiment.py
+python3 tests/perf/validate-full-quality-experiment.py \
+  tests/perf/full-quality-matrix-plan-v1.json --allow-incomplete
 ```
 
 - The dataset-tool test proves deterministic fixed-record PLY tier selection,
@@ -136,6 +139,42 @@ bash tests/perf/trace/test-trace-v1.sh
 - The trace test regenerates the `gsplat-camera-trace/v1` fixture and rejects
   hash or matrix-convention drift. A competitive harness must consume the
   explicit matrices or prove its API reconstruction matches them.
+- The full-quality plan rejects 640x360/640x480 as formal evidence, pins
+  desktop/Web to 1920x1080, the connected A065 to its observed 2412x1080
+  Surface, and the iOS simulator to its observed 2622x1206 drawable. It also
+  proves that endpoint-specific traces retain one pose/FOV camera family and
+  require exact requested, Surface, internal-render, and presented dimensions.
+
+### Formal full-quality acceptance contract
+
+- The only accepted dimensions are desktop/Web `1920x1080`, Nothing A065
+  `2412x1080`, and iPhone 17 Pro simulator `2622x1206`. Evidence from another
+  size is smoke or exploratory evidence until the formal matrix is explicitly
+  revised.
+- Every accepted frame must prove
+  `requested = Surface = internal render = presented` pixels and an actually
+  presented terminal frame. Dynamic resolution and upscaling must both be
+  disabled.
+- `source = decoded = encoded = resident = addressable` membership and the
+  complete source SH degree must be retained. Sampling, point reduction, LOD,
+  silent SH downgrade, and incomplete residency are rejection conditions, not
+  performance strategies.
+- Direct and full-resident Packed may qualify. Paged and the sampled WebGL
+  preview are smoke/diagnostic paths only and cannot produce formal quality or
+  competitor evidence. A device that cannot admit the exact workload must
+  return an explicit capacity failure.
+- Count evidence is `S/V/C/D`: complete source/resident/addressable `S`,
+  near/far candidate `V` (historical `visible`), conservative post-projection
+  contributor `C`, and issued draw `D`. New artifacts declare
+  `candidate_visible_contributor_issued_v1` and prove `0 <= C <= V <= S`.
+  Only an explicit exact-contributor flag permits `D=C`; Direct/downlevel and
+  legacy receipts still require `D=V`. This prevents a point budget from being
+  mislabeled as projection culling.
+- Adaptive CPU/GPU selection compares the same `FrameCompletion` interval for
+  both backends: frame start through queue completion, including sorting,
+  projection, rasterization, submission, and queueing. Order-stage timestamps
+  are diagnostic only. Switching raster execution plans resets the learned
+  Adaptive state before new samples are compared.
 
 Android, Apple, and Web collectors can also emit the same v1 artifact contract:
 
@@ -177,7 +216,7 @@ node --test examples/web/test/benchmark-artifact.test.mjs
   artifacts, and refuses to overwrite an existing output root. Use `--dry-run`
   to inspect every command without changing the device.
 
-## Competitive Harness and Phase E Pairing
+## Competitive Harness and Historical Phase E Pairing
 
 The PlayCanvas harness freezes dependency identity and has a separate
 fail-closed browser path smoke plus a validated timed collector:
@@ -196,9 +235,12 @@ npm run benchmark:kitsune-static --prefix tests/competitive/playcanvas
   selected backend, resolved and active GPU-sort renderer, source format,
   canvas size, and a nonzero loaded splat count. Its result and pre-timing
   screenshot are written below `target/benchmarks/playcanvas-path-smoke/`.
-- A single timed artifact does not prove a competitor claim. Phase E uses five
-  predeclared, sequential randomized-order pairs, 120 warmups and 3,600
-  measured frames per run, the shared Kitsune trace, and raw 640×480 images.
+- The original Phase E procedure used five predeclared, sequential
+  randomized-order pairs, 120 warmups and 3,600 measured frames per run, the
+  shared Kitsune trace, and raw 640×480 images. It remains reproducible
+  historical smoke/diagnostic evidence, but its 640×480 resolution violates
+  the formal contract above and therefore cannot establish a current quality,
+  performance-parity, or competitor claim.
 - Store `pairing.pair_id`, `pairing.run_order`, and `pairing.position` in both
   manifests with `PHASE_E_PAIR_ID`, `PHASE_E_PAIR_ORDER`, and
   `PHASE_E_PAIR_POSITION`. Set `PLAYCANVAS_ARTIFACT_DIR` and
@@ -216,9 +258,9 @@ python3 tests/perf/compare-paired-benchmarks.py \
 
 - The paired comparator rejects mismatched dataset, trace, display, backend,
   order, sample, warmup, or quality fields and reports deterministic bootstrap
-  confidence intervals. Its current claim scope is desktop Web Kitsune static
-  only; it does not prove native, broad browser/dataset, memory, thermal,
-  energy, or large-scene claims.
+  confidence intervals. For formal desktop/Web competitor evidence, rerun the
+  same controlled pairing at `1920x1080` with the full-quality contract above;
+  the historical 640×480 series proves only harness behavior.
 
 ## Web Example Smoke
 
