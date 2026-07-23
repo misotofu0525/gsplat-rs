@@ -26,13 +26,12 @@ A4 = Active
   strategy-free data/API extraction and the complete A3 scene/resource
   ownership extraction are root-accepted.
 - Current work package: A — responsibility extraction.
-- Active package task: none while the root task writes and reviews the A4b
-  boundary.
+- Active package task: A4b — renderer CPU visibility/depth/key primitive
+  extraction in an isolated worktree.
 - Last completed task: A4a — `gsplat-sort` CPU backend/SIMD/radix ownership
   extraction.
-- Next eligible task: A4b only. A4b becomes Active in a separate plan-only
-  commit; A5 and every later package remain inactive until root review accepts
-  A4b.
+- Next eligible task: A4b only. A5 and every later package remain inactive
+  until root review accepts A4b and closes A4.
 - Integration branch: `codex/native-render-core-refactor`.
 - Frozen source implementation closeout:
   `5db2520e0d7a0ef1c68a78bdb9abc6fc588c5186`.
@@ -99,6 +98,99 @@ eligible task. Do not rewrite the architecture in this ledger.
   this section and the current policy are authoritative for later tasks.
 
 ## Current task
+
+### A4b — Extract renderer CPU visibility/depth/key primitives
+
+- Parent task state: A4 Active
+- Subtask state: Active
+- Started: 2026-07-23
+- Production baseline commit:
+  `7650c59449736b560e051ceefecf67d5dcd6db13` (`docs: accept A4a CPU sort
+  ownership extraction`)
+- Exact source baseline before production edits:
+  - `crates/gsplat-render-wgpu/src/lib.rs`: 5,004 physical LOC
+  - architecture grandfather baseline for `lib.rs`: 5,004 physical LOC
+- Hypothesis: the existing exact CPU visibility, depth-key and deterministic
+  native chunk primitives can move unchanged into one private renderer leaf,
+  while `Renderer` retains all orchestration/workspace ownership and every
+  existing internal crate-root path remains available by private re-export.
+- Dependencies: A4a Accepted at `7650c59`; the extracted `gsplat-sort` API is
+  frozen. A5 and every later task are inactive.
+- Required responsibility boundary:
+  - the new private `cpu_order.rs` owns exactly
+    `PARALLEL_PREPROCESS_THRESHOLD`, `MAX_PARALLEL_PREPROCESS_CHUNKS`,
+    `PreprocessChunkScratch`, `is_visible`, `depth_to_key`,
+    `world_to_camera_depth_with_view_row`,
+    `preprocess_positions_visible_into`,
+    `preprocess_positions_visible_into_parallel` and
+    `preprocess_paged_visible_into`;
+  - the current threshold, thread-count fallback, four-chunk cap, camera
+    validation and `RendererError::InvalidCamera` mapping move inside those
+    byte-identical function bodies; they are not lifted into configuration or
+    a new error abstraction;
+  - `lib.rs` continues to own `Renderer`, its vectors, timed orchestration,
+    geometry-path/call timing, sort invocation and sort/error orchestration;
+  - shared quaternion/matrix/canonical-dot math remains in its current owner;
+    A4b may call it but may not relocate or rewrite it;
+  - the async loop in `surface_session.rs` remains deliberately duplicated for
+    E3, where one `CpuOrderEngine` will replace all sync/async/offscreen owners.
+- Allowed production scope:
+  - exact file allowlist: `crates/gsplat-render-wgpu/src/lib.rs` and new private
+    `crates/gsplat-render-wgpu/src/cpu_order.rs`, including relocation of the
+    one directly owned test into that module when useful;
+  - private module declaration, imports and `pub(crate)` re-exports required to
+    preserve existing internal paths used by `surface_presenter`,
+    `surface_session`, `direct_gpu_order` and `preproject_gpu` without editing
+    those consumers;
+  - only `parallel_visibility_preprocess_matches_sequential_source_order` may
+    move with its owner. Sorted-alpha ordering, missing-scene, invalid-camera
+    and every consumer test remain in their current files;
+  - mechanical visibility changes only; moved production/test bodies must be
+    byte-identical after path and indentation normalization.
+- Forbidden scope:
+  - `crates/gsplat-sort/**`, `surface_presenter.rs`, `surface_session.rs`,
+    `direct_gpu_order.rs`, `preproject_gpu.rs`, any other renderer file,
+    architecture policy/ledger, Cargo manifests/lockfile, shaders, FFI/JNI,
+    Swift, Web, examples or benchmark protocol;
+  - changing near/far inclusivity, `depth.max(0.0).to_bits()`, quaternion or dot
+    arithmetic order, source iteration/concatenation order, capacity reuse,
+    Rayon threshold `256 * 1024`, four-chunk cap, fallback conditions or error
+    mapping;
+  - merging sync and async loops, constructing a new engine/workspace, moving
+    `Renderer` fields, new SIMD, calibration, CPU/GPU/Adaptive policy, timing,
+    allocation, public API, optimization claims, merge/rebase/push or edits in
+    another worktree;
+  - splitting by a numeric line target. The new module may take the cohesive
+    size implied by these primitives; only mixed ownership is a failure.
+- Hard gates:
+  - fixed-SHA review proves all moved production and test bodies, constants and
+    cfg gates unchanged, with one definition of every primitive;
+  - `Renderer::preprocess_visible_scratch`, `sort_preprocessed_scratch`, every
+    Renderer vector/backend field, `canonical_dot3_f32`, quaternion/matrix
+    helpers and `surface_session::sort_positions_for_camera` remain in place;
+  - every pre-task internal path continues to compile; no consumer source file
+    changes and no public Rust/C ABI surface changes;
+  - the complete renderer test inventory remains, including invalid camera,
+    missing scene, sorted-alpha order, scalar/native parallel parity, duplicate
+    depths, non-lane tails, empty/singleton and source-order stability where
+    currently present;
+  - `cargo fmt --all -- --check`, `git diff --check`, locked renderer/workspace
+    tests, all-target Clippy with warnings denied, Rustdoc with warnings denied,
+    wasm32 check and architecture checks pass after the root task closes the
+    completed `lib.rs` ratchet separately;
+  - Apple M4 native exercises the Rayon/scalar oracle. Root owns a fresh A065
+    exact-count/full-quality receipt at the A4 package boundary after accepting
+    the writer SHA; no FPS or speed percentage is a gate.
+- Performance observations: none. This task relocates the current scalar/Rayon
+  implementation and makes no SIMD/preprocess speed claim.
+- Required endpoints for claim: native Apple M4 tests plus wasm32 compile in
+  the writer task; A065 Vulkan exactness is owned by root closeout.
+- Performance correction used: no
+- Known correctness issues: none
+- Closeout requirement: root reviews one fixed writer SHA, proves definition,
+  test and internal-path parity, runs integrated gates, updates/removes only the
+  exact completed `lib.rs` ratchet, then Accepts/Rejects/Defers A4b. Accept also
+  closes parent A4; A5 is activated only in a later plan-only commit.
 
 ### A4a — Extract the existing `gsplat-sort` CPU owner
 
