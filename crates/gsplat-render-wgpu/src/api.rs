@@ -7,6 +7,18 @@ pub enum GeometryPath {
     PagedActiveAtlas,
 }
 
+/// GPU-side order producer selected for a Packed frame.
+///
+/// The default remains the qualified post-sort graph. `Preproject` is an
+/// explicit diagnostic A/B choice and never changes CPU/GPU/Adaptive backend
+/// selection.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SurfaceGpuOrderProducer {
+    #[default]
+    PostSort,
+    Preproject,
+}
+
 /// Backend that actually supplied the order presented by one frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SurfaceOrderBackendUsed {
@@ -40,20 +52,30 @@ pub struct PreprocessOutput {
 
 #[cfg(test)]
 mod tests {
-    use super::{SurfaceOrderBackendUsed, SurfaceProjectedDrawExecution};
+    use super::{SurfaceGpuOrderProducer, SurfaceOrderBackendUsed, SurfaceProjectedDrawExecution};
 
     #[test]
     fn execution_identities_remain_available_at_the_crate_root() {
+        let producer: crate::SurfaceGpuOrderProducer = SurfaceGpuOrderProducer::PostSort;
         let order: crate::SurfaceOrderBackendUsed = SurfaceOrderBackendUsed::Cpu;
         let projected: crate::SurfaceProjectedDrawExecution =
             SurfaceProjectedDrawExecution::Candidate;
 
+        assert_eq!(producer, SurfaceGpuOrderProducer::PostSort);
         assert_eq!(order, SurfaceOrderBackendUsed::Cpu);
         assert_eq!(projected, SurfaceProjectedDrawExecution::Candidate);
     }
 
     #[test]
     fn execution_identity_equality_and_default_are_unchanged() {
+        assert_eq!(
+            SurfaceGpuOrderProducer::default(),
+            SurfaceGpuOrderProducer::PostSort
+        );
+        assert_ne!(
+            SurfaceGpuOrderProducer::PostSort,
+            SurfaceGpuOrderProducer::Preproject
+        );
         assert_eq!(SurfaceOrderBackendUsed::Cpu, SurfaceOrderBackendUsed::Cpu);
         assert_ne!(SurfaceOrderBackendUsed::Cpu, SurfaceOrderBackendUsed::Gpu);
         assert_eq!(

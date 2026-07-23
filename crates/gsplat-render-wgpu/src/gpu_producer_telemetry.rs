@@ -13,6 +13,11 @@ use std::{
     },
 };
 
+pub use crate::api::SurfaceGpuOrderProducer;
+pub use crate::evidence::{
+    SurfaceGpuProducerDrawScope, SurfaceGpuProducerMeasurement,
+    SurfaceGpuProducerMeasurementFailure, SurfaceGpuProducerMeasurementFailureReason,
+};
 use crate::{TimerInstant, timer_elapsed_ms, wgpu_label};
 
 const RING_SLOTS: usize = 8;
@@ -40,82 +45,6 @@ fn next_gpu_producer_ticket(current: u64) -> u64 {
         .checked_add(1)
         .filter(|next| *next <= LAST_GPU_PRODUCER_TICKET)
         .unwrap_or(FIRST_GPU_PRODUCER_TICKET)
-}
-
-/// GPU-side order producer selected for a Packed frame.
-///
-/// The default remains the qualified post-sort graph. `Preproject` is an
-/// explicit diagnostic A/B choice and never changes CPU/GPU/Adaptive backend
-/// selection.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum SurfaceGpuOrderProducer {
-    #[default]
-    PostSort,
-    Preproject,
-}
-
-/// Meaning of the issued draw count for one producer frame.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum SurfaceGpuProducerDrawScope {
-    /// The order was refreshed for this camera and `D == C`.
-    ExactCurrentContributors,
-    /// Projection/count are current, but the draw consumes the previous
-    /// refresh's stable order prefix. `D` must not be presented as current C.
-    StaleOrderCandidates,
-}
-
-/// Queue-terminal receipt for one presented Packed GPU-producer frame.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct SurfaceGpuProducerMeasurement {
-    pub ticket: u64,
-    pub camera_revision: u64,
-    pub producer: SurfaceGpuOrderProducer,
-    pub order_generation: u64,
-    pub projection_generation: u64,
-    pub source_count: u32,
-    /// Contributor count computed from this frame's camera. For the
-    /// preproject producer this is always scanned from the complete S pass,
-    /// including non-refresh frames.
-    pub contributor_count: u32,
-    /// Instances in the indirect draw actually issued by this frame.
-    pub drawn_count: u32,
-    pub order_refreshed: bool,
-    pub draw_scope: SurfaceGpuProducerDrawScope,
-    pub frame_complete_ms: f32,
-}
-
-impl SurfaceGpuProducerMeasurement {
-    pub const fn exact_current_contributor_draw(self) -> bool {
-        matches!(
-            self.draw_scope,
-            SurfaceGpuProducerDrawScope::ExactCurrentContributors
-        )
-    }
-
-    pub const fn stale_order(self) -> bool {
-        matches!(
-            self.draw_scope,
-            SurfaceGpuProducerDrawScope::StaleOrderCandidates
-        )
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SurfaceGpuProducerMeasurementFailureReason {
-    ReadbackMap,
-    GenerationInvalidated,
-    InvariantViolation,
-}
-
-/// Terminal failure for an already exposed producer ticket.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SurfaceGpuProducerMeasurementFailure {
-    pub ticket: u64,
-    pub camera_revision: u64,
-    pub producer: SurfaceGpuOrderProducer,
-    pub order_generation: u64,
-    pub projection_generation: u64,
-    pub reason: SurfaceGpuProducerMeasurementFailureReason,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
