@@ -87,6 +87,14 @@ until this file names:
   implementation;
 - known correctness issues (must be zero for Accept).
 
+Writer verification is deliberately focused: scope/hash checks, format/diff,
+owned tests, direct consumers and the smallest affected crate/target gates.
+The root task runs the complete shared workspace, architecture and platform
+matrix once after each accepted parallel batch. A writer runs that full matrix
+only for an inseparable cross-cutting change recorded in its active contract;
+duplicating the same full suite in every isolated worktree is not evidence of
+greater correctness.
+
 When the task ends, replace `Active` with exactly one of:
 
 - `Accepted`;

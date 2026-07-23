@@ -388,6 +388,17 @@ cross-task architecture/platform gates. Parallelism is used to remove avoidable
 waiting, not to create competing owners or make integration failures somebody
 else's problem.
 
+Verification is layered so parallel writers do not repeat the same expensive
+matrix without adding evidence. Each writer runs format/diff checks, frozen
+scope checks, focused owner/consumer tests and the smallest relevant crate or
+target checks needed to make its candidate reviewable. Public ABI, shader or
+platform-lifecycle changes additionally run their directly affected gate. The
+root task runs one complete workspace, architecture and required-platform
+matrix after the accepted candidates in a parallel batch have been integrated.
+A writer repeats that complete matrix only when its change cannot be isolated
+by a focused gate or when the root records why early full-matrix evidence is
+needed.
+
 ## 8. Source-size and dependency ratchet
 
 A1 creates a lightweight checker. From that point:
