@@ -7,42 +7,40 @@
       "IO-SPZ-1"
     ],
     "parallel_execution": {
-      "activation_commit": "1ac92e114378065eadbb0537da5a416a68faee0b",
+      "activation_commit": "c9ddb136eee170d8a222da62a7db6bf21815f1ab",
       "members": [
         {
-          "task": "E3",
-          "lane": "E3-cpu-order",
+          "task": "E4",
+          "lane": "E4-neon",
           "write_allowlist": [
-            "crates/gsplat-core/src/lib.rs",
-            "crates/gsplat-render-wgpu/src/lib.rs",
-            "crates/gsplat-render-wgpu/src/data/mod.rs",
-            "crates/gsplat-render-wgpu/src/data/view.rs",
-            "crates/gsplat-render-wgpu/src/cpu_order.rs",
-            "crates/gsplat-render-wgpu/src/cpu/mod.rs",
-            "crates/gsplat-render-wgpu/src/cpu/workspace.rs",
-            "crates/gsplat-render-wgpu/src/cpu/preprocess.rs",
-            "crates/gsplat-render-wgpu/src/cpu/preprocess/scalar.rs",
-            "crates/gsplat-render-wgpu/src/cpu/preprocess/aarch64.rs",
-            "crates/gsplat-render-wgpu/src/cpu/preprocess/x86_64.rs",
-            "crates/gsplat-render-wgpu/src/plans/cpu_post.rs",
-            "crates/gsplat-render-wgpu/src/surface_session.rs"
+            "crates/gsplat-render-wgpu/src/cpu/preprocess/aarch64.rs"
+          ]
+        },
+        {
+          "task": "E5",
+          "lane": "E5-avx2",
+          "write_allowlist": [
+            "crates/gsplat-render-wgpu/src/cpu/preprocess/x86_64.rs"
           ]
         },
         {
           "task": "E8",
-          "lane": "E8a-gpu-adapter",
+          "lane": "E8a-gpu-adapter-repair",
           "write_allowlist": [
             "crates/gsplat-render-wgpu/src/renderer/mod.rs",
             "crates/gsplat-render-wgpu/src/renderer/gpu_prepare.rs",
-            "crates/gsplat-render-wgpu/src/scene/runtime.rs"
+            "crates/gsplat-render-wgpu/src/scene/runtime.rs",
+            "crates/gsplat-render-wgpu/src/plans/mod.rs",
+            "crates/gsplat-render-wgpu/src/resident_gpu.rs"
           ]
         }
       ],
       "integration_order": [
-        "E8a-gpu-adapter",
-        "E3-cpu-order"
+        "E4-neon",
+        "E5-avx2",
+        "E8a-gpu-adapter-repair"
       ],
-      "reason": "E3 owns CPU ordering and platform preprocess leaves while E8a owns only the GPU runtime preparation seam; exact production write paths and mutable owners are disjoint, and root owns ledger, policy, review, integration and shared gates."
+      "reason": "E4 and E5 own disjoint architecture-specific preprocess leaves while E8a owns only the repaired GPU preparation/execution seam; exact production write paths and mutable owners are disjoint, and root owns ledger, policy, review, integration and shared gates."
     },
     "task_catalog": {
       "A0": "A",
