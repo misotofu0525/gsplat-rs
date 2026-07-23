@@ -2,6 +2,7 @@
 
 > Status: Accepted
 > Frozen: 2026-07-23 18:43 CST
+> Evidence boundary amended: 2026-07-23 18:57 CST
 > Integration branch: `codex/native-render-core-refactor`
 > Source implementation closeout: `5db2520e0d7a0ef1c68a78bdb9abc6fc588c5186`
 > Plan anchor and A0 parent: `c478252246733f6dc209686091caf183e1ef7f06`
@@ -83,25 +84,57 @@ with the release trunk before Package A has its ratchet and closeout. The
 dedicated branch provides the safer reversible boundary. A future merge is a
 separate reviewed action after the package gates pass.
 
-## 4. Accepted evidence inherited by Package A
+## 4. Evidence classes and inherited inventory
+
+### 4.1 A0 evidence classes
+
+A0 assigns every inherited result one of three roles. Clean/dirty identity is a
+separate dimension: a clean artifact may still be only directional, while a
+dirty artifact cannot support final-binary qualification.
+
+| Evidence class | Definition | What Package A may inherit |
+| --- | --- | --- |
+| verified semantic/correctness fact | A deterministic type/layout, count, order, image, failure, state-machine or validator fact tied to named code/evidence. It says what the implementation does, not how fast a final product is. | A1 and later refactors may use the fact as a regression oracle, while preserving its endpoint and commit boundary. |
+| directional performance | Timing or winner/loser observation scoped to one endpoint, binary/commit, dirty flag, camera and protocol. It guides the next hypothesis but is not a default, release or cross-platform qualification. | Package A may cite it only as motivation; it may not aggregate or relabel it as final performance evidence. |
+| capacity-only | A short complete-scene admission/load/draw result with exact counts and quality fallback disabled. | It proves only that the recorded scene fit and rendered on that endpoint; it proves no interactive FPS, sustained stability or thermal behavior. |
+
+Final qualification is intentionally outside these A0 inheritance classes. It
+requires a clean final binary, one predeclared protocol and non-mixed commit
+identity, and belongs to Package Q.
+
+### 4.2 Accepted inherited facts and observations
 
 These results are inputs, not experiments to repeat during responsibility-only
 extraction:
 
-| Accepted evidence | Inherited scope and boundary | Primary record |
+| Class | Accepted evidence | Inherited scope and boundary | Primary record |
+| --- | --- | --- | --- |
+| verified semantic/correctness fact | Exact Resident/Packed ownership and Direct image oracle | Complete source membership and source SH0--SH3, fail-closed admission and the fixed Direct gate are established. | [final report](../../completed/2026-07-22-full-quality-native-rendering/final-report.md), [findings](../../completed/2026-07-22-full-quality-native-rendering/findings.md) |
+| verified semantic/correctness fact | CPU/GPU depth, stable order and exact count vocabulary | Shared explicit f32 depth sequence, full32 ordering, deterministic source-ID ties and `S/V/C/D` semantics are established. | [depth parity](../../completed/2026-07-22-full-quality-native-rendering/cpu-gpu-depth-parity.md), [exact contributor evidence](../../completed/2026-07-22-full-quality-native-rendering/exact-contributor-evidence.md) |
+| verified semantic/correctness fact | CPU and portable GPU primitives | Stable CPU radix, retained NEON/AVX2 helpers, bounded Rayon, portable full32 GPU visibility/radix and indirect draw exist. E4/E5 must still qualify complete preprocess kernels. | [parallel radix](../../completed/2026-07-22-full-quality-native-rendering/cpu-parallel-radix.md), [final report](../../completed/2026-07-22-full-quality-native-rendering/final-report.md) |
+| verified semantic/correctness fact | Metal-only radix8 admission | Four-pass full32 Resident radix8 is accepted only on the recorded qualified Metal scope; Android keeps exact radix16. | [radix8 evidence](../../completed/2026-07-22-full-quality-native-rendering/resident-radix8.md) |
+| verified semantic/correctness fact | Canonical exact raster and Preproject exactness | Four-vertex `TriangleStrip`, conservative support, fail-closed ProjectedQuads guards, GlobalQuads oracle and exact Preproject/Compact count/image behavior are retained. | [final report](../../completed/2026-07-22-full-quality-native-rendering/final-report.md), [producer checkpoint](../../completed/2026-07-22-full-quality-native-rendering/phase2-production-producer-ab-checkpoint.md) |
+| verified semantic/correctness fact | Measured-policy mechanics | `FrameCompletion`, ticket identity, hysteresis, cooldown, re-probe and the moving-camera starvation fix are established behavior. | [final report](../../completed/2026-07-22-full-quality-native-rendering/final-report.md) |
+| directional performance | CPU/GPU and PostSort/Preproject timings | All winner/loser and ratio observations remain scoped to their exact commit, dirty flag, endpoint and protocol. They are not one combined final-binary cohort. | [final report](../../completed/2026-07-22-full-quality-native-rendering/final-report.md) |
+| capacity-only | Complete Garden/Bicycle endpoint runs | Short full-count SH3 runs prove admission and drawing only; 640x360 codec views remain diagnostics rather than product qualification. | [final report](../../completed/2026-07-22-full-quality-native-rendering/final-report.md) |
+
+### 4.3 Ignored artifact identity ledger
+
+The `target/` tree is ignored by Git. None of the paths below exists in this
+A0 worktree, and `git ls-files` contains none of these assets. A0 inspected an
+available machine-local copy only to transcribe identity fields. The table uses
+workspace-relative historical locators deliberately: a machine absolute path
+is not a portable evidence contract, and another checkout must not assume the
+ignored files are present.
+
+| Workspace-relative locator | Recorded identity | Class and allowed use |
 | --- | --- | --- |
-| Exact Resident/Packed ownership | Complete source membership and source SH0--SH3; fail-closed admission; Direct remains the wide-f32 oracle | [final report](../../completed/2026-07-22-full-quality-native-rendering/final-report.md), [findings](../../completed/2026-07-22-full-quality-native-rendering/findings.md) |
-| Direct image gate | Full-resolution Truck passes the fixed Direct gate; historical Garden/Bicycle codec views support the retained representation but 640x360 is diagnostic only | [final report](../../completed/2026-07-22-full-quality-native-rendering/final-report.md) |
-| CPU/GPU depth and stable order | Shared explicit f32 depth sequence, full32 ordering and deterministic source-ID ties; complete Garden visibility parity | [depth parity](../../completed/2026-07-22-full-quality-native-rendering/cpu-gpu-depth-parity.md) |
-| Exact count vocabulary | `S/V/C/D` and `candidate_visible_contributor_issued_v1`; Candidate requires `D=V`, exact Compact permits `D=C<=V` | [exact contributor evidence](../../completed/2026-07-22-full-quality-native-rendering/exact-contributor-evidence.md) |
-| CPU ordering primitives | Stable four-pass CPU radix, retained NEON/AVX2 helpers and bounded Rayon path; E4/E5 still must qualify complete preprocess kernels rather than claim greenfield SIMD | [parallel radix](../../completed/2026-07-22-full-quality-native-rendering/cpu-parallel-radix.md) |
-| Portable GPU order | Full32 visibility, hierarchical scan, stable radix and indirect draw are established; the base16 eight-pass path is the portability baseline | [final report](../../completed/2026-07-22-full-quality-native-rendering/final-report.md) |
-| Metal radix8 | Four-pass full32 Resident radix8 is accepted only on the recorded qualified Metal scope | [radix8 evidence](../../completed/2026-07-22-full-quality-native-rendering/resident-radix8.md) |
-| Canonical exact raster | Four-vertex `TriangleStrip`, opacity-aware conservative support, exact ProjectedQuads cache guards and GlobalQuads oracle are retained | [final report](../../completed/2026-07-22-full-quality-native-rendering/final-report.md) |
-| Exact Preproject/Compact | Exact contributor-first producer is implemented, transactionally prepared and image exact; same-binary A/Bs are accepted for their tested endpoints | [producer checkpoint](../../completed/2026-07-22-full-quality-native-rendering/phase2-production-producer-ab-checkpoint.md) |
-| Runtime CPU/GPU selection | `FrameCompletion`, ticket identity, hysteresis, cooldown and re-probe are accepted; the moving-camera starvation fix is part of the baseline | [final report](../../completed/2026-07-22-full-quality-native-rendering/final-report.md) |
-| Endpoint evidence | M4 Metal, Chrome/WebGPU and A065 results are scoped to their recorded binaries/workloads; iOS simulator evidence is functional only; Garden/Bicycle short runs are capacity only | [final report](../../completed/2026-07-22-full-quality-native-rendering/final-report.md) |
-| Artifact and camera identity | Formal resolutions, full count/SH receipts, camera hashes and terminal tickets remain authoritative | [full-quality schema](../../../../tests/perf/full-quality-experiment-v1.md), [matrix](../../../../tests/perf/full-quality-matrix-plan-v1.json) |
+| `target/full-quality-final/post-parallel-android-truck-2412x1080-cpu-gpu-adaptive-r3-20260723/` | commit `28f77d041d70fe3a11713590591ac57a122e1599`; `dirty=true`; nine complete A065 CPU/GPU/Adaptive runs | **directional performance only**. It supports the historical A065 ordering direction, not clean final-binary qualification. |
+| `target/full-quality-final-v3/playcanvas-android-a065-truck-native-dpr-20260723-a/` | commit `28f77d041d70fe3a11713590591ac57a122e1599`; `dirty=true`; PlayCanvas WebGPU A065 terminal observation | **directional performance only** under a different precision/work contract. It is not a clean comparator qualification. |
+| `target/full-quality-final-v4/android-a065-truck-producer-ab-7cabb6e/` | commit `7cabb6e0d7e81b5988406f49f25ab82b50c5ce75`; `dirty=false`; PostSort/Preproject manifests have `pairing=null`/no pairing metadata | **clean descriptive directional performance**. Exact count/image receipts may support semantic correctness, but the timing ratio is not a formal paired qualification. |
+| `target/full-quality-final-v4/android-a065-truck-adaptive-moving-fixed-120x2-28f79ee/` | commit `28f79eecf3aeab8eacfb7555beed38760d3f0753`; `dirty=false`; two complete Adaptive moving runs | The bounded learning/terminal-ticket outcome is a **verified semantic/correctness fact**; its timings remain directional. |
+| `target/full-quality-final-v4/android-a065-garden-capacity-76a9267/` | commit `76a9267b26d1c55bef5208152d02f8ce56d4d88f`; `dirty=false`; complete Garden SH3 | **capacity-only**. It proves exact admission/rendering on that A065, not cadence or sustained behavior. |
+| `target/full-quality-final-v4/android-a065-bicycle-capacity-76a9267/` | commit `76a9267b26d1c55bef5208152d02f8ce56d4d88f`; `dirty=false`; complete Bicycle SH3 | **capacity-only**. It proves exact admission/rendering on that A065, not cadence or sustained behavior. |
 
 ## 5. Rejected evidence inherited by Package A
 
@@ -148,6 +181,13 @@ following current files exist and remain the canonical routing set:
 A later schema task may change these authorities only before collecting a new
 field or making a new claim. Package A extraction does not edit them.
 
+The current matrix is a **schema-valid plan, not a completed qualification
+matrix**. The canonical validator reports `expected=339`, `rendered=0`,
+`capacity_rejected=0`, and `missing=339` when run with `--allow-incomplete`.
+It therefore proves that the planned cells and schema are valid; it does not
+prove a unified clean final binary across those cells and cannot be cited as
+final product qualification.
+
 ## 7. Risks and controls
 
 - Both full-quality and the new integration branch are local-only. A local
@@ -158,6 +198,11 @@ field or making a new claim. Package A extraction does not edit them.
   evidence-impact decision.
 - Historical artifacts name commits `7cabb6e`, `28f79ee` and `76a9267`.
   Rewriting the inherited line would weaken that provenance.
+- The dirty `28f77d0` A065 native and PlayCanvas artifacts remain directional.
+  Their complete receipts do not make them clean final-binary cohorts.
+- Ignored `target/` locators are not repository assets. Their absence in a new
+  worktree is expected; only committed schemas, reports and validators are
+  portable until artifacts are deliberately archived elsewhere.
 - Several worktrees began at the same plan commit. A1 must confirm its own
   branch and clean status before edits rather than infer ownership from path.
 - Full-quality performance numbers remain endpoint-, binary-, camera- and
@@ -171,17 +216,25 @@ A1 receives these exact inputs:
 1. Start from the clean tip of `codex/native-render-core-refactor` after the A0
    documentation commit; do not start from `main`, `5db2520` alone or another
    detached `c478252` worktree.
-2. Treat the six-commit full-quality line as immutable evidence ancestry.
-3. Add only the source-size/dependency ratchet and its explicit baseline
+2. Treat the six-commit full-quality line as immutable evidence ancestry. A1
+   may inherit verified semantic/correctness facts as regression oracles, but
+   it must not splice milliseconds, FPS or ratios from dirty `28f77d0`, clean
+   `7cabb6e`, `28f79ee`, `76a9267` or any other distinct binary into one
+   performance claim.
+3. Treat directional timings only as hypothesis context and Garden/Bicycle as
+   capacity-only. Package Q owns clean, same-protocol, same-final-binary
+   qualification and any cross-endpoint or competitor claim.
+4. Add only the source-size/dependency ratchet and its explicit baseline
    allowlist; do not move production responsibilities in A1.
-4. Measure physical LOC fresh at the A0 base for every grandfathered giant
+5. Measure physical LOC fresh at the A0 base for every grandfathered giant
    file, assign its exit task and enforce shrink-only behavior.
-5. Encode the forbidden dependency directions from `architecture.md`, while
+6. Encode the forbidden dependency directions from `architecture.md`, while
    avoiding a runtime pass trait/DAG or new crate.
-6. Use the canonical validators above. No device-performance rerun is needed
+7. Use the canonical validators above. The 0/339 matrix is a planning/schema
+   oracle, not inherited execution evidence. No device-performance rerun is needed
    for the checker itself; lightweight repository checks and checker fixtures
    are the relevant A1 gates.
-7. Preserve accepted/rejected/deferred boundaries above and stop if the ratchet
+8. Preserve accepted/rejected/deferred boundaries above and stop if the ratchet
    would require a benchmark-schema, handbook, CI or production-policy change.
 
 ## 9. A0 verification record
@@ -193,6 +246,11 @@ A1 receives these exact inputs:
 - verified canonical authorities and linked inherited evidence files exist;
 - validated the active-plan local Markdown links after adding this record;
 - parsed the full-quality matrix JSON and ran its validator with
-  `--allow-incomplete` (`expected=339`, `missing=339`, valid planning matrix);
+  `--allow-incomplete` (`expected=339`, `rendered=0`, `capacity_rejected=0`,
+  `missing=339`; schema-valid planning matrix only);
+- confirmed `target/` is ignored, the listed full-quality artifact roots are
+  absent from this worktree and no such paths are tracked;
+- inspected only commit/dirty/pairing identity fields from an available local
+  artifact copy and recorded only workspace-relative locators;
 - ran `git diff --check` and confirmed the A0 diff is documentation-only;
 - did not run Cargo, browser, simulator, device or performance workloads.

@@ -115,8 +115,31 @@ No implementation task is active.
 - Decision reason: the history is already linear; the dedicated branch keeps
   `main` unchanged, preserves artifact-linked commit identities and provides a
   reversible package boundary.
-- Commit: this A0 documentation commit; exact SHA is reported in the task
-  handoff because a commit cannot contain its own object ID
+- Commit: `2aef9f0e209c36fc24c706c284e02a181d275b8c`
+- Next eligible task: A1 — add source-size and dependency ratchet
+
+### A0 evidence-boundary follow-up
+
+- State: Accepted
+- Started: 2026-07-23 18:52 CST
+- Ended: 2026-07-23 18:57 CST
+- Baseline: `2aef9f0e209c36fc24c706c284e02a181d275b8c`
+- Scope: documentation-only correction to the A0 evidence classification and
+  artifact identity ledger
+- Hard gates:
+  - PASS semantic/correctness, directional performance and capacity-only are
+    distinct inherited classes
+  - PASS dirty A065/PlayCanvas, clean descriptive Preproject and capacity-only
+    Garden/Bicycle boundaries are explicit
+  - PASS the full-quality matrix is recorded as schema-valid but 0/339 complete
+  - PASS ignored artifact locators are workspace-relative and not claimed as
+    worktree contents
+  - PASS A1 cannot combine cross-commit performance; final qualification belongs
+    to Package Q
+- Device/performance work: none
+- Decision: A0 remains Accepted with narrower evidence claims; the integration
+  baseline and A1 eligibility are unchanged
+- Commit: this follow-up commit; exact SHA is reported in the handoff
 - Next eligible task: A1 — add source-size and dependency ratchet
 
 ## Decision ledger
@@ -124,7 +147,8 @@ No implementation task is active.
 | Task | State | Commit | Evidence/report | Decision summary |
 | --- | --- | --- | --- | --- |
 | Plan bundle | Accepted | `c478252` | this directory | complete route, architecture, protocol and finite-task ledger written |
-| A0 | Accepted | this commit | [a0-baseline.md](a0-baseline.md) | dedicated integration branch from `c478252`; no merge/rebase/cherry-pick |
+| A0 | Accepted | `2aef9f0` | [a0-baseline.md](a0-baseline.md) | dedicated integration branch from `c478252`; no merge/rebase/cherry-pick |
+| A0 evidence audit | Accepted | this follow-up | [a0-baseline.md](a0-baseline.md) | evidence classes and artifact identity limits tightened; integration decision unchanged |
 
 ## Baseline evidence inherited, not rerun by default
 
@@ -151,10 +175,15 @@ Key inherited facts:
 - Existing NEON/AVX2/Rayon code must be consolidated, not marketed as greenfield.
 - Preproject/Compact already exists and is image-exact; it needs clean ownership
   as a complete plan.
-- A065 complete Truck currently favors CPU PostSort over GPU PostSort, while
-  Preproject materially reduces the GPU execution-plan cost.
-- Pinned PlayCanvas on A065 is WebGPU and has a lower observed queue-terminal
-  interval under a different precision/work contract.
+- The A065 nine-run CPU/GPU/Adaptive result and A065 PlayCanvas result are
+  dirty directional observations, not clean final-binary qualification.
+- A065 Preproject is clean descriptive evidence at `7cabb6e`, but its pairing
+  metadata is null; Garden/Bicycle results at `76a9267` are capacity-only.
+- The full-quality matrix is a schema-valid plan with 0 rendered of 339
+  expected cells, not a completed unified-binary qualification.
+- A1 may inherit semantic or correctness proofs, but performance numbers from
+  distinct commits/binaries cannot be stitched together; Package Q owns clean,
+  same-protocol, final-binary qualification.
 - Fixed-slot Paged is not streaming and is not the Scalable foundation.
 
 ## Rejected experiments that require new evidence before reopening
