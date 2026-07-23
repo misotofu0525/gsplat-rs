@@ -20,7 +20,14 @@ A4 = Accepted
 A5 = Accepted
 A6 = Accepted
 A7 = Active
+A8 = Active
 <!-- gsplat-program-task-states: end -->
+
+<!-- gsplat-program-active-lanes: begin -->
+activation_commit = cf6ba8488b2942b503ce859142b9d4c28c55ef5c
+A7 = A7f
+A8 = A8b
+<!-- gsplat-program-active-lanes: end -->
 
 ## Program status
 
@@ -39,12 +46,12 @@ A7 = Active
   projection in `gpu/project.rs`. A5 and A6 are now closed and accepted; A7
   and A8 remain open for later, separately activated slices.
 - Current work package: A — responsibility extraction.
-- Active package task: A7. There is no writer lane during this closeout commit.
+- Active package tasks: A7 and A8 under the exact disjoint A7f/A8b parallel
+  lease recorded by the policy and machine lane block.
 - Last completed tasks: A7e — producer identities/receipts; A6a — canonical
   raster owner; A6 package closeout — merged full matrix.
-- Next eligible implementation: after this closeout is committed, activate
-  A7f and a disjoint A8 lifecycle slice if the exact write sets remain
-  independent on the new baseline.
+- Next eligible implementation: only A7f and A8b. Later A8 configuration,
+  resize and capture ownership remains sequential after A8b.
 - Integration branch: `codex/native-render-core-refactor`.
 - Frozen source implementation closeout:
   `5db2520e0d7a0ef1c68a78bdb9abc6fc588c5186`.
@@ -123,46 +130,115 @@ eligible task. Do not rewrite the architecture in this ledger.
 
 ## Current task
 
-### A7e + A6a parallel batch closeout
+### Parallel writer lanes — A7f and A8b
 
-- State: Accepted.
-- Activation baseline:
-  `796ac0532114e0a5468e35b8d638e4be3ecab2fd`; task activation commit
-  `ced129cbfdfa39313e7adc9cb09676bd2fb550cb`.
-- Writers: two user-visible Codex tasks in isolated worktrees. Collaboration
-  subagents performed only read-only fixed-SHA review.
-- A7e candidate `e278f8ca333b255da196facd0e205b644587d2bf` was accepted with
-  no P0/P1/P2 finding and integrated as
-  `f007e2b88055982cf712ffccdc96d96bc3fc7f9b`. Producer selection now lives in
-  `api.rs`; four immutable producer receipt/failure values and their two pure
-  queries live in `evidence/producer.rs`. Ticket allocation, ring slots,
-  mapping, generation/count validation and terminal delivery remain telemetry
-  responsibilities, with old compatibility paths preserved.
-- A6a candidate `af034c8b02f5ae33ca0cf4bc2a0e1961fd5cc8b6` was accepted with
-  no P0/P1/P2 finding and integrated as
-  `008d4dd94f4da61da8c91bb60992cdd6b22a15ae`. Pipeline/layout preparation and
-  direct/indirect draw encoding now live in `raster/{pipeline,encode}.rs`, with
-  one canonical quad vertex count and no second `draw_pass` owner.
-- Static identity evidence: all 25 WGSL blobs are unchanged; extracted pipeline
-  and encoder implementations are byte-identical after relocation; all raster
-  pipelines remain TriangleStrip; bindings, labels, usages, clear/load/store,
-  draw counts, submit and present ownership are unchanged.
-- Root combined matrix on `008d4dd`: architecture self-tests and real-tree
-  checker, format/diff, locked workspace check/tests, workspace Clippy,
-  warning-free Rustdoc, wasm32 Web check, forced Metal SortedAlpha conformance
-  and C FFI smoke all passed. Renderer results were 293 passed and five
-  existing research tests ignored; conformance was 1 passed and tiled raster
-  integration was 10 passed.
-- Claim boundary: this batch changes responsibility ownership only. It makes no
-  device-performance or competitor claim and needs no new A065 run because
-  shader bytes, render math, public ABI and platform lifecycle are unchanged.
-- A6 decision: Accepted. The canonical raster facade, preparation and encoding
-  owners are explicit; the completed A6 shader grandfather record is removed.
-- A7 remains Active for the submission/evidence ownership slice.
-- Next activation: A7f plus a disjoint A8 lifecycle slice after a current-tree
-  overlap audit.
+- Activation baseline: `cf6ba8488b2942b503ce859142b9d4c28c55ef5c`.
+- Isolation: two user-visible Codex tasks in separate worktrees, each with its
+  own finite goal and exact write allowlist. Collaboration subagents may only
+  perform bounded read-only scope audits or fixed-SHA review.
+- Integration order: A7f, then A8b, followed by one combined root matrix.
+- File intersection: empty. A7f owns only submission identities in
+  `evidence/` plus their session compatibility/mapping site. A8b owns only the
+  Surface acquire/recovery/present lifecycle leaf and mechanical presenter/root
+  wiring.
+- No fixed line-count threshold is a prompt, acceptance gate or design target.
+  Boundaries are judged by responsibility cohesion, dependency direction,
+  compatibility, navigability, test seams and maintenance risk.
+
+### A7f — Separate immutable submission identity from session policy
+
+- Parent task state: A7 Active; A7e is integrated and accepted.
+- Subtask state: Active.
+- Hypothesis: the three submission values and their three unsampled-reason
+  values are immutable evidence identities, while conversion from presenter
+  telemetry remains a session concern.
+- Exact writer allowlist:
+  - `crates/gsplat-render-wgpu/src/evidence/mod.rs`;
+  - new `crates/gsplat-render-wgpu/src/evidence/submission.rs`;
+  - `crates/gsplat-render-wgpu/src/surface_session.rs`.
+- Move `SurfaceOrderMeasurementUnsampledReason`,
+  `SurfaceOrderMeasurementSubmission`,
+  `SurfaceProjectedDrawMeasurementUnsampledReason`,
+  `SurfaceProjectedDrawMeasurementSubmission`,
+  `SurfaceGpuProducerMeasurementUnsampledReason` and
+  `SurfaceGpuProducerMeasurementSubmission` byte-for-byte into the evidence
+  leaf. Move their public pure `backend`/`ticket` queries with them.
+- Keep all `from_presenter` conversion methods in `surface_session.rs` because
+  they interpret runtime telemetry and optional actual producer state. Preserve
+  the existing crate-root and session import paths through compatibility
+  re-exports; `lib.rs` and every consumer remain unchanged.
+- Frozen identities: evidence facade
+  `fb8d78eac69d4f6ebb900d25941a13927c6220f901d57ac2c706ff310f2fd58e`;
+  session `dfb06f3d1d159bf9432d22d9812804b7424c84e6c6cf62294dd393df73e90187`.
+- Preserve every derive, default, variant/field order, visibility, conversion,
+  ticket identity and Adaptive/controller behavior.
+- Focused gates: exact declaration/query inventory, compatibility paths,
+  submission conversion tests, session/renderer tests, format/diff, exact
+  scope, architecture, locked renderer check/test, Clippy and wasm32. Root owns
+  the combined workspace/Rustdoc/FFI/Metal matrix.
+- Forbidden: `lib.rs`, presenter, API, telemetry implementations, GPU/raster/
+  shader/scene/offscreen, FFI/JNI/Swift/Web/examples, Cargo, benchmarks and
+  plan/policy files; no policy, lifecycle, ABI or behavior change.
+
+### A8b — Extract the Surface acquire/recovery/present lifecycle leaf
+
+- Parent task state: A8 Active; A8a offscreen target/readback is accepted.
+- Subtask state: Active.
+- Hypothesis: the existing instance/present-mode selection, exact Surface error
+  mapping, one-retry acquisition protocol and presentation state form one
+  strategy-free host lifecycle leaf. Presenter retains geometry,
+  resize/configuration policy, capture publication, telemetry and frame
+  orchestration.
+- Exact writer allowlist:
+  - `crates/gsplat-render-wgpu/src/lib.rs` for private module wiring and moving
+    the three existing lifecycle helpers only;
+  - new `crates/gsplat-render-wgpu/src/surface/mod.rs`;
+  - new `crates/gsplat-render-wgpu/src/surface/lifecycle.rs`;
+  - `crates/gsplat-render-wgpu/src/surface_presenter.rs` for mechanical
+    delegation and lifecycle-state field replacement only.
+- The lifecycle leaf owns Android Vulkan-only/other-platform default instance
+  creation, present-mode priority, `wgpu::SurfaceError` mapping, fail-closed
+  admission, `get_current_texture`, the single Lost/Outdated
+  reconfigure-and-retry path, Timeout-as-no-drawable behavior and primitive
+  presentation with the actual texture-size receipt.
+- Presenter continues to own Surface/configuration/device values, resize and
+  rollback, COPY_SRC capture, command encoding/submission, geometry/resources
+  and policy. Pending capture becomes presented only after the same successful
+  primitive presentation as before.
+- Frozen identities: presenter
+  `15b75e420375e72468377a658af774f33a06af8e2dee8fba92520661a2481f69`;
+  root `86df209eb341faedb64529954f8d0a7775dd05697818f925904d61f3e8be0549`;
+  session and every WGSL file remain outside scope.
+- Preserve exactly one recovery attempt, Surface error variants/strings,
+  configure timing, submit-before-present order, last-presented dimensions,
+  capture publication timing, public API and ABI.
+- Focused gates: lifecycle state/error/retry decision tests, frozen WGSL/
+  session/offscreen inventory, presenter/renderer Surface tests, format/diff,
+  exact scope, architecture, locked renderer check/test and wasm32. Root owns
+  the combined workspace/Clippy/Rustdoc/FFI/Metal matrix.
+- Forbidden: session, evidence/API/telemetry, offscreen, scene/GPU/raster/WGSL,
+  FFI/JNI/Swift/Web/examples, Cargo, benchmarks and plan/policy files; no
+  resize, capture, resource, math, count, resolution or policy change.
+
+Neither lane has a performance percentage, FPS, competitor, device or source-
+size completion gate. Each produces one fixed candidate SHA without merge,
+rebase, push, main or ledger edits.
 
 ## Recently integrated tasks
+
+### A7e + A6a parallel batch closeout
+
+- Activation baseline `796ac0532114e0a5468e35b8d638e4be3ecab2fd`;
+  task activation commit `ced129cbfdfa39313e7adc9cb09676bd2fb550cb`.
+- A7e candidate `e278f8ca333b255da196facd0e205b644587d2bf`
+  passed fixed-SHA review and integrated as `f007e2b`; A6a candidate
+  `af034c8b02f5ae33ca0cf4bc2a0e1961fd5cc8b6` passed fixed-SHA review and
+  integrated as `008d4dd`.
+- All 25 WGSL blobs remained unchanged and the relocated raster pipeline/
+  encoder bodies were byte-identical. The root combined architecture,
+  format/diff, workspace check/test, Clippy, Rustdoc, wasm32, forced Metal
+  SortedAlpha and C FFI matrix passed.
+- A6 is Accepted. A7 remains open for submission/evidence ownership.
 
 ### A7d + A5g parallel batch closeout
 
