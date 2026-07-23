@@ -278,9 +278,9 @@ No implementation task is active.
 - Next eligible task: A2 — extract `api.rs` and strategy-free
   `data/{layout,view}.rs` types
 - A2 input:
-  - start from the resolved tip of
-    `9df0d6c..codex/native-render-a1-ratchet` and keep the checker passing before
-    and after the extraction
+  - start from accepted A1 commit
+    `f6180844bbaf910b74ff5ecfe81c9b9588c88561` and keep the checker passing
+    before and after the extraction
   - keep new production Rust below the declared target, shrink legacy owners,
     and lower a checked grandfather baseline in the same task when it shrinks
   - A2 does not need to activate future `plans/` or `renderer/mod.rs`; if it
@@ -358,8 +358,9 @@ No implementation task is active.
   - PASS checker self-ratchet at 1,192 physical lines
   - PASS `cargo check --workspace --locked`
   - PASS JSON, in-memory Python compilation and whitespace checks
-- Result identity: `9585871..codex/native-render-a1-ratchet`; resolve the final
-  root-acceptance tip SHA during integration
+- Result identity: `f6180844bbaf910b74ff5ecfe81c9b9588c88561`
+- Integration: fast-forwarded without conflict into
+  `codex/native-render-core-refactor`
 - Decision: A1 is eligible for fast-forward integration only with this root
   acceptance correction included
 - Next eligible task: A2a, the strategy-free data/layout/view extraction
@@ -371,7 +372,7 @@ No implementation task is active.
 | Plan bundle | Accepted | `c478252` | this directory | complete route, architecture, protocol and finite-task ledger written |
 | A0 | Accepted | `2aef9f0` | [a0-baseline.md](a0-baseline.md) | dedicated integration branch from `c478252`; no merge/rebase/cherry-pick |
 | A0 evidence audit | Accepted | `9df0d6c` | [a0-baseline.md](a0-baseline.md) | evidence classes and artifact identity limits tightened; integration decision unchanged |
-| A1 | Accepted | `9df0d6c..codex/native-render-a1-ratchet` (resolve tip at integration) | `tests/architecture/` and this ledger | reviewer-hardened physical-LOC/dependency ratchet passes on fixtures and the A0 tree; A2 is eligible |
+| A1 | Accepted | `f6180844bbaf910b74ff5ecfe81c9b9588c88561` | `tests/architecture/` and this ledger | root-accepted physical-LOC/dependency ratchet passes 56 fixtures and the A0 tree; A2a is eligible |
 
 ## Baseline evidence inherited, not rerun by default
 
