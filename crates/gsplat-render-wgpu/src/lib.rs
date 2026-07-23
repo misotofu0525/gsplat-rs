@@ -12,6 +12,8 @@ mod gpu;
 mod gpu_error;
 mod gpu_producer_telemetry;
 mod gpu_telemetry;
+#[cfg(not(target_arch = "wasm32"))]
+mod offscreen;
 mod packed_atlas;
 mod packed_gpu;
 mod page_atlas;
@@ -2603,9 +2605,7 @@ struct GpuRasterizer {
     adapter_info: wgpu::AdapterInfo,
     device: wgpu::Device,
     queue: wgpu::Queue,
-    output_texture: wgpu::Texture,
-    output_view: wgpu::TextureView,
-    output_size: (u32, u32),
+    offscreen_target: offscreen::OffscreenTarget,
     max_texture_dimension_2d: u32,
     direct_pipeline: wgpu::RenderPipeline,
     direct_bind_group_layout: wgpu::BindGroupLayout,
@@ -2651,7 +2651,7 @@ impl GpuRasterizer {
 
         let max_texture_dimension_2d = device.limits().max_texture_dimension_2d;
 
-        let (output_texture, output_view) = create_output_target(
+        let offscreen_target = offscreen::OffscreenTarget::new(
             &device,
             config.width,
             config.height,
@@ -2692,9 +2692,7 @@ impl GpuRasterizer {
             adapter_info,
             device,
             queue,
-            output_texture,
-            output_view,
-            output_size: (config.width, config.height),
+            offscreen_target,
             max_texture_dimension_2d,
             direct_pipeline,
             direct_bind_group_layout,
@@ -2752,7 +2750,7 @@ impl GpuRasterizer {
             "gsplat-offscreen-direct-encoder",
             draw_pass::SplatDraw {
                 pass_label: "gsplat-offscreen-direct-pass",
-                view: &self.output_view,
+                view: self.output_view(),
                 pipeline: &self.direct_pipeline,
                 bind_group: &direct_scene.cpu_bind_group,
                 clear: wgpu::Color::TRANSPARENT,
@@ -2826,7 +2824,7 @@ impl GpuRasterizer {
             &mut encoder,
             &draw_pass::SplatDraw {
                 pass_label: "gsplat-offscreen-resident-pass",
-                view: &self.output_view,
+                view: self.output_view(),
                 pipeline: &resident_pipelines.draw_pipeline,
                 bind_group: &resident.draw_bind_group,
                 clear: wgpu::Color::TRANSPARENT,
@@ -2894,7 +2892,7 @@ impl GpuRasterizer {
             "gsplat-offscreen-paged-encoder",
             draw_pass::SplatDraw {
                 pass_label: "gsplat-offscreen-paged-pass",
-                view: &self.output_view,
+                view: self.output_view(),
                 pipeline: &self.packed_pipeline,
                 bind_group: &paged.atlas.resources.bind_group,
                 clear: wgpu::Color::TRANSPARENT,
@@ -2907,96 +2905,20 @@ impl GpuRasterizer {
     }
 
     fn readback_rgba8(&mut self) -> Result<Vec<u8>, RendererError> {
-        use std::sync::mpsc;
+        offscreen::readback_rgba8(&self.device, &self.queue, &self.offscreen_target)
+    }
 
-        let (width, height) = self.output_size;
-        if width == 0 || height == 0 {
-            return Err(RendererError::InvalidConfig);
-        }
-
-        let bytes_per_pixel = 4_u32;
-        let unpadded_bytes_per_row = width.saturating_mul(bytes_per_pixel);
-        let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
-        let padded_bytes_per_row = unpadded_bytes_per_row.div_ceil(align).saturating_mul(align);
-        let buffer_size = padded_bytes_per_row as u64 * height as u64;
-
-        let readback = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: wgpu_label("splat-readback"),
-            size: buffer_size,
-            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-
-        {
-            let mut encoder = self
-                .device
-                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                    label: wgpu_label("splat-readback-encoder"),
-                });
-            encoder.copy_texture_to_buffer(
-                wgpu::TexelCopyTextureInfo {
-                    texture: &self.output_texture,
-                    mip_level: 0,
-                    origin: wgpu::Origin3d::ZERO,
-                    aspect: wgpu::TextureAspect::All,
-                },
-                wgpu::TexelCopyBufferInfo {
-                    buffer: &readback,
-                    layout: wgpu::TexelCopyBufferLayout {
-                        offset: 0,
-                        bytes_per_row: Some(padded_bytes_per_row),
-                        rows_per_image: Some(height),
-                    },
-                },
-                wgpu::Extent3d {
-                    width,
-                    height,
-                    depth_or_array_layers: 1,
-                },
-            );
-            self.queue.submit(Some(encoder.finish()));
-        }
-
-        let slice = readback.slice(..);
-        let (tx, rx) = mpsc::channel();
-        slice.map_async(wgpu::MapMode::Read, move |result| {
-            let _ = tx.send(result);
-        });
-        let _ = self.device.poll(wgpu::PollType::wait_indefinitely());
-
-        match rx.recv() {
-            Ok(Ok(())) => {}
-            _ => return Err(RendererError::GpuReadback),
-        }
-
-        let mapped = slice.get_mapped_range();
-        let unpadded = unpadded_bytes_per_row as usize;
-        let padded = padded_bytes_per_row as usize;
-        let mut out = vec![0_u8; unpadded.saturating_mul(height as usize)];
-
-        for row in 0..(height as usize) {
-            let src_start = row * padded;
-            let dst_start = row * unpadded;
-            out[dst_start..dst_start + unpadded]
-                .copy_from_slice(&mapped[src_start..src_start + unpadded]);
-        }
-
-        drop(mapped);
-        readback.unmap();
-        Ok(out)
+    fn output_view(&self) -> &wgpu::TextureView {
+        self.offscreen_target.view()
     }
 
     fn ensure_output_target(&mut self, width: u32, height: u32) -> Result<(), RendererError> {
-        if self.output_size == (width, height) {
-            return Ok(());
-        }
-
-        let (texture, view) =
-            create_output_target(&self.device, width, height, self.max_texture_dimension_2d)?;
-        self.output_texture = texture;
-        self.output_view = view;
-        self.output_size = (width, height);
-        Ok(())
+        self.offscreen_target.ensure_size(
+            &self.device,
+            width,
+            height,
+            self.max_texture_dimension_2d,
+        )
     }
 }
 
@@ -3034,40 +2956,6 @@ fn offscreen_device_limits(
         return Err(RendererError::GpuDeviceCreation);
     }
     Ok(required_limits)
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn create_output_target(
-    device: &wgpu::Device,
-    width: u32,
-    height: u32,
-    max_texture_dimension_2d: u32,
-) -> Result<(wgpu::Texture, wgpu::TextureView), RendererError> {
-    if width > max_texture_dimension_2d || height > max_texture_dimension_2d {
-        return Err(RendererError::GpuDimensionsUnsupported {
-            width,
-            height,
-            max_dimension: max_texture_dimension_2d,
-        });
-    }
-
-    let texture = device.create_texture(&wgpu::TextureDescriptor {
-        label: wgpu_label("splat-output"),
-        size: wgpu::Extent3d {
-            width,
-            height,
-            depth_or_array_layers: 1,
-        },
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format: RENDER_TARGET_FORMAT,
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-        view_formats: &[],
-    });
-
-    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-    Ok((texture, view))
 }
 
 #[cfg(test)]
