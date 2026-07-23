@@ -6,7 +6,34 @@
       "IO-PLY-1",
       "IO-SPZ-1"
     ],
-    "parallel_execution": null,
+    "parallel_execution": {
+      "activation_commit": "f1c8f1c87e534443fecc09bb80d896317637b038",
+      "members": [
+        {
+          "task": "A7",
+          "lane": "A7c",
+          "write_allowlist": [
+            "crates/gsplat-render-wgpu/src/api.rs",
+            "crates/gsplat-render-wgpu/src/projected_draw_telemetry.rs",
+            "crates/gsplat-render-wgpu/src/surface_session.rs"
+          ]
+        },
+        {
+          "task": "A5",
+          "lane": "A5f",
+          "write_allowlist": [
+            "crates/gsplat-render-wgpu/src/gpu/color.rs",
+            "crates/gsplat-render-wgpu/src/gpu/mod.rs",
+            "crates/gsplat-render-wgpu/src/resident_gpu.rs"
+          ]
+        }
+      ],
+      "integration_order": [
+        "A7c",
+        "A5f"
+      ],
+      "reason": "A7c moves only two stateless public execution identities into the API leaf while A5f moves only Resident color-kernel mechanics into a strategy-free GPU leaf; their exact files, responsibilities and verification ownership are disjoint."
+    },
     "task_catalog": {
       "A0": "A",
       "A1": "A",

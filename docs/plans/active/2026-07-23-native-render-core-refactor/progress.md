@@ -17,7 +17,15 @@ A1 = Accept
 A2 = Accepted
 A3 = Accepted
 A4 = Accepted
+A5 = Active
+A7 = Active
 <!-- gsplat-program-task-states: end -->
+
+<!-- gsplat-program-active-lanes: begin -->
+activation_commit = f1c8f1c87e534443fecc09bb80d896317637b038
+A5 = A5f
+A7 = A7c
+<!-- gsplat-program-active-lanes: end -->
 
 ## Program status
 
@@ -32,12 +40,14 @@ A4 = Accepted
   now own Direct Resident-visible and Preproject key/ID compaction. The parent
   A5, A7 and A8 packages remain open for later, separately activated slices.
 - Current work package: A — responsibility extraction.
-- Active package tasks: none while the accepted A7b/A5e lease is closed.
+- Active package tasks: A7c and A5f under the exact disjoint parallel lease
+  recorded by the architecture policy and machine lane block.
 - Last completed tasks: A7b — bounded external evidence retention; A5e —
   Preproject key/ID compaction owner.
-- Next eligible implementation: a separately governed A7c API-identity slice
-  and A5f Resident-color GPU-owner slice may run concurrently only after a new
-  exact activation commit records their disjoint allowlists.
+- Next eligible implementation: A7c API identity ownership and A5f Resident
+  color-kernel ownership may run concurrently from the same clean activation
+  baseline in separate user-visible tasks/worktrees. No other writer slice is
+  active.
 - Integration branch: `codex/native-render-core-refactor`.
 - Frozen source implementation closeout:
   `5db2520e0d7a0ef1c68a78bdb9abc6fc588c5186`.
@@ -108,9 +118,90 @@ eligible task. Do not rewrite the architecture in this ledger.
 
 ## Current task
 
-No production writer lease is active. Root is closing accepted evidence and
-preparing the next exact disjoint activation; no parent task name by itself
-grants write scope.
+### Parallel writer lanes — A7c and A5f
+
+- Activation baseline:
+  `f1c8f1c87e534443fecc09bb80d896317637b038`.
+- Isolation: two user-visible Codex tasks, two isolated worktrees and exact
+  disjoint allowlists. Collaboration subagents may only perform read-only
+  fixed-SHA review.
+- Integration order: root reviews and merges A7c first, verifies A5f's frozen
+  forbidden hashes, then reviews/merges A5f and reruns the combined gates.
+- Neither writer edits this ledger or the architecture policy. Source size is
+  descriptive context only; responsibility cohesion, dependency direction,
+  test seams and behavior determine acceptance.
+
+### A7c — Move stateless execution identities into the API leaf
+
+- Parent task state: A7 Active.
+- Subtask state: Active.
+- Hypothesis: two already-public, strategy-free identity enums can live in the
+  existing API leaf while their legacy owner modules privately re-export them,
+  preserving every crate-root path and receipt/controller behavior.
+- Exact writer allowlist:
+  - `crates/gsplat-render-wgpu/src/api.rs`;
+  - `crates/gsplat-render-wgpu/src/surface_session.rs`;
+  - `crates/gsplat-render-wgpu/src/projected_draw_telemetry.rs`.
+- Required boundary: move `SurfaceOrderBackendUsed` and
+  `SurfaceProjectedDrawExecution`, including the latter's
+  `exact_contributor_compaction` method, byte-for-byte except for imports and
+  indentation. `surface_session` and `projected_draw_telemetry` retain private
+  `pub use crate::api::...` compatibility paths so the existing `lib.rs`
+  re-export surface remains source-compatible.
+- Forbidden: no other receipt, measurement, failure, submission, policy,
+  controller, ticket, ring, telemetry transport, FFI/header or platform
+  consumer moves; no enum variant, derive, default, numeric mapping or public
+  path changes.
+- Frozen source hashes:
+  - `api.rs`: `7979d8b6a53c76b308149ac060964d94eec83cbb0a7abee0e8317b28d46f584a`;
+  - `surface_session.rs`: `0921a21c98026e7ce3c695bf6ff5d579fd3e59dc9637375bd898a78d021f41bd`;
+  - `projected_draw_telemetry.rs`: `3653a37f3132a0bab595185bbc46657ea6344c36572cdf788780c6eb9d33fc54`;
+  - forbidden `lib.rs`: `81e3509bb6b21c84fbf0c953ec4336497db2386a164bfc3de30c4af9582c7842`;
+  - forbidden C implementation/header: `2f777c0eea8e117a36af59cc92b4e70313a7237c02ce7353a79d7bb1a1e5a3bc` /
+    `69e1f1fbfd351c2262ca2c5eff26beb3da8987f924824fb4ff31f92c9390a455`.
+- Hard gates: compile probes for old crate-root paths, enum equality/default and
+  exact-compaction semantics; unchanged telemetry/session tests and inventory;
+  exact forbidden hashes; format/diff, architecture, locked renderer/workspace
+  tests, all-target Clippy, Rustdoc, wasm32 and C FFI smoke. No device or
+  performance gate is required for this declaration-only ownership move.
+
+### A5f — Extract Resident color-kernel mechanics
+
+- Parent task state: A5 Active.
+- Subtask state: Active.
+- Hypothesis: Resident's color parameter ABI, bind-group layout/pipeline
+  construction and compute dispatch can move behind one strategy-free GPU leaf
+  while Resident retains all data resources, bind groups, camera cache and
+  decision policy.
+- Exact writer allowlist:
+  - `crates/gsplat-render-wgpu/src/resident_gpu.rs`;
+  - `crates/gsplat-render-wgpu/src/gpu/mod.rs`;
+  - new `crates/gsplat-render-wgpu/src/gpu/color.rs`.
+- Required boundary: the new leaf owns `GpuResidentColorParams`, the existing
+  color bind-group-layout and pipeline factories, current two-dimensional
+  dispatch calculation, parameter upload and compute-pass encoding. Resident
+  retains every scene/upload/output buffer, the color bind group and parameter
+  buffer, `last_resolved_camera_position`, skip/change policy, error mapping,
+  caller-visible factories through compatibility re-exports and call order.
+- Forbidden: no WGSL, binding ABI, shader entry, label, usage, byte plan,
+  workgroup behavior, SH precision/degree, camera cache, order/raster policy,
+  public API/FFI or platform consumer change. Do not import Scene, Surface,
+  session, controller, policy or telemetry types into the new GPU leaf.
+- Frozen source hashes:
+  - `resident_gpu.rs`: `2d3b0c2c5f5fa98921f72777c0ac6e31159fb14e18a7cf114b55e1b4bff41794`;
+  - `gpu/mod.rs`: `fd40f96820c7bc7d14c9092095022496435def056cad45798d4c9995a5a04a75`;
+  - forbidden color WGSL: `d8ffb3e4898160789f15db9b149c85622fb132b7568acbf328c724e3673a8b7f`;
+  - forbidden Direct/Projected/Preproject owners:
+    `4dc900bd3a52cb479da308ef6bd168ff91dde4fcc9d81e2dc78f2a73144d070b` /
+    `84760e990707a77c971b6b830d19f112c1004995116bbbc0a4667fcd686d5d6c` /
+    `c295f61e93ae685f339670ec9bcf68de01698651bcc06a8274364467904bbadd`;
+  - forbidden `lib.rs`: `81e3509bb6b21c84fbf0c953ec4336497db2386a164bfc3de30c4af9582c7842`.
+- Hard gates: exact frozen shader/forbidden hashes and unchanged label,
+  binding, usage, parameter ABI, dispatch and pass inventories; unchanged
+  Resident color/cache/image/order tests; format/diff, architecture, locked
+  renderer/workspace tests, all-target Clippy, Rustdoc, wasm32 and required
+  Apple Metal SortedAlpha conformance. This behavior-preserving ownership slice
+  makes no device or performance claim.
 
 ## Recently integrated tasks
 
