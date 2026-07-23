@@ -17,15 +17,7 @@ A1 = Accept
 A2 = Accepted
 A3 = Accepted
 A4 = Accepted
-A5 = Active
-A7 = Active
 <!-- gsplat-program-task-states: end -->
-
-<!-- gsplat-program-active-lanes: begin -->
-activation_commit = 6b5a42cfdfc4d2f3c4916d8f83c6fe27490a1807
-A5 = A5d
-A7 = A7a
-<!-- gsplat-program-active-lanes: end -->
 
 ## Program status
 
@@ -35,16 +27,18 @@ A7 = A7a
   root-accepted. A5a's strategy-free scan/radix leaves are also root-accepted;
   A5b's Direct/Resident stable-radix mechanics and A5c1's Projected scan reuse
   are now accepted behind those owners. A5c2's contributor compactor and A8a's
-  offscreen lifecycle leaves are integrated and accepted. The parent A5 and A8
-  packages remain open for later, separately activated slices.
+  offscreen lifecycle leaves are integrated and accepted. A7a's immutable
+  order-receipt values and A5d's Direct Resident-visible compaction owner are
+  also integrated and accepted. The parent A5, A7 and A8 packages remain open
+  for later, separately activated slices.
 - Current work package: A — responsibility extraction.
-- Active package tasks: A5d and A7a under the exact disjoint parallel lease
-  recorded by the architecture policy and machine lane block.
-- Last completed tasks: A5c2 — Projected contributor compactor; A8a — offscreen
-  target/readback lifecycle leaves.
-- Next eligible implementation: A5d and A7a may run concurrently from the same
-  clean activation commit in separate user-visible tasks/worktrees. A6,
-  Preproject compaction and later packages stay inactive.
+- Active package tasks: none while the root task runs the combined acceptance
+  gates and records a new parallel activation baseline.
+- Last completed tasks: A7a — immutable order-receipt values; A5d — Direct
+  Resident-visible compaction owner.
+- Next eligible implementation: after combined acceptance, A7b bounded
+  external evidence retention and A5e Preproject key/ID compaction may run from
+  one new activation commit in separate user-visible tasks/worktrees.
 - Integration branch: `codex/native-render-core-refactor`.
 - Frozen source implementation closeout:
   `5db2520e0d7a0ef1c68a78bdb9abc6fc588c5186`.
@@ -113,9 +107,11 @@ eligible task. Do not rewrite the architecture in this ledger.
   hard. Historical A1 entries below record the then-current implementation;
   this section and the current policy are authoritative for later tasks.
 
-## Current task
+## Recently integrated tasks
 
 ### Parallel writer lanes — A5d and A7a
+
+- State: Accepted
 
 - Activation commit:
   `6b5a42cfdfc4d2f3c4916d8f83c6fe27490a1807`.
@@ -131,8 +127,8 @@ eligible task. Do not rewrite the architecture in this ledger.
 
 ### A5d — Extract Direct Resident-visible compaction mechanics
 
-- Parent task state: A5 Active
-- Subtask state: Active
+- Parent task state: A5 remains open for later slices
+- Subtask state: Accepted
 - Activation baseline:
   `6b5a42cfdfc4d2f3c4916d8f83c6fe27490a1807`.
 - Hypothesis: Direct's qualified Resident-visible compaction resources and
@@ -190,11 +186,24 @@ eligible task. Do not rewrite the architecture in this ledger.
   Android device run is required for this behavior-preserving ownership slice.
 - Source size: reported only as review context; responsibility, dependency
   direction and preserved test seams determine acceptance.
+- Candidate: `30f2cca8c7987358c3563e5ed04b3b7bcb213731`.
+- Root integration: `8e7680b` after independent fixed-SHA review reported
+  P0/P1/P2 = 0.
+- Result: `ResidentVisibleCompactionSeed` and
+  `ResidentVisibleCompaction` now own the existing control/offset resources,
+  bindings and three compaction stages. Direct retains admission, indirect
+  reset, scan/radix orchestration, timestamp boundaries and pass order.
+- Verification: exact allowlist and frozen hashes, unchanged labels/entries/
+  bindings/usages/test inventory, format/diff, architecture, renderer and
+  workspace tests, all-target Clippy, Rustdoc, wasm32 and required Metal
+  SortedAlpha conformance all passed in the writer and fixed-SHA review.
+- Final source sizes are descriptive only: `direct_gpu_order.rs` 1,864 lines,
+  `gpu/visible_compact.rs` 350 lines and `gpu/mod.rs` 23 lines.
 
 ### A7a — Extract the immutable order-receipt value cluster
 
-- Parent task state: A7 Active
-- Subtask state: Active
+- Parent task state: A7 remains open for later slices
+- Subtask state: Accepted
 - Activation baseline:
   `2e2e211` (`docs: accept parallel extraction slices`).
 - Hypothesis: the closed order-receipt value cluster can move behind one
@@ -237,6 +246,17 @@ eligible task. Do not rewrite the architecture in this ledger.
   execution are unchanged.
 - Source size: reported only as review context; no fixed line count is a task
   requirement, split criterion or completion gate.
+- Candidate: `07eed6f23de65e1e4d248ef5828b5da96eb48078`.
+- Root integration: `ff7eace` after independent fixed-SHA review reported
+  P0/P1/P2 = 0.
+- Result: five immutable order-receipt value types now live behind the private
+  `evidence` facade while their crate-root public paths remain unchanged.
+  Tickets, rings, readback, invalidation, controller policy, Projected and FFI
+  behavior did not move.
+- Verification: exact declaration/path equivalence, frozen forbidden hashes,
+  format/diff, architecture, renderer and workspace tests, all-target Clippy,
+  Rustdoc, wasm32, C FFI smoke and required Metal SortedAlpha conformance all
+  passed in the writer and fixed-SHA review.
 
 ## Last integrated tasks
 
