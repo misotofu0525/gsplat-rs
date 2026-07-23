@@ -6,6 +6,15 @@
       "IO-PLY-1",
       "IO-SPZ-1"
     ],
+    "parallel_active_sets": [
+      {
+        "tasks": [
+          "A5",
+          "A8"
+        ],
+        "reason": "A5c2 owns only Projected compute-compaction files while A8a owns only offscreen target/readback files; root records integration order and reruns shared gates."
+      }
+    ],
     "task_catalog": {
       "A0": "A",
       "A1": "A",

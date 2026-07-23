@@ -709,18 +709,20 @@ immutable active snapshot is published.
 
 ## 16. Maintainability guardrails
 
-- `lib.rs < 200` lines review target.
-- `renderer/mod.rs < 800` lines review target.
-- each plan `< 600` lines review target.
-- top-level frame orchestration `< 150` lines review target.
-- new production Rust file `< 800` lines review target.
-- new WGSL file `< 350` lines review target.
-- new production Rust, plan and WGSL files share a 2,500-line default circuit
-  breaker against multi-thousand-line mixed owners; a finite documented
-  exception is allowed and the number is not a preferred file size.
+- `lib.rs` is a facade and re-export boundary, not a renderer owner.
+- `renderer/mod.rs` composes focused components instead of accumulating their
+  algorithms, resources and policy state.
+- each plan describes one immutable execution choice; top-level frame
+  orchestration coordinates owners rather than implementing their internals.
+- production Rust and WGSL modules are split only at real responsibility,
+  dependency and test boundaries. Physical LOC is recorded as review evidence,
+  never used as a writer quota.
+- a newly introduced multi-thousand-line owner requires explicit responsibility
+  review. A finite documented exception is valid when the owner is cohesive;
+  the review trigger must not force an artificial split or block closeout.
 - renderer should have roughly 5--7 top-level private components, not dozens of
   flat fields; this is a review smell, not a gameable field-count hard gate.
-- `FrameResult` should remain small (roughly 12 fields or fewer); detailed
+- `FrameResult` carries completion identity and compact summary state; detailed
   evidence is separate, and nested giant objects do not satisfy the intent.
 - no new top-level crate until an extracted component has a real second
   consumer and stable boundary.
@@ -729,12 +731,13 @@ immutable active snapshot is published.
   non-default compilation or test routing.
 - architecture tests check forbidden imports/operations in hot modules.
 
-The LOC checker counts physical lines including tests and comments. Review
-targets emit notices and never force a task to split a cohesive owner. Existing
-oversized files enter a checked allowlist containing baseline line count,
-responsible extraction task and semantic exit condition. They may not grow
-without a bounded exception. A circuit-breaker exception names a maximum
-temporary delta, reason and removal task and expires at that task's closeout.
+The LOC checker counts physical lines including tests and comments. Diagnostic
+notices never force a task to split a cohesive owner and are not copied into
+writer prompts. Existing oversized files enter a checked allowlist containing
+baseline line count, responsible extraction task and semantic exit condition.
+They may not grow without a bounded exception. A circuit-breaker exception
+names a maximum temporary delta, reason and removal task and expires at that
+task's closeout.
 Moving tests can lower LOC, but a responsibility-extraction task passes only
 when its dependency/ownership assertions also pass.
 

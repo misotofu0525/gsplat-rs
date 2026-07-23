@@ -512,7 +512,7 @@
       ]
     },
     {
-      "name": "package_may_have_at_most_one_active_task",
+      "name": "undeclared_parallel_active_tasks_fail_closed",
       "files": {},
       "task_states": [
         "A2 = Active",
@@ -521,6 +521,26 @@
       "expected_error_codes": [
         "program_state.multiple_active"
       ]
+    },
+    {
+      "name": "explicit_disjoint_parallel_active_set_is_allowed",
+      "files": {},
+      "program_task_state": {
+        "parallel_active_sets": [
+          {
+            "tasks": [
+              "A2",
+              "A3"
+            ],
+            "reason": "Fixture tasks have disjoint writer allowlists."
+          }
+        ]
+      },
+      "task_states": [
+        "A2 = Active",
+        "A3 = Active"
+      ],
+      "expected_error_codes": []
     },
     {
       "name": "selected_package_ledger_requires_machine_state_block",

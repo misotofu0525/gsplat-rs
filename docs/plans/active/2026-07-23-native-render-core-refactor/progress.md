@@ -18,6 +18,7 @@ A2 = Accepted
 A3 = Accepted
 A4 = Accepted
 A5 = Active
+A8 = Active
 <!-- gsplat-program-task-states: end -->
 
 ## Program status
@@ -30,12 +31,12 @@ A5 = Active
   are now accepted behind those owners. The parent A5 package remains active
   for its later consumer slices.
 - Current work package: A — responsibility extraction.
-- Active package task: none; A5c1 is closed and no later writer is activated by
-  implication.
+- Active package tasks: A5 and A8 under the explicit disjoint parallel set in
+  the architecture policy. The concrete writer lanes are A5c2 and A8a below.
 - Last completed task: A5c1 — Projected contributor prefix-scan reuse.
-- Next eligible task: A5c2 only within A5. Independent A7/A8 scope audits may
-  continue in parallel under task-plan section 7.4, but a production writer
-  starts only after its exact disjoint allowlist is recorded here. Remaining
+- Next eligible implementation: the recorded A5c2 and A8a writer lanes may run
+  concurrently. A7 remains read-only until A8a is integrated because both
+  implementation slices would otherwise need `lib.rs`. Remaining
   Direct/Preproject compaction slices, A5d, A6 and later packages stay inactive.
 - Integration branch: `codex/native-render-core-refactor`.
 - Frozen source implementation closeout:
@@ -55,9 +56,13 @@ created a dedicated integration branch from the complete local full-quality
 tip. No merge into `main`, rebase, cherry-pick, push or production change was
 performed.
 
-## One-active-task rule
+## Active-task and writer-lane rule
 
-Only one row may have state `Active`. A task cannot start until this file names:
+More than one row may be `Active` only when the architecture policy names the
+exact task set and this file proves disjoint writer allowlists, no dependency on
+unintegrated results, separate worktrees and an explicit root integration
+order. Read-only audits need no writer lane. A production writer cannot start
+until this file names:
 
 - task ID;
 - one hypothesis;
@@ -85,24 +90,120 @@ decision table are human-readable mirrors, not checker inputs.
 Then record the code commit (if any), evidence paths, commands, result and next
 eligible task. Do not rewrite the architecture in this ledger.
 
-## Cross-cutting LOC guardrail correction
+## Cross-cutting source-size guardrail correction
 
 - Corrected: 2026-07-23 after explicit owner review.
-- The 800/600/200/800/350/150 values are advisory review signals, not task
-  completion gates. In particular, 800 LOC is not a hard file limit.
-- A cohesive file may exceed a review target when the closeout explains its
-  responsibility, dependency direction, test boundary and why another split
-  would make ownership worse. No task may split at 799/999/1,199 or move tests
-  merely to satisfy a count.
-- New production Rust, plan and WGSL files use a 2,500-line default circuit
-  breaker only to prevent an unnoticed multi-thousand-line mixed owner. A
-  finite documented exception remains a valid path; 2,499 is not a quality
-  target.
+- No fixed physical line count is a task requirement or writer instruction.
+  Existing checker numbers are diagnostic notices and legacy checkpoints only.
+- A cohesive file may exceed a diagnostic threshold when the closeout explains
+  its responsibility, dependency direction, test boundary and why another
+  split would make ownership worse. No task may split or move tests merely to
+  satisfy a count.
+- A new multi-thousand-line owner triggers explicit responsibility review, but
+  a finite documented exception remains a valid path for a cohesive owner; it
+  cannot become an endless split loop.
 - Dependency/ownership rules and the legacy giant-file growth ratchet remain
   hard. Historical A1 entries below record the then-current implementation;
   this section and the current policy are authoritative for later tasks.
 
 ## Current task
+
+### Parallel writer lanes — A5c2 and A8a
+
+- Parallel set: `A5`, `A8`; policy reason and machine task states are recorded
+  in the same activation commit.
+- Isolation: separate user-visible Codex tasks and separate worktrees from this
+  exact activation commit; neither writer edits this ledger or architecture
+  policy.
+- Integration order: root reviews and merges A5c2 first. It then merges A8a
+  only if A8a's frozen forbidden-file hashes still match; root reruns shared
+  architecture and cross-platform gates on the combined SHA.
+- File intersection: empty. A5c2 owns only Projected/GPU compaction files;
+  A8a owns only `lib.rs` wiring and new `offscreen/` leaves.
+- A7 remains a read-only audit while these writers run. Its implementation is
+  sequential after A8a because both may require `lib.rs`.
+- Source size: report final LOC for review, but no fixed number is a gate or a
+  writer instruction.
+
+### A5c2 — Extract the Projected strategy-free compute compactor
+
+- Parent task state: A5 Active
+- Subtask state: Active
+- Production baseline: `32b277e1181a76ac8442e263e5a0be39162edb39`;
+  activation parent is the current ledger commit.
+- Hypothesis: Projected's stable rank compaction and indirect-argument compute
+  mechanics can move into one private GPU leaf without moving Candidate/Compact
+  policy, optional graph admission/publication or either raster pipeline.
+- Writer allowlist:
+  - `crates/gsplat-render-wgpu/src/projected_quads_gpu.rs`;
+  - `crates/gsplat-render-wgpu/src/gpu/mod.rs`;
+  - new `crates/gsplat-render-wgpu/src/gpu/compact.rs`.
+- Frozen source hashes before activation:
+  - `projected_quads_gpu.rs`: `9d332038f9e7b42aa36778f619b7621adac593cce85676aa84081951d5692b7d`;
+  - `gpu/scan.rs`: `08afa1daf9ec0fda0293a6cf467a14ffce2e9c24011d9b92bbf92704ce5eb6ab`;
+  - `gpu/mod.rs`: `e7adefec48555340b23fb429f838575db0831ee9061e1de6ceebca0770a4f8d1`.
+- Required ownership boundary:
+  - the new leaf owns contributor-rank storage, the 16-byte indirect args,
+    compact/finalize compute pipelines and bind group, reset/encode mechanics
+    and read-only buffer accessors;
+  - Projected retains capacity/admission, prepared/publish transaction,
+    Candidate/Compact resolution, projection/scan/pass orchestration and both
+    raster pipeline/bind-group owners;
+  - Direct and Preproject compaction graphs remain separate.
+- Frozen behavior: contributor ranks are `capacity * 4` bytes with a four-byte
+  minimum and `STORAGE | COPY_SRC`; indirect args remain four `u32` initialized
+  to vertex count four and zero instance/base fields with identical usage;
+  only instance-count bytes are cleared before Compact; compact dispatch is
+  skipped for zero items and finalize is always one workgroup; bindings,
+  labels, pass order and `D=C<=V` remain exact.
+- Frozen WGSL hashes:
+  - compact: `e8348a6535c39da1ebcd0a18d59fa3b84d36f865505b7a8f15e6d6f8eef01822`;
+  - compacted draw: `d9d648dedd06c9af441691ec9a0adb441e2c2b4f45495e6788712076dc4b8024`;
+  - project: `7c224f1f1e9380d8427da714fd17134203049bf96334b5ef7119efcba0eadd3d`;
+  - Candidate draw: `ed48658f0008728368206b5c59637e42be580e861e17c7eef6f1f89a5ee71529`.
+- Forbidden: every WGSL file; `gpu/scan.rs`, radix, Direct, Preproject,
+  Resident/Scene/Surface/session/policy/telemetry/API/FFI/platform/Cargo,
+  benchmark and plan/policy files; algorithm, resource, usage, binding,
+  dispatch, labels, pass order, errors, target selection or performance change.
+- Hard gates: frozen hashes/labels/resources; exact 13 Projected tests and zero
+  ignored; A5a/A5b inventories unchanged; format/diff, architecture, locked
+  renderer/workspace tests, all-target Clippy, Rustdoc, wasm32 and forced Metal
+  conformance. No performance percentage is a completion gate.
+
+### A8a — Extract the offscreen target/readback leaf
+
+- Parent task state: A8 Active
+- Subtask state: Active
+- Baseline: current activation commit; worktree must start clean.
+- Hypothesis: offscreen target allocation/reuse and synchronous RGBA8 readback
+  can become private lifecycle leaves without changing Renderer ownership,
+  submission timing, public API, error mapping or output bytes.
+- Writer allowlist:
+  - `crates/gsplat-render-wgpu/src/lib.rs` for private wiring and mechanical
+    delegation only;
+  - new `crates/gsplat-render-wgpu/src/offscreen/mod.rs`;
+  - new `crates/gsplat-render-wgpu/src/offscreen/target.rs`;
+  - new `crates/gsplat-render-wgpu/src/offscreen/readback.rs`.
+- Frozen source hashes before activation:
+  - `lib.rs`: `22a1e823cf3416b315734c0d7726dd5a07ea1d17d259318906d30659818fe2cf`;
+  - `surface_presenter.rs`: `7b44a87f960dbf944b00d969477b8494afd9603d48229746866e3d6d0cc1e2aa`;
+  - `surface_session.rs`: `7ed8b08dc13d5ccd97d4e6007de204211c7d208d00c894f5f9b6d363a99ef702`.
+- Required ownership boundary:
+  - `OffscreenTarget` owns output texture/view/size and same-size reuse;
+  - readback leaf owns row alignment, copy buffer, copy/map/poll and padding
+    removal, while Renderer supplies device/queue and keeps the public
+    `readback_rgba8` signature;
+  - adapter/device/queue, scene resources, render-path selection, ordering,
+    submits, stats and `offscreen_device_limits` remain in the legacy owner.
+- Forbidden: `surface_presenter.rs`, `surface_session.rs`, telemetry, GPU
+  primitive files, shaders, API/FFI/JNI/Swift/Web/examples, Cargo, benchmark
+  schemas and plan/policy files; no completion token, new public type, submit
+  reordering, async readback, error/string/format/usage or behavior change.
+- Hard gates: frozen forbidden hashes; offscreen count/image/conformance and
+  unsupported-dimension/4K tests; public Rust and C ABI unchanged; format/diff,
+  architecture, locked renderer/workspace tests, all-target Clippy, Rustdoc,
+  wasm32, FFI smoke and forced Metal conformance. Device/long performance runs
+  are not required for this behavior-preserving ownership slice.
 
 ### A5c1 — Reuse the accepted scan owner for Projected contributor counts
 
@@ -1422,9 +1523,9 @@ eligible task. Do not rewrite the architecture in this ledger.
     generation fields/types without banning presentation generations
   - PASS the static A/E/M/B/S/Q task catalog aggregates one active/completed
     ledger per opened package; A is always required, E follows A9, M follows
-    E13, and B/S/Q each follow M8; duplicate package ledgers, multiple Active
-    tasks, duplicate/conflicting tasks, unknown task/state and wrong-package
-    records fail closed
+    E13, and B/S/Q each follow M8; duplicate package ledgers, undeclared
+    multiple-Active sets, duplicate/conflicting tasks, unknown task/state and
+    wrong-package records fail closed
   - PASS every policy task reference is cataloged, including both activation
     tasks; E1 terminal state requires a real per-frame plan boundary
   - PASS task state is read only from one explicit machine block per ledger;

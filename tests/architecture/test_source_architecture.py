@@ -238,6 +238,11 @@ class SourceArchitectureFixtureTests(unittest.TestCase):
             set(state["external_owner_review_allowlist"]),
             {"IO-PLY-1", "IO-SPZ-1"},
         )
+        self.assertEqual(
+            [entry["tasks"] for entry in state["parallel_active_sets"]],
+            [["A5", "A8"]],
+        )
+        self.assertTrue(state["parallel_active_sets"][0]["reason"])
 
         external = {
             entry["owner_task"]: entry

@@ -1096,6 +1096,70 @@ def load_program_task_states(
         if not isinstance(task, str) or not isinstance(package, str) or package not in known_packages:
             issues.append(error("config.invalid_task_catalog", "<policy>", f"invalid catalog entry {task!r}: {package!r}"))
 
+    parallel_sets = config.get("parallel_active_sets", [])
+    allowed_parallel: set[tuple[str, tuple[str, ...]]] = set()
+    if not isinstance(parallel_sets, list):
+        issues.append(
+            error(
+                "config.invalid_parallel_active_sets",
+                "<policy>",
+                "program_task_state.parallel_active_sets must be a list",
+            )
+        )
+        parallel_sets = []
+    for index, entry in enumerate(parallel_sets):
+        path = f"<policy>.program_task_state.parallel_active_sets[{index}]"
+        if not isinstance(entry, dict):
+            issues.append(
+                error(
+                    "config.invalid_parallel_active_sets",
+                    path,
+                    "parallel active set must be an object",
+                )
+            )
+            continue
+        tasks = entry.get("tasks")
+        reason = entry.get("reason")
+        if (
+            not isinstance(tasks, list)
+            or len(tasks) < 2
+            or any(not isinstance(task, str) or not task for task in tasks)
+            or len(set(tasks)) != len(tasks)
+            or not isinstance(reason, str)
+            or not reason.strip()
+        ):
+            issues.append(
+                error(
+                    "config.invalid_parallel_active_sets",
+                    path,
+                    "parallel active set requires unique task IDs and a non-empty reason",
+                )
+            )
+            continue
+        unknown = [task for task in tasks if task not in catalog]
+        task_packages = {catalog.get(task) for task in tasks}
+        if unknown or len(task_packages) != 1 or None in task_packages:
+            issues.append(
+                error(
+                    "config.invalid_parallel_active_sets",
+                    path,
+                    "parallel active tasks must be cataloged in the same package",
+                )
+            )
+            continue
+        package = next(iter(task_packages))
+        key = (package, tuple(sorted(tasks)))
+        if key in allowed_parallel:
+            issues.append(
+                error(
+                    "config.invalid_parallel_active_sets",
+                    path,
+                    "duplicate parallel active task set",
+                )
+            )
+            continue
+        allowed_parallel.add(key)
+
     selected: list[tuple[str, str, bool]] = []
     present_packages: set[str] = set()
     claimed_paths: dict[str, str] = {}
@@ -1163,8 +1227,15 @@ def load_program_task_states(
                 if completed_ledger:
                     issues.append(error("program_state.active_in_completed_ledger", path, f"completed package ledger leaves {task} Active", line))
     for package, tasks in active.items():
-        if len(tasks) > 1:
-            issues.append(error("program_state.multiple_active", package, f"multiple Active tasks: {', '.join(tasks)}"))
+        key = (package, tuple(sorted(tasks)))
+        if len(tasks) > 1 and key not in allowed_parallel:
+            issues.append(
+                error(
+                    "program_state.multiple_active",
+                    package,
+                    f"multiple Active tasks lack an explicit parallel set: {', '.join(tasks)}",
+                )
+            )
     closed = {task for task, (state, _, _) in states.items() if state in TERMINAL_STATES}
     for package, pair in packages.items():
         if not isinstance(pair, dict) or "required_after" not in pair:
