@@ -30,6 +30,7 @@ mod residency;
 mod resident_gpu;
 mod scene;
 mod spatial_pages;
+mod surface;
 mod surface_presenter;
 mod surface_session;
 mod tiled_resident_gpu;
@@ -1355,41 +1356,6 @@ pub(crate) fn make_surface_render_params(
         source_position_stride_words: 16,
         source_position_offset_words: 0,
     }
-}
-
-fn select_present_mode(caps: &wgpu::SurfaceCapabilities) -> wgpu::PresentMode {
-    if caps.present_modes.contains(&wgpu::PresentMode::Mailbox) {
-        return wgpu::PresentMode::Mailbox;
-    }
-    if caps.present_modes.contains(&wgpu::PresentMode::Fifo) {
-        return wgpu::PresentMode::Fifo;
-    }
-
-    caps.present_modes
-        .first()
-        .copied()
-        .unwrap_or(wgpu::PresentMode::Fifo)
-}
-
-fn surface_error_to_presenter(err: wgpu::SurfaceError) -> SurfacePresenterError {
-    match err {
-        wgpu::SurfaceError::OutOfMemory => SurfacePresenterError::SurfaceOutOfMemory,
-        other => SurfacePresenterError::SurfaceAcquire(format!("{other:?}")),
-    }
-}
-
-#[cfg(target_os = "android")]
-fn create_surface_instance() -> wgpu::Instance {
-    wgpu::Instance::new(&wgpu::InstanceDescriptor {
-        backends: wgpu::Backends::VULKAN,
-        flags: wgpu::InstanceFlags::empty(),
-        ..Default::default()
-    })
-}
-
-#[cfg(not(target_os = "android"))]
-fn create_surface_instance() -> wgpu::Instance {
-    wgpu::Instance::default()
 }
 
 #[cfg(test)]
