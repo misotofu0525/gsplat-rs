@@ -25,8 +25,8 @@ A3 = Active
   strategy-free data/API extraction and A3a Resident CPU ownership extraction
   are root-accepted.
 - Current work package: A — responsibility extraction.
-- Active package task: none; A3b awaits a root-owned activation commit and an
-  isolated writer worktree.
+- Active package task: A3b — GPU resource planning and Direct/Packed preflight
+  ownership extraction in an isolated worktree.
 - Last completed task: A3a — Resident CPU ownership, ABI layout and encoder
   extraction.
 - Next eligible task: A3b — Direct/Packed resource accounting and preflight
@@ -80,6 +80,91 @@ Then record the code commit (if any), evidence paths, commands, result and next
 eligible task. Do not rewrite the architecture in this ledger.
 
 ## Current task
+
+### A3b — Extract GPU resource planning and Direct/Packed preflight
+
+- Parent task state: A3 Active
+- Subtask state: Active
+- Started: 2026-07-23 21:34 CST
+- Production baseline commit:
+  `0562cfe` (`docs: accept A3a resident ownership extraction`)
+- Exact source baseline before production edits:
+  - `crates/gsplat-render-wgpu/src/lib.rs`: 5,589 physical LOC
+  - `crates/gsplat-render-wgpu/src/resident_gpu.rs`: 1,182 physical LOC
+  - `crates/gsplat-render-wgpu/src/projected_quads_gpu.rs`: 2,358 physical LOC
+  - `crates/gsplat-render-wgpu/src/scene/budget.rs`: 73 physical LOC
+- Hypothesis: the existing Resident GPU byte plan, Direct/Packed capacity
+  receipts and their pure arithmetic can move into private leaf modules without
+  changing one public root name, formula, minimum descriptor, error, selected
+  geometry path, requested device limit, allocation or GPU command.
+- Dependencies: A3a Accepted at `0562cfe`; no later package is active.
+- Required dependency direction:
+  - keep `scene/budget.rs` as the pure CPU Resident payload ledger; it must not
+    acquire `wgpu`, projected-kernel or GPU execution dependencies;
+  - add a private `gpu_error.rs` leaf for the existing `ResidentGpuError`, moved
+    mechanically with all variants, derives and Display text unchanged;
+  - add a private `resource_plan.rs` leaf for `ResidentGpuBytePlan`, projected
+    contributor byte arithmetic, Direct/Packed preflight types/functions and
+    `DirectSceneError`;
+  - make `resource_plan.rs` the single source for projected cache/scan planning
+    constants and `RESIDENT_COLOR_STORAGE_BINDINGS`; GPU consumers may import or
+    privately re-export them, but must not duplicate numeric definitions;
+  - preserve every current crate-root public re-export and method signature.
+- Allowed production scope:
+  - new private `crates/gsplat-render-wgpu/src/gpu_error.rs` and
+    `crates/gsplat-render-wgpu/src/resource_plan.rs`;
+  - mechanical module declarations, root re-exports and removal of the moved
+    declarations/implementations from `lib.rs` and `resident_gpu.rs`;
+  - only constant/import/re-export changes required in
+    `projected_quads_gpu.rs` and `surface_presenter.rs`;
+  - move the existing pure byte-plan/limit and Direct/Packed preflight tests to
+    focused tests owned by `resource_plan.rs` without weakening assertions;
+  - exact A1 architecture-policy grandfather entries for legacy files that
+    physically shrink; normal modules use the advisory size profile.
+- Must remain with existing owners:
+  - `SurfaceResourcePlan`, `surface_resource_plan`, device-limit requests,
+    selected-path validation and fallback policy remain in
+    `surface_presenter.rs`;
+  - GPU buffer creation/descriptors/upload/bind groups and
+    `ResidentGpuResources` remain in `resident_gpu.rs`;
+  - Renderer preflight accessors, offscreen device-limit behavior and
+    `ErrorCode` mapping remain in `lib.rs`;
+  - allocation/order/dispatch tests remain beside their runtime owner.
+- Forbidden scope:
+  - any resource formula, field order/type, derive, error variant/message,
+    public signature or numeric constant change;
+  - shaders/WGSL, projection math, sort, visibility, raster, point membership,
+    SH degree/precision, camera, resolution or benchmark behavior;
+  - buffer creation/upload, bind groups, queue submission, Surface policy,
+    adapter/device selection, requested limits or automatic paging;
+  - `direct_gpu_order.rs`, `external_prefix_radix.rs`, `preproject_gpu.rs`,
+    `surface_session.rs`, Packed/Paged implementation modules, FFI/JNI/Swift,
+    Web API, examples, tools, Cargo dependencies/features, merge/rebase/push or
+    edits in another worktree.
+- Hard gates:
+  - all moved symbols have one production definition and all old/new pure-test
+    inventories match;
+  - a repository-external temporary crate imports every current public root
+    preflight/plan/error name and checks signatures, fields, traits, error text
+    and boundary receipts;
+  - exact boundary/overflow cases remain unchanged, including empty minimum
+    descriptors, `min(max_storage_buffer_binding_size, max_buffer_size)`, eight
+    bindings, 128 MiB boundaries, `u32` draw count and `usize::MAX` overflow;
+  - architecture checker/self-tests, format, locked workspace check/tests,
+    all-target Clippy, Rustdoc, WASM and FFI smoke pass;
+  - 800 LOC is an advisory review target. A cohesive 800--1,200-line
+    `resource_plan.rs` is acceptable; only a file above 1,200 needs a finite
+    documented exception. Do not split at 799 lines or game physical LOC.
+- Performance observations: none; A3b is a behavior-only responsibility
+  extraction.
+- Required endpoints for claim: none in the writer task. Root acceptance owns
+  forced Metal conformance and an A065 full-count exactness run at the A3
+  package boundary. No fixed FPS or competitor percentage is a completion gate.
+- Performance correction used: no
+- Known correctness issues: none
+- Closeout requirement: root records the fixed implementation SHA, exact file
+  sizes and verification here. A3 may become Accepted only if A3a and A3b are
+  both accepted and no duplicate resource owner remains.
 
 ### A3a — Extract Resident CPU ownership, ABI layout and encoder
 
