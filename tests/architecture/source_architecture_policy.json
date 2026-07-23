@@ -186,7 +186,7 @@
     {
       "path": "crates/gsplat-render-wgpu/src/lib.rs",
       "a0_physical_loc": 5680,
-      "baseline_physical_loc": 5588,
+      "baseline_physical_loc": 5004,
       "owner_task": "M7",
       "exit_condition": "Remove the legacy owner and leave lib.rs as public re-exports below 200 physical LOC."
     },
@@ -291,13 +291,6 @@
       "baseline_physical_loc": 1219,
       "owner_task": "A7",
       "exit_condition": "Extract immutable receipts and bounded observer storage into files below 800 physical LOC."
-    },
-    {
-      "path": "crates/gsplat-render-wgpu/src/resident_gpu.rs",
-      "a0_physical_loc": 1181,
-      "baseline_physical_loc": 1181,
-      "owner_task": "A3",
-      "exit_condition": "Separate Resident ownership/preflight from reusable GPU leaves and reduce the file below 800 physical LOC."
     },
     {
       "path": "crates/gsplat-render-wgpu/src/external_prefix_radix.rs",
