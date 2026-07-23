@@ -1,6 +1,7 @@
 mod color;
 mod compact;
 mod preproject_compact;
+mod project;
 mod radix;
 mod scan;
 mod visible_compact;
@@ -15,6 +16,9 @@ pub(crate) use preproject_compact::PreprojectDrawIndirectArgs;
 pub(crate) use preproject_compact::{
     PREPROJECT_DRAW_INDIRECT_ARGS_BYTES, PreprojectKeyIdCompactor,
 };
+#[cfg(test)]
+pub(crate) use project::PROJECT_DRAW_INDIRECT_ARGS_BYTES;
+pub(crate) use project::{ProjectedRankProjector, ProjectedRankSourceBindings};
 #[cfg(test)]
 pub(crate) use radix::{EXTERNAL_RADIX_TILE_SIZE, ExternalPrefixControl};
 pub(crate) use radix::{ExternalPrefixRadix, ExternalPrefixRadixBytePlan};

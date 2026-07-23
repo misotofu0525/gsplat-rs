@@ -7,11 +7,11 @@
 
 use std::mem::size_of;
 
-use bytemuck::{Pod, Zeroable};
-use wgpu::util::DeviceExt;
-
 use crate::draw_pass::{SplatPipeline, create_splat_pipeline};
-use crate::gpu::{GpuPrefixScan, GpuPrefixScanProfile, StableContributorCompactor};
+use crate::gpu::{
+    GpuPrefixScan, GpuPrefixScanProfile, ProjectedRankProjector, ProjectedRankSourceBindings,
+    StableContributorCompactor,
+};
 use crate::gpu_error::ResidentGpuError;
 use crate::projected_draw_telemetry::SurfaceProjectedDrawExecution;
 use crate::resident_gpu::{RESIDENT_QUAD_VERTEX_COUNT, ResidentGpuResources};
@@ -22,38 +22,12 @@ use crate::scene::{
 use crate::wgpu_label;
 
 #[cfg(test)]
+use crate::gpu::PROJECT_DRAW_INDIRECT_ARGS_BYTES;
+#[cfg(test)]
 use crate::scene::PROJECTED_CACHE_BYTES_PER_SPLAT;
 
-#[repr(C)]
-#[derive(Clone, Copy, Pod, Zeroable)]
-struct DrawIndirectArgs {
-    vertex_count: u32,
-    instance_count: u32,
-    first_vertex: u32,
-    first_instance: u32,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct Dispatch2d {
-    x: u32,
-    y: u32,
-}
-
-impl Dispatch2d {
-    fn for_items(items: u32, limit: u32) -> Result<Self, ResidentGpuError> {
-        if items == 0 {
-            return Ok(Self { x: 1, y: 1 });
-        }
-        let logical_groups = items.div_ceil(PROJECT_WORKGROUP_SIZE);
-        let limit = limit.max(1);
-        let x = logical_groups.min(limit);
-        let y = logical_groups.div_ceil(x);
-        if y > limit {
-            return Err(ResidentGpuError::DispatchLimitExceeded);
-        }
-        Ok(Self { x, y })
-    }
-}
+const _: [(); PROJECT_WORKGROUP_SIZE as usize] = [(); 128];
+const _: [(); PROJECTED_CACHE_PLANE_BYTES_PER_SPLAT as usize] = [(); 16];
 
 pub(crate) type ProjectedDrawExecution = SurfaceProjectedDrawExecution;
 
@@ -76,21 +50,13 @@ struct ProjectedContributorCompaction {
 pub(crate) struct PreparedProjectedContributorCompaction(ProjectedContributorCompaction);
 
 pub(crate) struct ProjectedQuadsGpu {
-    capacity: u32,
-    project_pipeline: wgpu::ComputePipeline,
-    project_layout: wgpu::BindGroupLayout,
-    cpu_project_bind_group: wgpu::BindGroup,
+    projector: ProjectedRankProjector,
     gpu_project_bind_group: Option<wgpu::BindGroup>,
     draw_pipeline: wgpu::RenderPipeline,
     draw_bind_group: wgpu::BindGroup,
-    projected_center_source: wgpu::Buffer,
-    projected_axes: wgpu::Buffer,
-    contributor_group_offsets: wgpu::Buffer,
     contributor_counter: Option<ProjectedContributorCounter>,
     #[cfg_attr(not(test), allow(dead_code))]
     contributor_compaction: Option<ProjectedContributorCompaction>,
-    cpu_draw_args: wgpu::Buffer,
-    dispatch_limit: u32,
 }
 
 impl ProjectedQuadsGpu {
@@ -136,109 +102,13 @@ impl ProjectedQuadsGpu {
     ) -> Result<Self, ResidentGpuError> {
         let capacity =
             u32::try_from(resident.capacity).map_err(|_| ResidentGpuError::AddressSpaceExceeded)?;
-        let plane_bytes = u64::from(capacity)
-            .checked_mul(PROJECTED_CACHE_PLANE_BYTES_PER_SPLAT)
-            .ok_or(ResidentGpuError::AddressSpaceExceeded)?;
-        let binding_limit = u64::from(device.limits().max_storage_buffer_binding_size)
-            .min(device.limits().max_buffer_size);
-        for (resource, bytes, minimum) in [
-            (
-                "projected center/source plane",
-                plane_bytes,
-                PROJECTED_CACHE_PLANE_BYTES_PER_SPLAT,
-            ),
-            (
-                "projected axes plane",
-                plane_bytes,
-                PROJECTED_CACHE_PLANE_BYTES_PER_SPLAT,
-            ),
-        ] {
-            if bytes.max(minimum) > binding_limit {
-                return Err(ResidentGpuError::BindingLimitExceeded {
-                    resource,
-                    required_bytes: bytes.max(minimum),
-                    limit_bytes: binding_limit,
-                });
-            }
-        }
-        Dispatch2d::for_items(
+        let projector = ProjectedRankProjector::new(
+            device,
             capacity,
-            device.limits().max_compute_workgroups_per_dimension,
+            RESIDENT_QUAD_VERTEX_COUNT,
+            &resident.order_buffer,
+            project_source_bindings(resident),
         )?;
-
-        let projected_center_source = storage_buffer(
-            device,
-            "gsplat-projected-quads-center-source",
-            plane_bytes.max(PROJECTED_CACHE_PLANE_BYTES_PER_SPLAT),
-        );
-        let projected_axes = storage_buffer(
-            device,
-            "gsplat-projected-quads-axes",
-            plane_bytes.max(PROJECTED_CACHE_PLANE_BYTES_PER_SPLAT),
-        );
-        let contributor_group_count = capacity.div_ceil(PROJECT_WORKGROUP_SIZE);
-        let contributor_group_offset_count = contributor_group_count
-            .checked_add(1)
-            .ok_or(ResidentGpuError::AddressSpaceExceeded)?;
-        let contributor_group_offsets = storage_buffer_with_usage(
-            device,
-            "gsplat-projected-quads-contributor-group-offsets",
-            u64::from(contributor_group_offset_count) * size_of::<u32>() as u64,
-            wgpu::BufferUsages::STORAGE
-                | wgpu::BufferUsages::COPY_DST
-                | wgpu::BufferUsages::COPY_SRC,
-        );
-        let cpu_draw_args = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: wgpu_label("gsplat-projected-quads-cpu-draw-args"),
-            contents: bytemuck::bytes_of(&DrawIndirectArgs {
-                vertex_count: RESIDENT_QUAD_VERTEX_COUNT,
-                instance_count: 0,
-                first_vertex: 0,
-                first_instance: 0,
-            }),
-            // CPU-order drawing is direct; this buffer only supplies the
-            // authoritative visible-count guard to the projection shader.
-            // Requiring INDIRECT here rejects otherwise valid adapters (for
-            // example the iOS simulator's Metal adapter) for no semantic gain.
-            usage: wgpu::BufferUsages::STORAGE
-                | wgpu::BufferUsages::COPY_DST
-                | wgpu::BufferUsages::COPY_SRC,
-        });
-
-        let project_layout = create_project_layout(device);
-        let project_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: wgpu_label("gsplat-projected-quads-project-shader"),
-            source: wgpu::ShaderSource::Wgsl(
-                include_str!("../shaders/projected_quads_project.wgsl").into(),
-            ),
-        });
-        let project_pipeline_layout =
-            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: wgpu_label("gsplat-projected-quads-project-pipeline-layout"),
-                bind_group_layouts: &[&project_layout],
-                immediate_size: 0,
-            });
-        let project_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: wgpu_label("gsplat-projected-quads-project-pipeline"),
-            layout: Some(&project_pipeline_layout),
-            module: &project_shader,
-            entry_point: Some("main"),
-            compilation_options: wgpu::PipelineCompilationOptions::default(),
-            cache: None,
-        });
-        let cpu_project_bind_group = create_project_bind_group(
-            device,
-            &project_layout,
-            "gsplat-projected-quads-cpu-project-bg",
-            ProjectBindGroupResources {
-                order: &resident.order_buffer,
-                resident,
-                projected_center_source: &projected_center_source,
-                projected_axes: &projected_axes,
-                draw_args: &cpu_draw_args,
-                contributor_group_offsets: &contributor_group_offsets,
-            },
-        );
 
         let draw_layout = create_draw_layout(device);
         let draw_pipeline = create_splat_pipeline(
@@ -257,8 +127,8 @@ impl ProjectedQuadsGpu {
             label: wgpu_label("gsplat-projected-quads-draw-bg"),
             layout: &draw_layout,
             entries: &[
-                entry(0, &projected_center_source),
-                entry(1, &projected_axes),
+                entry(0, projector.projected_center_source()),
+                entry(1, projector.projected_axes()),
                 entry(2, &resident.resolved_color_buffer),
             ],
         });
@@ -269,25 +139,17 @@ impl ProjectedQuadsGpu {
         let contributor_counter = contributor_scan_supported(device).then(|| {
             create_contributor_counter(
                 device,
-                contributor_group_offset_count,
-                &contributor_group_offsets,
+                projector.contributor_group_offset_count(),
+                projector.contributor_group_offsets(),
             )
         });
         Ok(Self {
-            capacity,
-            project_pipeline,
-            project_layout,
-            cpu_project_bind_group,
+            projector,
             gpu_project_bind_group: None,
             draw_pipeline,
             draw_bind_group,
-            projected_center_source,
-            projected_axes,
-            contributor_group_offsets,
             contributor_counter,
             contributor_compaction: None,
-            cpu_draw_args,
-            dispatch_limit: device.limits().max_compute_workgroups_per_dimension,
         })
     }
 
@@ -300,7 +162,7 @@ impl ProjectedQuadsGpu {
         if self.contributor_counter.is_none() || self.contributor_compaction.is_some() {
             return Ok(None);
         }
-        let contributor_rank_bytes = u64::from(self.capacity)
+        let contributor_rank_bytes = u64::from(self.projector.capacity())
             .checked_mul(size_of::<u32>() as u64)
             .ok_or(ResidentGpuError::AddressSpaceExceeded)?;
         let binding_limit = u64::from(device.limits().max_storage_buffer_binding_size)
@@ -313,9 +175,9 @@ impl ProjectedQuadsGpu {
             target_format,
             resident,
             contributor_rank_bytes,
-            &self.projected_center_source,
-            &self.projected_axes,
-            &self.contributor_group_offsets,
+            self.projector.projected_center_source(),
+            self.projector.projected_axes(),
+            self.projector.contributor_group_offsets(),
         )
         .map(PreparedProjectedContributorCompaction)
         .map(Some)
@@ -336,18 +198,11 @@ impl ProjectedQuadsGpu {
         order: &wgpu::Buffer,
         indirect_args: &wgpu::Buffer,
     ) -> wgpu::BindGroup {
-        create_project_bind_group(
+        self.projector.create_external_bind_group(
             device,
-            &self.project_layout,
-            "gsplat-projected-quads-gpu-project-bg",
-            ProjectBindGroupResources {
-                order,
-                resident,
-                projected_center_source: &self.projected_center_source,
-                projected_axes: &self.projected_axes,
-                draw_args: indirect_args,
-                contributor_group_offsets: &self.contributor_group_offsets,
-            },
+            project_source_bindings(resident),
+            order,
+            indirect_args,
         )
     }
 
@@ -410,25 +265,16 @@ impl ProjectedQuadsGpu {
         visible_count: u32,
         requested: ProjectedDrawExecution,
     ) -> Result<ProjectedDrawExecution, ResidentGpuError> {
-        queue.write_buffer(
-            &self.cpu_draw_args,
-            0,
-            bytemuck::bytes_of(&DrawIndirectArgs {
-                vertex_count: RESIDENT_QUAD_VERTEX_COUNT,
-                instance_count: visible_count,
-                first_vertex: 0,
-                // The flag is internal to projection and is never consumed as
-                // an indirect draw for CPU ordering. It enables the exact
-                // low-limit sentinel fallback when hierarchical scan is absent.
-                first_instance: u32::from(self.contributor_counter.is_none()),
-            }),
-        );
-        self.encode_projection_for_draw(
-            encoder,
-            &self.cpu_project_bind_group,
+        // The flag is internal to projection and is never consumed as an
+        // indirect draw for CPU ordering. It enables the exact low-limit
+        // sentinel fallback when hierarchical scan is absent.
+        self.projector.write_cpu_draw_args(
+            queue,
+            RESIDENT_QUAD_VERTEX_COUNT,
             visible_count,
-            requested,
-        )
+            self.contributor_counter.is_none(),
+        );
+        self.encode_projection_for_draw(encoder, None, visible_count, requested)
     }
 
     /// Projects the complete CPU-sorted candidate prefix and, when indirect
@@ -472,13 +318,18 @@ impl ProjectedQuadsGpu {
         let bind_group = self.gpu_project_bind_group.as_ref().ok_or_else(|| {
             ResidentGpuError::GpuOrderInternal("projected quad GPU binding is unavailable".into())
         })?;
-        self.encode_projection_for_draw(encoder, bind_group, self.capacity, requested)
+        self.encode_projection_for_draw(
+            encoder,
+            Some(bind_group),
+            self.projector.capacity(),
+            requested,
+        )
     }
 
     fn encode_projection_for_draw(
         &self,
         encoder: &mut wgpu::CommandEncoder,
-        project_bind_group: &wgpu::BindGroup,
+        external_project_bind_group: Option<&wgpu::BindGroup>,
         dispatch_items: u32,
         requested: ProjectedDrawExecution,
     ) -> Result<ProjectedDrawExecution, ResidentGpuError> {
@@ -494,45 +345,27 @@ impl ProjectedQuadsGpu {
             let compaction = self.contributor_compaction.as_ref().expect("checked above");
             compaction.compute.reset_instance_count(encoder);
         }
-        self.encode_projection(encoder, project_bind_group, dispatch_items)?;
+        if let Some(bind_group) = external_project_bind_group {
+            self.projector
+                .encode_external(encoder, bind_group, dispatch_items)?;
+        } else {
+            self.projector.encode_cpu(encoder, dispatch_items)?;
+        }
         if let Some(counter) = &self.contributor_counter {
             counter.encode_forward_scan(encoder);
             if execution == ProjectedDrawExecution::Compact {
                 counter.encode_reverse_offsets(encoder);
+                let compact_dispatch = (dispatch_items > 0)
+                    .then(|| self.projector.dispatch_for_items(dispatch_items))
+                    .transpose()?;
                 self.contributor_compaction
                     .as_ref()
                     .expect("checked above")
-                    .encode_compaction(encoder, dispatch_items, self.dispatch_limit)?;
+                    .compute
+                    .encode(encoder, compact_dispatch);
             }
         }
         Ok(execution)
-    }
-
-    fn encode_projection(
-        &self,
-        encoder: &mut wgpu::CommandEncoder,
-        bind_group: &wgpu::BindGroup,
-        dispatch_items: u32,
-    ) -> Result<(), ResidentGpuError> {
-        // Clear the full fixed-capacity count/offset plane on every projection,
-        // including the downlevel direct-draw path. CPU ordering may project a
-        // shorter prefix than the previous frame, while GPU ordering writes all
-        // capacity groups. The final sentinel is also the exact contributor
-        // count available to same-command-buffer telemetry before or after the
-        // optional in-place exclusive scan.
-        encoder.clear_buffer(&self.contributor_group_offsets, 0, None);
-        if dispatch_items == 0 {
-            return Ok(());
-        }
-        let dispatch = Dispatch2d::for_items(dispatch_items, self.dispatch_limit)?;
-        let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-            label: wgpu_label("gsplat-projected-quads-project-pass"),
-            timestamp_writes: None,
-        });
-        pass.set_pipeline(&self.project_pipeline);
-        pass.set_bind_group(0, bind_group, &[]);
-        pass.dispatch_workgroups(dispatch.x, dispatch.y, 1);
-        Ok(())
     }
 
     pub(crate) fn draw_pipeline(&self) -> &wgpu::RenderPipeline {
@@ -592,15 +425,17 @@ impl ProjectedQuadsGpu {
 
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn cpu_candidate_args(&self) -> &wgpu::Buffer {
-        &self.cpu_draw_args
+        self.projector.cpu_draw_args()
     }
 
     pub(crate) fn contributor_count_buffer_and_offset(&self) -> (&wgpu::Buffer, u64) {
         if let Some(counter) = &self.contributor_counter {
             return counter.exact_count_buffer_and_offset();
         }
-        let sentinel = self.capacity.div_ceil(PROJECT_WORKGROUP_SIZE);
-        (&self.contributor_group_offsets, u64::from(sentinel) * 4)
+        (
+            self.projector.contributor_group_offsets(),
+            self.projector.contributor_count_sentinel_offset(),
+        )
     }
 }
 
@@ -619,47 +454,13 @@ impl ProjectedContributorCounter {
     }
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
-impl ProjectedContributorCompaction {
-    fn encode_compaction(
-        &self,
-        encoder: &mut wgpu::CommandEncoder,
-        dispatch_items: u32,
-        dispatch_limit: u32,
-    ) -> Result<(), ResidentGpuError> {
-        let compact_dispatch = (dispatch_items > 0)
-            .then(|| Dispatch2d::for_items(dispatch_items, dispatch_limit))
-            .transpose()?
-            .map(|dispatch| (dispatch.x, dispatch.y));
-        self.compute.encode(encoder, compact_dispatch);
-        Ok(())
+fn project_source_bindings(resident: &ResidentGpuResources) -> ProjectedRankSourceBindings<'_> {
+    ProjectedRankSourceBindings {
+        position_alpha: &resident.position_alpha_buffer,
+        covariance0: &resident.covariance0_buffer,
+        covariance1: &resident.covariance1_buffer,
+        draw_params: &resident.draw_params_buffer,
     }
-}
-
-fn create_project_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
-    device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-        label: wgpu_label("gsplat-projected-quads-project-bgl"),
-        entries: &[
-            storage_layout(0, true, wgpu::ShaderStages::COMPUTE),
-            storage_layout(1, true, wgpu::ShaderStages::COMPUTE),
-            storage_layout(2, true, wgpu::ShaderStages::COMPUTE),
-            storage_layout(3, true, wgpu::ShaderStages::COMPUTE),
-            wgpu::BindGroupLayoutEntry {
-                binding: 4,
-                visibility: wgpu::ShaderStages::COMPUTE,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            },
-            storage_layout(5, false, wgpu::ShaderStages::COMPUTE),
-            storage_layout(6, false, wgpu::ShaderStages::COMPUTE),
-            storage_layout(7, false, wgpu::ShaderStages::COMPUTE),
-            storage_layout(8, false, wgpu::ShaderStages::COMPUTE),
-        ],
-    })
 }
 
 fn create_draw_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
@@ -688,38 +489,6 @@ fn storage_layout(
         },
         count: None,
     }
-}
-
-struct ProjectBindGroupResources<'a> {
-    order: &'a wgpu::Buffer,
-    resident: &'a ResidentGpuResources,
-    projected_center_source: &'a wgpu::Buffer,
-    projected_axes: &'a wgpu::Buffer,
-    draw_args: &'a wgpu::Buffer,
-    contributor_group_offsets: &'a wgpu::Buffer,
-}
-
-fn create_project_bind_group(
-    device: &wgpu::Device,
-    layout: &wgpu::BindGroupLayout,
-    label: &'static str,
-    resources: ProjectBindGroupResources<'_>,
-) -> wgpu::BindGroup {
-    device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: wgpu_label(label),
-        layout,
-        entries: &[
-            entry(0, resources.order),
-            entry(1, &resources.resident.position_alpha_buffer),
-            entry(2, &resources.resident.covariance0_buffer),
-            entry(3, &resources.resident.covariance1_buffer),
-            entry(4, &resources.resident.draw_params_buffer),
-            entry(5, resources.projected_center_source),
-            entry(6, resources.projected_axes),
-            entry(7, resources.draw_args),
-            entry(8, resources.contributor_group_offsets),
-        ],
-    })
 }
 
 fn contributor_scan_supported(device: &wgpu::Device) -> bool {
@@ -813,24 +582,6 @@ fn create_contributor_compaction(
         compute,
         draw_pipeline,
         draw_bind_group,
-    })
-}
-
-fn storage_buffer(device: &wgpu::Device, label: &'static str, size: u64) -> wgpu::Buffer {
-    storage_buffer_with_usage(device, label, size, wgpu::BufferUsages::STORAGE)
-}
-
-fn storage_buffer_with_usage(
-    device: &wgpu::Device,
-    label: &'static str,
-    size: u64,
-    usage: wgpu::BufferUsages,
-) -> wgpu::Buffer {
-    device.create_buffer(&wgpu::BufferDescriptor {
-        label: wgpu_label(label),
-        size,
-        usage,
-        mapped_at_creation: false,
     })
 }
 
@@ -1107,7 +858,7 @@ mod tests {
             device,
             &mut encoder,
             projected.cpu_candidate_args(),
-            size_of::<DrawIndirectArgs>() as u64,
+            PROJECT_DRAW_INDIRECT_ARGS_BYTES,
             "projected-candidate-args-readback",
         );
         let contributor_readback = copy_buffer(
@@ -1116,7 +867,7 @@ mod tests {
             projected
                 .contributor_indirect_args()
                 .expect("contributor args"),
-            size_of::<DrawIndirectArgs>() as u64,
+            PROJECT_DRAW_INDIRECT_ARGS_BYTES,
             "projected-contributor-args-readback",
         );
         let ranks_readback = copy_buffer(
@@ -1137,33 +888,36 @@ mod tests {
     #[test]
     fn dispatch_flattens_across_two_dimensions() {
         assert_eq!(
-            Dispatch2d::for_items(0, 7).unwrap(),
-            Dispatch2d { x: 1, y: 1 }
+            ProjectedRankProjector::dispatch_for_items_with_limit(0, 7).unwrap(),
+            (1, 1)
         );
         assert_eq!(
-            Dispatch2d::for_items(128 * 7, 7).unwrap(),
-            Dispatch2d { x: 7, y: 1 }
+            ProjectedRankProjector::dispatch_for_items_with_limit(128 * 7, 7).unwrap(),
+            (7, 1)
         );
         assert_eq!(
-            Dispatch2d::for_items(128 * 8, 7).unwrap(),
-            Dispatch2d { x: 7, y: 2 }
+            ProjectedRankProjector::dispatch_for_items_with_limit(128 * 8, 7).unwrap(),
+            (7, 2)
         );
         assert_eq!(
-            Dispatch2d::for_items(128 * 49, 7).unwrap(),
-            Dispatch2d { x: 7, y: 7 }
+            ProjectedRankProjector::dispatch_for_items_with_limit(128 * 49, 7).unwrap(),
+            (7, 7)
         );
         assert!(matches!(
-            Dispatch2d::for_items(128 * 50, 7),
+            ProjectedRankProjector::dispatch_for_items_with_limit(128 * 50, 7),
             Err(ResidentGpuError::DispatchLimitExceeded)
         ));
 
         let portable_binding_boundary = 8_388_608_u32;
-        let boundary_dispatch = Dispatch2d::for_items(portable_binding_boundary, 65_535)
-            .expect("portable boundary dispatch");
+        let boundary_dispatch = ProjectedRankProjector::dispatch_for_items_with_limit(
+            portable_binding_boundary,
+            65_535,
+        )
+        .expect("portable boundary dispatch");
         let logical_groups = portable_binding_boundary.div_ceil(PROJECT_WORKGROUP_SIZE);
         assert_eq!(logical_groups, 65_536);
-        assert_eq!(boundary_dispatch, Dispatch2d { x: 65_535, y: 2 });
-        assert!(boundary_dispatch.x * boundary_dispatch.y > logical_groups);
+        assert_eq!(boundary_dispatch, (65_535, 2));
+        assert!(boundary_dispatch.0 * boundary_dispatch.1 > logical_groups);
         for shader in [
             include_str!("../shaders/projected_quads_project.wgsl"),
             include_str!("../shaders/projected_quads_compact.wgsl"),
@@ -1336,7 +1090,7 @@ mod tests {
             &device,
             &mut encoder,
             projected.cpu_candidate_args(),
-            size_of::<DrawIndirectArgs>() as u64,
+            PROJECT_DRAW_INDIRECT_ARGS_BYTES,
             "projected-downlevel-candidate-readback",
         );
         let (contributor_buffer, contributor_offset) =
@@ -1561,8 +1315,8 @@ mod tests {
             .expect("projected quads");
         assert_eq!(
             (
-                projected.projected_center_source.size(),
-                projected.projected_axes.size(),
+                projected.projector.projected_center_source().size(),
+                projected.projector.projected_axes().size(),
             ),
             (3 * 16, 3 * 16),
         );
@@ -1742,7 +1496,7 @@ mod tests {
             projected
                 .contributor_indirect_args()
                 .expect("contributor indirect args"),
-            size_of::<DrawIndirectArgs>() as u64,
+            PROJECT_DRAW_INDIRECT_ARGS_BYTES,
             "compact-projected-args-readback",
         );
         queue.submit(Some(encoder.finish()));
@@ -1877,7 +1631,7 @@ mod tests {
             projected
                 .contributor_indirect_args()
                 .expect("contributor indirect args"),
-            size_of::<DrawIndirectArgs>() as u64,
+            PROJECT_DRAW_INDIRECT_ARGS_BYTES,
             "adversarial-contributor-args-readback",
         );
         queue.submit(Some(encoder.finish()));
@@ -2021,7 +1775,7 @@ mod tests {
             &device,
             &mut encoder,
             order.sorter.indirect_args(),
-            size_of::<DrawIndirectArgs>() as u64,
+            PROJECT_DRAW_INDIRECT_ARGS_BYTES,
             "gpu-candidate-args-readback",
         );
         let contributor_args_readback = copy_buffer(
@@ -2030,7 +1784,7 @@ mod tests {
             projected
                 .contributor_indirect_args()
                 .expect("contributor indirect args"),
-            size_of::<DrawIndirectArgs>() as u64,
+            PROJECT_DRAW_INDIRECT_ARGS_BYTES,
             "gpu-contributor-args-readback",
         );
         queue.submit(Some(encoder.finish()));
