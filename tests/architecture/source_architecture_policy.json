@@ -1,0 +1,274 @@
+{
+  "schema": "gsplat-source-architecture-policy/v1",
+  "baseline_commit": "9df0d6cb2e7e7df7ddc95e85d16c416e4e91d4b0",
+  "progress_file": "docs/plans/active/2026-07-23-native-render-core-refactor/progress.md",
+  "source_sets": {
+    "rust": {
+      "include": [
+        "crates/*/src/*.rs",
+        "crates/*/src/**/*.rs",
+        "examples/*/src/*.rs",
+        "examples/*/src/**/*.rs",
+        "tools/*/src/*.rs",
+        "tools/*/src/**/*.rs",
+        "bindings/**/*.rs"
+      ],
+      "exclude": []
+    },
+    "wgsl": {
+      "include": [
+        "crates/*/shaders/*.wgsl",
+        "crates/*/shaders/**/*.wgsl"
+      ],
+      "exclude": []
+    }
+  },
+  "limits": {
+    "production_rust": {
+      "target_lt": 800,
+      "hard_ceiling": 1200,
+      "enforce_target": false
+    },
+    "concrete_plan": {
+      "include": [
+        "crates/gsplat-render-wgpu/src/plans/*.rs",
+        "crates/gsplat-render-wgpu/src/plans/**/*.rs"
+      ],
+      "target_lt": 600,
+      "hard_ceiling": 1000,
+      "enforce_target": false
+    },
+    "render_lib": {
+      "paths": [
+        "crates/gsplat-render-wgpu/src/lib.rs"
+      ],
+      "target_lt": 200,
+      "enforce_target": true
+    },
+    "renderer_orchestrator": {
+      "paths": [
+        "crates/gsplat-render-wgpu/src/renderer/mod.rs"
+      ],
+      "target_lt": 800,
+      "enforce_target": true
+    },
+    "wgsl": {
+      "target_lt": 350,
+      "enforce_target": true
+    }
+  },
+  "top_level_orchestration": {
+    "enabled": false,
+    "target_lt": 150,
+    "activation_task": "E1",
+    "activation_paths": [
+      "crates/gsplat-render-wgpu/src/renderer/mod.rs"
+    ],
+    "reason": "The A0 legacy tree has no single reliable top-level render function boundary; E1 must name exact functions when renderer/mod.rs is introduced.",
+    "functions": []
+  },
+  "grandfather": [
+    {
+      "path": "crates/gsplat-render-wgpu/src/lib.rs",
+      "baseline_physical_loc": 5680,
+      "owner_task": "M7",
+      "exit_condition": "Remove the legacy owner and leave lib.rs as public re-exports below 200 physical LOC."
+    },
+    {
+      "path": "crates/gsplat-ffi-c/src/lib.rs",
+      "baseline_physical_loc": 5344,
+      "owner_task": "M3",
+      "exit_condition": "Split stable ABI implementation from compatibility plumbing and reduce this file below 800 physical LOC."
+    },
+    {
+      "path": "crates/gsplat-render-wgpu/src/surface_presenter.rs",
+      "baseline_physical_loc": 5091,
+      "owner_task": "M7",
+      "exit_condition": "Delete the legacy presenter owner after Surface cutover and reduce or remove this file below 800 physical LOC."
+    },
+    {
+      "path": "crates/gsplat-render-wgpu/src/surface_session.rs",
+      "baseline_physical_loc": 5044,
+      "owner_task": "M7",
+      "exit_condition": "Delete the legacy session/controller owner after product cutover and reduce or remove this file below 800 physical LOC."
+    },
+    {
+      "path": "examples/desktop/src/main.rs",
+      "baseline_physical_loc": 4135,
+      "owner_task": "M1",
+      "exit_condition": "Split desktop host, CLI, and benchmark responsibilities so main.rs is below 800 physical LOC."
+    },
+    {
+      "path": "crates/gsplat-render-wgpu/src/direct_gpu_order.rs",
+      "baseline_physical_loc": 2862,
+      "owner_task": "A5",
+      "exit_condition": "Extract strategy-free GPU order primitives and leave no file at or above 800 physical LOC."
+    },
+    {
+      "path": "crates/gsplat-io-ply/src/lib.rs",
+      "baseline_physical_loc": 2852,
+      "owner_task": "IO-PLY-1",
+      "exit_condition": "A dedicated bounded-loader responsibility split reduces lib.rs below 800 physical LOC without changing import behavior.",
+      "review_task": "A9",
+      "review_action": "Before Package A closeout, register IO-PLY-1 in a dedicated plan/ledger or replace this owner with an explicitly scheduled task; an unchanged entry fails once A9 closes."
+    },
+    {
+      "path": "crates/gsplat-render-wgpu/src/projected_quads_gpu.rs",
+      "baseline_physical_loc": 2358,
+      "owner_task": "A5",
+      "exit_condition": "Extract project, compact, scan, and indirect primitives so the legacy file is removed or below 800 physical LOC."
+    },
+    {
+      "path": "crates/gsplat-render-wgpu/src/tiled_resident_gpu.rs",
+      "baseline_physical_loc": 2156,
+      "owner_task": "M7",
+      "exit_condition": "Remove obsolete diagnostic ownership or isolate retained responsibilities below 800 physical LOC during legacy deletion."
+    },
+    {
+      "path": "crates/gsplat-web/src/wasm.rs",
+      "baseline_physical_loc": 2139,
+      "owner_task": "M4",
+      "exit_condition": "Keep the Web consumer as lifecycle/API adaptation and split it into files below 800 physical LOC."
+    },
+    {
+      "path": "crates/gsplat-render-wgpu/src/resident_scene.rs",
+      "baseline_physical_loc": 1881,
+      "owner_task": "A3",
+      "exit_condition": "Extract scene ownership, Resident layout, and preflight into focused modules below 800 physical LOC."
+    },
+    {
+      "path": "crates/gsplat-render-wgpu/src/preproject_gpu.rs",
+      "baseline_physical_loc": 1731,
+      "owner_task": "A5",
+      "exit_condition": "Extract reusable GPU project/compact/radix primitives and leave the legacy file below 800 physical LOC or remove it."
+    },
+    {
+      "path": "crates/gsplat-render-wgpu/src/tiled_gpu.rs",
+      "baseline_physical_loc": 1456,
+      "owner_task": "M7",
+      "exit_condition": "Remove obsolete tiled ownership or split any retained diagnostic leaves below 800 physical LOC."
+    },
+    {
+      "path": "crates/gsplat-io-spz/src/lib.rs",
+      "baseline_physical_loc": 1310,
+      "owner_task": "IO-SPZ-1",
+      "exit_condition": "A dedicated SPZ loader split reduces lib.rs below 800 physical LOC while preserving its isolated contract.",
+      "review_task": "A9",
+      "review_action": "Before Package A closeout, register IO-SPZ-1 in a dedicated plan/ledger or replace this owner with an explicitly scheduled task; an unchanged entry fails once A9 closes."
+    },
+    {
+      "path": "tools/bench-runner/src/main.rs",
+      "baseline_physical_loc": 1300,
+      "owner_task": "M1",
+      "exit_condition": "Separate runner CLI from renderer-host responsibilities and reduce main.rs below 800 physical LOC."
+    },
+    {
+      "path": "crates/gsplat-render-wgpu/src/gpu_telemetry.rs",
+      "baseline_physical_loc": 1219,
+      "owner_task": "A7",
+      "exit_condition": "Extract immutable receipts and bounded observer storage into files below 800 physical LOC."
+    },
+    {
+      "path": "crates/gsplat-render-wgpu/src/resident_gpu.rs",
+      "baseline_physical_loc": 1181,
+      "owner_task": "A3",
+      "exit_condition": "Separate Resident ownership/preflight from reusable GPU leaves and reduce the file below 800 physical LOC."
+    },
+    {
+      "path": "crates/gsplat-render-wgpu/src/external_prefix_radix.rs",
+      "baseline_physical_loc": 1123,
+      "owner_task": "A5",
+      "exit_condition": "Consolidate scan/radix mechanics into focused GPU modules below 800 physical LOC."
+    },
+    {
+      "path": "crates/gsplat-render-wgpu/src/packed_atlas.rs",
+      "baseline_physical_loc": 916,
+      "owner_task": "A3",
+      "exit_condition": "Move Resident scene ownership into focused scene modules and reduce or remove this file below 800 physical LOC."
+    },
+    {
+      "path": "crates/gsplat-sort/src/lib.rs",
+      "baseline_physical_loc": 870,
+      "owner_task": "A4",
+      "exit_condition": "Consolidate CPU order primitives behind focused modules and reduce lib.rs below 800 physical LOC."
+    },
+    {
+      "path": "crates/gsplat-render-wgpu/src/projected_draw_telemetry.rs",
+      "baseline_physical_loc": 836,
+      "owner_task": "A7",
+      "exit_condition": "Move immutable draw receipts into evidence leaves and reduce or remove this file below 800 physical LOC."
+    },
+    {
+      "path": "crates/gsplat-render-wgpu/shaders/preproject_contributors.wgsl",
+      "baseline_physical_loc": 433,
+      "owner_task": "A5",
+      "exit_condition": "Extract reusable GPU mechanics so each retained production WGSL file is below 350 physical LOC."
+    },
+    {
+      "path": "crates/gsplat-render-wgpu/shaders/splat_surface_direct.wgsl",
+      "baseline_physical_loc": 370,
+      "owner_task": "A6",
+      "exit_condition": "Consolidate the accepted canonical raster into WGSL files below 350 physical LOC without changing math."
+    },
+    {
+      "path": "crates/gsplat-render-wgpu/shaders/direct_gpu_order.wgsl",
+      "baseline_physical_loc": 363,
+      "owner_task": "A5",
+      "exit_condition": "Extract portable GPU order kernels into focused WGSL files below 350 physical LOC."
+    }
+  ],
+  "exceptions": [],
+  "dependency_rules": {
+    "gpu": {
+      "include": [
+        "crates/gsplat-render-wgpu/src/gpu/*.rs",
+        "crates/gsplat-render-wgpu/src/gpu/**/*.rs"
+      ],
+      "forbidden_prefixes": {
+        "renderer": [
+          ["renderer"]
+        ],
+        "plans": [
+          ["plans"]
+        ],
+        "policy": [
+          ["policy"],
+          ["controller"],
+          ["renderer", "controller"]
+        ],
+        "evidence": [
+          ["evidence"]
+        ],
+        "platform_host": [
+          ["surface"],
+          ["offscreen"],
+          ["platform"],
+          ["host"],
+          ["ffi"],
+          ["web"],
+          ["android"],
+          ["apple"],
+          ["desktop"]
+        ]
+      }
+    },
+    "plans": {
+      "include": [
+        "crates/gsplat-render-wgpu/src/plans/*.rs",
+        "crates/gsplat-render-wgpu/src/plans/**/*.rs"
+      ],
+      "activation_task": "E1",
+      "reason": "Pipeline and environment checks apply only inside exact declared per-frame bodies; constructors and preparation helpers are legal.",
+      "per_frame_functions": [],
+      "preparation_only_files": []
+    },
+    "platform_hosts": {
+      "include": [
+        "crates/gsplat-render-wgpu/src/surface/*.rs",
+        "crates/gsplat-render-wgpu/src/surface/**/*.rs",
+        "crates/gsplat-render-wgpu/src/offscreen/*.rs",
+        "crates/gsplat-render-wgpu/src/offscreen/**/*.rs"
+      ]
+    }
+  }
+}

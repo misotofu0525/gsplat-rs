@@ -7,11 +7,12 @@
 ## Program status
 
 - Plan bundle: committed at `c478252246733f6dc209686091caf183e1ef7f06`.
-- Implementation: not started under this plan.
+- Implementation: Package A started; A1 guardrails are Accepted.
 - Current work package: A — responsibility extraction.
 - Active package task: none.
-- Last completed task: A0 — Accepted.
-- Next eligible task: A1 — add source-size and dependency ratchet.
+- Last completed task: A1 — Accepted.
+- Next eligible task: A2 — extract `api.rs` and strategy-free
+  `data/{layout,view}.rs` types.
 - Integration branch: `codex/native-render-core-refactor`.
 - Frozen source implementation closeout:
   `5db2520e0d7a0ef1c68a78bdb9abc6fc588c5186`.
@@ -142,6 +143,109 @@ No implementation task is active.
 - Commit: this follow-up commit; exact SHA is reported in the handoff
 - Next eligible task: A1 — add source-size and dependency ratchet
 
+### A1 — Add source-size and dependency ratchet
+
+- State: Accepted
+- Final state: Accept
+- Started: 2026-07-23 18:59 CST
+- Ended: 2026-07-23 19:14 CST
+- Baseline commit: `9df0d6cb2e7e7df7ddc95e85d16c416e4e91d4b0`
+- Worktree before task: clean detached checkout at the baseline commit; branch
+  `codex/native-render-a1-ratchet` was created before the first edit
+- Hypothesis: a small standard-library-only checker can freeze A0 physical LOC,
+  prevent new giant source files and enforce future render-core dependency
+  directions without changing production behavior or scanning legacy owners as
+  if the target module tree already existed.
+- Dependencies: A0 Accepted
+- Allowed scope:
+  - one executable checker, policy, fixture matrix and self-test under
+    `tests/architecture/`
+  - this A1 ledger entry
+- Forbidden scope:
+  - renderer, shader, API, FFI or platform-consumer changes
+  - benchmark schema, CI or handbook changes
+  - responsibility movement, device/browser runs or performance collection
+- Hard gates:
+  - PASS physical LOC counts comments, blank lines and embedded tests
+  - PASS all current target breaches are checked exactly: 21 production Rust
+    files plus 3 WGSL files, each with A0 LOC, owner task and exit condition
+  - PASS grandfather entries may shrink and may not exceed their checked
+    baseline; owner closeout while still over target is detectable
+  - PASS production Rust `<800` target / `1,200` hard ceiling, concrete plan
+    `<600` target / `1,000` hard ceiling, render `lib.rs <200`, future renderer
+    orchestrator `<800`, and WGSL `<350` are encoded
+  - PASS the top-level orchestration `<150` rule is explicitly disabled because
+    A0 has no reliable single-function boundary; creation of
+    `renderer/mod.rs` or E1 closeout forces exact function activation
+  - PASS exceptions require baseline LOC, maximum temporary delta, reason and
+    removal task; terminal removal-task closeout expires them
+  - PASS future `gpu/` imports of renderer/plans/policy/evidence/platform hosts,
+    plan submit/present/poll/map, host plan/cache/adaptive ownership, runtime
+    `Vec<Box<dyn ...Pass>>` and public `RenderPlan` are covered by positive and
+    negative fixtures
+  - PASS plan environment reads and pipeline creation are checked only inside
+    exact configured per-frame function bodies; constructors/preparation are
+    legal, and a new plan file without an explicit frame/preparation boundary
+    fails closed
+  - PASS source discovery enumerates configured include globs directly and does
+    not walk repository-wide `target/`, `node_modules/` or datasets
+  - PASS checker self-tests and checker against the real A0 tree
+  - PASS `cargo check --workspace --locked`
+  - PASS final whitespace and scope checks
+- Observations:
+  - real-tree checker reports `38 production Rust, 25 WGSL, 24 grandfathered`
+  - warm real-tree timing after the directed-glob/lexer fix was `0.17 s` and
+    `0.16 s` in consecutive `/usr/bin/time -p` runs
+  - generic Rust and plan targets are reported notices until their hard
+    ceilings; specialized render `lib.rs`, renderer and WGSL targets are errors
+  - no renderer timing, FPS, device, browser or competitor observation was
+    collected
+- Required endpoints for claim: none; A1 makes a deterministic repository
+  policy and fixture-test claim
+- Performance correction used: no; no performance hypothesis exists in A1
+- Known correctness issues: none
+- Commands:
+  - `PYTHONDONTWRITEBYTECODE=1 tests/architecture/test_source_architecture.py`
+  - `PYTHONDONTWRITEBYTECODE=1 tests/architecture/check_source_architecture.py`
+  - `/usr/bin/time -p env PYTHONDONTWRITEBYTECODE=1
+    tests/architecture/check_source_architecture.py`
+  - `python3 -m json.tool` for the policy and fixture JSON
+  - `cargo check --workspace --locked`
+  - `git diff --check`
+- Evidence:
+  - `tests/architecture/source_architecture_policy.json`
+  - `tests/architecture/fixtures/cases.json`
+  - `tests/architecture/test_source_architecture.py`
+- External owner tracking:
+  - `IO-PLY-1` and `IO-SPZ-1` are deliberately outside the current native-core
+    work-package map; each entry has `review_task: A9`
+  - once A9 reaches any terminal closeout, an unchanged entry fails with
+    `grandfather.review_due`; A9 must therefore register a dedicated plan and
+    ledger, reassign an explicitly scheduled owner, or remove the entry after
+    meeting its exit condition
+- Claim boundary:
+  - dependency checks are deterministic lexical architecture checks, not a
+    complete Rust type resolver; comments and literals are removed before
+    matching, target directories and exact frame bodies are configured, and
+    missing future boundaries fail closed
+  - A1 moves no production responsibility and changes no render behavior
+- Decision: Accept
+- Decision reason: every declared A1 guardrail is executable on fixtures and
+  the real A0 tree, all required local gates pass, and the diff remains inside
+  the checker/test/config/ledger boundary.
+- Result commit: this A1 commit; exact SHA is reported in the handoff
+- Next eligible task: A2 — extract `api.rs` and strategy-free
+  `data/{layout,view}.rs` types
+- A2 input:
+  - start from this A1 commit and keep the checker passing before and after the
+    extraction
+  - keep new production Rust below the declared target, shrink legacy owners,
+    and lower a checked grandfather baseline in the same task when it shrinks
+  - A2 does not need to activate future `plans/` or `renderer/mod.rs`; if it
+    introduces either path, it must configure the exact boundary rather than
+    suppressing the activation failure
+  - moving embedded tests alone is not evidence that an A2 responsibility moved
+
 ## Decision ledger
 
 | Task | State | Commit | Evidence/report | Decision summary |
@@ -149,6 +253,7 @@ No implementation task is active.
 | Plan bundle | Accepted | `c478252` | this directory | complete route, architecture, protocol and finite-task ledger written |
 | A0 | Accepted | `2aef9f0` | [a0-baseline.md](a0-baseline.md) | dedicated integration branch from `c478252`; no merge/rebase/cherry-pick |
 | A0 evidence audit | Accepted | this follow-up | [a0-baseline.md](a0-baseline.md) | evidence classes and artifact identity limits tightened; integration decision unchanged |
+| A1 | Accepted | this commit | `tests/architecture/` and this ledger | physical-LOC/dependency ratchet passes on fixtures and the A0 tree; A2 is eligible |
 
 ## Baseline evidence inherited, not rerun by default
 

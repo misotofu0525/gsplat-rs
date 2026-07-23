@@ -1,0 +1,412 @@
+{
+  "schema": "gsplat-source-architecture-fixtures/v1",
+  "cases": [
+    {
+      "name": "new_oversized_rust_counts_comments_blanks_and_embedded_tests",
+      "files": {
+        "crates/demo/src/new.rs": {
+          "physical_lines": 1201,
+          "prefix": [
+            "// This comment counts.",
+            "",
+            "#[cfg(test)]",
+            "mod tests {",
+            "    #[test] fn embedded_test_counts() {}",
+            "}"
+          ]
+        }
+      },
+      "expected_error_codes": [
+        "size.hard_ceiling"
+      ]
+    },
+    {
+      "name": "new_rust_between_target_and_hard_ceiling_is_reported",
+      "files": {
+        "crates/demo/src/new.rs": {
+          "physical_lines": 900
+        }
+      },
+      "expected_error_codes": [],
+      "expected_notice_codes": [
+        "size.target_exceeded"
+      ]
+    },
+    {
+      "name": "new_concrete_plan_over_hard_ceiling",
+      "files": {
+        "crates/gsplat-render-wgpu/src/plans/gpu_post.rs": {
+          "physical_lines": 1001
+        }
+      },
+      "plan_rules": {
+        "preparation_only_files": [
+          "crates/gsplat-render-wgpu/src/plans/gpu_post.rs"
+        ]
+      },
+      "expected_error_codes": [
+        "size.hard_ceiling"
+      ]
+    },
+    {
+      "name": "render_lib_target_is_enforced",
+      "files": {
+        "crates/gsplat-render-wgpu/src/lib.rs": {
+          "physical_lines": 200
+        }
+      },
+      "expected_error_codes": [
+        "size.target_exceeded"
+      ]
+    },
+    {
+      "name": "new_wgsl_target_is_enforced",
+      "files": {
+        "crates/demo/shaders/new.wgsl": {
+          "physical_lines": 350
+        }
+      },
+      "expected_error_codes": [
+        "size.target_exceeded"
+      ]
+    },
+    {
+      "name": "grandfather_growth_fails",
+      "files": {
+        "crates/demo/src/legacy.rs": {
+          "physical_lines": 801
+        }
+      },
+      "grandfather": [
+        {
+          "path": "crates/demo/src/legacy.rs",
+          "baseline_physical_loc": 800,
+          "owner_task": "A9",
+          "exit_condition": "Reduce below target."
+        }
+      ],
+      "expected_error_codes": [
+        "size.grandfather_growth"
+      ]
+    },
+    {
+      "name": "grandfather_shrink_is_allowed",
+      "files": {
+        "crates/demo/src/legacy.rs": {
+          "physical_lines": 799
+        }
+      },
+      "grandfather": [
+        {
+          "path": "crates/demo/src/legacy.rs",
+          "baseline_physical_loc": 801,
+          "owner_task": "A9",
+          "exit_condition": "Reduce below target."
+        }
+      ],
+      "expected_error_codes": [],
+      "expected_notice_codes": [
+        "size.grandfather_shrink"
+      ]
+    },
+    {
+      "name": "closed_owner_task_expires_grandfather_exit",
+      "files": {
+        "crates/demo/src/legacy.rs": {
+          "physical_lines": 800
+        }
+      },
+      "grandfather": [
+        {
+          "path": "crates/demo/src/legacy.rs",
+          "baseline_physical_loc": 800,
+          "owner_task": "A5",
+          "exit_condition": "Reduce below target."
+        }
+      ],
+      "progress": "### A5 closeout\n\n- Final state: Rejected\n",
+      "expected_error_codes": [
+        "grandfather.exit_due"
+      ]
+    },
+    {
+      "name": "external_owner_review_expires_at_package_closeout",
+      "files": {
+        "crates/demo/src/legacy.rs": {
+          "physical_lines": 800
+        }
+      },
+      "grandfather": [
+        {
+          "path": "crates/demo/src/legacy.rs",
+          "baseline_physical_loc": 800,
+          "owner_task": "IO-1",
+          "exit_condition": "Reduce below target.",
+          "review_task": "A9",
+          "review_action": "Register a dedicated follow-up before Package A closes."
+        }
+      ],
+      "progress": "### A9 closeout\n\n- Final state: Accepted\n",
+      "expected_error_codes": [
+        "grandfather.review_due"
+      ]
+    },
+    {
+      "name": "active_exception_allows_bounded_hard_ceiling_delta",
+      "files": {
+        "crates/demo/src/temporary.rs": {
+          "physical_lines": 1201
+        }
+      },
+      "exceptions": [
+        {
+          "path": "crates/demo/src/temporary.rs",
+          "baseline_physical_loc": 1200,
+          "max_temporary_delta": 1,
+          "reason": "One-line transition shim.",
+          "removal_task": "A2"
+        }
+      ],
+      "expected_error_codes": []
+    },
+    {
+      "name": "exception_maximum_delta_is_enforced",
+      "files": {
+        "crates/demo/src/temporary.rs": {
+          "physical_lines": 1202
+        }
+      },
+      "exceptions": [
+        {
+          "path": "crates/demo/src/temporary.rs",
+          "baseline_physical_loc": 1200,
+          "max_temporary_delta": 1,
+          "reason": "One-line transition shim.",
+          "removal_task": "A2"
+        }
+      ],
+      "expected_error_codes": [
+        "exception.delta_exceeded"
+      ]
+    },
+    {
+      "name": "exception_expires_at_removal_task_closeout",
+      "files": {
+        "crates/demo/src/temporary.rs": {
+          "physical_lines": 1201
+        }
+      },
+      "exceptions": [
+        {
+          "path": "crates/demo/src/temporary.rs",
+          "baseline_physical_loc": 1200,
+          "max_temporary_delta": 10,
+          "reason": "Temporary transition shim.",
+          "removal_task": "A2"
+        }
+      ],
+      "progress": "### A2 closeout\n\n- Final state: Accepted\n",
+      "expected_error_codes": [
+        "exception.expired",
+        "size.hard_ceiling"
+      ]
+    },
+    {
+      "name": "gpu_forbidden_dependency_directions",
+      "files": {
+        "crates/gsplat-render-wgpu/src/gpu/project.rs": {
+          "lines": [
+            "use crate::renderer::Renderer;",
+            "use crate::plans::PlanSet;",
+            "use crate::policy::Policy;",
+            "use crate::evidence::EvidenceRing;",
+            "use crate::surface::SurfaceHost;"
+          ]
+        }
+      },
+      "expected_error_codes": [
+        "dependency.gpu.evidence",
+        "dependency.gpu.plans",
+        "dependency.gpu.platform_host",
+        "dependency.gpu.policy",
+        "dependency.gpu.renderer"
+      ]
+    },
+    {
+      "name": "plan_forbidden_operations",
+      "files": {
+        "crates/gsplat-render-wgpu/src/plans/gpu_post.rs": {
+          "lines": [
+            "fn encode(queue: &Queue, frame: Frame, device: &Device, slice: Slice) {",
+            "    queue.submit([]);",
+            "    frame.present();",
+            "    device.poll(Maintain::Wait);",
+            "    slice.map_async(MapMode::Read, |_| {});",
+            "    let _ = std::env::var(\"GSPLAT_PLAN\");",
+            "    let _ = device.create_render_pipeline(&descriptor);",
+            "}"
+          ]
+        }
+      },
+      "plan_rules": {
+        "per_frame_functions": [
+          {
+            "path": "crates/gsplat-render-wgpu/src/plans/gpu_post.rs",
+            "name": "encode"
+          }
+        ]
+      },
+      "expected_error_codes": [
+        "dependency.plan.env",
+        "dependency.plan.map",
+        "dependency.plan.pipeline",
+        "dependency.plan.poll",
+        "dependency.plan.present",
+        "dependency.plan.submit"
+      ]
+    },
+    {
+      "name": "future_plan_requires_explicit_frame_boundary",
+      "files": {
+        "crates/gsplat-render-wgpu/src/plans/gpu_post.rs": {
+          "lines": [
+            "fn encode() {}"
+          ]
+        }
+      },
+      "expected_error_codes": [
+        "dependency.plan.frame_boundary_missing"
+      ]
+    },
+    {
+      "name": "platform_host_forbidden_ownership",
+      "files": {
+        "crates/gsplat-render-wgpu/src/surface/mod.rs": {
+          "lines": [
+            "struct SurfaceHost {",
+            "    selected_plan: PlanId,",
+            "    cache_generation: u64,",
+            "    adaptive_state: AdaptiveState,",
+            "}"
+          ]
+        }
+      },
+      "expected_error_codes": [
+        "dependency.host.adaptive_state",
+        "dependency.host.cache_generation",
+        "dependency.host.plan_selection"
+      ]
+    },
+    {
+      "name": "runtime_pass_vector_and_public_render_plan_trait",
+      "files": {
+        "crates/demo/src/runtime.rs": {
+          "lines": [
+            "pub trait RenderPlan {}",
+            "trait Pass {}",
+            "type RuntimePasses = Vec<Box<dyn Pass>>;"
+          ]
+        }
+      },
+      "expected_error_codes": [
+        "architecture.public_render_plan_trait",
+        "architecture.runtime_pass_vector"
+      ]
+    },
+    {
+      "name": "legal_future_architecture_and_lexical_decoys",
+      "files": {
+        "crates/gsplat-render-wgpu/src/gpu/project.rs": {
+          "lines": [
+            "use crate::data::layout::Splat;",
+            "// use crate::renderer::Renderer;",
+            "const TEXT: &str = r#\"use crate::plans::PlanSet;\"#;"
+          ]
+        },
+        "crates/gsplat-render-wgpu/src/plans/cpu_post.rs": {
+          "lines": [
+            "fn new(device: &Device) {",
+            "    let _ = device.create_render_pipeline(&descriptor);",
+            "    let _ = std::env::var(\"GSPLAT_PLAN\");",
+            "}",
+            "fn encode(encoder: &mut Encoder) {",
+            "    encoder.begin_compute_pass(&Default::default());",
+            "    // queue.submit([]); frame.present(); device.poll(());",
+            "    let _ = \"slice.map_async create_render_pipeline std::env::var\";",
+            "}"
+          ]
+        },
+        "crates/gsplat-render-wgpu/src/surface/mod.rs": {
+          "lines": [
+            "struct SurfaceHost {",
+            "    renderer: Renderer,",
+            "    last_plan_label: String,",
+            "}"
+          ]
+        },
+        "crates/demo/src/runtime.rs": {
+          "lines": [
+            "trait RenderPlan {}",
+            "struct ConcretePass;",
+            "type RuntimePasses = Vec<ConcretePass>;"
+          ]
+        },
+        "target/crates/demo/src/generated.rs": {
+          "physical_lines": 1300,
+          "prefix": [
+            "// Ignored build output must not be traversed as production source."
+          ]
+        }
+      },
+      "plan_rules": {
+        "per_frame_functions": [
+          {
+            "path": "crates/gsplat-render-wgpu/src/plans/cpu_post.rs",
+            "name": "encode"
+          }
+        ]
+      },
+      "expected_error_codes": []
+    },
+    {
+      "name": "future_orchestration_path_requires_activation",
+      "files": {
+        "crates/gsplat-render-wgpu/src/renderer/mod.rs": {
+          "lines": [
+            "pub struct Renderer;"
+          ]
+        }
+      },
+      "expected_error_codes": [
+        "orchestration.activation_due"
+      ]
+    },
+    {
+      "name": "activated_top_level_orchestration_target",
+      "files": {
+        "crates/gsplat-render-wgpu/src/renderer/mod.rs": {
+          "physical_lines": 151,
+          "prefix": [
+            "pub fn render_frame() {"
+          ],
+          "suffix": [
+            "}"
+          ]
+        }
+      },
+      "top_level_orchestration": {
+        "enabled": true,
+        "functions": [
+          {
+            "path": "crates/gsplat-render-wgpu/src/renderer/mod.rs",
+            "name": "render_frame",
+            "target_lt": 150
+          }
+        ]
+      },
+      "expected_error_codes": [
+        "orchestration.target_exceeded"
+      ]
+    }
+  ]
+}
