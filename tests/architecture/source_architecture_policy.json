@@ -239,7 +239,7 @@
     {
       "path": "crates/gsplat-render-wgpu/src/projected_quads_gpu.rs",
       "a0_physical_loc": 2358,
-      "baseline_physical_loc": 2358,
+      "baseline_physical_loc": 2194,
       "owner_task": "A5",
       "exit_condition": "Extract reusable project, compact, scan and indirect primitives so the legacy file has one plan-execution responsibility or is removed."
     },

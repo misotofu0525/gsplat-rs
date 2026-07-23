@@ -26,15 +26,17 @@ A5 = Active
 - Implementation: Package A is in progress; A1 guardrails and the complete A2
   data/API, A3 scene/resource and A4 CPU order ownership extractions are
   root-accepted. A5a's strategy-free scan/radix leaves are also root-accepted;
-  A5b's Direct/Resident stable-radix mechanics are now accepted behind those
-  owners. The parent A5 package remains active for its later consumer slices.
+  A5b's Direct/Resident stable-radix mechanics and A5c1's Projected scan reuse
+  are now accepted behind those owners. The parent A5 package remains active
+  for its later consumer slices.
 - Current work package: A — responsibility extraction.
-- Active package task: A5c1 — migrate the duplicate Projected contributor
-  prefix scan to the accepted strategy-free scan owner.
-- Last completed task: A5b — Direct/Resident stable-radix mechanics extraction.
-- Next eligible task: A5c1 only. A5c2, the remaining Direct/Preproject
-  compaction slices, A5d, A6 and later packages remain inactive until A5c1 is
-  root-reviewed and closed.
+- Active package task: none; A5c1 is closed and no later writer is activated by
+  implication.
+- Last completed task: A5c1 — Projected contributor prefix-scan reuse.
+- Next eligible task: A5c2 only within A5. Independent A7/A8 scope audits may
+  continue in parallel under task-plan section 7.4, but a production writer
+  starts only after its exact disjoint allowlist is recorded here. Remaining
+  Direct/Preproject compaction slices, A5d, A6 and later packages stay inactive.
 - Integration branch: `codex/native-render-core-refactor`.
 - Frozen source implementation closeout:
   `5db2520e0d7a0ef1c68a78bdb9abc6fc588c5186`.
@@ -105,8 +107,9 @@ eligible task. Do not rewrite the architecture in this ledger.
 ### A5c1 — Reuse the accepted scan owner for Projected contributor counts
 
 - Parent task state: A5 Active
-- Subtask state: Active
+- Subtask state: Accepted
 - Started: 2026-07-24
+- Ended: 2026-07-24
 - Baseline commit:
   `e687614fbd9b973d060904978d2b5aebde898959` (`docs: accept A5b
   stable radix extraction`).
@@ -210,6 +213,42 @@ eligible task. Do not rewrite the architecture in this ledger.
 - Closeout requirement: one isolated writer produces a fixed SHA; root reviews
   the exact graph and integrated gates before Accept/Reject/Defer. No later
   compaction slice activates automatically.
+- Writer commit:
+  `74206fde135e33470dd0d22cc66261cbfb952c86` (`refactor: reuse prefix scan
+  for projected contributors`), with exact parent
+  `23569d9f627deaa370ec7404f71fc93f62816efe`.
+- Integration merge commit:
+  `32b277e1181a76ac8442e263e5a0be39162edb39` (`merge: integrate A5c1 shared
+  projected scan`).
+- Fixed-SHA review:
+  - independent review concluded P0/P1/P2 = 0/0/0;
+  - only the three allowed files changed; all five frozen WGSL hashes and all
+    forbidden files are byte-identical;
+  - the complete 52-entry `gsplat-*` label/resource multiset is unchanged;
+  - sums bytes/usage, 16-byte params ABI, uniform stride, bindings, dynamic
+    offsets, two-dimensional dispatch, pass order and final count location are
+    exact;
+  - Candidate remains projection plus forward scan with D=V; Compact adds
+    reverse offsets, stable rank compaction and finalize with D=C<=V;
+    downlevel sentinel and prepare/publish transactionality are unchanged.
+- Final ownership and physical LOC:
+  - `projected_quads_gpu.rs`: 2,194 LOC, retaining Projected admission,
+    Candidate/Compact selection, compaction, publication and raster ownership;
+  - `gpu/scan.rs`: 495 LOC, one profiled hierarchical prefix-scan owner with
+    forward/reverse phases and exact-count access;
+  - `gpu/mod.rs`: 15 LOC, private facade.
+- Root integrated gates:
+  - PASS architecture checker/self-tests after lowering only the
+    `projected_quads_gpu.rs` current ratchet from 2,358 to 2,194;
+  - PASS format, whitespace, locked workspace check/tests; renderer result is
+    281 passed / 5 ignored and Projected remains 13 passed / 0 ignored;
+  - PASS all-target Clippy and Rustdoc with warnings denied;
+  - PASS wasm32 `gsplat-web`, forced Apple M4 Metal SortedAlpha conformance and
+    C ABI smoke (`drawn=2`, `visible=2`).
+- Required endpoint decision: A065 stays at the A5 package boundary because
+  this ownership-only slice changes no shader, product routing, algorithm or
+  rendered set. No performance claim is made.
+- Decision: Accept A5c1. A5 remains Active; A5c2 is eligible but inactive.
 
 ### A5b — Extract Direct/Resident stable-radix mechanics
 
