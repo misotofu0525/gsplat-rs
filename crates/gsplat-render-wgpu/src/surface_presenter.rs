@@ -28,6 +28,9 @@ use crate::raster::{
     encode_splat_indirect_draw_into,
 };
 use crate::resident_gpu;
+#[cfg(not(target_arch = "wasm32"))]
+use crate::surface::SurfaceCapture;
+pub use crate::surface::SurfaceFrameCapture;
 use crate::surface::{
     SurfaceConfigurationOwner, SurfaceLifecycle, create_surface_instance, select_present_mode,
 };
@@ -47,28 +50,6 @@ use crate::{timer_elapsed_ms, timer_now};
 struct SurfaceAdapterContext {
     info: wgpu::AdapterInfo,
     limits: wgpu::Limits,
-}
-
-/// Exact native Surface framebuffer captured immediately before presentation.
-///
-/// Capture is a diagnostic-only opt-in. Ordinary Surface presenters never ask
-/// the swapchain for copy usage and do not allocate a readback buffer.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SurfaceFrameCapture {
-    pub width: u32,
-    pub height: u32,
-    pub rgba8: Vec<u8>,
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-struct PendingSurfaceCapture {
-    buffer: wgpu::Buffer,
-    width: u32,
-    height: u32,
-    padded_bytes_per_row: u32,
-    format: wgpu::TextureFormat,
-    encoded: bool,
-    presented: bool,
 }
 
 pub(crate) struct SurfacePagedRuntime {
@@ -142,9 +123,7 @@ pub struct SurfacePresenter {
     surface_configuration: SurfaceConfigurationOwner,
     surface_lifecycle: SurfaceLifecycle,
     #[cfg(not(target_arch = "wasm32"))]
-    surface_copy_src_supported: bool,
-    #[cfg(not(target_arch = "wasm32"))]
-    pending_surface_capture: Option<PendingSurfaceCapture>,
+    surface_capture: SurfaceCapture,
     adapter_max_storage_buffers_per_shader_stage: u32,
     adapter_max_storage_buffer_binding_size: u64,
     indirect_execution_supported: bool,
@@ -1134,9 +1113,9 @@ impl SurfacePresenter {
             surface_configuration,
             surface_lifecycle: SurfaceLifecycle::new(),
             #[cfg(not(target_arch = "wasm32"))]
-            surface_copy_src_supported: caps.usages.contains(wgpu::TextureUsages::COPY_SRC),
-            #[cfg(not(target_arch = "wasm32"))]
-            pending_surface_capture: None,
+            surface_capture: SurfaceCapture::new(
+                caps.usages.contains(wgpu::TextureUsages::COPY_SRC),
+            ),
             adapter_max_storage_buffers_per_shader_stage: adapter_limits
                 .max_storage_buffers_per_shader_stage,
             adapter_max_storage_buffer_binding_size: u64::from(
@@ -1164,11 +1143,7 @@ impl SurfacePresenter {
 
     pub fn resize(&mut self, width: u32, height: u32) -> Result<(), SurfacePresenterError> {
         #[cfg(not(target_arch = "wasm32"))]
-        if self.pending_surface_capture.is_some() {
-            return Err(SurfacePresenterError::SurfaceCaptureState(
-                "cannot resize while a capture is pending".into(),
-            ));
-        }
+        ensure_surface_capture_allows_resize(self.surface_capture.has_pending())?;
         self.surface_configuration.validate_size(width, height)?;
         if !self.surface_configuration.resize_required(width, height) {
             return Ok(());
@@ -1249,69 +1224,16 @@ impl SurfacePresenter {
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn request_surface_capture(&mut self) -> Result<(), SurfacePresenterError> {
         self.surface_configuration.ensure_capture_valid()?;
-        if self.pending_surface_capture.is_some() {
-            return Err(SurfacePresenterError::SurfaceCaptureState(
-                "a previous capture has not been taken".into(),
-            ));
-        }
-        if !self.surface_copy_src_supported {
-            return Err(SurfacePresenterError::SurfaceCaptureUnsupported(
-                "the adapter does not expose COPY_SRC for this Surface".into(),
-            ));
-        }
         let (width, height) = self.surface_configuration.size();
         let format = self.surface_configuration.format();
-        if !surface_capture_format_supported(format) {
-            return Err(SurfacePresenterError::SurfaceCaptureUnsupported(format!(
-                "format {:?} is not an RGBA8/BGRA8 format",
-                format
-            )));
-        }
-        let (padded_bytes_per_row, buffer_size) = surface_capture_layout(width, height)?;
-        validate_surface_capture_buffer_size(buffer_size, self.device.limits().max_buffer_size)?;
-
-        // Allocate the unpublished readback resource first. Device creation
-        // errors are asynchronous even on native wgpu backends, so a plain
-        // create_buffer call could otherwise turn this Result-returning API
-        // into an uncaptured validation/OOM and leave a reconfigured Surface
-        // without a usable pending capture.
-        let (validation_scope, oom_scope, internal_scope) = (
-            self.device.push_error_scope(wgpu::ErrorFilter::Validation),
-            self.device.push_error_scope(wgpu::ErrorFilter::OutOfMemory),
-            self.device.push_error_scope(wgpu::ErrorFilter::Internal),
-        );
-        let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: wgpu_label("gsplat-surface-frame-capture"),
-            size: buffer_size,
-            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-            mapped_at_creation: false,
-        });
-        let (internal_error, oom_error, validation_error) = pollster::block_on(async {
-            (
-                internal_scope.pop().await,
-                oom_scope.pop().await,
-                validation_scope.pop().await,
-            )
-        });
-        if let Some(error) = internal_error.or(oom_error).or(validation_error) {
-            return Err(SurfacePresenterError::SurfaceCaptureUnsupported(format!(
-                "readback buffer allocation failed: {error}"
-            )));
-        }
-
+        let pending = self
+            .surface_capture
+            .prepare_request(&self.device, width, height, format)?;
         pollster::block_on(
             self.surface_configuration
                 .ensure_copy_src(&self.surface, &self.device),
         )?;
-        self.pending_surface_capture = Some(PendingSurfaceCapture {
-            buffer,
-            width,
-            height,
-            padded_bytes_per_row,
-            format,
-            encoded: false,
-            presented: false,
-        });
+        self.surface_capture.publish(pending);
         Ok(())
     }
 
@@ -1322,52 +1244,14 @@ impl SurfacePresenter {
     /// avoids a second fallible swapchain transition during recovery.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn cancel_surface_capture(&mut self) -> bool {
-        self.pending_surface_capture.take().is_some()
+        self.surface_capture.cancel()
     }
 
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn take_surface_capture(
         &mut self,
     ) -> Result<SurfaceFrameCapture, SurfacePresenterError> {
-        use std::sync::mpsc;
-
-        let pending = self.pending_surface_capture.as_ref().ok_or_else(|| {
-            SurfacePresenterError::SurfaceCaptureState("no capture was requested".into())
-        })?;
-        if !pending.encoded || !pending.presented {
-            return Err(SurfacePresenterError::SurfaceCaptureState(
-                "the requested framebuffer copy has not completed a presentation".into(),
-            ));
-        }
-        let pending = self
-            .pending_surface_capture
-            .take()
-            .expect("validated pending capture");
-        let slice = pending.buffer.slice(..);
-        let (tx, rx) = mpsc::channel();
-        slice.map_async(wgpu::MapMode::Read, move |result| {
-            let _ = tx.send(result);
-        });
-        let _ = self.device.poll(wgpu::PollType::wait_indefinitely());
-        match rx.recv() {
-            Ok(Ok(())) => {}
-            Ok(Err(_)) | Err(_) => return Err(SurfacePresenterError::SurfaceCaptureReadback),
-        }
-        let mapped = slice.get_mapped_range();
-        let rgba8 = unpack_surface_capture_rows(
-            &mapped,
-            pending.width,
-            pending.height,
-            pending.padded_bytes_per_row,
-            pending.format,
-        )?;
-        drop(mapped);
-        pending.buffer.unmap();
-        Ok(SurfaceFrameCapture {
-            width: pending.width,
-            height: pending.height,
-            rgba8,
-        })
+        self.surface_capture.take(&self.device)
     }
 
     /// Actual dimensions of the raster target before presentation. Packed
@@ -2064,7 +1948,7 @@ impl SurfacePresenter {
                     &mut encoder,
                 )?;
         }
-        self.encode_pending_surface_capture(&mut encoder, &frame.texture);
+        self.surface_capture.encode(&mut encoder, &frame.texture);
         let command_buffer = encoder.finish();
         let mut completion_ticket = completion.and_then(|request| {
             self.cpu_order_completion_telemetry.begin_sample(
@@ -2995,7 +2879,7 @@ impl SurfacePresenter {
 
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(frame) = frame.as_ref() {
-            self.encode_pending_surface_capture(&mut encoder, &frame.texture);
+            self.surface_capture.encode(&mut encoder, &frame.texture);
         }
 
         if frame.is_none() && !refresh_order && !color_resolved {
@@ -3242,7 +3126,7 @@ impl SurfacePresenter {
         }
 
         #[cfg(not(target_arch = "wasm32"))]
-        self.encode_pending_surface_capture(&mut encoder, &frame.texture);
+        self.surface_capture.encode(&mut encoder, &frame.texture);
 
         let command_buffer = encoder.finish();
         let submitted_order_ticket = order_ticket.as_ref().map(|ticket| ticket.ticket);
@@ -3435,7 +3319,7 @@ impl SurfacePresenter {
                     &mut encoder,
                 )?;
         }
-        self.encode_pending_surface_capture(&mut encoder, &frame.texture);
+        self.surface_capture.encode(&mut encoder, &frame.texture);
         let command_buffer = encoder.finish();
         let submitted_ticket = telemetry_ticket.as_ref().map(|ticket| ticket.ticket);
         if let Some(ticket) = telemetry_ticket.take() {
@@ -4038,7 +3922,7 @@ impl SurfacePresenter {
             );
         }
         #[cfg(not(target_arch = "wasm32"))]
-        self.encode_pending_surface_capture(&mut encoder, &frame.texture);
+        self.surface_capture.encode(&mut encoder, &frame.texture);
         let command_buffer = encoder.finish();
         let submitted_ticket = completion_ticket.as_ref().map(|ticket| ticket.ticket);
         let projected_started = projected_sample_request.map(|request| request.started);
@@ -4075,61 +3959,10 @@ impl SurfacePresenter {
             .acquire(&self.surface, &self.device, &self.surface_configuration)
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
-    fn encode_pending_surface_capture(
-        &mut self,
-        encoder: &mut wgpu::CommandEncoder,
-        texture: &wgpu::Texture,
-    ) {
-        let Some(pending) = self.pending_surface_capture.as_mut() else {
-            return;
-        };
-        if pending.presented {
-            return;
-        }
-        // The request reconfigures this exact Surface without changing its
-        // dimensions or format before any drawable is acquired.
-        debug_assert_eq!(
-            (texture.width(), texture.height()),
-            (pending.width, pending.height)
-        );
-        debug_assert_eq!(texture.format(), pending.format);
-        encoder.copy_texture_to_buffer(
-            wgpu::TexelCopyTextureInfo {
-                texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            wgpu::TexelCopyBufferInfo {
-                buffer: &pending.buffer,
-                layout: wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(pending.padded_bytes_per_row),
-                    rows_per_image: Some(pending.height),
-                },
-            },
-            wgpu::Extent3d {
-                width: pending.width,
-                height: pending.height,
-                depth_or_array_layers: 1,
-            },
-        );
-        pending.encoded = true;
-    }
-
     fn present_frame(&mut self, frame: wgpu::SurfaceTexture) {
         self.surface_lifecycle.present(frame);
         #[cfg(not(target_arch = "wasm32"))]
-        if let Some(pending) = self.pending_surface_capture.as_mut()
-            && pending.encoded
-        {
-            // A prior submitted copy is not publishable until the exact frame
-            // carrying the latest copy has reached Surface presentation. If a
-            // post-submit diagnostic fails before this point, the next retry
-            // encodes another copy because `presented` remains false.
-            pending.presented = true;
-        }
+        self.surface_capture.mark_presented();
     }
 
     pub const fn instance_count(&self) -> u32 {
@@ -4138,106 +3971,13 @@ impl SurfacePresenter {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn surface_capture_format_supported(format: wgpu::TextureFormat) -> bool {
-    matches!(
-        format,
-        wgpu::TextureFormat::Rgba8Unorm
-            | wgpu::TextureFormat::Rgba8UnormSrgb
-            | wgpu::TextureFormat::Bgra8Unorm
-            | wgpu::TextureFormat::Bgra8UnormSrgb
-    )
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn surface_capture_layout(width: u32, height: u32) -> Result<(u32, u64), SurfacePresenterError> {
-    let unpadded = width.checked_mul(4).ok_or_else(|| {
-        SurfacePresenterError::SurfaceCaptureUnsupported("row byte size overflow".into())
-    })?;
-    let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
-    let padded = unpadded
-        .checked_add(align - 1)
-        .map(|value| value / align * align)
-        .ok_or_else(|| {
-            SurfacePresenterError::SurfaceCaptureUnsupported("aligned row size overflow".into())
-        })?;
-    let size = u64::from(padded)
-        .checked_mul(u64::from(height))
-        .ok_or_else(|| {
-            SurfacePresenterError::SurfaceCaptureUnsupported("readback size overflow".into())
-        })?;
-    if size == 0 {
-        return Err(SurfacePresenterError::SurfaceCaptureUnsupported(
-            "capture dimensions must be non-zero".into(),
+fn ensure_surface_capture_allows_resize(pending: bool) -> Result<(), SurfacePresenterError> {
+    if pending {
+        return Err(SurfacePresenterError::SurfaceCaptureState(
+            "cannot resize while a capture is pending".into(),
         ));
     }
-    Ok((padded, size))
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn validate_surface_capture_buffer_size(
-    buffer_size: u64,
-    max_buffer_size: u64,
-) -> Result<(), SurfacePresenterError> {
-    if buffer_size > max_buffer_size {
-        return Err(SurfacePresenterError::SurfaceCaptureUnsupported(format!(
-            "readback buffer requires {buffer_size} bytes but the device limit is {max_buffer_size}"
-        )));
-    }
     Ok(())
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn unpack_surface_capture_rows(
-    mapped: &[u8],
-    width: u32,
-    height: u32,
-    padded_bytes_per_row: u32,
-    format: wgpu::TextureFormat,
-) -> Result<Vec<u8>, SurfacePresenterError> {
-    if !surface_capture_format_supported(format) {
-        return Err(SurfacePresenterError::SurfaceCaptureUnsupported(format!(
-            "format {format:?} cannot be converted to RGBA8"
-        )));
-    }
-    let row_bytes = usize::try_from(width)
-        .ok()
-        .and_then(|width| width.checked_mul(4))
-        .ok_or_else(|| {
-            SurfacePresenterError::SurfaceCaptureState("RGBA row size overflow".into())
-        })?;
-    let padded = usize::try_from(padded_bytes_per_row).map_err(|_| {
-        SurfacePresenterError::SurfaceCaptureState("padded row size overflow".into())
-    })?;
-    let height = usize::try_from(height).map_err(|_| {
-        SurfacePresenterError::SurfaceCaptureState("capture height overflow".into())
-    })?;
-    let output_len = row_bytes.checked_mul(height).ok_or_else(|| {
-        SurfacePresenterError::SurfaceCaptureState("RGBA output size overflow".into())
-    })?;
-    let required = padded
-        .checked_mul(height)
-        .ok_or_else(|| SurfacePresenterError::SurfaceCaptureState("mapped size overflow".into()))?;
-    if mapped.len() < required || padded < row_bytes {
-        return Err(SurfacePresenterError::SurfaceCaptureState(format!(
-            "mapped readback has {} bytes, expected at least {required}",
-            mapped.len()
-        )));
-    }
-    let mut rgba8 = vec![0_u8; output_len];
-    for row in 0..height {
-        let source = &mapped[row * padded..row * padded + row_bytes];
-        let target = &mut rgba8[row * row_bytes..(row + 1) * row_bytes];
-        target.copy_from_slice(source);
-    }
-    if matches!(
-        format,
-        wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb
-    ) {
-        for pixel in rgba8.chunks_exact_mut(4) {
-            pixel.swap(0, 2);
-        }
-    }
-    Ok(rgba8)
 }
 
 #[cfg(test)]
@@ -4246,34 +3986,13 @@ mod tests {
 
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
-    fn capture_layout_obeys_texture_copy_row_alignment() {
-        let (row, size) = surface_capture_layout(3, 2).expect("layout");
-        assert_eq!(row, wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
-        assert_eq!(size, u64::from(row) * 2);
-        assert!(surface_capture_layout(0, 1).is_err());
-        assert!(validate_surface_capture_buffer_size(size, size).is_ok());
+    fn pending_surface_capture_blocks_resize() {
+        assert!(ensure_surface_capture_allows_resize(false).is_ok());
         assert!(matches!(
-            validate_surface_capture_buffer_size(size, size - 1),
-            Err(SurfacePresenterError::SurfaceCaptureUnsupported(message))
-                if message.contains("device limit")
+            ensure_surface_capture_allows_resize(true),
+            Err(SurfacePresenterError::SurfaceCaptureState(message))
+                if message == "cannot resize while a capture is pending"
         ));
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    #[test]
-    fn capture_unpack_removes_padding_and_canonicalizes_bgra() {
-        let padded = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
-        let mut mapped = vec![0_u8; padded as usize * 2];
-        mapped[0..8].copy_from_slice(&[1, 2, 3, 4, 5, 6, 7, 8]);
-        let second = padded as usize;
-        mapped[second..second + 8].copy_from_slice(&[9, 10, 11, 12, 13, 14, 15, 16]);
-        let rgba =
-            unpack_surface_capture_rows(&mapped, 2, 2, padded, wgpu::TextureFormat::Bgra8UnormSrgb)
-                .expect("unpack");
-        assert_eq!(
-            rgba,
-            [3, 2, 1, 4, 7, 6, 5, 8, 11, 10, 9, 12, 15, 14, 13, 16]
-        );
     }
 
     #[test]
