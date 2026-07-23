@@ -13,10 +13,11 @@ use gsplat_core::Camera;
 use wgpu::util::DeviceExt;
 
 use crate::draw_pass::{SplatPipeline, create_splat_pipeline};
-use crate::external_prefix_radix::{
-    ExternalPrefixRadix, ExternalPrefixRadixBytePlan, GpuPrefixScan,
+use crate::gpu::{ExternalPrefixRadix, ExternalPrefixRadixBytePlan, GpuPrefixScan};
+use crate::resident_gpu::{
+    RESIDENT_COLOR_STORAGE_BINDINGS, RESIDENT_QUAD_VERTEX_COUNT, ResidentGpuError,
+    ResidentGpuResources,
 };
-use crate::resident_gpu::{RESIDENT_QUAD_VERTEX_COUNT, ResidentGpuError, ResidentGpuResources};
 use crate::{make_surface_render_params, wgpu_label};
 
 pub(crate) const PREPROJECT_WORKGROUP_SIZE: u32 = 128;
@@ -145,6 +146,11 @@ impl PreprojectGpuBytePlan {
     }
 
     fn validate_limits(self, limits: &wgpu::Limits) -> Result<Self, ResidentGpuError> {
+        if limits.max_storage_buffers_per_shader_stage < RESIDENT_COLOR_STORAGE_BINDINGS {
+            return Err(ResidentGpuError::StorageBindingCountUnsupported(
+                limits.max_storage_buffers_per_shader_stage,
+            ));
+        }
         self.radix.validate_limits(limits)?;
         let binding_limit =
             u64::from(limits.max_storage_buffer_binding_size).min(limits.max_buffer_size);
@@ -720,7 +726,7 @@ mod tests {
 
     use super::*;
     use crate::draw_pass::{SplatIndirectDraw, encode_splat_indirect_draw_into};
-    use crate::external_prefix_radix::{EXTERNAL_RADIX_TILE_SIZE, ExternalPrefixControl};
+    use crate::gpu::{EXTERNAL_RADIX_TILE_SIZE, ExternalPrefixControl};
     use crate::projected_draw_telemetry::SurfaceProjectedDrawExecution;
     use crate::projected_quads_gpu::ProjectedQuadsGpu;
     use crate::{
@@ -749,8 +755,7 @@ mod tests {
                 .await
                 .ok()?;
             let mut limits = wgpu::Limits::downlevel_defaults();
-            limits.max_storage_buffers_per_shader_stage =
-                crate::resident_gpu::RESIDENT_COLOR_STORAGE_BINDINGS;
+            limits.max_storage_buffers_per_shader_stage = RESIDENT_COLOR_STORAGE_BINDINGS;
             if !limits.check_limits(&adapter.limits()) {
                 return None;
             }
@@ -1198,6 +1203,17 @@ mod tests {
                 + plan.contributor_scan_params
                 + plan.radix.total_static
                 + plan.draw_args
+        );
+    }
+
+    #[test]
+    fn seven_storage_bindings_remain_below_resident_admission_floor() {
+        let mut limits = wgpu::Limits::downlevel_defaults();
+        limits.max_storage_buffers_per_shader_stage = 7;
+        let plan = PreprojectGpuBytePlan::for_capacity(1, &limits).expect("byte plan");
+        assert_eq!(
+            plan.validate_limits(&limits),
+            Err(ResidentGpuError::StorageBindingCountUnsupported(7))
         );
     }
 
