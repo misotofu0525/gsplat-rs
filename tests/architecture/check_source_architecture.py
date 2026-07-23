@@ -54,6 +54,10 @@ class Issue:
         return f"{self.severity.upper()} [{self.code}] {location}: {self.message}"
 
 
+def error(code: str, path: str, message: str, line: int | None = None) -> Issue:
+    return Issue("error", code, path, message, line)
+
+
 def physical_loc(path: pathlib.Path) -> int:
     """Count physical lines; splitlines counts a final unterminated line too."""
 
@@ -68,6 +72,7 @@ def path_matches(path: str, patterns: Iterable[str]) -> bool:
 def discover(root: pathlib.Path, source_set: dict[str, Any]) -> list[str]:
     includes = source_set.get("include", [])
     excludes = source_set.get("exclude", [])
+    excluded_dirs = set(source_set.get("exclude_dir_names", []))
     found: list[str] = []
     # Enumerate only declared source roots. A repository-wide rglob would walk
     # target/, node_modules/, external datasets, and ignored build products.
@@ -75,8 +80,9 @@ def discover(root: pathlib.Path, source_set: dict[str, Any]) -> list[str]:
         for candidate in root.glob(pattern):
             if not candidate.is_file():
                 continue
-            relative = candidate.relative_to(root).as_posix()
-            if not path_matches(relative, excludes):
+            relative_path = candidate.relative_to(root)
+            relative = relative_path.as_posix()
+            if excluded_dirs.isdisjoint(relative_path.parts) and not path_matches(relative, excludes):
                 found.append(relative)
     return sorted(set(found))
 
@@ -204,9 +210,14 @@ RUST_PATH_RE = re.compile(
     r"(?P<tail>(?:r#)?[A-Za-z_][A-Za-z0-9_]*"
     r"(?:\s*::\s*(?:r#)?[A-Za-z_][A-Za-z0-9_]*)*)"
 )
-CRATE_ALIAS_RE = re.compile(
-    r"\b(?:use\s+crate|extern\s+crate\s+self)\s+as\s+"
-    r"(?P<alias>(?:r#)?[A-Za-z_]\w*)\s*;"
+ROOT_MODULE_ALIAS_RE = re.compile(
+    r"\b(?:"
+    r"(?:use\s+(?:crate|self|super(?:\s*::\s*super)*)|extern\s+crate\s+self)"
+    r"\s+as\s+(?:r#)?[A-Za-z_]\w*\s*;"
+    r"|use\s+(?:crate|self|super(?:\s*::\s*super)*)\s*::\s*\{"
+    r"[^;]*\b(?:crate|self|super)\s+as\s+(?:r#)?[A-Za-z_]\w*[^;]*\}\s*;"
+    r")",
+    re.DOTALL,
 )
 
 
@@ -305,25 +316,11 @@ def task_state_observations(
     """Read only the unique machine state block; prose is never task state."""
 
     lines = progress.splitlines()
-    begins = [
-        index
-        for index, line in enumerate(lines)
-        if line.strip() == TASK_STATE_BLOCK_BEGIN
-    ]
-    ends = [
-        index
-        for index, line in enumerate(lines)
-        if line.strip() == TASK_STATE_BLOCK_END
-    ]
+    begins = [index for index, line in enumerate(lines) if line.strip() == TASK_STATE_BLOCK_BEGIN]
+    ends = [index for index, line in enumerate(lines) if line.strip() == TASK_STATE_BLOCK_END]
     if len(begins) != 1 or len(ends) != 1 or begins[0] >= ends[0]:
-        return [], [
-            Issue(
-                "error",
-                "program_state.invalid_block",
-                path,
-                "package ledger requires exactly one ordered machine task-state block",
-            )
-        ]
+        message = "package ledger requires exactly one ordered machine task-state block"
+        return [], [error("program_state.invalid_block", path, message)]
     observations: list[tuple[str, str, int]] = []
     issues: list[Issue] = []
     for index in range(begins[0] + 1, ends[0]):
@@ -335,19 +332,10 @@ def task_state_observations(
             line,
         )
         if not record:
-            issues.append(
-                Issue(
-                    "error",
-                    "program_state.invalid_record",
-                    path,
-                    "machine task-state records must use `TASK = STATE`",
-                    index + 1,
-                )
-            )
+            message = "machine task-state records must use `TASK = STATE`"
+            issues.append(error("program_state.invalid_record", path, message, index + 1))
             continue
-        observations.append(
-            (record.group("task"), record.group("state").lower(), index + 1)
-        )
+        observations.append((record.group("task"), record.group("state").lower(), index + 1))
     return observations, issues
 
 
@@ -393,6 +381,31 @@ def size_profile(path: str, kind: str, policy: dict[str, Any]) -> dict[str, Any]
     return profile
 
 
+def check_task_references(policy: dict[str, Any]) -> list[Issue]:
+    state = policy.get("program_task_state", {})
+    catalog = set(state.get("task_catalog", {}))
+    external = set(state.get("external_owner_review_allowlist", []))
+    issues: list[Issue] = []
+
+    def require(task: Any, path: str, field: str) -> None:
+        if task not in catalog:
+            message = f"{field} {task!r} is not in the static task catalog"
+            issues.append(error("config.untracked_task_reference", path, message))
+
+    for entry in policy.get("grandfather", []):
+        owner = entry.get("owner_task")
+        review = entry.get("review_task")
+        if owner not in catalog and (owner not in external or review not in catalog):
+            require(owner, entry.get("path", "<grandfather>"), "owner_task")
+        if review is not None:
+            require(review, entry.get("path", "<grandfather>"), "review_task")
+    for entry in policy.get("exceptions", []):
+        require(entry.get("removal_task"), entry.get("path", "<exception>"), "removal_task")
+    require(policy.get("top_level_orchestration", {}).get("activation_task"), "<policy>", "top-level activation_task")
+    require(policy.get("dependency_rules", {}).get("plans", {}).get("activation_task"), "<policy>", "plans activation_task")
+    return issues
+
+
 def check_sizes(
     root: pathlib.Path,
     policy: dict[str, Any],
@@ -401,9 +414,6 @@ def check_sizes(
 ) -> list[Issue]:
     issues: list[Issue] = []
     all_sources = {path: kind for kind, paths in sources.items() for path in paths}
-    task_catalog = set(
-        policy.get("program_task_state", {}).get("task_catalog", {})
-    )
     grandfather: dict[str, dict[str, Any]] = {}
     for entry in policy.get("grandfather", []):
         path = entry.get("path", "")
@@ -448,26 +458,6 @@ def check_sizes(
                     "review_task requires review_action",
                 )
             )
-        owner_task = entry.get("owner_task")
-        review_task = entry.get("review_task")
-        if owner_task not in task_catalog and review_task not in task_catalog:
-            issues.append(
-                Issue(
-                    "error",
-                    "config.untracked_grandfather_owner",
-                    path,
-                    "external owner requires a cataloged review_task that forces reassignment or removal",
-                )
-            )
-        if review_task and review_task not in task_catalog:
-            issues.append(
-                Issue(
-                    "error",
-                    "config.untracked_grandfather_owner",
-                    path,
-                    f"review_task {review_task} is not in the static task catalog",
-                )
-            )
         if path not in all_sources:
             issues.append(Issue("error", "grandfather.missing", path, "allowlisted source no longer exists; remove the stale entry"))
 
@@ -486,15 +476,6 @@ def check_sizes(
         if path not in all_sources:
             issues.append(Issue("error", "exception.missing", path, "exception source does not exist"))
         removal_task = entry.get("removal_task")
-        if removal_task not in task_catalog:
-            issues.append(
-                Issue(
-                    "error",
-                    "config.untracked_exception_removal",
-                    path,
-                    f"removal_task {removal_task} is not in the static task catalog",
-                )
-            )
         if removal_task in completed:
             expired.add(path)
             issues.append(
@@ -614,12 +595,12 @@ PLAN_FRAME_OPERATIONS = (
     (
         "dependency.plan.env",
         re.compile(r"\b(?:std\s*::\s*)?env\s*::\s*(?:var|var_os|vars|vars_os)\s*\("),
-        "plans may not parse environment selection in a per-frame function",
+        "per-frame plan files may not parse environment selection",
     ),
     (
         "dependency.plan.pipeline",
         re.compile(r"\bcreate_(?:compute_pipeline|render_pipeline|pipeline_layout)\s*\("),
-        "plans may not create pipelines in a per-frame function",
+        "per-frame plan files may not create pipelines",
     ),
 )
 
@@ -644,14 +625,6 @@ def find_matching_brace(code: str, opening: int) -> int | None:
             if depth == 0:
                 return index
     return None
-
-
-@dataclass(frozen=True)
-class FunctionBody:
-    name: str
-    start: int
-    body_start: int
-    end: int
 
 
 def find_parameter_opening(code: str, start: int) -> int | None:
@@ -706,9 +679,10 @@ def find_signature_body_opening(code: str, start: int) -> int | None:
     return None
 
 
-def parse_function_bodies(code: str) -> list[FunctionBody]:
-    functions: list[FunctionBody] = []
-    for match in re.finditer(r"\bfn\s+(?P<name>(?:r#)?[A-Za-z_]\w*)", code):
+def find_function_spans(code: str, name: str) -> list[tuple[int, int]]:
+    spans: list[tuple[int, int]] = []
+    pattern = re.compile(rf"\bfn\s+(?:r#)?{re.escape(name)}\b")
+    for match in pattern.finditer(code):
         parameters = find_parameter_opening(code, match.end())
         if parameters is None:
             continue
@@ -720,59 +694,8 @@ def parse_function_bodies(code: str) -> list[FunctionBody]:
             continue
         body_end = find_matching_brace(code, body_start)
         if body_end is not None:
-            functions.append(
-                FunctionBody(
-                    name=match.group("name").removeprefix("r#"),
-                    start=match.start(),
-                    body_start=body_start,
-                    end=body_end + 1,
-                )
-            )
-    return functions
-
-
-def find_function_spans(code: str, name: str) -> list[tuple[int, int]]:
-    return [
-        (function.start, function.end)
-        for function in parse_function_bodies(code)
-        if function.name == name
-    ]
-
-
-def reachable_function_bodies(
-    code: str, functions: list[FunctionBody], root: FunctionBody
-) -> tuple[list[FunctionBody], set[str]]:
-    """Follow same-file `helper()` and `self.helper()` calls from a frame body."""
-
-    by_name: dict[str, list[FunctionBody]] = {}
-    for function in functions:
-        by_name.setdefault(function.name, []).append(function)
-    names = sorted(by_name, key=len, reverse=True)
-    if not names:
-        return [root], set()
-    call_re = re.compile(
-        r"(?<![A-Za-z0-9_:.])(?:self\s*\.\s*|Self\s*::\s*)?"
-        r"(?P<name>" + "|".join(re.escape(name) for name in names) + r")\s*\("
-    )
-    reachable: list[FunctionBody] = []
-    ambiguous: set[str] = set()
-    pending = [root]
-    seen: set[tuple[int, int]] = set()
-    while pending:
-        function = pending.pop()
-        identity = (function.start, function.end)
-        if identity in seen:
-            continue
-        seen.add(identity)
-        reachable.append(function)
-        body = code[function.body_start + 1 : function.end - 1]
-        for call in call_re.finditer(body):
-            candidates = by_name[call.group("name")]
-            if len(candidates) == 1:
-                pending.append(candidates[0])
-            else:
-                ambiguous.add(call.group("name"))
-    return reachable, ambiguous
+            spans.append((match.start(), body_end + 1))
+    return spans
 
 
 def struct_fields(code: str) -> Iterable[tuple[str, str, int]]:
@@ -794,8 +717,23 @@ def struct_fields(code: str) -> Iterable[tuple[str, str, int]]:
             )
 
 
+def tuple_struct_fields(code: str) -> Iterable[tuple[str, str, int]]:
+    pattern = re.compile(
+        r"\bstruct\s+(?:r#)?[A-Za-z_]\w*(?:\s*<[^;{}>]*>)?\s*\("
+    )
+    for match in pattern.finditer(code):
+        opening = code.find("(", match.start())
+        closing = find_matching_delimiter(code, opening, "(", ")")
+        if closing is not None:
+            yield "", code[opening + 1 : closing], opening + 1
+
+
 def check_dependencies(
-    root: pathlib.Path, policy: dict[str, Any], rust_paths: list[str]
+    root: pathlib.Path,
+    policy: dict[str, Any],
+    rust_paths: list[str],
+    completed: set[str],
+    state_path: str,
 ) -> list[Issue]:
     issues: list[Issue] = []
     dependency = policy["dependency_rules"]
@@ -809,6 +747,16 @@ def check_dependencies(
     for entry in plan_rule.get("per_frame_functions", []):
         configured_boundaries.setdefault(entry["path"], []).append(entry["name"])
     preparation_only = set(plan_rule.get("preparation_only_files", []))
+    activation_task = plan_rule.get("activation_task")
+    if activation_task in completed and not configured_boundaries:
+        issues.append(
+            Issue(
+                "error",
+                "dependency.plan.activation_due",
+                state_path,
+                f"{activation_task} is terminal but no plan file boundary is configured",
+            )
+        )
     for path in sorted(set(configured_boundaries) | preparation_only):
         if path not in discovered_plans:
             issues.append(
@@ -835,15 +783,15 @@ def check_dependencies(
         if path_matches(path, gpu_paths):
             resolved: list[tuple[list[str], int]] = []
             current = module_path(path)
-            crate_alias = CRATE_ALIAS_RE.search(code)
-            if crate_alias:
+            root_alias = ROOT_MODULE_ALIAS_RE.search(code)
+            if root_alias:
                 issues.append(
                     Issue(
                         "error",
-                        "dependency.gpu.crate_alias",
+                        "dependency.gpu.root_module_alias",
                         path,
-                        f"gpu/ may not alias the crate root as {crate_alias.group('alias')}; use explicit crate:: paths",
-                        line_number(code, crate_alias.start()),
+                        "gpu/ may not alias crate/self/super module roots; use explicit paths",
+                        line_number(code, root_alias.start()),
                     )
                 )
             for match in RUST_PATH_RE.finditer(code):
@@ -886,58 +834,35 @@ def check_dependencies(
                         "declare exact per-frame functions or mark this file preparation-only before plan code is admitted",
                     )
                 )
-            functions = parse_function_bodies(code)
             for function_name in boundaries:
-                roots = [
-                    function
-                    for function in functions
-                    if function.name == function_name
-                ]
-                if len(roots) != 1:
+                spans = find_function_spans(code, function_name)
+                if len(spans) != 1:
                     issues.append(
                         Issue(
                             "error",
                             "dependency.plan.frame_boundary_ambiguous",
                             path,
-                            f"expected exactly one body for per-frame fn {function_name}, found {len(roots)}",
+                            f"expected exactly one body for per-frame fn {function_name}, found {len(spans)}",
                         )
                     )
-                    continue
-                reachable, ambiguous_helpers = reachable_function_bodies(
-                    code, functions, roots[0]
-                )
-                for helper in sorted(ambiguous_helpers):
-                    issues.append(
-                        Issue(
-                            "error",
-                            "dependency.plan.helper_boundary_ambiguous",
-                            path,
-                            f"per-frame fn {function_name} reaches ambiguous same-file helper {helper}",
-                        )
-                    )
-                emitted_operations: set[str] = set()
-                for function in reachable:
-                    body = code[function.body_start + 1 : function.end - 1]
-                    for code_name, pattern, message in PLAN_FRAME_OPERATIONS:
-                        if code_name in emitted_operations:
-                            continue
-                        match = pattern.search(body)
-                        if match:
-                            emitted_operations.add(code_name)
-                            offset = function.body_start + 1 + match.start()
-                            issues.append(
-                                Issue(
-                                    "error",
-                                    code_name,
-                                    path,
-                                    message,
-                                    line_number(code, offset),
-                                )
+            if boundaries:
+                for code_name, pattern, message in PLAN_FRAME_OPERATIONS:
+                    match = pattern.search(code)
+                    if match:
+                        issues.append(
+                            Issue(
+                                "error",
+                                code_name,
+                                path,
+                                message,
+                                line_number(code, match.start()),
                             )
+                        )
 
         if path_matches(path, host_paths):
             emitted: set[str] = set()
-            for name, field_type, offset in struct_fields(code):
+            members = [*struct_fields(code), *tuple_struct_fields(code)]
+            for name, field_type, offset in members:
                 lowered = name.lower()
                 categories: list[tuple[str, bool, str]] = [
                     (
@@ -958,9 +883,19 @@ def check_dependencies(
                     ),
                     (
                         "cache_generation",
-                        "cache_generation" in lowered
-                        or lowered == "cache_gen"
-                        or lowered.endswith("_cache_gen"),
+                        lowered
+                        in {
+                            "cache_generation",
+                            "cache_gen",
+                            "renderer_generation",
+                            "renderer_cache_generation",
+                        }
+                        or bool(
+                            re.search(
+                                r"\b(?:CacheGeneration|RendererGeneration|RendererCacheGeneration)\b",
+                                field_type,
+                            )
+                        ),
                         "platform hosts may not own renderer cache generations",
                     ),
                     (
@@ -973,6 +908,12 @@ def check_dependencies(
                             )
                         ),
                         "platform hosts may not own adaptive state",
+                    ),
+                    (
+                        "renderer_state",
+                        lowered == "frame_state"
+                        or bool(re.search(r"\bFrameState\b", field_type)),
+                        "platform hosts may not own renderer FrameState",
                     ),
                 ]
                 for category, matches, message in categories:
@@ -1107,108 +1048,53 @@ def load_program_task_states(
     packages = config.get("package_ledgers", {})
     issues: list[Issue] = []
     if not isinstance(catalog, dict) or not catalog:
-        issues.append(
-            Issue(
-                "error",
-                "config.invalid_task_catalog",
-                "<policy>",
-                "program_task_state.task_catalog must be a non-empty task-to-package map",
-            )
-        )
+        issues.append(error("config.invalid_task_catalog", "<policy>", "task_catalog must be a non-empty task-to-package map"))
         return set(), "<program-task-state>", issues
     if not isinstance(packages, dict) or not packages:
-        issues.append(
-            Issue(
-                "error",
-                "config.invalid_package_ledgers",
-                "<policy>",
-                "program_task_state.package_ledgers must be a non-empty package map",
-            )
-        )
+        issues.append(error("config.invalid_package_ledgers", "<policy>", "package_ledgers must be a non-empty package map"))
         return set(), "<program-task-state>", issues
+
     known_packages = set(packages)
     for task, package in catalog.items():
-        if (
-            not isinstance(task, str)
-            or not isinstance(package, str)
-            or package not in known_packages
-        ):
-            issues.append(
-                Issue(
-                    "error",
-                    "config.invalid_task_catalog",
-                    "<policy>",
-                    f"invalid task catalog entry {task!r}: {package!r}",
-                )
-            )
+        if not isinstance(task, str) or not isinstance(package, str) or package not in known_packages:
+            issues.append(error("config.invalid_task_catalog", "<policy>", f"invalid catalog entry {task!r}: {package!r}"))
 
     selected: list[tuple[str, str]] = []
-    any_candidate_exists = False
+    present_packages: set[str] = set()
     claimed_paths: dict[str, str] = {}
     for package, pair in packages.items():
-        if not isinstance(pair, dict) or set(pair) != {"active", "completed"}:
-            issues.append(
-                Issue(
-                    "error",
-                    "config.invalid_package_ledgers",
-                    "<policy>",
-                    f"package {package} requires exactly active and completed ledger paths",
-                )
-            )
+        required_keys = {"active", "completed", "required_after"}
+        if not isinstance(pair, dict) or set(pair) != required_keys:
+            issues.append(error("config.invalid_package_ledgers", "<policy>", f"package {package} requires {sorted(required_keys)}"))
             continue
+        required_after = pair["required_after"]
+        if required_after is not None and (
+            not isinstance(required_after, str) or required_after not in catalog
+        ):
+            issues.append(error("config.untracked_task_reference", "<policy>", f"package {package} required_after {required_after!r} is not cataloged"))
         candidates = [pair["active"], pair["completed"]]
         if (
             any(not isinstance(path, str) or not path for path in candidates)
             or candidates[0] == candidates[1]
         ):
-            issues.append(
-                Issue(
-                    "error",
-                    "config.invalid_package_ledgers",
-                    "<policy>",
-                    f"package {package} ledger paths must be distinct non-empty strings",
-                )
-            )
+            issues.append(error("config.invalid_package_ledgers", "<policy>", f"package {package} paths must be distinct non-empty strings"))
             continue
         for path in candidates:
             prior_package = claimed_paths.get(path)
             if prior_package:
-                issues.append(
-                    Issue(
-                        "error",
-                        "config.invalid_package_ledgers",
-                        "<policy>",
-                        f"ledger path {path} is shared by packages {prior_package} and {package}",
-                    )
-                )
+                issues.append(error("config.invalid_package_ledgers", "<policy>", f"{path} is shared by {prior_package} and {package}"))
             else:
                 claimed_paths[path] = package
         existing = [path for path in candidates if (root / path).is_file()]
-        any_candidate_exists = any_candidate_exists or bool(existing)
+        if existing:
+            present_packages.add(package)
         if len(existing) > 1:
-            issues.append(
-                Issue(
-                    "error",
-                    "program_state.ambiguous_package_ledger",
-                    package,
-                    f"active and completed ledgers both exist: {', '.join(existing)}",
-                )
-            )
+            issues.append(error("program_state.ambiguous_package_ledger", package, f"active and completed ledgers both exist: {', '.join(existing)}"))
         elif existing:
             selected.append((package, existing[0]))
 
-    if not selected and not any_candidate_exists:
-        issues.append(
-            Issue(
-                "error",
-                "program_state.missing",
-                "<program-task-state>",
-                "none of the static package ledger pairs has a state source",
-            )
-        )
-        return set(), "<program-task-state>", issues
-
     states: dict[str, tuple[str, str, int]] = {}
+    active: dict[str, list[str]] = {}
     for package, path in selected:
         progress = (root / path).read_text(encoding="utf-8")
         observations, block_issues = task_state_observations(progress, path)
@@ -1216,37 +1102,13 @@ def load_program_task_states(
         for task, raw_state, line in observations:
             state = STATE_ALIASES.get(raw_state)
             if task not in catalog:
-                issues.append(
-                    Issue(
-                        "error",
-                        "program_state.unknown_task",
-                        path,
-                        f"task {task} is not in the static program catalog",
-                        line,
-                    )
-                )
+                issues.append(error("program_state.unknown_task", path, f"task {task} is not cataloged", line))
                 continue
             if catalog[task] != package:
-                issues.append(
-                    Issue(
-                        "error",
-                        "program_state.wrong_package",
-                        path,
-                        f"task {task} belongs to package {catalog[task]}, not {package}",
-                        line,
-                    )
-                )
+                issues.append(error("program_state.wrong_package", path, f"task {task} belongs to {catalog[task]}, not {package}", line))
                 continue
             if state is None:
-                issues.append(
-                    Issue(
-                        "error",
-                        "program_state.unknown_state",
-                        path,
-                        f"task {task} has unsupported state {raw_state!r}",
-                        line,
-                    )
-                )
+                issues.append(error("program_state.unknown_state", path, f"task {task} has unsupported state {raw_state!r}", line))
                 continue
             prior = states.get(task)
             if prior:
@@ -1255,18 +1117,23 @@ def load_program_task_states(
                     if prior[0] == state
                     else "program_state.conflict"
                 )
-                issues.append(
-                    Issue(
-                        "error",
-                        code,
-                        path,
-                        f"task {task} is already {prior[0]} at {prior[1]}:{prior[2]} and is repeated as {state}",
-                        line,
-                    )
-                )
+                message = f"task {task} was {prior[0]} at {prior[1]}:{prior[2]}; repeated as {state}"
+                issues.append(error(code, path, message, line))
                 continue
             states[task] = (state, path, line)
+            if state == "active":
+                active.setdefault(package, []).append(task)
+    for package, tasks in active.items():
+        if len(tasks) > 1:
+            issues.append(error("program_state.multiple_active", package, f"multiple Active tasks: {', '.join(tasks)}"))
     closed = {task for task, (state, _, _) in states.items() if state in TERMINAL_STATES}
+    for package, pair in packages.items():
+        if not isinstance(pair, dict) or "required_after" not in pair:
+            continue
+        trigger = pair["required_after"]
+        if (trigger is None or trigger in closed) and package not in present_packages:
+            reason = "always" if trigger is None else f"after {trigger} became terminal"
+            issues.append(error("program_state.required_package_missing", package, f"package {package} ledger is required {reason}"))
     return closed, ", ".join(path for _, path in selected), issues
 
 
@@ -1275,8 +1142,17 @@ def check_repository(root: pathlib.Path, policy: dict[str, Any]) -> tuple[list[I
     source_sets = policy["source_sets"]
     sources = {kind: discover(root, source_set) for kind, source_set in source_sets.items()}
     completed, progress_path, issues = load_program_task_states(root, policy)
+    issues.extend(check_task_references(policy))
     issues.extend(check_sizes(root, policy, sources, completed))
-    issues.extend(check_dependencies(root, policy, sources.get("rust", [])))
+    issues.extend(
+        check_dependencies(
+            root,
+            policy,
+            sources.get("rust", []),
+            completed,
+            progress_path,
+        )
+    )
     issues.extend(check_orchestration(root, policy, completed, progress_path))
     return sorted(issues, key=Issue.sort_key), {kind: len(paths) for kind, paths in sources.items()}
 

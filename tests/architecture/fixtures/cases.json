@@ -33,6 +33,29 @@
       ]
     },
     {
+      "name": "bindings_build_directories_are_excluded_from_production_sources",
+      "files": {
+        "bindings/android/demo/src/lib.rs": {
+          "physical_lines": 1201
+        },
+        "bindings/android/target/src/generated.rs": {
+          "physical_lines": 1300
+        },
+        "bindings/android/node_modules/src/generated.rs": {
+          "physical_lines": 1300
+        },
+        "bindings/apple/.build/src/generated.rs": {
+          "physical_lines": 1300
+        },
+        "bindings/apple/build/src/generated.rs": {
+          "physical_lines": 1300
+        }
+      },
+      "expected_error_codes": [
+        "size.hard_ceiling"
+      ]
+    },
+    {
       "name": "new_concrete_plan_over_hard_ceiling",
       "files": {
         "crates/gsplat-render-wgpu/src/plans/gpu_post.rs": {
@@ -183,7 +206,7 @@
           "path": "crates/demo/src/legacy.rs",
           "a0_physical_loc": 800,
           "baseline_physical_loc": 800,
-          "owner_task": "IO-1",
+          "owner_task": "IO-PLY-1",
           "exit_condition": "Reduce below target.",
           "review_task": "A9",
           "review_action": "Register a dedicated follow-up before Package A closes."
@@ -192,6 +215,9 @@
       "task_states": [
         "A9 = Defer"
       ],
+      "package_task_states": {
+        "E": []
+      },
       "expected_error_codes": [
         "grandfather.review_due"
       ]
@@ -225,8 +251,46 @@
         }
       ],
       "expected_error_codes": [
-        "config.untracked_exception_removal",
-        "config.untracked_grandfather_owner"
+        "config.untracked_task_reference",
+        "config.untracked_task_reference"
+      ]
+    },
+    {
+      "name": "all_policy_task_reference_kinds_require_catalog_entries",
+      "files": {
+        "crates/demo/src/legacy.rs": {
+          "physical_lines": 800
+        }
+      },
+      "grandfather": [
+        {
+          "path": "crates/demo/src/legacy.rs",
+          "a0_physical_loc": 800,
+          "baseline_physical_loc": 800,
+          "owner_task": "A9",
+          "exit_condition": "Reduce below target.",
+          "review_task": "UNKNOWN-REVIEW",
+          "review_action": "Must be cataloged."
+        }
+      ],
+      "top_level_orchestration": {
+        "activation_task": "UNKNOWN-TOP"
+      },
+      "plan_rules": {
+        "activation_task": "UNKNOWN-PLAN"
+      },
+      "program_task_state": {
+        "package_ledgers": {
+          "E": {
+            "required_after": "UNKNOWN-REQUIRED"
+          }
+        }
+      },
+      "expected_error_codes": [
+        "config.untracked_task_reference",
+        "config.untracked_task_reference",
+        "config.untracked_task_reference",
+        "config.untracked_task_reference"
       ]
     },
     {
@@ -320,7 +384,82 @@
       "files": {},
       "ledgers": {},
       "expected_error_codes": [
-        "program_state.missing"
+        "program_state.required_package_missing"
+      ]
+    },
+    {
+      "name": "e_ledger_is_required_after_a9_terminal",
+      "files": {},
+      "task_states": [
+        "A9 = Accepted"
+      ],
+      "expected_error_codes": [
+        "program_state.required_package_missing"
+      ]
+    },
+    {
+      "name": "deleted_m_ledger_cannot_revive_m7_grandfather",
+      "files": {
+        "crates/demo/src/legacy.rs": {
+          "physical_lines": 800
+        },
+        "crates/demo/src/temporary.rs": {
+          "physical_lines": 1201
+        }
+      },
+      "grandfather": [
+        {
+          "path": "crates/demo/src/legacy.rs",
+          "a0_physical_loc": 800,
+          "baseline_physical_loc": 800,
+          "owner_task": "M7",
+          "exit_condition": "Reduce below target."
+        }
+      ],
+      "exceptions": [
+        {
+          "path": "crates/demo/src/temporary.rs",
+          "baseline_physical_loc": 1200,
+          "max_temporary_delta": 1,
+          "reason": "Must not revive when the M ledger disappears.",
+          "removal_task": "M7"
+        }
+      ],
+      "package_task_states": {
+        "E": [
+          "E13 = Accepted"
+        ]
+      },
+      "expected_error_codes": [
+        "program_state.required_package_missing"
+      ]
+    },
+    {
+      "name": "b_s_q_ledgers_are_each_required_after_m8_terminal",
+      "files": {},
+      "package_task_states": {
+        "E": [
+          "E13 = Accepted"
+        ],
+        "M": [
+          "M8 = Accepted"
+        ]
+      },
+      "expected_error_codes": [
+        "program_state.required_package_missing",
+        "program_state.required_package_missing",
+        "program_state.required_package_missing"
+      ]
+    },
+    {
+      "name": "package_may_have_at_most_one_active_task",
+      "files": {},
+      "task_states": [
+        "A2 = Active",
+        "A3 = Active"
+      ],
+      "expected_error_codes": [
+        "program_state.multiple_active"
       ]
     },
     {
@@ -429,8 +568,47 @@
         }
       },
       "expected_error_codes": [
-        "dependency.gpu.crate_alias"
+        "dependency.gpu.root_module_alias"
       ]
+    },
+    {
+      "name": "gpu_super_root_alias_cannot_bypass_forbidden_prefixes",
+      "files": {
+        "crates/gsplat-render-wgpu/src/gpu/project.rs": {
+          "lines": [
+            "use super::super as root;",
+            "use root::renderer::Renderer;"
+          ]
+        }
+      },
+      "expected_error_codes": [
+        "dependency.gpu.root_module_alias"
+      ]
+    },
+    {
+      "name": "gpu_grouped_self_root_alias_cannot_bypass_forbidden_prefixes",
+      "files": {
+        "crates/gsplat-render-wgpu/src/gpu/project.rs": {
+          "lines": [
+            "use crate::{self as root};",
+            "use root::plans::PlanSet;"
+          ]
+        }
+      },
+      "expected_error_codes": [
+        "dependency.gpu.root_module_alias"
+      ]
+    },
+    {
+      "name": "gpu_ordinary_item_alias_is_allowed",
+      "files": {
+        "crates/gsplat-render-wgpu/src/gpu/project.rs": {
+          "lines": [
+            "use crate::{data::layout::Splat as ItemAlias};"
+          ]
+        }
+      },
+      "expected_error_codes": []
     },
     {
       "name": "gpu_grouped_super_imports_with_aliases_are_resolved",
@@ -508,19 +686,19 @@
       ]
     },
     {
-      "name": "per_frame_checks_follow_same_file_helpers_with_rust_signatures",
+      "name": "per_frame_file_blocks_indirect_call_syntax_without_call_graph",
       "files": {
         "crates/gsplat-render-wgpu/src/plans.rs": {
           "lines": [
             "fn encode<'a, T>(&'a self, value: T) -> [u8; 4] where T: Copy {",
-            "    frame_helper();",
-            "    self.pipeline_helper();",
+            "    self::hidden::<T>();",
+            "    Type::hidden();",
             "    [0; 4]",
             "}",
-            "fn frame_helper() {",
+            "fn hidden<T>() {",
             "    let _ = std::env::var(\"GSPLAT_PLAN\");",
             "}",
-            "fn pipeline_helper(&self) {",
+            "fn other_hidden() {",
             "    let _ = self.device.create_render_pipeline(&descriptor);",
             "}"
           ]
@@ -540,7 +718,26 @@
       ]
     },
     {
-      "name": "unreachable_preparation_helpers_may_create_pipelines",
+      "name": "preparation_only_file_allows_pipeline_and_environment_setup",
+      "files": {
+        "crates/gsplat-render-wgpu/src/plans/prepare.rs": {
+          "lines": [
+            "fn prepare() {",
+            "    let _ = std::env::var(\"GSPLAT_PLAN\");",
+            "    let _ = device.create_render_pipeline(&descriptor);",
+            "}"
+          ]
+        }
+      },
+      "plan_rules": {
+        "preparation_only_files": [
+          "crates/gsplat-render-wgpu/src/plans/prepare.rs"
+        ]
+      },
+      "expected_error_codes": []
+    },
+    {
+      "name": "per_frame_file_rejects_unreachable_preparation_helpers",
       "files": {
         "crates/gsplat-render-wgpu/src/plans/cpu_post.rs": {
           "lines": [
@@ -562,7 +759,10 @@
           }
         ]
       },
-      "expected_error_codes": []
+      "expected_error_codes": [
+        "dependency.plan.env",
+        "dependency.plan.pipeline"
+      ]
     },
     {
       "name": "future_plan_requires_explicit_frame_boundary",
@@ -575,6 +775,44 @@
       },
       "expected_error_codes": [
         "dependency.plan.frame_boundary_missing"
+      ]
+    },
+    {
+      "name": "e1_terminal_requires_plan_boundary_activation",
+      "files": {
+        "crates/demo/src/runtime.rs": {
+          "lines": [
+            "fn render_frame() {}"
+          ]
+        },
+        "crates/gsplat-render-wgpu/src/plans/prepare.rs": {
+          "lines": [
+            "fn prepare() {}"
+          ]
+        }
+      },
+      "plan_rules": {
+        "preparation_only_files": [
+          "crates/gsplat-render-wgpu/src/plans/prepare.rs"
+        ]
+      },
+      "package_task_states": {
+        "E": [
+          "E1 = Accepted"
+        ]
+      },
+      "top_level_orchestration": {
+        "enabled": true,
+        "functions": [
+          {
+            "path": "crates/demo/src/runtime.rs",
+            "name": "render_frame",
+            "target_lt": 150
+          }
+        ]
+      },
+      "expected_error_codes": [
+        "dependency.plan.activation_due"
       ]
     },
     {
@@ -623,6 +861,40 @@
       ]
     },
     {
+      "name": "host_tuple_and_named_renderer_state_are_forbidden",
+      "files": {
+        "crates/gsplat-render-wgpu/src/surface.rs": {
+          "lines": [
+            "struct TupleHost(PlanId, Controller, FrameState);",
+            "struct NamedHost {",
+            "    frame_state: FrameState,",
+            "    renderer_generation: u64,",
+            "    generation: RendererGeneration,",
+            "}"
+          ]
+        }
+      },
+      "expected_error_codes": [
+        "dependency.host.cache_generation",
+        "dependency.host.plan_selection",
+        "dependency.host.renderer_state"
+      ]
+    },
+    {
+      "name": "host_presentation_identity_generation_is_allowed",
+      "files": {
+        "crates/gsplat-render-wgpu/src/offscreen.rs": {
+          "lines": [
+            "struct OffscreenHost {",
+            "    presentation_generation: u64,",
+            "    presented_frame_generation: u64,",
+            "}"
+          ]
+        }
+      },
+      "expected_error_codes": []
+    },
+    {
       "name": "runtime_pass_vector_and_public_render_plan_trait",
       "files": {
         "crates/demo/src/runtime.rs": {
@@ -644,6 +916,7 @@
         "crates/gsplat-render-wgpu/src/gpu/project.rs": {
           "lines": [
             "use crate::data::layout::Splat;",
+            "use crate::{data::layout::Splat as ItemAlias};",
             "// use crate::renderer::Renderer;",
             "// use crate as root; use root::renderer::Renderer;",
             "const TEXT: &str = r#\"use crate as root; use root::plans::PlanSet;\"#;"
@@ -651,14 +924,18 @@
         },
         "crates/gsplat-render-wgpu/src/plans/cpu_post.rs": {
           "lines": [
-            "fn new(device: &Device) {",
-            "    let _ = device.create_render_pipeline(&descriptor);",
-            "    let _ = std::env::var(\"GSPLAT_PLAN\");",
-            "}",
             "fn encode(encoder: &mut Encoder) {",
             "    encoder.begin_compute_pass(&Default::default());",
             "    // queue.submit([]); frame.present(); device.poll(());",
             "    let _ = \"slice.map_async create_render_pipeline std::env::var\";",
+            "}"
+          ]
+        },
+        "crates/gsplat-render-wgpu/src/plans/prepare.rs": {
+          "lines": [
+            "fn new(device: &Device) {",
+            "    let _ = device.create_render_pipeline(&descriptor);",
+            "    let _ = std::env::var(\"GSPLAT_PLAN\");",
             "}"
           ]
         },
@@ -667,6 +944,7 @@
             "struct SurfaceHost {",
             "    renderer: Renderer,",
             "    last_plan_label: String,",
+            "    presentation_generation: u64,",
             "}"
           ]
         },
@@ -690,6 +968,9 @@
             "path": "crates/gsplat-render-wgpu/src/plans/cpu_post.rs",
             "name": "encode"
           }
+        ],
+        "preparation_only_files": [
+          "crates/gsplat-render-wgpu/src/plans/prepare.rs"
         ]
       },
       "expected_error_codes": []

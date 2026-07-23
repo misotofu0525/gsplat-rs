@@ -95,6 +95,19 @@ class SourceArchitectureFixtureTests(unittest.TestCase):
                     "ledgers",
                     {default_ledger: default_content},
                 )
+                if "ledgers" not in case:
+                    for package, records in case.get("package_task_states", {}).items():
+                        path = policy["program_task_state"]["package_ledgers"][package][
+                            "active"
+                        ]
+                        ledgers[path] = "\n".join(
+                            [
+                                f"# Fixture package {package}",
+                                checker.TASK_STATE_BLOCK_BEGIN,
+                                *records,
+                                checker.TASK_STATE_BLOCK_END,
+                            ]
+                        )
                 for relative, content in ledgers.items():
                     path = root / relative
                     path.parent.mkdir(parents=True, exist_ok=True)
@@ -145,6 +158,9 @@ class SourceArchitectureFixtureTests(unittest.TestCase):
             self.assertTrue(entry["exit_condition"])
 
     def test_declared_guardrail_values_and_future_activation(self) -> None:
+        self.assertLess(
+            checker.physical_loc(TEST_DIR / "check_source_architecture.py"), 1200
+        )
         limits = self.base_policy["limits"]
         self.assertEqual(
             (limits["production_rust"]["target_lt"], limits["production_rust"]["hard_ceiling"]),
@@ -180,6 +196,12 @@ class SourceArchitectureFixtureTests(unittest.TestCase):
             "crates/gsplat-render-wgpu/src/renderer.rs",
             limits["renderer_orchestrator"]["paths"],
         )
+        rust_sources = self.base_policy["source_sets"]["rust"]
+        self.assertNotIn("bindings/**/*.rs", rust_sources["include"])
+        self.assertEqual(
+            set(rust_sources["exclude_dir_names"]),
+            {"target", "node_modules", ".build", "build"},
+        )
 
         state = self.base_policy["program_task_state"]
         self.assertEqual(set(state["package_ledgers"]), {"A", "E", "M", "B", "S", "Q"})
@@ -194,8 +216,19 @@ class SourceArchitectureFixtureTests(unittest.TestCase):
         }
         self.assertEqual(set(state["task_catalog"]), expected_tasks)
         for package, pair in state["package_ledgers"].items():
-            self.assertEqual(set(pair), {"active", "completed"}, package)
+            self.assertEqual(
+                set(pair), {"active", "completed", "required_after"}, package
+            )
             self.assertNotEqual(pair["active"], pair["completed"])
+        self.assertIsNone(state["package_ledgers"]["A"]["required_after"])
+        self.assertEqual(state["package_ledgers"]["E"]["required_after"], "A9")
+        self.assertEqual(state["package_ledgers"]["M"]["required_after"], "E13")
+        for package in ("B", "S", "Q"):
+            self.assertEqual(state["package_ledgers"][package]["required_after"], "M8")
+        self.assertEqual(
+            set(state["external_owner_review_allowlist"]),
+            {"IO-PLY-1", "IO-SPZ-1"},
+        )
 
         external = {
             entry["owner_task"]: entry

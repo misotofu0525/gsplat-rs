@@ -167,7 +167,7 @@ No implementation task is active.
 - Baseline commit: `9df0d6cb2e7e7df7ddc95e85d16c416e4e91d4b0`
 - Worktree before task: clean detached checkout at the baseline commit; branch
   `codex/native-render-a1-ratchet` was created before the first edit
-- Hypothesis: a small standard-library-only checker can freeze A0 physical LOC,
+- Hypothesis: a deterministic standard-library-only checker can freeze A0 physical LOC,
   prevent new giant source files and enforce future render-core dependency
   directions without changing production behavior or scanning legacy owners as
   if the target module tree already existed.
@@ -201,26 +201,33 @@ No implementation task is active.
     renderer/plans/policy/evidence/platform hosts, plan submit/present/poll/map,
     host plan/cache/adaptive ownership, runtime `Vec<Box<dyn ...Pass>>` and
     public `RenderPlan` are covered by positive and negative fixtures
-  - PASS crate-root aliases fail closed and grouped `crate/self/super` imports,
-    including nested groups and item aliases, resolve before direction checks
-  - PASS plan environment reads and pipeline creation are checked through the
-    same-file helper graph reachable from exact per-frame functions;
-    constructors and unreachable preparation helpers remain legal, and a new
-    `plans.rs` / `plans/` file without an explicit frame/preparation boundary
-    fails closed
+  - PASS future GPU modules reject aliases that hide `crate/self/super` module
+    roots; ordinary item aliases remain legal and grouped imports resolve before
+    direction checks
+  - PASS any plan file with a per-frame function forbids environment reads and
+    pipeline creation across the entire file; only an exclusively
+    `preparation_only_files` entry may contain them, and an unclassified plan
+    file fails closed
   - PASS function boundaries accept array-return semicolons plus
     generic/lifetime signatures instead of using a first-semicolon heuristic
-  - PASS `surface.rs` / `surface/` and `offscreen.rs` / `offscreen/` host fields
-    cover plain `plan`, `cache_gen` and controller names/types
+  - PASS `surface.rs` / `surface/` and `offscreen.rs` / `offscreen/` cover named
+    and tuple ownership of PlanId/Controller/FrameState plus explicit renderer
+    generation fields/types without banning presentation generations
   - PASS the static A/E/M/B/S/Q task catalog aggregates one active/completed
-    ledger per opened package; missing global state sources, duplicate package
-    ledgers, duplicate/conflicting tasks, unknown task/state and wrong-package
+    ledger per opened package; A is always required, E follows A9, M follows
+    E13, and B/S/Q each follow M8; duplicate package ledgers, multiple Active
+    tasks, duplicate/conflicting tasks, unknown task/state and wrong-package
     records fail closed
+  - PASS every policy task reference is cataloged, including both activation
+    tasks; E1 terminal state requires a real per-frame plan boundary
   - PASS task state is read only from one explicit machine block per ledger;
     `Accept/Reject/Defer` and `Accepted/Rejected/Deferred` normalize to terminal
     states without scanning narrative prose
   - PASS source discovery enumerates configured include globs directly and does
-    not walk repository-wide `target/`, `node_modules/` or datasets
+    not walk repository-wide build output; binding source globs exclude embedded
+    `target`, `node_modules`, `.build` and `build` directories
+  - PASS the checker itself is 1,194 physical lines and self-ratcheted below
+    1,200 after deleting the incomplete helper call graph
   - PASS checker self-tests and checker against the real A0 tree
   - PASS `cargo check --workspace --locked`
   - PASS final whitespace and scope checks
@@ -299,6 +306,35 @@ No implementation task is active.
 - Decision: keep A1 Accepted after the reviewer-blocking ratchet, dependency,
   function-boundary and cross-package expiry cases pass locally
 - Next eligible task: A2, from the resolved correction tip
+
+### Final acceptance correction after A1
+
+- Outcome: Accepted
+- Baseline: `d85312fcac16576131f716eb78c1e5dc3e9017b4`
+- Scope: the same five A1-owned checker/policy/fixture/self-test/ledger files;
+  no production, shader, API, FFI, platform, benchmark-schema, CI or handbook
+  change
+- Simplification result:
+  - deleted the incomplete plan helper call graph and made per-frame plan files
+    whole-file pipeline/environment-free
+  - replaced alias expansion with a conservative ban on GPU root-module aliases
+  - retained only bounded signature parsing for exact configured function LOC
+    and existence checks
+  - reduced the checker from 1,318 to 1,194 physical lines and added a `<1,200`
+    self-ratchet
+- Registry result: static package lifecycle, one-Active enforcement, complete
+  policy task-reference validation and consumed E1 plan activation are covered
+  by negative fixtures
+- Verification:
+  - PASS 52-case fixture matrix
+  - PASS real-tree checker: `38 production Rust, 25 WGSL, 24 grandfathered`
+  - PASS `cargo check --workspace --locked`
+  - PASS JSON, Python execution/syntax, diff/show whitespace and bytecode checks
+- Result identity: `d85312f..codex/native-render-a1-ratchet`; resolve the final
+  branch-tip SHA during integration
+- Decision: keep A1 Accepted; the final rules are simpler, fail closed at
+  package/file boundaries and have no remaining reviewer-blocking parser path
+- Next eligible task: A2, from the resolved final correction tip
 
 ## Decision ledger
 

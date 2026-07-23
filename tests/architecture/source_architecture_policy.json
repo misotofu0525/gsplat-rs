@@ -2,6 +2,10 @@
   "schema": "gsplat-source-architecture-policy/v1",
   "baseline_commit": "9df0d6cb2e7e7df7ddc95e85d16c416e4e91d4b0",
   "program_task_state": {
+    "external_owner_review_allowlist": [
+      "IO-PLY-1",
+      "IO-SPZ-1"
+    ],
     "task_catalog": {
       "A0": "A",
       "A1": "A",
@@ -60,27 +64,33 @@
     "package_ledgers": {
       "A": {
         "active": "docs/plans/active/2026-07-23-native-render-core-refactor/progress.md",
-        "completed": "docs/plans/completed/2026-07-23-native-render-core-refactor/progress.md"
+        "completed": "docs/plans/completed/2026-07-23-native-render-core-refactor/progress.md",
+        "required_after": null
       },
       "E": {
         "active": "docs/plans/active/2026-07-23-native-render-exact-core/progress.md",
-        "completed": "docs/plans/completed/2026-07-23-native-render-exact-core/progress.md"
+        "completed": "docs/plans/completed/2026-07-23-native-render-exact-core/progress.md",
+        "required_after": "A9"
       },
       "M": {
         "active": "docs/plans/active/2026-07-23-native-render-core-migration/progress.md",
-        "completed": "docs/plans/completed/2026-07-23-native-render-core-migration/progress.md"
+        "completed": "docs/plans/completed/2026-07-23-native-render-core-migration/progress.md",
+        "required_after": "E13"
       },
       "B": {
         "active": "docs/plans/active/2026-07-23-native-render-balanced/progress.md",
-        "completed": "docs/plans/completed/2026-07-23-native-render-balanced/progress.md"
+        "completed": "docs/plans/completed/2026-07-23-native-render-balanced/progress.md",
+        "required_after": "M8"
       },
       "S": {
         "active": "docs/plans/active/2026-07-23-native-render-scalable/progress.md",
-        "completed": "docs/plans/completed/2026-07-23-native-render-scalable/progress.md"
+        "completed": "docs/plans/completed/2026-07-23-native-render-scalable/progress.md",
+        "required_after": "M8"
       },
       "Q": {
         "active": "docs/plans/active/2026-07-23-native-render-qualification/progress.md",
-        "completed": "docs/plans/completed/2026-07-23-native-render-qualification/progress.md"
+        "completed": "docs/plans/completed/2026-07-23-native-render-qualification/progress.md",
+        "required_after": "M8"
       }
     }
   },
@@ -93,7 +103,20 @@
         "examples/*/src/**/*.rs",
         "tools/*/src/*.rs",
         "tools/*/src/**/*.rs",
-        "bindings/**/*.rs"
+        "bindings/android/src/*.rs",
+        "bindings/android/src/**/*.rs",
+        "bindings/android/*/src/*.rs",
+        "bindings/android/*/src/**/*.rs",
+        "bindings/apple/src/*.rs",
+        "bindings/apple/src/**/*.rs",
+        "bindings/apple/*/src/*.rs",
+        "bindings/apple/*/src/**/*.rs"
+      ],
+      "exclude_dir_names": [
+        "target",
+        "node_modules",
+        ".build",
+        "build"
       ],
       "exclude": []
     },
@@ -369,7 +392,7 @@
         "crates/gsplat-render-wgpu/src/plans/**/*.rs"
       ],
       "activation_task": "E1",
-      "reason": "Pipeline and environment checks apply only inside exact declared per-frame bodies; constructors and preparation helpers are legal.",
+      "reason": "Any plan file with a per-frame boundary forbids pipeline creation and environment reads across the whole file; only exclusively preparation-only files may contain them.",
       "per_frame_functions": [],
       "preparation_only_files": []
     },
