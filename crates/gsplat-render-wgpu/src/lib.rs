@@ -3,6 +3,7 @@
 //! WGPU renderer with a SortedAlpha reference path.
 
 mod api;
+mod cpu;
 mod cpu_order;
 mod data;
 mod direct_gpu_order;
@@ -40,21 +41,19 @@ mod surface_session;
 mod tiled_resident_gpu;
 
 pub use api::{GeometryPath, PreprocessOutput};
-#[cfg(not(target_arch = "wasm32"))]
-#[allow(unused_imports)]
-pub(crate) use cpu_order::{MAX_PARALLEL_PREPROCESS_CHUNKS, PARALLEL_PREPROCESS_THRESHOLD};
-#[cfg(not(target_arch = "wasm32"))]
-use cpu_order::{PreprocessChunkScratch, preprocess_positions_visible_into_parallel};
-#[allow(unused_imports)]
+use cpu_order::CpuOrderEngine;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+pub(crate) use cpu_order::{
+    PARALLEL_PREPROCESS_THRESHOLD, preprocess_positions_visible_into_parallel,
+};
+#[cfg(test)]
 pub(crate) use cpu_order::{depth_to_key, world_to_camera_depth_with_view_row};
 pub(crate) use cpu_order::{
     is_visible, preprocess_paged_visible_into, preprocess_positions_visible_into,
 };
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) use data::OwnedCpuOrderInput;
 pub(crate) use data::{
-    CameraCovarianceTerms, GpuSortPair, GpuSurfaceRenderParams, GpuSurfaceSourceElem,
-    ShColorLayout, SplatSetView,
+    CameraCovarianceTerms, CpuPositionView, GpuSortPair, GpuSurfaceRenderParams,
+    GpuSurfaceSourceElem, ShColorLayout, SplatSetView,
 };
 pub use data::{
     GpuInstance, RESIDENT_CHUNK_META_BYTES, RESIDENT_CHUNK_SPLATS, RESIDENT_COLOR_AUX_WORDS,
@@ -116,7 +115,7 @@ use std::time::Instant;
 
 use bytemuck::Zeroable;
 use gsplat_core::{Camera, ErrorCode, FrameStats, RenderMode, RendererConfig, SceneBuffers, Vec3f};
-use gsplat_sort::{CpuSortBackend, SortError};
+use gsplat_sort::SortError;
 #[cfg(not(target_arch = "wasm32"))]
 use rayon::prelude::*;
 #[cfg(not(target_arch = "wasm32"))]
@@ -409,7 +408,7 @@ pub struct Renderer {
     mode: RenderMode,
     config: RendererConfig,
     geometry_path: GeometryPath,
-    cpu_sort_backend: CpuSortBackend,
+    cpu_order_engine: CpuOrderEngine,
     #[cfg(not(target_arch = "wasm32"))]
     gpu_rasterizer: Option<GpuRasterizer>,
     /// Wide source buffers are retained only by the Direct reference and the
@@ -422,10 +421,7 @@ pub struct Renderer {
     world_covariances: Option<Vec<[[f32; 3]; 3]>>,
     world_covariance_terms: Option<Vec<CameraCovarianceTerms>>,
     alpha_values: Option<Vec<f32>>,
-    preprocess_depth_keys: Vec<u32>,
     preprocess_indices: Vec<u32>,
-    #[cfg(not(target_arch = "wasm32"))]
-    preprocess_chunks: Vec<PreprocessChunkScratch>,
     last_stats: FrameStats,
 }
 
@@ -513,7 +509,7 @@ impl Renderer {
             mode: config.mode,
             config,
             geometry_path: GeometryPath::SortedIndexDirect,
-            cpu_sort_backend: CpuSortBackend::default(),
+            cpu_order_engine: CpuOrderEngine::default(),
             #[cfg(not(target_arch = "wasm32"))]
             gpu_rasterizer: None,
             scene: None,
@@ -522,10 +518,7 @@ impl Renderer {
             world_covariances: None,
             world_covariance_terms: None,
             alpha_values: None,
-            preprocess_depth_keys: Vec::new(),
             preprocess_indices: Vec::new(),
-            #[cfg(not(target_arch = "wasm32"))]
-            preprocess_chunks: Vec::new(),
             last_stats: FrameStats::zero(),
         }
     }
@@ -958,12 +951,61 @@ impl Renderer {
     }
 
     fn preprocess_and_sort_timed(&mut self, camera: &Camera) -> Result<(f32, f32), RendererError> {
-        let started = timer_now();
-        self.preprocess_visible_scratch(camera)?;
-        let preprocess_ms = timer_elapsed_ms(started);
-        let started = timer_now();
-        self.sort_preprocessed_scratch()?;
-        Ok((preprocess_ms, timer_elapsed_ms(started)))
+        let stable_full32 = self.mode == RenderMode::SortedAlpha;
+        let timings = match self.geometry_path {
+            GeometryPath::PagedActiveAtlas => {
+                let scene = self.scene.as_ref().ok_or(RendererError::SceneNotLoaded)?;
+                let pages = self
+                    .spatial_pages
+                    .as_ref()
+                    .ok_or(RendererError::InvalidScene)?;
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    let rasterizer = self
+                        .gpu_rasterizer
+                        .as_mut()
+                        .ok_or(RendererError::GpuRasterizerUnavailable)?;
+                    rasterizer.ensure_paged_active_set(scene, pages, camera)?;
+                    let entries = rasterizer
+                        .paged_active_set
+                        .as_ref()
+                        .ok_or(RendererError::InvalidScene)?
+                        .atlas
+                        .active_entries();
+                    self.cpu_order_engine.order_paged(
+                        scene,
+                        &entries,
+                        camera,
+                        stable_full32,
+                        &mut self.preprocess_indices,
+                    )?
+                }
+                #[cfg(target_arch = "wasm32")]
+                {
+                    let _ = (scene, pages, camera, stable_full32);
+                    return Err(RendererError::GpuRasterizerUnavailable);
+                }
+            }
+            GeometryPath::SortedIndexDirect | GeometryPath::PackedAtlas => {
+                let positions = self
+                    .scene
+                    .as_ref()
+                    .map(|scene| scene.positions.as_slice())
+                    .or_else(|| {
+                        self.resident_scene_cpu
+                            .as_ref()
+                            .map(|scene| scene.positions.as_ref())
+                    })
+                    .ok_or(RendererError::SceneNotLoaded)?;
+                self.cpu_order_engine.order_positions(
+                    CpuPositionView::new(positions),
+                    camera,
+                    stable_full32,
+                    &mut self.preprocess_indices,
+                )?
+            }
+        };
+        Ok((timings.preprocess_ms, timings.sort_ms))
     }
 
     fn record_stats(
@@ -1047,7 +1089,14 @@ impl Renderer {
 
     pub fn replace_surface_sorted_indices(
         &mut self,
-        indices: Vec<u32>,
+        mut indices: Vec<u32>,
+    ) -> Result<(), RendererError> {
+        self.replace_surface_sorted_indices_recycling(&mut indices)
+    }
+
+    pub(crate) fn replace_surface_sorted_indices_recycling(
+        &mut self,
+        indices: &mut Vec<u32>,
     ) -> Result<(), RendererError> {
         let scene_len = self.scene_len().ok_or(RendererError::SceneNotLoaded)?;
         match self.geometry_path {
@@ -1073,8 +1122,7 @@ impl Renderer {
             }
         }
 
-        self.preprocess_depth_keys.clear();
-        self.preprocess_indices = indices;
+        std::mem::swap(&mut self.preprocess_indices, indices);
         Ok(())
     }
 
@@ -1215,83 +1263,6 @@ impl Renderer {
 
     pub fn render_placeholder(&mut self) -> Result<FrameStats, RendererError> {
         self.render_frame(&Camera::default())
-    }
-
-    fn preprocess_visible_scratch(&mut self, camera: &Camera) -> Result<(), RendererError> {
-        match self.geometry_path {
-            GeometryPath::PagedActiveAtlas => {
-                let scene = self.scene.as_ref().ok_or(RendererError::SceneNotLoaded)?;
-                let pages = self
-                    .spatial_pages
-                    .as_ref()
-                    .ok_or(RendererError::InvalidScene)?;
-                #[cfg(not(target_arch = "wasm32"))]
-                {
-                    let rasterizer = self
-                        .gpu_rasterizer
-                        .as_mut()
-                        .ok_or(RendererError::GpuRasterizerUnavailable)?;
-                    rasterizer.ensure_paged_active_set(scene, pages, camera)?;
-                    let entries = rasterizer
-                        .paged_active_set
-                        .as_ref()
-                        .ok_or(RendererError::InvalidScene)?
-                        .atlas
-                        .active_entries();
-                    preprocess_paged_visible_into(
-                        scene,
-                        &entries,
-                        camera,
-                        &mut self.preprocess_depth_keys,
-                        &mut self.preprocess_indices,
-                    )
-                }
-                #[cfg(target_arch = "wasm32")]
-                {
-                    let _ = (scene, pages, camera);
-                    Err(RendererError::GpuRasterizerUnavailable)
-                }
-            }
-            GeometryPath::SortedIndexDirect | GeometryPath::PackedAtlas => {
-                let positions = self
-                    .scene
-                    .as_ref()
-                    .map(|scene| scene.positions.as_slice())
-                    .or_else(|| {
-                        self.resident_scene_cpu
-                            .as_ref()
-                            .map(|scene| scene.positions.as_ref())
-                    })
-                    .ok_or(RendererError::SceneNotLoaded)?;
-                #[cfg(not(target_arch = "wasm32"))]
-                {
-                    preprocess_positions_visible_into_parallel(
-                        positions,
-                        camera,
-                        &mut self.preprocess_depth_keys,
-                        &mut self.preprocess_indices,
-                        &mut self.preprocess_chunks,
-                    )
-                }
-                #[cfg(target_arch = "wasm32")]
-                {
-                    preprocess_positions_visible_into(
-                        positions,
-                        camera,
-                        &mut self.preprocess_depth_keys,
-                        &mut self.preprocess_indices,
-                    )
-                }
-            }
-        }
-    }
-
-    fn sort_preprocessed_scratch(&mut self) -> Result<(), RendererError> {
-        if self.mode == RenderMode::SortedAlpha {
-            self.cpu_sort_backend
-                .sort_values_by_keys(&self.preprocess_depth_keys, &mut self.preprocess_indices)?;
-        }
-        Ok(())
     }
 }
 
@@ -3642,7 +3613,7 @@ mod tests {
             .build_sorted_indices(&Camera::default())
             .expect("pre-handoff CPU order");
         let before_workspace = (
-            renderer.preprocess_depth_keys.capacity(),
+            renderer.cpu_order_engine.buffer_state(),
             renderer.preprocess_indices.capacity(),
         );
         let before = renderer
@@ -3668,7 +3639,7 @@ mod tests {
         assert!(renderer.has_scene());
         assert_eq!(
             (
-                renderer.preprocess_depth_keys.capacity(),
+                renderer.cpu_order_engine.buffer_state(),
                 renderer.preprocess_indices.capacity(),
             ),
             before_workspace

@@ -1,19 +1,11 @@
-#[cfg(not(target_arch = "wasm32"))]
-use gsplat_core::Vec3f;
 use gsplat_core::{Camera, FrameStats};
-#[cfg(not(target_arch = "wasm32"))]
-use gsplat_sort::CpuSortBackend;
 use std::collections::VecDeque;
-#[cfg(not(target_arch = "wasm32"))]
-use std::{
-    sync::{
-        Arc,
-        mpsc::{Receiver, SyncSender, TryRecvError, sync_channel},
-    },
-    thread::{self, JoinHandle},
-};
 
+#[cfg(not(target_arch = "wasm32"))]
+use crate::SurfaceFrameCapture;
 pub use crate::api::SurfaceOrderBackendUsed;
+#[cfg(not(target_arch = "wasm32"))]
+use crate::cpu_order::NativeCpuOrderWorker;
 use crate::evidence::BoundedEvidenceRing;
 pub use crate::evidence::{
     SurfaceGpuProducerMeasurementSubmission, SurfaceGpuProducerMeasurementUnsampledReason,
@@ -29,8 +21,6 @@ use crate::{
     SurfaceProjectedDrawMeasurement, SurfaceProjectedDrawMeasurementFailure,
     SurfaceRasterExecutionPlan, SurfaceTimingSource, timer_elapsed_ms, timer_now,
 };
-#[cfg(not(target_arch = "wasm32"))]
-use crate::{OwnedCpuOrderInput, SurfaceFrameCapture};
 
 const DEFAULT_SURFACE_SORT_INTERVAL: u32 = 1;
 /// Maximum number of camera revisions an asynchronously produced order may lag
@@ -1327,103 +1317,15 @@ fn should_measure_cpu_refresh(
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-struct SurfaceAsyncSorter {
-    request_tx: SyncSender<Option<(Camera, u64)>>,
-    result_rx: Receiver<Result<AsyncSortResult, RendererError>>,
-    worker: Option<JoinHandle<()>>,
-    in_flight: bool,
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-struct AsyncSortResult {
-    indices: Vec<u32>,
-    preprocess_ms: f32,
-    sort_ms: f32,
-    camera_revision: u64,
-    camera: Camera,
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-impl SurfaceAsyncSorter {
-    fn new(renderer: &Renderer) -> Result<Self, RendererError> {
-        let positions: Arc<[Vec3f]> = if let Some(scene) = renderer.resident_scene() {
-            Arc::clone(&scene.positions)
+fn native_cpu_order_worker(renderer: &Renderer) -> Result<NativeCpuOrderWorker, RendererError> {
+    let positions: std::sync::Arc<[gsplat_core::Vec3f]> =
+        if let Some(scene) = renderer.resident_scene() {
+            std::sync::Arc::clone(&scene.positions)
         } else {
             let scene = renderer.scene().ok_or(RendererError::SceneNotLoaded)?;
-            Arc::from(scene.positions.clone().into_boxed_slice())
+            std::sync::Arc::from(scene.positions.clone().into_boxed_slice())
         };
-        let (request_tx, request_rx) = sync_channel::<Option<(Camera, u64)>>(1);
-        let (result_tx, result_rx) = sync_channel(1);
-        let worker = thread::spawn(move || {
-            let mut positions = positions;
-            while let Ok(request) = request_rx.recv() {
-                let Some((camera, camera_revision)) = request else {
-                    break;
-                };
-                let input = OwnedCpuOrderInput::new(positions, camera);
-                let result = sort_positions_for_camera(&input, camera_revision);
-                positions = input.into_positions();
-                if result_tx.send(result).is_err() {
-                    break;
-                }
-            }
-        });
-        Ok(Self {
-            request_tx,
-            result_rx,
-            worker: Some(worker),
-            in_flight: false,
-        })
-    }
-
-    fn is_in_flight(&self) -> bool {
-        self.in_flight
-    }
-
-    fn poll_result(&mut self) -> Option<Result<AsyncSortResult, RendererError>> {
-        if !self.in_flight {
-            return None;
-        }
-        match self.result_rx.try_recv() {
-            Ok(result) => {
-                self.in_flight = false;
-                Some(result)
-            }
-            Err(TryRecvError::Empty) => None,
-            Err(TryRecvError::Disconnected) => {
-                self.in_flight = false;
-                Some(Err(RendererError::SurfaceWorker))
-            }
-        }
-    }
-
-    fn start(&mut self, camera: Camera, camera_revision: u64) {
-        if self.in_flight {
-            return;
-        }
-        if self
-            .request_tx
-            .try_send(Some((camera, camera_revision)))
-            .is_ok()
-        {
-            self.in_flight = true;
-        }
-    }
-
-    fn drain(&mut self) {
-        let _ = self.request_tx.send(None);
-        if let Some(handle) = self.worker.take() {
-            let _ = handle.join();
-        }
-        self.in_flight = false;
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-impl Drop for SurfaceAsyncSorter {
-    fn drop(&mut self) {
-        self.drain();
-    }
+    NativeCpuOrderWorker::new(positions)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -1630,7 +1532,7 @@ pub struct SurfaceRenderSession {
     #[cfg(not(target_arch = "wasm32"))]
     async_sort_enabled: bool,
     #[cfg(not(target_arch = "wasm32"))]
-    async_sorter: Option<SurfaceAsyncSorter>,
+    async_sorter: Option<NativeCpuOrderWorker>,
 }
 
 fn try_switch_renderer_geometry_path<Error>(
@@ -2537,7 +2439,7 @@ impl SurfaceRenderSession {
             if self.order_backend != SurfaceOrderBackend::Cpu {
                 return Err(RendererError::InvalidConfig);
             }
-            self.async_sorter = Some(SurfaceAsyncSorter::new(&self.renderer)?);
+            self.async_sorter = Some(native_cpu_order_worker(&self.renderer)?);
         } else {
             self.disable_async_sort();
             return Ok(());
@@ -3328,12 +3230,12 @@ impl SurfaceRenderSession {
             .ok_or(RendererError::SurfaceWorker)?
             .poll_result();
         if let Some(result) = polled_result {
-            let result = result?;
+            let mut result = result?;
             completed_revision = Some(result.camera_revision);
             let revision_delta = self.camera_revision.saturating_sub(result.camera_revision);
             let revision_lag = u32::try_from(revision_delta).unwrap_or(u32::MAX);
             observed_revision_lag = Some(revision_lag);
-            completed_timing = Some((result.preprocess_ms, result.sort_ms));
+            completed_timing = Some((result.timings.preprocess_ms, result.timings.sort_ms));
             if result.camera_revision >= self.applied_order_revision
                 && revision_delta <= MAX_ASYNC_SORT_REVISION_LAG
                 && async_order_pose_compatible(
@@ -3342,14 +3244,24 @@ impl SurfaceRenderSession {
                     self.async_sort_translation_limit,
                 )
             {
-                self.renderer
-                    .replace_surface_sorted_indices(result.indices)?;
+                let replace_result = self
+                    .renderer
+                    .replace_surface_sorted_indices_recycling(&mut result.ordered_ids);
+                self.async_sorter
+                    .as_mut()
+                    .ok_or(RendererError::SurfaceWorker)?
+                    .recycle(result.ordered_ids);
+                replace_result?;
                 self.frame_state.mark_external_order(revision_lag);
                 self.applied_order_revision = result.camera_revision;
                 self.applied_order_camera = result.camera;
                 applied_order = true;
             } else {
                 stale_result_dropped = true;
+                self.async_sorter
+                    .as_mut()
+                    .ok_or(RendererError::SurfaceWorker)?
+                    .recycle(result.ordered_ids);
             }
         }
 
@@ -3382,7 +3294,7 @@ impl SurfaceRenderSession {
             && !self
                 .async_sorter
                 .as_ref()
-                .is_some_and(SurfaceAsyncSorter::is_in_flight);
+                .is_some_and(NativeCpuOrderWorker::is_in_flight);
         let schedule_camera = self.camera;
         let schedule_revision = self.camera_revision;
         let (completed_projected_measurement, completed_projected_measurement_failure) =
@@ -3483,47 +3395,6 @@ impl SurfaceRenderSession {
 
 fn paged_surface_counts(source_count: usize, drawn_count: u32) -> (u32, u32) {
     (u32::try_from(source_count).unwrap_or(u32::MAX), drawn_count)
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn sort_positions_for_camera(
-    input: &OwnedCpuOrderInput,
-    camera_revision: u64,
-) -> Result<AsyncSortResult, RendererError> {
-    let positions = input.positions();
-    let camera = input.camera();
-    camera
-        .validate()
-        .map_err(|_| RendererError::InvalidCamera)?;
-
-    let preprocess_start = std::time::Instant::now();
-    let view_rotation = crate::quat_to_mat3(crate::quat_inverse(camera.pose.rotation_xyzw));
-    let depth_row = view_rotation[2];
-    let camera_position = camera.pose.position;
-    let mut depth_keys = Vec::with_capacity(positions.len());
-    let mut indices = Vec::with_capacity(positions.len());
-
-    for (index, position) in positions.iter().enumerate() {
-        let depth =
-            crate::world_to_camera_depth_with_view_row(*position, camera_position, depth_row);
-        if depth >= camera.intrinsics.near_plane && depth <= camera.intrinsics.far_plane {
-            indices.push(index as u32);
-            depth_keys.push(depth.max(0.0).to_bits());
-        }
-    }
-    let preprocess_ms = preprocess_start.elapsed().as_secs_f32() * 1000.0;
-
-    let sort_start = std::time::Instant::now();
-    CpuSortBackend::default().sort_values_by_keys(&depth_keys, &mut indices)?;
-    let sort_ms = sort_start.elapsed().as_secs_f32() * 1000.0;
-
-    Ok(AsyncSortResult {
-        indices,
-        preprocess_ms,
-        sort_ms,
-        camera_revision,
-        camera,
-    })
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -3949,6 +3820,80 @@ mod tests {
         assert_eq!(async_schedule_threshold(1), 1);
         assert_eq!(async_schedule_threshold(2), 1);
         assert_eq!(async_schedule_threshold(3), 2);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn wait_for_async_result(
+        sorter: &mut super::NativeCpuOrderWorker,
+    ) -> Result<crate::cpu_order::NativeCpuOrderResult, RendererError> {
+        for _ in 0..1_000_000 {
+            if let Some(result) = sorter.poll_result() {
+                return result;
+            }
+            std::thread::yield_now();
+        }
+        panic!("async CPU order worker did not complete")
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn async_worker_matches_sync_recycles_two_buffers_and_fails_without_publication() {
+        let count = 257;
+        let scene = SceneBuffers {
+            positions: (0..count)
+                .map(|index| {
+                    let depth = match index % 5 {
+                        0 | 1 => 2.0,
+                        2 => 1.0,
+                        3 => 3.0,
+                        _ => 4.0,
+                    };
+                    Vec3f::new(index as f32 * 0.001, 0.0, depth)
+                })
+                .collect(),
+            opacity: vec![1.0; count],
+            scale_xyz: vec![[0.0; 3]; count],
+            rotation_xyzw: vec![[0.0, 0.0, 0.0, 1.0]; count],
+            color_dc: vec![[0.0; 3]; count],
+            sh_degree: 0,
+            sh_rest: None,
+        };
+        let mut camera = Camera::default();
+        camera.intrinsics.near_plane = 1.0;
+        camera.intrinsics.far_plane = 3.0;
+        let mut renderer = Renderer::with_config_for_surface(RendererConfig::default()).unwrap();
+        renderer.load_scene(scene).unwrap();
+        renderer
+            .build_surface_sorted_indices_with_sort_refresh(&camera, true)
+            .expect("sync order");
+        let authoritative = renderer.current_sorted_indices().to_vec();
+
+        let mut sorter = super::native_cpu_order_worker(&renderer).expect("async worker");
+        let mut pointers = Vec::new();
+        for revision in 1..=3 {
+            sorter.start(camera, revision);
+            let result = wait_for_async_result(&mut sorter).expect("async order");
+            assert_eq!(result.ordered_ids, authoritative);
+            assert_eq!(result.camera_revision, revision);
+            pointers.push((
+                result.ordered_ids.as_ptr() as usize,
+                result.ordered_ids.capacity(),
+            ));
+            sorter.recycle(result.ordered_ids);
+        }
+        assert_ne!(pointers[0].0, pointers[1].0);
+        assert_eq!(pointers[0], pointers[2]);
+
+        let mut invalid = camera;
+        invalid.intrinsics.near_plane = 4.0;
+        invalid.intrinsics.far_plane = 1.0;
+        sorter.start(invalid, 4);
+        assert!(wait_for_async_result(&mut sorter).is_err());
+        assert_eq!(renderer.current_sorted_indices(), authoritative);
+
+        sorter.start(camera, 5);
+        let recovered = wait_for_async_result(&mut sorter).expect("recovered async order");
+        assert_eq!(recovered.ordered_ids, authoritative);
     }
 
     fn feed_cpu_bootstrap(policy: &mut AdaptiveOrderPolicy, sample_ms: f32) {

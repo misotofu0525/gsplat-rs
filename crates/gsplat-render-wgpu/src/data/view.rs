@@ -7,6 +7,35 @@ use std::sync::Arc;
 use gsplat_core::Camera;
 use gsplat_core::{SceneBuffers, Vec3f};
 
+/// Borrowed AoS position input for exact CPU ordering kernels.
+///
+/// This view deliberately retains the canonical `Vec3f` storage. Platform
+/// leaves may read that proven 12-byte record layout but must not create a
+/// duplicate SoA position owner.
+#[derive(Clone, Copy)]
+pub(crate) struct CpuPositionView<'a> {
+    positions: &'a [Vec3f],
+}
+
+impl<'a> CpuPositionView<'a> {
+    pub(crate) const fn new(positions: &'a [Vec3f]) -> Self {
+        Self { positions }
+    }
+
+    pub(crate) const fn as_slice(self) -> &'a [Vec3f] {
+        self.positions
+    }
+
+    pub(crate) const fn len(self) -> usize {
+        self.positions.len()
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn slice(self, range: std::ops::Range<usize>) -> Self {
+        Self::new(&self.positions[range])
+    }
+}
+
 #[derive(Clone, Copy)]
 pub(crate) struct CameraCovarianceTerms {
     pub(crate) xx: f32,
@@ -116,8 +145,8 @@ impl OwnedCpuOrderInput {
         Self { positions, camera }
     }
 
-    pub(crate) fn positions(&self) -> &[Vec3f] {
-        &self.positions
+    pub(crate) fn position_view(&self) -> CpuPositionView<'_> {
+        CpuPositionView::new(&self.positions)
     }
 
     pub(crate) const fn camera(&self) -> Camera {

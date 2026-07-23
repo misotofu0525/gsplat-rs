@@ -1,16 +1,9 @@
 use gsplat_core::{Camera, Vec3f};
-use gsplat_sort::CpuSortBackend;
 use thiserror::Error;
 
-use crate::RendererError;
-#[cfg(target_arch = "wasm32")]
-use crate::cpu_order::preprocess_positions_visible_into;
-#[cfg(not(target_arch = "wasm32"))]
-use crate::cpu_order::{
-    MAX_PARALLEL_PREPROCESS_CHUNKS, PreprocessChunkScratch,
-    preprocess_positions_visible_into_parallel,
-};
+use crate::cpu_order::CpuOrderEngine;
 use crate::scene::SceneRuntime;
+use crate::{CpuPositionView, RendererError};
 
 use super::{FrameIdentity, ProjectedWork};
 
@@ -51,28 +44,17 @@ impl CpuOrderGuard {
 
 /// Reusable workspace and authoritative order cache for Exact CPU PostSort.
 pub(super) struct CpuPostSortPlan {
-    depth_keys: Vec<u32>,
-    working_ids: Vec<u32>,
+    engine: CpuOrderEngine,
     ordered_ids: Vec<u32>,
-    sorter: CpuSortBackend,
-    #[cfg(not(target_arch = "wasm32"))]
-    native_chunks: Vec<PreprocessChunkScratch>,
     guard: Option<CpuOrderGuard>,
     order_generation: u64,
 }
 
 impl CpuPostSortPlan {
     pub(super) fn prepare(source_count: usize) -> Result<Self, CpuPostSortError> {
-        let mut depth_keys = Vec::new();
-        depth_keys.try_reserve_exact(source_count).map_err(|_| {
+        let engine = CpuOrderEngine::try_with_capacity(source_count).map_err(|error| {
             CpuPostSortError::AllocationFailed {
-                resource: "depth keys",
-            }
-        })?;
-        let mut working_ids = Vec::new();
-        working_ids.try_reserve_exact(source_count).map_err(|_| {
-            CpuPostSortError::AllocationFailed {
-                resource: "working source IDs",
+                resource: error.resource(),
             }
         })?;
         let mut ordered_ids = Vec::new();
@@ -82,28 +64,9 @@ impl CpuPostSortPlan {
             }
         })?;
 
-        #[cfg(not(target_arch = "wasm32"))]
-        let native_chunks = {
-            let mut chunks = Vec::new();
-            chunks
-                .try_reserve_exact(MAX_PARALLEL_PREPROCESS_CHUNKS)
-                .map_err(|_| CpuPostSortError::AllocationFailed {
-                    resource: "native chunk scratch",
-                })?;
-            chunks.resize_with(
-                MAX_PARALLEL_PREPROCESS_CHUNKS,
-                PreprocessChunkScratch::default,
-            );
-            chunks
-        };
-
         Ok(Self {
-            depth_keys,
-            working_ids,
+            engine,
             ordered_ids,
-            sorter: CpuSortBackend::default(),
-            #[cfg(not(target_arch = "wasm32"))]
-            native_chunks,
             guard: None,
             order_generation: 0,
         })
@@ -147,27 +110,12 @@ impl CpuPostSortPlan {
             .checked_add(1)
             .ok_or(CpuPostSortError::OrderGenerationExhausted)?;
 
-        #[cfg(not(target_arch = "wasm32"))]
-        preprocess_positions_visible_into_parallel(
-            positions,
+        self.engine.order_positions(
+            CpuPositionView::new(positions),
             camera,
-            &mut self.depth_keys,
-            &mut self.working_ids,
-            &mut self.native_chunks,
+            true,
+            &mut self.ordered_ids,
         )?;
-        #[cfg(target_arch = "wasm32")]
-        preprocess_positions_visible_into(
-            positions,
-            camera,
-            &mut self.depth_keys,
-            &mut self.working_ids,
-        )?;
-
-        self.sorter
-            .sort_values_by_keys(&self.depth_keys, &mut self.working_ids)
-            .map_err(RendererError::from)?;
-
-        std::mem::swap(&mut self.ordered_ids, &mut self.working_ids);
         self.order_generation = next_generation;
         self.guard = Some(requested_guard);
         Ok(())
@@ -180,15 +128,16 @@ impl CpuPostSortPlan {
 
 #[cfg(test)]
 mod tests {
-    use gsplat_core::{Camera, SceneBuffers, Vec3f};
+    use gsplat_core::{Camera, RenderMode, SceneBuffers, Vec3f};
 
     use super::CpuPostSortPlan;
+    use crate::Renderer;
     use crate::plans::FrameIdentity;
     use crate::scene::{ResidentSceneCpu, SceneRuntime};
 
-    fn runtime(depths: &[f32]) -> SceneRuntime {
+    fn scene_buffers(depths: &[f32]) -> SceneBuffers {
         let count = depths.len();
-        let scene = SceneBuffers {
+        SceneBuffers {
             positions: depths
                 .iter()
                 .copied()
@@ -200,8 +149,12 @@ mod tests {
             color_dc: vec![[0.0; 3]; count],
             sh_degree: 0,
             sh_rest: None,
-        };
-        let resident = ResidentSceneCpu::encode_owned(scene).expect("resident scene");
+        }
+    }
+
+    fn runtime(depths: &[f32]) -> SceneRuntime {
+        let resident =
+            ResidentSceneCpu::encode_owned(scene_buffers(depths)).expect("resident scene");
         SceneRuntime::prepare(resident).expect("scene runtime")
     }
 
@@ -291,5 +244,44 @@ mod tests {
             .order_generation();
 
         assert_eq!(first_generation, second_generation);
+    }
+
+    #[test]
+    fn sync_surface_legacy_offscreen_and_cpu_post_plan_share_exact_order() {
+        let depths = (0..257)
+            .map(|index| match index % 7 {
+                0 => 1.0,
+                1 | 2 => 2.0,
+                3 => 3.0,
+                4 => f32::from_bits(1.0_f32.to_bits() - 1),
+                5 => f32::from_bits(3.0_f32.to_bits() + 1),
+                _ => 2.5,
+            })
+            .collect::<Vec<_>>();
+        let camera = camera(1.0, 3.0);
+
+        let mut renderer = Renderer::new_for_surface(RenderMode::SortedAlpha).expect("renderer");
+        renderer
+            .load_scene(scene_buffers(&depths))
+            .expect("legacy scene");
+        let (legacy_order, _) = renderer
+            .build_sorted_indices(&camera)
+            .expect("legacy/offscreen order");
+        renderer
+            .build_surface_sorted_indices_with_sort_refresh(&camera, true)
+            .expect("sync Surface order");
+        let surface_order = renderer.current_sorted_indices().to_vec();
+
+        let scene = runtime(&depths);
+        let mut plan = CpuPostSortPlan::prepare(scene.source_count()).expect("plan");
+        let plan_order = plan
+            .execute(&scene, &camera, identity(1), scene.source_count() as u32)
+            .expect("plan order")
+            .cpu_order_ids()
+            .expect("CPU IDs")
+            .to_vec();
+
+        assert_eq!(surface_order, legacy_order);
+        assert_eq!(plan_order, legacy_order);
     }
 }

@@ -7,11 +7,23 @@ pub const GSPLAT_API_VERSION_MINOR: u32 = 1;
 const CAMERA_ROTATION_NORM2_TOLERANCE: f32 = 1.0e-3;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[repr(C)]
 pub struct Vec3f {
     pub x: f32,
     pub y: f32,
     pub z: f32,
 }
+
+// `Vec3f` is the renderer's internal borrowed CPU position record. The exact
+// layout is proven for architecture-specific preprocess leaves; this does not
+// make the type a public C ABI record or a bytemuck `Pod`.
+const _: () = {
+    assert!(std::mem::size_of::<Vec3f>() == 12);
+    assert!(std::mem::align_of::<Vec3f>() == 4);
+    assert!(std::mem::offset_of!(Vec3f, x) == 0);
+    assert!(std::mem::offset_of!(Vec3f, y) == 4);
+    assert!(std::mem::offset_of!(Vec3f, z) == 8);
+};
 
 impl Vec3f {
     pub const fn new(x: f32, y: f32, z: f32) -> Self {

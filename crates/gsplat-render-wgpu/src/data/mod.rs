@@ -12,4 +12,4 @@ pub use layout::{
 pub(crate) use layout::{GpuSortPair, GpuSurfaceRenderParams, GpuSurfaceSourceElem};
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use view::OwnedCpuOrderInput;
-pub(crate) use view::{CameraCovarianceTerms, ShColorLayout, SplatSetView};
+pub(crate) use view::{CameraCovarianceTerms, CpuPositionView, ShColorLayout, SplatSetView};
