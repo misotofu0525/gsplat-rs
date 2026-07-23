@@ -18,8 +18,15 @@ A2 = Accepted
 A3 = Accepted
 A4 = Accepted
 A5 = Accepted
+A6 = Active
 A7 = Active
 <!-- gsplat-program-task-states: end -->
+
+<!-- gsplat-program-active-lanes: begin -->
+activation_commit = 796ac0532114e0a5468e35b8d638e4be3ecab2fd
+A6 = A6a
+A7 = A7e
+<!-- gsplat-program-active-lanes: end -->
 
 ## Program status
 
@@ -37,11 +44,12 @@ A7 = Active
   A5g owns rank projection in `gpu/project.rs`. A5 is now closed and accepted;
   A7 and A8 remain open for later, separately activated slices.
 - Current work package: A — responsibility extraction.
-- Active package task: A7. There is no writer lane during this closeout commit.
+- Active package tasks: A6 and A7 under the exact disjoint A6a/A7e parallel
+  lease recorded by the policy and machine lane block.
 - Last completed tasks: A7d — immutable projected receipts; A5g — rank
   projection; A5 package closeout — full-count A065 exactness regression.
-- Next eligible implementation: after this closeout is committed, activate
-  disjoint A6a and A7e writer lanes from one exact baseline.
+- Next eligible implementation: only A6a and A7e. A7f depends on integrated
+  A7e; A8b/A8c overlap A6 lifecycle files and remain inactive.
 - Integration branch: `codex/native-render-core-refactor`.
 - Frozen source implementation closeout:
   `5db2520e0d7a0ef1c68a78bdb9abc6fc588c5186`.
@@ -120,6 +128,91 @@ eligible task. Do not rewrite the architecture in this ledger.
 
 ## Current task
 
+### Parallel writer lanes — A7e and A6a
+
+- Activation baseline:
+  `796ac0532114e0a5468e35b8d638e4be3ecab2fd`.
+- Isolation: two user-visible Codex tasks in separate worktrees, each with its
+  own goal and exact write allowlist. Collaboration subagents may only perform
+  bounded read-only scope audits or fixed-SHA review.
+- Integration order: A7e, then A6a, followed by one combined root matrix.
+- There is no fixed line-count gate. Responsibility cohesion, dependency
+  direction, compatibility, behavior and focused executable evidence decide
+  whether each boundary is accepted.
+
+### A7e — Separate producer selection from immutable producer evidence
+
+- Parent task state: A7 Active.
+- Subtask state: Active.
+- Hypothesis: the product-facing producer selector can live in `api.rs`, and
+  the four immutable producer receipt/failure types plus their two pure query
+  methods can live in `evidence/producer.rs`, while telemetry retains ticket
+  allocation, ring slots, mapping, generation/count validation and terminal
+  delivery.
+- Exact writer allowlist:
+  - `crates/gsplat-render-wgpu/src/api.rs`;
+  - `crates/gsplat-render-wgpu/src/evidence/mod.rs`;
+  - new `crates/gsplat-render-wgpu/src/evidence/producer.rs`;
+  - `crates/gsplat-render-wgpu/src/gpu_producer_telemetry.rs`.
+- Move `SurfaceGpuOrderProducer` to the API leaf. Move
+  `SurfaceGpuProducerDrawScope`, `SurfaceGpuProducerMeasurement`,
+  `SurfaceGpuProducerMeasurementFailureReason` and
+  `SurfaceGpuProducerMeasurementFailure` to the evidence leaf, including only
+  `exact_current_contributor_draw` and `stale_order` as pure value queries.
+- Preserve crate-root and telemetry compatibility re-exports. Do not change
+  discriminants, derives, fields, ticket ranges, ring sizing, readback, state
+  transitions, validation, delivery or public behavior.
+- Frozen hashes: `api.rs` `d3792d4e...cfc38`, telemetry
+  `190fa41d...fa54`, evidence facade `da63a018...a6d`, `lib.rs`
+  `81e3509b...7842`, session `dfb06f3d...90187`, and all FFI/Web/platform
+  consumers remain outside the writer scope.
+- Focused gates: declaration/field/derive inventory, compatibility paths,
+  producer telemetry tests, direct session consumers, format/diff,
+  architecture, locked renderer check/test, Clippy and wasm32. Root owns the
+  combined FFI/Rustdoc/Metal/workspace matrix.
+- Forbidden: session/presenter/lib, policy/controller changes, FFI/header,
+  JNI/Swift/Web/examples, GPU/shader/raster, benchmarks and plan/policy edits.
+
+### A6a — Establish one canonical raster owner
+
+- Parent task state: A6 Active; A2 and A5 are Accepted.
+- Subtask state: Active.
+- Hypothesis: accepted raster pipeline construction and direct/indirect draw
+  encoding can move into `raster/{pipeline,encode}.rs`, with one canonical quad
+  vertex-count owner, while every existing caller retains resource, encoder,
+  submit, present and policy ownership.
+- Exact writer allowlist:
+  - new `crates/gsplat-render-wgpu/src/raster/mod.rs`;
+  - new `crates/gsplat-render-wgpu/src/raster/pipeline.rs`;
+  - new `crates/gsplat-render-wgpu/src/raster/encode.rs`;
+  - delete `crates/gsplat-render-wgpu/src/draw_pass.rs`;
+  - mechanical import/call-site updates only in `lib.rs`, `resident_gpu.rs`,
+    `packed_gpu.rs`, `projected_quads_gpu.rs`, `preproject_gpu.rs` and
+    `surface_presenter.rs`.
+- `pipeline.rs` owns bind-group-layout helpers, pipeline specification and
+  pipeline creation. `encode.rs` owns direct and indirect render-pass encoding.
+  `raster/mod.rs` owns the canonical quad vertex count. Do not retain a second
+  compatibility owner in `draw_pass.rs`.
+- Preserve current TriangleStrip topology, bindings, usages, labels, pass load/
+  store behavior, clears, caches, draw counts and all pixels. Callers continue
+  to own command encoders, submission and presentation.
+- Frozen hashes: draw owner `e218a06d...2865`, `lib.rs`
+  `81e3509b...7842`, Resident `dd659dd0...b842`, Packed
+  `2e1052b2...0238`, Projected `ac0305a8...38f4`, Preproject
+  `c295f61e...dd`, presenter `7b44a87f...e2aa`; every WGSL file is frozen.
+- Focused gates: WGSL hash inventory, absence of duplicate raster constants and
+  old draw owner, existing Projected/Preproject/Direct/Packed image oracles,
+  format/diff, architecture, locked renderer check/test and wasm32. Root owns
+  the combined FFI/Rustdoc/Clippy/Metal/workspace matrix.
+- Forbidden: WGSL, `gpu/**`, scene/data/API/evidence/telemetry/session/offscreen,
+  FFI/JNI/Swift/Web/examples, Cargo files, benchmarks and plan/policy edits; no
+  math, behavior, policy, count, SH or resolution change.
+
+Neither lane has an FPS, competitor or device-performance gate. Each produces
+one fixed candidate SHA without merge, rebase, push, main or ledger edits.
+
+## Recently integrated tasks
+
 ### A7d + A5g parallel batch closeout
 
 - State: Accepted.
@@ -159,8 +252,6 @@ eligible task. Do not rewrite the architecture in this ledger.
   entries are removed from architecture policy.
 - Next activation: A6a canonical raster owner and A7e producer-selector/
   immutable-receipt owner, in separate worktrees with disjoint write sets.
-
-## Recently integrated tasks
 
 ### Parallel writer lanes — A7c and A5f
 
