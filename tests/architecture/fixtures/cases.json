@@ -2,10 +2,10 @@
   "schema": "gsplat-source-architecture-fixtures/v1",
   "cases": [
     {
-      "name": "new_oversized_rust_counts_comments_blanks_and_embedded_tests",
+      "name": "new_multi_thousand_rust_counts_comments_blanks_and_embedded_tests",
       "files": {
         "crates/demo/src/new.rs": {
-          "physical_lines": 1201,
+          "physical_lines": 2501,
           "prefix": [
             "// This comment counts.",
             "",
@@ -21,7 +21,7 @@
       ]
     },
     {
-      "name": "new_rust_between_target_and_hard_ceiling_is_reported",
+      "name": "new_rust_above_review_target_is_reported",
       "files": {
         "crates/demo/src/new.rs": {
           "physical_lines": 900
@@ -36,19 +36,19 @@
       "name": "bindings_build_directories_are_excluded_from_production_sources",
       "files": {
         "bindings/android/demo/src/lib.rs": {
-          "physical_lines": 1201
+          "physical_lines": 2501
         },
         "bindings/android/target/src/generated.rs": {
-          "physical_lines": 1300
+          "physical_lines": 2600
         },
         "bindings/android/node_modules/src/generated.rs": {
-          "physical_lines": 1300
+          "physical_lines": 2600
         },
         "bindings/apple/.build/src/generated.rs": {
-          "physical_lines": 1300
+          "physical_lines": 2600
         },
         "bindings/apple/build/src/generated.rs": {
-          "physical_lines": 1300
+          "physical_lines": 2600
         }
       },
       "expected_error_codes": [
@@ -59,7 +59,7 @@
       "name": "legitimate_production_src_build_directory_is_checked",
       "files": {
         "crates/demo/src/build/mod.rs": {
-          "physical_lines": 1201
+          "physical_lines": 2501
         }
       },
       "expected_error_codes": [
@@ -67,10 +67,10 @@
       ]
     },
     {
-      "name": "new_concrete_plan_over_hard_ceiling",
+      "name": "new_concrete_plan_trips_multi_thousand_circuit_breaker",
       "files": {
         "crates/gsplat-render-wgpu/src/plans/gpu_post.rs": {
-          "physical_lines": 1001
+          "physical_lines": 2501
         }
       },
       "plan_rules": {
@@ -83,25 +83,38 @@
       ]
     },
     {
-      "name": "render_lib_target_is_enforced",
+      "name": "render_lib_target_is_advisory",
       "files": {
         "crates/gsplat-render-wgpu/src/lib.rs": {
           "physical_lines": 200
         }
       },
-      "expected_error_codes": [
+      "expected_error_codes": [],
+      "expected_notice_codes": [
         "size.target_exceeded"
       ]
     },
     {
-      "name": "new_wgsl_target_is_enforced",
+      "name": "new_wgsl_target_is_advisory",
       "files": {
         "crates/demo/shaders/new.wgsl": {
           "physical_lines": 350
         }
       },
-      "expected_error_codes": [
+      "expected_error_codes": [],
+      "expected_notice_codes": [
         "size.target_exceeded"
+      ]
+    },
+    {
+      "name": "new_wgsl_multi_thousand_file_trips_circuit_breaker",
+      "files": {
+        "crates/demo/shaders/new.wgsl": {
+          "physical_lines": 2501
+        }
+      },
+      "expected_error_codes": [
+        "size.hard_ceiling"
       ]
     },
     {
@@ -276,7 +289,7 @@
           "physical_lines": 800
         },
         "crates/demo/src/temporary.rs": {
-          "physical_lines": 1201
+          "physical_lines": 2501
         }
       },
       "grandfather": [
@@ -291,7 +304,7 @@
       "exceptions": [
         {
           "path": "crates/demo/src/temporary.rs",
-          "baseline_physical_loc": 1200,
+          "baseline_physical_loc": 2500,
           "max_temporary_delta": 1,
           "reason": "Temporary transition shim.",
           "removal_task": "IO-UNKNOWN"
@@ -341,16 +354,16 @@
       ]
     },
     {
-      "name": "active_exception_allows_bounded_hard_ceiling_delta",
+      "name": "active_exception_allows_bounded_circuit_breaker_delta",
       "files": {
         "crates/demo/src/temporary.rs": {
-          "physical_lines": 1201
+          "physical_lines": 2501
         }
       },
       "exceptions": [
         {
           "path": "crates/demo/src/temporary.rs",
-          "baseline_physical_loc": 1200,
+          "baseline_physical_loc": 2500,
           "max_temporary_delta": 1,
           "reason": "One-line transition shim.",
           "removal_task": "A2"
@@ -362,13 +375,13 @@
       "name": "exception_maximum_delta_is_enforced",
       "files": {
         "crates/demo/src/temporary.rs": {
-          "physical_lines": 1202
+          "physical_lines": 2502
         }
       },
       "exceptions": [
         {
           "path": "crates/demo/src/temporary.rs",
-          "baseline_physical_loc": 1200,
+          "baseline_physical_loc": 2500,
           "max_temporary_delta": 1,
           "reason": "One-line transition shim.",
           "removal_task": "A2"
@@ -382,13 +395,13 @@
       "name": "exception_expires_at_removal_task_closeout",
       "files": {
         "crates/demo/src/temporary.rs": {
-          "physical_lines": 1201
+          "physical_lines": 2501
         }
       },
       "exceptions": [
         {
           "path": "crates/demo/src/temporary.rs",
-          "baseline_physical_loc": 1200,
+          "baseline_physical_loc": 2500,
           "max_temporary_delta": 10,
           "reason": "Temporary transition shim.",
           "removal_task": "A2"
@@ -451,7 +464,7 @@
           "physical_lines": 800
         },
         "crates/demo/src/temporary.rs": {
-          "physical_lines": 1201
+          "physical_lines": 2501
         }
       },
       "grandfather": [
@@ -466,7 +479,7 @@
       "exceptions": [
         {
           "path": "crates/demo/src/temporary.rs",
-          "baseline_physical_loc": 1200,
+          "baseline_physical_loc": 2500,
           "max_temporary_delta": 1,
           "reason": "Must not revive when the M ledger disappears.",
           "removal_task": "M7"
@@ -1072,7 +1085,9 @@
         }
       },
       "expected_error_codes": [
-        "orchestration.activation_due",
+        "orchestration.activation_due"
+      ],
+      "expected_notice_codes": [
         "size.target_exceeded"
       ]
     },
@@ -1099,7 +1114,8 @@
           }
         ]
       },
-      "expected_error_codes": [
+      "expected_error_codes": [],
+      "expected_notice_codes": [
         "orchestration.target_exceeded"
       ]
     }

@@ -363,7 +363,7 @@ def size_profile(path: str, kind: str, policy: dict[str, Any]) -> dict[str, Any]
         return {
             "target": limits["wgsl"]["target_lt"],
             "target_error": limits["wgsl"]["enforce_target"],
-            "hard": None,
+            "hard": limits["wgsl"].get("hard_ceiling"),
             "name": "WGSL",
         }
 
@@ -601,7 +601,8 @@ def check_sizes(
                     "error",
                     "size.hard_ceiling",
                     path,
-                    f"{loc} physical LOC exceeds {profile['name']} hard ceiling {hard} without an active exception",
+                    f"{loc} physical LOC exceeds the {profile['name']} multi-thousand-line "
+                    f"circuit breaker {hard} without an active finite exception",
                 )
             )
         elif loc >= profile["target"]:
@@ -1016,7 +1017,7 @@ def check_orchestration(
                     "error",
                     "orchestration.activation_due",
                     existing[0],
-                    "future orchestration path now exists; configure exact function boundaries and enable the <150 LOC rule",
+                    "future orchestration path now exists; configure exact function boundaries and enable the orchestration review signal",
                 )
             )
         task = rule.get("activation_task")
@@ -1062,9 +1063,10 @@ def check_orchestration(
                 )
             )
         elif locs[0] >= target:
+            enforce_target = entry.get("enforce_target", rule.get("enforce_target", False))
             issues.append(
                 Issue(
-                    "error",
+                    "error" if enforce_target else "notice",
                     "orchestration.target_exceeded",
                     path,
                     f"fn {name} is {locs[0]} physical lines; target is < {target}",

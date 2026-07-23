@@ -134,7 +134,7 @@
   "limits": {
     "production_rust": {
       "target_lt": 800,
-      "hard_ceiling": 1200,
+      "hard_ceiling": 2500,
       "enforce_target": false
     },
     "concrete_plan": {
@@ -144,7 +144,7 @@
         "crates/gsplat-render-wgpu/src/plans/**/*.rs"
       ],
       "target_lt": 600,
-      "hard_ceiling": 1000,
+      "hard_ceiling": 2500,
       "enforce_target": false
     },
     "render_lib": {
@@ -152,7 +152,7 @@
         "crates/gsplat-render-wgpu/src/lib.rs"
       ],
       "target_lt": 200,
-      "enforce_target": true
+      "enforce_target": false
     },
     "renderer_orchestrator": {
       "paths": [
@@ -160,11 +160,12 @@
         "crates/gsplat-render-wgpu/src/renderer/mod.rs"
       ],
       "target_lt": 800,
-      "enforce_target": true
+      "enforce_target": false
     },
     "wgsl": {
       "target_lt": 350,
-      "enforce_target": true
+      "hard_ceiling": 2500,
+      "enforce_target": false
     }
   },
   "grandfather_ratchet": {
@@ -174,6 +175,7 @@
   "top_level_orchestration": {
     "enabled": false,
     "target_lt": 150,
+    "enforce_target": false,
     "activation_task": "E1",
     "activation_paths": [
       "crates/gsplat-render-wgpu/src/renderer.rs",
@@ -188,49 +190,49 @@
       "a0_physical_loc": 5680,
       "baseline_physical_loc": 5004,
       "owner_task": "M7",
-      "exit_condition": "Remove the legacy owner and leave lib.rs as public re-exports below 200 physical LOC."
+      "exit_condition": "Remove legacy renderer ownership so lib.rs contains only crate wiring and public re-exports."
     },
     {
       "path": "crates/gsplat-ffi-c/src/lib.rs",
       "a0_physical_loc": 5344,
       "baseline_physical_loc": 5344,
       "owner_task": "M3",
-      "exit_condition": "Split stable ABI implementation from compatibility plumbing and reduce this file below 800 physical LOC."
+      "exit_condition": "Separate stable ABI declarations and marshalling from renderer lifecycle and compatibility plumbing into independently testable owners."
     },
     {
       "path": "crates/gsplat-render-wgpu/src/surface_presenter.rs",
       "a0_physical_loc": 5091,
       "baseline_physical_loc": 5091,
       "owner_task": "M7",
-      "exit_condition": "Delete the legacy presenter owner after Surface cutover and reduce or remove this file below 800 physical LOC."
+      "exit_condition": "After Surface cutover, delete the legacy presenter owner or retain only adapter and presentation-host responsibilities."
     },
     {
       "path": "crates/gsplat-render-wgpu/src/surface_session.rs",
       "a0_physical_loc": 5044,
       "baseline_physical_loc": 5042,
       "owner_task": "M7",
-      "exit_condition": "Delete the legacy session/controller owner after product cutover and reduce or remove this file below 800 physical LOC."
+      "exit_condition": "After product cutover, move controller, adaptive and evidence ownership out of the legacy session or delete it."
     },
     {
       "path": "examples/desktop/src/main.rs",
       "a0_physical_loc": 4135,
       "baseline_physical_loc": 4135,
       "owner_task": "M1",
-      "exit_condition": "Split desktop host, CLI, and benchmark responsibilities so main.rs is below 800 physical LOC."
+      "exit_condition": "Separate desktop host, CLI and benchmark responsibilities so main.rs is composition only."
     },
     {
       "path": "crates/gsplat-render-wgpu/src/direct_gpu_order.rs",
       "a0_physical_loc": 2862,
       "baseline_physical_loc": 2855,
       "owner_task": "A5",
-      "exit_condition": "Extract strategy-free GPU order primitives and leave no file at or above 800 physical LOC."
+      "exit_condition": "Extract strategy-free GPU order primitives and leave this owner with one independently testable orchestration responsibility."
     },
     {
       "path": "crates/gsplat-io-ply/src/lib.rs",
       "a0_physical_loc": 2852,
       "baseline_physical_loc": 2852,
       "owner_task": "IO-PLY-1",
-      "exit_condition": "A dedicated bounded-loader responsibility split reduces lib.rs below 800 physical LOC without changing import behavior.",
+      "exit_condition": "Separate PLY metadata, bounded decode and import policy responsibilities without changing import behavior.",
       "review_task": "A9",
       "review_action": "Before Package A closeout, add IO-PLY-1 and its static active/completed ledger pair to program_task_state, replace it with an already cataloged task, or meet the exit condition and remove this entry; an unchanged entry fails once A9 closes."
     },
@@ -239,42 +241,42 @@
       "a0_physical_loc": 2358,
       "baseline_physical_loc": 2358,
       "owner_task": "A5",
-      "exit_condition": "Extract project, compact, scan, and indirect primitives so the legacy file is removed or below 800 physical LOC."
+      "exit_condition": "Extract reusable project, compact, scan and indirect primitives so the legacy file has one plan-execution responsibility or is removed."
     },
     {
       "path": "crates/gsplat-render-wgpu/src/tiled_resident_gpu.rs",
       "a0_physical_loc": 2156,
       "baseline_physical_loc": 2156,
       "owner_task": "M7",
-      "exit_condition": "Remove obsolete diagnostic ownership or isolate retained responsibilities below 800 physical LOC during legacy deletion."
+      "exit_condition": "Remove obsolete tiled diagnostics or isolate each retained diagnostic responsibility behind an explicit non-product owner."
     },
     {
       "path": "crates/gsplat-web/src/wasm.rs",
       "a0_physical_loc": 2139,
       "baseline_physical_loc": 2139,
       "owner_task": "M4",
-      "exit_condition": "Keep the Web consumer as lifecycle/API adaptation and split it into files below 800 physical LOC."
+      "exit_condition": "Keep the Web consumer limited to lifecycle and API adaptation with parsing, receipts and renderer ownership separated."
     },
     {
       "path": "crates/gsplat-render-wgpu/src/preproject_gpu.rs",
       "a0_physical_loc": 1731,
       "baseline_physical_loc": 1731,
       "owner_task": "A5",
-      "exit_condition": "Extract reusable GPU project/compact/radix primitives and leave the legacy file below 800 physical LOC or remove it."
+      "exit_condition": "Extract reusable GPU project, compact and radix primitives and leave one diagnostic responsibility or remove the legacy file."
     },
     {
       "path": "crates/gsplat-render-wgpu/src/tiled_gpu.rs",
       "a0_physical_loc": 1456,
       "baseline_physical_loc": 1456,
       "owner_task": "M7",
-      "exit_condition": "Remove obsolete tiled ownership or split any retained diagnostic leaves below 800 physical LOC."
+      "exit_condition": "Remove obsolete tiled ownership or isolate retained diagnostic leaves by responsibility and dependency direction."
     },
     {
       "path": "crates/gsplat-io-spz/src/lib.rs",
       "a0_physical_loc": 1310,
       "baseline_physical_loc": 1310,
       "owner_task": "IO-SPZ-1",
-      "exit_condition": "A dedicated SPZ loader split reduces lib.rs below 800 physical LOC while preserving its isolated contract.",
+      "exit_condition": "Separate SPZ metadata, bounded decode and import policy while preserving the isolated format contract.",
       "review_task": "A9",
       "review_action": "Before Package A closeout, add IO-SPZ-1 and its static active/completed ledger pair to program_task_state, replace it with an already cataloged task, or meet the exit condition and remove this entry; an unchanged entry fails once A9 closes."
     },
@@ -283,63 +285,63 @@
       "a0_physical_loc": 1300,
       "baseline_physical_loc": 1300,
       "owner_task": "M1",
-      "exit_condition": "Separate runner CLI from renderer-host responsibilities and reduce main.rs below 800 physical LOC."
+      "exit_condition": "Separate benchmark CLI, artifact collection and renderer-host responsibilities so main.rs is composition only."
     },
     {
       "path": "crates/gsplat-render-wgpu/src/gpu_telemetry.rs",
       "a0_physical_loc": 1219,
       "baseline_physical_loc": 1219,
       "owner_task": "A7",
-      "exit_condition": "Extract immutable receipts and bounded observer storage into files below 800 physical LOC."
+      "exit_condition": "Separate immutable receipt types from bounded observer storage and polling lifecycle."
     },
     {
       "path": "crates/gsplat-render-wgpu/src/external_prefix_radix.rs",
       "a0_physical_loc": 1123,
       "baseline_physical_loc": 1123,
       "owner_task": "A5",
-      "exit_condition": "Consolidate scan/radix mechanics into focused GPU modules below 800 physical LOC."
+      "exit_condition": "Consolidate scan and radix mechanics into strategy-free GPU owners with explicit scratch and dispatch boundaries."
     },
     {
       "path": "crates/gsplat-render-wgpu/src/packed_atlas.rs",
       "a0_physical_loc": 916,
       "baseline_physical_loc": 916,
       "owner_task": "A3",
-      "exit_condition": "Move Resident scene ownership into focused scene modules and reduce or remove this file below 800 physical LOC."
+      "exit_condition": "Move Resident scene ownership and encoding into scene modules so this file owns only packed-atlas quantization and compatibility."
     },
     {
       "path": "crates/gsplat-sort/src/lib.rs",
       "a0_physical_loc": 870,
       "baseline_physical_loc": 870,
       "owner_task": "A4",
-      "exit_condition": "Consolidate CPU order primitives behind focused modules and reduce lib.rs below 800 physical LOC."
+      "exit_condition": "Consolidate CPU depth/key, SIMD and radix workspace responsibilities behind focused modules, leaving lib.rs as the public facade."
     },
     {
       "path": "crates/gsplat-render-wgpu/src/projected_draw_telemetry.rs",
       "a0_physical_loc": 836,
       "baseline_physical_loc": 836,
       "owner_task": "A7",
-      "exit_condition": "Move immutable draw receipts into evidence leaves and reduce or remove this file below 800 physical LOC."
+      "exit_condition": "Separate immutable projected-draw receipts from bounded observer storage and adaptive lifecycle."
     },
     {
       "path": "crates/gsplat-render-wgpu/shaders/preproject_contributors.wgsl",
       "a0_physical_loc": 433,
       "baseline_physical_loc": 433,
       "owner_task": "A5",
-      "exit_condition": "Extract reusable GPU mechanics so each retained production WGSL file is below 350 physical LOC."
+      "exit_condition": "Extract reusable GPU mechanics so this shader owns one contributor-generation stage without duplicated scan or raster contracts."
     },
     {
       "path": "crates/gsplat-render-wgpu/shaders/splat_surface_direct.wgsl",
       "a0_physical_loc": 370,
       "baseline_physical_loc": 370,
       "owner_task": "A6",
-      "exit_condition": "Consolidate the accepted canonical raster into WGSL files below 350 physical LOC without changing math."
+      "exit_condition": "Consolidate the accepted canonical raster math into a single owned contract without changing pixels."
     },
     {
       "path": "crates/gsplat-render-wgpu/shaders/direct_gpu_order.wgsl",
       "a0_physical_loc": 363,
       "baseline_physical_loc": 363,
       "owner_task": "A5",
-      "exit_condition": "Extract portable GPU order kernels into focused WGSL files below 350 physical LOC."
+      "exit_condition": "Extract portable GPU order kernels by stage with one owner for shared key and radix contracts."
     }
   ],
   "exceptions": [],

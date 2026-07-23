@@ -367,14 +367,16 @@ Hard gates are limited to:
 
 A1 creates a lightweight checker. From that point:
 
-- new production Rust modules target fewer than 800 lines and may not exceed
-  1,200 without an explicit exception;
-- a concrete plan module targets fewer than 600 lines and may not exceed 1,000;
-- `lib.rs` targets fewer than 200 lines;
-- the renderer orchestrator targets fewer than 800 lines;
+- new production Rust modules target fewer than 800 lines as a review signal;
+- a concrete plan module targets fewer than 600 lines as a review signal;
+- `lib.rs` targets fewer than 200 lines as a review signal;
+- the renderer orchestrator targets fewer than 800 lines as a review signal;
 - the top-level `render_to`/`render_frame` orchestration function targets fewer
-  than 150 lines;
-- new WGSL files target fewer than 350 lines;
+  than 150 lines as a review signal;
+- new WGSL files target fewer than 350 lines as a review signal;
+- a new production Rust, plan, or WGSL file above 2,500 physical lines trips a
+  multi-thousand-line circuit breaker unless a finite exception records why
+  the responsibility is still cohesive and which task must revisit it;
 - current giant files enter an allowlist containing baseline physical LOC,
   responsible extraction task and exit condition; they may only shrink;
 - moving embedded tests without moving responsibilities does not count as an
@@ -387,22 +389,26 @@ A1 creates a lightweight checker. From that point:
 - production paths may not use a runtime vector of boxed passes or a public
   render-plan trait.
 
-These numbers are architecture-smell thresholds, not file-sharding quotas.
-Responsibility, dependency direction and testability decide module boundaries.
-A cohesive production module between 800 and 1,200 lines is reviewable and may
-be accepted when another split would add cycles, duplicate abstractions or hide
-the real owner. A file must not be split merely to satisfy a line count. The
-default 1,200-line ceiling exists to stop new multi-thousand-line mixed owners;
-the explicit, finite exception mechanism covers the rare case where a larger
-cohesive generated/table-heavy implementation is genuinely clearer.
+These numbers are architecture-smell thresholds, not file-sharding quotas or
+task completion gates. Responsibility, dependency direction and testability
+decide module boundaries. A cohesive module above any review target is
+acceptable when another split would add cycles, duplicate abstractions or hide
+the real owner; its closeout simply explains the cohesion and split cost. A
+file must not be split merely to satisfy a line count, and 2,499 lines is not
+automatically good design. The 2,500-line circuit breaker exists only to stop a
+new multi-thousand-line mixed owner from appearing unnoticed. The explicit,
+finite exception mechanism covers rare generated/table-heavy or transition
+implementations without forcing artificial fragmentation.
 
 Legacy-file LOC baselines are coarse architecture checkpoints, not exact
 formatting budgets. The checker tolerates up to 32 lines of mechanical drift
 from a checkpoint and only requires a lower checkpoint after a reduction of at
 least 100 lines. Closing the responsible extraction task removes the legacy
 entry and returns the file to its normal profile; it does not require an
-otherwise cohesive module to land on exactly 799 lines. Dependency direction,
-single ownership and independently testable behavior remain the decisive gates.
+otherwise cohesive module to land on exactly 799, 999 or 1,199 lines. Legacy
+exit conditions describe responsibility removal rather than a precise LOC
+finish line. Dependency direction, single ownership and independently testable
+behavior remain the decisive gates.
 
 ## 9. Work-package map
 

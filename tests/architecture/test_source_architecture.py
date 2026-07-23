@@ -132,7 +132,7 @@ class SourceArchitectureFixtureTests(unittest.TestCase):
                         msg="\n".join(issue.render() for issue in issues),
                     )
 
-    def test_policy_registers_hard_breaches_without_turning_targets_into_quotas(self) -> None:
+    def test_policy_registers_circuit_breaker_breaches_without_turning_targets_into_quotas(self) -> None:
         policy = copy.deepcopy(self.base_policy)
         sources = {
             kind: checker.discover(REPO_ROOT, source_set)
@@ -165,15 +165,21 @@ class SourceArchitectureFixtureTests(unittest.TestCase):
         limits = self.base_policy["limits"]
         self.assertEqual(
             (limits["production_rust"]["target_lt"], limits["production_rust"]["hard_ceiling"]),
-            (800, 1200),
+            (800, 2500),
         )
         self.assertEqual(
             (limits["concrete_plan"]["target_lt"], limits["concrete_plan"]["hard_ceiling"]),
-            (600, 1000),
+            (600, 2500),
         )
+        self.assertFalse(limits["production_rust"]["enforce_target"])
+        self.assertFalse(limits["concrete_plan"]["enforce_target"])
         self.assertEqual(limits["render_lib"]["target_lt"], 200)
+        self.assertFalse(limits["render_lib"]["enforce_target"])
         self.assertEqual(limits["renderer_orchestrator"]["target_lt"], 800)
+        self.assertFalse(limits["renderer_orchestrator"]["enforce_target"])
         self.assertEqual(limits["wgsl"]["target_lt"], 350)
+        self.assertEqual(limits["wgsl"]["hard_ceiling"], 2500)
+        self.assertFalse(limits["wgsl"]["enforce_target"])
         self.assertEqual(
             self.base_policy["grandfather_ratchet"],
             {"growth_tolerance_lines": 32, "shrink_checkpoint_lines": 100},
@@ -181,6 +187,7 @@ class SourceArchitectureFixtureTests(unittest.TestCase):
         orchestration = self.base_policy["top_level_orchestration"]
         self.assertFalse(orchestration["enabled"])
         self.assertEqual(orchestration["target_lt"], 150)
+        self.assertFalse(orchestration["enforce_target"])
         self.assertEqual(orchestration["activation_task"], "E1")
         self.assertTrue(orchestration["reason"])
         self.assertEqual(orchestration["functions"], [])

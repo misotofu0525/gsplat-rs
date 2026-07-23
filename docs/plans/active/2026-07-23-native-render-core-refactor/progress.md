@@ -79,6 +79,23 @@ decision table are human-readable mirrors, not checker inputs.
 Then record the code commit (if any), evidence paths, commands, result and next
 eligible task. Do not rewrite the architecture in this ledger.
 
+## Cross-cutting LOC guardrail correction
+
+- Corrected: 2026-07-23 after explicit owner review.
+- There is no 890-line rule. The 800/600/200/800/350/150 values are advisory
+  review signals, not task completion gates.
+- A cohesive file may exceed a review target when the closeout explains its
+  responsibility, dependency direction, test boundary and why another split
+  would make ownership worse. No task may split at 799/999/1,199 or move tests
+  merely to satisfy a count.
+- New production Rust, plan and WGSL files use a 2,500-line default circuit
+  breaker only to prevent an unnoticed multi-thousand-line mixed owner. A
+  finite documented exception remains a valid path; 2,499 is not a quality
+  target.
+- Dependency/ownership rules and the legacy giant-file growth ratchet remain
+  hard. Historical A1 entries below record the then-current implementation;
+  this section and the current policy are authoritative for later tasks.
+
 ## Current task
 
 ### A3b — Extract GPU resource planning and Direct/Packed preflight
@@ -157,9 +174,10 @@ eligible task. Do not rewrite the architecture in this ledger.
     bindings, 128 MiB boundaries, `u32` draw count and `usize::MAX` overflow;
   - architecture checker/self-tests, format, locked workspace check/tests,
     all-target Clippy, Rustdoc, WASM and FFI smoke pass;
-  - 800 LOC is an advisory review target. A cohesive 800--1,200-line budget or
-    preflight module is acceptable; only a file above 1,200 needs a finite
-    documented exception. Do not split at 799 lines or game physical LOC.
+  - LOC is advisory below the multi-thousand circuit breaker. Cohesive modules
+    above 800 or 1,200 lines are acceptable after root review; only a new file
+    above 2,500 needs a finite documented exception. Do not split at 799 lines
+    or game physical LOC.
 - Performance observations: none; A3b is a behavior-only responsibility
   extraction.
 - Required endpoints for claim: none in the writer task. Root acceptance owns
@@ -226,8 +244,8 @@ eligible task. Do not rewrite the architecture in this ledger.
 - Hard gates:
   - architecture checker/self-tests pass; the 1,881-line grandfather entry is
     removed or ratcheted exactly; 800 physical LOC is a review target, while
-    the existing 1,200-line default ceiling and finite exception mechanism
-    prevent a new multi-thousand-line owner without forcing artificial splits
+    the 2,500-line circuit breaker and finite exception mechanism prevent a new
+    multi-thousand-line owner without forcing artificial splits
   - format, locked workspace check/tests/clippy/rustdoc, render-wgpu tests, wasm
     check and FFI smoke pass
   - a repository-external temporary crate imports the existing public Resident
