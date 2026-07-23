@@ -26,12 +26,13 @@ A4 = Active
   strategy-free data/API extraction and the complete A3 scene/resource
   ownership extraction are root-accepted.
 - Current work package: A — responsibility extraction.
-- Active package task: A4a — `gsplat-sort` CPU backend/SIMD/radix ownership
-  extraction in an isolated worktree.
-- Last completed task: A3 — scene ownership, Resident layout and resource
-  preflight extraction.
-- Next eligible task: A4a only. A4b and every later package remain inactive
-  until root review accepts A4a.
+- Active package task: none while the root task writes and reviews the A4b
+  boundary.
+- Last completed task: A4a — `gsplat-sort` CPU backend/SIMD/radix ownership
+  extraction.
+- Next eligible task: A4b only. A4b becomes Active in a separate plan-only
+  commit; A5 and every later package remain inactive until root review accepts
+  A4b.
 - Integration branch: `codex/native-render-core-refactor`.
 - Frozen source implementation closeout:
   `5db2520e0d7a0ef1c68a78bdb9abc6fc588c5186`.
@@ -102,8 +103,9 @@ eligible task. Do not rewrite the architecture in this ledger.
 ### A4a — Extract the existing `gsplat-sort` CPU owner
 
 - Parent task state: A4 Active
-- Subtask state: Active
+- Subtask state: Accepted
 - Started: 2026-07-23
+- Ended: 2026-07-23
 - Production baseline commit:
   `3128b5e` (`docs: accept A3 scene resource extraction`)
 - Exact source baseline before production edits:
@@ -181,6 +183,44 @@ eligible task. Do not rewrite the architecture in this ledger.
 - Closeout requirement: root reviews one fixed writer SHA, proves symbol/test
   inventory and public API parity, records final responsibilities, then either
   Accepts/Rejects/Defers A4a. A4b is activated only in a later plan-only commit.
+- Fixed writer commit:
+  `8ba7845fce002c26e65280a60de81259096beda1` (parent
+  `1e4a45c18b0e8b260c52b0693fd6e9454461a701`).
+- Integration commit:
+  `2ead582fdeb723c1292755ccd6e44807cc16ad90` (`merge: integrate A4a CPU sort
+  ownership extraction`).
+- Final responsibilities and physical LOC:
+  - `lib.rs`: 26 LOC, crate-root facade, public trait/error and re-exports only
+  - `cpu.rs`: 548 LOC, CPU backend, reusable scratch, packed pairs and existing
+    target-gated NEON/AVX2 helpers
+  - `radix.rs`: 455 LOC, unchanged stable serial/Rayon radix mechanics
+  - `gpu_odd_even.rs`: 309 LOC, mechanically moved compatibility/conformance
+    backend with its original O(N^2) and 4,096-item limits
+- Preservation evidence:
+  - independent fixed-SHA review found P0/P1/P2 = 0 and proved CPU production,
+    GPU odd-even production, public trait/error, test bodies and assertion
+    inventories byte-identical after accounting for module ownership
+  - repository-external probes passed before and after for all four public root
+    names, both `Default` implementations, backend names, sorting behavior and
+    exact error Display strings
+  - all 17 test leaves remain; 16 pass and the same manual size-ladder
+    microbenchmark remains ignored
+- Verification:
+  - PASS `cargo fmt --all -- --check`, `git diff --check`, locked `gsplat-sort`
+    and `gsplat-render-wgpu` library tests, wasm32 check, all-target Clippy with
+    warnings denied and Rustdoc with warnings denied
+  - PASS Apple M4 GPU conformance for the unchanged odd-even compatibility
+    backend
+  - PASS architecture checker and all three self-tests after removing the
+    completed 870-LOC `gsplat-sort/src/lib.rs` grandfather entry; the unrelated
+    cohesive 916-LOC `packed_atlas.rs` remains an advisory notice only
+- Performance observation: none. This is a byte-preserving responsibility
+  extraction and makes no speed claim.
+- Decision: Accept A4a. The crate root is now a real facade, CPU and legacy GPU
+  compatibility responsibilities have one owner each, and no algorithm,
+  policy, public API or consumer behavior changed. The grandfather entry was
+  removed because its semantic exit condition is satisfied, not because a
+  numeric quota was reached.
 
 ### A3b — Extract GPU resource planning and Direct/Packed preflight
 

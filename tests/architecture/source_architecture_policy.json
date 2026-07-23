@@ -302,13 +302,6 @@
       "exit_condition": "Consolidate scan and radix mechanics into strategy-free GPU owners with explicit scratch and dispatch boundaries."
     },
     {
-      "path": "crates/gsplat-sort/src/lib.rs",
-      "a0_physical_loc": 870,
-      "baseline_physical_loc": 870,
-      "owner_task": "A4",
-      "exit_condition": "Consolidate CPU depth/key, SIMD and radix workspace responsibilities behind focused modules, leaving lib.rs as the public facade."
-    },
-    {
       "path": "crates/gsplat-render-wgpu/src/projected_draw_telemetry.rs",
       "a0_physical_loc": 836,
       "baseline_physical_loc": 836,
