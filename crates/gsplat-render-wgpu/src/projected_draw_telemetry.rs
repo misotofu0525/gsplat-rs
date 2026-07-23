@@ -15,6 +15,7 @@ use std::{
     },
 };
 
+pub use crate::api::SurfaceProjectedDrawExecution;
 use crate::{SurfaceOrderBackendUsed, TimerInstant, timer_elapsed_ms, wgpu_label};
 
 const RING_SLOTS: usize = 8;
@@ -44,24 +45,6 @@ fn next_projected_draw_ticket(current: u64) -> u64 {
         .checked_add(1)
         .filter(|next| *next <= MAX_JAVASCRIPT_SAFE_INTEGER)
         .unwrap_or(FIRST_PROJECTED_DRAW_TICKET)
-}
-
-/// Exact projected draw path used for one presented frame.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum SurfaceProjectedDrawExecution {
-    /// Project every visible candidate, compute exact contributor count C,
-    /// and draw the original V candidates without a compaction scatter.
-    #[default]
-    Candidate,
-    /// Project, scan, and stably compact contributors before drawing exactly
-    /// the compacted C instances.
-    Compact,
-}
-
-impl SurfaceProjectedDrawExecution {
-    pub const fn exact_contributor_compaction(self) -> bool {
-        matches!(self, Self::Compact)
-    }
 }
 
 /// Completion measurement for one projected draw execution.
@@ -586,12 +569,6 @@ mod tests {
         const {
             assert!(FIRST_PROJECTED_DRAW_TICKET <= MAX_JAVASCRIPT_SAFE_INTEGER);
         }
-    }
-
-    #[test]
-    fn execution_defines_exact_compaction_semantics() {
-        assert!(!SurfaceProjectedDrawExecution::Candidate.exact_contributor_compaction());
-        assert!(SurfaceProjectedDrawExecution::Compact.exact_contributor_compaction());
     }
 
     #[test]
