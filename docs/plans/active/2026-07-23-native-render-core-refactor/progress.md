@@ -40,13 +40,13 @@ A8 = Active
   projection in `gpu/project.rs`. A5, A6 and A7 are now closed and accepted;
   A8 remains open for separately activated lifecycle slices.
 - Current work package: A — responsibility extraction.
-- Active package task: A8, with one isolated writer assigned to A8c. A single
-  active task does not use the multi-writer lane registry.
-- Last completed tasks: A7f — submission identities; A8b — Surface
-  acquire/recovery/present lifecycle; A7 package closeout — merged full matrix.
-- Current implementation: A8c — Surface configuration/resize transaction
-  ownership. Surface capture remains a later sequential A8d slice because both
-  responsibilities must mechanically rewire the same presenter owner.
+- Active package task: A8. A8c is integrated and accepted; no implementation
+  writer is active while the root task records the A8d activation baseline.
+- Last completed tasks: A8c — Surface configuration/resize transaction;
+  A8b — Surface acquire/recovery/present lifecycle; A7 package closeout.
+- Next implementation: A8d — native Surface capture ownership. It follows
+  A8c sequentially because both responsibilities mechanically rewire the same
+  presenter owner.
 - Integration branch: `codex/native-render-core-refactor`.
 - Frozen source implementation closeout:
   `5db2520e0d7a0ef1c68a78bdb9abc6fc588c5186`.
@@ -123,13 +123,13 @@ eligible task. Do not rewrite the architecture in this ledger.
   hard. Historical A1 entries below record the then-current implementation;
   this section and the current policy are authoritative for later tasks.
 
-## Current task
+## Latest completed task
 
 ### A8c — Extract Surface configuration transaction state
 
 - Parent task state: A8 Active; A8a offscreen target/readback and A8b Surface
   acquire/recovery/present are accepted.
-- Subtask state: Active.
+- Subtask state: Accepted.
 - Production baseline:
   `66e3631251bbbf7821d96a11b4cbb73f64ab41de`.
 - Hypothesis: Surface configuration identity, validity, size admission and
@@ -191,6 +191,22 @@ eligible task. Do not rewrite the architecture in this ledger.
 - Source-size rule: no 800, 890 or other fixed LOC target. Accept only on
   cohesive ownership, preserved dependency direction and executable lifecycle
   tests; do not split or move tests to satisfy a count.
+- Candidate and integration commit:
+  `b676df4648d52087d44aa809fa41c6dddf034ea6`, exact parent
+  `943d5e6075a5b99f13b37cff73e3092e7c87febb`; fast-forwarded without rewrite.
+- Fixed-SHA review: Accepted with zero P0/P1/P2 findings. The four-file
+  allowlist was exact; `configuration.rs` is the unique raw
+  `wgpu::SurfaceConfiguration`/`surface.configure()` owner; lifecycle remains
+  acquire/one-retry/present only; Presenter retains geometry, cache, telemetry,
+  capture and command-submission orchestration.
+- Root shared matrix: PASS architecture checker/self-tests, format/diff,
+  locked workspace check/tests, all-target Clippy with warnings denied,
+  Rustdoc with warnings denied, wasm32 Web check, required Metal SortedAlpha
+  conformance and C FFI smoke. Renderer library result: 301 passed, 5 ignored.
+- Behavior decision: Accepted. Native/WASM resize, configuration rollback and
+  fail-closed state, capture allocation-before-COPY_SRC, error precedence,
+  submit-before-present and after-present capture publication are preserved.
+- Performance/device claim: none; this was an ownership-only extraction.
 
 ## Latest integrated batch
 
@@ -2293,6 +2309,7 @@ rebase, push, main or ledger edits.
 | A6a | Accepted | `af034c8` + `008d4dd` | A7e/A6a closeout above and fixed-SHA review | accepted raster preparation and encoding now have one canonical owner; shader bytes, render behavior and platform lifecycle remain unchanged |
 | A6 | Accepted | `008d4dd` | A6a record above and merged full matrix | raster facade, pipeline preparation and draw encoding have explicit cohesive owners, duplicate quad constants are gone and the completed A6 grandfather record is retired |
 | A8b | Accepted | `71bb0c6` + `6e2a7ef` | A7f/A8b closeout above and fixed-SHA review | Surface acquire, one-retry recovery and primitive present now have a lifecycle leaf; resize, capture and frame orchestration remain with the presenter |
+| A8c | Accepted | `b676df4` | A8c closeout above and fixed-SHA review | Surface configuration identity, resize, COPY_SRC upgrade and rollback/fail-closed transitions now have one configuration owner; capture state and frame orchestration remain with the presenter |
 
 ## Baseline evidence inherited, not rerun by default
 
