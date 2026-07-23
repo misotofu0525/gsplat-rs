@@ -17,11 +17,15 @@ use crate::gpu::{
     FULL32_RESIDENT_STORAGE_BINDINGS as RESIDENT_RADIX_STORAGE_BINDINGS,
     FULL32_RESIDENT_WORKGROUP_STORAGE_BYTES as RESIDENT_RADIX_WORKGROUP_STORAGE_BYTES,
     FULL32_SCAN_WORKGROUP_SIZE as SCAN_WORKGROUP_SIZE,
-    FULL32_SCAN_WORKGROUP_STORAGE_BYTES as SCAN_WORKGROUP_STORAGE_BYTES, StableFull32Radix,
+    FULL32_SCAN_WORKGROUP_STORAGE_BYTES as SCAN_WORKGROUP_STORAGE_BYTES, ResidentVisibleCompaction,
+    ResidentVisibleCompactionBindings, ResidentVisibleCompactionSeed, StableFull32Radix,
     StableFull32RadixProfile, StableFull32RadixTimestampRange, full32_scan_level_counts,
     full32_workgroup_count,
 };
 use crate::{DirectSceneError, GpuSortPair, GpuSurfaceRenderParams, wgpu_label};
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+use crate::gpu::ResidentOrderControl;
 
 #[cfg(test)]
 use crate::gpu::{
@@ -83,19 +87,6 @@ struct GpuDrawIndirectArgs {
     first_instance: u32,
 }
 
-#[repr(C)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Pod, Zeroable)]
-struct ResidentOrderControl {
-    visible_count: u32,
-    active_group_count: u32,
-    dispatch_x: u32,
-    dispatch_y: u32,
-    dispatch_z: u32,
-    _pad0: u32,
-    _pad1: u32,
-    _pad2: u32,
-}
-
 #[derive(Clone, Copy)]
 pub(crate) struct GpuOrderTimestampRange<'a> {
     pub(crate) query_set: &'a wgpu::QuerySet,
@@ -103,16 +94,6 @@ pub(crate) struct GpuOrderTimestampRange<'a> {
     pub(crate) keygen_end_index: u32,
     pub(crate) radix_begin_index: u32,
     pub(crate) radix_end_index: u32,
-}
-
-struct ResidentVisibleCompaction {
-    keygen_pipeline: wgpu::ComputePipeline,
-    compact_pipeline: wgpu::ComputePipeline,
-    finalize_pipeline: wgpu::ComputePipeline,
-    bind_group: wgpu::BindGroup,
-    group_offsets: wgpu::Buffer,
-    dispatch: Dispatch2d,
-    control: wgpu::Buffer,
 }
 
 pub(crate) struct DirectGpuOrder {
@@ -354,35 +335,8 @@ impl DirectGpuOrder {
         let dispatch_limit = device.limits().max_compute_workgroups_per_dimension;
         let keygen_dispatch = Dispatch2d::for_workgroups(group_count, dispatch_limit)
             .expect("dispatch limits were validated");
-        let visible_resources = resident_visible_compaction_enabled.then(|| {
-            let control = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: wgpu_label("gsplat-resident-gpu-order-control"),
-                contents: bytemuck::bytes_of(&ResidentOrderControl {
-                    visible_count: 0,
-                    active_group_count: 0,
-                    dispatch_x: 0,
-                    dispatch_y: 1,
-                    dispatch_z: 1,
-                    _pad0: 0,
-                    _pad1: 0,
-                    _pad2: 0,
-                }),
-                usage: wgpu::BufferUsages::STORAGE
-                    | wgpu::BufferUsages::INDIRECT
-                    | wgpu::BufferUsages::COPY_SRC
-                    | wgpu::BufferUsages::COPY_DST,
-            });
-            let group_offset_count = group_count + 1;
-            let group_offsets = storage_buffer(
-                device,
-                "gsplat-resident-visible-group-offsets",
-                u64::from(group_offset_count) * size_of::<u32>() as u64,
-                wgpu::BufferUsages::STORAGE
-                    | wgpu::BufferUsages::COPY_SRC
-                    | wgpu::BufferUsages::COPY_DST,
-            );
-            (control, group_offsets, group_offset_count)
-        });
+        let visible_seed = resident_visible_compaction_enabled
+            .then(|| ResidentVisibleCompactionSeed::new(device, group_count));
         let indirect_args = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: wgpu_label("gsplat-direct-gpu-order-indirect-args"),
             contents: bytemuck::bytes_of(&GpuDrawIndirectArgs {
@@ -430,13 +384,11 @@ impl DirectGpuOrder {
             "generate_pairs",
             "gsplat-direct-gpu-order-keygen-pipeline",
         );
-        let radix_profile = if let Some((control, group_offsets, group_offset_count)) =
-            visible_resources.as_ref()
-        {
+        let radix_profile = if let Some(seed) = visible_seed.as_ref() {
             StableFull32RadixProfile::ResidentVisible {
-                control,
-                group_offsets,
-                group_offset_count: *group_offset_count,
+                control: seed.control(),
+                group_offsets: seed.group_offsets(),
+                group_offset_count: seed.group_offset_count(),
             }
         } else if resident_radix8_enabled {
             StableFull32RadixProfile::Resident
@@ -463,82 +415,21 @@ impl DirectGpuOrder {
                 entire_buffer_entry(9, &indirect_args),
             ],
         });
-        let resident_visible_compaction = if resident_visible_compaction_enabled {
-            let (control, group_offsets, _) =
-                visible_resources.expect("visible compaction resources were constructed");
-            let compact_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: wgpu_label("gsplat-resident-visible-compaction-shader"),
-                source: wgpu::ShaderSource::Wgsl(
-                    include_str!("../shaders/resident_gpu_order_compact.wgsl").into(),
-                ),
-            });
-            let compact_layout =
-                device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                    label: wgpu_label("gsplat-resident-visible-compaction-bgl"),
-                    entries: &[
-                        storage_entry(0, true),
-                        uniform_entry(
-                            1,
-                            false,
-                            NonZeroU64::new(size_of::<GpuSurfaceRenderParams>() as u64),
-                        ),
-                        storage_entry(2, false),
-                        storage_entry(3, false),
-                        storage_entry(4, false),
-                        storage_entry(5, false),
-                        storage_entry(6, false),
-                        storage_entry(9, false),
-                    ],
-                });
-            let compact_pipeline_layout = pipeline_layout(
+        let resident_visible_compaction = visible_seed.map(|seed| {
+            seed.bind(
                 device,
-                "gsplat-resident-visible-compaction-layout",
-                &compact_layout,
-            );
-            let compact_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: wgpu_label("gsplat-resident-visible-compaction-bg"),
-                layout: &compact_layout,
-                entries: &[
-                    entire_buffer_entry(0, source_buffer),
-                    entire_buffer_entry(1, render_params_buffer),
-                    entire_buffer_entry(2, radix.spare_keys()),
-                    entire_buffer_entry(3, &group_offsets),
-                    entire_buffer_entry(4, radix.input_keys()),
-                    entire_buffer_entry(5, radix.input_source_ids()),
-                    entire_buffer_entry(6, &control),
-                    entire_buffer_entry(9, &indirect_args),
-                ],
-            });
-            Some(ResidentVisibleCompaction {
-                keygen_pipeline: compute_pipeline(
-                    device,
-                    &compact_shader,
-                    &compact_pipeline_layout,
-                    "generate_keys_and_group_counts",
-                    "gsplat-resident-visible-keygen-pipeline",
+                ResidentVisibleCompactionBindings::new(
+                    source_buffer,
+                    render_params_buffer,
+                    radix.spare_keys(),
+                    radix.input_keys(),
+                    radix.input_source_ids(),
+                    &indirect_args,
                 ),
-                compact_pipeline: compute_pipeline(
-                    device,
-                    &compact_shader,
-                    &compact_pipeline_layout,
-                    "compact_visible_keys_ids",
-                    "gsplat-resident-visible-compact-pipeline",
-                ),
-                finalize_pipeline: compute_pipeline(
-                    device,
-                    &compact_shader,
-                    &compact_pipeline_layout,
-                    "finalize_visible_compaction",
-                    "gsplat-resident-visible-finalize-pipeline",
-                ),
-                bind_group: compact_bind_group,
-                group_offsets,
-                dispatch: keygen_dispatch,
-                control,
-            })
-        } else {
-            None
-        };
+                keygen_dispatch.x,
+                keygen_dispatch.y,
+            )
+        });
         Ok(Self {
             count,
             keygen_dispatch,
@@ -592,19 +483,9 @@ impl DirectGpuOrder {
         // generated exact visible instance count.
         encoder.clear_buffer(&self.indirect_args, 4, Some(4));
         if let Some(compaction) = &self.resident_visible_compaction {
-            let sentinel_offset = u64::from(workgroup_count(self.count)) * size_of::<u32>() as u64;
-            encoder.clear_buffer(
-                &compaction.group_offsets,
-                sentinel_offset,
-                Some(size_of::<u32>() as u64),
-            );
-            Self::encode_stage(
+            compaction.reset_sentinel(encoder);
+            compaction.encode_keygen(
                 encoder,
-                &compaction.keygen_pipeline,
-                &compaction.bind_group,
-                &[],
-                compaction.dispatch,
-                "gsplat-resident-visible-keygen-pass",
                 timestamps.map(|range| wgpu::ComputePassTimestampWrites {
                     query_set: range.query_set,
                     beginning_of_pass_write_index: Some(range.keygen_begin_index),
@@ -612,22 +493,9 @@ impl DirectGpuOrder {
                 }),
             );
             self.radix.encode_visible_compaction_scan(encoder);
-            Self::encode_stage(
+            compaction.encode_compact(encoder);
+            compaction.encode_finalize(
                 encoder,
-                &compaction.compact_pipeline,
-                &compaction.bind_group,
-                &[],
-                compaction.dispatch,
-                "gsplat-resident-visible-compact-pass",
-                None,
-            );
-            Self::encode_stage(
-                encoder,
-                &compaction.finalize_pipeline,
-                &compaction.bind_group,
-                &[],
-                Dispatch2d { x: 1, y: 1 },
-                "gsplat-resident-visible-finalize-pass",
                 timestamps.map(|range| wgpu::ComputePassTimestampWrites {
                     query_set: range.query_set,
                     beginning_of_pass_write_index: None,
@@ -661,7 +529,7 @@ impl DirectGpuOrder {
             encoder,
             self.resident_visible_compaction
                 .as_ref()
-                .map(|compaction| &compaction.control),
+                .map(ResidentVisibleCompaction::control),
             timestamps.map(|range| StableFull32RadixTimestampRange {
                 query_set: range.query_set,
                 begin_index: range.radix_begin_index,
@@ -687,20 +555,6 @@ impl DirectGpuOrder {
         pass.set_bind_group(0, bind_group, dynamic_offsets);
         pass.dispatch_workgroups(dispatch.x, dispatch.y, 1);
     }
-}
-
-fn storage_buffer(
-    device: &wgpu::Device,
-    label: &'static str,
-    size: u64,
-    usage: wgpu::BufferUsages,
-) -> wgpu::Buffer {
-    device.create_buffer(&wgpu::BufferDescriptor {
-        label: wgpu_label(label),
-        size,
-        usage,
-        mapped_at_creation: false,
-    })
 }
 
 fn pipeline_layout(
@@ -1064,7 +918,7 @@ mod tests {
             size_of::<GpuDrawIndirectArgs>() as u64,
         );
         encoder.copy_buffer_to_buffer(
-            &compaction.control,
+            compaction.control(),
             0,
             &control_readback,
             0,
