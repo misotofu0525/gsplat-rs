@@ -6,7 +6,34 @@
       "IO-PLY-1",
       "IO-SPZ-1"
     ],
-    "parallel_execution": null,
+    "parallel_execution": {
+      "activation_commit": "4f3a01faaa79132ce9f9f0402e48fb43ec3a6029",
+      "members": [
+        {
+          "task": "A7",
+          "lane": "A7b",
+          "write_allowlist": [
+            "crates/gsplat-render-wgpu/src/evidence/mod.rs",
+            "crates/gsplat-render-wgpu/src/evidence/ring.rs",
+            "crates/gsplat-render-wgpu/src/surface_session.rs"
+          ]
+        },
+        {
+          "task": "A5",
+          "lane": "A5e",
+          "write_allowlist": [
+            "crates/gsplat-render-wgpu/src/preproject_gpu.rs",
+            "crates/gsplat-render-wgpu/src/gpu/mod.rs",
+            "crates/gsplat-render-wgpu/src/gpu/preproject_compact.rs"
+          ]
+        }
+      ],
+      "integration_order": [
+        "A7b",
+        "A5e"
+      ],
+      "reason": "A7b owns only five bounded external evidence queues while A5e owns only Preproject key/ID compaction mechanics; their exact writer allowlists and mutable responsibilities are disjoint."
+    },
     "task_catalog": {
       "A0": "A",
       "A1": "A",

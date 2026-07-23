@@ -17,7 +17,15 @@ A1 = Accept
 A2 = Accepted
 A3 = Accepted
 A4 = Accepted
+A5 = Active
+A7 = Active
 <!-- gsplat-program-task-states: end -->
+
+<!-- gsplat-program-active-lanes: begin -->
+activation_commit = 4f3a01faaa79132ce9f9f0402e48fb43ec3a6029
+A5 = A5e
+A7 = A7b
+<!-- gsplat-program-active-lanes: end -->
 
 ## Program status
 
@@ -32,13 +40,14 @@ A4 = Accepted
   also integrated and accepted. The parent A5, A7 and A8 packages remain open
   for later, separately activated slices.
 - Current work package: A — responsibility extraction.
-- Active package tasks: none while the root task runs the combined acceptance
-  gates and records a new parallel activation baseline.
+- Active package tasks: A7b and A5e under the exact disjoint parallel lease
+  recorded by the architecture policy and machine lane block.
 - Last completed tasks: A7a — immutable order-receipt values; A5d — Direct
   Resident-visible compaction owner.
-- Next eligible implementation: after combined acceptance, A7b bounded
-  external evidence retention and A5e Preproject key/ID compaction may run from
-  one new activation commit in separate user-visible tasks/worktrees.
+- Next eligible implementation: A7b bounded external evidence retention and
+  A5e Preproject key/ID compaction may run concurrently from the same clean
+  activation commit in separate user-visible tasks/worktrees. Other slices
+  remain inactive until root acceptance closes this lease.
 - Integration branch: `codex/native-render-core-refactor`.
 - Frozen source implementation closeout:
   `5db2520e0d7a0ef1c68a78bdb9abc6fc588c5186`.
@@ -106,6 +115,95 @@ eligible task. Do not rewrite the architecture in this ledger.
 - Dependency/ownership rules and the legacy giant-file growth ratchet remain
   hard. Historical A1 entries below record the then-current implementation;
   this section and the current policy are authoritative for later tasks.
+
+## Current task
+
+### Parallel writer lanes — A7b and A5e
+
+- Activation commit:
+  `4f3a01faaa79132ce9f9f0402e48fb43ec3a6029`.
+- Isolation: two user-visible Codex tasks, two worktrees and exact disjoint
+  allowlists. Collaboration subagents remain read-only auditors/reviewers.
+- Integration order: root fixed-SHA review and merge A7b first, verify A5e's
+  frozen forbidden hashes, then review/merge A5e and rerun combined gates.
+- Neither writer edits this ledger or the architecture policy.
+- No fixed line count is a writer instruction, split criterion, review signal
+  or completion gate. Responsibility, dependencies, test seams and behavior
+  decide acceptance.
+
+### A7b — Extract bounded external evidence retention
+
+- Parent task state: A7 Active
+- Subtask state: Active
+- Hypothesis: the five session-owned external observer queues can share one
+  private bounded FIFO owner without moving producer terminals, adaptive
+  observation, ticket identity, public API or FFI behavior.
+- Exact writer allowlist:
+  - `crates/gsplat-render-wgpu/src/evidence/mod.rs`;
+  - new `crates/gsplat-render-wgpu/src/evidence/ring.rs`;
+  - `crates/gsplat-render-wgpu/src/surface_session.rs`.
+- Required boundary: private `BoundedEvidenceRing<T>` owns capacity 64,
+  drop-oldest on the 65th retained external receipt, FIFO pop/drain and no
+  policy. Replace exactly the completed CPU-order, GPU-order, order-failure,
+  projected-measurement and projected-failure queues. Adaptive/controller
+  observation occurs before external retention exactly as today.
+- Critical forbidden scope: do not modify the two GPU-producer terminal
+  `VecDeque`s or `retain_gpu_producer_terminal`; they are intentionally
+  lossless despite `with_capacity(64)`, and the existing 65th-receipt test must
+  remain unchanged and passing. No presenter, telemetry producer, projected
+  receipt declaration, ticket/submission, public API, FFI/header, policy or
+  platform-consumer changes.
+- Frozen source hashes:
+  - `evidence/mod.rs`: `18b6a4257f6b2a3548119ddd67de4e924bc00ddf683363161c6bd12afd60d1f0`;
+  - `surface_session.rs`: `7ed8b08dc13d5ccd97d4e6007de204211c7d208d00c894f5f9b6d363a99ef702`;
+  - `gpu_telemetry.rs`: `3c9881e9272aa86a8c2e9fefa8569c6175308e6a6a57bdee8c0b654f9a9c947c`;
+  - `gpu_producer_telemetry.rs`: `190fa41de9cbefd59c025c660456d8f89d931496f14fcfdc40b4b5ce5946fa54`;
+  - `projected_draw_telemetry.rs`: `3653a37f3132a0bab595185bbc46657ea6344c36572cdf788780c6eb9d33fc54`;
+  - `surface_presenter.rs`: `7b44a87f960dbf944b00d969477b8494afd9603d48229746866e3d6d0cc1e2aa`;
+  - `lib.rs`: `81e3509bb6b21c84fbf0c953ec4336497db2386a164bfc3de30c4af9582c7842`.
+- Hard gates: focused ring FIFO/cap/drop/drain tests; unchanged GPU-producer
+  65th-receipt behavior; session adaptive and public drain-order tests; exact
+  forbidden hashes; format/diff, architecture, renderer/workspace tests,
+  all-target Clippy, Rustdoc, wasm32 and C FFI smoke. No device/performance gate
+  is required for this behavior-preserving ownership slice.
+
+### A5e — Extract Preproject key/ID compaction mechanics
+
+- Parent task state: A5 Active
+- Subtask state: Active
+- Hypothesis: Preproject's compact/finalize resources and encoding can move
+  behind one private GPU owner without moving projection, scan, radix,
+  stale-draw reuse, admission or top-level pass order.
+- Exact writer allowlist:
+  - `crates/gsplat-render-wgpu/src/preproject_gpu.rs`;
+  - `crates/gsplat-render-wgpu/src/gpu/mod.rs`;
+  - new `crates/gsplat-render-wgpu/src/gpu/preproject_compact.rs`.
+- Required boundary: private `PreprojectKeyIdCompactor` owns the existing
+  compact/finalize layouts, pipelines, empty and compact bind groups, indirect
+  draw arguments and compact-to-finalize encoding. It receives the caller's
+  existing shared shader module so module creation and labels do not duplicate.
+  The caller retains byte/capability admission, projection/cache, V/C offset
+  buffers and scans, `ExternalPrefixRadix`, draw pipeline/bind group, stale-D
+  non-refresh behavior and full project-scan-compact-finalize-radix order.
+- Forbidden: do not reuse/generalize `gpu/compact.rs`; do not modify WGSL,
+  scan/radix, Direct, Projected, Surface/session/evidence/API/FFI or performance
+  policy. Binding ABI, resource sizes/usages, labels, entries, dispatch and
+  pass order must remain equivalent.
+- Frozen source hashes:
+  - `preproject_gpu.rs`: `5dfafabe06fa177b6c2d3ff3a32a5ed842fd05aac074774aba83fb48bf8d518f`;
+  - `gpu/mod.rs`: `e2371743bfe1bea75bdf8a413bc3eeae282c75a76e8f47271b2a9227cad0416c`;
+  - `gpu/scan.rs`: `08afa1daf9ec0fda0293a6cf467a14ffce2e9c24011d9b92bbf92704ce5eb6ab`;
+  - `gpu/radix.rs`: `51bf9c0ece413c9c84ed88fc8e7fac3c1fbc6cc7b673fab15f359572a5c54f7d`;
+  - `direct_gpu_order.rs`: `4dc900bd3a52cb479da308ef6bd168ff91dde4fcc9d81e2dc78f2a73144d070b`;
+  - `projected_quads_gpu.rs`: `84760e990707a77c971b6b830d19f112c1004995116bbbc0a4667fcd686d5d6c`;
+  - `preproject_contributors.wgsl`: `7f7eaa200ff1e7ee3e08c4ce66bed0c55eb6f4a61c63d605260cd5130e0efcc8`;
+  - `preproject_draw.wgsl`: `aed5675e0cb13e7692d24e8253c3f85a34039c8358a36375f1244e900d4f021f`.
+- Hard gates: exact frozen WGSL/forbidden hashes; identical label, entry,
+  binding, usage, byte-plan, dispatch and pass inventory; all six existing
+  Preproject tests including CPU oracle, full-zero-full reuse, stale-D and
+  image equality; format/diff, architecture, renderer/workspace tests,
+  all-target Clippy, Rustdoc, wasm32 and required Metal conformance. No
+  device/performance gate is required for this ownership-only slice.
 
 ## Recently integrated tasks
 
