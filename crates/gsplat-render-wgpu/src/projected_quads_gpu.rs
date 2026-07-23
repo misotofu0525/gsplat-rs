@@ -7,14 +7,14 @@
 
 use std::mem::size_of;
 
-use crate::draw_pass::{SplatPipeline, create_splat_pipeline};
 use crate::gpu::{
     GpuPrefixScan, GpuPrefixScanProfile, ProjectedRankProjector, ProjectedRankSourceBindings,
     StableContributorCompactor,
 };
 use crate::gpu_error::ResidentGpuError;
 use crate::projected_draw_telemetry::SurfaceProjectedDrawExecution;
-use crate::resident_gpu::{RESIDENT_QUAD_VERTEX_COUNT, ResidentGpuResources};
+use crate::raster::{QUAD_VERTEX_COUNT, SplatPipeline, create_splat_pipeline};
+use crate::resident_gpu::ResidentGpuResources;
 use crate::scene::{
     PROJECT_WORKGROUP_SIZE, PROJECTED_CACHE_PLANE_BYTES_PER_SPLAT, SCAN_ITEMS_PER_GROUP,
     SCAN_WORKGROUP_SIZE,
@@ -105,7 +105,7 @@ impl ProjectedQuadsGpu {
         let projector = ProjectedRankProjector::new(
             device,
             capacity,
-            RESIDENT_QUAD_VERTEX_COUNT,
+            QUAD_VERTEX_COUNT,
             &resident.order_buffer,
             project_source_bindings(resident),
         )?;
@@ -270,7 +270,7 @@ impl ProjectedQuadsGpu {
         // sentinel fallback when hierarchical scan is absent.
         self.projector.write_cpu_draw_args(
             queue,
-            RESIDENT_QUAD_VERTEX_COUNT,
+            QUAD_VERTEX_COUNT,
             visible_count,
             self.contributor_counter.is_none(),
         );
@@ -540,7 +540,7 @@ fn create_contributor_compaction(
     let compute = StableContributorCompactor::new(
         device,
         contributor_rank_bytes,
-        RESIDENT_QUAD_VERTEX_COUNT,
+        QUAD_VERTEX_COUNT,
         projected_center_source,
         contributor_group_offsets,
         &resident.draw_params_buffer,
@@ -597,7 +597,7 @@ mod tests {
     use super::*;
 
     #[cfg(not(target_arch = "wasm32"))]
-    use crate::draw_pass::{
+    use crate::raster::{
         SplatDraw, SplatIndirectDraw, encode_splat_draw_into, encode_splat_indirect_draw_into,
     };
 
@@ -1039,7 +1039,7 @@ mod tests {
             assert!(source.contains("let offset = axes.xy * local.x + axes.zw * local.y;"));
             assert!(source.contains("center_source.xy + offset"));
         }
-        assert_eq!(RESIDENT_QUAD_VERTEX_COUNT, 4);
+        assert_eq!(QUAD_VERTEX_COUNT, 4);
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -1107,7 +1107,7 @@ mod tests {
 
         assert_eq!(
             read_u32s(&device, &candidate_readback),
-            [RESIDENT_QUAD_VERTEX_COUNT, visible, 0, 0],
+            [QUAD_VERTEX_COUNT, visible, 0, 0],
         );
         assert_eq!(
             read_u32s(&device, &contributor_readback),
@@ -1348,7 +1348,7 @@ mod tests {
                 pipeline: &global_pipeline,
                 bind_group: &resident.draw_bind_group,
                 clear: wgpu::Color::TRANSPARENT,
-                vertex_count: RESIDENT_QUAD_VERTEX_COUNT,
+                vertex_count: QUAD_VERTEX_COUNT,
                 instance_count: visible,
             },
         );
@@ -1363,7 +1363,7 @@ mod tests {
                 pipeline: projected.draw_pipeline(),
                 bind_group: projected.draw_bind_group(),
                 clear: wgpu::Color::TRANSPARENT,
-                vertex_count: RESIDENT_QUAD_VERTEX_COUNT,
+                vertex_count: QUAD_VERTEX_COUNT,
                 instance_count: visible,
             },
         );
@@ -1446,7 +1446,7 @@ mod tests {
                 pipeline: projected.draw_pipeline(),
                 bind_group: projected.draw_bind_group(),
                 clear: wgpu::Color::TRANSPARENT,
-                vertex_count: RESIDENT_QUAD_VERTEX_COUNT,
+                vertex_count: QUAD_VERTEX_COUNT,
                 instance_count: visible,
             },
         );
@@ -1574,7 +1574,7 @@ mod tests {
                 pipeline: &global_pipeline,
                 bind_group: &resident.draw_bind_group,
                 clear: wgpu::Color::TRANSPARENT,
-                vertex_count: RESIDENT_QUAD_VERTEX_COUNT,
+                vertex_count: QUAD_VERTEX_COUNT,
                 instance_count: visible,
             },
         );
@@ -1586,7 +1586,7 @@ mod tests {
                 pipeline: projected.draw_pipeline(),
                 bind_group: projected.draw_bind_group(),
                 clear: wgpu::Color::TRANSPARENT,
-                vertex_count: RESIDENT_QUAD_VERTEX_COUNT,
+                vertex_count: QUAD_VERTEX_COUNT,
                 instance_count: visible,
             },
         );
@@ -1703,7 +1703,7 @@ mod tests {
                 .expect("GPU projection binding");
             order
                 .sorter
-                .set_indirect_vertex_count(&queue, RESIDENT_QUAD_VERTEX_COUNT);
+                .set_indirect_vertex_count(&queue, QUAD_VERTEX_COUNT);
         }
 
         let (global_texture, global_view) = target(&device, "gpu-global-quad-target");
