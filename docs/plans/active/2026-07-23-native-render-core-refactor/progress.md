@@ -15,22 +15,21 @@ their own single block in the same format.
 A0 = Accepted
 A1 = Accept
 A2 = Accepted
-A3 = Active
+A3 = Accepted
 <!-- gsplat-program-task-states: end -->
 
 ## Program status
 
 - Plan bundle: committed at `c478252246733f6dc209686091caf183e1ef7f06`.
 - Implementation: Package A started; A1 guardrails, the complete A2
-  strategy-free data/API extraction and A3a Resident CPU ownership extraction
-  are root-accepted.
+  strategy-free data/API extraction and the complete A3 scene/resource
+  ownership extraction are root-accepted.
 - Current work package: A — responsibility extraction.
-- Active package task: A3b — GPU resource planning and Direct/Packed preflight
-  ownership extraction in an isolated worktree.
-- Last completed task: A3a — Resident CPU ownership, ABI layout and encoder
-  extraction.
-- Next eligible task: A3b — Direct/Packed resource accounting and preflight
-  ownership.
+- Active package task: none; A3 is closed and A4 has not yet been activated.
+- Last completed task: A3b — GPU resource planning and Direct/Packed preflight
+  ownership extraction.
+- Next eligible task: A4 — existing CPU order primitives, to be activated in a
+  separate plan-only commit and isolated worktree.
 - Integration branch: `codex/native-render-core-refactor`.
 - Frozen source implementation closeout:
   `5db2520e0d7a0ef1c68a78bdb9abc6fc588c5186`.
@@ -100,9 +99,10 @@ eligible task. Do not rewrite the architecture in this ledger.
 
 ### A3b — Extract GPU resource planning and Direct/Packed preflight
 
-- Parent task state: A3 Active
-- Subtask state: Active
+- Parent task state: A3 Accepted
+- Subtask state: Accepted
 - Started: 2026-07-23 21:34 CST
+- Ended: 2026-07-23
 - Production baseline commit:
   `0562cfe` (`docs: accept A3a resident ownership extraction`)
 - Exact source baseline before production edits:
@@ -185,9 +185,49 @@ eligible task. Do not rewrite the architecture in this ledger.
   package boundary. No fixed FPS or competitor percentage is a completion gate.
 - Performance correction used: no
 - Known correctness issues: none
-- Closeout requirement: root records the fixed implementation SHA, exact file
-  sizes and verification here. A3 may become Accepted only if A3a and A3b are
-  both accepted and no duplicate resource owner remains.
+- Fixed writer commit:
+  `ba8ed0e19999d90123403d5c3df6c034cdad9261` (`refactor: extract scene resource planning`)
+- Integration merge commit: `3fe4c3e`.
+- Root policy correction commit: `278e393`; numeric source-size targets are
+  review notices, not A3 completion gates.
+- Final physical LOC:
+  - `lib.rs`: 5,004
+  - `projected_quads_gpu.rs`: 2,360
+  - `resident_gpu.rs`: 677
+  - `scene/budget.rs`: 407
+  - `scene/preflight.rs`: 372
+  - `gpu_error.rs`: 35
+  - `scene/mod.rs`: 29
+  - focused budget/preflight test modules: 139 / 235 LOC
+- Root verification:
+  - PASS architecture checker self-tests and real-tree policy check;
+  - PASS `cargo fmt --all -- --check`, locked workspace check and tests
+    (renderer 280 passed, 5 ignored), all-target Clippy and Rustdoc with
+    warnings denied;
+  - PASS locked `wasm32-unknown-unknown` check, C ABI smoke and forced Metal
+    SortedAlpha conformance;
+  - PASS repository-external public-API probe with unchanged Direct maximum
+    `745654`, Resident/Packed largest binding `134217728` and eight storage
+    bindings;
+  - PASS A065 full-Truck exactness artifact at
+    `target/benchmarks/native-render-core-refactor/a3-a065-truck-exactness-retry2/`:
+    complete 630,225,580-byte PLY, 2,541,226 source/decoded/encoded/resident/
+    addressable splats, SH3 preserved, sampling/LOD/upscaling disabled, and
+    requested/Surface/internal/presented dimensions all 2412x1080. Four
+    retained frames passed the benchmark and camera-receipt validators.
+- Performance observation: current full Candidate draw averaged about 165 ms
+  per retained frame on A065. This is not an A3 failure because A3 changes
+  ownership only; it is explicit input to later exact-work/raster tasks and is
+  not converted into a fixed FPS gate.
+- Responsibility review: `packed_atlas.rs` remains a cohesive 916-line
+  quantization/legacy-compatibility owner. Product Resident ownership is now in
+  `scene/{resident,builder,codec}.rs`, so its A3 grandfather entry was removed;
+  the normal 800-line notice remains visible, but no mechanical split is
+  required.
+- Decision: Accept A3b and close A3. Resource arithmetic has one pure owner,
+  preflight/error ownership is explicit, root public contracts are unchanged,
+  and the exact-count native product path remains intact on Metal, Web target,
+  C ABI and A065 Vulkan.
 
 ### A3a — Extract Resident CPU ownership, ABI layout and encoder
 
@@ -872,6 +912,7 @@ eligible task. Do not rewrite the architecture in this ledger.
 | A2a | Complete | `3758fd614bc09c5f330210cf87a120dd9fd0ccdd` | `data/{layout,view}.rs` and this ledger | root-accepted strategy-free ABI and real data views; API/Resident/shader/lifecycle unchanged |
 | A2b | Complete | `d041a4a3cbefaa70f8647f65ff575727acbb3589` | `api.rs` and this ledger | root-accepted stable API leaves; public root paths preserved and `lib.rs` ratchet lowered exactly |
 | A2 | Accepted | `d041a4a3cbefaa70f8647f65ff575727acbb3589` | A2a/A2b records above | data and API leaf extraction complete without owner, policy, shader, FFI or lifecycle changes; A3 is eligible |
+| A3 | Accepted | `3fe4c3e` | A3a/A3b records above | Resident CPU ownership, GPU resource arithmetic, Direct/Packed preflight and errors have one explicit owner; exact-count cross-target evidence retained |
 
 ## Baseline evidence inherited, not rerun by default
 

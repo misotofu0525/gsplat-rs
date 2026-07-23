@@ -302,13 +302,6 @@
       "exit_condition": "Consolidate scan and radix mechanics into strategy-free GPU owners with explicit scratch and dispatch boundaries."
     },
     {
-      "path": "crates/gsplat-render-wgpu/src/packed_atlas.rs",
-      "a0_physical_loc": 916,
-      "baseline_physical_loc": 916,
-      "owner_task": "A3",
-      "exit_condition": "Move Resident scene ownership and encoding into scene modules so this file owns only packed-atlas quantization and compatibility."
-    },
-    {
       "path": "crates/gsplat-sort/src/lib.rs",
       "a0_physical_loc": 870,
       "baseline_physical_loc": 870,
