@@ -11,15 +11,17 @@ use bytemuck::{Pod, Zeroable};
 use wgpu::util::DeviceExt;
 
 use crate::draw_pass::{SplatPipeline, create_splat_pipeline};
+use crate::gpu_error::ResidentGpuError;
 use crate::projected_draw_telemetry::SurfaceProjectedDrawExecution;
-use crate::resident_gpu::{RESIDENT_QUAD_VERTEX_COUNT, ResidentGpuError, ResidentGpuResources};
+use crate::resident_gpu::{RESIDENT_QUAD_VERTEX_COUNT, ResidentGpuResources};
+use crate::scene::{
+    PROJECT_WORKGROUP_SIZE, PROJECTED_CACHE_PLANE_BYTES_PER_SPLAT, SCAN_ITEMS_PER_GROUP,
+    SCAN_WORKGROUP_SIZE,
+};
 use crate::wgpu_label;
 
-pub const PROJECTED_CACHE_PLANE_BYTES_PER_SPLAT: u64 = 16;
-pub const PROJECTED_CACHE_BYTES_PER_SPLAT: u64 = 2 * PROJECTED_CACHE_PLANE_BYTES_PER_SPLAT;
-pub(crate) const PROJECT_WORKGROUP_SIZE: u32 = 128;
-pub(crate) const SCAN_WORKGROUP_SIZE: u32 = 256;
-pub(crate) const SCAN_ITEMS_PER_GROUP: u32 = SCAN_WORKGROUP_SIZE * 2;
+#[cfg(test)]
+use crate::scene::PROJECTED_CACHE_BYTES_PER_SPLAT;
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
