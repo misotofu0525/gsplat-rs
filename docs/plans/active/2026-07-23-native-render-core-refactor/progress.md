@@ -202,13 +202,24 @@ eligible task. Do not rewrite the architecture in this ledger.
 - Not run by A2a: `GSPLAT_REQUIRE_GPU_CONFORMANCE=1`, formal GPU conformance,
   browser runtime smoke, Android/iOS physical-device runs and performance
   collection; the root task owns those endpoints.
+- Root acceptance:
+  - independent fixed-SHA review found no P0, P1 or P2 issue
+  - PASS `GSPLAT_REQUIRE_GPU_CONFORMANCE=1 cargo test -p
+    gsplat-render-wgpu --test conformance_sorted_alpha --locked -- --nocapture`
+    with one test executed and no skip
+  - PASS exact Direct GPU key/radix complete-element and Resident position
+    stride parity tests
+  - PASS external crate compile probe for
+    `gsplat_render_wgpu::GpuInstance`
+  - PASS root reruns of architecture policy/self-tests, declared-scope diff,
+    shader/Resident/FFI/binding zero-diff checks and FFI smoke
 - Scope audit: no `api.rs`, `SurfaceFrameOutput`, Resident source/baseline,
   shader, FFI source/header, platform wrapper, renderer owner, policy owner or
   product-default change is present.
 - Decision: complete the independently verifiable A2a result and leave the
   machine registry at `A2 = Active`; do not claim overall A2 acceptance.
-- Result identity: `304ab0e..codex/native-render-a2a-data`; resolve the branch
-  tip SHA after the single closeout commit is created.
+- Result identity: `3758fd614bc09c5f330210cf87a120dd9fd0ccdd`, accepted and
+  fast-forwarded unchanged into `codex/native-render-core-refactor`.
 
 ### A0 — Freeze integration baseline and evidence inventory
 
@@ -506,7 +517,7 @@ eligible task. Do not rewrite the architecture in this ledger.
 | A0 | Accepted | `2aef9f0` | [a0-baseline.md](a0-baseline.md) | dedicated integration branch from `c478252`; no merge/rebase/cherry-pick |
 | A0 evidence audit | Accepted | `9df0d6c` | [a0-baseline.md](a0-baseline.md) | evidence classes and artifact identity limits tightened; integration decision unchanged |
 | A1 | Accepted | `f6180844bbaf910b74ff5ecfe81c9b9588c88561` | `tests/architecture/` and this ledger | root-accepted physical-LOC/dependency ratchet passes 56 fixtures and the A0 tree; A2a is eligible |
-| A2a | Complete (A2 Active) | branch tip pending | `data/{layout,view}.rs` and this ledger | strategy-free ABI and real data views extracted; API/Resident/shader/lifecycle unchanged |
+| A2a | Complete (A2 Active) | `3758fd614bc09c5f330210cf87a120dd9fd0ccdd` | `data/{layout,view}.rs` and this ledger | root-accepted strategy-free ABI and real data views; API/Resident/shader/lifecycle unchanged |
 
 ## Baseline evidence inherited, not rerun by default
 
