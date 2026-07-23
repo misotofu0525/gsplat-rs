@@ -54,6 +54,15 @@ object NativeBridge {
     external fun setSurfaceProjectedPolicyV1(nativeHandle: Long, policy: Int): Int
 
     @JvmStatic
+    external fun setSurfaceGpuOrderProducerV1(nativeHandle: Long, producer: Int): Int
+
+    @JvmStatic
+    external fun setSurfaceGpuProducerMeasurementEnabledV1(
+        nativeHandle: Long,
+        enabled: Boolean
+    ): Int
+
+    @JvmStatic
     external fun setSurfaceAsyncSortEnabled(nativeHandle: Long, enabled: Boolean): Int
 
     @JvmStatic
@@ -108,6 +117,24 @@ object NativeBridge {
 
     @JvmStatic
     external fun pollSurfaceProjectedFailureV1(nativeHandle: Long, outFailure: LongArray): Int
+
+    @JvmStatic
+    external fun getSurfaceGpuProducerSubmissionV1(
+        nativeHandle: Long,
+        outSubmission: LongArray
+    ): Int
+
+    @JvmStatic
+    external fun pollSurfaceGpuProducerMeasurementV1(
+        nativeHandle: Long,
+        outMeasurement: LongArray
+    ): Int
+
+    @JvmStatic
+    external fun pollSurfaceGpuProducerFailureV1(
+        nativeHandle: Long,
+        outFailure: LongArray
+    ): Int
 
     @JvmStatic
     external fun pollSurfaceOrderMeasurement(nativeHandle: Long, outMeasurement: LongArray): Int

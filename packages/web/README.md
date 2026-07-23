@@ -136,6 +136,19 @@ projected tickets. `drainOrderMeasurementReceipts()` retains its existing order
 arrays and additionally returns `completedProjectedMeasurements` and
 `failedProjectedMeasurements`, with exactly one terminal per issued ticket.
 
+`gpuOrderProducer: "post-sort" | "preproject"` is an explicit diagnostic
+creation option, not a product default switch. Omitting it keeps PostSort and
+leaves producer telemetry disabled. Supplying it requires exact Packed
+geometry plus forced Compact projected drawing; formal callers must also force
+GPU ordering. Creation transactionally prepares and publishes the complete
+producer graph before returning, then enables an independent ticket stream in
+`completedGpuProducerMeasurements` / `failedGpuProducerMeasurements`. Each
+successful exact-current receipt proves source/contributor/drawn counts,
+producer and camera identity, graph generations, queue-completion time, and
+`D=C`; stale-order or unsampled frames are not strict A/B evidence. The same
+selector is available after construction through
+`await renderer.setGpuOrderProducerAsync(producer)`.
+
 Package-level checks:
 
 ```bash

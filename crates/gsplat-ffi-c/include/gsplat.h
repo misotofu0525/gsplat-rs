@@ -347,6 +347,98 @@ typedef struct GsplatSurfaceProjectedFailureV1 {
   uint32_t flags;
 } GsplatSurfaceProjectedFailureV1;
 
+/*
+ * Versioned diagnostic ABI for the Packed GPU producer graph. Product
+ * defaults remain PostSort with measurement disabled. Zero is a setter-only
+ * alias for PostSort; successful receipts always use canonical values 1/2.
+ */
+#define GSPLAT_SURFACE_GPU_PRODUCER_ABI_VERSION_V1 1u
+
+typedef enum GsplatSurfaceGpuProducerV1 {
+  GSPLAT_SURFACE_GPU_PRODUCER_LEGACY_DEFAULT = 0,
+  GSPLAT_SURFACE_GPU_PRODUCER_POST_SORT = 1,
+  GSPLAT_SURFACE_GPU_PRODUCER_PREPROJECT = 2,
+} GsplatSurfaceGpuProducerV1;
+
+typedef enum GsplatSurfaceGpuProducerDrawScopeV1 {
+  GSPLAT_SURFACE_GPU_PRODUCER_DRAW_SCOPE_UNKNOWN = 0,
+  GSPLAT_SURFACE_GPU_PRODUCER_DRAW_SCOPE_EXACT_CURRENT_CONTRIBUTORS = 1,
+  GSPLAT_SURFACE_GPU_PRODUCER_DRAW_SCOPE_STALE_ORDER_CANDIDATES = 2,
+} GsplatSurfaceGpuProducerDrawScopeV1;
+
+#define GSPLAT_SURFACE_GPU_PRODUCER_SUBMISSION_TICKET_ISSUED (1u << 0)
+#define GSPLAT_SURFACE_GPU_PRODUCER_SUBMISSION_UNSAMPLED_RING_BUSY (1u << 1)
+#define GSPLAT_SURFACE_GPU_PRODUCER_SUBMISSION_UNSAMPLED_SURFACE_UNAVAILABLE (1u << 2)
+#define GSPLAT_SURFACE_GPU_PRODUCER_SUBMISSION_MEASUREMENT_ENABLED (1u << 3)
+
+typedef struct GsplatSurfaceGpuProducerSubmissionV1 {
+  uint32_t struct_size;
+  uint32_t version;
+  uint64_t ticket;
+  uint64_t camera_revision;
+  /* Requested GsplatSurfaceGpuProducerV1 value. */
+  uint32_t requested_producer;
+  /* Actual GsplatSurfaceGpuProducerV1, or zero outside a Packed GPU frame. */
+  uint32_t actual_producer;
+  /* Actual GsplatSurfaceOrderBackend: producer evidence requires GPU=1. */
+  uint32_t order_backend;
+  /* Actual GsplatSurfaceProjectedExecutionV1: strict A/B requires COMPACT=2. */
+  uint32_t projected_execution;
+  /* GSPLAT_SURFACE_GPU_PRODUCER_SUBMISSION_* bits. */
+  uint32_t flags;
+  uint32_t reserved;
+} GsplatSurfaceGpuProducerSubmissionV1;
+
+#define GSPLAT_SURFACE_GPU_PRODUCER_MEASUREMENT_ORDER_REFRESHED (1u << 0)
+#define GSPLAT_SURFACE_GPU_PRODUCER_MEASUREMENT_EXACT_CURRENT_DRAW (1u << 1)
+#define GSPLAT_SURFACE_GPU_PRODUCER_MEASUREMENT_STALE_ORDER (1u << 2)
+#define GSPLAT_SURFACE_GPU_PRODUCER_MEASUREMENT_DROPPED_PRIOR (1u << 3)
+
+/* Terminal producer success with exact source/contributor/drawn (S/C/D). */
+typedef struct GsplatSurfaceGpuProducerMeasurementV1 {
+  uint32_t struct_size;
+  uint32_t version;
+  uint64_t ticket;
+  uint64_t camera_revision;
+  uint64_t order_generation;
+  uint64_t projection_generation;
+  float frame_complete_ms;
+  /* GsplatSurfaceGpuProducerV1 value. */
+  uint32_t producer;
+  uint32_t source_count;
+  uint32_t contributor_count;
+  uint32_t drawn_count;
+  /* GsplatSurfaceGpuProducerDrawScopeV1 value. */
+  uint32_t draw_scope;
+  /* GSPLAT_SURFACE_GPU_PRODUCER_MEASUREMENT_* bits. */
+  uint32_t flags;
+  uint32_t reserved;
+} GsplatSurfaceGpuProducerMeasurementV1;
+
+typedef enum GsplatSurfaceGpuProducerFailureReasonV1 {
+  GSPLAT_SURFACE_GPU_PRODUCER_FAILURE_READBACK_MAP = 1,
+  GSPLAT_SURFACE_GPU_PRODUCER_FAILURE_GENERATION_INVALIDATED = 2,
+  GSPLAT_SURFACE_GPU_PRODUCER_FAILURE_INVARIANT_VIOLATION = 3,
+} GsplatSurfaceGpuProducerFailureReasonV1;
+
+#define GSPLAT_SURFACE_GPU_PRODUCER_FAILURE_DROPPED_PRIOR (1u << 0)
+
+typedef struct GsplatSurfaceGpuProducerFailureV1 {
+  uint32_t struct_size;
+  uint32_t version;
+  uint64_t ticket;
+  uint64_t camera_revision;
+  uint64_t order_generation;
+  uint64_t projection_generation;
+  /* GsplatSurfaceGpuProducerFailureReasonV1 value. */
+  uint32_t reason;
+  /* GsplatSurfaceGpuProducerV1 value. */
+  uint32_t producer;
+  /* GSPLAT_SURFACE_GPU_PRODUCER_FAILURE_* bits. */
+  uint32_t flags;
+  uint32_t reserved;
+} GsplatSurfaceGpuProducerFailureV1;
+
 #define GSPLAT_SURFACE_EXACTNESS_SOURCE_MEMBERSHIP_ALL (1u << 0)
 #define GSPLAT_SURFACE_EXACTNESS_SAMPLING_DISABLED (1u << 1)
 #define GSPLAT_SURFACE_EXACTNESS_LOD_DISABLED (1u << 2)
@@ -591,6 +683,32 @@ int32_t gsplat_surface_renderer_take_projected_counts_v1(
 int32_t gsplat_surface_renderer_poll_projected_failure_v1(
     GsplatSurfaceRenderer *renderer,
     GsplatSurfaceProjectedFailureV1 *out_failure,
+    uint32_t *out_available);
+/*
+ * Strict diagnostic producer lane. Select the graph while measurement is
+ * disabled, then enable receipts only under Packed + ProjectedQuadsExact +
+ * forced Compact. CPU/GPU ordering remains independent; retained Android A/B
+ * evidence additionally requires the forced GPU backend. Disabling stops new
+ * tickets but preserves the last successful-render submission and every
+ * already-issued terminal success/failure. Drain both terminal queues before
+ * treating a later enabled period as a fresh strict experiment.
+ */
+int32_t gsplat_surface_renderer_set_gpu_order_producer_v1(
+    GsplatSurfaceRenderer *renderer,
+    uint32_t producer);
+int32_t gsplat_surface_renderer_set_gpu_producer_measurement_enabled_v1(
+    GsplatSurfaceRenderer *renderer,
+    uint32_t enabled);
+int32_t gsplat_surface_renderer_get_gpu_producer_submission_v1(
+    const GsplatSurfaceRenderer *renderer,
+    GsplatSurfaceGpuProducerSubmissionV1 *out_submission);
+int32_t gsplat_surface_renderer_poll_gpu_producer_measurement_v1(
+    GsplatSurfaceRenderer *renderer,
+    GsplatSurfaceGpuProducerMeasurementV1 *out_measurement,
+    uint32_t *out_available);
+int32_t gsplat_surface_renderer_poll_gpu_producer_failure_v1(
+    GsplatSurfaceRenderer *renderer,
+    GsplatSurfaceGpuProducerFailureV1 *out_failure,
     uint32_t *out_available);
 /* Drain one completed CPU frame-start -> queue-done order receipt. */
 int32_t gsplat_surface_renderer_poll_cpu_order_measurement(

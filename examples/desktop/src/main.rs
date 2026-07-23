@@ -401,6 +401,17 @@ impl Args {
         if surface_gpu_producer.is_some() && order_backend == SurfaceOrderBackend::Cpu {
             return Err("--surface-gpu-producer requires --order-backend gpu|adaptive".to_owned());
         }
+        if interactive && png_out.is_some() && camera_trace_path.is_none() {
+            return Err(
+                "interactive --png requires --camera-trace Surface benchmark mode".to_owned(),
+            );
+        }
+        if interactive && png_out.is_some() && surface_gpu_producer.is_none() {
+            return Err(
+                "interactive --png requires an explicit --surface-gpu-producer post-sort|preproject"
+                    .to_owned(),
+            );
+        }
 
         Ok(Self {
             dataset_path: dataset_path.unwrap_or_else(|| "tests/datasets/minimal_ascii.ply".into()),
@@ -894,9 +905,6 @@ fn run_interactive(
     camera: Camera,
     trace_playback: Option<&CameraTracePlayback>,
 ) -> Result<(), String> {
-    if args.png_out.is_some() {
-        return Err("interactive mode does not support --png in surface-present path".to_owned());
-    }
     let event_loop =
         EventLoop::new().map_err(|err| format!("event loop creation failed: {err}"))?;
     let window = Arc::new(
@@ -2029,6 +2037,180 @@ fn run_surface_trace_benchmark(
                             session.force_sort_refresh();
                         }
                     } else if action == SurfaceBenchmarkAction::Complete {
+                        if let Some(png_path) = args.png_out.as_deref() {
+                            let requested_capture_producer =
+                                match identity.gpu_order_producer {
+                                    Some(producer) => producer,
+                                    None => {
+                                        store_surface_benchmark_error(
+                                            &render_error_shared,
+                                            "surface capture requires an explicit GPU producer identity"
+                                                .to_owned(),
+                                        );
+                                        target.exit();
+                                        return;
+                                    }
+                                };
+                            let capture_step = steps.first().copied().ok_or_else(|| {
+                                "surface capture requires a non-empty trace schedule".to_owned()
+                            });
+                            let capture_step = match capture_step {
+                                Ok(step) => step,
+                                Err(error) => {
+                                    store_surface_benchmark_error(&render_error_shared, error);
+                                    target.exit();
+                                    return;
+                                }
+                            };
+                            if let Err(error) = session.set_gpu_producer_measurement_enabled(false)
+                            {
+                                store_surface_benchmark_error(
+                                    &render_error_shared,
+                                    format!(
+                                        "surface capture could not disable producer measurement: {error}"
+                                    ),
+                                );
+                                target.exit();
+                                return;
+                            }
+                            if let Err(error) =
+                                session.set_order_backend(SurfaceOrderBackend::Gpu)
+                            {
+                                store_surface_benchmark_error(
+                                    &render_error_shared,
+                                    format!(
+                                        "surface capture could not force the selected GPU producer: {error}"
+                                    ),
+                                );
+                                target.exit();
+                                return;
+                            }
+                            if let Err(error) = session.set_camera(capture_step.camera) {
+                                store_surface_benchmark_error(
+                                    &render_error_shared,
+                                    format!("surface capture camera update failed: {error}"),
+                                );
+                                target.exit();
+                                return;
+                            }
+                            session.force_sort_refresh();
+                            if let Err(error) = session.request_surface_capture() {
+                                store_surface_benchmark_error(
+                                    &render_error_shared,
+                                    format!("surface capture request failed: {error}"),
+                                );
+                                target.exit();
+                                return;
+                            }
+                            let output = match session.render_frame() {
+                                Ok(output) => output,
+                                Err(error) => {
+                                    store_surface_benchmark_error(
+                                        &render_error_shared,
+                                        format!("surface capture render failed: {error}"),
+                                    );
+                                    target.exit();
+                                    return;
+                                }
+                            };
+                            let actual_capture_producer =
+                                match output.gpu_order_producer {
+                                    Some(actual) if actual == requested_capture_producer => actual,
+                                    actual => {
+                                        store_surface_benchmark_error(
+                                            &render_error_shared,
+                                            format!(
+                                                "surface capture GPU producer mismatch: requested={requested_capture_producer:?}, actual={actual:?}",
+                                            ),
+                                        );
+                                        target.exit();
+                                        return;
+                                    }
+                                };
+                            if !output.frame_presented
+                                || output.tiled_preparation_pending
+                                || output.gpu_producer_measurement_submission
+                                    != SurfaceGpuProducerMeasurementSubmission::NotRequested
+                            {
+                                store_surface_benchmark_error(
+                                    &render_error_shared,
+                                    format!(
+                                        "surface capture frame was not an unmeasured complete presentation: presented={} preparation_pending={} producer_submission={:?}",
+                                        output.frame_presented,
+                                        output.tiled_preparation_pending,
+                                        output.gpu_producer_measurement_submission,
+                                    ),
+                                );
+                                target.exit();
+                                return;
+                            }
+                            let capture = match session.take_surface_capture() {
+                                Ok(capture) => capture,
+                                Err(error) => {
+                                    store_surface_benchmark_error(
+                                        &render_error_shared,
+                                        format!("surface capture readback failed: {error}"),
+                                    );
+                                    target.exit();
+                                    return;
+                                }
+                            };
+                            if (capture.width, capture.height) != expected_size
+                                || capture.rgba8.len()
+                                    != expected_size.0 as usize
+                                        * expected_size.1 as usize
+                                        * 4
+                            {
+                                store_surface_benchmark_error(
+                                    &render_error_shared,
+                                    format!(
+                                        "surface capture dimensions/bytes mismatch: got {}x{} and {} bytes, expected {}x{} and {} bytes",
+                                        capture.width,
+                                        capture.height,
+                                        capture.rgba8.len(),
+                                        expected_size.0,
+                                        expected_size.1,
+                                        expected_size.0 as usize
+                                            * expected_size.1 as usize
+                                            * 4,
+                                    ),
+                                );
+                                target.exit();
+                                return;
+                            }
+                            let capture_ticket = output.order_measurement_submission.ticket();
+                            if let Err(error) = drain_surface_capture_receipts(
+                                &mut session,
+                                &output,
+                                identity.source_count,
+                            ) {
+                                store_surface_benchmark_error(&render_error_shared, error);
+                                target.exit();
+                                return;
+                            }
+                            if let Err(error) = write_png(
+                                png_path,
+                                capture.width,
+                                capture.height,
+                                &capture.rgba8,
+                            ) {
+                                store_surface_benchmark_error(&render_error_shared, error);
+                                target.exit();
+                                return;
+                            }
+                            println!(
+                                "SURFACE_CAPTURE status=ok path={} trace_frame={} requested_width={} requested_height={} captured_width={} captured_height={} gpu_order_producer_requested={} gpu_order_producer_actual={} producer_measurement_enabled=false measured=false order_ticket={} terminal_receipt=success",
+                                png_path.display(),
+                                capture_step.trace_frame_index,
+                                expected_size.0,
+                                expected_size.1,
+                                capture.width,
+                                capture.height,
+                                gpu_order_producer_label(requested_capture_producer),
+                                gpu_order_producer_label(actual_capture_producer),
+                                option_u64(capture_ticket),
+                            );
+                        }
                         print_surface_benchmark_summary(&identity, &summary);
                         benchmark_completed = true;
                         target.exit();
@@ -2295,6 +2477,100 @@ fn run_surface_trace_benchmark(
 fn store_surface_benchmark_error(slot: &Mutex<Option<String>>, error: String) {
     if let Ok(mut slot) = slot.lock() {
         *slot = Some(error);
+    }
+}
+
+#[cfg(feature = "interactive-viewer")]
+fn drain_surface_capture_receipts(
+    session: &mut SurfaceRenderSession,
+    output: &SurfaceFrameOutput,
+    source_count: usize,
+) -> Result<(), String> {
+    let (expected_backend, expected_ticket) = match output.order_measurement_submission {
+        SurfaceOrderMeasurementSubmission::Issued { backend, ticket } => (backend, ticket),
+        SurfaceOrderMeasurementSubmission::NotRequested => {
+            return Err("forced-refresh surface capture did not issue an order ticket".to_owned());
+        }
+        SurfaceOrderMeasurementSubmission::Unsampled { backend, reason } => {
+            return Err(format!(
+                "forced-refresh surface capture could not issue its {backend:?} order ticket: {reason:?}"
+            ));
+        }
+    };
+    if expected_backend != SurfaceOrderBackendUsed::Gpu {
+        return Err(format!(
+            "surface producer capture requires a GPU terminal ticket, got {expected_backend:?}"
+        ));
+    }
+
+    let deadline = Instant::now() + SURFACE_TELEMETRY_DRAIN_TIMEOUT;
+    loop {
+        session.poll_order_measurement_receipts();
+        let cpu = session.drain_cpu_order_measurements();
+        let projected = session.drain_projected_draw_measurements();
+        let producer = session.drain_gpu_producer_measurements();
+        let order_failures = session.drain_order_measurement_failures();
+        let projected_failures = session.drain_projected_draw_measurement_failures();
+        let producer_failures = session.drain_gpu_producer_measurement_failures();
+        if !cpu.is_empty() || !projected.is_empty() || !producer.is_empty() {
+            return Err(format!(
+                "unmeasured surface capture produced unrelated terminal evidence: cpu={} projected={} producer={}",
+                cpu.len(),
+                projected.len(),
+                producer.len(),
+            ));
+        }
+        if !order_failures.is_empty()
+            || !projected_failures.is_empty()
+            || !producer_failures.is_empty()
+        {
+            return Err(format!(
+                "unmeasured surface capture produced a terminal failure: order={order_failures:?} projected={projected_failures:?} producer={producer_failures:?}"
+            ));
+        }
+
+        let completed = session.drain_order_measurements();
+        if !completed.is_empty() {
+            if completed.len() != 1 {
+                return Err(format!(
+                    "surface capture expected one terminal order receipt, got {}",
+                    completed.len()
+                ));
+            }
+            let measurement = completed[0];
+            if measurement.ticket != expected_ticket
+                || measurement.camera_revision != output.camera_revision
+            {
+                return Err(format!(
+                    "surface capture terminal identity mismatch: expected ticket={} revision={}, got ticket={} revision={}",
+                    expected_ticket,
+                    output.camera_revision,
+                    measurement.ticket,
+                    measurement.camera_revision,
+                ));
+            }
+            if measurement.visible_count as usize > source_count {
+                return Err(format!(
+                    "surface capture terminal count exceeds S: V={} S={source_count}",
+                    measurement.visible_count
+                ));
+            }
+            validate_surface_measurement_counts(
+                measurement.visible_count,
+                measurement.contributor_count,
+                measurement.drawn_count,
+                measurement.exact_contributor_compaction,
+                "unmeasured Surface capture terminal",
+            )?;
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "surface capture order ticket {expected_ticket} did not produce a terminal receipt within {:?}",
+                SURFACE_TELEMETRY_DRAIN_TIMEOUT
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(1));
     }
 }
 
@@ -3508,6 +3784,42 @@ mod tests {
             ])
             .unwrap_err()
             .contains("expected post-sort|preproject")
+        );
+    }
+
+    #[test]
+    fn interactive_png_is_restricted_to_explicit_producer_trace_benchmarks() {
+        assert!(
+            parse_args(&["--interactive", "--png", "target/capture.png"])
+                .unwrap_err()
+                .contains("requires --camera-trace")
+        );
+        assert!(
+            parse_args(&[
+                "--interactive",
+                "--camera-trace",
+                CAMERA_TRACE_FIXTURE,
+                "--png",
+                "target/capture.png",
+            ])
+            .unwrap_err()
+            .contains("requires an explicit --surface-gpu-producer")
+        );
+        let args = parse_args(&[
+            "--interactive",
+            "--camera-trace",
+            CAMERA_TRACE_FIXTURE,
+            "--order-backend",
+            "gpu",
+            "--surface-gpu-producer",
+            "post-sort",
+            "--png",
+            "target/capture.png",
+        ])
+        .expect("valid diagnostic capture");
+        assert_eq!(
+            args.png_out,
+            Some(std::path::PathBuf::from("target/capture.png"))
         );
     }
 

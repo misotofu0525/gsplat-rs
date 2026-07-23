@@ -21,6 +21,15 @@ class GsplatSurfaceRenderer private constructor(
     fun configure(options: GsplatSurfaceOptions) {
         synchronized(lock) {
             checkOpen()
+            checkResult(
+                NativeBridge.setSurfaceGpuProducerMeasurementEnabledV1(nativeHandle, false)
+            )
+            checkResult(
+                NativeBridge.setSurfaceGpuOrderProducerV1(
+                    nativeHandle,
+                    GsplatSurfaceGpuOrderProducer.POST_SORT.nativeValue
+                )
+            )
             checkResult(NativeBridge.setSurfaceSortInterval(nativeHandle, options.sortInterval))
             if (options.asyncSort) {
                 checkResult(
@@ -46,6 +55,17 @@ class GsplatSurfaceRenderer private constructor(
                     options.projectedPolicy.nativeValue
                 )
             )
+            options.gpuProducerDiagnostics?.let { diagnostics ->
+                checkResult(
+                    NativeBridge.setSurfaceGpuOrderProducerV1(
+                        nativeHandle,
+                        diagnostics.producer.nativeValue
+                    )
+                )
+                checkResult(
+                    NativeBridge.setSurfaceGpuProducerMeasurementEnabledV1(nativeHandle, true)
+                )
+            }
         }
     }
 
@@ -54,6 +74,28 @@ class GsplatSurfaceRenderer private constructor(
         synchronized(lock) {
             checkOpen()
             checkResult(NativeBridge.setSurfaceProjectedPolicyV1(nativeHandle, policy.nativeValue))
+        }
+    }
+
+    /** Enables a strict producer diagnostic after the caller configures its exact context. */
+    fun setGpuProducerDiagnostics(diagnostics: GsplatSurfaceGpuProducerDiagnostics?) {
+        synchronized(lock) {
+            checkOpen()
+            checkResult(
+                NativeBridge.setSurfaceGpuProducerMeasurementEnabledV1(nativeHandle, false)
+            )
+            checkResult(
+                NativeBridge.setSurfaceGpuOrderProducerV1(
+                    nativeHandle,
+                    diagnostics?.producer?.nativeValue
+                        ?: GsplatSurfaceGpuOrderProducer.POST_SORT.nativeValue
+                )
+            )
+            if (diagnostics != null) {
+                checkResult(
+                    NativeBridge.setSurfaceGpuProducerMeasurementEnabledV1(nativeHandle, true)
+                )
+            }
         }
     }
 
@@ -175,6 +217,66 @@ class GsplatSurfaceRenderer private constructor(
                 val raw = LongArray(GsplatSurfaceProjectedMeasurementFailure.RAW_VALUE_COUNT)
                 checkResult(NativeBridge.pollSurfaceProjectedFailureV1(nativeHandle, raw))
                 val failure = GsplatSurfaceProjectedMeasurementFailure.fromRaw(raw) ?: break
+                failures += failure
+            }
+            return failures
+        }
+    }
+
+    /** Returns producer identity for the last successfully rendered frame. */
+    fun gpuProducerSubmission(): GsplatSurfaceGpuProducerSubmission {
+        synchronized(lock) {
+            checkOpen()
+            val raw = LongArray(GsplatSurfaceGpuProducerSubmission.RAW_VALUE_COUNT)
+            checkResult(NativeBridge.getSurfaceGpuProducerSubmissionV1(nativeHandle, raw))
+            return GsplatSurfaceGpuProducerSubmission.fromRaw(raw)
+        }
+    }
+
+    /** Returns one terminal producer success with exact S/C/D counts. */
+    fun pollGpuProducerMeasurement(): GsplatSurfaceGpuProducerMeasurement? {
+        synchronized(lock) {
+            checkOpen()
+            val raw = LongArray(GsplatSurfaceGpuProducerMeasurement.RAW_VALUE_COUNT)
+            checkResult(NativeBridge.pollSurfaceGpuProducerMeasurementV1(nativeHandle, raw))
+            return GsplatSurfaceGpuProducerMeasurement.fromRaw(raw)
+        }
+    }
+
+    /** Drains producer successes currently available in native ticket order. */
+    fun drainGpuProducerMeasurements(): List<GsplatSurfaceGpuProducerMeasurement> {
+        synchronized(lock) {
+            checkOpen()
+            val completed = mutableListOf<GsplatSurfaceGpuProducerMeasurement>()
+            while (true) {
+                val raw = LongArray(GsplatSurfaceGpuProducerMeasurement.RAW_VALUE_COUNT)
+                checkResult(NativeBridge.pollSurfaceGpuProducerMeasurementV1(nativeHandle, raw))
+                val measurement = GsplatSurfaceGpuProducerMeasurement.fromRaw(raw) ?: break
+                completed += measurement
+            }
+            return completed
+        }
+    }
+
+    /** Returns one terminal producer failure, or null without blocking. */
+    fun pollGpuProducerMeasurementFailure(): GsplatSurfaceGpuProducerMeasurementFailure? {
+        synchronized(lock) {
+            checkOpen()
+            val raw = LongArray(GsplatSurfaceGpuProducerMeasurementFailure.RAW_VALUE_COUNT)
+            checkResult(NativeBridge.pollSurfaceGpuProducerFailureV1(nativeHandle, raw))
+            return GsplatSurfaceGpuProducerMeasurementFailure.fromRaw(raw)
+        }
+    }
+
+    /** Drains terminal producer failures currently available. */
+    fun drainGpuProducerMeasurementFailures(): List<GsplatSurfaceGpuProducerMeasurementFailure> {
+        synchronized(lock) {
+            checkOpen()
+            val failures = mutableListOf<GsplatSurfaceGpuProducerMeasurementFailure>()
+            while (true) {
+                val raw = LongArray(GsplatSurfaceGpuProducerMeasurementFailure.RAW_VALUE_COUNT)
+                checkResult(NativeBridge.pollSurfaceGpuProducerFailureV1(nativeHandle, raw))
+                val failure = GsplatSurfaceGpuProducerMeasurementFailure.fromRaw(raw) ?: break
                 failures += failure
             }
             return failures

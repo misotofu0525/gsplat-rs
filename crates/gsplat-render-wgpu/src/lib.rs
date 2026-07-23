@@ -1,3 +1,5 @@
+#![deny(clippy::debug_assert_with_mut_call)]
+
 //! WGPU renderer with a SortedAlpha reference path.
 
 mod direct_gpu_order;
@@ -58,7 +60,7 @@ pub use resident_scene::{
     ResidentSourceSplat, resident_sh_plane_count,
 };
 pub(crate) use spatial_pages::{DEFAULT_PAGE_CAPACITY, SpatialPageSet};
-pub use surface_presenter::SurfacePresenter;
+pub use surface_presenter::{SurfaceFrameCapture, SurfacePresenter};
 #[cfg(test)]
 use surface_presenter::{SurfacePagedRuntime, surface_resource_plan, try_prepare_then_commit};
 pub use surface_session::{
@@ -381,6 +383,12 @@ pub enum SurfacePresenterError {
         resize_error: String,
         rollback_error: String,
     },
+    #[error("surface framebuffer capture is unsupported: {0}")]
+    SurfaceCaptureUnsupported(String),
+    #[error("surface framebuffer capture state is invalid: {0}")]
+    SurfaceCaptureState(String),
+    #[error("surface framebuffer capture readback failed")]
+    SurfaceCaptureReadback,
 }
 
 impl SurfacePresenterError {
@@ -411,7 +419,8 @@ impl SurfacePresenterError {
             | Self::SurfaceGeometryPreparationRequired
             | Self::SurfaceGeometrySwitchUnsupported
             | Self::SurfaceResizePreparationRequired
-            | Self::SurfaceResizeUnsupported => ErrorCode::Unsupported,
+            | Self::SurfaceResizeUnsupported
+            | Self::SurfaceCaptureUnsupported(_) => ErrorCode::Unsupported,
             Self::GpuDimensionsUnsupported { .. } => ErrorCode::Unsupported,
             Self::SceneNotLoaded => ErrorCode::SceneNotLoaded,
             Self::NoSurfaceFormat
@@ -422,6 +431,8 @@ impl SurfacePresenterError {
             | Self::SurfaceGeometryValidation { .. }
             | Self::SurfaceGeometryInternal { .. }
             | Self::SurfaceResizeRollbackFailed { .. }
+            | Self::SurfaceCaptureState(_)
+            | Self::SurfaceCaptureReadback
             | Self::PagedAtlas(_) => ErrorCode::Internal,
             Self::DirectScene(DirectSceneError::ResourceLimitExceeded(_))
             | Self::DirectScene(DirectSceneError::PackedResourceLimitExceeded(_))

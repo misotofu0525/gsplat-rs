@@ -63,6 +63,7 @@ def camera_validation_fixture(backend: str = "gpu", sample_count: int = 1):
         "renderer": {
             "order_backend_requested": backend,
             "path": "packed_atlas",
+            "gpu_producer_measurement_enabled": False,
         },
         "dataset": {"sha256": "abc", "bytes": 123},
         "trace": {
@@ -162,6 +163,72 @@ def runtime_receipt(trace_frame, width: int, height: int, revision: int):
     }
 
 
+def add_gpu_producer_evidence(
+    manifest: dict,
+    summary: dict,
+    frames: list[dict],
+    producer: str = "post_sort",
+) -> None:
+    source = 2_541_226
+    manifest["dataset"]["splat_count"] = source
+    manifest["renderer"].update(
+        {
+            "raster_plan": "projected_quads_exact",
+            "projected_policy_requested": "compact",
+            "gpu_order_producer_requested": producer,
+            "gpu_producer_measurement_enabled": True,
+        }
+    )
+    ledger = []
+    for index, frame in enumerate(frames):
+        ticket = 100 + index
+        contributor = source - index
+        frame.update(
+            {
+                "gpu_order_producer": producer,
+                "gpu_producer_measurement_ticket": ticket,
+                "gpu_producer_measurement_camera_revision": frame["camera_revision"],
+                "gpu_producer_order_generation": index + 1,
+                "gpu_producer_projection_generation": index + 1,
+                "gpu_producer_frame_complete_ms": 4.5 + index,
+                "gpu_producer_source": source,
+                "gpu_producer_contributor": contributor,
+                "gpu_producer_drawn": contributor,
+                "gpu_producer_draw_scope": "exact_current_contributors",
+                "gpu_producer_order_refreshed": True,
+                "gpu_producer_exact_current_draw": True,
+                "gpu_producer_stale_order": False,
+                "gpu_producer_dropped_prior": False,
+                "gpu_producer_submission_flags": 9,
+            }
+        )
+        ledger.append(
+            {
+                "ticket": ticket,
+                "camera_revision": frame["camera_revision"],
+                "producer": producer,
+                "outcome": "success",
+                "source": source,
+                "contributor": contributor,
+                "drawn": contributor,
+            }
+        )
+    count = len(frames)
+    summary["gpu_producer_telemetry"] = {
+        "requested_producer": producer,
+        "scheduled_count": count,
+        "completed_count": count,
+        "failure_count": 0,
+        "unsampled_count": 0,
+        "exact_current_count": count,
+        "stale_count": 0,
+        "dropped_count": 0,
+        "order_refreshed_count": count,
+        "frame_complete_ms": {"count": count},
+    }
+    summary["gpu_producer_terminal_ledger"] = ledger
+
+
 class ScheduleTests(unittest.TestCase):
     def test_schedule_is_paired_and_balanced(self) -> None:
         schedule = COLLECTOR.build_schedule(["cpu", "gpu"], 3, False, 99)
@@ -257,10 +324,60 @@ class ParsingTests(unittest.TestCase):
         self.assertEqual(launch[launch.index("gsplat_camera_trace_frame") + 1], "1")
         self.assertNotIn("gsplat_camera_trace_sequence", launch)
 
+    def test_launch_arguments_enable_strict_gpu_producer_diagnostic(self) -> None:
+        args = COLLECTOR.parser().parse_args(
+            [
+                "--serial",
+                "serial",
+                "--ply",
+                __file__,
+                "--camera-trace",
+                str(TEST_CAMERA_TRACE),
+                "--backend",
+                "gpu",
+                "--gpu-producer",
+                "preproject",
+            ]
+        )
+        COLLECTOR.validate_args(args)
+        launch = COLLECTOR.benchmark_launch_args(args, "gpu")
+        self.assertEqual(
+            launch[launch.index("gsplat_surface_gpu_producer") + 1],
+            "preproject",
+        )
+        self.assertEqual(
+            launch[launch.index("gsplat_surface_gpu_producer_measurement") + 1],
+            "true",
+        )
+
+    def test_gpu_producer_diagnostic_rejects_non_isolated_configuration(self) -> None:
+        cases = (
+            ["--backend", "cpu", "--gpu-producer", "post_sort"],
+            ["--backend", "gpu", "--gpu-producer", "post_sort", "--geometry-path", "direct"],
+            ["--backend", "gpu", "--gpu-producer", "post_sort", "--sort-interval", "2"],
+            ["--backend", "gpu", "--gpu-producer", "post_sort", "--camera-frame", "0"],
+        )
+        for extra in cases:
+            with self.subTest(extra=extra):
+                args = COLLECTOR.parser().parse_args(
+                    [
+                        "--serial",
+                        "serial",
+                        "--ply",
+                        __file__,
+                        "--camera-trace",
+                        str(TEST_CAMERA_TRACE),
+                        *extra,
+                    ]
+                )
+                with self.assertRaisesRegex(ValueError, "gpu-producer"):
+                    COLLECTOR.validate_args(args)
+
     def test_forced_backend_and_dataset_identity_are_validated(self) -> None:
         manifest, summary, frames, trace, trace_identity = camera_validation_fixture(
             "gpu", 8
         )
+        manifest["renderer"]["gpu_producer_measurement_enabled"] = False
         COLLECTOR.validate_run_artifact(
             manifest,
             summary,
@@ -286,6 +403,62 @@ class ParsingTests(unittest.TestCase):
                 trace_identity,
             )
 
+    def test_non_diagnostic_artifact_requires_producer_diagnostics_explicitly_off(
+        self,
+    ) -> None:
+        fixture = camera_validation_fixture("gpu")
+        fixture[0]["renderer"]["gpu_producer_measurement_enabled"] = False
+        COLLECTOR.validate_run_artifact(
+            fixture[0],
+            fixture[1],
+            fixture[2],
+            "gpu",
+            "packed",
+            {"sha256": "abc", "bytes": 123},
+            fixture[3],
+            fixture[4],
+        )
+
+        for label, value in (
+            ("missing", None),
+            ("null", None),
+            ("true", True),
+            ("string", "false"),
+        ):
+            with self.subTest(label=label):
+                manifest = copy.deepcopy(fixture[0])
+                if label == "missing":
+                    manifest["renderer"].pop("gpu_producer_measurement_enabled")
+                else:
+                    manifest["renderer"]["gpu_producer_measurement_enabled"] = value
+                with self.assertRaisesRegex(RuntimeError, "enabled GPU producer telemetry"):
+                    COLLECTOR.validate_run_artifact(
+                        manifest,
+                        fixture[1],
+                        fixture[2],
+                        "gpu",
+                        "packed",
+                        {"sha256": "abc", "bytes": 123},
+                        fixture[3],
+                        fixture[4],
+                    )
+
+    def test_non_diagnostic_artifact_rejects_any_producer_frame_field(self) -> None:
+        fixture = camera_validation_fixture("gpu")
+        fixture[0]["renderer"]["gpu_producer_measurement_enabled"] = False
+        fixture[2][0]["gpu_producer_hidden_receipt"] = 1
+        with self.assertRaisesRegex(RuntimeError, "published GPU producer fields"):
+            COLLECTOR.validate_run_artifact(
+                fixture[0],
+                fixture[1],
+                fixture[2],
+                "gpu",
+                "packed",
+                {"sha256": "abc", "bytes": 123},
+                fixture[3],
+                fixture[4],
+            )
+
     def test_artifact_rejects_wrong_packaged_dataset(self) -> None:
         manifest, summary, frames, trace, trace_identity = camera_validation_fixture(
             "cpu"
@@ -302,6 +475,67 @@ class ParsingTests(unittest.TestCase):
                 trace,
                 trace_identity,
             )
+
+    def test_gpu_producer_artifact_requires_exact_ticketed_s_c_d(self) -> None:
+        fixture = camera_validation_fixture("gpu", 2)
+        add_gpu_producer_evidence(fixture[0], fixture[1], fixture[2], "post_sort")
+        COLLECTOR.validate_run_artifact(
+            fixture[0],
+            fixture[1],
+            fixture[2],
+            "gpu",
+            "packed",
+            {"sha256": "abc", "bytes": 123},
+            fixture[3],
+            fixture[4],
+            "post_sort",
+        )
+
+        mutations = {
+            "missing ticket": lambda manifest, summary, frames: frames[0].pop(
+                "gpu_producer_measurement_ticket"
+            ),
+            "duplicate ticket": lambda manifest, summary, frames: frames[1].__setitem__(
+                "gpu_producer_measurement_ticket",
+                frames[0]["gpu_producer_measurement_ticket"],
+            ),
+            "ring busy": lambda manifest, summary, frames: frames[0].__setitem__(
+                "gpu_producer_submission_flags", 10
+            ),
+            "stale": lambda manifest, summary, frames: frames[0].__setitem__(
+                "gpu_producer_stale_order", True
+            ),
+            "dropped": lambda manifest, summary, frames: frames[0].__setitem__(
+                "gpu_producer_dropped_prior", True
+            ),
+            "non D=C": lambda manifest, summary, frames: frames[0].__setitem__(
+                "gpu_producer_drawn", frames[0]["gpu_producer_contributor"] + 1
+            ),
+            "wrong producer": lambda manifest, summary, frames: frames[0].__setitem__(
+                "gpu_order_producer", "preproject"
+            ),
+            "terminal failure": lambda manifest, summary, frames: summary[
+                "gpu_producer_terminal_ledger"
+            ][0].__setitem__("outcome", "failure"),
+        }
+        for label, mutate in mutations.items():
+            with self.subTest(label=label):
+                manifest = copy.deepcopy(fixture[0])
+                summary = copy.deepcopy(fixture[1])
+                frames = copy.deepcopy(fixture[2])
+                mutate(manifest, summary, frames)
+                with self.assertRaises(RuntimeError):
+                    COLLECTOR.validate_run_artifact(
+                        manifest,
+                        summary,
+                        frames,
+                        "gpu",
+                        "packed",
+                        {"sha256": "abc", "bytes": 123},
+                        fixture[3],
+                        fixture[4],
+                        "post_sort",
+                    )
 
     def test_camera_receipt_mutations_fail_closed(self) -> None:
         fixture = camera_validation_fixture("gpu")

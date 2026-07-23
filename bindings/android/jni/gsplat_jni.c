@@ -136,6 +136,28 @@ JNIEXPORT jint JNICALL Java_com_gsplat_example_GsplatJniSmoke_nativeProjectedAbi
       submission.version != GSPLAT_SURFACE_PROJECTED_ABI_VERSION_V1) {
     return 42;
   }
+  GsplatSurfaceGpuProducerSubmissionV1 producer_submission;
+  memset(&producer_submission, 0, sizeof(producer_submission));
+  producer_submission.struct_size = (uint32_t)sizeof(producer_submission);
+  producer_submission.version = GSPLAT_SURFACE_GPU_PRODUCER_ABI_VERSION_V1;
+  if (gsplat_surface_renderer_set_gpu_order_producer_v1(
+          NULL,
+          GSPLAT_SURFACE_GPU_PRODUCER_POST_SORT) != GSPLAT_ERROR_INVALID_ARGUMENT) {
+    return 43;
+  }
+  if (gsplat_surface_renderer_set_gpu_producer_measurement_enabled_v1(NULL, 1) !=
+      GSPLAT_ERROR_INVALID_ARGUMENT) {
+    return 44;
+  }
+  if (gsplat_surface_renderer_get_gpu_producer_submission_v1(
+          NULL,
+          &producer_submission) != GSPLAT_ERROR_INVALID_ARGUMENT) {
+    return 45;
+  }
+  if (producer_submission.struct_size != sizeof(producer_submission) ||
+      producer_submission.version != GSPLAT_SURFACE_GPU_PRODUCER_ABI_VERSION_V1) {
+    return 46;
+  }
   return 0;
 }
 
@@ -193,7 +215,28 @@ static void initialize_projected_failure_v1(GsplatSurfaceProjectedFailureV1 *fai
   failure->version = GSPLAT_SURFACE_PROJECTED_ABI_VERSION_V1;
 }
 
-static int projected_v1_header_matches(
+static void initialize_gpu_producer_submission_v1(
+    GsplatSurfaceGpuProducerSubmissionV1 *submission) {
+  memset(submission, 0, sizeof(*submission));
+  submission->struct_size = (uint32_t)sizeof(*submission);
+  submission->version = GSPLAT_SURFACE_GPU_PRODUCER_ABI_VERSION_V1;
+}
+
+static void initialize_gpu_producer_measurement_v1(
+    GsplatSurfaceGpuProducerMeasurementV1 *measurement) {
+  memset(measurement, 0, sizeof(*measurement));
+  measurement->struct_size = (uint32_t)sizeof(*measurement);
+  measurement->version = GSPLAT_SURFACE_GPU_PRODUCER_ABI_VERSION_V1;
+}
+
+static void initialize_gpu_producer_failure_v1(
+    GsplatSurfaceGpuProducerFailureV1 *failure) {
+  memset(failure, 0, sizeof(*failure));
+  failure->struct_size = (uint32_t)sizeof(*failure);
+  failure->version = GSPLAT_SURFACE_GPU_PRODUCER_ABI_VERSION_V1;
+}
+
+static int v1_header_matches(
     uint32_t struct_size,
     uint32_t version,
     size_t expected_size) {
@@ -395,6 +438,44 @@ JNIEXPORT jint JNICALL Java_com_gsplat_android_NativeBridge_setSurfaceProjectedP
   return gsplat_surface_renderer_set_projected_policy_v1(
       handle->renderer,
       (uint32_t)policy);
+}
+
+JNIEXPORT jint JNICALL Java_com_gsplat_android_NativeBridge_setSurfaceGpuOrderProducerV1(
+    JNIEnv *env,
+    jclass cls,
+    jlong native_handle,
+    jint producer) {
+  (void)env;
+  (void)cls;
+
+  AndroidSurfaceRendererHandle *handle = android_handle_from_jlong(native_handle);
+  if (handle == NULL || handle->renderer == NULL ||
+      producer < GSPLAT_SURFACE_GPU_PRODUCER_LEGACY_DEFAULT ||
+      producer > GSPLAT_SURFACE_GPU_PRODUCER_PREPROJECT) {
+    return GSPLAT_ERROR_INVALID_ARGUMENT;
+  }
+
+  return gsplat_surface_renderer_set_gpu_order_producer_v1(
+      handle->renderer,
+      (uint32_t)producer);
+}
+
+JNIEXPORT jint JNICALL Java_com_gsplat_android_NativeBridge_setSurfaceGpuProducerMeasurementEnabledV1(
+    JNIEnv *env,
+    jclass cls,
+    jlong native_handle,
+    jboolean enabled) {
+  (void)env;
+  (void)cls;
+
+  AndroidSurfaceRendererHandle *handle = android_handle_from_jlong(native_handle);
+  if (handle == NULL || handle->renderer == NULL) {
+    return GSPLAT_ERROR_INVALID_ARGUMENT;
+  }
+
+  return gsplat_surface_renderer_set_gpu_producer_measurement_enabled_v1(
+      handle->renderer,
+      enabled ? 1u : 0u);
 }
 
 JNIEXPORT jint JNICALL Java_com_gsplat_android_NativeBridge_setSurfaceGeometryPath(
@@ -840,7 +921,7 @@ JNIEXPORT jint JNICALL Java_com_gsplat_android_NativeBridge_getSurfaceProjectedS
   if (rc != GSPLAT_OK) {
     return rc;
   }
-  if (!projected_v1_header_matches(
+  if (!v1_header_matches(
           submission.struct_size,
           submission.version,
           sizeof(submission)) ||
@@ -920,7 +1001,7 @@ JNIEXPORT jint JNICALL Java_com_gsplat_android_NativeBridge_pollSurfaceProjected
   if (rc != GSPLAT_OK) {
     return rc;
   }
-  if (available > 1 || !projected_v1_header_matches(
+  if (available > 1 || !v1_header_matches(
           measurement.struct_size,
           measurement.version,
           sizeof(measurement))) {
@@ -947,7 +1028,7 @@ JNIEXPORT jint JNICALL Java_com_gsplat_android_NativeBridge_pollSurfaceProjected
     if (rc != GSPLAT_OK) {
       return rc;
     }
-    if (counts_available != 1 || !projected_v1_header_matches(
+    if (counts_available != 1 || !v1_header_matches(
             counts.struct_size,
             counts.version,
             sizeof(counts)) ||
@@ -1033,7 +1114,7 @@ JNIEXPORT jint JNICALL Java_com_gsplat_android_NativeBridge_pollSurfaceProjected
   if (rc != GSPLAT_OK) {
     return rc;
   }
-  if (available > 1 || !projected_v1_header_matches(
+  if (available > 1 || !v1_header_matches(
           failure.struct_size,
           failure.version,
           sizeof(failure)) ||
@@ -1059,6 +1140,211 @@ JNIEXPORT jint JNICALL Java_com_gsplat_android_NativeBridge_pollSurfaceProjected
   values[7] = (jlong)failure.order_backend;
   values[8] = (jlong)failure.flags;
   (*env)->SetLongArrayRegion(env, out_failure, 0, 9, values);
+  return GSPLAT_OK;
+}
+
+JNIEXPORT jint JNICALL Java_com_gsplat_android_NativeBridge_getSurfaceGpuProducerSubmissionV1(
+    JNIEnv *env,
+    jclass cls,
+    jlong native_handle,
+    jlongArray out_submission) {
+  (void)cls;
+
+  AndroidSurfaceRendererHandle *handle = android_handle_from_jlong(native_handle);
+  if (handle == NULL || handle->renderer == NULL || out_submission == NULL ||
+      (*env)->GetArrayLength(env, out_submission) < 7) {
+    return GSPLAT_ERROR_INVALID_ARGUMENT;
+  }
+
+  GsplatSurfaceGpuProducerSubmissionV1 submission;
+  initialize_gpu_producer_submission_v1(&submission);
+  int32_t rc = gsplat_surface_renderer_get_gpu_producer_submission_v1(
+      handle->renderer,
+      &submission);
+  if (rc != GSPLAT_OK) {
+    return rc;
+  }
+  const uint32_t known_flags =
+      GSPLAT_SURFACE_GPU_PRODUCER_SUBMISSION_TICKET_ISSUED |
+      GSPLAT_SURFACE_GPU_PRODUCER_SUBMISSION_UNSAMPLED_RING_BUSY |
+      GSPLAT_SURFACE_GPU_PRODUCER_SUBMISSION_UNSAMPLED_SURFACE_UNAVAILABLE |
+      GSPLAT_SURFACE_GPU_PRODUCER_SUBMISSION_MEASUREMENT_ENABLED;
+  const uint32_t issued =
+      submission.flags & GSPLAT_SURFACE_GPU_PRODUCER_SUBMISSION_TICKET_ISSUED;
+  const uint32_t ring_busy =
+      submission.flags & GSPLAT_SURFACE_GPU_PRODUCER_SUBMISSION_UNSAMPLED_RING_BUSY;
+  const uint32_t surface_unavailable =
+      submission.flags & GSPLAT_SURFACE_GPU_PRODUCER_SUBMISSION_UNSAMPLED_SURFACE_UNAVAILABLE;
+  const uint32_t measurement_enabled =
+      submission.flags & GSPLAT_SURFACE_GPU_PRODUCER_SUBMISSION_MEASUREMENT_ENABLED;
+  if (!v1_header_matches(
+          submission.struct_size,
+          submission.version,
+          sizeof(submission)) ||
+      submission.requested_producer < GSPLAT_SURFACE_GPU_PRODUCER_POST_SORT ||
+      submission.requested_producer > GSPLAT_SURFACE_GPU_PRODUCER_PREPROJECT ||
+      submission.actual_producer > GSPLAT_SURFACE_GPU_PRODUCER_PREPROJECT ||
+      submission.order_backend > GSPLAT_SURFACE_ORDER_BACKEND_GPU ||
+      submission.projected_execution < GSPLAT_SURFACE_PROJECTED_EXECUTION_CANDIDATE ||
+      submission.projected_execution > GSPLAT_SURFACE_PROJECTED_EXECUTION_COMPACT ||
+      submission.reserved != 0 || (submission.flags & ~known_flags) != 0 ||
+      (ring_busy != 0 && surface_unavailable != 0) ||
+      (issued != 0 &&
+       (submission.ticket == 0 || ring_busy != 0 || surface_unavailable != 0)) ||
+      (issued == 0 && submission.ticket != 0) ||
+      (measurement_enabled == 0 &&
+       (issued != 0 || ring_busy != 0 || surface_unavailable != 0))) {
+    __android_log_print(
+        ANDROID_LOG_ERROR,
+        GSPLAT_LOG_TAG,
+        "invalid GPU producer submission v1 receipt");
+    return GSPLAT_ERROR_INTERNAL;
+  }
+
+  jlong values[7];
+  values[0] = (jlong)submission.ticket;
+  values[1] = (jlong)submission.camera_revision;
+  values[2] = (jlong)submission.requested_producer;
+  values[3] = (jlong)submission.actual_producer;
+  values[4] = (jlong)submission.order_backend;
+  values[5] = (jlong)submission.projected_execution;
+  values[6] = (jlong)submission.flags;
+  (*env)->SetLongArrayRegion(env, out_submission, 0, 7, values);
+  return GSPLAT_OK;
+}
+
+JNIEXPORT jint JNICALL Java_com_gsplat_android_NativeBridge_pollSurfaceGpuProducerMeasurementV1(
+    JNIEnv *env,
+    jclass cls,
+    jlong native_handle,
+    jlongArray out_measurement) {
+  (void)cls;
+
+  AndroidSurfaceRendererHandle *handle = android_handle_from_jlong(native_handle);
+  if (handle == NULL || handle->renderer == NULL || out_measurement == NULL ||
+      (*env)->GetArrayLength(env, out_measurement) < 12) {
+    return GSPLAT_ERROR_INVALID_ARGUMENT;
+  }
+
+  GsplatSurfaceGpuProducerMeasurementV1 measurement;
+  initialize_gpu_producer_measurement_v1(&measurement);
+  uint32_t available = 0;
+  int32_t rc = gsplat_surface_renderer_poll_gpu_producer_measurement_v1(
+      handle->renderer,
+      &measurement,
+      &available);
+  if (rc != GSPLAT_OK) {
+    return rc;
+  }
+  const uint32_t known_flags =
+      GSPLAT_SURFACE_GPU_PRODUCER_MEASUREMENT_ORDER_REFRESHED |
+      GSPLAT_SURFACE_GPU_PRODUCER_MEASUREMENT_EXACT_CURRENT_DRAW |
+      GSPLAT_SURFACE_GPU_PRODUCER_MEASUREMENT_STALE_ORDER |
+      GSPLAT_SURFACE_GPU_PRODUCER_MEASUREMENT_DROPPED_PRIOR;
+  const uint32_t refreshed =
+      measurement.flags & GSPLAT_SURFACE_GPU_PRODUCER_MEASUREMENT_ORDER_REFRESHED;
+  const uint32_t exact =
+      measurement.flags & GSPLAT_SURFACE_GPU_PRODUCER_MEASUREMENT_EXACT_CURRENT_DRAW;
+  const uint32_t stale =
+      measurement.flags & GSPLAT_SURFACE_GPU_PRODUCER_MEASUREMENT_STALE_ORDER;
+  if (available > 1 || !v1_header_matches(
+          measurement.struct_size,
+          measurement.version,
+          sizeof(measurement)) ||
+      (available != 0 &&
+       (measurement.ticket == 0 ||
+        !isfinite(measurement.frame_complete_ms) ||
+        measurement.frame_complete_ms < 0.0f ||
+        measurement.producer < GSPLAT_SURFACE_GPU_PRODUCER_POST_SORT ||
+        measurement.producer > GSPLAT_SURFACE_GPU_PRODUCER_PREPROJECT ||
+        measurement.contributor_count > measurement.source_count ||
+        measurement.drawn_count > measurement.source_count ||
+        measurement.draw_scope <
+            GSPLAT_SURFACE_GPU_PRODUCER_DRAW_SCOPE_EXACT_CURRENT_CONTRIBUTORS ||
+        measurement.draw_scope >
+            GSPLAT_SURFACE_GPU_PRODUCER_DRAW_SCOPE_STALE_ORDER_CANDIDATES ||
+        measurement.reserved != 0 ||
+        (measurement.flags & ~known_flags) != 0 ||
+        (exact != 0) == (stale != 0) ||
+        (measurement.draw_scope ==
+             GSPLAT_SURFACE_GPU_PRODUCER_DRAW_SCOPE_EXACT_CURRENT_CONTRIBUTORS &&
+         (exact == 0 || stale != 0 || refreshed == 0 ||
+          measurement.drawn_count != measurement.contributor_count)) ||
+        (measurement.draw_scope ==
+             GSPLAT_SURFACE_GPU_PRODUCER_DRAW_SCOPE_STALE_ORDER_CANDIDATES &&
+         (exact != 0 || stale == 0))))) {
+    __android_log_print(
+        ANDROID_LOG_ERROR,
+        GSPLAT_LOG_TAG,
+        "invalid GPU producer measurement v1 receipt");
+    return GSPLAT_ERROR_INTERNAL;
+  }
+
+  jlong values[12];
+  values[0] = (jlong)available;
+  values[1] = (jlong)measurement.ticket;
+  values[2] = (jlong)measurement.camera_revision;
+  values[3] = (jlong)measurement.order_generation;
+  values[4] = (jlong)measurement.projection_generation;
+  values[5] = float_bits_to_jlong(measurement.frame_complete_ms);
+  values[6] = (jlong)measurement.producer;
+  values[7] = (jlong)measurement.source_count;
+  values[8] = (jlong)measurement.contributor_count;
+  values[9] = (jlong)measurement.drawn_count;
+  values[10] = (jlong)measurement.draw_scope;
+  values[11] = (jlong)measurement.flags;
+  (*env)->SetLongArrayRegion(env, out_measurement, 0, 12, values);
+  return GSPLAT_OK;
+}
+
+JNIEXPORT jint JNICALL Java_com_gsplat_android_NativeBridge_pollSurfaceGpuProducerFailureV1(
+    JNIEnv *env,
+    jclass cls,
+    jlong native_handle,
+    jlongArray out_failure) {
+  (void)cls;
+
+  AndroidSurfaceRendererHandle *handle = android_handle_from_jlong(native_handle);
+  if (handle == NULL || handle->renderer == NULL || out_failure == NULL ||
+      (*env)->GetArrayLength(env, out_failure) < 8) {
+    return GSPLAT_ERROR_INVALID_ARGUMENT;
+  }
+
+  GsplatSurfaceGpuProducerFailureV1 failure;
+  initialize_gpu_producer_failure_v1(&failure);
+  uint32_t available = 0;
+  int32_t rc = gsplat_surface_renderer_poll_gpu_producer_failure_v1(
+      handle->renderer,
+      &failure,
+      &available);
+  if (rc != GSPLAT_OK) {
+    return rc;
+  }
+  if (available > 1 || !v1_header_matches(
+          failure.struct_size,
+          failure.version,
+          sizeof(failure)) ||
+      (available != 0 &&
+       (failure.ticket == 0 ||
+        failure.reason < GSPLAT_SURFACE_GPU_PRODUCER_FAILURE_READBACK_MAP ||
+        failure.reason > GSPLAT_SURFACE_GPU_PRODUCER_FAILURE_INVARIANT_VIOLATION ||
+        failure.producer < GSPLAT_SURFACE_GPU_PRODUCER_POST_SORT ||
+        failure.producer > GSPLAT_SURFACE_GPU_PRODUCER_PREPROJECT ||
+        failure.reserved != 0 ||
+        (failure.flags & ~GSPLAT_SURFACE_GPU_PRODUCER_FAILURE_DROPPED_PRIOR) != 0))) {
+    return GSPLAT_ERROR_INTERNAL;
+  }
+
+  jlong values[8];
+  values[0] = (jlong)available;
+  values[1] = (jlong)failure.ticket;
+  values[2] = (jlong)failure.camera_revision;
+  values[3] = (jlong)failure.order_generation;
+  values[4] = (jlong)failure.projection_generation;
+  values[5] = (jlong)failure.reason;
+  values[6] = (jlong)failure.producer;
+  values[7] = (jlong)failure.flags;
+  (*env)->SetLongArrayRegion(env, out_failure, 0, 8, values);
   return GSPLAT_OK;
 }
 

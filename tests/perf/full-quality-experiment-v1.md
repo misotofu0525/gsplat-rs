@@ -293,6 +293,22 @@ The renderer section additionally records:
 "sort_interval": 1
 ```
 
+An opt-in same-binary GPU-producer run additionally records
+`renderer.gpu_order_producer_requested` and
+`renderer.gpu_order_producer_actual` as `"post-sort"` or `"preproject"`.
+Such a run is valid only with complete Packed residency,
+`raster_execution_plan="projected_quads_exact"`, forced GPU ordering, forced
+Compact drawing, sort interval one, and isolated queue terminals. Every
+retained frame advances asynchronously and carries an issued ticket in the
+independent `[2^51, 2^52)`
+namespace. Its terminal proves the same producer/camera identity, current graph
+generations, `source_contributor_issued_v1`, `D=C`, refreshed order,
+`exact_current_contributors`, `stale_order=false`, and queue-completion time.
+Ring-busy, surface-unavailable, stale-order, missing, duplicate, or structured
+failure receipts fail closed. When no producer is requested, PostSort remains
+the GPU default and this diagnostic ticket stream must stay disabled; CPU
+frames correctly report no actual GPU producer.
+
 The summary's `sort_telemetry` records `cpu_frame_count`, `gpu_frame_count`,
 and `gpu_sort_fallback_count`. Forced CPU/GPU runs may not contain another
 backend or a fallback. Adaptive runs may select either backend, but their CPU

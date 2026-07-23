@@ -75,6 +75,22 @@ boundary used by the Android JNI bridge and the iOS `GsplatKit` wrapper.
   ticket by itself. After polling a success, take its counts immediately;
   `out_available == 0` means bounded evidence has expired and a strict run
   must be rejected.
+- Packed GPU producer selection is a separate diagnostic lane. Keep the
+  qualified default (`POST_SORT`) unless running an isolated A/B experiment;
+  set `PREPROJECT` with
+  `gsplat_surface_renderer_set_gpu_order_producer_v1()`, then explicitly opt
+  into receipts with
+  `gsplat_surface_renderer_set_gpu_producer_measurement_enabled_v1()`. Receipt
+  admission requires Packed, forced Compact projected draw, and the GPU order
+  lane. Join submission and terminal success/failure by ticket plus camera
+  revision. An exact-current success carries source/contributor/drawn counts
+  and must prove `D=C<=S`; ring-busy, Surface-unavailable, stale-order,
+  dropped-prior, generation-invalidated, readback, or invariant evidence is a
+  failed strict run. The additive V1 layouts are frozen and remain dormant
+  until explicitly enabled. Disabling measurement stops new tickets but does
+  not erase the last rendered submission or terminal outcomes for tickets
+  already issued. Drain both terminal queues before treating a later enabled
+  period as a fresh experiment.
 - Call `gsplat_surface_renderer_get_exactness()` after construction to obtain
   source/decoded/encoded/resident/addressable counts, source/resident SH
   degree, full-quality policy bits, and the physical adapter limits used for

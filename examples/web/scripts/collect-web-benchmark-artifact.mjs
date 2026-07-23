@@ -26,6 +26,11 @@ import {
   validateProjectedFrameEvidence,
   validateProjectedTerminalLedger,
 } from '../src/benchmark-projected-evidence.mjs';
+import {
+  validateGpuProducerFrameEvidence,
+  validateGpuProducerMeasuredSubmissions,
+  validateGpuProducerTerminalLedger,
+} from '../src/benchmark-gpu-producer-evidence.mjs';
 
 const execFile = promisify(execFileCallback);
 
@@ -63,6 +68,10 @@ const projectedPolicy = process.env.GSPLAT_PROJECTED_POLICY ?? 'adaptive';
 if (!['candidate', 'compact', 'adaptive'].includes(projectedPolicy)) {
   throw new Error('GSPLAT_PROJECTED_POLICY must be candidate, compact, or adaptive');
 }
+const gpuOrderProducer = process.env.GSPLAT_GPU_ORDER_PRODUCER?.trim() || null;
+if (gpuOrderProducer !== null && !['post-sort', 'preproject'].includes(gpuOrderProducer)) {
+  throw new Error('GSPLAT_GPU_ORDER_PRODUCER must be post-sort or preproject');
+}
 const sortInterval = Number(process.env.GSPLAT_SORT_INTERVAL ?? 1);
 const navigationTimeoutMs = Number(process.env.GSPLAT_NAVIGATION_TIMEOUT_MS ?? 600_000);
 const benchmarkTimeoutMs = Number(process.env.GSPLAT_BENCHMARK_TIMEOUT_MS ?? 600_000);
@@ -71,6 +80,20 @@ const benchmarkSettleMs = Number(process.env.GSPLAT_BENCHMARK_SETTLE_MS ?? 50);
 const orderCompletionProtocol = process.env.GSPLAT_ORDER_COMPLETION_PROTOCOL ?? 'isolated_terminal';
 if (!['isolated_terminal', 'sustained_window'].includes(orderCompletionProtocol)) {
   throw new Error('GSPLAT_ORDER_COMPLETION_PROTOCOL must be isolated_terminal or sustained_window');
+}
+if (gpuOrderProducer !== null && (
+  geometryPath !== 'packed'
+  || orderBackend !== 'gpu'
+  || projectedPolicy !== 'compact'
+  || sortInterval !== 1
+  || orderCompletionProtocol !== 'isolated_terminal'
+  || benchmarkSync
+)) {
+  throw new Error(
+    'GPU producer qualification requires Packed geometry, forced GPU ordering, ' +
+    'forced Compact projected drawing, sort interval 1, asynchronous progression, ' +
+    'and isolated terminals',
+  );
 }
 
 async function findChrome() {
@@ -141,6 +164,9 @@ function parseArtifacts(consoleLines) {
   const projectedMeasurements = [];
   const projectedMeasurementSubmissions = [];
   const projectedMeasurementFailures = [];
+  const gpuProducerMeasurements = [];
+  const gpuProducerMeasurementSubmissions = [];
+  const gpuProducerMeasurementFailures = [];
   for (const line of consoleLines) {
     const text = line.includes(': ') ? line.slice(line.indexOf(': ') + 2) : line;
     if (text.startsWith('BENCHMARK_MANIFEST_JSON ')) {
@@ -175,6 +201,18 @@ function parseArtifacts(consoleLines) {
       projectedMeasurementFailures.push(
         text.slice('PROJECTED_MEASUREMENT_FAILURE_JSON '.length),
       );
+    } else if (text.startsWith('GPU_PRODUCER_MEASUREMENT_JSON ')) {
+      gpuProducerMeasurements.push(
+        text.slice('GPU_PRODUCER_MEASUREMENT_JSON '.length),
+      );
+    } else if (text.startsWith('GPU_PRODUCER_MEASUREMENT_SUBMISSION_JSON ')) {
+      gpuProducerMeasurementSubmissions.push(
+        text.slice('GPU_PRODUCER_MEASUREMENT_SUBMISSION_JSON '.length),
+      );
+    } else if (text.startsWith('GPU_PRODUCER_MEASUREMENT_FAILURE_JSON ')) {
+      gpuProducerMeasurementFailures.push(
+        text.slice('GPU_PRODUCER_MEASUREMENT_FAILURE_JSON '.length),
+      );
     }
   }
   if (manifests.length !== 1 || summaries.length !== 1 || frameRecords.length === 0) {
@@ -197,6 +235,9 @@ function parseArtifacts(consoleLines) {
     ...projectedMeasurements,
     ...projectedMeasurementSubmissions,
     ...projectedMeasurementFailures,
+    ...gpuProducerMeasurements,
+    ...gpuProducerMeasurementSubmissions,
+    ...gpuProducerMeasurementFailures,
   ]) {
     JSON.parse(payload);
   }
@@ -214,6 +255,15 @@ function parseArtifacts(consoleLines) {
     .map((payload) => JSON.parse(payload))
     .filter((record) => record.run_id === manifest.run_id);
   const projectedFailures = projectedMeasurementFailures
+    .map((payload) => JSON.parse(payload))
+    .filter((record) => record.run_id === manifest.run_id);
+  const producerMeasurements = gpuProducerMeasurements
+    .map((payload) => JSON.parse(payload))
+    .filter((record) => record.run_id === manifest.run_id);
+  const producerSubmissions = gpuProducerMeasurementSubmissions
+    .map((payload) => JSON.parse(payload))
+    .filter((record) => record.run_id === manifest.run_id);
+  const producerFailures = gpuProducerMeasurementFailures
     .map((payload) => JSON.parse(payload))
     .filter((record) => record.run_id === manifest.run_id);
   if (monotonicOrderingWindows.length !== 1) {
@@ -247,7 +297,9 @@ function parseArtifacts(consoleLines) {
         || preparation.submitted_measurement_ticket !== null
         || preparation.submitted_measurement_backend !== null
         || preparation.projected_measurement_submission === 'issued'
-        || preparation.projected_measurement_ticket !== null) {
+        || preparation.projected_measurement_ticket !== null
+        || preparation.gpu_producer_measurement_submission === 'issued'
+        || preparation.gpu_producer_measurement_ticket !== null) {
       throw new Error(
         'GPU order preparation must be hidden, pending, and expose no order/projected identity',
       );
@@ -273,6 +325,20 @@ function parseArtifacts(consoleLines) {
     throw new Error(
       `benchmark projected policy mismatch: requested ${projectedPolicy}, observed ` +
       `${manifest.renderer?.projected_policy_requested ?? 'missing'}`,
+    );
+  }
+  if (manifest.renderer?.gpu_order_producer_requested !== gpuOrderProducer) {
+    throw new Error(
+      `benchmark GPU producer mismatch: requested ${gpuOrderProducer ?? 'default'}; observed ` +
+      `${manifest.renderer?.gpu_order_producer_requested ?? 'default'}`,
+    );
+  }
+  const hasGpuFrame = rawFrames.some((frame) => frame.order_backend === 'gpu');
+  const expectedActualProducer = gpuOrderProducer ?? (hasGpuFrame ? 'post-sort' : null);
+  if (manifest.renderer?.gpu_order_producer_actual !== expectedActualProducer) {
+    throw new Error(
+      `benchmark actual GPU producer mismatch: expected ${expectedActualProducer ?? 'none'}; observed ` +
+      `${manifest.renderer?.gpu_order_producer_actual ?? 'missing'}`,
     );
   }
   if (geometryPath === 'packed') {
@@ -316,6 +382,13 @@ function parseArtifacts(consoleLines) {
   }
   validateTerminalTicketLedger({ submissions, measurements, cpuMeasurements, failures });
   validateProjectedFrameEvidence({ requestedPolicy: projectedPolicy, frames: rawFrames });
+  validateGpuProducerFrameEvidence({ requestedProducer: gpuOrderProducer, frames: rawFrames });
+  if (gpuOrderProducer !== null) {
+    validateGpuProducerMeasuredSubmissions({
+      frames: rawFrames,
+      submissions: producerSubmissions,
+    });
+  }
   const projectedLedger = validateProjectedTerminalLedger({
     submissions: projectedSubmissions,
     measurements: projectedSuccesses,
@@ -325,6 +398,32 @@ function parseArtifacts(consoleLines) {
     throw new Error(
       `strict benchmark observed projected failure ${projectedFailures[0].reason ?? 'unknown'}`,
     );
+  }
+  let producerLedger = {
+    issued_count: 0,
+    success_count: 0,
+    failure_count: 0,
+  };
+  if (gpuOrderProducer === null) {
+    if (producerSubmissions.length > 0
+        || producerMeasurements.length > 0
+        || producerFailures.length > 0) {
+      throw new Error('unrequested GPU producer emitted a diagnostic terminal ledger');
+    }
+  } else {
+    producerLedger = validateGpuProducerTerminalLedger({
+      requestedProducer: gpuOrderProducer,
+      sourceCount: manifest.dataset?.splat_count,
+      submissions: producerSubmissions,
+      measurements: producerMeasurements,
+      failures: producerFailures,
+    });
+    if (producerFailures.length > 0) {
+      throw new Error(
+        `strict benchmark observed GPU producer failure ` +
+        `${producerFailures[0].reason ?? 'unknown'}`,
+      );
+    }
   }
   const gpuFailures = failures.filter((failure) => failure.actual_backend === 'gpu');
   const frames = joinOrderingEvidence({
@@ -433,6 +532,22 @@ function parseArtifacts(consoleLines) {
     ticket_namespace: 'javascript_safe_high_half_from_2_pow_52',
     ...projectedLedger,
   };
+  manifest.gpu_producer_evidence = {
+    requested_producer: gpuOrderProducer,
+    default_when_unset: 'post-sort',
+    actual_producers: [
+      ...new Set(
+        frames
+          .map((frame) => frame.gpu_order_producer)
+          .filter((producer) => producer !== null),
+      ),
+    ],
+    completion_protocol: orderCompletionProtocol,
+    ticket_namespace: 'javascript_safe_middle_quarter_from_2_pow_51',
+    terminal_receipt_policy: 'exactly_one_success_or_structured_failure_per_issued_ticket',
+    exact_scope: gpuOrderProducer === null ? 'telemetry_disabled' : 'exact_current_contributors',
+    ...producerLedger,
+  };
   if (orderBackend !== 'cpu'
       && frames.every((frame) => frame.gpu_complete_ms != null)
       && Array.isArray(manifest.unavailable_fields)) {
@@ -456,6 +571,11 @@ function parseArtifacts(consoleLines) {
     projectedMeasurementSubmissions:
       projectedSubmissions.map((record) => JSON.stringify(record)),
     projectedMeasurementFailures: projectedFailures.map((record) => JSON.stringify(record)),
+    gpuProducerMeasurements: producerMeasurements.map((record) => JSON.stringify(record)),
+    gpuProducerMeasurementSubmissions:
+      producerSubmissions.map((record) => JSON.stringify(record)),
+    gpuProducerMeasurementFailures:
+      producerFailures.map((record) => JSON.stringify(record)),
   };
 }
 
@@ -483,6 +603,9 @@ async function writeArtifact({
   projectedMeasurements,
   projectedMeasurementSubmissions,
   projectedMeasurementFailures,
+  gpuProducerMeasurements,
+  gpuProducerMeasurementSubmissions,
+  gpuProducerMeasurementFailures,
 }) {
   if (await pathExists(outDir)) {
     throw new Error(`destination already exists: ${outDir}`);
@@ -540,6 +663,22 @@ async function writeArtifact({
     resolve(sibling, 'projected-measurement-failures.jsonl'),
     projectedMeasurementFailures.length > 0
       ? `${projectedMeasurementFailures.join('\n')}\n`
+      : ''
+  );
+  await writeFile(
+    resolve(sibling, 'gpu-producer-measurements.jsonl'),
+    gpuProducerMeasurements.length > 0 ? `${gpuProducerMeasurements.join('\n')}\n` : ''
+  );
+  await writeFile(
+    resolve(sibling, 'gpu-producer-measurement-submissions.jsonl'),
+    gpuProducerMeasurementSubmissions.length > 0
+      ? `${gpuProducerMeasurementSubmissions.join('\n')}\n`
+      : ''
+  );
+  await writeFile(
+    resolve(sibling, 'gpu-producer-measurement-failures.jsonl'),
+    gpuProducerMeasurementFailures.length > 0
+      ? `${gpuProducerMeasurementFailures.join('\n')}\n`
       : ''
   );
   await new Promise((resolvePromise, reject) => {
@@ -622,6 +761,9 @@ try {
     benchmark_yaw_step: qualification ? '0' : '0.001'
   });
   params.set('gsplat_order_completion_protocol', orderCompletionProtocol);
+  if (gpuOrderProducer !== null) {
+    params.set('gsplat_surface_gpu_order_producer', gpuOrderProducer);
+  }
   if (dataset) params.set('dataset', dataset);
   params.set('gsplat_geometry_path', geometryPath);
   if (process.env.GSPLAT_CAMERA_TRACE_URL) {
@@ -667,6 +809,12 @@ try {
     () => globalThis.GSPLAT_PROJECTED_LEDGER_COMPLETE === true,
     { timeout: benchmarkTimeoutMs },
   );
+  if (gpuOrderProducer !== null) {
+    await page.waitForFunction(
+      () => globalThis.GSPLAT_GPU_PRODUCER_LEDGER_COMPLETE === true,
+      { timeout: benchmarkTimeoutMs },
+    );
+  }
   await new Promise((r) => setTimeout(r, benchmarkSettleMs));
   const settledBenchmarkState = await page.$eval('#benchmarkStatus', (element) => element.textContent);
   if (settledBenchmarkState !== 'complete') {

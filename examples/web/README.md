@@ -220,6 +220,25 @@ identity to every frame. Separate `projected-measurement-submissions.jsonl`,
 files preserve the one-ticket/one-terminal ledger with V/C/D,
 projection/probe generations, and frame-completion timings.
 
+PostSort/Preproject qualification is opt-in and does not alter the normal Web
+product default. Set `GSPLAT_GPU_ORDER_PRODUCER=post-sort` or `preproject` on
+the headless collector together with `GSPLAT_GEOMETRY_PATH=packed`,
+`GSPLAT_ORDER_BACKEND=gpu`, `GSPLAT_PROJECTED_POLICY=compact`, sort interval
+`1`, asynchronous benchmark progression, and `isolated_terminal`. The
+collector passes the selector through the
+strict `gsplat_surface_gpu_order_producer` query, waits for transactional graph
+publication, and rejects any frame without matching ProjectedQuadsExact,
+forced-Compact, forced-GPU, exact-current producer evidence. It writes the
+independent submissions/successes/failures to
+`gpu-producer-measurement-submissions.jsonl`,
+`gpu-producer-measurements.jsonl`, and
+`gpu-producer-measurement-failures.jsonl`. Omitting the environment variable
+keeps PostSort, allows CPU/Adaptive frames to report no actual GPU producer,
+and requires the producer ticket stream to stay disabled. A formal producer
+comparison uses a moving camera trace (or the collector's non-qualification
+orbit), because every retained sample must rebuild order and issue a producer
+ticket; fixed-camera reuse intentionally fails this strict experiment.
+
 ## Scope
 
 - Parses ASCII and binary PLY files in the browser. Packed URL, File, and custom

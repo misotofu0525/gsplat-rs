@@ -290,6 +290,8 @@ test("GsplatWebRenderer preserves terminal success and structured failure receip
     }],
     completedProjectedMeasurements: [],
     failedProjectedMeasurements: [],
+    completedGpuProducerMeasurements: [],
+    failedGpuProducerMeasurements: [],
   });
 });
 
@@ -776,6 +778,11 @@ test("GsplatWebRenderer forwards commands and normalizes return values", async (
     projectedMeasurementTicket: null,
     projectedMeasurementExecution: null,
     projectedMeasurementUnsampledReason: null,
+    gpuOrderProducer: null,
+    gpuProducerMeasurementSubmission: "not_requested",
+    gpuProducerMeasurementTicket: null,
+    gpuProducerMeasurementProducer: null,
+    gpuProducerMeasurementUnsampledReason: null,
     cameraRevision: 0,
     appliedOrderRevision: 0,
     presentedOrderRevisionLag: 0,
@@ -825,11 +832,34 @@ test("GsplatWebRenderer forwards commands and normalizes return values", async (
     failedProjectedProjectionGeneration: null,
     failedProjectedProbeGeneration: null,
     failedProjectedMeasurementReason: null,
+    completedGpuProducerMeasurementAvailable: false,
+    completedGpuProducerMeasurementTicket: null,
+    completedGpuProducerMeasurementRevision: null,
+    completedGpuProducerMeasurementProducer: null,
+    completedGpuProducerOrderGeneration: null,
+    completedGpuProducerProjectionGeneration: null,
+    completedGpuProducerSourceCount: null,
+    completedGpuProducerContributorCount: null,
+    completedGpuProducerDrawnCount: null,
+    completedGpuProducerOrderRefreshed: null,
+    completedGpuProducerDrawScope: null,
+    completedGpuProducerExactCurrentContributorDraw: null,
+    completedGpuProducerStaleOrder: null,
+    completedGpuProducerQueueCompleteMs: null,
+    failedGpuProducerMeasurementAvailable: false,
+    failedGpuProducerMeasurementTicket: null,
+    failedGpuProducerMeasurementRevision: null,
+    failedGpuProducerMeasurementProducer: null,
+    failedGpuProducerOrderGeneration: null,
+    failedGpuProducerProjectionGeneration: null,
+    failedGpuProducerMeasurementReason: null,
     completedCpuOrderMeasurements: [],
     completedOrderMeasurements: [],
     failedOrderMeasurements: [],
     completedProjectedMeasurements: [],
     failedProjectedMeasurements: [],
+    completedGpuProducerMeasurements: [],
+    failedGpuProducerMeasurements: [],
     surfaceWidth: 640,
     surfaceHeight: 480,
     internalRenderWidth: 640,
@@ -979,6 +1009,48 @@ test("GsplatWebRenderer exposes transactional geometry-path switching", async ()
   await renderer.setGeometryPathAsync("direct");
 
   assert.deepEqual(native.calls, [["setGeometryPathAsync", 0]]);
+});
+
+test("GsplatWebRenderer publishes a GPU producer transactionally and blocks frames", async () => {
+  let releaseProducer;
+  const producerGate = new Promise((resolve) => {
+    releaseProducer = resolve;
+  });
+  let published = "post-sort";
+  const native = makeNativeRenderer({
+    async setGpuOrderProducerAsync(producer) {
+      native.calls.push(["setGpuOrderProducerAsync:start", producer]);
+      await producerGate;
+      published = producer === 1 ? "preproject" : "post-sort";
+      native.calls.push(["setGpuOrderProducerAsync:complete", producer]);
+    },
+    gpuOrderProducer() {
+      return published;
+    },
+  });
+  const renderer = new GsplatWebRenderer(native);
+
+  const switching = renderer.setGpuOrderProducerAsync("preproject");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.throws(
+    () => renderer.renderFrame(),
+    (error) => {
+      assert.ok(error instanceof GsplatWebError);
+      assert.equal(error.stage, "gpu_order_producer");
+      assert.equal(error.scene_published, true);
+      return true;
+    },
+  );
+  assert.equal(native.calls.some((call) => call[0] === "renderFrame"), false);
+
+  releaseProducer();
+  await switching;
+  renderer.renderFrame();
+  assert.deepEqual(native.calls.slice(0, 2), [
+    ["setGpuOrderProducerAsync:start", 1],
+    ["setGpuOrderProducerAsync:complete", 1],
+  ]);
+  assert.equal(native.calls.some((call) => call[0] === "renderFrame"), true);
 });
 
 test("GsplatWebRenderer async geometry switch fails closed on a legacy module", async () => {
@@ -1459,6 +1531,76 @@ test("createGsplatRenderer normalizes bytes and applies render options", async (
   assert.deepEqual(native.calls[1], ["setProjectedPolicy", 1]);
   assert.deepEqual(native.calls[2], ["setOrderBackend", 1]);
   assert.equal(native.calls.length, 3);
+});
+
+test("createGsplatRenderer publishes an explicit GPU producer only after its transaction", async () => {
+  const native = makeNativeRenderer();
+  let releaseProducer;
+  const producerPrepared = new Promise((resolve) => {
+    releaseProducer = resolve;
+  });
+  native.setProjectedPolicy = (policy) => native.calls.push(["setProjectedPolicy", policy]);
+  native.setGpuOrderProducerAsync = async (producer) => {
+    native.calls.push(["setGpuOrderProducerAsync:start", producer]);
+    await producerPrepared;
+    native.calls.push(["setGpuOrderProducerAsync:complete", producer]);
+  };
+  native.gpuOrderProducer = () => "preproject";
+  native.prepareGpuOrder = async () => native.calls.push(["prepareGpuOrder"]);
+  native.setOrderBackend = (backend) => native.calls.push(["setOrderBackend", backend]);
+  const module = {
+    async createRendererWithGeometryPath() {
+      return native;
+    },
+  };
+
+  let resolved = false;
+  const creating = createGsplatRenderer({
+    canvas: { width: 320, height: 240 },
+    plyBytes: new Uint8Array([1, 2, 3]),
+    geometryPath: "packed",
+    orderBackend: "gpu",
+    projectedPolicy: "compact",
+    gpuOrderProducer: "preproject",
+    module,
+  }).then((renderer) => {
+    resolved = true;
+    return renderer;
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(resolved, false);
+  assert.deepEqual(native.calls, [
+    ["setSortInterval", 1],
+    ["setProjectedPolicy", 1],
+    ["setGpuOrderProducerAsync:start", 1],
+  ]);
+
+  releaseProducer();
+  const renderer = await creating;
+  assert.ok(renderer instanceof GsplatWebRenderer);
+  assert.deepEqual(native.calls, [
+    ["setSortInterval", 1],
+    ["setProjectedPolicy", 1],
+    ["setGpuOrderProducerAsync:start", 1],
+    ["setGpuOrderProducerAsync:complete", 1],
+    ["prepareGpuOrder"],
+    ["setOrderBackend", 1],
+  ]);
+});
+
+test("createGsplatRenderer rejects GPU producer diagnostics outside the exact context", async () => {
+  await assert.rejects(
+    createGsplatRenderer({
+      canvas: { width: 320, height: 240 },
+      plyBytes: new Uint8Array([1, 2, 3]),
+      geometryPath: "packed",
+      orderBackend: "gpu",
+      projectedPolicy: "adaptive",
+      gpuOrderProducer: "preproject",
+      module: {},
+    }),
+    /require geometryPath=packed and projectedPolicy=compact/,
+  );
 });
 
 test("createGsplatRenderer fails closed when an explicit projected policy is unavailable", async () => {

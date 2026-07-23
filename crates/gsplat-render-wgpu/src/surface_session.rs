@@ -13,6 +13,8 @@ use std::{
     thread::{self, JoinHandle},
 };
 
+#[cfg(not(target_arch = "wasm32"))]
+use crate::SurfaceFrameCapture;
 use crate::gpu_telemetry::{SurfaceCpuOrderMeasurement, TelemetrySubmission};
 use crate::surface_presenter::{CpuCompletionSampleRequest, ProjectedDrawSampleRequest};
 use crate::{
@@ -1845,6 +1847,33 @@ impl SurfaceRenderSession {
 
     pub fn renderer(&self) -> &Renderer {
         &self.renderer
+    }
+
+    /// Requests an exact readback of the next native Surface frame. This is a
+    /// diagnostic operation: it may reconfigure the swapchain for `COPY_SRC`,
+    /// but ordinary sessions never pay that cost unless explicitly requested.
+    /// Resize and a second request fail while this capture remains armed. If a
+    /// frame cannot be presented, retry rendering or call
+    /// [`Self::cancel_surface_capture`] before resize/re-request.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn request_surface_capture(&mut self) -> Result<(), RendererError> {
+        self.presenter.request_surface_capture()?;
+        Ok(())
+    }
+
+    /// Cancels a requested native Surface capture and releases its readback
+    /// buffer. This also discards a presented capture that was not taken.
+    /// Returns false when no capture was armed.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn cancel_surface_capture(&mut self) -> bool {
+        self.presenter.cancel_surface_capture()
+    }
+
+    /// Blocks until the requested presented frame is readable and returns
+    /// canonical RGBA8 bytes. Calling before a frame presents fails closed.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn take_surface_capture(&mut self) -> Result<SurfaceFrameCapture, RendererError> {
+        Ok(self.presenter.take_surface_capture()?)
     }
 
     pub fn geometry_path(&self) -> GeometryPath {

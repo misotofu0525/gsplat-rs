@@ -24,7 +24,8 @@ data class GsplatSurfaceOptions(
     val frameLatency: Int = 2,
     val geometryPath: GsplatGeometryPath = GsplatGeometryPath.PACKED_ATLAS,
     val orderBackend: GsplatSurfaceOrderBackend = GsplatSurfaceOrderBackend.ADAPTIVE,
-    val projectedPolicy: GsplatSurfaceProjectedPolicy = GsplatSurfaceProjectedPolicy.ADAPTIVE
+    val projectedPolicy: GsplatSurfaceProjectedPolicy = GsplatSurfaceProjectedPolicy.ADAPTIVE,
+    val gpuProducerDiagnostics: GsplatSurfaceGpuProducerDiagnostics? = null
 ) {
     init {
         require(sortInterval > 0) { "sortInterval must be positive" }
@@ -37,6 +38,20 @@ data class GsplatSurfaceOptions(
                 orderBackend == GsplatSurfaceOrderBackend.CPU
         ) {
             "PAGED_ACTIVE_ATLAS is diagnostic-only and supports the CPU order backend"
+        }
+        if (gpuProducerDiagnostics != null) {
+            require(geometryPath == GsplatGeometryPath.PACKED_ATLAS) {
+                "GPU producer diagnostics require PACKED_ATLAS"
+            }
+            require(orderBackend == GsplatSurfaceOrderBackend.GPU && !asyncSort) {
+                "GPU producer diagnostics require the forced GPU order backend"
+            }
+            require(projectedPolicy == GsplatSurfaceProjectedPolicy.COMPACT) {
+                "GPU producer diagnostics require forced COMPACT projected drawing"
+            }
+            require(sortInterval == 1) {
+                "GPU producer diagnostics require sortInterval=1"
+            }
         }
     }
 }

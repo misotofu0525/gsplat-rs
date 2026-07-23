@@ -46,11 +46,27 @@ private const val GSPLAT_GEOMETRY_PATH_PAGED_ACTIVE_ATLAS = 2
 private const val GSPLAT_ORDER_BACKEND_CPU = 0
 private const val GSPLAT_ORDER_BACKEND_GPU = 1
 private const val GSPLAT_ORDER_BACKEND_ADAPTIVE = 2
+private const val GSPLAT_PROJECTED_POLICY_COMPACT = 2
+private const val GSPLAT_GPU_PRODUCER_POST_SORT = 1
+private const val GSPLAT_GPU_PRODUCER_PREPROJECT = 2
 private const val GPU_MEASUREMENT_EXACT_CONTRIBUTOR_DRAW = 1 shl 6
 private const val CPU_MEASUREMENT_EXACT_CONTRIBUTOR_DRAW = 1 shl 1
 private const val CPU_MEASUREMENT_CONTRIBUTOR_COUNT_VALID = 1 shl 2
 private const val ORDER_COUNTS_EXACT_CONTRIBUTOR_DRAW = 1 shl 0
 private const val COUNT_SEMANTICS = "candidate_visible_contributor_issued_v1"
+
+private fun gpuProducerValue(label: String): Int =
+    when (label) {
+        "preproject" -> GSPLAT_GPU_PRODUCER_PREPROJECT
+        else -> GSPLAT_GPU_PRODUCER_POST_SORT
+    }
+
+private fun gpuProducerName(value: Int): String =
+    when (value) {
+        GSPLAT_GPU_PRODUCER_POST_SORT -> "post_sort"
+        GSPLAT_GPU_PRODUCER_PREPROJECT -> "preproject"
+        else -> error("unsupported GPU producer value: $value")
+    }
 
 private fun geometryPathValue(label: String): Int =
     when (label) {
@@ -166,6 +182,82 @@ private data class BenchmarkCpuOrderMeasurement(
 )
 
 private data class IssuedOrderTicket(val cameraRevision: Long, val backend: Int)
+private data class IssuedGpuProducerTicket(val cameraRevision: Long, val producer: Int)
+
+private data class BenchmarkGpuProducerMeasurement(
+    val ticket: Long,
+    val cameraRevision: Long,
+    val orderGeneration: Long,
+    val projectionGeneration: Long,
+    val frameCompleteMs: Float,
+    val producer: Int,
+    val source: Long,
+    val contributor: Long,
+    val drawn: Long,
+    val drawScope: Int,
+    val flags: Int
+) {
+    val orderRefreshed: Boolean get() = flags and 1 != 0
+    val exactCurrentDraw: Boolean get() = flags and (1 shl 1) != 0
+    val staleOrder: Boolean get() = flags and (1 shl 2) != 0
+    val droppedPrior: Boolean get() = flags and (1 shl 3) != 0
+}
+
+private data class BenchmarkGpuProducerMeasurementFailure(
+    val ticket: Long,
+    val cameraRevision: Long,
+    val orderGeneration: Long,
+    val projectionGeneration: Long,
+    val reason: Int,
+    val producer: Int,
+    val flags: Int
+)
+
+private data class BenchmarkGpuProducerSubmission(
+    val ticket: Long?,
+    val cameraRevision: Long,
+    val requestedProducer: Int,
+    val actualProducer: Int?,
+    val orderBackend: Int,
+    val projectedExecution: Int,
+    val measurementEnabled: Boolean,
+    val unsampledReason: String?,
+    val flags: Int
+) {
+    companion object {
+        fun query(handle: Long): Result<BenchmarkGpuProducerSubmission> {
+            val raw = LongArray(7)
+            val rc = NativeBridge.getSurfaceGpuProducerSubmissionV1(handle, raw)
+            if (rc != 0) {
+                return Result.failure(
+                    IllegalStateException(
+                        "getSurfaceGpuProducerSubmissionV1 failed rc=$rc " +
+                            "error=${NativeBridge.lastErrorMessage()}"
+                    )
+                )
+            }
+            val flags = raw[6].toInt()
+            val issued = flags and 1 != 0
+            return Result.success(
+                BenchmarkGpuProducerSubmission(
+                    ticket = raw[0].takeIf { issued },
+                    cameraRevision = raw[1],
+                    requestedProducer = raw[2].toInt(),
+                    actualProducer = raw[3].toInt().takeIf { it != 0 },
+                    orderBackend = raw[4].toInt(),
+                    projectedExecution = raw[5].toInt(),
+                    measurementEnabled = flags and (1 shl 3) != 0,
+                    unsampledReason = when {
+                        flags and (1 shl 1) != 0 -> "ring_busy"
+                        flags and (1 shl 2) != 0 -> "surface_unavailable"
+                        else -> null
+                    },
+                    flags = flags
+                )
+            )
+        }
+    }
+}
 
 private data class BenchmarkOrderSubmission(
     val ticket: Long?,
@@ -522,6 +614,90 @@ private fun logCompletedOrderMeasurementFailures(
     }
 }
 
+private fun logCompletedGpuProducerMeasurements(
+    handle: Long,
+    consume: (BenchmarkGpuProducerMeasurement) -> Unit = {}
+): Int {
+    var count = 0
+    while (true) {
+        val raw = LongArray(12)
+        val rc = NativeBridge.pollSurfaceGpuProducerMeasurementV1(handle, raw)
+        if (rc != 0) {
+            Log.e(
+                "GsplatExample",
+                "pollSurfaceGpuProducerMeasurementV1 failed rc=$rc " +
+                    "error=${NativeBridge.lastErrorMessage()}"
+            )
+            return -1
+        }
+        if (raw[0] == 0L) return count
+        val measurement = BenchmarkGpuProducerMeasurement(
+            ticket = raw[1],
+            cameraRevision = raw[2],
+            orderGeneration = raw[3],
+            projectionGeneration = raw[4],
+            frameCompleteMs = Float.fromBits(raw[5].toInt()),
+            producer = raw[6].toInt(),
+            source = raw[7],
+            contributor = raw[8],
+            drawn = raw[9],
+            drawScope = raw[10].toInt(),
+            flags = raw[11].toInt()
+        )
+        Log.i(
+            "GsplatExample",
+            "GPU_PRODUCER_MEASUREMENT ticket=${measurement.ticket} " +
+                "camera_revision=${measurement.cameraRevision} " +
+                "producer=${gpuProducerName(measurement.producer)} " +
+                "order_generation=${measurement.orderGeneration} " +
+                "projection_generation=${measurement.projectionGeneration} " +
+                "frame_complete_ms=${measurement.frameCompleteMs} " +
+                "source=${measurement.source} contributor=${measurement.contributor} " +
+                "drawn=${measurement.drawn} scope=${measurement.drawScope} " +
+                "flags=${measurement.flags}"
+        )
+        consume(measurement)
+        count += 1
+    }
+}
+
+private fun logCompletedGpuProducerFailures(
+    handle: Long,
+    consume: (BenchmarkGpuProducerMeasurementFailure) -> Unit = {}
+): Int {
+    var count = 0
+    while (true) {
+        val raw = LongArray(8)
+        val rc = NativeBridge.pollSurfaceGpuProducerFailureV1(handle, raw)
+        if (rc != 0) {
+            Log.e(
+                "GsplatExample",
+                "pollSurfaceGpuProducerFailureV1 failed rc=$rc " +
+                    "error=${NativeBridge.lastErrorMessage()}"
+            )
+            return -1
+        }
+        if (raw[0] == 0L) return count
+        val failure = BenchmarkGpuProducerMeasurementFailure(
+            ticket = raw[1],
+            cameraRevision = raw[2],
+            orderGeneration = raw[3],
+            projectionGeneration = raw[4],
+            reason = raw[5].toInt(),
+            producer = raw[6].toInt(),
+            flags = raw[7].toInt()
+        )
+        Log.e(
+            "GsplatExample",
+            "GPU_PRODUCER_MEASUREMENT_FAILURE ticket=${failure.ticket} " +
+                "camera_revision=${failure.cameraRevision} reason=${failure.reason} " +
+                "producer=${gpuProducerName(failure.producer)} flags=${failure.flags}"
+        )
+        consume(failure)
+        count += 1
+    }
+}
+
 private fun flushCompletedOrderMeasurements(
     handle: Long,
     maxFrames: Int = 120,
@@ -529,26 +705,44 @@ private fun flushCompletedOrderMeasurements(
     consumeCpu: (BenchmarkCpuOrderMeasurement) -> Unit = {},
     consumeFailure: (BenchmarkOrderMeasurementFailure) -> Unit = {},
     consumeSubmission: (BenchmarkOrderSubmission) -> Unit,
-    terminalsComplete: () -> Boolean
+    terminalsComplete: () -> Boolean,
+    producerEnabled: Boolean = false,
+    consumeProducer: (BenchmarkGpuProducerMeasurement) -> Unit = {},
+    consumeProducerFailure: (BenchmarkGpuProducerMeasurementFailure) -> Unit = {},
+    producerTerminalsComplete: () -> Boolean = { true }
 ): Boolean {
-    if (terminalsComplete()) return true
+    if (terminalsComplete() && producerTerminalsComplete()) return true
     repeat(maxFrames) {
-        val rc = NativeBridge.renderSurfaceFrame(handle)
-        if (rc != 0) {
-            Log.e("GsplatExample", "order measurement flush render failed rc=$rc")
-            return false
+        if (!producerEnabled) {
+            val rc = NativeBridge.renderSurfaceFrame(handle)
+            if (rc != 0) {
+                Log.e("GsplatExample", "order measurement flush render failed rc=$rc")
+                return false
+            }
+            val submission = BenchmarkOrderSubmission.query(handle).getOrElse { error ->
+                Log.e("GsplatExample", "order submission flush query failed", error)
+                return false
+            }
+            consumeSubmission(submission)
         }
-        val submission = BenchmarkOrderSubmission.query(handle).getOrElse { error ->
-            Log.e("GsplatExample", "order submission flush query failed", error)
-            return false
-        }
-        consumeSubmission(submission)
         if (logCompletedCpuOrderMeasurements(handle, consumeCpu) < 0) return false
         if (logCompletedOrderMeasurements(handle, consume) < 0) return false
         if (logCompletedOrderMeasurementFailures(handle, consumeFailure) < 0) return false
-        if (terminalsComplete()) return true
+        if (producerEnabled &&
+            (logCompletedGpuProducerMeasurements(handle, consumeProducer) < 0 ||
+                logCompletedGpuProducerFailures(handle, consumeProducerFailure) < 0)
+        ) return false
+        if (terminalsComplete() && producerTerminalsComplete()) return true
+        if (producerEnabled) {
+            // Producer qualification has already recorded every intended
+            // frame/submission. Polling the native receipt pump advances queue
+            // callbacks without issuing another ticket; a short bounded yield
+            // prevents 120 immediate polls from expiring before a large-scene
+            // GPU submission can complete.
+            SystemClock.sleep(4)
+        }
     }
-    return terminalsComplete()
+    return terminalsComplete() && producerTerminalsComplete()
 }
 
 class MainActivity : Activity(), SurfaceHolder.Callback {
@@ -903,6 +1097,35 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                     updateStatus("state=create_failed rc=$frameLatencyRc error=$message")
                     return@Thread
                 }
+                val gpuProducerRc = benchmarkConfig.gpuProducer?.let { producer ->
+                    val projectedRc = NativeBridge.setSurfaceProjectedPolicyV1(
+                        handle,
+                        GSPLAT_PROJECTED_POLICY_COMPACT
+                    )
+                    if (projectedRc != 0) {
+                        projectedRc
+                    } else {
+                        val producerRc = NativeBridge.setSurfaceGpuOrderProducerV1(
+                            handle,
+                            gpuProducerValue(producer)
+                        )
+                        if (producerRc != 0) {
+                            producerRc
+                        } else {
+                            NativeBridge.setSurfaceGpuProducerMeasurementEnabledV1(handle, true)
+                        }
+                    }
+                } ?: 0
+                if (gpuProducerRc != 0) {
+                    val detail = NativeBridge.lastErrorMessage()
+                        .ifBlank { NativeBridge.errorMessage(gpuProducerRc) }
+                    val message = detail.replace('\n', ' ').take(240)
+                    Log.e(TAG, "configure GPU producer diagnostic failed rc=$gpuProducerRc error=$detail")
+                    NativeBridge.destroySurfaceRenderer(handle)
+                    running = false
+                    updateStatus("state=create_failed rc=$gpuProducerRc error=$message")
+                    return@Thread
+                }
                 val cameraTraceRc = benchmarkConfig.cameraTracePath?.let { tracePath ->
                     val initialFrame = if (benchmarkConfig.cameraTraceSequence) {
                         benchmarkConfig.cameraTraceFrameIndices.last()
@@ -1056,6 +1279,22 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                                 }
                                 val submission = submissionResult.getOrThrow()
                                 benchmark.recordOrderSubmission(submission)
+                                val producerSubmissionResult =
+                                    benchmark.config.gpuProducer?.let {
+                                        BenchmarkGpuProducerSubmission.query(handle)
+                                    }
+                                if (producerSubmissionResult?.isFailure == true) {
+                                    Log.e(
+                                        TAG,
+                                        "benchmark GPU producer submission query failed",
+                                        producerSubmissionResult.exceptionOrNull()
+                                    )
+                                    updateStatus("state=benchmark_gpu_producer_submission_error")
+                                    running = false
+                                    continue
+                                }
+                                val producerSubmission = producerSubmissionResult?.getOrThrow()
+                                producerSubmission?.let(benchmark::recordGpuProducerSubmission)
                                 val statsRc = NativeBridge.getSurfaceStats(handle, stats)
                                 val sortStatsRc = NativeBridge.getSurfaceSortStats(handle, sortStats)
                                 if (statsRc == 0 && sortStatsRc == 0) {
@@ -1071,6 +1310,14 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                                             handle,
                                             benchmark::recordOrderMeasurementFailure
                                         ) < 0
+                                        || (benchmark.config.gpuProducer != null &&
+                                            (logCompletedGpuProducerMeasurements(
+                                                handle,
+                                                benchmark::recordGpuProducerMeasurement
+                                            ) < 0 || logCompletedGpuProducerFailures(
+                                                handle,
+                                                benchmark::recordGpuProducerMeasurementFailure
+                                            ) < 0))
                                     ) {
                                         updateStatus("state=benchmark_measurement_error")
                                         running = false
@@ -1092,6 +1339,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                                         stats,
                                         sortStats,
                                         submission,
+                                        producerSubmission,
                                         renderCallNs,
                                         traceStep,
                                         cameraReceipt
@@ -1104,7 +1352,13 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                                                 consumeCpu = benchmark::recordCpuOrderMeasurement,
                                                 consumeFailure = benchmark::recordOrderMeasurementFailure,
                                                 consumeSubmission = benchmark::recordOrderSubmission,
-                                                terminalsComplete = benchmark::orderTerminalsComplete
+                                                terminalsComplete = benchmark::orderTerminalsComplete,
+                                                producerEnabled = benchmark.config.gpuProducer != null,
+                                                consumeProducer = benchmark::recordGpuProducerMeasurement,
+                                                consumeProducerFailure =
+                                                    benchmark::recordGpuProducerMeasurementFailure,
+                                                producerTerminalsComplete =
+                                                    benchmark::gpuProducerTerminalsComplete
                                             )
                                         ) {
                                             updateStatus("state=benchmark_measurement_flush_error")
@@ -1781,6 +2035,9 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         private const val EXTRA_SURFACE_FRAME_LATENCY = "gsplat_surface_frame_latency"
         private const val EXTRA_SURFACE_GEOMETRY_PATH = "gsplat_geometry_path"
         private const val EXTRA_SURFACE_ORDER_BACKEND = "gsplat_surface_order_backend"
+        private const val EXTRA_SURFACE_GPU_PRODUCER = "gsplat_surface_gpu_producer"
+        private const val EXTRA_SURFACE_GPU_PRODUCER_MEASUREMENT =
+            "gsplat_surface_gpu_producer_measurement"
         private const val DEFAULT_BENCHMARK_FRAMES = 120
         private const val DEFAULT_BENCHMARK_WARMUP_FRAMES = 10
         private const val DEFAULT_BENCHMARK_YAW_STEP = 0.001f
@@ -1859,6 +2116,8 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         val orderBackend: String = DEFAULT_SURFACE_ORDER_BACKEND,
         // Complete resident production path by default; Direct and Paged remain explicit A/B knobs.
         val geometryPath: String = DEFAULT_SURFACE_GEOMETRY_PATH,
+        // Explicit strict diagnostic only; null keeps PostSort telemetry off.
+        val gpuProducer: String? = null,
         val cameraTracePath: String? = null,
         val cameraTraceFrame: Int = 0,
         val cameraTraceSequence: Boolean = false,
@@ -1933,6 +2192,32 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                     ?.lowercase(Locale.US)
                     ?.takeIf { it == "cpu" || it == "gpu" || it == "adaptive" }
                     ?: DEFAULT_SURFACE_ORDER_BACKEND
+                val gpuProducer = intent.getStringExtra(EXTRA_SURFACE_GPU_PRODUCER)
+                    ?.trim()
+                    ?.lowercase(Locale.US)
+                    ?.takeIf(String::isNotEmpty)
+                check(gpuProducer == null || gpuProducer == "post_sort" || gpuProducer == "preproject") {
+                    "$EXTRA_SURFACE_GPU_PRODUCER must be post_sort or preproject"
+                }
+                val gpuProducerMeasurement = intent.getBooleanExtra(
+                    EXTRA_SURFACE_GPU_PRODUCER_MEASUREMENT,
+                    false
+                )
+                check((gpuProducer != null) == gpuProducerMeasurement) {
+                    "$EXTRA_SURFACE_GPU_PRODUCER and " +
+                        "$EXTRA_SURFACE_GPU_PRODUCER_MEASUREMENT=true are required together"
+                }
+                if (gpuProducer != null) {
+                    check(intent.getBooleanExtra(EXTRA_BENCHMARK, false)) {
+                        "GPU producer diagnostics require benchmark mode"
+                    }
+                    check(geometryPath == "packed" && orderBackend == "gpu" && !asyncSort) {
+                        "GPU producer diagnostics require packed + GPU + synchronous ordering"
+                    }
+                    check(sortInterval == 1 && cameraTraceSequence) {
+                        "GPU producer diagnostics require sort_interval=1 and trace sequence playback"
+                    }
+                }
                 val cameraTraceFrame = intent
                     .getIntExtra(EXTRA_CAMERA_TRACE_FRAME, 0)
                     .coerceAtLeast(0)
@@ -1956,6 +2241,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                     frameLatency = frameLatency,
                     orderBackend = orderBackend,
                     geometryPath = geometryPath,
+                    gpuProducer = gpuProducer,
                     cameraTracePath = cameraTracePath,
                     cameraTraceFrame = cameraTraceFrame,
                     cameraTraceSequence = cameraTraceSequence,
@@ -2079,6 +2365,8 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         private val sortFlags = LongArray(measuredSampleCount)
         private val orderSubmissionTicket = LongArray(measuredSampleCount)
         private val orderSubmissionFlags = LongArray(measuredSampleCount)
+        private val gpuProducerSubmissionTicket = LongArray(measuredSampleCount)
+        private val gpuProducerSubmissionFlags = LongArray(measuredSampleCount)
         private val traceFrameIndex = IntArray(measuredSampleCount) { -1 }
         private val traceTimestampNs = LongArray(measuredSampleCount) { -1L }
         private val traceLoopIndex = IntArray(measuredSampleCount) { -1 }
@@ -2101,6 +2389,12 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         private val orderFailuresByTicket = LinkedHashMap<Long, BenchmarkOrderMeasurementFailure>()
         private val issuedOrderTickets = LinkedHashMap<Long, IssuedOrderTicket>()
         private val unsampledOrderRequests = ArrayList<String>()
+        private val gpuProducerMeasurementsByTicket =
+            LinkedHashMap<Long, BenchmarkGpuProducerMeasurement>()
+        private val gpuProducerFailuresByTicket =
+            LinkedHashMap<Long, BenchmarkGpuProducerMeasurementFailure>()
+        private val issuedGpuProducerTickets = LinkedHashMap<Long, IssuedGpuProducerTicket>()
+        private val unsampledGpuProducerRequests = ArrayList<String>()
 
         fun recordOrderSubmission(submission: BenchmarkOrderSubmission) {
             check(submission.requestedBackend == orderBackendValue(config.orderBackend)) {
@@ -2141,6 +2435,171 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
             )
             check(previous == null) {
                 "order measurement ticket $ticket was issued more than once"
+            }
+        }
+
+        fun recordGpuProducerSubmission(submission: BenchmarkGpuProducerSubmission) {
+            val expectedLabel = checkNotNull(config.gpuProducer) {
+                "GPU producer submission arrived while diagnostics are disabled"
+            }
+            val expectedProducer = gpuProducerValue(expectedLabel)
+            check(submission.flags and 0b1111 == submission.flags) {
+                "GPU producer submission reports unknown flags ${submission.flags}"
+            }
+            check(submission.measurementEnabled) {
+                "GPU producer submission reports measurement disabled"
+            }
+            check(submission.requestedProducer == expectedProducer) {
+                "GPU producer submission requested ${submission.requestedProducer}, " +
+                    "expected $expectedProducer"
+            }
+            check(submission.actualProducer == expectedProducer) {
+                "GPU producer submission executed ${submission.actualProducer}, " +
+                    "expected $expectedProducer"
+            }
+            check(submission.orderBackend == GSPLAT_ORDER_BACKEND_GPU) {
+                "GPU producer diagnostic executed a non-GPU order lane"
+            }
+            check(submission.projectedExecution == GSPLAT_PROJECTED_POLICY_COMPACT) {
+                "GPU producer diagnostic did not execute Compact projected draw"
+            }
+            val ticket = submission.ticket
+            if (ticket == null) {
+                check(submission.unsampledReason != null) {
+                    "GPU producer diagnostic omitted a ticket without an unsampled reason"
+                }
+                unsampledGpuProducerRequests +=
+                    "producer=$expectedLabel revision=${submission.cameraRevision} " +
+                    "reason=${submission.unsampledReason}"
+                return
+            }
+            check(submission.unsampledReason == null) {
+                "GPU producer submission both issued a ticket and reported unsampled"
+            }
+            check(ticket > 0L) { "GPU producer ticket must be positive" }
+            val previous = issuedGpuProducerTickets.put(
+                ticket,
+                IssuedGpuProducerTicket(submission.cameraRevision, expectedProducer)
+            )
+            check(previous == null) { "GPU producer ticket $ticket was issued more than once" }
+        }
+
+        fun recordGpuProducerMeasurement(measurement: BenchmarkGpuProducerMeasurement) {
+            val expectedProducer = gpuProducerValue(checkNotNull(config.gpuProducer))
+            check(
+                issuedGpuProducerTickets[measurement.ticket] ==
+                    IssuedGpuProducerTicket(measurement.cameraRevision, expectedProducer)
+            ) { "GPU producer success does not match an issued ticket/revision" }
+            check(measurement.producer == expectedProducer) {
+                "GPU producer receipt reports ${measurement.producer}, expected $expectedProducer"
+            }
+            check(measurement.frameCompleteMs.isFinite() && measurement.frameCompleteMs >= 0f) {
+                "GPU producer receipt contains invalid completion timing"
+            }
+            check(measurement.orderGeneration > 0L && measurement.projectionGeneration > 0L) {
+                "GPU producer receipt contains an uninitialized generation"
+            }
+            check(measurement.source == exactness.source) {
+                "GPU producer receipt source ${measurement.source} != ${exactness.source}"
+            }
+            check(measurement.drawScope == 1 && measurement.exactCurrentDraw) {
+                "GPU producer diagnostic requires exact-current contributor scope"
+            }
+            check(measurement.orderRefreshed && !measurement.staleOrder) {
+                "GPU producer diagnostic retained stale order"
+            }
+            check(!measurement.droppedPrior) {
+                "GPU producer receipt queue dropped an older result"
+            }
+            check(measurement.contributor in 0L..measurement.source) {
+                "GPU producer receipt violates 0 <= C <= S"
+            }
+            check(measurement.drawn == measurement.contributor) {
+                "GPU producer Compact receipt requires D=C"
+            }
+            check(gpuProducerFailuresByTicket[measurement.ticket] == null) {
+                "GPU producer ticket ${measurement.ticket} produced success and failure"
+            }
+            check(gpuProducerMeasurementsByTicket.put(measurement.ticket, measurement) == null) {
+                "GPU producer ticket ${measurement.ticket} produced duplicate successes"
+            }
+        }
+
+        fun recordGpuProducerMeasurementFailure(
+            failure: BenchmarkGpuProducerMeasurementFailure
+        ) {
+            val expectedProducer = gpuProducerValue(checkNotNull(config.gpuProducer))
+            check(
+                issuedGpuProducerTickets[failure.ticket] ==
+                    IssuedGpuProducerTicket(failure.cameraRevision, expectedProducer)
+            ) { "GPU producer failure does not match an issued ticket/revision" }
+            check(failure.producer == expectedProducer) {
+                "GPU producer failure reports the wrong producer"
+            }
+            check(failure.reason in 1..3 && failure.flags and 1 == failure.flags) {
+                "GPU producer failure contains an invalid reason or flags"
+            }
+            check(gpuProducerMeasurementsByTicket[failure.ticket] == null) {
+                "GPU producer ticket ${failure.ticket} produced success and failure"
+            }
+            check(gpuProducerFailuresByTicket.put(failure.ticket, failure) == null) {
+                "GPU producer ticket ${failure.ticket} produced duplicate failures"
+            }
+        }
+
+        fun gpuProducerTerminalsComplete(): Boolean {
+            if (config.gpuProducer == null || unsampledGpuProducerRequests.isNotEmpty()) return true
+            return issuedGpuProducerTickets.keys.all { ticket ->
+                gpuProducerMeasurementsByTicket[ticket] != null ||
+                    gpuProducerFailuresByTicket[ticket] != null
+            }
+        }
+
+        private fun gpuProducerMeasurement(index: Int): BenchmarkGpuProducerMeasurement? {
+            val ticket = gpuProducerSubmissionTicket[index]
+            return ticket.takeIf { it > 0L }?.let(gpuProducerMeasurementsByTicket::get)
+        }
+
+        private fun requireGpuProducerMeasurements() {
+            if (config.gpuProducer == null) {
+                check(
+                    issuedGpuProducerTickets.isEmpty() &&
+                        gpuProducerMeasurementsByTicket.isEmpty() &&
+                        gpuProducerFailuresByTicket.isEmpty() &&
+                        unsampledGpuProducerRequests.isEmpty()
+                ) { "GPU producer evidence appeared while diagnostics are disabled" }
+                return
+            }
+            check(unsampledGpuProducerRequests.isEmpty()) {
+                "GPU producer measurement was unsampled: $unsampledGpuProducerRequests"
+            }
+            for ((ticket, issued) in issuedGpuProducerTickets) {
+                val success = gpuProducerMeasurementsByTicket[ticket]
+                val failure = gpuProducerFailuresByTicket[ticket]
+                check(listOf(success, failure).count { it != null } == 1) {
+                    "GPU producer ticket $ticket revision ${issued.cameraRevision} " +
+                        "did not produce exactly one terminal receipt"
+                }
+            }
+            check(gpuProducerFailuresByTicket.isEmpty()) {
+                val failure = gpuProducerFailuresByTicket.values.first()
+                "GPU producer measurement failed: ticket=${failure.ticket} reason=${failure.reason}"
+            }
+            val measuredTickets = HashSet<Long>()
+            for (index in 0 until samples) {
+                val ticket = gpuProducerSubmissionTicket[index]
+                check(ticket > 0L && measuredTickets.add(ticket)) {
+                    "frame $index lacks a unique GPU producer ticket"
+                }
+                check(gpuProducerSubmissionFlags[index] and 1L != 0L) {
+                    "frame $index GPU producer submission did not mark ticket issued"
+                }
+                val measurement = checkNotNull(gpuProducerMeasurementsByTicket[ticket]) {
+                    "frame $index lacks a terminal GPU producer receipt"
+                }
+                check(measurement.cameraRevision == cameraRevision[index]) {
+                    "frame $index producer receipt revision does not match presentation"
+                }
             }
         }
 
@@ -2447,6 +2906,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
             stats: LongArray,
             sortStats: LongArray,
             submission: BenchmarkOrderSubmission,
+            producerSubmission: BenchmarkGpuProducerSubmission?,
             renderCallNs: Long,
             traceStep: CameraTraceStep?,
             cameraReceipt: BenchmarkCameraReceipt
@@ -2502,6 +2962,20 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
             sortFlags[index] = sortStats[6]
             orderSubmissionTicket[index] = submission.ticket ?: 0L
             orderSubmissionFlags[index] = submission.flags.toLong()
+            if (config.gpuProducer != null) {
+                val producer = checkNotNull(producerSubmission) {
+                    "GPU producer diagnostic frame omitted its submission receipt"
+                }
+                check(producer.cameraRevision == sortStats[0]) {
+                    "GPU producer submission revision does not match frame telemetry"
+                }
+                gpuProducerSubmissionTicket[index] = checkNotNull(producer.ticket)
+                gpuProducerSubmissionFlags[index] = producer.flags.toLong()
+            } else {
+                check(producerSubmission == null) {
+                    "non-diagnostic frame received a GPU producer submission"
+                }
+            }
             cameraReceipts[index] = cameraReceipt
             if (traceStep != null) {
                 check(traceStep.phase == "measure" && traceStep.measuredSampleIndex == index)
@@ -2522,6 +2996,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
 
         fun resultLine(datasetLabel: String): String {
             requireOrderMeasurements()
+            requireGpuProducerMeasurements()
             val safeSamples = samples.coerceAtLeast(1)
             var cpuTimingSamples = 0
             var cpuPreprocessMicros = 0L
@@ -2562,6 +3037,14 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
             } else {
                 "%.3f".format(Locale.US, gpuQueueCompleteMs / gpuQueueCompleteSamples)
             }
+            val producerCompletion = (0 until samples)
+                .mapNotNull(::gpuProducerMeasurement)
+                .map { it.frameCompleteMs.toDouble() }
+            val averageGpuProducerComplete = if (producerCompletion.isEmpty()) {
+                "n/a"
+            } else {
+                "%.3f".format(Locale.US, producerCompletion.average())
+            }
             var resolvedVisibleTotal = 0L
             var resolvedContributorTotal = 0L
             var resolvedContributorSamples = 0
@@ -2596,6 +3079,8 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                 "avg_cpu_raster_ms=$averageCpuRaster " +
                 "avg_cpu_queue_complete_ms=$averageCpuQueueComplete " +
                 "avg_gpu_queue_complete_ms=$averageGpuQueueComplete " +
+                "gpu_order_producer=${config.gpuProducer ?: "disabled"} " +
+                "avg_gpu_producer_frame_complete_ms=$averageGpuProducerComplete " +
                 "$averageCount " +
                 (if (resolvedContributorSamples == samples) {
                     "avg_contributor=${resolvedContributorTotal / safeSamples} "
@@ -2617,6 +3102,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         ): List<Pair<String, String>> {
             check(complete) { "benchmark artifacts require a complete measurement" }
             requireOrderMeasurements()
+            requireGpuProducerMeasurements()
             presentation.requireFormal(
                 presentation.requestedWidth,
                 presentation.requestedHeight
@@ -2807,6 +3293,17 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                         if (contributorContract) {
                             renderer.put("count_semantics", COUNT_SEMANTICS)
                         }
+                        if (config.gpuProducer != null) {
+                            renderer
+                                .put("raster_plan", "projected_quads_exact")
+                                .put("projected_policy_requested", "compact")
+                                .put("gpu_order_producer_requested", config.gpuProducer)
+                                .put("gpu_producer_measurement_enabled", true)
+                        } else {
+                            renderer
+                                .put("gpu_order_producer_requested", JSONObject.NULL)
+                                .put("gpu_producer_measurement_enabled", false)
+                        }
                     })
                 .put("resolution", JSONObject()
                     .put("requested_width", presentation.requestedWidth)
@@ -2866,6 +3363,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                 val contributor = resolvedContributor(index)
                 val exactContributorCompaction =
                     resolvedExactContributorCompaction(index)
+                val producerMeasurement = gpuProducerMeasurement(index)
                 val frame = JSONObject()
                     .put("schema", "gsplat-benchmark/v1")
                     .put("record_type", "frame")
@@ -2926,6 +3424,37 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                                     exactContributorCompaction
                                 )
                         }
+                        if (config.gpuProducer != null) {
+                            val producer = checkNotNull(producerMeasurement)
+                            frameJson
+                                .put("gpu_order_producer", gpuProducerName(producer.producer))
+                                .put("gpu_producer_measurement_ticket", producer.ticket)
+                                .put(
+                                    "gpu_producer_measurement_camera_revision",
+                                    producer.cameraRevision
+                                )
+                                .put("gpu_producer_order_generation", producer.orderGeneration)
+                                .put(
+                                    "gpu_producer_projection_generation",
+                                    producer.projectionGeneration
+                                )
+                                .put(
+                                    "gpu_producer_frame_complete_ms",
+                                    producer.frameCompleteMs.toDouble()
+                                )
+                                .put("gpu_producer_source", producer.source)
+                                .put("gpu_producer_contributor", producer.contributor)
+                                .put("gpu_producer_drawn", producer.drawn)
+                                .put("gpu_producer_draw_scope", "exact_current_contributors")
+                                .put("gpu_producer_order_refreshed", producer.orderRefreshed)
+                                .put("gpu_producer_exact_current_draw", producer.exactCurrentDraw)
+                                .put("gpu_producer_stale_order", producer.staleOrder)
+                                .put("gpu_producer_dropped_prior", producer.droppedPrior)
+                                .put(
+                                    "gpu_producer_submission_flags",
+                                    gpuProducerSubmissionFlags[index]
+                                )
+                        }
                     }
                 lines += BENCHMARK_FRAME_PREFIX to frame.toString()
             }
@@ -2956,6 +3485,22 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                     .put("gpu_order_ms", gpuMeasurementDistribution { it.gpuOrderMs?.toDouble() }))
                 .put("sort_telemetry", sortTelemetrySummary())
                 .put("order_terminal_ledger", orderTerminalLedger(exactnessReceiptId))
+                .put(
+                    "gpu_producer_telemetry",
+                    if (config.gpuProducer == null) {
+                        JSONObject.NULL
+                    } else {
+                        gpuProducerTelemetrySummary()
+                    }
+                )
+                .put(
+                    "gpu_producer_terminal_ledger",
+                    if (config.gpuProducer == null) {
+                        JSONObject.NULL
+                    } else {
+                        gpuProducerTerminalLedger(exactnessReceiptId)
+                    }
+                )
             lines += BENCHMARK_SUMMARY_PREFIX to summary.toString()
             return lines
         }
@@ -3117,6 +3662,57 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
             return ledger
         }
 
+        private fun gpuProducerTelemetrySummary(): JSONObject {
+            val measurements = (0 until samples).map { index ->
+                checkNotNull(gpuProducerMeasurement(index))
+            }
+            return JSONObject()
+                .put("requested_producer", checkNotNull(config.gpuProducer))
+                .put("scheduled_count", measurements.size)
+                .put("completed_count", measurements.size)
+                .put("failure_count", gpuProducerFailuresByTicket.size)
+                .put("unsampled_count", unsampledGpuProducerRequests.size)
+                .put("exact_current_count", measurements.count { it.exactCurrentDraw })
+                .put("stale_count", measurements.count { it.staleOrder })
+                .put("dropped_count", measurements.count { it.droppedPrior })
+                .put("order_refreshed_count", measurements.count { it.orderRefreshed })
+                .put(
+                    "frame_complete_ms",
+                    doubleDistributionJson(measurements.map { it.frameCompleteMs.toDouble() })
+                )
+        }
+
+        private fun gpuProducerTerminalLedger(exactnessReceiptId: String): JSONArray {
+            val ledger = JSONArray()
+            issuedGpuProducerTickets.keys.sorted().forEach { ticket ->
+                val issued = checkNotNull(issuedGpuProducerTickets[ticket])
+                val record = JSONObject()
+                    .put("ticket", ticket)
+                    .put("camera_revision", issued.cameraRevision)
+                    .put("producer", gpuProducerName(issued.producer))
+                    .put("exactness_receipt_id", exactnessReceiptId)
+                val success = gpuProducerMeasurementsByTicket[ticket]
+                val failure = gpuProducerFailuresByTicket[ticket]
+                when {
+                    success != null -> record
+                        .put("outcome", "success")
+                        .put("order_generation", success.orderGeneration)
+                        .put("projection_generation", success.projectionGeneration)
+                        .put("frame_complete_ms", success.frameCompleteMs.toDouble())
+                        .put("source", success.source)
+                        .put("contributor", success.contributor)
+                        .put("drawn", success.drawn)
+                        .put("draw_scope", "exact_current_contributors")
+                    failure != null -> record
+                        .put("outcome", "failure")
+                        .put("failure_reason", failure.reason)
+                    else -> record.put("outcome", "pending")
+                }
+                ledger.put(record)
+            }
+            return ledger
+        }
+
         private fun exactnessReceiptId(): String = listOf(
             "native-exactness-v1",
             exactness.source,
@@ -3177,6 +3773,23 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
             return JSONObject()
                 .put("count", values.size)
                 .put("mean", sum / values.size.toDouble())
+                .put("p50", nearestRank(0.50))
+                .put("p90", nearestRank(0.90))
+                .put("p95", nearestRank(0.95))
+                .put("p99", nearestRank(0.99))
+                .put("max", values.last())
+        }
+
+        private fun doubleDistributionJson(input: List<Double>): JSONObject {
+            check(input.isNotEmpty()) { "distribution requires at least one sample" }
+            val values = input.sorted()
+            fun nearestRank(fraction: Double): Double {
+                val index = maxOf(kotlin.math.ceil(fraction * values.size).toInt() - 1, 0)
+                return values[index]
+            }
+            return JSONObject()
+                .put("count", values.size)
+                .put("mean", values.average())
                 .put("p50", nearestRank(0.50))
                 .put("p90", nearestRank(0.90))
                 .put("p95", nearestRank(0.95))

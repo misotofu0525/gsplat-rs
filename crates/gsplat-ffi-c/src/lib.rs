@@ -20,8 +20,12 @@ use gsplat_io_ply::{
 use gsplat_render_wgpu::{
     GeometryPath, Renderer, RendererError, ResidentSceneBuilder, ResidentSceneError,
     ResidentSourceSplat, SurfaceAdaptiveGpuFailureReason, SurfaceAdaptiveState,
-    SurfaceCpuOrderMeasurement, SurfaceFrameOutput, SurfaceOrderBackend, SurfaceOrderBackendUsed,
-    SurfaceOrderMeasurement, SurfaceOrderMeasurementFailure, SurfaceOrderMeasurementFailureReason,
+    SurfaceCpuOrderMeasurement, SurfaceFrameOutput, SurfaceGpuOrderProducer,
+    SurfaceGpuProducerDrawScope, SurfaceGpuProducerMeasurement,
+    SurfaceGpuProducerMeasurementFailure, SurfaceGpuProducerMeasurementFailureReason,
+    SurfaceGpuProducerMeasurementSubmission, SurfaceGpuProducerMeasurementUnsampledReason,
+    SurfaceOrderBackend, SurfaceOrderBackendUsed, SurfaceOrderMeasurement,
+    SurfaceOrderMeasurementFailure, SurfaceOrderMeasurementFailureReason,
     SurfaceOrderMeasurementSubmission, SurfaceOrderMeasurementUnsampledReason, SurfacePresenter,
     SurfaceProjectedDrawAdaptiveState, SurfaceProjectedDrawExecution,
     SurfaceProjectedDrawMeasurement, SurfaceProjectedDrawMeasurementFailure,
@@ -288,6 +292,120 @@ impl Default for GsplatSurfaceProjectedFailureV1 {
     }
 }
 
+const SURFACE_GPU_PRODUCER_ABI_VERSION_V1: u32 = 1;
+
+/// Versioned submission identity for the optional Packed GPU-producer A/B lane.
+///
+/// The default renderer neither requests producer measurements nor allocates
+/// FFI-side receipt storage. Callers must opt in explicitly after selecting a
+/// producer under the strict Packed + ProjectedQuadsExact + Compact + GPU
+/// benchmark context.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GsplatSurfaceGpuProducerSubmissionV1 {
+    pub struct_size: u32,
+    pub version: u32,
+    pub ticket: u64,
+    pub camera_revision: u64,
+    pub requested_producer: u32,
+    pub actual_producer: u32,
+    pub order_backend: u32,
+    pub projected_execution: u32,
+    pub flags: u32,
+    pub reserved: u32,
+}
+
+impl Default for GsplatSurfaceGpuProducerSubmissionV1 {
+    fn default() -> Self {
+        Self {
+            struct_size: std::mem::size_of::<Self>() as u32,
+            version: SURFACE_GPU_PRODUCER_ABI_VERSION_V1,
+            ticket: 0,
+            camera_revision: 0,
+            requested_producer: 0,
+            actual_producer: 0,
+            order_backend: 0,
+            projected_execution: 0,
+            flags: 0,
+            reserved: 0,
+        }
+    }
+}
+
+/// Terminal success for one producer ticket, including exact S/C/D counts.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct GsplatSurfaceGpuProducerMeasurementV1 {
+    pub struct_size: u32,
+    pub version: u32,
+    pub ticket: u64,
+    pub camera_revision: u64,
+    pub order_generation: u64,
+    pub projection_generation: u64,
+    pub frame_complete_ms: f32,
+    pub producer: u32,
+    pub source_count: u32,
+    pub contributor_count: u32,
+    pub drawn_count: u32,
+    pub draw_scope: u32,
+    pub flags: u32,
+    pub reserved: u32,
+}
+
+impl Default for GsplatSurfaceGpuProducerMeasurementV1 {
+    fn default() -> Self {
+        Self {
+            struct_size: std::mem::size_of::<Self>() as u32,
+            version: SURFACE_GPU_PRODUCER_ABI_VERSION_V1,
+            ticket: 0,
+            camera_revision: 0,
+            order_generation: 0,
+            projection_generation: 0,
+            frame_complete_ms: 0.0,
+            producer: 0,
+            source_count: 0,
+            contributor_count: 0,
+            drawn_count: 0,
+            draw_scope: 0,
+            flags: 0,
+            reserved: 0,
+        }
+    }
+}
+
+/// Terminal failure for one already-exposed producer ticket.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GsplatSurfaceGpuProducerFailureV1 {
+    pub struct_size: u32,
+    pub version: u32,
+    pub ticket: u64,
+    pub camera_revision: u64,
+    pub order_generation: u64,
+    pub projection_generation: u64,
+    pub reason: u32,
+    pub producer: u32,
+    pub flags: u32,
+    pub reserved: u32,
+}
+
+impl Default for GsplatSurfaceGpuProducerFailureV1 {
+    fn default() -> Self {
+        Self {
+            struct_size: std::mem::size_of::<Self>() as u32,
+            version: SURFACE_GPU_PRODUCER_ABI_VERSION_V1,
+            ticket: 0,
+            camera_revision: 0,
+            order_generation: 0,
+            projection_generation: 0,
+            reason: 0,
+            producer: 0,
+            flags: 0,
+            reserved: 0,
+        }
+    }
+}
+
 /// Source-to-GPU exactness and adapter-admission receipt for the Surface
 /// renderer's current geometry path.
 #[repr(C)]
@@ -405,6 +523,17 @@ const SURFACE_PROJECTED_MEASUREMENT_DROPPED_PRIOR: u32 = 1 << 3;
 const SURFACE_PROJECTED_COUNTS_EXACT_CONTRIBUTOR_DRAW: u32 = 1 << 0;
 const SURFACE_PROJECTED_FAILURE_DROPPED_PRIOR: u32 = 1 << 0;
 const SURFACE_PROJECTED_MEASUREMENT_QUEUE_CAPACITY: usize = 64;
+
+const SURFACE_GPU_PRODUCER_SUBMISSION_TICKET_ISSUED: u32 = 1 << 0;
+const SURFACE_GPU_PRODUCER_SUBMISSION_UNSAMPLED_RING_BUSY: u32 = 1 << 1;
+const SURFACE_GPU_PRODUCER_SUBMISSION_UNSAMPLED_SURFACE_UNAVAILABLE: u32 = 1 << 2;
+const SURFACE_GPU_PRODUCER_SUBMISSION_MEASUREMENT_ENABLED: u32 = 1 << 3;
+const SURFACE_GPU_PRODUCER_MEASUREMENT_ORDER_REFRESHED: u32 = 1 << 0;
+const SURFACE_GPU_PRODUCER_MEASUREMENT_EXACT_CURRENT_DRAW: u32 = 1 << 1;
+const SURFACE_GPU_PRODUCER_MEASUREMENT_STALE_ORDER: u32 = 1 << 2;
+const SURFACE_GPU_PRODUCER_MEASUREMENT_DROPPED_PRIOR: u32 = 1 << 3;
+const SURFACE_GPU_PRODUCER_FAILURE_DROPPED_PRIOR: u32 = 1 << 0;
+const SURFACE_GPU_PRODUCER_MEASUREMENT_QUEUE_CAPACITY: usize = 64;
 
 const SURFACE_EXACTNESS_SOURCE_MEMBERSHIP_ALL: u32 = 1 << 0;
 const SURFACE_EXACTNESS_SAMPLING_DISABLED: u32 = 1 << 1;
@@ -597,6 +726,103 @@ fn surface_projected_failure_to_ffi(
         },
         execution: surface_projected_execution_to_ffi(failure.execution),
         order_backend: surface_order_backend_used_to_ffi(failure.order_backend),
+        ..Default::default()
+    }
+}
+
+fn surface_gpu_producer_to_ffi(producer: SurfaceGpuOrderProducer) -> u32 {
+    match producer {
+        SurfaceGpuOrderProducer::PostSort => 1,
+        SurfaceGpuOrderProducer::Preproject => 2,
+    }
+}
+
+fn surface_gpu_producer_from_ffi(value: u32) -> Option<SurfaceGpuOrderProducer> {
+    match value {
+        // Zero is a setter-only alias for the unchanged qualified default.
+        0 | 1 => Some(SurfaceGpuOrderProducer::PostSort),
+        2 => Some(SurfaceGpuOrderProducer::Preproject),
+        _ => None,
+    }
+}
+
+fn surface_gpu_producer_submission_to_ffi(
+    output: SurfaceFrameOutput,
+    requested_producer: SurfaceGpuOrderProducer,
+    measurement_enabled: bool,
+) -> GsplatSurfaceGpuProducerSubmissionV1 {
+    let (ticket, sampled_producer, unsampled_reason) =
+        match output.gpu_producer_measurement_submission {
+            SurfaceGpuProducerMeasurementSubmission::NotRequested => (None, None, None),
+            SurfaceGpuProducerMeasurementSubmission::Issued { producer, ticket } => {
+                (Some(ticket), Some(producer), None)
+            }
+            SurfaceGpuProducerMeasurementSubmission::Unsampled { producer, reason } => {
+                (None, Some(producer), Some(reason))
+            }
+        };
+    let actual_producer = output.gpu_order_producer.or(sampled_producer);
+    let mut flags = u32::from(ticket.is_some()) * SURFACE_GPU_PRODUCER_SUBMISSION_TICKET_ISSUED;
+    flags |=
+        u32::from(unsampled_reason == Some(SurfaceGpuProducerMeasurementUnsampledReason::RingBusy))
+            * SURFACE_GPU_PRODUCER_SUBMISSION_UNSAMPLED_RING_BUSY;
+    flags |= u32::from(
+        unsampled_reason == Some(SurfaceGpuProducerMeasurementUnsampledReason::SurfaceUnavailable),
+    ) * SURFACE_GPU_PRODUCER_SUBMISSION_UNSAMPLED_SURFACE_UNAVAILABLE;
+    flags |= u32::from(measurement_enabled) * SURFACE_GPU_PRODUCER_SUBMISSION_MEASUREMENT_ENABLED;
+    GsplatSurfaceGpuProducerSubmissionV1 {
+        ticket: ticket.unwrap_or(0),
+        camera_revision: output.camera_revision,
+        requested_producer: surface_gpu_producer_to_ffi(requested_producer),
+        actual_producer: actual_producer.map_or(0, surface_gpu_producer_to_ffi),
+        order_backend: surface_order_backend_used_to_ffi(output.order_backend),
+        projected_execution: surface_projected_execution_to_ffi(output.projected_draw_execution),
+        flags,
+        ..Default::default()
+    }
+}
+
+fn surface_gpu_producer_measurement_to_ffi(
+    measurement: SurfaceGpuProducerMeasurement,
+) -> GsplatSurfaceGpuProducerMeasurementV1 {
+    let mut flags =
+        u32::from(measurement.order_refreshed) * SURFACE_GPU_PRODUCER_MEASUREMENT_ORDER_REFRESHED;
+    flags |= u32::from(measurement.exact_current_contributor_draw())
+        * SURFACE_GPU_PRODUCER_MEASUREMENT_EXACT_CURRENT_DRAW;
+    flags |= u32::from(measurement.stale_order()) * SURFACE_GPU_PRODUCER_MEASUREMENT_STALE_ORDER;
+    GsplatSurfaceGpuProducerMeasurementV1 {
+        ticket: measurement.ticket,
+        camera_revision: measurement.camera_revision,
+        order_generation: measurement.order_generation,
+        projection_generation: measurement.projection_generation,
+        frame_complete_ms: measurement.frame_complete_ms,
+        producer: surface_gpu_producer_to_ffi(measurement.producer),
+        source_count: measurement.source_count,
+        contributor_count: measurement.contributor_count,
+        drawn_count: measurement.drawn_count,
+        draw_scope: match measurement.draw_scope {
+            SurfaceGpuProducerDrawScope::ExactCurrentContributors => 1,
+            SurfaceGpuProducerDrawScope::StaleOrderCandidates => 2,
+        },
+        flags,
+        ..Default::default()
+    }
+}
+
+fn surface_gpu_producer_failure_to_ffi(
+    failure: SurfaceGpuProducerMeasurementFailure,
+) -> GsplatSurfaceGpuProducerFailureV1 {
+    GsplatSurfaceGpuProducerFailureV1 {
+        ticket: failure.ticket,
+        camera_revision: failure.camera_revision,
+        order_generation: failure.order_generation,
+        projection_generation: failure.projection_generation,
+        reason: match failure.reason {
+            SurfaceGpuProducerMeasurementFailureReason::ReadbackMap => 1,
+            SurfaceGpuProducerMeasurementFailureReason::GenerationInvalidated => 2,
+            SurfaceGpuProducerMeasurementFailureReason::InvariantViolation => 3,
+        },
+        producer: surface_gpu_producer_to_ffi(failure.producer),
         ..Default::default()
     }
 }
@@ -955,6 +1181,35 @@ fn pump_surface_projected_measurement_receipts(renderer: &mut GsplatSurfaceRende
     }
 }
 
+fn pump_surface_gpu_producer_measurement_receipts(renderer: &mut GsplatSurfaceRenderer) {
+    // Disabling diagnostics invalidates every outstanding producer ticket and
+    // turns it into a terminal failure. Those terminals remain observable
+    // while disabled so an issued identity is never silently dropped or
+    // deferred into a later diagnostic epoch.
+    for measurement in renderer.session.drain_gpu_producer_measurements() {
+        let mut receipt = surface_gpu_producer_measurement_to_ffi(measurement);
+        if renderer.pending_gpu_producer_measurements.len()
+            == SURFACE_GPU_PRODUCER_MEASUREMENT_QUEUE_CAPACITY
+        {
+            renderer.pending_gpu_producer_measurements.pop_front();
+            receipt.flags |= SURFACE_GPU_PRODUCER_MEASUREMENT_DROPPED_PRIOR;
+        }
+        renderer
+            .pending_gpu_producer_measurements
+            .push_back(receipt);
+    }
+    for failure in renderer.session.drain_gpu_producer_measurement_failures() {
+        let mut receipt = surface_gpu_producer_failure_to_ffi(failure);
+        if renderer.pending_gpu_producer_failures.len()
+            == SURFACE_GPU_PRODUCER_MEASUREMENT_QUEUE_CAPACITY
+        {
+            renderer.pending_gpu_producer_failures.pop_front();
+            receipt.flags |= SURFACE_GPU_PRODUCER_FAILURE_DROPPED_PRIOR;
+        }
+        renderer.pending_gpu_producer_failures.push_back(receipt);
+    }
+}
+
 impl From<SurfaceFrameOutput> for GsplatSurfaceSortStats {
     fn from(output: SurfaceFrameOutput) -> Self {
         let mut flags = 0_u32;
@@ -1072,6 +1327,8 @@ pub struct GsplatSurfaceRenderer {
     last_sort_stats: GsplatSurfaceSortStats,
     last_order_submission: GsplatSurfaceOrderSubmission,
     last_projected_submission: GsplatSurfaceProjectedSubmissionV1,
+    last_gpu_producer_submission: GsplatSurfaceGpuProducerSubmissionV1,
+    gpu_producer_measurement_enabled: bool,
     pending_cpu_order_measurements: VecDeque<GsplatSurfaceCpuOrderMeasurement>,
     pending_order_measurements: VecDeque<GsplatSurfaceOrderMeasurement>,
     pending_order_counts: VecDeque<GsplatSurfaceOrderCounts>,
@@ -1080,6 +1337,8 @@ pub struct GsplatSurfaceRenderer {
     pending_projected_measurements: VecDeque<GsplatSurfaceProjectedMeasurementV1>,
     pending_projected_counts: VecDeque<GsplatSurfaceProjectedCountsV1>,
     pending_projected_failures: VecDeque<GsplatSurfaceProjectedFailureV1>,
+    pending_gpu_producer_measurements: VecDeque<GsplatSurfaceGpuProducerMeasurementV1>,
+    pending_gpu_producer_failures: VecDeque<GsplatSurfaceGpuProducerFailureV1>,
     #[cfg(any(target_os = "android", target_os = "ios"))]
     benchmark_camera_trace: Option<BenchmarkCameraTraceCache>,
 }
@@ -2204,6 +2463,8 @@ fn create_surface_renderer_from_raw_handles(
         last_sort_stats: GsplatSurfaceSortStats::default(),
         last_order_submission: GsplatSurfaceOrderSubmission::default(),
         last_projected_submission: GsplatSurfaceProjectedSubmissionV1::default(),
+        last_gpu_producer_submission: GsplatSurfaceGpuProducerSubmissionV1::default(),
+        gpu_producer_measurement_enabled: false,
         pending_cpu_order_measurements: VecDeque::with_capacity(
             SURFACE_ORDER_MEASUREMENT_QUEUE_CAPACITY,
         ),
@@ -2226,6 +2487,10 @@ fn create_surface_renderer_from_raw_handles(
         pending_projected_failures: VecDeque::with_capacity(
             SURFACE_PROJECTED_MEASUREMENT_QUEUE_CAPACITY,
         ),
+        // Remain allocation-free until the explicit diagnostic lane is
+        // enabled and produces a terminal receipt.
+        pending_gpu_producer_measurements: VecDeque::new(),
+        pending_gpu_producer_failures: VecDeque::new(),
         #[cfg(any(target_os = "android", target_os = "ios"))]
         benchmark_camera_trace: None,
     });
@@ -2561,6 +2826,123 @@ pub unsafe extern "C" fn gsplat_surface_renderer_set_projected_policy_v1(
         renderer.render_error_logged = false;
         ffi_ok()
     })
+}
+
+/// Select the Packed GPU order producer used by an explicit A/B diagnostic.
+///
+/// Zero and one select the unchanged qualified PostSort default; two selects
+/// Preproject. Producer measurement must be disabled while changing graphs so
+/// no ticket can cross a generation boundary.
+///
+/// # Safety
+///
+/// `renderer` must be null or a live Surface renderer.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gsplat_surface_renderer_set_gpu_order_producer_v1(
+    renderer: *mut GsplatSurfaceRenderer,
+    producer: u32,
+) -> i32 {
+    ffi_catch_i32("gsplat_surface_renderer_set_gpu_order_producer_v1", || {
+        let renderer = match unsafe { renderer.as_mut() } {
+            Some(renderer) => renderer,
+            None => {
+                return ffi_error(
+                    ErrorCode::InvalidArgument,
+                    "gsplat_surface_renderer_set_gpu_order_producer_v1: renderer is null",
+                );
+            }
+        };
+        let Some(producer) = surface_gpu_producer_from_ffi(producer) else {
+            return ffi_error(
+                ErrorCode::InvalidArgument,
+                "gsplat_surface_renderer_set_gpu_order_producer_v1: unsupported producer",
+            );
+        };
+        // Idempotent reapplication does not cross a graph generation and is
+        // safe while strict diagnostics are active. Only a real producer
+        // transition must first stop issuing new measurement tickets.
+        if renderer.session.gpu_order_producer() == producer {
+            return ffi_ok();
+        }
+        if renderer.gpu_producer_measurement_enabled {
+            return ffi_error(
+                ErrorCode::InvalidArgument,
+                concat!(
+                    "gsplat_surface_renderer_set_gpu_order_producer_v1: disable producer ",
+                    "measurement before changing graphs"
+                ),
+            );
+        }
+        if let Err(error) = renderer.session.set_gpu_order_producer(producer) {
+            return ffi_error_display(
+                error.code(),
+                "gsplat_surface_renderer_set_gpu_order_producer_v1",
+                error,
+            );
+        }
+        renderer.render_error_logged = false;
+        ffi_ok()
+    })
+}
+
+/// Enable or disable strict ticketed producer diagnostics.
+///
+/// The renderer admits `enabled=1` only in the exact Packed +
+/// ProjectedQuadsExact + forced Compact context. Ordering remains an
+/// independent policy; strict Android qualification additionally requires the
+/// forced GPU backend before enabling this lane.
+///
+/// # Safety
+///
+/// `renderer` must be null or a live Surface renderer.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gsplat_surface_renderer_set_gpu_producer_measurement_enabled_v1(
+    renderer: *mut GsplatSurfaceRenderer,
+    enabled: u32,
+) -> i32 {
+    ffi_catch_i32(
+        "gsplat_surface_renderer_set_gpu_producer_measurement_enabled_v1",
+        || {
+            let renderer = match unsafe { renderer.as_mut() } {
+                Some(renderer) => renderer,
+                None => {
+                    return ffi_error(
+                        ErrorCode::InvalidArgument,
+                        concat!(
+                            "gsplat_surface_renderer_set_gpu_producer_measurement_enabled_v1: ",
+                            "renderer is null"
+                        ),
+                    );
+                }
+            };
+            if enabled > 1 {
+                return ffi_error(
+                    ErrorCode::InvalidArgument,
+                    concat!(
+                        "gsplat_surface_renderer_set_gpu_producer_measurement_enabled_v1: ",
+                        "enabled must be zero or one"
+                    ),
+                );
+            }
+            let enabled = enabled != 0;
+            if renderer.gpu_producer_measurement_enabled == enabled {
+                return ffi_ok();
+            }
+            if let Err(error) = renderer
+                .session
+                .set_gpu_producer_measurement_enabled(enabled)
+            {
+                return ffi_error_display(
+                    error.code(),
+                    "gsplat_surface_renderer_set_gpu_producer_measurement_enabled_v1",
+                    error,
+                );
+            }
+            renderer.gpu_producer_measurement_enabled = enabled;
+            renderer.render_error_logged = false;
+            ffi_ok()
+        },
+    )
 }
 
 /// Compatibility alias retained for existing Android benchmark APKs.
@@ -3101,6 +3483,7 @@ pub unsafe extern "C" fn gsplat_surface_renderer_render_frame(
         // issued tickets cannot become unreachable behind a failing frame.
         pump_surface_order_measurement_receipts(renderer, fallback_adaptive_state);
         pump_surface_projected_measurement_receipts(renderer);
+        pump_surface_gpu_producer_measurement_receipts(renderer);
 
         match result {
             Ok(output) => {
@@ -3112,6 +3495,11 @@ pub unsafe extern "C" fn gsplat_surface_renderer_render_frame(
                 renderer.last_order_submission =
                     surface_order_submission_to_ffi(output, renderer.session.order_backend());
                 renderer.last_projected_submission = surface_projected_submission_to_ffi(output);
+                renderer.last_gpu_producer_submission = surface_gpu_producer_submission_to_ffi(
+                    output,
+                    renderer.session.gpu_order_producer(),
+                    renderer.gpu_producer_measurement_enabled,
+                );
                 if let SurfaceOrderMeasurementSubmission::Issued { backend, ticket } =
                     output.order_measurement_submission
                 {
@@ -3408,6 +3796,7 @@ fn poll_and_pump_surface_receipts(renderer: &mut GsplatSurfaceRenderer) {
     let adaptive_state = renderer.session.adaptive_state();
     pump_surface_order_measurement_receipts(renderer, adaptive_state);
     pump_surface_projected_measurement_receipts(renderer);
+    pump_surface_gpu_producer_measurement_receipts(renderer);
 }
 
 /// Drain one terminal projected-draw success without blocking.
@@ -3562,6 +3951,154 @@ pub unsafe extern "C" fn gsplat_surface_renderer_poll_projected_failure_v1(
         }
         ffi_ok()
     })
+}
+
+/// Copy producer identity for the last successful Surface render call.
+///
+/// # Safety
+///
+/// `renderer` must be null or live. `out_submission` must contain an
+/// initialized v1 header and be valid for one write.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gsplat_surface_renderer_get_gpu_producer_submission_v1(
+    renderer: *const GsplatSurfaceRenderer,
+    out_submission: *mut GsplatSurfaceGpuProducerSubmissionV1,
+) -> i32 {
+    ffi_catch_i32(
+        "gsplat_surface_renderer_get_gpu_producer_submission_v1",
+        || {
+            let renderer = match unsafe { renderer.as_ref() } {
+                Some(renderer) => renderer,
+                None => {
+                    return ffi_error(
+                        ErrorCode::InvalidArgument,
+                        concat!(
+                            "gsplat_surface_renderer_get_gpu_producer_submission_v1: ",
+                            "renderer is null"
+                        ),
+                    );
+                }
+            };
+            if let Err(code) = validate_v1_output(
+                out_submission,
+                "gsplat_surface_renderer_get_gpu_producer_submission_v1",
+            ) {
+                return code;
+            }
+            unsafe {
+                *out_submission = renderer.last_gpu_producer_submission;
+            }
+            ffi_ok()
+        },
+    )
+}
+
+/// Drain one terminal producer success with exact S/C/D counts.
+///
+/// # Safety
+///
+/// All pointers must be null or valid for the documented writes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gsplat_surface_renderer_poll_gpu_producer_measurement_v1(
+    renderer: *mut GsplatSurfaceRenderer,
+    out_measurement: *mut GsplatSurfaceGpuProducerMeasurementV1,
+    out_available: *mut u32,
+) -> i32 {
+    ffi_catch_i32(
+        "gsplat_surface_renderer_poll_gpu_producer_measurement_v1",
+        || {
+            let renderer = match unsafe { renderer.as_mut() } {
+                Some(renderer) => renderer,
+                None => {
+                    return ffi_error(
+                        ErrorCode::InvalidArgument,
+                        concat!(
+                            "gsplat_surface_renderer_poll_gpu_producer_measurement_v1: ",
+                            "renderer is null"
+                        ),
+                    );
+                }
+            };
+            if out_available.is_null() {
+                return ffi_error(
+                    ErrorCode::InvalidArgument,
+                    concat!(
+                        "gsplat_surface_renderer_poll_gpu_producer_measurement_v1: ",
+                        "out_available is null"
+                    ),
+                );
+            }
+            if let Err(code) = validate_v1_output(
+                out_measurement,
+                "gsplat_surface_renderer_poll_gpu_producer_measurement_v1",
+            ) {
+                return code;
+            }
+            if renderer.pending_gpu_producer_measurements.is_empty() {
+                poll_and_pump_surface_receipts(renderer);
+            }
+            let measurement = renderer.pending_gpu_producer_measurements.pop_front();
+            unsafe {
+                *out_measurement = measurement.unwrap_or_default();
+                *out_available = u32::from(measurement.is_some());
+            }
+            ffi_ok()
+        },
+    )
+}
+
+/// Drain one terminal producer failure.
+///
+/// # Safety
+///
+/// All pointers must be null or valid for the documented writes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gsplat_surface_renderer_poll_gpu_producer_failure_v1(
+    renderer: *mut GsplatSurfaceRenderer,
+    out_failure: *mut GsplatSurfaceGpuProducerFailureV1,
+    out_available: *mut u32,
+) -> i32 {
+    ffi_catch_i32(
+        "gsplat_surface_renderer_poll_gpu_producer_failure_v1",
+        || {
+            let renderer = match unsafe { renderer.as_mut() } {
+                Some(renderer) => renderer,
+                None => {
+                    return ffi_error(
+                        ErrorCode::InvalidArgument,
+                        concat!(
+                            "gsplat_surface_renderer_poll_gpu_producer_failure_v1: ",
+                            "renderer is null"
+                        ),
+                    );
+                }
+            };
+            if out_available.is_null() {
+                return ffi_error(
+                    ErrorCode::InvalidArgument,
+                    concat!(
+                        "gsplat_surface_renderer_poll_gpu_producer_failure_v1: ",
+                        "out_available is null"
+                    ),
+                );
+            }
+            if let Err(code) = validate_v1_output(
+                out_failure,
+                "gsplat_surface_renderer_poll_gpu_producer_failure_v1",
+            ) {
+                return code;
+            }
+            if renderer.pending_gpu_producer_failures.is_empty() {
+                poll_and_pump_surface_receipts(renderer);
+            }
+            let failure = renderer.pending_gpu_producer_failures.pop_front();
+            unsafe {
+                *out_failure = failure.unwrap_or_default();
+                *out_available = u32::from(failure.is_some());
+            }
+            ffi_ok()
+        },
+    )
 }
 
 /// Drain the oldest completed CPU order measurement without blocking.
@@ -4018,6 +4555,18 @@ mod tests {
         assert_eq!(std::mem::size_of::<GsplatSurfaceProjectedCountsV1>(), 40);
         assert_eq!(std::mem::size_of::<GsplatSurfaceProjectedFailureV1>(), 56);
         assert_eq!(
+            std::mem::size_of::<super::GsplatSurfaceGpuProducerSubmissionV1>(),
+            48
+        );
+        assert_eq!(
+            std::mem::size_of::<super::GsplatSurfaceGpuProducerMeasurementV1>(),
+            72
+        );
+        assert_eq!(
+            std::mem::size_of::<super::GsplatSurfaceGpuProducerFailureV1>(),
+            56
+        );
+        assert_eq!(
             std::mem::offset_of!(GsplatSurfaceProjectedSubmissionV1, ticket),
             8
         );
@@ -4051,6 +4600,33 @@ mod tests {
         );
         assert_eq!(
             std::mem::align_of::<GsplatSurfaceProjectedFailureV1>(),
+            std::mem::align_of::<u64>()
+        );
+        assert_eq!(
+            std::mem::offset_of!(super::GsplatSurfaceGpuProducerSubmissionV1, ticket),
+            8
+        );
+        assert_eq!(
+            std::mem::offset_of!(
+                super::GsplatSurfaceGpuProducerMeasurementV1,
+                frame_complete_ms
+            ),
+            40
+        );
+        assert_eq!(
+            std::mem::offset_of!(super::GsplatSurfaceGpuProducerFailureV1, reason),
+            40
+        );
+        assert_eq!(
+            std::mem::align_of::<super::GsplatSurfaceGpuProducerSubmissionV1>(),
+            std::mem::align_of::<u64>()
+        );
+        assert_eq!(
+            std::mem::align_of::<super::GsplatSurfaceGpuProducerMeasurementV1>(),
+            std::mem::align_of::<u64>()
+        );
+        assert_eq!(
+            std::mem::align_of::<super::GsplatSurfaceGpuProducerFailureV1>(),
             std::mem::align_of::<u64>()
         );
         assert_eq!(std::mem::size_of::<GsplatSurfaceExactness>(), 64);

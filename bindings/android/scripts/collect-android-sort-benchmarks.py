@@ -48,6 +48,7 @@ PACKAGE = "com.gsplat.example"
 ACTIVITY = f"{PACKAGE}/.MainActivity"
 LOG_TAG = "GsplatExample:I"
 BACKENDS = ("cpu", "gpu", "adaptive")
+GPU_PRODUCERS = ("post_sort", "preproject")
 GEOMETRY_PATHS = ("packed", "direct")
 RENDERER_PATHS = {
     "packed": "packed_atlas",
@@ -571,6 +572,18 @@ def benchmark_launch_args(args: argparse.Namespace, backend: str) -> list[str]:
         "gsplat_surface_order_backend",
         backend,
     ]
+    gpu_producer = getattr(args, "gpu_producer", None)
+    if gpu_producer is not None:
+        result.extend(
+            [
+                "--es",
+                "gsplat_surface_gpu_producer",
+                gpu_producer,
+                "--ez",
+                "gsplat_surface_gpu_producer_measurement",
+                "true",
+            ]
+        )
     if args.camera_trace is not None:
         result.extend(
             [
@@ -1055,14 +1068,16 @@ def validate_run_artifact(
     expected_dataset: dict[str, Any],
     expected_trace: dict[str, Any],
     expected_trace_identity: dict[str, Any],
+    expected_gpu_producer: str | None = None,
 ) -> None:
-    requested = manifest.get("renderer", {}).get("order_backend_requested")
+    renderer = manifest.get("renderer", {})
+    requested = renderer.get("order_backend_requested")
     if requested != expected_backend:
         raise RuntimeError(
             f"artifact requested backend {requested!r}, expected {expected_backend!r}"
         )
 
-    renderer_path = manifest.get("renderer", {}).get("path")
+    renderer_path = renderer.get("path")
     expected_renderer_path = RENDERER_PATHS[expected_geometry_path]
     if renderer_path != expected_renderer_path:
         raise RuntimeError(
@@ -1111,6 +1126,134 @@ def validate_run_artifact(
             f"samples={sample_count!r} cpu={cpu_frames!r} gpu={gpu_frames!r} "
             f"gpu_fallbacks={gpu_fallbacks!r}"
         )
+
+    producer_requested = renderer.get("gpu_order_producer_requested")
+    producer_enabled = renderer.get("gpu_producer_measurement_enabled")
+    producer_summary = summary.get("gpu_producer_telemetry")
+    producer_ledger = summary.get("gpu_producer_terminal_ledger")
+    if expected_gpu_producer is None:
+        if producer_requested is not None or producer_enabled is not False:
+            raise RuntimeError("non-diagnostic artifact enabled GPU producer telemetry")
+        if producer_summary is not None or producer_ledger is not None:
+            raise RuntimeError("non-diagnostic artifact published GPU producer evidence")
+        for index, frame in enumerate(frames):
+            if frame.get("gpu_order_producer") is not None:
+                raise RuntimeError(
+                    f"frame {index} published GPU producer evidence while disabled"
+                )
+            producer_fields = [
+                field for field in frame if field.startswith("gpu_producer_")
+            ]
+            if producer_fields:
+                raise RuntimeError(
+                    f"frame {index} published GPU producer fields while disabled: "
+                    f"{sorted(producer_fields)!r}"
+                )
+        return
+
+    if expected_gpu_producer not in GPU_PRODUCERS:
+        raise RuntimeError(f"unsupported expected GPU producer {expected_gpu_producer!r}")
+    if expected_backend != "gpu" or expected_geometry_path != "packed":
+        raise RuntimeError("GPU producer qualification requires packed + forced GPU")
+    expected_renderer = {
+        "raster_plan": "projected_quads_exact",
+        "projected_policy_requested": "compact",
+        "gpu_order_producer_requested": expected_gpu_producer,
+        "gpu_producer_measurement_enabled": True,
+    }
+    for field, expected in expected_renderer.items():
+        if renderer.get(field) != expected:
+            raise RuntimeError(
+                f"artifact renderer {field} {renderer.get(field)!r}, expected {expected!r}"
+            )
+    if not isinstance(sample_count, int) or sample_count <= 0 or len(frames) != sample_count:
+        raise RuntimeError("GPU producer artifact has an invalid sample count")
+    source_count = manifest.get("dataset", {}).get("splat_count")
+    if not isinstance(source_count, int) or source_count <= 0:
+        raise RuntimeError("GPU producer artifact lacks a positive dataset splat_count")
+
+    frame_tickets: set[int] = set()
+    for index, frame in enumerate(frames):
+        ticket = frame.get("gpu_producer_measurement_ticket")
+        contributor = frame.get("gpu_producer_contributor")
+        drawn = frame.get("gpu_producer_drawn")
+        completion_ms = frame.get("gpu_producer_frame_complete_ms")
+        if frame.get("gpu_order_producer") != expected_gpu_producer:
+            raise RuntimeError(f"frame {index} used the wrong GPU producer")
+        if not isinstance(ticket, int) or ticket <= 0 or ticket in frame_tickets:
+            raise RuntimeError(f"frame {index} has a missing or duplicate producer ticket")
+        frame_tickets.add(ticket)
+        if frame.get("gpu_producer_submission_flags") != 9:
+            raise RuntimeError(
+                f"frame {index} producer submission was unsampled or malformed"
+            )
+        if frame.get("gpu_producer_measurement_camera_revision") != frame.get(
+            "camera_revision"
+        ):
+            raise RuntimeError(f"frame {index} producer camera revision is stale")
+        if frame.get("gpu_producer_source") != source_count:
+            raise RuntimeError(f"frame {index} producer source count is incomplete")
+        if not isinstance(contributor, int) or not 0 <= contributor <= source_count:
+            raise RuntimeError(f"frame {index} producer contributor count is invalid")
+        if drawn != contributor:
+            raise RuntimeError(f"frame {index} Compact producer receipt violates D=C")
+        if frame.get("gpu_producer_draw_scope") != "exact_current_contributors":
+            raise RuntimeError(f"frame {index} producer draw scope is not exact-current")
+        if frame.get("gpu_producer_order_refreshed") is not True:
+            raise RuntimeError(f"frame {index} producer did not refresh order")
+        if frame.get("gpu_producer_exact_current_draw") is not True:
+            raise RuntimeError(f"frame {index} producer draw is not exact-current")
+        if frame.get("gpu_producer_stale_order") is not False:
+            raise RuntimeError(f"frame {index} producer retained stale order")
+        if frame.get("gpu_producer_dropped_prior") is not False:
+            raise RuntimeError(f"frame {index} producer evidence dropped a prior receipt")
+        for field in ("gpu_producer_order_generation", "gpu_producer_projection_generation"):
+            if not isinstance(frame.get(field), int) or frame[field] <= 0:
+                raise RuntimeError(f"frame {index} producer {field} is invalid")
+        if not isinstance(completion_ms, (int, float)) or isinstance(completion_ms, bool):
+            raise RuntimeError(f"frame {index} producer completion timing is missing")
+        if not math.isfinite(float(completion_ms)) or float(completion_ms) < 0.0:
+            raise RuntimeError(f"frame {index} producer completion timing is invalid")
+
+    if not isinstance(producer_summary, dict):
+        raise RuntimeError("GPU producer summary is missing")
+    required_summary = {
+        "requested_producer": expected_gpu_producer,
+        "scheduled_count": sample_count,
+        "completed_count": sample_count,
+        "failure_count": 0,
+        "unsampled_count": 0,
+        "exact_current_count": sample_count,
+        "stale_count": 0,
+        "dropped_count": 0,
+        "order_refreshed_count": sample_count,
+    }
+    for field, expected in required_summary.items():
+        if producer_summary.get(field) != expected:
+            raise RuntimeError(
+                f"GPU producer summary {field} {producer_summary.get(field)!r}, "
+                f"expected {expected!r}"
+            )
+    if producer_summary.get("frame_complete_ms", {}).get("count") != sample_count:
+        raise RuntimeError("GPU producer timing distribution is incomplete")
+    if not isinstance(producer_ledger, list):
+        raise RuntimeError("GPU producer terminal ledger is missing")
+    ledger_tickets: set[int] = set()
+    for entry in producer_ledger:
+        ticket = entry.get("ticket") if isinstance(entry, dict) else None
+        if not isinstance(ticket, int) or ticket <= 0 or ticket in ledger_tickets:
+            raise RuntimeError("GPU producer terminal ledger contains duplicate tickets")
+        ledger_tickets.add(ticket)
+        if entry.get("outcome") != "success":
+            raise RuntimeError("GPU producer terminal ledger contains a failure")
+        if entry.get("producer") != expected_gpu_producer:
+            raise RuntimeError("GPU producer terminal ledger contains the wrong producer")
+        if entry.get("source") != source_count or entry.get("drawn") != entry.get(
+            "contributor"
+        ):
+            raise RuntimeError("GPU producer terminal ledger violates exact S/C/D")
+    if not frame_tickets.issubset(ledger_tickets):
+        raise RuntimeError("GPU producer terminal ledger is missing measured tickets")
 
 
 def device_info(adb: pathlib.Path | str, serial: str) -> dict[str, str]:
@@ -1168,6 +1311,14 @@ def parser() -> argparse.ArgumentParser:
         action="append",
         choices=BACKENDS,
         help="backend to include; repeat for an A/B set (default: cpu, gpu)",
+    )
+    result.add_argument(
+        "--gpu-producer",
+        choices=GPU_PRODUCERS,
+        help=(
+            "strict Packed+GPU+Compact diagnostic producer; enables exact per-frame "
+            "S/C/D completion receipts and leaves product defaults unchanged"
+        ),
     )
     result.add_argument("--repetitions", type=int, default=1, help="runs per backend")
     result.add_argument(
@@ -1297,6 +1448,15 @@ def validate_args(args: argparse.Namespace) -> list[str]:
         raise ValueError("--backend values must be unique")
     if args.async_sort and any(backend != "cpu" for backend in backends):
         raise ValueError("--async-sort is only compatible with the cpu backend")
+    if args.gpu_producer is not None:
+        if backends != ["gpu"]:
+            raise ValueError("--gpu-producer requires exactly one --backend gpu")
+        if args.geometry_path != "packed":
+            raise ValueError("--gpu-producer requires --geometry-path packed")
+        if args.async_sort or args.sort_interval != 1:
+            raise ValueError("--gpu-producer requires synchronous sort interval 1")
+        if args.camera_frame is not None:
+            raise ValueError("--gpu-producer requires camera trace sequence playback")
     if args.repetitions < 1:
         raise ValueError("--repetitions must be positive")
     if args.sort_interval < 1:
@@ -1439,6 +1599,7 @@ def collect_scheduled_runs(
                 "async_sort": args.async_sort,
                 "frame_latency": args.frame_latency,
                 "geometry_path": args.geometry_path,
+                "gpu_producer": args.gpu_producer,
             },
             "log": str(log_path.relative_to(output)),
             "artifact": str(artifact_dir.relative_to(output)),
@@ -1511,6 +1672,7 @@ def collect_scheduled_runs(
             f"warmup={args.warmup} yaw={args.yaw} "
             f"async_sort={str(args.async_sort).lower()} "
             f"frame_latency={args.frame_latency} thermal_before={thermal_before} "
+            f"gpu_producer={args.gpu_producer or 'disabled'} "
             f"run_dir={run_dir}",
             flush=True,
         )
@@ -1553,6 +1715,7 @@ def collect_scheduled_runs(
             experiment["dataset"],
             expected_trace,
             experiment["trace"],
+            args.gpu_producer,
         )
 
         run_record.update(
@@ -1628,6 +1791,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "async_sort": args.async_sort,
             "frame_latency": args.frame_latency,
             "geometry_path": args.geometry_path,
+            "gpu_producer": args.gpu_producer,
             "cooldown_seconds": args.cooldown_seconds,
             "max_thermal_status": args.max_thermal_status,
             "apk_mode": "prepare-once" if args.prepare_apk else "reuse-exact-installed",

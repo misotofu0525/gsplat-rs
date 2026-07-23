@@ -43,6 +43,7 @@ export interface GsplatApiVersion {
 
 export type GsplatProjectedPolicy = "candidate" | "compact" | "adaptive";
 export type GsplatProjectedExecution = "candidate" | "compact";
+export type GsplatGpuOrderProducer = "post-sort" | "preproject";
 export type GsplatProjectedAdaptiveState =
   | "disabled"
   | "candidate_learning"
@@ -63,6 +64,12 @@ export interface CreateRendererOptions {
   orderBackend?: "cpu" | "gpu" | "adaptive";
   /** Exact projected draw policy, independent of CPU/GPU ordering. Defaults to adaptive. */
   projectedPolicy?: GsplatProjectedPolicy;
+  /**
+   * Strict diagnostic selector inside the GPU lane. When set, construction
+   * requires Packed geometry plus forced Compact projected drawing and enables
+   * ticketed producer evidence. The product default remains PostSort.
+   */
+  gpuOrderProducer?: GsplatGpuOrderProducer | null;
   /** Resident geometry layout. Defaults to the exact compact `packed` path. */
   geometryPath?: "direct" | "packed" | "paged";
   module?: GsplatWebModule;
@@ -130,6 +137,7 @@ export type GsplatFailureStage =
   | "renderer_create"
   | "renderer_configure"
   | "gpu_order_prepare"
+  | "gpu_order_producer"
   | "stream_create"
   | "stream_decode"
   | "stream_finish"
@@ -205,6 +213,15 @@ export interface GsplatFrameStats {
     | "ring_busy"
     | "surface_unavailable"
     | null;
+  /** Producer used by a GPU frame; null when the CPU supplied this frame. */
+  gpuOrderProducer: GsplatGpuOrderProducer | null;
+  gpuProducerMeasurementSubmission: "not_requested" | "issued" | "unsampled";
+  gpuProducerMeasurementTicket: number | null;
+  gpuProducerMeasurementProducer: GsplatGpuOrderProducer | null;
+  gpuProducerMeasurementUnsampledReason:
+    | "ring_busy"
+    | "surface_unavailable"
+    | null;
   cameraRevision: number;
   appliedOrderRevision: number;
   presentedOrderRevisionLag: number;
@@ -254,6 +271,30 @@ export interface GsplatFrameStats {
   failedProjectedProjectionGeneration: number | null;
   failedProjectedProbeGeneration: number | null;
   failedProjectedMeasurementReason: GsplatProjectedMeasurementFailureReason | null;
+  completedGpuProducerMeasurementAvailable: boolean;
+  completedGpuProducerMeasurementTicket: number | null;
+  completedGpuProducerMeasurementRevision: number | null;
+  completedGpuProducerMeasurementProducer: GsplatGpuOrderProducer | null;
+  completedGpuProducerOrderGeneration: number | null;
+  completedGpuProducerProjectionGeneration: number | null;
+  completedGpuProducerSourceCount: number | null;
+  completedGpuProducerContributorCount: number | null;
+  completedGpuProducerDrawnCount: number | null;
+  completedGpuProducerOrderRefreshed: boolean | null;
+  completedGpuProducerDrawScope:
+    | "exact_current_contributors"
+    | "stale_order_candidates"
+    | null;
+  completedGpuProducerExactCurrentContributorDraw: boolean | null;
+  completedGpuProducerStaleOrder: boolean | null;
+  completedGpuProducerQueueCompleteMs: number | null;
+  failedGpuProducerMeasurementAvailable: boolean;
+  failedGpuProducerMeasurementTicket: number | null;
+  failedGpuProducerMeasurementRevision: number | null;
+  failedGpuProducerMeasurementProducer: GsplatGpuOrderProducer | null;
+  failedGpuProducerOrderGeneration: number | null;
+  failedGpuProducerProjectionGeneration: number | null;
+  failedGpuProducerMeasurementReason: GsplatGpuProducerMeasurementFailureReason | null;
   /** All CPU-order queue-completion receipts since the preceding renderFrame call. */
   completedCpuOrderMeasurements: GsplatCpuOrderMeasurement[];
   /** All GPU-order receipts completed since the preceding renderFrame call. */
@@ -264,6 +305,10 @@ export interface GsplatFrameStats {
   completedProjectedMeasurements: GsplatProjectedMeasurement[];
   /** All terminal failures for issued projected tickets since the preceding drain. */
   failedProjectedMeasurements: GsplatProjectedMeasurementFailure[];
+  /** All completed strict GPU-producer samples since the preceding drain. */
+  completedGpuProducerMeasurements: GsplatGpuProducerMeasurement[];
+  /** All terminal failures for strict GPU-producer tickets since the preceding drain. */
+  failedGpuProducerMeasurements: GsplatGpuProducerMeasurementFailure[];
   surfaceWidth: number;
   surfaceHeight: number;
   /** Native internal raster width. Exact benchmarks require this to equal surfaceWidth. */
@@ -352,12 +397,46 @@ export interface GsplatProjectedMeasurementFailure {
   reason: GsplatProjectedMeasurementFailureReason;
 }
 
+export interface GsplatGpuProducerMeasurement {
+  /** Producer tickets occupy [2^51, 2^52) in the JS-safe namespace. */
+  ticket: number;
+  cameraRevision: number;
+  producer: GsplatGpuOrderProducer;
+  orderGeneration: number;
+  projectionGeneration: number;
+  countSemantics: "source_contributor_issued_v1";
+  sourceCount: number;
+  contributorCount: number;
+  drawnCount: number;
+  orderRefreshed: boolean;
+  drawScope: "exact_current_contributors" | "stale_order_candidates";
+  exactCurrentContributorDraw: boolean;
+  staleOrder: boolean;
+  queueCompleteMs: number;
+}
+
+export type GsplatGpuProducerMeasurementFailureReason =
+  | "readback_map"
+  | "generation_invalidated"
+  | "invariant_violation";
+
+export interface GsplatGpuProducerMeasurementFailure {
+  ticket: number;
+  cameraRevision: number;
+  producer: GsplatGpuOrderProducer;
+  orderGeneration: number;
+  projectionGeneration: number;
+  reason: GsplatGpuProducerMeasurementFailureReason;
+}
+
 export interface GsplatOrderMeasurementReceipts {
   completedCpuOrderMeasurements: GsplatCpuOrderMeasurement[];
   completedOrderMeasurements: GsplatOrderMeasurement[];
   failedOrderMeasurements: GsplatOrderMeasurementFailure[];
   completedProjectedMeasurements: GsplatProjectedMeasurement[];
   failedProjectedMeasurements: GsplatProjectedMeasurementFailure[];
+  completedGpuProducerMeasurements: GsplatGpuProducerMeasurement[];
+  failedGpuProducerMeasurements: GsplatGpuProducerMeasurementFailure[];
 }
 
 export class GsplatWebRenderer {
@@ -383,6 +462,8 @@ export class GsplatWebRenderer {
   setOrderBackend(backend: "cpu" | "gpu" | "adaptive"): void;
   /** Fail-closed transactional switch of the independent projected draw policy. */
   setProjectedPolicy(policy: GsplatProjectedPolicy): void;
+  /** Transactionally select and enable strict diagnostics for one GPU producer. */
+  setGpuOrderProducerAsync(producer: GsplatGpuOrderProducer): Promise<void>;
   rasterPath(): string;
   renderFrame(): GsplatFrameStats;
   /** Drain terminal receipts even when rendering itself failed. */

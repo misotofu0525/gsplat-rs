@@ -14,15 +14,24 @@ _Static_assert(sizeof(GsplatSurfaceProjectedSubmissionV1) == 48, "projected subm
 _Static_assert(sizeof(GsplatSurfaceProjectedMeasurementV1) == 56, "projected measurement v1 ABI changed");
 _Static_assert(sizeof(GsplatSurfaceProjectedCountsV1) == 40, "projected counts v1 ABI changed");
 _Static_assert(sizeof(GsplatSurfaceProjectedFailureV1) == 56, "projected failure v1 ABI changed");
+_Static_assert(sizeof(GsplatSurfaceGpuProducerSubmissionV1) == 48, "GPU producer submission v1 ABI changed");
+_Static_assert(sizeof(GsplatSurfaceGpuProducerMeasurementV1) == 72, "GPU producer measurement v1 ABI changed");
+_Static_assert(sizeof(GsplatSurfaceGpuProducerFailureV1) == 56, "GPU producer failure v1 ABI changed");
 _Static_assert(offsetof(GsplatSurfaceProjectedSubmissionV1, ticket) == 8, "projected submission ticket offset changed");
 _Static_assert(offsetof(GsplatSurfaceProjectedSubmissionV1, flags) == 40, "projected submission flags offset changed");
 _Static_assert(offsetof(GsplatSurfaceProjectedMeasurementV1, frame_complete_ms) == 40, "projected measurement time offset changed");
 _Static_assert(offsetof(GsplatSurfaceProjectedCountsV1, visible_count) == 24, "projected counts offset changed");
 _Static_assert(offsetof(GsplatSurfaceProjectedFailureV1, reason) == 40, "projected failure reason offset changed");
+_Static_assert(offsetof(GsplatSurfaceGpuProducerSubmissionV1, ticket) == 8, "GPU producer submission ticket offset changed");
+_Static_assert(offsetof(GsplatSurfaceGpuProducerMeasurementV1, frame_complete_ms) == 40, "GPU producer completion offset changed");
+_Static_assert(offsetof(GsplatSurfaceGpuProducerFailureV1, reason) == 40, "GPU producer failure reason offset changed");
 _Static_assert(_Alignof(GsplatSurfaceProjectedSubmissionV1) == _Alignof(uint64_t), "projected submission alignment changed");
 _Static_assert(_Alignof(GsplatSurfaceProjectedMeasurementV1) == _Alignof(uint64_t), "projected measurement alignment changed");
 _Static_assert(_Alignof(GsplatSurfaceProjectedCountsV1) == _Alignof(uint64_t), "projected counts alignment changed");
 _Static_assert(_Alignof(GsplatSurfaceProjectedFailureV1) == _Alignof(uint64_t), "projected failure alignment changed");
+_Static_assert(_Alignof(GsplatSurfaceGpuProducerSubmissionV1) == _Alignof(uint64_t), "GPU producer submission alignment changed");
+_Static_assert(_Alignof(GsplatSurfaceGpuProducerMeasurementV1) == _Alignof(uint64_t), "GPU producer measurement alignment changed");
+_Static_assert(_Alignof(GsplatSurfaceGpuProducerFailureV1) == _Alignof(uint64_t), "GPU producer failure alignment changed");
 _Static_assert(sizeof(GsplatSurfaceExactness) == 64, "exactness receipt ABI changed");
 _Static_assert(sizeof(GsplatSurfacePresentation) == 48, "presentation receipt ABI changed");
 _Static_assert(sizeof(GsplatSurfaceCameraReceiptV1) == 272, "camera receipt v1 ABI changed");
@@ -67,6 +76,17 @@ int main(int argc, char **argv) {
       (GSPLAT_SURFACE_PROJECTED_SUBMISSION_TICKET_ISSUED |
        GSPLAT_SURFACE_PROJECTED_SUBMISSION_UNSAMPLED_RING_BUSY |
        GSPLAT_SURFACE_PROJECTED_SUBMISSION_UNSAMPLED_SURFACE_UNAVAILABLE) != 7u ||
+      GSPLAT_SURFACE_GPU_PRODUCER_ABI_VERSION_V1 != 1 ||
+      GSPLAT_SURFACE_GPU_PRODUCER_LEGACY_DEFAULT != 0 ||
+      GSPLAT_SURFACE_GPU_PRODUCER_POST_SORT != 1 ||
+      GSPLAT_SURFACE_GPU_PRODUCER_PREPROJECT != 2 ||
+      GSPLAT_SURFACE_GPU_PRODUCER_DRAW_SCOPE_EXACT_CURRENT_CONTRIBUTORS != 1 ||
+      GSPLAT_SURFACE_GPU_PRODUCER_DRAW_SCOPE_STALE_ORDER_CANDIDATES != 2 ||
+      GSPLAT_SURFACE_GPU_PRODUCER_FAILURE_INVARIANT_VIOLATION != 3 ||
+      (GSPLAT_SURFACE_GPU_PRODUCER_SUBMISSION_TICKET_ISSUED |
+       GSPLAT_SURFACE_GPU_PRODUCER_SUBMISSION_UNSAMPLED_RING_BUSY |
+       GSPLAT_SURFACE_GPU_PRODUCER_SUBMISSION_UNSAMPLED_SURFACE_UNAVAILABLE |
+       GSPLAT_SURFACE_GPU_PRODUCER_SUBMISSION_MEASUREMENT_ENABLED) != 15u ||
       (GSPLAT_SURFACE_EXACTNESS_SOURCE_MEMBERSHIP_ALL |
        GSPLAT_SURFACE_EXACTNESS_SAMPLING_DISABLED |
        GSPLAT_SURFACE_EXACTNESS_LOD_DISABLED |
@@ -195,6 +215,51 @@ int main(int argc, char **argv) {
   if (rc != GSPLAT_ERROR_INVALID_ARGUMENT) {
     fprintf(stderr, "expected null projected failure poll to fail, got: %d\n", rc);
     return 23;
+  }
+  GsplatSurfaceGpuProducerSubmissionV1 producer_submission = {
+      .struct_size = sizeof(GsplatSurfaceGpuProducerSubmissionV1),
+      .version = GSPLAT_SURFACE_GPU_PRODUCER_ABI_VERSION_V1,
+  };
+  rc = gsplat_surface_renderer_set_gpu_order_producer_v1(
+      NULL,
+      GSPLAT_SURFACE_GPU_PRODUCER_POST_SORT);
+  if (rc != GSPLAT_ERROR_INVALID_ARGUMENT) {
+    fprintf(stderr, "expected null GPU producer setter to fail, got: %d\n", rc);
+    return 24;
+  }
+  rc = gsplat_surface_renderer_set_gpu_producer_measurement_enabled_v1(NULL, 1);
+  if (rc != GSPLAT_ERROR_INVALID_ARGUMENT) {
+    fprintf(stderr, "expected null GPU producer measurement setter to fail, got: %d\n", rc);
+    return 25;
+  }
+  rc = gsplat_surface_renderer_get_gpu_producer_submission_v1(NULL, &producer_submission);
+  if (rc != GSPLAT_ERROR_INVALID_ARGUMENT) {
+    fprintf(stderr, "expected null GPU producer submission query to fail, got: %d\n", rc);
+    return 26;
+  }
+  GsplatSurfaceGpuProducerMeasurementV1 producer_measurement = {
+      .struct_size = sizeof(GsplatSurfaceGpuProducerMeasurementV1),
+      .version = GSPLAT_SURFACE_GPU_PRODUCER_ABI_VERSION_V1,
+  };
+  rc = gsplat_surface_renderer_poll_gpu_producer_measurement_v1(
+      NULL,
+      &producer_measurement,
+      &measurement_available);
+  if (rc != GSPLAT_ERROR_INVALID_ARGUMENT) {
+    fprintf(stderr, "expected null GPU producer measurement poll to fail, got: %d\n", rc);
+    return 27;
+  }
+  GsplatSurfaceGpuProducerFailureV1 producer_failure = {
+      .struct_size = sizeof(GsplatSurfaceGpuProducerFailureV1),
+      .version = GSPLAT_SURFACE_GPU_PRODUCER_ABI_VERSION_V1,
+  };
+  rc = gsplat_surface_renderer_poll_gpu_producer_failure_v1(
+      NULL,
+      &producer_failure,
+      &measurement_available);
+  if (rc != GSPLAT_ERROR_INVALID_ARGUMENT) {
+    fprintf(stderr, "expected null GPU producer failure poll to fail, got: %d\n", rc);
+    return 28;
   }
   GsplatSurfaceExactness exactness;
   memset(&exactness, 0, sizeof(exactness));
