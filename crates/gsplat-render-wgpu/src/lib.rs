@@ -2651,7 +2651,7 @@ impl GpuRasterizer {
 
         let max_texture_dimension_2d = device.limits().max_texture_dimension_2d;
 
-        let offscreen_target = create_output_target(
+        let offscreen_target = offscreen::OffscreenTarget::new(
             &device,
             config.width,
             config.height,
@@ -2956,19 +2956,6 @@ fn offscreen_device_limits(
         return Err(RendererError::GpuDeviceCreation);
     }
     Ok(required_limits)
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-// Keep adapter/device acquisition in this owner while delegating only the
-// texture, view and size lifecycle to the private offscreen target leaf.
-// Render submission order remains in GpuRasterizer.
-fn create_output_target(
-    device: &wgpu::Device,
-    width: u32,
-    height: u32,
-    max_texture_dimension_2d: u32,
-) -> Result<offscreen::OffscreenTarget, RendererError> {
-    offscreen::OffscreenTarget::new(device, width, height, max_texture_dimension_2d)
 }
 
 #[cfg(test)]
