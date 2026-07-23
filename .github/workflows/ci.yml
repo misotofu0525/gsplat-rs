@@ -17,7 +17,7 @@ jobs:
   check-linux:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@45f5412a0cc5dee553bb061a37369fc8e63fa137 # 1.93.0
         with:
           components: rustfmt, clippy
@@ -97,7 +97,7 @@ jobs:
   check-macos-swift:
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@45f5412a0cc5dee553bb061a37369fc8e63fa137 # 1.93.0
       - name: GPU pixel conformance
         env:
@@ -120,7 +120,7 @@ jobs:
   dependency-policy:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@45f5412a0cc5dee553bb061a37369fc8e63fa137 # 1.93.0
       - name: Cargo dependency policy
         run: bash tests/security/run-cargo-deny.sh
