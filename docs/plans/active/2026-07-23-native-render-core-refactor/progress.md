@@ -21,16 +21,16 @@ A3 = Active
 ## Program status
 
 - Plan bundle: committed at `c478252246733f6dc209686091caf183e1ef7f06`.
-- Implementation: Package A started; A1 guardrails and the complete A2
-  strategy-free data/API extraction are root-accepted. A3a is active in an
-  isolated worktree.
+- Implementation: Package A started; A1 guardrails, the complete A2
+  strategy-free data/API extraction and A3a Resident CPU ownership extraction
+  are root-accepted.
 - Current work package: A — responsibility extraction.
-- Active package task: A3a — Resident CPU ownership, ABI layout and encoder
+- Active package task: none; A3b awaits a root-owned activation commit and an
+  isolated writer worktree.
+- Last completed task: A3a — Resident CPU ownership, ABI layout and encoder
   extraction.
-- Last completed task: A2 — strategy-free data/layout/view and stable API leaf
-  extraction.
-- Next eligible task after acceptance: A3b — Direct/Packed resource accounting
-  and preflight ownership.
+- Next eligible task: A3b — Direct/Packed resource accounting and preflight
+  ownership.
 - Integration branch: `codex/native-render-core-refactor`.
 - Frozen source implementation closeout:
   `5db2520e0d7a0ef1c68a78bdb9abc6fc588c5186`.
@@ -84,8 +84,9 @@ eligible task. Do not rewrite the architecture in this ledger.
 ### A3a — Extract Resident CPU ownership, ABI layout and encoder
 
 - Parent task state: A3 Active
-- Subtask state: Active
+- Subtask state: Accepted
 - Started: 2026-07-23 21:02 CST
+- Ended: 2026-07-23 21:30 CST
 - Production baseline commit:
   `e03a26901fc92e7b449cbf07ca38c80eb0a06963`
 - Exact source baseline before production edits:
@@ -151,6 +152,40 @@ eligible task. Do not rewrite the architecture in this ledger.
 - Closeout requirement: record the fixed implementation SHA, exact file sizes,
   verification and result here, but keep `A3 = Active`; only root acceptance of
   A3b may close the parent package.
+- Fixed writer commit:
+  `7db9cadf27e3c51e7d27c59e5faa3a21db063c1f` (parent
+  `21f0fa0b877b1e78bbe919117ec5d27d56acb5f9`).
+- Integration merge commit:
+  `43ec7e759ee52d0f0199bfa14d602c26d8c791f1`.
+- Result:
+  - deleted the 1,881-line `resident_scene.rs` owner without a compatibility
+    facade or duplicate implementation;
+  - production responsibilities now live in `scene/budget.rs` (73 LOC),
+    `scene/builder.rs` (409), `scene/codec.rs` (296), `scene/mod.rs` (16) and
+    `scene/resident.rs` (303), with focused tests under `scene/tests/`;
+  - fixed Resident GPU ABI layouts moved to `data/layout.rs` with compile-time
+    size, alignment and offset assertions; every crate-root public name and
+    signature remains available;
+  - the obsolete architecture grandfather entry was removed. The only legacy
+    file growth was one mechanical import line in each of `lib.rs` and
+    `resident_gpu.rs`, accepted by the responsibility-aware +32-line tolerance.
+- Root acceptance evidence:
+  - architecture self-tests and the real-tree source checker pass;
+  - `cargo fmt --check`, locked workspace check/tests, all-target Clippy with
+    warnings denied, Rustdoc with warnings denied, render-wgpu WASM check and C
+    ABI smoke pass on the merged tree;
+  - renderer tests report 280 passed and 5 existing research/stress cases
+    ignored; forced Metal SortedAlpha conformance passes;
+  - a repository-external temporary crate imported the preserved Resident root
+    API and checked traits, builder flow, errors, sizes and offsets;
+  - old and new test inventories are both 20 tests; normalized production
+    function bodies are unchanged and SH0--SH3 encoding remains byte-identical.
+- Non-blocking follow-up: the pre-existing `legacy_encode` test oracle shares
+  production codec helpers, so it is an independent traversal/builder oracle,
+  not a fully independent codec implementation. A future frozen encoded-byte
+  digest fixture may strengthen this without blocking a pure ownership move.
+- Decision: Accept. A3 remains Active and A3b is the only next eligible writer
+  task.
 
 ### A2b — Extract the stable API leaf
 

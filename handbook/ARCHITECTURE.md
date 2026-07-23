@@ -18,9 +18,10 @@
   experimental SPZ v4 loader lives in `crates/gsplat-io-spz`.
 - Sorting lives in `crates/gsplat-sort`.
 - Rendering and GPU-facing orchestration live in `crates/gsplat-render-wgpu`.
-  `lib.rs` owns renderer/public entrypoints, `resident_scene.rs` owns the
-  exact-count compact CPU encoding, `resident_gpu.rs` owns its GPU planes and
-  coherent SH resolve, `direct_gpu_order.rs` owns portable GPU
+  `lib.rs` owns renderer/public entrypoints, private `scene/` modules own the
+  exact-count compact CPU scene, builder and codec, and `data/layout.rs` owns
+  the fixed Resident GPU ABI layouts. `resident_gpu.rs` owns GPU planes and
+  coherent SH resolve, while `direct_gpu_order.rs` owns portable GPU
   visibility/radix/indirect draw, `gpu_telemetry.rs` owns ticketed completion,
   `projected_quads_gpu.rs` owns the default exact projection cache and
   instanced draw, `preproject_gpu.rs` owns the lazy diagnostic direct
@@ -282,10 +283,12 @@
 
 ## Hotspots
 
-- `crates/gsplat-render-wgpu/src/resident_scene.rs`: exact-count compact planes,
-  checked byte plans, codec reports, and adapter preflight
+- `crates/gsplat-render-wgpu/src/scene/`: exact-count compact CPU ownership,
+  transactional building, codec reports and CPU byte accounting
+- `crates/gsplat-render-wgpu/src/data/layout.rs`: fixed Resident and shared GPU
+  ABI records with compile-time layout assertions
 - `crates/gsplat-render-wgpu/src/resident_gpu.rs`: Resident uploads, coherent
-  color resolve, and shared CPU/GPU-order draw bindings
+  color resolve, resource byte planning, and shared CPU/GPU-order draw bindings
 - `crates/gsplat-render-wgpu/src/projected_quads_gpu.rs`: exact one-projection-
   per-visible-splat cache, CPU direct count, GPU indirect count, and instanced
   SortedAlpha drawing
