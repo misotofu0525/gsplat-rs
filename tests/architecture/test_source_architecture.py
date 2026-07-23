@@ -304,10 +304,22 @@ class SourceArchitectureFixtureTests(unittest.TestCase):
             set(state["external_owner_review_allowlist"]),
             {"IO-PLY-1", "IO-SPZ-1"},
         )
-        # Parallel execution is an ephemeral lease. The adversarial fixtures
-        # prove its schema and overlap rules; the checked-in program state must
-        # return to null as soon as the declared writers are integrated.
-        self.assertIsNone(state["parallel_execution"])
+        # Parallel execution is an ephemeral lease. The checker binds it to the
+        # active ledger and exact lane block; this self-test verifies the
+        # current policy remains structurally reviewable without hard-coding a
+        # particular lease into the test suite.
+        execution = state["parallel_execution"]
+        if execution is not None:
+            self.assertRegex(execution["activation_commit"], r"^[0-9a-f]{40}$")
+            self.assertGreaterEqual(len(execution["members"]), 2)
+            self.assertTrue(execution["reason"])
+            lanes = [member["lane"] for member in execution["members"]]
+            self.assertCountEqual(execution["integration_order"], lanes)
+            write_sets = [set(member["write_allowlist"]) for member in execution["members"]]
+            self.assertTrue(all(write_sets))
+            for index, left in enumerate(write_sets):
+                for right in write_sets[index + 1 :]:
+                    self.assertFalse(left & right)
 
         external = {
             entry["owner_task"]: entry

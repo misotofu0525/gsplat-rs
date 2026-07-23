@@ -17,8 +17,15 @@ A1 = Accept
 A2 = Accepted
 A3 = Accepted
 A4 = Accepted
+A5 = Active
 A7 = Active
 <!-- gsplat-program-task-states: end -->
+
+<!-- gsplat-program-active-lanes: begin -->
+activation_commit = 6b5a42cfdfc4d2f3c4916d8f83c6fe27490a1807
+A5 = A5d
+A7 = A7a
+<!-- gsplat-program-active-lanes: end -->
 
 ## Program status
 
@@ -31,13 +38,13 @@ A7 = Active
   offscreen lifecycle leaves are integrated and accepted. The parent A5 and A8
   packages remain open for later, separately activated slices.
 - Current work package: A — responsibility extraction.
-- Active package task: A7 through the exact A7a order-receipt value lane below.
+- Active package tasks: A5d and A7a under the exact disjoint parallel lease
+  recorded by the architecture policy and machine lane block.
 - Last completed tasks: A5c2 — Projected contributor compactor; A8a — offscreen
   target/readback lifecycle leaves.
-- Next eligible implementation: A7a is active from the clean combined accepted
-  baseline. A disjoint second writer may start only after root records its exact
-  task, allowlist, dependency state and integration order. Remaining
-  Direct/Preproject compaction slices, A5d, A6 and later packages stay inactive.
+- Next eligible implementation: A5d and A7a may run concurrently from the same
+  clean activation commit in separate user-visible tasks/worktrees. A6,
+  Preproject compaction and later packages stay inactive.
 - Integration branch: `codex/native-render-core-refactor`.
 - Frozen source implementation closeout:
   `5db2520e0d7a0ef1c68a78bdb9abc6fc588c5186`.
@@ -107,6 +114,82 @@ eligible task. Do not rewrite the architecture in this ledger.
   this section and the current policy are authoritative for later tasks.
 
 ## Current task
+
+### Parallel writer lanes — A5d and A7a
+
+- Activation commit:
+  `6b5a42cfdfc4d2f3c4916d8f83c6fe27490a1807`.
+- Isolation: two user-visible Codex tasks, two worktrees, exact allowlists and
+  no shared writable file. Collaboration subagents are read-only reviewers.
+- Integration order: root fixed-SHA reviews and merges A7a first, verifies the
+  A5d forbidden hashes, then merges A5d and reruns the combined gates.
+- A5d owns only Direct Resident-visible compaction mechanics. A7a owns only the
+  immutable order-receipt value cluster. Neither writer edits this ledger or
+  the architecture policy.
+- Source size is descriptive review context only. There is no fixed line-count
+  target, split trigger or completion gate.
+
+### A5d — Extract Direct Resident-visible compaction mechanics
+
+- Parent task state: A5 Active
+- Subtask state: Active
+- Activation baseline:
+  `6b5a42cfdfc4d2f3c4916d8f83c6fe27490a1807`.
+- Hypothesis: Direct's qualified Resident-visible compaction resources and
+  three compute stages can move into a private two-phase GPU owner without
+  moving target/capability policy, shared indirect arguments, radix/scan
+  orchestration or timestamp/pass ordering.
+- Exact writer allowlist:
+  - `crates/gsplat-render-wgpu/src/direct_gpu_order.rs`;
+  - `crates/gsplat-render-wgpu/src/gpu/mod.rs`;
+  - new `crates/gsplat-render-wgpu/src/gpu/visible_compact.rs`.
+- Required ownership boundary:
+  - a private seed owns the control buffer, group offsets and offset count and
+    exposes only the references needed to construct the existing
+    `StableFull32RadixProfile::ResidentVisible`;
+  - after radix construction, binding the seed creates the private compactor
+    owner for the three existing pipelines, bind group, dispatch, control and
+    offsets;
+  - the compactor encodes only its sentinel reset, keygen, compact and finalize
+    mechanics;
+  - `DirectGpuOrder` retains shared indirect args and reset/vertex setter,
+    target allowlists, capability/error admission, key/radix owner, scan
+    interleave, timestamps and the complete top-level pass order.
+- Frozen source hashes at activation:
+  - `direct_gpu_order.rs`: `cd2a087628f4ccac492e5fb65d24ddaa1116fde2569967c6b8937377ff5de584`;
+  - `gpu/mod.rs`: `c2802f7a271d3a64f3a21a67764ca5d80fc227146d2d6a591d3681f81ab75e23`;
+  - `gpu/radix.rs`: `51bf9c0ece413c9c84ed88fc8e7fac3c1fbc6cc7b673fab15f359572a5c54f7d`;
+  - `gpu/scan.rs`: `08afa1daf9ec0fda0293a6cf467a14ffce2e9c24011d9b92bbf92704ce5eb6ab`;
+  - `preproject_gpu.rs`: `5dfafabe06fa177b6c2d3ff3a32a5ed842fd05aac074774aba83fb48bf8d518f`;
+  - `projected_quads_gpu.rs`: `84760e990707a77c971b6b830d19f112c1004995116bbbc0a4667fcd686d5d6c`.
+- Frozen WGSL hashes:
+  - Direct order: `4531b652f74f7ba9763256be9f151cef24225385d2f3a486d802f89d658f4f6a`;
+  - prefix scan: `f58e3e47ef6175965f88c48e95f0df8eb1b380d847b7d5f65d45ad1a7537fc61`;
+  - Resident radix8: `cb31ba454379eac6243bc77754095f566c11cbfe67303037dc17767aedfbebf7`;
+  - Resident visible radix8:
+    `3afe4e7c011172f973527f3130bd2ff8a89195938135a2eddb2da5cf92c583a5`;
+  - Resident visible compaction:
+    `e59efc1ae0cf3771d311bf97f36bafbe6a26dce5f35f330a76181cf10f71c526`.
+- Forbidden: every WGSL file; `gpu/radix.rs`, `gpu/scan.rs`, Preproject,
+  Projected, Scene/Resident/Surface/session/policy/telemetry/evidence/API/FFI,
+  platform consumers, Cargo, benchmark and plan/policy files. No algorithm,
+  precision, target allowlist, capability threshold, error text, resource
+  size/usage/binding, label, entry point, clear range, dispatch, pass/timestamp
+  order, V/C/D or performance change.
+- Exact behavior sequence: zero count still returns before encoding; otherwise
+  clear only the shared indirect instance count, clear the offset sentinel,
+  visible keygen begins the keygen timestamp, existing visible scan runs,
+  stable compact and finalize end the keygen timestamp, then existing radix
+  consumes the same control buffer. The 32-byte control initialization,
+  offset sizing, usages, bindings `0/1/2/3/4/5/6/9`, labels and entry points
+  remain byte-for-byte equivalent.
+- Hard gates: exact frozen hashes outside the allowlist; unchanged complete
+  `gsplat-*` label multiset and compaction test inventory; format/diff,
+  architecture, renderer/workspace tests, all-target Clippy, Rustdoc, wasm32
+  and required Metal SortedAlpha conformance. No performance percentage or
+  Android device run is required for this behavior-preserving ownership slice.
+- Source size: reported only as review context; responsibility, dependency
+  direction and preserved test seams determine acceptance.
 
 ### A7a — Extract the immutable order-receipt value cluster
 

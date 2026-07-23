@@ -6,7 +6,35 @@
       "IO-PLY-1",
       "IO-SPZ-1"
     ],
-    "parallel_execution": null,
+    "parallel_execution": {
+      "activation_commit": "6b5a42cfdfc4d2f3c4916d8f83c6fe27490a1807",
+      "members": [
+        {
+          "task": "A5",
+          "lane": "A5d",
+          "write_allowlist": [
+            "crates/gsplat-render-wgpu/src/direct_gpu_order.rs",
+            "crates/gsplat-render-wgpu/src/gpu/mod.rs",
+            "crates/gsplat-render-wgpu/src/gpu/visible_compact.rs"
+          ]
+        },
+        {
+          "task": "A7",
+          "lane": "A7a",
+          "write_allowlist": [
+            "crates/gsplat-render-wgpu/src/lib.rs",
+            "crates/gsplat-render-wgpu/src/evidence/mod.rs",
+            "crates/gsplat-render-wgpu/src/evidence/order.rs",
+            "crates/gsplat-render-wgpu/src/gpu_telemetry.rs"
+          ]
+        }
+      ],
+      "integration_order": [
+        "A7a",
+        "A5d"
+      ],
+      "reason": "A5d owns only Direct Resident-visible compaction mechanics while A7a owns immutable order-receipt values; their exact writer allowlists and mutable responsibilities are disjoint."
+    },
     "task_catalog": {
       "A0": "A",
       "A1": "A",
