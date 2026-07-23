@@ -363,6 +363,31 @@ Hard gates are limited to:
 - energy, thermal and sustained behavior before a promotion task;
 - availability of every optional test device.
 
+### 7.4 Parallel execution and integration ownership
+
+Implementation writers run as user-visible Codex tasks in isolated worktrees.
+Each writer has its own goal, fixed baseline SHA, exact write allowlist, frozen
+evidence inventory and one reviewable candidate commit. Subagents are reserved
+for bounded read-only scope audits or fixed-SHA review; they do not edit shared
+production files or act as hidden implementation writers.
+
+Read-only audits may run in parallel with any implementation task. Multiple
+implementation tasks may also run concurrently when the plan records all of
+the following before either writer starts:
+
+- disjoint write allowlists and no shared mutable owner;
+- no dependency on the other task's unintegrated result;
+- separate worktrees, commits and task-local verification;
+- an explicit integration order and shared-gate rerun owned by the root task.
+
+If two tasks touch the same source, policy ledger, public API, ABI, shader
+contract or lifecycle owner, their implementation remains sequential even when
+their read-only preparation runs concurrently. The root task alone updates the
+integration ledger, reviews fixed SHAs, merges accepted candidates and runs the
+cross-task architecture/platform gates. Parallelism is used to remove avoidable
+waiting, not to create competing owners or make integration failures somebody
+else's problem.
+
 ## 8. Source-size and dependency ratchet
 
 A1 creates a lightweight checker. From that point:
@@ -414,8 +439,9 @@ behavior remain the decisive gates.
 
 This document is a program roadmap, not one long Codex goal. Implementation is
 split into independently closeable work packages. Each package receives its own
-branch, active-plan bundle, progress ledger and final report. Only one task
-inside the current package is Active.
+branch, active-plan bundle, progress ledger and final report. Only one task may
+own a given file or mutable responsibility at a time. Independent tasks may be
+Active concurrently under section 7.4; overlapping work stays sequential.
 
 The packages are:
 
