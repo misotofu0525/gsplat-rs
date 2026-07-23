@@ -6,35 +6,7 @@
       "IO-PLY-1",
       "IO-SPZ-1"
     ],
-    "parallel_execution": {
-      "activation_commit": "cf6ba8488b2942b503ce859142b9d4c28c55ef5c",
-      "members": [
-        {
-          "task": "A7",
-          "lane": "A7f",
-          "write_allowlist": [
-            "crates/gsplat-render-wgpu/src/evidence/mod.rs",
-            "crates/gsplat-render-wgpu/src/evidence/submission.rs",
-            "crates/gsplat-render-wgpu/src/surface_session.rs"
-          ]
-        },
-        {
-          "task": "A8",
-          "lane": "A8b",
-          "write_allowlist": [
-            "crates/gsplat-render-wgpu/src/lib.rs",
-            "crates/gsplat-render-wgpu/src/surface/mod.rs",
-            "crates/gsplat-render-wgpu/src/surface/lifecycle.rs",
-            "crates/gsplat-render-wgpu/src/surface_presenter.rs"
-          ]
-        }
-      ],
-      "integration_order": [
-        "A7f",
-        "A8b"
-      ],
-      "reason": "A7f moves only immutable submission identities between evidence and session, while A8b extracts only Surface acquire/recovery/present mechanics into a lifecycle leaf; their exact write sets and mutable responsibilities are disjoint."
-    },
+    "parallel_execution": null,
     "task_catalog": {
       "A0": "A",
       "A1": "A",
@@ -293,20 +265,6 @@
       "baseline_physical_loc": 1300,
       "owner_task": "M1",
       "exit_condition": "Separate benchmark CLI, artifact collection and renderer-host responsibilities so main.rs is composition only."
-    },
-    {
-      "path": "crates/gsplat-render-wgpu/src/gpu_telemetry.rs",
-      "a0_physical_loc": 1219,
-      "baseline_physical_loc": 1219,
-      "owner_task": "A7",
-      "exit_condition": "Separate immutable receipt types from bounded observer storage and polling lifecycle."
-    },
-    {
-      "path": "crates/gsplat-render-wgpu/src/projected_draw_telemetry.rs",
-      "a0_physical_loc": 836,
-      "baseline_physical_loc": 813,
-      "owner_task": "A7",
-      "exit_condition": "Separate immutable projected-draw receipts from bounded observer storage and adaptive lifecycle."
     }
   ],
   "exceptions": [],

@@ -19,15 +19,9 @@ A3 = Accepted
 A4 = Accepted
 A5 = Accepted
 A6 = Accepted
-A7 = Active
+A7 = Accepted
 A8 = Active
 <!-- gsplat-program-task-states: end -->
-
-<!-- gsplat-program-active-lanes: begin -->
-activation_commit = cf6ba8488b2942b503ce859142b9d4c28c55ef5c
-A7 = A7f
-A8 = A8b
-<!-- gsplat-program-active-lanes: end -->
 
 ## Program status
 
@@ -43,15 +37,16 @@ A8 = A8b
   places stateless execution identities in the API leaf, A7d owns immutable
   projected terminal receipts, A7e owns producer identities and immutable
   receipts, A5f owns Resident color-kernel mechanics, and A5g owns rank
-  projection in `gpu/project.rs`. A5 and A6 are now closed and accepted; A7
-  and A8 remain open for later, separately activated slices.
+  projection in `gpu/project.rs`. A5, A6 and A7 are now closed and accepted;
+  A8 remains open for separately activated lifecycle slices.
 - Current work package: A — responsibility extraction.
-- Active package tasks: A7 and A8 under the exact disjoint A7f/A8b parallel
-  lease recorded by the policy and machine lane block.
-- Last completed tasks: A7e — producer identities/receipts; A6a — canonical
-  raster owner; A6 package closeout — merged full matrix.
-- Next eligible implementation: only A7f and A8b. Later A8 configuration,
-  resize and capture ownership remains sequential after A8b.
+- Active package task: A8. No writer lane remains active after the accepted
+  A7f/A8b parallel batch.
+- Last completed tasks: A7f — submission identities; A8b — Surface
+  acquire/recovery/present lifecycle; A7 package closeout — merged full matrix.
+- Next eligible implementation: A8c — Surface configuration/resize transaction
+  ownership. Surface capture remains a later sequential A8d slice because both
+  responsibilities must mechanically rewire the same presenter owner.
 - Integration branch: `codex/native-render-core-refactor`.
 - Frozen source implementation closeout:
   `5db2520e0d7a0ef1c68a78bdb9abc6fc588c5186`.
@@ -128,9 +123,46 @@ eligible task. Do not rewrite the architecture in this ledger.
   hard. Historical A1 entries below record the then-current implementation;
   this section and the current policy are authoritative for later tasks.
 
-## Current task
+## Latest integrated batch
 
-### Parallel writer lanes — A7f and A8b
+### A7f + A8b parallel batch closeout
+
+- Final state: Accepted.
+- Integration baseline: `cf6ba8488b2942b503ce859142b9d4c28c55ef5c`.
+- A7f candidate: `0d8eda77845b8b3a65d092e0d39d9a5a73740773`;
+  integrated as `575bd65`.
+- A8b candidate: `71bb0c62668b2846b9d0b31cbe764e7912e6e52f`;
+  integrated as `6e2a7ef`.
+- Isolation: both writers ran as user-visible Codex tasks in separate
+  worktrees with exact disjoint allowlists. Collaboration subagents performed
+  only read-only scope and fixed-SHA review.
+- Fixed-SHA review: both candidates accepted with zero P0/P1/P2 findings.
+- Root shared matrix after both merges:
+  - PASS architecture checker and its self-tests;
+  - PASS format and whitespace checks;
+  - PASS locked workspace check and test;
+  - PASS all-target Clippy with warnings denied;
+  - PASS Rustdoc with warnings denied;
+  - PASS wasm32 Web check;
+  - PASS required Metal SortedAlpha conformance;
+  - PASS C FFI smoke.
+- No device/performance claim was made: both slices move existing ownership
+  without changing shaders, render math, ordering policy, resource selection or
+  public ABI.
+- A7 exit: immutable order/projected/producer receipts and submission
+  identities now live under `evidence/`; bounded optional observer storage is
+  owned by `evidence/ring.rs`; ticket/readback/poll/generation invalidation and
+  Adaptive policy remain in telemetry/session. The two completed A7 legacy
+  entries are therefore removed from the architecture policy.
+- A8 exit is not yet met. A8c will own configuration/resize transactions and
+  A8d will separately own native Surface capture. These slices stay sequential
+  because both rewire `surface_presenter.rs`.
+- Source size was descriptive review context only. No 800, 890 or other fixed
+  line count was used in prompts, reviews or acceptance.
+
+## Integrated task contracts
+
+### Historical parallel writer lanes — A7f and A8b
 
 - Activation baseline: `cf6ba8488b2942b503ce859142b9d4c28c55ef5c`.
 - Isolation: two user-visible Codex tasks in separate worktrees, each with its
@@ -148,7 +180,7 @@ eligible task. Do not rewrite the architecture in this ledger.
 ### A7f — Separate immutable submission identity from session policy
 
 - Parent task state: A7 Active; A7e is integrated and accepted.
-- Subtask state: Active.
+- Subtask state: Accepted.
 - Hypothesis: the three submission values and their three unsampled-reason
   values are immutable evidence identities, while conversion from presenter
   telemetry remains a session concern.
@@ -183,7 +215,7 @@ eligible task. Do not rewrite the architecture in this ledger.
 ### A8b — Extract the Surface acquire/recovery/present lifecycle leaf
 
 - Parent task state: A8 Active; A8a offscreen target/readback is accepted.
-- Subtask state: Active.
+- Subtask state: Accepted.
 - Hypothesis: the existing instance/present-mode selection, exact Surface error
   mapping, one-retry acquisition protocol and presentation state form one
   strategy-free host lifecycle leaf. Presenter retains geometry,
@@ -2187,8 +2219,11 @@ rebase, push, main or ledger edits.
 | A5g | Accepted | `9c72cf1` + `41ab3b7` | A7d/A5g closeout above, combined matrix and A065 evidence | rank projection now has a strategy-free GPU owner with Projected Candidate/Compact semantics unchanged |
 | A5 | Accepted | `41ab3b7` | A5a--A5g records and full-count A065 exactness artifacts | shared GPU mechanics have explicit leaves, orchestration boundaries remain coherent, shader bytes are unchanged and the completed A5 grandfather entries are retired |
 | A7e | Accepted | `e278f8c` + `f007e2b` | A7e/A6a closeout above and fixed-SHA review | product-facing producer identity and immutable producer receipts now have API/evidence owners; bounded ticket and terminal-delivery mechanics remain in telemetry; A7 remains open |
+| A7f | Accepted | `0d8eda7` + `575bd65` | A7f/A8b closeout above and fixed-SHA review | immutable submission identities now have an evidence owner while presenter conversion and all policy behavior remain in session |
+| A7 | Accepted | `575bd65` | A7a--A7f records, fixed-SHA reviews and merged full matrix | immutable receipts, submission identities and bounded optional observer storage have explicit owners without influencing Adaptive policy |
 | A6a | Accepted | `af034c8` + `008d4dd` | A7e/A6a closeout above and fixed-SHA review | accepted raster preparation and encoding now have one canonical owner; shader bytes, render behavior and platform lifecycle remain unchanged |
 | A6 | Accepted | `008d4dd` | A6a record above and merged full matrix | raster facade, pipeline preparation and draw encoding have explicit cohesive owners, duplicate quad constants are gone and the completed A6 grandfather record is retired |
+| A8b | Accepted | `71bb0c6` + `6e2a7ef` | A7f/A8b closeout above and fixed-SHA review | Surface acquire, one-retry recovery and primitive present now have a lifecycle leaf; resize, capture and frame orchestration remain with the presenter |
 
 ## Baseline evidence inherited, not rerun by default
 
