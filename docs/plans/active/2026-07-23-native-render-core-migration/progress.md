@@ -33,6 +33,22 @@ M1 = Active
 - Interactive Surface, public API signatures, C ABI, Web, Android and Apple
   consumers remain frozen during M1.
 
+## Execution coordination
+
+- Every independent implementation slice after M1 is dispatched as a visible
+  Codex task with its own worktree, fixed accepted base, narrow owned paths and
+  one reviewable candidate SHA. Concrete implementation is not delegated to a
+  subagent.
+- The root task owns dependency order, fixed-SHA acceptance, integration and
+  critical cross-platform verification. A candidate is never integrated merely
+  because its implementation task reports completion.
+- Subagents, when useful, are limited to short read-only assistance inside the
+  active root turn. They do not own implementation packages, mutate candidate
+  worktrees or replace the independently inspectable task handoff.
+- Parallel Codex tasks are opened only for slices whose ownership and base make
+  concurrent work safe. Dependent migrations remain serial rather than being
+  forced into parallel execution.
+
 ## M0 closeout
 
 - Final state: Accepted.
