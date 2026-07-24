@@ -39,16 +39,16 @@ M2 = Active
 
 ## Execution coordination
 
-- Every independent implementation slice after M1 is dispatched as a visible
-  Codex task with its own worktree, fixed accepted base, narrow owned paths and
-  one reviewable candidate SHA. Concrete implementation is not delegated to a
-  subagent.
+- Every independently assigned implementation, review, benchmark or repair
+  slice after M1 is dispatched as a new visible Codex task with its own
+  worktree, fixed accepted base, narrow owned paths and one reviewable
+  candidate SHA. A subagent does not own or execute any concrete program task.
 - The root task owns dependency order, fixed-SHA acceptance, integration and
   critical cross-platform verification. A candidate is never integrated merely
   because its implementation task reports completion.
-- Subagents, when useful, are limited to short read-only assistance inside the
-  active root turn. They do not own implementation packages, mutate candidate
-  worktrees or replace the independently inspectable task handoff.
+- The root task performs its own critical review and verification instead of
+  substituting a subagent for a visible Codex task. This keeps task history,
+  goals, worktree state and final handoffs independently inspectable.
 - Parallel Codex tasks are opened only for slices whose ownership and base make
   concurrent work safe. Dependent migrations remain serial rather than being
   forced into parallel execution.
