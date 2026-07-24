@@ -446,6 +446,14 @@ struct StagedGpuRuntimeAdmission {
     owner: GpuExecutionOwner,
 }
 
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CompleteGpuCandidateTestFailure {
+    GpuResource,
+    Plan,
+    Raster,
+}
+
 impl PreparedRuntimeSlot {
     pub(crate) fn prepare(resident: ResidentSceneCpu) -> Result<Self, PreparedRuntimeError> {
         Self::prepare_at_frame(resident, FrameState::initial())
@@ -493,6 +501,49 @@ impl PreparedRuntimeSlot {
         let mut candidate = Self::prepare_at_frame(resident, frame)?;
         candidate.prepare_gpu(device, queue, target_format).await?;
         Ok(candidate)
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn prepare_complete_gpu_candidate_with_test_failure(
+        resident: ResidentSceneCpu,
+        previous: Option<&Self>,
+        device: &Arc<wgpu::Device>,
+        queue: &Arc<wgpu::Queue>,
+        target_format: wgpu::TextureFormat,
+        failure: CompleteGpuCandidateTestFailure,
+    ) -> Result<Self, PreparedGpuRuntimeError> {
+        let frame = match previous {
+            Some(previous) => previous
+                .frame
+                .after_runtime_replacement()
+                .map_err(PreparedRuntimeError::Generation)?,
+            None => FrameState::initial(),
+        };
+        let mut candidate = Self::prepare_at_frame(resident, frame)?;
+        match failure {
+            CompleteGpuCandidateTestFailure::GpuResource => {
+                return Err(
+                    GpuRuntimePreparationError::Resources(GpuPreparationError::Internal(
+                        "injected complete GPU resource failure".into(),
+                    ))
+                    .into(),
+                );
+            }
+            CompleteGpuCandidateTestFailure::Plan => {
+                candidate.set_test_gpu_admission_mode(crate::plans::TestGpuAdmissionMode::Fail);
+            }
+            CompleteGpuCandidateTestFailure::Raster => {
+                candidate
+                    .set_test_gpu_admission_mode(crate::plans::TestGpuAdmissionMode::ConcreteAll);
+            }
+        }
+        let format = match failure {
+            CompleteGpuCandidateTestFailure::Raster => wgpu::TextureFormat::Depth32Float,
+            CompleteGpuCandidateTestFailure::GpuResource
+            | CompleteGpuCandidateTestFailure::Plan => target_format,
+        };
+        candidate.prepare_gpu(device, queue, format).await?;
+        unreachable!("every injected complete-candidate stage must fail")
     }
 
     pub(crate) fn replace(
@@ -629,6 +680,22 @@ impl PreparedRuntimeSlot {
 
     pub(crate) fn last_usable_cpu_order(&self) -> Option<&[u32]> {
         self.runtime.plans.last_usable_cpu_order()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn current_cpu_order_generation(&self) -> Option<u64> {
+        self.runtime.plans.current_cpu_order_generation()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn same_gpu_arc_owner(
+        &self,
+        device: &Arc<wgpu::Device>,
+        queue: &Arc<wgpu::Queue>,
+    ) -> bool {
+        self.gpu_owner
+            .as_ref()
+            .is_some_and(|owner| owner.same_arc_owner(device, queue))
     }
 
     fn reset_plan_policy_for_current_runtime(&mut self) {

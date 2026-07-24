@@ -13,8 +13,19 @@ impl OffscreenTarget {
         height: u32,
         max_texture_dimension_2d: u32,
     ) -> Result<Self, RendererError> {
-        let (texture, view) =
-            create_output_target(device, width, height, max_texture_dimension_2d)?;
+        validate_output_target_size(width, height, max_texture_dimension_2d)?;
+        let (validation_scope, oom_scope, internal_scope) = (
+            device.push_error_scope(wgpu::ErrorFilter::Validation),
+            device.push_error_scope(wgpu::ErrorFilter::OutOfMemory),
+            device.push_error_scope(wgpu::ErrorFilter::Internal),
+        );
+        let (texture, view) = create_output_target(device, width, height);
+        let internal_error = pollster::block_on(internal_scope.pop());
+        let oom_error = pollster::block_on(oom_scope.pop());
+        let validation_error = pollster::block_on(validation_scope.pop());
+        if oom_error.or(internal_error).or(validation_error).is_some() {
+            return Err(RendererError::GpuDeviceCreation);
+        }
         Ok(Self {
             texture,
             view,
@@ -55,16 +66,7 @@ fn create_output_target(
     device: &wgpu::Device,
     width: u32,
     height: u32,
-    max_texture_dimension_2d: u32,
-) -> Result<(wgpu::Texture, wgpu::TextureView), RendererError> {
-    if width > max_texture_dimension_2d || height > max_texture_dimension_2d {
-        return Err(RendererError::GpuDimensionsUnsupported {
-            width,
-            height,
-            max_dimension: max_texture_dimension_2d,
-        });
-    }
-
+) -> (wgpu::Texture, wgpu::TextureView) {
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: wgpu_label("splat-output"),
         size: wgpu::Extent3d {
@@ -81,5 +83,20 @@ fn create_output_target(
     });
 
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-    Ok((texture, view))
+    (texture, view)
+}
+
+fn validate_output_target_size(
+    width: u32,
+    height: u32,
+    max_texture_dimension_2d: u32,
+) -> Result<(), RendererError> {
+    if width > max_texture_dimension_2d || height > max_texture_dimension_2d {
+        return Err(RendererError::GpuDimensionsUnsupported {
+            width,
+            height,
+            max_dimension: max_texture_dimension_2d,
+        });
+    }
+    Ok(())
 }

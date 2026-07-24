@@ -914,6 +914,13 @@ impl PlanSet {
             .as_ref()
             .and_then(CpuPostSortPlan::last_usable_order)
     }
+
+    #[cfg(test)]
+    pub(crate) fn current_cpu_order_generation(&self) -> Option<u64> {
+        self.cpu_post
+            .as_ref()
+            .map(CpuPostSortPlan::current_order_generation)
+    }
 }
 
 #[cfg(test)]

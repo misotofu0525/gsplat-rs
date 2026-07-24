@@ -281,6 +281,11 @@ impl CpuPostSortPlan {
     pub(super) fn last_usable_order(&self) -> Option<&[u32]> {
         self.guard.as_ref().map(|_| self.ordered_ids.as_slice())
     }
+
+    #[cfg(test)]
+    pub(super) const fn current_order_generation(&self) -> u64 {
+        self.order_generation
+    }
 }
 
 fn validate_projection_contract(

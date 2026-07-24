@@ -172,6 +172,15 @@ impl GpuExecutionOwner {
         &self.token
     }
 
+    #[cfg(test)]
+    pub(super) fn same_arc_owner(
+        &self,
+        device: &Arc<wgpu::Device>,
+        queue: &Arc<wgpu::Queue>,
+    ) -> bool {
+        Arc::ptr_eq(&self.device, device) && Arc::ptr_eq(&self.queue, queue)
+    }
+
     pub(super) fn context<'a>(
         &'a self,
         queue: &'a Arc<wgpu::Queue>,

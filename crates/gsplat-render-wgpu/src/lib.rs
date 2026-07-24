@@ -893,15 +893,7 @@ impl Renderer {
                 ),
             )
             .map_err(map_prepared_gpu_runtime_error)?;
-
-            self.scene = None;
-            self.resident_scene_cpu = None;
-            self.exact_offscreen_runtime = Some(candidate);
-            self.rebuild_path_specific_cpu_data();
-            self.gpu_rasterizer
-                .as_mut()
-                .expect("offscreen rasterizer was borrowed above")
-                .clear_scene_resources();
+            self.publish_exact_offscreen_candidate(candidate);
             return Ok(());
         }
 
@@ -913,6 +905,48 @@ impl Renderer {
             rasterizer.clear_scene_resources();
         }
         Ok(())
+    }
+
+    #[cfg(all(test, not(target_arch = "wasm32")))]
+    fn load_resident_scene_with_exact_test_failure(
+        &mut self,
+        resident: ResidentSceneCpu,
+        failure: renderer::CompleteGpuCandidateTestFailure,
+    ) -> Result<(), RendererError> {
+        resident.validate_complete()?;
+        if self.geometry_path != GeometryPath::PackedAtlas {
+            return Err(RendererError::InvalidScene);
+        }
+        let rasterizer = self
+            .gpu_rasterizer
+            .as_ref()
+            .ok_or(RendererError::GpuRasterizerUnavailable)?;
+        let candidate = pollster::block_on(
+            renderer::PreparedRuntimeSlot::prepare_complete_gpu_candidate_with_test_failure(
+                resident,
+                self.exact_offscreen_runtime.as_ref(),
+                &rasterizer.device,
+                &rasterizer.queue,
+                RENDER_TARGET_FORMAT,
+                failure,
+            ),
+        )
+        .map_err(map_prepared_gpu_runtime_error)?;
+        self.publish_exact_offscreen_candidate(candidate);
+        Ok(())
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn publish_exact_offscreen_candidate(&mut self, candidate: renderer::PreparedRuntimeSlot) {
+        self.scene = None;
+        self.resident_scene_cpu = None;
+        self.exact_offscreen_runtime = Some(candidate);
+        self.preprocess_indices.clear();
+        self.rebuild_path_specific_cpu_data();
+        self.gpu_rasterizer
+            .as_mut()
+            .expect("offscreen candidate requires the existing rasterizer")
+            .clear_scene_resources();
     }
 
     /// Commits the CPU side of a successful Surface GPU-resource handoff.
@@ -1195,6 +1229,15 @@ impl Renderer {
     }
 
     pub fn current_sorted_indices(&self) -> &[u32] {
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.geometry_path == GeometryPath::PackedAtlas
+            && let Some(order) = self
+                .exact_offscreen_runtime
+                .as_ref()
+                .and_then(renderer::PreparedRuntimeSlot::last_usable_cpu_order)
+        {
+            return order;
+        }
         &self.preprocess_indices
     }
 
@@ -3073,6 +3116,9 @@ fn offscreen_device_limits(
 
 #[cfg(test)]
 mod tests {
+    #[cfg(not(target_arch = "wasm32"))]
+    use std::sync::Arc;
+
     use crate::spatial_pages::PageId;
     use gsplat_core::{
         Camera, ErrorCode, FrameStats, RenderMode, RendererConfig, SceneBuffers, Vec3f,
@@ -3080,6 +3126,8 @@ mod tests {
 
     #[cfg(not(target_arch = "wasm32"))]
     use super::offscreen_device_limits;
+    #[cfg(not(target_arch = "wasm32"))]
+    use super::renderer::{CompleteGpuCandidateTestFailure, PreparedRuntimeSlot};
     use super::{
         DirectSceneError, DirectScenePath, DirectSceneResource, GeometryPath, PackedScenePath,
         PackedScenePreflightFailure, Renderer, RendererError, build_instances,
@@ -3096,6 +3144,34 @@ mod tests {
             color_dc: vec![[0.1, 0.2, 0.3], [0.3, 0.2, 0.1]],
             sh_degree: 0,
             sh_rest: None,
+        }
+    }
+
+    fn exact_equal_depth_scene(sh_degree: u8, count: usize) -> SceneBuffers {
+        let coefficients_per_splat = ((sh_degree as usize + 1).pow(2) - 1) * 3;
+        SceneBuffers {
+            positions: (0..count)
+                .map(|index| {
+                    let x = if count <= 1 {
+                        0.0
+                    } else {
+                        index as f32 / (count - 1) as f32 - 0.5
+                    };
+                    Vec3f::new(x, (index % 3) as f32 * 0.015 - 0.015, 2.0)
+                })
+                .collect(),
+            opacity: vec![2.0; count],
+            scale_xyz: vec![[-3.5, -3.5, -3.5]; count],
+            rotation_xyzw: vec![[0.0, 0.0, 0.0, 1.0]; count],
+            color_dc: (0..count)
+                .map(|index| [0.1 + (index % 5) as f32 * 0.03, -0.05, 0.2])
+                .collect(),
+            sh_degree,
+            sh_rest: (coefficients_per_splat != 0).then(|| {
+                (0..count * coefficients_per_splat)
+                    .map(|index| ((index % 13) as f32 - 6.0) * 0.01)
+                    .collect()
+            }),
         }
     }
 
@@ -3232,6 +3308,327 @@ mod tests {
             rgba.chunks_exact(4).any(|pixel| pixel[3] > 0),
             "packed path must produce at least one non-transparent pixel"
         );
+    }
+
+    #[test]
+    fn packed_exact_offscreen_uses_host_gpu_and_refreshes_identical_camera_order() {
+        let config = test_config(64);
+        let Some(mut renderer) = test_renderer(config, "packed exact owner and forced order")
+        else {
+            return;
+        };
+        renderer.set_geometry_path(GeometryPath::PackedAtlas);
+        renderer.load_scene(exact_equal_depth_scene(3, 37)).unwrap();
+
+        let rasterizer = renderer.gpu_rasterizer.as_ref().expect("offscreen owner");
+        let slot = renderer
+            .exact_offscreen_runtime
+            .as_ref()
+            .expect("Packed Exact runtime");
+        assert!(slot.same_gpu_arc_owner(&rasterizer.device, &rasterizer.queue));
+        assert_eq!(slot.current_cpu_order_generation(), Some(0));
+
+        let first = renderer.render_frame(&Camera::default()).unwrap();
+        assert_eq!(
+            renderer
+                .exact_offscreen_runtime
+                .as_ref()
+                .and_then(PreparedRuntimeSlot::current_cpu_order_generation),
+            Some(1)
+        );
+        let second = renderer.render_frame(&Camera::default()).unwrap();
+        let slot = renderer.exact_offscreen_runtime.as_ref().unwrap();
+        assert_eq!(slot.current_cpu_order_generation(), Some(2));
+        assert_eq!(
+            slot.last_usable_cpu_order(),
+            Some((0_u32..37).collect::<Vec<_>>().as_slice())
+        );
+        assert_eq!(
+            renderer.current_sorted_indices(),
+            (0_u32..37).collect::<Vec<_>>().as_slice(),
+            "the public compatibility accessor must expose Exact CPU PostSort"
+        );
+
+        for stats in [first, second] {
+            assert_eq!(stats.visible_count, 37);
+            assert_eq!(stats.drawn_count, 37);
+            for duration in [
+                stats.preprocess_ms,
+                stats.sort_ms,
+                stats.raster_ms,
+                stats.frame_ms,
+            ] {
+                assert!(duration.is_finite() && duration >= 0.0);
+            }
+            assert!(stats.frame_ms + f32::EPSILON >= stats.preprocess_ms);
+            assert!(stats.frame_ms + f32::EPSILON >= stats.sort_ms);
+            assert!(stats.frame_ms + f32::EPSILON >= stats.raster_ms);
+        }
+    }
+
+    #[test]
+    fn packed_exact_load_clears_old_order_until_the_first_new_exact_frame() {
+        let Some(mut renderer) = test_renderer(test_config(64), "Packed Exact order replacement")
+        else {
+            return;
+        };
+        renderer.load_scene(build_scene()).unwrap();
+        renderer.render_frame(&Camera::default()).unwrap();
+        assert_eq!(renderer.current_sorted_indices().len(), 2);
+
+        renderer.set_geometry_path(GeometryPath::PackedAtlas);
+        renderer.load_scene(exact_equal_depth_scene(2, 5)).unwrap();
+        assert!(
+            renderer.current_sorted_indices().is_empty(),
+            "a new unpublished Exact scene cannot expose the prior scene order"
+        );
+
+        let stats = renderer.render_frame(&Camera::default()).unwrap();
+        assert_eq!(stats.visible_count, 5);
+        assert_eq!(stats.drawn_count, 5);
+        assert_eq!(renderer.current_sorted_indices(), &[0, 1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn packed_exact_offscreen_sh0_through_sh3_match_direct_with_all_equal_depth_ties() {
+        let config = test_config(96);
+        let Some(mut direct) = test_renderer(config, "Packed Exact SH0-SH3 Direct oracle") else {
+            return;
+        };
+        let mut packed = Renderer::with_config(config).expect("second renderer");
+        direct.set_geometry_path(GeometryPath::SortedIndexDirect);
+        packed.set_geometry_path(GeometryPath::PackedAtlas);
+
+        for degree in 0..=3 {
+            let scene = exact_equal_depth_scene(degree, 37);
+            direct.load_scene(scene.clone()).unwrap();
+            packed.load_scene(scene).unwrap();
+            let direct_stats = direct.render_frame(&Camera::default()).unwrap();
+            let packed_stats = packed.render_frame(&Camera::default()).unwrap();
+            assert_eq!(direct_stats.visible_count, 37);
+            assert_eq!(direct_stats.drawn_count, 37);
+            assert_eq!(packed_stats.visible_count, 37);
+            assert_eq!(packed_stats.drawn_count, 37);
+            assert_eq!(packed.scene_sh_degree(), Some(degree));
+            assert_eq!(
+                packed
+                    .exact_offscreen_runtime
+                    .as_ref()
+                    .and_then(PreparedRuntimeSlot::last_usable_cpu_order),
+                Some((0_u32..37).collect::<Vec<_>>().as_slice())
+            );
+            assert_image_parity(
+                &format!("Packed Exact SH{degree} Direct oracle"),
+                &direct.readback_rgba8().unwrap(),
+                &packed.readback_rgba8().unwrap(),
+            );
+        }
+    }
+
+    #[test]
+    fn direct_and_paged_offscreen_never_instantiate_the_packed_exact_slot() {
+        let Some(mut renderer) = test_renderer(test_config(64), "Direct/Paged Exact isolation")
+        else {
+            return;
+        };
+        renderer.load_scene(build_scene()).unwrap();
+        assert!(renderer.exact_offscreen_runtime.is_none());
+        renderer.set_geometry_path(GeometryPath::PagedActiveAtlas);
+        renderer.load_scene(build_scene()).unwrap();
+        assert!(renderer.exact_offscreen_runtime.is_none());
+    }
+
+    #[test]
+    fn packed_exact_failed_frame_and_resize_preserve_published_state() {
+        let config = test_config(64);
+        let Some(mut renderer) = test_renderer(config, "Packed Exact transactional resize") else {
+            return;
+        };
+        renderer.set_geometry_path(GeometryPath::PackedAtlas);
+        renderer.load_scene(build_scene()).unwrap();
+        let stats = renderer.render_frame(&Camera::default()).unwrap();
+        let image = renderer.readback_rgba8().unwrap();
+        let frame = renderer
+            .exact_offscreen_runtime
+            .as_ref()
+            .unwrap()
+            .frame_state();
+        let order_generation = renderer
+            .exact_offscreen_runtime
+            .as_ref()
+            .unwrap()
+            .current_cpu_order_generation();
+
+        let mut invalid_camera = Camera::default();
+        invalid_camera.pose.position.x = f32::NAN;
+        assert!(matches!(
+            renderer.render_frame(&invalid_camera),
+            Err(RendererError::InvalidCamera)
+        ));
+        assert_eq!(renderer.last_stats(), stats);
+        assert_eq!(renderer.readback_rgba8().unwrap(), image);
+        assert_eq!(
+            renderer
+                .exact_offscreen_runtime
+                .as_ref()
+                .unwrap()
+                .frame_state(),
+            frame
+        );
+        assert_eq!(
+            renderer
+                .exact_offscreen_runtime
+                .as_ref()
+                .unwrap()
+                .current_cpu_order_generation(),
+            order_generation
+        );
+
+        let max_dimension = renderer
+            .gpu_rasterizer
+            .as_ref()
+            .unwrap()
+            .max_texture_dimension_2d;
+        let unsupported_width = max_dimension.checked_add(1).expect("finite texture limit");
+        assert!(matches!(
+            renderer.set_size(unsupported_width, config.height),
+            Err(RendererError::GpuDimensionsUnsupported { .. })
+        ));
+        assert_eq!(renderer.config(), config);
+        assert_eq!(renderer.last_stats(), stats);
+        assert_eq!(renderer.readback_rgba8().unwrap(), image);
+        assert_eq!(
+            renderer
+                .exact_offscreen_runtime
+                .as_ref()
+                .unwrap()
+                .frame_state(),
+            frame
+        );
+
+        // Exercise an actual WebGPU validation scope after candidate texture
+        // creation. The live target remains the old 64x64 image.
+        let device = Arc::clone(&renderer.gpu_rasterizer.as_ref().unwrap().device);
+        let scoped_error = renderer
+            .gpu_rasterizer
+            .as_mut()
+            .unwrap()
+            .offscreen_target
+            .ensure_size(&device, 0, config.height, max_dimension);
+        assert!(matches!(
+            scoped_error,
+            Err(RendererError::GpuDeviceCreation)
+        ));
+        assert_eq!(
+            renderer
+                .gpu_rasterizer
+                .as_ref()
+                .unwrap()
+                .offscreen_target
+                .size(),
+            (config.width, config.height)
+        );
+        assert_eq!(renderer.readback_rgba8().unwrap(), image);
+
+        renderer.set_size(80, 48).unwrap();
+        assert_eq!(renderer.config().width, 80);
+        assert_eq!(renderer.config().height, 48);
+        assert_eq!(renderer.last_stats(), stats);
+        assert_eq!(
+            renderer
+                .exact_offscreen_runtime
+                .as_ref()
+                .unwrap()
+                .frame_state(),
+            frame,
+            "resize is not a semantic frame publication"
+        );
+        let resized = renderer.render_frame(&Camera::default()).unwrap();
+        assert_eq!(resized.visible_count, 2);
+        assert_eq!(resized.drawn_count, 2);
+        let first_readback = renderer.readback_rgba8().unwrap();
+        let second_readback = renderer.readback_rgba8().unwrap();
+        assert_eq!(first_readback.len(), 80 * 48 * 4);
+        assert_eq!(first_readback, second_readback);
+        assert_eq!(renderer.last_stats(), resized);
+        assert_eq!(
+            renderer
+                .exact_offscreen_runtime
+                .as_ref()
+                .unwrap()
+                .current_cpu_order_generation(),
+            Some(2),
+            "readback must not rerun or mutate ordering policy"
+        );
+    }
+
+    #[test]
+    fn packed_exact_failed_replacement_stages_preserve_scene_image_generations_and_stats() {
+        let Some(mut renderer) = test_renderer(
+            test_config(64),
+            "Packed Exact transactional replacement stages",
+        ) else {
+            return;
+        };
+        renderer.set_geometry_path(GeometryPath::PackedAtlas);
+        renderer.load_scene(exact_equal_depth_scene(3, 37)).unwrap();
+        let old_stats = renderer.render_frame(&Camera::default()).unwrap();
+        let old_image = renderer.readback_rgba8().unwrap();
+        let old_positions = renderer.positions().unwrap().to_vec();
+        let old_frame = renderer
+            .exact_offscreen_runtime
+            .as_ref()
+            .unwrap()
+            .frame_state();
+        let old_order = renderer.current_sorted_indices().to_vec();
+
+        let mut invalid = super::ResidentSceneCpu::encode_owned(exact_equal_depth_scene(3, 5))
+            .expect("invalid replacement staging");
+        invalid.report.encoded_count -= 1;
+        assert!(renderer.load_resident_scene(invalid).is_err());
+
+        for failure in [
+            CompleteGpuCandidateTestFailure::GpuResource,
+            CompleteGpuCandidateTestFailure::Plan,
+            CompleteGpuCandidateTestFailure::Raster,
+        ] {
+            let replacement = super::ResidentSceneCpu::encode_owned(exact_equal_depth_scene(3, 5))
+                .expect("replacement resident");
+            assert!(
+                renderer
+                    .load_resident_scene_with_exact_test_failure(replacement, failure)
+                    .is_err(),
+                "{failure:?} must fail before publication"
+            );
+            assert_eq!(renderer.positions(), Some(old_positions.as_slice()));
+            assert_eq!(renderer.current_sorted_indices(), old_order);
+            assert_eq!(renderer.last_stats(), old_stats);
+            assert_eq!(renderer.readback_rgba8().unwrap(), old_image);
+            assert_eq!(
+                renderer
+                    .exact_offscreen_runtime
+                    .as_ref()
+                    .unwrap()
+                    .frame_state(),
+                old_frame
+            );
+        }
+
+        renderer
+            .load_scene(exact_equal_depth_scene(3, 5))
+            .expect("clean retry publishes one complete candidate");
+        assert_eq!(renderer.scene_len(), Some(5));
+        assert_ne!(
+            renderer
+                .exact_offscreen_runtime
+                .as_ref()
+                .unwrap()
+                .frame_state(),
+            old_frame
+        );
+        let replacement_stats = renderer.render_frame(&Camera::default()).unwrap();
+        assert_eq!(replacement_stats.visible_count, 5);
+        assert_eq!(replacement_stats.drawn_count, 5);
     }
 
     #[test]
