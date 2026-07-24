@@ -811,6 +811,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
     private var currentSurface: Surface? = null
     private var currentSurfaceWidth = 0
     private var currentSurfaceHeight = 0
+    private var currentSurfaceRequest: SurfaceRenderSessionOwner.SurfaceRequest? = null
     private var restartAfterRendererRetires = false
     private var activityDestroying = false
     private var latestStatus = "state=waiting_for_surface"
@@ -1009,7 +1010,10 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         currentSurfaceHeight = height
         surfaceSizeLabel = "${width}x${height}"
         updateStatus("state=surface_changed size=${width}x$height")
+        val request = renderSessionOwner.observeSurface(width, height)
+        currentSurfaceRequest = request
         if (benchmarkConfig.enabled && width <= height) {
+            restartAfterRendererRetires = false
             Log.i(TAG, "benchmark waiting for landscape Surface size=${width}x$height")
             updateStatus("state=waiting_for_landscape size=${width}x$height")
             return
@@ -1023,7 +1027,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
             }
         }
 
-        startRenderer(holder.surface, width, height)
+        startRenderer(holder.surface, request)
     }
 
     override fun surfaceDestroyed(holder: SurfaceHolder) {
@@ -1031,6 +1035,8 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         currentSurface = null
         currentSurfaceWidth = 0
         currentSurfaceHeight = 0
+        currentSurfaceRequest = null
+        renderSessionOwner.forgetSurface()
         restartAfterRendererRetires = false
         updateStatus("state=surface_destroyed")
         stopRenderer()
@@ -1073,8 +1079,13 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         }
     }
 
-    private fun startRenderer(surface: Surface, width: Int, height: Int) {
-        val session = when (val reservation = renderSessionOwner.reserve()) {
+    private fun startRenderer(
+        surface: Surface,
+        request: SurfaceRenderSessionOwner.SurfaceRequest
+    ) {
+        val width = request.width
+        val height = request.height
+        val session = when (val reservation = renderSessionOwner.reserve(request)) {
             is SurfaceRenderSessionOwner.ReserveResult.Acquired -> reservation.session
             is SurfaceRenderSessionOwner.ReserveResult.Busy -> {
                 if (reservation.retiring) {
@@ -1084,6 +1095,15 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                             "generation=${reservation.generation}"
                     )
                 }
+                return
+            }
+            is SurfaceRenderSessionOwner.ReserveResult.Stale -> {
+                Log.i(
+                    TAG,
+                    "discarding stale Surface request generation=" +
+                        "${reservation.requestGeneration} latest=" +
+                        "${reservation.latestRequestGeneration}"
+                )
                 return
             }
         }
@@ -1097,6 +1117,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                     Log.i(
                         TAG,
                         "createSurfaceRenderer start generation=${session.generation} " +
+                            "surface_generation=${request.generation} " +
                             "size=${width}x$height geometry=${benchmarkConfig.geometryPath} " +
                             "dataset=$datasetPath"
                     )
@@ -1686,18 +1707,18 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         runOnUiThread {
             if (!restartAfterRendererRetires || activityDestroying) return@runOnUiThread
             val surface = currentSurface
-            val width = currentSurfaceWidth
-            val height = currentSurfaceHeight
-            if (surface == null || !surface.isValid || width <= 0 || height <= 0) {
+            val request = currentSurfaceRequest
+            if (surface == null || !surface.isValid || request == null) {
                 restartAfterRendererRetires = false
                 updateStatus("state=renderer_retired waiting_for_surface")
                 return@runOnUiThread
             }
             Log.i(
                 TAG,
-                "render generation $generation retired; starting latest Surface ${width}x$height"
+                "render generation $generation retired; starting latest Surface " +
+                    "generation=${request.generation} ${request.width}x${request.height}"
             )
-            startRenderer(surface, width, height)
+            startRenderer(surface, request)
         }
     }
 
@@ -1779,12 +1800,11 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         cameraStatus = "camera=auto"
 
         val surface = currentSurface
-        val width = currentSurfaceWidth
-        val height = currentSurfaceHeight
+        val request = currentSurfaceRequest
         stopRenderer()
 
-        if (surface != null && surface.isValid && width > 0 && height > 0) {
-            startRenderer(surface, width, height)
+        if (surface != null && surface.isValid && request != null) {
+            startRenderer(surface, request)
         } else {
             updateStatus("state=dataset_ready waiting_for_surface")
         }

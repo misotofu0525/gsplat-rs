@@ -10,9 +10,19 @@ package com.gsplat.example
  * owner instead of racing a destroy or accumulating more sessions.
  */
 internal class SurfaceRenderSessionOwner(private val lock: Any) {
+    internal data class SurfaceRequest(
+        val generation: Long,
+        val width: Int,
+        val height: Int
+    )
+
     internal sealed interface ReserveResult {
         data class Acquired(val session: Session) : ReserveResult
         data class Busy(val generation: Long, val retiring: Boolean) : ReserveResult
+        data class Stale(
+            val requestGeneration: Long,
+            val latestRequestGeneration: Long?
+        ) : ReserveResult
     }
 
     internal sealed interface StopResult {
@@ -21,7 +31,10 @@ internal class SurfaceRenderSessionOwner(private val lock: Any) {
         data class Retiring(val generation: Long) : StopResult
     }
 
-    internal class Session internal constructor(val generation: Long) {
+    internal class Session internal constructor(
+        val generation: Long,
+        val surfaceRequest: SurfaceRequest
+    ) {
         @Volatile
         internal var stopRequested = false
     }
@@ -32,17 +45,43 @@ internal class SurfaceRenderSessionOwner(private val lock: Any) {
         var handle: Long = 0L
     )
 
+    private var nextSurfaceGeneration = 1L
     private var nextGeneration = 1L
+    private var latestSurfaceRequest: SurfaceRequest? = null
     private var slot: Slot? = null
 
-    fun reserve(): ReserveResult = synchronized(lock) {
+    /** Records the newest Surface callback and retires an unpublished older create. */
+    fun observeSurface(width: Int, height: Int): SurfaceRequest = synchronized(lock) {
+        require(width > 0 && height > 0) { "Surface dimensions must be positive" }
+        val request = SurfaceRequest(nextSurfaceGeneration++, width, height)
+        latestSurfaceRequest = request
+        slot?.takeIf { it.handle == 0L }?.session?.stopRequested = true
+        request
+    }
+
+    /** Invalidates every request before lifecycle shutdown can race publication. */
+    fun forgetSurface() = synchronized(lock) {
+        latestSurfaceRequest = null
+        slot?.session?.stopRequested = true
+    }
+
+    fun reserve(request: SurfaceRequest): ReserveResult = synchronized(lock) {
+        if (latestSurfaceRequest != request) {
+            return@synchronized ReserveResult.Stale(
+                requestGeneration = request.generation,
+                latestRequestGeneration = latestSurfaceRequest?.generation
+            )
+        }
         slot?.let { current ->
+            if (current.handle == 0L && current.session.surfaceRequest != request) {
+                current.session.stopRequested = true
+            }
             return@synchronized ReserveResult.Busy(
                 generation = current.session.generation,
                 retiring = current.session.stopRequested
             )
         }
-        val session = Session(nextGeneration++)
+        val session = Session(nextGeneration++, request)
         slot = Slot(session)
         ReserveResult.Acquired(session)
     }
@@ -64,7 +103,7 @@ internal class SurfaceRenderSessionOwner(private val lock: Any) {
         val current = slot
         if (
             current?.session !== session || current.handle != 0L ||
-            session.stopRequested
+            session.stopRequested || latestSurfaceRequest != session.surfaceRequest
         ) {
             return@synchronized false
         }

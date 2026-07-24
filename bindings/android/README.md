@@ -191,16 +191,11 @@ so `projectedSubmission().ticket` remains null and is never synthesized.
 Adaptive probe tickets must terminate in exactly one projected success or
 failure; dropped-prior, ring-busy, Surface-unavailable, or invariant evidence
 invalidates strict retained runs.
-`GsplatSurfaceGpuProducerDiagnostics` is an explicit Packed/GPU/Compact-only
-diagnostic. It selects `POST_SORT` or `PREPROJECT` without changing the
-independent CPU/GPU ordering policy. Each successful rendered frame exposes a
-producer submission ticket; drain its terminal success/failure and join by
-ticket plus camera revision. Exact-current success proves `D=C<=S` and records
-order/projection generations and queue-completion time. Product defaults leave
-this telemetry disabled and retain `POST_SORT`. Disabling diagnostics stops
-new tickets but preserves the last rendered submission and every already
-issued terminal success/failure; drain both terminal queues before treating a
-later enabled period as a fresh strict experiment.
+`GsplatSurfaceGpuProducerDiagnostics` remains an additive compatibility/schema
+surface, but M2a rejects enabling its old independent measurement path. It is
+not a current Android qualification seam. Product defaults leave this telemetry
+disabled; M2b must provide a real-window producer measurement seam before these
+DTOs can support retained producer evidence.
 `presentation().fullResolution` additionally requires the last frame to have
 actually reached `present()`, with requested, Surface, internal-render, and
 presented dimensions equal and no dynamic resolution or upscaling.
@@ -368,20 +363,15 @@ Use `--camera-frame 0` or `--camera-frame 1` instead of
 `--camera-frame-indices` for a static-view run. Static and sequence playback
 produce the same post-present native camera receipt and pass through the same
 external-trace validator.
-To compare the two Packed GPU producers, run two otherwise identical forced-GPU
-sequence experiments and add exactly one of:
+`--gpu-producer post_sort|preproject` is explicitly Deferred and rejected
+before device collection. M2a rejects the old independent producer measurement
+path, so synthetic validator fixtures are schema tests rather than Android
+runtime qualification. M2b must provide the real-window seam before this option
+can collect retained evidence. The preserved future validator contract is
+canonical: PostSort uses Candidate with `D=V` (including `C<V`), while
+Preproject uses Compact with `D=C<=V`; measured-frame tickets and terminal
+ledger tickets must be unique and exactly equal.
 
-```text
---backend gpu --gpu-producer post_sort
---backend gpu --gpu-producer preproject
-```
-
-This mode requires Packed geometry, synchronous sort interval 1, and trace
-sequence playback. The collector requires `ProjectedQuadsExact + Compact`, a
-unique ticket for every retained frame, exact-current `S/C/D` with `D=C`, and a
-successful terminal ledger. Producer mismatch, ring-busy, stale-order,
-dropped, missing/duplicate, or failed evidence rejects the run rather than
-publishing a partial comparison.
 The collector defaults to `--geometry-path packed`, which selects the complete
 Resident scene and its production `ProjectedQuadsExact` Surface raster plan.
 `--geometry-path direct` is retained only for an explicit wide-f32 oracle run;

@@ -244,7 +244,9 @@ def add_gpu_producer_evidence(
     manifest["renderer"].update(
         {
             "raster_plan": "projected_quads_exact",
-            "projected_policy_requested": "compact",
+            "projected_policy_requested": (
+                "candidate" if producer == "post_sort" else "compact"
+            ),
             "gpu_order_producer_requested": producer,
             "gpu_producer_measurement_enabled": True,
         }
@@ -256,16 +258,23 @@ def add_gpu_producer_evidence(
         if producer == "post_sort"
         else "indirect_draw_equals_contributor"
     )
+    draw_scope = (
+        "exact_current_candidates"
+        if producer == "post_sort"
+        else "exact_current_contributors"
+    )
     for index, frame in enumerate(frames):
         ticket = 100 + index
-        contributor = source if producer == "post_sort" else source - index
+        visible = source - 10 - index
+        contributor = visible - 2
+        drawn = visible if producer == "post_sort" else contributor
         current_entry = summary["current_stats_terminal_ledger"][index]
         current_entry.update(
             {
                 "source": source,
-                "visible": source,
+                "visible": visible,
                 "contributor": contributor,
-                "drawn": contributor,
+                "drawn": drawn,
                 "count_semantics": count_semantics,
             }
         )
@@ -273,9 +282,9 @@ def add_gpu_producer_evidence(
         order_generation = current_entry["identity"]["order_generation"]
         frame.update(
             {
-                "visible": source,
+                "visible": visible,
                 "contributor": contributor,
-                "drawn": contributor,
+                "drawn": drawn,
                 "exact_contributor_compaction": producer == "preproject",
                 "current_stats_executed_plan": producer_plan,
                 "gpu_order_producer": producer,
@@ -286,8 +295,8 @@ def add_gpu_producer_evidence(
                 "gpu_producer_frame_complete_ms": 4.5 + index,
                 "gpu_producer_source": source,
                 "gpu_producer_contributor": contributor,
-                "gpu_producer_drawn": contributor,
-                "gpu_producer_draw_scope": "exact_current_contributors",
+                "gpu_producer_drawn": drawn,
+                "gpu_producer_draw_scope": draw_scope,
                 "gpu_producer_order_refreshed": True,
                 "gpu_producer_exact_current_draw": True,
                 "gpu_producer_stale_order": False,
@@ -305,8 +314,8 @@ def add_gpu_producer_evidence(
                 "projection_generation": index + 1,
                 "source": source,
                 "contributor": contributor,
-                "drawn": contributor,
-                "draw_scope": "exact_current_contributors",
+                "drawn": drawn,
+                "draw_scope": draw_scope,
                 "exactness_receipt_id": "fixture-exactness",
             }
         )
@@ -421,31 +430,25 @@ class ParsingTests(unittest.TestCase):
         self.assertEqual(launch[launch.index("gsplat_camera_trace_frame") + 1], "1")
         self.assertNotIn("gsplat_camera_trace_sequence", launch)
 
-    def test_launch_arguments_enable_strict_gpu_producer_diagnostic(self) -> None:
-        args = COLLECTOR.parser().parse_args(
-            [
-                "--serial",
-                "serial",
-                "--ply",
-                __file__,
-                "--camera-trace",
-                str(TEST_CAMERA_TRACE),
-                "--backend",
-                "gpu",
-                "--gpu-producer",
-                "preproject",
-            ]
-        )
-        COLLECTOR.validate_args(args)
-        launch = COLLECTOR.benchmark_launch_args(args, "gpu")
-        self.assertEqual(
-            launch[launch.index("gsplat_surface_gpu_producer") + 1],
-            "preproject",
-        )
-        self.assertEqual(
-            launch[launch.index("gsplat_surface_gpu_producer_measurement") + 1],
-            "true",
-        )
+    def test_gpu_producer_collection_is_explicitly_deferred_until_m2b(self) -> None:
+        for producer in COLLECTOR.GPU_PRODUCERS:
+            with self.subTest(producer=producer):
+                args = COLLECTOR.parser().parse_args(
+                    [
+                        "--serial",
+                        "serial",
+                        "--ply",
+                        __file__,
+                        "--camera-trace",
+                        str(TEST_CAMERA_TRACE),
+                        "--backend",
+                        "gpu",
+                        "--gpu-producer",
+                        producer,
+                    ]
+                )
+                with self.assertRaisesRegex(ValueError, "Deferred until M2b"):
+                    COLLECTOR.validate_args(args)
 
     def test_gpu_producer_diagnostic_rejects_non_isolated_configuration(self) -> None:
         cases = (
@@ -576,6 +579,12 @@ class ParsingTests(unittest.TestCase):
     def test_gpu_producer_artifact_requires_exact_ticketed_s_c_d(self) -> None:
         fixture = camera_validation_fixture("gpu", 2)
         add_gpu_producer_evidence(fixture[0], fixture[1], fixture[2], "post_sort")
+        self.assertEqual(
+            fixture[0]["renderer"]["projected_policy_requested"],
+            "candidate",
+        )
+        self.assertLess(fixture[2][0]["contributor"], fixture[2][0]["visible"])
+        self.assertEqual(fixture[2][0]["drawn"], fixture[2][0]["visible"])
         COLLECTOR.validate_run_artifact(
             fixture[0],
             fixture[1],
@@ -646,6 +655,26 @@ class ParsingTests(unittest.TestCase):
                         fixture[4],
                         "post_sort",
                     )
+
+    def test_gpu_producer_artifact_rejects_extra_unbound_terminal(self) -> None:
+        fixture = camera_validation_fixture("gpu", 2)
+        add_gpu_producer_evidence(fixture[0], fixture[1], fixture[2], "post_sort")
+        extra = copy.deepcopy(fixture[1]["gpu_producer_terminal_ledger"][-1])
+        extra["ticket"] = 9_999
+        fixture[1]["gpu_producer_terminal_ledger"].append(extra)
+
+        with self.assertRaisesRegex(RuntimeError, "ticket sets differ"):
+            COLLECTOR.validate_run_artifact(
+                fixture[0],
+                fixture[1],
+                fixture[2],
+                "gpu",
+                "packed",
+                {"sha256": "abc", "bytes": 123},
+                fixture[3],
+                fixture[4],
+                "post_sort",
+            )
 
     def test_camera_receipt_mutations_fail_closed(self) -> None:
         fixture = camera_validation_fixture("gpu")

@@ -1367,11 +1367,17 @@ def validate_gpu_producer_current_stats_join(
         raise RuntimeError(
             "enabled GPU producer telemetry lacks a valid requested producer"
         )
+    producer_projected_policy = {
+        "post_sort": "candidate",
+        "preproject": "compact",
+    }[producer]
     if (
         renderer.get("raster_plan") != "projected_quads_exact"
-        or renderer.get("projected_policy_requested") != "compact"
+        or renderer.get("projected_policy_requested") != producer_projected_policy
     ):
-        raise RuntimeError("GPU producer qualification requires ProjectedQuadsExact + Compact")
+        raise RuntimeError(
+            "GPU producer qualification disagrees with its canonical projected policy"
+        )
     producer_plan = {
         "post_sort": "gpu_post_sort",
         "preproject": "gpu_preproject",
@@ -1381,6 +1387,10 @@ def validate_gpu_producer_current_stats_join(
         "preproject": "indirect_draw_equals_contributor",
     }[producer]
     producer_exact_compaction = producer_plan == "gpu_preproject"
+    producer_draw_scope = {
+        "post_sort": "exact_current_candidates",
+        "preproject": "exact_current_contributors",
+    }[producer]
 
     producer_ledger = summary.get("gpu_producer_terminal_ledger")
     if not isinstance(producer_ledger, list):
@@ -1433,7 +1443,7 @@ def validate_gpu_producer_current_stats_join(
         ):
             raise RuntimeError(f"frame {index} producer/current-stats identity drifted")
         if (
-            frame.get("gpu_producer_draw_scope") != "exact_current_contributors"
+            frame.get("gpu_producer_draw_scope") != producer_draw_scope
             or frame.get("gpu_producer_exact_current_draw") is not True
             or frame.get("gpu_producer_order_refreshed") is not True
             or frame.get("gpu_producer_stale_order") is not False
@@ -1474,13 +1484,19 @@ def validate_gpu_producer_current_stats_join(
             or terminal.get("source") != current.get("source")
             or terminal.get("contributor") != current.get("contributor")
             or terminal.get("drawn") != current.get("drawn")
-            or terminal.get("draw_scope") != "exact_current_contributors"
+            or terminal.get("draw_scope") != producer_draw_scope
             or terminal.get("exactness_receipt_id")
             != current.get("exactness_receipt_id")
         ):
             raise RuntimeError(
                 f"frame {index} producer terminal/current-stats identity or S/C/D drifted"
             )
+    terminal_tickets = set(producer_terminals)
+    if terminal_tickets != frame_tickets:
+        raise RuntimeError(
+            "GPU producer measured-frame and terminal ticket sets differ: "
+            f"frames={sorted(frame_tickets)} terminals={sorted(terminal_tickets)}"
+        )
 
 
 def validate_run_artifact(
@@ -1586,9 +1602,17 @@ def validate_run_artifact(
         raise RuntimeError(f"unsupported expected GPU producer {expected_gpu_producer!r}")
     if expected_backend != "gpu" or expected_geometry_path != "packed":
         raise RuntimeError("GPU producer qualification requires packed + forced GPU")
+    projected_policy = {
+        "post_sort": "candidate",
+        "preproject": "compact",
+    }[expected_gpu_producer]
+    draw_scope = {
+        "post_sort": "exact_current_candidates",
+        "preproject": "exact_current_contributors",
+    }[expected_gpu_producer]
     expected_renderer = {
         "raster_plan": "projected_quads_exact",
-        "projected_policy_requested": "compact",
+        "projected_policy_requested": projected_policy,
         "gpu_order_producer_requested": expected_gpu_producer,
         "gpu_producer_measurement_enabled": True,
     }
@@ -1606,6 +1630,7 @@ def validate_run_artifact(
     frame_tickets: set[int] = set()
     for index, frame in enumerate(frames):
         ticket = frame.get("gpu_producer_measurement_ticket")
+        visible = frame.get("visible")
         contributor = frame.get("gpu_producer_contributor")
         drawn = frame.get("gpu_producer_drawn")
         completion_ms = frame.get("gpu_producer_frame_complete_ms")
@@ -1624,11 +1649,19 @@ def validate_run_artifact(
             raise RuntimeError(f"frame {index} producer camera revision is stale")
         if frame.get("gpu_producer_source") != source_count:
             raise RuntimeError(f"frame {index} producer source count is incomplete")
-        if not isinstance(contributor, int) or not 0 <= contributor <= source_count:
+        if (
+            not isinstance(visible, int)
+            or isinstance(visible, bool)
+            or not isinstance(contributor, int)
+            or isinstance(contributor, bool)
+            or not 0 <= contributor <= visible <= source_count
+        ):
             raise RuntimeError(f"frame {index} producer contributor count is invalid")
-        if drawn != contributor:
-            raise RuntimeError(f"frame {index} Compact producer receipt violates D=C")
-        if frame.get("gpu_producer_draw_scope") != "exact_current_contributors":
+        expected_drawn = visible if expected_gpu_producer == "post_sort" else contributor
+        if drawn != expected_drawn:
+            equation = "D=V" if expected_gpu_producer == "post_sort" else "D=C"
+            raise RuntimeError(f"frame {index} producer receipt violates {equation}")
+        if frame.get("gpu_producer_draw_scope") != draw_scope:
             raise RuntimeError(f"frame {index} producer draw scope is not exact-current")
         if frame.get("gpu_producer_order_refreshed") is not True:
             raise RuntimeError(f"frame {index} producer did not refresh order")
@@ -1679,12 +1712,27 @@ def validate_run_artifact(
             raise RuntimeError("GPU producer terminal ledger contains a failure")
         if entry.get("producer") != expected_gpu_producer:
             raise RuntimeError("GPU producer terminal ledger contains the wrong producer")
-        if entry.get("source") != source_count or entry.get("drawn") != entry.get(
-            "contributor"
+        contributor = entry.get("contributor")
+        drawn = entry.get("drawn")
+        if (
+            entry.get("source") != source_count
+            or not isinstance(contributor, int)
+            or isinstance(contributor, bool)
+            or not isinstance(drawn, int)
+            or isinstance(drawn, bool)
+            or not 0 <= contributor <= drawn <= source_count
+            or (
+                expected_gpu_producer == "preproject"
+                and drawn != contributor
+            )
+            or entry.get("draw_scope") != draw_scope
         ):
             raise RuntimeError("GPU producer terminal ledger violates exact S/C/D")
-    if not frame_tickets.issubset(ledger_tickets):
-        raise RuntimeError("GPU producer terminal ledger is missing measured tickets")
+    if frame_tickets != ledger_tickets:
+        raise RuntimeError(
+            "GPU producer measured-frame and terminal ticket sets differ: "
+            f"frames={sorted(frame_tickets)} terminals={sorted(ledger_tickets)}"
+        )
 
 
 def device_info(adb: pathlib.Path | str, serial: str) -> dict[str, str]:
@@ -1747,8 +1795,8 @@ def parser() -> argparse.ArgumentParser:
         "--gpu-producer",
         choices=GPU_PRODUCERS,
         help=(
-            "strict Packed+GPU+Compact diagnostic producer; enables exact per-frame "
-            "S/C/D completion receipts and leaves product defaults unchanged"
+            "reserved for the deferred M2b real-window producer seam; the current "
+            "collector rejects this option before device collection"
         ),
     )
     result.add_argument("--repetitions", type=int, default=1, help="runs per backend")
@@ -1880,14 +1928,10 @@ def validate_args(args: argparse.Namespace) -> list[str]:
     if args.async_sort and any(backend != "cpu" for backend in backends):
         raise ValueError("--async-sort is only compatible with the cpu backend")
     if args.gpu_producer is not None:
-        if backends != ["gpu"]:
-            raise ValueError("--gpu-producer requires exactly one --backend gpu")
-        if args.geometry_path != "packed":
-            raise ValueError("--gpu-producer requires --geometry-path packed")
-        if args.async_sort or args.sort_interval != 1:
-            raise ValueError("--gpu-producer requires synchronous sort interval 1")
-        if args.camera_frame is not None:
-            raise ValueError("--gpu-producer requires camera trace sequence playback")
+        raise ValueError(
+            "--gpu-producer is Deferred until M2b provides a real-window producer "
+            "measurement seam; current M2a rejects the old independent path"
+        )
     if args.repetitions < 1:
         raise ValueError("--repetitions must be positive")
     if args.sort_interval < 1:

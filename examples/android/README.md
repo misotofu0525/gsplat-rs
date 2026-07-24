@@ -70,6 +70,12 @@ Host transaction/iteration wall time remains available; preprocess, sort, and
 queue-completion timing is emitted only from the same sample's order terminal,
 while raster timing is explicitly unavailable.
 
+Android GPU-producer collection is Deferred until M2b provides a real-window
+measurement seam. The collector rejects `--gpu-producer` before device work;
+its synthetic fixtures validate only the future canonical schema (PostSort =
+Candidate with `D=V`, Preproject = Compact with `D=C<=V`, and exact unique
+frame/terminal ticket-set equality), not a current device qualification.
+
 Formal trace evidence is also post-present and revision-safe. Each measured
 frame records the native session's actual f32 pose/intrinsics plus canonical
 row-major view, projection, and `projection * view` matrices. The collector
@@ -85,7 +91,11 @@ smoke details. The standalone logcat extractor also runs the collector's strict
 current-stats ledger validator when the manifest declares strict evidence;
 minimal fixtures and short device runs remain smoke/capacity evidence only.
 
-Renderer shutdown uses a generation-bound retiring owner slot. Lifecycle
+Renderer creation and shutdown use generation-bound Surface requests plus a
+retiring owner slot. A resize observed during native creation invalidates the
+older request before handle publication; that candidate is destroyed by its
+owner without rendering, and the newest valid dimensions are created after the
+slot is released. Lifecycle
 callbacks wait up to one second, then return with that slot still occupied if
 the owner thread remains inside JNI/driver work. A later Surface is remembered
 but cannot create a second native session; after the old owner alone destroys
