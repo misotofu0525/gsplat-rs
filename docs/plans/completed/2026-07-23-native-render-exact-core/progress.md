@@ -18,20 +18,20 @@ E8 = Accepted
 E9 = Accepted
 E10 = Accepted
 E11 = Accepted
-E12 = Active
+E12 = Accepted
+E13 = Accepted
 <!-- gsplat-program-task-states: end -->
 
 ## Package status
 
-- Package: E — Exact prepared plans and native execution, still shadowed.
-- Active task: E12 explicit shadow Surface parity for complete plans,
-  generations, lifecycle and terminal receipts.
-- Last completed batch: E11 mandatory comparable terminal sampler and sole
-  whole-plan controller across the three accepted Exact plans.
+- Package: E — Exact prepared plans and native execution, completed in shadow.
+- Active task: none. Package M starts with its separate M0 cutover/rollback
+  checklist; no product consumer has switched yet.
+- Last completed batch: E12 transactional Surface-shadow parity followed by
+  the E13 fixed-SHA ownership, correctness and evidence audit.
 - E1 state: Accepted after root fixed-SHA review and fast-forward integration
   of candidate `0496266cc73de5fc84acb7c393606fa68eb77623`.
 - Dependency: Package A/A9 Accepted.
-- Product default: unchanged legacy renderer/session path.
 - E8 feasibility audit stopped without changes after proving that E1 lacked a
   real device-owned GPU scene/preparation/encoder seam. Accepted E8a now owns
   that transaction and leaves the actual GPU PostSort plan implementable by a
@@ -42,9 +42,11 @@ E12 = Active
   E5 is Deferred with a clean tree because the reachable physical x86_64
   endpoint lacks AVX2/FMA and Rosetta/cross-compilation cannot qualify native
   performance. Neither outcome changes the scalar production leaves.
-- Performance rule: no fixed FPS or competitor percentage gate. Correctness,
-  exactness, fail-closed publication and truthful evidence are hard; measured
-  performance determines scoped admission or rejection.
+- Product default: unchanged legacy renderer/session path. Exact consumer
+  migration and legacy deletion remain Package M work.
+- Performance rule: correctness, exactness, fail-closed publication and
+  truthful evidence are hard; performance observations affect only scoped
+  admission and claims.
 
 ## E0 closeout
 
@@ -663,7 +665,7 @@ E12 = Active
 
 ## E12 explicit Surface-shadow activation contract
 
-- State: Active.
+- Final state: Accepted.
 - Exact baseline: `76f75bb52c93934ddaa3a3b2d76588754e854d2e`.
 - Writer branch/worktree: `codex/native-render-e12-surface-shadow` at
   `/Users/misotofu/.codex/worktrees/native-e12-writer/gsplat-rs`.
@@ -712,3 +714,60 @@ E12 = Active
 - Known correctness issue at activation: one—the premature semantic
   publication boundary described above. E12 cannot close until it is removed
   and the submitted-but-not-presented case is deterministic.
+
+## E12 transactional Surface-shadow closeout
+
+- Writer candidate: `7bc88fa7eb66ab28b5a82a61d10a4525deec90de`.
+- Review correction: `37c07dbcbc3fb17aa48c32c84f86bd02130af916`
+  resets the previous presentation receipt before every fallible preflight, so
+  a rejected target attempt cannot leave a stale successful receipt visible.
+- Root integration tip before E13 documentation:
+  `d721ea6cd0c334e28d3ad5c28792383524e27935`.
+- The first fixed-SHA review found the receipt-reset P2 above. The corrected
+  fixed tip received a second independent review with no remaining P0/P1/P2;
+  the P2 is closed rather than deferred into migration.
+- Renderer submission is now two-phase. Queue submission returns an
+  unpublished `SubmittedGpuFrame`; only a matching primitive target outcome
+  can validate and publish its `FrameState`, controller decision, sampler
+  ticket and immutable result. Abandoning, duplicating or finalizing a stale
+  transaction fails closed.
+- The private Surface host uses the existing lifecycle owner to acquire/retry,
+  appends capture to the Renderer-owned encoder, submits once, presents once,
+  marks capture presented and then publishes the exact frame. CPU PostSort,
+  GPU PostSort, GPU Preproject and Adaptive share that route.
+- SH0--SH3 offscreen parity remains covered by the common plan oracle. Fresh
+  Metal tests cover a complete SH3 Surface shadow for all three forced plans
+  plus Adaptive, including exact source membership and honest count semantics.
+- The actual `wgpu::Surface` acquire/present adapter is compiled and inspected
+  against the production lifecycle seam. Runtime E12 evidence uses an Apple
+  M4 Metal texture target plus injected successful presentation; it is not a
+  real window/swapchain or platform-consumer cutover claim.
+- Known correctness issues at closeout: none.
+
+## E13 Exact shadow-core package closeout
+
+- Final state: Accepted.
+- Audited fixed implementation tip:
+  `d721ea6cd0c334e28d3ad5c28792383524e27935`.
+- All three complete plans preserve one Exact contract and canonical raster.
+  Unsupported GPU preparation leaves the complete CPU PostSort fallback
+  eligible; no failure samples points, lowers SH, changes resolution or enters
+  Paged.
+- `PreparedRuntimeSlot` remains the sole shadow runtime, semantic generation,
+  controller, mandatory sampler and optional evidence owner. Surface and
+  offscreen hosts provide target mechanics without defining another policy or
+  result producer. The legacy product session remains intentionally separate
+  until Package M and is not represented as already deleted.
+- Fresh integration verification passed workspace check and tests; renderer
+  tests reported 400 passed and eight existing research tests ignored; strict
+  all-target Clippy; warning-free Rustdoc; wasm32 check; source-architecture
+  policy and self-tests; required Apple M4 Metal SortedAlpha conformance; and
+  C FFI, JNI and Swift smoke routes.
+- No performance benchmark was run for E12/E13. This closeout makes no FPS,
+  PlayCanvas, cross-device winner or consumer-readiness claim.
+- Endpoint boundary: real-window Surface execution and product consumer
+  cutovers remain M2 and M4--M6. Browser, Android A065 and iOS evidence from
+  the legacy product route is regression context, not new-core execution
+  evidence.
+- Known correctness issues at closeout: none.
+- Next eligible task: M0, in the separate migration package ledger.

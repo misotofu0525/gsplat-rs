@@ -31,9 +31,12 @@
   respectively own swapchain acquire/retry/present, transactional
   configuration/resize and native one-shot capture/readback;
   `offscreen/target.rs` and `offscreen/readback.rs` own the equivalent
-  offscreen leaves. `surface_presenter.rs` remains the legacy frame
-  orchestration facade and `surface_session.rs` owns runtime CPU/GPU/Adaptive
-  plus Packed GPU-producer selection. Paged files remain an explicit
+  offscreen leaves. The private Exact core under `renderer/`, `plans/`, `cpu/`
+  and `raster/` owns one prepared runtime, three complete plans, one whole-plan
+  controller and common offscreen/Surface-shadow execution. It is not yet a
+  product route. `surface_presenter.rs` remains the legacy frame orchestration
+  facade and `surface_session.rs` owns product CPU/GPU/Adaptive plus Packed
+  GPU-producer selection until Package M. Paged files remain an explicit
   diagnostic seam.
 - Native embedding goes through `crates/gsplat-ffi-c`.
 - Browser WebAssembly embedding goes through `crates/gsplat-web`.
@@ -88,8 +91,24 @@
   resource preflight reports capacity without silently changing geometry,
   membership, SH degree, or ordering backend
 
+- Private Exact shadow-core flow:
+  `PreparedRuntimeSlot` transactionally binds one exact Resident scene,
+  immutable contract, closed `PlanSet` and canonical raster
+  CPU PostSort, GPU PostSort and GPU Preproject each return one
+  generation-bound `ProjectedWork`; Adaptive selects only among complete
+  eligible plans and always retains the same-Exact CPU fallback
+  renderer owns semantic generations, one mandatory sampler, one controller,
+  command encoding/submission identity and the terminal frame result
+  offscreen supplies a texture/readback target, while Surface shadow supplies
+  acquire/retry/present mechanics through the existing lifecycle leaves
+  Surface queue submission remains unpublished until the matching primitive
+  presentation succeeds; abort, resize, stale or duplicate completion cannot
+  publish frame state or policy evidence
+  the actual `wgpu::Surface` adapter is compiled but product and real-window
+  cutover remain Package M work
+
 - Shared Surface frame flow:
-  `SurfaceRenderSession` in
+  the current product route still uses `SurfaceRenderSession` in
   `crates/gsplat-render-wgpu/src/surface_session.rs` owns `Renderer`,
   `SurfacePresenter`, camera revisions, CPU/GPU order state, Adaptive probes,
   ticketed measurements, and frame statistics
@@ -265,6 +284,11 @@
   raster path; Surface-only construction is explicit.
 - Surface frame scheduling belongs in `SurfaceRenderSession`, not in Web, FFI,
   desktop, Android, or Apple wrapper-specific state machines.
+- Within the private Exact core, `PreparedRuntimeSlot` is the sole semantic
+  generation, complete-plan controller, mandatory sampler and result owner.
+  Surface/offscreen hosts own target mechanics only. The legacy product owner
+  remains until the atomic Package M cutover and is not treated as already
+  deleted.
 - Production Packed keeps complete source membership and SH degree. CPU and
   GPU order must share visibility/depth/tie semantics, authoritative visible
   order, and the same exact raster contract; backend selection may not alter
@@ -293,6 +317,13 @@
 
 ## Hotspots
 
+- `crates/gsplat-render-wgpu/src/renderer/`: private Exact prepared-runtime,
+  semantic generations, two-phase submission/publication, mandatory sampling
+  and whole-plan Adaptive ownership
+- `crates/gsplat-render-wgpu/src/plans/`: closed CPU PostSort, GPU PostSort and
+  GPU Preproject complete plans plus the common `ProjectedWork` contract
+- `crates/gsplat-render-wgpu/src/surface/shadow.rs`: private Surface target
+  adapter proving post-present publication without changing product routing
 - `crates/gsplat-render-wgpu/src/scene/`: exact-count compact CPU ownership,
   transactional building, codec reports and CPU byte accounting
 - `crates/gsplat-render-wgpu/src/data/layout.rs`: fixed Resident and shared GPU

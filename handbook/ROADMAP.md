@@ -23,11 +23,10 @@ Operational facts and command entrypoints live in `handbook/PROJECT_CONTEXT.md` 
 
 1. Keep bounded PLY import, the Direct-f32 oracle, and direct-to-Resident
    exact-count Packed loading correct and well tested.
-2. Keep portable GPU visibility/radix/indirect draw and measured CPU/GPU
-   Adaptive selection shared across platforms; next compare complete GPU
-   execution plans (`PostSort+Candidate`, `PostSort+Compact`, and
-   `Preproject+Compact`) before the outer CPU/GPU choice. Do not replace either
-   decision with a fixed point-count threshold.
+2. Keep portable GPU visibility/radix/indirect draw and measured whole-plan
+   Adaptive selection shared across platforms. Migrate the completed private
+   Exact core atomically—native offscreen first, then the shared Surface
+   owner—without replacing measured selection with a point-count threshold.
 3. Expand conformance and performance evidence across real scenes and
    representative desktop/mobile resolutions, including stage timings and
    image-quality comparisons, before widening APIs or making competitor claims.
@@ -80,6 +79,26 @@ Operational facts and command entrypoints live in `handbook/PROJECT_CONTEXT.md` 
   experimental Web API boundary. They are not a stable v0.1 release surface;
   Web renderer changes require verified wasm build and browser smoke evidence.
 - The Web example is validation example support for browser PLY loading, the WebGL2 fallback, and hosting the generated wasm package; it is not a polished web product surface.
+
+## Native Exact Shadow Core (completed 2026-07-24)
+
+Package E completed a private prepared-plan renderer with CPU PostSort, GPU
+PostSort and GPU Preproject as closed same-Exact plans, one mandatory sampler,
+one whole-plan Adaptive controller and one canonical raster. Its offscreen and
+Surface-shadow adapters preserve complete membership, SH0--SH3, stable full32
+ordering, honest `S/V/C/D` semantics and exact backing dimensions.
+
+The Surface transaction separates queue submission from semantic publication:
+only a matching successful primitive presentation publishes frame state,
+controller progress and the terminal receipt. Failed acquisition, abandoned
+presentation, resize, stale generation and duplicate finalization fail closed.
+
+This is an internal architecture milestone, not a product switch. The current
+public/native/Web/mobile consumers remain on the legacy renderer/session path.
+Package M starts with M0's cutover and rollback checklist, then migrates native
+offscreen in M1 and the shared Surface owner in M2 before M4--M6 platform
+consumer cutovers. Real-window new-core Surface execution is therefore still a
+migration requirement rather than a completed Package E claim.
 
 ## Full-Count Resident Evidence Boundary (completed 2026-07-23)
 
