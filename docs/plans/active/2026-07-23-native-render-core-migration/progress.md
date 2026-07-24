@@ -26,8 +26,8 @@ M2 = Active
   `e26a1df39780e744112924eb378e098c29be7cd4`.
 - M1 state: Accepted at integrated implementation/evidence tip
   `dc3e0de65073f819b714229b726ca55f47c6e6d6`.
-- Active task: M2, including its compatibility preparation and migration of the
-  shared real-window Surface to the accepted Exact core.
+- Active task: M2. M2p1 is Accepted; the current slice is M2p2's additive,
+  stateless C v1 bridge before any legacy getter or platform consumer changes.
 - Product state at M2 activation: native Packed offscreen, desktop
   non-interactive and bench-runner use the Exact runtime; the interactive
   `SurfaceRenderSession` remains legacy until its complete M2 candidate is
@@ -255,6 +255,30 @@ M2 = Active
      extend the native Surface collector/capture path so the four policies emit
      canonical artifacts and final frames. It does not redesign render
      semantics.
+- **M2p1 closeout: Accepted.** The independently reviewed candidate range was
+  `3874b00bebb2b3c8c7496bb04d3e20c8e1bd2ff7..a7799fee850f88220d65f38b3781c6d678574927`;
+  its three patches are integrated as `cf5b74b`, `842cabe` and `702aca3`.
+  Renderer/PlanSampler remain the sole request, ticket, generation, bounded
+  queue and terminal owners. A poll now consumes at most one pre-ticket
+  resolution or one atomic terminal; additional ready terminals stay in the
+  Renderer queue and are returned exactly once in ticket order.
+- Each terminal carries one inseparable ticket, complete frame/plan/generation
+  join identity, S/V/C/D values and count semantics. Surface exposes only
+  immutable value DTOs plus request/submission/poll delegates. The still-legacy
+  Surface returns `GpuUnavailable` / `NotRequested` / `Empty`, including when a
+  Packed renderer happens to own the unrelated M1 offscreen Exact runtime; it
+  never targets that runtime or creates a second state owner.
+- Three fixed-SHA reviews were required. The first rejected unscoped observer
+  resource creation and queue contamination; the second confirmed those fixes
+  but rejected the batch-drain and unreachable Surface seam; the final review
+  found no P0/P1/P2 findings. Root integration re-ran the 13 focused receipt
+  tests, the real Packed legacy-isolation regression, forced Metal SortedAlpha
+  conformance, architecture checks and FFI smoke successfully.
+- M2p1 changed no C/header, Android, Apple, Web, WGSL or product route and did
+  not alter an existing Surface output layout. M2p2 may therefore remain a
+  direct value translation over the accepted Surface seam and must not add a C
+  queue, cache, tombstone, generation or policy owner. The SHA of this
+  root-owned closeout commit is the M2p2 base and is reported in its handoff.
 - M2p3 Android and Apple implementation may run in parallel because their paths
   are disjoint; all dependent slices remain serial. Root accepts and integrates
   every fixed candidate separately, then owns the Apple M4 real-window run and
