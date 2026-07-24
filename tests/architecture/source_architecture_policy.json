@@ -177,13 +177,6 @@
       "exit_condition": "After product cutover, move controller, adaptive and evidence ownership out of the legacy session or delete it."
     },
     {
-      "path": "examples/desktop/src/main.rs",
-      "a0_physical_loc": 4135,
-      "baseline_physical_loc": 4135,
-      "owner_task": "M1",
-      "exit_condition": "Separate desktop host, CLI and benchmark responsibilities so main.rs is composition only."
-    },
-    {
       "path": "crates/gsplat-io-ply/src/lib.rs",
       "a0_physical_loc": 2852,
       "baseline_physical_loc": 2852,
@@ -221,13 +214,6 @@
       "exit_condition": "Separate SPZ metadata, bounded decode and import policy while preserving the isolated format contract.",
       "review_task": "M8",
       "review_action": "Open an independent IO ownership plan no later than M8 and either split metadata, bounded decode and import policy into cohesive owners or re-prove one responsibility. This is the single renewal; do not renew it again and do not use a fixed line count as the completion condition."
-    },
-    {
-      "path": "tools/bench-runner/src/main.rs",
-      "a0_physical_loc": 1300,
-      "baseline_physical_loc": 1300,
-      "owner_task": "M1",
-      "exit_condition": "Separate benchmark CLI, artifact collection and renderer-host responsibilities so main.rs is composition only."
     }
   ],
   "exceptions": [],
