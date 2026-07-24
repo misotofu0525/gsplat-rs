@@ -319,9 +319,11 @@ impl PreparedRuntime {
 ///
 /// This is not a second product renderer: it owns only the prepared bundle and
 /// its complete input identity. Any optional GPU graph stays under the sole
-/// `SceneRuntime` owner and uses the caller's device; the slot has no target,
-/// controller, sampler, evidence sink or presentation behavior. It publishes
-/// a semantic frame only through the single `submit_encoded_frame` boundary.
+/// `SceneRuntime` owner and uses the caller's device. The slot owns no target
+/// or presentation behavior; it does own the shadow runtime's sole whole-plan
+/// controller, mandatory completion sampler, and optional evidence sink. It
+/// publishes a semantic frame only through the single
+/// `submit_encoded_frame` boundary.
 pub(crate) struct PreparedRuntimeSlot {
     runtime: PreparedRuntime,
     frame: FrameState,

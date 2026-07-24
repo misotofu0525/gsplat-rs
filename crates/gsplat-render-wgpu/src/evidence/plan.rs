@@ -205,7 +205,8 @@ impl PlanSample {
 
         match (self.plan_id(), self.order_lane, self.count_semantics) {
             (PlanId::CpuPostSort, OrderLane::Cpu, PlanCountSemantics::DirectDrawEqualsVisible) => {
-                self.visible_count.is_some()
+                self.visible_count
+                    .is_some_and(|visible| visible <= self.comparison().source_count())
                     && self.draw_count == self.visible_count
                     && self.contributor_count.is_none()
             }

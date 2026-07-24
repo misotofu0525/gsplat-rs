@@ -269,6 +269,34 @@ fn zero_nonfinite_and_negative_terminal_durations_fail_closed() {
 }
 
 #[test]
+fn cpu_visible_count_above_source_count_fails_closed_and_releases_pending() {
+    let eligible = [PlanId::CpuPostSort, PlanId::GpuPostSort];
+    let mut controller = controller(&eligible);
+    let decision = controller.choose_adaptive().expect("bootstrap");
+    let ticket = PlanSampleTicket::new(
+        19,
+        decision.probe_generation(),
+        decision.comparison(),
+        decision.plan(),
+    );
+    let impossible = PlanSample::new(
+        ticket,
+        FRAME,
+        OrderLane::Cpu,
+        19,
+        Some(130),
+        None,
+        Some(130),
+        PlanCountSemantics::DirectDrawEqualsVisible,
+        1.0,
+    );
+    assert!(controller.register_pending(decision, ticket));
+    assert_eq!(controller.observe(impossible), SampleDisposition::Rejected);
+    assert_eq!(controller.pending_for_test(), None);
+    assert_eq!(controller.incumbent_for_test(), PlanId::CpuPostSort);
+}
+
+#[test]
 fn optional_ring_pressure_cannot_change_controller_decisions() {
     let eligible = [PlanId::CpuPostSort, PlanId::GpuPostSort];
     let mut observed = controller(&eligible);
