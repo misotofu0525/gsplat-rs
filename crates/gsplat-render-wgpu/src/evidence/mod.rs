@@ -1,4 +1,5 @@
 mod order;
+mod plan;
 mod producer;
 mod projected;
 mod ring;
@@ -8,6 +9,7 @@ pub use order::{
     SurfaceCpuOrderMeasurement, SurfaceOrderMeasurement, SurfaceOrderMeasurementFailure,
     SurfaceOrderMeasurementFailureReason, SurfaceTimingSource,
 };
+pub(crate) use plan::{PlanComparisonKey, PlanCountSemantics, PlanSample, PlanSampleTicket};
 pub use producer::{
     SurfaceGpuProducerDrawScope, SurfaceGpuProducerMeasurement,
     SurfaceGpuProducerMeasurementFailure, SurfaceGpuProducerMeasurementFailureReason,

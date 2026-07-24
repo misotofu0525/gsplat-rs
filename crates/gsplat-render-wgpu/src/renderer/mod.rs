@@ -1,13 +1,18 @@
 //! Shadow-only Exact runtime preparation and frame dispatch.
 
+mod controller;
 pub(crate) mod frame;
 pub(crate) mod gpu_prepare;
+mod sampler;
 
 use std::sync::Arc;
 
 use gsplat_core::Camera;
 use thiserror::Error;
 
+use crate::evidence::{
+    BoundedEvidenceRing, PlanComparisonKey, PlanCountSemantics, PlanSample, PlanSampleTicket,
+};
 use crate::plans::{
     DirectCountSemantics, FrameIdentity, GpuCapabilityReceipt, GpuOwnerToken,
     GpuPlanAdmissionRequest, IndirectCountSemantics, OrderLane, PlanExecutionContext,
@@ -16,10 +21,12 @@ use crate::plans::{
 use crate::raster::{CanonicalRaster, CanonicalRasterError, CanonicalRasterInput};
 use crate::scene::{ResidentSceneCpu, ResidentSceneError, SceneRuntime};
 
+use controller::{PlanDecision, SampleDisposition, WholePlanController, WholePlanControllerError};
 use frame::{FrameState, GenerationError, Viewport};
 use gpu_prepare::{
     GpuExecutionOwner, GpuPreparationError, GpuPreparationReceipt, GpuScenePreparation,
 };
+use sampler::{PlanSampleDescriptor, PlanSampler, PlanSamplerError};
 
 /// The only E1 contract: Exact fidelity over one complete resident scene.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -79,6 +86,10 @@ pub(crate) enum FrameExecutionError {
     EncodeAttemptExhausted,
     #[error("pending GPU frame is stale or inconsistent at {component}")]
     PendingFrameMismatch { component: &'static str },
+    #[error("whole-plan controller failed: {0}")]
+    Controller(#[from] WholePlanControllerError),
+    #[error("mandatory whole-plan sampler failed: {0}")]
+    Sampler(#[from] PlanSamplerError),
 }
 
 #[derive(Debug, Error)]
@@ -99,12 +110,7 @@ pub(crate) enum GpuPreparationStatus {
     Omitted(GpuRuntimePreparationError),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum RasterCountSemantics {
-    DirectDrawEqualsVisible,
-    IndirectDrawEqualsVisible,
-    IndirectDrawEqualsContributor,
-}
+pub(crate) type RasterCountSemantics = PlanCountSemantics;
 
 /// Immutable identity for one complete Exact shadow-core submission. Numeric
 /// V/C/D remain optional when the authoritative count is GPU-owned; the count
@@ -121,6 +127,7 @@ pub(crate) struct GpuFrameSubmission {
     draw_count: Option<u32>,
     count_semantics: RasterCountSemantics,
     encode_attempt: u64,
+    plan_sample_ticket: Option<PlanSampleTicket>,
 }
 
 struct FrameSubmissionMetadata {
@@ -146,6 +153,8 @@ pub(crate) struct PendingGpuFrame {
     candidate_frame: FrameState,
     encode_attempt: u64,
     metadata: FrameSubmissionMetadata,
+    decision: PlanDecision,
+    completion_started: crate::TimerInstant,
 }
 
 impl PendingGpuFrame {
@@ -157,8 +166,14 @@ impl PendingGpuFrame {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PlanSelection {
+    Forced(PlanId),
+    Adaptive,
+}
+
 pub(crate) struct GpuFrameEncodeRequest<'a> {
-    requested: PlanId,
+    selection: PlanSelection,
     camera: &'a Camera,
     viewport: Viewport,
     target: &'a wgpu::TextureView,
@@ -176,7 +191,24 @@ impl<'a> GpuFrameEncodeRequest<'a> {
         clear: wgpu::Color,
     ) -> Self {
         Self {
-            requested,
+            selection: PlanSelection::Forced(requested),
+            camera,
+            viewport,
+            target,
+            target_format,
+            clear,
+        }
+    }
+
+    pub(crate) const fn adaptive(
+        camera: &'a Camera,
+        viewport: Viewport,
+        target: &'a wgpu::TextureView,
+        target_format: wgpu::TextureFormat,
+        clear: wgpu::Color,
+    ) -> Self {
+        Self {
+            selection: PlanSelection::Adaptive,
             camera,
             viewport,
             target,
@@ -230,6 +262,10 @@ impl GpuFrameSubmission {
 
     pub(crate) const fn encode_attempt(&self) -> u64 {
         self.encode_attempt
+    }
+
+    pub(crate) const fn plan_sample_ticket(&self) -> Option<PlanSampleTicket> {
+        self.plan_sample_ticket
     }
 }
 
@@ -291,6 +327,9 @@ pub(crate) struct PreparedRuntimeSlot {
     frame: FrameState,
     gpu_owner: Option<GpuExecutionOwner>,
     latest_encode_attempt: u64,
+    controller: WholePlanController,
+    sampler: PlanSampler,
+    optional_plan_evidence: Option<BoundedEvidenceRing<PlanSample>>,
 }
 
 struct StagedGpuRuntimeAdmission {
@@ -304,11 +343,20 @@ struct StagedGpuRuntimeAdmission {
 impl PreparedRuntimeSlot {
     pub(crate) fn prepare(resident: ResidentSceneCpu) -> Result<Self, PreparedRuntimeError> {
         let frame = FrameState::initial();
+        let runtime = PreparedRuntime::prepare(resident, frame)?;
+        let controller = WholePlanController::new(
+            runtime.plans.fallback(),
+            runtime.plans.eligible(),
+            comparison_key(&runtime, frame.identity()),
+        );
         Ok(Self {
-            runtime: PreparedRuntime::prepare(resident, frame)?,
+            runtime,
             frame,
             gpu_owner: None,
             latest_encode_attempt: 0,
+            controller,
+            sampler: PlanSampler::new(),
+            optional_plan_evidence: None,
         })
     }
 
@@ -318,11 +366,19 @@ impl PreparedRuntimeSlot {
     ) -> Result<(), PreparedRuntimeError> {
         let next_frame = self.frame.after_runtime_replacement()?;
         let next_runtime = PreparedRuntime::prepare(resident, next_frame)?;
+        let controller = WholePlanController::new(
+            next_runtime.plans.fallback(),
+            next_runtime.plans.eligible(),
+            comparison_key(&next_runtime, next_frame.identity()),
+        );
         let candidate = Self {
             runtime: next_runtime,
             frame: next_frame,
             gpu_owner: None,
             latest_encode_attempt: 0,
+            controller,
+            sampler: PlanSampler::new(),
+            optional_plan_evidence: None,
         };
         *self = candidate;
         Ok(())
@@ -384,6 +440,7 @@ impl PreparedRuntimeSlot {
         self.runtime.raster = Some(staged.raster);
         self.frame = staged.frame;
         self.gpu_owner = Some(staged.owner);
+        self.reset_plan_policy_for_current_runtime();
     }
 
     /// Best-effort admission for the future closed plan set. Failure leaves
@@ -438,6 +495,76 @@ impl PreparedRuntimeSlot {
     pub(crate) fn last_usable_cpu_order(&self) -> Option<&[u32]> {
         self.runtime.plans.last_usable_cpu_order()
     }
+
+    fn reset_plan_policy_for_current_runtime(&mut self) {
+        self.sampler.invalidate();
+        let key = comparison_key(&self.runtime, self.frame.identity());
+        let _ = self.controller.synchronize(
+            self.runtime.plans.fallback(),
+            self.runtime.plans.eligible(),
+            key,
+        );
+    }
+
+    fn synchronize_plan_policy(&mut self, frame: FrameIdentity) {
+        let key = comparison_key(&self.runtime, frame);
+        if self.controller.synchronize(
+            self.runtime.plans.fallback(),
+            self.runtime.plans.eligible(),
+            key,
+        ) {
+            self.sampler.invalidate();
+        }
+    }
+
+    fn poll_plan_sampler(&mut self) -> Option<(PlanSample, SampleDisposition)> {
+        let owner = self.gpu_owner.as_ref()?;
+        let sample = self.sampler.poll(owner.device())?;
+        // Mandatory policy consumes the immutable sample before any optional
+        // observer can drop or overwrite its copy.
+        let disposition = self.controller.observe(sample);
+        if let Some(ring) = &mut self.optional_plan_evidence {
+            ring.push(sample);
+        }
+        Some((sample, disposition))
+    }
+
+    #[cfg(test)]
+    fn set_test_controller_config(&mut self, config: controller::ControllerConfig) {
+        self.sampler.invalidate();
+        self.controller.set_config_for_test(config);
+    }
+
+    #[cfg(test)]
+    fn enable_test_plan_evidence(&mut self) {
+        self.optional_plan_evidence = Some(BoundedEvidenceRing::new());
+    }
+
+    #[cfg(test)]
+    fn drain_test_plan_evidence(&mut self) -> Vec<PlanSample> {
+        self.optional_plan_evidence
+            .as_mut()
+            .map(|ring| ring.drain().collect())
+            .unwrap_or_default()
+    }
+
+    #[cfg(test)]
+    fn poll_test_plan_sampler(&mut self) -> Option<(PlanSample, SampleDisposition)> {
+        self.poll_plan_sampler()
+    }
+
+    #[cfg(test)]
+    const fn sampler_pending_for_test(&self) -> bool {
+        self.sampler.has_pending()
+    }
+}
+
+fn comparison_key(runtime: &PreparedRuntime, frame: FrameIdentity) -> PlanComparisonKey {
+    PlanComparisonKey::new(
+        frame,
+        runtime.contract.source_count,
+        runtime.contract.sh_degree,
+    )
 }
 
 /// Sole prepared-plan frame dispatch. It delegates the closed dispatch to
@@ -502,6 +629,8 @@ pub(crate) fn encode_frame_gpu(
     slot: &mut PreparedRuntimeSlot,
     request: GpuFrameEncodeRequest<'_>,
 ) -> Result<PendingGpuFrame, FrameExecutionError> {
+    let completion_started = crate::timer_now();
+    let _ = slot.poll_plan_sampler();
     let encode_attempt = slot
         .latest_encode_attempt
         .checked_add(1)
@@ -514,54 +643,75 @@ pub(crate) fn encode_frame_gpu(
     let candidate_frame = slot
         .frame
         .candidate_for_frame(*request.camera, request.viewport)?;
-    let owner = slot
+    slot.synchronize_plan_policy(candidate_frame.identity());
+    let decision = match request.selection {
+        PlanSelection::Forced(plan) => slot.controller.choose_forced(plan),
+        PlanSelection::Adaptive => slot.controller.choose_adaptive()?,
+    };
+
+    let encoded = (|| {
+        let owner = slot
+            .gpu_owner
+            .as_ref()
+            .ok_or(GpuPreparationError::Unavailable)?;
+        let PreparedRuntime {
+            contract,
+            scene,
+            plans,
+            raster,
+        } = &mut slot.runtime;
+        let raster = raster.as_ref().ok_or(GpuPreparationError::Unavailable)?;
+        raster.validate_target_format(request.target_format)?;
+        let mut encoder = owner
+            .device()
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("gsplat-exact-frame-encoder"),
+            });
+        let work = plans.execute(
+            decision.plan(),
+            scene,
+            PlanFrameInput::new(
+                request.camera,
+                candidate_frame.identity(),
+                contract.source_count,
+                request.viewport.width(),
+                request.viewport.height(),
+            ),
+            PlanExecutionContext::Gpu(owner.context(owner.queue(), &mut encoder)?),
+        )?;
+        let (input, metadata) = canonical_input_for_work(&work, owner.token())?;
+        raster.encode(
+            &mut encoder,
+            request.target,
+            request.target_format,
+            request.clear,
+            input,
+        )?;
+        drop(work);
+        Ok::<_, FrameExecutionError>((encoder, metadata))
+    })();
+    let (encoder, metadata) = match encoded {
+        Ok(encoded) => encoded,
+        Err(error) => {
+            slot.controller.execution_failed(decision);
+            return Err(error);
+        }
+    };
+    let pending_owner = slot
         .gpu_owner
         .as_ref()
-        .ok_or(GpuPreparationError::Unavailable)?;
-
-    let PreparedRuntime {
-        contract,
-        scene,
-        plans,
-        raster,
-    } = &mut slot.runtime;
-    let raster = raster.as_ref().ok_or(GpuPreparationError::Unavailable)?;
-    raster.validate_target_format(request.target_format)?;
-    let mut encoder = owner
-        .device()
-        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("gsplat-exact-frame-encoder"),
-        });
-    let work = plans.execute(
-        request.requested,
-        scene,
-        PlanFrameInput::new(
-            request.camera,
-            candidate_frame.identity(),
-            contract.source_count,
-            request.viewport.width(),
-            request.viewport.height(),
-        ),
-        PlanExecutionContext::Gpu(owner.context(owner.queue(), &mut encoder)?),
-    )?;
-    let (input, metadata) = canonical_input_for_work(&work, owner.token())?;
-    raster.encode(
-        &mut encoder,
-        request.target,
-        request.target_format,
-        request.clear,
-        input,
-    )?;
-
-    // End every scene/plan borrow before returning the owned transaction.
-    drop(work);
+        .ok_or(GpuPreparationError::Unavailable)?
+        .token()
+        .clone();
     Ok(PendingGpuFrame {
         encoder,
-        owner: owner.token().clone(),
+        owner: pending_owner,
         base_frame,
         candidate_frame,
         encode_attempt,
         metadata,
+        decision,
+        completion_started,
     })
 }
 
@@ -611,12 +761,56 @@ fn submit_pending_frame(
             component: "latest encode attempt",
         });
     }
+    if pending.decision.plan() != pending.metadata.plan
+        || pending.decision.comparison() != comparison_key(&slot.runtime, pending.metadata.frame)
+    {
+        return Err(FrameExecutionError::PendingFrameMismatch {
+            component: "whole-plan decision identity",
+        });
+    }
 
-    let command_buffer = pending.encoder.finish();
-    let submission_index = owner
-        .queue()
-        .submit(std::iter::once(command_buffer).chain(followups));
+    let queue = Arc::clone(owner.queue());
+    let mut command_buffers = Vec::with_capacity(2);
+    command_buffers.push(pending.encoder.finish());
+    command_buffers.extend(followups);
+    let terminal_index = command_buffers.len() - 1;
+    let mut plan_sample_ticket = None;
+    if pending.decision.formal_kind().is_some() {
+        if !slot.controller.can_arm(pending.decision) {
+            return Err(FrameExecutionError::PendingFrameMismatch {
+                component: "formal whole-plan sample",
+            });
+        }
+        let ticket = slot.sampler.arm(
+            &command_buffers[terminal_index],
+            PlanSampleDescriptor {
+                probe_generation: pending.decision.probe_generation(),
+                comparison: pending.decision.comparison(),
+                frame: pending.metadata.frame,
+                plan: pending.metadata.plan,
+                order_lane: pending.metadata.order_lane,
+                order_generation: pending.metadata.order_generation,
+                visible_count: pending.metadata.visible_count,
+                contributor_count: pending.metadata.contributor_count,
+                draw_count: pending.metadata.draw_count,
+                count_semantics: pending.metadata.count_semantics,
+            },
+            pending.completion_started,
+        )?;
+        if !slot.controller.register_pending(pending.decision, ticket) {
+            slot.sampler.invalidate();
+            return Err(FrameExecutionError::PendingFrameMismatch {
+                component: "formal whole-plan ticket",
+            });
+        }
+        plan_sample_ticket = Some(ticket);
+    }
+
+    let submission_index = queue.submit(command_buffers);
     slot.frame = pending.candidate_frame;
+    if plan_sample_ticket.is_none() {
+        slot.controller.submitted_without_sample(pending.decision);
+    }
     Ok(GpuFrameSubmission {
         submission_index,
         frame: pending.metadata.frame,
@@ -629,6 +823,7 @@ fn submit_pending_frame(
         draw_count: pending.metadata.draw_count,
         count_semantics: pending.metadata.count_semantics,
         encode_attempt: pending.encode_attempt,
+        plan_sample_ticket,
     })
 }
 
@@ -765,5 +960,7 @@ fn execute_prepared_runtime<'runtime>(
 
 #[cfg(test)]
 mod contract_tests;
+#[cfg(test)]
+mod e11_tests;
 #[cfg(test)]
 pub(crate) mod tests;

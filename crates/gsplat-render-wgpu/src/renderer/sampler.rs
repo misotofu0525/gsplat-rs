@@ -1,0 +1,140 @@
+//! Mandatory non-blocking completion sampler for complete Exact plans.
+
+use std::sync::{
+    Arc,
+    atomic::{AtomicU8, AtomicU32, Ordering},
+};
+
+use thiserror::Error;
+
+use crate::TimerInstant;
+use crate::evidence::{PlanComparisonKey, PlanCountSemantics, PlanSample, PlanSampleTicket};
+use crate::plans::{FrameIdentity, OrderLane, PlanId};
+use crate::timer_elapsed_ms;
+
+const PENDING: u8 = 0;
+const COMPLETE: u8 = 1;
+
+#[derive(Debug, Error, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PlanSamplerError {
+    #[error("a formal whole-plan completion sample is already pending")]
+    Busy,
+    #[error("whole-plan completion ticket space is exhausted")]
+    TicketExhausted,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(super) struct PlanSampleDescriptor {
+    pub(super) probe_generation: u64,
+    pub(super) comparison: PlanComparisonKey,
+    pub(super) frame: FrameIdentity,
+    pub(super) plan: PlanId,
+    pub(super) order_lane: OrderLane,
+    pub(super) order_generation: u64,
+    pub(super) visible_count: Option<u32>,
+    pub(super) contributor_count: Option<u32>,
+    pub(super) draw_count: Option<u32>,
+    pub(super) count_semantics: PlanCountSemantics,
+}
+
+struct PendingTerminalSample {
+    descriptor: PlanSampleDescriptor,
+    ticket: PlanSampleTicket,
+    state: Arc<AtomicU8>,
+    completion_ms_bits: Arc<AtomicU32>,
+}
+
+/// One mandatory slot is sufficient because the controller never schedules a
+/// second formal sample until the first has reached a terminal callback.
+pub(super) struct PlanSampler {
+    next_ticket: u64,
+    pending: Option<PendingTerminalSample>,
+}
+
+impl PlanSampler {
+    pub(super) const fn new() -> Self {
+        Self {
+            next_ticket: 1,
+            pending: None,
+        }
+    }
+
+    /// Binds a ticket to the final command buffer of the definite submission.
+    /// The callback writes only two atomics and never blocks or reads GPU data.
+    pub(super) fn arm(
+        &mut self,
+        command_buffer: &wgpu::CommandBuffer,
+        descriptor: PlanSampleDescriptor,
+        completion_started: TimerInstant,
+    ) -> Result<PlanSampleTicket, PlanSamplerError> {
+        if self.pending.is_some() {
+            return Err(PlanSamplerError::Busy);
+        }
+        let ticket_number = self.next_ticket;
+        self.next_ticket = self
+            .next_ticket
+            .checked_add(1)
+            .ok_or(PlanSamplerError::TicketExhausted)?;
+        let ticket = PlanSampleTicket::new(
+            ticket_number,
+            descriptor.probe_generation,
+            descriptor.comparison,
+            descriptor.plan,
+        );
+        let state = Arc::new(AtomicU8::new(PENDING));
+        let completion_ms_bits = Arc::new(AtomicU32::new(0));
+        let callback_state = Arc::clone(&state);
+        let callback_completion = Arc::clone(&completion_ms_bits);
+        command_buffer.on_submitted_work_done(move || {
+            callback_completion.store(
+                timer_elapsed_ms(completion_started).to_bits(),
+                Ordering::Relaxed,
+            );
+            callback_state.store(COMPLETE, Ordering::Release);
+        });
+        self.pending = Some(PendingTerminalSample {
+            descriptor,
+            ticket,
+            state,
+            completion_ms_bits,
+        });
+        Ok(ticket)
+    }
+
+    pub(super) fn poll(&mut self, device: &wgpu::Device) -> Option<PlanSample> {
+        let _ = device.poll(wgpu::PollType::Poll);
+        let pending = self.pending.as_ref()?;
+        if pending.state.load(Ordering::Acquire) != COMPLETE {
+            return None;
+        }
+        let completion_ms = f32::from_bits(pending.completion_ms_bits.load(Ordering::Relaxed));
+        let descriptor = pending.descriptor;
+        let ticket = pending.ticket;
+        self.pending = None;
+        Some(PlanSample::new(
+            ticket,
+            descriptor.frame,
+            descriptor.order_lane,
+            descriptor.order_generation,
+            descriptor.visible_count,
+            descriptor.contributor_count,
+            descriptor.draw_count,
+            descriptor.count_semantics,
+            completion_ms,
+        ))
+    }
+
+    pub(super) fn invalidate(&mut self) {
+        // E11 tickets are private shadow-policy identities, not public
+        // receipts with a terminal failure queue. Runtime, plan-set or key
+        // replacement therefore expires the ticket by dropping this sole
+        // owner. The old callback retains only its atomics, so late completion
+        // cannot enter the replacement controller or optional evidence ring.
+        self.pending = None;
+    }
+
+    #[cfg(test)]
+    pub(super) const fn has_pending(&self) -> bool {
+        self.pending.is_some()
+    }
+}
