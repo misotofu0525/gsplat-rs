@@ -14,8 +14,8 @@ use crate::timer_elapsed_ms;
 
 use super::current_stats::{
     ArmedCurrentStats, CurrentStatsFrameCounts, CurrentStatsHandoff, CurrentStatsLane,
-    CurrentStatsPoll, CurrentStatsRequest, CurrentStatsSubmission, CurrentStatsTicket,
-    StagedCurrentStats,
+    CurrentStatsPoll, CurrentStatsReadbackPool, CurrentStatsRequest, CurrentStatsSubmission,
+    CurrentStatsTicket, StagedCurrentStats,
 };
 
 const PENDING: u8 = 0;
@@ -69,6 +69,7 @@ pub(super) struct PlanSampler {
     next_ticket: u64,
     pending: Option<PendingTerminalSample>,
     current_stats: CurrentStatsLane,
+    observer_since_formal: bool,
 }
 
 impl PlanSampler {
@@ -77,6 +78,7 @@ impl PlanSampler {
             next_ticket: 1,
             pending: None,
             current_stats: CurrentStatsLane::new(),
+            observer_since_formal: false,
         }
     }
 
@@ -186,8 +188,12 @@ impl PlanSampler {
         }
     }
 
-    pub(super) fn request_current_stats(&mut self, device: &wgpu::Device) -> CurrentStatsRequest {
-        self.current_stats.request(device)
+    pub(super) fn install_current_stats_capability(&mut self, pool: CurrentStatsReadbackPool) {
+        self.current_stats.install_capability(pool);
+    }
+
+    pub(super) fn request_current_stats(&mut self) -> CurrentStatsRequest {
+        self.current_stats.request()
     }
 
     pub(super) fn encode_current_stats(
@@ -207,7 +213,9 @@ impl PlanSampler {
         command_buffer: &wgpu::CommandBuffer,
         staged: StagedCurrentStats,
     ) -> ArmedCurrentStats {
-        self.current_stats.arm(command_buffer, staged)
+        let armed = self.current_stats.arm(command_buffer, staged);
+        self.observer_since_formal = true;
+        armed
     }
 
     pub(super) fn commit_current_stats(
@@ -245,7 +253,8 @@ impl PlanSampler {
     }
 
     pub(super) fn current_stats_replacement_handoff(&self) -> CurrentStatsHandoff {
-        self.current_stats.replacement_handoff()
+        self.current_stats
+            .replacement_handoff(self.observer_since_formal)
     }
 
     pub(super) const fn has_current_stats_request(&self) -> bool {
@@ -253,7 +262,23 @@ impl PlanSampler {
     }
 
     pub(super) fn import_current_stats_handoff(&mut self, handoff: CurrentStatsHandoff) {
-        self.current_stats.import_handoff(handoff);
+        self.observer_since_formal = self.current_stats.import_handoff(handoff);
+    }
+
+    /// A pending request receives one bounded turn before a formal sample when
+    /// no observer has run since the preceding formal boundary. Once any
+    /// observer is submitted, formal work takes priority after the queue-safe
+    /// boundary, so a stream of requests cannot starve controller sampling.
+    pub(super) const fn should_yield_formal_to_current_stats(&self) -> bool {
+        self.current_stats.request_pending() && !self.observer_since_formal
+    }
+
+    pub(super) fn current_stats_formal_queue_safe_at_frame_entry(&mut self) -> bool {
+        self.current_stats.formal_queue_safe_at_frame_entry()
+    }
+
+    pub(super) fn note_formal_sample_published(&mut self) {
+        self.observer_since_formal = false;
     }
 
     #[cfg(test)]
@@ -264,6 +289,21 @@ impl PlanSampler {
     #[cfg(test)]
     pub(super) fn current_stats_readback_bytes_for_test(&self) -> u64 {
         self.current_stats.allocated_readback_bytes()
+    }
+
+    #[cfg(test)]
+    pub(super) const fn current_stats_observer_encode_count_for_test(&self) -> u64 {
+        self.current_stats.encoded_observer_count()
+    }
+
+    #[cfg(test)]
+    pub(super) const fn current_stats_map_arm_count_for_test(&self) -> u64 {
+        self.current_stats.map_arm_count()
+    }
+
+    #[cfg(test)]
+    pub(super) const fn current_stats_device_poll_count_for_test(&self) -> u64 {
+        self.current_stats.device_poll_count()
     }
 
     pub(super) const fn current_stats_request_pending_for_test(&self) -> bool {

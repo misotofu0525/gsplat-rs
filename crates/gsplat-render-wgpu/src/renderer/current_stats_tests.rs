@@ -12,6 +12,7 @@ use crate::evidence::PlanCountSemantics;
 use crate::plans::TestGpuAdmissionMode;
 use crate::renderer::controller::{ControllerConfig, SampleDisposition};
 use crate::renderer::frame::Viewport;
+use crate::renderer::gpu_prepare::CurrentStatsCapabilityTestFailure;
 use crate::scene::{ResidentGpuBytePlan, ResidentSceneCpu};
 
 const WIDTH: u32 = 64;
@@ -214,8 +215,21 @@ fn no_request_encodes_no_count_copy_and_publishes_not_requested() {
             return;
         };
         let mut slot = prepared_slot(&device, &queue, exact_scene(&[1.0])).await;
+        let plan = ResidentGpuBytePlan::for_count(1, 0).expect("resource accounting");
+        let resource_ledger = (
+            Some(plan.projected_contributor_scan_sums + plan.projected_contributor_scan_params),
+            4 * 2 * std::mem::size_of::<u32>() as u64,
+        );
         assert_eq!(slot.current_stats_copy_count_for_test(), 0);
-        assert_eq!(slot.current_stats_resource_bytes_for_test(), (None, 0));
+        assert_eq!(
+            slot.current_stats_resource_bytes_for_test(),
+            resource_ledger
+        );
+        assert_eq!(slot.current_stats_live_object_count_for_test(), Some(10));
+        assert_eq!(
+            slot.current_stats_observer_activity_for_test(),
+            (0, 0, 0, 0)
+        );
         assert!(!slot.current_stats_request_pending_for_test());
 
         let submission = render(&mut slot, &device, PlanId::CpuPostSort);
@@ -224,18 +238,27 @@ fn no_request_encodes_no_count_copy_and_publishes_not_requested() {
             CurrentStatsSubmission::NotRequested
         );
         assert_eq!(slot.current_stats_copy_count_for_test(), 0);
-        assert_eq!(slot.current_stats_resource_bytes_for_test(), (None, 0));
-        assert!(!slot.current_stats_request_pending_for_test());
-        assert!(slot.poll_current_stats().is_empty());
-
-        assert_eq!(slot.request_current_stats(), CurrentStatsRequest::Requested);
-        let plan = ResidentGpuBytePlan::for_count(1, 0).expect("resource accounting");
         assert_eq!(
             slot.current_stats_resource_bytes_for_test(),
-            (
-                Some(plan.projected_contributor_scan_sums + plan.projected_contributor_scan_params),
-                4 * 2 * std::mem::size_of::<u32>() as u64,
-            )
+            resource_ledger
+        );
+        assert_eq!(slot.current_stats_live_object_count_for_test(), Some(10));
+        assert!(!slot.current_stats_request_pending_for_test());
+        assert!(slot.poll_current_stats().is_empty());
+        assert_eq!(
+            slot.current_stats_observer_activity_for_test(),
+            (0, 0, 0, 0)
+        );
+
+        assert_eq!(slot.request_current_stats(), CurrentStatsRequest::Requested);
+        assert_eq!(
+            slot.current_stats_resource_bytes_for_test(),
+            resource_ledger
+        );
+        assert_eq!(slot.current_stats_live_object_count_for_test(), Some(10));
+        assert_eq!(
+            slot.current_stats_observer_activity_for_test(),
+            (0, 0, 0, 0)
         );
     });
 }
@@ -407,7 +430,7 @@ fn observer_ring_busy_does_not_block_formal_sampler_or_adaptive_progress() {
 }
 
 #[test]
-fn requested_observer_skips_formal_frame_and_samples_next_nonformal_frame() {
+fn pending_observer_gets_one_turn_then_formal_waits_for_a_known_safe_queue_entry() {
     pollster::block_on(async {
         let Some((device, queue)) = request_device().await else {
             return;
@@ -417,6 +440,36 @@ fn requested_observer_skips_formal_frame_and_samples_next_nonformal_frame() {
         assert_eq!(slot.request_current_stats(), CurrentStatsRequest::Requested);
         let copies_before = slot.current_stats_copy_count_for_test();
 
+        // The controller asked for a formal bootstrap, but the pending
+        // observer receives exactly one bounded turn first.
+        let observer_pending = encode_adaptive(&mut slot, &device);
+        let observer = submit_encoded_frame(&mut slot, observer_pending)
+            .expect("observer fairness submission");
+        assert!(observer.plan_sample_ticket().is_none());
+        assert!(matches!(
+            observer.current_stats_submission(),
+            CurrentStatsSubmission::Issued(_)
+        ));
+        assert_eq!(slot.current_stats_copy_count_for_test() - copies_before, 1);
+        assert!(!slot.current_stats_request_pending_for_test());
+        assert_eq!(slot.request_current_stats(), CurrentStatsRequest::Requested);
+
+        // The next frame began with observer work still queued. Its
+        // non-blocking progress poll may complete that work, but the formal
+        // sample is still suppressed for this frame.
+        let boundary_pending = encode_adaptive(&mut slot, &device);
+        let boundary =
+            submit_encoded_frame(&mut slot, boundary_pending).expect("queue-boundary submission");
+        assert!(boundary.plan_sample_ticket().is_none());
+        assert_eq!(
+            boundary.current_stats_submission(),
+            CurrentStatsSubmission::NotRequested
+        );
+        assert!(slot.current_stats_request_pending_for_test());
+        wait(&device, &boundary);
+
+        // Only a later frame that was already queue-safe at entry may start
+        // the controller's completion interval.
         let formal_pending = encode_adaptive(&mut slot, &device);
         let formal = submit_encoded_frame(&mut slot, formal_pending).expect("formal submission");
         assert!(formal.plan_sample_ticket().is_some());
@@ -424,7 +477,6 @@ fn requested_observer_skips_formal_frame_and_samples_next_nonformal_frame() {
             formal.current_stats_submission(),
             CurrentStatsSubmission::NotRequested
         );
-        assert_eq!(slot.current_stats_copy_count_for_test(), copies_before);
         assert!(slot.current_stats_request_pending_for_test());
         wait(&device, &formal);
         assert_eq!(
@@ -434,14 +486,19 @@ fn requested_observer_skips_formal_frame_and_samples_next_nonformal_frame() {
             SampleDisposition::Accepted
         );
 
-        let observer = render(&mut slot, &device, PlanId::GpuPostSort);
-        assert!(observer.plan_sample_ticket().is_none());
+        // The queued second request did not starve the formal sample, and now
+        // receives the next bounded turn without contributing values to it.
+        let second_observer_pending = encode_adaptive(&mut slot, &device);
+        let second_observer = submit_encoded_frame(&mut slot, second_observer_pending)
+            .expect("second observer fairness submission");
+        assert!(second_observer.plan_sample_ticket().is_none());
         assert!(matches!(
-            observer.current_stats_submission(),
+            second_observer.current_stats_submission(),
             CurrentStatsSubmission::Issued(_)
         ));
-        assert_eq!(slot.current_stats_copy_count_for_test() - copies_before, 2);
         assert!(!slot.current_stats_request_pending_for_test());
+        wait(&device, &second_observer);
+        assert_eq!(slot.poll_current_stats().len(), 2);
     });
 }
 
@@ -530,7 +587,7 @@ fn pending_request_intent_transfers_across_runtime_replacement_at_every_unpublis
                         plan.projected_contributor_scan_sums
                             + plan.projected_contributor_scan_params
                     ),
-                    0,
+                    4 * 2 * std::mem::size_of::<u32>() as u64,
                 )
             );
             let replacement = render(&mut slot, &device, PlanId::CpuPostSort);
@@ -539,50 +596,135 @@ fn pending_request_intent_transfers_across_runtime_replacement_at_every_unpublis
                 CurrentStatsSubmission::Issued(_)
             ));
             assert!(!slot.current_stats_request_pending_for_test());
-            assert_eq!(
-                slot.current_stats_resource_bytes_for_test().1,
-                4 * 2 * std::mem::size_of::<u32>() as u64
-            );
+            assert_eq!(slot.current_stats_live_object_count_for_test(), Some(10));
         }
     });
 }
 
+async fn assert_optional_capability_failure_does_not_gate_product(
+    device: &Arc<wgpu::Device>,
+    queue: &Arc<wgpu::Queue>,
+    failure: CurrentStatsCapabilityTestFailure,
+) {
+    let mut slot = prepared_slot(device, queue, exact_scene(&[1.0])).await;
+    assert_eq!(slot.request_current_stats(), CurrentStatsRequest::Requested);
+    slot.replace(exact_scene(&[1.0, 1.0]))
+        .expect("replace with transferred request");
+    let frame_before = slot.frame_state();
+    let fallback_before = slot.fallback();
+
+    slot.set_test_gpu_admission_mode(TestGpuAdmissionMode::ConcreteAll);
+    slot.set_current_stats_capability_failure_for_test(failure);
+    slot.prepare_gpu(device, queue, FORMAT)
+        .await
+        .expect("observer failure cannot reject product GPU admission");
+    assert_ne!(slot.frame_state(), frame_before);
+    assert_eq!(slot.fallback(), fallback_before);
+    assert!(slot.gpu_preparation().is_some());
+    assert!(!slot.current_stats_request_pending_for_test());
+    assert_eq!(slot.current_stats_resource_bytes_for_test(), (None, 0));
+    assert_eq!(slot.current_stats_live_object_count_for_test(), None);
+    if failure == CurrentStatsCapabilityTestFailure::ScopedInvalidBuffer {
+        assert!(device.limits().max_buffer_size.checked_add(1).is_some());
+        assert!(matches!(
+            slot.current_stats_capability_last_error_for_test(),
+            Some(
+                super::GpuPreparationError::Validation(_)
+                    | super::GpuPreparationError::OutOfMemory(_)
+                    | super::GpuPreparationError::Internal(_)
+            )
+        ));
+    }
+    let poll = slot.poll_current_stats();
+    assert_eq!(
+        poll.unsampled(),
+        Some(CurrentStatsUnsampledReason::ResourceUnavailable)
+    );
+    assert!(poll.terminals().is_empty());
+    assert!(slot.poll_current_stats().is_empty());
+    assert_eq!(
+        slot.request_current_stats(),
+        CurrentStatsRequest::Unsampled(CurrentStatsUnsampledReason::ResourceUnavailable)
+    );
+
+    let submission = render(&mut slot, device, PlanId::CpuPostSort);
+    assert_eq!(
+        submission.current_stats_submission(),
+        CurrentStatsSubmission::NotRequested
+    );
+    assert_eq!(submission.plan_id(), PlanId::CpuPostSort);
+}
+
 #[test]
-fn transferred_request_resource_failure_does_not_gate_product_replacement() {
+fn scan_candidate_failure_is_optional_and_resolves_transferred_request() {
     pollster::block_on(async {
         let Some((device, queue)) = request_device().await else {
             return;
         };
-        let mut slot = prepared_slot(&device, &queue, exact_scene(&[1.0])).await;
-        assert_eq!(slot.request_current_stats(), CurrentStatsRequest::Requested);
-        slot.replace(exact_scene(&[1.0, 1.0]))
-            .expect("replace with transferred request");
-        let frame_before = slot.frame_state();
-        let fallback_before = slot.fallback();
+        assert_optional_capability_failure_does_not_gate_product(
+            &device,
+            &queue,
+            CurrentStatsCapabilityTestFailure::AfterScanCandidate,
+        )
+        .await;
+    });
+}
+
+#[test]
+fn readback_candidate_failure_is_optional_and_resolves_transferred_request() {
+    pollster::block_on(async {
+        let Some((device, queue)) = request_device().await else {
+            return;
+        };
+        assert_optional_capability_failure_does_not_gate_product(
+            &device,
+            &queue,
+            CurrentStatsCapabilityTestFailure::AfterReadbackCandidate,
+        )
+        .await;
+    });
+}
+
+#[test]
+fn real_scoped_wgpu_failure_is_structured_optional_and_non_panicking() {
+    pollster::block_on(async {
+        let Some((device, queue)) = request_device().await else {
+            return;
+        };
+        assert_optional_capability_failure_does_not_gate_product(
+            &device,
+            &queue,
+            CurrentStatsCapabilityTestFailure::ScopedInvalidBuffer,
+        )
+        .await;
+    });
+}
+
+#[test]
+fn later_product_failure_cannot_half_publish_observer_capability() {
+    pollster::block_on(async {
+        let Some((device, queue)) = request_device().await else {
+            return;
+        };
+        let mut slot = PreparedRuntimeSlot::prepare(exact_scene(&[1.0]))
+            .expect("CPU fallback before product admission");
+        slot.set_test_gpu_admission_mode(TestGpuAdmissionMode::Fail);
+        assert!(slot.prepare_gpu(&device, &queue, FORMAT).await.is_err());
+        assert!(slot.gpu_preparation().is_none());
+        assert_eq!(slot.current_stats_resource_bytes_for_test(), (None, 0));
+        assert_eq!(slot.current_stats_live_object_count_for_test(), None);
+        assert_eq!(
+            slot.request_current_stats(),
+            CurrentStatsRequest::Unsampled(CurrentStatsUnsampledReason::GpuUnavailable)
+        );
 
         slot.set_test_gpu_admission_mode(TestGpuAdmissionMode::ConcreteAll);
-        slot.set_current_stats_resource_failure_for_test(true);
         slot.prepare_gpu(&device, &queue, FORMAT)
             .await
-            .expect("observer failure cannot reject product GPU admission");
-        assert_ne!(slot.frame_state(), frame_before);
-        assert_eq!(slot.fallback(), fallback_before);
+            .expect("clean retry publishes product plus complete observer capability");
         assert!(slot.gpu_preparation().is_some());
-        assert!(!slot.current_stats_request_pending_for_test());
-        assert_eq!(slot.current_stats_resource_bytes_for_test(), (None, 0));
-        let poll = slot.poll_current_stats();
-        assert_eq!(
-            poll.unsampled(),
-            Some(CurrentStatsUnsampledReason::ResourceUnavailable)
-        );
-        assert!(poll.terminals().is_empty());
-
-        let submission = render(&mut slot, &device, PlanId::CpuPostSort);
-        assert_eq!(
-            submission.current_stats_submission(),
-            CurrentStatsSubmission::NotRequested
-        );
-        assert_eq!(submission.plan_id(), PlanId::CpuPostSort);
+        assert_eq!(slot.current_stats_live_object_count_for_test(), Some(10));
+        assert_eq!(slot.request_current_stats(), CurrentStatsRequest::Requested);
     });
 }
 

@@ -26,7 +26,8 @@ use crate::scene::{ResidentSceneCpu, ResidentSceneError, SceneRuntime};
 use controller::{PlanDecision, SampleDisposition, WholePlanController, WholePlanControllerError};
 use frame::{FrameState, GenerationError, Viewport};
 use gpu_prepare::{
-    GpuExecutionOwner, GpuPreparationError, GpuPreparationReceipt, GpuScenePreparation,
+    CurrentStatsCapabilityCandidate, GpuExecutionOwner, GpuPreparationError, GpuPreparationReceipt,
+    GpuScenePreparation,
 };
 use sampler::{PlanSampleDescriptor, PlanSampler, PlanSamplerError, StagedPlanSample};
 
@@ -191,6 +192,7 @@ pub(crate) struct PendingGpuFrame {
     staged_controller: WholePlanController,
     completion_started: crate::TimerInstant,
     staged_current_stats: Option<current_stats::StagedCurrentStats>,
+    arm_formal_sample: bool,
 }
 
 impl PendingGpuFrame {
@@ -462,7 +464,9 @@ pub(crate) struct PreparedRuntimeSlot {
     sampler: PlanSampler,
     optional_plan_evidence: Option<BoundedEvidenceRing<PlanSample>>,
     #[cfg(test)]
-    fail_current_stats_resource_preparation: bool,
+    current_stats_capability_test_failure: Option<gpu_prepare::CurrentStatsCapabilityTestFailure>,
+    #[cfg(test)]
+    current_stats_capability_last_error: Option<GpuPreparationError>,
 }
 
 struct StagedGpuRuntimeAdmission {
@@ -471,6 +475,7 @@ struct StagedGpuRuntimeAdmission {
     raster: CanonicalRaster,
     frame: FrameState,
     owner: GpuExecutionOwner,
+    current_stats_capability: Option<CurrentStatsCapabilityCandidate>,
     current_stats_unsampled: Option<CurrentStatsUnsampledReason>,
 }
 
@@ -507,7 +512,9 @@ impl PreparedRuntimeSlot {
             sampler: PlanSampler::new(),
             optional_plan_evidence: None,
             #[cfg(test)]
-            fail_current_stats_resource_preparation: false,
+            current_stats_capability_test_failure: None,
+            #[cfg(test)]
+            current_stats_capability_last_error: None,
         })
     }
 
@@ -605,7 +612,9 @@ impl PreparedRuntimeSlot {
             sampler: PlanSampler::new(),
             optional_plan_evidence: None,
             #[cfg(test)]
-            fail_current_stats_resource_preparation: false,
+            current_stats_capability_test_failure: None,
+            #[cfg(test)]
+            current_stats_capability_last_error: None,
         };
         let mut candidate = candidate;
         candidate
@@ -634,27 +643,34 @@ impl PreparedRuntimeSlot {
         let previous_frame = self.frame.identity();
         let next_frame = self.frame.candidate_for_plan_set_admission()?;
         let owner = GpuExecutionOwner::new(device, queue);
-        let mut scene = self
+        let scene = self
             .runtime
             .scene
             .stage_gpu(&owner, next_frame.identity())
             .await?;
-        let current_stats_unsampled = if self.sampler.has_current_stats_request() {
-            #[cfg(test)]
-            let prepared = if self.fail_current_stats_resource_preparation {
-                Err(GpuPreparationError::Internal(
-                    "injected current-stats resource preparation failure".into(),
-                ))
-            } else {
-                scene.prepare_current_stats_resources(&owner).await
-            };
-            #[cfg(not(test))]
-            let prepared = scene.prepare_current_stats_resources(&owner).await;
-            prepared
-                .err()
-                .map(|_| CurrentStatsUnsampledReason::ResourceUnavailable)
-        } else {
-            None
+        #[cfg(test)]
+        let current_stats_candidate = scene
+            .stage_current_stats_capability_with_test_failure(
+                &owner,
+                self.current_stats_capability_test_failure,
+            )
+            .await;
+        #[cfg(not(test))]
+        let current_stats_candidate = scene.stage_current_stats_capability(&owner).await;
+        let (current_stats_capability, current_stats_unsampled) = match current_stats_candidate {
+            Ok(candidate) => (Some(candidate), None),
+            Err(_error) => {
+                #[cfg(test)]
+                {
+                    self.current_stats_capability_last_error = Some(_error.clone());
+                }
+                (
+                    None,
+                    self.sampler
+                        .has_current_stats_request()
+                        .then_some(CurrentStatsUnsampledReason::ResourceUnavailable),
+                )
+            }
         };
         let receipt = scene.receipt();
         let raster = scene
@@ -680,12 +696,18 @@ impl PreparedRuntimeSlot {
             raster,
             frame: next_frame,
             owner,
+            current_stats_capability,
             current_stats_unsampled,
         });
         Ok(receipt)
     }
 
-    fn commit_gpu_admission(&mut self, staged: StagedGpuRuntimeAdmission) {
+    fn commit_gpu_admission(&mut self, mut staged: StagedGpuRuntimeAdmission) {
+        if let Some(capability) = staged.current_stats_capability {
+            let (scan, readback_pool) = capability.into_parts();
+            staged.scene.install_current_stats_contributor_scan(scan);
+            self.sampler.install_current_stats_capability(readback_pool);
+        }
         self.runtime.scene.commit_gpu(staged.scene);
         self.runtime.plans.commit_gpu_admission(staged.plans);
         self.runtime.raster = Some(staged.raster);
@@ -737,24 +759,15 @@ impl PreparedRuntimeSlot {
         self.runtime.plans.gpu_capability()
     }
 
-    /// Requests one observer receipt from the next non-formal Exact frame. The
-    /// request is private and one-shot; ControllerFormal frames remain free of
-    /// observer scan/copy work and take priority until their sample completes.
+    /// Requests one observer receipt from an eligible Exact frame. The request
+    /// is private and one-shot; a pending request may receive one bounded turn
+    /// before a formal sample, after which formal work takes priority across a
+    /// proved queue-safe boundary. No formal frame carries observer GPU work.
     pub(crate) fn request_current_stats(&mut self) -> CurrentStatsRequest {
-        let Some(owner) = self.gpu_owner.as_ref() else {
+        if self.gpu_owner.is_none() {
             return CurrentStatsRequest::Unsampled(CurrentStatsUnsampledReason::GpuUnavailable);
-        };
-        if self
-            .runtime
-            .scene
-            .ensure_current_stats_resources(owner)
-            .is_err()
-        {
-            return CurrentStatsRequest::Unsampled(
-                CurrentStatsUnsampledReason::ResourceUnavailable,
-            );
         }
-        self.sampler.request_current_stats(owner.device())
+        self.sampler.request_current_stats()
     }
 
     /// Non-blocking observer poll. It performs `Poll` only when this lane has
@@ -774,8 +787,16 @@ impl PreparedRuntimeSlot {
     }
 
     #[cfg(test)]
-    fn set_current_stats_resource_failure_for_test(&mut self, fail: bool) {
-        self.fail_current_stats_resource_preparation = fail;
+    fn set_current_stats_capability_failure_for_test(
+        &mut self,
+        failure: gpu_prepare::CurrentStatsCapabilityTestFailure,
+    ) {
+        self.current_stats_capability_test_failure = Some(failure);
+    }
+
+    #[cfg(test)]
+    fn current_stats_capability_last_error_for_test(&self) -> Option<&GpuPreparationError> {
+        self.current_stats_capability_last_error.as_ref()
     }
 
     #[cfg(test)]
@@ -873,6 +894,24 @@ impl PreparedRuntimeSlot {
     }
 
     #[cfg(test)]
+    fn current_stats_live_object_count_for_test(&self) -> Option<usize> {
+        self.runtime
+            .scene
+            .current_stats_live_object_count()
+            .map(|scan_objects| scan_objects + 4)
+    }
+
+    #[cfg(test)]
+    const fn current_stats_observer_activity_for_test(&self) -> (u64, u64, u64, u64) {
+        (
+            self.sampler.current_stats_observer_encode_count_for_test(),
+            self.sampler.current_stats_copy_count_for_test(),
+            self.sampler.current_stats_map_arm_count_for_test(),
+            self.sampler.current_stats_device_poll_count_for_test(),
+        )
+    }
+
+    #[cfg(test)]
     fn force_current_stats_map_failure_for_test(&mut self, ticket: CurrentStatsTicket) -> bool {
         self.sampler
             .force_current_stats_map_failure_for_test(ticket)
@@ -959,7 +998,6 @@ pub(crate) fn encode_frame_gpu(
     slot: &mut PreparedRuntimeSlot,
     request: GpuFrameEncodeRequest<'_>,
 ) -> Result<PendingGpuFrame, FrameExecutionError> {
-    let completion_started = request.host_frame_started.unwrap_or_else(crate::timer_now);
     let encode_attempt = slot
         .latest_encode_attempt
         .checked_add(1)
@@ -972,6 +1010,9 @@ pub(crate) fn encode_frame_gpu(
     // token before polling the sole live sampler. An unpresented token owns
     // its callback outside the slot, so a fast completion can never be
     // mistaken for presented-frame evidence.
+    let current_stats_queue_safe_at_frame_entry = slot
+        .sampler
+        .current_stats_formal_queue_safe_at_frame_entry();
     let _ = slot.poll_plan_sampler();
     let base_frame = slot.frame;
     let base_sampler_ticket = slot.sampler.pending_ticket();
@@ -988,6 +1029,25 @@ pub(crate) fn encode_frame_gpu(
         PlanSelection::Forced(plan) => staged_controller.choose_forced(plan),
         PlanSelection::Adaptive => staged_controller.choose_adaptive()?,
     };
+    let (arm_formal_sample, encode_current_stats) = if decision.formal_kind().is_some() {
+        if !current_stats_queue_safe_at_frame_entry {
+            // Even when the mandatory non-blocking poll above observes
+            // completion, this frame began while the observer was still
+            // queue-unsafe. Retry the same formal decision on a later frame
+            // whose entry is known safe.
+            (false, false)
+        } else if slot.sampler.should_yield_formal_to_current_stats() {
+            // One pending request receives a bounded turn. Its submission
+            // establishes a barrier, so the retried formal sample cannot arm
+            // until a later frame begins queue-safe.
+            (false, true)
+        } else {
+            (true, false)
+        }
+    } else {
+        (false, true)
+    };
+    let completion_started = request.host_frame_started.unwrap_or_else(crate::timer_now);
 
     let encoded = (|| {
         let owner = slot
@@ -1032,17 +1092,16 @@ pub(crate) fn encode_frame_gpu(
             request.clear,
             input,
         )?;
-        // Formal controller samples measure the complete plan without
-        // observer GPU work. A current-stats intent stays pending until the
-        // next otherwise-eligible Exact frame that carries no formal sample.
-        let staged_current_stats = if decision.formal_kind().is_none()
-            && sampler.prepare_current_stats_encode(owner.device())
-        {
-            let counts = current_stats_counts_for_work(&work, &mut encoder)?;
-            sampler.encode_current_stats(&mut encoder, counts)
-        } else {
-            None
-        };
+        // A formal sample never shares a command stream with observer work.
+        // The scheduling decision above also protects it from observer work
+        // left in the same queue by an earlier submission.
+        let staged_current_stats =
+            if encode_current_stats && sampler.prepare_current_stats_encode(owner.device()) {
+                let counts = current_stats_counts_for_work(&work, &mut encoder)?;
+                sampler.encode_current_stats(&mut encoder, counts)
+            } else {
+                None
+            };
         drop(work);
         Ok::<_, FrameExecutionError>((encoder, metadata, staged_current_stats))
     })();
@@ -1079,6 +1138,7 @@ pub(crate) fn encode_frame_gpu(
         staged_controller,
         completion_started,
         staged_current_stats,
+        arm_formal_sample,
     })
 }
 
@@ -1146,7 +1206,7 @@ fn submit_pending_frame(
     let mut staged_controller = pending.staged_controller;
     let mut staged_sample = None;
     let mut plan_sample_ticket = None;
-    if pending.decision.formal_kind().is_some() {
+    if pending.arm_formal_sample {
         if !staged_controller.can_arm(pending.decision) {
             return Err(FrameExecutionError::PendingFrameMismatch {
                 component: "formal whole-plan sample",
@@ -1328,6 +1388,7 @@ impl ValidatedSubmittedGpuFrame<'_> {
         if let Some(sample) = state.staged_sample {
             debug_assert!(!self.slot.sampler.has_pending());
             self.slot.sampler.commit_staged(sample);
+            self.slot.sampler.note_formal_sample_published();
         }
         self.slot.frame = state.candidate_frame;
         self.slot.controller = state.staged_controller;

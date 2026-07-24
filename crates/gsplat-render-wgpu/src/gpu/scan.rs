@@ -373,6 +373,15 @@ impl GpuPrefixScan {
     pub(crate) fn allocated_buffer_bytes(&self) -> u64 {
         self.graph.sums.iter().map(wgpu::Buffer::size).sum::<u64>() + self.graph._params.size()
     }
+
+    /// Live opaque wgpu handles retained by this scan: one layout, two
+    /// pipelines, one params buffer, and one sums buffer plus bind group per
+    /// hierarchy level. Temporary shader/pipeline-layout handles are dropped
+    /// before publication and are not counted.
+    #[cfg(test)]
+    pub(crate) fn live_object_count(&self) -> usize {
+        4 + 2 * self.graph.levels.len()
+    }
 }
 
 pub(super) fn scan_level_counts(mut count: u32) -> Vec<(u32, u32)> {

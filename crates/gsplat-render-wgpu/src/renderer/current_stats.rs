@@ -329,6 +329,38 @@ pub(super) struct CurrentStatsHandoff {
     terminals: VecDeque<CurrentStatsTerminal>,
     pending_request: bool,
     request_unsampled: Option<CurrentStatsUnsampledReason>,
+    inherited_queue_barriers: Vec<Arc<AtomicU8>>,
+    observer_since_formal: bool,
+}
+
+/// The fixed readback half of the optional current-stats capability. It is
+/// constructed beside the contributor scan under the same device error
+/// scopes, then moved into the live sampler only with the complete product
+/// GPU admission.
+pub(super) struct CurrentStatsReadbackPool {
+    slots: Vec<CurrentStatsSlot>,
+}
+
+impl CurrentStatsReadbackPool {
+    pub(super) fn create_candidate(device: &wgpu::Device) -> Self {
+        let slots = (0..RING_CAPACITY)
+            .map(|_| CurrentStatsSlot {
+                readback: device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("gsplat-exact-current-stats-readback"),
+                    size: READBACK_BYTES,
+                    usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                    mapped_at_creation: false,
+                }),
+                state: Arc::new(AtomicU8::new(SLOT_IDLE)),
+                publication: Arc::new(AtomicU8::new(PUBLICATION_UNPUBLISHED)),
+                ticket: CurrentStatsTicket(0),
+                descriptor: None,
+                submission: None,
+                terminal_reported: false,
+            })
+            .collect();
+        Self { slots }
+    }
 }
 
 pub(super) struct CurrentStatsLane {
@@ -339,8 +371,15 @@ pub(super) struct CurrentStatsLane {
     next_slot: usize,
     next_ticket: u64,
     terminals: VecDeque<CurrentStatsTerminal>,
+    inherited_queue_barriers: Vec<Arc<AtomicU8>>,
     #[cfg(test)]
     encoded_copy_count: u64,
+    #[cfg(test)]
+    encoded_observer_count: u64,
+    #[cfg(test)]
+    map_arm_count: u64,
+    #[cfg(test)]
+    device_poll_count: u64,
 }
 
 impl CurrentStatsLane {
@@ -353,16 +392,33 @@ impl CurrentStatsLane {
             next_slot: 0,
             next_ticket: 1,
             terminals: VecDeque::new(),
+            inherited_queue_barriers: Vec::new(),
             #[cfg(test)]
             encoded_copy_count: 0,
+            #[cfg(test)]
+            encoded_observer_count: 0,
+            #[cfg(test)]
+            map_arm_count: 0,
+            #[cfg(test)]
+            device_poll_count: 0,
         }
     }
 
-    pub(super) fn request(&mut self, device: &wgpu::Device) -> CurrentStatsRequest {
+    pub(super) fn install_capability(&mut self, pool: CurrentStatsReadbackPool) {
+        debug_assert!(self.slots.is_empty());
+        self.slots = pool.slots;
+    }
+
+    pub(super) fn request(&mut self) -> CurrentStatsRequest {
         if self.pending_request || self.request_unsampled.is_some() {
             return CurrentStatsRequest::Unsampled(CurrentStatsUnsampledReason::Busy);
         }
-        match self.reserve(device) {
+        if self.slots.is_empty() {
+            return CurrentStatsRequest::Unsampled(
+                CurrentStatsUnsampledReason::ResourceUnavailable,
+            );
+        }
+        match self.reserve() {
             Ok(()) => {
                 self.pending_request = true;
                 CurrentStatsRequest::Requested
@@ -371,8 +427,7 @@ impl CurrentStatsLane {
         }
     }
 
-    fn reserve(&mut self, device: &wgpu::Device) -> Result<(), CurrentStatsUnsampledReason> {
-        self.ensure_slots(device);
+    fn reserve(&mut self) -> Result<(), CurrentStatsUnsampledReason> {
         let outstanding = self.terminals.len()
             + self
                 .slots
@@ -421,10 +476,10 @@ impl CurrentStatsLane {
             // no caller-visible terminal to motivate a poll. While the same
             // request is still active, one non-blocking poll is permitted to
             // recycle only completed abandoned attempts before retrying.
-            let _ = device.poll(wgpu::PollType::Poll);
+            self.poll_device(device);
             self.recycle_abandoned();
         }
-        if self.reserved.is_none() && self.reserve(device).is_err() {
+        if self.reserved.is_none() && self.reserve().is_err() {
             // The request remains pending and will retry on a later eligible
             // frame after non-blocking polling recycles an older attempt.
             return false;
@@ -487,6 +542,10 @@ impl CurrentStatsLane {
             count_semantics: counts.count_semantics,
         });
         slot.state.store(SLOT_ENCODED, Ordering::Release);
+        #[cfg(test)]
+        {
+            self.encoded_observer_count += 1;
+        }
         Some(StagedCurrentStats {
             slot: slot_index,
             ticket: slot.ticket,
@@ -525,6 +584,10 @@ impl CurrentStatsLane {
                 );
             },
         );
+        #[cfg(test)]
+        {
+            self.map_arm_count += 1;
+        }
         let armed = ArmedCurrentStats {
             slot: staged.slot,
             ticket: staged.ticket,
@@ -612,7 +675,7 @@ impl CurrentStatsLane {
             )
         }) && let Some(device) = device
         {
-            let _ = device.poll(wgpu::PollType::Poll);
+            self.poll_device(device);
         }
 
         let mut terminals: Vec<_> = self.terminals.drain(..).collect();
@@ -713,7 +776,7 @@ impl CurrentStatsLane {
         true
     }
 
-    pub(super) fn replacement_handoff(&self) -> CurrentStatsHandoff {
+    pub(super) fn replacement_handoff(&self, observer_since_formal: bool) -> CurrentStatsHandoff {
         let mut terminals = self.terminals.clone();
         for slot in &self.slots {
             if !slot.terminal_reported
@@ -725,21 +788,46 @@ impl CurrentStatsLane {
             }
         }
         debug_assert!(terminals.len() <= RING_CAPACITY);
+        let mut inherited_queue_barriers = self.inherited_queue_barriers.clone();
+        inherited_queue_barriers.extend(
+            self.slots
+                .iter()
+                .filter(|slot| slot.state.load(Ordering::Acquire) == SLOT_SUBMITTED)
+                .map(|slot| Arc::clone(&slot.state)),
+        );
         CurrentStatsHandoff {
             next_ticket: self.next_ticket,
             terminals,
             pending_request: self.pending_request,
             request_unsampled: self.request_unsampled,
+            inherited_queue_barriers,
+            observer_since_formal,
         }
     }
 
-    pub(super) fn import_handoff(&mut self, handoff: CurrentStatsHandoff) {
+    pub(super) fn import_handoff(&mut self, handoff: CurrentStatsHandoff) -> bool {
         debug_assert!(self.slots.is_empty());
         debug_assert!(self.terminals.is_empty());
         self.next_ticket = handoff.next_ticket;
         self.terminals = handoff.terminals;
         self.pending_request = handoff.pending_request;
         self.request_unsampled = handoff.request_unsampled;
+        self.inherited_queue_barriers = handoff.inherited_queue_barriers;
+        handoff.observer_since_formal
+    }
+
+    /// Captures queue safety before Renderer performs its existing mandatory
+    /// sampler progress poll. A callback fired by that later poll cannot make
+    /// the current frame retrospectively safe; only a subsequent frame may
+    /// start a formal interval.
+    pub(super) fn formal_queue_safe_at_frame_entry(&mut self) -> bool {
+        self.inherited_queue_barriers
+            .retain(|state| state.load(Ordering::Acquire) == SLOT_SUBMITTED);
+        self.inherited_queue_barriers.is_empty()
+            && !self
+                .slots
+                .iter()
+                .any(|slot| slot.state.load(Ordering::Acquire) == SLOT_SUBMITTED)
     }
 
     #[cfg(test)]
@@ -750,6 +838,21 @@ impl CurrentStatsLane {
     #[cfg(test)]
     pub(super) fn allocated_readback_bytes(&self) -> u64 {
         self.slots.iter().map(|slot| slot.readback.size()).sum()
+    }
+
+    #[cfg(test)]
+    pub(super) const fn encoded_observer_count(&self) -> u64 {
+        self.encoded_observer_count
+    }
+
+    #[cfg(test)]
+    pub(super) const fn map_arm_count(&self) -> u64 {
+        self.map_arm_count
+    }
+
+    #[cfg(test)]
+    pub(super) const fn device_poll_count(&self) -> u64 {
+        self.device_poll_count
     }
 
     pub(super) const fn request_pending(&self) -> bool {
@@ -784,26 +887,12 @@ impl CurrentStatsLane {
         true
     }
 
-    fn ensure_slots(&mut self, device: &wgpu::Device) {
-        if !self.slots.is_empty() {
-            return;
+    fn poll_device(&mut self, device: &wgpu::Device) {
+        let _ = device.poll(wgpu::PollType::Poll);
+        #[cfg(test)]
+        {
+            self.device_poll_count += 1;
         }
-        self.slots = (0..RING_CAPACITY)
-            .map(|_| CurrentStatsSlot {
-                readback: device.create_buffer(&wgpu::BufferDescriptor {
-                    label: Some("gsplat-exact-current-stats-readback"),
-                    size: READBACK_BYTES,
-                    usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-                    mapped_at_creation: false,
-                }),
-                state: Arc::new(AtomicU8::new(SLOT_IDLE)),
-                publication: Arc::new(AtomicU8::new(PUBLICATION_UNPUBLISHED)),
-                ticket: CurrentStatsTicket(0),
-                descriptor: None,
-                submission: None,
-                terminal_reported: false,
-            })
-            .collect();
     }
 }
 

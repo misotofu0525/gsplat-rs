@@ -29,6 +29,8 @@ use crate::resident_gpu::{
 use crate::scene::{ResidentGpuBytePlan, ResidentSceneCpu};
 use crate::{ResidentGpuError, make_surface_render_params};
 
+use super::current_stats::CurrentStatsReadbackPool;
+
 const DRAW_INSTANCE_COUNT_OFFSET: u64 = std::mem::size_of::<u32>() as u64;
 
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
@@ -220,6 +222,30 @@ pub(crate) struct GpuScenePreparation {
     cpu_post_projection_encode_count: u64,
 }
 
+/// Complete optional observer capability staged outside the live Scene and
+/// PlanSampler. Its scan and fixed readback pool share one validation/OOM/
+/// internal error-scope transaction.
+pub(super) struct CurrentStatsCapabilityCandidate {
+    contributor_scan: GpuPrefixScan,
+    readback_pool: CurrentStatsReadbackPool,
+}
+
+impl CurrentStatsCapabilityCandidate {
+    pub(super) fn into_parts(self) -> (GpuPrefixScan, CurrentStatsReadbackPool) {
+        (self.contributor_scan, self.readback_pool)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum CurrentStatsCapabilityTestFailure {
+    #[cfg(test)]
+    AfterScanCandidate,
+    #[cfg(test)]
+    AfterReadbackCandidate,
+    #[cfg(test)]
+    ScopedInvalidBuffer,
+}
+
 pub(crate) struct CpuPostProjectionRequest<'a> {
     ordered_ids: &'a [u32],
     camera: Camera,
@@ -329,36 +355,39 @@ impl GpuScenePreparation {
         self.receipt
     }
 
-    /// Lazily admits the only scene-sized observer resource after an explicit
-    /// current-stats request. The candidate is published only on successful
-    /// construction; ordinary rendering never allocates this scan graph.
-    pub(crate) fn ensure_current_stats_resources(
-        &mut self,
+    /// Stages the dormant observer graph as one optional capability. Failure
+    /// discards both halves and is reported to Renderer without modifying this
+    /// product scene candidate.
+    #[cfg_attr(test, allow(dead_code))]
+    pub(super) async fn stage_current_stats_capability(
+        &self,
         owner: &GpuExecutionOwner,
-    ) -> Result<(), GpuPreparationError> {
-        if !self.owner.same_owner(owner.token()) {
-            return Err(GpuPreparationError::ExecutionOwnerMismatch);
-        }
-        if self.current_stats_contributor_scan.is_some() {
-            return Ok(());
-        }
-        let candidate = self.create_current_stats_resource_candidate(owner.device())?;
-        self.current_stats_contributor_scan = Some(candidate);
-        Ok(())
+    ) -> Result<CurrentStatsCapabilityCandidate, GpuPreparationError> {
+        self.stage_current_stats_capability_inner(owner, None).await
     }
 
-    /// Transactional async variant used when a pending request crosses into a
-    /// newly prepared runtime. Validation/OOM/device scopes complete before
-    /// the observer resource can join that candidate.
-    pub(crate) async fn prepare_current_stats_resources(
-        &mut self,
+    #[cfg(test)]
+    pub(super) async fn stage_current_stats_capability_with_test_failure(
+        &self,
         owner: &GpuExecutionOwner,
-    ) -> Result<(), GpuPreparationError> {
+        failure: Option<CurrentStatsCapabilityTestFailure>,
+    ) -> Result<CurrentStatsCapabilityCandidate, GpuPreparationError> {
+        self.stage_current_stats_capability_inner(owner, failure)
+            .await
+    }
+
+    async fn stage_current_stats_capability_inner(
+        &self,
+        owner: &GpuExecutionOwner,
+        #[cfg_attr(not(test), allow(unused_variables))] test_failure: Option<
+            CurrentStatsCapabilityTestFailure,
+        >,
+    ) -> Result<CurrentStatsCapabilityCandidate, GpuPreparationError> {
         if !self.owner.same_owner(owner.token()) {
             return Err(GpuPreparationError::ExecutionOwnerMismatch);
         }
         if self.current_stats_contributor_scan.is_some() {
-            return Ok(());
+            return Err(GpuPreparationError::ExecutionOwnerAlreadyBound);
         }
         let device = owner.device();
         let (validation_scope, oom_scope, internal_scope) = (
@@ -366,18 +395,55 @@ impl GpuScenePreparation {
             device.push_error_scope(wgpu::ErrorFilter::OutOfMemory),
             device.push_error_scope(wgpu::ErrorFilter::Internal),
         );
-        let candidate = self.create_current_stats_resource_candidate(device);
+        let candidate = (|| {
+            let contributor_scan = self.create_current_stats_scan_candidate(device)?;
+            #[cfg(test)]
+            if test_failure == Some(CurrentStatsCapabilityTestFailure::AfterScanCandidate) {
+                return Err(GpuPreparationError::Internal(
+                    "injected failure after current-stats scan candidate creation".into(),
+                ));
+            }
+            let readback_pool = CurrentStatsReadbackPool::create_candidate(device);
+            #[cfg(test)]
+            if test_failure == Some(CurrentStatsCapabilityTestFailure::AfterReadbackCandidate) {
+                return Err(GpuPreparationError::Internal(
+                    "injected failure after current-stats readback candidate creation".into(),
+                ));
+            }
+            #[cfg(test)]
+            if test_failure == Some(CurrentStatsCapabilityTestFailure::ScopedInvalidBuffer) {
+                let invalid_size =
+                    device
+                        .limits()
+                        .max_buffer_size
+                        .checked_add(1)
+                        .ok_or_else(|| {
+                            GpuPreparationError::Internal(
+                                "cannot construct checked invalid current-stats buffer size".into(),
+                            )
+                        })?;
+                let _invalid = device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("gsplat-exact-current-stats-scoped-invalid-test-buffer"),
+                    size: invalid_size,
+                    usage: wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                });
+            }
+            Ok(CurrentStatsCapabilityCandidate {
+                contributor_scan,
+                readback_pool,
+            })
+        })();
         let internal = internal_scope.pop().await.map(|error| error.to_string());
         let out_of_memory = oom_scope.pop().await.map(|error| error.to_string());
         let validation = validation_scope.pop().await.map(|error| error.to_string());
         if let Some(error) = classify_scope_errors(internal, out_of_memory, validation) {
             return Err(error);
         }
-        self.current_stats_contributor_scan = Some(candidate?);
-        Ok(())
+        candidate
     }
 
-    fn create_current_stats_resource_candidate(
+    fn create_current_stats_scan_candidate(
         &self,
         device: &wgpu::Device,
     ) -> Result<GpuPrefixScan, GpuPreparationError> {
@@ -403,11 +469,23 @@ impl GpuScenePreparation {
         .map_err(GpuPreparationError::from)
     }
 
+    pub(super) fn install_current_stats_contributor_scan(&mut self, scan: GpuPrefixScan) {
+        debug_assert!(self.current_stats_contributor_scan.is_none());
+        self.current_stats_contributor_scan = Some(scan);
+    }
+
     #[cfg(test)]
     pub(crate) fn current_stats_resource_bytes(&self) -> Option<u64> {
         self.current_stats_contributor_scan
             .as_ref()
             .map(GpuPrefixScan::allocated_buffer_bytes)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn current_stats_live_object_count(&self) -> Option<usize> {
+        self.current_stats_contributor_scan
+            .as_ref()
+            .map(GpuPrefixScan::live_object_count)
     }
 
     /// Prepares the plan-neutral raster against the same complete scene graph
