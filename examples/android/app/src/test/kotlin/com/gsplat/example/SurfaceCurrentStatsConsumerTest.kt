@@ -43,6 +43,7 @@ class SurfaceCurrentStatsConsumerTest {
         val firstIdentity = identity(cameraRevision = 7, presentationSequence = 41)
         val firstRequest = consumer.beginRequest(binding(0)) { requested() }
         consumer.consumeCycle(pendingCycle(firstRequest, ticket = 11, identity = firstIdentity))
+        assertEquals(1, consumer.trackedStateForTest().issuedTicketCount)
 
         val secondIdentity = identity(cameraRevision = 8, presentationSequence = 42)
         val secondRequest = consumer.beginRequest(binding(1)) { requested() }
@@ -66,12 +67,44 @@ class SurfaceCurrentStatsConsumerTest {
             )
         )
         assertFalse(consumer.benchmarkTerminalsComplete(2))
+        assertEquals(1, consumer.trackedStateForTest().issuedTicketCount)
 
         consumer.consumePolledState(readyState(ticket = 12, identity = secondIdentity))
+        assertEquals(0, consumer.trackedStateForTest().issuedTicketCount)
         val records = consumer.strictRecords(2)
         assertEquals(listOf(11L, 12L), records.map { it.ticket })
         assertEquals(firstIdentity, records[0].identity)
         assertEquals(secondIdentity, records[1].identity)
+    }
+
+    @Test
+    fun twoPendingTicketsCanTerminateInReverseOrder() {
+        val consumer = SurfaceCurrentStatsConsumer()
+        val firstIdentity = identity(cameraRevision = 9, presentationSequence = 43)
+        val firstRequest = consumer.beginRequest(binding(0)) { requested() }
+        consumer.consumeCycle(pendingCycle(firstRequest, 13, firstIdentity))
+
+        val secondIdentity = identity(cameraRevision = 10, presentationSequence = 44)
+        val secondRequest = consumer.beginRequest(binding(1)) { requested() }
+        consumer.consumeCycle(
+            pendingCycle(
+                secondRequest,
+                ticket = 14,
+                identity = secondIdentity,
+                pendingCount = 2
+            )
+        )
+        assertEquals(2, consumer.trackedStateForTest().issuedTicketCount)
+
+        consumer.consumePolledState(
+            readyState(ticket = 14, identity = secondIdentity, pendingCount = 1)
+        )
+        assertEquals(1, consumer.trackedStateForTest().issuedTicketCount)
+        assertFalse(consumer.benchmarkTerminalsComplete(2))
+
+        consumer.consumePolledState(readyState(ticket = 13, identity = firstIdentity))
+        assertEquals(0, consumer.trackedStateForTest().issuedTicketCount)
+        assertEquals(listOf(13L, 14L), consumer.strictRecords(2).map { it.ticket })
     }
 
     @Test
@@ -148,6 +181,7 @@ class SurfaceCurrentStatsConsumerTest {
                 pendingCount = 0
             )
         )
+        assertEquals(0, failed.trackedStateForTest().issuedTicketCount)
         assertThrows(IllegalStateException::class.java) { failed.strictRecords(1) }
     }
 
@@ -224,6 +258,120 @@ class SurfaceCurrentStatsConsumerTest {
         assertEquals("resource_unavailable", unavailable.reason)
     }
 
+    @Test
+    fun thousandsOfUiReadyCyclesKeepConsumerTrackingBounded() {
+        val consumer = SurfaceCurrentStatsConsumer()
+
+        repeat(5_000) { index ->
+            val binding = consumer.nextUiBinding()
+            val request = consumer.beginRequest(binding) { requested() }
+            val ticket = index.toLong() + 1L
+            val sampleIdentity = identity(
+                cameraRevision = ticket,
+                presentationSequence = ticket
+            )
+            val expectedReceipt = receipt(ticket, sampleIdentity)
+
+            consumer.consumeCycle(readyCycle(request, ticket, sampleIdentity))
+
+            val ready = consumer.display as SurfaceCurrentStatsDisplay.Ready
+            assertEquals(binding, ready.binding)
+            assertEquals(expectedReceipt, ready.receipt)
+            assertEquals(0, consumer.trackedStateForTest().issuedTicketCount)
+        }
+
+        assertEquals(
+            SurfaceCurrentStatsTrackedState(
+                outstandingRequestCount = 0,
+                issuedTicketCount = 0,
+                sampleRecordCount = 0,
+                rejectionRecordCount = 0
+            ),
+            consumer.trackedStateForTest()
+        )
+    }
+
+    @Test
+    fun newerPendingUiSampleNeverRedisplaysAnOlderReadyReceipt() {
+        val consumer = SurfaceCurrentStatsConsumer()
+        val firstBinding = consumer.nextUiBinding()
+        val firstIdentity = identity(cameraRevision = 30, presentationSequence = 90)
+        val firstRequest = consumer.beginRequest(firstBinding) { requested() }
+        consumer.consumeCycle(readyCycle(firstRequest, 70, firstIdentity))
+        assertEquals(0, consumer.trackedStateForTest().issuedTicketCount)
+
+        val secondBinding = consumer.nextUiBinding()
+        val secondIdentity = identity(cameraRevision = 31, presentationSequence = 91)
+        val secondRequest = consumer.beginRequest(secondBinding) { requested() }
+        consumer.consumeCycle(pendingCycle(secondRequest, 71, secondIdentity))
+        assertTrue(consumer.display is SurfaceCurrentStatsDisplay.Unavailable)
+
+        consumer.consumePolledState(readyState(70, firstIdentity))
+        val stale = consumer.display as SurfaceCurrentStatsDisplay.Unavailable
+        assertEquals("ready_without_matching_issued", stale.reason)
+        assertEquals(1, consumer.trackedStateForTest().issuedTicketCount)
+
+        consumer.consumePolledState(readyState(71, secondIdentity))
+        val ready = consumer.display as SurfaceCurrentStatsDisplay.Ready
+        assertEquals(secondBinding, ready.binding)
+        assertEquals(71L, ready.receipt.ticket)
+        assertEquals(0, consumer.trackedStateForTest().issuedTicketCount)
+    }
+
+    @Test
+    fun duplicateAndStaleTerminalsKeepOnlyFirstFailureAndInvalidateStrictRecords() {
+        val consumer = SurfaceCurrentStatsConsumer()
+        val sampleIdentity = identity(cameraRevision = 40, presentationSequence = 100)
+        val request = consumer.beginRequest(binding(0)) { requested() }
+        consumer.consumeCycle(readyCycle(request, 80, sampleIdentity))
+
+        repeat(2_000) { index ->
+            val staleTicket = index.toLong() + 1_000L
+            consumer.consumePolledState(
+                readyState(
+                    ticket = if (index % 2 == 0) 80 else staleTicket,
+                    identity = if (index % 2 == 0) {
+                        sampleIdentity
+                    } else {
+                        identity(staleTicket, staleTicket)
+                    }
+                )
+            )
+        }
+
+        val tracked = consumer.trackedStateForTest()
+        assertEquals(0, tracked.issuedTicketCount)
+        assertEquals(1, tracked.sampleRecordCount)
+        assertEquals(1, tracked.rejectionRecordCount)
+        assertEquals(2, tracked.totalRecordCount)
+        assertThrows(IllegalStateException::class.java) { consumer.strictRecords(1) }
+    }
+
+    @Test
+    fun rejectionRecyclesItsPendingTicketAndClosesTheBenchmarkRecord() {
+        val consumer = SurfaceCurrentStatsConsumer()
+        val sampleIdentity = identity(cameraRevision = 50, presentationSequence = 110)
+        val request = consumer.beginRequest(binding(0)) { requested() }
+        consumer.consumeCycle(pendingCycle(request, 90, sampleIdentity))
+
+        consumer.consumePolledState(
+            GsplatSurfaceCurrentStatsState.Rejected(
+                reason = "stale_ticket",
+                ticket = 90,
+                pendingCount = 0
+            )
+        )
+
+        assertFalse(consumer.hasInFlight)
+        assertTrue(consumer.benchmarkTerminalsComplete(1))
+        assertTrue(
+            consumer.recordForSample(0)?.terminal is SurfaceCurrentStatsTerminal.Rejected
+        )
+        assertEquals(0, consumer.trackedStateForTest().issuedTicketCount)
+        assertEquals(1, consumer.trackedStateForTest().rejectionRecordCount)
+        assertThrows(IllegalStateException::class.java) { consumer.strictRecords(1) }
+    }
+
     private fun binding(index: Int) = SurfaceCurrentStatsFrameBinding(
         frameId = index.toLong() + 1,
         sampleIndex = index,
@@ -254,7 +402,8 @@ class SurfaceCurrentStatsConsumerTest {
     private fun pendingCycle(
         request: GsplatSurfaceCurrentStatsRequest,
         ticket: Long,
-        identity: GsplatSurfaceCurrentStatsIdentity
+        identity: GsplatSurfaceCurrentStatsIdentity,
+        pendingCount: Int = 1
     ) = GsplatSurfaceCurrentStatsCycle(
         request = request,
         submission = GsplatSurfaceCurrentStatsSubmission(
@@ -263,7 +412,7 @@ class SurfaceCurrentStatsConsumerTest {
             identity
         ),
         poll = GsplatSurfaceCurrentStatsPoll(GsplatSurfaceCurrentStatsPollKind.EMPTY),
-        state = GsplatSurfaceCurrentStatsState.Pending(ticket, identity, pendingCount = 1)
+        state = GsplatSurfaceCurrentStatsState.Pending(ticket, identity, pendingCount)
     )
 
     private fun readyCycle(
@@ -289,9 +438,10 @@ class SurfaceCurrentStatsConsumerTest {
 
     private fun readyState(
         ticket: Long,
-        identity: GsplatSurfaceCurrentStatsIdentity
+        identity: GsplatSurfaceCurrentStatsIdentity,
+        pendingCount: Int = 0
     ): GsplatSurfaceCurrentStatsState =
-        GsplatSurfaceCurrentStatsState.Ready(receipt(ticket, identity), pendingCount = 0)
+        GsplatSurfaceCurrentStatsState.Ready(receipt(ticket, identity), pendingCount)
 
     private fun receipt(
         ticket: Long,
