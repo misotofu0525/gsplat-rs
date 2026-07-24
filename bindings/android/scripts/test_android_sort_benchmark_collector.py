@@ -64,8 +64,25 @@ def camera_validation_fixture(backend: str = "gpu", sample_count: int = 1):
             "order_backend_requested": backend,
             "path": "packed_atlas",
             "gpu_producer_measurement_enabled": False,
+            "current_stats_schema": "gsplat-surface-current-stats/v1",
+            "current_stats_strict": True,
+            "count_source": "matching_current_stats_ready",
         },
-        "dataset": {"sha256": "abc", "bytes": 123},
+        "dataset": {"sha256": "abc", "bytes": 123, "splat_count": 100},
+        "timing_contract": {
+            "call_ms": "host_camera_request_render_transaction_wall",
+            "frame_wall_ms": "host_iteration_request_through_receipt_queries",
+            "preprocess_ms": "matching_cpu_order_terminal_only",
+            "sort_ms": "matching_cpu_order_terminal_only",
+            "raster_ms": None,
+        },
+        "unavailable_fields": [
+            "frames[*].preprocess_ms",
+            "frames[*].sort_ms",
+            "frames[*].gpu_complete_ms",
+            "frames[*].cpu_frame_complete_ms",
+            "frames[*].raster_ms",
+        ],
         "trace": {
             "schema": "gsplat-camera-trace/v1",
             "id": "unit-camera-trace",
@@ -101,6 +118,25 @@ def camera_validation_fixture(backend: str = "gpu", sample_count: int = 1):
                 "trace_frame_index": 0,
                 "trace_timestamp_ns": 0,
                 "trace_loop_index": 0,
+                "visible": 80,
+                "contributor": 70,
+                "drawn": 80,
+                "exact_contributor_compaction": False,
+                "call_ms": 1.0,
+                "frame_wall_ms": 2.0,
+                "preprocess_ms": None,
+                "sort_ms": None,
+                "gpu_complete_ms": None,
+                "cpu_frame_complete_ms": None,
+                "raster_ms": None,
+                "order_submission_ticket": None,
+                "order_measurement_ticket": None,
+                "order_measurement_camera_revision": None,
+                "current_stats_ticket": 1_000 + index,
+                "current_stats_presentation_sequence": 2_000 + index,
+                "current_stats_executed_plan": (
+                    "cpu_post_sort" if backend == "cpu" else "gpu_post_sort"
+                ),
                 "camera_receipt": {
                     "schema": COLLECTOR.CAMERA_RECEIPT_SCHEMA,
                     "source": "native_runtime_after_present",
@@ -131,6 +167,38 @@ def camera_validation_fixture(backend: str = "gpu", sample_count: int = 1):
             "gpu_frame_count": gpu_frames,
             "gpu_sort_fallback_count": 0,
         },
+        "current_stats_terminal_ledger": [
+            {
+                "sample_index": index,
+                "trace_frame_index": 0,
+                "trace_timestamp_ns": 0,
+                "request_status": "requested",
+                "submission_status": "issued",
+                "ticket": 1_000 + index,
+                "identity": {
+                    "scene_generation": 1,
+                    "camera_revision": 7,
+                    "viewport_generation": 2,
+                    "contract_generation": 3,
+                    "plan_set_generation": 4,
+                    "order_generation": 5 + index,
+                    "raster_generation": 6,
+                    "encode_attempt": 100 + index,
+                    "presentation_sequence": 2_000 + index,
+                    "executed_plan": (
+                        "cpu_post_sort" if backend == "cpu" else "gpu_post_sort"
+                    ),
+                },
+                "outcome": "ready",
+                "source": 100,
+                "visible": 80,
+                "contributor": 70,
+                "drawn": 80,
+                "count_semantics": "indirect_draw_equals_visible",
+                "exactness_receipt_id": "fixture-exactness",
+            }
+            for index in range(sample_count)
+        ],
     }
     return manifest, summary, frames, expected_trace, expected_identity
 
@@ -183,8 +251,24 @@ def add_gpu_producer_evidence(
     for index, frame in enumerate(frames):
         ticket = 100 + index
         contributor = source - index
+        current_entry = summary["current_stats_terminal_ledger"][index]
+        current_entry.update(
+            {
+                "source": source,
+                "visible": source,
+                "contributor": contributor,
+                "drawn": contributor,
+                "count_semantics": "indirect_draw_equals_contributor",
+            }
+        )
+        current_entry["identity"]["executed_plan"] = "gpu_preproject"
         frame.update(
             {
+                "visible": source,
+                "contributor": contributor,
+                "drawn": contributor,
+                "exact_contributor_compaction": True,
+                "current_stats_executed_plan": "gpu_preproject",
                 "gpu_order_producer": producer,
                 "gpu_producer_measurement_ticket": ticket,
                 "gpu_producer_measurement_camera_revision": frame["camera_revision"],
@@ -549,6 +633,81 @@ class ParsingTests(unittest.TestCase):
             fixture[3],
             fixture[4],
         )
+
+    def test_current_stats_ledger_is_complete_unique_and_identity_safe(self) -> None:
+        fixture = camera_validation_fixture("gpu", 2)
+        COLLECTOR.validate_run_artifact(
+            fixture[0],
+            fixture[1],
+            fixture[2],
+            "gpu",
+            "packed",
+            {"sha256": "abc", "bytes": 123},
+            fixture[3],
+            fixture[4],
+        )
+
+        mutations = {
+            "missing ledger": lambda manifest, summary, frames: summary.pop(
+                "current_stats_terminal_ledger"
+            ),
+            "missing Ready": lambda manifest, summary, frames: summary[
+                "current_stats_terminal_ledger"
+            ][0].__setitem__("outcome", "pending"),
+            "terminal failure": lambda manifest, summary, frames: summary[
+                "current_stats_terminal_ledger"
+            ][0].__setitem__("outcome", "failure"),
+            "duplicate ticket": lambda manifest, summary, frames: (
+                summary["current_stats_terminal_ledger"][1].__setitem__(
+                    "ticket", summary["current_stats_terminal_ledger"][0]["ticket"]
+                ),
+                frames[1].__setitem__(
+                    "current_stats_ticket", frames[0]["current_stats_ticket"]
+                ),
+            ),
+            "stale ticket join": lambda manifest, summary, frames: frames[0].__setitem__(
+                "current_stats_ticket", 999_999
+            ),
+            "identity drift": lambda manifest, summary, frames: summary[
+                "current_stats_terminal_ledger"
+            ][0]["identity"].__setitem__("camera_revision", 99),
+            "fixed-camera alias": lambda manifest, summary, frames: (
+                summary["current_stats_terminal_ledger"][1]["identity"].__setitem__(
+                    "presentation_sequence",
+                    summary["current_stats_terminal_ledger"][0]["identity"][
+                        "presentation_sequence"
+                    ],
+                ),
+                frames[1].__setitem__(
+                    "current_stats_presentation_sequence",
+                    frames[0]["current_stats_presentation_sequence"],
+                ),
+            ),
+            "unbound timing": lambda manifest, summary, frames: (
+                frames[0].__setitem__("preprocess_ms", 1.0),
+                frames[0].__setitem__("sort_ms", 2.0),
+            ),
+            "legacy raster timing": lambda manifest, summary, frames: frames[0].__setitem__(
+                "raster_ms", 1.0
+            ),
+        }
+        for label, mutate in mutations.items():
+            with self.subTest(label=label):
+                manifest = copy.deepcopy(fixture[0])
+                summary = copy.deepcopy(fixture[1])
+                frames = copy.deepcopy(fixture[2])
+                mutate(manifest, summary, frames)
+                with self.assertRaises(RuntimeError):
+                    COLLECTOR.validate_run_artifact(
+                        manifest,
+                        summary,
+                        frames,
+                        "gpu",
+                        "packed",
+                        {"sha256": "abc", "bytes": 123},
+                        fixture[3],
+                        fixture[4],
+                    )
 
         mutations = {
             "missing receipt": lambda manifest, frames: frames[0].pop("camera_receipt"),

@@ -1059,6 +1059,264 @@ def validate_camera_receipts(
                 )
 
 
+def validate_current_stats_evidence(
+    manifest: dict[str, Any],
+    summary: dict[str, Any],
+    frames: Sequence[dict[str, Any]],
+    expected_backend: str,
+) -> None:
+    renderer = manifest.get("renderer", {})
+    expected_renderer = {
+        "current_stats_schema": "gsplat-surface-current-stats/v1",
+        "current_stats_strict": True,
+        "count_source": "matching_current_stats_ready",
+    }
+    for field, expected in expected_renderer.items():
+        if renderer.get(field) != expected:
+            raise RuntimeError(
+                f"artifact renderer {field} {renderer.get(field)!r}, expected {expected!r}"
+            )
+
+    timing = manifest.get("timing_contract")
+    expected_timing = {
+        "call_ms": "host_camera_request_render_transaction_wall",
+        "frame_wall_ms": "host_iteration_request_through_receipt_queries",
+        "preprocess_ms": "matching_cpu_order_terminal_only",
+        "sort_ms": "matching_cpu_order_terminal_only",
+        "raster_ms": None,
+    }
+    if not isinstance(timing, dict) or any(
+        timing.get(field) != expected for field, expected in expected_timing.items()
+    ):
+        raise RuntimeError("artifact timing_contract is missing or dishonest")
+
+    sample_count = summary.get("sample_count")
+    ledger = summary.get("current_stats_terminal_ledger")
+    if (
+        not isinstance(sample_count, int)
+        or sample_count <= 0
+        or len(frames) != sample_count
+        or not isinstance(ledger, list)
+        or len(ledger) != sample_count
+    ):
+        raise RuntimeError("current-stats ledger does not cover every measured frame")
+
+    source = manifest.get("dataset", {}).get("splat_count")
+    if not isinstance(source, int) or isinstance(source, bool) or source <= 0:
+        raise RuntimeError("current-stats validation requires dataset.splat_count")
+    unavailable = manifest.get("unavailable_fields")
+    if not isinstance(unavailable, list):
+        raise RuntimeError("current-stats validation requires unavailable_fields")
+    unavailable_set = set(unavailable)
+    if "frames[*].raster_ms" not in unavailable_set:
+        raise RuntimeError("unavailable raster timing is not declared")
+
+    identity_fields = {
+        "scene_generation",
+        "camera_revision",
+        "viewport_generation",
+        "contract_generation",
+        "plan_set_generation",
+        "order_generation",
+        "raster_generation",
+        "encode_attempt",
+        "presentation_sequence",
+        "executed_plan",
+    }
+    plan_semantics = {
+        "cpu_post_sort": "visible",
+        "gpu_post_sort": "visible",
+        "gpu_preproject": "contributor",
+    }
+    tickets: set[int] = set()
+    presentation_sequences: set[int] = set()
+    exactness_receipt_ids: set[str] = set()
+    for sample_index, (frame, entry) in enumerate(zip(frames, ledger, strict=True)):
+        if not isinstance(entry, dict) or entry.get("sample_index") != sample_index:
+            raise RuntimeError(
+                f"current-stats ledger entry {sample_index} has a missing sample binding"
+            )
+        if entry.get("request_status") != "requested":
+            raise RuntimeError(f"current-stats frame {sample_index} lacks a requested pre-ticket")
+        if entry.get("submission_status") != "issued":
+            raise RuntimeError(f"current-stats frame {sample_index} lacks Issued")
+        if entry.get("outcome") != "ready":
+            raise RuntimeError(f"current-stats frame {sample_index} lacks matching Ready")
+        exactness_receipt_id = entry.get("exactness_receipt_id")
+        if not isinstance(exactness_receipt_id, str) or not exactness_receipt_id:
+            raise RuntimeError(
+                f"current-stats frame {sample_index} lacks exactness receipt identity"
+            )
+        exactness_receipt_ids.add(exactness_receipt_id)
+
+        ticket = entry.get("ticket")
+        if (
+            not isinstance(ticket, int)
+            or isinstance(ticket, bool)
+            or ticket <= 0
+            or ticket in tickets
+        ):
+            raise RuntimeError(
+                f"current-stats frame {sample_index} has a missing, stale, or duplicate ticket"
+            )
+        tickets.add(ticket)
+        if frame.get("current_stats_ticket") != ticket:
+            raise RuntimeError(f"current-stats frame {sample_index} ticket join drifted")
+
+        identity = entry.get("identity")
+        if not isinstance(identity, dict) or set(identity) != identity_fields:
+            raise RuntimeError(f"current-stats frame {sample_index} identity is incomplete")
+        for field in identity_fields - {"executed_plan"}:
+            value = identity.get(field)
+            if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+                raise RuntimeError(
+                    f"current-stats frame {sample_index} identity {field} is invalid"
+                )
+        presentation_sequence = identity["presentation_sequence"]
+        if presentation_sequence <= 0 or presentation_sequence in presentation_sequences:
+            raise RuntimeError(
+                f"current-stats frame {sample_index} aliases a presentation sequence"
+            )
+        presentation_sequences.add(presentation_sequence)
+        plan = identity.get("executed_plan")
+        if plan not in plan_semantics:
+            raise RuntimeError(f"current-stats frame {sample_index} plan is invalid")
+        if frame.get("current_stats_presentation_sequence") != presentation_sequence:
+            raise RuntimeError(
+                f"current-stats frame {sample_index} presentation identity drifted"
+            )
+        if frame.get("current_stats_executed_plan") != plan:
+            raise RuntimeError(f"current-stats frame {sample_index} plan join drifted")
+
+        camera_revision = frame.get("camera_revision")
+        camera_receipt = frame.get("camera_receipt")
+        if (
+            identity.get("camera_revision") != camera_revision
+            or not isinstance(camera_receipt, dict)
+            or camera_receipt.get("camera_revision") != camera_revision
+            or camera_receipt.get("presented_camera_revision") != camera_revision
+        ):
+            raise RuntimeError(f"current-stats frame {sample_index} camera identity is stale")
+        if entry.get("trace_frame_index") != frame.get("trace_frame_index") or entry.get(
+            "trace_timestamp_ns"
+        ) != frame.get("trace_timestamp_ns"):
+            raise RuntimeError(f"current-stats frame {sample_index} trace binding drifted")
+
+        counts = {}
+        for field in ("source", "visible", "contributor", "drawn"):
+            value = entry.get(field)
+            if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+                raise RuntimeError(
+                    f"current-stats frame {sample_index} {field} is invalid"
+                )
+            counts[field] = value
+        if not 0 <= counts["contributor"] <= counts["visible"] <= counts["source"]:
+            raise RuntimeError(f"current-stats frame {sample_index} violates C <= V <= S")
+        if counts["source"] != source:
+            raise RuntimeError(f"current-stats frame {sample_index} S is incomplete")
+        if frame.get("visible") != counts["visible"] or frame.get("contributor") != counts[
+            "contributor"
+        ] or frame.get("drawn") != counts["drawn"]:
+            raise RuntimeError(f"current-stats frame {sample_index} count join drifted")
+        if plan_semantics[plan] == "visible":
+            if counts["drawn"] != counts["visible"] or entry.get("count_semantics") not in (
+                "direct_draw_equals_visible",
+                "indirect_draw_equals_visible",
+            ):
+                raise RuntimeError(f"current-stats frame {sample_index} PostSort requires D=V")
+        elif counts["drawn"] != counts["contributor"] or entry.get(
+            "count_semantics"
+        ) != "indirect_draw_equals_contributor":
+            raise RuntimeError(f"current-stats frame {sample_index} Preproject requires D=C")
+        if frame.get("exact_contributor_compaction") != (plan == "gpu_preproject"):
+            raise RuntimeError(
+                f"current-stats frame {sample_index} compaction flag disagrees with plan"
+            )
+        if expected_backend == "cpu" and plan != "cpu_post_sort":
+            raise RuntimeError("forced CPU artifact executed a non-CPU current-stats plan")
+        if expected_backend == "gpu" and plan == "cpu_post_sort":
+            raise RuntimeError("forced GPU artifact executed a CPU current-stats plan")
+
+        for field in ("call_ms", "frame_wall_ms"):
+            value = frame.get(field)
+            if (
+                not isinstance(value, (int, float))
+                or isinstance(value, bool)
+                or not math.isfinite(float(value))
+                or float(value) < 0.0
+            ):
+                raise RuntimeError(f"frame {sample_index} {field} is not a host wall time")
+        if frame.get("raster_ms") is not None:
+            raise RuntimeError("legacy raster timing must remain unavailable")
+
+        order_ticket = frame.get("order_submission_ticket")
+        preprocess = frame.get("preprocess_ms")
+        sort = frame.get("sort_ms")
+        if preprocess is None or sort is None:
+            if preprocess is not None or sort is not None:
+                raise RuntimeError("CPU preprocess/sort timing must be unavailable together")
+            if not {
+                "frames[*].preprocess_ms",
+                "frames[*].sort_ms",
+            }.issubset(unavailable_set):
+                raise RuntimeError("unavailable CPU timing is not declared")
+        else:
+            if (
+                not isinstance(order_ticket, int)
+                or isinstance(order_ticket, bool)
+                or order_ticket <= 0
+                or frame.get("order_measurement_ticket") != order_ticket
+                or frame.get("order_measurement_camera_revision") != camera_revision
+            ):
+                raise RuntimeError(
+                    "CPU timing is not joined to this sample's own order terminal"
+                )
+            for field, value in (("preprocess_ms", preprocess), ("sort_ms", sort)):
+                if (
+                    not isinstance(value, (int, float))
+                    or isinstance(value, bool)
+                    or not math.isfinite(float(value))
+                    or float(value) < 0.0
+                ):
+                    raise RuntimeError(f"{field} is not a trustworthy timing")
+
+        cpu_complete = frame.get("cpu_frame_complete_ms")
+        if cpu_complete is None:
+            if "frames[*].cpu_frame_complete_ms" not in unavailable_set:
+                raise RuntimeError("unavailable CPU completion timing is not declared")
+        elif (
+            preprocess is None
+            or not isinstance(cpu_complete, (int, float))
+            or isinstance(cpu_complete, bool)
+            or not math.isfinite(float(cpu_complete))
+            or float(cpu_complete) < 0.0
+        ):
+            raise RuntimeError(
+                "CPU completion timing is not joined to this sample's own order terminal"
+            )
+
+        gpu_complete = frame.get("gpu_complete_ms")
+        if gpu_complete is None:
+            if "frames[*].gpu_complete_ms" not in unavailable_set:
+                raise RuntimeError("unavailable GPU completion timing is not declared")
+        elif (
+            not isinstance(gpu_complete, (int, float))
+            or isinstance(gpu_complete, bool)
+            or not math.isfinite(float(gpu_complete))
+            or float(gpu_complete) < 0.0
+            or not isinstance(order_ticket, int)
+            or isinstance(order_ticket, bool)
+            or order_ticket <= 0
+            or frame.get("order_measurement_ticket") != order_ticket
+            or frame.get("order_measurement_camera_revision") != camera_revision
+        ):
+            raise RuntimeError(
+                "GPU completion timing is not joined to this sample's own order terminal"
+            )
+    if len(exactness_receipt_ids) != 1:
+        raise RuntimeError("current-stats samples do not share one exactness receipt")
+
+
 def validate_run_artifact(
     manifest: dict[str, Any],
     summary: dict[str, Any],
@@ -1126,6 +1384,13 @@ def validate_run_artifact(
             f"samples={sample_count!r} cpu={cpu_frames!r} gpu={gpu_frames!r} "
             f"gpu_fallbacks={gpu_fallbacks!r}"
         )
+
+    validate_current_stats_evidence(
+        manifest,
+        summary,
+        frames,
+        expected_backend,
+    )
 
     producer_requested = renderer.get("gpu_order_producer_requested")
     producer_enabled = renderer.get("gpu_producer_measurement_enabled")

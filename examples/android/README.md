@@ -39,14 +39,29 @@ frame start through queue completion, including sorting, projection,
 rasterization, submission, and queued work. Order-stage timestamps are
 diagnostic only, and changing the raster plan resets the learned policy.
 
-Each successful CPU/GPU ticket also carries revision-safe `S/V/C/D` evidence:
-complete source/residency `S`, near/far candidates `V`, strict conservative
-post-projection contributors `C`, and issued draw count `D`. The artifact joins
-the terminal timing and count receipts by both ticket and camera revision,
-requires `0 <= C <= V <= S`, and accepts `D=C` only when exact contributor
-compaction is explicitly flagged. Direct/downlevel execution remains `D=V`;
-stale `GsplatSurfaceStats` values are never used to manufacture a terminal
-count.
+The live overlay explicitly requests current-stats only at its low-frequency
+status sampling points. Pending, Busy, unavailable, and empty states keep
+rendering and show counts as unavailable; they never reuse an older receipt or
+display zero, capacity, or a sentinel as a count.
+
+Every measured benchmark frame owns a separate current-stats pre-ticket intent.
+After the frame's fallible camera/resize command succeeds, the app requests the
+sample, renders/presents, records its Issued ticket and full native identity,
+then performs one non-blocking poll. Issued tickets may overlap and terminate
+out of order. A bounded terminal flush may poll them after measurement, but a
+later frame's receipt can never satisfy an earlier sample. Missing Ready,
+failure, expiry, generation drift, identity drift, or flush exhaustion rejects
+the artifact.
+
+Only a matching Ready receipt supplies revision-safe `S/V/C/D`: complete
+source/residency `S`, near/far candidates `V`, strict conservative
+post-projection contributors `C`, and issued draw count `D`. The artifact
+requires `0 <= C <= V <= S`, `D=V` for CPU/GPU PostSort, and `D=C` for GPU
+Preproject. Fixed-camera samples still require unique ticket and presentation
+sequence identities. Legacy `GsplatSurfaceStats` values are not live evidence.
+Host transaction/iteration wall time remains available; preprocess, sort, and
+queue-completion timing is emitted only from the same sample's order terminal,
+while raster timing is explicitly unavailable.
 
 Formal trace evidence is also post-present and revision-safe. Each measured
 frame records the native session's actual f32 pose/intrinsics plus canonical

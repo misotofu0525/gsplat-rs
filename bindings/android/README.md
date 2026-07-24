@@ -87,8 +87,8 @@ val renderer = GsplatSurfaceRenderer.create(
     height = height
 )
 
-renderer.renderFrame()
-val stats = renderer.stats()
+val currentStatsCycle = renderer.renderFrameWithCurrentStats()
+val currentStatsState = currentStatsCycle.state
 val exactness = renderer.exactness()
 val presentation = renderer.presentation()
 val orderStatus = renderer.orderStatus()
@@ -132,11 +132,14 @@ ticket with a different complete identity is rejected. A submission mismatch
 never skips a terminal already removed by the native global single-pop; that
 terminal is still accounted and the affected pending ticket ends fail-closed.
 
-Before the native Surface semantic cutover, the current implementation normally
-reports GPU unavailable / NotRequested / Empty. That is an expected successful
-adapter path. The sample app and formal Android benchmark intentionally retain
-their existing render sequence and evidence contract; they do not opt into this
-observer API.
+The sample app uses the same additive adapter over its lower-level
+`NativeBridge` render loop. Ordinary UI explicitly samples at low frequency and
+shows unavailable for every non-Ready state. Strict benchmark frames request
+only after their camera/resize command succeeds, then bind Issued submission and
+terminal evidence to that measured frame by ticket plus the complete identity.
+Multiple issued tickets may remain pending and terminate out of order; only one
+not-yet-submitted pre-ticket request intent may exist at a time. The bounded
+terminal flush never blocks rendering or borrows a later frame's receipt.
 
 The product defaults are `PACKED_ATLAS`, `ADAPTIVE`, and sort interval `1`.
 Projected execution independently defaults to
