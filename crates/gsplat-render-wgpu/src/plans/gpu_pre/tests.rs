@@ -100,8 +100,6 @@ async fn request_device() -> Option<(
 )> {
     // Fixture only. GpuPreprojectPlan consumes the renderer's existing owner
     // and never requests an adapter or device in production.
-    let required = std::env::var_os("GSPLAT_REQUIRE_GPU_PREPROJECT_PLAN").is_some();
-    let require_metal = std::env::var_os("GSPLAT_REQUIRE_METAL_GPU_PREPROJECT_PLAN").is_some();
     let instance = wgpu::Instance::default();
     let adapter = match instance
         .request_adapter(&wgpu::RequestAdapterOptions {
@@ -112,25 +110,30 @@ async fn request_device() -> Option<(
         .await
     {
         Ok(adapter) => adapter,
-        Err(error) if required || require_metal => {
+        #[cfg(target_os = "macos")]
+        Err(error) => {
             panic!("required GPU Preproject plan adapter unavailable: {error}")
         }
+        #[cfg(not(target_os = "macos"))]
         Err(error) => {
             eprintln!("skipping GPU Preproject plan test; adapter unavailable: {error}");
             return None;
         }
     };
     let info = adapter.get_info();
-    if require_metal {
-        assert_eq!(info.backend, wgpu::Backend::Metal, "Metal adapter required");
-    }
+    #[cfg(target_os = "macos")]
+    assert_eq!(info.backend, wgpu::Backend::Metal, "Metal adapter required");
     let limits = portable_limits();
     if !limits.check_limits(&adapter.limits()) {
-        if required || require_metal {
+        #[cfg(target_os = "macos")]
+        {
             panic!("required GPU Preproject plan limits are unavailable: {limits:?}");
         }
-        eprintln!("skipping GPU Preproject plan test; portable limits unavailable");
-        return None;
+        #[cfg(not(target_os = "macos"))]
+        {
+            eprintln!("skipping GPU Preproject plan test; portable limits unavailable");
+            return None;
+        }
     }
     let descriptor = wgpu::DeviceDescriptor {
         label: Some("exact-gpu-preproject-plan-test-device"),
@@ -142,9 +145,11 @@ async fn request_device() -> Option<(
     };
     match adapter.request_device(&descriptor).await {
         Ok((device, queue)) => Some((instance, adapter, info, Arc::new(device), Arc::new(queue))),
-        Err(error) if required || require_metal => {
+        #[cfg(target_os = "macos")]
+        Err(error) => {
             panic!("required GPU Preproject plan device unavailable: {error}")
         }
+        #[cfg(not(target_os = "macos"))]
         Err(error) => {
             eprintln!("skipping GPU Preproject plan test; device unavailable: {error}");
             None
