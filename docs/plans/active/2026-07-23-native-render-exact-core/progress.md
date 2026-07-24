@@ -17,16 +17,17 @@ E7 = Accepted
 E8 = Accepted
 E9 = Accepted
 E10 = Accepted
-E11 = Active
+E11 = Accepted
+E12 = Active
 <!-- gsplat-program-task-states: end -->
 
 ## Package status
 
 - Package: E — Exact prepared plans and native execution, still shadowed.
-- Active task: E11 mandatory comparable terminal sampler and sole whole-plan
-  controller across the three accepted Exact plans.
-- Last completed batch: E10 CPU projection adapter, canonical raster ownership,
-  exact frame transaction and one terminal submission/batching experiment.
+- Active task: E12 explicit shadow Surface parity for complete plans,
+  generations, lifecycle and terminal receipts.
+- Last completed batch: E11 mandatory comparable terminal sampler and sole
+  whole-plan controller across the three accepted Exact plans.
 - E1 state: Accepted after root fixed-SHA review and fast-forward integration
   of candidate `0496266cc73de5fc84acb7c393606fa68eb77623`.
 - Dependency: Package A/A9 Accepted.
@@ -70,8 +71,7 @@ E11 = Active
   benchmark schema, JSON policy or product default changed.
 - Correctness/performance boundary: hard Exact proof is separate from scoped
   performance observation. Historical timings cannot be combined into a
-  final conclusion, and no FPS, competitor percentage, 800/890-line or other
-  physical LOC target is a task condition.
+  final conclusion, and no FPS or competitor percentage is a task condition.
 - Ownership result: CPU PostSort, GPU PostSort and GPU Preproject are complete
   plans selected by one future whole-plan controller. There is no public
   `RenderPlan` trait, boxed pass vector, second controller or platform-host
@@ -624,3 +624,39 @@ E11 = Active
 - The one-buffer production shape remains for stronger transaction ownership
   and straightforward host append semantics, not because of a claimed speedup.
   The performance rejection does not block E11.
+
+## E11 mandatory sampler and whole-plan controller closeout
+
+- Final state: Accepted; E12 is now active.
+- Writer fixed tip: `e7bdd9f2734de5ffed95d10ee79b46af5b36c84d` on parent
+  `6ea066ea2488264c512981907bc54808d2472193`.
+- Root integration commits: `99a9771` and `40472cf`.
+- `PreparedRuntimeSlot` owns exactly one mandatory non-blocking `PlanSampler`,
+  one `WholePlanController`, and an optional evidence ring. Renderer consumes
+  a terminal sample before copying it to the optional ring, so disabling,
+  filling or dropping optional evidence cannot change plan selection.
+- The controller selects only complete `PlanId` values: CPU PostSort, GPU
+  PostSort and GPU Preproject. It starts from the same-Exact CPU fallback and
+  uses bounded bootstrap, interleaved ABBA probes, transition warmup,
+  hysteresis, minimum residency, challenger rotation, cooldown and reprobe.
+  It contains no point-count selection rule and does not decompose producer,
+  sort or raster into independent policy axes.
+- Formal samples bind to the final command buffer of the definite submission.
+  The completion callback writes only atomics; production polling is
+  non-blocking and adds no map/readback. CPU samples retain known `D=V` and
+  validate `V<=S`; GPU numeric V/C/D remain unavailable while their exact
+  `D=V` or `D=C` relationship stays explicit.
+- Comparison identity binds scene, viewport, contract, plan set, source count
+  and SH degree. Camera revision remains on every immutable sample but is not
+  a cohort reset, allowing a moving trace to learn. Runtime, plan-set or
+  viewport replacement expires old private tickets; late callbacks cannot
+  enter the replacement controller or optional evidence ring.
+- Two independent fixed-tip reviews accepted the final candidate with no
+  P0/P1/P2. Root and independent verification passed 561 workspace tests with
+  nine existing ignored research tests, 388 renderer tests with eight existing
+  ignored research tests, strict Clippy, warning-free Rustdoc, wasm32, source
+  architecture policy/self-tests, Apple M4/Metal required SortedAlpha
+  conformance, C FFI smoke and nine focused E11 tests.
+- No Surface host, public API/C ABI, WGSL, platform wrapper or product default
+  changed. E12 owns explicit shadow Surface integration and real lifecycle
+  parity; product cutover remains Package M.
