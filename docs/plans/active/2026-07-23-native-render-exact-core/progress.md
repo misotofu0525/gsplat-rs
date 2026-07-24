@@ -501,6 +501,12 @@ E9 = Active
   SortedAlpha conformance passed. The plan does not submit, poll, map, read
   back, present, create a second device, change raster/WGSL, or alter a product
   route or public ABI.
+- Root combined verification after E7 and E8 integration passed format/diff,
+  architecture policy/self-tests, locked workspace check and tests, strict
+  all-target Clippy, warning-free Rustdoc, wasm32 Web, C FFI smoke, the focused
+  GPU PostSort suite on an identified Apple M4/Metal adapter, and required
+  Metal SortedAlpha conformance. Renderer library coverage was 364 passed with
+  seven pre-existing ignored research/device tests and no failures.
 - E9 preflight result: `needs-adapter`. The existing Preproject graph already
   implements exact projection, stable contributor compaction, full32 radix and
   indirect draw, but one legacy owner also holds target-format raster state.
