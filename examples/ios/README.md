@@ -86,13 +86,28 @@ success's V/C/D receipt immediately and refuses a frame that issues both an
 order and projected formal ticket. Forced modes execute normally but never
 fabricate projected measurement tickets.
 
-Every success is paired with the additive, ticket-addressed `S/V/C/D` count
-receipt: complete source/residency `S`, near/far candidates `V`, strict
-conservative post-projection contributors `C`, and issued draw count `D`.
-Joining requires the same ticket and camera revision. Formal artifacts enforce
-`0 <= C <= V <= S`; only an explicit exact-compaction flag permits `D=C`, while
-Direct/downlevel execution remains `D=V`. Frame stats are provisional and do
-not backfill a missing terminal count.
+Live counts come only from the additive current-stats v1
+request/submission/poll path. The ordinary UI requests explicitly at a low
+cadence, polls once after each rendered frame, and displays unavailable for
+Pending, Busy, Unavailable, Empty, failure, or mismatch; it never keeps an old
+Ready value on screen. A Ready display includes its ticket, camera revision,
+presentation sequence, plan, and `S/V/C/D`.
+
+Every measured benchmark sample stores one current-stats ticket, the full
+scene/camera/viewport/contract/plan-set/order/raster/encode/presentation
+identity, and a sample/trace key. Fixed-camera frames may share camera revision
+but must have distinct ticket and presentation sequence. Its independent
+terminal ledger requires exactly one matching Ready and rejects missing,
+expired, failed, duplicated, stale, or identity-drifted receipts, including a
+finite flush timeout. Formal artifacts enforce `0 <= C <= V <= S`, CPU/GPU
+PostSort `D=V`, and GPU Preproject `D=C`. Order/projected ledgers cannot
+backfill a missing current receipt.
+
+The artifact retains Swift render host-call and adjacent-frame wall timing.
+CPU preprocess/sort or CPU/GPU completion is present only when that same sample
+owns the matching order terminal. Legacy geometry/raster timing has no trusted
+source, so it is `null` and declared in `unavailable_fields` rather than being
+reported as zero or host-call time.
 
 The build script prefers Kitsune, falls back to the shared NVIDIA Flowers
 fixture, and accepts an explicit PLY path as its first argument. `Open PLY +`

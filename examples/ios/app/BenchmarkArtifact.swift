@@ -24,12 +24,6 @@ struct BenchmarkSample {
     let elapsedNs: UInt64
     let callMs: Double
     let frameWallMs: Double
-    let rendererFrameMs: Double
-    let preprocessMs: Double
-    let sortMs: Double
-    let geometrySubmitMs: Double
-    let visible: UInt32
-    let drawn: UInt32
     let cameraRevision: UInt64
     let appliedOrderRevision: UInt64
     let sortRefreshed: Bool
@@ -46,9 +40,17 @@ struct BenchmarkSample {
     let projectedSubmissionExecution: UInt32?
     let projectedUnsampledReason: String?
     let projectedSubmissionFlags: UInt32
+    let currentStatsTicket: UInt64
     let traceFrameIndex: Int?
     let traceTimestampNs: UInt64?
     let traceLoopIndex: Int?
+}
+
+private struct IssuedCurrentStatsSample: Equatable {
+    let sampleIndex: Int
+    let sampleKey: String
+    let traceKey: String
+    let submission: GsplatCurrentStatsIssuedSubmission
 }
 
 private struct IssuedOrderTicket: Equatable {
@@ -65,11 +67,6 @@ private struct IssuedProjectedTicket: Equatable {
 private struct CompletedProjectedMeasurement {
     let measurement: GsplatSurfaceProjectedMeasurementV1
     let counts: GsplatSurfaceProjectedCountsV1
-}
-
-private struct ProjectedFrameCounts {
-    let visible: UInt32
-    let contributor: UInt32
 }
 
 private struct ProjectedTerminalIdentity: Equatable {
@@ -97,9 +94,6 @@ final class SurfaceBenchmark {
     private var completedCpuTickets: [UInt64: GsplatSurfaceCpuOrderMeasurement] = [:]
     private var completedCountsByTicket: [UInt64: GsplatSurfaceOrderCounts] = [:]
     private var failedOrderTickets: [UInt64: GsplatSurfaceOrderMeasurementFailure] = [:]
-    private var completedGpuMeasurementsByRevision: [UInt64: GsplatSurfaceOrderMeasurement] = [:]
-    private var completedCpuMeasurementsByRevision: [UInt64: GsplatSurfaceCpuOrderMeasurement] = [:]
-    private var completedCountsByRevision: [UInt64: GsplatSurfaceOrderCounts] = [:]
     private var unsampledOrderRequests: [String] = []
     private var orderLedgerErrors: [String] = []
     private var issuedProjectedTickets: [UInt64: IssuedProjectedTicket] = [:]
@@ -108,6 +102,10 @@ final class SurfaceBenchmark {
     private var projectedTerminalIdentities: [UInt64: ProjectedTerminalIdentity] = [:]
     private var unsampledProjectedRequests: [String] = []
     private var projectedLedgerErrors: [String] = []
+    private var issuedCurrentStatsSamples: [UInt64: IssuedCurrentStatsSample] = [:]
+    private var completedCurrentStatsTickets: [UInt64: GsplatCurrentStatsReceipt] = [:]
+    private var failedCurrentStatsTickets: [UInt64: GsplatCurrentStatsFailure] = [:]
+    private var currentStatsLedgerErrors: [String] = []
 
     init(config: BenchmarkConfig) {
         self.config = config
@@ -133,6 +131,127 @@ final class SurfaceBenchmark {
             traceFrameIndex: traceFrameIndex,
             timestampNs: metadata.timestamps[traceFrameIndex]
         )
+    }
+
+    var nextFrameRequiresCurrentStats: Bool {
+        config.enabled && !complete && observedFrames >= config.warmupFrames
+    }
+
+    func recordWarmupFrame(frameStartNs: UInt64) {
+        guard config.enabled, !complete, observedFrames < config.warmupFrames else {
+            return
+        }
+        observedFrames += 1
+        previousFrameStartNs = frameStartNs
+    }
+
+    func recordCurrentStatsError(_ error: String) {
+        currentStatsLedgerErrors.append(error)
+    }
+
+    func recordCurrentStatsSubmission(
+        _ submission: GsplatCurrentStatsIssuedSubmission,
+        traceStep: CameraTraceStep?
+    ) {
+        let sampleIndex = samples.count
+        if let traceStep {
+            guard traceStep.phase == "measure",
+                  traceStep.measuredSampleIndex == sampleIndex else {
+                currentStatsLedgerErrors.append(
+                    "current-stats submission does not match the measured trace sample"
+                )
+                return
+            }
+        }
+        let sampleKey = "measure:\(sampleIndex)"
+        let traceKey = currentStatsTraceKey(
+            sampleIndex: sampleIndex,
+            traceStep: traceStep
+        )
+        let issued = IssuedCurrentStatsSample(
+            sampleIndex: sampleIndex,
+            sampleKey: sampleKey,
+            traceKey: traceKey,
+            submission: submission
+        )
+        if issuedCurrentStatsSamples.updateValue(issued, forKey: submission.ticket) != nil {
+            currentStatsLedgerErrors.append("current-stats ticket was issued more than once")
+        }
+    }
+
+    func recordCurrentStatsEvent(_ event: GsplatCurrentStatsConsumerEvent) {
+        switch event {
+        case .empty:
+            return
+        case .unsampled(let status):
+            currentStatsLedgerErrors.append(
+                "current-stats request reached an unsampled terminal: \(requestStatusName(status))"
+            )
+        case .ready(let receipt):
+            guard let issued = issuedCurrentStatsSamples[receipt.ticket],
+                  issued.submission.identity == receipt.identity else {
+                currentStatsLedgerErrors.append(
+                    "current-stats Ready does not match an issued ticket and full identity"
+                )
+                return
+            }
+            if failedCurrentStatsTickets[receipt.ticket] != nil {
+                currentStatsLedgerErrors.append(
+                    "current-stats ticket produced both Ready and failure terminals"
+                )
+            }
+            if completedCurrentStatsTickets.updateValue(
+                receipt,
+                forKey: receipt.ticket
+            ) != nil {
+                currentStatsLedgerErrors.append(
+                    "current-stats ticket produced more than one Ready terminal"
+                )
+            }
+            if let error = currentStatsCountContractError(receipt) {
+                currentStatsLedgerErrors.append(error)
+            }
+        case .failure(let failure):
+            guard let issued = issuedCurrentStatsSamples[failure.ticket],
+                  issued.submission.identity == failure.identity else {
+                currentStatsLedgerErrors.append(
+                    "current-stats failure does not match an issued ticket and full identity"
+                )
+                return
+            }
+            if completedCurrentStatsTickets[failure.ticket] != nil {
+                currentStatsLedgerErrors.append(
+                    "current-stats ticket produced both Ready and failure terminals"
+                )
+            }
+            if failedCurrentStatsTickets.updateValue(
+                failure,
+                forKey: failure.ticket
+            ) != nil {
+                currentStatsLedgerErrors.append(
+                    "current-stats ticket produced more than one failure terminal"
+                )
+            }
+            currentStatsLedgerErrors.append(
+                "current-stats ticket \(failure.ticket) failed reason=" +
+                    failureReasonName(failure.reason)
+            )
+        case .rejected(let rejection):
+            switch rejection {
+            case .unknownTerminal(let ticket):
+                currentStatsLedgerErrors.append(
+                    "current-stats consumer rejected unknown terminal ticket \(ticket)"
+                )
+            case .identityMismatch(let ticket, _, _):
+                currentStatsLedgerErrors.append(
+                    "current-stats consumer rejected full identity drift for ticket \(ticket)"
+                )
+            }
+        case .notRequested, .pending, .settled:
+            currentStatsLedgerErrors.append(
+                "current-stats poll produced a non-terminal consumer event"
+            )
+        }
     }
 
     func recordOrderSubmission(_ submission: GsplatSurfaceOrderSubmission) {
@@ -320,12 +439,6 @@ final class SurfaceBenchmark {
             orderLedgerErrors.append("GPU success count contract: \(error)")
         }
         recordCounts(counts)
-        if let previous = completedGpuMeasurementsByRevision.updateValue(
-            measurement,
-            forKey: measurement.camera_revision
-        ), previous.ticket != measurement.ticket {
-            orderLedgerErrors.append("multiple GPU tickets completed for one camera revision")
-        }
     }
 
     func recordCpuOrderMeasurement(
@@ -378,23 +491,11 @@ final class SurfaceBenchmark {
             orderLedgerErrors.append("CPU success contains invalid timing")
         }
         recordCounts(counts)
-        if let previous = completedCpuMeasurementsByRevision.updateValue(
-            measurement,
-            forKey: measurement.camera_revision
-        ), previous.ticket != measurement.ticket {
-            orderLedgerErrors.append("multiple CPU tickets completed for one camera revision")
-        }
     }
 
     private func recordCounts(_ counts: GsplatSurfaceOrderCounts) {
         if completedCountsByTicket.updateValue(counts, forKey: counts.ticket) != nil {
             orderLedgerErrors.append("order ticket produced multiple V/C/D receipts")
-        }
-        if let previous = completedCountsByRevision.updateValue(
-            counts,
-            forKey: counts.camera_revision
-        ), previous.ticket != counts.ticket {
-            orderLedgerErrors.append("multiple V/C/D receipts completed for one camera revision")
         }
     }
 
@@ -552,8 +653,72 @@ final class SurfaceBenchmark {
         }
     }
 
+    var currentStatsLedgerWaitFinished: Bool {
+        issuedCurrentStatsSamples.keys.allSatisfy {
+            completedCurrentStatsTickets[$0] != nil || failedCurrentStatsTickets[$0] != nil
+        }
+    }
+
+    var currentStatsProtocolError: String? { currentStatsLedgerErrors.first }
+
     var terminalLedgersWaitFinished: Bool {
-        orderLedgerWaitFinished && projectedLedgerWaitFinished
+        orderLedgerWaitFinished && projectedLedgerWaitFinished && currentStatsLedgerWaitFinished
+    }
+
+    var currentStatsLedgerError: String? {
+        if let first = currentStatsLedgerErrors.first { return first }
+        if issuedCurrentStatsSamples.count != samples.count {
+            return "every measured sample must own one unique current-stats submission"
+        }
+        var presentationSequences: Set<UInt64> = []
+        for (sampleIndex, sample) in samples.enumerated() {
+            guard let issued = issuedCurrentStatsSamples[sample.currentStatsTicket],
+                  issued.sampleIndex == sampleIndex,
+                  let receipt = completedCurrentStatsTickets[sample.currentStatsTicket] else {
+                return "measured sample lacks a matching current-stats Ready terminal"
+            }
+            if failedCurrentStatsTickets[sample.currentStatsTicket] != nil {
+                return "measured current-stats ticket has a terminal failure"
+            }
+            if issued.submission.identity != receipt.identity {
+                return "measured current-stats ticket changed its full identity"
+            }
+            if receipt.identity.cameraRevision != sample.cameraRevision {
+                return "current-stats identity does not match the sample camera revision"
+            }
+            if !presentationSequences.insert(receipt.identity.presentationSequence).inserted {
+                return "measured current-stats samples reused a presentation sequence"
+            }
+            let expectedPlan: GsplatCurrentStatsPlan
+            if sample.actualOrderBackend == 0 {
+                expectedPlan = .cpuPostSort
+            } else if sample.projectedExecution == 2 {
+                expectedPlan = .gpuPreproject
+            } else {
+                expectedPlan = .gpuPostSort
+            }
+            if receipt.identity.executedPlan != expectedPlan {
+                return "current-stats plan does not match the executed order/projected tuple"
+            }
+        }
+        if let failure = failedCurrentStatsTickets.values.first {
+            return "current-stats ticket \(failure.ticket) failed reason=\(failureReasonName(failure.reason))"
+        }
+        return nil
+    }
+
+    private func currentStatsTraceKey(
+        sampleIndex: Int,
+        traceStep: CameraTraceStep?
+    ) -> String {
+        if let traceStep {
+            return "trace:\(traceStep.traceFrameIndex):\(traceStep.timestampNs):" +
+                "\(traceStep.loopIndex)"
+        }
+        if let metadata = config.cameraTraceMetadata {
+            return "fixed:\(metadata.sha256):\(config.cameraTraceFrame)"
+        }
+        return "orbit:\(sampleIndex)"
     }
 
     var orderLedgerError: String? {
@@ -580,37 +745,20 @@ final class SurfaceBenchmark {
         if samples.contains(where: { $0.gpuSortFallback }) {
             return "measured frame used GPU-to-CPU fallback"
         }
-        for sample in samples where sample.actualOrderBackend == 1 {
-            if sample.sortRefreshed && sample.submissionFlags & 1 == 0 {
-                return "GPU order refresh did not request GPU timing"
-            }
-            guard let measurement = orderMeasurement(for: sample) else {
-                return "GPU frame lacks a terminal measurement for its presented revision"
-            }
+        for sample in samples where sample.submittedMeasurementTicket != nil {
             guard let counts = orderCounts(for: sample) else {
-                return "GPU frame lacks revision-matched V/C/D counts"
+                return "issued order sample lacks its same-ticket V/C/D receipt"
             }
-            if sample.sortRefreshed && sample.submittedMeasurementTicket != measurement.ticket {
-                return "GPU frame terminal ticket does not match its submission"
-            }
-            if counts.ticket != measurement.ticket {
-                return "GPU frame measurement and V/C/D ticket disagree"
-            }
-        }
-        for sample in samples where sample.actualOrderBackend == 0 {
-            if sample.sortRefreshed && config.geometryPath != "paged" &&
-                sample.submissionFlags & (1 << 3) == 0 {
-                return "CPU order refresh did not request comparable queue-completion timing"
-            }
-            guard let measurement = cpuOrderMeasurement(for: sample),
-                  let counts = orderCounts(for: sample) else {
-                return "CPU frame lacks a revision-matched terminal measurement and V/C/D receipt"
-            }
-            if sample.sortRefreshed && sample.submittedMeasurementTicket != measurement.ticket {
-                return "CPU frame terminal ticket does not match its submission"
-            }
-            if counts.ticket != measurement.ticket {
-                return "CPU frame measurement and V/C/D ticket disagree"
+            if sample.actualOrderBackend == 1 {
+                guard let measurement = orderMeasurement(for: sample),
+                      counts.ticket == measurement.ticket else {
+                    return "GPU order sample lacks its same-ticket terminal"
+                }
+            } else {
+                guard let measurement = cpuOrderMeasurement(for: sample),
+                      counts.ticket == measurement.ticket else {
+                    return "CPU order sample lacks its same-ticket terminal"
+                }
             }
             if let error = countContractError(
                 visible: counts.visible_count,
@@ -619,7 +767,7 @@ final class SurfaceBenchmark {
                 exactContributorCompaction:
                     counts.flags & orderCountsExactContributorDraw != 0
             ) {
-                return "CPU frame contributor count contract: \(error)"
+                return "order sample contributor count contract: \(error)"
             }
         }
         return nil
@@ -670,16 +818,14 @@ final class SurfaceBenchmark {
                 return "unmeasured projected frame exposed a measurement execution"
             }
 
-            guard let counts = projectedFrameCounts(for: sample),
-                  counts.visible == sample.visible,
-                  counts.contributor <= counts.visible else {
-                return "projected frame lacks revision-matched V/C/D evidence"
+            guard let receipt = currentStatsReceipt(for: sample) else {
+                return "projected frame lacks its own current-stats Ready receipt"
             }
             if sample.projectedExecution == 1 {
-                if sample.drawn != sample.visible {
+                if receipt.drawnCount != receipt.visibleCount {
                     return "Candidate projected frame requires D=V without exact compaction"
                 }
-            } else if sample.drawn != counts.contributor {
+            } else if receipt.drawnCount != receipt.contributorCount {
                 return "Compact projected frame requires D=C with exact compaction"
             }
         }
@@ -689,44 +835,21 @@ final class SurfaceBenchmark {
     private func orderMeasurement(
         for sample: BenchmarkSample
     ) -> GsplatSurfaceOrderMeasurement? {
-        let revision = sample.sortRefreshed
-            ? sample.cameraRevision
-            : sample.appliedOrderRevision
-        return completedGpuMeasurementsByRevision[revision]
+        sample.submittedMeasurementTicket.flatMap { completedGpuTickets[$0] }
     }
 
     private func cpuOrderMeasurement(
         for sample: BenchmarkSample
     ) -> GsplatSurfaceCpuOrderMeasurement? {
-        let revision = sample.sortRefreshed
-            ? sample.cameraRevision
-            : sample.appliedOrderRevision
-        return completedCpuMeasurementsByRevision[revision]
+        sample.submittedMeasurementTicket.flatMap { completedCpuTickets[$0] }
     }
 
     private func orderCounts(for sample: BenchmarkSample) -> GsplatSurfaceOrderCounts? {
-        let revision = sample.sortRefreshed
-            ? sample.cameraRevision
-            : sample.appliedOrderRevision
-        return completedCountsByRevision[revision]
+        sample.submittedMeasurementTicket.flatMap { completedCountsByTicket[$0] }
     }
 
-    /// Per-frame projected V/C identity. An issued projected probe owns a
-    /// same-ticket counts receipt; all other frames use the revision-matched
-    /// order receipt for C while V/D come from that frame's native stats.
-    private func projectedFrameCounts(for sample: BenchmarkSample) -> ProjectedFrameCounts? {
-        if let ticket = sample.projectedSubmittedMeasurementTicket {
-            guard let counts = completedProjectedTickets[ticket]?.counts else { return nil }
-            return ProjectedFrameCounts(
-                visible: counts.visible_count,
-                contributor: counts.contributor_count
-            )
-        }
-        guard let counts = orderCounts(for: sample) else { return nil }
-        return ProjectedFrameCounts(
-            visible: counts.visible_count,
-            contributor: counts.contributor_count
-        )
+    private func currentStatsReceipt(for sample: BenchmarkSample) -> GsplatCurrentStatsReceipt? {
+        completedCurrentStatsTickets[sample.currentStatsTicket]
     }
 
     private func countContractError(
@@ -750,10 +873,10 @@ final class SurfaceBenchmark {
     }
 
     func record(
-        stats: GsplatStats,
         sortStats: GsplatSurfaceSortStats,
         submission: GsplatSurfaceOrderSubmission,
         projectedSubmission: GsplatSurfaceProjectedSubmissionV1,
+        currentStatsSubmission: GsplatCurrentStatsIssuedSubmission,
         renderCallNs: UInt64,
         frameStartNs: UInt64,
         traceStep: CameraTraceStep?
@@ -775,17 +898,19 @@ final class SurfaceBenchmark {
             measurementStartNs = frameStartNs
             measurementStartedAt = Date()
         }
+        guard let issuedCurrent = issuedCurrentStatsSamples[currentStatsSubmission.ticket],
+              issuedCurrent.sampleIndex == samples.count,
+              issuedCurrent.submission == currentStatsSubmission else {
+            currentStatsLedgerErrors.append(
+                "measured frame did not retain its unique current-stats ticket and identity"
+            )
+            return
+        }
         let wallNs = previousFrameStartNs.map { frameStartNs - $0 } ?? renderCallNs
         samples.append(BenchmarkSample(
             elapsedNs: frameStartNs - (measurementStartNs ?? frameStartNs),
             callMs: Double(renderCallNs) / 1_000_000.0,
             frameWallMs: Double(wallNs) / 1_000_000.0,
-            rendererFrameMs: Double(stats.frame_ms),
-            preprocessMs: Double(stats.preprocess_ms),
-            sortMs: Double(stats.sort_ms),
-            geometrySubmitMs: Double(stats.raster_ms),
-            visible: stats.visible_count,
-            drawn: stats.drawn_count,
             cameraRevision: sortStats.camera_revision,
             appliedOrderRevision: sortStats.applied_order_revision,
             sortRefreshed: sortStats.flags & 1 != 0,
@@ -819,6 +944,7 @@ final class SurfaceBenchmark {
                         ? "surface_unavailable"
                         : nil),
             projectedSubmissionFlags: projectedSubmission.flags,
+            currentStatsTicket: currentStatsSubmission.ticket,
             traceFrameIndex: traceStep?.traceFrameIndex,
             traceTimestampNs: traceStep?.timestampNs,
             traceLoopIndex: traceStep?.loopIndex
@@ -913,6 +1039,10 @@ final class SurfaceBenchmark {
             )
             return false
         }
+        if let ledgerError = currentStatsLedgerError {
+            print("BENCHMARK_ARTIFACT_ERROR current-stats terminal ledger: \(ledgerError)")
+            return false
+        }
         if let ledgerError = orderLedgerError {
             print("BENCHMARK_ARTIFACT_ERROR order terminal ledger: \(ledgerError)")
             return false
@@ -922,14 +1052,14 @@ final class SurfaceBenchmark {
             return false
         }
         for sample in samples {
-            guard let counts = projectedFrameCounts(for: sample),
-                  UInt64(sample.visible) <= exactness.source_splat_count,
-                  counts.visible == sample.visible,
-                  counts.contributor <= counts.visible,
+            guard let receipt = currentStatsReceipt(for: sample),
+                  UInt64(receipt.sourceCount) == exactness.source_splat_count,
+                  receipt.contributorCount <= receipt.visibleCount,
+                  receipt.visibleCount <= receipt.sourceCount,
                   sample.projectedExecution == 1
-                    ? sample.drawn == sample.visible
-                    : sample.drawn == counts.contributor else {
-                print("BENCHMARK_ARTIFACT_ERROR frame lacks valid revision-matched S/V/C/D counts")
+                    ? receipt.drawnCount == receipt.visibleCount
+                    : receipt.drawnCount == receipt.contributorCount else {
+                print("BENCHMARK_ARTIFACT_ERROR frame lacks valid ticket-matched current S/V/C/D")
                 return false
             }
         }
@@ -959,6 +1089,8 @@ final class SurfaceBenchmark {
         let repositoryDirtyValue: Any = repositoryDirty.map { $0 as Any } ?? NSNull()
         var unavailable = [
             "environment.browser", "environment.driver", "frames[*].gpu_wait_ms",
+            "frames[*].geometry_submit_ms",
+            "summary.distributions.geometry_submit_ms",
         ]
         if repositoryCommit == nil { unavailable.append("build.repository_commit") }
         if repositoryDirty == nil { unavailable.append("build.dirty") }
@@ -972,6 +1104,17 @@ final class SurfaceBenchmark {
         }
         if !hasMeasuredProjectedCompletion {
             unavailable.append("summary.distributions.projected_frame_complete_ms")
+        }
+        let hasUnavailableCpuOrderPhases = samples.contains {
+            $0.submittedMeasurementTicket.flatMap { completedCpuTickets[$0] } == nil
+        }
+        if hasUnavailableCpuOrderPhases {
+            unavailable.append("frames[*].preprocess_ms")
+            unavailable.append("frames[*].sort_ms")
+        }
+        if !hasMeasuredCpuCompletion {
+            unavailable.append("summary.distributions.preprocess_ms")
+            unavailable.append("summary.distributions.sort_ms")
         }
         let manifest: [String: Any] = [
             "schema": benchmarkSchema, "record_type": "manifest", "run_id": runID,
@@ -1009,6 +1152,7 @@ final class SurfaceBenchmark {
             "renderer": [
                 "implementation": "gsplat-rs", "path": geometryPipelineName(config.geometryPath), "backend": "metal",
                 "order_backend_requested": config.orderBackend,
+                "current_stats_evidence_version": 1,
                 "projected_evidence_version": 1,
                 "projected_policy_requested": config.projectedPolicy,
                 "sort_interval": config.sortInterval,
@@ -1066,15 +1210,13 @@ final class SurfaceBenchmark {
             let submittedCpuMeasurement = sample.submittedMeasurementTicket.flatMap {
                 completedCpuTickets[$0]
             }
-            guard orderCounts(for: sample) != nil else {
-                print("BENCHMARK_ARTIFACT_ERROR frame \(index) lost its V/C/D receipt")
+            guard let issuedCurrent = issuedCurrentStatsSamples[sample.currentStatsTicket],
+                  let currentReceipt = currentStatsReceipt(for: sample) else {
+                print("BENCHMARK_ARTIFACT_ERROR frame \(index) lost current-stats identity")
                 return false
             }
-            guard let projectedCounts = projectedFrameCounts(for: sample) else {
-                print("BENCHMARK_ARTIFACT_ERROR frame \(index) lost projected V/C identity")
-                return false
-            }
-            let exactContributorCompaction = sample.projectedExecution == 2
+            let exactContributorCompaction =
+                currentReceipt.countSemantics.exactContributorCompaction
             let timingSource: Any
             if let submittedGpuMeasurement {
                 timingSource = submittedGpuMeasurement.timing_source == 1
@@ -1098,19 +1240,25 @@ final class SurfaceBenchmark {
             let terminalRevision: Any = orderMeasurementReceipt.map { $0.camera_revision as Any }
                 ?? cpuOrderMeasurementReceipt.map { $0.camera_revision as Any }
                 ?? NSNull()
+            let currentIdentity = currentStatsIdentityObject(currentReceipt.identity)
             emit(kind: "frame", object: [
                 "schema": benchmarkSchema, "record_type": "frame", "run_id": runID,
                 "frame_index": index, "elapsed_ns": sample.elapsedNs, "call_ms": sample.callMs,
                 "frame_wall_ms": sample.frameWallMs,
-                "preprocess_ms": sample.actualOrderBackend == 1 ? NSNull() : sample.preprocessMs,
-                "sort_ms": sample.actualOrderBackend == 1 ? NSNull() : sample.sortMs,
-                "geometry_submit_ms": sample.geometrySubmitMs,
+                "preprocess_ms": submittedCpuMeasurement.map {
+                    Double($0.preprocess_ms) as Any
+                } ?? NSNull(),
+                "sort_ms": submittedCpuMeasurement.map {
+                    Double($0.sort_ms) as Any
+                } ?? NSNull(),
+                "geometry_submit_ms": NSNull(),
                 "gpu_wait_ms": NSNull(),
                 "gpu_complete_ms": gpuComplete,
                 "cpu_frame_complete_ms": cpuFrameComplete,
-                "visible": sample.visible,
-                "contributor": projectedCounts.contributor,
-                "drawn": sample.drawn,
+                "source": currentReceipt.sourceCount,
+                "visible": currentReceipt.visibleCount,
+                "contributor": currentReceipt.contributorCount,
+                "drawn": currentReceipt.drawnCount,
                 "exact_contributor_compaction": exactContributorCompaction,
                 "sort_refreshed": sample.sortRefreshed,
                 "camera_revision": sample.cameraRevision,
@@ -1150,6 +1298,12 @@ final class SurfaceBenchmark {
                 "projected_measurement_unsampled_reason":
                     sample.projectedUnsampledReason.map { $0 as Any } ?? NSNull(),
                 "projected_submission_flags": sample.projectedSubmissionFlags,
+                "current_stats_ticket": sample.currentStatsTicket,
+                "current_stats_sample_key": issuedCurrent.sampleKey,
+                "current_stats_trace_key": issuedCurrent.traceKey,
+                "current_stats_identity": currentIdentity,
+                "current_stats_count_semantics":
+                    currentStatsCountSemanticsName(currentReceipt.countSemantics),
                 "trace_frame_index": sample.traceFrameIndex.map { $0 as Any } ?? NSNull(),
                 "trace_timestamp_ns": sample.traceTimestampNs.map { $0 as Any } ?? NSNull(),
                 "trace_loop_index": sample.traceLoopIndex.map { $0 as Any } ?? NSNull(),
@@ -1173,13 +1327,13 @@ final class SurfaceBenchmark {
             samples.reduce(0.0) { $0 + value($1) } / Double(count)
         }
         let visible = samples.reduce(UInt64(0)) { total, sample in
-            total + UInt64(sample.visible)
+            total + UInt64(currentStatsReceipt(for: sample)?.visibleCount ?? 0)
         } / UInt64(count)
         let contributor = samples.reduce(UInt64(0)) { total, sample in
-            total + UInt64(projectedFrameCounts(for: sample)?.contributor ?? 0)
+            total + UInt64(currentStatsReceipt(for: sample)?.contributorCount ?? 0)
         } / UInt64(count)
         let drawn = samples.reduce(UInt64(0)) { total, sample in
-            total + UInt64(sample.drawn)
+            total + UInt64(currentStatsReceipt(for: sample)?.drawnCount ?? 0)
         } / UInt64(count)
         let cpuCompletion = samples.compactMap { sample in
             sample.submittedMeasurementTicket.flatMap { completedCpuTickets[$0] }
@@ -1205,6 +1359,14 @@ final class SurfaceBenchmark {
                 $0 + Double($1.measurement.frame_complete_ms)
             } / Double(projectedCompletion.count)
         )
+        let meanCpuPreprocess = cpuCompletion.isEmpty ? "n/a" : format(
+            cpuCompletion.reduce(0.0) { $0 + Double($1.preprocess_ms) } /
+                Double(cpuCompletion.count)
+        )
+        let meanCpuSort = cpuCompletion.isEmpty ? "n/a" : format(
+            cpuCompletion.reduce(0.0) { $0 + Double($1.sort_ms) } /
+                Double(cpuCompletion.count)
+        )
         return [
             "BENCHMARK_RESULT", "dataset=\(datasetLabel)", "samples=\(samples.count)",
             "warmup=\(config.warmupFrames)", "sort_interval=\(config.sortInterval)",
@@ -1212,10 +1374,10 @@ final class SurfaceBenchmark {
             "projected_policy=\(config.projectedPolicy)",
             "async_sort=\(config.asyncSort)", "geometry_pipeline=\(geometryPipelineName(config.geometryPath))",
             "frame_latency=\(config.frameLatency)", "avg_call_ms=\(format(mean { $0.callMs }))",
-            "avg_frame_ms=\(format(mean { $0.rendererFrameMs }))",
-            "avg_preprocess_ms=\(format(mean { $0.preprocessMs }))",
-            "avg_sort_ms=\(format(mean { $0.sortMs }))",
-            "avg_raster_ms=\(format(mean { $0.geometrySubmitMs }))",
+            "avg_frame_ms=n/a",
+            "avg_preprocess_ms=\(meanCpuPreprocess)",
+            "avg_sort_ms=\(meanCpuSort)",
+            "avg_raster_ms=n/a",
             "avg_cpu_queue_complete_ms=\(meanCpuCompletion)",
             "avg_gpu_queue_complete_ms=\(meanGpuCompletion)",
             "avg_projected_queue_complete_ms=\(meanProjectedCompletion)",
@@ -1251,15 +1413,21 @@ final class SurfaceBenchmark {
             : distribution(projectedMeasurements.map {
                 Double($0.measurement.frame_complete_ms)
             })
+        let cpuPreprocessDistribution: Any = cpuMeasurements.isEmpty
+            ? NSNull()
+            : distribution(cpuMeasurements.map { Double($0.preprocess_ms) })
+        let cpuSortDistribution: Any = cpuMeasurements.isEmpty
+            ? NSNull()
+            : distribution(cpuMeasurements.map { Double($0.sort_ms) })
         let adaptiveGpuFailureFinal: Any = samples.last
             .flatMap { $0.adaptiveGpuFailure }
             .map { adaptiveGpuFailureName($0) as Any } ?? NSNull()
         let distributions: [String: Any] = [
             "call_ms": distribution(samples.map(\.callMs)),
             "frame_wall_ms": distribution(wall),
-            "preprocess_ms": distribution(samples.map(\.preprocessMs)),
-            "sort_ms": distribution(samples.map(\.sortMs)),
-            "geometry_submit_ms": distribution(samples.map(\.geometrySubmitMs)),
+            "preprocess_ms": cpuPreprocessDistribution,
+            "sort_ms": cpuSortDistribution,
+            "geometry_submit_ms": NSNull(),
             "gpu_wait_ms": NSNull(),
             "gpu_complete_ms": gpuCompleteDistribution,
             "cpu_frame_complete_ms": cpuCompleteDistribution,
@@ -1305,6 +1473,7 @@ final class SurfaceBenchmark {
             "missed_frame_count": wall.filter { $0 > frameBudgetMs }.count,
             "distributions": distributions,
             "sort_telemetry": sortTelemetry,
+            "current_stats_terminal_ledger": currentStatsTerminalLedger(),
             "order_terminal_ledger": terminalLedger(exactnessReceiptID: exactnessReceiptID),
             "projected_draw_telemetry": projectedTelemetry,
             "projected_terminal_ledger": projectedTerminalLedger(
@@ -1312,6 +1481,138 @@ final class SurfaceBenchmark {
             ),
         ]
         return result
+    }
+
+    private func currentStatsTerminalLedger() -> [String: Any] {
+        let issued = issuedCurrentStatsSamples.values.sorted {
+            $0.sampleIndex < $1.sampleIndex
+        }
+        let submissions: [[String: Any]] = issued.map { sample in
+            [
+                "ticket": sample.submission.ticket,
+                "sample_index": sample.sampleIndex,
+                "sample_key": sample.sampleKey,
+                "trace_key": sample.traceKey,
+                "identity": currentStatsIdentityObject(sample.submission.identity),
+            ]
+        }
+        let successes: [[String: Any]] = issued.compactMap { sample in
+            guard let receipt = completedCurrentStatsTickets[sample.submission.ticket]
+            else { return nil }
+            return [
+                "ticket": receipt.ticket,
+                "sample_index": sample.sampleIndex,
+                "sample_key": sample.sampleKey,
+                "trace_key": sample.traceKey,
+                "identity": currentStatsIdentityObject(receipt.identity),
+                "outcome": "ready",
+                "count_semantics": currentStatsCountSemanticsName(
+                    receipt.countSemantics
+                ),
+                "source": receipt.sourceCount,
+                "visible": receipt.visibleCount,
+                "contributor": receipt.contributorCount,
+                "drawn": receipt.drawnCount,
+            ]
+        }
+        let failures: [[String: Any]] = issued.compactMap { sample in
+            guard let failure = failedCurrentStatsTickets[sample.submission.ticket]
+            else { return nil }
+            return [
+                "ticket": failure.ticket,
+                "sample_index": sample.sampleIndex,
+                "sample_key": sample.sampleKey,
+                "trace_key": sample.traceKey,
+                "identity": currentStatsIdentityObject(failure.identity),
+                "outcome": "failure",
+                "failure_reason": failureReasonName(failure.reason),
+            ]
+        }
+        return [
+            "submissions": submissions,
+            "successes": successes,
+            "failures": failures,
+            "issued_count": submissions.count,
+            "success_count": successes.count,
+            "failure_count": failures.count,
+        ]
+    }
+
+    private func currentStatsCountContractError(
+        _ receipt: GsplatCurrentStatsReceipt
+    ) -> String? {
+        if receipt.contributorCount > receipt.visibleCount ||
+            receipt.visibleCount > receipt.sourceCount {
+            return "current-stats Ready violates 0 <= C <= V <= S"
+        }
+        switch (receipt.identity.executedPlan, receipt.countSemantics) {
+        case (.cpuPostSort, .directDrawEqualsVisible),
+             (.gpuPostSort, .indirectDrawEqualsVisible):
+            if receipt.drawnCount != receipt.visibleCount {
+                return "PostSort current-stats Ready requires D=V"
+            }
+        case (.gpuPreproject, .indirectDrawEqualsContributor):
+            if receipt.drawnCount != receipt.contributorCount {
+                return "GPU Preproject current-stats Ready requires D=C"
+            }
+        default:
+            return "current-stats plan and count semantics disagree"
+        }
+        return nil
+    }
+
+    private func currentStatsIdentityObject(
+        _ identity: GsplatCurrentStatsIdentity
+    ) -> [String: Any] {
+        [
+            "scene_generation": identity.sceneGeneration,
+            "camera_revision": identity.cameraRevision,
+            "viewport_generation": identity.viewportGeneration,
+            "contract_generation": identity.contractGeneration,
+            "plan_set_generation": identity.planSetGeneration,
+            "executed_plan": currentStatsPlanName(identity.executedPlan),
+            "order_generation": identity.orderGeneration,
+            "raster_generation": identity.rasterGeneration,
+            "encode_attempt": identity.encodeAttempt,
+            "presentation_sequence": identity.presentationSequence,
+        ]
+    }
+
+    private func currentStatsPlanName(_ plan: GsplatCurrentStatsPlan) -> String {
+        switch plan {
+        case .cpuPostSort: return "cpu_post_sort"
+        case .gpuPostSort: return "gpu_post_sort"
+        case .gpuPreproject: return "gpu_preproject"
+        }
+    }
+
+    private func currentStatsCountSemanticsName(
+        _ semantics: GsplatCurrentStatsCountSemantics
+    ) -> String {
+        switch semantics {
+        case .directDrawEqualsVisible: return "direct_draw_equals_visible"
+        case .indirectDrawEqualsVisible: return "indirect_draw_equals_visible"
+        case .indirectDrawEqualsContributor: return "indirect_draw_equals_contributor"
+        }
+    }
+
+    private func failureReasonName(_ reason: GsplatCurrentStatsFailureReason) -> String {
+        switch reason {
+        case .mapFailure: return "map_failure"
+        case .generationInvalidated: return "generation_invalidated"
+        case .expired: return "expired"
+        case .dropped: return "dropped"
+        }
+    }
+
+    private func requestStatusName(_ status: GsplatCurrentStatsRequestStatus) -> String {
+        switch status {
+        case .requested: return "requested"
+        case .busy: return "busy"
+        case .gpuUnavailable: return "gpu_unavailable"
+        case .resourceUnavailable: return "resource_unavailable"
+        case .ticketExhausted: return "ticket_exhausted"
+        }
     }
 
     private func terminalLedger(exactnessReceiptID: String) -> [[String: Any]] {

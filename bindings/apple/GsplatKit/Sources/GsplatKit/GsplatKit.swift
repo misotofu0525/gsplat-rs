@@ -1100,6 +1100,13 @@ public final class GsplatUIKitSurfaceRenderer {
         }
     }
 
+    /// Legacy Surface compatibility snapshot.
+    ///
+    /// This method performs only the historical getter call. It never requests
+    /// a current sample, renders a frame, polls readback, or caches an older
+    /// value. Live consumers should use the current-stats v1 request,
+    /// submission, and poll API instead.
+    @available(*, deprecated, message: "Use requestCurrentStats(), currentStatsSubmission(), and pollCurrentStats() for live Surface counts")
     public func stats() throws -> GsplatFrameStats {
         try withRenderer(operation: "gsplat_surface_renderer_get_stats") { renderer in
             var stats = GsplatStats()

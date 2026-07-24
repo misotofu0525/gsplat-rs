@@ -87,11 +87,19 @@ that last snapshot, so a later terminal cannot publish counts. The consumer
 retains only live pending correlations plus one last-snapshot lifecycle slot;
 it does not build an unbounded history of completed tickets.
 
-The existing public `stats()` API remains unchanged. Its compatibility values
-are not a substitute for a current-stats Ready receipt, and this adapter does
-not change the iOS example's existing benchmark/artifact success contract.
-Before the later Surface semantic cutover, the current Surface implementation
-legally reports `gpuUnavailable`, followed by `notRequested` and `empty`.
+The existing public Surface `stats()` API remains as a deprecated compatibility
+getter. It performs only the legacy native call: it never requests a sample,
+renders, polls, or caches an older value. It is not a substitute for a
+current-stats Ready receipt. `GsplatContextRenderer.stats()` remains the
+separate offscreen context API and is not deprecated.
+
+The realtime iOS example and strict benchmark consume only current-stats v1 for
+live S/V/C/D. The UI requests at a low cadence and displays unavailable for
+non-Ready states. Every measured benchmark sample requires a unique Issued
+ticket, complete identity, sample/trace key, and one matching Ready terminal;
+fixed-camera samples are distinguished by ticket and presentation sequence.
+Order/projected receipts may provide their own terminal timing but never fill
+in a missing current receipt.
 
 UIKit defaults to exact resident `.packedAtlas`, `.adaptive` CPU/GPU ordering,
 and a sort interval of `1`. Pass `GsplatSurfaceOptions` to force `.cpu`, `.gpu`,

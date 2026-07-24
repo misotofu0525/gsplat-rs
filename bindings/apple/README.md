@@ -71,10 +71,14 @@ publish S/V/C/D; failure, expiry, drop, or mismatch terminates the matching
 pending entry without a count fallback. Identity fields are opaque join values,
 so zero is valid outside the ticket requirement.
 
-This adapter does not switch the iOS benchmark or artifact schema to current
-stats. Until the later Surface semantic activation, the current Surface path
-legally reports GPU-unavailable / NotRequested / Empty, while the existing
-benchmark continues under its unchanged compatibility contract.
+The realtime iOS example uses this current-stats API as its only live S/V/C/D
+source. Ordinary UI sampling is explicit and low frequency; Pending, Busy,
+Unavailable, and Empty keep rendering while showing counts unavailable. The
+strict benchmark requests every measured sample, binds its Issued ticket plus
+complete identity to that sample, polls at most once per rendered frame, and
+fails closed on any missing or failed terminal. The historical Surface
+`stats()` wrapper remains only as a deprecated compatibility getter and never
+requests, renders, polls, or caches current-stats values.
 
 `GSPLAT_RENDER_MODE_SORTED_ALPHA` is the only release-gated render mode in v0.1.
 Scene loading is path-based today; scene-from-memory loading is outside the
@@ -201,6 +205,13 @@ Formal artifact publication rejects ring-busy or Surface-unavailable probes,
 dropped or failed terminals, missing counts, ticket/revision/generation
 identity drift, an order/projected ticket on the same frame, `Candidate D != V`,
 or `Compact D != C`.
+Every measured frame additionally owns one current-stats v1 submission and
+Ready terminal joined by ticket, the full scene/camera/viewport/contract/
+plan-set/order/raster/encode/presentation identity, and its sample/trace key.
+Fixed-camera frames may repeat a camera revision; their tickets and
+presentation sequences must remain unique. CPU PostSort and GPU PostSort
+require `D=V`; GPU Preproject requires `D=C`. Order and projected ledgers remain
+independent evidence and never backfill a missing current receipt.
 `gsplat_geometry_path` selects exact resident `packed` (default), the `direct`
 wide-float oracle, or diagnostic local-source `paged` before scene derivation
 and Surface resource creation. A preselected packed path streams the path-backed
@@ -316,5 +327,10 @@ destinations are rejected. The manifest records the thermal state before and
 after measurement. Build commit/dirty identity, browser, driver, GPU completion
 timing, and sort-refresh visibility are unavailable on this collector and are
 therefore emitted as `null` with explicit `unavailable_fields` entries.
-The extractor runs both the shared benchmark-v1 validator and the Apple
-projected-evidence validator before atomically publishing the destination.
+The extractor runs the shared benchmark-v1 validator plus the Apple projected
+and current-stats validators before atomically publishing the destination.
+`call_ms` remains the Swift render host-call wall and `frame_wall_ms` remains
+the adjacent host-frame wall. CPU preprocess/sort and CPU/GPU completion values
+are emitted only when the same sample owns the matching order terminal;
+unsupported legacy geometry/raster timing is `null` and explicitly listed in
+`unavailable_fields`.

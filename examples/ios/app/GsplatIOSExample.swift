@@ -23,6 +23,7 @@ private let orbitRadiansPerScreen: Float = 3.2
 private let touchEpsilon: Float = 0.0001
 private let zoomEpsilon: Float = 0.003
 private let targetFrameIntervalSeconds = 1.0 / 60.0
+private let currentStatsUISampleInterval = 15
 private let firstProjectedDrawTicket: UInt64 = 1 << 52
 private let maximumJavaScriptSafeInteger: UInt64 = (1 << 53) - 1
 private let showcaseText = UIColor(red: 0.96, green: 0.95, blue: 0.91, alpha: 1)
@@ -775,10 +776,11 @@ final class ExampleViewController: UIViewController, UIGestureRecognizerDelegate
             }
 
             let benchmark = SurfaceBenchmark(config: self.benchmarkConfig)
+            var currentStatsConsumer = GsplatCurrentStatsConsumer()
             var frameIndex = 0
             while self.isRenderLoopActive() {
                 let traceStep = benchmark.nextTraceStep()
-                let renderStartNs = DispatchTime.now().uptimeNanoseconds
+                let frameStartNs = DispatchTime.now().uptimeNanoseconds
                 var rc: Int32 = 0
                 if let traceStep, let tracePath = benchmark.config.cameraTracePath {
                     rc = tracePath.withCString { path in
@@ -795,10 +797,28 @@ final class ExampleViewController: UIViewController, UIGestureRecognizerDelegate
                     rc = self.applyPendingCommand(renderer)
                 }
 
+                let strictCurrentStats = benchmark.nextFrameRequiresCurrentStats
+                let requestUIStats = !benchmark.config.enabled &&
+                    (frameIndex + 1).isMultiple(of: currentStatsUISampleInterval)
+                var currentStatsAdmission: GsplatCurrentStatsRequestStatus?
+                if rc == 0 && (strictCurrentStats || requestUIStats) {
+                    currentStatsAdmission = self.requestCurrentStats(renderer)
+                    if strictCurrentStats && currentStatsAdmission != .requested {
+                        let reason = currentStatsAdmission.map(self.currentStatsRequestName)
+                            ?? "ffi_error"
+                        benchmark.recordCurrentStatsError(
+                            "measured current-stats request was not admitted: \(reason)"
+                        )
+                        self.setStatus("state=benchmark_current_stats_request_error")
+                        break
+                    }
+                }
+
+                let renderCallStartNs = DispatchTime.now().uptimeNanoseconds
                 if rc == 0 {
                     rc = gsplat_surface_renderer_render_frame(renderer)
                 }
-                let renderCallNs = DispatchTime.now().uptimeNanoseconds - renderStartNs
+                let renderCallNs = DispatchTime.now().uptimeNanoseconds - renderCallStartNs
 
                 if rc != 0 {
                     self.setStatus("state=render_failed rc=\(rc) error=\(self.errorMessage(rc))")
@@ -808,92 +828,165 @@ final class ExampleViewController: UIViewController, UIGestureRecognizerDelegate
                 }
 
                 frameIndex += 1
-                var stats = GsplatStats()
-                let statsRc = gsplat_surface_renderer_get_stats(renderer, &stats)
-                if statsRc == 0 {
+                guard let currentSubmission = self.readCurrentStatsSubmission(renderer) else {
                     if benchmark.config.enabled {
-                        guard let orderFrame = self.readOrderFrameState(renderer) else {
-                            self.setStatus("state=order_status_error")
-                            break
-                        }
-                        benchmark.recordOrderSubmission(orderFrame.submission)
-                        benchmark.recordProjectedSubmission(
-                            orderFrame.projectedSubmission,
-                            orderSubmission: orderFrame.submission
+                        benchmark.recordCurrentStatsError("current-stats submission getter failed")
+                        self.setStatus("state=benchmark_current_stats_submission_error")
+                        break
+                    }
+                    self.updateCurrentStats(
+                        receipt: nil,
+                        unavailableReason: "submission_error",
+                        renderCallNs: renderCallNs,
+                        frameIndex: frameIndex
+                    )
+                    continue
+                }
+                let submissionEvent = currentStatsConsumer.observe(currentSubmission)
+                var measuredCurrentSubmission: GsplatCurrentStatsIssuedSubmission?
+                if strictCurrentStats {
+                    guard case .pending(let issued) = submissionEvent else {
+                        benchmark.recordCurrentStatsError(
+                            "measured frame did not publish one new Issued current-stats submission"
                         )
-                        self.logAdaptiveGpuStatus(orderFrame.stats)
-                        if !self.logCompletedProjectedMeasurements(
-                            renderer,
-                            benchmark: benchmark
-                        ) {
-                            self.setStatus("state=benchmark_projected_measurement_error")
-                            break
-                        }
-                        if !self.logCompletedOrderMeasurements(renderer, benchmark: benchmark) {
-                            self.setStatus("state=benchmark_measurement_error")
-                            break
-                        }
-                        if let traceStep {
-                            let metadata = benchmark.config.cameraTraceMetadata!
-                            print(
-                                "CAMERA_TRACE_FRAME trace_id=\(metadata.id) trace_sha256=\(metadata.sha256) " +
-                                "phase=\(traceStep.phase) loop=\(traceStep.loopIndex) " +
-                                "phase_frame=\(traceStep.phaseFrameIndex) " +
-                                "frame_index=\(traceStep.traceFrameIndex) " +
-                                "timestamp_ns=\(traceStep.timestampNs) " +
-                                "requested_backend=\(benchmark.config.orderBackend)"
+                        self.setStatus("state=benchmark_current_stats_submission_error")
+                        break
+                    }
+                    benchmark.recordCurrentStatsSubmission(issued, traceStep: traceStep)
+                    measuredCurrentSubmission = issued
+                }
+
+                guard let currentPoll = self.pollCurrentStats(renderer) else {
+                    if benchmark.config.enabled {
+                        benchmark.recordCurrentStatsError("current-stats poll failed")
+                        self.setStatus("state=benchmark_current_stats_poll_error")
+                        break
+                    }
+                    self.updateCurrentStats(
+                        receipt: nil,
+                        unavailableReason: "poll_error",
+                        renderCallNs: renderCallNs,
+                        frameIndex: frameIndex
+                    )
+                    continue
+                }
+                let currentEvent = currentStatsConsumer.consume(currentPoll)
+
+                if benchmark.config.enabled {
+                    benchmark.recordCurrentStatsEvent(currentEvent)
+                    if let error = benchmark.currentStatsProtocolError {
+                        print("BENCHMARK_CURRENT_STATS_ERROR \(error)")
+                        fflush(stdout)
+                        self.setStatus("state=benchmark_current_stats_error")
+                        break
+                    }
+                    guard let orderFrame = self.readOrderFrameState(renderer) else {
+                        self.setStatus("state=order_status_error")
+                        break
+                    }
+                    benchmark.recordOrderSubmission(orderFrame.submission)
+                    benchmark.recordProjectedSubmission(
+                        orderFrame.projectedSubmission,
+                        orderSubmission: orderFrame.submission
+                    )
+                    self.logAdaptiveGpuStatus(orderFrame.stats)
+                    if !self.logCompletedProjectedMeasurements(
+                        renderer,
+                        benchmark: benchmark
+                    ) {
+                        self.setStatus("state=benchmark_projected_measurement_error")
+                        break
+                    }
+                    if !self.logCompletedOrderMeasurements(renderer, benchmark: benchmark) {
+                        self.setStatus("state=benchmark_measurement_error")
+                        break
+                    }
+                    if let traceStep {
+                        let metadata = benchmark.config.cameraTraceMetadata!
+                        print(
+                            "CAMERA_TRACE_FRAME trace_id=\(metadata.id) trace_sha256=\(metadata.sha256) " +
+                            "phase=\(traceStep.phase) loop=\(traceStep.loopIndex) " +
+                            "phase_frame=\(traceStep.phaseFrameIndex) " +
+                            "frame_index=\(traceStep.traceFrameIndex) " +
+                            "timestamp_ns=\(traceStep.timestampNs) " +
+                            "requested_backend=\(benchmark.config.orderBackend)"
+                        )
+                        fflush(stdout)
+                    }
+                    if strictCurrentStats {
+                        guard let measuredCurrentSubmission else {
+                            benchmark.recordCurrentStatsError(
+                                "measured sample lost its Issued current-stats submission"
                             )
-                            fflush(stdout)
+                            break
                         }
                         benchmark.record(
-                            stats: stats,
                             sortStats: orderFrame.stats,
                             submission: orderFrame.submission,
                             projectedSubmission: orderFrame.projectedSubmission,
+                            currentStatsSubmission: measuredCurrentSubmission,
                             renderCallNs: renderCallNs,
-                            frameStartNs: renderStartNs,
+                            frameStartNs: frameStartNs,
                             traceStep: traceStep
                         )
-                        if benchmark.complete {
-                            guard self.flushTerminalLedgers(renderer, benchmark: benchmark) else {
-                                self.setStatus("state=benchmark_terminal_ledger_error")
-                                break
-                            }
-                            let size = self.currentSurfaceSize ?? (width: 1, height: 1)
-                            guard let exactness = self.surfaceExactness else {
-                                self.setStatus("state=benchmark_exactness_missing")
-                                print("BENCHMARK_ARTIFACT_ERROR native exactness receipt is missing")
-                                fflush(stdout)
-                                break
-                            }
-                            guard let presentation = self.readSurfacePresentation(renderer) else {
-                                self.setStatus("state=benchmark_presentation_missing")
-                                break
-                            }
-                            guard benchmark.emitArtifacts(
-                                datasetPath: self.datasetPath,
-                                datasetLabel: self.datasetLabel,
-                                width: size.width,
-                                height: size.height,
-                                exactness: exactness,
-                                presentation: presentation
-                            ) else {
-                                self.setStatus("state=benchmark_artifact_error")
-                                break
-                            }
-                            let result = benchmark.resultLine(datasetLabel: self.datasetLabel)
-                            print(result)
-                            fflush(stdout)
-                            self.setStatus("state=benchmark_complete \(result)")
+                    } else {
+                        benchmark.recordWarmupFrame(frameStartNs: frameStartNs)
+                    }
+                    if benchmark.complete {
+                        guard self.flushTerminalLedgers(
+                            renderer,
+                            benchmark: benchmark,
+                            currentStatsConsumer: &currentStatsConsumer
+                        ) else {
+                            self.setStatus("state=benchmark_terminal_ledger_error")
                             break
                         }
-                    }
-                    if frameIndex % 15 == 0 {
-                        self.updateStats(stats, frameIndex: frameIndex)
+                        let size = self.currentSurfaceSize ?? (width: 1, height: 1)
+                        guard let exactness = self.surfaceExactness else {
+                            self.setStatus("state=benchmark_exactness_missing")
+                            print("BENCHMARK_ARTIFACT_ERROR native exactness receipt is missing")
+                            fflush(stdout)
+                            break
+                        }
+                        guard let presentation = self.readSurfacePresentation(renderer) else {
+                            self.setStatus("state=benchmark_presentation_missing")
+                            break
+                        }
+                        guard benchmark.emitArtifacts(
+                            datasetPath: self.datasetPath,
+                            datasetLabel: self.datasetLabel,
+                            width: size.width,
+                            height: size.height,
+                            exactness: exactness,
+                            presentation: presentation
+                        ) else {
+                            self.setStatus("state=benchmark_artifact_error")
+                            break
+                        }
+                        let result = benchmark.resultLine(datasetLabel: self.datasetLabel)
+                        print(result)
+                        fflush(stdout)
+                        self.setStatus("state=benchmark_complete \(result)")
+                        break
                     }
                 } else {
-                    self.setStatus("state=stats_failed rc=\(statsRc) error=\(self.errorMessage(statsRc))")
-                    break
+                    let receipt: GsplatCurrentStatsReceipt?
+                    if case .ready(let ready) = currentEvent {
+                        receipt = ready
+                    } else {
+                        receipt = nil
+                    }
+                    self.updateCurrentStats(
+                        receipt: receipt,
+                        unavailableReason: self.currentStatsUnavailableReason(
+                            admission: currentStatsAdmission,
+                            submissionEvent: submissionEvent,
+                            pollEvent: currentEvent,
+                            pendingCount: currentStatsConsumer.pendingCount
+                        ),
+                        renderCallNs: renderCallNs,
+                        frameIndex: frameIndex
+                    )
                 }
 
                 if !benchmark.config.enabled {
@@ -909,6 +1002,74 @@ final class ExampleViewController: UIViewController, UIGestureRecognizerDelegate
                     self?.surfaceExactness = nil
                 }
             }
+        }
+    }
+
+    private func requestCurrentStats(
+        _ renderer: OpaquePointer
+    ) -> GsplatCurrentStatsRequestStatus? {
+        var native = GsplatSurfaceCurrentStatsRequestV1()
+        native.struct_size = UInt32(MemoryLayout<GsplatSurfaceCurrentStatsRequestV1>.size)
+        native.version = 1
+        let rc = gsplat_surface_renderer_request_current_stats_v1(renderer, &native)
+        guard rc == 0 else {
+            print("IOS_CURRENT_STATS_REQUEST_FAILED rc=\(rc) error=\(errorMessage(rc))")
+            fflush(stdout)
+            return nil
+        }
+        do {
+            return try currentStatsRequestStatus(native: native)
+        } catch {
+            print("IOS_CURRENT_STATS_REQUEST_FAILED invalid V1 payload error=\(error)")
+            fflush(stdout)
+            return nil
+        }
+    }
+
+    private func readCurrentStatsSubmission(
+        _ renderer: OpaquePointer
+    ) -> GsplatCurrentStatsSubmission? {
+        var native = GsplatSurfaceCurrentStatsSubmissionV1()
+        native.struct_size = UInt32(
+            MemoryLayout<GsplatSurfaceCurrentStatsSubmissionV1>.size
+        )
+        native.version = 1
+        let rc = gsplat_surface_renderer_get_current_stats_submission_v1(
+            renderer,
+            &native
+        )
+        guard rc == 0 else {
+            print("IOS_CURRENT_STATS_SUBMISSION_FAILED rc=\(rc) error=\(errorMessage(rc))")
+            fflush(stdout)
+            return nil
+        }
+        do {
+            return try GsplatCurrentStatsSubmission(native: native)
+        } catch {
+            print("IOS_CURRENT_STATS_SUBMISSION_FAILED invalid V1 payload error=\(error)")
+            fflush(stdout)
+            return nil
+        }
+    }
+
+    private func pollCurrentStats(
+        _ renderer: OpaquePointer
+    ) -> GsplatCurrentStatsPoll? {
+        var native = GsplatSurfaceCurrentStatsPollV1()
+        native.struct_size = UInt32(MemoryLayout<GsplatSurfaceCurrentStatsPollV1>.size)
+        native.version = 1
+        let rc = gsplat_surface_renderer_poll_current_stats_v1(renderer, &native)
+        guard rc == 0 else {
+            print("IOS_CURRENT_STATS_POLL_FAILED rc=\(rc) error=\(errorMessage(rc))")
+            fflush(stdout)
+            return nil
+        }
+        do {
+            return try GsplatCurrentStatsPoll(native: native)
+        } catch {
+            print("IOS_CURRENT_STATS_POLL_FAILED invalid V1 payload error=\(error)")
+            fflush(stdout)
+            return nil
         }
     }
 
@@ -1348,9 +1509,15 @@ final class ExampleViewController: UIViewController, UIGestureRecognizerDelegate
     private func flushTerminalLedgers(
         _ renderer: OpaquePointer,
         benchmark: SurfaceBenchmark,
+        currentStatsConsumer: inout GsplatCurrentStatsConsumer,
         maxFrames: Int = 120
     ) -> Bool {
         if benchmark.terminalLedgersWaitFinished {
+            if let error = benchmark.currentStatsLedgerError {
+                print("BENCHMARK_CURRENT_STATS_TERMINAL_LEDGER_ERROR \(error)")
+                fflush(stdout)
+                return false
+            }
             if let error = benchmark.orderLedgerError {
                 print("BENCHMARK_TERMINAL_LEDGER_ERROR \(error)")
                 fflush(stdout)
@@ -1370,6 +1537,26 @@ final class ExampleViewController: UIViewController, UIGestureRecognizerDelegate
                 fflush(stdout)
                 return false
             }
+            guard let submission = readCurrentStatsSubmission(renderer),
+                  let poll = pollCurrentStats(renderer) else {
+                benchmark.recordCurrentStatsError(
+                    "current-stats submission or poll failed during terminal flush"
+                )
+                return false
+            }
+            let submissionEvent = currentStatsConsumer.observe(submission)
+            if case .rejected = submissionEvent {
+                benchmark.recordCurrentStatsError(
+                    "current-stats submission identity drifted during terminal flush"
+                )
+                return false
+            }
+            benchmark.recordCurrentStatsEvent(currentStatsConsumer.consume(poll))
+            if let error = benchmark.currentStatsProtocolError {
+                print("BENCHMARK_CURRENT_STATS_TERMINAL_LEDGER_ERROR \(error)")
+                fflush(stdout)
+                return false
+            }
             guard let orderFrame = readOrderFrameState(renderer) else { return false }
             benchmark.recordOrderSubmission(orderFrame.submission)
             benchmark.recordProjectedSubmission(
@@ -1386,7 +1573,12 @@ final class ExampleViewController: UIViewController, UIGestureRecognizerDelegate
             if benchmark.terminalLedgersWaitFinished { break }
         }
         guard benchmark.terminalLedgersWaitFinished else {
-            print("BENCHMARK_TERMINAL_LEDGER_TIMEOUT issued tickets remain pending")
+            print("BENCHMARK_TERMINAL_LEDGER_TIMEOUT current/order/projected tickets remain pending")
+            fflush(stdout)
+            return false
+        }
+        if let error = benchmark.currentStatsLedgerError {
+            print("BENCHMARK_CURRENT_STATS_TERMINAL_LEDGER_ERROR \(error)")
             fflush(stdout)
             return false
         }
@@ -1473,25 +1665,86 @@ final class ExampleViewController: UIViewController, UIGestureRecognizerDelegate
         return (width, height)
     }
 
-    private func updateStats(_ stats: GsplatStats, frameIndex: Int) {
-        let state = String(
-            format: "state=rendering drawn=%u/%u frame_ms=%.2f",
-            stats.drawn_count,
-            stats.visible_count,
-            stats.frame_ms
-        )
+    private func updateCurrentStats(
+        receipt: GsplatCurrentStatsReceipt?,
+        unavailableReason: String,
+        renderCallNs: UInt64,
+        frameIndex: Int
+    ) {
+        let callMs = String(format: "%.2f", Double(renderCallNs) / 1_000_000.0)
+        let state: String
+        if let receipt {
+            state = "state=rendering stats=ready ticket=\(receipt.ticket) " +
+                "camera=\(receipt.identity.cameraRevision) " +
+                "presentation=\(receipt.identity.presentationSequence) " +
+                "plan=\(currentStatsPlanName(receipt.identity.executedPlan)) " +
+                "S=\(receipt.sourceCount) V=\(receipt.visibleCount) " +
+                "C=\(receipt.contributorCount) D=\(receipt.drawnCount) " +
+                "call_ms=\(callMs)"
+        } else {
+            state = "state=rendering stats=unavailable reason=\(unavailableReason) " +
+                "call_ms=\(callMs)"
+        }
         setStatus(state)
         if frameIndex % 60 == 0 {
-            print(
-                String(
-                    format: "IOS_SURFACE_FRAME frame=%d drawn=%u visible=%u frame_ms=%.2f",
-                    frameIndex,
-                    stats.drawn_count,
-                    stats.visible_count,
-                    stats.frame_ms
-                )
-            )
+            print("IOS_SURFACE_FRAME frame=\(frameIndex) \(state)")
             fflush(stdout)
+        }
+    }
+
+    private func currentStatsUnavailableReason(
+        admission: GsplatCurrentStatsRequestStatus?,
+        submissionEvent: GsplatCurrentStatsConsumerEvent,
+        pollEvent: GsplatCurrentStatsConsumerEvent,
+        pendingCount: Int
+    ) -> String {
+        switch pollEvent {
+        case .unsampled(let status): return currentStatsRequestName(status)
+        case .failure(let failure):
+            return "terminal_\(currentStatsFailureName(failure.reason))"
+        case .rejected: return "identity_mismatch"
+        default: break
+        }
+        if let admission, admission != .requested {
+            return currentStatsRequestName(admission)
+        }
+        if pendingCount > 0 { return "pending" }
+        switch submissionEvent {
+        case .pending: return "pending"
+        case .settled: return "settled"
+        case .rejected: return "identity_mismatch"
+        default: return "empty"
+        }
+    }
+
+    private func currentStatsRequestName(
+        _ status: GsplatCurrentStatsRequestStatus
+    ) -> String {
+        switch status {
+        case .requested: return "requested"
+        case .busy: return "busy"
+        case .gpuUnavailable: return "gpu_unavailable"
+        case .resourceUnavailable: return "resource_unavailable"
+        case .ticketExhausted: return "ticket_exhausted"
+        }
+    }
+
+    private func currentStatsFailureName(
+        _ reason: GsplatCurrentStatsFailureReason
+    ) -> String {
+        switch reason {
+        case .mapFailure: return "map_failure"
+        case .generationInvalidated: return "generation_invalidated"
+        case .expired: return "expired"
+        case .dropped: return "dropped"
+        }
+    }
+
+    private func currentStatsPlanName(_ plan: GsplatCurrentStatsPlan) -> String {
+        switch plan {
+        case .cpuPostSort: return "cpu_post_sort"
+        case .gpuPostSort: return "gpu_post_sort"
+        case .gpuPreproject: return "gpu_preproject"
         }
     }
 

@@ -20,6 +20,7 @@ for kind, name in (("manifest", "manifest.json"), ("summary", "summary.json")):
     if kind == "manifest":
         manifest = json.loads(payload)
         manifest["renderer"]["projected_evidence_version"] = 0
+        manifest["renderer"]["current_stats_evidence_version"] = 0
         payload = json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode()
     output.append(f"console BENCHMARK_ARTIFACT {kind} {base64.b64encode(payload).decode()}")
 for payload in (fixtures / "frames.jsonl").read_bytes().splitlines():
@@ -58,16 +59,43 @@ ticket = 1 << 52
 manifest["renderer"]["count_semantics"] = "candidate_visible_contributor_issued_v1"
 manifest["renderer"]["projected_evidence_version"] = 1
 manifest["renderer"]["projected_policy_requested"] = "adaptive"
+manifest["renderer"]["current_stats_evidence_version"] = 1
 manifest["exactness"] = {"receipt_id": "fixture"}
+manifest["trace"]["frame_index"] = 0
 manifest["unavailable_fields"].extend([
     "frames[*].cpu_frame_complete_ms",
     "summary.distributions.cpu_frame_complete_ms",
+    "frames[*].preprocess_ms",
+    "frames[*].sort_ms",
+    "frames[*].geometry_submit_ms",
+    "summary.distributions.preprocess_ms",
+    "summary.distributions.sort_ms",
+    "summary.distributions.geometry_submit_ms",
 ])
+current_submissions = []
+current_successes = []
 for index, frame in enumerate(frames):
+    current_ticket = 100 + index
+    identity = {
+        "scene_generation": 1,
+        "camera_revision": 10,
+        "viewport_generation": 2,
+        "contract_generation": 3,
+        "plan_set_generation": 4,
+        "executed_plan": "cpu_post_sort",
+        "order_generation": 5,
+        "raster_generation": 6,
+        "encode_attempt": 1000 + index,
+        "presentation_sequence": 2000 + index,
+    }
     frame.update({
-        "camera_revision": 10 + index,
+        "camera_revision": 10,
         "order_backend": "cpu",
         "cpu_frame_complete_ms": None,
+        "preprocess_ms": None,
+        "sort_ms": None,
+        "geometry_submit_ms": None,
+        "source": manifest["dataset"]["splat_count"],
         "contributor": frame["visible"],
         "exact_contributor_compaction": False,
         "projected_policy": "adaptive",
@@ -79,8 +107,40 @@ for index, frame in enumerate(frames):
         "projected_measurement_unsampled_reason": None,
         "projected_submission_flags": 1 if index == 0 else 0,
         "order_submission_ticket": None,
+        "current_stats_ticket": current_ticket,
+        "current_stats_sample_key": f"measure:{index}",
+        "current_stats_trace_key": f"fixed:{manifest['trace']['sha256']}:0",
+        "current_stats_identity": identity,
+        "current_stats_count_semantics": "direct_draw_equals_visible",
+    })
+    current_submissions.append({
+        "ticket": current_ticket,
+        "sample_index": index,
+        "sample_key": f"measure:{index}",
+        "trace_key": f"fixed:{manifest['trace']['sha256']}:0",
+        "identity": copy.deepcopy(identity),
+    })
+    current_successes.append({
+        **copy.deepcopy(current_submissions[-1]),
+        "outcome": "ready",
+        "count_semantics": "direct_draw_equals_visible",
+        "source": frame["source"],
+        "visible": frame["visible"],
+        "contributor": frame["contributor"],
+        "drawn": frame["drawn"],
     })
 summary["distributions"]["cpu_frame_complete_ms"] = None
+summary["distributions"]["preprocess_ms"] = None
+summary["distributions"]["sort_ms"] = None
+summary["distributions"]["geometry_submit_ms"] = None
+summary["current_stats_terminal_ledger"] = {
+    "submissions": current_submissions,
+    "successes": current_successes,
+    "failures": [],
+    "issued_count": len(current_submissions),
+    "success_count": len(current_successes),
+    "failure_count": 0,
+}
 summary["projected_draw_telemetry"] = {
     "policy_requested": "adaptive",
     "candidate_frame_count": len(frames),
@@ -184,6 +244,85 @@ write_log(tmp / "projected-counts-flags-mismatch.log", manifest, frames, counts_
 timing_frames = copy.deepcopy(frames)
 timing_frames[0]["cpu_frame_complete_ms"] = 2.5
 write_log(tmp / "projected-timing-mismatch.log", manifest, timing_frames, summary)
+
+current_missing_ready = copy.deepcopy(summary)
+current_missing_ready["current_stats_terminal_ledger"]["successes"].pop()
+current_missing_ready["current_stats_terminal_ledger"]["success_count"] -= 1
+write_log(tmp / "current-missing-ready.log", manifest, frames, current_missing_ready)
+
+current_failure = copy.deepcopy(summary)
+failed_success = current_failure["current_stats_terminal_ledger"]["successes"].pop(0)
+failure = {
+    key: copy.deepcopy(failed_success[key])
+    for key in ("ticket", "sample_index", "sample_key", "trace_key", "identity")
+}
+failure.update({"outcome": "failure", "failure_reason": "map_failure"})
+current_failure["current_stats_terminal_ledger"]["failures"] = [failure]
+current_failure["current_stats_terminal_ledger"]["success_count"] -= 1
+current_failure["current_stats_terminal_ledger"]["failure_count"] = 1
+write_log(tmp / "current-terminal-failure.log", manifest, frames, current_failure)
+
+current_identity_drift = copy.deepcopy(summary)
+current_identity_drift["current_stats_terminal_ledger"]["successes"][0][
+    "identity"
+]["presentation_sequence"] += 1
+write_log(tmp / "current-identity-drift.log", manifest, frames, current_identity_drift)
+
+current_presentation_alias_frames = copy.deepcopy(frames)
+current_presentation_alias_summary = copy.deepcopy(summary)
+aliased_sequence = current_presentation_alias_frames[0]["current_stats_identity"][
+    "presentation_sequence"
+]
+current_presentation_alias_frames[1]["current_stats_identity"][
+    "presentation_sequence"
+] = aliased_sequence
+current_presentation_alias_summary["current_stats_terminal_ledger"]["submissions"][1][
+    "identity"
+]["presentation_sequence"] = aliased_sequence
+current_presentation_alias_summary["current_stats_terminal_ledger"]["successes"][1][
+    "identity"
+]["presentation_sequence"] = aliased_sequence
+write_log(
+    tmp / "current-presentation-alias.log",
+    manifest,
+    current_presentation_alias_frames,
+    current_presentation_alias_summary,
+)
+
+current_duplicate_frames = copy.deepcopy(frames)
+current_duplicate_frames[1]["current_stats_ticket"] = current_duplicate_frames[0][
+    "current_stats_ticket"
+]
+write_log(tmp / "current-duplicate-ticket.log", manifest, current_duplicate_frames, summary)
+
+current_stale = copy.deepcopy(summary)
+current_stale["current_stats_terminal_ledger"]["submissions"][0]["ticket"] = 9999
+current_stale["current_stats_terminal_ledger"]["successes"][0]["ticket"] = 9999
+write_log(tmp / "current-stale-ticket.log", manifest, frames, current_stale)
+
+current_timing_substitution = copy.deepcopy(frames)
+substituted_timing = current_timing_substitution[0]["call_ms"]
+current_timing_substitution[0]["geometry_submit_ms"] = substituted_timing
+current_timing_summary = copy.deepcopy(summary)
+current_timing_summary["distributions"]["geometry_submit_ms"] = {
+    "count": 1,
+    "mean": substituted_timing,
+    "p50": substituted_timing,
+    "p90": substituted_timing,
+    "p95": substituted_timing,
+    "p99": substituted_timing,
+    "max": substituted_timing,
+}
+write_log(
+    tmp / "current-timing-substitution.log",
+    manifest,
+    current_timing_substitution,
+    current_timing_summary,
+)
+
+current_missing_version = copy.deepcopy(manifest)
+del current_missing_version["renderer"]["current_stats_evidence_version"]
+write_log(tmp / "current-missing-version.log", current_missing_version, frames, summary)
 PY
 
 python3 bindings/apple/scripts/extract-ios-benchmark-artifacts.py \
@@ -200,8 +339,16 @@ artifact = pathlib.Path(sys.argv[1])
 manifest = json.loads((artifact / "manifest.json").read_text())
 summary = json.loads((artifact / "summary.json").read_text())
 assert manifest["renderer"]["projected_policy_requested"] == "adaptive"
+assert manifest["renderer"]["current_stats_evidence_version"] == 1
 assert summary["projected_terminal_ledger"]["issued_count"] == 1
 assert summary["projected_terminal_ledger"]["success_count"] == 1
+assert summary["current_stats_terminal_ledger"]["issued_count"] == len(
+    summary["current_stats_terminal_ledger"]["successes"]
+)
+frames = [json.loads(line) for line in (artifact / "frames.jsonl").read_text().splitlines()]
+assert len({frame["current_stats_ticket"] for frame in frames}) == len(frames)
+assert len({frame["current_stats_identity"]["presentation_sequence"] for frame in frames}) == len(frames)
+assert len({frame["camera_revision"] for frame in frames}) == 1
 PY
 
 expect_rejected() {
@@ -228,4 +375,12 @@ expect_rejected projected-execution-mismatch 'changed camera revision, execution
 expect_rejected projected-counts-mismatch 'changed its terminal V/C/D identity'
 expect_rejected projected-counts-flags-mismatch 'counts_flags disagree with exact compaction'
 expect_rejected projected-timing-mismatch 'available CPU completion timing is declared unavailable'
+expect_rejected current-missing-ready 'current-stats terminal ledger is missing Ready tickets'
+expect_rejected current-terminal-failure 'formal Apple evidence contains a current-stats terminal failure'
+expect_rejected current-identity-drift 'changed full terminal identity'
+expect_rejected current-presentation-alias 'repeats a current-stats presentation sequence'
+expect_rejected current-duplicate-ticket 'repeats a current-stats ticket'
+expect_rejected current-stale-ticket 'measured frames and current-stats submissions differ'
+expect_rejected current-timing-substitution 'geometry_submit_ms must be null'
+expect_rejected current-missing-version 'current_stats_evidence_version must be the integer 0 or 1'
 echo "iOS benchmark artifact extraction tests passed"
