@@ -79,6 +79,13 @@ Ready receipt only when its nonzero ticket and complete identity match a
 previously observed Issued submission; every identity value other than the
 ticket is an opaque join value and may legally be zero. Terminal failures and
 identity mismatches end that pending ticket without publishing S/V/C/D.
+Because the submission getter is a read-only snapshot of the last successful
+frame, observing the same Issued value after its unique terminal returns the
+consumer's count-free `settled` event instead of creating a second pending
+entry. A same-ticket identity drift also clears the pending entry and poisons
+that last snapshot, so a later terminal cannot publish counts. The consumer
+retains only live pending correlations plus one last-snapshot lifecycle slot;
+it does not build an unbounded history of completed tickets.
 
 The existing public `stats()` API remains unchanged. Its compatibility values
 are not a substitute for a current-stats Ready receipt, and this adapter does

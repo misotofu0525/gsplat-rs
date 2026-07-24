@@ -285,6 +285,9 @@ public enum GsplatCurrentStatsCorrelationRejection: Equatable {
 public enum GsplatCurrentStatsConsumerEvent: Equatable {
     case notRequested
     case pending(GsplatCurrentStatsIssuedSubmission)
+    /// Replay of the last Issued snapshot after its terminal or invalidation.
+    /// This local correlation event never carries counts.
+    case settled(GsplatCurrentStatsIssuedSubmission)
     case empty
     case unsampled(GsplatCurrentStatsRequestStatus)
     case ready(GsplatCurrentStatsReceipt)
@@ -301,9 +304,23 @@ public enum GsplatCurrentStatsConsumerEvent: Equatable {
 ///
 /// This stores no renderer policy, sampling state, generation source, or count
 /// fallback. A Ready value is returned only after ticket and every identity
-/// field match the previously observed Issued submission.
+/// field match the previously observed Issued submission. The read-only getter
+/// may replay its last snapshot, so the consumer retains one finite lifecycle
+/// slot for that snapshot rather than a history of completed tickets.
 public struct GsplatCurrentStatsConsumer {
+    private enum LastIssuedSnapshotState {
+        case pending
+        case settled
+        case rejected(GsplatCurrentStatsCorrelationRejection)
+    }
+
+    private struct LastIssuedSnapshot {
+        let submission: GsplatCurrentStatsIssuedSubmission
+        let state: LastIssuedSnapshotState
+    }
+
     private var pendingByTicket: [UInt64: GsplatCurrentStatsIdentity] = [:]
+    private var lastIssuedSnapshot: LastIssuedSnapshot?
 
     public init() {}
 
@@ -314,19 +331,41 @@ public struct GsplatCurrentStatsConsumer {
     ) -> GsplatCurrentStatsConsumerEvent {
         switch submission {
         case .notRequested:
+            lastIssuedSnapshot = nil
             return .notRequested
         case .issued(let issued):
+            if let last = lastIssuedSnapshot,
+               last.submission.ticket == issued.ticket {
+                guard last.submission.identity == issued.identity else {
+                    return rejectIdentityDrift(
+                        expected: last.submission.identity,
+                        issued: issued
+                    )
+                }
+                switch last.state {
+                case .pending:
+                    return .pending(issued)
+                case .settled:
+                    return .settled(issued)
+                case .rejected(let rejection):
+                    return .rejected(rejection)
+                }
+            }
             if let expected = pendingByTicket[issued.ticket] {
                 guard expected == issued.identity else {
-                    return .rejected(.identityMismatch(
-                        ticket: issued.ticket,
-                        expected: expected,
-                        actual: issued.identity
-                    ))
+                    return rejectIdentityDrift(expected: expected, issued: issued)
                 }
+                lastIssuedSnapshot = LastIssuedSnapshot(
+                    submission: issued,
+                    state: .pending
+                )
                 return .pending(issued)
             }
             pendingByTicket[issued.ticket] = issued.identity
+            lastIssuedSnapshot = LastIssuedSnapshot(
+                submission: issued,
+                state: .pending
+            )
             return .pending(issued)
         }
     }
@@ -363,13 +402,47 @@ public struct GsplatCurrentStatsConsumer {
             return .rejected(.unknownTerminal(ticket: ticket))
         }
         guard expected == identity else {
-            return .rejected(.identityMismatch(
+            let rejection = GsplatCurrentStatsCorrelationRejection.identityMismatch(
                 ticket: ticket,
                 expected: expected,
                 actual: identity
-            ))
+            )
+            settleLastSnapshot(ticket: ticket, state: .rejected(rejection))
+            return .rejected(rejection)
         }
+        settleLastSnapshot(ticket: ticket, state: .settled)
         return accepted
+    }
+
+    private mutating func rejectIdentityDrift(
+        expected: GsplatCurrentStatsIdentity,
+        issued: GsplatCurrentStatsIssuedSubmission
+    ) -> GsplatCurrentStatsConsumerEvent {
+        pendingByTicket.removeValue(forKey: issued.ticket)
+        let rejection = GsplatCurrentStatsCorrelationRejection.identityMismatch(
+            ticket: issued.ticket,
+            expected: expected,
+            actual: issued.identity
+        )
+        lastIssuedSnapshot = LastIssuedSnapshot(
+            submission: issued,
+            state: .rejected(rejection)
+        )
+        return .rejected(rejection)
+    }
+
+    private mutating func settleLastSnapshot(
+        ticket: UInt64,
+        state: LastIssuedSnapshotState
+    ) {
+        guard let last = lastIssuedSnapshot,
+              last.submission.ticket == ticket else {
+            return
+        }
+        lastIssuedSnapshot = LastIssuedSnapshot(
+            submission: last.submission,
+            state: state
+        )
     }
 }
 

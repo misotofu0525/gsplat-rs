@@ -61,7 +61,54 @@ final class CurrentStatsTests: XCTestCase {
         guard case .rejected(.identityMismatch) = consumer.observe(drifted) else {
             return XCTFail("same ticket with different complete identity was not rejected")
         }
-        XCTAssertEqual(consumer.pendingCount, 1)
+        XCTAssertEqual(consumer.pendingCount, 0)
+        guard case .rejected(.identityMismatch) = consumer.observe(drifted) else {
+            return XCTFail("repeated drifted snapshot was not idempotently rejected")
+        }
+
+        for terminalIdentity in [identity, driftedIdentity] {
+            let terminal = try GsplatCurrentStatsPoll(native: readyPoll(
+                ticket: 11,
+                identity: terminalIdentity,
+                semantics: 1,
+                source: 8,
+                visible: 6,
+                contributor: 5,
+                drawn: 6
+            ))
+            XCTAssertEqual(
+                consumer.consume(terminal),
+                .rejected(.unknownTerminal(ticket: 11))
+            )
+            XCTAssertEqual(consumer.pendingCount, 0)
+        }
+    }
+
+    func testReadyThenSameIssuedSnapshotReplayStaysSettled() throws {
+        let identity = makeIdentity(seed: 7)
+        let submission = try GsplatCurrentStatsSubmission(
+            native: issuedSubmission(ticket: 17, identity: identity)
+        )
+        guard case .issued(let issued) = submission else {
+            return XCTFail("fixture did not produce Issued")
+        }
+        let terminal = try GsplatCurrentStatsPoll(native: readyPoll(
+            ticket: 17,
+            identity: identity,
+            semantics: 2,
+            source: 12,
+            visible: 9,
+            contributor: 7,
+            drawn: 9
+        ))
+        var consumer = GsplatCurrentStatsConsumer()
+        XCTAssertEqual(consumer.observe(submission), .pending(issued))
+        guard case .ready = consumer.consume(terminal) else {
+            return XCTFail("matching terminal was not published")
+        }
+        XCTAssertEqual(consumer.observe(submission), .settled(issued))
+        XCTAssertEqual(consumer.observe(submission), .settled(issued))
+        XCTAssertEqual(consumer.pendingCount, 0)
     }
 
     func testReadyPublishesAtomicallyAfterCompleteIdentityMatch() throws {
@@ -177,6 +224,10 @@ final class CurrentStatsTests: XCTestCase {
             XCTAssertEqual(rejectedTicket, ticket)
             XCTAssertNotEqual(expected, actual)
             XCTAssertEqual(consumer.pendingCount, 0)
+            guard case .rejected(.identityMismatch) = consumer.observe(submission) else {
+                return XCTFail("terminal mismatch replay reopened pending")
+            }
+            XCTAssertEqual(consumer.pendingCount, 0)
         }
     }
 
@@ -190,10 +241,14 @@ final class CurrentStatsTests: XCTestCase {
         for (kind, reason) in terminals {
             let identity = makeIdentity(seed: UInt64(kind) * 10)
             let ticket = UInt64(100 + kind)
-            var consumer = GsplatCurrentStatsConsumer()
-            _ = consumer.observe(try GsplatCurrentStatsSubmission(
+            let submission = try GsplatCurrentStatsSubmission(
                 native: issuedSubmission(ticket: ticket, identity: identity)
-            ))
+            )
+            guard case .issued(let issued) = submission else {
+                return XCTFail("fixture did not produce Issued")
+            }
+            var consumer = GsplatCurrentStatsConsumer()
+            _ = consumer.observe(submission)
             let event = consumer.consume(try GsplatCurrentStatsPoll(
                 native: failurePoll(kind: kind, ticket: ticket, identity: identity)
             ))
@@ -202,6 +257,146 @@ final class CurrentStatsTests: XCTestCase {
             }
             XCTAssertEqual(failure.ticket, ticket)
             XCTAssertEqual(failure.reason, reason)
+            XCTAssertEqual(consumer.pendingCount, 0)
+            XCTAssertEqual(consumer.observe(submission), .settled(issued))
+            XCTAssertEqual(consumer.observe(submission), .settled(issued))
+            XCTAssertEqual(consumer.pendingCount, 0)
+        }
+    }
+
+    func testConcurrentPendingAcceptOutOfOrderTerminalsWithoutRevival() throws {
+        let firstIdentity = makeIdentity(seed: 30)
+        let secondIdentity = makeIdentity(seed: 40)
+        let first = try GsplatCurrentStatsSubmission(
+            native: issuedSubmission(ticket: 31, identity: firstIdentity)
+        )
+        let second = try GsplatCurrentStatsSubmission(
+            native: issuedSubmission(ticket: 32, identity: secondIdentity)
+        )
+        guard case .issued(let secondIssued) = second else {
+            return XCTFail("fixture did not produce Issued")
+        }
+        var consumer = GsplatCurrentStatsConsumer()
+        _ = consumer.observe(first)
+        _ = consumer.observe(second)
+        XCTAssertEqual(consumer.pendingCount, 2)
+
+        guard case .ready(let secondReceipt) = consumer.consume(
+            try GsplatCurrentStatsPoll(native: readyPoll(
+                ticket: 32,
+                identity: secondIdentity,
+                semantics: 3,
+                source: 20,
+                visible: 15,
+                contributor: 12,
+                drawn: 12
+            ))
+        ) else {
+            return XCTFail("newer pending terminal was not accepted first")
+        }
+        XCTAssertEqual(secondReceipt.ticket, 32)
+        XCTAssertEqual(consumer.pendingCount, 1)
+        XCTAssertEqual(consumer.observe(second), .settled(secondIssued))
+
+        guard case .failure(let firstFailure) = consumer.consume(
+            try GsplatCurrentStatsPoll(native: failurePoll(
+                kind: 6,
+                ticket: 31,
+                identity: firstIdentity
+            ))
+        ) else {
+            return XCTFail("older pending terminal was not accepted later")
+        }
+        XCTAssertEqual(firstFailure.ticket, 31)
+        XCTAssertEqual(firstFailure.reason, .expired)
+        XCTAssertEqual(consumer.pendingCount, 0)
+        XCTAssertEqual(consumer.observe(second), .settled(secondIssued))
+    }
+
+    func testNotRequestedEmptyAndUnsampledCannotReviveReadyCounts() throws {
+        let identity = makeIdentity(seed: 50)
+        let submission = try GsplatCurrentStatsSubmission(
+            native: issuedSubmission(ticket: 51, identity: identity)
+        )
+        guard case .issued(let issued) = submission else {
+            return XCTFail("fixture did not produce Issued")
+        }
+        var consumer = GsplatCurrentStatsConsumer()
+        _ = consumer.observe(submission)
+        guard case .ready = consumer.consume(try GsplatCurrentStatsPoll(native: readyPoll(
+            ticket: 51,
+            identity: identity,
+            semantics: 1,
+            source: 6,
+            visible: 5,
+            contributor: 4,
+            drawn: 5
+        ))) else {
+            return XCTFail("matching Ready was not accepted")
+        }
+
+        let settled = consumer.observe(submission)
+        let notRequested = consumer.observe(.notRequested)
+        let empty = consumer.consume(.empty)
+        let unsampled = consumer.consume(.unsampled(.busy))
+        XCTAssertEqual(settled, .settled(issued))
+        XCTAssertEqual(notRequested, .notRequested)
+        XCTAssertEqual(empty, .empty)
+        XCTAssertEqual(unsampled, .unsampled(.busy))
+        XCTAssertFalse(settled.isReady)
+        XCTAssertFalse(notRequested.isReady)
+        XCTAssertFalse(empty.isReady)
+        XCTAssertFalse(unsampled.isReady)
+        XCTAssertEqual(consumer.pendingCount, 0)
+    }
+
+    func testBusyAdmissionCanObserveIssuedSnapshotFromLaterSuccessfulFrame() throws {
+        XCTAssertEqual(
+            try currentStatsRequestStatus(native: request(
+                GsplatCurrentStatsRequestStatus.busy.rawValue
+            )),
+            .busy
+        )
+        let identity = makeIdentity(seed: 70)
+        let submission = try GsplatCurrentStatsSubmission(
+            native: issuedSubmission(ticket: 71, identity: identity)
+        )
+        var consumer = GsplatCurrentStatsConsumer()
+        guard case .pending = consumer.observe(submission),
+              case .pending = consumer.observe(submission) else {
+            return XCTFail("later successful-frame Issued snapshot was not idempotent")
+        }
+        guard case .ready = consumer.consume(try GsplatCurrentStatsPoll(native: readyPoll(
+            ticket: 71,
+            identity: identity,
+            semantics: 2,
+            source: 10,
+            visible: 8,
+            contributor: 6,
+            drawn: 8
+        ))) else {
+            return XCTFail("later successful-frame terminal was not accepted")
+        }
+        XCTAssertEqual(consumer.pendingCount, 0)
+    }
+
+    func testCompletedTicketHistoryDoesNotGrowAcrossSnapshots() throws {
+        var consumer = GsplatCurrentStatsConsumer()
+        for ticket in UInt64(200)..<UInt64(264) {
+            let identity = makeIdentity(seed: ticket)
+            let submission = try GsplatCurrentStatsSubmission(
+                native: issuedSubmission(ticket: ticket, identity: identity)
+            )
+            guard case .issued(let issued) = submission else {
+                return XCTFail("fixture did not produce Issued")
+            }
+            XCTAssertEqual(consumer.observe(submission), .pending(issued))
+            guard case .failure = consumer.consume(try GsplatCurrentStatsPoll(
+                native: failurePoll(kind: 7, ticket: ticket, identity: identity)
+            )) else {
+                return XCTFail("matching terminal was not accepted")
+            }
+            XCTAssertEqual(consumer.observe(submission), .settled(issued))
             XCTAssertEqual(consumer.pendingCount, 0)
         }
     }
