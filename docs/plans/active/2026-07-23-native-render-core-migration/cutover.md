@@ -10,9 +10,12 @@
   `d721ea6cd0c334e28d3ad5c28792383524e27935` (`E_IMPL_SHA`).
 - Accepted E13 closeout and fixed M0 parent:
   `328e05c4cb55f4824cc9149c08629dd9d2ad5eed` (`E13_CLOSEOUT_SHA`).
-- `M0_ACCEPT_SHA` is the commit that accepts this file. It cannot be embedded
-  in its own tree. Root records it in the migration ledger before activating
-  M1. The accepted M0 tree, not `E_IMPL_SHA` directly, is M1's `BASE_SHA`.
+- `M0_CUTOVER_SHA` is the reviewed candidate/fix tip for this file and may be
+  written into `progress.md` by root. `M0_ACCEPT_SHA == M1_BASE_SHA` is the
+  later root-owned closeout/activation commit that marks M0 Accepted and M1
+  Active. That commit cannot embed its own SHA: root reports it in the handoff,
+  and the M1 closeout records it as M1's `BASE_SHA`. The accepted M0 tree, not
+  `E_IMPL_SHA` directly, is the M1 baseline.
 - Canonical design authority remains the
   [native render core roadmap](../../completed/2026-07-23-native-render-core-refactor/task_plan.md),
   [architecture](../../completed/2026-07-23-native-render-core-refactor/architecture.md),
@@ -90,8 +93,12 @@ ARTIFACTS=<retained paths plus identity hashes>
 DEFER=<explicit unavailable or out-of-scope items>
 ```
 
-The cutover and ledger closeout remain separate commits. A task candidate that
-is not integrated ends as Reject or Defer and requires no repository revert.
+`OWNED_PATHS` is the exact union of paths changed by `CUTOVER_SHA` and the
+optional `CLOSEOUT_SHA`; it is not merely the mutable implementation writer's
+scope. The mutable writer owns the cutover candidate. Root alone owns the
+ledger closeout/next-task activation commit. The cutover and ledger closeout
+remain separate commits. A task candidate that is not integrated ends as
+Reject or Defer and requires no repository revert.
 
 ### Revert procedure
 
@@ -104,8 +111,10 @@ git revert --no-edit <CUTOVER_SHA>
 git diff --exit-code <BASE_SHA>..HEAD -- <OWNED_PATHS...>
 ```
 
-If downstream tasks already exist, revert them in reverse order, M6 through
-M1, before reverting their dependencies. Do not use a destructive reset. A
+If downstream tasks already exist, revert every integrated task in reverse
+order, `M8 -> M7 -> M6 -> M5 -> M4 -> M3 -> M2 -> M1`, stopping at the target
+dependency. Revert each task's closeout before its cutover. Do not use a
+destructive reset. A
 rollback is complete only when the owned-path diff is empty, repository checks
 pass, and the previous product route is again the only state owner.
 
@@ -181,10 +190,14 @@ simulator timing into device performance.
 
 ### M0 — Freeze cutover and rollback
 
-**Owner:** migration root; documentation only.
+**Mutable writer:** M0 cutover-document owner; documentation only.
 
-**Owned path:** this `cutover.md`. The root-owned `progress.md` is updated only
-after independent review accepts M0.
+**Root ledger owner:** migration root, which alone updates `progress.md` and
+activates M1 after independent review.
+
+**Owned paths across both M0 commits:** this `cutover.md` in the cutover commit
+plus root-owned `progress.md` in the closeout/activation commit. The two writers
+and commits remain separate.
 
 **Exit:**
 
@@ -193,7 +206,9 @@ after independent review accepts M0.
   M1--M8 artifacts are complete;
 - dataset and trace hash domains are unambiguous;
 - M0 document links, architecture policy, and diff hygiene pass;
-- `M0_ACCEPT_SHA` is recorded by root before M1 activation.
+- root records `M0_CUTOVER_SHA` in `progress.md`; the resulting
+  `M0_ACCEPT_SHA == M1_BASE_SHA` is reported in the handoff and later recorded
+  by M1 as its base identity.
 
 M0 does not run or claim a renderer benchmark.
 
@@ -213,14 +228,21 @@ semantics; hosts own CLI/windowless lifecycle, input/output, and artifact I/O.
 **Frozen boundary:** the interactive shared Surface remains legacy until M2.
 M1 changes no public API, C ABI, Web, Android, Apple wrapper, or product-wide
 default. Desktop CLI, viewer, and benchmark responsibilities must remain
-separate; no host-side controller is introduced.
+separate; no host-side controller is introduced. The current bench-runner has
+no camera-trace CLI and its default dimensions are not the frozen 1920x1080
+Kitsune workload. Its existing minimal artifact is smoke only. M1 must extend
+bench-runner or add a dedicated offscreen collector that consumes the frozen
+trace, proves the Exact receipts, writes a final frame, and publishes the
+canonical artifact before M1 can exit.
 
 **Required exit artifacts:**
 
 - native offscreen Direct-oracle image parity at fixed scene/camera/resolution;
 - Exact count/SH/order/resolution receipts and focused CPU PostSort, GPU
   PostSort, and GPU Preproject eligibility/fallback tests;
-- one validated `gsplat-benchmark/v1` artifact from the cut-over bench-runner;
+- one validated formal `gsplat-benchmark/v1` offscreen artifact at the frozen
+  Kitsune 1920x1080 trace, including final-frame identity; M1 owns this
+  offscreen artifact and M2 owns all real-Surface artifacts;
 - clean ownership proof that native non-Surface consumers no longer write
   renderer generations, controller decisions, mandatory samples, or results.
 
@@ -254,6 +276,14 @@ false terminal evidence.
 - acquire/configure/submit/present ordering and surface-loss retry tests;
 - proof that the accepted E12 injected-presentation test still passes, while
   being labelled insufficient by itself for the M2 real-window exit.
+
+The existing desktop real-window command is a smoke/log entrypoint, not a
+canonical artifact collector. The specialized
+`tests/perf/collect-desktop-producer-ab.py` covers only the forced GPU producer
+A/B. M2 must extend it or add a general shared-Surface collector/capture seam
+for forced CPU PostSort, forced GPU PostSort, forced GPU Preproject, and
+Adaptive. M2 cannot exit until that seam emits validated canonical artifacts
+and a final frame for every required arm.
 
 **Rollback base:** accepted M1 tree.
 
@@ -307,6 +337,11 @@ budget, SH drop, CSS/backing-resolution mismatch, or host policy is accepted.
 - validated `gsplat-benchmark/v1` artifact or explicit unsupported fields;
 - browser capability failure is explicit and never misreported as a passed
   WebGL or compilation result.
+
+The generic minimal collector invocation is smoke only. Formal M4 exit also
+requires the existing full-quality suite validator to prove the frozen
+resolution and Exact receipt; passing only the generic benchmark-v1 validator
+is insufficient.
 
 **Rollback base:** accepted M3 tree.
 
@@ -363,6 +398,12 @@ Defer, not a blocker for the functional consumer migration.
   and validates a same-camera-family trace for that drawable rather than
   reusing the simulator dimensions. The artifact retains app/native/framework,
   device, raw-trace, and canonical-trace identities.
+
+The existing simulator scripts build and launch but do not by themselves
+retain the complete console artifact. M6 must add or extend an Apple-owned
+simulator wrapper that waits for benchmark completion, captures the log, and
+passes it to the existing `extract-ios-benchmark-artifacts.py`. If that seam is
+not present, a successful app launch remains smoke and M6 cannot exit.
 
 **Rollback base:** accepted M5 tree.
 
@@ -436,10 +477,15 @@ focused commands, then the applicable global matrix before acceptance.
 ```bash
 PYTHONDONTWRITEBYTECODE=1 tests/architecture/test_source_architecture.py
 PYTHONDONTWRITEBYTECODE=1 tests/architecture/check_source_architecture.py
-git diff --check
+git show --check "$M0_CUTOVER_SHA"
+git diff --check "$M0_BASE_SHA..$M0_CUTOVER_SHA"
 ```
 
 M0 also runs a read-only local Markdown relative-link checker over this file.
+After root creates the closeout/activation commit, it runs
+`git diff --check "$M0_BASE_SHA..$M0_ACCEPT_SHA"`. An unscoped
+`git diff --check` on a clean tree is not candidate evidence because it ignores
+already committed changes.
 
 ### Global migration matrix
 
@@ -453,7 +499,10 @@ GSPLAT_REQUIRE_GPU_CONFORMANCE=1 cargo test -p gsplat-render-wgpu --test conform
 PYTHONDONTWRITEBYTECODE=1 tests/architecture/test_source_architecture.py
 PYTHONDONTWRITEBYTECODE=1 tests/architecture/check_source_architecture.py
 bash tests/security/run-cargo-deny.sh
-git diff --check
+git show --check "$CUTOVER_SHA"
+git diff --check "$BASE_SHA..$CUTOVER_SHA"
+# When CLOSEOUT_SHA exists:
+git diff --check "$BASE_SHA..$CLOSEOUT_SHA"
 ```
 
 ### M1 focused
@@ -472,12 +521,30 @@ python3 tests/perf/validate-benchmark-artifacts.py \
   target/benchmarks/migration-m1-minimal
 ```
 
-The retained M1 parity run additionally uses the revalidated Kitsune asset and
-frozen desktop trace; the exact command is recorded with its artifact.
+Those commands are smoke only. The current offscreen executable does accept the
+frozen workload and final-frame output:
+
+```bash
+mkdir -p target/benchmarks/migration-m1-kitsune-offscreen
+cargo run --release -p desktop-example -- \
+  tests/datasets/external/wakufactory_kitune/kitune1.ply \
+  --geometry-path packed \
+  --camera-trace tests/perf/trace/fixtures/quality/candidate-kitsune-quality-1920x1080-v1.json \
+  --camera-sequence --camera-frame-indices 0,1 \
+  --camera-warmup-frames 20 --camera-measured-frames 80 \
+  --camera-loops 1 \
+  --png target/benchmarks/migration-m1-kitsune-offscreen/final-frame.png
+```
+
+This freezes the formal offscreen workload but does not yet publish the
+required canonical artifact. M1 first supplies the missing bench-runner or
+offscreen-collector trace/1920x1080/Exact-receipt seam, commits its real
+invocation in the owned tests or documentation, and retains that exact command
+with the artifact. The minimal artifact cannot substitute for it.
 
 ### M2 focused
 
-The documented real-Surface entrypoint is:
+The documented real-Surface smoke/log entrypoint is:
 
 ```bash
 cargo run --release -p desktop-example --features interactive-viewer -- \
@@ -492,8 +559,11 @@ cargo run --release -p desktop-example --features interactive-viewer -- \
 
 M2 repeats the documented entrypoint with `--order-backend cpu` and
 `--order-backend gpu`, and uses the documented GPU producer controls for
-PostSort and Preproject. Exact invocations and exits are retained with each
-artifact.
+PostSort and Preproject. This command alone is not an artifact. M2 first
+supplies the general shared-Surface collector/capture seam described above,
+then retains its exact forced CPU PostSort, GPU PostSort, GPU Preproject, and
+Adaptive invocations, canonical artifacts, and final frames. M1's offscreen
+artifact cannot satisfy M2.
 
 ### M3 focused
 
@@ -513,12 +583,51 @@ node --check packages/web/dist/index.js
 npm --prefix packages/web run check
 npm --prefix packages/web test
 npm --prefix packages/web run pack:dry-run
+```
+
+The current generic command below is smoke only:
+
+```bash
 GSPLAT_DATASET=kitsune \
-GSPLAT_ARTIFACT_DIR=target/benchmarks/migration-m4-web-kitsune \
+GSPLAT_ARTIFACT_DIR=target/benchmarks/migration-m4-web-kitsune-smoke \
   node examples/web/scripts/collect-web-benchmark-artifact.mjs
 python3 tests/perf/validate-benchmark-artifacts.py \
-  target/benchmarks/migration-m4-web-kitsune
+  target/benchmarks/migration-m4-web-kitsune-smoke
 ```
+
+The formal current collector invocation is:
+
+```bash
+GSPLAT_PHASE_E_QUALIFICATION=kitsune-static-v1 \
+GSPLAT_DATASET=kitsune \
+GSPLAT_GEOMETRY_PATH=packed \
+GSPLAT_ORDER_BACKEND=adaptive \
+GSPLAT_PROJECTED_POLICY=adaptive \
+GSPLAT_SORT_INTERVAL=1 \
+GSPLAT_ORDER_COMPLETION_PROTOCOL=sustained_window \
+GSPLAT_CAMERA_TRACE_URL=/tests/perf/trace/fixtures/quality/candidate-kitsune-quality-1920x1080-v1.json \
+GSPLAT_CAMERA_TRACE_SEQUENCE=1 \
+GSPLAT_CAMERA_FRAME_INDICES=0,1 \
+GSPLAT_CAMERA_TRACE_LOOPS=1 \
+GSPLAT_BENCHMARK_WARMUP_FRAMES=20 \
+GSPLAT_BENCHMARK_FRAMES=80 \
+GSPLAT_ARTIFACT_DIR=target/benchmarks/migration-m4-web-kitsune/run-adaptive \
+  node examples/web/scripts/collect-web-benchmark-artifact.mjs
+python3 tests/perf/validate-benchmark-artifacts.py \
+  target/benchmarks/migration-m4-web-kitsune/run-adaptive
+```
+
+M4 writes a task-local `suite.json` using the existing
+`gsplat-full-quality-experiment/v1` contract and references that run, then
+requires:
+
+```bash
+python3 tests/perf/validate-full-quality-experiment.py \
+  target/benchmarks/migration-m4-web-kitsune/suite.json --verify-inputs
+```
+
+The same frozen trace and counts are used for forced plan/lane checks; M4
+records each exact environment rather than inferring it from the Adaptive run.
 
 ### M5 focused
 
@@ -551,6 +660,42 @@ bash bindings/apple/scripts/run-ios-sim-app.sh
 bash bindings/apple/scripts/run-ios-sim-smoke.sh
 ```
 
+All commands above are build/launch smoke. The frozen formal simulator launch
+payload uses the actual documented arguments and bundled 2622x1206 trace:
+
+```bash
+GSPLAT_CAMERA_TRACE_PATH=tests/perf/trace/fixtures/quality/candidate-kitsune-quality-2622x1206-v1.json \
+  bash bindings/apple/scripts/run-ios-sim-app.sh \
+    tests/datasets/external/wakufactory_kitune/kitune1.ply -- \
+    --gsplat_benchmark true \
+    --gsplat_benchmark_frames 80 \
+    --gsplat_benchmark_warmup_frames 20 \
+    --gsplat_camera_trace camera_trace.json \
+    --gsplat_camera_trace_sequence true \
+    --gsplat_camera_frame_indices 0,1 \
+    --gsplat_camera_trace_loops 1 \
+    --gsplat_surface_sort_interval 1 \
+    --gsplat_surface_order_backend adaptive \
+    --gsplat_surface_projected_policy adaptive \
+    --gsplat_geometry_path packed
+```
+
+Because `run-ios-sim-app.sh` returns after launch, that invocation remains
+smoke until the M6-owned wrapper captures a complete simulator console log.
+The wrapper must then invoke the existing extractor and full-quality validator:
+
+```bash
+python3 bindings/apple/scripts/extract-ios-benchmark-artifacts.py \
+  "$SIMULATOR_LOG" target/benchmarks/migration-m6-ios-sim-kitsune/run-adaptive \
+  --validator tests/perf/validate-benchmark-artifacts.py
+python3 tests/perf/validate-full-quality-experiment.py \
+  target/benchmarks/migration-m6-ios-sim-kitsune/suite.json --verify-inputs
+```
+
+M6 repeats the retained wrapper for the required CPU/GPU/Adaptive coverage,
+records the exact simulator UUID/drawable, and rejects an unsupported forced
+GPU arm explicitly rather than substituting another lane.
+
 Physical-device execution uses the existing
 `bindings/apple/scripts/benchmark-ios-device-app.sh` support after M6 inspects
 and freezes the available device/signing environment. M0 does not invent a
@@ -566,12 +711,15 @@ final platform evidence validators needed by the factual claims it publishes.
 
 - **Accept M0** only when this file is the sole M0 change, its links resolve,
   architecture policy/self-tests and diff hygiene pass, independent review
-  finds no missing owner or artifact, and root records `M0_ACCEPT_SHA`.
+  finds no missing owner or artifact, and root records `M0_CUTOVER_SHA` in the
+  separate closeout/activation commit.
 - **Reject M0** when it changes product behavior, weakens Exactness, invents a
   command/schema, or leaves ambiguous ownership/rollback.
 - **Defer M0** only for a concrete missing fact that blocks a safe M1 cutover;
   performance results and unavailable later physical endpoints do not block
   this documentation freeze.
 
-Once accepted, M1 may activate from the accepted M0 tree. No other production
+Root's closeout/activation commit simultaneously makes M0 Accepted and M1
+Active; its resulting SHA is `M0_ACCEPT_SHA == M1_BASE_SHA`, reported in the
+handoff because it cannot name itself in its tree. No other production
 migration task is active until its predecessor closes.
