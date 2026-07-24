@@ -26,9 +26,8 @@ M2 = Active
   `e26a1df39780e744112924eb378e098c29be7cd4`.
 - M1 state: Accepted at integrated implementation/evidence tip
   `dc3e0de65073f819b714229b726ca55f47c6e6d6`.
-- Active task: M2. M2p1 and M2p2 are Accepted; the current slice is the two
-  pending-compatible M2p3 platform adapters, implemented in parallel from the
-  same accepted C v1 base before the legacy getter changes.
+- Active task: M2. M2p1, M2p2 and both M2p3 platform adapters are Accepted;
+  the current slice is the serial M2p4 legacy-getter fail-closed switch.
 - Product state at M2 activation: native Packed offscreen, desktop
   non-interactive and bench-runner use the Exact runtime; the interactive
   `SurfaceRenderSession` remains legacy until its complete M2 candidate is
@@ -296,6 +295,29 @@ M2 = Active
   and ARM32 compilation. The existing full i386 legacy smoke has an unrelated
   pre-existing 44/48-byte layout assertion and is not treated as evidence for
   or against the new structs.
+- **M2p3 closeout: Accepted.** Android and Apple were implemented from the
+  same accepted `95972ef` base in separate visible tasks and integrated only
+  after independent fixed-SHA review. Apple candidates `5928ee15` and
+  `9d9f2a48` are integrated as `8bc1b9e` and `d2f057f`; Android candidates
+  `0353a6d9` and `0a00ffa8` are integrated as `682f08a` and `012e049`.
+- Both initial reviews rejected a terminal-snapshot replay defect. Android's
+  review also rejected a failed-presentation request that could later issue an
+  unobserved ticket on an ordinary frame. The repair chains keep pre-ticket
+  intent, issued pending entries and terminal replay state distinct; terminal
+  identity drift fails closed, already-popped resolutions are still accounted,
+  and no count is published without matching ticket plus complete identity.
+  Apple retains one last-snapshot lifecycle slot; Android relies on Renderer
+  admission for live-pending bounds and keeps only a fixed terminal/rejection
+  replay window. Neither platform adds a sampler, policy owner or legacy-count
+  fallback.
+- Final review tasks `019f9444-db2e-7cf0-8c46-72bdec2e1572` (Apple) and
+  `019f9454-0c82-7302-baa1-276334c63361` (Android) reported no P0/P1/P2.
+  Root integration re-ran 14 Apple XCTest cases, 24 Android current-stats
+  cases plus sample tests, XCFramework, Swift/JNI/C smoke, AAR/APK, 13
+  Renderer receipt tests, workspace check, architecture self/real-tree policy
+  and forced Metal SortedAlpha conformance. Physical signed iPhone and Android
+  Ready-receipt qualification remain deferred until the later Surface/device
+  slices; packaging success is not reported as device or performance evidence.
 - M2p3 Android and Apple implementation may run in parallel because their paths
   are disjoint; all dependent slices remain serial. Root accepts and integrates
   every fixed candidate separately, then owns the Apple M4 real-window run and
