@@ -522,8 +522,8 @@ class ParsingTests(unittest.TestCase):
         for label, value in (
             ("missing", None),
             ("null", None),
-            ("true", True),
-            ("string", "false"),
+            ("integer one", 1),
+            ("string true", "true"),
         ):
             with self.subTest(label=label):
                 manifest = copy.deepcopy(fixture[0])
@@ -531,7 +531,7 @@ class ParsingTests(unittest.TestCase):
                     manifest["renderer"].pop("gpu_producer_measurement_enabled")
                 else:
                     manifest["renderer"]["gpu_producer_measurement_enabled"] = value
-                with self.assertRaisesRegex(RuntimeError, "enabled GPU producer telemetry"):
+                with self.assertRaisesRegex(RuntimeError, "real JSON boolean"):
                     COLLECTOR.validate_run_artifact(
                         manifest,
                         fixture[1],
@@ -542,6 +542,47 @@ class ParsingTests(unittest.TestCase):
                         fixture[3],
                         fixture[4],
                     )
+
+    def test_disabled_producer_rejects_requested_frame_and_terminal_evidence(
+        self,
+    ) -> None:
+        fixture = camera_validation_fixture("gpu", 2)
+        add_gpu_producer_evidence(fixture[0], fixture[1], fixture[2], "post_sort")
+        fixture[0]["renderer"]["gpu_producer_measurement_enabled"] = False
+
+        with self.assertRaisesRegex(RuntimeError, "disabled GPU producer telemetry"):
+            COLLECTOR.validate_run_artifact(
+                fixture[0],
+                fixture[1],
+                fixture[2],
+                "gpu",
+                "packed",
+                {"sha256": "abc", "bytes": 123},
+                fixture[3],
+                fixture[4],
+            )
+
+    def test_integer_one_cannot_skip_the_producer_identity_join(self) -> None:
+        fixture = camera_validation_fixture("gpu", 2)
+        add_gpu_producer_evidence(fixture[0], fixture[1], fixture[2], "post_sort")
+        fixture[0]["renderer"]["gpu_producer_measurement_enabled"] = 1
+        terminal = fixture[1]["gpu_producer_terminal_ledger"][0]
+        terminal["camera_revision"] += 1
+        terminal["order_generation"] += 1
+        terminal["projection_generation"] += 1
+
+        with self.assertRaisesRegex(RuntimeError, "real JSON boolean"):
+            COLLECTOR.validate_run_artifact(
+                fixture[0],
+                fixture[1],
+                fixture[2],
+                "gpu",
+                "packed",
+                {"sha256": "abc", "bytes": 123},
+                fixture[3],
+                fixture[4],
+                "post_sort",
+            )
 
     def test_non_diagnostic_artifact_rejects_any_producer_frame_field(self) -> None:
         fixture = camera_validation_fixture("gpu")
@@ -627,7 +668,19 @@ class ParsingTests(unittest.TestCase):
                 "gpu_producer_order_generation",
                 frames[0]["gpu_producer_order_generation"] + 1,
             ),
-            "terminal identity drift": lambda manifest, summary, frames: summary[
+            "terminal camera identity drift": lambda manifest, summary, frames: summary[
+                "gpu_producer_terminal_ledger"
+            ][0].__setitem__(
+                "camera_revision",
+                summary["gpu_producer_terminal_ledger"][0]["camera_revision"] + 1,
+            ),
+            "terminal order identity drift": lambda manifest, summary, frames: summary[
+                "gpu_producer_terminal_ledger"
+            ][0].__setitem__(
+                "order_generation",
+                summary["gpu_producer_terminal_ledger"][0]["order_generation"] + 1,
+            ),
+            "terminal projection identity drift": lambda manifest, summary, frames: summary[
                 "gpu_producer_terminal_ledger"
             ][0].__setitem__(
                 "projection_generation",

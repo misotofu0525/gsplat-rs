@@ -1360,13 +1360,43 @@ def validate_gpu_producer_current_stats_join(
     collector and the standalone extractor cannot diverge on this join.
     """
     renderer = manifest.get("renderer", {})
-    if renderer.get("gpu_producer_measurement_enabled") is not True:
-        return
+    producer_enabled = renderer.get("gpu_producer_measurement_enabled")
     producer = renderer.get("gpu_order_producer_requested")
+    producer_summary = summary.get("gpu_producer_telemetry")
+    producer_ledger = summary.get("gpu_producer_terminal_ledger")
+    if type(producer_enabled) is not bool:
+        raise RuntimeError(
+            "gpu_producer_measurement_enabled must be a real JSON boolean"
+        )
+    if producer_enabled is False:
+        if producer is not None:
+            raise RuntimeError(
+                "disabled GPU producer telemetry retained a requested producer"
+            )
+        if producer_summary is not None or producer_ledger is not None:
+            raise RuntimeError("disabled GPU producer telemetry published evidence")
+        for index, frame in enumerate(frames):
+            producer_fields = sorted(
+                field
+                for field in frame
+                if field == "gpu_order_producer" or field.startswith("gpu_producer_")
+            )
+            if producer_fields:
+                raise RuntimeError(
+                    f"frame {index} published GPU producer fields while disabled: "
+                    f"{producer_fields!r}"
+                )
+        return
+
     if producer not in GPU_PRODUCERS:
         raise RuntimeError(
             "enabled GPU producer telemetry lacks a valid requested producer"
         )
+    if (
+        renderer.get("order_backend_requested") != "gpu"
+        or renderer.get("path") != RENDERER_PATHS["packed"]
+    ):
+        raise RuntimeError("GPU producer qualification requires packed + forced GPU")
     producer_projected_policy = {
         "post_sort": "candidate",
         "preproject": "compact",
@@ -1392,7 +1422,33 @@ def validate_gpu_producer_current_stats_join(
         "preproject": "exact_current_contributors",
     }[producer]
 
-    producer_ledger = summary.get("gpu_producer_terminal_ledger")
+    sample_count = summary.get("sample_count")
+    if not isinstance(producer_summary, dict):
+        raise RuntimeError("GPU producer summary is missing")
+    required_summary = {
+        "requested_producer": producer,
+        "scheduled_count": sample_count,
+        "completed_count": sample_count,
+        "failure_count": 0,
+        "unsampled_count": 0,
+        "exact_current_count": sample_count,
+        "stale_count": 0,
+        "dropped_count": 0,
+        "order_refreshed_count": sample_count,
+    }
+    for field, expected in required_summary.items():
+        actual = producer_summary.get(field)
+        if type(actual) is not type(expected) or actual != expected:
+            raise RuntimeError(
+                f"GPU producer summary {field} {actual!r}, expected {expected!r}"
+            )
+    frame_complete = producer_summary.get("frame_complete_ms")
+    frame_complete_count = (
+        frame_complete.get("count") if isinstance(frame_complete, dict) else None
+    )
+    if type(frame_complete_count) is not int or frame_complete_count != sample_count:
+        raise RuntimeError("GPU producer timing distribution is incomplete")
+
     if not isinstance(producer_ledger, list):
         raise RuntimeError("GPU producer terminal ledger is missing")
     producer_terminals: dict[int, dict[str, Any]] = {}
@@ -1437,7 +1493,9 @@ def validate_gpu_producer_current_stats_join(
         ):
             raise RuntimeError(f"frame {index} producer identity generations are invalid")
         if (
-            frame.get("gpu_producer_measurement_camera_revision")
+            not isinstance(frame.get("gpu_producer_measurement_camera_revision"), int)
+            or isinstance(frame.get("gpu_producer_measurement_camera_revision"), bool)
+            or frame.get("gpu_producer_measurement_camera_revision")
             != identity.get("camera_revision")
             or order_generation != identity.get("order_generation")
         ):
@@ -1453,12 +1511,26 @@ def validate_gpu_producer_current_stats_join(
             raise RuntimeError(
                 f"frame {index} producer/current-stats draw semantics drifted"
             )
+        completion_ms = frame.get("gpu_producer_frame_complete_ms")
+        if (
+            not isinstance(completion_ms, (int, float))
+            or isinstance(completion_ms, bool)
+            or not math.isfinite(float(completion_ms))
+            or float(completion_ms) < 0.0
+        ):
+            raise RuntimeError(
+                f"frame {index} producer completion timing is invalid"
+            )
         for current_field, producer_field in (
             ("source", "gpu_producer_source"),
             ("contributor", "gpu_producer_contributor"),
             ("drawn", "gpu_producer_drawn"),
         ):
-            if current.get(current_field) != frame.get(producer_field):
+            producer_value = frame.get(producer_field)
+            if (
+                type(producer_value) is not int
+                or producer_value != current.get(current_field)
+            ):
                 raise RuntimeError(
                     f"frame {index} producer/current-stats {current_field.upper()} drifted"
                 )
@@ -1478,11 +1550,17 @@ def validate_gpu_producer_current_stats_join(
         if (
             terminal.get("outcome") != "success"
             or terminal.get("producer") != producer
+            or type(terminal.get("camera_revision")) is not int
             or terminal.get("camera_revision") != identity.get("camera_revision")
+            or type(terminal.get("order_generation")) is not int
             or terminal.get("order_generation") != order_generation
+            or type(terminal.get("projection_generation")) is not int
             or terminal.get("projection_generation") != projection_generation
+            or type(terminal.get("source")) is not int
             or terminal.get("source") != current.get("source")
+            or type(terminal.get("contributor")) is not int
             or terminal.get("contributor") != current.get("contributor")
+            or type(terminal.get("drawn")) is not int
             or terminal.get("drawn") != current.get("drawn")
             or terminal.get("draw_scope") != producer_draw_scope
             or terminal.get("exactness_receipt_id")
@@ -1574,164 +1652,21 @@ def validate_run_artifact(
         expected_backend,
     )
 
-    producer_requested = renderer.get("gpu_order_producer_requested")
     producer_enabled = renderer.get("gpu_producer_measurement_enabled")
-    producer_summary = summary.get("gpu_producer_telemetry")
-    producer_ledger = summary.get("gpu_producer_terminal_ledger")
+    producer_requested = renderer.get("gpu_order_producer_requested")
     if expected_gpu_producer is None:
-        if producer_requested is not None or producer_enabled is not False:
+        if producer_enabled is not False:
             raise RuntimeError("non-diagnostic artifact enabled GPU producer telemetry")
-        if producer_summary is not None or producer_ledger is not None:
-            raise RuntimeError("non-diagnostic artifact published GPU producer evidence")
-        for index, frame in enumerate(frames):
-            if frame.get("gpu_order_producer") is not None:
-                raise RuntimeError(
-                    f"frame {index} published GPU producer evidence while disabled"
-                )
-            producer_fields = [
-                field for field in frame if field.startswith("gpu_producer_")
-            ]
-            if producer_fields:
-                raise RuntimeError(
-                    f"frame {index} published GPU producer fields while disabled: "
-                    f"{sorted(producer_fields)!r}"
-                )
         return
 
     if expected_gpu_producer not in GPU_PRODUCERS:
         raise RuntimeError(f"unsupported expected GPU producer {expected_gpu_producer!r}")
     if expected_backend != "gpu" or expected_geometry_path != "packed":
         raise RuntimeError("GPU producer qualification requires packed + forced GPU")
-    projected_policy = {
-        "post_sort": "candidate",
-        "preproject": "compact",
-    }[expected_gpu_producer]
-    draw_scope = {
-        "post_sort": "exact_current_candidates",
-        "preproject": "exact_current_contributors",
-    }[expected_gpu_producer]
-    expected_renderer = {
-        "raster_plan": "projected_quads_exact",
-        "projected_policy_requested": projected_policy,
-        "gpu_order_producer_requested": expected_gpu_producer,
-        "gpu_producer_measurement_enabled": True,
-    }
-    for field, expected in expected_renderer.items():
-        if renderer.get(field) != expected:
-            raise RuntimeError(
-                f"artifact renderer {field} {renderer.get(field)!r}, expected {expected!r}"
-            )
-    if not isinstance(sample_count, int) or sample_count <= 0 or len(frames) != sample_count:
-        raise RuntimeError("GPU producer artifact has an invalid sample count")
-    source_count = manifest.get("dataset", {}).get("splat_count")
-    if not isinstance(source_count, int) or source_count <= 0:
-        raise RuntimeError("GPU producer artifact lacks a positive dataset splat_count")
-
-    frame_tickets: set[int] = set()
-    for index, frame in enumerate(frames):
-        ticket = frame.get("gpu_producer_measurement_ticket")
-        visible = frame.get("visible")
-        contributor = frame.get("gpu_producer_contributor")
-        drawn = frame.get("gpu_producer_drawn")
-        completion_ms = frame.get("gpu_producer_frame_complete_ms")
-        if frame.get("gpu_order_producer") != expected_gpu_producer:
-            raise RuntimeError(f"frame {index} used the wrong GPU producer")
-        if not isinstance(ticket, int) or ticket <= 0 or ticket in frame_tickets:
-            raise RuntimeError(f"frame {index} has a missing or duplicate producer ticket")
-        frame_tickets.add(ticket)
-        if frame.get("gpu_producer_submission_flags") != 9:
-            raise RuntimeError(
-                f"frame {index} producer submission was unsampled or malformed"
-            )
-        if frame.get("gpu_producer_measurement_camera_revision") != frame.get(
-            "camera_revision"
-        ):
-            raise RuntimeError(f"frame {index} producer camera revision is stale")
-        if frame.get("gpu_producer_source") != source_count:
-            raise RuntimeError(f"frame {index} producer source count is incomplete")
-        if (
-            not isinstance(visible, int)
-            or isinstance(visible, bool)
-            or not isinstance(contributor, int)
-            or isinstance(contributor, bool)
-            or not 0 <= contributor <= visible <= source_count
-        ):
-            raise RuntimeError(f"frame {index} producer contributor count is invalid")
-        expected_drawn = visible if expected_gpu_producer == "post_sort" else contributor
-        if drawn != expected_drawn:
-            equation = "D=V" if expected_gpu_producer == "post_sort" else "D=C"
-            raise RuntimeError(f"frame {index} producer receipt violates {equation}")
-        if frame.get("gpu_producer_draw_scope") != draw_scope:
-            raise RuntimeError(f"frame {index} producer draw scope is not exact-current")
-        if frame.get("gpu_producer_order_refreshed") is not True:
-            raise RuntimeError(f"frame {index} producer did not refresh order")
-        if frame.get("gpu_producer_exact_current_draw") is not True:
-            raise RuntimeError(f"frame {index} producer draw is not exact-current")
-        if frame.get("gpu_producer_stale_order") is not False:
-            raise RuntimeError(f"frame {index} producer retained stale order")
-        if frame.get("gpu_producer_dropped_prior") is not False:
-            raise RuntimeError(f"frame {index} producer evidence dropped a prior receipt")
-        for field in ("gpu_producer_order_generation", "gpu_producer_projection_generation"):
-            if not isinstance(frame.get(field), int) or frame[field] <= 0:
-                raise RuntimeError(f"frame {index} producer {field} is invalid")
-        if not isinstance(completion_ms, (int, float)) or isinstance(completion_ms, bool):
-            raise RuntimeError(f"frame {index} producer completion timing is missing")
-        if not math.isfinite(float(completion_ms)) or float(completion_ms) < 0.0:
-            raise RuntimeError(f"frame {index} producer completion timing is invalid")
-
-    if not isinstance(producer_summary, dict):
-        raise RuntimeError("GPU producer summary is missing")
-    required_summary = {
-        "requested_producer": expected_gpu_producer,
-        "scheduled_count": sample_count,
-        "completed_count": sample_count,
-        "failure_count": 0,
-        "unsampled_count": 0,
-        "exact_current_count": sample_count,
-        "stale_count": 0,
-        "dropped_count": 0,
-        "order_refreshed_count": sample_count,
-    }
-    for field, expected in required_summary.items():
-        if producer_summary.get(field) != expected:
-            raise RuntimeError(
-                f"GPU producer summary {field} {producer_summary.get(field)!r}, "
-                f"expected {expected!r}"
-            )
-    if producer_summary.get("frame_complete_ms", {}).get("count") != sample_count:
-        raise RuntimeError("GPU producer timing distribution is incomplete")
-    if not isinstance(producer_ledger, list):
-        raise RuntimeError("GPU producer terminal ledger is missing")
-    ledger_tickets: set[int] = set()
-    for entry in producer_ledger:
-        ticket = entry.get("ticket") if isinstance(entry, dict) else None
-        if not isinstance(ticket, int) or ticket <= 0 or ticket in ledger_tickets:
-            raise RuntimeError("GPU producer terminal ledger contains duplicate tickets")
-        ledger_tickets.add(ticket)
-        if entry.get("outcome") != "success":
-            raise RuntimeError("GPU producer terminal ledger contains a failure")
-        if entry.get("producer") != expected_gpu_producer:
-            raise RuntimeError("GPU producer terminal ledger contains the wrong producer")
-        contributor = entry.get("contributor")
-        drawn = entry.get("drawn")
-        if (
-            entry.get("source") != source_count
-            or not isinstance(contributor, int)
-            or isinstance(contributor, bool)
-            or not isinstance(drawn, int)
-            or isinstance(drawn, bool)
-            or not 0 <= contributor <= drawn <= source_count
-            or (
-                expected_gpu_producer == "preproject"
-                and drawn != contributor
-            )
-            or entry.get("draw_scope") != draw_scope
-        ):
-            raise RuntimeError("GPU producer terminal ledger violates exact S/C/D")
-    if frame_tickets != ledger_tickets:
+    if producer_enabled is not True or producer_requested != expected_gpu_producer:
         raise RuntimeError(
-            "GPU producer measured-frame and terminal ticket sets differ: "
-            f"frames={sorted(frame_tickets)} terminals={sorted(ledger_tickets)}"
+            f"artifact requested GPU producer {producer_requested!r}, "
+            f"expected {expected_gpu_producer!r}"
         )
 
 

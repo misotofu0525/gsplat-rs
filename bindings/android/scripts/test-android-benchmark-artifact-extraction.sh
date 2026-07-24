@@ -29,13 +29,16 @@ MISSING_LEDGER_LOG="$TMP_DIR/strict-missing-ledger-logcat.txt"
 ACCEPTED_ADAPTIVE_PLAN_BACKEND_DRIFT_LOG="$TMP_DIR/adaptive-plan-backend-drift.txt"
 ACCEPTED_PRODUCER_CURRENT_STATS_COUNT_DRIFT_LOG="$TMP_DIR/producer-count-drift.txt"
 BAD_GPU_COUNT_SEMANTICS_LOG="$TMP_DIR/bad-gpu-count-semantics.txt"
+PRODUCER_GATE_MUTATION_DIR="$TMP_DIR/producer-gate-mutations"
+mkdir -p "$PRODUCER_GATE_MUTATION_DIR"
 python3 - \
   "$FIXTURE" \
   "$STRICT_LOG" \
   "$MISSING_LEDGER_LOG" \
   "$ACCEPTED_ADAPTIVE_PLAN_BACKEND_DRIFT_LOG" \
   "$ACCEPTED_PRODUCER_CURRENT_STATS_COUNT_DRIFT_LOG" \
-  "$BAD_GPU_COUNT_SEMANTICS_LOG" <<'PY'
+  "$BAD_GPU_COUNT_SEMANTICS_LOG" \
+  "$PRODUCER_GATE_MUTATION_DIR" <<'PY'
 import copy
 import json
 import pathlib
@@ -47,6 +50,7 @@ missing_destination = pathlib.Path(sys.argv[3])
 adaptive_drift_destination = pathlib.Path(sys.argv[4])
 producer_drift_destination = pathlib.Path(sys.argv[5])
 bad_gpu_semantics_destination = pathlib.Path(sys.argv[6])
+producer_gate_mutation_directory = pathlib.Path(sys.argv[7])
 manifest = json.loads((fixture / "manifest.json").read_text())
 summary = json.loads((fixture / "summary.json").read_text())
 frames = [
@@ -186,6 +190,7 @@ producer_summary = copy.deepcopy(summary)
 producer_manifest["renderer"].update(
     {
         "order_backend_requested": "gpu",
+        "path": "packed_atlas",
         "raster_plan": "projected_quads_exact",
         "projected_policy_requested": "compact",
         "gpu_order_producer_requested": "preproject",
@@ -216,6 +221,7 @@ for index, (frame, entry) in enumerate(
             ],
             "gpu_producer_order_generation": entry["identity"]["order_generation"],
             "gpu_producer_projection_generation": 4_000 + index,
+            "gpu_producer_frame_complete_ms": 4.5 + index,
             "gpu_producer_draw_scope": "exact_current_contributors",
             "gpu_producer_order_refreshed": True,
             "gpu_producer_exact_current_draw": True,
@@ -242,12 +248,82 @@ for index, (frame, entry) in enumerate(
             "exactness_receipt_id": entry["exactness_receipt_id"],
         }
     )
+producer_summary["gpu_producer_telemetry"] = {
+    "requested_producer": "preproject",
+    "scheduled_count": len(producer_frames),
+    "completed_count": len(producer_frames),
+    "failure_count": 0,
+    "unsampled_count": 0,
+    "exact_current_count": len(producer_frames),
+    "stale_count": 0,
+    "dropped_count": 0,
+    "order_refreshed_count": len(producer_frames),
+    "frame_complete_ms": {"count": len(producer_frames)},
+}
 producer_summary["gpu_producer_terminal_ledger"] = producer_terminals
 write_log(
     producer_drift_destination,
     producer_manifest,
     producer_frames,
     producer_summary,
+)
+
+for label, value in (
+    ("missing-flag", None),
+    ("null-flag", None),
+    ("string-true", "true"),
+):
+    mutated_manifest = copy.deepcopy(manifest)
+    if label == "missing-flag":
+        mutated_manifest["renderer"].pop("gpu_producer_measurement_enabled")
+    else:
+        mutated_manifest["renderer"]["gpu_producer_measurement_enabled"] = value
+    write_log(
+        producer_gate_mutation_directory / f"{label}.txt",
+        mutated_manifest,
+        frames,
+        summary,
+    )
+
+disabled_manifest = copy.deepcopy(producer_manifest)
+disabled_manifest["renderer"]["gpu_producer_measurement_enabled"] = False
+write_log(
+    producer_gate_mutation_directory / "disabled-with-evidence.txt",
+    disabled_manifest,
+    producer_frames,
+    producer_summary,
+)
+
+valid_producer_frames = copy.deepcopy(producer_frames)
+valid_producer_summary = copy.deepcopy(producer_summary)
+for frame, entry in zip(
+    valid_producer_frames,
+    valid_producer_summary["current_stats_terminal_ledger"],
+):
+    entry["contributor"] = frame["gpu_producer_contributor"]
+    entry["drawn"] = frame["gpu_producer_drawn"]
+    frame["contributor"] = entry["contributor"]
+    frame["drawn"] = entry["drawn"]
+
+identity_drift_summary = copy.deepcopy(valid_producer_summary)
+identity_drift_terminal = identity_drift_summary["gpu_producer_terminal_ledger"][0]
+identity_drift_terminal["camera_revision"] += 1
+identity_drift_terminal["order_generation"] += 1
+identity_drift_terminal["projection_generation"] += 1
+write_log(
+    producer_gate_mutation_directory / "terminal-identity-drift.txt",
+    producer_manifest,
+    valid_producer_frames,
+    identity_drift_summary,
+)
+
+integer_flag_manifest = copy.deepcopy(producer_manifest)
+integer_flag_manifest["renderer"]["gpu_producer_measurement_enabled"] = 1
+write_log(
+    producer_gate_mutation_directory / "integer-one.txt",
+    integer_flag_manifest,
+    valid_producer_frames,
+    identity_drift_summary,
 )
 
 bad_semantics_manifest = copy.deepcopy(manifest)
@@ -274,6 +350,22 @@ if python3 "$ROOT/bindings/android/scripts/extract-android-benchmark-artifacts.p
   echo "extractor unexpectedly accepted strict current-stats without a ledger" >&2
   exit 1
 fi
+
+for mutation in \
+  disabled-with-evidence \
+  missing-flag \
+  null-flag \
+  integer-one \
+  string-true \
+  terminal-identity-drift; do
+  if python3 "$ROOT/bindings/android/scripts/extract-android-benchmark-artifacts.py" \
+    "$PRODUCER_GATE_MUTATION_DIR/$mutation.txt" \
+    "$TMP_DIR/$mutation-artifact" \
+    --validator "$ROOT/tests/perf/validate-benchmark-artifacts.py"; then
+    echo "extractor accepted GPU producer gate mutation: $mutation" >&2
+    exit 1
+  fi
+done
 
 if python3 "$ROOT/bindings/android/scripts/extract-android-benchmark-artifacts.py" \
   "$ACCEPTED_ADAPTIVE_PLAN_BACKEND_DRIFT_LOG" \
