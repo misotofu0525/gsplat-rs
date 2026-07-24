@@ -48,6 +48,9 @@ M2 = Active
   slice after M1 is dispatched as a new visible Codex task with its own
   worktree, fixed accepted base, narrow owned paths and one reviewable
   candidate SHA. A subagent does not own or execute any concrete program task.
+- This visible-task rule is part of the active goal, not a temporary scheduling
+  preference. Every later task brief must carry it forward; omitting it does
+  not authorize concrete work in a subagent.
 - The root task owns dependency order, fixed-SHA acceptance, integration and
   critical cross-platform verification. A candidate is never integrated merely
   because its implementation task reports completion.
