@@ -6,7 +6,39 @@
       "IO-PLY-1",
       "IO-SPZ-1"
     ],
-    "parallel_execution": null,
+    "parallel_execution": {
+      "activation_commit": "bd3b56cefc9f2071c42f1f2e43757c91a50de4dd",
+      "members": [
+        {
+          "task": "E6",
+          "lane": "E6-direct-packed",
+          "write_allowlist": [
+            "crates/gsplat-sort/src/cpu.rs",
+            "crates/gsplat-render-wgpu/src/cpu/preprocess.rs",
+            "crates/gsplat-render-wgpu/src/cpu/preprocess/packed.rs",
+            "crates/gsplat-render-wgpu/src/cpu/workspace.rs",
+            "crates/gsplat-render-wgpu/src/cpu_order.rs"
+          ]
+        },
+        {
+          "task": "E8",
+          "lane": "E8a-gpu-adapter-transaction-repair",
+          "write_allowlist": [
+            "crates/gsplat-render-wgpu/src/renderer/mod.rs",
+            "crates/gsplat-render-wgpu/src/renderer/frame.rs",
+            "crates/gsplat-render-wgpu/src/renderer/gpu_prepare.rs",
+            "crates/gsplat-render-wgpu/src/scene/runtime.rs",
+            "crates/gsplat-render-wgpu/src/plans/mod.rs",
+            "crates/gsplat-render-wgpu/src/resident_gpu.rs"
+          ]
+        }
+      ],
+      "integration_order": [
+        "E6-direct-packed",
+        "E8a-gpu-adapter-transaction-repair"
+      ],
+      "reason": "E6 owns only CPU packed preprocess/workspace and the existing radix input adapter, while E8a owns only the GPU preparation plus PlanSet admission transaction seam. Their production paths and mutable owners are disjoint; root owns ledger, policy, review, integration and shared gates."
+    },
     "task_catalog": {
       "A0": "A",
       "A1": "A",

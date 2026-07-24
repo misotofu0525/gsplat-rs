@@ -12,13 +12,21 @@ E2 = Accepted
 E3 = Accepted
 E4 = Rejected
 E5 = Deferred
+E6 = Active
 E8 = Active
 <!-- gsplat-program-task-states: end -->
+
+<!-- gsplat-program-active-lanes: begin -->
+activation_commit = bd3b56cefc9f2071c42f1f2e43757c91a50de4dd
+E6 = E6-direct-packed
+E8 = E8a-gpu-adapter-transaction-repair
+<!-- gsplat-program-active-lanes: end -->
 
 ## Package status
 
 - Package: E — Exact prepared plans and native execution, still shadowed.
-- Active task: the final finite E8a GPU runtime-adapter transaction repair.
+- Active tasks: the finite E6 direct-packed CPU preprocess experiment and the
+  final E8a GPU runtime-adapter transaction repair.
 - Last completed task: E3 — unified CPU order engine and reusable workspace.
 - E1 state: Accepted after root fixed-SHA review and fast-forward integration
   of candidate `0496266cc73de5fc84acb7c393606fa68eb77623`.
@@ -36,9 +44,13 @@ E8 = Active
   E5 is Deferred with a clean tree because the reachable physical x86_64
   endpoint lacks AVX2/FMA and Rosetta/cross-compilation cannot qualify native
   performance. Neither outcome changes the scalar production leaves.
-- Current writer batch contains only E8a. Root alone owns shared architecture
+- Current safe parallel batch contains E6 and E8a. E6 owns only CPU
+  preprocess/workspace plus the existing radix input adapter; E8a owns only its
+  renderer/scene/plan admission transaction. Their exact production paths and
+  mutable owners are disjoint. Root alone owns shared architecture
   policy/ledger edits, fixed-SHA review, integration and the combined matrix.
-  Resume the GPU PostSort implementation only after the adapter is Accepted.
+  E7 remains blocked on E6 because both own CPU engine/workspace decisions;
+  concrete GPU PostSort remains blocked on E8a acceptance.
   Never create parallel writers for the same mutable owner merely to increase
   concurrency.
 - Source-size rule: no fixed LOC quota, split trigger or completion gate. Module
@@ -299,6 +311,37 @@ E8 = Active
   disabled implementation would be dead code. Cross-target compile, Rosetta
   CPU-order tests, strict Clippy, wasm32, architecture, format and diff checks
   passed. A future real AVX2/FMA endpoint may reopen E5 as a new finite task.
+
+## E6 direct-packed activation contract
+
+- Dependency state: E3 Accepted, E4 Rejected and E5 Deferred. E6 does not
+  depend on E8/E8a and may run concurrently because their mutable owners are
+  disjoint.
+- Objective: test one exact position-to-packed `(depth_key, source_id)` input
+  path feeding the existing CPU radix backend, eliminating avoidable split
+  staging without changing radix semantics, stable ties, full membership or
+  product selection.
+- Exact writer allowlist:
+  - `crates/gsplat-sort/src/cpu.rs` only for an entry consuming already packed
+    key/ID input; the radix algorithm remains unchanged;
+  - `crates/gsplat-render-wgpu/src/cpu/preprocess.rs`;
+  - new `crates/gsplat-render-wgpu/src/cpu/preprocess/packed.rs`;
+  - `crates/gsplat-render-wgpu/src/cpu/workspace.rs`;
+  - `crates/gsplat-render-wgpu/src/cpu_order.rs`.
+- Frozen: AArch64/x86 leaves, radix implementation, plans/renderer/scene,
+  legacy `lib.rs`, Surface/offscreen product routing, WGSL/raster, public ABI,
+  policy and this ledger.
+- Exactness: Scalar/Rayon only in this task; the rejected NEON and unqualified
+  AVX2 leaves cannot be enabled. Empty/one/tail, inclusive near/far adjacent
+  ULPs, NaN/inf, equal-depth source-ID ties, invalid-camera transactions,
+  serial/parallel equivalence and workspace reuse must match the E3 oracle
+  element-for-element.
+- Finite exit: Accepted only if exactness and ownership hold and a finite
+  predeclared interleaved M4 release observation shows a clear repeatable
+  direction of benefit. Any correctness issue or inconclusive/no-benefit
+  result is Rejected and restored to a clean production tree; endpoint/toolchain
+  loss may terminate as Deferred. No fixed FPS, percentage or LOC gate, and no
+  unbounded tuning.
 
 ## E8 feasibility stop and adapter dependency
 
