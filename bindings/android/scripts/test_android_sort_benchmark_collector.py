@@ -138,6 +138,7 @@ def camera_validation_fixture(backend: str = "gpu", sample_count: int = 1):
                 "current_stats_executed_plan": (
                     "cpu_post_sort" if backend == "cpu" else "gpu_post_sort"
                 ),
+                "order_backend": "cpu" if backend == "cpu" else "gpu",
                 "camera_receipt": {
                     "schema": COLLECTOR.CAMERA_RECEIPT_SCHEMA,
                     "source": "native_runtime_after_present",
@@ -249,9 +250,15 @@ def add_gpu_producer_evidence(
         }
     )
     ledger = []
+    producer_plan = "gpu_post_sort" if producer == "post_sort" else "gpu_preproject"
+    count_semantics = (
+        "indirect_draw_equals_visible"
+        if producer == "post_sort"
+        else "indirect_draw_equals_contributor"
+    )
     for index, frame in enumerate(frames):
         ticket = 100 + index
-        contributor = source - index
+        contributor = source if producer == "post_sort" else source - index
         current_entry = summary["current_stats_terminal_ledger"][index]
         current_entry.update(
             {
@@ -259,21 +266,22 @@ def add_gpu_producer_evidence(
                 "visible": source,
                 "contributor": contributor,
                 "drawn": contributor,
-                "count_semantics": "indirect_draw_equals_contributor",
+                "count_semantics": count_semantics,
             }
         )
-        current_entry["identity"]["executed_plan"] = "gpu_preproject"
+        current_entry["identity"]["executed_plan"] = producer_plan
+        order_generation = current_entry["identity"]["order_generation"]
         frame.update(
             {
                 "visible": source,
                 "contributor": contributor,
                 "drawn": contributor,
-                "exact_contributor_compaction": True,
-                "current_stats_executed_plan": "gpu_preproject",
+                "exact_contributor_compaction": producer == "preproject",
+                "current_stats_executed_plan": producer_plan,
                 "gpu_order_producer": producer,
                 "gpu_producer_measurement_ticket": ticket,
                 "gpu_producer_measurement_camera_revision": frame["camera_revision"],
-                "gpu_producer_order_generation": index + 1,
+                "gpu_producer_order_generation": order_generation,
                 "gpu_producer_projection_generation": index + 1,
                 "gpu_producer_frame_complete_ms": 4.5 + index,
                 "gpu_producer_source": source,
@@ -293,9 +301,13 @@ def add_gpu_producer_evidence(
                 "camera_revision": frame["camera_revision"],
                 "producer": producer,
                 "outcome": "success",
+                "order_generation": order_generation,
+                "projection_generation": index + 1,
                 "source": source,
                 "contributor": contributor,
                 "drawn": contributor,
+                "draw_scope": "exact_current_contributors",
+                "exactness_receipt_id": "fixture-exactness",
             }
         )
     count = len(frames)
@@ -599,6 +611,19 @@ class ParsingTests(unittest.TestCase):
             "wrong producer": lambda manifest, summary, frames: frames[0].__setitem__(
                 "gpu_order_producer", "preproject"
             ),
+            "current semantics drift": lambda manifest, summary, frames: summary[
+                "current_stats_terminal_ledger"
+            ][0].__setitem__("count_semantics", "direct_draw_equals_visible"),
+            "current identity drift": lambda manifest, summary, frames: frames[0].__setitem__(
+                "gpu_producer_order_generation",
+                frames[0]["gpu_producer_order_generation"] + 1,
+            ),
+            "terminal identity drift": lambda manifest, summary, frames: summary[
+                "gpu_producer_terminal_ledger"
+            ][0].__setitem__(
+                "projection_generation",
+                summary["gpu_producer_terminal_ledger"][0]["projection_generation"] + 1,
+            ),
             "terminal failure": lambda manifest, summary, frames: summary[
                 "gpu_producer_terminal_ledger"
             ][0].__setitem__("outcome", "failure"),
@@ -755,6 +780,62 @@ class ParsingTests(unittest.TestCase):
             RuntimeError,
             "manifest.exactness.receipt_id",
         ):
+            COLLECTOR.validate_run_artifact(
+                fixture[0],
+                fixture[1],
+                fixture[2],
+                "gpu",
+                "packed",
+                {"sha256": "abc", "bytes": 123},
+                fixture[3],
+                fixture[4],
+            )
+
+    def test_rejects_ACCEPTED_ADAPTIVE_PLAN_BACKEND_DRIFT(self) -> None:
+        fixture = camera_validation_fixture("adaptive")
+        fixture[2][0]["order_backend"] = "cpu"
+
+        with self.assertRaisesRegex(RuntimeError, "plan/backend join drifted"):
+            COLLECTOR.validate_run_artifact(
+                fixture[0],
+                fixture[1],
+                fixture[2],
+                "adaptive",
+                "packed",
+                {"sha256": "abc", "bytes": 123},
+                fixture[3],
+                fixture[4],
+            )
+
+    def test_rejects_ACCEPTED_PRODUCER_CURRENT_STATS_COUNT_DRIFT(self) -> None:
+        fixture = camera_validation_fixture("gpu")
+        add_gpu_producer_evidence(fixture[0], fixture[1], fixture[2], "preproject")
+        current = fixture[1]["current_stats_terminal_ledger"][0]
+        current["contributor"] -= 1
+        current["drawn"] = current["contributor"]
+        fixture[2][0]["contributor"] = current["contributor"]
+        fixture[2][0]["drawn"] = current["drawn"]
+
+        with self.assertRaisesRegex(RuntimeError, "producer/current-stats CONTRIBUTOR drifted"):
+            COLLECTOR.validate_run_artifact(
+                fixture[0],
+                fixture[1],
+                fixture[2],
+                "gpu",
+                "packed",
+                {"sha256": "abc", "bytes": 123},
+                fixture[3],
+                fixture[4],
+                "preproject",
+            )
+
+    def test_rejects_redundant_gpu_count_semantics_claim(self) -> None:
+        fixture = camera_validation_fixture("gpu")
+        fixture[0]["renderer"][
+            "gpu_count_semantics"
+        ] = "source_count_upper_bound; sort-all/draw-all"
+
+        with self.assertRaisesRegex(RuntimeError, "gpu_count_semantics is redundant"):
             COLLECTOR.validate_run_artifact(
                 fixture[0],
                 fixture[1],

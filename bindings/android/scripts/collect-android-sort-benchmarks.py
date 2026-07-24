@@ -1081,6 +1081,11 @@ def validate_current_stats_evidence(
             raise RuntimeError(
                 f"artifact renderer {field} {renderer.get(field)!r}, expected {expected!r}"
             )
+    if "gpu_count_semantics" in renderer:
+        raise RuntimeError(
+            "artifact renderer gpu_count_semantics is redundant and may not override "
+            "per-frame current-stats plan/count semantics"
+        )
 
     timing = manifest.get("timing_contract")
     expected_timing = {
@@ -1145,6 +1150,11 @@ def validate_current_stats_evidence(
         "gpu_post_sort": "visible",
         "gpu_preproject": "contributor",
     }
+    plan_backends = {
+        "cpu_post_sort": "cpu",
+        "gpu_post_sort": "gpu",
+        "gpu_preproject": "gpu",
+    }
     tickets: set[int] = set()
     presentation_sequences: set[int] = set()
     for sample_index, (frame, entry) in enumerate(zip(frames, ledger, strict=True)):
@@ -1203,6 +1213,11 @@ def validate_current_stats_evidence(
             )
         if frame.get("current_stats_executed_plan") != plan:
             raise RuntimeError(f"current-stats frame {sample_index} plan join drifted")
+        if frame.get("order_backend") != plan_backends[plan]:
+            raise RuntimeError(
+                f"current-stats frame {sample_index} plan/backend join drifted: "
+                f"plan={plan!r} backend={frame.get('order_backend')!r}"
+            )
 
         camera_revision = frame.get("camera_revision")
         camera_receipt = frame.get("camera_receipt")
@@ -1328,6 +1343,143 @@ def validate_current_stats_evidence(
         ):
             raise RuntimeError(
                 "GPU completion timing is not joined to this sample's own order terminal"
+            )
+
+    validate_gpu_producer_current_stats_join(manifest, summary, frames, ledger)
+
+
+def validate_gpu_producer_current_stats_join(
+    manifest: dict[str, Any],
+    summary: dict[str, Any],
+    frames: Sequence[dict[str, Any]],
+    current_stats_ledger: Sequence[dict[str, Any]],
+) -> None:
+    """Bind optional producer qualification to the same strict frame receipts.
+
+    This helper is called by validate_current_stats_evidence, so the full
+    collector and the standalone extractor cannot diverge on this join.
+    """
+    renderer = manifest.get("renderer", {})
+    if renderer.get("gpu_producer_measurement_enabled") is not True:
+        return
+    producer = renderer.get("gpu_order_producer_requested")
+    if producer not in GPU_PRODUCERS:
+        raise RuntimeError(
+            "enabled GPU producer telemetry lacks a valid requested producer"
+        )
+    if (
+        renderer.get("raster_plan") != "projected_quads_exact"
+        or renderer.get("projected_policy_requested") != "compact"
+    ):
+        raise RuntimeError("GPU producer qualification requires ProjectedQuadsExact + Compact")
+    producer_plan = {
+        "post_sort": "gpu_post_sort",
+        "preproject": "gpu_preproject",
+    }[producer]
+    producer_count_semantics = {
+        "post_sort": "indirect_draw_equals_visible",
+        "preproject": "indirect_draw_equals_contributor",
+    }[producer]
+    producer_exact_compaction = producer_plan == "gpu_preproject"
+
+    producer_ledger = summary.get("gpu_producer_terminal_ledger")
+    if not isinstance(producer_ledger, list):
+        raise RuntimeError("GPU producer terminal ledger is missing")
+    producer_terminals: dict[int, dict[str, Any]] = {}
+    for entry in producer_ledger:
+        ticket = entry.get("ticket") if isinstance(entry, dict) else None
+        if (
+            not isinstance(ticket, int)
+            or isinstance(ticket, bool)
+            or ticket <= 0
+            or ticket in producer_terminals
+        ):
+            raise RuntimeError("GPU producer terminal ledger contains duplicate tickets")
+        producer_terminals[ticket] = entry
+
+    frame_tickets: set[int] = set()
+    for index, (frame, current) in enumerate(
+        zip(frames, current_stats_ledger, strict=True)
+    ):
+        identity = current.get("identity") if isinstance(current, dict) else None
+        if not isinstance(identity, dict):
+            raise RuntimeError(f"frame {index} producer/current-stats identity is missing")
+        if (
+            identity.get("executed_plan") != producer_plan
+            or frame.get("current_stats_executed_plan") != producer_plan
+            or frame.get("order_backend") != "gpu"
+            or current.get("count_semantics") != producer_count_semantics
+            or frame.get("exact_contributor_compaction") is not producer_exact_compaction
+        ):
+            raise RuntimeError(
+                f"frame {index} producer qualification disagrees with the "
+                "producer's current-stats plan/semantics"
+            )
+        if frame.get("gpu_order_producer") != producer:
+            raise RuntimeError(f"frame {index} producer/current-stats producer drifted")
+        order_generation = frame.get("gpu_producer_order_generation")
+        projection_generation = frame.get("gpu_producer_projection_generation")
+        if any(
+            not isinstance(value, int)
+            or isinstance(value, bool)
+            or value <= 0
+            for value in (order_generation, projection_generation)
+        ):
+            raise RuntimeError(f"frame {index} producer identity generations are invalid")
+        if (
+            frame.get("gpu_producer_measurement_camera_revision")
+            != identity.get("camera_revision")
+            or order_generation != identity.get("order_generation")
+        ):
+            raise RuntimeError(f"frame {index} producer/current-stats identity drifted")
+        if (
+            frame.get("gpu_producer_draw_scope") != "exact_current_contributors"
+            or frame.get("gpu_producer_exact_current_draw") is not True
+            or frame.get("gpu_producer_order_refreshed") is not True
+            or frame.get("gpu_producer_stale_order") is not False
+            or frame.get("gpu_producer_dropped_prior") is not False
+            or frame.get("gpu_producer_submission_flags") != 9
+        ):
+            raise RuntimeError(
+                f"frame {index} producer/current-stats draw semantics drifted"
+            )
+        for current_field, producer_field in (
+            ("source", "gpu_producer_source"),
+            ("contributor", "gpu_producer_contributor"),
+            ("drawn", "gpu_producer_drawn"),
+        ):
+            if current.get(current_field) != frame.get(producer_field):
+                raise RuntimeError(
+                    f"frame {index} producer/current-stats {current_field.upper()} drifted"
+                )
+
+        ticket = frame.get("gpu_producer_measurement_ticket")
+        if (
+            not isinstance(ticket, int)
+            or isinstance(ticket, bool)
+            or ticket <= 0
+            or ticket in frame_tickets
+        ):
+            raise RuntimeError(f"frame {index} lacks a unique producer ticket")
+        frame_tickets.add(ticket)
+        terminal = producer_terminals.get(ticket)
+        if terminal is None:
+            raise RuntimeError(f"frame {index} lacks its producer terminal identity")
+        if (
+            terminal.get("outcome") != "success"
+            or terminal.get("producer") != producer
+            or terminal.get("camera_revision") != identity.get("camera_revision")
+            or terminal.get("order_generation") != order_generation
+            or terminal.get("projection_generation") != projection_generation
+            or terminal.get("source") != current.get("source")
+            or terminal.get("contributor") != current.get("contributor")
+            or terminal.get("drawn") != current.get("drawn")
+            or terminal.get("draw_scope") != "exact_current_contributors"
+            or terminal.get("exactness_receipt_id")
+            != current.get("exactness_receipt_id")
+        ):
+            raise RuntimeError(
+                f"frame {index} producer terminal/current-stats identity or S/C/D drifted"
             )
 
 

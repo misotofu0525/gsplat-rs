@@ -84,3 +84,13 @@ The Android library module, JNI bridge, host smoke, and AAR build live under
 smoke details. The standalone logcat extractor also runs the collector's strict
 current-stats ledger validator when the manifest declares strict evidence;
 minimal fixtures and short device runs remain smoke/capacity evidence only.
+
+Renderer shutdown uses a generation-bound retiring owner slot. Lifecycle
+callbacks wait up to one second, then return with that slot still occupied if
+the owner thread remains inside JNI/driver work. A later Surface is remembered
+but cannot create a second native session; after the old owner alone destroys
+its handle and releases the slot, the app starts the latest still-valid
+Surface. There is intentionally no concurrent destroy of an in-flight native
+handle. If the native call never returns, this process remains fail-closed and
+will not start another renderer session; safe recovery beyond that boundary
+requires a future native cancellation contract or process restart.

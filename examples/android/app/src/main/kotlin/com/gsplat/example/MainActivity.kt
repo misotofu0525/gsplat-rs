@@ -59,6 +59,7 @@ private const val CPU_MEASUREMENT_CONTRIBUTOR_COUNT_VALID = 1 shl 2
 private const val ORDER_COUNTS_EXACT_CONTRIBUTOR_DRAW = 1 shl 0
 private const val COUNT_SEMANTICS = "candidate_visible_contributor_issued_v1"
 private const val CURRENT_STATS_SCHEMA = "gsplat-surface-current-stats/v1"
+private const val RENDER_SHUTDOWN_TIMEOUT_MS = 1_000L
 
 private fun gpuProducerValue(label: String): Int =
     when (label) {
@@ -798,10 +799,8 @@ private fun flushCompletedOrderMeasurements(
 
 class MainActivity : Activity(), SurfaceHolder.Callback {
     private val renderLock = Object()
+    private val renderSessionOwner = SurfaceRenderSessionOwner(renderLock)
     private val cameraCommandLock = Object()
-    @Volatile private var running = false
-    @Volatile private var renderThread: Thread? = null
-    private var nativeRenderer = 0L
     private lateinit var datasetPath: String
     private var datasetLabel = "pending"
     private lateinit var statusText: TextView
@@ -812,6 +811,8 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
     private var currentSurface: Surface? = null
     private var currentSurfaceWidth = 0
     private var currentSurfaceHeight = 0
+    private var restartAfterRendererRetires = false
+    private var activityDestroying = false
     private var latestStatus = "state=waiting_for_surface"
     private var surfaceSizeLabel = "pending"
     @Volatile private var cameraStatus = "camera=auto"
@@ -1014,8 +1015,9 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
             return
         }
         synchronized(renderLock) {
-            if (nativeRenderer != 0L) {
-                val rc = NativeBridge.resizeSurfaceRenderer(nativeRenderer, width, height)
+            val handle = renderSessionOwner.activeHandle()
+            if (handle != 0L) {
+                val rc = NativeBridge.resizeSurfaceRenderer(handle, width, height)
                 updateStatus("state=resized size=${width}x$height rc=$rc")
                 return
             }
@@ -1029,11 +1031,14 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         currentSurface = null
         currentSurfaceWidth = 0
         currentSurfaceHeight = 0
+        restartAfterRendererRetires = false
         updateStatus("state=surface_destroyed")
         stopRenderer()
     }
 
     override fun onDestroy() {
+        activityDestroying = true
+        restartAfterRendererRetires = false
         stopRenderer()
         super.onDestroy()
     }
@@ -1069,164 +1074,189 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
     }
 
     private fun startRenderer(surface: Surface, width: Int, height: Int) {
-        if (renderThread != null) {
-            return
+        val session = when (val reservation = renderSessionOwner.reserve()) {
+            is SurfaceRenderSessionOwner.ReserveResult.Acquired -> reservation.session
+            is SurfaceRenderSessionOwner.ReserveResult.Busy -> {
+                if (reservation.retiring) {
+                    restartAfterRendererRetires = true
+                    updateStatus(
+                        "state=waiting_for_renderer_shutdown " +
+                            "generation=${reservation.generation}"
+                    )
+                }
+                return
+            }
         }
+        restartAfterRendererRetires = false
 
         clearPendingCameraCommands()
-        running = true
-        renderThread = Thread(
+        val thread = Thread(
             {
-                Log.i(TAG, "createSurfaceRenderer start size=${width}x$height geometry=${benchmarkConfig.geometryPath} dataset=$datasetPath")
-                updateStatus("state=creating size=${width}x$height")
-                val createError = IntArray(1)
-                val handle = NativeBridge.createSurfaceRendererWithGeometryPath(
-                    surface,
-                    datasetPath,
-                    width,
-                    height,
-                    geometryPathValue(benchmarkConfig.geometryPath),
-                    createError
-                )
-                if (handle == 0L) {
-                    val rc = createError[0]
-                    val detail = NativeBridge.lastErrorMessage()
-                        .ifBlank { NativeBridge.errorMessage(rc) }
-                    val message = detail.replace('\n', ' ').take(240)
-                    Log.e(TAG, "createSurfaceRenderer failed rc=$rc error=$detail")
-                    running = false
-                    updateStatus("state=create_failed rc=$rc error=$message")
-                    return@Thread
-                }
-
-                Log.i(TAG, "createSurfaceRenderer ok handle=$handle")
-                val sortIntervalRc = NativeBridge.setSurfaceSortInterval(
-                    handle,
-                    benchmarkConfig.sortInterval
-                )
-                if (sortIntervalRc != 0) {
-                    val message = NativeBridge.errorMessage(sortIntervalRc)
-                    Log.e(TAG, "setSurfaceSortInterval failed rc=$sortIntervalRc error=$message")
-                    NativeBridge.destroySurfaceRenderer(handle)
-                    running = false
-                    updateStatus("state=create_failed rc=$sortIntervalRc error=$message")
-                    return@Thread
-                }
-                val orderBackendRc = NativeBridge.setSurfaceOrderBackend(
-                    handle,
-                    orderBackendValue(benchmarkConfig.orderBackend)
-                )
-                if (orderBackendRc != 0) {
-                    val message = NativeBridge.errorMessage(orderBackendRc)
-                    Log.e(TAG, "setSurfaceOrderBackend failed rc=$orderBackendRc error=$message")
-                    NativeBridge.destroySurfaceRenderer(handle)
-                    running = false
-                    updateStatus("state=create_failed rc=$orderBackendRc error=$message")
-                    return@Thread
-                }
-                val asyncSortRc = NativeBridge.setSurfaceAsyncSortEnabled(
-                    handle,
-                    benchmarkConfig.asyncSort
-                )
-                if (asyncSortRc != 0) {
-                    val message = NativeBridge.errorMessage(asyncSortRc)
-                    Log.e(TAG, "setSurfaceAsyncSortEnabled failed rc=$asyncSortRc error=$message")
-                    NativeBridge.destroySurfaceRenderer(handle)
-                    running = false
-                    updateStatus("state=create_failed rc=$asyncSortRc error=$message")
-                    return@Thread
-                }
-                val frameLatencyRc = NativeBridge.setSurfaceFrameLatency(
-                    handle,
-                    benchmarkConfig.frameLatency
-                )
-                if (frameLatencyRc != 0) {
-                    val message = NativeBridge.errorMessage(frameLatencyRc)
-                    Log.e(TAG, "setSurfaceFrameLatency failed rc=$frameLatencyRc error=$message")
-                    NativeBridge.destroySurfaceRenderer(handle)
-                    running = false
-                    updateStatus("state=create_failed rc=$frameLatencyRc error=$message")
-                    return@Thread
-                }
-                val gpuProducerRc = benchmarkConfig.gpuProducer?.let { producer ->
-                    val projectedRc = NativeBridge.setSurfaceProjectedPolicyV1(
-                        handle,
-                        GSPLAT_PROJECTED_POLICY_COMPACT
-                    )
-                    if (projectedRc != 0) {
-                        projectedRc
-                    } else {
-                        val producerRc = NativeBridge.setSurfaceGpuOrderProducerV1(
-                            handle,
-                            gpuProducerValue(producer)
-                        )
-                        if (producerRc != 0) {
-                            producerRc
-                        } else {
-                            NativeBridge.setSurfaceGpuProducerMeasurementEnabledV1(handle, true)
-                        }
-                    }
-                } ?: 0
-                if (gpuProducerRc != 0) {
-                    val detail = NativeBridge.lastErrorMessage()
-                        .ifBlank { NativeBridge.errorMessage(gpuProducerRc) }
-                    val message = detail.replace('\n', ' ').take(240)
-                    Log.e(TAG, "configure GPU producer diagnostic failed rc=$gpuProducerRc error=$detail")
-                    NativeBridge.destroySurfaceRenderer(handle)
-                    running = false
-                    updateStatus("state=create_failed rc=$gpuProducerRc error=$message")
-                    return@Thread
-                }
-                val cameraTraceRc = benchmarkConfig.cameraTracePath?.let { tracePath ->
-                    val initialFrame = if (benchmarkConfig.cameraTraceSequence) {
-                        benchmarkConfig.cameraTraceFrameIndices.last()
-                    } else {
-                        benchmarkConfig.cameraTraceFrame
-                    }
-                    BenchmarkBridge.setSurfaceCameraTraceFrame(
-                        handle,
-                        tracePath,
-                        initialFrame,
-                        benchmarkConfig.requireTraceDisplayMatch
-                    )
-                } ?: 0
-                if (cameraTraceRc != 0) {
-                    val detail = NativeBridge.lastErrorMessage()
-                        .ifBlank { NativeBridge.errorMessage(cameraTraceRc) }
-                    val message = detail.replace('\n', ' ').take(240)
-                    Log.e(TAG, "setSurfaceCameraTraceFrame failed rc=$cameraTraceRc error=$detail")
-                    NativeBridge.destroySurfaceRenderer(handle)
-                    running = false
-                    updateStatus("state=create_failed rc=$cameraTraceRc error=$message")
-                    return@Thread
-                }
-                if (benchmarkConfig.cameraTracePath != null) {
-                    val metadata = checkNotNull(benchmarkConfig.cameraTraceMetadata)
-                    val mode = if (benchmarkConfig.cameraTraceSequence) "trace_sequence" else "fixed_frame"
-                    val selected = if (benchmarkConfig.cameraTraceSequence) {
-                        benchmarkConfig.cameraTraceFrameIndices.joinToString(",")
-                    } else {
-                        benchmarkConfig.cameraTraceFrame.toString()
-                    }
-                    val receiptFrame = if (benchmarkConfig.cameraTraceSequence) {
-                        benchmarkConfig.cameraTraceFrameIndices.first()
-                    } else {
-                        benchmarkConfig.cameraTraceFrame
-                    }
-                    cameraStatus = "camera=trace mode=$mode frames=$selected"
+                var ownedHandle = 0L
+                try {
                     Log.i(
                         TAG,
-                        "CAMERA_TRACE trace_id=${metadata.id} trace_sha256=${metadata.sha256} " +
-                            "mode=$mode frame_indices=$selected frame_index=$receiptFrame " +
-                            "timestamp_ns=${metadata.timestamps[receiptFrame]} " +
-                            "requested_backend=${benchmarkConfig.orderBackend}"
+                        "createSurfaceRenderer start generation=${session.generation} " +
+                            "size=${width}x$height geometry=${benchmarkConfig.geometryPath} " +
+                            "dataset=$datasetPath"
                     )
-                }
-                synchronized(renderLock) {
-                    nativeRenderer = handle
-                }
+                    updateStatus("state=creating size=${width}x$height")
+                    val createError = IntArray(1)
+                    val handle = NativeBridge.createSurfaceRendererWithGeometryPath(
+                        surface,
+                        datasetPath,
+                        width,
+                        height,
+                        geometryPathValue(benchmarkConfig.geometryPath),
+                        createError
+                    )
+                    ownedHandle = handle
+                    if (handle == 0L) {
+                        val rc = createError[0]
+                        val detail = NativeBridge.lastErrorMessage()
+                            .ifBlank { NativeBridge.errorMessage(rc) }
+                        val message = detail.replace('\n', ' ').take(240)
+                        Log.e(TAG, "createSurfaceRenderer failed rc=$rc error=$detail")
+                        updateStatus("state=create_failed rc=$rc error=$message")
+                        return@Thread
+                    }
 
-                try {
+                    if (!renderSessionOwner.shouldRun(session)) {
+                        return@Thread
+                    }
+
+                    Log.i(TAG, "createSurfaceRenderer ok handle=$handle")
+                    val sortIntervalRc = NativeBridge.setSurfaceSortInterval(
+                        handle,
+                        benchmarkConfig.sortInterval
+                    )
+                    if (sortIntervalRc != 0) {
+                        val message = NativeBridge.errorMessage(sortIntervalRc)
+                        Log.e(TAG, "setSurfaceSortInterval failed rc=$sortIntervalRc error=$message")
+                        updateStatus("state=create_failed rc=$sortIntervalRc error=$message")
+                        return@Thread
+                    }
+                    val orderBackendRc = NativeBridge.setSurfaceOrderBackend(
+                        handle,
+                        orderBackendValue(benchmarkConfig.orderBackend)
+                    )
+                    if (orderBackendRc != 0) {
+                        val message = NativeBridge.errorMessage(orderBackendRc)
+                        Log.e(TAG, "setSurfaceOrderBackend failed rc=$orderBackendRc error=$message")
+                        updateStatus("state=create_failed rc=$orderBackendRc error=$message")
+                        return@Thread
+                    }
+                    val asyncSortRc = NativeBridge.setSurfaceAsyncSortEnabled(
+                        handle,
+                        benchmarkConfig.asyncSort
+                    )
+                    if (asyncSortRc != 0) {
+                        val message = NativeBridge.errorMessage(asyncSortRc)
+                        Log.e(TAG, "setSurfaceAsyncSortEnabled failed rc=$asyncSortRc error=$message")
+                        updateStatus("state=create_failed rc=$asyncSortRc error=$message")
+                        return@Thread
+                    }
+                    val frameLatencyRc = NativeBridge.setSurfaceFrameLatency(
+                        handle,
+                        benchmarkConfig.frameLatency
+                    )
+                    if (frameLatencyRc != 0) {
+                        val message = NativeBridge.errorMessage(frameLatencyRc)
+                        Log.e(TAG, "setSurfaceFrameLatency failed rc=$frameLatencyRc error=$message")
+                        updateStatus("state=create_failed rc=$frameLatencyRc error=$message")
+                        return@Thread
+                    }
+                    val gpuProducerRc = benchmarkConfig.gpuProducer?.let { producer ->
+                        val projectedRc = NativeBridge.setSurfaceProjectedPolicyV1(
+                            handle,
+                            GSPLAT_PROJECTED_POLICY_COMPACT
+                        )
+                        if (projectedRc != 0) {
+                            projectedRc
+                        } else {
+                            val producerRc = NativeBridge.setSurfaceGpuOrderProducerV1(
+                                handle,
+                                gpuProducerValue(producer)
+                            )
+                            if (producerRc != 0) {
+                                producerRc
+                            } else {
+                                NativeBridge.setSurfaceGpuProducerMeasurementEnabledV1(handle, true)
+                            }
+                        }
+                    } ?: 0
+                    if (gpuProducerRc != 0) {
+                        val detail = NativeBridge.lastErrorMessage()
+                            .ifBlank { NativeBridge.errorMessage(gpuProducerRc) }
+                        val message = detail.replace('\n', ' ').take(240)
+                        Log.e(
+                            TAG,
+                            "configure GPU producer diagnostic failed " +
+                                "rc=$gpuProducerRc error=$detail"
+                        )
+                        updateStatus("state=create_failed rc=$gpuProducerRc error=$message")
+                        return@Thread
+                    }
+                    val cameraTraceRc = benchmarkConfig.cameraTracePath?.let { tracePath ->
+                        val initialFrame = if (benchmarkConfig.cameraTraceSequence) {
+                            benchmarkConfig.cameraTraceFrameIndices.last()
+                        } else {
+                            benchmarkConfig.cameraTraceFrame
+                        }
+                        BenchmarkBridge.setSurfaceCameraTraceFrame(
+                            handle,
+                            tracePath,
+                            initialFrame,
+                            benchmarkConfig.requireTraceDisplayMatch
+                        )
+                    } ?: 0
+                    if (cameraTraceRc != 0) {
+                        val detail = NativeBridge.lastErrorMessage()
+                            .ifBlank { NativeBridge.errorMessage(cameraTraceRc) }
+                        val message = detail.replace('\n', ' ').take(240)
+                        Log.e(
+                            TAG,
+                            "setSurfaceCameraTraceFrame failed rc=$cameraTraceRc error=$detail"
+                        )
+                        updateStatus("state=create_failed rc=$cameraTraceRc error=$message")
+                        return@Thread
+                    }
+                    if (benchmarkConfig.cameraTracePath != null) {
+                        val metadata = checkNotNull(benchmarkConfig.cameraTraceMetadata)
+                        val mode = if (benchmarkConfig.cameraTraceSequence) {
+                            "trace_sequence"
+                        } else {
+                            "fixed_frame"
+                        }
+                        val selected = if (benchmarkConfig.cameraTraceSequence) {
+                            benchmarkConfig.cameraTraceFrameIndices.joinToString(",")
+                        } else {
+                            benchmarkConfig.cameraTraceFrame.toString()
+                        }
+                        val receiptFrame = if (benchmarkConfig.cameraTraceSequence) {
+                            benchmarkConfig.cameraTraceFrameIndices.first()
+                        } else {
+                            benchmarkConfig.cameraTraceFrame
+                        }
+                        cameraStatus = "camera=trace mode=$mode frames=$selected"
+                        Log.i(
+                            TAG,
+                            "CAMERA_TRACE trace_id=${metadata.id} " +
+                                "trace_sha256=${metadata.sha256} " +
+                                "mode=$mode frame_indices=$selected frame_index=$receiptFrame " +
+                                "timestamp_ns=${metadata.timestamps[receiptFrame]} " +
+                                "requested_backend=${benchmarkConfig.orderBackend}"
+                        )
+                    }
+                    if (!renderSessionOwner.publishHandle(session, handle)) {
+                        Log.i(
+                            TAG,
+                            "discarding stopped renderer generation=${session.generation} " +
+                                "handle=$handle"
+                        )
+                        return@Thread
+                    }
+
                     var frameCount = 0L
                     var consecutiveErrors = 0L
                     var lastStatusAt = 0L
@@ -1235,7 +1265,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                     val exactness = BenchmarkExactnessReceipt.query(handle).getOrElse { error ->
                         Log.e(TAG, "SURFACE_EXACTNESS_FAILED ${error.message}")
                         updateStatus("state=exactness_error error=${error.message}")
-                        running = false
+                        renderSessionOwner.requestStop(session)
                         return@Thread
                     }
                     Log.i(
@@ -1250,7 +1280,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                     if (benchmarkConfig.geometryPath != "paged" && !exactness.fullQuality) {
                         Log.e(TAG, "SURFACE_EXACTNESS_REJECTED full-quality invariant failed")
                         updateStatus("state=exactness_rejected")
-                        running = false
+                        renderSessionOwner.requestStop(session)
                         return@Thread
                     }
                     val benchmark = SurfaceBenchmark(
@@ -1259,7 +1289,10 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                         exactness
                     )
                     val currentStats = SurfaceCurrentStatsConsumer()
-                    while (running && !Thread.currentThread().isInterrupted) {
+                    while (
+                        renderSessionOwner.shouldRun(session) &&
+                        !Thread.currentThread().isInterrupted
+                    ) {
                         val traceStep = benchmark.nextTraceStep()
                         val iterationStartNs = System.nanoTime()
                         val benchmarkStatsBinding = benchmark.currentStatsBinding(traceStep)
@@ -1326,7 +1359,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                                 "state=current_stats_session_closed " +
                                     "reason=command_failed rc=${transaction.commandRc}"
                             )
-                            running = false
+                            renderSessionOwner.requestStop(session)
                             continue
                         }
                         val currentStatsRequestError = transaction.requestError
@@ -1337,7 +1370,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                                 "state=benchmark_current_stats_request_error " +
                                     "error=${compactMessage(error)}"
                             )
-                            running = false
+                            renderSessionOwner.requestStop(session)
                             continue
                         }
                         currentStatsRequestError?.let { error ->
@@ -1355,7 +1388,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                                     "state=benchmark_current_stats_error " +
                                         "error=${compactMessage(currentStatsReconciliationError)}"
                                 )
-                                running = false
+                                renderSessionOwner.requestStop(session)
                                 continue
                             }
                             Log.e(
@@ -1388,7 +1421,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                                         cameraReceiptResult.exceptionOrNull()
                                     )
                                     updateStatus("state=benchmark_camera_receipt_error")
-                                    running = false
+                                    renderSessionOwner.requestStop(session)
                                     continue
                                 }
                                 val cameraReceipt = cameraReceiptResult.getOrThrow()
@@ -1400,7 +1433,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                                         submissionResult.exceptionOrNull()
                                     )
                                     updateStatus("state=benchmark_submission_error")
-                                    running = false
+                                    renderSessionOwner.requestStop(session)
                                     continue
                                 }
                                 val submission = submissionResult.getOrThrow()
@@ -1416,7 +1449,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                                         producerSubmissionResult.exceptionOrNull()
                                     )
                                     updateStatus("state=benchmark_gpu_producer_submission_error")
-                                    running = false
+                                    renderSessionOwner.requestStop(session)
                                     continue
                                 }
                                 val producerSubmission = producerSubmissionResult?.getOrThrow()
@@ -1445,7 +1478,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                                             ) < 0))
                                     ) {
                                         updateStatus("state=benchmark_measurement_error")
-                                        running = false
+                                        renderSessionOwner.requestStop(session)
                                         continue
                                     }
                                     if (traceStep != null) {
@@ -1479,7 +1512,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                                             "state=benchmark_frame_error " +
                                                 "error=${compactMessage(error)}"
                                         )
-                                        running = false
+                                        renderSessionOwner.requestStop(session)
                                         continue
                                     }
                                     if (benchmark.complete) {
@@ -1522,7 +1555,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                                             )
                                         ) {
                                             updateStatus("state=benchmark_measurement_flush_error")
-                                            running = false
+                                            renderSessionOwner.requestStop(session)
                                             continue
                                         }
                                         val artifactResult = runCatching {
@@ -1560,24 +1593,24 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                                                 "state=benchmark_artifact_error " +
                                                     "error=${compactMessage(checkNotNull(error))}"
                                             )
-                                            running = false
+                                            renderSessionOwner.requestStop(session)
                                             continue
                                         }
                                         val result = artifactResult.getOrThrow()
                                         updateStatus("state=benchmark_complete $result")
-                                        running = false
+                                        renderSessionOwner.requestStop(session)
                                     }
                                 } else {
                                     Log.e(TAG, "benchmark sort stats failed rc=$sortStatsRc")
                                     updateStatus("state=benchmark_sort_stats_error rc=$sortStatsRc")
-                                    running = false
+                                    renderSessionOwner.requestStop(session)
                                 }
                             }
                             val currentStatsDisplayChanged =
                                 currentStats.displayVersion != lastPublishedCurrentStatsVersion
                             if (
                                 BenchmarkUiState.shouldPublishPeriodicRenderStatus(
-                                    running = running,
+                                    running = renderSessionOwner.shouldRun(session),
                                     elapsedSinceLastStatusNs = now - lastStatusAt,
                                     statusIntervalNs = STATUS_INTERVAL_NS
                                 ) || (!benchmark.enabled && currentStatsDisplayChanged)
@@ -1599,25 +1632,73 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                         }
                     }
                 } finally {
-                    synchronized(renderLock) {
-                        if (nativeRenderer == handle) {
-                            nativeRenderer = 0L
+                    if (ownedHandle != 0L) {
+                        synchronized(renderLock) {
+                            renderSessionOwner.clearOwnedHandle(session, ownedHandle)
                         }
+                        Log.i(
+                            TAG,
+                            "destroySurfaceRenderer generation=${session.generation} " +
+                                "handle=$ownedHandle"
+                        )
+                        // The owner slot remains occupied until finish(), so a blocked
+                        // native destroy cannot make a replacement session eligible or
+                        // hold renderLock across a lifecycle callback.
+                        NativeBridge.destroySurfaceRenderer(ownedHandle)
                     }
-                    Log.i(TAG, "destroySurfaceRenderer handle=$handle")
-                    NativeBridge.destroySurfaceRenderer(handle)
+                    check(renderSessionOwner.finish(session, Thread.currentThread())) {
+                        "render session generation ${session.generation} lost thread ownership"
+                    }
+                    resumeLatestSurfaceAfterRetirement(session.generation)
                 }
             },
-            "gsplat-surface-render"
-        ).also { it.start() }
+            "gsplat-surface-render-${session.generation}"
+        )
+        check(renderSessionOwner.attachThread(session, thread)) {
+            "render session generation ${session.generation} lost its reserved slot"
+        }
+        thread.start()
     }
 
     private fun stopRenderer() {
-        running = false
-        val thread = renderThread
-        renderThread = null
-        thread?.interrupt()
-        thread?.join(1000)
+        when (
+            val result = renderSessionOwner.requestStopAndAwait(
+                RENDER_SHUTDOWN_TIMEOUT_MS
+            )
+        ) {
+            SurfaceRenderSessionOwner.StopResult.Idle,
+            is SurfaceRenderSessionOwner.StopResult.Stopped -> Unit
+            is SurfaceRenderSessionOwner.StopResult.Retiring -> {
+                Log.w(
+                    TAG,
+                    "render generation ${result.generation} did not stop within " +
+                        "${RENDER_SHUTDOWN_TIMEOUT_MS}ms; retaining owner slot fail-closed"
+                )
+                updateStatus(
+                    "state=renderer_retiring generation=${result.generation} " +
+                        "new_session=blocked"
+                )
+            }
+        }
+    }
+
+    private fun resumeLatestSurfaceAfterRetirement(generation: Long) {
+        runOnUiThread {
+            if (!restartAfterRendererRetires || activityDestroying) return@runOnUiThread
+            val surface = currentSurface
+            val width = currentSurfaceWidth
+            val height = currentSurfaceHeight
+            if (surface == null || !surface.isValid || width <= 0 || height <= 0) {
+                restartAfterRendererRetires = false
+                updateStatus("state=renderer_retired waiting_for_surface")
+                return@runOnUiThread
+            }
+            Log.i(
+                TAG,
+                "render generation $generation retired; starting latest Surface ${width}x$height"
+            )
+            startRenderer(surface, width, height)
+        }
     }
 
     private fun importPlyFromUri(uri: Uri) {
@@ -3458,7 +3539,6 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                     .put("max_storage_buffer_binding_size", exactness.maxStorageBufferBindingSize)
                     .put("order_backend_requested", config.orderBackend)
                     .put("sort_interval", config.sortInterval)
-                    .put("gpu_count_semantics", "source_count_upper_bound; sort-all/draw-all")
                     .put("sort_policy", if (config.asyncSort) {
                         "async_latest:${config.sortInterval}"
                     } else {
@@ -3776,11 +3856,31 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                 ) { "frame $index CPU order/current-stats V/C/D disagree" }
             }
             gpuProducerMeasurement(index)?.let { producer ->
+                val (producerPlan, producerCountSemantics) = when (producer.producer) {
+                    GSPLAT_GPU_PRODUCER_POST_SORT ->
+                        GsplatSurfaceCurrentStatsPlan.GPU_POST_SORT to
+                            GsplatSurfaceCurrentStatsCountSemantics
+                                .INDIRECT_DRAW_EQUALS_VISIBLE
+                    GSPLAT_GPU_PRODUCER_PREPROJECT ->
+                        GsplatSurfaceCurrentStatsPlan.GPU_PREPROJECT to
+                            GsplatSurfaceCurrentStatsCountSemantics
+                                .INDIRECT_DRAW_EQUALS_CONTRIBUTOR
+                    else -> error(
+                        "frame $index producer receipt has unknown producer " +
+                            producer.producer
+                    )
+                }
                 check(
-                    producer.source == ready.sourceCount &&
+                    identity.executedPlan == producerPlan &&
+                        ready.countSemantics == producerCountSemantics &&
+                        producer.cameraRevision == identity.cameraRevision &&
+                        producer.orderGeneration == identity.orderGeneration &&
+                        producer.source == ready.sourceCount &&
                         producer.contributor == ready.contributorCount &&
                         producer.drawn == ready.drawnCount
-                ) { "frame $index producer/current-stats S/C/D disagree" }
+                ) {
+                    "frame $index producer/current-stats identity, plan, semantics, or S/C/D disagree"
+                }
             }
         }
 

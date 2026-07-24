@@ -26,7 +26,17 @@ python3 "$ROOT/bindings/android/scripts/extract-android-benchmark-artifacts.py" 
 # validator as the full device collector.
 STRICT_LOG="$TMP_DIR/strict-logcat.txt"
 MISSING_LEDGER_LOG="$TMP_DIR/strict-missing-ledger-logcat.txt"
-python3 - "$FIXTURE" "$STRICT_LOG" "$MISSING_LEDGER_LOG" <<'PY'
+ACCEPTED_ADAPTIVE_PLAN_BACKEND_DRIFT_LOG="$TMP_DIR/adaptive-plan-backend-drift.txt"
+ACCEPTED_PRODUCER_CURRENT_STATS_COUNT_DRIFT_LOG="$TMP_DIR/producer-count-drift.txt"
+BAD_GPU_COUNT_SEMANTICS_LOG="$TMP_DIR/bad-gpu-count-semantics.txt"
+python3 - \
+  "$FIXTURE" \
+  "$STRICT_LOG" \
+  "$MISSING_LEDGER_LOG" \
+  "$ACCEPTED_ADAPTIVE_PLAN_BACKEND_DRIFT_LOG" \
+  "$ACCEPTED_PRODUCER_CURRENT_STATS_COUNT_DRIFT_LOG" \
+  "$BAD_GPU_COUNT_SEMANTICS_LOG" <<'PY'
+import copy
 import json
 import pathlib
 import sys
@@ -34,6 +44,9 @@ import sys
 fixture = pathlib.Path(sys.argv[1])
 strict_destination = pathlib.Path(sys.argv[2])
 missing_destination = pathlib.Path(sys.argv[3])
+adaptive_drift_destination = pathlib.Path(sys.argv[4])
+producer_drift_destination = pathlib.Path(sys.argv[5])
+bad_gpu_semantics_destination = pathlib.Path(sys.argv[6])
 manifest = json.loads((fixture / "manifest.json").read_text())
 summary = json.loads((fixture / "summary.json").read_text())
 frames = [
@@ -48,6 +61,7 @@ manifest["renderer"].update(
         "current_stats_strict": True,
         "count_source": "matching_current_stats_ready",
         "count_semantics": "candidate_visible_contributor_issued_v1",
+        "gpu_producer_measurement_enabled": False,
     }
 )
 manifest["exactness"] = {"receipt_id": "strict-fixture-exactness"}
@@ -97,6 +111,7 @@ for index, frame in enumerate(frames):
             "current_stats_ticket": ticket,
             "current_stats_presentation_sequence": presentation_sequence,
             "current_stats_executed_plan": "cpu_post_sort",
+            "order_backend": "cpu",
             "camera_receipt": {
                 "camera_revision": revision,
                 "presented_camera_revision": revision,
@@ -124,15 +139,15 @@ for index, frame in enumerate(frames):
 summary["current_stats_terminal_ledger"] = ledger
 
 
-def write_log(destination, summary_value):
+def write_log(destination, manifest_value, frames_value, summary_value):
     lines = [
         "I/GsplatExample(123): GSPLAT_BENCHMARK_MANIFEST "
-        + json.dumps(manifest, separators=(",", ":"))
+        + json.dumps(manifest_value, separators=(",", ":"))
     ]
     lines.extend(
         "I/GsplatExample(123): GSPLAT_BENCHMARK_FRAME "
         + json.dumps(frame, separators=(",", ":"))
-        for frame in frames
+        for frame in frames_value
     )
     lines.append(
         "I/GsplatExample(123): GSPLAT_BENCHMARK_SUMMARY "
@@ -141,10 +156,110 @@ def write_log(destination, summary_value):
     destination.write_text("\n".join(lines) + "\n")
 
 
-write_log(strict_destination, summary)
+write_log(strict_destination, manifest, frames, summary)
 missing = dict(summary)
 missing.pop("current_stats_terminal_ledger")
-write_log(missing_destination, missing)
+write_log(missing_destination, manifest, frames, missing)
+
+# Regression fixture that bd44 previously accepted:
+# ACCEPTED_ADAPTIVE_PLAN_BACKEND_DRIFT.
+adaptive_manifest = copy.deepcopy(manifest)
+adaptive_frames = copy.deepcopy(frames)
+adaptive_summary = copy.deepcopy(summary)
+adaptive_manifest["renderer"]["order_backend_requested"] = "adaptive"
+for frame, entry in zip(adaptive_frames, adaptive_summary["current_stats_terminal_ledger"]):
+    entry["identity"]["executed_plan"] = "gpu_post_sort"
+    frame["current_stats_executed_plan"] = "gpu_post_sort"
+    frame["order_backend"] = "cpu"
+write_log(
+    adaptive_drift_destination,
+    adaptive_manifest,
+    adaptive_frames,
+    adaptive_summary,
+)
+
+# Regression fixture that bd44 previously accepted:
+# ACCEPTED_PRODUCER_CURRENT_STATS_COUNT_DRIFT.
+producer_manifest = copy.deepcopy(manifest)
+producer_frames = copy.deepcopy(frames)
+producer_summary = copy.deepcopy(summary)
+producer_manifest["renderer"].update(
+    {
+        "order_backend_requested": "gpu",
+        "raster_plan": "projected_quads_exact",
+        "projected_policy_requested": "compact",
+        "gpu_order_producer_requested": "preproject",
+        "gpu_producer_measurement_enabled": True,
+    }
+)
+producer_terminals = []
+for index, (frame, entry) in enumerate(
+    zip(producer_frames, producer_summary["current_stats_terminal_ledger"])
+):
+    producer_ticket = 3_000 + index
+    producer_contributor = entry["visible"]
+    entry["identity"]["executed_plan"] = "gpu_preproject"
+    entry["contributor"] = producer_contributor - 1
+    entry["drawn"] = producer_contributor - 1
+    entry["count_semantics"] = "indirect_draw_equals_contributor"
+    frame.update(
+        {
+            "contributor": entry["contributor"],
+            "drawn": entry["drawn"],
+            "exact_contributor_compaction": True,
+            "current_stats_executed_plan": "gpu_preproject",
+            "order_backend": "gpu",
+            "gpu_order_producer": "preproject",
+            "gpu_producer_measurement_ticket": producer_ticket,
+            "gpu_producer_measurement_camera_revision": entry["identity"][
+                "camera_revision"
+            ],
+            "gpu_producer_order_generation": entry["identity"]["order_generation"],
+            "gpu_producer_projection_generation": 4_000 + index,
+            "gpu_producer_draw_scope": "exact_current_contributors",
+            "gpu_producer_order_refreshed": True,
+            "gpu_producer_exact_current_draw": True,
+            "gpu_producer_stale_order": False,
+            "gpu_producer_dropped_prior": False,
+            "gpu_producer_submission_flags": 9,
+            "gpu_producer_source": entry["source"],
+            "gpu_producer_contributor": producer_contributor,
+            "gpu_producer_drawn": producer_contributor,
+        }
+    )
+    producer_terminals.append(
+        {
+            "ticket": producer_ticket,
+            "camera_revision": entry["identity"]["camera_revision"],
+            "producer": "preproject",
+            "outcome": "success",
+            "order_generation": entry["identity"]["order_generation"],
+            "projection_generation": 4_000 + index,
+            "source": entry["source"],
+            "contributor": producer_contributor,
+            "drawn": producer_contributor,
+            "draw_scope": "exact_current_contributors",
+            "exactness_receipt_id": entry["exactness_receipt_id"],
+        }
+    )
+producer_summary["gpu_producer_terminal_ledger"] = producer_terminals
+write_log(
+    producer_drift_destination,
+    producer_manifest,
+    producer_frames,
+    producer_summary,
+)
+
+bad_semantics_manifest = copy.deepcopy(manifest)
+bad_semantics_manifest["renderer"][
+    "gpu_count_semantics"
+] = "source_count_upper_bound; sort-all/draw-all"
+write_log(
+    bad_gpu_semantics_destination,
+    bad_semantics_manifest,
+    frames,
+    summary,
+)
 PY
 
 python3 "$ROOT/bindings/android/scripts/extract-android-benchmark-artifacts.py" \
@@ -157,6 +272,30 @@ if python3 "$ROOT/bindings/android/scripts/extract-android-benchmark-artifacts.p
   "$TMP_DIR/strict-missing-ledger-artifact" \
   --validator "$ROOT/tests/perf/validate-benchmark-artifacts.py"; then
   echo "extractor unexpectedly accepted strict current-stats without a ledger" >&2
+  exit 1
+fi
+
+if python3 "$ROOT/bindings/android/scripts/extract-android-benchmark-artifacts.py" \
+  "$ACCEPTED_ADAPTIVE_PLAN_BACKEND_DRIFT_LOG" \
+  "$TMP_DIR/adaptive-plan-backend-drift-artifact" \
+  --validator "$ROOT/tests/perf/validate-benchmark-artifacts.py"; then
+  echo "extractor accepted ACCEPTED_ADAPTIVE_PLAN_BACKEND_DRIFT" >&2
+  exit 1
+fi
+
+if python3 "$ROOT/bindings/android/scripts/extract-android-benchmark-artifacts.py" \
+  "$ACCEPTED_PRODUCER_CURRENT_STATS_COUNT_DRIFT_LOG" \
+  "$TMP_DIR/producer-count-drift-artifact" \
+  --validator "$ROOT/tests/perf/validate-benchmark-artifacts.py"; then
+  echo "extractor accepted ACCEPTED_PRODUCER_CURRENT_STATS_COUNT_DRIFT" >&2
+  exit 1
+fi
+
+if python3 "$ROOT/bindings/android/scripts/extract-android-benchmark-artifacts.py" \
+  "$BAD_GPU_COUNT_SEMANTICS_LOG" \
+  "$TMP_DIR/bad-gpu-count-semantics-artifact" \
+  --validator "$ROOT/tests/perf/validate-benchmark-artifacts.py"; then
+  echo "extractor accepted dishonest gpu_count_semantics" >&2
   exit 1
 fi
 
