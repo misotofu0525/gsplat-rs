@@ -1046,6 +1046,13 @@ impl Renderer {
         Ok(())
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
+    fn exact_surface_plan_is_eligible(&self, plan: plans::PlanId) -> Option<bool> {
+        self.exact_offscreen_runtime
+            .as_ref()
+            .map(|runtime| runtime.plan_is_eligible(plan))
+    }
+
     /// Invalidates only latency-bound whole-plan learning for the active
     /// native Surface runtime. Current-stats tickets and prepared resources
     /// deliberately remain in the same semantic generation.

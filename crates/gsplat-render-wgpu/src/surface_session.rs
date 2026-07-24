@@ -92,6 +92,35 @@ enum ExactSurfacePlanState {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+const fn exact_gpu_plan_for_producer(producer: SurfaceGpuOrderProducer) -> PlanId {
+    match producer {
+        SurfaceGpuOrderProducer::PostSort => PlanId::GpuPostSort,
+        SurfaceGpuOrderProducer::Preproject => PlanId::GpuPreproject,
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn prepare_exact_gpu_order_producer(
+    renderer: &Renderer,
+    producer: SurfaceGpuOrderProducer,
+) -> Result<(), RendererError> {
+    let plan = exact_gpu_plan_for_producer(producer);
+    if renderer.exact_surface_plan_is_eligible(plan) == Some(true) {
+        Ok(())
+    } else {
+        Err(SurfacePresenterError::GpuOrderUnsupported.into())
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn prepare_exact_gpu_order(
+    renderer: &Renderer,
+    state: ExactSurfacePlanState,
+) -> Result<(), RendererError> {
+    prepare_exact_gpu_order_producer(renderer, state.producer())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 impl ExactSurfacePlanState {
     const fn policy(self) -> ExactPlanPolicy {
         match self {
@@ -1806,6 +1835,23 @@ fn publish_only_on_present<T>(published: &mut T, presented: Option<T>) {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+fn commit_exact_plan_state(
+    renderer: &mut Renderer,
+    exact_plan_receipt: &mut Option<ExactSurfacePlanState>,
+    order_backend: &mut SurfaceOrderBackend,
+    projected_draw_policy: &mut SurfaceProjectedDrawPolicy,
+    state: ExactSurfacePlanState,
+) -> Result<(), RendererError> {
+    renderer.set_exact_surface_policy(state.policy())?;
+    // These fields are compatibility receipts only. Frame execution reads
+    // the renderer policy above and never consults any of them.
+    *order_backend = state.order_backend();
+    *projected_draw_policy = state.projected_policy();
+    *exact_plan_receipt = Some(state);
+    Ok(())
+}
+
 impl SurfaceRenderSession {
     pub fn new(
         mut renderer: Renderer,
@@ -1942,13 +1988,13 @@ impl SurfaceRenderSession {
         &mut self,
         state: ExactSurfacePlanState,
     ) -> Result<(), RendererError> {
-        self.renderer.set_exact_surface_policy(state.policy())?;
-        // These fields are compatibility receipts only. Frame execution reads
-        // the renderer policy above and never consults any of them.
-        self.order_backend = state.order_backend();
-        self.projected_draw_policy = state.projected_policy();
-        self.exact_plan_receipt = Some(state);
-        Ok(())
+        commit_exact_plan_state(
+            &mut self.renderer,
+            &mut self.exact_plan_receipt,
+            &mut self.order_backend,
+            &mut self.projected_draw_policy,
+            state,
+        )
     }
 
     /// Requests one current-stats receipt from the next eligible Exact
@@ -2054,10 +2100,10 @@ impl SurfaceRenderSession {
     ) -> Result<(), RendererError> {
         #[cfg(not(target_arch = "wasm32"))]
         if self.exact_plan_state().is_some() {
-            // All three concrete Exact plans were admitted atomically during
-            // construction, so there is no dormant partial graph to prepare.
-            let _ = producer;
-            return Ok(());
+            // Exact construction already published the complete set of plans
+            // the adapter can execute. A CPU-only Surface must not turn the
+            // existence of that runtime into a false GPU-prepared receipt.
+            return prepare_exact_gpu_order_producer(&self.renderer, producer);
         }
         if producer == SurfaceGpuOrderProducer::Preproject
             && !gpu_producer_measurement_context_is_valid(
@@ -2498,8 +2544,8 @@ impl SurfaceRenderSession {
     /// Browser callers must await this before selecting GPU or Adaptive.
     pub async fn prepare_gpu_order(&mut self) -> Result<(), RendererError> {
         #[cfg(not(target_arch = "wasm32"))]
-        if self.exact_plan_state().is_some() {
-            return Ok(());
+        if let Some(current) = self.exact_plan_state() {
+            return prepare_exact_gpu_order(&self.renderer, current);
         }
         self.presenter.prepare_gpu_order().await?;
         Ok(())
@@ -4035,6 +4081,10 @@ fn async_order_pose_compatible(
         .clamp(0.0, 1.0);
     2.0 * dot.acos() <= MAX_ASYNC_SORT_ROTATION_DELTA_RADIANS
 }
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "surface_session_exact_control_tests.rs"]
+mod exact_control_tests;
 
 #[cfg(test)]
 mod tests {

@@ -1047,6 +1047,24 @@ impl PreparedRuntimeSlot {
         self.runtime.scene.indirect_execution_resources_prepared()
     }
 
+    #[cfg(test)]
+    pub(crate) fn complete_adaptive_cpu_frame_for_test(
+        &mut self,
+    ) -> Result<(PlanId, bool), WholePlanControllerError> {
+        let decision = self.controller.choose_adaptive()?;
+        let formal = decision.formal_kind().is_some();
+        if decision.plan() == PlanId::CpuPostSort {
+            self.controller
+                .submitted_without_sample(decision, OrderLane::Cpu);
+        }
+        Ok((decision.plan(), formal))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn adaptive_probe_generation_for_test(&self) -> u64 {
+        self.controller.probe_generation_for_test()
+    }
+
     pub(crate) fn last_usable_cpu_order(&self) -> Option<&[u32]> {
         self.runtime.plans.last_usable_cpu_order()
     }
