@@ -6,42 +6,7 @@
       "IO-PLY-1",
       "IO-SPZ-1"
     ],
-    "parallel_execution": {
-      "activation_commit": "c9ddb136eee170d8a222da62a7db6bf21815f1ab",
-      "members": [
-        {
-          "task": "E4",
-          "lane": "E4-neon",
-          "write_allowlist": [
-            "crates/gsplat-render-wgpu/src/cpu/preprocess/aarch64.rs"
-          ]
-        },
-        {
-          "task": "E5",
-          "lane": "E5-avx2",
-          "write_allowlist": [
-            "crates/gsplat-render-wgpu/src/cpu/preprocess/x86_64.rs"
-          ]
-        },
-        {
-          "task": "E8",
-          "lane": "E8a-gpu-adapter-repair",
-          "write_allowlist": [
-            "crates/gsplat-render-wgpu/src/renderer/mod.rs",
-            "crates/gsplat-render-wgpu/src/renderer/gpu_prepare.rs",
-            "crates/gsplat-render-wgpu/src/scene/runtime.rs",
-            "crates/gsplat-render-wgpu/src/plans/mod.rs",
-            "crates/gsplat-render-wgpu/src/resident_gpu.rs"
-          ]
-        }
-      ],
-      "integration_order": [
-        "E4-neon",
-        "E5-avx2",
-        "E8a-gpu-adapter-repair"
-      ],
-      "reason": "E4 and E5 own disjoint architecture-specific preprocess leaves while E8a owns only the repaired GPU preparation/execution seam; exact production write paths and mutable owners are disjoint, and root owns ledger, policy, review, integration and shared gates."
-    },
+    "parallel_execution": null,
     "task_catalog": {
       "A0": "A",
       "A1": "A",

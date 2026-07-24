@@ -10,24 +10,15 @@ E0 = Accepted
 E1 = Accepted
 E2 = Accepted
 E3 = Accepted
-E4 = Active
-E5 = Active
+E4 = Rejected
+E5 = Deferred
 E8 = Active
 <!-- gsplat-program-task-states: end -->
-
-<!-- gsplat-program-active-lanes: begin -->
-activation_commit = c9ddb136eee170d8a222da62a7db6bf21815f1ab
-E4 = E4-neon
-E5 = E5-avx2
-E8 = E8a-gpu-adapter-repair
-<!-- gsplat-program-active-lanes: end -->
 
 ## Package status
 
 - Package: E — Exact prepared plans and native execution, still shadowed.
-- Active tasks: E4 AArch64 NEON qualification, E5 x86_64 AVX2/FMA
-  qualification and the finite E8a GPU runtime-adapter repair under the exact
-  disjoint parallel contract below.
+- Active task: the final finite E8a GPU runtime-adapter transaction repair.
 - Last completed task: E3 — unified CPU order engine and reusable workspace.
 - E1 state: Accepted after root fixed-SHA review and fast-forward integration
   of candidate `0496266cc73de5fc84acb7c393606fa68eb77623`.
@@ -40,13 +31,14 @@ E8 = E8a-gpu-adapter-repair
   Later E4/NEON and E5/AVX2 lanes require E3's
   platform-leaf interface; E6/E7 remain sequential because both own
   engine/workspace decisions.
-- Current safe parallel batch: E4 owns only the AArch64 leaf, E5 owns only the
-  x86_64 leaf, and E8a owns only its five-file GPU preparation/execution seam.
-  All three are user-visible tasks in separate worktrees; their production
-  allowlists and mutable owners are disjoint. Root alone owns shared
-  architecture policy/ledger edits, fixed-SHA review, integration and the
-  combined matrix. Resume the GPU PostSort implementation only after the
-  repaired adapter is Accepted.
+- E4 is Rejected with a clean tree after two bit-exact NEON candidates were
+  consistently slower than Scalar in the finite Apple M4 release experiment.
+  E5 is Deferred with a clean tree because the reachable physical x86_64
+  endpoint lacks AVX2/FMA and Rosetta/cross-compilation cannot qualify native
+  performance. Neither outcome changes the scalar production leaves.
+- Current writer batch contains only E8a. Root alone owns shared architecture
+  policy/ledger edits, fixed-SHA review, integration and the combined matrix.
+  Resume the GPU PostSort implementation only after the adapter is Accepted.
   Never create parallel writers for the same mutable owner merely to increase
   concurrency.
 - Source-size rule: no fixed LOC quota, split trigger or completion gate. Module
@@ -271,8 +263,9 @@ E8 = E8a-gpu-adapter-repair
   candidate and exact tests, but without a real x86 endpoint its performance
   admission is Deferred and the unqualified candidate cannot become the
   default. Endpoint absence is a terminal truthful result, not a loop.
-- E8a repair owns `renderer/mod.rs`, `renderer/gpu_prepare.rs`,
-  `scene/runtime.rs`, `plans/mod.rs` and `resident_gpu.rs`. It must make the
+- E8a repair owns `renderer/mod.rs`, `renderer/frame.rs`,
+  `renderer/gpu_prepare.rs`, `scene/runtime.rs`, `plans/mod.rs` and
+  `resident_gpu.rs`. It must make the
   future plans-only E8 consumer reachable from the renderer execution boundary,
   replace raw `wgpu::Device` equality with renderer-owned identity, and make
   color encoding safe when an encoder is discarded. It still cannot submit,
@@ -285,6 +278,27 @@ E8 = E8a-gpu-adapter-repair
   compatibility, navigability, test seams, change locality and maintenance
   risk. No physical line count is a hard gate, soft target, split trigger or
   completion condition.
+
+### E4 / E5 finite closeout
+
+- E4 final state: Rejected. Exact parent and final clean tip:
+  `17cc0e578bf8af774a68635adafa90fb79e6bbee`; no candidate commit exists.
+  Both experimental AArch64 leaves passed bit-for-bit scalar parity over
+  empty/1/3/4/5/257, inclusive boundaries, FMA-sensitive values, NaN/inf,
+  equal-depth ties, non-zero source base and tail cases. Three interleaved
+  release observations over 2,541,226 positions showed both candidates slower
+  than Scalar for preprocess and preprocess-plus-sort, so the finite protocol
+  stopped and restored the scalar delegate. Renderer tests, strict Clippy,
+  Rustdoc, wasm32, architecture checks, format and diff checks passed.
+- E5 final state: Deferred. Exact parent and final clean tip:
+  `17cc0e578bf8af774a68635adafa90fb79e6bbee`; no candidate commit exists.
+  The available Pentium Silver N6005 endpoint exposes neither AVX2 nor FMA;
+  the WSL endpoint was unavailable and Rosetta/cross-compilation provide only
+  partial semantic/compile evidence. Adding a production guard without a
+  qualifying endpoint would publish an unverified path, while a permanently
+  disabled implementation would be dead code. Cross-target compile, Rosetta
+  CPU-order tests, strict Clippy, wasm32, architecture, format and diff checks
+  passed. A future real AVX2/FMA endpoint may reopen E5 as a new finite task.
 
 ## E8 feasibility stop and adapter dependency
 
@@ -309,20 +323,34 @@ E8 = E8a-gpu-adapter-repair
   the resolved-color cache; and native `wgpu::Device` equality could collide
   across independent Instances. Compile and GPU tests passing did not override
   these semantic blockers.
+- The repaired candidate
+  `63eb4bee5979cf35ec6ab526621b61b947c06ac9` was also rejected rather than
+  integrated. It fixed discard-safe uncached color encoding and independent
+  Instance owner identity, and routed a queue plus caller encoder through the
+  renderer and `PlanSet`. However, GPU preparation still published only
+  `SceneRuntime` resources while `PlanSet` permanently classified both GPU
+  entries as unprepared. A later plans-only E8 therefore still could not
+  transactionally publish a concrete GPU plan, immutable eligibility and a new
+  plan-set generation together with the resource candidate.
 - The finite repair remains active with this exact implementation allowlist:
   - `crates/gsplat-render-wgpu/src/renderer/mod.rs`;
+  - `crates/gsplat-render-wgpu/src/renderer/frame.rs`;
   - new `crates/gsplat-render-wgpu/src/renderer/gpu_prepare.rs`;
   - `crates/gsplat-render-wgpu/src/scene/runtime.rs`;
   - `crates/gsplat-render-wgpu/src/plans/mod.rs`;
   - `crates/gsplat-render-wgpu/src/resident_gpu.rs`.
   Root, not the writer, owns any later architecture policy registration.
-- Adapter contract: one transactional CPU/GPU scene candidate; async scoped
-  device preparation; renderer-issued device owner identity; uncached or
-  explicitly transactional color encoding; capacity/count/SH0--SH3 agreement;
-  and a renderer-to-PlanSet frame seam that receives queue and an existing
-  encoder but can never submit, poll, map, read back or present. Unsupported
-  GPU preparation omits the GPU entry while preserving the prepared Exact CPU
-  fallback.
+- Adapter contract: build the complete GPU scene and a forward-compatible
+  `PlanSet` admission candidate privately, advance the plan-set generation,
+  and publish resources/plan admission/frame identity/owner in one infallible
+  transaction only after every fallible step succeeds. The current adapter
+  must leave an actual call seam that a later plans-only E8 can extend with its
+  concrete `GpuPostSortPlan` without modifying renderer/frame code again. It
+  also requires async scoped device preparation, renderer-issued owner
+  identity, discard-safe uncached color encoding, capacity/count/SH0--SH3
+  agreement, and a queue plus caller-owned encoder without submit, poll, map,
+  readback or present. Unsupported preparation preserves the Exact CPU
+  fallback and the prior generation/membership.
 - The GPU PostSort implementation resumes only from the accepted E2+adapter
   root SHA in a fresh worktree. Its original plans-only allowlist must still prove
   complete membership, original SH degree, inclusive visibility, stable
