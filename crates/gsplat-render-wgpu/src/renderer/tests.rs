@@ -318,13 +318,13 @@ fn failed_frame_keeps_identity_fallback_and_last_usable_order() {
 
 #[cfg(not(target_arch = "wasm32"))]
 mod canonical_submission {
-    use std::sync::Arc;
+    use std::{sync::Arc, time::Instant};
 
     use super::*;
     use crate::plans::TestGpuAdmissionMode;
     use crate::renderer::{
         FrameExecutionError, GpuFrameEncodeRequest, RasterCountSemantics, encode_frame_gpu,
-        submit_encoded_frame,
+        submit_encoded_frame, submit_encoded_frame_with_followup_for_test,
     };
 
     const WIDTH: u32 = 64;
@@ -434,11 +434,20 @@ mod canonical_submission {
         device: &wgpu::Device,
         label: &'static str,
     ) -> (wgpu::Texture, wgpu::TextureView, wgpu::Buffer) {
+        target_and_readback_size(device, label, WIDTH, HEIGHT)
+    }
+
+    fn target_and_readback_size(
+        device: &wgpu::Device,
+        label: &'static str,
+        width: u32,
+        height: u32,
+    ) -> (wgpu::Texture, wgpu::TextureView, wgpu::Buffer) {
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some(label),
             size: wgpu::Extent3d {
-                width: WIDTH,
-                height: HEIGHT,
+                width,
+                height,
                 depth_or_array_layers: 1,
             },
             mip_level_count: 1,
@@ -451,7 +460,7 @@ mod canonical_submission {
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
         let readback = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("exact-renderer-canonical-readback"),
-            size: u64::from(WIDTH * HEIGHT * 4),
+            size: u64::from(width * height * 4),
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
             mapped_at_creation: false,
         });
@@ -462,6 +471,16 @@ mod canonical_submission {
         encoder: &mut wgpu::CommandEncoder,
         texture: &wgpu::Texture,
         readback: &wgpu::Buffer,
+    ) {
+        append_readback_size(encoder, texture, readback, WIDTH, HEIGHT);
+    }
+
+    fn append_readback_size(
+        encoder: &mut wgpu::CommandEncoder,
+        texture: &wgpu::Texture,
+        readback: &wgpu::Buffer,
+        width: u32,
+        height: u32,
     ) {
         encoder.copy_texture_to_buffer(
             wgpu::TexelCopyTextureInfo {
@@ -474,13 +493,13 @@ mod canonical_submission {
                 buffer: readback,
                 layout: wgpu::TexelCopyBufferLayout {
                     offset: 0,
-                    bytes_per_row: Some(WIDTH * 4),
-                    rows_per_image: Some(HEIGHT),
+                    bytes_per_row: Some(width * 4),
+                    rows_per_image: Some(height),
                 },
             },
             wgpu::Extent3d {
-                width: WIDTH,
-                height: HEIGHT,
+                width,
+                height,
                 depth_or_array_layers: 1,
             },
         );
@@ -525,6 +544,395 @@ mod canonical_submission {
         let bytes = slice.get_mapped_range().to_vec();
         readback.unmap();
         (submission, bytes)
+    }
+
+    async fn render_plan_split_single_submit(
+        slot: &mut PreparedRuntimeSlot,
+        device: &wgpu::Device,
+        plan: PlanId,
+    ) -> (crate::renderer::GpuFrameSubmission, Vec<u8>) {
+        let (texture, view, readback) = target_and_readback(device, "exact-renderer-split-target");
+        let validation_scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let pending = encode_frame_gpu(
+            slot,
+            GpuFrameEncodeRequest::new(
+                plan,
+                &Camera::default(),
+                Viewport::new(WIDTH, HEIGHT).expect("viewport"),
+                &view,
+                FORMAT,
+                wgpu::Color::BLACK,
+            ),
+        )
+        .expect("complete render command buffer");
+        let mut copy_encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("exact-renderer-split-copy-encoder"),
+        });
+        append_readback(&mut copy_encoder, &texture, &readback);
+        let submission =
+            submit_encoded_frame_with_followup_for_test(slot, pending, copy_encoder.finish())
+                .expect("one submit with ordered render and copy command buffers");
+
+        let slice = readback.slice(..);
+        let (sender, receiver) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |result| {
+            let _ = sender.send(result);
+        });
+        device
+            .poll(wgpu::PollType::Wait {
+                submission_index: Some(submission.submission_index().clone()),
+                timeout: None,
+            })
+            .expect("wait for split-path exact submission");
+        receiver.recv().expect("map callback").expect("map result");
+        assert!(validation_scope.pop().await.is_none());
+        let bytes = slice.get_mapped_range().to_vec();
+        readback.unmap();
+        (submission, bytes)
+    }
+
+    fn assert_equivalent_submission(
+        batched: &crate::renderer::GpuFrameSubmission,
+        split: &crate::renderer::GpuFrameSubmission,
+    ) {
+        assert_eq!(batched.frame_identity(), split.frame_identity());
+        assert_eq!(batched.plan_id(), split.plan_id());
+        assert_eq!(batched.order_lane(), split.order_lane());
+        assert_eq!(batched.order_generation(), split.order_generation());
+        assert_eq!(batched.source_count(), split.source_count());
+        assert_eq!(batched.visible_count(), split.visible_count());
+        assert_eq!(batched.contributor_count(), split.contributor_count());
+        assert_eq!(batched.draw_count(), split.draw_count());
+        assert_eq!(batched.count_semantics(), split.count_semantics());
+    }
+
+    #[derive(Clone, Copy)]
+    enum CommandLayout {
+        Batched,
+        SplitSingleSubmit,
+    }
+
+    #[derive(Clone, Copy)]
+    struct FrameTiming {
+        encode_submit_ms: f64,
+        completion_ms: f64,
+        terminal_ms: f64,
+    }
+
+    #[derive(Clone, Copy)]
+    struct TimedFrameTarget<'a> {
+        texture: &'a wgpu::Texture,
+        view: &'a wgpu::TextureView,
+        readback: &'a wgpu::Buffer,
+        width: u32,
+        height: u32,
+    }
+
+    async fn timed_frame(
+        slot: &mut PreparedRuntimeSlot,
+        device: &wgpu::Device,
+        camera: &Camera,
+        target: TimedFrameTarget<'_>,
+        layout: CommandLayout,
+    ) -> FrameTiming {
+        let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let started = Instant::now();
+        let mut pending = encode_frame_gpu(
+            slot,
+            GpuFrameEncodeRequest::new(
+                PlanId::GpuPostSort,
+                camera,
+                Viewport::new(target.width, target.height).expect("benchmark viewport"),
+                target.view,
+                FORMAT,
+                wgpu::Color::BLACK,
+            ),
+        )
+        .expect("finite E10 plan/raster encode");
+
+        let submission = match layout {
+            CommandLayout::Batched => {
+                append_readback_size(
+                    pending.encoder_mut(),
+                    target.texture,
+                    target.readback,
+                    target.width,
+                    target.height,
+                );
+                submit_encoded_frame(slot, pending).expect("batched submission")
+            }
+            CommandLayout::SplitSingleSubmit => {
+                let mut copy_encoder =
+                    device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                        label: Some("e10-finite-split-copy-encoder"),
+                    });
+                append_readback_size(
+                    &mut copy_encoder,
+                    target.texture,
+                    target.readback,
+                    target.width,
+                    target.height,
+                );
+                submit_encoded_frame_with_followup_for_test(slot, pending, copy_encoder.finish())
+                    .expect("split single submission")
+            }
+        };
+        let submitted = Instant::now();
+        device
+            .poll(wgpu::PollType::Wait {
+                submission_index: Some(submission.submission_index().clone()),
+                timeout: None,
+            })
+            .expect("wait for exact finite E10 submission");
+        let completed = Instant::now();
+        assert!(scope.pop().await.is_none());
+        FrameTiming {
+            encode_submit_ms: (submitted - started).as_secs_f64() * 1_000.0,
+            completion_ms: (completed - submitted).as_secs_f64() * 1_000.0,
+            terminal_ms: (completed - started).as_secs_f64() * 1_000.0,
+        }
+    }
+
+    async fn timed_pair(
+        batched: &mut PreparedRuntimeSlot,
+        split: &mut PreparedRuntimeSlot,
+        device: &wgpu::Device,
+        camera: &Camera,
+        batched_target: TimedFrameTarget<'_>,
+        split_target: TimedFrameTarget<'_>,
+        batched_first: bool,
+    ) -> (FrameTiming, FrameTiming) {
+        if batched_first {
+            let a = timed_frame(
+                batched,
+                device,
+                camera,
+                batched_target,
+                CommandLayout::Batched,
+            )
+            .await;
+            let b = timed_frame(
+                split,
+                device,
+                camera,
+                split_target,
+                CommandLayout::SplitSingleSubmit,
+            )
+            .await;
+            (a, b)
+        } else {
+            let b = timed_frame(
+                split,
+                device,
+                camera,
+                split_target,
+                CommandLayout::SplitSingleSubmit,
+            )
+            .await;
+            let a = timed_frame(
+                batched,
+                device,
+                camera,
+                batched_target,
+                CommandLayout::Batched,
+            )
+            .await;
+            (a, b)
+        }
+    }
+
+    fn median(values: &[f64]) -> f64 {
+        let mut sorted = values.to_vec();
+        sorted.sort_by(f64::total_cmp);
+        sorted[sorted.len() / 2]
+    }
+
+    fn p95(values: &[f64]) -> f64 {
+        let mut sorted = values.to_vec();
+        sorted.sort_by(f64::total_cmp);
+        sorted[(sorted.len() * 95).div_ceil(100).saturating_sub(1)]
+    }
+
+    #[test]
+    fn single_encoder_matches_split_single_submit() {
+        pollster::block_on(async {
+            let Some((info, device, queue)) = request_device().await else {
+                return;
+            };
+            #[cfg(target_os = "macos")]
+            assert_eq!(info.backend, wgpu::Backend::Metal);
+
+            for plan in [
+                PlanId::CpuPostSort,
+                PlanId::GpuPostSort,
+                PlanId::GpuPreproject,
+            ] {
+                let scene = exact_scene(129, 3);
+                let mut batched =
+                    PreparedRuntimeSlot::prepare(scene.clone()).expect("batched runtime");
+                let mut split = PreparedRuntimeSlot::prepare(scene).expect("split runtime");
+                for slot in [&mut batched, &mut split] {
+                    slot.set_test_gpu_admission_mode(TestGpuAdmissionMode::ConcreteAll);
+                    slot.prepare_gpu(&device, &queue, FORMAT)
+                        .await
+                        .expect("complete exact runtime");
+                }
+
+                let before_batched = batched.frame_state();
+                let before_split = split.frame_state();
+                assert_eq!(before_batched, before_split);
+                let (batched_submission, batched_image) =
+                    render_plan(&mut batched, &device, plan).await;
+                let (split_submission, split_image) =
+                    render_plan_split_single_submit(&mut split, &device, plan).await;
+                assert_equivalent_submission(&batched_submission, &split_submission);
+                assert_eq!(batched.frame_state(), split.frame_state());
+                assert_ne!(batched.frame_state(), before_batched);
+                assert_eq!(batched_image, split_image);
+            }
+        });
+    }
+
+    #[test]
+    #[ignore = "finite E10 release observation; run exactly once on required Metal"]
+    fn finite_single_encoder_batching_experiment() {
+        pollster::block_on(async {
+            const BENCH_WIDTH: u32 = 640;
+            const BENCH_HEIGHT: u32 = 480;
+            const WARMUP_PAIRS: usize = 10;
+            const MEASURED_PAIRS: usize = 100;
+            const BLOCKS: usize = 5;
+
+            let Some((info, device, queue)) = request_device().await else {
+                return;
+            };
+            #[cfg(target_os = "macos")]
+            assert_eq!(info.backend, wgpu::Backend::Metal);
+            let scene = exact_scene(65_537, 3);
+            let mut batched =
+                PreparedRuntimeSlot::prepare(scene.clone()).expect("batched benchmark runtime");
+            let mut split = PreparedRuntimeSlot::prepare(scene).expect("split benchmark runtime");
+            for slot in [&mut batched, &mut split] {
+                slot.set_test_gpu_admission_mode(TestGpuAdmissionMode::ConcreteAll);
+                slot.prepare_gpu(&device, &queue, FORMAT)
+                    .await
+                    .expect("complete exact benchmark runtime");
+            }
+            let (batched_texture, batched_view, batched_readback) = target_and_readback_size(
+                &device,
+                "e10-finite-batched-target",
+                BENCH_WIDTH,
+                BENCH_HEIGHT,
+            );
+            let (split_texture, split_view, split_readback) = target_and_readback_size(
+                &device,
+                "e10-finite-split-target",
+                BENCH_WIDTH,
+                BENCH_HEIGHT,
+            );
+
+            let batched_target = TimedFrameTarget {
+                texture: &batched_texture,
+                view: &batched_view,
+                readback: &batched_readback,
+                width: BENCH_WIDTH,
+                height: BENCH_HEIGHT,
+            };
+            let split_target = TimedFrameTarget {
+                texture: &split_texture,
+                view: &split_view,
+                readback: &split_readback,
+                width: BENCH_WIDTH,
+                height: BENCH_HEIGHT,
+            };
+            let camera_for_pair = |pair_index: usize| {
+                let mut camera = Camera::default();
+                camera.pose.position.x = if pair_index.is_multiple_of(2) {
+                    0.0
+                } else {
+                    0.03
+                };
+                camera
+            };
+
+            for pair in 0..WARMUP_PAIRS {
+                let camera = camera_for_pair(pair);
+                let _ = timed_pair(
+                    &mut batched,
+                    &mut split,
+                    &device,
+                    &camera,
+                    batched_target,
+                    split_target,
+                    pair.is_multiple_of(2),
+                )
+                .await;
+            }
+            let mut batched_samples = Vec::with_capacity(MEASURED_PAIRS);
+            let mut split_samples = Vec::with_capacity(MEASURED_PAIRS);
+            for pair in 0..MEASURED_PAIRS {
+                let pair_index = pair + WARMUP_PAIRS;
+                let camera = camera_for_pair(pair_index);
+                let (a, b) = timed_pair(
+                    &mut batched,
+                    &mut split,
+                    &device,
+                    &camera,
+                    batched_target,
+                    split_target,
+                    pair_index.is_multiple_of(2),
+                )
+                .await;
+                batched_samples.push(a);
+                split_samples.push(b);
+            }
+
+            let block_size = MEASURED_PAIRS / BLOCKS;
+            let block_wins = (0..BLOCKS)
+                .filter(|block| {
+                    let range = block * block_size..(block + 1) * block_size;
+                    median(
+                        &batched_samples[range.clone()]
+                            .iter()
+                            .map(|sample| sample.terminal_ms)
+                            .collect::<Vec<_>>(),
+                    ) < median(
+                        &split_samples[range]
+                            .iter()
+                            .map(|sample| sample.terminal_ms)
+                            .collect::<Vec<_>>(),
+                    )
+                })
+                .count();
+            let metric = |samples: &[FrameTiming], field: fn(FrameTiming) -> f64| {
+                samples.iter().copied().map(field).collect::<Vec<_>>()
+            };
+            let a_terminal = metric(&batched_samples, |sample| sample.terminal_ms);
+            let b_terminal = metric(&split_samples, |sample| sample.terminal_ms);
+            let a_median = median(&a_terminal);
+            let b_median = median(&b_terminal);
+            let decision = if a_median < b_median && block_wins >= 4 {
+                "Accept"
+            } else {
+                "Reject"
+            };
+            eprintln!(
+                "E10_BATCHING decision={decision} adapter={} backend={:?} pairs={} block_wins={}/{} batched_encode_submit_median_ms={:.6} split_encode_submit_median_ms={:.6} batched_completion_median_ms={:.6} split_completion_median_ms={:.6} batched_terminal_median_ms={:.6} split_terminal_median_ms={:.6} batched_terminal_p95_ms={:.6} split_terminal_p95_ms={:.6}",
+                info.name,
+                info.backend,
+                MEASURED_PAIRS,
+                block_wins,
+                BLOCKS,
+                median(&metric(&batched_samples, |sample| sample.encode_submit_ms)),
+                median(&metric(&split_samples, |sample| sample.encode_submit_ms)),
+                median(&metric(&batched_samples, |sample| sample.completion_ms)),
+                median(&metric(&split_samples, |sample| sample.completion_ms)),
+                a_median,
+                b_median,
+                p95(&a_terminal),
+                p95(&b_terminal),
+            );
+        });
     }
 
     #[test]

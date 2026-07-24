@@ -16,16 +16,17 @@ E6 = Accepted
 E7 = Accepted
 E8 = Accepted
 E9 = Accepted
-E10 = Active
+E10 = Accepted
+E11 = Active
 <!-- gsplat-program-task-states: end -->
 
 ## Package status
 
 - Package: E — Exact prepared plans and native execution, still shadowed.
-- Active task: the finite E10 CPU PostSort projection adapter required before
-  canonical-raster ownership can migrate without inventing a second path.
-- Last completed batch: E9 exact GPU Preproject ownership and prepared-plan
-  activation, following E7 CPU calibration and E8 GPU PostSort activation.
+- Active task: E11 mandatory comparable terminal sampler and sole whole-plan
+  controller across the three accepted Exact plans.
+- Last completed batch: E10 CPU projection adapter, canonical raster ownership,
+  exact frame transaction and one terminal submission/batching experiment.
 - E1 state: Accepted after root fixed-SHA review and fast-forward integration
   of candidate `0496266cc73de5fc84acb7c393606fa68eb77623`.
 - Dependency: Package A/A9 Accepted.
@@ -40,22 +41,6 @@ E10 = Active
   E5 is Deferred with a clean tree because the reachable physical x86_64
   endpoint lacks AVX2/FMA and Rosetta/cross-compilation cannot qualify native
   performance. Neither outcome changes the scalar production leaves.
-- E10 begins with one finite CPU-projection adapter because CPU PostSort still
-  returns only authoritative CPU IDs while canonical raster requires
-  owner-bound projected GPU planes. Root alone owns architecture policy/ledger
-  edits, fixed-SHA review, integration and the combined matrix. A separate
-  raster owner may start only after this seam is accepted or a disjoint file
-  contract is proven.
-- Source-size rule: no fixed LOC quota, split trigger or completion gate. Module
-  boundaries follow responsibility, dependency direction, compatibility,
-  testability, change locality, navigability and maintenance risk. A mixed
-  owner requires finite review only when those semantic properties warrant it;
-  physical line count cannot trigger an artificial split.
-- Numeric-policy correction: `800` and the mistyped `890` are not design
-  requirements and must not appear in writer prompts. The checker has no
-  fixed-line target, ceiling or review trigger. Existing legacy-owner snapshots
-  retain their physical counts only as non-blocking growth evidence until their
-  semantic responsibility exit condition is satisfied.
 - Performance rule: no fixed FPS or competitor percentage gate. Correctness,
   exactness, fail-closed publication and truthful evidence are hard; measured
   performance determines scoped admission or rejection.
@@ -595,3 +580,47 @@ E10 = Active
   submission/batching hypothesis will be declared separately with an explicit
   baseline and finite Accept/Reject/Defer result; it is not invented inside
   the ownership adapter.
+
+## E10 canonical raster and frame-transaction closeout
+
+- Final state: Accepted; E11 is now active.
+- CPU PostSort projection adapter integration: `f07b02c`.
+- Dormant plan-neutral CanonicalRaster integration: `212e8c6`.
+- Exact frame transaction integration: `e4bc368`; corrective fixed tip after
+  two independent reviews: `2339c5b`.
+- GPU admission now stages scene, all three complete plans and the target-format
+  canonical raster before one infallible publication. Each frame encodes one
+  selected plan and exactly one canonical raster. CPU PostSort reports host-
+  known `D=V`; GPU PostSort retains GPU-owned `D=V`; GPU Preproject retains
+  GPU-owned `D=C`; unavailable GPU numeric counts remain unavailable.
+- The pending transaction owns its command encoder. Hosts may append capture or
+  readback work only to that exact encoder; Renderer alone finishes, submits
+  once and then publishes `FrameState`. Every later encode attempt, including a
+  failed one, invalidates older pending work before any plan or queue side
+  effect. Wrong-owner, stale-base and stale-attempt submissions fail closed.
+- Both fixed-tip reviewers accepted with no P0/P1/P2 after the transaction
+  correction. Root verification passed 379 renderer tests with seven existing
+  ignored research tests, all-workspace check/test/strict Clippy/Rustdoc,
+  wasm32, architecture policy/self-tests and required Apple M4/Metal
+  SortedAlpha conformance.
+
+## E10 finite submission/batching experiment
+
+- Hypothesis: placing `Plan + CanonicalRaster + capture copy` in one command
+  buffer would reduce terminal completion time versus two ordered command
+  buffers in the same single `Queue::submit` call. The comparison changed only
+  command-buffer organization; scene, SH3, 65,537 points, 640x480 target,
+  camera sequence, plan, copy, submission count and completion wait were equal.
+- Hard correctness passed first: CPU PostSort, GPU PostSort and GPU Preproject
+  produced byte-identical images, equivalent frame/plan/order/count receipts
+  and identical published FrameState in both organizations on Apple M4/Metal.
+- Protocol: 10 warmup pairs followed by 100 AB/BA-interleaved measured pairs in
+  five blocks, using exact `SubmissionIndex` completion. Performance was an
+  observation, never an E10 completion gate.
+- Result: Rejected for a scoped performance claim. The single-buffer layout won
+  only 3/5 blocks; terminal median was 59.536709 ms versus 59.448750 ms and p95
+  was 74.515791 ms versus 73.444583 ms. Encode/submit medians were 0.570167 ms
+  versus 0.546083 ms. No repeat tuning is authorized by this hypothesis.
+- The one-buffer production shape remains for stronger transaction ownership
+  and straightforward host append semantics, not because of a claimed speedup.
+  The performance rejection does not block E11.

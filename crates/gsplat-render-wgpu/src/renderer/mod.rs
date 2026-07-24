@@ -573,6 +573,25 @@ pub(crate) fn submit_encoded_frame(
     slot: &mut PreparedRuntimeSlot,
     pending: PendingGpuFrame,
 ) -> Result<GpuFrameSubmission, FrameExecutionError> {
+    submit_pending_frame(slot, pending, std::iter::empty())
+}
+
+/// Finite E10 control path: keep one queue submission while placing a caller
+/// copy in a second command buffer after the exact render command buffer.
+#[cfg(test)]
+pub(crate) fn submit_encoded_frame_with_followup_for_test(
+    slot: &mut PreparedRuntimeSlot,
+    pending: PendingGpuFrame,
+    followup: wgpu::CommandBuffer,
+) -> Result<GpuFrameSubmission, FrameExecutionError> {
+    submit_pending_frame(slot, pending, std::iter::once(followup))
+}
+
+fn submit_pending_frame(
+    slot: &mut PreparedRuntimeSlot,
+    pending: PendingGpuFrame,
+    followups: impl IntoIterator<Item = wgpu::CommandBuffer>,
+) -> Result<GpuFrameSubmission, FrameExecutionError> {
     let owner = slot
         .gpu_owner
         .as_ref()
@@ -594,7 +613,9 @@ pub(crate) fn submit_encoded_frame(
     }
 
     let command_buffer = pending.encoder.finish();
-    let submission_index = owner.queue().submit(Some(command_buffer));
+    let submission_index = owner
+        .queue()
+        .submit(std::iter::once(command_buffer).chain(followups));
     slot.frame = pending.candidate_frame;
     Ok(GpuFrameSubmission {
         submission_index,

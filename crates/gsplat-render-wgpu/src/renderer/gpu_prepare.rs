@@ -1,11 +1,11 @@
 //! Transactional device preparation for the shadow Exact runtime.
 //!
-//! This module prepares only device-owned Resident, resolved-color, PostSort
-//! order/rank-projection and dormant Preproject compute resources. It does not
-//! admit Preproject as a plan, select policy, create a target/raster, acquire
-//! an adapter, create a device, submit, poll, map, read back or present. The
-//! later concrete GPU plans own orchestration and the renderer remains the
-//! sole semantic-generation and result owner.
+//! This module prepares device-owned Resident, resolved-color, PostSort
+//! order/rank-projection, Preproject compute and target-format canonical raster
+//! resources. It does not select policy, own a target lifecycle, acquire an
+//! adapter, create a device, submit, poll, map, read back or present. Concrete
+//! plans own orchestration and the renderer remains the sole semantic-
+//! generation and result owner.
 
 use std::sync::Arc;
 
