@@ -13,23 +13,18 @@ E3 = Accepted
 E4 = Rejected
 E5 = Deferred
 E6 = Accepted
-E7 = Active
-E8 = Active
+E7 = Accepted
+E8 = Accepted
+E9 = Active
 <!-- gsplat-program-task-states: end -->
-
-<!-- gsplat-program-active-lanes: begin -->
-activation_commit = d356409a0245b45b5af3d1ecbfd0892be3c3274e
-E7 = E7-cpu-init-calibration
-E8 = E8-gpu-post-plan
-<!-- gsplat-program-active-lanes: end -->
 
 ## Package status
 
 - Package: E — Exact prepared plans and native execution, still shadowed.
-- Active tasks: bounded native CPU initialization calibration (E7) and the
-  plans-only exact GPU PostSort implementation (E8).
-- Last completed batch: E6 direct-packed CPU preprocess and E8a transactional
-  GPU runtime admission.
+- Active task: the finite E9 Preproject ownership adapter. The plans-only E9
+  writer remains blocked until this adapter is accepted.
+- Last completed batch: E7 native CPU initialization calibration and E8 exact
+  GPU PostSort prepared-plan activation.
 - E1 state: Accepted after root fixed-SHA review and fast-forward integration
   of candidate `0496266cc73de5fc84acb7c393606fa68eb77623`.
 - Dependency: Package A/A9 Accepted.
@@ -44,14 +39,11 @@ E8 = E8-gpu-post-plan
   E5 is Deferred with a clean tree because the reachable physical x86_64
   endpoint lacks AVX2/FMA and Rosetta/cross-compilation cannot qualify native
   performance. Neither outcome changes the scalar production leaves.
-- Current safe parallel batch contains E7 and E8. E7 owns only native CPU
-  initialization calibration, preprocess/workspace integration and tests. E8
-  owns only the concrete GPU PostSort plan and PlanSet registration. Their
-  exact files and mutable owners are disjoint. Root alone owns shared
-  architecture policy/ledger edits, fixed-SHA review, integration and the
-  combined matrix.
-  Never create parallel writers for the same mutable owner merely to increase
-  concurrency.
+- E9 is intentionally serial at this boundary because the adapter and the
+  later plan both touch GPU admission and `ProjectedWork` ownership. Root alone
+  owns architecture policy/ledger edits, fixed-SHA review, integration and the
+  combined matrix. Independent later packages may resume in parallel only
+  after their contracts and mutable owners are disjoint.
 - Source-size rule: no fixed LOC quota, split trigger or completion gate. Module
   boundaries follow responsibility, dependency direction, compatibility,
   testability, change locality, navigability and maintenance risk. A mixed
@@ -464,3 +456,62 @@ E8 = E8-gpu-post-plan
   do not overlap, either may finish first; root reviews fixed candidates
   independently and runs the shared matrix only after accepted candidates are
   composed.
+
+## E7 / E8 closeout and E9 adapter activation
+
+- E7 final state: Accepted. Activation base
+  `73548d46f3359eb273a55d76edfe7cefc76a2fe0`, first candidate
+  `bac5abf4c5ca9bdf511541cab6a14befb153b518`, corrective candidate and root
+  fast-forward `6378cefb53be975294268d950c5c5a13722c677e`.
+- E7 result: one native `CpuOrderEngine` now calibrates only accepted packed
+  Scalar chunk counts. Empty and small scenes execute serially but remain
+  pending because the same renderer can replace its scene; the first valid
+  large scene runs the finite private probe transaction and freezes one choice.
+  Candidate enumeration and fallback share the same effective OS/Rayon
+  parallelism, so fallback never selects an execution outside the candidate
+  set. Invalid cameras and probe failures cannot publish an authoritative
+  order. WASM remains on its prior scalar/serial path.
+- E7 review rejected the first candidate for inconsistent OS/Rayon fallback
+  derivation and missing three-chunk coverage. The corrective commit unified
+  the capability source, added singleton and failure tests, and covers chunk
+  counts 1--4 against the scalar oracle. Final fixed-SHA semantic and scope
+  reviews found no P0/P1/P2.
+- The finite Apple M4 observation used 500,000 deterministic positions. The
+  final environment selected serial, completed one calibration transaction,
+  retained order hash `a1ce663566d7ba9f`, and reused the frozen choice. These
+  numbers prove finite initialization and exact output only; they are not a
+  full-frame, cross-platform or competitor claim. The 500 ms deadline is a
+  cooperative check between bounded synchronous probes, not a preemptive wall
+  clock guarantee.
+- E8 final state: Accepted. Writer candidate
+  `778f6e484aa90f0aa1fbc90d6492bf1502af4d73`, activation base
+  `73548d46f3359eb273a55d76edfe7cefc76a2fe0`, root integration
+  `20b7dbbbcabfb559bf32661d14aed00eee38ff06` after E7.
+- E8 result: production GPU admission now publishes a concrete
+  `GpuPostSortPlan` only with the matching device-owned scene receipt and
+  immutable eligibility. Every execute validates camera, source/capacity/
+  resident/addressable counts, SH0--SH3, viewport, owner and scene/contract/
+  plan-set generations before encoding the accepted color, exact visibility,
+  stable compaction/full32 radix and rank-projection graph. A discarded encoder
+  publishes no cache; retry re-encodes. Host numeric V/C/D remain unavailable,
+  while sorter-owned indirect arguments carry the exact `D=V` relationship.
+- E8 fixed-SHA semantic and scope reviews found no P0/P1/P2. Fresh focused
+  execution identified Apple M4/Metal rather than silently skipping; 0/1/257,
+  SH0--SH3, invalid-camera transaction, discard/retry, full32 primitives and
+  SortedAlpha conformance passed. The plan does not submit, poll, map, read
+  back, present, create a second device, change raster/WGSL, or alter a product
+  route or public ABI.
+- E9 preflight result: `needs-adapter`. The existing Preproject graph already
+  implements exact projection, stable contributor compaction, full32 radix and
+  indirect draw, but one legacy owner also holds target-format raster state.
+  The adapter must first separate compute ownership, stage it in the same
+  atomic GPU scene transaction as PostSort, and expose an owner-bound
+  `SceneRuntime` encode seam. It may return only GPU buffers, count sources and
+  currentness receipts; it may not submit, poll, map/read back, present, add a
+  controller or change product selection.
+- E9 adapter activation baseline:
+  `20b7dbbbcabfb559bf32661d14aed00eee38ff06`. The writer may edit only the
+  registered Preproject compute/raster split, GPU preparation, scene-runtime
+  seam and the minimum PlanSet admission shape. The later plans-only E9 writer
+  starts from the accepted adapter SHA and is reviewed separately. E10 remains
+  blocked until both complete.

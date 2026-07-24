@@ -6,37 +6,7 @@
       "IO-PLY-1",
       "IO-SPZ-1"
     ],
-    "parallel_execution": {
-      "activation_commit": "d356409a0245b45b5af3d1ecbfd0892be3c3274e",
-      "members": [
-        {
-          "task": "E7",
-          "lane": "E7-cpu-init-calibration",
-          "write_allowlist": [
-            "crates/gsplat-render-wgpu/src/cpu/mod.rs",
-            "crates/gsplat-render-wgpu/src/cpu/calibration.rs",
-            "crates/gsplat-render-wgpu/src/cpu/preprocess.rs",
-            "crates/gsplat-render-wgpu/src/cpu/preprocess/packed.rs",
-            "crates/gsplat-render-wgpu/src/cpu/workspace.rs",
-            "crates/gsplat-render-wgpu/src/cpu_order.rs"
-          ]
-        },
-        {
-          "task": "E8",
-          "lane": "E8-gpu-post-plan",
-          "write_allowlist": [
-            "crates/gsplat-render-wgpu/src/plans/mod.rs",
-            "crates/gsplat-render-wgpu/src/plans/gpu_post.rs",
-            "crates/gsplat-render-wgpu/src/plans/gpu_post/tests.rs"
-          ]
-        }
-      ],
-      "integration_order": [
-        "E7-cpu-init-calibration",
-        "E8-gpu-post-plan"
-      ],
-      "reason": "E7 owns only native CPU initialization calibration and its lane-local preprocess/workspace integration. E8 owns only the concrete plans-only GPU PostSort implementation and PlanSet registration. Their exact files and mutable owners are disjoint; root owns ledger, policy, review, integration and shared gates."
-    },
+    "parallel_execution": null,
     "task_catalog": {
       "A0": "A",
       "A1": "A",
@@ -312,6 +282,14 @@
         {
           "path": "crates/gsplat-render-wgpu/src/plans/cpu_post.rs",
           "name": "execute"
+        },
+        {
+          "path": "crates/gsplat-render-wgpu/src/plans/gpu_post.rs",
+          "name": "execute"
+        },
+        {
+          "path": "crates/gsplat-render-wgpu/src/plans/gpu_post/tests.rs",
+          "name": "prepared_gpu_post_is_exact_current_indirect_and_discard_safe"
         }
       ],
       "preparation_only_files": []
