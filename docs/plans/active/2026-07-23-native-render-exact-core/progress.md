@@ -21,10 +21,10 @@ E9 = Active
 ## Package status
 
 - Package: E — Exact prepared plans and native execution, still shadowed.
-- Active task: the finite E9 Preproject ownership adapter. The plans-only E9
-  writer remains blocked until this adapter is accepted.
-- Last completed batch: E7 native CPU initialization calibration and E8 exact
-  GPU PostSort prepared-plan activation.
+- Active task: the plans-only E9 exact GPU Preproject prepared plan, using the
+  accepted target-independent compute seam without changing GPU algorithms.
+- Last completed batch: the finite E9 Preproject ownership adapter, following
+  E7 native CPU initialization calibration and E8 GPU PostSort activation.
 - E1 state: Accepted after root fixed-SHA review and fast-forward integration
   of candidate `0496266cc73de5fc84acb7c393606fa68eb77623`.
 - Dependency: Package A/A9 Accepted.
@@ -521,3 +521,28 @@ E9 = Active
   seam and the minimum PlanSet admission shape. The later plans-only E9 writer
   starts from the accepted adapter SHA and is reviewed separately. E10 remains
   blocked until both complete.
+
+## E9 finite ownership adapter closeout
+
+- Final state: Accepted; plans-only E9 is now active.
+- Fixed parent: `6be80c07967eb1acb4fc92124a8d8184736e869c`.
+- Accepted candidate: `52f15f65b03fc1feb0722b2b4ef883206c936f05`.
+- Root integration commit: `dca240e`.
+- Scope stayed within the four registered adapter paths: the Preproject
+  compute/raster ownership split, GPU preparation, and the scene-runtime seam.
+  No plan admission, product route, controller, public API, C ABI, WGSL or GPU
+  algorithm changed.
+- The accepted seam atomically stages PostSort and target-independent
+  Preproject compute on one existing device owner. It validates owner, full
+  scene/contract/plan-set identity, count, SH degree, camera and viewport, then
+  exposes borrowed stable IDs, indirect arguments, projected planes, resolved
+  color and GPU V/C count sources. It never submits, polls, maps, reads back,
+  presents or publishes encoder-dependent cache state.
+- Two independent fixed-SHA reviews reported no P0/P1/P2 findings. Root fresh
+  verification passed the 0/1/127/128/129/1025 and SH0--SH3 Metal seam test,
+  discard/retry, architecture self-tests/real-tree policy, and required Metal
+  SortedAlpha conformance. The writer's broader focused matrix also passed.
+- `PlanId::GpuPreproject` remains unprepared and ineligible at this boundary.
+  The active plans-only writer may consume only this accepted seam and the
+  existing plan abstractions; it may not reopen primitive algorithms or legacy
+  Surface ownership.
