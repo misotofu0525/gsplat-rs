@@ -1065,6 +1065,11 @@ def validate_current_stats_evidence(
     frames: Sequence[dict[str, Any]],
     expected_backend: str,
 ) -> None:
+    if expected_backend not in BACKENDS:
+        raise RuntimeError(
+            f"current-stats validation requires a known requested backend, got "
+            f"{expected_backend!r}"
+        )
     renderer = manifest.get("renderer", {})
     expected_renderer = {
         "current_stats_schema": "gsplat-surface-current-stats/v1",
@@ -1111,6 +1116,18 @@ def validate_current_stats_evidence(
     if "frames[*].raster_ms" not in unavailable_set:
         raise RuntimeError("unavailable raster timing is not declared")
 
+    exactness = manifest.get("exactness")
+    manifest_exactness_receipt_id = (
+        exactness.get("receipt_id") if isinstance(exactness, dict) else None
+    )
+    if (
+        not isinstance(manifest_exactness_receipt_id, str)
+        or not manifest_exactness_receipt_id
+    ):
+        raise RuntimeError(
+            "current-stats validation requires manifest exactness receipt identity"
+        )
+
     identity_fields = {
         "scene_generation",
         "camera_revision",
@@ -1130,7 +1147,6 @@ def validate_current_stats_evidence(
     }
     tickets: set[int] = set()
     presentation_sequences: set[int] = set()
-    exactness_receipt_ids: set[str] = set()
     for sample_index, (frame, entry) in enumerate(zip(frames, ledger, strict=True)):
         if not isinstance(entry, dict) or entry.get("sample_index") != sample_index:
             raise RuntimeError(
@@ -1143,11 +1159,11 @@ def validate_current_stats_evidence(
         if entry.get("outcome") != "ready":
             raise RuntimeError(f"current-stats frame {sample_index} lacks matching Ready")
         exactness_receipt_id = entry.get("exactness_receipt_id")
-        if not isinstance(exactness_receipt_id, str) or not exactness_receipt_id:
+        if exactness_receipt_id != manifest_exactness_receipt_id:
             raise RuntimeError(
-                f"current-stats frame {sample_index} lacks exactness receipt identity"
+                f"current-stats frame {sample_index} exactness receipt identity "
+                "does not match manifest.exactness.receipt_id"
             )
-        exactness_receipt_ids.add(exactness_receipt_id)
 
         ticket = entry.get("ticket")
         if (
@@ -1313,8 +1329,6 @@ def validate_current_stats_evidence(
             raise RuntimeError(
                 "GPU completion timing is not joined to this sample's own order terminal"
             )
-    if len(exactness_receipt_ids) != 1:
-        raise RuntimeError("current-stats samples do not share one exactness receipt")
 
 
 def validate_run_artifact(

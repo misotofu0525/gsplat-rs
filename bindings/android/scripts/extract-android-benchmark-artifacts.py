@@ -7,6 +7,7 @@ import argparse
 import base64
 import binascii
 import hashlib
+import importlib.util
 import json
 import os
 import pathlib
@@ -22,6 +23,9 @@ FRAME_PREFIX = "GSPLAT_BENCHMARK_FRAME "
 SUMMARY_PREFIX = "GSPLAT_BENCHMARK_SUMMARY "
 CHUNK_PREFIX = "GSPLAT_BENCHMARK_CHUNK "
 CHUNK_SHA256 = re.compile(r"[0-9a-f]{64}")
+CURRENT_STATS_VALIDATOR = pathlib.Path(__file__).with_name(
+    "collect-android-sort-benchmarks.py"
+)
 
 
 def extract_payload(line: str, prefix: str) -> str | None:
@@ -65,6 +69,35 @@ def parse_chunk(payload: str) -> tuple[tuple[str, str, str, int], int, bytes]:
         raise ValueError("chunk payload is empty")
     key = (fields["record"], fields["run_id"], fields["sha256"], total)
     return key, index, decoded
+
+
+def validate_declared_current_stats(staging: pathlib.Path) -> None:
+    manifest = json.loads((staging / "manifest.json").read_text(encoding="utf-8"))
+    renderer = manifest.get("renderer")
+    if not isinstance(renderer, dict) or renderer.get("current_stats_strict") is not True:
+        return
+
+    summary = json.loads((staging / "summary.json").read_text(encoding="utf-8"))
+    frames = [
+        json.loads(line)
+        for line in (staging / "frames.jsonl").read_text(encoding="utf-8").splitlines()
+        if line
+    ]
+    spec = importlib.util.spec_from_file_location(
+        "android_sort_collector_current_stats_validator",
+        CURRENT_STATS_VALIDATOR,
+    )
+    if spec is None or spec.loader is None:
+        raise RuntimeError("cannot load Android current-stats artifact validator")
+    validator = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = validator
+    spec.loader.exec_module(validator)
+    validator.validate_current_stats_evidence(
+        manifest,
+        summary,
+        frames,
+        renderer.get("order_backend_requested"),
+    )
 
 
 def main() -> int:
@@ -164,6 +197,10 @@ def main() -> int:
         (staging / "summary.json").write_text(summaries[0] + "\n", encoding="utf-8")
         (staging / "frames.jsonl").write_text("\n".join(frames) + "\n", encoding="utf-8")
         subprocess.run([sys.executable, str(args.validator), str(staging)], check=True)
+        try:
+            validate_declared_current_stats(staging)
+        except (RuntimeError, ValueError) as error:
+            parser.error(f"invalid strict Android current-stats artifact: {error}")
         if args.camera_trace is not None:
             assert args.camera_validator is not None
             subprocess.run(

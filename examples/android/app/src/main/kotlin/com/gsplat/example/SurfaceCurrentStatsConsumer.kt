@@ -197,6 +197,31 @@ internal class SurfaceCurrentStatsConsumer(
         )
     }
 
+    /**
+     * Closes a pre-ticket intent whose same-frame retry command failed.
+     *
+     * There is no native cancellation operation for an accepted request, so
+     * the caller must destroy the native renderer before another render. This
+     * prevents that intent from issuing against a different camera/trace frame.
+     */
+    fun closeOutstandingAfterCommandFailure(): Boolean {
+        val current = outstanding ?: return false
+        adapter.abandonFrame()
+        outstanding = null
+        recordRejection(
+            reason = "command_failed_before_same_frame_retry",
+            ticket = null,
+            binding = current.binding
+        )
+        setDisplay(
+            SurfaceCurrentStatsDisplay.Unavailable(
+                reason = "command_failed_current_stats_session_closed",
+                pendingCount = pendingTicketCount()
+            )
+        )
+        return true
+    }
+
     fun afterSuccessfulRender(nativeHandle: Long): SurfaceCurrentStatsDisplay =
         advanceAfterSuccessfulRender(
             completeRequest = { request -> adapter.complete(nativeHandle, request) },

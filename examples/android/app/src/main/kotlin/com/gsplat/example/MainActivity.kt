@@ -1272,43 +1272,62 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                             null
                         }
                         var renderCallNs = 0L
-                        val transaction = synchronized(renderLock) {
-                            val renderStartNs = System.nanoTime()
-                            performSurfaceRenderTransaction(
-                                applyCommand = {
-                                    if (traceStep != null && benchmark.config.cameraTraceSequence) {
-                                        BenchmarkBridge.setSurfaceCameraTraceFrame(
-                                            handle,
-                                            checkNotNull(benchmark.config.cameraTracePath),
-                                            traceStep.traceFrameIndex,
-                                            benchmark.config.requireTraceDisplayMatch
-                                        )
-                                    } else if (traceStep != null) {
-                                        // Fixed-trace mode was applied transactionally before the
-                                        // render loop. Do not force a fresh sort every frame merely
-                                        // to attach the same trace identity to its runtime receipt.
-                                        0
-                                    } else if (
-                                        benchmark.enabled && benchmark.config.cameraTracePath == null
-                                    ) {
-                                        NativeBridge.orbitSurfaceRenderer(
-                                            handle,
-                                            benchmark.config.yawStepRadians,
-                                            0f
-                                        )
-                                    } else {
-                                        applyPendingCameraCommands(handle)
-                                    }
-                                },
-                                requestCurrentStats = currentStatsBinding?.let { binding ->
-                                    {
-                                        currentStats.request(handle, binding)
-                                        Unit
-                                    }
-                                },
-                                stopOnRequestFailure = benchmarkStatsBinding != null,
-                                render = { NativeBridge.renderSurfaceFrame(handle) }
-                            ).also { renderCallNs = System.nanoTime() - renderStartNs }
+                        val renderStartNs = System.nanoTime()
+                        val transaction = performSurfaceRenderTransaction(
+                            renderLock = renderLock,
+                            applyCommand = {
+                                if (traceStep != null && benchmark.config.cameraTraceSequence) {
+                                    BenchmarkBridge.setSurfaceCameraTraceFrame(
+                                        handle,
+                                        checkNotNull(benchmark.config.cameraTracePath),
+                                        traceStep.traceFrameIndex,
+                                        benchmark.config.requireTraceDisplayMatch
+                                    )
+                                } else if (traceStep != null) {
+                                    // Fixed-trace mode was applied transactionally before the
+                                    // render loop. Do not force a fresh sort every frame merely
+                                    // to attach the same trace identity to its runtime receipt.
+                                    0
+                                } else if (
+                                    benchmark.enabled && benchmark.config.cameraTracePath == null
+                                ) {
+                                    NativeBridge.orbitSurfaceRenderer(
+                                        handle,
+                                        benchmark.config.yawStepRadians,
+                                        0f
+                                    )
+                                } else {
+                                    applyPendingCameraCommands(handle)
+                                }
+                            },
+                            closeCurrentStatsOnCommandFailure =
+                                currentStats::closeOutstandingAfterCommandFailure,
+                            requestCurrentStats = currentStatsBinding?.let { binding ->
+                                {
+                                    currentStats.request(handle, binding)
+                                    Unit
+                                }
+                            },
+                            stopOnRequestFailure = benchmarkStatsBinding != null,
+                            render = { NativeBridge.renderSurfaceFrame(handle) },
+                            observeRequestedRenderFailure = currentStats::renderFailed,
+                            reconcileAfterSuccessfulRender = {
+                                currentStats.afterSuccessfulRender(handle)
+                                Unit
+                            }
+                        ).also { renderCallNs = System.nanoTime() - renderStartNs }
+                        if (transaction.commandFailureClosedCurrentStats) {
+                            Log.e(
+                                TAG,
+                                "camera command failed with an outstanding current-stats intent; " +
+                                    "closing renderer rc=${transaction.commandRc}"
+                            )
+                            updateStatus(
+                                "state=current_stats_session_closed " +
+                                    "reason=command_failed rc=${transaction.commandRc}"
+                            )
+                            running = false
+                            continue
                         }
                         val currentStatsRequestError = transaction.requestError
                         if (benchmarkStatsBinding != null && currentStatsRequestError != null) {
@@ -1324,14 +1343,32 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                         currentStatsRequestError?.let { error ->
                             Log.e(TAG, "UI current-stats request failed; rendering continues", error)
                         }
+                        val currentStatsReconciliationError = transaction.reconciliationError
+                        if (currentStatsReconciliationError != null) {
+                            if (benchmark.enabled) {
+                                Log.e(
+                                    TAG,
+                                    "strict current-stats reconciliation failed",
+                                    currentStatsReconciliationError
+                                )
+                                updateStatus(
+                                    "state=benchmark_current_stats_error " +
+                                        "error=${compactMessage(currentStatsReconciliationError)}"
+                                )
+                                running = false
+                                continue
+                            }
+                            Log.e(
+                                TAG,
+                                "UI current-stats reconciliation failed; rendering continues",
+                                currentStatsReconciliationError
+                            )
+                        }
                         val rc = transaction.rc
                         frameCount += 1
                         if (rc != 0) {
                             if (transaction.commandRc != 0) {
                                 Log.e(TAG, "applyPendingCameraCommands failed rc=${transaction.commandRc}")
-                            }
-                            if (transaction.requestSucceeded && transaction.renderRc != null) {
-                                currentStats.renderFailed()
                             }
                             consecutiveErrors += 1
                             if (consecutiveErrors == 1L || consecutiveErrors % ERROR_STATUS_INTERVAL == 0L) {
@@ -1341,24 +1378,6 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                             }
                         } else {
                             consecutiveErrors = 0L
-                            val currentStatsAdvance = runCatching {
-                                synchronized(renderLock) {
-                                    currentStats.afterSuccessfulRender(handle)
-                                }
-                            }
-                            if (currentStatsAdvance.isFailure) {
-                                val error = checkNotNull(currentStatsAdvance.exceptionOrNull())
-                                if (benchmark.enabled) {
-                                    Log.e(TAG, "strict current-stats reconciliation failed", error)
-                                    updateStatus(
-                                        "state=benchmark_current_stats_error " +
-                                            "error=${compactMessage(error)}"
-                                    )
-                                    running = false
-                                    continue
-                                }
-                                Log.e(TAG, "UI current-stats reconciliation failed", error)
-                            }
                             val now = System.nanoTime()
                             if (benchmark.enabled) {
                                 val cameraReceiptResult = BenchmarkCameraReceipt.query(handle)

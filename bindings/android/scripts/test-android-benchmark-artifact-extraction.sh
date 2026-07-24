@@ -22,6 +22,144 @@ python3 "$ROOT/bindings/android/scripts/extract-android-benchmark-artifacts.py" 
   "$TMP_DIR/artifact" \
   --validator "$ROOT/tests/perf/validate-benchmark-artifacts.py"
 
+# A declared strict Android artifact must pass the same current-stats ledger
+# validator as the full device collector.
+STRICT_LOG="$TMP_DIR/strict-logcat.txt"
+MISSING_LEDGER_LOG="$TMP_DIR/strict-missing-ledger-logcat.txt"
+python3 - "$FIXTURE" "$STRICT_LOG" "$MISSING_LEDGER_LOG" <<'PY'
+import json
+import pathlib
+import sys
+
+fixture = pathlib.Path(sys.argv[1])
+strict_destination = pathlib.Path(sys.argv[2])
+missing_destination = pathlib.Path(sys.argv[3])
+manifest = json.loads((fixture / "manifest.json").read_text())
+summary = json.loads((fixture / "summary.json").read_text())
+frames = [
+    json.loads(line)
+    for line in (fixture / "frames.jsonl").read_text().splitlines()
+    if line
+]
+manifest["renderer"].update(
+    {
+        "order_backend_requested": "cpu",
+        "current_stats_schema": "gsplat-surface-current-stats/v1",
+        "current_stats_strict": True,
+        "count_source": "matching_current_stats_ready",
+        "count_semantics": "candidate_visible_contributor_issued_v1",
+    }
+)
+manifest["exactness"] = {"receipt_id": "strict-fixture-exactness"}
+manifest["timing_contract"] = {
+    "call_ms": "host_camera_request_render_transaction_wall",
+    "frame_wall_ms": "host_iteration_request_through_receipt_queries",
+    "preprocess_ms": "matching_cpu_order_terminal_only",
+    "sort_ms": "matching_cpu_order_terminal_only",
+    "raster_ms": None,
+}
+for unavailable in (
+    "frames[*].cpu_frame_complete_ms",
+    "frames[*].raster_ms",
+):
+    if unavailable not in manifest["unavailable_fields"]:
+        manifest["unavailable_fields"].append(unavailable)
+
+ledger = []
+for index, frame in enumerate(frames):
+    revision = index + 1
+    ticket = 1_000 + index
+    presentation_sequence = 2_000 + index
+    identity = {
+        "scene_generation": 1,
+        "camera_revision": revision,
+        "viewport_generation": 2,
+        "contract_generation": 3,
+        "plan_set_generation": 4,
+        "order_generation": 5 + index,
+        "raster_generation": 6,
+        "encode_attempt": 100 + index,
+        "presentation_sequence": presentation_sequence,
+        "executed_plan": "cpu_post_sort",
+    }
+    frame.update(
+        {
+            "camera_revision": revision,
+            "trace_frame_index": None,
+            "trace_timestamp_ns": None,
+            "contributor": frame["visible"],
+            "exact_contributor_compaction": False,
+            "raster_ms": None,
+            "cpu_frame_complete_ms": None,
+            "order_submission_ticket": ticket,
+            "order_measurement_ticket": ticket,
+            "order_measurement_camera_revision": revision,
+            "current_stats_ticket": ticket,
+            "current_stats_presentation_sequence": presentation_sequence,
+            "current_stats_executed_plan": "cpu_post_sort",
+            "camera_receipt": {
+                "camera_revision": revision,
+                "presented_camera_revision": revision,
+            },
+        }
+    )
+    ledger.append(
+        {
+            "sample_index": index,
+            "trace_frame_index": None,
+            "trace_timestamp_ns": None,
+            "request_status": "requested",
+            "submission_status": "issued",
+            "ticket": ticket,
+            "identity": identity,
+            "outcome": "ready",
+            "source": manifest["dataset"]["splat_count"],
+            "visible": frame["visible"],
+            "contributor": frame["contributor"],
+            "drawn": frame["drawn"],
+            "count_semantics": "indirect_draw_equals_visible",
+            "exactness_receipt_id": "strict-fixture-exactness",
+        }
+    )
+summary["current_stats_terminal_ledger"] = ledger
+
+
+def write_log(destination, summary_value):
+    lines = [
+        "I/GsplatExample(123): GSPLAT_BENCHMARK_MANIFEST "
+        + json.dumps(manifest, separators=(",", ":"))
+    ]
+    lines.extend(
+        "I/GsplatExample(123): GSPLAT_BENCHMARK_FRAME "
+        + json.dumps(frame, separators=(",", ":"))
+        for frame in frames
+    )
+    lines.append(
+        "I/GsplatExample(123): GSPLAT_BENCHMARK_SUMMARY "
+        + json.dumps(summary_value, separators=(",", ":"))
+    )
+    destination.write_text("\n".join(lines) + "\n")
+
+
+write_log(strict_destination, summary)
+missing = dict(summary)
+missing.pop("current_stats_terminal_ledger")
+write_log(missing_destination, missing)
+PY
+
+python3 "$ROOT/bindings/android/scripts/extract-android-benchmark-artifacts.py" \
+  "$STRICT_LOG" \
+  "$TMP_DIR/strict-artifact" \
+  --validator "$ROOT/tests/perf/validate-benchmark-artifacts.py"
+
+if python3 "$ROOT/bindings/android/scripts/extract-android-benchmark-artifacts.py" \
+  "$MISSING_LEDGER_LOG" \
+  "$TMP_DIR/strict-missing-ledger-artifact" \
+  --validator "$ROOT/tests/perf/validate-benchmark-artifacts.py"; then
+  echo "extractor unexpectedly accepted strict current-stats without a ledger" >&2
+  exit 1
+fi
+
 if python3 "$ROOT/bindings/android/scripts/extract-android-benchmark-artifacts.py" \
   "$LOG" \
   "$TMP_DIR/artifact" \

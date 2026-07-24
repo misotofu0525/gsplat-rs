@@ -69,6 +69,7 @@ def camera_validation_fixture(backend: str = "gpu", sample_count: int = 1):
             "count_source": "matching_current_stats_ready",
         },
         "dataset": {"sha256": "abc", "bytes": 123, "splat_count": 100},
+        "exactness": {"receipt_id": "fixture-exactness"},
         "timing_contract": {
             "call_ms": "host_camera_request_render_transaction_wall",
             "frame_wall_ms": "host_iteration_request_through_receipt_queries",
@@ -743,6 +744,27 @@ class ParsingTests(unittest.TestCase):
                         fixture[3],
                         fixture[4],
                     )
+
+    def test_current_stats_ledger_exactness_receipt_matches_manifest(self) -> None:
+        fixture = camera_validation_fixture("gpu", 2)
+        fixture[1]["current_stats_terminal_ledger"][0][
+            "exactness_receipt_id"
+        ] = "different-exactness"
+
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "manifest.exactness.receipt_id",
+        ):
+            COLLECTOR.validate_run_artifact(
+                fixture[0],
+                fixture[1],
+                fixture[2],
+                "gpu",
+                "packed",
+                {"sha256": "abc", "bytes": 123},
+                fixture[3],
+                fixture[4],
+            )
 
     def test_fixed_view_one_and_two_view_sequence_are_auditable(self) -> None:
         trace_path = (

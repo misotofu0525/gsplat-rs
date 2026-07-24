@@ -137,6 +137,13 @@ The sample app uses the same additive adapter over its lower-level
 shows unavailable for every non-Ready state. Strict benchmark frames request
 only after their camera/resize command succeeds, then bind Issued submission and
 terminal evidence to that measured frame by ticket plus the complete identity.
+The sample holds one `renderLock` transaction across command, request,
+render/present, submission read, and exactly one non-blocking poll, so a
+`surfaceChanged` resize cannot split that sequence. A UI request exception is
+non-fatal and the ordinary render still runs; a strict request exception rejects
+the sample before rendering. If a failed render retains a pre-ticket intent and
+its same-frame retry command then fails, the sample explicitly rejects that
+intent and closes the native renderer before any different frame can render.
 Multiple issued tickets may remain pending and terminate out of order; only one
 not-yet-submitted pre-ticket request intent may exist at a time. The bounded
 terminal flush never blocks rendering or borrows a later frame's receipt.
@@ -413,6 +420,13 @@ directory. The experiment root also contains the seeded schedule, dataset/APK
 hashes, device identity, thermal observations, and progress in
 `experiment.json`. Existing output roots and artifact directories are never
 overwritten.
+
+The standalone `extract-android-benchmark-artifacts.py` path runs the generic
+v1 validator and, whenever `renderer.current_stats_strict=true`, the same
+current-stats artifact validator used by the full collector. Missing or
+non-Ready ledger entries, incomplete identity, sample/trace join drift, or an
+`exactness_receipt_id` different from `manifest.exactness.receipt_id` fails
+closed before the destination is published.
 
 Benchmark mode forces a tiny camera orbit each frame so it measures the selected
 ordering backend and exact resident draw path rather than stationary

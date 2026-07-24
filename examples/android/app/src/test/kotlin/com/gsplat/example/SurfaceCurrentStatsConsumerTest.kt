@@ -132,6 +132,24 @@ class SurfaceCurrentStatsConsumerTest {
     }
 
     @Test
+    fun failedRetryCommandClosesOldIntentAndInvalidatesStrictSample() {
+        val consumer = SurfaceCurrentStatsConsumer()
+        consumer.beginRequest(binding(0)) { requested() }
+        consumer.observeRenderFailure()
+
+        assertTrue(consumer.closeOutstandingAfterCommandFailure())
+        assertFalse(consumer.hasInFlight)
+        assertTrue(consumer.benchmarkTerminalsComplete(1))
+        assertTrue(
+            consumer.recordForSample(0)?.terminal is SurfaceCurrentStatsTerminal.Rejected
+        )
+        val unavailable = consumer.display as SurfaceCurrentStatsDisplay.Unavailable
+        assertEquals("command_failed_current_stats_session_closed", unavailable.reason)
+        assertThrows(IllegalStateException::class.java) { consumer.strictRecords(1) }
+        assertFalse(consumer.closeOutstandingAfterCommandFailure())
+    }
+
+    @Test
     fun aSecondUnsubmittedPreTicketIntentIsRejected() {
         val consumer = SurfaceCurrentStatsConsumer()
         consumer.beginRequest(binding(0)) { requested() }

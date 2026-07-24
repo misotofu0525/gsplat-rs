@@ -53,6 +53,13 @@ later frame's receipt can never satisfy an earlier sample. Missing Ready,
 failure, expiry, generation drift, identity drift, or flush exhaustion rejects
 the artifact.
 
+Command, request, render/present, submission read, and that one poll share the
+same render-lock transaction; `surfaceChanged` cannot resize between them. UI
+request failures still render and show unavailable, while strict request
+failures stop before render. If a failed render leaves an intent and its
+same-frame retry command fails, the app rejects the sample and closes that
+renderer before another trace/frame can consume the old intent.
+
 Only a matching Ready receipt supplies revision-safe `S/V/C/D`: complete
 source/residency `S`, near/far candidates `V`, strict conservative
 post-projection contributors `C`, and issued draw count `D`. The artifact
@@ -74,4 +81,6 @@ receipt.
 
 The Android library module, JNI bridge, host smoke, and AAR build live under
 `bindings/android/`. See `bindings/android/README.md` for packaging and device
-smoke details.
+smoke details. The standalone logcat extractor also runs the collector's strict
+current-stats ledger validator when the manifest declares strict evidence;
+minimal fixtures and short device runs remain smoke/capacity evidence only.

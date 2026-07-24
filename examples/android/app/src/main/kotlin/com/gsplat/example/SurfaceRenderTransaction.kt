@@ -2,10 +2,13 @@ package com.gsplat.example
 
 internal data class SurfaceRenderTransactionResult(
     val commandRc: Int,
+    val commandFailureClosedCurrentStats: Boolean,
     val requestAttempted: Boolean,
     val requestSucceeded: Boolean,
     val requestError: Throwable?,
-    val renderRc: Int?
+    val renderRc: Int?,
+    val reconciliationAttempted: Boolean,
+    val reconciliationError: Throwable?
 ) {
     val rc: Int
         get() = when {
@@ -18,23 +21,30 @@ internal data class SurfaceRenderTransactionResult(
 
 /**
  * Runs the fallible camera/resize command before binding current-stats to the
- * now-determined frame, then renders it. The caller holds the renderer lock for
- * this entire transaction.
+ * now-determined frame, then renders and reconciles its submission plus one
+ * non-blocking poll. The same lock is shared with Surface resize/destroy.
  */
 internal fun performSurfaceRenderTransaction(
+    renderLock: Any,
     applyCommand: () -> Int,
+    closeCurrentStatsOnCommandFailure: () -> Boolean,
     requestCurrentStats: (() -> Unit)?,
     stopOnRequestFailure: Boolean,
-    render: () -> Int
-): SurfaceRenderTransactionResult {
+    render: () -> Int,
+    observeRequestedRenderFailure: () -> Unit,
+    reconcileAfterSuccessfulRender: () -> Unit
+): SurfaceRenderTransactionResult = synchronized(renderLock) {
     val commandRc = applyCommand()
     if (commandRc != 0) {
-        return SurfaceRenderTransactionResult(
+        return@synchronized SurfaceRenderTransactionResult(
             commandRc = commandRc,
+            commandFailureClosedCurrentStats = closeCurrentStatsOnCommandFailure(),
             requestAttempted = false,
             requestSucceeded = false,
             requestError = null,
-            renderRc = null
+            renderRc = null,
+            reconciliationAttempted = false,
+            reconciliationError = null
         )
     }
 
@@ -45,21 +55,38 @@ internal fun performSurfaceRenderTransaction(
             .onSuccess { requestSucceeded = true }
             .onFailure { requestError = it }
         if (requestError != null && stopOnRequestFailure) {
-            return SurfaceRenderTransactionResult(
+            return@synchronized SurfaceRenderTransactionResult(
                 commandRc = 0,
+                commandFailureClosedCurrentStats = false,
                 requestAttempted = true,
                 requestSucceeded = false,
                 requestError = requestError,
-                renderRc = null
+                renderRc = null,
+                reconciliationAttempted = false,
+                reconciliationError = null
             )
         }
     }
 
-    return SurfaceRenderTransactionResult(
+    val renderRc = render()
+    if (renderRc != 0 && requestSucceeded) {
+        observeRequestedRenderFailure()
+    }
+    var reconciliationError: Throwable? = null
+    val reconciliationAttempted = renderRc == 0
+    if (reconciliationAttempted) {
+        runCatching(reconcileAfterSuccessfulRender)
+            .onFailure { reconciliationError = it }
+    }
+
+    SurfaceRenderTransactionResult(
         commandRc = 0,
+        commandFailureClosedCurrentStats = false,
         requestAttempted = requestCurrentStats != null,
         requestSucceeded = requestSucceeded,
         requestError = requestError,
-        renderRc = render()
+        renderRc = renderRc,
+        reconciliationAttempted = reconciliationAttempted,
+        reconciliationError = reconciliationError
     )
 }
