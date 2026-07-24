@@ -1,4 +1,6 @@
 mod artifact;
+mod scene;
+mod trace;
 
 use std::env;
 use std::path::{Path, PathBuf};
@@ -6,12 +8,15 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 
 use artifact::{
-    ArtifactContext, Display, Environment, FileIdentity, FrameSample, Renderer as ArtifactRenderer,
-    ResourcePreflight, ResourceRequirement,
+    ArtifactContext, DirectResourcePreflight, Display, Environment, Exactness, FileIdentity,
+    FinalFrame, FrameSample, PackedResourcePreflight, Renderer as ArtifactRenderer,
+    ResidentGpuResources, ResolutionReceipt, ResourcePreflight, ResourceRequirement, SortTelemetry,
 };
-use gsplat_core::{Camera, FrameStats, RenderMode, RendererConfig, SceneBuffers, Vec3f};
+use gsplat_core::{Camera, FrameStats, RendererConfig, SceneBuffers, Vec3f};
 use gsplat_io_ply::load_ply;
 use gsplat_render_wgpu::{GeometryPath, Renderer};
+use scene::SceneLoadReceipt;
+use trace::{Playback, PlaybackPhase, TraceRequest, TraceSelection};
 
 fn main() {
     if let Err(err) = run() {
@@ -32,34 +37,35 @@ fn run() -> Result<(), String> {
         .as_ref()
         .map(|_| artifact::file_identity(dataset_path))
         .transpose()?;
-    let loaded = load_ply(dataset_path).map_err(|err| err.to_string())?;
+    if let Some(analysis) = config.analysis {
+        let loaded = load_ply(dataset_path).map_err(|err| err.to_string())?;
+        return run_spatial_analysis(&loaded.scene, &config.dataset_path, analysis);
+    }
+
+    let playback = Playback::build(config.trace_request())?;
+    let mut renderer =
+        Renderer::with_config(playback.renderer_config()).map_err(|err| err.to_string())?;
+    renderer.set_geometry_path(config.geometry_path);
+    let scene_receipt = scene::load_scene_for_path(dataset_path, &mut renderer)?;
     if let Some(expected) = dataset_identity.as_ref() {
         let actual = artifact::file_identity(dataset_path)?;
         if &actual != expected {
             return Err("dataset changed while it was being loaded".to_owned());
         }
     }
-    if let Some(analysis) = config.analysis {
-        return run_spatial_analysis(&loaded.scene, &config.dataset_path, analysis);
-    }
-
-    let splat_count = loaded.scene.len();
-    let sh_degree = loaded.scene.sh_degree;
-    let mut renderer = Renderer::new(RenderMode::SortedAlpha).map_err(|err| err.to_string())?;
-    renderer.set_geometry_path(config.geometry_path);
-    renderer
-        .load_scene(loaded.scene)
-        .map_err(|err| err.to_string())?;
     print_gpu_metadata(&renderer);
-    print_direct_scene_preflight(&renderer)?;
+    print_scene_preflight(&renderer, config.geometry_path)?;
     println!(
         "offscreen_geometry_pipeline={}",
         geometry_path_label(config.geometry_path)
     );
 
-    let camera = Camera::default();
-
     if let Some(seconds) = config.stability_seconds {
+        let camera = playback
+            .steps()
+            .first()
+            .map(|step| step.camera)
+            .unwrap_or_default();
         run_stability_mode(
             &mut renderer,
             &camera,
@@ -70,10 +76,9 @@ fn run() -> Result<(), String> {
     } else {
         run_iteration_mode(
             &mut renderer,
-            &camera,
+            &playback,
             &config,
-            splat_count,
-            sh_degree,
+            scene_receipt,
             dataset_identity,
         )
     }
@@ -81,10 +86,9 @@ fn run() -> Result<(), String> {
 
 fn run_iteration_mode(
     renderer: &mut Renderer,
-    camera: &Camera,
+    playback: &Playback,
     config: &BenchConfig,
-    splat_count: usize,
-    sh_degree: u8,
+    scene_receipt: SceneLoadReceipt,
     dataset_identity: Option<FileIdentity>,
 ) -> Result<(), String> {
     let run_id = match config.run_id.clone() {
@@ -95,35 +99,43 @@ fn run_iteration_mode(
     let mut sum = FrameStats::zero();
     let mut gpu_wait_ms = 0.0_f32;
     let mut gpu_complete_frame_ms = 0.0_f32;
-    let mut raw_frames = Vec::with_capacity(config.iterations);
+    let mut visible_total = 0_u64;
+    let mut drawn_total = 0_u64;
+    let mut raw_frames = Vec::with_capacity(playback.measured_count());
 
-    for _ in 0..config.warmup_iterations {
-        renderer
-            .render_frame(camera)
-            .map_err(|err| err.to_string())?;
-        renderer.wait_for_gpu().map_err(|err| err.to_string())?;
-    }
-
-    let measurement_started_at_utc = artifact::utc_now()?;
-    let measured_start = Instant::now();
-    for _ in 0..config.iterations {
+    let mut measurement_started_at_utc = None;
+    let mut measured_start = None;
+    for step in playback.steps() {
+        if step.phase == PlaybackPhase::Measure && measurement_started_at_utc.is_none() {
+            measurement_started_at_utc = Some(artifact::utc_now()?);
+            measured_start = Some(Instant::now());
+        }
         let frame_start = Instant::now();
         let stats = renderer
-            .render_frame(camera)
+            .render_frame(&step.camera)
             .map_err(|err| err.to_string())?;
         let submit_elapsed_ms = frame_start.elapsed().as_secs_f32() * 1000.0;
         renderer.wait_for_gpu().map_err(|err| err.to_string())?;
         let complete_elapsed_ms = frame_start.elapsed().as_secs_f32() * 1000.0;
+        if step.phase == PlaybackPhase::Warmup {
+            continue;
+        }
         sum.frame_ms += stats.frame_ms;
         sum.preprocess_ms += stats.preprocess_ms;
         sum.sort_ms += stats.sort_ms;
         sum.raster_ms += stats.raster_ms;
-        sum.visible_count += stats.visible_count;
-        sum.drawn_count += stats.drawn_count;
+        visible_total = visible_total.saturating_add(u64::from(stats.visible_count));
+        drawn_total = drawn_total.saturating_add(u64::from(stats.drawn_count));
         gpu_wait_ms += (complete_elapsed_ms - submit_elapsed_ms).max(0.0);
         gpu_complete_frame_ms += complete_elapsed_ms;
         raw_frames.push(RawFrameSample {
-            elapsed_ns: u64::try_from(measured_start.elapsed().as_nanos()).unwrap_or(u64::MAX),
+            elapsed_ns: u64::try_from(
+                measured_start
+                    .expect("measurement start exists for measured frames")
+                    .elapsed()
+                    .as_nanos(),
+            )
+            .unwrap_or(u64::MAX),
             call_ms: f64::from(submit_elapsed_ms),
             frame_wall_ms: f64::from(complete_elapsed_ms),
             preprocess_ms: f64::from(stats.preprocess_ms),
@@ -135,8 +147,17 @@ fn run_iteration_mode(
             gpu_complete_ms: Some(f64::from(complete_elapsed_ms)),
             visible: u64::from(stats.visible_count),
             drawn: u64::from(stats.drawn_count),
-            sort_refreshed: None,
+            // M1 offscreen executes one forced CPU PostSort refresh for every
+            // call. This is a structural product-path fact, not private
+            // controller or ticket telemetry.
+            sort_refreshed: Some(true),
+            trace_frame_index: step.trace_frame_index,
         });
+    }
+    let measurement_started_at_utc = measurement_started_at_utc
+        .ok_or_else(|| "camera playback did not produce a measured frame".to_owned())?;
+    if raw_frames.len() != playback.measured_count() {
+        return Err("camera playback produced an unexpected measured-frame count".to_owned());
     }
     let frames = raw_frames
         .into_iter()
@@ -145,19 +166,19 @@ fn run_iteration_mode(
         .collect::<Vec<_>>();
     let measurement_ended_at_utc = artifact::utc_now()?;
 
-    let n = config.iterations as f32;
+    let n = playback.measured_count() as f32;
     let avg_gpu_complete_frame_ms = gpu_complete_frame_ms / n;
     let summary = artifact::summarize(
         &run_id,
-        config.warmup_iterations,
+        playback.warmup_count(),
         config.frame_budget_ms,
         &frames,
     )?;
     println!("bench-runner complete");
     println!("mode=iterations");
     println!("dataset={}", config.dataset_path);
-    println!("iterations={}", config.iterations);
-    println!("warmup_iterations={}", config.warmup_iterations);
+    println!("iterations={}", playback.measured_count());
+    println!("warmup_iterations={}", playback.warmup_count());
     println!("benchmark_schema={}", artifact::SCHEMA);
     println!("benchmark_run_id={run_id}");
     println!("avg_submit_frame_ms={:.4}", sum.frame_ms / n);
@@ -169,8 +190,8 @@ fn run_iteration_mode(
     );
     println!("avg_gpu_wait_ms={:.4}", gpu_wait_ms / n);
     println!("avg_gpu_complete_frame_ms={avg_gpu_complete_frame_ms:.4}");
-    println!("avg_visible_count={:.2}", sum.visible_count as f32 / n);
-    println!("avg_drawn_count={:.2}", sum.drawn_count as f32 / n);
+    println!("avg_visible_count={:.2}", visible_total as f32 / n);
+    println!("avg_drawn_count={:.2}", drawn_total as f32 / n);
     print_distributions(&summary);
 
     if let Some(directory) = config.artifact_dir.as_deref() {
@@ -182,14 +203,30 @@ fn run_iteration_mode(
                 started_at_utc: &started_at_utc,
                 measurement_started_at_utc: &measurement_started_at_utc,
                 measurement_ended_at_utc: &measurement_ended_at_utc,
-                splat_count,
-                sh_degree,
+                scene_receipt,
                 dataset_identity: dataset_identity
                     .clone()
                     .ok_or("artifact dataset identity is unavailable")?,
             },
+            playback,
         )?;
-        artifact::write_artifacts(directory, context, config.warmup_iterations, &frames)?;
+        let final_frame = if config.full_quality {
+            let render_config = renderer.config();
+            Some(FinalFrame {
+                width: render_config.width,
+                height: render_config.height,
+                rgba: renderer.readback_rgba8().map_err(|err| err.to_string())?,
+            })
+        } else {
+            None
+        };
+        artifact::write_artifacts(
+            directory,
+            context,
+            playback.warmup_count(),
+            &frames,
+            final_frame,
+        )?;
         println!("benchmark_artifact_dir={}", directory.display());
     }
 
@@ -218,6 +255,7 @@ struct RawFrameSample {
     visible: u64,
     drawn: u64,
     sort_refreshed: Option<bool>,
+    trace_frame_index: Option<usize>,
 }
 
 impl RawFrameSample {
@@ -238,6 +276,7 @@ impl RawFrameSample {
             visible: self.visible,
             drawn: self.drawn,
             sort_refreshed: self.sort_refreshed,
+            trace_frame_index: self.trace_frame_index,
         }
     }
 }
@@ -322,39 +361,118 @@ fn print_gpu_metadata(renderer: &Renderer) {
     println!("gpu_driver_info={}", single_line(&info.driver_info));
 }
 
-fn print_direct_scene_preflight(renderer: &Renderer) -> Result<(), String> {
-    let report = renderer
-        .current_direct_scene_preflight()
-        .map_err(|error| error.to_string())?;
-    println!("direct_preflight_path={:?}", report.path);
-    println!("direct_preflight_splats={}", report.splat_count);
-    println!("direct_preflight_sh_degree={}", report.sh_degree);
-    println!(
-        "direct_preflight_storage_binding_limit_bytes={}",
-        report.effective_storage_binding_limit
-    );
-    println!(
-        "direct_preflight_max_buffer_size_bytes={}",
-        report.effective_max_buffer_size
-    );
-    println!(
-        "direct_preflight_limiting_resource={:?}",
-        report.limiting_resource
-    );
-    println!(
-        "direct_preflight_max_direct_splats={}",
-        report.max_direct_splats
-    );
-    for requirement in report.requirements {
-        println!(
-            "direct_preflight_resource={:?} required_bytes={} limit_bytes={} fits={}",
-            requirement.resource,
-            requirement.required_bytes,
-            requirement.limit_bytes,
-            requirement.fits
-        );
+fn print_scene_preflight(renderer: &Renderer, path: GeometryPath) -> Result<(), String> {
+    match path_resource_preflight(renderer, path)? {
+        Some(ResourcePreflight::Direct(report)) => {
+            println!("direct_preflight_path={}", report.path);
+            println!("direct_preflight_splats={}", report.splat_count);
+            println!("direct_preflight_sh_degree={}", report.sh_degree);
+            println!(
+                "direct_preflight_storage_binding_limit_bytes={}",
+                report.storage_binding_limit_bytes
+            );
+            println!(
+                "direct_preflight_max_direct_splats={}",
+                report.max_direct_splats
+            );
+        }
+        Some(ResourcePreflight::Packed(report)) => {
+            println!("packed_preflight_path={}", report.path);
+            println!("packed_preflight_splats={}", report.splat_count);
+            println!("packed_preflight_sh_degree={}", report.sh_degree);
+            println!(
+                "packed_preflight_storage_binding_limit_bytes={}",
+                report.storage_binding_limit_bytes
+            );
+            println!(
+                "packed_preflight_largest_storage_binding_bytes={}",
+                report.largest_storage_binding_bytes
+            );
+            println!(
+                "packed_preflight_total_static_bytes={}",
+                report.resident_gpu.total_static
+            );
+            println!("packed_preflight_failure={:?}", report.failure);
+        }
+        None => println!("paged_preflight=unavailable_diagnostic_path"),
     }
     Ok(())
+}
+
+fn path_resource_preflight(
+    renderer: &Renderer,
+    path: GeometryPath,
+) -> Result<Option<ResourcePreflight>, String> {
+    match path {
+        GeometryPath::SortedIndexDirect => {
+            let report = renderer
+                .current_direct_scene_preflight()
+                .map_err(|error| error.to_string())?;
+            Ok(Some(ResourcePreflight::Direct(DirectResourcePreflight {
+                path: format!("{:?}", report.path),
+                splat_count: report.splat_count,
+                sh_degree: report.sh_degree,
+                storage_binding_limit_bytes: report.effective_storage_binding_limit,
+                max_buffer_size_bytes: report.effective_max_buffer_size,
+                limiting_resource: format!("{:?}", report.limiting_resource),
+                max_direct_splats: report.max_direct_splats,
+                remediation: format!("{:?}", report.remediation),
+                requirements: report
+                    .requirements
+                    .into_iter()
+                    .map(|requirement| ResourceRequirement {
+                        resource: format!("{:?}", requirement.resource),
+                        required_bytes: requirement.required_bytes,
+                        limit_bytes: requirement.limit_bytes,
+                        fits: requirement.fits,
+                    })
+                    .collect(),
+            })))
+        }
+        GeometryPath::PackedAtlas => {
+            let report = renderer
+                .current_packed_scene_preflight()
+                .map_err(|error| error.to_string())?;
+            let plan = report.resident_gpu;
+            Ok(Some(ResourcePreflight::Packed(PackedResourcePreflight {
+                path: format!("{:?}", report.path),
+                splat_count: report.splat_count,
+                sh_degree: report.sh_degree,
+                storage_binding_limit_bytes: report.effective_storage_binding_limit,
+                required_storage_buffers_per_shader_stage: report
+                    .required_storage_buffers_per_shader_stage,
+                available_storage_buffers_per_shader_stage: report
+                    .available_storage_buffers_per_shader_stage,
+                largest_storage_binding_bytes: report.largest_storage_binding_bytes,
+                storage_binding_size_fits: report.storage_binding_size_fits,
+                storage_binding_count_fits: report.storage_binding_count_fits,
+                draw_instance_count_fits: report.draw_instance_count_fits,
+                failure: report.failure.map(|failure| format!("{failure:?}")),
+                resident_gpu: ResidentGpuResources {
+                    position_alpha: plan.position_alpha,
+                    covariance0: plan.covariance0,
+                    covariance1: plan.covariance1,
+                    color_auxiliary: plan.color_auxiliary,
+                    sh_plane: plan.sh_plane,
+                    sh_plane_count: plan.sh_plane_count,
+                    chunk_metadata: plan.chunk_metadata,
+                    resolved_color: plan.resolved_color,
+                    order: plan.order,
+                    projected_center_source: plan.projected_center_source,
+                    projected_axes: plan.projected_axes,
+                    projected_contributor_group_offsets: plan.projected_contributor_group_offsets,
+                    projected_contributor_ranks: plan.projected_contributor_ranks,
+                    projected_contributor_scan_sums: plan.projected_contributor_scan_sums,
+                    projected_contributor_largest_scan_sum: plan
+                        .projected_contributor_largest_scan_sum,
+                    projected_contributor_scan_params: plan.projected_contributor_scan_params,
+                    projected_contributor_args: plan.projected_contributor_args,
+                    total_static: plan.total_static,
+                },
+            })))
+        }
+        GeometryPath::PagedActiveAtlas => Ok(None),
+    }
 }
 
 fn print_distributions(summary: &artifact::Summary) {
@@ -403,8 +521,7 @@ struct ArtifactContextInput<'a> {
     started_at_utc: &'a str,
     measurement_started_at_utc: &'a str,
     measurement_ended_at_utc: &'a str,
-    splat_count: usize,
-    sh_degree: u8,
+    scene_receipt: SceneLoadReceipt,
     dataset_identity: FileIdentity,
 }
 
@@ -412,22 +529,46 @@ fn artifact_context(
     renderer: &Renderer,
     config: &BenchConfig,
     input: ArtifactContextInput<'_>,
+    playback: &Playback,
 ) -> Result<ArtifactContext, String> {
-    let render_config = RendererConfig::default();
+    let render_config = renderer.config();
     let dataset = artifact::dataset_with_identity(
         Path::new(&config.dataset_path),
-        input.splat_count,
-        input.sh_degree,
+        input.scene_receipt.source_count,
+        input.scene_receipt.source_sh_degree,
         input.dataset_identity,
     )?;
-    let trace = artifact::trace(
-        "static-default-camera-v1",
-        b"gsplat-camera-trace/v1\nmode=static\ncamera=Camera::default\n",
-    );
+    let trace = match (playback.trace(), playback.selection()) {
+        (None, TraceSelection::DefaultCamera) => artifact::trace(
+            "static-default-camera-v1",
+            b"gsplat-camera-trace/v1\nmode=static\ncamera=Camera::default\n",
+        ),
+        (Some(camera_trace), TraceSelection::Fixed { frame_index }) => artifact::Trace {
+            id: camera_trace.trace_id.clone(),
+            sha256: camera_trace.content_sha256.clone(),
+            frame_index: Some(*frame_index),
+            frame_indices: None,
+            require_display_match: Some(true),
+            display_policy: Some("trace_display_exact".to_owned()),
+            quality_comparable: Some(true),
+            reference_width: Some(camera_trace.display.width),
+            reference_height: Some(camera_trace.display.height),
+        },
+        (Some(camera_trace), TraceSelection::Sequence { frame_indices }) => artifact::Trace {
+            id: camera_trace.trace_id.clone(),
+            sha256: camera_trace.content_sha256.clone(),
+            frame_index: None,
+            frame_indices: Some(frame_indices.clone()),
+            require_display_match: Some(true),
+            display_policy: Some("trace_display_exact".to_owned()),
+            quality_comparable: Some(true),
+            reference_width: Some(camera_trace.display.width),
+            reference_height: Some(camera_trace.display.height),
+        },
+        _ => return Err("camera trace selection and payload disagree".to_owned()),
+    };
     let info = renderer.gpu_adapter_info();
-    let preflight = renderer
-        .current_direct_scene_preflight()
-        .map_err(|error| error.to_string())?;
+    let preflight = path_resource_preflight(renderer, config.geometry_path)?;
     let backend = info
         .map(|value| format!("{:?}", value.backend))
         .unwrap_or_else(|| "unavailable".to_owned());
@@ -439,8 +580,14 @@ fn artifact_context(
         .filter(|value| !value.is_empty());
     let mut unavailable_fields = vec![
         "environment.browser".to_owned(),
-        "frames[*].sort_refreshed".to_owned(),
+        "frames[*].contributor".to_owned(),
+        "frames[*].exact_contributor_compaction".to_owned(),
+        "frames[*].exact_plan_ticket".to_owned(),
+        "frames[*].exact_plan_generation".to_owned(),
     ];
+    if preflight.is_none() {
+        unavailable_fields.push("renderer.resource_preflight".to_owned());
+    }
     if adapter.is_none() {
         unavailable_fields.push("environment.adapter".to_owned());
     }
@@ -468,26 +615,11 @@ fn artifact_context(
             path: geometry_path_label(config.geometry_path).to_owned(),
             backend,
             sort_policy: "cpu_every_frame".to_owned(),
-            resource_preflight: Some(ResourcePreflight {
-                path: format!("{:?}", preflight.path),
-                splat_count: preflight.splat_count,
-                sh_degree: preflight.sh_degree,
-                storage_binding_limit_bytes: preflight.effective_storage_binding_limit,
-                max_buffer_size_bytes: preflight.effective_max_buffer_size,
-                limiting_resource: format!("{:?}", preflight.limiting_resource),
-                max_direct_splats: preflight.max_direct_splats,
-                remediation: format!("{:?}", preflight.remediation),
-                requirements: preflight
-                    .requirements
-                    .into_iter()
-                    .map(|requirement| ResourceRequirement {
-                        resource: format!("{:?}", requirement.resource),
-                        required_bytes: requirement.required_bytes,
-                        limit_bytes: requirement.limit_bytes,
-                        fits: requirement.fits,
-                    })
-                    .collect(),
-            }),
+            resource_preflight: preflight,
+            order_backend_requested: Some("cpu".to_owned()),
+            sort_interval: Some(1),
+            exact_plan_requested: Some("cpu_post_sort".to_owned()),
+            exact_plan_actual: Some("cpu_post_sort".to_owned()),
         },
         display: Display {
             width: render_config.width,
@@ -508,6 +640,40 @@ fn artifact_context(
             driver,
         },
         unavailable_fields,
+        exactness: config.full_quality.then_some(Exactness {
+            source_splat_count: input.scene_receipt.source_count as u64,
+            decoded_splat_count: input.scene_receipt.decoded_count as u64,
+            encoded_splat_count: input.scene_receipt.encoded_count as u64,
+            resident_splat_count: input.scene_receipt.resident_count as u64,
+            addressable_splat_count: input.scene_receipt.addressable_count as u64,
+            source_sh_degree: input.scene_receipt.source_sh_degree,
+            resident_sh_degree: input.scene_receipt.resident_sh_degree,
+            source_membership: "all",
+            sampling: "disabled",
+            lod: "disabled",
+            sh_degree_policy: "source",
+            partial_scene_published: false,
+            full_quality: true,
+        }),
+        resolution: config.full_quality.then_some(ResolutionReceipt {
+            requested_width: render_config.width,
+            requested_height: render_config.height,
+            surface_width: render_config.width,
+            surface_height: render_config.height,
+            internal_render_width: render_config.width,
+            internal_render_height: render_config.height,
+            presented_width: render_config.width,
+            presented_height: render_config.height,
+            dynamic_resolution: "disabled",
+            upscaling: "disabled",
+            full_resolution: true,
+            presentation_kind: "offscreen_readback",
+        }),
+        sort_telemetry: config.full_quality.then_some(SortTelemetry {
+            cpu_frame_count: playback.measured_count(),
+            gpu_frame_count: 0,
+            gpu_sort_fallback_count: 0,
+        }),
     })
 }
 
@@ -695,6 +861,15 @@ struct BenchConfig {
     rss_growth_limit_kib: u64,
     analysis: Option<SpatialAnalysisConfig>,
     geometry_path: GeometryPath,
+    full_quality: bool,
+    camera_trace_path: Option<PathBuf>,
+    camera_sequence: bool,
+    camera_frame: usize,
+    camera_frame_explicit: bool,
+    camera_frame_indices: Option<Vec<usize>>,
+    camera_warmup_frames: Option<usize>,
+    camera_measured_frames: Option<usize>,
+    camera_loops: usize,
 }
 
 impl Default for BenchConfig {
@@ -712,7 +887,16 @@ impl Default for BenchConfig {
             stability_seconds: None,
             rss_growth_limit_kib: 64 * 1024,
             analysis: None,
-            geometry_path: GeometryPath::SortedIndexDirect,
+            geometry_path: GeometryPath::PackedAtlas,
+            full_quality: false,
+            camera_trace_path: None,
+            camera_sequence: false,
+            camera_frame: 0,
+            camera_frame_explicit: false,
+            camera_frame_indices: None,
+            camera_warmup_frames: None,
+            camera_measured_frames: None,
+            camera_loops: 1,
         }
     }
 }
@@ -829,6 +1013,60 @@ impl BenchConfig {
                     }
                     config.artifact_dir = Some(PathBuf::from(value));
                 }
+                "--full-quality" => config.full_quality = true,
+                "--camera-trace" => {
+                    i += 1;
+                    let value = args.get(i).ok_or("missing value for --camera-trace")?;
+                    if value.is_empty() {
+                        return Err("--camera-trace must not be empty".to_owned());
+                    }
+                    config.camera_trace_path = Some(PathBuf::from(value));
+                }
+                "--camera-sequence" => config.camera_sequence = true,
+                "--camera-frame" => {
+                    i += 1;
+                    let value = args.get(i).ok_or("missing value for --camera-frame")?;
+                    config.camera_frame = value
+                        .parse::<usize>()
+                        .map_err(|_| "invalid --camera-frame value")?;
+                    config.camera_frame_explicit = true;
+                }
+                "--camera-frame-indices" => {
+                    i += 1;
+                    let value = args
+                        .get(i)
+                        .ok_or("missing value for --camera-frame-indices")?;
+                    config.camera_frame_indices = Some(trace::parse_frame_indices(value)?);
+                }
+                "--camera-warmup-frames" => {
+                    i += 1;
+                    let value = args
+                        .get(i)
+                        .ok_or("missing value for --camera-warmup-frames")?;
+                    config.camera_warmup_frames = Some(
+                        value
+                            .parse::<usize>()
+                            .map_err(|_| "invalid --camera-warmup-frames value")?,
+                    );
+                }
+                "--camera-measured-frames" => {
+                    i += 1;
+                    let value = args
+                        .get(i)
+                        .ok_or("missing value for --camera-measured-frames")?;
+                    config.camera_measured_frames = Some(
+                        value
+                            .parse::<usize>()
+                            .map_err(|_| "invalid --camera-measured-frames value")?,
+                    );
+                }
+                "--camera-loops" => {
+                    i += 1;
+                    let value = args.get(i).ok_or("missing value for --camera-loops")?;
+                    config.camera_loops = value
+                        .parse::<usize>()
+                        .map_err(|_| "invalid --camera-loops value")?;
+                }
                 "--series-id" => {
                     i += 1;
                     let value = args.get(i).ok_or("missing value for --series-id")?;
@@ -917,8 +1155,58 @@ impl BenchConfig {
         if config.stability_seconds.is_some() && config.artifact_dir.is_some() {
             return Err("--artifact-dir currently supports iteration mode only".to_owned());
         }
+        let has_camera_flags = config.camera_trace_path.is_some()
+            || config.camera_sequence
+            || config.camera_frame_explicit
+            || config.camera_frame_indices.is_some()
+            || config.camera_warmup_frames.is_some()
+            || config.camera_measured_frames.is_some()
+            || config.camera_loops != 1;
+        if (config.analysis.is_some() || config.stability_seconds.is_some()) && has_camera_flags {
+            return Err("camera trace playback is available only in iteration mode".to_owned());
+        }
+        if config.full_quality {
+            if config.artifact_dir.is_none() {
+                return Err("--full-quality requires --artifact-dir".to_owned());
+            }
+            if config.camera_trace_path.is_none() || !config.camera_sequence {
+                return Err(
+                    "--full-quality requires --camera-trace and --camera-sequence".to_owned(),
+                );
+            }
+            if config.camera_frame_indices.is_none()
+                || config.camera_warmup_frames.is_none()
+                || config.camera_measured_frames.is_none()
+                || config.camera_loops != 1
+            {
+                return Err("--full-quality requires explicit --camera-frame-indices, \
+                     --camera-warmup-frames, --camera-measured-frames, and one sequence loop"
+                    .to_owned());
+            }
+            if config.geometry_path == GeometryPath::PagedActiveAtlas {
+                return Err(
+                    "Paged is diagnostic only and cannot produce a full-quality artifact"
+                        .to_owned(),
+                );
+            }
+        }
 
         Ok(config)
+    }
+
+    fn trace_request(&self) -> TraceRequest {
+        TraceRequest {
+            path: self.camera_trace_path.clone(),
+            sequence: self.camera_sequence,
+            frame_index: self.camera_frame,
+            frame_index_explicit: self.camera_frame_explicit,
+            frame_indices: self.camera_frame_indices.clone(),
+            warmup_frames: self.camera_warmup_frames,
+            measured_frames: self.camera_measured_frames,
+            loops: self.camera_loops,
+            default_warmup_frames: self.warmup_iterations,
+            default_measured_frames: self.iterations,
+        }
     }
 }
 
@@ -1109,6 +1397,7 @@ mod tests {
     use std::path::PathBuf;
 
     use gsplat_core::{SceneBuffers, Vec3f};
+    use gsplat_render_wgpu::GeometryPath;
 
     use super::{
         BenchConfig, grid_axis_index, grid_cell_index, merge_max, merge_min, percentile_f32,
@@ -1144,6 +1433,9 @@ mod tests {
         assert_eq!(config.stability_seconds, None);
         assert_eq!(config.rss_growth_limit_kib, 64 * 1024);
         assert!(config.analysis.is_none());
+        assert_eq!(config.geometry_path, GeometryPath::PackedAtlas);
+        assert!(!config.full_quality);
+        assert!(config.camera_trace_path.is_none());
     }
 
     #[test]
@@ -1195,6 +1487,100 @@ mod tests {
         assert_eq!(config.frame_budget_ms, 33.333);
         assert_eq!(config.refresh_hz, 30.0);
         assert_eq!(config.stability_seconds, None);
+    }
+
+    #[test]
+    fn direct_is_an_explicit_oracle_and_packed_remains_the_default() {
+        let packed = BenchConfig::parse(Vec::new()).unwrap();
+        assert_eq!(packed.geometry_path, GeometryPath::PackedAtlas);
+
+        let direct =
+            BenchConfig::parse(vec!["--geometry-path".to_owned(), "direct".to_owned()]).unwrap();
+        assert_eq!(direct.geometry_path, GeometryPath::SortedIndexDirect);
+    }
+
+    #[test]
+    fn full_quality_requires_artifact_trace_sequence_and_rejects_paged() {
+        for args in [
+            vec!["--full-quality".to_owned()],
+            vec![
+                "--full-quality".to_owned(),
+                "--artifact-dir".to_owned(),
+                "target/run".to_owned(),
+            ],
+        ] {
+            assert!(BenchConfig::parse(args).is_err());
+        }
+
+        let error = BenchConfig::parse(vec![
+            "--full-quality".to_owned(),
+            "--artifact-dir".to_owned(),
+            "target/run".to_owned(),
+            "--camera-trace".to_owned(),
+            "trace.json".to_owned(),
+            "--camera-sequence".to_owned(),
+            "--camera-frame-indices".to_owned(),
+            "0,1".to_owned(),
+            "--camera-warmup-frames".to_owned(),
+            "20".to_owned(),
+            "--camera-measured-frames".to_owned(),
+            "80".to_owned(),
+            "--geometry-path".to_owned(),
+            "paged".to_owned(),
+        ])
+        .unwrap_err();
+        assert!(error.contains("Paged is diagnostic only"));
+    }
+
+    #[test]
+    fn full_quality_rejects_implicit_or_repeated_trace_schedule() {
+        let base = vec![
+            "--full-quality".to_owned(),
+            "--artifact-dir".to_owned(),
+            "target/run".to_owned(),
+            "--camera-trace".to_owned(),
+            "trace.json".to_owned(),
+            "--camera-sequence".to_owned(),
+        ];
+        let error = BenchConfig::parse(base.clone()).unwrap_err();
+        assert!(error.contains("requires explicit"));
+
+        let mut repeated = base;
+        repeated.extend([
+            "--camera-frame-indices".to_owned(),
+            "0,1".to_owned(),
+            "--camera-warmup-frames".to_owned(),
+            "20".to_owned(),
+            "--camera-measured-frames".to_owned(),
+            "80".to_owned(),
+            "--camera-loops".to_owned(),
+            "2".to_owned(),
+        ]);
+        let error = BenchConfig::parse(repeated).unwrap_err();
+        assert!(error.contains("one sequence loop"));
+    }
+
+    #[test]
+    fn frozen_sequence_options_are_preserved_in_trace_request() {
+        let config = BenchConfig::parse(vec![
+            "--camera-trace".to_owned(),
+            "trace.json".to_owned(),
+            "--camera-sequence".to_owned(),
+            "--camera-frame-indices".to_owned(),
+            "0,1".to_owned(),
+            "--camera-warmup-frames".to_owned(),
+            "20".to_owned(),
+            "--camera-measured-frames".to_owned(),
+            "80".to_owned(),
+        ])
+        .unwrap();
+        let request = config.trace_request();
+
+        assert_eq!(request.path, Some(PathBuf::from("trace.json")));
+        assert!(request.sequence);
+        assert_eq!(request.frame_indices, Some(vec![0, 1]));
+        assert_eq!(request.warmup_frames, Some(20));
+        assert_eq!(request.measured_frames, Some(80));
     }
 
     #[test]

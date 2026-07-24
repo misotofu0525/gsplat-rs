@@ -28,6 +28,8 @@ pub struct FrameSample {
     pub visible: u64,
     pub drawn: u64,
     pub sort_refreshed: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trace_frame_index: Option<usize>,
 }
 
 impl FrameSample {
@@ -69,6 +71,12 @@ pub struct Manifest {
     pub display: Display,
     pub environment: Environment,
     pub unavailable_fields: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub exactness: Option<Exactness>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resolution: Option<ResolutionReceipt>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub image: Option<ImageReceipt>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -107,6 +115,20 @@ pub struct FileIdentity {
 pub struct Trace {
     pub id: String,
     pub sha256: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub frame_index: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub frame_indices: Option<Vec<usize>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub require_display_match: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub display_policy: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub quality_comparable: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reference_width: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reference_height: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -116,10 +138,25 @@ pub struct Renderer {
     pub backend: String,
     pub sort_policy: String,
     pub resource_preflight: Option<ResourcePreflight>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub order_backend_requested: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sort_interval: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub exact_plan_requested: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub exact_plan_actual: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub struct ResourcePreflight {
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ResourcePreflight {
+    Direct(DirectResourcePreflight),
+    Packed(PackedResourcePreflight),
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct DirectResourcePreflight {
     pub path: String,
     pub splat_count: u64,
     pub sh_degree: u8,
@@ -129,6 +166,44 @@ pub struct ResourcePreflight {
     pub max_direct_splats: u64,
     pub remediation: String,
     pub requirements: Vec<ResourceRequirement>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PackedResourcePreflight {
+    pub path: String,
+    pub splat_count: u64,
+    pub sh_degree: u8,
+    pub storage_binding_limit_bytes: u64,
+    pub required_storage_buffers_per_shader_stage: u32,
+    pub available_storage_buffers_per_shader_stage: u32,
+    pub largest_storage_binding_bytes: u64,
+    pub storage_binding_size_fits: bool,
+    pub storage_binding_count_fits: bool,
+    pub draw_instance_count_fits: bool,
+    pub failure: Option<String>,
+    pub resident_gpu: ResidentGpuResources,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ResidentGpuResources {
+    pub position_alpha: u64,
+    pub covariance0: u64,
+    pub covariance1: u64,
+    pub color_auxiliary: u64,
+    pub sh_plane: u64,
+    pub sh_plane_count: u32,
+    pub chunk_metadata: u64,
+    pub resolved_color: u64,
+    pub order: u64,
+    pub projected_center_source: u64,
+    pub projected_axes: u64,
+    pub projected_contributor_group_offsets: u64,
+    pub projected_contributor_ranks: u64,
+    pub projected_contributor_scan_sums: u64,
+    pub projected_contributor_largest_scan_sum: u64,
+    pub projected_contributor_scan_params: u64,
+    pub projected_contributor_args: u64,
+    pub total_static: u64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -193,6 +268,63 @@ pub struct Summary {
     pub frame_budget_ms: f64,
     pub missed_frame_count: usize,
     pub distributions: Distributions,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sort_telemetry: Option<SortTelemetry>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SortTelemetry {
+    pub cpu_frame_count: usize,
+    pub gpu_frame_count: usize,
+    pub gpu_sort_fallback_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct Exactness {
+    pub source_splat_count: u64,
+    pub decoded_splat_count: u64,
+    pub encoded_splat_count: u64,
+    pub resident_splat_count: u64,
+    pub addressable_splat_count: u64,
+    pub source_sh_degree: u8,
+    pub resident_sh_degree: u8,
+    pub source_membership: &'static str,
+    pub sampling: &'static str,
+    pub lod: &'static str,
+    pub sh_degree_policy: &'static str,
+    pub partial_scene_published: bool,
+    pub full_quality: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ResolutionReceipt {
+    pub requested_width: u32,
+    pub requested_height: u32,
+    pub surface_width: u32,
+    pub surface_height: u32,
+    pub internal_render_width: u32,
+    pub internal_render_height: u32,
+    pub presented_width: u32,
+    pub presented_height: u32,
+    pub dynamic_resolution: &'static str,
+    pub upscaling: &'static str,
+    pub full_resolution: bool,
+    pub presentation_kind: &'static str,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct ImageReceipt {
+    pub path: String,
+    pub sha256: String,
+    pub width: u32,
+    pub height: u32,
+}
+
+#[derive(Debug, Clone)]
+pub struct FinalFrame {
+    pub width: u32,
+    pub height: u32,
+    pub rgba: Vec<u8>,
 }
 
 #[derive(Debug, Clone)]
@@ -209,6 +341,9 @@ pub struct ArtifactContext {
     pub display: Display,
     pub environment: Environment,
     pub unavailable_fields: Vec<String>,
+    pub exactness: Option<Exactness>,
+    pub resolution: Option<ResolutionReceipt>,
+    pub sort_telemetry: Option<SortTelemetry>,
 }
 
 pub fn summarize(
@@ -261,6 +396,7 @@ pub fn summarize(
             gpu_wait_ms: optional(|frame| frame.gpu_wait_ms),
             gpu_complete_ms: optional(|frame| frame.gpu_complete_ms),
         },
+        sort_telemetry: None,
     })
 }
 
@@ -269,6 +405,7 @@ pub fn write_artifacts(
     context: ArtifactContext,
     warmup_count: usize,
     frames: &[FrameSample],
+    final_frame: Option<FinalFrame>,
 ) -> Result<Summary, String> {
     if !context.display.frame_budget_ms.is_finite() || context.display.frame_budget_ms <= 0.0 {
         return Err("artifact display frame budget must be finite and positive".to_owned());
@@ -283,17 +420,22 @@ pub fn write_artifacts(
         .parent()
         .filter(|path| !path.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
-    fs::create_dir_all(parent)
-        .map_err(|error| format!("failed to create artifact parent directory: {error}"))?;
-    let staging = staging_directory_path(directory)?;
-    fs::create_dir(&staging)
-        .map_err(|error| format!("failed to create artifact staging directory: {error}"))?;
-    let summary = summarize(
+    let encoded_image = final_frame.as_ref().map(encode_final_frame).transpose()?;
+    let mut summary = summarize(
         &context.run_id,
         warmup_count,
         context.display.frame_budget_ms,
         frames,
     )?;
+    summary.sort_telemetry = context.sort_telemetry;
+    fs::create_dir_all(parent)
+        .map_err(|error| format!("failed to create artifact parent directory: {error}"))?;
+    let staging = staging_directory_path(directory)?;
+    fs::create_dir(&staging)
+        .map_err(|error| format!("failed to create artifact staging directory: {error}"))?;
+    let image = encoded_image
+        .as_ref()
+        .map(|encoded| encoded.receipt.clone());
     let manifest = Manifest {
         schema: SCHEMA,
         record_type: "manifest",
@@ -312,9 +454,15 @@ pub fn write_artifacts(
         display: context.display,
         environment: context.environment,
         unavailable_fields: context.unavailable_fields,
+        exactness: context.exactness,
+        resolution: context.resolution,
+        image,
     };
 
     let write_result = (|| {
+        if let Some(encoded) = encoded_image.as_ref() {
+            write_bytes_atomic(&staging.join("final-frame.png"), &encoded.bytes)?;
+        }
         write_json_atomic(&staging.join("manifest.json"), &manifest)?;
         write_frames_atomic(&staging.join("frames.jsonl"), frames)?;
         write_json_atomic(&staging.join("summary.json"), &summary)?;
@@ -398,6 +546,13 @@ pub fn trace(id: &str, canonical_bytes: &[u8]) -> Trace {
     Trace {
         id: id.to_owned(),
         sha256: sha256_bytes(canonical_bytes),
+        frame_index: None,
+        frame_indices: None,
+        require_display_match: None,
+        display_policy: None,
+        quality_comparable: None,
+        reference_width: None,
+        reference_height: None,
     }
 }
 
@@ -472,6 +627,60 @@ fn write_frames_atomic(path: &Path, frames: &[FrameSample]) -> Result<(), String
         .map_err(|error| format!("failed to publish {}: {error}", path.display()))
 }
 
+struct EncodedFinalFrame {
+    bytes: Vec<u8>,
+    receipt: ImageReceipt,
+}
+
+fn encode_final_frame(frame: &FinalFrame) -> Result<EncodedFinalFrame, String> {
+    let expected_len = usize::try_from(frame.width)
+        .ok()
+        .and_then(|width| {
+            usize::try_from(frame.height)
+                .ok()
+                .and_then(|height| width.checked_mul(height))
+        })
+        .and_then(|pixels| pixels.checked_mul(4))
+        .ok_or_else(|| "final-frame dimensions overflow addressable memory".to_owned())?;
+    if frame.width == 0 || frame.height == 0 || frame.rgba.len() != expected_len {
+        return Err("final-frame RGBA byte length does not match its dimensions".to_owned());
+    }
+
+    let mut bytes = Vec::new();
+    {
+        let mut encoder = png::Encoder::new(&mut bytes, frame.width, frame.height);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        let mut writer = encoder
+            .write_header()
+            .map_err(|error| format!("failed to encode final-frame PNG header: {error}"))?;
+        writer
+            .write_image_data(&frame.rgba)
+            .map_err(|error| format!("failed to encode final-frame PNG data: {error}"))?;
+    }
+    Ok(EncodedFinalFrame {
+        receipt: ImageReceipt {
+            path: "final-frame.png".to_owned(),
+            sha256: sha256_bytes(&bytes),
+            width: frame.width,
+            height: frame.height,
+        },
+        bytes,
+    })
+}
+
+fn write_bytes_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    let temp = temporary_path(path);
+    let mut file = File::create(&temp)
+        .map_err(|error| format!("failed to create {}: {error}", temp.display()))?;
+    file.write_all(bytes)
+        .map_err(|error| format!("failed to write {}: {error}", path.display()))?;
+    file.flush()
+        .map_err(|error| format!("failed to flush {}: {error}", path.display()))?;
+    fs::rename(&temp, path)
+        .map_err(|error| format!("failed to publish {}: {error}", path.display()))
+}
+
 fn temporary_path(path: &Path) -> PathBuf {
     let mut value = path.as_os_str().to_owned();
     value.push(format!(".tmp-{}", std::process::id()));
@@ -541,8 +750,9 @@ mod tests {
     use std::process::Command;
 
     use super::{
-        ArtifactContext, Build, Dataset, Display, Environment, FrameSample, Renderer, SCHEMA,
-        Trace, distribution, summarize, write_artifacts,
+        ArtifactContext, Build, Dataset, Display, Environment, Exactness, FinalFrame, FrameSample,
+        Renderer, ResolutionReceipt, SCHEMA, SortTelemetry, Trace, distribution, summarize,
+        write_artifacts,
     };
 
     fn sample(run_id: &str, index: u64, value: f64) -> FrameSample {
@@ -562,6 +772,83 @@ mod tests {
             visible: 2,
             drawn: 2,
             sort_refreshed: None,
+            trace_frame_index: None,
+        }
+    }
+
+    fn context(run_id: &str) -> ArtifactContext {
+        ArtifactContext {
+            run_id: run_id.to_owned(),
+            series_id: "validator-series".to_owned(),
+            started_at_utc: "2026-07-11T00:00:00Z".to_owned(),
+            measurement_started_at_utc: "2026-07-11T00:00:00.100Z".to_owned(),
+            measurement_ended_at_utc: "2026-07-11T00:00:00.900Z".to_owned(),
+            build: Build {
+                repository_commit: "0123456789abcdef0123456789abcdef01234567".to_owned(),
+                dirty: false,
+                profile: "test".to_owned(),
+                package_version: env!("CARGO_PKG_VERSION").to_owned(),
+            },
+            dataset: Dataset {
+                id: "fixture".to_owned(),
+                sha256: "a".repeat(64),
+                bytes: 1,
+                splat_count: 2,
+                sh_degree: 0,
+            },
+            trace: Trace {
+                id: "static".to_owned(),
+                sha256: "b".repeat(64),
+                frame_index: None,
+                frame_indices: None,
+                require_display_match: None,
+                display_policy: None,
+                quality_comparable: None,
+                reference_width: None,
+                reference_height: None,
+            },
+            renderer: Renderer {
+                implementation: "gsplat-rs".to_owned(),
+                path: "sorted_index_direct".to_owned(),
+                backend: "test".to_owned(),
+                sort_policy: "cpu_every_frame".to_owned(),
+                resource_preflight: None,
+                order_backend_requested: None,
+                sort_interval: None,
+                exact_plan_requested: None,
+                exact_plan_actual: None,
+            },
+            display: Display {
+                width: 640,
+                height: 480,
+                dpr: 1.0,
+                refresh_hz: 60.0,
+                frame_budget_ms: 3.5,
+                refresh_hz_source: "configured".to_owned(),
+                frame_budget_source: "configured".to_owned(),
+            },
+            environment: Environment {
+                platform: "test".to_owned(),
+                os: "test-os".to_owned(),
+                device: None,
+                browser: None,
+                adapter: None,
+                adapter_device_type: None,
+                driver: None,
+            },
+            unavailable_fields: vec![
+                "environment.device".to_owned(),
+                "environment.browser".to_owned(),
+                "environment.adapter".to_owned(),
+                "environment.adapter_device_type".to_owned(),
+                "environment.driver".to_owned(),
+                "frames[*].gpu_wait_ms".to_owned(),
+                "frames[*].gpu_complete_ms".to_owned(),
+                "frames[*].sort_refreshed".to_owned(),
+            ],
+            exactness: None,
+            resolution: None,
+            sort_telemetry: None,
         }
     }
 
@@ -624,67 +911,9 @@ mod tests {
         let frames = (0..5)
             .map(|index| sample("validator-run", index, index as f64 + 1.0))
             .collect::<Vec<_>>();
-        let context = ArtifactContext {
-            run_id: "validator-run".to_owned(),
-            series_id: "validator-series".to_owned(),
-            started_at_utc: "2026-07-11T00:00:00Z".to_owned(),
-            measurement_started_at_utc: "2026-07-11T00:00:00.100Z".to_owned(),
-            measurement_ended_at_utc: "2026-07-11T00:00:00.900Z".to_owned(),
-            build: Build {
-                repository_commit: "0123456789abcdef0123456789abcdef01234567".to_owned(),
-                dirty: false,
-                profile: "test".to_owned(),
-                package_version: env!("CARGO_PKG_VERSION").to_owned(),
-            },
-            dataset: Dataset {
-                id: "fixture".to_owned(),
-                sha256: "a".repeat(64),
-                bytes: 1,
-                splat_count: 2,
-                sh_degree: 0,
-            },
-            trace: Trace {
-                id: "static".to_owned(),
-                sha256: "b".repeat(64),
-            },
-            renderer: Renderer {
-                implementation: "gsplat-rs".to_owned(),
-                path: "sorted_index_direct".to_owned(),
-                backend: "test".to_owned(),
-                sort_policy: "cpu_every_frame".to_owned(),
-                resource_preflight: None,
-            },
-            display: Display {
-                width: 640,
-                height: 480,
-                dpr: 1.0,
-                refresh_hz: 60.0,
-                frame_budget_ms: 3.5,
-                refresh_hz_source: "configured".to_owned(),
-                frame_budget_source: "configured".to_owned(),
-            },
-            environment: Environment {
-                platform: "test".to_owned(),
-                os: "test-os".to_owned(),
-                device: None,
-                browser: None,
-                adapter: None,
-                adapter_device_type: None,
-                driver: None,
-            },
-            unavailable_fields: vec![
-                "environment.device".to_owned(),
-                "environment.browser".to_owned(),
-                "environment.adapter".to_owned(),
-                "environment.adapter_device_type".to_owned(),
-                "environment.driver".to_owned(),
-                "frames[*].gpu_wait_ms".to_owned(),
-                "frames[*].gpu_complete_ms".to_owned(),
-                "frames[*].sort_refreshed".to_owned(),
-            ],
-        };
+        let context = context("validator-run");
 
-        write_artifacts(&directory, context.clone(), 2, &frames).unwrap();
+        write_artifacts(&directory, context.clone(), 2, &frames, None).unwrap();
         let repository = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
         let status = Command::new("python3")
             .arg(repository.join("tests/perf/validate-benchmark-artifacts.py"))
@@ -693,8 +922,122 @@ mod tests {
             .unwrap();
         assert!(status.success());
 
-        let error = write_artifacts(&directory, context, 2, &frames).unwrap_err();
+        let error = write_artifacts(&directory, context, 2, &frames, None).unwrap_err();
         assert!(error.contains("already exists"));
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn full_quality_artifact_publishes_image_and_receipts_atomically() {
+        let root = std::env::temp_dir().join(format!(
+            "gsplat-full-quality-artifact-{}-{}",
+            std::process::id(),
+            super::default_run_id().unwrap()
+        ));
+        let directory = root.join("run");
+        let mut context = context("full-quality-run");
+        context.exactness = Some(Exactness {
+            source_splat_count: 2,
+            decoded_splat_count: 2,
+            encoded_splat_count: 2,
+            resident_splat_count: 2,
+            addressable_splat_count: 2,
+            source_sh_degree: 0,
+            resident_sh_degree: 0,
+            source_membership: "all",
+            sampling: "disabled",
+            lod: "disabled",
+            sh_degree_policy: "source",
+            partial_scene_published: false,
+            full_quality: true,
+        });
+        context.resolution = Some(ResolutionReceipt {
+            requested_width: 2,
+            requested_height: 2,
+            surface_width: 2,
+            surface_height: 2,
+            internal_render_width: 2,
+            internal_render_height: 2,
+            presented_width: 2,
+            presented_height: 2,
+            dynamic_resolution: "disabled",
+            upscaling: "disabled",
+            full_resolution: true,
+            presentation_kind: "offscreen_readback",
+        });
+        context.display.width = 2;
+        context.display.height = 2;
+        context.sort_telemetry = Some(SortTelemetry {
+            cpu_frame_count: 2,
+            gpu_frame_count: 0,
+            gpu_sort_fallback_count: 0,
+        });
+        let frames = vec![
+            sample("full-quality-run", 0, 1.0),
+            sample("full-quality-run", 1, 1.5),
+        ];
+        let rgba = vec![
+            255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255,
+        ];
+
+        write_artifacts(
+            &directory,
+            context,
+            1,
+            &frames,
+            Some(FinalFrame {
+                width: 2,
+                height: 2,
+                rgba,
+            }),
+        )
+        .unwrap();
+
+        let manifest: serde_json::Value = serde_json::from_slice(
+            &fs::read(directory.join("manifest.json")).expect("manifest bytes"),
+        )
+        .expect("manifest JSON");
+        assert_eq!(manifest["exactness"]["full_quality"], true);
+        assert_eq!(manifest["resolution"]["internal_render_width"], 2);
+        assert_eq!(manifest["image"]["path"], "final-frame.png");
+        assert_eq!(manifest["image"]["width"], 2);
+        assert_eq!(manifest["image"]["height"], 2);
+        assert_eq!(manifest["image"]["sha256"].as_str().unwrap().len(), 64);
+        let png = fs::read(directory.join("final-frame.png")).expect("final image");
+        assert!(png.starts_with(b"\x89PNG\r\n\x1a\n"));
+        let summary: serde_json::Value = serde_json::from_slice(
+            &fs::read(directory.join("summary.json")).expect("summary bytes"),
+        )
+        .expect("summary JSON");
+        assert_eq!(summary["sort_telemetry"]["cpu_frame_count"], 2);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn invalid_final_frame_leaves_no_partial_artifact() {
+        let root = std::env::temp_dir().join(format!(
+            "gsplat-invalid-image-artifact-{}-{}",
+            std::process::id(),
+            super::default_run_id().unwrap()
+        ));
+        let directory = root.join("run");
+        let frames = vec![sample("invalid-image-run", 0, 1.0)];
+
+        let error = write_artifacts(
+            &directory,
+            context("invalid-image-run"),
+            0,
+            &frames,
+            Some(FinalFrame {
+                width: 2,
+                height: 2,
+                rgba: vec![0; 15],
+            }),
+        )
+        .unwrap_err();
+
+        assert!(error.contains("RGBA byte length"));
+        assert!(!directory.exists());
+        assert!(!root.exists());
     }
 }
