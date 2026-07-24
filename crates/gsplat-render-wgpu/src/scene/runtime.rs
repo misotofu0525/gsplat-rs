@@ -3,10 +3,10 @@ use std::fmt;
 use gsplat_core::Vec3f;
 
 use super::{ResidentSceneCpu, ResidentSceneError};
-use crate::plans::{FrameIdentity, GpuExecutionContext};
+use crate::plans::{FrameIdentity, GpuExecutionContext, GpuOwnerToken};
 use crate::renderer::gpu_prepare::{
-    GpuExecutionOwner, GpuPreparationError, GpuPreparationReceipt, GpuPreprojectHandles,
-    GpuProjectedHandles, GpuScenePreparation,
+    CpuPostProjectedHandles, CpuPostProjectionRequest, GpuExecutionOwner, GpuPreparationError,
+    GpuPreparationReceipt, GpuPreprojectHandles, GpuProjectedHandles, GpuScenePreparation,
 };
 
 /// Private Exact, all-resident scene owner used by the shadow renderer core.
@@ -77,6 +77,13 @@ impl SceneRuntime {
     }
 
     #[cfg(test)]
+    pub(crate) fn gpu_cpu_post_projection_encode_count(&self) -> Option<u64> {
+        self.gpu
+            .as_ref()
+            .map(GpuScenePreparation::cpu_post_projection_encode_count)
+    }
+
+    #[cfg(test)]
     pub(crate) fn rebind_gpu(
         &mut self,
         owner: &GpuExecutionOwner,
@@ -103,6 +110,27 @@ impl SceneRuntime {
     ) -> Result<GpuProjectedHandles<'scene>, GpuPreparationError> {
         let gpu = self.gpu.as_mut().ok_or(GpuPreparationError::Unavailable)?;
         gpu.encode_frame(context, camera, width, height, frame)
+    }
+
+    pub(crate) fn validate_cpu_post_projection_context(
+        &self,
+        owner: &GpuOwnerToken,
+        camera: &gsplat_core::Camera,
+        width: u32,
+        height: u32,
+        frame: FrameIdentity,
+    ) -> Result<GpuPreparationReceipt, GpuPreparationError> {
+        let gpu = self.gpu.as_ref().ok_or(GpuPreparationError::Unavailable)?;
+        gpu.validate_cpu_post_projection_context(owner, camera, width, height, frame)
+    }
+
+    pub(crate) fn encode_cpu_post_projection_frame<'scene>(
+        &'scene mut self,
+        context: GpuExecutionContext<'_>,
+        request: CpuPostProjectionRequest<'_>,
+    ) -> Result<CpuPostProjectedHandles<'scene>, GpuPreparationError> {
+        let gpu = self.gpu.as_mut().ok_or(GpuPreparationError::Unavailable)?;
+        gpu.encode_cpu_post_projection_frame(context, request)
     }
 
     /// Encodes one complete current-frame Exact Preproject graph through the

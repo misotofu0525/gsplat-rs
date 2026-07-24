@@ -11,7 +11,7 @@ use thiserror::Error;
 
 use crate::scene::SceneRuntime;
 
-use cpu_post::{CpuPostSortError, CpuPostSortPlan};
+use cpu_post::{CpuPostSortError, CpuPostSortGpuWork, CpuPostSortPlan};
 use gpu_post::{GpuPostSortError, GpuPostSortPlan, GpuPostSortWork};
 use gpu_pre::{GpuPreprojectError, GpuPreprojectPlan, GpuPreprojectWork};
 
@@ -77,7 +77,7 @@ impl<'a> GpuExecutionContext<'a> {
         (self.owner, self.queue, self.encoder)
     }
 
-    const fn owner_token(&self) -> &GpuOwnerToken {
+    pub(crate) const fn owner_token(&self) -> &GpuOwnerToken {
         self.owner
     }
 }
@@ -365,6 +365,11 @@ pub(crate) enum IndirectCountSemantics {
     DrawEqualsContributor,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DirectCountSemantics {
+    DrawEqualsVisible,
+}
+
 /// Private, accessor-only plan handoff.
 ///
 /// E1 stops after the authoritative CPU order and therefore reports only
@@ -383,6 +388,7 @@ pub(crate) struct ProjectedWork<'a> {
     contributor_count: Option<u32>,
     draw_count: Option<u32>,
     cpu_order_ids: Option<&'a [u32]>,
+    cpu_post_gpu: Option<CpuPostSortGpuWork<'a>>,
     gpu_post: Option<GpuPostSortWork<'a>>,
     gpu_pre: Option<GpuPreprojectWork<'a>>,
 }
@@ -394,7 +400,9 @@ impl<'a> ProjectedWork<'a> {
         order_generation: u64,
         source_count: u32,
         ordered_ids: &'a [u32],
+        cpu_post_gpu: Option<CpuPostSortGpuWork<'a>>,
     ) -> Self {
+        let draw_count = cpu_post_gpu.as_ref().map(CpuPostSortGpuWork::direct_count);
         Self {
             plan: PlanId::CpuPostSort,
             order_lane: OrderLane::Cpu,
@@ -403,8 +411,9 @@ impl<'a> ProjectedWork<'a> {
             source_count,
             visible_count: Some(ordered_ids.len() as u32),
             contributor_count: None,
-            draw_count: None,
+            draw_count,
             cpu_order_ids: Some(ordered_ids),
+            cpu_post_gpu,
             gpu_post: None,
             gpu_pre: None,
         }
@@ -429,6 +438,7 @@ impl<'a> ProjectedWork<'a> {
             contributor_count: None,
             draw_count: None,
             cpu_order_ids: None,
+            cpu_post_gpu: None,
             gpu_post: Some(gpu_post),
             gpu_pre: None,
         }
@@ -453,6 +463,7 @@ impl<'a> ProjectedWork<'a> {
             contributor_count: None,
             draw_count: None,
             cpu_order_ids: None,
+            cpu_post_gpu: None,
             gpu_post: None,
             gpu_pre: Some(gpu_pre),
         }
@@ -493,6 +504,12 @@ impl<'a> ProjectedWork<'a> {
 
     pub(crate) fn cpu_order_ids(&self) -> Result<&[u32], WorkUnavailable> {
         self.cpu_order_ids.ok_or(WorkUnavailable::CpuOrderIds)
+    }
+
+    pub(crate) fn cpu_post_gpu(&self) -> Result<&CpuPostSortGpuWork<'a>, WorkUnavailable> {
+        self.cpu_post_gpu
+            .as_ref()
+            .ok_or(WorkUnavailable::GpuProjectedWork)
     }
 
     pub(crate) fn gpu_post(&self) -> Result<&GpuPostSortWork<'a>, WorkUnavailable> {
@@ -811,11 +828,14 @@ impl PlanSet {
         }
         match requested {
             PlanId::CpuPostSort => {
-                let _ = (input.viewport_width, input.viewport_height, execution);
+                let gpu = match execution {
+                    PlanExecutionContext::Cpu => None,
+                    PlanExecutionContext::Gpu(gpu) => Some(gpu),
+                };
                 self.cpu_post
                     .as_mut()
                     .ok_or(PlanSetError::RequestedPlanUnprepared { requested })?
-                    .execute(scene, input.camera, input.frame, input.source_count)
+                    .execute(scene, input, gpu)
                     .map_err(PlanSetError::from)
             }
             PlanId::GpuPostSort => {

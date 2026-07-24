@@ -50,6 +50,16 @@ pub(crate) enum GpuPreparationError {
     InvalidCamera,
     #[error("GPU frame viewport is invalid: {width}x{height}")]
     InvalidViewport { width: u32, height: u32 },
+    #[error("CPU PostSort order length {visible_count} exceeds prepared GPU capacity {capacity}")]
+    CpuOrderCapacityExceeded { visible_count: usize, capacity: u32 },
+    #[error(
+        "CPU PostSort source ID {source_id} at rank {rank} exceeds addressable count {addressable_count}"
+    )]
+    CpuOrderSourceIdOutOfRange {
+        rank: usize,
+        source_id: u32,
+        addressable_count: u32,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -183,6 +193,34 @@ pub(crate) struct GpuScenePreparation {
     color_encode_count: u64,
     #[cfg(test)]
     preproject_encode_count: u64,
+    #[cfg(test)]
+    cpu_post_projection_encode_count: u64,
+}
+
+pub(crate) struct CpuPostProjectionRequest<'a> {
+    ordered_ids: &'a [u32],
+    camera: Camera,
+    viewport: (u32, u32),
+    frame: FrameIdentity,
+    order_generation: u64,
+}
+
+impl<'a> CpuPostProjectionRequest<'a> {
+    pub(crate) const fn new(
+        ordered_ids: &'a [u32],
+        camera: Camera,
+        viewport: (u32, u32),
+        frame: FrameIdentity,
+        order_generation: u64,
+    ) -> Self {
+        Self {
+            ordered_ids,
+            camera,
+            viewport,
+            frame,
+            order_generation,
+        }
+    }
 }
 
 impl GpuScenePreparation {
@@ -258,6 +296,8 @@ impl GpuScenePreparation {
             color_encode_count: 0,
             #[cfg(test)]
             preproject_encode_count: 0,
+            #[cfg(test)]
+            cpu_post_projection_encode_count: 0,
         })
     }
 
@@ -365,6 +405,99 @@ impl GpuScenePreparation {
         })
     }
 
+    /// Validates the complete CPU PostSort projection context without writing
+    /// queue state or encoding commands. Plans use this before refreshing the
+    /// authoritative CPU order so a wrong owner or stale frame cannot publish
+    /// a new order as a side effect of a rejected GPU projection request.
+    pub(crate) fn validate_cpu_post_projection_context(
+        &self,
+        owner: &GpuOwnerToken,
+        camera: &Camera,
+        width: u32,
+        height: u32,
+        frame: FrameIdentity,
+    ) -> Result<GpuPreparationReceipt, GpuPreparationError> {
+        if !self.owner.same_owner(owner) {
+            return Err(GpuPreparationError::ExecutionOwnerMismatch);
+        }
+        if !self.receipt.accepts(frame) {
+            return Err(GpuPreparationError::StaleRuntimeGeneration);
+        }
+        validate_frame_input(camera, width, height)?;
+        validate_runtime_counts(
+            self.receipt,
+            &self.resident,
+            &self.projector,
+            &self.preproject,
+        )?;
+        Ok(self.receipt)
+    }
+
+    /// Uploads the authoritative visible CPU IDs and encodes the existing
+    /// Resident color plus CPU-bound rank projection into the caller's
+    /// encoder. Every call rewrites the direct D=V count and re-encodes all
+    /// GPU work; successful encoding publishes no cache or generation.
+    pub(crate) fn encode_cpu_post_projection_frame<'scene>(
+        &'scene mut self,
+        context: GpuExecutionContext<'_>,
+        request: CpuPostProjectionRequest<'_>,
+    ) -> Result<CpuPostProjectedHandles<'scene>, GpuPreparationError> {
+        let (owner, queue, encoder) = context.into_parts();
+        let (width, height) = request.viewport;
+        self.validate_cpu_post_projection_context(
+            owner,
+            &request.camera,
+            width,
+            height,
+            request.frame,
+        )?;
+        validate_cpu_order(self.receipt, request.ordered_ids)?;
+
+        let visible_count = self.resident.prepare_cpu_order(
+            queue,
+            request.ordered_ids,
+            &request.camera,
+            width,
+            height,
+            true,
+        )?;
+        self.projector
+            .write_cpu_draw_args(queue, QUAD_VERTEX_COUNT, visible_count, false);
+        self.resident.encode_color_resolve_uncached(
+            queue,
+            &self.color_pipeline,
+            encoder,
+            &request.camera,
+            self.max_workgroups_per_dimension,
+        )?;
+        #[cfg(test)]
+        {
+            self.color_encode_count += 1;
+        }
+        self.projector.encode_cpu(encoder, visible_count)?;
+        #[cfg(test)]
+        {
+            self.cpu_post_projection_encode_count += 1;
+        }
+
+        Ok(CpuPostProjectedHandles {
+            receipt: CpuPostProjectionFrameReceipt {
+                frame: request.frame,
+                preparation: self.receipt,
+                camera: request.camera,
+                viewport_width: width,
+                viewport_height: height,
+                order_generation: request.order_generation,
+                visible_count,
+            },
+            ordered_source_ids: &self.resident.order_buffer,
+            projected_center_source: self.projector.projected_center_source(),
+            projected_axes: self.projector.projected_axes(),
+            resolved_color: &self.resident.resolved_color_buffer,
+            projection_count_guard: self.projector.cpu_draw_args(),
+        })
+    }
+
     fn order(&self) -> Result<&crate::resident_gpu::ResidentGpuSceneOrder, GpuPreparationError> {
         self.resident
             .gpu_order()
@@ -450,6 +583,89 @@ impl GpuScenePreparation {
     #[cfg(test)]
     pub(crate) const fn preproject_encode_count(&self) -> u64 {
         self.preproject_encode_count
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn cpu_post_projection_encode_count(&self) -> u64 {
+        self.cpu_post_projection_encode_count
+    }
+}
+
+/// Immutable currentness and direct-count proof for one CPU PostSort
+/// projection encode. The direct count is authoritative D=V; no contributor
+/// count is inferred from the projection shader's private workspace.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct CpuPostProjectionFrameReceipt {
+    frame: FrameIdentity,
+    preparation: GpuPreparationReceipt,
+    camera: Camera,
+    viewport_width: u32,
+    viewport_height: u32,
+    order_generation: u64,
+    visible_count: u32,
+}
+
+impl CpuPostProjectionFrameReceipt {
+    pub(crate) const fn frame_identity(self) -> FrameIdentity {
+        self.frame
+    }
+
+    pub(crate) const fn preparation(self) -> GpuPreparationReceipt {
+        self.preparation
+    }
+
+    pub(crate) const fn camera(self) -> Camera {
+        self.camera
+    }
+
+    pub(crate) const fn viewport(self) -> (u32, u32) {
+        (self.viewport_width, self.viewport_height)
+    }
+
+    pub(crate) const fn order_generation(self) -> u64 {
+        self.order_generation
+    }
+
+    pub(crate) const fn visible_count(self) -> u32 {
+        self.visible_count
+    }
+}
+
+/// Borrowed GPU completion of the same CPU PostSort plan. Buffers remain
+/// owned by the atomically published SceneRuntime graph, while the explicit
+/// direct count is the later canonical raster's D=V source.
+pub(crate) struct CpuPostProjectedHandles<'a> {
+    receipt: CpuPostProjectionFrameReceipt,
+    ordered_source_ids: &'a wgpu::Buffer,
+    projected_center_source: &'a wgpu::Buffer,
+    projected_axes: &'a wgpu::Buffer,
+    resolved_color: &'a wgpu::Buffer,
+    projection_count_guard: &'a wgpu::Buffer,
+}
+
+impl CpuPostProjectedHandles<'_> {
+    pub(crate) const fn receipt(&self) -> CpuPostProjectionFrameReceipt {
+        self.receipt
+    }
+
+    pub(crate) const fn ordered_source_ids(&self) -> &wgpu::Buffer {
+        self.ordered_source_ids
+    }
+
+    pub(crate) const fn projected_center_source(&self) -> &wgpu::Buffer {
+        self.projected_center_source
+    }
+
+    pub(crate) const fn projected_axes(&self) -> &wgpu::Buffer {
+        self.projected_axes
+    }
+
+    pub(crate) const fn resolved_color(&self) -> &wgpu::Buffer {
+        self.resolved_color
+    }
+
+    pub(crate) const fn projection_count_guard(&self) -> &wgpu::Buffer {
+        self.projection_count_guard
     }
 }
 
@@ -669,6 +885,31 @@ fn validate_runtime_counts(
     Ok(())
 }
 
+fn validate_cpu_order(
+    receipt: GpuPreparationReceipt,
+    ordered_ids: &[u32],
+) -> Result<(), GpuPreparationError> {
+    if ordered_ids.len() > receipt.addressable_count as usize {
+        return Err(GpuPreparationError::CpuOrderCapacityExceeded {
+            visible_count: ordered_ids.len(),
+            capacity: receipt.addressable_count,
+        });
+    }
+    if let Some((rank, source_id)) = ordered_ids
+        .iter()
+        .copied()
+        .enumerate()
+        .find(|(_, source_id)| *source_id >= receipt.addressable_count)
+    {
+        return Err(GpuPreparationError::CpuOrderSourceIdOutOfRange {
+            rank,
+            source_id,
+            addressable_count: receipt.addressable_count,
+        });
+    }
+    Ok(())
+}
+
 fn validate_frame_input(
     camera: &Camera,
     width: u32,
@@ -851,6 +1092,41 @@ mod tests {
                 ResidentGpuError::StorageBindingCountUnsupported(7)
             ))
         ));
+    }
+
+    #[test]
+    fn cpu_post_order_upload_rejects_capacity_and_source_id_mismatch() {
+        let receipt = GpuPreparationReceipt {
+            source_count: 1,
+            capacity: 1,
+            resident_count: 1,
+            addressable_count: 1,
+            sh_degree: 0,
+            preproject_compute: true,
+            scene_resource_generation: SceneResourceGeneration {
+                scene: 1,
+                contract: 1,
+            },
+            plan_set_generation: 2,
+        };
+
+        assert!(validate_cpu_order(receipt, &[]).is_ok());
+        assert!(validate_cpu_order(receipt, &[0]).is_ok());
+        assert_eq!(
+            validate_cpu_order(receipt, &[0, 0]),
+            Err(GpuPreparationError::CpuOrderCapacityExceeded {
+                visible_count: 2,
+                capacity: 1,
+            })
+        );
+        assert_eq!(
+            validate_cpu_order(receipt, &[1]),
+            Err(GpuPreparationError::CpuOrderSourceIdOutOfRange {
+                rank: 0,
+                source_id: 1,
+                addressable_count: 1,
+            })
+        );
     }
 
     #[test]
