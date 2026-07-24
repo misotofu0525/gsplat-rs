@@ -160,7 +160,7 @@ impl GpuExecutionOwner {
         }
     }
 
-    fn device(&self) -> &wgpu::Device {
+    pub(super) fn device(&self) -> &wgpu::Device {
         &self.device
     }
 

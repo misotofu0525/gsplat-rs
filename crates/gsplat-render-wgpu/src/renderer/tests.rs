@@ -323,7 +323,7 @@ mod canonical_submission {
     use super::*;
     use crate::plans::TestGpuAdmissionMode;
     use crate::renderer::{
-        FrameExecutionError, GpuFrameEncodeRequest, RasterCountSemantics, encode_frame_gpu_into,
+        FrameExecutionError, GpuFrameEncodeRequest, RasterCountSemantics, encode_frame_gpu,
         submit_encoded_frame,
     };
 
@@ -489,18 +489,12 @@ mod canonical_submission {
     async fn render_plan(
         slot: &mut PreparedRuntimeSlot,
         device: &wgpu::Device,
-        queue: &Arc<wgpu::Queue>,
         plan: PlanId,
     ) -> (crate::renderer::GpuFrameSubmission, Vec<u8>) {
         let (texture, view, readback) = target_and_readback(device, "exact-renderer-target");
-        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("exact-renderer-caller-owned-encoder"),
-        });
         let validation_scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
-        let pending = encode_frame_gpu_into(
+        let mut pending = encode_frame_gpu(
             slot,
-            queue,
-            &mut encoder,
             GpuFrameEncodeRequest::new(
                 plan,
                 &Camera::default(),
@@ -511,9 +505,9 @@ mod canonical_submission {
             ),
         )
         .expect("complete plan plus canonical raster encode");
-        append_readback(&mut encoder, &texture, &readback);
-        let submission = submit_encoded_frame(slot, pending, encoder.finish())
-            .expect("single renderer-owned submission");
+        append_readback(pending.encoder_mut(), &texture, &readback);
+        let submission =
+            submit_encoded_frame(slot, pending).expect("single renderer-owned submission");
 
         let slice = readback.slice(..);
         let (sender, receiver) = std::sync::mpsc::channel();
@@ -553,16 +547,10 @@ mod canonical_submission {
                     .expect("scene, plans and raster admitted atomically");
 
                 let before = slot.frame_state();
-                let mut stale_encoder =
-                    device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                        label: Some("exact-renderer-stale-encoder"),
-                    });
                 let (_stale_texture, stale_view, _stale_readback) =
                     target_and_readback(&device, "exact-renderer-stale-target");
-                let stale = encode_frame_gpu_into(
+                let stale = encode_frame_gpu(
                     &mut slot,
-                    &queue,
-                    &mut stale_encoder,
                     GpuFrameEncodeRequest::new(
                         PlanId::CpuPostSort,
                         &Camera::default(),
@@ -573,16 +561,10 @@ mod canonical_submission {
                     ),
                 )
                 .expect("first pending frame");
-                let mut newer_encoder =
-                    device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                        label: Some("exact-renderer-newer-encoder"),
-                    });
                 let (_newer_texture, newer_view, _newer_readback) =
                     target_and_readback(&device, "exact-renderer-newer-target");
-                let newer = encode_frame_gpu_into(
+                let newer = encode_frame_gpu(
                     &mut slot,
-                    &queue,
-                    &mut newer_encoder,
                     GpuFrameEncodeRequest::new(
                         PlanId::CpuPostSort,
                         &Camera::default(),
@@ -595,21 +577,59 @@ mod canonical_submission {
                 .expect("newer pending frame");
                 assert_eq!(slot.frame_state(), before);
                 assert!(matches!(
-                    submit_encoded_frame(&mut slot, stale, stale_encoder.finish()),
+                    submit_encoded_frame(&mut slot, stale),
                     Err(FrameExecutionError::PendingFrameMismatch {
                         component: "latest encode attempt"
                     })
                 ));
                 drop(newer);
-                drop(newer_encoder);
                 assert_eq!(slot.frame_state(), before);
 
-                let (cpu, cpu_image) =
-                    render_plan(&mut slot, &device, &queue, PlanId::CpuPostSort).await;
+                let (_older_texture, older_view, _older_readback) =
+                    target_and_readback(&device, "exact-renderer-before-failed-attempt-target");
+                let older = encode_frame_gpu(
+                    &mut slot,
+                    GpuFrameEncodeRequest::new(
+                        PlanId::CpuPostSort,
+                        &Camera::default(),
+                        Viewport::new(WIDTH, HEIGHT).expect("viewport"),
+                        &older_view,
+                        FORMAT,
+                        wgpu::Color::BLACK,
+                    ),
+                )
+                .expect("pending frame before a later failed attempt");
+                let mut moved_camera = Camera::default();
+                moved_camera.pose.position.x = 0.25;
+                assert!(matches!(
+                    encode_frame_gpu(
+                        &mut slot,
+                        GpuFrameEncodeRequest::new(
+                            PlanId::CpuPostSort,
+                            &moved_camera,
+                            Viewport::new(WIDTH, HEIGHT).expect("viewport"),
+                            &older_view,
+                            wgpu::TextureFormat::Bgra8Unorm,
+                            wgpu::Color::BLACK,
+                        ),
+                    ),
+                    Err(FrameExecutionError::Raster(
+                        crate::raster::CanonicalRasterError::TargetFormatMismatch { .. }
+                    ))
+                ));
+                assert!(matches!(
+                    submit_encoded_frame(&mut slot, older),
+                    Err(FrameExecutionError::PendingFrameMismatch {
+                        component: "latest encode attempt"
+                    })
+                ));
+                assert_eq!(slot.frame_state(), before);
+
+                let (cpu, cpu_image) = render_plan(&mut slot, &device, PlanId::CpuPostSort).await;
                 let (gpu_post, gpu_post_image) =
-                    render_plan(&mut slot, &device, &queue, PlanId::GpuPostSort).await;
+                    render_plan(&mut slot, &device, PlanId::GpuPostSort).await;
                 let (gpu_pre, gpu_pre_image) =
-                    render_plan(&mut slot, &device, &queue, PlanId::GpuPreproject).await;
+                    render_plan(&mut slot, &device, PlanId::GpuPreproject).await;
 
                 assert_eq!(
                     cpu.count_semantics(),
@@ -659,13 +679,8 @@ mod canonical_submission {
 
             let (_texture, view, _readback) =
                 target_and_readback(&device, "exact-renderer-owner-target");
-            let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("exact-renderer-owner-encoder"),
-            });
-            let pending = encode_frame_gpu_into(
+            let pending = encode_frame_gpu(
                 &mut first,
-                &queue,
-                &mut encoder,
                 GpuFrameEncodeRequest::new(
                     PlanId::CpuPostSort,
                     &Camera::default(),
@@ -677,7 +692,7 @@ mod canonical_submission {
             )
             .expect("pending first-owner frame");
             assert!(matches!(
-                submit_encoded_frame(&mut second, pending, encoder.finish()),
+                submit_encoded_frame(&mut second, pending),
                 Err(FrameExecutionError::PendingFrameMismatch {
                     component: "GPU execution owner"
                 })

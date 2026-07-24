@@ -136,15 +136,25 @@ struct FrameSubmissionMetadata {
 }
 
 /// Owned transaction returned after one plan and one canonical raster have
-/// been encoded. The host may append capture/readback copies to the same
-/// encoder, then must hand the finished command buffer back to Renderer for
-/// the sole submit and semantic frame publication.
+/// been encoded. Renderer retains the encoder identity; the host may only
+/// append capture/readback work to that same encoder before handing the
+/// transaction back for the sole finish, submit and semantic publication.
 pub(crate) struct PendingGpuFrame {
+    encoder: wgpu::CommandEncoder,
     owner: GpuOwnerToken,
     base_frame: FrameState,
     candidate_frame: FrameState,
     encode_attempt: u64,
     metadata: FrameSubmissionMetadata,
+}
+
+impl PendingGpuFrame {
+    /// Borrows the exact encoder that already contains plan and raster work.
+    /// The encoder cannot be replaced or finished by the host, so the pending
+    /// identity remains structurally tied to the submitted command stream.
+    pub(crate) fn encoder_mut(&mut self) -> &mut wgpu::CommandEncoder {
+        &mut self.encoder
+    }
 }
 
 pub(crate) struct GpuFrameEncodeRequest<'a> {
@@ -485,20 +495,21 @@ pub(crate) fn execute_frame_gpu<'runtime>(
 }
 
 /// Encodes one complete Exact plan and invokes the single canonical raster in
-/// the caller's encoder. The returned transaction owns no borrowed GPU work;
-/// a host can append capture/readback copies before handing the finished
-/// command buffer back to `submit_encoded_frame`.
+/// a Renderer-owned encoder. A host may append capture/readback copies through
+/// the returned transaction, but cannot replace or finish its command stream.
 #[cfg_attr(not(test), allow(dead_code))]
-pub(crate) fn encode_frame_gpu_into(
+pub(crate) fn encode_frame_gpu(
     slot: &mut PreparedRuntimeSlot,
-    queue: &Arc<wgpu::Queue>,
-    encoder: &mut wgpu::CommandEncoder,
     request: GpuFrameEncodeRequest<'_>,
 ) -> Result<PendingGpuFrame, FrameExecutionError> {
     let encode_attempt = slot
         .latest_encode_attempt
         .checked_add(1)
         .ok_or(FrameExecutionError::EncodeAttemptExhausted)?;
+    // Every later attempt, including one that fails before producing a
+    // pending frame, invalidates all older command streams before any queue
+    // write or plan-local cache mutation can occur.
+    slot.latest_encode_attempt = encode_attempt;
     let base_frame = slot.frame;
     let candidate_frame = slot
         .frame
@@ -514,6 +525,13 @@ pub(crate) fn encode_frame_gpu_into(
         plans,
         raster,
     } = &mut slot.runtime;
+    let raster = raster.as_ref().ok_or(GpuPreparationError::Unavailable)?;
+    raster.validate_target_format(request.target_format)?;
+    let mut encoder = owner
+        .device()
+        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("gsplat-exact-frame-encoder"),
+        });
     let work = plans.execute(
         request.requested,
         scene,
@@ -524,24 +542,21 @@ pub(crate) fn encode_frame_gpu_into(
             request.viewport.width(),
             request.viewport.height(),
         ),
-        PlanExecutionContext::Gpu(owner.context(queue, encoder)?),
+        PlanExecutionContext::Gpu(owner.context(owner.queue(), &mut encoder)?),
     )?;
     let (input, metadata) = canonical_input_for_work(&work, owner.token())?;
-    raster
-        .as_ref()
-        .ok_or(GpuPreparationError::Unavailable)?
-        .encode(
-            encoder,
-            request.target,
-            request.target_format,
-            request.clear,
-            input,
-        )?;
+    raster.encode(
+        &mut encoder,
+        request.target,
+        request.target_format,
+        request.clear,
+        input,
+    )?;
 
     // End every scene/plan borrow before returning the owned transaction.
     drop(work);
-    slot.latest_encode_attempt = encode_attempt;
     Ok(PendingGpuFrame {
+        encoder,
         owner: owner.token().clone(),
         base_frame,
         candidate_frame,
@@ -557,7 +572,6 @@ pub(crate) fn encode_frame_gpu_into(
 pub(crate) fn submit_encoded_frame(
     slot: &mut PreparedRuntimeSlot,
     pending: PendingGpuFrame,
-    command_buffer: wgpu::CommandBuffer,
 ) -> Result<GpuFrameSubmission, FrameExecutionError> {
     let owner = slot
         .gpu_owner
@@ -579,6 +593,7 @@ pub(crate) fn submit_encoded_frame(
         });
     }
 
+    let command_buffer = pending.encoder.finish();
     let submission_index = owner.queue().submit(Some(command_buffer));
     slot.frame = pending.candidate_frame;
     Ok(GpuFrameSubmission {

@@ -152,12 +152,7 @@ impl CanonicalRaster {
         clear: wgpu::Color,
         input: CanonicalRasterInput,
     ) -> Result<(), CanonicalRasterError> {
-        if target_format != self.target_format {
-            return Err(CanonicalRasterError::TargetFormatMismatch {
-                expected: self.target_format,
-                actual: target_format,
-            });
-        }
+        self.validate_target_format(target_format)?;
         match input {
             CanonicalRasterInput::RankIndexedDirect { instance_count } => {
                 let rank =
@@ -229,6 +224,21 @@ impl CanonicalRaster {
                     },
                 );
             }
+        }
+        Ok(())
+    }
+
+    /// Checks target compatibility before any plan-local queue write or cache
+    /// mutation is allowed to start for a frame transaction.
+    pub(crate) fn validate_target_format(
+        &self,
+        target_format: wgpu::TextureFormat,
+    ) -> Result<(), CanonicalRasterError> {
+        if target_format != self.target_format {
+            return Err(CanonicalRasterError::TargetFormatMismatch {
+                expected: self.target_format,
+                actual: target_format,
+            });
         }
         Ok(())
     }
