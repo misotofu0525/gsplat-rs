@@ -660,3 +660,55 @@ E12 = Active
 - No Surface host, public API/C ABI, WGSL, platform wrapper or product default
   changed. E12 owns explicit shadow Surface integration and real lifecycle
   parity; product cutover remains Package M.
+
+## E12 explicit Surface-shadow activation contract
+
+- State: Active.
+- Exact baseline: `76f75bb52c93934ddaa3a3b2d76588754e854d2e`.
+- Writer branch/worktree: `codex/native-render-e12-surface-shadow` at
+  `/Users/misotofu/.codex/worktrees/native-e12-writer/gsplat-rs`.
+- Preflight result: `needs-adapter`. Exact encoding is already transactional,
+  but the current submit boundary publishes `FrameState` and whole-plan sample
+  ownership after queue submission and before Surface presentation. E12 must
+  split those events so an acquired and submitted frame is still unpublished
+  until its exact target has been presented.
+- Objective: add one private, explicit Surface-shadow route that exercises CPU
+  PostSort, GPU PostSort, GPU Preproject and Adaptive through the same
+  `PreparedRuntimeSlot`, canonical raster, command encoder, submission,
+  presentation and terminal receipt ownership. The legacy Surface/session
+  remains the product default.
+- Writer scope:
+  - `renderer/mod.rs` and, only when required for transactional policy state,
+    its private `frame.rs`, `controller.rs` or `sampler.rs` leaves;
+  - `surface_presenter.rs` only for a private device/target host seam;
+  - `surface/mod.rs` plus a new private `surface/shadow.rs` and focused tests.
+- Frozen scope: `surface_session.rs`, public crate exports/errors, C ABI,
+  FFI/JNI/Swift/Web/Android wrappers, concrete plans, raster math, WGSL,
+  legacy telemetry, product selection and benchmark schemas.
+- Required transaction:
+  `begin -> validate dimensions -> acquire/retry -> encode plan+raster ->`
+  `append capture -> submit unpublished -> present -> mark capture presented ->`
+  `publish frame/result/controller ticket`. Acquire failure, a stale encode,
+  or a host abort before primitive presentation produces no semantic frame,
+  target receipt or policy observation. A late completion callback from an
+  aborted transaction cannot enter the live controller or optional evidence.
+- Required receipt binds actual plan/lane/order generation, full frame
+  identity, source count, honest optional V/C/D values and their relationship,
+  encode/submission identity, optional formal ticket and matching requested,
+  Surface, internal-render and presented dimensions. CPU PostSort retains
+  numeric `D=V` with unavailable C; GPU PostSort retains GPU-owned `D=V`; GPU
+  Preproject retains GPU-owned `D=C`; unavailable GPU counts stay unavailable.
+- Hard gates: all four selection modes use one route; exactly one submit,
+  present and result for each successful frame; unavailable/retry/resize/
+  capture/stale/duplicate cases fail closed; Apple M4/Metal exercises the
+  complete GPU path; renderer/workspace tests, strict Clippy, Rustdoc, wasm32,
+  architecture checks, required SortedAlpha conformance and C/Swift/JNI smoke
+  remain green.
+- Endpoint boundary: Web, Android and iOS continue through their unchanged
+  product consumers in E12. Their direct shadow cutovers belong to M4, M5 and
+  M6; E12 may compile or smoke those consumers only as regression evidence.
+- Performance work: none. E12 proves ownership and exact lifecycle parity; it
+  makes no FPS or competitor claim.
+- Known correctness issue at activation: one—the premature semantic
+  publication boundary described above. E12 cannot close until it is removed
+  and the submitted-but-not-presented case is deterministic.
