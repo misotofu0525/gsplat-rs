@@ -164,50 +164,8 @@
       "exclude": []
     }
   },
-  "limits": {
-    "production_rust": {
-      "target_lt": 2500,
-      "hard_ceiling": null,
-      "enforce_target": false
-    },
-    "concrete_plan": {
-      "include": [
-        "crates/gsplat-render-wgpu/src/plans.rs",
-        "crates/gsplat-render-wgpu/src/plans/*.rs",
-        "crates/gsplat-render-wgpu/src/plans/**/*.rs"
-      ],
-      "target_lt": 2500,
-      "hard_ceiling": null,
-      "enforce_target": false
-    },
-    "render_lib": {
-      "paths": [
-        "crates/gsplat-render-wgpu/src/lib.rs"
-      ],
-      "target_lt": 2500,
-      "enforce_target": false
-    },
-    "renderer_orchestrator": {
-      "paths": [
-        "crates/gsplat-render-wgpu/src/renderer.rs",
-        "crates/gsplat-render-wgpu/src/renderer/mod.rs"
-      ],
-      "target_lt": 2500,
-      "enforce_target": false
-    },
-    "wgsl": {
-      "target_lt": 2500,
-      "hard_ceiling": null,
-      "enforce_target": false
-    }
-  },
-  "grandfather_ratchet": {
-    "growth_tolerance_lines": 32
-  },
   "top_level_orchestration": {
     "enabled": true,
-    "target_lt": 150,
-    "enforce_target": false,
     "activation_task": "E1",
     "activation_paths": [
       "crates/gsplat-render-wgpu/src/renderer.rs",

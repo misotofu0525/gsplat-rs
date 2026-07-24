@@ -271,10 +271,12 @@ No fixed FPS, fixed competitor lead, fixed file size or physical LOC number is
 an E boundary. In particular, 800, 890 or any other number cannot trigger a
 split, block review or define completion. Boundaries follow responsibility
 cohesion, dependency direction, compatibility, test seams and maintenance risk.
-A new multi-thousand-line mixed owner triggers one finite responsibility
-review. A cohesive owner may receive a finite documented exception when
-another split would worsen ownership; the review cannot become an endless
-decomposition loop.
+One finite responsibility review is required when a module mixes independently
+changing responsibilities, reverses dependency direction, hides test seams,
+forces unrelated changes to land together or becomes materially difficult to
+navigate. A cohesive owner may remain intact when another split would worsen
+ownership; the review cannot become an endless decomposition loop. Physical
+line count is descriptive evidence only and cannot trigger the review by itself.
 
 ## 7. E-task sequencing and writer lanes
 

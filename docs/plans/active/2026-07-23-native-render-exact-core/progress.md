@@ -55,13 +55,14 @@ E8 = E8a-gpu-adapter-transaction-repair
   concurrency.
 - Source-size rule: no fixed LOC quota, split trigger or completion gate. Module
   boundaries follow responsibility, dependency direction, compatibility,
-  testability and maintenance risk. A new mixed-responsibility multi-thousand
-  owner requires finite review but does not force an artificial split.
+  testability, change locality, navigability and maintenance risk. A mixed
+  owner requires finite review only when those semantic properties warrant it;
+  physical line count cannot trigger an artificial split.
 - Numeric-policy correction: `800` and the mistyped `890` are not design
   requirements and must not appear in writer prompts. The checker has no
-  fixed-line blocking ceiling for new files; its multi-thousand signal is
-  review-only. Existing legacy-owner baselines remain one-way no-growth
-  evidence until their responsibility exit condition is satisfied.
+  fixed-line target, ceiling or review trigger. Existing legacy-owner snapshots
+  retain their physical counts only as non-blocking growth evidence until their
+  semantic responsibility exit condition is satisfied.
 - Performance rule: no fixed FPS or competitor percentage gate. Correctness,
   exactness, fail-closed publication and truthful evidence are hard; measured
   performance determines scoped admission or rejection.

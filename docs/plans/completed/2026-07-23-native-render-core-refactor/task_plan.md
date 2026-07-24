@@ -405,11 +405,13 @@ A1 creates a lightweight checker. From that point:
 
 - physical LOC is recorded as review evidence, never sent to a writer as a
   completion quota and never used to force a mechanical split;
-- a newly introduced multi-thousand-line owner triggers an explicit
-  responsibility review; a finite documented exception is valid when the file
-  is cohesive and another split would worsen ownership or dependency direction;
+- a module receives an explicit responsibility review when it mixes
+  independently changing responsibilities, reverses dependency direction,
+  hides test seams, forces unrelated changes to land together or becomes
+  materially difficult to navigate; line count cannot trigger that review;
 - current giant files enter an allowlist containing baseline physical LOC,
-  responsible extraction task and exit condition; they may only shrink;
+  responsible extraction task and semantic exit condition; growth is reported
+  for root review but does not block a task by itself;
 - moving embedded tests without moving responsibilities does not count as an
   architectural task;
 - `gpu/` cannot import renderer, plans, policy, evidence or platform hosts;
@@ -420,21 +422,19 @@ A1 creates a lightweight checker. From that point:
 - production paths may not use a runtime vector of boxed passes or a public
   render-plan trait.
 
-Responsibility, dependency direction and testability decide module boundaries.
-The checker may retain numeric notices as diagnostic smell signals and legacy
-growth checkpoints, but they are not writer requirements, task gates or design
-targets. Future task prompts must state the responsibility boundary directly
-and must not repeat a fixed line-count target. The finite exception mechanism
-exists so even a multi-thousand-line review trigger cannot create an endless
-split loop for a cohesive generated, table-heavy or transitional owner.
+Responsibility, dependency direction, change locality, navigability and
+testability decide module boundaries. The checker records physical counts and
+legacy growth only as diagnostic evidence; it has no numeric target, ceiling,
+review trigger or completion gate. Future task prompts state the responsibility
+boundary directly and never repeat a fixed line-count target.
 
-Legacy-file LOC baselines are coarse one-way no-growth checkpoints, not exact
-formatting budgets. The checker tolerates small mechanical growth, accepts any
-amount of shrink without requiring code padding or a same-task checkpoint
-update, and removes the legacy entry when its responsibility exit condition is
-met. It never requires an otherwise cohesive module to land on an arbitrary
-number. Dependency direction, single ownership and independently testable
-behavior remain the decisive gates.
+Legacy-file LOC snapshots are historical evidence, not formatting budgets or
+one-way no-growth gates. The checker reports growth for root semantic review,
+accepts shrink without requiring padding or checkpoint churn, and removes the
+legacy entry when its responsibility exit condition is met. It never requires
+an otherwise cohesive module to land on an arbitrary number. Dependency
+direction, single ownership and independently testable behavior remain the
+decisive gates.
 
 ## 9. Work-package map
 
@@ -470,7 +470,7 @@ legacy core remains the sole product owner.
 | ID | Task | Depends on | Independent result |
 | --- | --- | --- | --- |
 | A0 | Freeze integration baseline and evidence inventory | none | exact branch/commit selected; prior accepted/rejected evidence indexed |
-| A1 | Add source-size and dependency ratchet | A0 | giant-file baseline, exit task and forbidden-import checks are executable |
+| A1 | Add source ownership and dependency policy | A0 | legacy snapshots, semantic exit tasks and forbidden-import checks are executable |
 | A2 | Extract `api.rs` and strategy-free `data/{layout,view}.rs` types | A1 | public signatures unchanged; kernel views/ABI live in a leaf; no new renderer owner |
 | A3 | Extract scene ownership, Resident layout and preflight | A2 | data/resources are separate from scheduling and policy |
 | A4 | Extract existing CPU order primitives | A2 | current scalar/NEON/AVX2/Rayon behavior moves unchanged |
@@ -665,8 +665,8 @@ The refactor program is complete when:
 - accepted GPU plans use reusable primitives and no redundant policy system;
 - Surface and offscreen use the same core;
 - platform wrappers contain lifecycle adaptation rather than rendering policy;
-- the 5,000-line render-core files are eliminated or reduced under an explicit,
-  expiring ratchet exception;
+- every legacy mixed owner satisfies its semantic exit condition or retains a
+  finite, explicitly owned follow-up with clear dependency and test boundaries;
 - PlayCanvas results are reported with honest product/same-contract scope;
 - each started package task has a terminal Accept, Reject or Defer record;
 - rejected experiments and obsolete strategy axes are removed from production

@@ -717,9 +717,11 @@ immutable active snapshot is published.
 - production Rust and WGSL modules are split only at real responsibility,
   dependency and test boundaries. Physical LOC is recorded as review evidence,
   never used as a writer quota.
-- a newly introduced multi-thousand-line owner requires explicit responsibility
-  review. A finite documented exception is valid when the owner is cohesive;
-  the review trigger must not force an artificial split or block closeout.
+- a module receives explicit responsibility review when it mixes independently
+  changing responsibilities, reverses dependency direction, hides test seams,
+  forces unrelated changes to land together or becomes materially difficult to
+  navigate. Physical line count is descriptive only and cannot trigger a split
+  or block closeout.
 - renderer should have roughly 5--7 top-level private components, not dozens of
   flat fields; this is a review smell, not a gameable field-count hard gate.
 - `FrameResult` carries completion identity and compact summary state; detailed

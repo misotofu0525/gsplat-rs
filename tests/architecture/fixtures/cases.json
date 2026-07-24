@@ -2,7 +2,7 @@
   "schema": "gsplat-source-architecture-fixtures/v1",
   "cases": [
     {
-      "name": "new_multi_thousand_rust_is_review_only_and_counts_all_physical_lines",
+      "name": "large_rust_has_no_numeric_gate_and_counts_all_physical_lines",
       "files": {
         "crates/demo/src/new.rs": {
           "physical_lines": 2501,
@@ -17,9 +17,7 @@
         }
       },
       "expected_error_codes": [],
-      "expected_notice_codes": [
-        "size.target_exceeded"
-      ]
+      "expected_notice_codes": []
     },
     {
       "name": "sub_multi_thousand_rust_has_no_numeric_gate",
@@ -51,9 +49,7 @@
         }
       },
       "expected_error_codes": [],
-      "expected_notice_codes": [
-        "size.target_exceeded"
-      ]
+      "expected_notice_codes": []
     },
     {
       "name": "legitimate_production_src_build_directory_is_checked",
@@ -63,12 +59,10 @@
         }
       },
       "expected_error_codes": [],
-      "expected_notice_codes": [
-        "size.target_exceeded"
-      ]
+      "expected_notice_codes": []
     },
     {
-      "name": "new_multi_thousand_concrete_plan_is_review_only",
+      "name": "large_concrete_plan_has_no_numeric_gate",
       "files": {
         "crates/gsplat-render-wgpu/src/plans/gpu_post.rs": {
           "physical_lines": 2501
@@ -80,9 +74,7 @@
         ]
       },
       "expected_error_codes": [],
-      "expected_notice_codes": [
-        "size.target_exceeded"
-      ]
+      "expected_notice_codes": []
     },
     {
       "name": "render_lib_has_no_small_file_quota",
@@ -105,19 +97,17 @@
       "expected_notice_codes": []
     },
     {
-      "name": "new_multi_thousand_wgsl_is_review_only",
+      "name": "large_wgsl_has_no_numeric_gate",
       "files": {
         "crates/demo/shaders/new.wgsl": {
           "physical_lines": 2501
         }
       },
       "expected_error_codes": [],
-      "expected_notice_codes": [
-        "size.target_exceeded"
-      ]
+      "expected_notice_codes": []
     },
     {
-      "name": "grandfather_growth_beyond_tolerance_fails",
+      "name": "grandfather_growth_is_non_blocking_evidence",
       "files": {
         "crates/demo/src/legacy.rs": {
           "physical_lines": 833
@@ -132,7 +122,8 @@
           "exit_condition": "Reduce below target."
         }
       ],
-      "expected_error_codes": [
+      "expected_error_codes": [],
+      "expected_notice_codes": [
         "size.grandfather_growth"
       ]
     },
@@ -301,8 +292,6 @@
       "exceptions": [
         {
           "path": "crates/demo/src/temporary.rs",
-          "baseline_physical_loc": 2500,
-          "max_temporary_delta": 1,
           "reason": "Temporary transition shim.",
           "removal_task": "IO-UNKNOWN"
         }
@@ -351,7 +340,7 @@
       ]
     },
     {
-      "name": "active_exception_allows_bounded_circuit_breaker_delta",
+      "name": "active_exception_records_owner_reason_without_numeric_budget",
       "files": {
         "crates/demo/src/temporary.rs": {
           "physical_lines": 2501
@@ -360,16 +349,14 @@
       "exceptions": [
         {
           "path": "crates/demo/src/temporary.rs",
-          "baseline_physical_loc": 2500,
-          "max_temporary_delta": 1,
-          "reason": "One-line transition shim.",
+          "reason": "Temporary transition shim.",
           "removal_task": "A2"
         }
       ],
       "expected_error_codes": []
     },
     {
-      "name": "exception_maximum_delta_is_enforced",
+      "name": "exception_growth_has_no_numeric_delta_gate",
       "files": {
         "crates/demo/src/temporary.rs": {
           "physical_lines": 2502
@@ -378,15 +365,11 @@
       "exceptions": [
         {
           "path": "crates/demo/src/temporary.rs",
-          "baseline_physical_loc": 2500,
-          "max_temporary_delta": 1,
-          "reason": "One-line transition shim.",
+          "reason": "Temporary transition shim.",
           "removal_task": "A2"
         }
       ],
-      "expected_error_codes": [
-        "exception.delta_exceeded"
-      ]
+      "expected_error_codes": []
     },
     {
       "name": "exception_expires_at_removal_task_closeout",
@@ -398,8 +381,6 @@
       "exceptions": [
         {
           "path": "crates/demo/src/temporary.rs",
-          "baseline_physical_loc": 2500,
-          "max_temporary_delta": 10,
           "reason": "Temporary transition shim.",
           "removal_task": "A2"
         }
@@ -410,9 +391,7 @@
       "expected_error_codes": [
         "exception.expired"
       ],
-      "expected_notice_codes": [
-        "size.target_exceeded"
-      ]
+      "expected_notice_codes": []
     },
     {
       "name": "archived_master_and_secondary_m_ledger_expire_m_owner",
@@ -515,8 +494,6 @@
       "exceptions": [
         {
           "path": "crates/demo/src/temporary.rs",
-          "baseline_physical_loc": 2500,
-          "max_temporary_delta": 1,
           "reason": "Must not revive when the M ledger disappears.",
           "removal_task": "M7"
         }
@@ -1316,8 +1293,7 @@
         "functions": [
           {
             "path": "crates/demo/src/runtime.rs",
-            "name": "render_frame",
-            "target_lt": 150
+            "name": "render_frame"
           }
         ]
       },
@@ -1516,7 +1492,7 @@
       "expected_notice_codes": []
     },
     {
-      "name": "activated_top_level_orchestration_target",
+      "name": "activated_top_level_orchestration_has_no_numeric_target",
       "files": {
         "crates/gsplat-render-wgpu/src/renderer/mod.rs": {
           "physical_lines": 151,
@@ -1533,15 +1509,12 @@
         "functions": [
           {
             "path": "crates/gsplat-render-wgpu/src/renderer/mod.rs",
-            "name": "render_frame",
-            "target_lt": 150
+            "name": "render_frame"
           }
         ]
       },
       "expected_error_codes": [],
-      "expected_notice_codes": [
-        "orchestration.target_exceeded"
-      ]
+      "expected_notice_codes": []
     }
   ]
 }

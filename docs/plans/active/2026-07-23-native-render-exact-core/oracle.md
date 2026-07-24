@@ -77,10 +77,11 @@ same-contract terminal samples for its actual prepared plans, and Package Q
 owns later competitor/native-advantage qualification.
 
 No fixed FPS, fixed percentage lead, 800/890-line rule or any other physical
-LOC value is part of this oracle. A large mixed owner triggers a bounded
-responsibility review; a cohesive owner may receive a finite documented
-exception. Correctness, ownership, compatibility, test seams and dependency
-direction decide acceptance.
+LOC value is part of this oracle. A mixed owner receives a bounded
+responsibility review only when cohesion, dependency direction, change
+locality, navigation or test seams show a maintenance problem; line count alone
+cannot trigger it. Correctness, ownership, compatibility and those semantic
+boundaries decide acceptance.
 
 ## 5. E13 closeout checklist
 

@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""Enforce source-size and future render-core dependency ratchets.
+"""Enforce render-core ownership, dependency and lifecycle guardrails.
+
+Physical line counts are retained only as non-blocking legacy evidence. They do
+not define a target, ceiling, review trigger or task completion condition.
 
 The checker intentionally uses only the Python standard library. Run it from
 the repository root; paths in the policy and diagnostics are repository-relative.
@@ -416,48 +419,6 @@ def active_lane_observations(
     return activation_commit, observations, issues
 
 
-def size_profile(path: str, kind: str, policy: dict[str, Any]) -> dict[str, Any]:
-    limits = policy["limits"]
-    if kind == "wgsl":
-        return {
-            "target": limits["wgsl"]["target_lt"],
-            "target_error": limits["wgsl"]["enforce_target"],
-            "hard": limits["wgsl"].get("hard_ceiling"),
-            "name": "WGSL",
-        }
-
-    generic = limits["production_rust"]
-    profile = {
-        "target": generic["target_lt"],
-        "target_error": generic["enforce_target"],
-        "hard": generic["hard_ceiling"],
-        "name": "production Rust",
-    }
-    plan = limits["concrete_plan"]
-    if path_matches(path, plan["include"]):
-        profile.update(
-            target=plan["target_lt"],
-            target_error=plan["enforce_target"],
-            hard=plan["hard_ceiling"],
-            name="concrete plan",
-        )
-    render_lib = limits["render_lib"]
-    if path in render_lib["paths"]:
-        profile.update(
-            target=render_lib["target_lt"],
-            target_error=render_lib["enforce_target"],
-            name="render lib.rs",
-        )
-    renderer = limits["renderer_orchestrator"]
-    if path in renderer["paths"]:
-        profile.update(
-            target=renderer["target_lt"],
-            target_error=renderer["enforce_target"],
-            name="renderer orchestrator",
-        )
-    return profile
-
-
 def check_task_references(policy: dict[str, Any]) -> list[Issue]:
     state = policy.get("program_task_state", {})
     catalog = set(state.get("task_catalog", {}))
@@ -491,14 +452,6 @@ def check_sizes(
 ) -> list[Issue]:
     issues: list[Issue] = []
     all_sources = {path: kind for kind, paths in sources.items() for path in paths}
-    ratchet = policy.get("grandfather_ratchet", {})
-    growth_tolerance = policy_integer(
-        ratchet.get("growth_tolerance_lines"),
-        name="growth_tolerance_lines",
-        minimum=0,
-        fallback=0,
-        issues=issues,
-    )
     grandfather: dict[str, dict[str, Any]] = {}
     for entry in policy.get("grandfather", []):
         path = entry.get("path", "")
@@ -531,7 +484,7 @@ def check_sizes(
                     "error",
                     "config.invalid_grandfather",
                     path,
-                    "current ratchet baseline may not exceed immutable A0 physical LOC",
+                    "legacy snapshot may not exceed immutable A0 physical LOC",
                 )
             )
         if entry.get("review_task") and not entry.get("review_action"):
@@ -554,7 +507,7 @@ def check_sizes(
             issues.append(Issue("error", "config.duplicate_exception", path, "duplicate exception entry"))
             continue
         exceptions[path] = entry
-        required = ("baseline_physical_loc", "max_temporary_delta", "reason", "removal_task")
+        required = ("reason", "removal_task")
         for field in required:
             if field not in entry or entry[field] in (None, ""):
                 issues.append(Issue("error", "config.invalid_exception", path, f"missing {field}"))
@@ -572,40 +525,24 @@ def check_sizes(
                 )
             )
 
-    for path, kind in sorted(all_sources.items()):
+    for path in sorted(all_sources):
         loc = physical_loc(root / path)
-        profile = size_profile(path, kind, policy)
         entry = grandfather.get(path)
         exception = exceptions.get(path)
         exception_active = exception is not None and path not in expired
-        if exception_active:
-            baseline = exception.get("baseline_physical_loc")
-            delta = exception.get("max_temporary_delta")
-            if isinstance(baseline, int) and isinstance(delta, int) and baseline >= 0 and delta >= 0:
-                temporary_limit = baseline + delta
-                if loc > temporary_limit:
-                    issues.append(
-                        Issue(
-                            "error",
-                            "exception.delta_exceeded",
-                            path,
-                            f"{loc} physical LOC exceeds temporary limit {temporary_limit} ({baseline} + {delta})",
-                        )
-                    )
-            else:
-                issues.append(Issue("error", "config.invalid_exception", path, "exception LOC values must be non-negative integers"))
 
         if entry:
             baseline = entry.get("baseline_physical_loc")
             if isinstance(baseline, int) and not isinstance(baseline, bool) and baseline > 0:
-                if loc > baseline + growth_tolerance and not exception_active:
+                if loc > baseline and not exception_active:
                     issues.append(
                         Issue(
-                            "error",
+                            "notice",
                             "size.grandfather_growth",
                             path,
-                            f"{loc} physical LOC exceeds checked ratchet baseline {baseline} "
-                            f"plus {growth_tolerance}-line mechanical tolerance",
+                            f"{loc} physical LOC is {loc - baseline} lines above the legacy "
+                            f"snapshot {baseline}; review responsibility cohesion, dependency "
+                            "direction, test seams and maintenance risk",
                         )
                     )
             else:
@@ -632,37 +569,6 @@ def check_sizes(
                     )
                 )
             continue
-
-        if exception_active:
-            continue
-        hard = profile["hard"]
-        if hard is not None and loc > hard:
-            issues.append(
-                Issue(
-                    "error",
-                    "size.hard_ceiling",
-                    path,
-                    f"{loc} physical LOC exceeds the {profile['name']} multi-thousand-line "
-                    f"circuit breaker {hard} without an active finite exception",
-                )
-            )
-        elif loc >= profile["target"]:
-            severity = "error" if profile["target_error"] else "notice"
-            message = (
-                f"{loc} physical LOC exceeds enforced {profile['name']} target "
-                f"< {profile['target']}"
-                if severity == "error"
-                else f"{loc} physical LOC crosses the advisory {profile['name']} "
-                f"review signal {profile['target']}; this is not a completion gate"
-            )
-            issues.append(
-                Issue(
-                    severity,
-                    "size.target_exceeded",
-                    path,
-                    message,
-                )
-            )
     return issues
 
 
@@ -1095,7 +1001,6 @@ def check_orchestration(
     for entry in functions:
         path = entry["path"]
         name = entry["name"]
-        target = entry.get("target_lt", rule["target_lt"])
         source_path = root / path
         if not source_path.is_file():
             issues.append(Issue("error", "orchestration.file_missing", path, "configured function source is missing"))
@@ -1108,22 +1013,6 @@ def check_orchestration(
                     "orchestration.boundary_ambiguous",
                     path,
                     f"expected exactly one body for fn {name}, found {len(locs)}",
-                )
-            )
-        elif locs[0] >= target:
-            enforce_target = entry.get("enforce_target", rule.get("enforce_target", False))
-            message = (
-                f"fn {name} is {locs[0]} physical lines; enforced target is < {target}"
-                if enforce_target
-                else f"fn {name} is {locs[0]} physical lines and crosses advisory review "
-                f"signal {target}; this is not a completion gate"
-            )
-            issues.append(
-                Issue(
-                    "error" if enforce_target else "notice",
-                    "orchestration.target_exceeded",
-                    path,
-                    message,
                 )
             )
     return issues
@@ -1488,10 +1377,10 @@ def main(argv: list[str] | None = None) -> int:
         print(issue.render(), file=stream)
     errors = sum(issue.severity == "error" for issue in issues)
     if errors:
-        print(f"source architecture ratchet: FAIL ({errors} errors)", file=sys.stderr)
+        print(f"source architecture policy: FAIL ({errors} errors)", file=sys.stderr)
         return 1
     print(
-        "source architecture ratchet: PASS "
+        "source architecture policy: PASS "
         f"({counts.get('rust', 0)} production Rust, {counts.get('wgsl', 0)} WGSL, "
         f"{len(policy.get('grandfather', []))} grandfathered)"
     )

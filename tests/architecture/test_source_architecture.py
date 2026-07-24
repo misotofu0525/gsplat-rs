@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Self-tests for the source-size and dependency ratchet."""
+"""Self-tests for source ownership, dependency and lifecycle guardrails."""
 
 from __future__ import annotations
 
@@ -203,59 +203,21 @@ class SourceArchitectureFixtureTests(unittest.TestCase):
                         msg="\n".join(issue.render() for issue in issues),
                     )
 
-    def test_policy_keeps_size_signals_advisory_and_legacy_growth_bounded(self) -> None:
+    def test_policy_keeps_physical_size_as_non_blocking_legacy_evidence(self) -> None:
         policy = copy.deepcopy(self.base_policy)
-        sources = {
-            kind: checker.discover(REPO_ROOT, source_set)
-            for kind, source_set in policy["source_sets"].items()
-        }
-        hard_breached: dict[str, int] = {}
-        for kind, paths in sources.items():
-            for relative in paths:
-                loc = checker.physical_loc(REPO_ROOT / relative)
-                profile = checker.size_profile(relative, kind, policy)
-                if profile["hard"] is not None and loc > profile["hard"]:
-                    hard_breached[relative] = loc
-
-        grandfather = {
-            entry["path"]: entry for entry in policy["grandfather"]
-        }
-        self.assertEqual(hard_breached, {})
-        growth_tolerance = policy["grandfather_ratchet"]["growth_tolerance_lines"]
-        for path, entry in grandfather.items():
-            loc = checker.physical_loc(REPO_ROOT / path)
-            baseline = entry["baseline_physical_loc"]
-            self.assertLessEqual(loc, baseline + growth_tolerance)
+        self.assertNotIn("limits", policy)
+        self.assertNotIn("grandfather_ratchet", policy)
+        for entry in policy["grandfather"]:
+            self.assertGreater(entry["a0_physical_loc"], 0)
+            self.assertGreater(entry["baseline_physical_loc"], 0)
             self.assertTrue(entry["owner_task"])
             self.assertTrue(entry["exit_condition"])
 
-    def test_declared_advisory_review_signal_and_future_activation(self) -> None:
-        limits = self.base_policy["limits"]
-        self.assertEqual(
-            (limits["production_rust"]["target_lt"], limits["production_rust"]["hard_ceiling"]),
-            (2500, None),
-        )
-        self.assertEqual(
-            (limits["concrete_plan"]["target_lt"], limits["concrete_plan"]["hard_ceiling"]),
-            (2500, None),
-        )
-        self.assertFalse(limits["production_rust"]["enforce_target"])
-        self.assertFalse(limits["concrete_plan"]["enforce_target"])
-        self.assertEqual(limits["render_lib"]["target_lt"], 2500)
-        self.assertFalse(limits["render_lib"]["enforce_target"])
-        self.assertEqual(limits["renderer_orchestrator"]["target_lt"], 2500)
-        self.assertFalse(limits["renderer_orchestrator"]["enforce_target"])
-        self.assertEqual(limits["wgsl"]["target_lt"], 2500)
-        self.assertIsNone(limits["wgsl"]["hard_ceiling"])
-        self.assertFalse(limits["wgsl"]["enforce_target"])
-        self.assertEqual(
-            self.base_policy["grandfather_ratchet"],
-            {"growth_tolerance_lines": 32},
-        )
+    def test_declared_semantic_guardrails_and_future_activation(self) -> None:
         orchestration = self.base_policy["top_level_orchestration"]
         self.assertTrue(orchestration["enabled"])
-        self.assertEqual(orchestration["target_lt"], 150)
-        self.assertFalse(orchestration["enforce_target"])
+        self.assertNotIn("target_lt", orchestration)
+        self.assertNotIn("enforce_target", orchestration)
         self.assertEqual(orchestration["activation_task"], "E1")
         self.assertTrue(orchestration["reason"])
         self.assertEqual(
@@ -292,10 +254,6 @@ class SourceArchitectureFixtureTests(unittest.TestCase):
         hosts = self.base_policy["dependency_rules"]["platform_hosts"]["include"]
         self.assertIn("crates/gsplat-render-wgpu/src/surface.rs", hosts)
         self.assertIn("crates/gsplat-render-wgpu/src/offscreen.rs", hosts)
-        self.assertIn(
-            "crates/gsplat-render-wgpu/src/renderer.rs",
-            limits["renderer_orchestrator"]["paths"],
-        )
         rust_sources = self.base_policy["source_sets"]["rust"]
         self.assertNotIn("bindings/**/*.rs", rust_sources["include"])
         self.assertNotIn("exclude_dir_names", rust_sources)
