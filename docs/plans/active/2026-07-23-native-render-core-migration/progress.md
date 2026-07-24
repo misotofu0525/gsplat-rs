@@ -250,12 +250,16 @@ M2 = Active
      CpuPostSort/Candidate, GpuPostSort/Candidate, GpuPreproject/Compact, or
      whole-plan Adaptive; unrepresentable combinations reject before mutation.
      It does not build the benchmark collector.
-  5. **M2p3c — live-consumer compatibility completion:** from the accepted
-     M2a candidate, Android and Apple run as separate visible tasks. They move
+  5. **M2p3c — live-consumer compatibility completion:** from the fixed M2a
+     candidate, Android and Apple run as separate visible tasks. They move
      the real example/UI/benchmark loops off the legacy Surface getter and
      consume only ticket- and generation-matched v1 receipts. Pending or
      unavailable counts remain non-fatal outside a strict retained benchmark;
      a strict benchmark rejects incomplete evidence instead of inventing it.
+     M2a and M2p3c are accepted as one migration batch because the legacy
+     `FrameStats` layout cannot represent unavailable GPU counts truthfully;
+     M2a is not published or declared accepted while a live consumer still
+     reads that layout.
   6. **M2p4 — legacy getter fail-closed switch:** only after both M2p3c
      candidates are accepted, pending/unrequested/expired or mismatched counts
      return `NOT_FOUND` without modifying the output. No prior value, zero,
@@ -331,3 +335,21 @@ M2 = Active
   are disjoint; all dependent slices remain serial. Root accepts and integrates
   every fixed candidate separately, then owns the Apple M4 real-window run and
   final M2 closeout. M2b cannot begin on an unaccepted M2a candidate.
+- **M2a provisional review: Rejected.** Candidate
+  `a6c839cb319b847b763c62d358a75f68fce00ae2` is a clean direct child of
+  `bf93ad2ca070a2a07ad49051b0890db0a07dc0e1` and passed focused, workspace,
+  Clippy, Rustdoc, Metal SortedAlpha, architecture, WASM, cargo-deny, FFI and
+  Swift checks. Fixed-SHA task `019f949d-1133-7ea1-8466-32a40025363a` still
+  rejected it for two P1 findings and one P2: legacy live consumers see false
+  zero V/D on GPU plans; a frame-latency change retains incomparable Exact
+  controller evidence; and one GPU-vs-GPU probe is labelled `CpuProbe`.
+- The latency/controller and probe-label defects are owned by visible repair
+  task `019f94a5-bedf-7e20-b2f5-0aec185df089`. The false-zero finding is not
+  "fixed" with a sentinel, source capacity, stale value or synchronous
+  readback. Visible Android task `019f94ab-9147-7ff1-b6c3-67c60bd12af4` and
+  Apple task `019f94ab-9148-79e0-b921-313b059c21e7` instead remove every
+  in-tree live dependency on the legacy getter using matching current-stats
+  tickets. These three path-disjoint candidates may be prepared in parallel;
+  root combines and reviews their fixed SHAs serially. No combined tree is
+  accepted, pushed or used as an M2b base until this migration batch and the
+  subsequent M2p4 fail-closed switch pass root verification.
