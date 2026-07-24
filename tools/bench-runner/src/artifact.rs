@@ -514,15 +514,17 @@ where
 
 pub fn dataset_with_identity(
     path: &Path,
+    canonical_id: Option<&str>,
     splat_count: usize,
     sh_degree: u8,
     identity: FileIdentity,
 ) -> Result<Dataset, String> {
-    let id = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("dataset")
-        .to_owned();
+    let id = canonical_id.map(str::to_owned).unwrap_or_else(|| {
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("dataset")
+            .to_owned()
+    });
     Ok(Dataset {
         id,
         sha256: identity.sha256,
@@ -535,7 +537,7 @@ pub fn dataset_with_identity(
 
 pub fn file_identity(path: &Path) -> Result<FileIdentity, String> {
     let metadata =
-        fs::metadata(path).map_err(|error| format!("failed to read dataset metadata: {error}"))?;
+        fs::metadata(path).map_err(|error| format!("failed to read file metadata: {error}"))?;
     Ok(FileIdentity {
         sha256: sha256_file(path)?,
         bytes: metadata.len(),
@@ -708,14 +710,14 @@ fn staging_directory_path(directory: &Path) -> Result<PathBuf, String> {
 
 fn sha256_file(path: &Path) -> Result<String, String> {
     let file =
-        File::open(path).map_err(|error| format!("failed to open dataset for hashing: {error}"))?;
+        File::open(path).map_err(|error| format!("failed to open file for hashing: {error}"))?;
     let mut reader = BufReader::new(file);
     let mut hasher = Sha256::new();
     let mut buffer = [0_u8; 64 * 1024];
     loop {
         let read = reader
             .read(&mut buffer)
-            .map_err(|error| format!("failed to hash dataset: {error}"))?;
+            .map_err(|error| format!("failed to hash file: {error}"))?;
         if read == 0 {
             break;
         }

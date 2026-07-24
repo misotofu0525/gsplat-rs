@@ -4,10 +4,12 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import pathlib
 import re
+import struct
 import sys
 from typing import Any
 
@@ -49,6 +51,70 @@ def load_json(path: pathlib.Path) -> dict[str, Any]:
     if not isinstance(value, dict):
         fail(f"{path.name} must contain a JSON object")
     return value
+
+
+def sha256_file(path: pathlib.Path) -> str:
+    digest = hashlib.sha256()
+    try:
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+    except OSError as error:
+        fail(f"cannot hash {path.name}: {error}")
+    return digest.hexdigest()
+
+
+def png_dimensions(path: pathlib.Path) -> tuple[int, int]:
+    try:
+        with path.open("rb") as handle:
+            header = handle.read(24)
+    except OSError as error:
+        fail(f"cannot read image {path.name}: {error}")
+    if (
+        len(header) != 24
+        or header[:8] != b"\x89PNG\r\n\x1a\n"
+        or header[12:16] != b"IHDR"
+    ):
+        fail(f"image is not a PNG with an IHDR header: {path.name}")
+    return struct.unpack(">II", header[16:24])
+
+
+def resolve_artifact_file(directory: pathlib.Path, value: str, context: str) -> pathlib.Path:
+    relative = pathlib.Path(value)
+    if relative.is_absolute() or not relative.parts or ".." in relative.parts:
+        fail(f"{context} must be a relative path inside the artifact directory")
+    root = directory.resolve()
+    path = (directory / relative).resolve()
+    try:
+        path.relative_to(root)
+    except ValueError:
+        fail(f"{context} escapes the artifact directory")
+    if not path.is_file():
+        fail(f"{context} does not name an artifact file: {value}")
+    return path
+
+
+def validate_image(directory: pathlib.Path, manifest: dict[str, Any]) -> None:
+    value = manifest.get("image")
+    if value is None:
+        return
+    image = require_object(manifest, "image")
+    path_text = require_string(image, "path")
+    expected_sha256 = require_string(image, "sha256")
+    if not SHA256_RE.fullmatch(expected_sha256):
+        fail("image.sha256 must be lowercase SHA-256")
+    width = require_int(image, "width")
+    height = require_int(image, "height")
+    if width == 0 or height == 0:
+        fail("image dimensions must be positive")
+    display = require_object(manifest, "display")
+    if (width, height) != (display.get("width"), display.get("height")):
+        fail("image dimensions must equal display dimensions")
+    path = resolve_artifact_file(directory, path_text, "image.path")
+    if png_dimensions(path) != (width, height):
+        fail("image PNG dimensions do not match its receipt")
+    if sha256_file(path) != expected_sha256:
+        fail("image SHA-256 mismatch")
 
 
 def require_object(parent: dict[str, Any], key: str) -> dict[str, Any]:
@@ -140,6 +206,15 @@ def validate_manifest(manifest: dict[str, Any]) -> str:
     renderer = manifest["renderer"]
     for key in ("implementation", "path", "backend", "sort_policy"):
         require_string(renderer, key)
+    for key in ("exact_plan_requested", "exact_plan_actual"):
+        if key in renderer and renderer[key] is not None:
+            require_string(renderer, key)
+    if (
+        renderer.get("exact_plan_requested") is not None
+        and renderer.get("exact_plan_actual") is None
+    ):
+        if "renderer.exact_plan_actual" not in unavailable:
+            fail("unavailable renderer.exact_plan_actual must be listed as unavailable")
     count_semantics = renderer.get("count_semantics")
     if count_semantics is not None and count_semantics != COUNT_SEMANTICS:
         fail(
@@ -379,6 +454,7 @@ def validate(directory: pathlib.Path) -> None:
         fail(f"artifact directory does not exist: {directory}")
     manifest = load_json(directory / "manifest.json")
     run_id = validate_manifest(manifest)
+    validate_image(directory, manifest)
     unavailable = set(manifest["unavailable_fields"])
     renderer = require_object(manifest, "renderer")
     frames = load_frames(

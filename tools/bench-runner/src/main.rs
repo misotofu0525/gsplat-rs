@@ -1,4 +1,5 @@
 mod artifact;
+mod qualification;
 mod scene;
 mod trace;
 
@@ -43,10 +44,32 @@ fn run() -> Result<(), String> {
     }
 
     let playback = Playback::build(config.trace_request())?;
+    let validated_full_quality = if config.full_quality {
+        let dataset_identity = dataset_identity
+            .as_ref()
+            .ok_or_else(|| "--full-quality dataset identity is unavailable".to_owned())?;
+        let trace_path = config
+            .camera_trace_path
+            .as_deref()
+            .ok_or_else(|| "--full-quality camera trace path is unavailable".to_owned())?;
+        Some(qualification::validate_inputs(
+            &PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."),
+            dataset_path,
+            dataset_identity,
+            config.geometry_path,
+            &playback,
+            trace_path,
+        )?)
+    } else {
+        None
+    };
     let mut renderer =
         Renderer::with_config(playback.renderer_config()).map_err(|err| err.to_string())?;
     renderer.set_geometry_path(config.geometry_path);
     let scene_receipt = scene::load_scene_for_path(dataset_path, &mut renderer)?;
+    if let Some(validated) = validated_full_quality {
+        validated.validate_scene_receipt(scene_receipt)?;
+    }
     if let Some(expected) = dataset_identity.as_ref() {
         let actual = artifact::file_identity(dataset_path)?;
         if &actual != expected {
@@ -80,6 +103,7 @@ fn run() -> Result<(), String> {
             &config,
             scene_receipt,
             dataset_identity,
+            validated_full_quality,
         )
     }
 }
@@ -90,6 +114,7 @@ fn run_iteration_mode(
     config: &BenchConfig,
     scene_receipt: SceneLoadReceipt,
     dataset_identity: Option<FileIdentity>,
+    validated_full_quality: Option<qualification::ValidatedFullQuality>,
 ) -> Result<(), String> {
     let run_id = match config.run_id.clone() {
         Some(run_id) => run_id,
@@ -207,6 +232,7 @@ fn run_iteration_mode(
                 dataset_identity: dataset_identity
                     .clone()
                     .ok_or("artifact dataset identity is unavailable")?,
+                validated_full_quality,
             },
             playback,
         )?;
@@ -523,6 +549,7 @@ struct ArtifactContextInput<'a> {
     measurement_ended_at_utc: &'a str,
     scene_receipt: SceneLoadReceipt,
     dataset_identity: FileIdentity,
+    validated_full_quality: Option<qualification::ValidatedFullQuality>,
 }
 
 fn artifact_context(
@@ -534,6 +561,9 @@ fn artifact_context(
     let render_config = renderer.config();
     let dataset = artifact::dataset_with_identity(
         Path::new(&config.dataset_path),
+        input
+            .validated_full_quality
+            .map(qualification::ValidatedFullQuality::dataset_id),
         input.scene_receipt.source_count,
         input.scene_receipt.source_sh_degree,
         input.dataset_identity,
@@ -578,13 +608,7 @@ fn artifact_context(
     let driver = info
         .map(|value| single_line(&value.driver))
         .filter(|value| !value.is_empty());
-    let mut unavailable_fields = vec![
-        "environment.browser".to_owned(),
-        "frames[*].contributor".to_owned(),
-        "frames[*].exact_contributor_compaction".to_owned(),
-        "frames[*].exact_plan_ticket".to_owned(),
-        "frames[*].exact_plan_generation".to_owned(),
-    ];
+    let mut unavailable_fields = base_unavailable_fields();
     if preflight.is_none() {
         unavailable_fields.push("renderer.resource_preflight".to_owned());
     }
@@ -610,17 +634,7 @@ fn artifact_context(
         build: artifact::repository_build()?,
         dataset,
         trace,
-        renderer: ArtifactRenderer {
-            implementation: "gsplat-rs".to_owned(),
-            path: geometry_path_label(config.geometry_path).to_owned(),
-            backend,
-            sort_policy: "cpu_every_frame".to_owned(),
-            resource_preflight: preflight,
-            order_backend_requested: Some("cpu".to_owned()),
-            sort_interval: Some(1),
-            exact_plan_requested: Some("cpu_post_sort".to_owned()),
-            exact_plan_actual: Some("cpu_post_sort".to_owned()),
-        },
+        renderer: artifact_renderer_receipt(config.geometry_path, backend, preflight),
         display: Display {
             width: render_config.width,
             height: render_config.height,
@@ -675,6 +689,40 @@ fn artifact_context(
             gpu_sort_fallback_count: 0,
         }),
     })
+}
+
+fn base_unavailable_fields() -> Vec<String> {
+    [
+        "environment.browser",
+        "frames[*].contributor",
+        "frames[*].exact_contributor_compaction",
+        "frames[*].exact_plan_ticket",
+        "frames[*].exact_plan_generation",
+        "renderer.exact_plan_actual",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect()
+}
+
+fn artifact_renderer_receipt(
+    geometry_path: GeometryPath,
+    backend: String,
+    preflight: Option<ResourcePreflight>,
+) -> ArtifactRenderer {
+    ArtifactRenderer {
+        implementation: "gsplat-rs".to_owned(),
+        path: geometry_path_label(geometry_path).to_owned(),
+        backend,
+        sort_policy: "cpu_every_frame".to_owned(),
+        resource_preflight: preflight,
+        order_backend_requested: Some("cpu".to_owned()),
+        sort_interval: Some(1),
+        exact_plan_requested: Some("cpu_post_sort".to_owned()),
+        // The M1c public offscreen facade exposes no terminal actual-PlanId
+        // receipt. The request is known, but the runtime result is not.
+        exact_plan_actual: None,
+    }
 }
 
 fn host_os_description() -> String {
@@ -1400,8 +1448,9 @@ mod tests {
     use gsplat_render_wgpu::GeometryPath;
 
     use super::{
-        BenchConfig, grid_axis_index, grid_cell_index, merge_max, merge_min, percentile_f32,
-        percentile_index, percentile_u32, scene_bounds,
+        BenchConfig, artifact_renderer_receipt, base_unavailable_fields, grid_axis_index,
+        grid_cell_index, merge_max, merge_min, percentile_f32, percentile_index, percentile_u32,
+        scene_bounds,
     };
 
     fn scene_with_positions(positions: Vec<Vec3f>) -> SceneBuffers {
@@ -1497,6 +1546,23 @@ mod tests {
         let direct =
             BenchConfig::parse(vec!["--geometry-path".to_owned(), "direct".to_owned()]).unwrap();
         assert_eq!(direct.geometry_path, GeometryPath::SortedIndexDirect);
+    }
+
+    #[test]
+    fn actual_plan_is_not_claimed_without_a_terminal_runtime_receipt() {
+        for path in [
+            GeometryPath::SortedIndexDirect,
+            GeometryPath::PackedAtlas,
+            GeometryPath::PagedActiveAtlas,
+        ] {
+            let receipt = artifact_renderer_receipt(path, "test".to_owned(), None);
+            assert!(receipt.exact_plan_actual.is_none());
+        }
+        assert!(
+            base_unavailable_fields()
+                .iter()
+                .any(|field| field == "renderer.exact_plan_actual")
+        );
     }
 
     #[test]

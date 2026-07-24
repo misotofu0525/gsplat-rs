@@ -12,6 +12,120 @@ python3 "$VALIDATOR" "$VALID"
 TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TMP_DIR"' EXIT
 
+cp -R "$VALID" "$TMP_DIR/image-valid"
+python3 - "$TMP_DIR/image-valid" <<'PY'
+import hashlib, json, pathlib, struct, sys, zlib
+
+root = pathlib.Path(sys.argv[1])
+width, height = 640, 480
+
+def chunk(kind, payload):
+    return struct.pack(">I", len(payload)) + kind + payload + struct.pack(">I", zlib.crc32(kind + payload) & 0xffffffff)
+
+raw = b"".join(b"\x00" + b"\x00\x00\x00\xff" * width for _ in range(height))
+png = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 6, 0, 0, 0)) + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b"")
+(root / "final-frame.png").write_bytes(png)
+manifest_path = root / "manifest.json"
+manifest = json.loads(manifest_path.read_text())
+manifest["renderer"]["exact_plan_requested"] = "cpu_post_sort"
+manifest["unavailable_fields"].append("renderer.exact_plan_actual")
+manifest["image"] = {
+    "path": "final-frame.png",
+    "sha256": hashlib.sha256(png).hexdigest(),
+    "width": width,
+    "height": height,
+}
+manifest_path.write_text(json.dumps(manifest))
+PY
+python3 "$VALIDATOR" "$TMP_DIR/image-valid"
+
+cp -R "$TMP_DIR/image-valid" "$TMP_DIR/unlisted-actual-plan"
+python3 - "$TMP_DIR/unlisted-actual-plan/manifest.json" <<'PY'
+import json, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+value = json.loads(path.read_text())
+value["unavailable_fields"].remove("renderer.exact_plan_actual")
+path.write_text(json.dumps(value))
+PY
+if python3 "$VALIDATOR" "$TMP_DIR/unlisted-actual-plan" >"$TMP_DIR/unlisted-actual-plan.out" 2>&1; then
+  echo "expected unobservable actual plan without unavailable marker to fail" >&2
+  exit 1
+fi
+grep -Fq 'renderer.exact_plan_actual must be listed as unavailable' "$TMP_DIR/unlisted-actual-plan.out"
+
+cp -R "$TMP_DIR/image-valid" "$TMP_DIR/damaged-image"
+python3 - "$TMP_DIR/damaged-image/final-frame.png" <<'PY'
+import pathlib, sys
+path = pathlib.Path(sys.argv[1])
+value = bytearray(path.read_bytes())
+value[0] = 0
+path.write_bytes(value)
+PY
+if python3 "$VALIDATOR" "$TMP_DIR/damaged-image" >"$TMP_DIR/damaged-image.out" 2>&1; then
+  echo "expected damaged PNG to fail" >&2
+  exit 1
+fi
+grep -Fq 'not a PNG with an IHDR header' "$TMP_DIR/damaged-image.out"
+
+cp -R "$TMP_DIR/image-valid" "$TMP_DIR/replaced-image"
+printf 'replacement' >>"$TMP_DIR/replaced-image/final-frame.png"
+if python3 "$VALIDATOR" "$TMP_DIR/replaced-image" >"$TMP_DIR/replaced-image.out" 2>&1; then
+  echo "expected replaced PNG to fail" >&2
+  exit 1
+fi
+grep -Fq 'image SHA-256 mismatch' "$TMP_DIR/replaced-image.out"
+
+cp -R "$TMP_DIR/image-valid" "$TMP_DIR/wrong-image-hash"
+python3 - "$TMP_DIR/wrong-image-hash/manifest.json" <<'PY'
+import json, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+value = json.loads(path.read_text())
+value["image"]["sha256"] = "0" * 64
+path.write_text(json.dumps(value))
+PY
+if python3 "$VALIDATOR" "$TMP_DIR/wrong-image-hash" >"$TMP_DIR/wrong-image-hash.out" 2>&1; then
+  echo "expected wrong image hash to fail" >&2
+  exit 1
+fi
+grep -Fq 'image SHA-256 mismatch' "$TMP_DIR/wrong-image-hash.out"
+
+cp -R "$TMP_DIR/image-valid" "$TMP_DIR/wrong-image-size"
+python3 - "$TMP_DIR/wrong-image-size/manifest.json" <<'PY'
+import json, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+value = json.loads(path.read_text())
+value["image"]["width"] = 639
+path.write_text(json.dumps(value))
+PY
+if python3 "$VALIDATOR" "$TMP_DIR/wrong-image-size" >"$TMP_DIR/wrong-image-size.out" 2>&1; then
+  echo "expected wrong image dimensions to fail" >&2
+  exit 1
+fi
+grep -Fq 'image dimensions must equal display dimensions' "$TMP_DIR/wrong-image-size.out"
+
+cp -R "$TMP_DIR/image-valid" "$TMP_DIR/wrong-png-size"
+python3 - "$TMP_DIR/wrong-png-size" <<'PY'
+import hashlib, json, pathlib, struct, sys, zlib
+
+root = pathlib.Path(sys.argv[1])
+
+def chunk(kind, payload):
+    return struct.pack(">I", len(payload)) + kind + payload + struct.pack(">I", zlib.crc32(kind + payload) & 0xffffffff)
+
+raw = b"\x00\x00\x00\x00\xff"
+png = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 6, 0, 0, 0)) + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b"")
+(root / "final-frame.png").write_bytes(png)
+manifest_path = root / "manifest.json"
+manifest = json.loads(manifest_path.read_text())
+manifest["image"]["sha256"] = hashlib.sha256(png).hexdigest()
+manifest_path.write_text(json.dumps(manifest))
+PY
+if python3 "$VALIDATOR" "$TMP_DIR/wrong-png-size" >"$TMP_DIR/wrong-png-size.out" 2>&1; then
+  echo "expected PNG with wrong actual dimensions to fail" >&2
+  exit 1
+fi
+grep -Fq 'image PNG dimensions do not match its receipt' "$TMP_DIR/wrong-png-size.out"
+
 cp -R "$VALID" "$TMP_DIR/bad-schema"
 python3 - "$TMP_DIR/bad-schema/manifest.json" <<'PY'
 import json, pathlib, sys

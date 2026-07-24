@@ -54,6 +54,17 @@ render, and presented dimensions must all equal `display.width/height`, with
 dynamic resolution and upscaling disabled. A browser CSS size or physical
 panel size is not a substitute for the backing texture dimensions.
 
+When `manifest.image` is present, it contains relative `path`, lowercase
+`sha256`, `width`, and `height` fields. The generic artifact validator requires
+the path to remain inside the run directory, reads the PNG IHDR dimensions,
+requires them and the receipt to equal `display.width/height`, and hashes the
+actual file. A missing, replaced, damaged, or mismatched image fails validation.
+
+When `renderer.exact_plan_requested` is present but the producer cannot observe
+the terminal actual plan, it omits or nulls `renderer.exact_plan_actual` and
+lists that exact field path in `unavailable_fields`; a requested path is not an
+actual-plan receipt.
+
 ## Frames
 
 Each non-empty line in `frames.jsonl` is one `record_type: "frame"` object.
