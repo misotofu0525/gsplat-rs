@@ -5,7 +5,9 @@ use gsplat_sort::CpuSortBackend;
 
 use crate::cpu::preprocess;
 #[cfg(not(target_arch = "wasm32"))]
-use crate::cpu::preprocess::{MAX_PARALLEL_PREPROCESS_CHUNKS, PreprocessChunkScratch};
+use crate::cpu::preprocess::{
+    MAX_PARALLEL_PREPROCESS_CHUNKS, packed::PackedPreprocessChunkScratch,
+};
 use crate::data::CpuPositionView;
 use crate::{RendererError, timer_elapsed_ms, timer_now};
 
@@ -23,10 +25,12 @@ pub(crate) struct WorkspaceTimings {
 #[derive(Default)]
 pub(crate) struct CpuOrderWorkspace {
     depth_keys: Vec<u32>,
+    #[cfg(not(target_arch = "wasm32"))]
+    packed_pairs: Vec<u64>,
     candidate_ids: Vec<u32>,
     sorter: CpuSortBackend,
     #[cfg(not(target_arch = "wasm32"))]
-    native_chunks: Vec<PreprocessChunkScratch>,
+    packed_chunks: Vec<PackedPreprocessChunkScratch>,
 }
 
 impl CpuOrderWorkspace {
@@ -47,14 +51,20 @@ impl CpuOrderWorkspace {
         #[cfg(not(target_arch = "wasm32"))]
         {
             workspace
-                .native_chunks
+                .packed_pairs
+                .try_reserve_exact(source_count)
+                .map_err(|_| WorkspaceAllocationError {
+                    resource: "packed depth/source pairs",
+                })?;
+            workspace
+                .packed_chunks
                 .try_reserve_exact(MAX_PARALLEL_PREPROCESS_CHUNKS)
                 .map_err(|_| WorkspaceAllocationError {
-                    resource: "native chunk scratch",
+                    resource: "packed native chunk scratch",
                 })?;
-            workspace.native_chunks.resize_with(
+            workspace.packed_chunks.resize_with(
                 MAX_PARALLEL_PREPROCESS_CHUNKS,
-                PreprocessChunkScratch::default,
+                PackedPreprocessChunkScratch::default,
             );
         }
         Ok(workspace)
@@ -67,17 +77,31 @@ impl CpuOrderWorkspace {
         stable_full32: bool,
         authoritative_ids: &mut Vec<u32>,
     ) -> Result<WorkspaceTimings, RendererError> {
-        let preprocess_start = timer_now();
-        preprocess::positions_visible_into(
-            positions,
-            camera,
-            &mut self.depth_keys,
-            &mut self.candidate_ids,
-            #[cfg(not(target_arch = "wasm32"))]
-            &mut self.native_chunks,
-        )?;
-        let preprocess_ms = timer_elapsed_ms(preprocess_start);
-        self.finish_order(stable_full32, authoritative_ids, preprocess_ms)
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let preprocess_start = timer_now();
+            preprocess::packed::positions_visible_into(
+                positions,
+                camera,
+                &mut self.packed_pairs,
+                &mut self.packed_chunks,
+            )?;
+            let preprocess_ms = timer_elapsed_ms(preprocess_start);
+            self.finish_packed_order(stable_full32, authoritative_ids, preprocess_ms)
+        }
+
+        #[cfg(target_arch = "wasm32")]
+        {
+            let preprocess_start = timer_now();
+            preprocess::positions_visible_into(
+                positions,
+                camera,
+                &mut self.depth_keys,
+                &mut self.candidate_ids,
+            )?;
+            let preprocess_ms = timer_elapsed_ms(preprocess_start);
+            self.finish_order(stable_full32, authoritative_ids, preprocess_ms)
+        }
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -123,9 +147,46 @@ impl CpuOrderWorkspace {
         })
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
+    fn finish_packed_order(
+        &mut self,
+        stable_full32: bool,
+        authoritative_ids: &mut Vec<u32>,
+        preprocess_ms: f32,
+    ) -> Result<WorkspaceTimings, RendererError> {
+        let sort_start = timer_now();
+        self.candidate_ids.resize(self.packed_pairs.len(), 0);
+        if stable_full32 {
+            self.sorter
+                .sort_prepacked_values(&mut self.packed_pairs, &mut self.candidate_ids)?;
+        } else {
+            for (source_id, pair) in self.candidate_ids.iter_mut().zip(&self.packed_pairs) {
+                *source_id = !(*pair as u32);
+            }
+        }
+        let sort_ms = timer_elapsed_ms(sort_start);
+
+        // Publication is the final infallible step. Invalid cameras and sort
+        // failures leave the caller's last authoritative order untouched.
+        std::mem::swap(authoritative_ids, &mut self.candidate_ids);
+        Ok(WorkspaceTimings {
+            preprocess_ms,
+            sort_ms,
+        })
+    }
+
     #[cfg(test)]
-    pub(crate) fn buffer_state(&self) -> ((usize, usize), (usize, usize)) {
+    pub(crate) fn buffer_state(&self) -> ((usize, usize), (usize, usize), (usize, usize)) {
+        #[cfg(not(target_arch = "wasm32"))]
+        let packed_state = (
+            self.packed_pairs.as_ptr() as usize,
+            self.packed_pairs.capacity(),
+        );
+        #[cfg(target_arch = "wasm32")]
+        let packed_state = (0, 0);
+
         (
+            packed_state,
             (
                 self.depth_keys.as_ptr() as usize,
                 self.depth_keys.capacity(),

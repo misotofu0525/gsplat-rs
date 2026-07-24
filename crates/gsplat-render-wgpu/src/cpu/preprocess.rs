@@ -1,14 +1,16 @@
 use gsplat_core::{Camera, SceneBuffers, Vec3f};
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 use rayon::prelude::*;
 
 use crate::data::CpuPositionView;
 use crate::{RendererError, quat_inverse, quat_to_mat3};
 
-#[cfg(all(not(target_arch = "wasm32"), target_arch = "aarch64"))]
+#[cfg(all(test, not(target_arch = "wasm32"), target_arch = "aarch64"))]
 mod aarch64;
+#[cfg(not(target_arch = "wasm32"))]
+pub(super) mod packed;
 mod scalar;
-#[cfg(all(not(target_arch = "wasm32"), target_arch = "x86_64"))]
+#[cfg(all(test, not(target_arch = "wasm32"), target_arch = "x86_64"))]
 mod x86_64;
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -39,7 +41,7 @@ impl PreprocessContext {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 #[derive(Default)]
 pub(crate) struct PreprocessChunkScratch {
     depth_keys: Vec<u32>,
@@ -57,6 +59,7 @@ fn reserve_outputs(depth_keys: &mut Vec<u32>, source_ids: &mut Vec<u32>, capacit
     }
 }
 
+#[cfg(any(test, target_arch = "wasm32"))]
 fn dispatch_leaf(
     positions: CpuPositionView<'_>,
     source_base: usize,
@@ -93,6 +96,7 @@ pub(crate) fn positions_visible_into_scalar(
     Ok(())
 }
 
+#[cfg(any(test, target_arch = "wasm32"))]
 pub(crate) fn positions_visible_into(
     positions: CpuPositionView<'_>,
     camera: &Camera,

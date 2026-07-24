@@ -99,7 +99,7 @@ impl CpuOrderEngine {
     }
 
     #[cfg(test)]
-    pub(crate) fn buffer_state(&self) -> ((usize, usize), (usize, usize)) {
+    pub(crate) fn buffer_state(&self) -> ((usize, usize), (usize, usize), (usize, usize)) {
         self.workspace.buffer_state()
     }
 }
@@ -331,7 +331,11 @@ pub(crate) fn world_to_camera_depth_with_view_row(
 #[cfg(test)]
 mod tests {
     use gsplat_core::{Camera, Vec3f};
+    #[cfg(not(target_arch = "wasm32"))]
+    use std::time::Instant;
 
+    #[cfg(not(target_arch = "wasm32"))]
+    use super::preprocess_positions_visible_into_parallel;
     use super::{
         CpuOrderEngine, depth_to_key, preprocess_positions_visible_into,
         world_to_camera_depth_with_view_row,
@@ -439,6 +443,77 @@ mod tests {
             )
             .expect("order");
         assert_eq!(order, (0..257_u32).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn unsorted_position_order_preserves_visible_source_id_order() {
+        let positions = [
+            Vec3f::new(0.0, 0.0, 2.5),
+            Vec3f::new(0.0, 0.0, 0.5),
+            Vec3f::new(0.0, 0.0, 1.5),
+            Vec3f::new(0.0, 0.0, 3.5),
+            Vec3f::new(0.0, 0.0, 2.0),
+        ];
+        let mut engine = CpuOrderEngine::try_with_capacity(positions.len()).expect("engine");
+        let mut order = Vec::with_capacity(positions.len());
+
+        engine
+            .order_positions(
+                CpuPositionView::new(&positions),
+                &camera(1.0, 3.0),
+                false,
+                &mut order,
+            )
+            .expect("visible source order");
+
+        assert_eq!(order, [0, 2, 4]);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn packed_order_matches_parallel_split_baseline_and_hash() {
+        let positions = (0..(super::PARALLEL_PREPROCESS_THRESHOLD + 257))
+            .map(|index| {
+                let depth = 1.0 + (index % 8192) as f32 * 0.000_1;
+                Vec3f::new(index as f32 * 0.000_01, 0.0, depth)
+            })
+            .collect::<Vec<_>>();
+        let camera = camera(0.5, 4.0);
+        let mut keys = Vec::new();
+        let mut expected = Vec::new();
+        let mut chunks = Vec::new();
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(4)
+            .build()
+            .expect("rayon pool")
+            .install(|| {
+                preprocess_positions_visible_into_parallel(
+                    &positions,
+                    &camera,
+                    &mut keys,
+                    &mut expected,
+                    &mut chunks,
+                )
+                .expect("split preprocess");
+            });
+        gsplat_sort::CpuSortBackend::default()
+            .sort_values_by_keys(&keys, &mut expected)
+            .expect("split radix");
+
+        let mut engine = CpuOrderEngine::try_with_capacity(positions.len()).expect("engine");
+        let mut actual = Vec::with_capacity(positions.len());
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(4)
+            .build()
+            .expect("rayon pool")
+            .install(|| {
+                engine
+                    .order_positions(CpuPositionView::new(&positions), &camera, true, &mut actual)
+                    .expect("packed order");
+            });
+
+        assert_eq!(actual, expected);
+        assert_eq!(order_hash(&actual), order_hash(&expected));
     }
 
     #[test]
@@ -554,5 +629,123 @@ mod tests {
             ),
             grown
         );
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn order_hash(order: &[u32]) -> u64 {
+        order.iter().fold(0xcbf2_9ce4_8422_2325_u64, |hash, id| {
+            (hash ^ u64::from(*id)).wrapping_mul(0x0000_0100_0000_01b3)
+        })
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn e6_positions(count: usize) -> Vec<Vec3f> {
+        let mut state = 0x6d2b_79f5_u32;
+        (0..count)
+            .map(|_| {
+                state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                let x = (state & 0xffff) as f32 * (1.0 / 65_535.0) - 0.5;
+                state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                let y = (state & 0xffff) as f32 * (1.0 / 65_535.0) - 0.5;
+                state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                let z = 1.0 + (state & 0x00ff_ffff) as f32 * (998.0 / 16_777_215.0);
+                Vec3f::new(x, y, z)
+            })
+            .collect()
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn e6_baseline_sample(
+        positions: &[Vec3f],
+        camera: &Camera,
+        keys: &mut Vec<u32>,
+        order: &mut Vec<u32>,
+        chunks: &mut Vec<super::PreprocessChunkScratch>,
+        sorter: &mut gsplat_sort::CpuSortBackend,
+    ) -> (f64, f64, u64) {
+        let total_started = Instant::now();
+        let preprocess_started = Instant::now();
+        preprocess_positions_visible_into_parallel(positions, camera, keys, order, chunks)
+            .expect("baseline preprocess");
+        let preprocess_ms = preprocess_started.elapsed().as_secs_f64() * 1000.0;
+        sorter
+            .sort_values_by_keys(keys, order)
+            .expect("baseline radix");
+        let total_ms = total_started.elapsed().as_secs_f64() * 1000.0;
+        (preprocess_ms, total_ms, order_hash(order))
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn e6_packed_sample(
+        positions: &[Vec3f],
+        camera: &Camera,
+        engine: &mut CpuOrderEngine,
+        order: &mut Vec<u32>,
+    ) -> (f64, f64, u64) {
+        let total_started = Instant::now();
+        let timings = engine
+            .order_positions(CpuPositionView::new(positions), camera, true, order)
+            .expect("packed order");
+        let total_ms = total_started.elapsed().as_secs_f64() * 1000.0;
+        (
+            f64::from(timings.preprocess_ms),
+            total_ms,
+            order_hash(order),
+        )
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    #[ignore = "finite E6 native release benchmark"]
+    fn e6_direct_packed_m4_release_benchmark() {
+        const COUNT: usize = 2_541_226;
+        const SCHEDULE: [bool; 6] = [false, true, true, false, false, true];
+
+        let positions = e6_positions(COUNT);
+        let camera = camera(0.5, 1_000.0);
+        let mut baseline_keys = Vec::with_capacity(COUNT);
+        let mut baseline_order = Vec::with_capacity(COUNT);
+        let mut baseline_chunks = Vec::new();
+        let mut baseline_sorter = gsplat_sort::CpuSortBackend::default();
+        let mut packed_engine = CpuOrderEngine::try_with_capacity(COUNT).expect("packed engine");
+        let mut packed_order = Vec::with_capacity(COUNT);
+
+        let baseline_warmup = e6_baseline_sample(
+            &positions,
+            &camera,
+            &mut baseline_keys,
+            &mut baseline_order,
+            &mut baseline_chunks,
+            &mut baseline_sorter,
+        );
+        let packed_warmup =
+            e6_packed_sample(&positions, &camera, &mut packed_engine, &mut packed_order);
+        assert_eq!(baseline_order, packed_order);
+        assert_eq!(baseline_warmup.2, packed_warmup.2);
+
+        for (run, packed) in SCHEDULE.into_iter().enumerate() {
+            let (preprocess_ms, total_ms, hash) = if packed {
+                e6_packed_sample(&positions, &camera, &mut packed_engine, &mut packed_order)
+            } else {
+                e6_baseline_sample(
+                    &positions,
+                    &camera,
+                    &mut baseline_keys,
+                    &mut baseline_order,
+                    &mut baseline_chunks,
+                    &mut baseline_sorter,
+                )
+            };
+            assert_eq!(hash, baseline_warmup.2);
+            eprintln!(
+                "E6_SAMPLE run={} path={} count={} preprocess_ms={:.6} total_ms={:.6} order_hash={:016x}",
+                run + 1,
+                if packed { "packed" } else { "baseline" },
+                COUNT,
+                preprocess_ms,
+                total_ms,
+                hash,
+            );
+        }
     }
 }

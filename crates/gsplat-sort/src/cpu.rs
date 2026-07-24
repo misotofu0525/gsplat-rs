@@ -13,6 +13,14 @@ pub struct CpuSortBackend {
 }
 
 impl CpuSortBackend {
+    /// Packs one key/value pair in the representation consumed by
+    /// [`Self::sort_prepacked_values`].
+    #[cfg(not(target_arch = "wasm32"))]
+    #[inline]
+    pub const fn pack_key_value(key: u32, value: u32) -> u64 {
+        pack_sort_pair(key, value)
+    }
+
     /// Stably orders `values` by the complete 32-bit keys, descending.
     ///
     /// Equal keys retain their input order. Renderer inputs enumerate source
@@ -32,7 +40,7 @@ impl CpuSortBackend {
             return Ok(());
         }
 
-        self.prepare_scratch(len);
+        self.prepare_pair_scratch(len);
         let packed = &mut self.packed[..len];
         pack_pairs(keys, values, packed);
         // Production path packs ascending indices; key-bit-only stable radix is enough.
@@ -46,10 +54,45 @@ impl CpuSortBackend {
         Ok(())
     }
 
-    fn prepare_scratch(&mut self, len: usize) {
+    /// Stably orders already packed `(key, value)` pairs by the complete
+    /// 32-bit key, descending, and writes the resulting values.
+    ///
+    /// The packed input must use [`Self::pack_key_value`] and enumerate equal
+    /// keys in the required stable input order. This entry reuses the same
+    /// high-key radix passes as [`Self::sort_values_by_keys`] without first
+    /// copying split keys and values into another packed buffer.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn sort_prepacked_values(
+        &mut self,
+        packed: &mut [u64],
+        values: &mut [u32],
+    ) -> Result<(), SortError> {
+        if packed.len() != values.len() {
+            return Err(SortError::LengthMismatch);
+        }
+
+        let len = packed.len();
+        if len > 1 {
+            self.prepare_radix_scratch(len);
+            radix_sort_desc_u64_key_bits(
+                packed,
+                &mut self.scratch[..len],
+                &mut self.counts[..RADIX_SORT_BUCKETS],
+                &mut self.parallel_counts[..RADIX_PARALLEL_COUNT_SLOTS],
+            );
+        }
+        unpack_values(packed, values);
+        Ok(())
+    }
+
+    fn prepare_pair_scratch(&mut self, len: usize) {
         if self.packed.len() < len {
             self.packed.resize(len, 0);
         }
+        self.prepare_radix_scratch(len);
+    }
+
+    fn prepare_radix_scratch(&mut self, len: usize) {
         if self.scratch.len() < len {
             self.scratch.resize(len, 0);
         }
@@ -77,7 +120,7 @@ impl SortBackend for CpuSortBackend {
             return Ok(());
         }
 
-        self.prepare_scratch(len);
+        self.prepare_pair_scratch(len);
         let packed = &mut self.packed[..len];
         pack_pairs(keys, values, packed);
         radix_sort_desc_u64(
@@ -490,6 +533,52 @@ mod tests {
     }
 
     #[test]
+    fn cpu_backend_sorts_prepacked_values_with_stable_source_ties() {
+        let keys = [20_u32, 12, 12, 5];
+        let source_ids = [7_u32, 11, 13, 17];
+        let mut packed = keys
+            .into_iter()
+            .zip(source_ids)
+            .map(|(key, value)| CpuSortBackend::pack_key_value(key, value))
+            .collect::<Vec<_>>();
+        let mut values = vec![u32::MAX; packed.len()];
+
+        CpuSortBackend::default()
+            .sort_prepacked_values(&mut packed, &mut values)
+            .unwrap();
+
+        assert_eq!(values, [7, 11, 13, 17]);
+    }
+
+    #[test]
+    fn cpu_backend_prepacked_entry_matches_split_entry_across_edge_lengths() {
+        let mut seed = 0x5eed_u32;
+        for &len in &[0_usize, 1, 2, 255, 256, 257, 65_537, 300_017] {
+            let keys = (0..len)
+                .map(|_| lcg_next(&mut seed) & 4095)
+                .collect::<Vec<_>>();
+            let source_ids = (0..len as u32).collect::<Vec<_>>();
+            let mut expected = source_ids.clone();
+            CpuSortBackend::default()
+                .sort_values_by_keys(&keys, &mut expected)
+                .unwrap();
+
+            let mut packed = keys
+                .iter()
+                .copied()
+                .zip(source_ids)
+                .map(|(key, value)| CpuSortBackend::pack_key_value(key, value))
+                .collect::<Vec<_>>();
+            let mut actual = vec![u32::MAX; len];
+            CpuSortBackend::default()
+                .sort_prepacked_values(&mut packed, &mut actual)
+                .unwrap();
+
+            assert_eq!(actual, expected, "len={len}");
+        }
+    }
+
+    #[test]
     fn cpu_backend_keeps_empty_and_singleton_inputs() {
         let mut backend = CpuSortBackend::default();
         let mut empty_keys: [u32; 0] = [];
@@ -515,6 +604,20 @@ mod tests {
         let mut values = [1_u32];
 
         let err = backend.sort_values_by_keys(&keys, &mut values).unwrap_err();
+        assert_eq!(err, SortError::LengthMismatch);
+    }
+
+    #[test]
+    fn cpu_backend_rejects_prepacked_value_mismatch() {
+        let mut packed = [
+            CpuSortBackend::pack_key_value(1, 0),
+            CpuSortBackend::pack_key_value(2, 1),
+        ];
+        let mut values = [u32::MAX];
+
+        let err = CpuSortBackend::default()
+            .sort_prepacked_values(&mut packed, &mut values)
+            .unwrap_err();
         assert_eq!(err, SortError::LengthMismatch);
     }
 
