@@ -15,16 +15,17 @@ E5 = Deferred
 E6 = Accepted
 E7 = Accepted
 E8 = Accepted
-E9 = Active
+E9 = Accepted
+E10 = Active
 <!-- gsplat-program-task-states: end -->
 
 ## Package status
 
 - Package: E — Exact prepared plans and native execution, still shadowed.
-- Active task: the plans-only E9 exact GPU Preproject prepared plan, using the
-  accepted target-independent compute seam without changing GPU algorithms.
-- Last completed batch: the finite E9 Preproject ownership adapter, following
-  E7 native CPU initialization calibration and E8 GPU PostSort activation.
+- Active task: the finite E10 CPU PostSort projection adapter required before
+  canonical-raster ownership can migrate without inventing a second path.
+- Last completed batch: E9 exact GPU Preproject ownership and prepared-plan
+  activation, following E7 CPU calibration and E8 GPU PostSort activation.
 - E1 state: Accepted after root fixed-SHA review and fast-forward integration
   of candidate `0496266cc73de5fc84acb7c393606fa68eb77623`.
 - Dependency: Package A/A9 Accepted.
@@ -39,11 +40,12 @@ E9 = Active
   E5 is Deferred with a clean tree because the reachable physical x86_64
   endpoint lacks AVX2/FMA and Rosetta/cross-compilation cannot qualify native
   performance. Neither outcome changes the scalar production leaves.
-- E9 is intentionally serial at this boundary because the adapter and the
-  later plan both touch GPU admission and `ProjectedWork` ownership. Root alone
-  owns architecture policy/ledger edits, fixed-SHA review, integration and the
-  combined matrix. Independent later packages may resume in parallel only
-  after their contracts and mutable owners are disjoint.
+- E10 begins with one finite CPU-projection adapter because CPU PostSort still
+  returns only authoritative CPU IDs while canonical raster requires
+  owner-bound projected GPU planes. Root alone owns architecture policy/ledger
+  edits, fixed-SHA review, integration and the combined matrix. A separate
+  raster owner may start only after this seam is accepted or a disjoint file
+  contract is proven.
 - Source-size rule: no fixed LOC quota, split trigger or completion gate. Module
   boundaries follow responsibility, dependency direction, compatibility,
   testability, change locality, navigability and maintenance risk. A mixed
@@ -546,3 +548,50 @@ E9 = Active
   The active plans-only writer may consume only this accepted seam and the
   existing plan abstractions; it may not reopen primitive algorithms or legacy
   Surface ownership.
+
+## E9 exact GPU Preproject plan closeout
+
+- Final state: Accepted; E10 is now active.
+- Fixed parent: `89365241646fa11bf51a4261ec9c146af0267b4a`.
+- Accepted cumulative candidate:
+  `88e45af465dc6e63d9b39d2cd200dfa5bd62ce2f`.
+- Root integration commits: `cbc807e` and `b13f33d`.
+- Scope was exactly `plans/mod.rs`, `plans/gpu_pre.rs` and its focused tests.
+  The plan consumes only the accepted SceneRuntime Preproject seam and carries
+  GPU V/C count sources plus the exact indirect relation `D=C`; numeric host
+  V/C/D remain unavailable instead of using source, capacity or zero.
+- GPU PostSort and CPU fallback remain prepared as before. Production GPU
+  admission constructs PostSort and Preproject together before one infallible
+  commit; Preproject execution revalidates owner, complete count/SH receipt,
+  scene/contract/plan-set identity, camera and viewport.
+- A fixed-SHA review found one candidate-side policy violation: the first test
+  helper selected required GPU execution through environment variables. The
+  corrective commit removed those reads; macOS now requires an adapter/device
+  and Metal through compile-time target gating, while non-macOS may report an
+  honest optional skip.
+- Both final fixed-SHA reviews accepted with no P0/P1/P2. Root independently
+  observed Apple M4/Metal execution and three focused passes. The integrated
+  matrix passed format/diff, architecture policy/self-tests, locked workspace
+  check/tests, 369 renderer tests with seven existing ignored research tests,
+  strict all-target Clippy, warning-free Rustdoc, wasm32 Web, required Metal
+  SortedAlpha conformance and C FFI smoke.
+- No submit, poll, map/readback, presentation, controller, public API/ABI,
+  product default, WGSL or primitive GPU algorithm changed.
+
+## E10 finite adapter activation
+
+- Preflight result: `needs-adapter`. `PreparedRuntime` has no canonical raster,
+  and CPU PostSort currently returns only CPU IDs and host S/V. Before raster
+  ownership migrates, the existing device-owned projection graph must accept
+  the authoritative CPU order and return owner/generation-bound projected
+  planes with direct `D=V` semantics.
+- The adapter is not a new renderer or experiment. It may reuse the staged
+  Resident/project resources, encode into the caller-owned command encoder and
+  expose borrowed projected buffers. It may not create target-format raster
+  state, submit, poll, map/read back, present or publish encoder-dependent
+  cache state.
+- After this finite seam passes fixed-SHA review and image/count/currentness
+  oracles, E10 can migrate the accepted four-vertex canonical raster. The one
+  submission/batching hypothesis will be declared separately with an explicit
+  baseline and finite Accept/Reject/Defer result; it is not invented inside
+  the ownership adapter.

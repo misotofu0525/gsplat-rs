@@ -251,6 +251,14 @@ class SourceArchitectureFixtureTests(unittest.TestCase):
                     "path": "crates/gsplat-render-wgpu/src/plans/gpu_post/tests.rs",
                     "name": "prepared_gpu_post_is_exact_current_indirect_and_discard_safe",
                 },
+                {
+                    "path": "crates/gsplat-render-wgpu/src/plans/gpu_pre.rs",
+                    "name": "execute",
+                },
+                {
+                    "path": "crates/gsplat-render-wgpu/src/plans/gpu_pre/tests.rs",
+                    "name": "prepared_gpu_preproject_is_exact_current_indirect_owner_bound_and_discard_safe",
+                },
             ],
         )
         self.assertEqual(plans["preparation_only_files"], [])
