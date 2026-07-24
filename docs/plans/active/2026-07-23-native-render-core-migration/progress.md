@@ -343,13 +343,22 @@ M2 = Active
   rejected it for two P1 findings and one P2: legacy live consumers see false
   zero V/D on GPU plans; a frame-latency change retains incomparable Exact
   controller evidence; and one GPU-vs-GPU probe is labelled `CpuProbe`.
-- The latency/controller and probe-label defects are owned by visible repair
-  task `019f94a5-bedf-7e20-b2f5-0aec185df089`. The false-zero finding is not
-  "fixed" with a sentinel, source capacity, stale value or synchronous
-  readback. Visible Android task `019f94ab-9147-7ff1-b6c3-67c60bd12af4` and
-  Apple task `019f94ab-9148-79e0-b921-313b059c21e7` instead remove every
-  in-tree live dependency on the legacy getter using matching current-stats
-  tickets. These three path-disjoint candidates may be prepared in parallel;
-  root combines and reviews their fixed SHAs serially. No combined tree is
-  accepted, pushed or used as an M2b base until this migration batch and the
-  subsequent M2p4 fail-closed switch pass root verification.
+- **M2a core repair: accepted for root integration, not package acceptance.**
+  Visible repair task `019f94a5-bedf-7e20-b2f5-0aec185df089` produced fixed
+  candidate `e98c5a21a0e6f410235e574862b1783e6d7efe1c`. Independent read-only
+  task `019f94b5-6299-7840-b253-ce2c9159d945` reported no P0/P1/P2: every
+  frame-latency setter call restarts only latency-bound whole-plan learning,
+  retires the old formal callback behind one bounded queue barrier, preserves
+  current-stats tickets and semantic identity, and labels GPU-to-GPU probes
+  from the recorded execution lane. Root integrated the provisional runtime
+  and repair as `a2bca9d` and `7e0e7c9`, then re-ran 12 controller/sampler
+  tests, 15 current-stats tests, workspace check and architecture policy.
+- The false-zero finding is not "fixed" with a sentinel, source capacity,
+  stale value or synchronous readback. Visible Android task
+  `019f94ab-9147-7ff1-b6c3-67c60bd12af4` and Apple task
+  `019f94ab-9148-79e0-b921-313b059c21e7` instead remove every in-tree live
+  dependency on the legacy getter using matching current-stats tickets. These
+  path-disjoint candidates are still under preparation and root review. No
+  combined tree is accepted, pushed or used as an M2b base until this
+  migration batch and the subsequent M2p4 fail-closed switch pass root
+  verification.
