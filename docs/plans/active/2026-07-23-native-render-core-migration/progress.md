@@ -214,8 +214,12 @@ M2 = Active
   constrain the actual complete plan, removed one experimental live switch
   without an explicit contract decision, and exposed unresolved GPU counts as
   successful stale `FrameStats`. The repair candidate
-  `166b457942e55947c68fbc8b9906de8e37043f26` is under independent review as a
-  partial repair only; neither candidate is integrated.
+  `166b457942e55947c68fbc8b9906de8e37043f26` is also Rejected after independent
+  review: it correctly closes scene currentness and candidate-added wasm
+  diagnostics, but still accepts forced CPU/GPU plus projected Adaptive while
+  executing Candidate with adaptive state disabled. Neither candidate is
+  integrated; their valid changes are reference material for the later M2a
+  rebuild on the accepted preparation tree.
 - Root approves one narrowly scoped experimental compatibility decision:
   after Native Surface scene publication, any runtime mutation entering or
   leaving Packed is unsupported and fails before mutation; same-path calls are
@@ -242,7 +246,11 @@ M2 = Active
      prove forced CPU PostSort, GPU PostSort, GPU Preproject, Adaptive,
      acquire/configure/present ordering and retry rollback through focused and
      injected-presentation tests. It also enforces the approved construction-
-     time-only Packed choice and does not build the benchmark collector.
+     time-only Packed choice and a single canonical complete-plan state. Every
+     successful legacy control setter atomically maps all facade fields to
+     CpuPostSort/Candidate, GpuPostSort/Candidate, GpuPreproject/Compact, or
+     whole-plan Adaptive; unrepresentable combinations reject before mutation.
+     It does not build the benchmark collector.
   6. **M2b — real-window evidence seam:** on the accepted M2a tree, add or
      extend the native Surface collector/capture path so the four policies emit
      canonical artifacts and final frames. It does not redesign render

@@ -309,6 +309,23 @@ handoff as reversible. Capture becomes complete only after a successful real
 presentation. Surface loss or failed presentation must leave the transaction
 retryable and must not publish false terminal evidence.
 
+Native Packed execution has one canonical complete-plan state, not independent
+order/projected/producer state machines. Every successful compatibility setter
+must atomically publish and report exactly one of these tuples:
+
+| Plan policy | Order | Projected | GPU producer |
+| --- | --- | --- | --- |
+| `CpuPostSort` | CPU | Candidate | PostSort |
+| `GpuPostSort` | GPU | Candidate | PostSort |
+| `GpuPreproject` | GPU | Compact | Preproject |
+| whole-plan Adaptive | Adaptive | Adaptive | canonical adaptive request |
+
+An old setter may map atomically to one tuple or reject before mutation. It may
+not leave a renderable intermediate tuple, report Adaptive while executing a
+forced plan with adaptive state disabled, or require callers to sequence two
+setters through an invalid half-state. M7 later removes the redundant internal
+cross-product owners while published compatibility symbols remain thin shims.
+
 **Required exit artifacts:**
 
 - real OS-window Apple M4/Metal Surface runs for forced CPU PostSort, forced
