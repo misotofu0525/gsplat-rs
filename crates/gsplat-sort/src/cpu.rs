@@ -532,6 +532,7 @@ mod tests {
         assert_eq!(values, [0, 2, 3, 1]);
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn cpu_backend_sorts_prepacked_values_with_stable_source_ties() {
         let keys = [20_u32, 12, 12, 5];
@@ -550,6 +551,7 @@ mod tests {
         assert_eq!(values, [7, 11, 13, 17]);
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn cpu_backend_prepacked_entry_matches_split_entry_across_edge_lengths() {
         let mut seed = 0x5eed_u32;
@@ -607,6 +609,7 @@ mod tests {
         assert_eq!(err, SortError::LengthMismatch);
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn cpu_backend_rejects_prepacked_value_mismatch() {
         let mut packed = [
