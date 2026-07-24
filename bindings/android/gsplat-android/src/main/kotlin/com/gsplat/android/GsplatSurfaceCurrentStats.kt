@@ -304,6 +304,9 @@ data class GsplatSurfaceCurrentStatsPoll(
 
 sealed interface GsplatSurfaceCurrentStatsState {
     data class NotRequested(val pendingCount: Int) : GsplatSurfaceCurrentStatsState
+    data class AwaitingSubmission(
+        val pendingCount: Int
+    ) : GsplatSurfaceCurrentStatsState
     data class Pending(
         val ticket: Long,
         val identity: GsplatSurfaceCurrentStatsIdentity,
@@ -338,12 +341,27 @@ data class GsplatSurfaceCurrentStatsCycle(
 /**
  * Thin Android consumer for the Renderer-owned current-stats v1 values.
  *
- * It retains only the minimum pending ticket-to-full-identity correlation
- * needed to reject stale or mismatched terminals. It never creates tickets,
- * generations, samples, plans, or fallback counts.
+ * Renderer admission bounds pending tickets. This consumer retains their full
+ * identities plus a finite terminal/rejection replay window so repeated getter
+ * snapshots stay idempotent. It never creates tickets, generations, samples,
+ * plans, or fallback counts.
  */
 class GsplatSurfaceCurrentStatsAdapter {
+    private enum class TicketPhase {
+        TERMINAL,
+        REJECTED
+    }
+
+    private data class TicketRecord(
+        val identity: GsplatSurfaceCurrentStatsIdentity,
+        val phase: TicketPhase
+    )
+
+    // Renderer admission bounds issued-but-unresolved tickets. Android adds
+    // only a finite replay window for completed/rejected submission snapshots.
     private val pending = LinkedHashMap<Long, GsplatSurfaceCurrentStatsIdentity>()
+    private val tombstones = LinkedHashMap<Long, TicketRecord>()
+    private var outstandingRequest: GsplatSurfaceCurrentStatsRequest? = null
 
     var state: GsplatSurfaceCurrentStatsState =
         GsplatSurfaceCurrentStatsState.NotRequested(pendingCount = 0)
@@ -355,69 +373,101 @@ class GsplatSurfaceCurrentStatsAdapter {
     val pendingCount: Int
         get() = pending.size
 
+    internal val requiresSubmissionReconciliation: Boolean
+        get() = outstandingRequest != null
+
+    internal val trackedTombstoneCount: Int
+        get() = tombstones.size
+
     fun request(nativeHandle: Long): GsplatSurfaceCurrentStatsRequest {
-        state = GsplatSurfaceCurrentStatsState.NotRequested(pending.size)
         val raw = LongArray(GsplatSurfaceCurrentStatsRequest.RAW_VALUE_COUNT)
         checkNative(NativeBridge.requestSurfaceCurrentStatsV1(nativeHandle, raw))
-        return GsplatSurfaceCurrentStatsRequest.fromRaw(raw).also { request ->
-            state = when (request.status) {
-                GsplatSurfaceCurrentStatsRequestStatus.REQUESTED ->
-                    GsplatSurfaceCurrentStatsState.NotRequested(pending.size)
-                else -> GsplatSurfaceCurrentStatsState.Unavailable(request.status, pending.size)
+        return observeRequest(GsplatSurfaceCurrentStatsRequest.fromRaw(raw))
+    }
+
+    internal fun observeRequest(
+        request: GsplatSurfaceCurrentStatsRequest
+    ): GsplatSurfaceCurrentStatsRequest {
+        state = when (request.status) {
+            GsplatSurfaceCurrentStatsRequestStatus.REQUESTED -> {
+                outstandingRequest = request
+                GsplatSurfaceCurrentStatsState.AwaitingSubmission(pendingCount)
             }
+            else -> GsplatSurfaceCurrentStatsState.Unavailable(request.status, pendingCount)
         }
+        return request
     }
 
     fun complete(
         nativeHandle: Long,
         request: GsplatSurfaceCurrentStatsRequest
     ): GsplatSurfaceCurrentStatsCycle {
-        val submissionRaw = LongArray(GsplatSurfaceCurrentStatsSubmission.RAW_VALUE_COUNT)
-        checkNative(
-            NativeBridge.getSurfaceCurrentStatsSubmissionV1(nativeHandle, submissionRaw)
+        return complete(
+            request = request,
+            readSubmission = { readSubmission(nativeHandle) },
+            readPoll = { readPoll(nativeHandle) }
         )
-        val pollRaw = LongArray(GsplatSurfaceCurrentStatsPoll.RAW_VALUE_COUNT)
-        checkNative(NativeBridge.pollSurfaceCurrentStatsV1(nativeHandle, pollRaw))
-        return consume(
-            request,
-            GsplatSurfaceCurrentStatsSubmission.fromRaw(submissionRaw),
-            GsplatSurfaceCurrentStatsPoll.fromRaw(pollRaw)
-        )
+    }
+
+    internal fun reconcileAfterSuccessfulRender(
+        readSubmission: () -> GsplatSurfaceCurrentStatsSubmission,
+        readPoll: () -> GsplatSurfaceCurrentStatsPoll
+    ): GsplatSurfaceCurrentStatsCycle? {
+        val request = outstandingRequest ?: return null
+        return complete(request, readSubmission, readPoll)
+    }
+
+    internal fun reconcileAfterSuccessfulRender(
+        nativeHandle: Long
+    ): GsplatSurfaceCurrentStatsCycle? = reconcileAfterSuccessfulRender(
+        readSubmission = { readSubmission(nativeHandle) },
+        readPoll = { readPoll(nativeHandle) }
+    )
+
+    internal fun reconcileAfterOrdinaryRender(
+        readSubmission: () -> GsplatSurfaceCurrentStatsSubmission,
+        readPoll: () -> GsplatSurfaceCurrentStatsPoll
+    ): GsplatSurfaceCurrentStatsCycle? = try {
+        reconcileAfterSuccessfulRender(readSubmission, readPoll)
+    } catch (_: RuntimeException) {
+        recoveryReadFailed()
+        null
+    }
+
+    internal fun reconcileAfterOrdinaryRender(
+        nativeHandle: Long
+    ): GsplatSurfaceCurrentStatsCycle? = reconcileAfterOrdinaryRender(
+        readSubmission = { readSubmission(nativeHandle) },
+        readPoll = { readPoll(nativeHandle) }
+    )
+
+    private fun complete(
+        request: GsplatSurfaceCurrentStatsRequest,
+        readSubmission: () -> GsplatSurfaceCurrentStatsSubmission,
+        readPoll: () -> GsplatSurfaceCurrentStatsPoll
+    ): GsplatSurfaceCurrentStatsCycle {
+        if (request.status == GsplatSurfaceCurrentStatsRequestStatus.REQUESTED &&
+            outstandingRequest == null
+        ) {
+            outstandingRequest = request
+        }
+        val submission = readSubmission()
+        val submissionRejection = observeSubmission(submission)
+        val poll = readPoll()
+        val pollState = consumePollValue(poll, request, submission)
+        state = submissionRejection ?: pollState
+        return GsplatSurfaceCurrentStatsCycle(request, submission, poll, state)
     }
 
     /** Single non-blocking poll used while flushing already-issued tickets. */
     fun poll(nativeHandle: Long): GsplatSurfaceCurrentStatsState {
-        state = GsplatSurfaceCurrentStatsState.NotRequested(pending.size)
-        val pollRaw = LongArray(GsplatSurfaceCurrentStatsPoll.RAW_VALUE_COUNT)
-        checkNative(NativeBridge.pollSurfaceCurrentStatsV1(nativeHandle, pollRaw))
-        return consumePoll(GsplatSurfaceCurrentStatsPoll.fromRaw(pollRaw))
+        return consumePoll(readPoll(nativeHandle))
     }
 
     internal fun consumePoll(
         poll: GsplatSurfaceCurrentStatsPoll
     ): GsplatSurfaceCurrentStatsState {
-        state = GsplatSurfaceCurrentStatsState.NotRequested(pending.size)
-        state = when (poll.kind) {
-            GsplatSurfaceCurrentStatsPollKind.EMPTY -> {
-                val oldest = pending.entries.firstOrNull()
-                if (oldest == null) {
-                    GsplatSurfaceCurrentStatsState.NotRequested(0)
-                } else {
-                    GsplatSurfaceCurrentStatsState.Pending(
-                        ticket = oldest.key,
-                        identity = oldest.value,
-                        pendingCount = pending.size
-                    )
-                }
-            }
-            GsplatSurfaceCurrentStatsPollKind.UNSAMPLED ->
-                GsplatSurfaceCurrentStatsState.Unavailable(
-                    status = checkNotNull(poll.requestStatus),
-                    pendingCount = pending.size
-                )
-            GsplatSurfaceCurrentStatsPollKind.READY -> consumeReady(checkNotNull(poll.receipt))
-            else -> consumeFailure(checkNotNull(poll.failure))
-        }
+        state = consumePollValue(poll, request = null, submission = null)
         return state
     }
 
@@ -426,107 +476,196 @@ class GsplatSurfaceCurrentStatsAdapter {
         submission: GsplatSurfaceCurrentStatsSubmission,
         poll: GsplatSurfaceCurrentStatsPoll
     ): GsplatSurfaceCurrentStatsCycle {
-        state = GsplatSurfaceCurrentStatsState.NotRequested(pending.size)
-        if (submission.status == GsplatSurfaceCurrentStatsSubmissionStatus.ISSUED) {
-            val ticket = checkNotNull(submission.ticket)
-            val identity = checkNotNull(submission.identity)
-            val previous = pending.putIfAbsent(ticket, identity)
-            if (previous != null && previous != identity) {
-                state = GsplatSurfaceCurrentStatsState.Rejected(
-                    reason = "submission_ticket_identity_mismatch",
-                    ticket = ticket,
-                    pendingCount = pending.size
-                )
-                return GsplatSurfaceCurrentStatsCycle(request, submission, poll, state)
-            }
+        if (request.status == GsplatSurfaceCurrentStatsRequestStatus.REQUESTED &&
+            outstandingRequest == null
+        ) {
+            outstandingRequest = request
         }
-
-        state = when (poll.kind) {
-            GsplatSurfaceCurrentStatsPollKind.EMPTY -> emptyState(request, submission)
-            GsplatSurfaceCurrentStatsPollKind.UNSAMPLED ->
-                GsplatSurfaceCurrentStatsState.Unavailable(
-                    status = checkNotNull(poll.requestStatus),
-                    pendingCount = pending.size
-                )
-            GsplatSurfaceCurrentStatsPollKind.READY -> consumeReady(checkNotNull(poll.receipt))
-            else -> consumeFailure(checkNotNull(poll.failure))
-        }
+        val submissionRejection = observeSubmission(submission)
+        val pollState = consumePollValue(poll, request, submission)
+        state = submissionRejection ?: pollState
         return GsplatSurfaceCurrentStatsCycle(request, submission, poll, state)
     }
 
     fun abandonFrame() {
-        state = GsplatSurfaceCurrentStatsState.Rejected(
-            reason = "render_failed_before_submission",
-            ticket = null,
-            pendingCount = pending.size
-        )
+        state = if (outstandingRequest != null) {
+            GsplatSurfaceCurrentStatsState.AwaitingSubmission(pendingCount)
+        } else {
+            rejected("render_failed_before_submission", ticket = null)
+        }
+    }
+
+    fun recoveryReadFailed() {
+        state = rejected("submission_reconciliation_failed", ticket = null)
     }
 
     fun reset() {
         pending.clear()
+        tombstones.clear()
+        outstandingRequest = null
         state = GsplatSurfaceCurrentStatsState.NotRequested(0)
     }
 
-    private fun emptyState(
-        request: GsplatSurfaceCurrentStatsRequest,
+    private fun observeSubmission(
         submission: GsplatSurfaceCurrentStatsSubmission
-    ): GsplatSurfaceCurrentStatsState = when (submission.status) {
-        GsplatSurfaceCurrentStatsSubmissionStatus.ISSUED ->
-            GsplatSurfaceCurrentStatsState.Pending(
-                ticket = checkNotNull(submission.ticket),
-                identity = checkNotNull(submission.identity),
-                pendingCount = pending.size
+    ): GsplatSurfaceCurrentStatsState.Rejected? {
+        if (submission.status == GsplatSurfaceCurrentStatsSubmissionStatus.NOT_REQUESTED) {
+            return null
+        }
+        outstandingRequest = null
+        val ticket = checkNotNull(submission.ticket)
+        val identity = checkNotNull(submission.identity)
+        val pendingIdentity = pending[ticket]
+        if (pendingIdentity != null) {
+            if (pendingIdentity != identity) {
+                pending.remove(ticket)
+                rememberTombstone(ticket, pendingIdentity, TicketPhase.REJECTED)
+                return rejected("submission_ticket_identity_mismatch", ticket)
+            }
+            return null
+        }
+        val completed = tombstones[ticket]
+        if (completed != null) {
+            if (completed.phase == TicketPhase.REJECTED) {
+                return rejected("submission_ticket_already_rejected", ticket)
+            }
+            if (completed.identity != identity) {
+                rememberTombstone(ticket, completed.identity, TicketPhase.REJECTED)
+                return rejected("submission_ticket_identity_mismatch", ticket)
+            }
+            return null
+        }
+        pending[ticket] = identity
+        return null
+    }
+
+    private fun consumePollValue(
+        poll: GsplatSurfaceCurrentStatsPoll,
+        request: GsplatSurfaceCurrentStatsRequest?,
+        submission: GsplatSurfaceCurrentStatsSubmission?
+    ): GsplatSurfaceCurrentStatsState = when (poll.kind) {
+        GsplatSurfaceCurrentStatsPollKind.EMPTY -> emptyState(request, submission)
+        GsplatSurfaceCurrentStatsPollKind.UNSAMPLED -> {
+            outstandingRequest = null
+            GsplatSurfaceCurrentStatsState.Unavailable(
+                status = checkNotNull(poll.requestStatus),
+                pendingCount = pendingCount
             )
-        GsplatSurfaceCurrentStatsSubmissionStatus.NOT_REQUESTED -> when (request.status) {
-            GsplatSurfaceCurrentStatsRequestStatus.REQUESTED ->
-                GsplatSurfaceCurrentStatsState.NotRequested(pending.size)
-            else -> GsplatSurfaceCurrentStatsState.Unavailable(request.status, pending.size)
+        }
+        GsplatSurfaceCurrentStatsPollKind.READY -> consumeReady(checkNotNull(poll.receipt))
+        else -> consumeFailure(checkNotNull(poll.failure))
+    }
+
+    private fun emptyState(
+        request: GsplatSurfaceCurrentStatsRequest?,
+        submission: GsplatSurfaceCurrentStatsSubmission?
+    ): GsplatSurfaceCurrentStatsState {
+        val oldest = pending.entries.firstOrNull()
+        if (oldest != null) {
+            return GsplatSurfaceCurrentStatsState.Pending(
+                ticket = oldest.key,
+                identity = oldest.value,
+                pendingCount = pendingCount
+            )
+        }
+        if (outstandingRequest != null) {
+            return GsplatSurfaceCurrentStatsState.AwaitingSubmission(pendingCount)
+        }
+        return if (submission?.status == GsplatSurfaceCurrentStatsSubmissionStatus.ISSUED) {
+            GsplatSurfaceCurrentStatsState.NotRequested(pendingCount)
+        } else if (request != null &&
+            request.status != GsplatSurfaceCurrentStatsRequestStatus.REQUESTED
+        ) {
+            GsplatSurfaceCurrentStatsState.Unavailable(request.status, pendingCount)
+        } else {
+            GsplatSurfaceCurrentStatsState.NotRequested(pendingCount)
         }
     }
 
     private fun consumeReady(
         receipt: GsplatSurfaceCurrentStatsReceipt
     ): GsplatSurfaceCurrentStatsState {
-        val expected = pending[receipt.ticket]
-            ?: return GsplatSurfaceCurrentStatsState.Rejected(
-                reason = "ready_without_issued_submission",
-                ticket = receipt.ticket,
-                pendingCount = pending.size
-            )
-        if (expected != receipt.identity) {
-            pending.remove(receipt.ticket)
-            return GsplatSurfaceCurrentStatsState.Rejected(
-                reason = "ready_identity_mismatch",
-                ticket = receipt.ticket,
-                pendingCount = pending.size
-            )
+        val expected = pending.remove(receipt.ticket)
+        if (expected == null) {
+            val completed = tombstones[receipt.ticket]
+            if (completed?.phase == TicketPhase.REJECTED) {
+                return rejected("ready_for_rejected_ticket", receipt.ticket)
+            }
+            if (completed?.phase == TicketPhase.TERMINAL) {
+                return rejected("duplicate_ready_terminal", receipt.ticket)
+            }
+            rememberTombstone(receipt.ticket, receipt.identity, TicketPhase.REJECTED)
+            return rejected("ready_without_issued_submission", receipt.ticket)
         }
-        pending.remove(receipt.ticket)
-        return GsplatSurfaceCurrentStatsState.Ready(receipt, pending.size)
+        if (expected != receipt.identity) {
+            rememberTombstone(receipt.ticket, expected, TicketPhase.REJECTED)
+            return rejected("ready_identity_mismatch", receipt.ticket)
+        }
+        rememberTombstone(receipt.ticket, expected, TicketPhase.TERMINAL)
+        return GsplatSurfaceCurrentStatsState.Ready(receipt, pendingCount)
     }
 
     private fun consumeFailure(
         failure: GsplatSurfaceCurrentStatsFailure
     ): GsplatSurfaceCurrentStatsState {
-        val expected = pending[failure.ticket]
-            ?: return GsplatSurfaceCurrentStatsState.Rejected(
-                reason = "failure_without_issued_submission",
-                ticket = failure.ticket,
-                pendingCount = pending.size
-            )
-        if (expected != failure.identity) {
-            pending.remove(failure.ticket)
-            return GsplatSurfaceCurrentStatsState.Rejected(
-                reason = "failure_identity_mismatch",
-                ticket = failure.ticket,
-                pendingCount = pending.size
-            )
+        val expected = pending.remove(failure.ticket)
+        if (expected == null) {
+            val completed = tombstones[failure.ticket]
+            if (completed?.phase == TicketPhase.REJECTED) {
+                return rejected("failure_for_rejected_ticket", failure.ticket)
+            }
+            if (completed?.phase == TicketPhase.TERMINAL) {
+                return rejected("duplicate_failure_terminal", failure.ticket)
+            }
+            rememberTombstone(failure.ticket, failure.identity, TicketPhase.REJECTED)
+            return rejected("failure_without_issued_submission", failure.ticket)
         }
-        pending.remove(failure.ticket)
-        return GsplatSurfaceCurrentStatsState.Failed(failure, pending.size)
+        if (expected != failure.identity) {
+            rememberTombstone(failure.ticket, expected, TicketPhase.REJECTED)
+            return rejected("failure_identity_mismatch", failure.ticket)
+        }
+        rememberTombstone(failure.ticket, expected, TicketPhase.TERMINAL)
+        return GsplatSurfaceCurrentStatsState.Failed(failure, pendingCount)
+    }
+
+    private fun rememberTombstone(
+        ticket: Long,
+        identity: GsplatSurfaceCurrentStatsIdentity,
+        phase: TicketPhase
+    ) {
+        tombstones.remove(ticket)
+        tombstones[ticket] = TicketRecord(identity, phase)
+        while (tombstones.size > REPLAY_TOMBSTONE_CAPACITY) {
+            tombstones.remove(tombstones.entries.first().key)
+        }
+    }
+
+    private fun rejected(
+        reason: String,
+        ticket: Long?
+    ) = GsplatSurfaceCurrentStatsState.Rejected(
+        reason = reason,
+        ticket = ticket,
+        pendingCount = pendingCount
+    )
+
+    private fun readSubmission(nativeHandle: Long): GsplatSurfaceCurrentStatsSubmission {
+        val raw = LongArray(GsplatSurfaceCurrentStatsSubmission.RAW_VALUE_COUNT)
+        checkNative(NativeBridge.getSurfaceCurrentStatsSubmissionV1(nativeHandle, raw))
+        return GsplatSurfaceCurrentStatsSubmission.fromRaw(raw)
+    }
+
+    private fun readPoll(nativeHandle: Long): GsplatSurfaceCurrentStatsPoll {
+        val raw = LongArray(GsplatSurfaceCurrentStatsPoll.RAW_VALUE_COUNT)
+        checkNative(NativeBridge.pollSurfaceCurrentStatsV1(nativeHandle, raw))
+        return GsplatSurfaceCurrentStatsPoll.fromRaw(raw)
     }
 
     private fun checkNative(code: Int) {
         if (code != 0) throw GsplatException(code)
+    }
+
+    private companion object {
+        const val REPLAY_TOMBSTONE_CAPACITY = 8
     }
 }

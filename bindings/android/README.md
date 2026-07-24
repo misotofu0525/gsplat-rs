@@ -106,8 +106,16 @@ renderer.close()
 readback. Call the additive `renderFrameWithCurrentStats()` only at an explicit
 sampling point. It performs request -> render -> submission -> one non-blocking
 poll; if that poll is pending, call `pollCurrentStats()` to advance the already
-issued ticket without requesting or rendering another sample. `currentStats()`
-only returns the last consumer state and does not poll.
+issued ticket without requesting or rendering another sample. If the requested
+render fails, or a successful frame cannot issue the ticket yet, the native
+request intent remains explicit as `AwaitingSubmission`. The next successful
+render reconciles that retained intent by reading one submission and one global
+poll even when the caller has returned to ordinary `renderFrame()`. This
+recovery never sends another request, does not change the ordinary frame's
+render-success result, and stops as soon as the intent becomes Issued or
+Unsampled. With no retained explicit intent, ordinary renders perform no
+current-stats JNI calls. `currentStats()` only returns the last consumer state
+and does not poll.
 
 Only a `GsplatSurfaceCurrentStatsState.Ready` whose non-zero ticket and complete
 scene/camera/viewport/contract/plan-set/executed-plan/order/raster/encode/
@@ -117,7 +125,12 @@ and TicketExhausted are non-fatal states with no fallback counts. Terminal map,
 generation, expiry, or drop failures clear their matching pending ticket and
 publish no counts. An `Issued` submission remains valid when the same cycle's
 request reports Busy because a request intent can transfer across a failed
-frame.
+frame. Renderer admission bounds issued-but-unresolved tickets; the Android
+consumer adds only a fixed-size terminal/rejection tombstone window. Rereading
+the same Issued snapshot after Ready or Failure is idempotent, while the same
+ticket with a different complete identity is rejected. A submission mismatch
+never skips a terminal already removed by the native global single-pop; that
+terminal is still accounted and the affected pending ticket ends fail-closed.
 
 Before the native Surface semantic cutover, the current implementation normally
 reports GPU unavailable / NotRequested / Empty. That is an expected successful

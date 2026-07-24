@@ -131,7 +131,11 @@ class GsplatSurfaceRenderer private constructor(
     fun renderFrame() {
         synchronized(lock) {
             checkOpen()
-            checkResult(NativeBridge.renderSurfaceFrame(nativeHandle))
+            val renderCode = NativeBridge.renderSurfaceFrame(nativeHandle)
+            checkResult(renderCode)
+            if (currentStatsAdapter.requiresSubmissionReconciliation) {
+                currentStatsAdapter.reconcileAfterOrdinaryRender(nativeHandle)
+            }
         }
     }
 
