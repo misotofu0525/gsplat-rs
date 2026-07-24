@@ -119,19 +119,10 @@ fn render_surface_shadow_frame(
 ) -> Result<Option<SurfaceShadowFrameResult>, SurfaceShadowError> {
     let requested = (request.viewport.width(), request.viewport.height());
     let configured = host.configuration.size();
-    host.configuration.validate_size(requested.0, requested.1)?;
-    if requested != configured {
-        return Err(SurfaceShadowError::TargetSizeMismatch {
-            requested,
-            configured,
-            acquired: configured,
-        });
-    }
-    // Reserve every fallible host receipt before acquiring a drawable. The
-    // value remains unpublished until primitive presentation succeeds.
-    let next_sequence = state.next_sequence()?;
-
-    host.lifecycle.begin_frame();
+    let next_sequence =
+        begin_surface_shadow_attempt(state, host.lifecycle, requested, configured, || {
+            host.configuration.validate_size(requested.0, requested.1)
+        })?;
     let Some(frame) = host
         .lifecycle
         .acquire(host.surface, host.device, host.configuration)?
@@ -186,6 +177,30 @@ fn render_surface_shadow_frame(
         || frame.present(),
     )
     .map(Some)
+}
+
+/// Starts a new target attempt before any fallible preflight. A rejected size,
+/// exhausted sequence or later acquire failure therefore cannot leave the
+/// previous frame's presentation receipt visible to the host.
+fn begin_surface_shadow_attempt(
+    state: &SurfaceShadowState,
+    lifecycle: &mut SurfaceLifecycle,
+    requested: (u32, u32),
+    configured: (u32, u32),
+    validate_size: impl FnOnce() -> Result<(), SurfacePresenterError>,
+) -> Result<u64, SurfaceShadowError> {
+    lifecycle.begin_frame();
+    validate_size()?;
+    if requested != configured {
+        return Err(SurfaceShadowError::TargetSizeMismatch {
+            requested,
+            configured,
+            acquired: configured,
+        });
+    }
+    // Reserve every fallible host receipt before acquiring a drawable. The
+    // value remains unpublished until primitive presentation succeeds.
+    state.next_sequence()
 }
 
 fn finish_presented_shadow_frame(
@@ -642,6 +657,27 @@ mod tests {
                 .submission()
                 .frame_identity()
                 .viewport_generation();
+
+            let published_frame = slot.frame_state();
+            let published_sequence = state.presentation_sequence;
+            assert!(lifecycle.last_frame_presented());
+            assert_eq!(lifecycle.last_presented_size(), Some((WIDTH, HEIGHT)));
+            let pre_acquire_error = begin_surface_shadow_attempt(
+                &state,
+                &mut lifecycle,
+                (WIDTH + 1, HEIGHT),
+                (WIDTH, HEIGHT),
+                || Ok(()),
+            )
+            .expect_err("mismatched target must fail before acquire");
+            assert!(matches!(
+                pre_acquire_error,
+                SurfaceShadowError::TargetSizeMismatch { .. }
+            ));
+            assert!(!lifecycle.last_frame_presented());
+            assert_eq!(lifecycle.last_presented_size(), None);
+            assert_eq!(slot.frame_state(), published_frame);
+            assert_eq!(state.presentation_sequence, published_sequence);
 
             let resized = (WIDTH + 1, HEIGHT);
             let resized_viewport = Viewport::new(resized.0, resized.1).expect("resized viewport");
