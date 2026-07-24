@@ -5,8 +5,8 @@ use gsplat_core::Vec3f;
 use super::{ResidentSceneCpu, ResidentSceneError};
 use crate::plans::{FrameIdentity, GpuExecutionContext};
 use crate::renderer::gpu_prepare::{
-    GpuExecutionOwner, GpuPreparationError, GpuPreparationReceipt, GpuProjectedHandles,
-    GpuScenePreparation,
+    GpuExecutionOwner, GpuPreparationError, GpuPreparationReceipt, GpuPreprojectHandles,
+    GpuProjectedHandles, GpuScenePreparation,
 };
 
 /// Private Exact, all-resident scene owner used by the shadow renderer core.
@@ -70,6 +70,13 @@ impl SceneRuntime {
     }
 
     #[cfg(test)]
+    pub(crate) fn gpu_preproject_encode_count(&self) -> Option<u64> {
+        self.gpu
+            .as_ref()
+            .map(GpuScenePreparation::preproject_encode_count)
+    }
+
+    #[cfg(test)]
     pub(crate) fn rebind_gpu(
         &mut self,
         owner: &GpuExecutionOwner,
@@ -96,6 +103,23 @@ impl SceneRuntime {
     ) -> Result<GpuProjectedHandles<'scene>, GpuPreparationError> {
         let gpu = self.gpu.as_mut().ok_or(GpuPreparationError::Unavailable)?;
         gpu.encode_frame(context, camera, width, height, frame)
+    }
+
+    /// Encodes one complete current-frame Exact Preproject graph through the
+    /// atomically published device owner. The returned seam contains only
+    /// borrowed GPU handles/count sources and immutable currentness receipts;
+    /// it owns no raster, submission, readback or cache publication.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn encode_gpu_preproject_frame<'scene>(
+        &'scene mut self,
+        context: GpuExecutionContext<'_>,
+        camera: gsplat_core::Camera,
+        width: u32,
+        height: u32,
+        frame: FrameIdentity,
+    ) -> Result<GpuPreprojectHandles<'scene>, GpuPreparationError> {
+        let gpu = self.gpu.as_mut().ok_or(GpuPreparationError::Unavailable)?;
+        gpu.encode_preproject_frame(context, camera, width, height, frame)
     }
 
     pub(crate) fn source_count(&self) -> usize {

@@ -14,11 +14,15 @@ use crate::gpu::{
     ExternalPrefixRadix, ExternalPrefixRadixBytePlan, GpuPrefixScan,
     PREPROJECT_DRAW_INDIRECT_ARGS_BYTES, PreprojectKeyIdCompactor,
 };
-use crate::raster::{QUAD_VERTEX_COUNT, SplatPipeline, create_splat_pipeline};
+use crate::raster::QUAD_VERTEX_COUNT;
 use crate::resident_gpu::{
     RESIDENT_COLOR_STORAGE_BINDINGS, ResidentGpuError, ResidentGpuResources,
 };
 use crate::{make_surface_render_params, wgpu_label};
+
+mod raster;
+
+use raster::PreprojectedGpuRaster;
 
 pub(crate) const PREPROJECT_WORKGROUP_SIZE: u32 = 128;
 const SOURCE_CACHE_PLANE_BYTES: u64 = 16;
@@ -229,10 +233,10 @@ fn scan_byte_plan(count: u32, uniform_stride: u32) -> Result<ScanBytePlan, Resid
     })
 }
 
-/// Complete optional direct-contributor graph. Construction is side-effect
-/// free with respect to Presenter ownership; callers may validate it inside a
-/// wgpu error scope and publish it only after all qualification gates pass.
-pub(crate) struct PreprojectedGpuOrder {
+/// Target-independent owner of the Exact `S -> V/C -> stable full32` compute
+/// graph. It owns no render pipeline, texture format, target or presentation
+/// state, so the same graph can be staged with the device-owned scene.
+pub(crate) struct PreprojectedGpuCompute {
     capacity: u32,
     project_dispatch: Dispatch2d,
     project_pipeline: wgpu::ComputePipeline,
@@ -247,16 +251,14 @@ pub(crate) struct PreprojectedGpuOrder {
     source_center_alpha_key: wgpu::Buffer,
     source_axes: wgpu::Buffer,
     radix: ExternalPrefixRadix,
-    draw_pipeline: wgpu::RenderPipeline,
-    draw_bind_group: wgpu::BindGroup,
     _byte_plan: PreprojectGpuBytePlan,
 }
 
-impl PreprojectedGpuOrder {
+impl PreprojectedGpuCompute {
     pub(crate) fn new(
         device: &wgpu::Device,
-        target_format: wgpu::TextureFormat,
         resident: &ResidentGpuResources,
+        indirect_vertex_count: u32,
     ) -> Result<Self, ResidentGpuError> {
         let capacity =
             u32::try_from(resident.capacity).map_err(|_| ResidentGpuError::AddressSpaceExceeded)?;
@@ -353,7 +355,7 @@ impl PreprojectedGpuOrder {
             &contributor_offsets,
             &radix,
             &resident.draw_params_buffer,
-            QUAD_VERTEX_COUNT,
+            indirect_vertex_count,
         );
         let offset_count = capacity
             .div_ceil(PREPROJECT_WORKGROUP_SIZE)
@@ -364,38 +366,6 @@ impl PreprojectedGpuOrder {
         let contributor_scan =
             GpuPrefixScan::new(device, &contributor_offsets, offset_count, dispatch_limit)?;
         let count_offset = u64::from(offset_count - 1) * WORD_BYTES;
-
-        let draw_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: wgpu_label("gsplat-preproject-draw-bgl"),
-            entries: &[
-                storage_layout(0, true, wgpu::ShaderStages::VERTEX),
-                storage_layout(1, true, wgpu::ShaderStages::VERTEX),
-                storage_layout(2, true, wgpu::ShaderStages::VERTEX),
-                storage_layout(3, true, wgpu::ShaderStages::VERTEX),
-            ],
-        });
-        let draw_pipeline = create_splat_pipeline(
-            device,
-            &draw_layout,
-            target_format,
-            SplatPipeline {
-                shader_label: "gsplat-preproject-draw-shader",
-                shader_source: include_str!("../shaders/preproject_draw.wgsl"),
-                layout_label: "gsplat-preproject-draw-pipeline-layout",
-                pipeline_label: "gsplat-preproject-draw-pipeline",
-                topology: wgpu::PrimitiveTopology::TriangleStrip,
-            },
-        );
-        let draw_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: wgpu_label("gsplat-preproject-draw-bg"),
-            layout: &draw_layout,
-            entries: &[
-                entry(0, radix.final_source_ids()),
-                entry(1, &source_center_alpha_key),
-                entry(2, &source_axes),
-                entry(3, &resident.resolved_color_buffer),
-            ],
-        });
 
         Ok(Self {
             capacity,
@@ -412,8 +382,6 @@ impl PreprojectedGpuOrder {
             source_center_alpha_key,
             source_axes,
             radix,
-            draw_pipeline,
-            draw_bind_group,
             _byte_plan: byte_plan,
         })
     }
@@ -475,16 +443,12 @@ impl PreprojectedGpuOrder {
         self.contributor_scan.encode(encoder);
     }
 
-    pub(crate) fn draw_pipeline(&self) -> &wgpu::RenderPipeline {
-        &self.draw_pipeline
-    }
-
-    pub(crate) fn draw_bind_group(&self) -> &wgpu::BindGroup {
-        &self.draw_bind_group
-    }
-
     pub(crate) fn draw_args(&self) -> &wgpu::Buffer {
         self.key_id_compactor.draw_args()
+    }
+
+    pub(crate) const fn capacity(&self) -> u32 {
+        self.capacity
     }
 
     pub(crate) fn final_keys(&self) -> &wgpu::Buffer {
@@ -517,6 +481,97 @@ impl PreprojectedGpuOrder {
     /// element of the group-count exclusive scan.
     pub(crate) fn contributor_count_buffer_and_offset(&self) -> (&wgpu::Buffer, u64) {
         (&self.contributor_offsets, self.contributor_count_offset)
+    }
+}
+
+/// Legacy Surface adapter that combines the target-independent compute owner
+/// with the existing target-format raster state. Product behavior remains
+/// unchanged while the shadow Exact runtime can own compute alone.
+pub(crate) struct PreprojectedGpuOrder {
+    compute: PreprojectedGpuCompute,
+    raster: PreprojectedGpuRaster,
+}
+
+impl PreprojectedGpuOrder {
+    pub(crate) fn new(
+        device: &wgpu::Device,
+        target_format: wgpu::TextureFormat,
+        resident: &ResidentGpuResources,
+    ) -> Result<Self, ResidentGpuError> {
+        let compute = PreprojectedGpuCompute::new(device, resident, QUAD_VERTEX_COUNT)?;
+        let raster = PreprojectedGpuRaster::new(device, target_format, resident, &compute);
+        Ok(Self { compute, raster })
+    }
+
+    pub(crate) fn encode(
+        &self,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        resident: &ResidentGpuResources,
+        camera: &Camera,
+        width: u32,
+        height: u32,
+    ) {
+        self.compute
+            .encode(queue, encoder, resident, camera, width, height);
+    }
+
+    pub(crate) fn encode_projection_and_count(
+        &self,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        resident: &ResidentGpuResources,
+        camera: &Camera,
+        width: u32,
+        height: u32,
+    ) {
+        self.compute
+            .encode_projection_and_count(queue, encoder, resident, camera, width, height);
+    }
+
+    pub(crate) fn draw_pipeline(&self) -> &wgpu::RenderPipeline {
+        self.raster.draw_pipeline()
+    }
+
+    pub(crate) fn draw_bind_group(&self) -> &wgpu::BindGroup {
+        self.raster.draw_bind_group()
+    }
+
+    pub(crate) fn draw_args(&self) -> &wgpu::Buffer {
+        self.compute.draw_args()
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn capacity(&self) -> u32 {
+        self.compute.capacity()
+    }
+
+    pub(crate) fn final_keys(&self) -> &wgpu::Buffer {
+        self.compute.final_keys()
+    }
+
+    pub(crate) fn final_source_ids(&self) -> &wgpu::Buffer {
+        self.compute.final_source_ids()
+    }
+
+    pub(crate) fn source_center_alpha_key(&self) -> &wgpu::Buffer {
+        self.compute.source_center_alpha_key()
+    }
+
+    pub(crate) fn source_axes(&self) -> &wgpu::Buffer {
+        self.compute.source_axes()
+    }
+
+    pub(crate) fn order_control(&self) -> &wgpu::Buffer {
+        self.compute.order_control()
+    }
+
+    pub(crate) fn candidate_count_buffer_and_offset(&self) -> (&wgpu::Buffer, u64) {
+        self.compute.candidate_count_buffer_and_offset()
+    }
+
+    pub(crate) fn contributor_count_buffer_and_offset(&self) -> (&wgpu::Buffer, u64) {
+        self.compute.contributor_count_buffer_and_offset()
     }
 }
 
@@ -894,7 +949,7 @@ mod tests {
         producer: &PreprojectedGpuOrder,
         camera: &Camera,
     ) -> ProducerReadback {
-        let capacity = producer.capacity as usize;
+        let capacity = producer.capacity() as usize;
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("preproject-oracle-encoder"),
         });
@@ -1001,7 +1056,7 @@ mod tests {
         PreprojectDrawIndirectArgs,
         Vec<[f32; 4]>,
     ) {
-        let capacity = producer.capacity as usize;
+        let capacity = producer.capacity() as usize;
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("preproject-projection-only-oracle-encoder"),
         });
@@ -1112,7 +1167,7 @@ mod tests {
         let Some((device, queue)) = test_device() else {
             return;
         };
-        let capacity = 12_usize;
+        let capacity = 14_usize;
         let scene = base_scene(capacity);
         let resident = resident_resources(&device, &scene);
         let producer =
@@ -1136,6 +1191,8 @@ mod tests {
             [0.0, 0.0, 3.0, ALPHA_THRESHOLD],
             [0.0, 0.0, 3.0, above_alpha],
             [0.0, 0.0, f32::NAN, 0.8],
+            [0.0, 0.0, f32::INFINITY, 0.8],
+            [0.0, 0.0, f32::NEG_INFINITY, 0.8],
         ]
         .map(|position_alpha| ResidentPositionAlpha { position_alpha });
         let mut covariance0 = vec![
@@ -1258,6 +1315,8 @@ mod tests {
         // producer rule; a NaN depth must not enter C even though isolated
         // post-sort projection comparisons are intentionally fail-open.
         assert!(!actual.ids.contains(&11));
+        assert!(!actual.ids.contains(&12));
+        assert!(!actual.ids.contains(&13));
     }
 
     #[test]
@@ -1337,6 +1396,22 @@ mod tests {
                 .collect::<Vec<_>>(),
             first_pairs,
         );
+
+        let all_equal = full
+            .iter()
+            .map(|source| ResidentPositionAlpha {
+                position_alpha: [
+                    source.position_alpha[0],
+                    source.position_alpha[1],
+                    2.0,
+                    source.position_alpha[3],
+                ],
+            })
+            .collect::<Vec<_>>();
+        upload_source_planes(&queue, &resident, &all_equal, &covariance0, &covariance1);
+        let equal = run_and_read(&device, &queue, &resident, &producer, &camera);
+        assert_eq!(equal.control.count, capacity as u32);
+        assert_eq!(equal.ids, (0..capacity as u32).collect::<Vec<_>>());
     }
 
     #[test]

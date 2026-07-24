@@ -1,10 +1,11 @@
 //! Transactional device preparation for the shadow Exact runtime.
 //!
-//! This module prepares only device-owned Resident, resolved-color, order and
-//! rank-projection resources. It does not admit a plan, select policy, create a
-//! target/raster, acquire an adapter, create a device, submit, poll, map, read
-//! back or present. The later concrete GPU plan owns orchestration and the
-//! renderer remains the sole semantic-generation and result owner.
+//! This module prepares only device-owned Resident, resolved-color, PostSort
+//! order/rank-projection and dormant Preproject compute resources. It does not
+//! admit Preproject as a plan, select policy, create a target/raster, acquire
+//! an adapter, create a device, submit, poll, map, read back or present. The
+//! later concrete GPU plans own orchestration and the renderer remains the
+//! sole semantic-generation and result owner.
 
 use std::sync::Arc;
 
@@ -14,6 +15,7 @@ use thiserror::Error;
 
 use crate::gpu::{ProjectedRankProjector, ProjectedRankSourceBindings};
 use crate::plans::{FrameIdentity, GpuExecutionContext, GpuOwnerToken};
+use crate::preproject_gpu::PreprojectedGpuCompute;
 use crate::raster::QUAD_VERTEX_COUNT;
 use crate::resident_gpu::{
     ResidentGpuResources, create_resident_color_bind_group_layout, create_resident_color_pipeline,
@@ -44,6 +46,10 @@ pub(crate) enum GpuPreparationError {
     ExecutionOwnerAlreadyBound,
     #[error("GPU plan-set generation cannot move backward from {prepared} to {requested}")]
     PlanSetGenerationRegression { prepared: u64, requested: u64 },
+    #[error("GPU frame camera is invalid")]
+    InvalidCamera,
+    #[error("GPU frame viewport is invalid: {width}x{height}")]
+    InvalidViewport { width: u32, height: u32 },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -75,6 +81,7 @@ pub(crate) struct GpuPreparationReceipt {
     resident_count: u32,
     addressable_count: u32,
     sh_degree: u8,
+    preproject_compute: bool,
     scene_resource_generation: SceneResourceGeneration,
     plan_set_generation: u64,
 }
@@ -100,6 +107,10 @@ impl GpuPreparationReceipt {
         self.sh_degree
     }
 
+    pub(crate) const fn preproject_compute(self) -> bool {
+        self.preproject_compute
+    }
+
     pub(crate) const fn scene_generation(self) -> u64 {
         self.scene_resource_generation.scene
     }
@@ -118,10 +129,7 @@ impl GpuPreparationReceipt {
     }
 }
 
-/// The only complete device-owned scene/project candidate held by
-/// `SceneRuntime`. The sorter remains inside `ResidentGpuResources`; the
-/// projector's external binding borrows that sorter's final IDs and indirect
-/// arguments rather than allocating competing order/count owners.
+/// Collision-free owner of one existing renderer device/queue pair.
 pub(crate) struct GpuExecutionOwner {
     token: GpuOwnerToken,
     device: Arc<wgpu::Device>,
@@ -157,16 +165,24 @@ impl GpuExecutionOwner {
     }
 }
 
+/// The only complete device-owned scene/project candidate held by
+/// `SceneRuntime`. PostSort and dormant Preproject are constructed within the
+/// same fallible candidate. The PostSort projector borrows its sorter's final
+/// IDs/indirect arguments; Preproject owns its source-order compaction counts
+/// and stable-prefix sorter without any target-format raster state.
 pub(crate) struct GpuScenePreparation {
     owner: GpuOwnerToken,
     resident: ResidentGpuResources,
     color_pipeline: wgpu::ComputePipeline,
     projector: ProjectedRankProjector,
     gpu_project_bind_group: wgpu::BindGroup,
+    preproject: PreprojectedGpuCompute,
     receipt: GpuPreparationReceipt,
     max_workgroups_per_dimension: u32,
     #[cfg(test)]
     color_encode_count: u64,
+    #[cfg(test)]
+    preproject_encode_count: u64,
 }
 
 impl GpuScenePreparation {
@@ -225,18 +241,23 @@ impl GpuScenePreparation {
             order.sorter.indirect_args(),
         );
         resident.publish_gpu_order(order);
+        let preproject = PreprojectedGpuCompute::new(device, &resident, QUAD_VERTEX_COUNT)?;
 
-        let receipt = validate_complete_receipt(scene, &resident, &projector, generation)?;
+        let receipt =
+            validate_complete_receipt(scene, &resident, &projector, &preproject, generation)?;
         Ok(Self {
             owner: owner.token().clone(),
             resident,
             color_pipeline,
             projector,
             gpu_project_bind_group,
+            preproject,
             receipt,
             max_workgroups_per_dimension: device.limits().max_compute_workgroups_per_dimension,
             #[cfg(test)]
             color_encode_count: 0,
+            #[cfg(test)]
+            preproject_encode_count: 0,
         })
     }
 
@@ -287,7 +308,13 @@ impl GpuScenePreparation {
         if !self.receipt.accepts(frame) {
             return Err(GpuPreparationError::StaleRuntimeGeneration);
         }
-        validate_runtime_counts(self.receipt, &self.resident, &self.projector)?;
+        validate_frame_input(&camera, width, height)?;
+        validate_runtime_counts(
+            self.receipt,
+            &self.resident,
+            &self.projector,
+            &self.preproject,
+        )?;
 
         let mut params = make_surface_render_params(
             &camera,
@@ -349,6 +376,173 @@ impl GpuScenePreparation {
     #[cfg(test)]
     pub(crate) const fn color_encode_count(&self) -> u64 {
         self.color_encode_count
+    }
+
+    /// Encodes the complete current-frame Exact Preproject graph. Every call
+    /// resolves color and recomputes all source projections, V/C scans,
+    /// stable compaction and full32 order; encode success publishes no cache.
+    pub(crate) fn encode_preproject_frame<'scene>(
+        &'scene mut self,
+        context: GpuExecutionContext<'_>,
+        camera: Camera,
+        width: u32,
+        height: u32,
+        frame: FrameIdentity,
+    ) -> Result<GpuPreprojectHandles<'scene>, GpuPreparationError> {
+        let (owner, queue, encoder) = context.into_parts();
+        if !self.owner.same_owner(owner) {
+            return Err(GpuPreparationError::ExecutionOwnerMismatch);
+        }
+        if !self.receipt.accepts(frame) {
+            return Err(GpuPreparationError::StaleRuntimeGeneration);
+        }
+        validate_frame_input(&camera, width, height)?;
+        validate_runtime_counts(
+            self.receipt,
+            &self.resident,
+            &self.projector,
+            &self.preproject,
+        )?;
+
+        self.resident.encode_color_resolve_uncached(
+            queue,
+            &self.color_pipeline,
+            encoder,
+            &camera,
+            self.max_workgroups_per_dimension,
+        )?;
+        self.preproject
+            .encode(queue, encoder, &self.resident, &camera, width, height);
+        #[cfg(test)]
+        {
+            self.color_encode_count += 1;
+            self.preproject_encode_count += 1;
+        }
+
+        let (candidate_count, candidate_count_offset) =
+            self.preproject.candidate_count_buffer_and_offset();
+        let (contributor_count, contributor_count_offset) =
+            self.preproject.contributor_count_buffer_and_offset();
+        Ok(GpuPreprojectHandles {
+            receipt: GpuPreprojectFrameReceipt {
+                frame,
+                preparation: self.receipt,
+                camera,
+                viewport_width: width,
+                viewport_height: height,
+            },
+            ordered_source_ids: self.preproject.final_source_ids(),
+            indirect_args: self.preproject.draw_args(),
+            projected_center_alpha_key: self.preproject.source_center_alpha_key(),
+            projected_axes: self.preproject.source_axes(),
+            resolved_color: &self.resident.resolved_color_buffer,
+            candidate_count: GpuCountSource {
+                buffer: candidate_count,
+                offset: candidate_count_offset,
+            },
+            contributor_count: GpuCountSource {
+                buffer: contributor_count,
+                offset: contributor_count_offset,
+            },
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn preproject_encode_count(&self) -> u64 {
+        self.preproject_encode_count
+    }
+}
+
+/// GPU-owned count source. The host receives the buffer identity and byte
+/// offset only; no numeric V/C/D value is fabricated or read back here.
+#[derive(Clone, Copy)]
+pub(crate) struct GpuCountSource<'a> {
+    buffer: &'a wgpu::Buffer,
+    offset: u64,
+}
+
+impl GpuCountSource<'_> {
+    pub(crate) const fn buffer(&self) -> &wgpu::Buffer {
+        self.buffer
+    }
+
+    pub(crate) const fn offset(&self) -> u64 {
+        self.offset
+    }
+}
+
+/// Immutable currentness proof bound to one complete Preproject encode.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct GpuPreprojectFrameReceipt {
+    frame: FrameIdentity,
+    preparation: GpuPreparationReceipt,
+    camera: Camera,
+    viewport_width: u32,
+    viewport_height: u32,
+}
+
+impl GpuPreprojectFrameReceipt {
+    pub(crate) const fn frame_identity(self) -> FrameIdentity {
+        self.frame
+    }
+
+    pub(crate) const fn preparation(self) -> GpuPreparationReceipt {
+        self.preparation
+    }
+
+    pub(crate) const fn camera(self) -> Camera {
+        self.camera
+    }
+
+    pub(crate) const fn viewport(self) -> (u32, u32) {
+        (self.viewport_width, self.viewport_height)
+    }
+}
+
+/// Accessor-only handoff for the later plans-only E9 writer. Every buffer is
+/// borrowed from the atomically published SceneRuntime GPU graph.
+pub(crate) struct GpuPreprojectHandles<'a> {
+    receipt: GpuPreprojectFrameReceipt,
+    ordered_source_ids: &'a wgpu::Buffer,
+    indirect_args: &'a wgpu::Buffer,
+    projected_center_alpha_key: &'a wgpu::Buffer,
+    projected_axes: &'a wgpu::Buffer,
+    resolved_color: &'a wgpu::Buffer,
+    candidate_count: GpuCountSource<'a>,
+    contributor_count: GpuCountSource<'a>,
+}
+
+impl GpuPreprojectHandles<'_> {
+    pub(crate) const fn receipt(&self) -> GpuPreprojectFrameReceipt {
+        self.receipt
+    }
+
+    pub(crate) const fn ordered_source_ids(&self) -> &wgpu::Buffer {
+        self.ordered_source_ids
+    }
+
+    pub(crate) const fn indirect_args(&self) -> &wgpu::Buffer {
+        self.indirect_args
+    }
+
+    pub(crate) const fn projected_center_alpha_key(&self) -> &wgpu::Buffer {
+        self.projected_center_alpha_key
+    }
+
+    pub(crate) const fn projected_axes(&self) -> &wgpu::Buffer {
+        self.projected_axes
+    }
+
+    pub(crate) const fn resolved_color(&self) -> &wgpu::Buffer {
+        self.resolved_color
+    }
+
+    pub(crate) const fn candidate_count(&self) -> GpuCountSource<'_> {
+        self.candidate_count
+    }
+
+    pub(crate) const fn contributor_count(&self) -> GpuCountSource<'_> {
+        self.contributor_count
     }
 }
 
@@ -424,6 +618,7 @@ fn validate_complete_receipt(
     scene: &ResidentSceneCpu,
     resident: &ResidentGpuResources,
     projector: &ProjectedRankProjector,
+    preproject: &PreprojectedGpuCompute,
     generation: FrameIdentity,
 ) -> Result<GpuPreparationReceipt, GpuPreparationError> {
     let source_count = u32::try_from(scene.len())
@@ -436,10 +631,11 @@ fn validate_complete_receipt(
         resident_count: capacity,
         addressable_count: projector.capacity(),
         sh_degree: scene.sh_degree,
+        preproject_compute: true,
         scene_resource_generation: SceneResourceGeneration::from_frame(generation),
         plan_set_generation: generation.plan_set_generation(),
     };
-    validate_runtime_counts(receipt, resident, projector)?;
+    validate_runtime_counts(receipt, resident, projector, preproject)?;
     Ok(receipt)
 }
 
@@ -447,12 +643,14 @@ fn validate_runtime_counts(
     receipt: GpuPreparationReceipt,
     resident: &ResidentGpuResources,
     projector: &ProjectedRankProjector,
+    preproject: &PreprojectedGpuCompute,
 ) -> Result<(), GpuPreparationError> {
     if receipt.source_count != receipt.capacity
         || receipt.source_count != receipt.resident_count
         || receipt.source_count != receipt.addressable_count
         || usize::try_from(receipt.source_count).ok() != Some(resident.capacity)
         || receipt.addressable_count != projector.capacity()
+        || receipt.source_count != preproject.capacity()
     {
         return Err(GpuPreparationError::ExactContractMismatch {
             component: "source/capacity/resident/addressable count",
@@ -462,6 +660,25 @@ fn validate_runtime_counts(
         return Err(GpuPreparationError::ExactContractMismatch {
             component: "SH degree",
         });
+    }
+    if !receipt.preproject_compute {
+        return Err(GpuPreparationError::ExactContractMismatch {
+            component: "Preproject compute graph",
+        });
+    }
+    Ok(())
+}
+
+fn validate_frame_input(
+    camera: &Camera,
+    width: u32,
+    height: u32,
+) -> Result<(), GpuPreparationError> {
+    camera
+        .validate()
+        .map_err(|_| GpuPreparationError::InvalidCamera)?;
+    if width == 0 || height == 0 {
+        return Err(GpuPreparationError::InvalidViewport { width, height });
     }
     Ok(())
 }
@@ -714,6 +931,7 @@ mod tests {
             assert_eq!(slot.fallback(), PlanId::CpuPostSort);
             assert!(slot.gpu_preparation().is_none());
             assert!(slot.gpu_capability().is_none());
+            assert_eq!(slot.scene().gpu_preproject_encode_count(), None);
 
             let viewport = Viewport::new(64, 64).expect("viewport");
             let work = execute_frame(&mut slot, PlanId::CpuPostSort, &Camera::default(), viewport)
@@ -740,6 +958,7 @@ mod tests {
             let capability = slot.gpu_capability().expect("PlanSet capability");
 
             assert_eq!(receipt.plan_set_generation(), 2);
+            assert!(receipt.preproject_compute());
             assert_eq!(capability.plan_set_generation(), 2);
             assert_eq!(slot.frame_state().identity().plan_set_generation(), 2);
             assert_eq!(slot.test_gpu_post_capability(), Some(capability));
@@ -833,6 +1052,18 @@ mod tests {
                 ),
                 Err(GpuPreparationError::ExecutionOwnerMismatch)
             ));
+            assert!(matches!(
+                runtime.encode_gpu_preproject_frame(
+                    owner_b
+                        .context(&queue_b, &mut foreign_encoder)
+                        .expect("foreign owner context"),
+                    Camera::default(),
+                    64,
+                    64,
+                    frame_with_plan_set(1, 1, 1, 2),
+                ),
+                Err(GpuPreparationError::ExecutionOwnerMismatch)
+            ));
 
             let mut encoder = device_a.create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("rebound-plan-set-test-encoder"),
@@ -865,6 +1096,202 @@ mod tests {
                 )
                 .expect("rebound candidate is immediately usable");
             assert_eq!(handles.receipt(), rebound);
+        });
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn preproject_seam_is_current_owner_bound_and_discard_safe() {
+        pollster::block_on(async {
+            let Some((_instance, _adapter, info, device, queue)) = request_device(8).await else {
+                return;
+            };
+            eprintln!(
+                "EXACT_GPU_PREPROJECT_ADAPTER adapter={} backend={:?}",
+                info.name, info.backend
+            );
+
+            for (count, sh_degree) in [(0, 0), (1, 1), (127, 2), (128, 3), (129, 0), (1_025, 3)] {
+                let owner = GpuExecutionOwner::new(&device, &queue);
+                let resident =
+                    ResidentSceneCpu::encode_owned(source(count, sh_degree)).expect("scene");
+                let mut runtime =
+                    crate::scene::SceneRuntime::prepare(resident).expect("Exact CPU runtime");
+                let prepared = stage_and_commit_scene_gpu(&mut runtime, &owner, frame(1, 0, 0))
+                    .await
+                    .expect("PostSort plus dormant Preproject candidate");
+                assert!(prepared.preproject_compute());
+                assert_eq!(prepared.source_count(), count as u32);
+                assert_eq!(prepared.sh_degree(), sh_degree);
+
+                let mut invalid_camera = Camera::default();
+                invalid_camera.intrinsics.near_plane = 2.0;
+                invalid_camera.intrinsics.far_plane = 1.0;
+                let mut rejected_encoder =
+                    device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                        label: Some("rejected-preproject-frame-test-encoder"),
+                    });
+                assert!(matches!(
+                    runtime.encode_gpu_preproject_frame(
+                        owner
+                            .context(&queue, &mut rejected_encoder)
+                            .expect("bound owner context"),
+                        invalid_camera,
+                        64,
+                        64,
+                        frame(1, 1, 1),
+                    ),
+                    Err(GpuPreparationError::InvalidCamera)
+                ));
+                assert!(matches!(
+                    runtime.encode_gpu_preproject_frame(
+                        owner
+                            .context(&queue, &mut rejected_encoder)
+                            .expect("bound owner context"),
+                        Camera::default(),
+                        0,
+                        64,
+                        frame(1, 1, 1),
+                    ),
+                    Err(GpuPreparationError::InvalidViewport {
+                        width: 0,
+                        height: 64
+                    })
+                ));
+                assert!(matches!(
+                    runtime.encode_gpu_preproject_frame(
+                        owner
+                            .context(&queue, &mut rejected_encoder)
+                            .expect("bound owner context"),
+                        Camera::default(),
+                        64,
+                        64,
+                        frame_with_plan_set(2, 1, 1, 1),
+                    ),
+                    Err(GpuPreparationError::StaleRuntimeGeneration)
+                ));
+                assert_eq!(runtime.gpu_preproject_encode_count(), Some(0));
+                drop(rejected_encoder);
+
+                let validation = device.push_error_scope(wgpu::ErrorFilter::Validation);
+                let current = frame(1, 7, 9);
+                let camera = Camera::default();
+                let mut discarded_encoder =
+                    device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                        label: Some("discarded-preproject-frame-test-encoder"),
+                    });
+                {
+                    let handles = runtime
+                        .encode_gpu_preproject_frame(
+                            owner
+                                .context(&queue, &mut discarded_encoder)
+                                .expect("bound owner context"),
+                            camera,
+                            127,
+                            65,
+                            current,
+                        )
+                        .expect("complete Preproject encode");
+                    let receipt = handles.receipt();
+                    assert_eq!(receipt.frame_identity(), current);
+                    assert_eq!(receipt.preparation(), prepared);
+                    assert_eq!(receipt.camera(), camera);
+                    assert_eq!(receipt.viewport(), (127, 65));
+                    assert!(receipt.preparation().preproject_compute());
+                    let _ = (
+                        handles.ordered_source_ids(),
+                        handles.indirect_args(),
+                        handles.projected_center_alpha_key(),
+                        handles.projected_axes(),
+                        handles.resolved_color(),
+                        handles.candidate_count().buffer(),
+                        handles.contributor_count().buffer(),
+                    );
+                    assert_eq!(handles.candidate_count().offset() % 4, 0);
+                    assert_eq!(handles.contributor_count().offset() % 4, 0);
+                }
+                assert_eq!(runtime.gpu_preproject_encode_count(), Some(1));
+                drop(discarded_encoder);
+
+                let mut retry_encoder =
+                    device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                        label: Some("retried-preproject-frame-test-encoder"),
+                    });
+                runtime
+                    .encode_gpu_preproject_frame(
+                        owner
+                            .context(&queue, &mut retry_encoder)
+                            .expect("bound owner context"),
+                        camera,
+                        127,
+                        65,
+                        current,
+                    )
+                    .expect("discarded encoder requires a complete retry");
+                assert_eq!(runtime.gpu_preproject_encode_count(), Some(2));
+                let _command_buffer = retry_encoder.finish();
+                assert!(
+                    validation.pop().await.is_none(),
+                    "Preproject adapter encode must be validation-clean"
+                );
+            }
+        });
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn preproject_count_sh_and_graph_receipt_mismatches_fail_closed() {
+        pollster::block_on(async {
+            let Some((_instance, _adapter, _info, device, queue)) = request_device(8).await else {
+                return;
+            };
+            let owner = GpuExecutionOwner::new(&device, &queue);
+            let resident = ResidentSceneCpu::encode_owned(source(129, 3)).expect("scene");
+            let candidate = GpuScenePreparation::prepare(&owner, &resident, frame(1, 0, 0))
+                .await
+                .expect("complete candidate");
+
+            let mut count_mismatch = candidate.receipt;
+            count_mismatch.resident_count -= 1;
+            assert!(matches!(
+                validate_runtime_counts(
+                    count_mismatch,
+                    &candidate.resident,
+                    &candidate.projector,
+                    &candidate.preproject,
+                ),
+                Err(GpuPreparationError::ExactContractMismatch {
+                    component: "source/capacity/resident/addressable count"
+                })
+            ));
+
+            let mut sh_mismatch = candidate.receipt;
+            sh_mismatch.sh_degree = 2;
+            assert!(matches!(
+                validate_runtime_counts(
+                    sh_mismatch,
+                    &candidate.resident,
+                    &candidate.projector,
+                    &candidate.preproject,
+                ),
+                Err(GpuPreparationError::ExactContractMismatch {
+                    component: "SH degree"
+                })
+            ));
+
+            let mut graph_mismatch = candidate.receipt;
+            graph_mismatch.preproject_compute = false;
+            assert!(matches!(
+                validate_runtime_counts(
+                    graph_mismatch,
+                    &candidate.resident,
+                    &candidate.projector,
+                    &candidate.preproject,
+                ),
+                Err(GpuPreparationError::ExactContractMismatch {
+                    component: "Preproject compute graph"
+                })
+            ));
         });
     }
 
