@@ -119,7 +119,10 @@ use gsplat_sort::SortError;
 #[cfg(not(target_arch = "wasm32"))]
 use rayon::prelude::*;
 #[cfg(not(target_arch = "wasm32"))]
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 use thiserror::Error;
 use wgpu::util::DeviceExt;
 
@@ -127,10 +130,10 @@ use wgpu::util::DeviceExt;
 const RENDER_TARGET_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 
 #[cfg(not(target_arch = "wasm32"))]
-type TimerInstant = Instant;
+pub(crate) type TimerInstant = Instant;
 
 #[cfg(target_arch = "wasm32")]
-type TimerInstant = f64;
+pub(crate) type TimerInstant = f64;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn timer_now() -> TimerInstant {
@@ -250,6 +253,70 @@ impl RendererError {
             Self::Sort(_) => ErrorCode::Internal,
             Self::SurfacePresenter(err) => err.code(),
         }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn map_prepared_gpu_runtime_error(error: renderer::PreparedGpuRuntimeError) -> RendererError {
+    use renderer::{GpuRuntimePreparationError, PreparedGpuRuntimeError, PreparedRuntimeError};
+
+    match error {
+        PreparedGpuRuntimeError::Runtime(PreparedRuntimeError::Scene(error)) => {
+            RendererError::ResidentScene(error)
+        }
+        PreparedGpuRuntimeError::Runtime(
+            PreparedRuntimeError::SourceCountOverflow | PreparedRuntimeError::ContractMismatch,
+        ) => RendererError::InvalidScene,
+        PreparedGpuRuntimeError::Runtime(
+            PreparedRuntimeError::PlanSet(_) | PreparedRuntimeError::Generation(_),
+        )
+        | PreparedGpuRuntimeError::Gpu(GpuRuntimePreparationError::PlanSet(_))
+        | PreparedGpuRuntimeError::Gpu(GpuRuntimePreparationError::Generation(_)) => {
+            RendererError::GpuDeviceCreation
+        }
+        PreparedGpuRuntimeError::Gpu(GpuRuntimePreparationError::Resources(error)) => {
+            map_gpu_preparation_error(error)
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn map_gpu_preparation_error(error: renderer::gpu_prepare::GpuPreparationError) -> RendererError {
+    use renderer::gpu_prepare::GpuPreparationError;
+
+    match error {
+        GpuPreparationError::Resource(error) => RendererError::ResidentGpu(error),
+        GpuPreparationError::InvalidCamera => RendererError::InvalidCamera,
+        GpuPreparationError::InvalidViewport { .. } => RendererError::InvalidConfig,
+        GpuPreparationError::Unavailable
+        | GpuPreparationError::Raster(_)
+        | GpuPreparationError::OutOfMemory(_)
+        | GpuPreparationError::Validation(_)
+        | GpuPreparationError::Internal(_)
+        | GpuPreparationError::ExactContractMismatch { .. }
+        | GpuPreparationError::StaleRuntimeGeneration
+        | GpuPreparationError::ExecutionOwnerMismatch
+        | GpuPreparationError::ExecutionOwnerAlreadyBound
+        | GpuPreparationError::PlanSetGenerationRegression { .. }
+        | GpuPreparationError::CpuOrderCapacityExceeded { .. }
+        | GpuPreparationError::CpuOrderSourceIdOutOfRange { .. } => {
+            RendererError::GpuDeviceCreation
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn map_frame_execution_error(error: renderer::FrameExecutionError) -> RendererError {
+    match error {
+        renderer::FrameExecutionError::GpuPreparation(error) => map_gpu_preparation_error(error),
+        renderer::FrameExecutionError::Generation(_)
+        | renderer::FrameExecutionError::PlanSet(_)
+        | renderer::FrameExecutionError::Raster(_)
+        | renderer::FrameExecutionError::ProjectedWorkMismatch { .. }
+        | renderer::FrameExecutionError::EncodeAttemptExhausted
+        | renderer::FrameExecutionError::PendingFrameMismatch { .. }
+        | renderer::FrameExecutionError::Controller(_)
+        | renderer::FrameExecutionError::Sampler(_) => RendererError::GpuDeviceCreation,
     }
 }
 
@@ -416,6 +483,10 @@ pub struct Renderer {
     scene: Option<SceneBuffers>,
     /// Exact-count compact resident representation used by PackedAtlas.
     resident_scene_cpu: Option<ResidentSceneCpu>,
+    /// Sole complete Exact runtime for native offscreen Packed rendering.
+    /// Surface-only renderers keep using `resident_scene_cpu` until M2.
+    #[cfg(not(target_arch = "wasm32"))]
+    exact_offscreen_runtime: Option<renderer::PreparedRuntimeSlot>,
     /// Spatial page metadata for [`GeometryPath::PagedActiveAtlas`].
     spatial_pages: Option<SpatialPageSet>,
     world_covariances: Option<Vec<[[f32; 3]; 3]>>,
@@ -514,6 +585,8 @@ impl Renderer {
             gpu_rasterizer: None,
             scene: None,
             resident_scene_cpu: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            exact_offscreen_runtime: None,
             spatial_pages: None,
             world_covariances: None,
             world_covariance_terms: None,
@@ -533,12 +606,12 @@ impl Renderer {
 
     #[cfg(not(target_arch = "wasm32"))]
     pub fn device(&self) -> Option<&wgpu::Device> {
-        self.gpu_rasterizer.as_ref().map(|gpu| &gpu.device)
+        self.gpu_rasterizer.as_ref().map(|gpu| gpu.device.as_ref())
     }
 
     #[cfg(not(target_arch = "wasm32"))]
     pub fn queue(&self) -> Option<&wgpu::Queue> {
-        self.gpu_rasterizer.as_ref().map(|gpu| &gpu.queue)
+        self.gpu_rasterizer.as_ref().map(|gpu| gpu.queue.as_ref())
     }
 
     pub fn set_geometry_path(&mut self, path: GeometryPath) {
@@ -785,6 +858,10 @@ impl Renderer {
 
         self.scene = Some(scene);
         self.resident_scene_cpu = None;
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.exact_offscreen_runtime = None;
+        }
         self.rebuild_path_specific_cpu_data();
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(rasterizer) = self.gpu_rasterizer.as_mut() {
@@ -802,6 +879,30 @@ impl Renderer {
         resident.validate_complete()?;
         if self.geometry_path != GeometryPath::PackedAtlas {
             return Err(RendererError::InvalidScene);
+        }
+
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(rasterizer) = self.gpu_rasterizer.as_ref() {
+            let candidate = pollster::block_on(
+                renderer::PreparedRuntimeSlot::prepare_complete_gpu_candidate(
+                    resident,
+                    self.exact_offscreen_runtime.as_ref(),
+                    &rasterizer.device,
+                    &rasterizer.queue,
+                    RENDER_TARGET_FORMAT,
+                ),
+            )
+            .map_err(map_prepared_gpu_runtime_error)?;
+
+            self.scene = None;
+            self.resident_scene_cpu = None;
+            self.exact_offscreen_runtime = Some(candidate);
+            self.rebuild_path_specific_cpu_data();
+            self.gpu_rasterizer
+                .as_mut()
+                .expect("offscreen rasterizer was borrowed above")
+                .clear_scene_resources();
+            return Ok(());
         }
 
         self.scene = None;
@@ -883,30 +984,37 @@ impl Renderer {
 
     /// Returns the compact source retained by the production Packed path.
     pub fn resident_scene(&self) -> Option<&ResidentSceneCpu> {
-        self.resident_scene_cpu.as_ref()
+        self.resident_scene_cpu.as_ref().or_else(|| {
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                self.exact_offscreen_runtime
+                    .as_ref()
+                    .map(|slot| slot.scene().resident())
+            }
+            #[cfg(target_arch = "wasm32")]
+            {
+                None
+            }
+        })
     }
 
     /// True for either a wide Direct/Paged source or a compact Packed source.
     pub fn has_scene(&self) -> bool {
-        self.scene.is_some() || self.resident_scene_cpu.is_some()
+        self.scene.is_some() || self.resident_scene().is_some()
     }
 
     pub fn scene_len(&self) -> Option<usize> {
         self.scene
             .as_ref()
             .map(SceneBuffers::len)
-            .or_else(|| self.resident_scene_cpu.as_ref().map(ResidentSceneCpu::len))
+            .or_else(|| self.resident_scene().map(ResidentSceneCpu::len))
     }
 
     pub fn scene_sh_degree(&self) -> Option<u8> {
         self.scene
             .as_ref()
             .map(|scene| scene.sh_degree)
-            .or_else(|| {
-                self.resident_scene_cpu
-                    .as_ref()
-                    .map(|scene| scene.sh_degree)
-            })
+            .or_else(|| self.resident_scene().map(|scene| scene.sh_degree))
     }
 
     /// Exact source-order world positions shared by CPU ordering, camera
@@ -915,11 +1023,7 @@ impl Renderer {
         self.scene
             .as_ref()
             .map(|scene| scene.positions.as_slice())
-            .or_else(|| {
-                self.resident_scene_cpu
-                    .as_ref()
-                    .map(|scene| scene.positions.as_ref())
-            })
+            .or_else(|| self.resident_scene().map(|scene| scene.positions.as_ref()))
     }
 
     pub fn world_covariances(&self) -> Option<&[[[f32; 3]; 3]]> {
@@ -987,16 +1091,23 @@ impl Renderer {
                 }
             }
             GeometryPath::SortedIndexDirect | GeometryPath::PackedAtlas => {
-                let positions = self
-                    .scene
-                    .as_ref()
-                    .map(|scene| scene.positions.as_slice())
-                    .or_else(|| {
-                        self.resident_scene_cpu
+                let positions = if let Some(scene) = self.scene.as_ref() {
+                    scene.positions.as_slice()
+                } else if let Some(scene) = self.resident_scene_cpu.as_ref() {
+                    scene.positions.as_ref()
+                } else {
+                    #[cfg(not(target_arch = "wasm32"))]
+                    {
+                        self.exact_offscreen_runtime
                             .as_ref()
-                            .map(|scene| scene.positions.as_ref())
-                    })
-                    .ok_or(RendererError::SceneNotLoaded)?;
+                            .map(|slot| slot.scene().positions())
+                            .ok_or(RendererError::SceneNotLoaded)?
+                    }
+                    #[cfg(target_arch = "wasm32")]
+                    {
+                        return Err(RendererError::SceneNotLoaded);
+                    }
+                };
                 self.cpu_order_engine.order_positions(
                     CpuPositionView::new(positions),
                     camera,
@@ -1189,11 +1300,15 @@ impl Renderer {
 
     #[cfg(not(target_arch = "wasm32"))]
     pub fn render_frame(&mut self, camera: &Camera) -> Result<FrameStats, RendererError> {
+        let frame_start = timer_now();
         if self.gpu_rasterizer.is_none() {
             return Err(RendererError::GpuRasterizerUnavailable);
         }
 
-        let frame_start = timer_now();
+        if self.geometry_path == GeometryPath::PackedAtlas && self.exact_offscreen_runtime.is_some()
+        {
+            return self.render_packed_exact_offscreen(camera, frame_start);
+        }
 
         let (preprocess_ms, sort_ms) = self.preprocess_and_sort_timed(camera)?;
 
@@ -1206,6 +1321,60 @@ impl Renderer {
         let raster_ms = timer_elapsed_ms(raster_start);
 
         Ok(self.record_stats(frame_start, preprocess_ms, sort_ms, raster_ms, drawn_count))
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn render_packed_exact_offscreen(
+        &mut self,
+        camera: &Camera,
+        frame_start: TimerInstant,
+    ) -> Result<FrameStats, RendererError> {
+        camera
+            .validate()
+            .map_err(|_| RendererError::InvalidCamera)?;
+        let viewport = renderer::frame::Viewport::new(self.config.width, self.config.height)
+            .map_err(|_| RendererError::InvalidConfig)?;
+        let rasterizer = self
+            .gpu_rasterizer
+            .as_ref()
+            .ok_or(RendererError::GpuRasterizerUnavailable)?;
+        let slot = self
+            .exact_offscreen_runtime
+            .as_mut()
+            .ok_or(RendererError::SceneNotLoaded)?;
+        let request = renderer::GpuFrameEncodeRequest::new(
+            plans::PlanId::CpuPostSort,
+            camera,
+            viewport,
+            rasterizer.offscreen_target.view(),
+            RENDER_TARGET_FORMAT,
+            wgpu::Color::TRANSPARENT,
+        )
+        .with_forced_cpu_order_refresh()
+        .with_host_frame_started(frame_start);
+        let pending =
+            renderer::encode_frame_gpu(slot, request).map_err(map_frame_execution_error)?;
+        let submission =
+            renderer::submit_encoded_frame(slot, pending).map_err(map_frame_execution_error)?;
+        let timings = submission
+            .host_timings()
+            .ok_or(RendererError::GpuDeviceCreation)?;
+        let visible_count = submission
+            .visible_count()
+            .ok_or(RendererError::GpuDeviceCreation)?;
+        let drawn_count = submission
+            .draw_count()
+            .ok_or(RendererError::GpuDeviceCreation)?;
+        let stats = FrameStats {
+            frame_ms: timings.frame_ms(),
+            preprocess_ms: timings.preprocess_ms(),
+            sort_ms: timings.sort_ms(),
+            raster_ms: timings.raster_ms(),
+            visible_count,
+            drawn_count,
+        };
+        self.last_stats = stats;
+        Ok(stats)
     }
 
     #[cfg(all(test, not(target_arch = "wasm32")))]
@@ -2545,8 +2714,8 @@ struct OffscreenResidentPipelines {
 #[cfg(not(target_arch = "wasm32"))]
 struct GpuRasterizer {
     adapter_info: wgpu::AdapterInfo,
-    device: wgpu::Device,
-    queue: wgpu::Queue,
+    device: Arc<wgpu::Device>,
+    queue: Arc<wgpu::Queue>,
     offscreen_target: offscreen::OffscreenTarget,
     max_texture_dimension_2d: u32,
     direct_pipeline: wgpu::RenderPipeline,
@@ -2591,6 +2760,8 @@ impl GpuRasterizer {
             .await
             .map_err(|_| RendererError::GpuDeviceCreation)?;
 
+        let device = Arc::new(device);
+        let queue = Arc::new(queue);
         let max_texture_dimension_2d = device.limits().max_texture_dimension_2d;
 
         let offscreen_target = offscreen::OffscreenTarget::new(

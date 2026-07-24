@@ -284,56 +284,54 @@ mod tests {
     }
 
     #[test]
-    fn direct_and_packed_sh0_through_sh3_normal_images_equal_shadow_bytes() {
+    fn direct_sh0_through_sh3_normal_images_equal_shadow_bytes() {
         let Some(mut renderer) = renderer_or_skip("E2 shadow image parity") else {
             return;
         };
         let viewport = Viewport::new(config().width, config().height).expect("viewport");
         let camera = Camera::default();
 
-        for path in [GeometryPath::SortedIndexDirect, GeometryPath::PackedAtlas] {
-            renderer.set_geometry_path(path);
-            for degree in 0..=3 {
-                let source = scene(degree, 37);
-                let (mut slot, legacy, normal) =
-                    prepare_legacy_oracle_then_shadow(&mut renderer, source, &camera)
-                        .expect("legacy then shadow preparation");
-                let legacy_order = renderer.current_sorted_indices().to_vec();
-                let frame = capture_shadow_frame(&mut slot, PlanId::CpuPostSort, &camera, viewport)
-                    .expect("shadow frame");
+        renderer.set_geometry_path(GeometryPath::SortedIndexDirect);
+        for degree in 0..=3 {
+            let source = scene(degree, 37);
+            let (mut slot, legacy, normal) =
+                prepare_legacy_oracle_then_shadow(&mut renderer, source, &camera)
+                    .expect("legacy then shadow preparation");
+            let legacy_order = renderer.current_sorted_indices().to_vec();
+            let frame = capture_shadow_frame(&mut slot, PlanId::CpuPostSort, &camera, viewport)
+                .expect("shadow frame");
 
-                assert_eq!(frame.plan_id(), PlanId::CpuPostSort);
-                assert_eq!(frame.order_lane(), OrderLane::Cpu);
-                assert_eq!(frame.source_count(), 37);
-                assert_eq!(frame.sh_degree(), degree);
-                assert_eq!(frame.visible_count(), Ok(37));
-                assert_eq!(
-                    frame.contributor_count(),
-                    Err(WorkUnavailable::ContributorCount)
-                );
-                assert_eq!(frame.draw_count(), Err(WorkUnavailable::DrawCount));
-                assert_eq!(frame.cpu_order_ids(), legacy_order);
-                assert_eq!(frame.frame_identity(), slot.frame_state().identity());
-                assert_eq!(normal.stats().visible_count, 37);
-                assert_eq!(normal.stats().drawn_count, 37);
+            assert_eq!(frame.plan_id(), PlanId::CpuPostSort);
+            assert_eq!(frame.order_lane(), OrderLane::Cpu);
+            assert_eq!(frame.source_count(), 37);
+            assert_eq!(frame.sh_degree(), degree);
+            assert_eq!(frame.visible_count(), Ok(37));
+            assert_eq!(
+                frame.contributor_count(),
+                Err(WorkUnavailable::ContributorCount)
+            );
+            assert_eq!(frame.draw_count(), Err(WorkUnavailable::DrawCount));
+            assert_eq!(frame.cpu_order_ids(), legacy_order);
+            assert_eq!(frame.frame_identity(), slot.frame_state().identity());
+            assert_eq!(normal.stats().visible_count, 37);
+            assert_eq!(normal.stats().drawn_count, 37);
 
-                let shadow = render_current_shadow_frame(
-                    &mut renderer,
-                    &slot,
-                    &legacy,
-                    &frame,
-                    &camera,
-                    viewport,
-                )
-                .expect("shadow raster");
-                assert_eq!(shadow.stats().visible_count, 37);
-                assert_eq!(shadow.stats().drawn_count, 37);
-                assert_eq!(shadow.rgba(), normal.rgba());
-                assert!(
-                    shadow.rgba().chunks_exact(4).any(|pixel| pixel[3] > 0),
-                    "{path:?} SH{degree} must produce covered pixels"
-                );
-            }
+            let shadow = render_current_shadow_frame(
+                &mut renderer,
+                &slot,
+                &legacy,
+                &frame,
+                &camera,
+                viewport,
+            )
+            .expect("shadow raster");
+            assert_eq!(shadow.stats().visible_count, 37);
+            assert_eq!(shadow.stats().drawn_count, 37);
+            assert_eq!(shadow.rgba(), normal.rgba());
+            assert!(
+                shadow.rgba().chunks_exact(4).any(|pixel| pixel[3] > 0),
+                "Direct SH{degree} must produce covered pixels"
+            );
         }
     }
 

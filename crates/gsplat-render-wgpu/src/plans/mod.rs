@@ -10,6 +10,7 @@ use gsplat_core::Camera;
 use thiserror::Error;
 
 use crate::scene::SceneRuntime;
+use crate::{TimerInstant, cpu_order::CpuOrderTimings};
 
 use cpu_post::{CpuPostSortError, CpuPostSortGpuWork, CpuPostSortPlan};
 use gpu_post::{GpuPostSortError, GpuPostSortPlan, GpuPostSortWork};
@@ -102,6 +103,7 @@ pub(crate) struct PlanFrameInput<'a> {
     source_count: u32,
     viewport_width: u32,
     viewport_height: u32,
+    force_cpu_order_refresh: bool,
 }
 
 impl<'a> PlanFrameInput<'a> {
@@ -118,7 +120,36 @@ impl<'a> PlanFrameInput<'a> {
             source_count,
             viewport_width,
             viewport_height,
+            force_cpu_order_refresh: false,
         }
+    }
+
+    pub(crate) const fn with_forced_cpu_order_refresh(mut self) -> Self {
+        self.force_cpu_order_refresh = true;
+        self
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct HostCpuOrderReceipt {
+    timings: CpuOrderTimings,
+    completed_at: TimerInstant,
+}
+
+impl HostCpuOrderReceipt {
+    pub(crate) const fn new(timings: CpuOrderTimings, completed_at: TimerInstant) -> Self {
+        Self {
+            timings,
+            completed_at,
+        }
+    }
+
+    pub(crate) const fn timings(self) -> CpuOrderTimings {
+        self.timings
+    }
+
+    pub(crate) const fn completed_at(self) -> TimerInstant {
+        self.completed_at
     }
 }
 
@@ -391,6 +422,7 @@ pub(crate) struct ProjectedWork<'a> {
     cpu_post_gpu: Option<CpuPostSortGpuWork<'a>>,
     gpu_post: Option<GpuPostSortWork<'a>>,
     gpu_pre: Option<GpuPreprojectWork<'a>>,
+    host_cpu_order: Option<HostCpuOrderReceipt>,
 }
 
 #[allow(dead_code)]
@@ -401,6 +433,7 @@ impl<'a> ProjectedWork<'a> {
         source_count: u32,
         ordered_ids: &'a [u32],
         cpu_post_gpu: Option<CpuPostSortGpuWork<'a>>,
+        host_cpu_order: HostCpuOrderReceipt,
     ) -> Self {
         let draw_count = cpu_post_gpu.as_ref().map(CpuPostSortGpuWork::direct_count);
         Self {
@@ -416,6 +449,7 @@ impl<'a> ProjectedWork<'a> {
             cpu_post_gpu,
             gpu_post: None,
             gpu_pre: None,
+            host_cpu_order: Some(host_cpu_order),
         }
     }
 
@@ -441,6 +475,7 @@ impl<'a> ProjectedWork<'a> {
             cpu_post_gpu: None,
             gpu_post: Some(gpu_post),
             gpu_pre: None,
+            host_cpu_order: None,
         }
     }
 
@@ -466,6 +501,7 @@ impl<'a> ProjectedWork<'a> {
             cpu_post_gpu: None,
             gpu_post: None,
             gpu_pre: Some(gpu_pre),
+            host_cpu_order: None,
         }
     }
 
@@ -522,6 +558,10 @@ impl<'a> ProjectedWork<'a> {
         self.gpu_pre
             .as_ref()
             .ok_or(WorkUnavailable::GpuProjectedWork)
+    }
+
+    pub(crate) const fn host_cpu_order(&self) -> Option<HostCpuOrderReceipt> {
+        self.host_cpu_order
     }
 }
 

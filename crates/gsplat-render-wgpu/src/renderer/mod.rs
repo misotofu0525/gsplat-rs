@@ -15,8 +15,9 @@ use crate::evidence::{
 };
 use crate::plans::{
     DirectCountSemantics, FrameIdentity, GpuCapabilityReceipt, GpuOwnerToken,
-    GpuPlanAdmissionRequest, IndirectCountSemantics, OrderLane, PlanExecutionContext,
-    PlanFrameInput, PlanId, PlanSet, PlanSetError, ProjectedWork, StagedGpuPlanAdmission,
+    GpuPlanAdmissionRequest, HostCpuOrderReceipt, IndirectCountSemantics, OrderLane,
+    PlanExecutionContext, PlanFrameInput, PlanId, PlanSet, PlanSetError, ProjectedWork,
+    StagedGpuPlanAdmission,
 };
 use crate::raster::{CanonicalRaster, CanonicalRasterError, CanonicalRasterInput};
 use crate::scene::{ResidentSceneCpu, ResidentSceneError, SceneRuntime};
@@ -102,6 +103,14 @@ pub(crate) enum GpuRuntimePreparationError {
     Generation(#[from] GenerationError),
 }
 
+#[derive(Debug, Error)]
+pub(crate) enum PreparedGpuRuntimeError {
+    #[error("Exact runtime preparation failed: {0}")]
+    Runtime(#[from] PreparedRuntimeError),
+    #[error("Exact GPU runtime preparation failed: {0}")]
+    Gpu(#[from] GpuRuntimePreparationError),
+}
+
 /// Result of optional device preparation. An omitted GPU candidate never
 /// weakens or removes the already prepared Exact CPU fallback.
 #[derive(Debug)]
@@ -128,6 +137,15 @@ pub(crate) struct GpuFrameSubmission {
     count_semantics: RasterCountSemantics,
     encode_attempt: u64,
     plan_sample_ticket: Option<PlanSampleTicket>,
+    host_timings: Option<HostFrameTimings>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct HostFrameTimings {
+    preprocess_ms: f32,
+    sort_ms: f32,
+    raster_ms: f32,
+    frame_ms: f32,
 }
 
 struct FrameSubmissionMetadata {
@@ -140,6 +158,7 @@ struct FrameSubmissionMetadata {
     contributor_count: Option<u32>,
     draw_count: Option<u32>,
     count_semantics: RasterCountSemantics,
+    host_cpu_order: Option<HostCpuOrderReceipt>,
 }
 
 /// Owned transaction returned after one plan and one canonical raster have
@@ -201,6 +220,7 @@ struct SubmittedGpuFrameState {
     staged_controller: WholePlanController,
     staged_sample: Option<StagedPlanSample>,
     plan_sample_ticket: Option<PlanSampleTicket>,
+    completion_started: crate::TimerInstant,
 }
 
 impl SubmittedGpuFrame {
@@ -225,6 +245,8 @@ pub(crate) struct GpuFrameEncodeRequest<'a> {
     target: &'a wgpu::TextureView,
     target_format: wgpu::TextureFormat,
     clear: wgpu::Color,
+    force_cpu_order_refresh: bool,
+    host_frame_started: Option<crate::TimerInstant>,
 }
 
 impl<'a> GpuFrameEncodeRequest<'a> {
@@ -243,6 +265,8 @@ impl<'a> GpuFrameEncodeRequest<'a> {
             target,
             target_format,
             clear,
+            force_cpu_order_refresh: false,
+            host_frame_started: None,
         }
     }
 
@@ -260,7 +284,19 @@ impl<'a> GpuFrameEncodeRequest<'a> {
             target,
             target_format,
             clear,
+            force_cpu_order_refresh: false,
+            host_frame_started: None,
         }
+    }
+
+    pub(crate) const fn with_forced_cpu_order_refresh(mut self) -> Self {
+        self.force_cpu_order_refresh = true;
+        self
+    }
+
+    pub(crate) const fn with_host_frame_started(mut self, started: crate::TimerInstant) -> Self {
+        self.host_frame_started = Some(started);
+        self
     }
 }
 
@@ -312,6 +348,28 @@ impl GpuFrameSubmission {
 
     pub(crate) const fn plan_sample_ticket(&self) -> Option<PlanSampleTicket> {
         self.plan_sample_ticket
+    }
+
+    pub(crate) const fn host_timings(&self) -> Option<HostFrameTimings> {
+        self.host_timings
+    }
+}
+
+impl HostFrameTimings {
+    pub(crate) const fn preprocess_ms(self) -> f32 {
+        self.preprocess_ms
+    }
+
+    pub(crate) const fn sort_ms(self) -> f32 {
+        self.sort_ms
+    }
+
+    pub(crate) const fn raster_ms(self) -> f32 {
+        self.raster_ms
+    }
+
+    pub(crate) const fn frame_ms(self) -> f32 {
+        self.frame_ms
     }
 }
 
@@ -390,7 +448,13 @@ struct StagedGpuRuntimeAdmission {
 
 impl PreparedRuntimeSlot {
     pub(crate) fn prepare(resident: ResidentSceneCpu) -> Result<Self, PreparedRuntimeError> {
-        let frame = FrameState::initial();
+        Self::prepare_at_frame(resident, FrameState::initial())
+    }
+
+    fn prepare_at_frame(
+        resident: ResidentSceneCpu,
+        frame: FrameState,
+    ) -> Result<Self, PreparedRuntimeError> {
         let runtime = PreparedRuntime::prepare(resident, frame)?;
         let controller = WholePlanController::new(
             runtime.plans.fallback(),
@@ -406,6 +470,29 @@ impl PreparedRuntimeSlot {
             sampler: PlanSampler::new(),
             optional_plan_evidence: None,
         })
+    }
+
+    /// Builds a complete unpublished replacement against the existing
+    /// offscreen owner. The prior slot is borrowed only for its next semantic
+    /// generation; failure leaves it and every published renderer field
+    /// untouched.
+    pub(crate) async fn prepare_complete_gpu_candidate(
+        resident: ResidentSceneCpu,
+        previous: Option<&Self>,
+        device: &Arc<wgpu::Device>,
+        queue: &Arc<wgpu::Queue>,
+        target_format: wgpu::TextureFormat,
+    ) -> Result<Self, PreparedGpuRuntimeError> {
+        let frame = match previous {
+            Some(previous) => previous
+                .frame
+                .after_runtime_replacement()
+                .map_err(PreparedRuntimeError::Generation)?,
+            None => FrameState::initial(),
+        };
+        let mut candidate = Self::prepare_at_frame(resident, frame)?;
+        candidate.prepare_gpu(device, queue, target_format).await?;
+        Ok(candidate)
     }
 
     pub(crate) fn replace(
@@ -666,7 +753,7 @@ pub(crate) fn encode_frame_gpu(
     slot: &mut PreparedRuntimeSlot,
     request: GpuFrameEncodeRequest<'_>,
 ) -> Result<PendingGpuFrame, FrameExecutionError> {
-    let completion_started = crate::timer_now();
+    let completion_started = request.host_frame_started.unwrap_or_else(crate::timer_now);
     let encode_attempt = slot
         .latest_encode_attempt
         .checked_add(1)
@@ -714,16 +801,20 @@ pub(crate) fn encode_frame_gpu(
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("gsplat-exact-frame-encoder"),
             });
+        let mut input = PlanFrameInput::new(
+            request.camera,
+            candidate_frame.identity(),
+            contract.source_count,
+            request.viewport.width(),
+            request.viewport.height(),
+        );
+        if request.force_cpu_order_refresh {
+            input = input.with_forced_cpu_order_refresh();
+        }
         let work = plans.execute(
             decision.plan(),
             scene,
-            PlanFrameInput::new(
-                request.camera,
-                candidate_frame.identity(),
-                contract.source_count,
-                request.viewport.width(),
-                request.viewport.height(),
-            ),
+            input,
             PlanExecutionContext::Gpu(owner.context(owner.queue(), &mut encoder)?),
         )?;
         let (input, metadata) = canonical_input_for_work(&work, owner.token())?;
@@ -883,6 +974,7 @@ fn submit_pending_frame(
             staged_controller,
             staged_sample,
             plan_sample_ticket,
+            completion_started: pending.completion_started,
         }),
     })
 }
@@ -991,6 +1083,15 @@ impl ValidatedSubmittedGpuFrame<'_> {
         self.slot.frame = state.candidate_frame;
         self.slot.controller = state.staged_controller;
 
+        let host_timings = state.metadata.host_cpu_order.map(|receipt| {
+            let timings = receipt.timings();
+            HostFrameTimings {
+                preprocess_ms: timings.preprocess_ms,
+                sort_ms: timings.sort_ms,
+                raster_ms: crate::timer_elapsed_ms(receipt.completed_at()),
+                frame_ms: crate::timer_elapsed_ms(state.completion_started),
+            }
+        });
         GpuFrameSubmission {
             submission_index: state.submission_index,
             frame: state.metadata.frame,
@@ -1004,6 +1105,7 @@ impl ValidatedSubmittedGpuFrame<'_> {
             count_semantics: state.metadata.count_semantics,
             encode_attempt: state.encode_attempt,
             plan_sample_ticket: state.plan_sample_ticket,
+            host_timings,
         }
     }
 }
@@ -1116,6 +1218,7 @@ fn canonical_input_for_work(
             contributor_count: work.contributor_count().ok(),
             draw_count: work.draw_count().ok(),
             count_semantics,
+            host_cpu_order: work.host_cpu_order(),
         },
     ))
 }

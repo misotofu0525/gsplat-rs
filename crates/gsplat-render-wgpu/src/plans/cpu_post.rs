@@ -9,8 +9,8 @@ use crate::scene::SceneRuntime;
 use crate::{CpuPositionView, RendererError};
 
 use super::{
-    DirectCountSemantics, FrameIdentity, GpuExecutionContext, GpuOwnerToken, PlanFrameInput,
-    ProjectedWork,
+    DirectCountSemantics, FrameIdentity, GpuExecutionContext, GpuOwnerToken, HostCpuOrderReceipt,
+    PlanFrameInput, ProjectedWork,
 };
 
 #[derive(Debug, Error)]
@@ -198,9 +198,12 @@ impl CpuPostSortPlan {
             })
             .transpose()?;
         let requested_guard = CpuOrderGuard::new(frame, source_count, *camera);
-        if self.guard != Some(requested_guard) {
-            self.refresh_order(scene.positions(), camera, requested_guard)?;
-        }
+        let timings = if input.force_cpu_order_refresh || self.guard != Some(requested_guard) {
+            self.refresh_order(scene.positions(), camera, requested_guard)?
+        } else {
+            crate::cpu_order::CpuOrderTimings::default()
+        };
+        let host_cpu_order = HostCpuOrderReceipt::new(timings, crate::timer_now());
 
         let cpu_post_gpu = match (execution, gpu_preparation) {
             (Some(execution), Some(preparation)) => {
@@ -249,6 +252,7 @@ impl CpuPostSortPlan {
             source_count,
             &self.ordered_ids,
             cpu_post_gpu,
+            host_cpu_order,
         ))
     }
 
@@ -257,13 +261,13 @@ impl CpuPostSortPlan {
         positions: &[Vec3f],
         camera: &Camera,
         requested_guard: CpuOrderGuard,
-    ) -> Result<(), CpuPostSortError> {
+    ) -> Result<crate::cpu_order::CpuOrderTimings, CpuPostSortError> {
         let next_generation = self
             .order_generation
             .checked_add(1)
             .ok_or(CpuPostSortError::OrderGenerationExhausted)?;
 
-        self.engine.order_positions(
+        let timings = self.engine.order_positions(
             CpuPositionView::new(positions),
             camera,
             true,
@@ -271,7 +275,7 @@ impl CpuPostSortPlan {
         )?;
         self.order_generation = next_generation;
         self.guard = Some(requested_guard);
-        Ok(())
+        Ok(timings)
     }
 
     pub(super) fn last_usable_order(&self) -> Option<&[u32]> {
