@@ -229,6 +229,119 @@ typedef struct GsplatSurfaceOrderSubmission {
 } GsplatSurfaceOrderSubmission;
 
 /*
+ * Additive current-stats ABI. V1 is a stateless translation of the
+ * Renderer-owned request/submission/single-pop receipt seam. Callers
+ * initialize struct_size=sizeof(struct) and version=1 before every call.
+ */
+#define GSPLAT_SURFACE_CURRENT_STATS_ABI_VERSION_V1 1u
+
+typedef enum GsplatSurfaceCurrentStatsRequestStatusV1 {
+  GSPLAT_SURFACE_CURRENT_STATS_REQUEST_NOT_APPLICABLE = 0,
+  GSPLAT_SURFACE_CURRENT_STATS_REQUEST_REQUESTED = 1,
+  GSPLAT_SURFACE_CURRENT_STATS_REQUEST_BUSY = 2,
+  GSPLAT_SURFACE_CURRENT_STATS_REQUEST_GPU_UNAVAILABLE = 3,
+  GSPLAT_SURFACE_CURRENT_STATS_REQUEST_RESOURCE_UNAVAILABLE = 4,
+  GSPLAT_SURFACE_CURRENT_STATS_REQUEST_TICKET_EXHAUSTED = 5,
+} GsplatSurfaceCurrentStatsRequestStatusV1;
+
+typedef enum GsplatSurfaceCurrentStatsSubmissionStatusV1 {
+  GSPLAT_SURFACE_CURRENT_STATS_SUBMISSION_UNSPECIFIED = 0,
+  GSPLAT_SURFACE_CURRENT_STATS_SUBMISSION_NOT_REQUESTED = 1,
+  GSPLAT_SURFACE_CURRENT_STATS_SUBMISSION_ISSUED = 2,
+} GsplatSurfaceCurrentStatsSubmissionStatusV1;
+
+typedef enum GsplatSurfaceCurrentStatsPlanV1 {
+  GSPLAT_SURFACE_CURRENT_STATS_PLAN_NOT_APPLICABLE = 0,
+  GSPLAT_SURFACE_CURRENT_STATS_PLAN_CPU_POST_SORT = 1,
+  GSPLAT_SURFACE_CURRENT_STATS_PLAN_GPU_POST_SORT = 2,
+  GSPLAT_SURFACE_CURRENT_STATS_PLAN_GPU_PREPROJECT = 3,
+} GsplatSurfaceCurrentStatsPlanV1;
+
+typedef enum GsplatSurfaceCurrentStatsPollKindV1 {
+  GSPLAT_SURFACE_CURRENT_STATS_POLL_UNSPECIFIED = 0,
+  GSPLAT_SURFACE_CURRENT_STATS_POLL_EMPTY = 1,
+  GSPLAT_SURFACE_CURRENT_STATS_POLL_UNSAMPLED = 2,
+  GSPLAT_SURFACE_CURRENT_STATS_POLL_READY = 3,
+  GSPLAT_SURFACE_CURRENT_STATS_POLL_MAP_FAILURE = 4,
+  GSPLAT_SURFACE_CURRENT_STATS_POLL_GENERATION_INVALIDATED = 5,
+  GSPLAT_SURFACE_CURRENT_STATS_POLL_EXPIRED = 6,
+  GSPLAT_SURFACE_CURRENT_STATS_POLL_DROPPED = 7,
+} GsplatSurfaceCurrentStatsPollKindV1;
+
+typedef enum GsplatSurfaceCurrentStatsCountSemanticsV1 {
+  GSPLAT_SURFACE_CURRENT_STATS_COUNT_SEMANTICS_NONE = 0,
+  GSPLAT_SURFACE_CURRENT_STATS_COUNT_SEMANTICS_DIRECT_DRAW_EQUALS_VISIBLE = 1,
+  GSPLAT_SURFACE_CURRENT_STATS_COUNT_SEMANTICS_INDIRECT_DRAW_EQUALS_VISIBLE = 2,
+  GSPLAT_SURFACE_CURRENT_STATS_COUNT_SEMANTICS_INDIRECT_DRAW_EQUALS_CONTRIBUTOR = 3,
+} GsplatSurfaceCurrentStatsCountSemanticsV1;
+
+/* Full join identity. `executed_plan` is a GsplatSurfaceCurrentStatsPlanV1. */
+typedef struct GsplatSurfaceCurrentStatsIdentityV1 {
+  uint64_t scene_generation;
+  uint64_t camera_revision;
+  uint64_t viewport_generation;
+  uint64_t contract_generation;
+  uint64_t plan_set_generation;
+  uint64_t order_generation;
+  uint64_t raster_generation;
+  uint64_t encode_attempt;
+  uint64_t presentation_sequence;
+  uint32_t executed_plan;
+  uint32_t reserved;
+} GsplatSurfaceCurrentStatsIdentityV1;
+
+/* A legal call returns OK; `status` reports Renderer sampling admission. */
+typedef struct GsplatSurfaceCurrentStatsRequestV1 {
+  uint32_t struct_size;
+  uint32_t version;
+  /* GsplatSurfaceCurrentStatsRequestStatusV1; never NOT_APPLICABLE. */
+  uint32_t status;
+  uint32_t reserved;
+  uint64_t reserved_u64[2];
+} GsplatSurfaceCurrentStatsRequestV1;
+
+/*
+ * `ticket` and `identity` are applicable only when status is ISSUED. Their
+ * zero representation under NOT_REQUESTED is reserved padding, not a real
+ * ticket or generation.
+ */
+typedef struct GsplatSurfaceCurrentStatsSubmissionV1 {
+  uint32_t struct_size;
+  uint32_t version;
+  /* GsplatSurfaceCurrentStatsSubmissionStatusV1. */
+  uint32_t status;
+  uint32_t reserved;
+  uint64_t ticket;
+  GsplatSurfaceCurrentStatsIdentityV1 identity;
+  uint64_t reserved_u64[2];
+} GsplatSurfaceCurrentStatsSubmissionV1;
+
+/*
+ * One atomic global single-pop result. UNSAMPLED is pre-ticket and uses only
+ * `request_status`. READY makes ticket, identity, S/V/C/D and non-NONE count
+ * semantics valid together. Terminal failures make only ticket and identity
+ * valid. EMPTY and all inapplicable payload zeros are not count/ticket data.
+ */
+typedef struct GsplatSurfaceCurrentStatsPollV1 {
+  uint32_t struct_size;
+  uint32_t version;
+  /* GsplatSurfaceCurrentStatsPollKindV1. */
+  uint32_t kind;
+  /* GsplatSurfaceCurrentStatsRequestStatusV1, only for UNSAMPLED. */
+  uint32_t request_status;
+  /* GsplatSurfaceCurrentStatsCountSemanticsV1, only for READY. */
+  uint32_t count_semantics;
+  uint32_t reserved;
+  uint64_t ticket;
+  GsplatSurfaceCurrentStatsIdentityV1 identity;
+  uint32_t source_count;
+  uint32_t visible_count;
+  uint32_t contributor_count;
+  uint32_t drawn_count;
+  uint64_t reserved_u64[2];
+} GsplatSurfaceCurrentStatsPollV1;
+
+/*
  * Versioned projected-draw ABI. V1 layouts are frozen; any future extension
  * uses new V2 types/symbols. Zero is a setter-only alias for the legacy
  * Adaptive default; successful frame receipts canonicalize it to ADAPTIVE=3.
@@ -640,6 +753,23 @@ int32_t gsplat_surface_renderer_pan(
     float normalized_delta_x,
     float normalized_delta_y);
 int32_t gsplat_surface_renderer_render_frame(GsplatSurfaceRenderer *renderer);
+/*
+ * Request -> render -> submission -> poll is the current-stats sequence.
+ * After ISSUED, EMPTY means no globally oldest resolution is ready now; the
+ * issued ticket remains pending until its terminal appears. A poll consumes
+ * at most one pre-ticket UNSAMPLED or one atomic terminal. Bounded evidence
+ * may resolve as EXPIRED or DROPPED. Strict consumers must never substitute
+ * gsplat_surface_renderer_get_stats() when a current receipt is absent.
+ */
+int32_t gsplat_surface_renderer_request_current_stats_v1(
+    GsplatSurfaceRenderer *renderer,
+    GsplatSurfaceCurrentStatsRequestV1 *out_request);
+int32_t gsplat_surface_renderer_get_current_stats_submission_v1(
+    const GsplatSurfaceRenderer *renderer,
+    GsplatSurfaceCurrentStatsSubmissionV1 *out_submission);
+int32_t gsplat_surface_renderer_poll_current_stats_v1(
+    GsplatSurfaceRenderer *renderer,
+    GsplatSurfaceCurrentStatsPollV1 *out_poll);
 int32_t gsplat_surface_renderer_get_stats(
     const GsplatSurfaceRenderer *renderer,
     GsplatStats *out_stats);

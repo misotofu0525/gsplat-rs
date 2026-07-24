@@ -10,6 +10,21 @@ _Static_assert(sizeof(GsplatSurfaceCpuOrderMeasurement) == 48, "CPU order receip
 _Static_assert(sizeof(GsplatSurfaceOrderCounts) == 32, "order counts receipt ABI changed");
 _Static_assert(sizeof(GsplatSurfaceOrderMeasurementFailure) == 40, "order failure ABI changed");
 _Static_assert(sizeof(GsplatSurfaceOrderSubmission) == 32, "order submission ABI changed");
+_Static_assert(sizeof(GsplatSurfaceCurrentStatsIdentityV1) == 80, "current-stats identity v1 ABI changed");
+_Static_assert(sizeof(GsplatSurfaceCurrentStatsRequestV1) == 32, "current-stats request v1 ABI changed");
+_Static_assert(sizeof(GsplatSurfaceCurrentStatsSubmissionV1) == 120, "current-stats submission v1 ABI changed");
+_Static_assert(sizeof(GsplatSurfaceCurrentStatsPollV1) == 144, "current-stats poll v1 ABI changed");
+_Static_assert(offsetof(GsplatSurfaceCurrentStatsIdentityV1, executed_plan) == 72, "current-stats plan offset changed");
+_Static_assert(offsetof(GsplatSurfaceCurrentStatsRequestV1, status) == 8, "current-stats request status offset changed");
+_Static_assert(offsetof(GsplatSurfaceCurrentStatsSubmissionV1, ticket) == 16, "current-stats submission ticket offset changed");
+_Static_assert(offsetof(GsplatSurfaceCurrentStatsSubmissionV1, identity) == 24, "current-stats submission identity offset changed");
+_Static_assert(offsetof(GsplatSurfaceCurrentStatsPollV1, ticket) == 24, "current-stats poll ticket offset changed");
+_Static_assert(offsetof(GsplatSurfaceCurrentStatsPollV1, identity) == 32, "current-stats poll identity offset changed");
+_Static_assert(offsetof(GsplatSurfaceCurrentStatsPollV1, source_count) == 112, "current-stats poll counts offset changed");
+_Static_assert(_Alignof(GsplatSurfaceCurrentStatsIdentityV1) == _Alignof(GsplatSurfaceProjectedSubmissionV1), "current-stats identity alignment changed");
+_Static_assert(_Alignof(GsplatSurfaceCurrentStatsRequestV1) == _Alignof(GsplatSurfaceProjectedSubmissionV1), "current-stats request alignment changed");
+_Static_assert(_Alignof(GsplatSurfaceCurrentStatsSubmissionV1) == _Alignof(GsplatSurfaceProjectedSubmissionV1), "current-stats submission alignment changed");
+_Static_assert(_Alignof(GsplatSurfaceCurrentStatsPollV1) == _Alignof(GsplatSurfaceProjectedSubmissionV1), "current-stats poll alignment changed");
 _Static_assert(sizeof(GsplatSurfaceProjectedSubmissionV1) == 48, "projected submission v1 ABI changed");
 _Static_assert(sizeof(GsplatSurfaceProjectedMeasurementV1) == 56, "projected measurement v1 ABI changed");
 _Static_assert(sizeof(GsplatSurfaceProjectedCountsV1) == 40, "projected counts v1 ABI changed");
@@ -62,6 +77,32 @@ int main(int argc, char **argv) {
       GSPLAT_SURFACE_ADAPTIVE_GPU_FAILURE_VALIDATION != 4 ||
       GSPLAT_SURFACE_ORDER_MEASUREMENT_FAILURE_READBACK_MAP != 1 ||
       GSPLAT_SURFACE_ORDER_MEASUREMENT_FAILURE_GENERATION_INVALIDATED != 2 ||
+      GSPLAT_SURFACE_CURRENT_STATS_ABI_VERSION_V1 != 1 ||
+      GSPLAT_SURFACE_CURRENT_STATS_REQUEST_NOT_APPLICABLE != 0 ||
+      GSPLAT_SURFACE_CURRENT_STATS_REQUEST_REQUESTED != 1 ||
+      GSPLAT_SURFACE_CURRENT_STATS_REQUEST_BUSY != 2 ||
+      GSPLAT_SURFACE_CURRENT_STATS_REQUEST_GPU_UNAVAILABLE != 3 ||
+      GSPLAT_SURFACE_CURRENT_STATS_REQUEST_RESOURCE_UNAVAILABLE != 4 ||
+      GSPLAT_SURFACE_CURRENT_STATS_REQUEST_TICKET_EXHAUSTED != 5 ||
+      GSPLAT_SURFACE_CURRENT_STATS_SUBMISSION_UNSPECIFIED != 0 ||
+      GSPLAT_SURFACE_CURRENT_STATS_SUBMISSION_NOT_REQUESTED != 1 ||
+      GSPLAT_SURFACE_CURRENT_STATS_SUBMISSION_ISSUED != 2 ||
+      GSPLAT_SURFACE_CURRENT_STATS_PLAN_NOT_APPLICABLE != 0 ||
+      GSPLAT_SURFACE_CURRENT_STATS_PLAN_CPU_POST_SORT != 1 ||
+      GSPLAT_SURFACE_CURRENT_STATS_PLAN_GPU_POST_SORT != 2 ||
+      GSPLAT_SURFACE_CURRENT_STATS_PLAN_GPU_PREPROJECT != 3 ||
+      GSPLAT_SURFACE_CURRENT_STATS_POLL_UNSPECIFIED != 0 ||
+      GSPLAT_SURFACE_CURRENT_STATS_POLL_EMPTY != 1 ||
+      GSPLAT_SURFACE_CURRENT_STATS_POLL_UNSAMPLED != 2 ||
+      GSPLAT_SURFACE_CURRENT_STATS_POLL_READY != 3 ||
+      GSPLAT_SURFACE_CURRENT_STATS_POLL_MAP_FAILURE != 4 ||
+      GSPLAT_SURFACE_CURRENT_STATS_POLL_GENERATION_INVALIDATED != 5 ||
+      GSPLAT_SURFACE_CURRENT_STATS_POLL_EXPIRED != 6 ||
+      GSPLAT_SURFACE_CURRENT_STATS_POLL_DROPPED != 7 ||
+      GSPLAT_SURFACE_CURRENT_STATS_COUNT_SEMANTICS_NONE != 0 ||
+      GSPLAT_SURFACE_CURRENT_STATS_COUNT_SEMANTICS_DIRECT_DRAW_EQUALS_VISIBLE != 1 ||
+      GSPLAT_SURFACE_CURRENT_STATS_COUNT_SEMANTICS_INDIRECT_DRAW_EQUALS_VISIBLE != 2 ||
+      GSPLAT_SURFACE_CURRENT_STATS_COUNT_SEMANTICS_INDIRECT_DRAW_EQUALS_CONTRIBUTOR != 3 ||
       GSPLAT_SURFACE_PROJECTED_ABI_VERSION_V1 != 1 ||
       GSPLAT_SURFACE_CAMERA_RECEIPT_ABI_VERSION_V1 != 1 ||
       GSPLAT_SURFACE_PROJECTED_POLICY_LEGACY_DEFAULT != 0 ||
@@ -100,12 +141,48 @@ int main(int argc, char **argv) {
 
   GsplatSurfaceOrderMeasurement measurement;
   memset(&measurement, 0, sizeof(measurement));
+  GsplatSurfaceCurrentStatsRequestV1 current_request = {
+      .struct_size = sizeof(GsplatSurfaceCurrentStatsRequestV1),
+      .version = GSPLAT_SURFACE_CURRENT_STATS_ABI_VERSION_V1,
+      .status = 0xfeedu,
+  };
+  GsplatSurfaceCurrentStatsRequestV1 current_request_before = current_request;
+  int32_t rc = gsplat_surface_renderer_request_current_stats_v1(NULL, &current_request);
+  if (rc != GSPLAT_ERROR_INVALID_ARGUMENT ||
+      memcmp(&current_request, &current_request_before, sizeof(current_request)) != 0) {
+    fprintf(stderr, "expected null current-stats request to fail without output mutation, got: %d\n", rc);
+    return 29;
+  }
+  GsplatSurfaceCurrentStatsSubmissionV1 current_submission = {
+      .struct_size = sizeof(GsplatSurfaceCurrentStatsSubmissionV1),
+      .version = GSPLAT_SURFACE_CURRENT_STATS_ABI_VERSION_V1,
+      .status = 0xfeedu,
+  };
+  GsplatSurfaceCurrentStatsSubmissionV1 current_submission_before = current_submission;
+  rc = gsplat_surface_renderer_get_current_stats_submission_v1(NULL, &current_submission);
+  if (rc != GSPLAT_ERROR_INVALID_ARGUMENT ||
+      memcmp(&current_submission, &current_submission_before, sizeof(current_submission)) != 0) {
+    fprintf(stderr, "expected null current-stats submission to fail without output mutation, got: %d\n", rc);
+    return 30;
+  }
+  GsplatSurfaceCurrentStatsPollV1 current_poll = {
+      .struct_size = sizeof(GsplatSurfaceCurrentStatsPollV1),
+      .version = GSPLAT_SURFACE_CURRENT_STATS_ABI_VERSION_V1,
+      .kind = 0xfeedu,
+  };
+  GsplatSurfaceCurrentStatsPollV1 current_poll_before = current_poll;
+  rc = gsplat_surface_renderer_poll_current_stats_v1(NULL, &current_poll);
+  if (rc != GSPLAT_ERROR_INVALID_ARGUMENT ||
+      memcmp(&current_poll, &current_poll_before, sizeof(current_poll)) != 0) {
+    fprintf(stderr, "expected null current-stats poll to fail without output mutation, got: %d\n", rc);
+    return 31;
+  }
   GsplatSurfaceCameraReceiptV1 camera_receipt = {
       .struct_size = sizeof(GsplatSurfaceCameraReceiptV1),
       .version = GSPLAT_SURFACE_CAMERA_RECEIPT_ABI_VERSION_V1,
   };
   uint32_t measurement_available = 99;
-  int32_t rc = gsplat_surface_renderer_set_order_backend(
+  rc = gsplat_surface_renderer_set_order_backend(
       NULL,
       GSPLAT_SURFACE_ORDER_BACKEND_ADAPTIVE);
   if (rc != GSPLAT_ERROR_INVALID_ARGUMENT) {

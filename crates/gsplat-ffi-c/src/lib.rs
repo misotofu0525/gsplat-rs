@@ -20,7 +20,10 @@ use gsplat_io_ply::{
 use gsplat_render_wgpu::{
     GeometryPath, Renderer, RendererError, ResidentSceneBuilder, ResidentSceneError,
     ResidentSourceSplat, SurfaceAdaptiveGpuFailureReason, SurfaceAdaptiveState,
-    SurfaceCpuOrderMeasurement, SurfaceFrameOutput, SurfaceGpuOrderProducer,
+    SurfaceCpuOrderMeasurement, SurfaceCurrentStatsCountSemantics, SurfaceCurrentStatsPlan,
+    SurfaceCurrentStatsPoll, SurfaceCurrentStatsRequest, SurfaceCurrentStatsSubmission,
+    SurfaceCurrentStatsSubmissionReceipt, SurfaceCurrentStatsTerminal,
+    SurfaceCurrentStatsUnsampledReason, SurfaceFrameOutput, SurfaceGpuOrderProducer,
     SurfaceGpuProducerDrawScope, SurfaceGpuProducerMeasurement,
     SurfaceGpuProducerMeasurementFailure, SurfaceGpuProducerMeasurementFailureReason,
     SurfaceGpuProducerMeasurementSubmission, SurfaceGpuProducerMeasurementUnsampledReason,
@@ -157,6 +160,183 @@ pub struct GsplatSurfaceOrderSubmission {
     pub adaptive_state: u32,
     pub flags: u32,
 }
+
+const SURFACE_CURRENT_STATS_ABI_VERSION_V1: u32 = 1;
+const SURFACE_CURRENT_STATS_REQUEST_NOT_APPLICABLE: u32 = 0;
+const SURFACE_CURRENT_STATS_REQUEST_REQUESTED: u32 = 1;
+const SURFACE_CURRENT_STATS_REQUEST_BUSY: u32 = 2;
+const SURFACE_CURRENT_STATS_REQUEST_GPU_UNAVAILABLE: u32 = 3;
+const SURFACE_CURRENT_STATS_REQUEST_RESOURCE_UNAVAILABLE: u32 = 4;
+const SURFACE_CURRENT_STATS_REQUEST_TICKET_EXHAUSTED: u32 = 5;
+const SURFACE_CURRENT_STATS_SUBMISSION_UNSPECIFIED: u32 = 0;
+const SURFACE_CURRENT_STATS_SUBMISSION_NOT_REQUESTED: u32 = 1;
+const SURFACE_CURRENT_STATS_SUBMISSION_ISSUED: u32 = 2;
+const SURFACE_CURRENT_STATS_PLAN_NOT_APPLICABLE: u32 = 0;
+const SURFACE_CURRENT_STATS_PLAN_CPU_POST_SORT: u32 = 1;
+const SURFACE_CURRENT_STATS_PLAN_GPU_POST_SORT: u32 = 2;
+const SURFACE_CURRENT_STATS_PLAN_GPU_PREPROJECT: u32 = 3;
+const SURFACE_CURRENT_STATS_POLL_UNSPECIFIED: u32 = 0;
+const SURFACE_CURRENT_STATS_POLL_EMPTY: u32 = 1;
+const SURFACE_CURRENT_STATS_POLL_UNSAMPLED: u32 = 2;
+const SURFACE_CURRENT_STATS_POLL_READY: u32 = 3;
+const SURFACE_CURRENT_STATS_POLL_MAP_FAILURE: u32 = 4;
+const SURFACE_CURRENT_STATS_POLL_GENERATION_INVALIDATED: u32 = 5;
+const SURFACE_CURRENT_STATS_POLL_EXPIRED: u32 = 6;
+const SURFACE_CURRENT_STATS_POLL_DROPPED: u32 = 7;
+const SURFACE_CURRENT_STATS_COUNT_SEMANTICS_NONE: u32 = 0;
+const SURFACE_CURRENT_STATS_COUNT_SEMANTICS_DIRECT_DRAW_EQUALS_VISIBLE: u32 = 1;
+const SURFACE_CURRENT_STATS_COUNT_SEMANTICS_INDIRECT_DRAW_EQUALS_VISIBLE: u32 = 2;
+const SURFACE_CURRENT_STATS_COUNT_SEMANTICS_INDIRECT_DRAW_EQUALS_CONTRIBUTOR: u32 = 3;
+
+/// Complete Renderer-owned join identity shared by current-stats submission
+/// and terminal receipts.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GsplatSurfaceCurrentStatsIdentityV1 {
+    pub scene_generation: u64,
+    pub camera_revision: u64,
+    pub viewport_generation: u64,
+    pub contract_generation: u64,
+    pub plan_set_generation: u64,
+    pub order_generation: u64,
+    pub raster_generation: u64,
+    pub encode_attempt: u64,
+    pub presentation_sequence: u64,
+    pub executed_plan: u32,
+    pub reserved: u32,
+}
+
+impl Default for GsplatSurfaceCurrentStatsIdentityV1 {
+    fn default() -> Self {
+        Self {
+            scene_generation: 0,
+            camera_revision: 0,
+            viewport_generation: 0,
+            contract_generation: 0,
+            plan_set_generation: 0,
+            order_generation: 0,
+            raster_generation: 0,
+            encode_attempt: 0,
+            presentation_sequence: 0,
+            executed_plan: SURFACE_CURRENT_STATS_PLAN_NOT_APPLICABLE,
+            reserved: 0,
+        }
+    }
+}
+
+/// Immediate result of requesting one current-stats sample.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GsplatSurfaceCurrentStatsRequestV1 {
+    pub struct_size: u32,
+    pub version: u32,
+    pub status: u32,
+    pub reserved: u32,
+    pub reserved_u64: [u64; 2],
+}
+
+impl Default for GsplatSurfaceCurrentStatsRequestV1 {
+    fn default() -> Self {
+        Self {
+            struct_size: std::mem::size_of::<Self>() as u32,
+            version: SURFACE_CURRENT_STATS_ABI_VERSION_V1,
+            status: SURFACE_CURRENT_STATS_REQUEST_NOT_APPLICABLE,
+            reserved: 0,
+            reserved_u64: [0; 2],
+        }
+    }
+}
+
+/// Presentation-committed ticket and complete identity for the current frame.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GsplatSurfaceCurrentStatsSubmissionV1 {
+    pub struct_size: u32,
+    pub version: u32,
+    pub status: u32,
+    pub reserved: u32,
+    pub ticket: u64,
+    pub identity: GsplatSurfaceCurrentStatsIdentityV1,
+    pub reserved_u64: [u64; 2],
+}
+
+impl Default for GsplatSurfaceCurrentStatsSubmissionV1 {
+    fn default() -> Self {
+        Self {
+            struct_size: std::mem::size_of::<Self>() as u32,
+            version: SURFACE_CURRENT_STATS_ABI_VERSION_V1,
+            status: SURFACE_CURRENT_STATS_SUBMISSION_UNSPECIFIED,
+            reserved: 0,
+            ticket: 0,
+            identity: GsplatSurfaceCurrentStatsIdentityV1::default(),
+            reserved_u64: [0; 2],
+        }
+    }
+}
+
+/// One atomic global single-pop current-stats result.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GsplatSurfaceCurrentStatsPollV1 {
+    pub struct_size: u32,
+    pub version: u32,
+    pub kind: u32,
+    pub request_status: u32,
+    pub count_semantics: u32,
+    pub reserved: u32,
+    pub ticket: u64,
+    pub identity: GsplatSurfaceCurrentStatsIdentityV1,
+    pub source_count: u32,
+    pub visible_count: u32,
+    pub contributor_count: u32,
+    pub drawn_count: u32,
+    pub reserved_u64: [u64; 2],
+}
+
+impl Default for GsplatSurfaceCurrentStatsPollV1 {
+    fn default() -> Self {
+        Self {
+            struct_size: std::mem::size_of::<Self>() as u32,
+            version: SURFACE_CURRENT_STATS_ABI_VERSION_V1,
+            kind: SURFACE_CURRENT_STATS_POLL_UNSPECIFIED,
+            request_status: SURFACE_CURRENT_STATS_REQUEST_NOT_APPLICABLE,
+            count_semantics: SURFACE_CURRENT_STATS_COUNT_SEMANTICS_NONE,
+            reserved: 0,
+            ticket: 0,
+            identity: GsplatSurfaceCurrentStatsIdentityV1::default(),
+            source_count: 0,
+            visible_count: 0,
+            contributor_count: 0,
+            drawn_count: 0,
+            reserved_u64: [0; 2],
+        }
+    }
+}
+
+const _: () = {
+    assert!(std::mem::size_of::<GsplatSurfaceCurrentStatsIdentityV1>() == 80);
+    assert!(
+        std::mem::align_of::<GsplatSurfaceCurrentStatsIdentityV1>() == std::mem::align_of::<u64>()
+    );
+    assert!(std::mem::offset_of!(GsplatSurfaceCurrentStatsIdentityV1, executed_plan) == 72);
+    assert!(std::mem::size_of::<GsplatSurfaceCurrentStatsRequestV1>() == 32);
+    assert!(
+        std::mem::align_of::<GsplatSurfaceCurrentStatsRequestV1>() == std::mem::align_of::<u64>()
+    );
+    assert!(std::mem::offset_of!(GsplatSurfaceCurrentStatsRequestV1, status) == 8);
+    assert!(std::mem::size_of::<GsplatSurfaceCurrentStatsSubmissionV1>() == 120);
+    assert!(
+        std::mem::align_of::<GsplatSurfaceCurrentStatsSubmissionV1>()
+            == std::mem::align_of::<u64>()
+    );
+    assert!(std::mem::offset_of!(GsplatSurfaceCurrentStatsSubmissionV1, ticket) == 16);
+    assert!(std::mem::offset_of!(GsplatSurfaceCurrentStatsSubmissionV1, identity) == 24);
+    assert!(std::mem::size_of::<GsplatSurfaceCurrentStatsPollV1>() == 144);
+    assert!(std::mem::align_of::<GsplatSurfaceCurrentStatsPollV1>() == std::mem::align_of::<u64>());
+    assert!(std::mem::offset_of!(GsplatSurfaceCurrentStatsPollV1, ticket) == 24);
+    assert!(std::mem::offset_of!(GsplatSurfaceCurrentStatsPollV1, identity) == 32);
+    assert!(std::mem::offset_of!(GsplatSurfaceCurrentStatsPollV1, source_count) == 112);
+};
 
 const SURFACE_PROJECTED_ABI_VERSION_V1: u32 = 1;
 
@@ -614,7 +794,11 @@ struct GsplatV1Header {
     version: u32,
 }
 
-fn validate_v1_output<T>(output: *mut T, operation: &'static str) -> Result<(), i32> {
+fn validate_versioned_output<T>(
+    output: *mut T,
+    expected_version: u32,
+    operation: &'static str,
+) -> Result<(), i32> {
     if output.is_null() {
         return Err(ffi_error(
             ErrorCode::InvalidArgument,
@@ -623,12 +807,12 @@ fn validate_v1_output<T>(output: *mut T, operation: &'static str) -> Result<(), 
     }
     let header = unsafe { &*output.cast::<GsplatV1Header>() };
     let expected_size = std::mem::size_of::<T>() as u32;
-    if header.version != SURFACE_PROJECTED_ABI_VERSION_V1 {
+    if header.version != expected_version {
         return Err(ffi_error(
             ErrorCode::InvalidArgument,
             format!(
                 "{operation}: unsupported version {} (expected {})",
-                header.version, SURFACE_PROJECTED_ABI_VERSION_V1
+                header.version, expected_version
             ),
         ));
     }
@@ -642,6 +826,145 @@ fn validate_v1_output<T>(output: *mut T, operation: &'static str) -> Result<(), 
         ));
     }
     Ok(())
+}
+
+fn validate_v1_output<T>(output: *mut T, operation: &'static str) -> Result<(), i32> {
+    validate_versioned_output(output, SURFACE_PROJECTED_ABI_VERSION_V1, operation)
+}
+
+fn surface_current_stats_request_status_to_ffi(reason: SurfaceCurrentStatsUnsampledReason) -> u32 {
+    match reason {
+        SurfaceCurrentStatsUnsampledReason::Busy => SURFACE_CURRENT_STATS_REQUEST_BUSY,
+        SurfaceCurrentStatsUnsampledReason::GpuUnavailable => {
+            SURFACE_CURRENT_STATS_REQUEST_GPU_UNAVAILABLE
+        }
+        SurfaceCurrentStatsUnsampledReason::ResourceUnavailable => {
+            SURFACE_CURRENT_STATS_REQUEST_RESOURCE_UNAVAILABLE
+        }
+        SurfaceCurrentStatsUnsampledReason::TicketExhausted => {
+            SURFACE_CURRENT_STATS_REQUEST_TICKET_EXHAUSTED
+        }
+    }
+}
+
+fn surface_current_stats_plan_to_ffi(plan: SurfaceCurrentStatsPlan) -> u32 {
+    match plan {
+        SurfaceCurrentStatsPlan::CpuPostSort => SURFACE_CURRENT_STATS_PLAN_CPU_POST_SORT,
+        SurfaceCurrentStatsPlan::GpuPostSort => SURFACE_CURRENT_STATS_PLAN_GPU_POST_SORT,
+        SurfaceCurrentStatsPlan::GpuPreproject => SURFACE_CURRENT_STATS_PLAN_GPU_PREPROJECT,
+    }
+}
+
+fn surface_current_stats_count_semantics_to_ffi(
+    semantics: SurfaceCurrentStatsCountSemantics,
+) -> u32 {
+    match semantics {
+        SurfaceCurrentStatsCountSemantics::DirectDrawEqualsVisible => {
+            SURFACE_CURRENT_STATS_COUNT_SEMANTICS_DIRECT_DRAW_EQUALS_VISIBLE
+        }
+        SurfaceCurrentStatsCountSemantics::IndirectDrawEqualsVisible => {
+            SURFACE_CURRENT_STATS_COUNT_SEMANTICS_INDIRECT_DRAW_EQUALS_VISIBLE
+        }
+        SurfaceCurrentStatsCountSemantics::IndirectDrawEqualsContributor => {
+            SURFACE_CURRENT_STATS_COUNT_SEMANTICS_INDIRECT_DRAW_EQUALS_CONTRIBUTOR
+        }
+    }
+}
+
+fn surface_current_stats_identity_to_ffi(
+    submission: SurfaceCurrentStatsSubmissionReceipt,
+) -> GsplatSurfaceCurrentStatsIdentityV1 {
+    let join = submission.join();
+    let frame = join.frame_identity();
+    GsplatSurfaceCurrentStatsIdentityV1 {
+        scene_generation: frame.scene_generation(),
+        camera_revision: frame.camera_revision(),
+        viewport_generation: frame.viewport_generation(),
+        contract_generation: frame.contract_generation(),
+        plan_set_generation: frame.plan_set_generation(),
+        order_generation: join.order_generation(),
+        raster_generation: join.raster_generation(),
+        encode_attempt: join.encode_attempt(),
+        presentation_sequence: join.presentation_sequence(),
+        executed_plan: surface_current_stats_plan_to_ffi(join.executed_plan()),
+        reserved: 0,
+    }
+}
+
+fn surface_current_stats_request_to_ffi(
+    request: SurfaceCurrentStatsRequest,
+) -> GsplatSurfaceCurrentStatsRequestV1 {
+    GsplatSurfaceCurrentStatsRequestV1 {
+        status: match request {
+            SurfaceCurrentStatsRequest::Requested => SURFACE_CURRENT_STATS_REQUEST_REQUESTED,
+            SurfaceCurrentStatsRequest::Unsampled(reason) => {
+                surface_current_stats_request_status_to_ffi(reason)
+            }
+        },
+        ..Default::default()
+    }
+}
+
+fn surface_current_stats_submission_to_ffi(
+    submission: SurfaceCurrentStatsSubmission,
+) -> GsplatSurfaceCurrentStatsSubmissionV1 {
+    match submission {
+        SurfaceCurrentStatsSubmission::NotRequested => GsplatSurfaceCurrentStatsSubmissionV1 {
+            status: SURFACE_CURRENT_STATS_SUBMISSION_NOT_REQUESTED,
+            ..Default::default()
+        },
+        SurfaceCurrentStatsSubmission::Issued(receipt) => GsplatSurfaceCurrentStatsSubmissionV1 {
+            status: SURFACE_CURRENT_STATS_SUBMISSION_ISSUED,
+            ticket: receipt.ticket(),
+            identity: surface_current_stats_identity_to_ffi(receipt),
+            ..Default::default()
+        },
+    }
+}
+
+fn surface_current_stats_poll_to_ffi(
+    poll: SurfaceCurrentStatsPoll,
+) -> GsplatSurfaceCurrentStatsPollV1 {
+    let mut output = GsplatSurfaceCurrentStatsPollV1::default();
+    match poll {
+        SurfaceCurrentStatsPoll::Empty => {
+            output.kind = SURFACE_CURRENT_STATS_POLL_EMPTY;
+        }
+        SurfaceCurrentStatsPoll::Unsampled(reason) => {
+            output.kind = SURFACE_CURRENT_STATS_POLL_UNSAMPLED;
+            output.request_status = surface_current_stats_request_status_to_ffi(reason);
+        }
+        SurfaceCurrentStatsPoll::Terminal(terminal) => {
+            let submission = terminal.submission();
+            output.ticket = submission.ticket();
+            output.identity = surface_current_stats_identity_to_ffi(submission);
+            match terminal {
+                SurfaceCurrentStatsTerminal::Ready(receipt) => {
+                    let counts = receipt.counts();
+                    output.kind = SURFACE_CURRENT_STATS_POLL_READY;
+                    output.count_semantics =
+                        surface_current_stats_count_semantics_to_ffi(receipt.count_semantics());
+                    output.source_count = counts.source();
+                    output.visible_count = counts.visible();
+                    output.contributor_count = counts.contributor();
+                    output.drawn_count = counts.drawn();
+                }
+                SurfaceCurrentStatsTerminal::MapFailure(_) => {
+                    output.kind = SURFACE_CURRENT_STATS_POLL_MAP_FAILURE;
+                }
+                SurfaceCurrentStatsTerminal::GenerationInvalidated(_) => {
+                    output.kind = SURFACE_CURRENT_STATS_POLL_GENERATION_INVALIDATED;
+                }
+                SurfaceCurrentStatsTerminal::Expired(_) => {
+                    output.kind = SURFACE_CURRENT_STATS_POLL_EXPIRED;
+                }
+                SurfaceCurrentStatsTerminal::Dropped(_) => {
+                    output.kind = SURFACE_CURRENT_STATS_POLL_DROPPED;
+                }
+            }
+        }
+    }
+    output
 }
 
 fn surface_projected_submission_to_ffi(
@@ -3530,6 +3853,130 @@ pub unsafe extern "C" fn gsplat_surface_renderer_render_frame(
     })
 }
 
+/// Request one current-stats sample from the next eligible Exact Surface
+/// frame. Sampling admission is returned in `out_request->status`; a legal
+/// call returns `GSPLAT_OK` even when the Renderer reports an unsampled status.
+///
+/// # Safety
+///
+/// `renderer` must be null or a live Surface renderer. `out_request` must
+/// describe a writable, initialized v1 structure.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gsplat_surface_renderer_request_current_stats_v1(
+    renderer: *mut GsplatSurfaceRenderer,
+    out_request: *mut GsplatSurfaceCurrentStatsRequestV1,
+) -> i32 {
+    ffi_catch_i32("gsplat_surface_renderer_request_current_stats_v1", || {
+        if let Err(code) = validate_versioned_output(
+            out_request,
+            SURFACE_CURRENT_STATS_ABI_VERSION_V1,
+            "gsplat_surface_renderer_request_current_stats_v1",
+        ) {
+            return code;
+        }
+        let renderer = match unsafe { renderer.as_mut() } {
+            Some(renderer) => renderer,
+            None => {
+                return ffi_error(
+                    ErrorCode::InvalidArgument,
+                    "gsplat_surface_renderer_request_current_stats_v1: renderer is null",
+                );
+            }
+        };
+        let request =
+            surface_current_stats_request_to_ffi(renderer.session.request_current_stats());
+        unsafe {
+            *out_request = request;
+        }
+        ffi_ok()
+    })
+}
+
+/// Copy the current frame's presentation-committed current-stats submission.
+/// Only `ISSUED` makes the ticket and identity payload applicable.
+///
+/// # Safety
+///
+/// `renderer` must be null or a live Surface renderer. `out_submission` must
+/// describe a writable, initialized v1 structure.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gsplat_surface_renderer_get_current_stats_submission_v1(
+    renderer: *const GsplatSurfaceRenderer,
+    out_submission: *mut GsplatSurfaceCurrentStatsSubmissionV1,
+) -> i32 {
+    ffi_catch_i32(
+        "gsplat_surface_renderer_get_current_stats_submission_v1",
+        || {
+            if let Err(code) = validate_versioned_output(
+                out_submission,
+                SURFACE_CURRENT_STATS_ABI_VERSION_V1,
+                "gsplat_surface_renderer_get_current_stats_submission_v1",
+            ) {
+                return code;
+            }
+            let renderer = match unsafe { renderer.as_ref() } {
+                Some(renderer) => renderer,
+                None => {
+                    return ffi_error(
+                        ErrorCode::InvalidArgument,
+                        concat!(
+                            "gsplat_surface_renderer_get_current_stats_submission_v1: ",
+                            "renderer is null"
+                        ),
+                    );
+                }
+            };
+            let submission = surface_current_stats_submission_to_ffi(
+                renderer.session.current_stats_submission(),
+            );
+            unsafe {
+                *out_submission = submission;
+            }
+            ffi_ok()
+        },
+    )
+}
+
+/// Poll and consume at most one global current-stats resolution or atomic
+/// terminal. `READY` contains inseparable ticket, identity, S/V/C/D and count
+/// semantics. Terminal failure kinds retain ticket/identity but no counts.
+///
+/// # Safety
+///
+/// `renderer` must be null or a live Surface renderer. `out_poll` must
+/// describe a writable, initialized v1 structure.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gsplat_surface_renderer_poll_current_stats_v1(
+    renderer: *mut GsplatSurfaceRenderer,
+    out_poll: *mut GsplatSurfaceCurrentStatsPollV1,
+) -> i32 {
+    ffi_catch_i32("gsplat_surface_renderer_poll_current_stats_v1", || {
+        // Validate before polling because a successful poll consumes at most
+        // one Renderer-owned resolution or terminal.
+        if let Err(code) = validate_versioned_output(
+            out_poll,
+            SURFACE_CURRENT_STATS_ABI_VERSION_V1,
+            "gsplat_surface_renderer_poll_current_stats_v1",
+        ) {
+            return code;
+        }
+        let renderer = match unsafe { renderer.as_mut() } {
+            Some(renderer) => renderer,
+            None => {
+                return ffi_error(
+                    ErrorCode::InvalidArgument,
+                    "gsplat_surface_renderer_poll_current_stats_v1: renderer is null",
+                );
+            }
+        };
+        let poll = surface_current_stats_poll_to_ffi(renderer.session.poll_current_stats());
+        unsafe {
+            *out_poll = poll;
+        }
+        ffi_ok()
+    })
+}
+
 /// Copy the last Surface renderer stats.
 ///
 /// # Safety
@@ -4480,7 +4927,9 @@ mod tests {
     use gsplat_core::{ErrorCode, RendererConfig};
     use gsplat_render_wgpu::{
         GeometryPath, Renderer, SurfaceAdaptiveGpuFailureReason, SurfaceAdaptiveState,
-        SurfaceCpuOrderMeasurement, SurfaceOrderBackend, SurfaceOrderBackendUsed,
+        SurfaceCpuOrderMeasurement, SurfaceCurrentStatsCountSemantics, SurfaceCurrentStatsPlan,
+        SurfaceCurrentStatsPoll, SurfaceCurrentStatsRequest, SurfaceCurrentStatsSubmission,
+        SurfaceCurrentStatsUnsampledReason, SurfaceOrderBackend, SurfaceOrderBackendUsed,
         SurfaceOrderMeasurement, SurfaceOrderMeasurementFailure,
         SurfaceOrderMeasurementFailureReason, SurfaceProjectedDrawExecution,
         SurfaceProjectedDrawMeasurement, SurfaceTimingSource,
@@ -4488,7 +4937,9 @@ mod tests {
 
     use super::{
         GsplatCamera, GsplatConfig, GsplatContext, GsplatSurfaceCameraReceiptV1,
-        GsplatSurfaceCpuOrderMeasurement, GsplatSurfaceExactness, GsplatSurfaceOrderCounts,
+        GsplatSurfaceCpuOrderMeasurement, GsplatSurfaceCurrentStatsIdentityV1,
+        GsplatSurfaceCurrentStatsPollV1, GsplatSurfaceCurrentStatsRequestV1,
+        GsplatSurfaceCurrentStatsSubmissionV1, GsplatSurfaceExactness, GsplatSurfaceOrderCounts,
         GsplatSurfaceOrderMeasurement, GsplatSurfaceOrderMeasurementFailure,
         GsplatSurfaceOrderSubmission, GsplatSurfacePresentation, GsplatSurfaceProjectedCountsV1,
         GsplatSurfaceProjectedFailureV1, GsplatSurfaceProjectedMeasurementV1,
@@ -4500,23 +4951,28 @@ mod tests {
         gsplat_context_load_scene_path, gsplat_context_render_frame,
         gsplat_context_set_auto_camera, gsplat_context_set_camera, gsplat_error_message,
         gsplat_last_error_message, gsplat_surface_renderer_get_camera_receipt_v1,
+        gsplat_surface_renderer_get_current_stats_submission_v1,
         gsplat_surface_renderer_get_exactness, gsplat_surface_renderer_get_order_submission,
         gsplat_surface_renderer_get_presentation, gsplat_surface_renderer_get_stats,
         gsplat_surface_renderer_orbit, gsplat_surface_renderer_pan,
         gsplat_surface_renderer_poll_cpu_order_measurement,
+        gsplat_surface_renderer_poll_current_stats_v1,
         gsplat_surface_renderer_poll_order_measurement,
         gsplat_surface_renderer_poll_order_measurement_failure,
-        gsplat_surface_renderer_render_frame, gsplat_surface_renderer_reset_camera,
-        gsplat_surface_renderer_resize, gsplat_surface_renderer_set_async_geometry,
-        gsplat_surface_renderer_set_async_sort, gsplat_surface_renderer_set_frame_latency,
-        gsplat_surface_renderer_set_geometry_path, gsplat_surface_renderer_set_gpu_preproject,
+        gsplat_surface_renderer_render_frame, gsplat_surface_renderer_request_current_stats_v1,
+        gsplat_surface_renderer_reset_camera, gsplat_surface_renderer_resize,
+        gsplat_surface_renderer_set_async_geometry, gsplat_surface_renderer_set_async_sort,
+        gsplat_surface_renderer_set_frame_latency, gsplat_surface_renderer_set_geometry_path,
+        gsplat_surface_renderer_set_gpu_preproject,
         gsplat_surface_renderer_set_gpu_preproject_double_buffer,
         gsplat_surface_renderer_set_instance_buffer_count,
         gsplat_surface_renderer_set_order_backend, gsplat_surface_renderer_set_sort_interval,
         gsplat_surface_renderer_take_order_counts, gsplat_surface_renderer_zoom,
         load_ply_path_into_renderer, multiply_mat4_f32, push_surface_order_counts,
         push_surface_projected_counts, surface_adaptive_gpu_failure_flags,
-        surface_camera_from_control, surface_cpu_order_measurement_to_ffi, surface_order_counts,
+        surface_camera_from_control, surface_cpu_order_measurement_to_ffi,
+        surface_current_stats_poll_to_ffi, surface_current_stats_request_to_ffi,
+        surface_current_stats_submission_to_ffi, surface_order_counts,
         surface_order_measurement_failure_to_ffi, surface_order_measurement_to_ffi,
         surface_projected_counts, surface_projected_measurement_to_ffi,
         surface_projected_policy_from_ffi, take_surface_order_counts,
@@ -4544,6 +5000,63 @@ mod tests {
             40
         );
         assert_eq!(std::mem::size_of::<GsplatSurfaceOrderSubmission>(), 32);
+        assert_eq!(
+            std::mem::size_of::<GsplatSurfaceCurrentStatsIdentityV1>(),
+            80
+        );
+        assert_eq!(
+            std::mem::size_of::<GsplatSurfaceCurrentStatsRequestV1>(),
+            32
+        );
+        assert_eq!(
+            std::mem::size_of::<GsplatSurfaceCurrentStatsSubmissionV1>(),
+            120
+        );
+        assert_eq!(std::mem::size_of::<GsplatSurfaceCurrentStatsPollV1>(), 144);
+        assert_eq!(
+            std::mem::offset_of!(GsplatSurfaceCurrentStatsIdentityV1, executed_plan),
+            72
+        );
+        assert_eq!(
+            std::mem::offset_of!(GsplatSurfaceCurrentStatsRequestV1, status),
+            8
+        );
+        assert_eq!(
+            std::mem::offset_of!(GsplatSurfaceCurrentStatsSubmissionV1, ticket),
+            16
+        );
+        assert_eq!(
+            std::mem::offset_of!(GsplatSurfaceCurrentStatsSubmissionV1, identity),
+            24
+        );
+        assert_eq!(
+            std::mem::offset_of!(GsplatSurfaceCurrentStatsPollV1, ticket),
+            24
+        );
+        assert_eq!(
+            std::mem::offset_of!(GsplatSurfaceCurrentStatsPollV1, identity),
+            32
+        );
+        assert_eq!(
+            std::mem::offset_of!(GsplatSurfaceCurrentStatsPollV1, source_count),
+            112
+        );
+        assert_eq!(
+            std::mem::align_of::<GsplatSurfaceCurrentStatsIdentityV1>(),
+            std::mem::align_of::<u64>()
+        );
+        assert_eq!(
+            std::mem::align_of::<GsplatSurfaceCurrentStatsRequestV1>(),
+            std::mem::align_of::<u64>()
+        );
+        assert_eq!(
+            std::mem::align_of::<GsplatSurfaceCurrentStatsSubmissionV1>(),
+            std::mem::align_of::<u64>()
+        );
+        assert_eq!(
+            std::mem::align_of::<GsplatSurfaceCurrentStatsPollV1>(),
+            std::mem::align_of::<u64>()
+        );
         assert_eq!(
             std::mem::size_of::<GsplatSurfaceProjectedSubmissionV1>(),
             48
@@ -4661,6 +5174,174 @@ mod tests {
         assert_eq!(view_projection, projection);
         assert!(projection[0] > 0.0 && projection[5] > projection[0]);
         assert_eq!(projection[14], 1.0);
+    }
+
+    #[test]
+    fn current_stats_v1_numeric_domains_are_closed_and_stable() {
+        assert_eq!(super::SURFACE_CURRENT_STATS_ABI_VERSION_V1, 1);
+        assert_eq!(super::SURFACE_CURRENT_STATS_REQUEST_NOT_APPLICABLE, 0);
+        assert_eq!(super::SURFACE_CURRENT_STATS_REQUEST_REQUESTED, 1);
+        assert_eq!(super::SURFACE_CURRENT_STATS_REQUEST_BUSY, 2);
+        assert_eq!(super::SURFACE_CURRENT_STATS_REQUEST_GPU_UNAVAILABLE, 3);
+        assert_eq!(super::SURFACE_CURRENT_STATS_REQUEST_RESOURCE_UNAVAILABLE, 4);
+        assert_eq!(super::SURFACE_CURRENT_STATS_REQUEST_TICKET_EXHAUSTED, 5);
+        assert_eq!(super::SURFACE_CURRENT_STATS_SUBMISSION_UNSPECIFIED, 0);
+        assert_eq!(super::SURFACE_CURRENT_STATS_SUBMISSION_NOT_REQUESTED, 1);
+        assert_eq!(super::SURFACE_CURRENT_STATS_SUBMISSION_ISSUED, 2);
+        assert_eq!(super::SURFACE_CURRENT_STATS_PLAN_NOT_APPLICABLE, 0);
+        assert_eq!(
+            super::surface_current_stats_plan_to_ffi(SurfaceCurrentStatsPlan::CpuPostSort),
+            1
+        );
+        assert_eq!(
+            super::surface_current_stats_plan_to_ffi(SurfaceCurrentStatsPlan::GpuPostSort),
+            2
+        );
+        assert_eq!(
+            super::surface_current_stats_plan_to_ffi(SurfaceCurrentStatsPlan::GpuPreproject),
+            3
+        );
+        assert_eq!(super::SURFACE_CURRENT_STATS_POLL_UNSPECIFIED, 0);
+        assert_eq!(super::SURFACE_CURRENT_STATS_POLL_EMPTY, 1);
+        assert_eq!(super::SURFACE_CURRENT_STATS_POLL_UNSAMPLED, 2);
+        assert_eq!(super::SURFACE_CURRENT_STATS_POLL_READY, 3);
+        assert_eq!(super::SURFACE_CURRENT_STATS_POLL_MAP_FAILURE, 4);
+        assert_eq!(super::SURFACE_CURRENT_STATS_POLL_GENERATION_INVALIDATED, 5);
+        assert_eq!(super::SURFACE_CURRENT_STATS_POLL_EXPIRED, 6);
+        assert_eq!(super::SURFACE_CURRENT_STATS_POLL_DROPPED, 7);
+        assert_eq!(super::SURFACE_CURRENT_STATS_COUNT_SEMANTICS_NONE, 0);
+        assert_eq!(
+            super::surface_current_stats_count_semantics_to_ffi(
+                SurfaceCurrentStatsCountSemantics::DirectDrawEqualsVisible,
+            ),
+            1
+        );
+        assert_eq!(
+            super::surface_current_stats_count_semantics_to_ffi(
+                SurfaceCurrentStatsCountSemantics::IndirectDrawEqualsVisible,
+            ),
+            2
+        );
+        assert_eq!(
+            super::surface_current_stats_count_semantics_to_ffi(
+                SurfaceCurrentStatsCountSemantics::IndirectDrawEqualsContributor,
+            ),
+            3
+        );
+    }
+
+    #[test]
+    fn current_stats_v1_translates_legacy_surface_three_states_as_success_payloads() {
+        let request = surface_current_stats_request_to_ffi(SurfaceCurrentStatsRequest::Unsampled(
+            SurfaceCurrentStatsUnsampledReason::GpuUnavailable,
+        ));
+        assert_eq!(request.version, 1);
+        assert_eq!(
+            request.struct_size as usize,
+            std::mem::size_of_val(&request)
+        );
+        assert_eq!(request.status, 3);
+        assert_eq!(request.reserved, 0);
+        assert_eq!(request.reserved_u64, [0; 2]);
+
+        let submission =
+            surface_current_stats_submission_to_ffi(SurfaceCurrentStatsSubmission::NotRequested);
+        assert_eq!(submission.status, 1);
+        assert_eq!(submission.ticket, 0);
+        assert_eq!(
+            submission.identity,
+            GsplatSurfaceCurrentStatsIdentityV1::default()
+        );
+
+        let poll = surface_current_stats_poll_to_ffi(SurfaceCurrentStatsPoll::Empty);
+        assert_eq!(poll.kind, 1);
+        assert_eq!(poll.request_status, 0);
+        assert_eq!(poll.count_semantics, 0);
+        assert_eq!(poll.ticket, 0);
+        assert_eq!(
+            poll.identity,
+            GsplatSurfaceCurrentStatsIdentityV1::default()
+        );
+        assert_eq!(
+            (
+                poll.source_count,
+                poll.visible_count,
+                poll.contributor_count,
+                poll.drawn_count,
+            ),
+            (0, 0, 0, 0)
+        );
+    }
+
+    #[test]
+    fn current_stats_v1_rejects_null_size_and_version_without_output_mutation() {
+        let invalid = ErrorCode::InvalidArgument.as_i32();
+
+        assert_eq!(
+            unsafe {
+                gsplat_surface_renderer_request_current_stats_v1(ptr::null_mut(), ptr::null_mut())
+            },
+            invalid
+        );
+
+        let mut request = GsplatSurfaceCurrentStatsRequestV1 {
+            status: 0xfeed,
+            ..Default::default()
+        };
+        let request_before = request;
+        assert_eq!(
+            unsafe {
+                gsplat_surface_renderer_request_current_stats_v1(ptr::null_mut(), &mut request)
+            },
+            invalid
+        );
+        assert_eq!(request, request_before);
+
+        let mut submission = GsplatSurfaceCurrentStatsSubmissionV1 {
+            version: 99,
+            status: 0xfeed,
+            ..Default::default()
+        };
+        let submission_before = submission;
+        assert_eq!(
+            unsafe {
+                gsplat_surface_renderer_get_current_stats_submission_v1(
+                    ptr::null(),
+                    &mut submission,
+                )
+            },
+            invalid
+        );
+        assert_eq!(submission, submission_before);
+
+        let mut poll = GsplatSurfaceCurrentStatsPollV1 {
+            struct_size: std::mem::size_of::<GsplatSurfaceCurrentStatsPollV1>() as u32 - 1,
+            kind: 0xfeed,
+            ..Default::default()
+        };
+        let poll_before = poll;
+        assert_eq!(
+            unsafe { gsplat_surface_renderer_poll_current_stats_v1(ptr::null_mut(), &mut poll) },
+            invalid
+        );
+        assert_eq!(poll, poll_before);
+    }
+
+    #[test]
+    fn current_stats_bridge_adds_no_ffi_owned_renderer_state() {
+        let source = include_str!("lib.rs");
+        let struct_start = source
+            .find("pub struct GsplatSurfaceRenderer {")
+            .expect("Surface renderer definition");
+        let after_start = &source[struct_start..];
+        let struct_end = after_start
+            .find("\n}\n\n#[derive(Debug, Clone, Copy)]\nstruct SurfaceOrderMeasurementContext")
+            .expect("Surface renderer definition terminator");
+        let fields = &after_start[..struct_end];
+        assert!(
+            !fields.contains("current_stats"),
+            "the current-stats C bridge must not add queue/cache/policy/result fields",
+        );
     }
 
     #[test]

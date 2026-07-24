@@ -53,6 +53,38 @@ boundary used by the Android JNI bridge and the iOS `GsplatKit` wrapper.
   Surface-unavailable reason let a
   strict collector account for warmup, measured, and terminal-flush frames and
   reject any issued ticket that lacks exactly one success or failure.
+- Current S/V/C/D evidence uses the additive, stateless `_v1` sequence:
+  initialize each output's `struct_size`/`version`, call
+  `gsplat_surface_renderer_request_current_stats_v1()`, render, read
+  `gsplat_surface_renderer_get_current_stats_submission_v1()`, then repeatedly
+  call `gsplat_surface_renderer_poll_current_stats_v1()`. Global C errors only
+  report an illegal call; request admission is instead `REQUESTED`, `BUSY`,
+  `GPU_UNAVAILABLE`, `RESOURCE_UNAVAILABLE`, or `TICKET_EXHAUSTED` in the
+  current-stats output.
+- A submission is either `NOT_REQUESTED` or `ISSUED`. Only `ISSUED` makes its
+  non-zero ticket and complete join identity applicable. That identity retains
+  scene, camera, viewport, contract and plan-set generations, the executed
+  plan, order/raster generations, encode attempt, and presentation sequence.
+  Consumers must join the terminal against every field, not ticket alone.
+- The poll is a global atomic single-pop. `UNSAMPLED` is a pre-ticket request
+  resolution; it has no ticket or identity. `READY` carries ticket, complete
+  identity, S/V/C/D and count semantics in the same struct—there is no second
+  take-counts call. `MAP_FAILURE`, `GENERATION_INVALIDATED`, `EXPIRED`, and
+  `DROPPED` retain ticket/identity but have no usable counts. Payload zeros
+  under other kinds are inapplicable fields, never real counts, generations,
+  or a real ticket.
+- After an `ISSUED` submission, `EMPTY` means no globally oldest resolution is
+  ready now; the consumer may describe that issued ticket locally as pending
+  and continue rendering/polling. `EMPTY` alone does not identify a ticket or
+  prove that one was requested. Evidence is bounded, so an issued receipt may
+  later resolve as `EXPIRED` or `DROPPED`; strict evidence rejects that ticket.
+  It must never fill a missing current receipt from legacy
+  `gsplat_surface_renderer_get_stats()`.
+- Before the M2 Surface cutover, the legacy Surface honestly translates as
+  request `GPU_UNAVAILABLE`, submission `NOT_REQUESTED`, and poll `EMPTY`, all
+  with `GSPLAT_OK`. Later Renderer activation can return `ISSUED` and terminal
+  outcomes without changing this C contract. The C bridge owns no queue,
+  cache, tombstone, ticket, generation, sampling policy, or result state.
 - `GsplatSurfaceSortStats.flags` preserves its 48-byte layout and now reports
   an Adaptive GPU-unavailable reason (unsupported, initialization,
   out-of-memory, or validation) in bits 15-18. This makes an Adaptive CPU
