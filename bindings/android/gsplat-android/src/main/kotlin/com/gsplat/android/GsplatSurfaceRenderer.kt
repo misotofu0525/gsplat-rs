@@ -7,6 +7,7 @@ class GsplatSurfaceRenderer private constructor(
     private var nativeHandle: Long
 ) : Closeable {
     private val lock = Any()
+    private val currentStatsAdapter = GsplatSurfaceCurrentStatsAdapter()
 
     val isClosed: Boolean
         get() = synchronized(lock) { nativeHandle == 0L }
@@ -132,6 +133,38 @@ class GsplatSurfaceRenderer private constructor(
             checkOpen()
             checkResult(NativeBridge.renderSurfaceFrame(nativeHandle))
         }
+    }
+
+    /** Explicit observer path: request, render, read submission, and single-poll. */
+    fun renderFrameWithCurrentStats(): GsplatSurfaceCurrentStatsCycle {
+        synchronized(lock) {
+            checkOpen()
+            val request = currentStatsAdapter.request(nativeHandle)
+            val renderCode = NativeBridge.renderSurfaceFrame(nativeHandle)
+            if (renderCode != 0) {
+                currentStatsAdapter.abandonFrame()
+                checkResult(renderCode)
+            }
+            return currentStatsAdapter.complete(nativeHandle, request)
+        }
+    }
+
+    /** Advances one already-issued current-stats ticket without requesting or rendering. */
+    fun pollCurrentStats(): GsplatSurfaceCurrentStatsState {
+        synchronized(lock) {
+            checkOpen()
+            return currentStatsAdapter.poll(nativeHandle)
+        }
+    }
+
+    /**
+     * Returns this adapter's latest current-stats state. Counts exist only in
+     * [GsplatSurfaceCurrentStatsState.Ready]; all other states intentionally
+     * carry no fallback from [stats].
+     */
+    fun currentStats(): GsplatSurfaceCurrentStatsState = synchronized(lock) {
+        checkOpen()
+        currentStatsAdapter.state
     }
 
     fun stats(): GsplatSurfaceStats {
@@ -382,6 +415,7 @@ class GsplatSurfaceRenderer private constructor(
         synchronized(lock) {
             val handle = nativeHandle
             nativeHandle = 0L
+            currentStatsAdapter.reset()
             if (handle != 0L) {
                 NativeBridge.destroySurfaceRenderer(handle)
             }

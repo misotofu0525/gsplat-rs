@@ -161,6 +161,48 @@ JNIEXPORT jint JNICALL Java_com_gsplat_example_GsplatJniSmoke_nativeProjectedAbi
   return 0;
 }
 
+JNIEXPORT jint JNICALL Java_com_gsplat_example_GsplatJniSmoke_nativeCurrentStatsAbiSmoke(
+    JNIEnv *env,
+    jclass cls) {
+  (void)env;
+  (void)cls;
+
+  GsplatSurfaceCurrentStatsRequestV1 request;
+  memset(&request, 0, sizeof(request));
+  request.struct_size = (uint32_t)sizeof(request);
+  request.version = GSPLAT_SURFACE_CURRENT_STATS_ABI_VERSION_V1;
+  GsplatSurfaceCurrentStatsRequestV1 request_before = request;
+  if (gsplat_surface_renderer_request_current_stats_v1(NULL, &request) !=
+          GSPLAT_ERROR_INVALID_ARGUMENT ||
+      memcmp(&request, &request_before, sizeof(request)) != 0) {
+    return 50;
+  }
+
+  GsplatSurfaceCurrentStatsSubmissionV1 submission;
+  memset(&submission, 0, sizeof(submission));
+  submission.struct_size = (uint32_t)sizeof(submission);
+  submission.version = GSPLAT_SURFACE_CURRENT_STATS_ABI_VERSION_V1;
+  GsplatSurfaceCurrentStatsSubmissionV1 submission_before = submission;
+  if (gsplat_surface_renderer_get_current_stats_submission_v1(NULL, &submission) !=
+          GSPLAT_ERROR_INVALID_ARGUMENT ||
+      memcmp(&submission, &submission_before, sizeof(submission)) != 0) {
+    return 51;
+  }
+
+  GsplatSurfaceCurrentStatsPollV1 poll;
+  memset(&poll, 0, sizeof(poll));
+  poll.struct_size = (uint32_t)sizeof(poll);
+  poll.version = GSPLAT_SURFACE_CURRENT_STATS_ABI_VERSION_V1;
+  GsplatSurfaceCurrentStatsPollV1 poll_before = poll;
+  if (gsplat_surface_renderer_poll_current_stats_v1(NULL, &poll) !=
+          GSPLAT_ERROR_INVALID_ARGUMENT ||
+      memcmp(&poll, &poll_before, sizeof(poll)) != 0) {
+    return 52;
+  }
+
+  return 0;
+}
+
 #if defined(__ANDROID__)
 
 #define GSPLAT_LOG_TAG "gsplat_jni"
@@ -187,6 +229,80 @@ static jlong float_bits_to_jlong(float value) {
   uint32_t bits = 0;
   memcpy(&bits, &value, sizeof(bits));
   return (jlong)bits;
+}
+
+static void initialize_current_stats_request_v1(
+    GsplatSurfaceCurrentStatsRequestV1 *request) {
+  memset(request, 0, sizeof(*request));
+  request->struct_size = (uint32_t)sizeof(*request);
+  request->version = GSPLAT_SURFACE_CURRENT_STATS_ABI_VERSION_V1;
+}
+
+static void initialize_current_stats_submission_v1(
+    GsplatSurfaceCurrentStatsSubmissionV1 *submission) {
+  memset(submission, 0, sizeof(*submission));
+  submission->struct_size = (uint32_t)sizeof(*submission);
+  submission->version = GSPLAT_SURFACE_CURRENT_STATS_ABI_VERSION_V1;
+}
+
+static void initialize_current_stats_poll_v1(GsplatSurfaceCurrentStatsPollV1 *poll) {
+  memset(poll, 0, sizeof(*poll));
+  poll->struct_size = (uint32_t)sizeof(*poll);
+  poll->version = GSPLAT_SURFACE_CURRENT_STATS_ABI_VERSION_V1;
+}
+
+static int current_stats_header_matches(
+    uint32_t struct_size,
+    uint32_t version,
+    size_t expected_size) {
+  return struct_size == expected_size &&
+      version == GSPLAT_SURFACE_CURRENT_STATS_ABI_VERSION_V1;
+}
+
+static int current_stats_identity_is_zero(
+    const GsplatSurfaceCurrentStatsIdentityV1 *identity) {
+  GsplatSurfaceCurrentStatsIdentityV1 zero_identity;
+  memset(&zero_identity, 0, sizeof(zero_identity));
+  return memcmp(identity, &zero_identity, sizeof(*identity)) == 0;
+}
+
+static int current_stats_identity_is_applicable(
+    const GsplatSurfaceCurrentStatsIdentityV1 *identity) {
+  return identity->executed_plan >= GSPLAT_SURFACE_CURRENT_STATS_PLAN_CPU_POST_SORT &&
+      identity->executed_plan <= GSPLAT_SURFACE_CURRENT_STATS_PLAN_GPU_PREPROJECT &&
+      identity->reserved == 0;
+}
+
+static int current_stats_counts_are_valid(const GsplatSurfaceCurrentStatsPollV1 *poll) {
+  if (poll->contributor_count > poll->visible_count ||
+      poll->visible_count > poll->source_count ||
+      poll->drawn_count > poll->source_count) {
+    return 0;
+  }
+  switch (poll->count_semantics) {
+    case GSPLAT_SURFACE_CURRENT_STATS_COUNT_SEMANTICS_DIRECT_DRAW_EQUALS_VISIBLE:
+    case GSPLAT_SURFACE_CURRENT_STATS_COUNT_SEMANTICS_INDIRECT_DRAW_EQUALS_VISIBLE:
+      return poll->drawn_count == poll->visible_count;
+    case GSPLAT_SURFACE_CURRENT_STATS_COUNT_SEMANTICS_INDIRECT_DRAW_EQUALS_CONTRIBUTOR:
+      return poll->drawn_count == poll->contributor_count;
+    default:
+      return 0;
+  }
+}
+
+static void current_stats_identity_to_jlongs(
+    const GsplatSurfaceCurrentStatsIdentityV1 *identity,
+    jlong *values) {
+  values[0] = (jlong)identity->scene_generation;
+  values[1] = (jlong)identity->camera_revision;
+  values[2] = (jlong)identity->viewport_generation;
+  values[3] = (jlong)identity->contract_generation;
+  values[4] = (jlong)identity->plan_set_generation;
+  values[5] = (jlong)identity->order_generation;
+  values[6] = (jlong)identity->raster_generation;
+  values[7] = (jlong)identity->encode_attempt;
+  values[8] = (jlong)identity->presentation_sequence;
+  values[9] = (jlong)identity->executed_plan;
 }
 
 static void initialize_projected_submission_v1(
@@ -723,6 +839,183 @@ JNIEXPORT jint JNICALL Java_com_gsplat_android_NativeBridge_renderSurfaceFrame(
   }
 
   return gsplat_surface_renderer_render_frame(handle->renderer);
+}
+
+JNIEXPORT jint JNICALL Java_com_gsplat_android_NativeBridge_requestSurfaceCurrentStatsV1(
+    JNIEnv *env,
+    jclass cls,
+    jlong native_handle,
+    jlongArray out_request) {
+  (void)cls;
+
+  AndroidSurfaceRendererHandle *handle = android_handle_from_jlong(native_handle);
+  if (handle == NULL || handle->renderer == NULL || out_request == NULL ||
+      (*env)->GetArrayLength(env, out_request) < 1) {
+    return GSPLAT_ERROR_INVALID_ARGUMENT;
+  }
+
+  GsplatSurfaceCurrentStatsRequestV1 request;
+  initialize_current_stats_request_v1(&request);
+  int32_t rc = gsplat_surface_renderer_request_current_stats_v1(
+      handle->renderer,
+      &request);
+  if (rc != GSPLAT_OK) {
+    return rc;
+  }
+  if (!current_stats_header_matches(
+          request.struct_size,
+          request.version,
+          sizeof(request)) ||
+      request.status < GSPLAT_SURFACE_CURRENT_STATS_REQUEST_REQUESTED ||
+      request.status > GSPLAT_SURFACE_CURRENT_STATS_REQUEST_TICKET_EXHAUSTED ||
+      request.reserved != 0 || request.reserved_u64[0] != 0 ||
+      request.reserved_u64[1] != 0) {
+    return GSPLAT_ERROR_INTERNAL;
+  }
+
+  jlong values[1] = {(jlong)request.status};
+  (*env)->SetLongArrayRegion(env, out_request, 0, 1, values);
+  return (*env)->ExceptionCheck(env) ? GSPLAT_ERROR_INTERNAL : GSPLAT_OK;
+}
+
+JNIEXPORT jint JNICALL
+Java_com_gsplat_android_NativeBridge_getSurfaceCurrentStatsSubmissionV1(
+    JNIEnv *env,
+    jclass cls,
+    jlong native_handle,
+    jlongArray out_submission) {
+  (void)cls;
+
+  enum { CURRENT_STATS_SUBMISSION_RAW_VALUE_COUNT = 12 };
+  AndroidSurfaceRendererHandle *handle = android_handle_from_jlong(native_handle);
+  if (handle == NULL || handle->renderer == NULL || out_submission == NULL ||
+      (*env)->GetArrayLength(env, out_submission) <
+          CURRENT_STATS_SUBMISSION_RAW_VALUE_COUNT) {
+    return GSPLAT_ERROR_INVALID_ARGUMENT;
+  }
+
+  GsplatSurfaceCurrentStatsSubmissionV1 submission;
+  initialize_current_stats_submission_v1(&submission);
+  int32_t rc = gsplat_surface_renderer_get_current_stats_submission_v1(
+      handle->renderer,
+      &submission);
+  if (rc != GSPLAT_OK) {
+    return rc;
+  }
+  if (!current_stats_header_matches(
+          submission.struct_size,
+          submission.version,
+          sizeof(submission)) ||
+      submission.status < GSPLAT_SURFACE_CURRENT_STATS_SUBMISSION_NOT_REQUESTED ||
+      submission.status > GSPLAT_SURFACE_CURRENT_STATS_SUBMISSION_ISSUED ||
+      submission.reserved != 0 || submission.reserved_u64[0] != 0 ||
+      submission.reserved_u64[1] != 0 ||
+      (submission.status == GSPLAT_SURFACE_CURRENT_STATS_SUBMISSION_NOT_REQUESTED &&
+       (submission.ticket != 0 ||
+        !current_stats_identity_is_zero(&submission.identity))) ||
+      (submission.status == GSPLAT_SURFACE_CURRENT_STATS_SUBMISSION_ISSUED &&
+       (submission.ticket == 0 ||
+        !current_stats_identity_is_applicable(&submission.identity)))) {
+    return GSPLAT_ERROR_INTERNAL;
+  }
+
+  jlong values[CURRENT_STATS_SUBMISSION_RAW_VALUE_COUNT] = {0};
+  values[0] = (jlong)submission.status;
+  values[1] = (jlong)submission.ticket;
+  current_stats_identity_to_jlongs(&submission.identity, &values[2]);
+  (*env)->SetLongArrayRegion(
+      env,
+      out_submission,
+      0,
+      CURRENT_STATS_SUBMISSION_RAW_VALUE_COUNT,
+      values);
+  return (*env)->ExceptionCheck(env) ? GSPLAT_ERROR_INTERNAL : GSPLAT_OK;
+}
+
+JNIEXPORT jint JNICALL Java_com_gsplat_android_NativeBridge_pollSurfaceCurrentStatsV1(
+    JNIEnv *env,
+    jclass cls,
+    jlong native_handle,
+    jlongArray out_poll) {
+  (void)cls;
+
+  enum { CURRENT_STATS_POLL_RAW_VALUE_COUNT = 18 };
+  AndroidSurfaceRendererHandle *handle = android_handle_from_jlong(native_handle);
+  if (handle == NULL || handle->renderer == NULL || out_poll == NULL ||
+      (*env)->GetArrayLength(env, out_poll) < CURRENT_STATS_POLL_RAW_VALUE_COUNT) {
+    return GSPLAT_ERROR_INVALID_ARGUMENT;
+  }
+
+  GsplatSurfaceCurrentStatsPollV1 poll;
+  initialize_current_stats_poll_v1(&poll);
+  int32_t rc = gsplat_surface_renderer_poll_current_stats_v1(handle->renderer, &poll);
+  if (rc != GSPLAT_OK) {
+    return rc;
+  }
+
+  const int counts_zero = poll.source_count == 0 && poll.visible_count == 0 &&
+      poll.contributor_count == 0 && poll.drawn_count == 0;
+  const int reserved_zero = poll.reserved == 0 && poll.reserved_u64[0] == 0 &&
+      poll.reserved_u64[1] == 0;
+  int valid_payload = 0;
+  switch (poll.kind) {
+    case GSPLAT_SURFACE_CURRENT_STATS_POLL_EMPTY:
+      valid_payload = poll.request_status ==
+              GSPLAT_SURFACE_CURRENT_STATS_REQUEST_NOT_APPLICABLE &&
+          poll.count_semantics == GSPLAT_SURFACE_CURRENT_STATS_COUNT_SEMANTICS_NONE &&
+          poll.ticket == 0 && current_stats_identity_is_zero(&poll.identity) &&
+          counts_zero;
+      break;
+    case GSPLAT_SURFACE_CURRENT_STATS_POLL_UNSAMPLED:
+      valid_payload =
+          poll.request_status >= GSPLAT_SURFACE_CURRENT_STATS_REQUEST_BUSY &&
+          poll.request_status <= GSPLAT_SURFACE_CURRENT_STATS_REQUEST_TICKET_EXHAUSTED &&
+          poll.count_semantics == GSPLAT_SURFACE_CURRENT_STATS_COUNT_SEMANTICS_NONE &&
+          poll.ticket == 0 && current_stats_identity_is_zero(&poll.identity) &&
+          counts_zero;
+      break;
+    case GSPLAT_SURFACE_CURRENT_STATS_POLL_READY:
+      valid_payload = poll.request_status ==
+              GSPLAT_SURFACE_CURRENT_STATS_REQUEST_NOT_APPLICABLE &&
+          poll.ticket != 0 && current_stats_identity_is_applicable(&poll.identity) &&
+          current_stats_counts_are_valid(&poll);
+      break;
+    case GSPLAT_SURFACE_CURRENT_STATS_POLL_MAP_FAILURE:
+    case GSPLAT_SURFACE_CURRENT_STATS_POLL_GENERATION_INVALIDATED:
+    case GSPLAT_SURFACE_CURRENT_STATS_POLL_EXPIRED:
+    case GSPLAT_SURFACE_CURRENT_STATS_POLL_DROPPED:
+      valid_payload = poll.request_status ==
+              GSPLAT_SURFACE_CURRENT_STATS_REQUEST_NOT_APPLICABLE &&
+          poll.count_semantics == GSPLAT_SURFACE_CURRENT_STATS_COUNT_SEMANTICS_NONE &&
+          poll.ticket != 0 && current_stats_identity_is_applicable(&poll.identity) &&
+          counts_zero;
+      break;
+    default:
+      valid_payload = 0;
+      break;
+  }
+  if (!current_stats_header_matches(poll.struct_size, poll.version, sizeof(poll)) ||
+      !reserved_zero || !valid_payload) {
+    return GSPLAT_ERROR_INTERNAL;
+  }
+
+  jlong values[CURRENT_STATS_POLL_RAW_VALUE_COUNT] = {0};
+  values[0] = (jlong)poll.kind;
+  values[1] = (jlong)poll.request_status;
+  values[2] = (jlong)poll.count_semantics;
+  values[3] = (jlong)poll.ticket;
+  current_stats_identity_to_jlongs(&poll.identity, &values[4]);
+  values[14] = (jlong)poll.source_count;
+  values[15] = (jlong)poll.visible_count;
+  values[16] = (jlong)poll.contributor_count;
+  values[17] = (jlong)poll.drawn_count;
+  (*env)->SetLongArrayRegion(
+      env,
+      out_poll,
+      0,
+      CURRENT_STATS_POLL_RAW_VALUE_COUNT,
+      values);
+  return (*env)->ExceptionCheck(env) ? GSPLAT_ERROR_INTERNAL : GSPLAT_OK;
 }
 
 JNIEXPORT jint JNICALL Java_com_gsplat_android_NativeBridge_getSurfaceStats(

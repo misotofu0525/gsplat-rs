@@ -63,6 +63,8 @@ The library module namespace is `com.gsplat.android`. It packages the generated
 - `GsplatSurfacePresentation`: requested, Surface, internal-render, and actual
   presented pixels, with fail-closed full-resolution/presentation flags
 - `GsplatSurfaceStats`: typed frame stats
+- `GsplatSurfaceCurrentStats*`: immutable current-stats v1 request,
+  submission, full-identity receipt/failure, and consumer state values
 - `GsplatException`: readable native error wrapper
 
 Local Gradle consumers can depend on the module directly from this repository,
@@ -99,6 +101,29 @@ val orderReceipts = renderer.drainOrderMeasurements()
 val orderFailures = renderer.drainOrderMeasurementFailures()
 renderer.close()
 ```
+
+`renderFrame()` remains the ordinary render path and never requests observer
+readback. Call the additive `renderFrameWithCurrentStats()` only at an explicit
+sampling point. It performs request -> render -> submission -> one non-blocking
+poll; if that poll is pending, call `pollCurrentStats()` to advance the already
+issued ticket without requesting or rendering another sample. `currentStats()`
+only returns the last consumer state and does not poll.
+
+Only a `GsplatSurfaceCurrentStatsState.Ready` whose non-zero ticket and complete
+scene/camera/viewport/contract/plan-set/executed-plan/order/raster/encode/
+presentation identity match a previously observed `Issued` submission exposes
+current `S/V/C/D` counts. Busy, Pending, NotRequested, GPU/Resource unavailable,
+and TicketExhausted are non-fatal states with no fallback counts. Terminal map,
+generation, expiry, or drop failures clear their matching pending ticket and
+publish no counts. An `Issued` submission remains valid when the same cycle's
+request reports Busy because a request intent can transfer across a failed
+frame.
+
+Before the native Surface semantic cutover, the current implementation normally
+reports GPU unavailable / NotRequested / Empty. That is an expected successful
+adapter path. The sample app and formal Android benchmark intentionally retain
+their existing render sequence and evidence contract; they do not opt into this
+observer API.
 
 The product defaults are `PACKED_ATLAS`, `ADAPTIVE`, and sort interval `1`.
 Projected execution independently defaults to

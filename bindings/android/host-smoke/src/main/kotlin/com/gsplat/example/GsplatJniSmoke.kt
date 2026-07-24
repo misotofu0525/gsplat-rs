@@ -18,6 +18,9 @@ object GsplatJniSmoke {
     private external fun nativeProjectedAbiSmoke(): Int
 
     @JvmStatic
+    private external fun nativeCurrentStatsAbiSmoke(): Int
+
+    @JvmStatic
     fun main(args: Array<String>) {
         val datasetPath = args.firstOrNull() ?: "tests/datasets/minimal_ascii.ply"
         val major = nativeVersionMajor()
@@ -32,6 +35,12 @@ object GsplatJniSmoke {
         if (projectedRc != 0) {
             System.err.printf("JNI projected ABI smoke failed with code=%d%n", projectedRc)
             kotlin.system.exitProcess(projectedRc)
+        }
+
+        val currentStatsRc = nativeCurrentStatsAbiSmoke()
+        if (currentStatsRc != 0) {
+            System.err.printf("JNI current-stats ABI smoke failed with code=%d%n", currentStatsRc)
+            kotlin.system.exitProcess(currentStatsRc)
         }
 
         val rc = nativeFfiSmoke(datasetPath)

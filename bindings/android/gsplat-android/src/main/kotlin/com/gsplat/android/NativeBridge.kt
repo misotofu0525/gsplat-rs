@@ -95,6 +95,18 @@ object NativeBridge {
     external fun renderSurfaceFrame(nativeHandle: Long): Int
 
     @JvmStatic
+    external fun requestSurfaceCurrentStatsV1(nativeHandle: Long, outRequest: LongArray): Int
+
+    @JvmStatic
+    external fun getSurfaceCurrentStatsSubmissionV1(
+        nativeHandle: Long,
+        outSubmission: LongArray
+    ): Int
+
+    @JvmStatic
+    external fun pollSurfaceCurrentStatsV1(nativeHandle: Long, outPoll: LongArray): Int
+
+    @JvmStatic
     external fun getSurfaceStats(nativeHandle: Long, outStats: LongArray): Int
 
     @JvmStatic
