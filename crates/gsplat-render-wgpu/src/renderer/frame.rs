@@ -74,6 +74,19 @@ impl FrameState {
         )
     }
 
+    /// Binds construction-time Surface inputs without inventing a rendered
+    /// revision. The public session starts at camera revision zero, and the
+    /// configured viewport is likewise a baseline rather than a resize event.
+    pub(crate) fn with_surface_baseline(self, camera: Camera, viewport: Viewport) -> Self {
+        debug_assert!(self.camera.is_none());
+        debug_assert!(self.viewport.is_none());
+        Self {
+            camera: Some(camera),
+            viewport: Some(viewport),
+            ..self
+        }
+    }
+
     pub(crate) fn after_runtime_replacement(self) -> Result<Self, GenerationError> {
         Ok(Self {
             scene_generation: increment(self.scene_generation, "scene")?,
@@ -199,5 +212,25 @@ mod tests {
         assert_eq!(moved.identity().viewport_generation(), 1);
         assert_eq!(resized.identity().camera_revision(), 2);
         assert_eq!(resized.identity().viewport_generation(), 2);
+    }
+
+    #[test]
+    fn surface_baseline_keeps_first_camera_revision_zero_then_tracks_changes() {
+        let camera = Camera::default();
+        let viewport = Viewport::new(640, 480).expect("viewport");
+        let baseline = FrameState::initial().with_surface_baseline(camera, viewport);
+        let first = baseline
+            .candidate_for_frame(camera, viewport)
+            .expect("first Surface frame");
+        assert_eq!(first.identity().camera_revision(), 0);
+        assert_eq!(first.identity().viewport_generation(), 0);
+
+        let mut moved = camera;
+        moved.pose.position.x = 1.0;
+        let changed = first
+            .candidate_for_frame(moved, viewport)
+            .expect("changed camera");
+        assert_eq!(changed.identity().camera_revision(), 1);
+        assert_eq!(changed.identity().viewport_generation(), 0);
     }
 }

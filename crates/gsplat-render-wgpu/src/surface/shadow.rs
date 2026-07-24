@@ -1,50 +1,45 @@
-//! Dormant native Surface adapter for the private Exact shadow renderer.
+//! Native Surface target adapter for the shared Exact renderer.
 //!
-//! The production presenter remains unchanged. This adapter exists to prove
-//! that prepared Exact plans can obey the real Surface acquire/submit/present
-//! transaction without publishing renderer semantics before presentation.
-
-#![allow(dead_code)] // Dormant until the integration milestone selects this private host.
+//! This module owns no scene, plan, controller, generation, sampler or frame
+//! result. It borrows the presenter's lifecycle leaves and the renderer's sole
+//! `PreparedRuntimeSlot`, publishing semantics only after primitive present.
 
 use gsplat_core::Camera;
 use thiserror::Error;
 
 use super::{SurfaceCapture, SurfaceConfigurationOwner, SurfaceLifecycle};
 use crate::SurfacePresenterError;
-use crate::plans::{FrameIdentity, PlanId};
+use crate::plans::FrameIdentity;
+#[cfg(test)]
+use crate::plans::PlanId;
 use crate::renderer::frame::Viewport;
 use crate::renderer::{
-    FrameExecutionError, GpuFrameEncodeRequest, GpuFrameSubmission, PreparedRuntimeSlot,
-    SubmittedGpuFrame, encode_frame_gpu, submit_encoded_frame_unpublished,
-    validate_submitted_frame,
+    ExactPlanPolicy, FrameExecutionError, GpuFrameEncodeRequest, GpuFrameSubmission,
+    PreparedRuntimeSlot, SubmittedGpuFrame, abandon_submitted_frame, encode_frame_gpu,
+    submit_encoded_frame_unpublished, validate_submitted_frame,
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SurfaceShadowSelection {
-    Forced(PlanId),
-    Adaptive,
-}
-
-struct SurfaceShadowRequest<'a> {
-    selection: SurfaceShadowSelection,
-    camera: &'a Camera,
-    viewport: Viewport,
-    clear: wgpu::Color,
+pub(crate) struct SurfaceExactRequest<'a> {
+    pub(crate) camera: &'a Camera,
+    pub(crate) viewport: Viewport,
+    pub(crate) clear: wgpu::Color,
+    pub(crate) force_cpu_order_refresh: bool,
+    pub(crate) host_frame_started: Option<crate::TimerInstant>,
 }
 
 /// Existing native Surface owners borrowed as one host transaction. No
 /// adapter, device, queue, configuration, capture, or lifecycle is duplicated
-/// by the shadow route.
-struct NativeSurfaceShadowHost<'host, 'window> {
-    surface: &'host wgpu::Surface<'window>,
-    device: &'host wgpu::Device,
-    configuration: &'host SurfaceConfigurationOwner,
-    lifecycle: &'host mut SurfaceLifecycle,
-    capture: &'host mut SurfaceCapture,
+/// by the Exact route.
+pub(crate) struct NativeSurfaceExactHost<'host, 'window> {
+    pub(crate) surface: &'host wgpu::Surface<'window>,
+    pub(crate) device: &'host wgpu::Device,
+    pub(crate) configuration: &'host SurfaceConfigurationOwner,
+    pub(crate) lifecycle: &'host mut SurfaceLifecycle,
+    pub(crate) capture: &'host mut SurfaceCapture,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct SurfaceTargetReceipt {
+pub(crate) struct SurfaceTargetReceipt {
     frame: FrameIdentity,
     requested: (u32, u32),
     configured: (u32, u32),
@@ -54,29 +49,29 @@ struct SurfaceTargetReceipt {
     presentation_sequence: u64,
 }
 
+impl SurfaceTargetReceipt {
+    pub(crate) const fn presentation_sequence(self) -> u64 {
+        self.presentation_sequence
+    }
+}
+
 #[derive(Clone, Copy)]
 struct UnpublishedSurfaceTarget {
     requested: (u32, u32),
     configured: (u32, u32),
     acquired: (u32, u32),
-    next_sequence: u64,
 }
 
-struct SurfaceShadowFrameResult {
+pub(crate) struct SurfaceExactFrameResult {
     submission: GpuFrameSubmission,
     target: SurfaceTargetReceipt,
 }
 
-#[derive(Default)]
-struct SurfaceShadowState {
-    presentation_sequence: u64,
-}
-
 #[derive(Debug, Error)]
-enum SurfaceShadowError {
+pub(crate) enum SurfaceExactError {
     #[error("surface host failed: {0}")]
     Surface(#[from] SurfacePresenterError),
-    #[error("Exact shadow frame failed: {0}")]
+    #[error("Exact Surface frame failed: {0}")]
     Frame(#[from] FrameExecutionError),
     #[error(
         "surface target size mismatch: requested={requested:?}, configured={configured:?}, acquired={acquired:?}"
@@ -86,43 +81,30 @@ enum SurfaceShadowError {
         configured: (u32, u32),
         acquired: (u32, u32),
     },
-    #[error("surface presentation sequence is exhausted")]
-    PresentationSequenceExhausted,
 }
 
-impl SurfaceShadowState {
-    fn next_sequence(&self) -> Result<u64, SurfaceShadowError> {
-        self.presentation_sequence
-            .checked_add(1)
-            .ok_or(SurfaceShadowError::PresentationSequenceExhausted)
-    }
-}
-
-impl SurfaceShadowFrameResult {
-    fn submission(&self) -> &GpuFrameSubmission {
+impl SurfaceExactFrameResult {
+    pub(crate) fn submission(&self) -> &GpuFrameSubmission {
         &self.submission
     }
 
-    const fn target(&self) -> SurfaceTargetReceipt {
+    pub(crate) const fn target(&self) -> SurfaceTargetReceipt {
         self.target
     }
 }
 
-/// Compiled adapter against an actual `wgpu::Surface`. It is intentionally
-/// private and dormant until the integration milestone switches the product
-/// host. The legacy presenter remains the only default route.
-fn render_surface_shadow_frame(
-    state: &mut SurfaceShadowState,
+/// Product adapter against an actual `wgpu::Surface`. Native Packed sessions
+/// enter here before any legacy session semantic writer can run.
+pub(crate) fn render_surface_exact_frame(
     runtime: &mut PreparedRuntimeSlot,
-    host: NativeSurfaceShadowHost<'_, '_>,
-    request: SurfaceShadowRequest<'_>,
-) -> Result<Option<SurfaceShadowFrameResult>, SurfaceShadowError> {
+    host: NativeSurfaceExactHost<'_, '_>,
+    request: SurfaceExactRequest<'_>,
+) -> Result<Option<SurfaceExactFrameResult>, SurfaceExactError> {
     let requested = (request.viewport.width(), request.viewport.height());
     let configured = host.configuration.size();
-    let next_sequence =
-        begin_surface_shadow_attempt(state, host.lifecycle, requested, configured, || {
-            host.configuration.validate_size(requested.0, requested.1)
-        })?;
+    begin_surface_exact_attempt(host.lifecycle, requested, configured, || {
+        host.configuration.validate_size(requested.0, requested.1)
+    })?;
     let Some(frame) = host
         .lifecycle
         .acquire(host.surface, host.device, host.configuration)?
@@ -131,7 +113,7 @@ fn render_surface_shadow_frame(
     };
     let acquired = (frame.texture.width(), frame.texture.height());
     if acquired != configured {
-        return Err(SurfaceShadowError::TargetSizeMismatch {
+        return Err(SurfaceExactError::TargetSizeMismatch {
             requested,
             configured,
             acquired,
@@ -141,8 +123,8 @@ fn render_surface_shadow_frame(
     let view = frame
         .texture
         .create_view(&wgpu::TextureViewDescriptor::default());
-    let encode_request = match request.selection {
-        SurfaceShadowSelection::Forced(plan) => GpuFrameEncodeRequest::new(
+    let mut encode_request = match runtime.active_policy() {
+        ExactPlanPolicy::Forced(plan) => GpuFrameEncodeRequest::new(
             plan,
             request.camera,
             request.viewport,
@@ -150,7 +132,7 @@ fn render_surface_shadow_frame(
             host.configuration.format(),
             request.clear,
         ),
-        SurfaceShadowSelection::Adaptive => GpuFrameEncodeRequest::adaptive(
+        ExactPlanPolicy::Adaptive => GpuFrameEncodeRequest::adaptive(
             request.camera,
             request.viewport,
             &view,
@@ -158,12 +140,17 @@ fn render_surface_shadow_frame(
             request.clear,
         ),
     };
+    if request.force_cpu_order_refresh || runtime.cpu_order_refresh_requested() {
+        encode_request = encode_request.with_forced_cpu_order_refresh();
+    }
+    if let Some(started) = request.host_frame_started {
+        encode_request = encode_request.with_host_frame_started(started);
+    }
     let mut pending = encode_frame_gpu(runtime, encode_request)?;
     host.capture.encode(pending.encoder_mut(), &frame.texture);
     let mut submitted = submit_encoded_frame_unpublished(runtime, pending)?;
 
-    finish_presented_shadow_frame(
-        state,
+    finish_presented_exact_frame(
         runtime,
         host.lifecycle,
         host.capture,
@@ -172,9 +159,11 @@ fn render_surface_shadow_frame(
             requested,
             configured,
             acquired,
-            next_sequence,
         },
-        || frame.present(),
+        || {
+            frame.present();
+            Ok(())
+        },
     )
     .map(Some)
 }
@@ -182,63 +171,60 @@ fn render_surface_shadow_frame(
 /// Starts a new target attempt before any fallible preflight. A rejected size,
 /// exhausted sequence or later acquire failure therefore cannot leave the
 /// previous frame's presentation receipt visible to the host.
-fn begin_surface_shadow_attempt(
-    state: &SurfaceShadowState,
+fn begin_surface_exact_attempt(
     lifecycle: &mut SurfaceLifecycle,
     requested: (u32, u32),
     configured: (u32, u32),
     validate_size: impl FnOnce() -> Result<(), SurfacePresenterError>,
-) -> Result<u64, SurfaceShadowError> {
+) -> Result<(), SurfaceExactError> {
     lifecycle.begin_frame();
     validate_size()?;
     if requested != configured {
-        return Err(SurfaceShadowError::TargetSizeMismatch {
+        return Err(SurfaceExactError::TargetSizeMismatch {
             requested,
             configured,
             acquired: configured,
         });
     }
-    // Reserve every fallible host receipt before acquiring a drawable. The
-    // value remains unpublished until primitive presentation succeeds.
-    state.next_sequence()
+    Ok(())
 }
 
-fn finish_presented_shadow_frame(
-    state: &mut SurfaceShadowState,
+fn finish_presented_exact_frame(
     runtime: &mut PreparedRuntimeSlot,
     lifecycle: &mut SurfaceLifecycle,
     capture: &mut SurfaceCapture,
     submitted: &mut SubmittedGpuFrame,
     target: UnpublishedSurfaceTarget,
-    present: impl FnOnce(),
-) -> Result<SurfaceShadowFrameResult, SurfaceShadowError> {
+    present: impl FnOnce() -> Result<(), SurfacePresenterError>,
+) -> Result<SurfaceExactFrameResult, SurfaceExactError> {
     let UnpublishedSurfaceTarget {
         requested,
         configured,
         acquired,
-        next_sequence,
     } = target;
     if requested != configured || configured != acquired {
-        return Err(SurfaceShadowError::TargetSizeMismatch {
+        return Err(SurfaceExactError::TargetSizeMismatch {
             requested,
             configured,
             acquired,
         });
     }
-    if next_sequence != state.next_sequence()? {
-        return Err(SurfaceShadowError::PresentationSequenceExhausted);
-    }
-
     // All fallible renderer identity checks happen before the target is made
     // visible. The guard holds the exclusive runtime borrow until its
     // infallible commit after the primitive present call.
     let validated = validate_submitted_frame(runtime, submitted)?;
-    let presented = lifecycle.present_with(acquired, present);
+    let presented = match lifecycle.try_present_with(acquired, present) {
+        Ok(presented) => presented,
+        Err(error) => {
+            let _ = abandon_submitted_frame(submitted);
+            return Err(error.into());
+        }
+    };
     capture.mark_presented();
     let submission = validated.publish();
     let frame = submission.frame_identity();
-    state.presentation_sequence = next_sequence;
-    Ok(SurfaceShadowFrameResult {
+    let presentation_sequence = submission.presentation_sequence();
+    Ok(SurfaceExactFrameResult {
         submission,
         target: SurfaceTargetReceipt {
             frame,
@@ -249,9 +235,54 @@ fn finish_presented_shadow_frame(
             // texture; there is no hidden scaled intermediate target.
             internal_render: acquired,
             presented,
-            presentation_sequence: next_sequence,
+            presentation_sequence,
         },
     })
+}
+
+// Keep the historical injected-target harness readable while the product path
+// above uses only lifecycle-owned sequencing. These aliases never enter a
+// non-test build and therefore cannot become a second Surface semantic owner.
+#[cfg(test)]
+type SurfaceShadowFrameResult = SurfaceExactFrameResult;
+
+#[cfg(test)]
+type SurfaceShadowError = SurfaceExactError;
+
+#[cfg(test)]
+#[derive(Default)]
+struct SurfaceShadowState {
+    presentation_sequence: u64,
+}
+
+#[cfg(test)]
+fn begin_surface_shadow_attempt(
+    _state: &SurfaceShadowState,
+    lifecycle: &mut SurfaceLifecycle,
+    requested: (u32, u32),
+    configured: (u32, u32),
+    validate_size: impl FnOnce() -> Result<(), SurfacePresenterError>,
+) -> Result<(), SurfaceShadowError> {
+    begin_surface_exact_attempt(lifecycle, requested, configured, validate_size)
+}
+
+#[cfg(test)]
+fn finish_presented_shadow_frame(
+    state: &mut SurfaceShadowState,
+    runtime: &mut PreparedRuntimeSlot,
+    lifecycle: &mut SurfaceLifecycle,
+    capture: &mut SurfaceCapture,
+    submitted: &mut SubmittedGpuFrame,
+    target: UnpublishedSurfaceTarget,
+    present: impl FnOnce(),
+) -> Result<SurfaceShadowFrameResult, SurfaceShadowError> {
+    let result =
+        finish_presented_exact_frame(runtime, lifecycle, capture, submitted, target, || {
+            present();
+            Ok(())
+        })?;
+    state.presentation_sequence = result.target().presentation_sequence;
+    Ok(result)
 }
 
 #[cfg(test)]
@@ -268,6 +299,12 @@ mod tests {
     const WIDTH: u32 = 64;
     const HEIGHT: u32 = 64;
     const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
+
+    #[derive(Debug, Clone, Copy)]
+    enum SurfaceShadowSelection {
+        Forced(PlanId),
+        Adaptive,
+    }
 
     fn exact_scene(count: usize) -> ResidentSceneCpu {
         let buffers = SceneBuffers {
@@ -402,24 +439,34 @@ mod tests {
         viewport: Viewport,
     ) -> SubmittedGpuFrame {
         let camera = Camera::default();
+        encode_and_submit_camera(slot, capture, texture, selection, &camera, viewport)
+    }
+
+    fn encode_and_submit_camera(
+        slot: &mut PreparedRuntimeSlot,
+        capture: &mut SurfaceCapture,
+        texture: &wgpu::Texture,
+        selection: SurfaceShadowSelection,
+        camera: &Camera,
+        viewport: Viewport,
+    ) -> SubmittedGpuFrame {
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let request = match selection {
+        let mut request = match selection {
             SurfaceShadowSelection::Forced(plan) => GpuFrameEncodeRequest::new(
                 plan,
-                &camera,
+                camera,
                 viewport,
                 &view,
                 FORMAT,
                 wgpu::Color::BLACK,
             ),
-            SurfaceShadowSelection::Adaptive => GpuFrameEncodeRequest::adaptive(
-                &camera,
-                viewport,
-                &view,
-                FORMAT,
-                wgpu::Color::BLACK,
-            ),
+            SurfaceShadowSelection::Adaptive => {
+                GpuFrameEncodeRequest::adaptive(camera, viewport, &view, FORMAT, wgpu::Color::BLACK)
+            }
         };
+        if slot.cpu_order_refresh_requested() {
+            request = request.with_forced_cpu_order_refresh();
+        }
         let mut pending = encode_frame_gpu(slot, request).expect("Exact Surface encode");
         capture.encode(pending.encoder_mut(), texture);
         submit_encoded_frame_unpublished(slot, pending).expect("unpublished Surface submit")
@@ -434,7 +481,6 @@ mod tests {
         size: (u32, u32),
         present_count: &mut u32,
     ) -> SurfaceShadowFrameResult {
-        let next_sequence = state.next_sequence().expect("next presentation");
         finish_presented_shadow_frame(
             state,
             slot,
@@ -445,7 +491,6 @@ mod tests {
                 requested: size,
                 configured: size,
                 acquired: size,
-                next_sequence,
             },
             || *present_count += 1,
         )
@@ -624,6 +669,81 @@ mod tests {
     }
 
     #[test]
+    fn failed_adaptive_present_publishes_no_plan_or_controller_frame() {
+        pollster::block_on(async {
+            let Some((device, queue)) = request_device().await else {
+                return;
+            };
+            let mut slot = prepared_slot(&device, &queue).await;
+            slot.set_active_policy(ExactPlanPolicy::Adaptive);
+            let viewport = Viewport::new(WIDTH, HEIGHT).expect("viewport");
+            let mut lifecycle = SurfaceLifecycle::new();
+            let mut capture = SurfaceCapture::new(false);
+            let before = slot.frame_state();
+
+            lifecycle.begin_frame();
+            let failed_texture = target(&device, WIDTH, HEIGHT);
+            let mut failed = encode_and_submit(
+                &mut slot,
+                &mut capture,
+                &failed_texture,
+                SurfaceShadowSelection::Adaptive,
+                viewport,
+            );
+            let error = match finish_presented_exact_frame(
+                &mut slot,
+                &mut lifecycle,
+                &mut capture,
+                &mut failed,
+                UnpublishedSurfaceTarget {
+                    requested: (WIDTH, HEIGHT),
+                    configured: (WIDTH, HEIGHT),
+                    acquired: (WIDTH, HEIGHT),
+                },
+                || {
+                    Err(SurfacePresenterError::SurfaceAcquire(
+                        "injected adaptive present failure".into(),
+                    ))
+                },
+            ) {
+                Ok(_) => panic!("failed adaptive present must remain unpublished"),
+                Err(error) => error,
+            };
+            assert!(matches!(error, SurfaceExactError::Surface(_)));
+            assert_eq!(slot.frame_state(), before);
+            assert_eq!(slot.last_published_plan(), None);
+            assert!(!lifecycle.last_frame_presented());
+
+            lifecycle.begin_frame();
+            let retry_texture = target(&device, WIDTH, HEIGHT);
+            let mut retry = encode_and_submit(
+                &mut slot,
+                &mut capture,
+                &retry_texture,
+                SurfaceShadowSelection::Adaptive,
+                viewport,
+            );
+            let mut state = SurfaceShadowState::default();
+            let mut present_count = 0;
+            let result = present_injected(
+                &mut state,
+                &mut slot,
+                &mut lifecycle,
+                &mut capture,
+                &mut retry,
+                (WIDTH, HEIGHT),
+                &mut present_count,
+            );
+            assert_eq!(
+                slot.last_published_plan(),
+                Some(result.submission().plan_id())
+            );
+            assert_eq!(result.target().presentation_sequence, 1);
+            assert_eq!(present_count, 1);
+        });
+    }
+
+    #[test]
     fn resize_is_published_only_by_the_successfully_presented_retry() {
         pollster::block_on(async {
             let Some((device, queue)) = request_device().await else {
@@ -719,6 +839,179 @@ mod tests {
             );
             assert_eq!(result.target().presentation_sequence, 2);
             assert_eq!(present_count, 2);
+        });
+    }
+
+    #[test]
+    fn forced_cpu_refresh_survives_unavailable_and_failed_present_until_retry() {
+        pollster::block_on(async {
+            let Some((device, queue)) = request_device().await else {
+                return;
+            };
+            let mut slot = prepared_slot(&device, &queue).await;
+            let viewport = Viewport::new(WIDTH, HEIGHT).expect("viewport");
+            let mut lifecycle = SurfaceLifecycle::new();
+            let mut capture = SurfaceCapture::new(false);
+            let mut state = SurfaceShadowState::default();
+            let mut present_count = 0;
+
+            lifecycle.begin_frame();
+            let initial_texture = target(&device, WIDTH, HEIGHT);
+            let mut initial = encode_and_submit(
+                &mut slot,
+                &mut capture,
+                &initial_texture,
+                SurfaceShadowSelection::Forced(PlanId::CpuPostSort),
+                viewport,
+            );
+            let initial_result = present_injected(
+                &mut state,
+                &mut slot,
+                &mut lifecycle,
+                &mut capture,
+                &mut initial,
+                (WIDTH, HEIGHT),
+                &mut present_count,
+            );
+            let initial_order_generation = initial_result.submission().order_generation();
+            let initial_frame = initial_result.submission().frame_identity();
+
+            slot.request_cpu_order_refresh();
+            assert!(slot.cpu_order_refresh_requested());
+
+            // A missing drawable does not encode, consume the refresh latch,
+            // or advance either successful-presentation sequence.
+            lifecycle.begin_frame();
+            let unavailable = lifecycle
+                .acquire_with::<u32>(|| Err(wgpu::SurfaceError::Timeout), || {})
+                .expect("timeout is retryable");
+            assert_eq!(unavailable, None);
+            assert!(slot.cpu_order_refresh_requested());
+            assert_eq!(state.presentation_sequence, 1);
+
+            // A submitted target whose primitive present fails is abandoned.
+            // Renderer identity and the latch stay unpublished for the retry.
+            lifecycle.begin_frame();
+            let failed_texture = target(&device, WIDTH, HEIGHT);
+            let mut failed = encode_and_submit(
+                &mut slot,
+                &mut capture,
+                &failed_texture,
+                SurfaceShadowSelection::Forced(PlanId::CpuPostSort),
+                viewport,
+            );
+            let error = match finish_presented_exact_frame(
+                &mut slot,
+                &mut lifecycle,
+                &mut capture,
+                &mut failed,
+                UnpublishedSurfaceTarget {
+                    requested: (WIDTH, HEIGHT),
+                    configured: (WIDTH, HEIGHT),
+                    acquired: (WIDTH, HEIGHT),
+                },
+                || {
+                    Err(SurfacePresenterError::SurfaceAcquire(
+                        "injected primitive present failure".into(),
+                    ))
+                },
+            ) {
+                Ok(_) => panic!("failed primitive present must abandon semantic publication"),
+                Err(error) => error,
+            };
+            assert!(matches!(error, SurfaceExactError::Surface(_)));
+            assert!(slot.cpu_order_refresh_requested());
+            assert_eq!(slot.frame_state().identity(), initial_frame);
+            assert_eq!(state.presentation_sequence, 1);
+
+            lifecycle.begin_frame();
+            let retry_texture = target(&device, WIDTH, HEIGHT);
+            let mut retry = encode_and_submit(
+                &mut slot,
+                &mut capture,
+                &retry_texture,
+                SurfaceShadowSelection::Forced(PlanId::CpuPostSort),
+                viewport,
+            );
+            let retry_result = present_injected(
+                &mut state,
+                &mut slot,
+                &mut lifecycle,
+                &mut capture,
+                &mut retry,
+                (WIDTH, HEIGHT),
+                &mut present_count,
+            );
+            assert!(retry_result.submission().order_generation() > initial_order_generation);
+            assert_eq!(
+                retry_result.submission().frame_identity().camera_revision(),
+                initial_frame.camera_revision()
+            );
+            assert_eq!(retry_result.target().presentation_sequence, 2);
+            assert!(!slot.cpu_order_refresh_requested());
+            assert_eq!(present_count, 2);
+        });
+    }
+
+    #[test]
+    fn surface_camera_baseline_matches_public_revision_on_first_and_changed_frames() {
+        pollster::block_on(async {
+            let Some((device, queue)) = request_device().await else {
+                return;
+            };
+            let viewport = Viewport::new(WIDTH, HEIGHT).expect("viewport");
+            let initial_camera = Camera::default();
+            let mut slot = prepared_slot(&device, &queue).await;
+            slot.seed_surface_frame_baseline(initial_camera, viewport);
+            let mut lifecycle = SurfaceLifecycle::new();
+            let mut capture = SurfaceCapture::new(false);
+            let mut state = SurfaceShadowState::default();
+            let mut present_count = 0;
+
+            lifecycle.begin_frame();
+            let first_texture = target(&device, WIDTH, HEIGHT);
+            let mut first = encode_and_submit_camera(
+                &mut slot,
+                &mut capture,
+                &first_texture,
+                SurfaceShadowSelection::Forced(PlanId::CpuPostSort),
+                &initial_camera,
+                viewport,
+            );
+            let first = present_injected(
+                &mut state,
+                &mut slot,
+                &mut lifecycle,
+                &mut capture,
+                &mut first,
+                (WIDTH, HEIGHT),
+                &mut present_count,
+            );
+            assert_eq!(first.submission().frame_identity().camera_revision(), 0);
+
+            let mut moved_camera = initial_camera;
+            moved_camera.pose.position.x = 0.25;
+            lifecycle.begin_frame();
+            let moved_texture = target(&device, WIDTH, HEIGHT);
+            let mut moved = encode_and_submit_camera(
+                &mut slot,
+                &mut capture,
+                &moved_texture,
+                SurfaceShadowSelection::Forced(PlanId::CpuPostSort),
+                &moved_camera,
+                viewport,
+            );
+            let moved = present_injected(
+                &mut state,
+                &mut slot,
+                &mut lifecycle,
+                &mut capture,
+                &mut moved,
+                (WIDTH, HEIGHT),
+                &mut present_count,
+            );
+            assert_eq!(moved.submission().frame_identity().camera_revision(), 1);
+            assert_eq!(moved.target().presentation_sequence, 2);
         });
     }
 

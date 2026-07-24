@@ -3,7 +3,7 @@ mod configuration;
 mod current_stats;
 mod lifecycle;
 #[cfg(not(target_arch = "wasm32"))]
-mod shadow;
+pub(crate) mod shadow;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use capture::SurfaceCapture;

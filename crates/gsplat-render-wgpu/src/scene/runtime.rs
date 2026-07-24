@@ -1,4 +1,4 @@
-use std::fmt;
+use std::{fmt, sync::Arc};
 
 use gsplat_core::Vec3f;
 
@@ -33,10 +33,29 @@ impl fmt::Debug for SceneRuntime {
 impl SceneRuntime {
     pub(crate) fn prepare(resident: ResidentSceneCpu) -> Result<Self, ResidentSceneError> {
         resident.validate_complete()?;
-        Ok(Self {
+        Ok(Self::from_validated(resident))
+    }
+
+    fn from_validated(resident: ResidentSceneCpu) -> Self {
+        Self {
             resident,
             gpu: None,
-        })
+        }
+    }
+
+    /// Builds the durable Surface scene owner while borrowing upload-only
+    /// compact planes from the unpublished renderer source. The candidate
+    /// shares the exact positions allocation and retains no staging clone.
+    pub(crate) fn prepare_surface_retained(
+        source: &ResidentSceneCpu,
+    ) -> Result<Self, ResidentSceneError> {
+        source.validate_complete()?;
+        Ok(Self::from_validated(ResidentSceneCpu {
+            positions: Arc::clone(&source.positions),
+            upload_staging: None,
+            sh_degree: source.sh_degree,
+            report: source.report,
+        }))
     }
 
     /// Builds a complete device-owned candidate without publishing it. The
@@ -50,6 +69,20 @@ impl SceneRuntime {
             return Err(GpuPreparationError::ExecutionOwnerAlreadyBound);
         }
         GpuScenePreparation::prepare(owner, &self.resident, generation).await
+    }
+
+    /// Stages the complete GPU graph from the renderer's still-live upload
+    /// source while this candidate retains only post-upload CPU state.
+    pub(crate) async fn stage_gpu_from(
+        &self,
+        owner: &GpuExecutionOwner,
+        source: &ResidentSceneCpu,
+        generation: FrameIdentity,
+    ) -> Result<GpuScenePreparation, GpuPreparationError> {
+        if self.gpu.is_some() {
+            return Err(GpuPreparationError::ExecutionOwnerAlreadyBound);
+        }
+        GpuScenePreparation::prepare(owner, source, generation).await
     }
 
     /// Infallibly publishes one fully staged GPU scene candidate.
@@ -174,6 +207,10 @@ impl SceneRuntime {
 
     pub(crate) fn positions(&self) -> &[Vec3f] {
         &self.resident.positions
+    }
+
+    pub(crate) fn has_same_surface_source(&self, source: &ResidentSceneCpu) -> bool {
+        self.resident.has_same_source_identity(source)
     }
 
     #[cfg_attr(not(test), allow(dead_code))]

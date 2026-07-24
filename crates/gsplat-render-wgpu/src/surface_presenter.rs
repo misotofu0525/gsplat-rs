@@ -31,6 +31,11 @@ use crate::resident_gpu;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::surface::SurfaceCapture;
 pub use crate::surface::SurfaceFrameCapture;
+#[cfg(not(target_arch = "wasm32"))]
+use crate::surface::shadow::{
+    NativeSurfaceExactHost, SurfaceExactFrameResult, SurfaceExactRequest,
+    render_surface_exact_frame,
+};
 use crate::surface::{
     SurfaceConfigurationOwner, SurfaceLifecycle, create_surface_instance, select_present_mode,
 };
@@ -1215,6 +1220,57 @@ impl SurfacePresenter {
 
     pub const fn surface_size(&self) -> (u32, u32) {
         self.surface_configuration.size()
+    }
+
+    /// Clones the presenter's existing device/queue handles for one Exact
+    /// runtime candidate. The handles retain the same underlying WGPU owner;
+    /// no adapter, device, queue or Surface is created by the cutover.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn exact_runtime_context(
+        &self,
+    ) -> (
+        std::sync::Arc<wgpu::Device>,
+        std::sync::Arc<wgpu::Queue>,
+        wgpu::TextureFormat,
+    ) {
+        (
+            std::sync::Arc::new(self.device.clone()),
+            std::sync::Arc::new(self.queue.clone()),
+            self.surface_configuration.format(),
+        )
+    }
+
+    /// Borrows only the presenter's Surface transaction leaves. Scene,
+    /// PlanSet, controller, generations, ordering and raster semantics stay
+    /// inside the renderer-owned Exact runtime passed by the session.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn render_exact_frame(
+        &mut self,
+        runtime: &mut crate::renderer::PreparedRuntimeSlot,
+        camera: &Camera,
+        force_cpu_order_refresh: bool,
+        host_frame_started: TimerInstant,
+    ) -> Result<Option<SurfaceExactFrameResult>, crate::surface::shadow::SurfaceExactError> {
+        let (width, height) = self.surface_configuration.size();
+        let viewport = crate::renderer::frame::Viewport::new(width, height)
+            .expect("validated Surface configuration has a non-zero viewport");
+        render_surface_exact_frame(
+            runtime,
+            NativeSurfaceExactHost {
+                surface: &self.surface,
+                device: &self.device,
+                configuration: &self.surface_configuration,
+                lifecycle: &mut self.surface_lifecycle,
+                capture: &mut self.surface_capture,
+            },
+            SurfaceExactRequest {
+                camera,
+                viewport,
+                clear: wgpu::Color::BLACK,
+                force_cpu_order_refresh,
+                host_frame_started: Some(host_frame_started),
+            },
+        )
     }
 
     /// Arms a one-shot exact framebuffer readback for the next presented

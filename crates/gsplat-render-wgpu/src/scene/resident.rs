@@ -86,6 +86,15 @@ pub struct ResidentSceneCpu {
 }
 
 impl ResidentSceneCpu {
+    /// Proves that two retained views name the same source allocation and the
+    /// same complete encoding contract. Shape equality alone is insufficient:
+    /// a replacement scene may have the same count and SH degree.
+    pub(crate) fn has_same_source_identity(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.positions, &other.positions)
+            && self.sh_degree == other.sh_degree
+            && self.report == other.report
+    }
+
     /// Consumes the compatibility scene and retains its position allocation as
     /// the exact CPU-order source. Other wide float attribute arrays are
     /// released after their compact planes have been produced.

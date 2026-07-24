@@ -419,6 +419,42 @@ fn every_plan_uses_actual_count_sources_for_boundary_and_distinct_v_c_scenes() {
 }
 
 #[test]
+fn repeated_fixed_camera_frames_are_distinguished_by_ticket_and_present_sequence() {
+    pollster::block_on(async {
+        let Some((device, queue)) = request_device().await else {
+            return;
+        };
+        let mut slot = prepared_slot(&device, &queue, exact_scene(&[1.0, 1.1])).await;
+        let mut identities = Vec::new();
+        for _ in 0..2 {
+            assert_eq!(slot.request_current_stats(), CurrentStatsRequest::Requested);
+            let submission = render(&mut slot, &device, PlanId::CpuPostSort);
+            wait(&device, &submission);
+            let terminal = one_terminal(slot.poll_current_stats());
+            let CurrentStatsTerminal::Ready(receipt) = terminal else {
+                panic!("fixed-camera current stats must resolve Ready: {terminal:?}");
+            };
+            assert_eq!(receipt.submission(), issued(&submission));
+            identities.push(receipt.submission());
+        }
+
+        let first = identities[0];
+        let second = identities[1];
+        assert_eq!(
+            first.join().frame_identity().camera_revision(),
+            second.join().frame_identity().camera_revision(),
+            "fixed camera frames intentionally share camera revision"
+        );
+        assert!(second.ticket() > first.ticket());
+        assert!(
+            second.join().presentation_sequence() > first.join().presentation_sequence(),
+            "only successful presents advance the join identity"
+        );
+        assert_ne!(first.join(), second.join());
+    });
+}
+
+#[test]
 fn observer_ring_busy_does_not_block_formal_sampler_or_adaptive_progress() {
     pollster::block_on(async {
         let Some((device, queue)) = request_device().await else {

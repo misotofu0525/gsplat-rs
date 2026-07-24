@@ -4,6 +4,7 @@ use thiserror::Error;
 
 use crate::evidence::{PlanComparisonKey, PlanSample, PlanSampleTicket};
 use crate::plans::PlanId;
+use crate::renderer::ExactAdaptivePolicyState;
 
 const BOOTSTRAP_SAMPLES: u8 = 6;
 const INITIAL_PROBE_DELAY: u32 = 4;
@@ -155,7 +156,7 @@ pub(super) enum SampleDisposition {
     Rejected,
 }
 
-/// Sole policy owner for the shadow Exact renderer. It sees only closed
+/// Sole policy owner for the shared Exact renderer. It sees only closed
 /// complete-plan identities and queue-terminal samples.
 #[derive(Clone)]
 pub(super) struct WholePlanController {
@@ -289,6 +290,20 @@ impl WholePlanController {
                 };
                 Ok(self.decision(target, Some(formal), true))
             }
+        }
+    }
+
+    pub(super) fn adaptive_state(&self) -> ExactAdaptivePolicyState {
+        match self.phase {
+            Phase::Learning { .. } => ExactAdaptivePolicyState::CpuLearning,
+            Phase::Stable => match self.incumbent {
+                PlanId::CpuPostSort => ExactAdaptivePolicyState::CpuStable,
+                PlanId::GpuPostSort | PlanId::GpuPreproject => ExactAdaptivePolicyState::GpuStable,
+            },
+            Phase::Probe { .. } => match self.incumbent {
+                PlanId::CpuPostSort => ExactAdaptivePolicyState::GpuProbe,
+                PlanId::GpuPostSort | PlanId::GpuPreproject => ExactAdaptivePolicyState::CpuProbe,
+            },
         }
     }
 

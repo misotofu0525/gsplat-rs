@@ -87,10 +87,25 @@ impl SurfaceLifecycle {
     }
 
     pub(super) fn present_with(&mut self, size: (u32, u32), present: impl FnOnce()) -> (u32, u32) {
+        self.try_present_with(size, || {
+            present();
+            Ok(())
+        })
+        .expect("infallible primitive presentation")
+    }
+
+    /// Publishes lifecycle identity only after the primitive presentation
+    /// succeeds. The injected error seam proves a submitted but unpresented
+    /// frame remains retryable without advancing presentation state.
+    pub(super) fn try_present_with(
+        &mut self,
+        size: (u32, u32),
+        present: impl FnOnce() -> Result<(), SurfacePresenterError>,
+    ) -> Result<(u32, u32), SurfacePresenterError> {
+        present()?;
         self.last_presented_size = Some(size);
-        present();
         self.last_frame_presented = true;
-        size
+        Ok(size)
     }
 }
 
@@ -201,6 +216,28 @@ mod tests {
         lifecycle.begin_frame();
         assert!(!lifecycle.last_frame_presented());
         assert_eq!(lifecycle.last_presented_size(), None);
+    }
+
+    #[test]
+    fn failed_primitive_present_does_not_publish_lifecycle_identity() {
+        let mut lifecycle = SurfaceLifecycle::new();
+        let failure = lifecycle
+            .try_present_with((64, 64), || {
+                Err(SurfacePresenterError::SurfaceAcquire(
+                    "injected present failure".into(),
+                ))
+            })
+            .expect_err("failed primitive present");
+        assert!(matches!(failure, SurfacePresenterError::SurfaceAcquire(_)));
+        assert!(!lifecycle.last_frame_presented());
+        assert_eq!(lifecycle.last_presented_size(), None);
+
+        assert_eq!(
+            lifecycle
+                .try_present_with((64, 64), || Ok(()))
+                .expect("retry presentation"),
+            (64, 64)
+        );
     }
 
     #[test]

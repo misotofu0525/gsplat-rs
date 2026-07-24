@@ -1,4 +1,4 @@
-//! Shadow-only Exact runtime preparation and frame dispatch.
+//! Shared Exact runtime preparation and frame dispatch.
 
 mod controller;
 mod current_stats;
@@ -131,7 +131,7 @@ pub(crate) enum GpuPreparationStatus {
 
 pub(crate) type RasterCountSemantics = PlanCountSemantics;
 
-/// Immutable identity for one complete Exact shadow-core submission. Numeric
+/// Immutable identity for one complete Exact renderer submission. Numeric
 /// V/C/D remain optional when the authoritative count is GPU-owned; the count
 /// relationship is always explicit.
 pub(crate) struct GpuFrameSubmission {
@@ -249,13 +249,23 @@ impl SubmittedGpuFrame {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PlanSelection {
+pub(crate) enum ExactPlanPolicy {
     Forced(PlanId),
     Adaptive,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ExactAdaptivePolicyState {
+    Disabled,
+    CpuLearning,
+    CpuStable,
+    GpuStable,
+    GpuProbe,
+    CpuProbe,
+}
+
 pub(crate) struct GpuFrameEncodeRequest<'a> {
-    selection: PlanSelection,
+    selection: ExactPlanPolicy,
     camera: &'a Camera,
     viewport: Viewport,
     target: &'a wgpu::TextureView,
@@ -275,7 +285,7 @@ impl<'a> GpuFrameEncodeRequest<'a> {
         clear: wgpu::Color,
     ) -> Self {
         Self {
-            selection: PlanSelection::Forced(requested),
+            selection: ExactPlanPolicy::Forced(requested),
             camera,
             viewport,
             target,
@@ -294,7 +304,7 @@ impl<'a> GpuFrameEncodeRequest<'a> {
         clear: wgpu::Color,
     ) -> Self {
         Self {
-            selection: PlanSelection::Adaptive,
+            selection: ExactPlanPolicy::Adaptive,
             camera,
             viewport,
             target,
@@ -413,7 +423,7 @@ impl GpuPreparationStatus {
     }
 }
 
-/// One fully validated shadow runtime candidate.
+/// One fully validated Exact runtime candidate.
 ///
 /// CPU-only preparation leaves raster absent. GPU admission stages scene,
 /// plans and target-format raster together, then publishes them in one commit.
@@ -441,14 +451,31 @@ impl PreparedRuntime {
             raster: None,
         })
     }
+
+    fn prepare_surface_retained(
+        source: &ResidentSceneCpu,
+        frame: FrameState,
+    ) -> Result<Self, PreparedRuntimeError> {
+        let scene = SceneRuntime::prepare_surface_retained(source)?;
+        let contract = RenderContract::exact_all_resident(&scene)?;
+        contract.validate(&scene)?;
+        let plans =
+            PlanSet::prepare_cpu(scene.source_count(), scene.sh_degree(), frame.identity())?;
+        Ok(Self {
+            contract,
+            scene,
+            plans,
+            raster: None,
+        })
+    }
 }
 
-/// Publication slot used only by the private shadow core.
+/// Renderer-owned publication slot shared by native Exact targets.
 ///
 /// This is not a second product renderer: it owns only the prepared bundle and
 /// its complete input identity. Any optional GPU graph stays under the sole
 /// `SceneRuntime` owner and uses the caller's device. The slot owns no target
-/// or presentation behavior; it does own the shadow runtime's sole whole-plan
+/// or presentation behavior; it does own the Exact runtime's sole whole-plan
 /// controller, mandatory completion sampler, and optional evidence sink. It
 /// publishes a semantic frame only through the single
 /// `submit_encoded_frame` boundary.
@@ -461,6 +488,9 @@ pub(crate) struct PreparedRuntimeSlot {
     controller: WholePlanController,
     sampler: PlanSampler,
     optional_plan_evidence: Option<BoundedEvidenceRing<PlanSample>>,
+    active_policy: ExactPlanPolicy,
+    force_cpu_order_refresh: bool,
+    last_published_plan: Option<PlanId>,
     #[cfg(test)]
     current_stats_capability_test_failure: Option<gpu_prepare::CurrentStatsCapabilityTestFailure>,
     #[cfg(test)]
@@ -509,11 +539,59 @@ impl PreparedRuntimeSlot {
             controller,
             sampler: PlanSampler::new(),
             optional_plan_evidence: None,
+            active_policy: ExactPlanPolicy::Forced(PlanId::CpuPostSort),
+            force_cpu_order_refresh: false,
+            last_published_plan: None,
             #[cfg(test)]
             current_stats_capability_test_failure: None,
             #[cfg(test)]
             current_stats_capability_last_error: None,
         })
+    }
+
+    /// Builds the durable CPU half of a Surface candidate by sharing only the
+    /// exact position allocation. Upload staging stays with the unpublished
+    /// renderer source until complete GPU preparation succeeds.
+    pub(crate) fn prepare_surface_candidate(
+        source: &ResidentSceneCpu,
+    ) -> Result<Self, PreparedRuntimeError> {
+        let frame = FrameState::initial();
+        let runtime = PreparedRuntime::prepare_surface_retained(source, frame)?;
+        let controller = WholePlanController::new(
+            runtime.plans.fallback(),
+            runtime.plans.eligible(),
+            comparison_key(&runtime, frame.identity()),
+        );
+        Ok(Self {
+            runtime,
+            frame,
+            gpu_owner: None,
+            latest_encode_attempt: 0,
+            presentation_sequence: 0,
+            controller,
+            sampler: PlanSampler::new(),
+            optional_plan_evidence: None,
+            active_policy: ExactPlanPolicy::Forced(PlanId::CpuPostSort),
+            force_cpu_order_refresh: false,
+            last_published_plan: None,
+            #[cfg(test)]
+            current_stats_capability_test_failure: None,
+            #[cfg(test)]
+            current_stats_capability_last_error: None,
+        })
+    }
+
+    pub(crate) async fn prepare_complete_surface_gpu_candidate(
+        source: &ResidentSceneCpu,
+        device: &Arc<wgpu::Device>,
+        queue: &Arc<wgpu::Queue>,
+        target_format: wgpu::TextureFormat,
+    ) -> Result<Self, PreparedGpuRuntimeError> {
+        let mut candidate = Self::prepare_surface_candidate(source)?;
+        candidate
+            .prepare_gpu_from_source(source, device, queue, target_format)
+            .await?;
+        Ok(candidate)
     }
 
     /// Builds a complete unpublished replacement against the existing
@@ -609,6 +687,9 @@ impl PreparedRuntimeSlot {
             controller,
             sampler: PlanSampler::new(),
             optional_plan_evidence: None,
+            active_policy: ExactPlanPolicy::Forced(PlanId::CpuPostSort),
+            force_cpu_order_refresh: false,
+            last_published_plan: None,
             #[cfg(test)]
             current_stats_capability_test_failure: None,
             #[cfg(test)]
@@ -645,6 +726,87 @@ impl PreparedRuntimeSlot {
             .runtime
             .scene
             .stage_gpu(&owner, next_frame.identity())
+            .await?;
+        #[cfg(test)]
+        let current_stats_candidate = scene
+            .stage_current_stats_capability_with_test_failure(
+                &owner,
+                self.current_stats_capability_test_failure,
+            )
+            .await;
+        #[cfg(not(test))]
+        let current_stats_candidate = scene.stage_current_stats_capability(&owner).await;
+        let (current_stats_capability, current_stats_unsampled) = match current_stats_candidate {
+            Ok(candidate) => (Some(candidate), None),
+            Err(_error) => {
+                #[cfg(test)]
+                {
+                    self.current_stats_capability_last_error = Some(_error.clone());
+                }
+                (
+                    None,
+                    self.sampler
+                        .has_current_stats_request()
+                        .then_some(CurrentStatsUnsampledReason::ResourceUnavailable),
+                )
+            }
+        };
+        let receipt = scene.receipt();
+        let raster = scene
+            .prepare_canonical_raster(&owner, target_format)
+            .await?;
+        let plans = self
+            .runtime
+            .plans
+            .stage_gpu_admission(GpuPlanAdmissionRequest::new(
+                receipt.source_count(),
+                receipt.capacity(),
+                receipt.resident_count(),
+                receipt.addressable_count(),
+                receipt.sh_degree(),
+                receipt.scene_generation(),
+                receipt.contract_generation(),
+                previous_frame.plan_set_generation(),
+                receipt.plan_set_generation(),
+            ))?;
+        self.commit_gpu_admission(StagedGpuRuntimeAdmission {
+            scene,
+            plans,
+            raster,
+            frame: next_frame,
+            owner,
+            current_stats_capability,
+            current_stats_unsampled,
+        });
+        Ok(receipt)
+    }
+
+    /// Surface preparation variant that uploads from the live unpublished
+    /// renderer source. Optional current-stats resources remain observer-only:
+    /// their failure cannot reject the complete Scene/PlanSet/Raster graph.
+    pub(crate) async fn prepare_gpu_from_source(
+        &mut self,
+        source: &ResidentSceneCpu,
+        device: &Arc<wgpu::Device>,
+        queue: &Arc<wgpu::Queue>,
+        target_format: wgpu::TextureFormat,
+    ) -> Result<GpuPreparationReceipt, GpuRuntimePreparationError> {
+        if self.gpu_owner.is_some() {
+            return Err(GpuPreparationError::ExecutionOwnerAlreadyBound.into());
+        }
+        if !self.runtime.scene.has_same_surface_source(source) {
+            return Err(GpuPreparationError::Internal(
+                "Surface Exact source identity changed before GPU preparation".into(),
+            )
+            .into());
+        }
+        let previous_frame = self.frame.identity();
+        let next_frame = self.frame.candidate_for_plan_set_admission()?;
+        let owner = GpuExecutionOwner::new(device, queue);
+        let scene = self
+            .runtime
+            .scene
+            .stage_gpu_from(&owner, source, next_frame.identity())
             .await?;
         #[cfg(test)]
         let current_stats_candidate = scene
@@ -741,12 +903,61 @@ impl PreparedRuntimeSlot {
         self.runtime.plans.fallback()
     }
 
+    pub(crate) const fn active_policy(&self) -> ExactPlanPolicy {
+        self.active_policy
+    }
+
+    pub(crate) fn seed_surface_frame_baseline(&mut self, camera: Camera, viewport: Viewport) {
+        debug_assert_eq!(self.presentation_sequence, 0);
+        debug_assert!(self.last_published_plan.is_none());
+        self.frame = self.frame.with_surface_baseline(camera, viewport);
+    }
+
+    pub(crate) fn set_active_policy(&mut self, policy: ExactPlanPolicy) {
+        self.active_policy = policy;
+    }
+
+    pub(crate) fn adaptive_policy_state(&self) -> ExactAdaptivePolicyState {
+        match self.active_policy {
+            ExactPlanPolicy::Forced(_) => ExactAdaptivePolicyState::Disabled,
+            ExactPlanPolicy::Adaptive => self.controller.adaptive_state(),
+        }
+    }
+
+    pub(crate) const fn cpu_order_refresh_requested(&self) -> bool {
+        self.force_cpu_order_refresh
+    }
+
+    pub(crate) fn request_cpu_order_refresh(&mut self) {
+        self.force_cpu_order_refresh = true;
+    }
+
+    pub(crate) const fn last_published_plan(&self) -> Option<PlanId> {
+        self.last_published_plan
+    }
+
     pub(crate) fn eligible(&self) -> &[PlanId] {
         self.runtime.plans.eligible()
     }
 
     pub(crate) fn scene(&self) -> &SceneRuntime {
         &self.runtime.scene
+    }
+
+    pub(crate) fn has_same_surface_source(&self, source: &ResidentSceneCpu) -> bool {
+        if !self.runtime.scene.has_same_surface_source(source)
+            || self.runtime.contract.source_count as usize != source.len()
+            || self.runtime.contract.sh_degree != source.sh_degree
+        {
+            return false;
+        }
+        self.gpu_preparation().is_some_and(|receipt| {
+            receipt.source_count() as usize == source.len()
+                && receipt.capacity() == receipt.source_count()
+                && receipt.resident_count() == receipt.source_count()
+                && receipt.addressable_count() == receipt.source_count()
+                && receipt.sh_degree() == source.sh_degree
+        })
     }
 
     pub(crate) fn gpu_preparation(&self) -> Option<GpuPreparationReceipt> {
@@ -1024,8 +1235,8 @@ pub(crate) fn encode_frame_gpu(
         comparison_key(&slot.runtime, candidate_frame.identity()),
     );
     let decision = match request.selection {
-        PlanSelection::Forced(plan) => staged_controller.choose_forced(plan),
-        PlanSelection::Adaptive => staged_controller.choose_adaptive()?,
+        ExactPlanPolicy::Forced(plan) => staged_controller.choose_forced(plan),
+        ExactPlanPolicy::Adaptive => staged_controller.choose_adaptive()?,
     };
     let (arm_formal_sample, encode_current_stats) = if decision.formal_kind().is_some() {
         if !current_stats_queue_safe_at_frame_entry {
@@ -1140,7 +1351,7 @@ pub(crate) fn encode_frame_gpu(
     })
 }
 
-/// Sole Exact shadow-core submission boundary. A stale/discarded encode cannot
+/// Sole Exact renderer submission boundary. A stale/discarded encode cannot
 /// publish its semantic frame, and only the latest successful encode attempt
 /// may be submitted.
 #[cfg_attr(not(test), allow(dead_code))]
@@ -1391,6 +1602,10 @@ impl ValidatedSubmittedGpuFrame<'_> {
         self.slot.frame = state.candidate_frame;
         self.slot.controller = state.staged_controller;
         self.slot.presentation_sequence = self.presentation_sequence;
+        self.slot.last_published_plan = Some(state.metadata.plan);
+        if state.metadata.plan == PlanId::CpuPostSort {
+            self.slot.force_cpu_order_refresh = false;
+        }
         let current_stats = state
             .armed_current_stats
             .map(|armed| {
