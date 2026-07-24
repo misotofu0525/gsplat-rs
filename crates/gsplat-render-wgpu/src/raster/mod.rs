@@ -1,8 +1,16 @@
 //! Canonical SortedAlpha raster pipeline and draw encoding.
 
+mod canonical;
 mod encode;
 mod pipeline;
 
+// E10b prepares the dormant leaf before the Exact shadow-core integration
+// task consumes these crate-private types.
+#[allow(unused_imports)]
+pub(crate) use canonical::{
+    CanonicalRaster, CanonicalRasterError, CanonicalRasterInput, CanonicalRasterResources,
+    RankIndexedRasterResources, SourceIndexedRasterResources,
+};
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use encode::encode_splat_draw;
 pub(crate) use encode::{
