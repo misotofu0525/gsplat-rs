@@ -26,8 +26,9 @@ M2 = Active
   `e26a1df39780e744112924eb378e098c29be7cd4`.
 - M1 state: Accepted at integrated implementation/evidence tip
   `dc3e0de65073f819b714229b726ca55f47c6e6d6`.
-- Active task: M2. M2p1 is Accepted; the current slice is M2p2's additive,
-  stateless C v1 bridge before any legacy getter or platform consumer changes.
+- Active task: M2. M2p1 and M2p2 are Accepted; the current slice is the two
+  pending-compatible M2p3 platform adapters, implemented in parallel from the
+  same accepted C v1 base before the legacy getter changes.
 - Product state at M2 activation: native Packed offscreen, desktop
   non-interactive and bench-runner use the Exact runtime; the interactive
   `SurfaceRenderSession` remains legacy until its complete M2 candidate is
@@ -279,6 +280,22 @@ M2 = Active
   direct value translation over the accepted Surface seam and must not add a C
   queue, cache, tombstone, generation or policy owner. The SHA of this
   root-owned closeout commit is the M2p2 base and is reported in its handoff.
+- **M2p2 closeout: Accepted.** Candidate
+  `61c347ed56399ce83b082784ef021100522bd1b4` was the single direct child of
+  `1d00f2538ad66340f8b28b1e97138a4703181ef9` and is integrated as
+  `113bfe1`. It adds only three stateless `_v1` calls: request admission,
+  presentation-committed submission identity and one atomic global poll.
+  `Ready` carries ticket, complete join identity, S/V/C/D and count semantics
+  in one value; terminal failures retain ticket/identity without usable
+  counts. The C layer adds no current-stats field to `GsplatSurfaceRenderer`
+  and the legacy stats getter remains byte-for-byte unchanged.
+- Fixed-SHA review task `019f9417-4768-72b0-b2c3-de5765817467` found no
+  P0/P1/P2 findings. Candidate and root verification covered 31 FFI tests, 13
+  Renderer current-stats tests, C FFI smoke, workspace check, architecture
+  checks, C/C++ headers and the new ABI layouts on 64-bit plus targeted i386
+  and ARM32 compilation. The existing full i386 legacy smoke has an unrelated
+  pre-existing 44/48-byte layout assertion and is not treated as evidence for
+  or against the new structs.
 - M2p3 Android and Apple implementation may run in parallel because their paths
   are disjoint; all dependent slices remain serial. Root accepts and integrates
   every fixed candidate separately, then owns the Apple M4 real-window run and
