@@ -50,6 +50,11 @@ struct PendingTerminalSample {
     completion_ms_bits: Arc<AtomicU32>,
 }
 
+struct RetiredTerminalSample {
+    ticket: PlanSampleTicket,
+    state: Arc<AtomicU8>,
+}
+
 /// Transaction-owned terminal sample. Attaching its callback to a command
 /// buffer does not make it visible to the live sampler; only a successful
 /// target finalize moves this sole consumer into `PlanSampler`.
@@ -68,6 +73,7 @@ impl StagedPlanSample {
 pub(super) struct PlanSampler {
     next_ticket: u64,
     pending: Option<PendingTerminalSample>,
+    retired_performance_context: Option<RetiredTerminalSample>,
     current_stats: CurrentStatsLane,
     observer_since_formal: bool,
 }
@@ -77,6 +83,7 @@ impl PlanSampler {
         Self {
             next_ticket: 1,
             pending: None,
+            retired_performance_context: None,
             current_stats: CurrentStatsLane::new(),
             observer_since_formal: false,
         }
@@ -90,7 +97,7 @@ impl PlanSampler {
         descriptor: PlanSampleDescriptor,
         completion_started: TimerInstant,
     ) -> Result<PlanSampleTicket, PlanSamplerError> {
-        if self.pending.is_some() {
+        if self.pending.is_some() || self.retired_performance_context.is_some() {
             return Err(PlanSamplerError::Busy);
         }
         let staged = self.stage_arm(command_buffer, descriptor, completion_started)?;
@@ -175,6 +182,21 @@ impl PlanSampler {
         // owner. The old callback retains only its atomics, so late completion
         // cannot enter the replacement controller or optional evidence ring.
         self.pending = None;
+    }
+
+    /// Invalidates a latency-bound formal sample while retaining only its
+    /// queue-terminal flag as a bounded barrier. The callback may complete,
+    /// but its ticket and duration can never re-enter controller policy.
+    pub(super) fn invalidate_performance_context(&mut self) {
+        if let Some(pending) = self.pending.take() {
+            // A later queue callback subsumes every older callback on the same
+            // renderer queue, so one retained terminal is a bounded barrier
+            // even across repeated setter calls.
+            self.retired_performance_context = Some(RetiredTerminalSample {
+                ticket: pending.ticket,
+                state: pending.state,
+            });
+        }
     }
 
     pub(super) const fn has_pending(&self) -> bool {
@@ -273,8 +295,16 @@ impl PlanSampler {
         self.current_stats.request_pending() && !self.observer_since_formal
     }
 
-    pub(super) fn current_stats_formal_queue_safe_at_frame_entry(&mut self) -> bool {
-        self.current_stats.formal_queue_safe_at_frame_entry()
+    pub(super) fn formal_queue_safe_at_frame_entry(&mut self) -> bool {
+        let current_stats_safe = self.current_stats.formal_queue_safe_at_frame_entry();
+        if self
+            .retired_performance_context
+            .as_ref()
+            .is_some_and(|retired| retired.state.load(Ordering::Acquire) == COMPLETE)
+        {
+            self.retired_performance_context = None;
+        }
+        current_stats_safe && self.retired_performance_context.is_none()
     }
 
     pub(super) fn note_formal_sample_published(&mut self) {
@@ -308,6 +338,14 @@ impl PlanSampler {
 
     pub(super) const fn current_stats_request_pending_for_test(&self) -> bool {
         self.current_stats.request_pending()
+    }
+
+    #[cfg(test)]
+    pub(super) const fn retired_performance_ticket_for_test(&self) -> Option<PlanSampleTicket> {
+        match &self.retired_performance_context {
+            Some(retired) => Some(retired.ticket),
+            None => None,
+        }
     }
 
     #[cfg(test)]

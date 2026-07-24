@@ -1038,6 +1038,16 @@ impl Renderer {
         Ok(())
     }
 
+    /// Invalidates only latency-bound whole-plan learning for the active
+    /// native Surface runtime. Current-stats tickets and prepared resources
+    /// deliberately remain in the same semantic generation.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn reset_exact_surface_performance_learning(&mut self) {
+        if let Some(runtime) = self.exact_offscreen_runtime.as_mut() {
+            runtime.reset_surface_performance_learning();
+        }
+    }
+
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn request_exact_surface_cpu_refresh(&mut self) -> Result<(), RendererError> {
         self.exact_runtime_mut()?.request_cpu_order_refresh();

@@ -4,8 +4,8 @@ use gsplat_core::{Camera, SceneBuffers, Vec3f};
 
 use super::{
     CurrentStatsPoll, CurrentStatsRequest, CurrentStatsSubmission, CurrentStatsTerminal,
-    CurrentStatsUnsampledReason, GpuFrameEncodeRequest, GpuFrameSubmission, PlanId,
-    PreparedRuntimeSlot, SubmittedGpuFrame, abandon_submitted_frame, encode_frame_gpu,
+    CurrentStatsUnsampledReason, ExactPlanPolicy, GpuFrameEncodeRequest, GpuFrameSubmission,
+    PlanId, PreparedRuntimeSlot, SubmittedGpuFrame, abandon_submitted_frame, encode_frame_gpu,
     submit_encoded_frame, submit_encoded_frame_unpublished,
 };
 use crate::evidence::PlanCountSemantics;
@@ -885,6 +885,66 @@ fn issued_ticket_is_generation_invalidated_once_and_late_callback_cannot_enter_r
         assert_eq!(failure.submission(), issued);
         assert!(slot.poll_current_stats().is_empty());
         let _ = device.poll(wgpu::PollType::wait_indefinitely());
+        assert!(slot.poll_current_stats().is_empty());
+    });
+}
+
+#[test]
+fn performance_reset_preserves_pending_and_issued_current_stats_exactly_once() {
+    pollster::block_on(async {
+        let Some((device, queue)) = request_device().await else {
+            return;
+        };
+        let mut slot = prepared_slot(&device, &queue, exact_scene(&[1.0])).await;
+        slot.set_active_policy(ExactPlanPolicy::Adaptive);
+        let initial_frame = slot.frame_state();
+        let initial_presentation = slot.presentation_sequence_for_test();
+
+        assert_eq!(slot.request_current_stats(), CurrentStatsRequest::Requested);
+        slot.reset_surface_performance_learning();
+        // A duplicate latency setter call must reset performance learning
+        // again without losing the already accepted observer request.
+        slot.reset_surface_performance_learning();
+        assert!(slot.current_stats_request_pending_for_test());
+        assert_eq!(slot.frame_state(), initial_frame);
+        assert_eq!(slot.presentation_sequence_for_test(), initial_presentation);
+        assert_eq!(slot.active_policy(), ExactPlanPolicy::Adaptive);
+
+        let pending_request_submission = render(&mut slot, &device, PlanId::CpuPostSort);
+        let pending_request_issued = issued(&pending_request_submission);
+        wait(&device, &pending_request_submission);
+        let CurrentStatsTerminal::Ready(pending_request_ready) =
+            one_terminal(slot.poll_current_stats())
+        else {
+            panic!("pending request must resolve Ready after reset");
+        };
+        assert_eq!(pending_request_ready.submission(), pending_request_issued);
+        assert!(slot.poll_current_stats().is_empty());
+
+        assert_eq!(slot.request_current_stats(), CurrentStatsRequest::Requested);
+        let issued_submission = render(&mut slot, &device, PlanId::GpuPostSort);
+        let issued_before_reset = issued(&issued_submission);
+        let issued_frame = slot.frame_state();
+        let issued_presentation = slot.presentation_sequence_for_test();
+        slot.reset_surface_performance_learning();
+        assert_eq!(slot.frame_state(), issued_frame);
+        assert_eq!(slot.presentation_sequence_for_test(), issued_presentation);
+        assert_eq!(slot.active_policy(), ExactPlanPolicy::Adaptive);
+
+        wait(&device, &issued_submission);
+        let CurrentStatsTerminal::Ready(issued_ready) = one_terminal(slot.poll_current_stats())
+        else {
+            panic!("issued request must retain its terminal after reset");
+        };
+        assert_eq!(issued_ready.submission(), issued_before_reset);
+        assert_eq!(
+            issued_ready.submission().join().frame_identity(),
+            issued_before_reset.join().frame_identity()
+        );
+        assert_eq!(
+            issued_ready.submission().join().presentation_sequence(),
+            issued_presentation
+        );
         assert!(slot.poll_current_stats().is_empty());
     });
 }

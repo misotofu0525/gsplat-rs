@@ -3,7 +3,7 @@
 use thiserror::Error;
 
 use crate::evidence::{PlanComparisonKey, PlanSample, PlanSampleTicket};
-use crate::plans::PlanId;
+use crate::plans::{OrderLane, PlanId};
 use crate::renderer::ExactAdaptivePolicyState;
 
 const BOOTSTRAP_SAMPLES: u8 = 6;
@@ -111,6 +111,7 @@ enum Phase {
 struct PendingSample {
     ticket: PlanSampleTicket,
     kind: FormalSampleKind,
+    order_lane: OrderLane,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -173,6 +174,7 @@ pub(super) struct WholePlanController {
     minimum_residency: u32,
     challenger_cursor: usize,
     cooldowns: [u32; 3],
+    order_lanes: [Option<OrderLane>; 3],
     incumbent_samples: RollingEstimate,
     challenger_samples: RollingEstimate,
 }
@@ -180,14 +182,22 @@ pub(super) struct WholePlanController {
 impl WholePlanController {
     pub(super) fn new(
         fallback: PlanId,
+        fallback_order_lane: OrderLane,
         eligible: &[PlanId],
         comparison: PlanComparisonKey,
     ) -> Self {
-        Self::with_config(fallback, eligible, comparison, ControllerConfig::default())
+        Self::with_config(
+            fallback,
+            fallback_order_lane,
+            eligible,
+            comparison,
+            ControllerConfig::default(),
+        )
     }
 
     fn with_config(
         fallback: PlanId,
+        fallback_order_lane: OrderLane,
         eligible: &[PlanId],
         comparison: PlanComparisonKey,
         config: ControllerConfig,
@@ -202,6 +212,8 @@ impl WholePlanController {
         } else {
             Phase::Stable
         };
+        let mut order_lanes = [None; 3];
+        order_lanes[plan_index(fallback)] = Some(fallback_order_lane);
         Self {
             config,
             comparison,
@@ -216,6 +228,7 @@ impl WholePlanController {
             minimum_residency: 0,
             challenger_cursor: 0,
             cooldowns: [0; 3],
+            order_lanes,
             incumbent_samples: RollingEstimate::default(),
             challenger_samples: RollingEstimate::default(),
         }
@@ -226,7 +239,25 @@ impl WholePlanController {
         let fallback = self.fallback;
         let eligible = self.eligible.to_vec();
         let comparison = self.comparison;
-        *self = Self::with_config(fallback, &eligible, comparison, config);
+        let fallback_order_lane = self.order_lane(fallback);
+        let order_lanes = self.order_lanes;
+        *self = Self::with_config(fallback, fallback_order_lane, &eligible, comparison, config);
+        self.order_lanes = order_lanes;
+    }
+
+    /// Restarts only latency-dependent learning while retaining plan identity
+    /// and the actual order lanes already observed from plan execution.
+    pub(super) fn reset_performance_learning(&mut self) {
+        let next_probe_generation = self.probe_generation.wrapping_add(1).max(1);
+        let fallback = self.fallback;
+        let fallback_order_lane = self.order_lane(fallback);
+        let eligible = self.eligible.to_vec();
+        let comparison = self.comparison;
+        let config = self.config;
+        let order_lanes = self.order_lanes;
+        *self = Self::with_config(fallback, fallback_order_lane, &eligible, comparison, config);
+        self.probe_generation = next_probe_generation;
+        self.order_lanes = order_lanes;
     }
 
     /// Returns true when identity/eligibility changed and outstanding sampler
@@ -234,6 +265,7 @@ impl WholePlanController {
     pub(super) fn synchronize(
         &mut self,
         fallback: PlanId,
+        fallback_order_lane: OrderLane,
         eligible: &[PlanId],
         comparison: PlanComparisonKey,
     ) -> bool {
@@ -244,7 +276,7 @@ impl WholePlanController {
             return false;
         }
         let config = self.config;
-        *self = Self::with_config(fallback, eligible, comparison, config);
+        *self = Self::with_config(fallback, fallback_order_lane, eligible, comparison, config);
         true
     }
 
@@ -296,14 +328,20 @@ impl WholePlanController {
     pub(super) fn adaptive_state(&self) -> ExactAdaptivePolicyState {
         match self.phase {
             Phase::Learning { .. } => ExactAdaptivePolicyState::CpuLearning,
-            Phase::Stable => match self.incumbent {
-                PlanId::CpuPostSort => ExactAdaptivePolicyState::CpuStable,
-                PlanId::GpuPostSort | PlanId::GpuPreproject => ExactAdaptivePolicyState::GpuStable,
-            },
-            Phase::Probe { .. } => match self.incumbent {
-                PlanId::CpuPostSort => ExactAdaptivePolicyState::GpuProbe,
-                PlanId::GpuPostSort | PlanId::GpuPreproject => ExactAdaptivePolicyState::CpuProbe,
-            },
+            Phase::Stable => stable_state_for_lane(self.order_lane(self.incumbent)),
+            Phase::Probe {
+                challenger,
+                active_plan,
+                ..
+            } => {
+                // Name the probe from an actually observed order lane. A new
+                // challenger uses the recorded active lane until its first
+                // submitted execution supplies the authoritative lane.
+                probe_state_for_lane(
+                    self.known_order_lane(challenger)
+                        .unwrap_or_else(|| self.order_lane(active_plan)),
+                )
+            }
         }
     }
 
@@ -340,6 +378,7 @@ impl WholePlanController {
         &mut self,
         decision: PlanDecision,
         ticket: PlanSampleTicket,
+        order_lane: OrderLane,
     ) -> bool {
         let Some(kind) = decision.formal else {
             return false;
@@ -348,14 +387,38 @@ impl WholePlanController {
             || ticket.probe_generation() != decision.probe_generation
             || ticket.comparison() != decision.comparison
             || ticket.plan() != decision.plan
+            || !self.accepts_execution_lane(decision, order_lane)
         {
             return false;
         }
-        self.pending = Some(PendingSample { ticket, kind });
+        self.record_order_lane(decision.plan, order_lane);
+        self.pending = Some(PendingSample {
+            ticket,
+            kind,
+            order_lane,
+        });
         true
     }
 
-    pub(super) fn submitted_without_sample(&mut self, decision: PlanDecision) {
+    pub(super) fn accepts_execution_lane(
+        &self,
+        decision: PlanDecision,
+        order_lane: OrderLane,
+    ) -> bool {
+        decision.comparison == self.comparison
+            && self.eligible.contains(&decision.plan)
+            && self
+                .known_order_lane(decision.plan)
+                .is_none_or(|known| known == order_lane)
+    }
+
+    pub(super) fn submitted_without_sample(
+        &mut self,
+        decision: PlanDecision,
+        order_lane: OrderLane,
+    ) {
+        debug_assert!(self.accepts_execution_lane(decision, order_lane));
+        self.record_order_lane(decision.plan, order_lane);
         if !decision.adaptive || decision.formal.is_some() || self.pending.is_some() {
             return;
         }
@@ -379,6 +442,7 @@ impl WholePlanController {
         if !sample.is_comparable()
             || sample.comparison() != self.comparison
             || !self.eligible.contains(&sample.plan_id())
+            || sample.order_lane() != pending.order_lane
         {
             // A terminal callback carrying the exact pending ticket is owned
             // by this probe. Invalid duration/count/frame data cannot teach
@@ -500,6 +564,21 @@ impl WholePlanController {
             .find(|plan| *plan != self.incumbent && self.cooldowns[plan_index(*plan)] == 0)
     }
 
+    fn known_order_lane(&self, plan: PlanId) -> Option<OrderLane> {
+        self.order_lanes[plan_index(plan)]
+    }
+
+    fn order_lane(&self, plan: PlanId) -> OrderLane {
+        self.known_order_lane(plan)
+            .expect("controller plan order lane must come from an actual execution contract")
+    }
+
+    fn record_order_lane(&mut self, plan: PlanId, order_lane: OrderLane) {
+        let lane = &mut self.order_lanes[plan_index(plan)];
+        debug_assert!(lane.is_none_or(|known| known == order_lane));
+        *lane = Some(order_lane);
+    }
+
     #[cfg(test)]
     pub(super) const fn incumbent_for_test(&self) -> PlanId {
         self.incumbent
@@ -508,6 +587,25 @@ impl WholePlanController {
     #[cfg(test)]
     pub(super) fn pending_for_test(&self) -> Option<PlanSampleTicket> {
         self.pending.map(|pending| pending.ticket)
+    }
+
+    #[cfg(test)]
+    pub(super) const fn probe_generation_for_test(&self) -> u64 {
+        self.probe_generation
+    }
+}
+
+const fn stable_state_for_lane(order_lane: OrderLane) -> ExactAdaptivePolicyState {
+    match order_lane {
+        OrderLane::Cpu => ExactAdaptivePolicyState::CpuStable,
+        OrderLane::Gpu => ExactAdaptivePolicyState::GpuStable,
+    }
+}
+
+const fn probe_state_for_lane(order_lane: OrderLane) -> ExactAdaptivePolicyState {
+    match order_lane {
+        OrderLane::Cpu => ExactAdaptivePolicyState::CpuProbe,
+        OrderLane::Gpu => ExactAdaptivePolicyState::GpuProbe,
     }
 }
 

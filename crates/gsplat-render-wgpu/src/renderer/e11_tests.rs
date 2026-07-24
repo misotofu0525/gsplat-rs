@@ -16,9 +16,21 @@ fn comparison(frame: FrameIdentity) -> PlanComparisonKey {
 }
 
 fn controller(eligible: &[PlanId]) -> WholePlanController {
-    let mut controller = WholePlanController::new(PlanId::CpuPostSort, eligible, comparison(FRAME));
+    let mut controller = WholePlanController::new(
+        PlanId::CpuPostSort,
+        OrderLane::Cpu,
+        eligible,
+        comparison(FRAME),
+    );
     controller.set_config_for_test(ControllerConfig::accelerated());
     controller
+}
+
+const fn order_lane(plan: PlanId) -> OrderLane {
+    match plan {
+        PlanId::CpuPostSort => OrderLane::Cpu,
+        PlanId::GpuPostSort | PlanId::GpuPreproject => OrderLane::Gpu,
+    }
 }
 
 fn sample_for(
@@ -78,7 +90,7 @@ fn complete(
 ) -> PlanSample {
     assert!(decision.formal_kind().is_some());
     let sample = sample_for(decision, *ticket, FRAME, completion_ms);
-    assert!(controller.register_pending(decision, sample.sample_ticket()));
+    assert!(controller.register_pending(decision, sample.sample_ticket(), sample.order_lane(),));
     assert_eq!(controller.observe(sample), SampleDisposition::Accepted);
     *ticket += 1;
     sample
@@ -148,7 +160,7 @@ fn controller_interleaves_complete_plans_and_requires_hysteresis() {
     let resident = winning.choose_adaptive().expect("minimum residency");
     assert_eq!(resident.plan(), PlanId::GpuPostSort);
     assert_eq!(resident.formal_kind(), None);
-    winning.submitted_without_sample(resident);
+    winning.submitted_without_sample(resident, order_lane(resident.plan()));
     let next_probe = winning.choose_adaptive().expect("next challenger probe");
     assert_eq!(next_probe.plan(), PlanId::GpuPostSort);
     assert_eq!(
@@ -159,6 +171,92 @@ fn controller_interleaves_complete_plans_and_requires_hysteresis() {
     let mut close = controller(&eligible);
     drive_first_probe(&mut close, 9.5);
     assert_eq!(close.incumbent_for_test(), PlanId::CpuPostSort);
+}
+
+#[test]
+fn probe_state_uses_recorded_challenger_or_active_order_lane() {
+    let eligible = [
+        PlanId::CpuPostSort,
+        PlanId::GpuPostSort,
+        PlanId::GpuPreproject,
+    ];
+    let mut gpu_to_gpu = controller(&eligible);
+    drive_first_probe(&mut gpu_to_gpu, 5.0);
+    assert_eq!(
+        gpu_to_gpu.adaptive_state(),
+        ExactAdaptivePolicyState::GpuStable
+    );
+
+    let resident = gpu_to_gpu.choose_adaptive().expect("GPU residency");
+    assert_eq!(resident.plan(), PlanId::GpuPostSort);
+    gpu_to_gpu.submitted_without_sample(resident, OrderLane::Gpu);
+    let incumbent = gpu_to_gpu.choose_adaptive().expect("GPU/GPU probe A");
+    assert_eq!(incumbent.plan(), PlanId::GpuPostSort);
+    assert_eq!(
+        gpu_to_gpu.adaptive_state(),
+        ExactAdaptivePolicyState::GpuProbe,
+        "an unobserved GPU challenger falls back to the recorded active GPU lane"
+    );
+    let mut ticket = 100;
+    complete(&mut gpu_to_gpu, incumbent, &mut ticket, 10.0);
+    let transition = gpu_to_gpu
+        .choose_adaptive()
+        .expect("GPU Preproject transition");
+    assert_eq!(transition.plan(), PlanId::GpuPreproject);
+    let transition_sample = sample_for(transition, ticket, FRAME, 5.0);
+    assert!(gpu_to_gpu.register_pending(
+        transition,
+        transition_sample.sample_ticket(),
+        transition_sample.order_lane(),
+    ));
+    assert_eq!(
+        gpu_to_gpu.adaptive_state(),
+        ExactAdaptivePolicyState::GpuProbe,
+        "the recorded GPU challenger lane must not be inferred as CPU from the incumbent"
+    );
+    assert_eq!(
+        gpu_to_gpu.observe(transition_sample),
+        SampleDisposition::Accepted
+    );
+
+    let mut gpu_to_cpu = controller(&[PlanId::CpuPostSort, PlanId::GpuPostSort]);
+    drive_first_probe(&mut gpu_to_cpu, 5.0);
+    let resident = gpu_to_cpu.choose_adaptive().expect("GPU residency");
+    gpu_to_cpu.submitted_without_sample(resident, OrderLane::Gpu);
+    let _incumbent = gpu_to_cpu.choose_adaptive().expect("GPU/CPU probe A");
+    assert_eq!(
+        gpu_to_cpu.adaptive_state(),
+        ExactAdaptivePolicyState::CpuProbe,
+        "the already observed CPU challenger lane remains CPU"
+    );
+}
+
+#[test]
+fn performance_context_reset_discards_learning_but_preserves_comparison_and_lanes() {
+    let eligible = [
+        PlanId::CpuPostSort,
+        PlanId::GpuPostSort,
+        PlanId::GpuPreproject,
+    ];
+    let mut controller = controller(&eligible);
+    drive_first_probe(&mut controller, 5.0);
+    assert_eq!(controller.incumbent_for_test(), PlanId::GpuPostSort);
+    let old_generation = controller.probe_generation_for_test();
+
+    controller.reset_performance_learning();
+    assert_eq!(controller.incumbent_for_test(), PlanId::CpuPostSort);
+    assert_eq!(
+        controller.adaptive_state(),
+        ExactAdaptivePolicyState::CpuLearning
+    );
+    assert_ne!(controller.probe_generation_for_test(), old_generation);
+    let after_first_reset = controller.probe_generation_for_test();
+    controller.reset_performance_learning();
+    assert_ne!(controller.probe_generation_for_test(), after_first_reset);
+
+    let bootstrap = controller.choose_adaptive().expect("fresh bootstrap");
+    assert_eq!(bootstrap.comparison(), comparison(FRAME));
+    assert_eq!(bootstrap.plan(), PlanId::CpuPostSort);
 }
 
 #[test]
@@ -180,7 +278,7 @@ fn failed_challenger_cools_down_then_is_reprobed() {
         let held = controller.choose_adaptive().expect("cooldown incumbent");
         assert_eq!(held.plan(), PlanId::CpuPostSort);
         assert_eq!(held.formal_kind(), None);
-        controller.submitted_without_sample(held);
+        controller.submitted_without_sample(held, order_lane(held.plan()));
     }
     let reprobe = controller.choose_adaptive().expect("bounded reprobe");
     assert_eq!(reprobe.plan(), PlanId::CpuPostSort);
@@ -196,7 +294,7 @@ fn stale_duplicate_wrong_plan_and_wrong_generation_samples_fail_closed() {
     let mut controller = controller(&eligible);
     let decision = controller.choose_adaptive().expect("bootstrap");
     let valid = sample_for(decision, 7, FRAME, 3.0);
-    assert!(controller.register_pending(decision, valid.sample_ticket()));
+    assert!(controller.register_pending(decision, valid.sample_ticket(), valid.order_lane(),));
 
     let wrong_plan_ticket = PlanSampleTicket::new(
         7,
@@ -244,10 +342,11 @@ fn stale_duplicate_wrong_plan_and_wrong_generation_samples_fail_closed() {
 
     let next = controller.choose_adaptive().expect("next bootstrap");
     let old = sample_for(next, 8, FRAME, 3.0);
-    assert!(controller.register_pending(next, old.sample_ticket()));
+    assert!(controller.register_pending(next, old.sample_ticket(), old.order_lane()));
     let replacement_frame = FrameIdentity::new(4, 12, 6, 8, 10);
     assert!(controller.synchronize(
         PlanId::CpuPostSort,
+        OrderLane::Cpu,
         &eligible,
         comparison(replacement_frame),
     ));
@@ -261,7 +360,9 @@ fn zero_nonfinite_and_negative_terminal_durations_fail_closed() {
         let mut controller = controller(&eligible);
         let decision = controller.choose_adaptive().expect("bootstrap");
         let sample = sample_for(decision, 17, FRAME, duration);
-        assert!(controller.register_pending(decision, sample.sample_ticket()));
+        assert!(
+            controller.register_pending(decision, sample.sample_ticket(), sample.order_lane(),)
+        );
         assert_eq!(controller.observe(sample), SampleDisposition::Rejected);
         assert_eq!(controller.pending_for_test(), None);
         assert_eq!(controller.incumbent_for_test(), PlanId::CpuPostSort);
@@ -290,7 +391,7 @@ fn cpu_visible_count_above_source_count_fails_closed_and_releases_pending() {
         PlanCountSemantics::DirectDrawEqualsVisible,
         1.0,
     );
-    assert!(controller.register_pending(decision, ticket));
+    assert!(controller.register_pending(decision, ticket, OrderLane::Cpu));
     assert_eq!(controller.observe(impossible), SampleDisposition::Rejected);
     assert_eq!(controller.pending_for_test(), None);
     assert_eq!(controller.incumbent_for_test(), PlanId::CpuPostSort);
@@ -316,16 +417,16 @@ fn optional_ring_pressure_cannot_change_controller_decisions() {
                 5.0
             };
             let sample = sample_for(left, ticket, FRAME, ms);
-            assert!(observed.register_pending(left, sample.sample_ticket()));
-            assert!(control.register_pending(right, sample.sample_ticket()));
+            assert!(observed.register_pending(left, sample.sample_ticket(), sample.order_lane(),));
+            assert!(control.register_pending(right, sample.sample_ticket(), sample.order_lane(),));
             assert_eq!(observed.observe(sample), SampleDisposition::Accepted);
             assert_eq!(control.observe(sample), SampleDisposition::Accepted);
             // Optional observation happens strictly after mandatory policy.
             ring.push(sample);
             ticket += 1;
         } else {
-            observed.submitted_without_sample(left);
-            control.submitted_without_sample(right);
+            observed.submitted_without_sample(left, order_lane(left.plan()));
+            control.submitted_without_sample(right, order_lane(right.plan()));
         }
     }
     assert_eq!(observed.incumbent_for_test(), control.incumbent_for_test());
@@ -582,6 +683,129 @@ mod metal {
             assert_eq!(sample.sample_ticket(), current);
             assert_eq!(disposition, SampleDisposition::Accepted);
             assert!(!slot.sampler_pending_for_test());
+        });
+    }
+
+    #[test]
+    fn performance_reset_retires_formal_terminal_and_preserves_runtime_identity() {
+        pollster::block_on(async {
+            let Some((_info, device, queue)) = request_device().await else {
+                return;
+            };
+            let mut slot =
+                PreparedRuntimeSlot::prepare(exact_scene(129)).expect("prepared runtime");
+            slot.set_test_gpu_admission_mode(TestGpuAdmissionMode::ConcreteAll);
+            slot.prepare_gpu(&device, &queue, FORMAT)
+                .await
+                .expect("three Exact plans and raster");
+            slot.set_test_controller_config(ControllerConfig::accelerated());
+            slot.set_active_policy(ExactPlanPolicy::Adaptive);
+
+            let frame = slot.frame_state();
+            let comparison = comparison(frame.identity());
+            let decision = slot.controller.choose_adaptive().expect("bootstrap");
+            let encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("exact-latency-old-formal-generation"),
+            });
+            let command_buffer = encoder.finish();
+            let old_ticket = slot
+                .sampler
+                .arm(
+                    &command_buffer,
+                    PlanSampleDescriptor {
+                        probe_generation: decision.probe_generation(),
+                        comparison: decision.comparison(),
+                        frame: frame.identity(),
+                        plan: decision.plan(),
+                        order_lane: OrderLane::Cpu,
+                        order_generation: 1,
+                        visible_count: Some(129),
+                        contributor_count: None,
+                        draw_count: Some(129),
+                        count_semantics: PlanCountSemantics::DirectDrawEqualsVisible,
+                    },
+                    TimerInstant::now(),
+                )
+                .expect("old formal ticket");
+            assert!(
+                slot.controller
+                    .register_pending(decision, old_ticket, OrderLane::Cpu)
+            );
+
+            let gpu_receipt = slot.gpu_preparation();
+            let policy = slot.active_policy();
+            let presentation_sequence = slot.presentation_sequence_for_test();
+            slot.reset_surface_performance_learning();
+            // SurfaceRenderSession deliberately invokes the same reset for a
+            // repeated/clamped latency value, matching the legacy setter.
+            slot.reset_surface_performance_learning();
+
+            assert_eq!(slot.frame_state(), frame);
+            assert_eq!(slot.gpu_preparation(), gpu_receipt);
+            assert_eq!(slot.active_policy(), policy);
+            assert_eq!(slot.presentation_sequence_for_test(), presentation_sequence);
+            assert!(!slot.sampler_pending_for_test());
+            assert_eq!(slot.retired_performance_ticket_for_test(), Some(old_ticket));
+            assert_eq!(slot.controller.pending_for_test(), None);
+            assert_eq!(
+                slot.adaptive_policy_state(),
+                ExactAdaptivePolicyState::CpuLearning
+            );
+            assert!(!slot.sampler.formal_queue_safe_at_frame_entry());
+
+            let old_submission = queue.submit([command_buffer]);
+            device
+                .poll(wgpu::PollType::Wait {
+                    submission_index: Some(old_submission),
+                    timeout: None,
+                })
+                .expect("old formal callback may finish");
+            assert!(slot.sampler.formal_queue_safe_at_frame_entry());
+            assert!(slot.poll_test_plan_sampler().is_none());
+
+            let next = slot.controller.choose_adaptive().expect("new bootstrap");
+            assert_eq!(next.comparison(), comparison);
+            assert_ne!(next.probe_generation(), old_ticket.probe_generation());
+            let next_encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("exact-latency-new-formal-generation"),
+            });
+            let next_buffer = next_encoder.finish();
+            let next_ticket = slot
+                .sampler
+                .arm(
+                    &next_buffer,
+                    PlanSampleDescriptor {
+                        probe_generation: next.probe_generation(),
+                        comparison: next.comparison(),
+                        frame: frame.identity(),
+                        plan: next.plan(),
+                        order_lane: OrderLane::Cpu,
+                        order_generation: 1,
+                        visible_count: Some(129),
+                        contributor_count: None,
+                        draw_count: Some(129),
+                        count_semantics: PlanCountSemantics::DirectDrawEqualsVisible,
+                    },
+                    TimerInstant::now(),
+                )
+                .expect("new formal ticket");
+            assert!(next_ticket.ticket() > old_ticket.ticket());
+            assert!(
+                slot.controller
+                    .register_pending(next, next_ticket, OrderLane::Cpu)
+            );
+            let next_submission = queue.submit([next_buffer]);
+            device
+                .poll(wgpu::PollType::Wait {
+                    submission_index: Some(next_submission),
+                    timeout: None,
+                })
+                .expect("new formal callback");
+            let (sample, disposition) = slot
+                .poll_test_plan_sampler()
+                .expect("new generation terminal sample");
+            assert_eq!(sample.sample_ticket(), next_ticket);
+            assert_eq!(disposition, SampleDisposition::Accepted);
         });
     }
 

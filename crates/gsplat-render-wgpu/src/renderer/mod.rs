@@ -527,6 +527,7 @@ impl PreparedRuntimeSlot {
         let runtime = PreparedRuntime::prepare(resident, frame)?;
         let controller = WholePlanController::new(
             runtime.plans.fallback(),
+            OrderLane::Cpu,
             runtime.plans.eligible(),
             comparison_key(&runtime, frame.identity()),
         );
@@ -559,6 +560,7 @@ impl PreparedRuntimeSlot {
         let runtime = PreparedRuntime::prepare_surface_retained(source, frame)?;
         let controller = WholePlanController::new(
             runtime.plans.fallback(),
+            OrderLane::Cpu,
             runtime.plans.eligible(),
             comparison_key(&runtime, frame.identity()),
         );
@@ -674,6 +676,7 @@ impl PreparedRuntimeSlot {
         let next_runtime = PreparedRuntime::prepare(resident, next_frame)?;
         let controller = WholePlanController::new(
             next_runtime.plans.fallback(),
+            OrderLane::Cpu,
             next_runtime.plans.eligible(),
             comparison_key(&next_runtime, next_frame.identity()),
         );
@@ -932,6 +935,15 @@ impl PreparedRuntimeSlot {
         self.force_cpu_order_refresh = true;
     }
 
+    /// Restarts only whole-plan performance learning for a changed Surface
+    /// queue/backpressure context. Semantic generations, active policy,
+    /// presentation identity, current-stats work and prepared plan resources
+    /// remain owned by this same runtime.
+    pub(crate) fn reset_surface_performance_learning(&mut self) {
+        self.sampler.invalidate_performance_context();
+        self.controller.reset_performance_learning();
+    }
+
     pub(crate) const fn last_published_plan(&self) -> Option<PlanId> {
         self.last_published_plan
     }
@@ -1038,6 +1050,7 @@ impl PreparedRuntimeSlot {
         let key = comparison_key(&self.runtime, self.frame.identity());
         let _ = self.controller.synchronize(
             self.runtime.plans.fallback(),
+            OrderLane::Cpu,
             self.runtime.plans.eligible(),
             key,
         );
@@ -1082,6 +1095,16 @@ impl PreparedRuntimeSlot {
     #[cfg(test)]
     const fn sampler_pending_for_test(&self) -> bool {
         self.sampler.has_pending()
+    }
+
+    #[cfg(test)]
+    const fn retired_performance_ticket_for_test(&self) -> Option<PlanSampleTicket> {
+        self.sampler.retired_performance_ticket_for_test()
+    }
+
+    #[cfg(test)]
+    const fn presentation_sequence_for_test(&self) -> u64 {
+        self.presentation_sequence
     }
 
     #[cfg(test)]
@@ -1219,9 +1242,7 @@ pub(crate) fn encode_frame_gpu(
     // token before polling the sole live sampler. An unpresented token owns
     // its callback outside the slot, so a fast completion can never be
     // mistaken for presented-frame evidence.
-    let current_stats_queue_safe_at_frame_entry = slot
-        .sampler
-        .current_stats_formal_queue_safe_at_frame_entry();
+    let formal_queue_safe_at_frame_entry = slot.sampler.formal_queue_safe_at_frame_entry();
     let _ = slot.poll_plan_sampler();
     let base_frame = slot.frame;
     let base_sampler_ticket = slot.sampler.pending_ticket();
@@ -1231,6 +1252,7 @@ pub(crate) fn encode_frame_gpu(
     let mut staged_controller = slot.controller.clone();
     let reset_sampler_on_finalize = staged_controller.synchronize(
         slot.runtime.plans.fallback(),
+        OrderLane::Cpu,
         slot.runtime.plans.eligible(),
         comparison_key(&slot.runtime, candidate_frame.identity()),
     );
@@ -1239,7 +1261,7 @@ pub(crate) fn encode_frame_gpu(
         ExactPlanPolicy::Adaptive => staged_controller.choose_adaptive()?,
     };
     let (arm_formal_sample, encode_current_stats) = if decision.formal_kind().is_some() {
-        if !current_stats_queue_safe_at_frame_entry {
+        if !formal_queue_safe_at_frame_entry {
             // Even when the mandatory non-blocking poll above observes
             // completion, this frame began while the observer was still
             // queue-unsafe. Retry the same formal decision on a later frame
@@ -1401,6 +1423,9 @@ fn submit_pending_frame(
     }
     if pending.decision.plan() != pending.metadata.plan
         || pending.decision.comparison() != comparison_key(&slot.runtime, pending.metadata.frame)
+        || !pending
+            .staged_controller
+            .accepts_execution_lane(pending.decision, pending.metadata.order_lane)
     {
         return Err(FrameExecutionError::PendingFrameMismatch {
             component: "whole-plan decision identity",
@@ -1438,7 +1463,11 @@ fn submit_pending_frame(
             pending.completion_started,
         )?;
         let ticket = sample.ticket();
-        if !staged_controller.register_pending(pending.decision, ticket) {
+        if !staged_controller.register_pending(
+            pending.decision,
+            ticket,
+            pending.metadata.order_lane,
+        ) {
             return Err(FrameExecutionError::PendingFrameMismatch {
                 component: "formal whole-plan ticket",
             });
@@ -1589,7 +1618,7 @@ impl ValidatedSubmittedGpuFrame<'_> {
         if state.plan_sample_ticket.is_none() {
             state
                 .staged_controller
-                .submitted_without_sample(state.decision);
+                .submitted_without_sample(state.decision, state.metadata.order_lane);
         }
         if state.reset_sampler_on_finalize {
             self.slot.sampler.invalidate();

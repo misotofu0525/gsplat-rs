@@ -2644,6 +2644,11 @@ impl SurfaceRenderSession {
 
     pub fn set_frame_latency(&mut self, latency: u32) {
         self.presenter.set_frame_latency(latency);
+        #[cfg(not(target_arch = "wasm32"))]
+        self.renderer.reset_exact_surface_performance_learning();
+        // Preserve the established setter contract: every invocation resets
+        // latency-dependent learning, including a repeated/clamped value for
+        // which Surface configuration itself is already a no-op.
         self.latest_gpu_order_measurement = None;
         self.latest_cpu_order_measurement = None;
         self.reset_adaptive_policy();

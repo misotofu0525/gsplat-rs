@@ -197,7 +197,10 @@ fn arm_old_presented_sample(
             crate::timer_now(),
         )
         .expect("old presented sample");
-    assert!(slot.controller.register_pending(decision, ticket));
+    assert!(
+        slot.controller
+            .register_pending(decision, ticket, OrderLane::Cpu)
+    );
     (command_buffer, ticket)
 }
 
