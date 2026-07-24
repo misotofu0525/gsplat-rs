@@ -73,6 +73,24 @@ Production implementation is serial:
 M0 -> M1 -> M2 -> M3 -> M4 -> M5 -> M6 -> M7 -> M8
 ```
 
+M2 has one reviewed compatibility preparation sequence before its semantic
+activation. These preparation slices do not claim the later M3, M5, or M6
+consumer migrations complete:
+
+```text
+M2p1 renderer current-stats receipts
+  -> M2p2 additive C v1 receipt API
+  -> M2p3 Android and Apple pending-compatible adapters
+  -> M2p4 legacy C getter fail-closed switch
+  -> M2a Surface semantic activation
+  -> M2b real-window evidence
+```
+
+M2p3-Android and M2p3-Apple may be implemented in parallel from the same
+accepted M2p2 tree because their owned paths are disjoint. Root integrates and
+verifies them serially before M2p4. No accepted intermediate tree may make
+pending counts fatal to a platform consumer.
+
 Read-only audits may run ahead, but no later production candidate may be based
 on an unaccepted predecessor. M3--M6 audits may begin after the M2 seam is
 frozen; their implementation still integrates in the order above. M7 may keep
@@ -262,10 +280,34 @@ M2 is accepted.
 - `surface_presenter.rs`, `surface_session.rs`, and the `lib.rs` facade;
 - focused Surface integration tests.
 
-**Frozen boundary:** no C ABI, Web, Android, or Apple consumer cutover. Capture
-becomes complete only after a successful real presentation. Surface loss or
-failed presentation must leave the transaction retryable and must not publish
-false terminal evidence.
+**Compatibility preparation before activation:**
+
+- M2p1 may change the Renderer-owned sampler, prepared plans, private evidence
+  leaves, and Surface receipt seam only to expose bounded, non-blocking,
+  generation-safe current S/V/C/D receipts. No request means no count copy or
+  map; ring pressure cannot change controller policy or plan execution.
+- M2p2 may add versioned C structs and symbols in `gsplat-ffi-c`, its public
+  header/README, and FFI smoke tests. It remains a thin translation layer and
+  does not own a sampler, controller, generation, cache, or result.
+- M2p3 may update only the Android and Apple translation/example paths to
+  tolerate Pending/NotRequested/Busy and join resolved counts by ticket and
+  complete identity. This is compatibility preparation, not their M5/M6
+  renderer cutover or device qualification.
+- M2p4 changes the legacy Surface stats getter only after both in-tree platform
+  adapters consume the versioned receipt. Pending/unrequested/expired or
+  generation-mismatched counts return `NOT_FOUND` without modifying output;
+  prior values, zero, capacity, and sentinels are never substituted.
+
+**Frozen boundary:** the stable v0.1 `context_*` ABI, all existing Surface
+symbols and layouts, constructor/default behavior, Web behavior, and rendered
+pixels remain unchanged. One explicit experimental exception is approved:
+after a Native Surface scene is published, a runtime geometry mutation entering
+or leaving Packed is unsupported and fails before mutation; a same-path call
+remains idempotent. Constructor-time Direct/Packed selection remains supported,
+Direct-to-Paged behavior is not changed here, and no API may describe a Packed
+handoff as reversible. Capture becomes complete only after a successful real
+presentation. Surface loss or failed presentation must leave the transaction
+retryable and must not publish false terminal evidence.
 
 **Required exit artifacts:**
 
@@ -274,6 +316,11 @@ false terminal evidence.
 - exact Kitsune trace, full resolution, all points/SH3, canonical SortedAlpha,
   terminal tickets, counts, and final-frame identity;
 - acquire/configure/submit/present ordering and surface-loss retry tests;
+- current-count request/submission/terminal receipt tests proving bounded
+  non-blocking polling, actual plan-owned V/C/D sources, successful-presentation
+  publication, generation invalidation, and honest ring-busy behavior;
+- construction-time Direct/Packed plus same-path idempotence, and structured
+  pre-mutation rejection for live mutations entering or leaving Packed;
 - proof that the accepted E12 injected-presentation test still passes, while
   being labelled insufficient by itself for the M2 real-window exit.
 
@@ -301,7 +348,10 @@ sampling, plan caches, or terminal result state.
 
 **Frozen boundary:** keep the published v0.1 ABI small and stable. Existing
 symbols remain thin shims unless a separately reviewed compatibility decision
-allows removal. Platform consumer edits remain M5/M6.
+allows removal. M2p2/M2p4 already prepare the additive current-stats v1 API and
+the fail-closed legacy getter needed to activate M2 safely; M3 validates and
+closes out the complete C compatibility surface after M2 rather than creating a
+second receipt owner. Platform semantic migrations remain M5/M6.
 
 **Required exit artifacts:**
 
@@ -357,7 +407,10 @@ device artifact collection. Kotlin/Java must not implement render policy.
 
 **Frozen boundary:** one serial device run at a time. CPU/GPU/Adaptive are
 actual complete-plan choices from the shared renderer. No point-count rule,
-sampling, reduced SH, reduced resolution, or Paged fallback is permitted.
+sampling, reduced SH, reduced resolution, or Paged fallback is permitted. The
+M2p3 Android adapter only makes pending current-stats receipts non-fatal before
+M2 activation; M5 still owns the Android consumer cutover, packaging, and
+physical-device qualification.
 
 **Required exit artifacts:**
 
@@ -385,7 +438,10 @@ sample UI, and Apple artifact collection. Swift owns no render policy.
 **Frozen boundary:** the shared renderer owns plan selection and evidence.
 Simulator evidence is functional only. Physical iPhone qualification is used
 when a device/signing environment is available and is otherwise an explicit
-Defer, not a blocker for the functional consumer migration.
+Defer, not a blocker for the functional consumer migration. The M2p3 Apple
+adapter only makes pending current-stats receipts non-fatal before M2
+activation; M6 still owns the Apple consumer cutover, packaging, and platform
+qualification.
 
 **Required exit artifacts:**
 
@@ -423,6 +479,9 @@ experiment ownership after every consumer is on the shared core.
 compatibility. Any still-published C symbol remains an M3-owned thin shim.
 Diagnostic code survives only when it has a named owner, use, and verification;
 otherwise it is removed rather than becoming a dormant second architecture.
+The deprecated Native live geometry setter symbols may remain thin shims, but
+the old Direct-to-Packed fallback, cross-product internal setters, and any
+duplicate current-stats owner are deleted.
 
 **Required exit artifacts:**
 

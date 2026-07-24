@@ -26,16 +26,18 @@ M2 = Active
   `e26a1df39780e744112924eb378e098c29be7cd4`.
 - M1 state: Accepted at integrated implementation/evidence tip
   `dc3e0de65073f819b714229b726ca55f47c6e6d6`.
-- Active task: M2, migration of the shared real-window Surface to the accepted
-  Exact core.
+- Active task: M2, including its compatibility preparation and migration of the
+  shared real-window Surface to the accepted Exact core.
 - Product state at M2 activation: native Packed offscreen, desktop
   non-interactive and bench-runner use the Exact runtime; the interactive
   `SurfaceRenderSession` remains legacy until its complete M2 candidate is
   accepted.
 - Unstarted tasks: M3, M4, M5, M6, M7 and M8. They are pending in roadmap
   order and are not active machine-state entries.
-- Public API signatures, C ABI, Web, Android and Apple consumers remain frozen
-  during M2.
+- Stable v0.1 signatures/layouts, Web behavior and rendered semantics remain
+  frozen during M2. Additive current-stats v1 receipts and pending-compatible
+  Android/Apple translation are prepared before M2 activation so no accepted
+  intermediate tree exposes stale counts or makes pending fatal.
 
 ## Execution coordination
 
@@ -197,23 +199,55 @@ M2 = Active
 ## M2 activation contract
 
 - Objective: replace the shared real-window Surface's legacy semantic owner
-  with the accepted Exact runtime while preserving its public API, C ABI and
-  platform consumer behavior.
+  with the accepted Exact runtime while preserving stable ABI/layouts, pixels,
+  constructors and platform behavior, and while making asynchronous counts
+  explicit instead of returning stale values as current.
 - Unique owner, frozen paths, rollback identity and required evidence remain
   exactly those defined by [cutover.md](cutover.md#m2--shared-real-window-surface).
 - M2 begins only from this Accepted M1 tree. Its implementation is dispatched
   as a separate Codex task/worktree; the root task retains fixed-SHA acceptance,
   integration and real-Surface validation.
-- M2 is delivered as two serial, independently reviewable slices:
-  1. **M2a — Surface semantic cutover:** replace the legacy Surface semantic
+- The first M2a candidate `bd1d12a4418d76e68b6e0a408dc8b976730e3a05`
+  remains Rejected after fixed-SHA review. It correctly established a single
+  Exact Surface owner and present-after-submit publication, but it allowed a
+  stale prepared scene to replace a newer scene, did not make projected policy
+  constrain the actual complete plan, removed one experimental live switch
+  without an explicit contract decision, and exposed unresolved GPU counts as
+  successful stale `FrameStats`. The repair candidate
+  `166b457942e55947c68fbc8b9906de8e37043f26` is under independent review as a
+  partial repair only; neither candidate is integrated.
+- Root approves one narrowly scoped experimental compatibility decision:
+  after Native Surface scene publication, any runtime mutation entering or
+  leaving Packed is unsupported and fails before mutation; same-path calls are
+  idempotent and constructor-time Direct/Packed selection remains supported.
+  This does not change the stable `context_*` ABI, Direct-to-Paged, or Web.
+- M2 is delivered as serial, independently reviewable slices:
+  1. **M2p1 — Renderer current-stats receipts:** add bounded, non-blocking,
+     generation-safe request/submission/terminal V/C/D receipts using the sole
+     Renderer sampler and actual plan-owned count sources. Ordinary frames do
+     no count readback; optional evidence pressure cannot change policy.
+  2. **M2p2 — additive C v1 bridge:** add versioned request/submission/receipt/
+     failure symbols and structs without changing existing layouts or making
+     the C layer a state owner. The legacy getter is not switched yet.
+  3. **M2p3 — pending-compatible platform adapters:** Android and Apple are
+     separate visible tasks from the same accepted M2p2 base. They consume the
+     v1 status/receipts, treat Pending/Busy as non-fatal, and never display or
+     retain counts without matching ticket and generation.
+  4. **M2p4 — legacy getter fail-closed switch:** after both adapters are
+     accepted, pending/unrequested/expired or mismatched counts return
+     `NOT_FOUND` without modifying the output. No prior value, zero, capacity,
+     or sentinel is substituted.
+  5. **M2a — Surface semantic cutover:** replace the legacy Surface semantic
      writer with the accepted Exact runtime, preserve lifecycle ownership and
      prove forced CPU PostSort, GPU PostSort, GPU Preproject, Adaptive,
      acquire/configure/present ordering and retry rollback through focused and
-     injected-presentation tests. It does not build the benchmark collector.
-  2. **M2b — real-window evidence seam:** on the accepted M2a tree, add or
+     injected-presentation tests. It also enforces the approved construction-
+     time-only Packed choice and does not build the benchmark collector.
+  6. **M2b — real-window evidence seam:** on the accepted M2a tree, add or
      extend the native Surface collector/capture path so the four policies emit
      canonical artifacts and final frames. It does not redesign render
      semantics.
-- Root accepts and integrates each fixed candidate separately, then owns the
-  Apple M4 real-window run and final M2 closeout. M2b cannot begin on an
-  unaccepted M2a candidate.
+- M2p3 Android and Apple implementation may run in parallel because their paths
+  are disjoint; all dependent slices remain serial. Root accepts and integrates
+  every fixed candidate separately, then owns the Apple M4 real-window run and
+  final M2 closeout. M2b cannot begin on an unaccepted M2a candidate.
