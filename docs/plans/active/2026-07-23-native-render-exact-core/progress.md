@@ -12,45 +12,44 @@ E2 = Accepted
 E3 = Accepted
 E4 = Rejected
 E5 = Deferred
-E6 = Active
+E6 = Accepted
+E7 = Active
 E8 = Active
 <!-- gsplat-program-task-states: end -->
 
 <!-- gsplat-program-active-lanes: begin -->
-activation_commit = bd3b56cefc9f2071c42f1f2e43757c91a50de4dd
-E6 = E6-direct-packed
-E8 = E8a-gpu-adapter-transaction-repair
+activation_commit = d356409a0245b45b5af3d1ecbfd0892be3c3274e
+E7 = E7-cpu-init-calibration
+E8 = E8-gpu-post-plan
 <!-- gsplat-program-active-lanes: end -->
 
 ## Package status
 
 - Package: E — Exact prepared plans and native execution, still shadowed.
-- Active tasks: the finite E6 direct-packed CPU preprocess experiment and the
-  final E8a GPU runtime-adapter transaction repair.
-- Last completed task: E3 — unified CPU order engine and reusable workspace.
+- Active tasks: bounded native CPU initialization calibration (E7) and the
+  plans-only exact GPU PostSort implementation (E8).
+- Last completed batch: E6 direct-packed CPU preprocess and E8a transactional
+  GPU runtime admission.
 - E1 state: Accepted after root fixed-SHA review and fast-forward integration
   of candidate `0496266cc73de5fc84acb7c393606fa68eb77623`.
 - Dependency: Package A/A9 Accepted.
 - Product default: unchanged legacy renderer/session path.
-- E8 feasibility audit: stopped without changes after proving that the E1
-  runtime lacks a real device-owned GPU scene/preparation/encoder seam. E8 is
-  now Active only as the finite E8a adapter lane; the actual GPU PostSort plan
-  resumes from a fresh exact root baseline only after that adapter is Accepted.
-  Later E4/NEON and E5/AVX2 lanes require E3's
-  platform-leaf interface; E6/E7 remain sequential because both own
-  engine/workspace decisions.
+- E8 feasibility audit stopped without changes after proving that E1 lacked a
+  real device-owned GPU scene/preparation/encoder seam. Accepted E8a now owns
+  that transaction and leaves the actual GPU PostSort plan implementable by a
+  plans-only writer. E4/NEON remains Rejected and E5/AVX2 remains Deferred;
+  E7 calibrates only accepted native CPU choices.
 - E4 is Rejected with a clean tree after two bit-exact NEON candidates were
   consistently slower than Scalar in the finite Apple M4 release experiment.
   E5 is Deferred with a clean tree because the reachable physical x86_64
   endpoint lacks AVX2/FMA and Rosetta/cross-compilation cannot qualify native
   performance. Neither outcome changes the scalar production leaves.
-- Current safe parallel batch contains E6 and E8a. E6 owns only CPU
-  preprocess/workspace plus the existing radix input adapter; E8a owns only its
-  renderer/scene/plan admission transaction. Their exact production paths and
-  mutable owners are disjoint. Root alone owns shared architecture
-  policy/ledger edits, fixed-SHA review, integration and the combined matrix.
-  E7 remains blocked on E6 because both own CPU engine/workspace decisions;
-  concrete GPU PostSort remains blocked on E8a acceptance.
+- Current safe parallel batch contains E7 and E8. E7 owns only native CPU
+  initialization calibration, preprocess/workspace integration and tests. E8
+  owns only the concrete GPU PostSort plan and PlanSet registration. Their
+  exact files and mutable owners are disjoint. Root alone owns shared
+  architecture policy/ledger edits, fixed-SHA review, integration and the
+  combined matrix.
   Never create parallel writers for the same mutable owner merely to increase
   concurrency.
 - Source-size rule: no fixed LOC quota, split trigger or completion gate. Module
@@ -376,7 +375,7 @@ E8 = E8a-gpu-adapter-transaction-repair
   entries as unprepared. A later plans-only E8 therefore still could not
   transactionally publish a concrete GPU plan, immutable eligibility and a new
   plan-set generation together with the resource candidate.
-- The finite repair remains active with this exact implementation allowlist:
+- The accepted finite repair used this exact implementation allowlist:
   - `crates/gsplat-render-wgpu/src/renderer/mod.rs`;
   - `crates/gsplat-render-wgpu/src/renderer/frame.rs`;
   - new `crates/gsplat-render-wgpu/src/renderer/gpu_prepare.rs`;
@@ -395,7 +394,73 @@ E8 = E8a-gpu-adapter-transaction-repair
   agreement, and a queue plus caller-owned encoder without submit, poll, map,
   readback or present. Unsupported preparation preserves the Exact CPU
   fallback and the prior generation/membership.
-- The GPU PostSort implementation resumes only from the accepted E2+adapter
-  root SHA in a fresh worktree. Its original plans-only allowlist must still prove
+- The GPU PostSort implementation resumes from the accepted E2+adapter root SHA
+  in a fresh worktree. Its original plans-only allowlist must still prove
   complete membership, original SH degree, inclusive visibility, stable
   full32 ordering, `D=V`, exact generation guards and unchanged product routing.
+
+## E6 / E8a closeout and E7 / E8 parallel contract
+
+- E6 final state: Accepted. Writer parent
+  `f3d1a64b39aecb5dbe6d2a2986ff49185477af46`, accepted candidate
+  `868d5312c59ece0eac3bfc7880b9011cc3108bef`, root integration
+  `d28234789f3d55f536fcb0189d8aae53419c08c6`, followed by the native-test
+  wasm guard repair `b12536cea55b69083d0cbb8cedd0e6bd5411fcd0`.
+- E6 result: native Direct preprocessing now creates packed
+  `(depth_key, !source_id)` records in one pass and feeds the unchanged stable
+  high-32 radix. Scalar and Rayon preserve inclusive visibility, full32 depth,
+  deterministic source-ID ties and transactional authoritative-order
+  publication. Paged and WASM retain their prior split paths.
+- E6 finite M4 observation used one release binary, deterministic 2,541,226
+  positions, identical camera/order hash, per-path warmup and interleaved
+  `B,P,P,B,B,P` runs. Packed median preprocess was `3.051917 ms` versus
+  `3.182792 ms`; packed preprocess-plus-sort was `9.896375 ms` versus
+  `10.259541 ms`. This admits the native packed input path only; it is not a
+  frame-terminal or cross-platform performance claim.
+- E8a final state: Accepted. Writer parent
+  `98173cba3b891c21e7901a51c19e2ca8ceabe125`, accepted cumulative candidate
+  `0d89b42523932584a701b789419b5e0041816222`, root integration
+  `d356409a0245b45b5af3d1ecbfd0892be3c3274e`.
+- E8a result: renderer-owned GPU identity, complete scene-resource staging,
+  forward-compatible PlanSet admission, plan-set generation and SceneRuntime
+  owner publish atomically after every fallible step succeeds. Failure leaves
+  CPU fallback, prior scene, generations and eligibility usable. Queue plus a
+  caller-owned encoder reach PlanSet without submit, poll, map, readback or
+  present, and discarded encoders cannot publish color/order/project cache
+  state.
+- Shared root verification after both integrations passed format/diff,
+  architecture policy/self-tests, locked workspace check/tests, strict
+  all-target Clippy, warning-free Rustdoc, wasm32 Web check, required Metal
+  SortedAlpha conformance and C FFI smoke.
+- New activation baseline:
+  `d356409a0245b45b5af3d1ecbfd0892be3c3274e`.
+- Writer model: two user-visible Codex tasks in independent worktrees.
+  Collaboration subagents may only perform bounded read-only audits and
+  fixed-SHA reviews. Root owns integration and the combined matrix.
+- E7 exact write allowlist:
+  - `crates/gsplat-render-wgpu/src/cpu/mod.rs`;
+  - new `crates/gsplat-render-wgpu/src/cpu/calibration.rs`;
+  - `crates/gsplat-render-wgpu/src/cpu/preprocess.rs`;
+  - `crates/gsplat-render-wgpu/src/cpu/preprocess/packed.rs`;
+  - `crates/gsplat-render-wgpu/src/cpu/workspace.rs`;
+  - `crates/gsplat-render-wgpu/src/cpu_order.rs`.
+- E7 runs once during each native lane's initialization, compares only accepted
+  packed Scalar execution with deduplicated supported chunk counts, then freezes
+  the choice in that lane-local engine. WASM remains Scalar/serial. Invalid or
+  incomplete calibration selects the existing accepted static fallback. It
+  cannot become a per-frame controller, point-count rule, public policy or
+  persistent background tuner.
+- E8 exact write allowlist:
+  - `crates/gsplat-render-wgpu/src/plans/mod.rs`;
+  - new `crates/gsplat-render-wgpu/src/plans/gpu_post.rs`;
+  - optional new `crates/gsplat-render-wgpu/src/plans/gpu_post/tests.rs`.
+- E8 constructs and stages a concrete `GpuPostSortPlan` through the accepted
+  E8a hook, makes it eligible only with matching owner/count/SH/generations,
+  and encodes existing exact GPU visibility, stable compaction/full32 radix and
+  rank projection into canonical `ProjectedWork` with `D=V`. It may not edit
+  renderer/scene/resident primitives, WGSL, raster, Surface/offscreen product
+  routes, public API/C ABI, controller or evidence policy.
+- Integration order is E7 then E8. Because their allowlists and mutable owners
+  do not overlap, either may finish first; root reviews fixed candidates
+  independently and runs the shared matrix only after accepted candidates are
+  composed.
