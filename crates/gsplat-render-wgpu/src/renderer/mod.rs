@@ -9,9 +9,11 @@ use gsplat_core::Camera;
 use thiserror::Error;
 
 use crate::plans::{
-    GpuCapabilityReceipt, GpuPlanAdmissionRequest, PlanExecutionContext, PlanFrameInput, PlanId,
-    PlanSet, PlanSetError, ProjectedWork, StagedGpuPlanAdmission,
+    DirectCountSemantics, FrameIdentity, GpuCapabilityReceipt, GpuOwnerToken,
+    GpuPlanAdmissionRequest, IndirectCountSemantics, OrderLane, PlanExecutionContext,
+    PlanFrameInput, PlanId, PlanSet, PlanSetError, ProjectedWork, StagedGpuPlanAdmission,
 };
+use crate::raster::{CanonicalRaster, CanonicalRasterError, CanonicalRasterInput};
 use crate::scene::{ResidentSceneCpu, ResidentSceneError, SceneRuntime};
 
 use frame::{FrameState, GenerationError, Viewport};
@@ -69,6 +71,14 @@ pub(crate) enum FrameExecutionError {
     PlanSet(#[from] PlanSetError),
     #[error("GPU execution context is unavailable: {0}")]
     GpuPreparation(#[from] GpuPreparationError),
+    #[error("canonical raster encoding failed: {0}")]
+    Raster(#[from] CanonicalRasterError),
+    #[error("prepared projected work is inconsistent at {component}")]
+    ProjectedWorkMismatch { component: &'static str },
+    #[error("GPU frame encode-attempt generation is exhausted")]
+    EncodeAttemptExhausted,
+    #[error("pending GPU frame is stale or inconsistent at {component}")]
+    PendingFrameMismatch { component: &'static str },
 }
 
 #[derive(Debug, Error)]
@@ -89,6 +99,130 @@ pub(crate) enum GpuPreparationStatus {
     Omitted(GpuRuntimePreparationError),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RasterCountSemantics {
+    DirectDrawEqualsVisible,
+    IndirectDrawEqualsVisible,
+    IndirectDrawEqualsContributor,
+}
+
+/// Immutable identity for one complete Exact shadow-core submission. Numeric
+/// V/C/D remain optional when the authoritative count is GPU-owned; the count
+/// relationship is always explicit.
+pub(crate) struct GpuFrameSubmission {
+    submission_index: wgpu::SubmissionIndex,
+    frame: FrameIdentity,
+    plan: PlanId,
+    order_lane: OrderLane,
+    order_generation: u64,
+    source_count: u32,
+    visible_count: Option<u32>,
+    contributor_count: Option<u32>,
+    draw_count: Option<u32>,
+    count_semantics: RasterCountSemantics,
+    encode_attempt: u64,
+}
+
+struct FrameSubmissionMetadata {
+    frame: FrameIdentity,
+    plan: PlanId,
+    order_lane: OrderLane,
+    order_generation: u64,
+    source_count: u32,
+    visible_count: Option<u32>,
+    contributor_count: Option<u32>,
+    draw_count: Option<u32>,
+    count_semantics: RasterCountSemantics,
+}
+
+/// Owned transaction returned after one plan and one canonical raster have
+/// been encoded. The host may append capture/readback copies to the same
+/// encoder, then must hand the finished command buffer back to Renderer for
+/// the sole submit and semantic frame publication.
+pub(crate) struct PendingGpuFrame {
+    owner: GpuOwnerToken,
+    base_frame: FrameState,
+    candidate_frame: FrameState,
+    encode_attempt: u64,
+    metadata: FrameSubmissionMetadata,
+}
+
+pub(crate) struct GpuFrameEncodeRequest<'a> {
+    requested: PlanId,
+    camera: &'a Camera,
+    viewport: Viewport,
+    target: &'a wgpu::TextureView,
+    target_format: wgpu::TextureFormat,
+    clear: wgpu::Color,
+}
+
+impl<'a> GpuFrameEncodeRequest<'a> {
+    pub(crate) const fn new(
+        requested: PlanId,
+        camera: &'a Camera,
+        viewport: Viewport,
+        target: &'a wgpu::TextureView,
+        target_format: wgpu::TextureFormat,
+        clear: wgpu::Color,
+    ) -> Self {
+        Self {
+            requested,
+            camera,
+            viewport,
+            target,
+            target_format,
+            clear,
+        }
+    }
+}
+
+#[allow(dead_code)]
+impl GpuFrameSubmission {
+    pub(crate) const fn frame_identity(&self) -> FrameIdentity {
+        self.frame
+    }
+
+    pub(crate) const fn plan_id(&self) -> PlanId {
+        self.plan
+    }
+
+    pub(crate) const fn order_lane(&self) -> OrderLane {
+        self.order_lane
+    }
+
+    pub(crate) const fn order_generation(&self) -> u64 {
+        self.order_generation
+    }
+
+    pub(crate) const fn source_count(&self) -> u32 {
+        self.source_count
+    }
+
+    pub(crate) const fn visible_count(&self) -> Option<u32> {
+        self.visible_count
+    }
+
+    pub(crate) const fn contributor_count(&self) -> Option<u32> {
+        self.contributor_count
+    }
+
+    pub(crate) const fn draw_count(&self) -> Option<u32> {
+        self.draw_count
+    }
+
+    pub(crate) const fn count_semantics(&self) -> RasterCountSemantics {
+        self.count_semantics
+    }
+
+    pub(crate) const fn submission_index(&self) -> &wgpu::SubmissionIndex {
+        &self.submission_index
+    }
+
+    pub(crate) const fn encode_attempt(&self) -> u64 {
+        self.encode_attempt
+    }
+}
+
 impl GpuPreparationStatus {
     pub(crate) const fn receipt(&self) -> Option<GpuPreparationReceipt> {
         match self {
@@ -107,13 +241,13 @@ impl GpuPreparationStatus {
 
 /// One fully validated shadow runtime candidate.
 ///
-/// Canonical raster remains intentionally absent: E8a can attach one complete
-/// dormant device-owned scene/project graph, but no raster resource or fake
-/// GPU plan is published by this adapter task.
+/// CPU-only preparation leaves raster absent. GPU admission stages scene,
+/// plans and target-format raster together, then publishes them in one commit.
 pub(crate) struct PreparedRuntime {
     contract: RenderContract,
     scene: SceneRuntime,
     plans: PlanSet,
+    raster: Option<CanonicalRaster>,
 }
 
 impl PreparedRuntime {
@@ -130,6 +264,7 @@ impl PreparedRuntime {
             contract,
             scene,
             plans,
+            raster: None,
         })
     }
 }
@@ -139,16 +274,19 @@ impl PreparedRuntime {
 /// This is not a second product renderer: it owns only the prepared bundle and
 /// its complete input identity. Any optional GPU graph stays under the sole
 /// `SceneRuntime` owner and uses the caller's device; the slot has no target,
-/// controller, sampler, evidence sink, submission or presentation behavior.
+/// controller, sampler, evidence sink or presentation behavior. It publishes
+/// a semantic frame only through the single `submit_encoded_frame` boundary.
 pub(crate) struct PreparedRuntimeSlot {
     runtime: PreparedRuntime,
     frame: FrameState,
     gpu_owner: Option<GpuExecutionOwner>,
+    latest_encode_attempt: u64,
 }
 
 struct StagedGpuRuntimeAdmission {
     scene: GpuScenePreparation,
     plans: StagedGpuPlanAdmission,
+    raster: CanonicalRaster,
     frame: FrameState,
     owner: GpuExecutionOwner,
 }
@@ -160,6 +298,7 @@ impl PreparedRuntimeSlot {
             runtime: PreparedRuntime::prepare(resident, frame)?,
             frame,
             gpu_owner: None,
+            latest_encode_attempt: 0,
         })
     }
 
@@ -173,6 +312,7 @@ impl PreparedRuntimeSlot {
             runtime: next_runtime,
             frame: next_frame,
             gpu_owner: None,
+            latest_encode_attempt: 0,
         };
         *self = candidate;
         Ok(())
@@ -187,6 +327,7 @@ impl PreparedRuntimeSlot {
         &mut self,
         device: &Arc<wgpu::Device>,
         queue: &Arc<wgpu::Queue>,
+        target_format: wgpu::TextureFormat,
     ) -> Result<GpuPreparationReceipt, GpuRuntimePreparationError> {
         if self.gpu_owner.is_some() {
             return Err(GpuPreparationError::ExecutionOwnerAlreadyBound.into());
@@ -200,6 +341,9 @@ impl PreparedRuntimeSlot {
             .stage_gpu(&owner, next_frame.identity())
             .await?;
         let receipt = scene.receipt();
+        let raster = scene
+            .prepare_canonical_raster(&owner, target_format)
+            .await?;
         let plans = self
             .runtime
             .plans
@@ -217,6 +361,7 @@ impl PreparedRuntimeSlot {
         self.commit_gpu_admission(StagedGpuRuntimeAdmission {
             scene,
             plans,
+            raster,
             frame: next_frame,
             owner,
         });
@@ -226,6 +371,7 @@ impl PreparedRuntimeSlot {
     fn commit_gpu_admission(&mut self, staged: StagedGpuRuntimeAdmission) {
         self.runtime.scene.commit_gpu(staged.scene);
         self.runtime.plans.commit_gpu_admission(staged.plans);
+        self.runtime.raster = Some(staged.raster);
         self.frame = staged.frame;
         self.gpu_owner = Some(staged.owner);
     }
@@ -237,8 +383,9 @@ impl PreparedRuntimeSlot {
         &mut self,
         device: &Arc<wgpu::Device>,
         queue: &Arc<wgpu::Queue>,
+        target_format: wgpu::TextureFormat,
     ) -> GpuPreparationStatus {
-        match self.prepare_gpu(device, queue).await {
+        match self.prepare_gpu(device, queue, target_format).await {
             Ok(receipt) => GpuPreparationStatus::Ready(receipt),
             Err(error) => GpuPreparationStatus::Omitted(error),
         }
@@ -311,7 +458,7 @@ pub(crate) fn execute_frame<'a>(
 /// while encoder provenance is a private caller invariant because wgpu has no
 /// encoder identity API. Until E8 registers a concrete plan, PlanSet returns
 /// structured unprepared rather than bypassing this route.
-#[cfg_attr(not(test), allow(dead_code))]
+#[cfg(test)]
 pub(crate) fn execute_frame_gpu<'runtime>(
     slot: &'runtime mut PreparedRuntimeSlot,
     requested: PlanId,
@@ -335,6 +482,223 @@ pub(crate) fn execute_frame_gpu<'runtime>(
     )?;
     slot.frame = candidate_frame;
     Ok(work)
+}
+
+/// Encodes one complete Exact plan and invokes the single canonical raster in
+/// the caller's encoder. The returned transaction owns no borrowed GPU work;
+/// a host can append capture/readback copies before handing the finished
+/// command buffer back to `submit_encoded_frame`.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn encode_frame_gpu_into(
+    slot: &mut PreparedRuntimeSlot,
+    queue: &Arc<wgpu::Queue>,
+    encoder: &mut wgpu::CommandEncoder,
+    request: GpuFrameEncodeRequest<'_>,
+) -> Result<PendingGpuFrame, FrameExecutionError> {
+    let encode_attempt = slot
+        .latest_encode_attempt
+        .checked_add(1)
+        .ok_or(FrameExecutionError::EncodeAttemptExhausted)?;
+    let base_frame = slot.frame;
+    let candidate_frame = slot
+        .frame
+        .candidate_for_frame(*request.camera, request.viewport)?;
+    let owner = slot
+        .gpu_owner
+        .as_ref()
+        .ok_or(GpuPreparationError::Unavailable)?;
+
+    let PreparedRuntime {
+        contract,
+        scene,
+        plans,
+        raster,
+    } = &mut slot.runtime;
+    let work = plans.execute(
+        request.requested,
+        scene,
+        PlanFrameInput::new(
+            request.camera,
+            candidate_frame.identity(),
+            contract.source_count,
+            request.viewport.width(),
+            request.viewport.height(),
+        ),
+        PlanExecutionContext::Gpu(owner.context(queue, encoder)?),
+    )?;
+    let (input, metadata) = canonical_input_for_work(&work, owner.token())?;
+    raster
+        .as_ref()
+        .ok_or(GpuPreparationError::Unavailable)?
+        .encode(
+            encoder,
+            request.target,
+            request.target_format,
+            request.clear,
+            input,
+        )?;
+
+    // End every scene/plan borrow before returning the owned transaction.
+    drop(work);
+    slot.latest_encode_attempt = encode_attempt;
+    Ok(PendingGpuFrame {
+        owner: owner.token().clone(),
+        base_frame,
+        candidate_frame,
+        encode_attempt,
+        metadata,
+    })
+}
+
+/// Sole Exact shadow-core submission boundary. A stale/discarded encode cannot
+/// publish its semantic frame, and only the latest successful encode attempt
+/// may be submitted.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn submit_encoded_frame(
+    slot: &mut PreparedRuntimeSlot,
+    pending: PendingGpuFrame,
+    command_buffer: wgpu::CommandBuffer,
+) -> Result<GpuFrameSubmission, FrameExecutionError> {
+    let owner = slot
+        .gpu_owner
+        .as_ref()
+        .ok_or(GpuPreparationError::Unavailable)?;
+    if !pending.owner.same_owner(owner.token()) {
+        return Err(FrameExecutionError::PendingFrameMismatch {
+            component: "GPU execution owner",
+        });
+    }
+    if pending.base_frame != slot.frame {
+        return Err(FrameExecutionError::PendingFrameMismatch {
+            component: "base frame",
+        });
+    }
+    if pending.encode_attempt != slot.latest_encode_attempt {
+        return Err(FrameExecutionError::PendingFrameMismatch {
+            component: "latest encode attempt",
+        });
+    }
+
+    let submission_index = owner.queue().submit(Some(command_buffer));
+    slot.frame = pending.candidate_frame;
+    Ok(GpuFrameSubmission {
+        submission_index,
+        frame: pending.metadata.frame,
+        plan: pending.metadata.plan,
+        order_lane: pending.metadata.order_lane,
+        order_generation: pending.metadata.order_generation,
+        source_count: pending.metadata.source_count,
+        visible_count: pending.metadata.visible_count,
+        contributor_count: pending.metadata.contributor_count,
+        draw_count: pending.metadata.draw_count,
+        count_semantics: pending.metadata.count_semantics,
+        encode_attempt: pending.encode_attempt,
+    })
+}
+
+fn canonical_input_for_work(
+    work: &ProjectedWork<'_>,
+    owner: &GpuOwnerToken,
+) -> Result<(CanonicalRasterInput, FrameSubmissionMetadata), FrameExecutionError> {
+    let (input, count_semantics) = match work.plan_id() {
+        PlanId::CpuPostSort => {
+            let gpu =
+                work.cpu_post_gpu()
+                    .map_err(|_| FrameExecutionError::ProjectedWorkMismatch {
+                        component: "CPU PostSort projected planes",
+                    })?;
+            let visible =
+                work.visible_count()
+                    .map_err(|_| FrameExecutionError::ProjectedWorkMismatch {
+                        component: "CPU PostSort visible count",
+                    })?;
+            let draw =
+                work.draw_count()
+                    .map_err(|_| FrameExecutionError::ProjectedWorkMismatch {
+                        component: "CPU PostSort draw count",
+                    })?;
+            if !gpu.same_owner(owner)
+                || gpu.frame_identity() != work.frame_identity()
+                || gpu.source_count() != work.source_count()
+                || gpu.order_generation() != work.order_generation()
+                || gpu.direct_count() != visible
+                || draw != visible
+                || gpu.count_semantics() != DirectCountSemantics::DrawEqualsVisible
+                || work.contributor_count().is_ok()
+            {
+                return Err(FrameExecutionError::ProjectedWorkMismatch {
+                    component: "CPU PostSort direct D=V contract",
+                });
+            }
+            (
+                CanonicalRasterInput::RankIndexedDirect {
+                    instance_count: draw,
+                },
+                RasterCountSemantics::DirectDrawEqualsVisible,
+            )
+        }
+        PlanId::GpuPostSort => {
+            let gpu = work
+                .gpu_post()
+                .map_err(|_| FrameExecutionError::ProjectedWorkMismatch {
+                    component: "GPU PostSort projected planes",
+                })?;
+            if !gpu.same_owner(owner)
+                || gpu.frame_identity() != work.frame_identity()
+                || gpu.source_count() != work.source_count()
+                || gpu.count_semantics() != IndirectCountSemantics::DrawEqualsVisible
+                || work.visible_count().is_ok()
+                || work.contributor_count().is_ok()
+                || work.draw_count().is_ok()
+            {
+                return Err(FrameExecutionError::ProjectedWorkMismatch {
+                    component: "GPU PostSort indirect D=V contract",
+                });
+            }
+            (
+                CanonicalRasterInput::RankIndexedIndirect,
+                RasterCountSemantics::IndirectDrawEqualsVisible,
+            )
+        }
+        PlanId::GpuPreproject => {
+            let gpu =
+                work.gpu_preproject()
+                    .map_err(|_| FrameExecutionError::ProjectedWorkMismatch {
+                        component: "GPU Preproject projected planes",
+                    })?;
+            if !gpu.same_owner(owner)
+                || gpu.frame_identity() != work.frame_identity()
+                || gpu.source_count() != work.source_count()
+                || gpu.count_semantics() != IndirectCountSemantics::DrawEqualsContributor
+                || work.visible_count().is_ok()
+                || work.contributor_count().is_ok()
+                || work.draw_count().is_ok()
+            {
+                return Err(FrameExecutionError::ProjectedWorkMismatch {
+                    component: "GPU Preproject indirect D=C contract",
+                });
+            }
+            (
+                CanonicalRasterInput::SourceIndexedIndirect,
+                RasterCountSemantics::IndirectDrawEqualsContributor,
+            )
+        }
+    };
+
+    Ok((
+        input,
+        FrameSubmissionMetadata {
+            frame: work.frame_identity(),
+            plan: work.plan_id(),
+            order_lane: work.order_lane(),
+            order_generation: work.order_generation(),
+            source_count: work.source_count(),
+            visible_count: work.visible_count().ok(),
+            contributor_count: work.contributor_count().ok(),
+            draw_count: work.draw_count().ok(),
+            count_semantics,
+        },
+    ))
 }
 
 fn execute_prepared_runtime<'runtime>(

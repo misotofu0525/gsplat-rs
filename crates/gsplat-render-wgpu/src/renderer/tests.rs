@@ -315,3 +315,373 @@ fn failed_frame_keeps_identity_fallback_and_last_usable_order() {
     assert_eq!(reused_order_generation, old_order_generation);
     assert_eq!(reused_order, old_order);
 }
+
+#[cfg(not(target_arch = "wasm32"))]
+mod canonical_submission {
+    use std::sync::Arc;
+
+    use super::*;
+    use crate::plans::TestGpuAdmissionMode;
+    use crate::renderer::{
+        FrameExecutionError, GpuFrameEncodeRequest, RasterCountSemantics, encode_frame_gpu_into,
+        submit_encoded_frame,
+    };
+
+    const WIDTH: u32 = 64;
+    const HEIGHT: u32 = 64;
+    const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
+
+    fn exact_scene(count: usize, sh_degree: u8) -> ResidentSceneCpu {
+        let coefficients = match sh_degree {
+            0 => 0,
+            1 => 9,
+            2 => 24,
+            3 => 45,
+            _ => unreachable!("Exact fixture supports SH0-SH3"),
+        };
+        let buffers = SceneBuffers {
+            positions: (0..count)
+                .map(|index| {
+                    let x = (index % 17) as f32 * 0.01 - 0.08;
+                    let y = ((index / 17) % 9) as f32 * 0.01 - 0.04;
+                    Vec3f::new(x, y, 1.0 + (index % 5) as f32 * 0.01)
+                })
+                .collect(),
+            opacity: vec![0.0; count],
+            scale_xyz: vec![[-3.0; 3]; count],
+            rotation_xyzw: vec![[0.0, 0.0, 0.0, 1.0]; count],
+            color_dc: (0..count)
+                .map(|index| {
+                    let value = index as f32 / count.max(1) as f32;
+                    [value * 0.25, value * 0.1, value * 0.05]
+                })
+                .collect(),
+            sh_degree,
+            sh_rest: (coefficients != 0).then(|| vec![0.001; count * coefficients]),
+        };
+        ResidentSceneCpu::encode_owned(buffers).expect("Exact resident fixture")
+    }
+
+    fn portable_limits() -> wgpu::Limits {
+        let mut limits = wgpu::Limits::downlevel_defaults();
+        limits.max_storage_buffers_per_shader_stage =
+            crate::resident_gpu::RESIDENT_COLOR_STORAGE_BINDINGS;
+        limits.max_storage_buffer_binding_size = 128 << 20;
+        limits.max_buffer_size = 128 << 20;
+        limits
+    }
+
+    async fn request_device() -> Option<(wgpu::AdapterInfo, Arc<wgpu::Device>, Arc<wgpu::Queue>)> {
+        #[cfg(target_os = "macos")]
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+            backends: wgpu::Backends::METAL,
+            ..Default::default()
+        });
+        #[cfg(not(target_os = "macos"))]
+        let instance = wgpu::Instance::default();
+
+        let adapter = match instance
+            .request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::HighPerformance,
+                compatible_surface: None,
+                force_fallback_adapter: false,
+            })
+            .await
+        {
+            Ok(adapter) => adapter,
+            #[cfg(target_os = "macos")]
+            Err(error) => panic!("required Exact renderer Metal adapter unavailable: {error}"),
+            #[cfg(not(target_os = "macos"))]
+            Err(error) => {
+                eprintln!("skipping optional Exact renderer GPU test: {error}");
+                return None;
+            }
+        };
+        let info = adapter.get_info();
+        #[cfg(target_os = "macos")]
+        assert_eq!(info.backend, wgpu::Backend::Metal, "Metal adapter required");
+        let limits = portable_limits();
+        if !limits.check_limits(&adapter.limits()) {
+            #[cfg(target_os = "macos")]
+            panic!("required Exact renderer Metal limits unavailable: {limits:?}");
+            #[cfg(not(target_os = "macos"))]
+            {
+                eprintln!("skipping optional Exact renderer GPU test; limits unavailable");
+                return None;
+            }
+        }
+        let descriptor = wgpu::DeviceDescriptor {
+            label: Some("exact-renderer-canonical-submission-test-device"),
+            required_features: wgpu::Features::empty(),
+            required_limits: limits,
+            experimental_features: wgpu::ExperimentalFeatures::disabled(),
+            memory_hints: wgpu::MemoryHints::Performance,
+            trace: wgpu::Trace::Off,
+        };
+        match adapter.request_device(&descriptor).await {
+            Ok((device, queue)) => Some((info, Arc::new(device), Arc::new(queue))),
+            #[cfg(target_os = "macos")]
+            Err(error) => panic!("required Exact renderer Metal device unavailable: {error}"),
+            #[cfg(not(target_os = "macos"))]
+            Err(error) => {
+                eprintln!("skipping optional Exact renderer GPU test: {error}");
+                None
+            }
+        }
+    }
+
+    fn target_and_readback(
+        device: &wgpu::Device,
+        label: &'static str,
+    ) -> (wgpu::Texture, wgpu::TextureView, wgpu::Buffer) {
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some(label),
+            size: wgpu::Extent3d {
+                width: WIDTH,
+                height: HEIGHT,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: FORMAT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let readback = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("exact-renderer-canonical-readback"),
+            size: u64::from(WIDTH * HEIGHT * 4),
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        (texture, view, readback)
+    }
+
+    fn append_readback(
+        encoder: &mut wgpu::CommandEncoder,
+        texture: &wgpu::Texture,
+        readback: &wgpu::Buffer,
+    ) {
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: readback,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(WIDTH * 4),
+                    rows_per_image: Some(HEIGHT),
+                },
+            },
+            wgpu::Extent3d {
+                width: WIDTH,
+                height: HEIGHT,
+                depth_or_array_layers: 1,
+            },
+        );
+    }
+
+    async fn render_plan(
+        slot: &mut PreparedRuntimeSlot,
+        device: &wgpu::Device,
+        queue: &Arc<wgpu::Queue>,
+        plan: PlanId,
+    ) -> (crate::renderer::GpuFrameSubmission, Vec<u8>) {
+        let (texture, view, readback) = target_and_readback(device, "exact-renderer-target");
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("exact-renderer-caller-owned-encoder"),
+        });
+        let validation_scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let pending = encode_frame_gpu_into(
+            slot,
+            queue,
+            &mut encoder,
+            GpuFrameEncodeRequest::new(
+                plan,
+                &Camera::default(),
+                Viewport::new(WIDTH, HEIGHT).expect("viewport"),
+                &view,
+                FORMAT,
+                wgpu::Color::BLACK,
+            ),
+        )
+        .expect("complete plan plus canonical raster encode");
+        append_readback(&mut encoder, &texture, &readback);
+        let submission = submit_encoded_frame(slot, pending, encoder.finish())
+            .expect("single renderer-owned submission");
+
+        let slice = readback.slice(..);
+        let (sender, receiver) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |result| {
+            let _ = sender.send(result);
+        });
+        device
+            .poll(wgpu::PollType::Wait {
+                submission_index: Some(submission.submission_index().clone()),
+                timeout: None,
+            })
+            .expect("wait for the exact submission");
+        receiver.recv().expect("map callback").expect("map result");
+        assert!(validation_scope.pop().await.is_none());
+        let bytes = slice.get_mapped_range().to_vec();
+        readback.unmap();
+        (submission, bytes)
+    }
+
+    #[test]
+    fn all_exact_plans_share_one_raster_and_one_submission() {
+        pollster::block_on(async {
+            let Some((info, device, queue)) = request_device().await else {
+                return;
+            };
+            eprintln!(
+                "EXACT_CANONICAL_SUBMISSION adapter={} backend={:?}",
+                info.name, info.backend
+            );
+
+            for (count, sh_degree) in [(0, 0), (129, 3)] {
+                let mut slot = PreparedRuntimeSlot::prepare(exact_scene(count, sh_degree))
+                    .expect("prepared runtime");
+                slot.set_test_gpu_admission_mode(TestGpuAdmissionMode::ConcreteAll);
+                slot.prepare_gpu(&device, &queue, FORMAT)
+                    .await
+                    .expect("scene, plans and raster admitted atomically");
+
+                let before = slot.frame_state();
+                let mut stale_encoder =
+                    device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                        label: Some("exact-renderer-stale-encoder"),
+                    });
+                let (_stale_texture, stale_view, _stale_readback) =
+                    target_and_readback(&device, "exact-renderer-stale-target");
+                let stale = encode_frame_gpu_into(
+                    &mut slot,
+                    &queue,
+                    &mut stale_encoder,
+                    GpuFrameEncodeRequest::new(
+                        PlanId::CpuPostSort,
+                        &Camera::default(),
+                        Viewport::new(WIDTH, HEIGHT).expect("viewport"),
+                        &stale_view,
+                        FORMAT,
+                        wgpu::Color::BLACK,
+                    ),
+                )
+                .expect("first pending frame");
+                let mut newer_encoder =
+                    device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                        label: Some("exact-renderer-newer-encoder"),
+                    });
+                let (_newer_texture, newer_view, _newer_readback) =
+                    target_and_readback(&device, "exact-renderer-newer-target");
+                let newer = encode_frame_gpu_into(
+                    &mut slot,
+                    &queue,
+                    &mut newer_encoder,
+                    GpuFrameEncodeRequest::new(
+                        PlanId::CpuPostSort,
+                        &Camera::default(),
+                        Viewport::new(WIDTH, HEIGHT).expect("viewport"),
+                        &newer_view,
+                        FORMAT,
+                        wgpu::Color::BLACK,
+                    ),
+                )
+                .expect("newer pending frame");
+                assert_eq!(slot.frame_state(), before);
+                assert!(matches!(
+                    submit_encoded_frame(&mut slot, stale, stale_encoder.finish()),
+                    Err(FrameExecutionError::PendingFrameMismatch {
+                        component: "latest encode attempt"
+                    })
+                ));
+                drop(newer);
+                drop(newer_encoder);
+                assert_eq!(slot.frame_state(), before);
+
+                let (cpu, cpu_image) =
+                    render_plan(&mut slot, &device, &queue, PlanId::CpuPostSort).await;
+                let (gpu_post, gpu_post_image) =
+                    render_plan(&mut slot, &device, &queue, PlanId::GpuPostSort).await;
+                let (gpu_pre, gpu_pre_image) =
+                    render_plan(&mut slot, &device, &queue, PlanId::GpuPreproject).await;
+
+                assert_eq!(
+                    cpu.count_semantics(),
+                    RasterCountSemantics::DirectDrawEqualsVisible
+                );
+                assert_eq!(cpu.visible_count(), Some(count as u32));
+                assert_eq!(cpu.draw_count(), Some(count as u32));
+                assert_eq!(cpu.contributor_count(), None);
+                assert_eq!(
+                    gpu_post.count_semantics(),
+                    RasterCountSemantics::IndirectDrawEqualsVisible
+                );
+                assert_eq!(
+                    gpu_pre.count_semantics(),
+                    RasterCountSemantics::IndirectDrawEqualsContributor
+                );
+                assert!(cpu.encode_attempt() < gpu_post.encode_attempt());
+                assert!(gpu_post.encode_attempt() < gpu_pre.encode_attempt());
+                assert_eq!(cpu_image, gpu_post_image);
+                assert_eq!(cpu_image, gpu_pre_image);
+                if count != 0 {
+                    assert!(cpu_image.iter().any(|byte| *byte != 0));
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn pending_frame_rejects_a_different_renderer_owner() {
+        pollster::block_on(async {
+            let Some((_info, device, queue)) = request_device().await else {
+                return;
+            };
+            let mut first = PreparedRuntimeSlot::prepare(exact_scene(1, 0)).expect("first runtime");
+            let mut second =
+                PreparedRuntimeSlot::prepare(exact_scene(1, 0)).expect("second runtime");
+            first.set_test_gpu_admission_mode(TestGpuAdmissionMode::ConcreteAll);
+            second.set_test_gpu_admission_mode(TestGpuAdmissionMode::ConcreteAll);
+            first
+                .prepare_gpu(&device, &queue, FORMAT)
+                .await
+                .expect("first GPU runtime");
+            second
+                .prepare_gpu(&device, &queue, FORMAT)
+                .await
+                .expect("second GPU runtime");
+
+            let (_texture, view, _readback) =
+                target_and_readback(&device, "exact-renderer-owner-target");
+            let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("exact-renderer-owner-encoder"),
+            });
+            let pending = encode_frame_gpu_into(
+                &mut first,
+                &queue,
+                &mut encoder,
+                GpuFrameEncodeRequest::new(
+                    PlanId::CpuPostSort,
+                    &Camera::default(),
+                    Viewport::new(WIDTH, HEIGHT).expect("viewport"),
+                    &view,
+                    FORMAT,
+                    wgpu::Color::BLACK,
+                ),
+            )
+            .expect("pending first-owner frame");
+            assert!(matches!(
+                submit_encoded_frame(&mut second, pending, encoder.finish()),
+                Err(FrameExecutionError::PendingFrameMismatch {
+                    component: "GPU execution owner"
+                })
+            ));
+        });
+    }
+}

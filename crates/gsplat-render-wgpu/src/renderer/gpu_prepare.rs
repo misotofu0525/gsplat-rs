@@ -16,7 +16,10 @@ use thiserror::Error;
 use crate::gpu::{ProjectedRankProjector, ProjectedRankSourceBindings};
 use crate::plans::{FrameIdentity, GpuExecutionContext, GpuOwnerToken};
 use crate::preproject_gpu::PreprojectedGpuCompute;
-use crate::raster::QUAD_VERTEX_COUNT;
+use crate::raster::{
+    CanonicalRaster, CanonicalRasterError, CanonicalRasterResources, QUAD_VERTEX_COUNT,
+    RankIndexedRasterResources, SourceIndexedRasterResources,
+};
 use crate::resident_gpu::{
     ResidentGpuResources, create_resident_color_bind_group_layout, create_resident_color_pipeline,
     create_resident_draw_bind_group_layout,
@@ -30,6 +33,8 @@ pub(crate) enum GpuPreparationError {
     Unavailable,
     #[error("Exact GPU scene/project preparation failed: {0}")]
     Resource(#[from] ResidentGpuError),
+    #[error("Exact canonical raster preparation failed: {0}")]
+    Raster(#[from] CanonicalRasterError),
     #[error("Exact GPU scene/project allocation failed: {0}")]
     OutOfMemory(String),
     #[error("Exact GPU scene/project validation failed: {0}")]
@@ -159,7 +164,11 @@ impl GpuExecutionOwner {
         &self.device
     }
 
-    fn token(&self) -> &GpuOwnerToken {
+    pub(super) fn queue(&self) -> &Arc<wgpu::Queue> {
+        &self.queue
+    }
+
+    pub(super) fn token(&self) -> &GpuOwnerToken {
         &self.token
     }
 
@@ -303,6 +312,60 @@ impl GpuScenePreparation {
 
     pub(crate) const fn receipt(&self) -> GpuPreparationReceipt {
         self.receipt
+    }
+
+    /// Prepares the plan-neutral raster against the same complete scene graph
+    /// before either unit is published. Error scopes cover pipeline and bind
+    /// group validation, so publication remains one all-or-nothing commit.
+    pub(crate) async fn prepare_canonical_raster(
+        &self,
+        owner: &GpuExecutionOwner,
+        target_format: wgpu::TextureFormat,
+    ) -> Result<CanonicalRaster, GpuPreparationError> {
+        if !self.owner.same_owner(owner.token()) {
+            return Err(GpuPreparationError::ExecutionOwnerMismatch);
+        }
+        let device = owner.device();
+        let (validation_scope, oom_scope, internal_scope) = (
+            device.push_error_scope(wgpu::ErrorFilter::Validation),
+            device.push_error_scope(wgpu::ErrorFilter::OutOfMemory),
+            device.push_error_scope(wgpu::ErrorFilter::Internal),
+        );
+        let candidate = self.canonical_raster_resources().and_then(|resources| {
+            CanonicalRaster::prepare(device, target_format, resources)
+                .map_err(GpuPreparationError::from)
+        });
+        let internal = internal_scope.pop().await.map(|error| error.to_string());
+        let out_of_memory = oom_scope.pop().await.map(|error| error.to_string());
+        let validation = validation_scope.pop().await.map(|error| error.to_string());
+        if let Some(error) = classify_scope_errors(internal, out_of_memory, validation) {
+            return Err(error);
+        }
+        candidate
+    }
+
+    fn canonical_raster_resources(
+        &self,
+    ) -> Result<CanonicalRasterResources<'_>, GpuPreparationError> {
+        let order = self.order()?;
+        Ok(CanonicalRasterResources {
+            rank_indexed: Some(RankIndexedRasterResources {
+                projected_center_source: self.projector.projected_center_source(),
+                projected_axes: self.projector.projected_axes(),
+                resolved_color: &self.resident.resolved_color_buffer,
+                indirect_args: Some(order.sorter.indirect_args()),
+                projected_capacity: self.receipt.capacity,
+                source_count: self.receipt.source_count,
+            }),
+            source_indexed: Some(SourceIndexedRasterResources {
+                ordered_source_ids: self.preproject.final_source_ids(),
+                projected_center_alpha_key: self.preproject.source_center_alpha_key(),
+                projected_axes: self.preproject.source_axes(),
+                resolved_color: &self.resident.resolved_color_buffer,
+                indirect_args: self.preproject.draw_args(),
+                source_count: self.receipt.source_count,
+            }),
+        })
     }
 
     /// Existing device resources may be rebound only to a newer PlanSet from
@@ -1167,7 +1230,9 @@ mod tests {
             let mut slot = PreparedRuntimeSlot::prepare(resident).expect("CPU fallback");
             let before = slot.frame_state();
 
-            let status = slot.prepare_gpu_optional(&device, &queue).await;
+            let status = slot
+                .prepare_gpu_optional(&device, &queue, wgpu::TextureFormat::Rgba8Unorm)
+                .await;
 
             assert!(matches!(status, GpuPreparationStatus::Omitted(_)));
             assert!(status.receipt().is_none());
@@ -1195,7 +1260,8 @@ mod tests {
             let before_eligible = slot.eligible().to_vec();
 
             assert!(matches!(
-                slot.prepare_gpu(&device, &queue).await,
+                slot.prepare_gpu(&device, &queue, wgpu::TextureFormat::Rgba8Unorm)
+                    .await,
                 Err(GpuRuntimePreparationError::PlanSet(
                     PlanSetError::GpuAdmissionRejected {
                         reason: "injected staged-plan failure"
@@ -1218,6 +1284,47 @@ mod tests {
 
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
+    fn staged_raster_failure_publishes_nothing_and_allows_clean_retry() {
+        pollster::block_on(async {
+            let Some((_instance, _adapter, _info, device, queue)) = request_device(8).await else {
+                return;
+            };
+            let resident = ResidentSceneCpu::encode_owned(source(1, 3)).expect("resident scene");
+            let mut slot = PreparedRuntimeSlot::prepare(resident).expect("CPU fallback");
+            slot.set_test_gpu_admission_mode(TestGpuAdmissionMode::ConcreteAll);
+            let before_frame = slot.frame_state();
+            let before_eligible = slot.eligible().to_vec();
+
+            assert!(
+                slot.prepare_gpu(&device, &queue, wgpu::TextureFormat::Depth32Float)
+                    .await
+                    .is_err(),
+                "a color-blended canonical raster cannot target a depth format"
+            );
+            assert_eq!(slot.frame_state(), before_frame);
+            assert_eq!(slot.eligible(), before_eligible);
+            assert_eq!(slot.fallback(), PlanId::CpuPostSort);
+            assert!(slot.gpu_preparation().is_none());
+            assert!(slot.gpu_capability().is_none());
+
+            let receipt = slot
+                .prepare_gpu(&device, &queue, wgpu::TextureFormat::Rgba8Unorm)
+                .await
+                .expect("a complete scene, plan set and raster retry");
+            assert_eq!(slot.gpu_preparation(), Some(receipt));
+            assert_eq!(
+                slot.eligible(),
+                &[
+                    PlanId::CpuPostSort,
+                    PlanId::GpuPostSort,
+                    PlanId::GpuPreproject,
+                ]
+            );
+        });
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
     fn same_staged_hook_can_atomically_admit_a_test_concrete_gpu_plan() {
         pollster::block_on(async {
             let Some((_instance, _adapter, _info, device, queue)) = request_device(8).await else {
@@ -1228,7 +1335,7 @@ mod tests {
             slot.set_test_gpu_admission_mode(TestGpuAdmissionMode::Concrete);
 
             let receipt = slot
-                .prepare_gpu(&device, &queue)
+                .prepare_gpu(&device, &queue, wgpu::TextureFormat::Rgba8Unorm)
                 .await
                 .expect("atomic test concrete admission");
             let capability = slot.gpu_capability().expect("PlanSet capability");
@@ -1686,7 +1793,7 @@ mod tests {
             let resident = ResidentSceneCpu::encode_owned(source(1, 0)).expect("resident scene");
             let mut slot = PreparedRuntimeSlot::prepare(resident).expect("runtime slot");
             let receipt = slot
-                .prepare_gpu(&device, &queue)
+                .prepare_gpu(&device, &queue, wgpu::TextureFormat::Rgba8Unorm)
                 .await
                 .expect("renderer-owned GPU context");
             assert_eq!(receipt.plan_set_generation(), 2);
@@ -1699,7 +1806,8 @@ mod tests {
             );
             let current_frame = slot.frame_state();
             assert!(matches!(
-                slot.prepare_gpu(&device, &queue).await,
+                slot.prepare_gpu(&device, &queue, wgpu::TextureFormat::Rgba8Unorm)
+                    .await,
                 Err(GpuRuntimePreparationError::Resources(
                     GpuPreparationError::ExecutionOwnerAlreadyBound
                 ))

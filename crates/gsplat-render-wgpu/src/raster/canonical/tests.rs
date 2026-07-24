@@ -390,6 +390,7 @@ fn rank_direct_is_byte_identical_to_accepted_projected_draw_on_required_gpu() {
             .encode(
                 &mut encoder,
                 &canonical_view,
+                TARGET_FORMAT,
                 wgpu::Color::TRANSPARENT,
                 CanonicalRasterInput::RankIndexedDirect {
                     instance_count: centers.len() as u32,
@@ -555,11 +556,25 @@ fn constructors_and_unprepared_variants_fail_closed() {
             source_only.encode(
                 &mut encoder,
                 &view,
+                TARGET_FORMAT,
                 wgpu::Color::TRANSPARENT,
                 CanonicalRasterInput::RankIndexedDirect { instance_count: 0 },
             ),
             Err(CanonicalRasterError::InputUnavailable {
                 input: "rank-indexed direct",
+            }),
+        );
+        assert_eq!(
+            source_only.encode(
+                &mut encoder,
+                &view,
+                wgpu::TextureFormat::Bgra8Unorm,
+                wgpu::Color::TRANSPARENT,
+                CanonicalRasterInput::SourceIndexedIndirect,
+            ),
+            Err(CanonicalRasterError::TargetFormatMismatch {
+                expected: TARGET_FORMAT,
+                actual: wgpu::TextureFormat::Bgra8Unorm,
             }),
         );
 
@@ -578,6 +593,7 @@ fn constructors_and_unprepared_variants_fail_closed() {
             rank_only.encode(
                 &mut encoder,
                 &view,
+                TARGET_FORMAT,
                 wgpu::Color::TRANSPARENT,
                 CanonicalRasterInput::RankIndexedIndirect,
             ),
@@ -589,6 +605,7 @@ fn constructors_and_unprepared_variants_fail_closed() {
             rank_only.encode(
                 &mut encoder,
                 &view,
+                TARGET_FORMAT,
                 wgpu::Color::TRANSPARENT,
                 CanonicalRasterInput::RankIndexedDirect { instance_count: 2 },
             ),
@@ -652,6 +669,7 @@ fn rank_direct_and_indirect_preserve_d_equals_v_for_boundaries() {
                 .encode(
                     &mut encoder,
                     &direct_view,
+                    TARGET_FORMAT,
                     wgpu::Color::TRANSPARENT,
                     CanonicalRasterInput::RankIndexedDirect {
                         instance_count: count,
@@ -662,6 +680,7 @@ fn rank_direct_and_indirect_preserve_d_equals_v_for_boundaries() {
                 .encode(
                     &mut encoder,
                     &indirect_view,
+                    TARGET_FORMAT,
                     wgpu::Color::TRANSPARENT,
                     CanonicalRasterInput::RankIndexedIndirect,
                 )
@@ -767,6 +786,7 @@ fn source_indirect_matches_existing_preproject_for_boundaries_and_sh0_through_sh
                 .encode(
                     &mut encoder,
                     &canonical_view,
+                    TARGET_FORMAT,
                     wgpu::Color::TRANSPARENT,
                     CanonicalRasterInput::SourceIndexedIndirect,
                 )

@@ -40,6 +40,11 @@ pub(crate) enum CanonicalRasterError {
         "canonical raster direct draw count {count} exceeds projected rank capacity {capacity}"
     )]
     DirectCountExceedsCapacity { count: u32, capacity: u32 },
+    #[error("canonical raster target format mismatch: prepared {expected:?}, got {actual:?}")]
+    TargetFormatMismatch {
+        expected: wgpu::TextureFormat,
+        actual: wgpu::TextureFormat,
+    },
     #[error("canonical raster byte-size calculation overflowed for {resource}")]
     SizeOverflow { resource: &'static str },
 }
@@ -92,7 +97,6 @@ struct SourceIndexedRaster {
 }
 
 /// Dormant Exact-core owner of the accepted four-vertex SortedAlpha raster.
-///
 /// Projection and ordering resources are borrowed only during preparation;
 /// prepared bind groups retain their buffer handles. Frame encoding receives
 /// only a target, clear color and neutral direct/indirect draw identity. The
@@ -100,6 +104,7 @@ struct SourceIndexedRaster {
 /// owner.
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) struct CanonicalRaster {
+    target_format: wgpu::TextureFormat,
     rank_indexed: Option<RankIndexedRaster>,
     source_indexed: Option<SourceIndexedRaster>,
 }
@@ -133,6 +138,7 @@ impl CanonicalRaster {
             .map(|source| prepare_source_indexed(device, target_format, source));
 
         Ok(Self {
+            target_format,
             rank_indexed,
             source_indexed,
         })
@@ -142,9 +148,16 @@ impl CanonicalRaster {
         &self,
         encoder: &mut wgpu::CommandEncoder,
         target: &wgpu::TextureView,
+        target_format: wgpu::TextureFormat,
         clear: wgpu::Color,
         input: CanonicalRasterInput,
     ) -> Result<(), CanonicalRasterError> {
+        if target_format != self.target_format {
+            return Err(CanonicalRasterError::TargetFormatMismatch {
+                expected: self.target_format,
+                actual: target_format,
+            });
+        }
         match input {
             CanonicalRasterInput::RankIndexedDirect { instance_count } => {
                 let rank =

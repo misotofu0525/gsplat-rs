@@ -539,7 +539,7 @@ mod tests {
                         .expect("scene");
                 let mut slot = PreparedRuntimeSlot::prepare(resident).expect("CPU fallback");
                 let preparation = slot
-                    .prepare_gpu(&device, &queue)
+                    .prepare_gpu(&device, &queue, wgpu::TextureFormat::Rgba8Unorm)
                     .await
                     .expect("device-owned projection graph");
                 assert_eq!(preparation.source_count(), count as u32);

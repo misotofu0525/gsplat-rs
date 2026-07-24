@@ -233,7 +233,7 @@ fn prepared_gpu_post_is_exact_current_indirect_and_discard_safe() {
             let mut slot = PreparedRuntimeSlot::prepare(resident).expect("CPU fallback");
             slot.set_test_gpu_admission_mode(TestGpuAdmissionMode::Concrete);
             let receipt = slot
-                .prepare_gpu(&device, &queue)
+                .prepare_gpu(&device, &queue, wgpu::TextureFormat::Rgba8Unorm)
                 .await
                 .expect("atomic concrete GPU PostSort admission");
             assert_eq!(slot.fallback(), PlanId::CpuPostSort);

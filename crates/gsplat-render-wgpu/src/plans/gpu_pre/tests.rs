@@ -283,7 +283,7 @@ fn prepared_gpu_preproject_is_exact_current_indirect_owner_bound_and_discard_saf
             let mut slot = PreparedRuntimeSlot::prepare(resident).expect("CPU fallback");
             slot.set_test_gpu_admission_mode(TestGpuAdmissionMode::ConcreteAll);
             let receipt = slot
-                .prepare_gpu(&device, &queue)
+                .prepare_gpu(&device, &queue, wgpu::TextureFormat::Rgba8Unorm)
                 .await
                 .expect("atomic PostSort plus Preproject admission");
             assert_eq!(slot.fallback(), PlanId::CpuPostSort);
