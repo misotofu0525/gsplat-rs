@@ -52,13 +52,24 @@ impl SurfaceLifecycle {
     ) -> Result<Option<wgpu::SurfaceTexture>, SurfacePresenterError> {
         configuration.ensure_valid()?;
 
+        self.acquire_with(
+            || surface.get_current_texture(),
+            || configuration.reconfigure_current(surface, device),
+        )
+    }
+
+    pub(super) fn acquire_with<T>(
+        &self,
+        mut acquire: impl FnMut() -> Result<T, wgpu::SurfaceError>,
+        mut reconfigure: impl FnMut(),
+    ) -> Result<Option<T>, SurfacePresenterError> {
         let mut attempt = SurfaceAcquireAttempt::Initial;
         loop {
-            match surface.get_current_texture() {
+            match acquire() {
                 Ok(frame) => return Ok(Some(frame)),
                 Err(error) => match surface_acquire_decision(&error, attempt) {
                     SurfaceAcquireDecision::ReconfigureAndRetry => {
-                        configuration.reconfigure_current(surface, device);
+                        reconfigure();
                         attempt = SurfaceAcquireAttempt::Retry;
                     }
                     SurfaceAcquireDecision::Unavailable => return Ok(None),
@@ -75,7 +86,7 @@ impl SurfaceLifecycle {
         self.present_with(size, || frame.present())
     }
 
-    fn present_with(&mut self, size: (u32, u32), present: impl FnOnce()) -> (u32, u32) {
+    pub(super) fn present_with(&mut self, size: (u32, u32), present: impl FnOnce()) -> (u32, u32) {
         self.last_presented_size = Some(size);
         present();
         self.last_frame_presented = true;
@@ -134,6 +145,9 @@ pub(crate) fn create_surface_instance() -> wgpu::Instance {
 
 #[cfg(test)]
 mod tests {
+    use std::cell::Cell;
+    use std::collections::VecDeque;
+
     use super::*;
 
     fn capabilities(present_modes: Vec<wgpu::PresentMode>) -> wgpu::SurfaceCapabilities {
@@ -236,6 +250,54 @@ mod tests {
             surface_error_to_presenter(wgpu::SurfaceError::Other),
             SurfacePresenterError::SurfaceAcquire(ref message) if message == "Other"
         ));
+    }
+
+    #[test]
+    fn injected_acquisition_retries_recoverable_errors_exactly_once() {
+        for recoverable in [wgpu::SurfaceError::Lost, wgpu::SurfaceError::Outdated] {
+            let lifecycle = SurfaceLifecycle::new();
+            let mut results = VecDeque::from([Err(recoverable), Ok(17_u32)]);
+            let reconfigured = Cell::new(0_u32);
+            let acquired = lifecycle
+                .acquire_with(
+                    || results.pop_front().expect("bounded acquire attempts"),
+                    || reconfigured.set(reconfigured.get() + 1),
+                )
+                .expect("one retry succeeds");
+            assert_eq!(acquired, Some(17));
+            assert_eq!(reconfigured.get(), 1);
+            assert!(results.is_empty());
+        }
+
+        let lifecycle = SurfaceLifecycle::new();
+        let mut results = VecDeque::<Result<u32, _>>::from([
+            Err(wgpu::SurfaceError::Lost),
+            Err(wgpu::SurfaceError::Outdated),
+        ]);
+        let reconfigured = Cell::new(0_u32);
+        assert!(matches!(
+            lifecycle.acquire_with(
+                || results.pop_front().expect("bounded acquire attempts"),
+                || reconfigured.set(reconfigured.get() + 1),
+            ),
+            Err(SurfacePresenterError::SurfaceAcquire(ref message)) if message == "Outdated"
+        ));
+        assert_eq!(reconfigured.get(), 1);
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn injected_timeout_is_unavailable_without_reconfigure() {
+        let lifecycle = SurfaceLifecycle::new();
+        let reconfigured = Cell::new(0_u32);
+        let acquired = lifecycle
+            .acquire_with::<u32>(
+                || Err(wgpu::SurfaceError::Timeout),
+                || reconfigured.set(reconfigured.get() + 1),
+            )
+            .expect("timeout is a non-fatal unavailable frame");
+        assert_eq!(acquired, None);
+        assert_eq!(reconfigured.get(), 0);
     }
 
     #[test]

@@ -26,7 +26,7 @@ use frame::{FrameState, GenerationError, Viewport};
 use gpu_prepare::{
     GpuExecutionOwner, GpuPreparationError, GpuPreparationReceipt, GpuScenePreparation,
 };
-use sampler::{PlanSampleDescriptor, PlanSampler, PlanSamplerError};
+use sampler::{PlanSampleDescriptor, PlanSampler, PlanSamplerError, StagedPlanSample};
 
 /// The only E1 contract: Exact fidelity over one complete resident scene.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -154,6 +154,9 @@ pub(crate) struct PendingGpuFrame {
     encode_attempt: u64,
     metadata: FrameSubmissionMetadata,
     decision: PlanDecision,
+    base_sampler_ticket: Option<PlanSampleTicket>,
+    reset_sampler_on_finalize: bool,
+    staged_controller: WholePlanController,
     completion_started: crate::TimerInstant,
 }
 
@@ -163,6 +166,49 @@ impl PendingGpuFrame {
     /// identity remains structurally tied to the submitted command stream.
     pub(crate) fn encoder_mut(&mut self) -> &mut wgpu::CommandEncoder {
         &mut self.encoder
+    }
+}
+
+/// Queue-submitted Exact frame whose semantic state is still unpublished.
+///
+/// A Surface host retains this token across primitive presentation. Dropping
+/// or abandoning it leaves FrameState, controller progress, sampler ownership
+/// and frame results untouched; any late completion callback can reach only
+/// the orphaned atomics retained by wgpu.
+pub(crate) struct SubmittedGpuFrame {
+    state: Option<SubmittedGpuFrameState>,
+}
+
+/// Identity-checked submitted frame whose only remaining operation is the
+/// infallible semantic commit. Holding the exclusive slot borrow across the
+/// primitive presentation prevents any newer encode from invalidating the
+/// checked transaction between validation and publication.
+pub(crate) struct ValidatedSubmittedGpuFrame<'a> {
+    slot: &'a mut PreparedRuntimeSlot,
+    submitted: &'a mut SubmittedGpuFrame,
+}
+
+struct SubmittedGpuFrameState {
+    submission_index: wgpu::SubmissionIndex,
+    owner: GpuOwnerToken,
+    base_frame: FrameState,
+    candidate_frame: FrameState,
+    encode_attempt: u64,
+    metadata: FrameSubmissionMetadata,
+    decision: PlanDecision,
+    base_sampler_ticket: Option<PlanSampleTicket>,
+    reset_sampler_on_finalize: bool,
+    staged_controller: WholePlanController,
+    staged_sample: Option<StagedPlanSample>,
+    plan_sample_ticket: Option<PlanSampleTicket>,
+}
+
+impl SubmittedGpuFrame {
+    /// This is only a wait primitive for tests/hosts. No semantic metadata or
+    /// formal ticket escapes before successful target finalization.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn submission_index(&self) -> Option<&wgpu::SubmissionIndex> {
+        self.state.as_ref().map(|state| &state.submission_index)
     }
 }
 
@@ -508,17 +554,6 @@ impl PreparedRuntimeSlot {
         );
     }
 
-    fn synchronize_plan_policy(&mut self, frame: FrameIdentity) {
-        let key = comparison_key(&self.runtime, frame);
-        if self.controller.synchronize(
-            self.runtime.plans.fallback(),
-            self.runtime.plans.eligible(),
-            key,
-        ) {
-            self.sampler.invalidate();
-        }
-    }
-
     fn poll_plan_sampler(&mut self) -> Option<(PlanSample, SampleDisposition)> {
         let owner = self.gpu_owner.as_ref()?;
         let sample = self.sampler.poll(owner.device())?;
@@ -632,7 +667,6 @@ pub(crate) fn encode_frame_gpu(
     request: GpuFrameEncodeRequest<'_>,
 ) -> Result<PendingGpuFrame, FrameExecutionError> {
     let completion_started = crate::timer_now();
-    let _ = slot.poll_plan_sampler();
     let encode_attempt = slot
         .latest_encode_attempt
         .checked_add(1)
@@ -641,14 +675,25 @@ pub(crate) fn encode_frame_gpu(
     // pending frame, invalidates all older command streams before any queue
     // write or plan-local cache mutation can occur.
     slot.latest_encode_attempt = encode_attempt;
+    // Advancing the attempt logically invalidates every unresolved target
+    // token before polling the sole live sampler. An unpresented token owns
+    // its callback outside the slot, so a fast completion can never be
+    // mistaken for presented-frame evidence.
+    let _ = slot.poll_plan_sampler();
     let base_frame = slot.frame;
+    let base_sampler_ticket = slot.sampler.pending_ticket();
     let candidate_frame = slot
         .frame
         .candidate_for_frame(*request.camera, request.viewport)?;
-    slot.synchronize_plan_policy(candidate_frame.identity());
+    let mut staged_controller = slot.controller.clone();
+    let reset_sampler_on_finalize = staged_controller.synchronize(
+        slot.runtime.plans.fallback(),
+        slot.runtime.plans.eligible(),
+        comparison_key(&slot.runtime, candidate_frame.identity()),
+    );
     let decision = match request.selection {
-        PlanSelection::Forced(plan) => slot.controller.choose_forced(plan),
-        PlanSelection::Adaptive => slot.controller.choose_adaptive()?,
+        PlanSelection::Forced(plan) => staged_controller.choose_forced(plan),
+        PlanSelection::Adaptive => staged_controller.choose_adaptive()?,
     };
 
     let encoded = (|| {
@@ -695,7 +740,14 @@ pub(crate) fn encode_frame_gpu(
     let (encoder, metadata) = match encoded {
         Ok(encoded) => encoded,
         Err(error) => {
-            slot.controller.execution_failed(decision);
+            // A genuine plan/encode failure under the still-published
+            // comparison key must retain the existing adaptive cooldown
+            // behavior. A failure while staging a different comparison key
+            // is not allowed to replace the old controller or sampler.
+            if !reset_sampler_on_finalize {
+                staged_controller.execution_failed(decision);
+                slot.controller = staged_controller;
+            }
             return Err(error);
         }
     };
@@ -713,6 +765,9 @@ pub(crate) fn encode_frame_gpu(
         encode_attempt,
         metadata,
         decision,
+        base_sampler_ticket,
+        reset_sampler_on_finalize,
+        staged_controller,
         completion_started,
     })
 }
@@ -725,7 +780,8 @@ pub(crate) fn submit_encoded_frame(
     slot: &mut PreparedRuntimeSlot,
     pending: PendingGpuFrame,
 ) -> Result<GpuFrameSubmission, FrameExecutionError> {
-    submit_pending_frame(slot, pending, std::iter::empty())
+    let mut submitted = submit_pending_frame(slot, pending, std::iter::empty())?;
+    finalize_submitted_frame(slot, &mut submitted)
 }
 
 /// Finite E10 control path: keep one queue submission while placing a caller
@@ -736,14 +792,15 @@ pub(crate) fn submit_encoded_frame_with_followup_for_test(
     pending: PendingGpuFrame,
     followup: wgpu::CommandBuffer,
 ) -> Result<GpuFrameSubmission, FrameExecutionError> {
-    submit_pending_frame(slot, pending, std::iter::once(followup))
+    let mut submitted = submit_pending_frame(slot, pending, std::iter::once(followup))?;
+    finalize_submitted_frame(slot, &mut submitted)
 }
 
 fn submit_pending_frame(
     slot: &mut PreparedRuntimeSlot,
     pending: PendingGpuFrame,
     followups: impl IntoIterator<Item = wgpu::CommandBuffer>,
-) -> Result<GpuFrameSubmission, FrameExecutionError> {
+) -> Result<SubmittedGpuFrame, FrameExecutionError> {
     let owner = slot
         .gpu_owner
         .as_ref()
@@ -776,14 +833,16 @@ fn submit_pending_frame(
     command_buffers.push(pending.encoder.finish());
     command_buffers.extend(followups);
     let terminal_index = command_buffers.len() - 1;
+    let mut staged_controller = pending.staged_controller;
+    let mut staged_sample = None;
     let mut plan_sample_ticket = None;
     if pending.decision.formal_kind().is_some() {
-        if !slot.controller.can_arm(pending.decision) {
+        if !staged_controller.can_arm(pending.decision) {
             return Err(FrameExecutionError::PendingFrameMismatch {
                 component: "formal whole-plan sample",
             });
         }
-        let ticket = slot.sampler.arm(
+        let sample = slot.sampler.stage_arm(
             &command_buffers[terminal_index],
             PlanSampleDescriptor {
                 probe_generation: pending.decision.probe_generation(),
@@ -799,34 +858,161 @@ fn submit_pending_frame(
             },
             pending.completion_started,
         )?;
-        if !slot.controller.register_pending(pending.decision, ticket) {
-            slot.sampler.invalidate();
+        let ticket = sample.ticket();
+        if !staged_controller.register_pending(pending.decision, ticket) {
             return Err(FrameExecutionError::PendingFrameMismatch {
                 component: "formal whole-plan ticket",
             });
         }
+        staged_sample = Some(sample);
         plan_sample_ticket = Some(ticket);
     }
 
     let submission_index = queue.submit(command_buffers);
-    slot.frame = pending.candidate_frame;
-    if plan_sample_ticket.is_none() {
-        slot.controller.submitted_without_sample(pending.decision);
-    }
-    Ok(GpuFrameSubmission {
-        submission_index,
-        frame: pending.metadata.frame,
-        plan: pending.metadata.plan,
-        order_lane: pending.metadata.order_lane,
-        order_generation: pending.metadata.order_generation,
-        source_count: pending.metadata.source_count,
-        visible_count: pending.metadata.visible_count,
-        contributor_count: pending.metadata.contributor_count,
-        draw_count: pending.metadata.draw_count,
-        count_semantics: pending.metadata.count_semantics,
-        encode_attempt: pending.encode_attempt,
-        plan_sample_ticket,
+    Ok(SubmittedGpuFrame {
+        state: Some(SubmittedGpuFrameState {
+            submission_index,
+            owner: pending.owner,
+            base_frame: pending.base_frame,
+            candidate_frame: pending.candidate_frame,
+            encode_attempt: pending.encode_attempt,
+            metadata: pending.metadata,
+            decision: pending.decision,
+            base_sampler_ticket: pending.base_sampler_ticket,
+            reset_sampler_on_finalize: pending.reset_sampler_on_finalize,
+            staged_controller,
+            staged_sample,
+            plan_sample_ticket,
+        }),
     })
+}
+
+/// Submits one Exact frame while retaining all semantic publication in the
+/// returned token. Surface hosts finalize it only after actual presentation.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn submit_encoded_frame_unpublished(
+    slot: &mut PreparedRuntimeSlot,
+    pending: PendingGpuFrame,
+) -> Result<SubmittedGpuFrame, FrameExecutionError> {
+    submit_pending_frame(slot, pending, std::iter::empty())
+}
+
+/// Publishes a queue-submitted frame exactly once after the primitive target
+/// outcome is known successful. Every fallible identity check occurs before
+/// the infallible FrameState/controller/sampler commit.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn finalize_submitted_frame(
+    slot: &mut PreparedRuntimeSlot,
+    submitted: &mut SubmittedGpuFrame,
+) -> Result<GpuFrameSubmission, FrameExecutionError> {
+    Ok(validate_submitted_frame(slot, submitted)?.publish())
+}
+
+/// Performs every fallible identity check before a Surface host presents.
+/// The returned guard keeps both semantic owners exclusively borrowed; once
+/// the primitive target is presented its `publish` operation cannot fail.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn validate_submitted_frame<'a>(
+    slot: &'a mut PreparedRuntimeSlot,
+    submitted: &'a mut SubmittedGpuFrame,
+) -> Result<ValidatedSubmittedGpuFrame<'a>, FrameExecutionError> {
+    let state = submitted
+        .state
+        .as_ref()
+        .ok_or(FrameExecutionError::PendingFrameMismatch {
+            component: "submitted target token",
+        })?;
+    let owner = slot
+        .gpu_owner
+        .as_ref()
+        .ok_or(GpuPreparationError::Unavailable)?;
+    if !state.owner.same_owner(owner.token()) {
+        return Err(FrameExecutionError::PendingFrameMismatch {
+            component: "GPU execution owner",
+        });
+    }
+    if state.base_frame != slot.frame {
+        return Err(FrameExecutionError::PendingFrameMismatch {
+            component: "base frame",
+        });
+    }
+    if state.encode_attempt != slot.latest_encode_attempt {
+        return Err(FrameExecutionError::PendingFrameMismatch {
+            component: "latest encode attempt",
+        });
+    }
+    if slot.sampler.pending_ticket() != state.base_sampler_ticket {
+        return Err(FrameExecutionError::PendingFrameMismatch {
+            component: "mandatory sampler base",
+        });
+    }
+    if state.candidate_frame.identity() != state.metadata.frame
+        || state.decision.plan() != state.metadata.plan
+        || state.decision.comparison() != comparison_key(&slot.runtime, state.metadata.frame)
+    {
+        return Err(FrameExecutionError::PendingFrameMismatch {
+            component: "submitted frame identity",
+        });
+    }
+    if state.staged_sample.is_some()
+        && !state.reset_sampler_on_finalize
+        && slot.sampler.has_pending()
+    {
+        return Err(FrameExecutionError::PendingFrameMismatch {
+            component: "mandatory sampler commit",
+        });
+    }
+
+    Ok(ValidatedSubmittedGpuFrame { slot, submitted })
+}
+
+impl ValidatedSubmittedGpuFrame<'_> {
+    /// Commits FrameState, controller progress and formal sampler ownership.
+    /// Validation and the exclusive borrow make this operation infallible.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn publish(self) -> GpuFrameSubmission {
+        let mut state = self
+            .submitted
+            .state
+            .take()
+            .expect("validated submitted target token");
+        if state.plan_sample_ticket.is_none() {
+            state
+                .staged_controller
+                .submitted_without_sample(state.decision);
+        }
+        if state.reset_sampler_on_finalize {
+            self.slot.sampler.invalidate();
+        }
+        if let Some(sample) = state.staged_sample {
+            debug_assert!(!self.slot.sampler.has_pending());
+            self.slot.sampler.commit_staged(sample);
+        }
+        self.slot.frame = state.candidate_frame;
+        self.slot.controller = state.staged_controller;
+
+        GpuFrameSubmission {
+            submission_index: state.submission_index,
+            frame: state.metadata.frame,
+            plan: state.metadata.plan,
+            order_lane: state.metadata.order_lane,
+            order_generation: state.metadata.order_generation,
+            source_count: state.metadata.source_count,
+            visible_count: state.metadata.visible_count,
+            contributor_count: state.metadata.contributor_count,
+            draw_count: state.metadata.draw_count,
+            count_semantics: state.metadata.count_semantics,
+            encode_attempt: state.encode_attempt,
+            plan_sample_ticket: state.plan_sample_ticket,
+        }
+    }
+}
+
+/// Explicitly abandons a submitted target transaction. Queued work may finish,
+/// but the callback has no route into Renderer policy or evidence state.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn abandon_submitted_frame(submitted: &mut SubmittedGpuFrame) -> bool {
+    submitted.state.take().is_some()
 }
 
 fn canonical_input_for_work(
@@ -964,5 +1150,7 @@ fn execute_prepared_runtime<'runtime>(
 mod contract_tests;
 #[cfg(test)]
 mod e11_tests;
+#[cfg(test)]
+mod e12_tests;
 #[cfg(test)]
 pub(crate) mod tests;

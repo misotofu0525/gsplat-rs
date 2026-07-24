@@ -157,6 +157,7 @@ pub(super) enum SampleDisposition {
 
 /// Sole policy owner for the shadow Exact renderer. It sees only closed
 /// complete-plan identities and queue-terminal samples.
+#[derive(Clone)]
 pub(super) struct WholePlanController {
     config: ControllerConfig,
     comparison: PlanComparisonKey,

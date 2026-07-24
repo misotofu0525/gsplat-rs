@@ -44,6 +44,19 @@ struct PendingTerminalSample {
     completion_ms_bits: Arc<AtomicU32>,
 }
 
+/// Transaction-owned terminal sample. Attaching its callback to a command
+/// buffer does not make it visible to the live sampler; only a successful
+/// target finalize moves this sole consumer into `PlanSampler`.
+pub(super) struct StagedPlanSample {
+    pending: PendingTerminalSample,
+}
+
+impl StagedPlanSample {
+    pub(super) const fn ticket(&self) -> PlanSampleTicket {
+        self.pending.ticket
+    }
+}
+
 /// One mandatory slot is sufficient because the controller never schedules a
 /// second formal sample until the first has reached a terminal callback.
 pub(super) struct PlanSampler {
@@ -70,6 +83,21 @@ impl PlanSampler {
         if self.pending.is_some() {
             return Err(PlanSamplerError::Busy);
         }
+        let staged = self.stage_arm(command_buffer, descriptor, completion_started)?;
+        let ticket = staged.ticket();
+        self.commit_staged(staged);
+        Ok(ticket)
+    }
+
+    /// Attaches a callback while retaining the sample outside the live slot.
+    /// An abandoned target drops this owner; a late callback then has no path
+    /// into controller or evidence state.
+    pub(super) fn stage_arm(
+        &mut self,
+        command_buffer: &wgpu::CommandBuffer,
+        descriptor: PlanSampleDescriptor,
+        completion_started: TimerInstant,
+    ) -> Result<StagedPlanSample, PlanSamplerError> {
         let ticket_number = self.next_ticket;
         self.next_ticket = self
             .next_ticket
@@ -92,13 +120,19 @@ impl PlanSampler {
             );
             callback_state.store(COMPLETE, Ordering::Release);
         });
-        self.pending = Some(PendingTerminalSample {
-            descriptor,
-            ticket,
-            state,
-            completion_ms_bits,
-        });
-        Ok(ticket)
+        Ok(StagedPlanSample {
+            pending: PendingTerminalSample {
+                descriptor,
+                ticket,
+                state,
+                completion_ms_bits,
+            },
+        })
+    }
+
+    pub(super) fn commit_staged(&mut self, staged: StagedPlanSample) {
+        debug_assert!(self.pending.is_none());
+        self.pending = Some(staged.pending);
     }
 
     pub(super) fn poll(&mut self, device: &wgpu::Device) -> Option<PlanSample> {
@@ -133,8 +167,14 @@ impl PlanSampler {
         self.pending = None;
     }
 
-    #[cfg(test)]
     pub(super) const fn has_pending(&self) -> bool {
         self.pending.is_some()
+    }
+
+    pub(super) const fn pending_ticket(&self) -> Option<PlanSampleTicket> {
+        match &self.pending {
+            Some(pending) => Some(pending.ticket),
+            None => None,
+        }
     }
 }
