@@ -353,6 +353,36 @@ impl ResidentGpuResources {
         if self.last_resolved_camera_position == Some(position) {
             return Ok(false);
         }
+        self.encode_color_resolve_uncached(
+            queue,
+            pipeline,
+            encoder,
+            camera,
+            max_workgroups_per_dimension,
+        )?;
+        self.last_resolved_camera_position = Some(position);
+        Ok(true)
+    }
+
+    /// Encodes one exact all-point SH resolve without publishing cache state.
+    ///
+    /// This is the transactional primitive for a caller-owned encoder: if the
+    /// encoder is discarded, a retry invokes this method again. Only a layer
+    /// that owns submission completion may safely build a persistent cache on
+    /// top of it.
+    pub(crate) fn encode_color_resolve_uncached(
+        &self,
+        queue: &wgpu::Queue,
+        pipeline: &wgpu::ComputePipeline,
+        encoder: &mut wgpu::CommandEncoder,
+        camera: &Camera,
+        max_workgroups_per_dimension: u32,
+    ) -> Result<(), ResidentGpuError> {
+        let position = [
+            camera.pose.position.x,
+            camera.pose.position.y,
+            camera.pose.position.z,
+        ];
         ResidentColorKernel {
             pipeline,
             bind_group: &self.color_bind_group,
@@ -362,8 +392,7 @@ impl ResidentGpuResources {
             max_workgroups_per_dimension,
         }
         .encode(queue, encoder, position)?;
-        self.last_resolved_camera_position = Some(position);
-        Ok(true)
+        Ok(())
     }
 }
 

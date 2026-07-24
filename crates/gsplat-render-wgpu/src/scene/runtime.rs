@@ -1,21 +1,101 @@
+use std::fmt;
+
 use gsplat_core::Vec3f;
 
 use super::{ResidentSceneCpu, ResidentSceneError};
+use crate::plans::{FrameIdentity, GpuExecutionContext};
+use crate::renderer::gpu_prepare::{
+    GpuExecutionOwner, GpuPreparationError, GpuPreparationReceipt, GpuProjectedHandles,
+    GpuScenePreparation,
+};
 
 /// Private Exact, all-resident scene owner used by the shadow renderer core.
 ///
 /// The resident value is consumed at construction. Callers receive only
 /// borrowed views, so the shadow core cannot create a second positions array
 /// or a second scene owner.
-#[derive(Debug)]
 pub(crate) struct SceneRuntime {
     resident: ResidentSceneCpu,
+    gpu: Option<GpuScenePreparation>,
+}
+
+impl fmt::Debug for SceneRuntime {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("SceneRuntime")
+            .field("source_count", &self.source_count())
+            .field("sh_degree", &self.sh_degree())
+            .field("gpu_prepared", &self.gpu.is_some())
+            .finish()
+    }
 }
 
 impl SceneRuntime {
     pub(crate) fn prepare(resident: ResidentSceneCpu) -> Result<Self, ResidentSceneError> {
         resident.validate_complete()?;
-        Ok(Self { resident })
+        Ok(Self {
+            resident,
+            gpu: None,
+        })
+    }
+
+    /// Builds a complete device-owned candidate without publishing it. The
+    /// Renderer stages PlanSet admission before this value can be committed.
+    pub(crate) async fn stage_gpu(
+        &self,
+        owner: &GpuExecutionOwner,
+        generation: FrameIdentity,
+    ) -> Result<GpuScenePreparation, GpuPreparationError> {
+        if self.gpu.is_some() {
+            return Err(GpuPreparationError::ExecutionOwnerAlreadyBound);
+        }
+        GpuScenePreparation::prepare(owner, &self.resident, generation).await
+    }
+
+    /// Infallibly publishes one fully staged GPU scene candidate.
+    pub(crate) fn commit_gpu(&mut self, candidate: GpuScenePreparation) {
+        debug_assert!(self.gpu.is_none());
+        self.gpu = Some(candidate);
+    }
+
+    pub(crate) fn gpu_preparation(&self) -> Option<GpuPreparationReceipt> {
+        self.gpu.as_ref().map(GpuScenePreparation::receipt)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn gpu_color_encode_count(&self) -> Option<u64> {
+        self.gpu
+            .as_ref()
+            .map(GpuScenePreparation::color_encode_count)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn rebind_gpu(
+        &mut self,
+        owner: &GpuExecutionOwner,
+        generation: FrameIdentity,
+    ) -> Result<GpuPreparationReceipt, GpuPreparationError> {
+        self.gpu
+            .as_mut()
+            .ok_or(GpuPreparationError::Unavailable)?
+            .rebind_existing(owner, generation)
+    }
+
+    /// Encodes the fixed color/order/project sequence using the strictly
+    /// owner-bound borrowed queue and caller encoder, then returns only opaque
+    /// projected handles. It owns no submit, polling, mapping, readback,
+    /// presentation, target or raster lifecycle.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn encode_gpu_frame<'scene>(
+        &'scene mut self,
+        context: GpuExecutionContext<'_>,
+        camera: gsplat_core::Camera,
+        width: u32,
+        height: u32,
+        frame: FrameIdentity,
+    ) -> Result<GpuProjectedHandles<'scene>, GpuPreparationError> {
+        let gpu = self.gpu.as_mut().ok_or(GpuPreparationError::Unavailable)?;
+        gpu.encode_frame(context, camera, width, height, frame)
     }
 
     pub(crate) fn source_count(&self) -> usize {
@@ -66,6 +146,7 @@ mod tests {
         assert_eq!(runtime.source_count(), 1);
         assert_eq!(runtime.sh_degree(), 0);
         assert_eq!(runtime.resident().len(), 1);
+        assert!(runtime.gpu_preparation().is_none());
     }
 
     #[test]

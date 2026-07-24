@@ -86,6 +86,20 @@ impl FrameState {
         })
     }
 
+    /// Builds the unpublished identity for one complete PlanSet admission.
+    /// No other semantic input changes during device preparation.
+    pub(crate) fn candidate_for_plan_set_admission(self) -> Result<Self, GenerationError> {
+        Ok(Self {
+            scene_generation: self.scene_generation,
+            camera_revision: self.camera_revision,
+            viewport_generation: self.viewport_generation,
+            contract_generation: self.contract_generation,
+            plan_set_generation: increment(self.plan_set_generation, "plan set")?,
+            camera: self.camera,
+            viewport: self.viewport,
+        })
+    }
+
     /// Computes the next frame identity without mutating the published state.
     /// The caller publishes this value only after plan execution succeeds.
     pub(crate) fn candidate_for_frame(
@@ -139,6 +153,21 @@ mod tests {
         assert_eq!(next.identity().plan_set_generation(), 2);
         assert_eq!(next.identity().camera_revision(), 0);
         assert_eq!(next.identity().viewport_generation(), 0);
+    }
+
+    #[test]
+    fn plan_admission_candidate_advances_only_plan_set_generation() {
+        let initial = FrameState::initial();
+        let next = initial
+            .candidate_for_plan_set_admission()
+            .expect("next PlanSet generation");
+
+        assert_eq!(next.identity().scene_generation(), 1);
+        assert_eq!(next.identity().contract_generation(), 1);
+        assert_eq!(next.identity().plan_set_generation(), 2);
+        assert_eq!(next.identity().camera_revision(), 0);
+        assert_eq!(next.identity().viewport_generation(), 0);
+        assert_eq!(initial.identity().plan_set_generation(), 1);
     }
 
     #[test]
