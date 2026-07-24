@@ -81,15 +81,19 @@ consumer migrations complete:
 M2p1 renderer current-stats receipts
   -> M2p2 additive C v1 receipt API
   -> M2p3 Android and Apple pending-compatible adapters
-  -> M2p4 legacy C getter fail-closed switch
   -> M2a Surface semantic activation
+  -> M2p3c Android and Apple live-consumer completion
+  -> M2p4 legacy C getter fail-closed switch
   -> M2b real-window evidence
 ```
 
 M2p3-Android and M2p3-Apple may be implemented in parallel from the same
-accepted M2p2 tree because their owned paths are disjoint. Root integrates and
-verifies them serially before M2p4. No accepted intermediate tree may make
-pending counts fatal to a platform consumer.
+accepted M2p2 tree because their owned paths are disjoint. Their additive
+adapters do not by themselves retire every live example call to the legacy
+getter. After M2a is accepted, M2p3c-Android and M2p3c-Apple may likewise run
+in parallel on its fixed SHA; root integrates and verifies them serially before
+M2p4. No accepted integration batch may make pending counts fatal to a
+platform consumer or leave a live in-tree path dependent on stale stats.
 
 Read-only audits may run ahead, but no later production candidate may be based
 on an unaccepted predecessor. M3--M6 audits may begin after the M2 seam is
@@ -289,12 +293,18 @@ M2 is accepted.
 - M2p2 may add versioned C structs and symbols in `gsplat-ffi-c`, its public
   header/README, and FFI smoke tests. It remains a thin translation layer and
   does not own a sampler, controller, generation, cache, or result.
-- M2p3 may update only the Android and Apple translation/example paths to
+- M2p3 may update only the Android and Apple translation paths to
   tolerate Pending/NotRequested/Busy and join resolved counts by ticket and
   complete identity. This is compatibility preparation, not their M5/M6
   renderer cutover or device qualification.
+- M2a activates the shared Exact Surface runtime before live consumers are
+  switched, so the migration is built and tested against the actual receipt
+  producer rather than a legacy placeholder.
+- M2p3c updates the Android and Apple live example/UI/benchmark consumers in
+  separate visible tasks. A normal UI may report counts unavailable; a strict
+  artifact fails closed. Neither path falls back to the legacy getter.
 - M2p4 changes the legacy Surface stats getter only after both in-tree platform
-  adapters consume the versioned receipt. Pending/unrequested/expired or
+  consumers use the versioned receipt. Pending/unrequested/expired or
   generation-mismatched counts return `NOT_FOUND` without modifying output;
   prior values, zero, capacity, and sentinels are never substituted.
 

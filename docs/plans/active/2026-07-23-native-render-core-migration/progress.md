@@ -26,8 +26,10 @@ M2 = Active
   `e26a1df39780e744112924eb378e098c29be7cd4`.
 - M1 state: Accepted at integrated implementation/evidence tip
   `dc3e0de65073f819b714229b726ca55f47c6e6d6`.
-- Active task: M2. M2p1, M2p2 and both M2p3 platform adapters are Accepted;
-  the current slice is the serial M2p4 legacy-getter fail-closed switch.
+- Active task: M2. M2p1, M2p2 and both M2p3 platform adapters are Accepted.
+  A pre-M2p4 call audit found that the Android and iOS live examples still
+  consume the legacy Surface getter, so M2p4 is deferred. The current serial
+  slice is M2a; live-consumer completion and M2p4 follow its accepted runtime.
 - Product state at M2 activation: native Packed offscreen, desktop
   non-interactive and bench-runner use the Exact runtime; the interactive
   `SurfaceRenderSession` remains legacy until its complete M2 candidate is
@@ -36,8 +38,9 @@ M2 = Active
   order and are not active machine-state entries.
 - Stable v0.1 signatures/layouts, Web behavior and rendered semantics remain
   frozen during M2. Additive current-stats v1 receipts and pending-compatible
-  Android/Apple translation are prepared before M2 activation so no accepted
-  intermediate tree exposes stale counts or makes pending fatal.
+  Android/Apple translation are prepared before M2 activation. No root
+  acceptance batch may switch the legacy getter until every in-tree live
+  Surface consumer has stopped requiring its stale counts.
 
 ## Execution coordination
 
@@ -237,11 +240,7 @@ M2 = Active
      separate visible tasks from the same accepted M2p2 base. They consume the
      v1 status/receipts, treat Pending/Busy as non-fatal, and never display or
      retain counts without matching ticket and generation.
-  4. **M2p4 — legacy getter fail-closed switch:** after both adapters are
-     accepted, pending/unrequested/expired or mismatched counts return
-     `NOT_FOUND` without modifying the output. No prior value, zero, capacity,
-     or sentinel is substituted.
-  5. **M2a — Surface semantic cutover:** replace the legacy Surface semantic
+  4. **M2a — Surface semantic cutover:** replace the legacy Surface semantic
      writer with the accepted Exact runtime, preserve lifecycle ownership and
      prove forced CPU PostSort, GPU PostSort, GPU Preproject, Adaptive,
      acquire/configure/present ordering and retry rollback through focused and
@@ -251,10 +250,20 @@ M2 = Active
      CpuPostSort/Candidate, GpuPostSort/Candidate, GpuPreproject/Compact, or
      whole-plan Adaptive; unrepresentable combinations reject before mutation.
      It does not build the benchmark collector.
-  6. **M2b — real-window evidence seam:** on the accepted M2a tree, add or
-     extend the native Surface collector/capture path so the four policies emit
-     canonical artifacts and final frames. It does not redesign render
-     semantics.
+  5. **M2p3c — live-consumer compatibility completion:** from the accepted
+     M2a candidate, Android and Apple run as separate visible tasks. They move
+     the real example/UI/benchmark loops off the legacy Surface getter and
+     consume only ticket- and generation-matched v1 receipts. Pending or
+     unavailable counts remain non-fatal outside a strict retained benchmark;
+     a strict benchmark rejects incomplete evidence instead of inventing it.
+  6. **M2p4 — legacy getter fail-closed switch:** only after both M2p3c
+     candidates are accepted, pending/unrequested/expired or mismatched counts
+     return `NOT_FOUND` without modifying the output. No prior value, zero,
+     capacity, or sentinel is substituted.
+  7. **M2b — real-window evidence seam:** on the accepted
+     M2a/M2p3c/M2p4 tree, add or extend the native Surface collector/capture
+     path so the four policies emit canonical artifacts and final frames. It
+     does not redesign render semantics.
 - **M2p1 closeout: Accepted.** The independently reviewed candidate range was
   `3874b00bebb2b3c8c7496bb04d3e20c8e1bd2ff7..a7799fee850f88220d65f38b3781c6d678574927`;
   its three patches are integrated as `cf5b74b`, `842cabe` and `702aca3`.
