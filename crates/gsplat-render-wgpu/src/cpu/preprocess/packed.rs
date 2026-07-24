@@ -42,18 +42,6 @@ impl PackedScalarExecution {
     }
 }
 
-pub(crate) fn static_fallback(position_count: usize) -> PackedScalarExecution {
-    if position_count >= PARALLEL_PREPROCESS_THRESHOLD && rayon::current_num_threads() >= 2 {
-        PackedScalarExecution::new(
-            rayon::current_num_threads()
-                .min(MAX_PARALLEL_PREPROCESS_CHUNKS)
-                .min(position_count),
-        )
-    } else {
-        PackedScalarExecution::serial()
-    }
-}
-
 #[derive(Default)]
 pub(crate) struct PackedPreprocessChunkScratch {
     pairs: Vec<u64>,
@@ -225,7 +213,7 @@ mod tests {
             .build()
             .expect("rayon pool")
             .install(|| {
-                for chunk_count in [1, 2, 4] {
+                for chunk_count in [1, 2, 3, 4] {
                     let mut packed = Vec::new();
                     let mut chunks = Vec::<PackedPreprocessChunkScratch>::new();
                     positions_visible_into(
@@ -248,7 +236,7 @@ mod tests {
     fn empty_and_small_inputs_are_exact_for_every_supported_chunk_count() {
         let camera = camera(0.5, 4.0);
         for positions in [Vec::new(), vec![Vec3f::new(0.0, 0.0, 2.0)]] {
-            for chunk_count in [1, 2, 4] {
+            for chunk_count in [1, 2, 3, 4] {
                 let mut packed = Vec::new();
                 let mut chunks = Vec::<PackedPreprocessChunkScratch>::new();
                 positions_visible_into(

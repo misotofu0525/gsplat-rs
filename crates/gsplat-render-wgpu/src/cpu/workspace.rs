@@ -128,14 +128,12 @@ impl CpuOrderWorkspace {
             return decision.execution();
         }
 
-        let static_fallback = preprocess::packed::static_fallback(positions.len());
         if positions.len() < preprocess::PARALLEL_PREPROCESS_THRESHOLD {
-            return static_fallback;
+            return PackedScalarExecution::serial();
         }
         let candidates = native_candidates();
-        if candidates.as_slice().len() == 1 {
-            let decision =
-                crate::cpu::calibration::CalibrationDecision::static_choice(static_fallback);
+        let static_fallback = candidates.static_fallback();
+        if let Some(decision) = candidates.singleton_decision() {
             debug_assert_eq!(static_fallback, PackedScalarExecution::serial());
             self.native_calibration.freeze_static(decision);
             return decision.execution();
@@ -145,7 +143,6 @@ impl CpuOrderWorkspace {
         let started = Instant::now();
         let decision = calibrate_bounded(
             candidates,
-            static_fallback,
             || started.elapsed(),
             |execution| self.probe_terminal_order(calibration_positions, camera, execution),
         );

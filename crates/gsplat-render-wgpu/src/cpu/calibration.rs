@@ -15,6 +15,10 @@ pub(crate) struct CalibrationCandidates {
 }
 
 impl CalibrationCandidates {
+    fn for_capabilities(available_parallelism: usize, rayon_threads: usize) -> Self {
+        Self::for_parallelism(available_parallelism.max(1).min(rayon_threads.max(1)))
+    }
+
     fn for_parallelism(available_parallelism: usize) -> Self {
         let available_parallelism = available_parallelism.max(1);
         let mut candidates = Self {
@@ -40,13 +44,27 @@ impl CalibrationCandidates {
     pub(crate) fn as_slice(&self) -> &[PackedScalarExecution] {
         &self.executions[..self.len]
     }
+
+    pub(crate) fn static_fallback(&self) -> PackedScalarExecution {
+        self.as_slice()
+            .last()
+            .copied()
+            .expect("calibration candidates always contain serial Scalar")
+    }
+
+    pub(crate) fn singleton_decision(&self) -> Option<CalibrationDecision> {
+        let [execution] = self.as_slice() else {
+            return None;
+        };
+        Some(CalibrationDecision::static_choice(*execution))
+    }
 }
 
 pub(crate) fn native_candidates() -> CalibrationCandidates {
     let available_parallelism = std::thread::available_parallelism()
         .map(std::num::NonZeroUsize::get)
         .unwrap_or(1);
-    CalibrationCandidates::for_parallelism(available_parallelism.min(rayon::current_num_threads()))
+    CalibrationCandidates::for_capabilities(available_parallelism, rayon::current_num_threads())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -54,7 +72,6 @@ pub(crate) enum CalibrationFallbackReason {
     DeadlineExpired,
     ProbeFailed,
     InvalidTiming,
-    NoCandidates,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -98,14 +115,27 @@ impl CalibrationDecision {
 /// authoritative order buffer.
 pub(crate) fn calibrate_bounded<E>(
     candidates: CalibrationCandidates,
-    static_fallback: PackedScalarExecution,
     mut elapsed: impl FnMut() -> Duration,
     mut probe: impl FnMut(PackedScalarExecution) -> Result<Duration, E>,
 ) -> CalibrationDecision {
     let mut medians = [(PackedScalarExecution::serial(), Duration::ZERO); 3];
     let mut median_count = 0;
+    let (&static_fallback, other_candidates) = candidates
+        .as_slice()
+        .split_last()
+        .expect("calibration candidates always contain serial Scalar");
 
-    for &candidate in candidates.as_slice() {
+    if elapsed() >= CALIBRATION_TOTAL_BUDGET {
+        return CalibrationDecision::fallback(
+            static_fallback,
+            CalibrationFallbackReason::DeadlineExpired,
+        );
+    }
+
+    // Measure the accepted static fallback first. If a later candidate probe
+    // fails or the deadline expires, the frozen fallback is never an
+    // execution outside the candidate set or one the transaction did not try.
+    for candidate in std::iter::once(static_fallback).chain(other_candidates.iter().copied()) {
         if elapsed() >= CALIBRATION_TOTAL_BUDGET {
             return CalibrationDecision::fallback(
                 static_fallback,
@@ -158,16 +188,11 @@ pub(crate) fn calibrate_bounded<E>(
         median_count += 1;
     }
 
-    let Some(fastest) = medians[..median_count]
+    let fastest = medians[..median_count]
         .iter()
         .map(|(_, median)| *median)
         .min()
-    else {
-        return CalibrationDecision::fallback(
-            static_fallback,
-            CalibrationFallbackReason::NoCandidates,
-        );
-    };
+        .expect("non-empty candidate set produced a median");
     let noise_ceiling_ns = fastest
         .as_nanos()
         .saturating_add(fastest.as_nanos().div_ceil(20));
@@ -255,6 +280,25 @@ mod tests {
             chunk_counts(CalibrationCandidates::for_parallelism(8)),
             [1, 2, 4]
         );
+
+        let os_one_rayon_many = CalibrationCandidates::for_capabilities(1, 8);
+        assert_eq!(chunk_counts(os_one_rayon_many), [1]);
+        assert_eq!(
+            os_one_rayon_many.static_fallback(),
+            PackedScalarExecution::serial()
+        );
+        let decision = os_one_rayon_many
+            .singleton_decision()
+            .expect("effective serial capability has one static decision");
+        let mut calibration = NativeCalibration::default();
+        calibration.freeze_static(decision);
+        assert_eq!(calibration.attempts(), 0);
+        assert_eq!(decision.execution(), PackedScalarExecution::serial());
+
+        let os_two_rayon_four = CalibrationCandidates::for_capabilities(2, 4);
+        assert_eq!(chunk_counts(os_two_rayon_four), [1, 2]);
+        assert_eq!(os_two_rayon_four.static_fallback().chunk_count(), 2);
+        assert_eq!(os_two_rayon_four.singleton_decision(), None);
     }
 
     #[test]
@@ -263,7 +307,6 @@ mod tests {
         let calls = Cell::new(0_usize);
         let decision = calibrate_bounded(
             CalibrationCandidates::for_parallelism(8),
-            PackedScalarExecution::new(4),
             || elapsed.get(),
             |candidate| {
                 calls.set(calls.get() + 1);
@@ -285,23 +328,32 @@ mod tests {
 
     #[test]
     fn failed_invalid_and_expired_measurements_use_static_fallback() {
-        let candidates = CalibrationCandidates::for_parallelism(8);
-        let fallback = PackedScalarExecution::new(4);
+        let candidates = CalibrationCandidates::for_capabilities(2, 4);
+        let fallback = candidates.static_fallback();
+        let mut probed_chunks = Vec::new();
         let failed = calibrate_bounded(
             candidates,
-            fallback,
             || Duration::ZERO,
-            |_| Err::<Duration, _>(()),
+            |candidate| {
+                probed_chunks.push(candidate.chunk_count());
+                if candidate.chunk_count() == 1 {
+                    Err(())
+                } else {
+                    Ok(Duration::from_nanos(1))
+                }
+            },
         );
         assert_eq!(
             failed.fallback_reason(),
             Some(CalibrationFallbackReason::ProbeFailed)
         );
         assert_eq!(failed.execution(), fallback);
+        assert_eq!(probed_chunks, [2, 2, 2, 2, 1]);
 
+        let candidates = CalibrationCandidates::for_parallelism(8);
+        let fallback = candidates.static_fallback();
         let invalid = calibrate_bounded(
             candidates,
-            fallback,
             || Duration::ZERO,
             |_| Ok::<_, ()>(Duration::ZERO),
         );
@@ -314,7 +366,6 @@ mod tests {
         let elapsed = Cell::new(Duration::ZERO);
         let expired = calibrate_bounded(
             candidates,
-            fallback,
             || elapsed.get(),
             |_| {
                 elapsed.set(CALIBRATION_TOTAL_BUDGET);
@@ -326,6 +377,22 @@ mod tests {
             Some(CalibrationFallbackReason::DeadlineExpired)
         );
         assert_eq!(expired.execution(), fallback);
+
+        let first_probe = Cell::new(None);
+        let preexpired = calibrate_bounded(
+            candidates,
+            || CALIBRATION_TOTAL_BUDGET,
+            |candidate| {
+                first_probe.set(Some(candidate.chunk_count()));
+                Ok::<_, ()>(Duration::from_nanos(1))
+            },
+        );
+        assert_eq!(first_probe.get(), None);
+        assert_eq!(
+            preexpired.fallback_reason(),
+            Some(CalibrationFallbackReason::DeadlineExpired)
+        );
+        assert_eq!(preexpired.execution(), fallback);
     }
 
     #[test]
