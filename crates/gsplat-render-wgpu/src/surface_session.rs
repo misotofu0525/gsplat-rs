@@ -1856,10 +1856,14 @@ impl SurfaceRenderSession {
         // Direct, Paged and Web retain the established compatibility route.
         #[cfg(not(target_arch = "wasm32"))]
         let exact_plan_receipt = if presenter.geometry_path() == GeometryPath::PackedAtlas {
-            let (device, queue, format) = presenter.exact_runtime_context();
-            let mut candidate = pollster::block_on(
-                renderer.prepare_surface_exact_candidate(&device, &queue, format),
-            )?;
+            let (device, queue, format, indirect_execution_supported) =
+                presenter.exact_runtime_context();
+            let mut candidate = pollster::block_on(renderer.prepare_surface_exact_candidate(
+                &device,
+                &queue,
+                format,
+                indirect_execution_supported,
+            ))?;
             let (surface_width, surface_height) = presenter.surface_size();
             candidate.seed_surface_frame_baseline(
                 camera,

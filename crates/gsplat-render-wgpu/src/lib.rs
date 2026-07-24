@@ -966,6 +966,7 @@ impl Renderer {
         device: &std::sync::Arc<wgpu::Device>,
         queue: &std::sync::Arc<wgpu::Queue>,
         target_format: wgpu::TextureFormat,
+        indirect_execution_supported: bool,
     ) -> Result<renderer::PreparedRuntimeSlot, RendererError> {
         if self.geometry_path != GeometryPath::PackedAtlas || self.gpu_rasterizer.is_some() {
             return Err(RendererError::InvalidConfig);
@@ -979,6 +980,7 @@ impl Renderer {
             device,
             queue,
             target_format,
+            indirect_execution_supported,
         )
         .await
         .map_err(map_prepared_gpu_runtime_error)
@@ -1034,7 +1036,13 @@ impl Renderer {
         &mut self,
         policy: renderer::ExactPlanPolicy,
     ) -> Result<(), RendererError> {
-        self.exact_runtime_mut()?.set_active_policy(policy);
+        let runtime = self.exact_runtime_mut()?;
+        if let renderer::ExactPlanPolicy::Forced(plan) = policy
+            && !runtime.plan_is_eligible(plan)
+        {
+            return Err(SurfacePresenterError::GpuOrderUnsupported.into());
+        }
+        runtime.set_active_policy(policy);
         Ok(())
     }
 

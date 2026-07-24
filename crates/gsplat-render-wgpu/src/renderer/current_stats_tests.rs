@@ -272,6 +272,52 @@ fn no_request_encodes_no_count_copy_and_publishes_not_requested() {
 }
 
 #[test]
+fn surface_without_indirect_execution_prepares_cpu_exact_and_returns_ready_counts() {
+    pollster::block_on(async {
+        let Some((device, queue)) = request_device().await else {
+            return;
+        };
+        let source = exact_scene(&[1.0]);
+        let mut slot = PreparedRuntimeSlot::prepare_complete_surface_gpu_candidate(
+            &source, &device, &queue, FORMAT, false,
+        )
+        .await
+        .expect("CPU Exact Surface resources must not require indirect execution");
+
+        let preparation = slot
+            .gpu_preparation()
+            .expect("device-owned CPU Exact graph");
+        assert!(!preparation.preproject_compute());
+        assert_eq!(
+            slot.indirect_execution_resources_prepared_for_test(),
+            Some(false)
+        );
+        assert_eq!(slot.eligible(), &[PlanId::CpuPostSort]);
+        assert_eq!(slot.fallback(), PlanId::CpuPostSort);
+        assert!(!slot.plan_is_eligible(PlanId::GpuPostSort));
+        assert!(!slot.plan_is_eligible(PlanId::GpuPreproject));
+        assert_eq!(slot.request_current_stats(), CurrentStatsRequest::Requested);
+
+        let submission = render(&mut slot, &device, PlanId::CpuPostSort);
+        let issued = issued(&submission);
+        wait(&device, &submission);
+        let CurrentStatsTerminal::Ready(receipt) = one_terminal(slot.poll_current_stats()) else {
+            panic!("CPU-only Exact Surface current stats did not resolve Ready");
+        };
+        assert_eq!(receipt.submission(), issued);
+        assert_eq!(receipt.counts().source(), 1);
+        assert_eq!(receipt.counts().visible(), 1);
+        assert_eq!(receipt.counts().contributor(), 1);
+        assert_eq!(receipt.counts().drawn(), 1);
+        assert_eq!(
+            receipt.count_semantics(),
+            PlanCountSemantics::DirectDrawEqualsVisible
+        );
+        assert!(slot.poll_current_stats().is_empty());
+    });
+}
+
+#[test]
 fn every_plan_uses_actual_count_sources_for_boundary_and_distinct_v_c_scenes() {
     pollster::block_on(async {
         let Some((device, queue)) = request_device().await else {

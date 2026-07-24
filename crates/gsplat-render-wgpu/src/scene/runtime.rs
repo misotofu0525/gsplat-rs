@@ -78,11 +78,18 @@ impl SceneRuntime {
         owner: &GpuExecutionOwner,
         source: &ResidentSceneCpu,
         generation: FrameIdentity,
+        indirect_execution_supported: bool,
     ) -> Result<GpuScenePreparation, GpuPreparationError> {
         if self.gpu.is_some() {
             return Err(GpuPreparationError::ExecutionOwnerAlreadyBound);
         }
-        GpuScenePreparation::prepare(owner, source, generation).await
+        GpuScenePreparation::prepare_with_indirect_execution(
+            owner,
+            source,
+            generation,
+            indirect_execution_supported,
+        )
+        .await
     }
 
     /// Infallibly publishes one fully staged GPU scene candidate.
@@ -121,6 +128,13 @@ impl SceneRuntime {
         self.gpu
             .as_ref()
             .map(GpuScenePreparation::preproject_encode_count)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn indirect_execution_resources_prepared(&self) -> Option<bool> {
+        self.gpu
+            .as_ref()
+            .map(GpuScenePreparation::indirect_execution_resources_prepared)
     }
 
     #[cfg(test)]

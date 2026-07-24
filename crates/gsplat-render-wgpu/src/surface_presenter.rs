@@ -1232,11 +1232,13 @@ impl SurfacePresenter {
         std::sync::Arc<wgpu::Device>,
         std::sync::Arc<wgpu::Queue>,
         wgpu::TextureFormat,
+        bool,
     ) {
         (
             std::sync::Arc::new(self.device.clone()),
             std::sync::Arc::new(self.queue.clone()),
             self.surface_configuration.format(),
+            self.indirect_execution_supported,
         )
     }
 

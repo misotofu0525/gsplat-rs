@@ -210,8 +210,8 @@ pub(crate) struct GpuScenePreparation {
     color_pipeline: wgpu::ComputePipeline,
     projector: ProjectedRankProjector,
     current_stats_contributor_scan: Option<GpuPrefixScan>,
-    gpu_project_bind_group: wgpu::BindGroup,
-    preproject: PreprojectedGpuCompute,
+    gpu_project_bind_group: Option<wgpu::BindGroup>,
+    preproject: Option<PreprojectedGpuCompute>,
     receipt: GpuPreparationReceipt,
     max_workgroups_per_dimension: u32,
     #[cfg(test)]
@@ -278,6 +278,15 @@ impl GpuScenePreparation {
         scene: &ResidentSceneCpu,
         generation: FrameIdentity,
     ) -> Result<Self, GpuPreparationError> {
+        Self::prepare_with_indirect_execution(owner, scene, generation, true).await
+    }
+
+    pub(crate) async fn prepare_with_indirect_execution(
+        owner: &GpuExecutionOwner,
+        scene: &ResidentSceneCpu,
+        generation: FrameIdentity,
+        indirect_execution_supported: bool,
+    ) -> Result<Self, GpuPreparationError> {
         let device = owner.device();
         validate_adapter_capacity(
             scene.len(),
@@ -291,7 +300,8 @@ impl GpuScenePreparation {
             device.push_error_scope(wgpu::ErrorFilter::OutOfMemory),
             device.push_error_scope(wgpu::ErrorFilter::Internal),
         );
-        let candidate = Self::create_candidate(owner, scene, generation);
+        let candidate =
+            Self::create_candidate(owner, scene, generation, indirect_execution_supported);
         let internal = internal_scope.pop().await.map(|error| error.to_string());
         let out_of_memory = oom_scope.pop().await.map(|error| error.to_string());
         let validation = validation_scope.pop().await.map(|error| error.to_string());
@@ -305,6 +315,7 @@ impl GpuScenePreparation {
         owner: &GpuExecutionOwner,
         scene: &ResidentSceneCpu,
         generation: FrameIdentity,
+        indirect_execution_supported: bool,
     ) -> Result<Self, GpuPreparationError> {
         let device = owner.device();
         let source_count = u32::try_from(scene.len())
@@ -313,7 +324,6 @@ impl GpuScenePreparation {
         let color_layout = create_resident_color_bind_group_layout(device);
         let color_pipeline = create_resident_color_pipeline(device, &color_layout);
         let mut resident = ResidentGpuResources::new(device, &draw_layout, &color_layout, scene)?;
-        let order = resident.create_gpu_order_candidate(device, &draw_layout)?;
         let projector = ProjectedRankProjector::new(
             device,
             source_count,
@@ -321,17 +331,37 @@ impl GpuScenePreparation {
             &resident.order_buffer,
             project_source_bindings(&resident),
         )?;
-        let gpu_project_bind_group = projector.create_external_bind_group(
-            device,
-            project_source_bindings(&resident),
-            order.sorter.final_ids(),
-            order.sorter.indirect_args(),
-        );
-        resident.publish_gpu_order(order);
-        let preproject = PreprojectedGpuCompute::new(device, &resident, QUAD_VERTEX_COUNT)?;
+        // The rank-indexed CPU Exact path needs neither indirect draws nor the
+        // GPU order graph. Keep that path complete on downlevel adapters and
+        // admit the two GPU plans only when their indirect resources are legal.
+        let (gpu_project_bind_group, preproject) = if indirect_execution_supported {
+            let order = resident.create_gpu_order_candidate(device, &draw_layout)?;
+            let gpu_project_bind_group = projector.create_external_bind_group(
+                device,
+                project_source_bindings(&resident),
+                order.sorter.final_ids(),
+                order.sorter.indirect_args(),
+            );
+            resident.publish_gpu_order(order);
+            (
+                Some(gpu_project_bind_group),
+                Some(PreprojectedGpuCompute::new(
+                    device,
+                    &resident,
+                    QUAD_VERTEX_COUNT,
+                )?),
+            )
+        } else {
+            (None, None)
+        };
 
-        let receipt =
-            validate_complete_receipt(scene, &resident, &projector, &preproject, generation)?;
+        let receipt = validate_complete_receipt(
+            scene,
+            &resident,
+            &projector,
+            preproject.as_ref(),
+            generation,
+        )?;
         Ok(Self {
             owner: owner.token().clone(),
             resident,
@@ -521,23 +551,27 @@ impl GpuScenePreparation {
     fn canonical_raster_resources(
         &self,
     ) -> Result<CanonicalRasterResources<'_>, GpuPreparationError> {
-        let order = self.order()?;
         Ok(CanonicalRasterResources {
             rank_indexed: Some(RankIndexedRasterResources {
                 projected_center_source: self.projector.projected_center_source(),
                 projected_axes: self.projector.projected_axes(),
                 resolved_color: &self.resident.resolved_color_buffer,
-                indirect_args: Some(order.sorter.indirect_args()),
+                indirect_args: self
+                    .resident
+                    .gpu_order()
+                    .map(|order| order.sorter.indirect_args()),
                 projected_capacity: self.receipt.capacity,
                 source_count: self.receipt.source_count,
             }),
-            source_indexed: Some(SourceIndexedRasterResources {
-                ordered_source_ids: self.preproject.final_source_ids(),
-                projected_center_alpha_key: self.preproject.source_center_alpha_key(),
-                projected_axes: self.preproject.source_axes(),
-                resolved_color: &self.resident.resolved_color_buffer,
-                indirect_args: self.preproject.draw_args(),
-                source_count: self.receipt.source_count,
+            source_indexed: self.preproject.as_ref().map(|preproject| {
+                SourceIndexedRasterResources {
+                    ordered_source_ids: preproject.final_source_ids(),
+                    projected_center_alpha_key: preproject.source_center_alpha_key(),
+                    projected_axes: preproject.source_axes(),
+                    resolved_color: &self.resident.resolved_color_buffer,
+                    indirect_args: preproject.draw_args(),
+                    source_count: self.receipt.source_count,
+                }
             }),
         })
     }
@@ -590,7 +624,7 @@ impl GpuScenePreparation {
             self.receipt,
             &self.resident,
             &self.projector,
-            &self.preproject,
+            self.preproject.as_ref(),
         )?;
 
         let mut params = make_surface_render_params(
@@ -625,10 +659,15 @@ impl GpuScenePreparation {
                 .ok_or(GpuPreparationError::ExactContractMismatch {
                     component: "sorter publication",
                 })?;
+        let gpu_project_bind_group = self.gpu_project_bind_group.as_ref().ok_or(
+            GpuPreparationError::ExactContractMismatch {
+                component: "GPU PostSort projection bind group",
+            },
+        )?;
         order.sorter.encode(encoder);
         self.projector.encode_external(
             encoder,
-            &self.gpu_project_bind_group,
+            gpu_project_bind_group,
             self.receipt.source_count,
         )?;
         Ok(GpuProjectedHandles {
@@ -670,7 +709,7 @@ impl GpuScenePreparation {
             self.receipt,
             &self.resident,
             &self.projector,
-            &self.preproject,
+            self.preproject.as_ref(),
         )?;
         Ok(self.receipt)
     }
@@ -777,8 +816,15 @@ impl GpuScenePreparation {
             self.receipt,
             &self.resident,
             &self.projector,
-            &self.preproject,
+            self.preproject.as_ref(),
         )?;
+
+        let preproject =
+            self.preproject
+                .as_mut()
+                .ok_or(GpuPreparationError::ExactContractMismatch {
+                    component: "Preproject compute graph",
+                })?;
 
         self.resident.encode_color_resolve_uncached(
             queue,
@@ -787,8 +833,7 @@ impl GpuScenePreparation {
             &camera,
             self.max_workgroups_per_dimension,
         )?;
-        self.preproject
-            .encode(queue, encoder, &self.resident, &camera, width, height);
+        preproject.encode(queue, encoder, &self.resident, &camera, width, height);
         #[cfg(test)]
         {
             self.color_encode_count += 1;
@@ -796,9 +841,9 @@ impl GpuScenePreparation {
         }
 
         let (candidate_count, candidate_count_offset) =
-            self.preproject.candidate_count_buffer_and_offset();
+            preproject.candidate_count_buffer_and_offset();
         let (contributor_count, contributor_count_offset) =
-            self.preproject.contributor_count_buffer_and_offset();
+            preproject.contributor_count_buffer_and_offset();
         Ok(GpuPreprojectHandles {
             receipt: GpuPreprojectFrameReceipt {
                 frame,
@@ -807,10 +852,10 @@ impl GpuScenePreparation {
                 viewport_width: width,
                 viewport_height: height,
             },
-            ordered_source_ids: self.preproject.final_source_ids(),
-            indirect_args: self.preproject.draw_args(),
-            projected_center_alpha_key: self.preproject.source_center_alpha_key(),
-            projected_axes: self.preproject.source_axes(),
+            ordered_source_ids: preproject.final_source_ids(),
+            indirect_args: preproject.draw_args(),
+            projected_center_alpha_key: preproject.source_center_alpha_key(),
+            projected_axes: preproject.source_axes(),
             resolved_color: &self.resident.resolved_color_buffer,
             candidate_count: GpuCountSource {
                 buffer: candidate_count,
@@ -826,6 +871,13 @@ impl GpuScenePreparation {
     #[cfg(test)]
     pub(crate) const fn preproject_encode_count(&self) -> u64 {
         self.preproject_encode_count
+    }
+
+    #[cfg(test)]
+    pub(crate) fn indirect_execution_resources_prepared(&self) -> bool {
+        self.resident.gpu_order().is_some()
+            || self.gpu_project_bind_group.is_some()
+            || self.preproject.is_some()
     }
 
     #[cfg(test)]
@@ -1108,7 +1160,7 @@ fn validate_complete_receipt(
     scene: &ResidentSceneCpu,
     resident: &ResidentGpuResources,
     projector: &ProjectedRankProjector,
-    preproject: &PreprojectedGpuCompute,
+    preproject: Option<&PreprojectedGpuCompute>,
     generation: FrameIdentity,
 ) -> Result<GpuPreparationReceipt, GpuPreparationError> {
     let source_count = u32::try_from(scene.len())
@@ -1121,7 +1173,7 @@ fn validate_complete_receipt(
         resident_count: capacity,
         addressable_count: projector.capacity(),
         sh_degree: scene.sh_degree,
-        preproject_compute: true,
+        preproject_compute: preproject.is_some(),
         scene_resource_generation: SceneResourceGeneration::from_frame(generation),
         plan_set_generation: generation.plan_set_generation(),
     };
@@ -1133,14 +1185,14 @@ fn validate_runtime_counts(
     receipt: GpuPreparationReceipt,
     resident: &ResidentGpuResources,
     projector: &ProjectedRankProjector,
-    preproject: &PreprojectedGpuCompute,
+    preproject: Option<&PreprojectedGpuCompute>,
 ) -> Result<(), GpuPreparationError> {
     if receipt.source_count != receipt.capacity
         || receipt.source_count != receipt.resident_count
         || receipt.source_count != receipt.addressable_count
         || usize::try_from(receipt.source_count).ok() != Some(resident.capacity)
         || receipt.addressable_count != projector.capacity()
-        || receipt.source_count != preproject.capacity()
+        || preproject.is_some_and(|preproject| receipt.source_count != preproject.capacity())
     {
         return Err(GpuPreparationError::ExactContractMismatch {
             component: "source/capacity/resident/addressable count",
@@ -1151,7 +1203,7 @@ fn validate_runtime_counts(
             component: "SH degree",
         });
     }
-    if !receipt.preproject_compute {
+    if receipt.preproject_compute != preproject.is_some() {
         return Err(GpuPreparationError::ExactContractMismatch {
             component: "Preproject compute graph",
         });
@@ -1852,7 +1904,7 @@ mod tests {
                     count_mismatch,
                     &candidate.resident,
                     &candidate.projector,
-                    &candidate.preproject,
+                    candidate.preproject.as_ref(),
                 ),
                 Err(GpuPreparationError::ExactContractMismatch {
                     component: "source/capacity/resident/addressable count"
@@ -1866,7 +1918,7 @@ mod tests {
                     sh_mismatch,
                     &candidate.resident,
                     &candidate.projector,
-                    &candidate.preproject,
+                    candidate.preproject.as_ref(),
                 ),
                 Err(GpuPreparationError::ExactContractMismatch {
                     component: "SH degree"
@@ -1880,7 +1932,7 @@ mod tests {
                     graph_mismatch,
                     &candidate.resident,
                     &candidate.projector,
-                    &candidate.preproject,
+                    candidate.preproject.as_ref(),
                 ),
                 Err(GpuPreparationError::ExactContractMismatch {
                     component: "Preproject compute graph"

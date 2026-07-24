@@ -588,10 +588,17 @@ impl PreparedRuntimeSlot {
         device: &Arc<wgpu::Device>,
         queue: &Arc<wgpu::Queue>,
         target_format: wgpu::TextureFormat,
+        indirect_execution_supported: bool,
     ) -> Result<Self, PreparedGpuRuntimeError> {
         let mut candidate = Self::prepare_surface_candidate(source)?;
         candidate
-            .prepare_gpu_from_source(source, device, queue, target_format)
+            .prepare_gpu_from_source(
+                source,
+                device,
+                queue,
+                target_format,
+                indirect_execution_supported,
+            )
             .await?;
         Ok(candidate)
     }
@@ -758,10 +765,8 @@ impl PreparedRuntimeSlot {
         let raster = scene
             .prepare_canonical_raster(&owner, target_format)
             .await?;
-        let plans = self
-            .runtime
-            .plans
-            .stage_gpu_admission(GpuPlanAdmissionRequest::new(
+        let plans = self.runtime.plans.stage_gpu_admission(
+            GpuPlanAdmissionRequest::new(
                 receipt.source_count(),
                 receipt.capacity(),
                 receipt.resident_count(),
@@ -771,7 +776,9 @@ impl PreparedRuntimeSlot {
                 receipt.contract_generation(),
                 previous_frame.plan_set_generation(),
                 receipt.plan_set_generation(),
-            ))?;
+            ),
+            true,
+        )?;
         self.commit_gpu_admission(StagedGpuRuntimeAdmission {
             scene,
             plans,
@@ -793,6 +800,7 @@ impl PreparedRuntimeSlot {
         device: &Arc<wgpu::Device>,
         queue: &Arc<wgpu::Queue>,
         target_format: wgpu::TextureFormat,
+        indirect_execution_supported: bool,
     ) -> Result<GpuPreparationReceipt, GpuRuntimePreparationError> {
         if self.gpu_owner.is_some() {
             return Err(GpuPreparationError::ExecutionOwnerAlreadyBound.into());
@@ -809,7 +817,12 @@ impl PreparedRuntimeSlot {
         let scene = self
             .runtime
             .scene
-            .stage_gpu_from(&owner, source, next_frame.identity())
+            .stage_gpu_from(
+                &owner,
+                source,
+                next_frame.identity(),
+                indirect_execution_supported,
+            )
             .await?;
         #[cfg(test)]
         let current_stats_candidate = scene
@@ -839,10 +852,8 @@ impl PreparedRuntimeSlot {
         let raster = scene
             .prepare_canonical_raster(&owner, target_format)
             .await?;
-        let plans = self
-            .runtime
-            .plans
-            .stage_gpu_admission(GpuPlanAdmissionRequest::new(
+        let plans = self.runtime.plans.stage_gpu_admission(
+            GpuPlanAdmissionRequest::new(
                 receipt.source_count(),
                 receipt.capacity(),
                 receipt.resident_count(),
@@ -852,7 +863,9 @@ impl PreparedRuntimeSlot {
                 receipt.contract_generation(),
                 previous_frame.plan_set_generation(),
                 receipt.plan_set_generation(),
-            ))?;
+            ),
+            receipt.preproject_compute(),
+        )?;
         self.commit_gpu_admission(StagedGpuRuntimeAdmission {
             scene,
             plans,
@@ -952,6 +965,10 @@ impl PreparedRuntimeSlot {
         self.runtime.plans.eligible()
     }
 
+    pub(crate) fn plan_is_eligible(&self, plan: PlanId) -> bool {
+        self.runtime.plans.eligible().contains(&plan)
+    }
+
     pub(crate) fn scene(&self) -> &SceneRuntime {
         &self.runtime.scene
     }
@@ -1023,6 +1040,11 @@ impl PreparedRuntimeSlot {
     #[cfg(test)]
     pub(crate) fn test_gpu_post_capability(&self) -> Option<GpuCapabilityReceipt> {
         self.runtime.plans.test_gpu_post_capability()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn indirect_execution_resources_prepared_for_test(&self) -> Option<bool> {
+        self.runtime.scene.indirect_execution_resources_prepared()
     }
 
     pub(crate) fn last_usable_cpu_order(&self) -> Option<&[u32]> {

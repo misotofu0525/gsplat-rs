@@ -707,12 +707,13 @@ impl PlanSet {
         }
     }
 
-    /// Stages the complete PlanSet-side half of GPU admission without
-    /// modifying membership, capability or generation. Later E8 work replaces
-    /// only this hook/candidate implementation to construct GpuPostSortPlan.
+    /// Stages the PlanSet-side half of device admission without modifying
+    /// membership, capability or generation. Downlevel devices still publish
+    /// the device-owned CPU Exact graph but do not admit indirect GPU plans.
     pub(crate) fn stage_gpu_admission(
         &self,
         request: GpuPlanAdmissionRequest,
+        complete_gpu_plans: bool,
     ) -> Result<StagedGpuPlanAdmission, PlanSetError> {
         self.validate_gpu_admission(request)?;
         if let Some(existing) = self.gpu_capability {
@@ -735,16 +736,22 @@ impl PlanSet {
         let capability = request.capability();
         let mut eligible = self.eligible.to_vec();
         #[cfg(not(test))]
-        let (gpu_post, gpu_pre) = (
-            Some(GpuPostSortPlan::prepare(capability)?),
-            Some(GpuPreprojectPlan::prepare(capability)?),
-        );
+        let (gpu_post, gpu_pre) = if complete_gpu_plans {
+            (
+                Some(GpuPostSortPlan::prepare(capability)?),
+                Some(GpuPreprojectPlan::prepare(capability)?),
+            )
+        } else {
+            (None, None)
+        };
         #[cfg(test)]
-        let (gpu_post, gpu_pre) = match self.test_gpu_admission_mode {
-            TestGpuAdmissionMode::CapabilityOnly => (None, None),
-            TestGpuAdmissionMode::Fail => unreachable!("failure returned above"),
-            TestGpuAdmissionMode::Concrete => (Some(GpuPostSortPlan::prepare(capability)?), None),
-            TestGpuAdmissionMode::ConcreteAll => (
+        let (gpu_post, gpu_pre) = match (complete_gpu_plans, self.test_gpu_admission_mode) {
+            (false, _) | (true, TestGpuAdmissionMode::CapabilityOnly) => (None, None),
+            (true, TestGpuAdmissionMode::Fail) => unreachable!("failure returned above"),
+            (true, TestGpuAdmissionMode::Concrete) => {
+                (Some(GpuPostSortPlan::prepare(capability)?), None)
+            }
+            (true, TestGpuAdmissionMode::ConcreteAll) => (
                 Some(GpuPostSortPlan::prepare(capability)?),
                 Some(GpuPreprojectPlan::prepare(capability)?),
             ),
@@ -1056,7 +1063,7 @@ mod tests {
     fn gpu_capability_stage_commit_reentry_and_generation_are_explicit() {
         let mut plans = PlanSet::prepare_cpu(0, 0, identity(1)).expect("plan set");
         let candidate = plans
-            .stage_gpu_admission(gpu_request(1, 2))
+            .stage_gpu_admission(gpu_request(1, 2), true)
             .expect("staged capability");
 
         assert!(plans.gpu_capability().is_none());
@@ -1074,11 +1081,11 @@ mod tests {
         assert_eq!(plans.eligible(), &[PlanId::CpuPostSort]);
         assert_eq!(plans.contract.plan_set_generation, 2);
         assert!(matches!(
-            plans.stage_gpu_admission(gpu_request(2, 3)),
+            plans.stage_gpu_admission(gpu_request(2, 3), true),
             Err(PlanSetError::GpuCapabilityAlreadyAdmitted { generation: 2 })
         ));
         assert!(matches!(
-            plans.stage_gpu_admission(gpu_request(1, 2)),
+            plans.stage_gpu_admission(gpu_request(1, 2), true),
             Err(PlanSetError::GpuAdmissionGenerationMismatch {
                 current: 2,
                 previous: 1,
