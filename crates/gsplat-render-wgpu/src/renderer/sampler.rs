@@ -12,6 +12,12 @@ use crate::evidence::{PlanComparisonKey, PlanCountSemantics, PlanSample, PlanSam
 use crate::plans::{FrameIdentity, OrderLane, PlanId};
 use crate::timer_elapsed_ms;
 
+use super::current_stats::{
+    ArmedCurrentStats, CurrentStatsFrameCounts, CurrentStatsHandoff, CurrentStatsLane,
+    CurrentStatsPoll, CurrentStatsRequest, CurrentStatsSubmission, CurrentStatsTicket,
+    StagedCurrentStats,
+};
+
 const PENDING: u8 = 0;
 const COMPLETE: u8 = 1;
 
@@ -62,6 +68,7 @@ impl StagedPlanSample {
 pub(super) struct PlanSampler {
     next_ticket: u64,
     pending: Option<PendingTerminalSample>,
+    current_stats: CurrentStatsLane,
 }
 
 impl PlanSampler {
@@ -69,6 +76,7 @@ impl PlanSampler {
         Self {
             next_ticket: 1,
             pending: None,
+            current_stats: CurrentStatsLane::new(),
         }
     }
 
@@ -176,5 +184,110 @@ impl PlanSampler {
             Some(pending) => Some(pending.ticket),
             None => None,
         }
+    }
+
+    pub(super) fn request_current_stats(&mut self, device: &wgpu::Device) -> CurrentStatsRequest {
+        self.current_stats.request(device)
+    }
+
+    pub(super) fn encode_current_stats(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
+        counts: CurrentStatsFrameCounts<'_>,
+    ) -> Option<StagedCurrentStats> {
+        self.current_stats.encode(encoder, counts)
+    }
+
+    pub(super) fn prepare_current_stats_encode(&mut self, device: &wgpu::Device) -> bool {
+        self.current_stats.prepare_encode(device)
+    }
+
+    pub(super) fn arm_current_stats(
+        &mut self,
+        command_buffer: &wgpu::CommandBuffer,
+        staged: StagedCurrentStats,
+    ) -> ArmedCurrentStats {
+        self.current_stats.arm(command_buffer, staged)
+    }
+
+    pub(super) fn commit_current_stats(
+        &mut self,
+        armed: ArmedCurrentStats,
+        encode_attempt: u64,
+        presentation_sequence: u64,
+    ) -> CurrentStatsSubmission {
+        self.current_stats
+            .commit(armed, encode_attempt, presentation_sequence)
+    }
+
+    pub(super) fn accepts_current_stats_armed(
+        &self,
+        armed: &ArmedCurrentStats,
+        frame: FrameIdentity,
+        plan: PlanId,
+    ) -> bool {
+        self.current_stats.accepts_armed(armed, frame, plan)
+    }
+
+    pub(super) fn poll_current_stats(&mut self, device: Option<&wgpu::Device>) -> CurrentStatsPoll {
+        self.current_stats.poll(device)
+    }
+
+    pub(super) fn resolve_current_stats_request_unsampled(
+        &mut self,
+        reason: super::current_stats::CurrentStatsUnsampledReason,
+    ) -> bool {
+        self.current_stats.resolve_request_unsampled(reason)
+    }
+
+    pub(super) fn expire_current_stats(&mut self, ticket: CurrentStatsTicket) -> bool {
+        self.current_stats.expire(ticket)
+    }
+
+    pub(super) fn current_stats_replacement_handoff(&self) -> CurrentStatsHandoff {
+        self.current_stats.replacement_handoff()
+    }
+
+    pub(super) const fn has_current_stats_request(&self) -> bool {
+        self.current_stats.request_pending()
+    }
+
+    pub(super) fn import_current_stats_handoff(&mut self, handoff: CurrentStatsHandoff) {
+        self.current_stats.import_handoff(handoff);
+    }
+
+    #[cfg(test)]
+    pub(super) const fn current_stats_copy_count_for_test(&self) -> u64 {
+        self.current_stats.encoded_copy_count()
+    }
+
+    #[cfg(test)]
+    pub(super) fn current_stats_readback_bytes_for_test(&self) -> u64 {
+        self.current_stats.allocated_readback_bytes()
+    }
+
+    pub(super) const fn current_stats_request_pending_for_test(&self) -> bool {
+        self.current_stats.request_pending()
+    }
+
+    #[cfg(test)]
+    pub(super) fn force_current_stats_map_failure_for_test(
+        &mut self,
+        ticket: CurrentStatsTicket,
+    ) -> bool {
+        self.current_stats.force_map_failure(ticket)
+    }
+
+    #[cfg(test)]
+    pub(super) fn hold_current_stats_callback_for_test(
+        &mut self,
+        ticket: CurrentStatsTicket,
+    ) -> bool {
+        self.current_stats.hold_callback_for_test(ticket)
+    }
+
+    #[cfg(test)]
+    pub(super) fn poll_current_stats_without_device_for_test(&mut self) -> CurrentStatsPoll {
+        self.current_stats.poll(None)
     }
 }

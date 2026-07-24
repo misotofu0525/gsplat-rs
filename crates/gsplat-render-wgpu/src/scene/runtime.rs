@@ -62,6 +62,23 @@ impl SceneRuntime {
         self.gpu.as_ref().map(GpuScenePreparation::receipt)
     }
 
+    pub(crate) fn ensure_current_stats_resources(
+        &mut self,
+        owner: &GpuExecutionOwner,
+    ) -> Result<(), GpuPreparationError> {
+        self.gpu
+            .as_mut()
+            .ok_or(GpuPreparationError::Unavailable)?
+            .ensure_current_stats_resources(owner)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn current_stats_resource_bytes(&self) -> Option<u64> {
+        self.gpu
+            .as_ref()
+            .and_then(GpuScenePreparation::current_stats_resource_bytes)
+    }
+
     #[cfg(test)]
     pub(crate) fn gpu_color_encode_count(&self) -> Option<u64> {
         self.gpu

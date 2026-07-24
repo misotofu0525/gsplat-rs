@@ -3,7 +3,8 @@ use thiserror::Error;
 
 use crate::cpu_order::CpuOrderEngine;
 use crate::renderer::gpu_prepare::{
-    CpuPostProjectedHandles, CpuPostProjectionRequest, GpuPreparationError, GpuPreparationReceipt,
+    CpuPostProjectedHandles, CpuPostProjectionRequest, GpuCountSource, GpuPreparationError,
+    GpuPreparationReceipt,
 };
 use crate::scene::SceneRuntime;
 use crate::{CpuPositionView, RendererError};
@@ -121,6 +122,13 @@ impl CpuPostSortGpuWork<'_> {
 
     pub(crate) const fn projection_count_guard(&self) -> &wgpu::Buffer {
         self.handles.projection_count_guard()
+    }
+
+    pub(crate) fn encode_contributor_count(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+    ) -> Result<GpuCountSource<'_>, GpuPreparationError> {
+        self.handles.encode_contributor_count(encoder)
     }
 }
 

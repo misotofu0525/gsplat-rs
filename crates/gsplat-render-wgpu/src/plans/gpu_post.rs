@@ -2,7 +2,7 @@ use gsplat_core::Camera;
 use thiserror::Error;
 
 use crate::renderer::gpu_prepare::{
-    GpuPreparationError, GpuPreparationReceipt, GpuProjectedHandles,
+    GpuCountSource, GpuPreparationError, GpuPreparationReceipt, GpuProjectedHandles,
 };
 use crate::scene::SceneRuntime;
 
@@ -94,6 +94,17 @@ impl GpuPostSortWork<'_> {
 
     pub(crate) const fn resolved_color(&self) -> &wgpu::Buffer {
         self.handles.resolved_color()
+    }
+
+    pub(crate) const fn visible_count(&self) -> GpuCountSource<'_> {
+        self.handles.visible_count()
+    }
+
+    pub(crate) fn encode_contributor_count(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+    ) -> Result<GpuCountSource<'_>, GpuPreparationError> {
+        self.handles.encode_contributor_count(encoder)
     }
 }
 

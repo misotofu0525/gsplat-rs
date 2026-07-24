@@ -368,6 +368,11 @@ impl GpuPrefixScan {
             0,
         )
     }
+
+    #[cfg(test)]
+    pub(crate) fn allocated_buffer_bytes(&self) -> u64 {
+        self.graph.sums.iter().map(wgpu::Buffer::size).sum::<u64>() + self.graph._params.size()
+    }
 }
 
 pub(super) fn scan_level_counts(mut count: u32) -> Vec<(u32, u32)> {

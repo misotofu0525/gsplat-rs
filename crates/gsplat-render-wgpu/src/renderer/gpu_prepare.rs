@@ -13,7 +13,9 @@ use bytemuck::bytes_of;
 use gsplat_core::Camera;
 use thiserror::Error;
 
-use crate::gpu::{ProjectedRankProjector, ProjectedRankSourceBindings};
+use crate::gpu::{
+    GpuPrefixScan, GpuPrefixScanProfile, ProjectedRankProjector, ProjectedRankSourceBindings,
+};
 use crate::plans::{FrameIdentity, GpuExecutionContext, GpuOwnerToken};
 use crate::preproject_gpu::PreprojectedGpuCompute;
 use crate::raster::{
@@ -26,6 +28,8 @@ use crate::resident_gpu::{
 };
 use crate::scene::{ResidentGpuBytePlan, ResidentSceneCpu};
 use crate::{ResidentGpuError, make_surface_render_params};
+
+const DRAW_INSTANCE_COUNT_OFFSET: u64 = std::mem::size_of::<u32>() as u64;
 
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
 pub(crate) enum GpuPreparationError {
@@ -203,6 +207,7 @@ pub(crate) struct GpuScenePreparation {
     resident: ResidentGpuResources,
     color_pipeline: wgpu::ComputePipeline,
     projector: ProjectedRankProjector,
+    current_stats_contributor_scan: Option<GpuPrefixScan>,
     gpu_project_bind_group: wgpu::BindGroup,
     preproject: PreprojectedGpuCompute,
     receipt: GpuPreparationReceipt,
@@ -306,6 +311,7 @@ impl GpuScenePreparation {
             resident,
             color_pipeline,
             projector,
+            current_stats_contributor_scan: None,
             gpu_project_bind_group,
             preproject,
             receipt,
@@ -321,6 +327,87 @@ impl GpuScenePreparation {
 
     pub(crate) const fn receipt(&self) -> GpuPreparationReceipt {
         self.receipt
+    }
+
+    /// Lazily admits the only scene-sized observer resource after an explicit
+    /// current-stats request. The candidate is published only on successful
+    /// construction; ordinary rendering never allocates this scan graph.
+    pub(crate) fn ensure_current_stats_resources(
+        &mut self,
+        owner: &GpuExecutionOwner,
+    ) -> Result<(), GpuPreparationError> {
+        if !self.owner.same_owner(owner.token()) {
+            return Err(GpuPreparationError::ExecutionOwnerMismatch);
+        }
+        if self.current_stats_contributor_scan.is_some() {
+            return Ok(());
+        }
+        let candidate = self.create_current_stats_resource_candidate(owner.device())?;
+        self.current_stats_contributor_scan = Some(candidate);
+        Ok(())
+    }
+
+    /// Transactional async variant used when a pending request crosses into a
+    /// newly prepared runtime. Validation/OOM/device scopes complete before
+    /// the observer resource can join that candidate.
+    pub(crate) async fn prepare_current_stats_resources(
+        &mut self,
+        owner: &GpuExecutionOwner,
+    ) -> Result<(), GpuPreparationError> {
+        if !self.owner.same_owner(owner.token()) {
+            return Err(GpuPreparationError::ExecutionOwnerMismatch);
+        }
+        if self.current_stats_contributor_scan.is_some() {
+            return Ok(());
+        }
+        let device = owner.device();
+        let (validation_scope, oom_scope, internal_scope) = (
+            device.push_error_scope(wgpu::ErrorFilter::Validation),
+            device.push_error_scope(wgpu::ErrorFilter::OutOfMemory),
+            device.push_error_scope(wgpu::ErrorFilter::Internal),
+        );
+        let candidate = self.create_current_stats_resource_candidate(device);
+        let internal = internal_scope.pop().await.map(|error| error.to_string());
+        let out_of_memory = oom_scope.pop().await.map(|error| error.to_string());
+        let validation = validation_scope.pop().await.map(|error| error.to_string());
+        if let Some(error) = classify_scope_errors(internal, out_of_memory, validation) {
+            return Err(error);
+        }
+        self.current_stats_contributor_scan = Some(candidate?);
+        Ok(())
+    }
+
+    fn create_current_stats_resource_candidate(
+        &self,
+        device: &wgpu::Device,
+    ) -> Result<GpuPrefixScan, GpuPreparationError> {
+        GpuPrefixScan::new_profiled(
+            device,
+            self.projector.contributor_group_offsets(),
+            self.projector.contributor_group_offset_count(),
+            device.limits().max_compute_workgroups_per_dimension,
+            GpuPrefixScanProfile {
+                bind_group_layout: "gsplat-exact-current-contributor-scan-bgl",
+                shader: "gsplat-exact-current-contributor-scan-shader",
+                pipeline_layout: "gsplat-exact-current-contributor-scan-pipeline-layout",
+                scan_pipeline: "gsplat-exact-current-contributor-scan-pipeline",
+                add_offsets_pipeline: "gsplat-exact-current-contributor-add-offsets-pipeline",
+                sums: "gsplat-exact-current-contributor-scan-sums",
+                params: "gsplat-exact-current-contributor-scan-params",
+                bind_group: "gsplat-exact-current-contributor-scan-bg",
+                sums_usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+                scan_pass: "gsplat-exact-current-contributor-scan-pass",
+                add_offsets_pass: "gsplat-exact-current-contributor-add-offsets-pass",
+            },
+        )
+        .map_err(GpuPreparationError::from)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn current_stats_resource_bytes(&self) -> Option<u64> {
+        self.current_stats_contributor_scan
+            .as_ref()
+            .map(GpuPrefixScan::allocated_buffer_bytes)
     }
 
     /// Prepares the plan-neutral raster against the same complete scene graph
@@ -474,6 +561,11 @@ impl GpuScenePreparation {
             projected_center_source: self.projector.projected_center_source(),
             projected_axes: self.projector.projected_axes(),
             resolved_color: &self.resident.resolved_color_buffer,
+            visible_count: GpuCountSource {
+                buffer: order.sorter.indirect_args(),
+                offset: DRAW_INSTANCE_COUNT_OFFSET,
+            },
+            contributor_scan: self.current_stats_contributor_scan.as_ref(),
         })
     }
 
@@ -567,6 +659,7 @@ impl GpuScenePreparation {
             projected_axes: self.projector.projected_axes(),
             resolved_color: &self.resident.resolved_color_buffer,
             projection_count_guard: self.projector.cpu_draw_args(),
+            contributor_scan: self.current_stats_contributor_scan.as_ref(),
         })
     }
 
@@ -713,6 +806,7 @@ pub(crate) struct CpuPostProjectedHandles<'a> {
     projected_axes: &'a wgpu::Buffer,
     resolved_color: &'a wgpu::Buffer,
     projection_count_guard: &'a wgpu::Buffer,
+    contributor_scan: Option<&'a GpuPrefixScan>,
 }
 
 impl CpuPostProjectedHandles<'_> {
@@ -738,6 +832,18 @@ impl CpuPostProjectedHandles<'_> {
 
     pub(crate) const fn projection_count_guard(&self) -> &wgpu::Buffer {
         self.projection_count_guard
+    }
+
+    pub(crate) fn encode_contributor_count(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+    ) -> Result<GpuCountSource<'_>, GpuPreparationError> {
+        let scan = self
+            .contributor_scan
+            .ok_or(GpuPreparationError::Unavailable)?;
+        scan.encode_forward(encoder);
+        let (buffer, offset) = scan.exact_count_buffer_and_offset();
+        Ok(GpuCountSource { buffer, offset })
     }
 }
 
@@ -844,6 +950,8 @@ pub(crate) struct GpuProjectedHandles<'a> {
     projected_center_source: &'a wgpu::Buffer,
     projected_axes: &'a wgpu::Buffer,
     resolved_color: &'a wgpu::Buffer,
+    visible_count: GpuCountSource<'a>,
+    contributor_scan: Option<&'a GpuPrefixScan>,
 }
 
 impl GpuProjectedHandles<'_> {
@@ -873,6 +981,22 @@ impl GpuProjectedHandles<'_> {
 
     pub(crate) const fn resolved_color(&self) -> &wgpu::Buffer {
         self.resolved_color
+    }
+
+    pub(crate) const fn visible_count(&self) -> GpuCountSource<'_> {
+        self.visible_count
+    }
+
+    pub(crate) fn encode_contributor_count(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+    ) -> Result<GpuCountSource<'_>, GpuPreparationError> {
+        let scan = self
+            .contributor_scan
+            .ok_or(GpuPreparationError::Unavailable)?;
+        scan.encode_forward(encoder);
+        let (buffer, offset) = scan.exact_count_buffer_and_offset();
+        Ok(GpuCountSource { buffer, offset })
     }
 }
 

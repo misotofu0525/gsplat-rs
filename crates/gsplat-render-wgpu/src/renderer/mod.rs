@@ -1,6 +1,7 @@
 //! Shadow-only Exact runtime preparation and frame dispatch.
 
 mod controller;
+mod current_stats;
 pub(crate) mod frame;
 pub(crate) mod gpu_prepare;
 mod sampler;
@@ -28,6 +29,16 @@ use gpu_prepare::{
     GpuExecutionOwner, GpuPreparationError, GpuPreparationReceipt, GpuScenePreparation,
 };
 use sampler::{PlanSampleDescriptor, PlanSampler, PlanSamplerError, StagedPlanSample};
+
+use current_stats::{CurrentStatsFrameCounts, CurrentStatsVisibleSource};
+pub(crate) use current_stats::{
+    CurrentStatsPoll, CurrentStatsRequest, CurrentStatsSubmission, CurrentStatsTicket,
+    CurrentStatsUnsampledReason,
+};
+// Kept as private bridge handoff types for M2p2; this slice's production code
+// carries them through submission/poll wrappers rather than naming them.
+#[allow(unused_imports)]
+pub(crate) use current_stats::{CurrentStatsSubmissionReceipt, CurrentStatsTerminal};
 
 /// The only E1 contract: Exact fidelity over one complete resident scene.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -138,6 +149,8 @@ pub(crate) struct GpuFrameSubmission {
     encode_attempt: u64,
     plan_sample_ticket: Option<PlanSampleTicket>,
     host_timings: Option<HostFrameTimings>,
+    presentation_sequence: u64,
+    current_stats: CurrentStatsSubmission,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -177,6 +190,7 @@ pub(crate) struct PendingGpuFrame {
     reset_sampler_on_finalize: bool,
     staged_controller: WholePlanController,
     completion_started: crate::TimerInstant,
+    staged_current_stats: Option<current_stats::StagedCurrentStats>,
 }
 
 impl PendingGpuFrame {
@@ -205,6 +219,7 @@ pub(crate) struct SubmittedGpuFrame {
 pub(crate) struct ValidatedSubmittedGpuFrame<'a> {
     slot: &'a mut PreparedRuntimeSlot,
     submitted: &'a mut SubmittedGpuFrame,
+    presentation_sequence: u64,
 }
 
 struct SubmittedGpuFrameState {
@@ -221,6 +236,7 @@ struct SubmittedGpuFrameState {
     staged_sample: Option<StagedPlanSample>,
     plan_sample_ticket: Option<PlanSampleTicket>,
     completion_started: crate::TimerInstant,
+    armed_current_stats: Option<current_stats::ArmedCurrentStats>,
 }
 
 impl SubmittedGpuFrame {
@@ -353,6 +369,14 @@ impl GpuFrameSubmission {
     pub(crate) const fn host_timings(&self) -> Option<HostFrameTimings> {
         self.host_timings
     }
+
+    pub(crate) const fn presentation_sequence(&self) -> u64 {
+        self.presentation_sequence
+    }
+
+    pub(crate) const fn current_stats_submission(&self) -> CurrentStatsSubmission {
+        self.current_stats
+    }
 }
 
 impl HostFrameTimings {
@@ -433,9 +457,12 @@ pub(crate) struct PreparedRuntimeSlot {
     frame: FrameState,
     gpu_owner: Option<GpuExecutionOwner>,
     latest_encode_attempt: u64,
+    presentation_sequence: u64,
     controller: WholePlanController,
     sampler: PlanSampler,
     optional_plan_evidence: Option<BoundedEvidenceRing<PlanSample>>,
+    #[cfg(test)]
+    fail_current_stats_resource_preparation: bool,
 }
 
 struct StagedGpuRuntimeAdmission {
@@ -444,6 +471,7 @@ struct StagedGpuRuntimeAdmission {
     raster: CanonicalRaster,
     frame: FrameState,
     owner: GpuExecutionOwner,
+    current_stats_unsampled: Option<CurrentStatsUnsampledReason>,
 }
 
 #[cfg(test)]
@@ -474,9 +502,12 @@ impl PreparedRuntimeSlot {
             frame,
             gpu_owner: None,
             latest_encode_attempt: 0,
+            presentation_sequence: 0,
             controller,
             sampler: PlanSampler::new(),
             optional_plan_evidence: None,
+            #[cfg(test)]
+            fail_current_stats_resource_preparation: false,
         })
     }
 
@@ -499,6 +530,12 @@ impl PreparedRuntimeSlot {
             None => FrameState::initial(),
         };
         let mut candidate = Self::prepare_at_frame(resident, frame)?;
+        if let Some(previous) = previous {
+            candidate.presentation_sequence = previous.presentation_sequence;
+            candidate
+                .sampler
+                .import_current_stats_handoff(previous.sampler.current_stats_replacement_handoff());
+        }
         candidate.prepare_gpu(device, queue, target_format).await?;
         Ok(candidate)
     }
@@ -557,15 +594,23 @@ impl PreparedRuntimeSlot {
             next_runtime.plans.eligible(),
             comparison_key(&next_runtime, next_frame.identity()),
         );
+        let current_stats_handoff = self.sampler.current_stats_replacement_handoff();
         let candidate = Self {
             runtime: next_runtime,
             frame: next_frame,
             gpu_owner: None,
             latest_encode_attempt: 0,
+            presentation_sequence: self.presentation_sequence,
             controller,
             sampler: PlanSampler::new(),
             optional_plan_evidence: None,
+            #[cfg(test)]
+            fail_current_stats_resource_preparation: false,
         };
+        let mut candidate = candidate;
+        candidate
+            .sampler
+            .import_current_stats_handoff(current_stats_handoff);
         *self = candidate;
         Ok(())
     }
@@ -574,7 +619,9 @@ impl PreparedRuntimeSlot {
     /// caller's existing device/queue pair. No adapter or second device is
     /// acquired; Arc identity keeps later queue borrows tied to this owner.
     /// Publication into `SceneRuntime` is one infallible commit after every
-    /// resource constructor and asynchronous device error scope succeeds.
+    /// product resource constructor and asynchronous device error scope
+    /// succeeds. Optional observer-resource failure resolves only that
+    /// pre-ticket request and cannot reject Scene/PlanSet/Raster admission.
     pub(crate) async fn prepare_gpu(
         &mut self,
         device: &Arc<wgpu::Device>,
@@ -587,11 +634,28 @@ impl PreparedRuntimeSlot {
         let previous_frame = self.frame.identity();
         let next_frame = self.frame.candidate_for_plan_set_admission()?;
         let owner = GpuExecutionOwner::new(device, queue);
-        let scene = self
+        let mut scene = self
             .runtime
             .scene
             .stage_gpu(&owner, next_frame.identity())
             .await?;
+        let current_stats_unsampled = if self.sampler.has_current_stats_request() {
+            #[cfg(test)]
+            let prepared = if self.fail_current_stats_resource_preparation {
+                Err(GpuPreparationError::Internal(
+                    "injected current-stats resource preparation failure".into(),
+                ))
+            } else {
+                scene.prepare_current_stats_resources(&owner).await
+            };
+            #[cfg(not(test))]
+            let prepared = scene.prepare_current_stats_resources(&owner).await;
+            prepared
+                .err()
+                .map(|_| CurrentStatsUnsampledReason::ResourceUnavailable)
+        } else {
+            None
+        };
         let receipt = scene.receipt();
         let raster = scene
             .prepare_canonical_raster(&owner, target_format)
@@ -616,6 +680,7 @@ impl PreparedRuntimeSlot {
             raster,
             frame: next_frame,
             owner,
+            current_stats_unsampled,
         });
         Ok(receipt)
     }
@@ -627,6 +692,10 @@ impl PreparedRuntimeSlot {
         self.frame = staged.frame;
         self.gpu_owner = Some(staged.owner);
         self.reset_plan_policy_for_current_runtime();
+        if let Some(reason) = staged.current_stats_unsampled {
+            let resolved = self.sampler.resolve_current_stats_request_unsampled(reason);
+            debug_assert!(resolved);
+        }
     }
 
     /// Best-effort admission for the future closed plan set. Failure leaves
@@ -668,9 +737,45 @@ impl PreparedRuntimeSlot {
         self.runtime.plans.gpu_capability()
     }
 
+    /// Requests one observer receipt from the next non-formal Exact frame. The
+    /// request is private and one-shot; ControllerFormal frames remain free of
+    /// observer scan/copy work and take priority until their sample completes.
+    pub(crate) fn request_current_stats(&mut self) -> CurrentStatsRequest {
+        let Some(owner) = self.gpu_owner.as_ref() else {
+            return CurrentStatsRequest::Unsampled(CurrentStatsUnsampledReason::GpuUnavailable);
+        };
+        if self
+            .runtime
+            .scene
+            .ensure_current_stats_resources(owner)
+            .is_err()
+        {
+            return CurrentStatsRequest::Unsampled(
+                CurrentStatsUnsampledReason::ResourceUnavailable,
+            );
+        }
+        self.sampler.request_current_stats(owner.device())
+    }
+
+    /// Non-blocking observer poll. It performs `Poll` only when this lane has
+    /// an explicitly requested submitted map or queued terminal.
+    pub(crate) fn poll_current_stats(&mut self) -> CurrentStatsPoll {
+        self.sampler
+            .poll_current_stats(self.gpu_owner.as_ref().map(GpuExecutionOwner::device))
+    }
+
+    pub(crate) fn expire_current_stats(&mut self, ticket: CurrentStatsTicket) -> bool {
+        self.sampler.expire_current_stats(ticket)
+    }
+
     #[cfg(test)]
     pub(crate) fn set_test_gpu_admission_mode(&mut self, mode: crate::plans::TestGpuAdmissionMode) {
         self.runtime.plans.set_test_gpu_admission_mode(mode);
+    }
+
+    #[cfg(test)]
+    fn set_current_stats_resource_failure_for_test(&mut self, fail: bool) {
+        self.fail_current_stats_resource_preparation = fail;
     }
 
     #[cfg(test)]
@@ -747,6 +852,40 @@ impl PreparedRuntimeSlot {
     #[cfg(test)]
     const fn sampler_pending_for_test(&self) -> bool {
         self.sampler.has_pending()
+    }
+
+    #[cfg(test)]
+    const fn current_stats_copy_count_for_test(&self) -> u64 {
+        self.sampler.current_stats_copy_count_for_test()
+    }
+
+    #[cfg(test)]
+    const fn current_stats_request_pending_for_test(&self) -> bool {
+        self.sampler.current_stats_request_pending_for_test()
+    }
+
+    #[cfg(test)]
+    fn current_stats_resource_bytes_for_test(&self) -> (Option<u64>, u64) {
+        (
+            self.runtime.scene.current_stats_resource_bytes(),
+            self.sampler.current_stats_readback_bytes_for_test(),
+        )
+    }
+
+    #[cfg(test)]
+    fn force_current_stats_map_failure_for_test(&mut self, ticket: CurrentStatsTicket) -> bool {
+        self.sampler
+            .force_current_stats_map_failure_for_test(ticket)
+    }
+
+    #[cfg(test)]
+    fn hold_current_stats_callback_for_test(&mut self, ticket: CurrentStatsTicket) -> bool {
+        self.sampler.hold_current_stats_callback_for_test(ticket)
+    }
+
+    #[cfg(test)]
+    fn poll_current_stats_without_device_for_test(&mut self) -> CurrentStatsPoll {
+        self.sampler.poll_current_stats_without_device_for_test()
     }
 }
 
@@ -855,12 +994,13 @@ pub(crate) fn encode_frame_gpu(
             .gpu_owner
             .as_ref()
             .ok_or(GpuPreparationError::Unavailable)?;
+        let (runtime, sampler) = (&mut slot.runtime, &mut slot.sampler);
         let PreparedRuntime {
             contract,
             scene,
             plans,
             raster,
-        } = &mut slot.runtime;
+        } = runtime;
         let raster = raster.as_ref().ok_or(GpuPreparationError::Unavailable)?;
         raster.validate_target_format(request.target_format)?;
         let mut encoder = owner
@@ -892,10 +1032,21 @@ pub(crate) fn encode_frame_gpu(
             request.clear,
             input,
         )?;
+        // Formal controller samples measure the complete plan without
+        // observer GPU work. A current-stats intent stays pending until the
+        // next otherwise-eligible Exact frame that carries no formal sample.
+        let staged_current_stats = if decision.formal_kind().is_none()
+            && sampler.prepare_current_stats_encode(owner.device())
+        {
+            let counts = current_stats_counts_for_work(&work, &mut encoder)?;
+            sampler.encode_current_stats(&mut encoder, counts)
+        } else {
+            None
+        };
         drop(work);
-        Ok::<_, FrameExecutionError>((encoder, metadata))
+        Ok::<_, FrameExecutionError>((encoder, metadata, staged_current_stats))
     })();
-    let (encoder, metadata) = match encoded {
+    let (encoder, metadata, staged_current_stats) = match encoded {
         Ok(encoded) => encoded,
         Err(error) => {
             // A genuine plan/encode failure under the still-published
@@ -927,6 +1078,7 @@ pub(crate) fn encode_frame_gpu(
         reset_sampler_on_finalize,
         staged_controller,
         completion_started,
+        staged_current_stats,
     })
 }
 
@@ -1025,6 +1177,14 @@ fn submit_pending_frame(
         staged_sample = Some(sample);
         plan_sample_ticket = Some(ticket);
     }
+    // All fallible formal-lane staging is complete before the observer map is
+    // armed. From here queue submission is the only operation, so an error
+    // cannot strand an unpublished observer slot waiting on an unsubmitted
+    // callback.
+    let armed_current_stats = pending.staged_current_stats.map(|staged| {
+        slot.sampler
+            .arm_current_stats(&command_buffers[terminal_index], staged)
+    });
 
     let submission_index = queue.submit(command_buffers);
     Ok(SubmittedGpuFrame {
@@ -1042,6 +1202,7 @@ fn submit_pending_frame(
             staged_sample,
             plan_sample_ticket,
             completion_started: pending.completion_started,
+            armed_current_stats,
         }),
     })
 }
@@ -1121,8 +1282,29 @@ pub(crate) fn validate_submitted_frame<'a>(
             component: "mandatory sampler commit",
         });
     }
+    if let Some(armed) = state.armed_current_stats.as_ref()
+        && !slot.sampler.accepts_current_stats_armed(
+            armed,
+            state.metadata.frame,
+            state.metadata.plan,
+        )
+    {
+        return Err(FrameExecutionError::PendingFrameMismatch {
+            component: "current-stats observer ticket",
+        });
+    }
 
-    Ok(ValidatedSubmittedGpuFrame { slot, submitted })
+    let presentation_sequence = slot.presentation_sequence.checked_add(1).ok_or(
+        FrameExecutionError::PendingFrameMismatch {
+            component: "presentation sequence",
+        },
+    )?;
+
+    Ok(ValidatedSubmittedGpuFrame {
+        slot,
+        submitted,
+        presentation_sequence,
+    })
 }
 
 impl ValidatedSubmittedGpuFrame<'_> {
@@ -1149,6 +1331,17 @@ impl ValidatedSubmittedGpuFrame<'_> {
         }
         self.slot.frame = state.candidate_frame;
         self.slot.controller = state.staged_controller;
+        self.slot.presentation_sequence = self.presentation_sequence;
+        let current_stats = state
+            .armed_current_stats
+            .map(|armed| {
+                self.slot.sampler.commit_current_stats(
+                    armed,
+                    state.encode_attempt,
+                    self.presentation_sequence,
+                )
+            })
+            .unwrap_or_default();
 
         let host_timings = state.metadata.host_cpu_order.map(|receipt| {
             let timings = receipt.timings();
@@ -1173,6 +1366,8 @@ impl ValidatedSubmittedGpuFrame<'_> {
             encode_attempt: state.encode_attempt,
             plan_sample_ticket: state.plan_sample_ticket,
             host_timings,
+            presentation_sequence: self.presentation_sequence,
+            current_stats,
         }
     }
 }
@@ -1290,6 +1485,64 @@ fn canonical_input_for_work(
     ))
 }
 
+fn current_stats_counts_for_work<'a>(
+    work: &'a ProjectedWork<'a>,
+    encoder: &mut wgpu::CommandEncoder,
+) -> Result<CurrentStatsFrameCounts<'a>, FrameExecutionError> {
+    let (visible, contributor, count_semantics) = match work.plan_id() {
+        PlanId::CpuPostSort => {
+            let gpu =
+                work.cpu_post_gpu()
+                    .map_err(|_| FrameExecutionError::ProjectedWorkMismatch {
+                        component: "CPU PostSort current-count sources",
+                    })?;
+            let visible =
+                work.visible_count()
+                    .map_err(|_| FrameExecutionError::ProjectedWorkMismatch {
+                        component: "CPU PostSort current visible count",
+                    })?;
+            (
+                CurrentStatsVisibleSource::Host(visible),
+                gpu.encode_contributor_count(encoder)?,
+                RasterCountSemantics::DirectDrawEqualsVisible,
+            )
+        }
+        PlanId::GpuPostSort => {
+            let gpu = work
+                .gpu_post()
+                .map_err(|_| FrameExecutionError::ProjectedWorkMismatch {
+                    component: "GPU PostSort current-count sources",
+                })?;
+            (
+                CurrentStatsVisibleSource::Gpu(gpu.visible_count()),
+                gpu.encode_contributor_count(encoder)?,
+                RasterCountSemantics::IndirectDrawEqualsVisible,
+            )
+        }
+        PlanId::GpuPreproject => {
+            let gpu =
+                work.gpu_preproject()
+                    .map_err(|_| FrameExecutionError::ProjectedWorkMismatch {
+                        component: "GPU Preproject current-count sources",
+                    })?;
+            (
+                CurrentStatsVisibleSource::Gpu(gpu.candidate_count()),
+                gpu.contributor_count(),
+                RasterCountSemantics::IndirectDrawEqualsContributor,
+            )
+        }
+    };
+    Ok(CurrentStatsFrameCounts {
+        frame: work.frame_identity(),
+        plan: work.plan_id(),
+        order_generation: work.order_generation(),
+        source_count: work.source_count(),
+        visible,
+        contributor,
+        count_semantics,
+    })
+}
+
 fn execute_prepared_runtime<'runtime>(
     runtime: &'runtime mut PreparedRuntime,
     requested: PlanId,
@@ -1318,6 +1571,8 @@ fn execute_prepared_runtime<'runtime>(
 
 #[cfg(test)]
 mod contract_tests;
+#[cfg(test)]
+mod current_stats_tests;
 #[cfg(test)]
 mod e11_tests;
 #[cfg(test)]
