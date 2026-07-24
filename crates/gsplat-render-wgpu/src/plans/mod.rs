@@ -2,6 +2,7 @@
 
 mod cpu_post;
 mod gpu_post;
+mod gpu_pre;
 
 use std::{fmt, sync::Arc};
 
@@ -12,6 +13,7 @@ use crate::scene::SceneRuntime;
 
 use cpu_post::{CpuPostSortError, CpuPostSortPlan};
 use gpu_post::{GpuPostSortError, GpuPostSortPlan, GpuPostSortWork};
+use gpu_pre::{GpuPreprojectError, GpuPreprojectPlan, GpuPreprojectWork};
 
 struct GpuOwnerIdentity;
 
@@ -329,6 +331,7 @@ pub(crate) struct StagedGpuPlanAdmission {
     capability: GpuCapabilityReceipt,
     eligible: Box<[PlanId]>,
     gpu_post: Option<GpuPostSortPlan>,
+    gpu_pre: Option<GpuPreprojectPlan>,
 }
 
 #[cfg(test)]
@@ -337,6 +340,7 @@ pub(crate) enum TestGpuAdmissionMode {
     CapabilityOnly,
     Fail,
     Concrete,
+    ConcreteAll,
 }
 
 #[derive(Debug, Error, Clone, Copy, PartialEq, Eq)]
@@ -358,6 +362,7 @@ pub(crate) enum WorkUnavailable {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum IndirectCountSemantics {
     DrawEqualsVisible,
+    DrawEqualsContributor,
 }
 
 /// Private, accessor-only plan handoff.
@@ -379,6 +384,7 @@ pub(crate) struct ProjectedWork<'a> {
     draw_count: Option<u32>,
     cpu_order_ids: Option<&'a [u32]>,
     gpu_post: Option<GpuPostSortWork<'a>>,
+    gpu_pre: Option<GpuPreprojectWork<'a>>,
 }
 
 #[allow(dead_code)]
@@ -400,6 +406,7 @@ impl<'a> ProjectedWork<'a> {
             draw_count: None,
             cpu_order_ids: Some(ordered_ids),
             gpu_post: None,
+            gpu_pre: None,
         }
     }
 
@@ -423,6 +430,31 @@ impl<'a> ProjectedWork<'a> {
             draw_count: None,
             cpu_order_ids: None,
             gpu_post: Some(gpu_post),
+            gpu_pre: None,
+        }
+    }
+
+    fn from_gpu_preproject(
+        frame: FrameIdentity,
+        order_generation: u64,
+        source_count: u32,
+        gpu_pre: GpuPreprojectWork<'a>,
+    ) -> Self {
+        Self {
+            plan: PlanId::GpuPreproject,
+            order_lane: OrderLane::Gpu,
+            frame,
+            order_generation,
+            source_count,
+            // V, C and D remain GPU-owned. Their buffers and exact D=C
+            // relationship travel with GpuPreprojectWork; numeric host values
+            // stay unavailable rather than borrowing S/capacity/zero.
+            visible_count: None,
+            contributor_count: None,
+            draw_count: None,
+            cpu_order_ids: None,
+            gpu_post: None,
+            gpu_pre: Some(gpu_pre),
         }
     }
 
@@ -468,6 +500,12 @@ impl<'a> ProjectedWork<'a> {
             .as_ref()
             .ok_or(WorkUnavailable::GpuProjectedWork)
     }
+
+    pub(crate) fn gpu_preproject(&self) -> Result<&GpuPreprojectWork<'a>, WorkUnavailable> {
+        self.gpu_pre
+            .as_ref()
+            .ok_or(WorkUnavailable::GpuProjectedWork)
+    }
 }
 
 #[derive(Debug, Error)]
@@ -506,12 +544,16 @@ pub(crate) enum PlanSetError {
     GpuCapabilityConflict,
     #[error("prepared GPU PostSort plan does not match its admitted capability")]
     GpuPlanCapabilityMismatch,
+    #[error("prepared GPU Preproject plan does not match its admitted capability")]
+    GpuPreprojectCapabilityMismatch,
     #[error("GPU admission staging rejected: {reason}")]
     GpuAdmissionRejected { reason: &'static str },
     #[error("CPU PostSort failed: {0}")]
     CpuPostSort(#[from] CpuPostSortError),
     #[error("GPU PostSort failed: {0}")]
     GpuPostSort(#[from] GpuPostSortError),
+    #[error("GPU Preproject failed: {0}")]
+    GpuPreproject(#[from] GpuPreprojectError),
 }
 
 /// Validated, immutable-membership set of prepared Exact plans.
@@ -520,6 +562,7 @@ pub(crate) struct PlanSet {
     eligible: Box<[PlanId]>,
     cpu_post: Option<CpuPostSortPlan>,
     gpu_post: Option<GpuPostSortPlan>,
+    gpu_pre: Option<GpuPreprojectPlan>,
     contract: PlanSetContract,
     gpu_capability: Option<GpuCapabilityReceipt>,
     #[cfg(test)]
@@ -554,6 +597,7 @@ impl PlanSet {
             eligible,
             cpu_post,
             gpu_post: None,
+            gpu_pre: None,
             contract,
             gpu_capability: None,
             #[cfg(test)]
@@ -590,6 +634,11 @@ impl PlanSet {
         {
             return Err(PlanSetError::GpuPlanCapabilityMismatch);
         }
+        if let Some(gpu_pre) = self.gpu_pre.as_ref()
+            && self.gpu_capability != Some(gpu_pre.capability())
+        {
+            return Err(PlanSetError::GpuPreprojectCapabilityMismatch);
+        }
         Ok(())
     }
 
@@ -597,7 +646,7 @@ impl PlanSet {
         match plan {
             PlanId::CpuPostSort => self.cpu_post.is_some(),
             PlanId::GpuPostSort => self.gpu_post.is_some(),
-            PlanId::GpuPreproject => false,
+            PlanId::GpuPreproject => self.gpu_pre.is_some(),
         }
     }
 
@@ -629,20 +678,31 @@ impl PlanSet {
         let capability = request.capability();
         let mut eligible = self.eligible.to_vec();
         #[cfg(not(test))]
-        let gpu_post = Some(GpuPostSortPlan::prepare(capability)?);
+        let (gpu_post, gpu_pre) = (
+            Some(GpuPostSortPlan::prepare(capability)?),
+            Some(GpuPreprojectPlan::prepare(capability)?),
+        );
         #[cfg(test)]
-        let gpu_post = match self.test_gpu_admission_mode {
-            TestGpuAdmissionMode::CapabilityOnly => None,
+        let (gpu_post, gpu_pre) = match self.test_gpu_admission_mode {
+            TestGpuAdmissionMode::CapabilityOnly => (None, None),
             TestGpuAdmissionMode::Fail => unreachable!("failure returned above"),
-            TestGpuAdmissionMode::Concrete => Some(GpuPostSortPlan::prepare(capability)?),
+            TestGpuAdmissionMode::Concrete => (Some(GpuPostSortPlan::prepare(capability)?), None),
+            TestGpuAdmissionMode::ConcreteAll => (
+                Some(GpuPostSortPlan::prepare(capability)?),
+                Some(GpuPreprojectPlan::prepare(capability)?),
+            ),
         };
         if gpu_post.is_some() {
             eligible.push(PlanId::GpuPostSort);
+        }
+        if gpu_pre.is_some() {
+            eligible.push(PlanId::GpuPreproject);
         }
         let candidate = StagedGpuPlanAdmission {
             capability,
             eligible: eligible.into_boxed_slice(),
             gpu_post,
+            gpu_pre,
         };
         self.validate_staged_gpu_admission(&candidate)?;
         Ok(candidate)
@@ -655,6 +715,7 @@ impl PlanSet {
         self.contract.plan_set_generation = candidate.capability.plan_set_generation;
         self.gpu_capability = Some(candidate.capability);
         self.gpu_post = candidate.gpu_post;
+        self.gpu_pre = candidate.gpu_pre;
         debug_assert!(self.validate().is_ok());
     }
 
@@ -693,6 +754,11 @@ impl PlanSet {
         {
             return Err(PlanSetError::GpuPlanCapabilityMismatch);
         }
+        if let Some(gpu_pre) = candidate.gpu_pre.as_ref()
+            && gpu_pre.capability() != candidate.capability
+        {
+            return Err(PlanSetError::GpuPreprojectCapabilityMismatch);
+        }
         if candidate.eligible.is_empty() {
             return Err(PlanSetError::Empty);
         }
@@ -703,7 +769,7 @@ impl PlanSet {
             let prepared = match plan {
                 PlanId::CpuPostSort => self.cpu_post.is_some(),
                 PlanId::GpuPostSort => candidate.gpu_post.is_some(),
-                PlanId::GpuPreproject => false,
+                PlanId::GpuPreproject => candidate.gpu_pre.is_some(),
             };
             if !prepared {
                 return Err(PlanSetError::EligiblePlanUnprepared { plan });
@@ -763,10 +829,14 @@ impl PlanSet {
                     .map_err(PlanSetError::from)
             }
             PlanId::GpuPreproject => {
-                let PlanExecutionContext::Gpu(_gpu) = execution else {
+                let PlanExecutionContext::Gpu(gpu) = execution else {
                     unreachable!("GPU context was validated above")
                 };
-                Err(PlanSetError::RequestedPlanUnprepared { requested })
+                self.gpu_pre
+                    .as_mut()
+                    .ok_or(PlanSetError::RequestedPlanUnprepared { requested })?
+                    .execute(scene, input, gpu)
+                    .map_err(PlanSetError::from)
             }
         }
     }
