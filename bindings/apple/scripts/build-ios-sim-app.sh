@@ -75,6 +75,7 @@ esac
 cp "$CAMERA_TRACE_ABS" "$APP_BUNDLE/camera_trace.json"
 
 xcrun --sdk iphonesimulator swiftc \
+  bindings/apple/GsplatKit/Sources/GsplatKit/CurrentStats.swift \
   bindings/apple/GsplatKit/Sources/GsplatKit/GsplatKit.swift \
   examples/ios/app/BenchmarkArtifact.swift \
   examples/ios/app/GsplatIOSExample.swift \

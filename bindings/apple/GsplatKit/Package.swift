@@ -20,5 +20,10 @@ let package = Package(
             dependencies: ["GsplatFFI"],
             path: "Sources/GsplatKit"
         ),
+        .testTarget(
+            name: "GsplatKitTests",
+            dependencies: ["GsplatKit", "GsplatFFI"],
+            path: "Tests/GsplatKitTests"
+        ),
     ]
 )

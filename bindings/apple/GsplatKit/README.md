@@ -57,6 +57,35 @@ let projectedTerminals = try renderer.drainProjectedDrawTerminals()
 renderer.close()
 ```
 
+Current S/V/C/D sampling is an additive, non-blocking request/submission/poll
+API. Keep one consumer with the renderer, observe the presentation-committed
+submission after a successful frame, and consume at most one global poll value
+per call:
+
+```swift
+var currentStats = GsplatCurrentStatsConsumer()
+
+let admission = try renderer.requestCurrentStats()
+try renderer.renderFrame()
+let submission = try renderer.currentStatsSubmission()
+let pendingEvent = currentStats.observe(submission)
+let terminalEvent = currentStats.consume(try renderer.pollCurrentStats())
+```
+
+`requested`, `busy`, `gpuUnavailable`, `resourceUnavailable`, and
+`ticketExhausted` are admission values, not C-call failures. `notRequested`,
+`empty`, and `unsampled` likewise carry no current counts. The consumer emits a
+Ready receipt only when its nonzero ticket and complete identity match a
+previously observed Issued submission; every identity value other than the
+ticket is an opaque join value and may legally be zero. Terminal failures and
+identity mismatches end that pending ticket without publishing S/V/C/D.
+
+The existing public `stats()` API remains unchanged. Its compatibility values
+are not a substitute for a current-stats Ready receipt, and this adapter does
+not change the iOS example's existing benchmark/artifact success contract.
+Before the later Surface semantic cutover, the current Surface implementation
+legally reports `gpuUnavailable`, followed by `notRequested` and `empty`.
+
 UIKit defaults to exact resident `.packedAtlas`, `.adaptive` CPU/GPU ordering,
 and a sort interval of `1`. Pass `GsplatSurfaceOptions` to force `.cpu`, `.gpu`,
 or another explicit diagnostic configuration. GPU receipt collection is

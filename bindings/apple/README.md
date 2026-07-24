@@ -60,6 +60,22 @@ full-resident publication; diagnostic `.pagedActiveAtlas` does not claim it.
 Surface, internal-render, and presented dimensions equal, with dynamic
 resolution and upscaling disabled.
 
+The UIKit wrapper also exposes additive current-stats
+`requestCurrentStats()`, `currentStatsSubmission()`, and `pollCurrentStats()`
+calls plus `GsplatCurrentStatsConsumer`. They translate the native V1 values
+without taking ownership of tickets, generations, sampling, or render policy.
+Busy and unavailable admission, NotRequested, Empty, and Unsampled are
+successful non-fatal values and contain no current counts. Only a Ready receipt
+whose nonzero ticket and full identity match an observed Issued submission may
+publish S/V/C/D; failure, expiry, drop, or mismatch terminates the matching
+pending entry without a count fallback. Identity fields are opaque join values,
+so zero is valid outside the ticket requirement.
+
+This adapter does not switch the iOS benchmark or artifact schema to current
+stats. Until the later Surface semantic activation, the current Surface path
+legally reports GPU-unavailable / NotRequested / Empty, while the existing
+benchmark continues under its unchanged compatibility contract.
+
 `GSPLAT_RENDER_MODE_SORTED_ALPHA` is the only release-gated render mode in v0.1.
 Scene loading is path-based today; scene-from-memory loading is outside the
 current mobile contract.

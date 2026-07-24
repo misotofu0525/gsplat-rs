@@ -167,6 +167,7 @@ cp "$PROVISIONING_PROFILE" "$APP_BUNDLE/embedded.mobileprovision"
   || /usr/libexec/PlistBuddy -c "Set :CFBundleSupportedPlatforms:0 iPhoneOS" "$APP_BUNDLE/Info.plist"
 
 xcrun --sdk iphoneos swiftc \
+  bindings/apple/GsplatKit/Sources/GsplatKit/CurrentStats.swift \
   bindings/apple/GsplatKit/Sources/GsplatKit/GsplatKit.swift \
   examples/ios/app/BenchmarkArtifact.swift \
   examples/ios/app/GsplatIOSExample.swift \

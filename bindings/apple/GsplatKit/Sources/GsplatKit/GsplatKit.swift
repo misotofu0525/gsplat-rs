@@ -11,7 +11,7 @@ import UIKit
 // Keep internal fallback codes aligned with GsplatErrorCode in gsplat.h without
 // exposing raw C enum types in the public Swift API.
 private let gsplatOk: Int32 = 0
-private let gsplatInvalidArgument: Int32 = 1
+let gsplatInvalidArgument: Int32 = 1
 private let gsplatUnsupported: Int32 = 4
 private let firstProjectedDrawTicket: UInt64 = 1 << 52
 private let maximumJavaScriptSafeInteger: UInt64 = (1 << 53) - 1
@@ -1108,6 +1108,57 @@ public final class GsplatUIKitSurfaceRenderer {
                 operation: "gsplat_surface_renderer_get_stats"
             )
             return GsplatFrameStats(stats)
+        }
+    }
+
+    /// Requests an optional current S/V/C/D sample from the next eligible frame.
+    /// Busy and unavailable results are returned as values and do not throw.
+    public func requestCurrentStats() throws -> GsplatCurrentStatsRequestStatus {
+        try withRenderer(operation: "gsplat_surface_renderer_request_current_stats_v1") {
+            renderer in
+            var native = GsplatSurfaceCurrentStatsRequestV1()
+            native.struct_size = UInt32(
+                MemoryLayout<GsplatSurfaceCurrentStatsRequestV1>.size
+            )
+            native.version = 1
+            try check(
+                gsplat_surface_renderer_request_current_stats_v1(renderer, &native),
+                operation: "gsplat_surface_renderer_request_current_stats_v1"
+            )
+            return try currentStatsRequestStatus(native: native)
+        }
+    }
+
+    /// Returns the last successful frame's presentation-committed submission.
+    public func currentStatsSubmission() throws -> GsplatCurrentStatsSubmission {
+        try withRenderer(
+            operation: "gsplat_surface_renderer_get_current_stats_submission_v1"
+        ) { renderer in
+            var native = GsplatSurfaceCurrentStatsSubmissionV1()
+            native.struct_size = UInt32(
+                MemoryLayout<GsplatSurfaceCurrentStatsSubmissionV1>.size
+            )
+            native.version = 1
+            try check(
+                gsplat_surface_renderer_get_current_stats_submission_v1(renderer, &native),
+                operation: "gsplat_surface_renderer_get_current_stats_submission_v1"
+            )
+            return try GsplatCurrentStatsSubmission(native: native)
+        }
+    }
+
+    /// Consumes at most one global current-stats resolution without blocking.
+    public func pollCurrentStats() throws -> GsplatCurrentStatsPoll {
+        try withRenderer(operation: "gsplat_surface_renderer_poll_current_stats_v1") {
+            renderer in
+            var native = GsplatSurfaceCurrentStatsPollV1()
+            native.struct_size = UInt32(MemoryLayout<GsplatSurfaceCurrentStatsPollV1>.size)
+            native.version = 1
+            try check(
+                gsplat_surface_renderer_poll_current_stats_v1(renderer, &native),
+                operation: "gsplat_surface_renderer_poll_current_stats_v1"
+            )
+            return try GsplatCurrentStatsPoll(native: native)
         }
     }
 
