@@ -102,6 +102,13 @@ impl CpuOrderEngine {
     pub(crate) fn buffer_state(&self) -> ((usize, usize), (usize, usize), (usize, usize)) {
         self.workspace.buffer_state()
     }
+
+    #[cfg(all(test, not(target_arch = "wasm32")))]
+    pub(crate) fn calibration_state(
+        &self,
+    ) -> (Option<crate::cpu::calibration::CalibrationDecision>, usize) {
+        self.workspace.calibration_state()
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -514,6 +521,12 @@ mod tests {
 
         assert_eq!(actual, expected);
         assert_eq!(order_hash(&actual), order_hash(&expected));
+        let frozen = engine.calibration_state();
+        engine
+            .order_positions(CpuPositionView::new(&positions), &camera, true, &mut actual)
+            .expect("frozen packed order");
+        assert_eq!(engine.calibration_state(), frozen);
+        assert_eq!(order_hash(&actual), order_hash(&expected));
     }
 
     #[test]
@@ -529,6 +542,12 @@ mod tests {
             )
             .expect("empty");
         assert!(order.is_empty());
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let (decision, attempts) = engine.calibration_state();
+            assert_eq!(attempts, 0);
+            assert_eq!(decision, None);
+        }
 
         let positions = [Vec3f::new(0.0, 0.0, 2.0)];
         engine
@@ -555,6 +574,52 @@ mod tests {
         assert_eq!(order, published);
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn invalid_initial_camera_leaves_calibration_pending_and_authoritative_order_untouched() {
+        let positions = vec![Vec3f::new(0.0, 0.0, 2.0); super::PARALLEL_PREPROCESS_THRESHOLD + 257];
+        let mut engine = CpuOrderEngine::try_with_capacity(positions.len()).expect("engine");
+        let mut order = vec![99];
+
+        assert!(
+            engine
+                .order_positions(
+                    CpuPositionView::new(&positions),
+                    &camera(3.0, 1.0),
+                    true,
+                    &mut order,
+                )
+                .is_err()
+        );
+        assert_eq!(order, [99]);
+        let (decision, attempts) = engine.calibration_state();
+        assert_eq!(decision, None);
+        assert_eq!(attempts, 0);
+
+        engine
+            .order_positions(
+                CpuPositionView::new(&positions),
+                &camera(1.0, 3.0),
+                true,
+                &mut order,
+            )
+            .expect("first valid large input calibrates");
+        assert_eq!(order.len(), positions.len());
+        assert_eq!(order.first(), Some(&0));
+        assert_eq!(order.last(), Some(&(positions.len() as u32 - 1)));
+        let frozen = engine.calibration_state();
+        assert!(frozen.0.is_some());
+        engine
+            .order_positions(
+                CpuPositionView::new(&positions),
+                &camera(1.0, 3.0),
+                true,
+                &mut order,
+            )
+            .expect("valid large input reuses frozen choice");
+        assert_eq!(engine.calibration_state(), frozen);
+    }
+
     #[test]
     fn warmup_reuses_bounded_double_buffers_without_reallocation() {
         let positions = (0..257)
@@ -574,6 +639,8 @@ mod tests {
                 )
                 .expect("warmup");
         }
+        #[cfg(not(target_arch = "wasm32"))]
+        let frozen_calibration = engine.calibration_state();
         let first = (
             engine.buffer_state(),
             order.as_ptr() as usize,
@@ -595,6 +662,39 @@ mod tests {
             order.capacity(),
         );
         assert_eq!(second, first);
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            assert_eq!(frozen_calibration.1, 0);
+            assert_eq!(frozen_calibration.0, None);
+            assert_eq!(engine.calibration_state(), frozen_calibration);
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn same_engine_small_then_large_initializes_calibration_only_at_threshold() {
+        let small = [Vec3f::new(0.0, 0.0, 2.0)];
+        let large = (0..(super::PARALLEL_PREPROCESS_THRESHOLD + 257))
+            .map(|index| Vec3f::new(0.0, 0.0, 1.0 + (index % 4096) as f32 * 0.000_1))
+            .collect::<Vec<_>>();
+        let camera = camera(0.5, 4.0);
+        let mut engine = CpuOrderEngine::try_with_capacity(large.len()).expect("engine");
+        let mut order = Vec::with_capacity(large.len());
+
+        engine
+            .order_positions(CpuPositionView::new(&small), &camera, true, &mut order)
+            .expect("small serial order");
+        assert_eq!(engine.calibration_state(), (None, 0));
+
+        engine
+            .order_positions(CpuPositionView::new(&large), &camera, true, &mut order)
+            .expect("large initialized order");
+        let frozen = engine.calibration_state();
+        assert!(frozen.0.is_some());
+        engine
+            .order_positions(CpuPositionView::new(&large), &camera, true, &mut order)
+            .expect("large frozen order");
+        assert_eq!(engine.calibration_state(), frozen);
     }
 
     #[test]
@@ -692,6 +792,40 @@ mod tests {
             total_ms,
             order_hash(order),
         )
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    #[ignore = "finite E7 native initialization calibration observation"]
+    fn e7_native_initialization_calibration_observation() {
+        const COUNT: usize = 500_000;
+
+        let positions = e6_positions(COUNT);
+        let camera = camera(0.5, 1_000.0);
+        let mut engine = CpuOrderEngine::try_with_capacity(COUNT).expect("engine");
+        let mut order = Vec::with_capacity(COUNT);
+        let first_started = Instant::now();
+        engine
+            .order_positions(CpuPositionView::new(&positions), &camera, true, &mut order)
+            .expect("calibrated order");
+        let first_elapsed = first_started.elapsed();
+        let first_hash = order_hash(&order);
+        let frozen = engine.calibration_state();
+
+        let second_started = Instant::now();
+        engine
+            .order_positions(CpuPositionView::new(&positions), &camera, true, &mut order)
+            .expect("frozen order");
+        let second_elapsed = second_started.elapsed();
+        assert_eq!(order_hash(&order), first_hash);
+        assert_eq!(engine.calibration_state(), frozen);
+        eprintln!(
+            "E7_CALIBRATION count={COUNT} decision={:?} attempts={} first_total_ms={:.6} frozen_total_ms={:.6} order_hash={first_hash:016x}",
+            frozen.0,
+            frozen.1,
+            first_elapsed.as_secs_f64() * 1_000.0,
+            second_elapsed.as_secs_f64() * 1_000.0,
+        );
     }
 
     #[cfg(not(target_arch = "wasm32"))]

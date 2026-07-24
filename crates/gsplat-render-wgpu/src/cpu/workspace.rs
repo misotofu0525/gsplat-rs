@@ -2,11 +2,18 @@ use gsplat_core::Camera;
 #[cfg(not(target_arch = "wasm32"))]
 use gsplat_core::SceneBuffers;
 use gsplat_sort::CpuSortBackend;
+#[cfg(not(target_arch = "wasm32"))]
+use std::time::{Duration, Instant};
 
+#[cfg(not(target_arch = "wasm32"))]
+use crate::cpu::calibration::{
+    CALIBRATION_INPUT_CAP, NativeCalibration, calibrate_bounded, native_candidates,
+};
 use crate::cpu::preprocess;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::cpu::preprocess::{
-    MAX_PARALLEL_PREPROCESS_CHUNKS, packed::PackedPreprocessChunkScratch,
+    MAX_PARALLEL_PREPROCESS_CHUNKS,
+    packed::{PackedPreprocessChunkScratch, PackedScalarExecution},
 };
 use crate::data::CpuPositionView;
 use crate::{RendererError, timer_elapsed_ms, timer_now};
@@ -31,6 +38,8 @@ pub(crate) struct CpuOrderWorkspace {
     sorter: CpuSortBackend,
     #[cfg(not(target_arch = "wasm32"))]
     packed_chunks: Vec<PackedPreprocessChunkScratch>,
+    #[cfg(not(target_arch = "wasm32"))]
+    native_calibration: NativeCalibration,
 }
 
 impl CpuOrderWorkspace {
@@ -79,12 +88,17 @@ impl CpuOrderWorkspace {
     ) -> Result<WorkspaceTimings, RendererError> {
         #[cfg(not(target_arch = "wasm32"))]
         {
+            camera
+                .validate()
+                .map_err(|_| RendererError::InvalidCamera)?;
+            let execution = self.calibrated_execution(positions, camera);
             let preprocess_start = timer_now();
             preprocess::packed::positions_visible_into(
                 positions,
                 camera,
                 &mut self.packed_pairs,
                 &mut self.packed_chunks,
+                execution,
             )?;
             let preprocess_ms = timer_elapsed_ms(preprocess_start);
             self.finish_packed_order(stable_full32, authoritative_ids, preprocess_ms)
@@ -102,6 +116,65 @@ impl CpuOrderWorkspace {
             let preprocess_ms = timer_elapsed_ms(preprocess_start);
             self.finish_order(stable_full32, authoritative_ids, preprocess_ms)
         }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn calibrated_execution(
+        &mut self,
+        positions: CpuPositionView<'_>,
+        camera: &Camera,
+    ) -> PackedScalarExecution {
+        if let Some(decision) = self.native_calibration.decision() {
+            return decision.execution();
+        }
+
+        let static_fallback = preprocess::packed::static_fallback(positions.len());
+        if positions.len() < preprocess::PARALLEL_PREPROCESS_THRESHOLD {
+            return static_fallback;
+        }
+        let candidates = native_candidates();
+        if candidates.as_slice().len() == 1 {
+            let decision =
+                crate::cpu::calibration::CalibrationDecision::static_choice(static_fallback);
+            debug_assert_eq!(static_fallback, PackedScalarExecution::serial());
+            self.native_calibration.freeze_static(decision);
+            return decision.execution();
+        }
+        let calibration_len = positions.len().min(CALIBRATION_INPUT_CAP);
+        let calibration_positions = positions.slice(0..calibration_len);
+        let started = Instant::now();
+        let decision = calibrate_bounded(
+            candidates,
+            static_fallback,
+            || started.elapsed(),
+            |execution| self.probe_terminal_order(calibration_positions, camera, execution),
+        );
+        debug_assert!(
+            decision.fallback_reason().is_none() || decision.execution() == static_fallback
+        );
+        self.native_calibration.freeze_after_probe(decision);
+        decision.execution()
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn probe_terminal_order(
+        &mut self,
+        positions: CpuPositionView<'_>,
+        camera: &Camera,
+        execution: PackedScalarExecution,
+    ) -> Result<Duration, RendererError> {
+        let started = Instant::now();
+        preprocess::packed::positions_visible_into(
+            positions,
+            camera,
+            &mut self.packed_pairs,
+            &mut self.packed_chunks,
+            execution,
+        )?;
+        self.candidate_ids.resize(self.packed_pairs.len(), 0);
+        self.sorter
+            .sort_prepacked_values(&mut self.packed_pairs, &mut self.candidate_ids)?;
+        Ok(started.elapsed())
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -195,6 +268,16 @@ impl CpuOrderWorkspace {
                 self.candidate_ids.as_ptr() as usize,
                 self.candidate_ids.capacity(),
             ),
+        )
+    }
+
+    #[cfg(all(test, not(target_arch = "wasm32")))]
+    pub(crate) fn calibration_state(
+        &self,
+    ) -> (Option<crate::cpu::calibration::CalibrationDecision>, usize) {
+        (
+            self.native_calibration.decision(),
+            self.native_calibration.attempts(),
         )
     }
 }

@@ -15,6 +15,45 @@ use super::{
     MAX_PARALLEL_PREPROCESS_CHUNKS, PARALLEL_PREPROCESS_THRESHOLD, PreprocessContext, scalar,
 };
 
+/// One already-accepted packed Scalar execution with a fixed chunk count.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PackedScalarExecution {
+    chunk_count: usize,
+}
+
+impl PackedScalarExecution {
+    pub(crate) const fn new(chunk_count: usize) -> Self {
+        let chunk_count = if chunk_count == 0 {
+            1
+        } else if chunk_count > MAX_PARALLEL_PREPROCESS_CHUNKS {
+            MAX_PARALLEL_PREPROCESS_CHUNKS
+        } else {
+            chunk_count
+        };
+        Self { chunk_count }
+    }
+
+    pub(crate) const fn serial() -> Self {
+        Self { chunk_count: 1 }
+    }
+
+    pub(crate) const fn chunk_count(self) -> usize {
+        self.chunk_count
+    }
+}
+
+pub(crate) fn static_fallback(position_count: usize) -> PackedScalarExecution {
+    if position_count >= PARALLEL_PREPROCESS_THRESHOLD && rayon::current_num_threads() >= 2 {
+        PackedScalarExecution::new(
+            rayon::current_num_threads()
+                .min(MAX_PARALLEL_PREPROCESS_CHUNKS)
+                .min(position_count),
+        )
+    } else {
+        PackedScalarExecution::serial()
+    }
+}
+
 #[derive(Default)]
 pub(crate) struct PackedPreprocessChunkScratch {
     pairs: Vec<u64>,
@@ -51,13 +90,12 @@ pub(crate) fn positions_visible_into(
     camera: &Camera,
     pairs: &mut Vec<u64>,
     chunks: &mut Vec<PackedPreprocessChunkScratch>,
+    execution: PackedScalarExecution,
 ) -> Result<(), RendererError> {
     let context = PreprocessContext::from_camera(camera)?;
 
-    if positions.len() >= PARALLEL_PREPROCESS_THRESHOLD && rayon::current_num_threads() >= 2 {
-        let chunk_count = rayon::current_num_threads()
-            .min(MAX_PARALLEL_PREPROCESS_CHUNKS)
-            .min(positions.len());
+    if positions.len() >= PARALLEL_PREPROCESS_THRESHOLD && execution.chunk_count() >= 2 {
+        let chunk_count = execution.chunk_count().min(positions.len());
         let chunk_len = positions.len().div_ceil(chunk_count);
         if chunks.len() < chunk_count {
             chunks.resize_with(chunk_count, PackedPreprocessChunkScratch::default);
@@ -93,7 +131,10 @@ pub(crate) fn positions_visible_into(
 mod tests {
     use gsplat_core::{Camera, Vec3f};
 
-    use super::{PackedPreprocessChunkScratch, positions_visible_into, preprocess_into};
+    use super::{
+        PackedPreprocessChunkScratch, PackedScalarExecution, positions_visible_into,
+        preprocess_into,
+    };
     use crate::cpu::preprocess::{PreprocessContext, scalar};
     use crate::data::CpuPositionView;
 
@@ -160,7 +201,7 @@ mod tests {
     }
 
     #[test]
-    fn rayon_packed_matches_scalar_split_oracle_element_for_element() {
+    fn every_supported_chunk_count_matches_scalar_split_oracle_element_for_element() {
         let positions = (0..(super::PARALLEL_PREPROCESS_THRESHOLD + 257))
             .map(|index| {
                 let depth = 1.0 + (index % 4096) as f32 * 0.000_1;
@@ -179,24 +220,48 @@ mod tests {
             &mut expected_ids,
         );
 
-        let mut packed = Vec::new();
-        let mut chunks = Vec::<PackedPreprocessChunkScratch>::new();
         rayon::ThreadPoolBuilder::new()
             .num_threads(4)
             .build()
             .expect("rayon pool")
             .install(|| {
+                for chunk_count in [1, 2, 4] {
+                    let mut packed = Vec::new();
+                    let mut chunks = Vec::<PackedPreprocessChunkScratch>::new();
+                    positions_visible_into(
+                        CpuPositionView::new(&positions),
+                        &camera,
+                        &mut packed,
+                        &mut chunks,
+                        PackedScalarExecution::new(chunk_count),
+                    )
+                    .expect("packed preprocess");
+
+                    let (actual_keys, actual_ids) = unpack_pairs(&packed);
+                    assert_eq!(actual_keys, expected_keys);
+                    assert_eq!(actual_ids, expected_ids);
+                }
+            });
+    }
+
+    #[test]
+    fn empty_and_small_inputs_are_exact_for_every_supported_chunk_count() {
+        let camera = camera(0.5, 4.0);
+        for positions in [Vec::new(), vec![Vec3f::new(0.0, 0.0, 2.0)]] {
+            for chunk_count in [1, 2, 4] {
+                let mut packed = Vec::new();
+                let mut chunks = Vec::<PackedPreprocessChunkScratch>::new();
                 positions_visible_into(
                     CpuPositionView::new(&positions),
                     &camera,
                     &mut packed,
                     &mut chunks,
+                    PackedScalarExecution::new(chunk_count),
                 )
                 .expect("packed preprocess");
-            });
-
-        let (actual_keys, actual_ids) = unpack_pairs(&packed);
-        assert_eq!(actual_keys, expected_keys);
-        assert_eq!(actual_ids, expected_ids);
+                let (_, actual_ids) = unpack_pairs(&packed);
+                assert_eq!(actual_ids, (0..positions.len() as u32).collect::<Vec<_>>());
+            }
+        }
     }
 }
