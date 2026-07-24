@@ -53,36 +53,34 @@ pub(crate) enum CurrentStatsRequest {
 
 /// One non-blocking observer poll. A pre-ticket request resolution is kept
 /// separate from issued-ticket terminals so unavailable is never represented
-/// by fabricated counts or a fake ticket.
-#[derive(Debug, Default)]
-pub(crate) struct CurrentStatsPoll {
-    unsampled: Option<CurrentStatsUnsampledReason>,
-    terminals: Vec<CurrentStatsTerminal>,
+/// by fabricated counts or a fake ticket. Each call consumes at most one
+/// caller-visible result; additional ready terminals stay in the
+/// Renderer-owned bounded queue.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum CurrentStatsPoll {
+    #[default]
+    Empty,
+    Unsampled(CurrentStatsUnsampledReason),
+    Terminal(CurrentStatsTerminal),
 }
 
 impl CurrentStatsPoll {
     pub(crate) const fn unsampled(&self) -> Option<CurrentStatsUnsampledReason> {
-        self.unsampled
+        match self {
+            Self::Unsampled(reason) => Some(*reason),
+            Self::Empty | Self::Terminal(_) => None,
+        }
     }
 
-    pub(crate) fn terminals(&self) -> &[CurrentStatsTerminal] {
-        &self.terminals
+    pub(crate) const fn terminal(&self) -> Option<CurrentStatsTerminal> {
+        match self {
+            Self::Terminal(terminal) => Some(*terminal),
+            Self::Empty | Self::Unsampled(_) => None,
+        }
     }
 
-    pub(crate) fn len(&self) -> usize {
-        self.terminals.len()
-    }
-
-    pub(crate) fn is_empty(&self) -> bool {
-        self.unsampled.is_none() && self.terminals.is_empty()
-    }
-}
-
-impl std::ops::Index<usize> for CurrentStatsPoll {
-    type Output = CurrentStatsTerminal;
-
-    fn index(&self, index: usize) -> &Self::Output {
-        &self.terminals[index]
+    pub(crate) const fn is_empty(&self) -> bool {
+        matches!(self, Self::Empty)
     }
 }
 
@@ -678,7 +676,6 @@ impl CurrentStatsLane {
             self.poll_device(device);
         }
 
-        let mut terminals: Vec<_> = self.terminals.drain(..).collect();
         for slot in &mut self.slots {
             match slot.state.load(Ordering::Acquire) {
                 SLOT_MAPPED => {
@@ -727,7 +724,7 @@ impl CurrentStatsLane {
                         CurrentStatsTerminal::Dropped(CurrentStatsFailure { submission })
                     };
                     slot.terminal_reported = true;
-                    terminals.push(terminal);
+                    self.terminals.push_back(terminal);
                     recycle(slot);
                 }
                 SLOT_MAP_ERROR => {
@@ -740,9 +737,9 @@ impl CurrentStatsLane {
                         && let Some(submission) = slot.submission
                     {
                         slot.terminal_reported = true;
-                        terminals.push(CurrentStatsTerminal::MapFailure(CurrentStatsFailure {
-                            submission,
-                        }));
+                        self.terminals.push_back(CurrentStatsTerminal::MapFailure(
+                            CurrentStatsFailure { submission },
+                        ));
                     }
                     slot.readback.unmap();
                     recycle(slot);
@@ -750,10 +747,15 @@ impl CurrentStatsLane {
                 _ => {}
             }
         }
-        terminals.sort_by_key(|terminal| terminal.ticket());
-        CurrentStatsPoll {
-            unsampled: self.request_unsampled.take(),
-            terminals,
+        self.terminals
+            .make_contiguous()
+            .sort_by_key(|terminal| terminal.ticket());
+        if let Some(reason) = self.request_unsampled.take() {
+            CurrentStatsPoll::Unsampled(reason)
+        } else if let Some(terminal) = self.terminals.pop_front() {
+            CurrentStatsPoll::Terminal(terminal)
+        } else {
+            CurrentStatsPoll::Empty
         }
     }
 
@@ -787,6 +789,9 @@ impl CurrentStatsLane {
                 ));
             }
         }
+        terminals
+            .make_contiguous()
+            .sort_by_key(|terminal| terminal.ticket());
         debug_assert!(terminals.len() <= RING_CAPACITY);
         let mut inherited_queue_barriers = self.inherited_queue_barriers.clone();
         inherited_queue_barriers.extend(

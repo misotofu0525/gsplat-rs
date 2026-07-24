@@ -15,7 +15,8 @@ pub use crate::evidence::{
 use crate::gpu_telemetry::{SurfaceCpuOrderMeasurement, TelemetrySubmission};
 use crate::surface_presenter::{CpuCompletionSampleRequest, ProjectedDrawSampleRequest};
 use crate::{
-    GeometryPath, Renderer, RendererError, SurfaceGpuOrderProducer, SurfaceGpuProducerMeasurement,
+    GeometryPath, Renderer, RendererError, SurfaceCurrentStatsPoll, SurfaceCurrentStatsRequest,
+    SurfaceCurrentStatsSubmission, SurfaceGpuOrderProducer, SurfaceGpuProducerMeasurement,
     SurfaceGpuProducerMeasurementFailure, SurfaceOrderMeasurement, SurfaceOrderMeasurementFailure,
     SurfacePresenter, SurfacePresenterError, SurfaceProjectedDrawExecution,
     SurfaceProjectedDrawMeasurement, SurfaceProjectedDrawMeasurementFailure,
@@ -1579,6 +1580,18 @@ fn surface_geometry_switch_entry(
     }
 }
 
+fn legacy_surface_current_stats_request(_renderer: &mut Renderer) -> SurfaceCurrentStatsRequest {
+    SurfaceCurrentStatsRequest::Unsampled(crate::SurfaceCurrentStatsUnsampledReason::GpuUnavailable)
+}
+
+fn legacy_surface_current_stats_poll(_renderer: &mut Renderer) -> SurfaceCurrentStatsPoll {
+    SurfaceCurrentStatsPoll::Empty
+}
+
+const fn legacy_surface_current_stats_submission() -> SurfaceCurrentStatsSubmission {
+    SurfaceCurrentStatsSubmission::NotRequested
+}
+
 impl SurfaceRenderSession {
     pub fn new(
         mut renderer: Renderer,
@@ -1673,6 +1686,27 @@ impl SurfaceRenderSession {
 
     pub fn renderer(&self) -> &Renderer {
         &self.renderer
+    }
+
+    /// Requests one current-stats receipt from the next eligible Exact
+    /// Surface frame. Until M2a activates the prepared Exact Surface runtime,
+    /// the legacy path returns `GpuUnavailable` without changing session state.
+    pub fn request_current_stats(&mut self) -> SurfaceCurrentStatsRequest {
+        legacy_surface_current_stats_request(&mut self.renderer)
+    }
+
+    /// Returns the current frame's presentation-committed current-stats
+    /// submission. The legacy Surface path never issues a ticket; M2a may back
+    /// this additive getter with session-private state updated only after a
+    /// successful present.
+    pub const fn current_stats_submission(&self) -> SurfaceCurrentStatsSubmission {
+        legacy_surface_current_stats_submission()
+    }
+
+    /// Polls at most one current-stats resolution or atomic terminal. The
+    /// Renderer retains any additional ready terminals in its bounded queue.
+    pub fn poll_current_stats(&mut self) -> SurfaceCurrentStatsPoll {
+        legacy_surface_current_stats_poll(&mut self.renderer)
     }
 
     /// Requests an exact readback of the next native Surface frame. This is a
@@ -3434,19 +3468,22 @@ mod tests {
         adaptive_gpu_order_failure_reason, adaptive_primary_metric, arbitrate_new_probe_owner,
         async_order_pose_compatible, async_schedule_threshold, defer_projected_formal_choice,
         gpu_producer_measurement_context_is_valid, gpu_projected_order_changed,
-        order_probe_owner_should_yield, paged_surface_counts, probe_sequence_backend,
-        projected_formal_sample_requested, projected_order_changed, projected_policy_can_sample,
-        projected_probe_claims_owner, projected_probe_sequence_execution,
-        reset_adaptive_for_gpu_producer_measurement_transition,
+        legacy_surface_current_stats_poll, legacy_surface_current_stats_request,
+        legacy_surface_current_stats_submission, order_probe_owner_should_yield,
+        paged_surface_counts, probe_sequence_backend, projected_formal_sample_requested,
+        projected_order_changed, projected_policy_can_sample, projected_probe_claims_owner,
+        projected_probe_sequence_execution, reset_adaptive_for_gpu_producer_measurement_transition,
         reset_adaptive_for_raster_transition, retain_gpu_producer_terminal,
         should_measure_cpu_refresh, should_reset_order_for_projected_incumbent_change,
         surface_geometry_switch_entry, try_switch_renderer_geometry_path,
         validate_gpu_order_producer_transition, validate_projected_draw_policy_transition,
     };
     use crate::{
-        GeometryPath, Renderer, RendererError, ResidentGpuError, SurfaceGpuOrderProducer,
-        SurfaceOrderMeasurement, SurfaceOrderMeasurementFailure,
-        SurfaceOrderMeasurementFailureReason, SurfacePresenterError, SurfaceProjectedDrawExecution,
+        GeometryPath, Renderer, RendererError, ResidentGpuError, ResidentSceneCpu,
+        SurfaceCurrentStatsPoll, SurfaceCurrentStatsRequest, SurfaceCurrentStatsSubmission,
+        SurfaceCurrentStatsUnsampledReason, SurfaceGpuOrderProducer, SurfaceOrderMeasurement,
+        SurfaceOrderMeasurementFailure, SurfaceOrderMeasurementFailureReason,
+        SurfacePresenterError, SurfaceProjectedDrawExecution,
         SurfaceProjectedDrawMeasurementFailure, SurfaceProjectedDrawMeasurementFailureReason,
         SurfaceRasterExecutionPlan, SurfaceTimingSource,
     };
@@ -3512,6 +3549,67 @@ mod tests {
             ),
             SurfaceGeometrySwitchEntry::Synchronous,
         );
+    }
+
+    #[test]
+    fn legacy_packed_surface_stats_never_target_the_offscreen_exact_runtime() {
+        let mut renderer = match Renderer::with_config(RendererConfig {
+            width: 64,
+            height: 64,
+            ..RendererConfig::default()
+        }) {
+            Ok(renderer) => renderer,
+            #[cfg(target_os = "macos")]
+            Err(error) => panic!("required legacy Surface Metal renderer unavailable: {error}"),
+            #[cfg(not(target_os = "macos"))]
+            Err(error) => {
+                eprintln!("skipping optional legacy Surface GPU test: {error}");
+                return;
+            }
+        };
+        renderer.set_geometry_path(GeometryPath::PackedAtlas);
+        let resident = ResidentSceneCpu::encode_owned(SceneBuffers {
+            positions: vec![Vec3f::new(0.0, 0.0, 1.0)],
+            opacity: vec![1.0],
+            scale_xyz: vec![[-1.0; 3]],
+            rotation_xyzw: vec![[0.0, 0.0, 0.0, 1.0]],
+            color_dc: vec![[0.1, 0.2, 0.3]],
+            sh_degree: 0,
+            sh_rest: None,
+        })
+        .expect("legacy Packed Surface fixture");
+        renderer
+            .load_resident_scene(resident)
+            .expect("offscreen Exact runtime proves the regression precondition");
+        let runtime = renderer
+            .exact_offscreen_runtime
+            .as_ref()
+            .expect("Packed renderer owns the unrelated M1 offscreen runtime");
+        assert!(!runtime.current_stats_request_pending_for_test());
+
+        for _ in 0..2 {
+            assert_eq!(
+                legacy_surface_current_stats_request(&mut renderer),
+                SurfaceCurrentStatsRequest::Unsampled(
+                    SurfaceCurrentStatsUnsampledReason::GpuUnavailable
+                )
+            );
+            assert_eq!(
+                legacy_surface_current_stats_submission(),
+                SurfaceCurrentStatsSubmission::NotRequested
+            );
+            assert_eq!(
+                legacy_surface_current_stats_poll(&mut renderer),
+                SurfaceCurrentStatsPoll::Empty
+            );
+            assert!(
+                !renderer
+                    .exact_offscreen_runtime
+                    .as_ref()
+                    .expect("offscreen runtime remains installed")
+                    .current_stats_request_pending_for_test()
+            );
+        }
     }
 
     #[test]

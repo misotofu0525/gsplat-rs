@@ -31,15 +31,13 @@ use gpu_prepare::{
 };
 use sampler::{PlanSampleDescriptor, PlanSampler, PlanSamplerError, StagedPlanSample};
 
-use current_stats::{CurrentStatsFrameCounts, CurrentStatsVisibleSource};
 pub(crate) use current_stats::{
-    CurrentStatsPoll, CurrentStatsRequest, CurrentStatsSubmission, CurrentStatsTicket,
+    CurrentStatsCounts, CurrentStatsFailure, CurrentStatsJoinIdentity, CurrentStatsPoll,
+    CurrentStatsReceipt, CurrentStatsRequest, CurrentStatsSubmission,
+    CurrentStatsSubmissionReceipt, CurrentStatsTerminal, CurrentStatsTicket,
     CurrentStatsUnsampledReason,
 };
-// Kept as private bridge handoff types for M2p2; this slice's production code
-// carries them through submission/poll wrappers rather than naming them.
-#[allow(unused_imports)]
-pub(crate) use current_stats::{CurrentStatsSubmissionReceipt, CurrentStatsTerminal};
+use current_stats::{CurrentStatsFrameCounts, CurrentStatsVisibleSource};
 
 /// The only E1 contract: Exact fidelity over one complete resident scene.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -881,7 +879,7 @@ impl PreparedRuntimeSlot {
     }
 
     #[cfg(test)]
-    const fn current_stats_request_pending_for_test(&self) -> bool {
+    pub(crate) const fn current_stats_request_pending_for_test(&self) -> bool {
         self.sampler.current_stats_request_pending_for_test()
     }
 

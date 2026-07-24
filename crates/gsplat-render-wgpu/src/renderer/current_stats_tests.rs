@@ -3,10 +3,10 @@ use std::sync::Arc;
 use gsplat_core::{Camera, SceneBuffers, Vec3f};
 
 use super::{
-    CurrentStatsRequest, CurrentStatsSubmission, CurrentStatsTerminal, CurrentStatsUnsampledReason,
-    GpuFrameEncodeRequest, GpuFrameSubmission, PlanId, PreparedRuntimeSlot, SubmittedGpuFrame,
-    abandon_submitted_frame, encode_frame_gpu, submit_encoded_frame,
-    submit_encoded_frame_unpublished,
+    CurrentStatsPoll, CurrentStatsRequest, CurrentStatsSubmission, CurrentStatsTerminal,
+    CurrentStatsUnsampledReason, GpuFrameEncodeRequest, GpuFrameSubmission, PlanId,
+    PreparedRuntimeSlot, SubmittedGpuFrame, abandon_submitted_frame, encode_frame_gpu,
+    submit_encoded_frame, submit_encoded_frame_unpublished,
 };
 use crate::evidence::PlanCountSemantics;
 use crate::plans::TestGpuAdmissionMode;
@@ -14,6 +14,9 @@ use crate::renderer::controller::{ControllerConfig, SampleDisposition};
 use crate::renderer::frame::Viewport;
 use crate::renderer::gpu_prepare::CurrentStatsCapabilityTestFailure;
 use crate::scene::{ResidentGpuBytePlan, ResidentSceneCpu};
+use crate::{
+    SurfaceCurrentStatsCountSemantics, SurfaceCurrentStatsPlan, SurfaceCurrentStatsTerminal,
+};
 
 const WIDTH: u32 = 64;
 const HEIGHT: u32 = 64;
@@ -208,6 +211,11 @@ fn issued(submission: &GpuFrameSubmission) -> super::CurrentStatsSubmissionRecei
         .expect("requested frame issues current-stats ticket")
 }
 
+fn one_terminal(poll: CurrentStatsPoll) -> CurrentStatsTerminal {
+    poll.terminal()
+        .unwrap_or_else(|| panic!("expected one current-stats terminal, got {poll:?}"))
+}
+
 #[test]
 fn no_request_encodes_no_count_copy_and_publishes_not_requested() {
     pollster::block_on(async {
@@ -290,10 +298,12 @@ fn every_plan_uses_actual_count_sources_for_boundary_and_distinct_v_c_scenes() {
                 );
                 let issued = issued(&submission);
                 wait(&device, &submission);
-                let terminals = slot.poll_current_stats();
-                assert_eq!(terminals.len(), 1);
-                let CurrentStatsTerminal::Ready(receipt) = terminals[0] else {
-                    panic!("expected Ready for {plan:?}, got {:?}", terminals[0]);
+                let terminal = one_terminal(slot.poll_current_stats());
+                let CurrentStatsTerminal::Ready(receipt) = terminal else {
+                    panic!("expected Ready for {plan:?}, got {terminal:?}");
+                };
+                let SurfaceCurrentStatsTerminal::Ready(surface_receipt) = terminal.into() else {
+                    panic!("public Surface DTO did not preserve Ready terminal");
                 };
                 assert_eq!(receipt.submission(), issued);
                 assert!(receipt.submission().ticket().get() > 0);
@@ -337,6 +347,69 @@ fn every_plan_uses_actual_count_sources_for_boundary_and_distinct_v_c_scenes() {
                         PlanId::GpuPostSort => PlanCountSemantics::IndirectDrawEqualsVisible,
                         PlanId::GpuPreproject => {
                             PlanCountSemantics::IndirectDrawEqualsContributor
+                        }
+                    }
+                );
+                let surface_submission = surface_receipt.submission();
+                let surface_join = surface_submission.join();
+                let surface_frame = surface_join.frame_identity();
+                assert_eq!(surface_submission.ticket(), issued.ticket().get());
+                assert_eq!(
+                    surface_frame.scene_generation(),
+                    submission.frame_identity().scene_generation()
+                );
+                assert_eq!(
+                    surface_frame.camera_revision(),
+                    submission.frame_identity().camera_revision()
+                );
+                assert_eq!(
+                    surface_frame.viewport_generation(),
+                    submission.frame_identity().viewport_generation()
+                );
+                assert_eq!(
+                    surface_frame.contract_generation(),
+                    submission.frame_identity().contract_generation()
+                );
+                assert_eq!(
+                    surface_frame.plan_set_generation(),
+                    submission.frame_identity().plan_set_generation()
+                );
+                assert_eq!(
+                    surface_join.executed_plan(),
+                    match plan {
+                        PlanId::CpuPostSort => SurfaceCurrentStatsPlan::CpuPostSort,
+                        PlanId::GpuPostSort => SurfaceCurrentStatsPlan::GpuPostSort,
+                        PlanId::GpuPreproject => SurfaceCurrentStatsPlan::GpuPreproject,
+                    }
+                );
+                assert_eq!(
+                    surface_join.order_generation(),
+                    submission.order_generation()
+                );
+                assert_eq!(
+                    surface_join.raster_generation(),
+                    submission.frame_identity().plan_set_generation()
+                );
+                assert_eq!(surface_join.encode_attempt(), submission.encode_attempt());
+                assert_eq!(
+                    surface_join.presentation_sequence(),
+                    submission.presentation_sequence()
+                );
+                assert_eq!(surface_receipt.counts().source(), counts.source());
+                assert_eq!(surface_receipt.counts().visible(), counts.visible());
+                assert_eq!(surface_receipt.counts().contributor(), counts.contributor());
+                assert_eq!(surface_receipt.counts().drawn(), counts.drawn());
+                assert_eq!(
+                    surface_receipt.count_semantics(),
+                    match receipt.count_semantics() {
+                        PlanCountSemantics::DirectDrawEqualsVisible => {
+                            SurfaceCurrentStatsCountSemantics::DirectDrawEqualsVisible
+                        }
+                        PlanCountSemantics::IndirectDrawEqualsVisible => {
+                            SurfaceCurrentStatsCountSemantics::IndirectDrawEqualsVisible
+                        }
+                        PlanCountSemantics::IndirectDrawEqualsContributor => {
+                            SurfaceCurrentStatsCountSemantics::IndirectDrawEqualsContributor
                         }
                     }
                 );
@@ -425,7 +498,31 @@ fn observer_ring_busy_does_not_block_formal_sampler_or_adaptive_progress() {
             SampleDisposition::Accepted
         );
 
-        assert_eq!(slot.poll_current_stats().len(), 4);
+        let expected_tickets = submissions
+            .iter()
+            .map(|submission| issued(submission).ticket())
+            .collect::<Vec<_>>();
+        let terminals = (0..4)
+            .map(|_| one_terminal(slot.poll_current_stats()))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            terminals
+                .iter()
+                .map(|terminal| terminal.ticket())
+                .collect::<Vec<_>>(),
+            expected_tickets
+        );
+        assert!(
+            terminals
+                .windows(2)
+                .all(|pair| pair[0].ticket() < pair[1].ticket())
+        );
+        assert!(
+            terminals
+                .windows(2)
+                .all(|pair| { pair[0].submission().join() != pair[1].submission().join() })
+        );
+        assert!(slot.poll_current_stats().is_empty());
     });
 }
 
@@ -498,7 +595,11 @@ fn pending_observer_gets_one_turn_then_formal_waits_for_a_known_safe_queue_entry
         ));
         assert!(!slot.current_stats_request_pending_for_test());
         wait(&device, &second_observer);
-        assert_eq!(slot.poll_current_stats().len(), 2);
+        let first = one_terminal(slot.poll_current_stats());
+        let second = one_terminal(slot.poll_current_stats());
+        assert!(first.ticket() < second.ticket());
+        assert_ne!(first.submission().join(), second.submission().join());
+        assert!(slot.poll_current_stats().is_empty());
     });
 }
 
@@ -640,7 +741,7 @@ async fn assert_optional_capability_failure_does_not_gate_product(
         poll.unsampled(),
         Some(CurrentStatsUnsampledReason::ResourceUnavailable)
     );
-    assert!(poll.terminals().is_empty());
+    assert!(poll.terminal().is_none());
     assert!(slot.poll_current_stats().is_empty());
     assert_eq!(
         slot.request_current_stats(),
@@ -741,10 +842,9 @@ fn issued_ticket_is_generation_invalidated_once_and_late_callback_cannot_enter_r
         slot.replace(exact_scene(&[1.0, 1.0]))
             .expect("replace issued-ticket runtime");
 
-        let terminals = slot.poll_current_stats();
-        assert_eq!(terminals.len(), 1);
-        let CurrentStatsTerminal::GenerationInvalidated(failure) = terminals[0] else {
-            panic!("expected generation invalidation, got {:?}", terminals[0]);
+        let terminal = one_terminal(slot.poll_current_stats());
+        let CurrentStatsTerminal::GenerationInvalidated(failure) = terminal else {
+            panic!("expected generation invalidation, got {terminal:?}");
         };
         assert_eq!(failure.submission(), issued);
         assert!(slot.poll_current_stats().is_empty());
@@ -766,10 +866,9 @@ fn map_failure_expiry_and_terminal_uniqueness_are_ticket_bound() {
         let failed_ticket = issued(&failed).ticket();
         wait(&device, &failed);
         assert!(slot.force_current_stats_map_failure_for_test(failed_ticket));
-        let terminals = slot.poll_current_stats();
-        assert_eq!(terminals.len(), 1);
-        assert!(matches!(terminals[0], CurrentStatsTerminal::MapFailure(_)));
-        assert_eq!(terminals[0].ticket(), failed_ticket);
+        let terminal = one_terminal(slot.poll_current_stats());
+        assert!(matches!(terminal, CurrentStatsTerminal::MapFailure(_)));
+        assert_eq!(terminal.ticket(), failed_ticket);
         assert!(slot.poll_current_stats().is_empty());
         assert!(!slot.expire_current_stats(failed_ticket));
 
@@ -778,10 +877,9 @@ fn map_failure_expiry_and_terminal_uniqueness_are_ticket_bound() {
         let expiring_ticket = issued(&expiring).ticket();
         assert_ne!(failed_ticket, expiring_ticket);
         assert!(slot.expire_current_stats(expiring_ticket));
-        let terminals = slot.poll_current_stats();
-        assert_eq!(terminals.len(), 1);
-        assert!(matches!(terminals[0], CurrentStatsTerminal::Expired(_)));
-        assert_eq!(terminals[0].ticket(), expiring_ticket);
+        let terminal = one_terminal(slot.poll_current_stats());
+        assert!(matches!(terminal, CurrentStatsTerminal::Expired(_)));
+        assert_eq!(terminal.ticket(), expiring_ticket);
         assert!(slot.poll_current_stats().is_empty());
         assert!(!slot.expire_current_stats(expiring_ticket));
     });
@@ -807,16 +905,14 @@ fn out_of_order_terminal_and_late_callback_cannot_duplicate_a_ticket() {
         // ticket's MapFailure first and consume it without device polling.
         assert!(slot.hold_current_stats_callback_for_test(first_ticket));
         assert!(slot.force_current_stats_map_failure_for_test(second_ticket));
-        let terminals = slot.poll_current_stats_without_device_for_test();
-        assert_eq!(terminals.len(), 1);
-        assert!(matches!(terminals[0], CurrentStatsTerminal::MapFailure(_)));
-        assert_eq!(terminals[0].ticket(), second_ticket);
+        let terminal = one_terminal(slot.poll_current_stats_without_device_for_test());
+        assert!(matches!(terminal, CurrentStatsTerminal::MapFailure(_)));
+        assert_eq!(terminal.ticket(), second_ticket);
 
         assert!(slot.force_current_stats_map_failure_for_test(first_ticket));
-        let terminals = slot.poll_current_stats_without_device_for_test();
-        assert_eq!(terminals.len(), 1);
-        assert!(matches!(terminals[0], CurrentStatsTerminal::MapFailure(_)));
-        assert_eq!(terminals[0].ticket(), first_ticket);
+        let terminal = one_terminal(slot.poll_current_stats_without_device_for_test());
+        assert!(matches!(terminal, CurrentStatsTerminal::MapFailure(_)));
+        assert_eq!(terminal.ticket(), first_ticket);
 
         // Waiting either submission may deliver its real cancelled-map
         // callback after the synthetic ordering, but those old callbacks

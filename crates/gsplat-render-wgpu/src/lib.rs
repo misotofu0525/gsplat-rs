@@ -94,6 +94,13 @@ pub use scene::{
     packed_scene_preflight_with_limits, resident_sh_plane_count,
 };
 pub(crate) use spatial_pages::{DEFAULT_PAGE_CAPACITY, SpatialPageSet};
+pub use surface::{
+    SurfaceCurrentStatsCountSemantics, SurfaceCurrentStatsCounts, SurfaceCurrentStatsFailure,
+    SurfaceCurrentStatsFrameIdentity, SurfaceCurrentStatsJoinIdentity, SurfaceCurrentStatsPlan,
+    SurfaceCurrentStatsPoll, SurfaceCurrentStatsReceipt, SurfaceCurrentStatsRequest,
+    SurfaceCurrentStatsSubmission, SurfaceCurrentStatsSubmissionReceipt,
+    SurfaceCurrentStatsTerminal, SurfaceCurrentStatsUnsampledReason,
+};
 pub use surface_presenter::{SurfaceFrameCapture, SurfacePresenter};
 #[cfg(test)]
 use surface_presenter::{SurfacePagedRuntime, surface_resource_plan, try_prepare_then_commit};
