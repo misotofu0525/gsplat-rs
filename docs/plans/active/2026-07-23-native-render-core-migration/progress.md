@@ -204,3 +204,16 @@ M2 = Active
 - M2 begins only from this Accepted M1 tree. Its implementation is dispatched
   as a separate Codex task/worktree; the root task retains fixed-SHA acceptance,
   integration and real-Surface validation.
+- M2 is delivered as two serial, independently reviewable slices:
+  1. **M2a — Surface semantic cutover:** replace the legacy Surface semantic
+     writer with the accepted Exact runtime, preserve lifecycle ownership and
+     prove forced CPU PostSort, GPU PostSort, GPU Preproject, Adaptive,
+     acquire/configure/present ordering and retry rollback through focused and
+     injected-presentation tests. It does not build the benchmark collector.
+  2. **M2b — real-window evidence seam:** on the accepted M2a tree, add or
+     extend the native Surface collector/capture path so the four policies emit
+     canonical artifacts and final frames. It does not redesign render
+     semantics.
+- Root accepts and integrates each fixed candidate separately, then owns the
+  Apple M4 real-window run and final M2 closeout. M2b cannot begin on an
+  unaccepted M2a candidate.
