@@ -156,13 +156,6 @@
       "exit_condition": "Remove legacy renderer ownership so lib.rs contains only crate wiring and public re-exports."
     },
     {
-      "path": "crates/gsplat-ffi-c/src/lib.rs",
-      "a0_physical_loc": 5344,
-      "baseline_physical_loc": 5344,
-      "owner_task": "M3",
-      "exit_condition": "Separate stable ABI declarations and marshalling from renderer lifecycle and compatibility plumbing into independently testable owners."
-    },
-    {
       "path": "crates/gsplat-render-wgpu/src/surface_presenter.rs",
       "a0_physical_loc": 5091,
       "baseline_physical_loc": 4631,
@@ -191,13 +184,6 @@
       "baseline_physical_loc": 2156,
       "owner_task": "M7",
       "exit_condition": "Remove obsolete tiled diagnostics or isolate each retained diagnostic responsibility behind an explicit non-product owner."
-    },
-    {
-      "path": "crates/gsplat-web/src/wasm.rs",
-      "a0_physical_loc": 2139,
-      "baseline_physical_loc": 2139,
-      "owner_task": "M4",
-      "exit_condition": "Keep the Web consumer limited to lifecycle and API adaptation with parsing, receipts and renderer ownership separated."
     },
     {
       "path": "crates/gsplat-io-spz/src/lib.rs",
