@@ -60,7 +60,34 @@ class BenchmarkCameraReceiptTest {
     }
 
     @Test
-    fun pendingTracePresentationRejectsStaleOrMismatchedRevision() {
+    fun repeatedOldPresentationWaitsUntilThePendingRevisionIsPresented() {
+        val gate = BenchmarkCameraPresentationGate()
+        val oldPresentation = BenchmarkCameraReceipt.fromRaw(
+            validRawReceipt(
+                cameraRevision = 2L,
+                presentedCameraRevision = 1L,
+                flags = 1L
+            )
+        )
+
+        repeat(3) {
+            assertEquals(
+                BenchmarkCameraPresentationDecision.WAIT_FOR_CURRENT_REVISION,
+                gate.decide(oldPresentation, expectedRenderedRevision = 2L)
+            )
+        }
+
+        val targetPresentation = BenchmarkCameraReceipt.fromRaw(
+            validRawReceipt(cameraRevision = 2L, presentedCameraRevision = 2L)
+        )
+        assertEquals(
+            BenchmarkCameraPresentationDecision.RECORD,
+            gate.decide(targetPresentation, expectedRenderedRevision = 2L)
+        )
+    }
+
+    @Test
+    fun pendingTracePresentationRejectsMismatchedOrDriftedRevision() {
         val pending = BenchmarkCameraReceipt.fromRaw(
             validRawReceipt(
                 cameraRevision = 9L,
@@ -76,10 +103,17 @@ class BenchmarkCameraReceiptTest {
             )
         }
 
-        val gate = BenchmarkCameraPresentationGate()
-        gate.decide(pending, expectedRenderedRevision = 8L)
+        val regressionGate = BenchmarkCameraPresentationGate()
+        regressionGate.decide(pending, expectedRenderedRevision = 8L)
+        val regressed = BenchmarkCameraReceipt.fromRaw(
+            validRawReceipt(
+                cameraRevision = 9L,
+                presentedCameraRevision = 7L,
+                flags = 1L
+            )
+        )
         assertThrows(IllegalStateException::class.java) {
-            gate.decide(pending, expectedRenderedRevision = 8L)
+            regressionGate.decide(regressed, expectedRenderedRevision = 7L)
         }
 
         val driftGate = BenchmarkCameraPresentationGate()
@@ -93,6 +127,62 @@ class BenchmarkCameraReceiptTest {
         )
         assertThrows(IllegalStateException::class.java) {
             driftGate.decide(drifted, expectedRenderedRevision = 9L)
+        }
+    }
+
+    @Test
+    fun pendingTracePresentationRejectsInvalidFlagsSurfaceAndRevisionBounds() {
+        val missingPresentedFrame = BenchmarkCameraReceipt.fromRaw(
+            validRawReceipt(
+                cameraRevision = 9L,
+                presentedCameraRevision = 8L,
+                flags = 0L
+            )
+        )
+        assertThrows(IllegalStateException::class.java) {
+            BenchmarkCameraPresentationGate().decide(
+                missingPresentedFrame,
+                expectedRenderedRevision = 8L
+            )
+        }
+
+        assertThrows(IllegalStateException::class.java) {
+            BenchmarkCameraReceipt.fromRaw(
+                validRawReceipt(flags = 2L)
+            )
+        }
+        assertThrows(IllegalStateException::class.java) {
+            BenchmarkCameraReceipt.fromRaw(
+                validRawReceipt(flags = 5L)
+            )
+        }
+
+        val invalidSurface = BenchmarkCameraReceipt.fromRaw(
+            validRawReceipt(
+                cameraRevision = 9L,
+                presentedCameraRevision = 8L,
+                flags = 1L
+            ).also { it[2] = 0L }
+        )
+        assertThrows(IllegalStateException::class.java) {
+            BenchmarkCameraPresentationGate().decide(
+                invalidSurface,
+                expectedRenderedRevision = 8L
+            )
+        }
+
+        val presentedPastTarget = BenchmarkCameraReceipt.fromRaw(
+            validRawReceipt(
+                cameraRevision = 9L,
+                presentedCameraRevision = 10L,
+                flags = 1L
+            )
+        )
+        assertThrows(IllegalStateException::class.java) {
+            BenchmarkCameraPresentationGate().decide(
+                presentedPastTarget,
+                expectedRenderedRevision = 10L
+            )
         }
     }
 

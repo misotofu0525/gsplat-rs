@@ -71,6 +71,8 @@ internal data class BenchmarkCameraReceipt(
         const val RAW_VALUE_COUNT = 63
         private const val FLAG_FRAME_PRESENTED = 1 shl 0
         private const val FLAG_CURRENT_REVISION_PRESENTED = 1 shl 1
+        private const val KNOWN_FLAGS =
+            FLAG_FRAME_PRESENTED or FLAG_CURRENT_REVISION_PRESENTED
 
         fun query(nativeHandle: Long): Result<BenchmarkCameraReceipt> = runCatching {
             val raw = LongArray(RAW_VALUE_COUNT)
@@ -117,6 +119,12 @@ internal data class BenchmarkCameraReceipt(
             check(receipt.cameraRevision >= 0L && receipt.presentedCameraRevision >= 0L) {
                 "native camera receipt revision overflowed the signed host representation"
             }
+            check((receipt.flags and KNOWN_FLAGS.inv()) == 0) {
+                "native camera receipt contains unknown flags ${receipt.flags}"
+            }
+            check(!receipt.currentRevisionPresented || receipt.framePresented) {
+                "native camera receipt marks the current revision presented without a frame"
+            }
             return receipt
         }
     }
@@ -132,8 +140,9 @@ internal enum class BenchmarkCameraPresentationDecision {
  *
  * A Surface frame may successfully present the previously committed camera
  * while a newly selected trace camera is current but not presented yet. The
- * gate holds that exact target revision across the next warmup render. It does
- * not accept missing presentation, revision regression, or a different camera
+ * gate holds that exact target revision across subsequent warmup renders,
+ * including repeated receipts for the same older presentation. It does not
+ * accept missing presentation, revision regression, or a different camera
  * appearing while the target is pending.
  */
 internal class BenchmarkCameraPresentationGate {
@@ -172,9 +181,10 @@ internal class BenchmarkCameraPresentationGate {
                 return BenchmarkCameraPresentationDecision.RECORD
             }
             requireAwaitable(receipt, expectedRenderedRevision, target)
-            check(receipt.presentedCameraRevision > pending.lastPresentedRevision) {
-                "pending camera revision $target made no presentation progress from " +
-                    "${pending.lastPresentedRevision}"
+            check(receipt.presentedCameraRevision >= pending.lastPresentedRevision) {
+                "native presented camera revision regressed from " +
+                    "${pending.lastPresentedRevision} to ${receipt.presentedCameraRevision} " +
+                    "while waiting for pending revision $target"
             }
             awaiting = AwaitingPresentation(target, receipt.presentedCameraRevision)
             return BenchmarkCameraPresentationDecision.WAIT_FOR_CURRENT_REVISION
