@@ -15,6 +15,7 @@ Unstarted tasks remain outside the machine registry until activated.
 M0 = Accepted
 M1 = Accepted
 M2 = Accepted
+M3 = Active
 <!-- gsplat-program-task-states: end -->
 
 ## Package status
@@ -27,8 +28,8 @@ M2 = Accepted
 - M1 state: Accepted at integrated implementation/evidence tip
   `dc3e0de65073f819b714229b726ca55f47c6e6d6`.
 - M2 state: Accepted. M2p1, M2p2, M2a, M2p3c, M2p4 and M2b are accepted.
-  The next serial migration slice is M3, which must begin as its own visible
-  Codex task from this closeout tip.
+  M3 is active; its work remains serial and each implementation/review slice
+  is its own visible Codex task from an accepted root tip.
 - Product state at M2 activation: native Packed offscreen, desktop
   non-interactive and bench-runner use the Exact runtime; the interactive
   `SurfaceRenderSession` remains legacy until its complete M2 candidate is
@@ -439,3 +440,18 @@ M2 = Accepted
   terminalization tests, 26 strict collector tests, focused desktop Clippy,
   artifact validators and raw-log validators. No M2b change altered raster
   semantics, ABI, source membership, SH degree or platform-consumer behavior.
+- **M3a start slice: Accepted and integrated.** A visible read-only boundary
+  audit selected only the already stateless current-stats v1 ABI DTOs and pure
+  conversion as the first safe extraction. Candidate
+  `d7eb6000f15e8469fe459c10138bbf36e6fcfe31` was independently reviewed with
+  no P0/P1/P2 and integrated by root as `6be40a8`. The new
+  `current_stats_v1` module owns constants, C layouts and value conversion;
+  `lib.rs` keeps crate-root re-exports and all three exported entrypoints,
+  preserving validation-before-poll, one session delegation and one output
+  write. Header, symbols, unavailable/no-write behavior and platform consumers
+  did not change. Root verification passed formatter, 34 FFI unit tests, C
+  smoke and architecture checks. JNI host smoke is Environment Unavailable
+  because this Mac currently has no JDK; it is neither a code pass nor an M5
+  qualification result. M3 remains Active because order/projected/producer
+  compatibility queues and count ledgers remain in the FFI handle; merely
+  moving them would not remove duplicate ownership.
