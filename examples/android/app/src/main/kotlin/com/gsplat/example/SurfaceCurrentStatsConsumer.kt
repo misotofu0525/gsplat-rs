@@ -42,6 +42,14 @@ internal data class SurfaceCurrentStatsSampleRecord(
     val terminal: SurfaceCurrentStatsTerminal?
 )
 
+internal sealed interface SurfaceCurrentStatsFrameAdmission {
+    data object RetrySameSample : SurfaceCurrentStatsFrameAdmission
+
+    data class Issued(
+        val record: SurfaceCurrentStatsSampleRecord
+    ) : SurfaceCurrentStatsFrameAdmission
+}
+
 internal sealed interface SurfaceCurrentStatsDisplay {
     data class Ready(
         val binding: SurfaceCurrentStatsFrameBinding,
@@ -389,6 +397,51 @@ internal class SurfaceCurrentStatsConsumer(
 
     fun recordForSample(sampleIndex: Int): SurfaceCurrentStatsSampleRecord? =
         samples[sampleIndex]?.snapshot()
+
+    /**
+     * Admits a strict measured frame only after its retained pre-ticket intent
+     * has become a real presentation-bound submission.
+     *
+     * Exact Adaptive deliberately separates controller-formal work from the
+     * optional observer. A queue-boundary or formal presentation may therefore
+     * keep an accepted request pending. The benchmark must retry that same
+     * binding instead of counting the intermediate presentation or requesting
+     * another sample.
+     */
+    fun strictFrameAdmission(
+        sampleIndex: Int,
+        cameraRevision: Long
+    ): SurfaceCurrentStatsFrameAdmission {
+        val record = checkNotNull(samples[sampleIndex]) {
+            "measured frame $sampleIndex lacks a current-stats pre-ticket record"
+        }.snapshot()
+        check(record.binding.sampleIndex == sampleIndex) {
+            "measured frame $sampleIndex current-stats binding index drifted"
+        }
+        check(record.requestStatus == GsplatSurfaceCurrentStatsRequestStatus.REQUESTED) {
+            "measured frame $sampleIndex current-stats request was " +
+                record.requestStatus.wireName
+        }
+        if (!record.submissionIssued) {
+            check(record.ticket == null && record.identity == null) {
+                "measured frame $sampleIndex has a partial current-stats submission"
+            }
+            val retained = checkNotNull(outstanding) {
+                "measured frame $sampleIndex lost its pending current-stats request"
+            }
+            check(retained.binding == record.binding) {
+                "measured frame $sampleIndex pending current-stats binding drifted"
+            }
+            return SurfaceCurrentStatsFrameAdmission.RetrySameSample
+        }
+        check(record.ticket != null && record.identity != null) {
+            "measured frame $sampleIndex lacks a complete Issued current-stats submission"
+        }
+        check(record.identity.cameraRevision == cameraRevision) {
+            "measured frame $sampleIndex current-stats camera identity drifted from presentation"
+        }
+        return SurfaceCurrentStatsFrameAdmission.Issued(record)
+    }
 
     private fun recordSubmission(
         binding: SurfaceCurrentStatsFrameBinding,

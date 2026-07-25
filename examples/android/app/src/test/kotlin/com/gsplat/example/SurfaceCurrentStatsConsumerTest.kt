@@ -536,6 +536,110 @@ class SurfaceCurrentStatsConsumerTest {
         assertThrows(IllegalStateException::class.java) { consumer.strictRecords(1) }
     }
 
+    @Test
+    fun warmupBoundaryForcedCpuAndGpuLanesIssueTheirFirstMeasuredSample() {
+        for (plan in listOf(
+            GsplatSurfaceCurrentStatsPlan.CPU_POST_SORT,
+            GsplatSurfaceCurrentStatsPlan.GPU_POST_SORT
+        )) {
+            val consumer = SurfaceCurrentStatsConsumer()
+            val request = consumer.beginRequest(binding(0)) { requested() }
+            val sampleIdentity = identity(
+                cameraRevision = 21,
+                presentationSequence = 101,
+                plan = plan
+            )
+            consumer.consumeCycle(pendingCycle(request, 1, sampleIdentity))
+
+            val admission = consumer.strictFrameAdmission(0, cameraRevision = 21)
+                as SurfaceCurrentStatsFrameAdmission.Issued
+            assertEquals(1L, admission.record.ticket)
+            assertEquals(21L, admission.record.identity?.cameraRevision)
+            assertEquals(plan, admission.record.identity?.executedPlan)
+        }
+    }
+
+    @Test
+    fun adaptiveProbeRetainsOneRequestAcrossBoundaryAndFormalPresentations() {
+        val consumer = SurfaceCurrentStatsConsumer()
+        val sampleBinding = binding(0)
+        val request = consumer.beginRequest(sampleBinding) { requested() }
+
+        // The prior observer is not queue-safe at frame entry.
+        consumer.consumeCycle(notIssuedCycle(request))
+        assertEquals(
+            SurfaceCurrentStatsFrameAdmission.RetrySameSample,
+            consumer.strictFrameAdmission(0, cameraRevision = 21)
+        )
+
+        // The whole-plan formal probe receives the next presentation.
+        var duplicateNativeRequest = false
+        assertEquals(
+            request,
+            consumer.beginRequest(sampleBinding) {
+                duplicateNativeRequest = true
+                requested()
+            }
+        )
+        assertFalse(duplicateNativeRequest)
+        consumer.consumeCycle(notIssuedCycle(request))
+        assertEquals(
+            SurfaceCurrentStatsFrameAdmission.RetrySameSample,
+            consumer.strictFrameAdmission(0, cameraRevision = 21)
+        )
+
+        // The same pre-ticket intent finally owns the measured presentation.
+        val sampleIdentity = identity(
+            cameraRevision = 21,
+            presentationSequence = 104,
+            plan = GsplatSurfaceCurrentStatsPlan.CPU_POST_SORT
+        )
+        consumer.beginRequest(sampleBinding) {
+            error("Adaptive retry must not request a second native sample")
+        }
+        consumer.consumeCycle(pendingCycle(request, 1, sampleIdentity))
+
+        val admission = consumer.strictFrameAdmission(0, cameraRevision = 21)
+            as SurfaceCurrentStatsFrameAdmission.Issued
+        assertEquals(1L, admission.record.ticket)
+        assertEquals(sampleBinding, admission.record.binding)
+        assertEquals(sampleIdentity, admission.record.identity)
+    }
+
+    @Test
+    fun adaptiveStableGpuPresentationIssuesWithoutRetry() {
+        val consumer = SurfaceCurrentStatsConsumer()
+        val request = consumer.beginRequest(binding(0)) { requested() }
+        val sampleIdentity = identity(
+            cameraRevision = 30,
+            presentationSequence = 120,
+            plan = GsplatSurfaceCurrentStatsPlan.GPU_PREPROJECT
+        )
+        consumer.consumeCycle(pendingCycle(request, 9, sampleIdentity))
+
+        val admission = consumer.strictFrameAdmission(0, cameraRevision = 30)
+            as SurfaceCurrentStatsFrameAdmission.Issued
+        assertEquals(9L, admission.record.ticket)
+        assertEquals(GsplatSurfaceCurrentStatsPlan.GPU_PREPROJECT, admission.record.identity?.executedPlan)
+    }
+
+    @Test
+    fun strictFrameAdmissionRejectsCameraRevisionDriftAfterIssuance() {
+        val consumer = SurfaceCurrentStatsConsumer()
+        val request = consumer.beginRequest(binding(0)) { requested() }
+        consumer.consumeCycle(
+            pendingCycle(
+                request,
+                ticket = 11,
+                identity = identity(cameraRevision = 40, presentationSequence = 130)
+            )
+        )
+
+        assertThrows(IllegalStateException::class.java) {
+            consumer.strictFrameAdmission(0, cameraRevision = 41)
+        }
+    }
+
     private fun binding(index: Int) = SurfaceCurrentStatsFrameBinding(
         frameId = index.toLong() + 1,
         sampleIndex = index,
@@ -577,6 +681,19 @@ class SurfaceCurrentStatsConsumerTest {
         ),
         poll = GsplatSurfaceCurrentStatsPoll(GsplatSurfaceCurrentStatsPollKind.EMPTY),
         state = GsplatSurfaceCurrentStatsState.Pending(ticket, identity, pendingCount)
+    )
+
+    private fun notIssuedCycle(
+        request: GsplatSurfaceCurrentStatsRequest
+    ) = GsplatSurfaceCurrentStatsCycle(
+        request = request,
+        submission = GsplatSurfaceCurrentStatsSubmission(
+            GsplatSurfaceCurrentStatsSubmissionStatus.NOT_REQUESTED,
+            ticket = null,
+            identity = null
+        ),
+        poll = GsplatSurfaceCurrentStatsPoll(GsplatSurfaceCurrentStatsPollKind.EMPTY),
+        state = GsplatSurfaceCurrentStatsState.AwaitingSubmission(pendingCount = 0)
     )
 
     private fun readyCycle(

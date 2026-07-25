@@ -1593,6 +1593,18 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                                             )
                                             continue
                                         }
+                                        BenchmarkFrameRecordResult.WAITING_FOR_CURRENT_STATS_SUBMISSION -> {
+                                            Log.i(
+                                                TAG,
+                                                "CURRENT_STATS_SUBMISSION_PENDING " +
+                                                    "sample=${traceStep?.measuredSampleIndex} " +
+                                                    "camera_revision=${cameraReceipt.cameraRevision} " +
+                                                    currentStats.benchmarkDiagnostics(
+                                                        benchmark.measuredSampleCount
+                                                    )
+                                            )
+                                            continue
+                                        }
                                         BenchmarkFrameRecordResult.RECORDED -> Unit
                                     }
                                     if (traceStep != null) {
@@ -2699,7 +2711,8 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
 
     private enum class BenchmarkFrameRecordResult {
         RECORDED,
-        WAITING_FOR_CAMERA_PRESENTATION
+        WAITING_FOR_CAMERA_PRESENTATION,
+        WAITING_FOR_CURRENT_STATS_SUBMISSION
     }
 
     private class SurfaceBenchmark(
@@ -3356,6 +3369,17 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                     "trace benchmark frame omitted its playback identity"
                 }
             }
+            val currentStatsAdmission = if (observedFrames >= config.warmupFrames) {
+                currentStats.strictFrameAdmission(
+                    sampleIndex = samples,
+                    cameraRevision = cameraReceipt.cameraRevision
+                )
+            } else {
+                null
+            }
+            if (currentStatsAdmission == SurfaceCurrentStatsFrameAdmission.RetrySameSample) {
+                return BenchmarkFrameRecordResult.WAITING_FOR_CURRENT_STATS_SUBMISSION
+            }
             observedFrames += 1
             if (observedFrames <= config.warmupFrames) {
                 return BenchmarkFrameRecordResult.RECORDED
@@ -3402,19 +3426,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                 }
             }
             cameraReceipts[index] = cameraReceipt
-            val currentRecord = checkNotNull(currentStats.recordForSample(index)) {
-                "measured frame $index lacks a current-stats pre-ticket record"
-            }
-            check(
-                currentRecord.requestStatus == GsplatSurfaceCurrentStatsRequestStatus.REQUESTED &&
-                    currentRecord.submissionIssued && currentRecord.ticket != null &&
-                    currentRecord.identity != null
-            ) {
-                "measured frame $index lacks a requested and Issued current-stats sample"
-            }
-            check(currentRecord.identity.cameraRevision == cameraReceipt.cameraRevision) {
-                "measured frame $index current-stats camera identity drifted from presentation"
-            }
+            check(currentStatsAdmission is SurfaceCurrentStatsFrameAdmission.Issued)
             if (traceStep != null) {
                 check(traceStep.phase == "measure" && traceStep.measuredSampleIndex == index)
                 traceFrameIndex[index] = traceStep.traceFrameIndex
