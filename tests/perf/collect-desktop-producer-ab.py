@@ -673,7 +673,6 @@ def make_command(inputs: Inputs, producer: str, capture_path: Path | None = None
         "--camera-loops", "1",
         "--surface-benchmark-mode", inputs.mode,
         "--surface-sort-policy", "every-frame",
-        "--surface-raster-plan", "projected",
         "--order-backend", "gpu",
         "--surface-gpu-producer", CLI_PRODUCER[producer],
     ]

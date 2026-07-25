@@ -913,7 +913,6 @@ def make_command(
         "--camera-loops", "1",
         "--surface-benchmark-mode", "isolated",
         "--surface-sort-policy", "every-frame",
-        "--surface-raster-plan", "projected",
         "--surface-evidence-plan", CLI_PLAN[arm],
         "--png", str(capture_path),
     ]

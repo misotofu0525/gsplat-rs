@@ -70,10 +70,11 @@ measurements are joined asynchronously by ticket and camera revision.
 Adaptive's primary comparison is `FrameCompletion` for both backends: frame
 start through queue completion, including ordering, projection, rasterization,
 submission, and queued GPU work. Order-stage wall/timestamp fields remain
-diagnostics and never select the backend. Changing `--surface-raster-plan`
-resets Adaptive learning before the new plan is sampled because measurements
-from different raster plans are not comparable. The `cpu_render_submit_ms`
-field is CPU wall time and is never presented as GPU execution time.
+diagnostics and never select the backend. Packed Surface rendering is fixed to
+the Exact `ProjectedQuadsExact` product raster; the desktop CLI does not expose
+the legacy GlobalQuads or TiledExact diagnostic plans. The
+`cpu_render_submit_ms` field is CPU wall time and is never presented as GPU
+execution time.
 
 Each scheduled frame emits one `SURFACE_FRAME_RECEIPT` line with trace and
 session revisions, requested/actual backend, adaptive state, sort refresh,
@@ -185,17 +186,6 @@ frame still submits the complete hardware draw. The default
 `every-frame` policy remains the moving-camera/order stress experiment. Keeping
 the policy explicit prevents a static 60 Hz raster result from being compared
 to a two-pose benchmark that deliberately performs a full sort each frame.
-
-For a controlled raster A/B, add `--surface-raster-plan projected` (the
-product default), `--surface-raster-plan global` (the full-count Resident
-vertex-projection reference), or `--surface-raster-plan tiled`. All three
-retain the complete resident source, full SH degree, exact CPU/GPU order,
-native output resolution, and the same fragment alpha contract. `tiled` is
-deliberately an explicit quality oracle and pressure diagnostic; it is not
-selected automatically and its software per-pixel composition throughput is
-not a product result. The flag requires `--interactive --geometry-path packed`
-so an offscreen or Direct run cannot silently claim it exercised the selected
-Surface path.
 
 The offscreen harness uses complete CPU ordering. Its default Packed loader
 streams the PLY directly into the exact-count resident representation; pass

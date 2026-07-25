@@ -110,10 +110,6 @@ fn run_interactive(
         session
             .set_gpu_producer_measurement_enabled(true)
             .map_err(|err| err.to_string())?;
-    } else if args.geometry_path == GeometryPath::PackedAtlas {
-        session
-            .set_raster_execution_plan(args.surface_raster_plan.execution_plan())
-            .map_err(|err| err.to_string())?;
     }
     if args.surface_evidence_plan.is_none() {
         session
@@ -1069,11 +1065,10 @@ fn run_surface_trace_benchmark(
     )?;
     let raster_execution_plan = session.raster_execution_plan();
     if args.geometry_path == GeometryPath::PackedAtlas
-        && raster_execution_plan != args.surface_raster_plan.execution_plan()
+        && raster_execution_plan != SurfaceRasterExecutionPlan::ProjectedQuadsExact
     {
         return Err(format!(
-            "full-quality Packed Surface benchmark requested {:?}, got {raster_execution_plan:?}",
-            args.surface_raster_plan.execution_plan(),
+            "full-quality Packed Surface benchmark requires ProjectedQuadsExact, got {raster_execution_plan:?}",
         ));
     }
     if let Some(requested_producer) = args.surface_gpu_producer {

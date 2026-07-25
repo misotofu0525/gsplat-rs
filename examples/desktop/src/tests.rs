@@ -10,7 +10,7 @@ use gsplat_render_wgpu::{
 };
 
 use crate::cli::{
-    Args, SurfaceBenchmarkMode, SurfaceEvidencePlanArg, SurfaceRasterPlanArg, SurfaceSortPolicyArg,
+    Args, SurfaceBenchmarkMode, SurfaceEvidencePlanArg, SurfaceSortPolicyArg,
     validate_surface_trace_geometry,
 };
 use crate::image_output::write_png;
@@ -257,7 +257,6 @@ fn args_parse_defaults_to_minimal_dataset() {
     assert_eq!(args.order_backend, SurfaceOrderBackend::Adaptive);
     assert_eq!(args.surface_benchmark_mode, SurfaceBenchmarkMode::Isolated);
     assert_eq!(args.surface_sort_policy, SurfaceSortPolicyArg::EveryFrame);
-    assert_eq!(args.surface_raster_plan, SurfaceRasterPlanArg::Projected);
     assert_eq!(args.surface_gpu_producer, None);
     assert_eq!(args.surface_evidence_plan, None);
     assert!(args.png_out.is_none());
@@ -375,42 +374,6 @@ fn args_parse_surface_order_backends_and_rejects_non_surface_gpu() {
     );
 
     for (label, expected) in [
-        ("projected", SurfaceRasterPlanArg::Projected),
-        ("global", SurfaceRasterPlanArg::Global),
-        ("tiled", SurfaceRasterPlanArg::Tiled),
-    ] {
-        let args = parse_args(&[
-            "--interactive",
-            "--geometry-path",
-            "packed",
-            "--surface-raster-plan",
-            label,
-        ])
-        .unwrap();
-        assert_eq!(args.surface_raster_plan, expected);
-    }
-    assert!(
-        parse_args(&["--surface-raster-plan", "projected"])
-            .unwrap_err()
-            .contains("requires --interactive")
-    );
-    assert!(
-        parse_args(&[
-            "--interactive",
-            "--geometry-path",
-            "direct",
-            "--surface-raster-plan",
-            "tiled",
-        ])
-        .unwrap_err()
-        .contains("requires --geometry-path packed")
-    );
-    assert!(
-        parse_args(&["--interactive", "--surface-raster-plan", "software",])
-            .unwrap_err()
-            .contains("expected projected|global|tiled")
-    );
-    for (label, expected) in [
         ("every-frame", SurfaceSortPolicyArg::EveryFrame),
         ("camera-change", SurfaceSortPolicyArg::CameraChange),
     ] {
@@ -476,25 +439,23 @@ fn args_parse_surface_order_backends_and_rejects_non_surface_gpu() {
             "--interactive",
             "--order-backend",
             "gpu",
-            "--surface-raster-plan",
-            "global",
-            "--surface-gpu-producer",
-            "preproject",
-        ])
-        .unwrap_err()
-        .contains("requires --surface-raster-plan projected")
-    );
-    assert!(
-        parse_args(&[
-            "--interactive",
-            "--order-backend",
-            "gpu",
             "--surface-gpu-producer",
             "automatic",
         ])
         .unwrap_err()
         .contains("expected post-sort|preproject")
     );
+}
+
+#[test]
+fn args_parse_rejects_retired_surface_raster_plan() {
+    for value in ["projected", "global", "tiled"] {
+        let error = parse_args(&["--interactive", "--surface-raster-plan", value]).unwrap_err();
+        assert!(error.contains("unknown flag: --surface-raster-plan"));
+    }
+
+    let help = parse_args(&["--help"]).unwrap_err();
+    assert!(!help.contains("  --surface-raster-plan"));
 }
 
 #[test]

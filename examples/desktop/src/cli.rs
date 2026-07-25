@@ -1,8 +1,6 @@
 use std::path::PathBuf;
 
 use gsplat_core::{RenderMode, RendererConfig};
-#[cfg(feature = "interactive-viewer")]
-use gsplat_render_wgpu::SurfaceRasterExecutionPlan;
 use gsplat_render_wgpu::{GeometryPath, SurfaceGpuOrderProducer, SurfaceOrderBackend};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -39,16 +37,6 @@ impl SurfaceSortPolicyArg {
     }
 }
 
-/// Explicit Packed Surface A/B control. Projected quads are the product path;
-/// tiled compute is retained as a correctness oracle and pressure diagnostic.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub(crate) enum SurfaceRasterPlanArg {
-    #[default]
-    Projected,
-    Global,
-    Tiled,
-}
-
 /// Closed Exact plan request used only by the real-window evidence harness.
 /// The renderer remains the policy owner; this value selects one existing
 /// complete policy tuple before trace playback begins.
@@ -79,17 +67,6 @@ impl SurfaceEvidencePlanArg {
     }
 }
 
-impl SurfaceRasterPlanArg {
-    #[cfg(feature = "interactive-viewer")]
-    pub(crate) const fn execution_plan(self) -> SurfaceRasterExecutionPlan {
-        match self {
-            Self::Projected => SurfaceRasterExecutionPlan::ProjectedQuadsExact,
-            Self::Global => SurfaceRasterExecutionPlan::GlobalQuads,
-            Self::Tiled => SurfaceRasterExecutionPlan::TiledExact,
-        }
-    }
-}
-
 #[derive(Debug, Clone)]
 pub(crate) struct Args {
     pub(crate) dataset_path: PathBuf,
@@ -104,8 +81,6 @@ pub(crate) struct Args {
     pub(crate) surface_benchmark_mode: SurfaceBenchmarkMode,
     #[cfg_attr(not(feature = "interactive-viewer"), allow(dead_code))]
     pub(crate) surface_sort_policy: SurfaceSortPolicyArg,
-    #[cfg_attr(not(feature = "interactive-viewer"), allow(dead_code))]
-    pub(crate) surface_raster_plan: SurfaceRasterPlanArg,
     /// `None` preserves the ordinary product defaults. `Some` is the explicit
     /// producer A/B mode and also enables its independent terminal receipts.
     #[cfg_attr(not(feature = "interactive-viewer"), allow(dead_code))]
@@ -144,8 +119,6 @@ impl Args {
         let mut surface_benchmark_mode = SurfaceBenchmarkMode::Isolated;
         let mut surface_sort_policy = SurfaceSortPolicyArg::EveryFrame;
         let mut surface_sort_policy_explicit = false;
-        let mut surface_raster_plan = SurfaceRasterPlanArg::Projected;
-        let mut surface_raster_plan_explicit = false;
         let mut surface_gpu_producer = None;
         let mut surface_evidence_plan = None;
         let mut order_backend_explicit = false;
@@ -235,23 +208,6 @@ impl Args {
                             );
                         }
                     };
-                }
-                "--surface-raster-plan" => {
-                    let value = args
-                        .next()
-                        .ok_or_else(|| "missing value for --surface-raster-plan".to_owned())?;
-                    surface_raster_plan = match value.as_str() {
-                        "projected" => SurfaceRasterPlanArg::Projected,
-                        "global" => SurfaceRasterPlanArg::Global,
-                        "tiled" => SurfaceRasterPlanArg::Tiled,
-                        _ => {
-                            return Err(
-                                "invalid --surface-raster-plan; expected projected|global|tiled"
-                                    .to_owned(),
-                            );
-                        }
-                    };
-                    surface_raster_plan_explicit = true;
                 }
                 "--surface-sort-policy" => {
                     let value = args
@@ -366,12 +322,6 @@ impl Args {
         if surface_benchmark_mode == SurfaceBenchmarkMode::Throughput && !interactive {
             return Err("--surface-benchmark-mode throughput requires --interactive".to_owned());
         }
-        if surface_raster_plan_explicit && !interactive {
-            return Err("--surface-raster-plan requires --interactive".to_owned());
-        }
-        if surface_raster_plan_explicit && geometry_path != GeometryPath::PackedAtlas {
-            return Err("--surface-raster-plan requires --geometry-path packed".to_owned());
-        }
         if surface_sort_policy_explicit && !interactive {
             return Err("--surface-sort-policy requires --interactive".to_owned());
         }
@@ -380,12 +330,6 @@ impl Args {
         }
         if surface_gpu_producer.is_some() && geometry_path != GeometryPath::PackedAtlas {
             return Err("--surface-gpu-producer requires --geometry-path packed".to_owned());
-        }
-        if surface_gpu_producer.is_some() && surface_raster_plan != SurfaceRasterPlanArg::Projected
-        {
-            return Err(
-                "--surface-gpu-producer requires --surface-raster-plan projected".to_owned(),
-            );
         }
         if surface_gpu_producer.is_some() && order_backend == SurfaceOrderBackend::Cpu {
             return Err("--surface-gpu-producer requires --order-backend gpu|adaptive".to_owned());
@@ -406,11 +350,6 @@ impl Args {
             if surface_benchmark_mode != SurfaceBenchmarkMode::Isolated {
                 return Err(
                     "--surface-evidence-plan requires --surface-benchmark-mode isolated".to_owned(),
-                );
-            }
-            if surface_raster_plan != SurfaceRasterPlanArg::Projected {
-                return Err(
-                    "--surface-evidence-plan requires --surface-raster-plan projected".to_owned(),
                 );
             }
             if surface_sort_policy != SurfaceSortPolicyArg::EveryFrame {
@@ -460,7 +399,6 @@ impl Args {
             order_backend,
             surface_benchmark_mode,
             surface_sort_policy,
-            surface_raster_plan,
             surface_gpu_producer,
             surface_evidence_plan,
             png_out,
@@ -494,7 +432,6 @@ fn usage() -> String {
         "  --geometry-path P use direct, packed, or paged geometry (default: packed)",
         "  --order-backend B select cpu, gpu, or adaptive Surface ordering (default: adaptive)",
         "  --surface-benchmark-mode M isolate each receipt or measure continuous throughput",
-        "  --surface-raster-plan R select projected product, global reference, or tiled oracle",
         "  --surface-gpu-producer P run an exact post-sort|preproject GPU-producer A/B",
         "  --surface-evidence-plan P collect strict cpu-post-sort|gpu-post-sort|gpu-preproject|adaptive evidence",
         "  --surface-sort-policy S refresh every frame or only when the trace camera changes",

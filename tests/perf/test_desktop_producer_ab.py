@@ -365,13 +365,13 @@ class CollectorUtilityTests(unittest.TestCase):
         joined = " ".join(command)
         for expected in (
             "--geometry-path packed",
-            "--surface-raster-plan projected",
             "--surface-sort-policy every-frame",
             "--order-backend gpu",
             "--surface-gpu-producer preproject",
             "--png /tmp/out/frame-0.png",
         ):
             self.assertIn(expected, joined)
+        self.assertNotIn("--surface-raster-plan", joined)
 
     def test_png_dimensions_reads_the_ihdr_and_rejects_non_png(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
