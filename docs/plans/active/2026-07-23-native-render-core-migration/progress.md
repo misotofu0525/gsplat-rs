@@ -17,6 +17,7 @@ M1 = Accepted
 M2 = Accepted
 M3 = Accepted
 M4 = Accepted
+M5 = Accepted
 <!-- gsplat-program-task-states: end -->
 
 ## Package status
@@ -30,13 +31,16 @@ M4 = Accepted
   `dc3e0de65073f819b714229b726ca55f47c6e6d6`.
 - M2 state: Accepted. M2p1, M2p2, M2a, M2p3c, M2p4 and M2b are accepted.
 - M3 state: Accepted. Its serial implementation/review slices ran as visible
-  Codex tasks from accepted root tips; M4--M8 remain pending.
+  Codex tasks from accepted root tips.
+- M4 state: Accepted for its defined Chrome/WebGPU/WASM consumer scope.
+- M5 state: Accepted for its defined Android/JNI/AAR consumer and A065 strict
+  evidence scope. See [M5 Android strict evidence closeout](m5-android-strict-evidence.md).
 - Product state at M2 activation: native Packed offscreen, desktop
   non-interactive and bench-runner use the Exact runtime; the interactive
   `SurfaceRenderSession` remains legacy until its complete M2 candidate is
   accepted.
-- Unstarted tasks: M3, M4, M5, M6, M7 and M8. They are pending in roadmap
-  order and are not active machine-state entries.
+- Unstarted tasks: M6, M7 and M8. They are pending in roadmap order and are not
+  active machine-state entries. Package M therefore remains Active.
 - Stable v0.1 signatures/layouts, Web behavior and rendered semantics remain
   frozen during M2. Additive current-stats v1 receipts and pending-compatible
   Android/Apple translation are prepared before M2 activation. No root
@@ -556,3 +560,33 @@ M4 = Accepted
 - This accepts M4 only as one Chrome/WebGPU browser-consumer migration and
   formal functional/quality receipt. It is not a PlayCanvas comparison,
   multi-browser result, cross-device claim, or general performance claim.
+
+## M5 closeout
+
+- Final state: Accepted for the defined Android/JNI/AAR consumer and A065
+  strict-evidence scope. Package M remains Active; M6--M8 are still pending.
+- The detailed retained paths, identities, repair audit trail, validator
+  results and residual boundaries are recorded in
+  [M5 Android strict evidence closeout](m5-android-strict-evidence.md).
+- At `5cc7c97`, forced CPU and forced GPU each completed one strict 80-frame
+  Kitsune run under the same 2412x1080 Packed/SH3/no-sampling/no-LOD conditions.
+  Each run is directional evidence only and is not a performance comparison.
+- The first `5cc7c97` Adaptive attempt failed strict current-stats pre-ticket
+  admission. Fixed-SHA candidate `d902c04` retained the same binding and camera
+  across retries until a real `Issued` submission; root reviewed it and
+  integrated it as `46dce2e`. Pending counts remain unavailable, with no
+  synthetic ticket, synchronous readback or CPU fallback.
+- A fresh `46dce2e` APK/AAR/device run passed the generic artifact, strict
+  current-stats and 80-frame camera-receipt validators with all 279,199 SH3
+  splats at 2412x1080 and sampling/LOD disabled. Its actual 79 CPU / 1 GPU
+  selection is a functional observation only.
+- The initial collector stopped after that successful run because the PLY came
+  from another checkout. With no device rerun, a byte-identical, ignored,
+  non-symlink canonical dataset copy enabled atomic publication of a complete
+  one-cell Adaptive suite. Suite SHA-256 is
+  `d9029ac53946b45d19d0c14343416d8c7427076e3b907070f96125f2095eea53`;
+  root independently revalidated the full-quality suite, generic artifact and
+  all 80 Android camera receipts.
+- Resource, power, sustained-thermal, CPU/GPU winner and PlayCanvas claims are
+  unverified. All retained `target/` paths are temporary machine-local evidence;
+  Git contains no model, PNG, APK, AAR or native library.
