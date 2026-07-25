@@ -1,0 +1,20 @@
+{
+  "devices": {
+    "com.apple.CoreSimulator.SimRuntime.iOS-26-2": [
+      {
+        "deviceTypeIdentifier": "com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro",
+        "isAvailable": true,
+        "name": "iPhone 17 Pro",
+        "state": "Booted",
+        "udid": "3FC9AF01-5669-4BCF-A777-40649EBC9AFA"
+      },
+      {
+        "deviceTypeIdentifier": "com.apple.CoreSimulator.SimDeviceType.iPad-Pro-13-inch-M5-12GB",
+        "isAvailable": true,
+        "name": "iPad Pro 13-inch (M5)",
+        "state": "Shutdown",
+        "udid": "5905A0BE-0CA8-43FE-BB33-A335BD27D4E9"
+      }
+    ]
+  }
+}

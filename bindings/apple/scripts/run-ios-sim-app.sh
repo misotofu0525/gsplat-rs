@@ -63,20 +63,33 @@ fi
 
 xcrun simctl bootstatus "$SIMULATOR_ID" -b >/dev/null
 
-if [[ ${#DATASET_ARGS[@]} -gt 0 ]]; then
-  bash bindings/apple/scripts/build-ios-sim-app.sh "${DATASET_ARGS[@]}"
-else
-  bash bindings/apple/scripts/build-ios-sim-app.sh
+if [[ "${IOS_SIMULATOR_SKIP_BUILD:-0}" != "1" ]]; then
+  if [[ ${#DATASET_ARGS[@]} -gt 0 ]]; then
+    bash bindings/apple/scripts/build-ios-sim-app.sh "${DATASET_ARGS[@]}"
+  else
+    bash bindings/apple/scripts/build-ios-sim-app.sh
+  fi
 fi
 
 APP_BUNDLE="$ROOT_DIR/target/ios-sim-app/GsplatIOSExample.app"
 BUNDLE_ID="com.gsplat.example.ios"
 
 xcrun simctl install "$SIMULATOR_ID" "$APP_BUNDLE"
-if [[ ${#LAUNCH_ARGS[@]} -gt 0 ]]; then
-  xcrun simctl launch --terminate-running-process "$SIMULATOR_ID" "$BUNDLE_ID" "${LAUNCH_ARGS[@]}"
+if [[ "${IOS_SIMULATOR_CONSOLE:-0}" == "1" ]]; then
+  if [[ ${#LAUNCH_ARGS[@]} -gt 0 ]]; then
+    xcrun simctl launch --terminate-running-process --console \
+      "$SIMULATOR_ID" "$BUNDLE_ID" "${LAUNCH_ARGS[@]}"
+  else
+    xcrun simctl launch --terminate-running-process --console \
+      "$SIMULATOR_ID" "$BUNDLE_ID"
+  fi
 else
-  xcrun simctl launch --terminate-running-process "$SIMULATOR_ID" "$BUNDLE_ID"
+  if [[ ${#LAUNCH_ARGS[@]} -gt 0 ]]; then
+    xcrun simctl launch --terminate-running-process \
+      "$SIMULATOR_ID" "$BUNDLE_ID" "${LAUNCH_ARGS[@]}"
+  else
+    xcrun simctl launch --terminate-running-process "$SIMULATOR_ID" "$BUNDLE_ID"
+  fi
 fi
 
 echo "ios simulator app launched"
