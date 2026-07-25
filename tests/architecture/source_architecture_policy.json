@@ -200,13 +200,6 @@
       "exit_condition": "Keep the Web consumer limited to lifecycle and API adaptation with parsing, receipts and renderer ownership separated."
     },
     {
-      "path": "crates/gsplat-render-wgpu/src/tiled_gpu.rs",
-      "a0_physical_loc": 1456,
-      "baseline_physical_loc": 1456,
-      "owner_task": "M7",
-      "exit_condition": "Remove obsolete tiled ownership or isolate retained diagnostic leaves by responsibility and dependency direction."
-    },
-    {
       "path": "crates/gsplat-io-spz/src/lib.rs",
       "a0_physical_loc": 1310,
       "baseline_physical_loc": 1310,
