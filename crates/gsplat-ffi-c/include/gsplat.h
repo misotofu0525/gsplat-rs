@@ -770,6 +770,12 @@ int32_t gsplat_surface_renderer_get_current_stats_submission_v1(
 int32_t gsplat_surface_renderer_poll_current_stats_v1(
     GsplatSurfaceRenderer *renderer,
     GsplatSurfaceCurrentStatsPollV1 *out_poll);
+/*
+ * Copies the last Surface stats only when V/D are demonstrably current.
+ * Asynchronous counts require a ticket- and generation-matched current-stats
+ * v1 READY receipt. Unrequested, pending, failed, expired, or mismatched
+ * counts return GSPLAT_ERROR_NOT_FOUND without modifying out_stats.
+ */
 int32_t gsplat_surface_renderer_get_stats(
     const GsplatSurfaceRenderer *renderer,
     GsplatStats *out_stats);

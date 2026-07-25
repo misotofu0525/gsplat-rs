@@ -9,6 +9,8 @@ pub(crate) mod shadow;
 pub(crate) use capture::SurfaceCapture;
 pub use capture::SurfaceFrameCapture;
 pub(crate) use configuration::SurfaceConfigurationOwner;
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) use current_stats::LegacySurfaceStatsAvailability;
 pub use current_stats::{
     SurfaceCurrentStatsCountSemantics, SurfaceCurrentStatsCounts, SurfaceCurrentStatsFailure,
     SurfaceCurrentStatsFrameIdentity, SurfaceCurrentStatsJoinIdentity, SurfaceCurrentStatsPlan,

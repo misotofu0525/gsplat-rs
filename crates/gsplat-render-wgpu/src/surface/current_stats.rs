@@ -4,6 +4,9 @@
 //! terminal publication remain owned by `Renderer` and `PlanSampler`. Surface
 //! and later C consumers only translate these values.
 
+#[cfg(not(target_arch = "wasm32"))]
+use gsplat_core::FrameStats;
+
 use crate::{
     evidence::PlanCountSemantics,
     plans::{FrameIdentity, PlanId},
@@ -385,6 +388,232 @@ impl From<CurrentStatsPoll> for SurfaceCurrentStatsPoll {
             CurrentStatsPoll::Empty => Self::Empty,
             CurrentStatsPoll::Unsampled(reason) => Self::Unsampled(reason.into()),
             CurrentStatsPoll::Terminal(terminal) => Self::Terminal(terminal.into()),
+        }
+    }
+}
+
+/// Whether the legacy FrameStats projection for the last presented Surface
+/// frame has demonstrably current V/D counts.
+///
+/// This is compatibility availability only. Renderer remains the ticket,
+/// generation, queue and terminal owner; Surface retains no terminal ledger.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) enum LegacySurfaceStatsAvailability {
+    Current,
+    AwaitingCurrentReceipt,
+    Unavailable,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl LegacySurfaceStatsAvailability {
+    pub(crate) const fn for_presented_frame(
+        counts_are_synchronous: bool,
+        submission: SurfaceCurrentStatsSubmission,
+    ) -> Self {
+        if counts_are_synchronous {
+            Self::Current
+        } else if matches!(submission, SurfaceCurrentStatsSubmission::Issued(_)) {
+            Self::AwaitingCurrentReceipt
+        } else {
+            Self::Unavailable
+        }
+    }
+
+    pub(crate) fn observe_poll(
+        &mut self,
+        submission: SurfaceCurrentStatsSubmission,
+        poll: SurfaceCurrentStatsPoll,
+        stats: &mut FrameStats,
+    ) {
+        if *self != Self::AwaitingCurrentReceipt {
+            return;
+        }
+        let Some(expected) = submission.receipt() else {
+            *self = Self::Unavailable;
+            return;
+        };
+        let SurfaceCurrentStatsPoll::Terminal(terminal) = poll else {
+            return;
+        };
+        if terminal.submission() != expected {
+            return;
+        }
+
+        match terminal {
+            SurfaceCurrentStatsTerminal::Ready(receipt) => {
+                let counts = receipt.counts();
+                stats.visible_count = counts.visible();
+                stats.drawn_count = counts.drawn();
+                *self = Self::Current;
+            }
+            SurfaceCurrentStatsTerminal::MapFailure(_)
+            | SurfaceCurrentStatsTerminal::GenerationInvalidated(_)
+            | SurfaceCurrentStatsTerminal::Expired(_)
+            | SurfaceCurrentStatsTerminal::Dropped(_) => {
+                *self = Self::Unavailable;
+            }
+        }
+    }
+
+    pub(crate) const fn get(self, stats: FrameStats) -> Option<FrameStats> {
+        match self {
+            Self::Current => Some(stats),
+            Self::AwaitingCurrentReceipt | Self::Unavailable => None,
+        }
+    }
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests {
+    use super::*;
+
+    fn submission(ticket: u64, camera_revision: u64) -> SurfaceCurrentStatsSubmissionReceipt {
+        SurfaceCurrentStatsSubmissionReceipt {
+            ticket,
+            join: SurfaceCurrentStatsJoinIdentity {
+                frame: SurfaceCurrentStatsFrameIdentity {
+                    scene_generation: 3,
+                    camera_revision,
+                    viewport_generation: 5,
+                    contract_generation: 7,
+                    plan_set_generation: 11,
+                },
+                executed_plan: SurfaceCurrentStatsPlan::GpuPostSort,
+                order_generation: 13,
+                raster_generation: 11,
+                encode_attempt: 17,
+                presentation_sequence: 19,
+            },
+        }
+    }
+
+    fn ready(submission: SurfaceCurrentStatsSubmissionReceipt) -> SurfaceCurrentStatsPoll {
+        SurfaceCurrentStatsPoll::Terminal(SurfaceCurrentStatsTerminal::Ready(
+            SurfaceCurrentStatsReceipt {
+                submission,
+                counts: SurfaceCurrentStatsCounts {
+                    source: 100,
+                    visible: 80,
+                    contributor: 70,
+                    drawn: 80,
+                },
+                count_semantics: SurfaceCurrentStatsCountSemantics::IndirectDrawEqualsVisible,
+            },
+        ))
+    }
+
+    fn pending_stats() -> FrameStats {
+        FrameStats {
+            frame_ms: 1.0,
+            preprocess_ms: 2.0,
+            sort_ms: 3.0,
+            raster_ms: 4.0,
+            visible_count: 0,
+            drawn_count: 0,
+        }
+    }
+
+    #[test]
+    fn presented_frame_preserves_synchronous_current_success() {
+        let issued = SurfaceCurrentStatsSubmission::Issued(submission(23, 29));
+        assert_eq!(
+            LegacySurfaceStatsAvailability::for_presented_frame(
+                true,
+                SurfaceCurrentStatsSubmission::NotRequested,
+            ),
+            LegacySurfaceStatsAvailability::Current,
+        );
+        assert_eq!(
+            LegacySurfaceStatsAvailability::for_presented_frame(true, issued),
+            LegacySurfaceStatsAvailability::Current,
+        );
+        assert_eq!(
+            LegacySurfaceStatsAvailability::for_presented_frame(
+                false,
+                SurfaceCurrentStatsSubmission::NotRequested,
+            ),
+            LegacySurfaceStatsAvailability::Unavailable,
+        );
+        assert_eq!(
+            LegacySurfaceStatsAvailability::for_presented_frame(false, issued),
+            LegacySurfaceStatsAvailability::AwaitingCurrentReceipt,
+        );
+    }
+
+    #[test]
+    fn matching_ready_receipt_makes_pending_legacy_counts_current() {
+        let expected = submission(23, 29);
+        let mut availability = LegacySurfaceStatsAvailability::AwaitingCurrentReceipt;
+        let mut stats = pending_stats();
+
+        availability.observe_poll(
+            SurfaceCurrentStatsSubmission::Issued(expected),
+            ready(expected),
+            &mut stats,
+        );
+
+        assert_eq!(availability, LegacySurfaceStatsAvailability::Current);
+        assert_eq!(stats.visible_count, 80);
+        assert_eq!(stats.drawn_count, 80);
+        assert_eq!(stats.frame_ms, 1.0);
+        assert_eq!(stats.preprocess_ms, 2.0);
+        assert_eq!(stats.sort_ms, 3.0);
+        assert_eq!(stats.raster_ms, 4.0);
+    }
+
+    #[test]
+    fn pending_expired_and_mismatched_receipts_never_publish_legacy_counts() {
+        let expected = submission(23, 29);
+        let mismatched_ticket = submission(24, 29);
+        let mismatched_generation = submission(23, 30);
+
+        for poll in [
+            SurfaceCurrentStatsPoll::Empty,
+            ready(mismatched_ticket),
+            ready(mismatched_generation),
+        ] {
+            let mut availability = LegacySurfaceStatsAvailability::AwaitingCurrentReceipt;
+            let mut stats = pending_stats();
+            let before = stats;
+            availability.observe_poll(
+                SurfaceCurrentStatsSubmission::Issued(expected),
+                poll,
+                &mut stats,
+            );
+            assert_eq!(
+                availability,
+                LegacySurfaceStatsAvailability::AwaitingCurrentReceipt,
+            );
+            assert_eq!(stats, before);
+            assert_eq!(availability.get(stats), None);
+        }
+
+        for terminal in [
+            SurfaceCurrentStatsTerminal::MapFailure(SurfaceCurrentStatsFailure {
+                submission: expected,
+            }),
+            SurfaceCurrentStatsTerminal::GenerationInvalidated(SurfaceCurrentStatsFailure {
+                submission: expected,
+            }),
+            SurfaceCurrentStatsTerminal::Expired(SurfaceCurrentStatsFailure {
+                submission: expected,
+            }),
+            SurfaceCurrentStatsTerminal::Dropped(SurfaceCurrentStatsFailure {
+                submission: expected,
+            }),
+        ] {
+            let mut availability = LegacySurfaceStatsAvailability::AwaitingCurrentReceipt;
+            let mut stats = pending_stats();
+            let before = stats;
+            availability.observe_poll(
+                SurfaceCurrentStatsSubmission::Issued(expected),
+                SurfaceCurrentStatsPoll::Terminal(terminal),
+                &mut stats,
+            );
+            assert_eq!(availability, LegacySurfaceStatsAvailability::Unavailable);
+            assert_eq!(stats, before);
+            assert_eq!(availability.get(stats), None);
         }
     }
 }

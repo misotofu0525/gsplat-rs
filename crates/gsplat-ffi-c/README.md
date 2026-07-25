@@ -80,11 +80,13 @@ boundary used by the Android JNI bridge and the iOS `GsplatKit` wrapper.
   later resolve as `EXPIRED` or `DROPPED`; strict evidence rejects that ticket.
   It must never fill a missing current receipt from legacy
   `gsplat_surface_renderer_get_stats()`.
-- Before the M2 Surface cutover, the legacy Surface honestly translates as
-  request `GPU_UNAVAILABLE`, submission `NOT_REQUESTED`, and poll `EMPTY`, all
-  with `GSPLAT_OK`. Later Renderer activation can return `ISSUED` and terminal
-  outcomes without changing this C contract. The C bridge owns no queue,
-  cache, tombstone, ticket, generation, sampling policy, or result state.
+- The legacy `gsplat_surface_renderer_get_stats()` remains successful whenever
+  the last presented frame has synchronous current counts or a ticket- and
+  generation-matched current-stats v1 `READY` receipt. Unrequested, pending,
+  failed, expired, or mismatched asynchronous counts return
+  `GSPLAT_ERROR_NOT_FOUND` without modifying the output. The C bridge owns no
+  queue, cache, tombstone, ticket, generation, sampling policy, or result
+  state.
 - `GsplatSurfaceSortStats.flags` preserves its 48-byte layout and now reports
   an Adaptive GPU-unavailable reason (unsupported, initialization,
   out-of-memory, or validation) in bits 15-18. This makes an Adaptive CPU

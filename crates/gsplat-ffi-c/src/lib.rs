@@ -1589,6 +1589,17 @@ impl From<FrameStats> for GsplatStats {
     }
 }
 
+fn copy_legacy_surface_stats(
+    stats: Option<FrameStats>,
+    out_stats: &mut GsplatStats,
+) -> Result<(), ErrorCode> {
+    // SurfaceRenderSession exposes Some only for synchronous current counts or
+    // a READY receipt joined to the last presented ticket and full identity.
+    let stats = stats.ok_or(ErrorCode::NotFound)?;
+    *out_stats = stats.into();
+    Ok(())
+}
+
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct GsplatCamera {
@@ -3977,7 +3988,12 @@ pub unsafe extern "C" fn gsplat_surface_renderer_poll_current_stats_v1(
     })
 }
 
-/// Copy the last Surface renderer stats.
+/// Copy the last Surface renderer stats with demonstrably current counts.
+///
+/// Asynchronous counts require a ticket- and generation-matched current-stats
+/// v1 `READY` receipt. This legacy getter returns [`ErrorCode::NotFound`] for
+/// unrequested, pending, failed, expired or mismatched counts without modifying
+/// `out_stats`. Synchronous current counts retain the historical success path.
 ///
 /// # Safety
 ///
@@ -4006,8 +4022,15 @@ pub unsafe extern "C" fn gsplat_surface_renderer_get_stats(
             );
         }
 
-        unsafe {
-            *out_stats = renderer.session.last_stats().into();
+        let out_stats = unsafe { &mut *out_stats };
+        if let Err(code) = copy_legacy_surface_stats(renderer.session.legacy_stats(), out_stats) {
+            return ffi_error(
+                code,
+                concat!(
+                    "gsplat_surface_renderer_get_stats: current Surface counts ",
+                    "are not available from a matching receipt",
+                ),
+            );
         }
 
         ffi_ok()
@@ -4945,10 +4968,10 @@ mod tests {
         GsplatSurfaceProjectedFailureV1, GsplatSurfaceProjectedMeasurementV1,
         GsplatSurfaceProjectedSubmissionV1, SURFACE_EXACTNESS_FULL_QUALITY_FLAGS,
         SURFACE_EXACTNESS_SAMPLING_DISABLED, SurfaceCameraControl, camera_rotation_looking_at,
-        canonical_projection_matrix_f32, canonical_view_matrix_f32, discard_surface_order_counts,
-        ffi_catch_i32, geometry_path_from_ffi, gsplat_camera_default, gsplat_config_default,
-        gsplat_context_create, gsplat_context_destroy, gsplat_context_get_stats,
-        gsplat_context_load_scene_path, gsplat_context_render_frame,
+        canonical_projection_matrix_f32, canonical_view_matrix_f32, copy_legacy_surface_stats,
+        discard_surface_order_counts, ffi_catch_i32, geometry_path_from_ffi, gsplat_camera_default,
+        gsplat_config_default, gsplat_context_create, gsplat_context_destroy,
+        gsplat_context_get_stats, gsplat_context_load_scene_path, gsplat_context_render_frame,
         gsplat_context_set_auto_camera, gsplat_context_set_camera, gsplat_error_message,
         gsplat_last_error_message, gsplat_surface_renderer_get_camera_receipt_v1,
         gsplat_surface_renderer_get_current_stats_submission_v1,
@@ -5342,6 +5365,54 @@ mod tests {
             !fields.contains("current_stats"),
             "the current-stats C bridge must not add queue/cache/policy/result fields",
         );
+    }
+
+    #[test]
+    fn legacy_surface_stats_fail_closed_without_output_mutation() {
+        let mut output = super::GsplatStats {
+            frame_ms: -1.0,
+            preprocess_ms: -2.0,
+            sort_ms: -3.0,
+            raster_ms: -4.0,
+            visible_count: u32::MAX - 1,
+            drawn_count: u32::MAX,
+        };
+        let before = output;
+
+        assert_eq!(
+            copy_legacy_surface_stats(None, &mut output),
+            Err(ErrorCode::NotFound)
+        );
+        assert_eq!(output.frame_ms.to_bits(), before.frame_ms.to_bits());
+        assert_eq!(
+            output.preprocess_ms.to_bits(),
+            before.preprocess_ms.to_bits()
+        );
+        assert_eq!(output.sort_ms.to_bits(), before.sort_ms.to_bits());
+        assert_eq!(output.raster_ms.to_bits(), before.raster_ms.to_bits());
+        assert_eq!(output.visible_count, before.visible_count);
+        assert_eq!(output.drawn_count, before.drawn_count);
+    }
+
+    #[test]
+    fn legacy_surface_stats_preserve_current_success_semantics() {
+        let stats = gsplat_core::FrameStats {
+            frame_ms: 1.0,
+            preprocess_ms: 2.0,
+            sort_ms: 3.0,
+            raster_ms: 4.0,
+            visible_count: 5,
+            drawn_count: 6,
+        };
+
+        let mut output = super::GsplatStats::from(gsplat_core::FrameStats::zero());
+        assert_eq!(copy_legacy_surface_stats(Some(stats), &mut output), Ok(()));
+        assert_eq!(output.frame_ms, stats.frame_ms);
+        assert_eq!(output.preprocess_ms, stats.preprocess_ms);
+        assert_eq!(output.sort_ms, stats.sort_ms);
+        assert_eq!(output.raster_ms, stats.raster_ms);
+        assert_eq!(output.visible_count, stats.visible_count);
+        assert_eq!(output.drawn_count, stats.drawn_count);
     }
 
     #[test]

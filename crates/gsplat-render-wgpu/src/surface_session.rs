@@ -13,6 +13,8 @@ pub use crate::evidence::{
     SurfaceProjectedDrawMeasurementSubmission, SurfaceProjectedDrawMeasurementUnsampledReason,
 };
 use crate::gpu_telemetry::{SurfaceCpuOrderMeasurement, TelemetrySubmission};
+#[cfg(not(target_arch = "wasm32"))]
+use crate::surface::LegacySurfaceStatsAvailability;
 use crate::surface_presenter::{CpuCompletionSampleRequest, ProjectedDrawSampleRequest};
 use crate::{
     GeometryPath, Renderer, RendererError, SurfaceCurrentStatsPoll, SurfaceCurrentStatsRequest,
@@ -1702,6 +1704,8 @@ pub struct SurfaceRenderSession {
     #[cfg(not(target_arch = "wasm32"))]
     exact_order_generation_receipt: Option<u64>,
     current_stats_submission: SurfaceCurrentStatsSubmission,
+    #[cfg(not(target_arch = "wasm32"))]
+    legacy_stats_availability: LegacySurfaceStatsAvailability,
     camera: Camera,
     sort_interval: u32,
     order_backend: SurfaceOrderBackend,
@@ -1924,6 +1928,12 @@ impl SurfaceRenderSession {
         };
         #[cfg(target_arch = "wasm32")]
         renderer.finish_surface_upload_handoff(presenter.geometry_path())?;
+        #[cfg(not(target_arch = "wasm32"))]
+        let legacy_stats_availability = if exact_plan_receipt.is_some() {
+            LegacySurfaceStatsAvailability::Unavailable
+        } else {
+            LegacySurfaceStatsAvailability::Current
+        };
         Ok(Self {
             renderer,
             presenter,
@@ -1932,6 +1942,8 @@ impl SurfaceRenderSession {
             #[cfg(not(target_arch = "wasm32"))]
             exact_order_generation_receipt: None,
             current_stats_submission: SurfaceCurrentStatsSubmission::NotRequested,
+            #[cfg(not(target_arch = "wasm32"))]
+            legacy_stats_availability,
             camera,
             sort_interval: DEFAULT_SURFACE_SORT_INTERVAL,
             order_backend: SurfaceOrderBackend::Cpu,
@@ -2027,11 +2039,17 @@ impl SurfaceRenderSession {
     pub fn poll_current_stats(&mut self) -> SurfaceCurrentStatsPoll {
         #[cfg(not(target_arch = "wasm32"))]
         if self.exact_plan_state().is_some() {
-            return self
+            let poll = self
                 .renderer
                 .poll_exact_surface_current_stats()
                 .map(Into::into)
                 .unwrap_or(SurfaceCurrentStatsPoll::Empty);
+            self.legacy_stats_availability.observe_poll(
+                self.current_stats_submission,
+                poll,
+                &mut self.last_stats,
+            );
+            return poll;
         }
         legacy_surface_current_stats_poll(&mut self.renderer)
     }
@@ -2799,6 +2817,19 @@ impl SurfaceRenderSession {
         self.last_stats
     }
 
+    /// Returns the legacy FrameStats projection only while its V/D counts are
+    /// demonstrably current for the last successfully presented Surface frame.
+    pub fn legacy_stats(&self) -> Option<FrameStats> {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.legacy_stats_availability.get(self.last_stats)
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            Some(self.last_stats)
+        }
+    }
+
     /// Formal Adaptive sample awaiting its asynchronous terminal receipt.
     pub fn adaptive_pending_sample(&self) -> Option<SurfaceAdaptivePendingSample> {
         #[cfg(not(target_arch = "wasm32"))]
@@ -3035,6 +3066,10 @@ impl SurfaceRenderSession {
             Some(presented_current_stats_submission),
         );
         self.last_stats = output.stats;
+        self.legacy_stats_availability = LegacySurfaceStatsAvailability::for_presented_frame(
+            !output.visible_count_pending,
+            self.current_stats_submission,
+        );
         self.renderer.publish_exact_surface_stats(output.stats);
         self.presented_order_backend = output.order_backend;
         Ok(output)
