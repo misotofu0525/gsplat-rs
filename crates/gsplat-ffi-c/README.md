@@ -32,6 +32,12 @@ boundary used by the Android JNI bridge and the iOS `GsplatKit` wrapper.
   call `gsplat_surface_renderer_poll_order_measurement()` until
   `out_available == 0` to drain timestamp-query or queue-completion timing,
   revision, and exact visible/drawn-count evidence without blocking.
+- `SurfaceRenderSession` is the sole owner of order, projected-draw, and
+  producer submissions, terminal queues, ticket-count state, and producer
+  measurement enablement. The C entrypoints validate caller buffers, delegate
+  directly to that session seam, and convert the returned value; the opaque C
+  handle keeps no compatibility queue, ledger, submission cache, pump, or
+  enabled-state mirror.
 - `GsplatSurfaceOrderMeasurement` is additive. Its validity flags distinguish
   real GPU timestamp fields from completion-only receipts; the existing
   `GsplatSurfaceSortStats` layout is unchanged. A bounded-queue overflow drops
@@ -108,7 +114,10 @@ boundary used by the Android JNI bridge and the iOS `GsplatKit` wrapper.
   Candidate or Compact controls execution but does not request a projected
   ticket by itself. After polling a success, take its counts immediately;
   `out_available == 0` means bounded evidence has expired and a strict run
-  must be rejected.
+  must be rejected. Pending, failed, expired, consumed, and invalid tickets
+  remain distinct renderer-owned states even though the frozen v1 C call maps
+  every unavailable state to `out_available == 0`; it never substitutes a
+  stale, zero, capacity, or parity-inferred count.
 - Packed GPU producer selection is a separate diagnostic lane. Keep the
   qualified default (`POST_SORT`) unless running an isolated A/B experiment;
   set `PREPROJECT` with
@@ -124,7 +133,9 @@ boundary used by the Android JNI bridge and the iOS `GsplatKit` wrapper.
   until explicitly enabled. Disabling measurement stops new tickets but does
   not erase the last rendered submission or terminal outcomes for tickets
   already issued. Drain both terminal queues before treating a later enabled
-  period as a fresh experiment.
+  period as a fresh experiment. Each producer poll pops exactly one record
+  from the renderer-owned lossless raw FIFO. Bounded compatibility-view
+  overflow therefore cannot erase or duplicate raw C delivery.
 - Call `gsplat_surface_renderer_get_exactness()` after construction to obtain
   source/decoded/encoded/resident/addressable counts, source/resident SH
   degree, full-quality policy bits, and the physical adapter limits used for

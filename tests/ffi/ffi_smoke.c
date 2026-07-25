@@ -10,6 +10,17 @@ _Static_assert(sizeof(GsplatSurfaceCpuOrderMeasurement) == 48, "CPU order receip
 _Static_assert(sizeof(GsplatSurfaceOrderCounts) == 32, "order counts receipt ABI changed");
 _Static_assert(sizeof(GsplatSurfaceOrderMeasurementFailure) == 40, "order failure ABI changed");
 _Static_assert(sizeof(GsplatSurfaceOrderSubmission) == 32, "order submission ABI changed");
+_Static_assert(offsetof(GsplatSurfaceOrderMeasurement, ticket) == 0, "order ticket offset changed");
+_Static_assert(offsetof(GsplatSurfaceOrderMeasurement, visible_count) == 36, "order counts offset changed");
+_Static_assert(offsetof(GsplatSurfaceCpuOrderMeasurement, reserved) == 44, "CPU contributor offset changed");
+_Static_assert(offsetof(GsplatSurfaceOrderCounts, visible_count) == 16, "order count payload offset changed");
+_Static_assert(offsetof(GsplatSurfaceOrderMeasurementFailure, reason) == 16, "order failure reason offset changed");
+_Static_assert(offsetof(GsplatSurfaceOrderSubmission, flags) == 28, "order submission flags offset changed");
+_Static_assert(_Alignof(GsplatSurfaceOrderMeasurement) == _Alignof(uint64_t), "order receipt alignment changed");
+_Static_assert(_Alignof(GsplatSurfaceCpuOrderMeasurement) == _Alignof(uint64_t), "CPU order receipt alignment changed");
+_Static_assert(_Alignof(GsplatSurfaceOrderCounts) == _Alignof(uint64_t), "order counts alignment changed");
+_Static_assert(_Alignof(GsplatSurfaceOrderMeasurementFailure) == _Alignof(uint64_t), "order failure alignment changed");
+_Static_assert(_Alignof(GsplatSurfaceOrderSubmission) == _Alignof(uint64_t), "order submission alignment changed");
 _Static_assert(sizeof(GsplatSurfaceCurrentStatsIdentityV1) == 80, "current-stats identity v1 ABI changed");
 _Static_assert(sizeof(GsplatSurfaceCurrentStatsRequestV1) == 32, "current-stats request v1 ABI changed");
 _Static_assert(sizeof(GsplatSurfaceCurrentStatsSubmissionV1) == 120, "current-stats submission v1 ABI changed");
@@ -53,6 +64,26 @@ _Static_assert(sizeof(GsplatSurfaceCameraReceiptV1) == 272, "camera receipt v1 A
 _Static_assert(offsetof(GsplatSurfaceCameraReceiptV1, camera_revision) == 8, "camera receipt revision offset changed");
 _Static_assert(offsetof(GsplatSurfaceCameraReceiptV1, view_matrix) == 80, "camera receipt matrix offset changed");
 _Static_assert(_Alignof(GsplatSurfaceCameraReceiptV1) == _Alignof(uint64_t), "camera receipt alignment changed");
+
+typedef int32_t (*GsplatGetOrderSubmissionFn)(const GsplatSurfaceRenderer *, GsplatSurfaceOrderSubmission *);
+typedef int32_t (*GsplatPollOrderMeasurementFn)(GsplatSurfaceRenderer *, GsplatSurfaceOrderMeasurement *, uint32_t *);
+typedef int32_t (*GsplatTakeOrderCountsFn)(GsplatSurfaceRenderer *, uint64_t, GsplatSurfaceOrderCounts *, uint32_t *);
+typedef int32_t (*GsplatGetProjectedSubmissionFn)(const GsplatSurfaceRenderer *, GsplatSurfaceProjectedSubmissionV1 *);
+typedef int32_t (*GsplatPollProjectedMeasurementFn)(GsplatSurfaceRenderer *, GsplatSurfaceProjectedMeasurementV1 *, uint32_t *);
+typedef int32_t (*GsplatTakeProjectedCountsFn)(GsplatSurfaceRenderer *, uint64_t, GsplatSurfaceProjectedCountsV1 *, uint32_t *);
+typedef int32_t (*GsplatGetProducerSubmissionFn)(const GsplatSurfaceRenderer *, GsplatSurfaceGpuProducerSubmissionV1 *);
+typedef int32_t (*GsplatPollProducerMeasurementFn)(GsplatSurfaceRenderer *, GsplatSurfaceGpuProducerMeasurementV1 *, uint32_t *);
+typedef int32_t (*GsplatPollProducerFailureFn)(GsplatSurfaceRenderer *, GsplatSurfaceGpuProducerFailureV1 *, uint32_t *);
+
+_Static_assert(_Generic(&gsplat_surface_renderer_get_order_submission, GsplatGetOrderSubmissionFn: 1, default: 0), "order submission symbol signature changed");
+_Static_assert(_Generic(&gsplat_surface_renderer_poll_order_measurement, GsplatPollOrderMeasurementFn: 1, default: 0), "order poll symbol signature changed");
+_Static_assert(_Generic(&gsplat_surface_renderer_take_order_counts, GsplatTakeOrderCountsFn: 1, default: 0), "order counts symbol signature changed");
+_Static_assert(_Generic(&gsplat_surface_renderer_get_projected_submission_v1, GsplatGetProjectedSubmissionFn: 1, default: 0), "projected submission symbol signature changed");
+_Static_assert(_Generic(&gsplat_surface_renderer_poll_projected_measurement_v1, GsplatPollProjectedMeasurementFn: 1, default: 0), "projected poll symbol signature changed");
+_Static_assert(_Generic(&gsplat_surface_renderer_take_projected_counts_v1, GsplatTakeProjectedCountsFn: 1, default: 0), "projected counts symbol signature changed");
+_Static_assert(_Generic(&gsplat_surface_renderer_get_gpu_producer_submission_v1, GsplatGetProducerSubmissionFn: 1, default: 0), "producer submission symbol signature changed");
+_Static_assert(_Generic(&gsplat_surface_renderer_poll_gpu_producer_measurement_v1, GsplatPollProducerMeasurementFn: 1, default: 0), "producer poll symbol signature changed");
+_Static_assert(_Generic(&gsplat_surface_renderer_poll_gpu_producer_failure_v1, GsplatPollProducerFailureFn: 1, default: 0), "producer failure symbol signature changed");
 
 int main(int argc, char **argv) {
   const char *dataset = "tests/datasets/minimal_ascii.ply";
@@ -198,8 +229,10 @@ int main(int argc, char **argv) {
       NULL,
       &measurement,
       &measurement_available);
-  if (rc != GSPLAT_ERROR_INVALID_ARGUMENT) {
-    fprintf(stderr, "expected null Surface measurement poll to fail, got: %d\n", rc);
+  if (rc != GSPLAT_ERROR_INVALID_ARGUMENT ||
+      memcmp(&measurement, &(GsplatSurfaceOrderMeasurement){0}, sizeof(measurement)) != 0 ||
+      measurement_available != 99) {
+    fprintf(stderr, "expected null Surface measurement poll to fail without output mutation, got: %d\n", rc);
     return 12;
   }
   GsplatSurfaceOrderMeasurementFailure failure;
@@ -208,8 +241,10 @@ int main(int argc, char **argv) {
       NULL,
       &failure,
       &measurement_available);
-  if (rc != GSPLAT_ERROR_INVALID_ARGUMENT) {
-    fprintf(stderr, "expected null Surface failure poll to fail, got: %d\n", rc);
+  if (rc != GSPLAT_ERROR_INVALID_ARGUMENT ||
+      memcmp(&failure, &(GsplatSurfaceOrderMeasurementFailure){0}, sizeof(failure)) != 0 ||
+      measurement_available != 99) {
+    fprintf(stderr, "expected null Surface failure poll to fail without output mutation, got: %d\n", rc);
     return 14;
   }
   GsplatSurfaceCpuOrderMeasurement cpu_measurement;
@@ -218,15 +253,18 @@ int main(int argc, char **argv) {
       NULL,
       &cpu_measurement,
       &measurement_available);
-  if (rc != GSPLAT_ERROR_INVALID_ARGUMENT) {
-    fprintf(stderr, "expected null CPU Surface measurement poll to fail, got: %d\n", rc);
+  if (rc != GSPLAT_ERROR_INVALID_ARGUMENT ||
+      memcmp(&cpu_measurement, &(GsplatSurfaceCpuOrderMeasurement){0}, sizeof(cpu_measurement)) != 0 ||
+      measurement_available != 99) {
+    fprintf(stderr, "expected null CPU Surface measurement poll to fail without output mutation, got: %d\n", rc);
     return 16;
   }
   GsplatSurfaceOrderSubmission submission;
   memset(&submission, 0, sizeof(submission));
   rc = gsplat_surface_renderer_get_order_submission(NULL, &submission);
-  if (rc != GSPLAT_ERROR_INVALID_ARGUMENT) {
-    fprintf(stderr, "expected null Surface submission query to fail, got: %d\n", rc);
+  if (rc != GSPLAT_ERROR_INVALID_ARGUMENT ||
+      memcmp(&submission, &(GsplatSurfaceOrderSubmission){0}, sizeof(submission)) != 0) {
+    fprintf(stderr, "expected null Surface submission query to fail without output mutation, got: %d\n", rc);
     return 15;
   }
   GsplatSurfaceOrderCounts counts;
@@ -236,14 +274,17 @@ int main(int argc, char **argv) {
       1,
       &counts,
       &measurement_available);
-  if (rc != GSPLAT_ERROR_INVALID_ARGUMENT) {
-    fprintf(stderr, "expected null Surface order-count query to fail, got: %d\n", rc);
+  if (rc != GSPLAT_ERROR_INVALID_ARGUMENT ||
+      memcmp(&counts, &(GsplatSurfaceOrderCounts){0}, sizeof(counts)) != 0 ||
+      measurement_available != 99) {
+    fprintf(stderr, "expected null Surface order-count query to fail without output mutation, got: %d\n", rc);
     return 18;
   }
   GsplatSurfaceProjectedSubmissionV1 projected_submission = {
       .struct_size = sizeof(GsplatSurfaceProjectedSubmissionV1),
       .version = GSPLAT_SURFACE_PROJECTED_ABI_VERSION_V1,
   };
+  GsplatSurfaceProjectedSubmissionV1 projected_submission_before = projected_submission;
   rc = gsplat_surface_renderer_set_projected_policy_v1(
       NULL,
       GSPLAT_SURFACE_PROJECTED_POLICY_ADAPTIVE);
@@ -252,51 +293,62 @@ int main(int argc, char **argv) {
     return 19;
   }
   rc = gsplat_surface_renderer_get_projected_submission_v1(NULL, &projected_submission);
-  if (rc != GSPLAT_ERROR_INVALID_ARGUMENT) {
-    fprintf(stderr, "expected null projected submission query to fail, got: %d\n", rc);
+  if (rc != GSPLAT_ERROR_INVALID_ARGUMENT ||
+      memcmp(&projected_submission, &projected_submission_before, sizeof(projected_submission)) != 0) {
+    fprintf(stderr, "expected null projected submission query to fail without output mutation, got: %d\n", rc);
     return 20;
   }
   GsplatSurfaceProjectedMeasurementV1 projected_measurement = {
       .struct_size = sizeof(GsplatSurfaceProjectedMeasurementV1),
       .version = GSPLAT_SURFACE_PROJECTED_ABI_VERSION_V1,
   };
+  GsplatSurfaceProjectedMeasurementV1 projected_measurement_before = projected_measurement;
   rc = gsplat_surface_renderer_poll_projected_measurement_v1(
       NULL,
       &projected_measurement,
       &measurement_available);
-  if (rc != GSPLAT_ERROR_INVALID_ARGUMENT) {
-    fprintf(stderr, "expected null projected measurement poll to fail, got: %d\n", rc);
+  if (rc != GSPLAT_ERROR_INVALID_ARGUMENT ||
+      memcmp(&projected_measurement, &projected_measurement_before, sizeof(projected_measurement)) != 0 ||
+      measurement_available != 99) {
+    fprintf(stderr, "expected null projected measurement poll to fail without output mutation, got: %d\n", rc);
     return 21;
   }
   GsplatSurfaceProjectedCountsV1 projected_counts = {
       .struct_size = sizeof(GsplatSurfaceProjectedCountsV1),
       .version = GSPLAT_SURFACE_PROJECTED_ABI_VERSION_V1,
   };
+  GsplatSurfaceProjectedCountsV1 projected_counts_before = projected_counts;
   rc = gsplat_surface_renderer_take_projected_counts_v1(
       NULL,
       1,
       &projected_counts,
       &measurement_available);
-  if (rc != GSPLAT_ERROR_INVALID_ARGUMENT) {
-    fprintf(stderr, "expected null projected counts query to fail, got: %d\n", rc);
+  if (rc != GSPLAT_ERROR_INVALID_ARGUMENT ||
+      memcmp(&projected_counts, &projected_counts_before, sizeof(projected_counts)) != 0 ||
+      measurement_available != 99) {
+    fprintf(stderr, "expected null projected counts query to fail without output mutation, got: %d\n", rc);
     return 22;
   }
   GsplatSurfaceProjectedFailureV1 projected_failure = {
       .struct_size = sizeof(GsplatSurfaceProjectedFailureV1),
       .version = GSPLAT_SURFACE_PROJECTED_ABI_VERSION_V1,
   };
+  GsplatSurfaceProjectedFailureV1 projected_failure_before = projected_failure;
   rc = gsplat_surface_renderer_poll_projected_failure_v1(
       NULL,
       &projected_failure,
       &measurement_available);
-  if (rc != GSPLAT_ERROR_INVALID_ARGUMENT) {
-    fprintf(stderr, "expected null projected failure poll to fail, got: %d\n", rc);
+  if (rc != GSPLAT_ERROR_INVALID_ARGUMENT ||
+      memcmp(&projected_failure, &projected_failure_before, sizeof(projected_failure)) != 0 ||
+      measurement_available != 99) {
+    fprintf(stderr, "expected null projected failure poll to fail without output mutation, got: %d\n", rc);
     return 23;
   }
   GsplatSurfaceGpuProducerSubmissionV1 producer_submission = {
       .struct_size = sizeof(GsplatSurfaceGpuProducerSubmissionV1),
       .version = GSPLAT_SURFACE_GPU_PRODUCER_ABI_VERSION_V1,
   };
+  GsplatSurfaceGpuProducerSubmissionV1 producer_submission_before = producer_submission;
   rc = gsplat_surface_renderer_set_gpu_order_producer_v1(
       NULL,
       GSPLAT_SURFACE_GPU_PRODUCER_POST_SORT);
@@ -310,32 +362,39 @@ int main(int argc, char **argv) {
     return 25;
   }
   rc = gsplat_surface_renderer_get_gpu_producer_submission_v1(NULL, &producer_submission);
-  if (rc != GSPLAT_ERROR_INVALID_ARGUMENT) {
-    fprintf(stderr, "expected null GPU producer submission query to fail, got: %d\n", rc);
+  if (rc != GSPLAT_ERROR_INVALID_ARGUMENT ||
+      memcmp(&producer_submission, &producer_submission_before, sizeof(producer_submission)) != 0) {
+    fprintf(stderr, "expected null GPU producer submission query to fail without output mutation, got: %d\n", rc);
     return 26;
   }
   GsplatSurfaceGpuProducerMeasurementV1 producer_measurement = {
       .struct_size = sizeof(GsplatSurfaceGpuProducerMeasurementV1),
       .version = GSPLAT_SURFACE_GPU_PRODUCER_ABI_VERSION_V1,
   };
+  GsplatSurfaceGpuProducerMeasurementV1 producer_measurement_before = producer_measurement;
   rc = gsplat_surface_renderer_poll_gpu_producer_measurement_v1(
       NULL,
       &producer_measurement,
       &measurement_available);
-  if (rc != GSPLAT_ERROR_INVALID_ARGUMENT) {
-    fprintf(stderr, "expected null GPU producer measurement poll to fail, got: %d\n", rc);
+  if (rc != GSPLAT_ERROR_INVALID_ARGUMENT ||
+      memcmp(&producer_measurement, &producer_measurement_before, sizeof(producer_measurement)) != 0 ||
+      measurement_available != 99) {
+    fprintf(stderr, "expected null GPU producer measurement poll to fail without output mutation, got: %d\n", rc);
     return 27;
   }
   GsplatSurfaceGpuProducerFailureV1 producer_failure = {
       .struct_size = sizeof(GsplatSurfaceGpuProducerFailureV1),
       .version = GSPLAT_SURFACE_GPU_PRODUCER_ABI_VERSION_V1,
   };
+  GsplatSurfaceGpuProducerFailureV1 producer_failure_before = producer_failure;
   rc = gsplat_surface_renderer_poll_gpu_producer_failure_v1(
       NULL,
       &producer_failure,
       &measurement_available);
-  if (rc != GSPLAT_ERROR_INVALID_ARGUMENT) {
-    fprintf(stderr, "expected null GPU producer failure poll to fail, got: %d\n", rc);
+  if (rc != GSPLAT_ERROR_INVALID_ARGUMENT ||
+      memcmp(&producer_failure, &producer_failure_before, sizeof(producer_failure)) != 0 ||
+      measurement_available != 99) {
+    fprintf(stderr, "expected null GPU producer failure poll to fail without output mutation, got: %d\n", rc);
     return 28;
   }
   GsplatSurfaceExactness exactness;
