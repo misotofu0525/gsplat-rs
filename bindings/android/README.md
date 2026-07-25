@@ -106,7 +106,9 @@ renderer.close()
 readback. Call the additive `renderFrameWithCurrentStats()` only at an explicit
 sampling point. It performs request -> render -> submission -> one non-blocking
 poll; if that poll is pending, call `pollCurrentStats()` to advance the already
-issued ticket without requesting or rendering another sample. If the requested
+issued ticket without requesting or rendering another sample. A Ready snapshot
+remains current only until the next successful ordinary presentation; that
+presentation clears it instead of exposing prior-frame counts. If the requested
 render fails, or a successful frame cannot issue the ticket yet, the native
 request intent remains explicit as `AwaitingSubmission`. The next successful
 render reconciles that retained intent by reading one submission and one global
@@ -137,6 +139,9 @@ The sample app uses the same additive adapter over its lower-level
 shows unavailable for every non-Ready state. Strict benchmark frames request
 only after their camera/resize command succeeds, then bind Issued submission and
 terminal evidence to that measured frame by ticket plus the complete identity.
+If a terminal arrives only after a later ordinary presentation, the ledger
+retains it for strict accounting but the live UI stays unavailable instead of
+displaying that prior frame's counts.
 The sample holds one `renderLock` transaction across command, request,
 render/present, submission read, and exactly one non-blocking poll, so a
 `surfaceChanged` resize cannot split that sequence. A UI request exception is

@@ -48,7 +48,8 @@ M4 = Accepted
 - **Goal execution constraint:** “isolated thread and worktree” in the active
   goal means a newly created, visible Codex task for every concrete code,
   review, benchmark, experiment, or repair slice. It explicitly excludes
-  collaboration subagents for program work; the root task only coordinates,
+  collaboration subagents for program work. The root task will not use a
+  subagent as a substitute for a visible task/thread: it only coordinates,
   integrates, and performs critical verification.
 - Every independently assigned implementation, review, benchmark or repair
   slice after M1 is dispatched as a new visible Codex task with its own

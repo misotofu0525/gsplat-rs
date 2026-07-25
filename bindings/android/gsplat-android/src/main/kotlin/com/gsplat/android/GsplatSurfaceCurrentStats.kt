@@ -347,6 +347,15 @@ data class GsplatSurfaceCurrentStatsCycle(
  * plans, or fallback counts.
  */
 class GsplatSurfaceCurrentStatsAdapter {
+    private class PresentationWatermark
+
+    // The opaque token avoids assuming native ticket/sequence ordering. Old
+    // tokens remain referenced only by renderer-bounded pending tickets.
+    private data class PendingTicket(
+        val identity: GsplatSurfaceCurrentStatsIdentity,
+        val presentationWatermark: PresentationWatermark
+    )
+
     private enum class TicketPhase {
         TERMINAL,
         REJECTED
@@ -359,9 +368,10 @@ class GsplatSurfaceCurrentStatsAdapter {
 
     // Renderer admission bounds issued-but-unresolved tickets. Android adds
     // only a finite replay window for completed/rejected submission snapshots.
-    private val pending = LinkedHashMap<Long, GsplatSurfaceCurrentStatsIdentity>()
+    private val pending = LinkedHashMap<Long, PendingTicket>()
     private val tombstones = LinkedHashMap<Long, TicketRecord>()
     private var outstandingRequest: GsplatSurfaceCurrentStatsRequest? = null
+    private var currentPresentationWatermark = PresentationWatermark()
 
     var state: GsplatSurfaceCurrentStatsState =
         GsplatSurfaceCurrentStatsState.NotRequested(pendingCount = 0)
@@ -402,7 +412,7 @@ class GsplatSurfaceCurrentStatsAdapter {
         nativeHandle: Long,
         request: GsplatSurfaceCurrentStatsRequest
     ): GsplatSurfaceCurrentStatsCycle {
-        return complete(
+        return completeAfterSuccessfulPresentation(
             request = request,
             readSubmission = { readSubmission(nativeHandle) },
             readPoll = { readPoll(nativeHandle) }
@@ -414,7 +424,7 @@ class GsplatSurfaceCurrentStatsAdapter {
         readPoll: () -> GsplatSurfaceCurrentStatsPoll
     ): GsplatSurfaceCurrentStatsCycle? {
         val request = outstandingRequest ?: return null
-        return complete(request, readSubmission, readPoll)
+        return completeAfterSuccessfulPresentation(request, readSubmission, readPoll)
     }
 
     internal fun reconcileAfterSuccessfulRender(
@@ -440,6 +450,15 @@ class GsplatSurfaceCurrentStatsAdapter {
         readSubmission = { readSubmission(nativeHandle) },
         readPoll = { readPoll(nativeHandle) }
     )
+
+    internal fun completeAfterSuccessfulPresentation(
+        request: GsplatSurfaceCurrentStatsRequest,
+        readSubmission: () -> GsplatSurfaceCurrentStatsSubmission,
+        readPoll: () -> GsplatSurfaceCurrentStatsPoll
+    ): GsplatSurfaceCurrentStatsCycle {
+        advancePresentationWatermark()
+        return complete(request, readSubmission, readPoll)
+    }
 
     private fun complete(
         request: GsplatSurfaceCurrentStatsRequest,
@@ -499,11 +518,25 @@ class GsplatSurfaceCurrentStatsAdapter {
         state = rejected("submission_reconciliation_failed", ticket = null)
     }
 
+    /** Invalidates a previously Ready snapshot after a presentation without a new request. */
+    internal fun observeOrdinaryRender() {
+        check(outstandingRequest == null) {
+            "ordinary render cannot bypass current-stats submission reconciliation"
+        }
+        advancePresentationWatermark()
+        state = emptyState(request = null, submission = null)
+    }
+
     fun reset() {
         pending.clear()
         tombstones.clear()
         outstandingRequest = null
+        currentPresentationWatermark = PresentationWatermark()
         state = GsplatSurfaceCurrentStatsState.NotRequested(0)
+    }
+
+    private fun advancePresentationWatermark() {
+        currentPresentationWatermark = PresentationWatermark()
     }
 
     private fun observeSubmission(
@@ -515,11 +548,11 @@ class GsplatSurfaceCurrentStatsAdapter {
         outstandingRequest = null
         val ticket = checkNotNull(submission.ticket)
         val identity = checkNotNull(submission.identity)
-        val pendingIdentity = pending[ticket]
-        if (pendingIdentity != null) {
-            if (pendingIdentity != identity) {
+        val pendingTicket = pending[ticket]
+        if (pendingTicket != null) {
+            if (pendingTicket.identity != identity) {
                 pending.remove(ticket)
-                rememberTombstone(ticket, pendingIdentity, TicketPhase.REJECTED)
+                rememberTombstone(ticket, pendingTicket.identity, TicketPhase.REJECTED)
                 return rejected("submission_ticket_identity_mismatch", ticket)
             }
             return null
@@ -535,7 +568,7 @@ class GsplatSurfaceCurrentStatsAdapter {
             }
             return null
         }
-        pending[ticket] = identity
+        pending[ticket] = PendingTicket(identity, currentPresentationWatermark)
         return null
     }
 
@@ -564,7 +597,7 @@ class GsplatSurfaceCurrentStatsAdapter {
         if (oldest != null) {
             return GsplatSurfaceCurrentStatsState.Pending(
                 ticket = oldest.key,
-                identity = oldest.value,
+                identity = oldest.value.identity,
                 pendingCount = pendingCount
             )
         }
@@ -585,8 +618,8 @@ class GsplatSurfaceCurrentStatsAdapter {
     private fun consumeReady(
         receipt: GsplatSurfaceCurrentStatsReceipt
     ): GsplatSurfaceCurrentStatsState {
-        val expected = pending.remove(receipt.ticket)
-        if (expected == null) {
+        val pendingTicket = pending.remove(receipt.ticket)
+        if (pendingTicket == null) {
             val completed = tombstones[receipt.ticket]
             if (completed?.phase == TicketPhase.REJECTED) {
                 return rejected("ready_for_rejected_ticket", receipt.ticket)
@@ -597,19 +630,25 @@ class GsplatSurfaceCurrentStatsAdapter {
             rememberTombstone(receipt.ticket, receipt.identity, TicketPhase.REJECTED)
             return rejected("ready_without_issued_submission", receipt.ticket)
         }
-        if (expected != receipt.identity) {
-            rememberTombstone(receipt.ticket, expected, TicketPhase.REJECTED)
+        if (pendingTicket.identity != receipt.identity) {
+            rememberTombstone(receipt.ticket, pendingTicket.identity, TicketPhase.REJECTED)
             return rejected("ready_identity_mismatch", receipt.ticket)
         }
-        rememberTombstone(receipt.ticket, expected, TicketPhase.TERMINAL)
-        return GsplatSurfaceCurrentStatsState.Ready(receipt, pendingCount)
+        rememberTombstone(receipt.ticket, pendingTicket.identity, TicketPhase.TERMINAL)
+        val readyIsCurrent = pendingTicket.presentationWatermark ===
+            currentPresentationWatermark
+        return if (readyIsCurrent) {
+            GsplatSurfaceCurrentStatsState.Ready(receipt, pendingCount)
+        } else {
+            emptyState(request = null, submission = null)
+        }
     }
 
     private fun consumeFailure(
         failure: GsplatSurfaceCurrentStatsFailure
     ): GsplatSurfaceCurrentStatsState {
-        val expected = pending.remove(failure.ticket)
-        if (expected == null) {
+        val pendingTicket = pending.remove(failure.ticket)
+        if (pendingTicket == null) {
             val completed = tombstones[failure.ticket]
             if (completed?.phase == TicketPhase.REJECTED) {
                 return rejected("failure_for_rejected_ticket", failure.ticket)
@@ -620,11 +659,11 @@ class GsplatSurfaceCurrentStatsAdapter {
             rememberTombstone(failure.ticket, failure.identity, TicketPhase.REJECTED)
             return rejected("failure_without_issued_submission", failure.ticket)
         }
-        if (expected != failure.identity) {
-            rememberTombstone(failure.ticket, expected, TicketPhase.REJECTED)
+        if (pendingTicket.identity != failure.identity) {
+            rememberTombstone(failure.ticket, pendingTicket.identity, TicketPhase.REJECTED)
             return rejected("failure_identity_mismatch", failure.ticket)
         }
-        rememberTombstone(failure.ticket, expected, TicketPhase.TERMINAL)
+        rememberTombstone(failure.ticket, pendingTicket.identity, TicketPhase.TERMINAL)
         return GsplatSurfaceCurrentStatsState.Failed(failure, pendingCount)
     }
 

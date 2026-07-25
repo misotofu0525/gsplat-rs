@@ -135,6 +135,8 @@ class GsplatSurfaceRenderer private constructor(
             checkResult(renderCode)
             if (currentStatsAdapter.requiresSubmissionReconciliation) {
                 currentStatsAdapter.reconcileAfterOrdinaryRender(nativeHandle)
+            } else {
+                currentStatsAdapter.observeOrdinaryRender()
             }
         }
     }

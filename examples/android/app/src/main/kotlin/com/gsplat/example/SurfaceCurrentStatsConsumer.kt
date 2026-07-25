@@ -74,6 +74,8 @@ internal class SurfaceCurrentStatsConsumer(
     private val adapter: GsplatSurfaceCurrentStatsAdapter =
         GsplatSurfaceCurrentStatsAdapter()
 ) {
+    private class PresentationWatermark
+
     private data class OutstandingRequest(
         val binding: SurfaceCurrentStatsFrameBinding,
         val request: GsplatSurfaceCurrentStatsRequest
@@ -81,7 +83,8 @@ internal class SurfaceCurrentStatsConsumer(
 
     private data class IssuedTicket(
         val binding: SurfaceCurrentStatsFrameBinding,
-        val identity: GsplatSurfaceCurrentStatsIdentity
+        val identity: GsplatSurfaceCurrentStatsIdentity,
+        val presentationWatermark: PresentationWatermark
     )
 
     private data class MutableSampleRecord(
@@ -109,6 +112,8 @@ internal class SurfaceCurrentStatsConsumer(
     private var firstRejection: String? = null
     private var outstanding: OutstandingRequest? = null
     private var latestBinding: SurfaceCurrentStatsFrameBinding? = null
+    // Old tokens remain referenced only by renderer-bounded issued tickets.
+    private var currentPresentationWatermark = PresentationWatermark()
     private var nextUiFrameId = -1L
 
     var display: SurfaceCurrentStatsDisplay =
@@ -232,18 +237,26 @@ internal class SurfaceCurrentStatsConsumer(
         completeRequest: (GsplatSurfaceCurrentStatsRequest) -> GsplatSurfaceCurrentStatsCycle,
         pollPending: () -> GsplatSurfaceCurrentStatsState
     ): SurfaceCurrentStatsDisplay {
+        currentPresentationWatermark = PresentationWatermark()
         val current = outstanding
         if (current != null) {
             consumeCycle(completeRequest(current.request))
         } else if (issued.isNotEmpty()) {
-            consumePolledState(pollPending())
+            consumePolledState(pollPending(), readyIsCurrent = false)
+        } else {
+            publishState(GsplatSurfaceCurrentStatsState.NotRequested(pendingCount = 0))
         }
         return display
     }
 
-    fun pollPending(nativeHandle: Long): SurfaceCurrentStatsDisplay {
+    fun pollPending(nativeHandle: Long): SurfaceCurrentStatsDisplay =
+        pollPending { adapter.poll(nativeHandle) }
+
+    internal fun pollPending(
+        readPoll: () -> GsplatSurfaceCurrentStatsState
+    ): SurfaceCurrentStatsDisplay {
         if (issued.isNotEmpty()) {
-            consumePolledState(adapter.poll(nativeHandle))
+            consumePolledState(readPoll())
         }
         return display
     }
@@ -262,7 +275,7 @@ internal class SurfaceCurrentStatsConsumer(
             outstanding = null
         }
 
-        var readyBinding: SurfaceCurrentStatsFrameBinding? = null
+        var readyTicket: IssuedTicket? = null
         when (cycle.poll.kind) {
             GsplatSurfaceCurrentStatsPollKind.EMPTY -> Unit
             GsplatSurfaceCurrentStatsPollKind.UNSAMPLED -> {
@@ -272,27 +285,30 @@ internal class SurfaceCurrentStatsConsumer(
                 outstanding = null
             }
             GsplatSurfaceCurrentStatsPollKind.READY ->
-                readyBinding = recordReady(checkNotNull(cycle.poll.receipt))
+                readyTicket = recordReady(checkNotNull(cycle.poll.receipt))
             else -> recordFailure(checkNotNull(cycle.poll.failure))
         }
         val cycleState = cycle.state
         if (cycleState is GsplatSurfaceCurrentStatsState.Rejected) {
             recordRejection(cycleState.reason, cycleState.ticket, intent.binding)
         }
-        publishState(cycleState, readyBinding)
+        publishState(cycleState, readyTicket)
     }
 
-    internal fun consumePolledState(state: GsplatSurfaceCurrentStatsState) {
-        var readyBinding: SurfaceCurrentStatsFrameBinding? = null
+    internal fun consumePolledState(
+        state: GsplatSurfaceCurrentStatsState,
+        readyIsCurrent: Boolean = true
+    ) {
+        var readyTicket: IssuedTicket? = null
         when (state) {
             is GsplatSurfaceCurrentStatsState.Ready ->
-                readyBinding = recordReady(state.receipt)
+                readyTicket = recordReady(state.receipt)
             is GsplatSurfaceCurrentStatsState.Failed -> recordFailure(state.failure)
             is GsplatSurfaceCurrentStatsState.Rejected ->
                 recordRejection(state.reason, state.ticket, null)
             else -> Unit
         }
-        publishState(state, readyBinding)
+        publishState(state, readyTicket, readyIsCurrent)
     }
 
     fun benchmarkTerminalsComplete(expectedSamples: Int): Boolean =
@@ -351,7 +367,7 @@ internal class SurfaceCurrentStatsConsumer(
             recordRejection(reason, ticket, binding)
             return
         }
-        issued[ticket] = IssuedTicket(binding, identity)
+        issued[ticket] = IssuedTicket(binding, identity, currentPresentationWatermark)
         binding.sampleIndex?.let { sampleIndex ->
             val record = checkNotNull(samples[sampleIndex])
             record.submissionIssued = true
@@ -362,7 +378,7 @@ internal class SurfaceCurrentStatsConsumer(
 
     private fun recordReady(
         receipt: GsplatSurfaceCurrentStatsReceipt
-    ): SurfaceCurrentStatsFrameBinding? {
+    ): IssuedTicket? {
         val issuedTicket = issued[receipt.ticket]
         if (issuedTicket == null) {
             recordRejection("ready_without_issued_ticket", receipt.ticket, null)
@@ -377,7 +393,7 @@ internal class SurfaceCurrentStatsConsumer(
             checkNotNull(samples[sampleIndex]).terminal = terminal
         }
         issued.remove(receipt.ticket)
-        return issuedTicket.binding
+        return issuedTicket
     }
 
     private fun recordFailure(failure: GsplatSurfaceCurrentStatsFailure) {
@@ -426,19 +442,29 @@ internal class SurfaceCurrentStatsConsumer(
 
     private fun publishState(
         state: GsplatSurfaceCurrentStatsState,
-        readyBinding: SurfaceCurrentStatsFrameBinding? = null
+        readyTicket: IssuedTicket? = null,
+        readyIsCurrent: Boolean = true
     ) {
         val next = when (state) {
             is GsplatSurfaceCurrentStatsState.Ready -> {
-                if (readyBinding != null &&
+                val readyBinding = readyTicket?.binding
+                val matchesCurrentPresentation = readyTicket?.presentationWatermark ===
+                    currentPresentationWatermark
+                if (readyIsCurrent &&
+                    matchesCurrentPresentation &&
+                    readyBinding != null &&
                     readyBinding == latestBinding &&
                     outstanding == null
                 ) {
                     SurfaceCurrentStatsDisplay.Ready(readyBinding, state.receipt)
                 } else {
                     SurfaceCurrentStatsDisplay.Unavailable(
-                        if (readyBinding == null) {
+                        if (!readyIsCurrent) {
+                            "ready_for_prior_presentation"
+                        } else if (readyTicket == null) {
                             "ready_without_matching_issued"
+                        } else if (!matchesCurrentPresentation) {
+                            "ready_for_prior_presentation"
                         } else {
                             "newer_sample_pending"
                         },

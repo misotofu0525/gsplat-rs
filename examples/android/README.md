@@ -42,7 +42,10 @@ diagnostic only, and changing the raster plan resets the learned policy.
 The live overlay explicitly requests current-stats only at its low-frequency
 status sampling points. Pending, Busy, unavailable, and empty states keep
 rendering and show counts as unavailable; they never reuse an older receipt or
-display zero, capacity, or a sentinel as a count.
+display zero, capacity, or a sentinel as a count. A newer ordinary presentation
+also invalidates a previously displayed Ready snapshot. A delayed matching
+terminal is retained for strict ledger accounting but cannot repopulate the UI
+with counts from the prior presentation.
 
 Every measured benchmark frame owns a separate current-stats pre-ticket intent.
 After the frame's fallible camera/resize command succeeds, the app requests the

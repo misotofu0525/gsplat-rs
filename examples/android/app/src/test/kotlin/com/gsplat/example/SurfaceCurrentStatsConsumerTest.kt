@@ -277,6 +277,106 @@ class SurfaceCurrentStatsConsumerTest {
     }
 
     @Test
+    fun ordinaryPresentationClearsPreviouslyDisplayedReadyCounts() {
+        val consumer = SurfaceCurrentStatsConsumer()
+        val first = consumer.nextUiBinding()
+        val request = consumer.beginRequest(first) { requested() }
+        consumer.consumeCycle(
+            readyCycle(
+                request,
+                72,
+                identity(cameraRevision = 30, presentationSequence = 90)
+            )
+        )
+        assertTrue(consumer.display is SurfaceCurrentStatsDisplay.Ready)
+
+        consumer.advanceAfterSuccessfulRender(
+            completeRequest = { error("ordinary frame must not complete a request") },
+            pollPending = { error("ordinary frame has no pending ticket") }
+        )
+
+        val unavailable = consumer.display as SurfaceCurrentStatsDisplay.Unavailable
+        assertEquals("not_requested", unavailable.reason)
+        assertEquals(0, unavailable.pendingCount)
+    }
+
+    @Test
+    fun delayedReadyAfterNewerPresentationIsRecordedButNotDisplayed() {
+        val consumer = SurfaceCurrentStatsConsumer()
+        val request = consumer.beginRequest(binding(0)) { requested() }
+        val sampleIdentity = identity(cameraRevision = 31, presentationSequence = 91)
+        consumer.consumeCycle(pendingCycle(request, 73, sampleIdentity))
+
+        consumer.advanceAfterSuccessfulRender(
+            completeRequest = { error("issued sample has no pre-ticket intent") },
+            pollPending = { readyState(73, sampleIdentity) }
+        )
+
+        val unavailable = consumer.display as SurfaceCurrentStatsDisplay.Unavailable
+        assertEquals("ready_for_prior_presentation", unavailable.reason)
+        assertEquals(0, unavailable.pendingCount)
+        assertTrue(
+            consumer.recordForSample(0)?.terminal is SurfaceCurrentStatsTerminal.Ready
+        )
+        assertEquals(1, consumer.strictRecords(1).size)
+    }
+
+    @Test
+    fun delayedReadyAfterOrdinaryEmptyStaysStaleWhileLaterCurrentReadyPublishes() {
+        val consumer = SurfaceCurrentStatsConsumer()
+        val firstBinding = binding(0)
+        val firstRequest = consumer.beginRequest(firstBinding) { requested() }
+        val firstIdentity = identity(cameraRevision = 32, presentationSequence = 92)
+        consumer.advanceAfterSuccessfulRender(
+            completeRequest = {
+                pendingCycle(firstRequest, ticket = 74, identity = firstIdentity)
+            },
+            pollPending = { error("requested frame must complete its request") }
+        )
+
+        consumer.advanceAfterSuccessfulRender(
+            completeRequest = { error("ordinary frame must not complete a request") },
+            pollPending = {
+                // The adapter maps native Empty with ticket 74 still issued to Pending.
+                GsplatSurfaceCurrentStatsState.Pending(
+                    ticket = 74,
+                    identity = firstIdentity,
+                    pendingCount = 1
+                )
+            }
+        )
+        val afterEmpty = consumer.display as SurfaceCurrentStatsDisplay.Unavailable
+        assertEquals("pending", afterEmpty.reason)
+        assertEquals(1, afterEmpty.pendingCount)
+
+        consumer.pollPending { readyState(ticket = 74, identity = firstIdentity) }
+
+        val stale = consumer.display as SurfaceCurrentStatsDisplay.Unavailable
+        assertEquals("ready_for_prior_presentation", stale.reason)
+        assertEquals(0, stale.pendingCount)
+        assertTrue(
+            consumer.recordForSample(0)?.terminal is SurfaceCurrentStatsTerminal.Ready
+        )
+        assertEquals(1, consumer.strictRecords(1).size)
+
+        val secondBinding = binding(1)
+        val secondRequest = consumer.beginRequest(secondBinding) { requested() }
+        val secondIdentity = identity(cameraRevision = 33, presentationSequence = 93)
+        consumer.advanceAfterSuccessfulRender(
+            completeRequest = {
+                pendingCycle(secondRequest, ticket = 75, identity = secondIdentity)
+            },
+            pollPending = { error("requested frame must complete its request") }
+        )
+        consumer.pollPending { readyState(ticket = 75, identity = secondIdentity) }
+
+        val ready = consumer.display as SurfaceCurrentStatsDisplay.Ready
+        assertEquals(secondBinding, ready.binding)
+        assertEquals(75L, ready.receipt.ticket)
+        assertEquals(listOf(74L, 75L), consumer.strictRecords(2).map { it.ticket })
+    }
+
+    @Test
     fun thousandsOfUiReadyCyclesKeepConsumerTrackingBounded() {
         val consumer = SurfaceCurrentStatsConsumer()
 
