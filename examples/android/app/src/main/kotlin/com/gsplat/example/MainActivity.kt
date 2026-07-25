@@ -804,6 +804,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
     private lateinit var datasetPath: String
     private var datasetLabel = "pending"
     private lateinit var statusText: TextView
+    private lateinit var surfaceView: SurfaceView
     private lateinit var sceneTitleText: TextView
     private lateinit var sceneMetaText: TextView
     private lateinit var studioPanel: LinearLayout
@@ -837,14 +838,15 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        benchmarkConfig = BenchmarkConfig.fromIntent(intent)
+        benchmarkConfig = BenchmarkConfig.fromIntent(intent, filesDir)
+        benchmarkConfig.finalFrameRequest?.prepareForLaunch()
         if (benchmarkConfig.enabled) {
             requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
         }
         setDataset(resolveInitialDataset())
 
         surfaceSizeLabel = "window"
-        val surfaceView = SurfaceView(this).apply {
+        surfaceView = SurfaceView(this).apply {
             holder.addCallback(this@MainActivity)
             setOnTouchListener(::handleTouch)
         }
@@ -1579,34 +1581,52 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                                             renderSessionOwner.requestStop(session)
                                             continue
                                         }
-                                        val artifactResult = runCatching {
-                                            val result = benchmark.resultLine(
-                                                datasetLabel,
-                                                currentStats
-                                            )
-                                            Log.i(TAG, result)
-                                            val presentation = BenchmarkPresentationReceipt
-                                                .query(handle)
-                                                .getOrThrow()
-                                            presentation.requireFormal(
-                                                currentSurfaceWidth,
-                                                currentSurfaceHeight
-                                            )
-                                            benchmark.artifactLines(
-                                                datasetLabel = datasetLabel,
-                                                datasetPath = datasetPath,
-                                                presentation = presentation,
-                                                physicalDisplayWidth = display?.mode?.physicalWidth,
-                                                physicalDisplayHeight = display?.mode?.physicalHeight,
-                                                density = resources.displayMetrics.density,
-                                                refreshHz = display?.refreshRate?.toDouble(),
-                                                thermalStatusEnd = currentThermalStatus(),
-                                                currentStats = currentStats
-                                            ).forEach { (prefix, json) ->
-                                                logBenchmarkArtifact(prefix, json)
+                                        val artifactResult = finalizeBenchmarkArtifact(
+                                            prepareEvidence = {
+                                                val presentation = BenchmarkPresentationReceipt
+                                                    .query(handle)
+                                                    .getOrThrow()
+                                                presentation.requireFormal(
+                                                    currentSurfaceWidth,
+                                                    currentSurfaceHeight
+                                                )
+                                                PreparedBenchmarkArtifact(
+                                                    resultLine = benchmark.resultLine(
+                                                        datasetLabel,
+                                                        currentStats
+                                                    ),
+                                                    records = benchmark.artifactLines(
+                                                        datasetLabel = datasetLabel,
+                                                        datasetPath = datasetPath,
+                                                        presentation = presentation,
+                                                        physicalDisplayWidth =
+                                                            display?.mode?.physicalWidth,
+                                                        physicalDisplayHeight =
+                                                            display?.mode?.physicalHeight,
+                                                        density = resources.displayMetrics.density,
+                                                        refreshHz = display?.refreshRate?.toDouble(),
+                                                        thermalStatusEnd = currentThermalStatus(),
+                                                        currentStats = currentStats
+                                                    )
+                                                )
+                                            },
+                                            captureFinalFrame = benchmark.config.finalFrameRequest
+                                                ?.let { request ->
+                                                    {
+                                                        BenchmarkSurfaceCapture(surfaceView).capture(
+                                                            request,
+                                                            currentSurfaceWidth,
+                                                            currentSurfaceHeight
+                                                        )
+                                                    }
+                                                },
+                                            publishEvidence = { prepared ->
+                                                Log.i(TAG, prepared.resultLine)
+                                                prepared.records.forEach { (prefix, json) ->
+                                                    logBenchmarkArtifact(prefix, json)
+                                                }
                                             }
-                                            result
-                                        }
+                                        )
                                         if (artifactResult.isFailure) {
                                             val error = artifactResult.exceptionOrNull()
                                             Log.e(TAG, "formal benchmark artifact rejected", error)
@@ -2294,6 +2314,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         private const val EXTRA_SURFACE_GPU_PRODUCER = "gsplat_surface_gpu_producer"
         private const val EXTRA_SURFACE_GPU_PRODUCER_MEASUREMENT =
             "gsplat_surface_gpu_producer_measurement"
+        private const val EXTRA_BENCHMARK_FINAL_PNG_PATH = "gsplat_benchmark_final_png_path"
         private const val DEFAULT_BENCHMARK_FRAMES = 120
         private const val DEFAULT_BENCHMARK_WARMUP_FRAMES = 10
         private const val DEFAULT_BENCHMARK_YAW_STEP = 0.001f
@@ -2380,10 +2401,17 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         val cameraTraceFrameIndices: List<Int> = emptyList(),
         val cameraTraceLoops: Int = 1,
         val requireTraceDisplayMatch: Boolean = true,
-        val cameraTraceMetadata: CameraTraceMetadata? = null
+        val cameraTraceMetadata: CameraTraceMetadata? = null,
+        val finalFrameRequest: BenchmarkFinalFrameRequest? = null
     ) {
         companion object {
-            fun fromIntent(intent: Intent): BenchmarkConfig {
+            fun fromIntent(intent: Intent, appFilesDir: File): BenchmarkConfig {
+                val benchmarkEnabled = intent.getBooleanExtra(EXTRA_BENCHMARK, false)
+                val finalFrameRequest = BenchmarkFinalFrameRequest.parse(
+                    benchmarkEnabled = benchmarkEnabled,
+                    requestedPath = intent.getStringExtra(EXTRA_BENCHMARK_FINAL_PNG_PATH),
+                    appFilesDir = appFilesDir
+                )
                 val cameraTracePath = intent.getStringExtra(EXTRA_CAMERA_TRACE_PATH)
                     ?.trim()
                     ?.takeIf(String::isNotEmpty)
@@ -2487,8 +2515,15 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                     EXTRA_REQUIRE_TRACE_DISPLAY_MATCH,
                     true
                 )
+                requireFormalFinalFrameProtocol(
+                    request = finalFrameRequest,
+                    requireTraceDisplayMatch = requireTraceDisplayMatch,
+                    traceWidth = cameraTraceMetadata?.width,
+                    traceHeight = cameraTraceMetadata?.height,
+                    geometryPath = geometryPath
+                )
                 return BenchmarkConfig(
-                    enabled = intent.getBooleanExtra(EXTRA_BENCHMARK, false),
+                    enabled = benchmarkEnabled,
                     frames = frames,
                     warmupFrames = warmupFrames,
                     yawStepRadians = yawStep,
@@ -2504,7 +2539,8 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                     cameraTraceFrameIndices = cameraTraceFrameIndices,
                     cameraTraceLoops = cameraTraceLoops,
                     requireTraceDisplayMatch = requireTraceDisplayMatch,
-                    cameraTraceMetadata = cameraTraceMetadata
+                    cameraTraceMetadata = cameraTraceMetadata,
+                    finalFrameRequest = finalFrameRequest
                 )
             }
 

@@ -34,6 +34,19 @@ environment metadata. Explicit `gsplat_require_trace_display_match=false` is
 available only for smoke testing and marks the artifact as native-aspect
 reprojection, which is not quality-comparable evidence.
 
+The formal host collector also requests one app-private
+`files/benchmark-final-frame.png`. The Activity accepts only that fixed path,
+deletes any stale published or temporary file before renderer startup, and
+requires the exact 2412x1080 trace plus full-resident Direct/Packed geometry.
+After all benchmark, terminal current-stats, order, exactness, and presentation
+checks succeed, Android `PixelCopy` copies the renderer's last presented
+raw `Surface` buffer at its native drawable size. The app fsyncs a same-directory
+temporary PNG and atomically renames it before emitting `BENCHMARK_RESULT` and
+the manifest/frame/summary records. It does not use system screencap, host
+display capture, UI-composited screenshots, a prior file, or a synthesized
+image. A copy, PNG encode, or publication failure emits neither the completion
+records nor a final PNG.
+
 Adaptive compares CPU and GPU with the same `FrameCompletion` interval from
 frame start through queue completion, including sorting, projection,
 rasterization, submission, and queued work. Order-stage timestamps are
