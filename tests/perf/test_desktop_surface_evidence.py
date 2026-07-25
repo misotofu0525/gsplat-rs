@@ -626,6 +626,43 @@ class CanonicalArtifactTests(unittest.TestCase):
                     self.assertFalse(output.exists())
                     self.assertTrue(stage.is_dir())
 
+    def test_publication_rejects_any_retained_execute_mode_bit(self) -> None:
+        for mode in (0o100, 0o010, 0o001):
+            with self.subTest(mode=oct(mode)), tempfile.TemporaryDirectory() as temporary:
+                root = pathlib.Path(temporary)
+                stage = root / ".stage"
+                output = root / "canonical"
+                suite = self.complete_suite(stage, "d" * 64)
+                retained = stage / "retained-file"
+                retained.write_bytes(b"must-not-publish")
+                retained.chmod(mode)
+
+                self.assertEqual(retained.stat().st_mode & 0o111, mode)
+                with self.assertRaisesRegex(COLLECTOR.ValidationError, "executable files"):
+                    COLLECTOR.publish_validated_suite(stage, output, suite)
+
+                self.assertTrue(stage.is_dir())
+                self.assertTrue(retained.is_file())
+                self.assertFalse((stage / "suite.json").exists())
+                self.assertFalse(output.exists())
+
+    def test_publication_allows_retained_regular_file_with_mode_0000(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            stage = root / ".stage"
+            output = root / "canonical"
+            suite = self.complete_suite(stage, "d" * 64)
+            retained = stage / "retained-file"
+            retained.write_bytes(b"safe-to-publish")
+            retained.chmod(0o000)
+
+            self.assertEqual(retained.stat().st_mode & 0o111, 0)
+            COLLECTOR.publish_validated_suite(stage, output, suite)
+
+            self.assertFalse(stage.exists())
+            self.assertTrue((output / "retained-file").is_file())
+            self.assertTrue((output / "suite.json").is_file())
+
     def test_successful_publication_excludes_private_target_and_keeps_attestation(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = pathlib.Path(temporary)

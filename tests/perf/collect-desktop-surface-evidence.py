@@ -593,7 +593,7 @@ def publish_validated_suite(stage: Path, output: Path, suite: dict[str, Any]) ->
     retained_executables = [
         path.relative_to(stage)
         for path in stage.rglob("*")
-        if path.is_file() and os.access(path, os.X_OK)
+        if path.is_file() and path.stat().st_mode & 0o111 != 0
     ]
     require(
         not retained_executables,
