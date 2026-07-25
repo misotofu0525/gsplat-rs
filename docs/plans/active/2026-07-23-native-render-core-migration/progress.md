@@ -460,3 +460,18 @@ M3 = Active
   qualification result. M3 remains Active because order/projected/producer
   compatibility queues and count ledgers remain in the FFI handle; merely
   moving them would not remove duplicate ownership.
+- **M3b renderer-owned terminal store: Accepted and integrated.** Visible
+  implementation candidate `621ff8c967f04d29c2d19ee101d2df41c82b84fa` was
+  independently reviewed with no P0/P1/P2 and integrated by root as
+  `0452fe6`. `SurfaceRenderSession` now owns compatibility submission,
+  terminal and ticket-count state for order, projected and producer evidence.
+  Success publishes its terminal and exact count record atomically; failures
+  expose no usable counts; counts are ticket-addressed, take-once and explicit
+  about pending, expiry, consumption or invalid tickets. Order retention is
+  64 terminal records per lane with 128 combined count records, projected
+  counts retain 64, and producer keeps its raw terminal FIFO lossless while
+  bounding only its compatibility view. Root repeated formatter, 461 renderer
+  library tests (8 existing research ignores), workspace check, strict
+  renderer Clippy, architecture policy and WASM renderer check. This is still
+  not M3 completion: M3c must delete FFI-side duplicate queues and translate
+  the unchanged C ABI directly from this renderer-owned seam.
