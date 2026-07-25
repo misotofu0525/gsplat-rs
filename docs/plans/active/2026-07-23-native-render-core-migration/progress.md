@@ -486,3 +486,18 @@ M3 = Active
   or reintroduced. Root reran formatter, the 13 compatibility tests, renderer
   check and strict Clippy, architecture self-tests/policy and diff checks.
   M3c must restart from this repaired base.
+- **M3b producer-seam repair: Accepted and integrated.** The restarted M3c
+  task then correctly stopped before editing because the frozen C producer poll
+  is one-record-at-a-time while renderer raw evidence exposed only a full
+  drain. A separate visible candidate
+  `2ace73223dd98f4df501c9b716c8c1930e23352e` was independently accepted with
+  no P0/P1/P2 and integrated as `f0f8c0b`. Compatibility polling and raw
+  producer FIFO now consume separate visibility views: bounded compatibility
+  delivery cannot erase raw records, and renderer-owned single-pop success and
+  failure APIs retain exact FIFO beyond the 64-record compatibility window.
+  The session also exposes its committed producer-measurement state while
+  retaining all transition admission and rollback logic. Root reran formatter,
+  456 renderer tests (8 existing research ignores), 34 FFI tests, workspace
+  check, strict renderer Clippy, WASM Web check and architecture policy. M3c
+  must restart from this second repaired base; FFI must not recreate queues or
+  mirror the enabled state.
