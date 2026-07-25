@@ -245,8 +245,11 @@ impl PlanSampler {
         &mut self,
         command_buffer: &wgpu::CommandBuffer,
         staged: StagedCurrentStats,
+        completion_started: TimerInstant,
     ) -> ArmedCurrentStats {
-        let armed = self.current_stats.arm(command_buffer, staged);
+        let armed = self
+            .current_stats
+            .arm(command_buffer, staged, completion_started);
         self.observer_since_formal = true;
         armed
     }

@@ -3305,6 +3305,62 @@ pub unsafe extern "C" fn gsplat_surface_renderer_pump_receipts(
     })
 }
 
+const SURFACE_RECEIPT_PUMP_QUEUE_COMPLETE: u32 = 1;
+const SURFACE_RECEIPT_PUMP_TIMEOUT: u32 = 2;
+
+/// Boundedly advances callbacks and reports whether the native wait observed
+/// queue completion or elapsed. Unlike the legacy entrypoint, v1 makes a
+/// timeout observable without treating it as an FFI error.
+///
+/// # Safety
+///
+/// `renderer` must be null or a live Surface renderer. `out_status` must be
+/// null or point to writable `u32` storage. It is not mutated on error.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gsplat_surface_renderer_pump_receipts_v1(
+    renderer: *mut GsplatSurfaceRenderer,
+    timeout_ns: u64,
+    out_status: *mut u32,
+) -> i32 {
+    ffi_catch_i32("gsplat_surface_renderer_pump_receipts_v1", || {
+        let renderer = match unsafe { renderer.as_mut() } {
+            Some(renderer) => renderer,
+            None => {
+                return ffi_error(
+                    ErrorCode::InvalidArgument,
+                    "gsplat_surface_renderer_pump_receipts_v1: renderer is null",
+                );
+            }
+        };
+        if out_status.is_null() {
+            return ffi_error(
+                ErrorCode::InvalidArgument,
+                "gsplat_surface_renderer_pump_receipts_v1: out_status is null",
+            );
+        }
+        match renderer
+            .session
+            .pump_receipts(Duration::from_nanos(timeout_ns))
+        {
+            Ok(completed) => {
+                unsafe {
+                    *out_status = if completed {
+                        SURFACE_RECEIPT_PUMP_QUEUE_COMPLETE
+                    } else {
+                        SURFACE_RECEIPT_PUMP_TIMEOUT
+                    };
+                }
+                ffi_ok()
+            }
+            Err(error) => ffi_error_display(
+                error.code(),
+                "gsplat_surface_renderer_pump_receipts_v1",
+                error,
+            ),
+        }
+    })
+}
+
 /// Request one current-stats sample from the next eligible Exact Surface
 /// frame. Sampling admission is returned in `out_request->status`; a legal
 /// call returns `GSPLAT_OK` even when the Renderer reports an unsampled status.
@@ -4507,10 +4563,11 @@ mod tests {
         gsplat_surface_renderer_poll_cpu_order_measurement,
         gsplat_surface_renderer_poll_order_measurement,
         gsplat_surface_renderer_poll_order_measurement_failure,
-        gsplat_surface_renderer_render_frame, gsplat_surface_renderer_reset_camera,
-        gsplat_surface_renderer_resize, gsplat_surface_renderer_set_async_geometry,
-        gsplat_surface_renderer_set_async_sort, gsplat_surface_renderer_set_frame_latency,
-        gsplat_surface_renderer_set_geometry_path, gsplat_surface_renderer_set_gpu_preproject,
+        gsplat_surface_renderer_pump_receipts_v1, gsplat_surface_renderer_render_frame,
+        gsplat_surface_renderer_reset_camera, gsplat_surface_renderer_resize,
+        gsplat_surface_renderer_set_async_geometry, gsplat_surface_renderer_set_async_sort,
+        gsplat_surface_renderer_set_frame_latency, gsplat_surface_renderer_set_geometry_path,
+        gsplat_surface_renderer_set_gpu_preproject,
         gsplat_surface_renderer_set_gpu_preproject_double_buffer,
         gsplat_surface_renderer_set_instance_buffer_count,
         gsplat_surface_renderer_set_order_backend, gsplat_surface_renderer_set_sort_interval,
@@ -5293,6 +5350,7 @@ mod tests {
         let mut presentation = GsplatSurfacePresentation::default();
         let mut camera_receipt = GsplatSurfaceCameraReceiptV1::default();
         let mut available = 0_u32;
+        let mut pump_status = 77_u32;
         let expected = ErrorCode::InvalidArgument.as_i32();
 
         assert_eq!(
@@ -5355,6 +5413,13 @@ mod tests {
             unsafe { gsplat_surface_renderer_render_frame(ptr::null_mut()) },
             expected
         );
+        assert_eq!(
+            unsafe {
+                gsplat_surface_renderer_pump_receipts_v1(ptr::null_mut(), 1, &mut pump_status)
+            },
+            expected
+        );
+        assert_eq!(pump_status, 77, "error must not mutate pump status");
         assert_eq!(
             unsafe { gsplat_surface_renderer_get_stats(ptr::null(), &mut stats) },
             expected

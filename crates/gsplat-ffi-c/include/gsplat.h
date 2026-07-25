@@ -780,6 +780,17 @@ int32_t gsplat_surface_renderer_pump_receipts(
     GsplatSurfaceRenderer *renderer,
     uint64_t timeout_ns);
 /*
+ * Additive status-reporting form of the receipt pump. GSPLAT_OK means
+ * out_status is one of the two values below; a timeout remains a successful
+ * bounded wait and must not be confused with queue completion.
+ */
+#define GSPLAT_SURFACE_RECEIPT_PUMP_QUEUE_COMPLETE 1u
+#define GSPLAT_SURFACE_RECEIPT_PUMP_TIMEOUT 2u
+int32_t gsplat_surface_renderer_pump_receipts_v1(
+    GsplatSurfaceRenderer *renderer,
+    uint64_t timeout_ns,
+    uint32_t *out_status);
+/*
  * Copies the last Surface stats only when V/D are demonstrably current.
  * Asynchronous counts require a ticket- and generation-matched current-stats
  * v1 READY receipt. Unrequested, pending, failed, expired, or mismatched

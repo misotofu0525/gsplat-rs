@@ -317,6 +317,25 @@ internal class SurfaceCurrentStatsConsumer(
             record == null || record.ticket == null || record.terminal != null
         }
 
+    fun benchmarkDiagnostics(expectedSamples: Int): String {
+        val records = (0 until expectedSamples).mapNotNull(samples::get)
+        val issued = records.count { it.ticket != null }
+        val terminals = records.count { it.terminal != null }
+        val firstMissingSubmission = (0 until expectedSamples).firstOrNull { index ->
+            samples[index]?.ticket == null
+        }
+        val firstPendingTerminal = (0 until expectedSamples).firstOrNull { index ->
+            val record = samples[index]
+            record?.ticket != null && record.terminal == null
+        }
+        return "current_stats_records=${records.size} current_stats_issued=$issued " +
+            "current_stats_callback_armed=$issued " +
+            "current_stats_terminal=$terminals current_stats_pending=${issued - terminals} " +
+            "current_stats_rejections=${if (firstRejection == null) 0 else 1} " +
+            "first_missing_current_stats_submission=${firstMissingSubmission ?: -1} " +
+            "first_pending_current_stats_terminal=${firstPendingTerminal ?: -1}"
+    }
+
     fun strictRecords(expectedSamples: Int): List<SurfaceCurrentStatsSampleRecord> {
         check(firstRejection == null) {
             "current-stats consumer rejected evidence: $firstRejection"

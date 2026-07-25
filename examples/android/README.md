@@ -71,6 +71,13 @@ never satisfy an earlier sample. Missing Ready,
 failure, expiry, generation drift, identity drift, or flush exhaustion rejects
 the artifact.
 
+When that Exact frame refreshed order, its issued current-stats ticket is also
+the required order ticket; the terminal is projected into both strict ledgers
+without another render, submit, or ticket. Terminal-drain log lines include
+QueueComplete versus Timeout, the render-thread id/name, and issued/terminal/
+pending counts for both ledgers. QueueComplete with pending terminals is
+reported separately from repeated pump timeout and native pump error.
+
 Command, request, render/present, submission read, and that one poll share the
 same render-lock transaction; `surfaceChanged` cannot resize between them. UI
 request failures still render and show unavailable, while strict request

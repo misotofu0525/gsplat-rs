@@ -98,6 +98,13 @@ object NativeBridge {
     external fun pumpSurfaceReceipts(nativeHandle: Long, timeoutNanos: Long): Int
 
     @JvmStatic
+    external fun pumpSurfaceReceiptsV1(
+        nativeHandle: Long,
+        timeoutNanos: Long,
+        outStatus: IntArray
+    ): Int
+
+    @JvmStatic
     external fun requestSurfaceCurrentStatsV1(nativeHandle: Long, outRequest: LongArray): Int
 
     @JvmStatic

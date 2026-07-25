@@ -859,6 +859,37 @@ JNIEXPORT jint JNICALL Java_com_gsplat_android_NativeBridge_pumpSurfaceReceipts(
       (uint64_t)timeout_nanos);
 }
 
+JNIEXPORT jint JNICALL Java_com_gsplat_android_NativeBridge_pumpSurfaceReceiptsV1(
+    JNIEnv *env,
+    jclass cls,
+    jlong native_handle,
+    jlong timeout_nanos,
+    jintArray out_status) {
+  (void)cls;
+
+  AndroidSurfaceRendererHandle *handle = android_handle_from_jlong(native_handle);
+  if (handle == NULL || handle->renderer == NULL || timeout_nanos < 0 ||
+      out_status == NULL || (*env)->GetArrayLength(env, out_status) < 1) {
+    return GSPLAT_ERROR_INVALID_ARGUMENT;
+  }
+
+  uint32_t status = 0;
+  int32_t rc = gsplat_surface_renderer_pump_receipts_v1(
+      handle->renderer,
+      (uint64_t)timeout_nanos,
+      &status);
+  if (rc != GSPLAT_OK) {
+    return rc;
+  }
+  if (status != GSPLAT_SURFACE_RECEIPT_PUMP_QUEUE_COMPLETE &&
+      status != GSPLAT_SURFACE_RECEIPT_PUMP_TIMEOUT) {
+    return GSPLAT_ERROR_INTERNAL;
+  }
+  jint value = (jint)status;
+  (*env)->SetIntArrayRegion(env, out_status, 0, 1, &value);
+  return (*env)->ExceptionCheck(env) ? GSPLAT_ERROR_INTERNAL : GSPLAT_OK;
+}
+
 JNIEXPORT jint JNICALL Java_com_gsplat_android_NativeBridge_requestSurfaceCurrentStatsV1(
     JNIEnv *env,
     jclass cls,

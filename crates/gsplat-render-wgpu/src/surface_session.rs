@@ -24,9 +24,11 @@ use crate::gpu_telemetry::{SurfaceCpuOrderMeasurement, TelemetrySubmission};
 use crate::surface::LegacySurfaceStatsAvailability;
 use crate::surface_presenter::{CpuCompletionSampleRequest, ProjectedDrawSampleRequest};
 use crate::{
-    GeometryPath, Renderer, RendererError, SurfaceCurrentStatsPoll, SurfaceCurrentStatsRequest,
-    SurfaceCurrentStatsSubmission, SurfaceGpuOrderProducer, SurfaceGpuProducerMeasurement,
-    SurfaceGpuProducerMeasurementFailure, SurfaceOrderMeasurement, SurfaceOrderMeasurementFailure,
+    GeometryPath, Renderer, RendererError, SurfaceCurrentStatsCountSemantics,
+    SurfaceCurrentStatsPlan, SurfaceCurrentStatsPoll, SurfaceCurrentStatsReceipt,
+    SurfaceCurrentStatsRequest, SurfaceCurrentStatsSubmission, SurfaceCurrentStatsTerminal,
+    SurfaceGpuOrderProducer, SurfaceGpuProducerMeasurement, SurfaceGpuProducerMeasurementFailure,
+    SurfaceOrderMeasurement, SurfaceOrderMeasurementFailure, SurfaceOrderMeasurementFailureReason,
     SurfacePresenter, SurfacePresenterError, SurfaceProjectedDrawExecution,
     SurfaceProjectedDrawMeasurement, SurfaceProjectedDrawMeasurementFailure,
     SurfaceRasterExecutionPlan, SurfaceTimingSource, timer_elapsed_ms, timer_now,
@@ -1830,6 +1832,120 @@ fn legacy_surface_current_stats_poll(_renderer: &mut Renderer) -> SurfaceCurrent
     SurfaceCurrentStatsPoll::Empty
 }
 
+pub(crate) fn publish_exact_order_terminal(
+    compatibility: &mut CompatibilityEvidenceStore,
+    terminal: SurfaceCurrentStatsTerminal,
+) {
+    let submission = terminal.submission();
+    let ticket = submission.ticket();
+    let camera_revision = submission.join().frame_identity().camera_revision();
+    match terminal {
+        SurfaceCurrentStatsTerminal::Ready(receipt) => {
+            publish_exact_order_success(compatibility, receipt);
+        }
+        SurfaceCurrentStatsTerminal::MapFailure(_) => {
+            compatibility.publish_order_failure(SurfaceOrderMeasurementFailure {
+                ticket,
+                camera_revision,
+                reason: SurfaceOrderMeasurementFailureReason::ReadbackMap,
+            });
+        }
+        SurfaceCurrentStatsTerminal::GenerationInvalidated(_)
+        | SurfaceCurrentStatsTerminal::Expired(_)
+        | SurfaceCurrentStatsTerminal::Dropped(_) => {
+            compatibility.publish_order_failure(SurfaceOrderMeasurementFailure {
+                ticket,
+                camera_revision,
+                reason: SurfaceOrderMeasurementFailureReason::GenerationInvalidated,
+            });
+        }
+    }
+}
+
+fn publish_exact_order_success(
+    compatibility: &mut CompatibilityEvidenceStore,
+    receipt: SurfaceCurrentStatsReceipt,
+) {
+    let submission = receipt.submission();
+    let ticket = submission.ticket();
+    let join = submission.join();
+    let camera_revision = join.frame_identity().camera_revision();
+    let counts = receipt.counts();
+    let frame_complete_ms = receipt.frame_complete_ms();
+    let exact_contributor_compaction = matches!(
+        receipt.count_semantics(),
+        SurfaceCurrentStatsCountSemantics::IndirectDrawEqualsContributor
+    );
+    if !frame_complete_ms.is_finite() || frame_complete_ms < 0.0 {
+        compatibility.publish_order_failure(SurfaceOrderMeasurementFailure {
+            ticket,
+            camera_revision,
+            reason: SurfaceOrderMeasurementFailureReason::GenerationInvalidated,
+        });
+        return;
+    }
+    match join.executed_plan() {
+        SurfaceCurrentStatsPlan::CpuPostSort => {
+            let Some(preprocess_ms) = receipt.cpu_preprocess_ms() else {
+                compatibility.publish_order_failure(SurfaceOrderMeasurementFailure {
+                    ticket,
+                    camera_revision,
+                    reason: SurfaceOrderMeasurementFailureReason::GenerationInvalidated,
+                });
+                return;
+            };
+            let Some(sort_ms) = receipt.cpu_sort_ms() else {
+                compatibility.publish_order_failure(SurfaceOrderMeasurementFailure {
+                    ticket,
+                    camera_revision,
+                    reason: SurfaceOrderMeasurementFailureReason::GenerationInvalidated,
+                });
+                return;
+            };
+            if !preprocess_ms.is_finite()
+                || preprocess_ms < 0.0
+                || !sort_ms.is_finite()
+                || sort_ms < 0.0
+            {
+                compatibility.publish_order_failure(SurfaceOrderMeasurementFailure {
+                    ticket,
+                    camera_revision,
+                    reason: SurfaceOrderMeasurementFailureReason::GenerationInvalidated,
+                });
+                return;
+            }
+            compatibility.publish_cpu_order(SurfaceCpuOrderMeasurement {
+                ticket,
+                camera_revision,
+                preprocess_ms,
+                sort_ms,
+                frame_complete_ms,
+                visible_count: counts.visible(),
+                contributor_count: counts.contributor(),
+                drawn_count: counts.drawn(),
+                exact_contributor_compaction,
+            });
+        }
+        SurfaceCurrentStatsPlan::GpuPostSort | SurfaceCurrentStatsPlan::GpuPreproject => {
+            compatibility.publish_gpu_order(SurfaceOrderMeasurement {
+                ticket,
+                camera_revision,
+                timing_source: SurfaceTimingSource::CompletionOnly,
+                gpu_preprocess_ms: None,
+                gpu_radix_ms: None,
+                gpu_order_ms: None,
+                gpu_complete_ms: frame_complete_ms,
+                timestamp_period_ns: None,
+                below_timestamp_resolution: false,
+                visible_count: counts.visible(),
+                contributor_count: counts.contributor(),
+                drawn_count: counts.drawn(),
+                exact_contributor_compaction,
+            });
+        }
+    }
+}
+
 #[cfg(test)]
 const fn legacy_surface_current_stats_submission() -> SurfaceCurrentStatsSubmission {
     SurfaceCurrentStatsSubmission::NotRequested
@@ -2149,6 +2265,9 @@ impl SurfaceRenderSession {
                 .poll_exact_surface_current_stats()
                 .map(Into::into)
                 .unwrap_or(SurfaceCurrentStatsPoll::Empty);
+            if let SurfaceCurrentStatsPoll::Terminal(terminal) = poll {
+                publish_exact_order_terminal(&mut self.compatibility, terminal);
+            }
             self.legacy_stats_availability.observe_poll(
                 self.current_stats_submission,
                 poll,
@@ -3304,6 +3423,18 @@ impl SurfaceRenderSession {
         let counts_pending = submission.is_some_and(|submission| {
             submission.visible_count().is_none() || submission.draw_count().is_none()
         });
+        let order_measurement_submission = if frame_presented && order_refreshed {
+            submission
+                .and_then(|submission| submission.current_stats_submission().receipt())
+                .map_or(SurfaceOrderMeasurementSubmission::NotRequested, |receipt| {
+                    SurfaceOrderMeasurementSubmission::Issued {
+                        backend: order_backend,
+                        ticket: receipt.ticket().get(),
+                    }
+                })
+        } else {
+            SurfaceOrderMeasurementSubmission::NotRequested
+        };
         let camera_revision = exact_published_camera_revision(
             self.camera_revision,
             submission.map(|submission| submission.frame_identity().camera_revision()),
@@ -3356,8 +3487,8 @@ impl SurfaceRenderSession {
                 SurfaceGpuProducerMeasurementSubmission::NotRequested,
             completed_gpu_producer_measurement: None,
             completed_gpu_producer_measurement_failure: None,
-            order_measurement_submission: SurfaceOrderMeasurementSubmission::NotRequested,
-            submitted_measurement_ticket: None,
+            order_measurement_submission,
+            submitted_measurement_ticket: order_measurement_submission.ticket(),
             completed_order_measurement: None,
             completed_order_measurement_failure: None,
             visible_count_revision: submission

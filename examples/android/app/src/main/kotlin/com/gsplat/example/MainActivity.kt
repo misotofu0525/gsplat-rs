@@ -751,43 +751,104 @@ private fun flushCompletedOrderMeasurements(
     consumeProducerFailure: (BenchmarkGpuProducerMeasurementFailure) -> Unit = {},
     producerTerminalsComplete: () -> Boolean = { true },
     advanceCurrentStats: (renderedFrame: Boolean) -> Boolean,
-    currentStatsTerminalsComplete: () -> Boolean
-): Boolean = drainBenchmarkTerminalReceipts(
-    maxPolls = maxPolls,
-    terminalsComplete = {
-        terminalsComplete() && producerTerminalsComplete() &&
-            currentStatsTerminalsComplete()
-    },
-    pumpCallbacks = {
-        val rc = NativeBridge.pumpSurfaceReceipts(handle, TERMINAL_RECEIPT_PUMP_TIMEOUT_NS)
-        if (rc != 0) {
-            Log.e(
-                "GsplatExample",
-                "receipt callback pump failed rc=$rc error=${NativeBridge.lastErrorMessage()}"
+    currentStatsTerminalsComplete: () -> Boolean,
+    terminalLedger: () -> String
+): Boolean {
+    var pumpAttempts = 0
+    var queueCompleteCount = 0
+    var timeoutCount = 0
+    var pumpError = false
+    val pumpStatus = IntArray(1)
+    val thread = Thread.currentThread()
+    Log.i(
+        "GsplatExample",
+        "BENCHMARK_TERMINAL_DRAIN phase=start thread_id=${thread.id} " +
+            "thread_name=${thread.name} ${terminalLedger()}"
+    )
+    val completed = drainBenchmarkTerminalReceipts(
+        maxPolls = maxPolls,
+        terminalsComplete = {
+            terminalsComplete() && producerTerminalsComplete() &&
+                currentStatsTerminalsComplete()
+        },
+        pumpCallbacks = {
+            pumpAttempts += 1
+            val rc = NativeBridge.pumpSurfaceReceiptsV1(
+                handle,
+                TERMINAL_RECEIPT_PUMP_TIMEOUT_NS,
+                pumpStatus
             )
-            false
-        } else {
-            true
-        }
-    },
-    pollReceipts = {
-        if (logCompletedCpuOrderMeasurements(handle, consumeCpu) < 0) {
-            false
-        } else if (logCompletedOrderMeasurements(handle, consume) < 0) {
-            false
-        } else if (logCompletedOrderMeasurementFailures(handle, consumeFailure) < 0) {
-            false
-        } else {
-            !producerEnabled ||
-                (logCompletedGpuProducerMeasurements(handle, consumeProducer) >= 0 &&
-                    logCompletedGpuProducerFailures(handle, consumeProducerFailure) >= 0)
-        }
-    },
-    pollCurrentStats = { advanceCurrentStats(false) },
-    // Each pump already performs a bounded native wait for existing queue work.
-    // Yield only to keep the app thread cooperative between incomplete pumps.
-    yieldAfterIncompletePoll = { Thread.yield() }
-)
+            if (rc != 0) {
+                pumpError = true
+                Log.e(
+                    "GsplatExample",
+                    "BENCHMARK_RECEIPT_PUMP status=error attempt=$pumpAttempts rc=$rc " +
+                        "thread_id=${thread.id} thread_name=${thread.name} " +
+                        "error=${NativeBridge.lastErrorMessage()} ${terminalLedger()}"
+                )
+                false
+            } else {
+                when (pumpStatus[0]) {
+                    1 -> queueCompleteCount += 1
+                    2 -> timeoutCount += 1
+                    else -> {
+                        pumpError = true
+                        Log.e(
+                            "GsplatExample",
+                            "BENCHMARK_RECEIPT_PUMP status=invalid attempt=$pumpAttempts " +
+                                "native_status=${pumpStatus[0]} ${terminalLedger()}"
+                        )
+                        return@drainBenchmarkTerminalReceipts false
+                    }
+                }
+                if (pumpAttempts == 1 || pumpStatus[0] == 1 || pumpAttempts == maxPolls) {
+                    val status = if (pumpStatus[0] == 1) "queue_complete" else "timeout"
+                    Log.i(
+                        "GsplatExample",
+                        "BENCHMARK_RECEIPT_PUMP status=$status attempt=$pumpAttempts " +
+                            "thread_id=${thread.id} thread_name=${thread.name} ${terminalLedger()}"
+                    )
+                }
+                true
+            }
+        },
+        pollReceipts = {
+            if (logCompletedCpuOrderMeasurements(handle, consumeCpu) < 0) {
+                false
+            } else if (logCompletedOrderMeasurements(handle, consume) < 0) {
+                false
+            } else if (logCompletedOrderMeasurementFailures(handle, consumeFailure) < 0) {
+                false
+            } else {
+                !producerEnabled ||
+                    (logCompletedGpuProducerMeasurements(handle, consumeProducer) >= 0 &&
+                        logCompletedGpuProducerFailures(handle, consumeProducerFailure) >= 0)
+            }
+        },
+        pollCurrentStats = { advanceCurrentStats(false) },
+        // Each pump already performs a bounded native wait for existing queue work.
+        // Yield only to keep the app thread cooperative between incomplete pumps.
+        yieldAfterIncompletePoll = { Thread.yield() }
+    )
+    val level = if (completed) Log.INFO else Log.ERROR
+    val classification = when {
+        completed -> "terminal_ledger_complete"
+        pumpError -> "pump_error"
+        queueCompleteCount > 0 -> "queue_complete_terminal_unconsumed_or_ledger_mismatch"
+        timeoutCount > 0 -> "pump_timeout"
+        else -> "terminal_ledger_incomplete_without_pump"
+    }
+    Log.println(
+        level,
+        "GsplatExample",
+        "BENCHMARK_TERMINAL_DRAIN phase=${if (completed) "complete" else "incomplete"} " +
+            "classification=$classification pump_attempts=$pumpAttempts " +
+            "queue_complete=$queueCompleteCount " +
+            "timeouts=$timeoutCount thread_id=${thread.id} thread_name=${thread.name} " +
+            terminalLedger()
+    )
+    return completed
+}
 
 class MainActivity : Activity(), SurfaceHolder.Callback {
     private val renderLock = Object()
@@ -1581,6 +1642,12 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                                                     currentStats.benchmarkTerminalsComplete(
                                                         benchmark.measuredSampleCount
                                                     )
+                                                },
+                                                terminalLedger = {
+                                                    benchmark.orderTerminalDiagnostics() + " " +
+                                                        currentStats.benchmarkDiagnostics(
+                                                            benchmark.measuredSampleCount
+                                                        )
                                                 }
                                             )
                                         ) {
@@ -2675,6 +2742,8 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         private var measurementStartNs = 0L
         private var measurementStartedAtMs = 0L
         private var measurementEndedAtMs = 0L
+        private var measurementThreadId: Long? = null
+        private var measurementThreadName: String? = null
         private var totalCallNs = 0L
         private var totalFrameWallNs = 0L
         private val orderMeasurementsByRevision = LinkedHashMap<Long, BenchmarkOrderMeasurement>()
@@ -3057,6 +3126,25 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
             }
         }
 
+        fun orderTerminalDiagnostics(): String {
+            val terminalTickets = issuedOrderTickets.keys.count { ticket ->
+                orderMeasurementsByTicket[ticket] != null ||
+                    cpuOrderMeasurementsByTicket[ticket] != null ||
+                    orderFailuresByTicket[ticket] != null
+            }
+            val firstMissingRefresh = (0 until samples).firstOrNull { index ->
+                sortFlags[index] and 1L != 0L && orderSubmissionTicket[index] <= 0L
+            }
+            return "order_issued=${issuedOrderTickets.size} " +
+                "order_terminal=$terminalTickets " +
+                "order_pending=${issuedOrderTickets.size - terminalTickets} " +
+                "order_unsampled=${unsampledOrderRequests.size} " +
+                "first_refreshed_without_ticket=${firstMissingRefresh ?: -1} " +
+                "render_thread_id=${measurementThreadId ?: -1} " +
+                "render_thread_name=${measurementThreadName ?: "unknown"} " +
+                "pump_same_as_render_thread=${measurementThreadId == Thread.currentThread().id}"
+        }
+
         private fun currentStatsReady(
             index: Int,
             currentStats: SurfaceCurrentStatsConsumer
@@ -3277,6 +3365,8 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
             if (samples == 0) {
                 measurementStartNs = nowNs
                 measurementStartedAtMs = System.currentTimeMillis()
+                measurementThreadId = Thread.currentThread().id
+                measurementThreadName = Thread.currentThread().name
             }
             val index = samples
             callNs[index] = renderCallNs

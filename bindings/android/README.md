@@ -152,10 +152,19 @@ its same-frame retry command then fails, the sample explicitly rejects that
 intent and closes the native renderer before any different frame can render.
 Multiple issued tickets may remain pending and terminate out of order; only one
 not-yet-submitted pre-ticket request intent may exist at a time. The bounded
-terminal flush stops rendering, uses `pumpSurfaceReceipts()` to wait only for
+terminal flush stops rendering, uses `pumpSurfaceReceiptsV1()` to wait only for
 already-submitted queue work, and never borrows a later frame's receipt. Its
 per-pump wait and total retry count are finite; callback-pump failure or flush
 exhaustion rejects the run.
+
+For a strict Exact frame whose order was refreshed, the already-issued
+current-stats ticket is also the compatibility order ticket. Its one atomic
+terminal supplies the same V/C/D plus queue-completion timing; CPU plans retain
+their same-frame preprocess/sort timing, while GPU phase timings remain absent
+under CompletionOnly. This projection issues no second ticket and adds no
+render or submit. `pumpSurfaceReceiptsV1()` reports QueueComplete versus Timeout
+so device logs can separate pump failure/timeout from a queue-complete but
+unconsumed terminal or mismatched ledger.
 
 The product defaults are `PACKED_ATLAS`, `ADAPTIVE`, and sort interval `1`.
 Projected execution independently defaults to
@@ -173,10 +182,11 @@ fields null instead of presenting submit-wall time as GPU work.
 `exactness().isFullQuality` is true only when all source splats were decoded,
 encoded, resident, and GPU-addressable at the source SH degree with sampling
 and LOD disabled. The diagnostic Paged path intentionally does not set it.
-Every exact non-Paged CPU refresh and every GPU refresh requests a measurement
-ticket. CPU tickets report frame-start-to-queue-completion timing, not submit
-wall time. Every issued CPU/GPU ticket must appear in exactly one success or
-failure queue. `orderStatus().adaptiveGpuFailure` also exposes an eager GPU
+Every explicitly sampled exact non-Paged refresh publishes its current-stats
+ticket as the same frame's order measurement ticket. CPU tickets report
+frame-start-to-queue-completion timing, not submit wall time. Every issued
+CPU/GPU ticket must appear in exactly one success or failure queue.
+`orderStatus().adaptiveGpuFailure` also exposes an eager GPU
 preparation failure when Adaptive correctly stays on CPU and no ticket exists.
 Strict benchmark collectors call `orderSubmission()` after every successful
 warmup/measured render, then stop issuing frames and boundedly pump callbacks

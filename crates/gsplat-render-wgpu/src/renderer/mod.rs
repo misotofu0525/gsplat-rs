@@ -1553,8 +1553,11 @@ fn submit_pending_frame(
     // cannot strand an unpublished observer slot waiting on an unsubmitted
     // callback.
     let armed_current_stats = pending.staged_current_stats.map(|staged| {
-        slot.sampler
-            .arm_current_stats(&command_buffers[terminal_index], staged)
+        slot.sampler.arm_current_stats(
+            &command_buffers[terminal_index],
+            staged,
+            pending.completion_started,
+        )
     });
 
     let submission_index = queue.submit(command_buffers);
@@ -1923,6 +1926,12 @@ fn current_stats_counts_for_work<'a>(
         visible,
         contributor,
         count_semantics,
+        cpu_preprocess_ms: work
+            .host_cpu_order()
+            .map(|receipt| receipt.timings().preprocess_ms),
+        cpu_sort_ms: work
+            .host_cpu_order()
+            .map(|receipt| receipt.timings().sort_ms),
     })
 }
 

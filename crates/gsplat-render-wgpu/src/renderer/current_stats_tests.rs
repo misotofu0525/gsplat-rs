@@ -357,6 +357,10 @@ fn receipt_pump_completes_existing_current_stats_without_issuing_a_ticket() {
             panic!("receipt pump did not complete the existing current-stats ticket");
         };
         assert_eq!(ready.submission(), first_receipt);
+        assert!(ready.frame_complete_ms().is_finite());
+        assert!(ready.frame_complete_ms() >= 0.0);
+        assert!(ready.cpu_preprocess_ms().is_some_and(f32::is_finite));
+        assert!(ready.cpu_sort_ms().is_some_and(f32::is_finite));
 
         assert_eq!(slot.request_current_stats(), CurrentStatsRequest::Requested);
         let second = render(&mut slot, &device, PlanId::CpuPostSort);

@@ -280,6 +280,9 @@ pub struct SurfaceCurrentStatsReceipt {
     submission: SurfaceCurrentStatsSubmissionReceipt,
     counts: SurfaceCurrentStatsCounts,
     count_semantics: SurfaceCurrentStatsCountSemantics,
+    frame_complete_ms_bits: u32,
+    cpu_preprocess_ms_bits: Option<u32>,
+    cpu_sort_ms_bits: Option<u32>,
 }
 
 impl SurfaceCurrentStatsReceipt {
@@ -294,6 +297,24 @@ impl SurfaceCurrentStatsReceipt {
     pub const fn count_semantics(self) -> SurfaceCurrentStatsCountSemantics {
         self.count_semantics
     }
+
+    pub(crate) const fn frame_complete_ms(self) -> f32 {
+        f32::from_bits(self.frame_complete_ms_bits)
+    }
+
+    pub(crate) const fn cpu_preprocess_ms(self) -> Option<f32> {
+        match self.cpu_preprocess_ms_bits {
+            Some(bits) => Some(f32::from_bits(bits)),
+            None => None,
+        }
+    }
+
+    pub(crate) const fn cpu_sort_ms(self) -> Option<f32> {
+        match self.cpu_sort_ms_bits {
+            Some(bits) => Some(f32::from_bits(bits)),
+            None => None,
+        }
+    }
 }
 
 impl From<CurrentStatsReceipt> for SurfaceCurrentStatsReceipt {
@@ -302,6 +323,9 @@ impl From<CurrentStatsReceipt> for SurfaceCurrentStatsReceipt {
             submission: receipt.submission().into(),
             counts: receipt.counts().into(),
             count_semantics: receipt.count_semantics().into(),
+            frame_complete_ms_bits: receipt.frame_complete_ms().to_bits(),
+            cpu_preprocess_ms_bits: receipt.cpu_preprocess_ms().map(f32::to_bits),
+            cpu_sort_ms_bits: receipt.cpu_sort_ms().map(f32::to_bits),
         }
     }
 }
@@ -464,6 +488,18 @@ impl LegacySurfaceStatsAvailability {
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
+    use crate::evidence::{
+        CompatibilityEvidenceStore, SurfaceCompatibilityOrderSubmission,
+        SurfaceCompatibilityProducerSubmission, SurfaceCompatibilityProjectedSubmission,
+        SurfaceCompatibilityTerminal, SurfaceCompatibilityTerminalPoll,
+        SurfaceCompatibilityTerminalSelector, SurfaceGpuProducerMeasurementSubmission,
+        SurfaceOrderMeasurementSubmission, SurfaceProjectedDrawMeasurementSubmission,
+    };
+    use crate::surface_session::{
+        SurfaceAdaptiveState, SurfaceOrderBackend, SurfaceProjectedDrawAdaptiveState,
+        SurfaceProjectedDrawPolicy,
+    };
+    use crate::{SurfaceGpuOrderProducer, SurfaceOrderBackendUsed, SurfaceProjectedDrawExecution};
 
     fn submission(ticket: u64, camera_revision: u64) -> SurfaceCurrentStatsSubmissionReceipt {
         SurfaceCurrentStatsSubmissionReceipt {
@@ -496,8 +532,80 @@ mod tests {
                     drawn: 80,
                 },
                 count_semantics: SurfaceCurrentStatsCountSemantics::IndirectDrawEqualsVisible,
+                frame_complete_ms_bits: 6.0_f32.to_bits(),
+                cpu_preprocess_ms_bits: None,
+                cpu_sort_ms_bits: None,
             },
         ))
+    }
+
+    fn observe_order_ticket(
+        store: &mut CompatibilityEvidenceStore,
+        ticket: u64,
+        camera_revision: u64,
+        backend: SurfaceOrderBackendUsed,
+    ) {
+        store.observe_submissions(
+            SurfaceCompatibilityOrderSubmission {
+                camera_revision,
+                requested_backend: match backend {
+                    SurfaceOrderBackendUsed::Cpu => SurfaceOrderBackend::Cpu,
+                    SurfaceOrderBackendUsed::Gpu => SurfaceOrderBackend::Gpu,
+                },
+                actual_backend: backend,
+                adaptive_state: SurfaceAdaptiveState::Disabled,
+                measurement: SurfaceOrderMeasurementSubmission::Issued { backend, ticket },
+            },
+            SurfaceCompatibilityProjectedSubmission {
+                camera_revision,
+                requested_policy: SurfaceProjectedDrawPolicy::Candidate,
+                actual_execution: SurfaceProjectedDrawExecution::Candidate,
+                order_backend: backend,
+                adaptive_state: SurfaceProjectedDrawAdaptiveState::Disabled,
+                measurement: SurfaceProjectedDrawMeasurementSubmission::NotRequested,
+            },
+            SurfaceCompatibilityProducerSubmission {
+                camera_revision,
+                requested_producer: SurfaceGpuOrderProducer::PostSort,
+                actual_producer: None,
+                order_backend: backend,
+                projected_execution: SurfaceProjectedDrawExecution::Candidate,
+                measurement_enabled: false,
+                measurement: SurfaceGpuProducerMeasurementSubmission::NotRequested,
+            },
+        );
+    }
+
+    #[test]
+    fn exact_cpu_current_stats_terminal_resolves_same_ticket_order_ledger() {
+        let mut store = CompatibilityEvidenceStore::new();
+        observe_order_ticket(&mut store, 23, 29, SurfaceOrderBackendUsed::Cpu);
+        let mut receipt = match ready(submission(23, 29)) {
+            SurfaceCurrentStatsPoll::Terminal(SurfaceCurrentStatsTerminal::Ready(receipt)) => {
+                receipt
+            }
+            _ => unreachable!(),
+        };
+        receipt.submission.join.executed_plan = SurfaceCurrentStatsPlan::CpuPostSort;
+        receipt.cpu_preprocess_ms_bits = Some(1.25_f32.to_bits());
+        receipt.cpu_sort_ms_bits = Some(2.5_f32.to_bits());
+
+        crate::surface_session::publish_exact_order_terminal(
+            &mut store,
+            SurfaceCurrentStatsTerminal::Ready(receipt),
+        );
+
+        let SurfaceCompatibilityTerminalPoll::Ready(SurfaceCompatibilityTerminal::OrderCpuSuccess(
+            success,
+        )) = store.poll_terminal(SurfaceCompatibilityTerminalSelector::OrderCpuSuccess)
+        else {
+            panic!("same-ticket CPU compatibility terminal must be ready");
+        };
+        assert_eq!(success.ticket, 23);
+        assert_eq!(success.camera_revision, 29);
+        assert_eq!(success.preprocess_ms, 1.25);
+        assert_eq!(success.sort_ms, 2.5);
+        assert_eq!(success.frame_complete_ms, 6.0);
     }
 
     fn pending_stats() -> FrameStats {

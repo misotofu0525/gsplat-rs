@@ -9,7 +9,7 @@ use std::{
     mem::size_of,
     sync::{
         Arc,
-        atomic::{AtomicU8, Ordering},
+        atomic::{AtomicU8, AtomicU32, Ordering},
     },
 };
 
@@ -32,6 +32,7 @@ const SLOT_MAP_ERROR: u8 = 5;
 const PUBLICATION_UNPUBLISHED: u8 = 0;
 const PUBLICATION_COMMITTED: u8 = 1;
 const PUBLICATION_ABANDONED: u8 = 2;
+const COMPLETION_PENDING_BITS: u32 = u32::MAX;
 
 /// Why an explicit request could not reserve bounded observer capacity.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -196,6 +197,9 @@ pub(crate) struct CurrentStatsReceipt {
     submission: CurrentStatsSubmissionReceipt,
     counts: CurrentStatsCounts,
     count_semantics: PlanCountSemantics,
+    frame_complete_ms_bits: u32,
+    cpu_preprocess_ms_bits: Option<u32>,
+    cpu_sort_ms_bits: Option<u32>,
 }
 
 impl CurrentStatsReceipt {
@@ -209,6 +213,24 @@ impl CurrentStatsReceipt {
 
     pub(crate) const fn count_semantics(self) -> PlanCountSemantics {
         self.count_semantics
+    }
+
+    pub(crate) const fn frame_complete_ms(self) -> f32 {
+        f32::from_bits(self.frame_complete_ms_bits)
+    }
+
+    pub(crate) const fn cpu_preprocess_ms(self) -> Option<f32> {
+        match self.cpu_preprocess_ms_bits {
+            Some(bits) => Some(f32::from_bits(bits)),
+            None => None,
+        }
+    }
+
+    pub(crate) const fn cpu_sort_ms(self) -> Option<f32> {
+        match self.cpu_sort_ms_bits {
+            Some(bits) => Some(f32::from_bits(bits)),
+            None => None,
+        }
     }
 }
 
@@ -264,6 +286,8 @@ pub(super) struct CurrentStatsFrameCounts<'a> {
     pub(super) visible: CurrentStatsVisibleSource<'a>,
     pub(super) contributor: GpuCountSource<'a>,
     pub(super) count_semantics: PlanCountSemantics,
+    pub(super) cpu_preprocess_ms: Option<f32>,
+    pub(super) cpu_sort_ms: Option<f32>,
 }
 
 #[derive(Clone, Copy)]
@@ -274,12 +298,15 @@ struct EncodedDescriptor {
     source_count: u32,
     host_visible: Option<u32>,
     count_semantics: PlanCountSemantics,
+    cpu_preprocess_ms_bits: Option<u32>,
+    cpu_sort_ms_bits: Option<u32>,
 }
 
 struct CurrentStatsSlot {
     readback: wgpu::Buffer,
     state: Arc<AtomicU8>,
     publication: Arc<AtomicU8>,
+    completion_ms_bits: Arc<AtomicU32>,
     ticket: CurrentStatsTicket,
     descriptor: Option<EncodedDescriptor>,
     submission: Option<CurrentStatsSubmissionReceipt>,
@@ -352,6 +379,7 @@ impl CurrentStatsReadbackPool {
                 }),
                 state: Arc::new(AtomicU8::new(SLOT_IDLE)),
                 publication: Arc::new(AtomicU8::new(PUBLICATION_UNPUBLISHED)),
+                completion_ms_bits: Arc::new(AtomicU32::new(COMPLETION_PENDING_BITS)),
                 ticket: CurrentStatsTicket(0),
                 descriptor: None,
                 submission: None,
@@ -474,6 +502,8 @@ impl CurrentStatsLane {
         slot.terminal_reported = false;
         slot.publication
             .store(PUBLICATION_UNPUBLISHED, Ordering::Release);
+        slot.completion_ms_bits
+            .store(COMPLETION_PENDING_BITS, Ordering::Release);
         slot.state.store(SLOT_RESERVED, Ordering::Release);
         self.reserved = Some(slot_index);
         Ok(())
@@ -555,6 +585,8 @@ impl CurrentStatsLane {
             source_count: counts.source_count,
             host_visible,
             count_semantics: counts.count_semantics,
+            cpu_preprocess_ms_bits: counts.cpu_preprocess_ms.map(f32::to_bits),
+            cpu_sort_ms_bits: counts.cpu_sort_ms.map(f32::to_bits),
         });
         slot.state.store(SLOT_ENCODED, Ordering::Release);
         #[cfg(test)]
@@ -572,11 +604,19 @@ impl CurrentStatsLane {
         &mut self,
         command_buffer: &wgpu::CommandBuffer,
         staged: StagedCurrentStats,
+        completion_started: crate::TimerInstant,
     ) -> ArmedCurrentStats {
         let slot = &mut self.slots[staged.slot];
         debug_assert_eq!(slot.ticket, staged.ticket);
         debug_assert_eq!(slot.state.load(Ordering::Acquire), SLOT_ENCODED);
         slot.state.store(SLOT_SUBMITTED, Ordering::Release);
+        let callback_completion = Arc::clone(&slot.completion_ms_bits);
+        command_buffer.on_submitted_work_done(move || {
+            callback_completion.store(
+                crate::timer_elapsed_ms(completion_started).to_bits(),
+                Ordering::Release,
+            );
+        });
         let callback_state = Arc::clone(&slot.state);
         command_buffer.map_buffer_on_submit(
             &slot.readback,
@@ -710,6 +750,16 @@ impl CurrentStatsLane {
                         recycle(slot);
                         continue;
                     }
+                    let completion_ms_bits = slot.completion_ms_bits.load(Ordering::Acquire);
+                    if completion_ms_bits == COMPLETION_PENDING_BITS {
+                        // Mapping and command-completion callbacks are both
+                        // fired by Device::poll, but their relative order is
+                        // intentionally not part of the API. Keep the mapped
+                        // slot intact until the queue-completion timestamp is
+                        // visible so the compatibility receipt never reports
+                        // map latency as FrameCompletion.
+                        continue;
+                    }
                     let bytes = slot.readback.slice(0..READBACK_BYTES).get_mapped_range();
                     let gpu_visible = read_u32(&bytes[0..4]);
                     let contributor = read_u32(&bytes[4..8]);
@@ -738,6 +788,9 @@ impl CurrentStatsLane {
                             submission,
                             counts,
                             count_semantics: descriptor.count_semantics,
+                            frame_complete_ms_bits: completion_ms_bits,
+                            cpu_preprocess_ms_bits: descriptor.cpu_preprocess_ms_bits,
+                            cpu_sort_ms_bits: descriptor.cpu_sort_ms_bits,
                         })
                     } else {
                         CurrentStatsTerminal::Dropped(CurrentStatsFailure { submission })
