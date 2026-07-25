@@ -94,3 +94,59 @@ Build/install the exact candidate and rerun the canonical `2412x1080` Kitsune
 Any pump error, finite drain exhaustion, timeout-only completion claim,
 missing/duplicate ticket, identity drift, weakened counts, or absent summary
 rejects the candidate.
+
+## A065 follow-up: historical terminal projection
+
+### Fixed boundary
+
+- Parent: `45e09bbb35e95b314bf58c2602ebf3a321fb422e`.
+- Scope: preserve an already-consumed current-stats terminal across the Android
+  adapter/sample-ledger boundary. Renderer, C ABI, JNI, collector schema and
+  strict acceptance rules remain unchanged.
+- Physical Android execution remains root-owned.
+
+### Device evidence and mechanism
+
+The canonical CPU run issued and armed all 80 current-stats tickets. During the
+no-render drain, native queue completion advanced the final two atomic receipts,
+and the compatibility order ledger observed tickets 79 and 80. The strict
+current-stats ledger observed only one of those terminals and retained measured
+frame 78 pending without a rejection.
+
+This was not a stuck Vulkan map callback or a bounded readback-slot leak. The
+Android adapter had already single-popped ticket 79, validated it, removed it
+from its bounded pending map and recorded its terminal tombstone. Because ticket
+79 belonged to the preceding presentation while ticket 80 was still current,
+the adapter deliberately normalized its UI state to `Pending(ticket=80)` to
+avoid resurrecting stale counts. The sample's separate strict ledger consumed
+only that normalized state, so it never learned which raw terminal had just
+been destructively removed. Repeated queue-complete pumps could not replay the
+lost single-pop value.
+
+### Repair contract
+
+The additive Kotlin `pollResult()` returns the one raw native poll together with
+the adapter's existing presentation-safe state. It performs exactly one JNI
+poll. Ordinary typed wrapper polling still returns only the normalized state;
+the strict sample consumer uses the raw ticket/full identity to terminalize its
+ledger, then uses the normalized state for live display. Thus an older Ready
+closes only its matching issued record while a newer Pending remains Pending.
+No count, terminal, ticket, render, submit or queue completion is synthesized.
+
+Focused tests cover the exact two-ticket case: raw Ready for the older ticket
+survives normalization to the newer Pending state, closes the corresponding
+strict sample record, and leaves the newer ticket pending until its own Ready.
+
+### Candidate-local verification
+
+- Forced focused Gradle tests: Android binding current-stats 31 passed; sample
+  current-stats consumer 19 passed.
+- Full Android unit suites: binding 42 passed; sample app 52 passed.
+- JNI host smoke: passed.
+- Android arm64 release AAR assembly: passed with API 24.
+- Android sample debug APK assembly: passed with the documented runtime minimal
+  fallback because no showcase dataset was supplied to this build.
+- `cargo check --workspace`, `cargo fmt --all --check` and `git diff --check`:
+  passed.
+- No emulator, physical Android device or Vulkan benchmark was run. The root
+  task retains the sole A065 fixed-SHA rerun and formal artifact decision.

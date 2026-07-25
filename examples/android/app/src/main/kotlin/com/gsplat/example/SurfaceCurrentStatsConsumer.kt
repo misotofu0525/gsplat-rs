@@ -5,6 +5,7 @@ import com.gsplat.android.GsplatSurfaceCurrentStatsCycle
 import com.gsplat.android.GsplatSurfaceCurrentStatsFailure
 import com.gsplat.android.GsplatSurfaceCurrentStatsIdentity
 import com.gsplat.android.GsplatSurfaceCurrentStatsPollKind
+import com.gsplat.android.GsplatSurfaceCurrentStatsPollResult
 import com.gsplat.android.GsplatSurfaceCurrentStatsReceipt
 import com.gsplat.android.GsplatSurfaceCurrentStatsRequest
 import com.gsplat.android.GsplatSurfaceCurrentStatsRequestStatus
@@ -230,19 +231,19 @@ internal class SurfaceCurrentStatsConsumer(
     fun afterSuccessfulRender(nativeHandle: Long): SurfaceCurrentStatsDisplay =
         advanceAfterSuccessfulRender(
             completeRequest = { request -> adapter.complete(nativeHandle, request) },
-            pollPending = { adapter.poll(nativeHandle) }
+            pollPending = { adapter.pollResult(nativeHandle) }
         )
 
     internal fun advanceAfterSuccessfulRender(
         completeRequest: (GsplatSurfaceCurrentStatsRequest) -> GsplatSurfaceCurrentStatsCycle,
-        pollPending: () -> GsplatSurfaceCurrentStatsState
+        pollPending: () -> GsplatSurfaceCurrentStatsPollResult
     ): SurfaceCurrentStatsDisplay {
         currentPresentationWatermark = PresentationWatermark()
         val current = outstanding
         if (current != null) {
             consumeCycle(completeRequest(current.request))
         } else if (issued.isNotEmpty()) {
-            consumePolledState(pollPending(), readyIsCurrent = false)
+            consumePolledResult(pollPending(), readyIsCurrent = false)
         } else {
             publishState(GsplatSurfaceCurrentStatsState.NotRequested(pendingCount = 0))
         }
@@ -250,15 +251,34 @@ internal class SurfaceCurrentStatsConsumer(
     }
 
     fun pollPending(nativeHandle: Long): SurfaceCurrentStatsDisplay =
-        pollPending { adapter.poll(nativeHandle) }
+        pollPending { adapter.pollResult(nativeHandle) }
 
     internal fun pollPending(
-        readPoll: () -> GsplatSurfaceCurrentStatsState
+        readPoll: () -> GsplatSurfaceCurrentStatsPollResult
     ): SurfaceCurrentStatsDisplay {
         if (issued.isNotEmpty()) {
-            consumePolledState(readPoll())
+            consumePolledResult(readPoll())
         }
         return display
+    }
+
+    internal fun consumePolledResult(
+        result: GsplatSurfaceCurrentStatsPollResult,
+        readyIsCurrent: Boolean = true
+    ) {
+        val state = result.state
+        var readyTicket: IssuedTicket? = null
+        when (result.poll.kind) {
+            GsplatSurfaceCurrentStatsPollKind.READY ->
+                readyTicket = recordReady(checkNotNull(result.poll.receipt))
+            GsplatSurfaceCurrentStatsPollKind.EMPTY,
+            GsplatSurfaceCurrentStatsPollKind.UNSAMPLED -> Unit
+            else -> recordFailure(checkNotNull(result.poll.failure))
+        }
+        if (state is GsplatSurfaceCurrentStatsState.Rejected) {
+            recordRejection(state.reason, state.ticket, null)
+        }
+        publishState(state, readyTicket, readyIsCurrent)
     }
 
     internal fun consumeCycle(cycle: GsplatSurfaceCurrentStatsCycle) {

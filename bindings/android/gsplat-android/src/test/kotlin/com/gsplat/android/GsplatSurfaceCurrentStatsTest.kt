@@ -859,18 +859,19 @@ class GsplatSurfaceCurrentStatsTest {
         adapter.consume(requested(), issued(88, historicalIdentity), emptyPoll())
 
         adapter.observeOrdinaryRender()
-        val historicalState = adapter.consumePoll(
-            readyPoll(
-                ticket = 88,
-                identity = historicalIdentity,
-                source = 10,
-                visible = 8,
-                contributor = 6,
-                drawn = 8,
-                semantics = GsplatSurfaceCurrentStatsCountSemantics.INDIRECT_DRAW_EQUALS_VISIBLE
-            )
+        val historicalPoll = readyPoll(
+            ticket = 88,
+            identity = historicalIdentity,
+            source = 10,
+            visible = 8,
+            contributor = 6,
+            drawn = 8,
+            semantics = GsplatSurfaceCurrentStatsCountSemantics.INDIRECT_DRAW_EQUALS_VISIBLE
         )
+        val historicalResult = adapter.consumePollResult(historicalPoll)
+        val historicalState = historicalResult.state
 
+        assertEquals(historicalPoll, historicalResult.poll)
         assertTrue(historicalState is GsplatSurfaceCurrentStatsState.NotRequested)
         assertNull(adapter.currentReceipt)
         assertEquals(0, adapter.pendingCount)
@@ -896,6 +897,54 @@ class GsplatSurfaceCurrentStatsTest {
         assertEquals(89L, currentState.receipt.ticket)
         assertEquals(currentState.receipt, adapter.currentReceipt)
         assertEquals(2, adapter.trackedTombstoneCount)
+    }
+
+    @Test
+    fun historicalRawReadySurvivesNormalizationToTheNewerPendingTicket() {
+        val adapter = GsplatSurfaceCurrentStatsAdapter()
+        val historicalIdentity = identity().copy(
+            cameraRevision = 90,
+            encodeAttempt = 90,
+            presentationSequence = 90
+        )
+        val historicalRequest = adapter.observeRequest(requested())
+        adapter.completeAfterSuccessfulPresentation(
+            historicalRequest,
+            readSubmission = { issued(90, historicalIdentity) },
+            readPoll = { emptyPoll() }
+        )
+
+        val currentIdentity = identity().copy(
+            cameraRevision = 91,
+            encodeAttempt = 91,
+            presentationSequence = 91
+        )
+        val currentRequest = adapter.observeRequest(requested())
+        adapter.completeAfterSuccessfulPresentation(
+            currentRequest,
+            readSubmission = { issued(91, currentIdentity) },
+            readPoll = { emptyPoll() }
+        )
+
+        val historicalPoll = readyPoll(
+            ticket = 90,
+            identity = historicalIdentity,
+            source = 10,
+            visible = 8,
+            contributor = 6,
+            drawn = 8,
+            semantics = GsplatSurfaceCurrentStatsCountSemantics.INDIRECT_DRAW_EQUALS_VISIBLE
+        )
+        val result = adapter.consumePollResult(historicalPoll)
+
+        assertEquals(historicalPoll, result.poll)
+        val pending = result.state as GsplatSurfaceCurrentStatsState.Pending
+        assertEquals(91L, pending.ticket)
+        assertEquals(currentIdentity, pending.identity)
+        assertEquals(1, pending.pendingCount)
+        assertEquals(1, adapter.pendingCount)
+        assertEquals(1, adapter.trackedTombstoneCount)
+        assertNull(adapter.currentReceipt)
     }
 
     @Test

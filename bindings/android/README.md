@@ -134,6 +134,11 @@ the same Issued snapshot after Ready or Failure is idempotent, while the same
 ticket with a different complete identity is rejected. A submission mismatch
 never skips a terminal already removed by the native global single-pop; that
 terminal is still accounted and the affected pending ticket ends fail-closed.
+`GsplatSurfaceCurrentStatsAdapter.pollResult()` preserves that destructive raw
+poll beside its presentation-safe state projection. Strict ledgers consume the
+raw ticket and identity even when an older Ready is normalized to Pending for a
+newer presentation; ordinary `pollCurrentStats()` remains state-only and cannot
+redisplay stale counts.
 
 The sample app uses the same additive adapter over its lower-level
 `NativeBridge` render loop. Ordinary UI explicitly samples at low frequency and

@@ -71,6 +71,12 @@ never satisfy an earlier sample. Missing Ready,
 failure, expiry, generation drift, identity drift, or flush exhaustion rejects
 the artifact.
 
+The flush retains each destructive raw poll separately from the adapter's live
+display state. A Ready terminal from an older presentation therefore closes
+only its exact ticket/identity in the strict ledger even when the display state
+correctly remains Pending for a newer ticket. This neither republishes stale UI
+counts nor converts Pending into Ready.
+
 When that Exact frame refreshed order, its issued current-stats ticket is also
 the required order ticket; the terminal is projected into both strict ledgers
 without another render, submit, or ticket. Terminal-drain log lines include

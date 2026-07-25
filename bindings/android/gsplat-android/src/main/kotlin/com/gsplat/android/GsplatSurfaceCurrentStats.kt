@@ -339,6 +339,19 @@ data class GsplatSurfaceCurrentStatsCycle(
 )
 
 /**
+ * One destructive native poll together with its presentation-safe UI state.
+ *
+ * [poll] retains the exact single-pop terminal identity even when [state]
+ * deliberately normalizes a receipt from an older presentation to Pending or
+ * NotRequested. Strict ledgers consume [poll]; ordinary UI consumers use
+ * [state] and therefore cannot resurrect stale counts.
+ */
+data class GsplatSurfaceCurrentStatsPollResult(
+    val poll: GsplatSurfaceCurrentStatsPoll,
+    val state: GsplatSurfaceCurrentStatsState
+)
+
+/**
  * Thin Android consumer for the Renderer-owned current-stats v1 values.
  *
  * Renderer admission bounds pending tickets. This consumer retains their full
@@ -479,9 +492,20 @@ class GsplatSurfaceCurrentStatsAdapter {
     }
 
     /** Single non-blocking poll used while flushing already-issued tickets. */
-    fun poll(nativeHandle: Long): GsplatSurfaceCurrentStatsState {
-        return consumePoll(readPoll(nativeHandle))
-    }
+    fun poll(nativeHandle: Long): GsplatSurfaceCurrentStatsState =
+        pollResult(nativeHandle).state
+
+    /**
+     * Single non-blocking poll retaining both the destructive native value and
+     * its presentation-safe projection. This performs exactly one JNI poll.
+     */
+    fun pollResult(nativeHandle: Long): GsplatSurfaceCurrentStatsPollResult =
+        consumePollResult(readPoll(nativeHandle))
+
+    internal fun consumePollResult(
+        poll: GsplatSurfaceCurrentStatsPoll
+    ): GsplatSurfaceCurrentStatsPollResult =
+        GsplatSurfaceCurrentStatsPollResult(poll, consumePoll(poll))
 
     internal fun consumePoll(
         poll: GsplatSurfaceCurrentStatsPoll

@@ -7,6 +7,7 @@ import com.gsplat.android.GsplatSurfaceCurrentStatsIdentity
 import com.gsplat.android.GsplatSurfaceCurrentStatsPlan
 import com.gsplat.android.GsplatSurfaceCurrentStatsPoll
 import com.gsplat.android.GsplatSurfaceCurrentStatsPollKind
+import com.gsplat.android.GsplatSurfaceCurrentStatsPollResult
 import com.gsplat.android.GsplatSurfaceCurrentStatsReceipt
 import com.gsplat.android.GsplatSurfaceCurrentStatsRequest
 import com.gsplat.android.GsplatSurfaceCurrentStatsRequestStatus
@@ -309,7 +310,7 @@ class SurfaceCurrentStatsConsumerTest {
 
         consumer.advanceAfterSuccessfulRender(
             completeRequest = { error("issued sample has no pre-ticket intent") },
-            pollPending = { readyState(73, sampleIdentity) }
+            pollPending = { pollResult(readyState(73, sampleIdentity)) }
         )
 
         val unavailable = consumer.display as SurfaceCurrentStatsDisplay.Unavailable
@@ -342,14 +343,16 @@ class SurfaceCurrentStatsConsumerTest {
                     ticket = 74,
                     identity = firstIdentity,
                     pendingCount = 1
-                )
+                ).let(::pollResult)
             }
         )
         val afterEmpty = consumer.display as SurfaceCurrentStatsDisplay.Unavailable
         assertEquals("pending", afterEmpty.reason)
         assertEquals(1, afterEmpty.pendingCount)
 
-        consumer.pollPending { readyState(ticket = 74, identity = firstIdentity) }
+        consumer.pollPending {
+            pollResult(readyState(ticket = 74, identity = firstIdentity))
+        }
 
         val stale = consumer.display as SurfaceCurrentStatsDisplay.Unavailable
         assertEquals("ready_for_prior_presentation", stale.reason)
@@ -368,12 +371,55 @@ class SurfaceCurrentStatsConsumerTest {
             },
             pollPending = { error("requested frame must complete its request") }
         )
-        consumer.pollPending { readyState(ticket = 75, identity = secondIdentity) }
+        consumer.pollPending {
+            pollResult(readyState(ticket = 75, identity = secondIdentity))
+        }
 
         val ready = consumer.display as SurfaceCurrentStatsDisplay.Ready
         assertEquals(secondBinding, ready.binding)
         assertEquals(75L, ready.receipt.ticket)
         assertEquals(listOf(74L, 75L), consumer.strictRecords(2).map { it.ticket })
+    }
+
+    @Test
+    fun historicalRawReadyClosesStrictLedgerWhenUiStatePointsAtNewerPendingTicket() {
+        val consumer = SurfaceCurrentStatsConsumer()
+        val historicalIdentity = identity(cameraRevision = 34, presentationSequence = 94)
+        val historicalRequest = consumer.beginRequest(binding(0)) { requested() }
+        consumer.consumeCycle(pendingCycle(historicalRequest, 76, historicalIdentity))
+
+        val currentIdentity = identity(cameraRevision = 35, presentationSequence = 95)
+        val currentRequest = consumer.beginRequest(binding(1)) { requested() }
+        consumer.consumeCycle(
+            pendingCycle(currentRequest, 77, currentIdentity, pendingCount = 2)
+        )
+
+        consumer.pollPending {
+            GsplatSurfaceCurrentStatsPollResult(
+                poll = readyPoll(76, historicalIdentity),
+                state = GsplatSurfaceCurrentStatsState.Pending(
+                    ticket = 77,
+                    identity = currentIdentity,
+                    pendingCount = 1
+                )
+            )
+        }
+
+        assertTrue(
+            consumer.recordForSample(0)?.terminal is SurfaceCurrentStatsTerminal.Ready
+        )
+        assertFalse(consumer.benchmarkTerminalsComplete(2))
+        assertEquals(1, consumer.trackedStateForTest().issuedTicketCount)
+
+        consumer.pollPending {
+            GsplatSurfaceCurrentStatsPollResult(
+                poll = readyPoll(77, currentIdentity),
+                state = readyState(77, currentIdentity)
+            )
+        }
+
+        assertEquals(listOf(76L, 77L), consumer.strictRecords(2).map { it.ticket })
+        assertEquals(0, consumer.trackedStateForTest().issuedTicketCount)
     }
 
     @Test
@@ -560,6 +606,31 @@ class SurfaceCurrentStatsConsumerTest {
         pendingCount: Int = 0
     ): GsplatSurfaceCurrentStatsState =
         GsplatSurfaceCurrentStatsState.Ready(receipt(ticket, identity), pendingCount)
+
+    private fun readyPoll(
+        ticket: Long,
+        identity: GsplatSurfaceCurrentStatsIdentity
+    ) = GsplatSurfaceCurrentStatsPoll(
+        kind = GsplatSurfaceCurrentStatsPollKind.READY,
+        receipt = receipt(ticket, identity)
+    )
+
+    private fun pollResult(
+        state: GsplatSurfaceCurrentStatsState
+    ): GsplatSurfaceCurrentStatsPollResult = GsplatSurfaceCurrentStatsPollResult(
+        poll = when (state) {
+            is GsplatSurfaceCurrentStatsState.Ready -> GsplatSurfaceCurrentStatsPoll(
+                kind = GsplatSurfaceCurrentStatsPollKind.READY,
+                receipt = state.receipt
+            )
+            is GsplatSurfaceCurrentStatsState.Failed -> GsplatSurfaceCurrentStatsPoll(
+                kind = state.failure.kind,
+                failure = state.failure
+            )
+            else -> GsplatSurfaceCurrentStatsPoll(GsplatSurfaceCurrentStatsPollKind.EMPTY)
+        },
+        state = state
+    )
 
     private fun receipt(
         ticket: Long,
