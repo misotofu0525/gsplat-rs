@@ -1504,18 +1504,6 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                                         renderSessionOwner.requestStop(session)
                                         continue
                                     }
-                                    if (traceStep != null) {
-                                        val metadata = checkNotNull(benchmark.config.cameraTraceMetadata)
-                                        Log.i(
-                                            TAG,
-                                            "CAMERA_TRACE_FRAME trace_id=${metadata.id} " +
-                                                "trace_sha256=${metadata.sha256} phase=${traceStep.phase} " +
-                                                "loop=${traceStep.loopIndex} phase_frame=${traceStep.phaseFrameIndex} " +
-                                                "frame_index=${traceStep.traceFrameIndex} " +
-                                                "timestamp_ns=${traceStep.timestampNs} " +
-                                                "requested_backend=${benchmark.config.orderBackend}"
-                                        )
-                                    }
                                     val recordResult = runCatching {
                                         benchmark.record(
                                             sortStats,
@@ -1537,6 +1525,33 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                                         )
                                         renderSessionOwner.requestStop(session)
                                         continue
+                                    }
+                                    when (recordResult.getOrThrow()) {
+                                        BenchmarkFrameRecordResult.WAITING_FOR_CAMERA_PRESENTATION -> {
+                                            Log.i(
+                                                TAG,
+                                                "CAMERA_TRACE_PRESENTATION_PENDING " +
+                                                    "phase=${traceStep?.phase} " +
+                                                    "frame_index=${traceStep?.traceFrameIndex} " +
+                                                    "current_revision=${cameraReceipt.cameraRevision} " +
+                                                    "presented_revision=" +
+                                                    cameraReceipt.presentedCameraRevision
+                                            )
+                                            continue
+                                        }
+                                        BenchmarkFrameRecordResult.RECORDED -> Unit
+                                    }
+                                    if (traceStep != null) {
+                                        val metadata = checkNotNull(benchmark.config.cameraTraceMetadata)
+                                        Log.i(
+                                            TAG,
+                                            "CAMERA_TRACE_FRAME trace_id=${metadata.id} " +
+                                                "trace_sha256=${metadata.sha256} phase=${traceStep.phase} " +
+                                                "loop=${traceStep.loopIndex} phase_frame=${traceStep.phaseFrameIndex} " +
+                                                "frame_index=${traceStep.traceFrameIndex} " +
+                                                "timestamp_ns=${traceStep.timestampNs} " +
+                                                "requested_backend=${benchmark.config.orderBackend}"
+                                        )
                                     }
                                     if (benchmark.complete) {
                                         if (
@@ -2623,6 +2638,11 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         val timestampNs: Long
     )
 
+    private enum class BenchmarkFrameRecordResult {
+        RECORDED,
+        WAITING_FOR_CAMERA_PRESENTATION
+    }
+
     private class SurfaceBenchmark(
         val config: BenchmarkConfig,
         private val thermalStatusStart: Int?,
@@ -2680,6 +2700,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
             LinkedHashMap<Long, BenchmarkGpuProducerMeasurementFailure>()
         private val issuedGpuProducerTickets = LinkedHashMap<Long, IssuedGpuProducerTicket>()
         private val unsampledGpuProducerRequests = ArrayList<String>()
+        private val cameraPresentationGate = BenchmarkCameraPresentationGate()
 
         fun recordOrderSubmission(submission: BenchmarkOrderSubmission) {
             check(submission.requestedBackend == orderBackendValue(config.orderBackend)) {
@@ -3213,11 +3234,24 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
             traceStep: CameraTraceStep?,
             cameraReceipt: BenchmarkCameraReceipt,
             currentStats: SurfaceCurrentStatsConsumer
-        ) {
+        ): BenchmarkFrameRecordResult {
             if (!enabled || complete) {
-                return
+                return BenchmarkFrameRecordResult.RECORDED
             }
-            cameraReceipt.requirePresented(sortStats[0])
+            if (config.cameraTraceMetadata != null) {
+                val cameraDecision = cameraPresentationGate.decide(cameraReceipt, sortStats[0])
+                if (cameraDecision ==
+                    BenchmarkCameraPresentationDecision.WAIT_FOR_CURRENT_REVISION
+                ) {
+                    check(traceStep?.phase == "warmup" && traceStep.measuredSampleIndex == null) {
+                        "measured trace frame cannot wait for camera presentation after " +
+                            "current-stats admission"
+                    }
+                    return BenchmarkFrameRecordResult.WAITING_FOR_CAMERA_PRESENTATION
+                }
+            } else {
+                cameraReceipt.requirePresented(sortStats[0])
+            }
             config.cameraTraceMetadata?.let { metadata ->
                 if (config.requireTraceDisplayMatch) {
                     check(
@@ -3233,7 +3267,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
             }
             observedFrames += 1
             if (observedFrames <= config.warmupFrames) {
-                return
+                return BenchmarkFrameRecordResult.RECORDED
             }
 
             val nowNs = System.nanoTime()
@@ -3301,6 +3335,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
             if (complete) {
                 measurementEndedAtMs = System.currentTimeMillis()
             }
+            return BenchmarkFrameRecordResult.RECORDED
         }
 
         fun resultLine(

@@ -36,13 +36,77 @@ class BenchmarkCameraReceiptTest {
         }
     }
 
-    private fun validRawReceipt(): LongArray {
+    @Test
+    fun firstTraceWarmupWaitsUntilItsCurrentRevisionIsPresented() {
+        val gate = BenchmarkCameraPresentationGate()
+        val priorPresentation = BenchmarkCameraReceipt.fromRaw(
+            validRawReceipt(
+                cameraRevision = 9L,
+                presentedCameraRevision = 8L,
+                flags = 1L
+            )
+        )
+
+        assertEquals(
+            BenchmarkCameraPresentationDecision.WAIT_FOR_CURRENT_REVISION,
+            gate.decide(priorPresentation, expectedRenderedRevision = 8L)
+        )
+
+        val matchingPresentation = BenchmarkCameraReceipt.fromRaw(validRawReceipt())
+        assertEquals(
+            BenchmarkCameraPresentationDecision.RECORD,
+            gate.decide(matchingPresentation, expectedRenderedRevision = 9L)
+        )
+    }
+
+    @Test
+    fun pendingTracePresentationRejectsStaleOrMismatchedRevision() {
+        val pending = BenchmarkCameraReceipt.fromRaw(
+            validRawReceipt(
+                cameraRevision = 9L,
+                presentedCameraRevision = 8L,
+                flags = 1L
+            )
+        )
+
+        assertThrows(IllegalStateException::class.java) {
+            BenchmarkCameraPresentationGate().decide(
+                pending,
+                expectedRenderedRevision = 7L
+            )
+        }
+
+        val gate = BenchmarkCameraPresentationGate()
+        gate.decide(pending, expectedRenderedRevision = 8L)
+        assertThrows(IllegalStateException::class.java) {
+            gate.decide(pending, expectedRenderedRevision = 8L)
+        }
+
+        val driftGate = BenchmarkCameraPresentationGate()
+        driftGate.decide(pending, expectedRenderedRevision = 8L)
+        val drifted = BenchmarkCameraReceipt.fromRaw(
+            validRawReceipt(
+                cameraRevision = 10L,
+                presentedCameraRevision = 9L,
+                flags = 1L
+            )
+        )
+        assertThrows(IllegalStateException::class.java) {
+            driftGate.decide(drifted, expectedRenderedRevision = 9L)
+        }
+    }
+
+    private fun validRawReceipt(
+        cameraRevision: Long = 9L,
+        presentedCameraRevision: Long = 9L,
+        flags: Long = 3L
+    ): LongArray {
         val raw = LongArray(BenchmarkCameraReceipt.RAW_VALUE_COUNT)
-        raw[0] = 9L
-        raw[1] = 9L
+        raw[0] = cameraRevision
+        raw[1] = presentedCameraRevision
         raw[2] = 2412L
         raw[3] = 1080L
-        raw[4] = 3L
+        raw[4] = flags
         fun put(index: Int, value: Float) {
             raw[index] = value.toRawBits().toLong()
         }

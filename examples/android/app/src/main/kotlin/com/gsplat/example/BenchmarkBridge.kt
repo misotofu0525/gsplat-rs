@@ -121,3 +121,102 @@ internal data class BenchmarkCameraReceipt(
         }
     }
 }
+
+internal enum class BenchmarkCameraPresentationDecision {
+    RECORD,
+    WAIT_FOR_CURRENT_REVISION
+}
+
+/**
+ * Admits only the narrow post-present transition exposed by the native receipt.
+ *
+ * A Surface frame may successfully present the previously committed camera
+ * while a newly selected trace camera is current but not presented yet. The
+ * gate holds that exact target revision across the next warmup render. It does
+ * not accept missing presentation, revision regression, or a different camera
+ * appearing while the target is pending.
+ */
+internal class BenchmarkCameraPresentationGate {
+    private data class AwaitingPresentation(
+        val targetRevision: Long,
+        val lastPresentedRevision: Long
+    )
+
+    private var awaiting: AwaitingPresentation? = null
+
+    fun decide(
+        receipt: BenchmarkCameraReceipt,
+        expectedRenderedRevision: Long
+    ): BenchmarkCameraPresentationDecision {
+        check(expectedRenderedRevision >= 0L) {
+            "benchmark frame reported a negative camera revision"
+        }
+        check(receipt.surfaceWidth > 0 && receipt.surfaceHeight > 0) {
+            "native camera receipt has an invalid Surface size"
+        }
+
+        val pending = awaiting
+        if (pending != null) {
+            val target = pending.targetRevision
+            check(receipt.cameraRevision == target) {
+                "native camera revision changed from pending $target to " +
+                    "${receipt.cameraRevision} before presentation"
+            }
+            if (receipt.currentRevisionPresented) {
+                receipt.requirePresented(target)
+                check(expectedRenderedRevision == target) {
+                    "render telemetry revision $expectedRenderedRevision does not match " +
+                        "presented pending revision $target"
+                }
+                awaiting = null
+                return BenchmarkCameraPresentationDecision.RECORD
+            }
+            requireAwaitable(receipt, expectedRenderedRevision, target)
+            check(receipt.presentedCameraRevision > pending.lastPresentedRevision) {
+                "pending camera revision $target made no presentation progress from " +
+                    "${pending.lastPresentedRevision}"
+            }
+            awaiting = AwaitingPresentation(target, receipt.presentedCameraRevision)
+            return BenchmarkCameraPresentationDecision.WAIT_FOR_CURRENT_REVISION
+        }
+
+        if (receipt.currentRevisionPresented) {
+            receipt.requirePresented(expectedRenderedRevision)
+            return BenchmarkCameraPresentationDecision.RECORD
+        }
+
+        check(receipt.cameraRevision > receipt.presentedCameraRevision) {
+            "native camera receipt is stale without a newer pending revision"
+        }
+        val pendingTarget = receipt.cameraRevision
+        requireAwaitable(receipt, expectedRenderedRevision, pendingTarget)
+        awaiting = AwaitingPresentation(pendingTarget, receipt.presentedCameraRevision)
+        return BenchmarkCameraPresentationDecision.WAIT_FOR_CURRENT_REVISION
+    }
+
+    private fun requireAwaitable(
+        receipt: BenchmarkCameraReceipt,
+        expectedRenderedRevision: Long,
+        target: Long
+    ) {
+        check(receipt.framePresented) {
+            "native camera receipt does not describe a presented frame"
+        }
+        check(!receipt.currentRevisionPresented) {
+            "native camera receipt unexpectedly marked the pending revision presented"
+        }
+        check(receipt.cameraRevision == target) {
+            "native camera receipt does not retain pending revision $target"
+        }
+        check(receipt.presentedCameraRevision < target) {
+            "native presented camera revision did not precede pending revision $target"
+        }
+        check(
+            expectedRenderedRevision == receipt.presentedCameraRevision ||
+                expectedRenderedRevision == target
+        ) {
+            "render telemetry revision $expectedRenderedRevision matches neither " +
+                "presented ${receipt.presentedCameraRevision} nor pending $target"
+        }
+    }
+}
