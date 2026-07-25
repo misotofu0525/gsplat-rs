@@ -46,16 +46,18 @@ M2 = Active
 - Every independently assigned implementation, review, benchmark or repair
   slice after M1 is dispatched as a new visible Codex task with its own
   worktree, fixed accepted base, narrow owned paths and one reviewable
-  candidate SHA. A subagent does not own or execute any concrete program task.
+  candidate SHA. Concrete program work is never delegated through the
+  collaboration-subagent mechanism: it belongs to a visible task/thread.
 - This visible-task rule is part of the active goal, not a temporary scheduling
   preference. Every later task brief must carry it forward; omitting it does
   not authorize concrete work in a subagent.
 - The root task owns dependency order, fixed-SHA acceptance, integration and
   critical cross-platform verification. A candidate is never integrated merely
   because its implementation task reports completion.
-- The root task performs its own critical review and verification instead of
-  substituting a subagent for a visible Codex task. This keeps task history,
-  goals, worktree state and final handoffs independently inspectable.
+- The root task performs its own critical review and verification; it may
+  create visible read-only review tasks, but never substitutes a subagent for
+  a visible Codex task. This keeps task history, goals, worktree state and
+  final handoffs independently inspectable.
 - Parallel Codex tasks are opened only for slices whose ownership and base make
   concurrent work safe. Dependent migrations remain serial rather than being
   forced into parallel execution.
