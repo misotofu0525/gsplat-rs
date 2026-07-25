@@ -14,7 +14,7 @@ Unstarted tasks remain outside the machine registry until activated.
 <!-- gsplat-program-task-states: begin -->
 M0 = Accepted
 M1 = Accepted
-M2 = Active
+M2 = Accepted
 <!-- gsplat-program-task-states: end -->
 
 ## Package status
@@ -26,9 +26,9 @@ M2 = Active
   `e26a1df39780e744112924eb378e098c29be7cd4`.
 - M1 state: Accepted at integrated implementation/evidence tip
   `dc3e0de65073f819b714229b726ca55f47c6e6d6`.
-- Active task: M2. M2p1, M2p2, M2a, M2p3c and M2p4 are Accepted. M2b is the
-  next serial migration slice and must be dispatched as its own visible Codex
-  task from the fixed accepted root tip recorded below.
+- M2 state: Accepted. M2p1, M2p2, M2a, M2p3c, M2p4 and M2b are accepted.
+  The next serial migration slice is M3, which must begin as its own visible
+  Codex task from this closeout tip.
 - Product state at M2 activation: native Packed offscreen, desktop
   non-interactive and bench-runner use the Exact runtime; the interactive
   `SurfaceRenderSession` remains legacy until its complete M2 candidate is
@@ -414,3 +414,28 @@ M2 = Active
   bind the executable and canonical workload, make published raw logs
   self-revalidating, and add fail-closed mutation coverage before root repeats
   fixed-SHA review or considers integration.
+- **M2b closeout: Accepted.** The evidence seam was repaired through visible,
+  isolated candidate and read-only-review tasks. Root integrated the accepted
+  publication/attestation chain and the terminal-event repair as
+  `d4f4246..ce15c90`, then `742bd5a` (`fix: emit surface evidence summary
+  once`). The final repair makes terminal success one-way: it commits before
+  emitting its summary, and queued post-exit redraws cannot render, capture,
+  log another summary or overwrite completion. Its independent fixed-SHA
+  review reported no P0/P1/P2 findings.
+- Root repeated the complete collector on Apple M4 / Metal at code SHA
+  `742bd5a928123557a9016e50655724aa82ef9bd5`, retaining the ignored suite at
+  `target/benchmarks/m2b/surface-742bd5a`. It built the locked release viewer
+  in a collector-owned target, then retained four validated 1920x1080 Kitsune
+  runs: forced CPU PostSort, forced GPU PostSort, forced GPU Preproject and
+  Adaptive. Every arm has exactly one begin/capture/summary record, all
+  `279,199` source/decoded/resident/addressable SH3 splats, full-resolution
+  presentation with sampling/LOD/upscaling disabled, and the same final PNG
+  SHA-256 `f4e95120066270d0351bd6fab445f1beac26725dc94ced120583239c85667574`.
+  Actual plans were CPU PostSort, GPU PostSort, GPU Preproject and CPU PostSort
+  for Adaptive. Root independently revalidated all four raw logs and confirmed
+  no executable artifact or retained collector Cargo target. This is
+  correctness/evidence acceptance, not a CPU-versus-GPU performance claim.
+- M2 final focused gates passed after integration: formatter, three desktop
+  terminalization tests, 26 strict collector tests, focused desktop Clippy,
+  artifact validators and raw-log validators. No M2b change altered raster
+  semantics, ABI, source membership, SH degree or platform-consumer behavior.
