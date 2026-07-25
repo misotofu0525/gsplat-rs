@@ -96,6 +96,33 @@ struct PendingReceipt {
     deadline: Instant,
 }
 
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+enum TerminalOutcome {
+    #[default]
+    Running,
+    CaptureComplete,
+    Committed,
+}
+
+impl TerminalOutcome {
+    fn mark_capture_complete(&mut self) {
+        debug_assert_eq!(*self, Self::Running);
+        *self = Self::CaptureComplete;
+    }
+
+    fn commit_if_ready(&mut self) -> bool {
+        if *self != Self::CaptureComplete {
+            return false;
+        }
+        *self = Self::Committed;
+        true
+    }
+
+    const fn is_committed(self) -> bool {
+        matches!(self, Self::Committed)
+    }
+}
+
 #[allow(deprecated)] // Kept aligned with the existing winit Surface loop.
 pub(crate) fn run(
     args: &Args,
@@ -192,13 +219,14 @@ pub(crate) fn run(
     let mut pending = None::<PendingReceipt>;
     let mut request_pending = false;
     let mut ineligible_retries = 0_usize;
-    let mut capture_complete = false;
+    let mut terminal_outcome = TerminalOutcome::default();
     let mut actual_plans = BTreeSet::new();
     let mut measured_frames = 0_usize;
     let mut capture_retries = 0_usize;
 
     event_loop
         .run(move |event, target| match event {
+            _ if terminal_outcome.is_committed() => {}
             Event::AboutToWait => window.request_redraw(),
             Event::WindowEvent {
                 window_id: id,
@@ -313,14 +341,14 @@ pub(crate) fn run(
                                         &capture,
                                         receipt,
                                     );
-                                    capture_complete = true;
+                                    terminal_outcome.mark_capture_complete();
                                 }
                             }
                         }
                     }
                 }
 
-                if capture_complete {
+                if terminal_outcome.commit_if_ready() {
                     println!(
                         "SURFACE_EXACT_EVIDENCE_SUMMARY status=ok exact_plan_requested={} actual_plan_set={} trace_frames={} measured_frames={} eligibility_retries={} capture_retries={} terminal_receipts={} final_capture=available",
                         identity.requested_plan.label(),
@@ -806,5 +834,21 @@ mod tests {
             count_semantics_label(SurfaceCurrentStatsCountSemantics::IndirectDrawEqualsContributor),
             "indirect_draw_equals_contributor"
         );
+    }
+
+    #[test]
+    fn terminal_outcome_commits_once_and_suppresses_repeated_delivery() {
+        let mut outcome = TerminalOutcome::default();
+        assert!(!outcome.is_committed());
+        assert!(!outcome.commit_if_ready());
+
+        outcome.mark_capture_complete();
+        assert!(outcome.commit_if_ready());
+        assert!(outcome.is_committed());
+
+        for _ in 0..162 {
+            assert!(!outcome.commit_if_ready());
+            assert!(outcome.is_committed());
+        }
     }
 }
