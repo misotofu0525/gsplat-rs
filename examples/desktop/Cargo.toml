@@ -21,3 +21,9 @@ png = "0.17.16"
 winit = { version = "0.30.12", optional = true }
 wgpu = { workspace = true, optional = true }
 pollster = { version = "0.4.0", optional = true }
+
+[[test]]
+name = "surface_geometry_entry"
+path = "tests/surface_geometry_entry.rs"
+harness = false
+required-features = ["interactive-viewer"]
