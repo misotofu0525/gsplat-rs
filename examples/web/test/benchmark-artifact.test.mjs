@@ -6,6 +6,7 @@ import {
   COUNT_SEMANTICS,
   benchmarkCountEvidence,
   benchmarkResolutionEvidence,
+  benchmarkSortTelemetry,
   benchmarkSummary,
   benchmarkSummaryFromFrameRecords,
   createBenchmarkCollector,
@@ -68,6 +69,8 @@ test("collector rebuilds summary from post-join frame timings", () => {
   const records = frameRecords(collector).map((frame, index) => ({
     ...frame,
     gpu_complete_ms: index === 0 ? 4 : 8,
+    order_backend: index === 0 ? "cpu" : "gpu",
+    gpu_sort_fallback: false,
   }));
 
   const rebuilt = benchmarkSummaryFromFrameRecords(records, emitted);
@@ -80,6 +83,31 @@ test("collector rebuilds summary from post-join frame timings", () => {
     p99: 8,
     max: 8,
   });
+  assert.deepEqual(rebuilt.sort_telemetry, {
+    cpu_frame_count: 1,
+    gpu_frame_count: 1,
+    gpu_sort_fallback_count: 0,
+  });
+});
+
+test("sort telemetry is serialized only from complete per-frame receipts", () => {
+  assert.deepEqual(benchmarkSortTelemetry([
+    { order_backend: "cpu", gpu_sort_fallback: false },
+    { order_backend: "gpu", gpu_sort_fallback: false },
+    { order_backend: "cpu", gpu_sort_fallback: true },
+  ]), {
+    cpu_frame_count: 2,
+    gpu_frame_count: 1,
+    gpu_sort_fallback_count: 1,
+  });
+  assert.throws(
+    () => benchmarkSortTelemetry([{ gpu_sort_fallback: false }]),
+    /actual order backend/,
+  );
+  assert.throws(
+    () => benchmarkSortTelemetry([{ order_backend: "cpu" }]),
+    /boolean GPU sort fallback receipt/,
+  );
 });
 
 test("count evidence excludes frames without a current CPU or joined GPU count", () => {

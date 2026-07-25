@@ -153,7 +153,37 @@ export function benchmarkSummaryFromFrameRecords(records, emittedSummary) {
     }
     appendBenchmarkSample(collector, record);
   }
-  return benchmarkSummary(collector);
+  return {
+    ...benchmarkSummary(collector),
+    sort_telemetry: benchmarkSortTelemetry(records),
+  };
+}
+
+export function benchmarkSortTelemetry(records) {
+  if (!Array.isArray(records) || records.length === 0) {
+    throw new TypeError("frame records are required");
+  }
+  let cpuFrameCount = 0;
+  let gpuFrameCount = 0;
+  let gpuSortFallbackCount = 0;
+  for (const [index, record] of records.entries()) {
+    if (record.order_backend === "cpu") {
+      cpuFrameCount += 1;
+    } else if (record.order_backend === "gpu") {
+      gpuFrameCount += 1;
+    } else {
+      throw new TypeError(`frame record ${index} has no valid actual order backend`);
+    }
+    if (typeof record.gpu_sort_fallback !== "boolean") {
+      throw new TypeError(`frame record ${index} has no boolean GPU sort fallback receipt`);
+    }
+    if (record.gpu_sort_fallback) gpuSortFallbackCount += 1;
+  }
+  return {
+    cpu_frame_count: cpuFrameCount,
+    gpu_frame_count: gpuFrameCount,
+    gpu_sort_fallback_count: gpuSortFallbackCount,
+  };
 }
 
 export function benchmarkCountEvidence(records) {

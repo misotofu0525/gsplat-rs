@@ -241,6 +241,19 @@ class FullQualityExperimentTests(unittest.TestCase):
             with self.assertRaisesRegex(VALIDATOR.ValidationError, "full_quality"):
                 VALIDATOR.validate(suite_path)
 
+    def test_missing_sort_telemetry_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            artifact = install_artifact(root)
+            summary_path = artifact / "summary.json"
+            summary = json.loads(summary_path.read_text(encoding="utf-8"))
+            del summary["sort_telemetry"]
+            write_json(summary_path, summary)
+            suite_path = root / "suite.json"
+            write_json(suite_path, base_suite())
+            with self.assertRaisesRegex(VALIDATOR.ValidationError, "sort_telemetry"):
+                VALIDATOR.validate(suite_path)
+
     def test_internal_resolution_downscale_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)
