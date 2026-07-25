@@ -22,6 +22,152 @@ python3 "$ROOT/bindings/android/scripts/extract-android-benchmark-artifacts.py" 
   "$TMP_DIR/artifact" \
   --validator "$ROOT/tests/perf/validate-benchmark-artifacts.py"
 
+# Formal image publication accepts only an exact 2412x1080 PNG paired with the
+# collector's post-completion app-sandbox pull receipt.
+FORMAL_PNG="$TMP_DIR/device-final-frame.png"
+FORMAL_PNG_RECEIPT="$TMP_DIR/device-png-pull-receipt.json"
+FORMAL_LOG="$TMP_DIR/formal-logcat.txt"
+python3 - "$LOG" "$FORMAL_LOG" <<'PY'
+import json
+import pathlib
+import sys
+
+source = pathlib.Path(sys.argv[1]).read_text().splitlines()
+result = []
+marker = "GSPLAT_BENCHMARK_MANIFEST "
+for line in source:
+    if marker in line:
+        prefix, raw = line.split(marker, 1)
+        manifest = json.loads(raw)
+        manifest["display"]["width"] = 2412
+        manifest["display"]["height"] = 1080
+        line = prefix + marker + json.dumps(manifest, separators=(",", ":"))
+    result.append(line)
+pathlib.Path(sys.argv[2]).write_text("\n".join(result) + "\n")
+PY
+python3 - "$FIXTURE/manifest.json" "$FORMAL_PNG" "$FORMAL_PNG_RECEIPT" <<'PY'
+import hashlib
+import json
+import pathlib
+import struct
+import sys
+import zlib
+
+manifest = json.loads(pathlib.Path(sys.argv[1]).read_text())
+image_path = pathlib.Path(sys.argv[2])
+receipt_path = pathlib.Path(sys.argv[3])
+width, height = 2412, 1080
+
+def chunk(kind, payload):
+    return (
+        struct.pack(">I", len(payload))
+        + kind
+        + payload
+        + struct.pack(">I", zlib.crc32(kind + payload) & 0xffffffff)
+    )
+
+rows = b"".join(b"\0" + b"\0\0\0\xff" * width for _ in range(height))
+data = (
+    b"\x89PNG\r\n\x1a\n"
+    + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 6, 0, 0, 0))
+    + chunk(b"IDAT", zlib.compress(rows, 9))
+    + chunk(b"IEND", b"")
+)
+image_path.write_bytes(data)
+receipt_path.write_text(json.dumps({
+    "schema": "gsplat-android-device-png-pull/v1",
+    "source": "adb-exec-out-run-as-after-benchmark-complete",
+    "package": "com.gsplat.example",
+    "device_path": "files/benchmark-final-frame.png",
+    "device_path_absent_after_package_clear": True,
+    "benchmark_completed": True,
+    "pulled_after_completed_log": True,
+    "benchmark_run_id": manifest["run_id"],
+    "device_identity": {
+        "bytes": len(data),
+        "sha256": hashlib.sha256(data).hexdigest(),
+    },
+    "local_identity": {
+        "bytes": len(data),
+        "sha256": hashlib.sha256(data).hexdigest(),
+        "width": width,
+        "height": height,
+    },
+}, sort_keys=True))
+PY
+
+python3 "$ROOT/bindings/android/scripts/extract-android-benchmark-artifacts.py" \
+  "$FORMAL_LOG" \
+  "$TMP_DIR/formal-artifact" \
+  --validator "$ROOT/tests/perf/validate-benchmark-artifacts.py" \
+  --final-png "$FORMAL_PNG" \
+  --device-png-pull-receipt "$FORMAL_PNG_RECEIPT"
+cmp "$FORMAL_PNG" "$TMP_DIR/formal-artifact/final-frame.png"
+
+if python3 "$ROOT/bindings/android/scripts/extract-android-benchmark-artifacts.py" \
+  "$FORMAL_LOG" \
+  "$TMP_DIR/missing-pull-receipt-artifact" \
+  --validator "$ROOT/tests/perf/validate-benchmark-artifacts.py" \
+  --final-png "$FORMAL_PNG"; then
+  echo "extractor accepted a formal PNG without its device pull receipt" >&2
+  exit 1
+fi
+[[ ! -e "$TMP_DIR/missing-pull-receipt-artifact" ]]
+
+if python3 "$ROOT/bindings/android/scripts/extract-android-benchmark-artifacts.py" \
+  "$FORMAL_LOG" \
+  "$TMP_DIR/missing-final-png-artifact" \
+  --validator "$ROOT/tests/perf/validate-benchmark-artifacts.py" \
+  --final-png "$TMP_DIR/does-not-exist.png" \
+  --device-png-pull-receipt "$FORMAL_PNG_RECEIPT"; then
+  echo "extractor accepted a missing formal PNG" >&2
+  exit 1
+fi
+[[ ! -e "$TMP_DIR/missing-final-png-artifact" ]]
+
+for mutation in wrong-run wrong-hash stale-path incomplete malformed-image wrong-size; do
+  MUTATED_PNG="$TMP_DIR/$mutation.png"
+  MUTATED_RECEIPT="$TMP_DIR/$mutation-receipt.json"
+  cp "$FORMAL_PNG" "$MUTATED_PNG"
+  cp "$FORMAL_PNG_RECEIPT" "$MUTATED_RECEIPT"
+  python3 - "$mutation" "$MUTATED_PNG" "$MUTATED_RECEIPT" <<'PY'
+import json
+import pathlib
+import struct
+import sys
+
+mutation = sys.argv[1]
+image = pathlib.Path(sys.argv[2])
+receipt_path = pathlib.Path(sys.argv[3])
+receipt = json.loads(receipt_path.read_text())
+if mutation == "wrong-run":
+    receipt["benchmark_run_id"] = "old-run"
+elif mutation == "wrong-hash":
+    receipt["device_identity"]["sha256"] = "0" * 64
+elif mutation == "stale-path":
+    receipt["device_path_absent_after_package_clear"] = False
+elif mutation == "incomplete":
+    receipt["benchmark_completed"] = False
+elif mutation == "malformed-image":
+    image.write_bytes(b"not a png")
+elif mutation == "wrong-size":
+    data = bytearray(image.read_bytes())
+    data[16:24] = struct.pack(">II", 1920, 1080)
+    image.write_bytes(data)
+receipt_path.write_text(json.dumps(receipt))
+PY
+  if python3 "$ROOT/bindings/android/scripts/extract-android-benchmark-artifacts.py" \
+    "$FORMAL_LOG" \
+    "$TMP_DIR/$mutation-artifact" \
+    --validator "$ROOT/tests/perf/validate-benchmark-artifacts.py" \
+    --final-png "$MUTATED_PNG" \
+    --device-png-pull-receipt "$MUTATED_RECEIPT"; then
+    echo "extractor accepted invalid formal PNG mutation: $mutation" >&2
+    exit 1
+  fi
+  [[ ! -e "$TMP_DIR/$mutation-artifact" ]]
+done
+
 # A declared strict Android artifact must pass the same current-stats ledger
 # validator as the full device collector.
 STRICT_LOG="$TMP_DIR/strict-logcat.txt"
@@ -624,7 +770,8 @@ summary_bytes = summary.encode("utf-8")
 run_id = json.loads(summary)["run_id"]
 digest = hashlib.sha256(summary_bytes).hexdigest()
 chunks = [summary_bytes[index : index + 47] for index in range(0, len(summary_bytes), 47)]
-lines = [f"I/GsplatExample(123): GSPLAT_BENCHMARK_MANIFEST {manifest}"]
+lines = ["I/GsplatExample(123): BENCHMARK_RESULT samples=1"]
+lines.append(f"I/GsplatExample(123): GSPLAT_BENCHMARK_MANIFEST {manifest}")
 lines.extend(f"I/GsplatExample(123): GSPLAT_BENCHMARK_FRAME {frame}" for frame in frames)
 for index, chunk in enumerate(chunks):
     payload = base64.b64encode(chunk).decode("ascii")
@@ -668,8 +815,9 @@ first_chunk = next(
 )
 assert not module.has_complete_summary_artifact("\n".join(lines[: first_chunk + 1]))
 assert module.has_complete_summary_artifact("\n".join(lines))
+assert module.completed_benchmark_run_id("\n".join(lines)) == "fixture-valid-001"
 assert module.has_complete_summary_artifact(
-    'I/GsplatExample: GSPLAT_BENCHMARK_SUMMARY {"record_type":"summary"}'
+    'I/GsplatExample: GSPLAT_BENCHMARK_SUMMARY {"record_type":"summary","run_id":"direct-run"}'
 )
 PY
 

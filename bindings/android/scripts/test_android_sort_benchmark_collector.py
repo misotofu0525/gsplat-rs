@@ -8,12 +8,15 @@ import copy
 import contextlib
 import importlib.util
 import io
+import hashlib
 import json
 import pathlib
+import struct
 import subprocess
 import sys
 import tempfile
 import unittest
+import zlib
 from unittest import mock
 
 
@@ -27,6 +30,24 @@ TEST_CAMERA_TRACE = (
     COLLECTOR.REPO_ROOT
     / "tests/perf/trace/fixtures/quality/candidate-truck-quality-2412x1080-v1.json"
 )
+
+
+def png_fixture(width: int = 2412, height: int = 1080) -> bytes:
+    def chunk(kind: bytes, payload: bytes) -> bytes:
+        return (
+            struct.pack(">I", len(payload))
+            + kind
+            + payload
+            + struct.pack(">I", zlib.crc32(kind + payload) & 0xFFFFFFFF)
+        )
+
+    rows = b"".join(b"\x00" + b"\x00\x00\x00\xff" * width for _ in range(height))
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 6, 0, 0, 0))
+        + chunk(b"IDAT", zlib.compress(rows, 9))
+        + chunk(b"IEND", b"")
+    )
 
 
 def android_environment_receipt(*, gfx_driver_0=None):
@@ -483,6 +504,45 @@ class ParsingTests(unittest.TestCase):
         launch = COLLECTOR.benchmark_launch_args(args, "cpu")
         self.assertEqual(launch[launch.index("gsplat_camera_trace_frame") + 1], "1")
         self.assertNotIn("gsplat_camera_trace_sequence", launch)
+
+    def test_formal_mode_requests_only_the_app_sandbox_final_png(self) -> None:
+        args = COLLECTOR.parser().parse_args(
+            [
+                "--serial",
+                "serial",
+                "--ply",
+                __file__,
+                "--camera-trace",
+                str(TEST_CAMERA_TRACE),
+                "--formal-artifact",
+                "--dry-run",
+            ]
+        )
+        COLLECTOR.validate_args(args)
+        launch = COLLECTOR.benchmark_launch_args(args, "cpu")
+        key = "gsplat_benchmark_final_png_path"
+        self.assertIn(key, launch)
+        self.assertEqual(
+            launch[launch.index(key) + 1],
+            f"/data/user/0/{COLLECTOR.PACKAGE}/{COLLECTOR.INTERNAL_FINAL_PNG}",
+        )
+
+    def test_formal_mode_rejects_missing_aar_before_device_work(self) -> None:
+        args = COLLECTOR.parser().parse_args(
+            [
+                "--serial",
+                "serial",
+                "--ply",
+                __file__,
+                "--camera-trace",
+                str(TEST_CAMERA_TRACE),
+                "--formal-artifact",
+                "--aar",
+                str(pathlib.Path(tempfile.gettempdir()) / "missing-gsplat.aar"),
+            ]
+        )
+        with self.assertRaisesRegex(ValueError, "AAR does not exist"):
+            COLLECTOR.validate_args(args)
 
     def test_gpu_producer_collection_is_explicitly_deferred_until_m2b(self) -> None:
         for producer in COLLECTOR.GPU_PRODUCERS:
@@ -1391,6 +1451,51 @@ class SafetyTests(unittest.TestCase):
         self.assertEqual(plan.count(" install -r "), 1)
         self.assertEqual(plan.count(" push "), 2)
 
+    def test_formal_prepare_dry_run_builds_apk_and_aar(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            output = pathlib.Path(directory) / "planned"
+            stdout = io.StringIO()
+            with contextlib.redirect_stdout(stdout):
+                result = COLLECTOR.main(
+                    [
+                        "--serial",
+                        "test-device",
+                        "--ply",
+                        __file__,
+                        "--backend",
+                        "cpu",
+                        "--prepare-apk",
+                        "--formal-artifact",
+                        "--camera-trace",
+                        str(TEST_CAMERA_TRACE),
+                        "--output",
+                        str(output),
+                        "--dry-run",
+                    ]
+                )
+        plan = stdout.getvalue()
+        self.assertEqual(result, 0)
+        self.assertIn(str(COLLECTOR.BUILD_SCRIPT), plan)
+        self.assertIn(str(COLLECTOR.BUILD_AAR_SCRIPT), plan)
+        self.assertIn(str(COLLECTOR.INTERNAL_FINAL_PNG), plan)
+        self.assertEqual(plan.count(" install -r "), 1)
+
+    def test_package_clear_must_remove_fixed_final_png_path(self) -> None:
+        absent = COLLECTOR.subprocess.CompletedProcess([], 0, "")
+        stale = COLLECTOR.subprocess.CompletedProcess([], 1, "")
+        with mock.patch.object(
+            COLLECTOR.subprocess, "run", return_value=absent
+        ) as run:
+            COLLECTOR.assert_device_final_png_absent("adb", "serial")
+        command = run.call_args.args[0]
+        self.assertEqual(command[:3], ["adb", "-s", "serial"])
+        self.assertIn(COLLECTOR.PACKAGE, command)
+        self.assertIn(COLLECTOR.INTERNAL_FINAL_PNG, command[-1])
+
+        with mock.patch.object(COLLECTOR.subprocess, "run", return_value=stale):
+            with self.assertRaisesRegex(RuntimeError, "refusing stale image"):
+                COLLECTOR.assert_device_final_png_absent("adb", "serial")
+
     def test_installed_apk_hash_mismatch_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             apk = pathlib.Path(directory) / "sample.apk"
@@ -1462,6 +1567,223 @@ class SafetyTests(unittest.TestCase):
             ],
             capture=True,
         )
+
+    def test_completed_device_png_is_pulled_and_receipted(self) -> None:
+        data = png_fixture()
+        identity = {"bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+        log = (
+            'I: GSPLAT_BENCHMARK_MANIFEST {"run_id":"fresh-run"}\n'
+            'I: GSPLAT_BENCHMARK_SUMMARY {"run_id":"fresh-run"}\n'
+            "I: BENCHMARK_RESULT samples=1\n"
+        )
+        completed = COLLECTOR.subprocess.CompletedProcess(
+            args=[], returncode=0, stdout=data, stderr=b""
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            image = root / "device-final-frame.png"
+            receipt_path = root / "receipt.json"
+            with (
+                mock.patch.object(
+                    COLLECTOR, "read_device_file_identity", return_value=identity
+                ),
+                mock.patch.object(COLLECTOR.subprocess, "run", return_value=completed),
+            ):
+                receipt = COLLECTOR.pull_completed_device_png(
+                    "adb", "serial", log, image, receipt_path
+                )
+            self.assertEqual(image.read_bytes(), data)
+            self.assertEqual(receipt["benchmark_run_id"], "fresh-run")
+            self.assertEqual(receipt["device_identity"], identity)
+            self.assertEqual(receipt["local_identity"]["width"], 2412)
+            self.assertEqual(receipt["local_identity"]["height"], 1080)
+            self.assertEqual(json.loads(receipt_path.read_text()), receipt)
+
+    def test_device_png_pull_rejects_wrong_dimensions(self) -> None:
+        data = png_fixture(1920, 1080)
+        log = (
+            'I: GSPLAT_BENCHMARK_MANIFEST {"run_id":"fresh-run"}\n'
+            'I: GSPLAT_BENCHMARK_SUMMARY {"run_id":"fresh-run"}\n'
+            "I: BENCHMARK_RESULT samples=1\n"
+        )
+        completed = COLLECTOR.subprocess.CompletedProcess(
+            args=[], returncode=0, stdout=data, stderr=b""
+        )
+        identity = {"bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            mock.patch.object(
+                COLLECTOR, "read_device_file_identity", return_value=identity
+            ),
+            mock.patch.object(COLLECTOR.subprocess, "run", return_value=completed),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "2412x1080"):
+                COLLECTOR.pull_completed_device_png(
+                    "adb",
+                    "serial",
+                    log,
+                    pathlib.Path(directory) / "image.png",
+                    pathlib.Path(directory) / "receipt.json",
+                )
+
+    def test_device_png_pull_rejects_malformed_png(self) -> None:
+        data = b"not-a-png"
+        log = (
+            'I: GSPLAT_BENCHMARK_MANIFEST {"run_id":"fresh-run"}\n'
+            'I: GSPLAT_BENCHMARK_SUMMARY {"run_id":"fresh-run"}\n'
+            "I: BENCHMARK_RESULT samples=1\n"
+        )
+        completed = COLLECTOR.subprocess.CompletedProcess(
+            args=[], returncode=0, stdout=data, stderr=b""
+        )
+        identity = {"bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            mock.patch.object(
+                COLLECTOR, "read_device_file_identity", return_value=identity
+            ),
+            mock.patch.object(COLLECTOR.subprocess, "run", return_value=completed),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "not a PNG"):
+                COLLECTOR.pull_completed_device_png(
+                    "adb",
+                    "serial",
+                    log,
+                    pathlib.Path(directory) / "image.png",
+                    pathlib.Path(directory) / "receipt.json",
+                )
+
+    def test_device_png_pull_rejects_hash_mismatch(self) -> None:
+        data = png_fixture()
+        log = (
+            'I: GSPLAT_BENCHMARK_MANIFEST {"run_id":"fresh-run"}\n'
+            'I: GSPLAT_BENCHMARK_SUMMARY {"run_id":"fresh-run"}\n'
+            "I: BENCHMARK_RESULT samples=1\n"
+        )
+        completed = COLLECTOR.subprocess.CompletedProcess(
+            args=[], returncode=0, stdout=data, stderr=b""
+        )
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            mock.patch.object(
+                COLLECTOR,
+                "read_device_file_identity",
+                return_value={"bytes": len(data), "sha256": "0" * 64},
+            ),
+            mock.patch.object(COLLECTOR.subprocess, "run", return_value=completed),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "SHA-256 mismatch"):
+                COLLECTOR.pull_completed_device_png(
+                    "adb",
+                    "serial",
+                    log,
+                    pathlib.Path(directory) / "image.png",
+                    pathlib.Path(directory) / "receipt.json",
+                )
+
+    def test_device_png_pull_requires_unique_completed_run(self) -> None:
+        cases = (
+            'I: GSPLAT_BENCHMARK_MANIFEST {"run_id":"run"}\n',
+            "I: BENCHMARK_RESULT samples=1\n",
+            (
+                'I: GSPLAT_BENCHMARK_MANIFEST {"run_id":"run"}\n'
+                'I: GSPLAT_BENCHMARK_SUMMARY {"run_id":"run"}\n'
+                "I: BENCHMARK_RESULT samples=1\n"
+                "I: BENCHMARK_RESULT samples=1\n"
+            ),
+            (
+                'I: GSPLAT_BENCHMARK_MANIFEST {"run_id":"a"}\n'
+                'I: GSPLAT_BENCHMARK_MANIFEST {"run_id":"b"}\n'
+                'I: GSPLAT_BENCHMARK_SUMMARY {"run_id":"a"}\n'
+                "I: BENCHMARK_RESULT samples=1\n"
+            ),
+        )
+        for log in cases:
+            with self.subTest(log=log):
+                with self.assertRaisesRegex(RuntimeError, "requires one"):
+                    COLLECTOR.completed_benchmark_run_id(log)
+
+    def test_formal_suite_references_atomically_published_run_and_all_build_ids(self) -> None:
+        plan = json.loads(COLLECTOR.FULL_QUALITY_PLAN.read_text())
+        dataset = next(item for item in plan["datasets"] if item["id"] == "kitsune-full")
+        trace = next(
+            item
+            for item in plan["traces"]
+            if item["id"] == "candidate-kitsune-quality-2view-2412x1080-v1"
+        )
+        identity = {"bytes": 10, "sha256": "a" * 64}
+        experiment = {
+            "repository": {"commit": "b" * 40, "dirty": False},
+            "apk": dict(identity),
+            "aar": dict(identity),
+            "native_library": dict(identity),
+            "aar_native_library": dict(identity),
+            "dataset": {
+                "bytes": dataset["bytes"],
+                "sha256": dataset["sha256"],
+            },
+            "trace": {"bytes": 1, "sha256": "c" * 64},
+            "configuration": {"backends": ["cpu"]},
+            "runs": [
+                {
+                    "status": "complete",
+                    "backend": "cpu",
+                    "repetition": 1,
+                    "index": 1,
+                    "artifact": "run-001/artifact",
+                }
+            ],
+        }
+        args = argparse.Namespace(
+            ply=COLLECTOR.REPO_ROOT / dataset["local_path"],
+            camera_trace=COLLECTOR.REPO_ROOT / trace["local_path"],
+            camera_frame=None,
+            camera_frame_indices="0,1",
+            repetitions=1,
+            warmup=20,
+            frames=80,
+            sort_interval=1,
+            seed=7,
+        )
+        trace_json = {
+            "trace_id": trace["id"],
+            "content_sha256": trace["sha256"],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            output = pathlib.Path(directory)
+            artifact = output / "run-001/artifact"
+            artifact.mkdir(parents=True)
+            (artifact / "manifest.json").write_text(
+                json.dumps(
+                    {
+                        "image": {
+                            "sha256": "d" * 64,
+                            "width": 2412,
+                            "height": 1080,
+                        }
+                    }
+                )
+            )
+            with mock.patch.object(COLLECTOR, "run_command") as validate:
+                COLLECTOR.publish_formal_suite(
+                    args, output, experiment, trace_json
+                )
+            suite = json.loads((output / "suite.json").read_text())
+            self.assertEqual(suite["schema"], "gsplat-full-quality-experiment/v1")
+            self.assertEqual(suite["runs"][0]["artifact"], "run-001/artifact")
+            self.assertEqual(
+                suite["runs"][0]["image"]["path"],
+                "run-001/artifact/final-frame.png",
+            )
+            self.assertEqual(
+                set(suite["android_build_artifacts"]),
+                {"apk", "aar", "native_library", "aar_native_library"},
+            )
+            validate.assert_called_once()
+
+    def test_formal_suite_rejects_absent_build_identity(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, "AAR identity is absent"):
+            COLLECTOR.require_identity(None, "AAR")
 
 
 if __name__ == "__main__":

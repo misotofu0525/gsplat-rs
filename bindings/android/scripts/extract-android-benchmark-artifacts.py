@@ -23,6 +23,11 @@ FRAME_PREFIX = "GSPLAT_BENCHMARK_FRAME "
 SUMMARY_PREFIX = "GSPLAT_BENCHMARK_SUMMARY "
 CHUNK_PREFIX = "GSPLAT_BENCHMARK_CHUNK "
 CHUNK_SHA256 = re.compile(r"[0-9a-f]{64}")
+PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+FORMAL_ANDROID_WIDTH = 2412
+FORMAL_ANDROID_HEIGHT = 1080
+DEVICE_PULL_RECEIPT_SCHEMA = "gsplat-android-device-png-pull/v1"
+DEVICE_FINAL_PNG_PATH = "files/benchmark-final-frame.png"
 CURRENT_STATS_VALIDATOR = pathlib.Path(__file__).with_name(
     "collect-android-sort-benchmarks.py"
 )
@@ -120,6 +125,78 @@ def validate_declared_current_stats(staging: pathlib.Path) -> None:
     )
 
 
+def png_dimensions(data: bytes) -> tuple[int, int]:
+    if len(data) < 24 or data[:8] != PNG_SIGNATURE or data[12:16] != b"IHDR":
+        raise RuntimeError("final image is not a PNG with an IHDR header")
+    return int.from_bytes(data[16:20], "big"), int.from_bytes(data[20:24], "big")
+
+
+def attach_device_pulled_final_png(
+    staging: pathlib.Path,
+    image_path: pathlib.Path,
+    receipt_path: pathlib.Path,
+) -> None:
+    manifest = json.loads((staging / "manifest.json").read_text(encoding="utf-8"))
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    if not isinstance(receipt, dict):
+        raise RuntimeError("device PNG pull receipt must contain an object")
+    required = {
+        "schema": DEVICE_PULL_RECEIPT_SCHEMA,
+        "source": "adb-exec-out-run-as-after-benchmark-complete",
+        "device_path": DEVICE_FINAL_PNG_PATH,
+        "package": "com.gsplat.example",
+        "benchmark_completed": True,
+        "device_path_absent_after_package_clear": True,
+    }
+    for field, expected in required.items():
+        if receipt.get(field) != expected:
+            raise RuntimeError(
+                f"device PNG pull receipt {field} must equal {expected!r}"
+            )
+    run_id = manifest.get("run_id")
+    if not isinstance(run_id, str) or not run_id:
+        raise RuntimeError("benchmark manifest run_id is missing")
+    if receipt.get("benchmark_run_id") != run_id:
+        raise RuntimeError("device PNG pull receipt run_id does not match the benchmark")
+    if receipt.get("pulled_after_completed_log") is not True:
+        raise RuntimeError("device PNG was not pulled after the completed benchmark log")
+
+    data = image_path.read_bytes()
+    width, height = png_dimensions(data)
+    if (width, height) != (FORMAL_ANDROID_WIDTH, FORMAL_ANDROID_HEIGHT):
+        raise RuntimeError(
+            "formal Android final PNG must be "
+            f"{FORMAL_ANDROID_WIDTH}x{FORMAL_ANDROID_HEIGHT}, got {width}x{height}"
+        )
+    device_identity = receipt.get("device_identity")
+    local_identity = receipt.get("local_identity")
+    if not isinstance(device_identity, dict) or not isinstance(local_identity, dict):
+        raise RuntimeError("device PNG pull receipt identities are missing")
+    actual_sha256 = hashlib.sha256(data).hexdigest()
+    actual_identity = {"bytes": len(data), "sha256": actual_sha256}
+    if device_identity != actual_identity or {
+        "bytes": local_identity.get("bytes"),
+        "sha256": local_identity.get("sha256"),
+    } != actual_identity:
+        raise RuntimeError("device/local PNG bytes/hash do not match the pull receipt")
+    if local_identity.get("width") != width or local_identity.get("height") != height:
+        raise RuntimeError("device PNG dimensions do not match the pull receipt")
+
+    destination = staging / "final-frame.png"
+    destination.write_bytes(data)
+    manifest["image"] = {
+        "path": destination.name,
+        "sha256": actual_sha256,
+        "width": width,
+        "height": height,
+    }
+    manifest["android_device_png_pull"] = receipt
+    (staging / "manifest.json").write_text(
+        json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("log", type=pathlib.Path)
@@ -128,6 +205,8 @@ def main() -> int:
     parser.add_argument("--camera-trace", type=pathlib.Path)
     parser.add_argument("--camera-validator", type=pathlib.Path)
     parser.add_argument("--android-environment-receipt", type=pathlib.Path)
+    parser.add_argument("--final-png", type=pathlib.Path)
+    parser.add_argument("--device-png-pull-receipt", type=pathlib.Path)
     args = parser.parse_args()
 
     if (args.camera_trace is None) != (args.camera_validator is None):
@@ -143,6 +222,20 @@ def main() -> int:
         parser.error(
             "Android environment receipt does not exist: "
             f"{args.android_environment_receipt}"
+        )
+    if (args.final_png is None) != (args.device_png_pull_receipt is None):
+        parser.error(
+            "--final-png and --device-png-pull-receipt must be provided together"
+        )
+    if args.final_png is not None and not args.final_png.is_file():
+        parser.error(f"final PNG does not exist: {args.final_png}")
+    if (
+        args.device_png_pull_receipt is not None
+        and not args.device_png_pull_receipt.is_file()
+    ):
+        parser.error(
+            "device PNG pull receipt does not exist: "
+            f"{args.device_png_pull_receipt}"
         )
 
     if args.destination.exists():
@@ -232,6 +325,14 @@ def main() -> int:
                 )
             except (OSError, json.JSONDecodeError, RuntimeError) as error:
                 parser.error(f"invalid Android environment receipt: {error}")
+        if args.final_png is not None:
+            assert args.device_png_pull_receipt is not None
+            try:
+                attach_device_pulled_final_png(
+                    staging, args.final_png, args.device_png_pull_receipt
+                )
+            except (OSError, json.JSONDecodeError, RuntimeError) as error:
+                parser.error(f"invalid device-pulled final PNG: {error}")
         subprocess.run([sys.executable, str(args.validator), str(staging)], check=True)
         try:
             validate_declared_current_stats(staging)

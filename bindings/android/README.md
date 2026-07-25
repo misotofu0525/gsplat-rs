@@ -401,6 +401,31 @@ output directory.
 Run `--help` for frame latency, yaw, timeout, thermal polling, and explicit
 `adb` options.
 
+Add `--formal-artifact` only for the 2412x1080 Packed device protocol. Formal
+mode requires the local release AAR as well as the exact APK, and records the
+APK, AAR, APK-member native `.so`, and AAR-member native `.so` identities
+before device collection. The two native member hashes must agree. After each
+package clear it proves that `files/benchmark-final-frame.png` is absent, asks
+the benchmark Activity to publish that exact app-sandbox path, waits for the
+unique benchmark result plus complete SHA-verified manifest and summary for the
+same run ID, and then pulls the file with `adb exec-out run-as`. It never
+accepts a caller-selected host image and never uses `screencap`, host display
+capture, or Android screenshot APIs.
+
+The extractor admits the image into the same staging transaction as
+`manifest.json`, `frames.jsonl`, and `summary.json` only when the pull receipt
+matches the benchmark run ID, fixed package/path, byte count, SHA-256, PNG
+signature/IHDR, and exact 2412x1080 dimensions. The receipt retains distinct
+device and local byte/SHA identities and both must match the staged bytes. The
+generic artifact validator,
+strict current-stats validator, and camera validator all run before the four
+files are atomically published. After every scheduled run is complete, the
+collector writes a staged `gsplat-full-quality-experiment/v1` suite, validates
+it with `--verify-inputs`, and only then renames it to `suite.json`. Missing
+image output, an old file surviving package clear, malformed/wrong-size bytes,
+hash drift, incomplete terminal evidence, non-full resolution, or absent
+APK/AAR/native/dataset/trace identity leaves no formal suite.
+
 The collector pushes each experiment's PLY exactly once to
 `/data/local/tmp/gsplat-benchmark-<sha256>.ply`. Before every paired run it
 clears only `com.gsplat.example`, copies that staged file with `run-as` to the
@@ -422,6 +447,8 @@ current-stats artifact validator used by the full collector. Missing or
 non-Ready ledger entries, incomplete identity, sample/trace join drift, or an
 `exactness_receipt_id` different from `manifest.exactness.receipt_id` fails
 closed before the destination is published.
+Its optional `--final-png` lane is accepted only together with the collector's
+`--device-png-pull-receipt`; it is not a general image-import option.
 
 Benchmark mode forces a tiny camera orbit each frame so it measures the selected
 ordering backend and exact resident draw path rather than stationary

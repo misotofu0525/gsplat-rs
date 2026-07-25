@@ -11,6 +11,8 @@ installing the APK is an explicit one-time preparation mode, not dataset setup.
 from __future__ import annotations
 
 import argparse
+import base64
+import binascii
 import copy
 import contextlib
 import dataclasses
@@ -35,9 +37,12 @@ from typing import Any, Iterator
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
 BUILD_SCRIPT = REPO_ROOT / "bindings/android/scripts/build-sample-apk.sh"
+BUILD_AAR_SCRIPT = REPO_ROOT / "bindings/android/scripts/build-aar.sh"
 APK_BOOTSTRAP_DATASET = REPO_ROOT / "tests/datasets/minimal_ascii.ply"
 EXTRACTOR = REPO_ROOT / "bindings/android/scripts/extract-android-benchmark-artifacts.py"
 VALIDATOR = REPO_ROOT / "tests/perf/validate-benchmark-artifacts.py"
+FULL_QUALITY_VALIDATOR = REPO_ROOT / "tests/perf/validate-full-quality-experiment.py"
+FULL_QUALITY_PLAN = REPO_ROOT / "tests/perf/full-quality-matrix-plan-v1.json"
 TRACE_VALIDATOR = REPO_ROOT / "tests/perf/trace/validate_trace_v1.py"
 CAMERA_RECEIPT_VALIDATOR = (
     REPO_ROOT / "bindings/android/scripts/validate-android-camera-receipts.py"
@@ -45,6 +50,11 @@ CAMERA_RECEIPT_VALIDATOR = (
 APK_METADATA = REPO_ROOT / "examples/android/app/build/outputs/apk/debug/output-metadata.json"
 APK_DIR = APK_METADATA.parent
 APK_NATIVE_LIBRARY = "lib/arm64-v8a/libgsplat_jni.so"
+AAR_OUTPUT = (
+    REPO_ROOT
+    / "bindings/android/gsplat-android/build/outputs/aar/gsplat-android-release.aar"
+)
+AAR_NATIVE_LIBRARY = "jni/arm64-v8a/libgsplat_jni.so"
 PACKAGE = "com.gsplat.example"
 ACTIVITY = f"{PACKAGE}/.MainActivity"
 LOG_TAG = "GsplatExample:I"
@@ -57,6 +67,9 @@ RENDERER_PATHS = {
 }
 INTERNAL_DATASET = "files/imported_scene.ply"
 INTERNAL_TRACE = "files/camera_trace.json"
+INTERNAL_FINAL_PNG = "files/benchmark-final-frame.png"
+FORMAL_ANDROID_SIZE = (2412, 1080)
+DEVICE_PNG_PULL_RECEIPT_SCHEMA = "gsplat-android-device-png-pull/v1"
 DEVICE_DATASET_PREFIX = "/data/local/tmp/gsplat-benchmark-"
 DEVICE_TRACE_PREFIX = "/data/local/tmp/gsplat-camera-trace-"
 CAMERA_RECEIPT_SCHEMA = "gsplat-surface-camera-receipt/v1"
@@ -271,6 +284,166 @@ def local_file_identity(path: pathlib.Path) -> dict[str, Any]:
     return {"bytes": path.stat().st_size, "sha256": sha256_file(path)}
 
 
+def png_dimensions(data: bytes) -> tuple[int, int]:
+    if (
+        len(data) < 24
+        or data[:8] != b"\x89PNG\r\n\x1a\n"
+        or data[12:16] != b"IHDR"
+    ):
+        raise RuntimeError("final image is not a PNG with an IHDR header")
+    return int.from_bytes(data[16:20], "big"), int.from_bytes(data[20:24], "big")
+
+
+def completed_terminal_record_run_id(log: str, record: str) -> str:
+    direct_marker = f"GSPLAT_BENCHMARK_{record.upper()} "
+    direct_payloads = [
+        line.split(direct_marker, 1)[1]
+        for line in log.splitlines()
+        if direct_marker in line
+    ]
+    chunk_marker = f"GSPLAT_BENCHMARK_CHUNK record={record} "
+    chunk_lines = [line for line in log.splitlines() if chunk_marker in line]
+    if direct_payloads and chunk_lines:
+        raise RuntimeError(f"benchmark {record} mixes direct and chunked records")
+    if direct_payloads:
+        if len(direct_payloads) != 1:
+            raise RuntimeError(f"benchmark requires one complete {record} record")
+        try:
+            value = json.loads(direct_payloads[0])
+        except json.JSONDecodeError as error:
+            raise RuntimeError(f"benchmark {record} JSON is malformed") from error
+        run_id = value.get("run_id")
+        if not isinstance(run_id, str) or not run_id:
+            raise RuntimeError(f"benchmark {record} run_id is missing")
+        return run_id
+
+    pattern = re.compile(
+        rf"GSPLAT_BENCHMARK_CHUNK record={record} "
+        r"run_id=(\S+) index=(\d+) total=(\d+) "
+        r"encoding=base64 sha256=([0-9a-f]{64}) payload=(\S+)"
+    )
+    groups: dict[tuple[str, int, str], dict[int, bytes]] = {}
+    for line in chunk_lines:
+        match = pattern.search(line)
+        if match is None:
+            raise RuntimeError(f"benchmark {record} chunk metadata is malformed")
+        run_id, index_text, total_text, expected_sha256, encoded = match.groups()
+        index = int(index_text)
+        total = int(total_text)
+        if total <= 0 or index < 0 or index >= total:
+            raise RuntimeError(f"benchmark {record} chunk index is out of range")
+        try:
+            decoded = base64.b64decode(encoded, validate=True)
+        except (binascii.Error, ValueError) as error:
+            raise RuntimeError(f"benchmark {record} chunk base64 is malformed") from error
+        key = (run_id, total, expected_sha256)
+        group = groups.setdefault(key, {})
+        if index in group:
+            raise RuntimeError(f"benchmark {record} contains a duplicate chunk")
+        group[index] = decoded
+    if len(groups) != 1:
+        raise RuntimeError(f"benchmark requires one complete {record} record")
+    (run_id, total, expected_sha256), chunks = next(iter(groups.items()))
+    if set(chunks) != set(range(total)):
+        raise RuntimeError(f"benchmark {record} chunk set is incomplete")
+    raw = b"".join(chunks[index] for index in range(total))
+    if hashlib.sha256(raw).hexdigest() != expected_sha256:
+        raise RuntimeError(f"benchmark {record} chunk SHA-256 does not match")
+    try:
+        value = json.loads(raw)
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise RuntimeError(f"benchmark {record} chunk JSON is malformed") from error
+    if value.get("run_id") != run_id:
+        raise RuntimeError(f"benchmark {record} payload run_id does not match chunks")
+    return run_id
+
+
+def completed_benchmark_run_id(log: str) -> str:
+    if len([line for line in log.splitlines() if "BENCHMARK_RESULT " in line]) != 1:
+        raise RuntimeError("device PNG pull requires one completed benchmark result")
+    manifest_run_id = completed_terminal_record_run_id(log, "manifest")
+    summary_run_id = completed_terminal_record_run_id(log, "summary")
+    if manifest_run_id != summary_run_id:
+        raise RuntimeError("benchmark manifest and summary run_id differ")
+    return manifest_run_id
+
+
+def assert_device_final_png_absent(adb: pathlib.Path | str, serial: str) -> None:
+    command = adb_args(
+        adb,
+        serial,
+        "shell",
+        "run-as",
+        PACKAGE,
+        "sh",
+        "-c",
+        f"test ! -e {INTERNAL_FINAL_PNG}",
+    )
+    result = subprocess.run(
+        command,
+        cwd=REPO_ROOT,
+        check=False,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            "benchmark final PNG already exists after package clear; refusing stale image"
+        )
+
+
+def pull_completed_device_png(
+    adb: pathlib.Path | str,
+    serial: str,
+    log: str,
+    destination: pathlib.Path,
+    receipt_path: pathlib.Path,
+) -> dict[str, Any]:
+    run_id = completed_benchmark_run_id(log)
+    device_identity = read_device_file_identity(
+        adb, serial, INTERNAL_FINAL_PNG, run_as_package=PACKAGE
+    )
+    command = adb_args(
+        adb, serial, "exec-out", "run-as", PACKAGE, "cat", INTERNAL_FINAL_PNG
+    )
+    print(f"+ {command_text(command)} > {destination}", flush=True)
+    pulled = subprocess.run(
+        command,
+        cwd=REPO_ROOT,
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if pulled.returncode != 0:
+        message = pulled.stderr.decode("utf-8", errors="replace").strip()
+        raise RuntimeError(f"failed to pull benchmark final PNG: {message}")
+    data = pulled.stdout
+    width, height = png_dimensions(data)
+    if (width, height) != FORMAL_ANDROID_SIZE:
+        raise RuntimeError(
+            "formal Android final PNG must be "
+            f"{FORMAL_ANDROID_SIZE[0]}x{FORMAL_ANDROID_SIZE[1]}, got {width}x{height}"
+        )
+    local_identity = {"bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+    require_matching_identity(device_identity, local_identity, "pulled final PNG")
+    destination.write_bytes(data)
+    receipt = {
+        "schema": DEVICE_PNG_PULL_RECEIPT_SCHEMA,
+        "source": "adb-exec-out-run-as-after-benchmark-complete",
+        "package": PACKAGE,
+        "device_path": INTERNAL_FINAL_PNG,
+        "device_path_absent_after_package_clear": True,
+        "benchmark_completed": True,
+        "pulled_after_completed_log": True,
+        "benchmark_run_id": run_id,
+        "device_identity": device_identity,
+        "local_identity": {**local_identity, "width": width, "height": height},
+    }
+    atomic_write_json(receipt_path, receipt)
+    return receipt
+
+
 def sha256_apk_member(apk: pathlib.Path, member: str) -> dict[str, Any]:
     digest = hashlib.sha256()
     try:
@@ -281,6 +454,19 @@ def sha256_apk_member(apk: pathlib.Path, member: str) -> dict[str, Any]:
                     digest.update(chunk)
     except (KeyError, zipfile.BadZipFile) as error:
         raise RuntimeError(f"local APK does not contain {member}: {apk}") from error
+    return {"bytes": info.file_size, "sha256": digest.hexdigest()}
+
+
+def sha256_aar_member(aar: pathlib.Path, member: str) -> dict[str, Any]:
+    digest = hashlib.sha256()
+    try:
+        with zipfile.ZipFile(aar) as archive:
+            info = archive.getinfo(member)
+            with archive.open(info) as source:
+                for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                    digest.update(chunk)
+    except (KeyError, zipfile.BadZipFile) as error:
+        raise RuntimeError(f"local AAR does not contain {member}: {aar}") from error
     return {"bytes": info.file_size, "sha256": digest.hexdigest()}
 
 
@@ -650,6 +836,14 @@ def benchmark_launch_args(args: argparse.Namespace, backend: str) -> list[str]:
                 "true",
             ]
         )
+    if getattr(args, "formal_artifact", False):
+        result.extend(
+            [
+                "--es",
+                "gsplat_benchmark_final_png_path",
+                f"/data/user/0/{PACKAGE}/{INTERNAL_FINAL_PNG}",
+            ]
+        )
     return result
 
 
@@ -671,27 +865,11 @@ def has_complete_summary_artifact(log: str) -> bool:
     records. Seeing chunk zero is not completion: stopping logcat at that point
     races the remaining chunks and creates an invalid artifact on fast scenes.
     """
-    if "GSPLAT_BENCHMARK_SUMMARY " in log:
-        return True
-
-    chunks: dict[tuple[str, int, str], set[int]] = {}
-    pattern = re.compile(
-        r"GSPLAT_BENCHMARK_CHUNK record=summary "
-        r"run_id=(\S+) index=(\d+) total=(\d+) "
-        r"encoding=base64 sha256=([0-9a-f]{64}) payload=\S+"
-    )
-    for match in pattern.finditer(log):
-        run_id, index_text, total_text, digest = match.groups()
-        index = int(index_text)
-        total = int(total_text)
-        if total <= 0 or index < 0 or index >= total:
-            continue
-        key = (run_id, total, digest)
-        indices = chunks.setdefault(key, set())
-        indices.add(index)
-        if len(indices) == total:
-            return True
-    return False
+    try:
+        completed_terminal_record_run_id(log, "summary")
+    except RuntimeError:
+        return False
+    return True
 
 
 def collect_logcat_run(
@@ -723,11 +901,13 @@ def collect_logcat_run(
             while time.monotonic() < deadline:
                 log_file.flush()
                 contents = log_path.read_text(encoding="utf-8", errors="replace")
-                if (
-                    "BENCHMARK_RESULT " in contents
-                    and has_complete_summary_artifact(contents)
-                ):
-                    return contents
+                if "BENCHMARK_RESULT " in contents:
+                    try:
+                        completed_benchmark_run_id(contents)
+                    except RuntimeError:
+                        pass
+                    else:
+                        return contents
                 if process.poll() is not None:
                     raise RuntimeError(
                         f"logcat exited before benchmark completion; see {log_path}"
@@ -1928,6 +2108,22 @@ def parser() -> argparse.ArgumentParser:
         ),
     )
     result.add_argument(
+        "--aar",
+        type=pathlib.Path,
+        help=(
+            "local release AAR whose identity must match the APK native library "
+            f"(default: {AAR_OUTPUT.relative_to(REPO_ROOT)})"
+        ),
+    )
+    result.add_argument(
+        "--formal-artifact",
+        action="store_true",
+        help=(
+            "require a fresh app-sandbox final PNG for every completed run and "
+            "publish a validated gsplat-full-quality-experiment/v1 suite"
+        ),
+    )
+    result.add_argument(
         "--backend",
         action="append",
         choices=BACKENDS,
@@ -2029,6 +2225,14 @@ def validate_args(args: argparse.Namespace) -> list[str]:
         args.apk = args.apk.expanduser().resolve()
         if not args.dry_run and not args.apk.is_file():
             raise ValueError(f"APK does not exist: {args.apk}")
+    args.aar = (args.aar or AAR_OUTPUT).expanduser().resolve()
+    if (
+        args.formal_artifact
+        and not args.prepare_apk
+        and not args.dry_run
+        and not args.aar.is_file()
+    ):
+        raise ValueError(f"formal Android AAR does not exist: {args.aar}")
     if args.camera_trace is None:
         raise ValueError(
             "--camera-trace is required so retained runs are trace_display_exact"
@@ -2043,6 +2247,17 @@ def validate_args(args: argparse.Namespace) -> list[str]:
     trace_frame_count = len(
         json.loads(args.camera_trace.read_text(encoding="utf-8"))["frames"]
     )
+    trace_display = json.loads(args.camera_trace.read_text(encoding="utf-8")).get(
+        "display", {}
+    )
+    if args.formal_artifact and (
+        trace_display.get("width"), trace_display.get("height")
+    ) != FORMAL_ANDROID_SIZE:
+        raise ValueError(
+            "--formal-artifact requires the exact 2412x1080 Android trace"
+        )
+    if args.formal_artifact and args.geometry_path != "packed":
+        raise ValueError("--formal-artifact requires --geometry-path packed")
     if args.camera_frame is not None:
         if args.camera_frame < 0:
             raise ValueError("--camera-frame must be non-negative")
@@ -2123,8 +2338,12 @@ def dry_run(
     print(
         f"apk_mode={'prepare-once' if args.prepare_apk else 'reuse-exact-installed'}"
     )
+    if args.formal_artifact:
+        print(f"aar={args.aar}")
     if args.prepare_apk:
         print(f"+ {command_text(['bash', BUILD_SCRIPT, APK_BOOTSTRAP_DATASET])}")
+        if args.formal_artifact:
+            print(f"+ {command_text(['bash', BUILD_AAR_SCRIPT])}")
         print("apk=<resolved from output-metadata.json>")
         print(f"+ {command_text(adb_args(adb, args.serial, 'install', '-r', '<apk>'))}")
     else:
@@ -2153,6 +2372,10 @@ def dry_run(
             f"backend={spec.backend}"
         )
         print(f"+ {command_text(adb_args(adb, args.serial, 'shell', 'pm', 'clear', PACKAGE))}")
+        if args.formal_artifact:
+            print(
+                f"+ {command_text(adb_args(adb, args.serial, 'shell', 'run-as', PACKAGE, 'sh', '-c', f'test ! -e {INTERNAL_FINAL_PNG}'))}"
+            )
         print(
             f"+ {command_text(adb_args(adb, args.serial, 'shell', 'run-as', PACKAGE, 'mkdir', '-p', 'files'))}"
         )
@@ -2171,6 +2394,10 @@ def dry_run(
         print(
             f"+ {command_text(adb_args(adb, args.serial, *benchmark_launch_args(args, spec.backend)))}"
         )
+        if args.formal_artifact:
+            print(
+                f"+ {command_text(adb_args(adb, args.serial, 'exec-out', 'run-as', PACKAGE, 'cat', INTERNAL_FINAL_PNG))} > <run>/device-final-frame.png"
+            )
     print(
         f"+ {command_text(adb_args(adb, args.serial, 'shell', 'rm', '-f', temporary_path))}"
     )
@@ -2247,6 +2474,8 @@ def collect_scheduled_runs(
             ),
             timeout=15.0,
         )
+        if args.formal_artifact:
+            assert_device_final_png_absent(adb, args.serial)
 
         injected_identity = inject_device_dataset(
             adb,
@@ -2304,22 +2533,40 @@ def collect_scheduled_runs(
             args.run_timeout_seconds,
         )
         result_line = extract_result_line(log)
-        run_command(
-            [
-                sys.executable,
-                EXTRACTOR,
-                log_path,
-                artifact_dir,
-                "--validator",
-                VALIDATOR,
-                "--camera-trace",
-                args.camera_trace,
-                "--camera-validator",
-                CAMERA_RECEIPT_VALIDATOR,
-                "--android-environment-receipt",
-                android_environment_receipt_path,
-            ]
-        )
+        final_png_path = run_dir / "device-final-frame.png"
+        final_png_receipt_path = run_dir / "device-png-pull-receipt.json"
+        if args.formal_artifact:
+            pull_completed_device_png(
+                adb,
+                args.serial,
+                log,
+                final_png_path,
+                final_png_receipt_path,
+            )
+        extractor_command: list[str | os.PathLike[str]] = [
+            sys.executable,
+            EXTRACTOR,
+            log_path,
+            artifact_dir,
+            "--validator",
+            VALIDATOR,
+            "--camera-trace",
+            args.camera_trace,
+            "--camera-validator",
+            CAMERA_RECEIPT_VALIDATOR,
+            "--android-environment-receipt",
+            android_environment_receipt_path,
+        ]
+        if args.formal_artifact:
+            extractor_command.extend(
+                [
+                    "--final-png",
+                    final_png_path,
+                    "--device-png-pull-receipt",
+                    final_png_receipt_path,
+                ]
+            )
+        run_command(extractor_command)
         manifest = json.loads(
             (artifact_dir / "manifest.json").read_text(encoding="utf-8")
         )
@@ -2347,6 +2594,11 @@ def collect_scheduled_runs(
                 "thermal_status_after": read_thermal_status(adb, args.serial),
                 "benchmark_result": result_line,
                 "artifact_run_id": manifest.get("run_id"),
+                "device_png_pull_receipt": (
+                    str(final_png_receipt_path.relative_to(output))
+                    if args.formal_artifact
+                    else None
+                ),
             }
         )
         atomic_write_json(run_dir / "run.json", run_record)
@@ -2354,6 +2606,212 @@ def collect_scheduled_runs(
         print(result_line)
         print(f"log={log_path}")
         print(f"artifact={artifact_dir}")
+
+
+def repository_relative(path: pathlib.Path, description: str) -> str:
+    try:
+        return path.resolve().relative_to(REPO_ROOT).as_posix()
+    except ValueError as error:
+        raise RuntimeError(
+            f"formal {description} must live inside the repository"
+        ) from error
+
+
+def require_identity(value: Any, description: str) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise RuntimeError(f"formal suite {description} identity is absent")
+    if (
+        not isinstance(value.get("bytes"), int)
+        or value["bytes"] <= 0
+        or re.fullmatch(r"[0-9a-f]{64}", str(value.get("sha256"))) is None
+    ):
+        raise RuntimeError(f"formal suite {description} identity is incomplete")
+    return value
+
+
+def publish_formal_suite(
+    args: argparse.Namespace,
+    output: pathlib.Path,
+    experiment: dict[str, Any],
+    trace_json: dict[str, Any],
+) -> None:
+    repository = experiment.get("repository")
+    if not isinstance(repository, dict) or repository.get("dirty") is not False:
+        raise RuntimeError("formal suite requires a clean repository identity")
+    commit = repository.get("commit")
+    if not isinstance(commit, str) or re.fullmatch(r"[0-9a-f]{40}", commit) is None:
+        raise RuntimeError("formal suite repository commit is absent")
+    for field in (
+        "apk",
+        "aar",
+        "native_library",
+        "aar_native_library",
+        "dataset",
+        "trace",
+    ):
+        require_identity(experiment.get(field), field)
+    if (
+        experiment["native_library"]["sha256"]
+        != experiment["aar_native_library"]["sha256"]
+    ):
+        raise RuntimeError("APK and AAR native library identities differ")
+
+    plan = json.loads(FULL_QUALITY_PLAN.read_text(encoding="utf-8"))
+    dataset_path = repository_relative(args.ply, "dataset")
+    dataset = next(
+        (
+            item
+            for item in plan.get("datasets", [])
+            if item.get("local_path") == dataset_path
+            and item.get("sha256") == experiment["dataset"]["sha256"]
+            and item.get("bytes") == experiment["dataset"]["bytes"]
+        ),
+        None,
+    )
+    if dataset is None:
+        raise RuntimeError("formal suite dataset is absent from the canonical matrix")
+    trace_path = repository_relative(args.camera_trace, "trace")
+    trace = next(
+        (
+            item
+            for item in plan.get("traces", [])
+            if item.get("local_path") == trace_path
+            and item.get("id") == trace_json.get("trace_id")
+            and item.get("sha256") == trace_json.get("content_sha256")
+        ),
+        None,
+    )
+    if trace is None:
+        raise RuntimeError("formal suite trace is absent from the canonical matrix")
+    endpoint = next(
+        (
+            item
+            for item in plan.get("endpoints", [])
+            if item.get("id") == "android-a065-vulkan"
+        ),
+        None,
+    )
+    if endpoint is None:
+        raise RuntimeError("formal Android endpoint is absent from the canonical matrix")
+
+    camera_mode = "fixed_frame" if args.camera_frame is not None else "trace_sequence"
+    frame_indices = (
+        [args.camera_frame]
+        if args.camera_frame is not None
+        else [int(value) for value in args.camera_frame_indices.split(",")]
+    )
+    protocols = []
+    for backend in experiment["configuration"]["backends"]:
+        protocols.append(
+            {
+                "id": f"m5c-android-{backend}",
+                "evidence_class": "formal_full_quality",
+                "dataset_ids": [dataset["id"]],
+                "endpoint_ids": [endpoint["id"]],
+                "sort_policies": [backend],
+                "repetitions": args.repetitions,
+                "warmup_frames": args.warmup,
+                "measured_frames": args.frames,
+                "sort_interval": args.sort_interval,
+                "randomization_seed": args.seed,
+                "randomize_policy_order": False,
+                "sort_refresh": (
+                    "first_frame_then_reuse"
+                    if camera_mode == "fixed_frame"
+                    else "every_camera_revision"
+                ),
+                "require_image": True,
+                "display": {
+                    "width": FORMAL_ANDROID_SIZE[0],
+                    "height": FORMAL_ANDROID_SIZE[1],
+                },
+                "camera": {
+                    "mode": camera_mode,
+                    "trace_id": trace["id"],
+                    "frame_indices": frame_indices,
+                    "require_display_match": True,
+                    "display_policy": "trace_display_exact",
+                    "quality_comparable": True,
+                },
+            }
+        )
+
+    suite_runs = []
+    for record in experiment.get("runs", []):
+        if record.get("status") != "complete":
+            raise RuntimeError("formal suite cannot reference an incomplete run")
+        artifact = output / record["artifact"]
+        manifest = json.loads(
+            (artifact / "manifest.json").read_text(encoding="utf-8")
+        )
+        image = manifest.get("image")
+        if not isinstance(image, dict):
+            raise RuntimeError("formal run image receipt is absent")
+        suite_runs.append(
+            {
+                "protocol_id": f"m5c-android-{record['backend']}",
+                "dataset_id": dataset["id"],
+                "endpoint_id": endpoint["id"],
+                "sort_policy": record["backend"],
+                "camera_case": (
+                    f"frame-{args.camera_frame:03d}"
+                    if args.camera_frame is not None
+                    else "sequence"
+                ),
+                "repetition": record["repetition"],
+                "schedule_index": record["index"],
+                "policy_position": 1,
+                "artifact": record["artifact"],
+                "image": {
+                    "path": f"{record['artifact']}/final-frame.png",
+                    "sha256": image.get("sha256"),
+                    "width": image.get("width"),
+                    "height": image.get("height"),
+                },
+            }
+        )
+
+    suite = {
+        "schema": "gsplat-full-quality-experiment/v1",
+        "suite_id": f"m5c-android-{commit[:12]}",
+        "status": "complete",
+        "pre_run_requirements": [],
+        "renderer_path": "packed_atlas",
+        "build": {
+            "repository_commit": commit,
+            "working_tree_dirty": False,
+        },
+        "quality_contract": {
+            "blend_mode": "sorted_alpha",
+            "source_membership": "all",
+            "sampling": "disabled",
+            "lod": "disabled",
+            "sh_degree": "source",
+            "resolution_scale": 1.0,
+            "capacity_failure": "reject_before_publish",
+        },
+        "traces": [trace],
+        "datasets": [dataset],
+        "endpoints": [endpoint],
+        "protocols": protocols,
+        "capacity_rejections": [],
+        "runs": suite_runs,
+        "android_build_artifacts": {
+            field: experiment[field]
+            for field in ("apk", "aar", "native_library", "aar_native_library")
+        },
+    }
+    suite_path = output / "suite.json"
+    staging = output / ".suite.json.staging"
+    atomic_write_json(staging, suite)
+    try:
+        run_command(
+            [sys.executable, FULL_QUALITY_VALIDATOR, staging, "--verify-inputs"]
+        )
+        os.replace(staging, suite_path)
+    except BaseException:
+        staging.unlink(missing_ok=True)
+        raise
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -2414,6 +2872,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "frame_latency": args.frame_latency,
             "geometry_path": args.geometry_path,
             "gpu_producer": args.gpu_producer,
+            "formal_artifact": args.formal_artifact,
             "cooldown_seconds": args.cooldown_seconds,
             "max_thermal_status": args.max_thermal_status,
             "apk_mode": "prepare-once" if args.prepare_apk else "reuse-exact-installed",
@@ -2427,6 +2886,49 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     try:
         experiment["repository"] = repository_identity()
+        if (
+            args.formal_artifact
+            and experiment["repository"].get("dirty") is not False
+        ):
+            raise RuntimeError("formal Android collection requires a clean repository")
+        if args.prepare_apk:
+            build_env = os.environ.copy()
+            build_env["ANDROID_RUST_PROFILE"] = args.rust_profile
+            run_command(
+                ["bash", BUILD_SCRIPT, APK_BOOTSTRAP_DATASET], env=build_env
+            )
+            if args.formal_artifact:
+                run_command(["bash", BUILD_AAR_SCRIPT], env=build_env)
+        apk = resolve_apk(args.apk)
+        apk_identity = local_file_identity(apk)
+        native_identity = sha256_apk_member(apk, APK_NATIVE_LIBRARY)
+        experiment["native_library"] = {
+            "path": f"{apk}!/{APK_NATIVE_LIBRARY}",
+            **native_identity,
+            "rust_profile": args.rust_profile if args.prepare_apk else None,
+            "identity_source": "local-apk-member",
+        }
+        experiment["apk"] = {"path": str(apk), **apk_identity}
+        if args.formal_artifact:
+            if not args.aar.is_file():
+                raise RuntimeError(f"formal Android AAR does not exist: {args.aar}")
+            aar_identity = local_file_identity(args.aar)
+            aar_native_identity = sha256_aar_member(args.aar, AAR_NATIVE_LIBRARY)
+            if aar_native_identity != native_identity:
+                raise RuntimeError("APK and AAR package different native libraries")
+            experiment["aar"] = {"path": str(args.aar), **aar_identity}
+            experiment["aar_native_library"] = {
+                "path": f"{args.aar}!/{AAR_NATIVE_LIBRARY}",
+                **aar_native_identity,
+                "identity_source": "local-aar-member",
+            }
+        if args.prepare_apk:
+            experiment["apk"]["bootstrap_dataset"] = {
+                "path": str(APK_BOOTSTRAP_DATASET),
+                **local_file_identity(APK_BOOTSTRAP_DATASET),
+            }
+        atomic_write_json(experiment_path, experiment)
+
         experiment["device"] = device_info(adb, args.serial)
         android_environment_receipt = build_android_environment_receipt(
             experiment["device"]
@@ -2438,29 +2940,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             "path": android_environment_receipt_path.name,
             "schema": ANDROID_ENVIRONMENT_RECEIPT_SCHEMA,
         }
-        atomic_write_json(experiment_path, experiment)
-
-        if args.prepare_apk:
-            build_env = os.environ.copy()
-            build_env["ANDROID_RUST_PROFILE"] = args.rust_profile
-            run_command(
-                ["bash", BUILD_SCRIPT, APK_BOOTSTRAP_DATASET], env=build_env
-            )
-        apk = resolve_apk(args.apk)
-        apk_identity = local_file_identity(apk)
-        native_identity = sha256_apk_member(apk, APK_NATIVE_LIBRARY)
-        experiment["native_library"] = {
-            "path": f"{apk}!/{APK_NATIVE_LIBRARY}",
-            **native_identity,
-            "rust_profile": args.rust_profile if args.prepare_apk else None,
-            "identity_source": "local-apk-member",
-        }
-        experiment["apk"] = {"path": str(apk), **apk_identity}
-        if args.prepare_apk:
-            experiment["apk"]["bootstrap_dataset"] = {
-                "path": str(APK_BOOTSTRAP_DATASET),
-                **local_file_identity(APK_BOOTSTRAP_DATASET),
-            }
         atomic_write_json(experiment_path, experiment)
 
         if args.prepare_apk:
@@ -2531,6 +3010,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         experiment["status"] = "complete"
         experiment["ended_at_utc"] = utc_now()
         atomic_write_json(experiment_path, experiment)
+        if args.formal_artifact:
+            publish_formal_suite(args, output, experiment, trace_json)
         print(f"experiment={output}")
         return 0
     except (
