@@ -946,6 +946,7 @@ impl PreparedRuntimeSlot {
 
     pub(crate) fn request_cpu_order_refresh(&mut self) {
         self.force_cpu_order_refresh = true;
+        self.sampler.require_fresh_cpu_order_for_current_stats();
     }
 
     /// Restarts only whole-plan performance learning for a changed Surface
@@ -1005,7 +1006,8 @@ impl PreparedRuntimeSlot {
         if self.gpu_owner.is_none() {
             return CurrentStatsRequest::Unsampled(CurrentStatsUnsampledReason::GpuUnavailable);
         }
-        self.sampler.request_current_stats()
+        self.sampler
+            .request_current_stats(self.force_cpu_order_refresh)
     }
 
     /// Non-blocking observer poll. It performs `Poll` only when this lane has
@@ -1155,6 +1157,12 @@ impl PreparedRuntimeSlot {
     #[cfg(test)]
     pub(crate) const fn current_stats_request_pending_for_test(&self) -> bool {
         self.sampler.current_stats_request_pending_for_test()
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn current_stats_fresh_cpu_order_required_for_test(&self) -> bool {
+        self.sampler
+            .current_stats_fresh_cpu_order_required_for_test()
     }
 
     #[cfg(test)]
@@ -1339,6 +1347,13 @@ pub(crate) fn encode_frame_gpu(
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("gsplat-exact-frame-encoder"),
             });
+        // A moving formal frame binds freshness to its observer request, not
+        // to whichever controller or queue-boundary presentation happened to
+        // run first. Static requests leave this false and retain normal cache
+        // reuse. The request-owned bit survives presentation deferral and is
+        // cleared only with request issuance or an unsampled resolution.
+        let force_cpu_order_refresh = request.force_cpu_order_refresh
+            || (encode_current_stats && sampler.current_stats_requires_fresh_cpu_order());
         let mut input = PlanFrameInput::new(
             request.camera,
             candidate_frame.identity(),
@@ -1346,7 +1361,7 @@ pub(crate) fn encode_frame_gpu(
             request.viewport.width(),
             request.viewport.height(),
         );
-        if request.force_cpu_order_refresh {
+        if force_cpu_order_refresh {
             input = input.with_forced_cpu_order_refresh();
         }
         let work = plans.execute(

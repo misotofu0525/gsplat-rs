@@ -214,8 +214,19 @@ impl PlanSampler {
         self.current_stats.install_capability(pool);
     }
 
-    pub(super) fn request_current_stats(&mut self) -> CurrentStatsRequest {
-        self.current_stats.request()
+    pub(super) fn request_current_stats(
+        &mut self,
+        fresh_cpu_order_required: bool,
+    ) -> CurrentStatsRequest {
+        self.current_stats.request(fresh_cpu_order_required)
+    }
+
+    pub(super) fn require_fresh_cpu_order_for_current_stats(&mut self) {
+        self.current_stats.require_fresh_cpu_order();
+    }
+
+    pub(super) const fn current_stats_requires_fresh_cpu_order(&self) -> bool {
+        self.current_stats.fresh_cpu_order_required()
     }
 
     pub(super) fn encode_current_stats(
@@ -338,6 +349,11 @@ impl PlanSampler {
 
     pub(super) const fn current_stats_request_pending_for_test(&self) -> bool {
         self.current_stats.request_pending()
+    }
+
+    #[cfg(test)]
+    pub(super) const fn current_stats_fresh_cpu_order_required_for_test(&self) -> bool {
+        self.current_stats.fresh_cpu_order_required()
     }
 
     #[cfg(test)]

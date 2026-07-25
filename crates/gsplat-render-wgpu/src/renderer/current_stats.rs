@@ -326,6 +326,7 @@ pub(super) struct CurrentStatsHandoff {
     next_ticket: u64,
     terminals: VecDeque<CurrentStatsTerminal>,
     pending_request: bool,
+    fresh_cpu_order_required: bool,
     request_unsampled: Option<CurrentStatsUnsampledReason>,
     inherited_queue_barriers: Vec<Arc<AtomicU8>>,
     observer_since_formal: bool,
@@ -364,6 +365,7 @@ impl CurrentStatsReadbackPool {
 pub(super) struct CurrentStatsLane {
     slots: Vec<CurrentStatsSlot>,
     pending_request: bool,
+    fresh_cpu_order_required: bool,
     request_unsampled: Option<CurrentStatsUnsampledReason>,
     reserved: Option<usize>,
     next_slot: usize,
@@ -385,6 +387,7 @@ impl CurrentStatsLane {
         Self {
             slots: Vec::new(),
             pending_request: false,
+            fresh_cpu_order_required: false,
             request_unsampled: None,
             reserved: None,
             next_slot: 0,
@@ -407,7 +410,7 @@ impl CurrentStatsLane {
         self.slots = pool.slots;
     }
 
-    pub(super) fn request(&mut self) -> CurrentStatsRequest {
+    pub(super) fn request(&mut self, fresh_cpu_order_required: bool) -> CurrentStatsRequest {
         if self.pending_request || self.request_unsampled.is_some() {
             return CurrentStatsRequest::Unsampled(CurrentStatsUnsampledReason::Busy);
         }
@@ -419,10 +422,24 @@ impl CurrentStatsLane {
         match self.reserve() {
             Ok(()) => {
                 self.pending_request = true;
+                self.fresh_cpu_order_required = fresh_cpu_order_required;
                 CurrentStatsRequest::Requested
             }
             Err(reason) => CurrentStatsRequest::Unsampled(reason),
         }
+    }
+
+    /// Upgrades an already accepted observer request when its logical camera
+    /// transaction is invalidated after admission. The requirement is
+    /// one-way until that request issues or resolves unsampled.
+    pub(super) fn require_fresh_cpu_order(&mut self) {
+        if self.pending_request {
+            self.fresh_cpu_order_required = true;
+        }
+    }
+
+    pub(super) const fn fresh_cpu_order_required(&self) -> bool {
+        self.pending_request && self.fresh_cpu_order_required
     }
 
     fn reserve(&mut self) -> Result<(), CurrentStatsUnsampledReason> {
@@ -624,6 +641,7 @@ impl CurrentStatsLane {
         slot.publication
             .store(PUBLICATION_COMMITTED, Ordering::Release);
         self.pending_request = false;
+        self.fresh_cpu_order_required = false;
         armed.committed = true;
         CurrentStatsSubmission::Issued(submission)
     }
@@ -661,6 +679,7 @@ impl CurrentStatsLane {
             }
         }
         self.pending_request = false;
+        self.fresh_cpu_order_required = false;
         self.request_unsampled = Some(reason);
         true
     }
@@ -804,6 +823,7 @@ impl CurrentStatsLane {
             next_ticket: self.next_ticket,
             terminals,
             pending_request: self.pending_request,
+            fresh_cpu_order_required: self.fresh_cpu_order_required,
             request_unsampled: self.request_unsampled,
             inherited_queue_barriers,
             observer_since_formal,
@@ -816,6 +836,7 @@ impl CurrentStatsLane {
         self.next_ticket = handoff.next_ticket;
         self.terminals = handoff.terminals;
         self.pending_request = handoff.pending_request;
+        self.fresh_cpu_order_required = handoff.fresh_cpu_order_required;
         self.request_unsampled = handoff.request_unsampled;
         self.inherited_queue_barriers = handoff.inherited_queue_barriers;
         handoff.observer_since_formal

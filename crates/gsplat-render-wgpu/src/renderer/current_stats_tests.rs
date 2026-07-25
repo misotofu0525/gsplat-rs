@@ -766,7 +766,7 @@ fn deferred_trace_observer_retains_forced_cpu_refresh_until_issued_frame() {
 
         // The ticket-bearing presentation itself performs a newer CPU order
         // refresh, then atomically clears the latch with that issued identity.
-        let issued_pending = encode_adaptive_forced_cpu_refresh(&mut slot, &device);
+        let issued_pending = encode_adaptive(&mut slot, &device);
         let issued = submit_encoded_frame(&mut slot, issued_pending)
             .expect("ticket-bearing trace presentation");
         assert_eq!(issued.plan_id(), PlanId::CpuPostSort);
@@ -776,6 +776,63 @@ fn deferred_trace_observer_retains_forced_cpu_refresh_until_issued_frame() {
         ));
         assert!(issued.order_generation() > formal.order_generation());
         assert!(!slot.cpu_order_refresh_requested());
+    });
+}
+
+#[test]
+fn stationary_current_stats_request_reuses_cpu_order() {
+    pollster::block_on(async {
+        let Some((device, queue)) = request_device().await else {
+            return;
+        };
+        let mut slot = prepared_slot(&device, &queue, exact_scene(&[1.0, 1.1])).await;
+        let baseline = render(&mut slot, &device, PlanId::CpuPostSort);
+        let baseline_generation = baseline.order_generation();
+
+        assert_eq!(slot.request_current_stats(), CurrentStatsRequest::Requested);
+        let observed = render(&mut slot, &device, PlanId::CpuPostSort);
+        assert!(matches!(
+            observed.current_stats_submission(),
+            CurrentStatsSubmission::Issued(_)
+        ));
+        assert_eq!(
+            observed.order_generation(),
+            baseline_generation,
+            "a stationary observer does not turn receipt collection into a sort policy"
+        );
+    });
+}
+
+#[test]
+fn abandoned_fresh_request_retries_with_a_new_cpu_order() {
+    pollster::block_on(async {
+        let Some((device, queue)) = request_device().await else {
+            return;
+        };
+        let mut slot = prepared_slot(&device, &queue, exact_scene(&[1.0, 1.1])).await;
+        let baseline = render(&mut slot, &device, PlanId::CpuPostSort);
+
+        assert_eq!(slot.request_current_stats(), CurrentStatsRequest::Requested);
+        slot.request_cpu_order_refresh();
+        let pending = encode(&mut slot, &device, PlanId::CpuPostSort);
+        let mut submitted = submit_encoded_frame_unpublished(&mut slot, pending)
+            .expect("submit unpublished moving observer");
+        assert!(abandon_submitted_frame(&mut submitted));
+        assert!(slot.current_stats_request_pending_for_test());
+        let abandoned_generation = slot
+            .current_cpu_order_generation()
+            .expect("abandoned attempt prepared an unpublished CPU order");
+        assert!(abandoned_generation > baseline.order_generation());
+
+        let retry = render(&mut slot, &device, PlanId::CpuPostSort);
+        assert!(matches!(
+            retry.current_stats_submission(),
+            CurrentStatsSubmission::Issued(_)
+        ));
+        assert!(
+            retry.order_generation() > abandoned_generation,
+            "abandonment cannot consume the request-bound freshness requirement"
+        );
     });
 }
 
@@ -826,6 +883,8 @@ fn pending_request_intent_transfers_across_runtime_replacement_at_every_unpublis
         ] {
             let mut slot = prepared_slot(&device, &queue, exact_scene(&[1.0])).await;
             assert_eq!(slot.request_current_stats(), CurrentStatsRequest::Requested);
+            slot.request_cpu_order_refresh();
+            assert!(slot.current_stats_fresh_cpu_order_required_for_test());
             let mut submitted: Option<SubmittedGpuFrame> = None;
             let pending = match point {
                 PendingReplacementPoint::Reserved => None,
@@ -851,6 +910,7 @@ fn pending_request_intent_transfers_across_runtime_replacement_at_every_unpublis
                 assert!(abandon_submitted_frame(&mut submitted));
             }
             assert!(slot.current_stats_request_pending_for_test());
+            assert!(slot.current_stats_fresh_cpu_order_required_for_test());
             assert_eq!(slot.current_stats_resource_bytes_for_test(), (None, 0));
             slot.set_test_gpu_admission_mode(TestGpuAdmissionMode::ConcreteAll);
             slot.prepare_gpu(&device, &queue, FORMAT)
@@ -873,6 +933,7 @@ fn pending_request_intent_transfers_across_runtime_replacement_at_every_unpublis
                 CurrentStatsSubmission::Issued(_)
             ));
             assert!(!slot.current_stats_request_pending_for_test());
+            assert!(!slot.current_stats_fresh_cpu_order_required_for_test());
             assert_eq!(slot.current_stats_live_object_count_for_test(), Some(10));
         }
     });
@@ -885,6 +946,8 @@ async fn assert_optional_capability_failure_does_not_gate_product(
 ) {
     let mut slot = prepared_slot(device, queue, exact_scene(&[1.0])).await;
     assert_eq!(slot.request_current_stats(), CurrentStatsRequest::Requested);
+    slot.request_cpu_order_refresh();
+    assert!(slot.current_stats_fresh_cpu_order_required_for_test());
     slot.replace(exact_scene(&[1.0, 1.0]))
         .expect("replace with transferred request");
     let frame_before = slot.frame_state();
@@ -899,6 +962,7 @@ async fn assert_optional_capability_failure_does_not_gate_product(
     assert_eq!(slot.fallback(), fallback_before);
     assert!(slot.gpu_preparation().is_some());
     assert!(!slot.current_stats_request_pending_for_test());
+    assert!(!slot.current_stats_fresh_cpu_order_required_for_test());
     assert_eq!(slot.current_stats_resource_bytes_for_test(), (None, 0));
     assert_eq!(slot.current_stats_live_object_count_for_test(), None);
     if failure == CurrentStatsCapabilityTestFailure::ScopedInvalidBuffer {
