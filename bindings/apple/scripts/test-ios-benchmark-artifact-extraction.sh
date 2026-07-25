@@ -14,17 +14,26 @@ import pathlib
 import sys
 
 fixtures = pathlib.Path("tests/perf/fixtures/v1/valid")
+manifest = json.loads((fixtures / "manifest.json").read_text())
+manifest["renderer"]["projected_evidence_version"] = 0
+manifest["renderer"]["current_stats_evidence_version"] = 0
+summary = json.loads((fixtures / "summary.json").read_text())
 output = []
-for kind, name in (("manifest", "manifest.json"), ("summary", "summary.json")):
-    payload = (fixtures / name).read_bytes()
-    if kind == "manifest":
-        manifest = json.loads(payload)
-        manifest["renderer"]["projected_evidence_version"] = 0
-        manifest["renderer"]["current_stats_evidence_version"] = 0
-        payload = json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode()
+for kind, record in (("manifest", manifest), ("summary", summary)):
+    payload = json.dumps(record, sort_keys=True, separators=(",", ":")).encode()
     output.append(f"console BENCHMARK_ARTIFACT {kind} {base64.b64encode(payload).decode()}")
 for payload in (fixtures / "frames.jsonl").read_bytes().splitlines():
     output.append(f"console BENCHMARK_ARTIFACT frame {base64.b64encode(payload).decode()}")
+output.append(
+    "console BENCHMARK_RESULT "
+    f"dataset={manifest['dataset']['id']} samples={summary['sample_count']} "
+    f"warmup={summary['warmup_count']} sort_interval=1 loops=1 "
+    "requested_backend=adaptive projected_policy=adaptive async_sort=false "
+    "geometry_pipeline=sorted_index_direct frame_latency=2 avg_call_ms=1.000000 "
+    "avg_frame_ms=n/a avg_preprocess_ms=n/a avg_sort_ms=n/a avg_raster_ms=n/a "
+    "avg_cpu_queue_complete_ms=n/a avg_gpu_queue_complete_ms=n/a "
+    "avg_projected_queue_complete_ms=n/a avg_visible=2 avg_contributor=2 avg_drawn=2"
+)
 pathlib.Path(sys.argv[1]).write_text("\n".join(output) + "\n", encoding="utf-8")
 PY
 
@@ -42,6 +51,81 @@ if python3 bindings/apple/scripts/extract-ios-benchmark-artifacts.py \
   exit 1
 fi
 grep -Fq 'destination already exists' "$TMP_DIR/reuse.stderr"
+
+python3 - "$TMP_DIR/console.log" "$TMP_DIR" <<'PY'
+import base64
+import json
+import pathlib
+import sys
+
+source = pathlib.Path(sys.argv[1]).read_text().splitlines()
+tmp = pathlib.Path(sys.argv[2])
+artifact_lines = [line for line in source if " BENCHMARK_RESULT " not in line]
+result_line = next(line for line in source if " BENCHMARK_RESULT " in line)
+manifest_line = next(line for line in source if " BENCHMARK_ARTIFACT manifest " in line)
+manifest_payload = manifest_line.split("BENCHMARK_ARTIFACT manifest ", 1)[1]
+manifest = json.loads(base64.b64decode(manifest_payload))
+summary_line = next(line for line in source if " BENCHMARK_ARTIFACT summary " in line)
+summary_payload = summary_line.split("BENCHMARK_ARTIFACT summary ", 1)[1]
+summary = json.loads(base64.b64decode(summary_payload))
+
+def write(name, lines):
+    (tmp / name).write_text("\n".join(lines) + "\n")
+
+write("terminal-missing.log", artifact_lines)
+write("terminal-duplicate.log", artifact_lines + [result_line, result_line])
+write(
+    "terminal-dataset-mismatch.log",
+    artifact_lines + [
+        result_line.replace(
+            f"dataset={manifest['dataset']['id']} ", "dataset=other-dataset ", 1
+        )
+    ],
+)
+write(
+    "terminal-samples-mismatch.log",
+    artifact_lines + [
+        result_line.replace(
+            f" samples={summary['sample_count']} ",
+            f" samples={summary['sample_count'] + 1} ",
+            1,
+        )
+    ],
+)
+mismatched_summary = dict(summary)
+mismatched_summary["run_id"] = "other-run"
+mismatched_payload = base64.b64encode(
+    json.dumps(mismatched_summary, sort_keys=True, separators=(",", ":")).encode()
+).decode()
+mismatched_artifacts = [
+    line
+    if " BENCHMARK_ARTIFACT summary " not in line
+    else f"console BENCHMARK_ARTIFACT summary {mismatched_payload}"
+    for line in artifact_lines
+]
+write("artifact-run-mismatch.log", mismatched_artifacts + [result_line])
+PY
+
+expect_terminal_rejected() {
+  local name="$1"
+  local expected="$2"
+  if python3 bindings/apple/scripts/extract-ios-benchmark-artifacts.py \
+    "$TMP_DIR/$name.log" \
+    "$TMP_DIR/$name-artifact" \
+    --validator tests/perf/validate-benchmark-artifacts.py \
+    >"$TMP_DIR/$name.stdout" 2>"$TMP_DIR/$name.stderr"; then
+    echo "extractor unexpectedly accepted $name" >&2
+    exit 1
+  fi
+  test ! -e "$TMP_DIR/$name-artifact"
+  grep -Fq "$expected" "$TMP_DIR/$name.stderr"
+}
+
+expect_terminal_rejected terminal-missing 'exactly one BENCHMARK_RESULT (found 0)'
+expect_terminal_rejected terminal-duplicate 'exactly one BENCHMARK_RESULT (found 2)'
+expect_terminal_rejected terminal-dataset-mismatch 'dataset does not match manifest identity'
+expect_terminal_rejected terminal-samples-mismatch 'samples does not match summary sample_count'
+expect_terminal_rejected artifact-run-mismatch 'manifest and summary run_id identity does not match'
 
 python3 - "$TMP_DIR" <<'PY'
 import base64
@@ -192,6 +276,14 @@ def write_log(path, manifest_record, frame_records, summary_record):
     for kind, record in records:
         payload = json.dumps(record, sort_keys=True, separators=(",", ":")).encode()
         lines.append(f"console BENCHMARK_ARTIFACT {kind} {base64.b64encode(payload).decode()}")
+    lines.append(
+        "console BENCHMARK_RESULT "
+        f"dataset={manifest_record['dataset']['id']} "
+        f"samples={summary_record['sample_count']} "
+        f"warmup={summary_record['warmup_count']} sort_interval=1 loops=1 "
+        "requested_backend=adaptive projected_policy=adaptive async_sort=false "
+        "geometry_pipeline=sorted_index_direct frame_latency=2 avg_call_ms=1.000000"
+    )
     pathlib.Path(path).write_text("\n".join(lines) + "\n")
 
 tmp = pathlib.Path(sys.argv[1])
