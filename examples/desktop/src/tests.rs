@@ -10,7 +10,7 @@ use gsplat_render_wgpu::{
 };
 
 use crate::cli::{
-    Args, SurfaceBenchmarkMode, SurfaceRasterPlanArg, SurfaceSortPolicyArg,
+    Args, SurfaceBenchmarkMode, SurfaceEvidencePlanArg, SurfaceRasterPlanArg, SurfaceSortPolicyArg,
     validate_surface_trace_geometry,
 };
 use crate::image_output::write_png;
@@ -259,6 +259,7 @@ fn args_parse_defaults_to_minimal_dataset() {
     assert_eq!(args.surface_sort_policy, SurfaceSortPolicyArg::EveryFrame);
     assert_eq!(args.surface_raster_plan, SurfaceRasterPlanArg::Projected);
     assert_eq!(args.surface_gpu_producer, None);
+    assert_eq!(args.surface_evidence_plan, None);
     assert!(args.png_out.is_none());
     assert!(args.camera_trace_path.is_none());
     assert_eq!(args.camera_frame, 0);
@@ -530,6 +531,88 @@ fn interactive_png_is_restricted_to_explicit_producer_trace_benchmarks() {
         args.png_out,
         Some(std::path::PathBuf::from("target/capture.png"))
     );
+}
+
+#[test]
+fn surface_evidence_plan_is_a_closed_fail_closed_cli() {
+    for (label, expected, backend) in [
+        (
+            "cpu-post-sort",
+            SurfaceEvidencePlanArg::CpuPostSort,
+            SurfaceOrderBackend::Cpu,
+        ),
+        (
+            "gpu-post-sort",
+            SurfaceEvidencePlanArg::GpuPostSort,
+            SurfaceOrderBackend::Gpu,
+        ),
+        (
+            "gpu-preproject",
+            SurfaceEvidencePlanArg::GpuPreproject,
+            SurfaceOrderBackend::Gpu,
+        ),
+        (
+            "adaptive",
+            SurfaceEvidencePlanArg::Adaptive,
+            SurfaceOrderBackend::Adaptive,
+        ),
+    ] {
+        let args = parse_args(&[
+            "--interactive",
+            "--camera-trace",
+            CAMERA_TRACE_FIXTURE,
+            "--surface-evidence-plan",
+            label,
+            "--png",
+            "target/capture.png",
+        ])
+        .unwrap();
+        assert_eq!(args.surface_evidence_plan, Some(expected));
+        assert_eq!(args.order_backend, backend);
+    }
+
+    for (args, message) in [
+        (
+            vec!["--surface-evidence-plan", "adaptive"],
+            "requires --interactive",
+        ),
+        (
+            vec![
+                "--interactive",
+                "--surface-evidence-plan",
+                "adaptive",
+                "--png",
+                "target/capture.png",
+            ],
+            "requires --camera-trace",
+        ),
+        (
+            vec![
+                "--interactive",
+                "--camera-trace",
+                CAMERA_TRACE_FIXTURE,
+                "--surface-evidence-plan",
+                "adaptive",
+            ],
+            "requires --png",
+        ),
+        (
+            vec![
+                "--interactive",
+                "--camera-trace",
+                CAMERA_TRACE_FIXTURE,
+                "--surface-evidence-plan",
+                "gpu-preproject",
+                "--order-backend",
+                "cpu",
+                "--png",
+                "target/capture.png",
+            ],
+            "conflicts with --order-backend",
+        ),
+    ] {
+        assert!(parse_args(&args).unwrap_err().contains(message));
+    }
 }
 
 #[test]

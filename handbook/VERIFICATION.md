@@ -66,6 +66,7 @@ npm --prefix packages/web test
 npm --prefix packages/web run pack:dry-run
 cargo run --release -p bench-runner -- tests/datasets/minimal_ascii.ply 120 --warmup-iterations 10 --max-avg-gpu-complete-ms 250
 bash tests/perf/test-benchmark-artifacts.sh
+PYTHONDONTWRITEBYTECODE=1 python3 tests/perf/test_desktop_surface_evidence.py
 python3 tests/perf/validate-dataset-manifests.py
 python3 tests/datasets/test_dataset_tools.py
 bash tests/perf/trace/test-trace-v1.sh
@@ -116,6 +117,28 @@ The artifact contract is `tests/perf/benchmark-artifact-v1.md`. A valid run
 contains `manifest.json`, contiguous raw `frames.jsonl`, and recomputable
 `summary.json`. The manifest distinguishes configured display values from
 observed values and includes the direct resource preflight report.
+
+For M2b real-window evidence, use a release viewer, the qualified Kitsune
+manifest, and the committed 1920x1080 trace. The output directory must be fresh
+and ignored:
+
+```bash
+cargo build --release -p desktop-example --features interactive-viewer
+PYTHONDONTWRITEBYTECODE=1 python3 tests/perf/test_desktop_surface_evidence.py
+python3 tests/perf/collect-desktop-surface-evidence.py \
+  --binary target/release/desktop-example \
+  --dataset-manifest tests/perf/datasets/kitsune.json \
+  --trace tests/perf/trace/fixtures/quality/candidate-kitsune-quality-1920x1080-v1.json \
+  --output target/benchmarks/m2b/surface-<candidate-sha>
+```
+
+This is a four-arm transaction: `CpuPostSort`, `GpuPostSort`,
+`GpuPreproject`, and `Adaptive` must each produce terminal joined S/V/C/D
+receipts plus a final presented PNG. Every staged `gsplat-benchmark/v1`
+artifact must pass the repository validator before the suite directory is
+atomically published. Missing Metal capability, missing terminal receipt,
+failed presentation/capture, plan drift, incomplete membership, SH downgrade,
+resolution drift, or validator rejection leaves the canonical output absent.
 
 Committed dataset identities and the shared camera oracle have separate checks:
 

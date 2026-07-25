@@ -129,6 +129,34 @@ because it does not keep every source splat resident. They also require
 source SH.
 Sampling, LOD, dynamic resolution, and upscaling are forbidden.
 
+For the strict M2b real-window evidence route, first fetch/verify the canonical
+Kitsune asset, build the release viewer, and run the focused collector test:
+
+```bash
+bash tests/datasets/fetch-wakufactory-kitune.sh
+cargo build --release -p desktop-example --features interactive-viewer
+PYTHONDONTWRITEBYTECODE=1 python3 tests/perf/test_desktop_surface_evidence.py
+```
+
+Then choose a fresh ignored output directory and collect all four Exact plans:
+
+```bash
+python3 tests/perf/collect-desktop-surface-evidence.py \
+  --binary target/release/desktop-example \
+  --dataset-manifest tests/perf/datasets/kitsune.json \
+  --trace tests/perf/trace/fixtures/quality/candidate-kitsune-quality-1920x1080-v1.json \
+  --output target/benchmarks/m2b/surface-<candidate-sha>
+```
+
+The collector requires an actually selected Metal adapter, a successful real
+Surface presentation and terminal current-stats receipt for every scheduled
+frame, and a final 1920x1080 capture joined to its own terminal receipt. It
+stages `CpuPostSort`, `GpuPostSort`, `GpuPreproject`, and `Adaptive` artifacts,
+runs `validate-benchmark-artifacts.py` on each, and publishes the suite
+directory only after all four pass. An unavailable asset/device/receipt/image
+or any contract mismatch is a failed run, never a guessed value. Host-observed
+call/frame-wall time is retained; unavailable GPU phase timing remains null.
+
 The competitor's static-camera throughput mode applies one trace pose and then
 reuses its order. Reproduce that distinct workload without weakening geometry,
 SH, resolution, or blending by selecting one repeated trace frame and refreshing

@@ -49,6 +49,36 @@ pub(crate) enum SurfaceRasterPlanArg {
     Tiled,
 }
 
+/// Closed Exact plan request used only by the real-window evidence harness.
+/// The renderer remains the policy owner; this value selects one existing
+/// complete policy tuple before trace playback begins.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SurfaceEvidencePlanArg {
+    CpuPostSort,
+    GpuPostSort,
+    GpuPreproject,
+    Adaptive,
+}
+
+impl SurfaceEvidencePlanArg {
+    pub(crate) const fn order_backend(self) -> SurfaceOrderBackend {
+        match self {
+            Self::CpuPostSort => SurfaceOrderBackend::Cpu,
+            Self::GpuPostSort | Self::GpuPreproject => SurfaceOrderBackend::Gpu,
+            Self::Adaptive => SurfaceOrderBackend::Adaptive,
+        }
+    }
+
+    pub(crate) const fn label(self) -> &'static str {
+        match self {
+            Self::CpuPostSort => "cpu_post_sort",
+            Self::GpuPostSort => "gpu_post_sort",
+            Self::GpuPreproject => "gpu_preproject",
+            Self::Adaptive => "adaptive",
+        }
+    }
+}
+
 impl SurfaceRasterPlanArg {
     #[cfg(feature = "interactive-viewer")]
     pub(crate) const fn execution_plan(self) -> SurfaceRasterExecutionPlan {
@@ -80,6 +110,9 @@ pub(crate) struct Args {
     /// producer A/B mode and also enables its independent terminal receipts.
     #[cfg_attr(not(feature = "interactive-viewer"), allow(dead_code))]
     pub(crate) surface_gpu_producer: Option<SurfaceGpuOrderProducer>,
+    /// Enables the strict M2b real-window current-stats/capture path.
+    #[cfg_attr(not(feature = "interactive-viewer"), allow(dead_code))]
+    pub(crate) surface_evidence_plan: Option<SurfaceEvidencePlanArg>,
     pub(crate) png_out: Option<PathBuf>,
     pub(crate) camera_trace_path: Option<PathBuf>,
     pub(crate) camera_frame: usize,
@@ -114,6 +147,7 @@ impl Args {
         let mut surface_raster_plan = SurfaceRasterPlanArg::Projected;
         let mut surface_raster_plan_explicit = false;
         let mut surface_gpu_producer = None;
+        let mut surface_evidence_plan = None;
         let mut order_backend_explicit = false;
         let mut png_out: Option<PathBuf> = None;
         let mut camera_trace_path: Option<PathBuf> = None;
@@ -241,6 +275,12 @@ impl Args {
                         .ok_or_else(|| "missing value for --surface-gpu-producer".to_owned())?;
                     surface_gpu_producer = Some(parse_gpu_order_producer(&value)?);
                 }
+                "--surface-evidence-plan" => {
+                    let value = args
+                        .next()
+                        .ok_or_else(|| "missing value for --surface-evidence-plan".to_owned())?;
+                    surface_evidence_plan = Some(parse_surface_evidence_plan(&value)?);
+                }
                 "--png" => {
                     let value = args
                         .next()
@@ -350,12 +390,58 @@ impl Args {
         if surface_gpu_producer.is_some() && order_backend == SurfaceOrderBackend::Cpu {
             return Err("--surface-gpu-producer requires --order-backend gpu|adaptive".to_owned());
         }
+        if let Some(plan) = surface_evidence_plan {
+            if !interactive {
+                return Err("--surface-evidence-plan requires --interactive".to_owned());
+            }
+            if geometry_path != GeometryPath::PackedAtlas {
+                return Err("--surface-evidence-plan requires --geometry-path packed".to_owned());
+            }
+            if camera_trace_path.is_none() {
+                return Err("--surface-evidence-plan requires --camera-trace".to_owned());
+            }
+            if png_out.is_none() {
+                return Err("--surface-evidence-plan requires --png".to_owned());
+            }
+            if surface_benchmark_mode != SurfaceBenchmarkMode::Isolated {
+                return Err(
+                    "--surface-evidence-plan requires --surface-benchmark-mode isolated".to_owned(),
+                );
+            }
+            if surface_raster_plan != SurfaceRasterPlanArg::Projected {
+                return Err(
+                    "--surface-evidence-plan requires --surface-raster-plan projected".to_owned(),
+                );
+            }
+            if surface_sort_policy != SurfaceSortPolicyArg::EveryFrame {
+                return Err(
+                    "--surface-evidence-plan requires --surface-sort-policy every-frame".to_owned(),
+                );
+            }
+            if surface_gpu_producer.is_some() {
+                return Err(
+                    "--surface-evidence-plan cannot be combined with --surface-gpu-producer"
+                        .to_owned(),
+                );
+            }
+            if order_backend_explicit && order_backend != plan.order_backend() {
+                return Err(format!(
+                    "--surface-evidence-plan {} conflicts with --order-backend",
+                    plan.label()
+                ));
+            }
+            order_backend = plan.order_backend();
+        }
         if interactive && png_out.is_some() && camera_trace_path.is_none() {
             return Err(
                 "interactive --png requires --camera-trace Surface benchmark mode".to_owned(),
             );
         }
-        if interactive && png_out.is_some() && surface_gpu_producer.is_none() {
+        if interactive
+            && png_out.is_some()
+            && surface_gpu_producer.is_none()
+            && surface_evidence_plan.is_none()
+        {
             return Err(
                 "interactive --png requires an explicit --surface-gpu-producer post-sort|preproject"
                     .to_owned(),
@@ -376,6 +462,7 @@ impl Args {
             surface_sort_policy,
             surface_raster_plan,
             surface_gpu_producer,
+            surface_evidence_plan,
             png_out,
             camera_trace_path,
             camera_frame,
@@ -409,6 +496,7 @@ fn usage() -> String {
         "  --surface-benchmark-mode M isolate each receipt or measure continuous throughput",
         "  --surface-raster-plan R select projected product, global reference, or tiled oracle",
         "  --surface-gpu-producer P run an exact post-sort|preproject GPU-producer A/B",
+        "  --surface-evidence-plan P collect strict cpu-post-sort|gpu-post-sort|gpu-preproject|adaptive evidence",
         "  --surface-sort-policy S refresh every frame or only when the trace camera changes",
         "  --png PATH       write the last rendered frame to PATH (requires GPU rasterizer)",
         "  --camera-trace P render one validated gsplat-camera-trace/v1 frame",
@@ -482,6 +570,18 @@ fn parse_gpu_order_producer(value: &str) -> Result<SurfaceGpuOrderProducer, Stri
         "preproject" => Ok(SurfaceGpuOrderProducer::Preproject),
         _ => Err(format!(
             "invalid --surface-gpu-producer '{value}' (expected post-sort|preproject)"
+        )),
+    }
+}
+
+fn parse_surface_evidence_plan(value: &str) -> Result<SurfaceEvidencePlanArg, String> {
+    match value {
+        "cpu-post-sort" => Ok(SurfaceEvidencePlanArg::CpuPostSort),
+        "gpu-post-sort" => Ok(SurfaceEvidencePlanArg::GpuPostSort),
+        "gpu-preproject" => Ok(SurfaceEvidencePlanArg::GpuPreproject),
+        "adaptive" => Ok(SurfaceEvidencePlanArg::Adaptive),
+        _ => Err(format!(
+            "invalid --surface-evidence-plan '{value}' (expected cpu-post-sort|gpu-post-sort|gpu-preproject|adaptive)"
         )),
     }
 }

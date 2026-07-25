@@ -84,12 +84,15 @@ fn run_interactive(
         &renderer,
     ))
     .map_err(|err| err.to_string())?;
+    let surface_adapter_info = presenter.adapter_info().clone();
     let mut session =
         SurfaceRenderSession::new(renderer, presenter, camera).map_err(|err| err.to_string())?;
     session
         .set_sort_interval(1)
         .map_err(|err| err.to_string())?;
-    if let Some(producer) = args.surface_gpu_producer {
+    if let Some(plan) = args.surface_evidence_plan {
+        crate::surface_evidence::configure(&mut session, plan)?;
+    } else if let Some(producer) = args.surface_gpu_producer {
         // The diagnostic producer comparison must construct only the selected
         // GPU graph before the backend becomes active. Both arms use the same
         // forced-Compact projected draw contract and independent receipts.
@@ -112,11 +115,23 @@ fn run_interactive(
             .set_raster_execution_plan(args.surface_raster_plan.execution_plan())
             .map_err(|err| err.to_string())?;
     }
-    session
-        .set_order_backend(args.order_backend)
-        .map_err(|err| err.to_string())?;
+    if args.surface_evidence_plan.is_none() {
+        session
+            .set_order_backend(args.order_backend)
+            .map_err(|err| err.to_string())?;
+    }
 
     if let Some(playback) = trace_playback {
+        if args.surface_evidence_plan.is_some() {
+            return crate::surface_evidence::run(
+                args,
+                event_loop,
+                window,
+                session,
+                playback,
+                surface_adapter_info,
+            );
+        }
         return run_surface_trace_benchmark(args, event_loop, window, session, playback);
     }
 

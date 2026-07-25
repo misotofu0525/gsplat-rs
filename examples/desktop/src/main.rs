@@ -2,6 +2,8 @@ mod cli;
 mod image_output;
 mod offscreen;
 mod scene;
+#[cfg(feature = "interactive-viewer")]
+mod surface_evidence;
 mod trace;
 mod viewer;
 

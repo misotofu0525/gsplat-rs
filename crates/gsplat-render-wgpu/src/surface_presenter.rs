@@ -115,6 +115,7 @@ impl SurfacePagedRuntime {
 
 pub struct SurfacePresenter {
     surface: wgpu::Surface<'static>,
+    adapter_info: wgpu::AdapterInfo,
     device: wgpu::Device,
     queue: wgpu::Queue,
     direct_pipeline: wgpu::RenderPipeline,
@@ -1105,6 +1106,7 @@ impl SurfacePresenter {
 
         Ok(Self {
             surface,
+            adapter_info,
             device,
             queue,
             direct_pipeline,
@@ -1330,6 +1332,14 @@ impl SurfacePresenter {
                 self.surface_size()
             }
         }
+    }
+
+    /// Physical adapter identity selected for this Surface presenter.
+    ///
+    /// This is an observation-only receipt. It cannot select a backend,
+    /// change device capabilities, or influence renderer plan policy.
+    pub const fn adapter_info(&self) -> &wgpu::AdapterInfo {
+        &self.adapter_info
     }
 
     /// Number of splat records allocated by the selected Surface geometry.
