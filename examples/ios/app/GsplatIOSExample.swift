@@ -360,7 +360,7 @@ final class ExampleViewController: UIViewController, UIGestureRecognizerDelegate
     private let sceneMetaLabel = UILabel()
     private let renderQueue = DispatchQueue(label: "com.gsplat.example.ios.render")
     private let commandLock = NSLock()
-    private let renderStateLock = NSLock()
+    private let renderLoopLifecycle = RenderLoopLifecycle()
     private var benchmarkConfig = BenchmarkConfig.fromArguments(ProcessInfo.processInfo.arguments)
     private var renderer: OpaquePointer?
     private var currentSurfaceSize: (width: Int, height: Int)?
@@ -369,7 +369,7 @@ final class ExampleViewController: UIViewController, UIGestureRecognizerDelegate
     private var datasetLabel = "pending"
     private var latestState = "state=launching"
     private var cameraState = "camera=auto"
-    private var renderLoopActive = false
+    private var rendererLifecycleVisible = false
     private var pendingResize: (width: Int, height: Int)?
     private var pendingResetCamera = false
     private var pendingOrbitYaw: Float = 0
@@ -400,13 +400,14 @@ final class ExampleViewController: UIViewController, UIGestureRecognizerDelegate
 
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
+        rendererLifecycleVisible = true
         requestBenchmarkLandscapeOrientation()
         createRendererIfNeeded()
     }
 
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
-        if benchmarkConfig.enabled, renderer == nil, view.window != nil {
+        if benchmarkConfig.enabled, renderer == nil, rendererLifecycleVisible {
             createRendererIfNeeded()
         }
         resizeRendererIfNeeded()
@@ -424,6 +425,7 @@ final class ExampleViewController: UIViewController, UIGestureRecognizerDelegate
     }
 
     override func viewWillDisappear(_ animated: Bool) {
+        rendererLifecycleVisible = false
         stopRenderer()
         super.viewWillDisappear(animated)
     }
@@ -621,9 +623,10 @@ final class ExampleViewController: UIViewController, UIGestureRecognizerDelegate
     }
 
     private func createRendererIfNeeded() {
-        guard renderer == nil else {
+        guard renderLoopLifecycle.requestStart() else {
             return
         }
+        precondition(renderer == nil, "renderer handle outlived its render-loop token")
         guard !datasetPath.isEmpty else {
             setStatus("state=dataset_missing")
             return
@@ -699,13 +702,18 @@ final class ExampleViewController: UIViewController, UIGestureRecognizerDelegate
         )
         fflush(stdout)
 
+        guard let loopToken = renderLoopLifecycle.begin() else {
+            gsplat_surface_renderer_destroy(handle)
+            setStatus("state=create_failed error=render_loop_identity_unavailable")
+            return
+        }
         renderer = handle
         surfaceExactness = exactness
         currentSurfaceSize = size
         setStatus("state=rendering")
         print("IOS_SURFACE_CREATE_OK dataset=\(datasetLabel) size=\(size.width)x\(size.height)")
         fflush(stdout)
-        startRenderLoop(handle)
+        startRenderLoop(handle, token: loopToken)
     }
 
     private func configureRenderer(_ handle: OpaquePointer) -> Int32 {
@@ -767,8 +775,10 @@ final class ExampleViewController: UIViewController, UIGestureRecognizerDelegate
         return 0
     }
 
-    private func startRenderLoop(_ renderer: OpaquePointer) {
-        setRenderLoopActive(true)
+    private func startRenderLoop(
+        _ renderer: OpaquePointer,
+        token: RenderLoopLifecycle.Token
+    ) {
         renderQueue.async { [weak self] in
             guard let self else {
                 gsplat_surface_renderer_destroy(renderer)
@@ -778,7 +788,7 @@ final class ExampleViewController: UIViewController, UIGestureRecognizerDelegate
             let benchmark = SurfaceBenchmark(config: self.benchmarkConfig)
             var currentStatsConsumer = GsplatCurrentStatsConsumer()
             var frameIndex = 0
-            while self.isRenderLoopActive() {
+            while token.shouldRun {
                 let traceStep = benchmark.nextTraceStep()
                 let frameStartNs = DispatchTime.now().uptimeNanoseconds
                 var rc: Int32 = 0
@@ -820,6 +830,9 @@ final class ExampleViewController: UIViewController, UIGestureRecognizerDelegate
                 }
                 let renderCallNs = DispatchTime.now().uptimeNanoseconds - renderCallStartNs
 
+                guard token.shouldRun else {
+                    break
+                }
                 if rc != 0 {
                     self.setStatus("state=render_failed rc=\(rc) error=\(self.errorMessage(rc))")
                     print("IOS_SURFACE_RENDER_FAILED rc=\(rc) error=\(self.errorMessage(rc))")
@@ -994,12 +1007,23 @@ final class ExampleViewController: UIViewController, UIGestureRecognizerDelegate
                 }
             }
 
-            self.setRenderLoopActive(false)
             gsplat_surface_renderer_destroy(renderer)
             DispatchQueue.main.async { [weak self] in
-                if self?.renderer == renderer {
-                    self?.renderer = nil
-                    self?.surfaceExactness = nil
+                guard let self,
+                      let shouldRestart = self.renderLoopLifecycle.finish(token) else {
+                    return
+                }
+                self.renderer = nil
+                self.currentSurfaceSize = nil
+                self.surfaceExactness = nil
+                self.lastAdaptiveGpuFailureReason = nil
+                if shouldRestart, self.rendererLifecycleVisible {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
+                        guard let self, self.rendererLifecycleVisible else {
+                            return
+                        }
+                        self.createRendererIfNeeded()
+                    }
                 }
             }
         }
@@ -1611,8 +1635,7 @@ final class ExampleViewController: UIViewController, UIGestureRecognizerDelegate
     }
 
     private func stopRenderer() {
-        setRenderLoopActive(false)
-        renderer = nil
+        renderLoopLifecycle.requestStop()
         currentSurfaceSize = nil
         surfaceExactness = nil
         lastAdaptiveGpuFailureReason = nil
@@ -1621,10 +1644,18 @@ final class ExampleViewController: UIViewController, UIGestureRecognizerDelegate
     private func restartRendererForDataset() {
         clearPendingCameraCommands()
         setCameraState("camera=auto")
-        stopRenderer()
+        let canRestartImmediately = renderLoopLifecycle.requestReplacement()
+        currentSurfaceSize = nil
+        surfaceExactness = nil
+        lastAdaptiveGpuFailureReason = nil
         setStatus("state=dataset_ready")
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
-            self?.createRendererIfNeeded()
+        if canRestartImmediately {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
+                guard let self, self.rendererLifecycleVisible else {
+                    return
+                }
+                self.createRendererIfNeeded()
+            }
         }
     }
 
@@ -1637,7 +1668,7 @@ final class ExampleViewController: UIViewController, UIGestureRecognizerDelegate
         }
 
         currentSurfaceSize = size
-        if renderer != nil {
+        if renderLoopLifecycle.isRunning {
             queueResize(size)
             setStatus("state=resize_pending size=\(size.width)x\(size.height)")
         }
@@ -2052,18 +2083,6 @@ final class ExampleViewController: UIViewController, UIGestureRecognizerDelegate
         return 0
     }
 
-    private func setRenderLoopActive(_ active: Bool) {
-        withRenderStateLock {
-            renderLoopActive = active
-        }
-    }
-
-    private func isRenderLoopActive() -> Bool {
-        withRenderStateLock {
-            renderLoopActive
-        }
-    }
-
     private func setStatus(_ state: String) {
         DispatchQueue.main.async { [weak self] in
             guard let self else {
@@ -2206,13 +2225,6 @@ final class ExampleViewController: UIViewController, UIGestureRecognizerDelegate
         return body()
     }
 
-    private func withRenderStateLock<T>(_ body: () -> T) -> T {
-        renderStateLock.lock()
-        defer {
-            renderStateLock.unlock()
-        }
-        return body()
-    }
 }
 
 private extension Comparable {

@@ -78,6 +78,7 @@ xcrun --sdk iphonesimulator swiftc \
   bindings/apple/GsplatKit/Sources/GsplatKit/CurrentStats.swift \
   bindings/apple/GsplatKit/Sources/GsplatKit/GsplatKit.swift \
   examples/ios/app/BenchmarkArtifact.swift \
+  examples/ios/app/RenderLoopLifecycle.swift \
   examples/ios/app/GsplatIOSExample.swift \
   -parse-as-library \
   -import-objc-header crates/gsplat-ffi-c/include/gsplat.h \
