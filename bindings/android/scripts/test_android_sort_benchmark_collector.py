@@ -29,6 +29,46 @@ TEST_CAMERA_TRACE = (
 )
 
 
+def android_environment_receipt(*, gfx_driver_0=None):
+    return {
+        "schema": COLLECTOR.ANDROID_ENVIRONMENT_RECEIPT_SCHEMA,
+        "source": "adb_getprop",
+        "serial": "fixture-serial",
+        "renderer_identity": copy.deepcopy(
+            COLLECTOR.ANDROID_RENDERER_IDENTITY_SOURCES
+        ),
+        "manufacturer": "Fixture",
+        "model": "Phone",
+        "device": "fixture_device",
+        "android_release": "16",
+        "android_sdk": "36",
+        "hardware": "fixture-hardware",
+        "build_fingerprint": "fixture/device/build:16/TEST/1:userdebug/test-keys",
+        "device_properties": {
+            "soc_manufacturer_property": {
+                "getprop": "ro.soc.manufacturer",
+                "value": "Fixture Silicon",
+            },
+            "soc_model_property": {
+                "getprop": "ro.soc.model",
+                "value": "F1",
+            },
+            "board_platform_property": {
+                "getprop": "ro.board.platform",
+                "value": "fixture-board",
+            },
+            "vulkan_hal_property": {
+                "getprop": "ro.hardware.vulkan",
+                "value": "vulkan.fixture",
+            },
+            "gfx_driver_0_property": {
+                "getprop": "ro.gfx.driver.0",
+                "value": gfx_driver_0,
+            },
+        },
+    }
+
+
 def camera_validation_fixture(backend: str = "gpu", sample_count: int = 1):
     position = [1.25, -0.5, 3.0]
     rotation = [0.0, 0.0, 0.0, 1.0]
@@ -63,6 +103,7 @@ def camera_validation_fixture(backend: str = "gpu", sample_count: int = 1):
         "renderer": {
             "order_backend_requested": backend,
             "path": "packed_atlas",
+            "backend": "vulkan",
             "gpu_producer_measurement_enabled": False,
             "current_stats_schema": "gsplat-surface-current-stats/v1",
             "current_stats_strict": True,
@@ -77,7 +118,20 @@ def camera_validation_fixture(backend: str = "gpu", sample_count: int = 1):
             "sort_ms": "matching_cpu_order_terminal_only",
             "raster_ms": None,
         },
+        "environment": {
+            "platform": "android-native",
+            "os": "Android 16 (API 36)",
+            "device": "Fixture Phone (fixture_device)",
+            "browser": None,
+            "adapter": None,
+            "driver": None,
+            "hardware": "fixture-hardware",
+            "android_device_receipt": android_environment_receipt(),
+        },
         "unavailable_fields": [
+            "environment.adapter",
+            "environment.driver",
+            "environment.android_device_receipt.device_properties.gfx_driver_0_property.value",
             "frames[*].preprocess_ms",
             "frames[*].sort_ms",
             "frames[*].gpu_complete_ms",
@@ -503,6 +557,179 @@ class ParsingTests(unittest.TestCase):
                 trace_identity,
             )
 
+    def test_forced_gpu_requires_actual_gpu_post_sort_plan(self) -> None:
+        fixture = camera_validation_fixture("gpu")
+        entry = fixture[1]["current_stats_terminal_ledger"][0]
+        entry["identity"]["executed_plan"] = "gpu_preproject"
+        entry["drawn"] = entry["contributor"]
+        entry["count_semantics"] = "indirect_draw_equals_contributor"
+        fixture[2][0].update(
+            {
+                "current_stats_executed_plan": "gpu_preproject",
+                "drawn": entry["contributor"],
+                "exact_contributor_compaction": True,
+            }
+        )
+        with self.assertRaisesRegex(
+            RuntimeError, "requires actual plan gpu_post_sort"
+        ):
+            COLLECTOR.validate_run_artifact(
+                fixture[0],
+                fixture[1],
+                fixture[2],
+                "gpu",
+                "packed",
+                {"sha256": "abc", "bytes": 123},
+                fixture[3],
+                fixture[4],
+            )
+
+    def test_adaptive_preserves_factual_gpu_preproject_plan(self) -> None:
+        fixture = camera_validation_fixture("adaptive")
+        entry = fixture[1]["current_stats_terminal_ledger"][0]
+        entry["identity"]["executed_plan"] = "gpu_preproject"
+        entry["drawn"] = entry["contributor"]
+        entry["count_semantics"] = "indirect_draw_equals_contributor"
+        fixture[2][0].update(
+            {
+                "current_stats_executed_plan": "gpu_preproject",
+                "drawn": entry["contributor"],
+                "exact_contributor_compaction": True,
+            }
+        )
+        COLLECTOR.validate_run_artifact(
+            fixture[0],
+            fixture[1],
+            fixture[2],
+            "adaptive",
+            "packed",
+            {"sha256": "abc", "bytes": 123},
+            fixture[3],
+            fixture[4],
+        )
+
+    def test_android_environment_receipt_is_required_and_device_exact(self) -> None:
+        fixture = camera_validation_fixture("cpu")
+        expected = android_environment_receipt()
+        COLLECTOR.validate_run_artifact(
+            fixture[0],
+            fixture[1],
+            fixture[2],
+            "cpu",
+            "packed",
+            {"sha256": "abc", "bytes": 123},
+            fixture[3],
+            fixture[4],
+            expected_android_environment_receipt=expected,
+        )
+
+        missing = copy.deepcopy(fixture[0])
+        missing["environment"].pop("android_device_receipt")
+        with self.assertRaisesRegex(
+            RuntimeError, "device environment receipt is missing"
+        ):
+            COLLECTOR.validate_run_artifact(
+                missing,
+                fixture[1],
+                fixture[2],
+                "cpu",
+                "packed",
+                {"sha256": "abc", "bytes": 123},
+                fixture[3],
+                fixture[4],
+            )
+
+        mismatched = copy.deepcopy(fixture[0])
+        mismatched["environment"]["android_device_receipt"]["serial"] = "other"
+        with self.assertRaisesRegex(RuntimeError, "does not match the selected device"):
+            COLLECTOR.validate_run_artifact(
+                mismatched,
+                fixture[1],
+                fixture[2],
+                "cpu",
+                "packed",
+                {"sha256": "abc", "bytes": 123},
+                fixture[3],
+                fixture[4],
+                expected_android_environment_receipt=expected,
+            )
+
+    def test_android_environment_allows_declared_unavailable_device_property(
+        self,
+    ) -> None:
+        manifest = camera_validation_fixture("adaptive")[0]
+        self.assertIsNone(
+            manifest["environment"]["android_device_receipt"]["device_properties"][
+                "gfx_driver_0_property"
+            ][
+                "value"
+            ]
+        )
+        COLLECTOR.validate_android_environment_receipt(manifest)
+
+    def test_android_renderer_identity_requires_present_or_declared_unavailable(
+        self,
+    ) -> None:
+        manifest = camera_validation_fixture("adaptive")[0]
+
+        for owner_name, field_name in (
+            ("environment", "adapter"),
+            ("environment", "driver"),
+            ("renderer", "backend"),
+        ):
+            with self.subTest(missing=f"{owner_name}.{field_name}"):
+                missing = copy.deepcopy(manifest)
+                missing[owner_name].pop(field_name)
+                with self.assertRaisesRegex(RuntimeError, "identity field is missing"):
+                    COLLECTOR.validate_android_environment_receipt(missing)
+
+        undeclared = copy.deepcopy(manifest)
+        undeclared["unavailable_fields"].remove("environment.driver")
+        with self.assertRaisesRegex(RuntimeError, "identity is not declared"):
+            COLLECTOR.validate_android_environment_receipt(undeclared)
+
+        falsely_unavailable = copy.deepcopy(manifest)
+        falsely_unavailable["unavailable_fields"].append("renderer.backend")
+        with self.assertRaisesRegex(RuntimeError, "declared unavailable"):
+            COLLECTOR.validate_android_environment_receipt(falsely_unavailable)
+
+        source_drift = copy.deepcopy(manifest)
+        source_drift["environment"]["android_device_receipt"]["renderer_identity"][
+            "adapter"
+        ]["path"] = "environment.hardware"
+        with self.assertRaisesRegex(RuntimeError, "sources are incomplete or changed"):
+            COLLECTOR.validate_android_environment_receipt(source_drift)
+
+    def test_android_renderer_identity_accepts_nonempty_manifest_values(self) -> None:
+        manifest = camera_validation_fixture("adaptive")[0]
+        manifest["environment"]["adapter"] = "Fixture wgpu adapter"
+        manifest["environment"]["driver"] = "Fixture Vulkan driver"
+        manifest["renderer"]["backend"] = "vulkan"
+        manifest["unavailable_fields"].remove("environment.adapter")
+        manifest["unavailable_fields"].remove("environment.driver")
+        COLLECTOR.validate_android_environment_receipt(manifest)
+
+    def test_android_environment_receipt_is_built_from_device_properties(self) -> None:
+        expected = android_environment_receipt()
+        device = {"serial": expected["serial"]}
+        for field, property_name in (
+            COLLECTOR.ANDROID_ENVIRONMENT_REQUIRED_PROPERTIES.items()
+        ):
+            device[property_name] = expected[field]
+        for field, property_name in (
+            COLLECTOR.ANDROID_ENVIRONMENT_DEVICE_PROPERTIES.items()
+        ):
+            value = expected["device_properties"][field]["value"]
+            device[property_name] = "" if value is None else value
+        self.assertEqual(
+            COLLECTOR.build_android_environment_receipt(device),
+            expected,
+        )
+
+        device.pop("ro.build.fingerprint")
+        with self.assertRaisesRegex(RuntimeError, "ro.build.fingerprint"):
+            COLLECTOR.build_android_environment_receipt(device)
+
     def test_non_diagnostic_artifact_requires_producer_diagnostics_explicitly_off(
         self,
     ) -> None:
@@ -891,12 +1118,10 @@ class ParsingTests(unittest.TestCase):
 
     def test_rejects_ACCEPTED_PRODUCER_CURRENT_STATS_COUNT_DRIFT(self) -> None:
         fixture = camera_validation_fixture("gpu")
-        add_gpu_producer_evidence(fixture[0], fixture[1], fixture[2], "preproject")
+        add_gpu_producer_evidence(fixture[0], fixture[1], fixture[2], "post_sort")
         current = fixture[1]["current_stats_terminal_ledger"][0]
         current["contributor"] -= 1
-        current["drawn"] = current["contributor"]
         fixture[2][0]["contributor"] = current["contributor"]
-        fixture[2][0]["drawn"] = current["drawn"]
 
         with self.assertRaisesRegex(RuntimeError, "producer/current-stats CONTRIBUTOR drifted"):
             COLLECTOR.validate_run_artifact(
@@ -908,7 +1133,7 @@ class ParsingTests(unittest.TestCase):
                 {"sha256": "abc", "bytes": 123},
                 fixture[3],
                 fixture[4],
-                "preproject",
+                "post_sort",
             )
 
     def test_rejects_redundant_gpu_count_semantics_claim(self) -> None:

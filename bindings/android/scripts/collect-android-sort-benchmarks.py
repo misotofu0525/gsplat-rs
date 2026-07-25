@@ -11,6 +11,7 @@ installing the APK is an explicit one-time preparation mode, not dataset setup.
 from __future__ import annotations
 
 import argparse
+import copy
 import contextlib
 import dataclasses
 import datetime as dt
@@ -59,7 +60,38 @@ INTERNAL_TRACE = "files/camera_trace.json"
 DEVICE_DATASET_PREFIX = "/data/local/tmp/gsplat-benchmark-"
 DEVICE_TRACE_PREFIX = "/data/local/tmp/gsplat-camera-trace-"
 CAMERA_RECEIPT_SCHEMA = "gsplat-surface-camera-receipt/v1"
+ANDROID_ENVIRONMENT_RECEIPT_SCHEMA = "gsplat-android-environment-receipt/v2"
 CAMERA_RECEIPT_TOLERANCE = 5.0e-5
+ANDROID_ENVIRONMENT_REQUIRED_PROPERTIES = {
+    "manufacturer": "ro.product.manufacturer",
+    "model": "ro.product.model",
+    "device": "ro.product.device",
+    "android_release": "ro.build.version.release",
+    "android_sdk": "ro.build.version.sdk",
+    "hardware": "ro.hardware",
+    "build_fingerprint": "ro.build.fingerprint",
+}
+ANDROID_ENVIRONMENT_DEVICE_PROPERTIES = {
+    "soc_manufacturer_property": "ro.soc.manufacturer",
+    "soc_model_property": "ro.soc.model",
+    "board_platform_property": "ro.board.platform",
+    "vulkan_hal_property": "ro.hardware.vulkan",
+    "gfx_driver_0_property": "ro.gfx.driver.0",
+}
+ANDROID_RENDERER_IDENTITY_SOURCES = {
+    "adapter": {
+        "source": "benchmark_manifest",
+        "path": "environment.adapter",
+    },
+    "driver": {
+        "source": "benchmark_manifest",
+        "path": "environment.driver",
+    },
+    "backend": {
+        "source": "benchmark_manifest",
+        "path": "renderer.backend",
+    },
+}
 CANONICAL_COORDINATE_SYSTEM = {
     "handedness": "right",
     "axes": "RUF",
@@ -1071,6 +1103,7 @@ def validate_current_stats_evidence(
             f"{expected_backend!r}"
         )
     renderer = manifest.get("renderer", {})
+    validate_android_environment_receipt(manifest)
     expected_renderer = {
         "current_stats_schema": "gsplat-surface-current-stats/v1",
         "current_stats_strict": True,
@@ -1265,8 +1298,10 @@ def validate_current_stats_evidence(
             )
         if expected_backend == "cpu" and plan != "cpu_post_sort":
             raise RuntimeError("forced CPU artifact executed a non-CPU current-stats plan")
-        if expected_backend == "gpu" and plan == "cpu_post_sort":
-            raise RuntimeError("forced GPU artifact executed a CPU current-stats plan")
+        if expected_backend == "gpu" and plan != "gpu_post_sort":
+            raise RuntimeError(
+                "forced GPU artifact requires actual plan gpu_post_sort"
+            )
 
         for field in ("call_ms", "frame_wall_ms"):
             value = frame.get(field)
@@ -1587,6 +1622,7 @@ def validate_run_artifact(
     expected_trace: dict[str, Any],
     expected_trace_identity: dict[str, Any],
     expected_gpu_producer: str | None = None,
+    expected_android_environment_receipt: dict[str, Any] | None = None,
 ) -> None:
     renderer = manifest.get("renderer", {})
     requested = renderer.get("order_backend_requested")
@@ -1651,6 +1687,14 @@ def validate_run_artifact(
         frames,
         expected_backend,
     )
+    if expected_android_environment_receipt is not None:
+        actual_receipt = manifest.get("environment", {}).get(
+            "android_device_receipt"
+        )
+        if actual_receipt != expected_android_environment_receipt:
+            raise RuntimeError(
+                "artifact Android environment receipt does not match the selected device"
+            )
 
     producer_enabled = renderer.get("gpu_producer_measurement_enabled")
     producer_requested = renderer.get("gpu_order_producer_requested")
@@ -1693,6 +1737,169 @@ def device_info(adb: pathlib.Path | str, serial: str) -> dict[str, str]:
             adb_args(adb, serial, "shell", "getprop", key), capture=True
         ).stdout.strip()
     return {"serial": serial, **properties}
+
+
+def build_android_environment_receipt(device: dict[str, str]) -> dict[str, Any]:
+    serial = device.get("serial")
+    if not isinstance(serial, str) or not serial:
+        raise RuntimeError("Android environment receipt requires the adb serial")
+    receipt: dict[str, Any] = {
+        "schema": ANDROID_ENVIRONMENT_RECEIPT_SCHEMA,
+        "source": "adb_getprop",
+        "serial": serial,
+        "renderer_identity": copy.deepcopy(ANDROID_RENDERER_IDENTITY_SOURCES),
+    }
+    for field, property_name in ANDROID_ENVIRONMENT_REQUIRED_PROPERTIES.items():
+        value = device.get(property_name)
+        if not isinstance(value, str) or not value:
+            raise RuntimeError(
+                f"Android environment receipt requires non-empty {property_name}"
+            )
+        receipt[field] = value
+    device_properties: dict[str, dict[str, str | None]] = {}
+    for field, property_name in ANDROID_ENVIRONMENT_DEVICE_PROPERTIES.items():
+        value = device.get(property_name)
+        device_properties[field] = {
+            "getprop": property_name,
+            "value": value if isinstance(value, str) and value else None,
+        }
+    receipt["device_properties"] = device_properties
+    return receipt
+
+
+def validate_android_environment_receipt(manifest: dict[str, Any]) -> None:
+    environment = manifest.get("environment")
+    if not isinstance(environment, dict):
+        raise RuntimeError("formal Android artifact environment is missing")
+    receipt = environment.get("android_device_receipt")
+    if not isinstance(receipt, dict):
+        raise RuntimeError(
+            "formal Android artifact device environment receipt is missing"
+        )
+    expected_fields = {
+        "schema",
+        "source",
+        "serial",
+        *ANDROID_ENVIRONMENT_REQUIRED_PROPERTIES,
+        "device_properties",
+        "renderer_identity",
+    }
+    if set(receipt) != expected_fields:
+        raise RuntimeError(
+            "Android environment receipt fields are incomplete or changed"
+        )
+    if receipt.get("schema") != ANDROID_ENVIRONMENT_RECEIPT_SCHEMA:
+        raise RuntimeError("Android environment receipt schema is wrong")
+    if receipt.get("source") != "adb_getprop":
+        raise RuntimeError("Android environment receipt source is wrong")
+    for field in ("serial", *ANDROID_ENVIRONMENT_REQUIRED_PROPERTIES):
+        value = receipt.get(field)
+        if not isinstance(value, str) or not value:
+            raise RuntimeError(
+                f"Android environment receipt required field {field} is unavailable"
+            )
+
+    expected_os = (
+        f"Android {receipt['android_release']} (API {receipt['android_sdk']})"
+    )
+    expected_device = (
+        f"{receipt['manufacturer']} {receipt['model']} ({receipt['device']})"
+    )
+    for field, expected in (
+        ("platform", "android-native"),
+        ("os", expected_os),
+        ("device", expected_device),
+        ("hardware", receipt["hardware"]),
+    ):
+        if environment.get(field) != expected:
+            raise RuntimeError(
+                f"artifact environment.{field} does not match Android device receipt"
+            )
+
+    renderer_identity = receipt.get("renderer_identity")
+    if renderer_identity != ANDROID_RENDERER_IDENTITY_SOURCES:
+        raise RuntimeError("Android renderer identity sources are incomplete or changed")
+    unavailable = manifest.get("unavailable_fields")
+    if not isinstance(unavailable, list):
+        raise RuntimeError("Android environment receipt requires unavailable_fields")
+    unavailable_set = set(unavailable)
+    for source in renderer_identity.values():
+        path = source["path"]
+        owner_name, field_name = path.split(".", 1)
+        owner = manifest.get(owner_name)
+        if not isinstance(owner, dict) or field_name not in owner:
+            raise RuntimeError(f"Android renderer identity field is missing: {path}")
+        value = owner[field_name]
+        if value is None:
+            if path not in unavailable_set:
+                raise RuntimeError(
+                    f"unavailable Android renderer identity is not declared: {path}"
+                )
+        elif not isinstance(value, str) or not value:
+            raise RuntimeError(f"Android renderer identity field is invalid: {path}")
+        elif path in unavailable_set:
+            raise RuntimeError(
+                f"available Android renderer identity is declared unavailable: {path}"
+            )
+
+    device_properties = receipt.get("device_properties")
+    if not isinstance(device_properties, dict) or set(device_properties) != set(
+        ANDROID_ENVIRONMENT_DEVICE_PROPERTIES
+    ):
+        raise RuntimeError("Android device-property receipt is incomplete")
+    for field, property_name in ANDROID_ENVIRONMENT_DEVICE_PROPERTIES.items():
+        entry = device_properties.get(field)
+        if not isinstance(entry, dict) or set(entry) != {"getprop", "value"}:
+            raise RuntimeError(f"Android device property {field} is invalid")
+        if entry.get("getprop") != property_name:
+            raise RuntimeError(f"Android device property {field} source is wrong")
+        value = entry.get("value")
+        path = (
+            f"environment.android_device_receipt.device_properties.{field}.value"
+        )
+        if value is None:
+            if path not in unavailable_set:
+                raise RuntimeError(
+                    f"unavailable Android device property is not declared: {path}"
+                )
+        elif not isinstance(value, str) or not value:
+            raise RuntimeError(f"Android device property {field} value is invalid")
+        elif path in unavailable_set:
+            raise RuntimeError(
+                f"available Android device property is declared unavailable: {path}"
+            )
+
+
+def attach_android_environment_receipt(
+    manifest: dict[str, Any], receipt: dict[str, Any]
+) -> None:
+    environment = manifest.get("environment")
+    if not isinstance(environment, dict):
+        raise RuntimeError("cannot attach Android receipt without manifest environment")
+    existing = environment.get("android_device_receipt")
+    if existing is not None and existing != receipt:
+        raise RuntimeError(
+            "log artifact Android environment receipt mismatches adb receipt"
+        )
+    renderer_identity = receipt.get("renderer_identity")
+    if renderer_identity != ANDROID_RENDERER_IDENTITY_SOURCES:
+        raise RuntimeError("Android renderer identity sources are missing")
+    device_properties = receipt.get("device_properties")
+    if not isinstance(device_properties, dict):
+        raise RuntimeError("Android environment receipt device properties are missing")
+    unavailable = manifest.get("unavailable_fields")
+    if not isinstance(unavailable, list):
+        raise RuntimeError("cannot attach Android receipt without unavailable_fields")
+    for field in ANDROID_ENVIRONMENT_DEVICE_PROPERTIES:
+        entry = device_properties.get(field)
+        if isinstance(entry, dict) and entry.get("value") is None:
+            path = (
+                f"environment.android_device_receipt.device_properties.{field}.value"
+            )
+            if path not in unavailable:
+                unavailable.append(path)
+    environment["android_device_receipt"] = receipt
+    validate_android_environment_receipt(manifest)
 
 
 def parser() -> argparse.ArgumentParser:
@@ -1982,6 +2189,8 @@ def collect_scheduled_runs(
     temporary_dataset_path: str,
     temporary_trace_path: str,
     expected_trace: dict[str, Any],
+    android_environment_receipt_path: pathlib.Path,
+    android_environment_receipt: dict[str, Any],
 ) -> None:
     for spec in schedule:
         if spec.index > 1 and args.cooldown_seconds > 0:
@@ -2107,6 +2316,8 @@ def collect_scheduled_runs(
                 args.camera_trace,
                 "--camera-validator",
                 CAMERA_RECEIPT_VALIDATOR,
+                "--android-environment-receipt",
+                android_environment_receipt_path,
             ]
         )
         manifest = json.loads(
@@ -2126,6 +2337,7 @@ def collect_scheduled_runs(
             expected_trace,
             experiment["trace"],
             args.gpu_producer,
+            android_environment_receipt,
         )
 
         run_record.update(
@@ -2211,10 +2423,21 @@ def main(argv: Sequence[str] | None = None) -> int:
         "runs": [],
     }
     experiment_path = output / "experiment.json"
+    android_environment_receipt_path = output / "android-environment-receipt.json"
 
     try:
         experiment["repository"] = repository_identity()
         experiment["device"] = device_info(adb, args.serial)
+        android_environment_receipt = build_android_environment_receipt(
+            experiment["device"]
+        )
+        atomic_write_json(
+            android_environment_receipt_path, android_environment_receipt
+        )
+        experiment["android_environment_receipt"] = {
+            "path": android_environment_receipt_path.name,
+            "schema": ANDROID_ENVIRONMENT_RECEIPT_SCHEMA,
+        }
         atomic_write_json(experiment_path, experiment)
 
         if args.prepare_apk:
@@ -2301,6 +2524,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                     temporary_dataset_path,
                     temporary_trace_path,
                     trace_json,
+                    android_environment_receipt_path,
+                    android_environment_receipt,
                 )
 
         experiment["status"] = "complete"

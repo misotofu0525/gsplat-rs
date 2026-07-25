@@ -71,6 +71,34 @@ def parse_chunk(payload: str) -> tuple[tuple[str, str, str, int], int, bytes]:
     return key, index, decoded
 
 
+def load_android_validator():
+    spec = importlib.util.spec_from_file_location(
+        "android_sort_collector_current_stats_validator",
+        CURRENT_STATS_VALIDATOR,
+    )
+    if spec is None or spec.loader is None:
+        raise RuntimeError("cannot load Android current-stats artifact validator")
+    validator = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = validator
+    spec.loader.exec_module(validator)
+    return validator
+
+
+def attach_android_environment_receipt(
+    staging: pathlib.Path, receipt_path: pathlib.Path
+) -> None:
+    manifest = json.loads((staging / "manifest.json").read_text(encoding="utf-8"))
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    if not isinstance(receipt, dict):
+        raise RuntimeError("Android environment receipt file must contain an object")
+    validator = load_android_validator()
+    validator.attach_android_environment_receipt(manifest, receipt)
+    (staging / "manifest.json").write_text(
+        json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+
 def validate_declared_current_stats(staging: pathlib.Path) -> None:
     manifest = json.loads((staging / "manifest.json").read_text(encoding="utf-8"))
     renderer = manifest.get("renderer")
@@ -83,15 +111,7 @@ def validate_declared_current_stats(staging: pathlib.Path) -> None:
         for line in (staging / "frames.jsonl").read_text(encoding="utf-8").splitlines()
         if line
     ]
-    spec = importlib.util.spec_from_file_location(
-        "android_sort_collector_current_stats_validator",
-        CURRENT_STATS_VALIDATOR,
-    )
-    if spec is None or spec.loader is None:
-        raise RuntimeError("cannot load Android current-stats artifact validator")
-    validator = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = validator
-    spec.loader.exec_module(validator)
+    validator = load_android_validator()
     validator.validate_current_stats_evidence(
         manifest,
         summary,
@@ -107,6 +127,7 @@ def main() -> int:
     parser.add_argument("--validator", type=pathlib.Path, required=True)
     parser.add_argument("--camera-trace", type=pathlib.Path)
     parser.add_argument("--camera-validator", type=pathlib.Path)
+    parser.add_argument("--android-environment-receipt", type=pathlib.Path)
     args = parser.parse_args()
 
     if (args.camera_trace is None) != (args.camera_validator is None):
@@ -115,6 +136,14 @@ def main() -> int:
         parser.error(f"camera trace does not exist: {args.camera_trace}")
     if args.camera_validator is not None and not args.camera_validator.is_file():
         parser.error(f"camera validator does not exist: {args.camera_validator}")
+    if (
+        args.android_environment_receipt is not None
+        and not args.android_environment_receipt.is_file()
+    ):
+        parser.error(
+            "Android environment receipt does not exist: "
+            f"{args.android_environment_receipt}"
+        )
 
     if args.destination.exists():
         parser.error(f"destination already exists: {args.destination}")
@@ -196,6 +225,13 @@ def main() -> int:
         (staging / "manifest.json").write_text(manifests[0] + "\n", encoding="utf-8")
         (staging / "summary.json").write_text(summaries[0] + "\n", encoding="utf-8")
         (staging / "frames.jsonl").write_text("\n".join(frames) + "\n", encoding="utf-8")
+        if args.android_environment_receipt is not None:
+            try:
+                attach_android_environment_receipt(
+                    staging, args.android_environment_receipt
+                )
+            except (OSError, json.JSONDecodeError, RuntimeError) as error:
+                parser.error(f"invalid Android environment receipt: {error}")
         subprocess.run([sys.executable, str(args.validator), str(staging)], check=True)
         try:
             validate_declared_current_stats(staging)

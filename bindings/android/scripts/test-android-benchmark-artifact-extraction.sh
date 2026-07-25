@@ -30,6 +30,9 @@ ACCEPTED_ADAPTIVE_PLAN_BACKEND_DRIFT_LOG="$TMP_DIR/adaptive-plan-backend-drift.t
 ACCEPTED_PRODUCER_CURRENT_STATS_COUNT_DRIFT_LOG="$TMP_DIR/producer-count-drift.txt"
 BAD_GPU_COUNT_SEMANTICS_LOG="$TMP_DIR/bad-gpu-count-semantics.txt"
 PRODUCER_GATE_MUTATION_DIR="$TMP_DIR/producer-gate-mutations"
+WRONG_GPU_ACTUAL_PLAN_LOG="$TMP_DIR/wrong-gpu-actual-plan.txt"
+ANDROID_ENVIRONMENT_RECEIPT="$TMP_DIR/android-environment-receipt.json"
+MISMATCHED_ANDROID_ENVIRONMENT_RECEIPT="$TMP_DIR/mismatched-android-environment-receipt.json"
 mkdir -p "$PRODUCER_GATE_MUTATION_DIR"
 python3 - \
   "$FIXTURE" \
@@ -38,7 +41,10 @@ python3 - \
   "$ACCEPTED_ADAPTIVE_PLAN_BACKEND_DRIFT_LOG" \
   "$ACCEPTED_PRODUCER_CURRENT_STATS_COUNT_DRIFT_LOG" \
   "$BAD_GPU_COUNT_SEMANTICS_LOG" \
-  "$PRODUCER_GATE_MUTATION_DIR" <<'PY'
+  "$PRODUCER_GATE_MUTATION_DIR" \
+  "$WRONG_GPU_ACTUAL_PLAN_LOG" \
+  "$ANDROID_ENVIRONMENT_RECEIPT" \
+  "$MISMATCHED_ANDROID_ENVIRONMENT_RECEIPT" <<'PY'
 import copy
 import json
 import pathlib
@@ -51,6 +57,9 @@ adaptive_drift_destination = pathlib.Path(sys.argv[4])
 producer_drift_destination = pathlib.Path(sys.argv[5])
 bad_gpu_semantics_destination = pathlib.Path(sys.argv[6])
 producer_gate_mutation_directory = pathlib.Path(sys.argv[7])
+wrong_gpu_actual_plan_destination = pathlib.Path(sys.argv[8])
+environment_receipt_destination = pathlib.Path(sys.argv[9])
+mismatched_environment_receipt_destination = pathlib.Path(sys.argv[10])
 manifest = json.loads((fixture / "manifest.json").read_text())
 summary = json.loads((fixture / "summary.json").read_text())
 frames = [
@@ -69,6 +78,70 @@ manifest["renderer"].update(
     }
 )
 manifest["exactness"] = {"receipt_id": "strict-fixture-exactness"}
+manifest["environment"].update(
+    {
+        "platform": "android-native",
+        "os": "Android 16 (API 36)",
+        "device": "Fixture Phone (fixture_device)",
+        "adapter": None,
+        "driver": None,
+        "hardware": "fixture-hardware",
+    }
+)
+environment_receipt = {
+    "schema": "gsplat-android-environment-receipt/v2",
+    "source": "adb_getprop",
+    "serial": "fixture-serial",
+    "renderer_identity": {
+        "adapter": {
+            "source": "benchmark_manifest",
+            "path": "environment.adapter",
+        },
+        "driver": {
+            "source": "benchmark_manifest",
+            "path": "environment.driver",
+        },
+        "backend": {
+            "source": "benchmark_manifest",
+            "path": "renderer.backend",
+        },
+    },
+    "manufacturer": "Fixture",
+    "model": "Phone",
+    "device": "fixture_device",
+    "android_release": "16",
+    "android_sdk": "36",
+    "hardware": "fixture-hardware",
+    "build_fingerprint": "fixture/device/build:16/TEST/1:userdebug/test-keys",
+    "device_properties": {
+        "soc_manufacturer_property": {
+            "getprop": "ro.soc.manufacturer",
+            "value": "Fixture Silicon",
+        },
+        "soc_model_property": {
+            "getprop": "ro.soc.model",
+            "value": "F1",
+        },
+        "board_platform_property": {
+            "getprop": "ro.board.platform",
+            "value": "fixture-board",
+        },
+        "vulkan_hal_property": {
+            "getprop": "ro.hardware.vulkan",
+            "value": "vulkan.fixture",
+        },
+        "gfx_driver_0_property": {
+            "getprop": "ro.gfx.driver.0",
+            "value": None,
+        },
+    },
+}
+environment_receipt_destination.write_text(json.dumps(environment_receipt) + "\n")
+mismatched_environment_receipt = copy.deepcopy(environment_receipt)
+mismatched_environment_receipt["manufacturer"] = "Other"
+mismatched_environment_receipt_destination.write_text(
+    json.dumps(mismatched_environment_receipt) + "\n"
+)
 manifest["timing_contract"] = {
     "call_ms": "host_camera_request_render_transaction_wall",
     "frame_wall_ms": "host_iteration_request_through_receipt_queries",
@@ -77,6 +150,8 @@ manifest["timing_contract"] = {
     "raster_ms": None,
 }
 for unavailable in (
+    "environment.adapter",
+    "environment.driver",
     "frames[*].cpu_frame_complete_ms",
     "frames[*].raster_ms",
 ):
@@ -161,6 +236,69 @@ def write_log(destination, manifest_value, frames_value, summary_value):
 
 
 write_log(strict_destination, manifest, frames, summary)
+missing_renderer_identity_manifest = copy.deepcopy(manifest)
+missing_renderer_identity_manifest["environment"].pop("adapter")
+write_log(
+    producer_gate_mutation_directory / "missing-renderer-identity.txt",
+    missing_renderer_identity_manifest,
+    frames,
+    summary,
+)
+undeclared_renderer_identity_manifest = copy.deepcopy(manifest)
+undeclared_renderer_identity_manifest["unavailable_fields"].remove(
+    "environment.driver"
+)
+write_log(
+    producer_gate_mutation_directory / "undeclared-renderer-identity.txt",
+    undeclared_renderer_identity_manifest,
+    frames,
+    summary,
+)
+nonempty_renderer_identity_manifest = copy.deepcopy(manifest)
+nonempty_renderer_identity_manifest["environment"]["adapter"] = (
+    "Fixture wgpu adapter"
+)
+nonempty_renderer_identity_manifest["environment"]["driver"] = (
+    "Fixture Vulkan driver"
+)
+nonempty_renderer_identity_manifest["renderer"]["backend"] = "vulkan"
+nonempty_renderer_identity_manifest["unavailable_fields"].remove(
+    "environment.adapter"
+)
+nonempty_renderer_identity_manifest["unavailable_fields"].remove(
+    "environment.driver"
+)
+write_log(
+    producer_gate_mutation_directory / "nonempty-renderer-identity.txt",
+    nonempty_renderer_identity_manifest,
+    frames,
+    summary,
+)
+wrong_gpu_manifest = copy.deepcopy(manifest)
+wrong_gpu_frames = copy.deepcopy(frames)
+wrong_gpu_summary = copy.deepcopy(summary)
+wrong_gpu_manifest["renderer"]["order_backend_requested"] = "gpu"
+for frame, entry in zip(
+    wrong_gpu_frames,
+    wrong_gpu_summary["current_stats_terminal_ledger"],
+):
+    entry["identity"]["executed_plan"] = "gpu_preproject"
+    entry["drawn"] = entry["contributor"]
+    entry["count_semantics"] = "indirect_draw_equals_contributor"
+    frame.update(
+        {
+            "current_stats_executed_plan": "gpu_preproject",
+            "order_backend": "gpu",
+            "drawn": entry["contributor"],
+            "exact_contributor_compaction": True,
+        }
+    )
+write_log(
+    wrong_gpu_actual_plan_destination,
+    wrong_gpu_manifest,
+    wrong_gpu_frames,
+    wrong_gpu_summary,
+)
 missing = dict(summary)
 missing.pop("current_stats_terminal_ledger")
 write_log(missing_destination, manifest, frames, missing)
@@ -192,8 +330,8 @@ producer_manifest["renderer"].update(
         "order_backend_requested": "gpu",
         "path": "packed_atlas",
         "raster_plan": "projected_quads_exact",
-        "projected_policy_requested": "compact",
-        "gpu_order_producer_requested": "preproject",
+        "projected_policy_requested": "candidate",
+        "gpu_order_producer_requested": "post_sort",
         "gpu_producer_measurement_enabled": True,
     }
 )
@@ -202,19 +340,18 @@ for index, (frame, entry) in enumerate(
     zip(producer_frames, producer_summary["current_stats_terminal_ledger"])
 ):
     producer_ticket = 3_000 + index
-    producer_contributor = entry["visible"]
-    entry["identity"]["executed_plan"] = "gpu_preproject"
+    producer_contributor = entry["visible"] - 1
+    entry["identity"]["executed_plan"] = "gpu_post_sort"
     entry["contributor"] = producer_contributor - 1
-    entry["drawn"] = producer_contributor - 1
-    entry["count_semantics"] = "indirect_draw_equals_contributor"
+    entry["count_semantics"] = "indirect_draw_equals_visible"
     frame.update(
         {
             "contributor": entry["contributor"],
             "drawn": entry["drawn"],
-            "exact_contributor_compaction": True,
-            "current_stats_executed_plan": "gpu_preproject",
+            "exact_contributor_compaction": False,
+            "current_stats_executed_plan": "gpu_post_sort",
             "order_backend": "gpu",
-            "gpu_order_producer": "preproject",
+            "gpu_order_producer": "post_sort",
             "gpu_producer_measurement_ticket": producer_ticket,
             "gpu_producer_measurement_camera_revision": entry["identity"][
                 "camera_revision"
@@ -222,7 +359,7 @@ for index, (frame, entry) in enumerate(
             "gpu_producer_order_generation": entry["identity"]["order_generation"],
             "gpu_producer_projection_generation": 4_000 + index,
             "gpu_producer_frame_complete_ms": 4.5 + index,
-            "gpu_producer_draw_scope": "exact_current_contributors",
+            "gpu_producer_draw_scope": "exact_current_candidates",
             "gpu_producer_order_refreshed": True,
             "gpu_producer_exact_current_draw": True,
             "gpu_producer_stale_order": False,
@@ -230,26 +367,26 @@ for index, (frame, entry) in enumerate(
             "gpu_producer_submission_flags": 9,
             "gpu_producer_source": entry["source"],
             "gpu_producer_contributor": producer_contributor,
-            "gpu_producer_drawn": producer_contributor,
+            "gpu_producer_drawn": entry["visible"],
         }
     )
     producer_terminals.append(
         {
             "ticket": producer_ticket,
             "camera_revision": entry["identity"]["camera_revision"],
-            "producer": "preproject",
+            "producer": "post_sort",
             "outcome": "success",
             "order_generation": entry["identity"]["order_generation"],
             "projection_generation": 4_000 + index,
             "source": entry["source"],
             "contributor": producer_contributor,
-            "drawn": producer_contributor,
-            "draw_scope": "exact_current_contributors",
+            "drawn": entry["visible"],
+            "draw_scope": "exact_current_candidates",
             "exactness_receipt_id": entry["exactness_receipt_id"],
         }
     )
 producer_summary["gpu_producer_telemetry"] = {
-    "requested_producer": "preproject",
+    "requested_producer": "post_sort",
     "scheduled_count": len(producer_frames),
     "completed_count": len(producer_frames),
     "failure_count": 0,
@@ -341,12 +478,79 @@ PY
 python3 "$ROOT/bindings/android/scripts/extract-android-benchmark-artifacts.py" \
   "$STRICT_LOG" \
   "$TMP_DIR/strict-artifact" \
-  --validator "$ROOT/tests/perf/validate-benchmark-artifacts.py"
+  --validator "$ROOT/tests/perf/validate-benchmark-artifacts.py" \
+  --android-environment-receipt "$ANDROID_ENVIRONMENT_RECEIPT"
+python3 - "$TMP_DIR/strict-artifact/manifest.json" <<'PY'
+import json
+import pathlib
+import sys
+
+manifest = json.loads(pathlib.Path(sys.argv[1]).read_text())
+receipt = manifest["environment"]["android_device_receipt"]
+assert receipt["device_properties"]["gfx_driver_0_property"] == {
+    "getprop": "ro.gfx.driver.0",
+    "value": None,
+}
+assert (
+    "environment.android_device_receipt.device_properties.gfx_driver_0_property.value"
+    in manifest["unavailable_fields"]
+)
+assert "environment.adapter" in manifest["unavailable_fields"]
+assert "environment.driver" in manifest["unavailable_fields"]
+PY
+
+python3 "$ROOT/bindings/android/scripts/extract-android-benchmark-artifacts.py" \
+  "$PRODUCER_GATE_MUTATION_DIR/nonempty-renderer-identity.txt" \
+  "$TMP_DIR/nonempty-renderer-identity-artifact" \
+  --validator "$ROOT/tests/perf/validate-benchmark-artifacts.py" \
+  --android-environment-receipt "$ANDROID_ENVIRONMENT_RECEIPT"
+
+for mutation in missing-renderer-identity undeclared-renderer-identity; do
+  if python3 "$ROOT/bindings/android/scripts/extract-android-benchmark-artifacts.py" \
+    "$PRODUCER_GATE_MUTATION_DIR/$mutation.txt" \
+    "$TMP_DIR/$mutation-artifact" \
+    --validator "$ROOT/tests/perf/validate-benchmark-artifacts.py" \
+    --android-environment-receipt "$ANDROID_ENVIRONMENT_RECEIPT"; then
+    echo "extractor accepted renderer identity mutation: $mutation" >&2
+    exit 1
+  fi
+  [[ ! -e "$TMP_DIR/$mutation-artifact" ]]
+done
+
+if python3 "$ROOT/bindings/android/scripts/extract-android-benchmark-artifacts.py" \
+  "$STRICT_LOG" \
+  "$TMP_DIR/strict-missing-environment-receipt-artifact" \
+  --validator "$ROOT/tests/perf/validate-benchmark-artifacts.py"; then
+  echo "extractor unexpectedly accepted strict artifact without Android environment receipt" >&2
+  exit 1
+fi
+[[ ! -e "$TMP_DIR/strict-missing-environment-receipt-artifact" ]]
+
+if python3 "$ROOT/bindings/android/scripts/extract-android-benchmark-artifacts.py" \
+  "$WRONG_GPU_ACTUAL_PLAN_LOG" \
+  "$TMP_DIR/wrong-gpu-actual-plan-artifact" \
+  --validator "$ROOT/tests/perf/validate-benchmark-artifacts.py" \
+  --android-environment-receipt "$ANDROID_ENVIRONMENT_RECEIPT"; then
+  echo "extractor unexpectedly accepted forced GPU actual-plan drift" >&2
+  exit 1
+fi
+[[ ! -e "$TMP_DIR/wrong-gpu-actual-plan-artifact" ]]
+
+if python3 "$ROOT/bindings/android/scripts/extract-android-benchmark-artifacts.py" \
+  "$STRICT_LOG" \
+  "$TMP_DIR/strict-mismatched-environment-receipt-artifact" \
+  --validator "$ROOT/tests/perf/validate-benchmark-artifacts.py" \
+  --android-environment-receipt "$MISMATCHED_ANDROID_ENVIRONMENT_RECEIPT"; then
+  echo "extractor unexpectedly accepted mismatched Android environment receipt" >&2
+  exit 1
+fi
+[[ ! -e "$TMP_DIR/strict-mismatched-environment-receipt-artifact" ]]
 
 if python3 "$ROOT/bindings/android/scripts/extract-android-benchmark-artifacts.py" \
   "$MISSING_LEDGER_LOG" \
   "$TMP_DIR/strict-missing-ledger-artifact" \
-  --validator "$ROOT/tests/perf/validate-benchmark-artifacts.py"; then
+  --validator "$ROOT/tests/perf/validate-benchmark-artifacts.py" \
+  --android-environment-receipt "$ANDROID_ENVIRONMENT_RECEIPT"; then
   echo "extractor unexpectedly accepted strict current-stats without a ledger" >&2
   exit 1
 fi
@@ -361,7 +565,8 @@ for mutation in \
   if python3 "$ROOT/bindings/android/scripts/extract-android-benchmark-artifacts.py" \
     "$PRODUCER_GATE_MUTATION_DIR/$mutation.txt" \
     "$TMP_DIR/$mutation-artifact" \
-    --validator "$ROOT/tests/perf/validate-benchmark-artifacts.py"; then
+    --validator "$ROOT/tests/perf/validate-benchmark-artifacts.py" \
+    --android-environment-receipt "$ANDROID_ENVIRONMENT_RECEIPT"; then
     echo "extractor accepted GPU producer gate mutation: $mutation" >&2
     exit 1
   fi
@@ -370,7 +575,8 @@ done
 if python3 "$ROOT/bindings/android/scripts/extract-android-benchmark-artifacts.py" \
   "$ACCEPTED_ADAPTIVE_PLAN_BACKEND_DRIFT_LOG" \
   "$TMP_DIR/adaptive-plan-backend-drift-artifact" \
-  --validator "$ROOT/tests/perf/validate-benchmark-artifacts.py"; then
+  --validator "$ROOT/tests/perf/validate-benchmark-artifacts.py" \
+  --android-environment-receipt "$ANDROID_ENVIRONMENT_RECEIPT"; then
   echo "extractor accepted ACCEPTED_ADAPTIVE_PLAN_BACKEND_DRIFT" >&2
   exit 1
 fi
@@ -378,7 +584,8 @@ fi
 if python3 "$ROOT/bindings/android/scripts/extract-android-benchmark-artifacts.py" \
   "$ACCEPTED_PRODUCER_CURRENT_STATS_COUNT_DRIFT_LOG" \
   "$TMP_DIR/producer-count-drift-artifact" \
-  --validator "$ROOT/tests/perf/validate-benchmark-artifacts.py"; then
+  --validator "$ROOT/tests/perf/validate-benchmark-artifacts.py" \
+  --android-environment-receipt "$ANDROID_ENVIRONMENT_RECEIPT"; then
   echo "extractor accepted ACCEPTED_PRODUCER_CURRENT_STATS_COUNT_DRIFT" >&2
   exit 1
 fi
@@ -386,7 +593,8 @@ fi
 if python3 "$ROOT/bindings/android/scripts/extract-android-benchmark-artifacts.py" \
   "$BAD_GPU_COUNT_SEMANTICS_LOG" \
   "$TMP_DIR/bad-gpu-count-semantics-artifact" \
-  --validator "$ROOT/tests/perf/validate-benchmark-artifacts.py"; then
+  --validator "$ROOT/tests/perf/validate-benchmark-artifacts.py" \
+  --android-environment-receipt "$ANDROID_ENVIRONMENT_RECEIPT"; then
   echo "extractor accepted dishonest gpu_count_semantics" >&2
   exit 1
 fi
