@@ -7,7 +7,9 @@
 use gsplat_core::Camera;
 use thiserror::Error;
 
-use super::{SurfaceCapture, SurfaceConfigurationOwner, SurfaceLifecycle};
+#[cfg(not(target_arch = "wasm32"))]
+use super::SurfaceCapture;
+use super::{SurfaceConfigurationOwner, SurfaceLifecycle};
 use crate::SurfacePresenterError;
 use crate::plans::FrameIdentity;
 #[cfg(test)]
@@ -35,6 +37,7 @@ pub(crate) struct NativeSurfaceExactHost<'host, 'window> {
     pub(crate) device: &'host wgpu::Device,
     pub(crate) configuration: &'host SurfaceConfigurationOwner,
     pub(crate) lifecycle: &'host mut SurfaceLifecycle,
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) capture: &'host mut SurfaceCapture,
 }
 
@@ -146,13 +149,16 @@ pub(crate) fn render_surface_exact_frame(
     if let Some(started) = request.host_frame_started {
         encode_request = encode_request.with_host_frame_started(started);
     }
+    #[allow(unused_mut)]
     let mut pending = encode_frame_gpu(runtime, encode_request)?;
+    #[cfg(not(target_arch = "wasm32"))]
     host.capture.encode(pending.encoder_mut(), &frame.texture);
     let mut submitted = submit_encoded_frame_unpublished(runtime, pending)?;
 
     finish_presented_exact_frame(
         runtime,
         host.lifecycle,
+        #[cfg(not(target_arch = "wasm32"))]
         host.capture,
         &mut submitted,
         UnpublishedSurfaceTarget {
@@ -192,7 +198,7 @@ fn begin_surface_exact_attempt(
 fn finish_presented_exact_frame(
     runtime: &mut PreparedRuntimeSlot,
     lifecycle: &mut SurfaceLifecycle,
-    capture: &mut SurfaceCapture,
+    #[cfg(not(target_arch = "wasm32"))] capture: &mut SurfaceCapture,
     submitted: &mut SubmittedGpuFrame,
     target: UnpublishedSurfaceTarget,
     present: impl FnOnce() -> Result<(), SurfacePresenterError>,
@@ -220,6 +226,7 @@ fn finish_presented_exact_frame(
             return Err(error.into());
         }
     };
+    #[cfg(not(target_arch = "wasm32"))]
     capture.mark_presented();
     let submission = validated.publish();
     let frame = submission.frame_identity();

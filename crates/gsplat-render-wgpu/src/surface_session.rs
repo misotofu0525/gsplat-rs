@@ -19,7 +19,6 @@ pub use crate::evidence::{
     SurfaceProjectedDrawMeasurementSubmission, SurfaceProjectedDrawMeasurementUnsampledReason,
 };
 use crate::gpu_telemetry::{SurfaceCpuOrderMeasurement, TelemetrySubmission};
-#[cfg(not(target_arch = "wasm32"))]
 use crate::surface::LegacySurfaceStatsAvailability;
 use crate::surface_presenter::{CpuCompletionSampleRequest, ProjectedDrawSampleRequest};
 use crate::{
@@ -30,7 +29,6 @@ use crate::{
     SurfaceProjectedDrawMeasurement, SurfaceProjectedDrawMeasurementFailure,
     SurfaceRasterExecutionPlan, SurfaceTimingSource, timer_elapsed_ms, timer_now,
 };
-#[cfg(not(target_arch = "wasm32"))]
 use crate::{
     plans::PlanId,
     renderer::{ExactAdaptivePolicyState, ExactPlanPolicy},
@@ -90,7 +88,6 @@ pub enum SurfaceProjectedDrawPolicy {
 /// Canonical compatibility receipt for the renderer-owned complete Exact
 /// PlanSet. This value is never consulted by frame execution; it exists only
 /// so the established const getters can report the atomic renderer commit.
-#[cfg(not(target_arch = "wasm32"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ExactSurfacePlanState {
     CpuPostSort,
@@ -99,7 +96,6 @@ enum ExactSurfacePlanState {
     Adaptive,
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 const fn exact_gpu_plan_for_producer(producer: SurfaceGpuOrderProducer) -> PlanId {
     match producer {
         SurfaceGpuOrderProducer::PostSort => PlanId::GpuPostSort,
@@ -107,7 +103,6 @@ const fn exact_gpu_plan_for_producer(producer: SurfaceGpuOrderProducer) -> PlanI
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 fn prepare_exact_gpu_order_producer(
     renderer: &Renderer,
     producer: SurfaceGpuOrderProducer,
@@ -120,7 +115,6 @@ fn prepare_exact_gpu_order_producer(
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 fn prepare_exact_gpu_order(
     renderer: &Renderer,
     state: ExactSurfacePlanState,
@@ -128,7 +122,6 @@ fn prepare_exact_gpu_order(
     prepare_exact_gpu_order_producer(renderer, state.producer())
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 impl ExactSurfacePlanState {
     const fn policy(self) -> ExactPlanPolicy {
         match self {
@@ -272,6 +265,7 @@ impl ExactSurfacePlanState {
         }
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     fn with_async_sort(self, enabled: bool) -> Result<Self, RendererError> {
         if enabled {
             Err(RendererError::InvalidConfig)
@@ -1706,12 +1700,9 @@ impl SurfaceFrameState {
 pub struct SurfaceRenderSession {
     renderer: Renderer,
     presenter: SurfacePresenter,
-    #[cfg(not(target_arch = "wasm32"))]
     exact_plan_receipt: Option<ExactSurfacePlanState>,
-    #[cfg(not(target_arch = "wasm32"))]
     exact_order_generation_receipt: Option<u64>,
     current_stats_submission: SurfaceCurrentStatsSubmission,
-    #[cfg(not(target_arch = "wasm32"))]
     legacy_stats_availability: LegacySurfaceStatsAvailability,
     camera: Camera,
     sort_interval: u32,
@@ -1842,7 +1833,6 @@ const fn legacy_surface_current_stats_submission() -> SurfaceCurrentStatsSubmiss
     SurfaceCurrentStatsSubmission::NotRequested
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 fn map_surface_exact_error(error: SurfaceExactError) -> RendererError {
     match error {
         SurfaceExactError::Surface(error) => error.into(),
@@ -1858,14 +1848,12 @@ fn map_surface_exact_error(error: SurfaceExactError) -> RendererError {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 fn publish_only_on_present<T>(published: &mut T, presented: Option<T>) {
     if let Some(presented) = presented {
         *published = presented;
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 fn commit_exact_plan_state(
     renderer: &mut Renderer,
     exact_plan_receipt: &mut Option<ExactSurfacePlanState>,
@@ -1883,6 +1871,7 @@ fn commit_exact_plan_state(
 }
 
 impl SurfaceRenderSession {
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn new(
         mut renderer: Renderer,
         presenter: SurfacePresenter,
@@ -1957,12 +1946,9 @@ impl SurfaceRenderSession {
         Ok(Self {
             renderer,
             presenter,
-            #[cfg(not(target_arch = "wasm32"))]
             exact_plan_receipt,
-            #[cfg(not(target_arch = "wasm32"))]
             exact_order_generation_receipt: None,
             current_stats_submission: SurfaceCurrentStatsSubmission::NotRequested,
-            #[cfg(not(target_arch = "wasm32"))]
             legacy_stats_availability,
             camera,
             sort_interval: DEFAULT_SURFACE_SORT_INTERVAL,
@@ -1997,11 +1983,92 @@ impl SurfaceRenderSession {
         })
     }
 
+    /// Browser construction is asynchronous because WebGPU validation and OOM
+    /// scopes must settle without blocking the browser event loop. Packed
+    /// sessions publish the same single Exact runtime used by native Surface
+    /// consumers; Direct and Paged retain their compatibility routes.
+    #[cfg(target_arch = "wasm32")]
+    pub async fn new(
+        mut renderer: Renderer,
+        presenter: SurfacePresenter,
+        camera: Camera,
+    ) -> Result<Self, RendererError> {
+        camera
+            .validate()
+            .map_err(|_| RendererError::InvalidCamera)?;
+        if !renderer.has_scene() {
+            return Err(RendererError::SceneNotLoaded);
+        }
+        if renderer.geometry_path() != presenter.geometry_path() {
+            return Err(RendererError::InvalidConfig);
+        }
+        let compatibility = CompatibilityEvidenceStore::new();
+        let exact_plan_receipt = if presenter.geometry_path() == GeometryPath::PackedAtlas {
+            let (device, queue, format, indirect_execution_supported) =
+                presenter.exact_runtime_context();
+            let mut candidate = renderer
+                .prepare_surface_exact_candidate(
+                    &device,
+                    &queue,
+                    format,
+                    indirect_execution_supported,
+                )
+                .await?;
+            let (surface_width, surface_height) = presenter.surface_size();
+            candidate.seed_surface_frame_baseline(
+                camera,
+                crate::renderer::frame::Viewport::new(surface_width, surface_height)
+                    .expect("configured Surface viewport"),
+            );
+            renderer.publish_surface_exact_candidate(candidate)?;
+            Some(ExactSurfacePlanState::CpuPostSort)
+        } else {
+            renderer.finish_surface_upload_handoff(presenter.geometry_path())?;
+            None
+        };
+        let legacy_stats_availability = if exact_plan_receipt.is_some() {
+            LegacySurfaceStatsAvailability::Unavailable
+        } else {
+            LegacySurfaceStatsAvailability::Current
+        };
+        Ok(Self {
+            renderer,
+            presenter,
+            exact_plan_receipt,
+            exact_order_generation_receipt: None,
+            current_stats_submission: SurfaceCurrentStatsSubmission::NotRequested,
+            legacy_stats_availability,
+            camera,
+            sort_interval: DEFAULT_SURFACE_SORT_INTERVAL,
+            order_backend: SurfaceOrderBackend::Cpu,
+            projected_draw_policy: SurfaceProjectedDrawPolicy::Adaptive,
+            gpu_producer_measurement: SurfaceGpuProducerMeasurementControl::default(),
+            presented_order_backend: SurfaceOrderBackendUsed::Cpu,
+            gpu_order_initialized: false,
+            adaptive_policy: AdaptiveOrderPolicy::default(),
+            adaptive_projected_cpu: AdaptiveProjectedDrawPolicy::default(),
+            adaptive_projected_gpu: AdaptiveProjectedDrawPolicy::default(),
+            adaptive_probe_owner: None,
+            blocked_order_choice: None,
+            adaptive_gpu_failure: None,
+            pending_tiled_backend: None,
+            pending_tiled_adaptive_choice: None,
+            pending_projected_choice: None,
+            camera_revision: 0,
+            applied_order_revision: 0,
+            applied_order_camera: camera,
+            frame_state: SurfaceFrameState::default(),
+            last_stats: FrameStats::zero(),
+            latest_cpu_order_measurement: None,
+            latest_gpu_order_measurement: None,
+            compatibility,
+        })
+    }
+
     pub fn renderer(&self) -> &Renderer {
         &self.renderer
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     fn exact_plan_state(&self) -> Option<ExactSurfacePlanState> {
         let policy = self.renderer.exact_surface_policy()?;
         let state = ExactSurfacePlanState::from_policy(policy);
@@ -2009,7 +2076,6 @@ impl SurfaceRenderSession {
         Some(state)
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     fn commit_exact_plan_state(
         &mut self,
         state: ExactSurfacePlanState,
@@ -2027,7 +2093,6 @@ impl SurfaceRenderSession {
     /// Surface frame. Direct, Paged and Web retain the additive fail-closed
     /// compatibility result until their later consumer cutovers.
     pub fn request_current_stats(&mut self) -> SurfaceCurrentStatsRequest {
-        #[cfg(not(target_arch = "wasm32"))]
         if self.exact_plan_state().is_some() {
             return self
                 .renderer
@@ -2051,7 +2116,6 @@ impl SurfaceRenderSession {
     /// Polls at most one current-stats resolution or atomic terminal. The
     /// Renderer retains any additional ready terminals in its bounded queue.
     pub fn poll_current_stats(&mut self) -> SurfaceCurrentStatsPoll {
-        #[cfg(not(target_arch = "wasm32"))]
         if self.exact_plan_state().is_some() {
             let poll = self
                 .renderer
@@ -2100,7 +2164,6 @@ impl SurfaceRenderSession {
     }
 
     pub fn raster_execution_plan(&self) -> SurfaceRasterExecutionPlan {
-        #[cfg(not(target_arch = "wasm32"))]
         if self.exact_plan_receipt.is_some() {
             return SurfaceRasterExecutionPlan::ProjectedQuadsExact;
         }
@@ -2108,7 +2171,6 @@ impl SurfaceRenderSession {
     }
 
     pub const fn projected_draw_policy(&self) -> SurfaceProjectedDrawPolicy {
-        #[cfg(not(target_arch = "wasm32"))]
         if let Some(state) = self.exact_plan_receipt {
             return state.projected_policy();
         }
@@ -2116,7 +2178,6 @@ impl SurfaceRenderSession {
     }
 
     pub const fn gpu_order_producer(&self) -> SurfaceGpuOrderProducer {
-        #[cfg(not(target_arch = "wasm32"))]
         if let Some(state) = self.exact_plan_receipt {
             return state.producer();
         }
@@ -2130,7 +2191,6 @@ impl SurfaceRenderSession {
         &mut self,
         producer: SurfaceGpuOrderProducer,
     ) -> Result<(), RendererError> {
-        #[cfg(not(target_arch = "wasm32"))]
         if self.exact_plan_state().is_some() {
             // Exact construction already published the complete set of plans
             // the adapter can execute. A CPU-only Surface must not turn the
@@ -2156,7 +2216,6 @@ impl SurfaceRenderSession {
         &mut self,
         producer: SurfaceGpuOrderProducer,
     ) -> Result<(), RendererError> {
-        #[cfg(not(target_arch = "wasm32"))]
         if let Some(current) = self.exact_plan_state() {
             return self.commit_exact_plan_state(current.with_producer(producer)?);
         }
@@ -2217,7 +2276,6 @@ impl SurfaceRenderSession {
         &mut self,
         enabled: bool,
     ) -> Result<(), RendererError> {
-        #[cfg(not(target_arch = "wasm32"))]
         if let Some(current) = self.exact_plan_state() {
             let next = current.with_gpu_producer_measurement(enabled)?;
             debug_assert_eq!(next, current);
@@ -2263,7 +2321,6 @@ impl SurfaceRenderSession {
         &mut self,
         policy: SurfaceProjectedDrawPolicy,
     ) -> Result<(), RendererError> {
-        #[cfg(not(target_arch = "wasm32"))]
         if let Some(current) = self.exact_plan_state() {
             return self.commit_exact_plan_state(current.with_projected_policy(policy)?);
         }
@@ -2306,7 +2363,6 @@ impl SurfaceRenderSession {
         &mut self,
         plan: SurfaceRasterExecutionPlan,
     ) -> Result<(), RendererError> {
-        #[cfg(not(target_arch = "wasm32"))]
         if let Some(current) = self.exact_plan_state() {
             let next = current.with_raster(plan)?;
             debug_assert_eq!(next, current);
@@ -2346,7 +2402,6 @@ impl SurfaceRenderSession {
     /// path (experimental A/B benchmark knob; default remains
     /// [`GeometryPath::SortedIndexDirect`]).
     pub fn set_geometry_path(&mut self, path: GeometryPath) -> Result<(), RendererError> {
-        #[cfg(not(target_arch = "wasm32"))]
         if let Some(current) = self.exact_plan_state() {
             let next = current.with_geometry(path)?;
             debug_assert_eq!(next, current);
@@ -2405,6 +2460,19 @@ impl SurfaceRenderSession {
         &mut self,
         path: GeometryPath,
     ) -> Result<(), RendererError> {
+        if let Some(current) = self.exact_plan_state() {
+            let next = current.with_geometry(path)?;
+            debug_assert_eq!(next, current);
+            return Ok(());
+        }
+        if path == GeometryPath::PackedAtlas || self.geometry_path() == GeometryPath::PackedAtlas {
+            // Browser Packed rendering is owned exclusively by the Exact
+            // runtime prepared at construction. Do not permit a legacy Direct
+            // session to manufacture a second mutable Packed owner (or an
+            // Exact Packed session to escape it) through the compatibility
+            // geometry setter.
+            return Err(SurfacePresenterError::SurfaceGeometrySwitchUnsupported.into());
+        }
         if path != GeometryPath::PackedAtlas
             && (self.gpu_order_producer() == SurfaceGpuOrderProducer::Preproject
                 || self.gpu_producer_measurement.enabled())
@@ -2485,7 +2553,6 @@ impl SurfaceRenderSession {
         if self.camera != camera {
             self.camera = camera;
             self.camera_revision = self.camera_revision.wrapping_add(1);
-            #[cfg(not(target_arch = "wasm32"))]
             if self.exact_plan_receipt.is_some() {
                 return Ok(());
             }
@@ -2500,7 +2567,6 @@ impl SurfaceRenderSession {
 
     /// Actual raster target dimensions before any Surface presentation.
     pub fn internal_render_size(&self) -> (u32, u32) {
-        #[cfg(not(target_arch = "wasm32"))]
         if self.exact_plan_receipt.is_some() {
             return self.presenter.surface_size();
         }
@@ -2517,7 +2583,6 @@ impl SurfaceRenderSession {
         let (surface_width, surface_height) = self.presenter.surface_size();
         self.renderer.set_size(surface_width, surface_height)?;
         if previous_size != (surface_width, surface_height) {
-            #[cfg(not(target_arch = "wasm32"))]
             if self.exact_plan_receipt.is_some() {
                 return Ok(());
             }
@@ -2552,6 +2617,9 @@ impl SurfaceRenderSession {
         self.renderer.set_size(width, height)?;
         let (surface_width, surface_height) = self.presenter.surface_size();
         if previous_size != (surface_width, surface_height) {
+            if self.exact_plan_receipt.is_some() {
+                return Ok(());
+            }
             self.pending_tiled_backend = None;
             self.pending_tiled_adaptive_choice = None;
             self.latest_gpu_order_measurement = None;
@@ -2568,7 +2636,6 @@ impl SurfaceRenderSession {
     }
 
     pub const fn order_backend(&self) -> SurfaceOrderBackend {
-        #[cfg(not(target_arch = "wasm32"))]
         if let Some(state) = self.exact_plan_receipt {
             return state.order_backend();
         }
@@ -2579,7 +2646,6 @@ impl SurfaceRenderSession {
     /// changing the selected backend, frame state, or Adaptive evidence.
     /// Browser callers must await this before selecting GPU or Adaptive.
     pub async fn prepare_gpu_order(&mut self) -> Result<(), RendererError> {
-        #[cfg(not(target_arch = "wasm32"))]
         if let Some(current) = self.exact_plan_state() {
             return prepare_exact_gpu_order(&self.renderer, current);
         }
@@ -2588,7 +2654,6 @@ impl SurfaceRenderSession {
     }
 
     pub fn set_order_backend(&mut self, backend: SurfaceOrderBackend) -> Result<(), RendererError> {
-        #[cfg(not(target_arch = "wasm32"))]
         if let Some(current) = self.exact_plan_state() {
             return self.commit_exact_plan_state(current.with_order_backend(backend));
         }
@@ -2653,7 +2718,6 @@ impl SurfaceRenderSession {
     }
 
     pub fn sort_schedule(&self) -> SurfaceSortSchedule {
-        #[cfg(not(target_arch = "wasm32"))]
         if self.exact_plan_receipt.is_some() {
             return SurfaceSortSchedule::Interval(1);
         }
@@ -2673,7 +2737,6 @@ impl SurfaceRenderSession {
         if schedule.interval() == 0 {
             return Err(RendererError::InvalidConfig);
         }
-        #[cfg(not(target_arch = "wasm32"))]
         if let Some(current) = self.exact_plan_state() {
             let next = current.with_sort_schedule(schedule)?;
             debug_assert_eq!(next, current);
@@ -2714,7 +2777,6 @@ impl SurfaceRenderSession {
         if interval == 0 {
             return Err(RendererError::InvalidConfig);
         }
-        #[cfg(not(target_arch = "wasm32"))]
         if let Some(current) = self.exact_plan_state() {
             let next = current.with_sort_interval(interval)?;
             debug_assert_eq!(next, current);
@@ -2730,8 +2792,9 @@ impl SurfaceRenderSession {
 
     pub fn set_frame_latency(&mut self, latency: u32) {
         self.presenter.set_frame_latency(latency);
-        #[cfg(not(target_arch = "wasm32"))]
-        self.renderer.reset_exact_surface_performance_learning();
+        if self.exact_plan_receipt.is_some() {
+            self.renderer.reset_exact_surface_performance_learning();
+        }
         // Preserve the established setter contract: every invocation resets
         // latency-dependent learning, including a repeated/clamped value for
         // which Surface configuration itself is already a no-op.
@@ -2838,19 +2901,11 @@ impl SurfaceRenderSession {
     /// Returns the legacy FrameStats projection only while its V/D counts are
     /// demonstrably current for the last successfully presented Surface frame.
     pub fn legacy_stats(&self) -> Option<FrameStats> {
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            self.legacy_stats_availability.get(self.last_stats)
-        }
-        #[cfg(target_arch = "wasm32")]
-        {
-            Some(self.last_stats)
-        }
+        self.legacy_stats_availability.get(self.last_stats)
     }
 
     /// Formal Adaptive sample awaiting its asynchronous terminal receipt.
     pub fn adaptive_pending_sample(&self) -> Option<SurfaceAdaptivePendingSample> {
-        #[cfg(not(target_arch = "wasm32"))]
         if self.exact_plan_state().is_some() {
             // M2a exposes no legacy benchmark ticket for the renderer-owned
             // mandatory whole-plan sampler.
@@ -2864,7 +2919,6 @@ impl SurfaceRenderSession {
     /// Current Adaptive policy state, including transitions completed by an
     /// explicit receipt poll between rendered frames.
     pub fn adaptive_state(&self) -> SurfaceAdaptiveState {
-        #[cfg(not(target_arch = "wasm32"))]
         if self.exact_plan_state().is_some() {
             return match self.renderer.exact_surface_adaptive_state() {
                 Some(ExactAdaptivePolicyState::CpuLearning) => SurfaceAdaptiveState::CpuLearning,
@@ -2886,7 +2940,6 @@ impl SurfaceRenderSession {
         &self,
         backend: SurfaceOrderBackendUsed,
     ) -> SurfaceProjectedDrawAdaptiveState {
-        #[cfg(not(target_arch = "wasm32"))]
         if self.exact_plan_state().is_some() {
             // Exact Adaptive is a whole-plan controller. It deliberately has
             // no independent projected learner to report.
@@ -2906,7 +2959,6 @@ impl SurfaceRenderSession {
         &self,
         backend: SurfaceOrderBackendUsed,
     ) -> Option<SurfaceProjectedDrawAdaptivePendingSample> {
-        #[cfg(not(target_arch = "wasm32"))]
         if self.exact_plan_state().is_some() {
             let _ = backend;
             return None;
@@ -2921,7 +2973,6 @@ impl SurfaceRenderSession {
     /// more queue work. Benchmarks use this to isolate one formal sample from
     /// artificial drain-frame backlog.
     pub fn poll_order_measurement_receipts(&mut self) {
-        #[cfg(not(target_arch = "wasm32"))]
         if self.exact_plan_state().is_some() {
             return;
         }
@@ -3012,7 +3063,6 @@ impl SurfaceRenderSession {
     }
 
     pub fn force_sort_refresh(&mut self) {
-        #[cfg(not(target_arch = "wasm32"))]
         if self.exact_plan_state().is_some() {
             self.renderer
                 .request_exact_surface_cpu_refresh()
@@ -3057,7 +3107,6 @@ impl SurfaceRenderSession {
     }
 
     pub fn render_frame(&mut self) -> Result<SurfaceFrameOutput, RendererError> {
-        #[cfg(not(target_arch = "wasm32"))]
         if self.exact_plan_state().is_some() {
             let result = self.render_frame_exact();
             if let Ok(output) = &result {
@@ -3117,7 +3166,6 @@ impl SurfaceRenderSession {
         );
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     fn render_frame_exact(&mut self) -> Result<SurfaceFrameOutput, RendererError> {
         let frame_started = timer_now();
         let previous_plan = self.renderer.exact_surface_last_plan();
@@ -3181,7 +3229,6 @@ impl SurfaceRenderSession {
         Ok(output)
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     fn exact_surface_output(
         &self,
         submission: Option<&crate::renderer::GpuFrameSubmission>,

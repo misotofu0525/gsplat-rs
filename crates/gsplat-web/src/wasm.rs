@@ -9,11 +9,15 @@ use gsplat_io_ply::{
 use gsplat_render_wgpu::{
     GeometryPath, Renderer, ResidentSceneBuilder, ResidentSourceSplat,
     SurfaceAdaptiveGpuFailureReason, SurfaceAdaptiveState, SurfaceCpuOrderMeasurement,
-    SurfaceFrameOutput, SurfaceGpuOrderProducer, SurfaceGpuProducerDrawScope,
-    SurfaceGpuProducerMeasurement, SurfaceGpuProducerMeasurementFailure,
-    SurfaceGpuProducerMeasurementFailureReason, SurfaceGpuProducerMeasurementSubmission,
-    SurfaceGpuProducerMeasurementUnsampledReason, SurfaceOrderBackend, SurfaceOrderBackendUsed,
-    SurfaceOrderMeasurement, SurfaceOrderMeasurementFailure, SurfaceOrderMeasurementFailureReason,
+    SurfaceCurrentStatsCountSemantics, SurfaceCurrentStatsPlan, SurfaceCurrentStatsPoll,
+    SurfaceCurrentStatsRequest, SurfaceCurrentStatsSubmission,
+    SurfaceCurrentStatsSubmissionReceipt, SurfaceCurrentStatsTerminal,
+    SurfaceCurrentStatsUnsampledReason, SurfaceFrameOutput, SurfaceGpuOrderProducer,
+    SurfaceGpuProducerDrawScope, SurfaceGpuProducerMeasurement,
+    SurfaceGpuProducerMeasurementFailure, SurfaceGpuProducerMeasurementFailureReason,
+    SurfaceGpuProducerMeasurementSubmission, SurfaceGpuProducerMeasurementUnsampledReason,
+    SurfaceOrderBackend, SurfaceOrderBackendUsed, SurfaceOrderMeasurement,
+    SurfaceOrderMeasurementFailure, SurfaceOrderMeasurementFailureReason,
     SurfaceOrderMeasurementSubmission, SurfaceOrderMeasurementUnsampledReason, SurfacePresenter,
     SurfaceProjectedDrawAdaptiveState, SurfaceProjectedDrawExecution,
     SurfaceProjectedDrawMeasurement, SurfaceProjectedDrawMeasurementFailure,
@@ -131,7 +135,9 @@ async fn finish_surface_renderer(
 
     let camera_control = auto_surface_camera_control(&renderer).map_err(error_code)?;
     let camera = surface_camera_from_control(camera_control, renderer.config());
-    let session = SurfaceRenderSession::new(renderer, presenter, camera).map_err(renderer_error)?;
+    let session = SurfaceRenderSession::new(renderer, presenter, camera)
+        .await
+        .map_err(renderer_error)?;
 
     Ok(GsplatWebRenderer {
         session,
@@ -537,11 +543,10 @@ impl GsplatWebRenderer {
         self.session.set_geometry_path(path).map_err(renderer_error)
     }
 
-    /// Transactionally switches between the full-quality Direct oracle and
-    /// Packed production geometry. The renderer's CPU derivations and the
-    /// complete GPU resource graph are published only after WebGPU
-    /// validation/OOM/internal error scopes complete. Paged remains an
-    /// explicit constructor-time diagnostic.
+    /// Preserves the historical async geometry-setter shape. Packed is owned
+    /// by the Exact runtime selected at construction, so changed Direct/Packed
+    /// requests fail before mutation instead of publishing a legacy Packed
+    /// controller beside the shared runtime.
     #[wasm_bindgen(js_name = setGeometryPathAsync)]
     pub async fn set_geometry_path_async(&mut self, path: u32) -> Result<(), JsValue> {
         let path = geometry_path_from_id(path)?;
@@ -600,11 +605,9 @@ impl GsplatWebRenderer {
             .map_err(renderer_error)
     }
 
-    /// Transactionally prepares and selects only the producer inside the GPU
-    /// ordering lane. CPU/GPU/Adaptive selection is not changed. Producer
-    /// receipts are enabled only after the complete target graph has been
-    /// published successfully, so a failed switch leaves the previous graph
-    /// and measurement state live.
+    /// Transactionally prepares and selects the producer inside the shared
+    /// Exact plan. Current-stats receipts are the sole Exact terminal ledger;
+    /// the legacy producer-specific learner/receipt stream stays disabled.
     #[wasm_bindgen(js_name = setGpuOrderProducerAsync)]
     pub async fn set_gpu_order_producer_async(&mut self, producer: u32) -> Result<(), JsValue> {
         let producer = gpu_order_producer_from_id(producer)?;
@@ -612,9 +615,6 @@ impl GsplatWebRenderer {
         self.session
             .set_gpu_order_producer_async(producer)
             .await
-            .map_err(renderer_error)?;
-        self.session
-            .set_gpu_producer_measurement_enabled(true)
             .map_err(renderer_error)
     }
 
@@ -674,6 +674,7 @@ impl GsplatWebRenderer {
     #[wasm_bindgen(js_name = renderFrame)]
     pub fn render_frame(&mut self) -> Result<JsValue, JsValue> {
         let output = self.session.render_frame().map_err(renderer_error)?;
+        let current_stats_submission = self.session.current_stats_submission();
         let completed_cpu_order_measurements = self.session.drain_cpu_order_measurements();
         let completed_order_measurements = self.session.drain_order_measurements();
         let failed_order_measurements = self.session.drain_order_measurement_failures();
@@ -688,6 +689,7 @@ impl GsplatWebRenderer {
             self.session.surface_size(),
             self.session.internal_render_size(),
             self.session.last_presented_size(),
+            current_stats_submission,
             &completed_cpu_order_measurements,
             &completed_order_measurements,
             &failed_order_measurements,
@@ -696,6 +698,20 @@ impl GsplatWebRenderer {
             &completed_gpu_producer_measurements,
             &failed_gpu_producer_measurements,
         )
+    }
+
+    /// Requests one observer receipt from the next presented Exact frame.
+    /// This does not create another controller or change renderer policy.
+    #[wasm_bindgen(js_name = requestCurrentStats)]
+    pub fn request_current_stats(&mut self) -> Result<JsValue, JsValue> {
+        current_stats_request_object(self.session.request_current_stats())
+    }
+
+    /// Polls at most one renderer-owned current-stats terminal without
+    /// submitting another frame or blocking for GPU readback.
+    #[wasm_bindgen(js_name = pollCurrentStats)]
+    pub fn poll_current_stats(&mut self) -> Result<JsValue, JsValue> {
+        current_stats_poll_object(self.session.poll_current_stats())
     }
 
     /// Drains terminal order and projected-draw receipts independently of rendering.
@@ -1048,11 +1064,199 @@ fn scene_bounds(positions: &[Vec3f]) -> Option<(Vec3f, Vec3f)> {
     Some((min, max))
 }
 
+fn current_stats_request_object(request: SurfaceCurrentStatsRequest) -> Result<JsValue, JsValue> {
+    let object = Object::new();
+    match request {
+        SurfaceCurrentStatsRequest::Requested => {
+            set_string(&object, "status", "requested")?;
+            set_null(&object, "reason")?;
+        }
+        SurfaceCurrentStatsRequest::Unsampled(reason) => {
+            set_string(&object, "status", "unsampled")?;
+            set_string(
+                &object,
+                "reason",
+                current_stats_unsampled_reason_label(reason),
+            )?;
+        }
+    }
+    Ok(object.into())
+}
+
+fn current_stats_poll_object(poll: SurfaceCurrentStatsPoll) -> Result<JsValue, JsValue> {
+    let object = Object::new();
+    match poll {
+        SurfaceCurrentStatsPoll::Empty => {
+            set_string(&object, "status", "empty")?;
+        }
+        SurfaceCurrentStatsPoll::Unsampled(reason) => {
+            set_string(&object, "status", "unsampled")?;
+            set_string(
+                &object,
+                "reason",
+                current_stats_unsampled_reason_label(reason),
+            )?;
+        }
+        SurfaceCurrentStatsPoll::Terminal(terminal) => {
+            let (status, submission) = match terminal {
+                SurfaceCurrentStatsTerminal::Ready(receipt) => {
+                    let counts = receipt.counts();
+                    set_u32(&object, "sourceCount", counts.source())?;
+                    set_u32(&object, "visibleCount", counts.visible())?;
+                    set_u32(&object, "contributorCount", counts.contributor())?;
+                    set_u32(&object, "drawnCount", counts.drawn())?;
+                    set_string(
+                        &object,
+                        "countSemantics",
+                        current_stats_count_semantics_label(receipt.count_semantics()),
+                    )?;
+                    ("ready", receipt.submission())
+                }
+                SurfaceCurrentStatsTerminal::MapFailure(failure) => {
+                    ("map_failure", failure.submission())
+                }
+                SurfaceCurrentStatsTerminal::GenerationInvalidated(failure) => {
+                    ("generation_invalidated", failure.submission())
+                }
+                SurfaceCurrentStatsTerminal::Expired(failure) => ("expired", failure.submission()),
+                SurfaceCurrentStatsTerminal::Dropped(failure) => ("dropped", failure.submission()),
+            };
+            set_string(&object, "status", status)?;
+            set_current_stats_receipt_fields(&object, submission)?;
+        }
+    }
+    Ok(object.into())
+}
+
+fn set_current_stats_submission_fields(
+    object: &Object,
+    submission: SurfaceCurrentStatsSubmission,
+) -> Result<(), JsValue> {
+    match submission {
+        SurfaceCurrentStatsSubmission::NotRequested => {
+            set_string(object, "currentStatsSubmission", "not_requested")?;
+            for key in [
+                "currentStatsTicket",
+                "currentStatsPlan",
+                "currentStatsSceneGeneration",
+                "currentStatsCameraRevision",
+                "currentStatsViewportGeneration",
+                "currentStatsContractGeneration",
+                "currentStatsPlanSetGeneration",
+                "currentStatsOrderGeneration",
+                "currentStatsRasterGeneration",
+                "currentStatsEncodeAttempt",
+                "currentStatsPresentationSequence",
+            ] {
+                set_null(object, key)?;
+            }
+        }
+        SurfaceCurrentStatsSubmission::Issued(receipt) => {
+            set_string(object, "currentStatsSubmission", "issued")?;
+            set_current_stats_receipt_fields_prefixed(object, receipt, "currentStats")?;
+        }
+    }
+    Ok(())
+}
+
+fn set_current_stats_receipt_fields(
+    object: &Object,
+    receipt: SurfaceCurrentStatsSubmissionReceipt,
+) -> Result<(), JsValue> {
+    set_current_stats_receipt_fields_prefixed(object, receipt, "")
+}
+
+fn set_current_stats_receipt_fields_prefixed(
+    object: &Object,
+    receipt: SurfaceCurrentStatsSubmissionReceipt,
+    prefix: &str,
+) -> Result<(), JsValue> {
+    let join = receipt.join();
+    let frame = join.frame_identity();
+    let key = |suffix: &str| {
+        if prefix.is_empty() {
+            let mut chars = suffix.chars();
+            match chars.next() {
+                Some(first) => first.to_ascii_lowercase().to_string() + chars.as_str(),
+                None => String::new(),
+            }
+        } else {
+            format!("{prefix}{suffix}")
+        }
+    };
+    set_u64(object, &key("Ticket"), receipt.ticket())?;
+    set_string(
+        object,
+        &key("Plan"),
+        current_stats_plan_label(join.executed_plan()),
+    )?;
+    set_u64(object, &key("SceneGeneration"), frame.scene_generation())?;
+    set_u64(object, &key("CameraRevision"), frame.camera_revision())?;
+    set_u64(
+        object,
+        &key("ViewportGeneration"),
+        frame.viewport_generation(),
+    )?;
+    set_u64(
+        object,
+        &key("ContractGeneration"),
+        frame.contract_generation(),
+    )?;
+    set_u64(
+        object,
+        &key("PlanSetGeneration"),
+        frame.plan_set_generation(),
+    )?;
+    set_u64(object, &key("OrderGeneration"), join.order_generation())?;
+    set_u64(object, &key("RasterGeneration"), join.raster_generation())?;
+    set_u64(object, &key("EncodeAttempt"), join.encode_attempt())?;
+    set_u64(
+        object,
+        &key("PresentationSequence"),
+        join.presentation_sequence(),
+    )?;
+    Ok(())
+}
+
+const fn current_stats_plan_label(plan: SurfaceCurrentStatsPlan) -> &'static str {
+    match plan {
+        SurfaceCurrentStatsPlan::CpuPostSort => "cpu_post_sort",
+        SurfaceCurrentStatsPlan::GpuPostSort => "gpu_post_sort",
+        SurfaceCurrentStatsPlan::GpuPreproject => "gpu_preproject",
+    }
+}
+
+const fn current_stats_count_semantics_label(
+    semantics: SurfaceCurrentStatsCountSemantics,
+) -> &'static str {
+    match semantics {
+        SurfaceCurrentStatsCountSemantics::DirectDrawEqualsVisible => "draw_equals_visible",
+        SurfaceCurrentStatsCountSemantics::IndirectDrawEqualsVisible => {
+            "indirect_draw_equals_visible"
+        }
+        SurfaceCurrentStatsCountSemantics::IndirectDrawEqualsContributor => {
+            "indirect_draw_equals_contributor"
+        }
+    }
+}
+
+const fn current_stats_unsampled_reason_label(
+    reason: SurfaceCurrentStatsUnsampledReason,
+) -> &'static str {
+    match reason {
+        SurfaceCurrentStatsUnsampledReason::Busy => "busy",
+        SurfaceCurrentStatsUnsampledReason::GpuUnavailable => "gpu_unavailable",
+        SurfaceCurrentStatsUnsampledReason::ResourceUnavailable => "resource_unavailable",
+        SurfaceCurrentStatsUnsampledReason::TicketExhausted => "ticket_exhausted",
+    }
+}
+
 fn frame_stats_object(
     output: SurfaceFrameOutput,
     surface_size: (u32, u32),
     internal_render_size: (u32, u32),
     presented_size: Option<(u32, u32)>,
+    current_stats_submission: SurfaceCurrentStatsSubmission,
     completed_cpu_order_measurements: &[SurfaceCpuOrderMeasurement],
     completed_order_measurements: &[SurfaceOrderMeasurement],
     failed_order_measurements: &[SurfaceOrderMeasurementFailure],
@@ -1064,6 +1268,7 @@ fn frame_stats_object(
     let stats: FrameStats = output.stats;
     let timings = output.timings;
     let object = Object::new();
+    set_current_stats_submission_fields(&object, current_stats_submission)?;
     set_f32(&object, "frameMs", stats.frame_ms)?;
     set_f32(&object, "preprocessMs", stats.preprocess_ms)?;
     set_f32(&object, "sortMs", stats.sort_ms)?;

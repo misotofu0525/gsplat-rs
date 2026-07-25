@@ -31,7 +31,6 @@ use crate::resident_gpu;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::surface::SurfaceCapture;
 pub use crate::surface::SurfaceFrameCapture;
-#[cfg(not(target_arch = "wasm32"))]
 use crate::surface::shadow::{
     NativeSurfaceExactHost, SurfaceExactFrameResult, SurfaceExactRequest,
     render_surface_exact_frame,
@@ -1227,7 +1226,6 @@ impl SurfacePresenter {
     /// Clones the presenter's existing device/queue handles for one Exact
     /// runtime candidate. The handles retain the same underlying WGPU owner;
     /// no adapter, device, queue or Surface is created by the cutover.
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn exact_runtime_context(
         &self,
     ) -> (
@@ -1247,7 +1245,6 @@ impl SurfacePresenter {
     /// Borrows only the presenter's Surface transaction leaves. Scene,
     /// PlanSet, controller, generations, ordering and raster semantics stay
     /// inside the renderer-owned Exact runtime passed by the session.
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn render_exact_frame(
         &mut self,
         runtime: &mut crate::renderer::PreparedRuntimeSlot,
@@ -1265,6 +1262,7 @@ impl SurfacePresenter {
                 device: &self.device,
                 configuration: &self.surface_configuration,
                 lifecycle: &mut self.surface_lifecycle,
+                #[cfg(not(target_arch = "wasm32"))]
                 capture: &mut self.surface_capture,
             },
             SurfaceExactRequest {

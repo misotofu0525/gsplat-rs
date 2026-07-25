@@ -157,6 +157,10 @@ const state = {
   requestedGpuOrderProducer: null,
   orderCompletionProtocol: "isolated_terminal",
   sampledWebglEnabled: false,
+  currentStatsSmokeEnabled: false,
+  currentStatsSmokeRequested: false,
+  currentStatsSmokeCompleted: false,
+  currentStatsSmokeFrame: null,
   resizeMeasurePending: false,
   resizePending: false,
   lastLoadError: "",
@@ -1908,6 +1912,19 @@ function renderWasm() {
   state.frameCounter += 1;
   const callStart = performance.now();
   try {
+    if (state.currentStatsSmokeEnabled && !state.currentStatsSmokeRequested) {
+      const request = state.wasmRenderer.requestCurrentStats();
+      if (request.status !== "requested") {
+        globalThis.GSPLAT_M4_SMOKE_RESULT = {
+          status: "failed",
+          stage: "current_stats_request",
+          reason: request.reason ?? "unknown",
+        };
+        state.currentStatsSmokeCompleted = true;
+      } else {
+        state.currentStatsSmokeRequested = true;
+      }
+    }
     const raw = state.wasmRenderer.renderFrame();
     const callMs = performance.now() - callStart;
     const surfaceWidth = raw.surfaceWidth ?? els.canvas.width;
@@ -2132,6 +2149,7 @@ function renderWasm() {
     }
     updateFrameStats(stats);
     updateStatusOverlay(stats);
+    publishCurrentStatsSmoke(raw);
     if (failedMeasurements.length > 0) {
       const failure = failedMeasurements[0];
       failStrictBenchmarkForOrderEvidence(
@@ -2155,6 +2173,68 @@ function renderWasm() {
     failClosedWasmRender(error);
     return null;
   }
+}
+
+function publishCurrentStatsSmoke(frame) {
+  if (!state.currentStatsSmokeEnabled || state.currentStatsSmokeCompleted) return;
+  if (frame.currentStatsSubmission === "issued") {
+    state.currentStatsSmokeFrame = {
+      frame,
+      cameraReceipt: state.wasmRenderer.cameraReceipt(),
+    };
+  }
+  const terminal = state.wasmRenderer.pollCurrentStats();
+  if (terminal.status === "empty") return;
+  if (terminal.status !== "ready") {
+    globalThis.GSPLAT_M4_SMOKE_RESULT = {
+      status: "failed",
+      stage: "current_stats_poll",
+      reason: terminal.reason ?? terminal.status,
+      terminal,
+    };
+    state.currentStatsSmokeCompleted = true;
+    return;
+  }
+  const issued = state.currentStatsSmokeFrame;
+  if (!issued) {
+    globalThis.GSPLAT_M4_SMOKE_RESULT = {
+      status: "failed",
+      stage: "current_stats_identity",
+      reason: "ready terminal has no issued frame",
+      terminal,
+    };
+    state.currentStatsSmokeCompleted = true;
+    return;
+  }
+  const issuedFrame = issued.frame;
+  const result = {
+    status: "ready",
+    backend: state.backend,
+    sampled_webgl_enabled: state.sampledWebglEnabled,
+    scene: state.wasmRenderer.sceneSummary(),
+    load_receipt: state.wasmRenderer.loadReceipt(),
+    camera_receipt: issued.cameraReceipt,
+    surface: state.wasmRenderer.surfaceSize(),
+    frame: {
+      frame_presented: issuedFrame.framePresented,
+      surface_width: issuedFrame.surfaceWidth,
+      surface_height: issuedFrame.surfaceHeight,
+      internal_render_width: issuedFrame.internalRenderWidth,
+      internal_render_height: issuedFrame.internalRenderHeight,
+      presented_width: issuedFrame.presentedWidth,
+      presented_height: issuedFrame.presentedHeight,
+      camera_revision: issuedFrame.cameraRevision,
+      current_stats_submission: issuedFrame.currentStatsSubmission,
+      current_stats_ticket: issuedFrame.currentStatsTicket,
+      current_stats_plan: issuedFrame.currentStatsPlan,
+      current_stats_camera_revision: issuedFrame.currentStatsCameraRevision,
+      current_stats_presentation_sequence: issuedFrame.currentStatsPresentationSequence,
+    },
+    current_stats: terminal,
+  };
+  globalThis.GSPLAT_M4_SMOKE_RESULT = result;
+  state.currentStatsSmokeCompleted = true;
+  console.info(`M4_WEBGPU_SMOKE_JSON ${JSON.stringify(result)}`);
 }
 
 function renderWebgl() {
@@ -2578,6 +2658,10 @@ function applyBenchmarkTraceStep(benchmark) {
 function applyUrlConfig() {
   const params = new URLSearchParams(window.location.search);
   state.sampledWebglEnabled = sampledWebglOptIn(params);
+  state.currentStatsSmokeEnabled = ["1", "true", "yes"].includes(
+    (params.get("gsplat_current_stats_smoke") ?? "").toLowerCase(),
+  );
+  if (state.currentStatsSmokeEnabled) state.autoOrbit = false;
   const benchmarkFramesParam = params.get("gsplat_benchmark_frames") ?? params.get("benchmark_frames");
   const benchmarkWarmupParam = params.get("gsplat_benchmark_warmup_frames") ?? params.get("benchmark_warmup");
   const sortIntervalParam = params.get("gsplat_surface_sort_interval") ?? params.get("sort_interval");

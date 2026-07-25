@@ -32,6 +32,17 @@ Then open:
 http://127.0.0.1:4173/examples/web/
 ```
 
+The repository collector has a bounded M4 functional smoke that requires real
+Chrome WebGPU, disables the sampled WebGL fallback, and records renderer-owned
+Exact current-stats plus source/SH/camera/resolution/presentation facts:
+
+```bash
+GSPLAT_M4_SMOKE=1 node examples/web/scripts/collect-web-benchmark-artifact.mjs
+```
+
+Its `m4_functional_smoke` result is browser behavior evidence only. It is not a
+formal Kitsune performance run or broad device qualification.
+
 The default/product path fails closed when WASM/WebGPU construction or exact
 scene admission fails. To inspect the non-equivalent sampled WebGL2 diagnostic
 when WebGPU is unavailable, opt in explicitly:

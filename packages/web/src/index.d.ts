@@ -44,6 +44,12 @@ export interface GsplatApiVersion {
 export type GsplatProjectedPolicy = "candidate" | "compact" | "adaptive";
 export type GsplatProjectedExecution = "candidate" | "compact";
 export type GsplatGpuOrderProducer = "post-sort" | "preproject";
+export type GsplatExactPlan = "cpu_post_sort" | "gpu_post_sort" | "gpu_preproject";
+export type GsplatCurrentStatsUnsampledReason =
+  | "busy"
+  | "gpu_unavailable"
+  | "resource_unavailable"
+  | "ticket_exhausted";
 export type GsplatProjectedAdaptiveState =
   | "disabled"
   | "candidate_learning"
@@ -168,6 +174,18 @@ export class GsplatWebError extends Error {
 }
 
 export interface GsplatFrameStats {
+  currentStatsSubmission: "not_requested" | "issued";
+  currentStatsTicket: number | null;
+  currentStatsPlan: GsplatExactPlan | null;
+  currentStatsSceneGeneration: number | null;
+  currentStatsCameraRevision: number | null;
+  currentStatsViewportGeneration: number | null;
+  currentStatsContractGeneration: number | null;
+  currentStatsPlanSetGeneration: number | null;
+  currentStatsOrderGeneration: number | null;
+  currentStatsRasterGeneration: number | null;
+  currentStatsEncodeAttempt: number | null;
+  currentStatsPresentationSequence: number | null;
   frameMs: number;
   preprocessMs: number;
   sortMs: number;
@@ -439,6 +457,42 @@ export interface GsplatOrderMeasurementReceipts {
   failedGpuProducerMeasurements: GsplatGpuProducerMeasurementFailure[];
 }
 
+export type GsplatCurrentStatsRequest =
+  | { status: "requested"; reason: null }
+  | { status: "unsampled"; reason: GsplatCurrentStatsUnsampledReason };
+
+export interface GsplatCurrentStatsIdentity {
+  ticket: number;
+  plan: GsplatExactPlan;
+  sceneGeneration: number;
+  cameraRevision: number;
+  viewportGeneration: number;
+  contractGeneration: number;
+  planSetGeneration: number;
+  orderGeneration: number;
+  rasterGeneration: number;
+  encodeAttempt: number;
+  presentationSequence: number;
+}
+
+export type GsplatCurrentStatsPoll =
+  | { status: "empty" }
+  | { status: "unsampled"; reason: GsplatCurrentStatsUnsampledReason }
+  | (GsplatCurrentStatsIdentity & {
+      status: "map_failure" | "generation_invalidated" | "expired" | "dropped";
+    })
+  | (GsplatCurrentStatsIdentity & {
+      status: "ready";
+      countSemantics:
+        | "draw_equals_visible"
+        | "indirect_draw_equals_visible"
+        | "indirect_draw_equals_contributor";
+      sourceCount: number;
+      visibleCount: number;
+      contributorCount: number;
+      drawnCount: number;
+    });
+
 export class GsplatWebRenderer {
   readonly isDisposed: boolean;
   /** Transactionally resize and resolve only after native publication. */
@@ -468,6 +522,10 @@ export class GsplatWebRenderer {
   renderFrame(): GsplatFrameStats;
   /** Drain terminal receipts even when rendering itself failed. */
   drainOrderMeasurementReceipts(): GsplatOrderMeasurementReceipts;
+  /** Request one renderer-owned S/V/C/D receipt from the next presented Exact frame. */
+  requestCurrentStats(): GsplatCurrentStatsRequest;
+  /** Poll at most one terminal without submitting or blocking on another frame. */
+  pollCurrentStats(): GsplatCurrentStatsPoll;
   sceneSummary(): GsplatSceneSummary;
   loadReceipt(): GsplatLoadReceipt | null;
   surfaceSize(): GsplatSurfaceSize;

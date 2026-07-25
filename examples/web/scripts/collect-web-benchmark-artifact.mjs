@@ -47,6 +47,7 @@ const chromeCandidates = [
 
 const qualificationName = process.env.GSPLAT_PHASE_E_QUALIFICATION ?? '';
 const qualification = qualificationName.length > 0;
+const m4Smoke = process.env.GSPLAT_M4_SMOKE === '1';
 const frames = Number(process.env.GSPLAT_BENCHMARK_FRAMES ?? (qualification ? 3600 : 30));
 const warmup = Number(process.env.GSPLAT_BENCHMARK_WARMUP_FRAMES ?? (qualification ? 120 : 5));
 const dataset = process.env.GSPLAT_DATASET ?? (
@@ -58,7 +59,11 @@ const outDir = resolve(
   process.env.GSPLAT_ARTIFACT_DIR ??
     resolve(
       repoRoot,
-      qualification ? 'target/benchmarks/phase-e/gsplat-web-kitsune-static-v1' : 'target/benchmarks/phase-a/web-minimal-v1'
+      m4Smoke
+        ? 'target/benchmarks/m4-webgpu-smoke'
+        : qualification
+          ? 'target/benchmarks/phase-e/gsplat-web-kitsune-static-v1'
+          : 'target/benchmarks/phase-a/web-minimal-v1'
     )
 );
 const port = Number(process.env.GSPLAT_HTTP_PORT ?? 4173);
@@ -751,7 +756,7 @@ try {
     consoleLines.push(`pageerror: ${error.stack ?? error.message}`);
   });
   const params = new URLSearchParams({
-    gsplat_benchmark: 'true',
+    gsplat_benchmark: m4Smoke ? 'false' : 'true',
     gsplat_benchmark_sync: benchmarkSync ? 'true' : 'false',
     gsplat_benchmark_frames: String(frames),
     gsplat_benchmark_warmup_frames: String(warmup),
@@ -761,6 +766,7 @@ try {
     benchmark_yaw_step: qualification ? '0' : '0.001'
   });
   params.set('gsplat_order_completion_protocol', orderCompletionProtocol);
+  if (m4Smoke) params.set('gsplat_current_stats_smoke', 'true');
   if (gpuOrderProducer !== null) {
     params.set('gsplat_surface_gpu_order_producer', gpuOrderProducer);
   }
@@ -783,6 +789,90 @@ try {
   if (qualification) params.set('gsplat_camera_trace', `phase-e-${qualificationName}`);
   const url = `http://127.0.0.1:${port}/examples/web/?${params.toString()}`;
   await page.goto(url, { waitUntil: 'networkidle0', timeout: navigationTimeoutMs });
+  if (m4Smoke) {
+    await page.waitForFunction(
+      () => ['ready', 'failed'].includes(globalThis.GSPLAT_M4_SMOKE_RESULT?.status),
+      { timeout: benchmarkTimeoutMs },
+    );
+    const smoke = await page.evaluate(() => {
+      const canvas = document.getElementById('viewport');
+      return {
+        result: globalThis.GSPLAT_M4_SMOKE_RESULT,
+        browser: {
+          navigator_gpu: navigator.gpu != null,
+          webgpu_context: canvas?.getContext('webgpu') != null,
+          canvas_width: canvas?.width ?? null,
+          canvas_height: canvas?.height ?? null,
+          gpu_status: document.getElementById('gpuStatus')?.textContent ?? null,
+          status_line: document.getElementById('statusLine')?.textContent ?? null,
+          user_agent: navigator.userAgent,
+        },
+      };
+    });
+    const { result, browser: browserFacts } = smoke;
+    const load = result?.load_receipt;
+    const scene = result?.scene;
+    const frame = result?.frame;
+    const stats = result?.current_stats;
+    const dimensions = [
+      frame?.surface_width,
+      frame?.surface_height,
+      frame?.internal_render_width,
+      frame?.internal_render_height,
+      frame?.presented_width,
+      frame?.presented_height,
+    ];
+    if (result?.status !== 'ready'
+        || result.backend !== 'wasm'
+        || result.sampled_webgl_enabled !== false
+        || !browserFacts.navigator_gpu
+        || !browserFacts.webgpu_context
+        || browserFacts.gpu_status !== 'wgpu'
+        || consoleLines.some((line) => line.includes('fallback=webgl'))
+        || load?.fullQuality !== true
+        || load?.sourceMembership !== 'all'
+        || load?.samplingEnabled !== false
+        || load?.lodEnabled !== false
+        || load?.partialScenePublished !== false
+        || ![load?.decodedCount, load?.encodedCount, load?.residentCount, load?.addressableCount]
+          .every((count) => count === load?.sourceCount)
+        || scene?.gaussians !== load?.sourceCount
+        || scene?.shDegree !== load?.sourceShDegree
+        || load?.sourceShDegree !== load?.residentShDegree
+        || frame?.frame_presented !== true
+        || !dimensions.every((value) => Number.isSafeInteger(value) && value > 0)
+        || frame.surface_width !== frame.internal_render_width
+        || frame.surface_height !== frame.internal_render_height
+        || frame.surface_width !== frame.presented_width
+        || frame.surface_height !== frame.presented_height
+        || frame.surface_width !== browserFacts.canvas_width
+        || frame.surface_height !== browserFacts.canvas_height
+        || frame.current_stats_submission !== 'issued'
+        || frame.current_stats_ticket !== stats?.ticket
+        || frame.current_stats_plan !== stats?.plan
+        || frame.current_stats_camera_revision !== frame.camera_revision
+        || stats?.cameraRevision !== frame.camera_revision
+        || frame.current_stats_presentation_sequence !== stats?.presentationSequence
+        || !Number.isSafeInteger(stats?.presentationSequence)
+        || stats.presentationSequence <= 0
+        || stats.sourceCount !== load.sourceCount
+        || stats.contributorCount > stats.visibleCount
+        || stats.visibleCount > stats.sourceCount) {
+      throw new Error(`M4 browser WebGPU smoke invariant failed: ${JSON.stringify(smoke)}`);
+    }
+    await mkdir(outDir, { recursive: true });
+    await writeFile(resolve(outDir, 'm4-browser-smoke.json'), `${JSON.stringify({
+      schema: 'gsplat-m4-browser-smoke/v1',
+      repository_commit: repositoryCommit,
+      dirty,
+      url,
+      ...smoke,
+    }, null, 2)}\n`);
+    const dataUrl = await page.$eval('#viewport', (canvas) => canvas.toDataURL('image/png'));
+    await writeFile(resolve(outDir, 'final-frame.png'), Buffer.from(dataUrl.split(',')[1], 'base64'));
+    await writeFile(resolve(outDir, 'browser-console.log'), `${consoleLines.join('\n')}\n`);
+    console.log(JSON.stringify({ status: 'ok', scope: 'm4_functional_smoke', artifact_dir: outDir }));
+  } else {
   await page.waitForFunction(
     () => {
       const el = document.getElementById('benchmarkStatus');
@@ -827,6 +917,7 @@ try {
   await writeFile(resolve(artifactDir, 'browser-console.log'), `${consoleLines.join('\n')}\n`);
   const resultLine = consoleLines.find((line) => line.includes('BENCHMARK_RESULT '));
   console.log(JSON.stringify({ status: 'ok', artifact_dir: artifactDir, result: resultLine ?? null }));
+  }
 } catch (error) {
   const logPath = resolve(repoRoot, 'target/benchmarks/phase-a/web-collector-failure.log');
   await mkdir(dirname(logPath), { recursive: true });

@@ -139,10 +139,9 @@ use gsplat_sort::SortError;
 #[cfg(not(target_arch = "wasm32"))]
 use rayon::prelude::*;
 #[cfg(not(target_arch = "wasm32"))]
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
-};
+use std::sync::Arc;
+#[cfg(not(target_arch = "wasm32"))]
+use std::sync::atomic::{AtomicBool, Ordering};
 use thiserror::Error;
 use wgpu::util::DeviceExt;
 
@@ -276,7 +275,6 @@ impl RendererError {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 fn map_prepared_gpu_runtime_error(error: renderer::PreparedGpuRuntimeError) -> RendererError {
     use renderer::{GpuRuntimePreparationError, PreparedGpuRuntimeError, PreparedRuntimeError};
 
@@ -300,7 +298,6 @@ fn map_prepared_gpu_runtime_error(error: renderer::PreparedGpuRuntimeError) -> R
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 fn map_gpu_preparation_error(error: renderer::gpu_prepare::GpuPreparationError) -> RendererError {
     use renderer::gpu_prepare::GpuPreparationError;
 
@@ -325,7 +322,6 @@ fn map_gpu_preparation_error(error: renderer::gpu_prepare::GpuPreparationError) 
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 fn map_frame_execution_error(error: renderer::FrameExecutionError) -> RendererError {
     match error {
         renderer::FrameExecutionError::GpuPreparation(error) => map_gpu_preparation_error(error),
@@ -503,10 +499,9 @@ pub struct Renderer {
     scene: Option<SceneBuffers>,
     /// Exact-count compact resident representation used by PackedAtlas.
     resident_scene_cpu: Option<ResidentSceneCpu>,
-    /// Sole complete Exact runtime for native Packed rendering. Offscreen and
+    /// Sole complete Exact runtime for Packed rendering. Offscreen and
     /// Surface hosts supply different targets but never own a second scene,
     /// PlanSet, controller, generation ledger, sampler, or raster graph.
-    #[cfg(not(target_arch = "wasm32"))]
     exact_offscreen_runtime: Option<renderer::PreparedRuntimeSlot>,
     /// Spatial page metadata for [`GeometryPath::PagedActiveAtlas`].
     spatial_pages: Option<SpatialPageSet>,
@@ -606,7 +601,6 @@ impl Renderer {
             gpu_rasterizer: None,
             scene: None,
             resident_scene_cpu: None,
-            #[cfg(not(target_arch = "wasm32"))]
             exact_offscreen_runtime: None,
             spatial_pages: None,
             world_covariances: None,
@@ -970,10 +964,9 @@ impl Renderer {
             .clear_scene_resources();
     }
 
-    /// Prepares the native Surface's complete Exact runtime while borrowing
+    /// Prepares the Surface's complete Exact runtime while borrowing
     /// upload-only compact planes from the still-unpublished renderer source.
     /// Failure leaves the source, generations, stats and fallback untouched.
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) async fn prepare_surface_exact_candidate(
         &self,
         device: &std::sync::Arc<wgpu::Device>,
@@ -981,7 +974,11 @@ impl Renderer {
         target_format: wgpu::TextureFormat,
         indirect_execution_supported: bool,
     ) -> Result<renderer::PreparedRuntimeSlot, RendererError> {
-        if self.geometry_path != GeometryPath::PackedAtlas || self.gpu_rasterizer.is_some() {
+        if self.geometry_path != GeometryPath::PackedAtlas {
+            return Err(RendererError::InvalidConfig);
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.gpu_rasterizer.is_some() {
             return Err(RendererError::InvalidConfig);
         }
         let source = self
@@ -1001,12 +998,15 @@ impl Renderer {
 
     /// Publishes a fully prepared Surface candidate only if the renderer still
     /// owns the exact source allocation used during preparation.
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn publish_surface_exact_candidate(
         &mut self,
         candidate: renderer::PreparedRuntimeSlot,
     ) -> Result<(), RendererError> {
-        if self.geometry_path != GeometryPath::PackedAtlas || self.gpu_rasterizer.is_some() {
+        if self.geometry_path != GeometryPath::PackedAtlas {
+            return Err(RendererError::InvalidConfig);
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.gpu_rasterizer.is_some() {
             return Err(RendererError::InvalidConfig);
         }
         let source = self
@@ -1028,7 +1028,6 @@ impl Renderer {
         Ok(())
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn exact_runtime_mut(
         &mut self,
     ) -> Result<&mut renderer::PreparedRuntimeSlot, RendererError> {
@@ -1037,14 +1036,12 @@ impl Renderer {
             .ok_or(RendererError::SceneNotLoaded)
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn exact_surface_policy(&self) -> Option<renderer::ExactPlanPolicy> {
         self.exact_offscreen_runtime
             .as_ref()
             .map(renderer::PreparedRuntimeSlot::active_policy)
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn set_exact_surface_policy(
         &mut self,
         policy: renderer::ExactPlanPolicy,
@@ -1059,7 +1056,6 @@ impl Renderer {
         Ok(())
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     fn exact_surface_plan_is_eligible(&self, plan: plans::PlanId) -> Option<bool> {
         self.exact_offscreen_runtime
             .as_ref()
@@ -1067,36 +1063,31 @@ impl Renderer {
     }
 
     /// Invalidates only latency-bound whole-plan learning for the active
-    /// native Surface runtime. Current-stats tickets and prepared resources
+    /// Surface runtime. Current-stats tickets and prepared resources
     /// deliberately remain in the same semantic generation.
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn reset_exact_surface_performance_learning(&mut self) {
         if let Some(runtime) = self.exact_offscreen_runtime.as_mut() {
             runtime.reset_surface_performance_learning();
         }
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn request_exact_surface_cpu_refresh(&mut self) -> Result<(), RendererError> {
         self.exact_runtime_mut()?.request_cpu_order_refresh();
         Ok(())
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn exact_surface_cpu_refresh_requested(&self) -> Option<bool> {
         self.exact_offscreen_runtime
             .as_ref()
             .map(renderer::PreparedRuntimeSlot::cpu_order_refresh_requested)
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn exact_surface_last_plan(&self) -> Option<plans::PlanId> {
         self.exact_offscreen_runtime
             .as_ref()
             .and_then(renderer::PreparedRuntimeSlot::last_published_plan)
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn exact_surface_adaptive_state(
         &self,
     ) -> Option<renderer::ExactAdaptivePolicyState> {
@@ -1105,21 +1096,18 @@ impl Renderer {
             .map(renderer::PreparedRuntimeSlot::adaptive_policy_state)
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn request_exact_surface_current_stats(
         &mut self,
     ) -> Result<renderer::CurrentStatsRequest, RendererError> {
         Ok(self.exact_runtime_mut()?.request_current_stats())
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn poll_exact_surface_current_stats(
         &mut self,
     ) -> Result<renderer::CurrentStatsPoll, RendererError> {
         Ok(self.exact_runtime_mut()?.poll_current_stats())
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn publish_exact_surface_stats(&mut self, stats: FrameStats) {
         debug_assert!(self.exact_offscreen_runtime.is_some());
         self.last_stats = stats;

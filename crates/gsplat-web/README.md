@@ -18,19 +18,17 @@ Browser WebAssembly bindings for the shared Rust `wgpu` Surface renderer.
   ASCII row, or binary record is retained while complete splats are appended
   directly to `ResidentSceneBuilder`. This avoids both full-response
   `ArrayBuffer` materialization and a full WASM input copy.
-- Rendering goes through `gsplat-render-wgpu::SurfaceRenderSession`, which owns
-  `Renderer`, `SurfacePresenter`, CPU sort cadence, compact order uploads,
-  direct rendering, and phase timings. This is the same Surface lifecycle
-  used by Android/iOS and the interactive desktop viewer.
+- Rendering goes through `gsplat-render-wgpu::SurfaceRenderSession`, whose
+  shared Exact runtime owns the complete Packed plan, policy, cache generations,
+  order/raster publication, and current-stats receipts. The WASM crate is only
+  a compatibility/translation boundary; it has no Web-only renderer controller.
 - Each `renderFrame` result drains the complete queue of newly finished GPU
   order measurements. The ESM layer exposes that queue as
   `completedOrderMeasurements`; ticket and camera revision are both required
   when joining asynchronous evidence to submitted frames.
-- Projected drawing is independently selectable through raw
-  `setProjectedPolicy(0|1|2)` for Candidate, Compact, or Adaptive. A rejected
-  Compact request leaves the previous policy live. Frame results distinguish
-  requested policy, actual execution, Adaptive state, and issued/unsampled
-  submission identity; forced modes report `not_requested` with no ticket.
+- Raw `setProjectedPolicy(0|1|2)` remains a compatibility input for Candidate,
+  Compact, or Adaptive, but the session validates it as part of one closed
+  Exact plan. There is no browser-local projected learner.
 - Adaptive projected successes and failures drain as
   `completedProjectedMeasurements` / `failedProjectedMeasurements`, including
   exact V/C/D counts, projection/probe generations, and frame-completion time.
@@ -40,15 +38,11 @@ Browser WebAssembly bindings for the shared Rust `wgpu` Surface renderer.
   `prepareGpuOrder()`, which constructs the sorter plus draw/projection bindings
   under WebGPU validation/OOM/internal error scopes, and only then call
   `setOrderBackend(...)`. CPU-only clients never allocate those resources.
-- Runtime geometry changes are also two-phase: raw callers await
-  `setGeometryPathAsync(...)` to move between the Direct oracle and production
-  Packed path. Target CPU derivations and the complete GPU graph—including the
-  exact projected-contributor path and any sorter required by the selected
-  order backend—remain unpublished until validation/OOM/internal scopes finish.
-  Changed-path calls to legacy synchronous `setGeometryPath` fail closed;
-  repeated same-path calls are idempotent. Paged remains a constructor-time
-  diagnostic and is rejected by runtime switching so it cannot invalidate the
-  full-quality load receipt.
+- Geometry is selected at construction. Raw `setGeometryPathAsync(...)` and
+  legacy `setGeometryPath(...)` retain their compatibility shape, but only a
+  repeated same-path request succeeds; changed Direct/Packed/Paged transitions
+  fail before mutation so the browser cannot publish a legacy Packed owner
+  beside the shared Exact runtime.
 - Production Packed + Projected resizing is likewise asynchronous through raw
   `resizeAsync(width, height)`. A changed size passed to legacy synchronous
   `resize` fails closed; the async path publishes dimensions only after scoped
@@ -58,6 +52,9 @@ Browser WebAssembly bindings for the shared Rust `wgpu` Surface renderer.
   by `ResidentSceneBuilder`, records owned by `Renderer`, and records actually
   addressable by the allocated Surface geometry, together with source and
   resident SH degree.
+- `requestCurrentStats` and `pollCurrentStats` expose the renderer/session's
+  non-blocking Exact observer receipt. WASM translates its identity and
+  `S/V/C/D` semantics without owning a second ticket or generation ledger.
 - It is not part of the stable v0.1 public contract. Web changes must pass the
   WebGPU/WASM smoke path in `handbook/VERIFICATION.md` before completion is
   claimed.

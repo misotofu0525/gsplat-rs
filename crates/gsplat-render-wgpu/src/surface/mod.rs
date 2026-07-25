@@ -2,14 +2,12 @@ mod capture;
 mod configuration;
 mod current_stats;
 mod lifecycle;
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) mod shadow;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use capture::SurfaceCapture;
 pub use capture::SurfaceFrameCapture;
 pub(crate) use configuration::SurfaceConfigurationOwner;
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) use current_stats::LegacySurfaceStatsAvailability;
 pub use current_stats::{
     SurfaceCurrentStatsCountSemantics, SurfaceCurrentStatsCounts, SurfaceCurrentStatsFailure,

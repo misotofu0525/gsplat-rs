@@ -140,21 +140,6 @@ async function configureRenderer(
   const renderer = new GsplatWebRenderer(nativeRenderer);
   try {
     renderer.setSortInterval(sortInterval);
-    applyNativeProjectedPolicy(nativeRenderer, projectedPolicy);
-    if (gpuOrderProducer !== null) {
-      try {
-        if (typeof nativeRenderer.setGpuOrderProducerAsync !== "function") {
-          throw new Error(
-            "the loaded gsplat-web module does not support transactional GPU producer selection",
-          );
-        }
-        await nativeRenderer.setGpuOrderProducerAsync(
-          resolveGpuOrderProducerId(gpuOrderProducer),
-        );
-      } catch (error) {
-        throw structuredFailure(error, FAILURE_STAGES.gpuOrderProducer);
-      }
-    }
     if (orderBackend !== "cpu") {
       try {
         if (typeof nativeRenderer.prepareGpuOrder !== "function") {
@@ -170,6 +155,21 @@ async function configureRenderer(
       }
     }
     renderer.setOrderBackend(orderBackend);
+    applyNativeProjectedPolicy(nativeRenderer, projectedPolicy);
+    if (gpuOrderProducer !== null) {
+      try {
+        if (typeof nativeRenderer.setGpuOrderProducerAsync !== "function") {
+          throw new Error(
+            "the loaded gsplat-web module does not support transactional GPU producer selection",
+          );
+        }
+        await nativeRenderer.setGpuOrderProducerAsync(
+          resolveGpuOrderProducerId(gpuOrderProducer),
+        );
+      } catch (error) {
+        throw structuredFailure(error, FAILURE_STAGES.gpuOrderProducer);
+      }
+    }
     return renderer;
   } catch (error) {
     freeNative(renderer);
@@ -379,10 +379,6 @@ export class GsplatWebRenderer {
   #disposed = false;
   #mutationQueue = Promise.resolve();
   #pendingMutations = new Set();
-  #projectedIssuedTickets = new Map();
-  #projectedTerminalTickets = new Set();
-  #gpuProducerIssuedTickets = new Map();
-  #gpuProducerTerminalTickets = new Set();
 
   constructor(nativeRenderer) {
     if (!nativeRenderer) {
@@ -596,10 +592,6 @@ export class GsplatWebRenderer {
       );
     }
     const frame = normalizeFrameStats(this.#requireNativeRenderer().renderFrame());
-    this.#recordGpuProducerSubmission(frame);
-    this.#recordProjectedSubmission(frame);
-    this.#recordGpuProducerTerminals(frame);
-    this.#recordProjectedTerminals(frame);
     return frame;
   }
 
@@ -610,95 +602,25 @@ export class GsplatWebRenderer {
         "the loaded gsplat-web module does not support standalone terminal order receipts",
       );
     }
-    const receipts = normalizeMeasurementReceipts(
+    return normalizeMeasurementReceipts(
       nativeRenderer.drainOrderMeasurementReceipts(),
     );
-    this.#recordGpuProducerTerminals(receipts);
-    this.#recordProjectedTerminals(receipts);
-    return receipts;
   }
 
-  #recordProjectedTerminals(receipts) {
-    const terminals = [
-      ...receipts.completedProjectedMeasurements,
-      ...receipts.failedProjectedMeasurements,
-    ];
-    for (const terminal of terminals) {
-      const ticket = terminal.ticket;
-      if (this.#projectedTerminalTickets.has(ticket)) {
-        throw new TypeError(`projected measurement ticket ${ticket} already terminated`);
-      }
-      const issued = this.#projectedIssuedTickets.get(ticket);
-      if (!issued) {
-        throw new TypeError(`projected measurement ticket ${ticket} was never issued`);
-      }
-      if (issued.cameraRevision !== terminal.cameraRevision
-          || issued.execution !== terminal.execution
-          || issued.orderBackend !== terminal.orderBackend) {
-        throw new TypeError(`projected measurement ticket ${ticket} changed terminal identity`);
-      }
+  requestCurrentStats() {
+    const nativeRenderer = this.#requireNativeRenderer();
+    if (typeof nativeRenderer.requestCurrentStats !== "function") {
+      throw new Error("the loaded gsplat-web module does not support Exact current stats");
     }
-    for (const terminal of terminals) {
-      this.#projectedIssuedTickets.delete(terminal.ticket);
-      this.#projectedTerminalTickets.add(terminal.ticket);
-    }
+    return normalizeCurrentStatsRequest(nativeRenderer.requestCurrentStats());
   }
 
-  #recordProjectedSubmission(frame) {
-    if (frame.projectedMeasurementSubmission !== "issued") return;
-    const ticket = frame.projectedMeasurementTicket;
-    if (this.#projectedIssuedTickets.has(ticket)
-        || this.#projectedTerminalTickets.has(ticket)) {
-      throw new TypeError(`projected measurement ticket ${ticket} was issued more than once`);
+  pollCurrentStats() {
+    const nativeRenderer = this.#requireNativeRenderer();
+    if (typeof nativeRenderer.pollCurrentStats !== "function") {
+      throw new Error("the loaded gsplat-web module does not support Exact current stats");
     }
-    this.#projectedIssuedTickets.set(ticket, {
-      cameraRevision: frame.cameraRevision,
-      execution: frame.projectedMeasurementExecution,
-      orderBackend: frame.orderBackend,
-    });
-  }
-
-  #recordGpuProducerTerminals(receipts) {
-    const terminals = [
-      ...receipts.completedGpuProducerMeasurements,
-      ...receipts.failedGpuProducerMeasurements,
-    ];
-    const seen = new Set();
-    for (const terminal of terminals) {
-      const ticket = terminal.ticket;
-      if (seen.has(ticket)) {
-        throw new TypeError(`GPU producer ticket ${ticket} has multiple terminals`);
-      }
-      seen.add(ticket);
-      if (this.#gpuProducerTerminalTickets.has(ticket)) {
-        throw new TypeError(`GPU producer ticket ${ticket} already terminated`);
-      }
-      const issued = this.#gpuProducerIssuedTickets.get(ticket);
-      if (!issued) {
-        throw new TypeError(`GPU producer ticket ${ticket} was never issued`);
-      }
-      if (issued.cameraRevision !== terminal.cameraRevision
-          || issued.producer !== terminal.producer) {
-        throw new TypeError(`GPU producer ticket ${ticket} changed terminal identity`);
-      }
-    }
-    for (const terminal of terminals) {
-      this.#gpuProducerIssuedTickets.delete(terminal.ticket);
-      this.#gpuProducerTerminalTickets.add(terminal.ticket);
-    }
-  }
-
-  #recordGpuProducerSubmission(frame) {
-    if (frame.gpuProducerMeasurementSubmission !== "issued") return;
-    const ticket = frame.gpuProducerMeasurementTicket;
-    if (this.#gpuProducerIssuedTickets.has(ticket)
-        || this.#gpuProducerTerminalTickets.has(ticket)) {
-      throw new TypeError(`GPU producer ticket ${ticket} was issued more than once`);
-    }
-    this.#gpuProducerIssuedTickets.set(ticket, {
-      cameraRevision: frame.cameraRevision,
-      producer: frame.gpuProducerMeasurementProducer,
-    });
+    return normalizeCurrentStatsPoll(nativeRenderer.pollCurrentStats());
   }
 
   sceneSummary() {
@@ -852,6 +774,119 @@ function applyNativeProjectedPolicy(nativeRenderer, policy) {
   nativeRenderer.setProjectedPolicy(id);
 }
 
+function normalizeCurrentStatsRequest(raw) {
+  const status = String(raw?.status ?? "unknown");
+  if (status === "requested") {
+    return { status, reason: null };
+  }
+  if (status === "unsampled") {
+    return { status, reason: normalizeCurrentStatsUnsampledReason(raw?.reason) };
+  }
+  throw new TypeError(`unknown current-stats request status ${status}`);
+}
+
+function normalizeCurrentStatsPoll(raw) {
+  const status = String(raw?.status ?? "unknown");
+  if (status === "empty") return { status };
+  if (status === "unsampled") {
+    return { status, reason: normalizeCurrentStatsUnsampledReason(raw?.reason) };
+  }
+  const terminalStatuses = new Set([
+    "ready",
+    "map_failure",
+    "generation_invalidated",
+    "expired",
+    "dropped",
+  ]);
+  if (!terminalStatuses.has(status)) {
+    throw new TypeError(`unknown current-stats poll status ${status}`);
+  }
+  const terminal = {
+    status,
+    ticket: telemetrySafeInteger(raw?.ticket, "current-stats ticket"),
+    plan: normalizeCurrentStatsPlan(raw?.plan),
+    sceneGeneration: telemetrySafeInteger(
+      raw?.sceneGeneration,
+      "current-stats sceneGeneration",
+    ),
+    cameraRevision: telemetrySafeInteger(
+      raw?.cameraRevision,
+      "current-stats cameraRevision",
+    ),
+    viewportGeneration: telemetrySafeInteger(
+      raw?.viewportGeneration,
+      "current-stats viewportGeneration",
+    ),
+    contractGeneration: telemetrySafeInteger(
+      raw?.contractGeneration,
+      "current-stats contractGeneration",
+    ),
+    planSetGeneration: telemetrySafeInteger(
+      raw?.planSetGeneration,
+      "current-stats planSetGeneration",
+    ),
+    orderGeneration: telemetrySafeInteger(
+      raw?.orderGeneration,
+      "current-stats orderGeneration",
+    ),
+    rasterGeneration: telemetrySafeInteger(
+      raw?.rasterGeneration,
+      "current-stats rasterGeneration",
+    ),
+    encodeAttempt: telemetrySafeInteger(raw?.encodeAttempt, "current-stats encodeAttempt"),
+    presentationSequence: telemetrySafeInteger(
+      raw?.presentationSequence,
+      "current-stats presentationSequence",
+    ),
+  };
+  if (status !== "ready") return terminal;
+  const sourceCount = telemetrySafeInteger(raw?.sourceCount, "current-stats sourceCount");
+  const visibleCount = telemetrySafeInteger(raw?.visibleCount, "current-stats visibleCount");
+  const contributorCount = telemetrySafeInteger(
+    raw?.contributorCount,
+    "current-stats contributorCount",
+  );
+  const drawnCount = telemetrySafeInteger(raw?.drawnCount, "current-stats drawnCount");
+  if (contributorCount > visibleCount || visibleCount > sourceCount) {
+    throw new TypeError("current-stats receipt violates C <= V <= S");
+  }
+  const countSemantics = String(raw?.countSemantics ?? "unknown");
+  if (!["draw_equals_visible", "indirect_draw_equals_visible", "indirect_draw_equals_contributor"]
+    .includes(countSemantics)) {
+    throw new TypeError(`unknown current-stats count semantics ${countSemantics}`);
+  }
+  const expectedDrawn = countSemantics === "indirect_draw_equals_contributor"
+    ? contributorCount
+    : visibleCount;
+  if (drawnCount !== expectedDrawn) {
+    throw new TypeError("current-stats drawn count disagrees with its exact semantics");
+  }
+  return {
+    ...terminal,
+    countSemantics,
+    sourceCount,
+    visibleCount,
+    contributorCount,
+    drawnCount,
+  };
+}
+
+function normalizeCurrentStatsUnsampledReason(value) {
+  const reason = String(value ?? "unknown");
+  if (!["busy", "gpu_unavailable", "resource_unavailable", "ticket_exhausted"].includes(reason)) {
+    throw new TypeError(`unknown current-stats unsampled reason ${reason}`);
+  }
+  return reason;
+}
+
+function normalizeCurrentStatsPlan(value) {
+  const plan = String(value ?? "unknown");
+  if (!["cpu_post_sort", "gpu_post_sort", "gpu_preproject"].includes(plan)) {
+    throw new TypeError(`unknown Exact current-stats plan ${plan}`);
+  }
+  return plan;
+}
+
 function normalizeFrameStats(raw) {
   const receipts = normalizeMeasurementReceipts(raw);
   const gpuOrderPreparationPending = Boolean(
@@ -949,6 +984,45 @@ function normalizeFrameStats(raw) {
   assertUniqueProjectedTerminals(receipts);
   assertUniqueGpuProducerTerminals(receipts);
   const frame = {
+    currentStatsSubmission: String(raw.currentStatsSubmission ?? "not_requested"),
+    currentStatsTicket: nullableSafeInteger(raw.currentStatsTicket, "currentStatsTicket"),
+    currentStatsPlan: raw.currentStatsPlan == null ? null : normalizeCurrentStatsPlan(raw.currentStatsPlan),
+    currentStatsSceneGeneration: nullableSafeInteger(
+      raw.currentStatsSceneGeneration,
+      "currentStatsSceneGeneration",
+    ),
+    currentStatsCameraRevision: nullableSafeInteger(
+      raw.currentStatsCameraRevision,
+      "currentStatsCameraRevision",
+    ),
+    currentStatsViewportGeneration: nullableSafeInteger(
+      raw.currentStatsViewportGeneration,
+      "currentStatsViewportGeneration",
+    ),
+    currentStatsContractGeneration: nullableSafeInteger(
+      raw.currentStatsContractGeneration,
+      "currentStatsContractGeneration",
+    ),
+    currentStatsPlanSetGeneration: nullableSafeInteger(
+      raw.currentStatsPlanSetGeneration,
+      "currentStatsPlanSetGeneration",
+    ),
+    currentStatsOrderGeneration: nullableSafeInteger(
+      raw.currentStatsOrderGeneration,
+      "currentStatsOrderGeneration",
+    ),
+    currentStatsRasterGeneration: nullableSafeInteger(
+      raw.currentStatsRasterGeneration,
+      "currentStatsRasterGeneration",
+    ),
+    currentStatsEncodeAttempt: nullableSafeInteger(
+      raw.currentStatsEncodeAttempt,
+      "currentStatsEncodeAttempt",
+    ),
+    currentStatsPresentationSequence: nullableSafeInteger(
+      raw.currentStatsPresentationSequence,
+      "currentStatsPresentationSequence",
+    ),
     frameMs: numberOr(raw.frameMs, 0),
     preprocessMs: numberOr(raw.preprocessMs, 0),
     sortMs: numberOr(raw.sortMs, 0),
@@ -1192,9 +1266,39 @@ function normalizeFrameStats(raw) {
     presentedWidth: nullableNumber(raw.presentedWidth),
     presentedHeight: nullableNumber(raw.presentedHeight),
   };
+  validateCurrentStatsFrameSubmission(frame);
   validateProjectedFrameSubmission(frame);
   validateGpuProducerFrameSubmission(frame);
   return frame;
+}
+
+function validateCurrentStatsFrameSubmission(frame) {
+  if (frame.currentStatsSubmission === "not_requested") {
+    for (const value of [
+      frame.currentStatsTicket,
+      frame.currentStatsPlan,
+      frame.currentStatsSceneGeneration,
+      frame.currentStatsCameraRevision,
+      frame.currentStatsViewportGeneration,
+      frame.currentStatsContractGeneration,
+      frame.currentStatsPlanSetGeneration,
+      frame.currentStatsOrderGeneration,
+      frame.currentStatsRasterGeneration,
+      frame.currentStatsEncodeAttempt,
+      frame.currentStatsPresentationSequence,
+    ]) {
+      if (value !== null) {
+        throw new TypeError("not-requested current stats exposed receipt identity");
+      }
+    }
+    return;
+  }
+  if (frame.currentStatsSubmission !== "issued"
+      || frame.currentStatsTicket === null
+      || frame.currentStatsPlan === null
+      || frame.currentStatsCameraRevision !== frame.cameraRevision) {
+    throw new TypeError("issued current stats lacks a matching Exact frame identity");
+  }
 }
 
 function normalizeMeasurementReceipts(raw) {

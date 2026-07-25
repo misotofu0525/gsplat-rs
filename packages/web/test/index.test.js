@@ -460,7 +460,7 @@ test("GsplatWebRenderer rejects unsafe or multiply-terminal projected tickets", 
   );
 });
 
-test("GsplatWebRenderer permits exactly one terminal across render and standalone drains", () => {
+test("GsplatWebRenderer leaves cross-call terminal ownership with the native session", () => {
   const terminal = projectedSuccess({
     ticket: "4503599627370496",
     cameraRevision: 1,
@@ -497,13 +497,10 @@ test("GsplatWebRenderer permits exactly one terminal across render and standalon
   }));
   renderer.renderFrame();
   assert.equal(renderer.renderFrame().completedProjectedMeasurements.length, 1);
-  assert.throws(
-    () => renderer.drainOrderMeasurementReceipts(),
-    /projected measurement ticket 4503599627370496 already terminated/,
-  );
+  assert.equal(renderer.drainOrderMeasurementReceipts().failedProjectedMeasurements.length, 1);
 });
 
-test("GsplatWebRenderer rejects unissued or identity-changing projected terminals", () => {
+test("GsplatWebRenderer validates terminal shape without retaining a JS ticket ledger", () => {
   const success = projectedSuccess({
     ticket: "4503599627370496",
     cameraRevision: 7,
@@ -515,10 +512,7 @@ test("GsplatWebRenderer rejects unissued or identity-changing projected terminal
       return { completedProjectedMeasurements: [success] };
     },
   }));
-  assert.throws(
-    () => unissued.drainOrderMeasurementReceipts(),
-    /projected measurement ticket 4503599627370496 was never issued/,
-  );
+  assert.equal(unissued.drainOrderMeasurementReceipts().completedProjectedMeasurements.length, 1);
 
   const changed = new GsplatWebRenderer(makeNativeRenderer({
     renderFrame() {
@@ -534,9 +528,9 @@ test("GsplatWebRenderer rejects unissued or identity-changing projected terminal
     },
   }));
   changed.renderFrame();
-  assert.throws(
-    () => changed.drainOrderMeasurementReceipts(),
-    /projected measurement ticket 4503599627370496 changed terminal identity/,
+  assert.equal(
+    changed.drainOrderMeasurementReceipts().completedProjectedMeasurements[0].orderBackend,
+    "gpu",
   );
 });
 
@@ -753,6 +747,18 @@ test("GsplatWebRenderer forwards commands and normalizes return values", async (
   renderer.setProjectedPolicy("compact");
 
   assert.deepEqual(renderer.renderFrame(), {
+    currentStatsSubmission: "not_requested",
+    currentStatsTicket: null,
+    currentStatsPlan: null,
+    currentStatsSceneGeneration: null,
+    currentStatsCameraRevision: null,
+    currentStatsViewportGeneration: null,
+    currentStatsContractGeneration: null,
+    currentStatsPlanSetGeneration: null,
+    currentStatsOrderGeneration: null,
+    currentStatsRasterGeneration: null,
+    currentStatsEncodeAttempt: null,
+    currentStatsPresentationSequence: null,
     frameMs: 1.25,
     preprocessMs: 0,
     sortMs: 0.5,
@@ -916,6 +922,59 @@ test("GsplatWebRenderer forwards commands and normalizes return values", async (
   ]);
   assert.equal(renderer.isDisposed, true);
   assert.throws(() => renderer.renderFrame(), /disposed/);
+});
+
+test("GsplatWebRenderer exposes renderer-owned Exact current-stats receipts", () => {
+  const identity = {
+    ticket: "19",
+    plan: "gpu_preproject",
+    sceneGeneration: "3",
+    cameraRevision: "4",
+    viewportGeneration: "5",
+    contractGeneration: "6",
+    planSetGeneration: "7",
+    orderGeneration: "8",
+    rasterGeneration: "9",
+    encodeAttempt: "10",
+    presentationSequence: "11",
+  };
+  const renderer = new GsplatWebRenderer(makeNativeRenderer({
+    requestCurrentStats() {
+      return { status: "requested" };
+    },
+    pollCurrentStats() {
+      return {
+        status: "ready",
+        ...identity,
+        countSemantics: "indirect_draw_equals_contributor",
+        sourceCount: "100",
+        visibleCount: "81",
+        contributorCount: "64",
+        drawnCount: "64",
+      };
+    },
+  }));
+
+  assert.deepEqual(renderer.requestCurrentStats(), { status: "requested", reason: null });
+  assert.deepEqual(renderer.pollCurrentStats(), {
+    status: "ready",
+    ticket: 19,
+    plan: "gpu_preproject",
+    sceneGeneration: 3,
+    cameraRevision: 4,
+    viewportGeneration: 5,
+    contractGeneration: 6,
+    planSetGeneration: 7,
+    orderGeneration: 8,
+    rasterGeneration: 9,
+    encodeAttempt: 10,
+    presentationSequence: 11,
+    countSemantics: "indirect_draw_equals_contributor",
+    sourceCount: 100,
+    visibleCount: 81,
+    contributorCount: 64,
+    drawnCount: 64,
+  });
 });
 
 test("GsplatWebRenderer same-size resize is a no-op on a legacy module", async () => {
@@ -1528,8 +1587,8 @@ test("createGsplatRenderer normalizes bytes and applies render options", async (
   assert.equal(captured.height, 240);
   assert.equal(captured.geometryPath, 1);
   assert.deepEqual(native.calls[0], ["setSortInterval", 3]);
-  assert.deepEqual(native.calls[1], ["setProjectedPolicy", 1]);
-  assert.deepEqual(native.calls[2], ["setOrderBackend", 1]);
+  assert.deepEqual(native.calls[1], ["setOrderBackend", 1]);
+  assert.deepEqual(native.calls[2], ["setProjectedPolicy", 1]);
   assert.equal(native.calls.length, 3);
 });
 
@@ -1571,6 +1630,8 @@ test("createGsplatRenderer publishes an explicit GPU producer only after its tra
   assert.equal(resolved, false);
   assert.deepEqual(native.calls, [
     ["setSortInterval", 1],
+    ["prepareGpuOrder"],
+    ["setOrderBackend", 1],
     ["setProjectedPolicy", 1],
     ["setGpuOrderProducerAsync:start", 1],
   ]);
@@ -1580,11 +1641,11 @@ test("createGsplatRenderer publishes an explicit GPU producer only after its tra
   assert.ok(renderer instanceof GsplatWebRenderer);
   assert.deepEqual(native.calls, [
     ["setSortInterval", 1],
+    ["prepareGpuOrder"],
+    ["setOrderBackend", 1],
     ["setProjectedPolicy", 1],
     ["setGpuOrderProducerAsync:start", 1],
     ["setGpuOrderProducerAsync:complete", 1],
-    ["prepareGpuOrder"],
-    ["setOrderBackend", 1],
   ]);
 });
 

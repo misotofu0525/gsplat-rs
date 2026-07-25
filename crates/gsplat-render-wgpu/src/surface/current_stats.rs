@@ -4,7 +4,6 @@
 //! terminal publication remain owned by `Renderer` and `PlanSampler`. Surface
 //! and later C consumers only translate these values.
 
-#[cfg(not(target_arch = "wasm32"))]
 use gsplat_core::FrameStats;
 
 use crate::{
@@ -398,14 +397,12 @@ impl From<CurrentStatsPoll> for SurfaceCurrentStatsPoll {
 /// This is compatibility availability only. Renderer remains the ticket,
 /// generation, queue and terminal owner; Surface retains no terminal ledger.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) enum LegacySurfaceStatsAvailability {
     Current,
     AwaitingCurrentReceipt,
     Unavailable,
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 impl LegacySurfaceStatsAvailability {
     pub(crate) const fn for_presented_frame(
         counts_are_synchronous: bool,

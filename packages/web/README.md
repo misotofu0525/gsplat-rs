@@ -22,13 +22,13 @@ The wrapper exposes:
 - `createGsplatRendererFromUrl()` for fetch-and-render flows
 - `createGsplatRendererFromStream()` for local `File.stream()` and custom
   `ReadableStream<Uint8Array>` transports
-- `GsplatWebRenderer` for camera controls, transactional resize/geometry-path
-  changes, stats, and disposal
+- `GsplatWebRenderer` for camera controls, transactional resize,
+  constructor-time geometry selection, stats, and disposal
 - exact compact GPU-resident `packed` rendering by default, with adaptive
-  CPU/GPU full-scene ordering; `direct` remains the f32 quality oracle and
-  `rasterPath()` reports the active pipeline
-- independent `candidate`, `compact`, or `adaptive` projected drawing, with
-  requested policy and actual execution reported separately on every frame
+  CPU/GPU full-scene ordering owned by the shared renderer/session; `direct`
+  remains the f32 quality oracle and `rasterPath()` reports the active pipeline
+- `candidate`, `compact`, and `adaptive` compatibility inputs are validated as
+  complete Exact plans rather than learned by a Web-only controller
 - allocation-bounded URL loading: `Response.body` chunks are decoded directly
   into the exact resident planes, so the browser never materializes the full
   PLY as an `ArrayBuffer` plus a second WASM copy
@@ -64,6 +64,11 @@ const renderer = await createGsplatRendererFromUrl({
 });
 
 const frame = renderer.renderFrame();
+renderer.requestCurrentStats();
+renderer.renderFrame();
+const current = renderer.pollCurrentStats();
+// Poll on later animation frames until this renderer-owned receipt is terminal.
+console.log(current);
 for (const receipt of frame.completedOrderMeasurements) {
   // GPU timing/count receipts are asynchronous and are joined by
   // receipt.ticket plus receipt.cameraRevision.
@@ -94,18 +99,13 @@ Surface size is published. Runtime resize failures use `stage="resize"` and
 `scene_published=true`, because the already-published scene remains live at its
 last successfully configured size.
 
-`await renderer.setGeometryPathAsync(path)` requests a transactional switch
-between the full-quality Direct oracle and Packed production geometry. It
-shares one serial mutation queue with `resize()`, blocks frame submission until
-the queued mutation settles, and rejects with `stage="geometry_path"` plus
-`scene_published=true` without replacing the last working renderer. A
-Direct-constructed scene retains the source planes needed for a Direct ->
-Packed -> Direct round trip. An allocation-bounded Packed stream intentionally
-does not retain that wide Direct source, so its later Packed -> Direct request
-can reject while Packed stays live. Paged is a constructor-time diagnostic and
-a changed runtime transition involving it is rejected by the native contract.
-The legacy synchronous `setGeometryPath()` is retained only for compatibility:
-a repeated same-path call is idempotent and a changed-path call fails closed.
+`await renderer.setGeometryPathAsync(path)` retains the historical async API
+shape, but Packed is selected at construction and owned solely by the shared
+Exact runtime. Repeated same-path calls are idempotent; changed runtime
+transitions involving Direct/Packed/Paged fail closed with
+`stage="geometry_path"` and `scene_published=true`, leaving the published
+renderer live. The legacy synchronous `setGeometryPath()` follows the same
+compatibility rule.
 Calling `dispose()` while either mutation is in flight marks the wrapper
 disposed immediately but defers native release until the complete mutation
 queue settles.
@@ -120,7 +120,14 @@ rejecting. Rejections are `GsplatWebError` instances with `stage`,
 also include `resource.kind`, `resource.required_bytes`, and
 `resource.limit_bytes` when the native error exposes those values.
 
-`completedOrderMeasurements` drains every GPU-order receipt that completed
+`requestCurrentStats()` reserves one non-blocking observation of the next
+presented Exact frame, and `pollCurrentStats()` returns its renderer-owned
+terminal. The receipt binds plan, scene/camera/viewport/contract/plan-set/order/
+raster generations, encode attempt, presentation sequence, and truthful
+`S/V/C/D` semantics. The wrapper validates but does not mirror issued or
+terminal tickets, cache generations, or adaptive state.
+
+Legacy `completedOrderMeasurements` drains every GPU-order receipt that completed
 since the preceding `renderFrame()` call. Consumers must not treat only the
 latest receipt as a complete benchmark sample: more than one ticket can finish
 between animation frames. `failedOrderMeasurements` is the matching terminal
@@ -128,25 +135,19 @@ failure stream. `drainOrderMeasurementReceipts()` drains both streams without
 rendering, which lets a fail-closed caller preserve receipts collected before a
 later Surface/presentation error.
 
-`setProjectedPolicy("candidate" | "compact" | "adaptive")` is fail closed.
-Candidate and Compact are deterministic experiment controls and therefore
-report their actual execution with `projectedMeasurementSubmission="not_requested"`
-and `projectedMeasurementTicket=null`; only Adaptive formal samples issue
-projected tickets. `drainOrderMeasurementReceipts()` retains its existing order
-arrays and additionally returns `completedProjectedMeasurements` and
-`failedProjectedMeasurements`, with exactly one terminal per issued ticket.
+`setProjectedPolicy("candidate" | "compact" | "adaptive")` is a fail-closed
+compatibility input to the complete Exact plan. Legacy projected receipt fields
+remain present for API compatibility, but the browser does not run a separate
+projected adaptive controller.
 
 `gpuOrderProducer: "post-sort" | "preproject"` is an explicit diagnostic
 creation option, not a product default switch. Omitting it keeps PostSort and
 leaves producer telemetry disabled. Supplying it requires exact Packed
 geometry plus forced Compact projected drawing; formal callers must also force
 GPU ordering. Creation transactionally prepares and publishes the complete
-producer graph before returning, then enables an independent ticket stream in
-`completedGpuProducerMeasurements` / `failedGpuProducerMeasurements`. Each
-successful exact-current receipt proves source/contributor/drawn counts,
-producer and camera identity, graph generations, queue-completion time, and
-`D=C`; stale-order or unsampled frames are not strict A/B evidence. The same
-selector is available after construction through
+producer graph without enabling the retired producer-specific learner or
+terminal ledger. Use Exact current-stats to prove the selected whole plan and
+its source/contributor/drawn identity. The same compatibility selector is available through
 `await renderer.setGpuOrderProducerAsync(producer)`.
 
 Package-level checks:
