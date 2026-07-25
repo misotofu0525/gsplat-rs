@@ -27,6 +27,10 @@ import {
   sampledWebglOptIn,
 } from "./renderer-policy.mjs";
 import { LatestAsyncRequestCoordinator } from "./latest-async-request.mjs";
+import {
+  canonicalDatasetIdentityFromObservation,
+  WEB_DATASET_PATHS,
+} from "./dataset-identity.mjs";
 
 const API_VERSION = "0.1";
 const ORBIT_RADIANS_PER_SCREEN = 3.2;
@@ -39,24 +43,7 @@ const OPACITY_LOGIT_LIMIT = 16;
 const DEFAULT_FRAME_BUDGET_MS = 1000 / 60;
 const reportedStructuredFailures = new WeakSet();
 
-const DATASETS = {
-  showcase: "/tests/datasets/external/wakufactory_kitune/kitune1.ply",
-  minimal: "/tests/datasets/minimal_ascii.ply",
-  flowers: "/tests/datasets/external/nvidia_flowers_1/flowers_1/flowers_1.ply",
-  bonsai: "/tests/datasets/external/inria_3dgs/bonsai/point_cloud.ply",
-  truck: "/tests/datasets/external/inria_3dgs/truck/point_cloud.ply",
-  garden: "/tests/datasets/external/inria_3dgs/garden/point_cloud.ply",
-  bicycle: "/tests/datasets/external/inria_3dgs/bicycle/point_cloud.ply",
-  "truck-50000": "/tests/datasets/external/ladder/inria-truck/point_cloud-n50000.ply",
-  "truck-100000": "/tests/datasets/external/ladder/inria-truck/point_cloud-n100000.ply",
-  "truck-200000": "/tests/datasets/external/ladder/inria-truck/point_cloud-n200000.ply",
-  "truck-300000": "/tests/datasets/external/ladder/inria-truck/point_cloud-n300000.ply",
-  "truck-500000": "/tests/datasets/external/ladder/inria-truck/point_cloud-n500000.ply",
-  "truck-1000000": "/tests/datasets/external/ladder/inria-truck/point_cloud-n1000000.ply",
-  "truck-1500000": "/tests/datasets/external/ladder/inria-truck/point_cloud-n1500000.ply",
-  "truck-2000000": "/tests/datasets/external/ladder/inria-truck/point_cloud-n2000000.ply",
-  diagnostic: "generated:raster_diagnostic_v1",
-};
+const DATASETS = WEB_DATASET_PATHS;
 
 const WASM_ENTRY = new URL("../pkg/gsplat_web.js?v=sorted-index-20260710", import.meta.url);
 const WASM_BINARY = new URL("../pkg/gsplat_web_bg.wasm?v=sorted-index-20260710", import.meta.url);
@@ -149,7 +136,6 @@ const state = {
   qualificationTraceLoops: 1,
   qualificationTraceSequence: null,
   qualificationCamera: null,
-  qualificationDatasetId: null,
   cameraReceipt: null,
   geometryPath: "packed",
   requestedOrderBackend: "adaptive",
@@ -2834,13 +2820,10 @@ function applyUrlConfig() {
   );
   if (trace === "phase-e-kitsune-static-v1") {
     state.qualificationTraceUrl = "/tests/perf/trace/fixtures/phase-e-kitsune-static-640x480-v1.json";
-    state.qualificationDatasetId = "kitsune";
   } else if (trace === "phase-e-minimal-static-v1") {
     state.qualificationTraceUrl = "/tests/perf/trace/fixtures/phase-e-minimal-static-640x480-v1.json";
-    state.qualificationDatasetId = "minimal_ascii";
   } else if (trace === "phase-e-raster-diagnostic-v1") {
     state.qualificationTraceUrl = "/tests/perf/trace/fixtures/phase-e-minimal-static-640x480-v1.json";
-    state.qualificationDatasetId = "raster_diagnostic_v1";
   } else if (trace && /^(?:https?:\/\/|\/|\.\/|\.\.\/)/.test(trace)) {
     state.qualificationTraceUrl = trace;
   }
@@ -3635,6 +3618,11 @@ function benchmarkResultLine(benchmark) {
 
 async function emitBenchmarkArtifacts(benchmark) {
   const scene = state.scene;
+  const datasetIdentity = canonicalDatasetIdentityFromObservation({
+    id: scene.name,
+    source_path: scene.sourcePath,
+    sha256: scene.sourceSha256,
+  });
   if (usingWasm()) {
     state.cameraReceipt = state.wasmRenderer.cameraReceipt();
   }
@@ -3690,8 +3678,7 @@ async function emitBenchmarkArtifacts(benchmark) {
       package_version: API_VERSION,
     },
     dataset: {
-      id: state.qualificationDatasetId ?? scene.name,
-      sha256: scene.sourceSha256,
+      ...datasetIdentity,
       bytes: scene.sourceBytes,
       splat_count: scene.count,
       sh_degree: scene.shDegree,

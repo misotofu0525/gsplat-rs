@@ -193,6 +193,13 @@ terminals. `sort_refreshed=true` does not manufacture or require a retired
 legacy order ticket. Direct/downlevel compatibility routes may still expose
 their historical order-measurement streams.
 
+At the artifact boundary, `dataset.id` is the exact filename identity used by
+the collector (for example, `kitune1.ply`), while `dataset.logical_id` records
+the dataset-manifest identity (`kitsune`). `dataset.source_path`,
+`dataset.sha256`, and the matching streamed-load receipt bind those names to
+one input. A logical alias, alternate path, or conflicting hash is rejected;
+it is not normalized into acceptable evidence.
+
 Successful renderer current-stats terminals expose `S/V/C/D`: complete
 source/residency `S`, near/far candidates `V`, strict conservative
 post-projection contributors `C`, and issued draw count `D`. The collector

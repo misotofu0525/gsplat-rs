@@ -36,6 +36,7 @@ import {
   validateGpuProducerMeasuredSubmissions,
   validateGpuProducerTerminalLedger,
 } from '../src/benchmark-gpu-producer-evidence.mjs';
+import { validateDatasetEvidenceIdentity } from '../src/dataset-identity.mjs';
 
 const execFile = promisify(execFileCallback);
 
@@ -146,17 +147,6 @@ function startHttpServer() {
       }
     }, 400);
   });
-}
-
-function expectedDatasetId(datasetName) {
-  if (datasetName === 'minimal') return 'minimal_ascii.ply';
-  if (datasetName === 'flowers') return 'flowers_1.ply';
-  if (['showcase', 'kitsune', 'kitune', 'fox'].includes(datasetName)) return 'kitune1.ply';
-  if (datasetName === 'diagnostic') return 'raster_diagnostic_v1.ply';
-  if (['bonsai', 'truck', 'garden', 'bicycle'].includes(datasetName)) return `${datasetName}.ply`;
-  const ladder = /^truck-(\d+)$/.exec(datasetName);
-  if (ladder) return `point_cloud-n${ladder[1]}.ply`;
-  return datasetName;
 }
 
 function parseArtifacts(consoleLines) {
@@ -341,12 +331,11 @@ function parseArtifacts(consoleLines) {
     const failure = JSON.parse(adaptiveGpuFailures[0]);
     throw new Error(`strict benchmark observed adaptive GPU failure ${failure.reason ?? 'unknown'}`);
   }
-  const expected = expectedDatasetId(dataset);
-  if (manifest.dataset?.id !== expected) {
-    throw new Error(
-      `benchmark dataset mismatch: requested ${expected}, observed ${manifest.dataset?.id ?? 'missing'}`
-    );
-  }
+  const expectedIdentity = validateDatasetEvidenceIdentity({
+    requestedDataset: dataset,
+    manifestDataset: manifest.dataset,
+  });
+  const expected = expectedIdentity.id;
   if (manifest.renderer?.order_backend_requested !== orderBackend) {
     throw new Error(
       `benchmark backend mismatch: requested ${orderBackend}, observed ` +
@@ -378,9 +367,11 @@ function parseArtifacts(consoleLines) {
       throw new Error(`exact Packed benchmark requires one load receipt; observed ${loadReceipts.length}`);
     }
     const receipt = JSON.parse(loadReceipts[0]);
-    if (receipt.dataset !== expected) {
-      throw new Error(`load receipt dataset mismatch: requested ${expected}, observed ${receipt.dataset}`);
-    }
+    validateDatasetEvidenceIdentity({
+      requestedDataset: dataset,
+      manifestDataset: manifest.dataset,
+      loadReceipt: receipt,
+    });
     const count = manifest.dataset?.splat_count;
     if (!receipt.streamed || receipt.source_count !== count || receipt.decoded_count !== count
         || receipt.encoded_count !== count || receipt.resident_count !== count
