@@ -169,6 +169,7 @@ pub struct SurfaceCompatibilityOrderCpuSuccess {
     pub preprocess_ms: f32,
     pub sort_ms: f32,
     pub frame_complete_ms: f32,
+    pub contributor_count: u32,
     pub exact_contributor_compaction: bool,
     pub dropped_prior: bool,
 }
@@ -185,6 +186,8 @@ pub struct SurfaceCompatibilityOrderGpuSuccess {
     pub gpu_complete_ms: f32,
     pub timestamp_period_ns: Option<f32>,
     pub below_timestamp_resolution: bool,
+    pub visible_count: u32,
+    pub drawn_count: u32,
     pub exact_contributor_compaction: bool,
     pub dropped_prior: bool,
 }
@@ -897,6 +900,7 @@ impl From<AtomicTerminal<SurfaceCpuOrderMeasurement, SurfaceCompatibilityOrderIs
             preprocess_ms: record.payload.preprocess_ms,
             sort_ms: record.payload.sort_ms,
             frame_complete_ms: record.payload.frame_complete_ms,
+            contributor_count: record.payload.contributor_count,
             exact_contributor_compaction: record.payload.exact_contributor_compaction,
             dropped_prior: record.dropped_prior,
         }
@@ -920,6 +924,8 @@ impl From<AtomicTerminal<SurfaceOrderMeasurement, SurfaceCompatibilityOrderIssue
             gpu_complete_ms: record.payload.gpu_complete_ms,
             timestamp_period_ns: record.payload.timestamp_period_ns,
             below_timestamp_resolution: record.payload.below_timestamp_resolution,
+            visible_count: record.payload.visible_count,
+            drawn_count: record.payload.drawn_count,
             exact_contributor_compaction: record.payload.exact_contributor_compaction,
             dropped_prior: record.dropped_prior,
         }
@@ -1185,7 +1191,7 @@ mod tests {
     }
 
     #[test]
-    fn cpu_and_gpu_success_keep_publication_context_and_take_once_counts() {
+    fn gpu_success_terminal_keeps_ffi_counts_without_consuming_take_once_counts() {
         let mut store = CompatibilityEvidenceStore::new();
         observe_ticket(
             &mut store,
@@ -1214,6 +1220,7 @@ mod tests {
             success.issue.requested_backend,
             SurfaceOrderBackend::Adaptive
         );
+        assert_eq!((success.visible_count, success.drawn_count), (91, 91));
         let SurfaceCompatibilityCountsTake::Ready(counts) =
             store.take_counts(SurfaceCompatibilityCountFamily::Order, nonzero(2))
         else {
@@ -1235,7 +1242,11 @@ mod tests {
                 reason: SurfaceCompatibilityCountsUnavailableReason::Consumed,
             })
         );
+    }
 
+    #[test]
+    fn cpu_success_terminal_keeps_contributor_after_take_once_counts_are_consumed() {
+        let mut store = CompatibilityEvidenceStore::new();
         // An odd ticket is deliberately used for CPU: backend identity comes
         // from publication context, never ticket parity.
         observe_ticket(
@@ -1246,6 +1257,19 @@ mod tests {
             SurfaceGpuOrderProducer::PostSort,
         );
         store.publish_cpu_order(cpu_measurement(3));
+        let SurfaceCompatibilityCountsTake::Ready(counts) =
+            store.take_counts(SurfaceCompatibilityCountFamily::Order, nonzero(3))
+        else {
+            panic!("CPU counts must be ready");
+        };
+        assert_eq!(
+            (
+                counts.visible_count,
+                counts.contributor_count,
+                counts.drawn_count
+            ),
+            (90, 70, 70)
+        );
         let SurfaceCompatibilityTerminalPoll::Ready(SurfaceCompatibilityTerminal::OrderCpuSuccess(
             success,
         )) = store.poll_terminal(SurfaceCompatibilityTerminalSelector::OrderCpuSuccess)
@@ -1253,6 +1277,15 @@ mod tests {
             panic!("CPU success must be ready");
         };
         assert_eq!(success.issue.actual_backend, SurfaceOrderBackendUsed::Cpu);
+        assert_eq!(success.contributor_count, 70);
+        assert_eq!(
+            store.take_counts(SurfaceCompatibilityCountFamily::Order, nonzero(3)),
+            SurfaceCompatibilityCountsTake::Unavailable(SurfaceCompatibilityCountsUnavailable {
+                family: SurfaceCompatibilityCountFamily::Order,
+                ticket: nonzero(3),
+                reason: SurfaceCompatibilityCountsUnavailableReason::Consumed,
+            })
+        );
     }
 
     #[test]
