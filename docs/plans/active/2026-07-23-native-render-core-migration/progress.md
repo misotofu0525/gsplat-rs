@@ -63,6 +63,11 @@ M4 = Accepted
 - This visible-task rule is part of the active goal, not a temporary scheduling
   preference. Every later task brief must carry it forward; omitting it does
   not authorize concrete work in a subagent.
+- **Enforcement:** a concrete implementation, review, benchmark, experiment or
+  repair performed through a collaboration subagent is not an acceptable
+  milestone deliverable. It must be discarded or independently repeated in a
+  newly created visible Codex task with its own worktree before root acceptance.
+  The root task records the replacement task and its fixed base in this bundle.
 - The root task owns dependency order, fixed-SHA acceptance, integration and
   critical cross-platform verification. A candidate is never integrated merely
   because its implementation task reports completion.
