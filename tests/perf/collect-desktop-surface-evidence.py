@@ -12,6 +12,7 @@ import os
 import platform
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import uuid
@@ -564,6 +565,19 @@ def write_json(path: Path, value: Any) -> None:
     path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
+def remove_private_cargo_target(stage: Path) -> None:
+    target_dir = stage / "cargo-target"
+    require(
+        target_dir.is_dir() and not target_dir.is_symlink(),
+        "private Cargo target is unavailable before cleanup",
+    )
+    try:
+        shutil.rmtree(target_dir)
+    except OSError as error:
+        raise ValidationError(f"private Cargo target cleanup failed: {error}") from error
+    require(not target_dir.exists(), "private Cargo target cleanup was incomplete")
+
+
 def publish_validated_suite(stage: Path, output: Path, suite: dict[str, Any]) -> None:
     require(suite.get("schema") == SUITE_SCHEMA, "suite schema is not publishable")
     require(suite.get("status") == "ok", "suite status is not publishable")
@@ -575,6 +589,16 @@ def publish_validated_suite(stage: Path, output: Path, suite: dict[str, Any]) ->
         artifact = stage / str(run.get("artifact", ""))
         for name in ("manifest.json", "frames.jsonl", "summary.json", "final-frame.png"):
             require((artifact / name).is_file(), f"{run.get('arm')} is missing {name}")
+    require(not (stage / "cargo-target").exists(), "private Cargo target must not be published")
+    retained_executables = [
+        path.relative_to(stage)
+        for path in stage.rglob("*")
+        if path.is_file() and os.access(path, os.X_OK)
+    ]
+    require(
+        not retained_executables,
+        f"staging contains executable files: {', '.join(map(str, retained_executables))}",
+    )
     require(not output.exists(), f"output appeared during collection: {output}")
     write_json(stage / "suite.json", suite)
     os.rename(stage, output)
@@ -990,6 +1014,8 @@ def collect(args: argparse.Namespace, repo: Path) -> dict[str, Any]:
                 }
             )
         suite.update({"status": "ok", "ended_at_utc": utc_now()})
+        require_binary_sha256(binary, build["binary_sha256"])
+        remove_private_cargo_target(stage)
         publish_validated_suite(stage, output, suite)
         return suite
     except Exception as error:

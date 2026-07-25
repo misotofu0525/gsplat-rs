@@ -513,6 +513,27 @@ class BuildIsolationTests(unittest.TestCase):
 
 
 class CanonicalArtifactTests(unittest.TestCase):
+    def complete_suite(self, stage: pathlib.Path, binary_sha256: str) -> dict[str, object]:
+        runs = []
+        for arm in COLLECTOR.ARMS:
+            artifact = stage / arm / "artifact"
+            artifact.mkdir(parents=True)
+            for name in ("manifest.json", "frames.jsonl", "summary.json", "final-frame.png"):
+                (artifact / name).write_bytes(b"retained")
+            runs.append(
+                {
+                    "arm": arm,
+                    "artifact": f"{arm}/artifact",
+                    "validator_exit_status": 0,
+                }
+            )
+        return {
+            "schema": COLLECTOR.SUITE_SCHEMA,
+            "status": "ok",
+            "build": {"binary_sha256": binary_sha256},
+            "runs": runs,
+        }
+
     def test_built_artifact_passes_repository_validator(self) -> None:
         validated = validate(synthetic_records("adaptive"), "adaptive")
         build = {
@@ -604,6 +625,138 @@ class CanonicalArtifactTests(unittest.TestCase):
                         COLLECTOR.publish_validated_suite(stage, output, suite)
                     self.assertFalse(output.exists())
                     self.assertTrue(stage.is_dir())
+
+    def test_successful_publication_excludes_private_target_and_keeps_attestation(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            stage = root / ".stage"
+            output = root / "canonical"
+            target = stage / "cargo-target"
+            binary = target / "release/desktop-example"
+            binary.parent.mkdir(parents=True)
+            binary.write_bytes(b"fresh-private-build")
+            binary.chmod(0o755)
+            binary_sha256 = COLLECTOR.sha256_file(binary)
+            build_dir = stage / "build"
+            build_dir.mkdir()
+            (build_dir / "command.json").write_text('{"argv":["cargo","build"]}\n')
+            (build_dir / "stdout.log").write_text("compiler artifact attestation\n")
+            (build_dir / "stderr.log").write_text("")
+            suite = self.complete_suite(stage, binary_sha256)
+
+            COLLECTOR.require_binary_sha256(binary, binary_sha256)
+            COLLECTOR.remove_private_cargo_target(stage)
+            COLLECTOR.publish_validated_suite(stage, output, suite)
+
+            self.assertTrue(output.is_dir())
+            self.assertFalse((output / "cargo-target").exists())
+            self.assertFalse(binary.exists())
+            self.assertEqual(
+                (output / "build/command.json").read_text(),
+                '{"argv":["cargo","build"]}\n',
+            )
+            self.assertEqual(
+                (output / "build/stdout.log").read_text(),
+                "compiler artifact attestation\n",
+            )
+            published_suite = json.loads((output / "suite.json").read_text())
+            self.assertEqual(published_suite["build"]["binary_sha256"], binary_sha256)
+            self.assertFalse(
+                any(path.is_file() and path.stat().st_mode & 0o111 for path in output.rglob("*"))
+            )
+
+    def test_private_target_cleanup_failure_is_retained_and_cannot_publish(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            output = root / "canonical"
+            dataset_path = root / "kitsune.ply"
+            dataset_path.write_bytes(b"canonical-dataset")
+            dataset = {**DATASET, "sha256": COLLECTOR.sha256_file(dataset_path)}
+            trace_path = root / "trace.json"
+            trace_path.write_bytes(b"canonical-trace")
+            trace = {
+                **TRACE,
+                "file_sha256": COLLECTOR.sha256_file(trace_path),
+                "path": str(trace_path),
+            }
+            expected_git = {
+                "commit": "a" * 40,
+                "dirty": False,
+                "status_porcelain_sha256": "b" * 64,
+            }
+            args = SimpleNamespace(
+                output=output,
+                warmup=COLLECTOR.CANONICAL_WARMUP,
+                measured=COLLECTOR.CANONICAL_MEASURED,
+                refresh_hz=60.0,
+                dataset_manifest=root / "dataset.json",
+                trace=trace_path,
+            )
+            validated_arms = []
+
+            def build_binary(_repo, stage, _expected_git):
+                build_dir = stage / "build"
+                build_dir.mkdir()
+                (build_dir / "command.json").write_text("{}\n")
+                (build_dir / "stdout.log").write_text("build attestation\n")
+                (build_dir / "stderr.log").write_text("")
+                binary = stage / "cargo-target/release/desktop-example"
+                binary.parent.mkdir(parents=True)
+                binary.write_bytes(b"fresh-private-build")
+                binary.chmod(0o755)
+                return binary
+
+            def run(command, **kwargs):
+                stage = next(root.glob(".canonical.stage-*"))
+                self.assertTrue((stage / "cargo-target/release/desktop-example").is_file())
+                if command[0] == sys.executable:
+                    validated_arms.append(pathlib.Path(command[-1]).parent.name)
+                else:
+                    minimal_png(pathlib.Path(kwargs["cwd"]) / COLLECTOR.FINAL_CAPTURE_IDENTITY)
+                return subprocess.CompletedProcess(command, 0, "", "")
+
+            def build_artifact(directory, *, arm, **_kwargs):
+                for name in ("manifest.json", "frames.jsonl", "summary.json"):
+                    (directory / name).write_bytes(b"retained")
+                return {
+                    "run_id": f"run-{arm}",
+                    "renderer": {"exact_plan_actual": arm},
+                    "image": {"sha256": arm},
+                }
+
+            with (
+                mock.patch.object(COLLECTOR, "git_receipt", return_value=expected_git),
+                mock.patch.object(
+                    COLLECTOR, "read_dataset_manifest", return_value=(dataset, dataset_path)
+                ),
+                mock.patch.object(COLLECTOR, "read_trace", return_value=trace),
+                mock.patch.object(COLLECTOR, "build_desktop_binary", side_effect=build_binary),
+                mock.patch.object(COLLECTOR, "package_version", return_value="0.1.3"),
+                mock.patch.object(COLLECTOR, "host_device_name", return_value=None),
+                mock.patch.object(COLLECTOR, "validate_run_log", return_value={}),
+                mock.patch.object(COLLECTOR, "build_artifact", side_effect=build_artifact),
+                mock.patch.object(COLLECTOR.subprocess, "run", side_effect=run),
+                mock.patch.object(
+                    COLLECTOR.shutil,
+                    "rmtree",
+                    side_effect=PermissionError("simulated cleanup denial"),
+                ),
+                mock.patch.object(COLLECTOR, "publish_validated_suite") as publish,
+            ):
+                with self.assertRaisesRegex(
+                    COLLECTOR.ValidationError, "retained_failed_evidence"
+                ):
+                    COLLECTOR.collect(args, ROOT)
+
+            self.assertFalse(output.exists())
+            publish.assert_not_called()
+            self.assertEqual(validated_arms, list(COLLECTOR.ARMS))
+            failed = list(root.glob("canonical.failed-*"))
+            self.assertEqual(len(failed), 1)
+            self.assertTrue((failed[0] / "cargo-target/release/desktop-example").is_file())
+            suite = json.loads((failed[0] / "suite.json").read_text())
+            self.assertEqual(suite["status"], "failed")
+            self.assertIn("private Cargo target cleanup failed", suite["error"])
 
     def test_raw_log_revalidates_after_atomic_publication(self) -> None:
         records = synthetic_records("cpu_post_sort")
