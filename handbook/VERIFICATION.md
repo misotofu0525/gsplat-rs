@@ -121,7 +121,8 @@ observed values and includes the direct resource preflight report.
 For M2b real-window evidence, use the qualified Kitsune manifest and the
 committed 1920x1080 trace. The output directory must be fresh and ignored. The
 collector requires a clean Git tree and builds the release viewer itself with
-the locked workspace before it stages or runs any evidence arm:
+the locked workspace into a newly empty collector-owned Cargo target inside the
+staging transaction before it runs any evidence arm:
 
 ```bash
 PYTHONDONTWRITEBYTECODE=1 python3 tests/perf/test_desktop_surface_evidence.py

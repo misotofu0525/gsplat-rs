@@ -795,6 +795,10 @@ def package_version(repo: Path) -> str:
 def build_desktop_binary(repo: Path, stage: Path, expected_git: dict[str, Any]) -> Path:
     build_dir = stage / "build"
     build_dir.mkdir()
+    target_dir = stage / "cargo-target"
+    require(not target_dir.exists(), f"private Cargo target already exists: {target_dir}")
+    target_dir.mkdir()
+    require(not any(target_dir.iterdir()), "private Cargo target is not empty")
     command = [
         "cargo",
         "build",
@@ -806,10 +810,19 @@ def build_desktop_binary(repo: Path, stage: Path, expected_git: dict[str, Any]) 
         "interactive-viewer",
         "--message-format=json-render-diagnostics",
     ]
-    write_json(build_dir / "command.json", {"argv": command})
+    build_environment = os.environ.copy()
+    build_environment["CARGO_TARGET_DIR"] = str(target_dir.resolve())
+    write_json(
+        build_dir / "command.json",
+        {
+            "argv": command,
+            "environment": {"CARGO_TARGET_DIR": build_environment["CARGO_TARGET_DIR"]},
+        },
+    )
     completed = subprocess.run(
         command,
         cwd=repo,
+        env=build_environment,
         check=False,
         text=True,
         stdout=subprocess.PIPE,
@@ -841,6 +854,12 @@ def build_desktop_binary(repo: Path, stage: Path, expected_git: dict[str, Any]) 
         "cargo did not attest exactly one desktop-example executable",
     )
     binary = next(iter(executables))
+    try:
+        binary.relative_to(target_dir.resolve())
+    except ValueError as error:
+        raise ValidationError(
+            "Cargo-reported desktop executable is outside the private target root"
+        ) from error
     require(binary.is_file() and os.access(binary, os.X_OK), "collector-built binary is unavailable")
     require(git_receipt(repo) == expected_git, "git receipt changed during the canonical build")
     return binary

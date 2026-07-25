@@ -13,6 +13,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from types import SimpleNamespace
 from unittest import mock
 
 
@@ -371,6 +372,144 @@ class CanonicalAdmissionTests(unittest.TestCase):
             with self.subTest(warmup=warmup, measured=measured):
                 with self.assertRaisesRegex(COLLECTOR.ValidationError, "warmup=20 and measured=80"):
                     COLLECTOR.validate_canonical_schedule(warmup, measured)
+
+
+class BuildIsolationTests(unittest.TestCase):
+    def test_build_uses_new_empty_private_target_and_ignores_shared_poison(self) -> None:
+        expected_git = {
+            "commit": "a" * 40,
+            "dirty": False,
+            "status_porcelain_sha256": "b" * 64,
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            repo = root / "repo"
+            stage = root / ".stage"
+            repo.mkdir()
+            stage.mkdir()
+            shared_binary = repo / "target/release/desktop-example"
+            shared_binary.parent.mkdir(parents=True)
+            shared_binary.write_bytes(b"timestamp-preserved-poison")
+            shared_binary.chmod(0o755)
+
+            def cargo_build(command, **kwargs):
+                self.assertEqual(command[:3], ["cargo", "build", "--locked"])
+                target_dir = pathlib.Path(kwargs["env"]["CARGO_TARGET_DIR"])
+                self.assertEqual(target_dir, (stage / "cargo-target").resolve())
+                self.assertTrue(target_dir.is_dir())
+                self.assertEqual(list(target_dir.iterdir()), [])
+                binary = target_dir / "release/desktop-example"
+                binary.parent.mkdir(parents=True)
+                binary.write_bytes(b"fresh-private-build")
+                binary.chmod(0o755)
+                message = {
+                    "reason": "compiler-artifact",
+                    "target": {"name": "desktop-example", "kind": ["bin"]},
+                    "executable": str(binary),
+                }
+                return subprocess.CompletedProcess(command, 0, json.dumps(message), "")
+
+            with (
+                mock.patch.object(COLLECTOR.subprocess, "run", side_effect=cargo_build),
+                mock.patch.object(COLLECTOR, "git_receipt", return_value=expected_git),
+            ):
+                binary = COLLECTOR.build_desktop_binary(repo, stage, expected_git)
+
+            self.assertEqual(binary.read_bytes(), b"fresh-private-build")
+            self.assertEqual(shared_binary.read_bytes(), b"timestamp-preserved-poison")
+            command_receipt = json.loads((stage / "build/command.json").read_text())
+            self.assertEqual(
+                command_receipt["environment"]["CARGO_TARGET_DIR"],
+                str((stage / "cargo-target").resolve()),
+            )
+
+    def test_preexisting_private_target_content_fails_before_cargo(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            repo = root / "repo"
+            stage = root / ".stage"
+            repo.mkdir()
+            (stage / "cargo-target").mkdir(parents=True)
+            (stage / "cargo-target/poison").write_bytes(b"poison")
+            cargo = mock.Mock()
+            with mock.patch.object(COLLECTOR.subprocess, "run", cargo):
+                with self.assertRaisesRegex(
+                    COLLECTOR.ValidationError, "private Cargo target already exists"
+                ):
+                    COLLECTOR.build_desktop_binary(repo, stage, {})
+            cargo.assert_not_called()
+
+    def test_cargo_executable_outside_private_target_is_rejected(self) -> None:
+        expected_git = {
+            "commit": "a" * 40,
+            "dirty": False,
+            "status_porcelain_sha256": "b" * 64,
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            repo = root / "repo"
+            stage = root / ".stage"
+            repo.mkdir()
+            stage.mkdir()
+            shared_binary = repo / "target/release/desktop-example"
+            shared_binary.parent.mkdir(parents=True)
+            shared_binary.write_bytes(b"poison")
+            shared_binary.chmod(0o755)
+            message = {
+                "reason": "compiler-artifact",
+                "target": {"name": "desktop-example", "kind": ["bin"]},
+                "executable": str(shared_binary),
+            }
+            completed = subprocess.CompletedProcess([], 0, json.dumps(message), "")
+            with mock.patch.object(COLLECTOR.subprocess, "run", return_value=completed):
+                with self.assertRaisesRegex(
+                    COLLECTOR.ValidationError, "outside the private target root"
+                ):
+                    COLLECTOR.build_desktop_binary(repo, stage, expected_git)
+
+    def test_build_failure_starts_no_arm_and_publishes_nothing(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            output = root / "canonical"
+            dataset_path = root / "kitsune.ply"
+            trace_path = root / "trace.json"
+            trace = {**TRACE, "path": str(trace_path)}
+            expected_git = {
+                "commit": "a" * 40,
+                "dirty": False,
+                "status_porcelain_sha256": "b" * 64,
+            }
+            args = SimpleNamespace(
+                output=output,
+                warmup=COLLECTOR.CANONICAL_WARMUP,
+                measured=COLLECTOR.CANONICAL_MEASURED,
+                refresh_hz=60.0,
+                dataset_manifest=root / "dataset.json",
+                trace=trace_path,
+            )
+            with (
+                mock.patch.object(COLLECTOR, "git_receipt", return_value=expected_git),
+                mock.patch.object(
+                    COLLECTOR, "read_dataset_manifest", return_value=(DATASET, dataset_path)
+                ),
+                mock.patch.object(COLLECTOR, "read_trace", return_value=trace),
+                mock.patch.object(
+                    COLLECTOR,
+                    "build_desktop_binary",
+                    side_effect=COLLECTOR.ValidationError("private target setup failed"),
+                ),
+                mock.patch.object(COLLECTOR, "publish_validated_suite") as publish,
+            ):
+                with self.assertRaisesRegex(COLLECTOR.ValidationError, "private target setup failed"):
+                    COLLECTOR.collect(args, ROOT)
+
+            self.assertFalse(output.exists())
+            publish.assert_not_called()
+            failed = list(root.glob("canonical.failed-*"))
+            self.assertEqual(len(failed), 1)
+            suite = json.loads((failed[0] / "suite.json").read_text())
+            self.assertEqual(suite["runs"], [])
+            self.assertFalse(any((failed[0] / arm).exists() for arm in COLLECTOR.ARMS))
 
 
 class CanonicalArtifactTests(unittest.TestCase):
