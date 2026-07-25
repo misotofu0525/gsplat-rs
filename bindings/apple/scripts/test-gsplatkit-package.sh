@@ -79,5 +79,6 @@ echo "simulator=$SIMULATOR_ID"
     -derivedDataPath "$ROOT_DIR/target/gsplatkit-package-tests" \
     -only-testing:GsplatKitTests/CurrentStatsABIContractTests \
     -only-testing:GsplatKitTests/CurrentStatsTests \
+    -only-testing:GsplatKitTests/ProjectedSubmissionContractTests \
     test
 )

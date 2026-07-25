@@ -24,18 +24,12 @@ private let touchEpsilon: Float = 0.0001
 private let zoomEpsilon: Float = 0.003
 private let targetFrameIntervalSeconds = 1.0 / 60.0
 private let currentStatsUISampleInterval = 15
-private let firstProjectedDrawTicket: UInt64 = 1 << 52
-private let maximumJavaScriptSafeInteger: UInt64 = (1 << 53) - 1
 private let showcaseText = UIColor(red: 0.96, green: 0.95, blue: 0.91, alpha: 1)
 private let showcaseMuted = UIColor(red: 0.72, green: 0.70, blue: 0.66, alpha: 1)
 private let showcaseAccent = UIColor(red: 0.83, green: 0.96, blue: 0.45, alpha: 1)
 
 private func validProjectedV1Header(size: UInt32, version: UInt32, expected: Int) -> Bool {
     size == UInt32(expected) && version == 1
-}
-
-private func isProjectedTicket(_ ticket: UInt64) -> Bool {
-    (firstProjectedDrawTicket...maximumJavaScriptSafeInteger).contains(ticket)
 }
 
 private struct RenderCommand {
@@ -1136,7 +1130,7 @@ final class ExampleViewController: UIViewController, UIGestureRecognizerDelegate
                 ticket: measurement.ticket,
                 cameraRevision: measurement.camera_revision
             ) else { return false }
-            guard isProjectedTicket(measurement.ticket),
+            guard isProjectedDrawTicket(measurement.ticket),
                   measurement.frame_complete_ms.isFinite,
                   measurement.frame_complete_ms >= 0,
                   (1...2).contains(measurement.execution),
@@ -1202,7 +1196,7 @@ final class ExampleViewController: UIViewController, UIGestureRecognizerDelegate
                 return false
             }
             if available == 0 { return true }
-            guard isProjectedTicket(failure.ticket),
+            guard isProjectedDrawTicket(failure.ticket),
                   (1...3).contains(failure.reason),
                   (1...2).contains(failure.execution),
                   failure.order_backend <= 1,
@@ -1463,45 +1457,35 @@ final class ExampleViewController: UIViewController, UIGestureRecognizerDelegate
         submission.struct_size = UInt32(MemoryLayout<GsplatSurfaceProjectedSubmissionV1>.size)
         submission.version = 1
         let rc = gsplat_surface_renderer_get_projected_submission_v1(renderer, &submission)
-        guard rc == 0,
-              validProjectedV1Header(
-                  size: submission.struct_size,
-                  version: submission.version,
-                  expected: MemoryLayout<GsplatSurfaceProjectedSubmissionV1>.size
-              ),
-              submission.requested_policy == projectedPolicyValue(benchmarkConfig.projectedPolicy),
-              (1...2).contains(submission.actual_execution),
-              submission.order_backend <= 1,
-              submission.adaptive_state <= 7,
-              submission.flags & ~UInt32(0b111) == 0,
-              submission.reserved == 0 else {
+        guard rc == 0 else {
             print(
                 "IOS_PROJECTED_SUBMISSION_FAILED rc=\(rc) error=\(errorMessage(rc))"
             )
             fflush(stdout)
             return nil
         }
-        let ticketIssued = submission.flags & 1 != 0
-        let ringBusy = submission.flags & (1 << 1) != 0
-        let surfaceUnavailable = submission.flags & (1 << 2) != 0
-        guard !(ringBusy && surfaceUnavailable),
-              ticketIssued
-                ? (isProjectedTicket(submission.ticket) && !ringBusy && !surfaceUnavailable)
-                : submission.ticket == 0 else {
-            print("IOS_PROJECTED_SUBMISSION_FAILED invalid ticket/unsampled flags")
+        do {
+            let decoded = try GsplatProjectedDrawSubmission(submission)
+            guard decoded.requestedPolicy.rawValue == projectedPolicyValue(
+                benchmarkConfig.projectedPolicy
+            ) else {
+                throw GsplatKitError(
+                    code: gsplatInvalidArgument,
+                    operation: "gsplat_surface_renderer_get_projected_submission_v1",
+                    detail: "native requested policy does not match the configured policy"
+                )
+            }
+        } catch {
+            print(
+                "IOS_PROJECTED_SUBMISSION_FAILED rc=\(rc) error=\(error) " +
+                "size=\(submission.struct_size) version=\(submission.version) " +
+                "ticket=\(submission.ticket) camera=\(submission.camera_revision) " +
+                "requested=\(submission.requested_policy) actual=\(submission.actual_execution) " +
+                "order=\(submission.order_backend) adaptive=\(submission.adaptive_state) " +
+                "flags=\(submission.flags) reserved=\(submission.reserved)"
+            )
             fflush(stdout)
             return nil
-        }
-        if submission.requested_policy != 3 {
-            guard submission.actual_execution == submission.requested_policy,
-                  submission.adaptive_state == 0,
-                  !ticketIssued,
-                  !ringBusy,
-                  !surfaceUnavailable else {
-                print("IOS_PROJECTED_SUBMISSION_FAILED forced policy fabricated telemetry")
-                fflush(stdout)
-                return nil
-            }
         }
         return submission
     }

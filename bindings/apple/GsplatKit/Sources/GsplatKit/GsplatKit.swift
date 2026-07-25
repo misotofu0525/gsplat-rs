@@ -13,8 +13,6 @@ import UIKit
 private let gsplatOk: Int32 = 0
 let gsplatInvalidArgument: Int32 = 1
 private let gsplatUnsupported: Int32 = 4
-private let firstProjectedDrawTicket: UInt64 = 1 << 52
-private let maximumJavaScriptSafeInteger: UInt64 = (1 << 53) - 1
 
 public struct GsplatKitError: Error, CustomStringConvertible, Equatable {
     public let code: Int32
@@ -298,7 +296,7 @@ public struct GsplatProjectedDrawSubmission: Equatable {
     public let unsampledReason: GsplatProjectedDrawUnsampledReason?
     public let flags: UInt32
 
-    fileprivate init(_ native: GsplatSurfaceProjectedSubmissionV1) throws {
+    init(_ native: GsplatSurfaceProjectedSubmissionV1) throws {
         try requireProjectedV1Header(
             size: native.struct_size,
             version: native.version,
@@ -1777,8 +1775,9 @@ private func requireProjectedV1Header(
     }
 }
 
-private func isProjectedDrawTicket(_ ticket: UInt64) -> Bool {
-    (firstProjectedDrawTicket...maximumJavaScriptSafeInteger).contains(ticket)
+// Projected tickets are opaque ABI identities; only zero means "no ticket".
+func isProjectedDrawTicket(_ ticket: UInt64) -> Bool {
+    ticket != 0
 }
 
 private func requireProjectedAvailability(_ available: UInt32, operation: String) throws {

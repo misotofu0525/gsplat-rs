@@ -135,9 +135,10 @@ missing V/C/D evidence.
 `drainProjectedDrawTerminals()` holds the renderer ownership lock across both
 terminal queues and takes each success's V/C/D receipt before another native
 poll. All V1 calls initialize and verify `struct_size/version`; projected
-tickets are also rejected unless they remain in the independent, JavaScript-safe
-`[2^52, 2^53 - 1]` namespace. Forced Candidate/Compact receipts must report the
-same actual execution, disabled Adaptive state, and no fabricated ticket.
+tickets are opaque ABI identities and are rejected when zero or when they do
+not match the independent projected submission/terminal ledger. Forced
+Candidate/Compact receipts must report the same actual execution, disabled
+Adaptive state, and no fabricated ticket.
 `presentation.fullResolution` is true only after an actual presentation whose
 requested, Surface, internal-render, and presented pixel dimensions all match;
 the native Surface path does not use dynamic resolution or upscaling.

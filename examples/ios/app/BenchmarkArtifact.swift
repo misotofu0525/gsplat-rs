@@ -8,8 +8,6 @@ private let gpuExactContributorDraw: UInt32 = 1 << 6
 private let cpuExactContributorDraw: UInt32 = 1 << 1
 private let cpuContributorCountValid: UInt32 = 1 << 2
 private let orderCountsExactContributorDraw: UInt32 = 1 << 0
-private let firstProjectedDrawTicket: UInt64 = 1 << 52
-private let maximumJavaScriptSafeInteger: UInt64 = (1 << 53) - 1
 private let projectedSubmissionTicketIssued: UInt32 = 1 << 0
 private let projectedSubmissionRingBusy: UInt32 = 1 << 1
 private let projectedSubmissionSurfaceUnavailable: UInt32 = 1 << 2
@@ -305,7 +303,6 @@ final class SurfaceBenchmark {
             return
         }
         guard submission.ticket > 0,
-              submission.ticket < firstProjectedDrawTicket,
               !ringBusy,
               !surfaceUnavailable else {
             orderLedgerErrors.append("issued order ticket has invalid submission flags")
@@ -362,7 +359,7 @@ final class SurfaceBenchmark {
         }
 
         if ticketIssued {
-            guard isProjectedTicket(submission.ticket), !ringBusy, !surfaceUnavailable else {
+            guard isProjectedDrawTicket(submission.ticket), !ringBusy, !surfaceUnavailable else {
                 projectedLedgerErrors.append("Adaptive projected submission issued an invalid ticket")
                 return
             }
@@ -614,7 +611,7 @@ final class SurfaceBenchmark {
         ticket: UInt64,
         identity: ProjectedTerminalIdentity
     ) -> Bool {
-        guard isProjectedTicket(ticket),
+        guard isProjectedDrawTicket(ticket),
               issuedProjectedTickets[ticket] == IssuedProjectedTicket(
                   cameraRevision: identity.cameraRevision,
                   execution: identity.execution,
@@ -1923,8 +1920,4 @@ private func sha256File(_ path: String) -> String? {
 
 private func traceHash() -> String {
     SHA256.hash(data: Data("gsplat-ios-orbit-trace-v1".utf8)).map { String(format: "%02x", $0) }.joined()
-}
-
-private func isProjectedTicket(_ ticket: UInt64) -> Bool {
-    (firstProjectedDrawTicket...maximumJavaScriptSafeInteger).contains(ticket)
 }
