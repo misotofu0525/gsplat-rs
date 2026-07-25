@@ -22,6 +22,20 @@ final class ProjectedSubmissionContractTests: XCTestCase {
         )
     }
 
+    func testTicketlessAdaptiveReceiptKeepsConfiguredPolicySeparateFromExecution() throws {
+        var native = validAdaptiveSubmission(ticket: 0)
+        native.adaptive_state = 0
+        native.flags = 0
+
+        let submission = try GsplatProjectedDrawSubmission(native)
+
+        XCTAssertNil(submission.ticket)
+        XCTAssertEqual(submission.requestedPolicy, .adaptive)
+        XCTAssertEqual(submission.actualExecution, .candidate)
+        XCTAssertEqual(submission.adaptiveState, .disabled)
+        XCTAssertNil(submission.unsampledReason)
+    }
+
     private func validAdaptiveSubmission(
         ticket: UInt64
     ) -> GsplatSurfaceProjectedSubmissionV1 {

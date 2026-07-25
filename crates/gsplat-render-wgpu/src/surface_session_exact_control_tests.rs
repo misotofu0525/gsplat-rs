@@ -168,6 +168,7 @@ struct ExactSessionBoundarySnapshot {
     plan_receipt: Option<ExactSurfacePlanState>,
     order_backend: SurfaceOrderBackend,
     projected_draw_policy: SurfaceProjectedDrawPolicy,
+    projected_draw_policy_requested: SurfaceProjectedDrawPolicy,
 }
 
 struct ExactSessionBoundary {
@@ -175,6 +176,7 @@ struct ExactSessionBoundary {
     plan_receipt: Option<ExactSurfacePlanState>,
     order_backend: SurfaceOrderBackend,
     projected_draw_policy: SurfaceProjectedDrawPolicy,
+    projected_draw_policy_requested: SurfaceProjectedDrawPolicy,
 }
 
 impl ExactSessionBoundary {
@@ -189,6 +191,7 @@ impl ExactSessionBoundary {
             plan_receipt: Some(state),
             order_backend: state.order_backend(),
             projected_draw_policy: state.projected_policy(),
+            projected_draw_policy_requested: SurfaceProjectedDrawPolicy::Adaptive,
         }
     }
 
@@ -223,7 +226,9 @@ impl ExactSessionBoundary {
         policy: SurfaceProjectedDrawPolicy,
     ) -> Result<(), RendererError> {
         let next = self.current_state().with_projected_policy(policy)?;
-        self.commit(next)
+        self.commit(next)?;
+        self.projected_draw_policy_requested = policy;
+        Ok(())
     }
 
     fn set_gpu_order_producer(
@@ -250,6 +255,7 @@ impl ExactSessionBoundary {
             plan_receipt: self.plan_receipt,
             order_backend: self.order_backend,
             projected_draw_policy: self.projected_draw_policy,
+            projected_draw_policy_requested: self.projected_draw_policy_requested,
         }
     }
 }
@@ -429,6 +435,24 @@ fn capable_exact_surface_prepare_boundary_retains_all_three_plans_and_setters() 
         session
             .set_order_backend(SurfaceOrderBackend::Gpu)
             .expect("force capable GPU PostSort");
+        session
+            .set_projected_draw_policy(SurfaceProjectedDrawPolicy::Adaptive)
+            .expect("retain configured Adaptive projected policy");
+        let adaptive_requested = session.snapshot();
+        assert_eq!(
+            adaptive_requested.plan_receipt,
+            Some(ExactSurfacePlanState::GpuPostSort)
+        );
+        assert_eq!(
+            adaptive_requested.projected_draw_policy,
+            SurfaceProjectedDrawPolicy::Candidate,
+            "the forced GPU plan still executes Candidate"
+        );
+        assert_eq!(
+            adaptive_requested.projected_draw_policy_requested,
+            SurfaceProjectedDrawPolicy::Adaptive,
+            "the public receipt preserves the configured policy"
+        );
         session
             .set_gpu_order_producer(SurfaceGpuOrderProducer::Preproject)
             .expect("force capable GPU Preproject");

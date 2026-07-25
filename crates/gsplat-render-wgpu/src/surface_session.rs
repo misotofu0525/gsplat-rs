@@ -200,8 +200,9 @@ impl ExactSurfacePlanState {
                 }
             },
             // Binding defaults apply `order` first and then Adaptive. Preserve
-            // that forced backend while reporting its canonical Candidate
-            // tuple; only an already-whole-plan Adaptive request remains D.
+            // that forced backend and its canonical Candidate execution; the
+            // independently configured policy is retained by the session for
+            // public receipts.
             SurfaceProjectedDrawPolicy::Adaptive => Ok(match self {
                 Self::CpuPostSort => Self::CpuPostSort,
                 Self::GpuPostSort | Self::GpuPreproject => Self::GpuPostSort,
@@ -1712,6 +1713,10 @@ pub struct SurfaceRenderSession {
     sort_interval: u32,
     order_backend: SurfaceOrderBackend,
     projected_draw_policy: SurfaceProjectedDrawPolicy,
+    /// Configured public policy for Exact. The renderer-owned four-state plan
+    /// remains the execution owner, so a forced CPU/GPU plan may execute
+    /// Candidate while this receipt correctly remains Adaptive.
+    exact_projected_draw_policy_requested: Option<SurfaceProjectedDrawPolicy>,
     gpu_producer_measurement: SurfaceGpuProducerMeasurementControl,
     presented_order_backend: SurfaceOrderBackendUsed,
     gpu_order_initialized: bool,
@@ -2097,6 +2102,8 @@ impl SurfaceRenderSession {
             sort_interval: DEFAULT_SURFACE_SORT_INTERVAL,
             order_backend: SurfaceOrderBackend::Cpu,
             projected_draw_policy: SurfaceProjectedDrawPolicy::Adaptive,
+            exact_projected_draw_policy_requested: exact_plan_receipt
+                .map(|_| SurfaceProjectedDrawPolicy::Adaptive),
             gpu_producer_measurement: SurfaceGpuProducerMeasurementControl::default(),
             presented_order_backend: SurfaceOrderBackendUsed::Cpu,
             gpu_order_initialized: false,
@@ -2185,6 +2192,8 @@ impl SurfaceRenderSession {
             sort_interval: DEFAULT_SURFACE_SORT_INTERVAL,
             order_backend: SurfaceOrderBackend::Cpu,
             projected_draw_policy: SurfaceProjectedDrawPolicy::Adaptive,
+            exact_projected_draw_policy_requested: exact_plan_receipt
+                .map(|_| SurfaceProjectedDrawPolicy::Adaptive),
             gpu_producer_measurement: SurfaceGpuProducerMeasurementControl::default(),
             presented_order_backend: SurfaceOrderBackendUsed::Cpu,
             gpu_order_initialized: false,
@@ -2317,8 +2326,8 @@ impl SurfaceRenderSession {
     }
 
     pub const fn projected_draw_policy(&self) -> SurfaceProjectedDrawPolicy {
-        if let Some(state) = self.exact_plan_receipt {
-            return state.projected_policy();
+        if let Some(requested) = self.exact_projected_draw_policy_requested {
+            return requested;
         }
         self.projected_draw_policy
     }
@@ -2468,7 +2477,9 @@ impl SurfaceRenderSession {
         policy: SurfaceProjectedDrawPolicy,
     ) -> Result<(), RendererError> {
         if let Some(current) = self.exact_plan_state() {
-            return self.commit_exact_plan_state(current.with_projected_policy(policy)?);
+            self.commit_exact_plan_state(current.with_projected_policy(policy)?)?;
+            self.exact_projected_draw_policy_requested = Some(policy);
+            return Ok(());
         }
         if policy != SurfaceProjectedDrawPolicy::Compact
             && (self.gpu_order_producer() == SurfaceGpuOrderProducer::Preproject
