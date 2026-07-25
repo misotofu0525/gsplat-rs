@@ -23,6 +23,32 @@ SCHEMA = "gsplat-benchmark/v1"
 SUITE_SCHEMA = "gsplat-surface-evidence/v1"
 COUNT_SEMANTICS = "candidate_visible_contributor_issued_v1"
 FORMAL_SIZE = (1920, 1080)
+CANONICAL_WARMUP = 20
+CANONICAL_MEASURED = 80
+CANONICAL_DATASET_MANIFEST = Path("tests/perf/datasets/kitsune.json")
+CANONICAL_TRACE_PATH = Path(
+    "tests/perf/trace/fixtures/quality/candidate-kitsune-quality-1920x1080-v1.json"
+)
+CANONICAL_DATASET = {
+    "schema": "gsplat-dataset/v1",
+    "id": "kitsune",
+    "qualification_status": "qualified",
+    "local_path": "tests/datasets/external/wakufactory_kitune/kitune1.ply",
+    "sha256": "3bea1ec48ea91861fc8fad1df688a2cdb1db9b103735498b35d16d146f2551a2",
+    "bytes": 65_892_441,
+    "splat_count": 279_199,
+    "sh_degree": 3,
+}
+CANONICAL_TRACE = {
+    "trace_id": "candidate-kitsune-quality-2view-1920x1080-v1",
+    "content_sha256": "8821c193506cdf7d67aa200248a45088c4750a3cd128ee29f6e2dc2d3a5bdb99",
+    "file_sha256": "c996e5fe757d9d6661cce9f1dc303edcfbe8e12059e08bf8ab9f8eb566e54657",
+    "width": 1920,
+    "height": 1080,
+    "frame_indices": (0, 1),
+    "frame_timestamps_ns": (0, 16_666_667),
+}
+FINAL_CAPTURE_IDENTITY = "final-frame.png"
 RUN_TIMEOUT_SECONDS = 30 * 60
 ARMS = ("cpu_post_sort", "gpu_post_sort", "gpu_preproject", "adaptive")
 CLI_PLAN = {
@@ -47,9 +73,6 @@ PREFIXES = {
     "capture": "SURFACE_EXACT_EVIDENCE_CAPTURE ",
     "summary": "SURFACE_EXACT_EVIDENCE_SUMMARY ",
 }
-HEX_64 = re.compile(r"^[0-9a-f]{64}$")
-
-
 class ValidationError(ValueError):
     """The run cannot be published as canonical evidence."""
 
@@ -260,7 +283,8 @@ def validate_run_log(
         require(parse_uint(record.get("playback_index", ""), f"{context}.playback_index") == index,
                 f"{context} playback index mismatch")
         phase = record.get("phase")
-        require(phase in ("warmup", "measure"), f"{context}.phase is invalid")
+        expected_phase = "warmup" if index < warmup else "measure"
+        require(phase == expected_phase, f"{context}.phase violates the canonical schedule")
         elapsed = parse_uint(record.get("elapsed_ns", ""), f"{context}.elapsed_ns")
         require(elapsed >= previous_elapsed, f"{context}.elapsed_ns is not monotonic")
         previous_elapsed = elapsed
@@ -276,6 +300,21 @@ def validate_run_log(
         call_ms = parse_float(record.get("call_ms", ""), f"{context}.call_ms")
         frame_wall_ms = parse_float(record.get("frame_wall_ms", ""), f"{context}.frame_wall_ms")
         last_trace_frame = parse_uint(record.get("trace_frame", ""), f"{context}.trace_frame")
+        phase_frame_index = index if phase == "warmup" else index - warmup
+        expected_trace_frame = trace["frame_indices"][
+            phase_frame_index % len(trace["frame_indices"])
+        ]
+        require(last_trace_frame == expected_trace_frame, f"{context}.trace_frame schedule mismatch")
+        trace_timestamp_ns = parse_uint(
+            record.get("trace_timestamp_ns", ""), f"{context}.trace_timestamp_ns"
+        )
+        expected_timestamp_ns = trace["frame_timestamps_ns"][
+            phase_frame_index % len(trace["frame_timestamps_ns"])
+        ]
+        require(
+            trace_timestamp_ns == expected_timestamp_ns,
+            f"{context}.trace_timestamp_ns schedule mismatch",
+        )
         if phase == "measure":
             sample = parse_uint(record.get("measured_sample", ""), f"{context}.measured_sample")
             require(sample == len(measured_records), f"{context} measured sample index mismatch")
@@ -294,6 +333,11 @@ def validate_run_log(
                     "current_stats_ticket": counts["ticket"],
                     "presentation_sequence": counts["presentation_sequence"],
                 }
+            )
+        else:
+            require(
+                record.get("measured_sample") == "none",
+                f"{context}.measured_sample must be none during warmup",
             )
     require(len(measured_records) == measured, "measured frame count mismatch")
 
@@ -318,9 +362,15 @@ def validate_run_log(
     if arm in FORCED_ACTUAL:
         require(capture_counts["actual_plan"] == FORCED_ACTUAL[arm], "capture forced plan drift")
     actual_plans.add(capture_counts["actual_plan"])
+    require(
+        capture.get("path") == FINAL_CAPTURE_IDENTITY,
+        "capture.path must be the stable artifact-relative final-frame.png identity",
+    )
     if capture_path is not None:
-        require(Path(capture.get("path", "")).resolve() == capture_path.resolve(),
-                "capture.path does not match the collector path")
+        require(
+            (capture_path.parent / capture["path"]).resolve() == capture_path.resolve(),
+            "capture.path does not resolve to the artifact image",
+        )
 
     assert_fields(
         summary,
@@ -372,38 +422,96 @@ def read_json(path: Path, context: str) -> dict[str, Any]:
     return value
 
 
+def require_canonical_path(repo: Path, path: Path, canonical: Path, context: str) -> Path:
+    expected = (repo / canonical).resolve()
+    require(path.resolve() == expected, f"{context} must be {canonical}")
+    return expected
+
+
+def validate_canonical_dataset_manifest(manifest: dict[str, Any]) -> None:
+    for key, expected in CANONICAL_DATASET.items():
+        require(
+            manifest.get(key) == expected,
+            f"dataset manifest {key} does not match the qualified Kitsune contract",
+        )
+
+
 def read_dataset_manifest(repo: Path, path: Path) -> tuple[dict[str, Any], Path]:
+    path = require_canonical_path(
+        repo, path, CANONICAL_DATASET_MANIFEST, "dataset manifest"
+    )
     manifest = read_json(path, "dataset manifest")
-    require(manifest.get("schema") == "gsplat-dataset/v1", "invalid dataset manifest schema")
-    for key in ("id", "local_path", "sha256", "bytes", "splat_count", "sh_degree"):
-        require(key in manifest, f"dataset manifest is missing {key}")
-    require(HEX_64.fullmatch(str(manifest["sha256"])) is not None, "invalid dataset SHA-256")
+    validate_canonical_dataset_manifest(manifest)
     dataset_path = (repo / str(manifest["local_path"])).resolve()
     require(dataset_path.is_file(), f"dataset is unavailable: {dataset_path}")
     require(sha256_file(dataset_path) == manifest["sha256"], "dataset SHA-256 mismatch")
     require(dataset_path.stat().st_size == manifest["bytes"], "dataset byte count mismatch")
-    require(manifest["sh_degree"] == 3, "formal M2b evidence requires source SH3")
     return manifest, dataset_path
 
 
-def read_trace(path: Path) -> dict[str, Any]:
-    value = read_json(path, "camera trace")
+def validate_canonical_trace(value: dict[str, Any], file_sha256: str) -> dict[str, Any]:
     display = value.get("display")
     require(isinstance(display, dict), "trace.display must be an object")
-    require((display.get("width"), display.get("height")) == FORMAL_SIZE,
-            "formal M2b evidence requires a 1920x1080 trace")
-    trace_id = value.get("trace_id")
-    content_sha = value.get("content_sha256")
-    require(isinstance(trace_id, str) and trace_id, "trace_id is missing")
-    require(isinstance(content_sha, str) and HEX_64.fullmatch(content_sha), "trace hash is invalid")
+    frames = value.get("frames")
+    require(isinstance(frames, list), "trace.frames must be an array")
+    frame_indices = tuple(frame.get("frame_index") for frame in frames if isinstance(frame, dict))
+    frame_timestamps = tuple(
+        frame.get("timestamp_ns") for frame in frames if isinstance(frame, dict)
+    )
+    require(value.get("trace_id") == CANONICAL_TRACE["trace_id"], "alternate trace identity")
+    require(
+        value.get("content_sha256") == CANONICAL_TRACE["content_sha256"],
+        "stale or alternate trace content hash",
+    )
+    require(file_sha256 == CANONICAL_TRACE["file_sha256"], "stale or alternate trace file SHA-256")
+    require(
+        (display.get("width"), display.get("height")) == FORMAL_SIZE,
+        "formal M2b evidence requires the canonical 1920x1080 trace",
+    )
+    require(frame_indices == CANONICAL_TRACE["frame_indices"], "trace must contain canonical views 0,1")
+    require(
+        frame_timestamps == CANONICAL_TRACE["frame_timestamps_ns"],
+        "trace timestamps do not match the canonical two-view trace",
+    )
     return {
-        "trace_id": trace_id,
-        "content_sha256": content_sha,
-        "file_sha256": sha256_file(path),
+        "trace_id": value["trace_id"],
+        "content_sha256": value["content_sha256"],
+        "file_sha256": file_sha256,
         "width": display["width"],
         "height": display["height"],
-        "path": str(path.resolve()),
+        "frame_indices": frame_indices,
+        "frame_timestamps_ns": frame_timestamps,
     }
+
+
+def run_trace_validator(repo: Path, path: Path) -> None:
+    validator = repo / "tests/perf/trace/validate_trace_v1.py"
+    completed = subprocess.run(
+        [sys.executable, str(validator), str(path)],
+        cwd=repo,
+        check=False,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    detail = completed.stderr.strip() or completed.stdout.strip()
+    require(completed.returncode == 0, f"repository trace validator rejected input: {detail}")
+
+
+def read_trace(repo: Path, path: Path) -> dict[str, Any]:
+    path = require_canonical_path(repo, path, CANONICAL_TRACE_PATH, "camera trace")
+    run_trace_validator(repo, path)
+    value = read_json(path, "camera trace")
+    result = validate_canonical_trace(value, sha256_file(path))
+    result["path"] = str(path)
+    return result
+
+
+def validate_canonical_schedule(warmup: int, measured: int) -> None:
+    require(
+        warmup == CANONICAL_WARMUP and measured == CANONICAL_MEASURED,
+        f"formal M2b evidence requires warmup={CANONICAL_WARMUP} and measured={CANONICAL_MEASURED}",
+    )
 
 
 def git_receipt(repo: Path) -> dict[str, Any]:
@@ -527,6 +635,7 @@ def build_artifact(
             "package_version": build["package_version"],
             "executable_sha256": build["binary_sha256"],
             "status_porcelain_sha256": build["git"]["status_porcelain_sha256"],
+            "provenance": "collector_cargo_build_locked_release",
         },
         "dataset": {
             "id": dataset["id"],
@@ -683,6 +792,64 @@ def package_version(repo: Path) -> str:
     return match.group(1)
 
 
+def build_desktop_binary(repo: Path, stage: Path, expected_git: dict[str, Any]) -> Path:
+    build_dir = stage / "build"
+    build_dir.mkdir()
+    command = [
+        "cargo",
+        "build",
+        "--locked",
+        "--release",
+        "-p",
+        "desktop-example",
+        "--features",
+        "interactive-viewer",
+        "--message-format=json-render-diagnostics",
+    ]
+    write_json(build_dir / "command.json", {"argv": command})
+    completed = subprocess.run(
+        command,
+        cwd=repo,
+        check=False,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    (build_dir / "stdout.log").write_text(completed.stdout, encoding="utf-8")
+    (build_dir / "stderr.log").write_text(completed.stderr, encoding="utf-8")
+    require(
+        completed.returncode == 0,
+        f"canonical desktop release build exited with {completed.returncode}",
+    )
+    executables: set[Path] = set()
+    for line in completed.stdout.splitlines():
+        try:
+            message = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        target = message.get("target")
+        if (
+            message.get("reason") == "compiler-artifact"
+            and isinstance(target, dict)
+            and target.get("name") == "desktop-example"
+            and "bin" in target.get("kind", [])
+            and isinstance(message.get("executable"), str)
+        ):
+            executables.add(Path(message["executable"]).resolve())
+    require(
+        len(executables) == 1,
+        "cargo did not attest exactly one desktop-example executable",
+    )
+    binary = next(iter(executables))
+    require(binary.is_file() and os.access(binary, os.X_OK), "collector-built binary is unavailable")
+    require(git_receipt(repo) == expected_git, "git receipt changed during the canonical build")
+    return binary
+
+
+def require_binary_sha256(binary: Path, expected: str) -> None:
+    require(sha256_file(binary) == expected, "collector-built binary changed during collection")
+
+
 def make_command(
     binary: Path,
     dataset_path: Path,
@@ -712,54 +879,65 @@ def make_command(
 def collect(args: argparse.Namespace, repo: Path) -> dict[str, Any]:
     output = args.output.resolve()
     require(not output.exists(), f"output already exists: {output}")
-    require(args.binary.is_file() and os.access(args.binary, os.X_OK), "binary is unavailable")
-    require("release" in args.binary.resolve().parts, "formal evidence requires a release binary")
-    require(args.warmup >= 0 and args.measured > 0, "invalid warmup/measured counts")
+    validate_canonical_schedule(args.warmup, args.measured)
     require(math.isfinite(args.refresh_hz) and args.refresh_hz > 0.0, "refresh-hz must be positive")
     validate_ignored_output(repo, output)
+    initial_git = git_receipt(repo)
+    require(not initial_git["dirty"], "formal M2b evidence requires a clean repository")
     dataset, dataset_path = read_dataset_manifest(repo, args.dataset_manifest.resolve())
-    trace = read_trace(args.trace.resolve())
-    build = {
-        "binary_sha256": sha256_file(args.binary),
-        "package_version": package_version(repo),
-        "git": git_receipt(repo),
-    }
+    trace = read_trace(repo, args.trace.resolve())
     stage = output.parent / f".{output.name}.stage-{os.getpid()}-{uuid.uuid4().hex[:12]}"
     require(not stage.exists(), f"staging path exists: {stage}")
     stage.mkdir(parents=True)
     started_at = utc_now()
-    suite: dict[str, Any] = {
-        "schema": SUITE_SCHEMA,
-        "status": "running",
-        "started_at_utc": started_at,
-        "build": build,
-        "dataset": dataset,
-        "trace": trace,
-        "required_adapter_backend": "metal",
-        "runs": [],
-    }
+    suite: dict[str, Any] = {"schema": SUITE_SCHEMA, "status": "running", "runs": []}
     try:
+        binary = build_desktop_binary(repo, stage, initial_git)
+        build = {
+            "binary_sha256": sha256_file(binary),
+            "package_version": package_version(repo),
+            "git": initial_git,
+            "attestation": {
+                "method": "collector_cargo_build_locked_release",
+                "command": "build/command.json",
+                "stdout": "build/stdout.log",
+                "stderr": "build/stderr.log",
+            },
+        }
+        suite.update(
+            {
+                "started_at_utc": started_at,
+                "build": build,
+                "dataset": dataset,
+                "trace": trace,
+                "required_adapter_backend": "metal",
+            }
+        )
         for arm in ARMS:
             arm_dir = stage / arm
             artifact_dir = arm_dir / "artifact"
             artifact_dir.mkdir(parents=True)
             capture_path = artifact_dir / "final-frame.png"
             command = make_command(
-                args.binary.resolve(), dataset_path, args.trace.resolve(), arm,
-                args.warmup, args.measured, capture_path,
+                binary, dataset_path, Path(trace["path"]), arm,
+                args.warmup, args.measured, Path(FINAL_CAPTURE_IDENTITY),
             )
-            write_json(arm_dir / "command.json", {"argv": command})
+            write_json(arm_dir / "command.json", {"argv": command, "cwd": "artifact"})
+            require_binary_sha256(binary, build["binary_sha256"])
             run_started = utc_now()
             completed = subprocess.run(
-                command, cwd=repo, check=False, text=True,
+                command, cwd=artifact_dir, check=False, text=True,
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=RUN_TIMEOUT_SECONDS,
             )
             (arm_dir / "stdout.log").write_text(completed.stdout, encoding="utf-8")
             (arm_dir / "stderr.log").write_text(completed.stderr, encoding="utf-8")
             require(completed.returncode == 0, f"{arm} exited with {completed.returncode}")
-            require(sha256_file(args.binary) == build["binary_sha256"], "binary changed during collection")
+            require_binary_sha256(binary, build["binary_sha256"])
             require(sha256_file(dataset_path) == dataset["sha256"], "dataset changed during collection")
-            require(sha256_file(args.trace) == trace["file_sha256"], "trace changed during collection")
+            require(
+                sha256_file(Path(trace["path"])) == trace["file_sha256"],
+                "trace changed during collection",
+            )
             require(git_receipt(repo) == build["git"], "git receipt changed during collection")
             validated = validate_run_log(
                 completed.stdout, completed.stderr, arm=arm, dataset=dataset, trace=trace,
@@ -805,12 +983,11 @@ def collect(args: argparse.Namespace, repo: Path) -> dict[str, Any]:
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Collect four strict M2b real-window Surface artifacts")
-    parser.add_argument("--binary", required=True, type=Path)
     parser.add_argument("--dataset-manifest", required=True, type=Path)
     parser.add_argument("--trace", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
-    parser.add_argument("--warmup", type=int, default=20)
-    parser.add_argument("--measured", type=int, default=80)
+    parser.add_argument("--warmup", type=int, default=CANONICAL_WARMUP)
+    parser.add_argument("--measured", type=int, default=CANONICAL_MEASURED)
     parser.add_argument("--refresh-hz", type=float, default=60.0)
     return parser.parse_args(argv)
 

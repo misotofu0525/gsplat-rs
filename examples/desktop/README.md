@@ -130,11 +130,10 @@ source SH.
 Sampling, LOD, dynamic resolution, and upscaling are forbidden.
 
 For the strict M2b real-window evidence route, first fetch/verify the canonical
-Kitsune asset, build the release viewer, and run the focused collector test:
+Kitsune asset and run the focused collector test:
 
 ```bash
 bash tests/datasets/fetch-wakufactory-kitune.sh
-cargo build --release -p desktop-example --features interactive-viewer
 PYTHONDONTWRITEBYTECODE=1 python3 tests/perf/test_desktop_surface_evidence.py
 ```
 
@@ -142,20 +141,25 @@ Then choose a fresh ignored output directory and collect all four Exact plans:
 
 ```bash
 python3 tests/perf/collect-desktop-surface-evidence.py \
-  --binary target/release/desktop-example \
   --dataset-manifest tests/perf/datasets/kitsune.json \
   --trace tests/perf/trace/fixtures/quality/candidate-kitsune-quality-1920x1080-v1.json \
   --output target/benchmarks/m2b/surface-<candidate-sha>
 ```
 
-The collector requires an actually selected Metal adapter, a successful real
-Surface presentation and terminal current-stats receipt for every scheduled
-frame, and a final 1920x1080 capture joined to its own terminal receipt. It
-stages `CpuPostSort`, `GpuPostSort`, `GpuPreproject`, and `Adaptive` artifacts,
+The collector first requires a clean Git tree, pins the qualified Kitsune
+asset identity plus the exact two-view trace and 20-warmup/80-measured
+schedule, runs the repository trace validator, and builds the locked release
+viewer itself. It then requires an actually selected Metal adapter, a
+successful real Surface presentation and terminal current-stats receipt for
+every scheduled frame, and a final 1920x1080 capture joined to its own terminal
+receipt. The collector stages `CpuPostSort`, `GpuPostSort`, `GpuPreproject`,
+and `Adaptive` artifacts,
 runs `validate-benchmark-artifacts.py` on each, and publishes the suite
 directory only after all four pass. An unavailable asset/device/receipt/image
 or any contract mismatch is a failed run, never a guessed value. Host-observed
 call/frame-wall time is retained; unavailable GPU phase timing remains null.
+Published raw capture receipts use artifact-relative `final-frame.png`, not a
+staging path.
 
 The competitor's static-camera throughput mode applies one trace pose and then
 reuses its order. Reproduce that distinct workload without weakening geometry,

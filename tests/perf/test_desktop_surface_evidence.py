@@ -4,13 +4,16 @@
 from __future__ import annotations
 
 import copy
+import contextlib
 import importlib.util
+import io
 import json
 import pathlib
 import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
@@ -34,6 +37,8 @@ TRACE = {
     "file_sha256": "c" * 64,
     "width": 1920,
     "height": 1080,
+    "frame_indices": (0, 1),
+    "frame_timestamps_ns": (0, 100),
 }
 WARMUP = 1
 MEASURED = 2
@@ -95,6 +100,7 @@ def synthetic_records(arm: str) -> dict[str, list[dict[str, str]]]:
     for index in range(3):
         plan = plans[index]
         count_semantics, compacted, contributor, drawn, backend = semantics(plan)
+        phase_frame_index = index if index == 0 else index - 1
         frames.append(
             {
                 "trace_id": TRACE["trace_id"],
@@ -102,8 +108,8 @@ def synthetic_records(arm: str) -> dict[str, list[dict[str, str]]]:
                 "playback_index": str(index),
                 "phase": "warmup" if index == 0 else "measure",
                 "measured_sample": "none" if index == 0 else str(index - 1),
-                "trace_frame": str(index % 2),
-                "trace_timestamp_ns": str(index * 100),
+                "trace_frame": str(phase_frame_index % 2),
+                "trace_timestamp_ns": str((phase_frame_index % 2) * 100),
                 "elapsed_ns": str(1_000 + index),
                 "exact_plan_requested": arm,
                 "exact_plan_actual": plan,
@@ -139,7 +145,7 @@ def synthetic_records(arm: str) -> dict[str, list[dict[str, str]]]:
     count_semantics, compacted, contributor, drawn, backend = semantics(capture_plan)
     capture = {
         "status": "ok",
-        "path": "/tmp/final-frame.png",
+        "path": COLLECTOR.FINAL_CAPTURE_IDENTITY,
         "trace_frame": frames[-1]["trace_frame"],
         "exact_plan_requested": arm,
         "exact_plan_actual": capture_plan,
@@ -261,6 +267,111 @@ class ReceiptValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(COLLECTOR.ValidationError, "reused.*presentation"):
             validate(records, "gpu_preproject")
 
+    def test_phase_view_and_timestamp_schedule_mutations_fail(self) -> None:
+        mutations = [
+            ("phase", "measure", "phase violates"),
+            ("trace_frame", "1", "trace_frame schedule"),
+            ("trace_timestamp_ns", "1", "trace_timestamp_ns schedule"),
+        ]
+        for key, value, message in mutations:
+            with self.subTest(key=key):
+                records = synthetic_records("cpu_post_sort")
+                records["frame"][0][key] = value
+                with self.assertRaisesRegex(COLLECTOR.ValidationError, message):
+                    validate(records, "cpu_post_sort")
+
+    def test_capture_identity_must_be_artifact_relative(self) -> None:
+        records = synthetic_records("cpu_post_sort")
+        records["capture"][0]["path"] = "/tmp/stale-stage/final-frame.png"
+        with self.assertRaisesRegex(COLLECTOR.ValidationError, "artifact-relative"):
+            validate(records, "cpu_post_sort")
+
+
+class CanonicalAdmissionTests(unittest.TestCase):
+    def test_caller_supplied_binary_is_not_an_option(self) -> None:
+        with contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit):
+                COLLECTOR.parse_args(
+                    [
+                        "--binary", "/tmp/foreign-desktop-example",
+                        "--dataset-manifest", str(COLLECTOR.CANONICAL_DATASET_MANIFEST),
+                        "--trace", str(COLLECTOR.CANONICAL_TRACE_PATH),
+                        "--output", "target/benchmarks/m2b/test",
+                    ]
+                )
+
+    def test_collector_built_binary_content_drift_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            binary = pathlib.Path(temporary) / "desktop-example"
+            binary.write_bytes(b"collector-built")
+            expected = COLLECTOR.sha256_file(binary)
+            COLLECTOR.require_binary_sha256(binary, expected)
+            binary.write_bytes(b"foreign-or-stale")
+            with self.assertRaisesRegex(COLLECTOR.ValidationError, "collector-built binary changed"):
+                COLLECTOR.require_binary_sha256(binary, expected)
+
+    def test_qualified_kitsune_manifest_tuple_is_frozen(self) -> None:
+        COLLECTOR.validate_canonical_dataset_manifest(dict(COLLECTOR.CANONICAL_DATASET))
+        for key in (
+            "id", "qualification_status", "local_path", "sha256", "bytes", "splat_count", "sh_degree"
+        ):
+            with self.subTest(key=key):
+                value = dict(COLLECTOR.CANONICAL_DATASET)
+                value[key] = "wrong" if isinstance(value[key], str) else value[key] + 1
+                with self.assertRaisesRegex(COLLECTOR.ValidationError, key):
+                    COLLECTOR.validate_canonical_dataset_manifest(value)
+
+    def test_alternate_dataset_and_trace_paths_are_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            alternate = pathlib.Path(temporary) / "alternate.json"
+            alternate.write_text("{}", encoding="utf-8")
+            for canonical, context in (
+                (COLLECTOR.CANONICAL_DATASET_MANIFEST, "dataset manifest"),
+                (COLLECTOR.CANONICAL_TRACE_PATH, "camera trace"),
+            ):
+                with self.subTest(context=context):
+                    with self.assertRaisesRegex(COLLECTOR.ValidationError, context):
+                        COLLECTOR.require_canonical_path(ROOT, alternate, canonical, context)
+
+    def test_exact_trace_identity_content_file_and_views_are_frozen(self) -> None:
+        path = ROOT / COLLECTOR.CANONICAL_TRACE_PATH
+        canonical = json.loads(path.read_text(encoding="utf-8"))
+        COLLECTOR.validate_canonical_trace(canonical, COLLECTOR.CANONICAL_TRACE["file_sha256"])
+        mutations = [
+            (lambda value: value.__setitem__("trace_id", "alternate"), "alternate trace identity"),
+            (lambda value: value.__setitem__("content_sha256", "0" * 64), "content hash"),
+            (lambda value: value["display"].__setitem__("width", 960), "1920x1080"),
+            (lambda value: value["frames"].pop(), "views 0,1"),
+            (lambda value: value["frames"][1].__setitem__("timestamp_ns", 1), "timestamps"),
+        ]
+        for mutate, message in mutations:
+            with self.subTest(message=message):
+                value = copy.deepcopy(canonical)
+                mutate(value)
+                with self.assertRaisesRegex(COLLECTOR.ValidationError, message):
+                    COLLECTOR.validate_canonical_trace(
+                        value, COLLECTOR.CANONICAL_TRACE["file_sha256"]
+                    )
+        with self.assertRaisesRegex(COLLECTOR.ValidationError, "file SHA-256"):
+            COLLECTOR.validate_canonical_trace(canonical, "0" * 64)
+
+    def test_repository_trace_validator_is_an_admission_gate(self) -> None:
+        path = ROOT / COLLECTOR.CANONICAL_TRACE_PATH
+        COLLECTOR.run_trace_validator(ROOT, path)
+        rejected = subprocess.CompletedProcess([], 1, stdout="", stderr="invalid canonical trace")
+        with mock.patch.object(COLLECTOR.subprocess, "run", return_value=rejected):
+            with self.assertRaisesRegex(COLLECTOR.ValidationError, "repository trace validator"):
+                COLLECTOR.run_trace_validator(ROOT, path)
+
+    def test_schedule_weakening_is_rejected(self) -> None:
+        COLLECTOR.validate_canonical_schedule(
+            COLLECTOR.CANONICAL_WARMUP, COLLECTOR.CANONICAL_MEASURED
+        )
+        for warmup, measured in ((19, 80), (20, 79), (0, 1), (21, 80), (20, 81)):
+            with self.subTest(warmup=warmup, measured=measured):
+                with self.assertRaisesRegex(COLLECTOR.ValidationError, "warmup=20 and measured=80"):
+                    COLLECTOR.validate_canonical_schedule(warmup, measured)
+
 
 class CanonicalArtifactTests(unittest.TestCase):
     def test_built_artifact_passes_repository_validator(self) -> None:
@@ -354,6 +465,31 @@ class CanonicalArtifactTests(unittest.TestCase):
                         COLLECTOR.publish_validated_suite(stage, output, suite)
                     self.assertFalse(output.exists())
                     self.assertTrue(stage.is_dir())
+
+    def test_raw_log_revalidates_after_atomic_publication(self) -> None:
+        records = synthetic_records("cpu_post_sort")
+        stdout = render(records)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            stage = root / ".stage"
+            artifact = stage / "cpu_post_sort" / "artifact"
+            artifact.mkdir(parents=True)
+            minimal_png(artifact / COLLECTOR.FINAL_CAPTURE_IDENTITY)
+            (stage / "cpu_post_sort" / "stdout.log").write_text(stdout, encoding="utf-8")
+            output = root / "published"
+            stage.rename(output)
+            published_arm = output / "cpu_post_sort"
+            result = COLLECTOR.validate_run_log(
+                (published_arm / "stdout.log").read_text(encoding="utf-8"),
+                "",
+                arm="cpu_post_sort",
+                dataset=DATASET,
+                trace=TRACE,
+                warmup=WARMUP,
+                measured=MEASURED,
+                capture_path=published_arm / "artifact" / COLLECTOR.FINAL_CAPTURE_IDENTITY,
+            )
+            self.assertEqual(result["final_actual_plan"], "cpu_post_sort")
 
 
 if __name__ == "__main__":

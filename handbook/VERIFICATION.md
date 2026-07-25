@@ -118,27 +118,33 @@ contains `manifest.json`, contiguous raw `frames.jsonl`, and recomputable
 `summary.json`. The manifest distinguishes configured display values from
 observed values and includes the direct resource preflight report.
 
-For M2b real-window evidence, use a release viewer, the qualified Kitsune
-manifest, and the committed 1920x1080 trace. The output directory must be fresh
-and ignored:
+For M2b real-window evidence, use the qualified Kitsune manifest and the
+committed 1920x1080 trace. The output directory must be fresh and ignored. The
+collector requires a clean Git tree and builds the release viewer itself with
+the locked workspace before it stages or runs any evidence arm:
 
 ```bash
-cargo build --release -p desktop-example --features interactive-viewer
 PYTHONDONTWRITEBYTECODE=1 python3 tests/perf/test_desktop_surface_evidence.py
 python3 tests/perf/collect-desktop-surface-evidence.py \
-  --binary target/release/desktop-example \
   --dataset-manifest tests/perf/datasets/kitsune.json \
   --trace tests/perf/trace/fixtures/quality/candidate-kitsune-quality-1920x1080-v1.json \
   --output target/benchmarks/m2b/surface-<candidate-sha>
 ```
 
-This is a four-arm transaction: `CpuPostSort`, `GpuPostSort`,
-`GpuPreproject`, and `Adaptive` must each produce terminal joined S/V/C/D
-receipts plus a final presented PNG. Every staged `gsplat-benchmark/v1`
-artifact must pass the repository validator before the suite directory is
-atomically published. Missing Metal capability, missing terminal receipt,
-failed presentation/capture, plan drift, incomplete membership, SH downgrade,
-resolution drift, or validator rejection leaves the canonical output absent.
+Admission pins the qualified Kitsune identity, asset SHA/bytes/count/SH3, the
+exact two-view trace content and file SHA, and the 20-warmup/80-measured
+schedule. It also runs the repository camera-trace validator. Alternate inputs,
+schedule overrides, a dirty source tree, or executable drift fail closed before
+canonical publication. This is a four-arm transaction: `CpuPostSort`,
+`GpuPostSort`, `GpuPreproject`, and `Adaptive` must each produce terminal joined
+S/V/C/D receipts plus a final presented PNG. Every staged
+`gsplat-benchmark/v1` artifact must pass the repository validator before the
+suite directory is atomically published. Missing Metal capability, missing
+terminal receipt, failed presentation/capture, plan drift, incomplete
+membership, SH downgrade, resolution drift, or validator rejection leaves the
+canonical output absent.
+Each raw capture receipt records artifact-relative `final-frame.png`, so the
+published logs remain revalidatable after the staging directory is renamed.
 
 Committed dataset identities and the shared camera oracle have separate checks:
 
