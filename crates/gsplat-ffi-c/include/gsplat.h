@@ -771,6 +771,15 @@ int32_t gsplat_surface_renderer_poll_current_stats_v1(
     GsplatSurfaceRenderer *renderer,
     GsplatSurfaceCurrentStatsPollV1 *out_poll);
 /*
+ * Wait up to timeout_ns while advancing callbacks for queue work submitted
+ * before this call. This never acquires a Surface, renders, submits work, or
+ * issues a receipt ticket. Timeout is GSPLAT_OK; callers retain a finite retry
+ * bound and determine completion by polling the existing terminal lanes.
+ */
+int32_t gsplat_surface_renderer_pump_receipts(
+    GsplatSurfaceRenderer *renderer,
+    uint64_t timeout_ns);
+/*
  * Copies the last Surface stats only when V/D are demonstrably current.
  * Asynchronous counts require a ticket- and generation-matched current-stats
  * v1 READY receipt. Unrequested, pending, failed, expired, or mismatched

@@ -64,8 +64,10 @@ Every measured benchmark frame owns a separate current-stats pre-ticket intent.
 After the frame's fallible camera/resize command succeeds, the app requests the
 sample, renders/presents, records its Issued ticket and full native identity,
 then performs one non-blocking poll. Issued tickets may overlap and terminate
-out of order. A bounded terminal flush may poll them after measurement, but a
-later frame's receipt can never satisfy an earlier sample. Missing Ready,
+out of order. After measurement, a bounded no-render terminal flush waits only
+for callbacks from already-submitted queue work and polls those existing
+tickets; it cannot issue a new benchmark ticket. A later frame's receipt can
+never satisfy an earlier sample. Missing Ready,
 failure, expiry, generation drift, identity drift, or flush exhaustion rejects
 the artifact.
 

@@ -2,6 +2,8 @@
 
 use gsplat_core::{Camera, SceneBuffers};
 use gsplat_sort::CpuSortBackend;
+#[cfg(not(target_arch = "wasm32"))]
+use std::time::Duration;
 
 use crate::SurfaceRasterExecutionPlan;
 use crate::direct_gpu_order::GpuOrderTimestampRange;
@@ -3717,6 +3719,16 @@ impl SurfacePresenter {
     pub(crate) fn poll_cpu_order_completion_telemetry(&mut self) -> CpuOrderTelemetryPoll {
         let _ = self.device.poll(wgpu::PollType::Poll);
         self.cpu_order_completion_telemetry.poll()
+    }
+
+    /// Waits boundedly for queue work submitted before this call. It does not
+    /// acquire the Surface, encode commands, submit work, or issue telemetry.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn pump_receipt_callbacks(
+        &self,
+        timeout: Duration,
+    ) -> Result<bool, crate::RendererError> {
+        crate::pump_device_receipt_callbacks(&self.device, timeout)
     }
 
     pub(crate) fn poll_projected_draw_telemetry(&mut self) -> ProjectedDrawTelemetryPoll {

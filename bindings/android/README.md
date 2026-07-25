@@ -105,8 +105,9 @@ renderer.close()
 `renderFrame()` remains the ordinary render path and never requests observer
 readback. Call the additive `renderFrameWithCurrentStats()` only at an explicit
 sampling point. It performs request -> render -> submission -> one non-blocking
-poll; if that poll is pending, call `pollCurrentStats()` to advance the already
-issued ticket without requesting or rendering another sample. A Ready snapshot
+poll; if that poll is pending while ordinary rendering continues, call
+`pollCurrentStats()` to observe the already issued ticket without requesting
+another sample. A Ready snapshot
 remains current only until the next successful ordinary presentation; that
 presentation clears it instead of exposing prior-frame counts. If the requested
 render fails, or a successful frame cannot issue the ticket yet, the native
@@ -151,7 +152,10 @@ its same-frame retry command then fails, the sample explicitly rejects that
 intent and closes the native renderer before any different frame can render.
 Multiple issued tickets may remain pending and terminate out of order; only one
 not-yet-submitted pre-ticket request intent may exist at a time. The bounded
-terminal flush never blocks rendering or borrows a later frame's receipt.
+terminal flush stops rendering, uses `pumpSurfaceReceipts()` to wait only for
+already-submitted queue work, and never borrows a later frame's receipt. Its
+per-pump wait and total retry count are finite; callback-pump failure or flush
+exhaustion rejects the run.
 
 The product defaults are `PACKED_ATLAS`, `ADAPTIVE`, and sort interval `1`.
 Projected execution independently defaults to
@@ -175,7 +179,7 @@ wall time. Every issued CPU/GPU ticket must appear in exactly one success or
 failure queue. `orderStatus().adaptiveGpuFailure` also exposes an eager GPU
 preparation failure when Adaptive correctly stays on CPU and no ticket exists.
 Strict benchmark collectors call `orderSubmission()` after every successful
-render (including warmup and terminal-flush frames), then continue rendering
+warmup/measured render, then stop issuing frames and boundedly pump callbacks
 until every issued ticket has exactly one terminal receipt. Ring-busy,
 Surface-unavailable, dropped-prior, failure, and fallback evidence invalidates
 the run.

@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::Duration;
 
 use gsplat_core::{Camera, SceneBuffers, Vec3f};
 
@@ -334,6 +335,37 @@ fn surface_without_indirect_execution_prepares_cpu_exact_and_returns_ready_count
             PlanCountSemantics::DirectDrawEqualsVisible
         );
         assert!(slot.poll_current_stats().is_empty());
+    });
+}
+
+#[test]
+fn receipt_pump_completes_existing_current_stats_without_issuing_a_ticket() {
+    pollster::block_on(async {
+        let Some((device, queue)) = request_device().await else {
+            return;
+        };
+        let mut slot = prepared_slot(&device, &queue, exact_scene(&[1.0])).await;
+
+        assert_eq!(slot.request_current_stats(), CurrentStatsRequest::Requested);
+        let first = render(&mut slot, &device, PlanId::CpuPostSort);
+        let first_receipt = issued(&first);
+        assert!(
+            slot.pump_receipt_callbacks(Duration::from_secs(5))
+                .expect("pump existing Exact receipt callbacks")
+        );
+        let CurrentStatsTerminal::Ready(ready) = one_terminal(slot.poll_current_stats()) else {
+            panic!("receipt pump did not complete the existing current-stats ticket");
+        };
+        assert_eq!(ready.submission(), first_receipt);
+
+        assert_eq!(slot.request_current_stats(), CurrentStatsRequest::Requested);
+        let second = render(&mut slot, &device, PlanId::CpuPostSort);
+        let second_receipt = issued(&second);
+        assert_eq!(
+            second_receipt.ticket().get(),
+            first_receipt.ticket().get() + 1,
+            "pumping callbacks must not reserve or issue a hidden ticket"
+        );
     });
 }
 

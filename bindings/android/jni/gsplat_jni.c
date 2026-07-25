@@ -841,6 +841,24 @@ JNIEXPORT jint JNICALL Java_com_gsplat_android_NativeBridge_renderSurfaceFrame(
   return gsplat_surface_renderer_render_frame(handle->renderer);
 }
 
+JNIEXPORT jint JNICALL Java_com_gsplat_android_NativeBridge_pumpSurfaceReceipts(
+    JNIEnv *env,
+    jclass cls,
+    jlong native_handle,
+    jlong timeout_nanos) {
+  (void)env;
+  (void)cls;
+
+  AndroidSurfaceRendererHandle *handle = android_handle_from_jlong(native_handle);
+  if (handle == NULL || handle->renderer == NULL || timeout_nanos < 0) {
+    return GSPLAT_ERROR_INVALID_ARGUMENT;
+  }
+
+  return gsplat_surface_renderer_pump_receipts(
+      handle->renderer,
+      (uint64_t)timeout_nanos);
+}
+
 JNIEXPORT jint JNICALL Java_com_gsplat_android_NativeBridge_requestSurfaceCurrentStatsV1(
     JNIEnv *env,
     jclass cls,

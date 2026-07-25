@@ -74,6 +74,7 @@ typedef int32_t (*GsplatTakeProjectedCountsFn)(GsplatSurfaceRenderer *, uint64_t
 typedef int32_t (*GsplatGetProducerSubmissionFn)(const GsplatSurfaceRenderer *, GsplatSurfaceGpuProducerSubmissionV1 *);
 typedef int32_t (*GsplatPollProducerMeasurementFn)(GsplatSurfaceRenderer *, GsplatSurfaceGpuProducerMeasurementV1 *, uint32_t *);
 typedef int32_t (*GsplatPollProducerFailureFn)(GsplatSurfaceRenderer *, GsplatSurfaceGpuProducerFailureV1 *, uint32_t *);
+typedef int32_t (*GsplatPumpSurfaceReceiptsFn)(GsplatSurfaceRenderer *, uint64_t);
 
 _Static_assert(_Generic(&gsplat_surface_renderer_get_order_submission, GsplatGetOrderSubmissionFn: 1, default: 0), "order submission symbol signature changed");
 _Static_assert(_Generic(&gsplat_surface_renderer_poll_order_measurement, GsplatPollOrderMeasurementFn: 1, default: 0), "order poll symbol signature changed");
@@ -84,6 +85,7 @@ _Static_assert(_Generic(&gsplat_surface_renderer_take_projected_counts_v1, Gspla
 _Static_assert(_Generic(&gsplat_surface_renderer_get_gpu_producer_submission_v1, GsplatGetProducerSubmissionFn: 1, default: 0), "producer submission symbol signature changed");
 _Static_assert(_Generic(&gsplat_surface_renderer_poll_gpu_producer_measurement_v1, GsplatPollProducerMeasurementFn: 1, default: 0), "producer poll symbol signature changed");
 _Static_assert(_Generic(&gsplat_surface_renderer_poll_gpu_producer_failure_v1, GsplatPollProducerFailureFn: 1, default: 0), "producer failure symbol signature changed");
+_Static_assert(_Generic(&gsplat_surface_renderer_pump_receipts, GsplatPumpSurfaceReceiptsFn: 1, default: 0), "receipt pump symbol signature changed");
 
 int main(int argc, char **argv) {
   const char *dataset = "tests/datasets/minimal_ascii.ply";
@@ -207,6 +209,11 @@ int main(int argc, char **argv) {
       memcmp(&current_poll, &current_poll_before, sizeof(current_poll)) != 0) {
     fprintf(stderr, "expected null current-stats poll to fail without output mutation, got: %d\n", rc);
     return 31;
+  }
+  rc = gsplat_surface_renderer_pump_receipts(NULL, 1000000);
+  if (rc != GSPLAT_ERROR_INVALID_ARGUMENT) {
+    fprintf(stderr, "expected null Surface receipt pump to fail, got: %d\n", rc);
+    return 32;
   }
   GsplatSurfaceCameraReceiptV1 camera_receipt = {
       .struct_size = sizeof(GsplatSurfaceCameraReceiptV1),

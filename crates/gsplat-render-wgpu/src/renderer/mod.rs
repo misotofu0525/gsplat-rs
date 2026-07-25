@@ -7,6 +7,8 @@ pub(crate) mod gpu_prepare;
 mod sampler;
 
 use std::sync::Arc;
+#[cfg(not(target_arch = "wasm32"))]
+use std::time::Duration;
 
 use gsplat_core::Camera;
 use thiserror::Error;
@@ -1108,6 +1110,22 @@ impl PreparedRuntimeSlot {
             ring.push(sample);
         }
         Some((sample, disposition))
+    }
+
+    /// Waits only for already-submitted queue work, then lets the mandatory
+    /// whole-plan sampler observe any callback made ready by that wait. This
+    /// path cannot reserve or issue either a plan or current-stats ticket.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn pump_receipt_callbacks(
+        &mut self,
+        timeout: Duration,
+    ) -> Result<bool, crate::RendererError> {
+        let completed = match self.gpu_owner.as_ref() {
+            Some(owner) => crate::pump_device_receipt_callbacks(owner.device(), timeout),
+            None => Err(crate::RendererError::GpuWait),
+        };
+        let _ = self.poll_plan_sampler();
+        completed
     }
 
     #[cfg(test)]

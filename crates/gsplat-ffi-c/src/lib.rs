@@ -9,6 +9,7 @@ use std::num::NonZeroU64;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::Path;
 use std::ptr::NonNull;
+use std::time::Duration;
 
 #[cfg(any(target_os = "android", target_os = "ios"))]
 use gsplat_core::camera_trace::CameraTrace;
@@ -3263,6 +3264,42 @@ pub unsafe extern "C" fn gsplat_surface_renderer_render_frame(
                     renderer.render_error_logged = true;
                 }
                 ffi_error_display(err.code(), "gsplat_surface_renderer_render_frame", err)
+            }
+        }
+    })
+}
+
+/// Boundedly advances callbacks for Surface queue work submitted before this
+/// call. This does not acquire a Surface, render, submit queue work, or issue a
+/// benchmark receipt ticket. A timeout is reported as success because the
+/// caller owns the finite retry bound and determines terminal completeness by
+/// polling the existing receipt lanes.
+///
+/// # Safety
+///
+/// `renderer` must be null or a live Surface renderer.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gsplat_surface_renderer_pump_receipts(
+    renderer: *mut GsplatSurfaceRenderer,
+    timeout_ns: u64,
+) -> i32 {
+    ffi_catch_i32("gsplat_surface_renderer_pump_receipts", || {
+        let renderer = match unsafe { renderer.as_mut() } {
+            Some(renderer) => renderer,
+            None => {
+                return ffi_error(
+                    ErrorCode::InvalidArgument,
+                    "gsplat_surface_renderer_pump_receipts: renderer is null",
+                );
+            }
+        };
+        match renderer
+            .session
+            .pump_receipts(Duration::from_nanos(timeout_ns))
+        {
+            Ok(_) => ffi_ok(),
+            Err(error) => {
+                ffi_error_display(error.code(), "gsplat_surface_renderer_pump_receipts", error)
             }
         }
     })

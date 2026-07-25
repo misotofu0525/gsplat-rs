@@ -60,6 +60,7 @@ private const val ORDER_COUNTS_EXACT_CONTRIBUTOR_DRAW = 1 shl 0
 private const val COUNT_SEMANTICS = "candidate_visible_contributor_issued_v1"
 private const val CURRENT_STATS_SCHEMA = "gsplat-surface-current-stats/v1"
 private const val RENDER_SHUTDOWN_TIMEOUT_MS = 1_000L
+private const val TERMINAL_RECEIPT_PUMP_TIMEOUT_NS = 100_000_000L
 
 private fun gpuProducerValue(label: String): Int =
     when (label) {
@@ -757,6 +758,18 @@ private fun flushCompletedOrderMeasurements(
         terminalsComplete() && producerTerminalsComplete() &&
             currentStatsTerminalsComplete()
     },
+    pumpCallbacks = {
+        val rc = NativeBridge.pumpSurfaceReceipts(handle, TERMINAL_RECEIPT_PUMP_TIMEOUT_NS)
+        if (rc != 0) {
+            Log.e(
+                "GsplatExample",
+                "receipt callback pump failed rc=$rc error=${NativeBridge.lastErrorMessage()}"
+            )
+            false
+        } else {
+            true
+        }
+    },
     pollReceipts = {
         if (logCompletedCpuOrderMeasurements(handle, consumeCpu) < 0) {
             false
@@ -771,10 +784,9 @@ private fun flushCompletedOrderMeasurements(
         }
     },
     pollCurrentStats = { advanceCurrentStats(false) },
-    // Native receipt polls pump queue callbacks without acquiring a Surface or
-    // issuing another order ticket. Yield briefly so large-scene completion
-    // callbacks can become visible within the bounded drain.
-    yieldAfterIncompletePoll = { SystemClock.sleep(4) }
+    // Each pump already performs a bounded native wait for existing queue work.
+    // Yield only to keep the app thread cooperative between incomplete pumps.
+    yieldAfterIncompletePoll = { Thread.yield() }
 )
 
 class MainActivity : Activity(), SurfaceHolder.Callback {

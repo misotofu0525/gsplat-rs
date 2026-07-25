@@ -2,6 +2,8 @@ use gsplat_core::{Camera, FrameStats};
 #[cfg(test)]
 use std::collections::VecDeque;
 use std::num::NonZeroU64;
+#[cfg(not(target_arch = "wasm32"))]
+use std::time::Duration;
 
 #[cfg(not(target_arch = "wasm32"))]
 use crate::SurfaceFrameCapture;
@@ -3004,6 +3006,25 @@ impl SurfaceRenderSession {
         let _ = self.collect_order_measurements();
         let _ = self.collect_projected_draw_measurements();
         let _ = self.collect_gpu_producer_measurements();
+    }
+
+    /// Boundedly advances callbacks for already-submitted Surface queue work.
+    ///
+    /// This terminalization path never acquires a Surface texture, encodes or
+    /// submits commands, or requests a measurement, so it cannot issue a new
+    /// benchmark ticket. `Ok(false)` means the finite wait elapsed while work
+    /// remained pending; callers decide their own total drain bound.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn pump_receipts(&mut self, timeout: Duration) -> Result<bool, RendererError> {
+        if self.exact_plan_state().is_some() {
+            return self
+                .renderer
+                .exact_runtime_mut()?
+                .pump_receipt_callbacks(timeout);
+        }
+        let completed = self.presenter.pump_receipt_callbacks(timeout);
+        self.poll_order_measurement_receipts();
+        completed
     }
 
     /// Returns the last successful render call's immutable submission identity

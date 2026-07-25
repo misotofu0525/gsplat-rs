@@ -131,6 +131,8 @@ pub use tiled_resident_gpu::{ResidentTiledError, SurfaceRasterExecutionPlan};
 const DEFAULT_PAGED_ATLAS_SLOTS: usize = 4;
 
 #[cfg(not(target_arch = "wasm32"))]
+use std::time::Duration;
+#[cfg(not(target_arch = "wasm32"))]
 use std::time::Instant;
 
 use bytemuck::Zeroable;
@@ -170,6 +172,24 @@ pub(crate) fn timer_now() -> TimerInstant {
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn timer_elapsed_ms(start: TimerInstant) -> f32 {
     start.elapsed().as_secs_f32() * 1000.0
+}
+
+/// Advances callbacks for queue work that already exists without encoding or
+/// submitting another command buffer. A timeout is an ordinary pending result;
+/// callers retain their own finite drain bound.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn pump_device_receipt_callbacks(
+    device: &wgpu::Device,
+    timeout: Duration,
+) -> Result<bool, RendererError> {
+    match device.poll(wgpu::PollType::Wait {
+        submission_index: None,
+        timeout: Some(timeout),
+    }) {
+        Ok(status) => Ok(status.wait_finished()),
+        Err(wgpu::PollError::Timeout) => Ok(false),
+        Err(wgpu::PollError::WrongSubmissionIndex(_, _)) => Err(RendererError::GpuWait),
+    }
 }
 
 #[cfg(target_arch = "wasm32")]
