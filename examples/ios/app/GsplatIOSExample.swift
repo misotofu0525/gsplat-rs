@@ -782,6 +782,7 @@ final class ExampleViewController: UIViewController, UIGestureRecognizerDelegate
             let benchmark = SurfaceBenchmark(config: self.benchmarkConfig)
             var currentStatsConsumer = GsplatCurrentStatsConsumer()
             var frameIndex = 0
+            var emittedBenchmarkTerminal = false
             while token.shouldRun {
                 let traceStep = benchmark.nextTraceStep()
                 let frameStartNs = DispatchTime.now().uptimeNanoseconds
@@ -973,6 +974,7 @@ final class ExampleViewController: UIViewController, UIGestureRecognizerDelegate
                         let result = benchmark.resultLine(datasetLabel: self.datasetLabel)
                         print(result)
                         fflush(stdout)
+                        emittedBenchmarkTerminal = true
                         self.setStatus("state=benchmark_complete \(result)")
                         break
                     }
@@ -1004,7 +1006,10 @@ final class ExampleViewController: UIViewController, UIGestureRecognizerDelegate
             gsplat_surface_renderer_destroy(renderer)
             DispatchQueue.main.async { [weak self] in
                 guard let self,
-                      let shouldRestart = self.renderLoopLifecycle.finish(token) else {
+                      let shouldRestart = self.renderLoopLifecycle.finish(
+                          token,
+                          terminal: emittedBenchmarkTerminal
+                      ) else {
                     return
                 }
                 self.renderer = nil

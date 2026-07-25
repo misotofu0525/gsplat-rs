@@ -197,6 +197,113 @@ class ReceiptTests(unittest.TestCase):
                     timeout_seconds=1,
                 )
 
+    def test_launch_capture_rejects_disappeared_terminal_but_retains_observation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            stdout = root / "stdout.log"
+            stderr = root / "stderr.log"
+            raw_log = root / "raw.log"
+            with self.assertRaisesRegex(RuntimeError, "lost"):
+                collector.capture_launch_session(
+                    [
+                        sys.executable,
+                        "-c",
+                        (
+                            "import pathlib,sys; "
+                            "pathlib.Path(sys.argv[1]).write_text('BENCHMARK_RESULT ok\\n')"
+                        ),
+                        str(stdout),
+                    ],
+                    [
+                        sys.executable,
+                        "-c",
+                        "import pathlib,sys; pathlib.Path(sys.argv[1]).write_text('')",
+                        str(stdout),
+                    ],
+                    stdout,
+                    stderr,
+                    raw_log,
+                    env=dict(),
+                    timeout_seconds=1,
+                )
+            self.assertEqual(raw_log.read_text(), "BENCHMARK_RESULT ok\n")
+            self.assertEqual(stdout.read_text(), "")
+
+    def test_launch_capture_rejects_second_terminal_written_during_termination(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            stdout = root / "stdout.log"
+            stderr = root / "stderr.log"
+            raw_log = root / "raw.log"
+            with self.assertRaisesRegex(RuntimeError, "duplicate"):
+                collector.capture_launch_session(
+                    [
+                        sys.executable,
+                        "-c",
+                        (
+                            "import pathlib,sys; "
+                            "pathlib.Path(sys.argv[1]).write_text('BENCHMARK_RESULT one\\n')"
+                        ),
+                        str(stdout),
+                    ],
+                    [
+                        sys.executable,
+                        "-c",
+                        (
+                            "import pathlib,sys; "
+                            "pathlib.Path(sys.argv[1]).open('a').write("
+                            "'BENCHMARK_RESULT two\\n')"
+                        ),
+                        str(stdout),
+                    ],
+                    stdout,
+                    stderr,
+                    raw_log,
+                    env=dict(),
+                    timeout_seconds=1,
+                )
+            self.assertEqual(
+                raw_log.read_text(),
+                "BENCHMARK_RESULT one\n",
+                "the known-good observation remains available for failure diagnosis",
+            )
+
+    def test_post_launch_failure_retains_streams_and_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            staging = root / "staging"
+            staging.mkdir()
+            stdout = root / "stdout.log"
+            stderr = root / "stderr.log"
+            stdout.write_text("BENCHMARK_RESULT one\nBENCHMARK_RESULT two\n")
+            stderr.write_text("lifecycle diagnostic\n")
+            (staging / "raw-console.log").write_text("BENCHMARK_RESULT one\n")
+            retained = collector.preserve_collector_failure(
+                staging,
+                failure_root=root / "failures",
+                destination=root / "requested-output",
+                started_at="2026-07-26T00:00:00Z",
+                commit="a" * 40,
+                simulator={"udid": "simulator"},
+                dataset={"sha256": "b" * 64},
+                trace={"sha256": "c" * 64},
+                benchmark_args=["--gsplat_surface_projected_policy", "adaptive"],
+                stage="launch_capture",
+                error=RuntimeError("duplicate terminal"),
+                stdout_path=stdout,
+                stderr_path=stderr,
+            )
+            self.assertFalse(staging.exists())
+            receipt = json.loads((retained / "collector-failure.json").read_text())
+            self.assertEqual(receipt["schema"], collector.FAILURE_RECEIPT_SCHEMA)
+            self.assertEqual(receipt["failure"]["stage"], "launch_capture")
+            self.assertEqual(receipt["launch_streams"]["merged_terminal_count"], 2)
+            self.assertEqual(receipt["observed_capture"]["terminal_count"], 1)
+            self.assertEqual(
+                (retained / "launch-streams/stdout.log").read_text(),
+                stdout.read_text(),
+            )
+
     def test_consecutive_launch_sessions_keep_terminals_and_artifacts_isolated(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)

@@ -31,6 +31,8 @@ DEFAULT_XCFRAMEWORK = (
 BUNDLE_ID = "com.gsplat.example.ios"
 RESULT_PREFIX = "BENCHMARK_RESULT "
 RECEIPT_SCHEMA = "gsplat-ios-simulator-collector-receipt/v1"
+FAILURE_RECEIPT_SCHEMA = "gsplat-ios-simulator-collector-failure/v1"
+FAILURE_ROOT = REPO_ROOT / "target/ios-sim-benchmark-failures"
 
 DEFAULT_BENCHMARK_ARGS = (
     "--gsplat_benchmark",
@@ -310,6 +312,10 @@ def terminal_count(log: str) -> int:
     return sum(RESULT_PREFIX in line for line in log.splitlines())
 
 
+def terminal_lines(log: str) -> list[str]:
+    return [line for line in log.splitlines() if RESULT_PREFIX in line]
+
+
 def merged_launch_streams(
     stdout_path: pathlib.Path, stderr_path: pathlib.Path
 ) -> str:
@@ -324,6 +330,109 @@ def merged_launch_streams(
             text += "\n"
         streams.append(text)
     return "".join(streams)
+
+
+def finalized_launch_capture(observed: str, after_termination: str) -> str:
+    observed_terminals = terminal_lines(observed)
+    if len(observed_terminals) != 1:
+        raise RuntimeError(
+            "observed launch snapshot must contain exactly one BENCHMARK_RESULT terminal"
+        )
+    final_terminals = terminal_lines(after_termination)
+    if len(final_terminals) == 0:
+        raise RuntimeError(
+            "launch streams lost the observed BENCHMARK_RESULT terminal"
+        )
+    if len(final_terminals) > 1:
+        raise RuntimeError(
+            "launch streams contain duplicate BENCHMARK_RESULT terminals"
+        )
+    if final_terminals != observed_terminals:
+        raise RuntimeError(
+            "launch terminal changed while terminating simulator app"
+        )
+    return after_termination
+
+
+def preserve_collector_failure(
+    staging: pathlib.Path,
+    *,
+    failure_root: pathlib.Path,
+    destination: pathlib.Path,
+    started_at: str,
+    commit: str,
+    simulator: dict[str, Any],
+    dataset: dict[str, Any],
+    trace: dict[str, Any],
+    benchmark_args: Sequence[str],
+    stage: str,
+    error: BaseException,
+    stdout_path: pathlib.Path | None,
+    stderr_path: pathlib.Path | None,
+) -> pathlib.Path:
+    streams_dir = staging / "launch-streams"
+    streams_dir.mkdir(exist_ok=True)
+    stream_metadata: dict[str, Any] = {}
+    for name, source in (("stdout", stdout_path), ("stderr", stderr_path)):
+        if source is None or not source.is_file():
+            stream_metadata[name] = {"available": False}
+            continue
+        retained = streams_dir / f"{name}.log"
+        shutil.copy2(source, retained)
+        text = retained.read_text(encoding="utf-8", errors="replace")
+        stream_metadata[name] = {
+            "available": True,
+            "path": f"launch-streams/{name}.log",
+            "terminal_count": terminal_count(text),
+            **file_identity(retained),
+        }
+    merged = merged_launch_streams(
+        streams_dir / "stdout.log", streams_dir / "stderr.log"
+    )
+    observed_path = staging / "raw-console.log"
+    observed_metadata: dict[str, Any] = {"available": False}
+    if observed_path.is_file():
+        observed_text = observed_path.read_text(encoding="utf-8", errors="replace")
+        observed_metadata = {
+            "available": True,
+            "path": "raw-console.log",
+            "terminal_count": terminal_count(observed_text),
+            **file_identity(observed_path),
+        }
+    receipt = {
+        "schema": FAILURE_RECEIPT_SCHEMA,
+        "record_type": "collector_failure",
+        "started_at_utc": started_at,
+        "ended_at_utc": utc_now(),
+        "repository": {"commit": commit, "dirty": False},
+        "simulator": simulator,
+        "dataset": dataset,
+        "trace": trace,
+        "requested_destination": str(destination),
+        "benchmark_args": list(benchmark_args),
+        "failure": {
+            "stage": stage,
+            "type": type(error).__name__,
+            "message": str(error),
+        },
+        "launch_streams": {
+            **stream_metadata,
+            "merged_terminal_count": terminal_count(merged),
+        },
+        "observed_capture": observed_metadata,
+    }
+    (staging / "collector-failure.json").write_text(
+        json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    failure_root.mkdir(parents=True, exist_ok=True)
+    retained_root = pathlib.Path(
+        tempfile.mkdtemp(
+            prefix=f"{destination.name}-{commit[:12]}-", dir=failure_root
+        )
+    )
+    shutil.copytree(staging, retained_root, dirs_exist_ok=True)
+    shutil.rmtree(staging, ignore_errors=True)
+    return retained_root
 
 
 def collector_receipt(
@@ -377,6 +486,7 @@ def capture_launch_session(
     for path in (stdout_path, stderr_path, log_path):
         if os.path.lexists(path):
             raise ValueError(f"launch capture path already exists: {path}")
+    observed_capture: str | None = None
     try:
         launch = run_command(command, capture=True, env=env)
         if terminal_count(launch.stdout) != 0:
@@ -392,6 +502,8 @@ def capture_launch_session(
                     "launch streams contain duplicate BENCHMARK_RESULT terminals"
                 )
             if count == 1:
+                observed_capture = merged_launch_streams(stdout_path, stderr_path)
+                log_path.write_text(observed_capture, encoding="utf-8")
                 found_terminal = True
                 break
             time.sleep(0.1)
@@ -418,7 +530,12 @@ def capture_launch_session(
             )
 
     time.sleep(0.25)
-    captured = merged_launch_streams(stdout_path, stderr_path)
+    if observed_capture is None:
+        raise RuntimeError("benchmark terminal snapshot was not retained")
+    captured = finalized_launch_capture(
+        observed_capture,
+        merged_launch_streams(stdout_path, stderr_path),
+    )
     if terminal_count(captured) != 1:
         raise RuntimeError(
             "launch streams must contain exactly one BENCHMARK_RESULT terminal"
@@ -519,6 +636,11 @@ def collect(args: argparse.Namespace) -> None:
         tempfile.mkdtemp(prefix=f".{destination.name}.", dir=destination.parent)
     )
     started_at = utc_now()
+    launch_session: pathlib.Path | None = None
+    launch_stdout: pathlib.Path | None = None
+    launch_stderr: pathlib.Path | None = None
+    launch_started = False
+    failure_stage = "install"
     try:
         raw_log = staging / "raw-console.log"
         run_command(["xcrun", "simctl", "install", args.simulator_id, APP_BUNDLE])
@@ -546,21 +668,21 @@ def collect(args: argparse.Namespace) -> None:
         benchmark_args = args.benchmark_args or list(DEFAULT_BENCHMARK_ARGS)
         if benchmark_args and benchmark_args[0] == "--":
             benchmark_args = benchmark_args[1:]
-        try:
-            capture_launch_session(
-                ["bash", os.fspath(RUN_SCRIPT), "--", *benchmark_args],
-                ["xcrun", "simctl", "terminate", args.simulator_id, BUNDLE_ID],
-                launch_stdout,
-                launch_stderr,
-                raw_log,
-                env=launch_env,
-                timeout_seconds=args.timeout_seconds,
-            )
-        finally:
-            shutil.rmtree(launch_session, ignore_errors=True)
+        failure_stage = "launch_capture"
+        launch_started = True
+        capture_launch_session(
+            ["bash", os.fspath(RUN_SCRIPT), "--", *benchmark_args],
+            ["xcrun", "simctl", "terminate", args.simulator_id, BUNDLE_ID],
+            launch_stdout,
+            launch_stderr,
+            raw_log,
+            env=launch_env,
+            timeout_seconds=args.timeout_seconds,
+        )
         if terminal_count(raw_log.read_text(encoding="utf-8", errors="replace")) != 1:
             raise ValueError("raw console log must contain exactly one BENCHMARK_RESULT")
 
+        failure_stage = "extract_validate"
         artifact_dir = staging / "artifact"
         run_command(
             [
@@ -609,9 +731,30 @@ def collect(args: argparse.Namespace) -> None:
             json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8"
         )
         os.rename(staging, destination)
-    except BaseException:
-        shutil.rmtree(staging, ignore_errors=True)
+    except BaseException as error:
+        if launch_started:
+            retained = preserve_collector_failure(
+                staging,
+                failure_root=FAILURE_ROOT,
+                destination=destination,
+                started_at=started_at,
+                commit=commit,
+                simulator=booted,
+                dataset=dataset,
+                trace=trace,
+                benchmark_args=benchmark_args,
+                stage=failure_stage,
+                error=error,
+                stdout_path=launch_stdout,
+                stderr_path=launch_stderr,
+            )
+            print(f"collector_failure_dir={retained}", file=sys.stderr)
+        else:
+            shutil.rmtree(staging, ignore_errors=True)
         raise
+    finally:
+        if launch_session is not None:
+            shutil.rmtree(launch_session, ignore_errors=True)
     print(f"collector_dir={destination}")
 
 

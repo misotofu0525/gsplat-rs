@@ -246,7 +246,10 @@ contain exactly one `BENCHMARK_RESULT`; duplicate or missing terminals are not
 selected, ignored, or repaired. After the terminal, the collector terminates
 the app before finalizing `raw-console.log`, extracts and validates artifact v1,
 and joins the manifest back to the exact commit, dataset, trace, and Simulator
-runtime identities.
+runtime identities. A post-launch failure leaves the requested artifact absent
+and retains a diagnostic-only bundle under
+`target/ios-sim-benchmark-failures/`, including the observed terminal snapshot,
+the post-termination launch streams, and their hashes and terminal counts.
 
 ## 4) iOS simulator target build
 

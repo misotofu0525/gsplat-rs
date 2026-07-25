@@ -32,11 +32,15 @@ final class RenderLoopLifecycle {
     private var nextIdentity: UInt64 = 1
     private var currentToken: Token?
     private var restartAfterStop = false
+    private var terminalFinished = false
 
     /// Returns true only when a renderer may be created immediately.
     /// An already-running loop is left unchanged; a stopping loop records one
     /// deferred restart request.
     func requestStart() -> Bool {
+        guard !terminalFinished else {
+            return false
+        }
         guard let currentToken else {
             return true
         }
@@ -48,7 +52,7 @@ final class RenderLoopLifecycle {
 
     /// Installs the identity for a successfully created native renderer.
     func begin() -> Token? {
-        guard currentToken == nil else {
+        guard currentToken == nil, !terminalFinished else {
             return nil
         }
         let token = Token(identity: nextIdentity)
@@ -77,12 +81,18 @@ final class RenderLoopLifecycle {
     }
 
     /// Retires a token after its native handle has been destroyed.
-    /// A stale or duplicate completion cannot retire the current loop.
-    func finish(_ token: Token) -> Bool? {
+    /// A stale or duplicate completion cannot retire the current loop. A
+    /// terminal completion permanently suppresses another loop in this process.
+    func finish(_ token: Token, terminal: Bool = false) -> Bool? {
         guard currentToken === token else {
             return nil
         }
         currentToken = nil
+        if terminal {
+            terminalFinished = true
+            restartAfterStop = false
+            return false
+        }
         let shouldRestart = restartAfterStop
         restartAfterStop = false
         return shouldRestart

@@ -35,6 +35,25 @@ private enum RenderLoopLifecycleTests {
         lifecycle.requestStop()
         require(lifecycle.finish(third) == false, "a later stop must cancel the pending restart")
 
+        let terminalLifecycle = RenderLoopLifecycle()
+        require(terminalLifecycle.requestStart(), "a benchmark loop must start once")
+        let terminal = requireToken(
+            terminalLifecycle.begin(),
+            "the benchmark loop must install"
+        )
+        require(
+            terminalLifecycle.finish(terminal, terminal: true) == false,
+            "terminal completion must not request a restart"
+        )
+        require(
+            !terminalLifecycle.requestStart(),
+            "layout callbacks after a benchmark terminal must not start a second loop"
+        )
+        require(
+            terminalLifecycle.begin() == nil,
+            "a benchmark terminal must permanently seal the render-loop lifecycle"
+        )
+
         print("ios render-loop lifecycle tests ok")
     }
 
