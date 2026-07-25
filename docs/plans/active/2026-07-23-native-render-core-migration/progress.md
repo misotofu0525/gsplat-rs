@@ -26,9 +26,9 @@ M2 = Active
   `e26a1df39780e744112924eb378e098c29be7cd4`.
 - M1 state: Accepted at integrated implementation/evidence tip
   `dc3e0de65073f819b714229b726ca55f47c6e6d6`.
-- Active task: M2. M2p1, M2p2, M2a and M2p3c are Accepted. M2p4 is the next
-  serial migration slice and must be dispatched as its own visible Codex task
-  from the fixed accepted root tip recorded below.
+- Active task: M2. M2p1, M2p2, M2a, M2p3c and M2p4 are Accepted. M2b is the
+  next serial migration slice and must be dispatched as its own visible Codex
+  task from the fixed accepted root tip recorded below.
 - Product state at M2 activation: native Packed offscreen, desktop
   non-interactive and bench-runner use the Exact runtime; the interactive
   `SurfaceRenderSession` remains legacy until its complete M2 candidate is
@@ -379,3 +379,21 @@ M2 = Active
   `wasm32-unknown-unknown` renderer check. The fixed accepted root tip is
   recorded by this closeout commit; M2p4 may use only that tree as its base.
   M2b remains blocked until M2p4 is independently accepted and integrated.
+- **M2p4 closeout: Accepted.** Candidate
+  `3d70301b2e5d321cfb5e6e1b5da40b3493ef9c5a`, a direct child of
+  `502b751cf1795143102e9628eb6381962786ee2f`, is integrated as `c4db3cf`.
+  It changes the legacy C getter only through a Surface compatibility
+  availability projection: synchronous current counts retain legacy success;
+  asynchronous counts are unavailable until a READY terminal exactly matches
+  the last presented ticket and complete join identity. Unrequested, pending,
+  expired, failed and mismatched states return `NOT_FOUND` without writing the
+  caller buffer. Renderer/PlanSampler remain the sole ticket, generation,
+  queue and terminal owners.
+- Independent fixed-SHA review task `019f9723-ebb8-7f80-b355-67cbfdc33485`
+  accepted the candidate with no P0/P1/P2. It independently passed 20
+  current-stats tests, 33 C ABI tests, C smoke, workspace check, formatter,
+  architecture policy and the Android live-getter guard. Root re-ran the same
+  focused checks after integration. ABI layouts, render policy, pixels,
+  producer evidence, M2b capture and platform consumers did not change.
+- The fixed M2p4 integration tip is recorded by this closeout commit. M2b may
+  begin only from that tip and must remain a separate visible task.
