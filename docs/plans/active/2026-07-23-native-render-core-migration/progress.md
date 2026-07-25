@@ -15,7 +15,7 @@ Unstarted tasks remain outside the machine registry until activated.
 M0 = Accepted
 M1 = Accepted
 M2 = Accepted
-M3 = Active
+M3 = Accepted
 <!-- gsplat-program-task-states: end -->
 
 ## Package status
@@ -28,8 +28,8 @@ M3 = Active
 - M1 state: Accepted at integrated implementation/evidence tip
   `dc3e0de65073f819b714229b726ca55f47c6e6d6`.
 - M2 state: Accepted. M2p1, M2p2, M2a, M2p3c, M2p4 and M2b are accepted.
-  M3 is active; its work remains serial and each implementation/review slice
-  is its own visible Codex task from an accepted root tip.
+- M3 state: Accepted. Its serial implementation/review slices ran as visible
+  Codex tasks from accepted root tips; M4--M8 remain pending.
 - Product state at M2 activation: native Packed offscreen, desktop
   non-interactive and bench-runner use the Exact runtime; the interactive
   `SurfaceRenderSession` remains legacy until its complete M2 candidate is
@@ -501,3 +501,17 @@ M3 = Active
   check, strict renderer Clippy, WASM Web check and architecture policy. M3c
   must restart from this second repaired base; FFI must not recreate queues or
   mirror the enabled state.
+- **M3c FFI ownership deletion: Accepted and integrated.** Visible candidate
+  `bd221592e387b920118ff8d60b8bd8d1a49cc909` was independently accepted with
+  no P0/P1/P2 and integrated as `2618ae9`. The C layer now directly translates
+  renderer-owned compatibility submissions, terminals, ticket counts and raw
+  producer single-pop FIFO. `GsplatSurfaceRenderer` no longer owns
+  compatibility queues, ledgers, ticket contexts, pumps, submission caches or
+  a producer-enabled mirror. Header content and the Rust exported C-function
+  set are unchanged; validation still occurs before session polling or caller
+  output mutation. Root M3 gates passed formatter, 35 FFI unit tests, 14
+  renderer compatibility tests, C smoke, workspace check, strict FFI Clippy,
+  WASM renderer compilation, architecture self-tests/policy and diff checks.
+  M3 is therefore accepted for its defined C ABI cutover scope. This does not
+  claim a fresh real-window or physical Android/iOS qualification: those remain
+  explicit later M5/M6 evidence obligations.
