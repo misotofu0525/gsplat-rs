@@ -19,6 +19,7 @@ M3 = Accepted
 M4 = Accepted
 M5 = Accepted
 M6 = Accepted
+M7 = Active
 <!-- gsplat-program-task-states: end -->
 
 ## Package status
@@ -39,12 +40,18 @@ M6 = Accepted
 - M6 state: Accepted for the defined Apple/GsplatKit/XCFramework functional
   consumer scope. Physical-iPhone qualification remains explicit Deferred; see
   [M6 Apple functional evidence closeout](m6-apple-functional-evidence.md).
+- M7 state: Active at the read-only fact baseline
+  `24157b933d15662a29b9e2347bb945155b08ecbf`. M7a legacy tiled-prototype
+  deletion, the M7d geometry-switch contract/public-entry slice, Android strict
+  refreshed-ticket repairs, and the obsolete desktop raster-plan CLI deletion
+  are integrated. The remaining M7 inventory, deletion, classification and
+  acceptance matrix are not complete.
 - Product state at M2 activation: native Packed offscreen, desktop
   non-interactive and bench-runner use the Exact runtime; the interactive
   `SurfaceRenderSession` remains legacy until its complete M2 candidate is
   accepted.
-- Unstarted tasks: M7 and M8. They are pending in roadmap order and are not
-  active machine-state entries. Package M therefore remains Active.
+- M8 remains unstarted and outside the machine registry. Package M remains
+  Active; neither M7 nor M8 is Accepted.
 - Stable v0.1 signatures/layouts, Web behavior and rendered semantics remain
   frozen during M2. Additive current-stats v1 receipts and pending-compatible
   Android/Apple translation are prepared before M2 activation. No root
@@ -568,7 +575,7 @@ M6 = Accepted
 ## M5 closeout
 
 - Final state: Accepted for the defined Android/JNI/AAR consumer and A065
-  strict-evidence scope. Package M remains Active; M6--M8 are still pending.
+  strict-evidence scope. At this M5 closeout point, M6--M8 were still pending.
 - The detailed retained paths, identities, repair audit trail, validator
   results and residual boundaries are recorded in
   [M5 Android strict evidence closeout](m5-android-strict-evidence.md).
@@ -610,4 +617,54 @@ M6 = Accepted
   represented by Simulator timing.
 - The complete identity, receipt, validator and boundary record is
   [M6 Apple functional evidence closeout](m6-apple-functional-evidence.md).
-- Package M remains Active; M7 and M8 are still pending.
+- At this M6 closeout point, M7 and M8 had not been accepted. The current M7
+  partial-integration state is recorded below.
+
+## M7 partial integration status
+
+- State at read-only fact baseline
+  `24157b933d15662a29b9e2347bb945155b08ecbf`: Active, not Accepted. M8 remains
+  unstarted, and Package M remains Active.
+- M7a is integrated as `658c7241fb0031290d7d86989ee1ec70e146cad6`.
+  It removes the unused `tiled_gpu` and `tiled_raster` Rust modules, their three
+  WGSL shaders, the standalone tiled-raster CPU test, and the corresponding
+  architecture-policy exception. This establishes deletion from the baseline
+  tree; it is not the complete M7 legacy-owner inventory or closeout.
+- The M7d contract/API slice is integrated through
+  `d957eb670d6da0d920e7cfbea53a75d2ce5238c8`,
+  `e0123e1a94e82db57d5de3e0c68030cee63c9558`,
+  `12c4bbdcd264207d88a0c232964630aebf61c3b2`,
+  `c848c84fda110a4ea648e06fb6547aa5a9bfa11e`, and
+  `a51e149da6b20b16a422dd8ad8832d5e29f34081`. Same-path geometry calls are
+  idempotent; live transitions entering or leaving Packed reject before
+  resource preparation or mutation; Native Direct/Paged retains its existing
+  transactional rule; and Rust, C-header/C-ABI, Web declaration and
+  architecture text describe that same boundary. The final commit adds a
+  macOS/Metal hidden-window regression over the public `SurfacePresenter` and
+  `SurfaceRenderSession` entries. A fresh run at the fact baseline reported
+  `M7D_SURFACE_GEOMETRY_ENTRY=PASS backend=Metal adapter="Apple M4"
+  public_presenter=true public_session=true`; this is one local public-entry
+  regression, not broader Apple, Web, Android or device qualification.
+- Android strict refreshed-ticket alignment is present through
+  `b2118aa33b6a1c8dcd97fcfd577b39c69a9da09c` and
+  `dcfcaf74d1e2a19c82e790ce699ec7aa0259d7ba`: an Exact frame that refreshes
+  order must join the current-stats and strict order ledgers on the same issued
+  ticket, and artifact extraction rejects refreshed-ticket identity drift.
+  Fresh baseline checks passed the Android artifact-extraction script and all
+  55 collector unit tests. No new APK, AAR or physical-device run was performed
+  for this status correction.
+- The obsolete desktop `--surface-raster-plan` CLI is removed at
+  `24157b933d15662a29b9e2347bb945155b08ecbf`; desktop help no longer advertises
+  it, collector scripts no longer pass it, and the CLI test rejects the retired
+  flag. A fresh `cargo test -p desktop-example` passed all 17 unit tests.
+- Additional fresh baseline checks passed: all 463 executed
+  `gsplat-render-wgpu` library tests (8 ignored), architecture checker
+  self-tests (3 tests), and the real-tree architecture policy check (124 Rust,
+  22 WGSL, 6 retained grandfather entries), plus the C FFI smoke. These focused
+  results do not substitute for M7's full workspace, platform, FFI, WASM and
+  forced-Metal acceptance matrix.
+- Remaining before M7 acceptance: finish and review the deletion inventory;
+  classify every deleted or retained call site/API/ABI entry; prove the final
+  single-owner policy; run the complete required consumer/global matrix; and
+  record fixed-SHA review and rollback evidence. M8 is not activated by these
+  partial integrations.
