@@ -186,6 +186,26 @@ fn encode_adaptive(
     .expect("encode adaptive Exact frame")
 }
 
+fn encode_adaptive_forced_cpu_refresh(
+    slot: &mut PreparedRuntimeSlot,
+    device: &wgpu::Device,
+) -> super::PendingGpuFrame {
+    let texture = target(device);
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    encode_frame_gpu(
+        slot,
+        GpuFrameEncodeRequest::adaptive(
+            &Camera::default(),
+            Viewport::new(WIDTH, HEIGHT).expect("viewport"),
+            &view,
+            FORMAT,
+            wgpu::Color::BLACK,
+        )
+        .with_forced_cpu_order_refresh(),
+    )
+    .expect("encode adaptive Exact frame with forced CPU refresh")
+}
+
 fn render(
     slot: &mut PreparedRuntimeSlot,
     device: &wgpu::Device,
@@ -682,6 +702,80 @@ fn pending_observer_gets_one_turn_then_formal_waits_for_a_known_safe_queue_entry
         assert!(first.ticket() < second.ticket());
         assert_ne!(first.submission().join(), second.submission().join());
         assert!(slot.poll_current_stats().is_empty());
+    });
+}
+
+#[test]
+fn deferred_trace_observer_retains_forced_cpu_refresh_until_issued_frame() {
+    pollster::block_on(async {
+        let Some((device, queue)) = request_device().await else {
+            return;
+        };
+        let mut slot = prepared_slot(&device, &queue, exact_scene(&[1.0, 1.1])).await;
+        slot.set_test_controller_config(ControllerConfig::accelerated());
+
+        // Seed an observer queue boundary exactly like the preceding formal
+        // trace frame in sustained-window collection.
+        assert_eq!(slot.request_current_stats(), CurrentStatsRequest::Requested);
+        let first_pending = encode_adaptive(&mut slot, &device);
+        let first = submit_encoded_frame(&mut slot, first_pending).expect("first trace observer");
+        assert!(matches!(
+            first.current_stats_submission(),
+            CurrentStatsSubmission::Issued(_)
+        ));
+
+        assert_eq!(slot.request_current_stats(), CurrentStatsRequest::Requested);
+        slot.request_cpu_order_refresh();
+        let before = slot
+            .current_cpu_order_generation()
+            .expect("prepared CPU order generation");
+
+        // This presented frame refreshes, but its queue-unsafe entry cannot
+        // issue the requested observer. The force latch must remain owned by
+        // Renderer rather than being consumed by an unretained presentation.
+        let boundary_pending = encode_adaptive_forced_cpu_refresh(&mut slot, &device);
+        let boundary = submit_encoded_frame(&mut slot, boundary_pending)
+            .expect("deferred trace boundary frame");
+        assert_eq!(boundary.plan_id(), PlanId::CpuPostSort);
+        assert_eq!(
+            boundary.current_stats_submission(),
+            CurrentStatsSubmission::NotRequested
+        );
+        assert!(boundary.order_generation() > before);
+        assert!(slot.cpu_order_refresh_requested());
+        wait(&device, &boundary);
+
+        // A formal controller frame may also receive priority. It still must
+        // not consume the trace refresh while the observer request is pending.
+        let formal_pending = encode_adaptive_forced_cpu_refresh(&mut slot, &device);
+        let formal = submit_encoded_frame(&mut slot, formal_pending).expect("formal frame");
+        assert_eq!(formal.plan_id(), PlanId::CpuPostSort);
+        assert!(formal.plan_sample_ticket().is_some());
+        assert_eq!(
+            formal.current_stats_submission(),
+            CurrentStatsSubmission::NotRequested
+        );
+        assert!(slot.cpu_order_refresh_requested());
+        wait(&device, &formal);
+        assert_eq!(
+            slot.poll_test_plan_sampler()
+                .expect("formal controller completion")
+                .1,
+            SampleDisposition::Accepted
+        );
+
+        // The ticket-bearing presentation itself performs a newer CPU order
+        // refresh, then atomically clears the latch with that issued identity.
+        let issued_pending = encode_adaptive_forced_cpu_refresh(&mut slot, &device);
+        let issued = submit_encoded_frame(&mut slot, issued_pending)
+            .expect("ticket-bearing trace presentation");
+        assert_eq!(issued.plan_id(), PlanId::CpuPostSort);
+        assert!(matches!(
+            issued.current_stats_submission(),
+            CurrentStatsSubmission::Issued(_)
+        ));
+        assert!(issued.order_generation() > formal.order_generation());
+        assert!(!slot.cpu_order_refresh_requested());
     });
 }
 

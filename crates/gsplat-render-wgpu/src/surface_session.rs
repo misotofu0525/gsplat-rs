@@ -1701,7 +1701,7 @@ pub struct SurfaceRenderSession {
     renderer: Renderer,
     presenter: SurfacePresenter,
     exact_plan_receipt: Option<ExactSurfacePlanState>,
-    exact_order_generation_receipt: Option<u64>,
+    exact_order_generation_receipt: Option<(PlanId, u64)>,
     current_stats_submission: SurfaceCurrentStatsSubmission,
     legacy_stats_availability: LegacySurfaceStatsAvailability,
     camera: Camera,
@@ -1852,6 +1852,18 @@ fn publish_only_on_present<T>(published: &mut T, presented: Option<T>) {
     if let Some(presented) = presented {
         *published = presented;
     }
+}
+
+fn exact_order_refreshed(
+    published: Option<(PlanId, u64)>,
+    plan: PlanId,
+    order_generation: u64,
+) -> bool {
+    // Every complete plan owns an independent monotonic generation domain.
+    // A plan transition with the same numeric value still publishes a fresh
+    // authoritative order identity.
+    !matches!(published, Some((published_plan, published_generation))
+        if published_plan == plan && published_generation == order_generation)
 }
 
 const fn exact_published_camera_revision(
@@ -3217,12 +3229,13 @@ impl SurfaceRenderSession {
         let presented_current_stats_submission = submission.current_stats_submission().into();
         let plan = submission.plan_id();
         let order_generation = submission.order_generation();
-        let order_refreshed = self.exact_order_generation_receipt != Some(order_generation);
+        let order_refreshed =
+            exact_order_refreshed(self.exact_order_generation_receipt, plan, order_generation);
         self.applied_order_revision = submission.frame_identity().camera_revision();
         self.applied_order_camera = self.camera;
         let output =
             self.exact_surface_output(Some(submission), plan, order_refreshed, frame_started);
-        self.exact_order_generation_receipt = Some(order_generation);
+        self.exact_order_generation_receipt = Some((plan, order_generation));
         publish_only_on_present(
             &mut self.current_stats_submission,
             Some(presented_current_stats_submission),
@@ -4285,7 +4298,7 @@ mod tests {
         ADAPTIVE_GPU_FAILURE_COOLDOWN, ADAPTIVE_INITIAL_PROBE_DELAY, ADAPTIVE_PROBE_SEQUENCE_LEN,
         ADAPTIVE_REPROBE_INTERVAL, AdaptiveMetric, AdaptiveOrderPolicy, AdaptiveProbeOwner,
         AdaptiveProjectedDrawPolicy, AdaptiveRefreshChoice, AdaptiveSampleKind,
-        MAX_ASYNC_SORT_REVISION_LAG, PROJECTED_TELEMETRY_FAILURE_COOLDOWN,
+        MAX_ASYNC_SORT_REVISION_LAG, PROJECTED_TELEMETRY_FAILURE_COOLDOWN, PlanId,
         ProjectedAdaptivePendingSample, ProjectedAdaptivePhase, ProjectedAdaptiveSampleKind,
         SurfaceAdaptiveState, SurfaceFrameState, SurfaceGeometrySwitchEntry,
         SurfaceGpuProducerMeasurementControl, SurfaceGpuProducerMeasurementSubmission,
@@ -4295,13 +4308,14 @@ mod tests {
         SurfaceProjectedDrawMeasurementUnsampledReason, SurfaceProjectedDrawPolicy,
         SurfaceSortSchedule, TelemetrySubmission, adaptive_gpu_order_failure_reason,
         adaptive_primary_metric, arbitrate_new_probe_owner, async_order_pose_compatible,
-        async_schedule_threshold, defer_projected_formal_choice, exact_published_camera_revision,
-        gpu_producer_measurement_context_is_valid, gpu_projected_order_changed,
-        legacy_surface_current_stats_poll, legacy_surface_current_stats_request,
-        legacy_surface_current_stats_submission, order_probe_owner_should_yield,
-        paged_surface_counts, probe_sequence_backend, projected_formal_sample_requested,
-        projected_order_changed, projected_policy_can_sample, projected_probe_claims_owner,
-        projected_probe_sequence_execution, reset_adaptive_for_gpu_producer_measurement_transition,
+        async_schedule_threshold, defer_projected_formal_choice, exact_order_refreshed,
+        exact_published_camera_revision, gpu_producer_measurement_context_is_valid,
+        gpu_projected_order_changed, legacy_surface_current_stats_poll,
+        legacy_surface_current_stats_request, legacy_surface_current_stats_submission,
+        order_probe_owner_should_yield, paged_surface_counts, probe_sequence_backend,
+        projected_formal_sample_requested, projected_order_changed, projected_policy_can_sample,
+        projected_probe_claims_owner, projected_probe_sequence_execution,
+        reset_adaptive_for_gpu_producer_measurement_transition,
         reset_adaptive_for_raster_transition, retain_gpu_producer_terminal,
         should_measure_cpu_refresh, should_reset_order_for_projected_incumbent_change,
         surface_geometry_switch_entry, try_switch_renderer_geometry_path,
@@ -4612,6 +4626,24 @@ mod tests {
             exact_published_camera_revision(3, None),
             3,
             "an acquire-without-present has no renderer frame identity to publish"
+        );
+    }
+
+    #[test]
+    fn moving_trace_plan_transition_cannot_alias_a_fresh_order_generation() {
+        assert!(exact_order_refreshed(None, PlanId::CpuPostSort, 1));
+        assert!(!exact_order_refreshed(
+            Some((PlanId::CpuPostSort, 1)),
+            PlanId::CpuPostSort,
+            1,
+        ));
+        assert!(
+            exact_order_refreshed(Some((PlanId::GpuPostSort, 17)), PlanId::CpuPostSort, 17,),
+            "independent Adaptive plan generations cannot alias the moving trace refresh"
+        );
+        assert!(
+            exact_order_refreshed(Some((PlanId::CpuPostSort, 23)), PlanId::GpuPreproject, 23,),
+            "the Preproject generation domain is independent too"
         );
     }
 

@@ -1672,7 +1672,14 @@ impl ValidatedSubmittedGpuFrame<'_> {
         self.slot.controller = state.staged_controller;
         self.slot.presentation_sequence = self.presentation_sequence;
         self.slot.last_published_plan = Some(state.metadata.plan);
-        if state.metadata.plan == PlanId::CpuPostSort {
+        // A queue-unsafe entry may defer the requested observer after this
+        // CPU plan already refreshed. Keep the renderer-owned force latch in
+        // that case so the later ticket-bearing presentation refreshes the
+        // same camera/order revision instead of merely reusing it.
+        let cpu_refresh_reaches_requested_observer = state.metadata.plan == PlanId::CpuPostSort
+            && (!self.slot.sampler.has_current_stats_request()
+                || state.armed_current_stats.is_some());
+        if cpu_refresh_reaches_requested_observer {
             self.slot.force_cpu_order_refresh = false;
         }
         let current_stats = state
