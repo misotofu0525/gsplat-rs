@@ -5,6 +5,7 @@ import {
   canonicalDatasetIdentityFromObservation,
   canonicalDatasetIdentityForRequest,
   validateDatasetEvidenceIdentity,
+  validateFormalDatasetEvidenceIdentity,
 } from "../src/dataset-identity.mjs";
 
 const KITSUNE_SHA256 = "3bea1ec48ea91861fc8fad1df688a2cdb1db9b103735498b35d16d146f2551a2";
@@ -44,6 +45,33 @@ test("canonical Kitsune request, manifest, and observed load receipt bind", () =
   }), kitsuneManifest());
 });
 
+test("formal Kitsune admission requires the exact canonical logical request", () => {
+  assert.deepEqual(validateFormalDatasetEvidenceIdentity({
+    requestedLogicalId: "kitsune",
+    expectedLogicalId: "kitsune",
+    manifestDataset: kitsuneManifest(),
+    loadReceipt: kitsuneReceipt(),
+  }), kitsuneManifest());
+
+  for (const alias of ["fox", "showcase", "kitune"]) {
+    assert.throws(
+      () => validateFormalDatasetEvidenceIdentity({
+        requestedLogicalId: alias,
+        expectedLogicalId: "kitsune",
+        manifestDataset: kitsuneManifest(),
+        loadReceipt: kitsuneReceipt(),
+      }),
+      new RegExp(`formal request must be logical_id kitsune, observed ${alias}`),
+    );
+  }
+});
+
+test("Kitsune UI aliases retain their selection identity", () => {
+  for (const alias of ["showcase", "kitsune", "kitune", "fox"]) {
+    assert.deepEqual(canonicalDatasetIdentityForRequest(alias), kitsuneManifest());
+  }
+});
+
 test("dataset evidence rejects a logical alias in the filename field and a conflicting path", () => {
   assert.throws(
     () => validateDatasetEvidenceIdentity({
@@ -68,6 +96,14 @@ test("dataset evidence rejects a logical alias in the filename field and a confl
       loadReceipt: { ...kitsuneReceipt(), source_path: "/tmp/kitune1.ply" },
     }),
     /load receipt observed \/tmp\/kitune1\.ply/,
+  );
+  assert.throws(
+    () => validateDatasetEvidenceIdentity({
+      requestedDataset: "kitsune",
+      manifestDataset: { ...kitsuneManifest(), source_path: "/tmp/kitune1.ply" },
+      loadReceipt: kitsuneReceipt(),
+    }),
+    /manifest source_path observed \/tmp\/kitune1\.ply/,
   );
 });
 

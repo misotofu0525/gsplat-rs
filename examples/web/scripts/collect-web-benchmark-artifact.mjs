@@ -36,7 +36,11 @@ import {
   validateGpuProducerMeasuredSubmissions,
   validateGpuProducerTerminalLedger,
 } from '../src/benchmark-gpu-producer-evidence.mjs';
-import { validateDatasetEvidenceIdentity } from '../src/dataset-identity.mjs';
+import {
+  validateDatasetEvidenceIdentity,
+  validateFormalDatasetEvidenceIdentity,
+  validateFormalDatasetLogicalRequest,
+} from '../src/dataset-identity.mjs';
 
 const execFile = promisify(execFileCallback);
 
@@ -53,14 +57,21 @@ const chromeCandidates = [
 
 const qualificationName = process.env.GSPLAT_PHASE_E_QUALIFICATION ?? '';
 const qualification = qualificationName.length > 0;
+const formalDatasetLogicalId = qualificationName === 'kitsune-static-v1'
+  ? 'kitsune'
+  : qualificationName === 'raster-diagnostic-v1' ? 'raster_diagnostic_v1' : null;
 const m4Smoke = process.env.GSPLAT_M4_SMOKE === '1';
 const frames = Number(process.env.GSPLAT_BENCHMARK_FRAMES ?? (qualification ? 3600 : 30));
 const warmup = Number(process.env.GSPLAT_BENCHMARK_WARMUP_FRAMES ?? (qualification ? 120 : 5));
 const dataset = process.env.GSPLAT_DATASET ?? (
-  qualificationName === 'kitsune-static-v1'
-    ? 'kitsune'
-    : qualificationName === 'raster-diagnostic-v1' ? 'diagnostic' : 'minimal'
+  formalDatasetLogicalId ?? 'minimal'
 );
+if (formalDatasetLogicalId !== null) {
+  validateFormalDatasetLogicalRequest({
+    requestedLogicalId: dataset,
+    expectedLogicalId: formalDatasetLogicalId,
+  });
+}
 const outDir = resolve(
   process.env.GSPLAT_ARTIFACT_DIR ??
     resolve(
@@ -146,6 +157,22 @@ function startHttpServer() {
         resolvePromise(child);
       }
     }, 400);
+  });
+}
+
+function validateCollectorDatasetIdentity({ manifestDataset, loadReceipt = null }) {
+  if (formalDatasetLogicalId !== null) {
+    return validateFormalDatasetEvidenceIdentity({
+      requestedLogicalId: dataset,
+      expectedLogicalId: formalDatasetLogicalId,
+      manifestDataset,
+      loadReceipt,
+    });
+  }
+  return validateDatasetEvidenceIdentity({
+    requestedDataset: dataset,
+    manifestDataset,
+    loadReceipt,
   });
 }
 
@@ -331,8 +358,7 @@ function parseArtifacts(consoleLines) {
     const failure = JSON.parse(adaptiveGpuFailures[0]);
     throw new Error(`strict benchmark observed adaptive GPU failure ${failure.reason ?? 'unknown'}`);
   }
-  const expectedIdentity = validateDatasetEvidenceIdentity({
-    requestedDataset: dataset,
+  const expectedIdentity = validateCollectorDatasetIdentity({
     manifestDataset: manifest.dataset,
   });
   const expected = expectedIdentity.id;
@@ -367,8 +393,7 @@ function parseArtifacts(consoleLines) {
       throw new Error(`exact Packed benchmark requires one load receipt; observed ${loadReceipts.length}`);
     }
     const receipt = JSON.parse(loadReceipts[0]);
-    validateDatasetEvidenceIdentity({
-      requestedDataset: dataset,
+    validateCollectorDatasetIdentity({
       manifestDataset: manifest.dataset,
       loadReceipt: receipt,
     });

@@ -143,12 +143,11 @@ export function canonicalDatasetIdentityFromObservation({ id, source_path, sha25
   return { ...expected, sha256: observed.sha256 };
 }
 
-export function validateDatasetEvidenceIdentity({
-  requestedDataset,
+function validateDatasetEvidenceAgainstExpected({
+  expected,
   manifestDataset,
   loadReceipt = null,
 }) {
-  const expected = canonicalDatasetIdentityForRequest(requestedDataset);
   const fields = ["id", "logical_id", "source_path"];
   for (const field of fields) {
     const observed = manifestDataset?.[field];
@@ -173,4 +172,45 @@ export function validateDatasetEvidenceIdentity({
     }
   }
   return { ...expected, sha256: manifestSha256 };
+}
+
+export function validateDatasetEvidenceIdentity({
+  requestedDataset,
+  manifestDataset,
+  loadReceipt = null,
+}) {
+  return validateDatasetEvidenceAgainstExpected({
+    expected: canonicalDatasetIdentityForRequest(requestedDataset),
+    manifestDataset,
+    loadReceipt,
+  });
+}
+
+export function validateFormalDatasetEvidenceIdentity({
+  requestedLogicalId,
+  expectedLogicalId,
+  manifestDataset,
+  loadReceipt = null,
+}) {
+  validateFormalDatasetLogicalRequest({ requestedLogicalId, expectedLogicalId });
+  const expected = Object.values(FIXED_IDENTITIES)
+    .find((identity) => identity.logical_id === expectedLogicalId);
+  if (expected == null) fail(`unsupported formal logical_id ${expectedLogicalId}`);
+  return validateDatasetEvidenceAgainstExpected({
+    expected,
+    manifestDataset,
+    loadReceipt,
+  });
+}
+
+export function validateFormalDatasetLogicalRequest({
+  requestedLogicalId,
+  expectedLogicalId,
+}) {
+  const requested = requireString(requestedLogicalId, "formal requested logical_id");
+  const expected = requireString(expectedLogicalId, "formal expected logical_id");
+  if (requested !== expected) {
+    fail(`formal request must be logical_id ${expected}, observed ${requested}`);
+  }
+  return expected;
 }
