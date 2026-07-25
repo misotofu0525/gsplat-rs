@@ -1220,30 +1220,6 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                         updateStatus("state=create_failed rc=$gpuProducerRc error=$message")
                         return@Thread
                     }
-                    val cameraTraceRc = benchmarkConfig.cameraTracePath?.let { tracePath ->
-                        val initialFrame = if (benchmarkConfig.cameraTraceSequence) {
-                            benchmarkConfig.cameraTraceFrameIndices.last()
-                        } else {
-                            benchmarkConfig.cameraTraceFrame
-                        }
-                        BenchmarkBridge.setSurfaceCameraTraceFrame(
-                            handle,
-                            tracePath,
-                            initialFrame,
-                            benchmarkConfig.requireTraceDisplayMatch
-                        )
-                    } ?: 0
-                    if (cameraTraceRc != 0) {
-                        val detail = NativeBridge.lastErrorMessage()
-                            .ifBlank { NativeBridge.errorMessage(cameraTraceRc) }
-                        val message = detail.replace('\n', ' ').take(240)
-                        Log.e(
-                            TAG,
-                            "setSurfaceCameraTraceFrame failed rc=$cameraTraceRc error=$detail"
-                        )
-                        updateStatus("state=create_failed rc=$cameraTraceRc error=$message")
-                        return@Thread
-                    }
                     if (benchmarkConfig.cameraTracePath != null) {
                         val metadata = checkNotNull(benchmarkConfig.cameraTraceMetadata)
                         val mode = if (benchmarkConfig.cameraTraceSequence) {
@@ -1317,6 +1293,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                         !Thread.currentThread().isInterrupted
                     ) {
                         val traceStep = benchmark.nextTraceStep()
+                        val traceCommand = benchmark.cameraTraceCommand(traceStep)
                         val iterationStartNs = System.nanoTime()
                         val benchmarkStatsBinding = benchmark.currentStatsBinding(traceStep)
                         val uiSamplingDue = !benchmark.enabled &&
@@ -1332,7 +1309,11 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                         val transaction = performSurfaceRenderTransaction(
                             renderLock = renderLock,
                             applyCommand = {
-                                if (traceStep != null && benchmark.config.cameraTraceSequence) {
+                                if (
+                                    traceStep != null &&
+                                    traceCommand ==
+                                    BenchmarkCameraTraceCommandDecision.APPLY_TARGET
+                                ) {
                                     BenchmarkBridge.setSurfaceCameraTraceFrame(
                                         handle,
                                         checkNotNull(benchmark.config.cameraTracePath),
@@ -1340,9 +1321,9 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                                         benchmark.config.requireTraceDisplayMatch
                                     )
                                 } else if (traceStep != null) {
-                                    // Fixed-trace mode was applied transactionally before the
-                                    // render loop. Do not force a fresh sort every frame merely
-                                    // to attach the same trace identity to its runtime receipt.
+                                    // The selected fixed/sequence target is already current.
+                                    // Pending warmup retries render it again without reissuing
+                                    // the setter or forcing another order refresh.
                                     0
                                 } else if (
                                     benchmark.enabled && benchmark.config.cameraTracePath == null
@@ -1381,6 +1362,26 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                             updateStatus(
                                 "state=current_stats_session_closed " +
                                     "reason=command_failed rc=${transaction.commandRc}"
+                            )
+                            renderSessionOwner.requestStop(session)
+                            continue
+                        }
+                        if (
+                            benchmark.enabled && traceCommand ==
+                            BenchmarkCameraTraceCommandDecision.APPLY_TARGET &&
+                            transaction.commandRc != 0
+                        ) {
+                            val detail = NativeBridge.lastErrorMessage()
+                                .ifBlank { NativeBridge.errorMessage(transaction.commandRc) }
+                            Log.e(
+                                TAG,
+                                "setSurfaceCameraTraceFrame failed " +
+                                    "rc=${transaction.commandRc} error=$detail"
+                            )
+                            updateStatus(
+                                "state=benchmark_camera_command_error " +
+                                    "rc=${transaction.commandRc} " +
+                                    "error=${detail.replace('\n', ' ').take(240)}"
                             )
                             renderSessionOwner.requestStop(session)
                             continue
@@ -2701,6 +2702,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         private val issuedGpuProducerTickets = LinkedHashMap<Long, IssuedGpuProducerTicket>()
         private val unsampledGpuProducerRequests = ArrayList<String>()
         private val cameraPresentationGate = BenchmarkCameraPresentationGate()
+        private val cameraTraceCommandGate = BenchmarkCameraTraceCommandGate()
 
         fun recordOrderSubmission(submission: BenchmarkOrderSubmission) {
             check(submission.requestedBackend == orderBackendValue(config.orderBackend)) {
@@ -3209,6 +3211,12 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
             )
         }
 
+        fun cameraTraceCommand(
+            traceStep: CameraTraceStep?
+        ): BenchmarkCameraTraceCommandDecision? = traceStep?.let {
+            cameraTraceCommandGate.beforeRender(it.traceFrameIndex)
+        }
+
         fun currentStatsBinding(
             traceStep: CameraTraceStep?
         ): SurfaceCurrentStatsFrameBinding? {
@@ -3240,6 +3248,10 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
             }
             if (config.cameraTraceMetadata != null) {
                 val cameraDecision = cameraPresentationGate.decide(cameraReceipt, sortStats[0])
+                cameraTraceCommandGate.afterRender(
+                    checkNotNull(traceStep).traceFrameIndex,
+                    cameraDecision
+                )
                 if (cameraDecision ==
                     BenchmarkCameraPresentationDecision.WAIT_FOR_CURRENT_REVISION
                 ) {

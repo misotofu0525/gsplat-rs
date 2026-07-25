@@ -60,6 +60,115 @@ class BenchmarkCameraReceiptTest {
     }
 
     @Test
+    fun fixedTraceAppliesOnceThenRendersTheCurrentTarget() {
+        val commands = BenchmarkCameraTraceCommandGate()
+
+        assertEquals(
+            BenchmarkCameraTraceCommandDecision.APPLY_TARGET,
+            commands.beforeRender(traceFrameIndex = 7)
+        )
+        commands.afterRender(7, BenchmarkCameraPresentationDecision.RECORD)
+        repeat(3) {
+            assertEquals(
+                BenchmarkCameraTraceCommandDecision.RENDER_TARGET,
+                commands.beforeRender(traceFrameIndex = 7)
+            )
+            commands.afterRender(7, BenchmarkCameraPresentationDecision.RECORD)
+        }
+    }
+
+    @Test
+    fun sequenceAppliesItsFirstFrameWithoutAPrerollMutation() {
+        val commands = BenchmarkCameraTraceCommandGate()
+
+        assertEquals(
+            BenchmarkCameraTraceCommandDecision.APPLY_TARGET,
+            commands.beforeRender(traceFrameIndex = 2)
+        )
+        commands.afterRender(2, BenchmarkCameraPresentationDecision.RECORD)
+        assertEquals(
+            BenchmarkCameraTraceCommandDecision.APPLY_TARGET,
+            commands.beforeRender(traceFrameIndex = 5)
+        )
+    }
+
+    @Test
+    fun pendingPresentationRendersAgainWithoutReissuingTheSetter() {
+        val commands = BenchmarkCameraTraceCommandGate()
+
+        assertEquals(
+            BenchmarkCameraTraceCommandDecision.APPLY_TARGET,
+            commands.beforeRender(traceFrameIndex = 4)
+        )
+        repeat(3) {
+            commands.afterRender(4, BenchmarkCameraPresentationDecision.WAIT_FOR_CURRENT_REVISION)
+            assertEquals(
+                BenchmarkCameraTraceCommandDecision.RENDER_TARGET,
+                commands.beforeRender(traceFrameIndex = 4)
+            )
+        }
+        commands.afterRender(4, BenchmarkCameraPresentationDecision.RECORD)
+        assertEquals(
+            BenchmarkCameraTraceCommandDecision.APPLY_TARGET,
+            commands.beforeRender(traceFrameIndex = 6)
+        )
+    }
+
+    @Test
+    fun pendingWarmupCallOrderAppliesOnceThenOnlyRenders() {
+        val commands = BenchmarkCameraTraceCommandGate()
+        val calls = ArrayList<String>()
+
+        fun renderWarmup(presentation: BenchmarkCameraPresentationDecision) {
+            val command = commands.beforeRender(traceFrameIndex = 4)
+            val result = performSurfaceRenderTransaction(
+                renderLock = Any(),
+                applyCommand = {
+                    if (command == BenchmarkCameraTraceCommandDecision.APPLY_TARGET) {
+                        calls += "set_trace"
+                    }
+                    0
+                },
+                closeCurrentStatsOnCommandFailure = { false },
+                requestCurrentStats = null,
+                stopOnRequestFailure = true,
+                render = {
+                    calls += "render"
+                    0
+                },
+                observeRequestedRenderFailure = { calls += "render_failure" },
+                reconcileAfterSuccessfulRender = { calls += "submission+poll" }
+            )
+            assertEquals(0, result.rc)
+            commands.afterRender(4, presentation)
+        }
+
+        renderWarmup(BenchmarkCameraPresentationDecision.WAIT_FOR_CURRENT_REVISION)
+        renderWarmup(BenchmarkCameraPresentationDecision.WAIT_FOR_CURRENT_REVISION)
+        renderWarmup(BenchmarkCameraPresentationDecision.RECORD)
+
+        assertEquals(
+            listOf(
+                "set_trace", "render", "submission+poll",
+                "render", "submission+poll",
+                "render", "submission+poll"
+            ),
+            calls
+        )
+    }
+
+    @Test
+    fun pendingPresentationRejectsTraceTargetDrift() {
+        val commands = BenchmarkCameraTraceCommandGate()
+
+        commands.beforeRender(traceFrameIndex = 4)
+        commands.afterRender(4, BenchmarkCameraPresentationDecision.WAIT_FOR_CURRENT_REVISION)
+        assertThrows(IllegalStateException::class.java) {
+            commands.beforeRender(traceFrameIndex = 5)
+        }
+    }
+
+    @Test
     fun repeatedOldPresentationWaitsUntilThePendingRevisionIsPresented() {
         val gate = BenchmarkCameraPresentationGate()
         val oldPresentation = BenchmarkCameraReceipt.fromRaw(

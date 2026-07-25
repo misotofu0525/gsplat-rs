@@ -135,6 +135,53 @@ internal enum class BenchmarkCameraPresentationDecision {
     WAIT_FOR_CURRENT_REVISION
 }
 
+internal enum class BenchmarkCameraTraceCommandDecision {
+    APPLY_TARGET,
+    RENDER_TARGET
+}
+
+/**
+ * Sends each trace camera target exactly once before rendering it.
+ *
+ * The native setter advances the Surface session camera when the pose changes
+ * and always forces an order refresh. Reissuing it while presentation is
+ * pending cannot advance the already selected target; it only refreshes the
+ * same command again. A different target is illegal until the pending target
+ * has reached a post-present receipt.
+ */
+internal class BenchmarkCameraTraceCommandGate {
+    private var targetFrameIndex: Int? = null
+    private var awaitingPresentation = false
+
+    fun beforeRender(traceFrameIndex: Int): BenchmarkCameraTraceCommandDecision {
+        require(traceFrameIndex >= 0) { "trace frame index must be non-negative" }
+        val target = targetFrameIndex
+        if (awaitingPresentation) {
+            check(traceFrameIndex == target) {
+                "trace target changed from pending $target to $traceFrameIndex before presentation"
+            }
+            return BenchmarkCameraTraceCommandDecision.RENDER_TARGET
+        }
+        if (traceFrameIndex == target) {
+            return BenchmarkCameraTraceCommandDecision.RENDER_TARGET
+        }
+        targetFrameIndex = traceFrameIndex
+        awaitingPresentation = true
+        return BenchmarkCameraTraceCommandDecision.APPLY_TARGET
+    }
+
+    fun afterRender(
+        traceFrameIndex: Int,
+        presentation: BenchmarkCameraPresentationDecision
+    ) {
+        check(traceFrameIndex == targetFrameIndex) {
+            "rendered trace frame $traceFrameIndex does not match target $targetFrameIndex"
+        }
+        awaitingPresentation = presentation ==
+            BenchmarkCameraPresentationDecision.WAIT_FOR_CURRENT_REVISION
+    }
+}
+
 /**
  * Admits only the narrow post-present transition exposed by the native receipt.
  *
