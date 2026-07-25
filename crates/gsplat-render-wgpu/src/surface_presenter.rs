@@ -45,10 +45,9 @@ use crate::{
     DEFAULT_PAGED_ATLAS_SLOTS, DirectGpuSceneOrder, DirectSceneError, DirectScenePath,
     DirectScenePreflight, DirectSceneResources, GeometryPath, PackedScenePath,
     PackedScenePreflight, PreparedRendererGeometryPath, Renderer, ResidentGpuBytePlan,
-    ResidentSceneCpu, SpatialPageSet, SurfacePresenterError, TimerInstant,
-    create_direct_bind_group_layout, create_direct_pipeline, direct_scene_preflight,
-    packed_scene_preflight_with_limits, preprocess_paged_visible_into, refresh_paged_hot_colors,
-    wgpu_label,
+    SpatialPageSet, SurfacePresenterError, TimerInstant, create_direct_bind_group_layout,
+    create_direct_pipeline, direct_scene_preflight, packed_scene_preflight_with_limits,
+    preprocess_paged_visible_into, refresh_paged_hot_colors, wgpu_label,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use crate::{timer_elapsed_ms, timer_now};
@@ -580,18 +579,13 @@ fn create_geometry_resources(
                         device.limits().max_storage_buffers_per_shader_stage,
                     )
                 })?;
-            // Production Packed loads already own the compact source. The
-            // fallback only serves explicit Direct -> Packed A/B switching.
-            let fallback_scene;
-            let resident_scene = if let Some(scene) = renderer.resident_scene() {
-                scene
-            } else {
-                let scene = renderer
-                    .scene()
-                    .ok_or(SurfacePresenterError::SceneNotLoaded)?;
-                fallback_scene = ResidentSceneCpu::encode(scene)?;
-                &fallback_scene
-            };
+            let resident_scene = renderer.resident_scene().ok_or_else(|| {
+                if renderer.has_scene() {
+                    SurfacePresenterError::GeometrySourceUnavailable { path }
+                } else {
+                    SurfacePresenterError::SceneNotLoaded
+                }
+            })?;
             let resident = resident_gpu::ResidentGpuResources::new(
                 device,
                 resident_draw_bind_group_layout,
@@ -1678,13 +1672,17 @@ impl SurfacePresenter {
         path: GeometryPath,
         renderer: &Renderer,
     ) -> Result<(), SurfacePresenterError> {
+        let current = self.geometry.path();
+        if current == path {
+            return Ok(());
+        }
+        if current == GeometryPath::PackedAtlas || path == GeometryPath::PackedAtlas {
+            return Err(SurfacePresenterError::SurfaceGeometrySwitchUnsupported);
+        }
         if self.gpu_order_producer == SurfaceGpuOrderProducer::Preproject
             && path != GeometryPath::PackedAtlas
         {
             return Err(SurfacePresenterError::PreprojectProducerIncompatible);
-        }
-        if self.geometry.path() == path {
-            return Ok(());
         }
 
         try_prepare_then_commit(

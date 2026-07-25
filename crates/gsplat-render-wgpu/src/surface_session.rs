@@ -1771,14 +1771,17 @@ impl SurfaceGpuProducerMeasurementControl {
     }
 }
 
-fn try_switch_renderer_geometry_path<Error>(
+fn try_switch_renderer_geometry_path(
     renderer: &mut Renderer,
     target: GeometryPath,
-    prepare_presenter: impl FnOnce(&Renderer) -> Result<(), Error>,
-) -> Result<bool, Error> {
+    prepare_presenter: impl FnOnce(&Renderer) -> Result<(), SurfacePresenterError>,
+) -> Result<bool, SurfacePresenterError> {
     let previous = renderer.geometry_path();
     if previous == target {
         return Ok(false);
+    }
+    if previous == GeometryPath::PackedAtlas || target == GeometryPath::PackedAtlas {
+        return Err(SurfacePresenterError::SurfaceGeometrySwitchUnsupported);
     }
 
     renderer.set_geometry_path(target);
@@ -1804,6 +1807,8 @@ fn surface_geometry_switch_entry(
 ) -> SurfaceGeometrySwitchEntry {
     if current == target {
         SurfaceGeometrySwitchEntry::AlreadyActive
+    } else if current == GeometryPath::PackedAtlas || target == GeometryPath::PackedAtlas {
+        SurfaceGeometrySwitchEntry::Unsupported
     } else if web
         && (current == GeometryPath::PagedActiveAtlas || target == GeometryPath::PagedActiveAtlas)
     {
@@ -1812,20 +1817,6 @@ fn surface_geometry_switch_entry(
         SurfaceGeometrySwitchEntry::AsyncPreparationRequired
     } else {
         SurfaceGeometrySwitchEntry::Synchronous
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn validate_native_published_geometry_transition(
-    current: GeometryPath,
-    target: GeometryPath,
-) -> Result<(), SurfacePresenterError> {
-    if current != target
-        && (current == GeometryPath::PackedAtlas || target == GeometryPath::PackedAtlas)
-    {
-        Err(SurfacePresenterError::SurfaceGeometrySwitchUnsupported)
-    } else {
-        Ok(())
     }
 }
 
@@ -2564,16 +2555,6 @@ impl SurfaceRenderSession {
             debug_assert_eq!(next, current);
             return Ok(());
         }
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Err(error) =
-            validate_native_published_geometry_transition(self.geometry_path(), path)
-        {
-            // Packed owns a construction-time Exact runtime. Entering or
-            // leaving it after scene publication would require a complete new
-            // owner, so reject before touching renderer, presenter, resources
-            // or generations.
-            return Err(error.into());
-        }
         if path != GeometryPath::PackedAtlas
             && (self.gpu_order_producer() == SurfaceGpuOrderProducer::Preproject
                 || self.gpu_producer_measurement.enabled())
@@ -2621,14 +2602,6 @@ impl SurfaceRenderSession {
             let next = current.with_geometry(path)?;
             debug_assert_eq!(next, current);
             return Ok(());
-        }
-        if path == GeometryPath::PackedAtlas || self.geometry_path() == GeometryPath::PackedAtlas {
-            // Browser Packed rendering is owned exclusively by the Exact
-            // runtime prepared at construction. Do not permit a legacy Direct
-            // session to manufacture a second mutable Packed owner (or an
-            // Exact Packed session to escape it) through the compatibility
-            // geometry setter.
-            return Err(SurfacePresenterError::SurfaceGeometrySwitchUnsupported.into());
         }
         if path != GeometryPath::PackedAtlas
             && (self.gpu_order_producer() == SurfaceGpuOrderProducer::Preproject
@@ -4485,10 +4458,7 @@ mod tests {
         validate_gpu_order_producer_transition, validate_projected_draw_policy_transition,
     };
     #[cfg(not(target_arch = "wasm32"))]
-    use super::{
-        ExactSurfacePlanState, publish_only_on_present,
-        validate_native_published_geometry_transition,
-    };
+    use super::{ExactSurfacePlanState, publish_only_on_present};
     use crate::{
         GeometryPath, Renderer, RendererError, ResidentGpuError, ResidentSceneCpu,
         SurfaceCurrentStatsPoll, SurfaceCurrentStatsRequest, SurfaceCurrentStatsSubmission,
@@ -4810,39 +4780,6 @@ mod tests {
         );
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
-    #[test]
-    fn native_published_geometry_transition_guards_packed_before_mutation() {
-        let paths = [
-            GeometryPath::SortedIndexDirect,
-            GeometryPath::PackedAtlas,
-            GeometryPath::PagedActiveAtlas,
-        ];
-
-        for current in paths {
-            for target in paths {
-                let result = validate_native_published_geometry_transition(current, target);
-                let crosses_packed = current != target
-                    && (current == GeometryPath::PackedAtlas
-                        || target == GeometryPath::PackedAtlas);
-                if crosses_packed {
-                    assert!(
-                        matches!(
-                            result,
-                            Err(SurfacePresenterError::SurfaceGeometrySwitchUnsupported)
-                        ),
-                        "published {current:?} -> {target:?} must reject"
-                    );
-                } else {
-                    assert!(
-                        result.is_ok(),
-                        "same-path and Direct/Paged transitions retain their existing entry rule"
-                    );
-                }
-            }
-        }
-    }
-
     #[test]
     fn sort_schedule_exposes_interval_for_sync_and_async_policies() {
         assert_eq!(SurfaceSortSchedule::Interval(2).interval(), 2);
@@ -4853,7 +4790,7 @@ mod tests {
     }
 
     #[test]
-    fn browser_geometry_switch_contract_is_idempotent_async_and_paged_fail_closed() {
+    fn geometry_switch_entry_rejects_packed_and_preserves_existing_paged_rules() {
         assert_eq!(
             surface_geometry_switch_entry(
                 true,
@@ -4868,7 +4805,7 @@ mod tests {
                 GeometryPath::SortedIndexDirect,
                 GeometryPath::PackedAtlas,
             ),
-            SurfaceGeometrySwitchEntry::AsyncPreparationRequired,
+            SurfaceGeometrySwitchEntry::Unsupported,
         );
         assert_eq!(
             surface_geometry_switch_entry(
@@ -4876,7 +4813,7 @@ mod tests {
                 GeometryPath::PackedAtlas,
                 GeometryPath::SortedIndexDirect,
             ),
-            SurfaceGeometrySwitchEntry::AsyncPreparationRequired,
+            SurfaceGeometrySwitchEntry::Unsupported,
         );
         assert_eq!(
             surface_geometry_switch_entry(
@@ -5116,6 +5053,59 @@ mod tests {
         assert_eq!(paged_surface_counts(279_199, 262_144), (279_199, 262_144));
     }
 
+    #[derive(Debug, PartialEq)]
+    struct RendererGeometrySnapshot {
+        geometry_path: GeometryPath,
+        scene_allocation: Option<usize>,
+        resident_allocation: Option<usize>,
+        exact_runtime_allocation: Option<usize>,
+        positions_allocation: Option<usize>,
+        world_covariances_allocation: Option<usize>,
+        world_covariance_terms_allocation: Option<usize>,
+        alpha_values_allocation: Option<usize>,
+        spatial_pages_allocation: Option<usize>,
+        preprocess_indices: Vec<u32>,
+        last_stats: crate::FrameStats,
+    }
+
+    fn renderer_geometry_snapshot(renderer: &Renderer) -> RendererGeometrySnapshot {
+        RendererGeometrySnapshot {
+            geometry_path: renderer.geometry_path(),
+            scene_allocation: renderer
+                .scene
+                .as_ref()
+                .map(|scene| std::ptr::from_ref(scene) as usize),
+            resident_allocation: renderer
+                .resident_scene()
+                .map(|scene| std::ptr::from_ref(scene) as usize),
+            exact_runtime_allocation: renderer
+                .exact_offscreen_runtime
+                .as_ref()
+                .map(|runtime| std::ptr::from_ref(runtime) as usize),
+            positions_allocation: renderer
+                .positions()
+                .map(|positions| positions.as_ptr() as usize),
+            world_covariances_allocation: renderer
+                .world_covariances
+                .as_ref()
+                .map(|values| values.as_ptr() as usize),
+            world_covariance_terms_allocation: renderer
+                .world_covariance_terms
+                .as_ref()
+                .map(|values| values.as_ptr() as usize),
+            alpha_values_allocation: renderer
+                .alpha_values
+                .as_ref()
+                .map(|values| values.as_ptr() as usize),
+            spatial_pages_allocation: renderer
+                .spatial_pages
+                .as_ref()
+                .map(|pages| std::ptr::from_ref(pages) as usize),
+            preprocess_indices: renderer.preprocess_indices.clone(),
+            last_stats: renderer.last_stats(),
+        }
+    }
+
     #[test]
     fn failed_presenter_prepare_rolls_renderer_back_to_working_path() {
         let scene = SceneBuffers {
@@ -5138,18 +5128,24 @@ mod tests {
                 assert_eq!(prepared.geometry_path(), GeometryPath::PagedActiveAtlas);
                 assert!(prepared.world_covariances.is_none());
                 assert!(prepared.spatial_pages.is_some());
-                Err::<(), _>("injected presenter allocation failure")
+                Err(SurfacePresenterError::SurfaceConfigure(
+                    "injected presenter allocation failure".into(),
+                ))
             },
         );
 
-        assert_eq!(result, Err("injected presenter allocation failure"));
+        assert!(matches!(
+            result,
+            Err(SurfacePresenterError::SurfaceConfigure(message))
+                if message == "injected presenter allocation failure"
+        ));
         assert_eq!(renderer.geometry_path(), GeometryPath::SortedIndexDirect);
         assert_eq!(renderer.world_covariances.as_ref().map(Vec::len), Some(2));
         assert!(renderer.spatial_pages.is_none());
     }
 
     #[test]
-    fn released_packed_scene_rejects_wide_path_switches_and_rolls_back() {
+    fn direct_and_packed_live_switches_reject_before_renderer_mutation() {
         let scene = SceneBuffers {
             positions: vec![Vec3f::new(0.0, 0.0, 1.0), Vec3f::new(0.1, 0.0, 1.2)],
             opacity: vec![1.0; 2],
@@ -5159,34 +5155,60 @@ mod tests {
             sh_degree: 0,
             sh_rest: None,
         };
-        let expected_positions = scene.positions.clone();
-        let mut renderer = Renderer::with_config_for_surface(RendererConfig::default()).unwrap();
-        renderer.set_geometry_path(GeometryPath::PackedAtlas);
-        renderer.load_scene(scene).unwrap();
-        renderer
+        let mut direct = Renderer::with_config_for_surface(RendererConfig::default()).unwrap();
+        direct.load_scene(scene.clone()).unwrap();
+        direct
+            .build_sorted_indices(&Camera::default())
+            .expect("establish Direct current frame state");
+        let direct_before = renderer_geometry_snapshot(&direct);
+        let mut direct_prepare_called = false;
+        let direct_result =
+            try_switch_renderer_geometry_path(&mut direct, GeometryPath::PackedAtlas, |_| {
+                direct_prepare_called = true;
+                Ok::<(), SurfacePresenterError>(())
+            });
+        assert!(matches!(
+            direct_result,
+            Err(SurfacePresenterError::SurfaceGeometrySwitchUnsupported)
+        ));
+        assert!(!direct_prepare_called);
+        assert_eq!(renderer_geometry_snapshot(&direct), direct_before);
+        assert!(matches!(
+            try_switch_renderer_geometry_path(
+                &mut direct,
+                GeometryPath::SortedIndexDirect,
+                |_| panic!("same-path Direct must not prepare presenter resources"),
+            ),
+            Ok(false)
+        ));
+        assert_eq!(renderer_geometry_snapshot(&direct), direct_before);
+
+        let mut packed = Renderer::with_config_for_surface(RendererConfig::default()).unwrap();
+        packed.set_geometry_path(GeometryPath::PackedAtlas);
+        packed.load_scene(scene).unwrap();
+        packed
             .finish_surface_upload_handoff(GeometryPath::PackedAtlas)
             .unwrap();
-
-        for target in [
-            GeometryPath::SortedIndexDirect,
-            GeometryPath::PagedActiveAtlas,
-        ] {
-            let result = try_switch_renderer_geometry_path(&mut renderer, target, |prepared| {
-                prepared
-                    .scene()
-                    .map(|_| ())
-                    .ok_or(SurfacePresenterError::GeometrySourceUnavailable { path: target })
+        let packed_before = renderer_geometry_snapshot(&packed);
+        let mut packed_prepare_called = false;
+        let packed_result =
+            try_switch_renderer_geometry_path(&mut packed, GeometryPath::SortedIndexDirect, |_| {
+                packed_prepare_called = true;
+                Ok::<(), SurfacePresenterError>(())
             });
-
-            assert!(matches!(
-                result,
-                Err(SurfacePresenterError::GeometrySourceUnavailable { path }) if path == target
-            ));
-            assert_eq!(renderer.geometry_path(), GeometryPath::PackedAtlas);
-            assert_eq!(renderer.positions(), Some(expected_positions.as_slice()));
-            assert!(renderer.has_scene());
-            assert!(!renderer.resident_scene().unwrap().has_upload_staging());
-        }
+        assert!(matches!(
+            packed_result,
+            Err(SurfacePresenterError::SurfaceGeometrySwitchUnsupported)
+        ));
+        assert!(!packed_prepare_called);
+        assert_eq!(renderer_geometry_snapshot(&packed), packed_before);
+        assert!(matches!(
+            try_switch_renderer_geometry_path(&mut packed, GeometryPath::PackedAtlas, |_| {
+                panic!("same-path Packed must not prepare presenter resources")
+            }),
+            Ok(false)
+        ));
+        assert_eq!(renderer_geometry_snapshot(&packed), packed_before);
     }
 
     #[test]

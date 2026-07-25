@@ -152,6 +152,10 @@ struct GpuPreparationSnapshot {
 
 #[derive(Debug, PartialEq)]
 struct ExactControlSnapshot {
+    geometry_path: GeometryPath,
+    scene_len: Option<usize>,
+    positions_allocation: Option<usize>,
+    runtime_allocation: usize,
     runtime_frame: crate::renderer::frame::FrameState,
     runtime_policy: ExactPlanPolicy,
     eligible: Vec<PlanId>,
@@ -239,6 +243,11 @@ impl ExactSessionBoundary {
         self.commit(next)
     }
 
+    fn set_geometry_path(&mut self, path: GeometryPath) -> Result<(), RendererError> {
+        let next = self.current_state().with_geometry(path)?;
+        self.commit(next)
+    }
+
     fn commit(&mut self, next: ExactSurfacePlanState) -> Result<(), RendererError> {
         commit_exact_plan_state(
             &mut self.renderer,
@@ -266,6 +275,12 @@ fn exact_control_snapshot(renderer: &Renderer) -> ExactControlSnapshot {
         .as_ref()
         .expect("Exact Surface runtime");
     ExactControlSnapshot {
+        geometry_path: renderer.geometry_path(),
+        scene_len: renderer.scene_len(),
+        positions_allocation: renderer
+            .positions()
+            .map(|positions| positions.as_ptr() as usize),
+        runtime_allocation: std::ptr::from_ref(runtime) as usize,
         runtime_frame: runtime.frame_state(),
         runtime_policy: runtime.active_policy(),
         eligible: runtime.eligible().to_vec(),
@@ -287,6 +302,35 @@ fn exact_control_snapshot(renderer: &Renderer) -> ExactControlSnapshot {
         last_cpu_order: runtime.last_usable_cpu_order().map(<[u32]>::to_vec),
         cpu_order_generation: runtime.current_cpu_order_generation(),
     }
+}
+
+#[test]
+fn packed_exact_surface_geometry_switch_rejects_atomically_and_same_path_is_idempotent() {
+    pollster::block_on(async {
+        let Some((renderer, _device, _queue)) = exact_control_renderer(false).await else {
+            return;
+        };
+        let mut session = ExactSessionBoundary::new(renderer);
+        let before = session.snapshot();
+
+        session
+            .set_geometry_path(GeometryPath::PackedAtlas)
+            .expect("same-path Packed setter is idempotent");
+        assert_eq!(session.snapshot(), before);
+
+        let result = session.set_geometry_path(GeometryPath::SortedIndexDirect);
+        assert!(matches!(
+            result,
+            Err(RendererError::SurfacePresenter(
+                SurfacePresenterError::SurfaceGeometrySwitchUnsupported
+            ))
+        ));
+        assert_eq!(
+            session.snapshot(),
+            before,
+            "rejected Packed -> Direct retains scene allocation, GPU preparation, current plan, and published frame state"
+        );
+    });
 }
 
 fn assert_gpu_order_unsupported(result: Result<(), RendererError>) {
