@@ -415,7 +415,7 @@ pub enum SurfacePresenterError {
     #[error("browser geometry-path changes must be awaited through setGeometryPathAsync")]
     SurfaceGeometryPreparationRequired,
     #[error(
-        "transactional browser geometry switching supports only Direct and Packed; Paged remains a constructor-time diagnostic"
+        "the requested runtime surface geometry transition is unsupported; transitions entering or leaving Packed are disabled, and Paged remains a constructor-time diagnostic"
     )]
     SurfaceGeometrySwitchUnsupported,
     #[error("surface geometry {path:?} allocation ran out of GPU memory: {message}")]

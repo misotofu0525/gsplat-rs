@@ -1659,14 +1659,15 @@ impl SurfacePresenter {
         }
     }
 
-    /// Switches the Surface geometry path, clearing and rebuilding the GPU
-    /// scene resources for the new path from the renderer's loaded scene.
+    /// Switches the Surface geometry path when the requested transition is
+    /// supported.
     ///
-    /// This is an experimental A/B benchmark knob: callers must keep
-    /// `renderer`'s loaded scene in sync with the presenter that was created
-    /// from it. The device was sized for the initially selected path, so a
-    /// target path needing larger bindings can return an error; preparation is
-    /// transactional and leaves the current path intact in that case.
+    /// Requesting the active path is idempotent and does not prepare resources.
+    /// A changed transition entering or leaving [`GeometryPath::PackedAtlas`]
+    /// is rejected before resource preparation. Other changed-path transitions
+    /// prepare the complete replacement transactionally and leave the current
+    /// path intact if preparation fails. Callers must keep `renderer`'s loaded
+    /// scene in sync with the presenter that was created from it.
     pub fn set_geometry_path(
         &mut self,
         path: GeometryPath,
