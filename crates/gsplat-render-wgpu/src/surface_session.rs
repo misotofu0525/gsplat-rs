@@ -1717,7 +1717,7 @@ pub struct SurfaceRenderSession {
     sort_interval: u32,
     order_backend: SurfaceOrderBackend,
     projected_draw_policy: SurfaceProjectedDrawPolicy,
-    gpu_producer_measurement_enabled: bool,
+    gpu_producer_measurement: SurfaceGpuProducerMeasurementControl,
     presented_order_backend: SurfaceOrderBackendUsed,
     gpu_order_initialized: bool,
     adaptive_policy: AdaptiveOrderPolicy,
@@ -1743,6 +1743,32 @@ pub struct SurfaceRenderSession {
     async_sort_enabled: bool,
     #[cfg(not(target_arch = "wasm32"))]
     async_sorter: Option<NativeCpuOrderWorker>,
+}
+
+#[derive(Debug, Default)]
+struct SurfaceGpuProducerMeasurementControl {
+    enabled: bool,
+}
+
+impl SurfaceGpuProducerMeasurementControl {
+    fn enabled(&self) -> bool {
+        self.enabled
+    }
+
+    fn transition(
+        &mut self,
+        enabled: bool,
+        context_is_valid: bool,
+    ) -> Result<bool, SurfacePresenterError> {
+        if self.enabled == enabled {
+            return Ok(false);
+        }
+        if enabled && !context_is_valid {
+            return Err(SurfacePresenterError::PreprojectProducerIncompatible);
+        }
+        self.enabled = enabled;
+        Ok(true)
+    }
 }
 
 fn try_switch_renderer_geometry_path<Error>(
@@ -1942,7 +1968,7 @@ impl SurfaceRenderSession {
             sort_interval: DEFAULT_SURFACE_SORT_INTERVAL,
             order_backend: SurfaceOrderBackend::Cpu,
             projected_draw_policy: SurfaceProjectedDrawPolicy::Adaptive,
-            gpu_producer_measurement_enabled: false,
+            gpu_producer_measurement: SurfaceGpuProducerMeasurementControl::default(),
             presented_order_backend: SurfaceOrderBackendUsed::Cpu,
             gpu_order_initialized: false,
             adaptive_policy: AdaptiveOrderPolicy::default(),
@@ -2197,20 +2223,18 @@ impl SurfaceRenderSession {
             debug_assert_eq!(next, current);
             return Ok(());
         }
-        if self.gpu_producer_measurement_enabled == enabled {
+        let context_is_valid = gpu_producer_measurement_context_is_valid(
+            self.geometry_path(),
+            self.raster_execution_plan(),
+            self.projected_draw_policy,
+        );
+        if !self
+            .gpu_producer_measurement
+            .transition(enabled, context_is_valid)?
+        {
             return Ok(());
         }
-        if enabled
-            && !gpu_producer_measurement_context_is_valid(
-                self.geometry_path(),
-                self.raster_execution_plan(),
-                self.projected_draw_policy,
-            )
-        {
-            return Err(SurfacePresenterError::PreprojectProducerIncompatible.into());
-        }
         self.presenter.set_gpu_producer_measurement_enabled(enabled);
-        self.gpu_producer_measurement_enabled = enabled;
         self.pending_tiled_backend = None;
         self.pending_tiled_adaptive_choice = None;
         self.pending_projected_choice = None;
@@ -2226,6 +2250,12 @@ impl SurfaceRenderSession {
         Ok(())
     }
 
+    /// Reports the renderer-owned producer-measurement state. This is the
+    /// authoritative read-only query for integration layers.
+    pub fn gpu_producer_measurement_enabled(&self) -> bool {
+        self.gpu_producer_measurement.enabled()
+    }
+
     /// Transactionally changes only the projected draw strategy. A rejected
     /// forced Compact request leaves the previous policy and learned lanes
     /// untouched; repeated requests are no-ops.
@@ -2239,7 +2269,7 @@ impl SurfaceRenderSession {
         }
         if policy != SurfaceProjectedDrawPolicy::Compact
             && (self.gpu_order_producer() == SurfaceGpuOrderProducer::Preproject
-                || self.gpu_producer_measurement_enabled)
+                || self.gpu_producer_measurement.enabled())
         {
             return Err(SurfacePresenterError::PreprojectProducerIncompatible.into());
         }
@@ -2291,7 +2321,7 @@ impl SurfaceRenderSession {
         }
         if plan != SurfaceRasterExecutionPlan::ProjectedQuadsExact
             && (self.gpu_order_producer() == SurfaceGpuOrderProducer::Preproject
-                || self.gpu_producer_measurement_enabled)
+                || self.gpu_producer_measurement.enabled())
         {
             return Err(SurfacePresenterError::PreprojectProducerIncompatible.into());
         }
@@ -2334,7 +2364,7 @@ impl SurfaceRenderSession {
         }
         if path != GeometryPath::PackedAtlas
             && (self.gpu_order_producer() == SurfaceGpuOrderProducer::Preproject
-                || self.gpu_producer_measurement_enabled)
+                || self.gpu_producer_measurement.enabled())
         {
             return Err(SurfacePresenterError::PreprojectProducerIncompatible.into());
         }
@@ -2377,7 +2407,7 @@ impl SurfaceRenderSession {
     ) -> Result<(), RendererError> {
         if path != GeometryPath::PackedAtlas
             && (self.gpu_order_producer() == SurfaceGpuOrderProducer::Preproject
-                || self.gpu_producer_measurement_enabled)
+                || self.gpu_producer_measurement.enabled())
         {
             return Err(SurfacePresenterError::PreprojectProducerIncompatible.into());
         }
@@ -2967,6 +2997,20 @@ impl SurfaceRenderSession {
         self.compatibility.drain_producer_failures()
     }
 
+    /// Pops the oldest raw producer success without using the bounded
+    /// compatibility view.
+    pub fn pop_gpu_producer_measurement(&mut self) -> Option<SurfaceGpuProducerMeasurement> {
+        self.compatibility.pop_producer_success()
+    }
+
+    /// Pops the oldest raw producer failure without using the bounded
+    /// compatibility view.
+    pub fn pop_gpu_producer_measurement_failure(
+        &mut self,
+    ) -> Option<SurfaceGpuProducerMeasurementFailure> {
+        self.compatibility.pop_producer_failure()
+    }
+
     pub fn force_sort_refresh(&mut self) {
         #[cfg(not(target_arch = "wasm32"))]
         if self.exact_plan_state().is_some() {
@@ -3067,7 +3111,7 @@ impl SurfaceRenderSession {
                 actual_producer: output.gpu_order_producer.or(sampled_producer),
                 order_backend: output.order_backend,
                 projected_execution: output.projected_draw_execution,
-                measurement_enabled: self.gpu_producer_measurement_enabled,
+                measurement_enabled: self.gpu_producer_measurement.enabled(),
                 measurement: output.gpu_producer_measurement_submission,
             },
         );
@@ -3762,7 +3806,8 @@ impl SurfaceRenderSession {
         let gpu_producer_measurement_submission =
             SurfaceGpuProducerMeasurementSubmission::from_presenter(
                 gpu_order_producer.or_else(|| {
-                    self.gpu_producer_measurement_enabled
+                    self.gpu_producer_measurement
+                        .enabled()
                         .then_some(self.gpu_order_producer())
                 }),
                 gpu_producer_submission,
@@ -4185,13 +4230,14 @@ mod tests {
         MAX_ASYNC_SORT_REVISION_LAG, PROJECTED_TELEMETRY_FAILURE_COOLDOWN,
         ProjectedAdaptivePendingSample, ProjectedAdaptivePhase, ProjectedAdaptiveSampleKind,
         SurfaceAdaptiveState, SurfaceFrameState, SurfaceGeometrySwitchEntry,
-        SurfaceGpuProducerMeasurementSubmission, SurfaceGpuProducerMeasurementUnsampledReason,
-        SurfaceOrderBackend, SurfaceOrderBackendUsed, SurfaceOrderMeasurementSubmission,
-        SurfaceOrderMeasurementUnsampledReason, SurfaceProjectedDrawAdaptiveState,
-        SurfaceProjectedDrawMeasurementSubmission, SurfaceProjectedDrawMeasurementUnsampledReason,
-        SurfaceProjectedDrawPolicy, SurfaceSortSchedule, TelemetrySubmission,
-        adaptive_gpu_order_failure_reason, adaptive_primary_metric, arbitrate_new_probe_owner,
-        async_order_pose_compatible, async_schedule_threshold, defer_projected_formal_choice,
+        SurfaceGpuProducerMeasurementControl, SurfaceGpuProducerMeasurementSubmission,
+        SurfaceGpuProducerMeasurementUnsampledReason, SurfaceOrderBackend, SurfaceOrderBackendUsed,
+        SurfaceOrderMeasurementSubmission, SurfaceOrderMeasurementUnsampledReason,
+        SurfaceProjectedDrawAdaptiveState, SurfaceProjectedDrawMeasurementSubmission,
+        SurfaceProjectedDrawMeasurementUnsampledReason, SurfaceProjectedDrawPolicy,
+        SurfaceSortSchedule, TelemetrySubmission, adaptive_gpu_order_failure_reason,
+        adaptive_primary_metric, arbitrate_new_probe_owner, async_order_pose_compatible,
+        async_schedule_threshold, defer_projected_formal_choice,
         gpu_producer_measurement_context_is_valid, gpu_projected_order_changed,
         legacy_surface_current_stats_poll, legacy_surface_current_stats_request,
         legacy_surface_current_stats_submission, order_probe_owner_should_yield,
@@ -5968,6 +6014,28 @@ mod tests {
             SurfaceRasterExecutionPlan::GlobalQuads,
             SurfaceProjectedDrawPolicy::Compact,
         ));
+    }
+
+    #[test]
+    fn producer_measurement_control_reports_committed_state_across_transitions_and_errors() {
+        let mut control = SurfaceGpuProducerMeasurementControl::default();
+        assert!(!control.enabled());
+        assert!(matches!(control.transition(false, false), Ok(false)));
+        assert!(!control.enabled());
+
+        assert!(matches!(
+            control.transition(true, false),
+            Err(SurfacePresenterError::PreprojectProducerIncompatible)
+        ));
+        assert!(!control.enabled());
+
+        assert!(matches!(control.transition(true, true), Ok(true)));
+        assert!(control.enabled());
+        assert!(matches!(control.transition(true, false), Ok(false)));
+        assert!(control.enabled());
+
+        assert!(matches!(control.transition(false, false), Ok(true)));
+        assert!(!control.enabled());
     }
 
     #[test]

@@ -499,12 +499,20 @@ impl<T: Copy, C: Copy> ProducerTerminalQueue<T, C> {
             .iter_mut()
             .find(|entry| entry.compatibility_visible)?;
         entry.compatibility_visible = false;
-        entry.raw_visible = false;
         self.compatibility_visible -= 1;
         let terminal = entry.terminal;
         self.entries
             .retain(|entry| entry.raw_visible || entry.compatibility_visible);
         Some(terminal)
+    }
+
+    fn pop_raw(&mut self) -> Option<T> {
+        let entry = self.entries.iter_mut().find(|entry| entry.raw_visible)?;
+        entry.raw_visible = false;
+        let payload = entry.terminal.payload;
+        self.entries
+            .retain(|entry| entry.raw_visible || entry.compatibility_visible);
+        Some(payload)
     }
 
     fn drain_raw(&mut self) -> Vec<T> {
@@ -853,6 +861,14 @@ impl CompatibilityEvidenceStore {
     pub(crate) fn drain_producer_failures(&mut self) -> Vec<SurfaceGpuProducerMeasurementFailure> {
         self.producer_failure.drain_raw()
     }
+
+    pub(crate) fn pop_producer_success(&mut self) -> Option<SurfaceGpuProducerMeasurement> {
+        self.producer_success.pop_raw()
+    }
+
+    pub(crate) fn pop_producer_failure(&mut self) -> Option<SurfaceGpuProducerMeasurementFailure> {
+        self.producer_failure.pop_raw()
+    }
 }
 
 fn replace_pending<C: Copy>(pending: &mut VecDeque<(u64, C)>, ticket: u64, context: C) {
@@ -1183,6 +1199,17 @@ mod tests {
             order_refreshed: true,
             draw_scope: SurfaceGpuProducerDrawScope::ExactCurrentContributors,
             frame_complete_ms: 7.0,
+        }
+    }
+
+    fn producer_failure(ticket: u64) -> SurfaceGpuProducerMeasurementFailure {
+        SurfaceGpuProducerMeasurementFailure {
+            ticket,
+            camera_revision: ticket + 100,
+            producer: SurfaceGpuOrderProducer::Preproject,
+            order_generation: ticket + 200,
+            projection_generation: ticket + 300,
+            reason: SurfaceGpuProducerMeasurementFailureReason::ReadbackMap,
         }
     }
 
@@ -1594,6 +1621,12 @@ mod tests {
             success.draw_scope,
             SurfaceGpuProducerDrawScope::ExactCurrentContributors
         );
+        assert_eq!(
+            store
+                .pop_producer_success()
+                .map(|measurement| measurement.ticket),
+            Some(9)
+        );
         assert!(store.drain_producer_successes().is_empty());
     }
 
@@ -1660,7 +1693,59 @@ mod tests {
                 .into_iter()
                 .map(|measurement| measurement.ticket)
                 .collect::<Vec<_>>(),
-            vec![1]
+            (1..=65).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn producer_raw_single_pop_is_fifo_lossless_and_independent_of_compatibility_capacity() {
+        let mut store = CompatibilityEvidenceStore::new();
+        for ticket in 1..=65 {
+            observe_ticket(
+                &mut store,
+                ticket,
+                SurfaceOrderBackendUsed::Gpu,
+                SurfaceProjectedDrawExecution::Compact,
+                SurfaceGpuOrderProducer::Preproject,
+            );
+            store.publish_producer_success(producer_measurement(ticket));
+        }
+        for ticket in 101..=165 {
+            observe_ticket(
+                &mut store,
+                ticket,
+                SurfaceOrderBackendUsed::Gpu,
+                SurfaceProjectedDrawExecution::Compact,
+                SurfaceGpuOrderProducer::Preproject,
+            );
+            store.publish_producer_failure(producer_failure(ticket));
+        }
+
+        for selector in [
+            SurfaceCompatibilityTerminalSelector::ProducerSuccess,
+            SurfaceCompatibilityTerminalSelector::ProducerFailure,
+        ] {
+            let mut compatibility_count = 0;
+            while matches!(
+                store.poll_terminal(selector),
+                SurfaceCompatibilityTerminalPoll::Ready(_)
+            ) {
+                compatibility_count += 1;
+            }
+            assert_eq!(compatibility_count, TERMINAL_CAPACITY);
+        }
+
+        assert_eq!(
+            std::iter::from_fn(|| store.pop_producer_success())
+                .map(|measurement| measurement.ticket)
+                .collect::<Vec<_>>(),
+            (1..=65).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            std::iter::from_fn(|| store.pop_producer_failure())
+                .map(|failure| failure.ticket)
+                .collect::<Vec<_>>(),
+            (101..=165).collect::<Vec<_>>()
         );
     }
 
