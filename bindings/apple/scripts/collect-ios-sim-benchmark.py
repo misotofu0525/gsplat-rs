@@ -10,7 +10,6 @@ import json
 import os
 import pathlib
 import plistlib
-import signal
 import shutil
 import subprocess
 import sys
@@ -311,6 +310,22 @@ def terminal_count(log: str) -> int:
     return sum(RESULT_PREFIX in line for line in log.splitlines())
 
 
+def merged_launch_streams(
+    stdout_path: pathlib.Path, stderr_path: pathlib.Path
+) -> str:
+    streams: list[str] = []
+    for path in (stdout_path, stderr_path):
+        if not os.path.lexists(path):
+            continue
+        if not path.is_file():
+            raise ValueError(f"simulator launch stream is not a file: {path}")
+        text = path.read_text(encoding="utf-8", errors="replace")
+        if text and not text.endswith("\n"):
+            text += "\n"
+        streams.append(text)
+    return "".join(streams)
+
+
 def collector_receipt(
     *,
     started_at: str,
@@ -349,64 +364,66 @@ def collector_receipt(
     }
 
 
-def capture_console(
+def capture_launch_session(
     command: Sequence[str],
+    terminate_command: Sequence[str],
+    stdout_path: pathlib.Path,
+    stderr_path: pathlib.Path,
     log_path: pathlib.Path,
     *,
     env: dict[str, str],
     timeout_seconds: float,
 ) -> None:
-    with log_path.open("wb") as log_file:
-        process = subprocess.Popen(
-            command,
-            cwd=REPO_ROOT,
-            env=env,
-            stdout=log_file,
-            stderr=subprocess.STDOUT,
-            start_new_session=True,
-        )
+    for path in (stdout_path, stderr_path, log_path):
+        if os.path.lexists(path):
+            raise ValueError(f"launch capture path already exists: {path}")
+    try:
+        launch = run_command(command, capture=True, env=env)
+        if terminal_count(launch.stdout) != 0:
+            raise RuntimeError(
+                "launch control output unexpectedly contains BENCHMARK_RESULT"
+            )
         deadline = time.monotonic() + timeout_seconds
         found_terminal = False
-        try:
-            while time.monotonic() < deadline:
-                log_file.flush()
-                count = terminal_count(
-                    log_path.read_text(encoding="utf-8", errors="replace")
+        while time.monotonic() < deadline:
+            count = terminal_count(merged_launch_streams(stdout_path, stderr_path))
+            if count > 1:
+                raise RuntimeError(
+                    "launch streams contain duplicate BENCHMARK_RESULT terminals"
                 )
-                if count > 1:
-                    raise RuntimeError("console log contains duplicate BENCHMARK_RESULT terminals")
-                if count == 1:
-                    found_terminal = True
-                    time.sleep(0.25)
-                    log_file.flush()
-                    if (
-                        terminal_count(
-                            log_path.read_text(encoding="utf-8", errors="replace")
-                        )
-                        != 1
-                    ):
-                        raise RuntimeError(
-                            "console log contains duplicate BENCHMARK_RESULT terminals"
-                        )
-                    break
-                return_code = process.poll()
-                if return_code is not None:
-                    raise RuntimeError(
-                        f"console launch exited with status {return_code} before BENCHMARK_RESULT"
-                    )
-                time.sleep(0.1)
-            if not found_terminal:
-                raise TimeoutError(
-                    f"benchmark timed out after {timeout_seconds:g}s without BENCHMARK_RESULT"
-                )
-        finally:
-            if process.poll() is None:
-                os.killpg(process.pid, signal.SIGTERM)
-                try:
-                    process.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    os.killpg(process.pid, signal.SIGKILL)
-                    process.wait(timeout=5)
+            if count == 1:
+                found_terminal = True
+                break
+            time.sleep(0.1)
+        if not found_terminal:
+            raise TimeoutError(
+                f"benchmark timed out after {timeout_seconds:g}s without BENCHMARK_RESULT"
+            )
+    finally:
+        active_error = sys.exc_info()[0] is not None
+        terminated = subprocess.run(
+            [os.fspath(arg) for arg in terminate_command],
+            cwd=REPO_ROOT,
+            env=env,
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+        )
+        if not active_error and terminated.returncode != 0:
+            detail = terminated.stdout.strip()
+            raise RuntimeError(
+                "failed to terminate simulator app after benchmark terminal"
+                + (f": {detail}" if detail else "")
+            )
+
+    time.sleep(0.25)
+    captured = merged_launch_streams(stdout_path, stderr_path)
+    if terminal_count(captured) != 1:
+        raise RuntimeError(
+            "launch streams must contain exactly one BENCHMARK_RESULT terminal"
+        )
+    log_path.write_text(captured, encoding="utf-8")
 
 
 def installed_app_bundle(udid: str) -> pathlib.Path:
@@ -418,6 +435,21 @@ def installed_app_bundle(udid: str) -> pathlib.Path:
     if len(lines) != 1:
         raise ValueError("installed app container identity is malformed")
     return pathlib.Path(lines[0])
+
+
+def installed_data_container(udid: str) -> pathlib.Path:
+    result = run_command(
+        ["xcrun", "simctl", "get_app_container", udid, BUNDLE_ID, "data"],
+        capture=True,
+    )
+    lines = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+    if len(lines) != 1:
+        raise ValueError("installed app data container identity is malformed")
+    container = pathlib.Path(lines[0])
+    temporary = container / "tmp"
+    if not temporary.is_dir():
+        raise ValueError("installed app temporary container does not exist")
+    return container
 
 
 def collect(args: argparse.Namespace) -> None:
@@ -489,22 +521,7 @@ def collect(args: argparse.Namespace) -> None:
     started_at = utc_now()
     try:
         raw_log = staging / "raw-console.log"
-        launch_env = os.environ.copy()
-        launch_env["IOS_SIMULATOR_ID"] = args.simulator_id
-        launch_env["IOS_SIMULATOR_SKIP_BUILD"] = "1"
-        launch_env["IOS_SIMULATOR_CONSOLE"] = "1"
-        benchmark_args = args.benchmark_args or list(DEFAULT_BENCHMARK_ARGS)
-        if benchmark_args and benchmark_args[0] == "--":
-            benchmark_args = benchmark_args[1:]
-        capture_console(
-            ["bash", os.fspath(RUN_SCRIPT), "--", *benchmark_args],
-            raw_log,
-            env=launch_env,
-            timeout_seconds=args.timeout_seconds,
-        )
-        if terminal_count(raw_log.read_text(encoding="utf-8", errors="replace")) != 1:
-            raise ValueError("raw console log must contain exactly one BENCHMARK_RESULT")
-
+        run_command(["xcrun", "simctl", "install", args.simulator_id, APP_BUNDLE])
         installed_bundle = installed_app_bundle(args.simulator_id)
         installed_app = app_identity(installed_bundle, commit, False)
         if (
@@ -512,6 +529,37 @@ def collect(args: argparse.Namespace) -> None:
             or installed_app["bytes"] != built_app["bytes"]
         ):
             raise ValueError("installed app executable identity mismatch")
+        data_container = installed_data_container(args.simulator_id)
+        launch_session = pathlib.Path(
+            tempfile.mkdtemp(
+                prefix=".gsplat-benchmark-launch-", dir=data_container / "tmp"
+            )
+        )
+        launch_stdout = launch_session / "stdout.log"
+        launch_stderr = launch_session / "stderr.log"
+        launch_env = os.environ.copy()
+        launch_env["IOS_SIMULATOR_ID"] = args.simulator_id
+        launch_env["IOS_SIMULATOR_SKIP_BUILD"] = "1"
+        launch_env["IOS_SIMULATOR_SKIP_INSTALL"] = "1"
+        launch_env["IOS_SIMULATOR_STDOUT_PATH"] = str(launch_stdout)
+        launch_env["IOS_SIMULATOR_STDERR_PATH"] = str(launch_stderr)
+        benchmark_args = args.benchmark_args or list(DEFAULT_BENCHMARK_ARGS)
+        if benchmark_args and benchmark_args[0] == "--":
+            benchmark_args = benchmark_args[1:]
+        try:
+            capture_launch_session(
+                ["bash", os.fspath(RUN_SCRIPT), "--", *benchmark_args],
+                ["xcrun", "simctl", "terminate", args.simulator_id, BUNDLE_ID],
+                launch_stdout,
+                launch_stderr,
+                raw_log,
+                env=launch_env,
+                timeout_seconds=args.timeout_seconds,
+            )
+        finally:
+            shutil.rmtree(launch_session, ignore_errors=True)
+        if terminal_count(raw_log.read_text(encoding="utf-8", errors="replace")) != 1:
+            raise ValueError("raw console log must contain exactly one BENCHMARK_RESULT")
 
         artifact_dir = staging / "artifact"
         run_command(

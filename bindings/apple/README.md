@@ -226,6 +226,28 @@ request returns a structured unsupported error instead of triggering a wgpu
 validation failure. Simulator runs qualify API and visual compatibility; use a
 physical iOS device for performance conclusions.
 
+For an attested simulator artifact, use a fresh output directory and an
+explicit simulator, dataset, and trace:
+
+```bash
+python3 bindings/apple/scripts/collect-ios-sim-benchmark.py \
+  target/ios-sim-benchmarks/<run-id> \
+  --simulator-id <simulator-udid> \
+  --dataset <dataset.ply> \
+  --trace <camera-trace.json>
+```
+
+The collector installs and attests the built app, then gives every launch fresh
+stdout and stderr files inside that app's Simulator data container. It never
+reuses the blocking `simctl --console` stream, whose previous attachment can
+deliver a prior run's trailing output during a consecutive launch. The two
+launch-scoped streams are checked together, and collection fails unless they
+contain exactly one `BENCHMARK_RESULT`; duplicate or missing terminals are not
+selected, ignored, or repaired. After the terminal, the collector terminates
+the app before finalizing `raw-console.log`, extracts and validates artifact v1,
+and joins the manifest back to the exact commit, dataset, trace, and Simulator
+runtime identities.
+
 ## 4) iOS simulator target build
 
 Cross-compiles the smoke binary and Rust FFI library for iOS simulator.

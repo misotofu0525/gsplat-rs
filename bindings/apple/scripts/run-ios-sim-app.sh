@@ -74,8 +74,32 @@ fi
 APP_BUNDLE="$ROOT_DIR/target/ios-sim-app/GsplatIOSExample.app"
 BUNDLE_ID="com.gsplat.example.ios"
 
-xcrun simctl install "$SIMULATOR_ID" "$APP_BUNDLE"
-if [[ "${IOS_SIMULATOR_CONSOLE:-0}" == "1" ]]; then
+if [[ "${IOS_SIMULATOR_SKIP_INSTALL:-0}" != "1" ]]; then
+  xcrun simctl install "$SIMULATOR_ID" "$APP_BUNDLE"
+fi
+
+SIMULATOR_STDOUT_PATH="${IOS_SIMULATOR_STDOUT_PATH:-}"
+SIMULATOR_STDERR_PATH="${IOS_SIMULATOR_STDERR_PATH:-}"
+
+if [[ -n "$SIMULATOR_STDOUT_PATH" || -n "$SIMULATOR_STDERR_PATH" ]]; then
+  if [[ -z "$SIMULATOR_STDOUT_PATH" || -z "$SIMULATOR_STDERR_PATH" ]]; then
+    echo "IOS_SIMULATOR_STDOUT_PATH and IOS_SIMULATOR_STDERR_PATH must be set together" >&2
+    exit 1
+  fi
+  if [[ "${IOS_SIMULATOR_CONSOLE:-0}" == "1" ]]; then
+    echo "simulator stream redirection cannot be combined with IOS_SIMULATOR_CONSOLE=1" >&2
+    exit 1
+  fi
+  if [[ ${#LAUNCH_ARGS[@]} -gt 0 ]]; then
+    xcrun simctl launch --terminate-running-process \
+      --stdout="$SIMULATOR_STDOUT_PATH" --stderr="$SIMULATOR_STDERR_PATH" \
+      "$SIMULATOR_ID" "$BUNDLE_ID" "${LAUNCH_ARGS[@]}"
+  else
+    xcrun simctl launch --terminate-running-process \
+      --stdout="$SIMULATOR_STDOUT_PATH" --stderr="$SIMULATOR_STDERR_PATH" \
+      "$SIMULATOR_ID" "$BUNDLE_ID"
+  fi
+elif [[ "${IOS_SIMULATOR_CONSOLE:-0}" == "1" ]]; then
   if [[ ${#LAUNCH_ARGS[@]} -gt 0 ]]; then
     xcrun simctl launch --terminate-running-process --console \
       "$SIMULATOR_ID" "$BUNDLE_ID" "${LAUNCH_ARGS[@]}"

@@ -74,6 +74,7 @@ node --test examples/web/test/benchmark-artifact.test.mjs
 bash bindings/android/scripts/test-android-benchmark-artifact-extraction.sh
 python3 bindings/android/scripts/test_android_sort_benchmark_collector.py
 bash bindings/apple/scripts/test-ios-benchmark-artifact-extraction.sh
+PYTHONDONTWRITEBYTECODE=1 python3 bindings/apple/scripts/test_ios_sim_benchmark_collector.py
 npm ci --ignore-scripts --prefix tests/competitive/playcanvas
 npm test --prefix tests/competitive/playcanvas
 bash tests/ffi/run-ffi-smoke.sh
@@ -211,6 +212,7 @@ Android, Apple, and Web collectors can also emit the same v1 artifact contract:
 ```bash
 bash bindings/android/scripts/test-android-benchmark-artifact-extraction.sh
 bash bindings/apple/scripts/test-ios-benchmark-artifact-extraction.sh
+PYTHONDONTWRITEBYTECODE=1 python3 bindings/apple/scripts/test_ios_sim_benchmark_collector.py
 node --test examples/web/test/benchmark-artifact.test.mjs
 # After a device benchmark, extract from logcat:
 # python3 bindings/android/scripts/extract-android-benchmark-artifacts.py \
