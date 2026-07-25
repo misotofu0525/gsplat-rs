@@ -26,9 +26,9 @@ M2 = Active
   `e26a1df39780e744112924eb378e098c29be7cd4`.
 - M1 state: Accepted at integrated implementation/evidence tip
   `dc3e0de65073f819b714229b726ca55f47c6e6d6`.
-- Active task: M2. M2p1, M2p2, M2a and M2p3c are integrated and under the
-  root-owned combined verification recorded below. M2p4 remains deferred until
-  that combined tree is accepted; it is the next serial migration slice.
+- Active task: M2. M2p1, M2p2, M2a and M2p3c are Accepted. M2p4 is the next
+  serial migration slice and must be dispatched as its own visible Codex task
+  from the fixed accepted root tip recorded below.
 - Product state at M2 activation: native Packed offscreen, desktop
   non-interactive and bench-runner use the Exact runtime; the interactive
   `SurfaceRenderSession` remains legacy until its complete M2 candidate is
@@ -360,14 +360,14 @@ M2 = Active
   `019f94ab-9147-7ff1-b6c3-67c60bd12af4` and Apple task
   `019f94ab-9148-79e0-b921-313b059c21e7` instead remove every in-tree live
   dependency on the legacy getter using matching current-stats tickets.
-- **M2a/M2p3c integration verification: in progress.** Root integrated the
+- **M2a/M2p3c integration closeout: Accepted.** Root integrated the
   accepted Apple and Android current-receipt migration chains as
   `5e6ceab..d1a9e28`. The final Android repair makes the explicit
   `--gpu-producer` collector mode Deferred until M2b rather than publishing an
   unproved producer result; it rejects non-boolean flags, terminal identity
   drift and incomplete ticket sets. Its independent fixed-SHA review task
   `019f952f-92c3-79f2-aa2d-f3c64a91da06` found no P0/P1/P2.
-- Root combined verification so far has passed workspace tests/check, strict
+- Root combined verification passed workspace tests/check, strict
   Clippy/Rustdoc, forced Metal SortedAlpha conformance, FFI/JNI smoke, Android
   collector/extractor and legacy-live-stat guards, Android AAR/APK, Swift
   smoke, and the iOS Simulator app. A real A065 Surface smoke at 2412x1080
@@ -375,6 +375,7 @@ M2 = Active
   counts all equal to 2,541,226 and a current `cpu_post_sort` receipt. Its
   roughly 198 ms observed call time is a directional functional observation,
   not a performance qualification.
-- No combined tree is accepted, pushed or used as an M2b base until this
-  migration batch and the subsequent M2p4 fail-closed switch pass the remaining
-  root closeout checks.
+- The same closeout also passed release XCFramework assembly and a fresh
+  `wasm32-unknown-unknown` renderer check. The fixed accepted root tip is
+  recorded by this closeout commit; M2p4 may use only that tree as its base.
+  M2b remains blocked until M2p4 is independently accepted and integrated.
