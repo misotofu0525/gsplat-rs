@@ -12,12 +12,15 @@
 
 The complete third CPU run did reach artifact preparation. It failed before
 summary emission at `SurfaceBenchmark.requireOrderMeasurements` with
-`refreshed measured frame 0 lacks its own order ticket`. The terminal drain
-short-circuited because Exact `SurfaceFrameOutput` published every refreshed
-frame with `order_measurement_submission=NotRequested`; an empty order ticket
-set therefore looked terminal-complete. The strict result builder correctly
-rejected that contradiction. This was not evidence that Vulkan callback
-progress had timed out.
+`refreshed measured frame 0 lacks its own order ticket`. The retained 122-line
+log proceeds directly from measured frame 79 to that formal artifact rejection
+and renderer destruction; it contains no terminal-drain, receipt-pump, or
+`benchmark_measurement_flush_error` record. It therefore cannot establish
+whether callback progress, pumping, or terminal association would have
+completed. What it does establish is that Exact `SurfaceFrameOutput` published
+refreshed frames with `order_measurement_submission=NotRequested`, so the
+strict artifact builder correctly rejected the missing same-frame order ticket
+before evidence publication.
 
 The Exact renderer already issued one current-stats ticket for every measured
 frame. That ticket has the complete frame/plan/generation/presentation identity
