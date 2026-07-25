@@ -740,11 +740,10 @@ private fun logCompletedGpuProducerFailures(
 
 private fun flushCompletedOrderMeasurements(
     handle: Long,
-    maxFrames: Int = 120,
+    maxPolls: Int = 120,
     consume: (BenchmarkOrderMeasurement) -> Unit = {},
     consumeCpu: (BenchmarkCpuOrderMeasurement) -> Unit = {},
     consumeFailure: (BenchmarkOrderMeasurementFailure) -> Unit = {},
-    consumeSubmission: (BenchmarkOrderSubmission) -> Unit,
     terminalsComplete: () -> Boolean,
     producerEnabled: Boolean = false,
     consumeProducer: (BenchmarkGpuProducerMeasurement) -> Unit = {},
@@ -752,50 +751,31 @@ private fun flushCompletedOrderMeasurements(
     producerTerminalsComplete: () -> Boolean = { true },
     advanceCurrentStats: (renderedFrame: Boolean) -> Boolean,
     currentStatsTerminalsComplete: () -> Boolean
-): Boolean {
-    if (
+): Boolean = drainBenchmarkTerminalReceipts(
+    maxPolls = maxPolls,
+    terminalsComplete = {
         terminalsComplete() && producerTerminalsComplete() &&
-        currentStatsTerminalsComplete()
-    ) return true
-    repeat(maxFrames) {
-        var renderedFrame = false
-        if (!producerEnabled) {
-            val rc = NativeBridge.renderSurfaceFrame(handle)
-            if (rc != 0) {
-                Log.e("GsplatExample", "order measurement flush render failed rc=$rc")
-                return false
-            }
-            renderedFrame = true
-            val submission = BenchmarkOrderSubmission.query(handle).getOrElse { error ->
-                Log.e("GsplatExample", "order submission flush query failed", error)
-                return false
-            }
-            consumeSubmission(submission)
-        }
-        if (logCompletedCpuOrderMeasurements(handle, consumeCpu) < 0) return false
-        if (logCompletedOrderMeasurements(handle, consume) < 0) return false
-        if (logCompletedOrderMeasurementFailures(handle, consumeFailure) < 0) return false
-        if (producerEnabled &&
-            (logCompletedGpuProducerMeasurements(handle, consumeProducer) < 0 ||
-                logCompletedGpuProducerFailures(handle, consumeProducerFailure) < 0)
-        ) return false
-        if (!advanceCurrentStats(renderedFrame)) return false
-        if (
-            terminalsComplete() && producerTerminalsComplete() &&
             currentStatsTerminalsComplete()
-        ) return true
-        if (producerEnabled) {
-            // Producer qualification has already recorded every intended
-            // frame/submission. Polling the native receipt pump advances queue
-            // callbacks without issuing another ticket; a short bounded yield
-            // prevents 120 immediate polls from expiring before a large-scene
-            // GPU submission can complete.
-            SystemClock.sleep(4)
+    },
+    pollReceipts = {
+        if (logCompletedCpuOrderMeasurements(handle, consumeCpu) < 0) {
+            false
+        } else if (logCompletedOrderMeasurements(handle, consume) < 0) {
+            false
+        } else if (logCompletedOrderMeasurementFailures(handle, consumeFailure) < 0) {
+            false
+        } else {
+            !producerEnabled ||
+                (logCompletedGpuProducerMeasurements(handle, consumeProducer) >= 0 &&
+                    logCompletedGpuProducerFailures(handle, consumeProducerFailure) >= 0)
         }
-    }
-    return terminalsComplete() && producerTerminalsComplete() &&
-        currentStatsTerminalsComplete()
-}
+    },
+    pollCurrentStats = { advanceCurrentStats(false) },
+    // Native receipt polls pump queue callbacks without acquiring a Surface or
+    // issuing another order ticket. Yield briefly so large-scene completion
+    // callbacks can become visible within the bounded drain.
+    yieldAfterIncompletePoll = { SystemClock.sleep(4) }
+)
 
 class MainActivity : Activity(), SurfaceHolder.Callback {
     private val renderLock = Object()
@@ -1561,7 +1541,6 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                                                 consume = benchmark::recordOrderMeasurement,
                                                 consumeCpu = benchmark::recordCpuOrderMeasurement,
                                                 consumeFailure = benchmark::recordOrderMeasurementFailure,
-                                                consumeSubmission = benchmark::recordOrderSubmission,
                                                 terminalsComplete = benchmark::orderTerminalsComplete,
                                                 producerEnabled = benchmark.config.gpuProducer != null,
                                                 consumeProducer = benchmark::recordGpuProducerMeasurement,
