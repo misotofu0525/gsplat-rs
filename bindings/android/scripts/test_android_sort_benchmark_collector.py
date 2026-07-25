@@ -205,6 +205,7 @@ def camera_validation_fixture(backend: str = "gpu", sample_count: int = 1):
                 "gpu_complete_ms": None,
                 "cpu_frame_complete_ms": None,
                 "raster_ms": None,
+                "sort_refreshed": False,
                 "order_submission_ticket": None,
                 "order_measurement_ticket": None,
                 "order_measurement_camera_revision": None,
@@ -1148,6 +1149,47 @@ class ParsingTests(unittest.TestCase):
         with self.assertRaisesRegex(
             RuntimeError,
             "manifest.exactness.receipt_id",
+        ):
+            COLLECTOR.validate_run_artifact(
+                fixture[0],
+                fixture[1],
+                fixture[2],
+                "gpu",
+                "packed",
+                {"sha256": "abc", "bytes": 123},
+                fixture[3],
+                fixture[4],
+            )
+
+    def test_refreshed_order_ticket_must_equal_current_stats_ticket(self) -> None:
+        fixture = camera_validation_fixture("gpu")
+        frame = fixture[2][0]
+        current_stats_ticket = frame["current_stats_ticket"]
+        frame.update(
+            {
+                "sort_refreshed": True,
+                "order_submission_ticket": current_stats_ticket,
+                "order_measurement_ticket": current_stats_ticket,
+                "order_measurement_camera_revision": frame["camera_revision"],
+                "gpu_complete_ms": 1.0,
+            }
+        )
+        COLLECTOR.validate_run_artifact(
+            fixture[0],
+            fixture[1],
+            fixture[2],
+            "gpu",
+            "packed",
+            {"sha256": "abc", "bytes": 123},
+            fixture[3],
+            fixture[4],
+        )
+
+        frame["order_submission_ticket"] = 2_000
+        frame["order_measurement_ticket"] = 2_000
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "refreshed order/current-stats ticket identity drifted",
         ):
             COLLECTOR.validate_run_artifact(
                 fixture[0],

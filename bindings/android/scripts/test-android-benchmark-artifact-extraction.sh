@@ -172,6 +172,7 @@ done
 # validator as the full device collector.
 STRICT_LOG="$TMP_DIR/strict-logcat.txt"
 MISSING_LEDGER_LOG="$TMP_DIR/strict-missing-ledger-logcat.txt"
+MISMATCHED_REFRESH_TICKET_LOG="$TMP_DIR/strict-mismatched-refresh-ticket-logcat.txt"
 ACCEPTED_ADAPTIVE_PLAN_BACKEND_DRIFT_LOG="$TMP_DIR/adaptive-plan-backend-drift.txt"
 ACCEPTED_PRODUCER_CURRENT_STATS_COUNT_DRIFT_LOG="$TMP_DIR/producer-count-drift.txt"
 BAD_GPU_COUNT_SEMANTICS_LOG="$TMP_DIR/bad-gpu-count-semantics.txt"
@@ -184,6 +185,7 @@ python3 - \
   "$FIXTURE" \
   "$STRICT_LOG" \
   "$MISSING_LEDGER_LOG" \
+  "$MISMATCHED_REFRESH_TICKET_LOG" \
   "$ACCEPTED_ADAPTIVE_PLAN_BACKEND_DRIFT_LOG" \
   "$ACCEPTED_PRODUCER_CURRENT_STATS_COUNT_DRIFT_LOG" \
   "$BAD_GPU_COUNT_SEMANTICS_LOG" \
@@ -199,13 +201,14 @@ import sys
 fixture = pathlib.Path(sys.argv[1])
 strict_destination = pathlib.Path(sys.argv[2])
 missing_destination = pathlib.Path(sys.argv[3])
-adaptive_drift_destination = pathlib.Path(sys.argv[4])
-producer_drift_destination = pathlib.Path(sys.argv[5])
-bad_gpu_semantics_destination = pathlib.Path(sys.argv[6])
-producer_gate_mutation_directory = pathlib.Path(sys.argv[7])
-wrong_gpu_actual_plan_destination = pathlib.Path(sys.argv[8])
-environment_receipt_destination = pathlib.Path(sys.argv[9])
-mismatched_environment_receipt_destination = pathlib.Path(sys.argv[10])
+mismatched_refresh_ticket_destination = pathlib.Path(sys.argv[4])
+adaptive_drift_destination = pathlib.Path(sys.argv[5])
+producer_drift_destination = pathlib.Path(sys.argv[6])
+bad_gpu_semantics_destination = pathlib.Path(sys.argv[7])
+producer_gate_mutation_directory = pathlib.Path(sys.argv[8])
+wrong_gpu_actual_plan_destination = pathlib.Path(sys.argv[9])
+environment_receipt_destination = pathlib.Path(sys.argv[10])
+mismatched_environment_receipt_destination = pathlib.Path(sys.argv[11])
 manifest = json.loads((fixture / "manifest.json").read_text())
 summary = json.loads((fixture / "summary.json").read_text())
 frames = [
@@ -327,6 +330,7 @@ for index, frame in enumerate(frames):
             "trace_frame_index": None,
             "trace_timestamp_ns": None,
             "contributor": frame["visible"],
+            "sort_refreshed": True,
             "exact_contributor_compaction": False,
             "raster_ms": None,
             "cpu_frame_complete_ms": None,
@@ -382,6 +386,15 @@ def write_log(destination, manifest_value, frames_value, summary_value):
 
 
 write_log(strict_destination, manifest, frames, summary)
+mismatched_refresh_ticket_frames = copy.deepcopy(frames)
+mismatched_refresh_ticket_frames[0]["order_submission_ticket"] = 2_000
+mismatched_refresh_ticket_frames[0]["order_measurement_ticket"] = 2_000
+write_log(
+    mismatched_refresh_ticket_destination,
+    manifest,
+    mismatched_refresh_ticket_frames,
+    summary,
+)
 missing_renderer_identity_manifest = copy.deepcopy(manifest)
 missing_renderer_identity_manifest["environment"].pop("adapter")
 write_log(
@@ -700,6 +713,16 @@ if python3 "$ROOT/bindings/android/scripts/extract-android-benchmark-artifacts.p
   echo "extractor unexpectedly accepted strict current-stats without a ledger" >&2
   exit 1
 fi
+
+if python3 "$ROOT/bindings/android/scripts/extract-android-benchmark-artifacts.py" \
+  "$MISMATCHED_REFRESH_TICKET_LOG" \
+  "$TMP_DIR/strict-mismatched-refresh-ticket-artifact" \
+  --validator "$ROOT/tests/perf/validate-benchmark-artifacts.py" \
+  --android-environment-receipt "$ANDROID_ENVIRONMENT_RECEIPT"; then
+  echo "extractor accepted refreshed current-stats/order ticket identity drift" >&2
+  exit 1
+fi
+[[ ! -e "$TMP_DIR/strict-mismatched-refresh-ticket-artifact" ]]
 
 for mutation in \
   disabled-with-evidence \

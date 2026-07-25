@@ -1408,6 +1408,15 @@ def validate_current_stats_evidence(
         tickets.add(ticket)
         if frame.get("current_stats_ticket") != ticket:
             raise RuntimeError(f"current-stats frame {sample_index} ticket join drifted")
+        order_submission_ticket = frame.get("order_submission_ticket")
+        if frame.get("sort_refreshed") is True and (
+            type(order_submission_ticket) is not int
+            or order_submission_ticket != ticket
+        ):
+            raise RuntimeError(
+                f"current-stats frame {sample_index} refreshed order/current-stats "
+                "ticket identity drifted"
+            )
 
         identity = entry.get("identity")
         if not isinstance(identity, dict) or set(identity) != identity_fields:

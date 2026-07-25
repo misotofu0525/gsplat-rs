@@ -465,7 +465,11 @@ v1 validator and, whenever `renderer.current_stats_strict=true`, the same
 current-stats artifact validator used by the full collector. Missing or
 non-Ready ledger entries, incomplete identity, sample/trace join drift, or an
 `exactness_receipt_id` different from `manifest.exactness.receipt_id` fails
-closed before the destination is published.
+closed before the destination is published. A refreshed strict frame also
+fails closed unless `current_stats_ticket` exactly equals its
+`order_submission_ticket`; an unrefreshed frame retains its existing nullable
+order-ticket semantics, and validation never substitutes zero or a prior
+ticket.
 Its optional `--final-png` lane is accepted only together with the collector's
 `--device-png-pull-receipt`; it is not a general image-import option.
 
