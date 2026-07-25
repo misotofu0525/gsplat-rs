@@ -88,6 +88,41 @@ test("collector joins pending Exact counts only through the renderer current-sta
   assert.doesNotThrow(() => validateCurrentStatsEvidence({ frames: joined }));
 });
 
+test("trace-driven frames join each advancing renderer camera revision", () => {
+  const next = identity({
+    ticket: 20,
+    camera_revision: 5,
+    order_generation: 10,
+    encode_attempt: 11,
+    presentation_sequence: 12,
+  });
+  const nextFrame = frame({
+    frame_index: 1,
+    camera_revision: next.camera_revision,
+    current_stats_ticket: next.ticket,
+    current_stats_plan: next.plan,
+    current_stats_scene_generation: next.scene_generation,
+    current_stats_camera_revision: next.camera_revision,
+    current_stats_viewport_generation: next.viewport_generation,
+    current_stats_contract_generation: next.contract_generation,
+    current_stats_plan_set_generation: next.plan_set_generation,
+    current_stats_order_generation: next.order_generation,
+    current_stats_raster_generation: next.raster_generation,
+    current_stats_encode_attempt: next.encode_attempt,
+    current_stats_presentation_sequence: next.presentation_sequence,
+  });
+  const joined = joinCurrentStatsEvidence({
+    frames: [frame(), nextFrame],
+    submissions: [identity(), next],
+    terminals: [terminal(), terminal({ ...next })],
+    sourceCount: 100,
+  });
+
+  assert.deepEqual(joined.map((record) => record.camera_revision), [4, 5]);
+  assert.deepEqual(joined.map((record) => record.visible_count_revision), [4, 5]);
+  assert.doesNotThrow(() => validateCurrentStatsEvidence({ frames: joined }));
+});
+
 test("current-stats evidence fails closed for missing, stale, mismatched, unsampled, and failed terminals", () => {
   const submission = { ...identity(), phase: "measured", submitted_at_monotonic_ms: 10 };
   assert.throws(

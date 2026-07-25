@@ -1854,6 +1854,19 @@ fn publish_only_on_present<T>(published: &mut T, presented: Option<T>) {
     }
 }
 
+const fn exact_published_camera_revision(
+    session_revision: u64,
+    renderer_revision: Option<u64>,
+) -> u64 {
+    // Camera setters may run more than once before one trace frame presents.
+    // Exact publication must expose the renderer's committed frame identity,
+    // not the compatibility counter for those unpublished mutations.
+    match renderer_revision {
+        Some(renderer_revision) => renderer_revision,
+        None => session_revision,
+    }
+}
+
 fn commit_exact_plan_state(
     renderer: &mut Renderer,
     exact_plan_receipt: &mut Option<ExactSurfacePlanState>,
@@ -3197,11 +3210,6 @@ impl SurfaceRenderSession {
         };
         let submission = rendered.submission();
         debug_assert_eq!(
-            submission.frame_identity().camera_revision(),
-            self.camera_revision,
-            "Exact current-stats identity must join the public session camera revision"
-        );
-        debug_assert_eq!(
             rendered.target().presentation_sequence(),
             submission.presentation_sequence(),
             "Surface lifecycle and renderer publish the same successful present sequence"
@@ -3210,7 +3218,7 @@ impl SurfaceRenderSession {
         let plan = submission.plan_id();
         let order_generation = submission.order_generation();
         let order_refreshed = self.exact_order_generation_receipt != Some(order_generation);
-        self.applied_order_revision = self.camera_revision;
+        self.applied_order_revision = submission.frame_identity().camera_revision();
         self.applied_order_camera = self.camera;
         let output =
             self.exact_surface_output(Some(submission), plan, order_refreshed, frame_started);
@@ -3262,6 +3270,10 @@ impl SurfaceRenderSession {
         let counts_pending = submission.is_some_and(|submission| {
             submission.visible_count().is_none() || submission.draw_count().is_none()
         });
+        let camera_revision = exact_published_camera_revision(
+            self.camera_revision,
+            submission.map(|submission| submission.frame_identity().camera_revision()),
+        );
         SurfaceFrameOutput {
             stats,
             timings: SurfaceFrameTimings {
@@ -3280,11 +3292,10 @@ impl SurfaceRenderSession {
             async_sort_revision_lag: None,
             stale_async_sort_dropped: false,
             async_sort_scheduled: false,
-            camera_revision: self.camera_revision,
+            camera_revision,
             applied_order_revision: self.applied_order_revision,
             presented_order_revision_lag: u32::try_from(
-                self.camera_revision
-                    .saturating_sub(self.applied_order_revision),
+                camera_revision.saturating_sub(self.applied_order_revision),
             )
             .unwrap_or(u32::MAX),
             async_sort_scheduled_revision: None,
@@ -4284,7 +4295,7 @@ mod tests {
         SurfaceProjectedDrawMeasurementUnsampledReason, SurfaceProjectedDrawPolicy,
         SurfaceSortSchedule, TelemetrySubmission, adaptive_gpu_order_failure_reason,
         adaptive_primary_metric, arbitrate_new_probe_owner, async_order_pose_compatible,
-        async_schedule_threshold, defer_projected_formal_choice,
+        async_schedule_threshold, defer_projected_formal_choice, exact_published_camera_revision,
         gpu_producer_measurement_context_is_valid, gpu_projected_order_changed,
         legacy_surface_current_stats_poll, legacy_surface_current_stats_request,
         legacy_surface_current_stats_submission, order_probe_owner_should_yield,
@@ -4582,6 +4593,25 @@ mod tests {
         assert_eq!(
             published, 42,
             "successful present atomically commits its snapshot"
+        );
+    }
+
+    #[test]
+    fn trace_camera_frames_publish_renderer_owned_current_stats_revisions() {
+        assert_eq!(
+            exact_published_camera_revision(2, Some(1)),
+            1,
+            "the first trace frame may collapse multiple pre-present camera mutations"
+        );
+        assert_eq!(
+            exact_published_camera_revision(3, Some(2)),
+            2,
+            "the next trace frame advances with the renderer-owned identity"
+        );
+        assert_eq!(
+            exact_published_camera_revision(3, None),
+            3,
+            "an acquire-without-present has no renderer frame identity to publish"
         );
     }
 
