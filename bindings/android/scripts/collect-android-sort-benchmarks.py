@@ -368,8 +368,11 @@ def completed_benchmark_run_id(log: str) -> str:
     return manifest_run_id
 
 
-def assert_device_final_png_absent(adb: pathlib.Path | str, serial: str) -> None:
-    command = adb_args(
+def device_final_png_absence_command(
+    adb: pathlib.Path | str, serial: str
+) -> list[str]:
+    script = f"test ! -e {shlex.quote(INTERNAL_FINAL_PNG)}"
+    return adb_args(
         adb,
         serial,
         "shell",
@@ -377,8 +380,12 @@ def assert_device_final_png_absent(adb: pathlib.Path | str, serial: str) -> None
         PACKAGE,
         "sh",
         "-c",
-        f"test ! -e {INTERNAL_FINAL_PNG}",
+        shlex.quote(script),
     )
+
+
+def assert_device_final_png_absent(adb: pathlib.Path | str, serial: str) -> None:
+    command = device_final_png_absence_command(adb, serial)
     result = subprocess.run(
         command,
         cwd=REPO_ROOT,
@@ -2374,7 +2381,7 @@ def dry_run(
         print(f"+ {command_text(adb_args(adb, args.serial, 'shell', 'pm', 'clear', PACKAGE))}")
         if args.formal_artifact:
             print(
-                f"+ {command_text(adb_args(adb, args.serial, 'shell', 'run-as', PACKAGE, 'sh', '-c', f'test ! -e {INTERNAL_FINAL_PNG}'))}"
+                f"+ {command_text(device_final_png_absence_command(adb, args.serial))}"
             )
         print(
             f"+ {command_text(adb_args(adb, args.serial, 'shell', 'run-as', PACKAGE, 'mkdir', '-p', 'files'))}"

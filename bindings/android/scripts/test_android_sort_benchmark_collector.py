@@ -1481,16 +1481,31 @@ class SafetyTests(unittest.TestCase):
         self.assertEqual(plan.count(" install -r "), 1)
 
     def test_package_clear_must_remove_fixed_final_png_path(self) -> None:
-        absent = COLLECTOR.subprocess.CompletedProcess([], 0, "")
-        stale = COLLECTOR.subprocess.CompletedProcess([], 1, "")
+        expected = [
+            "adb",
+            "-s",
+            "serial",
+            "shell",
+            "run-as",
+            COLLECTOR.PACKAGE,
+            "sh",
+            "-c",
+            f"'test ! -e {COLLECTOR.INTERNAL_FINAL_PNG}'",
+        ]
+        absent = COLLECTOR.subprocess.CompletedProcess(expected, 0, "")
+        stale = COLLECTOR.subprocess.CompletedProcess(expected, 1, "")
         with mock.patch.object(
             COLLECTOR.subprocess, "run", return_value=absent
         ) as run:
             COLLECTOR.assert_device_final_png_absent("adb", "serial")
-        command = run.call_args.args[0]
-        self.assertEqual(command[:3], ["adb", "-s", "serial"])
-        self.assertIn(COLLECTOR.PACKAGE, command)
-        self.assertIn(COLLECTOR.INTERNAL_FINAL_PNG, command[-1])
+        run.assert_called_once_with(
+            expected,
+            cwd=COLLECTOR.REPO_ROOT,
+            check=False,
+            text=True,
+            stdout=COLLECTOR.subprocess.PIPE,
+            stderr=COLLECTOR.subprocess.STDOUT,
+        )
 
         with mock.patch.object(COLLECTOR.subprocess, "run", return_value=stale):
             with self.assertRaisesRegex(RuntimeError, "refusing stale image"):
