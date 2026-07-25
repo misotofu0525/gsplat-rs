@@ -184,41 +184,27 @@ scene and supports forced CPU, forced GPU, or measured Adaptive ordering.
 Benchmark output reports `renderer=wasm_packed_atlas`. When motion stops, leave
 the page visible for at least three frames and confirm the canvas remains
 non-black with non-zero Visible/Drawn counts; this guards cached-order redraw.
-Ordering artifacts require every submitted CPU or GPU measurement ticket to
-complete and match its backend and camera revision; one animation frame may
-drain multiple receipts. Every frame with `sort_refreshed=true` must carry a
-positive namespaced ticket. A ticket must terminate exactly once as either a
-successful measurement or a structured `readback_map` /
-`generation_invalidated` failure; strict GPU/Adaptive benchmarks reject the
-failure instead of manufacturing a timing/count sample. An explicit Adaptive
-GPU setup fallback is likewise recorded and rejected by the strict collector.
-The separate `order-measurement-submissions.jsonl` ledger includes preflight,
-warmup, and measured CPU/GPU submissions, so every ticket issued during the
-benchmark must have exactly one terminal receipt even when it is not part of
-the measured-frame summary. The first browser-only Packed GPU-order preparation
-is hidden: it presents no frame, allocates no ticket, and is recorded separately
-in `gpu-order-preparations.jsonl` before the same camera revision is retried.
+Packed Exact ordering artifacts request a renderer-owned current-stats receipt
+for every retained frame. `current-stats-submissions.jsonl` and
+`current-stats-terminals.jsonl` must form a one-submission/one-terminal ledger;
+the collector joins the complete plan/generation/camera/encode/presentation
+identity and rejects missing, stale, mismatched, unsampled, or failed
+terminals. `sort_refreshed=true` does not manufacture or require a retired
+legacy order ticket. Direct/downlevel compatibility routes may still expose
+their historical order-measurement streams.
 
-Successful CPU and GPU terminal receipts expose the same `S/V/C/D` evidence:
-complete source/residency `S`, near/far candidates `V`, strict conservative
+Successful renderer current-stats terminals expose `S/V/C/D`: complete
+source/residency `S`, near/far candidates `V`, strict conservative
 post-projection contributors `C`, and issued draw count `D`. The collector
-joins them only by the same ticket and camera revision, declares
-`candidate_visible_contributor_issued_v1`, and enforces
-`0 <= C <= V <= S`. Exact compaction must explicitly report `D=C`; otherwise
-the portable Direct/downlevel rule remains `D=V`. Provisional frame counters
-cannot fill a missing terminal receipt.
-Because an asynchronous frame can initially expose the preceding receipt's
-counts, the collector replaces GPU submission-frame `visible`, `drawn`, and
-GPU-order timing fields from the matching terminal receipt, records the count
-source/revision/ticket, and rebuilds `summary.json` from those post-join
-frames. Frames without a current CPU revision or a joined GPU submission are
-marked ineligible and excluded from `summary.json.count_evidence`; harvested
-GPU completion timing is likewise cleared from non-submitting frames to avoid
-double-counting. Only the collector-written `frames.jsonl` and rebuilt
-`summary.json` are final evidence; the corresponding live console-frame counts
-are provisional. `ordering-window-monotonic.json` is the page-side window, and
-the collector independently recomputes and exactly field-checks the same window
-before accepting the artifact.
+declares `candidate_visible_contributor_issued_v1`, enforces
+`0 <= C <= V <= S`, and requires either `D=V` or explicit exact compaction
+with `D=C`. Provisional indirect V/D are unavailable (`null`) in WASM, the ESM
+wrapper, live UI, and pending-frame receipts; zero, capacity, and stale counts
+cannot fill them. Only the matching terminal populates final frame V/C/D and
+marks `visible_count_source=renderer_current_stats_terminal` before the
+collector rebuilds `summary.json`. `ordering-window-monotonic.json` is the
+page-side window, and the collector independently recomputes and exactly
+field-checks the same window before accepting the artifact.
 Adaptive compares CPU and GPU with the same `FrameCompletion` interval from
 frame start through queue completion, including sorting, projection,
 rasterization, submission, and queueing. Order-stage timestamps remain
@@ -228,8 +214,9 @@ The retained browser artifact adds `projected_policy`,
 `projected_execution`, `projected_adaptive_state`, and projected submission
 identity to every frame. Separate `projected-measurement-submissions.jsonl`,
 `projected-measurements.jsonl`, and `projected-measurement-failures.jsonl`
-files preserve the one-ticket/one-terminal ledger with V/C/D,
-projection/probe generations, and frame-completion timings.
+files remain legacy compatibility artifacts. Renderer-owned Exact frames use
+the current-stats terminal plan to report actual projected execution and do
+not create a second projected learner or terminal owner.
 
 PostSort/Preproject qualification is opt-in and does not alter the normal Web
 product default. Set `GSPLAT_GPU_ORDER_PRODUCER=post-sort` or `preproject` on

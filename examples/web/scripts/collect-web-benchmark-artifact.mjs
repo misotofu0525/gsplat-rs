@@ -23,6 +23,11 @@ import {
   validateOrderingEvidence,
 } from '../src/benchmark-order-evidence.mjs';
 import {
+  joinCurrentStatsEvidence,
+  validateCurrentStatsEvidence,
+  validateCurrentStatsTerminalLedger,
+} from '../src/benchmark-current-stats-evidence.mjs';
+import {
   validateProjectedFrameEvidence,
   validateProjectedTerminalLedger,
 } from '../src/benchmark-projected-evidence.mjs';
@@ -162,6 +167,9 @@ function parseArtifacts(consoleLines) {
   const cpuOrderMeasurements = [];
   const orderMeasurementSubmissions = [];
   const orderMeasurementFailures = [];
+  const currentStatsSubmissions = [];
+  const currentStatsTerminals = [];
+  const currentStatsPendingFrames = [];
   const adaptiveGpuFailures = [];
   const loadReceipts = [];
   const gpuOrderPreparations = [];
@@ -188,6 +196,12 @@ function parseArtifacts(consoleLines) {
       orderMeasurementSubmissions.push(text.slice('ORDER_MEASUREMENT_SUBMISSION_JSON '.length));
     } else if (text.startsWith('ORDER_MEASUREMENT_FAILURE_JSON ')) {
       orderMeasurementFailures.push(text.slice('ORDER_MEASUREMENT_FAILURE_JSON '.length));
+    } else if (text.startsWith('CURRENT_STATS_SUBMISSION_JSON ')) {
+      currentStatsSubmissions.push(text.slice('CURRENT_STATS_SUBMISSION_JSON '.length));
+    } else if (text.startsWith('CURRENT_STATS_TERMINAL_JSON ')) {
+      currentStatsTerminals.push(text.slice('CURRENT_STATS_TERMINAL_JSON '.length));
+    } else if (text.startsWith('CURRENT_STATS_PENDING_FRAME_JSON ')) {
+      currentStatsPendingFrames.push(text.slice('CURRENT_STATS_PENDING_FRAME_JSON '.length));
     } else if (text.startsWith('ADAPTIVE_GPU_FAILURE_JSON ')) {
       adaptiveGpuFailures.push(text.slice('ADAPTIVE_GPU_FAILURE_JSON '.length));
     } else if (text.startsWith('SCENE_LOAD_RECEIPT_JSON ')) {
@@ -233,6 +247,9 @@ function parseArtifacts(consoleLines) {
     ...cpuOrderMeasurements,
     ...orderMeasurementSubmissions,
     ...orderMeasurementFailures,
+    ...currentStatsSubmissions,
+    ...currentStatsTerminals,
+    ...currentStatsPendingFrames,
     ...adaptiveGpuFailures,
     ...loadReceipts,
     ...gpuOrderPreparations,
@@ -252,6 +269,9 @@ function parseArtifacts(consoleLines) {
   const cpuMeasurements = cpuOrderMeasurements.map((payload) => JSON.parse(payload));
   const submissions = orderMeasurementSubmissions.map((payload) => JSON.parse(payload));
   const failures = orderMeasurementFailures.map((payload) => JSON.parse(payload));
+  const statsSubmissions = currentStatsSubmissions.map((payload) => JSON.parse(payload));
+  const statsTerminals = currentStatsTerminals.map((payload) => JSON.parse(payload));
+  const statsPendingFrames = currentStatsPendingFrames.map((payload) => JSON.parse(payload));
   const preparations = gpuOrderPreparations.map((payload) => JSON.parse(payload));
   const projectedSuccesses = projectedMeasurements
     .map((payload) => JSON.parse(payload))
@@ -276,12 +296,19 @@ function parseArtifacts(consoleLines) {
       `expected one final monotonic ordering window; observed ${monotonicOrderingWindows.length}`,
     );
   }
+  const rendererOwnedExact = rawFrames.every(
+    (frame) => frame.raster_execution_plan === 'projected_quads_exact',
+  );
+  const terminalSubmissions = rendererOwnedExact ? statsSubmissions : submissions;
+  const terminalReceipts = rendererOwnedExact
+    ? statsTerminals
+    : [...measurements, ...cpuMeasurements, ...failures];
   const pageMonotonicWindow = JSON.parse(monotonicOrderingWindows[0]);
   const monotonicWindow = monotonicOrderingWindow({
-    submissions,
-    terminals: [...measurements, ...cpuMeasurements, ...failures],
+    submissions: terminalSubmissions,
+    terminals: terminalReceipts,
   });
-  const measuredSubmissionCount = submissions.filter(
+  const measuredSubmissionCount = terminalSubmissions.filter(
     (submission) => submission.phase === 'measured',
   ).length;
   if (pageMonotonicWindow.measured_submit_count !== measuredSubmissionCount
@@ -385,10 +412,40 @@ function parseArtifacts(consoleLines) {
       throw new Error('manifest exactness receipt does not prove complete point/SH residency');
     }
   }
-  validateTerminalTicketLedger({ submissions, measurements, cpuMeasurements, failures });
+  if (rendererOwnedExact) {
+    validateCurrentStatsTerminalLedger({
+      submissions: statsSubmissions,
+      terminals: statsTerminals,
+      sourceCount: manifest.dataset?.splat_count,
+    });
+    if (submissions.length > 0 || measurements.length > 0
+        || cpuMeasurements.length > 0 || failures.length > 0) {
+      throw new Error('renderer-owned Exact benchmark emitted a retired order-measurement ledger');
+    }
+    for (const pending of statsPendingFrames) {
+      if (pending.visible !== null || pending.drawn !== null
+          || pending.visible_count_pending !== true) {
+        throw new Error(`pending Exact current-stats ticket ${pending.ticket} exposed numeric V/D`);
+      }
+      const terminal = statsTerminals.find((candidate) => candidate.ticket === pending.ticket);
+      if (!terminal || terminal.camera_revision !== pending.camera_revision) {
+        throw new Error(`pending Exact current-stats ticket ${pending.ticket} lacks its terminal join`);
+      }
+    }
+    for (const terminal of statsTerminals) {
+      if (terminal.count_semantics.startsWith('indirect_')
+          && !statsPendingFrames.some((pending) => pending.ticket === terminal.ticket)) {
+        throw new Error(`indirect Exact ticket ${terminal.ticket} did not preserve pending V/D`);
+      }
+    }
+  } else {
+    validateTerminalTicketLedger({ submissions, measurements, cpuMeasurements, failures });
+  }
   validateProjectedFrameEvidence({ requestedPolicy: projectedPolicy, frames: rawFrames });
-  validateGpuProducerFrameEvidence({ requestedProducer: gpuOrderProducer, frames: rawFrames });
-  if (gpuOrderProducer !== null) {
+  if (!rendererOwnedExact) {
+    validateGpuProducerFrameEvidence({ requestedProducer: gpuOrderProducer, frames: rawFrames });
+  }
+  if (!rendererOwnedExact && gpuOrderProducer !== null) {
     validateGpuProducerMeasuredSubmissions({
       frames: rawFrames,
       submissions: producerSubmissions,
@@ -409,7 +466,13 @@ function parseArtifacts(consoleLines) {
     success_count: 0,
     failure_count: 0,
   };
-  if (gpuOrderProducer === null) {
+  if (rendererOwnedExact) {
+    if (producerSubmissions.length > 0
+        || producerMeasurements.length > 0
+        || producerFailures.length > 0) {
+      throw new Error('renderer-owned Exact benchmark emitted a retired producer ticket ledger');
+    }
+  } else if (gpuOrderProducer === null) {
     if (producerSubmissions.length > 0
         || producerMeasurements.length > 0
         || producerFailures.length > 0) {
@@ -431,23 +494,47 @@ function parseArtifacts(consoleLines) {
     }
   }
   const gpuFailures = failures.filter((failure) => failure.actual_backend === 'gpu');
-  const frames = joinOrderingEvidence({
-    requestedBackend: orderBackend,
-    frames: rawFrames,
-    measurements,
-    cpuMeasurements,
-    failures: gpuFailures,
-  });
-  validateOrderingEvidence({
-    requestedBackend: orderBackend,
-    frames,
-    measurements,
-    failures: gpuFailures,
-    fixedCameraReuse: manifest.trace?.frame_index != null,
-  });
+  const frames = rendererOwnedExact
+    ? joinCurrentStatsEvidence({
+        frames: rawFrames,
+        submissions: statsSubmissions,
+        terminals: statsTerminals,
+        sourceCount: manifest.dataset?.splat_count,
+      })
+    : joinOrderingEvidence({
+        requestedBackend: orderBackend,
+        frames: rawFrames,
+        measurements,
+        cpuMeasurements,
+        failures: gpuFailures,
+      });
+  if (rendererOwnedExact) {
+    validateCurrentStatsEvidence({ frames });
+    if (gpuOrderProducer !== null) {
+      const requiredPlan = gpuOrderProducer === 'preproject'
+        ? 'gpu_preproject'
+        : 'gpu_post_sort';
+      if (statsTerminals.some((terminal) => terminal.plan !== requiredPlan)
+          || frames.some((frame) => frame.gpu_order_producer !== gpuOrderProducer)) {
+        throw new Error(
+          `renderer current-stats terminals do not prove requested producer ${gpuOrderProducer}`,
+        );
+      }
+    }
+  } else {
+    validateOrderingEvidence({
+      requestedBackend: orderBackend,
+      frames,
+      measurements,
+      failures: gpuFailures,
+      fixedCameraReuse: manifest.trace?.frame_index != null,
+    });
+  }
   const summary = benchmarkSummaryFromFrameRecords(frames, JSON.parse(summaries[0]));
   summary.count_evidence = benchmarkCountEvidence(frames);
-  const measuredSubmissions = submissions.filter((submission) => submission.phase === 'measured');
+  const measuredSubmissions = terminalSubmissions.filter(
+    (submission) => submission.phase === 'measured',
+  );
   const traceSequence = Array.isArray(manifest.trace?.frame_indices);
   if (traceSequence) {
     if (rawFrames.some((frame) => frame.sort_refreshed !== true)) {
@@ -463,10 +550,11 @@ function parseArtifacts(consoleLines) {
   const measuredTickets = new Set(
     measuredSubmissions.map((submission) => submission.ticket),
   );
-  const successfulTerminalTickets = new Set([
-    ...cpuMeasurements.map((measurement) => measurement.ticket),
-    ...measurements.map((measurement) => measurement.ticket),
-  ]);
+  const successfulTerminalTickets = new Set(
+    terminalReceipts
+      .filter((terminal) => !rendererOwnedExact || terminal.status === 'ready')
+      .map((terminal) => terminal.ticket),
+  );
   const measuredTerminalCount = measuredSubmissions.filter(
     (submission) => successfulTerminalTickets.has(submission.ticket),
   ).length;
@@ -510,16 +598,30 @@ function parseArtifacts(consoleLines) {
     ),
   };
   manifest.ordering_evidence = {
-    submission_predicate: 'sort_refreshed=true',
-    receipt_join_keys: ['submitted_measurement_ticket', 'camera_revision'],
+    terminal_model: rendererOwnedExact
+      ? 'renderer_current_stats'
+      : 'legacy_order_measurement',
+    submission_predicate: rendererOwnedExact
+      ? 'current_stats_submission=issued'
+      : 'sort_refreshed=true',
+    receipt_join_keys: rendererOwnedExact
+      ? [
+          'current_stats_ticket',
+          'current_stats_plan',
+          'current_stats_camera_revision',
+          'current_stats_presentation_sequence',
+        ]
+      : ['submitted_measurement_ticket', 'camera_revision'],
     terminal_receipt_policy: 'exactly_one_of_success_or_structured_failure',
     structured_failure_policy: 'reject_strict_benchmark',
     cpu_completion: 'frame_start_to_queue_done',
     gpu_completion: 'frame_start_to_queue_done',
     completion_protocol: orderCompletionProtocol,
-    frame_counts: orderBackend === 'cpu'
-      ? 'synchronous_cpu_order'
-      : 'post_join_terminal_gpu_receipt',
+    frame_counts: rendererOwnedExact
+      ? 'post_join_renderer_current_stats_terminal'
+      : orderBackend === 'cpu'
+        ? 'synchronous_cpu_order'
+        : 'post_join_terminal_gpu_receipt',
     summary: 'recomputed_from_post_join_frames',
   };
   manifest.gpu_order_preparation_evidence = {
@@ -568,6 +670,9 @@ function parseArtifacts(consoleLines) {
     cpuOrderMeasurements,
     orderMeasurementSubmissions,
     orderMeasurementFailures,
+    currentStatsSubmissions,
+    currentStatsTerminals,
+    currentStatsPendingFrames,
     adaptiveGpuFailures,
     loadReceipts,
     gpuOrderPreparations,
@@ -601,6 +706,9 @@ async function writeArtifact({
   cpuOrderMeasurements,
   orderMeasurementSubmissions,
   orderMeasurementFailures,
+  currentStatsSubmissions,
+  currentStatsTerminals,
+  currentStatsPendingFrames,
   adaptiveGpuFailures,
   loadReceipts,
   gpuOrderPreparations,
@@ -637,6 +745,18 @@ async function writeArtifact({
   await writeFile(
     resolve(sibling, 'order-measurement-failures.jsonl'),
     orderMeasurementFailures.length > 0 ? `${orderMeasurementFailures.join('\n')}\n` : ''
+  );
+  await writeFile(
+    resolve(sibling, 'current-stats-submissions.jsonl'),
+    currentStatsSubmissions.length > 0 ? `${currentStatsSubmissions.join('\n')}\n` : ''
+  );
+  await writeFile(
+    resolve(sibling, 'current-stats-terminals.jsonl'),
+    currentStatsTerminals.length > 0 ? `${currentStatsTerminals.join('\n')}\n` : ''
+  );
+  await writeFile(
+    resolve(sibling, 'current-stats-pending-frames.jsonl'),
+    currentStatsPendingFrames.length > 0 ? `${currentStatsPendingFrames.join('\n')}\n` : ''
   );
   await writeFile(
     resolve(sibling, 'adaptive-gpu-failures.jsonl'),

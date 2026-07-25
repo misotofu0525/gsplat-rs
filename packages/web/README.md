@@ -125,7 +125,9 @@ presented Exact frame, and `pollCurrentStats()` returns its renderer-owned
 terminal. The receipt binds plan, scene/camera/viewport/contract/plan-set/order/
 raster generations, encode attempt, presentation sequence, and truthful
 `S/V/C/D` semantics. The wrapper validates but does not mirror issued or
-terminal tickets, cache generations, or adaptive state.
+terminal tickets, cache generations, or adaptive state. While an indirect
+Exact frame awaits that terminal, `visibleCount` and `drawnCount` are `null`;
+they are never replaced by zero, capacity, or an older frame's counts.
 
 Legacy `completedOrderMeasurements` drains every GPU-order receipt that completed
 since the preceding `renderFrame()` call. Consumers must not treat only the
@@ -134,6 +136,10 @@ between animation frames. `failedOrderMeasurements` is the matching terminal
 failure stream. `drainOrderMeasurementReceipts()` drains both streams without
 rendering, which lets a fail-closed caller preserve receipts collected before a
 later Surface/presentation error.
+Packed Exact benchmark consumers use current-stats instead of requiring this
+legacy ticket stream. A retained frame is count-eligible only after the
+renderer terminal matches its ticket, complete generation identity, camera,
+plan, encode attempt, and presentation sequence.
 
 `setProjectedPolicy("candidate" | "compact" | "adaptive")` is a fail-closed
 compatibility input to the complete Exact plan. Legacy projected receipt fields

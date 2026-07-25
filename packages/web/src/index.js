@@ -983,6 +983,8 @@ function normalizeFrameStats(raw) {
   }
   assertUniqueProjectedTerminals(receipts);
   assertUniqueGpuProducerTerminals(receipts);
+  const visibleCount = nullableSafeInteger(raw.visibleCount, "visibleCount");
+  const drawnCount = nullableSafeInteger(raw.drawnCount, "drawnCount");
   const frame = {
     currentStatsSubmission: String(raw.currentStatsSubmission ?? "not_requested"),
     currentStatsTicket: nullableSafeInteger(raw.currentStatsTicket, "currentStatsTicket"),
@@ -1035,8 +1037,8 @@ function normalizeFrameStats(raw) {
     // Compatibility alias; use gpuOrderPreparationPending in new code.
     tiledPreparationPending: gpuOrderPreparationPending,
     rasterExecutionPlan: String(raw.rasterExecutionPlan ?? "global_quads"),
-    visibleCount: numberOr(raw.visibleCount, 0),
-    drawnCount: numberOr(raw.drawnCount, 0),
+    visibleCount,
+    drawnCount,
     refreshSort: Boolean(raw.refreshSort),
     orderBackend: String(raw.orderBackend ?? "cpu"),
     adaptiveGpuFailure: raw.adaptiveGpuFailure == null
@@ -1266,6 +1268,15 @@ function normalizeFrameStats(raw) {
     presentedWidth: nullableNumber(raw.presentedWidth),
     presentedHeight: nullableNumber(raw.presentedHeight),
   };
+  if (frame.rasterExecutionPlan === "projected_quads_exact" && frame.framePresented) {
+    if (frame.visibleCountPending) {
+      if (frame.visibleCount !== null || frame.drawnCount !== null) {
+        throw new TypeError("pending Exact V/D counts must remain unavailable");
+      }
+    } else if (frame.visibleCount === null || frame.drawnCount === null) {
+      throw new TypeError("current Exact V/D counts must both be available");
+    }
+  }
   validateCurrentStatsFrameSubmission(frame);
   validateProjectedFrameSubmission(frame);
   validateGpuProducerFrameSubmission(frame);

@@ -977,6 +977,45 @@ test("GsplatWebRenderer exposes renderer-owned Exact current-stats receipts", ()
   });
 });
 
+test("GsplatWebRenderer keeps pending Exact V/D counts unavailable", () => {
+  const renderer = new GsplatWebRenderer(makeNativeRenderer({
+    renderFrame() {
+      return {
+        frameMs: 1,
+        frameWallMs: 1,
+        framePresented: true,
+        rasterExecutionPlan: "projected_quads_exact",
+        visibleCount: null,
+        drawnCount: null,
+        visibleCountPending: true,
+        currentStatsSubmission: "not_requested",
+      };
+    },
+  }));
+
+  const frame = renderer.renderFrame();
+  assert.equal(frame.visibleCount, null);
+  assert.equal(frame.drawnCount, null);
+  assert.equal(frame.visibleCountPending, true);
+  assert.throws(
+    () => new GsplatWebRenderer(makeNativeRenderer({
+      renderFrame() {
+        return {
+          frameMs: 1,
+          frameWallMs: 1,
+          framePresented: true,
+          rasterExecutionPlan: "projected_quads_exact",
+          visibleCount: 0,
+          drawnCount: 0,
+          visibleCountPending: true,
+          currentStatsSubmission: "not_requested",
+        };
+      },
+    })).renderFrame(),
+    /pending Exact V\/D counts must remain unavailable/,
+  );
+});
+
 test("GsplatWebRenderer same-size resize is a no-op on a legacy module", async () => {
   const native = makeNativeRenderer();
   delete native.resizeAsync;

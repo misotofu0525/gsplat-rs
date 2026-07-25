@@ -1463,17 +1463,20 @@ function frame(now) {
   }
 
   const benchmarkWaitingForTerminal = state.benchmark?.enabled
-    && (state.benchmark.pendingOrderSample != null
+    && (state.benchmark.pendingCurrentStatsSample != null
+      || state.benchmark.pendingOrderSample != null
       || state.benchmark.pendingProjectedSample != null
       || state.benchmark.pendingGpuProducerSample != null);
   if (usingWasm() && benchmarkWaitingForTerminal
-      && state.benchmark.orderCompletionProtocol === "isolated_terminal") {
+      && (state.benchmark.pendingCurrentStatsSample != null
+        || state.benchmark.orderCompletionProtocol === "isolated_terminal")) {
     pollPendingBenchmarkReceipts(state.benchmark);
     requestAnimationFrame(frame);
     return;
   }
   if (!state.gpuOrderPreparationPending && state.benchmark?.enabled
-      && !benchmarkWaitingForTerminal) {
+      && !benchmarkWaitingForTerminal
+      && !state.benchmark.currentStatsRequestOutstanding) {
     if (state.benchmark.traceSequence) {
       applyBenchmarkTraceStep(state.benchmark);
     } else if (state.benchmark.fixedCameraPrimePending && state.qualificationCamera) {
@@ -1836,21 +1839,29 @@ function recordOrderTerminalReceipt(backend, ticket, revision, outcome, terminal
 
 function maybeEmitMonotonicOrderingWindow(benchmark) {
   if (benchmark.enabled || benchmark.monotonicOrderingWindowEmitted) return;
-  const measuredSubmissions = benchmark.orderSubmissionRecords.filter(
+  const rendererOwned = benchmark.currentStatsSubmissionRecords.length > 0;
+  const submissions = rendererOwned
+    ? benchmark.currentStatsSubmissionRecords
+    : benchmark.orderSubmissionRecords;
+  const terminals = rendererOwned
+    ? benchmark.currentStatsTerminalRecords
+    : benchmark.orderTerminalRecords;
+  const measuredSubmissions = submissions.filter(
     (submission) => submission.phase === "measured",
   );
   const terminalTickets = new Set(
-    benchmark.orderTerminalRecords.map((terminal) => terminal.ticket),
+    terminals.map((terminal) => terminal.ticket),
   );
   if (measuredSubmissions.some((submission) => !terminalTickets.has(submission.ticket))) return;
   const window = monotonicOrderingWindow({
-    submissions: benchmark.orderSubmissionRecords,
-    terminals: benchmark.orderTerminalRecords,
+    submissions,
+    terminals,
   });
   benchmark.monotonicOrderingWindowEmitted = true;
   console.info(`ORDERING_WINDOW_MONOTONIC_JSON ${JSON.stringify({
     schema: BENCHMARK_SCHEMA,
     record_type: "ordering_window_monotonic",
+    terminal_model: rendererOwned ? "renderer_current_stats" : "legacy_order_measurement",
     measured_submit_count: measuredSubmissions.length,
     measured_terminal_count: measuredSubmissions.length,
     ...window,
@@ -1912,6 +1923,21 @@ function renderWasm() {
   state.frameCounter += 1;
   const callStart = performance.now();
   try {
+    const benchmark = state.benchmark;
+    const exactBenchmark = benchmark?.enabled
+      && state.wasmRenderer.rasterPath() === "packed_atlas";
+    if (exactBenchmark
+        && !benchmark.currentStatsRequestOutstanding
+        && benchmark.pendingCurrentStatsSample == null) {
+      const request = state.wasmRenderer.requestCurrentStats();
+      if (request.status !== "requested") {
+        failStrictBenchmarkForOrderEvidence(
+          `renderer current-stats request was ${request.status}: ${request.reason ?? "unknown"}`,
+        );
+        return null;
+      }
+      benchmark.currentStatsRequestOutstanding = true;
+    }
     if (state.currentStatsSmokeEnabled && !state.currentStatsSmokeRequested) {
       const request = state.wasmRenderer.requestCurrentStats();
       if (request.status !== "requested") {
@@ -1935,10 +1961,22 @@ function renderWasm() {
       raw.gpuOrderPreparationPending ?? raw.tiledPreparationPending,
     );
     const stats = {
-      visible: raw.visibleCount ?? 0,
-      contributor: raw.contributorCount ?? null,
-      drawn: raw.drawnCount ?? 0,
+      visible: raw.visibleCount ?? null,
+      contributor: null,
+      drawn: raw.drawnCount ?? null,
       exactContributorCompaction: raw.exactContributorCompaction ?? null,
+      currentStatsSubmission: raw.currentStatsSubmission ?? "not_requested",
+      currentStatsTicket: raw.currentStatsTicket ?? null,
+      currentStatsPlan: raw.currentStatsPlan ?? null,
+      currentStatsSceneGeneration: raw.currentStatsSceneGeneration ?? null,
+      currentStatsCameraRevision: raw.currentStatsCameraRevision ?? null,
+      currentStatsViewportGeneration: raw.currentStatsViewportGeneration ?? null,
+      currentStatsContractGeneration: raw.currentStatsContractGeneration ?? null,
+      currentStatsPlanSetGeneration: raw.currentStatsPlanSetGeneration ?? null,
+      currentStatsOrderGeneration: raw.currentStatsOrderGeneration ?? null,
+      currentStatsRasterGeneration: raw.currentStatsRasterGeneration ?? null,
+      currentStatsEncodeAttempt: raw.currentStatsEncodeAttempt ?? null,
+      currentStatsPresentationSequence: raw.currentStatsPresentationSequence ?? null,
       preprocessMs: raw.preprocessMs ?? 0,
       sortMs: raw.sortMs ?? 0,
       pipelineMs: (raw.cpuGeometryMs ?? raw.rasterMs ?? 0) + (raw.renderSubmitMs ?? 0),
@@ -2610,6 +2648,10 @@ function createBenchmarkState(enabled) {
     terminalOrderTickets: new Map(),
     orderSubmissionRecords: [],
     orderTerminalRecords: [],
+    issuedCurrentStatsTickets: new Map(),
+    terminalCurrentStatsTickets: new Map(),
+    currentStatsSubmissionRecords: [],
+    currentStatsTerminalRecords: [],
     issuedProjectedTickets: new Map(),
     terminalProjectedTickets: new Map(),
     projectedSubmissionRecords: [],
@@ -2620,6 +2662,8 @@ function createBenchmarkState(enabled) {
     gpuProducerTerminalRecords: [],
     monotonicOrderingWindowEmitted: false,
     pendingOrderSample: null,
+    pendingCurrentStatsSample: null,
+    currentStatsRequestOutstanding: false,
     pendingProjectedSample: null,
     pendingGpuProducerSample: null,
     presentedSubmissionCount: 0,
@@ -2858,6 +2902,30 @@ function recordBenchmark(stats) {
     return;
   }
   benchmark.presentationPending = false;
+  if (stats.rasterExecutionPlan === "projected_quads_exact") {
+    if (stats.currentStatsSubmission === "not_requested"
+        && benchmark.currentStatsRequestOutstanding) {
+      if (stats.currentStatsTicket !== null
+          || stats.submittedMeasurementTicket !== null
+          || stats.submittedMeasurementBackend !== null) {
+        failStrictBenchmarkForOrderEvidence(
+          "deferred renderer current-stats frame exposed ticket identity",
+        );
+      }
+      return;
+    }
+    benchmark.presentedSubmissionCount += 1;
+    if (!trackBenchmarkCurrentStatsSubmission(benchmark, stats)) return;
+    benchmark.pendingCurrentStatsSample = {
+      ticket: stats.currentStatsTicket,
+      stats,
+      traceStep: benchmark.currentTraceStep,
+      priming: benchmark.primingOrder,
+    };
+    benchmark.currentStatsRequestOutstanding = false;
+    benchmark.primingOrder = false;
+    return;
+  }
   benchmark.presentedSubmissionCount += 1;
   if (benchmark.pendingOrderSample) {
     const pending = benchmark.pendingOrderSample;
@@ -2932,7 +3000,213 @@ function recordBenchmark(stats) {
   acceptBenchmarkFrame(benchmark, stats, now, benchmark.currentTraceStep);
 }
 
+function currentStatsIdentityFromFrame(stats) {
+  return {
+    ticket: stats.currentStatsTicket,
+    plan: stats.currentStatsPlan,
+    scene_generation: stats.currentStatsSceneGeneration,
+    camera_revision: stats.currentStatsCameraRevision,
+    viewport_generation: stats.currentStatsViewportGeneration,
+    contract_generation: stats.currentStatsContractGeneration,
+    plan_set_generation: stats.currentStatsPlanSetGeneration,
+    order_generation: stats.currentStatsOrderGeneration,
+    raster_generation: stats.currentStatsRasterGeneration,
+    encode_attempt: stats.currentStatsEncodeAttempt,
+    presentation_sequence: stats.currentStatsPresentationSequence,
+  };
+}
+
+function trackBenchmarkCurrentStatsSubmission(benchmark, stats) {
+  const identity = currentStatsIdentityFromFrame(stats);
+  const countsUnavailable = stats.visible === null && stats.drawn === null;
+  const countsAvailable = Number.isSafeInteger(stats.visible) && stats.visible >= 0
+    && Number.isSafeInteger(stats.drawn) && stats.drawn >= 0;
+  const invalidCountAvailability = stats.visibleCountPending
+    ? !countsUnavailable
+    : !countsAvailable;
+  if (!benchmark.currentStatsRequestOutstanding
+      || stats.currentStatsSubmission !== "issued"
+      || !Number.isSafeInteger(identity.ticket) || identity.ticket <= 0
+      || identity.camera_revision !== stats.cameraRevision
+      || invalidCountAvailability
+      || stats.submittedMeasurementTicket !== null
+      || stats.submittedMeasurementBackend !== null
+      || stats.measurementUnsampledReason !== null) {
+    failStrictBenchmarkForOrderEvidence(
+      `Exact frame lacks an issued renderer current-stats identity or exposed provisional counts ` +
+      `ticket=${identity.ticket} revision=${identity.camera_revision}/${stats.cameraRevision} ` +
+      `visible=${stats.visible} drawn=${stats.drawn} pending=${stats.visibleCountPending}`,
+    );
+    return false;
+  }
+  if (benchmark.issuedCurrentStatsTickets.has(identity.ticket)) {
+    failStrictBenchmarkForOrderEvidence(
+      `duplicate renderer current-stats ticket=${identity.ticket}`,
+    );
+    return false;
+  }
+  const phase = benchmark.primingOrder
+    ? "preflight"
+    : benchmark.observedFrames < benchmark.warmupFrames ? "warmup" : "measured";
+  const record = {
+    run_id: benchmark.collector.runId,
+    ...identity,
+    phase,
+    submitted_at_monotonic_ms: performance.now(),
+  };
+  benchmark.issuedCurrentStatsTickets.set(identity.ticket, record);
+  benchmark.currentStatsSubmissionRecords.push(record);
+  globalThis.GSPLAT_ORDER_LEDGER_COMPLETE = false;
+  console.info(`CURRENT_STATS_SUBMISSION_JSON ${JSON.stringify(record)}`);
+  if (stats.visibleCountPending) {
+    console.info(`CURRENT_STATS_PENDING_FRAME_JSON ${JSON.stringify({
+      run_id: benchmark.collector.runId,
+      ticket: identity.ticket,
+      camera_revision: identity.camera_revision,
+      visible: stats.visible,
+      drawn: stats.drawn,
+      visible_count_pending: true,
+    })}`);
+  }
+  return true;
+}
+
+function exactPlanForFrame(stats) {
+  if (stats.orderBackend === "cpu") return "cpu_post_sort";
+  if (stats.orderBackend === "gpu" && stats.projectedExecution === "compact") {
+    return "gpu_preproject";
+  }
+  if (stats.orderBackend === "gpu") return "gpu_post_sort";
+  return null;
+}
+
+function joinBenchmarkCurrentStatsTerminal(benchmark, pending, terminal) {
+  const issued = benchmark.issuedCurrentStatsTickets.get(pending.ticket);
+  const terminalAtMonotonicMs = performance.now();
+  const terminalRecord = {
+    run_id: benchmark.collector.runId,
+    status: terminal.status,
+    ticket: terminal.ticket,
+    plan: terminal.plan,
+    scene_generation: terminal.sceneGeneration,
+    camera_revision: terminal.cameraRevision,
+    viewport_generation: terminal.viewportGeneration,
+    contract_generation: terminal.contractGeneration,
+    plan_set_generation: terminal.planSetGeneration,
+    order_generation: terminal.orderGeneration,
+    raster_generation: terminal.rasterGeneration,
+    encode_attempt: terminal.encodeAttempt,
+    presentation_sequence: terminal.presentationSequence,
+    count_semantics: terminal.countSemantics ?? null,
+    source_count: terminal.sourceCount ?? null,
+    visible: terminal.visibleCount ?? null,
+    contributor: terminal.contributorCount ?? null,
+    drawn: terminal.drawnCount ?? null,
+    terminal_at_monotonic_ms: terminalAtMonotonicMs,
+  };
+  console.info(`CURRENT_STATS_TERMINAL_JSON ${JSON.stringify(terminalRecord)}`);
+  if (!issued || terminal.status !== "ready") {
+    failStrictBenchmarkForOrderEvidence(
+      `renderer current-stats ticket=${pending.ticket} terminated with ${terminal.status}`,
+    );
+    return null;
+  }
+  const frameIdentity = currentStatsIdentityFromFrame(pending.stats);
+  for (const key of [
+    "ticket", "plan", "scene_generation", "camera_revision", "viewport_generation",
+    "contract_generation", "plan_set_generation", "order_generation", "raster_generation",
+    "encode_attempt", "presentation_sequence",
+  ]) {
+    if (issued[key] !== terminalRecord[key] || frameIdentity[key] !== terminalRecord[key]) {
+      failStrictBenchmarkForOrderEvidence(
+        `renderer current-stats ticket=${pending.ticket} identity mismatch for ${key}`,
+      );
+      return null;
+    }
+  }
+  const exactPlan = exactPlanForFrame(pending.stats);
+  const exactContributorCompaction = terminal.countSemantics === "indirect_draw_equals_contributor";
+  const expectedDrawn = exactContributorCompaction
+    ? terminal.contributorCount
+    : terminal.visibleCount;
+  if (terminal.plan !== exactPlan
+      || terminal.sourceCount !== state.scene?.count
+      || !Number.isSafeInteger(terminal.visibleCount)
+      || !Number.isSafeInteger(terminal.contributorCount)
+      || !Number.isSafeInteger(terminal.drawnCount)
+      || terminal.contributorCount > terminal.visibleCount
+      || terminal.visibleCount > terminal.sourceCount
+      || terminal.drawnCount !== expectedDrawn) {
+    failStrictBenchmarkForOrderEvidence(
+      `renderer current-stats ticket=${pending.ticket} has mismatched plan or invalid S/V/C/D`,
+    );
+    return null;
+  }
+  if (state.requestedGpuOrderProducer !== null) {
+    const requestedPlan = state.requestedGpuOrderProducer === "preproject"
+      ? "gpu_preproject"
+      : "gpu_post_sort";
+    if (terminal.plan !== requestedPlan) {
+      failStrictBenchmarkForOrderEvidence(
+        `renderer current-stats plan ${terminal.plan} does not prove requested producer ` +
+        `${state.requestedGpuOrderProducer}`,
+      );
+      return null;
+    }
+    globalThis.GSPLAT_GPU_PRODUCER_LEDGER_COMPLETE = true;
+  }
+  benchmark.terminalCurrentStatsTickets.set(pending.ticket, terminalRecord);
+  benchmark.currentStatsTerminalRecords.push(terminalRecord);
+  globalThis.GSPLAT_ORDER_LEDGER_COMPLETE =
+    benchmark.issuedCurrentStatsTickets.size > 0
+    && benchmark.terminalCurrentStatsTickets.size === benchmark.issuedCurrentStatsTickets.size;
+  maybeEmitMonotonicOrderingWindow(benchmark);
+  return {
+    ...pending.stats,
+    visible: terminal.visibleCount,
+    contributor: terminal.contributorCount,
+    drawn: terminal.drawnCount,
+    exactContributorCompaction,
+    visibleCountRevision: terminal.cameraRevision,
+    visibleCountPending: false,
+    currentStatsTerminalStatus: terminal.status,
+  };
+}
+
 function pollPendingBenchmarkReceipts(benchmark) {
+  const pendingCurrentStats = benchmark.pendingCurrentStatsSample;
+  if (pendingCurrentStats) {
+    let terminal;
+    try {
+      benchmark.terminalPollCount += 1;
+      terminal = state.wasmRenderer.pollCurrentStats();
+    } catch (error) {
+      failStrictBenchmarkForOrderEvidence(
+        `renderer current-stats poll failed: ${compactMessage(error)}`,
+      );
+      return;
+    }
+    if (terminal.status === "empty") return;
+    if (terminal.status === "unsampled") {
+      failStrictBenchmarkForOrderEvidence(
+        `renderer current-stats poll was unsampled: ${terminal.reason ?? "unknown"}`,
+      );
+      return;
+    }
+    const joined = joinBenchmarkCurrentStatsTerminal(benchmark, pendingCurrentStats, terminal);
+    if (!joined || !benchmark.enabled) return;
+    benchmark.pendingCurrentStatsSample = null;
+    updateFrameStats(joined);
+    updateStatusOverlay(joined);
+    if (pendingCurrentStats.priming) return;
+    acceptBenchmarkFrame(
+      benchmark,
+      joined,
+      performance.now(),
+      pendingCurrentStats.traceStep,
+    );
+    return;
+  }
   const pendingOrder = benchmark.pendingOrderSample;
   const pendingProjected = benchmark.pendingProjectedSample;
   const pendingGpuProducer = benchmark.pendingGpuProducerSample;
@@ -3286,6 +3560,19 @@ function accumulateBenchmark(
       stats.completedExactContributorCompaction ?? null,
     visibleCountRevision: stats.visibleCountRevision ?? null,
     visibleCountPending: Boolean(stats.visibleCountPending),
+    currentStatsSubmission: stats.currentStatsSubmission ?? "not_requested",
+    currentStatsTicket: stats.currentStatsTicket ?? null,
+    currentStatsPlan: stats.currentStatsPlan ?? null,
+    currentStatsSceneGeneration: stats.currentStatsSceneGeneration ?? null,
+    currentStatsCameraRevision: stats.currentStatsCameraRevision ?? null,
+    currentStatsViewportGeneration: stats.currentStatsViewportGeneration ?? null,
+    currentStatsContractGeneration: stats.currentStatsContractGeneration ?? null,
+    currentStatsPlanSetGeneration: stats.currentStatsPlanSetGeneration ?? null,
+    currentStatsOrderGeneration: stats.currentStatsOrderGeneration ?? null,
+    currentStatsRasterGeneration: stats.currentStatsRasterGeneration ?? null,
+    currentStatsEncodeAttempt: stats.currentStatsEncodeAttempt ?? null,
+    currentStatsPresentationSequence: stats.currentStatsPresentationSequence ?? null,
+    currentStatsTerminalStatus: stats.currentStatsTerminalStatus ?? null,
     surfaceWidth: stats.surfaceWidth ?? null,
     surfaceHeight: stats.surfaceHeight ?? null,
     internalRenderWidth: stats.internalRenderWidth ?? null,
@@ -3557,6 +3844,20 @@ async function emitBenchmarkArtifacts(benchmark) {
       measurement_unsampled_reason: receipt?.measurementUnsampledReason ?? null,
       visible_count_revision: receipt?.visibleCountRevision ?? null,
       visible_count_pending: receipt?.visibleCountPending ?? false,
+      current_stats_submission: receipt?.currentStatsSubmission ?? "not_requested",
+      current_stats_ticket: receipt?.currentStatsTicket ?? null,
+      current_stats_plan: receipt?.currentStatsPlan ?? null,
+      current_stats_scene_generation: receipt?.currentStatsSceneGeneration ?? null,
+      current_stats_camera_revision: receipt?.currentStatsCameraRevision ?? null,
+      current_stats_viewport_generation: receipt?.currentStatsViewportGeneration ?? null,
+      current_stats_contract_generation: receipt?.currentStatsContractGeneration ?? null,
+      current_stats_plan_set_generation: receipt?.currentStatsPlanSetGeneration ?? null,
+      current_stats_order_generation: receipt?.currentStatsOrderGeneration ?? null,
+      current_stats_raster_generation: receipt?.currentStatsRasterGeneration ?? null,
+      current_stats_encode_attempt: receipt?.currentStatsEncodeAttempt ?? null,
+      current_stats_presentation_sequence:
+        receipt?.currentStatsPresentationSequence ?? null,
+      current_stats_terminal_status: receipt?.currentStatsTerminalStatus ?? null,
       completed_measurement_ticket: receipt?.completedMeasurementTicket ?? null,
       completed_measurement_revision: receipt?.completedMeasurementRevision ?? null,
       completed_measurement_timing_source: receipt?.completedMeasurementTimingSource ?? null,
@@ -3599,10 +3900,12 @@ function updateFrameStats(stats) {
 }
 
 function updateStatusOverlay(stats) {
+  const visible = stats.visible == null ? "unavailable" : stats.visible;
+  const drawn = stats.drawn == null ? "unavailable" : stats.drawn;
   if (window.innerWidth < 620) {
     state.rendererStatus = [
       `state=rendering frames=${state.frameCounter}`,
-      `visible=${stats.visible} drawn=${stats.drawn}/${stats.visible}`,
+      `visible=${visible} drawn=${drawn}/${visible}`,
       `projected=${stats.projectedPolicy}/${stats.projectedExecution} state=${stats.projectedAdaptiveState}`,
       `frame=${stats.frameMs.toFixed(2)}ms preprocess=${stats.preprocessMs.toFixed(2)}ms`,
       `sort=${stats.sortMs.toFixed(2)}ms geometry_submit=${stats.pipelineMs.toFixed(2)}ms call=${stats.callMs.toFixed(2)}ms`,
@@ -3610,7 +3913,7 @@ function updateStatusOverlay(stats) {
   } else {
     state.rendererStatus =
       `state=rendering frames=${state.frameCounter} ` +
-      `visible=${stats.visible} drawn=${stats.drawn}/${stats.visible} ` +
+      `visible=${visible} drawn=${drawn}/${visible} ` +
       `projected=${stats.projectedPolicy}/${stats.projectedExecution} ` +
       `projected_state=${stats.projectedAdaptiveState} ` +
       `frame=${stats.frameMs.toFixed(2)}ms preprocess=${stats.preprocessMs.toFixed(2)}ms ` +
@@ -3758,6 +4061,7 @@ function formatCompact(value) {
 }
 
 function formatNumber(value) {
+  if (value == null) return "Unavailable";
   return new Intl.NumberFormat("en-US").format(value);
 }
 

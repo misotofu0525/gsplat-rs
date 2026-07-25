@@ -1266,6 +1266,10 @@ fn frame_stats_object(
     failed_gpu_producer_measurements: &[SurfaceGpuProducerMeasurementFailure],
 ) -> Result<JsValue, JsValue> {
     let stats: FrameStats = output.stats;
+    let current_visible_count =
+        (output.frame_presented && !output.visible_count_pending).then_some(stats.visible_count);
+    let current_drawn_count =
+        (output.frame_presented && !output.visible_count_pending).then_some(stats.drawn_count);
     let timings = output.timings;
     let object = Object::new();
     set_current_stats_submission_fields(&object, current_stats_submission)?;
@@ -1296,8 +1300,8 @@ fn frame_stats_object(
             SurfaceRasterExecutionPlan::TiledExact => "tiled_exact",
         },
     )?;
-    set_u32(&object, "visibleCount", stats.visible_count)?;
-    set_u32(&object, "drawnCount", stats.drawn_count)?;
+    set_optional_u32(&object, "visibleCount", current_visible_count)?;
+    set_optional_u32(&object, "drawnCount", current_drawn_count)?;
     set_bool(&object, "refreshSort", output.sort_refreshed)?;
     set_string(
         &object,
@@ -2321,6 +2325,13 @@ fn set_u32(object: &Object, key: &str, value: u32) -> Result<(), JsValue> {
         &JsValue::from_f64(value as f64),
     )
     .map(|_| ())
+}
+
+fn set_optional_u32(object: &Object, key: &str, value: Option<u32>) -> Result<(), JsValue> {
+    match value {
+        Some(value) => set_u32(object, key, value),
+        None => set_null(object, key),
+    }
 }
 
 fn set_bool(object: &Object, key: &str, value: bool) -> Result<(), JsValue> {

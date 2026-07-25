@@ -22,10 +22,10 @@ Browser WebAssembly bindings for the shared Rust `wgpu` Surface renderer.
   shared Exact runtime owns the complete Packed plan, policy, cache generations,
   order/raster publication, and current-stats receipts. The WASM crate is only
   a compatibility/translation boundary; it has no Web-only renderer controller.
-- Each `renderFrame` result drains the complete queue of newly finished GPU
-  order measurements. The ESM layer exposes that queue as
-  `completedOrderMeasurements`; ticket and camera revision are both required
-  when joining asynchronous evidence to submitted frames.
+- Each `renderFrame` result retains the legacy order-measurement fields for
+  compatibility, but renderer-owned Exact Packed frames do not manufacture a
+  legacy order ticket. Exact benchmark evidence joins `requestCurrentStats`
+  submissions to `pollCurrentStats` terminals instead.
 - Raw `setProjectedPolicy(0|1|2)` remains a compatibility input for Candidate,
   Compact, or Adaptive, but the session validates it as part of one closed
   Exact plan. There is no browser-local projected learner.
@@ -55,6 +55,8 @@ Browser WebAssembly bindings for the shared Rust `wgpu` Surface renderer.
 - `requestCurrentStats` and `pollCurrentStats` expose the renderer/session's
   non-blocking Exact observer receipt. WASM translates its identity and
   `S/V/C/D` semantics without owning a second ticket or generation ledger.
+  Pending indirect V/D counts serialize as JavaScript `null`; only a matching
+  renderer terminal may populate them.
 - It is not part of the stable v0.1 public contract. Web changes must pass the
   WebGPU/WASM smoke path in `handbook/VERIFICATION.md` before completion is
   claimed.
