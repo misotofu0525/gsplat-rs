@@ -2395,6 +2395,12 @@ pub unsafe extern "C" fn gsplat_surface_renderer_set_sort_interval(
 /// `GSPLAT_GEOMETRY_PATH_PAGED_ACTIVE_ATLAS` (2). This is an experimental A/B
 /// benchmark knob. Mobile constructors default to the exact packed path;
 /// Direct remains the wide-float oracle and Paged is diagnostic-only.
+/// Construction may select any of the three paths. At runtime, a same-path
+/// call is idempotent; any transition entering or leaving Packed returns
+/// [`ErrorCode::Unsupported`] before resource preparation or state mutation.
+/// Native Direct/Paged changes retain their existing transactional rule, so a
+/// failed target preparation leaves the published path live. Packed upload
+/// handoff is not reversible.
 ///
 /// # Safety
 ///

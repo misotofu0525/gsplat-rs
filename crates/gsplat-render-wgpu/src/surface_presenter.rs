@@ -769,11 +769,10 @@ fn surface_required_device_limits(
             && adapter_limits.max_storage_buffers_per_shader_stage
                 >= resident_gpu::RESIDENT_COLOR_STORAGE_BINDINGS)
     {
-        // A Direct presenter may transactionally move to full-resident Packed
-        // later, but WebGPU device limits cannot be raised after creation.
-        // Reserve the binding-count capability only when the adapter already
-        // exposes it; lower-capability Direct devices still construct and the
-        // later Packed request fails explicitly.
+        // Preserve the historical Direct device-limit request when the adapter
+        // already exposes Packed's binding-count capability. A live transition
+        // entering or leaving Packed is unsupported before resource preparation
+        // or state mutation. Lower-capability Direct devices still construct.
         required_limits.max_storage_buffers_per_shader_stage = required_limits
             .max_storage_buffers_per_shader_stage
             .max(resident_gpu::RESIDENT_COLOR_STORAGE_BINDINGS);

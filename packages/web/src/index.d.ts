@@ -505,14 +505,14 @@ export class GsplatWebRenderer {
   pan(normalizedDeltaX: number, normalizedDeltaY: number): void;
   setSortInterval(interval: number): void;
   /**
-   * Legacy compatibility entrypoint. Native same-path calls are idempotent;
-   * changed-path calls fail closed instead of performing a synchronous switch.
+   * Legacy compatibility entrypoint. Geometry is selected at construction;
+   * same-path calls are idempotent, while every changed Web path request fails
+   * as Unsupported before resource preparation or mutation.
    */
   setGeometryPath(path: "direct" | "packed" | "paged"): void;
   /**
-   * Request a transactional Direct/Packed switch after native publication.
-   * Packed streams may reject a later Direct request when wide source planes
-   * were intentionally not retained; the previously published path survives.
+   * Async-shaped compatibility entrypoint with the same constructor-only
+   * runtime contract. It never performs or promises a reversible Packed handoff.
    */
   setGeometryPathAsync(path: "direct" | "packed" | "paged"): Promise<void>;
   setOrderBackend(backend: "cpu" | "gpu" | "adaptive"): void;

@@ -707,10 +707,14 @@ int32_t gsplat_surface_renderer_set_order_backend(
     GsplatSurfaceRenderer *renderer,
     uint32_t backend);
 /*
- * Experimental A/B benchmark knob: switch between the exact packed resident
- * path (the mobile-constructor default), direct wide-float oracle, and
- * diagnostic local-source paged active atlas. `path` is a GsplatGeometryPath
- * value. May change before a published mobile SDK.
+ * Experimental A/B benchmark knob. Direct, Packed, and Paged may be selected
+ * by the geometry-path constructors. At runtime, a same-path call is
+ * idempotent; any transition entering or leaving Packed returns
+ * GSPLAT_ERROR_UNSUPPORTED before resource preparation or state mutation.
+ * Native Direct/Paged changes retain their existing transactional rule: failed
+ * target preparation leaves the published path live. Packed upload handoff is
+ * not reversible. `path` is a GsplatGeometryPath value. May change before a
+ * published mobile SDK.
  */
 int32_t gsplat_surface_renderer_set_geometry_path(
     GsplatSurfaceRenderer *renderer,

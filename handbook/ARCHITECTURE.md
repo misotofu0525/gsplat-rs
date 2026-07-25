@@ -179,9 +179,13 @@
   crosses `crates/gsplat-ffi-c/include/gsplat.h` and `crates/gsplat-ffi-c/src/lib.rs`
   maps active v0.1 controls onto `SurfaceRenderSession`; additive experimental
   constructors can select Direct, full-resident Packed, or local Paged before
-  scene derivation and Surface allocation; runtime geometry/backend setters
-  preserve the old session when target preparation returns an error; native
-  async CPU sorting and lazy GPU-order creation stay behind the shared session
+  scene derivation and Surface allocation; runtime geometry setters are
+  same-path idempotent, return `Unsupported` for any transition entering or
+  leaving Packed before resource preparation or mutation, and keep the existing
+  transactional Direct/Paged rule, where failed target preparation preserves
+  the old session. Runtime backend setters follow their existing transactional
+  rules; native async CPU sorting and lazy GPU-order creation stay behind the
+  shared session
   exposes exactness, adapter-limit, requested/actual backend, and completed GPU
   order receipts without moving scheduling policy into JNI or Swift; the
   versioned read-only camera receipt derives canonical matrices from the live
@@ -236,12 +240,12 @@
   creates a browser canvas `wgpu::Surface` through `SurfacePresenter::from_canvas`
   hands both objects to `SurfaceRenderSession`, so the browser wrapper does not
   own a second frame scheduler or sorted-index copy
-  prepares GPU-order resources, Direct/Packed runtime geometry changes, and
-  production Packed + Projected Surface resizes through raw async wasm
-  transactions; geometry CPU derivations and complete target GPU graphs stay
-  unpublished until validation/OOM/internal scopes complete, changed-path
-  synchronous setters fail closed, and Paged remains a constructor-time-only
-  diagnostic; resize failure restores the old Surface configuration, while
+  prepares GPU-order resources and production Packed + Projected Surface
+  resizes through raw async wasm transactions; Direct, Packed, and Paged are
+  construction-time choices, same-path geometry calls are idempotent, and any
+  changed Web geometry request fails as `Unsupported` before resource
+  preparation or mutation. Paged remains a diagnostic; resize failure restores
+  the old Surface configuration, while
   rollback failure makes presentation fail closed
   CPU and GPU order feed the same Resident draw path; Adaptive measures both
   using the shared policy
