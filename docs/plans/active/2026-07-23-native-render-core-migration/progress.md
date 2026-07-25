@@ -18,6 +18,7 @@ M2 = Accepted
 M3 = Accepted
 M4 = Accepted
 M5 = Accepted
+M6 = Accepted
 <!-- gsplat-program-task-states: end -->
 
 ## Package status
@@ -35,11 +36,14 @@ M5 = Accepted
 - M4 state: Accepted for its defined Chrome/WebGPU/WASM consumer scope.
 - M5 state: Accepted for its defined Android/JNI/AAR consumer and A065 strict
   evidence scope. See [M5 Android strict evidence closeout](m5-android-strict-evidence.md).
+- M6 state: Accepted for the defined Apple/GsplatKit/XCFramework functional
+  consumer scope. Physical-iPhone qualification remains explicit Deferred; see
+  [M6 Apple functional evidence closeout](m6-apple-functional-evidence.md).
 - Product state at M2 activation: native Packed offscreen, desktop
   non-interactive and bench-runner use the Exact runtime; the interactive
   `SurfaceRenderSession` remains legacy until its complete M2 candidate is
   accepted.
-- Unstarted tasks: M6, M7 and M8. They are pending in roadmap order and are not
+- Unstarted tasks: M7 and M8. They are pending in roadmap order and are not
   active machine-state entries. Package M therefore remains Active.
 - Stable v0.1 signatures/layouts, Web behavior and rendered semantics remain
   frozen during M2. Additive current-stats v1 receipts and pending-compatible
@@ -590,3 +594,20 @@ M5 = Accepted
 - Resource, power, sustained-thermal, CPU/GPU winner and PlayCanvas claims are
   unverified. All retained `target/` paths are temporary machine-local evidence;
   Git contains no model, PNG, APK, AAR or native library.
+
+## M6 closeout
+
+- Final state: Accepted for the defined Apple/GsplatKit/XCFramework functional
+  consumer scope at `8022841957a196824eb9669c477f11ce91d2aab1`.
+- CPU and Adaptive are retained Simulator functional/capacity runs at the
+  canonical 2622x1206 Kitsune SH3 configuration. Forced GPU is explicitly
+  Deferred because the Simulator rejects the backend as unsupported; it was
+  neither substituted nor published as a valid artifact.
+- Root independently passed the packaged XCFramework/Swift tests, lifecycle and
+  collector tests, two artifact validator triplets, and the two-cell
+  full-quality suite with freshly verified inputs. No physical iPhone is
+  attached, so physical-device qualification remains Deferred rather than being
+  represented by Simulator timing.
+- The complete identity, receipt, validator and boundary record is
+  [M6 Apple functional evidence closeout](m6-apple-functional-evidence.md).
+- Package M remains Active; M7 and M8 are still pending.
