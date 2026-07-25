@@ -16,6 +16,7 @@ M0 = Accepted
 M1 = Accepted
 M2 = Accepted
 M3 = Accepted
+M4 = Active
 <!-- gsplat-program-task-states: end -->
 
 ## Package status
@@ -515,3 +516,22 @@ M3 = Accepted
   M3 is therefore accepted for its defined C ABI cutover scope. This does not
   claim a fresh real-window or physical Android/iOS qualification: those remain
   explicit later M5/M6 evidence obligations.
+- **M4 browser code cutover: integrated; formal qualification remains active.**
+  Root integrated the independently reviewed Web/WASM Exact-session candidate
+  `bfeefa8153e52806e281bca118e9b048a3b1ba0a` as `54ed237`, then the separately
+  reviewed current-stats repair
+  `3685300d8f298e7f0ea461a7d72f40f6a0e2bfe5` as `54baa69`. The first review
+  rejected the initial candidate because the retained Web collector still
+  required a retired legacy order ticket and exposed pending indirect V/D as
+  numeric zero. The repair moves strict artifact admission to renderer-owned
+  current-stats submissions and matching generation-, camera-, encode- and
+  presentation-bound terminals; pending V/D now remains unavailable through
+  Surface, WASM, JS and artifact records. Root and the independent reviewer
+  each reproduced adaptive and forced-GPU Chrome/WebGPU minimal artifacts:
+  terminals matched their submissions, legacy ledgers remained empty, and
+  forced-GPU pending V/D was `null` before its terminal arrived. Root's fresh
+  collector artifact at `target/benchmarks/root-m4-current-stats-v2` passed
+  the repository validator. These are functional regression checks only. M4
+  remains Active until a separate visible task retains and validates the
+  frozen 1920x1080 Kitsune SH3 Web suite; neither minimal smoke nor a local
+  Chrome run is a competitor, performance, or multi-device qualification.
