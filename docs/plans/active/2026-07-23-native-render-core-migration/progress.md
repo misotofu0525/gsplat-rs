@@ -399,3 +399,14 @@ M2 = Active
   producer evidence, M2b capture and platform consumers did not change.
 - The fixed M2p4 integration tip is recorded by this closeout commit. M2b may
   begin only from that tip and must remain a separate visible task.
+- **M2b provisional review: Rejected.** Candidate
+  `60b5e929edbdfe3086306dbc25335d9d56ca42bb` correctly keeps renderer policy,
+  ticket allocation, count readback and terminal publication in the existing
+  Surface runtime. Its retained four-arm Apple M4 Metal suite is internally
+  consistent, but it is not accepted as canonical evidence: the collector can
+  label a caller-supplied stale executable as the clean source SHA, admits
+  arbitrary SH3 workloads/traces/schedules, and emits capture paths that die
+  after staging is atomically renamed. A separate visible repair task must
+  bind the executable and canonical workload, make published raw logs
+  self-revalidating, and add fail-closed mutation coverage before root repeats
+  fixed-SHA review or considers integration.
