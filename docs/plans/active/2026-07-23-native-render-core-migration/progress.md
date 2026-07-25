@@ -16,7 +16,7 @@ M0 = Accepted
 M1 = Accepted
 M2 = Accepted
 M3 = Accepted
-M4 = Active
+M4 = Accepted
 <!-- gsplat-program-task-states: end -->
 
 ## Package status
@@ -516,7 +516,7 @@ M4 = Active
   M3 is therefore accepted for its defined C ABI cutover scope. This does not
   claim a fresh real-window or physical Android/iOS qualification: those remain
   explicit later M5/M6 evidence obligations.
-- **M4 browser code cutover: integrated; formal qualification remains active.**
+- **M4 browser WebGPU/WASM consumer: Accepted.**
   Root integrated the independently reviewed Web/WASM Exact-session candidate
   `bfeefa8153e52806e281bca118e9b048a3b1ba0a` as `54ed237`, then the separately
   reviewed current-stats repair
@@ -531,7 +531,22 @@ M4 = Active
   terminals matched their submissions, legacy ledgers remained empty, and
   forced-GPU pending V/D was `null` before its terminal arrived. Root's fresh
   collector artifact at `target/benchmarks/root-m4-current-stats-v2` passed
-  the repository validator. These are functional regression checks only. M4
-  remains Active until a separate visible task retains and validates the
-  frozen 1920x1080 Kitsune SH3 Web suite; neither minimal smoke nor a local
-  Chrome run is a competitor, performance, or multi-device qualification.
+  the repository validator. These are functional regression checks only.
+- Root then integrated the focused moving-trace receipt repairs as `4200199`
+  and `31d8aff`, followed by the formal artifact telemetry repair as
+  `68651f659d9b97e3ef2fe2149feabbd1073b8b31`. The latter serializes only
+  complete per-frame receipt facts: the retained Adaptive run has 80 measured
+  frames, seven CPU selections, 73 GPU selections, and zero GPU-sort
+  fallbacks. The values sum to the sample count; they are not inferred from a
+  requested policy.
+- At `68651f6`, root rebuilt the Web/WASM package, reran the frozen Kitsune
+  SH3 Packed Exact collector (1920x1080, trace `[0,1]`, 20 warmup and 80
+  measured frames), and validated both the `gsplat-benchmark/v1` artifact and
+  a task-local `gsplat-full-quality-experiment/v1` suite with
+  `--verify-inputs`. The suite retained one rendered cell, all 279,199 source
+  SH3 splats, full declared/presented resolution, final-image hash
+  `7ac2611619ef39482f7e77a5492b1844945006282e555872023c4ac6fc256247`, and
+  `sort_refreshed=true` for all 80 ticketed moving-trace frames.
+- This accepts M4 only as one Chrome/WebGPU browser-consumer migration and
+  formal functional/quality receipt. It is not a PlayCanvas comparison,
+  multi-browser result, cross-device claim, or general performance claim.
