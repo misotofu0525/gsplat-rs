@@ -48,6 +48,10 @@ M2 = Active
   worktree, fixed accepted base, narrow owned paths and one reviewable
   candidate SHA. Concrete program work is never delegated through the
   collaboration-subagent mechanism: it belongs to a visible task/thread.
+- This applies without exception to follow-up repairs and small verification
+  fixes: creating a task is not optional merely because the change is narrow.
+  The root task may inspect, integrate and run final gates, but it does not
+  hand a concrete code, test, review or experiment slice to a subagent.
 - This visible-task rule is part of the active goal, not a temporary scheduling
   preference. Every later task brief must carry it forward; omitting it does
   not authorize concrete work in a subagent.
