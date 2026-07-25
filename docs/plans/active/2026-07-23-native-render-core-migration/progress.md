@@ -475,3 +475,14 @@ M3 = Active
   renderer Clippy, architecture policy and WASM renderer check. This is still
   not M3 completion: M3c must delete FFI-side duplicate queues and translate
   the unchanged C ABI directly from this renderer-owned seam.
+- **M3b field-completeness repair: Accepted and integrated.** The first M3c
+  task correctly stopped before editing when it found that its frozen C order
+  terminal layouts need GPU visible/drawn and CPU contributor counts without
+  consuming the independent ticket-count receipt. A separate visible renderer
+  repair candidate `c4855664bb758879e058c0a78573b01b9c9bbf38` was independently
+  accepted with no P0/P1/P2 and integrated as `d696cb3`. It copies exactly
+  those immutable payload fields into the two order-success DTOs and tests
+  both poll-before-take and take-before-poll. No FFI mirror state was retained
+  or reintroduced. Root reran formatter, the 13 compatibility tests, renderer
+  check and strict Clippy, architecture self-tests/policy and diff checks.
+  M3c must restart from this repaired base.
