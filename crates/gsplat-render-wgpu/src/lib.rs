@@ -61,6 +61,19 @@ pub use data::{
     RESIDENT_SH_WORDS_PER_PLANE, ResidentChunkMeta, ResidentColorAux, ResidentCovariance0,
     ResidentCovariance1, ResidentPositionAlpha, ResidentShPlane,
 };
+pub use evidence::{
+    SurfaceCompatibilityChannel, SurfaceCompatibilityCountFamily, SurfaceCompatibilityCounts,
+    SurfaceCompatibilityCountsTake, SurfaceCompatibilityCountsUnavailable,
+    SurfaceCompatibilityCountsUnavailableReason, SurfaceCompatibilityOrderCpuSuccess,
+    SurfaceCompatibilityOrderFailure, SurfaceCompatibilityOrderGpuSuccess,
+    SurfaceCompatibilityOrderIssueContext, SurfaceCompatibilityOrderSubmission,
+    SurfaceCompatibilityProducerFailure, SurfaceCompatibilityProducerIssueContext,
+    SurfaceCompatibilityProducerSubmission, SurfaceCompatibilityProducerSuccess,
+    SurfaceCompatibilityProjectedFailure, SurfaceCompatibilityProjectedIssueContext,
+    SurfaceCompatibilityProjectedSubmission, SurfaceCompatibilityProjectedSuccess,
+    SurfaceCompatibilitySubmission, SurfaceCompatibilityTerminal, SurfaceCompatibilityTerminalPoll,
+    SurfaceCompatibilityTerminalSelector, SurfaceCompatibilityTerminalUnavailable,
+};
 pub use gpu_error::ResidentGpuError;
 pub use gpu_producer_telemetry::{
     SurfaceGpuOrderProducer, SurfaceGpuProducerDrawScope, SurfaceGpuProducerMeasurement,

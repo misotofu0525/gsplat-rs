@@ -1,13 +1,19 @@
 use gsplat_core::{Camera, FrameStats};
+#[cfg(test)]
 use std::collections::VecDeque;
+use std::num::NonZeroU64;
 
 #[cfg(not(target_arch = "wasm32"))]
 use crate::SurfaceFrameCapture;
 pub use crate::api::SurfaceOrderBackendUsed;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::cpu_order::NativeCpuOrderWorker;
-use crate::evidence::BoundedEvidenceRing;
+use crate::evidence::CompatibilityEvidenceStore;
 pub use crate::evidence::{
+    SurfaceCompatibilityChannel, SurfaceCompatibilityCountFamily, SurfaceCompatibilityCountsTake,
+    SurfaceCompatibilityOrderSubmission, SurfaceCompatibilityProducerSubmission,
+    SurfaceCompatibilityProjectedSubmission, SurfaceCompatibilitySubmission,
+    SurfaceCompatibilityTerminalPoll, SurfaceCompatibilityTerminalSelector,
     SurfaceGpuProducerMeasurementSubmission, SurfaceGpuProducerMeasurementUnsampledReason,
     SurfaceOrderMeasurementSubmission, SurfaceOrderMeasurementUnsampledReason,
     SurfaceProjectedDrawMeasurementSubmission, SurfaceProjectedDrawMeasurementUnsampledReason,
@@ -1329,6 +1335,7 @@ fn reset_adaptive_for_gpu_producer_measurement_transition(
     *blocked_order_choice = None;
 }
 
+#[cfg(test)]
 fn retain_gpu_producer_terminal<T>(queue: &mut VecDeque<T>, terminal: T) {
     queue.push_back(terminal);
 }
@@ -1731,14 +1738,7 @@ pub struct SurfaceRenderSession {
     last_stats: FrameStats,
     latest_cpu_order_measurement: Option<SurfaceCpuOrderMeasurement>,
     latest_gpu_order_measurement: Option<SurfaceOrderMeasurement>,
-    completed_cpu_order_measurements: BoundedEvidenceRing<SurfaceCpuOrderMeasurement>,
-    completed_order_measurements: BoundedEvidenceRing<SurfaceOrderMeasurement>,
-    completed_order_measurement_failures: BoundedEvidenceRing<SurfaceOrderMeasurementFailure>,
-    completed_projected_draw_measurements: BoundedEvidenceRing<SurfaceProjectedDrawMeasurement>,
-    completed_projected_draw_measurement_failures:
-        BoundedEvidenceRing<SurfaceProjectedDrawMeasurementFailure>,
-    completed_gpu_producer_measurements: VecDeque<SurfaceGpuProducerMeasurement>,
-    completed_gpu_producer_measurement_failures: VecDeque<SurfaceGpuProducerMeasurementFailure>,
+    compatibility: CompatibilityEvidenceStore,
     #[cfg(not(target_arch = "wasm32"))]
     async_sort_enabled: bool,
     #[cfg(not(target_arch = "wasm32"))]
@@ -1892,13 +1892,7 @@ impl SurfaceRenderSession {
         // Prepare the only eagerly allocated session-owned collection before
         // staging release. Nothing after the handoff below allocates or can
         // fail before the completed session value is returned.
-        let completed_order_measurements = BoundedEvidenceRing::new();
-        let completed_cpu_order_measurements = BoundedEvidenceRing::new();
-        let completed_order_measurement_failures = BoundedEvidenceRing::new();
-        let completed_projected_draw_measurements = BoundedEvidenceRing::new();
-        let completed_projected_draw_measurement_failures = BoundedEvidenceRing::new();
-        let completed_gpu_producer_measurements = VecDeque::with_capacity(64);
-        let completed_gpu_producer_measurement_failures = VecDeque::with_capacity(64);
+        let compatibility = CompatibilityEvidenceStore::new();
 
         // Native Packed activates one complete Exact Scene/PlanSet/Raster
         // candidate against the presenter's existing device and queue. Only
@@ -1969,13 +1963,7 @@ impl SurfaceRenderSession {
             last_stats: FrameStats::zero(),
             latest_cpu_order_measurement: None,
             latest_gpu_order_measurement: None,
-            completed_cpu_order_measurements,
-            completed_order_measurements,
-            completed_order_measurement_failures,
-            completed_projected_draw_measurements,
-            completed_projected_draw_measurement_failures,
-            completed_gpu_producer_measurements,
-            completed_gpu_producer_measurement_failures,
+            compatibility,
             #[cfg(not(target_arch = "wasm32"))]
             async_sort_enabled: false,
             #[cfg(not(target_arch = "wasm32"))]
@@ -2912,43 +2900,71 @@ impl SurfaceRenderSession {
         let _ = self.collect_gpu_producer_measurements();
     }
 
+    /// Returns the last successful render call's immutable submission identity
+    /// for one legacy compatibility channel.
+    pub fn compatibility_submission(
+        &self,
+        channel: SurfaceCompatibilityChannel,
+    ) -> Option<SurfaceCompatibilitySubmission> {
+        self.compatibility.submission(channel)
+    }
+
+    /// Drains one selected terminal without blocking. A terminal already in
+    /// the selected queue is consumed before completion callbacks may advance.
+    pub fn poll_compatibility_terminal(
+        &mut self,
+        selector: SurfaceCompatibilityTerminalSelector,
+    ) -> SurfaceCompatibilityTerminalPoll {
+        if self.compatibility.terminal_is_empty(selector) {
+            self.poll_order_measurement_receipts();
+        }
+        self.compatibility.poll_terminal(selector)
+    }
+
+    /// Takes one successful order/projected V/C/D receipt by non-zero ticket.
+    /// Counts remain independent of terminal-success consumption and are
+    /// returned at most once before explicit bounded expiry.
+    pub fn take_compatibility_counts(
+        &mut self,
+        family: SurfaceCompatibilityCountFamily,
+        ticket: NonZeroU64,
+    ) -> SurfaceCompatibilityCountsTake {
+        self.compatibility.take_counts(family, ticket)
+    }
+
     /// Drains completed CPU order measurements in ticket order.
     pub fn drain_cpu_order_measurements(&mut self) -> Vec<SurfaceCpuOrderMeasurement> {
-        self.completed_cpu_order_measurements.drain().collect()
+        self.compatibility.drain_cpu_order()
     }
 
     /// Drains exact asynchronous GPU timing/count receipts in ticket order.
     pub fn drain_order_measurements(&mut self) -> Vec<SurfaceOrderMeasurement> {
-        self.completed_order_measurements.drain().collect()
+        self.compatibility.drain_gpu_order()
     }
 
     /// Drains terminal failure receipts for issued GPU measurement tickets.
     pub fn drain_order_measurement_failures(&mut self) -> Vec<SurfaceOrderMeasurementFailure> {
-        self.completed_order_measurement_failures.drain().collect()
+        self.compatibility.drain_order_failures()
     }
 
     pub fn drain_projected_draw_measurements(&mut self) -> Vec<SurfaceProjectedDrawMeasurement> {
-        self.completed_projected_draw_measurements.drain().collect()
+        self.compatibility.drain_projected_successes()
     }
 
     pub fn drain_projected_draw_measurement_failures(
         &mut self,
     ) -> Vec<SurfaceProjectedDrawMeasurementFailure> {
-        self.completed_projected_draw_measurement_failures
-            .drain()
-            .collect()
+        self.compatibility.drain_projected_failures()
     }
 
     pub fn drain_gpu_producer_measurements(&mut self) -> Vec<SurfaceGpuProducerMeasurement> {
-        self.completed_gpu_producer_measurements.drain(..).collect()
+        self.compatibility.drain_producer_successes()
     }
 
     pub fn drain_gpu_producer_measurement_failures(
         &mut self,
     ) -> Vec<SurfaceGpuProducerMeasurementFailure> {
-        self.completed_gpu_producer_measurement_failures
-            .drain(..)
-            .collect()
+        self.compatibility.drain_producer_failures()
     }
 
     pub fn force_sort_refresh(&mut self) {
@@ -2999,16 +3015,62 @@ impl SurfaceRenderSession {
     pub fn render_frame(&mut self) -> Result<SurfaceFrameOutput, RendererError> {
         #[cfg(not(target_arch = "wasm32"))]
         if self.exact_plan_state().is_some() {
-            return self.render_frame_exact();
+            let result = self.render_frame_exact();
+            if let Ok(output) = &result {
+                self.observe_compatibility_submissions(*output);
+            }
+            return result;
         }
         #[cfg(not(target_arch = "wasm32"))]
         if self.async_sort_enabled
             && self.order_backend == SurfaceOrderBackend::Cpu
             && self.geometry_path() != GeometryPath::PagedActiveAtlas
         {
-            return self.render_frame_async_sort();
+            let result = self.render_frame_async_sort();
+            if let Ok(output) = &result {
+                self.observe_compatibility_submissions(*output);
+            }
+            return result;
         }
-        self.render_frame_sync()
+        let result = self.render_frame_sync();
+        if let Ok(output) = &result {
+            self.observe_compatibility_submissions(*output);
+        }
+        result
+    }
+
+    fn observe_compatibility_submissions(&mut self, output: SurfaceFrameOutput) {
+        let sampled_producer = match output.gpu_producer_measurement_submission {
+            SurfaceGpuProducerMeasurementSubmission::Issued { producer, .. }
+            | SurfaceGpuProducerMeasurementSubmission::Unsampled { producer, .. } => Some(producer),
+            SurfaceGpuProducerMeasurementSubmission::NotRequested => None,
+        };
+        self.compatibility.observe_submissions(
+            SurfaceCompatibilityOrderSubmission {
+                camera_revision: output.camera_revision,
+                requested_backend: self.order_backend(),
+                actual_backend: output.order_backend,
+                adaptive_state: output.adaptive_state,
+                measurement: output.order_measurement_submission,
+            },
+            SurfaceCompatibilityProjectedSubmission {
+                camera_revision: output.camera_revision,
+                requested_policy: output.projected_draw_policy,
+                actual_execution: output.projected_draw_execution,
+                order_backend: output.order_backend,
+                adaptive_state: output.projected_draw_adaptive_state,
+                measurement: output.projected_draw_measurement_submission,
+            },
+            SurfaceCompatibilityProducerSubmission {
+                camera_revision: output.camera_revision,
+                requested_producer: self.gpu_order_producer(),
+                actual_producer: output.gpu_order_producer.or(sampled_producer),
+                order_backend: output.order_backend,
+                projected_execution: output.projected_draw_execution,
+                measurement_enabled: self.gpu_producer_measurement_enabled,
+                measurement: output.gpu_producer_measurement_submission,
+            },
+        );
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -3558,7 +3620,7 @@ impl SurfaceRenderSession {
         for measurement in cpu_telemetry.completed {
             self.observe_cpu_completion_measurement(measurement);
             self.latest_cpu_order_measurement = Some(measurement);
-            self.completed_cpu_order_measurements.push(measurement);
+            self.compatibility.publish_cpu_order(measurement);
         }
         let mut newest_failure = None;
         for failure in cpu_telemetry.failures {
@@ -3566,7 +3628,7 @@ impl SurfaceRenderSession {
                 self.adaptive_policy
                     .observe_cpu_measurement_failure(failure);
             }
-            self.completed_order_measurement_failures.push(failure);
+            self.compatibility.publish_order_failure(failure);
             newest_failure = Some(failure);
         }
         let telemetry = self.presenter.poll_gpu_order_telemetry();
@@ -3576,7 +3638,7 @@ impl SurfaceRenderSession {
                 self.adaptive_policy.observe_gpu_measurement(measurement);
             }
             self.latest_gpu_order_measurement = Some(measurement);
-            self.completed_order_measurements.push(measurement);
+            self.compatibility.publish_gpu_order(measurement);
             newest = Some(measurement);
         }
         for failure in telemetry.failures {
@@ -3584,7 +3646,7 @@ impl SurfaceRenderSession {
                 self.adaptive_policy
                     .observe_gpu_measurement_failure(failure);
             }
-            self.completed_order_measurement_failures.push(failure);
+            self.compatibility.publish_order_failure(failure);
             newest_failure = Some(failure);
         }
         (newest, newest_failure)
@@ -3605,7 +3667,7 @@ impl SurfaceRenderSession {
                 self.projected_policy_mut(measurement.order_backend)
                     .observe_measurement(measurement);
             }
-            self.completed_projected_draw_measurements.push(measurement);
+            self.compatibility.publish_projected_success(measurement);
             newest = Some(measurement);
         }
         let mut newest_failure = None;
@@ -3616,8 +3678,7 @@ impl SurfaceRenderSession {
                 self.projected_policy_mut(failure.order_backend)
                     .observe_failure(failure);
             }
-            self.completed_projected_draw_measurement_failures
-                .push(failure);
+            self.compatibility.publish_projected_failure(failure);
             newest_failure = Some(failure);
         }
         self.refresh_adaptive_probe_owner();
@@ -3633,18 +3694,12 @@ impl SurfaceRenderSession {
         let telemetry = self.presenter.poll_gpu_producer_telemetry();
         let mut newest = None;
         for measurement in telemetry.completed {
-            retain_gpu_producer_terminal(
-                &mut self.completed_gpu_producer_measurements,
-                measurement,
-            );
+            self.compatibility.publish_producer_success(measurement);
             newest = Some(measurement);
         }
         let mut newest_failure = None;
         for failure in telemetry.failures {
-            retain_gpu_producer_terminal(
-                &mut self.completed_gpu_producer_measurement_failures,
-                failure,
-            );
+            self.compatibility.publish_producer_failure(failure);
             newest_failure = Some(failure);
         }
         (newest, newest_failure)
