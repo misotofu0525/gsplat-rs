@@ -149,27 +149,6 @@
   },
   "grandfather": [
     {
-      "path": "crates/gsplat-render-wgpu/src/lib.rs",
-      "a0_physical_loc": 5680,
-      "baseline_physical_loc": 4716,
-      "owner_task": "M7",
-      "exit_condition": "Remove legacy renderer ownership so lib.rs contains only crate wiring and public re-exports."
-    },
-    {
-      "path": "crates/gsplat-render-wgpu/src/surface_presenter.rs",
-      "a0_physical_loc": 5091,
-      "baseline_physical_loc": 4631,
-      "owner_task": "M7",
-      "exit_condition": "After Surface cutover, delete the legacy presenter owner or retain only adapter and presentation-host responsibilities."
-    },
-    {
-      "path": "crates/gsplat-render-wgpu/src/surface_session.rs",
-      "a0_physical_loc": 5044,
-      "baseline_physical_loc": 5014,
-      "owner_task": "M7",
-      "exit_condition": "After product cutover, move controller, adaptive and evidence ownership out of the legacy session or delete it."
-    },
-    {
       "path": "crates/gsplat-io-ply/src/lib.rs",
       "a0_physical_loc": 2852,
       "baseline_physical_loc": 2852,
