@@ -51,7 +51,8 @@
 - `examples/desktop`: desktop viewer and offscreen PNG harness
 - `examples/android`: Kotlin Android Surface sample app
 - `examples/ios`: UIKit realtime Surface sample app
-- `examples/web`: browser PLY loader, generated wasm package host, and WebGL2 SortedAlpha-style fallback preview
+- `examples/web`: browser PLY loader, generated wasm package host, and an
+  explicit opt-in sampled WebGL2 diagnostic preview
 - `bindings/android`: local `gsplat-android` Android library module, JNI bridge, host-side JNI smoke, and AAR/APK scripts
 - `bindings/apple`: local `GsplatKit` Swift package wrapper, Swift smoke path, XCFramework scripts, and iOS simulator/device build/run scripts
 - `packages/web`: local `@gsplat-rs/web` browser ESM wrapper
@@ -77,10 +78,11 @@ For the broader command matrix, use `VERIFICATION.md`.
 ## Current Focus
 
 - Package E's Exact core and Package M's native offscreen, shared Surface,
-  C/Web/Android/Apple consumer migrations are integrated. M7's obsolete
-  Packed/Tiled deletion and compatibility work are implemented, while its
-  remaining renderer/session/presenter ownership closeout is Active. M8 remains
-  unstarted.
+  C/Web/Android/Apple consumer migrations are integrated. M7 is Accepted for
+  its defined deletion, compatibility, ownership and available-endpoint scope;
+  [M8](../docs/plans/active/2026-07-23-native-render-core-migration/m8-closeout-inventory.md)
+  is Active for factual/release alignment and eventual migration-bundle
+  archival. Package M remains Active until M8 is separately accepted.
 - Keep the day-to-day verification paths passing and the release bar lightweight but real.
 - Expand conformance and perf coverage with real datasets before widening the public API surface.
 - Keep the exact-count Resident path, portable GPU visibility/radix/indirect
@@ -154,13 +156,14 @@ For the broader command matrix, use `VERIFICATION.md`.
 
 ## Known Open Gaps
 
-- Exact-core migration closeout: legacy Packed presenter ownership and
-  TiledExact are deleted, the platform consumers use the shared session, and
-  the completed M7 behavior range has aggregate rollback evidence. M7 remains
-  Active until the `lib.rs`, `surface_session.rs` and `surface_presenter.rs`
-  ownership obligations are actually satisfied. Chrome/WebGPU at the final M7
-  SHA, physical iPhone, and Windows/Linux runtime remain explicit Deferred;
-  M8 remains unstarted.
+- Package M closeout: [M7 is Accepted](../docs/plans/active/2026-07-23-native-render-core-migration/m7-final-acceptance.md),
+  including the `lib.rs`, `surface_session.rs` and `surface_presenter.rs`
+  ownership exits and aggregate rollback evidence. M8 is Active for factual
+  handbook/release/public-document alignment, remaining ownership decisions,
+  final verification and migration-bundle archival. Chrome/WebGPU at the
+  accepted M7 SHA, physical iPhone, and Windows/Linux runtime remain explicit
+  Deferred; compilation, historical runs, Simulator results and other
+  platforms are not substitutes.
 - Android external distribution: the GitHub prerelease attaches an AAR, but it
   is not published to Maven and the current package slice is `arm64-v8a` only.
 - iOS external distribution: the GitHub prerelease attaches an XCFramework ZIP,
@@ -170,11 +173,11 @@ For the broader command matrix, use `VERIFICATION.md`.
   v0.1 public API.
 - SPZ product integration: the loader is tested, but choosing where it enters
   desktop, C, mobile, or Web APIs remains a separate product decision.
-- Device runtime evidence: the latest validation covered Android APK/AAR build,
-  Android true-device launch and benchmark (an Android test device, flowers
-  dataset), iOS simulator app launch, iOS simulator smoke, iOS device app
-  build/sign, and iOS physical-device benchmark (iPhone 17 Pro Max, flowers
-  dataset).
+- Device runtime evidence is scoped to its recorded source identity. Available
+  results include Android APK/AAR build and true-device runs plus earlier iOS
+  simulator, device build/sign and physical-device evidence. The accepted M7
+  audit retains physical iPhone as Deferred, so those earlier Apple results do
+  not qualify the final M7 tree.
 
 ## Notes
 

@@ -24,9 +24,9 @@ Operational facts and command entrypoints live in `handbook/PROJECT_CONTEXT.md` 
 1. Keep bounded PLY import, the Direct-f32 oracle, and direct-to-Resident
    exact-count Packed loading correct and well tested.
 2. Keep portable GPU visibility/radix/indirect draw and measured whole-plan
-   Adaptive selection shared across platforms. Migrate the completed private
-   Exact core atomically—native offscreen first, then the shared Surface
-   owner—without replacing measured selection with a point-count threshold.
+   Adaptive selection shared across platforms. Preserve the completed private
+   Exact core and its single native offscreen/shared Surface product route
+   without replacing measured selection with a point-count threshold.
 3. Expand conformance and performance evidence across real scenes and
    representative desktop/mobile resolutions, including stage timings and
    image-quality comparisons, before widening APIs or making competitor claims.
@@ -63,7 +63,8 @@ Operational facts and command entrypoints live in `handbook/PROJECT_CONTEXT.md` 
 - Packed/Direct/Paged geometry selectors, Resident layouts, local page scheduling,
   benchmark artifact schemas, Web package APIs, and mobile Surface convenience
   wrappers remain experimental. They may change without widening the stable
-  v0.1 contract; direct remains their default.
+  v0.1 contract. Low-level compatibility constructors remain Direct by
+  default; product examples and SDK wrappers explicitly select Packed.
 - `crates/gsplat-io-spz` is an experimental, bounded import component. It is
   not yet connected to the stable C, Web, mobile, or default application path.
 - Native handles are single-owner handles and should be used from one serialized
@@ -78,9 +79,12 @@ Operational facts and command entrypoints live in `handbook/PROJECT_CONTEXT.md` 
 - `crates/gsplat-web` plus `packages/web` form the local
   experimental Web API boundary. They are not a stable v0.1 release surface;
   Web renderer changes require verified wasm build and browser smoke evidence.
-- The Web example is validation example support for browser PLY loading, the WebGL2 fallback, and hosting the generated wasm package; it is not a polished web product surface.
+- The Web example is validation example support for browser PLY loading, an
+  explicit opt-in sampled WebGL2 diagnostic, and hosting the generated wasm
+  package; it is not a polished web product surface. Its default Exact
+  WASM/WebGPU path fails closed rather than silently selecting that diagnostic.
 
-## Native Exact Product Core (migration active 2026-07-26)
+## Native Exact Product Core (M7 Accepted; M8 Active)
 
 Package E completed a private prepared-plan renderer with CPU PostSort, GPU
 PostSort and GPU Preproject as closed same-Exact plans, one mandatory sampler,
@@ -98,10 +102,15 @@ owner, and the C/Web/Android/Apple consumers to that runtime. Product Packed
 now routes through `SurfaceRenderSession`, `SurfacePresenterHost`, and the
 renderer-owned `PreparedRuntimeSlot`; standalone `SurfacePresenter` supports
 only Direct and diagnostic Paged. M7's obsolete standalone Packed graph and
-TiledExact deletion, available-platform matrix and aggregate rollback evidence
-are complete, but M7 remains Active until its renderer/session/presenter
-ownership exits are actually satisfied. M8 factual/release alignment and
-migration-bundle archival remain unstarted.
+TiledExact deletion, compatibility and ownership exits, available-platform
+matrix and aggregate rollback evidence are
+[Accepted](../docs/plans/active/2026-07-23-native-render-core-migration/m7-final-acceptance.md).
+[M8 is Active](../docs/plans/active/2026-07-23-native-render-core-migration/m8-closeout-inventory.md)
+for factual/release alignment, remaining ownership decisions, final
+verification and migration-bundle archival; Package M remains Active until
+that separate closeout is accepted. Chrome/WebGPU at the accepted M7 SHA,
+physical iPhone, and Windows/Linux runtime remain Deferred and are not implied
+by earlier browser/device evidence, Simulator results or compilation.
 
 ## Full-Count Resident Evidence Boundary (completed 2026-07-23)
 

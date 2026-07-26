@@ -9,7 +9,11 @@
 
 - The repository owns scene loading, sort backends, `wgpu` rendering, a small C ABI, experimental Rust/WASM Web bindings, and validation examples/tools around those pieces.
 - The repository does not own model training, a polished web product surface, or multiple polished render backends.
-- Main external dependencies are `wgpu`, platform toolchains for Swift/JNI validation, Android/iOS SDK tooling for mobile container builds and local package artifacts, browser WebGL2 for the static Web example, and `wasm-bindgen`/browser ESM tooling for the experimental Web SDK path.
+- Main external dependencies are `wgpu`, platform toolchains for Swift/JNI
+  validation, Android/iOS SDK tooling for mobile container builds and local
+  package artifacts, browser WebGL2 for the explicit sampled diagnostic in the
+  static Web example, and `wasm-bindgen`/browser ESM tooling for the
+  experimental Web SDK path.
 
 ## Runtime Topology
 
@@ -18,8 +22,10 @@
   experimental SPZ v4 loader lives in `crates/gsplat-io-spz`.
 - Sorting lives in `crates/gsplat-sort`.
 - Rendering and GPU-facing orchestration live in `crates/gsplat-render-wgpu`.
-  `lib.rs` owns renderer/public entrypoints, private `scene/` modules own the
-  exact-count compact CPU scene, builder and codec, and `data/layout.rs` owns
+  `lib.rs` wires modules, public types/re-exports and compatibility/error
+  mapping; concrete `Renderer` semantics live in `renderer/facade.rs` and its
+  private owners. Private `scene/` modules own the exact-count compact CPU
+  scene, builder and codec, and `data/layout.rs` owns
   the fixed Resident GPU ABI layouts. `resident_gpu.rs` owns GPU planes and
   coherent SH resolve, `direct_scene_gpu.rs` owns the Direct wide-f32 source,
   order bindings and draw pipeline shared by Surface and offscreen, while
@@ -42,8 +48,9 @@
   offscreen and Surface execution. `surface_session.rs` selects the Packed
   `SurfacePresenterHost` and renderer-owned `PreparedRuntimeSlot`, while
   `surface_presenter.rs` coordinates standalone Direct and diagnostic Paged
-  private runtime owners around common Surface mechanics. Paged files remain
-  an explicit diagnostic seam.
+  private runtime owners around common Surface mechanics. The accepted M7
+  ownership boundary leaves one Packed Exact semantic graph and no standalone
+  Packed product graph. Paged files remain an explicit diagnostic seam.
 - Native embedding goes through `crates/gsplat-ffi-c`.
 - Browser WebAssembly embedding goes through `crates/gsplat-web`.
 - Runtime validation entrypoints are `examples/desktop`, `examples/android`,
@@ -56,7 +63,8 @@
 - `examples/desktop/`: desktop viewer and offscreen output harness
 - `examples/android/`: Android Surface sample app
 - `examples/ios/`: UIKit realtime Surface sample app
-- `examples/web/`: static frontend example for browser PLY loading, WebGL2 point-splat fallback, and generated wasm package hosting
+- `examples/web/`: static frontend example for browser PLY loading, explicit
+  opt-in sampled WebGL2 diagnostics, and generated wasm package hosting
 - `bindings/android/`: Android `gsplat-android` library module, JNI bridge, host smoke entrypoint, and AAR/APK scripts
 - `bindings/apple/`: local `GsplatKit` Swift package wrapper, Swift smoke source, XCFramework scripts, and iOS simulator/device build/run scripts
 - `packages/web/`: local `@gsplat-rs/web` ESM wrapper over generated wasm-bindgen output
@@ -115,9 +123,12 @@
 
 - Shared Surface frame flow:
   `SurfaceRenderSession` in
-  `crates/gsplat-render-wgpu/src/surface_session.rs` owns `Renderer`, camera
-  revisions, execution composition, cross-controller arbitration, ticketed
-  measurements and frame publication. The private `surface/adaptive_order.rs`
+  `crates/gsplat-render-wgpu/src/surface_session.rs` is the public frame
+  transaction composer across `Renderer`, the Surface owner, camera/schedule
+  state and private controllers. The sole statistics/evidence/terminal
+  publication ledger is
+  `evidence/session_publication.rs::SessionPublication`. The private
+  `surface/adaptive_order.rs`
   and `surface/projected_adaptive.rs` modules own the respective pure Adaptive
   policy transitions, rolling estimates, hysteresis and cooldown. Its owner is
   either a standalone `SurfacePresenter` for
@@ -279,14 +290,20 @@
   imports generated `examples/web/pkg/gsplat_web.js` when present, routes it
   through `packages/web/src/index.js`, and attempts the
   Rust/WASM Surface renderer first
+  the default/product path fails closed when that package is missing or
+  WASM/WebGPU construction or exact scene admission fails
+  only `?gsplat_allow_sampled_webgl=true`, outside formal evidence, permits the
+  non-equivalent sampled WebGL2 diagnostic before an Exact scene is active
   fetches or uploads a `.ply` file in the browser
   parses ASCII or binary PLY data into frontend buffers
   applies the same RDF-to-RUF Y-axis flip, DC color, and opacity conventions as the Rust import/render path
-  CPU-sorts visible indices back-to-front and presents a WebGL2 point-splat preview
+  the sampled diagnostic CPU-sorts visible indices back-to-front and presents
+  a WebGL2 point-splat preview
   exposes Android-style orbit/zoom/pan/reset camera controls and benchmark query parameters
   presents the default scene through a responsive showcase shell with loading progress,
   scene switching, local PLY upload, and collapsible diagnostics
-  falls back to WebGL2 when the generated wasm package is missing or Surface creation fails
+  once an Exact WASM scene is active, render failure is terminal for that
+  scene and never switches to WebGL2
 
 ## Invariants
 
@@ -328,8 +345,9 @@
   under `bindings/`, but neither path is a published product SDK yet.
 - `crates/gsplat-web` is the active experimental Rust/WASM target; Web renderer changes require the wasm build and browser smoke path before completion is claimed.
 - The Web example stays a browser validator and generated wasm package host.
-  The local Web package lives under `packages/web`, but it is not a published
-  npm package.
+  Its sampled WebGL2 path requires explicit opt-in and cannot satisfy Exact or
+  formal evidence. The local Web package lives under `packages/web`, but it is
+  not a published npm package.
 
 ## Hotspots
 
@@ -378,7 +396,9 @@
 - `bindings/android/gsplat-android/src/main/kotlin/`, `examples/android/app/src/main/kotlin/`, and `bindings/android/jni/gsplat_jni.c`: Android SDK wrapper, Surface lifecycle sample, and JNI bridge
 - `bindings/apple/GsplatKit/Sources/GsplatKit/GsplatKit.swift`: Swift wrapper over the v0.1 C ABI
 - `examples/ios/app/GsplatIOSExample.swift`: iOS Surface lifecycle and UIKit gesture bridge
-- `examples/web/src/main.js`: browser PLY parsing, wasm-first renderer bootstrap, camera interaction, CPU depth sort fallback, benchmark orbit, and WebGL2 preview rendering
+- `examples/web/src/main.js`: browser PLY parsing, wasm-first renderer
+  bootstrap, camera interaction, explicit sampled-diagnostic CPU depth sort,
+  benchmark orbit, and WebGL2 preview rendering
 - `tests/perf/run-long-stability.sh` and `tools/bench-runner/src/main.rs`: regression detection for perf and stability
 
 ## Useful Entry Points
