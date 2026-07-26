@@ -20,10 +20,11 @@
             "crates/gsplat-render-wgpu/src/direct_gpu_order.rs",
             "crates/gsplat-render-wgpu/shaders/direct_gpu_order.wgsl",
             "crates/gsplat-render-wgpu/shaders/resident_gpu_order_compact.wgsl",
-            "crates/gsplat-render-wgpu/src/surface/session_schedule.rs",
-            "crates/gsplat-render-wgpu/src/surface_session.rs",
-            "crates/gsplat-render-wgpu/src/renderer/facade.rs",
-            "crates/gsplat-render-wgpu/src/surface_session_exact_control_tests.rs"
+            "crates/gsplat-render-wgpu/src/renderer/mod.rs",
+            "crates/gsplat-render-wgpu/src/renderer/gpu_prepare.rs",
+            "crates/gsplat-render-wgpu/src/plans/mod.rs",
+            "crates/gsplat-render-wgpu/src/plans/cpu_post.rs",
+            "crates/gsplat-render-wgpu/src/resident_gpu.rs"
           ]
         },
         {

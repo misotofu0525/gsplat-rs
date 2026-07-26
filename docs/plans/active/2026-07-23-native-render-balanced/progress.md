@@ -167,3 +167,8 @@ run an endpoint experiment, alter a default, make a performance claim, or
 allow 20-bit quantization. If a required platform control would expand a
 stable binding, it is out of scope and must be handed back to root rather than
 silently exposed.
+
+Implementation ownership is intentionally the real Exact plan construction:
+`PlanSet`/`CpuPostSortPlan` for CPU order and transactional resident GPU
+preparation for Direct GPU order. Surface façade files alone do not own this
+state and are not a permitted shortcut.
