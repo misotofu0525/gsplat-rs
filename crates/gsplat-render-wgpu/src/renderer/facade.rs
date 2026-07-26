@@ -486,6 +486,14 @@ impl Renderer {
             .map(renderer::PreparedRuntimeSlot::surface_depth_precision_profile)
     }
 
+    pub(crate) fn exact_surface_projected_cache_precision_profile(
+        &self,
+    ) -> Option<renderer::ProjectedCachePrecisionProfile> {
+        self.exact_offscreen_runtime
+            .as_ref()
+            .and_then(renderer::PreparedRuntimeSlot::surface_projected_cache_precision_profile)
+    }
+
     pub(crate) fn set_exact_surface_policy(
         &mut self,
         policy: renderer::ExactPlanPolicy,

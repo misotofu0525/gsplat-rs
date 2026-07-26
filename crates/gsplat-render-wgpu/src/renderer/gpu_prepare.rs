@@ -1745,6 +1745,11 @@ mod tests {
                     .projected_cache_precision(),
                 ProjectedCachePrecisionProfile::CandidateAxes16
             );
+            assert_eq!(
+                slot.surface_projected_cache_precision_profile(),
+                Some(ProjectedCachePrecisionProfile::CandidateAxes16),
+                "Surface evidence reads the admitted GPU profile"
+            );
 
             let replacement_resident =
                 ResidentSceneCpu::encode_owned(source(2, 0)).expect("replacement scene");
@@ -1753,6 +1758,11 @@ mod tests {
             assert_eq!(
                 slot.projected_cache_precision,
                 ProjectedCachePrecisionProfile::CandidateAxes16
+            );
+            assert_eq!(
+                slot.surface_projected_cache_precision_profile(),
+                None,
+                "replacement intent is not a realized profile before GPU re-admission"
             );
             assert_eq!(slot.fallback(), PlanId::CpuPostSort);
             assert_eq!(slot.eligible(), &[PlanId::CpuPostSort]);
@@ -1773,6 +1783,10 @@ mod tests {
                     .expect("replacement receipt")
                     .projected_cache_precision(),
                 ProjectedCachePrecisionProfile::CandidateAxes16
+            );
+            assert_eq!(
+                slot.surface_projected_cache_precision_profile(),
+                Some(ProjectedCachePrecisionProfile::CandidateAxes16)
             );
         });
     }

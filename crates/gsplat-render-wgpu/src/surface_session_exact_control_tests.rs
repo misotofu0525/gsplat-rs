@@ -444,6 +444,17 @@ fn surface_gpu_candidate_carries_the_same_candidate_precision_to_resident_order(
             default_candidate.surface_depth_precision_profile(),
             SurfaceDepthPrecisionProfile::configured_for_surface_build()
         );
+        assert_eq!(
+            default_candidate.surface_projected_cache_precision_profile(),
+            Some(crate::renderer::ProjectedCachePrecisionProfile::configured_for_surface_build()),
+            "the Surface facade exposes only the GPU-realized projected profile"
+        );
+        #[cfg(not(feature = "diagnostic-surface-projected-axes16"))]
+        assert_eq!(
+            default_candidate.surface_projected_cache_precision_profile(),
+            Some(crate::renderer::ProjectedCachePrecisionProfile::ExactAxes32),
+            "ordinary builds cannot realize the Axes16 candidate profile"
+        );
         #[cfg(not(feature = "diagnostic-surface-depth-key-candidate24"))]
         assert_eq!(
             default_candidate.surface_depth_precision_profile(),

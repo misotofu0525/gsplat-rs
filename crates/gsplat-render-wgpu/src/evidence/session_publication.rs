@@ -15,7 +15,7 @@ use super::{
 };
 use crate::gpu_telemetry::SurfaceCpuOrderMeasurement;
 use crate::plans::{FrameIdentity, PlanId};
-use crate::renderer::SurfaceDepthPrecisionProfile;
+use crate::renderer::{ProjectedCachePrecisionProfile, SurfaceDepthPrecisionProfile};
 use crate::{
     SurfaceCurrentStatsPoll, SurfaceCurrentStatsSubmission, SurfaceGpuProducerMeasurement,
     SurfaceGpuProducerMeasurementFailure, SurfaceOrderMeasurement, SurfaceOrderMeasurementFailure,
@@ -70,6 +70,76 @@ impl PresentedDepthPrecisionReceipt {
 
     pub(crate) const fn presentation_sequence(self) -> u64 {
         self.presentation_sequence
+    }
+}
+
+/// Renderer-realized projected-cache precision joined to one successfully
+/// presented Packed Exact frame. Construction intent alone cannot create this
+/// private receipt: the profile comes from the admitted GPU preparation
+/// receipt and enters publication only with the presented frame DTO.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PresentedProjectedCachePrecisionReceipt {
+    profile: ProjectedCachePrecisionProfile,
+    frame: FrameIdentity,
+    plan: PlanId,
+    order_generation: u64,
+    presentation_sequence: u64,
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+impl PresentedProjectedCachePrecisionReceipt {
+    pub(crate) const fn new(
+        profile: ProjectedCachePrecisionProfile,
+        frame: FrameIdentity,
+        plan: PlanId,
+        order_generation: u64,
+        presentation_sequence: u64,
+    ) -> Self {
+        Self {
+            profile,
+            frame,
+            plan,
+            order_generation,
+            presentation_sequence,
+        }
+    }
+
+    pub(crate) const fn profile(self) -> ProjectedCachePrecisionProfile {
+        self.profile
+    }
+
+    pub(crate) const fn frame(self) -> FrameIdentity {
+        self.frame
+    }
+
+    pub(crate) const fn plan(self) -> PlanId {
+        self.plan
+    }
+
+    pub(crate) const fn order_generation(self) -> u64 {
+        self.order_generation
+    }
+
+    pub(crate) const fn presentation_sequence(self) -> u64 {
+        self.presentation_sequence
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct PresentedFramePrecisionReceipts {
+    depth: Option<PresentedDepthPrecisionReceipt>,
+    projected_cache: Option<PresentedProjectedCachePrecisionReceipt>,
+}
+
+impl PresentedFramePrecisionReceipts {
+    pub(crate) const fn new(
+        depth: Option<PresentedDepthPrecisionReceipt>,
+        projected_cache: Option<PresentedProjectedCachePrecisionReceipt>,
+    ) -> Self {
+        Self {
+            depth,
+            projected_cache,
+        }
     }
 }
 
@@ -208,7 +278,7 @@ pub(crate) enum PresentedCurrentStats {
 pub(crate) struct PresentedFramePublication {
     stats: FrameStats,
     current_stats: PresentedCurrentStats,
-    depth_precision: Option<PresentedDepthPrecisionReceipt>,
+    precision: PresentedFramePrecisionReceipts,
     order: SurfaceCompatibilityOrderSubmission,
     projected: SurfaceCompatibilityProjectedSubmission,
     producer: SurfaceCompatibilityProducerSubmission,
@@ -219,7 +289,7 @@ impl PresentedFramePublication {
     pub(crate) const fn new(
         stats: FrameStats,
         current_stats: PresentedCurrentStats,
-        depth_precision: Option<PresentedDepthPrecisionReceipt>,
+        precision: PresentedFramePrecisionReceipts,
         order: SurfaceCompatibilityOrderSubmission,
         projected: SurfaceCompatibilityProjectedSubmission,
         producer: SurfaceCompatibilityProducerSubmission,
@@ -228,7 +298,7 @@ impl PresentedFramePublication {
         Self {
             stats,
             current_stats,
-            depth_precision,
+            precision,
             order,
             projected,
             producer,
@@ -307,6 +377,7 @@ pub(crate) struct SessionPublication {
     legacy_stats_availability: LegacySurfaceStatsAvailability,
     last_stats: FrameStats,
     presented_depth_precision: Option<PresentedDepthPrecisionReceipt>,
+    presented_projected_cache_precision: Option<PresentedProjectedCachePrecisionReceipt>,
     capture_depth_precision: CaptureDepthPrecisionState,
     pending_telemetry: SurfaceTelemetryBatch,
     evidence: SessionEvidence,
@@ -325,6 +396,7 @@ impl SessionPublication {
             },
             last_stats: FrameStats::zero(),
             presented_depth_precision: None,
+            presented_projected_cache_precision: None,
             capture_depth_precision: if exact_surface {
                 CaptureDepthPrecisionState::Idle
             } else {
@@ -349,6 +421,13 @@ impl SessionPublication {
         &self,
     ) -> Option<PresentedDepthPrecisionReceipt> {
         self.presented_depth_precision
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn presented_projected_cache_precision_receipt(
+        &self,
+    ) -> Option<PresentedProjectedCachePrecisionReceipt> {
+        self.presented_projected_cache_precision
     }
 
     pub(crate) fn arm_capture_depth_precision(&mut self) -> bool {
@@ -435,15 +514,18 @@ impl SessionPublication {
         let PresentedFramePublication {
             stats,
             current_stats,
-            depth_precision,
+            precision,
             order,
             projected,
             producer,
             telemetry,
         } = publication;
         self.last_stats = stats;
-        if let Some(depth_precision) = depth_precision {
+        if let Some(depth_precision) = precision.depth {
             self.presented_depth_precision = Some(depth_precision);
+        }
+        if let Some(projected_cache_precision) = precision.projected_cache {
+            self.presented_projected_cache_precision = Some(projected_cache_precision);
         }
         if let PresentedCurrentStats::Exact {
             submission,
@@ -755,7 +837,7 @@ mod tests {
         publication.publish_presented_frame(PresentedFramePublication::new(
             stats,
             PresentedCurrentStats::Preserve,
-            None,
+            PresentedFramePrecisionReceipts::default(),
             new_order,
             new_projected,
             new_producer,
@@ -817,7 +899,7 @@ mod tests {
         publication.publish_presented_frame(PresentedFramePublication::new(
             FrameStats::zero(),
             PresentedCurrentStats::Preserve,
-            Some(receipt),
+            PresentedFramePrecisionReceipts::new(Some(receipt), None),
             order,
             projected,
             producer,
@@ -864,6 +946,94 @@ mod tests {
         publish_depth_precision_receipt(&mut publication, next_presented);
         assert_eq!(
             publication.presented_depth_precision_receipt(),
+            Some(next_presented)
+        );
+    }
+
+    fn projected_cache_precision_receipt(
+        profile: ProjectedCachePrecisionProfile,
+        camera_revision: u64,
+        order_generation: u64,
+        presentation_sequence: u64,
+    ) -> PresentedProjectedCachePrecisionReceipt {
+        PresentedProjectedCachePrecisionReceipt::new(
+            profile,
+            FrameIdentity::new(2, camera_revision, 3, 4, 5),
+            PlanId::GpuPreproject,
+            order_generation,
+            presentation_sequence,
+        )
+    }
+
+    fn publish_projected_cache_precision_receipt(
+        publication: &mut SessionPublication,
+        receipt: PresentedProjectedCachePrecisionReceipt,
+    ) {
+        let (order, projected, producer) = submissions(receipt.presentation_sequence());
+        publication.publish_presented_frame(PresentedFramePublication::new(
+            FrameStats::zero(),
+            PresentedCurrentStats::Preserve,
+            PresentedFramePrecisionReceipts::new(None, Some(receipt)),
+            order,
+            projected,
+            producer,
+            PresentedTelemetry::from_batch(SurfaceTelemetryBatch::default()),
+        ));
+    }
+
+    #[test]
+    fn projected_cache_precision_receipt_is_present_fenced_and_identity_bound() {
+        let mut publication = SessionPublication::new(true);
+        assert_eq!(
+            publication.presented_projected_cache_precision_receipt(),
+            None
+        );
+
+        let candidate = projected_cache_precision_receipt(
+            ProjectedCachePrecisionProfile::CandidateAxes16,
+            7,
+            11,
+            13,
+        );
+        // Preparation, replacement, unavailable acquisition and failed present
+        // have no presented DTO and therefore cannot manufacture or overwrite
+        // a candidate receipt.
+        publication.retain_consumed_telemetry(SurfaceTelemetryBatch::default());
+        publication.terminalize_deferred_telemetry();
+        assert_eq!(
+            publication.presented_projected_cache_precision_receipt(),
+            None
+        );
+
+        publish_projected_cache_precision_receipt(&mut publication, candidate);
+        let published = publication
+            .presented_projected_cache_precision_receipt()
+            .expect("successful present publishes the realized projected-cache profile");
+        assert_eq!(
+            published.profile(),
+            ProjectedCachePrecisionProfile::CandidateAxes16
+        );
+        assert_eq!(published.frame().camera_revision(), 7);
+        assert_eq!(published.plan(), PlanId::GpuPreproject);
+        assert_eq!(published.order_generation(), 11);
+        assert_eq!(published.presentation_sequence(), 13);
+
+        publication.retain_consumed_telemetry(SurfaceTelemetryBatch::default());
+        assert_eq!(
+            publication.presented_projected_cache_precision_receipt(),
+            Some(candidate),
+            "an unpresented attempt cannot overwrite the last successful receipt"
+        );
+
+        let next_presented = projected_cache_precision_receipt(
+            ProjectedCachePrecisionProfile::ExactAxes32,
+            9,
+            15,
+            16,
+        );
+        publish_projected_cache_precision_receipt(&mut publication, next_presented);
+        assert_eq!(
+            publication.presented_projected_cache_precision_receipt(),
             Some(next_presented)
         );
     }

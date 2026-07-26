@@ -9,7 +9,7 @@ B1 = Active
 
 <!-- gsplat-program-active-lanes: begin -->
 activation_commit = 3ecf0f2d0180c197faa132443066b3b9b98d36d4
-B1 = diagnostic-surface-capture-receipt-bridge
+B1 = desktop-diagnostic-receipt-host
 <!-- gsplat-program-active-lanes: end -->
 
 ## B0 authoring slice
@@ -568,6 +568,57 @@ artifact was run; no image-quality or performance conclusion is claimed.
 Dataset image evaluation, product acceptance, endpoint portability and any
 formal performance decision remain **Deferred** to separately authorized
 root-owned evidence work. B2 remains **Active** until that evidence exists.
+
+## B2 projected-axis presentation-receipt slice
+
+Implementation on exact baseline `00c01eec367fa82e240433130c317fcc2d2a563c`,
+branch `codex/b2-axes16-presentation-receipt`, adds only the private identity
+needed before a future collector may join B2 pixels to a truthful runtime
+profile. It does not add a collector, artifact field, platform adapter or
+public API.
+
+`PreparedRuntimeSlot` exposes a projected-cache profile for evidence only from
+the admitted `GpuPreparationReceipt`. Construction intent and a replacement
+that has not completed GPU re-admission remain unavailable. The renderer facade
+then carries that realized `ExactAxes32` or `CandidateAxes16` profile into the
+existing successful-present transaction.
+
+`SessionPublication` retains a private
+`PresentedProjectedCachePrecisionReceipt` through the same single complete DTO
+commit as the presentation-fenced frame state. The receipt binds the realized
+profile to the Packed Exact `FrameIdentity`, actual `PlanId`, order generation
+and presentation sequence. Preparation, replacement, failed acquisition,
+failed/unavailable presentation and retained telemetry cannot create or
+overwrite it. Ordinary builds realize and publish only `ExactAxes32`; the
+`CandidateAxes16` receipt remains reachable only through the already existing
+default-disabled B2 feature. A later capture/collector slice must still perform
+its own exact-sequence take-once join; no latest-receipt collector or caller
+label is added here.
+
+Finite candidate-local verification passed:
+
+- presentation-publication focused tests passed in default and
+  `diagnostic-surface-projected-axes16` builds: 8 each;
+- the Axes16 complete-graph replacement/re-admission test passed and proved the
+  evidence profile is unavailable between CPU replacement and realized GPU
+  re-admission;
+- the ordinary Surface construction test passed and proved the default build
+  realizes `ExactAxes32`, not the candidate profile;
+- full default renderer library tests: 470 passed, 8 existing ignored;
+- full Axes16 renderer library tests: 476 passed, 8 existing ignored;
+- locked renderer library checks and all-target Clippy with warnings denied
+  passed for default and Axes16 builds;
+- `cargo fmt --all -- --check`, `git diff --check`, the source architecture
+  policy entrypoint and all three policy unit tests passed. The Balanced B1
+  active-lane record now matches the already frozen B1/S1 parallel-execution
+  policy value `desktop-diagnostic-receipt-host`; task states and the shared
+  activation commit are unchanged.
+
+No B2 algorithm, shader, `PlanId`, Adaptive/controller policy, FFI, Swift,
+Kotlin, JavaScript, desktop collector, browser/device path, endpoint evidence,
+image gate or product default changed or ran. This is a finite private receipt
+candidate for root review only; B2 remains **Active** and all formal
+image/performance/endpoint qualification remains **Deferred**.
 
 ## B3 Resident signed-8 SH mantissa candidate
 

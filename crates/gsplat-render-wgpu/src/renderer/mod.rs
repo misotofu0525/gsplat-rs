@@ -1258,6 +1258,22 @@ impl PreparedRuntimeSlot {
         )
     }
 
+    /// Returns only the projected-cache profile realized by the admitted GPU
+    /// graph. A construction-time request is not evidence until resource and
+    /// raster preparation have both succeeded.
+    pub(crate) fn surface_projected_cache_precision_profile(
+        &self,
+    ) -> Option<ProjectedCachePrecisionProfile> {
+        let realized = self
+            .gpu_preparation()
+            .map(|receipt| receipt.projected_cache_precision());
+        debug_assert!(
+            realized.is_none() || realized == Some(self.projected_cache_precision),
+            "admitted projected-cache profile must match the construction-time profile"
+        );
+        realized
+    }
+
     #[cfg(test)]
     pub(crate) fn depth_key_precision_for_test(&self) -> DepthKeyPrecision {
         self.runtime.plans.depth_key_precision()
