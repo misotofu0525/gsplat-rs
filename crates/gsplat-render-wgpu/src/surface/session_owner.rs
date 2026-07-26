@@ -36,6 +36,7 @@ pub(crate) struct TestSessionSurfaceOwner {
     addressable_splat_count: usize,
     adapter_info: wgpu::AdapterInfo,
     raster_execution_plan: SurfaceRasterExecutionPlan,
+    telemetry_polls: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -90,6 +91,7 @@ impl SessionSurfaceOwner {
                 transient_saves_memory: false,
             },
             raster_execution_plan: SurfaceRasterExecutionPlan::GlobalQuads,
+            telemetry_polls: 0,
         })
     }
 
@@ -477,6 +479,22 @@ impl SessionSurfaceOwner {
             panic!("frame outcome injection requires the test Surface owner");
         };
         test.frame_presented.push_back(presented);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn record_test_telemetry_poll(&mut self) {
+        let Self::Test(test) = self else {
+            return;
+        };
+        test.telemetry_polls += 1;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_telemetry_polls(&self) -> usize {
+        let Self::Test(test) = self else {
+            panic!("telemetry poll inspection requires the test Surface owner");
+        };
+        test.telemetry_polls
     }
 }
 

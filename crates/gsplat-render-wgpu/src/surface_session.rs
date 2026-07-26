@@ -305,10 +305,13 @@ impl SessionSurfaceOwner {
                 failures: Vec::new(),
             },
             #[cfg(test)]
-            Self::Test(_) => CpuOrderTelemetryPoll {
-                completed: Vec::new(),
-                failures: Vec::new(),
-            },
+            Self::Test(_) => {
+                self.record_test_telemetry_poll();
+                CpuOrderTelemetryPoll {
+                    completed: Vec::new(),
+                    failures: Vec::new(),
+                }
+            }
         }
     }
 
@@ -320,10 +323,13 @@ impl SessionSurfaceOwner {
                 failures: Vec::new(),
             },
             #[cfg(test)]
-            Self::Test(_) => GpuOrderTelemetryPoll {
-                completed: Vec::new(),
-                failures: Vec::new(),
-            },
+            Self::Test(_) => {
+                self.record_test_telemetry_poll();
+                GpuOrderTelemetryPoll {
+                    completed: Vec::new(),
+                    failures: Vec::new(),
+                }
+            }
         }
     }
 
@@ -2774,6 +2780,10 @@ impl SurfaceRenderSession {
             } else {
                 completion.accepted_order = None;
                 completion.stale_result_dropped = true;
+                // The candidate order is already installed as attempt input.
+                // Once it becomes unusable, require a current-camera sync
+                // refresh before any later successful present can commit.
+                self.schedule.force_sort();
                 completion.observed_revision_lag = Some(
                     u32::try_from(self.camera_revision.saturating_sub(order.camera_revision))
                         .unwrap_or(u32::MAX),
@@ -2783,16 +2793,14 @@ impl SurfaceRenderSession {
 
         let has_order = !self.renderer.current_sorted_indices().is_empty();
         if self.schedule.requires_initial_sync(has_order) {
+            let sync_sort_fallback = self.pending_async_completion.is_some();
             if let Some(completion) = self.pending_async_completion.as_mut()
                 && completion.accepted_order.take().is_some()
             {
                 completion.stale_result_dropped = true;
             }
-            let mut output = self.render_frame_sync()?;
-            if output.frame_presented {
-                self.commit_presented_async_completion(&mut output);
-            }
-            return Ok(output);
+            let plan = self.schedule.plan(has_order);
+            return self.render_async_cpu_attempt(plan, None, sync_sort_fallback);
         }
 
         let pending_order = self
@@ -2803,14 +2811,23 @@ impl SurfaceRenderSession {
                 .schedule
                 .requires_stale_order_fallback(&self.camera, self.camera_revision)
         {
-            let mut output = self.render_frame_sync()?;
-            output.sync_sort_fallback = true;
-            if output.frame_presented {
-                self.commit_presented_async_completion(&mut output);
-            }
-            return Ok(output);
+            self.schedule.force_sort();
+            let plan = self.schedule.plan(has_order);
+            return self.render_async_cpu_attempt(plan, None, true);
         }
 
+        let mut plan = self.schedule.stable_order_plan();
+        plan.upload_order |= pending_order.is_some();
+        self.render_async_cpu_attempt(plan, pending_order, false)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn render_async_cpu_attempt(
+        &mut self,
+        plan: SurfaceFramePlan,
+        pending_order: Option<PendingAsyncOrder>,
+        sync_sort_fallback: bool,
+    ) -> Result<SurfaceFrameOutput, RendererError> {
         let mut projected_policy = self.adaptive_projected_cpu.clone();
         let mut projected_probe_owner = self.adaptive_probe_owner;
         let compact_available = self.presenter.projected_contributor_indirect_draw_enabled();
@@ -2832,22 +2849,27 @@ impl SurfaceRenderSession {
         if projected_probe_owner.is_none() && projected_choice.sample.is_some() {
             projected_probe_owner = Some(AdaptiveProbeOwner::ProjectedCpu);
         }
-        let mut plan = self.schedule.stable_order_plan();
-        plan.upload_order |= pending_order.is_some();
         let attempt = self.attempt_with_plan(plan, false)?;
         let mut output = match attempt {
             SessionFrameAttempt::Presented(candidate) => {
                 let output = self.standalone_cpu_frame_output(
                     candidate,
                     plan,
-                    pending_order.is_some(),
+                    pending_order.is_some() || plan.refresh_sort,
                     true,
                 );
                 self.presented_order_backend = SurfaceOrderBackendUsed::Cpu;
+                self.schedule
+                    .finish_presented_frame(plan, output.order_uploaded);
+                if plan.refresh_sort {
+                    self.schedule
+                        .record_applied_order(self.camera, self.camera_revision);
+                }
                 output
             }
             SessionFrameAttempt::Unavailable(candidate) => {
                 let mut output = self.standalone_cpu_frame_output(candidate, plan, false, false);
+                output.sync_sort_fallback = sync_sort_fallback;
                 output.projected_draw_adaptive_state =
                     self.projected_draw_adaptive_state(SurfaceOrderBackendUsed::Cpu);
                 return Ok(output);
@@ -2857,10 +2879,14 @@ impl SurfaceRenderSession {
         self.adaptive_projected_cpu = projected_policy;
         self.adaptive_probe_owner = projected_probe_owner;
 
+        let (completed_order_measurement, completed_order_measurement_failure) =
+            self.collect_order_measurements();
         let (completed_projected_measurement, completed_projected_measurement_failure) =
             self.collect_projected_draw_measurements();
         let (completed_gpu_producer_measurement, completed_gpu_producer_measurement_failure) =
             self.collect_gpu_producer_measurements();
+        output.completed_order_measurement = completed_order_measurement;
+        output.completed_order_measurement_failure = completed_order_measurement_failure;
         output.completed_projected_draw_measurement = completed_projected_measurement;
         output.completed_projected_draw_measurement_failure =
             completed_projected_measurement_failure;
@@ -2898,6 +2924,7 @@ impl SurfaceRenderSession {
         }
         output.projected_draw_adaptive_state =
             self.projected_draw_adaptive_state(SurfaceOrderBackendUsed::Cpu);
+        output.sync_sort_fallback = sync_sort_fallback;
         self.commit_presented_async_completion(&mut output);
         Ok(output)
     }
@@ -2918,7 +2945,9 @@ impl SurfaceRenderSession {
             .finish_presented_frame(self.schedule.stable_order_plan(), output.order_uploaded);
 
         if let Some(completion) = completion {
-            if let Some((preprocess_ms, sort_ms)) = completion.completed_timing {
+            if accepted_order.is_some()
+                && let Some((preprocess_ms, sort_ms)) = completion.completed_timing
+            {
                 output.stats.preprocess_ms = preprocess_ms;
                 output.stats.sort_ms = sort_ms;
             }
@@ -3448,6 +3477,152 @@ mod tests {
             session.compatibility_submission(SurfaceCompatibilityChannel::Order),
             Some(published_order_submission),
         );
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn public_async_test_session() -> (SurfaceRenderSession, Camera) {
+        let scene = SceneBuffers {
+            positions: vec![Vec3f::new(-0.5, 0.0, 1.0), Vec3f::new(0.5, 0.0, 1.2)],
+            opacity: vec![1.0; 2],
+            scale_xyz: vec![[-3.0; 3]; 2],
+            rotation_xyzw: vec![[0.0, 0.0, 0.0, 1.0]; 2],
+            color_dc: vec![[0.0; 3]; 2],
+            sh_degree: 0,
+            sh_rest: None,
+        };
+        let initial_camera = Camera::default();
+        let mut renderer =
+            Renderer::with_config_for_surface(RendererConfig::default()).expect("test renderer");
+        renderer.load_scene(scene).expect("test Direct scene");
+        let presenter = SessionSurfaceOwner::test_direct(2, [true]);
+        let mut session =
+            SurfaceRenderSession::new_with_surface_owner(renderer, presenter, initial_camera)
+                .expect("public Surface session");
+        session
+            .set_async_sort_enabled(true)
+            .expect("Direct CPU async scheduling");
+        assert!(
+            session
+                .render_frame()
+                .expect("initial frame")
+                .frame_presented
+        );
+        (session, initial_camera)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn install_pending_async_candidate(session: &mut SurfaceRenderSession, camera: Camera) {
+        session
+            .set_camera(camera)
+            .expect("candidate camera revision");
+        session.schedule.start_async_order(camera, 1);
+        (0..1_000)
+            .find(|_| {
+                session.presenter.push_test_frame_presented(false);
+                let output = session
+                    .render_frame()
+                    .expect("unavailable candidate attempt");
+                assert!(!output.frame_presented);
+                let installed = session
+                    .pending_async_completion
+                    .and_then(|completion| completion.accepted_order)
+                    .is_some();
+                if !installed {
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
+                installed
+            })
+            .expect("async candidate installed as pending attempt input");
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn public_async_session_recomputes_candidate_that_becomes_stale_before_present() {
+        let (mut session, initial_camera) = public_async_test_session();
+        let mut candidate_camera = initial_camera;
+        candidate_camera.pose.position.x += 0.015;
+        install_pending_async_candidate(&mut session, candidate_camera);
+
+        let mut current_camera = initial_camera;
+        current_camera.pose.position.x -= 0.015;
+        session
+            .set_camera(current_camera)
+            .expect("camera moved after candidate installation");
+        assert_eq!(session.camera_revision(), 2);
+        session.presenter.push_test_frame_presented(true);
+        let presented = session
+            .render_frame()
+            .expect("current-camera recovery frame");
+
+        assert!(presented.frame_presented);
+        assert!(presented.sort_refreshed);
+        assert!(presented.order_uploaded);
+        assert!(presented.stale_async_sort_dropped);
+        assert!(!presented.async_sort_result_applied);
+        assert_eq!(presented.camera_revision, 2);
+        assert_eq!(presented.applied_order_revision, 2);
+        assert_eq!(presented.presented_order_revision_lag, 0);
+        assert_eq!(presented.visible_count_revision, Some(2));
+        assert!(!presented.visible_count_pending);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn public_async_sync_fallback_is_present_fenced_and_keeps_sync_stats() {
+        let (mut session, initial_camera) = public_async_test_session();
+        let mut candidate_camera = initial_camera;
+        candidate_camera.pose.position.x += 0.015;
+        install_pending_async_candidate(&mut session, candidate_camera);
+
+        let async_timing_sentinel = (12_345.0, 67_890.0);
+        session
+            .pending_async_completion
+            .as_mut()
+            .expect("pending async completion")
+            .completed_timing = Some(async_timing_sentinel);
+        let mut fallback_camera = initial_camera;
+        fallback_camera.pose.position.x -= 1.0;
+        session
+            .set_camera(fallback_camera)
+            .expect("stale fallback camera revision");
+
+        let published_order = session
+            .compatibility_submission(SurfaceCompatibilityChannel::Order)
+            .expect("published order evidence");
+        let published_projected = session
+            .compatibility_submission(SurfaceCompatibilityChannel::Projected)
+            .expect("published projected evidence");
+        let published_stats = session.last_stats();
+        let telemetry_polls = session.presenter.test_telemetry_polls();
+
+        session.presenter.push_test_frame_presented(false);
+        let unavailable = session.render_frame().expect("unavailable sync fallback");
+        assert!(!unavailable.frame_presented);
+        assert_eq!(session.presenter.test_telemetry_polls(), telemetry_polls);
+        assert_eq!(session.last_stats(), published_stats);
+        assert_eq!(
+            session.compatibility_submission(SurfaceCompatibilityChannel::Order),
+            Some(published_order),
+        );
+        assert_eq!(
+            session.compatibility_submission(SurfaceCompatibilityChannel::Projected),
+            Some(published_projected),
+        );
+        assert!(session.pending_async_completion.is_some());
+
+        session.presenter.push_test_frame_presented(true);
+        let presented = session.render_frame().expect("presented sync fallback");
+        assert!(session.presenter.test_telemetry_polls() > telemetry_polls);
+        assert!(presented.frame_presented);
+        assert!(presented.sync_sort_fallback);
+        assert!(presented.sort_refreshed);
+        assert!(presented.order_uploaded);
+        assert_ne!(
+            (presented.stats.preprocess_ms, presented.stats.sort_ms),
+            async_timing_sentinel,
+        );
+        assert_eq!(session.last_stats(), presented.stats);
+        assert_eq!(presented.applied_order_revision, session.camera_revision());
     }
 
     #[test]
