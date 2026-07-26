@@ -6,8 +6,6 @@ use std::time::Duration;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::SurfaceFrameCapture;
 pub use crate::api::SurfaceOrderBackendUsed;
-#[cfg(not(target_arch = "wasm32"))]
-use crate::cpu_order::NativeCpuOrderWorker;
 use crate::evidence::SessionEvidence;
 pub use crate::evidence::{
     SurfaceCompatibilityChannel, SurfaceCompatibilityCountFamily, SurfaceCompatibilityCountsTake,
@@ -22,6 +20,8 @@ use crate::gpu_telemetry::{
     CpuOrderTelemetryPoll, GpuOrderTelemetryPoll, SurfaceCpuOrderMeasurement, TelemetrySubmission,
 };
 use crate::projected_draw_telemetry::ProjectedDrawTelemetryPoll;
+#[cfg(not(target_arch = "wasm32"))]
+use crate::surface::async_sort_supported;
 #[cfg(test)]
 use crate::surface::{
     ADAPTIVE_CPU_BOOTSTRAP_SAMPLES, ADAPTIVE_INITIAL_PROBE_DELAY,
@@ -31,8 +31,8 @@ use crate::surface::{
     AdaptiveMetric, AdaptiveOrderPolicy, AdaptiveProbeOwner, AdaptiveProjectedDrawPolicy,
     AdaptiveRefreshChoice, AdaptiveSampleKind, ExactSurfacePlanState,
     LegacySurfaceStatsAvailability, ProjectedAdaptiveChoice, ProjectedAdaptiveSampleKind,
-    SessionSurfaceOwner, adaptive_primary_metric, arbitrate_new_probe_owner,
-    commit_exact_plan_state, commit_projected_draw_policy_transition,
+    SessionSchedule, SessionSurfaceOwner, SurfaceFramePlan, adaptive_primary_metric,
+    arbitrate_new_probe_owner, commit_exact_plan_state, commit_projected_draw_policy_transition,
     defer_projected_formal_choice, gpu_producer_measurement_context_is_valid,
     gpu_projected_order_changed, order_probe_owner_should_yield, prepare_exact_gpu_order,
     prepare_exact_gpu_order_producer, projected_order_changed, projected_policy_can_sample,
@@ -56,17 +56,6 @@ use crate::{
     plans::PlanId, renderer::ExactAdaptivePolicyState, surface::shadow::SurfaceExactError,
 };
 
-const DEFAULT_SURFACE_SORT_INTERVAL: u32 = 1;
-/// Maximum number of camera revisions an asynchronously produced order may lag
-/// behind the frame that consumes it. Older results are dropped; if the
-/// displayed order reaches this bound before a fresh result is ready, the
-/// session performs a synchronous refresh rather than allowing unbounded lag.
-#[cfg(not(target_arch = "wasm32"))]
-const MAX_ASYNC_SORT_REVISION_LAG: u64 = 2;
-#[cfg(not(target_arch = "wasm32"))]
-const MAX_ASYNC_SORT_ROTATION_DELTA_RADIANS: f32 = 0.01;
-#[cfg(not(target_arch = "wasm32"))]
-const MAX_ASYNC_SORT_TRANSLATION_DIAGONAL_FRACTION: f32 = 0.02;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SurfaceSortSchedule {
     Interval(u32),
@@ -81,11 +70,6 @@ pub enum SurfaceOrderBackend {
     Cpu,
     Gpu,
     Adaptive,
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn async_sort_supported(geometry_path: GeometryPath, order_backend: SurfaceOrderBackend) -> bool {
-    geometry_path == GeometryPath::SortedIndexDirect && order_backend == SurfaceOrderBackend::Cpu
 }
 
 /// Selects the exact projected draw execution independently from CPU/GPU
@@ -188,11 +172,6 @@ impl SurfaceSortSchedule {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-fn async_schedule_threshold(sort_interval: u32) -> u32 {
-    sort_interval.saturating_sub(1).max(1)
-}
-
 fn adaptive_gpu_order_failure_reason(
     error: &RendererError,
 ) -> Option<SurfaceAdaptiveGpuFailureReason> {
@@ -226,18 +205,6 @@ fn should_measure_cpu_refresh(
     plan.refresh_sort
         && requested_backend == SurfaceOrderBackendUsed::Cpu
         && geometry_path != GeometryPath::PagedActiveAtlas
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn native_cpu_order_worker(renderer: &Renderer) -> Result<NativeCpuOrderWorker, RendererError> {
-    let positions: std::sync::Arc<[gsplat_core::Vec3f]> =
-        if let Some(scene) = renderer.resident_scene() {
-            std::sync::Arc::clone(&scene.positions)
-        } else {
-            let scene = renderer.scene().ok_or(RendererError::SceneNotLoaded)?;
-            std::sync::Arc::from(scene.positions.clone().into_boxed_slice())
-        };
-    NativeCpuOrderWorker::new(positions)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -315,79 +282,6 @@ pub struct SurfaceFrameOutput {
     pub visible_count_revision: Option<u64>,
     pub visible_count_pending: bool,
     pub gpu_timestamp_queries_enabled: bool,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct SurfaceFramePlan {
-    refresh_sort: bool,
-    upload_order: bool,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct SurfaceFrameState {
-    camera_dirty: bool,
-    camera_changed_this_frame: bool,
-    force_sort: bool,
-    order_upload_dirty: bool,
-    camera_changes_since_sort: u32,
-}
-
-impl Default for SurfaceFrameState {
-    fn default() -> Self {
-        Self {
-            camera_dirty: true,
-            camera_changed_this_frame: true,
-            force_sort: true,
-            order_upload_dirty: true,
-            camera_changes_since_sort: 0,
-        }
-    }
-}
-
-impl SurfaceFrameState {
-    fn mark_camera_changed(&mut self) {
-        self.camera_dirty = true;
-        self.camera_changed_this_frame = true;
-        self.camera_changes_since_sort = self.camera_changes_since_sort.saturating_add(1);
-    }
-
-    fn force_sort(&mut self) {
-        self.force_sort = true;
-        self.order_upload_dirty = true;
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    fn mark_external_order(&mut self, camera_changes_since_sort: u32) {
-        self.camera_dirty = camera_changes_since_sort > 0;
-        self.camera_changed_this_frame = false;
-        self.force_sort = false;
-        self.order_upload_dirty = true;
-        self.camera_changes_since_sort = camera_changes_since_sort;
-    }
-
-    fn plan(self, has_order: bool, sort_interval: u32) -> SurfaceFramePlan {
-        let interval = sort_interval.max(1);
-        let refresh_sort = self.force_sort
-            || !has_order
-            || (self.camera_dirty
-                && (self.camera_changes_since_sort >= interval || !self.camera_changed_this_frame));
-        SurfaceFramePlan {
-            refresh_sort,
-            upload_order: self.order_upload_dirty || refresh_sort,
-        }
-    }
-
-    fn finish_frame(&mut self, plan: SurfaceFramePlan, order_uploaded: bool) {
-        self.force_sort = false;
-        self.camera_changed_this_frame = false;
-        if plan.refresh_sort {
-            self.camera_dirty = false;
-            self.camera_changes_since_sort = 0;
-        }
-        if order_uploaded {
-            self.order_upload_dirty = false;
-        }
-    }
 }
 
 // Frame execution and telemetry stay with the Session facade. S1 extracts the
@@ -544,7 +438,7 @@ pub struct SurfaceRenderSession {
     current_stats_submission: SurfaceCurrentStatsSubmission,
     legacy_stats_availability: LegacySurfaceStatsAvailability,
     camera: Camera,
-    sort_interval: u32,
+    schedule: SessionSchedule,
     order_backend: SurfaceOrderBackend,
     projected_draw_policy: SurfaceProjectedDrawPolicy,
     /// Configured public policy for Exact. The renderer-owned four-state plan
@@ -564,19 +458,10 @@ pub struct SurfaceRenderSession {
     pending_adaptive_choice: Option<AdaptiveRefreshChoice>,
     pending_projected_choice: Option<ProjectedAdaptiveChoice>,
     camera_revision: u64,
-    applied_order_revision: u64,
-    applied_order_camera: Camera,
-    #[cfg(not(target_arch = "wasm32"))]
-    async_sort_translation_limit: f32,
-    frame_state: SurfaceFrameState,
     last_stats: FrameStats,
     latest_cpu_order_measurement: Option<SurfaceCpuOrderMeasurement>,
     latest_gpu_order_measurement: Option<SurfaceOrderMeasurement>,
     evidence: SessionEvidence,
-    #[cfg(not(target_arch = "wasm32"))]
-    async_sort_enabled: bool,
-    #[cfg(not(target_arch = "wasm32"))]
-    async_sorter: Option<NativeCpuOrderWorker>,
 }
 
 #[derive(Debug, Default)]
@@ -780,24 +665,7 @@ impl SurfaceRenderSession {
         if renderer.geometry_path() != presenter.geometry_path() {
             return Err(RendererError::InvalidConfig);
         }
-        #[cfg(not(target_arch = "wasm32"))]
-        let async_sort_translation_limit = {
-            let positions = renderer.positions().ok_or(RendererError::SceneNotLoaded)?;
-            let mut min = [f32::INFINITY; 3];
-            let mut max = [f32::NEG_INFINITY; 3];
-            for position in positions {
-                min[0] = min[0].min(position.x);
-                min[1] = min[1].min(position.y);
-                min[2] = min[2].min(position.z);
-                max[0] = max[0].max(position.x);
-                max[1] = max[1].max(position.y);
-                max[2] = max[2].max(position.z);
-            }
-            let diagonal =
-                ((max[0] - min[0]).powi(2) + (max[1] - min[1]).powi(2) + (max[2] - min[2]).powi(2))
-                    .sqrt();
-            (diagonal * MAX_ASYNC_SORT_TRANSLATION_DIAGONAL_FRACTION).max(1e-4)
-        };
+        let schedule = SessionSchedule::new(&renderer, camera)?;
         // Prepare the only eagerly allocated session-owned collection before
         // staging release. Nothing after the handoff below allocates or can
         // fail before the completed session value is returned.
@@ -845,7 +713,7 @@ impl SurfaceRenderSession {
             current_stats_submission: SurfaceCurrentStatsSubmission::NotRequested,
             legacy_stats_availability,
             camera,
-            sort_interval: DEFAULT_SURFACE_SORT_INTERVAL,
+            schedule,
             order_backend: SurfaceOrderBackend::Cpu,
             projected_draw_policy: SurfaceProjectedDrawPolicy::Adaptive,
             exact_projected_draw_policy_requested: exact_plan_receipt
@@ -863,19 +731,10 @@ impl SurfaceRenderSession {
             pending_adaptive_choice: None,
             pending_projected_choice: None,
             camera_revision: 0,
-            applied_order_revision: 0,
-            applied_order_camera: camera,
-            #[cfg(not(target_arch = "wasm32"))]
-            async_sort_translation_limit,
-            frame_state: SurfaceFrameState::default(),
             last_stats: FrameStats::zero(),
             latest_cpu_order_measurement: None,
             latest_gpu_order_measurement: None,
             evidence,
-            #[cfg(not(target_arch = "wasm32"))]
-            async_sort_enabled: false,
-            #[cfg(not(target_arch = "wasm32"))]
-            async_sorter: None,
         })
     }
 
@@ -925,6 +784,7 @@ impl SurfaceRenderSession {
             return Err(RendererError::InvalidConfig);
         }
         let evidence = SessionEvidence::new();
+        let schedule = SessionSchedule::new(&renderer, camera)?;
         let exact_plan_receipt = if presenter.geometry_path() == GeometryPath::PackedAtlas {
             let (device, queue, format, indirect_execution_supported) =
                 presenter.exact_runtime_context();
@@ -961,7 +821,7 @@ impl SurfaceRenderSession {
             current_stats_submission: SurfaceCurrentStatsSubmission::NotRequested,
             legacy_stats_availability,
             camera,
-            sort_interval: DEFAULT_SURFACE_SORT_INTERVAL,
+            schedule,
             order_backend: SurfaceOrderBackend::Cpu,
             projected_draw_policy: SurfaceProjectedDrawPolicy::Adaptive,
             exact_projected_draw_policy_requested: exact_plan_receipt
@@ -979,9 +839,6 @@ impl SurfaceRenderSession {
             pending_adaptive_choice: None,
             pending_projected_choice: None,
             camera_revision: 0,
-            applied_order_revision: 0,
-            applied_order_camera: camera,
-            frame_state: SurfaceFrameState::default(),
             last_stats: FrameStats::zero(),
             latest_cpu_order_measurement: None,
             latest_gpu_order_measurement: None,
@@ -1226,7 +1083,7 @@ impl SurfaceRenderSession {
         self.adaptive_projected_gpu.suspend_learning();
         self.adaptive_probe_owner = None;
         self.blocked_order_choice = None;
-        self.frame_state.force_sort();
+        self.schedule.force_sort();
     }
 
     /// Enables the independent per-GPU-frame producer receipt ring. It is a
@@ -1263,7 +1120,7 @@ impl SurfaceRenderSession {
             &mut self.adaptive_probe_owner,
             &mut self.blocked_order_choice,
         );
-        self.frame_state.force_sort();
+        self.schedule.force_sort();
         Ok(())
     }
 
@@ -1306,7 +1163,7 @@ impl SurfaceRenderSession {
         )? {
             return Ok(());
         }
-        self.frame_state.force_sort();
+        self.schedule.force_sort();
         Ok(())
     }
 
@@ -1347,7 +1204,7 @@ impl SurfaceRenderSession {
             reset_adaptive_for_raster_transition(&mut self.adaptive_policy, previous, plan);
         debug_assert!(adaptive_reset);
         self.reset_projected_draw_policies();
-        self.frame_state.force_sort();
+        self.schedule.force_sort();
         Ok(())
     }
 
@@ -1420,7 +1277,7 @@ impl SurfaceRenderSession {
         self.reset_adaptive_policy();
         self.reset_projected_draw_policies();
         self.presented_order_backend = SurfaceOrderBackendUsed::Cpu;
-        self.frame_state.force_sort();
+        self.schedule.force_sort();
     }
 
     pub fn camera(&self) -> Camera {
@@ -1447,7 +1304,7 @@ impl SurfaceRenderSession {
             if self.exact_plan_receipt.is_some() {
                 return Ok(());
             }
-            self.frame_state.mark_camera_changed();
+            self.schedule.mark_camera_changed();
         }
         Ok(())
     }
@@ -1483,7 +1340,7 @@ impl SurfaceRenderSession {
             self.latest_cpu_order_measurement = None;
             self.reset_adaptive_policy();
             self.reset_projected_draw_policies();
-            self.frame_state.force_sort();
+            self.schedule.force_sort();
         }
         Ok(())
     }
@@ -1517,13 +1374,13 @@ impl SurfaceRenderSession {
             self.latest_cpu_order_measurement = None;
             self.reset_adaptive_policy();
             self.reset_projected_draw_policies();
-            self.frame_state.force_sort();
+            self.schedule.force_sort();
         }
         Ok(())
     }
 
     pub fn sort_interval(&self) -> u32 {
-        self.sort_interval
+        self.schedule.sort_interval()
     }
 
     pub const fn order_backend(&self) -> SurfaceOrderBackend {
@@ -1557,7 +1414,7 @@ impl SurfaceRenderSession {
             return Err(RendererError::InvalidConfig);
         }
         #[cfg(not(target_arch = "wasm32"))]
-        if backend != SurfaceOrderBackend::Cpu && self.async_sort_enabled {
+        if backend != SurfaceOrderBackend::Cpu && self.schedule.configured_async_enabled() {
             return Err(RendererError::InvalidConfig);
         }
         let gpu_prepare_error = if backend == SurfaceOrderBackend::Cpu {
@@ -1599,7 +1456,7 @@ impl SurfaceRenderSession {
         if backend == SurfaceOrderBackend::Adaptive && gpu_prepare_failed {
             self.adaptive_policy.gpu_failed();
         }
-        self.frame_state.force_sort();
+        self.schedule.force_sort();
         Ok(())
     }
 
@@ -1608,13 +1465,15 @@ impl SurfaceRenderSession {
             return SurfaceSortSchedule::Interval(1);
         }
         #[cfg(not(target_arch = "wasm32"))]
-        if self.async_sort_enabled && async_sort_supported(self.geometry_path(), self.order_backend)
+        if self
+            .schedule
+            .async_enabled(self.geometry_path(), self.order_backend)
         {
             return SurfaceSortSchedule::AsyncLatest {
-                interval: self.sort_interval,
+                interval: self.schedule.sort_interval(),
             };
         }
-        SurfaceSortSchedule::Interval(self.sort_interval)
+        SurfaceSortSchedule::Interval(self.schedule.sort_interval())
     }
 
     pub fn set_sort_schedule(
@@ -1669,10 +1528,8 @@ impl SurfaceRenderSession {
             debug_assert_eq!(next, current);
             return Ok(());
         }
-        if self.sort_interval != interval {
-            self.sort_interval = interval;
+        if self.schedule.set_sort_interval(interval) {
             self.reset_adaptive_policy();
-            self.frame_state.force_sort();
         }
         Ok(())
     }
@@ -1689,7 +1546,7 @@ impl SurfaceRenderSession {
         self.latest_cpu_order_measurement = None;
         self.reset_adaptive_policy();
         self.reset_projected_draw_policies();
-        self.frame_state.force_sort();
+        self.schedule.force_sort();
     }
 
     fn reset_adaptive_policy(&mut self) {
@@ -1765,10 +1622,10 @@ impl SurfaceRenderSession {
                 // this owner boundary; neither projected lane is reset.
                 self.adaptive_policy.reset(adaptive_primary_metric());
                 self.blocked_order_choice = None;
-                self.frame_state.force_sort();
+                self.schedule.force_sort();
             }
             if projected_owner_finished && self.blocked_order_choice.is_some() {
-                self.frame_state.force_sort();
+                self.schedule.force_sort();
             }
             self.adaptive_probe_owner = None;
         }
@@ -1968,7 +1825,7 @@ impl SurfaceRenderSession {
                 .expect("active Exact Surface runtime");
             return;
         }
-        self.frame_state.force_sort();
+        self.schedule.force_sort();
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -1981,28 +1838,19 @@ impl SurfaceRenderSession {
         if enabled && !async_sort_supported(self.geometry_path(), self.order_backend) {
             return Err(RendererError::InvalidConfig);
         }
-        if self.async_sort_enabled == enabled {
-            return Ok(());
-        }
-        if enabled {
-            self.async_sorter = Some(native_cpu_order_worker(&self.renderer)?);
-        } else {
-            self.disable_async_sort();
-            return Ok(());
-        }
-        self.async_sort_enabled = enabled;
+        self.schedule.set_async_enabled(&self.renderer, enabled)?;
         Ok(())
     }
 
     #[cfg(not(target_arch = "wasm32"))]
     fn disable_async_sort(&mut self) {
-        self.async_sorter = None;
-        self.async_sort_enabled = false;
+        self.schedule.disable_async();
     }
 
     #[cfg(not(target_arch = "wasm32"))]
     pub fn async_sort_enabled(&self) -> bool {
-        self.async_sort_enabled && async_sort_supported(self.geometry_path(), self.order_backend)
+        self.schedule
+            .async_enabled(self.geometry_path(), self.order_backend)
     }
 
     pub fn render_frame(&mut self) -> Result<SurfaceFrameOutput, RendererError> {
@@ -2014,7 +1862,9 @@ impl SurfaceRenderSession {
             return result;
         }
         #[cfg(not(target_arch = "wasm32"))]
-        if self.async_sort_enabled && async_sort_supported(self.geometry_path(), self.order_backend)
+        if self
+            .schedule
+            .async_enabled(self.geometry_path(), self.order_backend)
         {
             let result = self.render_frame_async_sort();
             if let Ok(output) = &result {
@@ -2080,8 +1930,8 @@ impl SurfaceRenderSession {
         let order_generation = submission.order_generation();
         let order_refreshed =
             exact_order_refreshed(self.exact_order_generation_receipt, plan, order_generation);
-        self.applied_order_revision = submission.frame_identity().camera_revision();
-        self.applied_order_camera = self.camera;
+        self.schedule
+            .record_applied_order(self.camera, submission.frame_identity().camera_revision());
         let output =
             self.exact_surface_output(Some(submission), plan, order_refreshed, frame_started);
         self.exact_order_generation_receipt = Some((plan, order_generation));
@@ -2166,11 +2016,10 @@ impl SurfaceRenderSession {
             stale_async_sort_dropped: false,
             async_sort_scheduled: false,
             camera_revision,
-            applied_order_revision: self.applied_order_revision,
-            presented_order_revision_lag: u32::try_from(
-                camera_revision.saturating_sub(self.applied_order_revision),
-            )
-            .unwrap_or(u32::MAX),
+            applied_order_revision: self.schedule.applied_order_revision(),
+            presented_order_revision_lag: self
+                .schedule
+                .presented_order_revision_lag(camera_revision),
             async_sort_scheduled_revision: None,
             async_sort_completed_revision: None,
             async_sort_result_applied: false,
@@ -2220,7 +2069,7 @@ impl SurfaceRenderSession {
             SurfaceOrderBackendUsed::Cpu => !self.renderer.current_sorted_indices().is_empty(),
             SurfaceOrderBackendUsed::Gpu => self.gpu_order_initialized,
         };
-        let plan = self.frame_state.plan(has_order, self.sort_interval);
+        let plan = self.schedule.plan(has_order);
         let mut adaptive_choice = self.pending_adaptive_choice.or_else(|| {
             if self.order_backend != SurfaceOrderBackend::Adaptive {
                 return None;
@@ -2401,11 +2250,10 @@ impl SurfaceRenderSession {
                     };
                     gpu_failed = true;
                     self.adaptive_gpu_failure = Some(reason);
-                    self.frame_state.force_sort();
-                    let fallback_plan = self.frame_state.plan(
-                        !self.renderer.current_sorted_indices().is_empty(),
-                        self.sort_interval,
-                    );
+                    self.schedule.force_sort();
+                    let fallback_plan = self
+                        .schedule
+                        .plan(!self.renderer.current_sorted_indices().is_empty());
                     projected_choice = self
                         .projected_policy(SurfaceOrderBackendUsed::Cpu)
                         .held_choice();
@@ -2498,7 +2346,7 @@ impl SurfaceRenderSession {
                             self.adaptive_policy.register_pending_sample(choice, ticket);
                         } else {
                             self.blocked_order_choice = Some(choice);
-                            self.frame_state.force_sort();
+                            self.schedule.force_sort();
                         }
                     }
                 }
@@ -2577,9 +2425,9 @@ impl SurfaceRenderSession {
             self.projected_draw_adaptive_state(output.order_backend);
         self.last_stats = output.stats;
         if output.sort_refreshed {
-            self.applied_order_revision = self.camera_revision;
-            self.applied_order_camera = self.camera;
-            output.applied_order_revision = self.applied_order_revision;
+            self.schedule
+                .record_applied_order(self.camera, self.camera_revision);
+            output.applied_order_revision = self.schedule.applied_order_revision();
             output.presented_order_revision_lag = 0;
         }
         Ok(output)
@@ -2749,7 +2597,7 @@ impl SurfaceRenderSession {
             self.last_stats = stats;
             self.gpu_order_initialized |= plan.refresh_sort;
             self.presented_order_backend = SurfaceOrderBackendUsed::Gpu;
-            self.frame_state.finish_frame(plan, false);
+            self.schedule.finish_presented_frame(plan, false);
         }
         Ok(SurfaceFrameOutput {
             stats,
@@ -2767,12 +2615,10 @@ impl SurfaceRenderSession {
             stale_async_sort_dropped: false,
             async_sort_scheduled: false,
             camera_revision: self.camera_revision,
-            applied_order_revision: self.applied_order_revision,
-            presented_order_revision_lag: u32::try_from(
-                self.camera_revision
-                    .saturating_sub(self.applied_order_revision),
-            )
-            .unwrap_or(u32::MAX),
+            applied_order_revision: self.schedule.applied_order_revision(),
+            presented_order_revision_lag: self
+                .schedule
+                .presented_order_revision_lag(self.camera_revision),
             async_sort_scheduled_revision: None,
             async_sort_completed_revision: None,
             async_sort_result_applied: false,
@@ -2866,8 +2712,8 @@ impl SurfaceRenderSession {
         if frame_presented {
             self.last_stats = stats;
             self.presented_order_backend = SurfaceOrderBackendUsed::Cpu;
-            self.frame_state
-                .finish_frame(plan, paged || plan.upload_order);
+            self.schedule
+                .finish_presented_frame(plan, paged || plan.upload_order);
         }
         Ok(SurfaceFrameOutput {
             stats,
@@ -2885,12 +2731,10 @@ impl SurfaceRenderSession {
             stale_async_sort_dropped: false,
             async_sort_scheduled: false,
             camera_revision: self.camera_revision,
-            applied_order_revision: self.applied_order_revision,
-            presented_order_revision_lag: u32::try_from(
-                self.camera_revision
-                    .saturating_sub(self.applied_order_revision),
-            )
-            .unwrap_or(u32::MAX),
+            applied_order_revision: self.schedule.applied_order_revision(),
+            presented_order_revision_lag: self
+                .schedule
+                .presented_order_revision_lag(self.camera_revision),
             async_sort_scheduled_revision: None,
             async_sort_completed_revision: None,
             async_sort_result_applied: false,
@@ -2917,93 +2761,54 @@ impl SurfaceRenderSession {
             visible_count_revision: Some(if paged || plan.refresh_sort {
                 self.camera_revision
             } else {
-                self.applied_order_revision
+                self.schedule.applied_order_revision()
             }),
             visible_count_pending: !paged
                 && !plan.refresh_sort
-                && self.applied_order_revision != self.camera_revision,
+                && self.schedule.applied_order_revision() != self.camera_revision,
             gpu_timestamp_queries_enabled: self.presenter.gpu_order_timestamps_enabled(),
         })
     }
 
     #[cfg(not(target_arch = "wasm32"))]
     fn render_frame_async_sort(&mut self) -> Result<SurfaceFrameOutput, RendererError> {
-        let mut completed_timing = None;
         let mut applied_order = false;
-        let mut observed_revision_lag = None;
-        let mut stale_result_dropped = false;
-        let mut completed_revision = None;
-        let polled_result = self
-            .async_sorter
-            .as_mut()
-            .ok_or(RendererError::SurfaceWorker)?
-            .poll_result();
-        if let Some(result) = polled_result {
-            let mut result = result?;
-            completed_revision = Some(result.camera_revision);
-            let revision_delta = self.camera_revision.saturating_sub(result.camera_revision);
-            let revision_lag = u32::try_from(revision_delta).unwrap_or(u32::MAX);
-            observed_revision_lag = Some(revision_lag);
-            completed_timing = Some((result.timings.preprocess_ms, result.timings.sort_ms));
-            if result.camera_revision >= self.applied_order_revision
-                && revision_delta <= MAX_ASYNC_SORT_REVISION_LAG
-                && async_order_pose_compatible(
-                    &result.camera,
-                    &self.camera,
-                    self.async_sort_translation_limit,
-                )
-            {
-                let replace_result = self
-                    .renderer
-                    .replace_surface_sorted_indices_recycling(&mut result.ordered_ids);
-                self.async_sorter
-                    .as_mut()
-                    .ok_or(RendererError::SurfaceWorker)?
-                    .recycle(result.ordered_ids);
-                replace_result?;
-                self.frame_state.mark_external_order(revision_lag);
-                self.applied_order_revision = result.camera_revision;
-                self.applied_order_camera = result.camera;
-                applied_order = true;
-            } else {
-                stale_result_dropped = true;
-                self.async_sorter
-                    .as_mut()
-                    .ok_or(RendererError::SurfaceWorker)?
-                    .recycle(result.ordered_ids);
-            }
+        let mut async_poll = self
+            .schedule
+            .poll_async_order(&self.camera, self.camera_revision)?;
+        if let Some(mut candidate) = async_poll.candidate.take() {
+            let candidate_camera = candidate.camera;
+            let candidate_revision = candidate.camera_revision;
+            let candidate_lag = candidate.revision_lag;
+            let replace_result = self
+                .renderer
+                .replace_surface_sorted_indices_recycling(&mut candidate.ordered_ids);
+            self.schedule.recycle_async_order(candidate.ordered_ids);
+            replace_result?;
+            self.schedule
+                .accept_async_order(candidate_camera, candidate_revision, candidate_lag);
+            applied_order = true;
         }
 
-        if self.renderer.current_sorted_indices().is_empty() || self.frame_state.force_sort {
+        let has_order = !self.renderer.current_sorted_indices().is_empty();
+        if self.schedule.requires_initial_sync(has_order) {
             return self.render_frame_sync();
         }
 
-        let displayed_order_lag = self
-            .camera_revision
-            .saturating_sub(self.applied_order_revision);
-        if displayed_order_lag > MAX_ASYNC_SORT_REVISION_LAG
-            || !async_order_pose_compatible(
-                &self.applied_order_camera,
-                &self.camera,
-                self.async_sort_translation_limit,
-            )
+        if self
+            .schedule
+            .requires_stale_order_fallback(&self.camera, self.camera_revision)
         {
             let mut output = self.render_frame_sync()?;
-            output.async_sort_revision_lag = observed_revision_lag;
-            output.stale_async_sort_dropped = stale_result_dropped;
-            output.async_sort_completed_revision = completed_revision;
+            output.async_sort_revision_lag = async_poll.observed_revision_lag;
+            output.stale_async_sort_dropped = async_poll.stale_result_dropped;
+            output.async_sort_completed_revision = async_poll.completed_revision;
             output.async_sort_result_applied = applied_order;
             output.sync_sort_fallback = true;
             return Ok(output);
         }
 
-        let should_schedule = self.frame_state.camera_dirty
-            && self.frame_state.camera_changes_since_sort
-                >= async_schedule_threshold(self.sort_interval)
-            && !self
-                .async_sorter
-                .as_ref()
-                .is_some_and(NativeCpuOrderWorker::is_in_flight);
+        let should_schedule = self.schedule.should_schedule_async();
         let schedule_camera = self.camera;
         let schedule_revision = self.camera_revision;
         let (completed_projected_measurement, completed_projected_measurement_failure) =
@@ -3030,10 +2835,7 @@ impl SurfaceRenderSession {
         if self.adaptive_probe_owner.is_none() && projected_choice.sample.is_some() {
             self.adaptive_probe_owner = Some(AdaptiveProbeOwner::ProjectedCpu);
         }
-        let plan = SurfaceFramePlan {
-            refresh_sort: false,
-            upload_order: self.frame_state.order_upload_dirty,
-        };
+        let plan = self.schedule.stable_order_plan();
         let mut output = self.render_with_plan(plan, applied_order, false, projected_choice)?;
         output.completed_projected_draw_measurement = completed_projected_measurement;
         output.completed_projected_draw_measurement_failure =
@@ -3074,29 +2876,25 @@ impl SurfaceRenderSession {
         output.projected_draw_adaptive_state =
             self.projected_draw_adaptive_state(SurfaceOrderBackendUsed::Cpu);
 
-        if let Some((preprocess_ms, sort_ms)) = completed_timing {
+        if let Some((preprocess_ms, sort_ms)) = async_poll.completed_timing {
             output.stats.preprocess_ms = preprocess_ms;
             output.stats.sort_ms = sort_ms;
             self.last_stats = output.stats;
         }
         if should_schedule {
-            self.async_sorter
-                .as_mut()
-                .ok_or(RendererError::SurfaceWorker)?
-                .start(schedule_camera, schedule_revision);
+            self.schedule
+                .start_async_order(schedule_camera, schedule_revision);
         }
-        output.async_sort_revision_lag = observed_revision_lag;
-        output.stale_async_sort_dropped = stale_result_dropped;
+        output.async_sort_revision_lag = async_poll.observed_revision_lag;
+        output.stale_async_sort_dropped = async_poll.stale_result_dropped;
         output.async_sort_scheduled = should_schedule;
         output.camera_revision = self.camera_revision;
-        output.applied_order_revision = self.applied_order_revision;
-        output.presented_order_revision_lag = u32::try_from(
-            self.camera_revision
-                .saturating_sub(self.applied_order_revision),
-        )
-        .unwrap_or(u32::MAX);
+        output.applied_order_revision = self.schedule.applied_order_revision();
+        output.presented_order_revision_lag = self
+            .schedule
+            .presented_order_revision_lag(self.camera_revision);
         output.async_sort_scheduled_revision = should_schedule.then_some(schedule_revision);
-        output.async_sort_completed_revision = completed_revision;
+        output.async_sort_completed_revision = async_poll.completed_revision;
         output.async_sort_result_applied = applied_order;
         Ok(output)
     }
@@ -3104,26 +2902,6 @@ impl SurfaceRenderSession {
 
 fn paged_surface_counts(source_count: usize, drawn_count: u32) -> (u32, u32) {
     (u32::try_from(source_count).unwrap_or(u32::MAX), drawn_count)
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn async_order_pose_compatible(
-    order_camera: &Camera,
-    current_camera: &Camera,
-    translation_limit: f32,
-) -> bool {
-    let dx = current_camera.pose.position.x - order_camera.pose.position.x;
-    let dy = current_camera.pose.position.y - order_camera.pose.position.y;
-    let dz = current_camera.pose.position.z - order_camera.pose.position.z;
-    if dx * dx + dy * dy + dz * dz > translation_limit * translation_limit {
-        return false;
-    }
-    let a = order_camera.pose.rotation_xyzw;
-    let b = current_camera.pose.rotation_xyzw;
-    let dot = (a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3])
-        .abs()
-        .clamp(0.0, 1.0);
-    2.0 * dot.acos() <= MAX_ASYNC_SORT_ROTATION_DELTA_RADIANS
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
@@ -3134,16 +2912,15 @@ mod exact_control_tests;
 mod tests {
     use super::{
         ADAPTIVE_INITIAL_PROBE_DELAY, AdaptiveMetric, AdaptiveOrderPolicy, AdaptiveProbeOwner,
-        AdaptiveProjectedDrawPolicy, AdaptiveSampleKind, MAX_ASYNC_SORT_REVISION_LAG, PlanId,
-        ProjectedAdaptiveChoice, ProjectedAdaptiveSampleKind, SurfaceAdaptiveState,
-        SurfaceFrameState, SurfaceGeometrySwitchEntry, SurfaceGpuProducerMeasurementControl,
-        SurfaceGpuProducerMeasurementSubmission, SurfaceGpuProducerMeasurementUnsampledReason,
-        SurfaceOrderBackend, SurfaceOrderBackendUsed, SurfaceOrderMeasurementSubmission,
-        SurfaceOrderMeasurementUnsampledReason, SurfaceProjectedDrawAdaptiveState,
-        SurfaceProjectedDrawMeasurementSubmission, SurfaceProjectedDrawMeasurementUnsampledReason,
-        SurfaceProjectedDrawPolicy, SurfaceSortSchedule, TelemetrySubmission,
-        adaptive_gpu_order_failure_reason, adaptive_primary_metric, arbitrate_new_probe_owner,
-        async_order_pose_compatible, async_schedule_threshold, defer_projected_formal_choice,
+        AdaptiveProjectedDrawPolicy, AdaptiveSampleKind, PlanId, ProjectedAdaptiveChoice,
+        ProjectedAdaptiveSampleKind, SurfaceAdaptiveState, SurfaceGeometrySwitchEntry,
+        SurfaceGpuProducerMeasurementControl, SurfaceGpuProducerMeasurementSubmission,
+        SurfaceGpuProducerMeasurementUnsampledReason, SurfaceOrderBackend, SurfaceOrderBackendUsed,
+        SurfaceOrderMeasurementSubmission, SurfaceOrderMeasurementUnsampledReason,
+        SurfaceProjectedDrawAdaptiveState, SurfaceProjectedDrawMeasurementSubmission,
+        SurfaceProjectedDrawMeasurementUnsampledReason, SurfaceProjectedDrawPolicy,
+        SurfaceSortSchedule, TelemetrySubmission, adaptive_gpu_order_failure_reason,
+        adaptive_primary_metric, arbitrate_new_probe_owner, defer_projected_formal_choice,
         exact_order_refreshed, exact_published_camera_revision,
         gpu_producer_measurement_context_is_valid, gpu_projected_order_changed,
         legacy_surface_current_stats_poll, legacy_surface_current_stats_request,
@@ -3934,164 +3711,6 @@ mod tests {
             Ok(false)
         ));
         assert_eq!(renderer_geometry_snapshot(&packed), packed_before);
-    }
-
-    #[test]
-    fn first_frame_forces_sort_and_order_upload() {
-        let plan = SurfaceFrameState::default().plan(false, 2);
-
-        assert!(plan.refresh_sort);
-        assert!(plan.upload_order);
-    }
-
-    #[test]
-    fn stationary_frame_reuses_order_without_resorting() {
-        let mut state = SurfaceFrameState::default();
-        let first = state.plan(false, 2);
-        state.finish_frame(first, true);
-
-        let stationary = state.plan(true, 2);
-        assert!(!stationary.refresh_sort);
-        assert!(!stationary.upload_order);
-    }
-
-    #[test]
-    fn deferred_camera_change_catches_up_on_the_next_stationary_frame() {
-        let mut state = SurfaceFrameState::default();
-        let first = state.plan(false, 2);
-        state.finish_frame(first, true);
-
-        state.mark_camera_changed();
-        let first_change = state.plan(true, 2);
-        assert!(!first_change.refresh_sort);
-        state.finish_frame(first_change, false);
-
-        let stationary = state.plan(true, 2);
-        assert!(stationary.refresh_sort);
-        assert!(stationary.upload_order);
-        state.finish_frame(stationary, true);
-
-        let caught_up = state.plan(true, 2);
-        assert!(!caught_up.refresh_sort);
-        assert!(!caught_up.upload_order);
-    }
-
-    #[test]
-    fn continuous_camera_changes_refresh_at_the_requested_interval() {
-        let mut state = SurfaceFrameState::default();
-        let first = state.plan(false, 2);
-        state.finish_frame(first, true);
-
-        state.mark_camera_changed();
-        let first_change = state.plan(true, 2);
-        assert!(!first_change.refresh_sort);
-        state.finish_frame(first_change, false);
-
-        state.mark_camera_changed();
-        let second_change = state.plan(true, 2);
-        assert!(second_change.refresh_sort);
-        assert!(second_change.upload_order);
-    }
-
-    #[test]
-    fn async_sort_revision_lag_is_explicitly_bounded() {
-        assert_eq!(MAX_ASYNC_SORT_REVISION_LAG, 2);
-    }
-
-    #[test]
-    fn async_sort_pose_envelope_accepts_slow_motion_and_rejects_jumps() {
-        let order = Camera::default();
-        let mut current = order;
-        current.pose.position = Vec3f::new(0.001, 0.0, 0.0);
-        current.pose.rotation_xyzw = [0.0, -(0.002_f32 * 0.5).sin(), 0.0, (0.002_f32 * 0.5).cos()];
-        assert!(async_order_pose_compatible(&order, &current, 0.01));
-
-        current.pose.position = Vec3f::new(0.02, 0.0, 0.0);
-        assert!(!async_order_pose_compatible(&order, &current, 0.01));
-        current.pose.position = order.pose.position;
-        current.pose.rotation_xyzw = [0.0, -(0.02_f32 * 0.5).sin(), 0.0, (0.02_f32 * 0.5).cos()];
-        assert!(!async_order_pose_compatible(&order, &current, 0.01));
-    }
-
-    #[test]
-    fn async_sort_starts_one_revision_before_interval_boundary() {
-        assert_eq!(async_schedule_threshold(1), 1);
-        assert_eq!(async_schedule_threshold(2), 1);
-        assert_eq!(async_schedule_threshold(3), 2);
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    fn wait_for_async_result(
-        sorter: &mut super::NativeCpuOrderWorker,
-    ) -> Result<crate::cpu_order::NativeCpuOrderResult, RendererError> {
-        for _ in 0..1_000_000 {
-            if let Some(result) = sorter.poll_result() {
-                return result;
-            }
-            std::thread::yield_now();
-        }
-        panic!("async CPU order worker did not complete")
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    #[test]
-    fn async_worker_matches_sync_recycles_two_buffers_and_fails_without_publication() {
-        let count = 257;
-        let scene = SceneBuffers {
-            positions: (0..count)
-                .map(|index| {
-                    let depth = match index % 5 {
-                        0 | 1 => 2.0,
-                        2 => 1.0,
-                        3 => 3.0,
-                        _ => 4.0,
-                    };
-                    Vec3f::new(index as f32 * 0.001, 0.0, depth)
-                })
-                .collect(),
-            opacity: vec![1.0; count],
-            scale_xyz: vec![[0.0; 3]; count],
-            rotation_xyzw: vec![[0.0, 0.0, 0.0, 1.0]; count],
-            color_dc: vec![[0.0; 3]; count],
-            sh_degree: 0,
-            sh_rest: None,
-        };
-        let mut camera = Camera::default();
-        camera.intrinsics.near_plane = 1.0;
-        camera.intrinsics.far_plane = 3.0;
-        let mut renderer = Renderer::with_config_for_surface(RendererConfig::default()).unwrap();
-        renderer.load_scene(scene).unwrap();
-        renderer
-            .build_surface_sorted_indices_with_sort_refresh(&camera, true)
-            .expect("sync order");
-        let authoritative = renderer.current_sorted_indices().to_vec();
-
-        let mut sorter = super::native_cpu_order_worker(&renderer).expect("async worker");
-        let mut pointers = Vec::new();
-        for revision in 1..=3 {
-            sorter.start(camera, revision);
-            let result = wait_for_async_result(&mut sorter).expect("async order");
-            assert_eq!(result.ordered_ids, authoritative);
-            assert_eq!(result.camera_revision, revision);
-            pointers.push((
-                result.ordered_ids.as_ptr() as usize,
-                result.ordered_ids.capacity(),
-            ));
-            sorter.recycle(result.ordered_ids);
-        }
-        assert_ne!(pointers[0].0, pointers[1].0);
-        assert_eq!(pointers[0], pointers[2]);
-
-        let mut invalid = camera;
-        invalid.intrinsics.near_plane = 4.0;
-        invalid.intrinsics.far_plane = 1.0;
-        sorter.start(invalid, 4);
-        assert!(wait_for_async_result(&mut sorter).is_err());
-        assert_eq!(renderer.current_sorted_indices(), authoritative);
-
-        sorter.start(camera, 5);
-        let recovered = wait_for_async_result(&mut sorter).expect("recovered async order");
-        assert_eq!(recovered.ordered_ids, authoritative);
     }
 
     fn feed_cpu_bootstrap(policy: &mut AdaptiveOrderPolicy, sample_ms: f32) {

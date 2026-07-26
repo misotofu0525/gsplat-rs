@@ -6,6 +6,7 @@ mod lifecycle;
 mod projected_adaptive;
 mod session_control;
 mod session_owner;
+mod session_schedule;
 pub(crate) mod shadow;
 pub(crate) mod standalone_direct_runtime;
 pub(crate) mod standalone_paged_runtime;
@@ -38,6 +39,9 @@ pub(crate) use session_control::{
     validate_projected_draw_policy_transition,
 };
 pub(crate) use session_owner::SessionSurfaceOwner;
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) use session_schedule::async_sort_supported;
+pub(crate) use session_schedule::{SessionSchedule, SurfaceFramePlan};
 
 #[cfg(test)]
 pub(crate) use adaptive_order::{ADAPTIVE_CPU_BOOTSTRAP_SAMPLES, ADAPTIVE_INITIAL_PROBE_DELAY};
