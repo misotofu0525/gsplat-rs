@@ -8,15 +8,13 @@
       "members": [
         {
           "task": "B1",
-          "lane": "surface-capture-depth-receipt-join",
+          "lane": "diagnostic-surface-capture-receipt-bridge",
           "write_allowlist": [
             "docs/plans/active/2026-07-23-native-render-balanced/progress.md",
+            "crates/gsplat-render-wgpu/Cargo.toml",
+            "crates/gsplat-render-wgpu/src/lib.rs",
             "crates/gsplat-render-wgpu/src/surface_session.rs",
-            "crates/gsplat-render-wgpu/src/evidence/session_publication.rs",
-            "crates/gsplat-render-wgpu/src/surface/capture.rs",
-            "crates/gsplat-render-wgpu/src/surface_session_exact_control_tests.rs",
-            "tests/perf/validate-balanced-image-gate.py",
-            "tests/perf/test_validate_balanced_image_gate.py"
+            "crates/gsplat-render-wgpu/src/surface_session_exact_control_tests.rs"
           ]
         },
         {
@@ -30,7 +28,7 @@
         }
       ],
       "integration_order": [
-        "surface-capture-depth-receipt-join",
+        "diagnostic-surface-capture-receipt-bridge",
         "proxy-image-evidence-validator"
       ],
       "reason": "B1 atomic native capture-to-depth-receipt joining and S1 fail-closed proxy-image evidence validation are independent post-contract seams; neither changes a product default or unlocks later work alone."

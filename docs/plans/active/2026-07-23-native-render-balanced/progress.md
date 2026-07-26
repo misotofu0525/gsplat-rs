@@ -9,7 +9,7 @@ B1 = Active
 
 <!-- gsplat-program-active-lanes: begin -->
 activation_commit = 3ecf0f2d0180c197faa132443066b3b9b98d36d4
-B1 = surface-capture-depth-receipt-join
+B1 = diagnostic-surface-capture-receipt-bridge
 <!-- gsplat-program-active-lanes: end -->
 
 ## B0 authoring slice
@@ -322,3 +322,27 @@ artifact was created, no image-quality or performance conclusion is claimed,
 and all device/browser/endpoint qualification remains **Deferred**. B1 remains
 **Active** pending separately scoped collector integration and formal endpoint
 evidence.
+
+## Next B1 diagnostic Surface capture bridge slice
+
+The proven private capture-to-receipt join is not callable by the existing
+desktop real-window evidence host: the ordinary public capture method correctly
+consumes the receipt and returns pixels only. This slice therefore introduces a
+separate, default-disabled Rust diagnostic feature for exactly one purpose:
+allow an explicitly opted-in native diagnostic host to take the already joined
+capture and immutable presentation receipt as one value.
+
+The bridge must be take-once and presentation-bound. It must not add a
+"latest" receipt query, alter the ordinary pixels-only capture method, choose a
+Candidate profile at runtime, change rendering defaults, or expose a stable C,
+Swift, Kotlin, or JavaScript API. The public diagnostic value contains only the
+fields needed to serialize the pre-existing immutable identity: profile,
+frame/plan/order generations and presentation sequence, together with the
+captured RGBA8 bytes. It is unavailable for Web and unavailable whenever no
+Exact capture/receipt join exists.
+
+This is a bridge for the subsequent desktop/Metal artifact consumer, not an
+endpoint result. Its acceptance is focused host-only API and lifecycle tests in
+both normal diagnostic-receipt and Candidate24 feature builds. No browser,
+Android, iOS, image-quality, performance, or product-default conclusion is
+authorized by this slice.
