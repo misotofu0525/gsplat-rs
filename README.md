@@ -8,8 +8,11 @@
 and `wgpu`. The project focuses on a small, verifiable core: bounded PLY
 import, in-memory scene buffers, `SortedAlpha` rendering, a narrow C ABI, and
 example surfaces that validate the stack on desktop, Android, iOS, and browser
-paths without overstating SDK maturity. A bounded SPZ v4 loader and alternate
-Packed/Paged geometry paths are experimental and stay outside the v0.1
+paths without overstating SDK maturity. Product Surface integrations explicitly
+use the exact-count Resident/Packed route. Direct remains the wide-f32 image
+oracle and low-level compatibility default, while Paged is an explicit
+partial-residency diagnostic. The geometry selectors, Resident layouts, and a
+bounded SPZ v4 loader remain experimental and outside the stable v0.1
 integration contract.
 
 ![SortedAlpha render of the Wakufactory Kitsune scene](docs/media/kitune.jpg)
@@ -23,15 +26,22 @@ can be fetched with `bash tests/datasets/fetch-wakufactory-kitune.sh`.*
 
 | Platform | Validation surface | Distribution status |
 | --- | --- | --- |
-| Desktop (Metal / Vulkan / DX12) | `examples/desktop` viewer and offscreen PNG harness | Build from source (Rust workspace) |
-| Android | `examples/android` app over the `bindings/android` library module | Local AAR build, `arm64-v8a` only; not on Maven yet |
-| iOS | `examples/ios` app over the `bindings/apple` `GsplatKit` package | Local XCFramework build; no binary SwiftPM release yet |
-| Web (WASM) | `examples/web` host over the `packages/web` ESM wrapper | Local build of experimental `crates/gsplat-web`; not on npm yet |
+| Desktop | `examples/desktop` viewer and offscreen PNG harness; current migration evidence is macOS/Metal | Build from source (Rust workspace) |
+| Android | `examples/android` app over the `bindings/android` library module; retained exact-Surface evidence covers one arm64 device/configuration | Local AAR build, `arm64-v8a` only; not on Maven yet |
+| iOS | `examples/ios` app over the `bindings/apple` `GsplatKit` package; current migration evidence is Simulator/host-side, not a physical iPhone | Local XCFramework build; no binary SwiftPM release yet |
+| Web (WASM/WebGPU) | `examples/web` host over the `packages/web` ESM wrapper; runtime at the accepted M7 SHA remains unqualified | Local build of experimental `crates/gsplat-web`; not on npm yet |
+
+Windows and Linux runtime, Chrome/WebGPU at the accepted M7 SHA, and a
+physical-iPhone run at that boundary remain explicitly deferred. Compilation,
+macOS/Metal, Simulator, sampled WebGL2, or earlier endpoint evidence is not a
+substitute for those runs.
 
 ## Project Status
 
 - Release line: `0.1.x`
 - Quality-gated render path: `SortedAlpha`
+- Product Surface geometry: exact-count Resident/Packed
+- Image oracle and low-level compatibility default: Direct wide-f32
 - Native integration surface: `crates/gsplat-ffi-c/include/gsplat.h`
 - Full-quality benchmark counts: `S/V/C/D` (source, candidate-visible,
   conservative contributor, issued draw), joined by order ticket and camera
@@ -77,6 +87,17 @@ python3 -m http.server 4173 --bind 127.0.0.1 --directory .
 
 Then open `http://127.0.0.1:4173/examples/web/`.
 
+The default browser path requires the generated Rust/WASM renderer and WebGPU
+and fails closed when either cannot be created. The non-equivalent sampled
+WebGL2 point-splat preview is diagnostic-only and requires explicit opt-in:
+
+```text
+http://127.0.0.1:4173/examples/web/?gsplat_allow_sampled_webgl=true
+```
+
+That preview is not full-quality, browser-qualification, performance, or
+automatic fallback evidence.
+
 The same Kitsune showcase is the default native first frame on Android and iOS:
 
 ```bash
@@ -103,8 +124,8 @@ and fall back to the shared Flowers fixture when Kitsune is unavailable.
 - `examples/desktop`: desktop viewer and offscreen PNG harness
 - `examples/android`: Android Surface sample app
 - `examples/ios`: UIKit realtime Surface sample app
-- `examples/web`: browser PLY loader, generated wasm package host, and WebGL2
-  fallback preview
+- `examples/web`: browser PLY loader, generated wasm package host, and an
+  explicitly opted-in sampled WebGL2 diagnostic preview
 - `bindings/android`: local `gsplat-android` library module, JNI bridge,
   host-side JNI smoke, and AAR/APK scripts
 - `bindings/apple`: local `GsplatKit` Swift package wrapper, Swift smoke path,
@@ -166,6 +187,9 @@ The current mobile-facing contract is the C ABI in
   `bash bindings/apple/scripts/build-xcframework.sh`.
 - Browser Rust/WASM integration and the local `@gsplat-rs/web` ESM wrapper are
   demonstrated by `examples/web`.
+- The Web product path uses exact-count Packed by default and fails closed on
+  WASM/WebGPU creation or exact-scene admission failure. Sampled WebGL2 is
+  available only through its explicit diagnostic query flag.
 - The local Web SDK wrapper is built with `bash packages/web/scripts/build.sh`.
 - Not in the v0.1 contract: SPZ consumer wiring, automatic geometry-path
   selection, scene-from-memory loading, runtime render-mode switching, Maven
@@ -180,9 +204,11 @@ The current mobile-facing contract is the C ABI in
   binary SwiftPM release or published XCFramework artifact yet.
 - Web: `@gsplat-rs/web` builds and packs locally, but is not published to npm
   and is not a stable v0.1 public contract.
-- Device validation: local build checks cover APK/AAR, iOS simulator, and iOS
-  device app signing, but Android true-device launch and iOS physical-device
-  launch/benchmark still require explicit device runs.
+- Endpoint qualification: retained Android evidence covers one Nothing A065
+  exact-Surface configuration, while Chrome/WebGPU at the accepted M7 SHA,
+  physical iPhone, and Windows/Linux runtime remain deferred. Build,
+  cross-compile, Simulator, host Metal, or sampled-preview results do not fill
+  those cells.
 
 ## Documentation
 

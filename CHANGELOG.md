@@ -10,23 +10,64 @@ and this project adheres to
 
 ### Added
 
+- Added the internal Exact prepared-plan core used by the product Packed route:
+  complete CPU PostSort, GPU PostSort, and GPU Preproject plans, one canonical
+  projected-quads `SortedAlpha` raster, transactional publication, and
+  renderer-owned current-stats receipts.
+- Added direct-to-Resident incremental PLY loading for exact-count Packed
+  rendering while retaining complete source membership and SH0-SH3 degree.
+- Added additive experimental Surface evidence APIs across C, Web, Android,
+  and Apple. Pending GPU `S/V/C/D` values remain unavailable until a matching
+  renderer-owned terminal rather than being reported as zero, capacity, or a
+  stale frame.
 - Added an experimental, bounded Niantic SPZ v4 loader with cancellation,
   coordinate/SH conversion, and isolated source-residency helpers.
 - Added versioned benchmark artifacts, dataset manifests, a shared camera
   trace contract, extraction tools for Web/Android/iOS, and a pinned
   PlayCanvas comparison harness with paired statistics and SSIM checks.
-- Added explicit experimental Packed and fixed four-slot local Paged geometry
-  paths while keeping Direct as the release-gated default.
+- Added the fixed four-slot local Paged geometry path as an explicit
+  partial-residency diagnostic; capacity failure never selects it
+  automatically.
 
 ### Changed
 
-- Removed the obsolete `static_direct` / `sortedIndexDirect` path-selection APIs
-  now that direct sorted-index rendering is the only production pipeline.
-- Kept local Paged selection explicit and removed unused automatic Surface
-  constructors so prototype policy does not widen the v0.1 API.
-- Archived completed Packed/Paged research plans and made the next performance
-  priority Direct-path GPU compaction, portable radix sorting, and indirect
-  drawing backed by real-dataset evidence.
+- M1 routed native Packed offscreen rendering, the non-interactive desktop
+  path, and bench-runner through one transactional Exact runtime, with Direct
+  retained as the image oracle.
+- M2 moved the shared real-window Surface path onto that Exact runtime. Desktop,
+  Web, Android, and Apple product entrypoints explicitly select Packed with
+  Adaptive ordering; `GeometryPath::default()` and low-level compatibility
+  constructors remain Direct.
+- M3 made `SurfaceRenderSession` the owner of compatibility submissions,
+  terminals, ticket counts, and producer evidence. The C ABI translates that
+  state without a second queue, ticket ledger, or policy owner, while its
+  existing v0.1 layouts and signatures remain intact.
+- M4 migrated the experimental Rust/WASM consumer to
+  `SurfaceRenderSession -> SurfacePresenterHost -> PreparedRuntimeSlot`.
+  Packed URL/File/stream loading writes directly into Resident planes and
+  exact benchmark counts come from matching renderer-owned current-stats
+  terminals.
+- Made sampled WebGL2 an explicit diagnostic opt-in rather than an automatic
+  product fallback.
+- M5 migrated the Android/JNI/AAR consumer and strict current-stats accounting
+  to the shared route. Its retained Nothing A065 forced-CPU, forced-GPU, and
+  Adaptive runs are separate functional/directional observations, not a
+  general performance or device claim.
+- M6 migrated the Apple/GsplatKit/XCFramework consumer and functional evidence
+  path. Simulator/host-side results do not substitute for a physical-iPhone
+  run.
+- M7 completed the renderer/session/presenter ownership split, leaving one
+  product Packed Surface route and standalone Direct/Paged compatibility
+  owners. It preserved classified Rust/C/Web/mobile compatibility entrypoints
+  and the small stable v0.1 boundary.
+
+### Removed
+
+- Removed the obsolete `static_direct` / `sortedIndexDirect` selectors while
+  retaining Direct as the wide-f32 oracle and compatibility default.
+- Removed the TiledExact implementation and public variant.
+- Removed the unreachable standalone Packed presenter graph and the duplicate
+  C-side Surface receipt queues, ledgers, and producer-state mirrors.
 
 ### Fixed
 
@@ -35,6 +76,18 @@ and this project adheres to
   preflight so valid storage-buffer scenes are not forced into Paged.
 - Ensured Packed Surface rendering applies complete view-dependent color on
   its first frame and uses one frozen camera across every band of a refresh.
+- Made default Web renderer failure fail closed; the sampled WebGL2 diagnostic
+  is available only with `gsplat_allow_sampled_webgl=true` and cannot satisfy
+  full-quality or performance evidence.
+
+The Unreleased work does not widen the stable v0.1 contract. Packed/Direct/
+Paged selectors, Resident layouts, Web package APIs, mobile Surface convenience
+wrappers, and benchmark schemas remain experimental. Distribution remains
+limited to direct GitHub prerelease AAR, XCFramework ZIP, and npm-compatible
+artifacts rather than Maven, binary SwiftPM, npm, or crates.io publication.
+Chrome/WebGPU at the accepted M7 SHA, physical iPhone, and Windows/Linux runtime
+remain deferred; no performance, competitor, power, thermal, or broad
+cross-platform claim is made here.
 
 ## [0.1.3] - 2026-07-10
 
