@@ -62,7 +62,7 @@ transition; it must not be presented as if endpoint evidence were rerun there.
 | M5 | `2d9f0e4d5769690a89abfad56da51a0d21fd89e1` | `46dce2ec1bad4c09f4688dfef9d59202803b0e9c` | `df87ff177097cb8b42c592b5e2826fa9bfe8d4e4` | Android/A065 current-stats repair and strict evidence, then M5 closeout. |
 | M6 | `df87ff177097cb8b42c592b5e2826fa9bfe8d4e4` | `8022841957a196824eb9669c477f11ce91d2aab1` | `4de4cbb38f98d5f69bc0aebe8a998f947c929879` | Apple/GsplatKit/XCFramework and Simulator evidence, then M6 acceptance record. |
 | M7 | accepted M6 rollback tree `a798b8accf454e96792df45d38e8564e7e27556e` | `2739f4899facc03e6a0fb35c23b42d9762ede9cc` | `0d291c5ea9b911fdfce8d064ff6617ee6f9955ed` -> `2e16fff072d6832d602d35c53e1c0582220ec9a2` -> `1de3f79fa2fa22955f99c887bea421c918e31ee0` | 39-commit deletion/ownership/evidence tree, acceptance record, test-count correction and final policy closeout. `1de3f79` is the M8 base. |
-| M8 | `1de3f79fa2fa22955f99c887bea421c918e31ee0` | no accepted final tip yet | activation `67e9bc5be3303af64291a87a6d34d75d1c984617`; D12 base `76188933a87a37f50175fa80720a429d50608ee7` | M8 remains Active. D12 and D15 do not become accepted until root review, fixed-candidate verification and D13 archival complete. |
+| M8 | `1de3f79fa2fa22955f99c887bea421c918e31ee0` | no accepted final tip yet | activation `67e9bc5be3303af64291a87a6d34d75d1c984617`; D12 base `76188933a87a37f50175fa80720a429d50608ee7` | M8 remains Active. D12 awaits root review and integration; D15 awaits fixed-candidate verification and independent review. Only after D15 acceptance may D13 archive the bundle and mark M8 and Package M Accepted. |
 
 ### M8 integrated chain before D12
 
@@ -118,8 +118,10 @@ or guaranteed to survive their worktrees.
 - M8f's release/consumer documentation repair passed Android collector tests
   56/56 and verification-bootstrap tests 11/11. These are host tests, not a
   new Android device or browser qualification.
-- D11 path repair is present in the D12 base `7618893`. Its authoritative
-  inventory status remains root-owned and is not changed by this D12 slice.
+- D11 path repair was independently reviewed and integrated in the D12 base
+  `7618893`; the inventory records it as Accepted. The only `active/` path
+  retained by D11 is an explicitly historical, non-rerunnable pre-archive
+  transcript.
 - D12 itself runs only document links, Git-object/ancestry checks and diff
   hygiene. It does not run or pre-claim the D15 matrix.
 

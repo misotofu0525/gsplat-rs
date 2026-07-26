@@ -691,10 +691,11 @@ M8 = Active
 - This activation changes no handbook, README, release file, source, ABI,
   shader, script, test or product route. It performs no browser, device or
   cross-platform runtime.
-- M8 acceptance still requires the pending D11 active-path normalization, D12
-  populated final architecture/deprecation and SHA report, D15 fixed-candidate
-  clean-tree verification/review, and the subsequent D13 archival of this
-  bundle. Completing D14 does not complete M8 or Package M.
+- D11 active-path normalization was independently reviewed and integrated as
+  `76188933a87a37f50175fa80720a429d50608ee7`. M8 acceptance still requires D12
+  root review/integration, D15 fixed-candidate clean-tree verification/review,
+  and the subsequent D13 archival of this bundle. Completing D11 or D14 does
+  not complete M8 or Package M.
 - The independent IO-SPZ ownership review at fixed baseline `41e18f8` accepted
   the existing loader as one cohesive `SPZ v4 -> validated SceneBuffers`
   transaction with no P0/P1/P2 ownership finding. Its M8 grandfather and
@@ -741,11 +742,11 @@ M8 = Active
   release operations and registry publication remain Deferred.
 - The M8g evidence audit rejected `93f9dc6` as a D15/final-closeout point. It
   preserved historical platform artifacts under their recorded SHAs but did
-  not promote them to current-candidate qualification. D14 is now Accepted;
-  D11 remains pending because five files still contain `active/` bundle paths,
-  D12 remains pending because the populated final report is absent, and D15
-  remains pending until the fixed pre-archive candidate matrix and independent
-  review run.
+  not promote them to current-candidate qualification. D11 and D14 are now
+  Accepted; the only `active/` path retained by D11 is an explicitly historical,
+  non-rerunnable pre-archive command transcript. D12 has a populated candidate
+  awaiting root review/integration, and D15 remains pending until the fixed
+  pre-archive candidate matrix and independent review run.
 - To avoid a circular gate, D15 now runs on one fixed pre-archive candidate
   after all source, documentation, policy, D11 and final-report edits. An
   independent review accepts or rejects that exact SHA. Only then may root make
