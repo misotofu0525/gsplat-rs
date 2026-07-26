@@ -445,6 +445,16 @@ struct NativeCpuOrderWorker {
     worker: Option<JoinHandle<()>>,
     recycled_ids: Vec<u32>,
     in_flight: bool,
+    #[cfg(test)]
+    join_started: Option<Arc<std::sync::Barrier>>,
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[derive(Clone)]
+struct NativeCpuOrderWorkerTestControl {
+    request_started: Arc<std::sync::Barrier>,
+    release_request: Arc<std::sync::Barrier>,
+    join_started: Arc<std::sync::Barrier>,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -478,6 +488,25 @@ struct NativeCpuOrderResult {
 #[cfg(not(target_arch = "wasm32"))]
 impl NativeCpuOrderWorker {
     fn new(positions: Arc<[gsplat_core::Vec3f]>) -> Result<Self, RendererError> {
+        Self::new_inner(
+            positions,
+            #[cfg(test)]
+            None,
+        )
+    }
+
+    #[cfg(test)]
+    fn new_for_in_flight_teardown_test(
+        positions: Arc<[gsplat_core::Vec3f]>,
+        control: NativeCpuOrderWorkerTestControl,
+    ) -> Result<Self, RendererError> {
+        Self::new_inner(positions, Some(control))
+    }
+
+    fn new_inner(
+        positions: Arc<[gsplat_core::Vec3f]>,
+        #[cfg(test)] test_control: Option<NativeCpuOrderWorkerTestControl>,
+    ) -> Result<Self, RendererError> {
         let engine = CpuOrderEngine::try_with_capacity(positions.len())
             .map_err(|_| RendererError::SurfaceWorker)?;
         let mut recycled_ids = Vec::new();
@@ -486,6 +515,8 @@ impl NativeCpuOrderWorker {
             .map_err(|_| RendererError::SurfaceWorker)?;
         let (request_tx, request_rx) = sync_channel::<Option<NativeCpuOrderRequest>>(1);
         let (result_tx, result_rx) = sync_channel(1);
+        #[cfg(test)]
+        let worker_test_control = test_control.clone();
         let worker = thread::spawn(move || {
             let mut positions = positions;
             let mut engine = engine;
@@ -493,6 +524,11 @@ impl NativeCpuOrderWorker {
                 let Some(request) = request else {
                     break;
                 };
+                #[cfg(test)]
+                if let Some(control) = worker_test_control.as_ref() {
+                    control.request_started.wait();
+                    control.release_request.wait();
+                }
                 let input = OwnedCpuOrderInput::new(positions, request.camera);
                 let mut ordered_ids = request.recycled_ids;
                 let camera = input.camera();
@@ -521,6 +557,8 @@ impl NativeCpuOrderWorker {
             worker: Some(worker),
             recycled_ids,
             in_flight: false,
+            #[cfg(test)]
+            join_started: test_control.map(|control| control.join_started),
         })
     }
 
@@ -578,17 +616,24 @@ impl NativeCpuOrderWorker {
         debug_assert!(!self.in_flight);
         self.recycled_ids = ordered_ids;
     }
+
+    fn drain(&mut self) {
+        let _ = self.request_tx.send(None);
+        if let Some(handle) = self.worker.take() {
+            #[cfg(test)]
+            if let Some(join_started) = self.join_started.take() {
+                join_started.wait();
+            }
+            let _ = handle.join();
+        }
+        self.in_flight = false;
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 impl Drop for NativeCpuOrderWorker {
     fn drop(&mut self) {
-        // Shutdown is deliberately non-blocking. Dropping the channels makes
-        // an in-flight worker exit after its current CPU-only request, and
-        // dropping the handle detaches that finite cleanup from the caller.
-        let _ = self.request_tx.try_send(None);
-        let _ = self.worker.take();
-        self.in_flight = false;
+        self.drain();
     }
 }
 
@@ -751,6 +796,72 @@ mod tests {
         sorter.start(camera, 5);
         let recovered = wait_for_async_result(&mut sorter).expect("recovered async order");
         assert_eq!(recovered.ordered_ids, authoritative);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn in_flight_disable_joins_old_worker_before_enable_creates_replacement() {
+        let scene = SceneBuffers {
+            positions: vec![Vec3f::new(0.0, 0.0, 2.0), Vec3f::new(0.0, 0.0, 3.0)],
+            opacity: vec![1.0; 2],
+            scale_xyz: vec![[0.0; 3]; 2],
+            rotation_xyzw: vec![[0.0, 0.0, 0.0, 1.0]; 2],
+            color_dc: vec![[0.0; 3]; 2],
+            sh_degree: 0,
+            sh_rest: None,
+        };
+        let camera = Camera::default();
+        let mut renderer = Renderer::with_config_for_surface(RendererConfig::default()).unwrap();
+        renderer.load_scene(scene).unwrap();
+        let mut schedule = SessionSchedule::new(&renderer, camera).unwrap();
+
+        let old_positions = renderer_positions(&renderer).unwrap();
+        let old_positions_weak = Arc::downgrade(&old_positions);
+        let request_started = Arc::new(std::sync::Barrier::new(2));
+        let release_request = Arc::new(std::sync::Barrier::new(2));
+        let join_started = Arc::new(std::sync::Barrier::new(2));
+        schedule.async_worker = Some(
+            NativeCpuOrderWorker::new_for_in_flight_teardown_test(
+                old_positions,
+                NativeCpuOrderWorkerTestControl {
+                    request_started: Arc::clone(&request_started),
+                    release_request: Arc::clone(&release_request),
+                    join_started: Arc::clone(&join_started),
+                },
+            )
+            .expect("old async worker"),
+        );
+        schedule.async_enabled = true;
+        schedule.start_async_order(camera, 1);
+        request_started.wait();
+
+        let (replacement_tx, replacement_rx) = sync_channel(1);
+        let transition = thread::spawn(move || {
+            schedule.disable_async();
+            let old_worker_exited = old_positions_weak.upgrade().is_none();
+            schedule
+                .set_async_enabled(&renderer, true)
+                .expect("replacement async worker");
+            replacement_tx
+                .send((old_worker_exited, schedule.configured_async_enabled()))
+                .expect("replacement observation");
+            schedule
+        });
+
+        join_started.wait();
+        assert!(matches!(
+            replacement_rx.try_recv(),
+            Err(TryRecvError::Empty)
+        ));
+        release_request.wait();
+
+        let (old_worker_exited, replacement_enabled) = replacement_rx
+            .recv()
+            .expect("replacement created after old worker exit");
+        assert!(old_worker_exited);
+        assert!(replacement_enabled);
+        let schedule = transition.join().expect("disable-enable transition");
+        drop(schedule);
     }
 
     #[cfg(not(target_arch = "wasm32"))]

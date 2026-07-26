@@ -15,7 +15,7 @@ and moves the shared Session's scheduling mechanics out of
   lag calculation;
 - the native Direct + CPU asynchronous worker, its capacity-one request/result
   channels and two-buffer order-ID recycle loop;
-- non-blocking request submission, result polling and worker shutdown;
+- non-blocking request submission/result polling plus bounded worker shutdown;
 - monotonic revision, maximum-lag and camera-pose admission for completed
   asynchronous orders; and
 - stale-result recycling plus the decision to require a synchronous CPU
@@ -49,9 +49,12 @@ Async sorting remains native-only and supported only for Direct + CPU. Exact
 Packed remains interval 1, Paged remains synchronous, GPU and Adaptive backend
 selection retains its existing preparation/fallback semantics, and wasm keeps
 the same synchronous schedule. Request submission and result polling use
-`try_send`/`try_recv`; worker teardown detaches finite CPU cleanup instead of
-joining on the caller. `pump_receipts(Duration)` and all GPU/readback callback
-waiting remain outside this owner and issue no new work.
+`try_send`/`try_recv`, and ID recycling remains a local vector handoff.
+Disable/drop teardown sends the shutdown marker, takes the worker handle and
+joins it after any in-flight CPU-only request completes. A later enable
+therefore cannot create a replacement while an old worker still retains its
+scene/workspace. `pump_receipts(Duration)` and all GPU/readback callback waiting
+remain outside this owner and issue no new work.
 
 No Renderer/GPU/WGSL/resource layout/pass order/pixel path, public Rust API, C
 ABI, FFI/JNI/Swift/Web wrapper or platform binding changes belong to S4. This
@@ -60,15 +63,15 @@ slice does not include S5.
 ## Verification
 
 - `cargo test -p gsplat-render-wgpu surface::session_schedule::tests:: --lib`:
-  PASS, 8/8, including interval scheduling, stale revision/lag/pose rejection,
-  stale-buffer recycle, fresh recovery, two-buffer reuse and failure without
-  renderer publication.
+  PASS, 9/9, including interval scheduling, stale revision/lag/pose rejection,
+  stale-buffer recycle, fresh recovery, two-buffer reuse, failure without
+  renderer publication, and in-flight disable/join before replacement enable.
 - `cargo test -p gsplat-render-wgpu async --lib`: PASS, 5 passed and the
   existing temporal pixel-tail research oracle ignored.
 - `cargo test -p gsplat-render-wgpu current_stats --lib`: PASS, 26/26.
 - `cargo test -p gsplat-render-wgpu exact_surface --lib`: PASS, 5/5.
 - `CARGO_INCREMENTAL=0 cargo check --workspace`: PASS.
-- `CARGO_INCREMENTAL=0 cargo test --workspace`: PASS, including 438
+- `CARGO_INCREMENTAL=0 cargo test --workspace`: PASS, including 439
   `gsplat-render-wgpu` unit tests, 8 existing research/device tests ignored,
   and Apple M4 SortedAlpha conformance.
 - `CARGO_INCREMENTAL=0 cargo clippy --workspace --all-targets -- -D warnings`:
