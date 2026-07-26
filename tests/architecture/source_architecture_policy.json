@@ -22,6 +22,7 @@
             "crates/gsplat-render-wgpu/shaders/resident_gpu_order_compact.wgsl",
             "crates/gsplat-render-wgpu/src/renderer/mod.rs",
             "crates/gsplat-render-wgpu/src/renderer/gpu_prepare.rs",
+            "crates/gsplat-render-wgpu/src/scene/runtime.rs",
             "crates/gsplat-render-wgpu/src/plans/mod.rs",
             "crates/gsplat-render-wgpu/src/plans/cpu_post.rs",
             "crates/gsplat-render-wgpu/src/resident_gpu.rs"
