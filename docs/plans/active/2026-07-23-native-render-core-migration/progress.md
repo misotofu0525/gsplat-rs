@@ -712,7 +712,29 @@ M8 = Active
   `0.1.2` release commands, inconsistent Apple artifact wording, an unlocked
   `wasm-bindgen-cli` install diagnostic, and obsolete M2b ownership text for
   the still-rejected Android GPU-producer option. The bounded M8f candidate
-  repairs only those facts and keeps workflow, manifests, collector behavior,
-  CI policy and all Deferred endpoint/release operations unchanged. M8f still
-  requires independent review and root integration; it does not accept M8 or
-  complete Package M.
+  `6bbd3c1ca82a21c04613b17e722d001c23561f8a` repaired only those facts and
+  preserved workflow, manifests, collector behavior, CI policy and all
+  Deferred endpoint/release operations. Its independent review found no
+  P0/P1/P2, and root integrated it as
+  `93f9dc662a6f1bac008def8ba4b541fb9a66ab4e`. D08, D09 and documented D16
+  facts are therefore Accepted; no release or endpoint qualification follows.
+- The historical M8e/M8f remote audit on 2026-07-26 recorded
+  `v0.1.3 -> a47542fbcae092e07eb427f64e0a81ac2123b4c7` plus the GitHub direct
+  prerelease assets `gsplat-android-release.aar`,
+  `GsplatFFI.xcframework.zip`, `gsplat-rs-web-*.tgz` and `SHA256SUMS`. The
+  wildcard is the local release-workflow name. This later status reconciliation
+  did not re-query the network; current-source package verification, future
+  release operations and registry publication remain Deferred.
+- The M8g evidence audit rejected `93f9dc6` as a D15/final-closeout point. It
+  preserved historical platform artifacts under their recorded SHAs but did
+  not promote them to current-candidate qualification. `IO-PLY-1`, the
+  populated final report and the fixed-candidate D15 matrix remain pending.
+  D11 is also pending because five files still contain `active/` bundle paths
+  that require repair.
+- To avoid a circular gate, D15 now runs on one fixed pre-archive candidate
+  after all source, documentation, policy, D11 and final-report edits. An
+  independent review accepts or rejects that exact SHA. Only then may root make
+  the pure archive/state commit; that move receives link, architecture-policy,
+  stale-path, diff-summary and clean-tree checks rather than another expensive
+  global matrix. M8 and Package M remain **Active** until that root closeout is
+  accepted.
