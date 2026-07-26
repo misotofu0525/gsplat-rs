@@ -62,6 +62,11 @@ The first B1 implementation slice adds the repository validator for the frozen
 remains **Active** and no quantized depth-key implementation, renderer policy,
 endpoint result, performance assertion, or product-default change is included.
 
+This validator slice was independently accepted and root-integrated as
+`9db1d14`, `5d4531e`, `a3fcdce`, and `1eb3b91`. That acceptance applies only
+to the evidence admission seam below; B1 itself remains Active until the
+separate 24-bit/20-bit depth-key experiment reaches its own terminal result.
+
 The validator fails closed unless an artifact provides and proves:
 
 - a hash-matched repository dataset manifest whose asset hash, point count and

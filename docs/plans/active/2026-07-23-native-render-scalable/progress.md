@@ -57,6 +57,11 @@ product claim merely by producing a structurally valid hierarchy.
 The first S1 implementation slice adds the private `gsplat-hierarchy` crate and
 no renderer or product-path integration. Its deterministic offline builder:
 
+This structural checkpoint was independently accepted and root-integrated as
+`eef4143`. The acceptance is limited to authored data/coverage integrity; S1
+itself remains Active until its separately frozen proxy-image gate has a
+terminal result.
+
 - partitions the canonical source sequence into gap-free highest-detail leaf
   ranges and preserves every source Gaussian, its SH degree and the complete
   SH3 rest plane bit-for-bit in the complete leaf cut;
