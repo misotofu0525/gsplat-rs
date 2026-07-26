@@ -529,16 +529,17 @@ impl GsplatWebRenderer {
         let _ = self.session.set_sort_interval(interval.max(1));
     }
 
+    /// Constructor-only compatibility setter. Repeating the active geometry
+    /// path is idempotent; every changed-path request returns Unsupported.
     #[wasm_bindgen(js_name = setGeometryPath)]
     pub fn set_geometry_path(&mut self, path: u32) -> Result<(), JsValue> {
         let path = geometry_path_from_id(path)?;
         self.session.set_geometry_path(path).map_err(renderer_error)
     }
 
-    /// Preserves the historical async geometry-setter shape. Packed is owned
-    /// by the Exact runtime selected at construction, so changed Direct/Packed
-    /// requests fail before mutation instead of publishing a legacy Packed
-    /// controller beside the shared runtime.
+    /// Async-shaped constructor-only compatibility setter. It preserves the
+    /// public Promise ABI without preparing or publishing runtime geometry:
+    /// same-path requests are idempotent and changed paths return Unsupported.
     #[wasm_bindgen(js_name = setGeometryPathAsync)]
     pub async fn set_geometry_path_async(&mut self, path: u32) -> Result<(), JsValue> {
         let path = geometry_path_from_id(path)?;

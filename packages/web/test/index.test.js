@@ -1100,7 +1100,7 @@ test("GsplatWebRenderer restages nested runtime failures as resize failures", as
   );
 });
 
-test("GsplatWebRenderer exposes transactional geometry-path switching", async () => {
+test("GsplatWebRenderer retains the async-shaped geometry compatibility setter", async () => {
   const native = makeNativeRenderer();
   const renderer = new GsplatWebRenderer(native);
 
@@ -1151,7 +1151,7 @@ test("GsplatWebRenderer publishes a GPU producer transactionally and blocks fram
   assert.equal(native.calls.some((call) => call[0] === "renderFrame"), true);
 });
 
-test("GsplatWebRenderer async geometry switch fails closed on a legacy module", async () => {
+test("GsplatWebRenderer async geometry shim fails closed on a legacy module", async () => {
   const native = makeNativeRenderer();
   delete native.setGeometryPathAsync;
   const renderer = new GsplatWebRenderer(native);
@@ -1169,62 +1169,65 @@ test("GsplatWebRenderer async geometry switch fails closed on a legacy module", 
   assert.equal(native.calls.some((call) => call[0] === "setGeometryPath"), false);
 });
 
-test("GsplatWebRenderer geometry failure preserves the published renderer", async () => {
-  const native = makeNativeRenderer({
-    async setGeometryPathAsync() {
-      throw new Error(
-        "resident resource packed storage requires 160000000 bytes " +
-        "but the effective binding limit is 134217728 bytes",
-      );
-    },
-  });
-  const renderer = new GsplatWebRenderer(native);
+test("GsplatWebRenderer enforces the constructor-only 3x3 geometry matrix", async () => {
+  const paths = [
+    ["direct", 0],
+    ["packed", 1],
+    ["paged", 2],
+  ];
+  const assertUnsupported = (error) => {
+    assert.ok(error instanceof GsplatWebError);
+    assert.equal(error.stage, "geometry_path");
+    assert.equal(error.error_code, "unsupported");
+    assert.equal(error.scene_published, true);
+    return true;
+  };
 
-  await assert.rejects(
-    renderer.setGeometryPathAsync("direct"),
-    (error) => {
-      assert.ok(error instanceof GsplatWebError);
-      assert.equal(error.stage, "geometry_path");
-      assert.equal(error.error_code, "capacity_exceeded");
-      assert.equal(error.scene_published, true);
-      assert.deepEqual(error.resource, {
-        kind: "packed storage",
-        required_bytes: 160000000,
-        limit_bytes: 134217728,
-      });
-      return true;
-    },
-  );
+  for (const [currentName, currentId] of paths) {
+    for (const [targetName, targetId] of paths) {
+      for (const setter of ["sync", "async"]) {
+        let activePath = currentId;
+        const native = makeNativeRenderer({
+          setGeometryPath(path) {
+            native.calls.push(["setGeometryPath", path]);
+            if (path !== activePath) {
+              throw new Error("changed Web geometry path is unsupported");
+            }
+          },
+          async setGeometryPathAsync(path) {
+            native.calls.push(["setGeometryPathAsync", path]);
+            if (path !== activePath) {
+              throw new Error("changed Web geometry path is unsupported");
+            }
+          },
+        });
+        const renderer = new GsplatWebRenderer(native);
 
-  renderer.renderFrame();
-  assert.equal(native.calls.some((call) => call[0] === "renderFrame"), true);
-});
+        if (currentId === targetId) {
+          if (setter === "sync") {
+            renderer.setGeometryPath(targetName);
+          } else {
+            await renderer.setGeometryPathAsync(targetName);
+          }
+        } else if (setter === "sync") {
+          assert.throws(() => renderer.setGeometryPath(targetName), assertUnsupported);
+        } else {
+          await assert.rejects(
+            renderer.setGeometryPathAsync(targetName),
+            assertUnsupported,
+          );
+        }
 
-test("GsplatWebRenderer keeps legacy synchronous geometry switching fail closed", () => {
-  let activePath = 1;
-  const native = makeNativeRenderer({
-    setGeometryPath(path) {
-      native.calls.push(["setGeometryPath", path]);
-      if (path !== activePath) {
-        throw new Error("changed-path synchronous geometry switching is unsupported");
+        assert.equal(
+          activePath,
+          currentId,
+          `${setter} ${currentName} -> ${targetName} mutated the active path`,
+        );
+        renderer.renderFrame();
+        assert.equal(native.calls.some((call) => call[0] === "renderFrame"), true);
       }
-      activePath = path;
-    },
-  });
-  const renderer = new GsplatWebRenderer(native);
-
-  renderer.setGeometryPath("packed");
-  renderer.setGeometryPath("packed");
-  assert.throws(
-    () => renderer.setGeometryPath("direct"),
-    /synchronous geometry switching is unsupported/,
-  );
-  assert.equal(activePath, 1);
-  assert.deepEqual(native.calls, [
-    ["setGeometryPath", 1],
-    ["setGeometryPath", 1],
-    ["setGeometryPath", 0],
-  ]);
+    }
+  }
 });
 
 test("GsplatWebRenderer serializes concurrent async resize calls", async () => {
@@ -1268,7 +1271,7 @@ test("GsplatWebRenderer serializes concurrent async resize calls", async () => {
   assert.deepEqual(renderer.surfaceSize(), { width: 1024, height: 768 });
 });
 
-test("GsplatWebRenderer serializes resize and geometry on one mutation queue", async () => {
+test("GsplatWebRenderer serializes resize and the async geometry shim", async () => {
   let releaseResize;
   const resizeGate = new Promise((resolve) => {
     releaseResize = resolve;
@@ -1313,14 +1316,14 @@ test("GsplatWebRenderer serializes resize and geometry on one mutation queue", a
   ]);
 });
 
-test("GsplatWebRenderer mutation queue continues after geometry failure", async () => {
+test("GsplatWebRenderer mutation queue continues after geometry rejection", async () => {
   let surface = { width: 640, height: 480 };
   const native = makeNativeRenderer({
     surfaceSize() {
       return surface;
     },
     async setGeometryPathAsync() {
-      throw new Error("geometry candidate validation failed");
+      throw new Error("changed Web geometry path is unsupported");
     },
     async resizeAsync(width, height) {
       surface = { width, height };
@@ -1331,7 +1334,10 @@ test("GsplatWebRenderer mutation queue continues after geometry failure", async 
 
   const switching = renderer.setGeometryPathAsync("direct");
   const resizing = renderer.resize(800, 600);
-  await assert.rejects(switching, (error) => error.stage === "geometry_path");
+  await assert.rejects(
+    switching,
+    (error) => error.stage === "geometry_path" && error.error_code === "unsupported",
+  );
   await resizing;
 
   assert.deepEqual(renderer.surfaceSize(), { width: 800, height: 600 });
@@ -1374,7 +1380,7 @@ test("GsplatWebRenderer blocks frame submission while resize is pending", async 
   assert.equal(native.calls.some((call) => call[0] === "renderFrame"), true);
 });
 
-test("GsplatWebRenderer blocks frame submission while geometry mutation is pending", async () => {
+test("GsplatWebRenderer blocks frames while the async geometry shim is pending", async () => {
   let releaseGeometry;
   const geometryGate = new Promise((resolve) => {
     releaseGeometry = resolve;
@@ -1436,7 +1442,7 @@ test("GsplatWebRenderer defers native free until an in-flight resize settles", a
   assert.equal(native.calls.filter((call) => call[0] === "free").length, 1);
 });
 
-test("GsplatWebRenderer defers native free until geometry mutation settles", async () => {
+test("GsplatWebRenderer defers native free until the async geometry shim settles", async () => {
   let releaseGeometry;
   const geometryGate = new Promise((resolve) => {
     releaseGeometry = resolve;

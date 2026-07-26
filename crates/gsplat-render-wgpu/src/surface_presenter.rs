@@ -44,10 +44,10 @@ use crate::tiled_resident_gpu::{ResidentTiledFinish, ResidentTiledGpu};
 use crate::{
     DEFAULT_PAGED_ATLAS_SLOTS, DirectGpuSceneOrder, DirectSceneError, DirectScenePath,
     DirectScenePreflight, DirectSceneResources, GeometryPath, PackedScenePath,
-    PackedScenePreflight, PreparedRendererGeometryPath, Renderer, ResidentGpuBytePlan,
-    SpatialPageSet, SurfacePresenterError, TimerInstant, create_direct_bind_group_layout,
-    create_direct_pipeline, direct_scene_preflight, packed_scene_preflight_with_limits,
-    preprocess_paged_visible_into, refresh_paged_hot_colors, wgpu_label,
+    PackedScenePreflight, Renderer, ResidentGpuBytePlan, SpatialPageSet, SurfacePresenterError,
+    TimerInstant, create_direct_bind_group_layout, create_direct_pipeline, direct_scene_preflight,
+    packed_scene_preflight_with_limits, preprocess_paged_visible_into, refresh_paged_hot_colors,
+    wgpu_label,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use crate::{timer_elapsed_ms, timer_now};
@@ -173,14 +173,6 @@ enum SurfaceGeometry {
     Direct(Box<DirectSceneResources>),
     Packed(Box<SurfacePackedRuntime>),
     Paged(Box<SurfacePagedRuntime>),
-}
-
-/// Complete but unpublished GPU-side geometry graph for a runtime path
-/// transition. This stays opaque to the session so publication remains an
-/// infallible presenter operation.
-#[cfg(target_arch = "wasm32")]
-pub(crate) struct PreparedSurfaceGeometryPath {
-    geometry: SurfaceGeometry,
 }
 
 enum PreparedSurfaceGpuOrder {
@@ -530,7 +522,6 @@ fn create_geometry_resources(
     context: GeometryResourceContext<'_>,
     path: GeometryPath,
     renderer: &Renderer,
-    prepared_renderer: Option<&PreparedRendererGeometryPath>,
 ) -> Result<SurfaceGeometry, SurfacePresenterError> {
     let GeometryResourceContext {
         device,
@@ -542,7 +533,6 @@ fn create_geometry_resources(
         width: _width,
         height: _height,
     } = context;
-    debug_assert!(prepared_renderer.is_none_or(|prepared| prepared.path() == path));
     match path {
         GeometryPath::SortedIndexDirect => {
             let scene = renderer.scene().ok_or_else(|| {
@@ -552,13 +542,13 @@ fn create_geometry_resources(
                     SurfacePresenterError::SceneNotLoaded
                 }
             })?;
-            let world_covariance_terms = prepared_renderer
-                .and_then(PreparedRendererGeometryPath::world_covariance_terms)
-                .or(renderer.world_covariance_terms.as_deref())
+            let world_covariance_terms = renderer
+                .world_covariance_terms
+                .as_deref()
                 .ok_or(SurfacePresenterError::SceneNotLoaded)?;
-            let alpha_values = prepared_renderer
-                .and_then(PreparedRendererGeometryPath::alpha_values)
-                .or(renderer.alpha_values.as_deref())
+            let alpha_values = renderer
+                .alpha_values
+                .as_deref()
                 .ok_or(SurfacePresenterError::SceneNotLoaded)?;
             let direct_scene = DirectSceneResources::new(
                 device,
@@ -625,10 +615,9 @@ fn create_geometry_resources(
                     SurfacePresenterError::SceneNotLoaded
                 }
             })?;
-            let pages = prepared_renderer
-                .and_then(PreparedRendererGeometryPath::spatial_pages)
-                .cloned()
-                .or_else(|| renderer.spatial_pages.clone())
+            let pages = renderer
+                .spatial_pages
+                .clone()
                 .ok_or(SurfacePresenterError::SceneNotLoaded)?;
             let paged_scene =
                 SurfacePagedRuntime::new(device, packed_bind_group_layout, scene, pages)?;
@@ -1311,7 +1300,6 @@ impl SurfacePresenter {
             },
             geometry_path,
             renderer,
-            None,
         );
         let gpu_order_telemetry = GpuOrderTelemetry::new(device, queue, timestamp_queries_enabled);
         let cpu_order_completion_telemetry = CpuOrderCompletionTelemetry::new(device);
@@ -1866,11 +1854,13 @@ impl SurfacePresenter {
     /// supported.
     ///
     /// Requesting the active path is idempotent and does not prepare resources.
-    /// A changed transition entering or leaving [`GeometryPath::PackedAtlas`]
-    /// is rejected before resource preparation. Other changed-path transitions
-    /// prepare the complete replacement transactionally and leave the current
-    /// path intact if preparation fails. Callers must keep `renderer`'s loaded
-    /// scene in sync with the presenter that was created from it.
+    /// Web geometry is constructor-only, so every changed browser request is
+    /// rejected as Unsupported before preparation. On native, a changed
+    /// transition entering or leaving [`GeometryPath::PackedAtlas`] is
+    /// rejected before resource preparation; Direct/Paged transitions remain
+    /// transactional and leave the current path intact if preparation fails.
+    /// Callers must keep `renderer`'s loaded scene in sync with the presenter
+    /// that was created from it.
     pub fn set_geometry_path(
         &mut self,
         path: GeometryPath,
@@ -1879,6 +1869,9 @@ impl SurfacePresenter {
         let current = self.geometry.path();
         if current == path {
             return Ok(());
+        }
+        if cfg!(target_arch = "wasm32") {
+            return Err(SurfacePresenterError::SurfaceGeometrySwitchUnsupported);
         }
         if current == GeometryPath::PackedAtlas || path == GeometryPath::PackedAtlas {
             return Err(SurfacePresenterError::SurfaceGeometrySwitchUnsupported);
@@ -1906,102 +1899,6 @@ impl SurfacePresenter {
         )
     }
 
-    /// Builds a complete browser geometry candidate while the active
-    /// presenter remains untouched. Packed construction includes resident
-    /// buffers, exact projected-contributor pipelines/buffers, and—when the
-    /// selected order policy needs it—the sorter and projected order binding.
-    /// The candidate becomes publishable only after every WebGPU error scope
-    /// has completed successfully.
-    #[cfg(target_arch = "wasm32")]
-    pub(crate) async fn prepare_geometry_path_async(
-        &self,
-        path: GeometryPath,
-        renderer: &Renderer,
-        prepared_renderer: &PreparedRendererGeometryPath,
-        prepare_gpu_order: bool,
-        require_projected_compaction: bool,
-    ) -> Result<PreparedSurfaceGeometryPath, SurfacePresenterError> {
-        debug_assert_eq!(prepared_renderer.path(), path);
-
-        let (validation_scope, oom_scope, internal_scope) = (
-            self.host
-                .device
-                .push_error_scope(wgpu::ErrorFilter::Validation),
-            self.host
-                .device
-                .push_error_scope(wgpu::ErrorFilter::OutOfMemory),
-            self.host
-                .device
-                .push_error_scope(wgpu::ErrorFilter::Internal),
-        );
-        let geometry_result = (|| {
-            let mut geometry = create_geometry_resources(
-                GeometryResourceContext {
-                    device: &self.host.device,
-                    direct_bind_group_layout: &self.direct_bind_group_layout,
-                    packed_bind_group_layout: &self.packed_bind_group_layout,
-                    resident_draw_bind_group_layout: self.resident_draw_bind_group_layout.as_ref(),
-                    resident_color_bind_group_layout: self
-                        .resident_color_bind_group_layout
-                        .as_ref(),
-                    surface_format: self.host.surface_configuration.format(),
-                    width: self.host.surface_configuration.size().0,
-                    height: self.host.surface_configuration.size().1,
-                },
-                path,
-                renderer,
-                Some(prepared_renderer),
-            )?;
-            if prepare_gpu_order {
-                if !self.host.indirect_execution_supported {
-                    return Err(SurfacePresenterError::GpuOrderUnsupported);
-                }
-                let order = self.create_gpu_order_candidate_for_geometry(&geometry)?;
-                Self::publish_gpu_order_candidate_to_geometry(&mut geometry, order);
-            }
-            Ok(geometry)
-        })();
-        let internal_error = internal_scope.pop().await;
-        let oom_error = oom_scope.pop().await;
-        let validation_error = validation_scope.pop().await;
-        if let Some(error) = classify_surface_geometry_scope_errors(
-            path,
-            internal_error.map(|error| error.to_string()),
-            oom_error.map(|error| error.to_string()),
-            validation_error.map(|error| error.to_string()),
-        ) {
-            return Err(error);
-        }
-
-        let mut geometry = geometry_result?;
-        prepare_optional_projected_compaction(
-            &self.host.device,
-            self.host.surface_configuration.format(),
-            self.host.indirect_execution_supported,
-            &mut geometry,
-            require_projected_compaction,
-        )
-        .await?;
-        Ok(PreparedSurfaceGeometryPath { geometry })
-    }
-
-    /// Atomically publishes an already scoped browser geometry graph. This
-    /// commit path performs no allocation and cannot report a late GPU error.
-    #[cfg(target_arch = "wasm32")]
-    pub(crate) fn publish_geometry_path_candidate(
-        &mut self,
-        prepared: PreparedSurfaceGeometryPath,
-    ) {
-        debug_assert_ne!(self.geometry.path(), prepared.geometry.path());
-        self.host.addressable_splat_count = prepared.geometry.addressable_splat_count();
-        self.geometry = prepared.geometry;
-        self.instance_count = 0;
-        self.gpu_order_telemetry.invalidate_generation();
-        self.cpu_order_completion_telemetry.invalidate_generation();
-        self.projected_draw_telemetry.invalidate_generation();
-        self.gpu_producer_telemetry.invalidate_generation();
-    }
-
     fn prepare_geometry_resources(
         &self,
         path: GeometryPath,
@@ -2020,11 +1917,10 @@ impl SurfacePresenter {
             },
             path,
             renderer,
-            None,
         )?;
         // Native event loops expose this historical synchronous A/B switch.
-        // Its capability and size gates run before construction; the browser
-        // path above uses the fully isolated asynchronous transaction.
+        // Its capability and size gates run before construction. Web geometry
+        // is constructor-only and never reaches this runtime preparation path.
         if self.host.indirect_execution_supported
             && let SurfaceGeometry::Packed(packed) = &mut geometry
             && let Some(candidate) = packed.projected.create_contributor_compaction_candidate(

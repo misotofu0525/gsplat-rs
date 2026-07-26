@@ -497,7 +497,12 @@ export class GsplatWebRenderer {
 
   setGeometryPath(path) {
     const id = resolveGeometryPathId(path);
-    this.#requireNativeRenderer().setGeometryPath(id);
+    const nativeRenderer = this.#requireNativeRenderer();
+    try {
+      nativeRenderer.setGeometryPath(id);
+    } catch (error) {
+      throw structuredRuntimeMutationFailure(error, FAILURE_STAGES.geometryPath);
+    }
   }
 
   setGeometryPathAsync(path) {

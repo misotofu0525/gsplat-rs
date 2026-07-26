@@ -412,8 +412,6 @@ pub enum SurfacePresenterError {
     GpuProducerPreparationRequired,
     #[error("browser GPU ordering must be prepared asynchronously before selection")]
     GpuOrderPreparationRequired,
-    #[error("browser geometry-path changes must be awaited through setGeometryPathAsync")]
-    SurfaceGeometryPreparationRequired,
     #[error(
         "the requested runtime surface geometry transition is unsupported; transitions entering or leaving Packed are disabled, and Paged remains a constructor-time diagnostic"
     )]
@@ -470,7 +468,6 @@ impl SurfacePresenterError {
             | Self::PreprojectOrderUnavailable
             | Self::GpuProducerPreparationRequired
             | Self::GpuOrderPreparationRequired
-            | Self::SurfaceGeometryPreparationRequired
             | Self::SurfaceGeometrySwitchUnsupported
             | Self::SurfaceResizePreparationRequired
             | Self::SurfaceResizeUnsupported
@@ -530,38 +527,6 @@ pub struct Renderer {
     alpha_values: Option<Vec<f32>>,
     preprocess_indices: Vec<u32>,
     last_stats: FrameStats,
-}
-
-/// Unpublished CPU-side state for a Surface geometry-path transition.
-///
-/// Runtime WebGPU allocation can complete only after an asynchronous error-
-/// scope pop. Keeping the target's derived CPU data here means the live
-/// renderer remains wholly on its previous path while that wait is pending.
-#[cfg_attr(not(any(target_arch = "wasm32", test)), allow(dead_code))]
-pub(crate) struct PreparedRendererGeometryPath {
-    path: GeometryPath,
-    world_covariances: Option<Vec<[[f32; 3]; 3]>>,
-    world_covariance_terms: Option<Vec<CameraCovarianceTerms>>,
-    alpha_values: Option<Vec<f32>>,
-    spatial_pages: Option<SpatialPageSet>,
-}
-
-impl PreparedRendererGeometryPath {
-    pub(crate) const fn path(&self) -> GeometryPath {
-        self.path
-    }
-
-    pub(crate) fn world_covariance_terms(&self) -> Option<&[CameraCovarianceTerms]> {
-        self.world_covariance_terms.as_deref()
-    }
-
-    pub(crate) fn alpha_values(&self) -> Option<&[f32]> {
-        self.alpha_values.as_deref()
-    }
-
-    pub(crate) fn spatial_pages(&self) -> Option<&SpatialPageSet> {
-        self.spatial_pages.as_ref()
-    }
 }
 
 impl Renderer {
@@ -657,87 +622,6 @@ impl Renderer {
             if let Some(rasterizer) = self.gpu_rasterizer.as_mut() {
                 rasterizer.clear_scene_resources();
             }
-        }
-    }
-
-    /// Derives all CPU data needed by `path` without changing live renderer
-    /// state. The returned value is paired with an unpublished Surface GPU
-    /// candidate and committed only after WebGPU error scopes report success.
-    #[cfg(any(target_arch = "wasm32", test))]
-    pub(crate) fn prepare_geometry_path_candidate(
-        &self,
-        path: GeometryPath,
-    ) -> Result<Option<PreparedRendererGeometryPath>, RendererError> {
-        if self.geometry_path == path {
-            return Ok(None);
-        }
-
-        let (world_covariances, world_covariance_terms, alpha_values, spatial_pages) = match path {
-            GeometryPath::SortedIndexDirect => {
-                let scene = self.scene.as_ref().ok_or_else(|| {
-                    if self.has_scene() {
-                        RendererError::GeometrySourceUnavailable { path }
-                    } else {
-                        RendererError::SceneNotLoaded
-                    }
-                })?;
-                let world_covariances = precompute_world_covariances(scene);
-                let world_covariance_terms = world_covariances
-                    .iter()
-                    .copied()
-                    .map(CameraCovarianceTerms::from_matrix)
-                    .collect();
-                (
-                    Some(world_covariances),
-                    Some(world_covariance_terms),
-                    Some(precompute_alpha_values(scene)),
-                    None,
-                )
-            }
-            GeometryPath::PackedAtlas => {
-                if !self.has_scene() {
-                    return Err(RendererError::SceneNotLoaded);
-                }
-                (None, None, None, None)
-            }
-            GeometryPath::PagedActiveAtlas => {
-                let scene = self.scene.as_ref().ok_or_else(|| {
-                    if self.has_scene() {
-                        RendererError::GeometrySourceUnavailable { path }
-                    } else {
-                        RendererError::SceneNotLoaded
-                    }
-                })?;
-                (None, None, None, Some(default_spatial_pages(scene)))
-            }
-        };
-
-        Ok(Some(PreparedRendererGeometryPath {
-            path,
-            world_covariances,
-            world_covariance_terms,
-            alpha_values,
-            spatial_pages,
-        }))
-    }
-
-    /// Publishes a previously prepared CPU geometry candidate. Every field
-    /// assignment is infallible; no target-path derivation or allocation is
-    /// performed in this commit phase.
-    #[cfg(any(target_arch = "wasm32", test))]
-    pub(crate) fn publish_geometry_path_candidate(
-        &mut self,
-        prepared: PreparedRendererGeometryPath,
-    ) {
-        debug_assert_ne!(self.geometry_path, prepared.path);
-        self.geometry_path = prepared.path;
-        self.world_covariances = prepared.world_covariances;
-        self.world_covariance_terms = prepared.world_covariance_terms;
-        self.alpha_values = prepared.alpha_values;
-        self.spatial_pages = prepared.spatial_pages;
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(rasterizer) = self.gpu_rasterizer.as_mut() {
-            rasterizer.clear_scene_resources();
         }
     }
 
@@ -4289,68 +4173,6 @@ mod tests {
         assert!(renderer.world_covariance_terms.is_none());
         assert!(renderer.alpha_values.is_none());
         assert!(renderer.resident_scene().is_some());
-    }
-
-    #[test]
-    fn renderer_geometry_candidate_is_unpublished_until_infallible_commit() {
-        let source = build_scene();
-        let mut renderer = Renderer::with_config_for_surface(RendererConfig::default()).unwrap();
-        renderer.load_scene(source).unwrap();
-        assert_eq!(
-            renderer.geometry_path(),
-            super::GeometryPath::SortedIndexDirect
-        );
-        assert!(renderer.world_covariances.is_some());
-
-        let candidate = renderer
-            .prepare_geometry_path_candidate(super::GeometryPath::PackedAtlas)
-            .unwrap()
-            .expect("changed path candidate");
-
-        assert_eq!(
-            renderer.geometry_path(),
-            super::GeometryPath::SortedIndexDirect
-        );
-        assert!(renderer.world_covariances.is_some());
-        assert!(renderer.scene().is_some());
-
-        renderer.publish_geometry_path_candidate(candidate);
-        assert_eq!(renderer.geometry_path(), super::GeometryPath::PackedAtlas);
-        assert!(renderer.world_covariances.is_none());
-        assert!(renderer.world_covariance_terms.is_none());
-        assert!(renderer.alpha_values.is_none());
-        assert!(renderer.scene().is_some());
-    }
-
-    #[test]
-    fn direct_candidate_prepares_derived_data_without_mutating_paged_state() {
-        let source = build_scene();
-        let mut renderer = Renderer::with_config_for_surface(RendererConfig::default()).unwrap();
-        renderer.load_scene(source).unwrap();
-        renderer.set_geometry_path(super::GeometryPath::PagedActiveAtlas);
-        assert!(renderer.spatial_pages.is_some());
-
-        let candidate = renderer
-            .prepare_geometry_path_candidate(super::GeometryPath::SortedIndexDirect)
-            .unwrap()
-            .expect("changed path candidate");
-
-        assert_eq!(
-            renderer.geometry_path(),
-            super::GeometryPath::PagedActiveAtlas
-        );
-        assert!(renderer.spatial_pages.is_some());
-        assert!(renderer.world_covariances.is_none());
-
-        renderer.publish_geometry_path_candidate(candidate);
-        assert_eq!(
-            renderer.geometry_path(),
-            super::GeometryPath::SortedIndexDirect
-        );
-        assert!(renderer.spatial_pages.is_none());
-        assert!(renderer.world_covariances.is_some());
-        assert!(renderer.world_covariance_terms.is_some());
-        assert!(renderer.alpha_values.is_some());
     }
 
     #[test]

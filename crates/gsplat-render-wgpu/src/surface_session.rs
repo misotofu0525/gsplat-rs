@@ -5,8 +5,6 @@ use std::num::NonZeroU64;
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::Duration;
 
-#[cfg(target_arch = "wasm32")]
-use crate::PreparedRendererGeometryPath;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::SurfaceFrameCapture;
 pub use crate::api::SurfaceOrderBackendUsed;
@@ -28,8 +26,6 @@ use crate::gpu_telemetry::{
 };
 use crate::projected_draw_telemetry::ProjectedDrawTelemetryPoll;
 use crate::surface::LegacySurfaceStatsAvailability;
-#[cfg(target_arch = "wasm32")]
-use crate::surface_presenter::PreparedSurfaceGeometryPath;
 use crate::surface_presenter::{
     CpuCompletionSampleRequest, ProjectedDrawSampleRequest, SurfacePresenterHost,
 };
@@ -1945,45 +1941,6 @@ impl SessionSurfaceOwner {
         }
     }
 
-    #[cfg(target_arch = "wasm32")]
-    async fn prepare_geometry_path_async(
-        &self,
-        path: GeometryPath,
-        renderer: &Renderer,
-        prepared_renderer: &PreparedRendererGeometryPath,
-        prepare_gpu_order: bool,
-        require_projected_compaction: bool,
-    ) -> Result<PreparedSurfaceGeometryPath, SurfacePresenterError> {
-        match self {
-            Self::Standalone(presenter) => {
-                presenter
-                    .prepare_geometry_path_async(
-                        path,
-                        renderer,
-                        prepared_renderer,
-                        prepare_gpu_order,
-                        require_projected_compaction,
-                    )
-                    .await
-            }
-            Self::ExactPacked(_) => Err(SurfacePresenterError::SurfaceGeometrySwitchUnsupported),
-        }
-    }
-
-    #[cfg(target_arch = "wasm32")]
-    fn publish_geometry_path_candidate(
-        &mut self,
-        prepared: PreparedSurfaceGeometryPath,
-    ) -> Result<(), SurfacePresenterError> {
-        match self {
-            Self::Standalone(presenter) => {
-                presenter.publish_geometry_path_candidate(prepared);
-                Ok(())
-            }
-            Self::ExactPacked(_) => Err(SurfacePresenterError::SurfaceGeometrySwitchUnsupported),
-        }
-    }
-
     async fn prepare_gpu_order(&mut self) -> Result<(), SurfacePresenterError> {
         match self {
             Self::Standalone(presenter) => presenter.prepare_gpu_order().await,
@@ -2265,7 +2222,6 @@ fn try_switch_renderer_geometry_path(
 enum SurfaceGeometrySwitchEntry {
     AlreadyActive,
     Synchronous,
-    AsyncPreparationRequired,
     Unsupported,
 }
 
@@ -2276,14 +2232,8 @@ fn surface_geometry_switch_entry(
 ) -> SurfaceGeometrySwitchEntry {
     if current == target {
         SurfaceGeometrySwitchEntry::AlreadyActive
-    } else if current == GeometryPath::PackedAtlas || target == GeometryPath::PackedAtlas {
+    } else if web || current == GeometryPath::PackedAtlas || target == GeometryPath::PackedAtlas {
         SurfaceGeometrySwitchEntry::Unsupported
-    } else if web
-        && (current == GeometryPath::PagedActiveAtlas || target == GeometryPath::PagedActiveAtlas)
-    {
-        SurfaceGeometrySwitchEntry::Unsupported
-    } else if web {
-        SurfaceGeometrySwitchEntry::AsyncPreparationRequired
     } else {
         SurfaceGeometrySwitchEntry::Synchronous
     }
@@ -3173,9 +3123,12 @@ impl SurfaceRenderSession {
         Ok(())
     }
 
-    /// Switches the shared renderer and presenter to a different geometry
-    /// path (experimental A/B benchmark knob; default remains
-    /// [`GeometryPath::SortedIndexDirect`]).
+    /// Native compatibility setter for the experimental geometry A/B knob.
+    ///
+    /// Native Direct/Paged switches remain transactional, while transitions
+    /// entering or leaving Packed are rejected before mutation. On Web,
+    /// geometry is constructor-only: same-path calls are idempotent and every
+    /// changed-path request returns Unsupported.
     pub fn set_geometry_path(&mut self, path: GeometryPath) -> Result<(), RendererError> {
         if let Some(current) = self.exact_plan_state() {
             let next = current.with_geometry(path)?;
@@ -3194,9 +3147,6 @@ impl SurfaceRenderSession {
             path,
         ) {
             SurfaceGeometrySwitchEntry::AlreadyActive => return Ok(()),
-            SurfaceGeometrySwitchEntry::AsyncPreparationRequired => {
-                return Err(SurfacePresenterError::SurfaceGeometryPreparationRequired.into());
-            }
             SurfaceGeometrySwitchEntry::Unsupported => {
                 return Err(SurfacePresenterError::SurfaceGeometrySwitchUnsupported.into());
             }
@@ -3216,61 +3166,17 @@ impl SurfaceRenderSession {
         Ok(())
     }
 
-    /// Browser-only two-phase geometry switch. The renderer's target CPU
-    /// derivations and the presenter's complete GPU graph remain unpublished
-    /// while validation/OOM/internal scopes are pending. Direct and Packed
-    /// are the full-quality runtime pair; Paged remains constructor-time-only.
+    /// Browser compatibility shim for the historical async setter shape.
+    ///
+    /// Geometry is constructor-only on Web. This returns success only for the
+    /// active path and returns Unsupported for every changed-path request,
+    /// without preparing or publishing renderer or presenter candidates.
     #[cfg(target_arch = "wasm32")]
     pub async fn set_geometry_path_async(
         &mut self,
         path: GeometryPath,
     ) -> Result<(), RendererError> {
-        if let Some(current) = self.exact_plan_state() {
-            let next = current.with_geometry(path)?;
-            debug_assert_eq!(next, current);
-            return Ok(());
-        }
-        if path != GeometryPath::PackedAtlas
-            && (self.gpu_order_producer() == SurfaceGpuOrderProducer::Preproject
-                || self.gpu_producer_measurement.enabled())
-        {
-            return Err(SurfacePresenterError::PreprojectProducerIncompatible.into());
-        }
-        match surface_geometry_switch_entry(true, self.geometry_path(), path) {
-            SurfaceGeometrySwitchEntry::AlreadyActive => return Ok(()),
-            SurfaceGeometrySwitchEntry::Unsupported => {
-                return Err(SurfacePresenterError::SurfaceGeometrySwitchUnsupported.into());
-            }
-            SurfaceGeometrySwitchEntry::AsyncPreparationRequired => {}
-            SurfaceGeometrySwitchEntry::Synchronous => unreachable!(),
-        }
-
-        let prepared_renderer = self
-            .renderer
-            .prepare_geometry_path_candidate(path)?
-            .expect("changed geometry path must produce a renderer candidate");
-        let prepare_gpu_order = self.order_backend != SurfaceOrderBackend::Cpu;
-        let require_projected_compaction =
-            self.projected_draw_policy == SurfaceProjectedDrawPolicy::Compact;
-        let prepared_presenter = self
-            .presenter
-            .prepare_geometry_path_async(
-                path,
-                &self.renderer,
-                &prepared_renderer,
-                prepare_gpu_order,
-                require_projected_compaction,
-            )
-            .await?;
-
-        // Both candidates are complete and every following operation is an
-        // infallible assignment. No live session field changed before here.
-        self.presenter
-            .publish_geometry_path_candidate(prepared_presenter)?;
-        self.renderer
-            .publish_geometry_path_candidate(prepared_renderer);
-        self.finish_geometry_path_switch(path);
-        Ok(())
+        self.set_geometry_path(path)
     }
 
     fn finish_geometry_path_switch(&mut self, _path: GeometryPath) {
@@ -5468,47 +5374,30 @@ mod tests {
     }
 
     #[test]
-    fn geometry_switch_entry_rejects_packed_and_preserves_existing_paged_rules() {
-        assert_eq!(
-            surface_geometry_switch_entry(
-                true,
-                GeometryPath::PagedActiveAtlas,
-                GeometryPath::PagedActiveAtlas,
-            ),
-            SurfaceGeometrySwitchEntry::AlreadyActive,
-        );
-        assert_eq!(
-            surface_geometry_switch_entry(
-                true,
-                GeometryPath::SortedIndexDirect,
-                GeometryPath::PackedAtlas,
-            ),
-            SurfaceGeometrySwitchEntry::Unsupported,
-        );
-        assert_eq!(
-            surface_geometry_switch_entry(
-                true,
-                GeometryPath::PackedAtlas,
-                GeometryPath::SortedIndexDirect,
-            ),
-            SurfaceGeometrySwitchEntry::Unsupported,
-        );
-        assert_eq!(
-            surface_geometry_switch_entry(
-                true,
-                GeometryPath::SortedIndexDirect,
-                GeometryPath::PagedActiveAtlas,
-            ),
-            SurfaceGeometrySwitchEntry::Unsupported,
-        );
-        assert_eq!(
-            surface_geometry_switch_entry(
-                true,
-                GeometryPath::PagedActiveAtlas,
-                GeometryPath::PackedAtlas,
-            ),
-            SurfaceGeometrySwitchEntry::Unsupported,
-        );
+    fn web_geometry_switch_matrix_is_constructor_only() {
+        let paths = [
+            GeometryPath::SortedIndexDirect,
+            GeometryPath::PackedAtlas,
+            GeometryPath::PagedActiveAtlas,
+        ];
+        for current in paths {
+            for target in paths {
+                let expected = if current == target {
+                    SurfaceGeometrySwitchEntry::AlreadyActive
+                } else {
+                    SurfaceGeometrySwitchEntry::Unsupported
+                };
+                assert_eq!(
+                    surface_geometry_switch_entry(true, current, target),
+                    expected,
+                    "Web geometry transition {current:?} -> {target:?}",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn native_geometry_switch_matrix_preserves_direct_paged_transactions() {
         assert_eq!(
             surface_geometry_switch_entry(
                 false,
@@ -5516,6 +5405,30 @@ mod tests {
                 GeometryPath::PagedActiveAtlas,
             ),
             SurfaceGeometrySwitchEntry::Synchronous,
+        );
+        assert_eq!(
+            surface_geometry_switch_entry(
+                false,
+                GeometryPath::PagedActiveAtlas,
+                GeometryPath::SortedIndexDirect,
+            ),
+            SurfaceGeometrySwitchEntry::Synchronous,
+        );
+        assert_eq!(
+            surface_geometry_switch_entry(
+                false,
+                GeometryPath::SortedIndexDirect,
+                GeometryPath::PackedAtlas,
+            ),
+            SurfaceGeometrySwitchEntry::Unsupported,
+        );
+        assert_eq!(
+            surface_geometry_switch_entry(
+                false,
+                GeometryPath::PackedAtlas,
+                GeometryPath::PagedActiveAtlas,
+            ),
+            SurfaceGeometrySwitchEntry::Unsupported,
         );
     }
 
