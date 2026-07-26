@@ -2,6 +2,7 @@
 
 mod controller;
 mod current_stats;
+mod facade;
 pub(crate) mod frame;
 pub(crate) mod gpu_prepare;
 #[cfg(not(target_arch = "wasm32"))]
