@@ -151,12 +151,13 @@ impl SessionFrameExecutor {
         let mut stats = if paged {
             FrameStats::zero()
         } else {
-            renderer.build_surface_sorted_indices_with_sort_refresh(camera, frame.refresh_sort)?
+            renderer.prepare_surface_sorted_indices_attempt(camera, frame.refresh_sort)?
         };
         #[cfg(test)]
         if let Some(frame_presented) = surface.take_test_frame_presented() {
             let frame_wall_ms = timer_elapsed_ms(frame_started);
             stats.frame_ms = frame_wall_ms;
+            renderer.stage_surface_attempt_stats(stats);
             let candidate = StandaloneCpuFrameAttempt {
                 stats,
                 presenter_submission: TelemetrySubmission::NotRequested,
@@ -193,7 +194,7 @@ impl SessionFrameExecutor {
                     sort_ms: stats.sort_ms,
                 });
                 presenter.render_cpu_sorted_indices_tracked(
-                    renderer.current_sorted_indices(),
+                    renderer.surface_sorted_indices_for_attempt(),
                     camera,
                     frame.upload_order,
                     completion,
@@ -208,6 +209,7 @@ impl SessionFrameExecutor {
         let frame_presented = surface.last_frame_presented();
         let frame_wall_ms = timer_elapsed_ms(frame_started);
         stats.frame_ms = frame_wall_ms;
+        renderer.stage_surface_attempt_stats(stats);
         let candidate = StandaloneCpuFrameAttempt {
             stats,
             presenter_submission,

@@ -81,6 +81,8 @@ impl Renderer {
             offscreen_host: None,
             scene_state: renderer::scene_state::RendererSceneState::empty(),
             exact_offscreen_runtime: None,
+            surface_attempt_order: None,
+            surface_attempt_stats: None,
             last_stats: FrameStats::zero(),
         }
     }
@@ -109,6 +111,7 @@ impl Renderer {
 
     pub fn set_geometry_path(&mut self, path: GeometryPath) {
         if self.geometry_path != path {
+            self.discard_surface_attempt();
             self.geometry_path = path;
             self.scene_state.rebuild_for_path(path);
             #[cfg(not(target_arch = "wasm32"))]
@@ -271,6 +274,7 @@ impl Renderer {
         }
 
         self.scene_state.replace_wide(scene, self.geometry_path);
+        self.discard_surface_attempt();
         #[cfg(not(target_arch = "wasm32"))]
         {
             self.exact_offscreen_runtime = None;
@@ -310,6 +314,7 @@ impl Renderer {
         }
 
         self.scene_state.replace_resident(resident);
+        self.discard_surface_attempt();
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(host) = self.offscreen_host.as_mut() {
             host.clear_scene_resources();
@@ -765,6 +770,103 @@ impl Renderer {
 
         let drawn_count = self.scene_state.preprocess_indices().len() as u32;
         Ok(self.record_stats(frame_start, preprocess_ms, sort_ms, 0.0, drawn_count))
+    }
+
+    /// Prepares the Direct order and stats used by one Surface attempt without
+    /// replacing the last successfully presented public Renderer snapshot.
+    pub(crate) fn prepare_surface_sorted_indices_attempt(
+        &mut self,
+        camera: &Camera,
+        refresh_sort: bool,
+    ) -> Result<FrameStats, RendererError> {
+        let frame_start = timer_now();
+        let refresh_sort = refresh_sort
+            || (self.scene_state.preprocess_indices().is_empty()
+                && self.surface_attempt_order.is_none());
+        let (preprocess_ms, sort_ms) = if refresh_sort {
+            let stable_full32 = self.mode == RenderMode::SortedAlpha;
+            let mut candidate = self.surface_attempt_order.take().unwrap_or_default();
+            candidate.clear();
+            let timings = {
+                let order_engine = &mut self.cpu_order_engine;
+                let positions = self
+                    .scene_state
+                    .source_positions()
+                    .ok_or(RendererError::SceneNotLoaded)?;
+                order_engine.order_positions(
+                    CpuPositionView::new(positions),
+                    camera,
+                    stable_full32,
+                    &mut candidate,
+                )?
+            };
+            self.surface_attempt_order = Some(candidate);
+            (timings.preprocess_ms, timings.sort_ms)
+        } else {
+            camera
+                .validate()
+                .map_err(|_| RendererError::InvalidCamera)?;
+            (0.0, 0.0)
+        };
+        let count =
+            u32::try_from(self.surface_sorted_indices_for_attempt().len()).unwrap_or(u32::MAX);
+        let stats = FrameStats {
+            frame_ms: timer_elapsed_ms(frame_start),
+            preprocess_ms,
+            sort_ms,
+            raster_ms: 0.0,
+            visible_count: count,
+            drawn_count: count,
+        };
+        self.surface_attempt_stats = Some(stats);
+        Ok(stats)
+    }
+
+    /// Installs an async worker result as attempt input while preserving the
+    /// public order until a matching primitive present succeeds.
+    pub(crate) fn stage_surface_sorted_indices_recycling(
+        &mut self,
+        indices: &mut Vec<u32>,
+    ) -> Result<(), RendererError> {
+        let scene_len = self.scene_len().ok_or(RendererError::SceneNotLoaded)?;
+        if self.geometry_path != GeometryPath::SortedIndexDirect
+            || indices.iter().any(|&index| index as usize >= scene_len)
+        {
+            return Err(RendererError::InvalidScene);
+        }
+        let mut candidate = self.surface_attempt_order.take().unwrap_or_default();
+        std::mem::swap(&mut candidate, indices);
+        self.surface_attempt_order = Some(candidate);
+        Ok(())
+    }
+
+    pub(crate) fn surface_sorted_indices_for_attempt(&self) -> &[u32] {
+        self.surface_attempt_order
+            .as_deref()
+            .unwrap_or_else(|| self.scene_state.preprocess_indices())
+    }
+
+    pub(crate) fn stage_surface_attempt_stats(&mut self, stats: FrameStats) {
+        self.surface_attempt_stats = Some(stats);
+    }
+
+    /// Infallible commit called only from the successful-present branch.
+    pub(crate) fn publish_surface_attempt(&mut self) {
+        if let Some(mut order) = self.surface_attempt_order.take() {
+            self.scene_state.swap_preprocess_indices(&mut order);
+        }
+        if let Some(stats) = self.surface_attempt_stats.take() {
+            self.last_stats = stats;
+        }
+    }
+
+    pub(crate) fn publish_surface_stats(&mut self, stats: FrameStats) {
+        self.last_stats = stats;
+    }
+
+    fn discard_surface_attempt(&mut self) {
+        self.surface_attempt_order = None;
+        self.surface_attempt_stats = None;
     }
 
     pub fn current_sorted_indices(&self) -> &[u32] {

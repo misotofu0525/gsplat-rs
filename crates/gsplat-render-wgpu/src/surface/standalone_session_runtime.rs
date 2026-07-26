@@ -14,8 +14,17 @@ use super::standalone_paged_runtime::{PreparedStandalonePagedScene, StandalonePa
 use crate::gpu_telemetry::{
     CpuOrderCompletionTelemetry, CpuOrderTelemetryPoll, FrameInstanceCounts, GpuOrderTelemetryPoll,
 };
-use crate::surface_presenter::try_prepare_then_commit;
 use crate::{GeometryPath, Renderer, SurfacePresenterError, TimerInstant};
+
+pub(crate) fn try_prepare_then_commit<State, Prepared, Error>(
+    state: &mut State,
+    prepare: impl FnOnce(&State) -> Result<Prepared, Error>,
+    commit: impl FnOnce(&mut State, Prepared),
+) -> Result<(), Error> {
+    let prepared = prepare(state)?;
+    commit(state, prepared);
+    Ok(())
+}
 
 #[derive(Clone, Copy)]
 pub(crate) struct CpuCompletionSampleRequest {
@@ -419,8 +428,13 @@ mod tests {
             "prepare_gpu_order",
             "CpuOrderCompletionTelemetry",
             "poll_gpu_order_telemetry",
+            "try_prepare_then_commit",
         ] {
             assert!(source.contains(responsibility), "missing {responsibility}");
         }
+        assert!(
+            !source.contains(concat!("use crate::surface_", "presenter")),
+            "standalone runtime must not depend on Presenter"
+        );
     }
 }

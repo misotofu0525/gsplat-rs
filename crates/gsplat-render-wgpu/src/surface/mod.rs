@@ -49,6 +49,8 @@ pub(crate) use session_owner::SessionSurfaceOwner;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use session_schedule::async_sort_supported;
 pub(crate) use session_schedule::{SessionSchedule, SurfaceFramePlan};
+#[cfg(test)]
+pub(crate) use standalone_session_runtime::try_prepare_then_commit;
 pub(crate) use standalone_session_runtime::{CpuCompletionSampleRequest, StandaloneSessionRuntime};
 
 #[cfg(test)]

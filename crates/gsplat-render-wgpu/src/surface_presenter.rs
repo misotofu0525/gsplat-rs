@@ -136,16 +136,6 @@ pub(crate) fn surface_resource_plan(
     })
 }
 
-pub(crate) fn try_prepare_then_commit<State, Prepared, Error>(
-    state: &mut State,
-    prepare: impl FnOnce(&State) -> Result<Prepared, Error>,
-    commit: impl FnOnce(&mut State, Prepared),
-) -> Result<(), Error> {
-    let prepared = prepare(state)?;
-    commit(state, prepared);
-    Ok(())
-}
-
 fn surface_required_device_limits(
     adapter_limits: &wgpu::Limits,
     resource_plan: &SurfaceResourcePlan,

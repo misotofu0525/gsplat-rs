@@ -348,6 +348,36 @@ impl SessionSurfaceOwner {
     }
 }
 
+/// Telemetry terminals consumed by controllers at frame start but withheld
+/// from public evidence until the surrounding Surface transaction publishes.
+#[derive(Default)]
+struct SurfaceTelemetryBatch {
+    cpu_order_completed: Vec<SurfaceCpuOrderMeasurement>,
+    gpu_order_completed: Vec<SurfaceOrderMeasurement>,
+    order_failures: Vec<SurfaceOrderMeasurementFailure>,
+    projected_completed: Vec<SurfaceProjectedDrawMeasurement>,
+    projected_failures: Vec<SurfaceProjectedDrawMeasurementFailure>,
+    producer_completed: Vec<SurfaceGpuProducerMeasurement>,
+    producer_failures: Vec<SurfaceGpuProducerMeasurementFailure>,
+}
+
+impl SurfaceTelemetryBatch {
+    fn append(&mut self, mut other: Self) {
+        self.cpu_order_completed
+            .append(&mut other.cpu_order_completed);
+        self.gpu_order_completed
+            .append(&mut other.gpu_order_completed);
+        self.order_failures.append(&mut other.order_failures);
+        self.projected_completed
+            .append(&mut other.projected_completed);
+        self.projected_failures
+            .append(&mut other.projected_failures);
+        self.producer_completed
+            .append(&mut other.producer_completed);
+        self.producer_failures.append(&mut other.producer_failures);
+    }
+}
+
 /// Owns the ordering + direct GPU draw lifecycle shared by every Surface client.
 ///
 /// PLY-derived scene attributes stay GPU-resident. CPU refreshes upload compact
@@ -386,6 +416,7 @@ pub struct SurfaceRenderSession {
     last_stats: FrameStats,
     latest_cpu_order_measurement: Option<SurfaceCpuOrderMeasurement>,
     latest_gpu_order_measurement: Option<SurfaceOrderMeasurement>,
+    pending_telemetry_publication: SurfaceTelemetryBatch,
     evidence: SessionEvidence,
     #[cfg(not(target_arch = "wasm32"))]
     pending_async_completion: Option<PendingAsyncCompletion>,
@@ -687,6 +718,7 @@ impl SurfaceRenderSession {
             last_stats: FrameStats::zero(),
             latest_cpu_order_measurement: None,
             latest_gpu_order_measurement: None,
+            pending_telemetry_publication: SurfaceTelemetryBatch::default(),
             evidence,
             pending_async_completion: None,
         })
@@ -796,6 +828,7 @@ impl SurfaceRenderSession {
             last_stats: FrameStats::zero(),
             latest_cpu_order_measurement: None,
             latest_gpu_order_measurement: None,
+            pending_telemetry_publication: SurfaceTelemetryBatch::default(),
             evidence,
         })
     }
@@ -1667,9 +1700,7 @@ impl SurfaceRenderSession {
         if self.exact_plan_state().is_some() {
             return;
         }
-        let _ = self.collect_order_measurements();
-        let _ = self.collect_projected_draw_measurements();
-        let _ = self.collect_gpu_producer_measurements();
+        self.collect_and_publish_telemetry();
     }
 
     /// Boundedly advances callbacks for already-submitted Surface queue work.
@@ -2023,6 +2054,12 @@ impl SurfaceRenderSession {
 
     fn render_frame_sync(&mut self) -> Result<SurfaceFrameOutput, RendererError> {
         let frame_start = timer_now();
+        // Preserve the pre-fence controller timing: completed telemetry must
+        // influence this frame's plan choice even if drawable acquisition later
+        // fails. Public receipts remain staged until this attempt presents.
+        let consumed_telemetry = self.consume_controller_telemetry();
+        self.pending_telemetry_publication
+            .append(consumed_telemetry);
         self.refresh_adaptive_probe_owner();
         let has_order = match self.presented_order_backend {
             SurfaceOrderBackendUsed::Cpu => !self.renderer.current_sorted_indices().is_empty(),
@@ -2254,12 +2291,15 @@ impl SurfaceRenderSession {
             self.pending_projected_choice = Some(projected_choice);
             return Ok(output);
         }
-        let (completed_measurement, completed_measurement_failure) =
-            self.collect_order_measurements();
-        let (completed_projected_measurement, completed_projected_measurement_failure) =
-            self.collect_projected_draw_measurements();
-        let (completed_gpu_producer_measurement, completed_gpu_producer_measurement_failure) =
-            self.collect_gpu_producer_measurements();
+        let telemetry = std::mem::take(&mut self.pending_telemetry_publication);
+        let completed_measurement = telemetry.gpu_order_completed.last().copied();
+        let completed_measurement_failure = telemetry.order_failures.last().copied();
+        let completed_projected_measurement = telemetry.projected_completed.last().copied();
+        let completed_projected_measurement_failure = telemetry.projected_failures.last().copied();
+        let completed_gpu_producer_measurement = telemetry.producer_completed.last().copied();
+        let completed_gpu_producer_measurement_failure =
+            telemetry.producer_failures.last().copied();
+        self.publish_telemetry_batch(telemetry);
         self.pending_order_backend = None;
         self.pending_adaptive_choice = None;
         let defer_projected_choice = defer_projected_formal_choice(
@@ -2381,6 +2421,7 @@ impl SurfaceRenderSession {
         output.projected_draw_adaptive_state =
             self.projected_draw_adaptive_state(output.order_backend);
         self.last_stats = output.stats;
+        self.renderer.publish_surface_stats(output.stats);
         if output.sort_refreshed {
             self.schedule
                 .record_applied_order(self.camera, self.camera_revision);
@@ -2390,56 +2431,38 @@ impl SurfaceRenderSession {
         Ok(output)
     }
 
-    fn collect_order_measurements(
-        &mut self,
-    ) -> (
-        Option<SurfaceOrderMeasurement>,
-        Option<SurfaceOrderMeasurementFailure>,
-    ) {
+    fn consume_controller_telemetry(&mut self) -> SurfaceTelemetryBatch {
+        let mut batch = SurfaceTelemetryBatch::default();
         let cpu_telemetry = self.presenter.poll_cpu_order_completion_telemetry();
         for measurement in cpu_telemetry.completed {
             self.observe_cpu_completion_measurement(measurement);
             self.latest_cpu_order_measurement = Some(measurement);
-            self.evidence.publish_cpu_order(measurement);
+            batch.cpu_order_completed.push(measurement);
         }
-        let mut newest_failure = None;
         for failure in cpu_telemetry.failures {
             if self.order_backend == SurfaceOrderBackend::Adaptive {
                 self.adaptive_policy
                     .observe_cpu_measurement_failure(failure);
             }
-            self.evidence.publish_order_failure(failure);
-            newest_failure = Some(failure);
+            batch.order_failures.push(failure);
         }
         let telemetry = self.presenter.poll_gpu_order_telemetry();
-        let mut newest = None;
         for measurement in telemetry.completed {
             if self.order_backend == SurfaceOrderBackend::Adaptive {
                 self.adaptive_policy.observe_gpu_measurement(measurement);
             }
             self.latest_gpu_order_measurement = Some(measurement);
-            self.evidence.publish_gpu_order(measurement);
-            newest = Some(measurement);
+            batch.gpu_order_completed.push(measurement);
         }
         for failure in telemetry.failures {
             if self.order_backend == SurfaceOrderBackend::Adaptive {
                 self.adaptive_policy
                     .observe_gpu_measurement_failure(failure);
             }
-            self.evidence.publish_order_failure(failure);
-            newest_failure = Some(failure);
+            batch.order_failures.push(failure);
         }
-        (newest, newest_failure)
-    }
 
-    fn collect_projected_draw_measurements(
-        &mut self,
-    ) -> (
-        Option<SurfaceProjectedDrawMeasurement>,
-        Option<SurfaceProjectedDrawMeasurementFailure>,
-    ) {
         let telemetry = self.presenter.poll_projected_draw_telemetry();
-        let mut newest = None;
         for measurement in telemetry.completed {
             if self.projected_draw_policy == SurfaceProjectedDrawPolicy::Adaptive
                 && self.gpu_order_producer() == SurfaceGpuOrderProducer::PostSort
@@ -2447,10 +2470,8 @@ impl SurfaceRenderSession {
                 self.projected_policy_mut(measurement.order_backend)
                     .observe_measurement(measurement);
             }
-            self.evidence.publish_projected_success(measurement);
-            newest = Some(measurement);
+            batch.projected_completed.push(measurement);
         }
-        let mut newest_failure = None;
         for failure in telemetry.failures {
             if self.projected_draw_policy == SurfaceProjectedDrawPolicy::Adaptive
                 && self.gpu_order_producer() == SurfaceGpuOrderProducer::PostSort
@@ -2458,31 +2479,48 @@ impl SurfaceRenderSession {
                 self.projected_policy_mut(failure.order_backend)
                     .observe_failure(failure);
             }
-            self.evidence.publish_projected_failure(failure);
-            newest_failure = Some(failure);
+            batch.projected_failures.push(failure);
         }
         self.refresh_adaptive_probe_owner();
-        (newest, newest_failure)
+
+        let telemetry = self.presenter.poll_gpu_producer_telemetry();
+        for measurement in telemetry.completed {
+            batch.producer_completed.push(measurement);
+        }
+        for failure in telemetry.failures {
+            batch.producer_failures.push(failure);
+        }
+        batch
     }
 
-    fn collect_gpu_producer_measurements(
-        &mut self,
-    ) -> (
-        Option<SurfaceGpuProducerMeasurement>,
-        Option<SurfaceGpuProducerMeasurementFailure>,
-    ) {
-        let telemetry = self.presenter.poll_gpu_producer_telemetry();
-        let mut newest = None;
-        for measurement in telemetry.completed {
+    fn publish_telemetry_batch(&mut self, batch: SurfaceTelemetryBatch) {
+        for measurement in batch.cpu_order_completed {
+            self.evidence.publish_cpu_order(measurement);
+        }
+        for measurement in batch.gpu_order_completed {
+            self.evidence.publish_gpu_order(measurement);
+        }
+        for failure in batch.order_failures {
+            self.evidence.publish_order_failure(failure);
+        }
+        for measurement in batch.projected_completed {
+            self.evidence.publish_projected_success(measurement);
+        }
+        for failure in batch.projected_failures {
+            self.evidence.publish_projected_failure(failure);
+        }
+        for measurement in batch.producer_completed {
             self.evidence.publish_producer_success(measurement);
-            newest = Some(measurement);
         }
-        let mut newest_failure = None;
-        for failure in telemetry.failures {
+        for failure in batch.producer_failures {
             self.evidence.publish_producer_failure(failure);
-            newest_failure = Some(failure);
         }
-        (newest, newest_failure)
+    }
+
+    fn collect_and_publish_telemetry(&mut self) {
+        let mut batch = std::mem::take(&mut self.pending_telemetry_publication);
+        batch.append(self.consume_controller_telemetry());
+        self.publish_telemetry_batch(batch);
     }
 
     fn observe_cpu_completion_measurement(&mut self, measurement: SurfaceCpuOrderMeasurement) {
@@ -2621,6 +2659,7 @@ impl SurfaceRenderSession {
         let attempt = self.attempt_with_plan(plan, track_cpu_completion)?;
         match attempt.commit(|candidate| {
             let output = self.standalone_cpu_frame_output(candidate, plan, sort_refreshed, true);
+            self.renderer.publish_surface_attempt();
             self.last_stats = output.stats;
             self.presented_order_backend = SurfaceOrderBackendUsed::Cpu;
             self.schedule
@@ -2743,7 +2782,7 @@ impl SurfaceRenderSession {
                 // Session identity remains pending until this order presents.
                 let replace_result = self
                     .renderer
-                    .replace_surface_sorted_indices_recycling(&mut candidate.ordered_ids);
+                    .stage_surface_sorted_indices_recycling(&mut candidate.ordered_ids);
                 self.schedule.recycle_async_order(candidate.ordered_ids);
                 replace_result?;
                 Some(accepted_order)
@@ -2827,6 +2866,9 @@ impl SurfaceRenderSession {
         pending_order: Option<PendingAsyncOrder>,
         sync_sort_fallback: bool,
     ) -> Result<SurfaceFrameOutput, RendererError> {
+        let consumed_telemetry = self.consume_controller_telemetry();
+        self.pending_telemetry_publication
+            .append(consumed_telemetry);
         let mut projected_policy = self.adaptive_projected_cpu.clone();
         let mut projected_probe_owner = self.adaptive_probe_owner;
         let compact_available = self.presenter.projected_contributor_indirect_draw_enabled();
@@ -2857,6 +2899,7 @@ impl SurfaceRenderSession {
                     pending_order.is_some() || plan.refresh_sort,
                     true,
                 );
+                self.renderer.publish_surface_attempt();
                 self.presented_order_backend = SurfaceOrderBackendUsed::Cpu;
                 self.schedule
                     .finish_presented_frame(plan, output.order_uploaded);
@@ -2878,12 +2921,15 @@ impl SurfaceRenderSession {
         self.adaptive_projected_cpu = projected_policy;
         self.adaptive_probe_owner = projected_probe_owner;
 
-        let (completed_order_measurement, completed_order_measurement_failure) =
-            self.collect_order_measurements();
-        let (completed_projected_measurement, completed_projected_measurement_failure) =
-            self.collect_projected_draw_measurements();
-        let (completed_gpu_producer_measurement, completed_gpu_producer_measurement_failure) =
-            self.collect_gpu_producer_measurements();
+        let telemetry = std::mem::take(&mut self.pending_telemetry_publication);
+        let completed_order_measurement = telemetry.gpu_order_completed.last().copied();
+        let completed_order_measurement_failure = telemetry.order_failures.last().copied();
+        let completed_projected_measurement = telemetry.projected_completed.last().copied();
+        let completed_projected_measurement_failure = telemetry.projected_failures.last().copied();
+        let completed_gpu_producer_measurement = telemetry.producer_completed.last().copied();
+        let completed_gpu_producer_measurement_failure =
+            telemetry.producer_failures.last().copied();
+        self.publish_telemetry_batch(telemetry);
         output.completed_order_measurement = completed_order_measurement;
         output.completed_order_measurement_failure = completed_order_measurement_failure;
         output.completed_projected_draw_measurement = completed_projected_measurement;
@@ -2973,6 +3019,7 @@ impl SurfaceRenderSession {
             .presented_order_revision_lag(self.camera_revision);
         output.async_sort_scheduled_revision = should_schedule.then_some(self.camera_revision);
         self.last_stats = output.stats;
+        self.renderer.publish_surface_stats(output.stats);
     }
 }
 
@@ -3379,6 +3426,28 @@ mod tests {
         assert_eq!(publications, 1);
     }
 
+    #[test]
+    fn controller_input_precedes_plan_choice_while_publication_follows_present() {
+        let source = include_str!("surface_session.rs");
+        let consume = source
+            .find("let consumed_telemetry = self.consume_controller_telemetry()")
+            .expect("controller input consumption");
+        let choose = source
+            .find("let plan = self.schedule.plan(has_order)")
+            .expect("frame plan choice");
+        let unavailable = source[choose..]
+            .find("if !output.frame_presented")
+            .map(|offset| choose + offset)
+            .expect("unavailable branch");
+        let publish = source[unavailable..]
+            .find("self.publish_telemetry_batch(telemetry)")
+            .map(|offset| unavailable + offset)
+            .expect("presented evidence publication");
+        assert!(consume < choose);
+        assert!(choose < unavailable);
+        assert!(unavailable < publish);
+    }
+
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn public_sync_session_publishes_only_after_presented_retry() {
@@ -3402,6 +3471,8 @@ mod tests {
         let initial = session.render_frame().expect("initial presented frame");
         assert!(initial.frame_presented);
         let published_stats = session.last_stats();
+        let published_renderer_stats = session.renderer().last_stats();
+        let published_renderer_order = session.renderer().current_sorted_indices().to_vec();
         let published_current_stats = session.current_stats_submission();
         let published_order = session
             .compatibility_submission(SurfaceCompatibilityChannel::Order)
@@ -3417,10 +3488,18 @@ mod tests {
         session
             .set_camera(moved_camera)
             .expect("moved camera revision");
-        let unavailable = session.render_frame().expect("unavailable drawable");
+        let unavailable = session
+            .render_frame()
+            .expect("injected acquire failure is retryable");
         assert!(!unavailable.frame_presented);
-        assert_eq!(session.presenter.test_telemetry_polls(), telemetry_polls);
+        assert!(session.renderer.surface_attempt_order.is_some());
+        assert!(session.presenter.test_telemetry_polls() > telemetry_polls);
         assert_eq!(session.last_stats(), published_stats);
+        assert_eq!(session.renderer().last_stats(), published_renderer_stats);
+        assert_eq!(
+            session.renderer().current_sorted_indices(),
+            published_renderer_order
+        );
         assert_eq!(session.current_stats_submission(), published_current_stats);
         assert_eq!(session.schedule.applied_order_revision(), applied_revision);
         assert_eq!(
@@ -3434,6 +3513,7 @@ mod tests {
 
         let presented = session.render_frame().expect("presented retry");
         assert!(presented.frame_presented);
+        assert!(session.renderer.surface_attempt_order.is_none());
         assert!(presented.sort_refreshed);
         assert!(presented.order_uploaded);
         assert_eq!(presented.camera_revision, session.camera_revision());
@@ -3444,6 +3524,8 @@ mod tests {
         );
         assert!(!presented.visible_count_pending);
         assert_eq!(session.last_stats(), presented.stats);
+        assert_eq!(session.renderer().last_stats(), presented.stats);
+        assert_eq!(session.renderer().current_sorted_indices().len(), 2);
         assert!(session.presenter.test_telemetry_polls() > telemetry_polls);
         assert_ne!(
             session.compatibility_submission(SurfaceCompatibilityChannel::Order),
@@ -3477,6 +3559,8 @@ mod tests {
         let initial = session.render_frame().expect("initial presented frame");
         assert!(initial.frame_presented);
         let published_stats = session.last_stats();
+        let published_renderer_stats = session.renderer().last_stats();
+        let published_renderer_order = session.renderer().current_sorted_indices().to_vec();
         let published_order_submission = session
             .compatibility_submission(SurfaceCompatibilityChannel::Order)
             .expect("initial compatibility order submission");
@@ -3517,11 +3601,17 @@ mod tests {
             .completed_timing
             .expect("native async timing");
         assert!(!unavailable.frame_presented);
+        assert!(session.renderer.surface_attempt_order.is_some());
         assert_eq!(unavailable.applied_order_revision, 0);
         assert_eq!(unavailable.async_sort_completed_revision, None);
         assert!(!unavailable.async_sort_result_applied);
         assert!(!unavailable.async_sort_scheduled);
         assert_eq!(session.last_stats(), published_stats);
+        assert_eq!(session.renderer().last_stats(), published_renderer_stats);
+        assert_eq!(
+            session.renderer().current_sorted_indices(),
+            published_renderer_order
+        );
         assert_eq!(session.current_stats_submission(), published_current_stats);
         assert_eq!(
             session.projected_draw_adaptive_state(SurfaceOrderBackendUsed::Cpu),
@@ -3541,6 +3631,7 @@ mod tests {
         session.presenter.push_test_frame_presented(true);
         let presented = session.render_frame().expect("presented retry");
         assert!(presented.frame_presented);
+        assert!(session.renderer.surface_attempt_order.is_none());
         assert!(presented.sort_refreshed);
         assert!(presented.order_uploaded);
         assert_eq!(presented.applied_order_revision, 1);
@@ -3555,6 +3646,7 @@ mod tests {
             completed_timing,
         );
         assert_eq!(session.last_stats(), presented.stats);
+        assert_eq!(session.renderer().last_stats(), presented.stats);
         assert_eq!(session.schedule.applied_order_revision(), 1);
         assert!(session.pending_async_completion.is_none());
         assert_eq!(session.current_stats_submission(), published_current_stats);
@@ -3683,8 +3775,9 @@ mod tests {
         session.presenter.push_test_frame_presented(false);
         let unavailable = session.render_frame().expect("unavailable sync fallback");
         assert!(!unavailable.frame_presented);
-        assert_eq!(session.presenter.test_telemetry_polls(), telemetry_polls);
+        assert!(session.presenter.test_telemetry_polls() > telemetry_polls);
         assert_eq!(session.last_stats(), published_stats);
+        assert_eq!(session.renderer().last_stats(), published_stats);
         assert_eq!(
             session.compatibility_submission(SurfaceCompatibilityChannel::Order),
             Some(published_order),
@@ -3707,6 +3800,7 @@ mod tests {
             async_timing_sentinel,
         );
         assert_eq!(session.last_stats(), presented.stats);
+        assert_eq!(session.renderer().last_stats(), presented.stats);
         assert_eq!(presented.applied_order_revision, session.camera_revision());
     }
 
