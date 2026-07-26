@@ -64,6 +64,18 @@ class SourceArchitectureFixtureTests(unittest.TestCase):
                 policy = copy.deepcopy(self.base_policy)
                 policy["grandfather"] = copy.deepcopy(case.get("grandfather", []))
                 policy["exceptions"] = copy.deepcopy(case.get("exceptions", []))
+                # Synthetic fixtures retain historical IO review states after
+                # the real policy closes an owner. Admit only the two
+                # fixture-defined external review identities; unknown IO
+                # owners must still fail as untracked task references.
+                policy["program_task_state"]["external_owner_review_allowlist"] = [
+                    owner
+                    for owner in ("IO-PLY-1", "IO-SPZ-1")
+                    if any(
+                        entry["owner_task"] == owner
+                        for entry in policy["grandfather"]
+                    )
+                ]
                 # Fixtures describe isolated synthetic trees. Clear the real
                 # E1 boundaries before applying each case-specific activation
                 # so repository paths are not required in unrelated fixtures.
@@ -338,7 +350,7 @@ class SourceArchitectureFixtureTests(unittest.TestCase):
             self.assertEqual(state["package_ledgers"][package]["required_after"], "M8")
         self.assertEqual(
             set(state["external_owner_review_allowlist"]),
-            {"IO-PLY-1", "IO-SPZ-1"},
+            {"IO-PLY-1"},
         )
         # Parallel execution is an ephemeral lease. The checker binds it to the
         # active ledger and exact lane block; this self-test verifies the
@@ -362,7 +374,7 @@ class SourceArchitectureFixtureTests(unittest.TestCase):
             for entry in self.base_policy["grandfather"]
             if entry["owner_task"] in {"IO-PLY-1", "IO-SPZ-1"}
         }
-        self.assertEqual(set(external), {"IO-PLY-1", "IO-SPZ-1"})
+        self.assertEqual(set(external), {"IO-PLY-1"})
         for entry in external.values():
             self.assertEqual(entry["review_task"], "M8")
             self.assertIn("single renewal", entry["review_action"])

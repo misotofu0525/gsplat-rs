@@ -693,8 +693,14 @@ M8 = Active
   cross-platform runtime.
 - M8 acceptance still requires factual handbook/release/public-document
   alignment, final architecture/deprecation and SHA ledgers, link/command
-  validation, the applicable clean-tree verification matrix, an explicit
-  decision for `IO-PLY-1` and `IO-SPZ-1`, and archival of this bundle.
+  validation, the applicable clean-tree verification matrix, completion of the
+  remaining `IO-PLY-1` ownership exit, and archival of this bundle.
+- The independent IO-SPZ ownership review at fixed baseline `41e18f8` accepted
+  the existing loader as one cohesive `SPZ v4 -> validated SceneBuffers`
+  transaction with no P0/P1/P2 ownership finding. Its M8 grandfather and
+  external-review allowlist entry are therefore removed without changing
+  `crates/gsplat-io-spz`. External-format interoperability and any future
+  product-selected non-default resource budget remain explicit **Deferred**.
 - Chrome/WebGPU at the accepted M7 SHA, physical iPhone, and Windows/Linux
   runtime remain **Deferred**. Compile, macOS/Metal, Simulator or historical
   evidence is not substituted.
