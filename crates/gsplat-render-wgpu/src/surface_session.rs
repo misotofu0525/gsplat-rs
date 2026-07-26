@@ -511,6 +511,14 @@ fn publish_only_on_present<T>(published: &mut T, presented: Option<T>) {
     }
 }
 
+fn publish_session_frame_only_on_present(frame_presented: bool, publish: impl FnOnce()) -> bool {
+    if !frame_presented {
+        return false;
+    }
+    publish();
+    true
+}
+
 fn exact_order_refreshed(
     published: Option<(PlanId, u64)>,
     plan: PlanId,
@@ -1806,29 +1814,28 @@ impl SurfaceRenderSession {
     }
 
     pub fn render_frame(&mut self) -> Result<SurfaceFrameOutput, RendererError> {
-        if self.exact_plan_state().is_some() {
-            let result = self.render_frame_exact();
-            if let Ok(output) = &result {
-                self.observe_compatibility_submissions(*output);
-            }
-            return result;
-        }
-        #[cfg(not(target_arch = "wasm32"))]
-        if self
-            .schedule
-            .async_enabled(self.geometry_path(), self.order_backend)
-        {
-            let result = self.render_frame_async_sort();
-            if let Ok(output) = &result
-                && output.frame_presented
+        let result = if self.exact_plan_state().is_some() {
+            self.render_frame_exact()
+        } else {
+            #[cfg(not(target_arch = "wasm32"))]
+            if self
+                .schedule
+                .async_enabled(self.geometry_path(), self.order_backend)
             {
-                self.observe_compatibility_submissions(*output);
+                self.render_frame_async_sort()
+            } else {
+                self.render_frame_sync()
             }
-            return result;
-        }
-        let result = self.render_frame_sync();
+            #[cfg(target_arch = "wasm32")]
+            {
+                self.render_frame_sync()
+            }
+        };
         if let Ok(output) = &result {
-            self.observe_compatibility_submissions(*output);
+            let output = *output;
+            publish_session_frame_only_on_present(output.frame_presented, || {
+                self.observe_compatibility_submissions(output);
+            });
         }
         result
     }
@@ -2016,12 +2023,6 @@ impl SurfaceRenderSession {
 
     fn render_frame_sync(&mut self) -> Result<SurfaceFrameOutput, RendererError> {
         let frame_start = timer_now();
-        let (completed_measurement, completed_measurement_failure) =
-            self.collect_order_measurements();
-        let (completed_projected_measurement, completed_projected_measurement_failure) =
-            self.collect_projected_draw_measurements();
-        let (completed_gpu_producer_measurement, completed_gpu_producer_measurement_failure) =
-            self.collect_gpu_producer_measurements();
         self.refresh_adaptive_probe_owner();
         let has_order = match self.presented_order_backend {
             SurfaceOrderBackendUsed::Cpu => !self.renderer.current_sorted_indices().is_empty(),
@@ -2247,20 +2248,18 @@ impl SurfaceRenderSession {
             // rendered frame. Preserve the frame-state plan, adaptive sample,
             // applied revision, and measurement ledger until the matching
             // scatter/raster/present submission exists.
-            output.completed_order_measurement = completed_measurement;
-            output.completed_order_measurement_failure = completed_measurement_failure;
-            output.completed_projected_draw_measurement = completed_projected_measurement;
-            output.completed_projected_draw_measurement_failure =
-                completed_projected_measurement_failure;
-            output.completed_gpu_producer_measurement = completed_gpu_producer_measurement;
-            output.completed_gpu_producer_measurement_failure =
-                completed_gpu_producer_measurement_failure;
             output.gpu_timestamp_queries_enabled = self.presenter.gpu_order_timestamps_enabled();
             self.pending_order_backend = Some(output.order_backend);
             self.pending_adaptive_choice = adaptive_choice;
             self.pending_projected_choice = Some(projected_choice);
             return Ok(output);
         }
+        let (completed_measurement, completed_measurement_failure) =
+            self.collect_order_measurements();
+        let (completed_projected_measurement, completed_projected_measurement_failure) =
+            self.collect_projected_draw_measurements();
+        let (completed_gpu_producer_measurement, completed_gpu_producer_measurement_failure) =
+            self.collect_gpu_producer_measurements();
         self.pending_order_backend = None;
         self.pending_adaptive_choice = None;
         let defer_projected_choice = defer_projected_formal_choice(
@@ -3000,6 +2999,7 @@ mod tests {
         legacy_surface_current_stats_submission, order_probe_owner_should_yield,
         paged_surface_counts, projected_formal_sample_requested, projected_order_changed,
         projected_policy_can_sample, projected_probe_claims_owner,
+        publish_session_frame_only_on_present,
         reset_adaptive_for_gpu_producer_measurement_transition,
         reset_adaptive_for_raster_transition, should_measure_cpu_refresh,
         should_reset_order_for_projected_incumbent_change, surface_geometry_switch_entry,
@@ -3364,6 +3364,91 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn exact_and_sync_paths_share_one_successful_present_publication_gate() {
+        let mut publications = 0;
+        assert!(!publish_session_frame_only_on_present(false, || {
+            publications += 1;
+        }));
+        assert_eq!(publications, 0);
+        assert!(publish_session_frame_only_on_present(true, || {
+            publications += 1;
+        }));
+        assert_eq!(publications, 1);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn public_sync_session_publishes_only_after_presented_retry() {
+        let scene = SceneBuffers {
+            positions: vec![Vec3f::new(0.0, 0.0, 1.0), Vec3f::new(0.1, 0.0, 1.2)],
+            opacity: vec![1.0; 2],
+            scale_xyz: vec![[-3.0; 3]; 2],
+            rotation_xyzw: vec![[0.0, 0.0, 0.0, 1.0]; 2],
+            color_dc: vec![[0.0; 3]; 2],
+            sh_degree: 0,
+            sh_rest: None,
+        };
+        let mut renderer =
+            Renderer::with_config_for_surface(RendererConfig::default()).expect("test renderer");
+        renderer.load_scene(scene).expect("test Direct scene");
+        let presenter = SessionSurfaceOwner::test_direct(2, [true, false, true]);
+        let mut session =
+            SurfaceRenderSession::new_with_surface_owner(renderer, presenter, Camera::default())
+                .expect("public Surface session");
+
+        let initial = session.render_frame().expect("initial presented frame");
+        assert!(initial.frame_presented);
+        let published_stats = session.last_stats();
+        let published_current_stats = session.current_stats_submission();
+        let published_order = session
+            .compatibility_submission(SurfaceCompatibilityChannel::Order)
+            .expect("initial order compatibility submission");
+        let published_projected = session
+            .compatibility_submission(SurfaceCompatibilityChannel::Projected)
+            .expect("initial projected compatibility submission");
+        let applied_revision = session.schedule.applied_order_revision();
+        let telemetry_polls = session.presenter.test_telemetry_polls();
+
+        let mut moved_camera = session.camera();
+        moved_camera.pose.position.x += 0.01;
+        session
+            .set_camera(moved_camera)
+            .expect("moved camera revision");
+        let unavailable = session.render_frame().expect("unavailable drawable");
+        assert!(!unavailable.frame_presented);
+        assert_eq!(session.presenter.test_telemetry_polls(), telemetry_polls);
+        assert_eq!(session.last_stats(), published_stats);
+        assert_eq!(session.current_stats_submission(), published_current_stats);
+        assert_eq!(session.schedule.applied_order_revision(), applied_revision);
+        assert_eq!(
+            session.compatibility_submission(SurfaceCompatibilityChannel::Order),
+            Some(published_order)
+        );
+        assert_eq!(
+            session.compatibility_submission(SurfaceCompatibilityChannel::Projected),
+            Some(published_projected)
+        );
+
+        let presented = session.render_frame().expect("presented retry");
+        assert!(presented.frame_presented);
+        assert!(presented.sort_refreshed);
+        assert!(presented.order_uploaded);
+        assert_eq!(presented.camera_revision, session.camera_revision());
+        assert_eq!(presented.applied_order_revision, session.camera_revision());
+        assert_eq!(
+            presented.visible_count_revision,
+            Some(session.camera_revision())
+        );
+        assert!(!presented.visible_count_pending);
+        assert_eq!(session.last_stats(), presented.stats);
+        assert!(session.presenter.test_telemetry_polls() > telemetry_polls);
+        assert_ne!(
+            session.compatibility_submission(SurfaceCompatibilityChannel::Order),
+            Some(published_order)
+        );
     }
 
     #[cfg(not(target_arch = "wasm32"))]

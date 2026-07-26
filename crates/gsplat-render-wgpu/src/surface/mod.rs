@@ -11,6 +11,7 @@ mod session_schedule;
 pub(crate) mod shadow;
 pub(crate) mod standalone_direct_runtime;
 pub(crate) mod standalone_paged_runtime;
+mod standalone_session_runtime;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use capture::SurfaceCapture;
@@ -48,6 +49,7 @@ pub(crate) use session_owner::SessionSurfaceOwner;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use session_schedule::async_sort_supported;
 pub(crate) use session_schedule::{SessionSchedule, SurfaceFramePlan};
+pub(crate) use standalone_session_runtime::{CpuCompletionSampleRequest, StandaloneSessionRuntime};
 
 #[cfg(test)]
 pub(crate) use adaptive_order::{ADAPTIVE_CPU_BOOTSTRAP_SAMPLES, ADAPTIVE_INITIAL_PROBE_DELAY};

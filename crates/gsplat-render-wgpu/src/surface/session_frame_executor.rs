@@ -8,8 +8,8 @@ use gsplat_core::{Camera, FrameStats};
 
 use super::{SessionSurfaceOwner, SurfaceFramePlan};
 use crate::gpu_telemetry::TelemetrySubmission;
+use crate::surface::CpuCompletionSampleRequest;
 use crate::surface::shadow::{SurfaceExactError, SurfaceExactFrameResult};
-use crate::surface_presenter::CpuCompletionSampleRequest;
 use crate::{
     GeometryPath, Renderer, RendererError, SurfaceGpuOrderProducer, SurfacePresenterError,
     SurfaceProjectedDrawExecution, SurfaceRasterExecutionPlan, timer_elapsed_ms, timer_now,

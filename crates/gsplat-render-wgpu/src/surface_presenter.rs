@@ -6,10 +6,7 @@ use std::time::Duration;
 
 use crate::SurfaceRasterExecutionPlan;
 use crate::gpu_producer_telemetry::SurfaceGpuOrderProducer;
-use crate::gpu_telemetry::{
-    CpuOrderCompletionTelemetry, CpuOrderTelemetryPoll, FrameInstanceCounts, GpuOrderTelemetryPoll,
-    TelemetrySubmission,
-};
+use crate::gpu_telemetry::{CpuOrderTelemetryPoll, GpuOrderTelemetryPoll, TelemetrySubmission};
 use crate::packed_gpu;
 use crate::resident_gpu;
 #[cfg(not(target_arch = "wasm32"))]
@@ -19,14 +16,9 @@ use crate::surface::shadow::{
     NativeSurfaceExactHost, SurfaceExactFrameResult, SurfaceExactRequest,
     render_surface_exact_frame,
 };
-use crate::surface::standalone_direct_runtime::{
-    DirectGpuTelemetrySample, PreparedStandaloneDirectScene, StandaloneDirectRuntime,
-};
-use crate::surface::standalone_paged_runtime::{
-    PreparedStandalonePagedScene, StandalonePagedRuntime,
-};
 use crate::surface::{
-    SurfaceConfigurationOwner, SurfaceLifecycle, create_surface_instance, select_present_mode,
+    CpuCompletionSampleRequest, StandaloneSessionRuntime, SurfaceConfigurationOwner,
+    SurfaceLifecycle, create_surface_instance, select_present_mode,
 };
 use crate::{
     DEFAULT_PAGED_ATLAS_SLOTS, DirectSceneError, DirectScenePath, DirectScenePreflight,
@@ -56,110 +48,13 @@ pub(crate) struct SurfacePresenterHost {
 
 pub struct SurfacePresenter {
     host: SurfacePresenterHost,
-    direct_runtime: StandaloneDirectRuntime,
-    paged_runtime: StandalonePagedRuntime,
-    geometry: SurfaceGeometry,
-    cpu_order_completion_telemetry: CpuOrderCompletionTelemetry,
-}
-
-#[derive(Clone, Copy)]
-pub(crate) struct CpuCompletionSampleRequest {
-    pub(crate) camera_revision: u64,
-    pub(crate) started: TimerInstant,
-    pub(crate) preprocess_ms: f32,
-    pub(crate) sort_ms: f32,
-}
-
-enum SurfaceGeometry {
-    Direct,
-    Paged,
-}
-
-enum PreparedSurfaceGeometry {
-    Direct(PreparedStandaloneDirectScene),
-    Paged(PreparedStandalonePagedScene),
-}
-
-impl PreparedSurfaceGeometry {
-    fn addressable_splat_count(&self) -> usize {
-        match self {
-            Self::Direct(direct) => direct.addressable_splat_count(),
-            Self::Paged(paged) => paged.addressable_splat_count(),
-        }
-    }
-}
-
-impl SurfaceGeometry {
-    const fn path(&self) -> GeometryPath {
-        match self {
-            Self::Direct => GeometryPath::SortedIndexDirect,
-            Self::Paged => GeometryPath::PagedActiveAtlas,
-        }
-    }
+    session_runtime: StandaloneSessionRuntime,
 }
 
 fn supports_direct_gpu_order(downlevel: &wgpu::DownlevelCapabilities) -> bool {
     downlevel
         .flags
         .contains(wgpu::DownlevelFlags::INDIRECT_EXECUTION)
-}
-
-/// Device-local dependencies shared by every geometry-path constructor.
-/// Keeping them together makes initial creation and transactional path
-/// switching use the same resource factory contract.
-struct GeometryResourceContext<'a> {
-    device: &'a wgpu::Device,
-    direct_runtime: &'a StandaloneDirectRuntime,
-    paged_runtime: &'a StandalonePagedRuntime,
-}
-
-fn create_geometry_resources(
-    context: GeometryResourceContext<'_>,
-    path: GeometryPath,
-    renderer: &Renderer,
-) -> Result<PreparedSurfaceGeometry, SurfacePresenterError> {
-    let GeometryResourceContext {
-        device,
-        direct_runtime,
-        paged_runtime,
-    } = context;
-    match path {
-        GeometryPath::SortedIndexDirect => {
-            let (scene, world_covariance_terms, alpha_values) =
-                renderer.direct_scene_cpu_inputs().ok_or_else(|| {
-                    if renderer.has_scene() {
-                        SurfacePresenterError::GeometrySourceUnavailable { path }
-                    } else {
-                        SurfacePresenterError::SceneNotLoaded
-                    }
-                })?;
-            let direct_scene = direct_runtime.prepare_scene_candidate(
-                device,
-                scene,
-                world_covariance_terms,
-                alpha_values,
-            )?;
-            Ok(PreparedSurfaceGeometry::Direct(direct_scene))
-        }
-        GeometryPath::PackedAtlas => {
-            Err(SurfacePresenterError::StandalonePackedPresenterUnsupported)
-        }
-        GeometryPath::PagedActiveAtlas => {
-            let scene = renderer.scene().ok_or_else(|| {
-                if renderer.has_scene() {
-                    SurfacePresenterError::GeometrySourceUnavailable { path }
-                } else {
-                    SurfacePresenterError::SceneNotLoaded
-                }
-            })?;
-            let pages = renderer
-                .spatial_pages()
-                .cloned()
-                .ok_or(SurfacePresenterError::SceneNotLoaded)?;
-            let paged_scene = paged_runtime.prepare_scene_candidate(device, scene, pages)?;
-            Ok(PreparedSurfaceGeometry::Paged(paged_scene))
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -796,64 +691,19 @@ impl SurfacePresenter {
         mut host: SurfacePresenterHost,
         renderer: &Renderer,
     ) -> Result<Self, SurfacePresenterError> {
-        let geometry_path = renderer.geometry_path();
         let format = host.surface_configuration.format();
-        let timestamp_queries_enabled = host.timestamp_queries_enabled;
-        let device = &host.device;
-        let queue = &host.queue;
-
-        // Every shared pipeline/layout and the selected geometry is one
-        // unpublished candidate. WebGPU reports constructor failures only
-        // when these async scopes are popped, so do not build or expose any
-        // part of the presenter outside this transaction.
-        let (validation_scope, oom_scope, internal_scope) = (
-            device.push_error_scope(wgpu::ErrorFilter::Validation),
-            device.push_error_scope(wgpu::ErrorFilter::OutOfMemory),
-            device.push_error_scope(wgpu::ErrorFilter::Internal),
-        );
-        let mut direct_runtime =
-            StandaloneDirectRuntime::new(device, queue, format, timestamp_queries_enabled);
-        let mut paged_runtime = StandalonePagedRuntime::new(device, format);
-        let geometry_result = create_geometry_resources(
-            GeometryResourceContext {
-                device,
-                direct_runtime: &direct_runtime,
-                paged_runtime: &paged_runtime,
-            },
-            geometry_path,
+        let (session_runtime, addressable_splat_count) = StandaloneSessionRuntime::new(
+            &host.device,
+            &host.queue,
+            format,
+            host.timestamp_queries_enabled,
             renderer,
-        );
-        let cpu_order_completion_telemetry = CpuOrderCompletionTelemetry::default();
-        let internal_error = internal_scope.pop().await;
-        let oom_error = oom_scope.pop().await;
-        let validation_error = validation_scope.pop().await;
-        if oom_error.is_some() {
-            return Err(SurfacePresenterError::SurfaceOutOfMemory);
-        }
-        if let Some(error) = internal_error.or(validation_error) {
-            return Err(SurfacePresenterError::DeviceCreation(format!(
-                "surface geometry resource creation failed: {error}"
-            )));
-        }
-        let prepared_geometry = geometry_result?;
-        host.addressable_splat_count = prepared_geometry.addressable_splat_count();
-        let geometry = match prepared_geometry {
-            PreparedSurfaceGeometry::Direct(scene) => {
-                direct_runtime.publish_scene(scene);
-                SurfaceGeometry::Direct
-            }
-            PreparedSurfaceGeometry::Paged(scene) => {
-                paged_runtime.publish_scene(scene);
-                SurfaceGeometry::Paged
-            }
-        };
-
+        )
+        .await?;
+        host.addressable_splat_count = addressable_splat_count;
         Ok(Self {
             host,
-            direct_runtime,
-            paged_runtime,
-            geometry,
-            cpu_order_completion_telemetry,
+            session_runtime,
         })
     }
 
@@ -879,8 +729,7 @@ impl SurfacePresenter {
         #[cfg(not(target_arch = "wasm32"))]
         {
             self.host.commit_native_resize(width, height);
-            self.direct_runtime.invalidate_gpu_order_telemetry();
-            self.cpu_order_completion_telemetry.invalidate_generation();
+            self.session_runtime.invalidate_telemetry();
             Ok(())
         }
     }
@@ -962,12 +811,11 @@ impl SurfacePresenter {
         if !self.host.set_frame_latency(latency) {
             return;
         }
-        self.direct_runtime.invalidate_gpu_order_telemetry();
-        self.cpu_order_completion_telemetry.invalidate_generation();
+        self.session_runtime.invalidate_telemetry();
     }
 
     pub const fn geometry_path(&self) -> GeometryPath {
-        self.geometry.path()
+        self.session_runtime.geometry_path()
     }
 
     /// Whether the most recent top-level render call actually presented a
@@ -1031,56 +879,10 @@ impl SurfacePresenter {
         path: GeometryPath,
         renderer: &Renderer,
     ) -> Result<(), SurfacePresenterError> {
-        let current = self.geometry.path();
-        if current == path {
-            return Ok(());
-        }
-        if cfg!(target_arch = "wasm32") {
-            return Err(SurfacePresenterError::SurfaceGeometrySwitchUnsupported);
-        }
-        if path == GeometryPath::PackedAtlas {
-            return Err(SurfacePresenterError::SurfaceGeometrySwitchUnsupported);
-        }
-
-        try_prepare_then_commit(
-            self,
-            |presenter| presenter.prepare_geometry_resources(path, renderer),
-            |presenter, prepared| {
-                presenter.host.addressable_splat_count = prepared.addressable_splat_count();
-                presenter.geometry = match prepared {
-                    PreparedSurfaceGeometry::Direct(scene) => {
-                        presenter.direct_runtime.publish_scene(scene);
-                        presenter.paged_runtime.clear_scene();
-                        SurfaceGeometry::Direct
-                    }
-                    PreparedSurfaceGeometry::Paged(scene) => {
-                        presenter.paged_runtime.publish_scene(scene);
-                        presenter.direct_runtime.clear_scene();
-                        SurfaceGeometry::Paged
-                    }
-                };
-                presenter.direct_runtime.invalidate_gpu_order_telemetry();
-                presenter
-                    .cpu_order_completion_telemetry
-                    .invalidate_generation();
-            },
-        )
-    }
-
-    fn prepare_geometry_resources(
-        &self,
-        path: GeometryPath,
-        renderer: &Renderer,
-    ) -> Result<PreparedSurfaceGeometry, SurfacePresenterError> {
-        create_geometry_resources(
-            GeometryResourceContext {
-                device: &self.host.device,
-                direct_runtime: &self.direct_runtime,
-                paged_runtime: &self.paged_runtime,
-            },
-            path,
-            renderer,
-        )
+        self.host.addressable_splat_count =
+            self.session_runtime
+                .set_geometry_path(&self.host.device, path, renderer)?;
+        Ok(())
     }
 
     pub fn render_sorted_indices(
@@ -1091,12 +893,12 @@ impl SurfacePresenter {
         refresh_indices: bool,
     ) -> Result<(), SurfacePresenterError> {
         self.host.surface_lifecycle.begin_frame();
-        if !matches!(self.geometry, SurfaceGeometry::Paged) {
+        if self.session_runtime.geometry_path() != GeometryPath::PagedActiveAtlas {
             return self.render_cpu_sorted_indices(sorted_indices, camera, refresh_indices);
         }
         let (width, height) = self.host.surface_configuration.size();
-        self.paged_runtime
-            .prepare_frame(&self.host.queue, scene, camera, width, height)?;
+        self.session_runtime
+            .prepare_paged_frame(&self.host.queue, scene, camera, width, height)?;
         self.present_geometry(camera)
     }
 
@@ -1119,11 +921,8 @@ impl SurfacePresenter {
         completion: Option<CpuCompletionSampleRequest>,
     ) -> Result<TelemetrySubmission, SurfacePresenterError> {
         self.host.surface_lifecycle.begin_frame();
-        if !matches!(self.geometry, SurfaceGeometry::Direct) {
-            return Err(SurfacePresenterError::PagedAtlasUnsupported);
-        }
         let (width, height) = self.host.surface_configuration.size();
-        self.direct_runtime.prepare_cpu_order(
+        self.session_runtime.prepare_cpu_order(
             &self.host.queue,
             sorted_indices,
             camera,
@@ -1134,27 +933,13 @@ impl SurfacePresenter {
         self.present_geometry_tracked(camera, completion)
     }
 
-    fn post_sort_gpu_order_is_prepared(&self) -> bool {
-        matches!(self.geometry, SurfaceGeometry::Direct)
-            && self.direct_runtime.gpu_order_is_prepared()
-    }
-
     fn gpu_order_is_prepared(&self) -> bool {
-        self.post_sort_gpu_order_is_prepared()
+        self.session_runtime.gpu_order_is_prepared()
     }
 
     async fn prepare_post_sort_gpu_order(&mut self) -> Result<(), SurfacePresenterError> {
-        if !self.host.indirect_execution_supported {
-            return Err(SurfacePresenterError::GpuOrderUnsupported);
-        }
-        if !matches!(self.geometry, SurfaceGeometry::Direct) {
-            return Err(SurfacePresenterError::GpuOrderUnsupported);
-        }
-        if self.post_sort_gpu_order_is_prepared() {
-            return Ok(());
-        }
-        self.direct_runtime
-            .prepare_gpu_order(&self.host.device)
+        self.session_runtime
+            .prepare_gpu_order(&self.host.device, self.host.indirect_execution_supported)
             .await
     }
 
@@ -1193,11 +978,8 @@ impl SurfacePresenter {
         completion_started: TimerInstant,
     ) -> Result<TelemetrySubmission, SurfacePresenterError> {
         self.host.surface_lifecycle.begin_frame();
-        if !matches!(self.geometry, SurfaceGeometry::Direct) {
-            return Err(SurfacePresenterError::GpuOrderUnsupported);
-        }
         let (width, height) = self.host.surface_configuration.size();
-        self.direct_runtime.prepare_gpu_frame(
+        self.session_runtime.prepare_gpu_frame(
             &self.host.device,
             &self.host.queue,
             camera,
@@ -1216,7 +998,7 @@ impl SurfacePresenter {
             });
         };
         let mut telemetry_sample = self
-            .direct_runtime
+            .session_runtime
             .begin_gpu_order_sample(camera_revision, refresh_order)?;
 
         let mut encoder =
@@ -1228,7 +1010,7 @@ impl SurfacePresenter {
         let view = frame
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
-        self.direct_runtime.encode_gpu_order_draw(
+        self.session_runtime.encode_gpu_order_draw(
             &mut encoder,
             &view,
             &self.host.queue,
@@ -1241,11 +1023,9 @@ impl SurfacePresenter {
             .surface_capture
             .encode(&mut encoder, &frame.texture);
         let command_buffer = encoder.finish();
-        let submitted_ticket = telemetry_sample
-            .as_ref()
-            .map(DirectGpuTelemetrySample::ticket);
+        let submitted_ticket = telemetry_sample.as_ref().map(|sample| sample.ticket());
         if let Some(sample) = telemetry_sample.take() {
-            self.direct_runtime
+            self.session_runtime
                 .arm_gpu_order_sample(&command_buffer, sample, completion_started);
         }
         self.host.queue.submit(Some(command_buffer));
@@ -1258,13 +1038,13 @@ impl SurfacePresenter {
     }
 
     pub(crate) fn poll_gpu_order_telemetry(&mut self) -> GpuOrderTelemetryPoll {
-        self.direct_runtime
+        self.session_runtime
             .poll_gpu_order_telemetry(&self.host.device)
     }
 
     pub(crate) fn poll_cpu_order_completion_telemetry(&mut self) -> CpuOrderTelemetryPoll {
         let _ = self.host.device.poll(wgpu::PollType::Poll);
-        self.cpu_order_completion_telemetry.poll()
+        self.session_runtime.poll_cpu_order_completion_telemetry()
     }
 
     /// Waits boundedly for queue work submitted before this call. It does not
@@ -1278,7 +1058,7 @@ impl SurfacePresenter {
     }
 
     pub(crate) fn gpu_order_timestamps_enabled(&self) -> bool {
-        self.direct_runtime.gpu_order_timestamps_enabled()
+        self.session_runtime.gpu_order_timestamps_enabled()
     }
 
     fn present_geometry(&mut self, camera: &Camera) -> Result<(), SurfacePresenterError> {
@@ -1306,25 +1086,9 @@ impl SurfacePresenter {
                 .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                     label: wgpu_label("gsplat-surface-encoder"),
                 });
-        match &self.geometry {
-            SurfaceGeometry::Direct => self.direct_runtime.encode_cpu_draw(&mut encoder, &view)?,
-            SurfaceGeometry::Paged => self.paged_runtime.encode_draw(&mut encoder, &view)?,
-        }
-        let instance_count = self.instance_count();
-        let mut completion_ticket = completion.and_then(|request| {
-            self.cpu_order_completion_telemetry
-                .begin_sample_with_counts(
-                    request.camera_revision,
-                    request.preprocess_ms,
-                    request.sort_ms,
-                    FrameInstanceCounts {
-                        candidate_visible: instance_count,
-                        contributor: instance_count,
-                        drawn: instance_count,
-                        exact_contributor_compaction: false,
-                    },
-                )
-        });
+        self.session_runtime.encode_draw(&mut encoder, &view)?;
+        let mut completion_ticket = completion
+            .and_then(|request| self.session_runtime.begin_cpu_completion_sample(request));
         #[cfg(not(target_arch = "wasm32"))]
         self.host
             .surface_capture
@@ -1332,8 +1096,11 @@ impl SurfacePresenter {
         let command_buffer = encoder.finish();
         let submitted_ticket = completion_ticket.as_ref().map(|ticket| ticket.ticket);
         if let (Some(ticket), Some(request)) = (completion_ticket.take(), completion) {
-            self.cpu_order_completion_telemetry
-                .arm(&command_buffer, ticket, request.started);
+            self.session_runtime.arm_cpu_completion_sample(
+                &command_buffer,
+                ticket,
+                request.started,
+            );
         }
         self.host.queue.submit(Some(command_buffer));
         self.present_frame(frame);
@@ -1361,10 +1128,7 @@ impl SurfacePresenter {
     }
 
     pub const fn instance_count(&self) -> u32 {
-        match &self.geometry {
-            SurfaceGeometry::Direct => self.direct_runtime.instance_count(),
-            SurfaceGeometry::Paged => self.paged_runtime.instance_count(),
-        }
+        self.session_runtime.instance_count()
     }
 }
 
@@ -1437,6 +1201,14 @@ mod tests {
             concat!("create_packed_bind_group_", "layout"),
             concat!("create_packed_", "pipeline"),
             concat!("gsplat-surface-", "paged-pass"),
+            concat!("PreparedStandalone", "DirectScene"),
+            concat!("PreparedStandalone", "PagedScene"),
+            concat!("StandaloneDirect", "Runtime"),
+            concat!("StandalonePaged", "Runtime"),
+            concat!("CpuOrderCompletion", "Telemetry"),
+            concat!("FrameInstance", "Counts"),
+            concat!("prepare_scene_", "candidate"),
+            concat!("publish_", "scene"),
         ] {
             assert!(
                 !source.contains(removed),
