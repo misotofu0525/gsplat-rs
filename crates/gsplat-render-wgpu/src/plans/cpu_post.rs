@@ -1,7 +1,7 @@
 use gsplat_core::{Camera, Vec3f};
 use thiserror::Error;
 
-use crate::cpu_order::CpuOrderEngine;
+use crate::cpu_order::{CpuOrderEngine, DepthKeyPrecision};
 use crate::renderer::gpu_prepare::{
     CpuPostProjectedHandles, CpuPostProjectionRequest, GpuCountSource, GpuPreparationError,
     GpuPreparationReceipt,
@@ -148,6 +148,7 @@ impl CpuOrderGuard {
 /// Reusable workspace and authoritative order cache for Exact CPU PostSort.
 pub(super) struct CpuPostSortPlan {
     engine: CpuOrderEngine,
+    depth_key_precision: DepthKeyPrecision,
     ordered_ids: Vec<u32>,
     guard: Option<CpuOrderGuard>,
     order_generation: u64,
@@ -155,6 +156,13 @@ pub(super) struct CpuPostSortPlan {
 
 impl CpuPostSortPlan {
     pub(super) fn prepare(source_count: usize) -> Result<Self, CpuPostSortError> {
+        Self::prepare_with_depth_key_precision(source_count, DepthKeyPrecision::ExactFull32)
+    }
+
+    pub(super) fn prepare_with_depth_key_precision(
+        source_count: usize,
+        depth_key_precision: DepthKeyPrecision,
+    ) -> Result<Self, CpuPostSortError> {
         let engine = CpuOrderEngine::try_with_capacity(source_count).map_err(|error| {
             CpuPostSortError::AllocationFailed {
                 resource: error.resource(),
@@ -169,6 +177,7 @@ impl CpuPostSortPlan {
 
         Ok(Self {
             engine,
+            depth_key_precision,
             ordered_ids,
             guard: None,
             order_generation: 0,
@@ -275,10 +284,11 @@ impl CpuPostSortPlan {
             .checked_add(1)
             .ok_or(CpuPostSortError::OrderGenerationExhausted)?;
 
-        let timings = self.engine.order_positions(
+        let timings = self.engine.order_positions_with_depth_key_precision(
             CpuPositionView::new(positions),
             camera,
             true,
+            self.depth_key_precision,
             &mut self.ordered_ids,
         )?;
         self.order_generation = next_generation;
@@ -288,6 +298,10 @@ impl CpuPostSortPlan {
 
     pub(super) fn last_usable_order(&self) -> Option<&[u32]> {
         self.guard.as_ref().map(|_| self.ordered_ids.as_slice())
+    }
+
+    pub(super) const fn depth_key_precision(&self) -> DepthKeyPrecision {
+        self.depth_key_precision
     }
 
     #[cfg(test)]

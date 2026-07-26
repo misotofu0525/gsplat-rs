@@ -10,6 +10,7 @@ use crate::cpu::calibration::{
     CALIBRATION_INPUT_CAP, NativeCalibration, calibrate_bounded, native_candidates,
 };
 use crate::cpu::preprocess;
+use crate::cpu::preprocess::DepthKeyPrecision;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::cpu::preprocess::{
     MAX_PARALLEL_PREPROCESS_CHUNKS,
@@ -86,16 +87,34 @@ impl CpuOrderWorkspace {
         stable_full32: bool,
         authoritative_ids: &mut Vec<u32>,
     ) -> Result<WorkspaceTimings, RendererError> {
+        self.order_positions_with_depth_key_precision(
+            positions,
+            camera,
+            stable_full32,
+            DepthKeyPrecision::ExactFull32,
+            authoritative_ids,
+        )
+    }
+
+    pub(crate) fn order_positions_with_depth_key_precision(
+        &mut self,
+        positions: CpuPositionView<'_>,
+        camera: &Camera,
+        stable_full32: bool,
+        precision: DepthKeyPrecision,
+        authoritative_ids: &mut Vec<u32>,
+    ) -> Result<WorkspaceTimings, RendererError> {
         #[cfg(not(target_arch = "wasm32"))]
         {
             camera
                 .validate()
                 .map_err(|_| RendererError::InvalidCamera)?;
-            let execution = self.calibrated_execution(positions, camera);
+            let execution = self.calibrated_execution(positions, camera, precision);
             let preprocess_start = timer_now();
             preprocess::packed::positions_visible_into(
                 positions,
                 camera,
+                precision,
                 &mut self.packed_pairs,
                 &mut self.packed_chunks,
                 execution,
@@ -107,9 +126,10 @@ impl CpuOrderWorkspace {
         #[cfg(target_arch = "wasm32")]
         {
             let preprocess_start = timer_now();
-            preprocess::positions_visible_into(
+            preprocess::positions_visible_into_with_precision(
                 positions,
                 camera,
+                precision,
                 &mut self.depth_keys,
                 &mut self.candidate_ids,
             )?;
@@ -123,6 +143,7 @@ impl CpuOrderWorkspace {
         &mut self,
         positions: CpuPositionView<'_>,
         camera: &Camera,
+        precision: DepthKeyPrecision,
     ) -> PackedScalarExecution {
         if let Some(decision) = self.native_calibration.decision() {
             return decision.execution();
@@ -144,7 +165,9 @@ impl CpuOrderWorkspace {
         let decision = calibrate_bounded(
             candidates,
             || started.elapsed(),
-            |execution| self.probe_terminal_order(calibration_positions, camera, execution),
+            |execution| {
+                self.probe_terminal_order(calibration_positions, camera, precision, execution)
+            },
         );
         debug_assert!(
             decision.fallback_reason().is_none() || decision.execution() == static_fallback
@@ -158,12 +181,14 @@ impl CpuOrderWorkspace {
         &mut self,
         positions: CpuPositionView<'_>,
         camera: &Camera,
+        precision: DepthKeyPrecision,
         execution: PackedScalarExecution,
     ) -> Result<Duration, RendererError> {
         let started = Instant::now();
         preprocess::packed::positions_visible_into(
             positions,
             camera,
+            precision,
             &mut self.packed_pairs,
             &mut self.packed_chunks,
             execution,

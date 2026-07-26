@@ -188,7 +188,7 @@ pub(crate) fn positions_visible_into_scalar_with_precision(
     Ok(())
 }
 
-#[cfg(any(test, target_arch = "wasm32"))]
+#[cfg(test)]
 pub(crate) fn positions_visible_into(
     positions: CpuPositionView<'_>,
     camera: &Camera,

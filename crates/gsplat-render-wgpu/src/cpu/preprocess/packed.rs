@@ -12,7 +12,8 @@ use crate::RendererError;
 use crate::data::CpuPositionView;
 
 use super::{
-    MAX_PARALLEL_PREPROCESS_CHUNKS, PARALLEL_PREPROCESS_THRESHOLD, PreprocessContext, scalar,
+    DepthKeyPrecision, MAX_PARALLEL_PREPROCESS_CHUNKS, PARALLEL_PREPROCESS_THRESHOLD,
+    PreprocessContext, scalar, visible_depth_key,
 };
 
 /// One already-accepted packed Scalar execution with a fixed chunk count.
@@ -55,20 +56,25 @@ fn reserve_output(pairs: &mut Vec<u64>, capacity: usize) {
 }
 
 #[inline]
-fn pack_visible(depth: f32, source_id: u32) -> u64 {
-    CpuSortBackend::pack_key_value(depth.max(0.0).to_bits(), source_id)
+fn pack_visible(depth: f32, source_id: u32, precision: DepthKeyPrecision) -> u64 {
+    CpuSortBackend::pack_key_value(visible_depth_key(depth, precision), source_id)
 }
 
 fn preprocess_into(
     positions: CpuPositionView<'_>,
     source_base: usize,
     context: PreprocessContext,
+    precision: DepthKeyPrecision,
     pairs: &mut Vec<u64>,
 ) {
     for (local_index, position) in positions.as_slice().iter().copied().enumerate() {
         let depth = scalar::depth(position, context.camera_position, context.depth_row);
         if depth >= context.near_plane && depth <= context.far_plane {
-            pairs.push(pack_visible(depth, (source_base + local_index) as u32));
+            pairs.push(pack_visible(
+                depth,
+                (source_base + local_index) as u32,
+                precision,
+            ));
         }
     }
 }
@@ -76,6 +82,7 @@ fn preprocess_into(
 pub(crate) fn positions_visible_into(
     positions: CpuPositionView<'_>,
     camera: &Camera,
+    precision: DepthKeyPrecision,
     pairs: &mut Vec<u64>,
     chunks: &mut Vec<PackedPreprocessChunkScratch>,
     execution: PackedScalarExecution,
@@ -99,6 +106,7 @@ pub(crate) fn positions_visible_into(
                     positions.slice(begin..end),
                     begin,
                     context,
+                    precision,
                     &mut scratch.pairs,
                 );
             });
@@ -111,7 +119,7 @@ pub(crate) fn positions_visible_into(
     }
 
     reserve_output(pairs, positions.len());
-    preprocess_into(positions, 0, context, pairs);
+    preprocess_into(positions, 0, context, precision, pairs);
     Ok(())
 }
 
@@ -123,7 +131,7 @@ mod tests {
         PackedPreprocessChunkScratch, PackedScalarExecution, positions_visible_into,
         preprocess_into,
     };
-    use crate::cpu::preprocess::{PreprocessContext, scalar};
+    use crate::cpu::preprocess::{DepthKeyPrecision, PreprocessContext, scalar};
     use crate::data::CpuPositionView;
 
     fn camera(near_plane: f32, far_plane: f32) -> Camera {
@@ -180,6 +188,7 @@ mod tests {
             CpuPositionView::new(&positions),
             source_base,
             context,
+            DepthKeyPrecision::ExactFull32,
             &mut packed,
         );
 
@@ -219,6 +228,7 @@ mod tests {
                     positions_visible_into(
                         CpuPositionView::new(&positions),
                         &camera,
+                        DepthKeyPrecision::ExactFull32,
                         &mut packed,
                         &mut chunks,
                         PackedScalarExecution::new(chunk_count),
@@ -242,6 +252,7 @@ mod tests {
                 positions_visible_into(
                     CpuPositionView::new(&positions),
                     &camera,
+                    DepthKeyPrecision::ExactFull32,
                     &mut packed,
                     &mut chunks,
                     PackedScalarExecution::new(chunk_count),
@@ -251,5 +262,45 @@ mod tests {
                 assert_eq!(actual_ids, (0..positions.len() as u32).collect::<Vec<_>>());
             }
         }
+    }
+
+    #[test]
+    fn packed_candidate_uses_the_shared_depth_key_precision_contract() {
+        let depths = [
+            f32::from_bits(1.0_f32.to_bits() + 1),
+            f32::from_bits(1.0_f32.to_bits() + 255),
+            2.0,
+        ];
+        let positions = depths
+            .into_iter()
+            .map(|depth| Vec3f::new(0.0, 0.0, depth))
+            .collect::<Vec<_>>();
+        let camera = camera(0.5, 3.0);
+        let mut expected_keys = Vec::new();
+        let mut expected_ids = Vec::new();
+        scalar::preprocess_into_with_precision(
+            CpuPositionView::new(&positions),
+            0,
+            PreprocessContext::from_camera(&camera).expect("camera"),
+            DepthKeyPrecision::CandidateStable24,
+            &mut expected_keys,
+            &mut expected_ids,
+        );
+        let mut packed = Vec::new();
+        let mut chunks = Vec::new();
+        positions_visible_into(
+            CpuPositionView::new(&positions),
+            &camera,
+            DepthKeyPrecision::CandidateStable24,
+            &mut packed,
+            &mut chunks,
+            PackedScalarExecution::serial(),
+        )
+        .expect("candidate packed preprocess");
+
+        let (actual_keys, actual_ids) = unpack_pairs(&packed);
+        assert_eq!(actual_keys, expected_keys);
+        assert_eq!(actual_ids, expected_ids);
+        assert_eq!(actual_keys[0], actual_keys[1]);
     }
 }

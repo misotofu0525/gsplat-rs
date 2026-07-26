@@ -9,8 +9,9 @@ use std::sync::Arc;
 use gsplat_core::{Camera, RendererConfig, SceneBuffers, Vec3f};
 
 use super::{SurfaceGpuOrderProducer, SurfaceOrderBackend, SurfaceProjectedDrawPolicy};
+use crate::cpu_order::DepthKeyPrecision;
 use crate::plans::{PlanId, TestGpuAdmissionMode};
-use crate::renderer::{ExactPlanPolicy, PreparedRuntimeSlot};
+use crate::renderer::{ExactPlanPolicy, PreparedRuntimeSlot, execute_frame};
 use crate::surface::{
     ExactSurfacePlanState, commit_exact_plan_state, exact_gpu_plan_for_producer,
     prepare_exact_gpu_order, prepare_exact_gpu_order_producer,
@@ -28,6 +29,22 @@ fn exact_control_scene() -> ResidentSceneCpu {
         sh_rest: None,
     })
     .expect("Exact Surface control fixture")
+}
+
+fn depth_precision_scene() -> ResidentSceneCpu {
+    ResidentSceneCpu::encode_owned(SceneBuffers {
+        positions: vec![
+            Vec3f::new(0.0, 0.0, f32::from_bits(1.0_f32.to_bits() + 1)),
+            Vec3f::new(0.0, 0.0, f32::from_bits(1.0_f32.to_bits() + 255)),
+        ],
+        opacity: vec![1.0; 2],
+        scale_xyz: vec![[-1.0; 3]; 2],
+        rotation_xyzw: vec![[0.0, 0.0, 0.0, 1.0]; 2],
+        color_dc: vec![[0.1, 0.2, 0.3]; 2],
+        sh_degree: 0,
+        sh_rest: None,
+    })
+    .expect("depth precision fixture")
 }
 
 fn exact_control_limits() -> wgpu::Limits {
@@ -134,6 +151,76 @@ async fn exact_control_renderer(
         .publish_surface_exact_candidate(candidate)
         .expect("publish Exact Surface test runtime");
     Some((renderer, device, queue))
+}
+
+#[test]
+fn surface_cpu_plan_carries_candidate_precision_without_changing_exact_default() {
+    let viewport = crate::renderer::frame::Viewport::new(64, 64).expect("viewport");
+    let camera = Camera::default();
+    let mut exact = PreparedRuntimeSlot::prepare(depth_precision_scene()).expect("Exact runtime");
+    assert_eq!(
+        exact.depth_key_precision_for_test(),
+        DepthKeyPrecision::ExactFull32
+    );
+    let exact_ids = execute_frame(&mut exact, PlanId::CpuPostSort, &camera, viewport)
+        .expect("Exact CPU frame")
+        .cpu_order_ids()
+        .expect("Exact CPU IDs")
+        .to_vec();
+
+    let mut candidate = PreparedRuntimeSlot::prepare_with_depth_key_precision(
+        depth_precision_scene(),
+        DepthKeyPrecision::CandidateStable24,
+    )
+    .expect("Candidate runtime");
+    let candidate_ids = execute_frame(&mut candidate, PlanId::CpuPostSort, &camera, viewport)
+        .expect("Candidate CPU frame")
+        .cpu_order_ids()
+        .expect("Candidate CPU IDs")
+        .to_vec();
+
+    assert_eq!(exact_ids, [1, 0]);
+    assert_eq!(candidate_ids, [0, 1]);
+    assert_eq!(exact_ids.len(), candidate_ids.len());
+    assert_eq!(candidate.scene().source_count(), 2);
+
+    candidate
+        .replace(depth_precision_scene())
+        .expect("Candidate replacement");
+    assert_eq!(
+        candidate.depth_key_precision_for_test(),
+        DepthKeyPrecision::CandidateStable24
+    );
+}
+
+#[test]
+fn surface_gpu_candidate_carries_the_same_candidate_precision_to_resident_order() {
+    pollster::block_on(async {
+        let Some((device, queue)) = exact_control_device().await else {
+            return;
+        };
+        let source = depth_precision_scene();
+        let candidate =
+            PreparedRuntimeSlot::prepare_complete_surface_gpu_candidate_with_depth_key_precision(
+                &source,
+                &device,
+                &queue,
+                wgpu::TextureFormat::Rgba8Unorm,
+                true,
+                DepthKeyPrecision::CandidateStable24,
+            )
+            .await
+            .expect("Candidate Surface GPU runtime");
+
+        assert_eq!(
+            candidate.depth_key_precision_for_test(),
+            DepthKeyPrecision::CandidateStable24
+        );
+        assert_eq!(
+            candidate.gpu_depth_key_precision_for_test(),
+            Some(DepthKeyPrecision::CandidateStable24)
+        );
+    });
 }
 
 #[derive(Debug, PartialEq)]

@@ -4,6 +4,7 @@ use bytemuck::Zeroable;
 use gsplat_core::Camera;
 use wgpu::util::DeviceExt;
 
+use crate::cpu_order::DepthKeyPrecision;
 use crate::data::{RESIDENT_SH_PLANES, ResidentChunkMeta};
 use crate::direct_gpu_order::DirectGpuOrder;
 use crate::gpu::{ResidentColorKernel, create_resident_color_params_buffer};
@@ -189,20 +190,33 @@ impl ResidentGpuResources {
         Ok(instance_count)
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn create_gpu_order_candidate(
         &self,
         device: &wgpu::Device,
+    ) -> Result<ResidentGpuSceneOrder, ResidentGpuError> {
+        self.create_gpu_order_candidate_with_depth_key_precision(
+            device,
+            DepthKeyPrecision::ExactFull32,
+        )
+    }
+
+    pub(crate) fn create_gpu_order_candidate_with_depth_key_precision(
+        &self,
+        device: &wgpu::Device,
+        depth_key_precision: DepthKeyPrecision,
     ) -> Result<ResidentGpuSceneOrder, ResidentGpuError> {
         let count =
             u32::try_from(self.capacity).map_err(|_| ResidentGpuError::AddressSpaceExceeded)?;
         DirectGpuOrder::validate_resident_soa_dispatch_limits(device, count.max(1), count)
             .map_err(|error| ResidentGpuError::GpuOrderInitialization(error.to_string()))?;
-        let sorter = DirectGpuOrder::new_resident_soa(
+        let sorter = DirectGpuOrder::new_resident_soa_with_depth_key_precision(
             device,
             &self.position_alpha_buffer,
             &self.draw_params_buffer,
             count.max(1),
             count,
+            depth_key_precision,
         )
         .map_err(|error| ResidentGpuError::GpuOrderInitialization(error.to_string()))?;
         Ok(ResidentGpuSceneOrder { sorter })
@@ -215,6 +229,13 @@ impl ResidentGpuResources {
 
     pub(crate) fn gpu_order(&self) -> Option<&ResidentGpuSceneOrder> {
         self.gpu_order.as_ref()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn gpu_order_depth_key_precision(&self) -> Option<DepthKeyPrecision> {
+        self.gpu_order
+            .as_ref()
+            .map(|order| order.sorter.depth_key_precision())
     }
 
     #[cfg(not(target_arch = "wasm32"))]

@@ -3,6 +3,7 @@ use std::{fmt, sync::Arc};
 use gsplat_core::Vec3f;
 
 use super::{ResidentSceneCpu, ResidentSceneError};
+use crate::cpu_order::DepthKeyPrecision;
 use crate::plans::{FrameIdentity, GpuExecutionContext, GpuOwnerToken};
 use crate::renderer::gpu_prepare::{
     CpuPostProjectedHandles, CpuPostProjectionRequest, GpuExecutionOwner, GpuPreparationError,
@@ -60,34 +61,52 @@ impl SceneRuntime {
 
     /// Builds a complete device-owned candidate without publishing it. The
     /// Renderer stages PlanSet admission before this value can be committed.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) async fn stage_gpu(
         &self,
         owner: &GpuExecutionOwner,
         generation: FrameIdentity,
     ) -> Result<GpuScenePreparation, GpuPreparationError> {
+        self.stage_gpu_with_depth_key_precision(owner, generation, DepthKeyPrecision::ExactFull32)
+            .await
+    }
+
+    pub(crate) async fn stage_gpu_with_depth_key_precision(
+        &self,
+        owner: &GpuExecutionOwner,
+        generation: FrameIdentity,
+        depth_key_precision: DepthKeyPrecision,
+    ) -> Result<GpuScenePreparation, GpuPreparationError> {
         if self.gpu.is_some() {
             return Err(GpuPreparationError::ExecutionOwnerAlreadyBound);
         }
-        GpuScenePreparation::prepare(owner, &self.resident, generation).await
+        GpuScenePreparation::prepare_with_depth_key_precision(
+            owner,
+            &self.resident,
+            generation,
+            true,
+            depth_key_precision,
+        )
+        .await
     }
 
-    /// Stages the complete GPU graph from the renderer's still-live upload
-    /// source while this candidate retains only post-upload CPU state.
-    pub(crate) async fn stage_gpu_from(
+    pub(crate) async fn stage_gpu_from_with_depth_key_precision(
         &self,
         owner: &GpuExecutionOwner,
         source: &ResidentSceneCpu,
         generation: FrameIdentity,
         indirect_execution_supported: bool,
+        depth_key_precision: DepthKeyPrecision,
     ) -> Result<GpuScenePreparation, GpuPreparationError> {
         if self.gpu.is_some() {
             return Err(GpuPreparationError::ExecutionOwnerAlreadyBound);
         }
-        GpuScenePreparation::prepare_with_indirect_execution(
+        GpuScenePreparation::prepare_with_depth_key_precision(
             owner,
             source,
             generation,
             indirect_execution_supported,
+            depth_key_precision,
         )
         .await
     }
@@ -100,6 +119,13 @@ impl SceneRuntime {
 
     pub(crate) fn gpu_preparation(&self) -> Option<GpuPreparationReceipt> {
         self.gpu.as_ref().map(GpuScenePreparation::receipt)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn gpu_depth_key_precision(&self) -> Option<DepthKeyPrecision> {
+        self.gpu
+            .as_ref()
+            .and_then(GpuScenePreparation::depth_key_precision)
     }
 
     #[cfg(test)]

@@ -13,6 +13,7 @@ use bytemuck::bytes_of;
 use gsplat_core::Camera;
 use thiserror::Error;
 
+use crate::cpu_order::DepthKeyPrecision;
 use crate::gpu::{
     GpuPrefixScan, GpuPrefixScanProfile, ProjectedRankProjector, ProjectedRankSourceBindings,
 };
@@ -277,14 +278,22 @@ impl GpuScenePreparation {
         scene: &ResidentSceneCpu,
         generation: FrameIdentity,
     ) -> Result<Self, GpuPreparationError> {
-        Self::prepare_with_indirect_execution(owner, scene, generation, true).await
+        Self::prepare_with_depth_key_precision(
+            owner,
+            scene,
+            generation,
+            true,
+            DepthKeyPrecision::ExactFull32,
+        )
+        .await
     }
 
-    pub(crate) async fn prepare_with_indirect_execution(
+    pub(crate) async fn prepare_with_depth_key_precision(
         owner: &GpuExecutionOwner,
         scene: &ResidentSceneCpu,
         generation: FrameIdentity,
         indirect_execution_supported: bool,
+        depth_key_precision: DepthKeyPrecision,
     ) -> Result<Self, GpuPreparationError> {
         let device = owner.device();
         validate_adapter_capacity(
@@ -299,8 +308,13 @@ impl GpuScenePreparation {
             device.push_error_scope(wgpu::ErrorFilter::OutOfMemory),
             device.push_error_scope(wgpu::ErrorFilter::Internal),
         );
-        let candidate =
-            Self::create_candidate(owner, scene, generation, indirect_execution_supported);
+        let candidate = Self::create_candidate(
+            owner,
+            scene,
+            generation,
+            indirect_execution_supported,
+            depth_key_precision,
+        );
         let internal = internal_scope.pop().await.map(|error| error.to_string());
         let out_of_memory = oom_scope.pop().await.map(|error| error.to_string());
         let validation = validation_scope.pop().await.map(|error| error.to_string());
@@ -315,6 +329,7 @@ impl GpuScenePreparation {
         scene: &ResidentSceneCpu,
         generation: FrameIdentity,
         indirect_execution_supported: bool,
+        depth_key_precision: DepthKeyPrecision,
     ) -> Result<Self, GpuPreparationError> {
         let device = owner.device();
         let source_count = u32::try_from(scene.len())
@@ -333,7 +348,8 @@ impl GpuScenePreparation {
         // GPU order graph. Keep that path complete on downlevel adapters and
         // admit the two GPU plans only when their indirect resources are legal.
         let (gpu_project_bind_group, preproject) = if indirect_execution_supported {
-            let order = resident.create_gpu_order_candidate(device)?;
+            let order = resident
+                .create_gpu_order_candidate_with_depth_key_precision(device, depth_key_precision)?;
             let gpu_project_bind_group = projector.create_external_bind_group(
                 device,
                 project_source_bindings(&resident),
@@ -381,6 +397,11 @@ impl GpuScenePreparation {
 
     pub(crate) const fn receipt(&self) -> GpuPreparationReceipt {
         self.receipt
+    }
+
+    #[cfg(test)]
+    pub(crate) fn depth_key_precision(&self) -> Option<DepthKeyPrecision> {
+        self.resident.gpu_order_depth_key_precision()
     }
 
     /// Stages the dormant observer graph as one optional capability. Failure

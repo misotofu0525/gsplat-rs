@@ -106,6 +106,8 @@ pub(crate) struct GpuOrderTimestampRange<'a> {
 
 pub(crate) struct DirectGpuOrder {
     count: u32,
+    #[cfg(test)]
+    depth_key_precision: DepthKeyPrecision,
     keygen_dispatch: Dispatch2d,
     radix: StableFull32Radix,
     indirect_args: wgpu::Buffer,
@@ -302,12 +304,31 @@ impl DirectGpuOrder {
 
     /// Constructs the full-resident SoA path. Unlike Direct, this path may use
     /// the fused stable byte radix negotiated by the Resident resource plan.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn new_resident_soa(
         device: &wgpu::Device,
         source_buffer: &wgpu::Buffer,
         render_params_buffer: &wgpu::Buffer,
         capacity: u32,
         count: u32,
+    ) -> Result<Self, DirectSceneError> {
+        Self::new_resident_soa_with_depth_key_precision(
+            device,
+            source_buffer,
+            render_params_buffer,
+            capacity,
+            count,
+            DepthKeyPrecision::ExactFull32,
+        )
+    }
+
+    pub(crate) fn new_resident_soa_with_depth_key_precision(
+        device: &wgpu::Device,
+        source_buffer: &wgpu::Buffer,
+        render_params_buffer: &wgpu::Buffer,
+        capacity: u32,
+        count: u32,
+        depth_key_precision: DepthKeyPrecision,
     ) -> Result<Self, DirectSceneError> {
         Self::new_inner(
             device,
@@ -318,7 +339,7 @@ impl DirectGpuOrder {
             DirectGpuOrderProfile {
                 compatibility_output: false,
                 prefer_resident_radix8: prefer_resident_radix8_for_target(),
-                depth_key_precision: DepthKeyPrecision::ExactFull32,
+                depth_key_precision,
             },
         )
     }
@@ -477,6 +498,8 @@ impl DirectGpuOrder {
         });
         Ok(Self {
             count,
+            #[cfg(test)]
+            depth_key_precision,
             keygen_dispatch,
             radix,
             indirect_args,
@@ -505,6 +528,11 @@ impl DirectGpuOrder {
 
     pub(crate) const fn is_empty(&self) -> bool {
         self.count == 0
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn depth_key_precision(&self) -> DepthKeyPrecision {
+        self.depth_key_precision
     }
 
     pub(crate) fn set_indirect_vertex_count(&self, queue: &wgpu::Queue, vertex_count: u32) {

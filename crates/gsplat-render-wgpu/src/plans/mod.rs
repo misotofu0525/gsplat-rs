@@ -10,7 +10,10 @@ use gsplat_core::Camera;
 use thiserror::Error;
 
 use crate::scene::SceneRuntime;
-use crate::{TimerInstant, cpu_order::CpuOrderTimings};
+use crate::{
+    TimerInstant,
+    cpu_order::{CpuOrderTimings, DepthKeyPrecision},
+};
 
 use cpu_post::{CpuPostSortError, CpuPostSortGpuWork, CpuPostSortPlan};
 use gpu_post::{GpuPostSortError, GpuPostSortPlan, GpuPostSortWork};
@@ -585,6 +588,8 @@ pub(crate) enum PlanSetError {
     GpuExecutionUnavailable { requested: PlanId },
     #[error("Exact PlanSet source count exceeds u32 addressability")]
     SourceCountOverflow,
+    #[error("CPU PostSort depth-key precision does not match the Exact PlanSet")]
+    DepthKeyPrecisionMismatch,
     #[error("GPU admission count/SH receipt does not match the Exact PlanSet contract")]
     GpuAdmissionContractMismatch,
     #[error(
@@ -620,6 +625,7 @@ pub(crate) struct PlanSet {
     cpu_post: Option<CpuPostSortPlan>,
     gpu_post: Option<GpuPostSortPlan>,
     gpu_pre: Option<GpuPreprojectPlan>,
+    depth_key_precision: DepthKeyPrecision,
     contract: PlanSetContract,
     gpu_capability: Option<GpuCapabilityReceipt>,
     #[cfg(test)]
@@ -632,7 +638,22 @@ impl PlanSet {
         sh_degree: u8,
         frame: FrameIdentity,
     ) -> Result<Self, PlanSetError> {
-        let cpu_post = CpuPostSortPlan::prepare(source_count)?;
+        Self::prepare_cpu_with_depth_key_precision(
+            source_count,
+            sh_degree,
+            frame,
+            DepthKeyPrecision::ExactFull32,
+        )
+    }
+
+    pub(crate) fn prepare_cpu_with_depth_key_precision(
+        source_count: usize,
+        sh_degree: u8,
+        frame: FrameIdentity,
+        depth_key_precision: DepthKeyPrecision,
+    ) -> Result<Self, PlanSetError> {
+        let cpu_post =
+            CpuPostSortPlan::prepare_with_depth_key_precision(source_count, depth_key_precision)?;
         let source_count =
             u32::try_from(source_count).map_err(|_| PlanSetError::SourceCountOverflow)?;
         Self::try_new(
@@ -640,6 +661,7 @@ impl PlanSet {
             vec![PlanId::CpuPostSort].into_boxed_slice(),
             PlanId::CpuPostSort,
             PlanSetContract::new(source_count, sh_degree, frame),
+            depth_key_precision,
         )
     }
 
@@ -648,6 +670,7 @@ impl PlanSet {
         eligible: Box<[PlanId]>,
         fallback: PlanId,
         contract: PlanSetContract,
+        depth_key_precision: DepthKeyPrecision,
     ) -> Result<Self, PlanSetError> {
         let candidate = Self {
             fallback,
@@ -655,6 +678,7 @@ impl PlanSet {
             cpu_post,
             gpu_post: None,
             gpu_pre: None,
+            depth_key_precision,
             contract,
             gpu_capability: None,
             #[cfg(test)]
@@ -665,6 +689,13 @@ impl PlanSet {
     }
 
     fn validate(&self) -> Result<(), PlanSetError> {
+        if self
+            .cpu_post
+            .as_ref()
+            .is_some_and(|plan| plan.depth_key_precision() != self.depth_key_precision)
+        {
+            return Err(PlanSetError::DepthKeyPrecisionMismatch);
+        }
         if self.eligible.is_empty() {
             return Err(PlanSetError::Empty);
         }
@@ -697,6 +728,10 @@ impl PlanSet {
             return Err(PlanSetError::GpuPreprojectCapabilityMismatch);
         }
         Ok(())
+    }
+
+    pub(crate) const fn depth_key_precision(&self) -> DepthKeyPrecision {
+        self.depth_key_precision
     }
 
     fn is_prepared(&self, plan: PlanId) -> bool {
@@ -935,8 +970,9 @@ mod tests {
     use gsplat_core::{Camera, SceneBuffers};
 
     use super::{
-        CpuPostSortPlan, FrameIdentity, GpuPlanAdmissionRequest, PlanExecutionContext,
-        PlanFrameInput, PlanId, PlanSet, PlanSetContract, PlanSetError, WorkUnavailable,
+        CpuPostSortPlan, DepthKeyPrecision, FrameIdentity, GpuPlanAdmissionRequest,
+        PlanExecutionContext, PlanFrameInput, PlanId, PlanSet, PlanSetContract, PlanSetError,
+        WorkUnavailable,
     };
     use crate::scene::{ResidentSceneCpu, SceneRuntime};
 
@@ -978,6 +1014,7 @@ mod tests {
                 Vec::new().into_boxed_slice(),
                 PlanId::CpuPostSort,
                 contract(),
+                DepthKeyPrecision::ExactFull32,
             ),
             Err(PlanSetError::Empty)
         ));
@@ -991,6 +1028,7 @@ mod tests {
                 vec![PlanId::CpuPostSort].into_boxed_slice(),
                 PlanId::GpuPostSort,
                 contract(),
+                DepthKeyPrecision::ExactFull32,
             ),
             Err(PlanSetError::FallbackUnprepared {
                 fallback: PlanId::GpuPostSort

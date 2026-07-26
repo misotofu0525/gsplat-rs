@@ -172,3 +172,36 @@ Implementation ownership is intentionally the real Exact plan construction:
 `PlanSet`/`CpuPostSortPlan` for CPU order and transactional resident GPU
 preparation for Direct GPU order. Surface façade files alone do not own this
 state and are not a permitted shortcut.
+
+The carriage candidate is implemented on baseline
+`ffaf8b591f07035afc60331a1a2ae8c1e43a0c91`. Root approved the audited true
+owner syncs recorded at `300d73a`, `95fc878` and `fa0bc50`; the candidate did
+not merge those bookkeeping commits. One immutable private precision value now
+travels from `PreparedRuntimeSlot` through `PlanSet` into both the native packed
+CPU/Wasm preprocess entry and the Resident GPU order constructor. Existing
+constructors still select `ExactFull32`, and scene replacement preserves the
+already prepared value. Candidate reachability remains crate-private.
+
+Focused execution proves that two depths differing only in the cleared low
+eight bits keep the previous Exact descending order while Candidate produces a
+stable source-ID tie. A real renderer-owned Surface GPU candidate also reports
+that `CandidateStable24` reached its Resident sorter. The packed native path
+matches the scalar shared quantizer; Wasm compiles through the same precision
+entrypoint. No shader mask, public API, FFI, plan ID, radix-pass count,
+visibility predicate, near/far rule, Adaptive behavior or product default was
+changed.
+
+Verification for this carriage candidate:
+
+- renderer library tests: 461 passed, 8 existing research/external-resource
+  observations ignored;
+- packed preprocess: 4 passed; CPU ordering: 13 passed and 2 ignored; Direct /
+  Resident GPU ordering: 13 passed and 4 ignored;
+- focused renderer-owned CPU and Surface GPU carriage: 2 passed;
+- required Metal SortedAlpha conformance: 1 passed;
+- native and `wasm32-unknown-unknown` checks, renderer all-target Clippy with
+  warnings denied, Rust format and source-architecture policy: passed.
+
+This remains construction and contract evidence only. Android, browser and
+device performance/image qualification were not run, no endpoint is promoted,
+and B1 remains **Active** pending the root-owned evidence harness.

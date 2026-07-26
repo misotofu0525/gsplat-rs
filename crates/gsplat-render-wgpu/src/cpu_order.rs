@@ -71,6 +71,27 @@ impl CpuOrderEngine {
         })
     }
 
+    pub(crate) fn order_positions_with_depth_key_precision(
+        &mut self,
+        positions: CpuPositionView<'_>,
+        camera: &Camera,
+        stable_full32: bool,
+        precision: DepthKeyPrecision,
+        authoritative_ids: &mut Vec<u32>,
+    ) -> Result<CpuOrderTimings, RendererError> {
+        let timings = self.workspace.order_positions_with_depth_key_precision(
+            positions,
+            camera,
+            stable_full32,
+            precision,
+            authoritative_ids,
+        )?;
+        Ok(CpuOrderTimings {
+            preprocess_ms: timings.preprocess_ms,
+            sort_ms: timings.sort_ms,
+        })
+    }
+
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn order_paged(
         &mut self,

@@ -18,6 +18,7 @@ use std::time::Duration;
 use gsplat_core::Camera;
 use thiserror::Error;
 
+use crate::cpu_order::DepthKeyPrecision;
 use crate::evidence::{
     BoundedEvidenceRing, PlanComparisonKey, PlanCountSemantics, PlanSample, PlanSampleTicket,
 };
@@ -443,15 +444,20 @@ pub(crate) struct PreparedRuntime {
 }
 
 impl PreparedRuntime {
-    fn prepare(
+    fn prepare_with_depth_key_precision(
         resident: ResidentSceneCpu,
         frame: FrameState,
+        depth_key_precision: DepthKeyPrecision,
     ) -> Result<Self, PreparedRuntimeError> {
         let scene = SceneRuntime::prepare(resident)?;
         let contract = RenderContract::exact_all_resident(&scene)?;
         contract.validate(&scene)?;
-        let plans =
-            PlanSet::prepare_cpu(scene.source_count(), scene.sh_degree(), frame.identity())?;
+        let plans = PlanSet::prepare_cpu_with_depth_key_precision(
+            scene.source_count(),
+            scene.sh_degree(),
+            frame.identity(),
+            depth_key_precision,
+        )?;
         Ok(Self {
             contract,
             scene,
@@ -460,15 +466,20 @@ impl PreparedRuntime {
         })
     }
 
-    fn prepare_surface_retained(
+    fn prepare_surface_retained_with_depth_key_precision(
         source: &ResidentSceneCpu,
         frame: FrameState,
+        depth_key_precision: DepthKeyPrecision,
     ) -> Result<Self, PreparedRuntimeError> {
         let scene = SceneRuntime::prepare_surface_retained(source)?;
         let contract = RenderContract::exact_all_resident(&scene)?;
         contract.validate(&scene)?;
-        let plans =
-            PlanSet::prepare_cpu(scene.source_count(), scene.sh_degree(), frame.identity())?;
+        let plans = PlanSet::prepare_cpu_with_depth_key_precision(
+            scene.source_count(),
+            scene.sh_degree(),
+            frame.identity(),
+            depth_key_precision,
+        )?;
         Ok(Self {
             contract,
             scene,
@@ -528,11 +539,39 @@ impl PreparedRuntimeSlot {
         Self::prepare_at_frame(resident, FrameState::initial())
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn prepare_with_depth_key_precision(
+        resident: ResidentSceneCpu,
+        depth_key_precision: DepthKeyPrecision,
+    ) -> Result<Self, PreparedRuntimeError> {
+        Self::prepare_at_frame_with_depth_key_precision(
+            resident,
+            FrameState::initial(),
+            depth_key_precision,
+        )
+    }
+
     fn prepare_at_frame(
         resident: ResidentSceneCpu,
         frame: FrameState,
     ) -> Result<Self, PreparedRuntimeError> {
-        let runtime = PreparedRuntime::prepare(resident, frame)?;
+        Self::prepare_at_frame_with_depth_key_precision(
+            resident,
+            frame,
+            DepthKeyPrecision::ExactFull32,
+        )
+    }
+
+    fn prepare_at_frame_with_depth_key_precision(
+        resident: ResidentSceneCpu,
+        frame: FrameState,
+        depth_key_precision: DepthKeyPrecision,
+    ) -> Result<Self, PreparedRuntimeError> {
+        let runtime = PreparedRuntime::prepare_with_depth_key_precision(
+            resident,
+            frame,
+            depth_key_precision,
+        )?;
         let controller = WholePlanController::new(
             runtime.plans.fallback(),
             OrderLane::Cpu,
@@ -564,8 +603,23 @@ impl PreparedRuntimeSlot {
     pub(crate) fn prepare_surface_candidate(
         source: &ResidentSceneCpu,
     ) -> Result<Self, PreparedRuntimeError> {
+        Self::prepare_surface_candidate_with_depth_key_precision(
+            source,
+            DepthKeyPrecision::ExactFull32,
+        )
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn prepare_surface_candidate_with_depth_key_precision(
+        source: &ResidentSceneCpu,
+        depth_key_precision: DepthKeyPrecision,
+    ) -> Result<Self, PreparedRuntimeError> {
         let frame = FrameState::initial();
-        let runtime = PreparedRuntime::prepare_surface_retained(source, frame)?;
+        let runtime = PreparedRuntime::prepare_surface_retained_with_depth_key_precision(
+            source,
+            frame,
+            depth_key_precision,
+        )?;
         let controller = WholePlanController::new(
             runtime.plans.fallback(),
             OrderLane::Cpu,
@@ -598,7 +652,28 @@ impl PreparedRuntimeSlot {
         target_format: wgpu::TextureFormat,
         indirect_execution_supported: bool,
     ) -> Result<Self, PreparedGpuRuntimeError> {
-        let mut candidate = Self::prepare_surface_candidate(source)?;
+        Self::prepare_complete_surface_gpu_candidate_with_depth_key_precision(
+            source,
+            device,
+            queue,
+            target_format,
+            indirect_execution_supported,
+            DepthKeyPrecision::ExactFull32,
+        )
+        .await
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) async fn prepare_complete_surface_gpu_candidate_with_depth_key_precision(
+        source: &ResidentSceneCpu,
+        device: &Arc<wgpu::Device>,
+        queue: &Arc<wgpu::Queue>,
+        target_format: wgpu::TextureFormat,
+        indirect_execution_supported: bool,
+        depth_key_precision: DepthKeyPrecision,
+    ) -> Result<Self, PreparedGpuRuntimeError> {
+        let mut candidate =
+            Self::prepare_surface_candidate_with_depth_key_precision(source, depth_key_precision)?;
         candidate
             .prepare_gpu_from_source(
                 source,
@@ -629,7 +704,11 @@ impl PreparedRuntimeSlot {
                 .map_err(PreparedRuntimeError::Generation)?,
             None => FrameState::initial(),
         };
-        let mut candidate = Self::prepare_at_frame(resident, frame)?;
+        let depth_key_precision = previous.map_or(DepthKeyPrecision::ExactFull32, |previous| {
+            previous.runtime.plans.depth_key_precision()
+        });
+        let mut candidate =
+            Self::prepare_at_frame_with_depth_key_precision(resident, frame, depth_key_precision)?;
         if let Some(previous) = previous {
             candidate.presentation_sequence = previous.presentation_sequence;
             candidate
@@ -688,7 +767,11 @@ impl PreparedRuntimeSlot {
         resident: ResidentSceneCpu,
     ) -> Result<(), PreparedRuntimeError> {
         let next_frame = self.frame.after_runtime_replacement()?;
-        let next_runtime = PreparedRuntime::prepare(resident, next_frame)?;
+        let next_runtime = PreparedRuntime::prepare_with_depth_key_precision(
+            resident,
+            next_frame,
+            self.runtime.plans.depth_key_precision(),
+        )?;
         let controller = WholePlanController::new(
             next_runtime.plans.fallback(),
             OrderLane::Cpu,
@@ -743,7 +826,11 @@ impl PreparedRuntimeSlot {
         let scene = self
             .runtime
             .scene
-            .stage_gpu(&owner, next_frame.identity())
+            .stage_gpu_with_depth_key_precision(
+                &owner,
+                next_frame.identity(),
+                self.runtime.plans.depth_key_precision(),
+            )
             .await?;
         #[cfg(test)]
         let current_stats_candidate = scene
@@ -825,11 +912,12 @@ impl PreparedRuntimeSlot {
         let scene = self
             .runtime
             .scene
-            .stage_gpu_from(
+            .stage_gpu_from_with_depth_key_precision(
                 &owner,
                 source,
                 next_frame.identity(),
                 indirect_execution_supported,
+                self.runtime.plans.depth_key_precision(),
             )
             .await?;
         #[cfg(test)]
@@ -1000,6 +1088,16 @@ impl PreparedRuntimeSlot {
 
     pub(crate) fn gpu_preparation(&self) -> Option<GpuPreparationReceipt> {
         self.runtime.scene.gpu_preparation()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn depth_key_precision_for_test(&self) -> DepthKeyPrecision {
+        self.runtime.plans.depth_key_precision()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn gpu_depth_key_precision_for_test(&self) -> Option<DepthKeyPrecision> {
+        self.runtime.scene.gpu_depth_key_precision()
     }
 
     pub(crate) fn gpu_capability(&self) -> Option<GpuCapabilityReceipt> {
