@@ -38,9 +38,7 @@ mod spatial_pages;
 mod surface;
 mod surface_presenter;
 mod surface_session;
-mod tiled_resident_gpu;
-
-pub use api::{GeometryPath, PreprocessOutput};
+pub use api::{GeometryPath, PreprocessOutput, SurfaceRasterExecutionPlan};
 use cpu_order::CpuOrderEngine;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 pub(crate) use cpu_order::{
@@ -126,8 +124,6 @@ pub use surface_session::{
     SurfaceProjectedDrawMeasurementSubmission, SurfaceProjectedDrawMeasurementUnsampledReason,
     SurfaceProjectedDrawPolicy, SurfaceRenderSession, SurfaceSortSchedule,
 };
-pub use tiled_resident_gpu::{ResidentTiledError, SurfaceRasterExecutionPlan};
-
 const DEFAULT_PAGED_ATLAS_SLOTS: usize = 4;
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -243,8 +239,6 @@ pub enum RendererError {
     ResidentScene(#[from] ResidentSceneError),
     #[error("resident GPU resource error: {0}")]
     ResidentGpu(#[from] ResidentGpuError),
-    #[error("resident exact tiled raster error: {0}")]
-    ResidentTiled(#[from] ResidentTiledError),
     #[error("paged atlas error: {0:?}")]
     PagedAtlas(String),
     #[error("sort backend error: {0}")]
@@ -265,11 +259,6 @@ impl RendererError {
             }
             Self::SceneNotLoaded => ErrorCode::SceneNotLoaded,
             Self::ResidentGpu(ResidentGpuError::GpuOrderInternal(_)) => ErrorCode::Internal,
-            Self::ResidentTiled(ResidentTiledError::Internal(_))
-            | Self::ResidentTiled(ResidentTiledError::Validation(_))
-            | Self::ResidentTiled(ResidentTiledError::Readback)
-            | Self::ResidentTiled(ResidentTiledError::IncompleteScatter)
-            | Self::ResidentTiled(ResidentTiledError::OutOfMemory) => ErrorCode::Internal,
             Self::GeometrySourceUnavailable { .. } => ErrorCode::Unsupported,
             Self::GpuRasterizerUnavailable
             | Self::GpuDeviceCreation
@@ -281,8 +270,7 @@ impl RendererError {
             | Self::ResidentScene(ResidentSceneError::UnsupportedShDegree(_))
             | Self::ResidentScene(ResidentSceneError::SizeOverflow)
             | Self::ResidentScene(ResidentSceneError::UploadStagingReleased)
-            | Self::ResidentGpu(_)
-            | Self::ResidentTiled(_) => ErrorCode::Unsupported,
+            | Self::ResidentGpu(_) => ErrorCode::Unsupported,
             Self::GpuReadback | Self::GpuWait | Self::SurfaceWorker => ErrorCode::Internal,
             Self::DirectScene(DirectSceneError::SortedIndexCapacityExceeded)
             | Self::DirectScene(DirectSceneError::GpuOrderInitialization(_))
@@ -392,8 +380,6 @@ pub enum SurfacePresenterError {
     ResidentScene(#[from] ResidentSceneError),
     #[error("resident GPU resource error: {0}")]
     ResidentGpu(#[from] ResidentGpuError),
-    #[error("resident exact tiled raster error: {0}")]
-    ResidentTiled(#[from] ResidentTiledError),
     #[error("paged atlas error: {0}")]
     PagedAtlas(String),
     #[error("paged active atlas is not yet supported on surface presenters")]
@@ -452,11 +438,6 @@ impl SurfacePresenterError {
                 ErrorCode::InvalidArgument
             }
             Self::ResidentGpu(ResidentGpuError::GpuOrderInternal(_)) => ErrorCode::Internal,
-            Self::ResidentTiled(ResidentTiledError::Internal(_))
-            | Self::ResidentTiled(ResidentTiledError::Validation(_))
-            | Self::ResidentTiled(ResidentTiledError::Readback)
-            | Self::ResidentTiled(ResidentTiledError::IncompleteScatter)
-            | Self::ResidentTiled(ResidentTiledError::OutOfMemory) => ErrorCode::Internal,
             Self::SurfaceCreation
             | Self::NoAdapter
             | Self::DeviceCreation(_)
@@ -492,8 +473,7 @@ impl SurfacePresenterError {
             | Self::ResidentScene(ResidentSceneError::UnsupportedShDegree(_))
             | Self::ResidentScene(ResidentSceneError::SizeOverflow)
             | Self::ResidentScene(ResidentSceneError::UploadStagingReleased)
-            | Self::ResidentGpu(_)
-            | Self::ResidentTiled(_) => ErrorCode::Unsupported,
+            | Self::ResidentGpu(_) => ErrorCode::Unsupported,
             Self::DirectScene(DirectSceneError::SortedIndexCapacityExceeded)
             | Self::DirectScene(DirectSceneError::GpuOrderInitialization(_))
             | Self::ResidentScene(ResidentSceneError::InvalidScene)

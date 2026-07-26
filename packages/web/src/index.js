@@ -894,9 +894,7 @@ function normalizeCurrentStatsPlan(value) {
 
 function normalizeFrameStats(raw) {
   const receipts = normalizeMeasurementReceipts(raw);
-  const gpuOrderPreparationPending = Boolean(
-    raw.gpuOrderPreparationPending ?? raw.tiledPreparationPending,
-  );
+  const gpuOrderPreparationPending = Boolean(raw.gpuOrderPreparationPending);
   if (receipts.completedOrderMeasurements.length === 0 && raw.completedMeasurementAvailable) {
     receipts.completedOrderMeasurements.push(normalizeOrderMeasurement({
       ticket: raw.completedMeasurementTicket,
@@ -1039,8 +1037,6 @@ function normalizeFrameStats(raw) {
     frameWallMs: numberOr(raw.frameWallMs, raw.frameMs),
     framePresented: raw.framePresented !== false,
     gpuOrderPreparationPending,
-    // Compatibility alias; use gpuOrderPreparationPending in new code.
-    tiledPreparationPending: gpuOrderPreparationPending,
     rasterExecutionPlan: String(raw.rasterExecutionPlan ?? "global_quads"),
     visibleCount,
     drawnCount,
@@ -1989,8 +1985,7 @@ function failureResource(error, message) {
   }
 
   const patterns = [
-    /resident (?:tiled )?resource (.+?) (?:requires|needs) ([\d_]+) bytes(?: but the effective binding limit is|; binding limit is) ([\d_]+) bytes/i,
-    /GPU tiled raster resource (.+?) needs ([\d_]+) bytes; binding limit is ([\d_]+) bytes/i,
+    /resident resource (.+?) (?:requires|needs) ([\d_]+) bytes(?: but the effective binding limit is|; binding limit is) ([\d_]+) bytes/i,
     /PLY resource limit exceeded for (.+?): requested ([\d_]+), limit ([\d_]+)/i,
     /(?:direct GPU order )?(.+?) buffer needs ([\d_]+) bytes; device storage-binding limit is ([\d_]+) bytes/i,
   ];

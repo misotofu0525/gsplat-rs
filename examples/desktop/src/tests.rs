@@ -449,7 +449,7 @@ fn args_parse_surface_order_backends_and_rejects_non_surface_gpu() {
 
 #[test]
 fn args_parse_rejects_retired_surface_raster_plan() {
-    for value in ["projected", "global", "tiled"] {
+    for value in ["projected", "global"] {
         let error = parse_args(&["--interactive", "--surface-raster-plan", value]).unwrap_err();
         assert!(error.contains("unknown flag: --surface-raster-plan"));
     }

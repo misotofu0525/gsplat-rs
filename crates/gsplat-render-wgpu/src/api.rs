@@ -38,6 +38,13 @@ pub enum SurfaceProjectedDrawExecution {
     Compact,
 }
 
+/// Raster implementation selected for one Surface presenter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SurfaceRasterExecutionPlan {
+    GlobalQuads,
+    ProjectedQuadsExact,
+}
+
 impl SurfaceProjectedDrawExecution {
     pub const fn exact_contributor_compaction(self) -> bool {
         matches!(self, Self::Compact)
@@ -52,7 +59,10 @@ pub struct PreprocessOutput {
 
 #[cfg(test)]
 mod tests {
-    use super::{SurfaceGpuOrderProducer, SurfaceOrderBackendUsed, SurfaceProjectedDrawExecution};
+    use super::{
+        SurfaceGpuOrderProducer, SurfaceOrderBackendUsed, SurfaceProjectedDrawExecution,
+        SurfaceRasterExecutionPlan,
+    };
 
     #[test]
     fn execution_identities_remain_available_at_the_crate_root() {
@@ -60,10 +70,13 @@ mod tests {
         let order: crate::SurfaceOrderBackendUsed = SurfaceOrderBackendUsed::Cpu;
         let projected: crate::SurfaceProjectedDrawExecution =
             SurfaceProjectedDrawExecution::Candidate;
+        let raster: crate::SurfaceRasterExecutionPlan =
+            SurfaceRasterExecutionPlan::ProjectedQuadsExact;
 
         assert_eq!(producer, SurfaceGpuOrderProducer::PostSort);
         assert_eq!(order, SurfaceOrderBackendUsed::Cpu);
         assert_eq!(projected, SurfaceProjectedDrawExecution::Candidate);
+        assert_eq!(raster, SurfaceRasterExecutionPlan::ProjectedQuadsExact);
     }
 
     #[test]

@@ -1295,7 +1295,7 @@ fn run_surface_trace_benchmark(
                                     }
                                 };
                             if !output.frame_presented
-                                || output.tiled_preparation_pending
+                                || output.gpu_order_preparation_pending
                                 || output.gpu_producer_measurement_submission
                                     != SurfaceGpuProducerMeasurementSubmission::NotRequested
                             {
@@ -1304,7 +1304,7 @@ fn run_surface_trace_benchmark(
                                     format!(
                                         "surface capture frame was not an unmeasured complete presentation: presented={} preparation_pending={} producer_submission={:?}",
                                         output.frame_presented,
-                                        output.tiled_preparation_pending,
+                                        output.gpu_order_preparation_pending,
                                         output.gpu_producer_measurement_submission,
                                     ),
                                 );
@@ -1400,14 +1400,14 @@ fn run_surface_trace_benchmark(
                                 return;
                             }
                         };
-                        if !output.frame_presented || output.tiled_preparation_pending {
+                        if !output.frame_presented || output.gpu_order_preparation_pending {
                             store_surface_benchmark_error(
                                 &render_error_shared,
                                 format!(
-                                    "surface trace frame {} did not present its full-resolution drawable (frame_presented={}, tiled_preparation_pending={})",
+                                    "surface trace frame {} did not present its full-resolution drawable (frame_presented={}, gpu_order_preparation_pending={})",
                                     step.playback_index,
                                     output.frame_presented,
-                                    output.tiled_preparation_pending,
+                                    output.gpu_order_preparation_pending,
                                 ),
                             );
                             target.exit();
@@ -1776,7 +1776,7 @@ fn print_surface_frame_receipt(
     };
     let phase = step.map_or("drain", |step| step.phase.as_str());
     println!(
-        "SURFACE_FRAME_RECEIPT playback_index={} phase={} loop={} phase_frame={} measured_sample={} trace_frame={} trace_timestamp_ns={} drain_frame={} camera_revision={} applied_order_revision={} presented_order_revision_lag={} sort_policy={} requested_backend={} actual_backend={} adaptive_state={} raster_execution_plan={} gpu_order_producer_requested={} gpu_order_producer_actual={} producer_ticket_submitted={} producer_unsampled_reason={} frame_presented={} tiled_preparation_pending={} requested_width={} requested_height={} surface_width={} surface_height={} internal_render_width={} internal_render_height={} presented_width={} presented_height={} dynamic_resolution=disabled upscaling=disabled full_resolution={} sort_refreshed={} order_uploaded={} gpu_sort_fallback={} source_count={} resident_count={} visible_count={} drawn_count={} visible_count_revision={} visible_count_pending={} pending_camera_revision={} cpu_preprocess_ms={:.6} cpu_sort_ms={:.6} cpu_render_submit_ms={:.6} frame_wall_ms={:.6} measurement_ticket_submitted={} measurement_backend={} measurement_unsampled_reason={} gpu_ticket_submitted={} gpu_timestamp_query_enabled={} gpu_ticket_completed={} gpu_completed_revision={} gpu_timing_source={} gpu_preprocess_ms={} gpu_radix_ms={} gpu_order_ms={} gpu_completion_ms={} gpu_timestamp_period_ns={} gpu_below_timestamp_resolution={}",
+        "SURFACE_FRAME_RECEIPT playback_index={} phase={} loop={} phase_frame={} measured_sample={} trace_frame={} trace_timestamp_ns={} drain_frame={} camera_revision={} applied_order_revision={} presented_order_revision_lag={} sort_policy={} requested_backend={} actual_backend={} adaptive_state={} raster_execution_plan={} gpu_order_producer_requested={} gpu_order_producer_actual={} producer_ticket_submitted={} producer_unsampled_reason={} frame_presented={} gpu_order_preparation_pending={} requested_width={} requested_height={} surface_width={} surface_height={} internal_render_width={} internal_render_height={} presented_width={} presented_height={} dynamic_resolution=disabled upscaling=disabled full_resolution={} sort_refreshed={} order_uploaded={} gpu_sort_fallback={} source_count={} resident_count={} visible_count={} drawn_count={} visible_count_revision={} visible_count_pending={} pending_camera_revision={} cpu_preprocess_ms={:.6} cpu_sort_ms={:.6} cpu_render_submit_ms={:.6} frame_wall_ms={:.6} measurement_ticket_submitted={} measurement_backend={} measurement_unsampled_reason={} gpu_ticket_submitted={} gpu_timestamp_query_enabled={} gpu_ticket_completed={} gpu_completed_revision={} gpu_timing_source={} gpu_preprocess_ms={} gpu_radix_ms={} gpu_order_ms={} gpu_completion_ms={} gpu_timestamp_period_ns={} gpu_below_timestamp_resolution={}",
         option_usize(step.map(|step| step.playback_index)),
         phase,
         option_usize(step.map(|step| step.loop_index)),
@@ -1802,7 +1802,7 @@ fn print_surface_frame_receipt(
         option_u64(producer_ticket),
         producer_unsampled_reason,
         output.frame_presented,
-        output.tiled_preparation_pending,
+        output.gpu_order_preparation_pending,
         identity.resolution.requested.0,
         identity.resolution.requested.1,
         identity.resolution.surface.0,
@@ -2033,7 +2033,6 @@ const fn raster_execution_plan_label(plan: SurfaceRasterExecutionPlan) -> &'stat
     match plan {
         SurfaceRasterExecutionPlan::GlobalQuads => "global_quads",
         SurfaceRasterExecutionPlan::ProjectedQuadsExact => "projected_quads_exact",
-        SurfaceRasterExecutionPlan::TiledExact => "tiled_exact",
     }
 }
 

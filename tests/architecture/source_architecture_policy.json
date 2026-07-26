@@ -179,13 +179,6 @@
       "review_action": "Open an independent IO ownership plan no later than M8 and either split metadata, bounded decode and import policy into cohesive owners or re-prove one responsibility. This is the single renewal; do not renew it again and do not use a fixed line count as the completion condition."
     },
     {
-      "path": "crates/gsplat-render-wgpu/src/tiled_resident_gpu.rs",
-      "a0_physical_loc": 2156,
-      "baseline_physical_loc": 2156,
-      "owner_task": "M7",
-      "exit_condition": "Remove obsolete tiled diagnostics or isolate each retained diagnostic responsibility behind an explicit non-product owner."
-    },
-    {
       "path": "crates/gsplat-io-spz/src/lib.rs",
       "a0_physical_loc": 1310,
       "baseline_physical_loc": 1310,

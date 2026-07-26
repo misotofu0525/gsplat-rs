@@ -415,7 +415,7 @@ pub(crate) fn run(
                 };
                 let call_ms = call_started.elapsed().as_secs_f32() * 1_000.0;
                 if !output.frame_presented
-                    || output.tiled_preparation_pending
+                    || output.gpu_order_preparation_pending
                     || session.last_presented_size() != Some(identity.resolution.requested)
                 {
                     store_error(
@@ -423,7 +423,7 @@ pub(crate) fn run(
                         format!(
                             "surface evidence frame was not a complete full-resolution presentation: presented={} preparation_pending={} presented_size={:?}",
                             output.frame_presented,
-                            output.tiled_preparation_pending,
+                            output.gpu_order_preparation_pending,
                             session.last_presented_size()
                         ),
                     );

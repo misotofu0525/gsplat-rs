@@ -768,7 +768,6 @@ test("GsplatWebRenderer forwards commands and normalizes return values", async (
     frameWallMs: 1.5,
     framePresented: true,
     gpuOrderPreparationPending: false,
-    tiledPreparationPending: false,
     rasterExecutionPlan: "global_quads",
     visibleCount: 2,
     drawnCount: 1,

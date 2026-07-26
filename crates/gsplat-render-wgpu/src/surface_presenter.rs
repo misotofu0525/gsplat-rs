@@ -15,8 +15,6 @@ use crate::gpu_telemetry::{
     CpuOrderCompletionTelemetry, CpuOrderTelemetryPoll, FrameInstanceCounts, GpuOrderTelemetry,
     GpuOrderTelemetryPoll, InstanceCountSource, TelemetrySubmission,
 };
-#[cfg(target_arch = "wasm32")]
-use crate::gpu_telemetry::{GpuTelemetryTicket, SurfaceOrderMeasurementFailureReason};
 use crate::packed_gpu;
 use crate::paged_active_set::PagedActiveSet;
 use crate::preproject_gpu::PreprojectedGpuOrder;
@@ -40,7 +38,6 @@ use crate::surface::shadow::{
 use crate::surface::{
     SurfaceConfigurationOwner, SurfaceLifecycle, create_surface_instance, select_present_mode,
 };
-use crate::tiled_resident_gpu::{ResidentTiledFinish, ResidentTiledGpu};
 use crate::{
     DEFAULT_PAGED_ATLAS_SLOTS, DirectGpuSceneOrder, DirectSceneError, DirectScenePath,
     DirectScenePreflight, DirectSceneResources, GeometryPath, PackedScenePath,
@@ -49,9 +46,6 @@ use crate::{
     packed_scene_preflight_with_limits, preprocess_paged_visible_into, refresh_paged_hot_colors,
     wgpu_label,
 };
-#[cfg(not(target_arch = "wasm32"))]
-use crate::{timer_elapsed_ms, timer_now};
-
 pub(crate) struct SurfacePagedRuntime {
     pub(crate) active_set: PagedActiveSet,
     sort_backend: CpuSortBackend,
@@ -195,18 +189,7 @@ struct SurfacePackedRuntime {
     projected_cache: ProjectedCacheState,
     preproject: Option<PreprojectedGpuOrder>,
     preproject_state: PreprojectProducerState,
-    // The tiled software raster is an exact diagnostic oracle, not part of
-    // the production allocation. Create it only for an explicit A/B request.
-    tiled: Option<ResidentTiledGpu>,
     raster_plan: SurfaceRasterExecutionPlan,
-    #[cfg(not(target_arch = "wasm32"))]
-    phase_trace_emitted: u32,
-    #[cfg(not(target_arch = "wasm32"))]
-    last_count_resolve_prepare_ms: f32,
-    #[cfg(target_arch = "wasm32")]
-    pending: Option<WebPendingTiledFrame>,
-    #[cfg(target_arch = "wasm32")]
-    pending_gpu: Option<WebPendingTiledGpuFrame>,
     #[cfg(target_arch = "wasm32")]
     gpu_order_warmed: bool,
 }
@@ -335,27 +318,6 @@ const fn unavailable_gpu_surface_submission(
         });
     }
     None
-}
-
-#[cfg(target_arch = "wasm32")]
-#[derive(Clone, Copy)]
-struct WebPendingTiledFrame {
-    camera: Camera,
-    work_count: u32,
-    completion: Option<CpuCompletionSampleRequest>,
-    count_ready: bool,
-}
-
-#[cfg(target_arch = "wasm32")]
-struct WebPendingTiledGpuFrame {
-    camera: Camera,
-    work_count: u32,
-    camera_revision: u64,
-    completion_started: TimerInstant,
-    count_ready: bool,
-    refresh_order: bool,
-    warmup_only: bool,
-    telemetry_ticket: Option<GpuTelemetryTicket>,
 }
 
 impl SurfaceGeometry {
@@ -593,16 +555,7 @@ fn create_geometry_resources(
                 projected_cache: ProjectedCacheState::default(),
                 preproject: None,
                 preproject_state: PreprojectProducerState::default(),
-                tiled: None,
                 raster_plan,
-                #[cfg(not(target_arch = "wasm32"))]
-                phase_trace_emitted: 0,
-                #[cfg(not(target_arch = "wasm32"))]
-                last_count_resolve_prepare_ms: 0.0,
-                #[cfg(target_arch = "wasm32")]
-                pending: None,
-                #[cfg(target_arch = "wasm32")]
-                pending_gpu: None,
                 #[cfg(target_arch = "wasm32")]
                 gpu_order_warmed: false,
             })))
@@ -1378,12 +1331,6 @@ impl SurfacePresenter {
         }
         #[cfg(not(target_arch = "wasm32"))]
         {
-            if let SurfaceGeometry::Packed(packed) = &mut self.geometry {
-                if let Some(tiled) = packed.tiled.as_mut() {
-                    tiled.resize(&self.host.device, width, height)?;
-                }
-                packed.phase_trace_emitted = 0;
-            }
             self.host.commit_native_resize(width, height);
             if let SurfaceGeometry::Packed(packed) = &mut self.geometry {
                 packed.preproject_state.invalidate_order();
@@ -1428,8 +1375,6 @@ impl SurfacePresenter {
         if let SurfaceGeometry::Packed(packed) = &mut self.geometry {
             packed.projected_cache.key = None;
             packed.preproject_state.invalidate_order();
-            packed.pending = None;
-            packed.pending_gpu = None;
         }
         self.gpu_order_telemetry.invalidate_generation();
         self.cpu_order_completion_telemetry.invalidate_generation();
@@ -1496,24 +1441,9 @@ impl SurfacePresenter {
         self.host.take_surface_capture()
     }
 
-    /// Actual dimensions of the raster target before presentation. Packed
-    /// tiled rendering owns an intermediate image; the other plans rasterize
-    /// directly into the Surface at its configured size.
+    /// Actual dimensions of the raster target before presentation.
     pub fn internal_render_size(&self) -> (u32, u32) {
-        match &self.geometry {
-            SurfaceGeometry::Packed(packed)
-                if packed.raster_plan == SurfaceRasterExecutionPlan::TiledExact =>
-            {
-                packed
-                    .tiled
-                    .as_ref()
-                    .expect("TiledExact plan owns its diagnostic raster")
-                    .size()
-            }
-            SurfaceGeometry::Direct(_) | SurfaceGeometry::Packed(_) | SurfaceGeometry::Paged(_) => {
-                self.surface_size()
-            }
-        }
+        self.surface_size()
     }
 
     /// Physical adapter identity selected for this Surface presenter.
@@ -1787,32 +1717,7 @@ impl SurfacePresenter {
                 if packed.raster_plan == plan {
                     return Ok(());
                 }
-                if plan == SurfaceRasterExecutionPlan::TiledExact {
-                    let tiled = ResidentTiledGpu::new(
-                        &self.host.device,
-                        self.host.surface_configuration.format(),
-                        &packed.resident,
-                        self.host.surface_configuration.size().0,
-                        self.host.surface_configuration.size().1,
-                    )?;
-                    // Publish only after complete construction succeeds.
-                    packed.tiled = Some(tiled);
-                } else {
-                    // The diagnostic owner includes three 16-byte source
-                    // planes plus viewport/work buffers. It must not remain in
-                    // the production large-scene residency after the A/B run.
-                    packed.tiled = None;
-                }
                 packed.raster_plan = plan;
-                #[cfg(not(target_arch = "wasm32"))]
-                {
-                    packed.phase_trace_emitted = 0;
-                }
-                #[cfg(target_arch = "wasm32")]
-                {
-                    packed.pending = None;
-                    packed.pending_gpu = None;
-                }
                 self.gpu_order_telemetry.invalidate_generation();
                 self.cpu_order_completion_telemetry.invalidate_generation();
                 self.projected_draw_telemetry.invalidate_generation();
@@ -1827,26 +1732,6 @@ impl SurfacePresenter {
             SurfaceGeometry::Direct(_) | SurfaceGeometry::Paged(_) => {
                 Err(SurfacePresenterError::GpuOrderUnsupported)
             }
-        }
-    }
-
-    pub const fn tiled_entry_count(&self) -> Option<u32> {
-        match &self.geometry {
-            SurfaceGeometry::Packed(packed) => match &packed.tiled {
-                Some(tiled) => Some(tiled.active_entry_count()),
-                None => Some(0),
-            },
-            SurfaceGeometry::Direct(_) | SurfaceGeometry::Paged(_) => None,
-        }
-    }
-
-    pub const fn tiled_entry_capacity(&self) -> Option<u32> {
-        match &self.geometry {
-            SurfaceGeometry::Packed(packed) => match &packed.tiled {
-                Some(tiled) => Some(tiled.entry_capacity()),
-                None => Some(0),
-            },
-            SurfaceGeometry::Direct(_) | SurfaceGeometry::Paged(_) => None,
         }
     }
 
@@ -1978,19 +1863,6 @@ impl SurfacePresenter {
         completion: Option<CpuCompletionSampleRequest>,
     ) -> Result<TelemetrySubmission, SurfacePresenterError> {
         self.host.surface_lifecycle.begin_frame();
-        #[cfg(target_arch = "wasm32")]
-        if matches!(
-            self.geometry,
-            SurfaceGeometry::Packed(ref packed)
-                if packed.raster_plan == SurfaceRasterExecutionPlan::TiledExact
-        ) {
-            return self.render_packed_tiled_cpu_web(
-                sorted_indices,
-                camera,
-                refresh_indices,
-                completion,
-            );
-        }
         self.instance_count = match &mut self.geometry {
             SurfaceGeometry::Direct(direct) => direct.prepare_cpu(
                 &self.host.queue,
@@ -2019,376 +1891,7 @@ impl SurfacePresenter {
                 return Err(SurfacePresenterError::PagedAtlasUnsupported);
             }
         };
-        #[cfg(not(target_arch = "wasm32"))]
-        if matches!(
-            self.geometry,
-            SurfaceGeometry::Packed(ref packed)
-                if packed.raster_plan == SurfaceRasterExecutionPlan::TiledExact
-        ) {
-            return self.present_packed_tiled_native(camera, self.instance_count, completion);
-        }
         self.present_geometry_tracked(camera, completion)
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    fn present_packed_tiled_native(
-        &mut self,
-        camera: &Camera,
-        work_count: u32,
-        completion: Option<CpuCompletionSampleRequest>,
-    ) -> Result<TelemetrySubmission, SurfacePresenterError> {
-        let storage_bindings = self
-            .host
-            .device
-            .limits()
-            .max_storage_buffers_per_shader_stage;
-        let color_pipeline = self
-            .resident_color_pipeline
-            .as_ref()
-            .ok_or_else(|| resident_pipelines_unavailable(storage_bindings))?;
-        let count_started = timer_now();
-        let mut count_encoder =
-            self.host
-                .device
-                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                    label: wgpu_label("gsplat-surface-resident-tiled-count-encoder"),
-                });
-        {
-            let SurfaceGeometry::Packed(packed) = &mut self.geometry else {
-                unreachable!();
-            };
-            packed.resident.encode_color_resolve_if_needed(
-                &self.host.queue,
-                color_pipeline,
-                &mut count_encoder,
-                camera,
-                self.host
-                    .device
-                    .limits()
-                    .max_compute_workgroups_per_dimension,
-            )?;
-            packed
-                .tiled
-                .as_mut()
-                .expect("TiledExact plan owns its diagnostic raster")
-                .encode_count_prepass(
-                    &self.host.device,
-                    &self.host.queue,
-                    &packed.resident,
-                    &packed.resident.order_buffer,
-                    work_count,
-                    &mut count_encoder,
-                )?;
-        }
-        self.host.queue.submit(Some(count_encoder.finish()));
-        {
-            let SurfaceGeometry::Packed(packed) = &mut self.geometry else {
-                unreachable!();
-            };
-            packed
-                .tiled
-                .as_mut()
-                .expect("TiledExact plan owns its diagnostic raster")
-                .resolve_count_and_prepare(&self.host.device, &self.host.queue)?;
-            packed.last_count_resolve_prepare_ms = timer_elapsed_ms(count_started);
-        }
-
-        let Some(frame) = self.acquire_surface_texture()? else {
-            return Ok(if completion.is_some() {
-                TelemetrySubmission::SurfaceUnavailable
-            } else {
-                TelemetrySubmission::NotRequested
-            });
-        };
-        let view = frame
-            .texture
-            .create_view(&wgpu::TextureViewDescriptor::default());
-        let mut encoder =
-            self.host
-                .device
-                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                    label: wgpu_label("gsplat-surface-resident-tiled-finish-encoder"),
-                });
-        {
-            let SurfaceGeometry::Packed(packed) = &mut self.geometry else {
-                unreachable!();
-            };
-            packed
-                .tiled
-                .as_mut()
-                .expect("TiledExact plan owns its diagnostic raster")
-                .encode_finish(
-                    &self.host.device,
-                    &self.host.queue,
-                    &packed.resident,
-                    ResidentTiledFinish {
-                        source_order_btf: &packed.resident.order_buffer,
-                        work_count,
-                        target: &view,
-                    },
-                    &mut encoder,
-                )?;
-        }
-        self.host
-            .surface_capture
-            .encode(&mut encoder, &frame.texture);
-        let command_buffer = encoder.finish();
-        let mut completion_ticket = completion.and_then(|request| {
-            self.cpu_order_completion_telemetry.begin_sample(
-                request.camera_revision,
-                request.preprocess_ms,
-                request.sort_ms,
-            )
-        });
-        let submitted_ticket = completion_ticket.as_ref().map(|ticket| ticket.ticket);
-        if let (Some(ticket), Some(request)) = (completion_ticket.take(), completion) {
-            self.cpu_order_completion_telemetry
-                .arm(&command_buffer, ticket, request.started);
-        }
-        self.host.queue.submit(Some(command_buffer));
-        self.maybe_emit_tiled_phase_trace()?;
-        self.present_frame(frame);
-        Ok(match (completion, submitted_ticket) {
-            (None, _) => TelemetrySubmission::NotRequested,
-            (Some(_), Some(ticket)) => TelemetrySubmission::Issued(ticket),
-            (Some(_), None) => TelemetrySubmission::RingBusy,
-        })
-    }
-
-    #[cfg(target_arch = "wasm32")]
-    fn render_packed_tiled_cpu_web(
-        &mut self,
-        sorted_indices: &[u32],
-        camera: &Camera,
-        refresh_indices: bool,
-        completion: Option<CpuCompletionSampleRequest>,
-    ) -> Result<TelemetrySubmission, SurfacePresenterError> {
-        let gpu_pending_ready = {
-            let SurfaceGeometry::Packed(packed) = &mut self.geometry else {
-                unreachable!();
-            };
-            match packed.pending_gpu.as_mut() {
-                None => true,
-                Some(pending) if pending.count_ready => true,
-                Some(_) => {
-                    let ready = packed
-                        .tiled
-                        .as_mut()
-                        .expect("TiledExact plan owns its diagnostic raster")
-                        .try_resolve_count_and_prepare(&self.host.device, &self.host.queue)?
-                        .is_some();
-                    if ready && let Some(pending) = packed.pending_gpu.as_mut() {
-                        pending.count_ready = true;
-                    }
-                    ready
-                }
-            }
-        };
-        if !gpu_pending_ready {
-            return Ok(TelemetrySubmission::GpuOrderPreparationPending);
-        }
-        let stale_gpu_ticket = {
-            let SurfaceGeometry::Packed(packed) = &mut self.geometry else {
-                unreachable!();
-            };
-            packed
-                .pending_gpu
-                .take()
-                .and_then(|pending| pending.telemetry_ticket)
-        };
-        if let Some(ticket) = stale_gpu_ticket {
-            self.gpu_order_telemetry.fail_encoding(
-                ticket,
-                SurfaceOrderMeasurementFailureReason::GenerationInvalidated,
-            );
-        }
-
-        let resolved_pending = {
-            let SurfaceGeometry::Packed(packed) = &mut self.geometry else {
-                unreachable!();
-            };
-            match packed.pending {
-                None => None,
-                Some(pending) if pending.count_ready => Some(pending),
-                Some(mut pending) => {
-                    let ready = packed
-                        .tiled
-                        .as_mut()
-                        .expect("TiledExact plan owns its diagnostic raster")
-                        .try_resolve_count_and_prepare(&self.host.device, &self.host.queue)?
-                        .is_some();
-                    if ready {
-                        pending.count_ready = true;
-                        packed.pending = Some(pending);
-                        Some(pending)
-                    } else {
-                        None
-                    }
-                }
-            }
-        };
-        if let SurfaceGeometry::Packed(packed) = &self.geometry
-            && packed.pending.is_some()
-            && resolved_pending.is_none()
-        {
-            return Ok(TelemetrySubmission::GpuOrderPreparationPending);
-        }
-        if let Some(pending) = resolved_pending {
-            let revision_matches = completion.is_none_or(|current| {
-                pending
-                    .completion
-                    .is_some_and(|previous| previous.camera_revision == current.camera_revision)
-            });
-            if pending.camera == *camera && revision_matches {
-                let Some(frame) = self.acquire_surface_texture()? else {
-                    return Ok(if pending.completion.is_some() {
-                        TelemetrySubmission::SurfaceUnavailable
-                    } else {
-                        TelemetrySubmission::NotRequested
-                    });
-                };
-                let view = frame
-                    .texture
-                    .create_view(&wgpu::TextureViewDescriptor::default());
-                let mut encoder =
-                    self.host
-                        .device
-                        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                            label: wgpu_label("gsplat-surface-resident-tiled-web-finish-encoder"),
-                        });
-                {
-                    let SurfaceGeometry::Packed(packed) = &mut self.geometry else {
-                        unreachable!();
-                    };
-                    packed
-                        .tiled
-                        .as_mut()
-                        .expect("TiledExact plan owns its diagnostic raster")
-                        .encode_finish(
-                            &self.host.device,
-                            &self.host.queue,
-                            &packed.resident,
-                            ResidentTiledFinish {
-                                source_order_btf: &packed.resident.order_buffer,
-                                work_count: pending.work_count,
-                                target: &view,
-                            },
-                            &mut encoder,
-                        )?;
-                    packed.pending = None;
-                }
-                let command_buffer = encoder.finish();
-                let mut completion_ticket = pending.completion.and_then(|request| {
-                    self.cpu_order_completion_telemetry.begin_sample(
-                        request.camera_revision,
-                        request.preprocess_ms,
-                        request.sort_ms,
-                    )
-                });
-                let submitted_ticket = completion_ticket.as_ref().map(|ticket| ticket.ticket);
-                if let (Some(ticket), Some(request)) =
-                    (completion_ticket.take(), pending.completion)
-                {
-                    self.cpu_order_completion_telemetry.arm(
-                        &command_buffer,
-                        ticket,
-                        request.started,
-                    );
-                }
-                self.host.queue.submit(Some(command_buffer));
-                self.present_frame(frame);
-                return Ok(match (pending.completion, submitted_ticket) {
-                    (None, _) => TelemetrySubmission::NotRequested,
-                    (Some(_), Some(ticket)) => TelemetrySubmission::Issued(ticket),
-                    (Some(_), None) => TelemetrySubmission::RingBusy,
-                });
-            }
-            // The callback completed for an obsolete camera revision. Its
-            // exact buffers are valid but must never be presented as the new
-            // camera; release the pending marker and start the current frame.
-            let SurfaceGeometry::Packed(packed) = &mut self.geometry else {
-                unreachable!();
-            };
-            packed.pending = None;
-        }
-
-        let storage_bindings = self
-            .host
-            .device
-            .limits()
-            .max_storage_buffers_per_shader_stage;
-        let color_pipeline = self
-            .resident_color_pipeline
-            .as_ref()
-            .ok_or_else(|| resident_pipelines_unavailable(storage_bindings))?;
-        self.instance_count = {
-            let SurfaceGeometry::Packed(packed) = &mut self.geometry else {
-                unreachable!();
-            };
-            packed.resident.prepare_cpu_order(
-                &self.host.queue,
-                sorted_indices,
-                camera,
-                self.host.surface_configuration.size().0,
-                self.host.surface_configuration.size().1,
-                refresh_indices,
-            )?
-        };
-        let mut count_encoder =
-            self.host
-                .device
-                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                    label: wgpu_label("gsplat-surface-resident-tiled-web-count-encoder"),
-                });
-        {
-            let SurfaceGeometry::Packed(packed) = &mut self.geometry else {
-                unreachable!();
-            };
-            packed.resident.encode_color_resolve_if_needed(
-                &self.host.queue,
-                color_pipeline,
-                &mut count_encoder,
-                camera,
-                self.host
-                    .device
-                    .limits()
-                    .max_compute_workgroups_per_dimension,
-            )?;
-            packed
-                .tiled
-                .as_mut()
-                .expect("TiledExact plan owns its diagnostic raster")
-                .encode_count_prepass(
-                    &self.host.device,
-                    &self.host.queue,
-                    &packed.resident,
-                    &packed.resident.order_buffer,
-                    self.instance_count,
-                    &mut count_encoder,
-                )?;
-        }
-        self.host.queue.submit(Some(count_encoder.finish()));
-        {
-            let SurfaceGeometry::Packed(packed) = &mut self.geometry else {
-                unreachable!();
-            };
-            packed.pending = Some(WebPendingTiledFrame {
-                camera: *camera,
-                work_count: self.instance_count,
-                completion,
-                count_ready: false,
-            });
-            let ready = packed
-                .tiled
-                .as_mut()
-                .expect("TiledExact plan owns its diagnostic raster")
-                .try_resolve_count_and_prepare(&self.host.device, &self.host.queue)?
-                .is_some();
-            if ready && let Some(pending) = packed.pending.as_mut() {
-                pending.count_ready = true;
-            }
-        }
-        Ok(TelemetrySubmission::GpuOrderPreparationPending)
     }
 
     fn post_sort_gpu_order_is_prepared(&self) -> bool {
@@ -2646,34 +2149,9 @@ impl SurfacePresenter {
             }
         };
 
-        if matches!(
-            self.geometry,
-            SurfaceGeometry::Packed(ref packed)
-                if packed.raster_plan == SurfaceRasterExecutionPlan::TiledExact
-        ) {
-            #[cfg(not(target_arch = "wasm32"))]
-            {
-                return self.render_packed_tiled_gpu_native(
-                    camera,
-                    refresh_order,
-                    camera_revision,
-                    completion_started,
-                );
-            }
-            #[cfg(target_arch = "wasm32")]
-            {
-                return self.render_packed_tiled_gpu_web(
-                    camera,
-                    refresh_order,
-                    camera_revision,
-                    completion_started,
-                );
-            }
-        }
-
         // Browser WebGPU can lazily compile the first large Resident radix
-        // pipeline. As with the exact tiled path below, do not publish that
-        // initialization turn as a drawable or issue a formal ticket: submit
+        // pipeline. Do not publish that initialization turn as a drawable or
+        // issue a formal ticket: submit
         // the complete order compute once, then retry the same frame plan.
         // This prevents a transient zero-count/black first GPU frame while
         // preserving the exact camera and full source membership.
@@ -2926,7 +2404,6 @@ impl SurfacePresenter {
                                 },
                             );
                         }
-                        SurfaceRasterExecutionPlan::TiledExact => unreachable!(),
                     }
                 }
                 SurfaceGeometry::Paged(_) => unreachable!(),
@@ -3380,516 +2857,8 @@ impl SurfacePresenter {
         })
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
-    fn render_packed_tiled_gpu_native(
-        &mut self,
-        camera: &Camera,
-        refresh_order: bool,
-        camera_revision: u64,
-        completion_started: TimerInstant,
-    ) -> Result<TelemetrySubmission, SurfacePresenterError> {
-        let storage_bindings = self
-            .host
-            .device
-            .limits()
-            .max_storage_buffers_per_shader_stage;
-        let color_pipeline = self
-            .resident_color_pipeline
-            .as_ref()
-            .ok_or_else(|| resident_pipelines_unavailable(storage_bindings))?;
-        let allow_timestamps = {
-            let SurfaceGeometry::Packed(packed) = &self.geometry else {
-                unreachable!();
-            };
-            !packed
-                .resident
-                .gpu_order()
-                .ok_or(SurfacePresenterError::GpuOrderUnsupported)?
-                .sorter
-                .is_empty()
-        };
-        let mut telemetry_ticket = refresh_order
-            .then(|| {
-                self.gpu_order_telemetry
-                    .begin_sample(camera_revision, allow_timestamps)
-            })
-            .flatten();
-        let timestamp_range = telemetry_ticket.as_ref().and_then(|ticket| {
-            ticket
-                .query_set
-                .as_ref()
-                .map(|query_set| GpuOrderTimestampRange {
-                    query_set,
-                    keygen_begin_index: 0,
-                    keygen_end_index: 1,
-                    radix_begin_index: 2,
-                    radix_end_index: 3,
-                })
-        });
-
-        let count_started = timer_now();
-        let mut count_encoder =
-            self.host
-                .device
-                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                    label: wgpu_label("gsplat-surface-resident-tiled-gpu-count-encoder"),
-                });
-        let prepass_result = (|| {
-            let SurfaceGeometry::Packed(packed) = &mut self.geometry else {
-                unreachable!();
-            };
-            let order = packed
-                .resident
-                .gpu_order()
-                .ok_or(SurfacePresenterError::GpuOrderUnsupported)?;
-            if refresh_order {
-                order
-                    .sorter
-                    .encode_with_timestamps(&mut count_encoder, timestamp_range);
-            }
-            packed.resident.encode_color_resolve_if_needed(
-                &self.host.queue,
-                color_pipeline,
-                &mut count_encoder,
-                camera,
-                self.host
-                    .device
-                    .limits()
-                    .max_compute_workgroups_per_dimension,
-            )?;
-            let order = packed
-                .resident
-                .gpu_order()
-                .ok_or(SurfacePresenterError::GpuOrderUnsupported)?;
-            packed
-                .tiled
-                .as_mut()
-                .expect("TiledExact plan owns its diagnostic raster")
-                .encode_count_prepass(
-                    &self.host.device,
-                    &self.host.queue,
-                    &packed.resident,
-                    order.sorter.final_ids(),
-                    self.instance_count,
-                    &mut count_encoder,
-                )?;
-            if let Some(ticket) = telemetry_ticket.as_ref() {
-                self.gpu_order_telemetry.encode_readback(
-                    &mut count_encoder,
-                    ticket,
-                    order.sorter.indirect_args(),
-                );
-            }
-            Ok::<_, SurfacePresenterError>(())
-        })();
-        if let Err(error) = prepass_result {
-            if let Some(ticket) = telemetry_ticket.take() {
-                self.gpu_order_telemetry.cancel(ticket);
-            }
-            return Err(error);
-        }
-        self.host.queue.submit(Some(count_encoder.finish()));
-        let count_result = {
-            let SurfaceGeometry::Packed(packed) = &mut self.geometry else {
-                unreachable!();
-            };
-            packed
-                .tiled
-                .as_mut()
-                .expect("TiledExact plan owns its diagnostic raster")
-                .resolve_count_and_prepare(&self.host.device, &self.host.queue)
-        };
-        if let Err(error) = count_result {
-            if let Some(ticket) = telemetry_ticket.take() {
-                self.gpu_order_telemetry.cancel(ticket);
-            }
-            return Err(error.into());
-        }
-        if let SurfaceGeometry::Packed(packed) = &mut self.geometry {
-            packed.last_count_resolve_prepare_ms = timer_elapsed_ms(count_started);
-        }
-
-        let Some(frame) = self.acquire_surface_texture()? else {
-            if let Some(ticket) = telemetry_ticket.take() {
-                self.gpu_order_telemetry.cancel(ticket);
-            }
-            return Ok(if refresh_order {
-                TelemetrySubmission::SurfaceUnavailable
-            } else {
-                TelemetrySubmission::NotRequested
-            });
-        };
-        let view = frame
-            .texture
-            .create_view(&wgpu::TextureViewDescriptor::default());
-        let mut encoder =
-            self.host
-                .device
-                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                    label: wgpu_label("gsplat-surface-resident-tiled-gpu-finish-encoder"),
-                });
-        {
-            let SurfaceGeometry::Packed(packed) = &mut self.geometry else {
-                unreachable!();
-            };
-            let order = packed
-                .resident
-                .gpu_order()
-                .ok_or(SurfacePresenterError::GpuOrderUnsupported)?;
-            packed
-                .tiled
-                .as_mut()
-                .expect("TiledExact plan owns its diagnostic raster")
-                .encode_finish(
-                    &self.host.device,
-                    &self.host.queue,
-                    &packed.resident,
-                    ResidentTiledFinish {
-                        source_order_btf: order.sorter.final_ids(),
-                        work_count: self.instance_count,
-                        target: &view,
-                    },
-                    &mut encoder,
-                )?;
-        }
-        self.host
-            .surface_capture
-            .encode(&mut encoder, &frame.texture);
-        let command_buffer = encoder.finish();
-        let submitted_ticket = telemetry_ticket.as_ref().map(|ticket| ticket.ticket);
-        if let Some(ticket) = telemetry_ticket.take() {
-            self.gpu_order_telemetry
-                .arm(&command_buffer, ticket, completion_started);
-        }
-        self.host.queue.submit(Some(command_buffer));
-        self.maybe_emit_tiled_phase_trace()?;
-        self.present_frame(frame);
-        Ok(match (refresh_order, submitted_ticket) {
-            (false, _) => TelemetrySubmission::NotRequested,
-            (true, Some(ticket)) => TelemetrySubmission::Issued(ticket),
-            (true, None) => TelemetrySubmission::RingBusy,
-        })
-    }
-
-    #[cfg(target_arch = "wasm32")]
-    fn render_packed_tiled_gpu_web(
-        &mut self,
-        camera: &Camera,
-        refresh_order: bool,
-        camera_revision: u64,
-        completion_started: TimerInstant,
-    ) -> Result<TelemetrySubmission, SurfacePresenterError> {
-        // A CPU-count callback owns the same mapped status buffer. Finish it
-        // fail-closed before allowing GPU ordering to replace the source-ID
-        // buffer or draw parameters.
-        let cpu_pending_ready = {
-            let SurfaceGeometry::Packed(packed) = &mut self.geometry else {
-                unreachable!();
-            };
-            if packed.pending.is_some() {
-                packed
-                    .tiled
-                    .as_mut()
-                    .expect("TiledExact plan owns its diagnostic raster")
-                    .try_resolve_count_and_prepare(&self.host.device, &self.host.queue)?
-                    .is_some()
-            } else {
-                true
-            }
-        };
-        if !cpu_pending_ready {
-            return Ok(TelemetrySubmission::GpuOrderPreparationPending);
-        }
-        if let SurfaceGeometry::Packed(packed) = &mut self.geometry {
-            packed.pending = None;
-        }
-
-        let gpu_count_ready = {
-            let SurfaceGeometry::Packed(packed) = &mut self.geometry else {
-                unreachable!();
-            };
-            match packed.pending_gpu.as_mut() {
-                None => None,
-                Some(pending) if pending.count_ready => Some(true),
-                Some(_) => {
-                    let ready = packed
-                        .tiled
-                        .as_mut()
-                        .expect("TiledExact plan owns its diagnostic raster")
-                        .try_resolve_count_and_prepare(&self.host.device, &self.host.queue)?
-                        .is_some();
-                    if ready && let Some(pending) = packed.pending_gpu.as_mut() {
-                        pending.count_ready = true;
-                    }
-                    Some(ready)
-                }
-            }
-        };
-        if gpu_count_ready == Some(false) {
-            return Ok(TelemetrySubmission::GpuOrderPreparationPending);
-        }
-
-        if gpu_count_ready == Some(true) {
-            let mut pending = {
-                let SurfaceGeometry::Packed(packed) = &mut self.geometry else {
-                    unreachable!();
-                };
-                packed.pending_gpu.take().expect("ready GPU tiled frame")
-            };
-            if pending.warmup_only {
-                let SurfaceGeometry::Packed(packed) = &mut self.geometry else {
-                    unreachable!();
-                };
-                packed.gpu_order_warmed = true;
-            } else if pending.camera != *camera || pending.camera_revision != camera_revision {
-                if let Some(ticket) = pending.telemetry_ticket.take() {
-                    self.gpu_order_telemetry.fail_encoding(
-                        ticket,
-                        SurfaceOrderMeasurementFailureReason::GenerationInvalidated,
-                    );
-                }
-            } else {
-                let Some(frame) = self.acquire_surface_texture()? else {
-                    let SurfaceGeometry::Packed(packed) = &mut self.geometry else {
-                        unreachable!();
-                    };
-                    packed.pending_gpu = Some(pending);
-                    return Ok(TelemetrySubmission::NotRequested);
-                };
-                let view = frame
-                    .texture
-                    .create_view(&wgpu::TextureViewDescriptor::default());
-                let mut encoder =
-                    self.host
-                        .device
-                        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                            label: wgpu_label(
-                                "gsplat-surface-resident-tiled-web-gpu-finish-encoder",
-                            ),
-                        });
-                {
-                    let SurfaceGeometry::Packed(packed) = &mut self.geometry else {
-                        unreachable!();
-                    };
-                    let order = packed
-                        .resident
-                        .gpu_order()
-                        .ok_or(SurfacePresenterError::GpuOrderUnsupported)?;
-                    packed
-                        .tiled
-                        .as_mut()
-                        .expect("TiledExact plan owns its diagnostic raster")
-                        .encode_finish(
-                            &self.host.device,
-                            &self.host.queue,
-                            &packed.resident,
-                            ResidentTiledFinish {
-                                source_order_btf: order.sorter.final_ids(),
-                                work_count: pending.work_count,
-                                target: &view,
-                            },
-                            &mut encoder,
-                        )?;
-                }
-                let command_buffer = encoder.finish();
-                let submitted_ticket = pending
-                    .telemetry_ticket
-                    .as_ref()
-                    .map(|ticket| ticket.ticket);
-                if let Some(ticket) = pending.telemetry_ticket.take() {
-                    self.gpu_order_telemetry.arm(
-                        &command_buffer,
-                        ticket,
-                        pending.completion_started,
-                    );
-                }
-                self.host.queue.submit(Some(command_buffer));
-                self.present_frame(frame);
-                return Ok(match (pending.refresh_order, submitted_ticket) {
-                    (false, _) => TelemetrySubmission::NotRequested,
-                    (true, Some(ticket)) => TelemetrySubmission::Issued(ticket),
-                    (true, None) => TelemetrySubmission::RingBusy,
-                });
-            }
-        }
-
-        let storage_bindings = self
-            .host
-            .device
-            .limits()
-            .max_storage_buffers_per_shader_stage;
-        let color_pipeline = self
-            .resident_color_pipeline
-            .as_ref()
-            .ok_or_else(|| resident_pipelines_unavailable(storage_bindings))?;
-        let allow_timestamps = {
-            let SurfaceGeometry::Packed(packed) = &self.geometry else {
-                unreachable!();
-            };
-            !packed
-                .resident
-                .gpu_order()
-                .ok_or(SurfacePresenterError::GpuOrderUnsupported)?
-                .sorter
-                .is_empty()
-        };
-        let warmup_only = {
-            let SurfaceGeometry::Packed(packed) = &self.geometry else {
-                unreachable!();
-            };
-            refresh_order && !packed.gpu_order_warmed
-        };
-        let mut telemetry_ticket = (refresh_order && !warmup_only)
-            .then(|| {
-                self.gpu_order_telemetry
-                    .begin_sample(camera_revision, allow_timestamps)
-            })
-            .flatten();
-        let timestamp_range = telemetry_ticket.as_ref().and_then(|ticket| {
-            ticket
-                .query_set
-                .as_ref()
-                .map(|query_set| GpuOrderTimestampRange {
-                    query_set,
-                    keygen_begin_index: 0,
-                    keygen_end_index: 1,
-                    radix_begin_index: 2,
-                    radix_end_index: 3,
-                })
-        });
-        let mut count_encoder =
-            self.host
-                .device
-                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                    label: wgpu_label("gsplat-surface-resident-tiled-web-gpu-count-encoder"),
-                });
-        let prepass_result = (|| {
-            let SurfaceGeometry::Packed(packed) = &mut self.geometry else {
-                unreachable!();
-            };
-            let order = packed
-                .resident
-                .gpu_order()
-                .ok_or(SurfacePresenterError::GpuOrderUnsupported)?;
-            if refresh_order {
-                order
-                    .sorter
-                    .encode_with_timestamps(&mut count_encoder, timestamp_range);
-            }
-            packed.resident.encode_color_resolve_if_needed(
-                &self.host.queue,
-                color_pipeline,
-                &mut count_encoder,
-                camera,
-                self.host
-                    .device
-                    .limits()
-                    .max_compute_workgroups_per_dimension,
-            )?;
-            let order = packed
-                .resident
-                .gpu_order()
-                .ok_or(SurfacePresenterError::GpuOrderUnsupported)?;
-            packed
-                .tiled
-                .as_mut()
-                .expect("TiledExact plan owns its diagnostic raster")
-                .encode_count_prepass(
-                    &self.host.device,
-                    &self.host.queue,
-                    &packed.resident,
-                    order.sorter.final_ids(),
-                    self.instance_count,
-                    &mut count_encoder,
-                )?;
-            if let Some(ticket) = telemetry_ticket.as_ref() {
-                self.gpu_order_telemetry.encode_readback(
-                    &mut count_encoder,
-                    ticket,
-                    order.sorter.indirect_args(),
-                );
-            }
-            Ok::<_, SurfacePresenterError>(())
-        })();
-        if let Err(error) = prepass_result {
-            if let Some(ticket) = telemetry_ticket.take() {
-                self.gpu_order_telemetry.cancel(ticket);
-            }
-            return Err(error);
-        }
-        self.host.queue.submit(Some(count_encoder.finish()));
-        {
-            let SurfaceGeometry::Packed(packed) = &mut self.geometry else {
-                unreachable!();
-            };
-            packed.pending_gpu = Some(WebPendingTiledGpuFrame {
-                camera: *camera,
-                work_count: self.instance_count,
-                camera_revision,
-                completion_started,
-                count_ready: false,
-                refresh_order,
-                warmup_only,
-                telemetry_ticket,
-            });
-            let ready = packed
-                .tiled
-                .as_mut()
-                .expect("TiledExact plan owns its diagnostic raster")
-                .try_resolve_count_and_prepare(&self.host.device, &self.host.queue)?
-                .is_some();
-            if ready && let Some(pending) = packed.pending_gpu.as_mut() {
-                pending.count_ready = true;
-            }
-        }
-        Ok(TelemetrySubmission::GpuOrderPreparationPending)
-    }
-
     pub(crate) fn poll_gpu_order_telemetry(&mut self) -> GpuOrderTelemetryPoll {
         self.gpu_order_telemetry.poll(&self.host.device)
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    fn maybe_emit_tiled_phase_trace(&mut self) -> Result<(), SurfacePresenterError> {
-        let Some(requested) = std::env::var_os("GSPLAT_TILED_PHASE_TRACE") else {
-            return Ok(());
-        };
-        let trace_limit = requested
-            .to_string_lossy()
-            .parse::<u32>()
-            .unwrap_or(1)
-            .max(1);
-        let SurfaceGeometry::Packed(packed) = &mut self.geometry else {
-            return Ok(());
-        };
-        if packed.phase_trace_emitted >= trace_limit {
-            return Ok(());
-        }
-        let timings = packed
-            .tiled
-            .as_ref()
-            .expect("TiledExact plan owns its diagnostic raster")
-            .read_phase_timings_blocking(&self.host.device, &self.host.queue)?;
-        eprintln!(
-            "gsplat_tiled_phase sample={} plan={:?} source_count={} entry_count={} entry_capacity={} count_resolve_prepare_ms={:.3} gpu={:?}",
-            packed.phase_trace_emitted,
-            packed.raster_plan,
-            packed.resident.capacity,
-            packed
-                .tiled
-                .as_ref()
-                .expect("TiledExact plan owns its diagnostic raster")
-                .active_entry_count(),
-            packed
-                .tiled
-                .as_ref()
-                .expect("TiledExact plan owns its diagnostic raster")
-                .entry_capacity(),
-            packed.last_count_resolve_prepare_ms,
-            timings,
-        );
-        packed.phase_trace_emitted += 1;
-        Ok(())
     }
 
     pub(crate) fn poll_cpu_order_completion_telemetry(&mut self) -> CpuOrderTelemetryPoll {

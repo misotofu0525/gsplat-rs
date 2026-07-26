@@ -335,7 +335,7 @@ def validate_run_log(
                 "gpu_order_producer_actual": producer,
                 "producer_unsampled_reason": "none",
                 "frame_presented": "true",
-                "tiled_preparation_pending": "false",
+                "gpu_order_preparation_pending": "false",
                 "sort_refreshed": "true",
                 "gpu_sort_fallback": "false",
                 "source_count": str(dataset["splat_count"]),

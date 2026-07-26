@@ -1567,14 +1567,6 @@ pub struct SurfaceFrameOutput {
     /// the same camera revision after yielding to the event loop and must not
     /// count this call as a rendered frame or a measured order submission.
     pub gpu_order_preparation_pending: bool,
-    /// Compatibility alias for `gpu_order_preparation_pending`. New callers
-    /// should use the generic field because preparation is not tiled-only.
-    ///
-    /// This mirrors the generic value so older Web clients also retry the
-    /// ProjectedQuadsExact lazy-pipeline preparation turn correctly.
-    /// Callers must retry the same camera revision after yielding to the event
-    /// loop and must not count this call as a rendered frame.
-    pub tiled_preparation_pending: bool,
     pub raster_execution_plan: SurfaceRasterExecutionPlan,
     pub sort_refreshed: bool,
     pub order_uploaded: bool,
@@ -2152,8 +2144,8 @@ pub struct SurfaceRenderSession {
     adaptive_probe_owner: Option<AdaptiveProbeOwner>,
     blocked_order_choice: Option<AdaptiveRefreshChoice>,
     adaptive_gpu_failure: Option<SurfaceAdaptiveGpuFailureReason>,
-    pending_tiled_backend: Option<SurfaceOrderBackendUsed>,
-    pending_tiled_adaptive_choice: Option<AdaptiveRefreshChoice>,
+    pending_order_backend: Option<SurfaceOrderBackendUsed>,
+    pending_adaptive_choice: Option<AdaptiveRefreshChoice>,
     pending_projected_choice: Option<ProjectedAdaptiveChoice>,
     camera_revision: u64,
     applied_order_revision: u64,
@@ -2609,8 +2601,8 @@ impl SurfaceRenderSession {
             adaptive_probe_owner: None,
             blocked_order_choice: None,
             adaptive_gpu_failure: None,
-            pending_tiled_backend: None,
-            pending_tiled_adaptive_choice: None,
+            pending_order_backend: None,
+            pending_adaptive_choice: None,
             pending_projected_choice: None,
             camera_revision: 0,
             applied_order_revision: 0,
@@ -2738,8 +2730,8 @@ impl SurfaceRenderSession {
             adaptive_probe_owner: None,
             blocked_order_choice: None,
             adaptive_gpu_failure: None,
-            pending_tiled_backend: None,
-            pending_tiled_adaptive_choice: None,
+            pending_order_backend: None,
+            pending_adaptive_choice: None,
             pending_projected_choice: None,
             camera_revision: 0,
             applied_order_revision: 0,
@@ -2980,8 +2972,8 @@ impl SurfaceRenderSession {
 
     fn finish_gpu_order_producer_transition(&mut self) {
         self.gpu_order_initialized = false;
-        self.pending_tiled_backend = None;
-        self.pending_tiled_adaptive_choice = None;
+        self.pending_order_backend = None;
+        self.pending_adaptive_choice = None;
         self.pending_projected_choice = None;
         self.latest_gpu_order_measurement = None;
         self.reset_adaptive_policy();
@@ -3016,8 +3008,8 @@ impl SurfaceRenderSession {
             return Ok(());
         }
         self.presenter.set_gpu_producer_measurement_enabled(enabled);
-        self.pending_tiled_backend = None;
-        self.pending_tiled_adaptive_choice = None;
+        self.pending_order_backend = None;
+        self.pending_adaptive_choice = None;
         self.pending_projected_choice = None;
         self.latest_gpu_order_measurement = None;
         reset_adaptive_for_gpu_producer_measurement_transition(
@@ -3075,8 +3067,8 @@ impl SurfaceRenderSession {
         self.adaptive_probe_owner = None;
         self.blocked_order_choice = None;
         self.projected_draw_policy = policy;
-        self.pending_tiled_backend = None;
-        self.pending_tiled_adaptive_choice = None;
+        self.pending_order_backend = None;
+        self.pending_adaptive_choice = None;
         self.pending_projected_choice = None;
         self.frame_state.force_sort();
         Ok(())
@@ -3107,8 +3099,8 @@ impl SurfaceRenderSession {
             return Err(SurfacePresenterError::PreprojectProducerIncompatible.into());
         }
         self.presenter.set_raster_execution_plan(plan)?;
-        self.pending_tiled_backend = None;
-        self.pending_tiled_adaptive_choice = None;
+        self.pending_order_backend = None;
+        self.pending_adaptive_choice = None;
         self.pending_projected_choice = None;
         self.latest_gpu_order_measurement = None;
         self.latest_cpu_order_measurement = None;
@@ -3185,8 +3177,8 @@ impl SurfaceRenderSession {
             self.disable_async_sort();
         }
         self.gpu_order_initialized = false;
-        self.pending_tiled_backend = None;
-        self.pending_tiled_adaptive_choice = None;
+        self.pending_order_backend = None;
+        self.pending_adaptive_choice = None;
         self.latest_gpu_order_measurement = None;
         self.latest_cpu_order_measurement = None;
         self.reset_adaptive_policy();
@@ -3249,8 +3241,8 @@ impl SurfaceRenderSession {
             if self.exact_plan_receipt.is_some() {
                 return Ok(());
             }
-            self.pending_tiled_backend = None;
-            self.pending_tiled_adaptive_choice = None;
+            self.pending_order_backend = None;
+            self.pending_adaptive_choice = None;
             self.latest_gpu_order_measurement = None;
             self.latest_cpu_order_measurement = None;
             self.reset_adaptive_policy();
@@ -3283,8 +3275,8 @@ impl SurfaceRenderSession {
             if self.exact_plan_receipt.is_some() {
                 return Ok(());
             }
-            self.pending_tiled_backend = None;
-            self.pending_tiled_adaptive_choice = None;
+            self.pending_order_backend = None;
+            self.pending_adaptive_choice = None;
             self.latest_gpu_order_measurement = None;
             self.latest_cpu_order_measurement = None;
             self.reset_adaptive_policy();
@@ -3351,8 +3343,8 @@ impl SurfaceRenderSession {
             _ => false,
         };
         self.order_backend = backend;
-        self.pending_tiled_backend = None;
-        self.pending_tiled_adaptive_choice = None;
+        self.pending_order_backend = None;
+        self.pending_adaptive_choice = None;
         self.pending_projected_choice = None;
         if backend != SurfaceOrderBackend::Adaptive || !gpu_prepare_failed {
             self.adaptive_gpu_failure = None;
@@ -3965,7 +3957,6 @@ impl SurfaceRenderSession {
             },
             frame_presented,
             gpu_order_preparation_pending: false,
-            tiled_preparation_pending: false,
             raster_execution_plan: SurfaceRasterExecutionPlan::ProjectedQuadsExact,
             sort_refreshed: frame_presented && order_refreshed,
             order_uploaded: frame_presented
@@ -4030,7 +4021,7 @@ impl SurfaceRenderSession {
             SurfaceOrderBackendUsed::Gpu => self.gpu_order_initialized,
         };
         let plan = self.frame_state.plan(has_order, self.sort_interval);
-        let mut adaptive_choice = self.pending_tiled_adaptive_choice.or_else(|| {
+        let mut adaptive_choice = self.pending_adaptive_choice.or_else(|| {
             if self.order_backend != SurfaceOrderBackend::Adaptive {
                 return None;
             }
@@ -4071,7 +4062,7 @@ impl SurfaceRenderSession {
                 SurfaceOrderBackend::Adaptive => unreachable!("adaptive refresh has a choice"),
             },
         };
-        let requested_backend = self.pending_tiled_backend.unwrap_or(planned_backend);
+        let requested_backend = self.pending_order_backend.unwrap_or(planned_backend);
         let compact_available = self.presenter.projected_contributor_indirect_draw_enabled();
         let projected_choice_was_pending = self.pending_projected_choice.is_some();
         let mut projected_choice = self.pending_projected_choice.unwrap_or_else(|| {
@@ -4259,13 +4250,13 @@ impl SurfaceRenderSession {
             output.completed_gpu_producer_measurement_failure =
                 completed_gpu_producer_measurement_failure;
             output.gpu_timestamp_queries_enabled = self.presenter.gpu_order_timestamps_enabled();
-            self.pending_tiled_backend = Some(output.order_backend);
-            self.pending_tiled_adaptive_choice = adaptive_choice;
+            self.pending_order_backend = Some(output.order_backend);
+            self.pending_adaptive_choice = adaptive_choice;
             self.pending_projected_choice = Some(projected_choice);
             return Ok(output);
         }
-        self.pending_tiled_backend = None;
-        self.pending_tiled_adaptive_choice = None;
+        self.pending_order_backend = None;
+        self.pending_adaptive_choice = None;
         let defer_projected_choice = defer_projected_formal_choice(
             projected_choice,
             output.sort_refreshed || output.order_uploaded,
@@ -4529,7 +4520,6 @@ impl SurfaceRenderSession {
         )?;
         let gpu_order_preparation_pending =
             presenter_submission == TelemetrySubmission::GpuOrderPreparationPending;
-        let tiled_preparation_pending = gpu_order_preparation_pending;
         let frame_presented = self.presenter.last_frame_presented();
         let order_measurement_submission = SurfaceOrderMeasurementSubmission::from_presenter(
             SurfaceOrderBackendUsed::Gpu,
@@ -4583,7 +4573,6 @@ impl SurfaceRenderSession {
             },
             frame_presented,
             gpu_order_preparation_pending,
-            tiled_preparation_pending,
             raster_execution_plan: self.presenter.raster_execution_plan(),
             sort_refreshed: frame_presented && plan.refresh_sort,
             order_uploaded: false,
@@ -4683,7 +4672,6 @@ impl SurfaceRenderSession {
         };
         let gpu_order_preparation_pending =
             presenter_submission == TelemetrySubmission::GpuOrderPreparationPending;
-        let tiled_preparation_pending = gpu_order_preparation_pending;
         let frame_presented = self.presenter.last_frame_presented();
         let order_measurement_submission = SurfaceOrderMeasurementSubmission::from_presenter(
             SurfaceOrderBackendUsed::Cpu,
@@ -4717,7 +4705,6 @@ impl SurfaceRenderSession {
             },
             frame_presented,
             gpu_order_preparation_pending,
-            tiled_preparation_pending,
             raster_execution_plan: self.presenter.raster_execution_plan(),
             sort_refreshed: frame_presented && (paged || sort_refreshed),
             order_uploaded: frame_presented && (paged || plan.upload_order),
@@ -5180,11 +5167,6 @@ mod tests {
             assert!(
                 current
                     .with_raster(SurfaceRasterExecutionPlan::GlobalQuads)
-                    .is_err()
-            );
-            assert!(
-                current
-                    .with_raster(SurfaceRasterExecutionPlan::TiledExact)
                     .is_err()
             );
             assert!(matches!(

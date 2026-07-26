@@ -36,8 +36,6 @@ mod macos {
         surface_size: (u32, u32),
         addressable_splat_count: usize,
         instance_count: u32,
-        tiled_entry_count: Option<u32>,
-        tiled_entry_capacity: Option<u32>,
     }
 
     #[derive(Debug, PartialEq)]
@@ -360,8 +358,6 @@ mod macos {
             surface_size: presenter.surface_size(),
             addressable_splat_count: presenter.addressable_splat_count(),
             instance_count: presenter.instance_count(),
-            tiled_entry_count: presenter.tiled_entry_count(),
-            tiled_entry_capacity: presenter.tiled_entry_capacity(),
         }
     }
 

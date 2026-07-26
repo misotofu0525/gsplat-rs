@@ -1943,9 +1943,7 @@ function renderWasm() {
     const surfaceHeight = raw.surfaceHeight ?? els.canvas.height;
     state.surfaceSizeLabel = `${surfaceWidth}x${surfaceHeight}`;
 
-    const gpuOrderPreparationPending = Boolean(
-      raw.gpuOrderPreparationPending ?? raw.tiledPreparationPending,
-    );
+    const gpuOrderPreparationPending = Boolean(raw.gpuOrderPreparationPending);
     const stats = {
       visible: raw.visibleCount ?? null,
       contributor: null,
@@ -1970,7 +1968,6 @@ function renderWasm() {
       callMs,
       framePresented: raw.framePresented !== false,
       gpuOrderPreparationPending,
-      tiledPreparationPending: gpuOrderPreparationPending,
       rasterExecutionPlan: raw.rasterExecutionPlan ?? "global_quads",
       surfaceWidth,
       surfaceHeight,
@@ -2301,7 +2298,6 @@ function renderWebgl() {
     gpuSortFallback: false,
     framePresented: true,
     gpuOrderPreparationPending: false,
-    tiledPreparationPending: false,
     rasterExecutionPlan: "global_quads",
     projectedPolicy: state.requestedProjectedPolicy,
     projectedExecution: "candidate",
@@ -2552,8 +2548,7 @@ function runBenchmarkSync() {
   // after JavaScript yields back to the browser. A tight synchronous loop can
   // submit every measured frame before a single exact visible-count/timing
   // receipt is observable, producing a misleading all-zero artifact. Exact
-  // tiled CPU-order frames also read their entry count asynchronously, so all
-  // WASM benchmark modes use the requestAnimationFrame event loop.
+  // All WASM benchmark modes use the requestAnimationFrame event loop.
   if (usingWasm()) {
     startBenchmark();
     return;

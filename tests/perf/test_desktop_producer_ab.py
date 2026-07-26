@@ -96,7 +96,7 @@ def synthetic_records(producer: str = "post_sort") -> dict[str, list[dict[str, s
                 "producer_ticket_submitted": str(producer_ticket),
                 "producer_unsampled_reason": "none",
                 "frame_presented": "true",
-                "tiled_preparation_pending": "false",
+                "gpu_order_preparation_pending": "false",
                 **dimensions(presented=True),
                 "sort_refreshed": "true",
                 "gpu_sort_fallback": "false",

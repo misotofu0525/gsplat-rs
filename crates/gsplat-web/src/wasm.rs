@@ -1279,18 +1279,12 @@ fn frame_stats_object(
         "gpuOrderPreparationPending",
         output.gpu_order_preparation_pending,
     )?;
-    set_bool(
-        &object,
-        "tiledPreparationPending",
-        output.tiled_preparation_pending,
-    )?;
     set_string(
         &object,
         "rasterExecutionPlan",
         match output.raster_execution_plan {
             SurfaceRasterExecutionPlan::GlobalQuads => "global_quads",
             SurfaceRasterExecutionPlan::ProjectedQuadsExact => "projected_quads_exact",
-            SurfaceRasterExecutionPlan::TiledExact => "tiled_exact",
         },
     )?;
     set_optional_u32(&object, "visibleCount", current_visible_count)?;

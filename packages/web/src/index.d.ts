@@ -196,9 +196,7 @@ export interface GsplatFrameStats {
   frameWallMs: number;
   framePresented: boolean;
   gpuOrderPreparationPending: boolean;
-  /** Compatibility alias for gpuOrderPreparationPending. */
-  tiledPreparationPending: boolean;
-  rasterExecutionPlan: "global_quads" | "projected_quads_exact" | "tiled_exact";
+  rasterExecutionPlan: "global_quads" | "projected_quads_exact";
   /** Null while renderer-owned Exact count evidence is pending or unavailable. */
   visibleCount: number | null;
   /** Null while renderer-owned Exact count evidence is pending or unavailable. */

@@ -135,9 +135,8 @@ pub(crate) enum TelemetrySubmission {
     RingBusy,
     SurfaceUnavailable,
     /// GPU ordering is being prepared without publishing a drawable. This is
-    /// used both by exact tiled count preparation and by browser-only lazy
-    /// pipeline warmup. No measurement identity may be exposed until a later
-    /// call submits the corresponding presented frame.
+    /// used by browser-only lazy pipeline warmup. No measurement identity may
+    /// be exposed until a later call submits the corresponding presented frame.
     GpuOrderPreparationPending,
 }
 
@@ -219,6 +218,7 @@ impl CpuOrderCompletionTelemetry {
         self.generation = self.generation.wrapping_add(1).max(1);
     }
 
+    #[cfg(test)]
     pub(crate) fn begin_sample(
         &mut self,
         camera_revision: u64,
@@ -528,31 +528,6 @@ impl GpuOrderTelemetry {
             && slot.ticket == ticket.ticket
             && slot.state.load(Ordering::Acquire) == SLOT_ENCODING
         {
-            slot.terminal_reported = true;
-            slot.state.store(SLOT_IDLE, Ordering::Release);
-        }
-    }
-
-    /// Terminally fail a ticket that was already exposed to the caller but
-    /// could not be armed (for example, an async Web tiled frame superseded by
-    /// a newer camera revision). Unlike `cancel`, this preserves the invariant
-    /// that every issued ticket produces exactly one terminal receipt.
-    #[cfg(target_arch = "wasm32")]
-    pub(crate) fn fail_encoding(
-        &mut self,
-        ticket: GpuTelemetryTicket,
-        reason: SurfaceOrderMeasurementFailureReason,
-    ) {
-        if let Some(slot) = self.slots.get_mut(ticket.slot)
-            && slot.ticket == ticket.ticket
-            && slot.state.load(Ordering::Acquire) == SLOT_ENCODING
-        {
-            self.pending_failures
-                .push_back(SurfaceOrderMeasurementFailure {
-                    ticket: slot.ticket,
-                    camera_revision: slot.camera_revision,
-                    reason,
-                });
             slot.terminal_reported = true;
             slot.state.store(SLOT_IDLE, Ordering::Release);
         }
