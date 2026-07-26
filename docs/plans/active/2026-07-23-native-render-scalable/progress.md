@@ -161,6 +161,32 @@ or failed image threshold is Reject/Deferred evidence, never a substitute
 quality claim. Real Bonsai proxy generation and Metal/A065 qualification remain
 separate root-owned slices after this validator exists.
 
+The candidate now adds the independent
+`tests/perf/validate-scalable-proxy-image-gate.py` validator for
+`gsplat-scalable-proxy-image-gate/v1`. It imports the pinned B1 image-gate
+reader and canonical benchmark validator rather than copying their path
+confinement, trace validation, artifact-tree hashing, PNG decoding, or image
+and temporal metric implementations. On top of those validated inputs it
+checks the S1-only contract: Bonsai/formal authority identities, the exact
+three frozen cuts and their canonical coverage/page/node hashes, complete
+`S/R/P` coverage, terminal per-frame `V/C/D`, the complete two-endpoint and
+forced-CPU/forced-GPU capture matrix, and logical-all per-image and transition
+thresholds. Contract fixtures report `ValidatedFixture`; only complete formal
+evidence can report `Accepted`. Missing required external authority or endpoint
+access reports `Deferred`, while malformed, incomplete, hash-invalid,
+unavailable-count, misjoined or threshold-failing evidence reports `Rejected`.
+
+Focused tests retain one complete synthetic 72-comparison/32-transition
+contract fixture and separately reject/defer missing or misjoined canonical
+benchmark lanes, invalid/unavailable `V/C/D`, camera/resolution drift,
+coverage/page hash drift, missing endpoint/cut/order/capture/transition scope,
+producer metric drift, per-image threshold failure and temporal threshold
+failure. These tests use tiny local RGBA8 and canonical benchmark artifacts;
+they are validator behavior evidence only. No real proxy bundle, Bonsai image
+result, Metal/A065 run, quality pass, runtime integration or device
+qualification exists in this slice, so **S1 remains Active** and S2--S5 remain
+locked.
+
 ## Ordered implementation ledger
 
 | Task | State in this candidate | Independent result |
