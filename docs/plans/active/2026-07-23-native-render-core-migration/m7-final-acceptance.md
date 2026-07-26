@@ -1,53 +1,57 @@
-# M7 final acceptance closeout
+# M7 final acceptance audit
 
 ## Decision and fixed identities
 
-- Final state: **Accepted** for M7's legacy-owner deletion and compatibility
-  boundary.
+- Final decision: **Active, not Accepted**. The obsolete Packed/Tiled deletion,
+  compatibility work, available-platform evidence and aggregate rollback are
+  complete, but M7's source-ownership exit is not.
 - Rollback base / accepted M6 tree:
   `a798b8accf454e96792df45d38e8564e7e27556e`.
 - Integrated M7 behavior sequence: `a798b8a..3f52558`, nine linear commits
   beginning at `707cd80`.
-- Final M7 behavior tip:
+- Current M7 behavior tip:
   `3f525584c1f3c5909ecd2f87b6a953b8a984e9ec`.
 - Canonical-document reconciliation tip:
   `9ebe7e3a1a115cbac18ef10e3adac2c14e984609`.
 - Aggregate rollback evidence commit, retained only in an isolated detached
   worktree: `6fdb4460f07cf9b7e7ca44983b6c884ed37e5987`.
-- The closeout commit that adds this record cannot contain its own object ID.
-  Its exact SHA is reported by the isolated task and recorded by the next
-  root-owned integration/M8 ledger step.
 - M8 remains unstarted and outside the machine task-state registry. Package M
-  therefore remains Active; accepting M7 does not accept or activate M8.
+  remains Active; this audit does not accept or activate M8.
 
-M7 acceptance is finite. It proves the deletion, ownership, compatibility,
-available-platform and rollback requirements in the
-[M7 cutover contract](cutover.md#m7--delete-legacy-owners-and-obsolete-experiments).
-It does not convert unavailable endpoints into successes and does not make a
-performance or competitor-leadership claim.
+The first closeout candidate incorrectly removed the M7 grandfather records
+after deleting the old Packed graph, even though `lib.rs` and
+`surface_session.rs` still contain substantial concrete ownership and the
+literal exit conditions were not established. This audit corrects that claim.
+
+The architecture checker treats physical LOC only as non-blocking legacy
+evidence. While M7 is Active, its grandfather records remain valid and growth
+is reported as a notice. If M7 is terminal while an owned record remains, the
+checker emits `grandfather.exit_due`; deleting the record makes that error
+disappear but does not prove the semantic exit. Therefore the records are
+restored and M7 stays Active. No fixed line count is an acceptance condition.
 
 ## Requirement-by-requirement result
 
 | M7 exit requirement | Decision | Evidence and boundary |
 | --- | --- | --- |
-| One controller, generation owner, mandatory sampler, plan-cache owner and terminal-result owner | **Accepted** | Product Packed is `SurfaceRenderSession -> SurfacePresenterHost -> Renderer::PreparedRuntimeSlot`. The obsolete standalone Packed semantic graph and TiledExact runtime are absent. The three temporary M7 grandfather records for `lib.rs`, `surface_presenter.rs` and `surface_session.rs` are removed at closeout; architecture policy and focused ownership tests pass. This is a responsibility/ownership result, not a fixed line-count claim. |
-| Call-site/API/ABI classification | **Accepted** | The [M7 public call-site/API/ABI ledger](m7-public-callsite-api-abi-ledger.md) classifies every removed or retained Rust, C, JNI/Kotlin, Swift and Web entry. Published C symbols remain M3-owned compatibility shims. |
-| No legacy/new runtime toggle or dual product default | **Accepted** | Standalone Presenter supports Direct/Paged and rejects Packed before allocation. Product Packed has one host/renderer route. Paged remains an explicit CPU-only diagnostic and rejects async configuration before mutation. |
-| Workspace and source policy after deletion | **Accepted** | Root passed format, workspace check/test, strict Clippy, Rustdoc and the real-tree architecture policy on the final behavior tip. Render tests reported 421 passed and 8 explicitly ignored research/external-asset cases. |
-| C ABI/FFI compatibility | **Accepted** | No public C layout/signature removal is part of M7. The real C header/client smoke passed after deletion. |
-| WASM compatibility | **Accepted as compile evidence** | `cargo check -p gsplat-web --target wasm32-unknown-unknown` passed. This is not a browser or WebGPU runtime result. |
-| macOS/Metal product mechanics | **Accepted** | Forced SortedAlpha Metal conformance passed. The public hidden-window Surface test reported Apple M4, standalone Packed rejection and successful product Packed host presentation. |
-| Android final shared-core function and strict terminal ledger | **Accepted** | A clean `3f52558` APK/AAR/native library rendered all 279,199 Kitsune SH3 splats at 2412x1080 for 20 measured CPU trace frames. Every frame retained full membership and `V=D=279199`; contributor count alternated between 226,450 and 236,792. The full-quality suite passed with verified inputs and retained a final native Surface PNG. |
+| One controller, generation owner, mandatory sampler, plan-cache owner and terminal-result owner | **Open / blocks M7** | Product Packed has one route through `SurfaceRenderSession -> SurfacePresenterHost -> Renderer::PreparedRuntimeSlot`, and the obsolete Packed graph/Tiled runtime are absent. However the existing `lib.rs`, `surface_session.rs` and `surface_presenter.rs` grandfather exit conditions have not all been proved. Their records remain owned by Active M7. |
+| Call-site/API/ABI classification | **Satisfied evidence** | The [M7 public call-site/API/ABI ledger](m7-public-callsite-api-abi-ledger.md) classifies every removed or retained Rust, C, JNI/Kotlin, Swift and Web entry. Published C symbols remain M3-owned compatibility shims. |
+| No legacy/new runtime toggle or dual product default | **Satisfied evidence** | Standalone Presenter supports Direct/Paged and rejects Packed before allocation. Product Packed has one host/renderer route. Paged remains an explicit CPU-only diagnostic and rejects async configuration before mutation. |
+| Workspace and source policy after deletion | **Pending final ownership candidate** | Root passed format, workspace check/test, strict Clippy, Rustdoc and architecture policy while M7 was Active. Render tests reported 421 passed and 8 ignored. The final ownership candidate must rerun policy after legitimately satisfying/removing the three M7 entries and marking M7 Accepted. |
+| C ABI/FFI compatibility | **Satisfied evidence** | No public C layout/signature removal is part of the completed deletion range. The real C header/client smoke passed. |
+| WASM compatibility | **Compile evidence available** | `cargo check -p gsplat-web --target wasm32-unknown-unknown` passed. This is not a browser or WebGPU runtime result. |
+| macOS/Metal product mechanics | **Satisfied evidence** | Forced SortedAlpha Metal conformance passed. The public hidden-window Surface test reported Apple M4, standalone Packed rejection and successful product Packed host presentation. |
+| Android final shared-core function and strict terminal ledger | **Satisfied evidence** | A clean `3f52558` APK/AAR/native library rendered all 279,199 Kitsune SH3 splats at 2412x1080 for 20 measured CPU trace frames. Every frame retained full membership and `V=D=279199`; contributor count alternated between 226,450 and 236,792. The full-quality suite passed with verified inputs and retained a final native Surface PNG. |
 | Chrome/WebGPU runtime after deletion | **Deferred** | The exact locked `wasm-bindgen-cli 0.2.121` prerequisite is unavailable in the final root environment. WASM compile evidence is not promoted to browser evidence, and the older accepted M4 browser run is not relabelled as a final-M7 run. |
-| Apple wrapper/device endpoints | **Accepted for preserved M6 source/functional scope; physical iPhone Deferred** | M7 changes no Swift/C wrapper API and the final shared core has fresh Metal evidence. M6's accepted Simulator/XCFramework scope remains intact. No final-M7 physical-iPhone run exists. |
+| Apple wrapper/device endpoints | **Preserved M6 evidence; physical iPhone Deferred** | The completed M7 range changes no Swift/C wrapper API and the shared core has fresh Metal evidence. M6's accepted Simulator/XCFramework scope remains intact. No final-M7 physical-iPhone run exists. |
 | Windows and Linux runtime after deletion | **Deferred** | No final-M7 Windows or Linux runtime was executed. macOS compilation and WASM checks do not imply those backends. |
-| Aggregate rollback | **Accepted** | All nine M7 commits were reverse-reverted without conflict in an isolated worktree. The resulting tree ID exactly equals `a798b8a`; `cargo check --workspace` and the C FFI smoke passed on that restored tree. |
-| Repository hygiene | **Accepted** | The root source worktree was clean. APK, AAR, native library, model, logs and PNG remain ignored machine-local artifacts under `target/`; none is committed as source. |
+| Aggregate rollback | **Satisfied evidence** | All nine completed behavior commits were reverse-reverted without conflict in an isolated worktree. The resulting tree ID exactly equals `a798b8a`; `cargo check --workspace` and the C FFI smoke passed on that restored tree. |
+| Repository hygiene | **Satisfied evidence** | The root source worktree was clean. APK, AAR, native library, model, logs and PNG remain ignored machine-local artifacts under `target/`; none is committed as source. |
 
 ## Final root verification ledger
 
 The root task ran the following against clean behavior tip `3f52558` before the
-docs-only reconciliation and acceptance record:
+docs-only reconciliation and this audit:
 
 | Command | Result | Evidence class |
 | --- | --- | --- |
@@ -64,7 +68,7 @@ docs-only reconciliation and acceptance record:
 | `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests/test_verification_bootstrap.py` | PASS: 8 | Read-only discovery, command generation and explicit device authorization. |
 
 The canonical docs reconciliation at `9ebe7e3` changed documentation only.
-Its edited relative links and diff hygiene passed. This acceptance closeout
+Its edited relative links and diff hygiene passed. This acceptance audit
 does not reinterpret those checks as runtime evidence.
 
 ## Android retained artifact
@@ -136,7 +140,29 @@ worktree remained on the clean M7 tip. This proves supported aggregate rollback
 to M6; it does not claim that arbitrary individual M7 commits can be reverted
 out of order.
 
-## Deferred and non-claims carried into M8
+## Finite next M7 ownership slice
+
+One independently reviewed M7 candidate must:
+
+1. remove remaining concrete renderer ownership from `lib.rs` so it is crate
+   wiring, public facade/re-export and compatibility entrypoints rather than a
+   second implementation owner;
+2. move controller, Adaptive and evidence ownership out of the legacy
+   `surface_session.rs` owner into the existing cohesive renderer/evidence
+   owners, leaving session composition and host coordination only;
+3. prove `surface_presenter.rs` now contains only adapter/presentation-host
+   responsibilities, or extract any residual semantic owner;
+4. preserve public Rust/C/Web/mobile compatibility and exact render behavior;
+5. only after those responsibility conditions pass review, remove the three
+   grandfather entries, mark M7 Accepted, and run architecture self-tests,
+   real-tree policy, focused compatibility tests and the applicable global
+   matrix.
+
+This is a responsibility-bound task, not a request to reach a numeric file
+length. Failure to prove any one item leaves M7 Active; it does not trigger
+repeated tuning or platform experiments.
+
+## Deferred and non-claims while M7 remains Active
 
 - Chrome/WebGPU runtime at the final M7 SHA awaits the pinned wasm-bindgen CLI.
 - Physical-iPhone function/performance remains Deferred; Simulator evidence is
@@ -145,6 +171,6 @@ out of order.
   presented as hardware proof.
 - M7 makes no new FPS, fixed-speedup, battery, thermal, memory-leadership or
   competitor-parity claim.
-- M8 owns final handbook/release alignment, link/command audit, accepted-SHA
-  ledger and migration-bundle archival. Accepting M7 neither performs nor
-  pre-accepts that work.
+- M8 remains unstarted. It owns final handbook/release alignment,
+  link/command audit, accepted-SHA ledger and migration-bundle archival only
+  after M7's ownership exit is genuinely accepted.

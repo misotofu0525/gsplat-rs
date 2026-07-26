@@ -98,9 +98,10 @@ owner, and the C/Web/Android/Apple consumers to that runtime. Product Packed
 now routes through `SurfaceRenderSession`, `SurfacePresenterHost`, and the
 renderer-owned `PreparedRuntimeSlot`; standalone `SurfacePresenter` supports
 only Direct and diagnostic Paged. M7's obsolete standalone Packed graph and
-TiledExact deletion, final available-platform matrix and aggregate rollback are
-accepted. M8 factual/release alignment and migration-bundle archival remain
-unstarted; deferred endpoints are not implied by M7 acceptance.
+TiledExact deletion, available-platform matrix and aggregate rollback evidence
+are complete, but M7 remains Active until its renderer/session/presenter
+ownership exits are actually satisfied. M8 factual/release alignment and
+migration-bundle archival remain unstarted.
 
 ## Full-Count Resident Evidence Boundary (completed 2026-07-23)
 

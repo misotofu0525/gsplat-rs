@@ -19,7 +19,7 @@ M3 = Accepted
 M4 = Accepted
 M5 = Accepted
 M6 = Accepted
-M7 = Accepted
+M7 = Active
 <!-- gsplat-program-task-states: end -->
 
 ## Package status
@@ -40,21 +40,22 @@ M7 = Accepted
 - M6 state: Accepted for the defined Apple/GsplatKit/XCFramework functional
   consumer scope. Physical-iPhone qualification remains explicit Deferred; see
   [M6 Apple functional evidence closeout](m6-apple-functional-evidence.md).
-- M7 state: Accepted for the legacy-owner deletion and compatibility boundary
-  at behavior tip `3f525584c1f3c5909ecd2f87b6a953b8a984e9ec`, with canonical-doc
+- M7 state: Active at behavior tip
+  `3f525584c1f3c5909ecd2f87b6a953b8a984e9ec`, with canonical-doc
   reconciliation at `9ebe7e3a1a115cbac18ef10e3adac2c14e984609`. TiledExact and the obsolete
   standalone Packed presenter graph are deleted; standalone Packed rejects
   before allocation; product Packed has one Session/Host/PreparedRuntimeSlot
   route; Direct/Paged compatibility remains; Paged is CPU-only and rejects
-  async configuration. The final requirement matrix, exact evidence boundaries
-  and aggregate rollback proof are in
-  [M7 final acceptance closeout](m7-final-acceptance.md).
+  async configuration. However, the M7-owned `lib.rs`, `surface_presenter.rs`
+  and `surface_session.rs` grandfather exit conditions are not all proven.
+  Existing evidence and the finite remaining ownership slice are recorded in
+  the [M7 acceptance audit](m7-final-acceptance.md).
 - Product state at M2 activation: native Packed offscreen, desktop
   non-interactive and bench-runner use the Exact runtime; the interactive
   `SurfaceRenderSession` remains legacy until its complete M2 candidate is
   accepted.
 - M8 remains unstarted and outside the machine registry. Package M remains
-  Active because M8 is not Accepted; M7 acceptance does not activate M8.
+  Active; neither M7 nor M8 is Accepted.
 - Stable v0.1 signatures/layouts, Web behavior and rendered semantics remain
   frozen during M2. Additive current-stats v1 receipts and pending-compatible
   Android/Apple translation are prepared before M2 activation. No root
@@ -623,9 +624,10 @@ M7 = Accepted
 - At this M6 closeout point, M7 and M8 had not been accepted. The current M7
   partial-integration state is recorded below.
 
-## M7 closeout
+## M7 integration and acceptance status
 
-- Final state: Accepted for M7's defined deletion and compatibility scope.
+- State: Active. The deletion and compatibility subrange is implemented and
+  evidenced, but the ownership exit requirement remains open.
   Behavior tip is `3f525584c1f3c5909ecd2f87b6a953b8a984e9ec`; canonical-document
   reconciliation tip is `9ebe7e3a1a115cbac18ef10e3adac2c14e984609`.
   M8 remains unstarted and Package M remains Active.
@@ -669,5 +671,12 @@ M7 = Accepted
   arbitrary out-of-order single-commit reverts.
 - The requirement-by-requirement evidence, machine-local Android identities,
   commands, rollback tree IDs, finite Deferred cells and non-claims are recorded
-  in [M7 final acceptance closeout](m7-final-acceptance.md). M8 is not activated
-  by M7 acceptance and remains outside the task-state registry.
+  in the [M7 acceptance audit](m7-final-acceptance.md).
+- The finite next M7 slice must remove concrete renderer ownership from
+  `lib.rs`, move controller/adaptive/evidence ownership out of the legacy
+  `surface_session.rs` owner, and either prove `surface_presenter.rs` is only an
+  adapter/presentation host or extract its residual semantic ownership. The
+  three policy entries remain until those responsibility conditions are
+  independently demonstrated. No fixed LOC threshold is involved. Only then
+  may the same candidate remove the entries, mark M7 Accepted and rerun the
+  architecture policy. M8 is not activated by this partial closeout.
