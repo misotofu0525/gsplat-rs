@@ -236,10 +236,12 @@
   WASM scene
   defaults to full-resident Packed plus Adaptive ordering while preserving an
   explicit Direct compatibility/oracle constructor and diagnostic Paged choice
-  loads the scene into `gsplat-render-wgpu::Renderer`
-  creates a browser canvas `wgpu::Surface` through `SurfacePresenter::from_canvas`
-  hands both objects to `SurfaceRenderSession`, so the browser wrapper does not
-  own a second frame scheduler or sorted-index copy
+  enters through `SurfaceRenderSession::from_canvas`, which creates the browser
+  canvas Surface and routes the product path through `SurfacePresenterHost` to
+  the renderer-owned `PreparedRuntimeSlot` / Exact runtime; the browser wrapper
+  therefore does not own a second frame scheduler or sorted-index copy
+  standalone `SurfacePresenter` constructors remain Direct/Paged-only and
+  reject Packed before Surface, device, or renderer-resource allocation
   prepares GPU-order resources and production Packed + Projected Surface
   resizes through raw async wasm transactions; Direct, Packed, and Paged are
   construction-time choices, same-path geometry calls are idempotent, and any

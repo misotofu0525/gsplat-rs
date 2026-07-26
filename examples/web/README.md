@@ -281,9 +281,12 @@ ticket; fixed-camera reuse intentionally fails this strict experiment.
   and does not switch to the sampled WebGL2 preview. The standalone receipt
   drain preserves both successes and failures even when presentation fails
   after telemetry collection.
-- The Rust/WASM package uses the incremental `gsplat-io-ply` decoder,
-  `ResidentSceneBuilder`, `SurfacePresenter::from_canvas`, and
-  `SurfaceRenderSession`, so it shares scene ownership, order policy, and the
+- The Rust/WASM package uses the incremental `gsplat-io-ply` decoder and
+  `ResidentSceneBuilder`, then enters the complete product route through
+  `SurfaceRenderSession::from_canvas` -> `SurfacePresenterHost` -> the
+  renderer-owned `PreparedRuntimeSlot` / Exact runtime. Standalone
+  `SurfacePresenter` constructors remain Direct/Paged-only and reject Packed
+  before allocation. This shares scene ownership, order policy, and the
   complete Surface lifecycle used by Android/iOS and the desktop viewer.
 
 ## Web Integration Boundary
