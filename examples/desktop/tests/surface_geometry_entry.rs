@@ -15,6 +15,7 @@ mod macos {
         GeometryPath, Renderer, RendererError, SurfaceCurrentStatsSubmission,
         SurfaceGpuOrderProducer, SurfaceOrderBackend, SurfacePresenter, SurfacePresenterError,
         SurfaceProjectedDrawPolicy, SurfaceRasterExecutionPlan, SurfaceRenderSession,
+        SurfaceSortSchedule,
     };
     use winit::{
         dpi::PhysicalSize,
@@ -54,6 +55,9 @@ mod macos {
         raster_execution_plan: SurfaceRasterExecutionPlan,
         current_stats_submission: SurfaceCurrentStatsSubmission,
         surface_size: (u32, u32),
+        sort_interval: u32,
+        sort_schedule: SurfaceSortSchedule,
+        async_sort_enabled: bool,
     }
 
     pub(super) fn main() {
@@ -189,9 +193,46 @@ mod macos {
         );
 
         direct
+            .set_async_sort_enabled(true)
+            .map_err(failed("public Direct session async sort enable"))?;
+        assert!(direct.async_sort_enabled());
+        assert_eq!(
+            direct.sort_schedule(),
+            SurfaceSortSchedule::AsyncLatest { interval: 1 }
+        );
+
+        direct
             .set_geometry_path(GeometryPath::PagedActiveAtlas)
             .map_err(failed("public session Direct -> Paged"))?;
         assert_eq!(direct.geometry_path(), GeometryPath::PagedActiveAtlas);
+        assert!(!direct.async_sort_enabled());
+        assert_eq!(
+            direct.sort_schedule(),
+            SurfaceSortSchedule::Interval(1),
+            "Paged must report the synchronous schedule it actually executes"
+        );
+        direct
+            .set_sort_interval(2)
+            .map_err(failed("public Paged session synchronous interval"))?;
+        let paged_before = session_snapshot(&direct);
+        assert!(matches!(
+            direct.set_async_sort_enabled(true),
+            Err(RendererError::InvalidConfig)
+        ));
+        assert_eq!(
+            session_snapshot(&direct),
+            paged_before,
+            "rejected Paged async enable must not mutate geometry, backend, interval, schedule, or worker state"
+        );
+        assert!(matches!(
+            direct.set_sort_schedule(SurfaceSortSchedule::AsyncLatest { interval: 3 }),
+            Err(RendererError::InvalidConfig)
+        ));
+        assert_eq!(
+            session_snapshot(&direct),
+            paged_before,
+            "rejected Paged async schedule must not publish its requested interval or async state"
+        );
         direct
             .set_geometry_path(GeometryPath::SortedIndexDirect)
             .map_err(failed("public session Paged -> Direct"))?;
@@ -351,6 +392,9 @@ mod macos {
             raster_execution_plan: session.raster_execution_plan(),
             current_stats_submission: session.current_stats_submission(),
             surface_size: session.surface_size(),
+            sort_interval: session.sort_interval(),
+            sort_schedule: session.sort_schedule(),
+            async_sort_enabled: session.async_sort_enabled(),
         }
     }
 

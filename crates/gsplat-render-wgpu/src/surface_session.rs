@@ -84,6 +84,11 @@ pub enum SurfaceOrderBackend {
     Adaptive,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+fn async_sort_supported(geometry_path: GeometryPath, order_backend: SurfaceOrderBackend) -> bool {
+    geometry_path == GeometryPath::SortedIndexDirect && order_backend == SurfaceOrderBackend::Cpu
+}
+
 /// Selects the exact projected draw execution independently from CPU/GPU
 /// ordering. Forced modes are deterministic experiment controls; Adaptive
 /// keeps separate learned lanes for orders produced by each backend.
@@ -3377,7 +3382,8 @@ impl SurfaceRenderSession {
             return SurfaceSortSchedule::Interval(1);
         }
         #[cfg(not(target_arch = "wasm32"))]
-        if self.async_sort_enabled {
+        if self.async_sort_enabled && async_sort_supported(self.geometry_path(), self.order_backend)
+        {
             return SurfaceSortSchedule::AsyncLatest {
                 interval: self.sort_interval,
             };
@@ -3403,7 +3409,7 @@ impl SurfaceRenderSession {
         }
         #[cfg(not(target_arch = "wasm32"))]
         if matches!(schedule, SurfaceSortSchedule::AsyncLatest { .. })
-            && self.order_backend != SurfaceOrderBackend::Cpu
+            && !async_sort_supported(self.geometry_path(), self.order_backend)
         {
             return Err(RendererError::InvalidConfig);
         }
@@ -3753,13 +3759,13 @@ impl SurfaceRenderSession {
             debug_assert_eq!(next, current);
             return Ok(());
         }
+        if enabled && !async_sort_supported(self.geometry_path(), self.order_backend) {
+            return Err(RendererError::InvalidConfig);
+        }
         if self.async_sort_enabled == enabled {
             return Ok(());
         }
         if enabled {
-            if self.order_backend != SurfaceOrderBackend::Cpu {
-                return Err(RendererError::InvalidConfig);
-            }
             self.async_sorter = Some(native_cpu_order_worker(&self.renderer)?);
         } else {
             self.disable_async_sort();
@@ -3777,7 +3783,7 @@ impl SurfaceRenderSession {
 
     #[cfg(not(target_arch = "wasm32"))]
     pub fn async_sort_enabled(&self) -> bool {
-        self.async_sort_enabled
+        self.async_sort_enabled && async_sort_supported(self.geometry_path(), self.order_backend)
     }
 
     pub fn render_frame(&mut self) -> Result<SurfaceFrameOutput, RendererError> {
@@ -3789,9 +3795,7 @@ impl SurfaceRenderSession {
             return result;
         }
         #[cfg(not(target_arch = "wasm32"))]
-        if self.async_sort_enabled
-            && self.order_backend == SurfaceOrderBackend::Cpu
-            && self.geometry_path() != GeometryPath::PagedActiveAtlas
+        if self.async_sort_enabled && async_sort_supported(self.geometry_path(), self.order_backend)
         {
             let result = self.render_frame_async_sort();
             if let Ok(output) = &result {
@@ -4987,7 +4991,7 @@ mod tests {
         validate_gpu_order_producer_transition, validate_projected_draw_policy_transition,
     };
     #[cfg(not(target_arch = "wasm32"))]
-    use super::{ExactSurfacePlanState, publish_only_on_present};
+    use super::{ExactSurfacePlanState, async_sort_supported, publish_only_on_present};
     use crate::{
         GeometryPath, Renderer, RendererError, ResidentGpuError, ResidentSceneCpu,
         SurfaceCurrentStatsPoll, SurfaceCurrentStatsRequest, SurfaceCurrentStatsSubmission,
@@ -5353,6 +5357,28 @@ mod tests {
             SurfaceSortSchedule::AsyncLatest { interval: 3 }.interval(),
             3
         );
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn async_sort_support_is_limited_to_direct_cpu_execution() {
+        for path in [
+            GeometryPath::SortedIndexDirect,
+            GeometryPath::PackedAtlas,
+            GeometryPath::PagedActiveAtlas,
+        ] {
+            for backend in [
+                SurfaceOrderBackend::Cpu,
+                SurfaceOrderBackend::Gpu,
+                SurfaceOrderBackend::Adaptive,
+            ] {
+                assert_eq!(
+                    async_sort_supported(path, backend),
+                    path == GeometryPath::SortedIndexDirect && backend == SurfaceOrderBackend::Cpu,
+                    "unexpected async-sort support for path={path:?} backend={backend:?}",
+                );
+            }
+        }
     }
 
     #[test]
