@@ -70,25 +70,45 @@ gates and receipts.
 | --- | --- |
 | source leaf | One highest-detail authored Gaussian assigned to one hierarchy lineage. |
 | proxy node | An independently drawable Gaussian set representing every source leaf in its subtree. It is not an arbitrary sample. |
-| replacement group | All direct children of one parent. A strict subset can be resident but can never replace the parent. |
+| replacement group | All direct children of one parent for one local refinement transaction. A strict subset can be resident but can never replace the parent. |
 | page | Immutable transfer/cache payload containing one or more node records. It is not a render layer or sort domain. |
 | cut | An antichain of nodes whose descendant leaf sets are disjoint and whose union is the complete authored leaf set. |
 | prepared cut | A validated cut whose required payloads and GPU resources are ready but are not yet public. |
 | published cut | The cut bound to the last successfully presented semantic generation. |
 | coverage generation | Monotone identity advanced only when a newly prepared cut is successfully presented. |
 
-For every interior node `p` with children `children(p)`:
+For every interior node `p` with children `children(p)`, leaf ownership is:
 
 ```text
 leaves(p) = disjoint_union(leaves(c) for c in children(p))
-
-active(p) XOR all(active(c) for c in children(p))
 ```
 
-The second rule applies to the rendered cut. Parent and child payloads may
-briefly coexist in caches during a transaction, but they are never drawn
-together in the release-gated Scalable path and are never both counted as
-coverage. This avoids both missing opacity and double opacity.
+A cut `C` is valid through the following recursive predicate:
+
+```text
+covers(n, C) =
+  if n in C:
+    no descendant of n is in C
+  else if n is a leaf:
+    false
+  else:
+    every child c in children(n) independently satisfies covers(c, C)
+
+valid_cut(C) = every scene root r satisfies covers(r, C)
+```
+
+The recursive rule permits mixed-depth cuts. For a root with child subtrees
+`A` and `B`, where `A` has children `A1` and `A2`, `{A1, A2, B}` is valid:
+`A` is refined while `B` remains coarse. `{A1, B}` is invalid because `A2` is
+uncovered, and `{A, A1, B}` is invalid because one lineage is represented
+twice. Every selected node's leaf range is disjoint from every other selected
+node's range, and the ranges of the complete cut equal the root ranges.
+
+Parent and descendant payloads may briefly coexist in caches during a
+transaction, but they are never drawn together in the release-gated Scalable
+path and are never both counted as coverage. This avoids both missing opacity
+and double opacity without forcing unrelated sibling subtrees to the same
+depth.
 
 ## 4. Runtime ownership and flow
 
@@ -158,14 +178,18 @@ the runtime does not allocate one manifest entry or source index per splat.
 
 ## 6. Parent/child publication transaction
 
-Refinement of parent `p` is a transaction:
+Refinement of an active parent `p` is one local transaction that replaces `p`
+with all its direct children. After that transaction publishes, each child
+subtree can refine independently, producing mixed-depth global cuts while the
+recursive coverage predicate remains true:
 
 1. select the complete replacement group and reserve all compressed, decoded,
    GPU and transition bytes;
 2. fetch, hash and decode every required page under the captured scene/request
    generations;
 3. upload every child payload and validate bindings/counts;
-4. build one candidate global cut by replacing `p` with all its children;
+4. build one candidate global cut by replacing only `p` with all its direct
+   children, leaving every other subtree's current cut unchanged;
 5. prepare the global order/plan resources for that cut;
 6. render and present the candidate;
 7. only then publish its coverage generation and permit retired resources to
@@ -240,9 +264,16 @@ The retained proxy-quality record uses the complete leaf cut at the same frozen
 camera and backing dimensions as reference. It records image hashes, SSIM,
 normalized RGB MAE, alpha MAE, RGB outlier fraction and temporal delta error
 for moving traces. The manifest names the metric/schema version and authored
-validation set; runtime receipts report that identity plus achieved SSE. S1
-freezes any candidate promotion threshold before viewing its final results,
-while S7 retains the complete quality-memory-latency curve. There is no
+validation set; runtime receipts report that identity plus achieved SSE.
+
+Before S1 implementation or measurement begins, its task contract freezes the
+validation assets, cameras, resolutions, required proxy cuts, numeric image
+promotion thresholds and aggregation rule. S1 can be **Accepted** only when
+those predeclared gates pass. A geometrically valid hierarchy that misses the
+image gate may be retained as a research artifact, but S1 ends **Rejected**; if
+the required authored/training evidence cannot be obtained, S1 ends
+**Deferred**. Neither outcome unlocks S2--S5. S7 later retains the complete
+quality-memory-latency curve, but it cannot retroactively waive S1. There is no
 universal FPS threshold and no claim that geometric SSE alone proves appearance
 quality.
 
@@ -339,19 +370,21 @@ There is no fixed FPS or competitor-win completion gate.
 
 | Task | Independently verifiable result | Hard gate | Reject / Deferred boundary |
 | --- | --- | --- | --- |
-| S1 authored proxies | deterministic offline hierarchy builder plus versioned manifest/page fixture | leaf lineage partitions exactly; every node is finite, independently drawable and has monotone error; complete leaf cut reproduces source; proxy cuts pass declared multi-view coverage/image schema | Reject a proxy/merge method that cannot pass; training-optimized proxies may be Deferred without blocking a correct geometric baseline |
+| S1 authored proxies | deterministic offline hierarchy builder plus versioned manifest/page fixture | before work, freeze validation assets/cameras/resolutions, required cuts, numeric promotion thresholds and aggregation; leaf lineage partitions exactly; every node is finite, independently drawable and has monotone error; complete leaf cut reproduces source; every required proxy cut passes the frozen image gate | Reject any proxy/merge method that misses the gate; missing authored/training evidence is Deferred. A geometric baseline may remain research, but only S1 Accepted unlocks S2--S5 |
 | S2 metadata-first source | local and HTTP/range `PageSource` plus bounded decoder into compact pages | huge synthetic logical scene opens without full body or `SceneBuffers`; ranges/hashes/path rules/check arithmetic and cancellation pass | Reject any API requiring full input ownership; real remote endpoints may be Deferred while deterministic local HTTP evidence closes core behavior |
 | S3 three caches | independent compressed, decoded and GPU budget owners with reservation and deterministic eviction | adversarial request/decode/upload schedules never exceed any declared peak; stale work releases reservations; bootstrap/transition headroom is protected | Reject oversubscription or count-only budgeting; platform memory-pressure callbacks wait for S6 |
-| S4 selection/replacement | SSE selector and transactional refinement/coarsening over simulated delayed, failed and reordered pages | every published cut proves complete lineage; parent remains until all children are ready and presented; no holes/double coverage under failure/eviction | Reject non-atomic selection; transition interpolation remains Deferred unless separately image-qualified |
+| S4 selection/replacement | SSE selector and transactional refinement/coarsening over simulated delayed, failed and reordered pages | every published cut passes the recursive coverage predicate; tests include mixed-depth cuts such as `{A1,A2,B}`, incomplete siblings, ancestor/descendant duplication, independent subtree refinement and coarsening; parent remains until all direct children are ready and presented; no holes/double coverage under failure/eviction | Reject non-atomic or uniform-depth-only selection; transition interpolation remains Deferred unless separately image-qualified |
 | S5 global render snapshot | one immutable active cut consumed by the existing shared plan boundary | materialized-cut oracle matches page-built cut; all pages share one global CPU/GPU order and canonical raster; successful present is publication boundary | Reject per-page sorting/render graphs or a second renderer scheduler; unavailable portability endpoint is Deferred, not emulated |
 | S6 platform feedback | bounded memory/thermal/network signals adjust budgets inside the same Scalable contract | hysteresis/cooldown/generation tests; no hidden profile/SH/resolution change; current cut remains valid during budget changes | Each unavailable platform signal is Deferred and reported; it does not block deterministic manual budgets on other endpoints |
 | S7 qualification/close | retained quality-memory-latency curves on real oversized scenes and available native/Web/mobile endpoints | receipt identity, coverage, budgets, same camera/resolution, raw images and terminal timings validate; claims are endpoint-scoped | Reject product promotion if quality/complexity is unjustified; unavailable iPhone/browser/device evidence is Deferred explicitly, never inferred |
 
-The tasks are sequential at their semantic seam: S2 consumes an accepted S1
-asset, S3 owns resources used by S4, and S5 is the first product renderer
-integration. Read-only research or fixture preparation may run in parallel only
-with disjoint write ownership. S1 cannot start until root review accepts this
-S0 contract and updates the program ledger.
+The tasks are sequential at their semantic seam: S2--S5 are locked until S1 is
+Accepted against its predeclared proxy-image gate; Rejected/Deferred S1 cannot
+be bypassed with a geometric-only asset. S3 owns resources used by S4, and S5
+is the first product renderer integration. Read-only research or fixture
+preparation may run in parallel only with disjoint write ownership. S1 cannot
+start until root review accepts this S0 contract and updates the program
+ledger.
 
 ## 14. S0 acceptance boundary
 

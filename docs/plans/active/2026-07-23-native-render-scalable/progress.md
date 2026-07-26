@@ -21,10 +21,13 @@ no renderer, format API, product default or qualification policy.
 
 The selected design is an offline-authored replacement hierarchy with a
 bounded versioned manifest and independently addressable immutable pages.
-Source-leaf coverage stays complete through a drawable bootstrap cut. A parent
-remains published until its complete child group is validated, decoded,
-uploaded, globally ordered, drawn and successfully presented. Random source
-sampling, partial child publication and per-page alpha sorting are excluded.
+Source-leaf coverage stays complete through a drawable bootstrap cut. A local
+refinement keeps its parent published until every direct child is validated,
+decoded, uploaded, globally ordered, drawn and successfully presented. Each
+child subtree can then refine independently, so valid global cuts may mix
+depths, such as `{A1,A2,B}`. Random source sampling, incomplete sibling
+publication, ancestor/descendant double coverage and per-page alpha sorting are
+excluded.
 
 ## Current S0 candidate
 
@@ -39,6 +42,9 @@ sampling, partial child publication and per-page alpha sorting are excluded.
 - Historical Paged remains a labelled diagnostic because it retains full
   source ownership and lacks authored replacement, three bounded caches and
   metadata-first I/O.
+- S1 must freeze its assets, cameras, resolutions, required proxy cuts, numeric
+  image thresholds and aggregation before work, then pass them to be Accepted.
+  A geometric-only result may remain research but cannot unlock S2--S5.
 
 This branch is only a review candidate. The machine state remains `S0 = Active`
 until the root task accepts and integrates it; this writer does not activate
@@ -49,11 +55,11 @@ S1.
 | Task | State in this candidate | Independent result |
 | --- | --- | --- |
 | S0 | Active, ready for root review | coverage/budget/source/receipt contract and selected asset approach |
-| S1 | Not started | authored independently valid proxy hierarchy |
-| S2 | Not started | metadata-first `PageSource` and bounded direct decode |
-| S3 | Not started | three byte-bounded caches and deterministic GPU page pool |
-| S4 | Not started | screen-error selection and atomic parent/child replacement |
-| S5 | Not started | one global active snapshot through shared CPU/GPU Adaptive plans |
+| S1 | Not started | predeclared image-gated, independently valid proxy hierarchy |
+| S2 | Locked until S1 Accepted | metadata-first `PageSource` and bounded direct decode |
+| S3 | Locked until S1 Accepted, then S2 | three byte-bounded caches and deterministic GPU page pool |
+| S4 | Locked until S1 Accepted, then S3 | recursive mixed-depth cut selection and atomic local replacement |
+| S5 | Locked until S1 Accepted, then S4 | one global active snapshot through shared CPU/GPU Adaptive plans |
 | S6 | Not started | bounded platform memory/thermal/network feedback |
 | S7 | Not started | endpoint-scoped quality-memory-latency qualification and closeout |
 
