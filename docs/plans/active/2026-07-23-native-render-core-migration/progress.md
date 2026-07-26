@@ -689,3 +689,12 @@ M7 = Active
   and shared CPU completion telemetry; Product Packed is unchanged. See
   [the slice record](m7-standalone-direct-runtime.md). M7 remains Active and
   the residual root/Session/Presenter acceptance audit is still required.
+- The following bounded candidate based on `1548893` extracts the standalone
+  diagnostic Paged compatibility lane into private
+  `surface/standalone_paged_runtime.rs`: Paged pipeline/layout and active scene,
+  synchronous page/color preparation, CPU preprocessing/stable-sort scratch,
+  Paged instance count and draw encoding. Presenter retains Surface mechanics,
+  shared CPU completion telemetry and prepare-then-commit routing while the
+  inactive Direct/Paged scene is cleared after successful publication. Product
+  Packed and all policies/public interfaces remain unchanged. See
+  [the Paged slice record](m7-standalone-paged-runtime.md). M7 remains Active.

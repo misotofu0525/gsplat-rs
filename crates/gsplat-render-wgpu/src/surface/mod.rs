@@ -6,6 +6,7 @@ mod lifecycle;
 mod projected_adaptive;
 pub(crate) mod shadow;
 pub(crate) mod standalone_direct_runtime;
+pub(crate) mod standalone_paged_runtime;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use capture::SurfaceCapture;

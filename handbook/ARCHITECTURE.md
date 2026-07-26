@@ -41,8 +41,9 @@
   offscreen leaves. Product Packed rendering now uses that Exact core for both
   offscreen and Surface execution. `surface_session.rs` selects the Packed
   `SurfacePresenterHost` and renderer-owned `PreparedRuntimeSlot`, while
-  `surface_presenter.rs` retains only standalone Direct and diagnostic Paged
-  execution. Paged files remain an explicit diagnostic seam.
+  `surface_presenter.rs` coordinates standalone Direct and diagnostic Paged
+  private runtime owners around common Surface mechanics. Paged files remain
+  an explicit diagnostic seam.
 - Native embedding goes through `crates/gsplat-ffi-c`.
 - Browser WebAssembly embedding goes through `crates/gsplat-web`.
 - Runtime validation entrypoints are `examples/desktop`, `examples/android`,
@@ -358,6 +359,10 @@
   standalone Direct Surface pipeline/scene/instance owner, CPU/GPU execution
   seam, and Direct GPU-order telemetry lifecycle; Surface acquisition and
   presentation remain in `SurfacePresenter`
+- `crates/gsplat-render-wgpu/src/surface/standalone_paged_runtime.rs`: private
+  standalone diagnostic Paged pipeline/active-set/instance owner, synchronous
+  page/color preparation, CPU stable sorting and draw encoding; Surface
+  acquisition and presentation remain in `SurfacePresenter`
 - `crates/gsplat-render-wgpu/src/surface_session.rs`: shared Surface lifecycle,
   Direct/Paged standalone versus Packed Exact-host execution composition,
   cross-controller arbitration, revisions, telemetry polling/publication and

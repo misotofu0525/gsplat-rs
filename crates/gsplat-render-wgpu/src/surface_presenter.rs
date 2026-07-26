@@ -1,7 +1,6 @@
 //! WGPU Surface presentation and geometry-resource ownership.
 
 use gsplat_core::{Camera, SceneBuffers};
-use gsplat_sort::CpuSortBackend;
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::Duration;
 
@@ -12,8 +11,6 @@ use crate::gpu_telemetry::{
     TelemetrySubmission,
 };
 use crate::packed_gpu;
-use crate::paged_active_set::PagedActiveSet;
-use crate::raster::{QUAD_VERTEX_COUNT, SplatDraw, encode_splat_draw_into};
 use crate::resident_gpu;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::surface::SurfaceCapture;
@@ -25,71 +22,18 @@ use crate::surface::shadow::{
 use crate::surface::standalone_direct_runtime::{
     DirectGpuTelemetrySample, PreparedStandaloneDirectScene, StandaloneDirectRuntime,
 };
+use crate::surface::standalone_paged_runtime::{
+    PreparedStandalonePagedScene, StandalonePagedRuntime,
+};
 use crate::surface::{
     SurfaceConfigurationOwner, SurfaceLifecycle, create_surface_instance, select_present_mode,
 };
 use crate::{
     DEFAULT_PAGED_ATLAS_SLOTS, DirectSceneError, DirectScenePath, DirectScenePreflight,
     GeometryPath, PackedScenePath, PackedScenePreflight, Renderer, ResidentGpuBytePlan,
-    SpatialPageSet, SurfacePresenterError, TimerInstant, direct_scene_preflight,
-    packed_scene_preflight_with_limits, preprocess_paged_visible_into, refresh_paged_hot_colors,
-    wgpu_label,
+    SurfacePresenterError, TimerInstant, direct_scene_preflight,
+    packed_scene_preflight_with_limits, wgpu_label,
 };
-pub(crate) struct SurfacePagedRuntime {
-    pub(crate) active_set: PagedActiveSet,
-    sort_backend: CpuSortBackend,
-    depth_keys: Vec<u32>,
-    sorted_indices: Vec<u32>,
-}
-
-impl SurfacePagedRuntime {
-    pub(crate) fn new(
-        device: &wgpu::Device,
-        layout: &wgpu::BindGroupLayout,
-        scene: &SceneBuffers,
-        pages: SpatialPageSet,
-    ) -> Result<Self, SurfacePresenterError> {
-        let active_set = PagedActiveSet::new(device, layout, scene, pages)
-            .map_err(|err| SurfacePresenterError::PagedAtlas(err.to_string()))?;
-        Ok(Self {
-            active_set,
-            sort_backend: CpuSortBackend::default(),
-            depth_keys: Vec::new(),
-            sorted_indices: Vec::new(),
-        })
-    }
-
-    pub(crate) fn prepare(
-        &mut self,
-        queue: &wgpu::Queue,
-        scene: &SceneBuffers,
-        camera: &Camera,
-        width: u32,
-        height: u32,
-    ) -> Result<u32, SurfacePresenterError> {
-        self.active_set
-            .sync(queue, scene, camera)
-            .map_err(|err| SurfacePresenterError::PagedAtlas(err.to_string()))?;
-        let entries = self.active_set.atlas.active_entries();
-        preprocess_paged_visible_into(
-            scene,
-            &entries,
-            camera,
-            &mut self.depth_keys,
-            &mut self.sorted_indices,
-        )
-        .map_err(|err| SurfacePresenterError::PagedAtlas(err.to_string()))?;
-        self.sort_backend
-            .sort_values_by_keys(&self.depth_keys, &mut self.sorted_indices)
-            .map_err(|err| SurfacePresenterError::PagedAtlas(err.to_string()))?;
-        refresh_paged_hot_colors(queue, &mut self.active_set.atlas, scene, camera);
-        self.active_set
-            .atlas
-            .resources
-            .prepare(queue, &self.sorted_indices, camera, width, height, true)
-            .map_err(SurfacePresenterError::from)
-    }
-}
 
 /// Surface/device presentation leaves shared with the renderer-owned Exact
 /// runtime. This host deliberately owns no legacy geometry, pipeline, order,
@@ -113,9 +57,7 @@ pub(crate) struct SurfacePresenterHost {
 pub struct SurfacePresenter {
     host: SurfacePresenterHost,
     direct_runtime: StandaloneDirectRuntime,
-    paged_pipeline: wgpu::RenderPipeline,
-    paged_bind_group_layout: wgpu::BindGroupLayout,
-    paged_instance_count: u32,
+    paged_runtime: StandalonePagedRuntime,
     geometry: SurfaceGeometry,
     cpu_order_completion_telemetry: CpuOrderCompletionTelemetry,
 }
@@ -130,19 +72,19 @@ pub(crate) struct CpuCompletionSampleRequest {
 
 enum SurfaceGeometry {
     Direct,
-    Paged(Box<SurfacePagedRuntime>),
+    Paged,
 }
 
 enum PreparedSurfaceGeometry {
     Direct(PreparedStandaloneDirectScene),
-    Paged(Box<SurfacePagedRuntime>),
+    Paged(PreparedStandalonePagedScene),
 }
 
 impl PreparedSurfaceGeometry {
     fn addressable_splat_count(&self) -> usize {
         match self {
             Self::Direct(direct) => direct.addressable_splat_count(),
-            Self::Paged(paged) => paged.active_set.atlas.resources.capacity,
+            Self::Paged(paged) => paged.addressable_splat_count(),
         }
     }
 }
@@ -151,7 +93,7 @@ impl SurfaceGeometry {
     const fn path(&self) -> GeometryPath {
         match self {
             Self::Direct => GeometryPath::SortedIndexDirect,
-            Self::Paged(_) => GeometryPath::PagedActiveAtlas,
+            Self::Paged => GeometryPath::PagedActiveAtlas,
         }
     }
 }
@@ -168,7 +110,7 @@ fn supports_direct_gpu_order(downlevel: &wgpu::DownlevelCapabilities) -> bool {
 struct GeometryResourceContext<'a> {
     device: &'a wgpu::Device,
     direct_runtime: &'a StandaloneDirectRuntime,
-    paged_bind_group_layout: &'a wgpu::BindGroupLayout,
+    paged_runtime: &'a StandalonePagedRuntime,
 }
 
 fn create_geometry_resources(
@@ -179,7 +121,7 @@ fn create_geometry_resources(
     let GeometryResourceContext {
         device,
         direct_runtime,
-        paged_bind_group_layout,
+        paged_runtime,
     } = context;
     match path {
         GeometryPath::SortedIndexDirect => {
@@ -221,9 +163,8 @@ fn create_geometry_resources(
                 .spatial_pages
                 .clone()
                 .ok_or(SurfacePresenterError::SceneNotLoaded)?;
-            let paged_scene =
-                SurfacePagedRuntime::new(device, paged_bind_group_layout, scene, pages)?;
-            Ok(PreparedSurfaceGeometry::Paged(Box::new(paged_scene)))
+            let paged_scene = paged_runtime.prepare_scene_candidate(device, scene, pages)?;
+            Ok(PreparedSurfaceGeometry::Paged(paged_scene))
         }
     }
 }
@@ -880,14 +821,12 @@ impl SurfacePresenter {
         );
         let mut direct_runtime =
             StandaloneDirectRuntime::new(device, queue, format, timestamp_queries_enabled);
-        let paged_bind_group_layout = packed_gpu::create_packed_bind_group_layout(device);
-        let paged_pipeline =
-            packed_gpu::create_packed_pipeline(device, &paged_bind_group_layout, format);
+        let mut paged_runtime = StandalonePagedRuntime::new(device, format);
         let geometry_result = create_geometry_resources(
             GeometryResourceContext {
                 device,
                 direct_runtime: &direct_runtime,
-                paged_bind_group_layout: &paged_bind_group_layout,
+                paged_runtime: &paged_runtime,
             },
             geometry_path,
             renderer,
@@ -911,15 +850,16 @@ impl SurfacePresenter {
                 direct_runtime.publish_scene(scene);
                 SurfaceGeometry::Direct
             }
-            PreparedSurfaceGeometry::Paged(paged) => SurfaceGeometry::Paged(paged),
+            PreparedSurfaceGeometry::Paged(scene) => {
+                paged_runtime.publish_scene(scene);
+                SurfaceGeometry::Paged
+            }
         };
 
         Ok(Self {
             host,
             direct_runtime,
-            paged_pipeline,
-            paged_bind_group_layout,
-            paged_instance_count: 0,
+            paged_runtime,
             geometry,
             cpu_order_completion_telemetry,
         })
@@ -1118,14 +1058,15 @@ impl SurfacePresenter {
                 presenter.geometry = match prepared {
                     PreparedSurfaceGeometry::Direct(scene) => {
                         presenter.direct_runtime.publish_scene(scene);
+                        presenter.paged_runtime.clear_scene();
                         SurfaceGeometry::Direct
                     }
-                    PreparedSurfaceGeometry::Paged(paged) => {
+                    PreparedSurfaceGeometry::Paged(scene) => {
+                        presenter.paged_runtime.publish_scene(scene);
                         presenter.direct_runtime.clear_scene();
-                        SurfaceGeometry::Paged(paged)
+                        SurfaceGeometry::Paged
                     }
                 };
-                presenter.paged_instance_count = 0;
                 presenter.direct_runtime.invalidate_gpu_order_telemetry();
                 presenter
                     .cpu_order_completion_telemetry
@@ -1143,7 +1084,7 @@ impl SurfacePresenter {
             GeometryResourceContext {
                 device: &self.host.device,
                 direct_runtime: &self.direct_runtime,
-                paged_bind_group_layout: &self.paged_bind_group_layout,
+                paged_runtime: &self.paged_runtime,
             },
             path,
             renderer,
@@ -1158,19 +1099,12 @@ impl SurfacePresenter {
         refresh_indices: bool,
     ) -> Result<(), SurfacePresenterError> {
         self.host.surface_lifecycle.begin_frame();
-        if !matches!(self.geometry, SurfaceGeometry::Paged(_)) {
+        if !matches!(self.geometry, SurfaceGeometry::Paged) {
             return self.render_cpu_sorted_indices(sorted_indices, camera, refresh_indices);
         }
-        self.paged_instance_count = match &mut self.geometry {
-            SurfaceGeometry::Paged(paged) => paged.prepare(
-                &self.host.queue,
-                scene,
-                camera,
-                self.host.surface_configuration.size().0,
-                self.host.surface_configuration.size().1,
-            )?,
-            SurfaceGeometry::Direct => unreachable!(),
-        };
+        let (width, height) = self.host.surface_configuration.size();
+        self.paged_runtime
+            .prepare_frame(&self.host.queue, scene, camera, width, height)?;
         self.present_geometry(camera)
     }
 
@@ -1382,18 +1316,7 @@ impl SurfacePresenter {
                 });
         match &self.geometry {
             SurfaceGeometry::Direct => self.direct_runtime.encode_cpu_draw(&mut encoder, &view)?,
-            SurfaceGeometry::Paged(paged) => encode_splat_draw_into(
-                &mut encoder,
-                &SplatDraw {
-                    pass_label: "gsplat-surface-paged-pass",
-                    view: &view,
-                    pipeline: &self.paged_pipeline,
-                    bind_group: &paged.active_set.atlas.resources.bind_group,
-                    clear: wgpu::Color::BLACK,
-                    vertex_count: QUAD_VERTEX_COUNT,
-                    instance_count: self.paged_instance_count,
-                },
-            ),
+            SurfaceGeometry::Paged => self.paged_runtime.encode_draw(&mut encoder, &view)?,
         }
         let instance_count = self.instance_count();
         let mut completion_ticket = completion.and_then(|request| {
@@ -1448,7 +1371,7 @@ impl SurfacePresenter {
     pub const fn instance_count(&self) -> u32 {
         match &self.geometry {
             SurfaceGeometry::Direct => self.direct_runtime.instance_count(),
-            SurfaceGeometry::Paged(_) => self.paged_instance_count,
+            SurfaceGeometry::Paged => self.paged_runtime.instance_count(),
         }
     }
 }
@@ -1498,7 +1421,7 @@ mod tests {
     }
 
     #[test]
-    fn standalone_presenter_source_contains_no_packed_graph_resources() {
+    fn standalone_presenter_source_contains_no_path_specific_gpu_graph_resources() {
         let source = include_str!("surface_presenter.rs");
         for removed in [
             concat!("Surface", "PackedRuntime"),
@@ -1515,10 +1438,17 @@ mod tests {
             concat!("DirectScene", "Resources"),
             concat!("GpuOrderTimestamp", "Range"),
             concat!("SplatIndirect", "Draw"),
+            concat!("PagedActive", "Set"),
+            concat!("CpuSort", "Backend"),
+            concat!("preprocess_paged_", "visible_into"),
+            concat!("refresh_paged_", "hot_colors"),
+            concat!("create_packed_bind_group_", "layout"),
+            concat!("create_packed_", "pipeline"),
+            concat!("gsplat-surface-", "paged-pass"),
         ] {
             assert!(
                 !source.contains(removed),
-                "standalone presenter retained legacy Packed graph resource {removed}"
+                "standalone presenter retained path-specific graph resource {removed}"
             );
         }
 

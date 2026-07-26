@@ -157,6 +157,29 @@ This is another Active ownership step, not M7 acceptance. Residual
 `lib.rs`/Session responsibilities and the final Presenter host/facade audit
 remain open, and no grandfather record is removed here.
 
+## Standalone Paged Surface execution ownership progress
+
+The next bounded candidate moves the explicit diagnostic Paged compatibility
+lane from `surface_presenter.rs` into the private
+`surface/standalone_paged_runtime.rs` owner. That owner contains the Paged
+pipeline/layout, active four-slot scene, CPU preprocessing and stable-sort
+scratch, synchronous page/color preparation, instance count and draw encoding.
+
+`SurfacePresenter` now holds only a Direct/Paged route marker and composes the
+two private standalone runtime owners around Surface acquire, capture, command
+completion, submit, present, shared CPU completion telemetry and transactional
+path switching. A successful switch publishes the complete target scene and
+clears the inactive scene owner; a failed candidate leaves both the active path
+and its resources unchanged. Product Packed, Direct execution, policy, public
+APIs, ABI, WGSL and platform wrappers are unchanged.
+
+The focused design and evidence are recorded in
+[M7 standalone Paged runtime ownership slice](m7-standalone-paged-runtime.md).
+Paged remains CPU-only, synchronous and diagnostic. This is another Active
+ownership step, not M7 acceptance; residual `lib.rs`/Session ownership and the
+final Presenter host/facade audit remain open, and no grandfather record is
+removed here.
+
 ## Android retained artifact
 
 Machine-local suite:

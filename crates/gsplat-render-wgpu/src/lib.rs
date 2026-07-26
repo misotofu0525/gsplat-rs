@@ -108,6 +108,8 @@ pub use scene::{
     packed_scene_preflight_with_limits, resident_sh_plane_count,
 };
 pub(crate) use spatial_pages::{DEFAULT_PAGE_CAPACITY, SpatialPageSet};
+#[cfg(test)]
+use surface::standalone_paged_runtime::StandalonePagedRuntime;
 pub use surface::{
     SurfaceCurrentStatsCountSemantics, SurfaceCurrentStatsCounts, SurfaceCurrentStatsFailure,
     SurfaceCurrentStatsFrameIdentity, SurfaceCurrentStatsJoinIdentity, SurfaceCurrentStatsPlan,
@@ -117,7 +119,7 @@ pub use surface::{
 };
 pub use surface_presenter::{SurfaceFrameCapture, SurfacePresenter};
 #[cfg(test)]
-use surface_presenter::{SurfacePagedRuntime, surface_resource_plan, try_prepare_then_commit};
+use surface_presenter::{surface_resource_plan, try_prepare_then_commit};
 pub use surface_session::{
     SurfaceAdaptiveGpuFailureReason, SurfaceAdaptivePendingSample, SurfaceAdaptiveState,
     SurfaceFrameOutput, SurfaceFrameTimings, SurfaceGpuProducerMeasurementSubmission,
@@ -3579,17 +3581,18 @@ mod tests {
         };
         let device = renderer.device().unwrap().clone();
         let queue = renderer.queue().unwrap().clone();
-        let layout = super::packed_gpu::create_packed_bind_group_layout(&device);
         let pages = super::default_spatial_pages(&scene);
         let page_count = pages.page_count();
         let page_capacity = pages.page_capacity;
         assert!(page_count > super::DEFAULT_PAGED_ATLAS_SLOTS);
-        let mut runtime = super::SurfacePagedRuntime::new(&device, &layout, &scene, pages).unwrap();
-        assert_eq!(
-            runtime.active_set.atlas.resources.capacity,
-            4 * page_capacity
-        );
-        assert!(runtime.active_set.atlas.resources.capacity < scene.len());
+        let mut runtime =
+            super::StandalonePagedRuntime::new(&device, wgpu::TextureFormat::Rgba8Unorm);
+        let prepared = runtime
+            .prepare_scene_candidate(&device, &scene, pages)
+            .unwrap();
+        assert_eq!(prepared.addressable_splat_count(), 4 * page_capacity);
+        assert!(prepared.addressable_splat_count() < scene.len());
+        runtime.publish_scene(prepared);
 
         for position in [
             Vec3f::new(-3.0, -3.0, 0.0),
@@ -3598,20 +3601,19 @@ mod tests {
         ] {
             let mut camera = Camera::default();
             camera.pose.position = position;
-            let drawn = runtime
-                .prepare(&queue, &scene, &camera, config.width, config.height)
+            runtime
+                .prepare_frame(&queue, &scene, &camera, config.width, config.height)
                 .unwrap();
             assert!(
-                drawn > 0,
+                runtime.instance_count() > 0,
                 "Surface paged runtime must prepare non-zero draw"
             );
             assert_eq!(
-                runtime.active_set.atlas.slot_count(),
-                super::DEFAULT_PAGED_ATLAS_SLOTS
-            );
-            assert_eq!(
-                runtime.active_set.atlas.occupied_slot_count(),
-                super::DEFAULT_PAGED_ATLAS_SLOTS
+                runtime.slot_counts(),
+                Some((
+                    super::DEFAULT_PAGED_ATLAS_SLOTS,
+                    super::DEFAULT_PAGED_ATLAS_SLOTS,
+                ))
             );
         }
     }
