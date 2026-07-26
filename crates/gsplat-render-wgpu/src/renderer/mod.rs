@@ -48,6 +48,14 @@ pub(crate) use current_stats::{
 };
 use current_stats::{CurrentStatsFrameCounts, CurrentStatsVisibleSource};
 
+#[cfg(all(
+    feature = "diagnostic-surface-depth-key-candidate24",
+    feature = "diagnostic-surface-projected-axes16"
+))]
+compile_error!(
+    "diagnostic-surface-depth-key-candidate24 and diagnostic-surface-projected-axes16 are mutually exclusive Balanced experiments"
+);
+
 /// Construction-time depth-key profile for the private Packed Surface graph.
 ///
 /// Ordinary builds remain ExactFull32. The candidate is reachable only through
@@ -83,6 +91,40 @@ impl SurfaceDepthPrecisionProfile {
         match precision {
             DepthKeyPrecision::ExactFull32 => Self::ExactFull32,
             DepthKeyPrecision::CandidateStable24 => Self::CandidateStable24,
+        }
+    }
+}
+
+/// Construction-time projected-cache profile for the private Packed Surface graph.
+///
+/// The selected value is carried by the unpublished runtime slot before GPU
+/// preparation begins, then realized and receipted by `GpuScenePreparation`
+/// and `CanonicalRaster`. It is deliberately orthogonal to PlanSet and the
+/// whole-plan controller.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[cfg_attr(not(feature = "diagnostic-surface-projected-axes16"), allow(dead_code))]
+pub(crate) enum ProjectedCachePrecisionProfile {
+    #[default]
+    ExactAxes32,
+    CandidateAxes16,
+}
+
+impl ProjectedCachePrecisionProfile {
+    pub(crate) const fn configured_for_surface_build() -> Self {
+        #[cfg(feature = "diagnostic-surface-projected-axes16")]
+        {
+            Self::CandidateAxes16
+        }
+        #[cfg(not(feature = "diagnostic-surface-projected-axes16"))]
+        {
+            Self::ExactAxes32
+        }
+    }
+
+    pub(crate) const fn axis_record_bytes(self) -> u64 {
+        match self {
+            Self::ExactAxes32 => 16,
+            Self::CandidateAxes16 => 8,
         }
     }
 }
@@ -549,6 +591,7 @@ pub(crate) struct PreparedRuntimeSlot {
     active_policy: ExactPlanPolicy,
     force_cpu_order_refresh: bool,
     last_published_plan: Option<PlanId>,
+    projected_cache_precision: ProjectedCachePrecisionProfile,
     #[cfg(test)]
     current_stats_capability_test_failure: Option<gpu_prepare::CurrentStatsCapabilityTestFailure>,
     #[cfg(test)]
@@ -629,6 +672,7 @@ impl PreparedRuntimeSlot {
             active_policy: ExactPlanPolicy::Forced(PlanId::CpuPostSort),
             force_cpu_order_refresh: false,
             last_published_plan: None,
+            projected_cache_precision: ProjectedCachePrecisionProfile::ExactAxes32,
             #[cfg(test)]
             current_stats_capability_test_failure: None,
             #[cfg(test)]
@@ -652,6 +696,18 @@ impl PreparedRuntimeSlot {
     pub(crate) fn prepare_surface_candidate_with_depth_key_precision(
         source: &ResidentSceneCpu,
         depth_key_precision: DepthKeyPrecision,
+    ) -> Result<Self, PreparedRuntimeError> {
+        Self::prepare_surface_candidate_with_precision_profiles(
+            source,
+            depth_key_precision,
+            ProjectedCachePrecisionProfile::ExactAxes32,
+        )
+    }
+
+    pub(crate) fn prepare_surface_candidate_with_precision_profiles(
+        source: &ResidentSceneCpu,
+        depth_key_precision: DepthKeyPrecision,
+        projected_cache_precision: ProjectedCachePrecisionProfile,
     ) -> Result<Self, PreparedRuntimeError> {
         let frame = FrameState::initial();
         let runtime = PreparedRuntime::prepare_surface_retained_with_depth_key_precision(
@@ -677,6 +733,7 @@ impl PreparedRuntimeSlot {
             active_policy: ExactPlanPolicy::Forced(PlanId::CpuPostSort),
             force_cpu_order_refresh: false,
             last_published_plan: None,
+            projected_cache_precision,
             #[cfg(test)]
             current_stats_capability_test_failure: None,
             #[cfg(test)]
@@ -711,8 +768,32 @@ impl PreparedRuntimeSlot {
         indirect_execution_supported: bool,
         depth_key_precision: DepthKeyPrecision,
     ) -> Result<Self, PreparedGpuRuntimeError> {
-        let mut candidate =
-            Self::prepare_surface_candidate_with_depth_key_precision(source, depth_key_precision)?;
+        Self::prepare_complete_surface_gpu_candidate_with_precision_profiles(
+            source,
+            device,
+            queue,
+            target_format,
+            indirect_execution_supported,
+            depth_key_precision,
+            ProjectedCachePrecisionProfile::ExactAxes32,
+        )
+        .await
+    }
+
+    pub(crate) async fn prepare_complete_surface_gpu_candidate_with_precision_profiles(
+        source: &ResidentSceneCpu,
+        device: &Arc<wgpu::Device>,
+        queue: &Arc<wgpu::Queue>,
+        target_format: wgpu::TextureFormat,
+        indirect_execution_supported: bool,
+        depth_key_precision: DepthKeyPrecision,
+        projected_cache_precision: ProjectedCachePrecisionProfile,
+    ) -> Result<Self, PreparedGpuRuntimeError> {
+        let mut candidate = Self::prepare_surface_candidate_with_precision_profiles(
+            source,
+            depth_key_precision,
+            projected_cache_precision,
+        )?;
         candidate
             .prepare_gpu_from_source(
                 source,
@@ -749,6 +830,7 @@ impl PreparedRuntimeSlot {
         let mut candidate =
             Self::prepare_at_frame_with_depth_key_precision(resident, frame, depth_key_precision)?;
         if let Some(previous) = previous {
+            candidate.projected_cache_precision = previous.projected_cache_precision;
             candidate.presentation_sequence = previous.presentation_sequence;
             candidate
                 .sampler
@@ -830,6 +912,7 @@ impl PreparedRuntimeSlot {
             active_policy: ExactPlanPolicy::Forced(PlanId::CpuPostSort),
             force_cpu_order_refresh: false,
             last_published_plan: None,
+            projected_cache_precision: self.projected_cache_precision,
             #[cfg(test)]
             current_stats_capability_test_failure: None,
             #[cfg(test)]
@@ -862,15 +945,35 @@ impl PreparedRuntimeSlot {
         let previous_frame = self.frame.identity();
         let next_frame = self.frame.candidate_for_plan_set_admission()?;
         let owner = GpuExecutionOwner::new(device, queue);
-        let scene = self
-            .runtime
-            .scene
-            .stage_gpu_with_depth_key_precision(
-                &owner,
-                next_frame.identity(),
-                self.runtime.plans.depth_key_precision(),
-            )
-            .await?;
+        let scene = match self.projected_cache_precision {
+            ProjectedCachePrecisionProfile::ExactAxes32 => {
+                self.runtime
+                    .scene
+                    .stage_gpu_with_depth_key_precision(
+                        &owner,
+                        next_frame.identity(),
+                        self.runtime.plans.depth_key_precision(),
+                    )
+                    .await?
+            }
+            ProjectedCachePrecisionProfile::CandidateAxes16 => {
+                GpuScenePreparation::prepare_with_precision_profiles(
+                    &owner,
+                    self.runtime.scene.resident(),
+                    next_frame.identity(),
+                    true,
+                    self.runtime.plans.depth_key_precision(),
+                    self.projected_cache_precision,
+                )
+                .await?
+            }
+        };
+        if scene.receipt().projected_cache_precision() != self.projected_cache_precision {
+            return Err(GpuPreparationError::ExactContractMismatch {
+                component: "projected-cache precision",
+            }
+            .into());
+        }
         #[cfg(test)]
         let current_stats_candidate = scene
             .stage_current_stats_capability_with_test_failure(
@@ -948,17 +1051,37 @@ impl PreparedRuntimeSlot {
         let previous_frame = self.frame.identity();
         let next_frame = self.frame.candidate_for_plan_set_admission()?;
         let owner = GpuExecutionOwner::new(device, queue);
-        let scene = self
-            .runtime
-            .scene
-            .stage_gpu_from_with_depth_key_precision(
-                &owner,
-                source,
-                next_frame.identity(),
-                indirect_execution_supported,
-                self.runtime.plans.depth_key_precision(),
-            )
-            .await?;
+        let scene = match self.projected_cache_precision {
+            ProjectedCachePrecisionProfile::ExactAxes32 => {
+                self.runtime
+                    .scene
+                    .stage_gpu_from_with_depth_key_precision(
+                        &owner,
+                        source,
+                        next_frame.identity(),
+                        indirect_execution_supported,
+                        self.runtime.plans.depth_key_precision(),
+                    )
+                    .await?
+            }
+            ProjectedCachePrecisionProfile::CandidateAxes16 => {
+                GpuScenePreparation::prepare_with_precision_profiles(
+                    &owner,
+                    source,
+                    next_frame.identity(),
+                    indirect_execution_supported,
+                    self.runtime.plans.depth_key_precision(),
+                    self.projected_cache_precision,
+                )
+                .await?
+            }
+        };
+        if scene.receipt().projected_cache_precision() != self.projected_cache_precision {
+            return Err(GpuPreparationError::ExactContractMismatch {
+                component: "projected-cache precision",
+            }
+            .into());
+        }
         #[cfg(test)]
         let current_stats_candidate = scene
             .stage_current_stats_capability_with_test_failure(
@@ -2108,6 +2231,79 @@ fn execute_prepared_runtime<'runtime>(
             execution,
         )
         .map_err(FrameExecutionError::from)
+}
+
+#[cfg(all(test, feature = "diagnostic-surface-projected-axes16"))]
+mod projected_cache_precision_tests {
+    use gsplat_core::{SceneBuffers, Vec3f};
+
+    use super::*;
+
+    fn resident(count: usize) -> ResidentSceneCpu {
+        ResidentSceneCpu::encode_owned(SceneBuffers {
+            positions: (0..count)
+                .map(|index| Vec3f::new(index as f32 * 0.01, 0.0, 2.0))
+                .collect(),
+            opacity: vec![0.0; count],
+            scale_xyz: vec![[-3.0; 3]; count],
+            rotation_xyzw: vec![[0.0, 0.0, 0.0, 1.0]; count],
+            color_dc: vec![[0.0; 3]; count],
+            sh_degree: 0,
+            sh_rest: None,
+        })
+        .expect("resident scene")
+    }
+
+    #[test]
+    fn axes16_profile_precedes_gpu_staging_and_survives_replacement() {
+        assert_eq!(
+            ProjectedCachePrecisionProfile::configured_for_surface_build(),
+            ProjectedCachePrecisionProfile::CandidateAxes16
+        );
+        assert_eq!(
+            ProjectedCachePrecisionProfile::ExactAxes32.axis_record_bytes(),
+            16
+        );
+        assert_eq!(
+            ProjectedCachePrecisionProfile::CandidateAxes16.axis_record_bytes(),
+            8
+        );
+
+        let source = resident(2);
+        let mut slot = PreparedRuntimeSlot::prepare_surface_candidate_with_precision_profiles(
+            &source,
+            DepthKeyPrecision::ExactFull32,
+            ProjectedCachePrecisionProfile::CandidateAxes16,
+        )
+        .expect("surface CPU candidate");
+        let before = slot.frame_state().identity();
+        assert_eq!(
+            slot.projected_cache_precision,
+            ProjectedCachePrecisionProfile::CandidateAxes16
+        );
+        assert_eq!(slot.fallback(), PlanId::CpuPostSort);
+        assert_eq!(slot.eligible(), &[PlanId::CpuPostSort]);
+
+        slot.replace(resident(3)).expect("replacement");
+        assert_eq!(
+            slot.projected_cache_precision,
+            ProjectedCachePrecisionProfile::CandidateAxes16
+        );
+        assert_eq!(slot.fallback(), PlanId::CpuPostSort);
+        assert_eq!(slot.eligible(), &[PlanId::CpuPostSort]);
+        assert_eq!(
+            slot.frame_state().identity().plan_set_generation(),
+            before.plan_set_generation() + 1
+        );
+
+        let plans = include_str!("../plans/mod.rs");
+        let controller = include_str!("controller.rs");
+        for source in [plans, controller] {
+            assert!(!source.contains("ProjectedCachePrecisionProfile"));
+            assert!(!source.contains("diagnostic-surface-projected-axes16"));
+            assert!(!source.contains("CandidateAxes16"));
+        }
+    }
 }
 
 #[cfg(test)]

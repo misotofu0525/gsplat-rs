@@ -22,7 +22,9 @@ use crate::resident_gpu::{
 use crate::{make_surface_render_params, wgpu_label};
 
 pub(crate) const PREPROJECT_WORKGROUP_SIZE: u32 = 128;
-const SOURCE_CACHE_PLANE_BYTES: u64 = 16;
+const SOURCE_CENTER_ALPHA_KEY_BYTES: u64 = 16;
+const SOURCE_AXES32_BYTES: u64 = 16;
+const SOURCE_AXES16_BYTES: u64 = 8;
 const WORD_BYTES: u64 = size_of::<u32>() as u64;
 const SCAN_ITEMS_PER_GROUP: u32 = 512;
 
@@ -85,10 +87,30 @@ impl PreprojectGpuBytePlan {
         capacity: u32,
         limits: &wgpu::Limits,
     ) -> Result<Self, ResidentGpuError> {
-        let source_plane = u64::from(capacity)
-            .checked_mul(SOURCE_CACHE_PLANE_BYTES)
+        Self::for_capacity_with_axes_record_bytes(capacity, limits, SOURCE_AXES32_BYTES)
+    }
+
+    #[cfg(feature = "diagnostic-surface-projected-axes16")]
+    pub(crate) fn for_capacity_axes16(
+        capacity: u32,
+        limits: &wgpu::Limits,
+    ) -> Result<Self, ResidentGpuError> {
+        Self::for_capacity_with_axes_record_bytes(capacity, limits, SOURCE_AXES16_BYTES)
+    }
+
+    fn for_capacity_with_axes_record_bytes(
+        capacity: u32,
+        limits: &wgpu::Limits,
+        axes_record_bytes: u64,
+    ) -> Result<Self, ResidentGpuError> {
+        let center_plane = u64::from(capacity)
+            .checked_mul(SOURCE_CENTER_ALPHA_KEY_BYTES)
             .ok_or(ResidentGpuError::AddressSpaceExceeded)?
-            .max(SOURCE_CACHE_PLANE_BYTES);
+            .max(SOURCE_CENTER_ALPHA_KEY_BYTES);
+        let axes_plane = u64::from(capacity)
+            .checked_mul(axes_record_bytes)
+            .ok_or(ResidentGpuError::AddressSpaceExceeded)?
+            .max(axes_record_bytes);
         let contributor_groups = capacity.div_ceil(PREPROJECT_WORKGROUP_SIZE);
         let offset_count = contributor_groups
             .checked_add(1)
@@ -103,8 +125,8 @@ impl PreprojectGpuBytePlan {
         let radix = ExternalPrefixRadixBytePlan::for_capacity(capacity, limits)?;
         let draw_args = PREPROJECT_DRAW_INDIRECT_ARGS_BYTES;
         let total_static = [
-            source_plane,
-            source_plane,
+            center_plane,
+            axes_plane,
             group_offsets,
             scan.sums,
             scan.params,
@@ -121,8 +143,8 @@ impl PreprojectGpuBytePlan {
                 .ok_or(ResidentGpuError::AddressSpaceExceeded)
         })?;
         Ok(Self {
-            source_center_alpha_key: source_plane,
-            source_axes: source_plane,
+            source_center_alpha_key: center_plane,
+            source_axes: axes_plane,
             candidate_group_offsets: group_offsets,
             candidate_scan_sums: scan.sums,
             candidate_largest_scan_sum: scan.largest_sum,
@@ -257,11 +279,45 @@ impl PreprojectedGpuCompute {
         resident: &ResidentGpuResources,
         indirect_vertex_count: u32,
     ) -> Result<Self, ResidentGpuError> {
+        Self::new_with_axes_record_bytes(
+            device,
+            resident,
+            indirect_vertex_count,
+            SOURCE_AXES32_BYTES,
+            include_str!("../shaders/preproject_contributors.wgsl"),
+        )
+    }
+
+    pub(crate) fn new_axes16(
+        device: &wgpu::Device,
+        resident: &ResidentGpuResources,
+        indirect_vertex_count: u32,
+    ) -> Result<Self, ResidentGpuError> {
+        Self::new_with_axes_record_bytes(
+            device,
+            resident,
+            indirect_vertex_count,
+            SOURCE_AXES16_BYTES,
+            include_str!("../shaders/preproject_contributors_axes16.wgsl"),
+        )
+    }
+
+    fn new_with_axes_record_bytes(
+        device: &wgpu::Device,
+        resident: &ResidentGpuResources,
+        indirect_vertex_count: u32,
+        axes_record_bytes: u64,
+        shader_source: &'static str,
+    ) -> Result<Self, ResidentGpuError> {
         let capacity =
             u32::try_from(resident.capacity).map_err(|_| ResidentGpuError::AddressSpaceExceeded)?;
         let limits = device.limits();
-        let byte_plan =
-            PreprojectGpuBytePlan::for_capacity(capacity, &limits)?.validate_limits(&limits)?;
+        let byte_plan = PreprojectGpuBytePlan::for_capacity_with_axes_record_bytes(
+            capacity,
+            &limits,
+            axes_record_bytes,
+        )?
+        .validate_limits(&limits)?;
         let dispatch_limit = limits.max_compute_workgroups_per_dimension;
         let project_dispatch =
             Dispatch2d::for_items(capacity, PREPROJECT_WORKGROUP_SIZE, dispatch_limit)?;
@@ -298,9 +354,7 @@ impl PreprojectedGpuCompute {
 
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: wgpu_label("gsplat-preproject-contributor-shader"),
-            source: wgpu::ShaderSource::Wgsl(
-                include_str!("../shaders/preproject_contributors.wgsl").into(),
-            ),
+            source: wgpu::ShaderSource::Wgsl(shader_source.into()),
         });
         let project_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: wgpu_label("gsplat-preproject-project-bgl"),
@@ -462,6 +516,10 @@ impl PreprojectedGpuCompute {
 
     pub(crate) fn source_axes(&self) -> &wgpu::Buffer {
         &self.source_axes
+    }
+
+    pub(crate) fn source_axes_record_bytes(&self) -> u64 {
+        self._byte_plan.source_axes / u64::from(self.capacity.max(1))
     }
 
     pub(crate) fn order_control(&self) -> &wgpu::Buffer {
@@ -843,6 +901,47 @@ mod tests {
         axes: Vec<[f32; 4]>,
     }
 
+    fn half_to_f32(bits: u16) -> f32 {
+        let sign = u32::from(bits & 0x8000) << 16;
+        let exponent = u32::from((bits >> 10) & 0x1f);
+        let fraction = u32::from(bits & 0x03ff);
+        let value = match exponent {
+            0 if fraction == 0 => sign,
+            0 => {
+                let leading = 31 - fraction.leading_zeros();
+                let normalized_fraction = (fraction << (10 - leading)) & 0x03ff;
+                let f32_exponent = 113 - (10 - leading);
+                sign | (f32_exponent << 23) | (normalized_fraction << 13)
+            }
+            0x1f => sign | 0x7f80_0000 | (fraction << 13),
+            _ => sign | ((exponent + 112) << 23) | (fraction << 13),
+        };
+        f32::from_bits(value)
+    }
+
+    fn decode_axes(bytes: &[u8], capacity: usize, record_bytes: u64) -> Vec<[f32; 4]> {
+        match record_bytes {
+            SOURCE_AXES32_BYTES => bytemuck::cast_slice::<u8, [f32; 4]>(bytes)[..capacity].to_vec(),
+            SOURCE_AXES16_BYTES => bytes
+                .chunks_exact(SOURCE_AXES16_BYTES as usize)
+                .take(capacity)
+                .map(|record| {
+                    let first =
+                        u32::from_ne_bytes(record[..4].try_into().expect("first axis word"));
+                    let second =
+                        u32::from_ne_bytes(record[4..8].try_into().expect("second axis word"));
+                    [
+                        half_to_f32(first as u16),
+                        half_to_f32((first >> 16) as u16),
+                        half_to_f32(second as u16),
+                        half_to_f32((second >> 16) as u16),
+                    ]
+                })
+                .collect(),
+            other => panic!("unexpected projected-axis record size {other}"),
+        }
+    }
+
     fn run_and_read(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
@@ -886,7 +985,8 @@ mod tests {
             "preproject-draw-readback",
         );
         let word_bytes = (capacity.max(1) * size_of::<u32>()) as u64;
-        let cache_bytes = (capacity.max(1) * size_of::<[f32; 4]>()) as u64;
+        let center_cache_bytes = (capacity.max(1) * size_of::<[f32; 4]>()) as u64;
+        let axes_cache_bytes = capacity.max(1) as u64 * producer.source_axes_record_bytes();
         let keys_readback = copy_buffer(
             device,
             &mut encoder,
@@ -905,14 +1005,14 @@ mod tests {
             device,
             &mut encoder,
             producer.source_center_alpha_key(),
-            cache_bytes,
+            center_cache_bytes,
             "preproject-center-readback",
         );
         let axes_readback = copy_buffer(
             device,
             &mut encoder,
             producer.source_axes(),
-            cache_bytes,
+            axes_cache_bytes,
             "preproject-axes-readback",
         );
         queue.submit(Some(encoder.finish()));
@@ -931,9 +1031,11 @@ mod tests {
         let center = bytemuck::cast_slice::<u8, [f32; 4]>(&read_bytes(device, &center_readback))
             [..capacity]
             .to_vec();
-        let axes = bytemuck::cast_slice::<u8, [f32; 4]>(&read_bytes(device, &axes_readback))
-            [..capacity]
-            .to_vec();
+        let axes = decode_axes(
+            &read_bytes(device, &axes_readback),
+            capacity,
+            producer.source_axes_record_bytes(),
+        );
         ProducerReadback {
             candidate_count,
             control,
@@ -1050,6 +1152,110 @@ mod tests {
                 + plan.radix.total_static
                 + plan.draw_args
         );
+    }
+
+    #[cfg(feature = "diagnostic-surface-projected-axes16")]
+    #[test]
+    fn axes16_byte_plan_changes_only_the_source_axis_plane() {
+        let limits = wgpu::Limits::downlevel_defaults();
+        let capacity = 4_099_u32;
+        let exact = PreprojectGpuBytePlan::for_capacity(capacity, &limits).expect("exact plan");
+        let candidate =
+            PreprojectGpuBytePlan::for_capacity_axes16(capacity, &limits).expect("axes16 plan");
+
+        assert_eq!(exact.source_center_alpha_key, 16 * u64::from(capacity));
+        assert_eq!(
+            candidate.source_center_alpha_key,
+            exact.source_center_alpha_key
+        );
+        assert_eq!(exact.source_axes, 16 * u64::from(capacity));
+        assert_eq!(candidate.source_axes, 8 * u64::from(capacity));
+        assert_eq!(candidate.radix, exact.radix);
+        assert_eq!(candidate.draw_args, exact.draw_args);
+        assert_eq!(
+            exact.total_static - candidate.total_static,
+            8 * u64::from(capacity)
+        );
+    }
+
+    #[cfg(feature = "diagnostic-surface-projected-axes16")]
+    #[test]
+    fn axes16_source_projection_executes_with_exact_centers_keys_ids_and_counts() {
+        let Some((device, queue)) = test_device() else {
+            return;
+        };
+        let scene = base_scene(3);
+        let resident = resident_resources(&device, &scene);
+        let producer = PreprojectedGpuCompute::new_axes16(&device, &resident, QUAD_VERTEX_COUNT)
+            .expect("axes16 preproject graph");
+        let camera = camera();
+        let position_alpha = [
+            ResidentPositionAlpha {
+                position_alpha: [0.0, 0.0, 2.0, 0.8],
+            },
+            ResidentPositionAlpha {
+                position_alpha: [0.01, 0.0, 2.0, 0.8],
+            },
+            ResidentPositionAlpha {
+                position_alpha: [0.02, 0.0, 2.0, 0.8],
+            },
+        ];
+        let covariance0 = [ResidentCovariance0 {
+            values: [0.01, 0.0, 0.0, 0.01],
+        }; 3];
+        let covariance1 = [ResidentCovariance1 {
+            values: [0.0, 0.01],
+        }; 3];
+        upload_source_planes(
+            &queue,
+            &resident,
+            &position_alpha,
+            &covariance0,
+            &covariance1,
+        );
+
+        assert_eq!(producer.source_center_alpha_key().size(), 3 * 16);
+        assert_eq!(producer.source_axes().size(), 3 * 8);
+        assert_eq!(producer.source_axes_record_bytes(), 8);
+
+        let actual = run_and_read(&device, &queue, &resident, &producer, &camera);
+        assert_eq!(actual.candidate_count, 3);
+        assert_eq!(actual.control.count, 3);
+        assert_eq!(actual.draw.instance_count, 3);
+        assert_eq!(actual.ids, vec![0, 1, 2]);
+        assert_eq!(actual.keys, vec![2.0_f32.to_bits(); 3]);
+
+        for source_id in 0..3 {
+            let expected = cpu_projection(
+                position_alpha[source_id],
+                covariance0[source_id],
+                covariance1[source_id],
+                &camera,
+            )
+            .expect("visible source");
+            assert_eq!(
+                actual.center[source_id][3].to_bits(),
+                expected.center_alpha_key[3].to_bits()
+            );
+            for component in 0..3 {
+                assert_near(
+                    actual.center[source_id][component],
+                    expected.center_alpha_key[component],
+                    source_id,
+                    "center/alpha",
+                );
+            }
+            for component in 0..4 {
+                let tolerance = 0.000_5_f32.max(expected.axes[component].abs() * 0.001);
+                assert!(
+                    (actual.axes[source_id][component] - expected.axes[component]).abs()
+                        <= tolerance,
+                    "source {source_id} axis {component}: actual={:?} expected={:?} tolerance={tolerance:?}",
+                    actual.axes[source_id][component],
+                    expected.axes[component],
+                );
+            }
+        }
     }
 
     #[test]

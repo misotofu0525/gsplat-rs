@@ -709,3 +709,269 @@ fn production_leaf_has_no_plan_policy_or_target_lifecycle_ownership() {
         "bind groups must be prepared before frame encoding"
     );
 }
+
+#[cfg(feature = "diagnostic-surface-projected-axes16")]
+#[test]
+fn axes16_rank_direct_indirect_and_source_paths_execute_with_matching_output() {
+    pollster::block_on(async {
+        let Some((_info, device, queue)) = request_device().await else {
+            return;
+        };
+        let centers = [
+            [-0.28_f32, -0.05, 0.92, f32::from_bits(0)],
+            [0.24, 0.08, 0.85, f32::from_bits(1)],
+            [0.02, 0.31, 0.74, f32::from_bits(2)],
+        ];
+        // 0.125 is exactly representable as binary16. Each record is two
+        // pack2x16float-compatible words: axis_u then axis_v.
+        let packed_axes = [
+            [0x0000_3000_u32, 0x3000_0000],
+            [0x0000_3000, 0x3000_0000],
+            [0x0000_3000, 0x3000_0000],
+        ];
+        let colors = [
+            packed_rgb18e8([1.0, 0.1, 0.05]),
+            packed_rgb18e8([0.05, 1.0, 0.15]),
+            packed_rgb18e8([0.1, 0.2, 1.0]),
+        ];
+        let ordered_ids = [0_u32, 1, 2];
+        let center = storage_buffer(
+            &device,
+            "canonical-axes16-centers",
+            bytemuck::cast_slice(&centers),
+        );
+        let axes = storage_buffer(
+            &device,
+            "canonical-axes16-axes",
+            bytemuck::cast_slice(&packed_axes),
+        );
+        let color = storage_buffer(
+            &device,
+            "canonical-axes16-colors",
+            bytemuck::cast_slice(&colors),
+        );
+        let ids = storage_buffer(
+            &device,
+            "canonical-axes16-source-ids",
+            bytemuck::cast_slice(&ordered_ids),
+        );
+        let indirect = indirect_buffer(&device, "canonical-axes16-indirect", 3);
+
+        assert_eq!(center.size(), 3 * PROJECTED_CENTER_RECORD_BYTES);
+        assert_eq!(axes.size(), 3 * PROJECTED_AXES16_RECORD_BYTES);
+        assert_eq!(ids.size(), 3 * SOURCE_ID_BYTES);
+        assert_eq!(color.size(), 3 * COLOR_RECORD_BYTES);
+
+        let canonical = CanonicalRaster::prepare_axes16(
+            &device,
+            TARGET_FORMAT,
+            CanonicalRasterResources {
+                rank_indexed: Some(RankIndexedRasterResources {
+                    projected_center_source: &center,
+                    projected_axes: &axes,
+                    resolved_color: &color,
+                    indirect_args: Some(&indirect),
+                    projected_capacity: 3,
+                    source_count: 3,
+                }),
+                source_indexed: Some(SourceIndexedRasterResources {
+                    ordered_source_ids: &ids,
+                    projected_center_alpha_key: &center,
+                    projected_axes: &axes,
+                    resolved_color: &color,
+                    indirect_args: &indirect,
+                    source_count: 3,
+                }),
+            },
+        )
+        .expect("prepare both axes16 canonical families");
+
+        let (direct_texture, direct_view) = target(&device, "canonical-axes16-direct-target");
+        let (indirect_texture, indirect_view) = target(&device, "canonical-axes16-indirect-target");
+        let (source_texture, source_view) = target(&device, "canonical-axes16-source-target");
+        let validation = device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("canonical-axes16-paths-encoder"),
+        });
+        canonical
+            .encode(
+                &mut encoder,
+                &direct_view,
+                TARGET_FORMAT,
+                wgpu::Color::TRANSPARENT,
+                CanonicalRasterInput::RankIndexedDirect { instance_count: 3 },
+            )
+            .expect("axes16 rank direct");
+        canonical
+            .encode(
+                &mut encoder,
+                &indirect_view,
+                TARGET_FORMAT,
+                wgpu::Color::TRANSPARENT,
+                CanonicalRasterInput::RankIndexedIndirect,
+            )
+            .expect("axes16 rank indirect");
+        canonical
+            .encode(
+                &mut encoder,
+                &source_view,
+                TARGET_FORMAT,
+                wgpu::Color::TRANSPARENT,
+                CanonicalRasterInput::SourceIndexedIndirect,
+            )
+            .expect("axes16 source indirect");
+        let direct_readback = copy_target(
+            &device,
+            &mut encoder,
+            &direct_texture,
+            "canonical-axes16-direct-readback",
+        );
+        let indirect_readback = copy_target(
+            &device,
+            &mut encoder,
+            &indirect_texture,
+            "canonical-axes16-indirect-readback",
+        );
+        let source_readback = copy_target(
+            &device,
+            &mut encoder,
+            &source_texture,
+            "canonical-axes16-source-readback",
+        );
+        queue.submit(Some(encoder.finish()));
+        let direct = read_buffer(&device, &direct_readback);
+        assert_eq!(read_buffer(&device, &indirect_readback), direct);
+        assert_eq!(read_buffer(&device, &source_readback), direct);
+        assert_contributing(&direct);
+        assert!(
+            validation.pop().await.is_none(),
+            "axes16 draw paths must be validation-clean"
+        );
+    });
+}
+
+#[cfg(feature = "diagnostic-surface-projected-axes16")]
+#[test]
+fn wgsl_binary16_boundaries_are_deterministic() {
+    pollster::block_on(async {
+        let Some((_info, device, queue)) = request_device().await else {
+            return;
+        };
+        let output = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("canonical-axes16-boundary-output"),
+            size: 18 * 4,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("canonical-axes16-boundary-bgl"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: false },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            }],
+        });
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("canonical-axes16-boundary-bg"),
+            layout: &layout,
+            entries: &[storage_entry(0, &output)],
+        });
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("canonical-axes16-boundary-shader"),
+            source: wgpu::ShaderSource::Wgsl(
+                r#"
+@group(0) @binding(0) var<storage, read_write> output: array<u32>;
+
+@compute @workgroup_size(1)
+fn main() {
+  output[0] = pack2x16float(vec2<f32>(0.0, -0.0));
+  output[1] = pack2x16float(vec2<f32>(0.000000059604645, -0.000000059604645));
+  output[2] = pack2x16float(vec2<f32>(65504.0, -65504.0));
+  output[3] = pack2x16float(vec2<f32>(70000.0, -70000.0));
+  output[4] = pack2x16float(vec2<f32>(bitcast<f32>(0x7f800000u), bitcast<f32>(0xff800000u)));
+  output[5] = pack2x16float(vec2<f32>(bitcast<f32>(0x7fc00001u), bitcast<f32>(0xffc00001u)));
+  output[6] = pack2x16float(vec2<f32>(0.0, -0.0));
+  output[7] = pack2x16float(vec2<f32>(0.000000059604645, -0.000000059604645));
+  output[8] = pack2x16float(vec2<f32>(70000.0, -70000.0));
+  output[9] = pack2x16float(vec2<f32>(bitcast<f32>(0x7fc00001u), bitcast<f32>(0xffc00001u)));
+  let zero = unpack2x16float(output[0]);
+  let subnormal = unpack2x16float(output[1]);
+  let overflow = unpack2x16float(output[3]);
+  let nonfinite = unpack2x16float(output[5]);
+  output[10] = bitcast<u32>(zero.x);
+  output[11] = bitcast<u32>(zero.y);
+  output[12] = bitcast<u32>(subnormal.x);
+  output[13] = bitcast<u32>(subnormal.y);
+  output[14] = bitcast<u32>(overflow.x);
+  output[15] = bitcast<u32>(overflow.y);
+  output[16] = bitcast<u32>(nonfinite.x);
+  output[17] = bitcast<u32>(nonfinite.y);
+}
+"#
+                .into(),
+            ),
+        });
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("canonical-axes16-boundary-layout"),
+            bind_group_layouts: &[&layout],
+            immediate_size: 0,
+        });
+        let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("canonical-axes16-boundary-pipeline"),
+            layout: Some(&pipeline_layout),
+            module: &shader,
+            entry_point: Some("main"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            cache: None,
+        });
+        let readback = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("canonical-axes16-boundary-readback"),
+            size: 18 * 4,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("canonical-axes16-boundary-encoder"),
+        });
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("canonical-axes16-boundary-pass"),
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&pipeline);
+            pass.set_bind_group(0, &bind_group, &[]);
+            pass.dispatch_workgroups(1, 1, 1);
+        }
+        encoder.copy_buffer_to_buffer(&output, 0, &readback, 0, 18 * 4);
+        queue.submit(Some(encoder.finish()));
+
+        let bytes = read_buffer(&device, &readback);
+        let words = bytemuck::cast_slice::<u8, u32>(&bytes);
+        assert_eq!(words[0], 0x8000_0000);
+        assert_eq!(words[1], 0x8001_0001);
+        assert_eq!(words[2], 0xfbff_7bff);
+        assert_eq!(words[3], 0xfc00_7c00);
+        assert_eq!(words[4], 0xfc00_7c00);
+        assert_eq!(words[0], words[6]);
+        assert_eq!(words[1], words[7]);
+        assert_eq!(words[3], words[8]);
+        assert_eq!(words[5], words[9]);
+        for half in [words[5] as u16, (words[5] >> 16) as u16] {
+            assert_eq!(half & 0x7c00, 0x7c00);
+            assert_ne!(half & 0x03ff, 0);
+        }
+        assert_eq!(words[10], 0.0_f32.to_bits());
+        assert_eq!(words[11], (-0.0_f32).to_bits());
+        assert_eq!(f32::from_bits(words[12]), 2.0_f32.powi(-24));
+        assert_eq!(f32::from_bits(words[13]), -2.0_f32.powi(-24));
+        assert_eq!(words[14], f32::INFINITY.to_bits());
+        assert_eq!(words[15], f32::NEG_INFINITY.to_bits());
+        assert!(f32::from_bits(words[16]).is_nan());
+        assert!(f32::from_bits(words[17]).is_nan());
+    });
+}

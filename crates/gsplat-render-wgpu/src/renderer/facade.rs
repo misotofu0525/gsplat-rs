@@ -391,6 +391,26 @@ impl Renderer {
         indirect_execution_supported: bool,
         profile: renderer::SurfaceDepthPrecisionProfile,
     ) -> Result<renderer::PreparedRuntimeSlot, RendererError> {
+        self.prepare_surface_exact_candidate_with_precision_profiles(
+            device,
+            queue,
+            target_format,
+            indirect_execution_supported,
+            profile,
+            renderer::ProjectedCachePrecisionProfile::configured_for_surface_build(),
+        )
+        .await
+    }
+
+    pub(crate) async fn prepare_surface_exact_candidate_with_precision_profiles(
+        &self,
+        device: &std::sync::Arc<wgpu::Device>,
+        queue: &std::sync::Arc<wgpu::Queue>,
+        target_format: wgpu::TextureFormat,
+        indirect_execution_supported: bool,
+        depth_profile: renderer::SurfaceDepthPrecisionProfile,
+        projected_profile: renderer::ProjectedCachePrecisionProfile,
+    ) -> Result<renderer::PreparedRuntimeSlot, RendererError> {
         if self.geometry_path != GeometryPath::PackedAtlas {
             return Err(RendererError::InvalidConfig);
         }
@@ -402,13 +422,14 @@ impl Renderer {
             .scene_state
             .resident_upload()
             .ok_or(RendererError::SceneNotLoaded)?;
-        renderer::PreparedRuntimeSlot::prepare_complete_surface_gpu_candidate_with_depth_key_precision(
+        renderer::PreparedRuntimeSlot::prepare_complete_surface_gpu_candidate_with_precision_profiles(
             source,
             device,
             queue,
             target_format,
             indirect_execution_supported,
-            profile.depth_key_precision(),
+            depth_profile.depth_key_precision(),
+            projected_profile,
         )
         .await
         .map_err(map_prepared_gpu_runtime_error)

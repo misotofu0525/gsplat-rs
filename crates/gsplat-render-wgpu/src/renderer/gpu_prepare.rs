@@ -29,7 +29,7 @@ use crate::resident_gpu::{
 use crate::scene::{ResidentGpuBytePlan, ResidentSceneCpu};
 use crate::{ResidentGpuError, make_surface_render_params};
 
-use super::current_stats::CurrentStatsReadbackPool;
+use super::{ProjectedCachePrecisionProfile, current_stats::CurrentStatsReadbackPool};
 
 const DRAW_INSTANCE_COUNT_OFFSET: u64 = std::mem::size_of::<u32>() as u64;
 
@@ -103,6 +103,7 @@ pub(crate) struct GpuPreparationReceipt {
     addressable_count: u32,
     sh_degree: u8,
     preproject_compute: bool,
+    projected_cache_precision: ProjectedCachePrecisionProfile,
     scene_resource_generation: SceneResourceGeneration,
     plan_set_generation: u64,
 }
@@ -130,6 +131,10 @@ impl GpuPreparationReceipt {
 
     pub(crate) const fn preproject_compute(self) -> bool {
         self.preproject_compute
+    }
+
+    pub(crate) const fn projected_cache_precision(self) -> ProjectedCachePrecisionProfile {
+        self.projected_cache_precision
     }
 
     pub(crate) const fn scene_generation(self) -> u64 {
@@ -295,6 +300,25 @@ impl GpuScenePreparation {
         indirect_execution_supported: bool,
         depth_key_precision: DepthKeyPrecision,
     ) -> Result<Self, GpuPreparationError> {
+        Self::prepare_with_precision_profiles(
+            owner,
+            scene,
+            generation,
+            indirect_execution_supported,
+            depth_key_precision,
+            ProjectedCachePrecisionProfile::ExactAxes32,
+        )
+        .await
+    }
+
+    pub(crate) async fn prepare_with_precision_profiles(
+        owner: &GpuExecutionOwner,
+        scene: &ResidentSceneCpu,
+        generation: FrameIdentity,
+        indirect_execution_supported: bool,
+        depth_key_precision: DepthKeyPrecision,
+        projected_cache_precision: ProjectedCachePrecisionProfile,
+    ) -> Result<Self, GpuPreparationError> {
         let device = owner.device();
         validate_adapter_capacity(
             scene.len(),
@@ -314,6 +338,7 @@ impl GpuScenePreparation {
             generation,
             indirect_execution_supported,
             depth_key_precision,
+            projected_cache_precision,
         );
         let internal = internal_scope.pop().await.map(|error| error.to_string());
         let out_of_memory = oom_scope.pop().await.map(|error| error.to_string());
@@ -330,6 +355,7 @@ impl GpuScenePreparation {
         generation: FrameIdentity,
         indirect_execution_supported: bool,
         depth_key_precision: DepthKeyPrecision,
+        projected_cache_precision: ProjectedCachePrecisionProfile,
     ) -> Result<Self, GpuPreparationError> {
         let device = owner.device();
         let source_count = u32::try_from(scene.len())
@@ -337,13 +363,22 @@ impl GpuScenePreparation {
         let color_layout = create_resident_color_bind_group_layout(device);
         let color_pipeline = create_resident_color_pipeline(device, &color_layout);
         let mut resident = ResidentGpuResources::new(device, &color_layout, scene)?;
-        let projector = ProjectedRankProjector::new(
-            device,
-            source_count,
-            QUAD_VERTEX_COUNT,
-            &resident.order_buffer,
-            project_source_bindings(&resident),
-        )?;
+        let projector = match projected_cache_precision {
+            ProjectedCachePrecisionProfile::ExactAxes32 => ProjectedRankProjector::new(
+                device,
+                source_count,
+                QUAD_VERTEX_COUNT,
+                &resident.order_buffer,
+                project_source_bindings(&resident),
+            )?,
+            ProjectedCachePrecisionProfile::CandidateAxes16 => ProjectedRankProjector::new_axes16(
+                device,
+                source_count,
+                QUAD_VERTEX_COUNT,
+                &resident.order_buffer,
+                project_source_bindings(&resident),
+            )?,
+        };
         // The rank-indexed CPU Exact path needs neither indirect draws nor the
         // GPU order graph. Keep that path complete on downlevel adapters and
         // admit the two GPU plans only when their indirect resources are legal.
@@ -359,11 +394,14 @@ impl GpuScenePreparation {
             resident.publish_gpu_order(order);
             (
                 Some(gpu_project_bind_group),
-                Some(PreprojectedGpuCompute::new(
-                    device,
-                    &resident,
-                    QUAD_VERTEX_COUNT,
-                )?),
+                Some(match projected_cache_precision {
+                    ProjectedCachePrecisionProfile::ExactAxes32 => {
+                        PreprojectedGpuCompute::new(device, &resident, QUAD_VERTEX_COUNT)?
+                    }
+                    ProjectedCachePrecisionProfile::CandidateAxes16 => {
+                        PreprojectedGpuCompute::new_axes16(device, &resident, QUAD_VERTEX_COUNT)?
+                    }
+                }),
             )
         } else {
             (None, None)
@@ -375,6 +413,7 @@ impl GpuScenePreparation {
             &projector,
             preproject.as_ref(),
             generation,
+            projected_cache_precision,
         )?;
         Ok(Self {
             owner: owner.token().clone(),
@@ -555,8 +594,15 @@ impl GpuScenePreparation {
             device.push_error_scope(wgpu::ErrorFilter::Internal),
         );
         let candidate = self.canonical_raster_resources().and_then(|resources| {
-            CanonicalRaster::prepare(device, target_format, resources)
-                .map_err(GpuPreparationError::from)
+            match self.receipt.projected_cache_precision {
+                ProjectedCachePrecisionProfile::ExactAxes32 => {
+                    CanonicalRaster::prepare(device, target_format, resources)
+                }
+                ProjectedCachePrecisionProfile::CandidateAxes16 => {
+                    CanonicalRaster::prepare_axes16(device, target_format, resources)
+                }
+            }
+            .map_err(GpuPreparationError::from)
         });
         let internal = internal_scope.pop().await.map(|error| error.to_string());
         let out_of_memory = oom_scope.pop().await.map(|error| error.to_string());
@@ -1181,6 +1227,7 @@ fn validate_complete_receipt(
     projector: &ProjectedRankProjector,
     preproject: Option<&PreprojectedGpuCompute>,
     generation: FrameIdentity,
+    projected_cache_precision: ProjectedCachePrecisionProfile,
 ) -> Result<GpuPreparationReceipt, GpuPreparationError> {
     let source_count = u32::try_from(scene.len())
         .map_err(|_| GpuPreparationError::Resource(ResidentGpuError::AddressSpaceExceeded))?;
@@ -1193,6 +1240,7 @@ fn validate_complete_receipt(
         addressable_count: projector.capacity(),
         sh_degree: scene.sh_degree,
         preproject_compute: preproject.is_some(),
+        projected_cache_precision,
         scene_resource_generation: SceneResourceGeneration::from_frame(generation),
         plan_set_generation: generation.plan_set_generation(),
     };
@@ -1211,7 +1259,13 @@ fn validate_runtime_counts(
         || receipt.source_count != receipt.addressable_count
         || usize::try_from(receipt.source_count).ok() != Some(resident.capacity)
         || receipt.addressable_count != projector.capacity()
+        || receipt.projected_cache_precision.axis_record_bytes()
+            != projector.projected_axes_record_bytes()
         || preproject.is_some_and(|preproject| receipt.source_count != preproject.capacity())
+        || preproject.is_some_and(|preproject| {
+            receipt.projected_cache_precision.axis_record_bytes()
+                != preproject.source_axes_record_bytes()
+        })
     {
         return Err(GpuPreparationError::ExactContractMismatch {
             component: "source/capacity/resident/addressable count",
@@ -1448,6 +1502,7 @@ mod tests {
             addressable_count: 1,
             sh_degree: 0,
             preproject_compute: true,
+            projected_cache_precision: ProjectedCachePrecisionProfile::ExactAxes32,
             scene_resource_generation: SceneResourceGeneration {
                 scene: 1,
                 contract: 1,
@@ -1499,6 +1554,225 @@ mod tests {
             classify_scope_errors(Some("internal".into()), None, Some("validation".into())),
             Some(GpuPreparationError::Internal("internal".into()))
         );
+    }
+
+    #[cfg(all(
+        not(target_arch = "wasm32"),
+        feature = "diagnostic-surface-projected-axes16"
+    ))]
+    #[test]
+    fn axes16_complete_graph_preserves_non_axis_records_and_executes_all_plan_paths() {
+        pollster::block_on(async {
+            let Some((_instance, _adapter, _info, device, queue)) = request_device(8).await else {
+                return;
+            };
+            let owner = GpuExecutionOwner::new(&device, &queue);
+            let resident = ResidentSceneCpu::encode_owned(source(3, 0)).expect("resident scene");
+            let generation = frame(1, 0, 0);
+            let mut candidate = GpuScenePreparation::prepare_with_precision_profiles(
+                &owner,
+                &resident,
+                generation,
+                true,
+                DepthKeyPrecision::ExactFull32,
+                ProjectedCachePrecisionProfile::CandidateAxes16,
+            )
+            .await
+            .expect("axes16 GPU graph");
+            let receipt = candidate.receipt();
+            assert_eq!(
+                receipt.projected_cache_precision(),
+                ProjectedCachePrecisionProfile::CandidateAxes16
+            );
+            assert_eq!(receipt.source_count(), 3);
+            assert_eq!(receipt.capacity(), 3);
+            assert_eq!(receipt.resident_count(), 3);
+            assert_eq!(receipt.addressable_count(), 3);
+            assert_eq!(receipt.sh_degree(), 0);
+            assert!(receipt.preproject_compute());
+            assert_eq!(candidate.projector.projected_center_source().size(), 3 * 16);
+            assert_eq!(candidate.projector.projected_axes().size(), 3 * 8);
+            let preproject = candidate.preproject.as_ref().expect("preproject graph");
+            assert_eq!(preproject.source_center_alpha_key().size(), 3 * 16);
+            assert_eq!(preproject.source_axes().size(), 3 * 8);
+            assert_eq!(preproject.final_keys().size(), 3 * 4);
+            assert_eq!(preproject.final_source_ids().size(), 3 * 4);
+            assert_eq!(preproject.draw_args().size(), 16);
+
+            let canonical = candidate
+                .prepare_canonical_raster(&owner, wgpu::TextureFormat::Rgba8Unorm)
+                .await
+                .expect("axes16 canonical raster");
+            let texture = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("axes16-complete-graph-target"),
+                size: wgpu::Extent3d {
+                    width: 64,
+                    height: 64,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8Unorm,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                view_formats: &[],
+            });
+            let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+            let validation = device.push_error_scope(wgpu::ErrorFilter::Validation);
+
+            let mut direct_encoder =
+                device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("axes16-cpu-post-encoder"),
+                });
+            let direct_count = candidate
+                .encode_cpu_post_projection_frame(
+                    owner
+                        .context(&queue, &mut direct_encoder)
+                        .expect("CPU PostSort context"),
+                    CpuPostProjectionRequest::new(
+                        &[0, 1, 2],
+                        Camera::default(),
+                        (64, 64),
+                        generation,
+                        1,
+                    ),
+                )
+                .expect("axes16 CPU PostSort producer")
+                .receipt()
+                .visible_count();
+            assert_eq!(direct_count, 3);
+            canonical
+                .encode(
+                    &mut direct_encoder,
+                    &view,
+                    wgpu::TextureFormat::Rgba8Unorm,
+                    wgpu::Color::TRANSPARENT,
+                    crate::raster::CanonicalRasterInput::RankIndexedDirect {
+                        instance_count: direct_count,
+                    },
+                )
+                .expect("axes16 rank direct draw");
+            queue.submit(Some(direct_encoder.finish()));
+
+            let mut post_encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("axes16-gpu-post-encoder"),
+            });
+            candidate
+                .encode_frame(
+                    owner
+                        .context(&queue, &mut post_encoder)
+                        .expect("GPU PostSort context"),
+                    Camera::default(),
+                    64,
+                    64,
+                    generation,
+                )
+                .expect("axes16 GPU PostSort producer");
+            canonical
+                .encode(
+                    &mut post_encoder,
+                    &view,
+                    wgpu::TextureFormat::Rgba8Unorm,
+                    wgpu::Color::TRANSPARENT,
+                    crate::raster::CanonicalRasterInput::RankIndexedIndirect,
+                )
+                .expect("axes16 rank indirect draw");
+            queue.submit(Some(post_encoder.finish()));
+
+            let mut preproject_encoder =
+                device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("axes16-gpu-preproject-encoder"),
+                });
+            candidate
+                .encode_preproject_frame(
+                    owner
+                        .context(&queue, &mut preproject_encoder)
+                        .expect("GPU Preproject context"),
+                    Camera::default(),
+                    64,
+                    64,
+                    generation,
+                )
+                .expect("axes16 Preproject producer");
+            canonical
+                .encode(
+                    &mut preproject_encoder,
+                    &view,
+                    wgpu::TextureFormat::Rgba8Unorm,
+                    wgpu::Color::TRANSPARENT,
+                    crate::raster::CanonicalRasterInput::SourceIndexedIndirect,
+                )
+                .expect("axes16 source-indexed draw");
+            queue.submit(Some(preproject_encoder.finish()));
+            device
+                .poll(wgpu::PollType::wait_indefinitely())
+                .expect("axes16 execution completion");
+            assert!(
+                validation.pop().await.is_none(),
+                "axes16 complete graph must be validation-clean"
+            );
+
+            let mut slot = PreparedRuntimeSlot::prepare_surface_candidate_with_precision_profiles(
+                &resident,
+                DepthKeyPrecision::ExactFull32,
+                ProjectedCachePrecisionProfile::CandidateAxes16,
+            )
+            .expect("axes16 Surface slot");
+            slot.set_test_gpu_admission_mode(TestGpuAdmissionMode::ConcreteAll);
+            slot.prepare_gpu_from_source(
+                &resident,
+                &device,
+                &queue,
+                wgpu::TextureFormat::Rgba8Unorm,
+                true,
+            )
+            .await
+            .expect("admitted axes16 Surface slot");
+            assert_eq!(slot.fallback(), PlanId::CpuPostSort);
+            assert_eq!(
+                slot.eligible(),
+                &[
+                    PlanId::CpuPostSort,
+                    PlanId::GpuPostSort,
+                    PlanId::GpuPreproject,
+                ]
+            );
+            assert_eq!(
+                slot.gpu_preparation()
+                    .expect("slot GPU receipt")
+                    .projected_cache_precision(),
+                ProjectedCachePrecisionProfile::CandidateAxes16
+            );
+
+            let replacement_resident =
+                ResidentSceneCpu::encode_owned(source(2, 0)).expect("replacement scene");
+            slot.replace(replacement_resident)
+                .expect("axes16 replacement CPU transaction");
+            assert_eq!(
+                slot.projected_cache_precision,
+                ProjectedCachePrecisionProfile::CandidateAxes16
+            );
+            assert_eq!(slot.fallback(), PlanId::CpuPostSort);
+            assert_eq!(slot.eligible(), &[PlanId::CpuPostSort]);
+            slot.set_test_gpu_admission_mode(TestGpuAdmissionMode::ConcreteAll);
+            slot.prepare_gpu(&device, &queue, wgpu::TextureFormat::Rgba8Unorm)
+                .await
+                .expect("re-admitted axes16 replacement");
+            assert_eq!(
+                slot.eligible(),
+                &[
+                    PlanId::CpuPostSort,
+                    PlanId::GpuPostSort,
+                    PlanId::GpuPreproject,
+                ]
+            );
+            assert_eq!(
+                slot.gpu_preparation()
+                    .expect("replacement receipt")
+                    .projected_cache_precision(),
+                ProjectedCachePrecisionProfile::CandidateAxes16
+            );
+        });
     }
 
     #[cfg(not(target_arch = "wasm32"))]

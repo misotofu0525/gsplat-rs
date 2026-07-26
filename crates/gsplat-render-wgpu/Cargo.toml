@@ -16,6 +16,7 @@ rust-version.workspace = true
 default = []
 diagnostic-surface-capture-receipt = []
 diagnostic-surface-depth-key-candidate24 = []
+diagnostic-surface-projected-axes16 = []
 
 [dependencies]
 gsplat-core = { path = "../gsplat-core", version = "0.1.3" }

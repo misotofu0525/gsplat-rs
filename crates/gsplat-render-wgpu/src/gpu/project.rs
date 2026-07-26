@@ -14,7 +14,24 @@ use crate::gpu_error::ResidentGpuError;
 use crate::wgpu_label;
 
 const PROJECT_WORKGROUP_SIZE: u32 = 128;
-const PROJECTED_PLANE_BYTES_PER_ITEM: u64 = 16;
+const PROJECTED_CENTER_SOURCE_BYTES_PER_ITEM: u64 = 16;
+const PROJECTED_AXES32_BYTES_PER_ITEM: u64 = 16;
+const PROJECTED_AXES16_BYTES_PER_ITEM: u64 = 8;
+
+#[derive(Clone, Copy)]
+enum ProjectedAxesEncoding {
+    Exact32,
+    Binary16,
+}
+
+impl ProjectedAxesEncoding {
+    const fn record_bytes(self) -> u64 {
+        match self {
+            Self::Exact32 => PROJECTED_AXES32_BYTES_PER_ITEM,
+            Self::Binary16 => PROJECTED_AXES16_BYTES_PER_ITEM,
+        }
+    }
+}
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -64,6 +81,7 @@ pub(crate) struct ProjectedRankProjector {
     cpu_project_bind_group: wgpu::BindGroup,
     projected_center_source: wgpu::Buffer,
     projected_axes: wgpu::Buffer,
+    projected_axes_record_bytes: u64,
     contributor_group_offsets: wgpu::Buffer,
     contributor_group_offset_count: u32,
     cpu_draw_args: wgpu::Buffer,
@@ -78,19 +96,59 @@ impl ProjectedRankProjector {
         cpu_order: &wgpu::Buffer,
         source: ProjectedRankSourceBindings<'_>,
     ) -> Result<Self, ResidentGpuError> {
-        let plane_bytes = u64::from(capacity)
-            .checked_mul(PROJECTED_PLANE_BYTES_PER_ITEM)
-            .ok_or(ResidentGpuError::AddressSpaceExceeded)?;
+        Self::new_with_axes_encoding(
+            device,
+            capacity,
+            vertex_count,
+            cpu_order,
+            source,
+            ProjectedAxesEncoding::Exact32,
+        )
+    }
+
+    pub(crate) fn new_axes16(
+        device: &wgpu::Device,
+        capacity: u32,
+        vertex_count: u32,
+        cpu_order: &wgpu::Buffer,
+        source: ProjectedRankSourceBindings<'_>,
+    ) -> Result<Self, ResidentGpuError> {
+        Self::new_with_axes_encoding(
+            device,
+            capacity,
+            vertex_count,
+            cpu_order,
+            source,
+            ProjectedAxesEncoding::Binary16,
+        )
+    }
+
+    fn new_with_axes_encoding(
+        device: &wgpu::Device,
+        capacity: u32,
+        vertex_count: u32,
+        cpu_order: &wgpu::Buffer,
+        source: ProjectedRankSourceBindings<'_>,
+        axes_encoding: ProjectedAxesEncoding,
+    ) -> Result<Self, ResidentGpuError> {
+        let center_plane_bytes =
+            projected_plane_bytes(capacity, PROJECTED_CENTER_SOURCE_BYTES_PER_ITEM)?;
+        let axes_record_bytes = axes_encoding.record_bytes();
+        let axes_plane_bytes = projected_plane_bytes(capacity, axes_record_bytes)?;
         let binding_limit = u64::from(device.limits().max_storage_buffer_binding_size)
             .min(device.limits().max_buffer_size);
-        for (resource, bytes) in [
-            ("projected center/source plane", plane_bytes),
-            ("projected axes plane", plane_bytes),
+        for (resource, bytes, minimum) in [
+            (
+                "projected center/source plane",
+                center_plane_bytes,
+                PROJECTED_CENTER_SOURCE_BYTES_PER_ITEM,
+            ),
+            ("projected axes plane", axes_plane_bytes, axes_record_bytes),
         ] {
-            if bytes.max(PROJECTED_PLANE_BYTES_PER_ITEM) > binding_limit {
+            if bytes.max(minimum) > binding_limit {
                 return Err(ResidentGpuError::BindingLimitExceeded {
                     resource,
-                    required_bytes: bytes.max(PROJECTED_PLANE_BYTES_PER_ITEM),
+                    required_bytes: bytes.max(minimum),
                     limit_bytes: binding_limit,
                 });
             }
@@ -103,12 +161,12 @@ impl ProjectedRankProjector {
         let projected_center_source = storage_buffer(
             device,
             "gsplat-projected-quads-center-source",
-            plane_bytes.max(PROJECTED_PLANE_BYTES_PER_ITEM),
+            center_plane_bytes.max(PROJECTED_CENTER_SOURCE_BYTES_PER_ITEM),
         );
         let projected_axes = storage_buffer(
             device,
             "gsplat-projected-quads-axes",
-            plane_bytes.max(PROJECTED_PLANE_BYTES_PER_ITEM),
+            axes_plane_bytes.max(axes_record_bytes),
         );
         let contributor_group_offset_count = capacity
             .div_ceil(PROJECT_WORKGROUP_SIZE)
@@ -140,11 +198,17 @@ impl ProjectedRankProjector {
         });
 
         let project_layout = create_project_layout(device);
+        let project_shader_source = match axes_encoding {
+            ProjectedAxesEncoding::Exact32 => {
+                include_str!("../../shaders/projected_quads_project.wgsl")
+            }
+            ProjectedAxesEncoding::Binary16 => {
+                include_str!("../../shaders/projected_quads_project_axes16.wgsl")
+            }
+        };
         let project_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: wgpu_label("gsplat-projected-quads-project-shader"),
-            source: wgpu::ShaderSource::Wgsl(
-                include_str!("../../shaders/projected_quads_project.wgsl").into(),
-            ),
+            source: wgpu::ShaderSource::Wgsl(project_shader_source.into()),
         });
         let project_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -181,6 +245,7 @@ impl ProjectedRankProjector {
             cpu_project_bind_group,
             projected_center_source,
             projected_axes,
+            projected_axes_record_bytes: axes_record_bytes,
             contributor_group_offsets,
             contributor_group_offset_count,
             cpu_draw_args,
@@ -283,6 +348,10 @@ impl ProjectedRankProjector {
 
     pub(crate) fn projected_axes(&self) -> &wgpu::Buffer {
         &self.projected_axes
+    }
+
+    pub(crate) const fn projected_axes_record_bytes(&self) -> u64 {
+        self.projected_axes_record_bytes
     }
 
     pub(crate) fn contributor_group_offsets(&self) -> &wgpu::Buffer {
@@ -392,5 +461,33 @@ fn entry(binding: u32, buffer: &wgpu::Buffer) -> wgpu::BindGroupEntry<'_> {
     wgpu::BindGroupEntry {
         binding,
         resource: buffer.as_entire_binding(),
+    }
+}
+
+fn projected_plane_bytes(capacity: u32, record_bytes: u64) -> Result<u64, ResidentGpuError> {
+    u64::from(capacity)
+        .checked_mul(record_bytes)
+        .ok_or(ResidentGpuError::AddressSpaceExceeded)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn exact_and_axes16_rank_cache_byte_contracts_are_finite() {
+        let capacity = 4_099;
+        assert_eq!(
+            projected_plane_bytes(capacity, PROJECTED_CENTER_SOURCE_BYTES_PER_ITEM),
+            Ok(16 * u64::from(capacity))
+        );
+        assert_eq!(
+            projected_plane_bytes(capacity, ProjectedAxesEncoding::Exact32.record_bytes()),
+            Ok(16 * u64::from(capacity))
+        );
+        assert_eq!(
+            projected_plane_bytes(capacity, ProjectedAxesEncoding::Binary16.record_bytes()),
+            Ok(8 * u64::from(capacity))
+        );
     }
 }

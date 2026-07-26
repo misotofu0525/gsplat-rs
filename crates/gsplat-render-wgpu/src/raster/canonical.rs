@@ -6,7 +6,9 @@ use crate::raster::{
 };
 use crate::wgpu_label;
 
-const PROJECTED_RECORD_BYTES: u64 = 16;
+const PROJECTED_CENTER_RECORD_BYTES: u64 = 16;
+const PROJECTED_AXES32_RECORD_BYTES: u64 = 16;
+const PROJECTED_AXES16_RECORD_BYTES: u64 = 8;
 const COLOR_RECORD_BYTES: u64 = 8;
 const SOURCE_ID_BYTES: u64 = 4;
 const DRAW_INDIRECT_ARGS_BYTES: u64 = 16;
@@ -116,15 +118,48 @@ impl CanonicalRaster {
         target_format: wgpu::TextureFormat,
         resources: CanonicalRasterResources<'_>,
     ) -> Result<Self, CanonicalRasterError> {
+        Self::prepare_with_rank_axes(
+            device,
+            target_format,
+            resources,
+            PROJECTED_AXES32_RECORD_BYTES,
+            include_str!("../../shaders/projected_quads_draw.wgsl"),
+            include_str!("../../shaders/preproject_draw.wgsl"),
+        )
+    }
+
+    pub(crate) fn prepare_axes16(
+        device: &wgpu::Device,
+        target_format: wgpu::TextureFormat,
+        resources: CanonicalRasterResources<'_>,
+    ) -> Result<Self, CanonicalRasterError> {
+        Self::prepare_with_rank_axes(
+            device,
+            target_format,
+            resources,
+            PROJECTED_AXES16_RECORD_BYTES,
+            include_str!("../../shaders/projected_quads_draw_axes16.wgsl"),
+            include_str!("../../shaders/preproject_draw_axes16.wgsl"),
+        )
+    }
+
+    fn prepare_with_rank_axes(
+        device: &wgpu::Device,
+        target_format: wgpu::TextureFormat,
+        resources: CanonicalRasterResources<'_>,
+        rank_axes_record_bytes: u64,
+        rank_shader_source: &'static str,
+        source_shader_source: &'static str,
+    ) -> Result<Self, CanonicalRasterError> {
         if resources.rank_indexed.is_none() && resources.source_indexed.is_none() {
             return Err(CanonicalRasterError::Empty);
         }
 
         if let Some(rank) = resources.rank_indexed {
-            validate_rank_resources(rank)?;
+            validate_rank_resources(rank, rank_axes_record_bytes)?;
         }
         if let Some(source) = resources.source_indexed {
-            validate_source_resources(source)?;
+            validate_source_resources(source, rank_axes_record_bytes)?;
         }
 
         // Build every requested family into locals before returning the owner.
@@ -132,10 +167,10 @@ impl CanonicalRaster {
         // no per-frame bind-group creation or partial CanonicalRaster exists.
         let rank_indexed = resources
             .rank_indexed
-            .map(|rank| prepare_rank_indexed(device, target_format, rank));
-        let source_indexed = resources
-            .source_indexed
-            .map(|source| prepare_source_indexed(device, target_format, source));
+            .map(|rank| prepare_rank_indexed(device, target_format, rank, rank_shader_source));
+        let source_indexed = resources.source_indexed.map(|source| {
+            prepare_source_indexed(device, target_format, source, source_shader_source)
+        });
 
         Ok(Self {
             target_format,
@@ -246,6 +281,7 @@ impl CanonicalRaster {
 
 fn validate_rank_resources(
     resources: RankIndexedRasterResources<'_>,
+    projected_axes_record_bytes: u64,
 ) -> Result<(), CanonicalRasterError> {
     if resources.projected_capacity != resources.source_count {
         return Err(CanonicalRasterError::CountMismatch {
@@ -260,7 +296,7 @@ fn validate_rank_resources(
         binding_bytes(
             "rank-indexed projected centers",
             resources.projected_capacity,
-            PROJECTED_RECORD_BYTES,
+            PROJECTED_CENTER_RECORD_BYTES,
         )?,
     )?;
     validate_storage_buffer(
@@ -269,7 +305,7 @@ fn validate_rank_resources(
         binding_bytes(
             "rank-indexed projected axes",
             resources.projected_capacity,
-            PROJECTED_RECORD_BYTES,
+            projected_axes_record_bytes,
         )?,
     )?;
     validate_storage_buffer(
@@ -289,6 +325,7 @@ fn validate_rank_resources(
 
 fn validate_source_resources(
     resources: SourceIndexedRasterResources<'_>,
+    projected_axes_record_bytes: u64,
 ) -> Result<(), CanonicalRasterError> {
     validate_storage_buffer(
         "source-indexed ordered IDs",
@@ -305,7 +342,7 @@ fn validate_source_resources(
         binding_bytes(
             "source-indexed projected centers",
             resources.source_count,
-            PROJECTED_RECORD_BYTES,
+            PROJECTED_CENTER_RECORD_BYTES,
         )?,
     )?;
     validate_storage_buffer(
@@ -314,7 +351,7 @@ fn validate_source_resources(
         binding_bytes(
             "source-indexed projected axes",
             resources.source_count,
-            PROJECTED_RECORD_BYTES,
+            projected_axes_record_bytes,
         )?,
     )?;
     validate_storage_buffer(
@@ -387,6 +424,7 @@ fn prepare_rank_indexed(
     device: &wgpu::Device,
     target_format: wgpu::TextureFormat,
     resources: RankIndexedRasterResources<'_>,
+    shader_source: &'static str,
 ) -> RankIndexedRaster {
     let layout = create_storage_layout(device, "gsplat-canonical-rank-bgl", 3);
     let pipeline = create_splat_pipeline(
@@ -395,7 +433,7 @@ fn prepare_rank_indexed(
         target_format,
         SplatPipeline {
             shader_label: "gsplat-canonical-rank-shader",
-            shader_source: include_str!("../../shaders/projected_quads_draw.wgsl"),
+            shader_source,
             layout_label: "gsplat-canonical-rank-pipeline-layout",
             pipeline_label: "gsplat-canonical-rank-pipeline",
             topology: wgpu::PrimitiveTopology::TriangleStrip,
@@ -422,6 +460,7 @@ fn prepare_source_indexed(
     device: &wgpu::Device,
     target_format: wgpu::TextureFormat,
     resources: SourceIndexedRasterResources<'_>,
+    shader_source: &'static str,
 ) -> SourceIndexedRaster {
     let layout = create_storage_layout(device, "gsplat-canonical-source-bgl", 4);
     let pipeline = create_splat_pipeline(
@@ -430,7 +469,7 @@ fn prepare_source_indexed(
         target_format,
         SplatPipeline {
             shader_label: "gsplat-canonical-source-shader",
-            shader_source: include_str!("../../shaders/preproject_draw.wgsl"),
+            shader_source,
             layout_label: "gsplat-canonical-source-pipeline-layout",
             pipeline_label: "gsplat-canonical-source-pipeline",
             topology: wgpu::PrimitiveTopology::TriangleStrip,

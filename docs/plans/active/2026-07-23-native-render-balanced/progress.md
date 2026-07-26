@@ -509,3 +509,62 @@ real window, browser or device endpoint was run for this candidate. Formal
 desktop collection, image-quality admission, performance evidence and every
 other endpoint qualification remain **Deferred** to the root-owned one-shot;
 B1 remains **Active**.
+
+## B2 projected-axis binary16 cache candidate
+
+Implementation on baseline `e5c5e4848dc0dd40338880a294d13d647cd156d2`
+adds one default-disabled private diagnostic feature,
+`diagnostic-surface-projected-axes16`. Ordinary/default construction remains
+`ExactAxes32`: the existing rank and source producer/draw shaders are
+unchanged, and their projected-axis records remain 16 bytes. The candidate
+selects its profile in the unpublished Packed Surface slot before GPU resource
+construction, receipts and validates the realized profile in GPU preparation,
+and prepares matching canonical raster consumers before PlanSet admission.
+Replacement and GPU re-admission retain that construction-time profile.
+
+Only the two live cache families change under the candidate. Rank PostSort and
+source-indexed Preproject producers keep all projection, visibility,
+contributor and order math in `f32`, then store `axis_u` and `axis_v` as two
+`pack2x16float` words in an 8-byte record. Their candidate-only draw shaders
+recover the vectors with `unpack2x16float`. Rank center/alpha/source-ID records
+and source center/alpha/full32-key records remain 16 bytes; key and ordered-ID
+planes remain four bytes per element. SH, membership, CPU ordering, V/C/D
+semantics, PlanId, eligibility, fallback and controller/Adaptive ownership are
+unchanged. The dead compacted projected-quad shader was not edited.
+
+The Candidate24 depth-key feature and axes16 feature are compile-time mutually
+exclusive; the combined feature command is accepted only when it fails with
+the explicit mutual-exclusion diagnostic. No combined profile is constructed.
+The axes16 value is crate-private and is not exposed through a stable Rust, C,
+Swift, Kotlin or JavaScript API, preset or product default.
+
+Finite candidate-local verification passed:
+
+- `cargo test -p gsplat-render-wgpu --lib --locked --quiet`: 469 passed, 8
+  existing research/external observations ignored;
+- the same command with
+  `--features diagnostic-surface-projected-axes16`: 475 passed, 8 ignored;
+- focused axes16 tests execute both producers, rank direct/indirect draws and
+  the source-indexed indirect draw, validate exact 16-byte versus candidate
+  8-byte axis allocations for both cache families, retain center/key/ID sizes,
+  preserve three-plan admission across replacement/re-admission, and match the
+  existing CPU order/count oracle;
+- the WGSL boundary test passed deterministic repeated packing plus unpacked
+  signed zero, minimum subnormal, maximum finite, overflow, infinity and NaN
+  classification checks;
+- locked native library checks passed for default and axes16 builds;
+- locked `wasm32-unknown-unknown` library checks passed for default and axes16
+  builds (with only pre-existing dead-code warnings in the unchanged capture
+  publication module);
+- renderer all-target Clippy with warnings denied passed for default and
+  axes16 builds;
+- `cargo fmt --all -- --check`, `git diff --check`, and
+  `PYTHONDONTWRITEBYTECODE=1 python3 tests/architecture/test_source_architecture.py`
+  passed (3 architecture tests).
+
+This is **Accepted only as a finite candidate-local implementation for root
+review**. No browser, device, real-window, Metal endpoint, collector or formal
+artifact was run; no image-quality or performance conclusion is claimed.
+Dataset image evaluation, product acceptance, endpoint portability and any
+formal performance decision remain **Deferred** to separately authorized
+root-owned evidence work. B2 remains **Active** until that evidence exists.
