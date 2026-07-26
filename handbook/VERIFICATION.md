@@ -461,6 +461,7 @@ python3 tests/perf/compare-paired-benchmarks.py \
 
 ```bash
 node --check examples/web/src/main.js
+node --test examples/web/test/renderer-policy.test.mjs
 python3 -m http.server 4173 --bind 127.0.0.1 --directory .
 ```
 
@@ -468,40 +469,48 @@ python3 -m http.server 4173 --bind 127.0.0.1 --directory .
 - Do not use `file:///.../examples/web/index.html`; the example depends on HTTP
   serving from the repository root so wasm imports and `/tests/...` dataset
   fetches resolve correctly.
-- Expected startup state loads `tests/datasets/minimal_ascii.ply` and shows
-  non-zero `Visible` and `Drawn` counts plus an overlay with `surface=webgl2
-  realtime`, `state=rendering`, `camera=auto`, `dataset=minimal_ascii.ply`,
-  and `path=/tests/datasets/minimal_ascii.ply`.
+- The default/product route requires the generated Rust/WASM package and a
+  usable browser WebGPU Surface. Complete the Web WASM Build below first.
+  Missing package, WebGPU construction failure, and Exact scene-admission
+  failure all fail closed; they do not select WebGL2 automatically.
+- A successful default/product startup shows `surface=wasm-wgpu realtime`,
+  `state=rendering`, the selected installed dataset and path, and non-zero
+  terminal `Visible` and `Drawn` counts. Pending Exact counts remain
+  unavailable until their matching renderer current-stats terminal.
 - Use the file picker or the `Flowers` button for larger local `.ply` smoke
   checks. Use `?dataset=flowers` for repeatable automation against
-  `tests/datasets/external/nvidia_flowers_1/flowers_1/flowers_1.ply`. Without a
-  generated wasm package, this is WebGL2 fallback validation rather than proof
-  that the Rust `wgpu` renderer is compiled to WebAssembly.
-- For benchmark smoke, open:
+  `tests/datasets/external/nvidia_flowers_1/flowers_1/flowers_1.ply`.
+- The non-equivalent sampled WebGL2 diagnostic is available only after the
+  explicit `?gsplat_allow_sampled_webgl=true` opt-in and only outside formal
+  qualification. The flag permits the diagnostic after an Exact startup
+  failure; it does not replace a working Exact route or make sampled output
+  product/fallback evidence. For example:
+
+```text
+http://127.0.0.1:4173/examples/web/?dataset=minimal&gsplat_allow_sampled_webgl=true
+```
+
+- For Exact Packed benchmark smoke, open:
 
 ```text
 http://127.0.0.1:4173/examples/web/?gsplat_benchmark=true&gsplat_benchmark_sync=true&gsplat_benchmark_frames=5&gsplat_benchmark_warmup_frames=1&gsplat_surface_sort_interval=2
 ```
 
-- Expected benchmark output includes `BENCHMARK_RESULT dataset=minimal_ascii.ply`.
-- Optional flower fallback smoke:
+- Expected benchmark output includes `BENCHMARK_RESULT` and
+  `renderer=wasm_packed_atlas`. The latter is the current Packed raster
+  identity returned as `wasm_${rasterPath()}`; the retired Direct product label
+  is not an acceptable expectation.
+- Optional Flowers scene smoke:
 
 ```text
 http://127.0.0.1:4173/examples/web/?dataset=flowers&gsplat_benchmark=true&gsplat_benchmark_sync=true&gsplat_benchmark_frames=2&gsplat_benchmark_warmup_frames=0&gsplat_surface_sort_interval=2
 ```
 
 - Expected benchmark output includes `BENCHMARK_RESULT dataset=flowers_1.ply`.
-- Direct Surface path smoke (after wasm build):
-
-```text
-http://127.0.0.1:4173/examples/web/?gsplat_benchmark=true&gsplat_benchmark_sync=true&gsplat_benchmark_frames=5&gsplat_benchmark_warmup_frames=1
-```
-
-- Expected wasm benchmark output includes `renderer=wasm_sorted_index_direct`.
 - After the benchmark/camera motion stops, leave the page visible for at least
   three animation frames. The canvas must remain non-black with non-zero
-  `Visible` / `Drawn` counts; this is the stationary direct-path regression
-  check and proves a cached order is still redrawn through the direct pipeline.
+  terminal `Visible` / `Drawn` counts; this is the stationary Packed Exact
+  regression check and proves cached exact order is still presented.
 
 ## Web WASM Build
 
@@ -527,8 +536,14 @@ npm --prefix packages/web run pack:dry-run
 - This is the proof path for the shared Rust `wgpu` renderer and local Web SDK
   wrapper running in the browser. After the package exists, reload
   `http://127.0.0.1:4173/examples/web/?dataset=flowers`; expected status should
-  report `surface=wasm-wgpu`, `renderer=wasm_sorted_index_direct` in benchmark output,
+  report `surface=wasm-wgpu`, `renderer=wasm_packed_atlas` in benchmark output,
   and non-zero `Visible` / `Drawn` counts for `flowers_1.ply`.
+
+The commands in this documentation edit are build, syntax, and unit-policy
+evidence only. They do not claim a browser run. Real Chrome/WebGPU execution at
+the accepted M7 SHA `1de3f79fa2fa22955f99c887bea421c918e31ee0` remains
+**Deferred**; WASM compilation, Node tests, sampled WebGL2, or a browser result
+from another SHA cannot substitute for that fixed-SHA endpoint evidence.
 
 For a local external-consumer check, build the distribution, pack from the
 package directory, install the resulting tarball into a fresh directory, and

@@ -22,6 +22,10 @@ Browser WebAssembly bindings for the shared Rust `wgpu` Surface renderer.
   shared Exact runtime owns the complete Packed plan, policy, cache generations,
   order/raster publication, and current-stats receipts. The WASM crate is only
   a compatibility/translation boundary; it has no Web-only renderer controller.
+- WebGPU Surface and Exact scene-construction failures return an error without
+  publishing a renderer. This crate has no WebGL2 fallback; the example's
+  sampled WebGL2 diagnostic is a separate explicit opt-in and cannot satisfy
+  formal qualification.
 - Each `renderFrame` result retains the legacy order-measurement fields for
   compatibility, but renderer-owned Exact Packed frames do not manufacture a
   legacy order ticket. Exact benchmark evidence joins `requestCurrentStats`
@@ -57,6 +61,8 @@ Browser WebAssembly bindings for the shared Rust `wgpu` Surface renderer.
   `S/V/C/D` semantics without owning a second ticket or generation ledger.
   Pending indirect V/D counts serialize as JavaScript `null`; only a matching
   renderer terminal may populate them.
+- The default Packed geometry reports `rasterPath() == "packed_atlas"`; the Web
+  example prefixes that identity as `renderer=wasm_packed_atlas`.
 - It is not part of the stable v0.1 public contract. Web changes must pass the
   WebGPU/WASM smoke path in `handbook/VERIFICATION.md` before completion is
   claimed.
@@ -88,3 +94,7 @@ bash packages/web/scripts/build.sh
 That writes `packages/web/dist/` and keeps the generated wasm
 module behind the `@gsplat-rs/web` ESM wrapper. This is still local-only and is
 not published to npm.
+
+Build and unit-policy results do not claim browser execution. Real
+Chrome/WebGPU execution at the accepted M7 SHA
+`1de3f79fa2fa22955f99c887bea421c918e31ee0` remains **Deferred**.

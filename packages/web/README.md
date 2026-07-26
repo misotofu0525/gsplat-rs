@@ -44,6 +44,13 @@ The wrapper exposes:
   only when every count and SH degree agrees and no sampling, LOD, or partial
   publication occurred.
 
+Creation and presentation are fail-closed: the package rejects when the
+Rust/WASM module, WebGPU Surface, or Exact Packed scene cannot be constructed.
+It has no WebGL2 product fallback. The example's sampled WebGL2 diagnostic is a
+separate, explicit `gsplat_allow_sampled_webgl=true` opt-in and cannot satisfy
+formal qualification. For the default Packed path `rasterPath()` returns
+`packed_atlas`, which the example reports as `renderer=wasm_packed_atlas`.
+
 Minimal browser usage:
 
 ```js
@@ -176,3 +183,7 @@ Current limits:
 - `createGsplatRenderer()` accepts in-memory PLY bytes; the recommended
   `createGsplatRendererFromUrl()` Packed path is transport-streamed
 - not a stable v0.1 public contract and not published to npm
+
+Package syntax and unit tests do not claim browser execution. Real
+Chrome/WebGPU execution at the accepted M7 SHA
+`1de3f79fa2fa22955f99c887bea421c918e31ee0` remains **Deferred**.

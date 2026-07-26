@@ -37,8 +37,9 @@ http://127.0.0.1:4173/examples/web/
 ```
 
 The repository collector has a bounded M4 functional smoke that requires real
-Chrome WebGPU, disables the sampled WebGL fallback, and records renderer-owned
-Exact current-stats plus source/SH/camera/resolution/presentation facts:
+Chrome WebGPU, keeps the sampled WebGL diagnostic disabled, and records
+renderer-owned Exact current-stats plus
+source/SH/camera/resolution/presentation facts:
 
 ```bash
 GSPLAT_M4_SMOKE=1 node examples/web/scripts/collect-web-benchmark-artifact.mjs
@@ -56,7 +57,12 @@ http://127.0.0.1:4173/examples/web/?gsplat_allow_sampled_webgl=true
 ```
 
 This flag is ignored for formal benchmark/qualification runs; it cannot turn a
-sampled preview into quality or performance evidence.
+sampled diagnostic into a product fallback or quality/performance evidence.
+
+This documentation update does not claim a fresh browser run. Real
+Chrome/WebGPU execution at the accepted M7 SHA
+`1de3f79fa2fa22955f99c887bea421c918e31ee0` remains **Deferred**; build and
+policy-test results cannot substitute for that fixed-SHA endpoint evidence.
 
 Exact construction failures emit `SCENE_LOAD_FAILURE_JSON` with the stable
 `stage`, `error_code`, `error_message`, and `scene_published=false` fields.
@@ -137,7 +143,7 @@ full-resident Packed path. Every accepted frame must prove
 `requested = Surface = internal render = presented = 1920x1080`,
 `source = decoded = encoded = resident = addressable` membership, and the
 complete source SH degree. Sampling, LOD, dynamic resolution, and upscaling are
-forbidden. The sampled WebGL2 point-splat fallback and Paged path remain useful
+forbidden. The sampled WebGL2 point-splat diagnostic and Paged path remain useful
 smoke/diagnostic paths, but neither can produce formal quality or competitor
 evidence. The 640x360/640x480 traces and historical comparisons are likewise
 smoke-only.
@@ -155,9 +161,9 @@ loop. `gsplat_camera_frame_indices=0,1,2`,
 schedule explicit. The standard benchmark warmup/frame parameters are aliases
 for the trace warmup/measured counts when the sequence-specific values are
 absent. Sequence mode requires sort interval `1`. The requested backend may be
-`cpu`, `gpu`, or `adaptive`; a non-CPU request fails closed if only the WebGL2
-fallback is available. Console receipts identify every applied source frame
-and timestamp.
+`cpu`, `gpu`, or `adaptive`; a non-CPU request fails closed if only the sampled
+WebGL2 diagnostic route is active. Console receipts identify every applied
+source frame and timestamp.
 
 Projected drawing is selected independently with
 `gsplat_surface_projected_policy=candidate|compact|adaptive` (default
