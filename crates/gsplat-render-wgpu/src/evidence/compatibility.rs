@@ -18,8 +18,8 @@ use crate::{
     SurfaceProjectedDrawMeasurementFailure, SurfaceProjectedDrawMeasurementFailureReason,
     SurfaceTimingSource,
     surface_session::{
-        SurfaceAdaptiveState, SurfaceFrameOutput, SurfaceGpuProducerMeasurementSubmission,
-        SurfaceOrderBackend, SurfaceOrderMeasurementSubmission, SurfaceProjectedDrawAdaptiveState,
+        SurfaceAdaptiveState, SurfaceGpuProducerMeasurementSubmission, SurfaceOrderBackend,
+        SurfaceOrderMeasurementSubmission, SurfaceProjectedDrawAdaptiveState,
         SurfaceProjectedDrawMeasurementSubmission, SurfaceProjectedDrawPolicy,
     },
 };
@@ -630,46 +630,6 @@ impl SessionEvidence {
         {
             replace_pending(&mut self.pending_producer, ticket, issue);
         }
-    }
-
-    pub(crate) fn observe_frame_output(
-        &mut self,
-        output: SurfaceFrameOutput,
-        requested_backend: SurfaceOrderBackend,
-        requested_producer: SurfaceGpuOrderProducer,
-        producer_measurement_enabled: bool,
-    ) {
-        let sampled_producer = match output.gpu_producer_measurement_submission {
-            SurfaceGpuProducerMeasurementSubmission::Issued { producer, .. }
-            | SurfaceGpuProducerMeasurementSubmission::Unsampled { producer, .. } => Some(producer),
-            SurfaceGpuProducerMeasurementSubmission::NotRequested => None,
-        };
-        self.observe_submissions(
-            SurfaceCompatibilityOrderSubmission {
-                camera_revision: output.camera_revision,
-                requested_backend,
-                actual_backend: output.order_backend,
-                adaptive_state: output.adaptive_state,
-                measurement: output.order_measurement_submission,
-            },
-            SurfaceCompatibilityProjectedSubmission {
-                camera_revision: output.camera_revision,
-                requested_policy: output.projected_draw_policy,
-                actual_execution: output.projected_draw_execution,
-                order_backend: output.order_backend,
-                adaptive_state: output.projected_draw_adaptive_state,
-                measurement: output.projected_draw_measurement_submission,
-            },
-            SurfaceCompatibilityProducerSubmission {
-                camera_revision: output.camera_revision,
-                requested_producer,
-                actual_producer: output.gpu_order_producer.or(sampled_producer),
-                order_backend: output.order_backend,
-                projected_execution: output.projected_draw_execution,
-                measurement_enabled: producer_measurement_enabled,
-                measurement: output.gpu_producer_measurement_submission,
-            },
-        );
     }
 
     pub(crate) fn publish_exact_order_terminal(&mut self, terminal: SurfaceCurrentStatsTerminal) {

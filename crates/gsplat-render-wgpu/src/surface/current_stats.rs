@@ -4,6 +4,7 @@
 //! terminal publication remain owned by `Renderer` and `PlanSampler`. Surface
 //! and later C consumers only translate these values.
 
+#[cfg(test)]
 use gsplat_core::FrameStats;
 
 use crate::{
@@ -415,81 +416,11 @@ impl From<CurrentStatsPoll> for SurfaceCurrentStatsPoll {
     }
 }
 
-/// Whether the legacy FrameStats projection for the last presented Surface
-/// frame has demonstrably current V/D counts.
-///
-/// This is compatibility availability only. Renderer remains the ticket,
-/// generation, queue and terminal owner; Surface retains no terminal ledger.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum LegacySurfaceStatsAvailability {
-    Current,
-    AwaitingCurrentReceipt,
-    Unavailable,
-}
-
-impl LegacySurfaceStatsAvailability {
-    pub(crate) const fn for_presented_frame(
-        counts_are_synchronous: bool,
-        submission: SurfaceCurrentStatsSubmission,
-    ) -> Self {
-        if counts_are_synchronous {
-            Self::Current
-        } else if matches!(submission, SurfaceCurrentStatsSubmission::Issued(_)) {
-            Self::AwaitingCurrentReceipt
-        } else {
-            Self::Unavailable
-        }
-    }
-
-    pub(crate) fn observe_poll(
-        &mut self,
-        submission: SurfaceCurrentStatsSubmission,
-        poll: SurfaceCurrentStatsPoll,
-        stats: &mut FrameStats,
-    ) {
-        if *self != Self::AwaitingCurrentReceipt {
-            return;
-        }
-        let Some(expected) = submission.receipt() else {
-            *self = Self::Unavailable;
-            return;
-        };
-        let SurfaceCurrentStatsPoll::Terminal(terminal) = poll else {
-            return;
-        };
-        if terminal.submission() != expected {
-            return;
-        }
-
-        match terminal {
-            SurfaceCurrentStatsTerminal::Ready(receipt) => {
-                let counts = receipt.counts();
-                stats.visible_count = counts.visible();
-                stats.drawn_count = counts.drawn();
-                *self = Self::Current;
-            }
-            SurfaceCurrentStatsTerminal::MapFailure(_)
-            | SurfaceCurrentStatsTerminal::GenerationInvalidated(_)
-            | SurfaceCurrentStatsTerminal::Expired(_)
-            | SurfaceCurrentStatsTerminal::Dropped(_) => {
-                *self = Self::Unavailable;
-            }
-        }
-    }
-
-    pub(crate) const fn get(self, stats: FrameStats) -> Option<FrameStats> {
-        match self {
-            Self::Current => Some(stats),
-            Self::AwaitingCurrentReceipt | Self::Unavailable => None,
-        }
-    }
-}
-
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
     use crate::evidence::{
-        SessionEvidence, SurfaceCompatibilityOrderSubmission,
+        LegacySurfaceStatsAvailability, SessionEvidence, SurfaceCompatibilityOrderSubmission,
         SurfaceCompatibilityProducerSubmission, SurfaceCompatibilityProjectedSubmission,
         SurfaceCompatibilityTerminal, SurfaceCompatibilityTerminalPoll,
         SurfaceCompatibilityTerminalSelector, SurfaceGpuProducerMeasurementSubmission,

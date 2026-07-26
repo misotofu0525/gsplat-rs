@@ -7,7 +7,6 @@ mod projected_adaptive;
 mod session_control;
 mod session_frame_executor;
 mod session_owner;
-mod session_publication;
 mod session_schedule;
 pub(crate) mod shadow;
 pub(crate) mod standalone_direct_runtime;
@@ -18,7 +17,6 @@ mod standalone_session_runtime;
 pub(crate) use capture::SurfaceCapture;
 pub use capture::SurfaceFrameCapture;
 pub(crate) use configuration::SurfaceConfigurationOwner;
-pub(crate) use current_stats::LegacySurfaceStatsAvailability;
 pub use current_stats::{
     SurfaceCurrentStatsCountSemantics, SurfaceCurrentStatsCounts, SurfaceCurrentStatsFailure,
     SurfaceCurrentStatsFrameIdentity, SurfaceCurrentStatsJoinIdentity, SurfaceCurrentStatsPlan,
@@ -47,9 +45,6 @@ pub(crate) use session_frame_executor::{
     SessionFrameAttempt, SessionFrameExecutor, StandaloneCpuFrameAttempt, StandaloneGpuFrameAttempt,
 };
 pub(crate) use session_owner::SessionSurfaceOwner;
-pub(crate) use session_publication::{
-    SessionPublication, SurfaceFramePublicationOutcome, SurfaceTelemetryBatch,
-};
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use session_schedule::async_sort_supported;
 pub(crate) use session_schedule::{SessionSchedule, SurfaceFramePlan};

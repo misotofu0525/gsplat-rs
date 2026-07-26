@@ -4,6 +4,7 @@ mod plan;
 mod producer;
 mod projected;
 mod ring;
+mod session_publication;
 mod submission;
 
 pub(crate) use compatibility::SessionEvidence;
@@ -34,6 +35,12 @@ pub use projected::{
     SurfaceProjectedDrawMeasurementFailureReason,
 };
 pub(crate) use ring::BoundedEvidenceRing;
+#[cfg(test)]
+pub(crate) use session_publication::LegacySurfaceStatsAvailability;
+pub(crate) use session_publication::{
+    PresentedCurrentStats, PresentedFramePublication, PresentedTelemetry, SessionPublication,
+    SurfaceTelemetryBatch,
+};
 pub use submission::{
     SurfaceGpuProducerMeasurementSubmission, SurfaceGpuProducerMeasurementUnsampledReason,
     SurfaceOrderMeasurementSubmission, SurfaceOrderMeasurementUnsampledReason,
