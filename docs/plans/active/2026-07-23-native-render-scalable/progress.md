@@ -10,7 +10,7 @@ S1 = Active
 
 <!-- gsplat-program-active-lanes: begin -->
 activation_commit = 3ecf0f2d0180c197faa132443066b3b9b98d36d4
-S1 = proxy-image-gate-contract
+S1 = bonsai-authority-manifest-admission
 <!-- gsplat-program-active-lanes: end -->
 
 ## Scope
@@ -121,6 +121,22 @@ metadata, manual authored-view review or physical-device access has an explicit
 **Rejected**. Only a fully joined two-endpoint pass is **Accepted**. Therefore
 **S1 remains Active**, the current geometric proxy has no quality claim, and
 S2--S5 remain locked pending a separate implementation/evidence slice.
+
+## S1 Bonsai authority-manifest admission slice
+
+The next S1 slice admits only the independently reviewable
+`gsplat-dataset/v1` identity required by the frozen formal gate. It may add the
+committed Bonsai manifest, manifest-validation coverage, and the accompanying
+contract/ledger record. The manifest must bind exactly the predeclared
+source-path, hash, byte count, splat count, SH degree, provenance and local
+research-use restrictions; any bounds field must come from a retained local
+analysis receipt, never an inferred camera or benchmark result.
+
+This is an authority prerequisite, not proxy quality evidence. It does not add
+a renderer consumer, page loader, hierarchy rule, image result, device claim
+or product default. Missing local source data or absent independently derived
+bounds is a finite Deferred handoff to root, not permission to guess values or
+weaken the manifest contract.
 
 ## Ordered implementation ledger
 

@@ -9,7 +9,7 @@ B1 = Active
 
 <!-- gsplat-program-active-lanes: begin -->
 activation_commit = 3ecf0f2d0180c197faa132443066b3b9b98d36d4
-B1 = shared-depth-key-quantizer
+B1 = surface-depth-precision-carriage
 <!-- gsplat-program-active-lanes: end -->
 
 ## B0 authoring slice
@@ -150,3 +150,20 @@ Focused verification for this candidate:
 - required Metal SortedAlpha conformance: 1 passed;
 - renderer all-target Clippy with warnings denied, Rust format, diff check, and
   source-architecture policy: passed.
+
+## B1 surface-depth-precision carriage slice
+
+The next B1 slice is deliberately limited to carrying the already-tested
+private `ExactFull32` / `CandidateStable24` choice through the renderer-owned
+Surface ordering path. It may change only private CPU/GPU plan construction and
+its focused tests. It must leave the product selection at `ExactFull32`, keep
+all public Rust/C/Swift/JavaScript APIs unchanged, and retain the same source
+membership, near/far decisions, radix width, plan IDs and adaptive policy.
+
+The purpose is diagnostic reachability: a later root-owned evidence harness
+must be able to force a fully specified candidate plan without duplicating
+depth-key rules or introducing a production preference. This slice does not
+run an endpoint experiment, alter a default, make a performance claim, or
+allow 20-bit quantization. If a required platform control would expand a
+stable binding, it is out of scope and must be handed back to root rather than
+silently exposed.
