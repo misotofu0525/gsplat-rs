@@ -14,11 +14,64 @@ use super::{
     SurfaceCompatibilityProjectedSubmission,
 };
 use crate::gpu_telemetry::SurfaceCpuOrderMeasurement;
+use crate::plans::{FrameIdentity, PlanId};
+use crate::renderer::SurfaceDepthPrecisionProfile;
 use crate::{
     SurfaceCurrentStatsPoll, SurfaceCurrentStatsSubmission, SurfaceGpuProducerMeasurement,
     SurfaceGpuProducerMeasurementFailure, SurfaceOrderMeasurement, SurfaceOrderMeasurementFailure,
     SurfaceProjectedDrawMeasurement, SurfaceProjectedDrawMeasurementFailure,
 };
+
+/// Renderer-observed depth precision joined to one successfully presented
+/// Packed Exact frame. This is private evidence: later collectors must still
+/// join it to the existing presented capture and Balanced image gate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PresentedDepthPrecisionReceipt {
+    profile: SurfaceDepthPrecisionProfile,
+    frame: FrameIdentity,
+    plan: PlanId,
+    order_generation: u64,
+    presentation_sequence: u64,
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+impl PresentedDepthPrecisionReceipt {
+    pub(crate) const fn new(
+        profile: SurfaceDepthPrecisionProfile,
+        frame: FrameIdentity,
+        plan: PlanId,
+        order_generation: u64,
+        presentation_sequence: u64,
+    ) -> Self {
+        Self {
+            profile,
+            frame,
+            plan,
+            order_generation,
+            presentation_sequence,
+        }
+    }
+
+    pub(crate) const fn profile(self) -> SurfaceDepthPrecisionProfile {
+        self.profile
+    }
+
+    pub(crate) const fn frame(self) -> FrameIdentity {
+        self.frame
+    }
+
+    pub(crate) const fn plan(self) -> PlanId {
+        self.plan
+    }
+
+    pub(crate) const fn order_generation(self) -> u64 {
+        self.order_generation
+    }
+
+    pub(crate) const fn presentation_sequence(self) -> u64 {
+        self.presentation_sequence
+    }
+}
 
 #[derive(Default)]
 pub(crate) struct SurfaceTelemetryBatch {
@@ -123,6 +176,7 @@ pub(crate) enum PresentedCurrentStats {
 pub(crate) struct PresentedFramePublication {
     stats: FrameStats,
     current_stats: PresentedCurrentStats,
+    depth_precision: Option<PresentedDepthPrecisionReceipt>,
     order: SurfaceCompatibilityOrderSubmission,
     projected: SurfaceCompatibilityProjectedSubmission,
     producer: SurfaceCompatibilityProducerSubmission,
@@ -133,6 +187,7 @@ impl PresentedFramePublication {
     pub(crate) const fn new(
         stats: FrameStats,
         current_stats: PresentedCurrentStats,
+        depth_precision: Option<PresentedDepthPrecisionReceipt>,
         order: SurfaceCompatibilityOrderSubmission,
         projected: SurfaceCompatibilityProjectedSubmission,
         producer: SurfaceCompatibilityProducerSubmission,
@@ -141,6 +196,7 @@ impl PresentedFramePublication {
         Self {
             stats,
             current_stats,
+            depth_precision,
             order,
             projected,
             producer,
@@ -218,6 +274,7 @@ pub(crate) struct SessionPublication {
     current_stats_submission: SurfaceCurrentStatsSubmission,
     legacy_stats_availability: LegacySurfaceStatsAvailability,
     last_stats: FrameStats,
+    presented_depth_precision: Option<PresentedDepthPrecisionReceipt>,
     pending_telemetry: SurfaceTelemetryBatch,
     evidence: SessionEvidence,
     #[cfg(test)]
@@ -234,6 +291,7 @@ impl SessionPublication {
                 LegacySurfaceStatsAvailability::Current
             },
             last_stats: FrameStats::zero(),
+            presented_depth_precision: None,
             pending_telemetry: SurfaceTelemetryBatch::default(),
             evidence: SessionEvidence::new(),
             #[cfg(test)]
@@ -247,6 +305,12 @@ impl SessionPublication {
 
     pub(crate) const fn last_stats(&self) -> FrameStats {
         self.last_stats
+    }
+
+    pub(crate) const fn presented_depth_precision_receipt(
+        &self,
+    ) -> Option<PresentedDepthPrecisionReceipt> {
+        self.presented_depth_precision
     }
 
     pub(crate) fn legacy_stats(&self) -> Option<FrameStats> {
@@ -276,12 +340,16 @@ impl SessionPublication {
         let PresentedFramePublication {
             stats,
             current_stats,
+            depth_precision,
             order,
             projected,
             producer,
             telemetry,
         } = publication;
         self.last_stats = stats;
+        if let Some(depth_precision) = depth_precision {
+            self.presented_depth_precision = Some(depth_precision);
+        }
         if let PresentedCurrentStats::Exact {
             submission,
             counts_current,
@@ -592,6 +660,7 @@ mod tests {
         publication.publish_presented_frame(PresentedFramePublication::new(
             stats,
             PresentedCurrentStats::Preserve,
+            None,
             new_order,
             new_projected,
             new_producer,
@@ -628,5 +697,79 @@ mod tests {
                     if unavailable.reason == SurfaceCompatibilityCountsUnavailableReason::Pending
             ));
         }
+    }
+
+    fn depth_precision_receipt(
+        profile: SurfaceDepthPrecisionProfile,
+        camera_revision: u64,
+        order_generation: u64,
+        presentation_sequence: u64,
+    ) -> PresentedDepthPrecisionReceipt {
+        PresentedDepthPrecisionReceipt::new(
+            profile,
+            FrameIdentity::new(2, camera_revision, 3, 4, 5),
+            PlanId::CpuPostSort,
+            order_generation,
+            presentation_sequence,
+        )
+    }
+
+    fn publish_depth_precision_receipt(
+        publication: &mut SessionPublication,
+        receipt: PresentedDepthPrecisionReceipt,
+    ) {
+        let (order, projected, producer) = submissions(receipt.presentation_sequence());
+        publication.publish_presented_frame(PresentedFramePublication::new(
+            FrameStats::zero(),
+            PresentedCurrentStats::Preserve,
+            Some(receipt),
+            order,
+            projected,
+            producer,
+            PresentedTelemetry::from_batch(SurfaceTelemetryBatch::default()),
+        ));
+    }
+
+    #[test]
+    fn depth_precision_receipt_is_present_fenced_and_identity_bound() {
+        let mut publication = SessionPublication::new(true);
+        assert_eq!(publication.presented_depth_precision_receipt(), None);
+
+        let candidate =
+            depth_precision_receipt(SurfaceDepthPrecisionProfile::CandidateStable24, 7, 11, 13);
+        // Unavailable and failed attempts have no presented DTO. Retained or
+        // terminalized telemetry therefore cannot manufacture the receipt.
+        publication.retain_consumed_telemetry(SurfaceTelemetryBatch::default());
+        publication.terminalize_deferred_telemetry();
+        assert_eq!(publication.presented_depth_precision_receipt(), None);
+
+        publish_depth_precision_receipt(&mut publication, candidate);
+        let published = publication
+            .presented_depth_precision_receipt()
+            .expect("successful present publishes the depth precision receipt");
+        assert_eq!(
+            published.profile(),
+            SurfaceDepthPrecisionProfile::CandidateStable24
+        );
+        assert_eq!(published.frame().camera_revision(), 7);
+        assert_eq!(published.plan(), PlanId::CpuPostSort);
+        assert_eq!(published.order_generation(), 11);
+        assert_eq!(published.presentation_sequence(), 13);
+
+        // Another unpresented attempt cannot overwrite the last successful
+        // presentation identity with its requested profile.
+        publication.retain_consumed_telemetry(SurfaceTelemetryBatch::default());
+        assert_eq!(
+            publication.presented_depth_precision_receipt(),
+            Some(candidate)
+        );
+
+        let next_presented =
+            depth_precision_receipt(SurfaceDepthPrecisionProfile::ExactFull32, 9, 15, 16);
+        publish_depth_precision_receipt(&mut publication, next_presented);
+        assert_eq!(
+            publication.presented_depth_precision_receipt(),
+            Some(next_presented)
+        );
     }
 }

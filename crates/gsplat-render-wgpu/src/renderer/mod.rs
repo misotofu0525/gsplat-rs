@@ -48,6 +48,45 @@ pub(crate) use current_stats::{
 };
 use current_stats::{CurrentStatsFrameCounts, CurrentStatsVisibleSource};
 
+/// Construction-time depth-key profile for the private Packed Surface graph.
+///
+/// Ordinary builds remain ExactFull32. The candidate is reachable only through
+/// the explicitly named diagnostic feature or crate-private tests, and the
+/// selected value is then owned by the immutable PlanSet for the session.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum SurfaceDepthPrecisionProfile {
+    #[default]
+    ExactFull32,
+    CandidateStable24,
+}
+
+impl SurfaceDepthPrecisionProfile {
+    pub(crate) const fn configured_for_surface_build() -> Self {
+        #[cfg(feature = "diagnostic-surface-depth-key-candidate24")]
+        {
+            Self::CandidateStable24
+        }
+        #[cfg(not(feature = "diagnostic-surface-depth-key-candidate24"))]
+        {
+            Self::ExactFull32
+        }
+    }
+
+    const fn depth_key_precision(self) -> DepthKeyPrecision {
+        match self {
+            Self::ExactFull32 => DepthKeyPrecision::ExactFull32,
+            Self::CandidateStable24 => DepthKeyPrecision::CandidateStable24,
+        }
+    }
+
+    const fn from_depth_key_precision(precision: DepthKeyPrecision) -> Self {
+        match precision {
+            DepthKeyPrecision::ExactFull32 => Self::ExactFull32,
+            DepthKeyPrecision::CandidateStable24 => Self::CandidateStable24,
+        }
+    }
+}
+
 /// The only E1 contract: Exact fidelity over one complete resident scene.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct RenderContract {
@@ -1088,6 +1127,12 @@ impl PreparedRuntimeSlot {
 
     pub(crate) fn gpu_preparation(&self) -> Option<GpuPreparationReceipt> {
         self.runtime.scene.gpu_preparation()
+    }
+
+    pub(crate) fn surface_depth_precision_profile(&self) -> SurfaceDepthPrecisionProfile {
+        SurfaceDepthPrecisionProfile::from_depth_key_precision(
+            self.runtime.plans.depth_key_precision(),
+        )
     }
 
     #[cfg(test)]

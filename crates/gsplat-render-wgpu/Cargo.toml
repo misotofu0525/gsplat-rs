@@ -12,6 +12,10 @@ repository.workspace = true
 homepage.workspace = true
 rust-version.workspace = true
 
+[features]
+default = []
+diagnostic-surface-depth-key-candidate24 = []
+
 [dependencies]
 gsplat-core = { path = "../gsplat-core", version = "0.1.3" }
 gsplat-sort = { path = "../gsplat-sort", version = "0.1.3" }

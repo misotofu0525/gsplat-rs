@@ -7,9 +7,10 @@ use std::time::Duration;
 use crate::SurfaceFrameCapture;
 pub use crate::api::SurfaceOrderBackendUsed;
 use crate::evidence::{
-    PresentedCurrentStats, PresentedFramePublication, PresentedTelemetry, SessionPublication,
-    SurfaceCompatibilityOrderSubmission, SurfaceCompatibilityProducerSubmission,
-    SurfaceCompatibilityProjectedSubmission, SurfaceTelemetryBatch,
+    PresentedCurrentStats, PresentedDepthPrecisionReceipt, PresentedFramePublication,
+    PresentedTelemetry, SessionPublication, SurfaceCompatibilityOrderSubmission,
+    SurfaceCompatibilityProducerSubmission, SurfaceCompatibilityProjectedSubmission,
+    SurfaceTelemetryBatch,
 };
 pub use crate::evidence::{
     SurfaceCompatibilityChannel, SurfaceCompatibilityCountFamily, SurfaceCompatibilityCountsTake,
@@ -291,6 +292,7 @@ pub struct SurfaceFrameOutput {
 struct RenderedSessionFrame {
     output: SurfaceFrameOutput,
     current_stats: PresentedCurrentStats,
+    depth_precision: Option<PresentedDepthPrecisionReceipt>,
     telemetry: Option<PresentedTelemetry>,
 }
 
@@ -300,6 +302,7 @@ impl RenderedSessionFrame {
         Self {
             output,
             current_stats: PresentedCurrentStats::Preserve,
+            depth_precision: None,
             telemetry: None,
         }
     }
@@ -307,12 +310,14 @@ impl RenderedSessionFrame {
     fn presented(
         output: SurfaceFrameOutput,
         current_stats: PresentedCurrentStats,
+        depth_precision: Option<PresentedDepthPrecisionReceipt>,
         telemetry: PresentedTelemetry,
     ) -> Self {
         debug_assert!(output.frame_presented);
         Self {
             output,
             current_stats,
+            depth_precision,
             telemetry: Some(telemetry),
         }
     }
@@ -871,6 +876,13 @@ impl SurfaceRenderSession {
     /// successful present.
     pub const fn current_stats_submission(&self) -> SurfaceCurrentStatsSubmission {
         self.publication.current_stats_submission()
+    }
+
+    #[allow(dead_code)]
+    pub(crate) const fn presented_depth_precision_receipt(
+        &self,
+    ) -> Option<PresentedDepthPrecisionReceipt> {
+        self.publication.presented_depth_precision_receipt()
     }
 
     /// Polls at most one current-stats resolution or atomic terminal. The
@@ -1822,6 +1834,11 @@ impl SurfaceRenderSession {
         };
         let mut rendered = result?;
         if rendered.output.frame_presented {
+            debug_assert_eq!(
+                exact_surface,
+                rendered.depth_precision.is_some(),
+                "only a presented Packed Exact frame carries depth precision evidence"
+            );
             let telemetry = rendered
                 .telemetry
                 .take()
@@ -1829,6 +1846,7 @@ impl SurfaceRenderSession {
             let publication = self.presented_frame_publication(
                 rendered.output,
                 rendered.current_stats,
+                rendered.depth_precision,
                 telemetry,
             );
             self.publication.publish_presented_frame(publication);
@@ -1846,6 +1864,7 @@ impl SurfaceRenderSession {
         &self,
         output: SurfaceFrameOutput,
         current_stats: PresentedCurrentStats,
+        depth_precision: Option<PresentedDepthPrecisionReceipt>,
         telemetry: PresentedTelemetry,
     ) -> PresentedFramePublication {
         debug_assert!(output.frame_presented);
@@ -1857,6 +1876,7 @@ impl SurfaceRenderSession {
         PresentedFramePublication::new(
             output.stats,
             current_stats,
+            depth_precision,
             SurfaceCompatibilityOrderSubmission {
                 camera_revision: output.camera_revision,
                 requested_backend: self.order_backend(),
@@ -1929,6 +1949,15 @@ impl SurfaceRenderSession {
         let presented_current_stats_submission = submission.current_stats_submission().into();
         let plan = submission.plan_id();
         let order_generation = submission.order_generation();
+        let depth_precision = PresentedDepthPrecisionReceipt::new(
+            self.renderer
+                .exact_surface_depth_precision_profile()
+                .expect("presented Exact Surface runtime owns a depth precision profile"),
+            submission.frame_identity(),
+            plan,
+            order_generation,
+            submission.presentation_sequence(),
+        );
         let order_refreshed =
             exact_order_refreshed(self.exact_order_generation_receipt, plan, order_generation);
         self.schedule
@@ -1945,6 +1974,7 @@ impl SurfaceRenderSession {
                 submission: presented_current_stats_submission,
                 counts_current,
             },
+            Some(depth_precision),
             telemetry,
         )
     }
@@ -2432,6 +2462,7 @@ impl SurfaceRenderSession {
         Ok(RenderedSessionFrame::presented(
             output,
             PresentedCurrentStats::Preserve,
+            None,
             telemetry,
         ))
     }
@@ -2952,6 +2983,7 @@ impl SurfaceRenderSession {
         Ok(RenderedSessionFrame::presented(
             output,
             PresentedCurrentStats::Preserve,
+            None,
             telemetry,
         ))
     }

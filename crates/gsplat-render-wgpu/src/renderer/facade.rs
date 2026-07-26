@@ -370,6 +370,27 @@ impl Renderer {
         target_format: wgpu::TextureFormat,
         indirect_execution_supported: bool,
     ) -> Result<renderer::PreparedRuntimeSlot, RendererError> {
+        self.prepare_surface_exact_candidate_with_depth_precision_profile(
+            device,
+            queue,
+            target_format,
+            indirect_execution_supported,
+            renderer::SurfaceDepthPrecisionProfile::configured_for_surface_build(),
+        )
+        .await
+    }
+
+    /// Crate-private construction seam for the Balanced diagnostic. The
+    /// profile is consumed before the unpublished Scene/PlanSet/GPU candidate
+    /// transaction starts and cannot be changed after publication.
+    pub(crate) async fn prepare_surface_exact_candidate_with_depth_precision_profile(
+        &self,
+        device: &std::sync::Arc<wgpu::Device>,
+        queue: &std::sync::Arc<wgpu::Queue>,
+        target_format: wgpu::TextureFormat,
+        indirect_execution_supported: bool,
+        profile: renderer::SurfaceDepthPrecisionProfile,
+    ) -> Result<renderer::PreparedRuntimeSlot, RendererError> {
         if self.geometry_path != GeometryPath::PackedAtlas {
             return Err(RendererError::InvalidConfig);
         }
@@ -381,12 +402,13 @@ impl Renderer {
             .scene_state
             .resident_upload()
             .ok_or(RendererError::SceneNotLoaded)?;
-        renderer::PreparedRuntimeSlot::prepare_complete_surface_gpu_candidate(
+        renderer::PreparedRuntimeSlot::prepare_complete_surface_gpu_candidate_with_depth_key_precision(
             source,
             device,
             queue,
             target_format,
             indirect_execution_supported,
+            profile.depth_key_precision(),
         )
         .await
         .map_err(map_prepared_gpu_runtime_error)
@@ -433,6 +455,14 @@ impl Renderer {
         self.exact_offscreen_runtime
             .as_ref()
             .map(renderer::PreparedRuntimeSlot::active_policy)
+    }
+
+    pub(crate) fn exact_surface_depth_precision_profile(
+        &self,
+    ) -> Option<renderer::SurfaceDepthPrecisionProfile> {
+        self.exact_offscreen_runtime
+            .as_ref()
+            .map(renderer::PreparedRuntimeSlot::surface_depth_precision_profile)
     }
 
     pub(crate) fn set_exact_surface_policy(

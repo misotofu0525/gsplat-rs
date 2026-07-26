@@ -38,8 +38,8 @@ pub(crate) use ring::BoundedEvidenceRing;
 #[cfg(test)]
 pub(crate) use session_publication::LegacySurfaceStatsAvailability;
 pub(crate) use session_publication::{
-    PresentedCurrentStats, PresentedFramePublication, PresentedTelemetry, SessionPublication,
-    SurfaceTelemetryBatch,
+    PresentedCurrentStats, PresentedDepthPrecisionReceipt, PresentedFramePublication,
+    PresentedTelemetry, SessionPublication, SurfaceTelemetryBatch,
 };
 pub use submission::{
     SurfaceGpuProducerMeasurementSubmission, SurfaceGpuProducerMeasurementUnsampledReason,

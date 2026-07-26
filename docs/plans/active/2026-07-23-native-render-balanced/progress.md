@@ -220,3 +220,35 @@ artifact, run a browser/device experiment, or judge image quality. Those later
 consumers must join this receipt with their already-presented RGBA capture and
 the canonical Balanced validator. The only purpose here is to establish a
 truthful renderer-owned identity for that future join.
+
+Implementation on baseline `bd1cf8da1b80ac218e0a9e22841358b770c0b205`
+keeps ordinary builds on `ExactFull32` and adds the default-disabled
+`diagnostic-surface-depth-key-candidate24` feature plus a crate-private profile
+construction seam. The renderer consumes that profile before its unpublished
+Packed Surface candidate transaction; the resulting immutable `PlanSet` is the
+source of truth for CPU/GPU admission and replacement.
+
+`SessionPublication` now retains a private
+`PresentedDepthPrecisionReceipt` only through its existing successful-present
+DTO commit. The receipt is derived from the admitted renderer runtime and binds
+the profile to the complete frame identity, actual plan, order generation and
+presentation sequence. Unavailable or failed attempts never enter that commit
+and therefore cannot create or overwrite the receipt.
+
+Focused and broad verification for this candidate:
+
+- the default Exact CPU path, explicit Candidate renderer/PlanSet/Resident-GPU
+  path, replacement GPU re-admission and present-fenced receipt tests passed;
+- `cargo test -p gsplat-render-wgpu --lib`: 462 passed, 8 existing
+  research/external-resource observations ignored;
+- host and `wasm32-unknown-unknown` renderer checks passed for the ordinary
+  build; the explicitly enabled diagnostic feature also passed host and Wasm
+  checks;
+- renderer all-target Clippy with warnings denied passed for ordinary and
+  diagnostic-feature builds; Rust format, diff check and the source
+  architecture checker passed.
+
+No browser, Android, platform collector or artifact writer was changed or run.
+No image, performance or endpoint qualification is claimed, and B1 remains
+**Active** pending root-owned capture/validator integration and formal endpoint
+evidence.
