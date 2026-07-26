@@ -347,6 +347,30 @@ both normal diagnostic-receipt and Candidate24 feature builds. No browser,
 Android, iOS, image-quality, performance, or product-default conclusion is
 authorized by this slice.
 
+## Next B1 desktop diagnostic receipt-host slice
+
+The next consumer is deliberately narrower than a formal artifact collector.
+It lets the existing native desktop real-window evidence host opt into the
+diagnostic receipt feature and consume its atomic pair immediately after the
+capture readback. The host must record the sealed identity in a distinct,
+explicit diagnostic log record; the existing M2b collector and its ordinary
+pixels-only route remain unchanged.
+
+The desktop package forwards the diagnostic renderer features only under an
+explicit package feature. A separate fail-closed CLI selection is required, so
+a normal surface-evidence invocation neither builds the diagnostic bridge nor
+changes its logs. The candidate build may combine that feature with the existing
+Candidate24 diagnostic feature; Exact uses the same receipt-host feature
+without Candidate24. The host must take the pair exactly once and write profile,
+frame identity, plan, order generation and presentation sequence from the
+returned value rather than recomputing or querying a later renderer state.
+
+This slice is limited to desktop host/CLI feature wiring and host-only parsing
+tests. It does not create a formal Balanced artifact, alter the accepted M2b
+collector, run Metal, compare images, or change C/Swift/Kotlin/JS. A later,
+separate collector slice will turn its diagnostic log into a hash-covered
+artifact and the root thread will perform the one-shot Metal endpoint run.
+
 Implementation on baseline `51ffe09c8720eba99305ddb1aed71cbb7f4a5a7f`
 adds the independent, default-disabled
 `diagnostic-surface-capture-receipt` feature. Native diagnostic hosts that opt
