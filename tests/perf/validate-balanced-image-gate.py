@@ -59,6 +59,14 @@ LIFECYCLE_GENERATIONS = (
     "plan_generation",
     "presentation_generation",
 )
+MATCHED_LIFECYCLE_GENERATIONS = (
+    "scene_generation",
+    "camera_generation",
+    "viewport_generation",
+    "contract_generation",
+    "plan_generation",
+)
+TERMINAL_RECEIPT_SCHEMA = "gsplat-balanced-terminal-frame/v1"
 
 
 class ValidationError(ValueError):
@@ -270,6 +278,9 @@ def validate_authority(manifest: dict[str, Any], evidence_class: str) -> Authori
         fail("formal_quality requires a qualified authoritative dataset manifest")
     dataset_id = require_string(dataset, "id", "authoritative dataset manifest")
     asset_sha256 = require_sha256(dataset, "sha256", "authoritative dataset manifest")
+    dataset_local_path = require_string(
+        dataset, "local_path", "authoritative dataset manifest"
+    )
     if require_string(
         dataset_receipt, "dataset_id", "manifest.authority.dataset_manifest"
     ) != dataset_id:
@@ -282,6 +293,9 @@ def validate_authority(manifest: dict[str, Any], evidence_class: str) -> Authori
         dataset, "splat_count", "authoritative dataset manifest", positive=True
     )
     source_sh_degree = require_int(dataset, "sh_degree", "authoritative dataset manifest")
+    if evidence_class == "formal_quality":
+        if not dataset_local_path.startswith("tests/datasets/external/"):
+            fail("formal_quality forbids minimal contract fixture datasets")
 
     trace_receipt = require_object(authority, "trace", "manifest.authority")
     trace_path = resolve_artifact_file(
@@ -313,6 +327,20 @@ def validate_authority(manifest: dict[str, Any], evidence_class: str) -> Authori
         trace_receipt, "content_sha256", "manifest.authority.trace"
     ) != trace_content_sha256:
         fail("manifest.authority.trace.content_sha256 mismatch")
+    if evidence_class == "formal_quality":
+        derivation = require_object(trace, "derivation", "authoritative camera trace")
+        expected_derivation = {
+            "source_path": dataset_local_path,
+            "source_sha256": asset_sha256,
+            "source_splat_count": source_splat_count,
+            "source_sh_degree": source_sh_degree,
+        }
+        for key, expected in expected_derivation.items():
+            if derivation.get(key) != expected:
+                fail(
+                    f"authoritative trace derivation.{key} does not match the "
+                    "authoritative dataset manifest"
+                )
 
     return Authority(
         dataset_id=dataset_id,
@@ -692,12 +720,82 @@ def validate_camera(
     return mode, indices
 
 
+def validate_formal_terminal_receipt(
+    raw_frame: dict[str, Any],
+    presentations: dict[str, dict[str, Any]],
+    image_receipts: dict[str, dict[str, Any]],
+    authority: Authority,
+    capture_index: int,
+    trace_frame_index: int,
+    pose_intrinsics_sha256: str,
+    context: str,
+) -> None:
+    terminal = require_object(raw_frame, "terminal_receipt", context)
+    if terminal.get("schema") != TERMINAL_RECEIPT_SCHEMA:
+        fail(f"{context}.terminal_receipt.schema must equal {TERMINAL_RECEIPT_SCHEMA!r}")
+    declared_sha256 = require_sha256(terminal, "sha256", f"{context}.terminal_receipt")
+    content = {key: value for key, value in terminal.items() if key != "sha256"}
+    actual_sha256 = canonical_sha256(content)
+    if declared_sha256 != actual_sha256:
+        fail(f"{context}.terminal_receipt SHA-256 mismatch")
+    if require_int(terminal, "capture_index", f"{context}.terminal_receipt") != capture_index:
+        fail(f"{context}.terminal_receipt.capture_index mismatch")
+    if (
+        require_int(terminal, "trace_frame_index", f"{context}.terminal_receipt")
+        != trace_frame_index
+    ):
+        fail(f"{context}.terminal_receipt.trace_frame_index mismatch")
+    if require_string(terminal, "trace_id", f"{context}.terminal_receipt") != authority.trace_id:
+        fail(f"{context}.terminal_receipt.trace_id mismatch")
+    if require_sha256(
+        terminal, "trace_content_sha256", f"{context}.terminal_receipt"
+    ) != authority.trace_content_sha256:
+        fail(f"{context}.terminal_receipt.trace_content_sha256 mismatch")
+    if require_sha256(
+        terminal, "pose_intrinsics_sha256", f"{context}.terminal_receipt"
+    ) != pose_intrinsics_sha256:
+        fail(f"{context}.terminal_receipt pose/intrinsics mismatch")
+    if require_string(terminal, "outcome", f"{context}.terminal_receipt") != "presented":
+        fail(f"{context}.terminal_receipt.outcome must equal 'presented'")
+
+    run_ids: list[str] = []
+    for lane in ("exact", "candidate"):
+        terminal_lane = require_object(terminal, lane, f"{context}.terminal_receipt")
+        run_ids.append(
+            require_string(
+                terminal_lane,
+                "benchmark_run_id",
+                f"{context}.terminal_receipt.{lane}",
+            )
+        )
+        require_int(
+            terminal_lane,
+            "benchmark_frame_index",
+            f"{context}.terminal_receipt.{lane}",
+        )
+        terminal_presentation = require_object(
+            terminal_lane, "presentation", f"{context}.terminal_receipt.{lane}"
+        )
+        if terminal_presentation != presentations[lane]:
+            fail(
+                f"{context}.terminal_receipt.{lane}.presentation does not match "
+                "the frame lifecycle receipt"
+            )
+        if require_sha256(
+            image_receipts[lane], "terminal_receipt_sha256", f"{context}.{lane}"
+        ) != actual_sha256:
+            fail(f"{context}.{lane}.terminal_receipt_sha256 mismatch")
+    if run_ids[0] == run_ids[1]:
+        fail(f"{context}.terminal_receipt Exact/candidate benchmark run IDs must differ")
+
+
 def validate_frames(
     manifest: dict[str, Any],
     root: pathlib.Path,
     expected_dimensions: tuple[int, int],
     expected_trace_indices: list[int],
     authority: Authority,
+    evidence_class: str,
 ) -> list[FramePixels]:
     raw_frames = require_array(manifest, "frames", "manifest")
     if len(raw_frames) != len(expected_trace_indices):
@@ -734,10 +832,13 @@ def validate_frames(
             fail(f"{context}.camera pose/intrinsics receipt mismatch")
 
         presentation_pair = require_object(raw_frame, "presentation", context)
+        presentations: dict[str, dict[str, Any]] = {}
+        generation_receipts: dict[str, dict[str, int]] = {}
         for lane in ("exact", "candidate"):
             presentation = require_object(
                 presentation_pair, lane, f"{context}.presentation"
             )
+            presentations[lane] = presentation
             presentation_context = f"{context}.presentation.{lane}"
             if require_string(presentation, "outcome", presentation_context) != "presented":
                 fail(f"{presentation_context}.outcome must equal 'presented'")
@@ -751,6 +852,7 @@ def validate_frames(
                 key: require_int(presentation, key, presentation_context, positive=True)
                 for key in LIFECYCLE_GENERATIONS
             }
+            generation_receipts[lane] = generations
             if (
                 generations["presentation_generation"]
                 <= previous_presentation_generations[lane]
@@ -762,9 +864,28 @@ def validate_frames(
             previous_presentation_generations[lane] = generations[
                 "presentation_generation"
             ]
+        for generation in MATCHED_LIFECYCLE_GENERATIONS:
+            if generation_receipts["exact"][generation] != generation_receipts[
+                "candidate"
+            ][generation]:
+                fail(
+                    f"{context}.presentation Exact/candidate {generation} must match"
+                )
 
         exact_receipt = require_object(raw_frame, "exact", context)
         candidate_receipt = require_object(raw_frame, "candidate", context)
+        image_receipts = {"exact": exact_receipt, "candidate": candidate_receipt}
+        if evidence_class == "formal_quality":
+            validate_formal_terminal_receipt(
+                raw_frame,
+                presentations,
+                image_receipts,
+                authority,
+                capture_index,
+                trace_frame_index,
+                pose_intrinsics_sha256,
+                context,
+            )
         exact = load_image(
             root,
             exact_receipt,
@@ -852,6 +973,7 @@ def validate(path: pathlib.Path) -> ValidationResult:
         dimensions,
         trace_indices,
         authority,
+        evidence_class,
     )
     transition_count = validate_transitions(manifest, mode, frames)
     return ValidationResult(

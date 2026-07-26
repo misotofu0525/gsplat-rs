@@ -86,9 +86,12 @@ def write_image(
     }
 
 
-def authority_receipt() -> tuple[dict, dict, dict]:
-    dataset_relative = pathlib.Path("tests/perf/datasets/minimal_binary.json")
-    trace_relative = pathlib.Path("tests/perf/trace/fixtures/camera-trace-v1.json")
+def authority_receipt(
+    dataset_path: str = "tests/perf/datasets/minimal_binary.json",
+    trace_path: str = "tests/perf/trace/fixtures/camera-trace-v1.json",
+) -> tuple[dict, dict, dict]:
+    dataset_relative = pathlib.Path(dataset_path)
+    trace_relative = pathlib.Path(trace_path)
     dataset_path = ROOT / dataset_relative
     trace_path = ROOT / trace_relative
     dataset = json.loads(dataset_path.read_text(encoding="utf-8"))
@@ -252,6 +255,60 @@ def base_manifest(root: pathlib.Path, *, moving: bool = False) -> dict:
     return manifest
 
 
+def formal_manifest(root: pathlib.Path) -> dict:
+    manifest = base_manifest(root)
+    authority, dataset, trace = authority_receipt(
+        "tests/perf/datasets/flowers.json",
+        "tests/perf/trace/fixtures/quality/candidate-flowers-quality-1920x1080-v1.json",
+    )
+    manifest["evidence_class"] = "formal_quality"
+    manifest["authority"] = authority
+    for field in VALIDATOR.EXACT_COUNT_FIELDS:
+        manifest["exactness"][field] = dataset["splat_count"]
+    manifest["exactness"]["source_sh_degree"] = dataset["sh_degree"]
+    manifest["exactness"]["resident_sh_degree"] = dataset["sh_degree"]
+    width = trace["display"]["width"]
+    height = trace["display"]["height"]
+    for stage in VALIDATOR.RESOLUTION_STAGES:
+        manifest["resolution"][f"{stage}_width"] = width
+        manifest["resolution"][f"{stage}_height"] = height
+
+    for frame in manifest["frames"]:
+        trace_frame = trace["frames"][frame["trace_frame_index"]]
+        pose_intrinsics_sha256 = VALIDATOR.canonical_sha256(
+            {"pose": trace_frame["pose"], "intrinsics": trace_frame["intrinsics"]}
+        )
+        frame["camera"] = {
+            "trace_id": trace["trace_id"],
+            "trace_content_sha256": trace["content_sha256"],
+            "pose_intrinsics_sha256": pose_intrinsics_sha256,
+        }
+        terminal_content = {
+            "schema": VALIDATOR.TERMINAL_RECEIPT_SCHEMA,
+            "capture_index": frame["capture_index"],
+            "trace_frame_index": frame["trace_frame_index"],
+            "trace_id": trace["trace_id"],
+            "trace_content_sha256": trace["content_sha256"],
+            "pose_intrinsics_sha256": pose_intrinsics_sha256,
+            "outcome": "presented",
+            "exact": {
+                "benchmark_run_id": "exact-run",
+                "benchmark_frame_index": frame["capture_index"],
+                "presentation": copy.deepcopy(frame["presentation"]["exact"]),
+            },
+            "candidate": {
+                "benchmark_run_id": "candidate-run",
+                "benchmark_frame_index": frame["capture_index"],
+                "presentation": copy.deepcopy(frame["presentation"]["candidate"]),
+            },
+        }
+        terminal_sha256 = VALIDATOR.canonical_sha256(terminal_content)
+        frame["terminal_receipt"] = {**terminal_content, "sha256": terminal_sha256}
+        frame["exact"]["terminal_receipt_sha256"] = terminal_sha256
+        frame["candidate"]["terminal_receipt_sha256"] = terminal_sha256
+    return manifest
+
+
 def validate_manifest(root: pathlib.Path, manifest: dict):
     path = root / "gate.json"
     write_json(path, manifest)
@@ -355,12 +412,48 @@ class BalancedImageGateTests(unittest.TestCase):
     def test_formal_quality_cannot_use_an_8x8_trace_and_resolution(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)
-            manifest = base_manifest(root)
-            manifest["evidence_class"] = "formal_quality"
+            manifest = formal_manifest(root)
             for stage in VALIDATOR.RESOLUTION_STAGES:
                 manifest["resolution"][f"{stage}_width"] = 8
                 manifest["resolution"][f"{stage}_height"] = 8
             with self.assertRaisesRegex(VALIDATOR.ValidationError, "trace display"):
+                validate_manifest(root, manifest)
+
+    def test_formal_quality_forbids_minimal_contract_fixture(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            manifest = base_manifest(root)
+            manifest["evidence_class"] = "formal_quality"
+            with self.assertRaisesRegex(VALIDATOR.ValidationError, "minimal contract fixture"):
+                validate_manifest(root, manifest)
+
+    def test_formal_trace_derivation_cannot_be_spliced_across_datasets(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            manifest = base_manifest(root)
+            authority, _, _ = authority_receipt(
+                "tests/perf/datasets/flowers.json",
+                "tests/perf/trace/fixtures/quality/candidate-truck-quality-1920x1080-v1.json",
+            )
+            manifest["evidence_class"] = "formal_quality"
+            manifest["authority"] = authority
+            with self.assertRaisesRegex(VALIDATOR.ValidationError, "derivation.source_path"):
+                validate_manifest(root, manifest)
+
+    def test_exact_and_candidate_lifecycle_generations_must_match(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            manifest = formal_manifest(root)
+            manifest["frames"][0]["presentation"]["candidate"]["plan_generation"] = 2
+            with self.assertRaisesRegex(VALIDATOR.ValidationError, "plan_generation must match"):
+                validate_manifest(root, manifest)
+
+    def test_formal_image_must_join_the_same_terminal_benchmark_receipt(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            manifest = formal_manifest(root)
+            manifest["frames"][0]["candidate"]["terminal_receipt_sha256"] = "0" * 64
+            with self.assertRaisesRegex(VALIDATOR.ValidationError, "terminal_receipt_sha256"):
                 validate_manifest(root, manifest)
 
     def test_missing_authority_or_lifecycle_receipt_is_rejected(self) -> None:

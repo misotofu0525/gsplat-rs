@@ -70,9 +70,12 @@ The validator fails closed unless an artifact provides and proves:
 - equal requested, Surface, internal-render, and presented dimensions with
   dynamic resolution and upscaling disabled, bound to a repository camera
   trace whose ID, file/content hashes, display, poses and intrinsics pass the
-  existing trace validator;
-- successful per-frame presentation tickets and complete positive lifecycle
-  generations, plus artifact-local, hash-matched, separately owned,
+  existing trace validator; formal traces must additionally bind their
+  derivation source path, asset hash, point count and SH degree to that same
+  dataset manifest, and a minimal contract fixture cannot claim formal quality;
+- successful per-frame Exact/candidate presentation tickets whose scene,
+  camera, viewport, contract and plan generations match individually, plus
+  artifact-local, hash-matched, separately owned,
   non-interlaced RGBA8 PNGs for Exact and candidate output;
 - recomputed per-frame SSIM, RGB and alpha metrics matching the artifact
   receipts and satisfying every frozen B0 threshold individually; and
@@ -84,6 +87,9 @@ symlink/hardlink image aliasing, over-limit decompression streams, or
 incomplete/misjoined transitions are rejected rather than defaulted. Formal
 quality evidence below 1920x1080 is also rejected; smaller deterministic inputs
 remain explicitly labeled contract fixtures and cannot qualify an endpoint. A
+formal image is also joined by hash to one terminal paired receipt that carries
+the same per-lane presentation lifecycle and benchmark run/frame identities;
+receipt or generation cross-joins are rejected. A
 successful invocation emits the validator version and SHA-256 so later retained
 evidence can identify the exact validator. Focused unit coverage exercises both
 valid camera modes and the fail-closed boundaries; it is repository-local
