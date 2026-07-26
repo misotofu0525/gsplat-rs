@@ -22,3 +22,15 @@ or competitor performance.
 The active writer owns only this ledger and [Q0 contract](q0-contract.md). It
 may not modify the renderer, benchmark producers, comparator harness, product
 defaults, or the Balanced and Scalable packages.
+
+## Candidate checkpoint
+
+- Branch: `codex/q0-qualification-contract`
+- Exact baseline: `6d5bd5442dee31cea24906744dfdd1d7492095ae`
+- State: Q0 remains Active pending root review and integration.
+- Scope: comparator identity/launch, common workload admission, terminal timing,
+  endpoint schedule, artifact receipts and finite Accepted/Rejected/Deferred
+  outcomes are frozen in [q0-contract.md](q0-contract.md).
+- Execution: no native, browser or device product benchmark was run by Q0.
+- Next: root reviews this narrow candidate; Q1--Q3 start only from the accepted
+  contract and their own declared prerequisites.
