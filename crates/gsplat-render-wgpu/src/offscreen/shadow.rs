@@ -195,9 +195,9 @@ fn validate_current(
 
 fn backing_viewport(renderer: &Renderer) -> Result<(u32, u32), RendererError> {
     renderer
-        .gpu_rasterizer
+        .offscreen_host
         .as_ref()
-        .map(|rasterizer| rasterizer.offscreen_target.size())
+        .map(crate::renderer::offscreen_host::OffscreenHost::target_size)
         .ok_or(RendererError::GpuRasterizerUnavailable)
 }
 

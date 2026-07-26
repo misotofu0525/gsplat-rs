@@ -70,10 +70,6 @@ pub use data::{
     RESIDENT_SH_WORDS_PER_PLANE, ResidentChunkMeta, ResidentColorAux, ResidentCovariance0,
     ResidentCovariance1, ResidentPositionAlpha, ResidentShPlane,
 };
-#[cfg(not(target_arch = "wasm32"))]
-use direct_scene_gpu::{
-    DirectSceneResources, create_direct_bind_group_layout, create_direct_pipeline,
-};
 pub use evidence::{
     SurfaceCompatibilityChannel, SurfaceCompatibilityCountFamily, SurfaceCompatibilityCounts,
     SurfaceCompatibilityCountsTake, SurfaceCompatibilityCountsUnavailable,
@@ -150,8 +146,6 @@ use std::time::Instant;
 
 use gsplat_core::{Camera, ErrorCode, FrameStats, RenderMode, RendererConfig, SceneBuffers, Vec3f};
 use gsplat_sort::SortError;
-#[cfg(not(target_arch = "wasm32"))]
-use std::sync::Arc;
 use thiserror::Error;
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -506,7 +500,7 @@ pub struct Renderer {
     geometry_path: GeometryPath,
     cpu_order_engine: CpuOrderEngine,
     #[cfg(not(target_arch = "wasm32"))]
-    gpu_rasterizer: Option<GpuRasterizer>,
+    offscreen_host: Option<renderer::offscreen_host::OffscreenHost>,
     scene_state: renderer::scene_state::RendererSceneState,
     /// Sole complete Exact runtime for Packed rendering. Offscreen and
     /// Surface hosts supply different targets but never own a second scene,
@@ -531,9 +525,9 @@ impl Renderer {
 
         #[cfg(not(target_arch = "wasm32"))]
         {
-            let gpu_rasterizer = GpuRasterizer::create(&config)?;
+            let offscreen_host = renderer::offscreen_host::OffscreenHost::create(&config)?;
             let mut renderer = Self::from_validated_config(config);
-            renderer.gpu_rasterizer = Some(gpu_rasterizer);
+            renderer.offscreen_host = Some(offscreen_host);
             Ok(renderer)
         }
 
@@ -569,7 +563,7 @@ impl Renderer {
             geometry_path: GeometryPath::SortedIndexDirect,
             cpu_order_engine: CpuOrderEngine::default(),
             #[cfg(not(target_arch = "wasm32"))]
-            gpu_rasterizer: None,
+            offscreen_host: None,
             scene_state: renderer::scene_state::RendererSceneState::empty(),
             exact_offscreen_runtime: None,
             last_stats: FrameStats::zero(),
@@ -586,12 +580,16 @@ impl Renderer {
 
     #[cfg(not(target_arch = "wasm32"))]
     pub fn device(&self) -> Option<&wgpu::Device> {
-        self.gpu_rasterizer.as_ref().map(|gpu| gpu.device.as_ref())
+        self.offscreen_host
+            .as_ref()
+            .map(|host| host.device().as_ref())
     }
 
     #[cfg(not(target_arch = "wasm32"))]
     pub fn queue(&self) -> Option<&wgpu::Queue> {
-        self.gpu_rasterizer.as_ref().map(|gpu| gpu.queue.as_ref())
+        self.offscreen_host
+            .as_ref()
+            .map(|host| host.queue().as_ref())
     }
 
     pub fn set_geometry_path(&mut self, path: GeometryPath) {
@@ -599,8 +597,8 @@ impl Renderer {
             self.geometry_path = path;
             self.scene_state.rebuild_for_path(path);
             #[cfg(not(target_arch = "wasm32"))]
-            if let Some(rasterizer) = self.gpu_rasterizer.as_mut() {
-                rasterizer.clear_scene_resources();
+            if let Some(host) = self.offscreen_host.as_mut() {
+                host.clear_scene_resources();
             }
         }
     }
@@ -616,8 +614,8 @@ impl Renderer {
             .map_err(|_| RendererError::InvalidConfig)?;
 
         #[cfg(not(target_arch = "wasm32"))]
-        if let Some(gpu_rasterizer) = self.gpu_rasterizer.as_mut() {
-            gpu_rasterizer.ensure_output_target(width, height)?;
+        if let Some(host) = self.offscreen_host.as_mut() {
+            host.ensure_output_target(width, height)?;
         }
 
         self.config = config;
@@ -636,7 +634,7 @@ impl Renderer {
     pub fn has_gpu_rasterizer(&self) -> bool {
         #[cfg(not(target_arch = "wasm32"))]
         {
-            self.gpu_rasterizer.is_some()
+            self.offscreen_host.is_some()
         }
 
         #[cfg(target_arch = "wasm32")]
@@ -648,9 +646,9 @@ impl Renderer {
     pub fn gpu_adapter_info(&self) -> Option<&wgpu::AdapterInfo> {
         #[cfg(not(target_arch = "wasm32"))]
         {
-            self.gpu_rasterizer
+            self.offscreen_host
                 .as_ref()
-                .map(|rasterizer| &rasterizer.adapter_info)
+                .map(renderer::offscreen_host::OffscreenHost::adapter_info)
         }
 
         #[cfg(target_arch = "wasm32")]
@@ -672,11 +670,11 @@ impl Renderer {
 
         #[cfg(not(target_arch = "wasm32"))]
         {
-            let rasterizer = self
-                .gpu_rasterizer
+            let host = self
+                .offscreen_host
                 .as_ref()
                 .ok_or(RendererError::GpuRasterizerUnavailable)?;
-            direct_scene_preflight(scene.len(), scene.sh_degree, &rasterizer.device.limits())
+            direct_scene_preflight(scene.len(), scene.sh_degree, &host.device().limits())
                 .map_err(RendererError::from)
         }
 
@@ -701,11 +699,11 @@ impl Renderer {
 
         #[cfg(not(target_arch = "wasm32"))]
         {
-            let rasterizer = self
-                .gpu_rasterizer
+            let host = self
+                .offscreen_host
                 .as_ref()
                 .ok_or(RendererError::GpuRasterizerUnavailable)?;
-            packed_scene_preflight_with_limits(scene_len, sh_degree, &rasterizer.device.limits())
+            packed_scene_preflight_with_limits(scene_len, sh_degree, &host.device().limits())
                 .map_err(RendererError::from)
         }
 
@@ -719,12 +717,11 @@ impl Renderer {
     pub fn wait_for_gpu(&self) -> Result<(), RendererError> {
         #[cfg(not(target_arch = "wasm32"))]
         {
-            let rasterizer = self
-                .gpu_rasterizer
+            let host = self
+                .offscreen_host
                 .as_ref()
                 .ok_or(RendererError::GpuRasterizerUnavailable)?;
-            rasterizer
-                .device
+            host.device()
                 .poll(wgpu::PollType::wait_indefinitely())
                 .map_err(|_| RendererError::GpuWait)?;
             Ok(())
@@ -764,8 +761,8 @@ impl Renderer {
             self.exact_offscreen_runtime = None;
         }
         #[cfg(not(target_arch = "wasm32"))]
-        if let Some(rasterizer) = self.gpu_rasterizer.as_mut() {
-            rasterizer.clear_scene_resources();
+        if let Some(host) = self.offscreen_host.as_mut() {
+            host.clear_scene_resources();
         }
         Ok(())
     }
@@ -782,13 +779,13 @@ impl Renderer {
         }
 
         #[cfg(not(target_arch = "wasm32"))]
-        if let Some(rasterizer) = self.gpu_rasterizer.as_ref() {
+        if let Some(host) = self.offscreen_host.as_ref() {
             let candidate = pollster::block_on(
                 renderer::PreparedRuntimeSlot::prepare_complete_gpu_candidate(
                     resident,
                     self.exact_offscreen_runtime.as_ref(),
-                    &rasterizer.device,
-                    &rasterizer.queue,
+                    host.device(),
+                    host.queue(),
                     RENDER_TARGET_FORMAT,
                 ),
             )
@@ -799,8 +796,8 @@ impl Renderer {
 
         self.scene_state.replace_resident(resident);
         #[cfg(not(target_arch = "wasm32"))]
-        if let Some(rasterizer) = self.gpu_rasterizer.as_mut() {
-            rasterizer.clear_scene_resources();
+        if let Some(host) = self.offscreen_host.as_mut() {
+            host.clear_scene_resources();
         }
         Ok(())
     }
@@ -815,16 +812,16 @@ impl Renderer {
         if self.geometry_path != GeometryPath::PackedAtlas {
             return Err(RendererError::InvalidScene);
         }
-        let rasterizer = self
-            .gpu_rasterizer
+        let host = self
+            .offscreen_host
             .as_ref()
             .ok_or(RendererError::GpuRasterizerUnavailable)?;
         let candidate = pollster::block_on(
             renderer::PreparedRuntimeSlot::prepare_complete_gpu_candidate_with_test_failure(
                 resident,
                 self.exact_offscreen_runtime.as_ref(),
-                &rasterizer.device,
-                &rasterizer.queue,
+                host.device(),
+                host.queue(),
                 RENDER_TARGET_FORMAT,
                 failure,
             ),
@@ -838,7 +835,7 @@ impl Renderer {
     fn publish_exact_offscreen_candidate(&mut self, candidate: renderer::PreparedRuntimeSlot) {
         self.exact_offscreen_runtime = Some(candidate);
         self.scene_state.clear_for_exact_runtime();
-        self.gpu_rasterizer
+        self.offscreen_host
             .as_mut()
             .expect("offscreen candidate requires the existing rasterizer")
             .clear_scene_resources();
@@ -858,7 +855,7 @@ impl Renderer {
             return Err(RendererError::InvalidConfig);
         }
         #[cfg(not(target_arch = "wasm32"))]
-        if self.gpu_rasterizer.is_some() {
+        if self.offscreen_host.is_some() {
             return Err(RendererError::InvalidConfig);
         }
         let source = self
@@ -886,7 +883,7 @@ impl Renderer {
             return Err(RendererError::InvalidConfig);
         }
         #[cfg(not(target_arch = "wasm32"))]
-        if self.gpu_rasterizer.is_some() {
+        if self.offscreen_host.is_some() {
             return Err(RendererError::InvalidConfig);
         }
         let source = self
@@ -1129,17 +1126,12 @@ impl Renderer {
                     .ok_or(RendererError::InvalidScene)?;
                 #[cfg(not(target_arch = "wasm32"))]
                 {
-                    let rasterizer = self
-                        .gpu_rasterizer
+                    let host = self
+                        .offscreen_host
                         .as_mut()
                         .ok_or(RendererError::GpuRasterizerUnavailable)?;
-                    rasterizer.ensure_paged_active_set(scene, pages, camera)?;
-                    let entries = rasterizer
-                        .paged_active_set
-                        .as_ref()
-                        .ok_or(RendererError::InvalidScene)?
-                        .atlas
-                        .active_entries();
+                    host.ensure_paged_active_set(scene, pages, camera)?;
+                    let entries = host.paged_active_entries()?;
                     self.cpu_order_engine.order_paged(
                         scene,
                         &entries,
@@ -1337,7 +1329,7 @@ impl Renderer {
                     .scene_state
                     .direct_inputs()
                     .ok_or(RendererError::InvalidScene)?;
-                self.gpu_rasterizer
+                self.offscreen_host
                     .as_mut()
                     .ok_or(RendererError::GpuRasterizerUnavailable)?
                     .render_direct_sorted_indices(
@@ -1350,7 +1342,7 @@ impl Renderer {
                     )
             }
             GeometryPath::PackedAtlas => self
-                .gpu_rasterizer
+                .offscreen_host
                 .as_mut()
                 .ok_or(RendererError::GpuRasterizerUnavailable)?
                 .render_packed_sorted_indices(
@@ -1362,7 +1354,7 @@ impl Renderer {
                         .ok_or(RendererError::SceneNotLoaded)?,
                 ),
             GeometryPath::PagedActiveAtlas => self
-                .gpu_rasterizer
+                .offscreen_host
                 .as_mut()
                 .ok_or(RendererError::GpuRasterizerUnavailable)?
                 .render_paged_sorted_indices(
@@ -1379,7 +1371,7 @@ impl Renderer {
     #[cfg(not(target_arch = "wasm32"))]
     pub fn render_frame(&mut self, camera: &Camera) -> Result<FrameStats, RendererError> {
         let frame_start = timer_now();
-        if self.gpu_rasterizer.is_none() {
+        if self.offscreen_host.is_none() {
             return Err(RendererError::GpuRasterizerUnavailable);
         }
 
@@ -1412,8 +1404,8 @@ impl Renderer {
             .map_err(|_| RendererError::InvalidCamera)?;
         let viewport = renderer::frame::Viewport::new(self.config.width, self.config.height)
             .map_err(|_| RendererError::InvalidConfig)?;
-        let rasterizer = self
-            .gpu_rasterizer
+        let host = self
+            .offscreen_host
             .as_ref()
             .ok_or(RendererError::GpuRasterizerUnavailable)?;
         let slot = self
@@ -1424,7 +1416,7 @@ impl Renderer {
             plans::PlanId::CpuPostSort,
             camera,
             viewport,
-            rasterizer.offscreen_target.view(),
+            host.target_view(),
             RENDER_TARGET_FORMAT,
             wgpu::Color::TRANSPARENT,
         )
@@ -1493,12 +1485,11 @@ impl Renderer {
     pub fn readback_rgba8(&mut self) -> Result<Vec<u8>, RendererError> {
         #[cfg(not(target_arch = "wasm32"))]
         {
-            let rasterizer = self
-                .gpu_rasterizer
+            let host = self
+                .offscreen_host
                 .as_mut()
                 .ok_or(RendererError::GpuRasterizerUnavailable)?;
-            rasterizer
-                .readback_rgba8()
+            host.readback_rgba8()
                 .map_err(|_| RendererError::GpuReadback)
         }
 
@@ -1618,381 +1609,6 @@ fn refresh_paged_hot_colors(
         .write_hot_colors_at(queue, run_start, &colors);
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-struct OffscreenResidentPipelines {
-    draw_pipeline: wgpu::RenderPipeline,
-    draw_bind_group_layout: wgpu::BindGroupLayout,
-    color_pipeline: wgpu::ComputePipeline,
-    color_bind_group_layout: wgpu::BindGroupLayout,
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-struct GpuRasterizer {
-    adapter_info: wgpu::AdapterInfo,
-    device: Arc<wgpu::Device>,
-    queue: Arc<wgpu::Queue>,
-    offscreen_target: offscreen::OffscreenTarget,
-    max_texture_dimension_2d: u32,
-    direct_pipeline: wgpu::RenderPipeline,
-    direct_bind_group_layout: wgpu::BindGroupLayout,
-    direct_scene: Option<DirectSceneResources>,
-    packed_pipeline: wgpu::RenderPipeline,
-    packed_bind_group_layout: wgpu::BindGroupLayout,
-    resident_pipelines: Option<OffscreenResidentPipelines>,
-    resident_scene: Option<resident_gpu::ResidentGpuResources>,
-    resident_draw_bind_group: Option<wgpu::BindGroup>,
-    paged_active_set: Option<paged_active_set::PagedActiveSet>,
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-impl GpuRasterizer {
-    fn create(config: &RendererConfig) -> Result<Self, RendererError> {
-        pollster::block_on(Self::create_async(config))
-    }
-
-    async fn create_async(config: &RendererConfig) -> Result<Self, RendererError> {
-        let instance = wgpu::Instance::default();
-        let adapter = instance
-            .request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::HighPerformance,
-                compatible_surface: None,
-                force_fallback_adapter: false,
-            })
-            .await
-            .map_err(|_| RendererError::GpuRasterizerUnavailable)?;
-
-        let adapter_info = adapter.get_info();
-        let required_limits = offscreen_device_limits(config, &adapter.limits())?;
-
-        let (device, queue) = adapter
-            .request_device(&wgpu::DeviceDescriptor {
-                label: wgpu_label("gsplat-render-device"),
-                required_features: wgpu::Features::empty(),
-                required_limits,
-                experimental_features: wgpu::ExperimentalFeatures::disabled(),
-                memory_hints: wgpu::MemoryHints::Performance,
-                trace: wgpu::Trace::Off,
-            })
-            .await
-            .map_err(|_| RendererError::GpuDeviceCreation)?;
-
-        let device = Arc::new(device);
-        let queue = Arc::new(queue);
-        let max_texture_dimension_2d = device.limits().max_texture_dimension_2d;
-
-        let offscreen_target = offscreen::OffscreenTarget::new(
-            &device,
-            config.width,
-            config.height,
-            max_texture_dimension_2d,
-        )?;
-        let direct_bind_group_layout = create_direct_bind_group_layout(&device);
-        let direct_pipeline =
-            create_direct_pipeline(&device, &direct_bind_group_layout, RENDER_TARGET_FORMAT);
-        let packed_bind_group_layout = packed_gpu::create_packed_bind_group_layout(&device);
-        let packed_pipeline = packed_gpu::create_packed_pipeline(
-            &device,
-            &packed_bind_group_layout,
-            RENDER_TARGET_FORMAT,
-        );
-        let resident_pipelines = (device.limits().max_storage_buffers_per_shader_stage
-            >= resident_gpu::RESIDENT_COLOR_STORAGE_BINDINGS)
-            .then(|| {
-                let draw_bind_group_layout =
-                    resident_gpu::create_resident_draw_bind_group_layout(&device);
-                let draw_pipeline = resident_gpu::create_resident_draw_pipeline(
-                    &device,
-                    &draw_bind_group_layout,
-                    RENDER_TARGET_FORMAT,
-                );
-                let color_bind_group_layout =
-                    resident_gpu::create_resident_color_bind_group_layout(&device);
-                let color_pipeline =
-                    resident_gpu::create_resident_color_pipeline(&device, &color_bind_group_layout);
-                OffscreenResidentPipelines {
-                    draw_pipeline,
-                    draw_bind_group_layout,
-                    color_pipeline,
-                    color_bind_group_layout,
-                }
-            });
-
-        Ok(Self {
-            adapter_info,
-            device,
-            queue,
-            offscreen_target,
-            max_texture_dimension_2d,
-            direct_pipeline,
-            direct_bind_group_layout,
-            direct_scene: None,
-            packed_pipeline,
-            packed_bind_group_layout,
-            resident_pipelines,
-            resident_scene: None,
-            resident_draw_bind_group: None,
-            paged_active_set: None,
-        })
-    }
-
-    fn clear_scene_resources(&mut self) {
-        self.direct_scene = None;
-        self.resident_scene = None;
-        self.resident_draw_bind_group = None;
-        self.paged_active_set = None;
-    }
-
-    fn render_direct_sorted_indices(
-        &mut self,
-        config: RendererConfig,
-        sorted_indices: &[u32],
-        camera: &Camera,
-        scene: &SceneBuffers,
-        world_covariance_terms: &[CameraCovarianceTerms],
-        alpha_values: &[f32],
-    ) -> Result<(), RendererError> {
-        self.ensure_output_target(config.width, config.height)?;
-        if self.direct_scene.is_none() {
-            self.direct_scene = Some(DirectSceneResources::new(
-                &self.device,
-                &self.direct_bind_group_layout,
-                scene,
-                world_covariance_terms,
-                alpha_values,
-            )?);
-        }
-        let direct_scene = self
-            .direct_scene
-            .as_ref()
-            .ok_or(RendererError::GpuDeviceCreation)?;
-        let instance_count = direct_scene
-            .prepare_cpu(
-                &self.queue,
-                sorted_indices,
-                camera,
-                config.width,
-                config.height,
-                true,
-            )
-            .map_err(|_| RendererError::GpuDeviceCreation)?;
-
-        let commands = raster::encode_splat_draw(
-            &self.device,
-            "gsplat-offscreen-direct-encoder",
-            raster::SplatDraw {
-                pass_label: "gsplat-offscreen-direct-pass",
-                view: self.output_view(),
-                pipeline: &self.direct_pipeline,
-                bind_group: direct_scene.cpu_bind_group(),
-                clear: wgpu::Color::TRANSPARENT,
-                vertex_count: raster::QUAD_VERTEX_COUNT,
-                instance_count,
-            },
-        );
-        self.queue.submit(Some(commands));
-        Ok(())
-    }
-
-    fn render_packed_sorted_indices(
-        &mut self,
-        config: RendererConfig,
-        sorted_indices: &[u32],
-        camera: &Camera,
-        scene: &ResidentSceneCpu,
-    ) -> Result<(), RendererError> {
-        self.ensure_output_target(config.width, config.height)?;
-        let resident_pipelines = self.resident_pipelines.as_ref().ok_or_else(|| {
-            resident_gpu::ResidentGpuError::StorageBindingCountUnsupported(
-                self.device.limits().max_storage_buffers_per_shader_stage,
-            )
-        })?;
-        // Unlike a SurfacePresenter handoff, this offscreen resource is still
-        // owned by Renderer and is cleared by the public geometry-path setter.
-        // Keep upload staging so Packed -> other path -> Packed can recreate
-        // the exact same complete GPU scene; releasing it here would make that
-        // existing lifecycle fail after an otherwise successful frame.
-        if self.resident_scene.is_none() {
-            let resident = resident_gpu::ResidentGpuResources::new(
-                &self.device,
-                &resident_pipelines.color_bind_group_layout,
-                scene,
-            )?;
-            let draw_bind_group = resident.create_offscreen_draw_bind_group(
-                &self.device,
-                &resident_pipelines.draw_bind_group_layout,
-            );
-            self.resident_scene = Some(resident);
-            self.resident_draw_bind_group = Some(draw_bind_group);
-        }
-        let instance_count = self
-            .resident_scene
-            .as_ref()
-            .ok_or(RendererError::GpuDeviceCreation)?
-            .prepare_cpu_order(
-                &self.queue,
-                sorted_indices,
-                camera,
-                config.width,
-                config.height,
-                true,
-            )?;
-
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: wgpu_label("gsplat-offscreen-resident-encoder"),
-            });
-        self.resident_scene
-            .as_mut()
-            .ok_or(RendererError::GpuDeviceCreation)?
-            .encode_color_resolve_if_needed(
-                &self.queue,
-                &resident_pipelines.color_pipeline,
-                &mut encoder,
-                camera,
-                self.device.limits().max_compute_workgroups_per_dimension,
-            )?;
-        raster::encode_splat_draw_into(
-            &mut encoder,
-            &raster::SplatDraw {
-                pass_label: "gsplat-offscreen-resident-pass",
-                view: self.output_view(),
-                pipeline: &resident_pipelines.draw_pipeline,
-                bind_group: self
-                    .resident_draw_bind_group
-                    .as_ref()
-                    .ok_or(RendererError::GpuDeviceCreation)?,
-                clear: wgpu::Color::TRANSPARENT,
-                vertex_count: raster::QUAD_VERTEX_COUNT,
-                instance_count,
-            },
-        );
-        self.queue.submit(Some(encoder.finish()));
-        Ok(())
-    }
-
-    fn ensure_paged_active_set(
-        &mut self,
-        scene: &SceneBuffers,
-        pages: &SpatialPageSet,
-        camera: &Camera,
-    ) -> Result<(), RendererError> {
-        if self.paged_active_set.is_none() {
-            self.paged_active_set = Some(paged_active_set::PagedActiveSet::new(
-                &self.device,
-                &self.packed_bind_group_layout,
-                scene,
-                pages.clone(),
-            )?);
-        }
-
-        self.paged_active_set
-            .as_mut()
-            .ok_or(RendererError::InvalidScene)?
-            .sync(&self.queue, scene, camera)
-    }
-
-    fn render_paged_sorted_indices(
-        &mut self,
-        config: RendererConfig,
-        sorted_indices: &[u32],
-        camera: &Camera,
-        scene: &SceneBuffers,
-    ) -> Result<(), RendererError> {
-        self.ensure_output_target(config.width, config.height)?;
-        let paged = self
-            .paged_active_set
-            .as_mut()
-            .ok_or(RendererError::GpuDeviceCreation)?;
-        refresh_paged_hot_colors(&self.queue, &mut paged.atlas, scene, camera);
-        let instance_count = paged
-            .atlas
-            .resources
-            .prepare(
-                &self.queue,
-                sorted_indices,
-                camera,
-                config.width,
-                config.height,
-                true,
-            )
-            .map_err(|_| RendererError::GpuDeviceCreation)?;
-
-        let paged = self
-            .paged_active_set
-            .as_ref()
-            .ok_or(RendererError::GpuDeviceCreation)?;
-        let commands = raster::encode_splat_draw(
-            &self.device,
-            "gsplat-offscreen-paged-encoder",
-            raster::SplatDraw {
-                pass_label: "gsplat-offscreen-paged-pass",
-                view: self.output_view(),
-                pipeline: &self.packed_pipeline,
-                bind_group: &paged.atlas.resources.bind_group,
-                clear: wgpu::Color::TRANSPARENT,
-                vertex_count: raster::QUAD_VERTEX_COUNT,
-                instance_count,
-            },
-        );
-        self.queue.submit(Some(commands));
-        Ok(())
-    }
-
-    fn readback_rgba8(&mut self) -> Result<Vec<u8>, RendererError> {
-        offscreen::readback_rgba8(&self.device, &self.queue, &self.offscreen_target)
-    }
-
-    fn output_view(&self) -> &wgpu::TextureView {
-        self.offscreen_target.view()
-    }
-
-    fn ensure_output_target(&mut self, width: u32, height: u32) -> Result<(), RendererError> {
-        self.offscreen_target.ensure_size(
-            &self.device,
-            width,
-            height,
-            self.max_texture_dimension_2d,
-        )
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn offscreen_device_limits(
-    config: &RendererConfig,
-    adapter_limits: &wgpu::Limits,
-) -> Result<wgpu::Limits, RendererError> {
-    if config.width == 0 || config.height == 0 {
-        return Err(RendererError::InvalidConfig);
-    }
-
-    let requested_dimension = config.width.max(config.height);
-    if requested_dimension > adapter_limits.max_texture_dimension_2d {
-        return Err(RendererError::GpuDimensionsUnsupported {
-            width: config.width,
-            height: config.height,
-            max_dimension: adapter_limits.max_texture_dimension_2d,
-        });
-    }
-
-    let mut required_limits = wgpu::Limits::downlevel_defaults();
-    // The offscreen renderer can switch paths and load a scene only after
-    // device creation. Preserve the adapter's storage and texture headroom so
-    // later Packed preflight describes physical capabilities rather than an
-    // artificial constructor-time default limit. Requesting limits does not
-    // allocate buffers.
-    required_limits.max_texture_dimension_2d = adapter_limits.max_texture_dimension_2d;
-    required_limits.max_storage_buffer_binding_size =
-        adapter_limits.max_storage_buffer_binding_size;
-    required_limits.max_buffer_size = adapter_limits.max_buffer_size;
-    required_limits.max_storage_buffers_per_shader_stage =
-        adapter_limits.max_storage_buffers_per_shader_stage;
-    if !required_limits.check_limits(adapter_limits) {
-        return Err(RendererError::GpuDeviceCreation);
-    }
-    Ok(required_limits)
-}
-
 #[cfg(test)]
 mod tests {
     #[cfg(not(target_arch = "wasm32"))]
@@ -2004,7 +1620,7 @@ mod tests {
     };
 
     #[cfg(not(target_arch = "wasm32"))]
-    use super::offscreen_device_limits;
+    use super::renderer::offscreen_host::offscreen_device_limits;
     #[cfg(not(target_arch = "wasm32"))]
     use super::renderer::{CompleteGpuCandidateTestFailure, PreparedRuntimeSlot};
     use super::{
@@ -2199,12 +1815,12 @@ mod tests {
         renderer.set_geometry_path(GeometryPath::PackedAtlas);
         renderer.load_scene(exact_equal_depth_scene(3, 37)).unwrap();
 
-        let rasterizer = renderer.gpu_rasterizer.as_ref().expect("offscreen owner");
+        let host = renderer.offscreen_host.as_ref().expect("offscreen owner");
         let slot = renderer
             .exact_offscreen_runtime
             .as_ref()
             .expect("Packed Exact runtime");
-        assert!(slot.same_gpu_arc_owner(&rasterizer.device, &rasterizer.queue));
+        assert!(slot.same_gpu_arc_owner(host.device(), host.queue()));
         assert_eq!(slot.current_cpu_order_generation(), Some(0));
 
         let first = renderer.render_frame(&Camera::default()).unwrap();
@@ -2364,10 +1980,10 @@ mod tests {
         );
 
         let max_dimension = renderer
-            .gpu_rasterizer
+            .offscreen_host
             .as_ref()
             .unwrap()
-            .max_texture_dimension_2d;
+            .max_texture_dimension_2d();
         let unsupported_width = max_dimension.checked_add(1).expect("finite texture limit");
         assert!(matches!(
             renderer.set_size(unsupported_width, config.height),
@@ -2387,24 +2003,18 @@ mod tests {
 
         // Exercise an actual WebGPU validation scope after candidate texture
         // creation. The live target remains the old 64x64 image.
-        let device = Arc::clone(&renderer.gpu_rasterizer.as_ref().unwrap().device);
+        let device = Arc::clone(renderer.offscreen_host.as_ref().unwrap().device());
         let scoped_error = renderer
-            .gpu_rasterizer
+            .offscreen_host
             .as_mut()
             .unwrap()
-            .offscreen_target
-            .ensure_size(&device, 0, config.height, max_dimension);
+            .ensure_output_target_with_device_for_test(&device, 0, config.height);
         assert!(matches!(
             scoped_error,
             Err(RendererError::GpuDeviceCreation)
         ));
         assert_eq!(
-            renderer
-                .gpu_rasterizer
-                .as_ref()
-                .unwrap()
-                .offscreen_target
-                .size(),
+            renderer.offscreen_host.as_ref().unwrap().target_size(),
             (config.width, config.height)
         );
         assert_eq!(renderer.readback_rgba8().unwrap(), image);
@@ -2583,8 +2193,8 @@ mod tests {
         first_camera.pose.position = Vec3f::new(0.0, 0.0, -30.0);
         let first_stats = renderer.render_frame(&first_camera).unwrap();
         let (first_residents, first_entries) = {
-            let rasterizer = renderer.gpu_rasterizer.as_ref().unwrap();
-            let active_set = rasterizer.paged_active_set.as_ref().unwrap();
+            let host = renderer.offscreen_host.as_ref().unwrap();
+            let active_set = host.paged_active_set_for_test().unwrap();
             let atlas = &active_set.atlas;
             let manager = &active_set.residency;
             assert_eq!(atlas.slot_count(), super::DEFAULT_PAGED_ATLAS_SLOTS);
@@ -2604,8 +2214,8 @@ mod tests {
         jumped_camera.pose.rotation_xyzw = [0.0, 1.0, 0.0, 0.0];
         let jumped_stats = renderer.render_frame(&jumped_camera).unwrap();
         let (jumped_residents, jumped_entries) = {
-            let rasterizer = renderer.gpu_rasterizer.as_ref().unwrap();
-            let active_set = rasterizer.paged_active_set.as_ref().unwrap();
+            let host = renderer.offscreen_host.as_ref().unwrap();
+            let active_set = host.paged_active_set_for_test().unwrap();
             let atlas = &active_set.atlas;
             let manager = &active_set.residency;
             assert_eq!(atlas.slot_count(), super::DEFAULT_PAGED_ATLAS_SLOTS);
@@ -2656,11 +2266,10 @@ mod tests {
                 "trace frame {frame} must retain visible coverage"
             );
             let mut residents = renderer
-                .gpu_rasterizer
+                .offscreen_host
                 .as_ref()
                 .unwrap()
-                .paged_active_set
-                .as_ref()
+                .paged_active_set_for_test()
                 .unwrap()
                 .residency
                 .resident_page_ids();
@@ -2737,8 +2346,8 @@ mod tests {
             let mut camera = Camera::default();
             camera.pose.position = Vec3f::new(phase.sin() * 3.0, phase.cos() * 3.0, 0.0);
             let stats = renderer.render_frame(&camera).unwrap();
-            let rasterizer = renderer.gpu_rasterizer.as_ref().unwrap();
-            let active_set = rasterizer.paged_active_set.as_ref().unwrap();
+            let host = renderer.offscreen_host.as_ref().unwrap();
+            let active_set = host.paged_active_set_for_test().unwrap();
             let atlas = &active_set.atlas;
             let manager = &active_set.residency;
             let active = atlas.active_entries().len();

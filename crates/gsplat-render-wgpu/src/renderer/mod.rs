@@ -4,6 +4,8 @@ mod controller;
 mod current_stats;
 pub(crate) mod frame;
 pub(crate) mod gpu_prepare;
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) mod offscreen_host;
 mod sampler;
 pub(crate) mod scene_state;
 
