@@ -692,10 +692,13 @@ M8 = Active
   shader, script, test or product route. It performs no browser, device or
   cross-platform runtime.
 - D11 active-path normalization was independently reviewed and integrated as
-  `76188933a87a37f50175fa80720a429d50608ee7`. M8 acceptance still requires D12
-  root review/integration, D15 fixed-candidate clean-tree verification/review,
-  and the subsequent D13 archival of this bundle. Completing D11 or D14 does
-  not complete M8 or Package M.
+  `76188933a87a37f50175fa80720a429d50608ee7`. D12 was independently reviewed
+  and integrated as `315f78e059ee0cd94b7653b4465e1937039d0131`, with its
+  status-order repair integrated as
+  `c6ea13e41bde1a9d0f8af7252d343538603bc059`. M8 acceptance still requires
+  D15 fixed-candidate clean-tree verification/review and the subsequent D13
+  archival of this bundle. Completing D11, D12 or D14 does not complete M8 or
+  Package M.
 - The independent IO-SPZ ownership review at fixed baseline `41e18f8` accepted
   the existing loader as one cohesive `SPZ v4 -> validated SceneBuffers`
   transaction with no P0/P1/P2 ownership finding. Its M8 grandfather and
@@ -744,9 +747,12 @@ M8 = Active
   preserved historical platform artifacts under their recorded SHAs but did
   not promote them to current-candidate qualification. D11 and D14 are now
   Accepted; the only `active/` path retained by D11 is an explicitly historical,
-  non-rerunnable pre-archive command transcript. D12 has a populated candidate
-  awaiting root review/integration, and D15 remains pending until the fixed
-  pre-archive candidate matrix and independent review run.
+  non-rerunnable pre-archive command transcript. D12 is integrated. The D15
+  current-SHA matrix ran at `c6ea13e`, but independent review rejected that
+  tree because of the stale-status P1 repaired by this slice. Those results do
+  not validate the post-repair candidate. D15 remains Pending: the SHA created
+  by root integration of this repair must be frozen, receive a fresh matrix on
+  that exact tree and obtain an independent review.
 - To avoid a circular gate, D15 now runs on one fixed pre-archive candidate
   after all source, documentation, policy, D11 and final-report edits. An
   independent review accepts or rejects that exact SHA. Only then may root make
@@ -754,12 +760,15 @@ M8 = Active
   stale-path, diff-summary and clean-tree checks rather than another expensive
   global matrix. M8 and Package M remain **Active** until that root closeout is
   accepted.
-- **M8-D12 candidate ready; root acceptance pending.** The populated
+- **M8-D12 integrated; M8-D15 Pending.** The populated
   [M8 final closeout report](m8-final-closeout.md) records the final
   architecture/deprecation boundary, exact existing M0--M8 Git identities,
   milestone-local versus historical endpoint evidence, explicit limitations
-  and the non-circular D15-before-D13 sequence. Its fixed input tree is
-  `76188933a87a37f50175fa80720a429d50608ee7`. This documentation candidate
-  does not accept M8 or Package M, does not qualify a new endpoint, and cannot
-  record its own integrated SHA; root supplies that identity only after
-  independent review and integration.
+  and the non-circular D15-before-D13 sequence. Its fixed input tree was
+  `76188933a87a37f50175fa80720a429d50608ee7`; root integrated the report as
+  `315f78e059ee0cd94b7653b4465e1937039d0131` and its status-order repair as
+  `c6ea13e41bde1a9d0f8af7252d343538603bc059`. Neither commit accepts M8 or
+  Package M or qualifies a new endpoint. The `c6ea13e` matrix attempt cannot
+  qualify the post-status-repair candidate. The SHA created by root integration
+  of this repair must be frozen, receive a fresh D15 run, and obtain an
+  independent review before D13.
