@@ -311,6 +311,33 @@ canonical output absent.
 Each raw capture receipt records artifact-relative `final-frame.png`, so the
 published logs remain revalidatable after the staging directory is renamed.
 
+For the B1 desktop Balanced artifact bridge, first run the synthetic collector
+tests. A separately authorized macOS/Metal endpoint owner may then choose a
+fresh ignored destination and run the collector exactly once:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 python3 tests/perf/test_collect_balanced_desktop_b1.py
+python3 tests/perf/collect-balanced-desktop-b1.py \
+  --dataset-manifest tests/perf/datasets/kitsune.json \
+  --trace tests/perf/trace/fixtures/quality/candidate-kitsune-quality-1920x1080-v1.json \
+  --output target/benchmarks/b1/desktop-balanced-<candidate-sha>
+```
+
+The collector builds private ExactFull32 and CandidateStable24 desktop hosts,
+then invokes each host once with `--surface-diagnostic-multi-capture`. Each
+lane must produce capture indexes and trace frames `0 -> 1 -> 2` / `0 -> 1 ->
+0` inside that single process and Surface session; three independent host
+processes may never be joined into a formal lane. Only after both complete
+terminal streams validate does the collector stage six `gsplat-benchmark/v1`
+run directories and one `gsplat-balanced-image-gate/v1` suite manifest. Every
+run is checked by `validate-benchmark-artifacts.py`, and the outer suite is
+checked by `validate-balanced-image-gate.py`, before a fresh destination is
+atomically published. A malformed, missing, duplicate, out-of-order, mismatched
+or failed receipt retains only failure diagnostics and leaves the requested
+output absent. The collector is not a browser, mobile, performance or
+cross-device qualification, and a failed endpoint attempt must not be retried
+without a new explicit authorization.
+
 Committed dataset identities and the shared camera oracle have separate checks:
 
 ```bash

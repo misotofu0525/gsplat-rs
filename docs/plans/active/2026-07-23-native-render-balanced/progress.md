@@ -473,3 +473,39 @@ resolution. Any mismatch returns an error and publishes nothing. Pure tests
 cover a complete match plus every individual identity, plan, order,
 presentation and dimension mismatch. No renderer, FFI or public API changed,
 and no endpoint was run for this repair.
+
+## B1 desktop formal-artifact collector candidate
+
+Implementation on exact parent
+`e5c5e4848dc0dd40338880a294d13d647cd156d2`, branch
+`codex/b1-balanced-desktop-artifact-collector-dd5b`, adds only the downstream
+collector and its synthetic tests. The accepted M2b collector and both
+canonical validators remain unchanged. Shared dataset/trace authority,
+artifact primitives, PNG decoding, image metrics and temporal metrics are
+called from the existing M2b and Balanced modules rather than reimplemented.
+
+The collector builds two private release binaries and invokes the desktop host
+exactly twice: one ExactFull32 process and one CandidateStable24 process. Each
+process receives `--surface-diagnostic-multi-capture` and must yield exactly
+three ordered terminal receipts for capture indexes `0/1/2` and trace frames
+`0/1/0` from that one continuous Surface session. Lane profile, full
+resolution, current-stats/capture identity, present fence, S/V/C/D semantics,
+monotonic receipt identity and finite timings fail closed before any standard
+run directory exists.
+
+After both lane sessions validate, the collector stages the six canonical
+`gsplat-benchmark/v1` run directories, recomputes the Balanced frame/temporal
+receipts through the existing validator implementation, and writes the outer
+`gsplat-balanced-image-gate/v1` manifest. It runs the standard benchmark
+validator on every run and the Balanced validator on the complete suite before
+one fresh-destination rename. Partial host failure, invalid evidence or
+validator rejection cannot publish the requested output.
+
+Candidate-local verification covers malformed records, missing and duplicate
+captures, lane/receipt mismatches, invalid timing, the exact two-invocation
+multi-capture command seam, partial second-host failure, incomplete staging and
+no output publication on collection failure. No desktop host, Metal adapter,
+real window, browser or device endpoint was run for this candidate. Formal
+desktop collection, image-quality admission, performance evidence and every
+other endpoint qualification remain **Deferred** to the root-owned one-shot;
+B1 remains **Active**.
