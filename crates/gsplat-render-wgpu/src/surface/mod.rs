@@ -5,6 +5,7 @@ mod current_stats;
 mod lifecycle;
 mod projected_adaptive;
 mod session_control;
+mod session_frame_executor;
 mod session_owner;
 mod session_schedule;
 pub(crate) mod shadow;
@@ -37,6 +38,11 @@ pub(crate) use session_control::{
 pub(crate) use session_control::{
     exact_gpu_plan_for_producer, projected_formal_sample_requested,
     validate_projected_draw_policy_transition,
+};
+#[cfg(test)]
+pub(crate) use session_frame_executor::paged_surface_counts;
+pub(crate) use session_frame_executor::{
+    SessionFrameExecutor, StandaloneCpuFrameAttempt, StandaloneGpuFrameAttempt,
 };
 pub(crate) use session_owner::SessionSurfaceOwner;
 #[cfg(not(target_arch = "wasm32"))]

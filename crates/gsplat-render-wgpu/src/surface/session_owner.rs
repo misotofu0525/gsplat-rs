@@ -343,13 +343,6 @@ impl SessionSurfaceOwner {
             Self::ExactPacked(host) => host.last_frame_presented(),
         }
     }
-
-    pub(crate) fn instance_count(&self) -> Option<u32> {
-        match self {
-            Self::Standalone(presenter) => Some(presenter.instance_count()),
-            Self::ExactPacked(_) => None,
-        }
-    }
 }
 
 #[cfg(test)]
