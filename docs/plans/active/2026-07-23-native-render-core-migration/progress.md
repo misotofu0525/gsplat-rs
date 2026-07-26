@@ -638,8 +638,8 @@ M7 = Accepted
   transaction composer with a single private publication ledger; Presenter is
   the mechanical Surface adapter/host around private standalone Direct/Paged
   runtime owners.
-- Root verification at clean `2739f48` passed workspace check, 462 renderer
-  library tests with 8 manual research tests ignored, strict Clippy, Rustdoc,
+- Root verification at clean `2739f48` passed workspace check, 454 renderer
+  library tests, with 8 manual research tests ignored (462 total), strict Clippy, Rustdoc,
   architecture self-tests and real-tree policy, the real C FFI smoke, renderer
   and Web WASM compilation, forced Apple M4 Metal SortedAlpha conformance, and
   the hidden-window Apple M4 Surface test.

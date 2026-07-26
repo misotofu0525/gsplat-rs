@@ -78,7 +78,7 @@ The root task recorded these results against clean source tip `2739f48`:
 | --- | --- | --- |
 | `cargo fmt --all -- --check` | PASS | Rust formatting. |
 | `cargo check --workspace` | PASS | Host workspace compile. |
-| `cargo test -p gsplat-render-wgpu --lib` | PASS: 462 passed, 8 ignored | Renderer behavior, including publication and transition regressions; ignored manual research tests are not acceptance evidence. |
+| `cargo test -p gsplat-render-wgpu --lib` | PASS: 454 passed, 8 ignored (462 total) | Renderer behavior, including publication and transition regressions; ignored manual research tests are not acceptance evidence. |
 | `cargo clippy --workspace --all-targets -- -D warnings` | PASS | Strict all-target lint. |
 | `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` | PASS | Public Rust documentation. |
 | `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests/architecture -p 'test_source_architecture.py'` | PASS: 3 | Architecture checker self-tests. |
