@@ -12,6 +12,7 @@ import io
 import json
 import os
 import pathlib
+import shutil
 import struct
 import sys
 import tempfile
@@ -255,6 +256,173 @@ def base_manifest(root: pathlib.Path, *, moving: bool = False) -> dict:
     return manifest
 
 
+def benchmark_distribution(value: float, count: int) -> dict:
+    return {
+        "count": count,
+        "mean": value,
+        "p50": value,
+        "p90": value,
+        "p95": value,
+        "p99": value,
+        "max": value,
+    }
+
+
+def write_canonical_benchmark_artifact(
+    root: pathlib.Path,
+    *,
+    lane: str,
+    capture_index: int,
+    pair_id: str,
+    dataset: dict,
+    trace: dict,
+    presentation: dict,
+    camera: dict,
+    image_receipt: dict,
+) -> dict:
+    run_id = f"formal-{lane}-{capture_index}"
+    artifact = root / "benchmark" / run_id
+    artifact.mkdir(parents=True)
+    image_data = (root / image_receipt["path"]).read_bytes()
+    image_path = artifact / "final-frame.png"
+    image_path.write_bytes(image_data)
+    benchmark_image = {
+        "path": image_path.name,
+        "sha256": hashlib.sha256(image_data).hexdigest(),
+        "width": image_receipt["width"],
+        "height": image_receipt["height"],
+    }
+    unavailable = [
+        "frames[*].preprocess_ms",
+        "frames[*].sort_ms",
+        "frames[*].geometry_submit_ms",
+        "frames[*].gpu_wait_ms",
+        "frames[*].gpu_complete_ms",
+    ]
+    manifest = {
+        "schema": "gsplat-benchmark/v1",
+        "record_type": "manifest",
+        "run_id": run_id,
+        "identity": {
+            "series_id": f"balanced-formal-{capture_index}",
+            "started_at_utc": "2026-07-27T00:00:00Z",
+            "ended_at_utc": "2026-07-27T00:00:01Z",
+            "measurement_started_at_utc": "2026-07-27T00:00:00Z",
+            "measurement_ended_at_utc": "2026-07-27T00:00:01Z",
+        },
+        "build": {
+            "repository_commit": "1" * 40,
+            "dirty": False,
+            "profile": "release",
+            "package_version": "0.1.3",
+        },
+        "dataset": {
+            "id": dataset["id"],
+            "sha256": dataset["sha256"],
+            "bytes": dataset["bytes"],
+            "splat_count": dataset["splat_count"],
+            "sh_degree": dataset["sh_degree"],
+        },
+        "trace": {"id": trace["trace_id"], "sha256": trace["content_sha256"]},
+        "renderer": {
+            "implementation": f"balanced-{lane}",
+            "path": "sorted_index_direct",
+            "backend": "test",
+            "sort_policy": "sync",
+        },
+        "display": {
+            "width": image_receipt["width"],
+            "height": image_receipt["height"],
+            "dpr": 1.0,
+            "refresh_hz": 60.0,
+            "frame_budget_ms": 16.6666666667,
+            "refresh_hz_source": "formal fixture",
+            "frame_budget_source": "formal fixture",
+        },
+        "environment": {
+            "platform": "fixture",
+            "os": "fixture",
+            "device": None,
+            "browser": None,
+            "adapter": None,
+            "driver": None,
+        },
+        "image": benchmark_image,
+        "unavailable_fields": unavailable,
+    }
+    write_json(artifact / "manifest.json", manifest)
+
+    frames = []
+    for frame_index in range(capture_index + 1):
+        selected = frame_index == capture_index
+        frame = {
+            "schema": "gsplat-benchmark/v1",
+            "record_type": "frame",
+            "run_id": run_id,
+            "frame_index": frame_index,
+            "elapsed_ns": frame_index * 1_000_000,
+            "call_ms": 1.0,
+            "frame_wall_ms": 1.0,
+            "preprocess_ms": None,
+            "sort_ms": None,
+            "geometry_submit_ms": None,
+            "gpu_wait_ms": None,
+            "gpu_complete_ms": None,
+            "visible": dataset["splat_count"],
+            "drawn": dataset["splat_count"],
+            "active_splats": dataset["splat_count"],
+            "sort_refreshed": True,
+        }
+        if selected:
+            frame.update(
+                {
+                    "pair_id": pair_id,
+                    "capture_index": capture_index,
+                    "trace_frame_index": capture_index,
+                    "camera": copy.deepcopy(camera),
+                    "terminal_outcome": "presented",
+                    "presentation": copy.deepcopy(presentation),
+                }
+            )
+        frames.append(frame)
+    (artifact / "frames.jsonl").write_text(
+        "".join(json.dumps(frame, sort_keys=True) + "\n" for frame in frames),
+        encoding="utf-8",
+    )
+    count = len(frames)
+    distributions = {
+        metric: benchmark_distribution(1.0, count)
+        if metric in {"call_ms", "frame_wall_ms"}
+        else None
+        for metric in (
+            "call_ms",
+            "frame_wall_ms",
+            "preprocess_ms",
+            "sort_ms",
+            "geometry_submit_ms",
+            "gpu_wait_ms",
+            "gpu_complete_ms",
+        )
+    }
+    summary = {
+        "schema": "gsplat-benchmark/v1",
+        "record_type": "summary",
+        "run_id": run_id,
+        "sample_count": count,
+        "warmup_count": 0,
+        "frame_budget_ms": 16.6666666667,
+        "missed_frame_count": 0,
+        "distributions": distributions,
+    }
+    write_json(artifact / "summary.json", summary)
+    return {
+        "path": artifact.relative_to(root).as_posix(),
+        "sha256": VALIDATOR.artifact_directory_sha256(artifact),
+        "run_id": run_id,
+        "frame_index": capture_index,
+    }
+
+
 def formal_manifest(root: pathlib.Path) -> dict:
     manifest = base_manifest(root)
     authority, dataset, trace = authority_receipt(
@@ -274,6 +442,21 @@ def formal_manifest(root: pathlib.Path) -> dict:
         manifest["resolution"][f"{stage}_height"] = height
 
     for frame in manifest["frames"]:
+        capture_index = frame["capture_index"]
+        frame["exact"] = write_image(
+            root,
+            f"formal-exact-{capture_index}.png",
+            width,
+            height,
+            solid_pixels(width, height, 64 + capture_index),
+        )
+        frame["candidate"] = write_image(
+            root,
+            f"formal-candidate-{capture_index}.png",
+            width,
+            height,
+            solid_pixels(width, height, 64 + capture_index),
+        )
         trace_frame = trace["frames"][frame["trace_frame_index"]]
         pose_intrinsics_sha256 = VALIDATOR.canonical_sha256(
             {"pose": trace_frame["pose"], "intrinsics": trace_frame["intrinsics"]}
@@ -283,29 +466,36 @@ def formal_manifest(root: pathlib.Path) -> dict:
             "trace_content_sha256": trace["content_sha256"],
             "pose_intrinsics_sha256": pose_intrinsics_sha256,
         }
-        terminal_content = {
-            "schema": VALIDATOR.TERMINAL_RECEIPT_SCHEMA,
-            "capture_index": frame["capture_index"],
-            "trace_frame_index": frame["trace_frame_index"],
-            "trace_id": trace["trace_id"],
-            "trace_content_sha256": trace["content_sha256"],
-            "pose_intrinsics_sha256": pose_intrinsics_sha256,
-            "outcome": "presented",
+        pair_id = f"balanced-formal-pair-{capture_index}"
+        frame["benchmark_artifacts"] = {
+            "pair_id": pair_id,
             "exact": {
-                "benchmark_run_id": "exact-run",
-                "benchmark_frame_index": frame["capture_index"],
-                "presentation": copy.deepcopy(frame["presentation"]["exact"]),
+                **write_canonical_benchmark_artifact(
+                    root,
+                    lane="exact",
+                    capture_index=capture_index,
+                    pair_id=pair_id,
+                    dataset=dataset,
+                    trace=trace,
+                    presentation=frame["presentation"]["exact"],
+                    camera=frame["camera"],
+                    image_receipt=frame["exact"],
+                )
             },
             "candidate": {
-                "benchmark_run_id": "candidate-run",
-                "benchmark_frame_index": frame["capture_index"],
-                "presentation": copy.deepcopy(frame["presentation"]["candidate"]),
+                **write_canonical_benchmark_artifact(
+                    root,
+                    lane="candidate",
+                    capture_index=capture_index,
+                    pair_id=pair_id,
+                    dataset=dataset,
+                    trace=trace,
+                    presentation=frame["presentation"]["candidate"],
+                    camera=frame["camera"],
+                    image_receipt=frame["candidate"],
+                )
             },
         }
-        terminal_sha256 = VALIDATOR.canonical_sha256(terminal_content)
-        frame["terminal_receipt"] = {**terminal_content, "sha256": terminal_sha256}
-        frame["exact"]["terminal_receipt_sha256"] = terminal_sha256
-        frame["candidate"]["terminal_receipt_sha256"] = terminal_sha256
     return manifest
 
 
@@ -448,12 +638,73 @@ class BalancedImageGateTests(unittest.TestCase):
             with self.assertRaisesRegex(VALIDATOR.ValidationError, "plan_generation must match"):
                 validate_manifest(root, manifest)
 
-    def test_formal_image_must_join_the_same_terminal_benchmark_receipt(self) -> None:
+    def test_presentation_generation_must_match_even_when_both_lanes_are_monotonic(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            manifest = base_manifest(root)
+            manifest["frames"][0]["presentation"]["candidate"][
+                "presentation_generation"
+            ] = 10
+            manifest["frames"][1]["presentation"]["candidate"][
+                "presentation_generation"
+            ] = 11
+            with self.assertRaisesRegex(
+                VALIDATOR.ValidationError, "presentation_generation must match"
+            ):
+                validate_manifest(root, manifest)
+
+    def test_valid_1920x1080_formal_quality_binds_canonical_runs(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            result = validate_manifest(root, formal_manifest(root))
+            self.assertEqual(result.evidence_class, "formal_quality")
+            self.assertEqual(result.frame_count, 2)
+
+    def test_candidate_benchmark_frame_must_match_capture_and_trace(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)
             manifest = formal_manifest(root)
-            manifest["frames"][0]["candidate"]["terminal_receipt_sha256"] = "0" * 64
-            with self.assertRaisesRegex(VALIDATOR.ValidationError, "terminal_receipt_sha256"):
+            receipt = manifest["frames"][0]["benchmark_artifacts"]["candidate"]
+            artifact = root / receipt["path"]
+            frames_path = artifact / "frames.jsonl"
+            benchmark_frame = json.loads(frames_path.read_text(encoding="utf-8"))
+            benchmark_frame["capture_index"] = 1
+            benchmark_frame["trace_frame_index"] = 1
+            frames_path.write_text(
+                json.dumps(benchmark_frame, sort_keys=True) + "\n", encoding="utf-8"
+            )
+            receipt["sha256"] = VALIDATOR.artifact_directory_sha256(artifact)
+            with self.assertRaisesRegex(VALIDATOR.ValidationError, "capture_index mismatch"):
+                validate_manifest(root, manifest)
+
+    def test_external_benchmark_artifact_is_rejected_before_validation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            container = pathlib.Path(directory)
+            root = container / "gate"
+            root.mkdir()
+            manifest = formal_manifest(root)
+            receipt = manifest["frames"][0]["benchmark_artifacts"]["candidate"]
+            external = container / "forged-canonical-run"
+            shutil.copytree(root / receipt["path"], external)
+            receipt["path"] = "../forged-canonical-run"
+            receipt["sha256"] = VALIDATOR.artifact_directory_sha256(external)
+            with self.assertRaisesRegex(VALIDATOR.ValidationError, "relative path"):
+                validate_manifest(root, manifest)
+
+    def test_canonical_benchmark_active_count_must_bind_full_membership(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            manifest = formal_manifest(root)
+            receipt = manifest["frames"][0]["benchmark_artifacts"]["candidate"]
+            artifact = root / receipt["path"]
+            frames_path = artifact / "frames.jsonl"
+            benchmark_frame = json.loads(frames_path.read_text(encoding="utf-8"))
+            benchmark_frame["active_splats"] -= 1
+            frames_path.write_text(
+                json.dumps(benchmark_frame, sort_keys=True) + "\n", encoding="utf-8"
+            )
+            receipt["sha256"] = VALIDATOR.artifact_directory_sha256(artifact)
+            with self.assertRaisesRegex(VALIDATOR.ValidationError, "active_splats"):
                 validate_manifest(root, manifest)
 
     def test_missing_authority_or_lifecycle_receipt_is_rejected(self) -> None:

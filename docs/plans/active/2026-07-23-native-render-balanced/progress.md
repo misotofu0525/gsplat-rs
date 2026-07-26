@@ -74,7 +74,7 @@ The validator fails closed unless an artifact provides and proves:
   derivation source path, asset hash, point count and SH degree to that same
   dataset manifest, and a minimal contract fixture cannot claim formal quality;
 - successful per-frame Exact/candidate presentation tickets whose scene,
-  camera, viewport, contract and plan generations match individually, plus
+  camera, viewport, contract, plan and presentation generations match, plus
   artifact-local, hash-matched, separately owned,
   non-interlaced RGBA8 PNGs for Exact and candidate output;
 - recomputed per-frame SSIM, RGB and alpha metrics matching the artifact
@@ -87,9 +87,14 @@ symlink/hardlink image aliasing, over-limit decompression streams, or
 incomplete/misjoined transitions are rejected rather than defaulted. Formal
 quality evidence below 1920x1080 is also rejected; smaller deterministic inputs
 remain explicitly labeled contract fixtures and cannot qualify an endpoint. A
-formal image is also joined by hash to one terminal paired receipt that carries
-the same per-lane presentation lifecycle and benchmark run/frame identities;
-receipt or generation cross-joins are rejected. A
+formal image must reference a hash-matched per-lane run artifact that first
+passes the repository's canonical `gsplat-benchmark/v1` validator. The selected
+terminal frame then binds pair/run/frame identity, capture and trace index,
+dataset and trace authority, clean build/profile, full source count, successful
+presentation lifecycle, and the same retained image bytes. External artifact
+paths, forged hashes, receipt cross-joins, or generation cross-joins are
+rejected. A real 1920x1080 positive fixture exercises the complete formal path;
+it remains contract evidence rather than endpoint qualification. A
 successful invocation emits the validator version and SHA-256 so later retained
 evidence can identify the exact validator. Focused unit coverage exercises both
 valid camera modes and the fail-closed boundaries; it is repository-local

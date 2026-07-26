@@ -48,6 +48,7 @@ METRIC_RECEIPT_TOLERANCE = 1.0e-9
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 TRACE_VALIDATOR_PATH = REPO_ROOT / "tests/perf/trace/validate_trace_v1.py"
+BENCHMARK_VALIDATOR_PATH = REPO_ROOT / "tests/perf/validate-benchmark-artifacts.py"
 EVIDENCE_CLASSES = {"contract_fixture", "formal_quality"}
 FORMAL_MIN_WIDTH = 1920
 FORMAL_MIN_HEIGHT = 1080
@@ -65,8 +66,8 @@ MATCHED_LIFECYCLE_GENERATIONS = (
     "viewport_generation",
     "contract_generation",
     "plan_generation",
+    "presentation_generation",
 )
-TERMINAL_RECEIPT_SCHEMA = "gsplat-balanced-terminal-frame/v1"
 
 
 class ValidationError(ValueError):
@@ -101,6 +102,7 @@ class ValidationResult:
 class Authority:
     dataset_id: str
     dataset_asset_sha256: str
+    dataset_asset_bytes: int
     source_splat_count: int
     source_sh_degree: int
     trace_id: str
@@ -231,6 +233,59 @@ def resolve_artifact_file(root: pathlib.Path, value: str, context: str) -> pathl
     return path
 
 
+def resolve_artifact_directory(root: pathlib.Path, value: str, context: str) -> pathlib.Path:
+    relative = pathlib.PurePosixPath(value)
+    if relative.is_absolute() or not relative.parts or ".." in relative.parts:
+        fail(f"{context} must be a relative path inside the artifact directory")
+    resolved_root = root.resolve()
+    try:
+        path = root.joinpath(*relative.parts).resolve(strict=True)
+    except OSError as error:
+        fail(f"cannot resolve {context}: {error}")
+    try:
+        path.relative_to(resolved_root)
+    except ValueError:
+        fail(f"{context} escapes the artifact directory")
+    if not path.is_dir():
+        fail(f"{context} does not name an artifact directory")
+    return path
+
+
+def artifact_directory_sha256(directory: pathlib.Path) -> str:
+    """Hash one immutable artifact tree by relative name, length, and bytes."""
+
+    digest = hashlib.sha256()
+    try:
+        entries = sorted(
+            directory.rglob("*"),
+            key=lambda path: path.relative_to(directory).as_posix(),
+        )
+    except OSError as error:
+        fail(f"cannot enumerate benchmark artifact {directory}: {error}")
+    files: list[pathlib.Path] = []
+    for path in entries:
+        if path.is_symlink():
+            fail(f"benchmark artifact must not contain symlinks: {path}")
+        if path.is_dir():
+            continue
+        if not path.is_file():
+            fail(f"benchmark artifact contains a non-file entry: {path}")
+        files.append(path)
+    if not files:
+        fail(f"benchmark artifact directory is empty: {directory}")
+    for path in files:
+        relative = path.relative_to(directory).as_posix().encode("utf-8")
+        try:
+            data = path.read_bytes()
+        except OSError as error:
+            fail(f"cannot hash benchmark artifact file {path}: {error}")
+        digest.update(struct.pack(">Q", len(relative)))
+        digest.update(relative)
+        digest.update(struct.pack(">Q", len(data)))
+        digest.update(data)
+    return digest.hexdigest()
+
+
 def load_trace_validator() -> Any:
     spec = importlib.util.spec_from_file_location(
         "balanced_gate_trace_validator", TRACE_VALIDATOR_PATH
@@ -244,6 +299,17 @@ def load_trace_validator() -> Any:
         spec.loader.exec_module(module)
     finally:
         sys.path.remove(trace_directory)
+    return module
+
+
+def load_benchmark_validator() -> Any:
+    spec = importlib.util.spec_from_file_location(
+        "balanced_gate_benchmark_validator", BENCHMARK_VALIDATOR_PATH
+    )
+    if spec is None or spec.loader is None:
+        fail(f"cannot load benchmark validator {BENCHMARK_VALIDATOR_PATH}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
     return module
 
 
@@ -291,6 +357,9 @@ def validate_authority(manifest: dict[str, Any], evidence_class: str) -> Authori
         fail("manifest.authority.dataset_manifest.asset_sha256 mismatch")
     source_splat_count = require_int(
         dataset, "splat_count", "authoritative dataset manifest", positive=True
+    )
+    dataset_asset_bytes = require_int(
+        dataset, "bytes", "authoritative dataset manifest", positive=True
     )
     source_sh_degree = require_int(dataset, "sh_degree", "authoritative dataset manifest")
     if evidence_class == "formal_quality":
@@ -345,6 +414,7 @@ def validate_authority(manifest: dict[str, Any], evidence_class: str) -> Authori
     return Authority(
         dataset_id=dataset_id,
         dataset_asset_sha256=asset_sha256,
+        dataset_asset_bytes=dataset_asset_bytes,
         source_splat_count=source_splat_count,
         source_sh_degree=source_sh_degree,
         trace_id=trace_id,
@@ -720,73 +790,131 @@ def validate_camera(
     return mode, indices
 
 
-def validate_formal_terminal_receipt(
+def validate_formal_benchmark_artifacts(
     raw_frame: dict[str, Any],
     presentations: dict[str, dict[str, Any]],
     image_receipts: dict[str, dict[str, Any]],
     authority: Authority,
+    root: pathlib.Path,
+    expected_dimensions: tuple[int, int],
     capture_index: int,
     trace_frame_index: int,
-    pose_intrinsics_sha256: str,
+    camera_receipt: dict[str, Any],
     context: str,
 ) -> None:
-    terminal = require_object(raw_frame, "terminal_receipt", context)
-    if terminal.get("schema") != TERMINAL_RECEIPT_SCHEMA:
-        fail(f"{context}.terminal_receipt.schema must equal {TERMINAL_RECEIPT_SCHEMA!r}")
-    declared_sha256 = require_sha256(terminal, "sha256", f"{context}.terminal_receipt")
-    content = {key: value for key, value in terminal.items() if key != "sha256"}
-    actual_sha256 = canonical_sha256(content)
-    if declared_sha256 != actual_sha256:
-        fail(f"{context}.terminal_receipt SHA-256 mismatch")
-    if require_int(terminal, "capture_index", f"{context}.terminal_receipt") != capture_index:
-        fail(f"{context}.terminal_receipt.capture_index mismatch")
-    if (
-        require_int(terminal, "trace_frame_index", f"{context}.terminal_receipt")
-        != trace_frame_index
-    ):
-        fail(f"{context}.terminal_receipt.trace_frame_index mismatch")
-    if require_string(terminal, "trace_id", f"{context}.terminal_receipt") != authority.trace_id:
-        fail(f"{context}.terminal_receipt.trace_id mismatch")
-    if require_sha256(
-        terminal, "trace_content_sha256", f"{context}.terminal_receipt"
-    ) != authority.trace_content_sha256:
-        fail(f"{context}.terminal_receipt.trace_content_sha256 mismatch")
-    if require_sha256(
-        terminal, "pose_intrinsics_sha256", f"{context}.terminal_receipt"
-    ) != pose_intrinsics_sha256:
-        fail(f"{context}.terminal_receipt pose/intrinsics mismatch")
-    if require_string(terminal, "outcome", f"{context}.terminal_receipt") != "presented":
-        fail(f"{context}.terminal_receipt.outcome must equal 'presented'")
-
+    pair = require_object(raw_frame, "benchmark_artifacts", context)
+    pair_context = f"{context}.benchmark_artifacts"
+    pair_id = require_string(pair, "pair_id", pair_context)
+    benchmark_validator = load_benchmark_validator()
     run_ids: list[str] = []
+    build_receipts: list[dict[str, Any]] = []
     for lane in ("exact", "candidate"):
-        terminal_lane = require_object(terminal, lane, f"{context}.terminal_receipt")
-        run_ids.append(
-            require_string(
-                terminal_lane,
-                "benchmark_run_id",
-                f"{context}.terminal_receipt.{lane}",
-            )
+        lane_receipt = require_object(pair, lane, pair_context)
+        lane_context = f"{pair_context}.{lane}"
+        artifact_directory = resolve_artifact_directory(
+            root,
+            require_string(lane_receipt, "path", lane_context),
+            f"{lane_context}.path",
         )
-        require_int(
-            terminal_lane,
-            "benchmark_frame_index",
-            f"{context}.terminal_receipt.{lane}",
+        declared_artifact_sha256 = require_sha256(
+            lane_receipt, "sha256", lane_context
         )
-        terminal_presentation = require_object(
-            terminal_lane, "presentation", f"{context}.terminal_receipt.{lane}"
+        if artifact_directory_sha256(artifact_directory) != declared_artifact_sha256:
+            fail(f"{lane_context} benchmark artifact SHA-256 mismatch")
+        try:
+            benchmark_validator.validate(artifact_directory)
+        except benchmark_validator.ValidationError as error:
+            fail(f"{lane_context} is not a canonical gsplat-benchmark/v1 artifact: {error}")
+
+        benchmark_manifest = benchmark_validator.load_json(
+            artifact_directory / "manifest.json"
         )
-        if terminal_presentation != presentations[lane]:
-            fail(
-                f"{context}.terminal_receipt.{lane}.presentation does not match "
-                "the frame lifecycle receipt"
-            )
+        run_id = require_string(lane_receipt, "run_id", lane_context)
+        if benchmark_manifest.get("run_id") != run_id:
+            fail(f"{lane_context}.run_id does not match canonical benchmark manifest")
+        run_ids.append(run_id)
+        unavailable = set(benchmark_manifest["unavailable_fields"])
+        benchmark_renderer = benchmark_manifest["renderer"]
+        benchmark_frames = benchmark_validator.load_frames(
+            artifact_directory / "frames.jsonl",
+            run_id,
+            unavailable,
+            count_semantics=benchmark_renderer.get("count_semantics"),
+            source_count=benchmark_manifest["dataset"]["splat_count"],
+        )
+        frame_index = require_int(lane_receipt, "frame_index", lane_context)
+        if frame_index >= len(benchmark_frames):
+            fail(f"{lane_context}.frame_index is unavailable in benchmark artifact")
+        benchmark_frame = benchmark_frames[frame_index]
+        if frame_index != len(benchmark_frames) - 1:
+            fail(f"{lane_context}.frame_index must identify the terminal benchmark frame")
+
+        expected_dataset = {
+            "id": authority.dataset_id,
+            "sha256": authority.dataset_asset_sha256,
+            "bytes": authority.dataset_asset_bytes,
+            "splat_count": authority.source_splat_count,
+            "sh_degree": authority.source_sh_degree,
+        }
+        for key, expected in expected_dataset.items():
+            if benchmark_manifest["dataset"].get(key) != expected:
+                fail(f"{lane_context} benchmark dataset.{key} does not match authority")
+        expected_trace = {
+            "id": authority.trace_id,
+            "sha256": authority.trace_content_sha256,
+        }
+        for key, expected in expected_trace.items():
+            if benchmark_manifest["trace"].get(key) != expected:
+                fail(f"{lane_context} benchmark trace.{key} does not match authority")
+        display = benchmark_manifest["display"]
+        if (display.get("width"), display.get("height")) != expected_dimensions:
+            fail(f"{lane_context} benchmark display does not match formal image resolution")
+        build = benchmark_manifest["build"]
+        if build.get("repository_commit") is None or build.get("dirty") is not False:
+            fail(f"{lane_context} benchmark build must identify a clean repository commit")
+        build_receipts.append(
+            {
+                "repository_commit": build.get("repository_commit"),
+                "dirty": build.get("dirty"),
+                "profile": build.get("profile"),
+                "package_version": build.get("package_version"),
+            }
+        )
+
+        if benchmark_frame.get("pair_id") != pair_id:
+            fail(f"{lane_context} benchmark pair_id mismatch")
+        if benchmark_frame.get("capture_index") != capture_index:
+            fail(f"{lane_context} benchmark capture_index mismatch")
+        if benchmark_frame.get("trace_frame_index") != trace_frame_index:
+            fail(f"{lane_context} benchmark trace_frame_index mismatch")
+        if benchmark_frame.get("camera") != camera_receipt:
+            fail(f"{lane_context} benchmark camera receipt mismatch")
+        if benchmark_frame.get("terminal_outcome") != "presented":
+            fail(f"{lane_context} benchmark terminal_outcome must equal 'presented'")
+        if benchmark_frame.get("presentation") != presentations[lane]:
+            fail(f"{lane_context} benchmark presentation receipt mismatch")
+        if benchmark_frame.get("active_splats") != authority.source_splat_count:
+            fail(f"{lane_context} benchmark active_splats must equal source membership")
+
+        benchmark_image = require_object(
+            benchmark_manifest, "image", f"{lane_context}.manifest"
+        )
         if require_sha256(
-            image_receipts[lane], "terminal_receipt_sha256", f"{context}.{lane}"
-        ) != actual_sha256:
-            fail(f"{context}.{lane}.terminal_receipt_sha256 mismatch")
+            benchmark_image, "sha256", f"{lane_context}.manifest.image"
+        ) != require_sha256(image_receipts[lane], "sha256", f"{context}.{lane}"):
+            fail(f"{lane_context} benchmark image does not match formal image receipt")
+        if (
+            require_int(benchmark_image, "width", f"{lane_context}.manifest.image")
+            != expected_dimensions[0]
+            or require_int(benchmark_image, "height", f"{lane_context}.manifest.image")
+            != expected_dimensions[1]
+        ):
+            fail(f"{lane_context} benchmark image dimensions mismatch")
+
     if run_ids[0] == run_ids[1]:
-        fail(f"{context}.terminal_receipt Exact/candidate benchmark run IDs must differ")
+        fail(f"{pair_context} Exact/candidate benchmark run IDs must differ")
+    if build_receipts[0] != build_receipts[1]:
+        fail(f"{pair_context} Exact/candidate benchmark build/profile must match")
 
 
 def validate_frames(
@@ -876,14 +1004,16 @@ def validate_frames(
         candidate_receipt = require_object(raw_frame, "candidate", context)
         image_receipts = {"exact": exact_receipt, "candidate": candidate_receipt}
         if evidence_class == "formal_quality":
-            validate_formal_terminal_receipt(
+            validate_formal_benchmark_artifacts(
                 raw_frame,
                 presentations,
                 image_receipts,
                 authority,
+                root,
+                expected_dimensions,
                 capture_index,
                 trace_frame_index,
-                pose_intrinsics_sha256,
+                camera_receipt,
                 context,
             )
         exact = load_image(
