@@ -1,6 +1,7 @@
 # S0 Scalable Coverage and Streaming Contract
 
-> Status: S0 design candidate; no product runtime is implemented by this file.
+> Status: S0 Accepted; S1 proxy-image gate is frozen and Active. No product
+> runtime is implemented by this file.
 > Program plan: [Native Render Core Refactor](../../completed/2026-07-23-native-render-core-refactor/task_plan.md)
 > Architecture source: [Scalable ownership](../../completed/2026-07-23-native-render-core-refactor/architecture.md#15-scalable-ownership)
 > Evidence source: [Scalable track](../../completed/2026-07-23-native-render-core-refactor/benchmark_protocol.md#33-scalable-track)
@@ -595,9 +596,9 @@ The tasks are sequential at their semantic seam: S2--S5 are locked until S1 is
 Accepted against its predeclared proxy-image gate; Rejected/Deferred S1 cannot
 be bypassed with a geometric-only asset. S3 owns resources used by S4, and S5
 is the first product renderer integration. Read-only research or fixture
-preparation may run in parallel only with disjoint write ownership. S1 cannot
-start until root review accepts this S0 contract and updates the program
-ledger.
+preparation may run in parallel only with disjoint write ownership. Root review
+has accepted S0 and updated the program ledger; S1 remains Active until its
+frozen proxy-image gate reaches a terminal result.
 
 ## 14. S0 acceptance boundary
 

@@ -127,7 +127,7 @@ S2--S5 remain locked pending a separate implementation/evidence slice.
 | Task | State in this candidate | Independent result |
 | --- | --- | --- |
 | S0 | Accepted | coverage/budget/source/receipt contract and selected asset approach |
-| S1 | Active: offline builder/fixture | predeclared image-gated, independently valid proxy hierarchy |
+| S1 | Active: builder and gate frozen | predeclared image-gated, independently valid proxy hierarchy |
 | S2 | Locked until S1 Accepted | metadata-first `PageSource` and bounded direct decode |
 | S3 | Locked until S1 Accepted, then S2 | three byte-bounded caches and deterministic GPU page pool |
 | S4 | Locked until S1 Accepted, then S3 | recursive mixed-depth cut selection and atomic local replacement |
