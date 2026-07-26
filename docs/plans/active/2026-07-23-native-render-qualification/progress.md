@@ -28,6 +28,9 @@ defaults, or the Balanced and Scalable packages.
 - Branch: `codex/q0-qualification-contract`
 - Exact baseline: `6d5bd5442dee31cea24906744dfdd1d7492095ae`
 - State: Q0 remains Active pending root review and integration.
+- Machine-state vocabulary: Q0--Q4 use only Accepted/Rejected/Deferred. If B6
+  is Rejected, Q2 finishes Accepted after recording the finite decision; only
+  its report may describe the Balanced comparison as `not_applicable`.
 - Scope: comparator identity/launch, common workload admission, terminal timing,
   endpoint schedule, artifact receipts and finite Accepted/Rejected/Deferred
   outcomes are frozen in [q0-contract.md](q0-contract.md).

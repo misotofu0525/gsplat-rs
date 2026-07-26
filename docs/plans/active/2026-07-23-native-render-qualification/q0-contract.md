@@ -19,9 +19,10 @@ The contract has four rules:
    phases unavailable;
 3. separate Exact near-contract, Balanced product throughput and native-only
    CPU/SIMD/whole-plan evidence;
-4. finish every planned cell as Accepted, Rejected, Deferred or, for a missing
-   product dependency, NotApplicable. No FPS or lead percentage is required to
-   finish Package Q.
+4. finish every planned cell and Q1--Q3 machine-ledger task as Accepted,
+   Rejected or Deferred. A missing product dependency may make a report result
+   `not_applicable`, but it never creates a fourth plan state. No FPS or lead
+   percentage is required to finish Package Q.
 
 Q0 does not change renderer code, public API, product defaults, comparator
 code, assets or benchmark schemas. It does not claim that native APIs are
@@ -258,9 +259,14 @@ source SH, matched camera and full resolution. Precision/layout differences
 are part of the product contract, while LOD, sampling and resolution scaling
 remain disabled.
 
-Q2 answers product throughput, not Exact parity. If B6 is Rejected, Q2 is
-NotApplicable and terminal. If B6 or a required endpoint is Deferred, Q2 is
-Deferred. Q0 never holds Package B open to manufacture a comparator result.
+Q2 answers product throughput, not Exact parity. If B6 is Rejected, Q2 performs
+one finite dependency decision, writes report outcome
+`product_comparison=not_applicable` with the B6 terminal identity and reason,
+and finishes its **machine ledger as Accepted**: the Q2 decision task completed
+correctly and there is no comparable Balanced product result. If B6 is
+Deferred, Q2 is Deferred. If B6 is Accepted but a Q2 implementation or admitted
+comparison violates its contract, Q2 is Rejected. Q0 never holds Package B open
+to manufacture a comparator result.
 
 ### 6.3 Q3 — native CPU/SIMD/whole-plan advantage
 
@@ -295,12 +301,32 @@ hard-coded product threshold.
 | Q1 | A065 native Vulkan vs immersive WebView WebGPU on the same A065 | Truck fixed views + moving 2412x1080 sequence | Accepted, Rejected or Deferred |
 | Q1 isolation | gsplat-rs WASM/WebGPU vs PlayCanvas WebGPU in the same Chrome, if both formal collectors are ready | Truck 1920x1080 | Accepted or Deferred; never substituted by smoke |
 | Q1 breadth | available real-scene anchors on admitted M4/A065 pairs | fixed quality views; moving runs only when predeclared | per-cell Accepted/Rejected/Deferred |
-| Q2 | admitted M4/A065 pairs after B6 | B6-declared scenes and sequences | Accepted/Rejected/Deferred or package NotApplicable |
+| Q2 | admitted M4/A065 pairs after B6 | B6-declared scenes and sequences | machine ledger Accepted/Rejected/Deferred; report may say `not_applicable` |
 | Q3 | M4 and A065 native | point ladder plus complete Truck | per-kernel/per-plan terminal decision |
 | Q3 breadth | physical x86_64 and physical Apple mobile | same eligible native matrix | Deferred when hardware is absent |
 
 Windows/Linux discrete GPUs, other browsers and a second Android class are
 promotion breadth. Their absence narrows the report; it does not block Q4.
+
+### 7.1 Package task terminal mapping
+
+The repository machine ledger accepts only `Accepted`, `Rejected` and
+`Deferred` for Q1--Q3. Report vocabulary never changes that state set.
+
+| Task | Dependency/result | Machine-ledger terminal | Report meaning |
+| --- | --- | --- | --- |
+| Q1 | admitted near-contract matrix finishes | Accepted or Rejected | scoped comparison, or no admissible comparison |
+| Q1 | required endpoint/input unavailable | Deferred | exact blocker and next official probe |
+| Q2 | B6 Accepted | Accepted, Rejected or Deferred after the Q2 matrix | matched product result, rejected evidence or unavailable prerequisite |
+| Q2 | B6 Rejected | **Accepted** after the finite dependency decision | `product_comparison=not_applicable`; no Balanced product exists to compare |
+| Q2 | B6 Deferred | Deferred | Q2 cannot start until B6 has a terminal product decision |
+| Q3 | native matrix finishes | Accepted or Rejected | scoped native advantage decision, including a retained Scalar/default result |
+| Q3 | required real hardware unavailable | Deferred | no simulator/cross-compile substitution |
+| Q4 | Q1--Q3 are terminal | Accepted when the scoped report truthfully publishes every terminal | slower, rejected, deferred and Q2 `not_applicable` report outcomes are all publishable |
+
+Q4 therefore depends on Q1--Q3 being terminal, not on every lane producing a
+performance winner. A Q2 report outcome of `not_applicable` is compatible only
+with an Accepted Q2 task ledger produced by the B6-Rejected row above.
 
 ## 8. Retained evidence
 
@@ -338,24 +364,28 @@ Planned
 
 Any contract mismatch on an available endpoint -> Rejected
 Missing device/asset/tool/capability/permission -> Deferred
-B6 terminal Rejected -> Q2 NotApplicable
+B6 terminal Rejected -> Q2 machine Accepted + report result not_applicable
 ```
 
-- **Accepted** means the retained artifact satisfies this lane's declared
-  contract on the named endpoint. It is not a backend-wide claim.
+- **Accepted** means the retained run artifact satisfies its declared contract
+  on the named endpoint, or that Q2 correctly completed the finite B6-Rejected
+  dependency decision without inventing a comparison. It is not a backend-wide
+  claim or a performance win.
 - **Rejected** means an available attempt violated identity, workload,
   presentation, timing, thermal or artifact admission. Its performance values
   do not enter aggregate comparisons.
 - **Deferred** names the exact unavailable prerequisite and next official
   probe. Compile success, READY doctor output, simulator output or historical
   artifacts cannot replace it.
-- **NotApplicable** is limited to Q2 when no Accepted Balanced product exists.
+- **`not_applicable`** is report/business vocabulary limited to Q2 when B6 is
+  Rejected. It is never written into the machine task-state block.
 
 Each planned run is a one-shot attempt. A proven infrastructure repair may
 create a newly named attempt with a fresh destination, but Q0 contains no
 automatic retry loop and no target percentage. Q4 may close with slower,
-inconclusive, Rejected, Deferred or NotApplicable cells as long as every cell
-has a truthful terminal state.
+inconclusive, Rejected or Deferred cells, and with a Q2 report marked
+`not_applicable`, as long as every machine-ledger task has a truthful Accepted,
+Rejected or Deferred terminal state.
 
 ## 10. Q0 acceptance
 
