@@ -52,8 +52,9 @@ rerun `doctor`.
 ### Discovery and overrides
 
 - Android SDK: `ANDROID_SDK_ROOT`, then `ANDROID_HOME`, the standard macOS SDK
-  directory, an SDK containing `adb` on `PATH`, or Homebrew's
-  `share/android-commandlinetools` below `brew --prefix`.
+  directory, Homebrew's `share/android-commandlinetools` below the main
+  `brew --prefix`, the `android-commandlinetools` formula prefix, then the SDK
+  inferred from an `adb` executable under `platform-tools` on `PATH`.
 - Java: `JAVA_HOME`, macOS `java_home -v 21`, Homebrew `openjdk@21`, then Java
   on `PATH`. Android profiles require major version 21 and JNI headers.
 - Android components: NDK `29.0.14206865`, platform `android-35`, Build Tools

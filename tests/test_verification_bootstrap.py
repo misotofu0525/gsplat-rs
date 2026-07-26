@@ -132,6 +132,56 @@ class VerificationBootstrapTests(unittest.TestCase):
             self.assertEqual(actual, sdk)
             self.assertEqual(source, "Homebrew share directory")
 
+    def test_android_sdk_automatic_discovery_has_documented_precedence(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            host = FakeHost(root)
+            brew = host.add_executable("brew")
+
+            standard_sdk = root / "Library" / "Android" / "sdk"
+            standard_sdk.mkdir(parents=True)
+            brew_prefix = root / "homebrew"
+            brew_share_sdk = brew_prefix / "share" / "android-commandlinetools"
+            brew_share_sdk.mkdir(parents=True)
+            brew_formula_sdk = root / "homebrew-formula"
+            brew_formula_sdk.mkdir()
+            adb_sdk = root / "adb-sdk"
+            adb = adb_sdk / "platform-tools" / "adb"
+            adb.parent.mkdir(parents=True)
+            adb.write_text("", encoding="utf-8")
+            host.paths["adb"] = adb
+
+            def capture(argv: tuple[str, ...]) -> tuple[int, str]:
+                host.calls.append(tuple(argv))
+                if pathlib.Path(argv[0]).name != brew.name:
+                    return 1, "unsupported fake command"
+                if argv[1:] == ("--prefix",):
+                    return 0, str(brew_prefix)
+                if argv[1:] == ("--prefix", "android-commandlinetools"):
+                    return 0, str(brew_formula_sdk)
+                return 1, "unsupported brew query"
+
+            discovery = BOOTSTRAP.Discovery(
+                env={}, home=root, which=host.which, capture=capture, host_system="Darwin"
+            )
+
+            self.assertEqual(
+                discovery.android_sdk(),
+                (standard_sdk, "standard macOS SDK location"),
+            )
+            standard_sdk.rename(root / "standard-sdk-disabled")
+            self.assertEqual(
+                discovery.android_sdk(),
+                (brew_share_sdk, "Homebrew share directory"),
+            )
+            brew_share_sdk.rename(root / "homebrew-share-sdk-disabled")
+            self.assertEqual(
+                discovery.android_sdk(),
+                (brew_formula_sdk, "Homebrew android-commandlinetools formula"),
+            )
+            brew_formula_sdk.rename(root / "homebrew-formula-sdk-disabled")
+            self.assertEqual(discovery.android_sdk(), (adb_sdk.resolve(), "adb on PATH"))
+
     def test_explicit_android_roots_are_exported_and_do_not_query_device(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)
