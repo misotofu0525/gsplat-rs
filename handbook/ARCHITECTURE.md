@@ -354,6 +354,10 @@
 - `crates/gsplat-render-wgpu/src/direct_scene_gpu.rs`: private Direct wide-f32
   source/order buffers, CPU/GPU-order draw bindings and shared Surface/offscreen
   pipeline construction
+- `crates/gsplat-render-wgpu/src/surface/standalone_direct_runtime.rs`: private
+  standalone Direct Surface pipeline/scene/instance owner, CPU/GPU execution
+  seam, and Direct GPU-order telemetry lifecycle; Surface acquisition and
+  presentation remain in `SurfacePresenter`
 - `crates/gsplat-render-wgpu/src/surface_session.rs`: shared Surface lifecycle,
   Direct/Paged standalone versus Packed Exact-host execution composition,
   cross-controller arbitration, revisions, telemetry polling/publication and

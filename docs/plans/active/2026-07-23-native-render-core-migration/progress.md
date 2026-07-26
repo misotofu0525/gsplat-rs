@@ -672,7 +672,7 @@ M7 = Active
 - The requirement-by-requirement evidence, machine-local Android identities,
   commands, rollback tree IDs, finite Deferred cells and non-claims are recorded
   in the [M7 acceptance audit](m7-final-acceptance.md).
-- The finite next M7 slice must remove concrete renderer ownership from
+- Remaining M7 work must remove concrete renderer ownership from
   `lib.rs`, move controller/adaptive/evidence ownership out of the legacy
   `surface_session.rs` owner, and either prove `surface_presenter.rs` is only an
   adapter/presentation host or extract its residual semantic ownership. The
@@ -680,3 +680,12 @@ M7 = Active
   independently demonstrated. No fixed LOC threshold is involved. Only then
   may the same candidate remove the entries, mark M7 Accepted and rerun the
   architecture policy. M8 is not activated by this partial closeout.
+- A later bounded candidate based on `7e8c7c6` extracts the standalone Direct
+  compatibility execution lane into private
+  `surface/standalone_direct_runtime.rs`: Direct pipeline/layout and active
+  scene state, Direct instance count, CPU/GPU order preparation and draw
+  encoding, and Direct GPU-order telemetry lifecycle. Presenter retains
+  Surface acquire/capture/submit/present, diagnostic Paged, path transactions
+  and shared CPU completion telemetry; Product Packed is unchanged. See
+  [the slice record](m7-standalone-direct-runtime.md). M7 remains Active and
+  the residual root/Session/Presenter acceptance audit is still required.

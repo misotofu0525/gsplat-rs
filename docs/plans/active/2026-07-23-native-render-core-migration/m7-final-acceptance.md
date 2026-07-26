@@ -132,6 +132,31 @@ publication boundary or pixel contract. M7 remains Active: other concrete
 `lib.rs` responsibilities, residual Session composition/publication, and the
 Presenter audit still require separate review.
 
+## Standalone Direct Surface execution ownership progress
+
+The next bounded candidate moves the standalone Direct compatibility lane from
+`surface_presenter.rs` into the private
+`surface/standalone_direct_runtime.rs` owner. That owner now contains Direct
+pipeline/layout state, the active Direct scene and instance count, CPU/GPU
+order preparation and Direct draw encoding, plus the Direct GPU-order telemetry
+ticket lifecycle. It consumes the existing `direct_scene_gpu.rs` resource
+contract without exposing buffers, bindings, sorter state, or telemetry slots
+back to the Presenter.
+
+`SurfacePresenter` remains the public facade and coordinates Surface acquire,
+capture, submit and present around the Direct owner. Diagnostic Paged execution,
+shared CPU completion telemetry, host lifecycle/configuration/capture, Product
+Packed Exact execution and all public APIs remain in their existing owners.
+Direct/Paged replacement is still prepare-then-commit and releases the inactive
+large scene after commit; native/wasm GPU preparation boundaries and all three
+WGPU error scopes remain unchanged.
+
+The focused design and evidence are recorded in
+[M7 standalone Direct runtime ownership slice](m7-standalone-direct-runtime.md).
+This is another Active ownership step, not M7 acceptance. Residual
+`lib.rs`/Session responsibilities and the final Presenter host/facade audit
+remain open, and no grandfather record is removed here.
+
 ## Android retained artifact
 
 Machine-local suite:
