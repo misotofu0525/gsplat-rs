@@ -54,3 +54,31 @@ The [B0 contract](b0-contract.md) now fixes:
 - B0 is **Accepted**. B1 begins with the fail-closed image-gate validator;
   quantized depth-key execution and retained experiment evidence remain locked
   until that validator exists. B2--B3 remain not started.
+
+## B1 validator slice
+
+The first B1 implementation slice adds the repository validator for the frozen
+`gsplat-balanced-image-gate/v1` contract. It validates artifacts only; B1
+remains **Active** and no quantized depth-key implementation, renderer policy,
+endpoint result, performance assertion, or product-default change is included.
+
+The validator fails closed unless an artifact provides and proves:
+
+- complete source/decoded/encoded/resident/addressable membership, unchanged
+  source SH degree, `SortedAlpha`, and no sampling, LOD, or partial scene;
+- equal requested, Surface, internal-render, and presented dimensions with
+  dynamic resolution and upscaling disabled;
+- successful per-frame presentations with artifact-local, hash-matched,
+  non-interlaced RGBA8 PNGs for Exact and candidate output;
+- recomputed per-frame SSIM, RGB and alpha metrics matching the artifact
+  receipts and satisfying every frozen B0 threshold individually; and
+- for moving quality evidence, exactly `0 -> 1 -> 0` captures plus both
+  adjacent temporal-residual receipts, recomputed from retained RGBA bytes.
+
+Missing fields, unavailable images, mismatched metric receipts, unsafe paths,
+or incomplete/misjoined transitions are rejected rather than defaulted. A
+successful invocation emits the validator version and SHA-256 so later retained
+evidence can identify the exact validator. Focused unit coverage exercises both
+valid camera modes and the fail-closed boundaries; it is repository-local
+contract evidence only and is not device, browser, image-quality, or B1
+experiment evidence.
