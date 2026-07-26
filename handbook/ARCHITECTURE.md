@@ -113,8 +113,11 @@
 - Shared Surface frame flow:
   `SurfaceRenderSession` in
   `crates/gsplat-render-wgpu/src/surface_session.rs` owns `Renderer`, camera
-  revisions, CPU/GPU order policy, Adaptive probes, ticketed measurements and
-  frame statistics. Its owner is either a standalone `SurfacePresenter` for
+  revisions, execution composition, cross-controller arbitration, ticketed
+  measurements and frame publication. The private `surface/adaptive_order.rs`
+  and `surface/projected_adaptive.rs` modules own the respective pure Adaptive
+  policy transitions, rolling estimates, hysteresis and cooldown. Its owner is
+  either a standalone `SurfacePresenter` for
   Direct/Paged or a `SurfacePresenterHost` for product Packed
   the standalone presenter and Packed host delegate swapchain
   acquire/retry/present to
@@ -347,8 +350,9 @@
 - `crates/gsplat-render-wgpu/src/direct_gpu_order.rs`: exact GPU visibility,
   hierarchical scan, stable radix, and indirect draw
 - `crates/gsplat-render-wgpu/src/surface_session.rs`: shared Surface lifecycle,
-  Direct/Paged standalone versus Packed Exact-host ownership, CPU/GPU/Adaptive
-  policy, revisions, failure cooldown, and timings
+  Direct/Paged standalone versus Packed Exact-host execution composition,
+  cross-controller arbitration, revisions, telemetry polling/publication and
+  timings
 - `crates/gsplat-render-wgpu/src/surface/adaptive_order.rs` and
   `surface/projected_adaptive.rs`: private pure Adaptive controllers for the
   independent order and projected-draw axes
