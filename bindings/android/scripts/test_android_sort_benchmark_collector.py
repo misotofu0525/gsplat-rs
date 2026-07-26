@@ -277,6 +277,7 @@ def camera_validation_fixture(backend: str = "gpu", sample_count: int = 1):
             }
             for index in range(sample_count)
         ],
+        "order_terminal_ledger": [],
     }
     return manifest, summary, frames, expected_trace, expected_identity
 
@@ -1165,6 +1166,7 @@ class ParsingTests(unittest.TestCase):
         fixture = camera_validation_fixture("gpu")
         frame = fixture[2][0]
         current_stats_ticket = frame["current_stats_ticket"]
+        current_stats_entry = fixture[1]["current_stats_terminal_ledger"][0]
         frame.update(
             {
                 "sort_refreshed": True,
@@ -1174,6 +1176,20 @@ class ParsingTests(unittest.TestCase):
                 "gpu_complete_ms": 1.0,
             }
         )
+        fixture[1]["order_terminal_ledger"] = [
+            {
+                "ticket": current_stats_ticket,
+                "camera_revision": frame["camera_revision"],
+                "backend": "gpu",
+                "exactness_receipt_id": "fixture-exactness",
+                "outcome": "success",
+                "frame_complete_ms": 1.0,
+                "visible": current_stats_entry["visible"],
+                "contributor": current_stats_entry["contributor"],
+                "drawn": current_stats_entry["drawn"],
+                "exact_contributor_compaction": False,
+            }
+        ]
         COLLECTOR.validate_run_artifact(
             fixture[0],
             fixture[1],
@@ -1187,10 +1203,45 @@ class ParsingTests(unittest.TestCase):
 
         frame["order_submission_ticket"] = 2_000
         frame["order_measurement_ticket"] = 2_000
+        fixture[1]["order_terminal_ledger"][0]["ticket"] = 2_000
         with self.assertRaisesRegex(
             RuntimeError,
             "refreshed order/current-stats ticket identity drifted",
         ):
+            COLLECTOR.validate_run_artifact(
+                fixture[0],
+                fixture[1],
+                fixture[2],
+                "gpu",
+                "packed",
+                {"sha256": "abc", "bytes": 123},
+                fixture[3],
+                fixture[4],
+            )
+
+    def test_unrefreshed_frame_requires_explicit_no_order_ticket_state(self) -> None:
+        fixture = camera_validation_fixture("gpu")
+        frame = fixture[2][0]
+        entry = fixture[1]["current_stats_terminal_ledger"][0]
+        frame["order_submission_ticket"] = 3_000
+        frame["order_measurement_ticket"] = 3_000
+        frame["order_measurement_camera_revision"] = frame["camera_revision"]
+        fixture[1]["order_terminal_ledger"] = [
+            {
+                "ticket": 3_000,
+                "camera_revision": frame["camera_revision"],
+                "backend": "gpu",
+                "exactness_receipt_id": "fixture-exactness",
+                "outcome": "success",
+                "frame_complete_ms": 1.0,
+                "visible": entry["visible"],
+                "contributor": entry["contributor"],
+                "drawn": entry["drawn"],
+                "exact_contributor_compaction": False,
+            }
+        ]
+
+        with self.assertRaisesRegex(RuntimeError, "explicit no-ticket state"):
             COLLECTOR.validate_run_artifact(
                 fixture[0],
                 fixture[1],

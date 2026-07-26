@@ -467,9 +467,11 @@ non-Ready ledger entries, incomplete identity, sample/trace join drift, or an
 `exactness_receipt_id` different from `manifest.exactness.receipt_id` fails
 closed before the destination is published. A refreshed strict frame also
 fails closed unless `current_stats_ticket` exactly equals its
-`order_submission_ticket`; an unrefreshed frame retains its existing nullable
-order-ticket semantics, and validation never substitutes zero or a prior
-ticket.
+`order_submission_ticket` and that ticket names a successful immutable order
+terminal with matching revision, backend and V/C/D. A frame without an order
+refresh must use the explicit `null` order submission/measurement state; it may
+not borrow a prior ticket. Validation never substitutes zero, capacity, or a
+prior receipt.
 Its optional `--final-png` lane is accepted only together with the collector's
 `--device-png-pull-receipt`; it is not a general image-import option.
 

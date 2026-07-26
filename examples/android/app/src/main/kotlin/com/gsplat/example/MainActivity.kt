@@ -3996,6 +3996,12 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
             }
             val ticket = checkNotNull(record.ticket)
             val identity = checkNotNull(record.identity)
+            requireStrictFrameTicketJoin(
+                frameIndex = index,
+                orderRefreshed = sortFlags[index] and 1L != 0L,
+                orderSubmissionTicket = orderSubmissionTicket[index].takeIf { it > 0L },
+                currentStatsTicket = ticket
+            )
             val ready = (record.terminal as? SurfaceCurrentStatsTerminal.Ready)?.receipt
                 ?: error("frame $index current-stats ticket $ticket did not become Ready")
             check(ready.ticket == ticket && ready.identity == identity) {

@@ -308,6 +308,7 @@ for unavailable in (
         manifest["unavailable_fields"].append(unavailable)
 
 ledger = []
+order_ledger = []
 for index, frame in enumerate(frames):
     revision = index + 1
     ticket = 1_000 + index
@@ -365,7 +366,22 @@ for index, frame in enumerate(frames):
             "exactness_receipt_id": "strict-fixture-exactness",
         }
     )
+    order_ledger.append(
+        {
+            "ticket": ticket,
+            "camera_revision": revision,
+            "backend": "cpu",
+            "exactness_receipt_id": "strict-fixture-exactness",
+            "outcome": "success",
+            "frame_complete_ms": 1.0,
+            "visible": frame["visible"],
+            "contributor": frame["contributor"],
+            "drawn": frame["drawn"],
+            "exact_contributor_compaction": False,
+        }
+    )
 summary["current_stats_terminal_ledger"] = ledger
+summary["order_terminal_ledger"] = order_ledger
 
 
 def write_log(destination, manifest_value, frames_value, summary_value):
@@ -387,13 +403,18 @@ def write_log(destination, manifest_value, frames_value, summary_value):
 
 write_log(strict_destination, manifest, frames, summary)
 mismatched_refresh_ticket_frames = copy.deepcopy(frames)
-mismatched_refresh_ticket_frames[0]["order_submission_ticket"] = 2_000
-mismatched_refresh_ticket_frames[0]["order_measurement_ticket"] = 2_000
+mismatched_refresh_ticket_summary = copy.deepcopy(summary)
+mismatched_order_ticket = 9_000_000
+mismatched_refresh_ticket_frames[0]["order_submission_ticket"] = mismatched_order_ticket
+mismatched_refresh_ticket_frames[0]["order_measurement_ticket"] = mismatched_order_ticket
+mismatched_refresh_ticket_summary["order_terminal_ledger"][0][
+    "ticket"
+] = mismatched_order_ticket
 write_log(
     mismatched_refresh_ticket_destination,
     manifest,
     mismatched_refresh_ticket_frames,
-    summary,
+    mismatched_refresh_ticket_summary,
 )
 missing_renderer_identity_manifest = copy.deepcopy(manifest)
 missing_renderer_identity_manifest["environment"].pop("adapter")
@@ -503,6 +524,16 @@ for index, (frame, entry) in enumerate(
     entry["identity"]["executed_plan"] = "gpu_post_sort"
     entry["contributor"] = producer_contributor - 1
     entry["count_semantics"] = "indirect_draw_equals_visible"
+    order_entry = producer_summary["order_terminal_ledger"][index]
+    order_entry.update(
+        {
+            "backend": "gpu",
+            "visible": entry["visible"],
+            "contributor": entry["contributor"],
+            "drawn": entry["drawn"],
+            "exact_contributor_compaction": False,
+        }
+    )
     frame.update(
         {
             "contributor": entry["contributor"],
@@ -600,6 +631,9 @@ for frame, entry in zip(
     entry["drawn"] = frame["gpu_producer_drawn"]
     frame["contributor"] = entry["contributor"]
     frame["drawn"] = entry["drawn"]
+    order_entry = valid_producer_summary["order_terminal_ledger"][entry["sample_index"]]
+    order_entry["contributor"] = entry["contributor"]
+    order_entry["drawn"] = entry["drawn"]
 
 identity_drift_summary = copy.deepcopy(valid_producer_summary)
 identity_drift_terminal = identity_drift_summary["gpu_producer_terminal_ledger"][0]
@@ -718,10 +752,14 @@ if python3 "$ROOT/bindings/android/scripts/extract-android-benchmark-artifacts.p
   "$MISMATCHED_REFRESH_TICKET_LOG" \
   "$TMP_DIR/strict-mismatched-refresh-ticket-artifact" \
   --validator "$ROOT/tests/perf/validate-benchmark-artifacts.py" \
-  --android-environment-receipt "$ANDROID_ENVIRONMENT_RECEIPT"; then
+  --android-environment-receipt "$ANDROID_ENVIRONMENT_RECEIPT" \
+  2>"$TMP_DIR/strict-mismatched-refresh-ticket.stderr"; then
   echo "extractor accepted refreshed current-stats/order ticket identity drift" >&2
   exit 1
 fi
+grep -F \
+  "refreshed order/current-stats ticket identity drifted" \
+  "$TMP_DIR/strict-mismatched-refresh-ticket.stderr"
 [[ ! -e "$TMP_DIR/strict-mismatched-refresh-ticket-artifact" ]]
 
 for mutation in \

@@ -1,5 +1,18 @@
 package com.gsplat.example
 
+import com.gsplat.android.GsplatSurfaceCurrentStatsCountSemantics
+import com.gsplat.android.GsplatSurfaceCurrentStatsCycle
+import com.gsplat.android.GsplatSurfaceCurrentStatsIdentity
+import com.gsplat.android.GsplatSurfaceCurrentStatsPlan
+import com.gsplat.android.GsplatSurfaceCurrentStatsPoll
+import com.gsplat.android.GsplatSurfaceCurrentStatsPollKind
+import com.gsplat.android.GsplatSurfaceCurrentStatsPollResult
+import com.gsplat.android.GsplatSurfaceCurrentStatsReceipt
+import com.gsplat.android.GsplatSurfaceCurrentStatsRequest
+import com.gsplat.android.GsplatSurfaceCurrentStatsRequestStatus
+import com.gsplat.android.GsplatSurfaceCurrentStatsState
+import com.gsplat.android.GsplatSurfaceCurrentStatsSubmission
+import com.gsplat.android.GsplatSurfaceCurrentStatsSubmissionStatus
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -99,4 +112,142 @@ class BenchmarkTerminalDrainTest {
         assertFalse(receiptsPolled)
         assertFalse(currentStatsPolled)
     }
+
+    @Test
+    fun drainRecordsHistoricalRawReadyBeforeNewerPendingUiProjection() {
+        val consumer = SurfaceCurrentStatsConsumer()
+        val historicalIdentity = identity(cameraRevision = 41, presentationSequence = 141)
+        val historicalRequest = consumer.beginRequest(binding(0)) { requested() }
+        consumer.consumeCycle(pendingCycle(historicalRequest, 101, historicalIdentity, 1))
+
+        val currentIdentity = identity(cameraRevision = 42, presentationSequence = 142)
+        val currentRequest = consumer.beginRequest(binding(1)) { requested() }
+        consumer.consumeCycle(pendingCycle(currentRequest, 102, currentIdentity, 2))
+
+        var pollIndex = 0
+        val completed = drainBenchmarkTerminalReceipts(
+            maxPolls = 2,
+            terminalsComplete = { consumer.benchmarkTerminalsComplete(2) },
+            pumpCallbacks = { true },
+            pollReceipts = { true },
+            pollCurrentStats = {
+                val result = when (pollIndex++) {
+                    0 -> GsplatSurfaceCurrentStatsPollResult(
+                        poll = readyPoll(101, historicalIdentity),
+                        state = GsplatSurfaceCurrentStatsState.Pending(
+                            ticket = 102,
+                            identity = currentIdentity,
+                            pendingCount = 1
+                        )
+                    )
+                    else -> GsplatSurfaceCurrentStatsPollResult(
+                        poll = readyPoll(102, currentIdentity),
+                        state = GsplatSurfaceCurrentStatsState.Ready(
+                            receipt = readyReceipt(102, currentIdentity),
+                            pendingCount = 0
+                        )
+                    )
+                }
+                consumer.pollPending { result }
+                true
+            }
+        )
+
+        assertTrue(completed)
+        assertEquals(2, pollIndex)
+        assertEquals(listOf(101L, 102L), consumer.strictRecords(2).map { it.ticket })
+    }
+
+    @Test
+    fun strictTicketJoinRejectsDriftAndRequiresExplicitNoTicketWithoutRefresh() {
+        requireStrictFrameTicketJoin(
+            frameIndex = 0,
+            orderRefreshed = true,
+            orderSubmissionTicket = 201,
+            currentStatsTicket = 201
+        )
+        requireStrictFrameTicketJoin(
+            frameIndex = 1,
+            orderRefreshed = false,
+            orderSubmissionTicket = null,
+            currentStatsTicket = 202
+        )
+
+        val drift = runCatching {
+            requireStrictFrameTicketJoin(2, true, 203, 204)
+        }.exceptionOrNull()
+        assertTrue(drift is IllegalStateException)
+        assertTrue(drift?.message?.contains("ticket identity drifted") == true)
+
+        val borrowed = runCatching {
+            requireStrictFrameTicketJoin(3, false, 205, 205)
+        }.exceptionOrNull()
+        assertTrue(borrowed is IllegalStateException)
+        assertTrue(borrowed?.message?.contains("explicit no-ticket state") == true)
+    }
+
+    private fun binding(sampleIndex: Int) = SurfaceCurrentStatsFrameBinding(
+        frameId = sampleIndex.toLong(),
+        sampleIndex = sampleIndex,
+        traceFrameIndex = sampleIndex,
+        traceTimestampNs = sampleIndex.toLong()
+    )
+
+    private fun requested() = GsplatSurfaceCurrentStatsRequest(
+        GsplatSurfaceCurrentStatsRequestStatus.REQUESTED
+    )
+
+    private fun identity(
+        cameraRevision: Long,
+        presentationSequence: Long
+    ) = GsplatSurfaceCurrentStatsIdentity(
+        sceneGeneration = 1,
+        cameraRevision = cameraRevision,
+        viewportGeneration = 2,
+        contractGeneration = 3,
+        planSetGeneration = 4,
+        orderGeneration = cameraRevision,
+        rasterGeneration = 5,
+        encodeAttempt = cameraRevision,
+        presentationSequence = presentationSequence,
+        executedPlan = GsplatSurfaceCurrentStatsPlan.GPU_POST_SORT
+    )
+
+    private fun pendingCycle(
+        request: GsplatSurfaceCurrentStatsRequest,
+        ticket: Long,
+        identity: GsplatSurfaceCurrentStatsIdentity,
+        pendingCount: Int
+    ) = GsplatSurfaceCurrentStatsCycle(
+        request = request,
+        submission = GsplatSurfaceCurrentStatsSubmission(
+            GsplatSurfaceCurrentStatsSubmissionStatus.ISSUED,
+            ticket,
+            identity
+        ),
+        poll = GsplatSurfaceCurrentStatsPoll(GsplatSurfaceCurrentStatsPollKind.EMPTY),
+        state = GsplatSurfaceCurrentStatsState.Pending(ticket, identity, pendingCount)
+    )
+
+    private fun readyPoll(
+        ticket: Long,
+        identity: GsplatSurfaceCurrentStatsIdentity
+    ) = GsplatSurfaceCurrentStatsPoll(
+        kind = GsplatSurfaceCurrentStatsPollKind.READY,
+        receipt = readyReceipt(ticket, identity)
+    )
+
+    private fun readyReceipt(
+        ticket: Long,
+        identity: GsplatSurfaceCurrentStatsIdentity
+    ) = GsplatSurfaceCurrentStatsReceipt(
+        ticket = ticket,
+        identity = identity,
+        sourceCount = 10,
+        visibleCount = 8,
+        contributorCount = 6,
+        drawnCount = 8,
+        countSemantics =
+            GsplatSurfaceCurrentStatsCountSemantics.INDIRECT_DRAW_EQUALS_VISIBLE
+    )
 }

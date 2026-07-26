@@ -1322,14 +1322,18 @@ def validate_current_stats_evidence(
 
     sample_count = summary.get("sample_count")
     ledger = summary.get("current_stats_terminal_ledger")
+    order_ledger = summary.get("order_terminal_ledger")
     if (
         not isinstance(sample_count, int)
         or sample_count <= 0
         or len(frames) != sample_count
         or not isinstance(ledger, list)
         or len(ledger) != sample_count
+        or not isinstance(order_ledger, list)
     ):
-        raise RuntimeError("current-stats ledger does not cover every measured frame")
+        raise RuntimeError(
+            "strict current-stats/order terminal ledgers do not cover the artifact"
+        )
 
     source = manifest.get("dataset", {}).get("splat_count")
     if not isinstance(source, int) or isinstance(source, bool) or source <= 0:
@@ -1352,6 +1356,53 @@ def validate_current_stats_evidence(
         raise RuntimeError(
             "current-stats validation requires manifest exactness receipt identity"
         )
+
+    order_terminals: dict[int, dict[str, Any]] = {}
+    for ledger_index, order_entry in enumerate(order_ledger):
+        if not isinstance(order_entry, dict):
+            raise RuntimeError(f"order terminal ledger entry {ledger_index} is invalid")
+        order_ticket = order_entry.get("ticket")
+        if (
+            type(order_ticket) is not int
+            or order_ticket <= 0
+            or order_ticket in order_terminals
+        ):
+            raise RuntimeError(
+                f"order terminal ledger entry {ledger_index} has an invalid or duplicate ticket"
+            )
+        if order_entry.get("outcome") != "success":
+            raise RuntimeError(f"order ticket {order_ticket} lacks a successful terminal")
+        if order_entry.get("exactness_receipt_id") != manifest_exactness_receipt_id:
+            raise RuntimeError(
+                f"order ticket {order_ticket} exactness receipt identity drifted"
+            )
+        if order_entry.get("backend") not in {"cpu", "gpu"}:
+            raise RuntimeError(f"order ticket {order_ticket} backend is invalid")
+        camera_revision = order_entry.get("camera_revision")
+        completion_ms = order_entry.get("frame_complete_ms")
+        if type(camera_revision) is not int or camera_revision < 0:
+            raise RuntimeError(f"order ticket {order_ticket} camera revision is invalid")
+        if (
+            not isinstance(completion_ms, (int, float))
+            or isinstance(completion_ms, bool)
+            or not math.isfinite(float(completion_ms))
+            or float(completion_ms) < 0.0
+        ):
+            raise RuntimeError(f"order ticket {order_ticket} completion timing is invalid")
+        order_counts = {}
+        for field in ("visible", "contributor", "drawn"):
+            value = order_entry.get(field)
+            if type(value) is not int or value < 0:
+                raise RuntimeError(f"order ticket {order_ticket} {field} is invalid")
+            order_counts[field] = value
+        if not 0 <= order_counts["contributor"] <= order_counts["visible"]:
+            raise RuntimeError(f"order ticket {order_ticket} violates C <= V")
+        compact = order_entry.get("exact_contributor_compaction")
+        if type(compact) is not bool or order_counts["drawn"] != (
+            order_counts["contributor"] if compact else order_counts["visible"]
+        ):
+            raise RuntimeError(f"order ticket {order_ticket} draw semantics are invalid")
+        order_terminals[order_ticket] = order_entry
 
     identity_fields = {
         "scene_generation",
@@ -1408,15 +1459,32 @@ def validate_current_stats_evidence(
         tickets.add(ticket)
         if frame.get("current_stats_ticket") != ticket:
             raise RuntimeError(f"current-stats frame {sample_index} ticket join drifted")
+        refreshed = frame.get("sort_refreshed")
+        if type(refreshed) is not bool:
+            raise RuntimeError(f"current-stats frame {sample_index} refresh state is invalid")
         order_submission_ticket = frame.get("order_submission_ticket")
-        if frame.get("sort_refreshed") is True and (
-            type(order_submission_ticket) is not int
-            or order_submission_ticket != ticket
-        ):
-            raise RuntimeError(
-                f"current-stats frame {sample_index} refreshed order/current-stats "
-                "ticket identity drifted"
-            )
+        if refreshed:
+            if type(order_submission_ticket) is not int or order_submission_ticket != ticket:
+                raise RuntimeError(
+                    f"current-stats frame {sample_index} refreshed order/current-stats "
+                    "ticket identity drifted"
+                )
+            order_terminal = order_terminals.get(order_submission_ticket)
+            if order_terminal is None:
+                raise RuntimeError(
+                    f"current-stats frame {sample_index} lacks its successful order terminal"
+                )
+        else:
+            if (
+                order_submission_ticket is not None
+                or frame.get("order_measurement_ticket") is not None
+                or frame.get("order_measurement_camera_revision") is not None
+            ):
+                raise RuntimeError(
+                    f"current-stats frame {sample_index} without an order refresh must use "
+                    "the explicit no-ticket state"
+                )
+            order_terminal = None
 
         identity = entry.get("identity")
         if not isinstance(identity, dict) or set(identity) != identity_fields:
@@ -1474,6 +1542,20 @@ def validate_current_stats_evidence(
             raise RuntimeError(f"current-stats frame {sample_index} violates C <= V <= S")
         if counts["source"] != source:
             raise RuntimeError(f"current-stats frame {sample_index} S is incomplete")
+        if order_terminal is not None and (
+            order_terminal.get("camera_revision") != camera_revision
+            or order_terminal.get("backend") != plan_backends[plan]
+            or order_terminal.get("visible") != counts["visible"]
+            or order_terminal.get("contributor") != counts["contributor"]
+            or order_terminal.get("drawn") != counts["drawn"]
+            or order_terminal.get("exact_contributor_compaction")
+            != (plan == "gpu_preproject")
+            or frame.get("order_measurement_ticket") != order_submission_ticket
+            or frame.get("order_measurement_camera_revision") != camera_revision
+        ):
+            raise RuntimeError(
+                f"current-stats frame {sample_index} order/current-stats terminal join drifted"
+            )
         if frame.get("visible") != counts["visible"] or frame.get("contributor") != counts[
             "contributor"
         ] or frame.get("drawn") != counts["drawn"]:

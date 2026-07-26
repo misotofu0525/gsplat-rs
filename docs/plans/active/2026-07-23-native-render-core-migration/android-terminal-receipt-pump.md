@@ -153,3 +153,37 @@ strict sample record, and leaves the newer ticket pending until its own Ready.
   passed.
 - No emulator, physical Android device or Vulkan benchmark was run. The root
   task retains the sole A065 fixed-SHA rerun and formal artifact decision.
+
+## M7 strict terminal-ledger repair v2
+
+### Boundary
+
+- Parent: `707cd8001abf84cd9fc990dd45246a0c02db75ef`.
+- This repair closes two evidence-layer gaps only. It does not change the
+  Renderer/session owner, native terminal poll, C/JNI ABI, render graph,
+  submission cadence, ticket allocation, `SortedAlpha`, Exact plan selection,
+  source membership, SH degree or resolution.
+- Android continues to translate immutable Renderer receipts. The bounded
+  sample ledger consumes each destructive raw terminal by ticket before the
+  presentation-normalized state is used for UI display. No unbounded UI
+  history or native replay queue is introduced.
+- Strict artifact production and both collector/extractor validation paths
+  require a refreshed frame's order submission, successful order terminal and
+  current-stats Ready terminal to use one ticket. An unrefreshed frame must
+  carry the explicit null order-ticket state. Independently valid terminals on
+  different tickets are rejected.
+
+### Qualification separation
+
+This candidate is host-side repair evidence, not A065 qualification. Focused
+Kotlin drain tests reproduce historical Ready A while newer ticket B remains
+Pending, then prove both raw terminals close the bounded strict ledger without
+another render or submit. Collector and standalone extractor fixtures retain a
+valid order terminal on ticket A and a valid current-stats terminal on ticket B
+and require fail-closed rejection of that cross-ledger drift.
+
+The root task alone may decide whether to build/install the reviewed fixed SHA
+and repeat the canonical A065 `2412x1080` Kitsune run. Until that separate
+device step succeeds, this note makes no Android/Vulkan completion,
+performance, thermal, power or image-quality claim and does not replace the
+earlier M5 evidence record.
