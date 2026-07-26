@@ -9,8 +9,9 @@
   It includes pre-allocation standalone Packed rejection, deletion of the
   obsolete standalone Packed graph, Paged async fail-closed behavior, Android
   strict-ledger repairs, and Web route documentation.
-- Program status: **M7 Active; M7 acceptance Deferred**. M8 is not activated and
-  Package M remains Active.
+- Program status: **M7 Accepted** at integrated closeout tip
+  `1de3f79fa2fa22955f99c887bea421c918e31ee0`; **M8 Active** from that fixed
+  base. Package M remains Active.
 - Deliverable status: **documentation evidence only**. This ledger changes no
   product source, Rust API, C ABI, JNI, Kotlin, Swift, WASM, JavaScript,
   TypeScript, test, script, generated artifact, runtime route, or rendered
@@ -23,6 +24,11 @@
 This document satisfies one inventory input to the M7 exit contract. It does
 not prove final single ownership, the complete consumer/global matrix,
 rollback, or fixed-SHA acceptance.
+
+M8 reconciliation note: only the program-status bullet above is updated to the
+current registry state. Baseline-specific M7 decisions, verification results
+and non-claims below remain slice-local historical records rather than current
+M8 evidence.
 
 ## Classification
 
