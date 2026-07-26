@@ -313,6 +313,219 @@ Only the successful presentation boundary publishes a new cut receipt.
 Preparation, queue submission, Surface unavailability and failed presentation
 cannot advance public coverage, policy learning or latency success.
 
+### 9.4 Frozen S1 proxy-image gate
+
+The machine-readable contract name is
+`gsplat-scalable-proxy-image-gate/v1`. This section freezes promotion evidence
+before another proxy authoring rule, image claim or S1 measurement is allowed.
+It is a contract only: it neither validates the current interior-node proxy nor
+makes S1 complete.
+
+S1 reuses the already integrated B1 evidence method instead of accepting a
+second self-reported image protocol. The implementation of the S1 validator
+must share or call the path confinement, canonical
+`gsplat-benchmark/v1` validation, trace/resolution authority, successful
+presentation join, RGBA8 PNG decoding/hash checks, metric recomputation and
+validator-version receipt used by
+[`validate-balanced-image-gate.py`](../../../../tests/perf/validate-balanced-image-gate.py).
+At this contract baseline that validator has SHA-256
+`8238c3eba0c577fd9b9a5cda017b02f7f7bb29dbd77290e981d0c53c5fed31d5`;
+the canonical benchmark validator has SHA-256
+`3a47dc9221e28a13985928c531d53143934f62313f9d8d257758fb1befbecc6c`.
+A later shared-helper refactor is allowed only when B1 stays fail-closed and
+the retained S1 artifact records the exact validator version and file hash.
+A prose table, renderer log, screenshot pair or producer-computed score is not
+formal evidence.
+
+B1's full-membership assertion is not copied onto a proxy cut. The S1
+validator first validates both lane-local canonical benchmark artifacts, then
+joins the proxy lane to a separately hash-bound coverage receipt. The Exact
+lane uses all `S` canonical source Gaussians. The proxy lane has `P` active
+proxy Gaussians representing all `S` source leaves. Claiming
+`active_splats=S`, `resident_splat_count=S` or `full_quality=true` for the
+proxy lane when `P != S` is evidence forgery, not compatibility. Any common
+helper therefore keeps the B1 full-membership behavior unchanged and adds
+profile-specific S1 coverage semantics rather than weakening B1.
+
+#### 9.4.1 Frozen assets and authority
+
+The small bring-up asset is complete SH3 Kitsune. It is realistically
+fetchable through the checked-in dataset manifest and is small enough to run
+the evidence plumbing before the larger authored-camera case:
+
+| Receipt | Frozen value |
+| --- | --- |
+| dataset manifest | `tests/perf/datasets/kitsune.json`, file SHA-256 `bcf8159b7f17b86d84f92590ffc3c45258456802296b3016fb4c3020ddafac7b` |
+| source PLY | `tests/datasets/external/wakufactory_kitune/kitune1.ply`, SHA-256 `3bea1ec48ea91861fc8fad1df688a2cdb1db9b103735498b35d16d146f2551a2`, `65,892,441` bytes, `279,199` splats, SH3 |
+| 1080p trace | `candidate-kitsune-quality-1920x1080-v1.json`, file SHA-256 `c996e5fe757d9d6661cce9f1dc303edcfbe8e12059e08bf8ab9f8eb566e54657`, content SHA-256 `8821c193506cdf7d67aa200248a45088c4750a3cd128ee29f6e2dc2d3a5bdb99` |
+| A065 trace | `candidate-kitsune-quality-2412x1080-v1.json`, file SHA-256 `f9a8316369966928e63816141ef61f3b38af8758cf307f94673e3a234a7daf44`, content SHA-256 `0775baeda60585a2668a415c63702b0c51c6efc643f1779b0ac5e3c82067f56a` |
+
+Kitsune is a contract/bring-up fixture only because those two traces are
+deterministically framed candidates rather than training-camera-authored and
+manually approved views. It may prove schema joins and expose an obviously bad
+proxy, but it cannot Accept S1.
+
+The minimum formal promotion asset is complete SH3 Bonsai because its two
+views come from pinned official training-camera metadata while remaining
+smaller than Truck:
+
+| Receipt | Frozen value |
+| --- | --- |
+| source PLY | `tests/datasets/external/inria_3dgs/bonsai/point_cloud.ply`, SHA-256 `a16af6d8815498ffbf9eb5d5ee93f5bcc9dca34c4e3eb6f7a796ef9e97c0d273`, `308,716,644` bytes, `1,244,819` splats, SH3 |
+| authored camera metadata | `tests/datasets/external/inria_3dgs/bonsai/cameras.json`, SHA-256 `41e623748141d5b1a292c2bcafbf9e897a3876f90c11a14618e9ac6190b05af3`, `116,695` bytes, `292` entries; selected camera IDs `0` and `146` |
+| native trace | `candidate-bonsai-quality-1920x1080-v1.json`, file SHA-256 `ea7f09ca4cec606f153308f8c9ae707eff96efabd897752e5e462e9b76fe81a6`, content SHA-256 `8f0c419cdd090bc93bdfd46d5876f954c46b6d189e4f72d34c8a0fa475a87ef3` |
+| A065 trace | `candidate-bonsai-quality-2412x1080-v1.json`, file SHA-256 `af70f0291197ad6e13b2dc1ab7bce77588a1d497db26721d039b1e30655a4d53`, content SHA-256 `b189dc06ac35f0a4e3805b5f53d7caab5a40c3e06e042836c848cb4aa185975f` |
+
+Both Bonsai traces currently declare
+`candidate_requires_manual_image_review`. Formal collection is locked until a
+review receipt names both exact trace file/content hashes and confirms that
+the two full-source Exact compositions are usable. Changing a camera, source,
+trace, selected training-camera ID or display after seeing a proxy result
+requires a new pre-measurement contract revision; it cannot repair a failing
+candidate. An unavailable source/camera asset or missing review receipt is the
+explicit S1 **Deferred** exit, not permission to use auto-framing.
+
+Formal preflight also requires a separately reviewed, qualified
+`gsplat-dataset/v1` authority manifest for this exact Bonsai source. That
+manifest is not present in this baseline worktree: it may bind only the frozen
+path/hash/bytes/count/SH values above, must be hash-checked before collection,
+and cannot be generated from benchmark output. Until it exists and its local
+asset validates, the formal asset scope is Deferred.
+
+The existing three-splat SH3 fixture in
+`crates/gsplat-hierarchy/tests/s1_proxy_fixture.rs` remains the smallest
+structural contract fixture. It exercises cut and hash invariants only. It,
+Kitsune, a deterministic source prefix or any generated solid-color image can
+never substitute for the formal Bonsai quality case.
+
+#### 9.4.2 Exact reference, endpoints and resolution
+
+The image authority is the canonical Bonsai source PLY loaded through the
+current all-resident Exact renderer: complete source membership and SH3,
+`SortedAlpha`, no sampling/LOD/draw budget, and the same CPU/GPU ordering lane
+as the compared proxy run. The hierarchy's complete leaf cut is a required
+control and must reproduce the source bits and pass the same image gate, but it
+does not replace the independently hashed source PLY as authority.
+
+Formal S1 promotion requires both endpoint scopes below. Each comparison uses
+the same endpoint, binary, order lane, trace frame, backing size and successful
+presentation for Exact and proxy:
+
+| Required endpoint | Real backing resolution | Formal role |
+| --- | ---: | --- |
+| Apple M4 native Metal | `1920x1080` | native reference and portability scope |
+| Nothing A065 / Adreno 730 / Vulkan | actual `2412x1080` Surface | physical-mobile scope |
+
+Requested, Surface, internal-render and presented dimensions must all equal
+the named trace display. Dynamic resolution and upscaling are disabled. The
+A065 drawable is re-probed immediately before collection; a changed size
+Defers that scope until a new trace and pre-measurement contract revision exist.
+Chrome/WebGPU, physical iOS and other desktop adapters are useful extension
+scopes. An iOS Simulator is integration evidence only. Neither a simulator nor
+one successful endpoint can replace either required scope or produce aggregate
+S1 Accepted.
+
+#### 9.4.3 Required cuts and captures
+
+The hierarchy manifest, every referenced page and every materialized cut are
+content-addressed. The retained artifact records the source hash, builder
+commit/configuration, manifest hash, page hashes, ordered node-list hash and
+active proxy count for each cut. The required cuts are derived before images
+are examined:
+
+1. `complete_leaf_exact`: the manifest's complete leaf cut; `P=S` and payload
+   attributes are bit-exact to the canonical source;
+2. `bootstrap_roots`: the canonically ordered complete root cut;
+3. `mixed_depth_two_replacements`: start at `bootstrap_roots`, twice choose the
+   active refinable node with the smallest
+   `(leaf_range.start, leaf_range.end, node_id)` and atomically replace it with
+   all direct children. The resulting cut must contain at least two depths.
+
+A hierarchy too shallow to produce the required mixed-depth cut is Rejected as
+an inadequate formal fixture. The chosen nodes may not be swapped after image
+inspection. Extra cuts may be reported, but they cannot average away or replace
+a required cut.
+
+For every required cut and endpoint, retain authored views `0` and `1` plus a
+post-warmup moving capture `0 -> 1 -> 0`, all paired with Exact. Also retain
+fixed-view-0 replacement captures for `bootstrap_roots ->
+mixed_depth_two_replacements -> complete_leaf_exact`; the unchanged Exact
+frame is the temporal reference for those two cut changes. These offline
+materialized-cut captures do not claim that the S4 streaming transaction
+already exists.
+
+#### 9.4.4 Numeric gate and aggregation
+
+S1 intentionally uses the B0/B1 RGBA8 metric definitions and promotion limits
+without relaxation:
+
+| Metric | S1 v1 promotion gate |
+| --- | ---: |
+| 8x8-luma sRGB SSIM | `>= 0.99` per captured view/cut |
+| normalized RGB MAE | `<= 0.005` per captured view/cut |
+| RGB bad-pixel fraction (`> 3/255`) | `<= 0.02` per captured view/cut |
+| normalized alpha MAE | `<= 0.001` per captured view/cut |
+| alpha bad-pixel fraction (`> 1/255`) | `<= 0.005` per captured view/cut |
+| temporal RGB residual MAE | `<= 0.005` for every camera and replacement transition |
+| missing/invalid image, receipt or transition | zero allowed |
+
+Scores are recomputed from retained, separate, non-interlaced RGBA8 PNG bytes;
+producer-declared values must match within the existing B1 `1e-9` receipt
+tolerance. Every view, transition, required cut, order lane and required
+endpoint passes individually. Aggregation is logical `all`, never a mean:
+summaries report minimum SSIM and maximum error, but cannot hide one failure.
+CPU and GPU ordering must each be forced at least once on both required
+endpoints; Adaptive is outside S1 proxy authoring qualification. Frame time,
+FPS and proxy-point reduction are recorded observations, not promotion gates.
+
+#### 9.4.5 Coverage and terminal receipts
+
+Each retained proxy frame joins one canonical benchmark terminal to one
+successful presented-cut receipt with the same scene, camera, viewport,
+contract, cut, plan, order and presentation generations. The coverage receipt
+proves:
+
+- canonical source hash and logical source-leaf count `S`;
+- hierarchy manifest/hash, cut name, ordered node-list hash and all page hashes;
+- antichain validity, represented leaf count `R=S`, missing leaves `0`, overlap
+  count `0`, and parent/descendant overlap `false`;
+- active proxy splat count `P`, source SH3 representation policy and no random
+  sampling, missing page, lowered SH or partial-child publication;
+- `0 <= C <= V <= P`; Candidate execution has `D=V`, while exact contributor
+  compaction has `D=C`. `S`, `R` and `P` are never substituted for `V/C/D`;
+- terminal actual global plan/order backend and a successful primitive
+  presentation ticket. Unavailable V/C/D or coverage fields invalidate the
+  formal run rather than becoming zero or capacity.
+
+The Exact lane independently proves the existing complete-source B1 identity
+and V/C/D rules. Reference and proxy artifacts use distinct run IDs and image
+files, match build/profile and pair identity, and retain their raw frame and
+terminal evidence. Random source sampling, a deterministic prefix, a reduced
+backing texture, upscaling, a missing page, structural tests alone, simulator
+output, or a single endpoint is never an accepted substitute.
+
+#### 9.4.6 Finite S1 decision
+
+- **Accepted:** all frozen assets and authored-camera review receipts exist;
+  the complete leaf control and both required proxy cuts pass structural,
+  coverage, per-view and temporal gates in forced CPU and forced GPU order on
+  both required real endpoints; every canonical artifact join validates.
+- **Rejected:** valid evidence exists but any required cut, view, transition,
+  endpoint, coverage/V/C/D invariant or numeric threshold fails; or the
+  hierarchy cannot produce the required cut. The current geometric proxy may
+  remain labelled research, but it does not unlock S2--S5 and the frozen gate
+  is not weakened after the result.
+- **Deferred:** the canonical source, official training-camera metadata,
+  authored-camera review, physical A065 access/authorization, locked toolchain
+  or another prerequisite needed before a valid run is unavailable. The exact
+  missing authority and attempted read-only preflight are recorded; no proxy
+  or product claim remains. Because S1 requires two real endpoints, a Deferred
+  required scope makes aggregate S1 Deferred even if the other scope passes.
+
+There is no fourth tuning state. Correctness fixes may produce one replacement
+candidate under this unchanged contract; changing the authoring method after a
+Rejected candidate is a new bounded S1 candidate, not an open-ended retry loop.
+
 ## 10. Failure and recovery contract
 
 | Failure | Required result |

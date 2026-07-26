@@ -86,6 +86,42 @@ run is part of this slice, so **S1 remains Active** and S2--S5 remain locked.
 The interior proxy authoring rule is not eligible for a quality or product
 claim until that separately predeclared visual gate exists and passes.
 
+## Current S1 proxy-image-gate contract checkpoint
+
+The pre-implementation promotion contract is now frozen in
+[S0 section 9.4](s0-contract.md#94-frozen-s1-proxy-image-gate). This checkpoint
+changes documentation only. It does not validate the existing interior proxy,
+add a renderer consumer, change a public API/default, or make S1 complete.
+
+The contract fixes:
+
+- the existing B1 canonical image/benchmark evidence pipeline as the required
+  implementation base, including path safety, canonical run validation,
+  successful-presentation joins, retained RGBA8 bytes and independently
+  recomputed metrics; a proxy log or self-reported screenshot table is not an
+  alternative;
+- complete SH3 Kitsune as a small obtainable bring-up fixture and complete SH3
+  Bonsai plus official training cameras `0/146` as the minimum formal asset,
+  with source, camera-metadata, trace-file and trace-content hashes pinned;
+- Apple M4 Metal at `1920x1080` and physical A065 Vulkan at its re-probed
+  `2412x1080` Surface as the two required formal scopes. Simulator, reduced
+  backing resolution and one endpoint cannot substitute;
+- the complete leaf, complete bootstrap-root and deterministic two-replacement
+  mixed-depth cuts, authored views `0/1`, moving `0 -> 1 -> 0`, and fixed-view
+  parent/child replacement transitions;
+- B0/B1's unchanged per-frame and temporal thresholds with logical-all
+  aggregation, plus separate logical source coverage `S/R`, active proxy count
+  `P` and actual `V/C/D` receipts so a proxy cut cannot impersonate full
+  resident membership.
+
+The two Bonsai traces still declare `candidate_requires_manual_image_review`,
+and the source/camera files are external. Missing source, training-camera
+metadata, manual authored-view review or physical-device access has an explicit
+**Deferred** exit. A valid hierarchy or image run that misses any frozen gate is
+**Rejected**. Only a fully joined two-endpoint pass is **Accepted**. Therefore
+**S1 remains Active**, the current geometric proxy has no quality claim, and
+S2--S5 remain locked pending a separate implementation/evidence slice.
+
 ## Ordered implementation ledger
 
 | Task | State in this candidate | Independent result |
