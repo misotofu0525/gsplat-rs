@@ -71,6 +71,25 @@ The canonical docs reconciliation at `9ebe7e3` changed documentation only.
 Its edited relative links and diff hygiene passed. This acceptance audit
 does not reinterpret those checks as runtime evidence.
 
+## Adaptive-order ownership progress
+
+This M7 slice satisfies one finite part of the legacy Session ownership exit:
+the complete private CPU/GPU Adaptive order controller now lives in
+`surface/adaptive_order.rs`. That owner contains the rolling estimator, CPU
+bootstrap, repeated ABBA probes, pending-ticket matching, hysteresis,
+GPU-failure cooldown/reprobe state, transitions and focused unit tests.
+
+`surface_session.rs` now composes that controller. It still owns the actual
+CPU/GPU sorting calls, telemetry submission and polling, current-stats and
+compatibility-evidence publication, and arbitration between order probes and
+the independent Projected Candidate/Compact controller. Public Rust re-export
+paths and enum discriminants remain unchanged through the Session facade.
+
+This is not M7 acceptance. The Projected controller/evidence coordination in
+Session, the residual `lib.rs` implementation ownership and the Presenter
+responsibility audit remain open; all three M7 grandfather records therefore
+remain in force.
+
 ## Android retained artifact
 
 Machine-local suite:
@@ -147,9 +166,10 @@ One independently reviewed M7 candidate must:
 1. remove remaining concrete renderer ownership from `lib.rs` so it is crate
    wiring, public facade/re-export and compatibility entrypoints rather than a
    second implementation owner;
-2. move controller, Adaptive and evidence ownership out of the legacy
-   `surface_session.rs` owner into the existing cohesive renderer/evidence
-   owners, leaving session composition and host coordination only;
+2. move the remaining Projected controller and evidence-policy ownership out
+   of the legacy `surface_session.rs` owner, leaving sorting execution,
+   composition, publication and host coordination only; the CPU/GPU Adaptive
+   order controller extraction described above is already satisfied;
 3. prove `surface_presenter.rs` now contains only adapter/presentation-host
    responsibilities, or extract any residual semantic owner;
 4. preserve public Rust/C/Web/mobile compatibility and exact render behavior;

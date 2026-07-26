@@ -1,3 +1,4 @@
+mod adaptive_order;
 mod capture;
 mod configuration;
 mod current_stats;
@@ -17,3 +18,12 @@ pub use current_stats::{
     SurfaceCurrentStatsTerminal, SurfaceCurrentStatsUnsampledReason,
 };
 pub(crate) use lifecycle::{SurfaceLifecycle, create_surface_instance, select_present_mode};
+
+pub(crate) use adaptive_order::{
+    ADAPTIVE_CPU_BOOTSTRAP_SAMPLES, ADAPTIVE_INITIAL_PROBE_DELAY, ADAPTIVE_PROBE_SEQUENCE_LEN,
+    ADAPTIVE_REPROBE_INTERVAL, AdaptiveMetric, AdaptiveOrderPolicy, AdaptiveRefreshChoice,
+    AdaptiveSampleKind, RollingEstimate, adaptive_primary_metric,
+};
+pub use adaptive_order::{
+    SurfaceAdaptiveGpuFailureReason, SurfaceAdaptivePendingSample, SurfaceAdaptiveState,
+};
