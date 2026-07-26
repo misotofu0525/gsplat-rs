@@ -15,9 +15,9 @@ unchanged. Camera motion, an order refresh, a CPU/GPU transition, resize, or
 count change invalidates the cache before drawing. A stationary frame therefore
 does not redo projection work, while moving frames retain the same exact
 projection and SortedAlpha result.
-`GlobalQuads` remains the wide exact image/performance oracle, while
-`TiledExact` is a lazily allocated diagnostic implementation rather than a
-quality or capacity fallback.
+Product Packed uses this canonical ProjectedQuadsExact raster. `GlobalQuads`
+remains on the standalone Direct/Paged compatibility graph; the former
+TiledExact implementation and public variant are deleted.
 
 The projected cache deliberately uses two separate `16 * splat_count` storage
 bindings instead of one 32-byte binding. This keeps each binding below wgpu's
@@ -34,10 +34,13 @@ Main entry points:
   constructors intentionally do not create an offscreen GPU device
 - `ResidentSceneBuilder`: checked direct-to-resident PLY target that preserves
   every source point and SH0-SH3 degree
-- `SurfaceRenderSession` / `SurfacePresenter`: shared CPU/GPU/Adaptive order,
-  ticketed timing, compact order upload or indirect draw, and realtime
-  presentation onto Android `Surface`, iOS `CAMetalLayer`, desktop windows, or
-  an HTML canvas
+- `SurfaceRenderSession`: shared CPU/GPU/Adaptive order, ticketed timing,
+  compact order upload or indirect draw, and realtime presentation onto
+  Android `Surface`, iOS `CAMetalLayer`, desktop windows, or an HTML canvas.
+  Product Packed uses `SurfacePresenterHost` plus the renderer-owned
+  `PreparedRuntimeSlot`
+- `SurfacePresenter`: low-level standalone Direct/Paged compatibility owner;
+  explicit Packed construction fails before Surface/device/resource allocation
 - `GpuInstance` CPU projection helpers: reference/conformance oracle only; they
   are not a selectable production renderer
 

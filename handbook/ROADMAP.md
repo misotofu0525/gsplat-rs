@@ -80,7 +80,7 @@ Operational facts and command entrypoints live in `handbook/PROJECT_CONTEXT.md` 
   Web renderer changes require verified wasm build and browser smoke evidence.
 - The Web example is validation example support for browser PLY loading, the WebGL2 fallback, and hosting the generated wasm package; it is not a polished web product surface.
 
-## Native Exact Shadow Core (completed 2026-07-24)
+## Native Exact Product Core (migration active 2026-07-26)
 
 Package E completed a private prepared-plan renderer with CPU PostSort, GPU
 PostSort and GPU Preproject as closed same-Exact plans, one mandatory sampler,
@@ -93,18 +93,19 @@ only a matching successful primitive presentation publishes frame state,
 controller progress and the terminal receipt. Failed acquisition, abandoned
 presentation, resize, stale generation and duplicate finalization fail closed.
 
-This is an internal architecture milestone, not a product switch. The current
-public/native/Web/mobile consumers remain on the legacy renderer/session path.
-Package M starts with M0's cutover and rollback checklist, then migrates native
-offscreen in M1 and the shared Surface owner in M2 before M4--M6 platform
-consumer cutovers. Real-window new-core Surface execution is therefore still a
-migration requirement rather than a completed Package E claim.
+Package M has since migrated native Packed offscreen, the shared Packed Surface
+owner, and the C/Web/Android/Apple consumers to that runtime. Product Packed
+now routes through `SurfaceRenderSession`, `SurfacePresenterHost`, and the
+renderer-owned `PreparedRuntimeSlot`; standalone `SurfacePresenter` supports
+only Direct and diagnostic Paged. M7 has deleted the obsolete standalone
+Packed graph and TiledExact implementation, but remains active until its final
+documentation, rollback, and affected-platform evidence matrix is accepted.
 
 ## Full-Count Resident Evidence Boundary (completed 2026-07-23)
 
-The exact resident representation, Direct-oracle quality gate, default exact
-projected-quads raster, lazy exact tiled diagnostic, terminal Adaptive
-evidence, and available-endpoint cross-platform evidence are in place.
+The exact resident representation, Direct-oracle quality gate, canonical exact
+projected-quads raster, terminal Adaptive evidence, and available-endpoint
+cross-platform evidence are in place.
 Historical global-quad timings below are context, not closeout evidence. The
 completed design and experiments live under
 `docs/plans/completed/2026-07-22-full-quality-native-rendering/`.
@@ -138,9 +139,10 @@ completed design and experiments live under
   owner, complete camera, viewport, and draw-count guard may skip projection.
   Motion, refresh, CPU/GPU transition, resize, or count change recomputes the
   exact cache before drawing.
-- GlobalQuads remains an exact Resident oracle. TiledExact is lazy and
-  diagnostic; neither plan is allowed to sample, lower SH, change resolution,
-  or reduce the authoritative visible draw count.
+- GlobalQuads remains only on the Direct/Paged standalone compatibility path;
+  product Packed uses the canonical ProjectedQuadsExact raster. TiledExact and
+  its public variant are deleted. No retained plan may sample, lower SH, change
+  resolution, or reduce the authoritative visible draw count.
 - Packed preflight accounts for the final degree-specific planes, eight
   color-resolve storage bindings, binding/buffer limits, and u32 draw
   addressability. Validation/OOM/internal failures reject before publication;

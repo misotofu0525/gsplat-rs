@@ -3,11 +3,14 @@
 ## Scope and status
 
 - Parent: `6befc3b52624f82f0baf1c582aab99431eada1d0`.
+- Integrated implementation: `fc90662` on the M7 root sequence; current
+  reconciliation baseline: `3f525584c1f3c5909ecd2f87b6a953b8a984e9ec`.
 - Scope: one isolated candidate deleting the unreachable standalone Packed
   `SurfacePresenter` graph after standalone Packed construction had already
   become a pre-allocation structured rejection.
-- Status: candidate-local implementation and verification are complete. This
-  note does not accept M7, activate M8, or replace root independent review.
+- Status: implementation, independent review and root integration are complete.
+  This note does not accept M7 or activate M8; final rollback and unavailable
+  platform cells remain part of the root acceptance closeout.
 - No Android collector/Kotlin, C header/implementation, JNI, Swift, Web SDK,
   shader, or public configuration file changed.
 
@@ -136,14 +139,17 @@ After this candidate:
 
 ## Residual M7 boundaries
 
-- Root independent review and integration are still required; this candidate
-  does not update root-owned `progress.md` or the public ledger's acceptance
-  state.
-- Android device/window terminal-ledger qualification was not run and no
-  Android collector/Kotlin source changed.
+- Root independent review accepted the deletion candidate and integration is
+  present in the current reconciliation baseline.
+- A final-SHA physical A065 functional/strict-ledger run at `3f52558` retained
+  all 279,199 Kitsune SH3 splats at 2412x1080 for 20 measured frames. Its
+  terminal counts were `V=279199`, `C` in `{226450,236792}`, and `D=279199`.
+  This is full-quality membership/presentation evidence for the CPU lane, not
+  a CPU/GPU, PlayCanvas, FPS, sustained-thermal, or performance claim.
 - iOS device/simulator, browser runtime/Playwright, Windows, Linux, and physical
-  Android presentation were not run. Their build/API surfaces remain covered
-  only by the repository matrix applicable on this macOS worktree.
+  iPhone presentation were not rerun at the reconciliation baseline. Their
+  available compile/host evidence must be classified separately; unavailable
+  runtime cells remain Deferred.
 - External Kitsune/Flowers/Garden/Truck asset benchmarks and explicitly ignored
   finite release observations were not run; they are not substituted by the
   focused hidden-window smoke.
@@ -152,3 +158,5 @@ After this candidate:
   session policy remain there. This candidate neither removes nor broadens
   those exceptions; factual policy reduction can be handled only where a
   checker exception is demonstrably obsolete.
+- M7 still requires the root-owned complete verification matrix, isolated
+  rollback proof, fixed-SHA acceptance review and progress-state transition.

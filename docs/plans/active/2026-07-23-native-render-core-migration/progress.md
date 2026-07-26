@@ -40,12 +40,13 @@ M7 = Active
 - M6 state: Accepted for the defined Apple/GsplatKit/XCFramework functional
   consumer scope. Physical-iPhone qualification remains explicit Deferred; see
   [M6 Apple functional evidence closeout](m6-apple-functional-evidence.md).
-- M7 state: Active at the read-only fact baseline
-  `24157b933d15662a29b9e2347bb945155b08ecbf`. M7a legacy tiled-prototype
-  deletion, the M7d geometry-switch contract/public-entry slice, Android strict
-  refreshed-ticket repairs, and the obsolete desktop raster-plan CLI deletion
-  are integrated. The remaining M7 inventory, deletion, classification and
-  acceptance matrix are not complete.
+- M7 state: Active at reconciliation baseline
+  `3f525584c1f3c5909ecd2f87b6a953b8a984e9ec`. TiledExact and the obsolete
+  standalone Packed presenter graph are deleted; standalone Packed rejects
+  before allocation; product Packed has one Session/Host/PreparedRuntimeSlot
+  route; Direct/Paged compatibility remains; Paged is CPU-only and rejects
+  async configuration. Final docs, rollback and affected-platform acceptance
+  evidence are not yet complete.
 - Product state at M2 activation: native Packed offscreen, desktop
   non-interactive and bench-runner use the Exact runtime; the interactive
   `SurfaceRenderSession` remains legacy until its complete M2 candidate is
@@ -620,51 +621,45 @@ M7 = Active
 - At this M6 closeout point, M7 and M8 had not been accepted. The current M7
   partial-integration state is recorded below.
 
-## M7 partial integration status
+## M7 integration and acceptance status
 
-- State at read-only fact baseline
-  `24157b933d15662a29b9e2347bb945155b08ecbf`: Active, not Accepted. M8 remains
-  unstarted, and Package M remains Active.
-- M7a is integrated as `658c7241fb0031290d7d86989ee1ec70e146cad6`.
-  It removes the unused `tiled_gpu` and `tiled_raster` Rust modules, their three
-  WGSL shaders, the standalone tiled-raster CPU test, and the corresponding
-  architecture-policy exception. This establishes deletion from the baseline
-  tree; it is not the complete M7 legacy-owner inventory or closeout.
-- The M7d contract/API slice is integrated through
-  `d957eb670d6da0d920e7cfbea53a75d2ce5238c8`,
-  `e0123e1a94e82db57d5de3e0c68030cee63c9558`,
-  `12c4bbdcd264207d88a0c232964630aebf61c3b2`,
-  `c848c84fda110a4ea648e06fb6547aa5a9bfa11e`, and
-  `a51e149da6b20b16a422dd8ad8832d5e29f34081`. Same-path geometry calls are
-  idempotent; live transitions entering or leaving Packed reject before
-  resource preparation or mutation; Native Direct/Paged retains its existing
-  transactional rule; and Rust, C-header/C-ABI, Web declaration and
-  architecture text describe that same boundary. The final commit adds a
-  macOS/Metal hidden-window regression over the public `SurfacePresenter` and
-  `SurfaceRenderSession` entries. A fresh run at the fact baseline reported
-  `M7D_SURFACE_GEOMETRY_ENTRY=PASS backend=Metal adapter="Apple M4"
-  public_presenter=true public_session=true`; this is one local public-entry
-  regression, not broader Apple, Web, Android or device qualification.
-- Android strict refreshed-ticket alignment is present through
-  `b2118aa33b6a1c8dcd97fcfd577b39c69a9da09c` and
-  `dcfcaf74d1e2a19c82e790ce699ec7aa0259d7ba`: an Exact frame that refreshes
-  order must join the current-stats and strict order ledgers on the same issued
-  ticket, and artifact extraction rejects refreshed-ticket identity drift.
-  Fresh baseline checks passed the Android artifact-extraction script and all
-  55 collector unit tests. No new APK, AAR or physical-device run was performed
-  for this status correction.
-- The obsolete desktop `--surface-raster-plan` CLI is removed at
-  `24157b933d15662a29b9e2347bb945155b08ecbf`; desktop help no longer advertises
-  it, collector scripts no longer pass it, and the CLI test rejects the retired
-  flag. A fresh `cargo test -p desktop-example` passed all 17 unit tests.
-- Additional fresh baseline checks passed: all 463 executed
-  `gsplat-render-wgpu` library tests (8 ignored), architecture checker
-  self-tests (3 tests), and the real-tree architecture policy check (124 Rust,
-  22 WGSL, 6 retained grandfather entries), plus the C FFI smoke. These focused
-  results do not substitute for M7's full workspace, platform, FFI, WASM and
-  forced-Metal acceptance matrix.
-- Remaining before M7 acceptance: finish and review the deletion inventory;
-  classify every deleted or retained call site/API/ABI entry; prove the final
-  single-owner policy; run the complete required consumer/global matrix; and
-  record fixed-SHA review and rollback evidence. M8 is not activated by these
-  partial integrations.
+- State at reconciliation baseline
+  `3f525584c1f3c5909ecd2f87b6a953b8a984e9ec`: Active, not Accepted. M8 remains
+  unstarted and Package M remains Active.
+- `707cd80` removes the TiledExact runtime, public variant, Web labels and
+  desktop selector. The current tree exposes only GlobalQuads and
+  ProjectedQuadsExact; canonical docs must not describe TiledExact as present.
+- `08bd5bf` makes every low-level `SurfacePresenter::from_*` family reject
+  Packed before Surface/device/resource allocation while preserving standalone
+  Direct/Paged. Product Packed construction continues through
+  `SurfaceRenderSession::from_*`.
+- `6befc3b` records the call-site/API/ABI ledger. `048344f` hardens Android
+  terminal joins. `432c430` makes Paged CPU-only and rejects AsyncLatest before
+  mutation. `a454719` plus `38bd608` provide the documented, read-only-by-
+  default cross-platform verification bootstrap and correct SDK discovery
+  precedence.
+- `fc90662` deletes the unreachable second Packed semantic graph from
+  `SurfacePresenter`, including `SurfacePackedRuntime`, `ProjectedQuadsGpu`,
+  the legacy preproject raster adapter and compatibility WGPU readback-ring
+  implementations. Product Packed scene/plans/policy/evidence remain solely in
+  `Renderer::PreparedRuntimeSlot`; `SurfacePresenterHost` owns target/device/
+  lifecycle mechanics. `3f52558` corrects the Web product route description.
+- Root post-integration checks at this sequence include the Apple M4 hidden-
+  window public Surface route, forced Metal SortedAlpha conformance and C FFI
+  smoke. WASM evidence is compile-only; a current Chrome/WebGPU runtime rerun
+  is Deferred when its exact toolchain prerequisite is unavailable.
+- A physical Nothing A065 run built from clean `3f52558` retained all 279,199
+  Kitsune SH3 splats at 2412x1080 for 20 measured CPU frames, with sampling,
+  LOD, dynamic resolution and upscaling disabled. Its strict terminal ledger
+  reported `V=279199`, `C` in `{226450,236792}` and `D=279199`; the formal suite
+  validator passed with verified inputs. This is final-SHA functional,
+  membership, presentation and ledger evidence only. It is not a CPU/GPU,
+  PlayCanvas, FPS, power, thermal or general performance claim.
+- Remaining before M7 acceptance: integrate and independently review the
+  canonical-document correction; run or explicitly classify the final
+  workspace and affected-platform matrix; prove the whole M7 rollback range in
+  an isolated worktree; record the final fixed SHA and Accept/Deferred cells;
+  then transition M7 from Active only if the cutover contract is satisfied.
+  Unavailable browser, iOS physical-device, Windows or Linux runtime cells stay
+  Deferred rather than being inferred from builds. M8 is not activated by this
+  partial closeout.

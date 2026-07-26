@@ -43,7 +43,8 @@
 - `crates/gsplat-render-wgpu`: exact-count compact Resident scenes, CPU/GPU
   ordering, measured Adaptive selection, shared Surface/offscreen rendering,
   the Direct-f32 oracle, the explicit diagnostic Paged runtime, and a completed
-  private Exact prepared-plan core awaiting atomic consumer migration
+  Exact prepared-plan core consumed by product Packed offscreen and Surface
+  rendering
 - `crates/gsplat-ffi-c`: small C ABI surface over the renderer and mobile Surface presenters
 - `crates/gsplat-web`: experimental `wasm-bindgen` bindings over the shared `wgpu` Surface renderer
 - `examples/desktop`: desktop viewer and offscreen PNG harness
@@ -74,18 +75,21 @@ For the broader command matrix, use `VERIFICATION.md`.
 
 ## Current Focus
 
-- Package E's private Exact core is complete. Package M begins with a bounded
-  cutover/rollback checklist, then migrates native offscreen and the shared
-  Surface owner before any platform wrapper switches.
+- Package E's Exact core and Package M's native offscreen, shared Surface,
+  C/Web/Android/Apple consumer migrations are integrated. M7 is closing the
+  legacy-owner deletion, documentation, rollback, and final verification
+  matrix before M8 can start.
 - Keep the day-to-day verification paths passing and the release bar lightweight but real.
 - Expand conformance and perf coverage with real datasets before widening the public API surface.
 - Keep the exact-count Resident path, portable GPU visibility/radix/indirect
   draw, default exact projected-quads raster with strictly invalidated
   stationary-frame cache reuse, and runtime CPU/GPU Adaptive policy covered by
   real-scene evidence.
-- Keep GlobalQuads as the exact Resident oracle and lazy TiledExact as a
-  diagnostic. Promote raster optimizations only when they preserve complete
-  membership, SH, resolution, order, draw count, and the image gate.
+- Keep Direct-f32 and the retained GlobalQuads compatibility path as explicit
+  oracles where they still have consumers. Product Packed uses the canonical
+  ProjectedQuadsExact raster; the former TiledExact path is deleted. Promote
+  raster optimizations only when they preserve complete membership, SH,
+  resolution, order, draw count, and the image gate.
 - Improve mobile integration only while the shared C ABI stays simple and stable.
 - Turn Android integration into a local AAR/module shape before widening it into a published SDK.
 - Harden the local iOS `GsplatKit`/XCFramework slice before treating it as a published SwiftPM binary SDK.
@@ -120,11 +124,12 @@ For the broader command matrix, use `VERIFICATION.md`.
   timing, and presentation to the shared `SurfaceRenderSession`. Product
   examples and SDK wrappers select full-resident Packed with sort interval 1
   and Adaptive ordering; Direct remains the explicit wide-f32 oracle.
-- The private Exact core under `renderer/`, `plans/`, `cpu/` and `raster/`
+- The Exact core under `renderer/`, `plans/`, `cpu/`, `gpu/` and `raster/`
   prepares CPU PostSort, GPU PostSort and GPU Preproject as complete plans and
-  has one whole-plan controller. Its offscreen and Surface-shadow adapters are
-  qualification seams, not public consumers; the legacy product route remains
-  authoritative until Package M cuts it over.
+  has one whole-plan controller. Product Packed offscreen and Surface rendering
+  consume this runtime. Surface target mechanics live in
+  `SurfacePresenterHost`; renderer semantics and evidence remain in the sole
+  `PreparedRuntimeSlot`.
 - Existing low-level Surface constructors and `GeometryPath::default()` stay
   Direct for compatibility. Packed and Paged are explicit selections, but only
   Packed can emit the production exactness receipt. An oversized scene is
@@ -147,10 +152,11 @@ For the broader command matrix, use `VERIFICATION.md`.
 
 ## Known Open Gaps
 
-- Exact-core product migration: native offscreen, shared Surface, C/Web/mobile
-  consumers and legacy-owner deletion remain Package M tasks. Package E's
-  Metal Surface evidence used a texture target with injected presentation;
-  real-window execution belongs to the shared Surface cutover.
+- Exact-core migration closeout: legacy Packed presenter ownership and
+  TiledExact are deleted, and the platform consumers use the shared session.
+  M7 still needs its final canonical-document, rollback and affected-platform
+  evidence matrix before it can be accepted; unrun browser/iOS/device cells
+  remain explicit Deferred rather than inferred from compile checks.
 - Android external distribution: the GitHub prerelease attaches an AAR, but it
   is not published to Maven and the current package slice is `arm64-v8a` only.
 - iOS external distribution: the GitHub prerelease attaches an XCFramework ZIP,

@@ -2,9 +2,13 @@
 
 ## Status and fixed identity
 
-- Fact baseline: `707cd8001abf84cd9fc990dd45246a0c02db75ef`
-  (`refactor(render): remove tiled exact diagnostic`).
-- Baseline parent: `a798b8accf454e96792df45d38e8564e7e27556e`.
+- Original inventory baseline: `707cd8001abf84cd9fc990dd45246a0c02db75ef`
+  (`refactor(render): remove tiled exact diagnostic`), with parent
+  `a798b8accf454e96792df45d38e8564e7e27556e`.
+- Current reconciliation baseline: `3f525584c1f3c5909ecd2f87b6a953b8a984e9ec`.
+  It includes pre-allocation standalone Packed rejection, deletion of the
+  obsolete standalone Packed graph, Paged async fail-closed behavior, Android
+  strict-ledger repairs, and Web route documentation.
 - Program status: **M7 Active; M7 acceptance Deferred**. M8 is not activated and
   Package M remains Active.
 - Deliverable status: **documentation evidence only**. This ledger changes no
@@ -13,8 +17,8 @@
   behavior.
 - The rejected candidate `b0a4a3e14c4e15af2478327143540a02cdfba6c1`
   predates the TiledExact deletion and is not an evidence source for this
-  ledger. Every fact below was re-derived from the fixed baseline, its direct
-  parent, or a fresh command recorded below.
+  ledger. Original inventory facts were derived at `707cd80`; current-owner
+  conclusions were reconciled against `3f52558` and its integrated closeouts.
 
 This document satisfies one inventory input to the M7 exit contract. It does
 not prove final single ownership, the complete consumer/global matrix,
@@ -36,7 +40,7 @@ Only the Swift Surface wrapper adds an explicit language-level deprecation.
 
 ## Current Surface owner conclusion
 
-At the fixed baseline, all in-tree Packed Surface product constructors select
+At the current reconciliation baseline, all in-tree Packed Surface product constructors select
 `SessionSurfaceOwner::ExactPacked(SurfacePresenterHost)`. The decision is
 encoded by `SessionSurfaceConstruction::for_geometry` in
 [`surface_session.rs`](../../../../crates/gsplat-render-wgpu/src/surface_session.rs)
@@ -57,13 +61,15 @@ from_raw_handles,from_canvas}` plus `SurfaceRenderSession::new` still exists as
 a Rust compatibility/diagnostic route. Its direct in-tree construction is the
 desktop public-entry regression in
 [`surface_geometry_entry.rs`](../../../../examples/desktop/tests/surface_geometry_entry.rs),
-not a platform product constructor. After `707cd80`, that standalone presenter
-can still own Direct, Paged, or legacy Packed Global/Projected resources, but it
-cannot own TiledExact.
+not a platform product constructor. It accepts Direct and diagnostic Paged.
+Explicit Packed construction returns
+`StandalonePackedPresenterUnsupported` before creating a Surface, adapter,
+device, or renderer resources.
 
-This route separation is not the final M7 single-owner proof. The retained
-standalone Packed/Global compatibility graph still needs an explicit retain or
-delete decision and the full M7 verification matrix.
+The obsolete standalone Packed Global/Projected graph has been deleted.
+Product Packed scene, plans, policy, generations and evidence have one semantic
+owner in `Renderer::PreparedRuntimeSlot`; `SurfacePresenterHost` owns only
+target/device/lifecycle mechanics.
 
 ## TiledExact deletion and caller impact
 
@@ -79,7 +85,7 @@ only `GlobalQuads` and `ProjectedQuadsExact` in
 | `SurfacePresenter::tiled_entry_count` / `tiled_entry_capacity` | Public accessors removed | **R.** The desktop regression stopped snapshotting these values. |
 | `SurfaceFrameOutput::tiled_preparation_pending` | Public compatibility field removed | **R.** Desktop, Web example, JS normalization, TypeScript, and tests now use only `gpu_order_preparation_pending` / `gpuOrderPreparationPending`. |
 | raw WASM `rasterExecutionPlan="tiled_exact"` and package TypeScript `"tiled_exact"` union member | Removed | **R.** Web callers must not expect the label. There is no raw or package Tiled selector. |
-| former `SurfaceRenderSession::set_raster_execution_plan(TiledExact)` path | Tiled argument deleted; the method itself remains public for Global/Projected compatibility | **R** for Tiled, **C/D** for the remaining method. Exact Packed accepts only Projected; standalone Packed may switch Global/Projected; Direct/Paged accept only Global. No C/JNI/Kotlin/Swift/WASM/JS raster setter exists. |
+| former `SurfaceRenderSession::set_raster_execution_plan(TiledExact)` path | Tiled argument deleted; the method itself remains public for Global/Projected compatibility | **R** for Tiled, **C/D** for the remaining method. Exact Packed accepts only Projected; standalone Direct/Paged accept only Global. No C/JNI/Kotlin/Swift/WASM/JS raster setter exists. |
 | desktop `--surface-raster-plan` selector | Removed earlier at `24157b933d15662a29b9e2347bb945155b08ecbf` | **R.** Current desktop callers explicitly reapply Projected; the retired CLI is rejected. |
 
 The current in-tree calls to `SurfaceRenderSession::set_raster_execution_plan`
@@ -87,9 +93,10 @@ are limited to desktop viewer/evidence/test code and all pass
 `ProjectedQuadsExact`. The public method remains a two-plan Rust compatibility
 entrypoint; TiledExact does not remain current through it.
 
-The handbook and renderer/desktop README files still contain historical Tiled
-prose at this baseline. Those stale documents are M8 correction inputs, not
-evidence that the deleted route survives.
+The handbook and renderer/desktop README files contained historical Tiled prose
+at the original inventory baseline. The M7 documentation-consistency candidate
+updates those canonical current-state descriptions; this does not itself prove
+the final platform or rollback matrix.
 
 ## Rust public API and call-site ledger
 
@@ -111,7 +118,7 @@ lines 41-126.
 | projected execution/measurement/failure DTOs | C/D | Compatibility and qualification surface. Retain. |
 | Direct/Packed/Resident scene builders, paths, preflight reports/errors, byte plans, source splats, and preflight helpers | P/C/D | Product scene construction plus Direct/Paged diagnostics. Retain. |
 | all `SurfaceCurrentStats*` request/submission/poll/receipt/failure/count DTOs | P/D | Authoritative Surface `S/V/C/D` observation contract. Pending/unavailable remains count-free. Retain. |
-| `SurfaceFrameCapture`, `SurfacePresenter` | C/D/Q | Capture is diagnostic. The low-level presenter remains public and is the standalone compatibility composition; its final M7 disposition is Deferred. |
+| `SurfaceFrameCapture`, `SurfacePresenter` | C/D | Capture is diagnostic. The low-level presenter remains public for standalone Direct/Paged compatibility and rejects Packed before allocation. |
 | `SurfaceAdaptive*`, frame output/timings, order/projected/producer submission and unsampled DTOs, policy enums, `SurfaceRenderSession`, `SurfaceSortSchedule` | P/C/D | Shared Surface product facade and compatibility/evidence data. Retain. `SurfaceFrameOutput::tiled_preparation_pending` is removed. |
 
 ### Constructors and mutable entries
@@ -120,7 +127,7 @@ lines 41-126.
 | --- | --- | --- |
 | `Renderer::{new,with_config}` | P/C | GPU offscreen construction used by desktop, bench-runner, C context, and tests. |
 | `Renderer::{new_for_surface,with_config_for_surface}` and pre-session `set_geometry_path` | P/C/D | Shared Surface scene construction. Geometry selection here precedes session publication. |
-| `SurfacePresenter::{from_window,from_raw_handles,from_canvas}` | C/D/Q | Low-level public compatibility constructors. Product `from_*` session constructors bypass the standalone presenter for Packed. |
+| `SurfacePresenter::{from_window,from_raw_handles,from_canvas}` | C/D | Low-level Direct/Paged compatibility constructors. Packed returns structured Unsupported before allocation; product `from_*` session constructors select the Exact host. |
 | native/WASM `SurfaceRenderSession::new` | C/D/Q | Accepts a caller-created presenter. Direct in-tree construction is test-only; it is not the product platform root. |
 | `SurfaceRenderSession::{from_window,from_raw_handles,from_canvas}` | P | Desktop, C/mobile, and WASM product roots respectively; Packed selects host-only Exact. |
 | `SurfaceRenderSession::{set_geometry_path,set_geometry_path_async}` | C/D | Native Direct/Paged remains transactional; transitions entering/leaving Packed reject; Web changed-path requests reject. Same-path calls are idempotent. |
@@ -252,10 +259,9 @@ not browser/WebGPU runtime evidence.
 
 ## Remaining M7 decisions and residual boundaries
 
-1. Decide whether the public low-level standalone presenter/session
-   composition and legacy Packed Global/Projected graph are retained as a named
-   compatibility diagnostic or removed/restricted through a separate API
-   decision.
+1. Retain the public low-level standalone presenter/session composition for
+   Direct/Paged compatibility. Packed is restricted to the product session
+   host, and its obsolete standalone Global/Projected graph stays deleted.
 2. Preserve all still-published C ABI symbols as M3-owned thin shims unless a
    separately reviewed compatibility decision authorizes removal. Compatibility
    no-ops and fail-closed stats are current symbols, not removed entries.
@@ -263,9 +269,10 @@ not browser/WebGPU runtime evidence.
    two-plan raster setter or stale README/handbook prose.
 4. Keep the C/JNI/Kotlin producer route distinct from Web's raw WASM -> Rust
    session route; neither route may be used as evidence for the other.
-5. Run the complete workspace, platform, architecture, FFI, WASM, forced-Metal,
-   rollback, and fixed-SHA review matrix on the final M7 deletion candidate.
-   The focused checks below qualify only this documentation ledger.
+5. Run the complete workspace, affected-platform, architecture, FFI, WASM,
+   forced-Metal, rollback, and fixed-SHA review matrix on the final M7 candidate.
+   Any unavailable browser/iOS/device cell remains Deferred. The focused checks
+   below qualify only the original inventory ledger.
 
 ## Fresh verification at `707cd80`
 

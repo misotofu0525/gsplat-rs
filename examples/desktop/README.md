@@ -72,7 +72,8 @@ start through queue completion, including ordering, projection, rasterization,
 submission, and queued GPU work. Order-stage wall/timestamp fields remain
 diagnostics and never select the backend. Packed Surface rendering is fixed to
 the Exact `ProjectedQuadsExact` product raster; the desktop CLI does not expose
-the legacy GlobalQuads or TiledExact diagnostic plans. The
+the standalone GlobalQuads compatibility plan, and TiledExact has been deleted.
+The
 `cpu_render_submit_ms` field is CPU wall time and is never presented as GPU
 execution time.
 
