@@ -1,5 +1,4 @@
 mod color;
-mod compact;
 mod preproject_compact;
 mod project;
 mod radix;
@@ -10,14 +9,11 @@ pub(crate) use color::{
     ResidentColorKernel, create_resident_color_bind_group_layout,
     create_resident_color_params_buffer, create_resident_color_pipeline,
 };
-pub(crate) use compact::StableContributorCompactor;
 #[cfg(test)]
 pub(crate) use preproject_compact::PreprojectDrawIndirectArgs;
 pub(crate) use preproject_compact::{
     PREPROJECT_DRAW_INDIRECT_ARGS_BYTES, PreprojectKeyIdCompactor,
 };
-#[cfg(test)]
-pub(crate) use project::PROJECT_DRAW_INDIRECT_ARGS_BYTES;
 pub(crate) use project::{ProjectedRankProjector, ProjectedRankSourceBindings};
 #[cfg(test)]
 pub(crate) use radix::{EXTERNAL_RADIX_TILE_SIZE, ExternalPrefixControl};

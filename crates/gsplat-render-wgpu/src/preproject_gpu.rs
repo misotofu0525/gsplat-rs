@@ -14,15 +14,12 @@ use crate::gpu::{
     ExternalPrefixRadix, ExternalPrefixRadixBytePlan, GpuPrefixScan,
     PREPROJECT_DRAW_INDIRECT_ARGS_BYTES, PreprojectKeyIdCompactor,
 };
+#[cfg(test)]
 use crate::raster::QUAD_VERTEX_COUNT;
 use crate::resident_gpu::{
     RESIDENT_COLOR_STORAGE_BINDINGS, ResidentGpuError, ResidentGpuResources,
 };
 use crate::{make_surface_render_params, wgpu_label};
-
-mod raster;
-
-use raster::PreprojectedGpuRaster;
 
 pub(crate) const PREPROJECT_WORKGROUP_SIZE: u32 = 128;
 const SOURCE_CACHE_PLANE_BYTES: u64 = 16;
@@ -484,97 +481,6 @@ impl PreprojectedGpuCompute {
     }
 }
 
-/// Legacy Surface adapter that combines the target-independent compute owner
-/// with the existing target-format raster state. Product behavior remains
-/// unchanged while the shadow Exact runtime can own compute alone.
-pub(crate) struct PreprojectedGpuOrder {
-    compute: PreprojectedGpuCompute,
-    raster: PreprojectedGpuRaster,
-}
-
-impl PreprojectedGpuOrder {
-    pub(crate) fn new(
-        device: &wgpu::Device,
-        target_format: wgpu::TextureFormat,
-        resident: &ResidentGpuResources,
-    ) -> Result<Self, ResidentGpuError> {
-        let compute = PreprojectedGpuCompute::new(device, resident, QUAD_VERTEX_COUNT)?;
-        let raster = PreprojectedGpuRaster::new(device, target_format, resident, &compute);
-        Ok(Self { compute, raster })
-    }
-
-    pub(crate) fn encode(
-        &self,
-        queue: &wgpu::Queue,
-        encoder: &mut wgpu::CommandEncoder,
-        resident: &ResidentGpuResources,
-        camera: &Camera,
-        width: u32,
-        height: u32,
-    ) {
-        self.compute
-            .encode(queue, encoder, resident, camera, width, height);
-    }
-
-    pub(crate) fn encode_projection_and_count(
-        &self,
-        queue: &wgpu::Queue,
-        encoder: &mut wgpu::CommandEncoder,
-        resident: &ResidentGpuResources,
-        camera: &Camera,
-        width: u32,
-        height: u32,
-    ) {
-        self.compute
-            .encode_projection_and_count(queue, encoder, resident, camera, width, height);
-    }
-
-    pub(crate) fn draw_pipeline(&self) -> &wgpu::RenderPipeline {
-        self.raster.draw_pipeline()
-    }
-
-    pub(crate) fn draw_bind_group(&self) -> &wgpu::BindGroup {
-        self.raster.draw_bind_group()
-    }
-
-    pub(crate) fn draw_args(&self) -> &wgpu::Buffer {
-        self.compute.draw_args()
-    }
-
-    #[cfg(test)]
-    pub(crate) const fn capacity(&self) -> u32 {
-        self.compute.capacity()
-    }
-
-    pub(crate) fn final_keys(&self) -> &wgpu::Buffer {
-        self.compute.final_keys()
-    }
-
-    pub(crate) fn final_source_ids(&self) -> &wgpu::Buffer {
-        self.compute.final_source_ids()
-    }
-
-    pub(crate) fn source_center_alpha_key(&self) -> &wgpu::Buffer {
-        self.compute.source_center_alpha_key()
-    }
-
-    pub(crate) fn source_axes(&self) -> &wgpu::Buffer {
-        self.compute.source_axes()
-    }
-
-    pub(crate) fn order_control(&self) -> &wgpu::Buffer {
-        self.compute.order_control()
-    }
-
-    pub(crate) fn candidate_count_buffer_and_offset(&self) -> (&wgpu::Buffer, u64) {
-        self.compute.candidate_count_buffer_and_offset()
-    }
-
-    pub(crate) fn contributor_count_buffer_and_offset(&self) -> (&wgpu::Buffer, u64) {
-        self.compute.contributor_count_buffer_and_offset()
-    }
-}
-
 fn storage_layout(
     binding: u32,
     read_only: bool,
@@ -671,9 +577,6 @@ mod tests {
 
     use super::*;
     use crate::gpu::{EXTERNAL_RADIX_TILE_SIZE, ExternalPrefixControl, PreprojectDrawIndirectArgs};
-    use crate::projected_draw_telemetry::SurfaceProjectedDrawExecution;
-    use crate::projected_quads_gpu::ProjectedQuadsGpu;
-    use crate::raster::{SplatIndirectDraw, encode_splat_indirect_draw_into};
     use crate::{
         ResidentCovariance0, ResidentCovariance1, ResidentPositionAlpha, ResidentSceneCpu,
     };
@@ -734,10 +637,8 @@ mod tests {
     }
 
     fn resident_resources(device: &wgpu::Device, scene: &ResidentSceneCpu) -> ResidentGpuResources {
-        let draw_layout = crate::resident_gpu::create_resident_draw_bind_group_layout(device);
         let color_layout = crate::resident_gpu::create_resident_color_bind_group_layout(device);
-        ResidentGpuResources::new(device, &draw_layout, &color_layout, scene)
-            .expect("resident resources")
+        ResidentGpuResources::new(device, &color_layout, scene).expect("resident resources")
     }
 
     fn camera() -> Camera {
@@ -946,7 +847,7 @@ mod tests {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         resident: &ResidentGpuResources,
-        producer: &PreprojectedGpuOrder,
+        producer: &PreprojectedGpuCompute,
         camera: &Camera,
     ) -> ProducerReadback {
         let capacity = producer.capacity() as usize;
@@ -1048,7 +949,7 @@ mod tests {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         resident: &ResidentGpuResources,
-        producer: &PreprojectedGpuOrder,
+        producer: &PreprojectedGpuCompute,
         camera: &Camera,
     ) -> (
         u32,
@@ -1170,9 +1071,8 @@ mod tests {
         let capacity = 14_usize;
         let scene = base_scene(capacity);
         let resident = resident_resources(&device, &scene);
-        let producer =
-            PreprojectedGpuOrder::new(&device, wgpu::TextureFormat::Rgba8Unorm, &resident)
-                .expect("preproject graph");
+        let producer = PreprojectedGpuCompute::new(&device, &resident, QUAD_VERTEX_COUNT)
+            .expect("preproject graph");
         let camera = camera();
         let below_near = f32::from_bits(camera.intrinsics.near_plane.to_bits() - 1);
         let above_far = f32::from_bits(camera.intrinsics.far_plane.to_bits() + 1);
@@ -1327,9 +1227,8 @@ mod tests {
         let capacity = 1_025_usize;
         let scene = base_scene(capacity);
         let resident = resident_resources(&device, &scene);
-        let producer =
-            PreprojectedGpuOrder::new(&device, wgpu::TextureFormat::Rgba8Unorm, &resident)
-                .expect("preproject graph");
+        let producer = PreprojectedGpuCompute::new(&device, &resident, QUAD_VERTEX_COUNT)
+            .expect("preproject graph");
         let camera = camera();
         let covariance0 = vec![
             ResidentCovariance0 {
@@ -1422,9 +1321,8 @@ mod tests {
         let capacity = 129_usize;
         let scene = base_scene(capacity);
         let resident = resident_resources(&device, &scene);
-        let producer =
-            PreprojectedGpuOrder::new(&device, wgpu::TextureFormat::Rgba8Unorm, &resident)
-                .expect("preproject graph");
+        let producer = PreprojectedGpuCompute::new(&device, &resident, QUAD_VERTEX_COUNT)
+            .expect("preproject graph");
         let base_camera = camera();
         let covariance0 = vec![
             ResidentCovariance0 {
@@ -1483,230 +1381,5 @@ mod tests {
         let refreshed_sparse = run_and_read(&device, &queue, &resident, &producer, &moved_camera);
         assert_eq!(refreshed_sparse.control.count, expected_current_c);
         assert_eq!(refreshed_sparse.draw.instance_count, expected_current_c);
-    }
-
-    fn packed_rgb18e8(rgb: [f32; 3]) -> [u32; 2] {
-        let nonnegative = rgb.map(|value| value.max(0.0));
-        let maximum = nonnegative.into_iter().fold(0.0_f32, f32::max);
-        if maximum == 0.0 {
-            return [0, 0];
-        }
-        let exponent = maximum.log2().ceil().clamp(-126.0, 127.0) as i32;
-        let exponent_code = (exponent + 127) as u32;
-        let scale = 2.0_f32.powi(exponent);
-        let quantize = |value: f32| ((value / scale).clamp(0.0, 1.0) * 262_143.0).round() as u32;
-        let q = nonnegative.map(quantize);
-        [
-            (q[0] & 0x3ffff) | ((q[1] & 0x3fff) << 18),
-            ((q[1] >> 14) & 0xf) | ((q[2] & 0x3ffff) << 4) | (exponent_code << 22),
-        ]
-    }
-
-    fn target(device: &wgpu::Device, label: &'static str) -> (wgpu::Texture, wgpu::TextureView) {
-        let texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some(label),
-            size: wgpu::Extent3d {
-                width: ORACLE_WIDTH,
-                height: ORACLE_HEIGHT,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8Unorm,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-            view_formats: &[],
-        });
-        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        (texture, view)
-    }
-
-    fn copy_target(
-        device: &wgpu::Device,
-        encoder: &mut wgpu::CommandEncoder,
-        texture: &wgpu::Texture,
-        label: &'static str,
-    ) -> wgpu::Buffer {
-        let size = u64::from(ORACLE_WIDTH * ORACLE_HEIGHT * 4);
-        let readback = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some(label),
-            size,
-            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        encoder.copy_texture_to_buffer(
-            wgpu::TexelCopyTextureInfo {
-                texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            wgpu::TexelCopyBufferInfo {
-                buffer: &readback,
-                layout: wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(ORACLE_WIDTH * 4),
-                    rows_per_image: Some(ORACLE_HEIGHT),
-                },
-            },
-            wgpu::Extent3d {
-                width: ORACLE_WIDTH,
-                height: ORACLE_HEIGHT,
-                depth_or_array_layers: 1,
-            },
-        );
-        readback
-    }
-
-    #[test]
-    fn source_id_draw_is_rgba_byte_identical_to_qualified_post_sort_compact_draw() {
-        let Some((device, queue)) = test_device() else {
-            return;
-        };
-        let source = SceneBuffers {
-            positions: vec![
-                Vec3f::new(-0.04, 0.01, 4.0),
-                Vec3f::new(0.03, -0.02, 2.0),
-                Vec3f::new(0.0, 0.04, 3.0),
-                Vec3f::new(0.02, 0.0, 3.0),
-                Vec3f::new(100.0, 0.0, 2.5),
-                Vec3f::new(0.0, 0.0, 2.5),
-            ],
-            opacity: vec![2.0, 1.5, 1.0, 0.5, 2.0, -20.0],
-            scale_xyz: vec![[-2.2, -2.3, -2.4]; 6],
-            rotation_xyzw: vec![[0.0, 0.0, 0.0, 1.0]; 6],
-            color_dc: vec![[0.0, 0.0, 0.0]; 6],
-            sh_degree: 0,
-            sh_rest: None,
-        };
-        let scene = ResidentSceneCpu::encode(&source).expect("draw parity scene");
-        let resident = resident_resources(&device, &scene);
-        for (source_id, color) in [
-            [1.0, 0.1, 0.1],
-            [0.1, 1.0, 0.1],
-            [0.1, 0.1, 1.0],
-            [1.0, 0.8, 0.1],
-            [0.8, 0.1, 1.0],
-            [0.1, 0.8, 1.0],
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            queue.write_buffer(
-                &resident.resolved_color_buffer,
-                source_id as u64 * 8,
-                bytemuck::cast_slice(&packed_rgb18e8(color)),
-            );
-        }
-        let camera = camera();
-        let mut order = source
-            .positions
-            .iter()
-            .enumerate()
-            .filter_map(|(source_id, &position)| {
-                let depth = crate::world_to_camera_depth_with_view_row(
-                    position,
-                    camera.pose.position,
-                    [0.0, 0.0, 1.0],
-                );
-                crate::is_visible(depth, &camera)
-                    .then_some((crate::depth_to_key(depth), source_id as u32))
-            })
-            .collect::<Vec<_>>();
-        order.sort_by(|left, right| right.0.cmp(&left.0));
-        let sorted_ids = order
-            .iter()
-            .map(|&(_, source_id)| source_id)
-            .collect::<Vec<_>>();
-        resident
-            .prepare_cpu_order(
-                &queue,
-                &sorted_ids,
-                &camera,
-                ORACLE_WIDTH,
-                ORACLE_HEIGHT,
-                true,
-            )
-            .expect("CPU order");
-        let projected = ProjectedQuadsGpu::new_with_indirect_execution(
-            &device,
-            wgpu::TextureFormat::Rgba8Unorm,
-            &resident,
-            true,
-        )
-        .expect("qualified post-sort graph");
-        let producer =
-            PreprojectedGpuOrder::new(&device, wgpu::TextureFormat::Rgba8Unorm, &resident)
-                .expect("direct contributor graph");
-        let (reference_texture, reference_view) = target(&device, "post-sort-reference-target");
-        let (direct_texture, direct_view) = target(&device, "preproject-direct-target");
-        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("preproject-draw-parity-encoder"),
-        });
-        assert_eq!(
-            projected
-                .encode_cpu_projection_for_draw(
-                    &queue,
-                    &mut encoder,
-                    sorted_ids.len() as u32,
-                    SurfaceProjectedDrawExecution::Compact,
-                )
-                .expect("post-sort projection"),
-            SurfaceProjectedDrawExecution::Compact,
-        );
-        producer.encode(
-            &queue,
-            &mut encoder,
-            &resident,
-            &camera,
-            ORACLE_WIDTH,
-            ORACLE_HEIGHT,
-        );
-        encode_splat_indirect_draw_into(
-            &mut encoder,
-            &SplatIndirectDraw {
-                pass_label: "post-sort-reference-draw",
-                view: &reference_view,
-                pipeline: projected
-                    .contributor_draw_pipeline()
-                    .expect("post-sort compact pipeline"),
-                bind_group: projected
-                    .contributor_draw_bind_group()
-                    .expect("post-sort compact bind group"),
-                clear: wgpu::Color::TRANSPARENT,
-                indirect_args: projected
-                    .contributor_indirect_args()
-                    .expect("post-sort compact args"),
-            },
-        );
-        encode_splat_indirect_draw_into(
-            &mut encoder,
-            &SplatIndirectDraw {
-                pass_label: "preproject-direct-draw",
-                view: &direct_view,
-                pipeline: producer.draw_pipeline(),
-                bind_group: producer.draw_bind_group(),
-                clear: wgpu::Color::TRANSPARENT,
-                indirect_args: producer.draw_args(),
-            },
-        );
-        let reference_readback = copy_target(
-            &device,
-            &mut encoder,
-            &reference_texture,
-            "post-sort-reference-readback",
-        );
-        let direct_readback = copy_target(
-            &device,
-            &mut encoder,
-            &direct_texture,
-            "preproject-direct-readback",
-        );
-        queue.submit(Some(encoder.finish()));
-
-        let reference = read_bytes(&device, &reference_readback);
-        let direct = read_bytes(&device, &direct_readback);
-        assert!(reference.iter().any(|&byte| byte != 0));
-        assert_eq!(direct, reference);
     }
 }

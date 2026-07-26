@@ -26,9 +26,7 @@ use crate::gpu_telemetry::{
 };
 use crate::projected_draw_telemetry::ProjectedDrawTelemetryPoll;
 use crate::surface::LegacySurfaceStatsAvailability;
-use crate::surface_presenter::{
-    CpuCompletionSampleRequest, ProjectedDrawSampleRequest, SurfacePresenterHost,
-};
+use crate::surface_presenter::{CpuCompletionSampleRequest, SurfacePresenterHost};
 use crate::{
     GeometryPath, Renderer, RendererError, SurfaceCurrentStatsCountSemantics,
     SurfaceCurrentStatsPlan, SurfaceCurrentStatsPoll, SurfaceCurrentStatsReceipt,
@@ -1720,7 +1718,7 @@ impl SessionSurfaceConstruction {
     }
 
     #[cfg(test)]
-    const fn creates_legacy_presenter_graph(self) -> bool {
+    const fn creates_standalone_presenter_graph(self) -> bool {
         matches!(self, Self::StandalonePresenter)
     }
 }
@@ -1756,7 +1754,7 @@ impl SessionSurfaceOwner {
 
     const fn gpu_order_producer(&self) -> SurfaceGpuOrderProducer {
         match self {
-            Self::Standalone(presenter) => presenter.gpu_order_producer(),
+            Self::Standalone(_) => SurfaceGpuOrderProducer::PostSort,
             Self::ExactPacked(_) => SurfaceGpuOrderProducer::PostSort,
         }
     }
@@ -1784,7 +1782,9 @@ impl SessionSurfaceOwner {
         bool,
     ) {
         match self {
-            Self::Standalone(presenter) => presenter.exact_runtime_context(),
+            Self::Standalone(_) => {
+                unreachable!("Exact Surface runtime requires the Packed host owner")
+            }
             Self::ExactPacked(host) => host.exact_runtime_context(),
         }
     }
@@ -1800,12 +1800,9 @@ impl SessionSurfaceOwner {
         crate::surface::shadow::SurfaceExactError,
     > {
         match self {
-            Self::Standalone(presenter) => presenter.render_exact_frame(
-                runtime,
-                camera,
-                force_cpu_order_refresh,
-                host_frame_started,
-            ),
+            Self::Standalone(_) => {
+                unreachable!("Exact Surface render requires the Packed host owner")
+            }
             Self::ExactPacked(host) => host.render_exact_frame(
                 runtime,
                 camera,
@@ -1899,22 +1896,18 @@ impl SessionSurfaceOwner {
         producer: SurfaceGpuOrderProducer,
     ) -> Result<(), SurfacePresenterError> {
         match self {
-            Self::Standalone(presenter) => presenter.set_gpu_order_producer(producer),
+            Self::Standalone(_) => match producer {
+                SurfaceGpuOrderProducer::PostSort => Ok(()),
+                SurfaceGpuOrderProducer::Preproject => {
+                    Err(SurfacePresenterError::PreprojectProducerIncompatible)
+                }
+            },
             Self::ExactPacked(_) => Err(SurfacePresenterError::GpuOrderUnsupported),
         }
     }
 
-    fn set_gpu_producer_measurement_enabled(&mut self, enabled: bool) {
-        if let Self::Standalone(presenter) = self {
-            presenter.set_gpu_producer_measurement_enabled(enabled);
-        }
-    }
-
-    fn projected_contributor_indirect_draw_enabled(&self) -> bool {
-        match self {
-            Self::Standalone(presenter) => presenter.projected_contributor_indirect_draw_enabled(),
-            Self::ExactPacked(_) => false,
-        }
+    const fn projected_contributor_indirect_draw_enabled(&self) -> bool {
+        false
     }
 
     fn set_raster_execution_plan(
@@ -1949,12 +1942,6 @@ impl SessionSurfaceOwner {
         match self {
             Self::Standalone(presenter) => presenter.prepare_direct_gpu_order(),
             Self::ExactPacked(_) => Err(SurfacePresenterError::GpuOrderUnsupported),
-        }
-    }
-
-    fn invalidate_gpu_order_producer_prefix(&mut self) {
-        if let Self::Standalone(presenter) = self {
-            presenter.invalidate_gpu_order_producer_prefix();
         }
     }
 
@@ -1994,33 +1981,16 @@ impl SessionSurfaceOwner {
     }
 
     fn poll_projected_draw_telemetry(&mut self) -> ProjectedDrawTelemetryPoll {
-        match self {
-            Self::Standalone(presenter) => presenter.poll_projected_draw_telemetry(),
-            Self::ExactPacked(_) => ProjectedDrawTelemetryPoll {
-                completed: Vec::new(),
-                failures: Vec::new(),
-            },
+        ProjectedDrawTelemetryPoll {
+            completed: Vec::new(),
+            failures: Vec::new(),
         }
     }
 
     fn poll_gpu_producer_telemetry(&mut self) -> GpuProducerTelemetryPoll {
-        match self {
-            Self::Standalone(presenter) => presenter.poll_gpu_producer_telemetry(),
-            Self::ExactPacked(_) => GpuProducerTelemetryPoll {
-                completed: Vec::new(),
-                failures: Vec::new(),
-            },
-        }
-    }
-
-    fn set_projected_draw_execution(
-        &mut self,
-        execution: SurfaceProjectedDrawExecution,
-        force_projection: bool,
-        sample_request: Option<ProjectedDrawSampleRequest>,
-    ) {
-        if let Self::Standalone(presenter) = self {
-            presenter.set_projected_draw_execution(execution, force_projection, sample_request);
+        GpuProducerTelemetryPoll {
+            completed: Vec::new(),
+            failures: Vec::new(),
         }
     }
 
@@ -2051,30 +2021,21 @@ impl SessionSurfaceOwner {
 
     fn resolved_projected_draw_execution(&self) -> Option<SurfaceProjectedDrawExecution> {
         match self {
-            Self::Standalone(presenter) => Some(presenter.resolved_projected_draw_execution()),
+            Self::Standalone(_) => Some(SurfaceProjectedDrawExecution::Candidate),
             Self::ExactPacked(_) => None,
         }
     }
 
-    fn take_projected_draw_submission(&mut self) -> TelemetrySubmission {
-        match self {
-            Self::Standalone(presenter) => presenter.take_projected_draw_submission(),
-            Self::ExactPacked(_) => TelemetrySubmission::NotRequested,
-        }
+    const fn take_projected_draw_submission(&mut self) -> TelemetrySubmission {
+        TelemetrySubmission::NotRequested
     }
 
-    fn take_actual_gpu_order_producer(&mut self) -> Option<SurfaceGpuOrderProducer> {
-        match self {
-            Self::Standalone(presenter) => presenter.take_actual_gpu_order_producer(),
-            Self::ExactPacked(_) => None,
-        }
+    const fn take_actual_gpu_order_producer(&mut self) -> Option<SurfaceGpuOrderProducer> {
+        None
     }
 
-    fn take_gpu_producer_submission(&mut self) -> TelemetrySubmission {
-        match self {
-            Self::Standalone(presenter) => presenter.take_gpu_producer_submission(),
-            Self::ExactPacked(_) => TelemetrySubmission::NotRequested,
-        }
+    const fn take_gpu_producer_submission(&mut self) -> TelemetrySubmission {
+        TelemetrySubmission::NotRequested
     }
 
     fn render_sorted_indices(
@@ -3012,7 +2973,6 @@ impl SurfaceRenderSession {
         {
             return Ok(());
         }
-        self.presenter.set_gpu_producer_measurement_enabled(enabled);
         self.pending_order_backend = None;
         self.pending_adaptive_choice = None;
         self.pending_projected_choice = None;
@@ -3368,11 +3328,6 @@ impl SurfaceRenderSession {
         if backend == SurfaceOrderBackend::Adaptive && gpu_prepare_failed {
             self.adaptive_policy.gpu_failed();
         }
-        // A later GPU frame must build a same-context prefix even if the
-        // previous GPU producer had once published a valid one. `force_sort`
-        // below is the scheduler contract; this presenter invalidation is the
-        // independent fail-closed guard.
-        self.presenter.invalidate_gpu_order_producer_prefix();
         self.frame_state.force_sort();
         Ok(())
     }
@@ -4499,22 +4454,9 @@ impl SurfaceRenderSession {
     fn render_gpu_with_plan(
         &mut self,
         plan: SurfaceFramePlan,
-        projected_choice: ProjectedAdaptiveChoice,
+        _projected_choice: ProjectedAdaptiveChoice,
     ) -> Result<SurfaceFrameOutput, RendererError> {
         let frame_start = timer_now();
-        let order_changed = gpu_projected_order_changed(plan.refresh_sort, plan.refresh_sort);
-        let projected_formal_sample =
-            projected_formal_sample_requested(projected_choice, order_changed);
-        self.presenter.set_projected_draw_execution(
-            projected_choice.execution,
-            projected_choice.sample.is_some(),
-            projected_formal_sample.then_some(ProjectedDrawSampleRequest {
-                camera_revision: self.camera_revision,
-                started: frame_start,
-                order_backend: SurfaceOrderBackendUsed::Gpu,
-                order_refreshed: order_changed,
-            }),
-        );
         let render_start = timer_now();
         let presenter_submission = self.presenter.render_direct_gpu_order(
             &self.camera,
@@ -4623,23 +4565,9 @@ impl SurfaceRenderSession {
         plan: SurfaceFramePlan,
         sort_refreshed: bool,
         track_cpu_completion: bool,
-        projected_choice: ProjectedAdaptiveChoice,
+        _projected_choice: ProjectedAdaptiveChoice,
     ) -> Result<SurfaceFrameOutput, RendererError> {
         let frame_start = timer_now();
-        let order_changed =
-            projected_order_changed(plan.refresh_sort, plan.upload_order, sort_refreshed);
-        let projected_formal_sample =
-            projected_formal_sample_requested(projected_choice, order_changed);
-        self.presenter.set_projected_draw_execution(
-            projected_choice.execution,
-            projected_choice.sample.is_some(),
-            projected_formal_sample.then_some(ProjectedDrawSampleRequest {
-                camera_revision: self.camera_revision,
-                started: frame_start,
-                order_backend: SurfaceOrderBackendUsed::Cpu,
-                order_refreshed: order_changed,
-            }),
-        );
         let paged = self.geometry_path() == GeometryPath::PagedActiveAtlas;
         let mut stats = if paged {
             FrameStats::zero()
@@ -5003,10 +4931,10 @@ mod tests {
     };
 
     #[test]
-    fn exact_packed_session_construction_skips_the_legacy_presenter_graph() {
+    fn exact_packed_session_construction_skips_standalone_presenter_resources() {
         let packed = SessionSurfaceConstruction::for_geometry(GeometryPath::PackedAtlas);
         assert_eq!(packed, SessionSurfaceConstruction::ExactPackedHost);
-        assert!(!packed.creates_legacy_presenter_graph());
+        assert!(!packed.creates_standalone_presenter_graph());
 
         for path in [
             GeometryPath::SortedIndexDirect,
@@ -5017,12 +4945,12 @@ mod tests {
                 construction,
                 SessionSurfaceConstruction::StandalonePresenter
             );
-            assert!(construction.creates_legacy_presenter_graph());
+            assert!(construction.creates_standalone_presenter_graph());
         }
     }
 
     #[test]
-    fn session_surface_owner_cannot_implicitly_deref_to_the_legacy_graph() {
+    fn session_surface_owner_cannot_implicitly_deref_to_the_standalone_presenter() {
         let source = include_str!("surface_session.rs");
         assert!(!source.contains(concat!("impl ", "Deref for SessionSurfaceOwner")));
         assert!(!source.contains(concat!("impl ", "DerefMut for SessionSurfaceOwner")));

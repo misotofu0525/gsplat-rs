@@ -7,22 +7,13 @@ use std::time::Duration;
 
 use crate::SurfaceRasterExecutionPlan;
 use crate::direct_gpu_order::GpuOrderTimestampRange;
-use crate::gpu_producer_telemetry::{
-    GpuProducerCountSource, GpuProducerSampleMetadata, GpuProducerTelemetry,
-    GpuProducerTelemetryPoll, SurfaceGpuOrderProducer, SurfaceGpuProducerDrawScope,
-};
+use crate::gpu_producer_telemetry::SurfaceGpuOrderProducer;
 use crate::gpu_telemetry::{
     CpuOrderCompletionTelemetry, CpuOrderTelemetryPoll, FrameInstanceCounts, GpuOrderTelemetry,
-    GpuOrderTelemetryPoll, InstanceCountSource, TelemetrySubmission,
+    GpuOrderTelemetryPoll, TelemetrySubmission,
 };
 use crate::packed_gpu;
 use crate::paged_active_set::PagedActiveSet;
-use crate::preproject_gpu::PreprojectedGpuOrder;
-use crate::projected_draw_telemetry::{
-    ProjectedDrawCountSource, ProjectedDrawSampleMetadata, ProjectedDrawTelemetry,
-    ProjectedDrawTelemetryPoll,
-};
-use crate::projected_quads_gpu::{ProjectedDrawExecution, ProjectedQuadsGpu};
 use crate::raster::{
     QUAD_VERTEX_COUNT, SplatDraw, SplatIndirectDraw, encode_splat_draw_into,
     encode_splat_indirect_draw_into,
@@ -125,26 +116,12 @@ pub struct SurfacePresenter {
     host: SurfacePresenterHost,
     direct_pipeline: wgpu::RenderPipeline,
     direct_bind_group_layout: wgpu::BindGroupLayout,
-    packed_pipeline: wgpu::RenderPipeline,
-    packed_bind_group_layout: wgpu::BindGroupLayout,
-    resident_draw_pipeline: Option<wgpu::RenderPipeline>,
-    resident_draw_bind_group_layout: Option<wgpu::BindGroupLayout>,
-    resident_color_pipeline: Option<wgpu::ComputePipeline>,
-    resident_color_bind_group_layout: Option<wgpu::BindGroupLayout>,
+    paged_pipeline: wgpu::RenderPipeline,
+    paged_bind_group_layout: wgpu::BindGroupLayout,
     instance_count: u32,
     geometry: SurfaceGeometry,
     gpu_order_telemetry: GpuOrderTelemetry,
     cpu_order_completion_telemetry: CpuOrderCompletionTelemetry,
-    projected_draw_telemetry: ProjectedDrawTelemetry,
-    gpu_producer_telemetry: GpuProducerTelemetry,
-    gpu_order_producer: SurfaceGpuOrderProducer,
-    gpu_producer_measurement_enabled: bool,
-    last_gpu_producer_submission: TelemetrySubmission,
-    last_actual_gpu_order_producer: Option<SurfaceGpuOrderProducer>,
-    projected_draw_execution: ProjectedDrawExecution,
-    projected_probe_generation: u64,
-    projected_draw_sample_request: Option<ProjectedDrawSampleRequest>,
-    last_projected_draw_submission: TelemetrySubmission,
 }
 
 #[derive(Clone, Copy)]
@@ -155,176 +132,20 @@ pub(crate) struct CpuCompletionSampleRequest {
     pub(crate) sort_ms: f32,
 }
 
-#[derive(Clone, Copy)]
-pub(crate) struct ProjectedDrawSampleRequest {
-    pub(crate) camera_revision: u64,
-    pub(crate) started: TimerInstant,
-    pub(crate) order_backend: crate::SurfaceOrderBackendUsed,
-    pub(crate) order_refreshed: bool,
-}
-
 enum SurfaceGeometry {
     Direct(Box<DirectSceneResources>),
-    Packed(Box<SurfacePackedRuntime>),
     Paged(Box<SurfacePagedRuntime>),
 }
 
 enum PreparedSurfaceGpuOrder {
     AlreadyPrepared,
-    Direct(DirectGpuSceneOrder),
-    Packed {
-        order: resident_gpu::ResidentGpuSceneOrder,
-        projected_bind_group: wgpu::BindGroup,
-    },
-}
-
-enum PreparedSurfaceGpuProducer {
-    AlreadyPrepared,
-    Preproject(Box<PreprojectedGpuOrder>),
-}
-
-struct SurfacePackedRuntime {
-    resident: resident_gpu::ResidentGpuResources,
-    projected: ProjectedQuadsGpu,
-    projected_cache: ProjectedCacheState,
-    preproject: Option<PreprojectedGpuOrder>,
-    preproject_state: PreprojectProducerState,
-    raster_plan: SurfaceRasterExecutionPlan,
-    #[cfg(target_arch = "wasm32")]
-    gpu_order_warmed: bool,
-}
-
-#[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
-struct PreprojectProducerState {
-    order_valid: bool,
-    order_generation: u64,
-    projection_generation: u64,
-}
-
-impl PreprojectProducerState {
-    fn invalidate_order(&mut self) {
-        self.order_valid = false;
-        self.order_generation = self.order_generation.wrapping_add(1);
-    }
-
-    fn require_order(self, refresh_order: bool) -> Result<(), SurfacePresenterError> {
-        if refresh_order || self.order_valid {
-            Ok(())
-        } else {
-            Err(SurfacePresenterError::PreprojectOrderUnavailable)
-        }
-    }
-
-    fn record_projection(&mut self, refresh_order: bool) {
-        self.projection_generation = self.projection_generation.wrapping_add(1);
-        if refresh_order {
-            self.order_generation = self.order_generation.wrapping_add(1);
-            self.order_valid = true;
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ProjectedOrderSource {
-    Cpu,
-    Gpu,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-struct ProjectedCacheKey {
-    order_source: ProjectedOrderSource,
-    order_generation: u64,
-    camera: Camera,
-    width: u32,
-    height: u32,
-    draw_count_guard: u32,
-    draw_execution: ProjectedDrawExecution,
-    probe_generation: u64,
-}
-
-#[derive(Default)]
-struct ProjectedCacheState {
-    key: Option<ProjectedCacheKey>,
-    order_generation: u64,
-    projection_generation: u64,
-}
-
-impl ProjectedCacheState {
-    fn invalidate_order_if(&mut self, order_refreshed: bool) {
-        if order_refreshed {
-            self.key = None;
-            self.order_generation = self.order_generation.wrapping_add(1);
-        }
-    }
-
-    const fn order_generation(&self) -> u64 {
-        self.order_generation
-    }
-
-    fn needs_projection(&self, key: ProjectedCacheKey) -> bool {
-        self.key != Some(key)
-    }
-
-    fn publish(&mut self, key: ProjectedCacheKey) {
-        self.key = Some(key);
-        self.projection_generation = self.projection_generation.wrapping_add(1);
-    }
-
-    const fn projection_generation(&self) -> u64 {
-        self.projection_generation
-    }
-}
-
-/// Browser WebGPU may lazily initialize the first large packed GPU-order
-/// pipeline. The preparation submission is deliberately not a frame: it
-/// acquires no surface and reserves no benchmark ticket. Once that submission
-/// has been queued, the same camera revision is retried as one ordinary,
-/// presented, measured frame. Native backends and direct geometry never need
-/// this extra turn.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct GpuOrderPreparationPlan {
-    pending: bool,
-    acquire_surface: bool,
-    reserve_measurement: bool,
-}
-
-const fn gpu_order_preparation_plan(
-    web: bool,
-    packed_geometry: bool,
-    refresh_order: bool,
-    already_prepared: bool,
-) -> GpuOrderPreparationPlan {
-    let pending = web && packed_geometry && refresh_order && !already_prepared;
-    GpuOrderPreparationPlan {
-        pending,
-        acquire_surface: !pending,
-        reserve_measurement: refresh_order && !pending,
-    }
-}
-
-/// Stops an ordinary GPU frame before telemetry reservation when the Surface
-/// supplies no drawable. A Web preparation turn intentionally has no drawable
-/// and therefore continues. In particular, a timed-out frame can never issue
-/// a ticket whose C/D readback came from an older projected cache.
-const fn unavailable_gpu_surface_submission(
-    preparation: GpuOrderPreparationPlan,
-    frame_available: bool,
-) -> Option<TelemetrySubmission> {
-    if preparation.acquire_surface && !frame_available {
-        return Some(if preparation.reserve_measurement {
-            TelemetrySubmission::SurfaceUnavailable
-        } else {
-            TelemetrySubmission::NotRequested
-        });
-    }
-    None
+    Direct(Box<DirectGpuSceneOrder>),
 }
 
 impl SurfaceGeometry {
     const fn path(&self) -> GeometryPath {
         match self {
             Self::Direct(_) => GeometryPath::SortedIndexDirect,
-            Self::Packed(_) => GeometryPath::PackedAtlas,
             Self::Paged(_) => GeometryPath::PagedActiveAtlas,
         }
     }
@@ -332,18 +153,9 @@ impl SurfaceGeometry {
     fn addressable_splat_count(&self) -> usize {
         match self {
             Self::Direct(direct) => direct.capacity,
-            Self::Packed(packed) => packed.resident.capacity,
             Self::Paged(paged) => paged.active_set.atlas.resources.capacity,
         }
     }
-}
-
-fn resident_pipelines_unavailable(storage_bindings: u32) -> SurfacePresenterError {
-    resident_gpu::ResidentGpuError::StorageBindingCountUnsupported(storage_bindings).into()
-}
-
-fn supports_resident_pipeline_layout(limits: &wgpu::Limits) -> bool {
-    limits.max_storage_buffers_per_shader_stage >= resident_gpu::RESIDENT_COLOR_STORAGE_BINDINGS
 }
 
 fn supports_direct_gpu_order(downlevel: &wgpu::DownlevelCapabilities) -> bool {
@@ -359,111 +171,16 @@ fn classify_surface_gpu_order_scope_errors(
     validation: Option<String>,
 ) -> Option<SurfacePresenterError> {
     match path {
-        GeometryPath::PackedAtlas => out_of_memory
-            .map(resident_gpu::ResidentGpuError::GpuOrderOutOfMemory)
-            .or_else(|| internal.map(resident_gpu::ResidentGpuError::GpuOrderInternal))
-            .or_else(|| validation.map(resident_gpu::ResidentGpuError::GpuOrderValidation))
-            .map(SurfacePresenterError::from),
         GeometryPath::SortedIndexDirect => out_of_memory
             .map(|error| format!("out of memory: {error}"))
             .or_else(|| internal.map(|error| format!("internal: {error}")))
             .or_else(|| validation.map(|error| format!("validation: {error}")))
             .map(DirectSceneError::GpuOrderInitialization)
             .map(SurfacePresenterError::from),
-        GeometryPath::PagedActiveAtlas => Some(SurfacePresenterError::GpuOrderUnsupported),
+        GeometryPath::PackedAtlas | GeometryPath::PagedActiveAtlas => {
+            Some(SurfacePresenterError::GpuOrderUnsupported)
+        }
     }
-}
-
-fn classify_surface_geometry_scope_errors(
-    path: GeometryPath,
-    internal: Option<String>,
-    out_of_memory: Option<String>,
-    validation: Option<String>,
-) -> Option<SurfacePresenterError> {
-    out_of_memory
-        .map(|message| SurfacePresenterError::SurfaceGeometryOutOfMemory { path, message })
-        .or_else(|| {
-            internal.map(|message| SurfacePresenterError::SurfaceGeometryInternal { path, message })
-        })
-        .or_else(|| {
-            validation
-                .map(|message| SurfacePresenterError::SurfaceGeometryValidation { path, message })
-        })
-}
-
-/// Resolves the independently scoped Compact candidate. Initial construction
-/// and Candidate/Adaptive geometry switches use best-effort admission;
-/// forced Compact switches make the exact same graph a required part of the
-/// unpublished transaction.
-fn resolve_projected_compaction_candidate<T>(
-    candidate: Result<Option<T>, resident_gpu::ResidentGpuError>,
-    internal: Option<String>,
-    out_of_memory: Option<String>,
-    validation: Option<String>,
-    required: bool,
-) -> Result<Option<T>, SurfacePresenterError> {
-    if let Some(error) = classify_surface_geometry_scope_errors(
-        GeometryPath::PackedAtlas,
-        internal,
-        out_of_memory,
-        validation,
-    ) {
-        return if required { Err(error) } else { Ok(None) };
-    }
-    match candidate {
-        Ok(Some(candidate)) => Ok(Some(candidate)),
-        Ok(None) if required => Err(SurfacePresenterError::ProjectedCompactionUnsupported),
-        Ok(None) => Ok(None),
-        Err(error) if required => Err(error.into()),
-        Err(_) => Ok(None),
-    }
-}
-
-async fn prepare_optional_projected_compaction(
-    device: &wgpu::Device,
-    surface_format: wgpu::TextureFormat,
-    indirect_execution_supported: bool,
-    geometry: &mut SurfaceGeometry,
-    required: bool,
-) -> Result<(), SurfacePresenterError> {
-    if !matches!(geometry, SurfaceGeometry::Packed(_)) {
-        return Ok(());
-    }
-    if !indirect_execution_supported {
-        return if required {
-            Err(SurfacePresenterError::ProjectedCompactionUnsupported)
-        } else {
-            Ok(())
-        };
-    }
-
-    let (validation_scope, oom_scope, internal_scope) = (
-        device.push_error_scope(wgpu::ErrorFilter::Validation),
-        device.push_error_scope(wgpu::ErrorFilter::OutOfMemory),
-        device.push_error_scope(wgpu::ErrorFilter::Internal),
-    );
-    let candidate = match geometry {
-        SurfaceGeometry::Packed(packed) => packed
-            .projected
-            .create_contributor_compaction_candidate(device, surface_format, &packed.resident),
-        SurfaceGeometry::Direct(_) | SurfaceGeometry::Paged(_) => unreachable!("checked above"),
-    };
-    let internal_error = internal_scope.pop().await.map(|error| error.to_string());
-    let oom_error = oom_scope.pop().await.map(|error| error.to_string());
-    let validation_error = validation_scope.pop().await.map(|error| error.to_string());
-    if let Some(candidate) = resolve_projected_compaction_candidate(
-        candidate,
-        internal_error,
-        oom_error,
-        validation_error,
-        required,
-    )? {
-        let SurfaceGeometry::Packed(packed) = geometry else {
-            unreachable!("geometry cannot change while optional resources are validated")
-        };
-        packed.projected.publish_contributor_compaction(candidate);
-    }
-    Ok(())
 }
 
 /// Device-local dependencies shared by every geometry-path constructor.
@@ -472,12 +189,7 @@ async fn prepare_optional_projected_compaction(
 struct GeometryResourceContext<'a> {
     device: &'a wgpu::Device,
     direct_bind_group_layout: &'a wgpu::BindGroupLayout,
-    packed_bind_group_layout: &'a wgpu::BindGroupLayout,
-    resident_draw_bind_group_layout: Option<&'a wgpu::BindGroupLayout>,
-    resident_color_bind_group_layout: Option<&'a wgpu::BindGroupLayout>,
-    surface_format: wgpu::TextureFormat,
-    width: u32,
-    height: u32,
+    paged_bind_group_layout: &'a wgpu::BindGroupLayout,
 }
 
 fn create_geometry_resources(
@@ -488,12 +200,7 @@ fn create_geometry_resources(
     let GeometryResourceContext {
         device,
         direct_bind_group_layout,
-        packed_bind_group_layout,
-        resident_draw_bind_group_layout,
-        resident_color_bind_group_layout,
-        surface_format,
-        width: _width,
-        height: _height,
+        paged_bind_group_layout,
     } = context;
     match path {
         GeometryPath::SortedIndexDirect => {
@@ -522,43 +229,7 @@ fn create_geometry_resources(
             Ok(SurfaceGeometry::Direct(Box::new(direct_scene)))
         }
         GeometryPath::PackedAtlas => {
-            let resident_draw_bind_group_layout =
-                resident_draw_bind_group_layout.ok_or_else(|| {
-                    resident_gpu::ResidentGpuError::StorageBindingCountUnsupported(
-                        device.limits().max_storage_buffers_per_shader_stage,
-                    )
-                })?;
-            let resident_color_bind_group_layout =
-                resident_color_bind_group_layout.ok_or_else(|| {
-                    resident_gpu::ResidentGpuError::StorageBindingCountUnsupported(
-                        device.limits().max_storage_buffers_per_shader_stage,
-                    )
-                })?;
-            let resident_scene = renderer.resident_scene().ok_or_else(|| {
-                if renderer.has_scene() {
-                    SurfacePresenterError::GeometrySourceUnavailable { path }
-                } else {
-                    SurfacePresenterError::SceneNotLoaded
-                }
-            })?;
-            let resident = resident_gpu::ResidentGpuResources::new(
-                device,
-                resident_draw_bind_group_layout,
-                resident_color_bind_group_layout,
-                resident_scene,
-            )?;
-            let projected = ProjectedQuadsGpu::new(device, surface_format, &resident)?;
-            let raster_plan = SurfaceRasterExecutionPlan::ProjectedQuadsExact;
-            Ok(SurfaceGeometry::Packed(Box::new(SurfacePackedRuntime {
-                resident,
-                projected,
-                projected_cache: ProjectedCacheState::default(),
-                preproject: None,
-                preproject_state: PreprojectProducerState::default(),
-                raster_plan,
-                #[cfg(target_arch = "wasm32")]
-                gpu_order_warmed: false,
-            })))
+            Err(SurfacePresenterError::StandalonePackedPresenterUnsupported)
         }
         GeometryPath::PagedActiveAtlas => {
             let scene = renderer.scene().ok_or_else(|| {
@@ -573,7 +244,7 @@ fn create_geometry_resources(
                 .clone()
                 .ok_or(SurfacePresenterError::SceneNotLoaded)?;
             let paged_scene =
-                SurfacePagedRuntime::new(device, packed_bind_group_layout, scene, pages)?;
+                SurfacePagedRuntime::new(device, paged_bind_group_layout, scene, pages)?;
             Ok(SurfaceGeometry::Paged(Box::new(paged_scene)))
         }
     }
@@ -709,15 +380,7 @@ fn surface_required_device_limits(
         .max_storage_buffer_binding_size
         .max(required_storage_binding_size);
     required_limits.max_buffer_size = required_limits.max_buffer_size.max(required_storage_bytes);
-    if resource_plan.geometry_path == GeometryPath::PackedAtlas
-        || (resource_plan.geometry_path == GeometryPath::SortedIndexDirect
-            && adapter_limits.max_storage_buffers_per_shader_stage
-                >= resident_gpu::RESIDENT_COLOR_STORAGE_BINDINGS)
-    {
-        // Preserve the historical Direct device-limit request when the adapter
-        // already exposes Packed's binding-count capability. A live transition
-        // entering or leaving Packed is unsupported before resource preparation
-        // or state mutation. Lower-capability Direct devices still construct.
+    if resource_plan.geometry_path == GeometryPath::PackedAtlas {
         required_limits.max_storage_buffers_per_shader_stage = required_limits
             .max_storage_buffers_per_shader_stage
             .max(resident_gpu::RESIDENT_COLOR_STORAGE_BINDINGS);
@@ -1223,9 +886,7 @@ impl SurfacePresenter {
         renderer: &Renderer,
     ) -> Result<Self, SurfacePresenterError> {
         let geometry_path = renderer.geometry_path();
-        let (surface_width, surface_height) = host.surface_size();
         let format = host.surface_configuration.format();
-        let indirect_execution_supported = host.indirect_execution_supported;
         let timestamp_queries_enabled = host.timestamp_queries_enabled;
         let device = &host.device;
         let queue = &host.queue;
@@ -1241,48 +902,20 @@ impl SurfacePresenter {
         );
         let direct_bind_group_layout = create_direct_bind_group_layout(device);
         let direct_pipeline = create_direct_pipeline(device, &direct_bind_group_layout, format);
-        let packed_bind_group_layout = packed_gpu::create_packed_bind_group_layout(device);
-        let packed_pipeline =
-            packed_gpu::create_packed_pipeline(device, &packed_bind_group_layout, format);
-        let (
-            resident_draw_bind_group_layout,
-            resident_draw_pipeline,
-            resident_color_bind_group_layout,
-            resident_color_pipeline,
-        ) = if supports_resident_pipeline_layout(&device.limits()) {
-            let draw_layout = resident_gpu::create_resident_draw_bind_group_layout(device);
-            let draw_pipeline =
-                resident_gpu::create_resident_draw_pipeline(device, &draw_layout, format);
-            let color_layout = resident_gpu::create_resident_color_bind_group_layout(device);
-            let color_pipeline =
-                resident_gpu::create_resident_color_pipeline(device, &color_layout);
-            (
-                Some(draw_layout),
-                Some(draw_pipeline),
-                Some(color_layout),
-                Some(color_pipeline),
-            )
-        } else {
-            (None, None, None, None)
-        };
+        let paged_bind_group_layout = packed_gpu::create_packed_bind_group_layout(device);
+        let paged_pipeline =
+            packed_gpu::create_packed_pipeline(device, &paged_bind_group_layout, format);
         let geometry_result = create_geometry_resources(
             GeometryResourceContext {
                 device,
                 direct_bind_group_layout: &direct_bind_group_layout,
-                packed_bind_group_layout: &packed_bind_group_layout,
-                resident_draw_bind_group_layout: resident_draw_bind_group_layout.as_ref(),
-                resident_color_bind_group_layout: resident_color_bind_group_layout.as_ref(),
-                surface_format: format,
-                width: surface_width,
-                height: surface_height,
+                paged_bind_group_layout: &paged_bind_group_layout,
             },
             geometry_path,
             renderer,
         );
         let gpu_order_telemetry = GpuOrderTelemetry::new(device, queue, timestamp_queries_enabled);
-        let cpu_order_completion_telemetry = CpuOrderCompletionTelemetry::new(device);
-        let projected_draw_telemetry = ProjectedDrawTelemetry::new(device);
-        let gpu_producer_telemetry = GpuProducerTelemetry::new(device);
+        let cpu_order_completion_telemetry = CpuOrderCompletionTelemetry::default();
         let internal_error = internal_scope.pop().await;
         let oom_error = oom_scope.pop().await;
         let validation_error = validation_scope.pop().await;
@@ -1294,44 +927,19 @@ impl SurfacePresenter {
                 "surface geometry resource creation failed: {error}"
             )));
         }
-        let mut geometry = geometry_result?;
-        // Compact is an optional performance graph. Validate it only after the
-        // mandatory Candidate geometry is known-good, and publish it only on
-        // complete success so an OOM/validation failure cannot reject Packed.
-        prepare_optional_projected_compaction(
-            device,
-            format,
-            indirect_execution_supported,
-            &mut geometry,
-            false,
-        )
-        .await?;
+        let geometry = geometry_result?;
         host.addressable_splat_count = geometry.addressable_splat_count();
 
         Ok(Self {
             host,
             direct_pipeline,
             direct_bind_group_layout,
-            packed_pipeline,
-            packed_bind_group_layout,
-            resident_draw_pipeline,
-            resident_draw_bind_group_layout,
-            resident_color_pipeline,
-            resident_color_bind_group_layout,
+            paged_pipeline,
+            paged_bind_group_layout,
             instance_count: 0,
             geometry,
             gpu_order_telemetry,
             cpu_order_completion_telemetry,
-            projected_draw_telemetry,
-            gpu_producer_telemetry,
-            gpu_order_producer: SurfaceGpuOrderProducer::PostSort,
-            gpu_producer_measurement_enabled: false,
-            last_gpu_producer_submission: TelemetrySubmission::NotRequested,
-            last_actual_gpu_order_producer: None,
-            projected_draw_execution: ProjectedDrawExecution::Compact,
-            projected_probe_generation: 0,
-            projected_draw_sample_request: None,
-            last_projected_draw_submission: TelemetrySubmission::NotRequested,
         })
     }
 
@@ -1357,22 +965,15 @@ impl SurfacePresenter {
         #[cfg(not(target_arch = "wasm32"))]
         {
             self.host.commit_native_resize(width, height);
-            if let SurfaceGeometry::Packed(packed) = &mut self.geometry {
-                packed.preproject_state.invalidate_order();
-            }
             self.gpu_order_telemetry.invalidate_generation();
             self.cpu_order_completion_telemetry.invalidate_generation();
-            self.projected_draw_telemetry.invalidate_generation();
-            self.gpu_producer_telemetry.invalidate_generation();
             Ok(())
         }
     }
 
-    /// Transactionally reconfigures the browser Surface for the production
-    /// Packed + Projected path. The published size remains unchanged until all
-    /// WebGPU error scopes complete. A failed attempt reconfigures the old
-    /// descriptor; if that rollback also fails, presentation becomes
-    /// fail-closed until a later successful transactional resize.
+    /// The standalone browser presenter retains its historical fail-closed
+    /// resize boundary. Product Packed resizing is owned by
+    /// [`crate::SurfaceRenderSession::from_canvas`] and its host transaction.
     #[cfg(target_arch = "wasm32")]
     pub async fn resize_async(
         &mut self,
@@ -1382,62 +983,11 @@ impl SurfacePresenter {
         self.host
             .surface_configuration
             .validate_size(width, height)?;
-        if !matches!(
-            &self.geometry,
-            SurfaceGeometry::Packed(packed)
-                if packed.raster_plan == SurfaceRasterExecutionPlan::ProjectedQuadsExact
-        ) {
-            return Err(SurfacePresenterError::SurfaceResizeUnsupported);
-        }
-        if !self
-            .host
-            .surface_configuration
-            .resize_required(width, height)
-        {
-            return Ok(());
-        }
-        self.host.resize_async(width, height).await?;
-        if let SurfaceGeometry::Packed(packed) = &mut self.geometry {
-            packed.projected_cache.key = None;
-            packed.preproject_state.invalidate_order();
-        }
-        self.gpu_order_telemetry.invalidate_generation();
-        self.cpu_order_completion_telemetry.invalidate_generation();
-        self.projected_draw_telemetry.invalidate_generation();
-        self.gpu_producer_telemetry.invalidate_generation();
-        Ok(())
+        Err(SurfacePresenterError::SurfaceResizeUnsupported)
     }
 
     pub const fn surface_size(&self) -> (u32, u32) {
         self.host.surface_configuration.size()
-    }
-
-    /// Clones the presenter's existing device/queue handles for one Exact
-    /// runtime candidate. The handles retain the same underlying WGPU owner;
-    /// no adapter, device, queue or Surface is created by the cutover.
-    pub(crate) fn exact_runtime_context(
-        &self,
-    ) -> (
-        std::sync::Arc<wgpu::Device>,
-        std::sync::Arc<wgpu::Queue>,
-        wgpu::TextureFormat,
-        bool,
-    ) {
-        self.host.exact_runtime_context()
-    }
-
-    /// Borrows only the presenter's Surface transaction leaves. Scene,
-    /// PlanSet, controller, generations, ordering and raster semantics stay
-    /// inside the renderer-owned Exact runtime passed by the session.
-    pub(crate) fn render_exact_frame(
-        &mut self,
-        runtime: &mut crate::renderer::PreparedRuntimeSlot,
-        camera: &Camera,
-        force_cpu_order_refresh: bool,
-        host_frame_started: TimerInstant,
-    ) -> Result<Option<SurfaceExactFrameResult>, crate::surface::shadow::SurfaceExactError> {
-        self.host
-            .render_exact_frame(runtime, camera, force_cpu_order_refresh, host_frame_started)
     }
 
     /// Arms a one-shot exact framebuffer readback for the next presented
@@ -1500,8 +1050,6 @@ impl SurfacePresenter {
         }
         self.gpu_order_telemetry.invalidate_generation();
         self.cpu_order_completion_telemetry.invalidate_generation();
-        self.projected_draw_telemetry.invalidate_generation();
-        self.gpu_producer_telemetry.invalidate_generation();
     }
 
     pub const fn geometry_path(&self) -> GeometryPath {
@@ -1519,210 +1067,24 @@ impl SurfacePresenter {
         self.host.surface_lifecycle.last_presented_size()
     }
 
-    /// Current raster execution plan. Packed defaults to exact preprojected
-    /// hardware quads; Direct and Paged retain their global-quad implementation.
+    /// Direct and diagnostic Paged standalone presenters use global quads.
+    /// Product Packed raster identity is reported by `SurfaceRenderSession`.
     pub const fn raster_execution_plan(&self) -> SurfaceRasterExecutionPlan {
-        match &self.geometry {
-            SurfaceGeometry::Packed(packed) => packed.raster_plan,
-            SurfaceGeometry::Direct(_) | SurfaceGeometry::Paged(_) => {
-                SurfaceRasterExecutionPlan::GlobalQuads
-            }
-        }
+        SurfaceRasterExecutionPlan::GlobalQuads
     }
 
-    pub(crate) fn projected_contributor_indirect_draw_enabled(&self) -> bool {
-        matches!(
-            &self.geometry,
-            SurfaceGeometry::Packed(packed)
-                if packed.raster_plan == SurfaceRasterExecutionPlan::ProjectedQuadsExact
-                    && packed.projected.resolve_draw_execution(ProjectedDrawExecution::Compact)
-                        == ProjectedDrawExecution::Compact
-        )
-    }
-
-    pub(crate) fn set_projected_draw_execution(
-        &mut self,
-        execution: ProjectedDrawExecution,
-        force_projection: bool,
-        sample_request: Option<ProjectedDrawSampleRequest>,
-    ) {
-        self.projected_draw_execution = execution;
-        self.projected_draw_sample_request = sample_request;
-        if force_projection {
-            self.projected_probe_generation = self.projected_probe_generation.wrapping_add(1);
-        }
-    }
-
-    pub(crate) fn resolved_projected_draw_execution(&self) -> ProjectedDrawExecution {
-        match &self.geometry {
-            SurfaceGeometry::Packed(packed)
-                if packed.raster_plan == SurfaceRasterExecutionPlan::ProjectedQuadsExact =>
-            {
-                packed
-                    .projected
-                    .resolve_draw_execution(self.projected_draw_execution)
-            }
-            SurfaceGeometry::Direct(_) | SurfaceGeometry::Packed(_) | SurfaceGeometry::Paged(_) => {
-                ProjectedDrawExecution::Candidate
-            }
-        }
-    }
-
-    pub(crate) const fn gpu_order_producer(&self) -> SurfaceGpuOrderProducer {
-        self.gpu_order_producer
-    }
-
-    pub(crate) fn invalidate_gpu_order_producer_prefix(&mut self) {
-        if let SurfaceGeometry::Packed(packed) = &mut self.geometry {
-            packed.preproject_state.invalidate_order();
-        }
-    }
-
-    pub(crate) fn set_gpu_producer_measurement_enabled(&mut self, enabled: bool) {
-        if self.gpu_producer_measurement_enabled == enabled {
-            return;
-        }
-        self.gpu_producer_measurement_enabled = enabled;
-        self.gpu_producer_telemetry.invalidate_generation();
-        self.last_gpu_producer_submission = TelemetrySubmission::NotRequested;
-    }
-
-    fn preproject_graph_is_prepared(&self) -> bool {
-        matches!(
-            &self.geometry,
-            SurfaceGeometry::Packed(packed) if packed.preproject.is_some()
-        )
-    }
-
-    fn validate_preproject_producer_context(&self) -> Result<(), SurfacePresenterError> {
-        if !self.host.indirect_execution_supported
-            || !matches!(
-                &self.geometry,
-                SurfaceGeometry::Packed(packed)
-                    if packed.raster_plan == SurfaceRasterExecutionPlan::ProjectedQuadsExact
-                        && packed.projected.resolve_draw_execution(ProjectedDrawExecution::Compact)
-                            == ProjectedDrawExecution::Compact
-            )
-        {
-            return Err(SurfacePresenterError::PreprojectProducerIncompatible);
-        }
-        Ok(())
-    }
-
-    fn create_preproject_candidate(
-        &self,
-    ) -> Result<PreparedSurfaceGpuProducer, SurfacePresenterError> {
-        self.validate_preproject_producer_context()?;
-        let SurfaceGeometry::Packed(packed) = &self.geometry else {
-            unreachable!("preproject context validation requires Packed")
-        };
-        if packed.preproject.is_some() {
-            return Ok(PreparedSurfaceGpuProducer::AlreadyPrepared);
-        }
-        Ok(PreparedSurfaceGpuProducer::Preproject(Box::new(
-            PreprojectedGpuOrder::new(
-                &self.host.device,
-                self.host.surface_configuration.format(),
-                &packed.resident,
-            )?,
-        )))
-    }
-
-    fn publish_preproject_candidate(&mut self, prepared: PreparedSurfaceGpuProducer) {
-        match prepared {
-            PreparedSurfaceGpuProducer::AlreadyPrepared => {}
-            PreparedSurfaceGpuProducer::Preproject(candidate) => {
-                let SurfaceGeometry::Packed(packed) = &mut self.geometry else {
-                    unreachable!("preproject candidate must publish into Packed")
-                };
-                debug_assert!(packed.preproject.is_none());
-                packed.preproject = Some(*candidate);
-                packed.preproject_state.invalidate_order();
-            }
-        }
-    }
-
-    /// Builds and publishes the complete dormant preproject graph only after
-    /// validation/OOM/internal scopes have completed. It does not change the
-    /// selected producer or frame state.
+    /// Standalone Direct supports only the PostSort producer identity.
+    /// Product Packed producer preparation is renderer-owned.
     pub async fn prepare_gpu_order_producer(
         &mut self,
         producer: SurfaceGpuOrderProducer,
     ) -> Result<(), SurfacePresenterError> {
-        if producer == SurfaceGpuOrderProducer::PostSort {
-            return self.prepare_post_sort_gpu_order().await;
-        }
-        self.validate_preproject_producer_context()?;
-        if self.preproject_graph_is_prepared() {
-            return Ok(());
-        }
-
-        let (validation_scope, oom_scope, internal_scope) = (
-            self.host
-                .device
-                .push_error_scope(wgpu::ErrorFilter::Validation),
-            self.host
-                .device
-                .push_error_scope(wgpu::ErrorFilter::OutOfMemory),
-            self.host
-                .device
-                .push_error_scope(wgpu::ErrorFilter::Internal),
-        );
-        let prepared = self.create_preproject_candidate();
-        let internal_error = internal_scope.pop().await;
-        let oom_error = oom_scope.pop().await;
-        let validation_error = validation_scope.pop().await;
-        if let Some(error) = classify_surface_gpu_order_scope_errors(
-            GeometryPath::PackedAtlas,
-            internal_error.map(|error| error.to_string()),
-            oom_error.map(|error| error.to_string()),
-            validation_error.map(|error| error.to_string()),
-        ) {
-            return Err(error);
-        }
-        self.publish_preproject_candidate(prepared?);
-        Ok(())
-    }
-
-    /// Selects a completely prepared Packed GPU producer. Native callers may
-    /// synchronously prepare the dormant graph; browser callers must await
-    /// [`Self::prepare_gpu_order_producer`] first.
-    pub(crate) fn set_gpu_order_producer(
-        &mut self,
-        producer: SurfaceGpuOrderProducer,
-    ) -> Result<(), SurfacePresenterError> {
-        if self.gpu_order_producer == producer {
-            return Ok(());
-        }
-        if producer == SurfaceGpuOrderProducer::Preproject {
-            self.validate_preproject_producer_context()?;
-            if !self.preproject_graph_is_prepared() {
-                #[cfg(target_arch = "wasm32")]
-                return Err(SurfacePresenterError::GpuProducerPreparationRequired);
-                #[cfg(not(target_arch = "wasm32"))]
-                pollster::block_on(self.prepare_gpu_order_producer(producer))?;
+        match producer {
+            SurfaceGpuOrderProducer::PostSort => self.prepare_post_sort_gpu_order().await,
+            SurfaceGpuOrderProducer::Preproject => {
+                Err(SurfacePresenterError::PreprojectProducerIncompatible)
             }
-        } else if !self.post_sort_gpu_order_is_prepared() {
-            #[cfg(target_arch = "wasm32")]
-            return Err(SurfacePresenterError::GpuOrderPreparationRequired);
-            #[cfg(not(target_arch = "wasm32"))]
-            pollster::block_on(self.prepare_post_sort_gpu_order())?;
         }
-        self.gpu_order_producer = producer;
-        if let SurfaceGeometry::Packed(packed) = &mut self.geometry {
-            packed.preproject_state.invalidate_order();
-            packed.projected_cache.key = None;
-        }
-        // Producer workloads and count buffers are different generations.
-        // Old projected tickets become terminal invalidations and can never
-        // be mistaken for a preproject completion.
-        self.gpu_order_telemetry.invalidate_generation();
-        self.projected_draw_telemetry.invalidate_generation();
-        self.gpu_producer_telemetry.invalidate_generation();
-        self.last_projected_draw_submission = TelemetrySubmission::NotRequested;
-        self.last_gpu_producer_submission = TelemetrySubmission::NotRequested;
-        self.last_actual_gpu_order_producer = None;
-        Ok(())
     }
 
     /// Force an A/B raster plan without changing CPU/GPU ordering policy.
@@ -1732,31 +1094,10 @@ impl SurfacePresenter {
         &mut self,
         plan: SurfaceRasterExecutionPlan,
     ) -> Result<(), SurfacePresenterError> {
-        if self.gpu_order_producer == SurfaceGpuOrderProducer::Preproject
-            && plan != SurfaceRasterExecutionPlan::ProjectedQuadsExact
-        {
-            return Err(SurfacePresenterError::PreprojectProducerIncompatible);
-        }
-        match &mut self.geometry {
-            SurfaceGeometry::Packed(packed) => {
-                if packed.raster_plan == plan {
-                    return Ok(());
-                }
-                packed.raster_plan = plan;
-                self.gpu_order_telemetry.invalidate_generation();
-                self.cpu_order_completion_telemetry.invalidate_generation();
-                self.projected_draw_telemetry.invalidate_generation();
-                self.gpu_producer_telemetry.invalidate_generation();
-                Ok(())
-            }
-            SurfaceGeometry::Direct(_) | SurfaceGeometry::Paged(_)
-                if plan == SurfaceRasterExecutionPlan::GlobalQuads =>
-            {
-                Ok(())
-            }
-            SurfaceGeometry::Direct(_) | SurfaceGeometry::Paged(_) => {
-                Err(SurfacePresenterError::GpuOrderUnsupported)
-            }
+        if plan == SurfaceRasterExecutionPlan::GlobalQuads {
+            Ok(())
+        } else {
+            Err(SurfacePresenterError::GpuOrderUnsupported)
         }
     }
 
@@ -1783,13 +1124,8 @@ impl SurfacePresenter {
         if cfg!(target_arch = "wasm32") {
             return Err(SurfacePresenterError::SurfaceGeometrySwitchUnsupported);
         }
-        if current == GeometryPath::PackedAtlas || path == GeometryPath::PackedAtlas {
+        if path == GeometryPath::PackedAtlas {
             return Err(SurfacePresenterError::SurfaceGeometrySwitchUnsupported);
-        }
-        if self.gpu_order_producer == SurfaceGpuOrderProducer::Preproject
-            && path != GeometryPath::PackedAtlas
-        {
-            return Err(SurfacePresenterError::PreprojectProducerIncompatible);
         }
 
         try_prepare_then_commit(
@@ -1800,8 +1136,6 @@ impl SurfacePresenter {
                 presenter.geometry = geometry;
                 presenter.instance_count = 0;
                 presenter.gpu_order_telemetry.invalidate_generation();
-                presenter.projected_draw_telemetry.invalidate_generation();
-                presenter.gpu_producer_telemetry.invalidate_generation();
                 presenter
                     .cpu_order_completion_telemetry
                     .invalidate_generation();
@@ -1814,34 +1148,15 @@ impl SurfacePresenter {
         path: GeometryPath,
         renderer: &Renderer,
     ) -> Result<SurfaceGeometry, SurfacePresenterError> {
-        let mut geometry = create_geometry_resources(
+        create_geometry_resources(
             GeometryResourceContext {
                 device: &self.host.device,
                 direct_bind_group_layout: &self.direct_bind_group_layout,
-                packed_bind_group_layout: &self.packed_bind_group_layout,
-                resident_draw_bind_group_layout: self.resident_draw_bind_group_layout.as_ref(),
-                resident_color_bind_group_layout: self.resident_color_bind_group_layout.as_ref(),
-                surface_format: self.host.surface_configuration.format(),
-                width: self.host.surface_configuration.size().0,
-                height: self.host.surface_configuration.size().1,
+                paged_bind_group_layout: &self.paged_bind_group_layout,
             },
             path,
             renderer,
-        )?;
-        // Native event loops expose this historical synchronous A/B switch.
-        // Its capability and size gates run before construction. Web geometry
-        // is constructor-only and never reaches this runtime preparation path.
-        if self.host.indirect_execution_supported
-            && let SurfaceGeometry::Packed(packed) = &mut geometry
-            && let Some(candidate) = packed.projected.create_contributor_compaction_candidate(
-                &self.host.device,
-                self.host.surface_configuration.format(),
-                &packed.resident,
-            )?
-        {
-            packed.projected.publish_contributor_compaction(candidate);
-        }
-        Ok(geometry)
+        )
     }
 
     pub fn render_sorted_indices(
@@ -1863,13 +1178,12 @@ impl SurfacePresenter {
                 self.host.surface_configuration.size().0,
                 self.host.surface_configuration.size().1,
             )?,
-            SurfaceGeometry::Direct(_) | SurfaceGeometry::Packed(_) => unreachable!(),
+            SurfaceGeometry::Direct(_) => unreachable!(),
         };
         self.present_geometry(camera)
     }
 
-    /// Draw Direct or Packed CPU order without requiring the wide source
-    /// buffers that production Packed loading deliberately releases.
+    /// Draw standalone Direct CPU order.
     pub(crate) fn render_cpu_sorted_indices(
         &mut self,
         sorted_indices: &[u32],
@@ -1897,21 +1211,6 @@ impl SurfacePresenter {
                 self.host.surface_configuration.size().1,
                 refresh_indices,
             )?,
-            SurfaceGeometry::Packed(packed) => {
-                let instance_count = packed.resident.prepare_cpu_order(
-                    &self.host.queue,
-                    sorted_indices,
-                    camera,
-                    self.host.surface_configuration.size().0,
-                    self.host.surface_configuration.size().1,
-                    refresh_indices,
-                )?;
-                // The rank-indexed projection cache is valid only for the
-                // exact order that populated it. Camera/viewport/backend/count
-                // changes are covered by the cache key at draw time.
-                packed.projected_cache.invalidate_order_if(refresh_indices);
-                instance_count
-            }
             SurfaceGeometry::Paged(_) => {
                 return Err(SurfacePresenterError::PagedAtlasUnsupported);
             }
@@ -1924,19 +1223,12 @@ impl SurfacePresenter {
     }
 
     fn gpu_order_is_prepared(&self) -> bool {
-        match self.gpu_order_producer {
-            SurfaceGpuOrderProducer::PostSort => self.post_sort_gpu_order_is_prepared(),
-            SurfaceGpuOrderProducer::Preproject => self.preproject_graph_is_prepared(),
-        }
+        self.post_sort_gpu_order_is_prepared()
     }
 
     fn geometry_gpu_order_is_prepared(geometry: &SurfaceGeometry) -> bool {
         match geometry {
             SurfaceGeometry::Direct(direct) => direct.gpu_order().is_some(),
-            SurfaceGeometry::Packed(packed) => {
-                packed.resident.gpu_order().is_some()
-                    && packed.projected.gpu_order_bind_group_is_prepared()
-            }
             SurfaceGeometry::Paged(_) => false,
         }
     }
@@ -1949,51 +1241,17 @@ impl SurfacePresenter {
         &self,
         geometry: &SurfaceGeometry,
     ) -> Result<PreparedSurfaceGpuOrder, SurfacePresenterError> {
-        let resident_draw_layout = self.resident_draw_bind_group_layout.as_ref();
-        let storage_bindings = self
-            .host
-            .device
-            .limits()
-            .max_storage_buffers_per_shader_stage;
         match geometry {
             SurfaceGeometry::Direct(direct) => {
                 if direct.gpu_order().is_some() {
                     return Ok(PreparedSurfaceGpuOrder::AlreadyPrepared);
                 }
-                Ok(PreparedSurfaceGpuOrder::Direct(
+                Ok(PreparedSurfaceGpuOrder::Direct(Box::new(
                     direct.create_gpu_order_candidate(
                         &self.host.device,
                         &self.direct_bind_group_layout,
                     )?,
-                ))
-            }
-            SurfaceGeometry::Packed(packed) => {
-                let order_prepared = packed.resident.gpu_order().is_some();
-                let projected_prepared = packed.projected.gpu_order_bind_group_is_prepared();
-                if order_prepared && projected_prepared {
-                    return Ok(PreparedSurfaceGpuOrder::AlreadyPrepared);
-                }
-                if order_prepared != projected_prepared {
-                    return Err(resident_gpu::ResidentGpuError::GpuOrderInternal(
-                        "GPU-order resources were only partially published".into(),
-                    )
-                    .into());
-                }
-                let layout = resident_draw_layout
-                    .ok_or_else(|| resident_pipelines_unavailable(storage_bindings))?;
-                let order = packed
-                    .resident
-                    .create_gpu_order_candidate(&self.host.device, layout)?;
-                let projected_bind_group = packed.projected.create_gpu_order_bind_group_candidate(
-                    &self.host.device,
-                    &packed.resident,
-                    order.sorter.final_ids(),
-                    order.sorter.indirect_args(),
-                );
-                Ok(PreparedSurfaceGpuOrder::Packed {
-                    order,
-                    projected_bind_group,
-                })
+                )))
             }
             SurfaceGeometry::Paged(_) => Err(SurfacePresenterError::GpuOrderUnsupported),
         }
@@ -2010,21 +1268,7 @@ impl SurfacePresenter {
         match (geometry, prepared) {
             (_, PreparedSurfaceGpuOrder::AlreadyPrepared) => {}
             (SurfaceGeometry::Direct(direct), PreparedSurfaceGpuOrder::Direct(order)) => {
-                direct.publish_gpu_order(order);
-            }
-            (
-                SurfaceGeometry::Packed(packed),
-                PreparedSurfaceGpuOrder::Packed {
-                    order,
-                    projected_bind_group,
-                },
-            ) => {
-                // Both assignments are infallible. Until this point neither
-                // candidate is reachable from the live presenter.
-                packed.resident.publish_gpu_order(order);
-                packed
-                    .projected
-                    .publish_gpu_order_bind_group(projected_bind_group);
+                direct.publish_gpu_order(*order);
             }
             _ => unreachable!("GPU-order candidate must match the live geometry path"),
         }
@@ -2066,17 +1310,9 @@ impl SurfacePresenter {
         Ok(())
     }
 
-    /// Pre-creates the selected GPU producer graph outside a measured or
-    /// presented frame. Browser callers must await this before selecting GPU
-    /// or Adaptive ordering.
+    /// Pre-creates standalone Direct GPU-order resources outside a frame.
     pub async fn prepare_gpu_order(&mut self) -> Result<(), SurfacePresenterError> {
-        match self.gpu_order_producer {
-            SurfaceGpuOrderProducer::PostSort => self.prepare_post_sort_gpu_order().await,
-            SurfaceGpuOrderProducer::Preproject => {
-                self.prepare_gpu_order_producer(SurfaceGpuOrderProducer::Preproject)
-                    .await
-            }
-        }
+        self.prepare_post_sort_gpu_order().await
     }
 
     /// Native selection remains synchronous. Web cannot block the browser
@@ -2109,27 +1345,6 @@ impl SurfacePresenter {
         completion_started: TimerInstant,
     ) -> Result<TelemetrySubmission, SurfacePresenterError> {
         self.host.surface_lifecycle.begin_frame();
-        let projected_sample_request = self.projected_draw_sample_request.take();
-        self.last_projected_draw_submission = TelemetrySubmission::NotRequested;
-        self.last_gpu_producer_submission = TelemetrySubmission::NotRequested;
-        self.last_actual_gpu_order_producer = None;
-        if self.gpu_order_producer == SurfaceGpuOrderProducer::Preproject {
-            if projected_sample_request.is_some() {
-                return Err(SurfacePresenterError::PreprojectProducerIncompatible);
-            }
-            return self.render_preproject_gpu_order(
-                camera,
-                refresh_order,
-                camera_revision,
-                completion_started,
-            );
-        }
-        let resident_draw_layout = self.resident_draw_bind_group_layout.as_ref();
-        let storage_bindings = self
-            .host
-            .device
-            .limits()
-            .max_storage_buffers_per_shader_stage;
         self.instance_count = match &mut self.geometry {
             SurfaceGeometry::Direct(direct) => direct.prepare_gpu(
                 &self.host.device,
@@ -2139,104 +1354,30 @@ impl SurfacePresenter {
                 self.host.surface_configuration.size().0,
                 self.host.surface_configuration.size().1,
             )?,
-            SurfaceGeometry::Packed(packed) => {
-                let count = u32::try_from(packed.resident.capacity)
-                    .map_err(|_| resident_gpu::ResidentGpuError::AddressSpaceExceeded)?;
-                packed.resident.prepare_gpu_order_draw(
-                    &self.host.device,
-                    resident_draw_layout
-                        .ok_or_else(|| resident_pipelines_unavailable(storage_bindings))?,
-                    &self.host.queue,
-                    resident_gpu::ResidentGpuOrderDraw {
-                        camera,
-                        width: self.host.surface_configuration.size().0,
-                        height: self.host.surface_configuration.size().1,
-                        instance_count: count,
-                        order_stride_words: 1,
-                        order_id_offset_words: 0,
-                    },
-                )?;
-                let order = packed
-                    .resident
-                    .gpu_order()
-                    .ok_or(SurfacePresenterError::GpuOrderUnsupported)?;
-                packed.projected.ensure_gpu_order_bind_group(
-                    &self.host.device,
-                    &packed.resident,
-                    order.sorter.final_ids(),
-                    order.sorter.indirect_args(),
-                )?;
-                packed.projected_cache.invalidate_order_if(refresh_order);
-                count
-            }
             SurfaceGeometry::Paged(_) => {
                 return Err(SurfacePresenterError::GpuOrderUnsupported);
             }
         };
 
-        // Browser WebGPU can lazily compile the first large Resident radix
-        // pipeline. Do not publish that initialization turn as a drawable or
-        // issue a formal ticket: submit
-        // the complete order compute once, then retry the same frame plan.
-        // This prevents a transient zero-count/black first GPU frame while
-        // preserving the exact camera and full source membership.
-        let packed_geometry = matches!(&self.geometry, SurfaceGeometry::Packed(_));
-        #[cfg(target_arch = "wasm32")]
-        let gpu_order_prepared = match &self.geometry {
-            SurfaceGeometry::Packed(packed) => packed.gpu_order_warmed,
-            SurfaceGeometry::Direct(_) | SurfaceGeometry::Paged(_) => true,
-        };
-        #[cfg(not(target_arch = "wasm32"))]
-        let gpu_order_prepared = true;
-        let preparation = gpu_order_preparation_plan(
-            cfg!(target_arch = "wasm32"),
-            packed_geometry,
-            refresh_order,
-            gpu_order_prepared,
-        );
-
         // Acquire before reserving a telemetry slot so a surface error cannot
-        // strand the slot in Encoding. The Web warmup intentionally has no
-        // surface. An ordinary timeout cannot issue a formal count receipt for
-        // an unpresented frame, nor read C/D from an older projected cache.
-        let frame = if preparation.acquire_surface {
-            self.acquire_surface_texture()?
-        } else {
-            None
+        // strand the slot in Encoding. An unavailable drawable cannot issue a
+        // formal ticket for an unpresented frame.
+        let Some(frame) = self.acquire_surface_texture()? else {
+            return Ok(if refresh_order {
+                TelemetrySubmission::SurfaceUnavailable
+            } else {
+                TelemetrySubmission::NotRequested
+            });
         };
-        if let Some(submission) = unavailable_gpu_surface_submission(preparation, frame.is_some()) {
-            if projected_sample_request.is_some() {
-                self.last_projected_draw_submission = TelemetrySubmission::SurfaceUnavailable;
-            }
-            if self.gpu_producer_measurement_enabled
-                && matches!(
-                    &self.geometry,
-                    SurfaceGeometry::Packed(packed)
-                        if packed.raster_plan == SurfaceRasterExecutionPlan::ProjectedQuadsExact
-                )
-            {
-                self.last_gpu_producer_submission = TelemetrySubmission::SurfaceUnavailable;
-            }
-            return Ok(submission);
-        }
-        let resident_draw_pipeline = self.resident_draw_pipeline.as_ref();
-        let resident_color_pipeline = self.resident_color_pipeline.as_ref();
         let allow_timestamps = match &self.geometry {
             SurfaceGeometry::Direct(direct) => !direct
                 .gpu_order()
                 .ok_or(SurfacePresenterError::GpuOrderUnsupported)?
                 .sorter
                 .is_empty(),
-            SurfaceGeometry::Packed(packed) => !packed
-                .resident
-                .gpu_order()
-                .ok_or(SurfacePresenterError::GpuOrderUnsupported)?
-                .sorter
-                .is_empty(),
             SurfaceGeometry::Paged(_) => false,
         };
-        let mut telemetry_ticket = preparation
-            .reserve_measurement
+        let mut telemetry_ticket = refresh_order
             .then(|| {
                 self.gpu_order_telemetry
                     .begin_sample(camera_revision, allow_timestamps)
@@ -2261,27 +1402,7 @@ impl SurfacePresenter {
                 .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                     label: wgpu_label("gsplat-surface-direct-gpu-order-encoder"),
                 });
-        let projected_order_generation = match &self.geometry {
-            SurfaceGeometry::Packed(packed) => packed.projected_cache.order_generation(),
-            SurfaceGeometry::Direct(_) | SurfaceGeometry::Paged(_) => 0,
-        };
-        let projected_draw_execution = self.resolved_projected_draw_execution();
-        let projected_cache_key = ProjectedCacheKey {
-            order_source: ProjectedOrderSource::Gpu,
-            order_generation: projected_order_generation,
-            camera: *camera,
-            width: self.host.surface_configuration.size().0,
-            height: self.host.surface_configuration.size().1,
-            // GPU projection dispatches resident capacity and guards ranks
-            // with the authoritative indirect visible count. Any change to
-            // that count comes from an order refresh, which invalidates the
-            // cache before this key is considered.
-            draw_count_guard: self.instance_count,
-            draw_execution: projected_draw_execution,
-            probe_generation: self.projected_probe_generation,
-        };
-        let mut projection_rebuilt = false;
-        let color_result = match &mut self.geometry {
+        match &mut self.geometry {
             SurfaceGeometry::Direct(direct) => {
                 let gpu_order = direct
                     .gpu_order()
@@ -2291,591 +1412,54 @@ impl SurfacePresenter {
                         .sorter
                         .encode_with_timestamps(&mut encoder, timestamp_range);
                 }
-                Ok(false)
-            }
-            SurfaceGeometry::Packed(packed) => {
-                if refresh_order {
-                    packed
-                        .resident
-                        .gpu_order()
-                        .ok_or(SurfacePresenterError::GpuOrderUnsupported)?
-                        .sorter
-                        .encode_with_timestamps(&mut encoder, timestamp_range);
-                }
-                let color_resolved = packed
-                    .resident
-                    .encode_color_resolve_if_needed(
-                        &self.host.queue,
-                        resident_color_pipeline
-                            .ok_or_else(|| resident_pipelines_unavailable(storage_bindings))?,
-                        &mut encoder,
-                        camera,
-                        self.host
-                            .device
-                            .limits()
-                            .max_compute_workgroups_per_dimension,
-                    )
-                    .map_err(SurfacePresenterError::from)?;
-                if frame.is_some()
-                    && packed.raster_plan == SurfaceRasterExecutionPlan::ProjectedQuadsExact
-                    && packed.projected_cache.needs_projection(projected_cache_key)
-                {
-                    packed
-                        .projected
-                        .encode_gpu_projection_for_draw(&mut encoder, projected_draw_execution)?;
-                    packed.projected_cache.publish(projected_cache_key);
-                    projection_rebuilt = true;
-                }
-                Ok(color_resolved)
             }
             SurfaceGeometry::Paged(_) => unreachable!(),
-        };
-        let color_resolved = match color_result {
-            Ok(value) => value,
-            Err(error) => {
-                if let Some(ticket) = telemetry_ticket.take() {
-                    self.gpu_order_telemetry.cancel(ticket);
-                }
-                return Err(error);
-            }
-        };
-
-        if let Some(frame) = frame.as_ref() {
-            let view = frame
-                .texture
-                .create_view(&wgpu::TextureViewDescriptor::default());
-            match &self.geometry {
-                SurfaceGeometry::Direct(direct) => {
-                    let order = direct
-                        .gpu_order()
-                        .ok_or(SurfacePresenterError::GpuOrderUnsupported)?;
-                    order
-                        .sorter
-                        .set_indirect_vertex_count(&self.host.queue, QUAD_VERTEX_COUNT);
-                    encode_splat_indirect_draw_into(
-                        &mut encoder,
-                        &SplatIndirectDraw {
-                            pass_label: "gsplat-surface-direct-gpu-order-draw-pass",
-                            view: &view,
-                            pipeline: &self.direct_pipeline,
-                            bind_group: &order.bind_group,
-                            clear: wgpu::Color::BLACK,
-                            indirect_args: order.sorter.indirect_args(),
-                        },
-                    );
-                }
-                SurfaceGeometry::Packed(packed) => {
-                    let order = packed
-                        .resident
-                        .gpu_order()
-                        .ok_or(SurfacePresenterError::GpuOrderUnsupported)?;
-                    order
-                        .sorter
-                        .set_indirect_vertex_count(&self.host.queue, QUAD_VERTEX_COUNT);
-                    match packed.raster_plan {
-                        SurfaceRasterExecutionPlan::ProjectedQuadsExact
-                            if projected_draw_execution == ProjectedDrawExecution::Compact =>
-                        {
-                            encode_splat_indirect_draw_into(
-                                &mut encoder,
-                                &SplatIndirectDraw {
-                                    pass_label: "gsplat-surface-projected-contributors-gpu-order-draw-pass",
-                                    view: &view,
-                                    pipeline: packed
-                                        .projected
-                                        .contributor_draw_pipeline()
-                                        .expect("available compaction owns its draw pipeline"),
-                                    bind_group: packed
-                                        .projected
-                                        .contributor_draw_bind_group()
-                                        .expect("available compaction owns its draw binding"),
-                                    clear: wgpu::Color::BLACK,
-                                    indirect_args: packed
-                                        .projected
-                                        .contributor_indirect_args()
-                                        .expect("available compaction owns its draw args"),
-                                },
-                            );
-                        }
-                        SurfaceRasterExecutionPlan::ProjectedQuadsExact => {
-                            // This fallback is retained only for exact
-                            // downlevel symmetry. GPU ordering itself requires
-                            // indirect execution, so production GPU-order
-                            // presenters take the compact branch above.
-                            encode_splat_indirect_draw_into(
-                                &mut encoder,
-                                &SplatIndirectDraw {
-                                    pass_label: "gsplat-surface-projected-quads-gpu-order-draw-pass",
-                                    view: &view,
-                                    pipeline: packed.projected.draw_pipeline(),
-                                    bind_group: packed.projected.draw_bind_group(),
-                                    clear: wgpu::Color::BLACK,
-                                    indirect_args: order.sorter.indirect_args(),
-                                },
-                            );
-                        }
-                        SurfaceRasterExecutionPlan::GlobalQuads => {
-                            encode_splat_indirect_draw_into(
-                                &mut encoder,
-                                &SplatIndirectDraw {
-                                    pass_label: "gsplat-surface-resident-gpu-order-draw-pass",
-                                    view: &view,
-                                    pipeline: resident_draw_pipeline.ok_or_else(|| {
-                                        resident_pipelines_unavailable(storage_bindings)
-                                    })?,
-                                    bind_group: &order.draw_bind_group,
-                                    clear: wgpu::Color::BLACK,
-                                    indirect_args: order.sorter.indirect_args(),
-                                },
-                            );
-                        }
-                    }
-                }
-                SurfaceGeometry::Paged(_) => unreachable!(),
-            }
         }
 
-        let projected_metadata = projected_sample_request.and_then(|request| {
-            frame.as_ref()?;
-            match &self.geometry {
-                SurfaceGeometry::Packed(packed)
-                    if packed.raster_plan == SurfaceRasterExecutionPlan::ProjectedQuadsExact =>
-                {
-                    Some(ProjectedDrawSampleMetadata {
-                        camera_revision: request.camera_revision,
-                        execution: projected_draw_execution,
-                        order_backend: request.order_backend,
-                        projection_generation: packed.projected_cache.projection_generation(),
-                        probe_generation: self.projected_probe_generation,
-                        projection_rebuilt,
-                        order_refreshed: request.order_refreshed,
-                    })
-                }
-                SurfaceGeometry::Direct(_)
-                | SurfaceGeometry::Packed(_)
-                | SurfaceGeometry::Paged(_) => None,
-            }
-        });
-        let mut projected_reservation = projected_metadata
-            .and_then(|metadata| self.projected_draw_telemetry.begin_sample(metadata));
-        let producer_metadata = (self.gpu_producer_measurement_enabled
-            && frame.is_some()
-            && projected_draw_execution == ProjectedDrawExecution::Compact)
-            .then(|| match &self.geometry {
-                SurfaceGeometry::Packed(packed)
-                    if packed.raster_plan == SurfaceRasterExecutionPlan::ProjectedQuadsExact =>
-                {
-                    u32::try_from(packed.resident.capacity)
-                        .ok()
-                        .map(|source_count| GpuProducerSampleMetadata {
-                            camera_revision,
-                            producer: SurfaceGpuOrderProducer::PostSort,
-                            order_generation: packed.projected_cache.order_generation(),
-                            projection_generation: packed.projected_cache.projection_generation(),
-                            source_count,
-                            order_refreshed: refresh_order,
-                            draw_scope: if refresh_order {
-                                SurfaceGpuProducerDrawScope::ExactCurrentContributors
-                            } else {
-                                SurfaceGpuProducerDrawScope::StaleOrderCandidates
-                            },
-                        })
-                }
-                SurfaceGeometry::Direct(_)
-                | SurfaceGeometry::Packed(_)
-                | SurfaceGeometry::Paged(_) => None,
-            })
-            .flatten();
-        let mut producer_reservation = producer_metadata
-            .and_then(|metadata| self.gpu_producer_telemetry.begin_sample(metadata));
-        if let Some(reservation) = projected_reservation.as_ref()
-            && let SurfaceGeometry::Packed(packed) = &self.geometry
-        {
-            let candidate_args = packed
-                .resident
-                .gpu_order()
-                .ok_or(SurfacePresenterError::GpuOrderUnsupported)?
-                .sorter
-                .indirect_args();
-            let candidate = ProjectedDrawCountSource::indirect_args(candidate_args);
-            let (contributor_buffer, contributor_offset) =
-                packed.projected.contributor_count_buffer_and_offset();
-            let contributor = ProjectedDrawCountSource::raw(contributor_buffer, contributor_offset);
-            let drawn = packed
-                .projected
-                .contributor_indirect_args()
-                .filter(|_| projected_draw_execution == ProjectedDrawExecution::Compact)
-                .map(ProjectedDrawCountSource::indirect_args)
-                .unwrap_or(candidate);
-            let readback_encoded = self.projected_draw_telemetry.encode_count_readback(
-                &mut encoder,
-                reservation,
-                candidate,
-                contributor,
-                drawn,
-            );
-            debug_assert!(readback_encoded);
-        }
-        if let Some(reservation) = producer_reservation.as_ref()
-            && let SurfaceGeometry::Packed(packed) = &self.geometry
-        {
-            let (contributor_buffer, contributor_offset) =
-                packed.projected.contributor_count_buffer_and_offset();
-            let contributor = GpuProducerCountSource::raw(contributor_buffer, contributor_offset);
-            let drawn = GpuProducerCountSource::indirect_args(
-                packed
-                    .projected
-                    .contributor_indirect_args()
-                    .expect("producer telemetry requires forced Compact"),
-            );
-            let readback_encoded = self.gpu_producer_telemetry.encode_count_readback(
-                &mut encoder,
-                reservation,
-                contributor,
-                drawn,
-            );
-            debug_assert!(readback_encoded);
-        }
-
-        if let Some(ticket) = telemetry_ticket.as_ref() {
-            match &self.geometry {
-                SurfaceGeometry::Direct(direct) => {
-                    let indirect_args = direct
-                        .gpu_order()
-                        .ok_or(SurfacePresenterError::GpuOrderUnsupported)?
-                        .sorter
-                        .indirect_args();
-                    self.gpu_order_telemetry
-                        .encode_readback(&mut encoder, ticket, indirect_args);
-                }
-                SurfaceGeometry::Packed(packed)
-                    if packed.raster_plan == SurfaceRasterExecutionPlan::ProjectedQuadsExact =>
-                {
-                    let candidate_args = packed
-                        .resident
-                        .gpu_order()
-                        .ok_or(SurfacePresenterError::GpuOrderUnsupported)?
-                        .sorter
-                        .indirect_args();
-                    let candidate = InstanceCountSource::indirect_args(candidate_args);
-                    let (contributor_buffer, contributor_offset) =
-                        packed.projected.contributor_count_buffer_and_offset();
-                    let contributor =
-                        InstanceCountSource::raw(contributor_buffer, contributor_offset);
-                    let drawn = packed
-                        .projected
-                        .contributor_indirect_args()
-                        .filter(|_| projected_draw_execution == ProjectedDrawExecution::Compact)
-                        .map(InstanceCountSource::indirect_args)
-                        .unwrap_or(candidate);
-                    self.gpu_order_telemetry.encode_instance_count_readback(
-                        &mut encoder,
-                        ticket,
-                        candidate,
-                        contributor,
-                        drawn,
-                        projected_draw_execution == ProjectedDrawExecution::Compact,
-                    );
-                }
-                SurfaceGeometry::Packed(packed) => {
-                    let indirect_args = packed
-                        .resident
-                        .gpu_order()
-                        .ok_or(SurfacePresenterError::GpuOrderUnsupported)?
-                        .sorter
-                        .indirect_args();
-                    self.gpu_order_telemetry
-                        .encode_readback(&mut encoder, ticket, indirect_args);
-                }
-                SurfaceGeometry::Paged(_) => unreachable!(),
-            }
-        }
-
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(frame) = frame.as_ref() {
-            self.host
-                .surface_capture
-                .encode(&mut encoder, &frame.texture);
-        }
-
-        if frame.is_none() && !refresh_order && !color_resolved {
-            return Ok(TelemetrySubmission::NotRequested);
-        }
-        let command_buffer = encoder.finish();
-        let submitted_ticket = telemetry_ticket.as_ref().map(|ticket| ticket.ticket);
-        let projected_started = projected_sample_request.map(|request| request.started);
-        let projected_submitted_ticket = match (projected_reservation.take(), projected_started) {
-            (Some(reservation), Some(started)) => self
-                .projected_draw_telemetry
-                .arm(&command_buffer, reservation, started)
-                .map(|ticket| ticket.ticket),
-            (None, _) | (_, None) => None,
-        };
-        let producer_submitted_ticket = producer_reservation.take().and_then(|reservation| {
-            self.gpu_producer_telemetry
-                .arm(&command_buffer, reservation, completion_started)
-                .map(|ticket| ticket.ticket)
-        });
-        if let Some(ticket) = telemetry_ticket.take() {
-            self.gpu_order_telemetry
-                .arm(&command_buffer, ticket, completion_started);
-        }
-        self.host.queue.submit(Some(command_buffer));
-        #[cfg(target_arch = "wasm32")]
-        if preparation.pending
-            && let SurfaceGeometry::Packed(packed) = &mut self.geometry
-        {
-            packed.gpu_order_warmed = true;
-        }
-        if let Some(frame) = frame {
-            self.present_frame(frame);
-            if matches!(self.geometry, SurfaceGeometry::Packed(_)) {
-                self.last_actual_gpu_order_producer = Some(SurfaceGpuOrderProducer::PostSort);
-            }
-        }
-        self.last_projected_draw_submission = match (projected_metadata, projected_submitted_ticket)
-        {
-            (None, _) => TelemetrySubmission::NotRequested,
-            (Some(_), Some(ticket)) => TelemetrySubmission::Issued(ticket),
-            (Some(_), None) => TelemetrySubmission::RingBusy,
-        };
-        self.last_gpu_producer_submission = match (producer_metadata, producer_submitted_ticket) {
-            (None, _) => TelemetrySubmission::NotRequested,
-            (Some(_), Some(ticket)) => TelemetrySubmission::Issued(ticket),
-            (Some(_), None) => TelemetrySubmission::RingBusy,
-        };
-        if preparation.pending {
-            return Ok(TelemetrySubmission::GpuOrderPreparationPending);
-        }
-        Ok(match (refresh_order, submitted_ticket) {
-            (false, _) => TelemetrySubmission::NotRequested,
-            (true, Some(ticket)) => TelemetrySubmission::Issued(ticket),
-            (true, None) => TelemetrySubmission::RingBusy,
-        })
-    }
-
-    fn render_preproject_gpu_order(
-        &mut self,
-        camera: &Camera,
-        refresh_order: bool,
-        camera_revision: u64,
-        completion_started: TimerInstant,
-    ) -> Result<TelemetrySubmission, SurfacePresenterError> {
-        self.validate_preproject_producer_context()?;
-        {
-            let SurfaceGeometry::Packed(packed) = &self.geometry else {
-                return Err(SurfacePresenterError::PreprojectProducerIncompatible);
-            };
-            if packed.preproject.is_none() {
-                return Err(SurfacePresenterError::GpuProducerPreparationRequired);
-            }
-            // A non-refresh frame must never draw uninitialized or invalidated
-            // ID/indirect state. Session scheduling normally forces this; the
-            // presenter guard keeps direct callers fail-closed as well.
-            packed.preproject_state.require_order(refresh_order)?;
-        }
-
-        let Some(frame) = self.acquire_surface_texture()? else {
-            self.last_gpu_producer_submission = if self.gpu_producer_measurement_enabled {
-                TelemetrySubmission::SurfaceUnavailable
-            } else {
-                TelemetrySubmission::NotRequested
-            };
-            return Ok(if refresh_order {
-                TelemetrySubmission::SurfaceUnavailable
-            } else {
-                TelemetrySubmission::NotRequested
-            });
-        };
         let view = frame
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
-        let storage_bindings = self
-            .host
-            .device
-            .limits()
-            .max_storage_buffers_per_shader_stage;
-        let resident_color_pipeline = self
-            .resident_color_pipeline
-            .as_ref()
-            .ok_or_else(|| resident_pipelines_unavailable(storage_bindings))?;
-        let mut encoder =
-            self.host
-                .device
-                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                    label: wgpu_label("gsplat-surface-preproject-gpu-order-encoder"),
-                });
-
-        let (source_count, order_generation, projection_generation) = {
-            let SurfaceGeometry::Packed(packed) = &mut self.geometry else {
-                unreachable!("validated preproject geometry")
-            };
-            let source_count = u32::try_from(packed.resident.capacity)
-                .map_err(|_| resident_gpu::ResidentGpuError::AddressSpaceExceeded)?;
-            packed.resident.encode_color_resolve_if_needed(
-                &self.host.queue,
-                resident_color_pipeline,
-                &mut encoder,
-                camera,
-                self.host
-                    .device
-                    .limits()
-                    .max_compute_workgroups_per_dimension,
-            )?;
-            let preproject = packed
-                .preproject
-                .as_ref()
-                .expect("validated preproject graph");
-            if refresh_order {
-                preproject.encode(
-                    &self.host.queue,
-                    &mut encoder,
-                    &packed.resident,
-                    camera,
-                    self.host.surface_configuration.size().0,
-                    self.host.surface_configuration.size().1,
-                );
-            } else {
-                // Projection and the complete-S count scan are current even
-                // when sort cadence deliberately retains the old order.
-                preproject.encode_projection_and_count(
-                    &self.host.queue,
-                    &mut encoder,
-                    &packed.resident,
-                    camera,
-                    self.host.surface_configuration.size().0,
-                    self.host.surface_configuration.size().1,
-                );
-            }
-            packed.preproject_state.record_projection(refresh_order);
-            (
-                source_count,
-                packed.preproject_state.order_generation,
-                packed.preproject_state.projection_generation,
-            )
+        let SurfaceGeometry::Direct(direct) = &self.geometry else {
+            unreachable!("Paged GPU ordering is rejected before encoding")
         };
-        self.instance_count = source_count;
-        let mut order_ticket = refresh_order
-            .then(|| {
-                self.gpu_order_telemetry
-                    .begin_sample(camera_revision, false)
-            })
-            .flatten();
-
-        {
-            let SurfaceGeometry::Packed(packed) = &self.geometry else {
-                unreachable!("validated preproject geometry")
-            };
-            let preproject = packed
-                .preproject
-                .as_ref()
-                .expect("validated preproject graph");
-            encode_splat_indirect_draw_into(
+        let order = direct
+            .gpu_order()
+            .ok_or(SurfacePresenterError::GpuOrderUnsupported)?;
+        order
+            .sorter
+            .set_indirect_vertex_count(&self.host.queue, QUAD_VERTEX_COUNT);
+        encode_splat_indirect_draw_into(
+            &mut encoder,
+            &SplatIndirectDraw {
+                pass_label: "gsplat-surface-direct-gpu-order-draw-pass",
+                view: &view,
+                pipeline: &self.direct_pipeline,
+                bind_group: &order.bind_group,
+                clear: wgpu::Color::BLACK,
+                indirect_args: order.sorter.indirect_args(),
+            },
+        );
+        if let Some(ticket) = telemetry_ticket.as_ref() {
+            self.gpu_order_telemetry.encode_readback(
                 &mut encoder,
-                &SplatIndirectDraw {
-                    pass_label: "gsplat-surface-preproject-gpu-order-draw-pass",
-                    view: &view,
-                    pipeline: preproject.draw_pipeline(),
-                    bind_group: preproject.draw_bind_group(),
-                    clear: wgpu::Color::BLACK,
-                    indirect_args: preproject.draw_args(),
-                },
+                ticket,
+                order.sorter.indirect_args(),
             );
-        }
-
-        let draw_scope = if refresh_order {
-            SurfaceGpuProducerDrawScope::ExactCurrentContributors
-        } else {
-            SurfaceGpuProducerDrawScope::StaleOrderCandidates
-        };
-        let mut producer_reservation = self
-            .gpu_producer_measurement_enabled
-            .then(|| {
-                self.gpu_producer_telemetry
-                    .begin_sample(GpuProducerSampleMetadata {
-                        camera_revision,
-                        producer: SurfaceGpuOrderProducer::Preproject,
-                        order_generation,
-                        projection_generation,
-                        source_count,
-                        order_refreshed: refresh_order,
-                        draw_scope,
-                    })
-            })
-            .flatten();
-        {
-            let SurfaceGeometry::Packed(packed) = &self.geometry else {
-                unreachable!("validated preproject geometry")
-            };
-            let preproject = packed
-                .preproject
-                .as_ref()
-                .expect("validated preproject graph");
-            let current_contributor = if refresh_order {
-                GpuProducerCountSource::raw(preproject.order_control(), 0)
-            } else {
-                let (buffer, offset) = preproject.contributor_count_buffer_and_offset();
-                GpuProducerCountSource::raw(buffer, offset)
-            };
-            let drawn = GpuProducerCountSource::indirect_args(preproject.draw_args());
-            if let Some(reservation) = producer_reservation.as_ref() {
-                let readback_encoded = self.gpu_producer_telemetry.encode_count_readback(
-                    &mut encoder,
-                    reservation,
-                    current_contributor,
-                    drawn,
-                );
-                debug_assert!(readback_encoded);
-            }
-            if let Some(ticket) = order_ticket.as_ref() {
-                let (candidate_buffer, candidate_offset) =
-                    preproject.candidate_count_buffer_and_offset();
-                let current_candidate =
-                    InstanceCountSource::raw(candidate_buffer, candidate_offset);
-                let current_contributor = if refresh_order {
-                    InstanceCountSource::raw(preproject.order_control(), 0)
-                } else {
-                    let (buffer, offset) = preproject.contributor_count_buffer_and_offset();
-                    InstanceCountSource::raw(buffer, offset)
-                };
-                self.gpu_order_telemetry.encode_instance_count_readback(
-                    &mut encoder,
-                    ticket,
-                    current_candidate,
-                    current_contributor,
-                    InstanceCountSource::indirect_args(preproject.draw_args()),
-                    refresh_order,
-                );
-            }
         }
 
         #[cfg(not(target_arch = "wasm32"))]
         self.host
             .surface_capture
             .encode(&mut encoder, &frame.texture);
-
         let command_buffer = encoder.finish();
-        let submitted_order_ticket = order_ticket.as_ref().map(|ticket| ticket.ticket);
-        let submitted_producer_ticket = producer_reservation.take().and_then(|reservation| {
-            self.gpu_producer_telemetry
-                .arm(&command_buffer, reservation, completion_started)
-                .map(|ticket| ticket.ticket)
-        });
-        if let Some(ticket) = order_ticket.take() {
+        let submitted_ticket = telemetry_ticket.as_ref().map(|ticket| ticket.ticket);
+        if let Some(ticket) = telemetry_ticket.take() {
             self.gpu_order_telemetry
                 .arm(&command_buffer, ticket, completion_started);
         }
         self.host.queue.submit(Some(command_buffer));
         self.present_frame(frame);
-        self.last_actual_gpu_order_producer = Some(SurfaceGpuOrderProducer::Preproject);
-        self.last_gpu_producer_submission = if !self.gpu_producer_measurement_enabled {
-            TelemetrySubmission::NotRequested
-        } else if let Some(ticket) = submitted_producer_ticket {
-            TelemetrySubmission::Issued(ticket)
-        } else {
-            TelemetrySubmission::RingBusy
-        };
-        Ok(match (refresh_order, submitted_order_ticket) {
+        Ok(match (refresh_order, submitted_ticket) {
             (false, _) => TelemetrySubmission::NotRequested,
             (true, Some(ticket)) => TelemetrySubmission::Issued(ticket),
             (true, None) => TelemetrySubmission::RingBusy,
@@ -2901,36 +1485,6 @@ impl SurfacePresenter {
         self.host.pump_receipt_callbacks(timeout)
     }
 
-    pub(crate) fn poll_projected_draw_telemetry(&mut self) -> ProjectedDrawTelemetryPoll {
-        self.projected_draw_telemetry.poll(&self.host.device)
-    }
-
-    pub(crate) fn poll_gpu_producer_telemetry(&mut self) -> GpuProducerTelemetryPoll {
-        self.gpu_producer_telemetry.poll(&self.host.device)
-    }
-
-    pub(crate) fn take_projected_draw_submission(&mut self) -> TelemetrySubmission {
-        std::mem::replace(
-            &mut self.last_projected_draw_submission,
-            TelemetrySubmission::NotRequested,
-        )
-    }
-
-    pub(crate) fn take_gpu_producer_submission(&mut self) -> TelemetrySubmission {
-        std::mem::replace(
-            &mut self.last_gpu_producer_submission,
-            TelemetrySubmission::NotRequested,
-        )
-    }
-
-    pub(crate) const fn take_actual_gpu_order_producer(
-        &mut self,
-    ) -> Option<SurfaceGpuOrderProducer> {
-        let producer = self.last_actual_gpu_order_producer;
-        self.last_actual_gpu_order_producer = None;
-        producer
-    }
-
     pub(crate) fn gpu_order_timestamps_enabled(&self) -> bool {
         self.gpu_order_telemetry.timestamps_enabled()
     }
@@ -2941,15 +1495,10 @@ impl SurfacePresenter {
 
     fn present_geometry_tracked(
         &mut self,
-        camera: &Camera,
+        _camera: &Camera,
         completion: Option<CpuCompletionSampleRequest>,
     ) -> Result<TelemetrySubmission, SurfacePresenterError> {
-        let projected_sample_request = self.projected_draw_sample_request.take();
-        self.last_projected_draw_submission = TelemetrySubmission::NotRequested;
         let Some(frame) = self.acquire_surface_texture()? else {
-            if projected_sample_request.is_some() {
-                self.last_projected_draw_submission = TelemetrySubmission::SurfaceUnavailable;
-            }
             return Ok(if completion.is_some() {
                 TelemetrySubmission::SurfaceUnavailable
             } else {
@@ -2965,54 +1514,6 @@ impl SurfacePresenter {
                 .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                     label: wgpu_label("gsplat-surface-encoder"),
                 });
-        let storage_bindings = self
-            .host
-            .device
-            .limits()
-            .max_storage_buffers_per_shader_stage;
-        let resident_color_pipeline = self.resident_color_pipeline.as_ref();
-        let resident_draw_pipeline = self.resident_draw_pipeline.as_ref();
-        let projected_order_generation = match &self.geometry {
-            SurfaceGeometry::Packed(packed) => packed.projected_cache.order_generation(),
-            SurfaceGeometry::Direct(_) | SurfaceGeometry::Paged(_) => 0,
-        };
-        let projected_draw_execution = self.resolved_projected_draw_execution();
-        let projected_cache_key = ProjectedCacheKey {
-            order_source: ProjectedOrderSource::Cpu,
-            order_generation: projected_order_generation,
-            camera: *camera,
-            width: self.host.surface_configuration.size().0,
-            height: self.host.surface_configuration.size().1,
-            draw_count_guard: self.instance_count,
-            draw_execution: projected_draw_execution,
-            probe_generation: self.projected_probe_generation,
-        };
-        let mut projection_rebuilt = false;
-        if let SurfaceGeometry::Packed(packed) = &mut self.geometry {
-            packed.resident.encode_color_resolve_if_needed(
-                &self.host.queue,
-                resident_color_pipeline
-                    .ok_or_else(|| resident_pipelines_unavailable(storage_bindings))?,
-                &mut encoder,
-                camera,
-                self.host
-                    .device
-                    .limits()
-                    .max_compute_workgroups_per_dimension,
-            )?;
-            if packed.raster_plan == SurfaceRasterExecutionPlan::ProjectedQuadsExact
-                && packed.projected_cache.needs_projection(projected_cache_key)
-            {
-                packed.projected.encode_cpu_projection_for_draw(
-                    &self.host.queue,
-                    &mut encoder,
-                    self.instance_count,
-                    projected_draw_execution,
-                )?;
-                packed.projected_cache.publish(projected_cache_key);
-                projection_rebuilt = true;
-            }
-        }
         match &self.geometry {
             SurfaceGeometry::Direct(direct) => encode_splat_draw_into(
                 &mut encoder,
@@ -3026,118 +1527,18 @@ impl SurfacePresenter {
                     instance_count: self.instance_count,
                 },
             ),
-            SurfaceGeometry::Packed(packed)
-                if packed.raster_plan == SurfaceRasterExecutionPlan::ProjectedQuadsExact
-                    && projected_draw_execution == ProjectedDrawExecution::Compact =>
-            {
-                encode_splat_indirect_draw_into(
-                    &mut encoder,
-                    &SplatIndirectDraw {
-                        pass_label: "gsplat-surface-projected-contributors-pass",
-                        view: &view,
-                        pipeline: packed
-                            .projected
-                            .contributor_draw_pipeline()
-                            .expect("available compaction owns its draw pipeline"),
-                        bind_group: packed
-                            .projected
-                            .contributor_draw_bind_group()
-                            .expect("available compaction owns its draw binding"),
-                        clear: wgpu::Color::BLACK,
-                        indirect_args: packed
-                            .projected
-                            .contributor_indirect_args()
-                            .expect("available compaction owns its draw args"),
-                    },
-                );
-            }
-            SurfaceGeometry::Packed(packed)
-                if packed.raster_plan == SurfaceRasterExecutionPlan::ProjectedQuadsExact =>
-            {
-                // Downlevel adapters keep the exact direct V-instance path;
-                // invalid projected ranks remain guarded by zero alpha.
-                encode_splat_draw_into(
-                    &mut encoder,
-                    &SplatDraw {
-                        pass_label: "gsplat-surface-projected-quads-pass",
-                        view: &view,
-                        pipeline: packed.projected.draw_pipeline(),
-                        bind_group: packed.projected.draw_bind_group(),
-                        clear: wgpu::Color::BLACK,
-                        vertex_count: QUAD_VERTEX_COUNT,
-                        instance_count: self.instance_count,
-                    },
-                );
-            }
-            SurfaceGeometry::Packed(packed) => encode_splat_draw_into(
-                &mut encoder,
-                &SplatDraw {
-                    pass_label: "gsplat-surface-resident-pass",
-                    view: &view,
-                    pipeline: resident_draw_pipeline
-                        .ok_or_else(|| resident_pipelines_unavailable(storage_bindings))?,
-                    bind_group: &packed.resident.draw_bind_group,
-                    clear: wgpu::Color::BLACK,
-                    vertex_count: QUAD_VERTEX_COUNT,
-                    instance_count: self.instance_count,
-                },
-            ),
             SurfaceGeometry::Paged(paged) => encode_splat_draw_into(
                 &mut encoder,
                 &SplatDraw {
                     pass_label: "gsplat-surface-paged-pass",
                     view: &view,
-                    pipeline: &self.packed_pipeline,
+                    pipeline: &self.paged_pipeline,
                     bind_group: &paged.active_set.atlas.resources.bind_group,
                     clear: wgpu::Color::BLACK,
                     vertex_count: QUAD_VERTEX_COUNT,
                     instance_count: self.instance_count,
                 },
             ),
-        }
-        let projected_metadata =
-            projected_sample_request.and_then(|request| match &self.geometry {
-                SurfaceGeometry::Packed(packed)
-                    if packed.raster_plan == SurfaceRasterExecutionPlan::ProjectedQuadsExact =>
-                {
-                    Some(ProjectedDrawSampleMetadata {
-                        camera_revision: request.camera_revision,
-                        execution: projected_draw_execution,
-                        order_backend: request.order_backend,
-                        projection_generation: packed.projected_cache.projection_generation(),
-                        probe_generation: self.projected_probe_generation,
-                        projection_rebuilt,
-                        order_refreshed: request.order_refreshed,
-                    })
-                }
-                SurfaceGeometry::Direct(_)
-                | SurfaceGeometry::Packed(_)
-                | SurfaceGeometry::Paged(_) => None,
-            });
-        let mut projected_reservation = projected_metadata
-            .and_then(|metadata| self.projected_draw_telemetry.begin_sample(metadata));
-        if let Some(reservation) = projected_reservation.as_ref()
-            && let SurfaceGeometry::Packed(packed) = &self.geometry
-        {
-            let candidate =
-                ProjectedDrawCountSource::indirect_args(packed.projected.cpu_candidate_args());
-            let (contributor_buffer, contributor_offset) =
-                packed.projected.contributor_count_buffer_and_offset();
-            let contributor = ProjectedDrawCountSource::raw(contributor_buffer, contributor_offset);
-            let drawn = packed
-                .projected
-                .contributor_indirect_args()
-                .filter(|_| projected_draw_execution == ProjectedDrawExecution::Compact)
-                .map(ProjectedDrawCountSource::indirect_args)
-                .unwrap_or(candidate);
-            let readback_encoded = self.projected_draw_telemetry.encode_count_readback(
-                &mut encoder,
-                reservation,
-                candidate,
-                contributor,
-                drawn,
-            );
-            debug_assert!(readback_encoded);
         }
         let mut completion_ticket = completion.and_then(|request| {
             self.cpu_order_completion_telemetry
@@ -3153,56 +1554,18 @@ impl SurfacePresenter {
                     },
                 )
         });
-        if let Some(ticket) = completion_ticket.as_ref()
-            && let SurfaceGeometry::Packed(packed) = &self.geometry
-            && packed.raster_plan == SurfaceRasterExecutionPlan::ProjectedQuadsExact
-        {
-            let candidate =
-                InstanceCountSource::indirect_args(packed.projected.cpu_candidate_args());
-            let (contributor_buffer, contributor_offset) =
-                packed.projected.contributor_count_buffer_and_offset();
-            let contributor = InstanceCountSource::raw(contributor_buffer, contributor_offset);
-            let drawn = packed
-                .projected
-                .contributor_indirect_args()
-                .filter(|_| projected_draw_execution == ProjectedDrawExecution::Compact)
-                .map(InstanceCountSource::indirect_args)
-                .unwrap_or(candidate);
-            self.cpu_order_completion_telemetry.encode_count_readback(
-                &mut encoder,
-                ticket,
-                candidate,
-                contributor,
-                drawn,
-                projected_draw_execution == ProjectedDrawExecution::Compact,
-            );
-        }
         #[cfg(not(target_arch = "wasm32"))]
         self.host
             .surface_capture
             .encode(&mut encoder, &frame.texture);
         let command_buffer = encoder.finish();
         let submitted_ticket = completion_ticket.as_ref().map(|ticket| ticket.ticket);
-        let projected_started = projected_sample_request.map(|request| request.started);
-        let projected_submitted_ticket = match (projected_reservation.take(), projected_started) {
-            (Some(reservation), Some(started)) => self
-                .projected_draw_telemetry
-                .arm(&command_buffer, reservation, started)
-                .map(|ticket| ticket.ticket),
-            (None, _) | (_, None) => None,
-        };
         if let (Some(ticket), Some(request)) = (completion_ticket.take(), completion) {
             self.cpu_order_completion_telemetry
                 .arm(&command_buffer, ticket, request.started);
         }
         self.host.queue.submit(Some(command_buffer));
         self.present_frame(frame);
-        self.last_projected_draw_submission = match (projected_metadata, projected_submitted_ticket)
-        {
-            (None, _) => TelemetrySubmission::NotRequested,
-            (Some(_), Some(ticket)) => TelemetrySubmission::Issued(ticket),
-            (Some(_), None) => TelemetrySubmission::RingBusy,
-        };
         Ok(match (completion, submitted_ticket) {
             (None, _) => TelemetrySubmission::NotRequested,
             (Some(_), Some(ticket)) => TelemetrySubmission::Issued(ticket),
@@ -3275,6 +1638,42 @@ mod tests {
         }
     }
 
+    #[test]
+    fn standalone_presenter_source_contains_no_packed_graph_resources() {
+        let source = include_str!("surface_presenter.rs");
+        for removed in [
+            concat!("Surface", "PackedRuntime"),
+            concat!("SurfaceGeometry::", "Packed"),
+            concat!("ProjectedQuads", "Gpu"),
+            concat!("Preprojected", "GpuOrder"),
+            concat!("ProjectedDrawTelemetry::", "new"),
+            concat!("GpuProducerTelemetry::", "new"),
+            concat!("create_resident_draw_", "pipeline"),
+            concat!("create_resident_color_", "pipeline"),
+        ] {
+            assert!(
+                !source.contains(removed),
+                "standalone presenter retained legacy Packed graph resource {removed}"
+            );
+        }
+
+        let crate_root = include_str!("lib.rs");
+        assert!(!crate_root.contains(concat!("mod projected_", "quads_gpu;")));
+
+        let preproject = include_str!("preproject_gpu.rs");
+        assert!(!preproject.contains(concat!("Preprojected", "GpuOrder")));
+        assert!(!preproject.contains(concat!("mod ", "raster;")));
+
+        for telemetry in [
+            include_str!("projected_draw_telemetry.rs"),
+            include_str!("gpu_producer_telemetry.rs"),
+        ] {
+            assert!(!telemetry.contains("wgpu::"));
+            assert!(!telemetry.contains("create_buffer"));
+            assert!(!telemetry.contains("map_buffer_on_submit"));
+        }
+    }
+
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn pending_surface_capture_blocks_resize() {
@@ -3284,283 +1683,6 @@ mod tests {
             Err(SurfacePresenterError::SurfaceCaptureState(message))
                 if message == "cannot resize while a capture is pending"
         ));
-    }
-
-    #[test]
-    fn preproject_first_frame_and_invalidation_require_a_refresh() {
-        let mut state = PreprojectProducerState::default();
-        assert!(matches!(
-            state.require_order(false),
-            Err(SurfacePresenterError::PreprojectOrderUnavailable)
-        ));
-        assert!(state.require_order(true).is_ok());
-        state.record_projection(true);
-        assert!(state.order_valid);
-        assert_eq!(state.order_generation, 1);
-        assert_eq!(state.projection_generation, 1);
-
-        // A current-camera non-refresh projection advances only the projected
-        // geometry generation and deliberately retains the order identity.
-        state.require_order(false).expect("refreshed prefix");
-        state.record_projection(false);
-        assert_eq!(state.order_generation, 1);
-        assert_eq!(state.projection_generation, 2);
-
-        // Scene replacement, resize, backend transitions, and producer
-        // transitions invalidate through this fail-closed primitive.
-        state.invalidate_order();
-        assert!(!state.order_valid);
-        assert_eq!(state.order_generation, 2);
-        assert!(matches!(
-            state.require_order(false),
-            Err(SurfacePresenterError::PreprojectOrderUnavailable)
-        ));
-    }
-
-    #[test]
-    fn preproject_web_scope_failure_cannot_publish_a_partial_graph() {
-        let mut published = false;
-        let result = try_prepare_then_commit(
-            &mut published,
-            |_| {
-                classify_surface_gpu_order_scope_errors(
-                    GeometryPath::PackedAtlas,
-                    None,
-                    Some("synthetic preproject OOM".into()),
-                    None,
-                )
-                .map_or(Ok(PreparedSurfaceGpuProducer::AlreadyPrepared), Err)
-            },
-            |published, _| *published = true,
-        );
-        assert!(matches!(
-            result,
-            Err(SurfacePresenterError::ResidentGpu(
-                resident_gpu::ResidentGpuError::GpuOrderOutOfMemory(_)
-            ))
-        ));
-        assert!(!published);
-    }
-
-    #[test]
-    fn projected_draw_modes_remain_independent_from_order_backend() {
-        assert_ne!(
-            ProjectedDrawExecution::Candidate,
-            ProjectedDrawExecution::Compact,
-        );
-    }
-
-    #[test]
-    fn optional_compaction_failure_is_discarded_without_rejecting_candidate() {
-        assert_eq!(
-            resolve_projected_compaction_candidate(Ok(Some(7_u32)), None, None, None, false)
-                .expect("optional success"),
-            Some(7)
-        );
-        for accepted in [
-            resolve_projected_compaction_candidate::<u32>(
-                Ok(Some(7_u32)),
-                Some("internal".into()),
-                None,
-                None,
-                false,
-            ),
-            resolve_projected_compaction_candidate::<u32>(
-                Ok(Some(7_u32)),
-                None,
-                Some("oom".into()),
-                None,
-                false,
-            ),
-            resolve_projected_compaction_candidate::<u32>(
-                Ok(Some(7_u32)),
-                None,
-                None,
-                Some("validation".into()),
-                false,
-            ),
-            resolve_projected_compaction_candidate::<u32>(
-                Err(resident_gpu::ResidentGpuError::GpuOrderInitialization(
-                    "typed construction failure".into(),
-                )),
-                None,
-                None,
-                None,
-                false,
-            ),
-        ] {
-            assert_eq!(accepted.expect("best-effort admission"), None);
-        }
-    }
-
-    #[test]
-    fn forced_compact_makes_the_optional_graph_transactional() {
-        assert!(matches!(
-            resolve_projected_compaction_candidate::<u32>(Ok(None), None, None, None, true),
-            Err(SurfacePresenterError::ProjectedCompactionUnsupported),
-        ));
-        assert!(matches!(
-            resolve_projected_compaction_candidate::<u32>(
-                Ok(Some(7)),
-                None,
-                Some("oom".into()),
-                None,
-                true,
-            ),
-            Err(SurfacePresenterError::SurfaceGeometryOutOfMemory {
-                path: GeometryPath::PackedAtlas,
-                ..
-            }),
-        ));
-    }
-
-    #[test]
-    fn unavailable_gpu_surface_never_issues_a_stale_count_ticket() {
-        let ordinary_refresh = gpu_order_preparation_plan(false, true, true, true);
-        assert_eq!(
-            unavailable_gpu_surface_submission(ordinary_refresh, false),
-            Some(TelemetrySubmission::SurfaceUnavailable),
-        );
-
-        let cached_frame = gpu_order_preparation_plan(false, true, false, true);
-        assert_eq!(
-            unavailable_gpu_surface_submission(cached_frame, false),
-            Some(TelemetrySubmission::NotRequested),
-        );
-
-        let web_warmup = gpu_order_preparation_plan(true, true, true, false);
-        assert_eq!(unavailable_gpu_surface_submission(web_warmup, false), None,);
-        assert_eq!(
-            unavailable_gpu_surface_submission(ordinary_refresh, true),
-            None,
-        );
-    }
-
-    #[test]
-    fn first_web_packed_gpu_order_is_hidden_and_unmeasured() {
-        let plan = gpu_order_preparation_plan(true, true, true, false);
-        assert_eq!(
-            plan,
-            GpuOrderPreparationPlan {
-                pending: true,
-                acquire_surface: false,
-                reserve_measurement: false,
-            }
-        );
-    }
-
-    #[test]
-    fn same_camera_retry_is_presented_with_exactly_one_measurement_reservation() {
-        let plan = gpu_order_preparation_plan(true, true, true, true);
-        assert_eq!(
-            plan,
-            GpuOrderPreparationPlan {
-                pending: false,
-                acquire_surface: true,
-                reserve_measurement: true,
-            }
-        );
-    }
-
-    #[test]
-    fn later_web_camera_refresh_does_not_repeat_one_time_preparation() {
-        let plan = gpu_order_preparation_plan(true, true, true, true);
-        assert!(!plan.pending);
-        assert!(plan.acquire_surface);
-        assert!(plan.reserve_measurement);
-    }
-
-    #[test]
-    fn native_and_direct_gpu_order_do_not_hide_the_first_frame() {
-        for plan in [
-            gpu_order_preparation_plan(false, true, true, false),
-            gpu_order_preparation_plan(true, false, true, false),
-        ] {
-            assert!(!plan.pending);
-            assert!(plan.acquire_surface);
-            assert!(plan.reserve_measurement);
-        }
-    }
-
-    #[test]
-    fn cached_gpu_order_is_presented_without_a_new_measurement() {
-        let plan = gpu_order_preparation_plan(true, true, false, true);
-        assert_eq!(
-            plan,
-            GpuOrderPreparationPlan {
-                pending: false,
-                acquire_surface: true,
-                reserve_measurement: false,
-            }
-        );
-    }
-
-    #[test]
-    fn projected_cache_reuses_only_the_same_camera_viewport_order_and_count() {
-        let base = ProjectedCacheKey {
-            order_source: ProjectedOrderSource::Cpu,
-            order_generation: 0,
-            camera: Camera::default(),
-            width: 1_920,
-            height: 1_080,
-            draw_count_guard: 1_886_298,
-            draw_execution: ProjectedDrawExecution::Candidate,
-            probe_generation: 0,
-        };
-        let mut cache = ProjectedCacheState::default();
-        assert!(cache.needs_projection(base));
-        cache.publish(base);
-        assert!(!cache.needs_projection(base));
-
-        let mut changed_camera = base;
-        changed_camera.camera.pose.position.x = 0.25;
-        assert!(cache.needs_projection(changed_camera));
-        assert!(cache.needs_projection(ProjectedCacheKey {
-            width: 1_280,
-            ..base
-        }));
-        assert!(cache.needs_projection(ProjectedCacheKey {
-            order_source: ProjectedOrderSource::Gpu,
-            ..base
-        }));
-        assert!(cache.needs_projection(ProjectedCacheKey {
-            draw_count_guard: base.draw_count_guard - 1,
-            ..base
-        }));
-        assert!(cache.needs_projection(ProjectedCacheKey {
-            draw_execution: ProjectedDrawExecution::Compact,
-            ..base
-        }));
-        assert!(cache.needs_projection(ProjectedCacheKey {
-            probe_generation: 1,
-            ..base
-        }));
-
-        cache.invalidate_order_if(false);
-        assert!(!cache.needs_projection(base));
-        cache.invalidate_order_if(true);
-        assert!(cache.needs_projection(base));
-        assert_eq!(cache.order_generation(), 1);
-        let next_generation = ProjectedCacheKey {
-            order_generation: cache.order_generation(),
-            ..base
-        };
-        cache.publish(next_generation);
-        assert!(!cache.needs_projection(next_generation));
-        assert!(cache.needs_projection(base));
-    }
-
-    #[test]
-    fn four_binding_direct_devices_skip_eager_resident_pipeline_creation() {
-        let mut direct_limits = wgpu::Limits::downlevel_defaults();
-        direct_limits.max_storage_buffers_per_shader_stage = 4;
-        assert!(!supports_resident_pipeline_layout(&direct_limits));
-
-        direct_limits.max_storage_buffers_per_shader_stage = 7;
-        assert!(!supports_resident_pipeline_layout(&direct_limits));
-
-        direct_limits.max_storage_buffers_per_shader_stage = 8;
-        assert!(supports_resident_pipeline_layout(&direct_limits));
     }
 
     #[test]
@@ -3576,88 +1698,22 @@ mod tests {
     }
 
     #[test]
-    fn packed_gpu_order_scope_errors_are_structured_and_prioritize_oom() {
-        let error = classify_surface_gpu_order_scope_errors(
-            GeometryPath::PackedAtlas,
-            Some("internal".into()),
-            Some("oom".into()),
-            Some("validation".into()),
-        )
-        .expect("scope error");
-        assert!(matches!(
-            error,
-            SurfacePresenterError::ResidentGpu(
-                resident_gpu::ResidentGpuError::GpuOrderOutOfMemory(ref message)
-            ) if message == "oom"
-        ));
-
-        let error = classify_surface_gpu_order_scope_errors(
-            GeometryPath::PackedAtlas,
-            None,
-            None,
-            Some("validation".into()),
-        )
-        .expect("scope error");
-        assert!(matches!(
-            error,
-            SurfacePresenterError::ResidentGpu(
-                resident_gpu::ResidentGpuError::GpuOrderValidation(ref message)
-            ) if message == "validation"
-        ));
-    }
-
-    #[test]
-    fn gpu_order_scope_success_has_no_error_and_paged_is_unsupported() {
+    fn direct_gpu_order_scope_success_has_no_error_and_other_paths_are_unsupported() {
         assert!(
-            classify_surface_gpu_order_scope_errors(GeometryPath::PackedAtlas, None, None, None,)
-                .is_none()
-        );
-        assert!(matches!(
             classify_surface_gpu_order_scope_errors(
-                GeometryPath::PagedActiveAtlas,
+                GeometryPath::SortedIndexDirect,
                 None,
                 None,
                 None,
-            ),
-            Some(SurfacePresenterError::GpuOrderUnsupported)
-        ));
-    }
-
-    #[test]
-    fn geometry_scope_errors_prioritize_oom_and_preserve_target_path() {
-        let error = classify_surface_geometry_scope_errors(
-            GeometryPath::PackedAtlas,
-            Some("internal".into()),
-            Some("oom".into()),
-            Some("validation".into()),
-        )
-        .expect("scope error");
-        assert!(matches!(
-            error,
-            SurfacePresenterError::SurfaceGeometryOutOfMemory {
-                path: GeometryPath::PackedAtlas,
-                ref message,
-            } if message == "oom"
-        ));
-
-        let error = classify_surface_geometry_scope_errors(
-            GeometryPath::SortedIndexDirect,
-            None,
-            None,
-            Some("bad binding".into()),
-        )
-        .expect("scope error");
-        assert!(matches!(
-            error,
-            SurfacePresenterError::SurfaceGeometryValidation {
-                path: GeometryPath::SortedIndexDirect,
-                ref message,
-            } if message == "bad binding"
-        ));
-        assert!(
-            classify_surface_geometry_scope_errors(GeometryPath::PackedAtlas, None, None, None,)
-                .is_none()
+            )
+            .is_none()
         );
+        for path in [GeometryPath::PackedAtlas, GeometryPath::PagedActiveAtlas] {
+            assert!(matches!(
+                classify_surface_gpu_order_scope_errors(path, None, None, None),
+                Some(SurfacePresenterError::GpuOrderUnsupported)
+            ));
+        }
     }
 
     fn adapter_limits(storage_bytes: u32, buffer_bytes: u64) -> wgpu::Limits {
@@ -3690,7 +1746,7 @@ mod tests {
     }
 
     #[test]
-    fn small_direct_scene_keeps_portable_limits_on_larger_adapter() {
+    fn small_direct_scene_does_not_request_obsolete_packed_headroom() {
         let mut adapter = adapter_limits(256 << 20, 512 << 20);
         adapter.max_texture_dimension_2d = 16_384;
         let plan = resource_plan(GeometryPath::SortedIndexDirect, 279_199, 3, 0, 0, &adapter);
@@ -3708,8 +1764,8 @@ mod tests {
         );
         assert_eq!(
             requested.max_storage_buffers_per_shader_stage,
-            resident_gpu::RESIDENT_COLOR_STORAGE_BINDINGS,
-            "a capable Direct device must retain runtime Packed headroom"
+            wgpu::Limits::downlevel_defaults().max_storage_buffers_per_shader_stage,
+            "standalone Direct must not reserve bindings for the deleted Packed graph"
         );
     }
 

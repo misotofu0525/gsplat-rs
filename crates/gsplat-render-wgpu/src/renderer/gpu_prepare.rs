@@ -24,7 +24,6 @@ use crate::raster::{
 };
 use crate::resident_gpu::{
     ResidentGpuResources, create_resident_color_bind_group_layout, create_resident_color_pipeline,
-    create_resident_draw_bind_group_layout,
 };
 use crate::scene::{ResidentGpuBytePlan, ResidentSceneCpu};
 use crate::{ResidentGpuError, make_surface_render_params};
@@ -320,10 +319,9 @@ impl GpuScenePreparation {
         let device = owner.device();
         let source_count = u32::try_from(scene.len())
             .map_err(|_| GpuPreparationError::Resource(ResidentGpuError::AddressSpaceExceeded))?;
-        let draw_layout = create_resident_draw_bind_group_layout(device);
         let color_layout = create_resident_color_bind_group_layout(device);
         let color_pipeline = create_resident_color_pipeline(device, &color_layout);
-        let mut resident = ResidentGpuResources::new(device, &draw_layout, &color_layout, scene)?;
+        let mut resident = ResidentGpuResources::new(device, &color_layout, scene)?;
         let projector = ProjectedRankProjector::new(
             device,
             source_count,
@@ -335,7 +333,7 @@ impl GpuScenePreparation {
         // GPU order graph. Keep that path complete on downlevel adapters and
         // admit the two GPU plans only when their indirect resources are legal.
         let (gpu_project_bind_group, preproject) = if indirect_execution_supported {
-            let order = resident.create_gpu_order_candidate(device, &draw_layout)?;
+            let order = resident.create_gpu_order_candidate(device)?;
             let gpu_project_bind_group = projector.create_external_bind_group(
                 device,
                 project_source_bindings(&resident),

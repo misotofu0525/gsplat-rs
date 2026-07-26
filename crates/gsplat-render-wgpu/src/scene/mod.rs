@@ -11,11 +11,8 @@ mod runtime;
 mod tests;
 
 #[cfg(test)]
-pub(crate) use budget::PROJECTED_CACHE_BYTES_PER_SPLAT;
-pub(crate) use budget::{
-    PROJECT_WORKGROUP_SIZE, PROJECTED_CACHE_PLANE_BYTES_PER_SPLAT, RESIDENT_COLOR_STORAGE_BINDINGS,
-    SCAN_ITEMS_PER_GROUP, SCAN_WORKGROUP_SIZE,
-};
+pub(crate) use budget::PROJECT_WORKGROUP_SIZE;
+pub(crate) use budget::RESIDENT_COLOR_STORAGE_BINDINGS;
 pub use budget::{ResidentCpuByteAccounting, ResidentGpuBytePlan};
 pub use builder::ResidentSceneBuilder;
 pub use codec::resident_sh_plane_count;

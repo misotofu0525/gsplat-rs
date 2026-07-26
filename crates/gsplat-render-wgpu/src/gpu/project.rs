@@ -27,8 +27,6 @@ struct DrawIndirectArgs {
 
 const _: [(); 16] = [(); size_of::<DrawIndirectArgs>()];
 
-pub(crate) const PROJECT_DRAW_INDIRECT_ARGS_BYTES: u64 = size_of::<DrawIndirectArgs>() as u64;
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Dispatch2d {
     x: u32,
@@ -275,20 +273,6 @@ impl ProjectedRankProjector {
         Ok(())
     }
 
-    pub(crate) fn dispatch_for_items(&self, items: u32) -> Result<(u32, u32), ResidentGpuError> {
-        let dispatch = Dispatch2d::for_items(items, self.dispatch_limit)?;
-        Ok((dispatch.x, dispatch.y))
-    }
-
-    #[cfg(test)]
-    pub(crate) fn dispatch_for_items_with_limit(
-        items: u32,
-        limit: u32,
-    ) -> Result<(u32, u32), ResidentGpuError> {
-        let dispatch = Dispatch2d::for_items(items, limit)?;
-        Ok((dispatch.x, dispatch.y))
-    }
-
     pub(crate) fn capacity(&self) -> u32 {
         self.capacity
     }
@@ -307,10 +291,6 @@ impl ProjectedRankProjector {
 
     pub(crate) fn contributor_group_offset_count(&self) -> u32 {
         self.contributor_group_offset_count
-    }
-
-    pub(crate) fn contributor_count_sentinel_offset(&self) -> u64 {
-        u64::from(self.contributor_group_offset_count - 1) * size_of::<u32>() as u64
     }
 
     pub(crate) fn cpu_draw_args(&self) -> &wgpu::Buffer {

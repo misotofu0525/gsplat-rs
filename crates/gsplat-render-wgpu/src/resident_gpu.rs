@@ -11,22 +11,11 @@ pub(crate) use crate::gpu::{
     create_resident_color_bind_group_layout, create_resident_color_pipeline,
 };
 pub(crate) use crate::gpu_error::ResidentGpuError;
+#[cfg(not(target_arch = "wasm32"))]
 use crate::raster::{SplatPipeline, create_splat_bind_group_layout, create_splat_pipeline};
 pub(crate) use crate::scene::RESIDENT_COLOR_STORAGE_BINDINGS;
 use crate::scene::{ResidentGpuBytePlan, ResidentSceneCpu};
 use crate::{GpuSurfaceRenderParams, make_surface_render_params, wgpu_label};
-
-#[cfg(any(not(target_arch = "wasm32"), test))]
-fn classify_gpu_order_scope_errors(
-    internal: Option<String>,
-    out_of_memory: Option<String>,
-    validation: Option<String>,
-) -> Option<ResidentGpuError> {
-    out_of_memory
-        .map(ResidentGpuError::GpuOrderOutOfMemory)
-        .or_else(|| internal.map(ResidentGpuError::GpuOrderInternal))
-        .or_else(|| validation.map(ResidentGpuError::GpuOrderValidation))
-}
 
 pub struct ResidentGpuResources {
     pub order_buffer: wgpu::Buffer,
@@ -42,33 +31,22 @@ pub struct ResidentGpuResources {
     pub resolved_color_buffer: wgpu::Buffer,
     pub draw_params_buffer: wgpu::Buffer,
     color_params_buffer: wgpu::Buffer,
-    pub draw_bind_group: wgpu::BindGroup,
     color_bind_group: wgpu::BindGroup,
     pub capacity: usize,
     pub sh_degree: u32,
     _byte_plan: ResidentGpuBytePlan,
+    #[cfg(not(target_arch = "wasm32"))]
     last_resolved_camera_position: Option<[f32; 3]>,
     gpu_order: Option<ResidentGpuSceneOrder>,
 }
 
-pub(crate) struct ResidentGpuOrderDraw<'a> {
-    pub(crate) camera: &'a Camera,
-    pub(crate) width: u32,
-    pub(crate) height: u32,
-    pub(crate) instance_count: u32,
-    pub(crate) order_stride_words: u32,
-    pub(crate) order_id_offset_words: u32,
-}
-
 pub(crate) struct ResidentGpuSceneOrder {
     pub(crate) sorter: DirectGpuOrder,
-    pub(crate) draw_bind_group: wgpu::BindGroup,
 }
 
 impl ResidentGpuResources {
     pub fn new(
         device: &wgpu::Device,
-        draw_layout: &wgpu::BindGroupLayout,
         color_layout: &wgpu::BindGroupLayout,
         scene: &ResidentSceneCpu,
     ) -> Result<Self, ResidentGpuError> {
@@ -147,17 +125,6 @@ impl ResidentGpuResources {
         });
         let color_params_buffer = create_resident_color_params_buffer(device);
 
-        let draw_bind_group = create_resident_draw_bind_group(
-            device,
-            draw_layout,
-            "gsplat-resident-draw-bind-group",
-            &order_buffer,
-            &position_alpha_buffer,
-            &covariance0_buffer,
-            &covariance1_buffer,
-            &resolved_color_buffer,
-            &draw_params_buffer,
-        );
         let color_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: wgpu_label("gsplat-resident-color-bind-group"),
             layout: color_layout,
@@ -188,11 +155,11 @@ impl ResidentGpuResources {
             resolved_color_buffer,
             draw_params_buffer,
             color_params_buffer,
-            draw_bind_group,
             color_bind_group,
             capacity,
             sh_degree: u32::from(scene.sh_degree),
             _byte_plan: byte_plan,
+            #[cfg(not(target_arch = "wasm32"))]
             last_resolved_camera_position: None,
             gpu_order: None,
         })
@@ -222,32 +189,9 @@ impl ResidentGpuResources {
         Ok(instance_count)
     }
 
-    pub fn prepare_gpu_order_draw(
-        &mut self,
-        device: &wgpu::Device,
-        draw_layout: &wgpu::BindGroupLayout,
-        queue: &wgpu::Queue,
-        draw: ResidentGpuOrderDraw<'_>,
-    ) -> Result<(), ResidentGpuError> {
-        self.ensure_gpu_order(device, draw_layout)?;
-        let mut params = make_surface_render_params(
-            draw.camera,
-            draw.width,
-            draw.height,
-            draw.instance_count,
-            self.sh_degree,
-        );
-        params.order_stride_words = draw.order_stride_words;
-        params.order_id_offset_words = draw.order_id_offset_words;
-        params.source_position_stride_words = 4;
-        queue.write_buffer(&self.draw_params_buffer, 0, bytemuck::bytes_of(&params));
-        Ok(())
-    }
-
     pub(crate) fn create_gpu_order_candidate(
         &self,
         device: &wgpu::Device,
-        draw_layout: &wgpu::BindGroupLayout,
     ) -> Result<ResidentGpuSceneOrder, ResidentGpuError> {
         let count =
             u32::try_from(self.capacity).map_err(|_| ResidentGpuError::AddressSpaceExceeded)?;
@@ -261,12 +205,7 @@ impl ResidentGpuResources {
             count,
         )
         .map_err(|error| ResidentGpuError::GpuOrderInitialization(error.to_string()))?;
-        let draw_bind_group =
-            self.create_draw_bind_group_for_order(device, draw_layout, sorter.final_ids());
-        Ok(ResidentGpuSceneOrder {
-            sorter,
-            draw_bind_group,
-        })
+        Ok(ResidentGpuSceneOrder { sorter })
     }
 
     pub(crate) fn publish_gpu_order(&mut self, prepared: ResidentGpuSceneOrder) {
@@ -274,59 +213,21 @@ impl ResidentGpuResources {
         self.gpu_order = Some(prepared);
     }
 
-    pub(crate) fn ensure_gpu_order(
-        &mut self,
-        device: &wgpu::Device,
-        draw_layout: &wgpu::BindGroupLayout,
-    ) -> Result<(), ResidentGpuError> {
-        if self.gpu_order.is_some() {
-            return Ok(());
-        }
-        #[cfg(target_arch = "wasm32")]
-        {
-            let _ = (device, draw_layout);
-            Err(ResidentGpuError::GpuOrderInitialization(
-                "browser GPU ordering must be prepared asynchronously before selection".into(),
-            ))
-        }
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            let (validation_scope, oom_scope, internal_scope) = (
-                device.push_error_scope(wgpu::ErrorFilter::Validation),
-                device.push_error_scope(wgpu::ErrorFilter::OutOfMemory),
-                device.push_error_scope(wgpu::ErrorFilter::Internal),
-            );
-            let prepared = self.create_gpu_order_candidate(device, draw_layout);
-            let internal_error = pollster::block_on(internal_scope.pop());
-            let oom_error = pollster::block_on(oom_scope.pop());
-            let validation_error = pollster::block_on(validation_scope.pop());
-            if let Some(error) = classify_gpu_order_scope_errors(
-                internal_error.map(|error| error.to_string()),
-                oom_error.map(|error| error.to_string()),
-                validation_error.map(|error| error.to_string()),
-            ) {
-                return Err(error);
-            }
-            self.publish_gpu_order(prepared?);
-            Ok(())
-        }
-    }
-
     pub(crate) fn gpu_order(&self) -> Option<&ResidentGpuSceneOrder> {
         self.gpu_order.as_ref()
     }
 
-    pub fn create_draw_bind_group_for_order(
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn create_offscreen_draw_bind_group(
         &self,
         device: &wgpu::Device,
-        draw_layout: &wgpu::BindGroupLayout,
-        order_buffer: &wgpu::Buffer,
+        layout: &wgpu::BindGroupLayout,
     ) -> wgpu::BindGroup {
         create_resident_draw_bind_group(
             device,
-            draw_layout,
-            "gsplat-resident-external-order-bind-group",
-            order_buffer,
+            layout,
+            "gsplat-resident-offscreen-draw-bind-group",
+            &self.order_buffer,
             &self.position_alpha_buffer,
             &self.covariance0_buffer,
             &self.covariance1_buffer,
@@ -337,6 +238,7 @@ impl ResidentGpuResources {
 
     /// Encodes one coherent all-point SH resolve if the camera position
     /// changed. Returns whether a compute pass was emitted.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn encode_color_resolve_if_needed(
         &mut self,
         queue: &wgpu::Queue,
@@ -423,6 +325,7 @@ fn entry(binding: u32, buffer: &wgpu::Buffer) -> wgpu::BindGroupEntry<'_> {
 }
 
 #[allow(clippy::too_many_arguments)]
+#[cfg(not(target_arch = "wasm32"))]
 fn create_resident_draw_bind_group(
     device: &wgpu::Device,
     layout: &wgpu::BindGroupLayout,
@@ -451,10 +354,12 @@ fn create_resident_draw_bind_group(
     })
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub fn create_resident_draw_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
     create_splat_bind_group_layout(device, "gsplat-resident-draw-bgl", 5)
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub fn create_resident_draw_pipeline(
     device: &wgpu::Device,
     bind_group_layout: &wgpu::BindGroupLayout,
@@ -525,69 +430,17 @@ mod tests {
 
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
-    fn gpu_order_scope_errors_are_structured_and_prioritize_oom() {
-        assert_eq!(
-            classify_gpu_order_scope_errors(
-                Some("internal".into()),
-                Some("oom".into()),
-                Some("validation".into()),
-            ),
-            Some(ResidentGpuError::GpuOrderOutOfMemory("oom".into()))
-        );
-        assert_eq!(
-            classify_gpu_order_scope_errors(
-                Some("internal".into()),
-                None,
-                Some("validation".into()),
-            ),
-            Some(ResidentGpuError::GpuOrderInternal("internal".into()))
-        );
-        assert_eq!(
-            classify_gpu_order_scope_errors(None, None, Some("validation".into())),
-            Some(ResidentGpuError::GpuOrderValidation("validation".into()))
-        );
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    #[test]
-    fn failed_lazy_gpu_order_validation_is_transactional_and_retryable() {
-        let Some((device, _queue)) = test_device() else {
-            return;
-        };
-        let scene = tiny_resident_scene();
-        let draw_layout = create_resident_draw_bind_group_layout(&device);
-        let color_layout = create_resident_color_bind_group_layout(&device);
-        let mut resources = ResidentGpuResources::new(&device, &draw_layout, &color_layout, &scene)
-            .expect("resident resources");
-        let incompatible_layout =
-            create_splat_bind_group_layout(&device, "resident-invalid-order-bgl", 4);
-
-        let error = resources
-            .ensure_gpu_order(&device, &incompatible_layout)
-            .expect_err("incompatible order layout must be captured");
-
-        assert!(matches!(error, ResidentGpuError::GpuOrderValidation(_)));
-        assert!(resources.gpu_order().is_none());
-        resources
-            .ensure_gpu_order(&device, &draw_layout)
-            .expect("a clean retry with the correct layout must succeed");
-        assert!(resources.gpu_order().is_some());
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    #[test]
     fn complete_gpu_order_candidate_stays_unpublished_until_commit() {
         let Some((device, _queue)) = test_device() else {
             return;
         };
         let scene = tiny_resident_scene();
-        let draw_layout = create_resident_draw_bind_group_layout(&device);
         let color_layout = create_resident_color_bind_group_layout(&device);
-        let mut resources = ResidentGpuResources::new(&device, &draw_layout, &color_layout, &scene)
-            .expect("resident resources");
+        let mut resources =
+            ResidentGpuResources::new(&device, &color_layout, &scene).expect("resident resources");
 
         let candidate = resources
-            .create_gpu_order_candidate(&device, &draw_layout)
+            .create_gpu_order_candidate(&device)
             .expect("candidate");
         assert!(resources.gpu_order().is_none());
 
@@ -601,7 +454,6 @@ mod tests {
         let Some((device, queue)) = test_device() else {
             return;
         };
-        let draw_layout = create_resident_draw_bind_group_layout(&device);
         let color_layout = create_resident_color_bind_group_layout(&device);
         let color_pipeline = create_resident_color_pipeline(&device, &color_layout);
         let max_workgroups = device.limits().max_compute_workgroups_per_dimension;
@@ -611,9 +463,8 @@ mod tests {
             ResidentSceneCpu::encode(&gsplat_core::SceneBuffers::default())
                 .expect("empty resident scene"),
         ] {
-            let mut resources =
-                ResidentGpuResources::new(&device, &draw_layout, &color_layout, &scene)
-                    .expect("resident resources");
+            let mut resources = ResidentGpuResources::new(&device, &color_layout, &scene)
+                .expect("resident resources");
             let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("resident-color-cache-test-encoder"),
             });

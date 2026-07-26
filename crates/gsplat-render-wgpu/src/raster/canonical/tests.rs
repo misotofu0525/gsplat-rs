@@ -1,11 +1,8 @@
 #![cfg(not(target_arch = "wasm32"))]
 
-use gsplat_core::{Camera, SceneBuffers, Vec3f};
 use wgpu::util::DeviceExt;
 
 use super::*;
-use crate::preproject_gpu::PreprojectedGpuOrder;
-use crate::resident_gpu::ResidentGpuResources;
 
 const WIDTH: u32 = 64;
 const HEIGHT: u32 = 64;
@@ -263,37 +260,6 @@ fn rank_resources<'a>(
         indirect_args,
         projected_capacity,
         source_count,
-    }
-}
-
-fn scene_fixture(count: usize, sh_degree: u8) -> SceneBuffers {
-    let coefficient_count = match sh_degree {
-        0 => 0,
-        1 => 9,
-        2 => 24,
-        3 => 45,
-        _ => unreachable!("Exact fixture supports only SH0-SH3"),
-    };
-    SceneBuffers {
-        positions: (0..count)
-            .map(|index| {
-                let column = (index % 17) as f32;
-                let row = ((index / 17) % 17) as f32;
-                Vec3f::new(-0.35 + column * 0.04, -0.35 + row * 0.04, 2.0)
-            })
-            .collect(),
-        opacity: vec![2.0; count],
-        scale_xyz: vec![[-3.5, -3.5, -3.5]; count],
-        rotation_xyzw: vec![[0.0, 0.0, 0.0, 1.0]; count],
-        color_dc: (0..count)
-            .map(|index| {
-                let phase = (index % 7) as f32 / 7.0;
-                [0.5 - phase * 0.2, -0.1 + phase * 0.2, 0.2]
-            })
-            .collect(),
-        sh_degree,
-        sh_rest: (coefficient_count != 0)
-            .then(|| vec![0.001; count.saturating_mul(coefficient_count)]),
     }
 }
 
@@ -706,115 +672,6 @@ fn rank_direct_and_indirect_preserve_d_equals_v_for_boundaries() {
                 assert_clear_only(&indirect_rgba);
             } else {
                 assert_contributing(&indirect_rgba);
-            }
-        }
-    });
-}
-
-#[test]
-fn source_indirect_matches_existing_preproject_for_boundaries_and_sh0_through_sh3() {
-    pollster::block_on(async {
-        let Some((_info, device, queue)) = request_device().await else {
-            return;
-        };
-        let draw_layout = crate::resident_gpu::create_resident_draw_bind_group_layout(&device);
-        let color_layout = crate::resident_gpu::create_resident_color_bind_group_layout(&device);
-        let color_pipeline =
-            crate::resident_gpu::create_resident_color_pipeline(&device, &color_layout);
-        let camera = Camera::default();
-
-        for (count, sh_degree) in [
-            (0_usize, 0_u8),
-            (1, 1),
-            (127, 2),
-            (128, 3),
-            (129, 0),
-            (257, 3),
-        ] {
-            let scene = crate::ResidentSceneCpu::encode_owned(scene_fixture(count, sh_degree))
-                .expect("encode source-indexed fixture");
-            let mut resident =
-                ResidentGpuResources::new(&device, &draw_layout, &color_layout, &scene)
-                    .expect("prepare source-indexed resident resources");
-            let preproject = PreprojectedGpuOrder::new(&device, TARGET_FORMAT, &resident)
-                .expect("prepare existing Preproject draw");
-            let canonical = CanonicalRaster::prepare(
-                &device,
-                TARGET_FORMAT,
-                CanonicalRasterResources {
-                    rank_indexed: None,
-                    source_indexed: Some(SourceIndexedRasterResources {
-                        ordered_source_ids: preproject.final_source_ids(),
-                        projected_center_alpha_key: preproject.source_center_alpha_key(),
-                        projected_axes: preproject.source_axes(),
-                        resolved_color: &resident.resolved_color_buffer,
-                        indirect_args: preproject.draw_args(),
-                        source_count: count as u32,
-                    }),
-                },
-            )
-            .expect("prepare canonical source-indexed raster");
-            let (reference_texture, reference_view) =
-                target(&device, "canonical-raster-preproject-reference-target");
-            let (canonical_texture, canonical_view) =
-                target(&device, "canonical-raster-preproject-canonical-target");
-            let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("canonical-raster-preproject-parity-encoder"),
-            });
-            resident
-                .encode_color_resolve_if_needed(
-                    &queue,
-                    &color_pipeline,
-                    &mut encoder,
-                    &camera,
-                    device.limits().max_compute_workgroups_per_dimension,
-                )
-                .expect("encode SH color resolve");
-            preproject.encode(&queue, &mut encoder, &resident, &camera, WIDTH, HEIGHT);
-            encode_splat_indirect_draw_into(
-                &mut encoder,
-                &SplatIndirectDraw {
-                    pass_label: "canonical-raster-preproject-reference-pass",
-                    view: &reference_view,
-                    pipeline: preproject.draw_pipeline(),
-                    bind_group: preproject.draw_bind_group(),
-                    clear: wgpu::Color::TRANSPARENT,
-                    indirect_args: preproject.draw_args(),
-                },
-            );
-            canonical
-                .encode(
-                    &mut encoder,
-                    &canonical_view,
-                    TARGET_FORMAT,
-                    wgpu::Color::TRANSPARENT,
-                    CanonicalRasterInput::SourceIndexedIndirect,
-                )
-                .expect("encode canonical source-indexed D=C draw");
-            let reference_readback = copy_target(
-                &device,
-                &mut encoder,
-                &reference_texture,
-                "canonical-raster-preproject-reference-readback",
-            );
-            let canonical_readback = copy_target(
-                &device,
-                &mut encoder,
-                &canonical_texture,
-                "canonical-raster-preproject-canonical-readback",
-            );
-            queue.submit(Some(encoder.finish()));
-
-            let reference_rgba = read_buffer(&device, &reference_readback);
-            let canonical_rgba = read_buffer(&device, &canonical_readback);
-            assert_eq!(
-                canonical_rgba, reference_rgba,
-                "source D=C parity mismatch at count={count}, SH{sh_degree}"
-            );
-            if count == 0 {
-                assert_clear_only(&canonical_rgba);
-            } else {
-                assert_contributing(&canonical_rgba);
             }
         }
     });

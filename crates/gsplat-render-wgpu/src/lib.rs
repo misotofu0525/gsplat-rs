@@ -27,7 +27,6 @@ mod plans;
 #[cfg_attr(not(test), allow(dead_code))]
 mod preproject_gpu;
 mod projected_draw_telemetry;
-mod projected_quads_gpu;
 mod raster;
 #[cfg_attr(not(test), allow(dead_code))]
 mod renderer;
@@ -40,12 +39,12 @@ mod surface_presenter;
 mod surface_session;
 pub use api::{GeometryPath, PreprocessOutput, SurfaceRasterExecutionPlan};
 use cpu_order::CpuOrderEngine;
+#[cfg(test)]
+pub(crate) use cpu_order::world_to_camera_depth_with_view_row;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 pub(crate) use cpu_order::{
     PARALLEL_PREPROCESS_THRESHOLD, preprocess_positions_visible_into_parallel,
 };
-#[cfg(test)]
-pub(crate) use cpu_order::{depth_to_key, world_to_camera_depth_with_view_row};
 pub(crate) use cpu_order::{
     is_visible, preprocess_paged_visible_into, preprocess_positions_visible_into,
 };
@@ -2821,6 +2820,7 @@ struct GpuRasterizer {
     packed_bind_group_layout: wgpu::BindGroupLayout,
     resident_pipelines: Option<OffscreenResidentPipelines>,
     resident_scene: Option<resident_gpu::ResidentGpuResources>,
+    resident_draw_bind_group: Option<wgpu::BindGroup>,
     paged_active_set: Option<paged_active_set::PagedActiveSet>,
 }
 
@@ -2910,6 +2910,7 @@ impl GpuRasterizer {
             packed_bind_group_layout,
             resident_pipelines,
             resident_scene: None,
+            resident_draw_bind_group: None,
             paged_active_set: None,
         })
     }
@@ -2917,6 +2918,7 @@ impl GpuRasterizer {
     fn clear_scene_resources(&mut self) {
         self.direct_scene = None;
         self.resident_scene = None;
+        self.resident_draw_bind_group = None;
         self.paged_active_set = None;
     }
 
@@ -2990,12 +2992,17 @@ impl GpuRasterizer {
         // the exact same complete GPU scene; releasing it here would make that
         // existing lifecycle fail after an otherwise successful frame.
         if self.resident_scene.is_none() {
-            self.resident_scene = Some(resident_gpu::ResidentGpuResources::new(
+            let resident = resident_gpu::ResidentGpuResources::new(
                 &self.device,
-                &resident_pipelines.draw_bind_group_layout,
                 &resident_pipelines.color_bind_group_layout,
                 scene,
-            )?);
+            )?;
+            let draw_bind_group = resident.create_offscreen_draw_bind_group(
+                &self.device,
+                &resident_pipelines.draw_bind_group_layout,
+            );
+            self.resident_scene = Some(resident);
+            self.resident_draw_bind_group = Some(draw_bind_group);
         }
         let instance_count = self
             .resident_scene
@@ -3025,17 +3032,16 @@ impl GpuRasterizer {
                 camera,
                 self.device.limits().max_compute_workgroups_per_dimension,
             )?;
-        let resident = self
-            .resident_scene
-            .as_ref()
-            .ok_or(RendererError::GpuDeviceCreation)?;
         raster::encode_splat_draw_into(
             &mut encoder,
             &raster::SplatDraw {
                 pass_label: "gsplat-offscreen-resident-pass",
                 view: self.output_view(),
                 pipeline: &resident_pipelines.draw_pipeline,
-                bind_group: &resident.draw_bind_group,
+                bind_group: self
+                    .resident_draw_bind_group
+                    .as_ref()
+                    .ok_or(RendererError::GpuDeviceCreation)?,
                 clear: wgpu::Color::TRANSPARENT,
                 vertex_count: raster::QUAD_VERTEX_COUNT,
                 instance_count,

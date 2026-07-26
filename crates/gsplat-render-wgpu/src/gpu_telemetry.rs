@@ -22,7 +22,6 @@ const CANDIDATE_VISIBLE_OFFSET: u64 = QUERY_BYTES;
 const CONTRIBUTOR_OFFSET: u64 = CANDIDATE_VISIBLE_OFFSET + std::mem::size_of::<u32>() as u64;
 const DRAWN_OFFSET: u64 = CONTRIBUTOR_OFFSET + std::mem::size_of::<u32>() as u64;
 const READBACK_BYTES: u64 = 48;
-const CPU_READBACK_BYTES: u64 = 16;
 const SLOT_IDLE: u8 = 0;
 const SLOT_ENCODING: u8 = 1;
 const SLOT_SUBMITTED: u8 = 2;
@@ -72,10 +71,6 @@ impl<'a> InstanceCountSource<'a> {
             offset: std::mem::size_of::<u32>() as u64,
         }
     }
-
-    pub(crate) const fn raw(buffer: &'a wgpu::Buffer, offset: u64) -> Self {
-        Self { buffer, offset }
-    }
 }
 
 struct TelemetrySlot {
@@ -108,7 +103,6 @@ pub(crate) struct GpuOrderTelemetry {
 }
 
 struct CpuCompletionSlot {
-    readback: Option<wgpu::Buffer>,
     state: Arc<AtomicU8>,
     completion_ms_bits: Arc<AtomicU32>,
     ticket: u64,
@@ -117,7 +111,6 @@ struct CpuCompletionSlot {
     preprocess_ms: f32,
     sort_ms: f32,
     counts: FrameInstanceCounts,
-    count_readback_encoded: bool,
     terminal_reported: bool,
 }
 
@@ -159,7 +152,6 @@ impl Default for CpuOrderCompletionTelemetry {
     fn default() -> Self {
         let slots = (0..RING_SLOTS)
             .map(|_| CpuCompletionSlot {
-                readback: None,
                 state: Arc::new(AtomicU8::new(SLOT_IDLE)),
                 completion_ms_bits: Arc::new(AtomicU32::new(COMPLETION_PENDING_BITS)),
                 ticket: 0,
@@ -168,7 +160,6 @@ impl Default for CpuOrderCompletionTelemetry {
                 preprocess_ms: 0.0,
                 sort_ms: 0.0,
                 counts: FrameInstanceCounts::default(),
-                count_readback_encoded: false,
                 terminal_reported: false,
             })
             .collect();
@@ -183,19 +174,6 @@ impl Default for CpuOrderCompletionTelemetry {
 }
 
 impl CpuOrderCompletionTelemetry {
-    pub(crate) fn new(device: &wgpu::Device) -> Self {
-        let mut telemetry = Self::default();
-        for slot in &mut telemetry.slots {
-            slot.readback = Some(device.create_buffer(&wgpu::BufferDescriptor {
-                label: wgpu_label("gsplat-cpu-order-count-readback"),
-                size: CPU_READBACK_BYTES,
-                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-                mapped_at_creation: false,
-            }));
-        }
-        telemetry
-    }
-
     pub(crate) fn invalidate_generation(&mut self) {
         for slot in &mut self.slots {
             let state = slot.state.load(Ordering::Acquire);
@@ -254,7 +232,6 @@ impl CpuOrderCompletionTelemetry {
         slot.preprocess_ms = preprocess_ms;
         slot.sort_ms = sort_ms;
         slot.counts = counts;
-        slot.count_readback_encoded = false;
         slot.terminal_reported = false;
         slot.completion_ms_bits
             .store(COMPLETION_PENDING_BITS, Ordering::Release);
@@ -263,42 +240,6 @@ impl CpuOrderCompletionTelemetry {
             slot: slot_index,
             ticket,
         })
-    }
-
-    pub(crate) fn encode_count_readback(
-        &mut self,
-        encoder: &mut wgpu::CommandEncoder,
-        ticket: &CpuCompletionTicket,
-        candidate_visible: InstanceCountSource<'_>,
-        contributor: InstanceCountSource<'_>,
-        drawn: InstanceCountSource<'_>,
-        exact_contributor_compaction: bool,
-    ) {
-        let slot = &mut self.slots[ticket.slot];
-        slot.counts.exact_contributor_compaction = exact_contributor_compaction;
-        let readback = slot
-            .readback
-            .as_ref()
-            .expect("presenter CPU telemetry slots own count readback buffers");
-        copy_count(encoder, candidate_visible, readback, 0);
-        copy_count(
-            encoder,
-            contributor,
-            readback,
-            std::mem::size_of::<u32>() as u64,
-        );
-        copy_count(
-            encoder,
-            drawn,
-            readback,
-            2 * std::mem::size_of::<u32>() as u64,
-        );
-        encoder.clear_buffer(
-            readback,
-            3 * std::mem::size_of::<u32>() as u64,
-            Some(std::mem::size_of::<u32>() as u64),
-        );
-        slot.count_readback_encoded = true;
     }
 
     pub(crate) fn arm(
@@ -310,36 +251,14 @@ impl CpuOrderCompletionTelemetry {
         let slot = &mut self.slots[ticket.slot];
         debug_assert_eq!(slot.ticket, ticket.ticket);
         slot.state.store(SLOT_SUBMITTED, Ordering::Release);
-        if slot.count_readback_encoded {
-            let map_state = Arc::clone(&slot.state);
-            command_buffer.map_buffer_on_submit(
-                slot.readback
-                    .as_ref()
-                    .expect("encoded CPU counts own a readback buffer"),
-                wgpu::MapMode::Read,
-                0..CPU_READBACK_BYTES,
-                move |result| {
-                    map_state.store(
-                        if result.is_ok() {
-                            SLOT_MAPPED
-                        } else {
-                            SLOT_ERROR
-                        },
-                        Ordering::Release,
-                    );
-                },
-            );
-        }
         let completion_bits = Arc::clone(&slot.completion_ms_bits);
-        let state = (!slot.count_readback_encoded).then(|| Arc::clone(&slot.state));
+        let state = Arc::clone(&slot.state);
         command_buffer.on_submitted_work_done(move || {
             completion_bits.store(
                 timer_elapsed_ms(completion_started).to_bits(),
                 Ordering::Release,
             );
-            if let Some(state) = state {
-                state.store(SLOT_MAPPED, Ordering::Release);
-            }
+            state.store(SLOT_MAPPED, Ordering::Release);
         });
     }
 
@@ -347,57 +266,26 @@ impl CpuOrderCompletionTelemetry {
         let mut completed = Vec::new();
         let mut failures: Vec<_> = self.pending_failures.drain(..).collect();
         for slot in &mut self.slots {
-            match slot.state.load(Ordering::Acquire) {
-                SLOT_ERROR => {
-                    if !slot.terminal_reported {
-                        failures.push(SurfaceOrderMeasurementFailure {
-                            ticket: slot.ticket,
-                            camera_revision: slot.camera_revision,
-                            reason: SurfaceOrderMeasurementFailureReason::ReadbackMap,
-                        });
-                        slot.terminal_reported = true;
-                    }
-                    if slot.completion_ms_bits.load(Ordering::Acquire) != COMPLETION_PENDING_BITS {
-                        slot.state.store(SLOT_IDLE, Ordering::Release);
-                    }
+            if slot.state.load(Ordering::Acquire) == SLOT_MAPPED {
+                let completion_bits = slot.completion_ms_bits.load(Ordering::Acquire);
+                if completion_bits == COMPLETION_PENDING_BITS {
+                    continue;
                 }
-                SLOT_MAPPED => {
-                    let completion_bits = slot.completion_ms_bits.load(Ordering::Acquire);
-                    if completion_bits == COMPLETION_PENDING_BITS {
-                        continue;
-                    }
-                    if slot.count_readback_encoded {
-                        let readback = slot
-                            .readback
-                            .as_ref()
-                            .expect("encoded CPU counts own a readback buffer");
-                        let bytes = readback.slice(0..CPU_READBACK_BYTES).get_mapped_range();
-                        slot.counts = FrameInstanceCounts {
-                            candidate_visible: read_u32(&bytes[0..4]),
-                            contributor: read_u32(&bytes[4..8]),
-                            drawn: read_u32(&bytes[8..12]),
-                            exact_contributor_compaction: slot.counts.exact_contributor_compaction,
-                        };
-                        drop(bytes);
-                        readback.unmap();
-                    }
-                    if slot.generation == self.generation && !slot.terminal_reported {
-                        completed.push(SurfaceCpuOrderMeasurement {
-                            ticket: slot.ticket,
-                            camera_revision: slot.camera_revision,
-                            preprocess_ms: slot.preprocess_ms,
-                            sort_ms: slot.sort_ms,
-                            frame_complete_ms: f32::from_bits(completion_bits),
-                            visible_count: slot.counts.candidate_visible,
-                            contributor_count: slot.counts.contributor,
-                            drawn_count: slot.counts.drawn,
-                            exact_contributor_compaction: slot.counts.exact_contributor_compaction,
-                        });
-                        slot.terminal_reported = true;
-                    }
-                    slot.state.store(SLOT_IDLE, Ordering::Release);
+                if slot.generation == self.generation && !slot.terminal_reported {
+                    completed.push(SurfaceCpuOrderMeasurement {
+                        ticket: slot.ticket,
+                        camera_revision: slot.camera_revision,
+                        preprocess_ms: slot.preprocess_ms,
+                        sort_ms: slot.sort_ms,
+                        frame_complete_ms: f32::from_bits(completion_bits),
+                        visible_count: slot.counts.candidate_visible,
+                        contributor_count: slot.counts.contributor,
+                        drawn_count: slot.counts.drawn,
+                        exact_contributor_compaction: slot.counts.exact_contributor_compaction,
+                    });
+                    slot.terminal_reported = true;
                 }
-                _ => {}
+                slot.state.store(SLOT_IDLE, Ordering::Release);
             }
         }
         completed.sort_by_key(|sample| sample.ticket);
@@ -521,16 +409,6 @@ impl GpuOrderTelemetry {
                     .clone()
             }),
         })
-    }
-
-    pub(crate) fn cancel(&mut self, ticket: GpuTelemetryTicket) {
-        if let Some(slot) = self.slots.get_mut(ticket.slot)
-            && slot.ticket == ticket.ticket
-            && slot.state.load(Ordering::Acquire) == SLOT_ENCODING
-        {
-            slot.terminal_reported = true;
-            slot.state.store(SLOT_IDLE, Ordering::Release);
-        }
     }
 
     pub(crate) fn encode_readback(
@@ -751,8 +629,8 @@ fn timestamp_delta_ms(begin: u64, end: u64, period_ns: f32) -> Option<f32> {
 #[cfg(test)]
 mod tests {
     use super::{
-        COMPLETION_PENDING_BITS, CpuOrderCompletionTelemetry, FrameInstanceCounts,
-        GpuOrderTelemetry, InstanceCountSource, LAST_ORDER_TICKET, SLOT_ERROR, SLOT_IDLE,
+        COMPLETION_PENDING_BITS, CpuOrderCompletionTelemetry, GpuOrderTelemetry,
+        InstanceCountSource, LAST_ORDER_TICKET, SLOT_ERROR, SLOT_IDLE,
         SurfaceOrderMeasurementFailureReason, SurfaceTimingSource, next_namespaced_ticket,
         timestamp_delta_ms,
     };
@@ -865,59 +743,6 @@ mod tests {
         assert_eq!(poll.completed[0].sort_ms, 2.5);
         assert!(poll.completed[0].frame_complete_ms.is_finite());
         assert!(poll.completed[0].frame_complete_ms >= 0.0);
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    #[test]
-    fn cpu_completion_readback_reports_distinct_candidate_contributor_and_drawn_counts() {
-        let Some((device, queue, _)) = test_device(false) else {
-            eprintln!("skipping CPU count telemetry test; adapter unavailable");
-            return;
-        };
-        let candidate = indirect_args(&device, 257);
-        let contributor = indirect_args(&device, 193);
-        let drawn = indirect_args(&device, 193);
-        let mut telemetry = CpuOrderCompletionTelemetry::new(&device);
-        let ticket = telemetry
-            .begin_sample_with_counts(
-                18,
-                1.0,
-                2.0,
-                FrameInstanceCounts {
-                    candidate_visible: 1,
-                    contributor: 1,
-                    drawn: 1,
-                    exact_contributor_compaction: false,
-                },
-            )
-            .expect("fresh CPU count telemetry slot");
-        let started = timer_now();
-        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("cpu-count-telemetry-test"),
-        });
-        telemetry.encode_count_readback(
-            &mut encoder,
-            &ticket,
-            InstanceCountSource::indirect_args(&candidate),
-            InstanceCountSource::indirect_args(&contributor),
-            InstanceCountSource::indirect_args(&drawn),
-            true,
-        );
-        let command_buffer = encoder.finish();
-        telemetry.arm(&command_buffer, ticket, started);
-        queue.submit(Some(command_buffer));
-        device
-            .poll(wgpu::PollType::wait_indefinitely())
-            .expect("wait for CPU count telemetry");
-
-        let poll = telemetry.poll();
-        assert!(poll.failures.is_empty());
-        assert_eq!(poll.completed.len(), 1);
-        let sample = poll.completed[0];
-        assert_eq!(sample.visible_count, 257);
-        assert_eq!(sample.contributor_count, 193);
-        assert_eq!(sample.drawn_count, 193);
-        assert!(sample.exact_contributor_compaction);
     }
 
     #[test]

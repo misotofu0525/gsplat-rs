@@ -357,11 +357,6 @@ impl GpuPrefixScan {
             .encode_forward(encoder, &self.graph, self.pass_labels.scan);
     }
 
-    pub(crate) fn encode_reverse(&self, encoder: &mut wgpu::CommandEncoder) {
-        self.kernel
-            .encode_reverse(encoder, &self.graph, self.pass_labels.add_offsets);
-    }
-
     pub(crate) fn exact_count_buffer_and_offset(&self) -> (&wgpu::Buffer, u64) {
         (
             self.graph.sums.last().expect("scan hierarchy is non-empty"),
