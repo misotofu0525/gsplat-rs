@@ -9,7 +9,7 @@ B1 = Active
 
 <!-- gsplat-program-active-lanes: begin -->
 activation_commit = 3ecf0f2d0180c197faa132443066b3b9b98d36d4
-B1 = surface-depth-precision-carriage
+B1 = surface-depth-precision-presentation-receipt
 <!-- gsplat-program-active-lanes: end -->
 
 ## B0 authoring slice
@@ -205,3 +205,18 @@ Verification for this carriage candidate:
 This remains construction and contract evidence only. Android, browser and
 device performance/image qualification were not run, no endpoint is promoted,
 and B1 remains **Active** pending the root-owned evidence harness.
+
+## B1 surface-depth-precision presentation-receipt slice
+
+The next B1 slice owns only a private diagnostic profile selection and the
+receipt that proves which depth-key precision reached a successfully presented
+Packed Exact Surface frame. The profile is selected once before session
+preparation, defaults to `ExactFull32`, survives resource replacement, and
+does not expand Rust, C, Swift or JavaScript stable APIs. A failed or
+unavailable presentation publishes neither a receipt nor a candidate claim.
+
+This slice deliberately does not change a platform collector, write a benchmark
+artifact, run a browser/device experiment, or judge image quality. Those later
+consumers must join this receipt with their already-presented RGBA capture and
+the canonical Balanced validator. The only purpose here is to establish a
+truthful renderer-owned identity for that future join.

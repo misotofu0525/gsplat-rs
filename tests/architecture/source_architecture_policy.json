@@ -8,25 +8,16 @@
       "members": [
         {
           "task": "B1",
-          "lane": "surface-depth-precision-carriage",
+          "lane": "surface-depth-precision-presentation-receipt",
           "write_allowlist": [
             "docs/plans/active/2026-07-23-native-render-balanced/progress.md",
-            "crates/gsplat-render-wgpu/src/cpu_order.rs",
-            "crates/gsplat-render-wgpu/src/cpu/preprocess.rs",
-            "crates/gsplat-render-wgpu/src/cpu/preprocess/packed.rs",
-            "crates/gsplat-render-wgpu/src/cpu/preprocess/scalar.rs",
-            "crates/gsplat-render-wgpu/src/cpu/preprocess/aarch64.rs",
-            "crates/gsplat-render-wgpu/src/cpu/preprocess/x86_64.rs",
-            "crates/gsplat-render-wgpu/src/cpu/workspace.rs",
-            "crates/gsplat-render-wgpu/src/direct_gpu_order.rs",
-            "crates/gsplat-render-wgpu/shaders/direct_gpu_order.wgsl",
-            "crates/gsplat-render-wgpu/shaders/resident_gpu_order_compact.wgsl",
+            "crates/gsplat-render-wgpu/Cargo.toml",
             "crates/gsplat-render-wgpu/src/renderer/mod.rs",
-            "crates/gsplat-render-wgpu/src/renderer/gpu_prepare.rs",
-            "crates/gsplat-render-wgpu/src/scene/runtime.rs",
-            "crates/gsplat-render-wgpu/src/plans/mod.rs",
-            "crates/gsplat-render-wgpu/src/plans/cpu_post.rs",
-            "crates/gsplat-render-wgpu/src/resident_gpu.rs"
+            "crates/gsplat-render-wgpu/src/renderer/facade.rs",
+            "crates/gsplat-render-wgpu/src/surface_session.rs",
+            "crates/gsplat-render-wgpu/src/evidence/mod.rs",
+            "crates/gsplat-render-wgpu/src/evidence/session_publication.rs",
+            "crates/gsplat-render-wgpu/src/surface_session_exact_control_tests.rs"
           ]
         },
         {
@@ -42,10 +33,10 @@
         }
       ],
       "integration_order": [
-        "surface-depth-precision-carriage",
+        "surface-depth-precision-presentation-receipt",
         "bonsai-authority-manifest-admission"
       ],
-      "reason": "B1 private Surface precision carriage and S1 Bonsai authority-manifest admission are independent post-contract seams; neither changes a product default or unlocks later work alone."
+      "reason": "B1 private Surface precision presentation receipt and S1 Bonsai authority-manifest admission are independent post-contract seams; neither changes a product default or unlocks later work alone."
     },
     "task_catalog": {
       "A0": "A",
