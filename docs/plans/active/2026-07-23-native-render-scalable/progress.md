@@ -52,6 +52,35 @@ S0 is Accepted after independent review and root integration (`435d04d`,
 requires its own predeclared, image-gated task contract and cannot make a
 product claim merely by producing a structurally valid hierarchy.
 
+## Current S1 structural checkpoint
+
+The first S1 implementation slice adds the private `gsplat-hierarchy` crate and
+no renderer or product-path integration. Its deterministic offline builder:
+
+- partitions the canonical source sequence into gap-free highest-detail leaf
+  ranges and preserves every source Gaussian, its SH degree and the complete
+  SH3 rest plane bit-for-bit in the complete leaf cut;
+- combines adjacent ranges into a recursive replacement hierarchy, with a
+  finite independently drawable proxy, conservative bounds and monotone
+  geometric error on every interior node;
+- emits one canonical immutable page per node, addressed by the SHA-256 of its
+  bytes, plus a stable versioned manifest encoding;
+- validates root reachability, acyclicity, unique parent ownership, recursive
+  child partition, page identity and the S0 recursive cut predicate before any
+  public cut materialization; graph validation uses an explicit stack so a
+  malformed cycle cannot consume the native call stack.
+
+The deterministic fixture proves repeated builds are byte-identical,
+`{A1,A2,B}` and `{A,B}` are valid, a missing sibling is rejected, an
+ancestor/descendant pair is rejected, and the full leaf cut exactly restores
+the authored non-zero SH3 source sequence. Tampered pages, cycles, duplicate
+roots and overlapping leaf ranges fail closed, while canonical manifest bytes
+are independent of root/page input order. These are structural results only.
+No frozen camera/reference image, numeric proxy-quality threshold or image-gate
+run is part of this slice, so **S1 remains Active** and S2--S5 remain locked.
+The interior proxy authoring rule is not eligible for a quality or product
+claim until that separately predeclared visual gate exists and passes.
+
 ## Ordered implementation ledger
 
 | Task | State in this candidate | Independent result |

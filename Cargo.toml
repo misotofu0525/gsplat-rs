@@ -1,6 +1,7 @@
 [workspace]
 members = [
   "crates/gsplat-core",
+  "crates/gsplat-hierarchy",
   "crates/gsplat-io-ply",
   "crates/gsplat-io-spz",
   "crates/gsplat-sort",

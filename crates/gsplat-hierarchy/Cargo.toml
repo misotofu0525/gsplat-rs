@@ -1,0 +1,13 @@
+[package]
+name = "gsplat-hierarchy"
+version = "0.1.3"
+description = "Offline-authored replacement hierarchy primitives for gsplat-rs."
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+sha2.workspace = true
