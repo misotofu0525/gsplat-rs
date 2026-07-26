@@ -395,3 +395,81 @@ collector, binding, ABI, shader, plan, Adaptive policy or product default was
 changed. This bridge makes no image-quality, performance or endpoint claim.
 B1 remains **Active** pending separately scoped desktop/Metal host integration,
 formal artifact validation and endpoint evidence.
+
+## B1 desktop diagnostic receipt-host implementation
+
+Implementation on baseline `2adf2a38ff2a9272f85ff267f7ae81174b37fcfe`
+adds two default-disabled desktop package features. The receipt-host feature
+depends on `interactive-viewer` and forwards the renderer's native diagnostic
+capture-receipt bridge; the separate Candidate24 feature depends on that host
+feature and forwards the renderer Candidate24 diagnostic. Both remain outside
+ordinary/default builds, and a diagnostic-feature desktop build is rejected
+for `wasm32`.
+
+The native-only `--surface-diagnostic-capture-receipt` flag is accepted only
+when the receipt-host feature is compiled and only with the existing strict
+`--surface-evidence-plan` contract. A Candidate24 desktop binary rejects every
+non-help execution without that flag, so it cannot silently run without
+receipt output. Exact diagnostic builds use the same flag without enabling the
+Candidate24 feature; ordinary M2b invocations retain the pixels-only take and
+existing log behavior.
+
+After the final capture presentation, diagnostic mode immediately consumes
+`take_diagnostic_surface_capture_receipt()` and stores that returned DTO as the
+pending capture value. It never falls back to `take_surface_capture()` on an
+absent, failed, or repeated diagnostic take. Once the existing current-stats
+terminal also validates, the host writes the unchanged PNG and M2b capture
+record, then emits exactly one `SURFACE_DIAGNOSTIC_CAPTURE_RECEIPT` line. Its
+profile, five frame identity values, plan ID, order generation, presentation
+sequence, dimensions, and SHA-256 over the returned RGBA8 bytes all derive
+only from the immutable DTO; no current/latest session state substitutes for
+those fields.
+
+Focused verification passed:
+
+- `cargo test -p desktop-example --locked --bin desktop-example`: 18 passed;
+- the same unit-test command with
+  `--features diagnostic-surface-capture-receipt`: 28 passed;
+- the same unit-test command with
+  `--features diagnostic-surface-depth-key-candidate24`: 19 passed;
+- locked desktop checks passed for `interactive-viewer`, the receipt-host
+  feature, and the Candidate24 feature combination;
+- `cargo fmt --check` and `git diff --check` passed;
+- `PYTHONDONTWRITEBYTECODE=1 python3 tests/perf/test_desktop_surface_evidence.py`:
+  26 passed;
+- `PYTHONDONTWRITEBYTECODE=1 python3 tests/architecture/test_source_architecture.py`:
+  3 passed.
+
+One initial package-wide diagnostic-feature test command unintentionally
+included the existing `surface_geometry_entry` harness, which selected the
+local Apple M4 Metal adapter and printed its smoke PASS. That out-of-scope run
+is excluded from this slice's acceptance evidence and establishes no formal
+Metal, image-quality, performance, or collector result. No collector,
+artifact writer, browser, Android, iOS, binding, ABI, shader, renderer policy,
+or product default was changed. Formal desktop Metal collection and all other
+endpoint/device qualification remain **Deferred** to separately authorized
+tasks; B1 remains **Active**.
+
+Fixed-SHA review then rejected a test-only parser bypass because it obscured
+the Candidate24 runtime gate. The repair removes that bypass completely:
+every production and test call now uses the same `Args::parse`, and every
+successful Candidate24 parse requires
+`--surface-diagnostic-capture-receipt`. Since that flag in turn requires the
+strict `--surface-evidence-plan` contract, ordinary `--interactive` and other
+receipt-less Candidate24 executions fail closed. Candidate-incompatible
+ordinary success cases are excluded under that feature rather than parsed
+through alternate semantics; direct tests cover empty arguments, ordinary
+`--interactive`, strict evidence without the flag, and the one valid strict
+receipt-host combination.
+
+A subsequent fixed-SHA review rejected independent publication of the
+validated current-stats terminal and diagnostic capture DTO. The repaired host
+now builds both join identities and compares them before updating terminal
+state, writing the PNG, or printing either capture record. The gate requires
+equal scene, camera, viewport, contract and plan-set identity; the renderer
+plan maps to the exact DTO plan name; order generation and presentation
+sequence match; and capture dimensions equal the requested evidence
+resolution. Any mismatch returns an error and publishes nothing. Pure tests
+cover a complete match plus every individual identity, plan, order,
+presentation and dimension mismatch. No renderer, FFI or public API changed,
+and no endpoint was run for this repair.

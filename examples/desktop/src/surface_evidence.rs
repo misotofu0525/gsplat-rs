@@ -12,6 +12,11 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[cfg(all(
+    feature = "diagnostic-surface-capture-receipt",
+    not(target_arch = "wasm32")
+))]
+use gsplat_render_wgpu::DiagnosticSurfaceCaptureReceipt;
 use gsplat_render_wgpu::{
     SurfaceCurrentStatsCountSemantics, SurfaceCurrentStatsPlan, SurfaceCurrentStatsPoll,
     SurfaceCurrentStatsReceipt, SurfaceCurrentStatsRequest, SurfaceCurrentStatsSubmission,
@@ -19,6 +24,11 @@ use gsplat_render_wgpu::{
     SurfaceFrameOutput, SurfaceGpuOrderProducer, SurfaceOrderBackend, SurfaceOrderBackendUsed,
     SurfaceProjectedDrawExecution, SurfaceRasterExecutionPlan, SurfaceRenderSession,
 };
+#[cfg(all(
+    feature = "diagnostic-surface-capture-receipt",
+    not(target_arch = "wasm32")
+))]
+use sha2::{Digest, Sha256};
 use winit::{
     event::{Event, WindowEvent},
     event_loop::EventLoop,
@@ -83,8 +93,149 @@ enum PendingKind {
     Capture {
         step: SurfaceTraceStep,
         path: PathBuf,
-        capture: SurfaceFrameCapture,
+        capture: PendingCapture,
     },
+}
+
+#[derive(Debug)]
+enum PendingCapture {
+    Ordinary(SurfaceFrameCapture),
+    #[cfg(all(
+        feature = "diagnostic-surface-capture-receipt",
+        not(target_arch = "wasm32")
+    ))]
+    Diagnostic(DiagnosticSurfaceCaptureReceipt),
+}
+
+#[cfg(all(
+    feature = "diagnostic-surface-capture-receipt",
+    not(target_arch = "wasm32")
+))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct DiagnosticCaptureJoinIdentity {
+    scene_generation: u64,
+    camera_revision: u64,
+    viewport_generation: u64,
+    contract_generation: u64,
+    plan_set_generation: u64,
+    plan_id: &'static str,
+    order_generation: u64,
+    presentation_sequence: u64,
+    width: u32,
+    height: u32,
+}
+
+#[cfg(all(
+    feature = "diagnostic-surface-capture-receipt",
+    not(target_arch = "wasm32")
+))]
+impl DiagnosticCaptureJoinIdentity {
+    fn from_capture(receipt: &DiagnosticSurfaceCaptureReceipt) -> Self {
+        let frame = receipt.frame_identity();
+        Self {
+            scene_generation: frame.scene_generation(),
+            camera_revision: frame.camera_revision(),
+            viewport_generation: frame.viewport_generation(),
+            contract_generation: frame.contract_generation(),
+            plan_set_generation: frame.plan_set_generation(),
+            plan_id: receipt.plan_id(),
+            order_generation: receipt.order_generation(),
+            presentation_sequence: receipt.presentation_sequence(),
+            width: receipt.width(),
+            height: receipt.height(),
+        }
+    }
+
+    fn from_current_stats(
+        receipt: &SurfaceCurrentStatsReceipt,
+        requested_size: (u32, u32),
+    ) -> Self {
+        let join = receipt.submission().join();
+        let frame = join.frame_identity();
+        Self {
+            scene_generation: frame.scene_generation(),
+            camera_revision: frame.camera_revision(),
+            viewport_generation: frame.viewport_generation(),
+            contract_generation: frame.contract_generation(),
+            plan_set_generation: frame.plan_set_generation(),
+            plan_id: diagnostic_plan_id(join.executed_plan()),
+            order_generation: join.order_generation(),
+            presentation_sequence: join.presentation_sequence(),
+            width: requested_size.0,
+            height: requested_size.1,
+        }
+    }
+}
+
+#[cfg(all(
+    feature = "diagnostic-surface-capture-receipt",
+    not(target_arch = "wasm32")
+))]
+#[derive(Debug, PartialEq, Eq)]
+struct DiagnosticCaptureReceiptRecord {
+    profile: &'static str,
+    scene_generation: u64,
+    camera_revision: u64,
+    viewport_generation: u64,
+    contract_generation: u64,
+    plan_set_generation: u64,
+    plan_id: &'static str,
+    order_generation: u64,
+    presentation_sequence: u64,
+    width: u32,
+    height: u32,
+    rgba8_sha256: String,
+}
+
+#[cfg(all(
+    feature = "diagnostic-surface-capture-receipt",
+    not(target_arch = "wasm32")
+))]
+impl DiagnosticCaptureReceiptRecord {
+    fn from_receipt(receipt: &DiagnosticSurfaceCaptureReceipt) -> Self {
+        let frame = receipt.frame_identity();
+        let rgba8_sha256 = rgba8_sha256(receipt.rgba8());
+        Self {
+            profile: receipt.depth_precision_profile(),
+            scene_generation: frame.scene_generation(),
+            camera_revision: frame.camera_revision(),
+            viewport_generation: frame.viewport_generation(),
+            contract_generation: frame.contract_generation(),
+            plan_set_generation: frame.plan_set_generation(),
+            plan_id: receipt.plan_id(),
+            order_generation: receipt.order_generation(),
+            presentation_sequence: receipt.presentation_sequence(),
+            width: receipt.width(),
+            height: receipt.height(),
+            rgba8_sha256,
+        }
+    }
+
+    fn line(&self) -> String {
+        format!(
+            "SURFACE_DIAGNOSTIC_CAPTURE_RECEIPT profile={} scene_generation={} camera_revision={} viewport_generation={} contract_generation={} plan_set_generation={} plan_id={} order_generation={} presentation_sequence={} width={} height={} rgba8_sha256={}",
+            self.profile,
+            self.scene_generation,
+            self.camera_revision,
+            self.viewport_generation,
+            self.contract_generation,
+            self.plan_set_generation,
+            self.plan_id,
+            self.order_generation,
+            self.presentation_sequence,
+            self.width,
+            self.height,
+            self.rgba8_sha256,
+        )
+    }
+}
+
+#[cfg(all(
+    feature = "diagnostic-surface-capture-receipt",
+    not(target_arch = "wasm32")
+))]
+fn rgba8_sha256(rgba8: &[u8]) -> String {
+    format!("{:x}", Sha256::digest(rgba8))
 }
 
 #[derive(Debug)]
@@ -139,6 +290,7 @@ pub(crate) fn run(
         .png_out
         .clone()
         .ok_or_else(|| "surface evidence capture path is missing".to_owned())?;
+    let diagnostic_capture_receipt = args.surface_diagnostic_capture_receipt;
     let steps = surface_trace_steps(playback)?;
     let capture_step = steps
         .last()
@@ -304,6 +456,24 @@ pub(crate) fn run(
                                     return;
                                 }
                             };
+                            #[cfg(all(
+                                feature = "diagnostic-surface-capture-receipt",
+                                not(target_arch = "wasm32")
+                            ))]
+                            if let PendingKind::Capture {
+                                capture: PendingCapture::Diagnostic(capture_receipt),
+                                ..
+                            } = &waiting.kind
+                                && let Err(message) = validate_diagnostic_capture_join(
+                                    capture_receipt,
+                                    &receipt,
+                                    identity.resolution.requested,
+                                )
+                            {
+                                store_error(&shared_error, message);
+                                target.exit();
+                                return;
+                            }
                             actual_plans.insert(plan_label(receipt.submission().join().executed_plan()));
                             match waiting.kind {
                                 PendingKind::Frame(step) => {
@@ -323,24 +493,61 @@ pub(crate) fn run(
                                     path,
                                     capture,
                                 } => {
-                                    if let Err(message) = write_png(
-                                        &path,
-                                        capture.width,
-                                        capture.height,
-                                        &capture.rgba8,
-                                    ) {
-                                        store_error(&shared_error, message);
-                                        target.exit();
-                                        return;
+                                    match capture {
+                                        PendingCapture::Ordinary(capture) => {
+                                            if let Err(message) = write_png(
+                                                &path,
+                                                capture.width,
+                                                capture.height,
+                                                &capture.rgba8,
+                                            ) {
+                                                store_error(&shared_error, message);
+                                                target.exit();
+                                                return;
+                                            }
+                                            print_capture(
+                                                &identity,
+                                                step,
+                                                waiting.output,
+                                                &path,
+                                                capture.width,
+                                                capture.height,
+                                                receipt,
+                                            );
+                                        }
+                                        #[cfg(all(
+                                            feature = "diagnostic-surface-capture-receipt",
+                                            not(target_arch = "wasm32")
+                                        ))]
+                                        PendingCapture::Diagnostic(capture_receipt) => {
+                                            if let Err(message) = write_png(
+                                                &path,
+                                                capture_receipt.width(),
+                                                capture_receipt.height(),
+                                                capture_receipt.rgba8(),
+                                            ) {
+                                                store_error(&shared_error, message);
+                                                target.exit();
+                                                return;
+                                            }
+                                            print_capture(
+                                                &identity,
+                                                step,
+                                                waiting.output,
+                                                &path,
+                                                capture_receipt.width(),
+                                                capture_receipt.height(),
+                                                receipt,
+                                            );
+                                            println!(
+                                                "{}",
+                                                DiagnosticCaptureReceiptRecord::from_receipt(
+                                                    &capture_receipt
+                                                )
+                                                .line()
+                                            );
+                                        }
                                     }
-                                    print_capture(
-                                        &identity,
-                                        step,
-                                        waiting.output,
-                                        &path,
-                                        &capture,
-                                        receipt,
-                                    );
                                     terminal_outcome.mark_capture_complete();
                                 }
                             }
@@ -431,7 +638,10 @@ pub(crate) fn run(
                     return;
                 }
                 let capture = if capture_attempt {
-                    match session.take_surface_capture() {
+                    match take_pending_capture(
+                        &mut session,
+                        diagnostic_capture_receipt,
+                    ) {
                         Ok(capture) => Some(capture),
                         Err(error) => {
                             store_error(
@@ -712,7 +922,8 @@ fn print_capture(
     step: SurfaceTraceStep,
     output: SurfaceFrameOutput,
     path: &Path,
-    capture: &SurfaceFrameCapture,
+    captured_width: u32,
+    captured_height: u32,
     receipt: SurfaceCurrentStatsReceipt,
 ) {
     let submission = receipt.submission();
@@ -737,10 +948,83 @@ fn print_capture(
         backend_label(output.order_backend),
         identity.resolution.requested.0,
         identity.resolution.requested.1,
-        capture.width,
-        capture.height,
+        captured_width,
+        captured_height,
         output.frame_presented,
     );
+}
+
+fn take_pending_capture(
+    session: &mut SurfaceRenderSession,
+    diagnostic: bool,
+) -> Result<PendingCapture, String> {
+    #[cfg(all(
+        feature = "diagnostic-surface-capture-receipt",
+        not(target_arch = "wasm32")
+    ))]
+    if diagnostic {
+        return session
+            .take_diagnostic_surface_capture_receipt()
+            .map(PendingCapture::Diagnostic)
+            .map_err(|error| error.to_string());
+    }
+
+    if diagnostic {
+        return Err("diagnostic Surface capture receipt support is unavailable".to_owned());
+    }
+    session
+        .take_surface_capture()
+        .map(PendingCapture::Ordinary)
+        .map_err(|error| error.to_string())
+}
+
+#[cfg(all(
+    feature = "diagnostic-surface-capture-receipt",
+    not(target_arch = "wasm32")
+))]
+fn validate_diagnostic_capture_join(
+    capture: &DiagnosticSurfaceCaptureReceipt,
+    current_stats: &SurfaceCurrentStatsReceipt,
+    requested_size: (u32, u32),
+) -> Result<(), String> {
+    validate_diagnostic_capture_join_identity(
+        DiagnosticCaptureJoinIdentity::from_capture(capture),
+        DiagnosticCaptureJoinIdentity::from_current_stats(current_stats, requested_size),
+    )
+}
+
+#[cfg(all(
+    feature = "diagnostic-surface-capture-receipt",
+    not(target_arch = "wasm32")
+))]
+fn validate_diagnostic_capture_join_identity(
+    diagnostic: DiagnosticCaptureJoinIdentity,
+    current_stats: DiagnosticCaptureJoinIdentity,
+) -> Result<(), String> {
+    macro_rules! require_match {
+        ($field:ident) => {
+            if diagnostic.$field != current_stats.$field {
+                return Err(format!(
+                    "diagnostic capture/current-stats {} mismatch: diagnostic={:?}, current_stats={:?}",
+                    stringify!($field),
+                    diagnostic.$field,
+                    current_stats.$field,
+                ));
+            }
+        };
+    }
+
+    require_match!(scene_generation);
+    require_match!(camera_revision);
+    require_match!(viewport_generation);
+    require_match!(contract_generation);
+    require_match!(plan_set_generation);
+    require_match!(plan_id);
+    require_match!(order_generation);
+    require_match!(presentation_sequence);
+    require_match!(width);
+    require_match!(height);
+    Ok(())
 }
 
 fn store_error(slot: &Mutex<Option<String>>, message: String) {
@@ -754,6 +1038,18 @@ const fn plan_label(plan: SurfaceCurrentStatsPlan) -> &'static str {
         SurfaceCurrentStatsPlan::CpuPostSort => "cpu_post_sort",
         SurfaceCurrentStatsPlan::GpuPostSort => "gpu_post_sort",
         SurfaceCurrentStatsPlan::GpuPreproject => "gpu_preproject",
+    }
+}
+
+#[cfg(all(
+    feature = "diagnostic-surface-capture-receipt",
+    not(target_arch = "wasm32")
+))]
+const fn diagnostic_plan_id(plan: SurfaceCurrentStatsPlan) -> &'static str {
+    match plan {
+        SurfaceCurrentStatsPlan::CpuPostSort => "CpuPostSort",
+        SurfaceCurrentStatsPlan::GpuPostSort => "GpuPostSort",
+        SurfaceCurrentStatsPlan::GpuPreproject => "GpuPreproject",
     }
 }
 
@@ -812,6 +1108,137 @@ fn nonempty_adapter_field(value: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(all(
+        feature = "diagnostic-surface-capture-receipt",
+        not(target_arch = "wasm32")
+    ))]
+    #[test]
+    fn diagnostic_capture_receipt_record_is_stable_and_hashes_rgba8_bytes() {
+        assert_eq!(
+            rgba8_sha256(b"abc"),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+
+        let record = DiagnosticCaptureReceiptRecord {
+            profile: "CandidateStable24",
+            scene_generation: 1,
+            camera_revision: 2,
+            viewport_generation: 3,
+            contract_generation: 4,
+            plan_set_generation: 5,
+            plan_id: "GpuPostSort",
+            order_generation: 6,
+            presentation_sequence: 7,
+            width: 1920,
+            height: 1080,
+            rgba8_sha256: "feed".to_owned(),
+        };
+        assert_eq!(
+            record.line(),
+            "SURFACE_DIAGNOSTIC_CAPTURE_RECEIPT profile=CandidateStable24 scene_generation=1 camera_revision=2 viewport_generation=3 contract_generation=4 plan_set_generation=5 plan_id=GpuPostSort order_generation=6 presentation_sequence=7 width=1920 height=1080 rgba8_sha256=feed"
+        );
+    }
+
+    #[cfg(all(
+        feature = "diagnostic-surface-capture-receipt",
+        not(target_arch = "wasm32")
+    ))]
+    #[test]
+    fn diagnostic_capture_join_identity_matches_all_keys_fail_closed() {
+        let expected = DiagnosticCaptureJoinIdentity {
+            scene_generation: 1,
+            camera_revision: 2,
+            viewport_generation: 3,
+            contract_generation: 4,
+            plan_set_generation: 5,
+            plan_id: "GpuPostSort",
+            order_generation: 6,
+            presentation_sequence: 7,
+            width: 1920,
+            height: 1080,
+        };
+        assert!(validate_diagnostic_capture_join_identity(expected, expected).is_ok());
+
+        for (actual, key) in [
+            (
+                DiagnosticCaptureJoinIdentity {
+                    scene_generation: 8,
+                    ..expected
+                },
+                "scene_generation",
+            ),
+            (
+                DiagnosticCaptureJoinIdentity {
+                    camera_revision: 8,
+                    ..expected
+                },
+                "camera_revision",
+            ),
+            (
+                DiagnosticCaptureJoinIdentity {
+                    viewport_generation: 8,
+                    ..expected
+                },
+                "viewport_generation",
+            ),
+            (
+                DiagnosticCaptureJoinIdentity {
+                    contract_generation: 8,
+                    ..expected
+                },
+                "contract_generation",
+            ),
+            (
+                DiagnosticCaptureJoinIdentity {
+                    plan_set_generation: 8,
+                    ..expected
+                },
+                "plan_set_generation",
+            ),
+            (
+                DiagnosticCaptureJoinIdentity {
+                    plan_id: "GpuPreproject",
+                    ..expected
+                },
+                "plan_id",
+            ),
+            (
+                DiagnosticCaptureJoinIdentity {
+                    order_generation: 8,
+                    ..expected
+                },
+                "order_generation",
+            ),
+            (
+                DiagnosticCaptureJoinIdentity {
+                    presentation_sequence: 8,
+                    ..expected
+                },
+                "presentation_sequence",
+            ),
+            (
+                DiagnosticCaptureJoinIdentity {
+                    width: 1280,
+                    ..expected
+                },
+                "width",
+            ),
+            (
+                DiagnosticCaptureJoinIdentity {
+                    height: 720,
+                    ..expected
+                },
+                "height",
+            ),
+        ] {
+            assert!(
+                validate_diagnostic_capture_join_identity(actual, expected)
+                    .unwrap_err()
+                    .contains(key)
+            );
+        }
+    }
 
     #[test]
     fn requested_plan_labels_are_closed_and_stable() {

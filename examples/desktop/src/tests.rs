@@ -9,12 +9,12 @@ use gsplat_render_wgpu::{
     SurfaceGpuProducerMeasurement, SurfaceOrderBackendUsed,
 };
 
-use crate::cli::{
-    Args, SurfaceBenchmarkMode, SurfaceEvidencePlanArg, SurfaceSortPolicyArg,
-    validate_surface_trace_geometry,
-};
+use crate::cli::{Args, SurfaceBenchmarkMode, SurfaceEvidencePlanArg};
+#[cfg(not(feature = "diagnostic-surface-depth-key-candidate24"))]
+use crate::cli::{SurfaceSortPolicyArg, validate_surface_trace_geometry};
 use crate::image_output::write_png;
 use crate::scene::{auto_camera, load_ply_path_into_renderer, scene_bounds};
+#[cfg(not(feature = "diagnostic-surface-depth-key-candidate24"))]
 use crate::trace::{CameraTracePlayback, load_camera_trace};
 #[cfg(feature = "interactive-viewer")]
 use crate::viewer::{
@@ -238,6 +238,7 @@ fn packed_path_loader_does_not_publish_a_partially_decoded_scene() {
     assert_eq!(renderer.scene_len(), Some(original_positions.len()));
 }
 
+#[cfg(not(feature = "diagnostic-surface-depth-key-candidate24"))]
 #[test]
 fn args_parse_defaults_to_minimal_dataset() {
     let args = parse_args(&[]).unwrap();
@@ -259,6 +260,7 @@ fn args_parse_defaults_to_minimal_dataset() {
     assert_eq!(args.surface_sort_policy, SurfaceSortPolicyArg::EveryFrame);
     assert_eq!(args.surface_gpu_producer, None);
     assert_eq!(args.surface_evidence_plan, None);
+    assert!(!args.surface_diagnostic_capture_receipt);
     assert!(args.png_out.is_none());
     assert!(args.camera_trace_path.is_none());
     assert_eq!(args.camera_frame, 0);
@@ -269,6 +271,7 @@ fn args_parse_defaults_to_minimal_dataset() {
     assert_eq!(args.camera_loops, 1);
 }
 
+#[cfg(not(feature = "diagnostic-surface-depth-key-candidate24"))]
 #[test]
 fn args_parse_flags_and_clamps_frames() {
     let args = parse_args(&[
@@ -313,6 +316,7 @@ fn args_parse_rejects_unknown_and_extra_args() {
     assert!(err.contains("unexpected extra arg: b.ply"));
 }
 
+#[cfg(not(feature = "diagnostic-surface-depth-key-candidate24"))]
 #[test]
 fn args_parse_surface_order_backends_and_rejects_non_surface_gpu() {
     for (label, expected) in [
@@ -458,6 +462,7 @@ fn args_parse_rejects_retired_surface_raster_plan() {
     assert!(!help.contains("  --surface-raster-plan"));
 }
 
+#[cfg(not(feature = "diagnostic-surface-depth-key-candidate24"))]
 #[test]
 fn interactive_png_is_restricted_to_explicit_producer_trace_benchmarks() {
     assert!(
@@ -518,7 +523,7 @@ fn surface_evidence_plan_is_a_closed_fail_closed_cli() {
             SurfaceOrderBackend::Adaptive,
         ),
     ] {
-        let args = parse_args(&[
+        let values = vec![
             "--interactive",
             "--camera-trace",
             CAMERA_TRACE_FIXTURE,
@@ -526,8 +531,14 @@ fn surface_evidence_plan_is_a_closed_fail_closed_cli() {
             label,
             "--png",
             "target/capture.png",
-        ])
-        .unwrap();
+        ];
+        #[cfg(feature = "diagnostic-surface-depth-key-candidate24")]
+        let values = {
+            let mut values = values;
+            values.push("--surface-diagnostic-capture-receipt");
+            values
+        };
+        let args = parse_args(&values).unwrap();
         assert_eq!(args.surface_evidence_plan, Some(expected));
         assert_eq!(args.order_backend, backend);
     }
@@ -576,6 +587,82 @@ fn surface_evidence_plan_is_a_closed_fail_closed_cli() {
     }
 }
 
+#[cfg(not(feature = "diagnostic-surface-capture-receipt"))]
+#[test]
+fn diagnostic_surface_capture_receipt_flag_is_unavailable_without_feature() {
+    assert!(
+        parse_args(&["--surface-diagnostic-capture-receipt"])
+            .unwrap_err()
+            .contains("unknown flag")
+    );
+}
+
+#[cfg(feature = "diagnostic-surface-capture-receipt")]
+#[test]
+fn diagnostic_surface_capture_receipt_flag_requires_strict_surface_evidence() {
+    assert!(
+        parse_args(&["--surface-diagnostic-capture-receipt"])
+            .unwrap_err()
+            .contains("requires --surface-evidence-plan")
+    );
+
+    let args = parse_args(&[
+        "--interactive",
+        "--camera-trace",
+        CAMERA_TRACE_FIXTURE,
+        "--surface-evidence-plan",
+        "gpu-post-sort",
+        "--surface-diagnostic-capture-receipt",
+        "--png",
+        "target/capture.png",
+    ])
+    .unwrap();
+    assert!(args.surface_diagnostic_capture_receipt);
+}
+
+#[cfg(feature = "diagnostic-surface-depth-key-candidate24")]
+#[test]
+fn candidate24_desktop_execution_requires_diagnostic_receipt_flag() {
+    for values in [vec![], vec!["--interactive"]] {
+        let error = Args::parse(values.into_iter().map(str::to_owned)).unwrap_err();
+        assert!(error.contains("Candidate24 desktop execution requires"));
+    }
+
+    let error = Args::parse(
+        [
+            "--interactive",
+            "--camera-trace",
+            CAMERA_TRACE_FIXTURE,
+            "--surface-evidence-plan",
+            "gpu-post-sort",
+            "--png",
+            "target/capture.png",
+        ]
+        .into_iter()
+        .map(str::to_owned),
+    )
+    .unwrap_err();
+    assert!(error.contains("Candidate24 desktop execution requires"));
+
+    let args = Args::parse(
+        [
+            "--interactive",
+            "--camera-trace",
+            CAMERA_TRACE_FIXTURE,
+            "--surface-evidence-plan",
+            "gpu-post-sort",
+            "--surface-diagnostic-capture-receipt",
+            "--png",
+            "target/capture.png",
+        ]
+        .into_iter()
+        .map(str::to_owned),
+    )
+    .unwrap();
+    assert!(args.surface_diagnostic_capture_receipt);
+}
+
+#[cfg(not(feature = "diagnostic-surface-depth-key-candidate24"))]
 #[test]
 fn fixed_camera_trace_sets_contract_display_and_selected_frame() {
     let mut args = parse_args(&[
@@ -599,6 +686,7 @@ fn fixed_camera_trace_sets_contract_display_and_selected_frame() {
     );
 }
 
+#[cfg(not(feature = "diagnostic-surface-depth-key-candidate24"))]
 #[test]
 fn fixed_camera_trace_rejects_conflicting_controls_and_display() {
     let mut args = parse_args(&["--camera-trace", CAMERA_TRACE_FIXTURE, "--orbit"]).unwrap();
@@ -641,6 +729,7 @@ fn fixed_camera_trace_rejects_conflicting_controls_and_display() {
     );
 }
 
+#[cfg(not(feature = "diagnostic-surface-depth-key-candidate24"))]
 #[test]
 fn throughput_surface_benchmark_requires_a_trace_but_accepts_a_fixed_pose() {
     let mut no_trace =
@@ -669,6 +758,7 @@ fn throughput_surface_benchmark_requires_a_trace_but_accepts_a_fixed_pose() {
     ));
 }
 
+#[cfg(not(feature = "diagnostic-surface-depth-key-candidate24"))]
 #[test]
 fn trace_sequence_defaults_to_each_revision_once_and_accepts_explicit_schedule() {
     let mut args =
@@ -717,6 +807,7 @@ fn trace_sequence_defaults_to_each_revision_once_and_accepts_explicit_schedule()
     ));
 }
 
+#[cfg(not(feature = "diagnostic-surface-depth-key-candidate24"))]
 #[test]
 fn trace_sequence_rejects_fixed_only_and_duplicate_controls() {
     let mut args = parse_args(&[
@@ -749,6 +840,7 @@ fn trace_sequence_rejects_fixed_only_and_duplicate_controls() {
 }
 
 #[cfg(feature = "interactive-viewer")]
+#[cfg(not(feature = "diagnostic-surface-depth-key-candidate24"))]
 #[test]
 fn surface_trace_schedule_preserves_warmup_measurement_and_loop_order() {
     let mut fixed_args = parse_args(&[

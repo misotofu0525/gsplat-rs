@@ -442,6 +442,7 @@ dependencies = [
  "gsplat-render-wgpu",
  "png",
  "pollster",
+ "sha2",
  "wgpu",
  "winit",
 ]

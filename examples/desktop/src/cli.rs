@@ -3,6 +3,15 @@ use std::path::PathBuf;
 use gsplat_core::{RenderMode, RendererConfig};
 use gsplat_render_wgpu::{GeometryPath, SurfaceGpuOrderProducer, SurfaceOrderBackend};
 
+#[cfg(all(
+    target_arch = "wasm32",
+    any(
+        feature = "diagnostic-surface-capture-receipt",
+        feature = "diagnostic-surface-depth-key-candidate24"
+    )
+))]
+compile_error!("desktop diagnostic Surface capture receipts are native-only");
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) enum SurfaceBenchmarkMode {
     #[default]
@@ -88,6 +97,17 @@ pub(crate) struct Args {
     /// Enables the strict M2b real-window current-stats/capture path.
     #[cfg_attr(not(feature = "interactive-viewer"), allow(dead_code))]
     pub(crate) surface_evidence_plan: Option<SurfaceEvidencePlanArg>,
+    /// Takes the atomic diagnostic capture/receipt pair in the strict native
+    /// Surface evidence host. The package feature and CLI flag are both
+    /// required so ordinary evidence runs retain their existing behavior.
+    #[cfg_attr(
+        not(all(
+            feature = "diagnostic-surface-capture-receipt",
+            not(target_arch = "wasm32")
+        )),
+        allow(dead_code)
+    )]
+    pub(crate) surface_diagnostic_capture_receipt: bool,
     pub(crate) png_out: Option<PathBuf>,
     pub(crate) camera_trace_path: Option<PathBuf>,
     pub(crate) camera_frame: usize,
@@ -121,6 +141,16 @@ impl Args {
         let mut surface_sort_policy_explicit = false;
         let mut surface_gpu_producer = None;
         let mut surface_evidence_plan = None;
+        #[cfg(all(
+            feature = "diagnostic-surface-capture-receipt",
+            not(target_arch = "wasm32")
+        ))]
+        let mut surface_diagnostic_capture_receipt = false;
+        #[cfg(not(all(
+            feature = "diagnostic-surface-capture-receipt",
+            not(target_arch = "wasm32")
+        )))]
+        let surface_diagnostic_capture_receipt = false;
         let mut order_backend_explicit = false;
         let mut png_out: Option<PathBuf> = None;
         let mut camera_trace_path: Option<PathBuf> = None;
@@ -236,6 +266,13 @@ impl Args {
                         .next()
                         .ok_or_else(|| "missing value for --surface-evidence-plan".to_owned())?;
                     surface_evidence_plan = Some(parse_surface_evidence_plan(&value)?);
+                }
+                #[cfg(all(
+                    feature = "diagnostic-surface-capture-receipt",
+                    not(target_arch = "wasm32")
+                ))]
+                "--surface-diagnostic-capture-receipt" => {
+                    surface_diagnostic_capture_receipt = true;
                 }
                 "--png" => {
                     let value = args
@@ -371,6 +408,18 @@ impl Args {
             }
             order_backend = plan.order_backend();
         }
+        if surface_diagnostic_capture_receipt && surface_evidence_plan.is_none() {
+            return Err(
+                "--surface-diagnostic-capture-receipt requires --surface-evidence-plan".to_owned(),
+            );
+        }
+        #[cfg(feature = "diagnostic-surface-depth-key-candidate24")]
+        if !surface_diagnostic_capture_receipt {
+            return Err(
+                "Candidate24 desktop execution requires --surface-diagnostic-capture-receipt"
+                    .to_owned(),
+            );
+        }
         if interactive && png_out.is_some() && camera_trace_path.is_none() {
             return Err(
                 "interactive --png requires --camera-trace Surface benchmark mode".to_owned(),
@@ -401,6 +450,7 @@ impl Args {
             surface_sort_policy,
             surface_gpu_producer,
             surface_evidence_plan,
+            surface_diagnostic_capture_receipt,
             png_out,
             camera_trace_path,
             camera_frame,
@@ -418,7 +468,7 @@ impl Args {
 }
 
 fn usage() -> String {
-    let lines = [
+    let lines = vec![
         "usage: cargo run -p desktop-example -- [dataset.ply] [flags]",
         "",
         "flags:",
@@ -444,6 +494,17 @@ fn usage() -> String {
         "  --camera-measured-frames N measured poses (fixed default: --frames; sequence: selected count)",
         "  --camera-loops N repeat the measured sequence N times (default: 1)",
     ];
+    #[cfg(all(
+        feature = "diagnostic-surface-capture-receipt",
+        not(target_arch = "wasm32")
+    ))]
+    let lines = {
+        let mut lines = lines;
+        lines.push(
+            "  --surface-diagnostic-capture-receipt take the atomic native diagnostic capture receipt",
+        );
+        lines
+    };
     lines.join("\n")
 }
 
