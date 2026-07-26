@@ -35,7 +35,7 @@ use gsplat_render_wgpu::{
     SurfaceGpuProducerMeasurementFailure, SurfaceGpuProducerMeasurementFailureReason,
     SurfaceGpuProducerMeasurementSubmission, SurfaceGpuProducerMeasurementUnsampledReason,
     SurfaceOrderBackend, SurfaceOrderBackendUsed, SurfaceOrderMeasurementFailureReason,
-    SurfaceOrderMeasurementSubmission, SurfaceOrderMeasurementUnsampledReason, SurfacePresenter,
+    SurfaceOrderMeasurementSubmission, SurfaceOrderMeasurementUnsampledReason,
     SurfaceProjectedDrawAdaptiveState, SurfaceProjectedDrawExecution,
     SurfaceProjectedDrawMeasurementFailureReason, SurfaceProjectedDrawMeasurementSubmission,
     SurfaceProjectedDrawMeasurementUnsampledReason, SurfaceProjectedDrawPolicy,
@@ -1920,16 +1920,16 @@ unsafe fn create_uikit_surface_renderer(
 }
 
 fn surface_exactness_receipt(
-    renderer: &Renderer,
-    presenter: &SurfacePresenter,
+    session: &SurfaceRenderSession,
 ) -> Result<GsplatSurfaceExactness, String> {
+    let renderer = session.renderer();
     let source_count = renderer
         .scene_len()
         .ok_or_else(|| "surface exactness source count is unavailable".to_owned())?;
     let source_sh_degree = renderer
         .scene_sh_degree()
         .ok_or_else(|| "surface exactness source SH degree is unavailable".to_owned())?;
-    let addressable_count = presenter.addressable_splat_count();
+    let addressable_count = session.addressable_splat_count();
 
     let (decoded_count, encoded_count, resident_count, resident_sh_degree, quality_flags) =
         match renderer.geometry_path() {
@@ -1987,9 +1987,9 @@ fn surface_exactness_receipt(
         source_sh_degree: u32::from(source_sh_degree),
         resident_sh_degree: u32::from(resident_sh_degree),
         quality_flags,
-        max_storage_buffers_per_shader_stage: presenter
+        max_storage_buffers_per_shader_stage: session
             .adapter_max_storage_buffers_per_shader_stage(),
-        max_storage_buffer_binding_size: presenter.adapter_max_storage_buffer_binding_size(),
+        max_storage_buffer_binding_size: session.adapter_max_storage_buffer_binding_size(),
     })
 }
 
@@ -2199,39 +2199,13 @@ fn surface_camera_receipt(renderer: &GsplatSurfaceRenderer) -> GsplatSurfaceCame
 }
 
 fn create_surface_renderer_from_raw_handles(
-    mut renderer: Renderer,
+    renderer: Renderer,
     raw_display_handle: wgpu::rwh::RawDisplayHandle,
     raw_window_handle: wgpu::rwh::RawWindowHandle,
     width: u32,
     height: u32,
     out_renderer: *mut *mut GsplatSurfaceRenderer,
 ) -> i32 {
-    let presenter = match unsafe {
-        SurfacePresenter::from_raw_handles(
-            raw_display_handle,
-            raw_window_handle,
-            width,
-            height,
-            &renderer,
-        )
-    } {
-        Ok(presenter) => presenter,
-        Err(err) => {
-            log_surface_error(&format!(
-                "SurfacePresenter::from_raw_handles failed: {err:?}"
-            ));
-            return ffi_error_display(err.code(), "SurfacePresenter::from_raw_handles", err);
-        }
-    };
-
-    let exactness = match surface_exactness_receipt(&renderer, &presenter) {
-        Ok(exactness) => exactness,
-        Err(message) => return ffi_error(ErrorCode::Internal, message),
-    };
-    let (surface_width, surface_height) = presenter.surface_size();
-    if let Err(err) = renderer.set_size(surface_width, surface_height) {
-        return ffi_error_display(err.code(), "gsplat_surface_renderer_set_size", err);
-    }
     let camera_control = match auto_surface_camera_control(&renderer) {
         Ok(camera_control) => camera_control,
         Err(code) => {
@@ -2242,11 +2216,28 @@ fn create_surface_renderer_from_raw_handles(
         }
     };
     let camera = surface_camera_from_control(camera_control, renderer.config());
-    let mut session = match SurfaceRenderSession::new(renderer, presenter, camera) {
+    let mut session = match unsafe {
+        SurfaceRenderSession::from_raw_handles(
+            renderer,
+            raw_display_handle,
+            raw_window_handle,
+            width,
+            height,
+            camera,
+        )
+    } {
         Ok(session) => session,
         Err(err) => {
-            return ffi_error_display(err.code(), "gsplat_surface_renderer_create", err);
+            log_surface_error(&format!(
+                "SurfaceRenderSession::from_raw_handles failed: {err:?}"
+            ));
+            return ffi_error_display(err.code(), "SurfaceRenderSession::from_raw_handles", err);
         }
+    };
+
+    let exactness = match surface_exactness_receipt(&session) {
+        Ok(exactness) => exactness,
+        Err(message) => return ffi_error(ErrorCode::Internal, message),
     };
     if session.geometry_path() != GeometryPath::PagedActiveAtlas
         && let Err(err) = session.set_order_backend(SurfaceOrderBackend::Adaptive)

@@ -18,7 +18,7 @@ use gsplat_render_wgpu::{
     SurfaceGpuProducerMeasurementSubmission, SurfaceGpuProducerMeasurementUnsampledReason,
     SurfaceOrderBackend, SurfaceOrderBackendUsed, SurfaceOrderMeasurement,
     SurfaceOrderMeasurementFailure, SurfaceOrderMeasurementFailureReason,
-    SurfaceOrderMeasurementSubmission, SurfaceOrderMeasurementUnsampledReason, SurfacePresenter,
+    SurfaceOrderMeasurementSubmission, SurfaceOrderMeasurementUnsampledReason,
     SurfaceProjectedDrawAdaptiveState, SurfaceProjectedDrawExecution,
     SurfaceProjectedDrawMeasurement, SurfaceProjectedDrawMeasurementFailure,
     SurfaceProjectedDrawMeasurementFailureReason, SurfaceProjectedDrawMeasurementSubmission,
@@ -109,7 +109,7 @@ async fn finish_surface_renderer(
     canvas: HtmlCanvasElement,
     width: u32,
     height: u32,
-    mut renderer: Renderer,
+    renderer: Renderer,
     summary: PlySceneSummary,
     load_receipt: WebLoadReceipt,
 ) -> Result<GsplatWebRenderer, JsValue> {
@@ -124,20 +124,12 @@ async fn finish_surface_renderer(
     let resident_sh_degree = renderer
         .scene_sh_degree()
         .ok_or_else(|| js_error("renderer has no resident SH degree after loading"))?;
-    let presenter = SurfacePresenter::from_canvas(canvas, width, height, &renderer)
-        .await
-        .map_err(|err| js_error(err.to_string()))?;
-    let addressable_count = presenter.addressable_splat_count();
-    let (surface_width, surface_height) = presenter.surface_size();
-    renderer
-        .set_size(surface_width, surface_height)
-        .map_err(renderer_error)?;
-
     let camera_control = auto_surface_camera_control(&renderer).map_err(error_code)?;
     let camera = surface_camera_from_control(camera_control, renderer.config());
-    let session = SurfaceRenderSession::new(renderer, presenter, camera)
+    let session = SurfaceRenderSession::from_canvas(renderer, canvas, width, height, camera)
         .await
         .map_err(renderer_error)?;
+    let addressable_count = session.addressable_splat_count();
 
     Ok(GsplatWebRenderer {
         session,

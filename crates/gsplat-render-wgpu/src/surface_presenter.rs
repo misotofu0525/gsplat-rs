@@ -52,11 +52,6 @@ use crate::{
 #[cfg(not(target_arch = "wasm32"))]
 use crate::{timer_elapsed_ms, timer_now};
 
-struct SurfaceAdapterContext {
-    info: wgpu::AdapterInfo,
-    limits: wgpu::Limits,
-}
-
 pub(crate) struct SurfacePagedRuntime {
     pub(crate) active_set: PagedActiveSet,
     sort_backend: CpuSortBackend,
@@ -113,11 +108,27 @@ impl SurfacePagedRuntime {
     }
 }
 
-pub struct SurfacePresenter {
+/// Surface/device presentation leaves shared with the renderer-owned Exact
+/// runtime. This host deliberately owns no legacy geometry, pipeline, order,
+/// projection, or telemetry graph.
+pub(crate) struct SurfacePresenterHost {
     surface: wgpu::Surface<'static>,
     adapter_info: wgpu::AdapterInfo,
     device: wgpu::Device,
     queue: wgpu::Queue,
+    surface_configuration: SurfaceConfigurationOwner,
+    surface_lifecycle: SurfaceLifecycle,
+    #[cfg(not(target_arch = "wasm32"))]
+    surface_capture: SurfaceCapture,
+    adapter_max_storage_buffers_per_shader_stage: u32,
+    adapter_max_storage_buffer_binding_size: u64,
+    indirect_execution_supported: bool,
+    timestamp_queries_enabled: bool,
+    addressable_splat_count: usize,
+}
+
+pub struct SurfacePresenter {
+    host: SurfacePresenterHost,
     direct_pipeline: wgpu::RenderPipeline,
     direct_bind_group_layout: wgpu::BindGroupLayout,
     packed_pipeline: wgpu::RenderPipeline,
@@ -126,14 +137,6 @@ pub struct SurfacePresenter {
     resident_draw_bind_group_layout: Option<wgpu::BindGroupLayout>,
     resident_color_pipeline: Option<wgpu::ComputePipeline>,
     resident_color_bind_group_layout: Option<wgpu::BindGroupLayout>,
-    surface_configuration: SurfaceConfigurationOwner,
-    surface_lifecycle: SurfaceLifecycle,
-    #[cfg(not(target_arch = "wasm32"))]
-    surface_capture: SurfaceCapture,
-    adapter_max_storage_buffers_per_shader_stage: u32,
-    adapter_max_storage_buffer_binding_size: u64,
-    indirect_execution_supported: bool,
-    addressable_splat_count: usize,
     instance_count: u32,
     geometry: SurfaceGeometry,
     gpu_order_telemetry: GpuOrderTelemetry,
@@ -786,23 +789,9 @@ fn surface_required_device_limits(
     Ok(required_limits)
 }
 
-impl SurfacePresenter {
-    /// Creates a presenter for an owned native window target.
+impl SurfacePresenterHost {
     #[cfg(not(target_arch = "wasm32"))]
-    pub async fn from_window<T>(
-        target: T,
-        width: u32,
-        height: u32,
-        renderer: &Renderer,
-    ) -> Result<Self, SurfacePresenterError>
-    where
-        T: Into<wgpu::SurfaceTarget<'static>>,
-    {
-        Self::from_window_selected(target, width, height, renderer).await
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    async fn from_window_selected<T>(
+    pub(crate) async fn from_window<T>(
         target: T,
         width: u32,
         height: u32,
@@ -818,29 +807,29 @@ impl SurfacePresenter {
         Self::from_surface_async(instance, surface, width, height, renderer).await
     }
 
-    /// Creates a presenter from raw handles supplied by an embedding platform.
-    ///
     /// # Safety
     ///
-    /// The caller must guarantee that the raw display and window handles remain valid until
-    /// after the returned presenter is dropped.
-    pub unsafe fn from_raw_handles(
+    /// The caller must keep both raw handles valid until this host is dropped.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) unsafe fn from_raw_handles(
         raw_display_handle: wgpu::rwh::RawDisplayHandle,
         raw_window_handle: wgpu::rwh::RawWindowHandle,
         width: u32,
         height: u32,
         renderer: &Renderer,
     ) -> Result<Self, SurfacePresenterError> {
-        pollster::block_on(Self::from_raw_handles_selected(
-            raw_display_handle,
-            raw_window_handle,
-            width,
-            height,
-            renderer,
-        ))
+        pollster::block_on(unsafe {
+            Self::from_raw_handles_async(
+                raw_display_handle,
+                raw_window_handle,
+                width,
+                height,
+                renderer,
+            )
+        })
     }
 
-    async fn from_raw_handles_selected(
+    async unsafe fn from_raw_handles_async(
         raw_display_handle: wgpu::rwh::RawDisplayHandle,
         raw_window_handle: wgpu::rwh::RawWindowHandle,
         width: u32,
@@ -855,22 +844,11 @@ impl SurfacePresenter {
             })
         }
         .map_err(|_| SurfacePresenterError::SurfaceCreation)?;
-
         Self::from_surface_async(instance, surface, width, height, renderer).await
     }
 
     #[cfg(target_arch = "wasm32")]
-    pub async fn from_canvas(
-        canvas: web_sys::HtmlCanvasElement,
-        width: u32,
-        height: u32,
-        renderer: &Renderer,
-    ) -> Result<Self, SurfacePresenterError> {
-        Self::from_canvas_selected(canvas, width, height, renderer).await
-    }
-
-    #[cfg(target_arch = "wasm32")]
-    async fn from_canvas_selected(
+    pub(crate) async fn from_canvas(
         canvas: web_sys::HtmlCanvasElement,
         width: u32,
         height: u32,
@@ -893,7 +871,6 @@ impl SurfacePresenter {
         if width == 0 || height == 0 {
             return Err(SurfacePresenterError::InvalidSurfaceSize);
         }
-
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
                 power_preference: wgpu::PowerPreference::HighPerformance,
@@ -902,35 +879,8 @@ impl SurfacePresenter {
             })
             .await
             .map_err(|_| SurfacePresenterError::NoAdapter)?;
-
         let adapter_limits = adapter.limits();
-        let adapter_context = SurfaceAdapterContext {
-            info: adapter.get_info(),
-            limits: adapter_limits,
-        };
-        Self::from_surface_with_adapter_async(
-            adapter,
-            surface,
-            width,
-            height,
-            renderer,
-            adapter_context,
-        )
-        .await
-    }
-
-    async fn from_surface_with_adapter_async(
-        adapter: wgpu::Adapter,
-        surface: wgpu::Surface<'static>,
-        width: u32,
-        height: u32,
-        renderer: &Renderer,
-        adapter_context: SurfaceAdapterContext,
-    ) -> Result<Self, SurfacePresenterError> {
-        let SurfaceAdapterContext {
-            info: adapter_info,
-            limits: adapter_limits,
-        } = adapter_context;
+        let adapter_info = adapter.get_info();
         let adapter_features = adapter.features();
         let downlevel = adapter.get_downlevel_capabilities();
         let indirect_execution_supported = supports_direct_gpu_order(&downlevel);
@@ -938,9 +888,6 @@ impl SurfacePresenter {
             && downlevel
                 .flags
                 .contains(wgpu::DownlevelFlags::NONBLOCKING_QUERY_RESOLVE);
-        // Plan against the adapter's physical limits first. Device creation
-        // then requests only the selected path's exact increase above portable
-        // defaults rather than copying the adapter maximum wholesale.
         let scene_splats = renderer
             .scene_len()
             .ok_or(SurfacePresenterError::SceneNotLoaded)?;
@@ -1002,115 +949,23 @@ impl SurfacePresenter {
             .first()
             .copied()
             .unwrap_or(wgpu::CompositeAlphaMode::Opaque);
-
-        let max_texture_dimension_2d = device.limits().max_texture_dimension_2d.max(1);
-        let (surface_width, surface_height) = (width, height);
-
         let surface_configuration = SurfaceConfigurationOwner::new_configured(
             &surface,
             &device,
             format,
-            surface_width,
-            surface_height,
+            width,
+            height,
             present_mode,
             alpha_mode,
-            max_texture_dimension_2d,
+            device.limits().max_texture_dimension_2d.max(1),
         )
         .await?;
-
-        // Every shared pipeline/layout and the selected geometry is one
-        // unpublished candidate. WebGPU reports constructor failures only
-        // when these async scopes are popped, so do not build or expose any
-        // part of the presenter outside this transaction.
-        let (validation_scope, oom_scope, internal_scope) = (
-            device.push_error_scope(wgpu::ErrorFilter::Validation),
-            device.push_error_scope(wgpu::ErrorFilter::OutOfMemory),
-            device.push_error_scope(wgpu::ErrorFilter::Internal),
-        );
-        let direct_bind_group_layout = create_direct_bind_group_layout(&device);
-        let direct_pipeline = create_direct_pipeline(&device, &direct_bind_group_layout, format);
-        let packed_bind_group_layout = packed_gpu::create_packed_bind_group_layout(&device);
-        let packed_pipeline =
-            packed_gpu::create_packed_pipeline(&device, &packed_bind_group_layout, format);
-        let (
-            resident_draw_bind_group_layout,
-            resident_draw_pipeline,
-            resident_color_bind_group_layout,
-            resident_color_pipeline,
-        ) = if supports_resident_pipeline_layout(&device.limits()) {
-            let draw_layout = resident_gpu::create_resident_draw_bind_group_layout(&device);
-            let draw_pipeline =
-                resident_gpu::create_resident_draw_pipeline(&device, &draw_layout, format);
-            let color_layout = resident_gpu::create_resident_color_bind_group_layout(&device);
-            let color_pipeline =
-                resident_gpu::create_resident_color_pipeline(&device, &color_layout);
-            (
-                Some(draw_layout),
-                Some(draw_pipeline),
-                Some(color_layout),
-                Some(color_pipeline),
-            )
-        } else {
-            (None, None, None, None)
-        };
-        let geometry_result = create_geometry_resources(
-            GeometryResourceContext {
-                device: &device,
-                direct_bind_group_layout: &direct_bind_group_layout,
-                packed_bind_group_layout: &packed_bind_group_layout,
-                resident_draw_bind_group_layout: resident_draw_bind_group_layout.as_ref(),
-                resident_color_bind_group_layout: resident_color_bind_group_layout.as_ref(),
-                surface_format: format,
-                width: surface_width,
-                height: surface_height,
-            },
-            geometry_path,
-            renderer,
-            None,
-        );
-        let gpu_order_telemetry =
-            GpuOrderTelemetry::new(&device, &queue, timestamp_queries_enabled);
-        let cpu_order_completion_telemetry = CpuOrderCompletionTelemetry::new(&device);
-        let projected_draw_telemetry = ProjectedDrawTelemetry::new(&device);
-        let gpu_producer_telemetry = GpuProducerTelemetry::new(&device);
-        let internal_error = internal_scope.pop().await;
-        let oom_error = oom_scope.pop().await;
-        let validation_error = validation_scope.pop().await;
-        if oom_error.is_some() {
-            return Err(SurfacePresenterError::SurfaceOutOfMemory);
-        }
-        if let Some(error) = internal_error.or(validation_error) {
-            return Err(SurfacePresenterError::DeviceCreation(format!(
-                "surface geometry resource creation failed: {error}"
-            )));
-        }
-        let mut geometry = geometry_result?;
-        // Compact is an optional performance graph. Validate it only after the
-        // mandatory Candidate geometry is known-good, and publish it only on
-        // complete success so an OOM/validation failure cannot reject Packed.
-        prepare_optional_projected_compaction(
-            &device,
-            format,
-            indirect_execution_supported,
-            &mut geometry,
-            false,
-        )
-        .await?;
-        let addressable_splat_count = geometry.addressable_splat_count();
 
         Ok(Self {
             surface,
             adapter_info,
             device,
             queue,
-            direct_pipeline,
-            direct_bind_group_layout,
-            packed_pipeline,
-            packed_bind_group_layout,
-            resident_draw_pipeline,
-            resident_draw_bind_group_layout,
-            resident_color_pipeline,
-            resident_color_bind_group_layout,
             surface_configuration,
             surface_lifecycle: SurfaceLifecycle::new(),
             #[cfg(not(target_arch = "wasm32"))]
@@ -1124,103 +979,82 @@ impl SurfacePresenter {
             )
             .min(adapter_limits.max_buffer_size),
             indirect_execution_supported,
-            addressable_splat_count,
-            instance_count: 0,
-            geometry,
-            gpu_order_telemetry,
-            cpu_order_completion_telemetry,
-            projected_draw_telemetry,
-            gpu_producer_telemetry,
-            gpu_order_producer: SurfaceGpuOrderProducer::PostSort,
-            gpu_producer_measurement_enabled: false,
-            last_gpu_producer_submission: TelemetrySubmission::NotRequested,
-            last_actual_gpu_order_producer: None,
-            projected_draw_execution: ProjectedDrawExecution::Compact,
-            projected_probe_generation: 0,
-            projected_draw_sample_request: None,
-            last_projected_draw_submission: TelemetrySubmission::NotRequested,
+            timestamp_queries_enabled,
+            addressable_splat_count: scene_splats,
         })
     }
 
-    pub fn resize(&mut self, width: u32, height: u32) -> Result<(), SurfacePresenterError> {
-        #[cfg(not(target_arch = "wasm32"))]
-        ensure_surface_capture_allows_resize(self.surface_capture.has_pending())?;
-        self.surface_configuration.validate_size(width, height)?;
-        if !self.surface_configuration.resize_required(width, height) {
-            return Ok(());
-        }
-        #[cfg(target_arch = "wasm32")]
-        {
-            Err(SurfacePresenterError::SurfaceResizePreparationRequired)
-        }
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            if let SurfaceGeometry::Packed(packed) = &mut self.geometry {
-                if let Some(tiled) = packed.tiled.as_mut() {
-                    tiled.resize(&self.device, width, height)?;
-                }
-                packed.phase_trace_emitted = 0;
-            }
-            self.surface_configuration
-                .resize_native(&self.surface, &self.device, width, height);
-            if let SurfaceGeometry::Packed(packed) = &mut self.geometry {
-                packed.preproject_state.invalidate_order();
-            }
-            self.gpu_order_telemetry.invalidate_generation();
-            self.cpu_order_completion_telemetry.invalidate_generation();
-            self.projected_draw_telemetry.invalidate_generation();
-            self.gpu_producer_telemetry.invalidate_generation();
-            Ok(())
-        }
+    pub(crate) const fn surface_size(&self) -> (u32, u32) {
+        self.surface_configuration.size()
     }
 
-    /// Transactionally reconfigures the browser Surface for the production
-    /// Packed + Projected path. The published size remains unchanged until all
-    /// WebGPU error scopes complete. A failed attempt reconfigures the old
-    /// descriptor; if that rollback also fails, presentation becomes
-    /// fail-closed until a later successful transactional resize.
+    pub(crate) const fn adapter_info(&self) -> &wgpu::AdapterInfo {
+        &self.adapter_info
+    }
+
+    pub(crate) const fn addressable_splat_count(&self) -> usize {
+        self.addressable_splat_count
+    }
+
+    pub(crate) const fn adapter_max_storage_buffers_per_shader_stage(&self) -> u32 {
+        self.adapter_max_storage_buffers_per_shader_stage
+    }
+
+    pub(crate) const fn adapter_max_storage_buffer_binding_size(&self) -> u64 {
+        self.adapter_max_storage_buffer_binding_size
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn resize(&mut self, width: u32, height: u32) -> Result<(), SurfacePresenterError> {
+        if self.prepare_native_resize(width, height)? {
+            self.commit_native_resize(width, height);
+        }
+        Ok(())
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn prepare_native_resize(
+        &self,
+        width: u32,
+        height: u32,
+    ) -> Result<bool, SurfacePresenterError> {
+        ensure_surface_capture_allows_resize(self.surface_capture.has_pending())?;
+        self.surface_configuration.validate_size(width, height)?;
+        Ok(self.surface_configuration.resize_required(width, height))
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn commit_native_resize(&mut self, width: u32, height: u32) {
+        self.surface_configuration
+            .resize_native(&self.surface, &self.device, width, height);
+    }
+
     #[cfg(target_arch = "wasm32")]
-    pub async fn resize_async(
+    pub(crate) async fn resize_async(
         &mut self,
         width: u32,
         height: u32,
     ) -> Result<(), SurfacePresenterError> {
         self.surface_configuration.validate_size(width, height)?;
-        if !matches!(
-            &self.geometry,
-            SurfaceGeometry::Packed(packed)
-                if packed.raster_plan == SurfaceRasterExecutionPlan::ProjectedQuadsExact
-        ) {
-            return Err(SurfacePresenterError::SurfaceResizeUnsupported);
-        }
         if !self.surface_configuration.resize_required(width, height) {
             return Ok(());
         }
-
         self.surface_configuration
             .resize_transactionally(&self.surface, &self.device, width, height)
             .await?;
         self.surface_lifecycle.begin_frame();
-        if let SurfaceGeometry::Packed(packed) = &mut self.geometry {
-            packed.projected_cache.key = None;
-            packed.preproject_state.invalidate_order();
-            packed.pending = None;
-            packed.pending_gpu = None;
-        }
-        self.gpu_order_telemetry.invalidate_generation();
-        self.cpu_order_completion_telemetry.invalidate_generation();
-        self.projected_draw_telemetry.invalidate_generation();
-        self.gpu_producer_telemetry.invalidate_generation();
         Ok(())
     }
 
-    pub const fn surface_size(&self) -> (u32, u32) {
-        self.surface_configuration.size()
+    pub(crate) fn set_frame_latency(&mut self, latency: u32) -> bool {
+        self.surface_configuration
+            .update_frame_latency(&self.surface, &self.device, latency)
     }
 
-    /// Clones the presenter's existing device/queue handles for one Exact
-    /// runtime candidate. The handles retain the same underlying WGPU owner;
-    /// no adapter, device, queue or Surface is created by the cutover.
+    pub(crate) const fn last_presented_size(&self) -> Option<(u32, u32)> {
+        self.surface_lifecycle.last_presented_size()
+    }
+
     pub(crate) fn exact_runtime_context(
         &self,
     ) -> (
@@ -1237,9 +1071,6 @@ impl SurfacePresenter {
         )
     }
 
-    /// Borrows only the presenter's Surface transaction leaves. Scene,
-    /// PlanSet, controller, generations, ordering and raster semantics stay
-    /// inside the renderer-owned Exact runtime passed by the session.
     pub(crate) fn render_exact_frame(
         &mut self,
         runtime: &mut crate::renderer::PreparedRuntimeSlot,
@@ -1270,10 +1101,6 @@ impl SurfacePresenter {
         )
     }
 
-    /// Arms a one-shot exact framebuffer readback for the next presented
-    /// native frame. The first request upgrades this Surface to `COPY_SRC`;
-    /// normal product sessions remain render-attachment-only forever unless a
-    /// caller explicitly opts into this diagnostic path.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn request_surface_capture(&mut self) -> Result<(), SurfacePresenterError> {
         self.surface_configuration.ensure_capture_valid()?;
@@ -1290,11 +1117,6 @@ impl SurfacePresenter {
         Ok(())
     }
 
-    /// Cancels an armed capture that has not yet been taken.
-    ///
-    /// The Surface may remain configured with `COPY_SRC`; that diagnostic
-    /// capability is harmless after the readback buffer is released and
-    /// avoids a second fallible swapchain transition during recovery.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn cancel_surface_capture(&mut self) -> bool {
         self.surface_capture.cancel()
@@ -1305,6 +1127,356 @@ impl SurfacePresenter {
         &mut self,
     ) -> Result<SurfaceFrameCapture, SurfacePresenterError> {
         self.surface_capture.take(&self.device)
+    }
+}
+
+impl SurfacePresenter {
+    /// Creates a presenter for an owned native window target.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub async fn from_window<T>(
+        target: T,
+        width: u32,
+        height: u32,
+        renderer: &Renderer,
+    ) -> Result<Self, SurfacePresenterError>
+    where
+        T: Into<wgpu::SurfaceTarget<'static>>,
+    {
+        Self::from_window_selected(target, width, height, renderer).await
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn from_window_selected<T>(
+        target: T,
+        width: u32,
+        height: u32,
+        renderer: &Renderer,
+    ) -> Result<Self, SurfacePresenterError>
+    where
+        T: Into<wgpu::SurfaceTarget<'static>>,
+    {
+        let host = SurfacePresenterHost::from_window(target, width, height, renderer).await?;
+        Self::from_host_async(host, renderer).await
+    }
+
+    /// Creates a presenter from raw handles supplied by an embedding platform.
+    ///
+    /// # Safety
+    ///
+    /// The caller must guarantee that the raw display and window handles remain valid until
+    /// after the returned presenter is dropped.
+    pub unsafe fn from_raw_handles(
+        raw_display_handle: wgpu::rwh::RawDisplayHandle,
+        raw_window_handle: wgpu::rwh::RawWindowHandle,
+        width: u32,
+        height: u32,
+        renderer: &Renderer,
+    ) -> Result<Self, SurfacePresenterError> {
+        pollster::block_on(Self::from_raw_handles_selected(
+            raw_display_handle,
+            raw_window_handle,
+            width,
+            height,
+            renderer,
+        ))
+    }
+
+    async fn from_raw_handles_selected(
+        raw_display_handle: wgpu::rwh::RawDisplayHandle,
+        raw_window_handle: wgpu::rwh::RawWindowHandle,
+        width: u32,
+        height: u32,
+        renderer: &Renderer,
+    ) -> Result<Self, SurfacePresenterError> {
+        let host = unsafe {
+            SurfacePresenterHost::from_raw_handles_async(
+                raw_display_handle,
+                raw_window_handle,
+                width,
+                height,
+                renderer,
+            )
+            .await?
+        };
+        Self::from_host_async(host, renderer).await
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    pub async fn from_canvas(
+        canvas: web_sys::HtmlCanvasElement,
+        width: u32,
+        height: u32,
+        renderer: &Renderer,
+    ) -> Result<Self, SurfacePresenterError> {
+        Self::from_canvas_selected(canvas, width, height, renderer).await
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    async fn from_canvas_selected(
+        canvas: web_sys::HtmlCanvasElement,
+        width: u32,
+        height: u32,
+        renderer: &Renderer,
+    ) -> Result<Self, SurfacePresenterError> {
+        let host = SurfacePresenterHost::from_canvas(canvas, width, height, renderer).await?;
+        Self::from_host_async(host, renderer).await
+    }
+
+    async fn from_host_async(
+        mut host: SurfacePresenterHost,
+        renderer: &Renderer,
+    ) -> Result<Self, SurfacePresenterError> {
+        let geometry_path = renderer.geometry_path();
+        let (surface_width, surface_height) = host.surface_size();
+        let format = host.surface_configuration.format();
+        let indirect_execution_supported = host.indirect_execution_supported;
+        let timestamp_queries_enabled = host.timestamp_queries_enabled;
+        let device = &host.device;
+        let queue = &host.queue;
+
+        // Every shared pipeline/layout and the selected geometry is one
+        // unpublished candidate. WebGPU reports constructor failures only
+        // when these async scopes are popped, so do not build or expose any
+        // part of the presenter outside this transaction.
+        let (validation_scope, oom_scope, internal_scope) = (
+            device.push_error_scope(wgpu::ErrorFilter::Validation),
+            device.push_error_scope(wgpu::ErrorFilter::OutOfMemory),
+            device.push_error_scope(wgpu::ErrorFilter::Internal),
+        );
+        let direct_bind_group_layout = create_direct_bind_group_layout(device);
+        let direct_pipeline = create_direct_pipeline(device, &direct_bind_group_layout, format);
+        let packed_bind_group_layout = packed_gpu::create_packed_bind_group_layout(device);
+        let packed_pipeline =
+            packed_gpu::create_packed_pipeline(device, &packed_bind_group_layout, format);
+        let (
+            resident_draw_bind_group_layout,
+            resident_draw_pipeline,
+            resident_color_bind_group_layout,
+            resident_color_pipeline,
+        ) = if supports_resident_pipeline_layout(&device.limits()) {
+            let draw_layout = resident_gpu::create_resident_draw_bind_group_layout(device);
+            let draw_pipeline =
+                resident_gpu::create_resident_draw_pipeline(device, &draw_layout, format);
+            let color_layout = resident_gpu::create_resident_color_bind_group_layout(device);
+            let color_pipeline =
+                resident_gpu::create_resident_color_pipeline(device, &color_layout);
+            (
+                Some(draw_layout),
+                Some(draw_pipeline),
+                Some(color_layout),
+                Some(color_pipeline),
+            )
+        } else {
+            (None, None, None, None)
+        };
+        let geometry_result = create_geometry_resources(
+            GeometryResourceContext {
+                device,
+                direct_bind_group_layout: &direct_bind_group_layout,
+                packed_bind_group_layout: &packed_bind_group_layout,
+                resident_draw_bind_group_layout: resident_draw_bind_group_layout.as_ref(),
+                resident_color_bind_group_layout: resident_color_bind_group_layout.as_ref(),
+                surface_format: format,
+                width: surface_width,
+                height: surface_height,
+            },
+            geometry_path,
+            renderer,
+            None,
+        );
+        let gpu_order_telemetry = GpuOrderTelemetry::new(device, queue, timestamp_queries_enabled);
+        let cpu_order_completion_telemetry = CpuOrderCompletionTelemetry::new(device);
+        let projected_draw_telemetry = ProjectedDrawTelemetry::new(device);
+        let gpu_producer_telemetry = GpuProducerTelemetry::new(device);
+        let internal_error = internal_scope.pop().await;
+        let oom_error = oom_scope.pop().await;
+        let validation_error = validation_scope.pop().await;
+        if oom_error.is_some() {
+            return Err(SurfacePresenterError::SurfaceOutOfMemory);
+        }
+        if let Some(error) = internal_error.or(validation_error) {
+            return Err(SurfacePresenterError::DeviceCreation(format!(
+                "surface geometry resource creation failed: {error}"
+            )));
+        }
+        let mut geometry = geometry_result?;
+        // Compact is an optional performance graph. Validate it only after the
+        // mandatory Candidate geometry is known-good, and publish it only on
+        // complete success so an OOM/validation failure cannot reject Packed.
+        prepare_optional_projected_compaction(
+            device,
+            format,
+            indirect_execution_supported,
+            &mut geometry,
+            false,
+        )
+        .await?;
+        host.addressable_splat_count = geometry.addressable_splat_count();
+
+        Ok(Self {
+            host,
+            direct_pipeline,
+            direct_bind_group_layout,
+            packed_pipeline,
+            packed_bind_group_layout,
+            resident_draw_pipeline,
+            resident_draw_bind_group_layout,
+            resident_color_pipeline,
+            resident_color_bind_group_layout,
+            instance_count: 0,
+            geometry,
+            gpu_order_telemetry,
+            cpu_order_completion_telemetry,
+            projected_draw_telemetry,
+            gpu_producer_telemetry,
+            gpu_order_producer: SurfaceGpuOrderProducer::PostSort,
+            gpu_producer_measurement_enabled: false,
+            last_gpu_producer_submission: TelemetrySubmission::NotRequested,
+            last_actual_gpu_order_producer: None,
+            projected_draw_execution: ProjectedDrawExecution::Compact,
+            projected_probe_generation: 0,
+            projected_draw_sample_request: None,
+            last_projected_draw_submission: TelemetrySubmission::NotRequested,
+        })
+    }
+
+    pub fn resize(&mut self, width: u32, height: u32) -> Result<(), SurfacePresenterError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        let resize_required = self.host.prepare_native_resize(width, height)?;
+        #[cfg(target_arch = "wasm32")]
+        self.host
+            .surface_configuration
+            .validate_size(width, height)?;
+        #[cfg(target_arch = "wasm32")]
+        let resize_required = self
+            .host
+            .surface_configuration
+            .resize_required(width, height);
+        if !resize_required {
+            return Ok(());
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            Err(SurfacePresenterError::SurfaceResizePreparationRequired)
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            if let SurfaceGeometry::Packed(packed) = &mut self.geometry {
+                if let Some(tiled) = packed.tiled.as_mut() {
+                    tiled.resize(&self.host.device, width, height)?;
+                }
+                packed.phase_trace_emitted = 0;
+            }
+            self.host.commit_native_resize(width, height);
+            if let SurfaceGeometry::Packed(packed) = &mut self.geometry {
+                packed.preproject_state.invalidate_order();
+            }
+            self.gpu_order_telemetry.invalidate_generation();
+            self.cpu_order_completion_telemetry.invalidate_generation();
+            self.projected_draw_telemetry.invalidate_generation();
+            self.gpu_producer_telemetry.invalidate_generation();
+            Ok(())
+        }
+    }
+
+    /// Transactionally reconfigures the browser Surface for the production
+    /// Packed + Projected path. The published size remains unchanged until all
+    /// WebGPU error scopes complete. A failed attempt reconfigures the old
+    /// descriptor; if that rollback also fails, presentation becomes
+    /// fail-closed until a later successful transactional resize.
+    #[cfg(target_arch = "wasm32")]
+    pub async fn resize_async(
+        &mut self,
+        width: u32,
+        height: u32,
+    ) -> Result<(), SurfacePresenterError> {
+        self.host
+            .surface_configuration
+            .validate_size(width, height)?;
+        if !matches!(
+            &self.geometry,
+            SurfaceGeometry::Packed(packed)
+                if packed.raster_plan == SurfaceRasterExecutionPlan::ProjectedQuadsExact
+        ) {
+            return Err(SurfacePresenterError::SurfaceResizeUnsupported);
+        }
+        if !self
+            .host
+            .surface_configuration
+            .resize_required(width, height)
+        {
+            return Ok(());
+        }
+        self.host.resize_async(width, height).await?;
+        if let SurfaceGeometry::Packed(packed) = &mut self.geometry {
+            packed.projected_cache.key = None;
+            packed.preproject_state.invalidate_order();
+            packed.pending = None;
+            packed.pending_gpu = None;
+        }
+        self.gpu_order_telemetry.invalidate_generation();
+        self.cpu_order_completion_telemetry.invalidate_generation();
+        self.projected_draw_telemetry.invalidate_generation();
+        self.gpu_producer_telemetry.invalidate_generation();
+        Ok(())
+    }
+
+    pub const fn surface_size(&self) -> (u32, u32) {
+        self.host.surface_configuration.size()
+    }
+
+    /// Clones the presenter's existing device/queue handles for one Exact
+    /// runtime candidate. The handles retain the same underlying WGPU owner;
+    /// no adapter, device, queue or Surface is created by the cutover.
+    pub(crate) fn exact_runtime_context(
+        &self,
+    ) -> (
+        std::sync::Arc<wgpu::Device>,
+        std::sync::Arc<wgpu::Queue>,
+        wgpu::TextureFormat,
+        bool,
+    ) {
+        self.host.exact_runtime_context()
+    }
+
+    /// Borrows only the presenter's Surface transaction leaves. Scene,
+    /// PlanSet, controller, generations, ordering and raster semantics stay
+    /// inside the renderer-owned Exact runtime passed by the session.
+    pub(crate) fn render_exact_frame(
+        &mut self,
+        runtime: &mut crate::renderer::PreparedRuntimeSlot,
+        camera: &Camera,
+        force_cpu_order_refresh: bool,
+        host_frame_started: TimerInstant,
+    ) -> Result<Option<SurfaceExactFrameResult>, crate::surface::shadow::SurfaceExactError> {
+        self.host
+            .render_exact_frame(runtime, camera, force_cpu_order_refresh, host_frame_started)
+    }
+
+    /// Arms a one-shot exact framebuffer readback for the next presented
+    /// native frame. The first request upgrades this Surface to `COPY_SRC`;
+    /// normal product sessions remain render-attachment-only forever unless a
+    /// caller explicitly opts into this diagnostic path.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn request_surface_capture(&mut self) -> Result<(), SurfacePresenterError> {
+        self.host.request_surface_capture()
+    }
+
+    /// Cancels an armed capture that has not yet been taken.
+    ///
+    /// The Surface may remain configured with `COPY_SRC`; that diagnostic
+    /// capability is harmless after the readback buffer is released and
+    /// avoids a second fallible swapchain transition during recovery.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn cancel_surface_capture(&mut self) -> bool {
+        self.host.cancel_surface_capture()
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn take_surface_capture(
+        &mut self,
+    ) -> Result<SurfaceFrameCapture, SurfacePresenterError> {
+        self.host.take_surface_capture()
     }
 
     /// Actual dimensions of the raster target before presentation. Packed
@@ -1332,29 +1504,26 @@ impl SurfacePresenter {
     /// This is an observation-only receipt. It cannot select a backend,
     /// change device capabilities, or influence renderer plan policy.
     pub const fn adapter_info(&self) -> &wgpu::AdapterInfo {
-        &self.adapter_info
+        &self.host.adapter_info
     }
 
     /// Number of splat records allocated by the selected Surface geometry.
     pub const fn addressable_splat_count(&self) -> usize {
-        self.addressable_splat_count
+        self.host.addressable_splat_count
     }
 
     /// Physical adapter storage-binding count used by exactness admission.
     pub const fn adapter_max_storage_buffers_per_shader_stage(&self) -> u32 {
-        self.adapter_max_storage_buffers_per_shader_stage
+        self.host.adapter_max_storage_buffers_per_shader_stage
     }
 
     /// Effective physical adapter size for one storage-buffer binding.
     pub const fn adapter_max_storage_buffer_binding_size(&self) -> u64 {
-        self.adapter_max_storage_buffer_binding_size
+        self.host.adapter_max_storage_buffer_binding_size
     }
 
     pub fn set_frame_latency(&mut self, latency: u32) {
-        if !self
-            .surface_configuration
-            .update_frame_latency(&self.surface, &self.device, latency)
-        {
+        if !self.host.set_frame_latency(latency) {
             return;
         }
         self.gpu_order_telemetry.invalidate_generation();
@@ -1371,11 +1540,11 @@ impl SurfacePresenter {
     /// drawable. Exact-count preparation, timeouts, and errors leave this
     /// false.
     pub(crate) const fn last_frame_presented(&self) -> bool {
-        self.surface_lifecycle.last_frame_presented()
+        self.host.surface_lifecycle.last_frame_presented()
     }
 
     pub(crate) const fn last_presented_size(&self) -> Option<(u32, u32)> {
-        self.surface_lifecycle.last_presented_size()
+        self.host.surface_lifecycle.last_presented_size()
     }
 
     /// Current raster execution plan. Packed defaults to exact preprojected
@@ -1454,7 +1623,7 @@ impl SurfacePresenter {
     }
 
     fn validate_preproject_producer_context(&self) -> Result<(), SurfacePresenterError> {
-        if !self.indirect_execution_supported
+        if !self.host.indirect_execution_supported
             || !matches!(
                 &self.geometry,
                 SurfaceGeometry::Packed(packed)
@@ -1480,8 +1649,8 @@ impl SurfacePresenter {
         }
         Ok(PreparedSurfaceGpuProducer::Preproject(Box::new(
             PreprojectedGpuOrder::new(
-                &self.device,
-                self.surface_configuration.format(),
+                &self.host.device,
+                self.host.surface_configuration.format(),
                 &packed.resident,
             )?,
         )))
@@ -1517,9 +1686,15 @@ impl SurfacePresenter {
         }
 
         let (validation_scope, oom_scope, internal_scope) = (
-            self.device.push_error_scope(wgpu::ErrorFilter::Validation),
-            self.device.push_error_scope(wgpu::ErrorFilter::OutOfMemory),
-            self.device.push_error_scope(wgpu::ErrorFilter::Internal),
+            self.host
+                .device
+                .push_error_scope(wgpu::ErrorFilter::Validation),
+            self.host
+                .device
+                .push_error_scope(wgpu::ErrorFilter::OutOfMemory),
+            self.host
+                .device
+                .push_error_scope(wgpu::ErrorFilter::Internal),
         );
         let prepared = self.create_preproject_candidate();
         let internal_error = internal_scope.pop().await;
@@ -1597,11 +1772,11 @@ impl SurfacePresenter {
                 }
                 if plan == SurfaceRasterExecutionPlan::TiledExact {
                     let tiled = ResidentTiledGpu::new(
-                        &self.device,
-                        self.surface_configuration.format(),
+                        &self.host.device,
+                        self.host.surface_configuration.format(),
                         &packed.resident,
-                        self.surface_configuration.size().0,
-                        self.surface_configuration.size().1,
+                        self.host.surface_configuration.size().0,
+                        self.host.surface_configuration.size().1,
                     )?;
                     // Publish only after complete construction succeeds.
                     packed.tiled = Some(tiled);
@@ -1689,7 +1864,7 @@ impl SurfacePresenter {
             self,
             |presenter| presenter.prepare_geometry_resources(path, renderer),
             |presenter, geometry| {
-                presenter.addressable_splat_count = geometry.addressable_splat_count();
+                presenter.host.addressable_splat_count = geometry.addressable_splat_count();
                 presenter.geometry = geometry;
                 presenter.instance_count = 0;
                 presenter.gpu_order_telemetry.invalidate_generation();
@@ -1720,30 +1895,36 @@ impl SurfacePresenter {
         debug_assert_eq!(prepared_renderer.path(), path);
 
         let (validation_scope, oom_scope, internal_scope) = (
-            self.device.push_error_scope(wgpu::ErrorFilter::Validation),
-            self.device.push_error_scope(wgpu::ErrorFilter::OutOfMemory),
-            self.device.push_error_scope(wgpu::ErrorFilter::Internal),
+            self.host
+                .device
+                .push_error_scope(wgpu::ErrorFilter::Validation),
+            self.host
+                .device
+                .push_error_scope(wgpu::ErrorFilter::OutOfMemory),
+            self.host
+                .device
+                .push_error_scope(wgpu::ErrorFilter::Internal),
         );
         let geometry_result = (|| {
             let mut geometry = create_geometry_resources(
                 GeometryResourceContext {
-                    device: &self.device,
+                    device: &self.host.device,
                     direct_bind_group_layout: &self.direct_bind_group_layout,
                     packed_bind_group_layout: &self.packed_bind_group_layout,
                     resident_draw_bind_group_layout: self.resident_draw_bind_group_layout.as_ref(),
                     resident_color_bind_group_layout: self
                         .resident_color_bind_group_layout
                         .as_ref(),
-                    surface_format: self.surface_configuration.format(),
-                    width: self.surface_configuration.size().0,
-                    height: self.surface_configuration.size().1,
+                    surface_format: self.host.surface_configuration.format(),
+                    width: self.host.surface_configuration.size().0,
+                    height: self.host.surface_configuration.size().1,
                 },
                 path,
                 renderer,
                 Some(prepared_renderer),
             )?;
             if prepare_gpu_order {
-                if !self.indirect_execution_supported {
+                if !self.host.indirect_execution_supported {
                     return Err(SurfacePresenterError::GpuOrderUnsupported);
                 }
                 let order = self.create_gpu_order_candidate_for_geometry(&geometry)?;
@@ -1765,9 +1946,9 @@ impl SurfacePresenter {
 
         let mut geometry = geometry_result?;
         prepare_optional_projected_compaction(
-            &self.device,
-            self.surface_configuration.format(),
-            self.indirect_execution_supported,
+            &self.host.device,
+            self.host.surface_configuration.format(),
+            self.host.indirect_execution_supported,
             &mut geometry,
             require_projected_compaction,
         )
@@ -1783,7 +1964,7 @@ impl SurfacePresenter {
         prepared: PreparedSurfaceGeometryPath,
     ) {
         debug_assert_ne!(self.geometry.path(), prepared.geometry.path());
-        self.addressable_splat_count = prepared.geometry.addressable_splat_count();
+        self.host.addressable_splat_count = prepared.geometry.addressable_splat_count();
         self.geometry = prepared.geometry;
         self.instance_count = 0;
         self.gpu_order_telemetry.invalidate_generation();
@@ -1799,14 +1980,14 @@ impl SurfacePresenter {
     ) -> Result<SurfaceGeometry, SurfacePresenterError> {
         let mut geometry = create_geometry_resources(
             GeometryResourceContext {
-                device: &self.device,
+                device: &self.host.device,
                 direct_bind_group_layout: &self.direct_bind_group_layout,
                 packed_bind_group_layout: &self.packed_bind_group_layout,
                 resident_draw_bind_group_layout: self.resident_draw_bind_group_layout.as_ref(),
                 resident_color_bind_group_layout: self.resident_color_bind_group_layout.as_ref(),
-                surface_format: self.surface_configuration.format(),
-                width: self.surface_configuration.size().0,
-                height: self.surface_configuration.size().1,
+                surface_format: self.host.surface_configuration.format(),
+                width: self.host.surface_configuration.size().0,
+                height: self.host.surface_configuration.size().1,
             },
             path,
             renderer,
@@ -1815,11 +1996,11 @@ impl SurfacePresenter {
         // Native event loops expose this historical synchronous A/B switch.
         // Its capability and size gates run before construction; the browser
         // path above uses the fully isolated asynchronous transaction.
-        if self.indirect_execution_supported
+        if self.host.indirect_execution_supported
             && let SurfaceGeometry::Packed(packed) = &mut geometry
             && let Some(candidate) = packed.projected.create_contributor_compaction_candidate(
-                &self.device,
-                self.surface_configuration.format(),
+                &self.host.device,
+                self.host.surface_configuration.format(),
                 &packed.resident,
             )?
         {
@@ -1835,17 +2016,17 @@ impl SurfacePresenter {
         camera: &Camera,
         refresh_indices: bool,
     ) -> Result<(), SurfacePresenterError> {
-        self.surface_lifecycle.begin_frame();
+        self.host.surface_lifecycle.begin_frame();
         if !matches!(self.geometry, SurfaceGeometry::Paged(_)) {
             return self.render_cpu_sorted_indices(sorted_indices, camera, refresh_indices);
         }
         self.instance_count = match &mut self.geometry {
             SurfaceGeometry::Paged(paged) => paged.prepare(
-                &self.queue,
+                &self.host.queue,
                 scene,
                 camera,
-                self.surface_configuration.size().0,
-                self.surface_configuration.size().1,
+                self.host.surface_configuration.size().0,
+                self.host.surface_configuration.size().1,
             )?,
             SurfaceGeometry::Direct(_) | SurfaceGeometry::Packed(_) => unreachable!(),
         };
@@ -1871,7 +2052,7 @@ impl SurfacePresenter {
         refresh_indices: bool,
         completion: Option<CpuCompletionSampleRequest>,
     ) -> Result<TelemetrySubmission, SurfacePresenterError> {
-        self.surface_lifecycle.begin_frame();
+        self.host.surface_lifecycle.begin_frame();
         #[cfg(target_arch = "wasm32")]
         if matches!(
             self.geometry,
@@ -1887,20 +2068,20 @@ impl SurfacePresenter {
         }
         self.instance_count = match &mut self.geometry {
             SurfaceGeometry::Direct(direct) => direct.prepare_cpu(
-                &self.queue,
+                &self.host.queue,
                 sorted_indices,
                 camera,
-                self.surface_configuration.size().0,
-                self.surface_configuration.size().1,
+                self.host.surface_configuration.size().0,
+                self.host.surface_configuration.size().1,
                 refresh_indices,
             )?,
             SurfaceGeometry::Packed(packed) => {
                 let instance_count = packed.resident.prepare_cpu_order(
-                    &self.queue,
+                    &self.host.queue,
                     sorted_indices,
                     camera,
-                    self.surface_configuration.size().0,
-                    self.surface_configuration.size().1,
+                    self.host.surface_configuration.size().0,
+                    self.host.surface_configuration.size().1,
                     refresh_indices,
                 )?;
                 // The rank-indexed projection cache is valid only for the
@@ -1931,14 +2112,19 @@ impl SurfacePresenter {
         work_count: u32,
         completion: Option<CpuCompletionSampleRequest>,
     ) -> Result<TelemetrySubmission, SurfacePresenterError> {
-        let storage_bindings = self.device.limits().max_storage_buffers_per_shader_stage;
+        let storage_bindings = self
+            .host
+            .device
+            .limits()
+            .max_storage_buffers_per_shader_stage;
         let color_pipeline = self
             .resident_color_pipeline
             .as_ref()
             .ok_or_else(|| resident_pipelines_unavailable(storage_bindings))?;
         let count_started = timer_now();
         let mut count_encoder =
-            self.device
+            self.host
+                .device
                 .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                     label: wgpu_label("gsplat-surface-resident-tiled-count-encoder"),
                 });
@@ -1947,26 +2133,29 @@ impl SurfacePresenter {
                 unreachable!();
             };
             packed.resident.encode_color_resolve_if_needed(
-                &self.queue,
+                &self.host.queue,
                 color_pipeline,
                 &mut count_encoder,
                 camera,
-                self.device.limits().max_compute_workgroups_per_dimension,
+                self.host
+                    .device
+                    .limits()
+                    .max_compute_workgroups_per_dimension,
             )?;
             packed
                 .tiled
                 .as_mut()
                 .expect("TiledExact plan owns its diagnostic raster")
                 .encode_count_prepass(
-                    &self.device,
-                    &self.queue,
+                    &self.host.device,
+                    &self.host.queue,
                     &packed.resident,
                     &packed.resident.order_buffer,
                     work_count,
                     &mut count_encoder,
                 )?;
         }
-        self.queue.submit(Some(count_encoder.finish()));
+        self.host.queue.submit(Some(count_encoder.finish()));
         {
             let SurfaceGeometry::Packed(packed) = &mut self.geometry else {
                 unreachable!();
@@ -1975,7 +2164,7 @@ impl SurfacePresenter {
                 .tiled
                 .as_mut()
                 .expect("TiledExact plan owns its diagnostic raster")
-                .resolve_count_and_prepare(&self.device, &self.queue)?;
+                .resolve_count_and_prepare(&self.host.device, &self.host.queue)?;
             packed.last_count_resolve_prepare_ms = timer_elapsed_ms(count_started);
         }
 
@@ -1989,11 +2178,12 @@ impl SurfacePresenter {
         let view = frame
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: wgpu_label("gsplat-surface-resident-tiled-finish-encoder"),
-            });
+        let mut encoder =
+            self.host
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: wgpu_label("gsplat-surface-resident-tiled-finish-encoder"),
+                });
         {
             let SurfaceGeometry::Packed(packed) = &mut self.geometry else {
                 unreachable!();
@@ -2003,8 +2193,8 @@ impl SurfacePresenter {
                 .as_mut()
                 .expect("TiledExact plan owns its diagnostic raster")
                 .encode_finish(
-                    &self.device,
-                    &self.queue,
+                    &self.host.device,
+                    &self.host.queue,
                     &packed.resident,
                     ResidentTiledFinish {
                         source_order_btf: &packed.resident.order_buffer,
@@ -2014,7 +2204,9 @@ impl SurfacePresenter {
                     &mut encoder,
                 )?;
         }
-        self.surface_capture.encode(&mut encoder, &frame.texture);
+        self.host
+            .surface_capture
+            .encode(&mut encoder, &frame.texture);
         let command_buffer = encoder.finish();
         let mut completion_ticket = completion.and_then(|request| {
             self.cpu_order_completion_telemetry.begin_sample(
@@ -2028,7 +2220,7 @@ impl SurfacePresenter {
             self.cpu_order_completion_telemetry
                 .arm(&command_buffer, ticket, request.started);
         }
-        self.queue.submit(Some(command_buffer));
+        self.host.queue.submit(Some(command_buffer));
         self.maybe_emit_tiled_phase_trace()?;
         self.present_frame(frame);
         Ok(match (completion, submitted_ticket) {
@@ -2058,7 +2250,7 @@ impl SurfacePresenter {
                         .tiled
                         .as_mut()
                         .expect("TiledExact plan owns its diagnostic raster")
-                        .try_resolve_count_and_prepare(&self.device, &self.queue)?
+                        .try_resolve_count_and_prepare(&self.host.device, &self.host.queue)?
                         .is_some();
                     if ready && let Some(pending) = packed.pending_gpu.as_mut() {
                         pending.count_ready = true;
@@ -2098,7 +2290,7 @@ impl SurfacePresenter {
                         .tiled
                         .as_mut()
                         .expect("TiledExact plan owns its diagnostic raster")
-                        .try_resolve_count_and_prepare(&self.device, &self.queue)?
+                        .try_resolve_count_and_prepare(&self.host.device, &self.host.queue)?
                         .is_some();
                     if ready {
                         pending.count_ready = true;
@@ -2134,7 +2326,8 @@ impl SurfacePresenter {
                     .texture
                     .create_view(&wgpu::TextureViewDescriptor::default());
                 let mut encoder =
-                    self.device
+                    self.host
+                        .device
                         .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                             label: wgpu_label("gsplat-surface-resident-tiled-web-finish-encoder"),
                         });
@@ -2147,8 +2340,8 @@ impl SurfacePresenter {
                         .as_mut()
                         .expect("TiledExact plan owns its diagnostic raster")
                         .encode_finish(
-                            &self.device,
-                            &self.queue,
+                            &self.host.device,
+                            &self.host.queue,
                             &packed.resident,
                             ResidentTiledFinish {
                                 source_order_btf: &packed.resident.order_buffer,
@@ -2177,7 +2370,7 @@ impl SurfacePresenter {
                         request.started,
                     );
                 }
-                self.queue.submit(Some(command_buffer));
+                self.host.queue.submit(Some(command_buffer));
                 self.present_frame(frame);
                 return Ok(match (pending.completion, submitted_ticket) {
                     (None, _) => TelemetrySubmission::NotRequested,
@@ -2194,7 +2387,11 @@ impl SurfacePresenter {
             packed.pending = None;
         }
 
-        let storage_bindings = self.device.limits().max_storage_buffers_per_shader_stage;
+        let storage_bindings = self
+            .host
+            .device
+            .limits()
+            .max_storage_buffers_per_shader_stage;
         let color_pipeline = self
             .resident_color_pipeline
             .as_ref()
@@ -2204,16 +2401,17 @@ impl SurfacePresenter {
                 unreachable!();
             };
             packed.resident.prepare_cpu_order(
-                &self.queue,
+                &self.host.queue,
                 sorted_indices,
                 camera,
-                self.surface_configuration.size().0,
-                self.surface_configuration.size().1,
+                self.host.surface_configuration.size().0,
+                self.host.surface_configuration.size().1,
                 refresh_indices,
             )?
         };
         let mut count_encoder =
-            self.device
+            self.host
+                .device
                 .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                     label: wgpu_label("gsplat-surface-resident-tiled-web-count-encoder"),
                 });
@@ -2222,26 +2420,29 @@ impl SurfacePresenter {
                 unreachable!();
             };
             packed.resident.encode_color_resolve_if_needed(
-                &self.queue,
+                &self.host.queue,
                 color_pipeline,
                 &mut count_encoder,
                 camera,
-                self.device.limits().max_compute_workgroups_per_dimension,
+                self.host
+                    .device
+                    .limits()
+                    .max_compute_workgroups_per_dimension,
             )?;
             packed
                 .tiled
                 .as_mut()
                 .expect("TiledExact plan owns its diagnostic raster")
                 .encode_count_prepass(
-                    &self.device,
-                    &self.queue,
+                    &self.host.device,
+                    &self.host.queue,
                     &packed.resident,
                     &packed.resident.order_buffer,
                     self.instance_count,
                     &mut count_encoder,
                 )?;
         }
-        self.queue.submit(Some(count_encoder.finish()));
+        self.host.queue.submit(Some(count_encoder.finish()));
         {
             let SurfaceGeometry::Packed(packed) = &mut self.geometry else {
                 unreachable!();
@@ -2256,7 +2457,7 @@ impl SurfacePresenter {
                 .tiled
                 .as_mut()
                 .expect("TiledExact plan owns its diagnostic raster")
-                .try_resolve_count_and_prepare(&self.device, &self.queue)?
+                .try_resolve_count_and_prepare(&self.host.device, &self.host.queue)?
                 .is_some();
             if ready && let Some(pending) = packed.pending.as_mut() {
                 pending.count_ready = true;
@@ -2296,15 +2497,21 @@ impl SurfacePresenter {
         geometry: &SurfaceGeometry,
     ) -> Result<PreparedSurfaceGpuOrder, SurfacePresenterError> {
         let resident_draw_layout = self.resident_draw_bind_group_layout.as_ref();
-        let storage_bindings = self.device.limits().max_storage_buffers_per_shader_stage;
+        let storage_bindings = self
+            .host
+            .device
+            .limits()
+            .max_storage_buffers_per_shader_stage;
         match geometry {
             SurfaceGeometry::Direct(direct) => {
                 if direct.gpu_order().is_some() {
                     return Ok(PreparedSurfaceGpuOrder::AlreadyPrepared);
                 }
                 Ok(PreparedSurfaceGpuOrder::Direct(
-                    direct
-                        .create_gpu_order_candidate(&self.device, &self.direct_bind_group_layout)?,
+                    direct.create_gpu_order_candidate(
+                        &self.host.device,
+                        &self.direct_bind_group_layout,
+                    )?,
                 ))
             }
             SurfaceGeometry::Packed(packed) => {
@@ -2323,9 +2530,9 @@ impl SurfacePresenter {
                     .ok_or_else(|| resident_pipelines_unavailable(storage_bindings))?;
                 let order = packed
                     .resident
-                    .create_gpu_order_candidate(&self.device, layout)?;
+                    .create_gpu_order_candidate(&self.host.device, layout)?;
                 let projected_bind_group = packed.projected.create_gpu_order_bind_group_candidate(
-                    &self.device,
+                    &self.host.device,
                     &packed.resident,
                     order.sorter.final_ids(),
                     order.sorter.indirect_args(),
@@ -2371,7 +2578,7 @@ impl SurfacePresenter {
     }
 
     async fn prepare_post_sort_gpu_order(&mut self) -> Result<(), SurfacePresenterError> {
-        if !self.indirect_execution_supported {
+        if !self.host.indirect_execution_supported {
             return Err(SurfacePresenterError::GpuOrderUnsupported);
         }
         if self.post_sort_gpu_order_is_prepared() {
@@ -2380,9 +2587,15 @@ impl SurfacePresenter {
 
         let path = self.geometry.path();
         let (validation_scope, oom_scope, internal_scope) = (
-            self.device.push_error_scope(wgpu::ErrorFilter::Validation),
-            self.device.push_error_scope(wgpu::ErrorFilter::OutOfMemory),
-            self.device.push_error_scope(wgpu::ErrorFilter::Internal),
+            self.host
+                .device
+                .push_error_scope(wgpu::ErrorFilter::Validation),
+            self.host
+                .device
+                .push_error_scope(wgpu::ErrorFilter::OutOfMemory),
+            self.host
+                .device
+                .push_error_scope(wgpu::ErrorFilter::Internal),
         );
         let prepared = self.create_gpu_order_candidate();
         let internal_error = internal_scope.pop().await;
@@ -2417,7 +2630,7 @@ impl SurfacePresenter {
     /// event loop waiting for `pop_error_scope`, so it accepts only a
     /// candidate already published by [`Self::prepare_gpu_order`].
     pub(crate) fn prepare_direct_gpu_order(&mut self) -> Result<(), SurfacePresenterError> {
-        if !self.indirect_execution_supported {
+        if !self.host.indirect_execution_supported {
             return Err(SurfacePresenterError::GpuOrderUnsupported);
         }
         if self.gpu_order_is_prepared() {
@@ -2442,7 +2655,7 @@ impl SurfacePresenter {
         camera_revision: u64,
         completion_started: TimerInstant,
     ) -> Result<TelemetrySubmission, SurfacePresenterError> {
-        self.surface_lifecycle.begin_frame();
+        self.host.surface_lifecycle.begin_frame();
         let projected_sample_request = self.projected_draw_sample_request.take();
         self.last_projected_draw_submission = TelemetrySubmission::NotRequested;
         self.last_gpu_producer_submission = TelemetrySubmission::NotRequested;
@@ -2459,28 +2672,32 @@ impl SurfacePresenter {
             );
         }
         let resident_draw_layout = self.resident_draw_bind_group_layout.as_ref();
-        let storage_bindings = self.device.limits().max_storage_buffers_per_shader_stage;
+        let storage_bindings = self
+            .host
+            .device
+            .limits()
+            .max_storage_buffers_per_shader_stage;
         self.instance_count = match &mut self.geometry {
             SurfaceGeometry::Direct(direct) => direct.prepare_gpu(
-                &self.device,
+                &self.host.device,
                 &self.direct_bind_group_layout,
-                &self.queue,
+                &self.host.queue,
                 camera,
-                self.surface_configuration.size().0,
-                self.surface_configuration.size().1,
+                self.host.surface_configuration.size().0,
+                self.host.surface_configuration.size().1,
             )?,
             SurfaceGeometry::Packed(packed) => {
                 let count = u32::try_from(packed.resident.capacity)
                     .map_err(|_| resident_gpu::ResidentGpuError::AddressSpaceExceeded)?;
                 packed.resident.prepare_gpu_order_draw(
-                    &self.device,
+                    &self.host.device,
                     resident_draw_layout
                         .ok_or_else(|| resident_pipelines_unavailable(storage_bindings))?,
-                    &self.queue,
+                    &self.host.queue,
                     resident_gpu::ResidentGpuOrderDraw {
                         camera,
-                        width: self.surface_configuration.size().0,
-                        height: self.surface_configuration.size().1,
+                        width: self.host.surface_configuration.size().0,
+                        height: self.host.surface_configuration.size().1,
                         instance_count: count,
                         order_stride_words: 1,
                         order_id_offset_words: 0,
@@ -2491,7 +2708,7 @@ impl SurfacePresenter {
                     .gpu_order()
                     .ok_or(SurfacePresenterError::GpuOrderUnsupported)?;
                 packed.projected.ensure_gpu_order_bind_group(
-                    &self.device,
+                    &self.host.device,
                     &packed.resident,
                     order.sorter.final_ids(),
                     order.sorter.indirect_args(),
@@ -2610,11 +2827,12 @@ impl SurfacePresenter {
                 })
         });
 
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: wgpu_label("gsplat-surface-direct-gpu-order-encoder"),
-            });
+        let mut encoder =
+            self.host
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: wgpu_label("gsplat-surface-direct-gpu-order-encoder"),
+                });
         let projected_order_generation = match &self.geometry {
             SurfaceGeometry::Packed(packed) => packed.projected_cache.order_generation(),
             SurfaceGeometry::Direct(_) | SurfaceGeometry::Paged(_) => 0,
@@ -2624,8 +2842,8 @@ impl SurfacePresenter {
             order_source: ProjectedOrderSource::Gpu,
             order_generation: projected_order_generation,
             camera: *camera,
-            width: self.surface_configuration.size().0,
-            height: self.surface_configuration.size().1,
+            width: self.host.surface_configuration.size().0,
+            height: self.host.surface_configuration.size().1,
             // GPU projection dispatches resident capacity and guards ranks
             // with the authoritative indirect visible count. Any change to
             // that count comes from an order refresh, which invalidates the
@@ -2659,12 +2877,15 @@ impl SurfacePresenter {
                 let color_resolved = packed
                     .resident
                     .encode_color_resolve_if_needed(
-                        &self.queue,
+                        &self.host.queue,
                         resident_color_pipeline
                             .ok_or_else(|| resident_pipelines_unavailable(storage_bindings))?,
                         &mut encoder,
                         camera,
-                        self.device.limits().max_compute_workgroups_per_dimension,
+                        self.host
+                            .device
+                            .limits()
+                            .max_compute_workgroups_per_dimension,
                     )
                     .map_err(SurfacePresenterError::from)?;
                 if frame.is_some()
@@ -2702,7 +2923,7 @@ impl SurfacePresenter {
                         .ok_or(SurfacePresenterError::GpuOrderUnsupported)?;
                     order
                         .sorter
-                        .set_indirect_vertex_count(&self.queue, QUAD_VERTEX_COUNT);
+                        .set_indirect_vertex_count(&self.host.queue, QUAD_VERTEX_COUNT);
                     encode_splat_indirect_draw_into(
                         &mut encoder,
                         &SplatIndirectDraw {
@@ -2722,7 +2943,7 @@ impl SurfacePresenter {
                         .ok_or(SurfacePresenterError::GpuOrderUnsupported)?;
                     order
                         .sorter
-                        .set_indirect_vertex_count(&self.queue, QUAD_VERTEX_COUNT);
+                        .set_indirect_vertex_count(&self.host.queue, QUAD_VERTEX_COUNT);
                     match packed.raster_plan {
                         SurfaceRasterExecutionPlan::ProjectedQuadsExact
                             if projected_draw_execution == ProjectedDrawExecution::Compact =>
@@ -2945,7 +3166,9 @@ impl SurfacePresenter {
 
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(frame) = frame.as_ref() {
-            self.surface_capture.encode(&mut encoder, &frame.texture);
+            self.host
+                .surface_capture
+                .encode(&mut encoder, &frame.texture);
         }
 
         if frame.is_none() && !refresh_order && !color_resolved {
@@ -2970,7 +3193,7 @@ impl SurfacePresenter {
             self.gpu_order_telemetry
                 .arm(&command_buffer, ticket, completion_started);
         }
-        self.queue.submit(Some(command_buffer));
+        self.host.queue.submit(Some(command_buffer));
         #[cfg(target_arch = "wasm32")]
         if preparation.pending
             && let SurfaceGeometry::Packed(packed) = &mut self.geometry
@@ -3040,16 +3263,21 @@ impl SurfacePresenter {
         let view = frame
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
-        let storage_bindings = self.device.limits().max_storage_buffers_per_shader_stage;
+        let storage_bindings = self
+            .host
+            .device
+            .limits()
+            .max_storage_buffers_per_shader_stage;
         let resident_color_pipeline = self
             .resident_color_pipeline
             .as_ref()
             .ok_or_else(|| resident_pipelines_unavailable(storage_bindings))?;
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: wgpu_label("gsplat-surface-preproject-gpu-order-encoder"),
-            });
+        let mut encoder =
+            self.host
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: wgpu_label("gsplat-surface-preproject-gpu-order-encoder"),
+                });
 
         let (source_count, order_generation, projection_generation) = {
             let SurfaceGeometry::Packed(packed) = &mut self.geometry else {
@@ -3058,11 +3286,14 @@ impl SurfacePresenter {
             let source_count = u32::try_from(packed.resident.capacity)
                 .map_err(|_| resident_gpu::ResidentGpuError::AddressSpaceExceeded)?;
             packed.resident.encode_color_resolve_if_needed(
-                &self.queue,
+                &self.host.queue,
                 resident_color_pipeline,
                 &mut encoder,
                 camera,
-                self.device.limits().max_compute_workgroups_per_dimension,
+                self.host
+                    .device
+                    .limits()
+                    .max_compute_workgroups_per_dimension,
             )?;
             let preproject = packed
                 .preproject
@@ -3070,23 +3301,23 @@ impl SurfacePresenter {
                 .expect("validated preproject graph");
             if refresh_order {
                 preproject.encode(
-                    &self.queue,
+                    &self.host.queue,
                     &mut encoder,
                     &packed.resident,
                     camera,
-                    self.surface_configuration.size().0,
-                    self.surface_configuration.size().1,
+                    self.host.surface_configuration.size().0,
+                    self.host.surface_configuration.size().1,
                 );
             } else {
                 // Projection and the complete-S count scan are current even
                 // when sort cadence deliberately retains the old order.
                 preproject.encode_projection_and_count(
-                    &self.queue,
+                    &self.host.queue,
                     &mut encoder,
                     &packed.resident,
                     camera,
-                    self.surface_configuration.size().0,
-                    self.surface_configuration.size().1,
+                    self.host.surface_configuration.size().0,
+                    self.host.surface_configuration.size().1,
                 );
             }
             packed.preproject_state.record_projection(refresh_order);
@@ -3192,7 +3423,9 @@ impl SurfacePresenter {
         }
 
         #[cfg(not(target_arch = "wasm32"))]
-        self.surface_capture.encode(&mut encoder, &frame.texture);
+        self.host
+            .surface_capture
+            .encode(&mut encoder, &frame.texture);
 
         let command_buffer = encoder.finish();
         let submitted_order_ticket = order_ticket.as_ref().map(|ticket| ticket.ticket);
@@ -3205,7 +3438,7 @@ impl SurfacePresenter {
             self.gpu_order_telemetry
                 .arm(&command_buffer, ticket, completion_started);
         }
-        self.queue.submit(Some(command_buffer));
+        self.host.queue.submit(Some(command_buffer));
         self.present_frame(frame);
         self.last_actual_gpu_order_producer = Some(SurfaceGpuOrderProducer::Preproject);
         self.last_gpu_producer_submission = if !self.gpu_producer_measurement_enabled {
@@ -3230,7 +3463,11 @@ impl SurfacePresenter {
         camera_revision: u64,
         completion_started: TimerInstant,
     ) -> Result<TelemetrySubmission, SurfacePresenterError> {
-        let storage_bindings = self.device.limits().max_storage_buffers_per_shader_stage;
+        let storage_bindings = self
+            .host
+            .device
+            .limits()
+            .max_storage_buffers_per_shader_stage;
         let color_pipeline = self
             .resident_color_pipeline
             .as_ref()
@@ -3267,7 +3504,8 @@ impl SurfacePresenter {
 
         let count_started = timer_now();
         let mut count_encoder =
-            self.device
+            self.host
+                .device
                 .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                     label: wgpu_label("gsplat-surface-resident-tiled-gpu-count-encoder"),
                 });
@@ -3285,11 +3523,14 @@ impl SurfacePresenter {
                     .encode_with_timestamps(&mut count_encoder, timestamp_range);
             }
             packed.resident.encode_color_resolve_if_needed(
-                &self.queue,
+                &self.host.queue,
                 color_pipeline,
                 &mut count_encoder,
                 camera,
-                self.device.limits().max_compute_workgroups_per_dimension,
+                self.host
+                    .device
+                    .limits()
+                    .max_compute_workgroups_per_dimension,
             )?;
             let order = packed
                 .resident
@@ -3300,8 +3541,8 @@ impl SurfacePresenter {
                 .as_mut()
                 .expect("TiledExact plan owns its diagnostic raster")
                 .encode_count_prepass(
-                    &self.device,
-                    &self.queue,
+                    &self.host.device,
+                    &self.host.queue,
                     &packed.resident,
                     order.sorter.final_ids(),
                     self.instance_count,
@@ -3322,7 +3563,7 @@ impl SurfacePresenter {
             }
             return Err(error);
         }
-        self.queue.submit(Some(count_encoder.finish()));
+        self.host.queue.submit(Some(count_encoder.finish()));
         let count_result = {
             let SurfaceGeometry::Packed(packed) = &mut self.geometry else {
                 unreachable!();
@@ -3331,7 +3572,7 @@ impl SurfacePresenter {
                 .tiled
                 .as_mut()
                 .expect("TiledExact plan owns its diagnostic raster")
-                .resolve_count_and_prepare(&self.device, &self.queue)
+                .resolve_count_and_prepare(&self.host.device, &self.host.queue)
         };
         if let Err(error) = count_result {
             if let Some(ticket) = telemetry_ticket.take() {
@@ -3356,11 +3597,12 @@ impl SurfacePresenter {
         let view = frame
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: wgpu_label("gsplat-surface-resident-tiled-gpu-finish-encoder"),
-            });
+        let mut encoder =
+            self.host
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: wgpu_label("gsplat-surface-resident-tiled-gpu-finish-encoder"),
+                });
         {
             let SurfaceGeometry::Packed(packed) = &mut self.geometry else {
                 unreachable!();
@@ -3374,8 +3616,8 @@ impl SurfacePresenter {
                 .as_mut()
                 .expect("TiledExact plan owns its diagnostic raster")
                 .encode_finish(
-                    &self.device,
-                    &self.queue,
+                    &self.host.device,
+                    &self.host.queue,
                     &packed.resident,
                     ResidentTiledFinish {
                         source_order_btf: order.sorter.final_ids(),
@@ -3385,14 +3627,16 @@ impl SurfacePresenter {
                     &mut encoder,
                 )?;
         }
-        self.surface_capture.encode(&mut encoder, &frame.texture);
+        self.host
+            .surface_capture
+            .encode(&mut encoder, &frame.texture);
         let command_buffer = encoder.finish();
         let submitted_ticket = telemetry_ticket.as_ref().map(|ticket| ticket.ticket);
         if let Some(ticket) = telemetry_ticket.take() {
             self.gpu_order_telemetry
                 .arm(&command_buffer, ticket, completion_started);
         }
-        self.queue.submit(Some(command_buffer));
+        self.host.queue.submit(Some(command_buffer));
         self.maybe_emit_tiled_phase_trace()?;
         self.present_frame(frame);
         Ok(match (refresh_order, submitted_ticket) {
@@ -3422,7 +3666,7 @@ impl SurfacePresenter {
                     .tiled
                     .as_mut()
                     .expect("TiledExact plan owns its diagnostic raster")
-                    .try_resolve_count_and_prepare(&self.device, &self.queue)?
+                    .try_resolve_count_and_prepare(&self.host.device, &self.host.queue)?
                     .is_some()
             } else {
                 true
@@ -3447,7 +3691,7 @@ impl SurfacePresenter {
                         .tiled
                         .as_mut()
                         .expect("TiledExact plan owns its diagnostic raster")
-                        .try_resolve_count_and_prepare(&self.device, &self.queue)?
+                        .try_resolve_count_and_prepare(&self.host.device, &self.host.queue)?
                         .is_some();
                     if ready && let Some(pending) = packed.pending_gpu.as_mut() {
                         pending.count_ready = true;
@@ -3491,7 +3735,8 @@ impl SurfacePresenter {
                     .texture
                     .create_view(&wgpu::TextureViewDescriptor::default());
                 let mut encoder =
-                    self.device
+                    self.host
+                        .device
                         .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                             label: wgpu_label(
                                 "gsplat-surface-resident-tiled-web-gpu-finish-encoder",
@@ -3510,8 +3755,8 @@ impl SurfacePresenter {
                         .as_mut()
                         .expect("TiledExact plan owns its diagnostic raster")
                         .encode_finish(
-                            &self.device,
-                            &self.queue,
+                            &self.host.device,
+                            &self.host.queue,
                             &packed.resident,
                             ResidentTiledFinish {
                                 source_order_btf: order.sorter.final_ids(),
@@ -3533,7 +3778,7 @@ impl SurfacePresenter {
                         pending.completion_started,
                     );
                 }
-                self.queue.submit(Some(command_buffer));
+                self.host.queue.submit(Some(command_buffer));
                 self.present_frame(frame);
                 return Ok(match (pending.refresh_order, submitted_ticket) {
                     (false, _) => TelemetrySubmission::NotRequested,
@@ -3543,7 +3788,11 @@ impl SurfacePresenter {
             }
         }
 
-        let storage_bindings = self.device.limits().max_storage_buffers_per_shader_stage;
+        let storage_bindings = self
+            .host
+            .device
+            .limits()
+            .max_storage_buffers_per_shader_stage;
         let color_pipeline = self
             .resident_color_pipeline
             .as_ref()
@@ -3584,7 +3833,8 @@ impl SurfacePresenter {
                 })
         });
         let mut count_encoder =
-            self.device
+            self.host
+                .device
                 .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                     label: wgpu_label("gsplat-surface-resident-tiled-web-gpu-count-encoder"),
                 });
@@ -3602,11 +3852,14 @@ impl SurfacePresenter {
                     .encode_with_timestamps(&mut count_encoder, timestamp_range);
             }
             packed.resident.encode_color_resolve_if_needed(
-                &self.queue,
+                &self.host.queue,
                 color_pipeline,
                 &mut count_encoder,
                 camera,
-                self.device.limits().max_compute_workgroups_per_dimension,
+                self.host
+                    .device
+                    .limits()
+                    .max_compute_workgroups_per_dimension,
             )?;
             let order = packed
                 .resident
@@ -3617,8 +3870,8 @@ impl SurfacePresenter {
                 .as_mut()
                 .expect("TiledExact plan owns its diagnostic raster")
                 .encode_count_prepass(
-                    &self.device,
-                    &self.queue,
+                    &self.host.device,
+                    &self.host.queue,
                     &packed.resident,
                     order.sorter.final_ids(),
                     self.instance_count,
@@ -3639,7 +3892,7 @@ impl SurfacePresenter {
             }
             return Err(error);
         }
-        self.queue.submit(Some(count_encoder.finish()));
+        self.host.queue.submit(Some(count_encoder.finish()));
         {
             let SurfaceGeometry::Packed(packed) = &mut self.geometry else {
                 unreachable!();
@@ -3658,7 +3911,7 @@ impl SurfacePresenter {
                 .tiled
                 .as_mut()
                 .expect("TiledExact plan owns its diagnostic raster")
-                .try_resolve_count_and_prepare(&self.device, &self.queue)?
+                .try_resolve_count_and_prepare(&self.host.device, &self.host.queue)?
                 .is_some();
             if ready && let Some(pending) = packed.pending_gpu.as_mut() {
                 pending.count_ready = true;
@@ -3668,7 +3921,7 @@ impl SurfacePresenter {
     }
 
     pub(crate) fn poll_gpu_order_telemetry(&mut self) -> GpuOrderTelemetryPoll {
-        self.gpu_order_telemetry.poll(&self.device)
+        self.gpu_order_telemetry.poll(&self.host.device)
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -3691,7 +3944,7 @@ impl SurfacePresenter {
             .tiled
             .as_ref()
             .expect("TiledExact plan owns its diagnostic raster")
-            .read_phase_timings_blocking(&self.device, &self.queue)?;
+            .read_phase_timings_blocking(&self.host.device, &self.host.queue)?;
         eprintln!(
             "gsplat_tiled_phase sample={} plan={:?} source_count={} entry_count={} entry_capacity={} count_resolve_prepare_ms={:.3} gpu={:?}",
             packed.phase_trace_emitted,
@@ -3715,7 +3968,7 @@ impl SurfacePresenter {
     }
 
     pub(crate) fn poll_cpu_order_completion_telemetry(&mut self) -> CpuOrderTelemetryPoll {
-        let _ = self.device.poll(wgpu::PollType::Poll);
+        let _ = self.host.device.poll(wgpu::PollType::Poll);
         self.cpu_order_completion_telemetry.poll()
     }
 
@@ -3726,15 +3979,15 @@ impl SurfacePresenter {
         &self,
         timeout: Duration,
     ) -> Result<bool, crate::RendererError> {
-        crate::pump_device_receipt_callbacks(&self.device, timeout)
+        crate::pump_device_receipt_callbacks(&self.host.device, timeout)
     }
 
     pub(crate) fn poll_projected_draw_telemetry(&mut self) -> ProjectedDrawTelemetryPoll {
-        self.projected_draw_telemetry.poll(&self.device)
+        self.projected_draw_telemetry.poll(&self.host.device)
     }
 
     pub(crate) fn poll_gpu_producer_telemetry(&mut self) -> GpuProducerTelemetryPoll {
-        self.gpu_producer_telemetry.poll(&self.device)
+        self.gpu_producer_telemetry.poll(&self.host.device)
     }
 
     pub(crate) fn take_projected_draw_submission(&mut self) -> TelemetrySubmission {
@@ -3787,12 +4040,17 @@ impl SurfacePresenter {
         let view = frame
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
-        let mut encoder = self
+        let mut encoder =
+            self.host
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: wgpu_label("gsplat-surface-encoder"),
+                });
+        let storage_bindings = self
+            .host
             .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: wgpu_label("gsplat-surface-encoder"),
-            });
-        let storage_bindings = self.device.limits().max_storage_buffers_per_shader_stage;
+            .limits()
+            .max_storage_buffers_per_shader_stage;
         let resident_color_pipeline = self.resident_color_pipeline.as_ref();
         let resident_draw_pipeline = self.resident_draw_pipeline.as_ref();
         let projected_order_generation = match &self.geometry {
@@ -3804,8 +4062,8 @@ impl SurfacePresenter {
             order_source: ProjectedOrderSource::Cpu,
             order_generation: projected_order_generation,
             camera: *camera,
-            width: self.surface_configuration.size().0,
-            height: self.surface_configuration.size().1,
+            width: self.host.surface_configuration.size().0,
+            height: self.host.surface_configuration.size().1,
             draw_count_guard: self.instance_count,
             draw_execution: projected_draw_execution,
             probe_generation: self.projected_probe_generation,
@@ -3813,18 +4071,21 @@ impl SurfacePresenter {
         let mut projection_rebuilt = false;
         if let SurfaceGeometry::Packed(packed) = &mut self.geometry {
             packed.resident.encode_color_resolve_if_needed(
-                &self.queue,
+                &self.host.queue,
                 resident_color_pipeline
                     .ok_or_else(|| resident_pipelines_unavailable(storage_bindings))?,
                 &mut encoder,
                 camera,
-                self.device.limits().max_compute_workgroups_per_dimension,
+                self.host
+                    .device
+                    .limits()
+                    .max_compute_workgroups_per_dimension,
             )?;
             if packed.raster_plan == SurfaceRasterExecutionPlan::ProjectedQuadsExact
                 && packed.projected_cache.needs_projection(projected_cache_key)
             {
                 packed.projected.encode_cpu_projection_for_draw(
-                    &self.queue,
+                    &self.host.queue,
                     &mut encoder,
                     self.instance_count,
                     projected_draw_execution,
@@ -3998,7 +4259,9 @@ impl SurfacePresenter {
             );
         }
         #[cfg(not(target_arch = "wasm32"))]
-        self.surface_capture.encode(&mut encoder, &frame.texture);
+        self.host
+            .surface_capture
+            .encode(&mut encoder, &frame.texture);
         let command_buffer = encoder.finish();
         let submitted_ticket = completion_ticket.as_ref().map(|ticket| ticket.ticket);
         let projected_started = projected_sample_request.map(|request| request.started);
@@ -4013,7 +4276,7 @@ impl SurfacePresenter {
             self.cpu_order_completion_telemetry
                 .arm(&command_buffer, ticket, request.started);
         }
-        self.queue.submit(Some(command_buffer));
+        self.host.queue.submit(Some(command_buffer));
         self.present_frame(frame);
         self.last_projected_draw_submission = match (projected_metadata, projected_submitted_ticket)
         {
@@ -4031,14 +4294,17 @@ impl SurfacePresenter {
     fn acquire_surface_texture(
         &mut self,
     ) -> Result<Option<wgpu::SurfaceTexture>, SurfacePresenterError> {
-        self.surface_lifecycle
-            .acquire(&self.surface, &self.device, &self.surface_configuration)
+        self.host.surface_lifecycle.acquire(
+            &self.host.surface,
+            &self.host.device,
+            &self.host.surface_configuration,
+        )
     }
 
     fn present_frame(&mut self, frame: wgpu::SurfaceTexture) {
-        self.surface_lifecycle.present(frame);
+        self.host.surface_lifecycle.present(frame);
         #[cfg(not(target_arch = "wasm32"))]
-        self.surface_capture.mark_presented();
+        self.host.surface_capture.mark_presented();
     }
 
     pub const fn instance_count(&self) -> u32 {

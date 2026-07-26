@@ -80,6 +80,7 @@ mod macos {
 
         exercise_presenter_entries(&event_loop)?;
         exercise_session_entries(&event_loop)?;
+        exercise_exact_packed_host_entry(&event_loop)?;
         Ok(adapter)
     }
 
@@ -106,7 +107,7 @@ mod macos {
 
     fn exercise_presenter_entries(event_loop: &EventLoop<()>) -> Result<(), HarnessError> {
         let direct_renderer = loaded_renderer(GeometryPath::SortedIndexDirect);
-        let packed_renderer = loaded_renderer(GeometryPath::PackedAtlas);
+        let mut packed_renderer = loaded_renderer(GeometryPath::PackedAtlas);
         let paged_renderer = loaded_renderer(GeometryPath::PagedActiveAtlas);
         let empty_direct_renderer = empty_renderer(GeometryPath::SortedIndexDirect);
         let empty_packed_renderer = empty_renderer(GeometryPath::PackedAtlas);
@@ -159,6 +160,20 @@ mod macos {
             "public presenter Packed -> Direct must reject before reading or preparing the target source",
         );
         assert_eq!(presenter_snapshot(&packed), packed_before);
+
+        packed_renderer
+            .build_surface_sorted_indices_with_sort_refresh(&Camera::default(), true)
+            .map_err(failed("standalone Packed sort"))?;
+        let standalone_source = test_scene();
+        packed
+            .render_sorted_indices(
+                &standalone_source,
+                packed_renderer.current_sorted_indices(),
+                &Camera::default(),
+                true,
+            )
+            .map_err(failed("standalone Packed render"))?;
+        assert!(packed.instance_count() > 0);
         Ok(())
     }
 
@@ -217,6 +232,29 @@ mod macos {
             packed_before,
             "rejected public session Packed -> Direct must not prepare or publish renderer, presenter, Exact plan, stats, or policy state"
         );
+        Ok(())
+    }
+
+    fn exercise_exact_packed_host_entry(event_loop: &EventLoop<()>) -> Result<(), HarnessError> {
+        let renderer = loaded_renderer(GeometryPath::PackedAtlas);
+        let window = hidden_window(event_loop, "M7h-1 Exact Packed host")?;
+        let mut session = pollster::block_on(SurfaceRenderSession::from_window(
+            renderer,
+            window,
+            TEST_WIDTH,
+            TEST_HEIGHT,
+            Camera::default(),
+        ))
+        .map_err(failed("Exact Packed host session construction"))?;
+
+        assert_eq!(session.geometry_path(), GeometryPath::PackedAtlas);
+        assert_eq!(session.addressable_splat_count(), 3);
+        let frame = session
+            .render_frame()
+            .map_err(failed("Exact Packed host session render"))?;
+        assert!(frame.frame_presented);
+        assert_eq!(frame.stats.visible_count, 3);
+        assert_eq!(frame.stats.drawn_count, 3);
         Ok(())
     }
 

@@ -22,8 +22,8 @@ use gsplat_render_wgpu::{
     SurfaceGpuProducerMeasurementFailure, SurfaceGpuProducerMeasurementSubmission,
     SurfaceGpuProducerMeasurementUnsampledReason, SurfaceOrderBackendUsed, SurfaceOrderMeasurement,
     SurfaceOrderMeasurementFailure, SurfaceOrderMeasurementSubmission,
-    SurfaceOrderMeasurementUnsampledReason, SurfacePresenter, SurfaceProjectedDrawPolicy,
-    SurfaceRasterExecutionPlan, SurfaceRenderSession, SurfaceTimingSource,
+    SurfaceOrderMeasurementUnsampledReason, SurfaceProjectedDrawPolicy, SurfaceRasterExecutionPlan,
+    SurfaceRenderSession, SurfaceTimingSource,
 };
 #[cfg(feature = "interactive-viewer")]
 use winit::{
@@ -77,16 +77,15 @@ fn run_interactive(
         .positions()
         .and_then(positions_center)
         .unwrap_or(Vec3f::new(0.0, 0.0, 0.0));
-    let presenter = pollster::block_on(SurfacePresenter::from_window(
+    let mut session = pollster::block_on(SurfaceRenderSession::from_window(
+        renderer,
         window.clone(),
         args.config.width,
         args.config.height,
-        &renderer,
+        camera,
     ))
     .map_err(|err| err.to_string())?;
-    let surface_adapter_info = presenter.adapter_info().clone();
-    let mut session =
-        SurfaceRenderSession::new(renderer, presenter, camera).map_err(|err| err.to_string())?;
+    let surface_adapter_info = session.adapter_info().clone();
     session
         .set_sort_interval(1)
         .map_err(|err| err.to_string())?;
