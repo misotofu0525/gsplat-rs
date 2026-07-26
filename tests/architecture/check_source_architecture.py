@@ -720,6 +720,173 @@ def tuple_struct_fields(code: str) -> Iterable[tuple[str, str, int]]:
             yield "", code[opening + 1 : closing], opening + 1
 
 
+def named_struct_declarations(code: str, name: str) -> list[int]:
+    pattern = re.compile(rf"\bstruct\s+(?:r#)?{re.escape(name)}\b")
+    return [match.start() for match in pattern.finditer(code)]
+
+
+def module_declarations(code: str, name: str) -> list[tuple[str | None, int]]:
+    pattern = re.compile(
+        rf"(?m)^\s*(?P<visibility>pub(?:\s*\([^)]*\))?\s+)?"
+        rf"mod\s+(?:r#)?{re.escape(name)}\s*;"
+    )
+    return [
+        (
+            match.group("visibility").strip()
+            if match.group("visibility") is not None
+            else None,
+            match.start(),
+        )
+        for match in pattern.finditer(code)
+    ]
+
+
+def rust_type_identifiers(field_type: str) -> set[str]:
+    return {
+        identifier.removeprefix("r#")
+        for identifier in re.findall(r"(?:r#)?[A-Za-z_]\w*", field_type)
+    }
+
+
+def check_session_publication_boundary(
+    root: pathlib.Path,
+    policy: dict[str, Any],
+    rust_paths: list[str],
+) -> list[Issue]:
+    rule = policy["dependency_rules"].get("session_publication", {})
+    if not rule.get("enabled", False):
+        return []
+
+    issues: list[Issue] = []
+    owner_path = rule["owner_path"]
+    owner_type = rule["owner_type"]
+    discovered = set(rust_paths)
+    sanitized: dict[str, str] = {}
+
+    def code_for(path: str) -> str:
+        if path not in sanitized:
+            sanitized[path] = sanitize_rust((root / path).read_text(encoding="utf-8"))
+        return sanitized[path]
+
+    if owner_path not in discovered:
+        issues.append(
+            error(
+                "dependency.session_publication.owner_missing",
+                owner_path,
+                f"{owner_type} must remain in the configured private evidence leaf",
+            )
+        )
+    else:
+        declarations = named_struct_declarations(code_for(owner_path), owner_type)
+        if len(declarations) != 1:
+            issues.append(
+                error(
+                    "dependency.session_publication.owner_ambiguous",
+                    owner_path,
+                    f"expected exactly one {owner_type} declaration, found {len(declarations)}",
+                )
+            )
+
+    for path in rust_paths:
+        if path == owner_path:
+            continue
+        declarations = named_struct_declarations(code_for(path), owner_type)
+        if declarations:
+            issues.append(
+                error(
+                    "dependency.session_publication.owner_location",
+                    path,
+                    f"{owner_type} may only be declared in {owner_path}",
+                    line_number(code_for(path), declarations[0]),
+                )
+            )
+
+    for module in rule.get("private_module_chain", []):
+        path = module["path"]
+        name = module["module"]
+        if path not in discovered:
+            issues.append(
+                error(
+                    "dependency.session_publication.private_module_missing",
+                    path,
+                    f"private module declaration for {name} is missing",
+                )
+            )
+            continue
+        declarations = module_declarations(code_for(path), name)
+        if len(declarations) != 1:
+            issues.append(
+                error(
+                    "dependency.session_publication.private_module_ambiguous",
+                    path,
+                    f"expected exactly one module declaration for {name}, found {len(declarations)}",
+                )
+            )
+            continue
+        visibility, offset = declarations[0]
+        if visibility is not None:
+            issues.append(
+                error(
+                    "dependency.session_publication.module_public",
+                    path,
+                    f"publication owner module {name} must remain private",
+                    line_number(code_for(path), offset),
+                )
+            )
+
+    if owner_path not in discovered:
+        return issues
+
+    owner_code = code_for(owner_path)
+    for symbol in rule.get("forbidden_symbol_references", []):
+        match = re.search(rf"\b(?:r#)?{re.escape(symbol)}\b", owner_code)
+        if match:
+            issues.append(
+                error(
+                    "dependency.session_publication.facade_output",
+                    owner_path,
+                    f"publication evidence may not refer to facade output {symbol}",
+                    line_number(owner_code, match.start()),
+                )
+            )
+
+    emitted: set[str] = set()
+    for field_name, field_type, offset in [
+        *struct_fields(owner_code),
+        *tuple_struct_fields(owner_code),
+    ]:
+        identifiers = rust_type_identifiers(field_type)
+        for category, state_rule in rule.get("forbidden_owned_state", {}).items():
+            if category in emitted:
+                continue
+            exact_types = set(state_rule.get("type_names", []))
+            type_patterns = [
+                re.compile(pattern) for pattern in state_rule.get("type_name_patterns", [])
+            ]
+            field_patterns = [
+                re.compile(pattern) for pattern in state_rule.get("field_name_patterns", [])
+            ]
+            owns_state = bool(identifiers & exact_types) or any(
+                pattern.fullmatch(identifier)
+                for pattern in type_patterns
+                for identifier in identifiers
+            )
+            owns_state = owns_state or any(
+                pattern.search(field_name) for pattern in field_patterns
+            )
+            if owns_state:
+                emitted.add(category)
+                issues.append(
+                    error(
+                        f"dependency.session_publication.{category}",
+                        owner_path,
+                        f"publication evidence may not own {state_rule['description']}",
+                        line_number(owner_code, offset),
+                    )
+                )
+    return issues
+
+
 def check_dependencies(
     root: pathlib.Path,
     policy: dict[str, Any],
@@ -1341,6 +1508,13 @@ def check_repository(root: pathlib.Path, policy: dict[str, Any]) -> tuple[list[I
     completed, progress_path, issues = load_program_task_states(root, policy)
     issues.extend(check_task_references(policy))
     issues.extend(check_sizes(root, policy, sources, completed))
+    issues.extend(
+        check_session_publication_boundary(
+            root,
+            policy,
+            sources.get("rust", []),
+        )
+    )
     issues.extend(
         check_dependencies(
             root,

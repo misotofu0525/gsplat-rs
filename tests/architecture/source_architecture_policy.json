@@ -269,6 +269,73 @@
         "crates/gsplat-render-wgpu/src/offscreen/*.rs",
         "crates/gsplat-render-wgpu/src/offscreen/**/*.rs"
       ]
+    },
+    "session_publication": {
+      "enabled": true,
+      "owner_path": "crates/gsplat-render-wgpu/src/evidence/session_publication.rs",
+      "owner_type": "SessionPublication",
+      "private_module_chain": [
+        {
+          "path": "crates/gsplat-render-wgpu/src/lib.rs",
+          "module": "evidence"
+        },
+        {
+          "path": "crates/gsplat-render-wgpu/src/evidence/mod.rs",
+          "module": "session_publication"
+        }
+      ],
+      "forbidden_symbol_references": [
+        "SurfaceFrameOutput"
+      ],
+      "forbidden_owned_state": {
+        "surface_state": {
+          "type_names": [
+            "Surface"
+          ],
+          "description": "wgpu Surface state"
+        },
+        "presenter_state": {
+          "type_names": [
+            "Presenter",
+            "SurfacePresenter",
+            "SurfacePresenterHost"
+          ],
+          "description": "Surface presenter state"
+        },
+        "device_state": {
+          "type_names": [
+            "Device"
+          ],
+          "description": "wgpu Device state"
+        },
+        "queue_state": {
+          "type_names": [
+            "Queue"
+          ],
+          "description": "wgpu Queue state"
+        },
+        "renderer_state": {
+          "type_names": [
+            "Renderer"
+          ],
+          "description": "Renderer state"
+        },
+        "adaptive_controller_state": {
+          "type_names": [
+            "PlanSampler",
+            "WholePlanController"
+          ],
+          "type_name_patterns": [
+            ".*Adaptive.*(?:Controller|State)",
+            ".*Controller"
+          ],
+          "field_name_patterns": [
+            "(?:^|_)adaptive(?:_|$)",
+            "(?:^|_)controller(?:_|$)"
+          ],
+          "description": "Adaptive controller state"
+        }
+      }
     }
   }
 }

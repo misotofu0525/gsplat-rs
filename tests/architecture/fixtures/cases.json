@@ -1396,6 +1396,106 @@
       ]
     },
     {
+      "name": "session_publication_owner_moved_into_surface_is_forbidden",
+      "files": {
+        "crates/gsplat-render-wgpu/src/lib.rs": {
+          "lines": [
+            "mod evidence;"
+          ]
+        },
+        "crates/gsplat-render-wgpu/src/evidence/mod.rs": {
+          "lines": [
+            "mod session_publication;"
+          ]
+        },
+        "crates/gsplat-render-wgpu/src/surface/session_publication.rs": {
+          "lines": [
+            "struct SessionPublication;"
+          ]
+        }
+      },
+      "session_publication_rule": {
+        "enabled": true
+      },
+      "expected_error_codes": [
+        "dependency.session_publication.owner_location",
+        "dependency.session_publication.owner_missing"
+      ]
+    },
+    {
+      "name": "session_publication_leaf_rejects_facade_output_and_runtime_state",
+      "files": {
+        "crates/gsplat-render-wgpu/src/lib.rs": {
+          "lines": [
+            "mod evidence;"
+          ]
+        },
+        "crates/gsplat-render-wgpu/src/evidence/mod.rs": {
+          "lines": [
+            "mod session_publication;"
+          ]
+        },
+        "crates/gsplat-render-wgpu/src/evidence/session_publication.rs": {
+          "lines": [
+            "use crate::surface_session::SurfaceFrameOutput;",
+            "struct SessionPublication {",
+            "    facade: SurfaceFrameOutput,",
+            "    surface: wgpu::Surface<'static>,",
+            "    presenter: SurfacePresenter,",
+            "    device: std::sync::Arc<wgpu::Device>,",
+            "    queue: wgpu::Queue,",
+            "    renderer: Renderer,",
+            "    adaptive: SurfaceAdaptiveState,",
+            "    compatibility: SurfaceCompatibilityOrderSubmission,",
+            "}"
+          ]
+        }
+      },
+      "session_publication_rule": {
+        "enabled": true
+      },
+      "expected_error_codes": [
+        "dependency.session_publication.adaptive_controller_state",
+        "dependency.session_publication.device_state",
+        "dependency.session_publication.facade_output",
+        "dependency.session_publication.presenter_state",
+        "dependency.session_publication.queue_state",
+        "dependency.session_publication.renderer_state",
+        "dependency.session_publication.surface_state"
+      ]
+    },
+    {
+      "name": "session_publication_compatibility_dtos_remain_allowed",
+      "files": {
+        "crates/gsplat-render-wgpu/src/lib.rs": {
+          "lines": [
+            "mod evidence;"
+          ]
+        },
+        "crates/gsplat-render-wgpu/src/evidence/mod.rs": {
+          "lines": [
+            "mod session_publication;"
+          ]
+        },
+        "crates/gsplat-render-wgpu/src/evidence/session_publication.rs": {
+          "lines": [
+            "// SurfaceFrameOutput and Renderer in comments are not references.",
+            "const DESCRIPTION: &str = \"wgpu::Surface SurfacePresenter wgpu::Queue\";",
+            "struct SessionPublication {",
+            "    order: SurfaceCompatibilityOrderSubmission,",
+            "    projected: SurfaceCompatibilityProjectedSubmission,",
+            "    producer: SurfaceCompatibilityProducerSubmission,",
+            "    evidence: SessionEvidence,",
+            "}"
+          ]
+        }
+      },
+      "session_publication_rule": {
+        "enabled": true
+      },
+      "expected_error_codes": []
+    },
+    {
       "name": "runtime_pass_vector_and_public_render_plan_trait",
       "files": {
         "crates/demo/src/runtime.rs": {

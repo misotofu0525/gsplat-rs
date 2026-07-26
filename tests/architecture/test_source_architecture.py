@@ -76,6 +76,7 @@ class SourceArchitectureFixtureTests(unittest.TestCase):
                 )
                 policy["dependency_rules"]["plans"]["per_frame_functions"] = []
                 policy["dependency_rules"]["plans"]["preparation_only_files"] = []
+                policy["dependency_rules"]["session_publication"]["enabled"] = False
                 # The repository policy carries only the currently executing
                 # writer pair. Fixtures opt into their own exact execution.
                 policy["program_task_state"]["parallel_execution"] = None
@@ -88,6 +89,11 @@ class SourceArchitectureFixtureTests(unittest.TestCase):
                     deep_update(
                         policy["dependency_rules"]["plans"],
                         case["plan_rules"],
+                    )
+                if "session_publication_rule" in case:
+                    deep_update(
+                        policy["dependency_rules"]["session_publication"],
+                        case["session_publication_rule"],
                     )
                 if "program_task_state" in case:
                     deep_update(
@@ -270,6 +276,31 @@ class SourceArchitectureFixtureTests(unittest.TestCase):
         hosts = self.base_policy["dependency_rules"]["platform_hosts"]["include"]
         self.assertIn("crates/gsplat-render-wgpu/src/surface.rs", hosts)
         self.assertIn("crates/gsplat-render-wgpu/src/offscreen.rs", hosts)
+        publication = self.base_policy["dependency_rules"]["session_publication"]
+        self.assertTrue(publication["enabled"])
+        self.assertEqual(
+            publication["owner_path"],
+            "crates/gsplat-render-wgpu/src/evidence/session_publication.rs",
+        )
+        self.assertEqual(publication["owner_type"], "SessionPublication")
+        self.assertEqual(
+            publication["forbidden_symbol_references"], ["SurfaceFrameOutput"]
+        )
+        self.assertEqual(
+            {entry["module"] for entry in publication["private_module_chain"]},
+            {"evidence", "session_publication"},
+        )
+        self.assertEqual(
+            set(publication["forbidden_owned_state"]),
+            {
+                "surface_state",
+                "presenter_state",
+                "device_state",
+                "queue_state",
+                "renderer_state",
+                "adaptive_controller_state",
+            },
+        )
         rust_sources = self.base_policy["source_sets"]["rust"]
         self.assertNotIn("bindings/**/*.rs", rust_sources["include"])
         self.assertNotIn("exclude_dir_names", rust_sources)
