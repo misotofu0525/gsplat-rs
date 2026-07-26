@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import binascii
 import hashlib
+import importlib.util
 import json
 import math
 import pathlib
@@ -45,6 +46,19 @@ TEMPORAL_METRIC = "temporal_rgb_residual_mae_normalized"
 TEMPORAL_LIMIT = 0.005
 METRIC_RECEIPT_TOLERANCE = 1.0e-9
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
+TRACE_VALIDATOR_PATH = REPO_ROOT / "tests/perf/trace/validate_trace_v1.py"
+EVIDENCE_CLASSES = {"contract_fixture", "formal_quality"}
+FORMAL_MIN_WIDTH = 1920
+FORMAL_MIN_HEIGHT = 1080
+LIFECYCLE_GENERATIONS = (
+    "scene_generation",
+    "camera_generation",
+    "viewport_generation",
+    "contract_generation",
+    "plan_generation",
+    "presentation_generation",
+)
 
 
 class ValidationError(ValueError):
@@ -56,6 +70,7 @@ class DecodedImage:
     width: int
     height: int
     rgba: bytes
+    path: pathlib.Path | None = None
 
 
 @dataclass(frozen=True)
@@ -68,9 +83,21 @@ class FramePixels:
 
 @dataclass(frozen=True)
 class ValidationResult:
+    evidence_class: str
     frame_count: int
     transition_count: int
     validator_sha256: str
+
+
+@dataclass(frozen=True)
+class Authority:
+    dataset_id: str
+    dataset_asset_sha256: str
+    source_splat_count: int
+    source_sh_degree: int
+    trace_id: str
+    trace_content_sha256: str
+    trace: dict[str, Any]
 
 
 def fail(message: str) -> None:
@@ -196,6 +223,108 @@ def resolve_artifact_file(root: pathlib.Path, value: str, context: str) -> pathl
     return path
 
 
+def load_trace_validator() -> Any:
+    spec = importlib.util.spec_from_file_location(
+        "balanced_gate_trace_validator", TRACE_VALIDATOR_PATH
+    )
+    if spec is None or spec.loader is None:
+        fail(f"cannot load trace validator {TRACE_VALIDATOR_PATH}")
+    module = importlib.util.module_from_spec(spec)
+    trace_directory = str(TRACE_VALIDATOR_PATH.parent)
+    sys.path.insert(0, trace_directory)
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        sys.path.remove(trace_directory)
+    return module
+
+
+def canonical_sha256(value: Any) -> str:
+    encoded = json.dumps(
+        value, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    ).encode("utf-8")
+    return sha256_bytes(encoded)
+
+
+def validate_authority(manifest: dict[str, Any], evidence_class: str) -> Authority:
+    authority = require_object(manifest, "authority", "manifest")
+
+    dataset_receipt = require_object(authority, "dataset_manifest", "manifest.authority")
+    dataset_path = resolve_artifact_file(
+        REPO_ROOT,
+        require_string(dataset_receipt, "path", "manifest.authority.dataset_manifest"),
+        "manifest.authority.dataset_manifest.path",
+    )
+    try:
+        dataset_path.relative_to((REPO_ROOT / "tests/perf/datasets").resolve())
+    except ValueError:
+        fail("authoritative dataset manifest must come from tests/perf/datasets")
+    if sha256_file(dataset_path) != require_sha256(
+        dataset_receipt, "sha256", "manifest.authority.dataset_manifest"
+    ):
+        fail("manifest.authority.dataset_manifest SHA-256 mismatch")
+    dataset = load_json(dataset_path)
+    if dataset.get("schema") != "gsplat-dataset/v1":
+        fail("authoritative dataset manifest schema must be 'gsplat-dataset/v1'")
+    if evidence_class == "formal_quality" and dataset.get("qualification_status") != "qualified":
+        fail("formal_quality requires a qualified authoritative dataset manifest")
+    dataset_id = require_string(dataset, "id", "authoritative dataset manifest")
+    asset_sha256 = require_sha256(dataset, "sha256", "authoritative dataset manifest")
+    if require_string(
+        dataset_receipt, "dataset_id", "manifest.authority.dataset_manifest"
+    ) != dataset_id:
+        fail("manifest.authority.dataset_manifest.dataset_id mismatch")
+    if require_sha256(
+        dataset_receipt, "asset_sha256", "manifest.authority.dataset_manifest"
+    ) != asset_sha256:
+        fail("manifest.authority.dataset_manifest.asset_sha256 mismatch")
+    source_splat_count = require_int(
+        dataset, "splat_count", "authoritative dataset manifest", positive=True
+    )
+    source_sh_degree = require_int(dataset, "sh_degree", "authoritative dataset manifest")
+
+    trace_receipt = require_object(authority, "trace", "manifest.authority")
+    trace_path = resolve_artifact_file(
+        REPO_ROOT,
+        require_string(trace_receipt, "path", "manifest.authority.trace"),
+        "manifest.authority.trace.path",
+    )
+    try:
+        trace_path.relative_to((REPO_ROOT / "tests/perf/trace/fixtures").resolve())
+    except ValueError:
+        fail("authoritative camera trace must come from tests/perf/trace/fixtures")
+    if sha256_file(trace_path) != require_sha256(
+        trace_receipt, "sha256", "manifest.authority.trace"
+    ):
+        fail("manifest.authority.trace SHA-256 mismatch")
+    trace = load_json(trace_path)
+    trace_validator = load_trace_validator()
+    try:
+        trace_validator.validate(trace)
+    except trace_validator.ValidationError as error:
+        fail(f"authoritative camera trace is invalid: {error}")
+    trace_id = require_string(trace, "trace_id", "authoritative camera trace")
+    trace_content_sha256 = require_sha256(
+        trace, "content_sha256", "authoritative camera trace"
+    )
+    if require_string(trace_receipt, "trace_id", "manifest.authority.trace") != trace_id:
+        fail("manifest.authority.trace.trace_id mismatch")
+    if require_sha256(
+        trace_receipt, "content_sha256", "manifest.authority.trace"
+    ) != trace_content_sha256:
+        fail("manifest.authority.trace.content_sha256 mismatch")
+
+    return Authority(
+        dataset_id=dataset_id,
+        dataset_asset_sha256=asset_sha256,
+        source_splat_count=source_splat_count,
+        source_sh_degree=source_sh_degree,
+        trace_id=trace_id,
+        trace_content_sha256=trace_content_sha256,
+        trace=trace,
+    )
+
+
 def paeth_predictor(left: int, above: int, upper_left: int) -> int:
     estimate = left + above - upper_left
     distance_left = abs(estimate - left)
@@ -302,8 +431,19 @@ def decode_rgba8_png(
     expected_bytes = height * (row_bytes + 1)
     try:
         decompressor = zlib.decompressobj()
-        filtered = decompressor.decompress(bytes(idat), expected_bytes + 1)
-        filtered += decompressor.flush()
+        filtered = bytearray()
+        pending = bytes(idat)
+        while pending:
+            remaining = expected_bytes + 1 - len(filtered)
+            if remaining <= 0:
+                fail(f"{context} decompressed byte length exceeds its RGBA receipt")
+            before = len(pending)
+            filtered.extend(decompressor.decompress(pending, remaining))
+            pending = decompressor.unconsumed_tail
+            if len(filtered) > expected_bytes:
+                fail(f"{context} decompressed byte length exceeds its RGBA receipt")
+            if pending and len(pending) == before:
+                fail(f"{context} compressed pixel stream made no progress")
     except zlib.error as error:
         fail(f"{context} has invalid compressed pixel data: {error}")
     if (
@@ -318,7 +458,7 @@ def decode_rgba8_png(
     offset = 0
     for _ in range(height):
         filter_type = filtered[offset]
-        source = filtered[offset + 1 : offset + 1 + row_bytes]
+        source = bytes(filtered[offset + 1 : offset + 1 + row_bytes])
         row = unfilter_scanline(filter_type, source, previous)
         rows.append(row)
         previous = row
@@ -345,7 +485,13 @@ def load_image(
         fail(f"cannot read {path}: {error}")
     if sha256_bytes(data) != expected_sha256:
         fail(f"{context} SHA-256 mismatch")
-    return decode_rgba8_png(data, context, (width, height))
+    decoded = decode_rgba8_png(data, context, (width, height))
+    return DecodedImage(
+        width=decoded.width,
+        height=decoded.height,
+        rgba=decoded.rgba,
+        path=path,
+    )
 
 
 def window_ssim(exact: list[float], candidate: list[float]) -> float:
@@ -452,7 +598,7 @@ def verify_metric_receipt(
         fail(f"{context}.{key} does not match recomputed RGBA8 bytes")
 
 
-def validate_exactness(manifest: dict[str, Any]) -> None:
+def validate_exactness(manifest: dict[str, Any], authority: Authority) -> None:
     exactness = require_object(manifest, "exactness", "manifest")
     counts = [
         require_int(exactness, key, "manifest.exactness", positive=True)
@@ -460,10 +606,14 @@ def validate_exactness(manifest: dict[str, Any]) -> None:
     ]
     if len(set(counts)) != 1:
         fail("manifest.exactness requires source=decoded=encoded=resident=addressable")
+    if counts[0] != authority.source_splat_count:
+        fail("manifest.exactness point count does not match authoritative dataset manifest")
     source_sh_degree = require_int(exactness, "source_sh_degree", "manifest.exactness")
     resident_sh_degree = require_int(exactness, "resident_sh_degree", "manifest.exactness")
     if resident_sh_degree != source_sh_degree:
         fail("manifest.exactness resident SH degree must equal source SH degree")
+    if source_sh_degree != authority.source_sh_degree:
+        fail("manifest.exactness SH degree does not match authoritative dataset manifest")
     required_values = {
         "source_membership": "all",
         "sampling": "disabled",
@@ -480,7 +630,9 @@ def validate_exactness(manifest: dict[str, Any]) -> None:
         fail("manifest.exactness.full_quality must be true")
 
 
-def validate_resolution(manifest: dict[str, Any]) -> tuple[int, int]:
+def validate_resolution(
+    manifest: dict[str, Any], trace: dict[str, Any], evidence_class: str
+) -> tuple[int, int]:
     resolution = require_object(manifest, "resolution", "manifest")
     dimensions: list[tuple[int, int]] = []
     for stage in RESOLUTION_STAGES:
@@ -501,10 +653,23 @@ def validate_resolution(manifest: dict[str, Any]) -> tuple[int, int]:
         fail("manifest.resolution.upscaling must equal 'disabled'")
     if not require_bool(resolution, "full_resolution", "manifest.resolution"):
         fail("manifest.resolution.full_resolution must be true")
+    trace_display = require_object(trace, "display", "authoritative camera trace")
+    trace_dimensions = (
+        require_int(trace_display, "width", "authoritative camera trace.display", positive=True),
+        require_int(trace_display, "height", "authoritative camera trace.display", positive=True),
+    )
+    if dimensions[0] != trace_dimensions:
+        fail("manifest.resolution does not match authoritative trace display")
+    if evidence_class == "formal_quality" and (
+        dimensions[0][0] < FORMAL_MIN_WIDTH or dimensions[0][1] < FORMAL_MIN_HEIGHT
+    ):
+        fail("formal_quality resolution must be at least 1920x1080")
     return dimensions[0]
 
 
-def validate_camera(manifest: dict[str, Any]) -> tuple[str, list[int]]:
+def validate_camera(
+    manifest: dict[str, Any], trace: dict[str, Any]
+) -> tuple[str, list[int]]:
     camera = require_object(manifest, "camera", "manifest")
     mode = require_string(camera, "mode", "manifest.camera")
     if mode not in {"authored_views", "moving_sequence"}:
@@ -521,6 +686,9 @@ def validate_camera(manifest: dict[str, Any]) -> tuple[str, list[int]]:
         fail("authored_views quality capture must cover trace frames 0 and 1")
     if mode == "moving_sequence" and indices != [0, 1, 0]:
         fail("moving_sequence quality capture must be exactly trace frames 0 -> 1 -> 0")
+    trace_frames = require_array(trace, "frames", "authoritative camera trace")
+    if len(trace_frames) < 2:
+        fail("authoritative camera trace must contain frozen frames 0 and 1")
     return mode, indices
 
 
@@ -529,11 +697,14 @@ def validate_frames(
     root: pathlib.Path,
     expected_dimensions: tuple[int, int],
     expected_trace_indices: list[int],
+    authority: Authority,
 ) -> list[FramePixels]:
     raw_frames = require_array(manifest, "frames", "manifest")
     if len(raw_frames) != len(expected_trace_indices):
         fail("manifest.frames must cover every declared camera capture exactly once")
     frames: list[FramePixels] = []
+    previous_tickets = {"exact": 0, "candidate": 0}
+    previous_presentation_generations = {"exact": 0, "candidate": 0}
     for capture_index, raw_frame in enumerate(raw_frames):
         context = f"manifest.frames[{capture_index}]"
         if not isinstance(raw_frame, dict):
@@ -545,10 +716,55 @@ def validate_frames(
             fail(f"{context}.trace_frame_index does not match the camera receipt")
         if not require_bool(raw_frame, "presented", context):
             fail(f"{context}.presented must be true")
+
+        camera_receipt = require_object(raw_frame, "camera", context)
+        if require_string(camera_receipt, "trace_id", f"{context}.camera") != authority.trace_id:
+            fail(f"{context}.camera.trace_id does not match authoritative trace")
+        if require_sha256(
+            camera_receipt, "trace_content_sha256", f"{context}.camera"
+        ) != authority.trace_content_sha256:
+            fail(f"{context}.camera.trace_content_sha256 mismatch")
+        trace_frame = authority.trace["frames"][trace_frame_index]
+        pose_intrinsics_sha256 = canonical_sha256(
+            {"pose": trace_frame["pose"], "intrinsics": trace_frame["intrinsics"]}
+        )
+        if require_sha256(
+            camera_receipt, "pose_intrinsics_sha256", f"{context}.camera"
+        ) != pose_intrinsics_sha256:
+            fail(f"{context}.camera pose/intrinsics receipt mismatch")
+
+        presentation_pair = require_object(raw_frame, "presentation", context)
+        for lane in ("exact", "candidate"):
+            presentation = require_object(
+                presentation_pair, lane, f"{context}.presentation"
+            )
+            presentation_context = f"{context}.presentation.{lane}"
+            if require_string(presentation, "outcome", presentation_context) != "presented":
+                fail(f"{presentation_context}.outcome must equal 'presented'")
+            ticket = require_int(
+                presentation, "ticket", presentation_context, positive=True
+            )
+            if ticket <= previous_tickets[lane]:
+                fail(f"{presentation_context}.ticket must be strictly increasing")
+            previous_tickets[lane] = ticket
+            generations = {
+                key: require_int(presentation, key, presentation_context, positive=True)
+                for key in LIFECYCLE_GENERATIONS
+            }
+            if (
+                generations["presentation_generation"]
+                <= previous_presentation_generations[lane]
+            ):
+                fail(
+                    f"{presentation_context}.presentation_generation must be "
+                    "strictly increasing"
+                )
+            previous_presentation_generations[lane] = generations[
+                "presentation_generation"
+            ]
+
         exact_receipt = require_object(raw_frame, "exact", context)
         candidate_receipt = require_object(raw_frame, "candidate", context)
-        if exact_receipt.get("path") == candidate_receipt.get("path"):
-            fail(f"{context} Exact and candidate images must be separate artifacts")
         exact = load_image(
             root,
             exact_receipt,
@@ -561,6 +777,13 @@ def validate_frames(
             expected_dimensions,
             f"{context}.candidate",
         )
+        assert exact.path is not None and candidate.path is not None
+        try:
+            same_file = exact.path.samefile(candidate.path)
+        except OSError as error:
+            fail(f"{context} cannot compare Exact/candidate file identity: {error}")
+        if same_file:
+            fail(f"{context} Exact and candidate images must be separate artifacts")
         actual_metrics = compute_frame_metrics(exact, candidate)
         metric_receipt = require_object(raw_frame, "metrics", context)
         for key, (limit_kind, limit) in FRAME_METRIC_LIMITS.items():
@@ -616,12 +839,23 @@ def validate(path: pathlib.Path) -> ValidationResult:
     manifest = load_json(manifest_path)
     if manifest.get("schema") != SCHEMA:
         fail(f"manifest.schema must equal {SCHEMA!r}")
-    validate_exactness(manifest)
-    dimensions = validate_resolution(manifest)
-    mode, trace_indices = validate_camera(manifest)
-    frames = validate_frames(manifest, manifest_path.parent, dimensions, trace_indices)
+    evidence_class = require_string(manifest, "evidence_class", "manifest")
+    if evidence_class not in EVIDENCE_CLASSES:
+        fail("manifest.evidence_class must be contract_fixture or formal_quality")
+    authority = validate_authority(manifest, evidence_class)
+    validate_exactness(manifest, authority)
+    dimensions = validate_resolution(manifest, authority.trace, evidence_class)
+    mode, trace_indices = validate_camera(manifest, authority.trace)
+    frames = validate_frames(
+        manifest,
+        manifest_path.parent,
+        dimensions,
+        trace_indices,
+        authority,
+    )
     transition_count = validate_transitions(manifest, mode, frames)
     return ValidationResult(
+        evidence_class=evidence_class,
         frame_count=len(frames),
         transition_count=transition_count,
         validator_sha256=sha256_file(pathlib.Path(__file__).resolve()),
@@ -645,6 +879,7 @@ def main(argv: list[str] | None = None) -> int:
                     "version": VALIDATOR_VERSION,
                     "sha256": result.validator_sha256,
                 },
+                "evidence_class": result.evidence_class,
                 "frame_count": result.frame_count,
                 "transition_count": result.transition_count,
                 "pass": True,

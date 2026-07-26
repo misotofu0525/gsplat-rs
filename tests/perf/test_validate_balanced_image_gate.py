@@ -10,6 +10,7 @@ import hashlib
 import importlib.util
 import io
 import json
+import os
 import pathlib
 import struct
 import sys
@@ -54,29 +55,59 @@ def rgba_png(width: int, height: int, rgba: bytes) -> bytes:
         b"\x00" + rgba[offset : offset + row_bytes]
         for offset in range(0, len(rgba), row_bytes)
     )
+    return png_with_filtered_bytes(width, height, filtered)
+
+
+def png_with_filtered_bytes(width: int, height: int, filtered: bytes) -> bytes:
     ihdr = struct.pack(">IIBBBBB", width, height, 8, 6, 0, 0, 0)
     return (
         VALIDATOR.PNG_SIGNATURE
         + png_chunk(b"IHDR", ihdr)
-        + png_chunk(b"IDAT", zlib.compress(filtered))
+        + png_chunk(b"IDAT", zlib.compress(filtered, level=9))
         + png_chunk(b"IEND", b"")
     )
 
 
-def solid_pixels(value: int, *, alpha: int = 255) -> bytes:
-    return bytes([value, value, value, alpha] * 64)
+def solid_pixels(width: int, height: int, value: int, *, alpha: int = 255) -> bytes:
+    return bytes([value, value, value, alpha] * (width * height))
 
 
-def write_image(root: pathlib.Path, name: str, rgba: bytes) -> dict:
+def write_image(
+    root: pathlib.Path, name: str, width: int, height: int, rgba: bytes
+) -> dict:
     path = root / name
-    data = rgba_png(8, 8, rgba)
+    data = rgba_png(width, height, rgba)
     path.write_bytes(data)
     return {
         "path": name,
         "sha256": hashlib.sha256(data).hexdigest(),
-        "width": 8,
-        "height": 8,
+        "width": width,
+        "height": height,
     }
+
+
+def authority_receipt() -> tuple[dict, dict, dict]:
+    dataset_relative = pathlib.Path("tests/perf/datasets/minimal_binary.json")
+    trace_relative = pathlib.Path("tests/perf/trace/fixtures/camera-trace-v1.json")
+    dataset_path = ROOT / dataset_relative
+    trace_path = ROOT / trace_relative
+    dataset = json.loads(dataset_path.read_text(encoding="utf-8"))
+    trace = json.loads(trace_path.read_text(encoding="utf-8"))
+    authority = {
+        "dataset_manifest": {
+            "path": dataset_relative.as_posix(),
+            "sha256": hashlib.sha256(dataset_path.read_bytes()).hexdigest(),
+            "dataset_id": dataset["id"],
+            "asset_sha256": dataset["sha256"],
+        },
+        "trace": {
+            "path": trace_relative.as_posix(),
+            "sha256": hashlib.sha256(trace_path.read_bytes()).hexdigest(),
+            "trace_id": trace["trace_id"],
+            "content_sha256": trace["content_sha256"],
+        },
+    }
+    return authority, dataset, trace
 
 
 def decoded(root: pathlib.Path, receipt: dict):
@@ -108,21 +139,63 @@ def refresh_transition_metrics(root: pathlib.Path, manifest: dict) -> None:
 
 
 def base_manifest(root: pathlib.Path, *, moving: bool = False) -> dict:
+    authority, dataset, trace = authority_receipt()
+    width = trace["display"]["width"]
+    height = trace["display"]["height"]
     trace_indices = [0, 1, 0] if moving else [0, 1]
     frames = []
     for capture_index, trace_frame_index in enumerate(trace_indices):
-        exact = write_image(root, f"exact-{capture_index}.png", solid_pixels(64 + capture_index))
+        exact = write_image(
+            root,
+            f"exact-{capture_index}.png",
+            width,
+            height,
+            solid_pixels(width, height, 64 + capture_index),
+        )
         candidate = write_image(
-            root, f"candidate-{capture_index}.png", solid_pixels(64 + capture_index)
+            root,
+            f"candidate-{capture_index}.png",
+            width,
+            height,
+            solid_pixels(width, height, 64 + capture_index),
         )
         frame = {
             "capture_index": capture_index,
             "trace_frame_index": trace_frame_index,
             "presented": True,
+            "camera": {
+                "trace_id": trace["trace_id"],
+                "trace_content_sha256": trace["content_sha256"],
+                "pose_intrinsics_sha256": VALIDATOR.canonical_sha256(
+                    {
+                        "pose": trace["frames"][trace_frame_index]["pose"],
+                        "intrinsics": trace["frames"][trace_frame_index]["intrinsics"],
+                    }
+                ),
+            },
+            "presentation": {
+                lane: {
+                    "ticket": capture_index + 1,
+                    "outcome": "presented",
+                    "scene_generation": 1,
+                    "camera_generation": capture_index + 1,
+                    "viewport_generation": 1,
+                    "contract_generation": 1,
+                    "plan_generation": 1,
+                    "presentation_generation": capture_index + 1,
+                }
+                for lane in ("exact", "candidate")
+            },
             "exact": exact,
             "candidate": candidate,
+            "metrics": {
+                "ssim_luma_srgb_window8": 1.0,
+                "rgb_mae_normalized": 0.0,
+                "rgb_bad_pixel_fraction_over_3": 0.0,
+                "alpha_mae_normalized": 0.0,
+                "alpha_bad_pixel_fraction_over_1": 0.0,
+            },
         }
-        refresh_frame_metrics(root, frame)
         frames.append(frame)
     transitions = []
     if moving:
@@ -133,18 +206,21 @@ def base_manifest(root: pathlib.Path, *, moving: bool = False) -> dict:
                     "to_capture_index": index + 1,
                     "from_trace_frame_index": trace_indices[index],
                     "to_trace_frame_index": trace_indices[index + 1],
+                    "metrics": {VALIDATOR.TEMPORAL_METRIC: 0.0},
                 }
             )
     manifest = {
         "schema": VALIDATOR.SCHEMA,
+        "evidence_class": "contract_fixture",
+        "authority": authority,
         "exactness": {
-            "source_splat_count": 100,
-            "decoded_splat_count": 100,
-            "encoded_splat_count": 100,
-            "resident_splat_count": 100,
-            "addressable_splat_count": 100,
-            "source_sh_degree": 3,
-            "resident_sh_degree": 3,
+            "source_splat_count": dataset["splat_count"],
+            "decoded_splat_count": dataset["splat_count"],
+            "encoded_splat_count": dataset["splat_count"],
+            "resident_splat_count": dataset["splat_count"],
+            "addressable_splat_count": dataset["splat_count"],
+            "source_sh_degree": dataset["sh_degree"],
+            "resident_sh_degree": dataset["sh_degree"],
             "source_membership": "all",
             "sampling": "disabled",
             "lod": "disabled",
@@ -154,14 +230,14 @@ def base_manifest(root: pathlib.Path, *, moving: bool = False) -> dict:
             "full_quality": True,
         },
         "resolution": {
-            "requested_width": 8,
-            "requested_height": 8,
-            "surface_width": 8,
-            "surface_height": 8,
-            "internal_render_width": 8,
-            "internal_render_height": 8,
-            "presented_width": 8,
-            "presented_height": 8,
+            "requested_width": width,
+            "requested_height": height,
+            "surface_width": width,
+            "surface_height": height,
+            "internal_render_width": width,
+            "internal_render_height": height,
+            "presented_width": width,
+            "presented_height": height,
             "dynamic_resolution": "disabled",
             "upscaling": "disabled",
             "full_resolution": True,
@@ -173,7 +249,6 @@ def base_manifest(root: pathlib.Path, *, moving: bool = False) -> dict:
         "frames": frames,
         "transitions": transitions,
     }
-    refresh_transition_metrics(root, manifest)
     return manifest
 
 
@@ -238,6 +313,23 @@ class BalancedImageGateTests(unittest.TestCase):
                     with self.assertRaisesRegex(VALIDATOR.ValidationError, message):
                         validate_manifest(root, manifest)
 
+    def test_self_consistent_count_one_and_sh_99_cannot_override_dataset(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            baseline = base_manifest(root)
+
+            count_one = copy.deepcopy(baseline)
+            for field in VALIDATOR.EXACT_COUNT_FIELDS:
+                count_one["exactness"][field] = 1
+            with self.assertRaisesRegex(VALIDATOR.ValidationError, "authoritative dataset"):
+                validate_manifest(root, count_one)
+
+            sh_99 = copy.deepcopy(baseline)
+            sh_99["exactness"]["source_sh_degree"] = 99
+            sh_99["exactness"]["resident_sh_degree"] = 99
+            with self.assertRaisesRegex(VALIDATOR.ValidationError, "authoritative dataset"):
+                validate_manifest(root, sh_99)
+
     def test_every_resolution_stage_must_equal_requested_dimensions(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)
@@ -260,12 +352,56 @@ class BalancedImageGateTests(unittest.TestCase):
                     with self.assertRaisesRegex(VALIDATOR.ValidationError, field):
                         validate_manifest(root, manifest)
 
+    def test_formal_quality_cannot_use_an_8x8_trace_and_resolution(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            manifest = base_manifest(root)
+            manifest["evidence_class"] = "formal_quality"
+            for stage in VALIDATOR.RESOLUTION_STAGES:
+                manifest["resolution"][f"{stage}_width"] = 8
+                manifest["resolution"][f"{stage}_height"] = 8
+            with self.assertRaisesRegex(VALIDATOR.ValidationError, "trace display"):
+                validate_manifest(root, manifest)
+
+    def test_missing_authority_or_lifecycle_receipt_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            baseline = base_manifest(root)
+
+            missing_authority = copy.deepcopy(baseline)
+            del missing_authority["authority"]
+            with self.assertRaisesRegex(VALIDATOR.ValidationError, "authority"):
+                validate_manifest(root, missing_authority)
+
+            missing_ticket = copy.deepcopy(baseline)
+            del missing_ticket["frames"][0]["presentation"]["candidate"]["ticket"]
+            with self.assertRaisesRegex(VALIDATOR.ValidationError, "ticket"):
+                validate_manifest(root, missing_ticket)
+
+            missing_generation = copy.deepcopy(baseline)
+            del missing_generation["frames"][0]["presentation"]["exact"]["plan_generation"]
+            with self.assertRaisesRegex(VALIDATOR.ValidationError, "plan_generation"):
+                validate_manifest(root, missing_generation)
+
+    def test_camera_receipt_must_bind_authoritative_pose_and_intrinsics(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            manifest = base_manifest(root)
+            manifest["frames"][0]["camera"]["pose_intrinsics_sha256"] = "0" * 64
+            with self.assertRaisesRegex(VALIDATOR.ValidationError, "pose/intrinsics"):
+                validate_manifest(root, manifest)
+
     def test_unsuccessful_presentation_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)
             manifest = base_manifest(root)
             manifest["frames"][0]["presented"] = False
             with self.assertRaisesRegex(VALIDATOR.ValidationError, "presented must be true"):
+                validate_manifest(root, manifest)
+
+            manifest = base_manifest(root)
+            manifest["frames"][0]["presentation"]["candidate"]["outcome"] = "failed"
+            with self.assertRaisesRegex(VALIDATOR.ValidationError, "outcome"):
                 validate_manifest(root, manifest)
 
     def test_image_hash_and_rgba8_encoding_are_verified(self) -> None:
@@ -307,7 +443,15 @@ class BalancedImageGateTests(unittest.TestCase):
             root = pathlib.Path(directory)
             manifest = base_manifest(root)
             frame = manifest["frames"][1]
-            frame["candidate"] = write_image(root, "candidate-1-failed.png", solid_pixels(255))
+            width = frame["candidate"]["width"]
+            height = frame["candidate"]["height"]
+            frame["candidate"] = write_image(
+                root,
+                "candidate-1-failed.png",
+                width,
+                height,
+                solid_pixels(width, height, 255),
+            )
             refresh_frame_metrics(root, frame)
             with self.assertRaisesRegex(VALIDATOR.ValidationError, "Balanced v1 gate"):
                 validate_manifest(root, manifest)
@@ -318,6 +462,14 @@ class BalancedImageGateTests(unittest.TestCase):
             manifest = base_manifest(root, moving=True)
             manifest["camera"]["trace_frame_indices"] = [0, 1, 1]
             with self.assertRaisesRegex(VALIDATOR.ValidationError, "0 -> 1 -> 0"):
+                validate_manifest(root, manifest)
+
+    def test_static_mode_cannot_disguise_a_0_1_0_sequence(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            manifest = base_manifest(root, moving=True)
+            manifest["camera"]["mode"] = "static"
+            with self.assertRaisesRegex(VALIDATOR.ValidationError, "camera.mode"):
                 validate_manifest(root, manifest)
 
     def test_authored_views_require_both_frozen_trace_frames(self) -> None:
@@ -337,6 +489,39 @@ class BalancedImageGateTests(unittest.TestCase):
                 manifest["frames"][0]["exact"]
             )
             with self.assertRaisesRegex(VALIDATOR.ValidationError, "separate artifacts"):
+                validate_manifest(root, manifest)
+
+    def test_symlink_and_hardlink_aliases_are_the_same_image_artifact(self) -> None:
+        for alias_kind in ("symlink", "hardlink"):
+            with self.subTest(alias_kind=alias_kind), tempfile.TemporaryDirectory() as directory:
+                root = pathlib.Path(directory)
+                manifest = base_manifest(root)
+                frame = manifest["frames"][0]
+                exact_path = root / frame["exact"]["path"]
+                candidate_path = root / frame["candidate"]["path"]
+                candidate_path.unlink()
+                if alias_kind == "symlink":
+                    os.symlink(exact_path.name, candidate_path)
+                else:
+                    os.link(exact_path, candidate_path)
+                with self.assertRaisesRegex(VALIDATOR.ValidationError, "separate artifacts"):
+                    validate_manifest(root, manifest)
+
+    def test_png_decompression_is_bounded_to_expected_rgba_bytes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            manifest = base_manifest(root)
+            frame = manifest["frames"][0]
+            candidate_path = root / frame["candidate"]["path"]
+            width = frame["candidate"]["width"]
+            height = frame["candidate"]["height"]
+            expected_filtered_bytes = height * (width * 4 + 1)
+            bomb = png_with_filtered_bytes(
+                width, height, b"\x00" * (expected_filtered_bytes + 1024 * 1024)
+            )
+            candidate_path.write_bytes(bomb)
+            frame["candidate"]["sha256"] = hashlib.sha256(bomb).hexdigest()
+            with self.assertRaisesRegex(VALIDATOR.ValidationError, "exceeds its RGBA receipt"):
                 validate_manifest(root, manifest)
 
     def test_missing_or_misjoined_transition_is_rejected(self) -> None:
@@ -359,9 +544,21 @@ class BalancedImageGateTests(unittest.TestCase):
             manifest = base_manifest(root, moving=True)
             for index, value in enumerate([129, 127, 129]):
                 frame = manifest["frames"][index]
-                frame["exact"] = write_image(root, f"exact-temporal-{index}.png", solid_pixels(128))
+                width = frame["exact"]["width"]
+                height = frame["exact"]["height"]
+                frame["exact"] = write_image(
+                    root,
+                    f"exact-temporal-{index}.png",
+                    width,
+                    height,
+                    solid_pixels(width, height, 128),
+                )
                 frame["candidate"] = write_image(
-                    root, f"candidate-temporal-{index}.png", solid_pixels(value)
+                    root,
+                    f"candidate-temporal-{index}.png",
+                    width,
+                    height,
+                    solid_pixels(width, height, value),
                 )
                 refresh_frame_metrics(root, frame)
             refresh_transition_metrics(root, manifest)

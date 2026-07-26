@@ -64,11 +64,15 @@ endpoint result, performance assertion, or product-default change is included.
 
 The validator fails closed unless an artifact provides and proves:
 
-- complete source/decoded/encoded/resident/addressable membership, unchanged
-  source SH degree, `SortedAlpha`, and no sampling, LOD, or partial scene;
+- a hash-matched repository dataset manifest whose asset hash, point count and
+  SH degree bind complete source/decoded/encoded/resident/addressable
+  membership, `SortedAlpha`, and no sampling, LOD, or partial scene;
 - equal requested, Surface, internal-render, and presented dimensions with
-  dynamic resolution and upscaling disabled;
-- successful per-frame presentations with artifact-local, hash-matched,
+  dynamic resolution and upscaling disabled, bound to a repository camera
+  trace whose ID, file/content hashes, display, poses and intrinsics pass the
+  existing trace validator;
+- successful per-frame presentation tickets and complete positive lifecycle
+  generations, plus artifact-local, hash-matched, separately owned,
   non-interlaced RGBA8 PNGs for Exact and candidate output;
 - recomputed per-frame SSIM, RGB and alpha metrics matching the artifact
   receipts and satisfying every frozen B0 threshold individually; and
@@ -76,7 +80,10 @@ The validator fails closed unless an artifact provides and proves:
   adjacent temporal-residual receipts, recomputed from retained RGBA bytes.
 
 Missing fields, unavailable images, mismatched metric receipts, unsafe paths,
-or incomplete/misjoined transitions are rejected rather than defaulted. A
+symlink/hardlink image aliasing, over-limit decompression streams, or
+incomplete/misjoined transitions are rejected rather than defaulted. Formal
+quality evidence below 1920x1080 is also rejected; smaller deterministic inputs
+remain explicitly labeled contract fixtures and cannot qualify an endpoint. A
 successful invocation emits the validator version and SHA-256 so later retained
 evidence can identify the exact validator. Focused unit coverage exercises both
 valid camera modes and the fail-closed boundaries; it is repository-local
