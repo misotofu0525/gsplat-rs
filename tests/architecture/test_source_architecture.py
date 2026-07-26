@@ -221,15 +221,16 @@ class SourceArchitectureFixtureTests(unittest.TestCase):
                         msg="\n".join(issue.render() for issue in issues),
                     )
 
-    def test_policy_keeps_physical_size_as_non_blocking_legacy_evidence(self) -> None:
+    def test_policy_has_no_remaining_architecture_exceptions_or_loc_gates(self) -> None:
         policy = copy.deepcopy(self.base_policy)
         self.assertNotIn("limits", policy)
         self.assertNotIn("grandfather_ratchet", policy)
-        for entry in policy["grandfather"]:
-            self.assertGreater(entry["a0_physical_loc"], 0)
-            self.assertGreater(entry["baseline_physical_loc"], 0)
-            self.assertTrue(entry["owner_task"])
-            self.assertTrue(entry["exit_condition"])
+        self.assertEqual(policy["grandfather"], [])
+        self.assertEqual(policy["exceptions"], [])
+        self.assertEqual(
+            policy["program_task_state"]["external_owner_review_allowlist"],
+            [],
+        )
 
     def test_declared_semantic_guardrails_and_future_activation(self) -> None:
         orchestration = self.base_policy["top_level_orchestration"]
@@ -348,10 +349,7 @@ class SourceArchitectureFixtureTests(unittest.TestCase):
         self.assertEqual(state["package_ledgers"]["M"]["required_after"], "E13")
         for package in ("B", "S", "Q"):
             self.assertEqual(state["package_ledgers"][package]["required_after"], "M8")
-        self.assertEqual(
-            set(state["external_owner_review_allowlist"]),
-            {"IO-PLY-1"},
-        )
+        self.assertEqual(state["external_owner_review_allowlist"], [])
         # Parallel execution is an ephemeral lease. The checker binds it to the
         # active ledger and exact lane block; this self-test verifies the
         # current policy remains structurally reviewable without hard-coding a
@@ -369,17 +367,7 @@ class SourceArchitectureFixtureTests(unittest.TestCase):
                 for right in write_sets[index + 1 :]:
                     self.assertFalse(left & right)
 
-        external = {
-            entry["owner_task"]: entry
-            for entry in self.base_policy["grandfather"]
-            if entry["owner_task"] in {"IO-PLY-1", "IO-SPZ-1"}
-        }
-        self.assertEqual(set(external), {"IO-PLY-1"})
-        for entry in external.values():
-            self.assertEqual(entry["review_task"], "M8")
-            self.assertIn("single renewal", entry["review_action"])
-            self.assertIn("fixed line count", entry["review_action"])
-            self.assertTrue(entry["review_action"])
+        self.assertFalse(self.base_policy["grandfather"])
 
 
 if __name__ == "__main__":

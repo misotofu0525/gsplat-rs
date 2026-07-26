@@ -2,9 +2,7 @@
   "schema": "gsplat-source-architecture-policy/v1",
   "baseline_commit": "9df0d6cb2e7e7df7ddc95e85d16c416e4e91d4b0",
   "program_task_state": {
-    "external_owner_review_allowlist": [
-      "IO-PLY-1"
-    ],
+    "external_owner_review_allowlist": [],
     "parallel_execution": null,
     "task_catalog": {
       "A0": "A",
@@ -146,17 +144,7 @@
       }
     ]
   },
-  "grandfather": [
-    {
-      "path": "crates/gsplat-io-ply/src/lib.rs",
-      "a0_physical_loc": 2852,
-      "baseline_physical_loc": 2852,
-      "owner_task": "IO-PLY-1",
-      "exit_condition": "Separate PLY metadata, bounded decode and import policy responsibilities without changing import behavior.",
-      "review_task": "M8",
-      "review_action": "Open an independent IO ownership plan no later than M8 and either split metadata, bounded decode and import policy into cohesive owners or re-prove one responsibility. This is the single renewal; do not renew it again and do not use a fixed line count as the completion condition."
-    }
-  ],
+  "grandfather": [],
   "exceptions": [],
   "dependency_rules": {
     "gpu": {

@@ -691,16 +691,30 @@ M8 = Active
 - This activation changes no handbook, README, release file, source, ABI,
   shader, script, test or product route. It performs no browser, device or
   cross-platform runtime.
-- M8 acceptance still requires factual handbook/release/public-document
-  alignment, final architecture/deprecation and SHA ledgers, link/command
-  validation, the applicable clean-tree verification matrix, completion of the
-  remaining `IO-PLY-1` ownership exit, and archival of this bundle.
+- M8 acceptance still requires the pending D11 active-path normalization, D12
+  populated final architecture/deprecation and SHA report, D15 fixed-candidate
+  clean-tree verification/review, and the subsequent D13 archival of this
+  bundle. Completing D14 does not complete M8 or Package M.
 - The independent IO-SPZ ownership review at fixed baseline `41e18f8` accepted
   the existing loader as one cohesive `SPZ v4 -> validated SceneBuffers`
   transaction with no P0/P1/P2 ownership finding. Its M8 grandfather and
   external-review allowlist entry are therefore removed without changing
   `crates/gsplat-io-spz`. External-format interoperability and any future
   product-selected non-default resource budget remain explicit **Deferred**.
+- The initial independent IO-PLY review at `41e18f8` rejected the former mixed
+  owner and required cohesive owners plus terminal-safe incremental failure.
+  The accepted integrated sequence is A1 metadata `b99adc5`, A2 terminal
+  safety `fdd37a9`, A3 per-vertex decode `0c9ba23`, and A4 stream/facade
+  `cee2a97`. The final independent A4 review task
+  `019f9ed8-25e0-7393-b961-a9af77aef2a2` reported no P0/P1/P2 and accepted
+  `metadata.rs` for header/attributes/SH layout, `decode.rs` for per-vertex
+  numeric and coordinate normalization, `stream.rs` for file/bytes/reader
+  traversal plus incremental lifecycle, and `lib.rs` for the public facade,
+  errors, budgets, allocation/publication and rotation import-policy choice.
+  The IO-PLY grandfather and external-review allowlist are therefore removed.
+  The existing file-backed Packed summary/stream two-open snapshot boundary
+  remains **Deferred** as a separate behavior-hardening issue, not an ownership
+  blocker.
 - Chrome/WebGPU at the accepted M7 SHA, physical iPhone, and Windows/Linux
   runtime remain **Deferred**. Compile, macOS/Metal, Simulator or historical
   evidence is not substituted.
@@ -727,10 +741,11 @@ M8 = Active
   release operations and registry publication remain Deferred.
 - The M8g evidence audit rejected `93f9dc6` as a D15/final-closeout point. It
   preserved historical platform artifacts under their recorded SHAs but did
-  not promote them to current-candidate qualification. `IO-PLY-1`, the
-  populated final report and the fixed-candidate D15 matrix remain pending.
-  D11 is also pending because five files still contain `active/` bundle paths
-  that require repair.
+  not promote them to current-candidate qualification. D14 is now Accepted;
+  D11 remains pending because five files still contain `active/` bundle paths,
+  D12 remains pending because the populated final report is absent, and D15
+  remains pending until the fixed pre-archive candidate matrix and independent
+  review run.
 - To avoid a circular gate, D15 now runs on one fixed pre-archive candidate
   after all source, documentation, policy, D11 and final-report edits. An
   independent review accepts or rejects that exact SHA. Only then may root make
