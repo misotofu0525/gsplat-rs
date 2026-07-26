@@ -20,6 +20,7 @@ M4 = Accepted
 M5 = Accepted
 M6 = Accepted
 M7 = Accepted
+M8 = Active
 <!-- gsplat-program-task-states: end -->
 
 ## Package status
@@ -48,13 +49,22 @@ M7 = Accepted
   static/Metal/FFI/WASM matrix passed, and the formal A065 exactness artifact
   passed canonical validation. See the
   [M7 final acceptance audit](m7-final-acceptance.md).
+- M7 integrated closeout chain after that source/evidence tip is
+  `0d291c5ea9b911fdfce8d064ff6617ee6f9955ed` (final acceptance and registry),
+  `2e16fff072d6832d602d35c53e1c0582220ec9a2` (renderer-test total
+  correction), then `1de3f79fa2fa22955f99c887bea421c918e31ee0`
+  (retire the three satisfied M7 architecture grandfather records).
+  `M7_ACCEPT_SHA == M8_BASE_SHA` is therefore `1de3f79`, not the earlier
+  source/evidence tip.
 - Product state at M2 activation: native Packed offscreen, desktop
   non-interactive and bench-runner use the Exact runtime; the interactive
   `SurfaceRenderSession` remains legacy until its complete M2 candidate is
   accepted.
-- M8 remains unstarted and outside the machine registry. Package M remains
-  Active until M8 is separately activated and accepted; this M7 closeout does
-  not perform or activate M8 work.
+- M8 state: Active from fixed base
+  `1de3f79fa2fa22955f99c887bea421c918e31ee0`. The first slice is the
+  documentation-only [M8 closeout inventory](m8-closeout-inventory.md).
+  Package M remains Active; activation is not M8 acceptance or Package M
+  completion.
 - Stable v0.1 signatures/layouts, Web behavior and rendered semantics remain
   frozen during M2. Additive current-stats v1 receipts and pending-compatible
   Android/Apple translation are prepared before M2 activation. No root
@@ -626,8 +636,9 @@ M7 = Accepted
 ## M7 integration and acceptance status
 
 - State: **Accepted** at fixed source/evidence tip
-  `2739f4899facc03e6a0fb35c23b42d9762ede9cc`. M8 remains unstarted and Package
-  M remains Active.
+  `2739f4899facc03e6a0fb35c23b42d9762ede9cc`, with integrated M7 acceptance
+  tip `1de3f79fa2fa22955f99c887bea421c918e31ee0`. M8 is now Active and Package M
+  remains Active.
 - The completed 39-commit range `a798b8a..2739f48` removes TiledExact and the
   unreachable standalone Packed graph, preserves the classified Rust/C/Web/
   mobile compatibility boundary, and leaves one product Packed route through
@@ -664,11 +675,29 @@ M7 = Accepted
 - Exact identities, commands, validators, rollback proof and finite evidence
   boundaries are recorded in the
   [M7 final acceptance audit](m7-final-acceptance.md).
-- Integration note: this documentation candidate changes the machine registry
-  to `M7 = Accepted`, which expires the three satisfied M7 grandfather records
-  still present in `tests/architecture/source_architecture_policy.json`. Root
-  must co-land their removal and rerun the real-tree architecture policy; this
-  task does not edit test policy under its documentation-only ownership brief.
-- M8 remains unstarted. Final handbook/release alignment, accepted-SHA ledger,
-  command/link audit and migration-bundle archival remain M8 work and are not
-  activated by this closeout.
+- Integrated closeout is complete. Commit `0d291c5` records final acceptance
+  and `M7 = Accepted`, `2e16fff` corrects the renderer-test total, and
+  `1de3f79` removes exactly the three satisfied M7 grandfather records. The
+  real-tree architecture policy passes at that final integrated tree.
+- `M7_ACCEPT_SHA == M8_BASE_SHA` is
+  `1de3f79fa2fa22955f99c887bea421c918e31ee0`.
+
+## M8 activation and closeout boundary
+
+- State: **Active** from fixed accepted M7 tree
+  `1de3f79fa2fa22955f99c887bea421c918e31ee0`.
+- Activation slice: documentation-only fact inventory and closeout workplan;
+  see [M8 closeout inventory](m8-closeout-inventory.md).
+- This activation changes no handbook, README, release file, source, ABI,
+  shader, script, test or product route. It performs no browser, device or
+  cross-platform runtime.
+- M8 acceptance still requires factual handbook/release/public-document
+  alignment, final architecture/deprecation and SHA ledgers, link/command
+  validation, the applicable clean-tree verification matrix, an explicit
+  decision for `IO-PLY-1` and `IO-SPZ-1`, and archival of this bundle.
+- Chrome/WebGPU at the accepted M7 SHA, physical iPhone, and Windows/Linux
+  runtime remain **Deferred**. Compile, macOS/Metal, Simulator or historical
+  evidence is not substituted.
+- Package M remains **Active**. Only a later independently reviewed root
+  closeout may set `M8 = Accepted`, move this bundle to `docs/plans/completed/`,
+  and declare Package M complete.
