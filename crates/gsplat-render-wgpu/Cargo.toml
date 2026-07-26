@@ -17,6 +17,7 @@ default = []
 diagnostic-surface-capture-receipt = []
 diagnostic-surface-depth-key-candidate24 = []
 diagnostic-surface-projected-axes16 = []
+diagnostic-resident-sh-mantissa8 = []
 
 [dependencies]
 gsplat-core = { path = "../gsplat-core", version = "0.1.3" }

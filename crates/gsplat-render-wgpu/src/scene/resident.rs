@@ -10,10 +10,12 @@ use crate::data::{
 
 use super::budget::ResidentCpuByteAccounting;
 use super::builder::{ResidentSceneBuilder, push_scene_into_builder};
+#[cfg(any(test, feature = "diagnostic-resident-sh-mantissa8"))]
+use super::codec::{RESIDENT_SH_BITS, RESIDENT_SH_MAX_MAGNITUDE};
 #[cfg(test)]
 use super::codec::{
-    RESIDENT_SH_BITS, RESIDENT_SH_POINT_SCALE_BITS, RESIDENT_SH_POINT_SCALE_MAX, sh_band,
-    sh_band_scale, unpack_signed_11, unpack_unsigned_bits, unpack_vec3_u16,
+    RESIDENT_SH_POINT_SCALE_BITS, RESIDENT_SH_POINT_SCALE_MAX, sh_band, sh_band_scale,
+    unpack_signed_sh, unpack_unsigned_bits, unpack_vec3_u16,
 };
 use super::codec::{resident_sh_plane_count, sh_coeffs_per_channel};
 
@@ -64,6 +66,57 @@ pub struct ResidentEncodingReport {
     pub max_sh_error_by_band: [f32; 3],
 }
 
+/// Candidate-only SH encoding identity and fail-closed quantization counters.
+///
+/// The ordinary build keeps this as a zero-sized private value, so the public
+/// encoding report and default resource representation do not change.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) struct ResidentShEncodingDiagnostic {
+    #[cfg(feature = "diagnostic-resident-sh-mantissa8")]
+    pub(crate) mantissa_bits: u8,
+    #[cfg(feature = "diagnostic-resident-sh-mantissa8")]
+    pub(crate) max_magnitude_code: u16,
+    #[cfg(feature = "diagnostic-resident-sh-mantissa8")]
+    pub(crate) encoded_value_count: usize,
+    #[cfg(feature = "diagnostic-resident-sh-mantissa8")]
+    pub(crate) saturation_count: usize,
+    #[cfg(feature = "diagnostic-resident-sh-mantissa8")]
+    pub(crate) non_finite_count: usize,
+}
+
+impl ResidentShEncodingDiagnostic {
+    pub(super) const fn configured() -> Self {
+        Self {
+            #[cfg(feature = "diagnostic-resident-sh-mantissa8")]
+            mantissa_bits: RESIDENT_SH_BITS as u8,
+            #[cfg(feature = "diagnostic-resident-sh-mantissa8")]
+            max_magnitude_code: RESIDENT_SH_MAX_MAGNITUDE as u16,
+            #[cfg(feature = "diagnostic-resident-sh-mantissa8")]
+            encoded_value_count: 0,
+            #[cfg(feature = "diagnostic-resident-sh-mantissa8")]
+            saturation_count: 0,
+            #[cfg(feature = "diagnostic-resident-sh-mantissa8")]
+            non_finite_count: 0,
+        }
+    }
+
+    pub(super) fn record_encoded_value(&mut self, rounded: f32) {
+        #[cfg(feature = "diagnostic-resident-sh-mantissa8")]
+        {
+            self.encoded_value_count += 1;
+            if !rounded.is_finite() {
+                self.non_finite_count += 1;
+            } else if rounded < -(RESIDENT_SH_MAX_MAGNITUDE as f32)
+                || rounded > RESIDENT_SH_MAX_MAGNITUDE as f32
+            {
+                self.saturation_count += 1;
+            }
+        }
+        #[cfg(not(feature = "diagnostic-resident-sh-mantissa8"))]
+        let _ = rounded;
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct ResidentUploadStaging {
     pub(crate) position_alpha: Vec<ResidentPositionAlpha>,
@@ -83,6 +136,7 @@ pub struct ResidentSceneCpu {
     pub(super) upload_staging: Option<ResidentUploadStaging>,
     pub sh_degree: u8,
     pub report: ResidentEncodingReport,
+    pub(crate) sh_encoding_diagnostic: ResidentShEncodingDiagnostic,
 }
 
 impl ResidentSceneCpu {
@@ -205,6 +259,22 @@ impl ResidentSceneCpu {
         {
             return Err(ResidentSceneError::InvalidScene);
         }
+        #[cfg(feature = "diagnostic-resident-sh-mantissa8")]
+        {
+            let expected_values = count
+                .checked_mul(self.sh_coeffs_per_channel() as usize)
+                .and_then(|value| value.checked_mul(3))
+                .ok_or(ResidentSceneError::SizeOverflow)?;
+            if self.sh_encoding_diagnostic.mantissa_bits != RESIDENT_SH_BITS as u8
+                || self.sh_encoding_diagnostic.max_magnitude_code
+                    != RESIDENT_SH_MAX_MAGNITUDE as u16
+                || self.sh_encoding_diagnostic.encoded_value_count != expected_values
+                || self.sh_encoding_diagnostic.saturation_count != 0
+                || self.sh_encoding_diagnostic.non_finite_count != 0
+            {
+                return Err(ResidentSceneError::InvalidScene);
+            }
+        }
 
         let staging = self.upload_staging()?;
         if staging.position_alpha.len() != count
@@ -263,21 +333,21 @@ impl ResidentSceneCpu {
     }
 
     #[cfg(test)]
-    pub(super) fn decode_dc(&self, index: usize) -> [f32; 3] {
+    pub(crate) fn decode_dc(&self, index: usize) -> [f32; 3] {
         let staging = self.upload_staging().expect("decode requires staging");
         let meta = staging.chunks[index / RESIDENT_CHUNK_SPLATS];
         unpack_vec3_u16(staging.color_aux[index].words, meta.dc_min, meta.dc_extent)
     }
 
     #[cfg(test)]
-    pub(super) fn decode_sh_channel(&self, index: usize, channel: usize) -> Vec<f32> {
+    pub(crate) fn decode_sh_channel(&self, index: usize, channel: usize) -> Vec<f32> {
         let staging = self.upload_staging().expect("decode requires staging");
         let coeffs = self.sh_coeffs_per_channel() as usize;
         let meta = staging.chunks[index / RESIDENT_CHUNK_SPLATS];
         let mut out = Vec::with_capacity(coeffs);
         for lane in 0..coeffs {
             let logical_value = lane * 3 + channel;
-            let value = unpack_signed_11(&staging.sh_planes, index, logical_value);
+            let value = unpack_signed_sh(&staging.sh_planes, index, logical_value);
             let point_scale_code = unpack_unsigned_bits(
                 &staging.sh_planes,
                 index,
@@ -285,7 +355,11 @@ impl ResidentSceneCpu {
                 RESIDENT_SH_POINT_SCALE_BITS,
             );
             let point_scale = point_scale_code as f32 / RESIDENT_SH_POINT_SCALE_MAX as f32;
-            out.push(value as f32 / 1023.0 * sh_band_scale(&meta, channel, lane) * point_scale);
+            out.push(
+                value as f32 / RESIDENT_SH_MAX_MAGNITUDE as f32
+                    * sh_band_scale(&meta, channel, lane)
+                    * point_scale,
+            );
         }
         out
     }

@@ -4,9 +4,28 @@ use crate::data::{
     RESIDENT_SH_PLANES, RESIDENT_SH_WORDS_PER_PLANE, ResidentChunkMeta, ResidentShPlane,
 };
 
+use super::resident::ResidentShEncodingDiagnostic;
 use super::{ResidentEncodingReport, ResidentSceneError, ResidentSourceSplat};
 
+#[cfg(all(
+    feature = "diagnostic-resident-sh-mantissa8",
+    any(
+        feature = "diagnostic-surface-depth-key-candidate24",
+        feature = "diagnostic-surface-projected-axes16"
+    )
+))]
+compile_error!(
+    "diagnostic-resident-sh-mantissa8 cannot be combined with B1 depth-key or B2 projected-axes experiments"
+);
+
+#[cfg(feature = "diagnostic-resident-sh-mantissa8")]
+pub(super) const RESIDENT_SH_BITS: usize = 8;
+#[cfg(not(feature = "diagnostic-resident-sh-mantissa8"))]
 pub(super) const RESIDENT_SH_BITS: usize = 11;
+#[cfg(feature = "diagnostic-resident-sh-mantissa8")]
+pub(super) const RESIDENT_SH_MAX_MAGNITUDE: i32 = 127;
+#[cfg(not(feature = "diagnostic-resident-sh-mantissa8"))]
+pub(super) const RESIDENT_SH_MAX_MAGNITUDE: i32 = 1023;
 pub(super) const RESIDENT_SH_POINT_SCALE_BITS: usize = 5;
 pub(super) const RESIDENT_SH_POINT_SCALE_MAX: u32 = (1 << RESIDENT_SH_POINT_SCALE_BITS) - 1;
 
@@ -129,6 +148,7 @@ pub(super) fn pack_sh_planes(
     meta: &ResidentChunkMeta,
     destination: &mut [Vec<ResidentShPlane>; RESIDENT_SH_PLANES],
     report: &mut ResidentEncodingReport,
+    diagnostic: &mut ResidentShEncodingDiagnostic,
 ) {
     let mut words = [0_u32; RESIDENT_SH_PLANES * RESIDENT_SH_WORDS_PER_PLANE];
     let mut point_scale_codes = [0_u32; 3];
@@ -171,14 +191,18 @@ pub(super) fn pack_sh_planes(
             let scale = sh_band_scale(meta, channel, lane) * point_scale;
             if point_scale_codes[band] == 0 {
                 debug_assert_eq!(source[source_index], 0.0);
+                diagnostic.record_encoded_value(0.0);
                 continue;
             }
-            let encoded = (source[source_index] / scale * 1023.0)
-                .round()
-                .clamp(-1023.0, 1023.0) as i32;
+            let rounded = (source[source_index] / scale * RESIDENT_SH_MAX_MAGNITUDE as f32).round();
+            diagnostic.record_encoded_value(rounded);
+            let encoded = rounded.clamp(
+                -(RESIDENT_SH_MAX_MAGNITUDE as f32),
+                RESIDENT_SH_MAX_MAGNITUDE as f32,
+            ) as i32;
             let logical_value = lane * 3 + channel;
-            pack_signed_11(&mut words, logical_value, encoded);
-            let decoded = encoded as f32 / 1023.0 * scale;
+            pack_signed_sh(&mut words, logical_value, encoded);
+            let decoded = encoded as f32 / RESIDENT_SH_MAX_MAGNITUDE as f32 * scale;
             report.max_sh_error_by_band[band] =
                 report.max_sh_error_by_band[band].max((decoded - source[source_index]).abs());
         }
@@ -209,19 +233,20 @@ pub(super) fn pack_unsigned_bits(
     }
 }
 
-pub(super) fn pack_signed_11(words: &mut [u32; 16], logical_value: usize, value: i32) {
-    let bits = (value as u32) & 0x7ff;
+pub(super) fn pack_signed_sh(words: &mut [u32; 16], logical_value: usize, value: i32) {
+    let mask = (1_u32 << RESIDENT_SH_BITS) - 1;
+    let bits = (value as u32) & mask;
     let bit_offset = logical_value * RESIDENT_SH_BITS;
     let word = bit_offset / 32;
     let shift = bit_offset % 32;
     words[word] |= bits << shift;
-    if shift > 21 {
+    if shift + RESIDENT_SH_BITS > 32 {
         words[word + 1] |= bits >> (32 - shift);
     }
 }
 
 #[cfg(test)]
-pub(super) fn unpack_signed_11(
+pub(super) fn unpack_signed_sh(
     planes: &[Vec<ResidentShPlane>; RESIDENT_SH_PLANES],
     index: usize,
     logical_value: usize,
@@ -235,10 +260,11 @@ pub(super) fn unpack_signed_11(
         planes[plane][index].words[lane]
     };
     let mut bits = load_word(word_index) >> shift;
-    if shift > 21 {
+    if shift + RESIDENT_SH_BITS > 32 {
         bits |= load_word(word_index + 1) << (32 - shift);
     }
-    ((bits & 0x7ff) << 21) as i32 >> 21
+    let sign_shift = 32 - RESIDENT_SH_BITS;
+    ((bits & ((1_u32 << RESIDENT_SH_BITS) - 1)) << sign_shift) as i32 >> sign_shift
 }
 
 #[cfg(test)]

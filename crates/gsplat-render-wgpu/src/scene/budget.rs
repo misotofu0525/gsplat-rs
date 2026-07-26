@@ -1,5 +1,7 @@
 use gsplat_core::Vec3f;
 
+#[cfg(all(test, feature = "diagnostic-resident-sh-mantissa8"))]
+use crate::data::RESIDENT_SH_PLANES;
 use crate::data::{
     RESIDENT_CHUNK_SPLATS, ResidentChunkMeta, ResidentColorAux, ResidentCovariance0,
     ResidentCovariance1, ResidentPositionAlpha, ResidentShPlane,
@@ -182,7 +184,7 @@ impl ResidentGpuBytePlan {
     }
 
     pub fn for_count(splat_count: usize, sh_plane_count: u32) -> Result<Self, ResidentGpuError> {
-        if !matches!(sh_plane_count, 0 | 1 | 3 | 4) {
+        if !(0..=3).any(|degree| resident_sh_plane_count(degree) as u32 == sh_plane_count) {
             return Err(ResidentGpuError::UnsupportedShPlaneCount(sh_plane_count));
         }
         let n = u64::try_from(splat_count).map_err(|_| ResidentGpuError::AddressSpaceExceeded)?;
@@ -399,6 +401,14 @@ impl ResidentGpuBytePlan {
                 ),
             ),
         )
+    }
+
+    /// Bytes requested from wgpu for the four fixed SH bindings, including
+    /// one 16-byte placeholder for every inactive logical plane.
+    #[cfg(all(test, feature = "diagnostic-resident-sh-mantissa8"))]
+    pub(crate) const fn allocated_sh_buffer_bytes(self) -> u64 {
+        self.sh_plane * self.sh_plane_count as u64
+            + 16 * (RESIDENT_SH_PLANES as u64 - self.sh_plane_count as u64)
     }
 }
 

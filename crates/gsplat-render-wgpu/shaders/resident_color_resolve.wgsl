@@ -1,5 +1,7 @@
 // One coherent SH0-SH3 color evaluation per resident splat.
 
+const SH_MANTISSA_BITS: u32 = 11u;
+
 struct ColorAux {
   dc_xy: u32,
   dc_z: u32,
@@ -68,9 +70,10 @@ fn decode_packed_bits(slot: u32, bit_offset: u32, bit_count: u32) -> u32 {
   return bits & ((1u << bit_count) - 1u);
 }
 
-fn decode_sh11(slot: u32, logical_value: u32) -> f32 {
-  let bits = decode_packed_bits(slot, logical_value * 11u, 11u);
-  return f32(bitcast<i32>((bits & 0x7ffu) << 21u) >> 21u);
+fn decode_sh_mantissa(slot: u32, logical_value: u32) -> f32 {
+  let bits = decode_packed_bits(slot, logical_value * SH_MANTISSA_BITS, SH_MANTISSA_BITS);
+  let sign_shift = 32u - SH_MANTISSA_BITS;
+  return f32(bitcast<i32>(bits << sign_shift) >> sign_shift);
 }
 
 fn sh_value_count() -> u32 {
@@ -94,7 +97,7 @@ fn sh_band_index(coefficient: u32) -> u32 {
 }
 
 fn sh_point_scales(slot: u32) -> vec3<f32> {
-  let bit_offset = sh_value_count() * 11u;
+  let bit_offset = sh_value_count() * SH_MANTISSA_BITS;
   return vec3<f32>(
     f32(decode_packed_bits(slot, bit_offset, 5u)),
     f32(decode_packed_bits(slot, bit_offset + 5u, 5u)),
@@ -115,11 +118,12 @@ fn sh_scale(chunk: ChunkMeta, coefficient: u32) -> vec3<f32> {
 fn sh_vec3(slot: u32, coefficient: u32, chunk: ChunkMeta, point_scales: vec3<f32>) -> vec3<f32> {
   let logical = coefficient * 3u;
   let quantized = vec3<f32>(
-    decode_sh11(slot, logical),
-    decode_sh11(slot, logical + 1u),
-    decode_sh11(slot, logical + 2u),
+    decode_sh_mantissa(slot, logical),
+    decode_sh_mantissa(slot, logical + 1u),
+    decode_sh_mantissa(slot, logical + 2u),
   );
-  return quantized / 1023.0 * sh_scale(chunk, coefficient) * point_scales[sh_band_index(coefficient)];
+  let mantissa_max = f32((1u << (SH_MANTISSA_BITS - 1u)) - 1u);
+  return quantized / mantissa_max * sh_scale(chunk, coefficient) * point_scales[sh_band_index(coefficient)];
 }
 
 fn normalize_or_default(v: vec3<f32>) -> vec3<f32> {

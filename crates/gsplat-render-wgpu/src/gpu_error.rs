@@ -8,7 +8,14 @@ pub enum ResidentGpuError {
     UploadStagingUnavailable,
     #[error("resident scene exceeds u32 addressing")]
     AddressSpaceExceeded,
-    #[error("resident SH plane count must be one of 0, 1, 3, or 4; got {0}")]
+    #[cfg_attr(
+        feature = "diagnostic-resident-sh-mantissa8",
+        error("resident SH plane count must be one of 0, 1, 2, or 3; got {0}")
+    )]
+    #[cfg_attr(
+        not(feature = "diagnostic-resident-sh-mantissa8"),
+        error("resident SH plane count must be one of 0, 1, 3, or 4; got {0}")
+    )]
     UnsupportedShPlaneCount(u32),
     #[error(
         "resident resource {resource} requires {required_bytes} bytes but the effective binding limit is {limit_bytes} bytes"

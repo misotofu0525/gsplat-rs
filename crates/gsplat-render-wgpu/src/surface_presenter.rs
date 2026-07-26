@@ -1135,6 +1135,7 @@ fn ensure_surface_capture_allows_resize(pending: bool) -> Result<(), SurfacePres
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::scene::resident_sh_plane_count;
 
     #[test]
     fn standalone_geometry_admission_is_structured_and_repeatable() {
@@ -1402,7 +1403,10 @@ mod tests {
             plan.packed_preflight.resident_gpu.position_alpha,
             48_000_000
         );
-        assert_eq!(plan.packed_preflight.resident_gpu.sh_plane_count, 4);
+        assert_eq!(
+            plan.packed_preflight.resident_gpu.sh_plane_count,
+            resident_sh_plane_count(3) as u32
+        );
         assert_eq!(
             plan.packed_preflight.largest_storage_binding_bytes,
             48_000_000

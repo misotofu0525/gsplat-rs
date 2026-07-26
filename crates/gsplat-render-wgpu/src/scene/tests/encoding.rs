@@ -10,7 +10,8 @@ use super::support::{assert_resident_bits_eq, legacy_encode, scene, source_splat
 
 #[test]
 fn exact_count_and_degree_specific_sh_planes() {
-    for (degree, planes) in [(0, 0), (1, 1), (2, 3), (3, 4)] {
+    for degree in 0..=3 {
+        let planes = super::super::resident_sh_plane_count(degree) as u32;
         let source = scene(degree, 513);
         let resident = ResidentSceneCpu::encode(&source).expect("encode");
         resident.validate_complete().expect("complete");
@@ -286,12 +287,17 @@ fn large_scene_staging_release_receipts_are_stable() {
     // SH3 staging is 112 bytes/splat plus 80 bytes per 256-splat chunk.
     // Canonical covariance is exact and SH uses four 16-byte signed-11
     // planes, preserving the portable per-binding ceiling.
-    for (label, count, expected_release) in [
+    for (label, count, exact_signed11_release) in [
         ("Truck", 2_541_226, 285_411_472),
         ("Garden", 5_834_784, 655_319_248),
         ("Bicycle", 6_131_954, 688_695_088),
     ] {
         let accounting = ResidentCpuByteAccounting::for_count(count, 3).expect(label);
+        let expected_release = if cfg!(feature = "diagnostic-resident-sh-mantissa8") {
+            exact_signed11_release - 16_u64 * count as u64
+        } else {
+            exact_signed11_release
+        };
         assert_eq!(
             accounting.upload_staging_bytes, expected_release,
             "{label} staging receipt"
@@ -307,6 +313,33 @@ fn large_scene_staging_release_receipts_are_stable() {
             "{label} total pre-upload payload"
         );
     }
+}
+
+#[test]
+#[cfg(feature = "diagnostic-resident-sh-mantissa8")]
+fn sh8_preserves_membership_degree_and_reports_error_without_saturation() {
+    let source = scene(3, 513);
+    let resident = ResidentSceneCpu::encode(&source).expect("encode SH8 candidate");
+    let diagnostic = resident.sh_encoding_diagnostic;
+
+    assert_eq!(resident.len(), source.len());
+    assert_eq!(resident.report.source_count, source.len());
+    assert_eq!(resident.report.encoded_count, source.len());
+    assert_eq!(resident.sh_degree, 3);
+    assert_eq!(resident.sh_coeffs_per_channel(), 15);
+    assert_eq!(resident.sh_plane_count(), 3);
+    assert_eq!(diagnostic.mantissa_bits, 8);
+    assert_eq!(diagnostic.max_magnitude_code, 127);
+    assert_eq!(diagnostic.encoded_value_count, source.len() * 45);
+    assert_eq!(diagnostic.saturation_count, 0);
+    assert_eq!(diagnostic.non_finite_count, 0);
+    assert!(
+        resident
+            .report
+            .max_sh_error_by_band
+            .iter()
+            .all(|error| error.is_finite() && *error > 0.0 && *error < 0.01)
+    );
 }
 
 #[test]

@@ -4,9 +4,11 @@ use crate::data::{
 };
 
 use super::super::codec::{
-    RESIDENT_SH_BITS, RESIDENT_SH_POINT_SCALE_BITS, pack_signed_11, pack_unsigned_bits,
-    resident_sh_plane_count, sh_coeffs_per_channel, unpack_signed_11, unpack_unsigned_bits,
+    RESIDENT_SH_BITS, RESIDENT_SH_MAX_MAGNITUDE, RESIDENT_SH_POINT_SCALE_BITS, pack_signed_sh,
+    resident_sh_plane_count, sh_coeffs_per_channel, unpack_signed_sh,
 };
+#[cfg(not(feature = "diagnostic-resident-sh-mantissa8"))]
+use super::super::codec::{pack_unsigned_bits, unpack_unsigned_bits};
 use super::super::{ResidentSceneCpu, ResidentSourceSplat};
 use super::support::scene;
 
@@ -35,7 +37,9 @@ fn packed_words_as_planes(
 }
 
 #[test]
+#[cfg(not(feature = "diagnostic-resident-sh-mantissa8"))]
 fn signed11_round_trips_extrema_without_neighbor_corruption() {
+    assert_eq!(RESIDENT_SH_MAX_MAGNITUDE, 1023);
     let mut words = [0_u32; RESIDENT_SH_PLANES * RESIDENT_SH_WORDS_PER_PLANE];
     let expected: [i32; 45] =
         std::array::from_fn(
@@ -44,12 +48,12 @@ fn signed11_round_trips_extrema_without_neighbor_corruption() {
             },
         );
     for (logical_value, value) in expected.iter().copied().enumerate() {
-        pack_signed_11(&mut words, logical_value, value);
+        pack_signed_sh(&mut words, logical_value, value);
     }
     let planes = packed_words_as_planes(words);
     for (logical_value, expected) in expected.iter().copied().enumerate() {
         assert_eq!(
-            unpack_signed_11(&planes, 0, logical_value),
+            unpack_signed_sh(&planes, 0, logical_value),
             expected,
             "signed-11 logical value {logical_value}"
         );
@@ -57,6 +61,7 @@ fn signed11_round_trips_extrema_without_neighbor_corruption() {
 }
 
 #[test]
+#[cfg(not(feature = "diagnostic-resident-sh-mantissa8"))]
 fn signed11_cross_word_and_plane_boundaries_match_exact_bit_layout() {
     let cross_word_values: Vec<_> = (0..45)
         .filter(|logical_value| (logical_value * RESIDENT_SH_BITS) % 32 > 21)
@@ -79,7 +84,7 @@ fn signed11_cross_word_and_plane_boundaries_match_exact_bit_layout() {
     for logical_value in cross_word_values {
         for value in [-1023_i32, -1, 1, 1023] {
             let mut words = [0_u32; RESIDENT_SH_PLANES * RESIDENT_SH_WORDS_PER_PLANE];
-            pack_signed_11(&mut words, logical_value, value);
+            pack_signed_sh(&mut words, logical_value, value);
             let bits = (value as u32) & 0x7ff;
             let bit_offset = logical_value * RESIDENT_SH_BITS;
             let word = bit_offset / 32;
@@ -91,7 +96,7 @@ fn signed11_cross_word_and_plane_boundaries_match_exact_bit_layout() {
 
             let planes = packed_words_as_planes(words);
             assert_eq!(
-                unpack_signed_11(&planes, 0, logical_value),
+                unpack_signed_sh(&planes, 0, logical_value),
                 value,
                 "logical value {logical_value} at shift {shift}"
             );
@@ -100,11 +105,12 @@ fn signed11_cross_word_and_plane_boundaries_match_exact_bit_layout() {
 }
 
 #[test]
+#[cfg(not(feature = "diagnostic-resident-sh-mantissa8"))]
 fn per_point_band_scales_use_only_degree3_spare_bits() {
     let mut words = [0_u32; RESIDENT_SH_PLANES * RESIDENT_SH_WORDS_PER_PLANE];
     let expected: [i32; 45] = std::array::from_fn(|logical_value| logical_value as i32 * 31 - 700);
     for (logical_value, value) in expected.iter().copied().enumerate() {
-        pack_signed_11(&mut words, logical_value, value);
+        pack_signed_sh(&mut words, logical_value, value);
     }
     let scale_bit_base = expected.len() * RESIDENT_SH_BITS;
     let scale_codes = [1_u32, 17, 31];
@@ -119,7 +125,7 @@ fn per_point_band_scales_use_only_degree3_spare_bits() {
     let planes = packed_words_as_planes(words);
 
     for (logical_value, expected) in expected.iter().copied().enumerate() {
-        assert_eq!(unpack_signed_11(&planes, 0, logical_value), expected);
+        assert_eq!(unpack_signed_sh(&planes, 0, logical_value), expected);
     }
     for (band, expected) in scale_codes.iter().copied().enumerate() {
         assert_eq!(
@@ -133,6 +139,29 @@ fn per_point_band_scales_use_only_degree3_spare_bits() {
         );
     }
     assert_eq!(words[15] >> 30, 0, "top two spare bits stay reserved");
+}
+
+#[test]
+#[cfg(feature = "diagnostic-resident-sh-mantissa8")]
+fn signed8_round_trips_extrema_and_fits_degree3_in_three_planes() {
+    assert_eq!(RESIDENT_SH_BITS, 8);
+    assert_eq!(RESIDENT_SH_MAX_MAGNITUDE, 127);
+    assert_eq!(resident_sh_plane_count(3), 3);
+
+    let mut words = [0_u32; RESIDENT_SH_PLANES * RESIDENT_SH_WORDS_PER_PLANE];
+    let expected: [i32; 45] = std::array::from_fn(
+        |logical_value| {
+            if logical_value % 2 == 0 { -127 } else { 127 }
+        },
+    );
+    for (logical_value, value) in expected.iter().copied().enumerate() {
+        pack_signed_sh(&mut words, logical_value, value);
+    }
+    let planes = packed_words_as_planes(words);
+    for (logical_value, expected) in expected.iter().copied().enumerate() {
+        assert_eq!(unpack_signed_sh(&planes, 0, logical_value), expected);
+    }
+    assert!(words[12..].iter().all(|word| *word == 0));
 }
 
 #[test]

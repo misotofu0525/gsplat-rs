@@ -116,7 +116,13 @@ impl ResidentGpuResources {
         let resolved_color_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: wgpu_label("gsplat-resident-resolved-color"),
             size: byte_plan.resolved_color.max(8),
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            usage: wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::COPY_DST
+                | if cfg!(test) {
+                    wgpu::BufferUsages::COPY_SRC
+                } else {
+                    wgpu::BufferUsages::empty()
+                },
             mapped_at_creation: false,
         });
         let draw_params_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -404,6 +410,61 @@ pub fn create_resident_draw_pipeline(
 mod tests {
     use super::*;
 
+    #[cfg(all(
+        not(target_arch = "wasm32"),
+        feature = "diagnostic-resident-sh-mantissa8"
+    ))]
+    fn read_buffer(device: &wgpu::Device, buffer: &wgpu::Buffer) -> Vec<u8> {
+        let slice = buffer.slice(..);
+        let (sender, receiver) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |result| {
+            let _ = sender.send(result);
+        });
+        device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .expect("wait for Resident SH8 readback");
+        receiver.recv().expect("map callback").expect("map result");
+        let bytes = slice.get_mapped_range().to_vec();
+        buffer.unmap();
+        bytes
+    }
+
+    #[cfg(all(
+        not(target_arch = "wasm32"),
+        feature = "diagnostic-resident-sh-mantissa8"
+    ))]
+    fn pack_rgb18e8(rgb: [f32; 3]) -> [u32; 2] {
+        let nonnegative = rgb.map(|value| value.max(0.0));
+        let maximum = nonnegative.into_iter().fold(0.0_f32, f32::max);
+        if maximum == 0.0 {
+            return [0, 0];
+        }
+        let exponent = maximum.log2().ceil().clamp(-126.0, 127.0) as i32;
+        let exponent_code = (exponent + 127) as u32;
+        let scale = 2.0_f32.powi(exponent);
+        let quantize = |value: f32| ((value / scale).clamp(0.0, 1.0) * 262_143.0).round() as u32;
+        let q = nonnegative.map(quantize);
+        [
+            (q[0] & 0x3ffff) | ((q[1] & 0x3fff) << 18),
+            ((q[1] >> 14) & 0xf) | ((q[2] & 0x3ffff) << 4) | (exponent_code << 22),
+        ]
+    }
+
+    #[cfg(all(
+        not(target_arch = "wasm32"),
+        feature = "diagnostic-resident-sh-mantissa8"
+    ))]
+    fn unpack_rgb18e8(words: [u32; 2]) -> ([u32; 3], u32) {
+        (
+            [
+                words[0] & 0x3ffff,
+                ((words[0] >> 18) & 0x3fff) | ((words[1] & 0xf) << 14),
+                (words[1] >> 4) & 0x3ffff,
+            ],
+            words[1] >> 22,
+        )
+    }
+
     #[cfg(not(target_arch = "wasm32"))]
     fn test_device() -> Option<(wgpu::Device, wgpu::Queue)> {
         pollster::block_on(async {
@@ -447,6 +508,134 @@ mod tests {
             sh_rest: None,
         };
         ResidentSceneCpu::encode(&source).expect("tiny resident scene")
+    }
+
+    #[cfg(all(
+        not(target_arch = "wasm32"),
+        feature = "diagnostic-resident-sh-mantissa8"
+    ))]
+    #[test]
+    fn production_color_shader_matches_cpu_sh8_decode_and_realizes_three_planes() {
+        use crate::data::ShColorLayout;
+
+        let Some((device, queue)) = test_device() else {
+            panic!("Resident SH8 CPU/GPU parity requires an available test adapter");
+        };
+        let count = 3_usize;
+        let positions = vec![
+            gsplat_core::Vec3f::new(0.0, 0.0, 1.0),
+            gsplat_core::Vec3f::new(1.0, 0.0, 2.0),
+            gsplat_core::Vec3f::new(-0.5, 1.0, 1.5),
+        ];
+        let mut sh_rest = vec![0.0_f32; count * 45];
+        for (index, value) in sh_rest.iter_mut().enumerate() {
+            *value = ((index as f32 * 0.37).sin() * 0.65) + ((index % 5) as f32 - 2.0) * 0.03;
+        }
+        let source = gsplat_core::SceneBuffers {
+            positions: positions.clone(),
+            opacity: vec![1.0; count],
+            scale_xyz: vec![[-3.0; 3]; count],
+            rotation_xyzw: vec![[0.0, 0.0, 0.0, 1.0]; count],
+            color_dc: vec![[-0.2, 0.1, 0.35], [0.25, -0.15, 0.05], [0.4, 0.2, -0.1]],
+            sh_degree: 3,
+            sh_rest: Some(sh_rest),
+        };
+        let resident = ResidentSceneCpu::encode(&source).expect("SH8 resident scene");
+        let mut decoded_rest = Vec::with_capacity(count * 45);
+        let mut decoded_dc = Vec::with_capacity(count);
+        for index in 0..count {
+            decoded_dc.push(resident.decode_dc(index));
+            for channel in 0..3 {
+                decoded_rest.extend(resident.decode_sh_channel(index, channel));
+            }
+        }
+        let decoded = gsplat_core::SceneBuffers {
+            positions: positions.clone(),
+            color_dc: decoded_dc,
+            sh_rest: Some(decoded_rest),
+            ..source.clone()
+        };
+
+        let color_layout = create_resident_color_bind_group_layout(&device);
+        let color_pipeline = create_resident_color_pipeline(&device, &color_layout);
+        let resources =
+            ResidentGpuResources::new(&device, &color_layout, &resident).expect("GPU resources");
+        assert_eq!(
+            resources
+                ._sh_buffers
+                .iter()
+                .map(wgpu::Buffer::size)
+                .sum::<u64>(),
+            48 * count as u64 + 16
+        );
+
+        let mut camera = Camera::default();
+        camera.pose.position = gsplat_core::Vec3f::new(0.0, 0.0, 0.0);
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("resident-sh8-parity-encoder"),
+        });
+        resources
+            .encode_color_resolve_uncached(
+                &queue,
+                &color_pipeline,
+                &mut encoder,
+                &camera,
+                device.limits().max_compute_workgroups_per_dimension,
+            )
+            .expect("encode SH8 color resolve");
+        let readback = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("resident-sh8-parity-readback"),
+            size: (count * 8) as u64,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        encoder.copy_buffer_to_buffer(
+            &resources.resolved_color_buffer,
+            0,
+            &readback,
+            0,
+            (count * 8) as u64,
+        );
+        queue.submit(Some(encoder.finish()));
+        let bytes = read_buffer(&device, &readback);
+        let actual: Vec<[u32; 2]> = bytes
+            .chunks_exact(8)
+            .map(|bytes| {
+                [
+                    u32::from_ne_bytes(bytes[..4].try_into().expect("first word")),
+                    u32::from_ne_bytes(bytes[4..].try_into().expect("second word")),
+                ]
+            })
+            .collect();
+
+        let layout = ShColorLayout::new(&decoded);
+        let expected: Vec<[u32; 2]> = positions
+            .iter()
+            .enumerate()
+            .map(|(index, position)| {
+                let length =
+                    (position.x * position.x + position.y * position.y + position.z * position.z)
+                        .sqrt();
+                let direction = [
+                    position.x / length,
+                    position.y / length,
+                    position.z / length,
+                ];
+                let rgb = unsafe { crate::sh_color_unchecked(&decoded, index, direction, layout) };
+                pack_rgb18e8(rgb)
+            })
+            .collect();
+        for (actual, expected) in actual.into_iter().zip(expected) {
+            let (actual_mantissas, actual_exponent) = unpack_rgb18e8(actual);
+            let (expected_mantissas, expected_exponent) = unpack_rgb18e8(expected);
+            assert_eq!(actual_exponent, expected_exponent);
+            for (actual, expected) in actual_mantissas.into_iter().zip(expected_mantissas) {
+                assert!(
+                    actual.abs_diff(expected) <= 1,
+                    "CPU/GPU RGB18E8 mantissa mismatch: actual={actual}, expected={expected}"
+                );
+            }
+        }
     }
 
     #[cfg(not(target_arch = "wasm32"))]

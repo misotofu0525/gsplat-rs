@@ -12,8 +12,8 @@ use super::codec::{
     sh_coeffs_per_channel, sigmoid, update_base_error_report,
 };
 use super::resident::{
-    ResidentEncodingReport, ResidentSceneCpu, ResidentSceneError, ResidentSourceSplat,
-    ResidentUploadStaging,
+    ResidentEncodingReport, ResidentSceneCpu, ResidentSceneError, ResidentShEncodingDiagnostic,
+    ResidentSourceSplat, ResidentUploadStaging,
 };
 
 /// Transactional exact-count encoder for loaders that produce one splat at a
@@ -36,6 +36,7 @@ pub struct ResidentSceneBuilder {
     sh_planes: [Vec<ResidentShPlane>; RESIDENT_SH_PLANES],
     pub(super) chunks: Vec<ResidentChunkMeta>,
     report: ResidentEncodingReport,
+    sh_encoding_diagnostic: ResidentShEncodingDiagnostic,
 }
 
 impl ResidentSceneBuilder {
@@ -122,6 +123,7 @@ impl ResidentSceneBuilder {
                 source_count: expected_count,
                 ..ResidentEncodingReport::default()
             },
+            sh_encoding_diagnostic: ResidentShEncodingDiagnostic::configured(),
         })
     }
 
@@ -200,6 +202,7 @@ impl ResidentSceneBuilder {
             }),
             sh_degree: self.sh_degree,
             report: self.report,
+            sh_encoding_diagnostic: self.sh_encoding_diagnostic,
         };
         resident.validate_complete()?;
         Ok(resident)
@@ -342,6 +345,7 @@ impl ResidentSceneBuilder {
                 &meta,
                 &mut self.sh_planes,
                 &mut self.report,
+                &mut self.sh_encoding_diagnostic,
             );
         }
         self.report.encoded_count = encoded_after_chunk;

@@ -56,6 +56,7 @@ impl SceneRuntime {
             upload_staging: None,
             sh_degree: source.sh_degree,
             report: source.report,
+            sh_encoding_diagnostic: source.sh_encoding_diagnostic,
         }))
     }
 

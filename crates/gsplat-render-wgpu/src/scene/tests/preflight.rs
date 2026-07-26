@@ -2,6 +2,7 @@ use super::super::{
     DirectSceneError, DirectScenePath, DirectSceneRemediation, DirectSceneResource,
     PackedScenePath, PackedScenePreflightFailure, RESIDENT_COLOR_STORAGE_BINDINGS,
     direct_scene_preflight, packed_scene_preflight, packed_scene_preflight_with_limits,
+    resident_sh_plane_count,
 };
 
 fn limits_with_storage_binding_limit(bytes: u32) -> wgpu::Limits {
@@ -93,7 +94,10 @@ fn packed_scene_preflight_reports_final_resident_planes_for_nandi() {
     assert_eq!(nandi.resident_gpu.covariance1, 3_454_040_u64 * 8);
     assert_eq!(nandi.resident_gpu.color_auxiliary, 3_454_040_u64 * 8);
     assert_eq!(nandi.resident_gpu.sh_plane, 3_454_040_u64 * 16);
-    assert_eq!(nandi.resident_gpu.sh_plane_count, 4);
+    assert_eq!(
+        nandi.resident_gpu.sh_plane_count,
+        resident_sh_plane_count(3) as u32
+    );
     assert_eq!(nandi.resident_gpu.resolved_color, 3_454_040_u64 * 8);
     assert_eq!(nandi.resident_gpu.order, 3_454_040_u64 * 4);
     assert_eq!(
@@ -136,7 +140,10 @@ fn packed_scene_preflight_accepts_exact_128_mib_plane_boundary() {
     assert_eq!(report.resident_gpu.position_alpha, 128 << 20);
     assert_eq!(report.resident_gpu.covariance0, 128 << 20);
     assert_eq!(report.resident_gpu.sh_plane, 128 << 20);
-    assert_eq!(report.resident_gpu.sh_plane_count, 4);
+    assert_eq!(
+        report.resident_gpu.sh_plane_count,
+        resident_sh_plane_count(3) as u32
+    );
     assert_eq!(report.largest_storage_binding_bytes, 128 << 20);
     assert_eq!(report.failure, None);
 }

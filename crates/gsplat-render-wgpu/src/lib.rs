@@ -638,7 +638,7 @@ mod tests {
         DirectSceneError, DirectScenePath, DirectSceneResource, GeometryPath, PackedScenePath,
         PackedScenePreflightFailure, Renderer, RendererError, build_instances,
         direct_scene_preflight, ellipse_axes_from_covariance, packed_scene_preflight_with_limits,
-        project_covariance_to_ndc, quat_inverse, try_prepare_then_commit,
+        project_covariance_to_ndc, quat_inverse, resident_sh_plane_count, try_prepare_then_commit,
     };
 
     fn build_scene() -> SceneBuffers {
@@ -2520,7 +2520,10 @@ mod tests {
         assert!(resident_capacity < scene_splats);
         assert_eq!(paged.packed_preflight.path, PackedScenePath::PackedAtlas);
         assert_eq!(paged.packed_preflight.splat_count, scene_splats as u64);
-        assert_eq!(paged.packed_preflight.resident_gpu.sh_plane_count, 4);
+        assert_eq!(
+            paged.packed_preflight.resident_gpu.sh_plane_count,
+            resident_sh_plane_count(3) as u32
+        );
         assert_eq!(paged.paged_plan.sorted_indices_bytes, 1_048_576);
         assert_eq!(paged.paged_plan.hot_record_storage_bytes, 5_242_880);
         assert!(paged.required_texture_dimension <= 8192);

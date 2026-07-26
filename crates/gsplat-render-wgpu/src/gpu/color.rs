@@ -4,7 +4,7 @@
 //! fixed color parameter ABI, pipeline factories, parameter upload, portable
 //! two-dimensional dispatch, and compute-pass encoding.
 
-use std::mem::size_of;
+use std::{borrow::Cow, mem::size_of};
 
 use bytemuck::{Pod, Zeroable};
 use wgpu::util::DeviceExt;
@@ -21,6 +21,8 @@ const COLOR_PIPELINE_LABEL: &str = "gsplat-resident-color-pipeline";
 const COLOR_PASS_LABEL: &str = "gsplat-resident-color-resolve-pass";
 const COLOR_ENTRY_POINT: &str = "main";
 const COLOR_SHADER_SOURCE: &str = include_str!("../../shaders/resident_color_resolve.wgsl");
+const COLOR_SH_MANTISSA_EXACT: &str = "const SH_MANTISSA_BITS: u32 = 11u;";
+const COLOR_SH_MANTISSA_CANDIDATE: &str = "const SH_MANTISSA_BITS: u32 = 8u;";
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -105,7 +107,7 @@ pub(crate) fn create_resident_color_pipeline(
 ) -> wgpu::ComputePipeline {
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: wgpu_label(COLOR_SHADER_LABEL),
-        source: wgpu::ShaderSource::Wgsl(COLOR_SHADER_SOURCE.into()),
+        source: wgpu::ShaderSource::Wgsl(resident_color_shader_source()),
     });
     let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: wgpu_label(COLOR_PIPELINE_LAYOUT_LABEL),
@@ -120,6 +122,25 @@ pub(crate) fn create_resident_color_pipeline(
         compilation_options: wgpu::PipelineCompilationOptions::default(),
         cache: None,
     })
+}
+
+fn resident_color_shader_source() -> Cow<'static, str> {
+    #[cfg(feature = "diagnostic-resident-sh-mantissa8")]
+    {
+        debug_assert_eq!(
+            COLOR_SHADER_SOURCE.matches(COLOR_SH_MANTISSA_EXACT).count(),
+            1
+        );
+        Cow::Owned(COLOR_SHADER_SOURCE.replacen(
+            COLOR_SH_MANTISSA_EXACT,
+            COLOR_SH_MANTISSA_CANDIDATE,
+            1,
+        ))
+    }
+    #[cfg(not(feature = "diagnostic-resident-sh-mantissa8"))]
+    {
+        Cow::Borrowed(COLOR_SHADER_SOURCE)
+    }
 }
 
 fn color_bind_group_layout_entries() -> Vec<wgpu::BindGroupLayoutEntry> {
@@ -229,6 +250,15 @@ mod tests {
         assert!(COLOR_SHADER_SOURCE.contains("fn main("));
         assert!(COLOR_SHADER_SOURCE.contains("camera_pos: vec4<f32>"));
         assert!(COLOR_SHADER_SOURCE.contains("sh_degree: u32"));
+        assert!(COLOR_SHADER_SOURCE.contains(COLOR_SH_MANTISSA_EXACT));
+        let configured = resident_color_shader_source();
+        if cfg!(feature = "diagnostic-resident-sh-mantissa8") {
+            assert!(configured.contains(COLOR_SH_MANTISSA_CANDIDATE));
+            assert!(!configured.contains(COLOR_SH_MANTISSA_EXACT));
+        } else {
+            assert!(matches!(configured, Cow::Borrowed(_)));
+            assert!(configured.contains(COLOR_SH_MANTISSA_EXACT));
+        }
     }
 
     #[test]

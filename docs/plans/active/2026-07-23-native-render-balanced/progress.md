@@ -568,3 +568,59 @@ artifact was run; no image-quality or performance conclusion is claimed.
 Dataset image evaluation, product acceptance, endpoint portability and any
 formal performance decision remain **Deferred** to separately authorized
 root-owned evidence work. B2 remains **Active** until that evidence exists.
+
+## B3 Resident signed-8 SH mantissa candidate
+
+Implementation on exact baseline `cfb76d693e9d44a205e3314cdf19491dc726780e`,
+branch `codex/b3-resident-sh8-mantissa`, adds one default-disabled private
+diagnostic feature, `diagnostic-resident-sh-mantissa8`. It changes only the
+non-DC Resident SH coefficient mantissa from signed-11 to signed-8. The
+per-band five-bit scale, chunk metadata, source membership, DC, position,
+covariance and source ID semantics are unchanged, and SH3 still carries all
+45 non-DC coefficients. Exact and Stable SortedAlpha remain the defaults.
+The B3 feature is compile-time mutually exclusive with the B1 depth-key and B2
+projected-axis features and is not exposed through any stable Rust, C, Swift,
+Kotlin or JavaScript API.
+
+For SH3, the packed SH payload changes from four 16-byte planes to three
+16-byte planes per source. Logical CPU upload staging changes from 112 to 96
+bytes per source, plus the unchanged 80 bytes of metadata per 256-source
+chunk. Logical GPU SH storage saves 16 bytes per source. Because the current
+GPU binding layout retains four bindings and uses one 16-byte inactive-buffer
+placeholder, the realized allocation saving is `16 * source_count - 16`
+bytes. On the checked-in Truck budget fixture with 2,541,226 sources, exact
+Resident staging is 285,411,472 bytes and the candidate is 244,751,856 bytes,
+a saving of 40,659,616 bytes.
+
+Candidate-local codec diagnostics require the complete expected coefficient
+count and reject any saturation or non-finite input. On the deterministic
+513-point SH3 fixture, saturation and encoded non-finite counts were both zero
+and the maximum absolute coefficient errors for bands 1--3 were
+`[0.0031491518, 0.0031489134, 0.0031491518]`. A production Metal shader parity
+test realized three SH planes and matched the CPU decode with exact exponent
+and RGB18E8 mantissas within one least-significant bit.
+
+Finite candidate-local verification passed:
+
+- feature-focused scene tests: 41 passed;
+- production SH8 GPU/CPU parity test: 1 passed;
+- full default renderer crate tests: 469 passed, 8 existing ignored;
+- full feature renderer crate tests: 470 passed, 8 existing ignored;
+- locked renderer library checks passed for default and feature builds;
+- the combined B2/B3 feature check failed as required with the explicit
+  mutual-exclusion diagnostic;
+- renderer all-target Clippy with warnings denied passed for default and
+  feature builds;
+- `cargo fmt --all -- --check`, `git diff --check` and all three architecture
+  policy unit tests passed.
+
+The repository architecture entrypoint remained fail-closed with the fixed
+baseline's existing `program_state.multiple_active` error: the Balanced ledger
+records B1 lane `diagnostic-surface-capture-receipt-bridge`, while the policy
+requires `desktop-diagnostic-receipt-host` for the declared B1/S1 parallel
+execution. This B3 candidate does not alter either task-state owner.
+
+This is a finite candidate-local implementation for root review only. No
+browser, device, collector, formal image-quality artifact or performance
+endpoint was run, and no product acceptance or default promotion is claimed.
+B3 remains **Active** pending separately authorized evidence and root review.

@@ -1354,6 +1354,7 @@ mod tests {
         FrameExecutionError, GpuPreparationStatus, GpuRuntimePreparationError, PreparedRuntimeSlot,
         execute_frame, execute_frame_gpu,
     };
+    use crate::scene::resident_sh_plane_count;
 
     const TAIL_COUNT: usize = 129;
 
@@ -1478,9 +1479,10 @@ mod tests {
     fn portable_binding_boundary_is_exact() {
         let limits = portable_limits(8);
         let at_boundary = (128_usize << 20) / 16;
-        assert!(validate_adapter_capacity(at_boundary, 3, 4, &limits).is_ok());
+        let sh_plane_count = resident_sh_plane_count(3) as u32;
+        assert!(validate_adapter_capacity(at_boundary, 3, sh_plane_count, &limits).is_ok());
         assert!(matches!(
-            validate_adapter_capacity(at_boundary + 1, 3, 4, &limits),
+            validate_adapter_capacity(at_boundary + 1, 3, sh_plane_count, &limits),
             Err(GpuPreparationError::Resource(
                 ResidentGpuError::BindingLimitExceeded { .. }
             ))

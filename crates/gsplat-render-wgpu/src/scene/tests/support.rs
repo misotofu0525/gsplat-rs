@@ -13,7 +13,8 @@ use super::super::codec::{
     sh_coeffs_per_channel, sigmoid, update_base_error_report,
 };
 use super::super::resident::{
-    ResidentEncodingReport, ResidentSceneCpu, ResidentSourceSplat, ResidentUploadStaging,
+    ResidentEncodingReport, ResidentSceneCpu, ResidentShEncodingDiagnostic, ResidentSourceSplat,
+    ResidentUploadStaging,
 };
 use super::super::resident_sh_plane_count;
 
@@ -126,6 +127,7 @@ pub(super) fn legacy_encode(scene: &SceneBuffers) -> ResidentSceneCpu {
         chunk_count,
         ..ResidentEncodingReport::default()
     };
+    let mut sh_encoding_diagnostic = ResidentShEncodingDiagnostic::configured();
 
     for chunk_index in 0..chunk_count {
         let start = chunk_index * RESIDENT_CHUNK_SPLATS;
@@ -174,6 +176,7 @@ pub(super) fn legacy_encode(scene: &SceneBuffers) -> ResidentSceneCpu {
                     &meta,
                     &mut sh_planes,
                     &mut report,
+                    &mut sh_encoding_diagnostic,
                 );
             }
         }
@@ -191,6 +194,7 @@ pub(super) fn legacy_encode(scene: &SceneBuffers) -> ResidentSceneCpu {
         }),
         sh_degree: scene.sh_degree,
         report,
+        sh_encoding_diagnostic,
     }
 }
 
@@ -232,4 +236,5 @@ pub(super) fn assert_resident_bits_eq(left: &ResidentSceneCpu, right: &ResidentS
     assert_eq!(left.sh_coeffs_per_channel(), right.sh_coeffs_per_channel());
     assert_eq!(left.sh_plane_count(), right.sh_plane_count());
     assert_eq!(left.report, right.report);
+    assert_eq!(left.sh_encoding_diagnostic, right.sh_encoding_diagnostic);
 }
