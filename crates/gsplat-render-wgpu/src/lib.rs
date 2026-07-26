@@ -506,12 +506,7 @@ pub struct Renderer {
     /// Surface hosts supply different targets but never own a second scene,
     /// PlanSet, controller, generation ledger, sampler, or raster graph.
     exact_offscreen_runtime: Option<renderer::PreparedRuntimeSlot>,
-    /// Direct Surface order prepared for one frame attempt. It is deliberately
-    /// separate from `scene_state.preprocess_indices`, which is the last
-    /// successfully presented order exposed by `current_sorted_indices()`.
-    surface_attempt_order: Option<Vec<u32>>,
-    /// Statistics for the same unpublished Direct/Paged Surface attempt.
-    surface_attempt_stats: Option<FrameStats>,
+    surface_attempt: renderer::SurfaceAttempt,
     last_stats: FrameStats,
 }
 

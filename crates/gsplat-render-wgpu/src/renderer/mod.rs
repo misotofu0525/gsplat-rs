@@ -9,6 +9,7 @@ pub(crate) mod gpu_prepare;
 pub(crate) mod offscreen_host;
 mod sampler;
 pub(crate) mod scene_state;
+mod surface_attempt;
 
 use std::sync::Arc;
 #[cfg(not(target_arch = "wasm32"))]
@@ -36,6 +37,7 @@ use gpu_prepare::{
     GpuScenePreparation,
 };
 use sampler::{PlanSampleDescriptor, PlanSampler, PlanSamplerError, StagedPlanSample};
+pub(crate) use surface_attempt::SurfaceAttempt;
 
 pub(crate) use current_stats::{
     CurrentStatsCounts, CurrentStatsFailure, CurrentStatsJoinIdentity, CurrentStatsPoll,

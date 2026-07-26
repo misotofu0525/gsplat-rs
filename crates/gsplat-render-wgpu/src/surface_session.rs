@@ -3492,7 +3492,7 @@ mod tests {
             .render_frame()
             .expect("injected acquire failure is retryable");
         assert!(!unavailable.frame_presented);
-        assert!(session.renderer.surface_attempt_order.is_some());
+        assert!(session.renderer.surface_attempt.has_staged_order());
         assert!(session.presenter.test_telemetry_polls() > telemetry_polls);
         assert_eq!(session.last_stats(), published_stats);
         assert_eq!(session.renderer().last_stats(), published_renderer_stats);
@@ -3513,7 +3513,7 @@ mod tests {
 
         let presented = session.render_frame().expect("presented retry");
         assert!(presented.frame_presented);
-        assert!(session.renderer.surface_attempt_order.is_none());
+        assert!(!session.renderer.surface_attempt.has_staged_order());
         assert!(presented.sort_refreshed);
         assert!(presented.order_uploaded);
         assert_eq!(presented.camera_revision, session.camera_revision());
@@ -3601,7 +3601,7 @@ mod tests {
             .completed_timing
             .expect("native async timing");
         assert!(!unavailable.frame_presented);
-        assert!(session.renderer.surface_attempt_order.is_some());
+        assert!(session.renderer.surface_attempt.has_staged_order());
         assert_eq!(unavailable.applied_order_revision, 0);
         assert_eq!(unavailable.async_sort_completed_revision, None);
         assert!(!unavailable.async_sort_result_applied);
@@ -3631,7 +3631,7 @@ mod tests {
         session.presenter.push_test_frame_presented(true);
         let presented = session.render_frame().expect("presented retry");
         assert!(presented.frame_presented);
-        assert!(session.renderer.surface_attempt_order.is_none());
+        assert!(!session.renderer.surface_attempt.has_staged_order());
         assert!(presented.sort_refreshed);
         assert!(presented.order_uploaded);
         assert_eq!(presented.applied_order_revision, 1);
