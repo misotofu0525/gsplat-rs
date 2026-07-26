@@ -9,6 +9,13 @@ not automatically permit redistributing the asset or screenshots. A
 `local_candidate` remains excluded from public claims until its source and
 license fields are resolved.
 
+The Bonsai local candidate binds the official pretrained archive identity for
+local S1 research, but its archive has no asset-specific model license. It may
+be used only for local evaluation and must not be redistributed or used for a
+public qualification claim until those rights are clarified. Its bounds
+receipt names the exact repository commit, source SHA-256 and splat count used
+by the canonical spatial-analysis command.
+
 Bounds are derived by the repository's spatial-analysis command:
 
 ```bash

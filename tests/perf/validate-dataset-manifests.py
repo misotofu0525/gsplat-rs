@@ -14,6 +14,7 @@ from typing import Any
 
 SCHEMA = "gsplat-dataset/v1"
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+COMMIT_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 MANIFEST_DIR = pathlib.Path(__file__).resolve().parent / "datasets"
 
@@ -50,6 +51,23 @@ def validate_bounds(value: dict[str, Any]) -> None:
             raise ValidationError(f"bounds_max[{axis}] must be numeric")
         if lower > upper:
             raise ValidationError(f"bounds axis {axis} is inverted")
+
+
+def validate_bounds_receipt(value: dict[str, Any]) -> None:
+    receipt = value.get("bounds_receipt")
+    if receipt is None:
+        return
+    if not isinstance(receipt, dict):
+        raise ValidationError("bounds_receipt must be an object")
+    if receipt.get("method") != "bench-runner --analyze-spatial":
+        raise ValidationError("bounds_receipt.method is unsupported")
+    commit = require_string(receipt, "repository_commit")
+    if not COMMIT_SHA_RE.fullmatch(commit):
+        raise ValidationError("bounds_receipt.repository_commit must be a full commit SHA")
+    if receipt.get("asset_sha256") != value.get("sha256"):
+        raise ValidationError("bounds_receipt asset SHA-256 does not match the manifest")
+    if receipt.get("splat_count") != value.get("splat_count"):
+        raise ValidationError("bounds_receipt splat count does not match the manifest")
 
 
 def parse_ply_header(path: pathlib.Path) -> tuple[int, int]:
@@ -107,6 +125,7 @@ def validate_manifest(path: pathlib.Path, verify_file: bool) -> None:
     if status == "qualified" and value.get("license") in (None, ""):
         raise ValidationError(f"{path.name}: qualified dataset requires a license")
     validate_bounds(value)
+    validate_bounds_receipt(value)
 
     asset = ROOT / local_path
     if not verify_file or not asset.exists():

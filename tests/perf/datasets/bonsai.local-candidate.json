@@ -1,0 +1,31 @@
+{
+  "schema": "gsplat-dataset/v1",
+  "id": "bonsai",
+  "qualification_status": "local_candidate",
+  "local_path": "tests/datasets/external/inria_3dgs/bonsai/point_cloud.ply",
+  "source_url": "https://repo-sam.inria.fr/fungraph/3d-gaussian-splatting/datasets/pretrained/models.zip",
+  "archive_entry": "bonsai/point_cloud/iteration_30000/point_cloud.ply",
+  "source_repository": "https://github.com/graphdeco-inria/gaussian-splatting",
+  "source_repository_license_url": "https://github.com/graphdeco-inria/gaussian-splatting/blob/main/LICENSE.md",
+  "upstream_dataset": "Mip-NeRF 360 indoor",
+  "upstream_dataset_url": "https://jonbarron.info/mipnerf360/",
+  "fetch_script": "tests/datasets/fetch_inria_3dgs_scenes.py",
+  "license": null,
+  "license_context": "the source repository publishes a research/evaluation software license, but the pretrained archive does not state an asset-specific model license",
+  "attribution": "Official pretrained 3D Gaussian Splatting model by Kerbl et al., Inria GRAPHDECO and MPII",
+  "allowed_use": "local research/evaluation only",
+  "redistribution": "prohibited unless model and upstream dataset rights are clarified",
+  "sha256": "a16af6d8815498ffbf9eb5d5ee93f5bcc9dca34c4e3eb6f7a796ef9e97c0d273",
+  "bytes": 308716644,
+  "splat_count": 1244819,
+  "sh_degree": 3,
+  "bounds_min": [-26.950081, -26.500570, -28.134710],
+  "bounds_max": [17.875225, 17.071907, 20.351149],
+  "bounds_receipt": {
+    "method": "bench-runner --analyze-spatial",
+    "repository_commit": "ffaf8b591f07035afc60331a1a2ae8c1e43a0c91",
+    "asset_sha256": "a16af6d8815498ffbf9eb5d5ee93f5bcc9dca34c4e3eb6f7a796ef9e97c0d273",
+    "splat_count": 1244819
+  },
+  "conversion": "none"
+}

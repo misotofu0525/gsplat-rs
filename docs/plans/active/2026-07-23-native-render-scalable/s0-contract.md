@@ -386,12 +386,21 @@ requires a new pre-measurement contract revision; it cannot repair a failing
 candidate. An unavailable source/camera asset or missing review receipt is the
 explicit S1 **Deferred** exit, not permission to use auto-framing.
 
-Formal preflight also requires a separately reviewed, qualified
-`gsplat-dataset/v1` authority manifest for this exact Bonsai source. That
-manifest is not present in this baseline worktree: it may bind only the frozen
-path/hash/bytes/count/SH values above, must be hash-checked before collection,
-and cannot be generated from benchmark output. Until it exists and its local
-asset validates, the formal asset scope is Deferred.
+Formal preflight also requires a separately reviewed `gsplat-dataset/v1`
+authority manifest for this exact Bonsai source. The current candidate is
+`tests/perf/datasets/bonsai.local-candidate.json`: it binds only the frozen
+path/hash/bytes/count/SH values above plus bounds produced by the repository's
+canonical spatial-analysis command over that same hash. It must be hash-checked
+before collection and cannot be generated from benchmark output.
+
+Because the pretrained archive does not publish an asset-specific model
+license, the manifest remains `local_candidate`, restricted to local
+research/evaluation and prohibited from redistribution. A successful local
+identity check removes only the missing-dataset-authority prerequisite; it
+does not authorize a public qualification claim. Public use remains Deferred
+until rights are clarified. S1 remains Active, but a formal collection attempt
+still has the explicit Deferred exit until the separate authored-camera review
+and both required endpoint gates are available.
 
 The existing three-splat SH3 fixture in
 `crates/gsplat-hierarchy/tests/s1_proxy_fixture.rs` remains the smallest

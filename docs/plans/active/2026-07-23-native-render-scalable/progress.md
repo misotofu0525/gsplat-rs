@@ -138,6 +138,16 @@ or product default. Missing local source data or absent independently derived
 bounds is a finite Deferred handoff to root, not permission to guess values or
 weaken the manifest contract.
 
+Candidate `bonsai.local-candidate.json` now binds the frozen official archive
+entry, source SHA-256, byte count, 1,244,819 SH3 splats and local-only rights
+status. Bounds were produced with `bench-runner --analyze-spatial` at exact
+baseline `ffaf8b591f07035afc60331a1a2ae8c1e43a0c91` after independently
+checking the 308,716,644-byte source SHA. This candidate can satisfy local S1
+dataset-identity admission after review and `--verify-available`; it cannot
+support redistribution or a public qualification claim. Manual authored-view
+review, proxy images, Metal/A065 runs and the aggregate S1 result were not run
+in this slice; the missing review remains an explicit Deferred prerequisite.
+
 ## Ordered implementation ledger
 
 | Task | State in this candidate | Independent result |
