@@ -338,13 +338,7 @@ impl SessionSurfaceOwner {
                 failures: Vec::new(),
             },
             #[cfg(test)]
-            Self::Test(_) => {
-                self.record_test_telemetry_poll();
-                CpuOrderTelemetryPoll {
-                    completed: Vec::new(),
-                    failures: Vec::new(),
-                }
-            }
+            Self::Test(_) => self.poll_test_cpu_completion_telemetry(),
         }
     }
 
@@ -3044,9 +3038,14 @@ mod tests {
     use crate::surface::SessionSurfaceOwner;
     use crate::{
         GeometryPath, Renderer, RendererError, ResidentGpuError, ResidentSceneCpu,
-        SurfaceCompatibilityChannel, SurfaceCurrentStatsPoll, SurfaceCurrentStatsRequest,
-        SurfaceCurrentStatsSubmission, SurfaceCurrentStatsUnsampledReason, SurfaceGpuOrderProducer,
-        SurfacePresenterError, SurfaceProjectedDrawExecution, SurfaceRasterExecutionPlan,
+        SurfaceCompatibilityChannel, SurfaceCompatibilityCountFamily,
+        SurfaceCompatibilityCountsTake, SurfaceCompatibilityCountsUnavailableReason,
+        SurfaceCompatibilitySubmission, SurfaceCompatibilityTerminal,
+        SurfaceCompatibilityTerminalPoll, SurfaceCompatibilityTerminalSelector,
+        SurfaceCurrentStatsPoll, SurfaceCurrentStatsRequest, SurfaceCurrentStatsSubmission,
+        SurfaceCurrentStatsUnsampledReason, SurfaceGpuOrderProducer,
+        SurfaceOrderMeasurementFailureReason, SurfacePresenterError, SurfaceProjectedDrawExecution,
+        SurfaceRasterExecutionPlan,
     };
 
     #[test]
@@ -3422,6 +3421,229 @@ mod tests {
             2,
             "raster and geometry transitions terminalize retained identities"
         );
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn public_cpu_telemetry_session(
+        frame_presented: impl IntoIterator<Item = bool>,
+    ) -> SurfaceRenderSession {
+        let scene = SceneBuffers {
+            positions: vec![Vec3f::new(0.0, 0.0, 1.0), Vec3f::new(0.1, 0.0, 1.2)],
+            opacity: vec![1.0; 2],
+            scale_xyz: vec![[-3.0; 3]; 2],
+            rotation_xyzw: vec![[0.0, 0.0, 0.0, 1.0]; 2],
+            color_dc: vec![[0.0; 3]; 2],
+            sh_degree: 0,
+            sh_rest: None,
+        };
+        let mut renderer =
+            Renderer::with_config_for_surface(RendererConfig::default()).expect("test renderer");
+        renderer.load_scene(scene).expect("test Direct scene");
+        let presenter = SessionSurfaceOwner::test_direct_with_cpu_telemetry(2, frame_presented);
+        SurfaceRenderSession::new_with_surface_owner(renderer, presenter, Camera::default())
+            .expect("public Surface session")
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn issued_cpu_ticket(session: &SurfaceRenderSession) -> u64 {
+        let Some(SurfaceCompatibilitySubmission::Order(submission)) =
+            session.compatibility_submission(SurfaceCompatibilityChannel::Order)
+        else {
+            panic!("presented frame must publish its order submission");
+        };
+        let SurfaceOrderMeasurementSubmission::Issued { backend, ticket } = submission.measurement
+        else {
+            panic!("CPU telemetry fixture must issue a ticket: {submission:?}");
+        };
+        assert_eq!(backend, SurfaceOrderBackendUsed::Cpu);
+        ticket
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn public_session_direct_paged_transition_invalidates_inflight_ticket_once() {
+        use std::num::NonZeroU64;
+
+        let mut session = public_cpu_telemetry_session([true, true]);
+        assert!(
+            session
+                .render_frame()
+                .expect("issued Direct frame")
+                .frame_presented
+        );
+        let invalidated_ticket = issued_cpu_ticket(&session);
+        let polls_before_transition = session.presenter.test_telemetry_polls();
+
+        session
+            .set_geometry_path(GeometryPath::PagedActiveAtlas)
+            .expect("reachable Direct -> Paged transaction");
+        assert_eq!(session.geometry_path(), GeometryPath::PagedActiveAtlas);
+        assert_eq!(
+            session.presenter.test_telemetry_polls(),
+            polls_before_transition,
+            "transition must leave the generated terminal unpolled",
+        );
+
+        let SurfaceCompatibilityTerminalPoll::Ready(SurfaceCompatibilityTerminal::OrderFailure(
+            failure,
+        )) =
+            session.poll_compatibility_terminal(SurfaceCompatibilityTerminalSelector::OrderFailure)
+        else {
+            panic!("geometry transition must expose one terminal failure");
+        };
+        assert_eq!(failure.ticket, invalidated_ticket);
+        assert_eq!(failure.camera_revision, 0);
+        assert_eq!(
+            failure.reason,
+            SurfaceOrderMeasurementFailureReason::GenerationInvalidated,
+        );
+        assert!(matches!(
+            session.poll_compatibility_terminal(SurfaceCompatibilityTerminalSelector::OrderFailure),
+            SurfaceCompatibilityTerminalPoll::Unavailable(_)
+        ));
+
+        let invalidated_ticket =
+            NonZeroU64::new(invalidated_ticket).expect("issued ticket is non-zero");
+        assert!(matches!(
+            session.take_compatibility_counts(
+                SurfaceCompatibilityCountFamily::Order,
+                invalidated_ticket,
+            ),
+            SurfaceCompatibilityCountsTake::Unavailable(unavailable)
+                if unavailable.reason == SurfaceCompatibilityCountsUnavailableReason::Failed
+        ));
+
+        session
+            .set_geometry_path(GeometryPath::SortedIndexDirect)
+            .expect("reachable Paged -> Direct transaction");
+        assert_eq!(session.geometry_path(), GeometryPath::SortedIndexDirect);
+        assert!(
+            session
+                .render_frame()
+                .expect("new Direct frame")
+                .frame_presented
+        );
+        let replacement_ticket = issued_cpu_ticket(&session);
+        assert_ne!(replacement_ticket, invalidated_ticket.get());
+
+        assert!(
+            session
+                .presenter
+                .complete_test_cpu_completion(invalidated_ticket.get(), 91.0),
+            "late callback still owns its old ring slot",
+        );
+        assert!(
+            session
+                .presenter
+                .complete_test_cpu_completion(replacement_ticket, 7.0),
+            "replacement callback completes independently",
+        );
+        let SurfaceCompatibilityTerminalPoll::Ready(SurfaceCompatibilityTerminal::OrderCpuSuccess(
+            success,
+        )) = session
+            .poll_compatibility_terminal(SurfaceCompatibilityTerminalSelector::OrderCpuSuccess)
+        else {
+            panic!("replacement submission must expose one success terminal");
+        };
+        assert_eq!(success.ticket, replacement_ticket);
+        assert_eq!(success.frame_complete_ms, 7.0);
+        assert!(matches!(
+            session
+                .poll_compatibility_terminal(SurfaceCompatibilityTerminalSelector::OrderCpuSuccess),
+            SurfaceCompatibilityTerminalPoll::Unavailable(_)
+        ));
+
+        let replacement_ticket =
+            NonZeroU64::new(replacement_ticket).expect("issued ticket is non-zero");
+        assert!(matches!(
+            session.take_compatibility_counts(
+                SurfaceCompatibilityCountFamily::Order,
+                replacement_ticket,
+            ),
+            SurfaceCompatibilityCountsTake::Ready(counts)
+                if counts.ticket == replacement_ticket.get()
+        ));
+        assert!(matches!(
+            session.take_compatibility_counts(
+                SurfaceCompatibilityCountFamily::Order,
+                replacement_ticket,
+            ),
+            SurfaceCompatibilityCountsTake::Unavailable(unavailable)
+                if unavailable.reason == SurfaceCompatibilityCountsUnavailableReason::Consumed
+        ));
+        assert!(matches!(
+            session.take_compatibility_counts(
+                SurfaceCompatibilityCountFamily::Order,
+                invalidated_ticket,
+            ),
+            SurfaceCompatibilityCountsTake::Unavailable(unavailable)
+                if unavailable.reason == SurfaceCompatibilityCountsUnavailableReason::Failed
+        ));
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn cfg_test_only_raster_transition_retains_completed_unpolled_terminal() {
+        use std::num::NonZeroU64;
+
+        let mut session = public_cpu_telemetry_session([true, false]);
+        assert!(
+            session
+                .render_frame()
+                .expect("issued Direct frame")
+                .frame_presented
+        );
+        let retained_ticket = issued_cpu_ticket(&session);
+        assert!(
+            session
+                .presenter
+                .complete_test_cpu_completion(retained_ticket, 5.0)
+        );
+        assert!(
+            !session
+                .render_frame()
+                .expect("unavailable frame retains completed telemetry")
+                .frame_presented
+        );
+
+        // This reaches the Session mutation branch only through the cfg(test)
+        // owner. Real standalone Direct/Paged owners reject ProjectedQuadsExact,
+        // while the Exact Packed owner is fixed to it; this is not device proof.
+        session
+            .set_raster_execution_plan(SurfaceRasterExecutionPlan::ProjectedQuadsExact)
+            .expect("cfg(test)-only raster transition");
+        let SurfaceCompatibilityTerminalPoll::Ready(SurfaceCompatibilityTerminal::OrderCpuSuccess(
+            success,
+        )) = session
+            .poll_compatibility_terminal(SurfaceCompatibilityTerminalSelector::OrderCpuSuccess)
+        else {
+            panic!("raster transition must retain the already completed terminal");
+        };
+        assert_eq!(success.ticket, retained_ticket);
+        assert_eq!(success.frame_complete_ms, 5.0);
+        assert!(matches!(
+            session
+                .poll_compatibility_terminal(SurfaceCompatibilityTerminalSelector::OrderCpuSuccess),
+            SurfaceCompatibilityTerminalPoll::Unavailable(_)
+        ));
+
+        let retained_ticket = NonZeroU64::new(retained_ticket).expect("issued ticket is non-zero");
+        assert!(matches!(
+            session.take_compatibility_counts(
+                SurfaceCompatibilityCountFamily::Order,
+                retained_ticket,
+            ),
+            SurfaceCompatibilityCountsTake::Ready(counts)
+                if counts.ticket == retained_ticket.get()
+        ));
+        assert!(matches!(
+            session.take_compatibility_counts(
+                SurfaceCompatibilityCountFamily::Order,
+                retained_ticket,
+            ),
+            SurfaceCompatibilityCountsTake::Unavailable(unavailable)
+                if unavailable.reason == SurfaceCompatibilityCountsUnavailableReason::Consumed
+        ));
     }
 
     #[cfg(not(target_arch = "wasm32"))]

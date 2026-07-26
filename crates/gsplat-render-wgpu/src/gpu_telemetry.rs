@@ -211,6 +211,39 @@ impl CpuOrderCompletionTelemetry {
         )
     }
 
+    #[cfg(test)]
+    pub(crate) fn begin_submitted_sample_for_test(
+        &mut self,
+        camera_revision: u64,
+        preprocess_ms: f32,
+        sort_ms: f32,
+        counts: FrameInstanceCounts,
+    ) -> Option<u64> {
+        let ticket =
+            self.begin_sample_with_counts(camera_revision, preprocess_ms, sort_ms, counts)?;
+        self.slots[ticket.slot]
+            .state
+            .store(SLOT_SUBMITTED, Ordering::Release);
+        Some(ticket.ticket)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn complete_submitted_sample_for_test(
+        &mut self,
+        ticket: u64,
+        frame_complete_ms: f32,
+    ) -> bool {
+        let Some(slot) = self.slots.iter_mut().find(|slot| {
+            slot.ticket == ticket && slot.state.load(Ordering::Acquire) == SLOT_SUBMITTED
+        }) else {
+            return false;
+        };
+        slot.completion_ms_bits
+            .store(frame_complete_ms.to_bits(), Ordering::Release);
+        slot.state.store(SLOT_MAPPED, Ordering::Release);
+        true
+    }
+
     pub(crate) fn begin_sample_with_counts(
         &mut self,
         camera_revision: u64,

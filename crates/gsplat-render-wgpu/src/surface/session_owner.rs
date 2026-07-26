@@ -14,6 +14,11 @@ use crate::{
     SurfaceRasterExecutionPlan,
 };
 
+#[cfg(test)]
+use crate::gpu_telemetry::{
+    CpuOrderCompletionTelemetry, CpuOrderTelemetryPoll, FrameInstanceCounts, TelemetrySubmission,
+};
+
 #[cfg(not(target_arch = "wasm32"))]
 use crate::RendererError;
 
@@ -24,7 +29,7 @@ pub(crate) enum SessionSurfaceOwner {
     Standalone(Box<SurfacePresenter>),
     ExactPacked(Box<SurfacePresenterHost>),
     #[cfg(test)]
-    Test(TestSessionSurfaceOwner),
+    Test(Box<TestSessionSurfaceOwner>),
 }
 
 #[cfg(test)]
@@ -35,7 +40,9 @@ pub(crate) struct TestSessionSurfaceOwner {
     size: (u32, u32),
     addressable_splat_count: usize,
     adapter_info: wgpu::AdapterInfo,
+    geometry_path: GeometryPath,
     raster_execution_plan: SurfaceRasterExecutionPlan,
+    cpu_completion_telemetry: Option<CpuOrderCompletionTelemetry>,
     telemetry_polls: usize,
 }
 
@@ -71,7 +78,24 @@ impl SessionSurfaceOwner {
         addressable_splat_count: usize,
         frame_presented: impl IntoIterator<Item = bool>,
     ) -> Self {
-        Self::Test(TestSessionSurfaceOwner {
+        Self::test_direct_with_telemetry(addressable_splat_count, frame_presented, false)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_direct_with_cpu_telemetry(
+        addressable_splat_count: usize,
+        frame_presented: impl IntoIterator<Item = bool>,
+    ) -> Self {
+        Self::test_direct_with_telemetry(addressable_splat_count, frame_presented, true)
+    }
+
+    #[cfg(test)]
+    fn test_direct_with_telemetry(
+        addressable_splat_count: usize,
+        frame_presented: impl IntoIterator<Item = bool>,
+        cpu_completion_telemetry: bool,
+    ) -> Self {
+        Self::Test(Box::new(TestSessionSurfaceOwner {
             frame_presented: frame_presented.into_iter().collect(),
             last_frame_presented: false,
             last_presented_size: None,
@@ -90,9 +114,12 @@ impl SessionSurfaceOwner {
                 subgroup_max_size: 1,
                 transient_saves_memory: false,
             },
+            geometry_path: GeometryPath::SortedIndexDirect,
             raster_execution_plan: SurfaceRasterExecutionPlan::GlobalQuads,
+            cpu_completion_telemetry: cpu_completion_telemetry
+                .then(CpuOrderCompletionTelemetry::default),
             telemetry_polls: 0,
-        })
+        }))
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -176,7 +203,7 @@ impl SessionSurfaceOwner {
             Self::Standalone(presenter) => presenter.geometry_path(),
             Self::ExactPacked(_) => GeometryPath::PackedAtlas,
             #[cfg(test)]
-            Self::Test(_) => GeometryPath::SortedIndexDirect,
+            Self::Test(test) => test.geometry_path,
         }
     }
 
@@ -413,9 +440,20 @@ impl SessionSurfaceOwner {
             Self::Standalone(presenter) => presenter.set_geometry_path(path, renderer),
             Self::ExactPacked(_) => Err(SurfacePresenterError::SurfaceGeometrySwitchUnsupported),
             #[cfg(test)]
-            Self::Test(_) if path == GeometryPath::SortedIndexDirect => Ok(()),
-            #[cfg(test)]
-            Self::Test(_) => Err(SurfacePresenterError::SurfaceGeometrySwitchUnsupported),
+            Self::Test(test) => match path {
+                GeometryPath::SortedIndexDirect | GeometryPath::PagedActiveAtlas => {
+                    if test.geometry_path != path {
+                        test.geometry_path = path;
+                        if let Some(telemetry) = test.cpu_completion_telemetry.as_mut() {
+                            telemetry.invalidate_generation();
+                        }
+                    }
+                    Ok(())
+                }
+                GeometryPath::PackedAtlas => {
+                    Err(SurfacePresenterError::SurfaceGeometrySwitchUnsupported)
+                }
+            },
         }
     }
 
@@ -471,6 +509,56 @@ impl SessionSurfaceOwner {
         test.last_frame_presented = presented;
         test.last_presented_size = presented.then_some(test.size);
         Some(presented)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn begin_test_cpu_completion(
+        &mut self,
+        camera_revision: u64,
+        preprocess_ms: f32,
+        sort_ms: f32,
+        counts: FrameInstanceCounts,
+    ) -> TelemetrySubmission {
+        let Self::Test(test) = self else {
+            panic!("CPU completion injection requires the test Surface owner");
+        };
+        let Some(telemetry) = test.cpu_completion_telemetry.as_mut() else {
+            return TelemetrySubmission::NotRequested;
+        };
+        telemetry
+            .begin_submitted_sample_for_test(camera_revision, preprocess_ms, sort_ms, counts)
+            .map_or(TelemetrySubmission::RingBusy, TelemetrySubmission::Issued)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn complete_test_cpu_completion(
+        &mut self,
+        ticket: u64,
+        frame_complete_ms: f32,
+    ) -> bool {
+        let Self::Test(test) = self else {
+            panic!("CPU completion injection requires the test Surface owner");
+        };
+        test.cpu_completion_telemetry
+            .as_mut()
+            .is_some_and(|telemetry| {
+                telemetry.complete_submitted_sample_for_test(ticket, frame_complete_ms)
+            })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn poll_test_cpu_completion_telemetry(&mut self) -> CpuOrderTelemetryPoll {
+        let Self::Test(test) = self else {
+            panic!("CPU completion injection requires the test Surface owner");
+        };
+        test.telemetry_polls += 1;
+        test.cpu_completion_telemetry.as_mut().map_or(
+            CpuOrderTelemetryPoll {
+                completed: Vec::new(),
+                failures: Vec::new(),
+            },
+            CpuOrderCompletionTelemetry::poll,
+        )
     }
 
     #[cfg(test)]

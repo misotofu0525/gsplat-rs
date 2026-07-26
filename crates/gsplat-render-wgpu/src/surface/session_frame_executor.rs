@@ -158,9 +158,24 @@ impl SessionFrameExecutor {
             let frame_wall_ms = timer_elapsed_ms(frame_started);
             stats.frame_ms = frame_wall_ms;
             renderer.stage_surface_attempt_stats(stats);
+            let presenter_submission = if frame_presented && track_cpu_completion {
+                surface.begin_test_cpu_completion(
+                    camera_revision,
+                    stats.preprocess_ms,
+                    stats.sort_ms,
+                    crate::gpu_telemetry::FrameInstanceCounts {
+                        candidate_visible: stats.visible_count,
+                        contributor: stats.drawn_count,
+                        drawn: stats.drawn_count,
+                        exact_contributor_compaction: false,
+                    },
+                )
+            } else {
+                TelemetrySubmission::NotRequested
+            };
             let candidate = StandaloneCpuFrameAttempt {
                 stats,
-                presenter_submission: TelemetrySubmission::NotRequested,
+                presenter_submission,
                 projected_draw_execution: SurfaceProjectedDrawExecution::Candidate,
                 projected_draw_submission: TelemetrySubmission::NotRequested,
                 raster_execution_plan: surface.raster_execution_plan(),
