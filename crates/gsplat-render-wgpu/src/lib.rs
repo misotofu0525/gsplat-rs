@@ -402,6 +402,10 @@ pub enum SurfacePresenterError {
         "the requested runtime surface geometry transition is unsupported; transitions entering or leaving Packed are disabled, and Paged remains a constructor-time diagnostic"
     )]
     SurfaceGeometrySwitchUnsupported,
+    #[error(
+        "standalone Packed surface presenters are unsupported; construct Packed through SurfaceRenderSession::from_* so the session owns the Exact surface host"
+    )]
+    StandalonePackedPresenterUnsupported,
     #[error("surface geometry {path:?} allocation ran out of GPU memory: {message}")]
     SurfaceGeometryOutOfMemory { path: GeometryPath, message: String },
     #[error("surface geometry {path:?} creation failed validation: {message}")]
@@ -450,6 +454,7 @@ impl SurfacePresenterError {
             | Self::GpuProducerPreparationRequired
             | Self::GpuOrderPreparationRequired
             | Self::SurfaceGeometrySwitchUnsupported
+            | Self::StandalonePackedPresenterUnsupported
             | Self::SurfaceResizePreparationRequired
             | Self::SurfaceResizeUnsupported
             | Self::SurfaceCaptureUnsupported(_) => ErrorCode::Unsupported,

@@ -1102,7 +1102,20 @@ impl SurfacePresenterHost {
 }
 
 impl SurfacePresenter {
-    /// Creates a presenter for an owned native window target.
+    fn admit_standalone_geometry(path: GeometryPath) -> Result<(), SurfacePresenterError> {
+        match path {
+            GeometryPath::PackedAtlas => {
+                Err(SurfacePresenterError::StandalonePackedPresenterUnsupported)
+            }
+            GeometryPath::SortedIndexDirect | GeometryPath::PagedActiveAtlas => Ok(()),
+        }
+    }
+
+    /// Creates a standalone presenter for an owned native window target.
+    ///
+    /// Direct and diagnostic Paged geometry are supported. Packed must be
+    /// constructed through [`crate::SurfaceRenderSession::from_window`] so the
+    /// session allocates only its Exact host graph.
     #[cfg(not(target_arch = "wasm32"))]
     pub async fn from_window<T>(
         target: T,
@@ -1113,6 +1126,7 @@ impl SurfacePresenter {
     where
         T: Into<wgpu::SurfaceTarget<'static>>,
     {
+        Self::admit_standalone_geometry(renderer.geometry_path())?;
         Self::from_window_selected(target, width, height, renderer).await
     }
 
@@ -1130,7 +1144,11 @@ impl SurfacePresenter {
         Self::from_host_async(host, renderer).await
     }
 
-    /// Creates a presenter from raw handles supplied by an embedding platform.
+    /// Creates a standalone presenter from raw embedding-platform handles.
+    ///
+    /// Direct and diagnostic Paged geometry are supported. Packed must be
+    /// constructed through [`crate::SurfaceRenderSession::from_raw_handles`]
+    /// so the session allocates only its Exact host graph.
     ///
     /// # Safety
     ///
@@ -1143,6 +1161,7 @@ impl SurfacePresenter {
         height: u32,
         renderer: &Renderer,
     ) -> Result<Self, SurfacePresenterError> {
+        Self::admit_standalone_geometry(renderer.geometry_path())?;
         pollster::block_on(Self::from_raw_handles_selected(
             raw_display_handle,
             raw_window_handle,
@@ -1173,12 +1192,18 @@ impl SurfacePresenter {
     }
 
     #[cfg(target_arch = "wasm32")]
+    /// Creates a standalone presenter for a browser canvas.
+    ///
+    /// Direct and diagnostic Paged geometry are supported. Packed must be
+    /// constructed through [`crate::SurfaceRenderSession::from_canvas`] so the
+    /// session allocates only its Exact host graph.
     pub async fn from_canvas(
         canvas: web_sys::HtmlCanvasElement,
         width: u32,
         height: u32,
         renderer: &Renderer,
     ) -> Result<Self, SurfacePresenterError> {
+        Self::admit_standalone_geometry(renderer.geometry_path())?;
         Self::from_canvas_selected(canvas, width, height, renderer).await
     }
 
@@ -3219,6 +3244,36 @@ fn ensure_surface_capture_allows_resize(pending: bool) -> Result<(), SurfacePres
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn standalone_geometry_admission_is_structured_and_repeatable() {
+        assert_eq!(
+            include_str!("surface_presenter.rs")
+                .matches(concat!(
+                    "Self::admit_standalone_geometry(",
+                    "renderer.geometry_path())?;"
+                ))
+                .count(),
+            3,
+            "every public from_* family member must admit before delegating to host/graph construction"
+        );
+        for path in [
+            GeometryPath::SortedIndexDirect,
+            GeometryPath::PagedActiveAtlas,
+        ] {
+            assert!(SurfacePresenter::admit_standalone_geometry(path).is_ok());
+        }
+
+        for _ in 0..2 {
+            let error = SurfacePresenter::admit_standalone_geometry(GeometryPath::PackedAtlas)
+                .expect_err("standalone Packed admission");
+            assert!(matches!(
+                error,
+                SurfacePresenterError::StandalonePackedPresenterUnsupported
+            ));
+            assert_eq!(error.code(), gsplat_core::ErrorCode::Unsupported);
+        }
+    }
 
     #[cfg(not(target_arch = "wasm32"))]
     #[test]

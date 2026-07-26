@@ -10,7 +10,7 @@ fn main() {
 mod macos {
     use std::sync::Arc;
 
-    use gsplat_core::{Camera, FrameStats, RendererConfig, SceneBuffers, Vec3f};
+    use gsplat_core::{Camera, ErrorCode, FrameStats, RendererConfig, SceneBuffers, Vec3f};
     use gsplat_render_wgpu::{
         GeometryPath, Renderer, RendererError, SurfaceCurrentStatsSubmission,
         SurfaceGpuOrderProducer, SurfaceOrderBackend, SurfacePresenter, SurfacePresenterError,
@@ -59,7 +59,7 @@ mod macos {
     pub(super) fn main() {
         match run() {
             Ok(adapter) => println!(
-                "M7D_SURFACE_GEOMETRY_ENTRY=PASS backend=Metal adapter={adapter:?} public_presenter=true public_session=true"
+                "M7D_SURFACE_GEOMETRY_ENTRY=PASS backend=Metal adapter={adapter:?} public_presenter=true public_session=true standalone_packed_rejected=true product_packed_host=true"
             ),
             Err(HarnessError::Skipped(reason)) => {
                 println!("M7D_SURFACE_GEOMETRY_ENTRY=SKIPPED target=macos reason={reason}")
@@ -105,9 +105,8 @@ mod macos {
 
     fn exercise_presenter_entries(event_loop: &EventLoop<()>) -> Result<(), HarnessError> {
         let direct_renderer = loaded_renderer(GeometryPath::SortedIndexDirect);
-        let mut packed_renderer = loaded_renderer(GeometryPath::PackedAtlas);
+        let packed_renderer = loaded_renderer(GeometryPath::PackedAtlas);
         let paged_renderer = loaded_renderer(GeometryPath::PagedActiveAtlas);
-        let empty_direct_renderer = empty_renderer(GeometryPath::SortedIndexDirect);
         let empty_packed_renderer = empty_renderer(GeometryPath::PackedAtlas);
 
         let direct_window = hidden_window(event_loop, "M7d presenter Direct")?;
@@ -139,39 +138,29 @@ mod macos {
             .map_err(failed("public presenter Paged -> Direct"))?;
         assert_eq!(direct.geometry_path(), GeometryPath::SortedIndexDirect);
 
-        let packed_window = hidden_window(event_loop, "M7d presenter Packed")?;
-        let mut packed = presenter(packed_window, &packed_renderer)?;
-        let packed_before = presenter_snapshot(&packed);
+        let paged_window = hidden_window(event_loop, "M7 standalone presenter Paged")?;
+        let paged = presenter(paged_window, &paged_renderer)?;
+        assert_eq!(paged.geometry_path(), GeometryPath::PagedActiveAtlas);
 
-        packed
-            .set_geometry_path(GeometryPath::PackedAtlas, &packed_renderer)
-            .map_err(failed("public presenter same-path Packed"))?;
-        assert_eq!(presenter_snapshot(&packed), packed_before);
-
-        assert_presenter_switch_unsupported(
-            packed.set_geometry_path(GeometryPath::SortedIndexDirect, &direct_renderer),
-            "public presenter Packed -> Direct",
+        let packed_window = hidden_window(event_loop, "M7 standalone presenter Packed")?;
+        assert_standalone_packed_rejected(
+            pollster::block_on(SurfacePresenter::from_window(
+                packed_window.clone(),
+                0,
+                0,
+                &packed_renderer,
+            )),
+            "standalone Packed admission must precede Surface size and graph preparation",
         );
-        assert_eq!(presenter_snapshot(&packed), packed_before);
-        assert_presenter_switch_unsupported(
-            packed.set_geometry_path(GeometryPath::SortedIndexDirect, &empty_direct_renderer),
-            "public presenter Packed -> Direct must reject before reading or preparing the target source",
+        assert_standalone_packed_rejected(
+            pollster::block_on(SurfacePresenter::from_window(
+                packed_window,
+                TEST_WIDTH,
+                TEST_HEIGHT,
+                &packed_renderer,
+            )),
+            "standalone Packed admission must be repeatable",
         );
-        assert_eq!(presenter_snapshot(&packed), packed_before);
-
-        packed_renderer
-            .build_surface_sorted_indices_with_sort_refresh(&Camera::default(), true)
-            .map_err(failed("standalone Packed sort"))?;
-        let standalone_source = test_scene();
-        packed
-            .render_sorted_indices(
-                &standalone_source,
-                packed_renderer.current_sorted_indices(),
-                &Camera::default(),
-                true,
-            )
-            .map_err(failed("standalone Packed render"))?;
-        assert!(packed.instance_count() > 0);
         Ok(())
     }
 
@@ -208,28 +197,6 @@ mod macos {
             .map_err(failed("public session Paged -> Direct"))?;
         assert_eq!(direct.geometry_path(), GeometryPath::SortedIndexDirect);
 
-        let packed_renderer = loaded_renderer(GeometryPath::PackedAtlas);
-        let packed_window = hidden_window(event_loop, "M7d session Packed")?;
-        let packed_presenter = presenter(packed_window, &packed_renderer)?;
-        let mut packed =
-            SurfaceRenderSession::new(packed_renderer, packed_presenter, Camera::default())
-                .map_err(failed("public Packed session construction"))?;
-        let packed_before = session_snapshot(&packed);
-
-        packed
-            .set_geometry_path(GeometryPath::PackedAtlas)
-            .map_err(failed("public session same-path Packed"))?;
-        assert_eq!(session_snapshot(&packed), packed_before);
-
-        assert_session_switch_unsupported(
-            packed.set_geometry_path(GeometryPath::SortedIndexDirect),
-            "public session Packed -> Direct",
-        );
-        assert_eq!(
-            session_snapshot(&packed),
-            packed_before,
-            "rejected public session Packed -> Direct must not prepare or publish renderer, presenter, Exact plan, stats, or policy state"
-        );
         Ok(())
     }
 
@@ -397,6 +364,23 @@ mod macos {
                 Err(SurfacePresenterError::SurfaceGeometrySwitchUnsupported)
             ),
             "{context} returned {result:?}"
+        );
+    }
+
+    fn assert_standalone_packed_rejected(
+        result: Result<SurfacePresenter, SurfacePresenterError>,
+        context: &str,
+    ) {
+        let error = match result {
+            Err(error @ SurfacePresenterError::StandalonePackedPresenterUnsupported) => error,
+            Err(other) => panic!("{context} returned the wrong error: {other:?}"),
+            Ok(_) => panic!("{context} unexpectedly constructed a legacy Packed presenter"),
+        };
+        assert_eq!(error.code(), ErrorCode::Unsupported, "{context}");
+        assert_eq!(
+            error.to_string(),
+            "standalone Packed surface presenters are unsupported; construct Packed through SurfaceRenderSession::from_* so the session owns the Exact surface host",
+            "{context}"
         );
     }
 
