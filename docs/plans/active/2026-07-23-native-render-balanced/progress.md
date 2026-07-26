@@ -4,7 +4,13 @@
 
 <!-- gsplat-program-task-states: begin -->
 B0 = Accepted
+B1 = Active
 <!-- gsplat-program-task-states: end -->
+
+<!-- gsplat-program-active-lanes: begin -->
+activation_commit = 3ecf0f2d0180c197faa132443066b3b9b98d36d4
+B1 = balanced-image-gate
+<!-- gsplat-program-active-lanes: end -->
 
 ## B0 authoring slice
 
@@ -45,4 +51,6 @@ The [B0 contract](b0-contract.md) now fixes:
 - Implementation evidence: none; B0 is a document contract.
 - Product behavior/defaults: unchanged.
 - Remote publication: forbidden for this slice.
-- B0 is **Accepted**. B1--B3 remain separate, not-yet-started experiments.
+- B0 is **Accepted**. B1 begins with the fail-closed image-gate validator;
+  quantized depth-key execution and retained experiment evidence remain locked
+  until that validator exists. B2--B3 remain not started.

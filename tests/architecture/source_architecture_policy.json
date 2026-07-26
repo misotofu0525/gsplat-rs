@@ -3,7 +3,37 @@
   "baseline_commit": "9df0d6cb2e7e7df7ddc95e85d16c416e4e91d4b0",
   "program_task_state": {
     "external_owner_review_allowlist": [],
-    "parallel_execution": null,
+    "parallel_execution": {
+      "activation_commit": "3ecf0f2d0180c197faa132443066b3b9b98d36d4",
+      "members": [
+        {
+          "task": "B1",
+          "lane": "balanced-image-gate",
+          "write_allowlist": [
+            "docs/plans/active/2026-07-23-native-render-balanced/progress.md",
+            "tests/perf/validate-balanced-image-gate.py",
+            "tests/perf/test_validate_balanced_image_gate.py"
+          ]
+        },
+        {
+          "task": "S1",
+          "lane": "authored-proxy-builder",
+          "write_allowlist": [
+            "Cargo.toml",
+            "Cargo.lock",
+            "docs/plans/active/2026-07-23-native-render-scalable/progress.md",
+            "crates/gsplat-hierarchy/Cargo.toml",
+            "crates/gsplat-hierarchy/src/lib.rs",
+            "crates/gsplat-hierarchy/tests/s1_proxy_fixture.rs"
+          ]
+        }
+      ],
+      "integration_order": [
+        "balanced-image-gate",
+        "authored-proxy-builder"
+      ],
+      "reason": "B1 fail-closed image admission and S1 offline proxy construction are independent post-contract implementation seams."
+    },
     "task_catalog": {
       "A0": "A",
       "A1": "A",

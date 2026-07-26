@@ -5,7 +5,13 @@
 
 <!-- gsplat-program-task-states: begin -->
 S0 = Accepted
+S1 = Active
 <!-- gsplat-program-task-states: end -->
+
+<!-- gsplat-program-active-lanes: begin -->
+activation_commit = 3ecf0f2d0180c197faa132443066b3b9b98d36d4
+S1 = authored-proxy-builder
+<!-- gsplat-program-active-lanes: end -->
 
 ## Scope
 
@@ -42,15 +48,16 @@ excluded.
   A geometric-only result may remain research but cannot unlock S2--S5.
 
 S0 is Accepted after independent review and root integration (`435d04d`,
-`f7164ed`). It activates neither implementation nor a product claim; S1 still
-requires its own predeclared, image-gated task contract.
+`f7164ed`). S1 is Active for a bounded offline builder/fixture slice. It still
+requires its own predeclared, image-gated task contract and cannot make a
+product claim merely by producing a structurally valid hierarchy.
 
 ## Ordered implementation ledger
 
 | Task | State in this candidate | Independent result |
 | --- | --- | --- |
 | S0 | Accepted | coverage/budget/source/receipt contract and selected asset approach |
-| S1 | Not started | predeclared image-gated, independently valid proxy hierarchy |
+| S1 | Active: offline builder/fixture | predeclared image-gated, independently valid proxy hierarchy |
 | S2 | Locked until S1 Accepted | metadata-first `PageSource` and bounded direct decode |
 | S3 | Locked until S1 Accepted, then S2 | three byte-bounded caches and deterministic GPU page pool |
 | S4 | Locked until S1 Accepted, then S3 | recursive mixed-depth cut selection and atomic local replacement |
