@@ -26,11 +26,21 @@ use crate::gpu_telemetry::{
 };
 use crate::projected_draw_telemetry::ProjectedDrawTelemetryPoll;
 #[cfg(test)]
-use crate::surface::{ADAPTIVE_CPU_BOOTSTRAP_SAMPLES, ADAPTIVE_INITIAL_PROBE_DELAY};
 use crate::surface::{
-    AdaptiveMetric, AdaptiveOrderPolicy, AdaptiveProjectedDrawPolicy, AdaptiveRefreshChoice,
-    AdaptiveSampleKind, LegacySurfaceStatsAvailability, ProjectedAdaptiveChoice,
-    ProjectedAdaptiveSampleKind, SessionSurfaceOwner, adaptive_primary_metric,
+    ADAPTIVE_CPU_BOOTSTRAP_SAMPLES, ADAPTIVE_INITIAL_PROBE_DELAY,
+    projected_formal_sample_requested, validate_projected_draw_policy_transition,
+};
+use crate::surface::{
+    AdaptiveMetric, AdaptiveOrderPolicy, AdaptiveProbeOwner, AdaptiveProjectedDrawPolicy,
+    AdaptiveRefreshChoice, AdaptiveSampleKind, ExactSurfacePlanState,
+    LegacySurfaceStatsAvailability, ProjectedAdaptiveChoice, ProjectedAdaptiveSampleKind,
+    SessionSurfaceOwner, adaptive_primary_metric, arbitrate_new_probe_owner,
+    commit_exact_plan_state, commit_projected_draw_policy_transition,
+    defer_projected_formal_choice, gpu_producer_measurement_context_is_valid,
+    gpu_projected_order_changed, order_probe_owner_should_yield, prepare_exact_gpu_order,
+    prepare_exact_gpu_order_producer, projected_order_changed, projected_policy_can_sample,
+    projected_probe_claims_owner, reset_adaptive_for_gpu_producer_measurement_transition,
+    should_reset_order_for_projected_incumbent_change, validate_gpu_order_producer_transition,
 };
 pub use crate::surface::{
     SurfaceAdaptiveGpuFailureReason, SurfaceAdaptivePendingSample, SurfaceAdaptiveState,
@@ -48,9 +58,7 @@ use crate::{
     SurfaceRasterExecutionPlan, SurfaceTimingSource, timer_elapsed_ms, timer_now,
 };
 use crate::{
-    plans::PlanId,
-    renderer::{ExactAdaptivePolicyState, ExactPlanPolicy},
-    surface::shadow::SurfaceExactError,
+    plans::PlanId, renderer::ExactAdaptivePolicyState, surface::shadow::SurfaceExactError,
 };
 
 const DEFAULT_SURFACE_SORT_INTERVAL: u32 = 1;
@@ -94,241 +102,6 @@ pub enum SurfaceProjectedDrawPolicy {
     Compact,
     #[default]
     Adaptive,
-}
-
-/// Canonical compatibility receipt for the renderer-owned complete Exact
-/// PlanSet. This value is never consulted by frame execution; it exists only
-/// so the established const getters can report the atomic renderer commit.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ExactSurfacePlanState {
-    CpuPostSort,
-    GpuPostSort,
-    GpuPreproject,
-    Adaptive,
-}
-
-const fn exact_gpu_plan_for_producer(producer: SurfaceGpuOrderProducer) -> PlanId {
-    match producer {
-        SurfaceGpuOrderProducer::PostSort => PlanId::GpuPostSort,
-        SurfaceGpuOrderProducer::Preproject => PlanId::GpuPreproject,
-    }
-}
-
-fn prepare_exact_gpu_order_producer(
-    renderer: &Renderer,
-    producer: SurfaceGpuOrderProducer,
-) -> Result<(), RendererError> {
-    let plan = exact_gpu_plan_for_producer(producer);
-    if renderer.exact_surface_plan_is_eligible(plan) == Some(true) {
-        Ok(())
-    } else {
-        Err(SurfacePresenterError::GpuOrderUnsupported.into())
-    }
-}
-
-fn prepare_exact_gpu_order(
-    renderer: &Renderer,
-    state: ExactSurfacePlanState,
-) -> Result<(), RendererError> {
-    prepare_exact_gpu_order_producer(renderer, state.producer())
-}
-
-impl ExactSurfacePlanState {
-    const fn policy(self) -> ExactPlanPolicy {
-        match self {
-            Self::CpuPostSort => ExactPlanPolicy::Forced(PlanId::CpuPostSort),
-            Self::GpuPostSort => ExactPlanPolicy::Forced(PlanId::GpuPostSort),
-            Self::GpuPreproject => ExactPlanPolicy::Forced(PlanId::GpuPreproject),
-            Self::Adaptive => ExactPlanPolicy::Adaptive,
-        }
-    }
-
-    const fn from_policy(policy: ExactPlanPolicy) -> Self {
-        match policy {
-            ExactPlanPolicy::Forced(PlanId::CpuPostSort) => Self::CpuPostSort,
-            ExactPlanPolicy::Forced(PlanId::GpuPostSort) => Self::GpuPostSort,
-            ExactPlanPolicy::Forced(PlanId::GpuPreproject) => Self::GpuPreproject,
-            ExactPlanPolicy::Adaptive => Self::Adaptive,
-        }
-    }
-
-    const fn order_backend(self) -> SurfaceOrderBackend {
-        match self {
-            Self::CpuPostSort => SurfaceOrderBackend::Cpu,
-            Self::GpuPostSort | Self::GpuPreproject => SurfaceOrderBackend::Gpu,
-            Self::Adaptive => SurfaceOrderBackend::Adaptive,
-        }
-    }
-
-    const fn projected_policy(self) -> SurfaceProjectedDrawPolicy {
-        match self {
-            Self::GpuPreproject => SurfaceProjectedDrawPolicy::Compact,
-            Self::Adaptive => SurfaceProjectedDrawPolicy::Adaptive,
-            Self::CpuPostSort | Self::GpuPostSort => SurfaceProjectedDrawPolicy::Candidate,
-        }
-    }
-
-    const fn producer(self) -> SurfaceGpuOrderProducer {
-        match self {
-            Self::GpuPreproject => SurfaceGpuOrderProducer::Preproject,
-            Self::CpuPostSort | Self::GpuPostSort | Self::Adaptive => {
-                SurfaceGpuOrderProducer::PostSort
-            }
-        }
-    }
-
-    const fn with_order_backend(self, backend: SurfaceOrderBackend) -> Self {
-        match backend {
-            SurfaceOrderBackend::Cpu => Self::CpuPostSort,
-            SurfaceOrderBackend::Gpu => match self {
-                Self::GpuPreproject => Self::GpuPreproject,
-                Self::CpuPostSort | Self::GpuPostSort | Self::Adaptive => Self::GpuPostSort,
-            },
-            SurfaceOrderBackend::Adaptive => Self::Adaptive,
-        }
-    }
-
-    fn with_projected_policy(
-        self,
-        policy: SurfaceProjectedDrawPolicy,
-    ) -> Result<Self, SurfacePresenterError> {
-        match policy {
-            SurfaceProjectedDrawPolicy::Candidate => Ok(match self {
-                Self::CpuPostSort => Self::CpuPostSort,
-                Self::GpuPostSort | Self::GpuPreproject => Self::GpuPostSort,
-                Self::Adaptive => {
-                    return Err(SurfacePresenterError::PreprojectProducerIncompatible);
-                }
-            }),
-            SurfaceProjectedDrawPolicy::Compact => match self {
-                Self::GpuPostSort | Self::GpuPreproject => Ok(Self::GpuPreproject),
-                Self::CpuPostSort | Self::Adaptive => {
-                    Err(SurfacePresenterError::PreprojectProducerIncompatible)
-                }
-            },
-            // Binding defaults apply `order` first and then Adaptive. Preserve
-            // that forced backend and its canonical Candidate execution; the
-            // independently configured policy is retained by the session for
-            // public receipts.
-            SurfaceProjectedDrawPolicy::Adaptive => Ok(match self {
-                Self::CpuPostSort => Self::CpuPostSort,
-                Self::GpuPostSort | Self::GpuPreproject => Self::GpuPostSort,
-                Self::Adaptive => Self::Adaptive,
-            }),
-        }
-    }
-
-    fn with_producer(
-        self,
-        producer: SurfaceGpuOrderProducer,
-    ) -> Result<Self, SurfacePresenterError> {
-        match producer {
-            SurfaceGpuOrderProducer::PostSort => Ok(match self {
-                Self::GpuPreproject => Self::GpuPostSort,
-                Self::CpuPostSort | Self::GpuPostSort | Self::Adaptive => self,
-            }),
-            SurfaceGpuOrderProducer::Preproject => match self {
-                Self::GpuPostSort | Self::GpuPreproject => Ok(Self::GpuPreproject),
-                Self::CpuPostSort | Self::Adaptive => {
-                    Err(SurfacePresenterError::PreprojectProducerIncompatible)
-                }
-            },
-        }
-    }
-
-    fn with_raster(self, plan: SurfaceRasterExecutionPlan) -> Result<Self, SurfacePresenterError> {
-        if plan == SurfaceRasterExecutionPlan::ProjectedQuadsExact {
-            Ok(self)
-        } else {
-            Err(SurfacePresenterError::SurfaceGeometrySwitchUnsupported)
-        }
-    }
-
-    fn with_geometry(self, path: GeometryPath) -> Result<Self, SurfacePresenterError> {
-        if path == GeometryPath::PackedAtlas {
-            Ok(self)
-        } else {
-            Err(SurfacePresenterError::SurfaceGeometrySwitchUnsupported)
-        }
-    }
-
-    fn with_gpu_producer_measurement(self, enabled: bool) -> Result<Self, SurfacePresenterError> {
-        if enabled {
-            Err(SurfacePresenterError::PreprojectProducerIncompatible)
-        } else {
-            Ok(self)
-        }
-    }
-
-    fn with_sort_interval(self, interval: u32) -> Result<Self, RendererError> {
-        if interval == 1 {
-            Ok(self)
-        } else {
-            Err(RendererError::InvalidConfig)
-        }
-    }
-
-    fn with_sort_schedule(self, schedule: SurfaceSortSchedule) -> Result<Self, RendererError> {
-        match schedule {
-            SurfaceSortSchedule::Interval(1) => Ok(self),
-            SurfaceSortSchedule::Interval(_) | SurfaceSortSchedule::AsyncLatest { .. } => {
-                Err(RendererError::InvalidConfig)
-            }
-        }
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    fn with_async_sort(self, enabled: bool) -> Result<Self, RendererError> {
-        if enabled {
-            Err(RendererError::InvalidConfig)
-        } else {
-            Ok(self)
-        }
-    }
-}
-
-fn validate_projected_draw_policy_transition(
-    current: SurfaceProjectedDrawPolicy,
-    next: SurfaceProjectedDrawPolicy,
-    compact_available: bool,
-) -> Result<bool, SurfacePresenterError> {
-    if current == next {
-        return Ok(false);
-    }
-    if next == SurfaceProjectedDrawPolicy::Compact && !compact_available {
-        return Err(SurfacePresenterError::ProjectedCompactionUnsupported);
-    }
-    Ok(true)
-}
-
-fn validate_gpu_order_producer_transition(
-    current: SurfaceGpuOrderProducer,
-    next: SurfaceGpuOrderProducer,
-    geometry_path: GeometryPath,
-    raster_plan: SurfaceRasterExecutionPlan,
-    projected_policy: SurfaceProjectedDrawPolicy,
-) -> Result<bool, SurfacePresenterError> {
-    if current == next {
-        return Ok(false);
-    }
-    if next == SurfaceGpuOrderProducer::Preproject
-        && (geometry_path != GeometryPath::PackedAtlas
-            || raster_plan != SurfaceRasterExecutionPlan::ProjectedQuadsExact
-            || projected_policy != SurfaceProjectedDrawPolicy::Compact)
-    {
-        return Err(SurfacePresenterError::PreprojectProducerIncompatible);
-    }
-    Ok(true)
-}
-
-fn gpu_producer_measurement_context_is_valid(
-    geometry_path: GeometryPath,
-    raster_plan: SurfaceRasterExecutionPlan,
-    projected_policy: SurfaceProjectedDrawPolicy,
-) -> bool {
-    geometry_path == GeometryPath::PackedAtlas
-        && raster_plan == SurfaceRasterExecutionPlan::ProjectedQuadsExact
-        && projected_policy == SurfaceProjectedDrawPolicy::Compact
 }
 
 impl SurfaceOrderMeasurementSubmission {
@@ -396,137 +169,9 @@ impl SurfaceProjectedDrawMeasurementSubmission {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum AdaptiveProbeOwner {
-    Order,
-    ProjectedCpu,
-    ProjectedGpu,
-}
-
-fn reset_adaptive_for_gpu_producer_measurement_transition(
-    adaptive_policy: &mut AdaptiveOrderPolicy,
-    projected_cpu: &mut AdaptiveProjectedDrawPolicy,
-    projected_gpu: &mut AdaptiveProjectedDrawPolicy,
-    owner: &mut Option<AdaptiveProbeOwner>,
-    blocked_order_choice: &mut Option<AdaptiveRefreshChoice>,
-) {
-    adaptive_policy.reset(adaptive_primary_metric());
-    projected_cpu.suspend_learning();
-    projected_gpu.suspend_learning();
-    *owner = None;
-    *blocked_order_choice = None;
-}
-
 #[cfg(test)]
 fn retain_gpu_producer_terminal<T>(queue: &mut VecDeque<T>, terminal: T) {
     queue.push_back(terminal);
-}
-
-fn projected_policy_can_sample(
-    owner: Option<AdaptiveProbeOwner>,
-    lane_owner: AdaptiveProbeOwner,
-    order_emits_sample: bool,
-) -> bool {
-    !order_emits_sample
-        && match owner {
-            None => true,
-            Some(active) => active == lane_owner,
-        }
-}
-
-const fn arbitrate_new_probe_owner(
-    current: Option<AdaptiveProbeOwner>,
-    order_wants_formal_sample: bool,
-    projected_wants_formal_sample: bool,
-    projected_owner: AdaptiveProbeOwner,
-) -> Option<AdaptiveProbeOwner> {
-    match current {
-        Some(owner) => Some(owner),
-        None if projected_wants_formal_sample => Some(projected_owner),
-        None if order_wants_formal_sample => Some(AdaptiveProbeOwner::Order),
-        None => None,
-    }
-}
-
-const fn projected_formal_sample_requested(
-    choice: ProjectedAdaptiveChoice,
-    order_changed: bool,
-) -> bool {
-    !order_changed
-        && matches!(
-            choice.sample,
-            Some(
-                ProjectedAdaptiveSampleKind::CandidateBootstrap
-                    | ProjectedAdaptiveSampleKind::Probe(_)
-            )
-        )
-}
-
-const fn projected_order_changed(
-    refresh_sort: bool,
-    upload_order: bool,
-    actual_sort_refreshed: bool,
-) -> bool {
-    refresh_sort || upload_order || actual_sort_refreshed
-}
-
-const fn gpu_projected_order_changed(refresh_sort: bool, actual_sort_refreshed: bool) -> bool {
-    // `SurfaceFramePlan::upload_order` is the deferred CPU upload dirty bit.
-    // A GPU-presented frame neither consumes nor changes that CPU order, so
-    // carrying the bit into the GPU identity would permanently block formal
-    // projected sampling while GPU remains selected.
-    projected_order_changed(refresh_sort, false, actual_sort_refreshed)
-}
-
-const fn defer_projected_formal_choice(
-    choice: ProjectedAdaptiveChoice,
-    order_changed: bool,
-) -> bool {
-    order_changed
-        && matches!(
-            choice.sample,
-            Some(
-                ProjectedAdaptiveSampleKind::CandidateBootstrap
-                    | ProjectedAdaptiveSampleKind::Probe(_)
-            )
-        )
-}
-
-const fn projected_probe_claims_owner(
-    choice: ProjectedAdaptiveChoice,
-    order_changed: bool,
-    choice_was_pending: bool,
-) -> bool {
-    projected_formal_sample_requested(choice, order_changed)
-        || (defer_projected_formal_choice(choice, order_changed) && !choice_was_pending)
-}
-
-const fn order_probe_owner_should_yield(
-    owner: Option<AdaptiveProbeOwner>,
-    order_pending: bool,
-    refresh_sort: bool,
-    order_wants_formal_sample: bool,
-) -> bool {
-    matches!(owner, Some(AdaptiveProbeOwner::Order))
-        && !order_pending
-        && !refresh_sort
-        && !order_wants_formal_sample
-}
-
-const fn should_reset_order_for_projected_incumbent_change(
-    order_backend: SurfaceOrderBackend,
-    projected_draw_policy: SurfaceProjectedDrawPolicy,
-    metric: AdaptiveMetric,
-    order_pending: bool,
-    projected_owner_finished: bool,
-    projected_incumbent_changed: bool,
-) -> bool {
-    projected_owner_finished
-        && projected_incumbent_changed
-        && matches!(order_backend, SurfaceOrderBackend::Adaptive)
-        && matches!(projected_draw_policy, SurfaceProjectedDrawPolicy::Adaptive)
-        && matches!(metric, AdaptiveMetric::FrameCompletion)
-        && !order_pending
 }
 
 /// Resets learned timings only when the raster workload actually changes.
@@ -1185,22 +830,6 @@ const fn exact_published_camera_revision(
     }
 }
 
-fn commit_exact_plan_state(
-    renderer: &mut Renderer,
-    exact_plan_receipt: &mut Option<ExactSurfacePlanState>,
-    order_backend: &mut SurfaceOrderBackend,
-    projected_draw_policy: &mut SurfaceProjectedDrawPolicy,
-    state: ExactSurfacePlanState,
-) -> Result<(), RendererError> {
-    renderer.set_exact_surface_policy(state.policy())?;
-    // These fields are compatibility receipts only. Frame execution reads
-    // the renderer policy above and never consults any of them.
-    *order_backend = state.order_backend();
-    *projected_draw_policy = state.projected_policy();
-    *exact_plan_receipt = Some(state);
-    Ok(())
-}
-
 impl SurfaceRenderSession {
     #[cfg(not(target_arch = "wasm32"))]
     pub fn new(
@@ -1786,29 +1415,21 @@ impl SurfaceRenderSession {
         {
             return Err(SurfacePresenterError::PreprojectProducerIncompatible.into());
         }
-        if !validate_projected_draw_policy_transition(
-            self.projected_draw_policy,
+        if !commit_projected_draw_policy_transition(
+            &mut self.projected_draw_policy,
             policy,
             self.presenter.projected_contributor_indirect_draw_enabled(),
+            &mut self.adaptive_policy,
+            &mut self.adaptive_projected_cpu,
+            &mut self.adaptive_projected_gpu,
+            &mut self.adaptive_probe_owner,
+            &mut self.blocked_order_choice,
+            &mut self.pending_order_backend,
+            &mut self.pending_adaptive_choice,
+            &mut self.pending_projected_choice,
         )? {
             return Ok(());
         }
-        // Candidate and Compact have different FrameCompletion workloads.
-        // No order sample, projected sample, or owner chosen under the old
-        // execution may cross this accepted transition. Stable projected
-        // history remains intact so returning to Adaptive does not relearn
-        // from zero; stale terminal tickets remain diagnostic-only.
-        if self.adaptive_policy.metric() == AdaptiveMetric::FrameCompletion {
-            self.adaptive_policy.reset(AdaptiveMetric::FrameCompletion);
-        }
-        self.adaptive_projected_cpu.suspend_learning();
-        self.adaptive_projected_gpu.suspend_learning();
-        self.adaptive_probe_owner = None;
-        self.blocked_order_choice = None;
-        self.projected_draw_policy = policy;
-        self.pending_order_backend = None;
-        self.pending_adaptive_choice = None;
-        self.pending_projected_choice = None;
         self.frame_state.force_sort();
         Ok(())
     }
@@ -2274,13 +1895,6 @@ impl SurfaceRenderSession {
                 self.frame_state.force_sort();
             }
             self.adaptive_probe_owner = None;
-        }
-    }
-
-    fn projected_probe_owner(backend: SurfaceOrderBackendUsed) -> AdaptiveProbeOwner {
-        match backend {
-            SurfaceOrderBackendUsed::Cpu => AdaptiveProbeOwner::ProjectedCpu,
-            SurfaceOrderBackendUsed::Gpu => AdaptiveProbeOwner::ProjectedGpu,
         }
     }
 
@@ -2822,7 +2436,7 @@ impl SurfaceRenderSession {
                     sample: None,
                 };
             }
-            let owner = Self::projected_probe_owner(requested_backend);
+            let owner = AdaptiveProbeOwner::projected(requested_backend);
             if !projected_policy_can_sample(
                 self.adaptive_probe_owner,
                 owner,
@@ -2834,7 +2448,7 @@ impl SurfaceRenderSession {
                     .choose(compact_available)
             }
         });
-        let projected_owner = Self::projected_probe_owner(requested_backend);
+        let projected_owner = AdaptiveProbeOwner::projected(requested_backend);
         let projected_order_changed_this_frame = match requested_backend {
             SurfaceOrderBackendUsed::Cpu => {
                 projected_order_changed(plan.refresh_sort, plan.upload_order, plan.refresh_sort)

@@ -8,13 +8,13 @@ use std::sync::Arc;
 
 use gsplat_core::{Camera, RendererConfig, SceneBuffers, Vec3f};
 
-use super::{
-    ExactSurfacePlanState, SurfaceGpuOrderProducer, SurfaceOrderBackend,
-    SurfaceProjectedDrawPolicy, commit_exact_plan_state, exact_gpu_plan_for_producer,
-    prepare_exact_gpu_order, prepare_exact_gpu_order_producer,
-};
+use super::{SurfaceGpuOrderProducer, SurfaceOrderBackend, SurfaceProjectedDrawPolicy};
 use crate::plans::{PlanId, TestGpuAdmissionMode};
 use crate::renderer::{ExactPlanPolicy, PreparedRuntimeSlot};
+use crate::surface::{
+    ExactSurfacePlanState, commit_exact_plan_state, exact_gpu_plan_for_producer,
+    prepare_exact_gpu_order, prepare_exact_gpu_order_producer,
+};
 use crate::{GeometryPath, Renderer, RendererError, ResidentSceneCpu, SurfacePresenterError};
 
 fn exact_control_scene() -> ResidentSceneCpu {
