@@ -753,3 +753,12 @@ M8 = Active
   stale-path, diff-summary and clean-tree checks rather than another expensive
   global matrix. M8 and Package M remain **Active** until that root closeout is
   accepted.
+- **M8-D12 candidate ready; root acceptance pending.** The populated
+  [M8 final closeout report](m8-final-closeout.md) records the final
+  architecture/deprecation boundary, exact existing M0--M8 Git identities,
+  milestone-local versus historical endpoint evidence, explicit limitations
+  and the non-circular D15-before-D13 sequence. Its fixed input tree is
+  `76188933a87a37f50175fa80720a429d50608ee7`. This documentation candidate
+  does not accept M8 or Package M, does not qualify a new endpoint, and cannot
+  record its own integrated SHA; root supplies that identity only after
+  independent review and integration.
