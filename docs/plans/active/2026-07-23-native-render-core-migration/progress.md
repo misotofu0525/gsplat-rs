@@ -19,7 +19,7 @@ M3 = Accepted
 M4 = Accepted
 M5 = Accepted
 M6 = Accepted
-M7 = Active
+M7 = Accepted
 <!-- gsplat-program-task-states: end -->
 
 ## Package status
@@ -40,19 +40,21 @@ M7 = Active
 - M6 state: Accepted for the defined Apple/GsplatKit/XCFramework functional
   consumer scope. Physical-iPhone qualification remains explicit Deferred; see
   [M6 Apple functional evidence closeout](m6-apple-functional-evidence.md).
-- M7 state: Active at reconciliation baseline
-  `3f525584c1f3c5909ecd2f87b6a953b8a984e9ec`. TiledExact and the obsolete
+- M7 state: Accepted for the legacy-owner deletion and compatibility boundary
+  at behavior tip `3f525584c1f3c5909ecd2f87b6a953b8a984e9ec`, with canonical-doc
+  reconciliation at `9ebe7e3a1a115cbac18ef10e3adac2c14e984609`. TiledExact and the obsolete
   standalone Packed presenter graph are deleted; standalone Packed rejects
   before allocation; product Packed has one Session/Host/PreparedRuntimeSlot
   route; Direct/Paged compatibility remains; Paged is CPU-only and rejects
-  async configuration. Final docs, rollback and affected-platform acceptance
-  evidence are not yet complete.
+  async configuration. The final requirement matrix, exact evidence boundaries
+  and aggregate rollback proof are in
+  [M7 final acceptance closeout](m7-final-acceptance.md).
 - Product state at M2 activation: native Packed offscreen, desktop
   non-interactive and bench-runner use the Exact runtime; the interactive
   `SurfaceRenderSession` remains legacy until its complete M2 candidate is
   accepted.
 - M8 remains unstarted and outside the machine registry. Package M remains
-  Active; neither M7 nor M8 is Accepted.
+  Active because M8 is not Accepted; M7 acceptance does not activate M8.
 - Stable v0.1 signatures/layouts, Web behavior and rendered semantics remain
   frozen during M2. Additive current-stats v1 receipts and pending-compatible
   Android/Apple translation are prepared before M2 activation. No root
@@ -621,11 +623,12 @@ M7 = Active
 - At this M6 closeout point, M7 and M8 had not been accepted. The current M7
   partial-integration state is recorded below.
 
-## M7 integration and acceptance status
+## M7 closeout
 
-- State at reconciliation baseline
-  `3f525584c1f3c5909ecd2f87b6a953b8a984e9ec`: Active, not Accepted. M8 remains
-  unstarted and Package M remains Active.
+- Final state: Accepted for M7's defined deletion and compatibility scope.
+  Behavior tip is `3f525584c1f3c5909ecd2f87b6a953b8a984e9ec`; canonical-document
+  reconciliation tip is `9ebe7e3a1a115cbac18ef10e3adac2c14e984609`.
+  M8 remains unstarted and Package M remains Active.
 - `707cd80` removes the TiledExact runtime, public variant, Web labels and
   desktop selector. The current tree exposes only GlobalQuads and
   ProjectedQuadsExact; canonical docs must not describe TiledExact as present.
@@ -655,11 +658,16 @@ M7 = Active
   validator passed with verified inputs. This is final-SHA functional,
   membership, presentation and ledger evidence only. It is not a CPU/GPU,
   PlayCanvas, FPS, power, thermal or general performance claim.
-- Remaining before M7 acceptance: integrate and independently review the
-  canonical-document correction; run or explicitly classify the final
-  workspace and affected-platform matrix; prove the whole M7 rollback range in
-  an isolated worktree; record the final fixed SHA and Accept/Deferred cells;
-  then transition M7 from Active only if the cutover contract is satisfied.
-  Unavailable browser, iOS physical-device, Windows or Linux runtime cells stay
-  Deferred rather than being inferred from builds. M8 is not activated by this
-  partial closeout.
+- Root passed the final workspace, strict lint/docs, architecture, C FFI, WASM
+  compile, forced Metal conformance and public Metal Surface checks. WASM
+  compilation is not browser proof. Chrome/WebGPU runtime, physical iPhone and
+  Windows/Linux runtime stay Deferred rather than being inferred from another
+  endpoint.
+- The complete nine-commit M7 range reverse-reverted without conflict in an
+  isolated worktree. Its tree exactly matched accepted M6 base `a798b8a`, then
+  passed workspace check and C FFI smoke. This proves aggregate rollback, not
+  arbitrary out-of-order single-commit reverts.
+- The requirement-by-requirement evidence, machine-local Android identities,
+  commands, rollback tree IDs, finite Deferred cells and non-claims are recorded
+  in [M7 final acceptance closeout](m7-final-acceptance.md). M8 is not activated
+  by M7 acceptance and remains outside the task-state registry.

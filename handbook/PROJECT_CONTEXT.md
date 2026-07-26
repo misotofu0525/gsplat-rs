@@ -76,9 +76,9 @@ For the broader command matrix, use `VERIFICATION.md`.
 ## Current Focus
 
 - Package E's Exact core and Package M's native offscreen, shared Surface,
-  C/Web/Android/Apple consumer migrations are integrated. M7 is closing the
-  legacy-owner deletion, documentation, rollback, and final verification
-  matrix before M8 can start.
+  C/Web/Android/Apple consumer migrations are integrated. M7's legacy-owner
+  deletion and compatibility boundary are accepted; M8 factual/release
+  closeout remains unstarted.
 - Keep the day-to-day verification paths passing and the release bar lightweight but real.
 - Expand conformance and perf coverage with real datasets before widening the public API surface.
 - Keep the exact-count Resident path, portable GPU visibility/radix/indirect
@@ -153,10 +153,10 @@ For the broader command matrix, use `VERIFICATION.md`.
 ## Known Open Gaps
 
 - Exact-core migration closeout: legacy Packed presenter ownership and
-  TiledExact are deleted, and the platform consumers use the shared session.
-  M7 still needs its final canonical-document, rollback and affected-platform
-  evidence matrix before it can be accepted; unrun browser/iOS/device cells
-  remain explicit Deferred rather than inferred from compile checks.
+  TiledExact are deleted, the platform consumers use the shared session, and
+  M7's deletion/rollback boundary is accepted. Chrome/WebGPU at the final M7
+  SHA, physical iPhone, and Windows/Linux runtime remain explicit Deferred;
+  M8 still owns final factual/release alignment and bundle archival.
 - Android external distribution: the GitHub prerelease attaches an AAR, but it
   is not published to Maven and the current package slice is `arm64-v8a` only.
 - iOS external distribution: the GitHub prerelease attaches an XCFramework ZIP,

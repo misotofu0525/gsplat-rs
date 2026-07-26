@@ -97,9 +97,10 @@ Package M has since migrated native Packed offscreen, the shared Packed Surface
 owner, and the C/Web/Android/Apple consumers to that runtime. Product Packed
 now routes through `SurfaceRenderSession`, `SurfacePresenterHost`, and the
 renderer-owned `PreparedRuntimeSlot`; standalone `SurfacePresenter` supports
-only Direct and diagnostic Paged. M7 has deleted the obsolete standalone
-Packed graph and TiledExact implementation, but remains active until its final
-documentation, rollback, and affected-platform evidence matrix is accepted.
+only Direct and diagnostic Paged. M7's obsolete standalone Packed graph and
+TiledExact deletion, final available-platform matrix and aggregate rollback are
+accepted. M8 factual/release alignment and migration-bundle archival remain
+unstarted; deferred endpoints are not implied by M7 acceptance.
 
 ## Full-Count Resident Evidence Boundary (completed 2026-07-23)
 

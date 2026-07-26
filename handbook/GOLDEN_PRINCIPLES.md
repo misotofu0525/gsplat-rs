@@ -18,7 +18,8 @@
   diagnostic; capacity failure never selects Paged automatically.
 - CPU, GPU, and Adaptive ordering may change execution cost, never source
   membership, SH degree, resolution, or the pinned SortedAlpha blend contract.
-  Global-quad and tiled raster plans must pass the same image oracle.
+  Retained Direct/global-quad compatibility and canonical projected raster
+  paths must pass the same image oracle.
 - Keep frame scheduling and resource dirtiness in the shared render layer;
   platform wrappers adapt handles and controls, not rendering state machines.
 - Make verification executable. Use repo-local scripts and commands instead of prose-only confidence.
