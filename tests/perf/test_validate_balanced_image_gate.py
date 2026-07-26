@@ -87,6 +87,57 @@ def write_image(
     }
 
 
+def attach_precision_receipts(
+    image: dict,
+    *,
+    rgba: bytes,
+    depth_profile: str,
+    presentation_sequence: int,
+    source_count: int,
+    sh_degree: int,
+    camera_revision: int,
+) -> None:
+    identity = {
+        "scene_generation": 1,
+        "camera_revision": camera_revision,
+        "viewport_generation": 1,
+        "contract_generation": 1,
+        "plan_set_generation": 1,
+        "plan_id": "GpuPostSort",
+        "order_generation": presentation_sequence,
+        "presentation_sequence": presentation_sequence,
+        "width": image["width"],
+        "height": image["height"],
+        "rgba8_sha256": hashlib.sha256(rgba).hexdigest(),
+    }
+    residual_coefficients = (((sh_degree + 1) ** 2) - 1) * 3
+    plane_count = {0: 0, 1: 1, 2: 3, 3: 4}[sh_degree]
+    image["depth_precision"] = {**identity, "profile": depth_profile}
+    image["projected_cache_precision"] = {
+        **identity,
+        "profile": "ExactAxes32",
+        "axis_record_bytes": 16,
+    }
+    image["resident_sh"] = {
+        **identity,
+        "codec_profile": "ExactSigned11BandScale5",
+        "mantissa_bits": 11,
+        "symmetric_max_code": 1023,
+        "point_scale_bits": 5,
+        "point_scale_max_code": 31,
+        "range_chunk_splats": 256,
+        "source_count": source_count,
+        "encoded_count": source_count,
+        "resident_count": source_count,
+        "addressable_count": source_count,
+        "source_sh_degree": sh_degree,
+        "resident_sh_degree": sh_degree,
+        "residual_coefficients_per_source": residual_coefficients,
+        "plane_count": plane_count,
+        "bytes_per_source": plane_count * 16,
+    }
+
+
 def authority_receipt(
     dataset_path: str = "tests/perf/datasets/minimal_binary.json",
     trace_path: str = "tests/perf/trace/fixtures/camera-trace-v1.json",
@@ -149,28 +200,40 @@ def base_manifest(root: pathlib.Path, *, moving: bool = False) -> dict:
     trace_indices = [0, 1, 0] if moving else [0, 1]
     frames = []
     for capture_index, trace_frame_index in enumerate(trace_indices):
+        exact_rgba = solid_pixels(width, height, 64 + capture_index)
         exact = write_image(
             root,
             f"exact-{capture_index}.png",
             width,
             height,
-            solid_pixels(width, height, 64 + capture_index),
+            exact_rgba,
         )
+        candidate_rgba = solid_pixels(width, height, 64 + capture_index)
         candidate = write_image(
             root,
             f"candidate-{capture_index}.png",
             width,
             height,
-            solid_pixels(width, height, 64 + capture_index),
+            candidate_rgba,
         )
-        exact["depth_precision"] = {
-            "profile": "ExactFull32",
-            "presentation_sequence": capture_index + 1,
-        }
-        candidate["depth_precision"] = {
-            "profile": "CandidateStable24",
-            "presentation_sequence": capture_index + 1,
-        }
+        attach_precision_receipts(
+            exact,
+            rgba=exact_rgba,
+            depth_profile="ExactFull32",
+            presentation_sequence=capture_index + 1,
+            source_count=dataset["splat_count"],
+            sh_degree=dataset["sh_degree"],
+            camera_revision=capture_index + 1,
+        )
+        attach_precision_receipts(
+            candidate,
+            rgba=candidate_rgba,
+            depth_profile="CandidateStable24",
+            presentation_sequence=capture_index + 1,
+            source_count=dataset["splat_count"],
+            sh_degree=dataset["sh_degree"],
+            camera_revision=capture_index + 1,
+        )
         frame = {
             "capture_index": capture_index,
             "trace_frame_index": trace_frame_index,
@@ -224,6 +287,10 @@ def base_manifest(root: pathlib.Path, *, moving: bool = False) -> dict:
     manifest = {
         "schema": VALIDATOR.SCHEMA,
         "evidence_class": "contract_fixture",
+        "experiment": {
+            "name": "b1-depth-key-candidate24",
+            "changed_receipt": "depth_precision",
+        },
         "authority": authority,
         "exactness": {
             "source_splat_count": dataset["splat_count"],
@@ -393,6 +460,12 @@ def write_canonical_benchmark_artifact(
                     "capture_depth_precision": copy.deepcopy(
                         image_receipt["depth_precision"]
                     ),
+                    "capture_projected_cache_precision": copy.deepcopy(
+                        image_receipt["projected_cache_precision"]
+                    ),
+                    "capture_resident_sh": copy.deepcopy(
+                        image_receipt["resident_sh"]
+                    ),
                 }
             )
         frames.append(frame)
@@ -432,6 +505,10 @@ def write_canonical_benchmark_artifact(
         "run_id": run_id,
         "frame_index": capture_index,
         "depth_precision": copy.deepcopy(image_receipt["depth_precision"]),
+        "projected_cache_precision": copy.deepcopy(
+            image_receipt["projected_cache_precision"]
+        ),
+        "resident_sh": copy.deepcopy(image_receipt["resident_sh"]),
     }
 
 
@@ -455,32 +532,44 @@ def formal_manifest(root: pathlib.Path) -> dict:
 
     for frame in manifest["frames"]:
         capture_index = frame["capture_index"]
+        exact_rgba = solid_pixels(width, height, 64 + capture_index)
         frame["exact"] = write_image(
             root,
             f"formal-exact-{capture_index}.png",
             width,
             height,
-            solid_pixels(width, height, 64 + capture_index),
+            exact_rgba,
         )
+        candidate_rgba = solid_pixels(width, height, 64 + capture_index)
         frame["candidate"] = write_image(
             root,
             f"formal-candidate-{capture_index}.png",
             width,
             height,
-            solid_pixels(width, height, 64 + capture_index),
+            candidate_rgba,
         )
-        frame["exact"]["depth_precision"] = {
-            "profile": "ExactFull32",
-            "presentation_sequence": frame["presentation"]["exact"][
+        attach_precision_receipts(
+            frame["exact"],
+            rgba=exact_rgba,
+            depth_profile="ExactFull32",
+            presentation_sequence=frame["presentation"]["exact"][
                 "presentation_generation"
             ],
-        }
-        frame["candidate"]["depth_precision"] = {
-            "profile": "CandidateStable24",
-            "presentation_sequence": frame["presentation"]["candidate"][
+            source_count=dataset["splat_count"],
+            sh_degree=dataset["sh_degree"],
+            camera_revision=frame["presentation"]["exact"]["camera_generation"],
+        )
+        attach_precision_receipts(
+            frame["candidate"],
+            rgba=candidate_rgba,
+            depth_profile="CandidateStable24",
+            presentation_sequence=frame["presentation"]["candidate"][
                 "presentation_generation"
             ],
-        }
+            source_count=dataset["splat_count"],
+            sh_degree=dataset["sh_degree"],
+            camera_revision=frame["presentation"]["candidate"]["camera_generation"],
+        )
         trace_frame = trace["frames"][frame["trace_frame_index"]]
         pose_intrinsics_sha256 = VALIDATOR.canonical_sha256(
             {"pose": trace_frame["pose"], "intrinsics": trace_frame["intrinsics"]}
@@ -709,7 +798,73 @@ class BalancedImageGateTests(unittest.TestCase):
                 "presentation_sequence"
             ] = 99
             with self.assertRaisesRegex(
-                VALIDATOR.ValidationError, "presentation_sequence must match"
+                VALIDATOR.ValidationError, "B1/B2/B3 capture receipt identity mismatch"
+            ):
+                validate_manifest(root, manifest)
+
+    def test_capture_projected_cache_receipt_is_actual_and_required(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            baseline = base_manifest(root)
+
+            missing = copy.deepcopy(baseline)
+            del missing["frames"][0]["candidate"]["projected_cache_precision"]
+            with self.assertRaisesRegex(
+                VALIDATOR.ValidationError, "projected_cache_precision"
+            ):
+                validate_manifest(root, missing)
+
+            requested_label = copy.deepcopy(baseline)
+            requested_label["frames"][0]["candidate"][
+                "projected_cache_precision"
+            ]["profile"] = "CandidateAxes16"
+            with self.assertRaisesRegex(VALIDATOR.ValidationError, "ExactAxes32"):
+                validate_manifest(root, requested_label)
+
+            missing_bytes = copy.deepcopy(baseline)
+            del missing_bytes["frames"][0]["candidate"][
+                "projected_cache_precision"
+            ]["axis_record_bytes"]
+            with self.assertRaisesRegex(VALIDATOR.ValidationError, "axis_record_bytes"):
+                validate_manifest(root, missing_bytes)
+
+    def test_capture_resident_sh_receipt_is_complete_actual_and_required(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            baseline = base_manifest(root)
+
+            for field in (
+                "codec_profile",
+                "mantissa_bits",
+                "source_count",
+                "residual_coefficients_per_source",
+                "plane_count",
+                "bytes_per_source",
+            ):
+                with self.subTest(missing=field):
+                    missing = copy.deepcopy(baseline)
+                    del missing["frames"][0]["candidate"]["resident_sh"][field]
+                    with self.assertRaisesRegex(VALIDATOR.ValidationError, field):
+                        validate_manifest(root, missing)
+
+            requested_label = copy.deepcopy(baseline)
+            requested_label["frames"][0]["candidate"]["resident_sh"][
+                "codec_profile"
+            ] = "CandidateSigned8BandScale5"
+            with self.assertRaisesRegex(
+                VALIDATOR.ValidationError, "ExactSigned11BandScale5"
+            ):
+                validate_manifest(root, requested_label)
+
+    def test_three_capture_receipts_must_share_one_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            manifest = base_manifest(root)
+            manifest["frames"][0]["candidate"]["resident_sh"][
+                "order_generation"
+            ] += 1
+            with self.assertRaisesRegex(
+                VALIDATOR.ValidationError, "B1/B2/B3 capture receipt identity mismatch"
             ):
                 validate_manifest(root, manifest)
 
@@ -754,6 +909,26 @@ class BalancedImageGateTests(unittest.TestCase):
                 VALIDATOR.ValidationError, "benchmark capture depth-precision receipt"
             ):
                 validate_manifest(root, manifest)
+
+    def test_canonical_benchmark_must_retain_b2_and_b3_capture_receipts(self) -> None:
+        for key, message in (
+            ("capture_projected_cache_precision", "projected-cache precision"),
+            ("capture_resident_sh", "Resident SH"),
+        ):
+            with self.subTest(missing=key), tempfile.TemporaryDirectory() as directory:
+                root = pathlib.Path(directory)
+                manifest = formal_manifest(root)
+                receipt = manifest["frames"][0]["benchmark_artifacts"]["candidate"]
+                artifact = root / receipt["path"]
+                frames_path = artifact / "frames.jsonl"
+                benchmark_frame = json.loads(frames_path.read_text(encoding="utf-8"))
+                del benchmark_frame[key]
+                frames_path.write_text(
+                    json.dumps(benchmark_frame, sort_keys=True) + "\n", encoding="utf-8"
+                )
+                receipt["sha256"] = VALIDATOR.artifact_directory_sha256(artifact)
+                with self.assertRaisesRegex(VALIDATOR.ValidationError, message):
+                    validate_manifest(root, manifest)
 
     def test_external_benchmark_artifact_is_rejected_before_validation(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -867,15 +1042,26 @@ class BalancedImageGateTests(unittest.TestCase):
             frame = manifest["frames"][1]
             width = frame["candidate"]["width"]
             height = frame["candidate"]["height"]
-            depth_precision = frame["candidate"]["depth_precision"]
+            precision_receipts = {
+                key: frame["candidate"][key]
+                for key in (
+                    "depth_precision",
+                    "projected_cache_precision",
+                    "resident_sh",
+                )
+            }
+            candidate_rgba = solid_pixels(width, height, 255)
             frame["candidate"] = write_image(
                 root,
                 "candidate-1-failed.png",
                 width,
                 height,
-                solid_pixels(width, height, 255),
+                candidate_rgba,
             )
-            frame["candidate"]["depth_precision"] = depth_precision
+            rgba8_sha256 = hashlib.sha256(candidate_rgba).hexdigest()
+            for receipt in precision_receipts.values():
+                receipt["rgba8_sha256"] = rgba8_sha256
+            frame["candidate"].update(precision_receipts)
             refresh_frame_metrics(root, frame)
             with self.assertRaisesRegex(VALIDATOR.ValidationError, "Balanced v1 gate"):
                 validate_manifest(root, manifest)
@@ -973,28 +1159,40 @@ class BalancedImageGateTests(unittest.TestCase):
                 frame = manifest["frames"][index]
                 width = frame["exact"]["width"]
                 height = frame["exact"]["height"]
+                exact_rgba = solid_pixels(width, height, 128)
                 frame["exact"] = write_image(
                     root,
                     f"exact-temporal-{index}.png",
                     width,
                     height,
-                    solid_pixels(width, height, 128),
+                    exact_rgba,
                 )
+                candidate_rgba = solid_pixels(width, height, value)
                 frame["candidate"] = write_image(
                     root,
                     f"candidate-temporal-{index}.png",
                     width,
                     height,
-                    solid_pixels(width, height, value),
+                    candidate_rgba,
                 )
-                frame["exact"]["depth_precision"] = {
-                    "profile": "ExactFull32",
-                    "presentation_sequence": index + 1,
-                }
-                frame["candidate"]["depth_precision"] = {
-                    "profile": "CandidateStable24",
-                    "presentation_sequence": index + 1,
-                }
+                attach_precision_receipts(
+                    frame["exact"],
+                    rgba=exact_rgba,
+                    depth_profile="ExactFull32",
+                    presentation_sequence=index + 1,
+                    source_count=manifest["exactness"]["source_splat_count"],
+                    sh_degree=manifest["exactness"]["source_sh_degree"],
+                    camera_revision=index + 1,
+                )
+                attach_precision_receipts(
+                    frame["candidate"],
+                    rgba=candidate_rgba,
+                    depth_profile="CandidateStable24",
+                    presentation_sequence=index + 1,
+                    source_count=manifest["exactness"]["source_splat_count"],
+                    sh_degree=manifest["exactness"]["source_sh_degree"],
+                    camera_revision=index + 1,
+                )
                 refresh_frame_metrics(root, frame)
             refresh_transition_metrics(root, manifest)
             with self.assertRaisesRegex(VALIDATOR.ValidationError, VALIDATOR.TEMPORAL_METRIC):

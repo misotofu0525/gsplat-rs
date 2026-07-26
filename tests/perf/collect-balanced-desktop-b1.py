@@ -57,20 +57,73 @@ class Lane:
     name: str
     profile: str
     cargo_feature: str
+    projected_cache_profile: str = "ExactAxes32"
+    resident_sh_codec_profile: str = "ExactSigned11BandScale5"
 
 
-LANES = (
-    Lane(
-        name="exact",
-        profile="ExactFull32",
-        cargo_feature="diagnostic-surface-capture-receipt",
-    ),
-    Lane(
-        name="candidate",
-        profile="CandidateStable24",
-        cargo_feature="diagnostic-surface-depth-key-candidate24",
+@dataclass(frozen=True)
+class Experiment:
+    name: str
+    changed_receipt: str
+    lanes: tuple[Lane, Lane]
+
+
+B1_EXPERIMENT = Experiment(
+    name="b1-depth-key-candidate24",
+    changed_receipt="depth_precision",
+    lanes=(
+        Lane(
+            name="exact",
+            profile="ExactFull32",
+            cargo_feature="diagnostic-surface-capture-receipt",
+        ),
+        Lane(
+            name="candidate",
+            profile="CandidateStable24",
+            cargo_feature="diagnostic-surface-depth-key-candidate24",
+        ),
     ),
 )
+B2_EXPERIMENT = Experiment(
+    name="b2-projected-axes16",
+    changed_receipt="projected_cache_precision",
+    lanes=(
+        Lane(
+            name="exact",
+            profile="ExactFull32",
+            cargo_feature="diagnostic-surface-capture-receipt",
+        ),
+        Lane(
+            name="candidate",
+            profile="ExactFull32",
+            cargo_feature="diagnostic-surface-projected-axes16",
+            projected_cache_profile="CandidateAxes16",
+        ),
+    ),
+)
+B3_EXPERIMENT = Experiment(
+    name="b3-resident-sh-mantissa8",
+    changed_receipt="resident_sh",
+    lanes=(
+        Lane(
+            name="exact",
+            profile="ExactFull32",
+            cargo_feature="diagnostic-surface-capture-receipt",
+        ),
+        Lane(
+            name="candidate",
+            profile="ExactFull32",
+            cargo_feature="diagnostic-resident-sh-mantissa8",
+            resident_sh_codec_profile="CandidateSigned8BandScale5",
+        ),
+    ),
+)
+EXPERIMENTS = {
+    "b1": B1_EXPERIMENT,
+    "b2": B2_EXPERIMENT,
+    "b3": B3_EXPERIMENT,
+}
+LANES = B1_EXPERIMENT.lanes
 
 
 @dataclass(frozen=True)
@@ -87,6 +140,8 @@ class Capture:
     counts: dict[str, int]
     presentation: dict[str, Any]
     depth_precision: dict[str, Any]
+    projected_cache_precision: dict[str, Any]
+    resident_sh: dict[str, Any]
     raster_generation: int
     encode_attempt: int
 
@@ -232,8 +287,18 @@ def validate_terminal_records(
     *,
     lane: Lane,
     source_count: int,
+    source_sh_degree: int = 3,
 ) -> list[dict[str, Any]]:
     require(len(records) == 3, f"{lane.name} requires exactly three terminal records, got {len(records)}")
+    resident_sh_candidate = lane.resident_sh_codec_profile == "CandidateSigned8BandScale5"
+    resident_sh_mantissa_bits = 8 if resident_sh_candidate else 11
+    resident_sh_symmetric_max_code = 127 if resident_sh_candidate else 1023
+    resident_sh_plane_count = (
+        {0: 0, 1: 1, 2: 2, 3: 3}
+        if resident_sh_candidate
+        else {0: 0, 1: 1, 2: 3, 3: 4}
+    ).get(source_sh_degree)
+    require(resident_sh_plane_count is not None, "source SH degree has no Resident layout")
     normalized: list[dict[str, Any]] = []
     previous_elapsed = -1
     previous_ticket = 0
@@ -255,7 +320,32 @@ def validate_terminal_records(
                 "count_semantics": COUNT_SEMANTICS_HOST,
                 "source_count": str(source_count),
                 "exact_contributor_compaction": "false",
-                "capture_receipt_profile": lane.profile,
+                "capture_receipt_depth_precision_profile": lane.profile,
+                "capture_receipt_projected_cache_precision_profile": lane.projected_cache_profile,
+                "capture_receipt_projected_axis_record_bytes": (
+                    "8" if lane.projected_cache_profile == "CandidateAxes16" else "16"
+                ),
+                "capture_receipt_resident_sh_codec_profile": lane.resident_sh_codec_profile,
+                "capture_receipt_resident_sh_mantissa_bits": str(resident_sh_mantissa_bits),
+                "capture_receipt_resident_sh_symmetric_max_code": str(
+                    resident_sh_symmetric_max_code
+                ),
+                "capture_receipt_resident_sh_point_scale_bits": "5",
+                "capture_receipt_resident_sh_point_scale_max_code": "31",
+                "capture_receipt_resident_sh_range_chunk_splats": "256",
+                "capture_receipt_resident_sh_source_count": str(source_count),
+                "capture_receipt_resident_sh_encoded_count": str(source_count),
+                "capture_receipt_resident_sh_resident_count": str(source_count),
+                "capture_receipt_resident_sh_addressable_count": str(source_count),
+                "capture_receipt_resident_sh_source_degree": str(source_sh_degree),
+                "capture_receipt_resident_sh_resident_degree": str(source_sh_degree),
+                "capture_receipt_resident_sh_residual_coefficients_per_source": str(
+                    (((source_sh_degree + 1) ** 2 - 1) * 3)
+                ),
+                "capture_receipt_resident_sh_plane_count": str(resident_sh_plane_count),
+                "capture_receipt_resident_sh_bytes_per_source": str(
+                    resident_sh_plane_count * 16
+                ),
                 "capture_receipt_plan_id": PLAN_CAPTURE_RECEIPT,
                 "capture_receipt_width": str(FORMAL_SIZE[0]),
                 "capture_receipt_height": str(FORMAL_SIZE[1]),
@@ -332,6 +422,90 @@ def validate_terminal_records(
                 "counts": {"source": source_count, "visible": visible, "contributor": contributor, "drawn": drawn},
                 "ticket": ticket,
                 "current": current,
+                "depth_precision_profile": record[
+                    "capture_receipt_depth_precision_profile"
+                ],
+                "projected_cache_precision_profile": record[
+                    "capture_receipt_projected_cache_precision_profile"
+                ],
+                "projected_axis_record_bytes": parse_uint(
+                    record.get("capture_receipt_projected_axis_record_bytes", ""),
+                    f"{context}.projected_axis_record_bytes",
+                    positive=True,
+                ),
+                "resident_sh": {
+                    "codec_profile": record["capture_receipt_resident_sh_codec_profile"],
+                    "mantissa_bits": parse_uint(
+                        record.get("capture_receipt_resident_sh_mantissa_bits", ""),
+                        f"{context}.resident_sh_mantissa_bits",
+                        positive=True,
+                    ),
+                    "symmetric_max_code": parse_uint(
+                        record.get("capture_receipt_resident_sh_symmetric_max_code", ""),
+                        f"{context}.resident_sh_symmetric_max_code",
+                        positive=True,
+                    ),
+                    "point_scale_bits": parse_uint(
+                        record.get("capture_receipt_resident_sh_point_scale_bits", ""),
+                        f"{context}.resident_sh_point_scale_bits",
+                        positive=True,
+                    ),
+                    "point_scale_max_code": parse_uint(
+                        record.get("capture_receipt_resident_sh_point_scale_max_code", ""),
+                        f"{context}.resident_sh_point_scale_max_code",
+                        positive=True,
+                    ),
+                    "range_chunk_splats": parse_uint(
+                        record.get("capture_receipt_resident_sh_range_chunk_splats", ""),
+                        f"{context}.resident_sh_range_chunk_splats",
+                        positive=True,
+                    ),
+                    "source_count": parse_uint(
+                        record.get("capture_receipt_resident_sh_source_count", ""),
+                        f"{context}.resident_sh_source_count",
+                        positive=True,
+                    ),
+                    "encoded_count": parse_uint(
+                        record.get("capture_receipt_resident_sh_encoded_count", ""),
+                        f"{context}.resident_sh_encoded_count",
+                        positive=True,
+                    ),
+                    "resident_count": parse_uint(
+                        record.get("capture_receipt_resident_sh_resident_count", ""),
+                        f"{context}.resident_sh_resident_count",
+                        positive=True,
+                    ),
+                    "addressable_count": parse_uint(
+                        record.get("capture_receipt_resident_sh_addressable_count", ""),
+                        f"{context}.resident_sh_addressable_count",
+                        positive=True,
+                    ),
+                    "source_sh_degree": parse_uint(
+                        record.get("capture_receipt_resident_sh_source_degree", ""),
+                        f"{context}.resident_sh_source_degree",
+                    ),
+                    "resident_sh_degree": parse_uint(
+                        record.get("capture_receipt_resident_sh_resident_degree", ""),
+                        f"{context}.resident_sh_resident_degree",
+                    ),
+                    "residual_coefficients_per_source": parse_uint(
+                        record.get(
+                            "capture_receipt_resident_sh_residual_coefficients_per_source",
+                            "",
+                        ),
+                        f"{context}.resident_sh_residual_coefficients_per_source",
+                    ),
+                    "plane_count": parse_uint(
+                        record.get("capture_receipt_resident_sh_plane_count", ""),
+                        f"{context}.resident_sh_plane_count",
+                        positive=True,
+                    ),
+                    "bytes_per_source": parse_uint(
+                        record.get("capture_receipt_resident_sh_bytes_per_source", ""),
+                        f"{context}.resident_sh_bytes_per_source",
+                        positive=True,
+                    ),
+                },
                 "raster_generation": parse_uint(record.get("current_stats_raster_generation", ""), f"{context}.raster", positive=True),
                 "encode_attempt": parse_uint(record.get("current_stats_encode_attempt", ""), f"{context}.encode_attempt", positive=True),
             }
@@ -376,7 +550,10 @@ def validate_lane_session(
     summary = only(parsed["summary"], f"{lane.name} summary record")
     adapter = validate_begin(begin, dataset=dataset, trace=trace, warmup=warmup, measured=measured)
     normalized = validate_terminal_records(
-        parsed["terminal"], lane=lane, source_count=dataset["splat_count"]
+        parsed["terminal"],
+        lane=lane,
+        source_count=dataset["splat_count"],
+        source_sh_degree=dataset["sh_degree"],
     )
     validate_summary(summary, warmup=warmup, measured=measured)
     captures: list[Capture] = []
@@ -400,8 +577,7 @@ def validate_lane_session(
             "plan_generation": current["plan_set_generation"],
             "presentation_generation": current["presentation_sequence"],
         }
-        depth_precision = {
-            "profile": lane.profile,
+        receipt_identity = {
             "scene_generation": current["scene_generation"],
             "camera_revision": current["camera_revision"],
             "viewport_generation": current["viewport_generation"],
@@ -413,6 +589,19 @@ def validate_lane_session(
             "width": FORMAL_SIZE[0],
             "height": FORMAL_SIZE[1],
             "rgba8_sha256": value["rgba8_sha256"],
+        }
+        depth_precision = {
+            **receipt_identity,
+            "profile": value["depth_precision_profile"],
+        }
+        projected_cache_precision = {
+            **receipt_identity,
+            "profile": value["projected_cache_precision_profile"],
+            "axis_record_bytes": value["projected_axis_record_bytes"],
+        }
+        resident_sh = {
+            **receipt_identity,
+            **value["resident_sh"],
         }
         captures.append(
             Capture(
@@ -428,6 +617,8 @@ def validate_lane_session(
                 counts=value["counts"],
                 presentation=presentation,
                 depth_precision=depth_precision,
+                projected_cache_precision=projected_cache_precision,
+                resident_sh=resident_sh,
                 raster_generation=value["raster_generation"],
                 encode_attempt=value["encode_attempt"],
             )
@@ -441,12 +632,17 @@ def validate_lane_session(
     )
 
 
-def validate_cross_lane_sessions(sessions: dict[str, LaneSession]) -> None:
-    require(set(sessions) == {lane.name for lane in LANES}, "both B1 lanes are required")
+def validate_cross_lane_sessions(
+    sessions: dict[str, LaneSession], lanes: tuple[Lane, Lane] = LANES
+) -> None:
+    require(set(sessions) == {lane.name for lane in lanes}, "both Balanced lanes are required")
     exact = sessions["exact"]
     candidate = sessions["candidate"]
     require(exact.adapter == candidate.adapter, "Exact/Candidate adapter receipts differ")
-    require(len(exact.captures) == len(candidate.captures) == 3, "incomplete B1 capture pair")
+    require(
+        len(exact.captures) == len(candidate.captures) == 3,
+        "incomplete Balanced capture pair",
+    )
     for capture_index, (exact_capture, candidate_capture) in enumerate(
         zip(exact.captures, candidate.captures, strict=True)
     ):
@@ -489,7 +685,10 @@ def cargo_executable(stdout: str, target_dir: Path) -> Path:
 
 
 def build_desktop_binaries(
-    repo: Path, stage: Path, expected_git: dict[str, Any]
+    repo: Path,
+    stage: Path,
+    expected_git: dict[str, Any],
+    lanes: tuple[Lane, Lane] = LANES,
 ) -> tuple[dict[str, Path], dict[str, Any]]:
     target_dir = stage / "cargo-target"
     target_dir.mkdir()
@@ -499,7 +698,7 @@ def build_desktop_binaries(
     receipts: dict[str, Any] = {}
     environment = os.environ.copy()
     environment["CARGO_TARGET_DIR"] = str(target_dir.resolve())
-    for lane in LANES:
+    for lane in lanes:
         lane_dir = build_root / lane.name
         lane_dir.mkdir()
         command = [
@@ -538,7 +737,7 @@ def build_desktop_binaries(
             "stdout": f"build/{lane.name}/stdout.log",
             "stderr": f"build/{lane.name}/stderr.log",
         }
-        require(git_receipt(repo) == expected_git, "git receipt changed during B1 build")
+        require(git_receipt(repo) == expected_git, "git receipt changed during Balanced build")
     return binaries, receipts
 
 
@@ -609,13 +808,14 @@ def run_host_sessions(
     trace_path: Path,
     warmup: int,
     measured: int,
+    lanes: tuple[Lane, Lane] = LANES,
     invoke: HostInvoker = default_host_invoker,
     validate_session: SessionValidator = validate_lane_session,
 ) -> dict[str, LaneSession]:
     host_root = stage / "host"
     host_root.mkdir()
     sessions: dict[str, LaneSession] = {}
-    for lane in LANES:
+    for lane in lanes:
         raw_directory = host_root / lane.name
         raw_directory.mkdir()
         command = make_command(
@@ -642,7 +842,7 @@ def run_host_sessions(
             started_at_utc=started,
             ended_at_utc=ended,
         )
-    validate_cross_lane_sessions(sessions)
+    validate_cross_lane_sessions(sessions, lanes)
     return sessions
 
 
@@ -690,12 +890,13 @@ def build_run_artifact(
     device: str | None,
     camera: dict[str, str],
     warmup: int,
+    experiment: Experiment = B1_EXPERIMENT,
 ) -> dict[str, Any]:
     directory.mkdir(parents=True)
     image_path = directory / "final-frame.png"
     shutil.copyfile(capture.path, image_path)
     require(sha256_file(image_path) == capture.png_sha256, "capture PNG changed during materialization")
-    run_id = f"b1-desktop-{build['git']['commit'][:12]}-{lane_session.lane.name}-{capture.capture_index}-{uuid.uuid4().hex[:10]}"
+    run_id = f"{experiment.name}-desktop-{build['git']['commit'][:12]}-{lane_session.lane.name}-{capture.capture_index}-{uuid.uuid4().hex[:10]}"
     frame_budget_ms = 1000.0 / refresh_hz
     unavailable = unavailable_environment(lane_session.adapter, device)
     manifest = {
@@ -703,7 +904,7 @@ def build_run_artifact(
         "record_type": "manifest",
         "run_id": run_id,
         "identity": {
-            "series_id": "b1-balanced-desktop-moving-010",
+            "series_id": f"{experiment.name}-desktop-moving-010",
             "started_at_utc": lane_session.started_at_utc,
             "ended_at_utc": lane_session.ended_at_utc,
             "measurement_started_at_utc": lane_session.started_at_utc,
@@ -725,7 +926,7 @@ def build_run_artifact(
             "file_sha256": trace["file_sha256"],
         },
         "renderer": {
-            "implementation": f"gsplat-rs B1 {lane_session.lane.profile} Surface",
+            "implementation": f"gsplat-rs {experiment.name} {lane_session.lane.name} Surface",
             "path": "packed_atlas",
             "backend": lane_session.adapter["backend"],
             "sort_policy": "every_frame",
@@ -734,7 +935,15 @@ def build_run_artifact(
             "count_semantics": COUNT_SEMANTICS,
             "raster_execution_plan": "projected_quads_exact",
             "blend_mode": "sorted_alpha",
-            "depth_precision_profile": lane_session.lane.profile,
+            "depth_precision_profile": capture.depth_precision["profile"],
+            "projected_cache_precision_profile": capture.projected_cache_precision[
+                "profile"
+            ],
+            "projected_axis_record_bytes": capture.projected_cache_precision[
+                "axis_record_bytes"
+            ],
+            "resident_sh_codec_profile": capture.resident_sh["codec_profile"],
+            "resident_sh_bytes_per_source": capture.resident_sh["bytes_per_source"],
         },
         "display": {
             "width": FORMAL_SIZE[0],
@@ -813,6 +1022,8 @@ def build_run_artifact(
         "terminal_outcome": "presented",
         "presentation": capture.presentation,
         "capture_depth_precision": capture.depth_precision,
+        "capture_projected_cache_precision": capture.projected_cache_precision,
+        "capture_resident_sh": capture.resident_sh,
         "raster_generation": capture.raster_generation,
         "encode_attempt": capture.encode_attempt,
     }
@@ -864,7 +1075,9 @@ def materialize_suite(
     build: dict[str, Any],
     refresh_hz: float,
     warmup: int,
+    experiment: Experiment = B1_EXPERIMENT,
 ) -> dict[str, Any]:
+    lanes = experiment.lanes
     require(not (stage / "runs").exists(), "run artifacts were materialized before complete validation")
     validators_dir = stage / "validators"
     validators_dir.mkdir()
@@ -873,8 +1086,10 @@ def materialize_suite(
     camera_receipts: dict[int, dict[str, str]] = {}
     for capture_index, trace_frame_index in enumerate(CAPTURE_TRACE_FRAMES):
         camera_receipts[capture_index] = camera_receipt(trace, trace_frame_index, BALANCED)
-        pair_id = f"b1-desktop-{build['git']['commit'][:12]}-capture-{capture_index}"
-        for lane in LANES:
+        pair_id = (
+            f"{experiment.name}-desktop-{build['git']['commit'][:12]}-capture-{capture_index}"
+        )
+        for lane in lanes:
             directory = stage / "runs" / lane.name / f"capture-{capture_index}"
             result = build_run_artifact(
                 directory,
@@ -889,6 +1104,7 @@ def materialize_suite(
                 device=device,
                 camera=camera_receipts[capture_index],
                 warmup=warmup,
+                experiment=experiment,
             )
             validator = run_validator(
                 [sys.executable, str(BENCHMARK_VALIDATOR_PATH), str(directory)],
@@ -904,6 +1120,10 @@ def materialize_suite(
                 "run_id": result["run_id"],
                 "frame_index": result["frame_index"],
                 "depth_precision": sessions[lane.name].captures[capture_index].depth_precision,
+                "projected_cache_precision": sessions[lane.name]
+                .captures[capture_index]
+                .projected_cache_precision,
+                "resident_sh": sessions[lane.name].captures[capture_index].resident_sh,
             }
 
     frames: list[dict[str, Any]] = []
@@ -919,6 +1139,8 @@ def materialize_suite(
             "width": FORMAL_SIZE[0],
             "height": FORMAL_SIZE[1],
             "depth_precision": exact_capture.depth_precision,
+            "projected_cache_precision": exact_capture.projected_cache_precision,
+            "resident_sh": exact_capture.resident_sh,
         }
         candidate_image = {
             "path": (candidate_run / "final-frame.png").relative_to(stage).as_posix(),
@@ -926,6 +1148,8 @@ def materialize_suite(
             "width": FORMAL_SIZE[0],
             "height": FORMAL_SIZE[1],
             "depth_precision": candidate_capture.depth_precision,
+            "projected_cache_precision": candidate_capture.projected_cache_precision,
+            "resident_sh": candidate_capture.resident_sh,
         }
         exact_decoded = BALANCED.decode_rgba8_png(
             (exact_run / "final-frame.png").read_bytes(), "Exact capture", FORMAL_SIZE
@@ -947,7 +1171,7 @@ def materialize_suite(
             "candidate": candidate_image,
             "metrics": metrics,
             "benchmark_artifacts": {
-                "pair_id": f"b1-desktop-{build['git']['commit'][:12]}-capture-{capture_index}",
+                "pair_id": f"{experiment.name}-desktop-{build['git']['commit'][:12]}-capture-{capture_index}",
                 "exact": run_receipts[("exact", capture_index)],
                 "candidate": run_receipts[("candidate", capture_index)],
             },
@@ -981,6 +1205,10 @@ def materialize_suite(
     suite = {
         "schema": SUITE_SCHEMA,
         "evidence_class": "formal_quality",
+        "experiment": {
+            "name": experiment.name,
+            "changed_receipt": experiment.changed_receipt,
+        },
         "authority": {
             "dataset_manifest": {
                 "path": str(build["dataset_manifest_path"]),
@@ -1025,7 +1253,21 @@ def materialize_suite(
             "repository_commit": build["git"]["commit"],
             "dirty": build["git"]["dirty"],
             "host_invocations": 2,
-            "lane_profiles": [lane.profile for lane in LANES],
+            "lane_profiles": [
+                {
+                    "name": lane.name,
+                    "depth_precision": sessions[lane.name]
+                    .captures[0]
+                    .depth_precision["profile"],
+                    "projected_cache_precision": sessions[lane.name]
+                    .captures[0]
+                    .projected_cache_precision["profile"],
+                    "resident_sh": sessions[lane.name]
+                    .captures[0]
+                    .resident_sh["codec_profile"],
+                }
+                for lane in lanes
+            ],
             "balanced_validator_sha256": sha256_file(BALANCED_VALIDATOR_PATH),
             "benchmark_validator_sha256": sha256_file(BENCHMARK_VALIDATOR_PATH),
         },
@@ -1042,11 +1284,11 @@ def materialize_suite(
     return suite
 
 
-def remove_private_builds(stage: Path) -> None:
+def remove_private_builds(stage: Path, lanes: tuple[Lane, Lane] = LANES) -> None:
     target_dir = stage / "cargo-target"
     require(target_dir.is_dir() and not target_dir.is_symlink(), "private Cargo target is unavailable")
     shutil.rmtree(target_dir)
-    for lane in LANES:
+    for lane in lanes:
         binary = stage / "build" / lane.name / "desktop-example-bin"
         require(binary.is_file() and not binary.is_symlink(), f"{lane.name} retained binary is unavailable")
         binary.unlink()
@@ -1055,9 +1297,11 @@ def remove_private_builds(stage: Path) -> None:
         shutil.rmtree(capture_directory)
 
 
-def publish_suite(stage: Path, output: Path) -> None:
+def publish_suite(
+    stage: Path, output: Path, lanes: tuple[Lane, Lane] = LANES
+) -> None:
     require((stage / "suite.json").is_file(), "validated suite manifest is unavailable")
-    for lane in LANES:
+    for lane in lanes:
         for capture_index in range(3):
             artifact = stage / "runs" / lane.name / f"capture-{capture_index}"
             for name in ("manifest.json", "frames.jsonl", "summary.json", "final-frame.png"):
@@ -1074,13 +1318,18 @@ def publish_suite(stage: Path, output: Path) -> None:
 
 
 def collect(args: argparse.Namespace, repo: Path) -> dict[str, Any]:
+    experiment = EXPERIMENTS[getattr(args, "experiment", "b1")]
+    lanes = experiment.lanes
     output = args.output.resolve()
     require(not output.exists(), f"output already exists: {output}")
-    require((args.warmup, args.measured) == (CANONICAL_WARMUP, CANONICAL_MEASURED), "formal B1 requires warmup=20 and measured=80")
+    require(
+        (args.warmup, args.measured) == (CANONICAL_WARMUP, CANONICAL_MEASURED),
+        "formal Balanced collection requires warmup=20 and measured=80",
+    )
     require(math.isfinite(args.refresh_hz) and args.refresh_hz > 0.0, "refresh-hz must be positive")
     validate_ignored_output(repo, output)
     initial_git = git_receipt(repo)
-    require(not initial_git["dirty"], "formal B1 evidence requires a clean repository")
+    require(not initial_git["dirty"], "formal Balanced evidence requires a clean repository")
 
     dataset, dataset_path = M2B.read_dataset_manifest(repo, args.dataset_manifest.resolve())
     trace = M2B.read_trace(repo, args.trace.resolve())
@@ -1090,7 +1339,9 @@ def collect(args: argparse.Namespace, repo: Path) -> dict[str, Any]:
     require(not stage.exists(), f"staging path exists: {stage}")
     stage.mkdir(parents=True)
     try:
-        binaries, lane_builds = build_desktop_binaries(repo, stage, initial_git)
+        binaries, lane_builds = build_desktop_binaries(
+            repo, stage, initial_git, lanes=lanes
+        )
         build = {
             "git": initial_git,
             "package_version": package_version(repo),
@@ -1109,6 +1360,7 @@ def collect(args: argparse.Namespace, repo: Path) -> dict[str, Any]:
             trace_path=trace_path,
             warmup=args.warmup,
             measured=args.measured,
+            lanes=lanes,
         )
         require(sha256_file(dataset_path) == dataset["sha256"], "dataset changed during collection")
         require(sha256_file(trace_path) == trace["file_sha256"], "trace changed during collection")
@@ -1122,9 +1374,10 @@ def collect(args: argparse.Namespace, repo: Path) -> dict[str, Any]:
             build=build,
             refresh_hz=args.refresh_hz,
             warmup=args.warmup,
+            experiment=experiment,
         )
-        remove_private_builds(stage)
-        publish_suite(stage, output)
+        remove_private_builds(stage, lanes)
+        publish_suite(stage, output, lanes)
         return suite
     except Exception as error:
         failure = {"status": "failed", "error": str(error), "output_published": output.exists()}
@@ -1135,7 +1388,10 @@ def collect(args: argparse.Namespace, repo: Path) -> dict[str, Any]:
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Collect the two-process desktop B1 moving 0-1-0 suite")
+    parser = argparse.ArgumentParser(
+        description="Collect one two-process desktop Balanced moving 0-1-0 suite"
+    )
+    parser.add_argument("--experiment", choices=tuple(EXPERIMENTS), default="b1")
     parser.add_argument("--dataset-manifest", required=True, type=Path)
     parser.add_argument("--trace", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
@@ -1150,7 +1406,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         suite = collect(args, REPO_ROOT)
     except (OSError, subprocess.SubprocessError, ValidationError, ValueError) as error:
-        print(f"desktop B1 collection failed: {error}", file=sys.stderr)
+        print(f"desktop Balanced collection failed: {error}", file=sys.stderr)
         return 1
     print(
         json.dumps(

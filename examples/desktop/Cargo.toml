@@ -21,6 +21,14 @@ diagnostic-surface-depth-key-candidate24 = [
     "diagnostic-surface-capture-receipt",
     "gsplat-render-wgpu/diagnostic-surface-depth-key-candidate24",
 ]
+diagnostic-surface-projected-axes16 = [
+    "diagnostic-surface-capture-receipt",
+    "gsplat-render-wgpu/diagnostic-surface-projected-axes16",
+]
+diagnostic-resident-sh-mantissa8 = [
+    "diagnostic-surface-capture-receipt",
+    "gsplat-render-wgpu/diagnostic-resident-sh-mantissa8",
+]
 
 [dependencies]
 gsplat-core = { path = "../../crates/gsplat-core", version = "0.1.3" }

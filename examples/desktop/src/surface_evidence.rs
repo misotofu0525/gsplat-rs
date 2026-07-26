@@ -141,7 +141,7 @@ enum PendingKind {
         capture_index: Option<usize>,
         step: SurfaceTraceStep,
         path: PathBuf,
-        capture: PendingCapture,
+        capture: Box<PendingCapture>,
     },
 }
 
@@ -221,7 +221,24 @@ impl DiagnosticCaptureJoinIdentity {
 ))]
 #[derive(Debug, PartialEq, Eq)]
 struct DiagnosticCaptureReceiptRecord {
-    profile: &'static str,
+    depth_precision_profile: &'static str,
+    projected_cache_precision_profile: &'static str,
+    projected_axis_record_bytes: u64,
+    resident_sh_codec_profile: &'static str,
+    resident_sh_mantissa_bits: u8,
+    resident_sh_symmetric_max_code: u16,
+    resident_sh_point_scale_bits: u8,
+    resident_sh_point_scale_max_code: u8,
+    resident_sh_range_chunk_splats: u16,
+    resident_sh_source_count: u32,
+    resident_sh_encoded_count: u32,
+    resident_sh_resident_count: u32,
+    resident_sh_addressable_count: u32,
+    resident_sh_source_degree: u8,
+    resident_sh_resident_degree: u8,
+    resident_sh_residual_coefficients_per_source: u8,
+    resident_sh_plane_count: u8,
+    resident_sh_bytes_per_source: u16,
     scene_generation: u64,
     camera_revision: u64,
     viewport_generation: u64,
@@ -244,7 +261,25 @@ impl DiagnosticCaptureReceiptRecord {
         let frame = receipt.frame_identity();
         let rgba8_sha256 = rgba8_sha256(receipt.rgba8());
         Self {
-            profile: receipt.depth_precision_profile(),
+            depth_precision_profile: receipt.depth_precision_profile(),
+            projected_cache_precision_profile: receipt.projected_cache_precision_profile(),
+            projected_axis_record_bytes: receipt.projected_axis_record_bytes(),
+            resident_sh_codec_profile: receipt.resident_sh_codec_profile(),
+            resident_sh_mantissa_bits: receipt.resident_sh_mantissa_bits(),
+            resident_sh_symmetric_max_code: receipt.resident_sh_symmetric_max_code(),
+            resident_sh_point_scale_bits: receipt.resident_sh_point_scale_bits(),
+            resident_sh_point_scale_max_code: receipt.resident_sh_point_scale_max_code(),
+            resident_sh_range_chunk_splats: receipt.resident_sh_range_chunk_splats(),
+            resident_sh_source_count: receipt.resident_sh_source_count(),
+            resident_sh_encoded_count: receipt.resident_sh_encoded_count(),
+            resident_sh_resident_count: receipt.resident_sh_resident_count(),
+            resident_sh_addressable_count: receipt.resident_sh_addressable_count(),
+            resident_sh_source_degree: receipt.resident_sh_source_degree(),
+            resident_sh_resident_degree: receipt.resident_sh_resident_degree(),
+            resident_sh_residual_coefficients_per_source: receipt
+                .resident_sh_residual_coefficients_per_source(),
+            resident_sh_plane_count: receipt.resident_sh_plane_count(),
+            resident_sh_bytes_per_source: receipt.resident_sh_bytes_per_source(),
             scene_generation: frame.scene_generation(),
             camera_revision: frame.camera_revision(),
             viewport_generation: frame.viewport_generation(),
@@ -261,8 +296,25 @@ impl DiagnosticCaptureReceiptRecord {
 
     fn line(&self) -> String {
         format!(
-            "SURFACE_DIAGNOSTIC_CAPTURE_RECEIPT profile={} scene_generation={} camera_revision={} viewport_generation={} contract_generation={} plan_set_generation={} plan_id={} order_generation={} presentation_sequence={} width={} height={} rgba8_sha256={}",
-            self.profile,
+            "SURFACE_DIAGNOSTIC_CAPTURE_RECEIPT depth_precision_profile={} projected_cache_precision_profile={} projected_axis_record_bytes={} resident_sh_codec_profile={} resident_sh_mantissa_bits={} resident_sh_symmetric_max_code={} resident_sh_point_scale_bits={} resident_sh_point_scale_max_code={} resident_sh_range_chunk_splats={} resident_sh_source_count={} resident_sh_encoded_count={} resident_sh_resident_count={} resident_sh_addressable_count={} resident_sh_source_degree={} resident_sh_resident_degree={} resident_sh_residual_coefficients_per_source={} resident_sh_plane_count={} resident_sh_bytes_per_source={} scene_generation={} camera_revision={} viewport_generation={} contract_generation={} plan_set_generation={} plan_id={} order_generation={} presentation_sequence={} width={} height={} rgba8_sha256={}",
+            self.depth_precision_profile,
+            self.projected_cache_precision_profile,
+            self.projected_axis_record_bytes,
+            self.resident_sh_codec_profile,
+            self.resident_sh_mantissa_bits,
+            self.resident_sh_symmetric_max_code,
+            self.resident_sh_point_scale_bits,
+            self.resident_sh_point_scale_max_code,
+            self.resident_sh_range_chunk_splats,
+            self.resident_sh_source_count,
+            self.resident_sh_encoded_count,
+            self.resident_sh_resident_count,
+            self.resident_sh_addressable_count,
+            self.resident_sh_source_degree,
+            self.resident_sh_resident_degree,
+            self.resident_sh_residual_coefficients_per_source,
+            self.resident_sh_plane_count,
+            self.resident_sh_bytes_per_source,
             self.scene_generation,
             self.camera_revision,
             self.viewport_generation,
@@ -627,9 +679,10 @@ pub(crate) fn run(
                                 not(target_arch = "wasm32")
                             ))]
                             if let PendingKind::Capture {
-                                capture: PendingCapture::Diagnostic(capture_receipt),
+                                capture,
                                 ..
                             } = &waiting.kind
+                                && let PendingCapture::Diagnostic(capture_receipt) = capture.as_ref()
                                 && let Err(message) = validate_diagnostic_capture_join(
                                     capture_receipt,
                                     &receipt,
@@ -660,6 +713,7 @@ pub(crate) fn run(
                                     path,
                                     capture,
                                 } => {
+                                    let capture = *capture;
                                     #[cfg(all(
                                         feature = "diagnostic-surface-capture-receipt",
                                         not(target_arch = "wasm32")
@@ -944,7 +998,7 @@ pub(crate) fn run(
                                 } else {
                                     capture_path.clone()
                                 },
-                                capture,
+                                capture: Box::new(capture),
                             },
                             None => PendingKind::Frame(step),
                         };
@@ -1285,7 +1339,7 @@ fn print_diagnostic_multi_capture_terminal(capture: &ValidatedDiagnosticCapture)
     let counts = capture.receipt.counts();
     let atomic = DiagnosticCaptureReceiptRecord::from_receipt(&capture.capture);
     println!(
-        "SURFACE_DIAGNOSTIC_MULTI_CAPTURE_TERMINAL status=ok capture_index={} path={:?} trace_frame={} trace_timestamp_ns={} elapsed_ns={} call_ms={:.6} frame_wall_ms={:.6} current_stats_ticket={} current_stats_scene_generation={} current_stats_camera_revision={} current_stats_viewport_generation={} current_stats_contract_generation={} current_stats_plan_set_generation={} current_stats_plan_id={} current_stats_order_generation={} current_stats_raster_generation={} current_stats_encode_attempt={} current_stats_presentation_sequence={} count_semantics={} source_count={} visible_count={} contributor_count={} drawn_count={} exact_contributor_compaction={} capture_receipt_profile={} capture_receipt_scene_generation={} capture_receipt_camera_revision={} capture_receipt_viewport_generation={} capture_receipt_contract_generation={} capture_receipt_plan_set_generation={} capture_receipt_plan_id={} capture_receipt_order_generation={} capture_receipt_presentation_sequence={} capture_receipt_width={} capture_receipt_height={} capture_receipt_rgba8_sha256={} frame_presented={} terminal_receipt=ready",
+        "SURFACE_DIAGNOSTIC_MULTI_CAPTURE_TERMINAL status=ok capture_index={} path={:?} trace_frame={} trace_timestamp_ns={} elapsed_ns={} call_ms={:.6} frame_wall_ms={:.6} current_stats_ticket={} current_stats_scene_generation={} current_stats_camera_revision={} current_stats_viewport_generation={} current_stats_contract_generation={} current_stats_plan_set_generation={} current_stats_plan_id={} current_stats_order_generation={} current_stats_raster_generation={} current_stats_encode_attempt={} current_stats_presentation_sequence={} count_semantics={} source_count={} visible_count={} contributor_count={} drawn_count={} exact_contributor_compaction={} capture_receipt_depth_precision_profile={} capture_receipt_projected_cache_precision_profile={} capture_receipt_projected_axis_record_bytes={} capture_receipt_resident_sh_codec_profile={} capture_receipt_resident_sh_mantissa_bits={} capture_receipt_resident_sh_symmetric_max_code={} capture_receipt_resident_sh_point_scale_bits={} capture_receipt_resident_sh_point_scale_max_code={} capture_receipt_resident_sh_range_chunk_splats={} capture_receipt_resident_sh_source_count={} capture_receipt_resident_sh_encoded_count={} capture_receipt_resident_sh_resident_count={} capture_receipt_resident_sh_addressable_count={} capture_receipt_resident_sh_source_degree={} capture_receipt_resident_sh_resident_degree={} capture_receipt_resident_sh_residual_coefficients_per_source={} capture_receipt_resident_sh_plane_count={} capture_receipt_resident_sh_bytes_per_source={} capture_receipt_scene_generation={} capture_receipt_camera_revision={} capture_receipt_viewport_generation={} capture_receipt_contract_generation={} capture_receipt_plan_set_generation={} capture_receipt_plan_id={} capture_receipt_order_generation={} capture_receipt_presentation_sequence={} capture_receipt_width={} capture_receipt_height={} capture_receipt_rgba8_sha256={} frame_presented={} terminal_receipt=ready",
         capture.capture_index,
         capture.path.to_string_lossy(),
         capture.step.trace_frame_index,
@@ -1311,7 +1365,24 @@ fn print_diagnostic_multi_capture_terminal(capture: &ValidatedDiagnosticCapture)
         counts.drawn(),
         capture.receipt.count_semantics()
             == SurfaceCurrentStatsCountSemantics::IndirectDrawEqualsContributor,
-        atomic.profile,
+        atomic.depth_precision_profile,
+        atomic.projected_cache_precision_profile,
+        atomic.projected_axis_record_bytes,
+        atomic.resident_sh_codec_profile,
+        atomic.resident_sh_mantissa_bits,
+        atomic.resident_sh_symmetric_max_code,
+        atomic.resident_sh_point_scale_bits,
+        atomic.resident_sh_point_scale_max_code,
+        atomic.resident_sh_range_chunk_splats,
+        atomic.resident_sh_source_count,
+        atomic.resident_sh_encoded_count,
+        atomic.resident_sh_resident_count,
+        atomic.resident_sh_addressable_count,
+        atomic.resident_sh_source_degree,
+        atomic.resident_sh_resident_degree,
+        atomic.resident_sh_residual_coefficients_per_source,
+        atomic.resident_sh_plane_count,
+        atomic.resident_sh_bytes_per_source,
         atomic.scene_generation,
         atomic.camera_revision,
         atomic.viewport_generation,
@@ -1649,7 +1720,24 @@ mod tests {
         );
 
         let record = DiagnosticCaptureReceiptRecord {
-            profile: "CandidateStable24",
+            depth_precision_profile: "CandidateStable24",
+            projected_cache_precision_profile: "CandidateAxes16",
+            projected_axis_record_bytes: 8,
+            resident_sh_codec_profile: "CandidateSigned8BandScale5",
+            resident_sh_mantissa_bits: 8,
+            resident_sh_symmetric_max_code: 127,
+            resident_sh_point_scale_bits: 5,
+            resident_sh_point_scale_max_code: 31,
+            resident_sh_range_chunk_splats: 256,
+            resident_sh_source_count: 11,
+            resident_sh_encoded_count: 11,
+            resident_sh_resident_count: 11,
+            resident_sh_addressable_count: 11,
+            resident_sh_source_degree: 3,
+            resident_sh_resident_degree: 3,
+            resident_sh_residual_coefficients_per_source: 45,
+            resident_sh_plane_count: 3,
+            resident_sh_bytes_per_source: 48,
             scene_generation: 1,
             camera_revision: 2,
             viewport_generation: 3,
@@ -1664,7 +1752,7 @@ mod tests {
         };
         assert_eq!(
             record.line(),
-            "SURFACE_DIAGNOSTIC_CAPTURE_RECEIPT profile=CandidateStable24 scene_generation=1 camera_revision=2 viewport_generation=3 contract_generation=4 plan_set_generation=5 plan_id=GpuPostSort order_generation=6 presentation_sequence=7 width=1920 height=1080 rgba8_sha256=feed"
+            "SURFACE_DIAGNOSTIC_CAPTURE_RECEIPT depth_precision_profile=CandidateStable24 projected_cache_precision_profile=CandidateAxes16 projected_axis_record_bytes=8 resident_sh_codec_profile=CandidateSigned8BandScale5 resident_sh_mantissa_bits=8 resident_sh_symmetric_max_code=127 resident_sh_point_scale_bits=5 resident_sh_point_scale_max_code=31 resident_sh_range_chunk_splats=256 resident_sh_source_count=11 resident_sh_encoded_count=11 resident_sh_resident_count=11 resident_sh_addressable_count=11 resident_sh_source_degree=3 resident_sh_resident_degree=3 resident_sh_residual_coefficients_per_source=45 resident_sh_plane_count=3 resident_sh_bytes_per_source=48 scene_generation=1 camera_revision=2 viewport_generation=3 contract_generation=4 plan_set_generation=5 plan_id=GpuPostSort order_generation=6 presentation_sequence=7 width=1920 height=1080 rgba8_sha256=feed"
         );
     }
 

@@ -66,7 +66,24 @@ def terminal_record(index: int, lane: object = collector.LANES[0]) -> dict[str, 
         "contributor_count": "90",
         "drawn_count": "100",
         "exact_contributor_compaction": "false",
-        "capture_receipt_profile": lane.profile,
+        "capture_receipt_depth_precision_profile": lane.profile,
+        "capture_receipt_projected_cache_precision_profile": "ExactAxes32",
+        "capture_receipt_projected_axis_record_bytes": "16",
+        "capture_receipt_resident_sh_codec_profile": "ExactSigned11BandScale5",
+        "capture_receipt_resident_sh_mantissa_bits": "11",
+        "capture_receipt_resident_sh_symmetric_max_code": "1023",
+        "capture_receipt_resident_sh_point_scale_bits": "5",
+        "capture_receipt_resident_sh_point_scale_max_code": "31",
+        "capture_receipt_resident_sh_range_chunk_splats": "256",
+        "capture_receipt_resident_sh_source_count": str(DATASET["splat_count"]),
+        "capture_receipt_resident_sh_encoded_count": str(DATASET["splat_count"]),
+        "capture_receipt_resident_sh_resident_count": str(DATASET["splat_count"]),
+        "capture_receipt_resident_sh_addressable_count": str(DATASET["splat_count"]),
+        "capture_receipt_resident_sh_source_degree": "3",
+        "capture_receipt_resident_sh_resident_degree": "3",
+        "capture_receipt_resident_sh_residual_coefficients_per_source": "45",
+        "capture_receipt_resident_sh_plane_count": "4",
+        "capture_receipt_resident_sh_bytes_per_source": "64",
         "capture_receipt_scene_generation": "1",
         "capture_receipt_camera_revision": str(index + 1),
         "capture_receipt_viewport_generation": "2",
@@ -98,6 +115,19 @@ def capture(index: int, lane: object, root: Path) -> object:
         "plan_generation": 4,
         "presentation_generation": 201 + index,
     }
+    receipt_identity = {
+        "scene_generation": 1,
+        "camera_revision": index + 1,
+        "viewport_generation": 2,
+        "contract_generation": 3,
+        "plan_set_generation": 4,
+        "plan_id": "GpuPostSort",
+        "order_generation": 10 + index,
+        "presentation_sequence": 201 + index,
+        "width": 1920,
+        "height": 1080,
+        "rgba8_sha256": SHA,
+    }
     return collector.Capture(
         capture_index=index,
         trace_frame_index=collector.CAPTURE_TRACE_FRAMES[index],
@@ -115,7 +145,30 @@ def capture(index: int, lane: object, root: Path) -> object:
             "drawn": 100,
         },
         presentation=presentation,
-        depth_precision={"profile": lane.profile},
+        depth_precision={**receipt_identity, "profile": lane.profile},
+        projected_cache_precision={
+            **receipt_identity,
+            "profile": "ExactAxes32",
+            "axis_record_bytes": 16,
+        },
+        resident_sh={
+            **receipt_identity,
+            "codec_profile": "ExactSigned11BandScale5",
+            "mantissa_bits": 11,
+            "symmetric_max_code": 1023,
+            "point_scale_bits": 5,
+            "point_scale_max_code": 31,
+            "range_chunk_splats": 256,
+            "source_count": DATASET["splat_count"],
+            "encoded_count": DATASET["splat_count"],
+            "resident_count": DATASET["splat_count"],
+            "addressable_count": DATASET["splat_count"],
+            "source_sh_degree": 3,
+            "resident_sh_degree": 3,
+            "residual_coefficients_per_source": 45,
+            "plane_count": 4,
+            "bytes_per_source": 64,
+        },
         raster_generation=20 + index,
         encode_attempt=30 + index,
     )
@@ -182,13 +235,49 @@ class CollectorRecordTests(unittest.TestCase):
     def test_mismatched_lane_and_receipt_are_rejected(self) -> None:
         with self.subTest("lane"):
             records = valid_records()
-            records[1]["capture_receipt_profile"] = "CandidateStable24"
-            with self.assertRaisesRegex(collector.ValidationError, "capture_receipt_profile"):
+            records[1]["capture_receipt_depth_precision_profile"] = "CandidateStable24"
+            with self.assertRaisesRegex(
+                collector.ValidationError, "capture_receipt_depth_precision_profile"
+            ):
                 collector.validate_terminal_records(
                     records,
                     lane=collector.LANES[0],
                     source_count=DATASET["splat_count"],
                 )
+
+    def test_projected_cache_and_resident_sh_fields_are_required_actual_receipts(self) -> None:
+        for field in (
+            "capture_receipt_projected_cache_precision_profile",
+            "capture_receipt_projected_axis_record_bytes",
+            "capture_receipt_resident_sh_codec_profile",
+            "capture_receipt_resident_sh_source_count",
+            "capture_receipt_resident_sh_residual_coefficients_per_source",
+            "capture_receipt_resident_sh_bytes_per_source",
+        ):
+            with self.subTest(missing=field):
+                records = valid_records()
+                del records[1][field]
+                with self.assertRaisesRegex(collector.ValidationError, field):
+                    collector.validate_terminal_records(
+                        records,
+                        lane=collector.LANES[0],
+                        source_count=DATASET["splat_count"],
+                    )
+
+        for field, value in (
+            ("capture_receipt_projected_cache_precision_profile", "CandidateAxes16"),
+            ("capture_receipt_resident_sh_codec_profile", "CandidateSigned8BandScale5"),
+            ("capture_receipt_resident_sh_source_count", "1"),
+        ):
+            with self.subTest(mismatched=field):
+                records = valid_records()
+                records[1][field] = value
+                with self.assertRaisesRegex(collector.ValidationError, field):
+                    collector.validate_terminal_records(
+                        records,
+                        lane=collector.LANES[0],
+                        source_count=DATASET["splat_count"],
+                    )
         with self.subTest("receipt"):
             records = valid_records()
             records[1]["capture_receipt_camera_revision"] = "99"
@@ -428,6 +517,34 @@ class CollectorOrchestrationTests(unittest.TestCase):
                         "height": 1080,
                         "rgba8_sha256": rgba_sha256,
                     }
+                    receipt_identity = {
+                        key: value
+                        for key, value in depth_precision.items()
+                        if key != "profile"
+                    }
+                    projected_cache_precision = {
+                        **receipt_identity,
+                        "profile": "ExactAxes32",
+                        "axis_record_bytes": 16,
+                    }
+                    resident_sh = {
+                        **receipt_identity,
+                        "codec_profile": "ExactSigned11BandScale5",
+                        "mantissa_bits": 11,
+                        "symmetric_max_code": 1023,
+                        "point_scale_bits": 5,
+                        "point_scale_max_code": 31,
+                        "range_chunk_splats": 256,
+                        "source_count": dataset["splat_count"],
+                        "encoded_count": dataset["splat_count"],
+                        "resident_count": dataset["splat_count"],
+                        "addressable_count": dataset["splat_count"],
+                        "source_sh_degree": dataset["sh_degree"],
+                        "resident_sh_degree": dataset["sh_degree"],
+                        "residual_coefficients_per_source": 45,
+                        "plane_count": 4,
+                        "bytes_per_source": 64,
+                    }
                     captures.append(
                         collector.Capture(
                             capture_index=index,
@@ -447,6 +564,8 @@ class CollectorOrchestrationTests(unittest.TestCase):
                             },
                             presentation=presentation,
                             depth_precision=depth_precision,
+                            projected_cache_precision=projected_cache_precision,
+                            resident_sh=resident_sh,
                             raster_generation=20 + index,
                             encode_attempt=30 + index,
                         )

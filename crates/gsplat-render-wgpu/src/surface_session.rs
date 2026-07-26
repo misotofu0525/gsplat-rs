@@ -7,9 +7,10 @@ use std::time::Duration;
 use crate::SurfaceFrameCapture;
 pub use crate::api::SurfaceOrderBackendUsed;
 use crate::evidence::{
-    PresentedCurrentStats, PresentedDepthPrecisionReceipt, PresentedFramePrecisionReceipts,
-    PresentedFramePublication, PresentedProjectedCachePrecisionReceipt, PresentedResidentShReceipt,
-    PresentedTelemetry, SessionPublication, SurfaceCompatibilityOrderSubmission,
+    PresentedCapturePrecisionReceipt, PresentedCurrentStats, PresentedDepthPrecisionReceipt,
+    PresentedFramePrecisionReceipts, PresentedFramePublication,
+    PresentedProjectedCachePrecisionReceipt, PresentedResidentShReceipt, PresentedTelemetry,
+    SessionPublication, SurfaceCompatibilityOrderSubmission,
     SurfaceCompatibilityProducerSubmission, SurfaceCompatibilityProjectedSubmission,
     SurfaceTelemetryBatch,
 };
@@ -301,19 +302,19 @@ struct RenderedSessionFrame {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) struct SurfaceCaptureDepthPrecisionEvidence {
+pub(crate) struct SurfaceCapturePrecisionEvidence {
     capture: SurfaceFrameCapture,
-    depth_precision: PresentedDepthPrecisionReceipt,
+    precision: PresentedCapturePrecisionReceipt,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-impl SurfaceCaptureDepthPrecisionEvidence {
-    pub(crate) fn into_parts(self) -> (SurfaceFrameCapture, PresentedDepthPrecisionReceipt) {
-        (self.capture, self.depth_precision)
+impl SurfaceCapturePrecisionEvidence {
+    pub(crate) fn into_parts(self) -> (SurfaceFrameCapture, PresentedCapturePrecisionReceipt) {
+        (self.capture, self.precision)
     }
 
     fn into_capture(self) -> SurfaceFrameCapture {
-        let (capture, _depth_precision) = self.into_parts();
+        let (capture, _precision) = self.into_parts();
         capture
     }
 }
@@ -373,6 +374,23 @@ impl DiagnosticSurfaceFrameIdentity {
 pub struct DiagnosticSurfaceCaptureReceipt {
     capture: SurfaceFrameCapture,
     depth_precision_profile: &'static str,
+    projected_cache_precision_profile: &'static str,
+    projected_axis_record_bytes: u64,
+    resident_sh_codec_profile: &'static str,
+    resident_sh_mantissa_bits: u8,
+    resident_sh_symmetric_max_code: u16,
+    resident_sh_point_scale_bits: u8,
+    resident_sh_point_scale_max_code: u8,
+    resident_sh_range_chunk_splats: u16,
+    resident_sh_source_count: u32,
+    resident_sh_encoded_count: u32,
+    resident_sh_resident_count: u32,
+    resident_sh_addressable_count: u32,
+    resident_sh_source_degree: u8,
+    resident_sh_resident_degree: u8,
+    resident_sh_residual_coefficients_per_source: u8,
+    resident_sh_plane_count: u8,
+    resident_sh_bytes_per_source: u16,
     frame: DiagnosticSurfaceFrameIdentity,
     plan_id: &'static str,
     order_generation: u64,
@@ -384,17 +402,52 @@ pub struct DiagnosticSurfaceCaptureReceipt {
     not(target_arch = "wasm32")
 ))]
 impl DiagnosticSurfaceCaptureReceipt {
-    fn from_evidence(evidence: SurfaceCaptureDepthPrecisionEvidence) -> Self {
-        let (capture, receipt) = evidence.into_parts();
-        let frame = receipt.frame();
+    fn from_evidence(evidence: SurfaceCapturePrecisionEvidence) -> Self {
+        let (capture, precision) = evidence.into_parts();
+        let depth = precision.depth_precision();
+        let projected = precision.projected_cache_precision();
+        let resident = precision.resident_sh();
+        let layout = resident.layout();
+        let resident_profile = layout.profile();
+        let frame = depth.frame();
         Self {
             capture,
-            depth_precision_profile: match receipt.profile() {
+            depth_precision_profile: match depth.profile() {
                 crate::renderer::SurfaceDepthPrecisionProfile::ExactFull32 => "ExactFull32",
                 crate::renderer::SurfaceDepthPrecisionProfile::CandidateStable24 => {
                     "CandidateStable24"
                 }
             },
+            projected_cache_precision_profile: match projected.profile() {
+                crate::renderer::ProjectedCachePrecisionProfile::ExactAxes32 => "ExactAxes32",
+                crate::renderer::ProjectedCachePrecisionProfile::CandidateAxes16 => {
+                    "CandidateAxes16"
+                }
+            },
+            projected_axis_record_bytes: projected.profile().axis_record_bytes(),
+            resident_sh_codec_profile: match resident_profile {
+                crate::renderer::gpu_prepare::ResidentShCodecProfile::ExactSigned11BandScale5 => {
+                    "ExactSigned11BandScale5"
+                }
+                crate::renderer::gpu_prepare::ResidentShCodecProfile::CandidateSigned8BandScale5 => {
+                    "CandidateSigned8BandScale5"
+                }
+            },
+            resident_sh_mantissa_bits: resident_profile.mantissa_bits(),
+            resident_sh_symmetric_max_code: resident_profile.symmetric_max_code(),
+            resident_sh_point_scale_bits: resident_profile.point_scale_bits(),
+            resident_sh_point_scale_max_code: resident_profile.point_scale_max_code(),
+            resident_sh_range_chunk_splats: layout.range_chunk_splats(),
+            resident_sh_source_count: layout.source_count(),
+            resident_sh_encoded_count: layout.encoded_count(),
+            resident_sh_resident_count: layout.resident_count(),
+            resident_sh_addressable_count: layout.addressable_count(),
+            resident_sh_source_degree: layout.source_sh_degree(),
+            resident_sh_resident_degree: layout.resident_sh_degree(),
+            resident_sh_residual_coefficients_per_source: layout
+                .residual_coefficients_per_source(),
+            resident_sh_plane_count: layout.plane_count(),
+            resident_sh_bytes_per_source: layout.bytes_per_source(),
             frame: DiagnosticSurfaceFrameIdentity {
                 scene_generation: frame.scene_generation(),
                 camera_revision: frame.camera_revision(),
@@ -402,13 +455,13 @@ impl DiagnosticSurfaceCaptureReceipt {
                 contract_generation: frame.contract_generation(),
                 plan_set_generation: frame.plan_set_generation(),
             },
-            plan_id: match receipt.plan() {
+            plan_id: match depth.plan() {
                 PlanId::CpuPostSort => "CpuPostSort",
                 PlanId::GpuPostSort => "GpuPostSort",
                 PlanId::GpuPreproject => "GpuPreproject",
             },
-            order_generation: receipt.order_generation(),
-            presentation_sequence: receipt.presentation_sequence(),
+            order_generation: depth.order_generation(),
+            presentation_sequence: depth.presentation_sequence(),
         }
     }
 
@@ -426,6 +479,74 @@ impl DiagnosticSurfaceCaptureReceipt {
 
     pub const fn depth_precision_profile(&self) -> &'static str {
         self.depth_precision_profile
+    }
+
+    pub const fn projected_cache_precision_profile(&self) -> &'static str {
+        self.projected_cache_precision_profile
+    }
+
+    pub const fn projected_axis_record_bytes(&self) -> u64 {
+        self.projected_axis_record_bytes
+    }
+
+    pub const fn resident_sh_codec_profile(&self) -> &'static str {
+        self.resident_sh_codec_profile
+    }
+
+    pub const fn resident_sh_mantissa_bits(&self) -> u8 {
+        self.resident_sh_mantissa_bits
+    }
+
+    pub const fn resident_sh_symmetric_max_code(&self) -> u16 {
+        self.resident_sh_symmetric_max_code
+    }
+
+    pub const fn resident_sh_point_scale_bits(&self) -> u8 {
+        self.resident_sh_point_scale_bits
+    }
+
+    pub const fn resident_sh_point_scale_max_code(&self) -> u8 {
+        self.resident_sh_point_scale_max_code
+    }
+
+    pub const fn resident_sh_range_chunk_splats(&self) -> u16 {
+        self.resident_sh_range_chunk_splats
+    }
+
+    pub const fn resident_sh_source_count(&self) -> u32 {
+        self.resident_sh_source_count
+    }
+
+    pub const fn resident_sh_encoded_count(&self) -> u32 {
+        self.resident_sh_encoded_count
+    }
+
+    pub const fn resident_sh_resident_count(&self) -> u32 {
+        self.resident_sh_resident_count
+    }
+
+    pub const fn resident_sh_addressable_count(&self) -> u32 {
+        self.resident_sh_addressable_count
+    }
+
+    pub const fn resident_sh_source_degree(&self) -> u8 {
+        self.resident_sh_source_degree
+    }
+
+    pub const fn resident_sh_resident_degree(&self) -> u8 {
+        self.resident_sh_resident_degree
+    }
+
+    pub const fn resident_sh_residual_coefficients_per_source(&self) -> u8 {
+        self.resident_sh_residual_coefficients_per_source
+    }
+
+    pub const fn resident_sh_plane_count(&self) -> u8 {
+        self.resident_sh_plane_count
+    }
+
+    pub const fn resident_sh_bytes_per_source(&self) -> u16 {
+        self.resident_sh_bytes_per_source
     }
 
     pub const fn frame_identity(&self) -> DiagnosticSurfaceFrameIdentity {
@@ -453,16 +574,13 @@ impl DiagnosticSurfaceCaptureReceipt {
 fn compose_surface_capture_evidence(
     publication: &mut SessionPublication,
     capture: SurfaceFrameCapture,
-) -> Result<SurfaceCaptureDepthPrecisionEvidence, crate::SurfacePresenterError> {
-    let depth_precision = publication.take_capture_depth_precision().ok_or_else(|| {
+) -> Result<SurfaceCapturePrecisionEvidence, crate::SurfacePresenterError> {
+    let precision = publication.take_capture_precision().ok_or_else(|| {
         crate::SurfacePresenterError::SurfaceCaptureState(
-            "the capture has no matching presented depth-precision receipt".into(),
+            "the capture has no matching complete presented precision receipt".into(),
         )
     })?;
-    Ok(SurfaceCaptureDepthPrecisionEvidence {
-        capture,
-        depth_precision,
-    })
+    Ok(SurfaceCapturePrecisionEvidence { capture, precision })
 }
 
 impl RenderedSessionFrame {
@@ -1087,10 +1205,10 @@ impl SurfaceRenderSession {
     #[cfg(not(target_arch = "wasm32"))]
     pub fn request_surface_capture(&mut self) -> Result<(), RendererError> {
         self.presenter.request_surface_capture()?;
-        if self.exact_plan_receipt.is_some() && !self.publication.arm_capture_depth_precision() {
+        if self.exact_plan_receipt.is_some() && !self.publication.arm_capture_precision() {
             self.presenter.cancel_surface_capture();
             return Err(crate::SurfacePresenterError::SurfaceCaptureState(
-                "the capture depth-precision receipt ledger is not idle".into(),
+                "the capture precision receipt ledger is not idle".into(),
             )
             .into());
         }
@@ -1103,7 +1221,7 @@ impl SurfaceRenderSession {
     #[cfg(not(target_arch = "wasm32"))]
     pub fn cancel_surface_capture(&mut self) -> bool {
         let cancelled = self.presenter.cancel_surface_capture();
-        self.publication.cancel_capture_depth_precision();
+        self.publication.cancel_capture_precision();
         cancelled
     }
 
@@ -1124,7 +1242,7 @@ impl SurfaceRenderSession {
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn take_surface_capture_evidence(
         &mut self,
-    ) -> Result<SurfaceCaptureDepthPrecisionEvidence, RendererError> {
+    ) -> Result<SurfaceCapturePrecisionEvidence, RendererError> {
         if self.exact_plan_receipt.is_none() {
             return Err(crate::SurfacePresenterError::SurfaceCaptureState(
                 "depth-precision evidence is available only for Exact Surface capture".into(),
@@ -1134,7 +1252,7 @@ impl SurfaceRenderSession {
         let capture = match self.presenter.take_surface_capture() {
             Ok(capture) => capture,
             Err(error @ crate::SurfacePresenterError::SurfaceCaptureReadback) => {
-                self.publication.cancel_capture_depth_precision();
+                self.publication.cancel_capture_precision();
                 return Err(error.into());
             }
             Err(error) => return Err(error.into()),
@@ -2073,7 +2191,11 @@ impl SurfaceRenderSession {
                 .expect("presented frame carries finalized telemetry");
             self.publication.observe_presented_capture(
                 rendered.capture_presentation_sequence,
-                rendered.depth_precision,
+                PresentedFramePrecisionReceipts::new(
+                    rendered.depth_precision,
+                    rendered.projected_cache_precision,
+                    rendered.resident_sh,
+                ),
             );
             let publication = self.presented_frame_publication(
                 rendered.output,

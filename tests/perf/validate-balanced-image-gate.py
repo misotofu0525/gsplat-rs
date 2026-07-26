@@ -68,9 +68,40 @@ MATCHED_LIFECYCLE_GENERATIONS = (
     "plan_generation",
     "presentation_generation",
 )
-DEPTH_PRECISION_PROFILES = {
-    "exact": "ExactFull32",
-    "candidate": "CandidateStable24",
+EXPERIMENTS = {
+    "b1-depth-key-candidate24": {
+        "changed_receipt": "depth_precision",
+        "profiles": {
+            "exact": ("ExactFull32", "ExactAxes32", "ExactSigned11BandScale5"),
+            "candidate": (
+                "CandidateStable24",
+                "ExactAxes32",
+                "ExactSigned11BandScale5",
+            ),
+        },
+    },
+    "b2-projected-axes16": {
+        "changed_receipt": "projected_cache_precision",
+        "profiles": {
+            "exact": ("ExactFull32", "ExactAxes32", "ExactSigned11BandScale5"),
+            "candidate": (
+                "ExactFull32",
+                "CandidateAxes16",
+                "ExactSigned11BandScale5",
+            ),
+        },
+    },
+    "b3-resident-sh-mantissa8": {
+        "changed_receipt": "resident_sh",
+        "profiles": {
+            "exact": ("ExactFull32", "ExactAxes32", "ExactSigned11BandScale5"),
+            "candidate": (
+                "ExactFull32",
+                "ExactAxes32",
+                "CandidateSigned8BandScale5",
+            ),
+        },
+    },
 }
 
 
@@ -794,6 +825,164 @@ def validate_camera(
     return mode, indices
 
 
+def validate_experiment(manifest: dict[str, Any]) -> dict[str, Any]:
+    receipt = require_object(manifest, "experiment", "manifest")
+    name = require_string(receipt, "name", "manifest.experiment")
+    experiment = EXPERIMENTS.get(name)
+    if experiment is None:
+        fail("manifest.experiment.name is not a closed B1/B2/B3 experiment")
+    changed_receipt = require_string(
+        receipt, "changed_receipt", "manifest.experiment"
+    )
+    if changed_receipt != experiment["changed_receipt"]:
+        fail("manifest.experiment.changed_receipt does not match the named experiment")
+    return experiment
+
+
+def validate_precision_receipts(
+    image_receipts: dict[str, dict[str, Any]],
+    generation_receipts: dict[str, dict[str, int]],
+    expected_dimensions: tuple[int, int],
+    authority: Authority,
+    experiment: dict[str, Any],
+    context: str,
+) -> None:
+    expected_residual_coefficients = (((authority.source_sh_degree + 1) ** 2) - 1) * 3
+    expected_plane_count = {0: 0, 1: 1, 2: 3, 3: 4}.get(authority.source_sh_degree)
+    if expected_plane_count is None:
+        fail("authoritative source SH degree has no Resident SH layout contract")
+
+    lane_identities: dict[str, dict[str, Any]] = {}
+    for lane, profiles in experiment["profiles"].items():
+        expected_depth_profile, expected_projected_profile, expected_resident_profile = profiles
+        lane_context = f"{context}.{lane}"
+        depth = require_object(image_receipts[lane], "depth_precision", lane_context)
+        projected = require_object(
+            image_receipts[lane], "projected_cache_precision", lane_context
+        )
+        resident = require_object(image_receipts[lane], "resident_sh", lane_context)
+        receipt_contexts = {
+            "depth_precision": depth,
+            "projected_cache_precision": projected,
+            "resident_sh": resident,
+        }
+
+        common_identities: dict[str, dict[str, Any]] = {}
+        for receipt_name, receipt in receipt_contexts.items():
+            receipt_context = f"{lane_context}.{receipt_name}"
+            common_identities[receipt_name] = {
+                "scene_generation": require_int(
+                    receipt, "scene_generation", receipt_context, positive=True
+                ),
+                "camera_revision": require_int(
+                    receipt, "camera_revision", receipt_context, positive=True
+                ),
+                "viewport_generation": require_int(
+                    receipt, "viewport_generation", receipt_context
+                ),
+                "contract_generation": require_int(
+                    receipt, "contract_generation", receipt_context, positive=True
+                ),
+                "plan_set_generation": require_int(
+                    receipt, "plan_set_generation", receipt_context, positive=True
+                ),
+                "plan_id": require_string(receipt, "plan_id", receipt_context),
+                "order_generation": require_int(
+                    receipt, "order_generation", receipt_context, positive=True
+                ),
+                "presentation_sequence": require_int(
+                    receipt, "presentation_sequence", receipt_context, positive=True
+                ),
+                "width": require_int(receipt, "width", receipt_context, positive=True),
+                "height": require_int(receipt, "height", receipt_context, positive=True),
+                "rgba8_sha256": require_sha256(receipt, "rgba8_sha256", receipt_context),
+            }
+        identities = list(common_identities.values())
+        if any(identity != identities[0] for identity in identities[1:]):
+            fail(f"{lane_context} B1/B2/B3 capture receipt identity mismatch")
+        identity = identities[0]
+        lane_identities[lane] = identity
+        generations = generation_receipts[lane]
+        expected_identity = {
+            "scene_generation": generations["scene_generation"],
+            "camera_revision": generations["camera_generation"],
+            "viewport_generation": generations["viewport_generation"],
+            "contract_generation": generations["contract_generation"],
+            "plan_set_generation": generations["plan_generation"],
+            "presentation_sequence": generations["presentation_generation"],
+            "width": expected_dimensions[0],
+            "height": expected_dimensions[1],
+        }
+        for field, expected in expected_identity.items():
+            if identity[field] != expected:
+                fail(
+                    f"{lane_context} capture receipt {field} must match the "
+                    "successful presentation identity"
+                )
+        if identity["plan_id"] not in {"CpuPostSort", "GpuPostSort", "GpuPreproject"}:
+            fail(f"{lane_context} capture receipt plan_id is not a closed Exact plan")
+
+        depth_context = f"{lane_context}.depth_precision"
+        if require_string(depth, "profile", depth_context) != expected_depth_profile:
+            fail(f"{depth_context}.profile must equal {expected_depth_profile!r}")
+
+        projected_context = f"{lane_context}.projected_cache_precision"
+        if (
+            require_string(projected, "profile", projected_context)
+            != expected_projected_profile
+        ):
+            fail(
+                f"{projected_context}.profile must equal "
+                f"{expected_projected_profile!r} for the named one-variable suite"
+            )
+        expected_axis_record_bytes = 8 if expected_projected_profile == "CandidateAxes16" else 16
+        if require_int(
+            projected, "axis_record_bytes", projected_context, positive=True
+        ) != expected_axis_record_bytes:
+            fail(
+                f"{projected_context}.axis_record_bytes must equal "
+                f"{expected_axis_record_bytes}"
+            )
+
+        resident_context = f"{lane_context}.resident_sh"
+        if (
+            require_string(resident, "codec_profile", resident_context)
+            != expected_resident_profile
+        ):
+            fail(
+                f"{resident_context}.codec_profile must equal "
+                f"{expected_resident_profile!r} for the named one-variable suite"
+            )
+        resident_candidate = expected_resident_profile == "CandidateSigned8BandScale5"
+        profile_plane_count = (
+            {0: 0, 1: 1, 2: 2, 3: 3}
+            if resident_candidate
+            else {0: 0, 1: 1, 2: 3, 3: 4}
+        )[authority.source_sh_degree]
+        expected_fields = {
+            "mantissa_bits": 8 if resident_candidate else 11,
+            "symmetric_max_code": 127 if resident_candidate else 1023,
+            "point_scale_bits": 5,
+            "point_scale_max_code": 31,
+            "range_chunk_splats": 256,
+            "source_count": authority.source_splat_count,
+            "encoded_count": authority.source_splat_count,
+            "resident_count": authority.source_splat_count,
+            "addressable_count": authority.source_splat_count,
+            "source_sh_degree": authority.source_sh_degree,
+            "resident_sh_degree": authority.source_sh_degree,
+            "residual_coefficients_per_source": expected_residual_coefficients,
+            "plane_count": profile_plane_count,
+            "bytes_per_source": profile_plane_count * 16,
+        }
+        for field, expected in expected_fields.items():
+            if require_int(resident, field, resident_context) != expected:
+                fail(f"{resident_context}.{field} must equal actual Exact Resident SH layout")
+    for field in ("plan_id", "order_generation"):
+        if lane_identities["exact"][field] != lane_identities["candidate"][field]:
+            fail(f"{context} Exact/candidate capture receipt {field} must match")
+
+
 def validate_formal_benchmark_artifacts(
     raw_frame: dict[str, Any],
     presentations: dict[str, dict[str, Any]],
@@ -897,15 +1086,22 @@ def validate_formal_benchmark_artifacts(
             fail(f"{lane_context} benchmark terminal_outcome must equal 'presented'")
         if benchmark_frame.get("presentation") != presentations[lane]:
             fail(f"{lane_context} benchmark presentation receipt mismatch")
-        capture_depth_precision = require_object(
-            image_receipts[lane], "depth_precision", f"{context}.{lane}"
-        )
-        if require_object(
-            lane_receipt, "depth_precision", lane_context
-        ) != capture_depth_precision:
-            fail(f"{lane_context} artifact depth-precision receipt mismatch")
-        if benchmark_frame.get("capture_depth_precision") != capture_depth_precision:
-            fail(f"{lane_context} benchmark capture depth-precision receipt mismatch")
+        for receipt_name, benchmark_key, label in (
+            ("depth_precision", "capture_depth_precision", "depth-precision"),
+            (
+                "projected_cache_precision",
+                "capture_projected_cache_precision",
+                "projected-cache precision",
+            ),
+            ("resident_sh", "capture_resident_sh", "Resident SH"),
+        ):
+            capture_receipt = require_object(
+                image_receipts[lane], receipt_name, f"{context}.{lane}"
+            )
+            if require_object(lane_receipt, receipt_name, lane_context) != capture_receipt:
+                fail(f"{lane_context} artifact {label} receipt mismatch")
+            if benchmark_frame.get(benchmark_key) != capture_receipt:
+                fail(f"{lane_context} benchmark capture {label} receipt mismatch")
         if benchmark_frame.get("active_splats") != authority.source_splat_count:
             fail(f"{lane_context} benchmark active_splats must equal source membership")
 
@@ -937,6 +1133,7 @@ def validate_frames(
     expected_trace_indices: list[int],
     authority: Authority,
     evidence_class: str,
+    experiment: dict[str, Any],
 ) -> list[FramePixels]:
     raw_frames = require_array(manifest, "frames", "manifest")
     if len(raw_frames) != len(expected_trace_indices):
@@ -1016,29 +1213,14 @@ def validate_frames(
         exact_receipt = require_object(raw_frame, "exact", context)
         candidate_receipt = require_object(raw_frame, "candidate", context)
         image_receipts = {"exact": exact_receipt, "candidate": candidate_receipt}
-        for lane, expected_profile in DEPTH_PRECISION_PROFILES.items():
-            receipt_context = f"{context}.{lane}.depth_precision"
-            depth_precision = require_object(
-                image_receipts[lane], "depth_precision", f"{context}.{lane}"
-            )
-            if require_string(depth_precision, "profile", receipt_context) != expected_profile:
-                fail(
-                    f"{receipt_context}.profile must equal {expected_profile!r}"
-                )
-            presentation_sequence = require_int(
-                depth_precision,
-                "presentation_sequence",
-                receipt_context,
-                positive=True,
-            )
-            if (
-                presentation_sequence
-                != generation_receipts[lane]["presentation_generation"]
-            ):
-                fail(
-                    f"{receipt_context}.presentation_sequence must match the "
-                    "successful presentation generation"
-                )
+        validate_precision_receipts(
+            image_receipts,
+            generation_receipts,
+            expected_dimensions,
+            authority,
+            experiment,
+            context,
+        )
         if evidence_class == "formal_quality":
             validate_formal_benchmark_artifacts(
                 raw_frame,
@@ -1064,6 +1246,16 @@ def validate_frames(
             expected_dimensions,
             f"{context}.candidate",
         )
+        for lane, image in (("exact", exact), ("candidate", candidate)):
+            declared_rgba8 = require_sha256(
+                require_object(
+                    image_receipts[lane], "depth_precision", f"{context}.{lane}"
+                ),
+                "rgba8_sha256",
+                f"{context}.{lane}.depth_precision",
+            )
+            if hashlib.sha256(image.rgba).hexdigest() != declared_rgba8:
+                fail(f"{context}.{lane} capture receipt RGBA8 SHA-256 mismatch")
         assert exact.path is not None and candidate.path is not None
         try:
             same_file = exact.path.samefile(candidate.path)
@@ -1129,6 +1321,7 @@ def validate(path: pathlib.Path) -> ValidationResult:
     evidence_class = require_string(manifest, "evidence_class", "manifest")
     if evidence_class not in EVIDENCE_CLASSES:
         fail("manifest.evidence_class must be contract_fixture or formal_quality")
+    experiment = validate_experiment(manifest)
     authority = validate_authority(manifest, evidence_class)
     validate_exactness(manifest, authority)
     dimensions = validate_resolution(manifest, authority.trace, evidence_class)
@@ -1140,6 +1333,7 @@ def validate(path: pathlib.Path) -> ValidationResult:
         trace_indices,
         authority,
         evidence_class,
+        experiment,
     )
     transition_count = validate_transitions(manifest, mode, frames)
     return ValidationResult(

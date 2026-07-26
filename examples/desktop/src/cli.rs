@@ -7,7 +7,9 @@ use gsplat_render_wgpu::{GeometryPath, SurfaceGpuOrderProducer, SurfaceOrderBack
     target_arch = "wasm32",
     any(
         feature = "diagnostic-surface-capture-receipt",
-        feature = "diagnostic-surface-depth-key-candidate24"
+        feature = "diagnostic-surface-depth-key-candidate24",
+        feature = "diagnostic-surface-projected-axes16",
+        feature = "diagnostic-resident-sh-mantissa8"
     )
 ))]
 compile_error!("desktop diagnostic Surface capture receipts are native-only");

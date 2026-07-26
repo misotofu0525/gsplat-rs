@@ -13,11 +13,15 @@ use super::{
     compose_surface_capture_evidence,
 };
 use crate::cpu_order::DepthKeyPrecision;
-use crate::evidence::{PresentedDepthPrecisionReceipt, SessionPublication};
+use crate::evidence::{
+    PresentedDepthPrecisionReceipt, PresentedFramePrecisionReceipts,
+    PresentedProjectedCachePrecisionReceipt, PresentedResidentShReceipt, SessionPublication,
+};
 use crate::plans::{FrameIdentity, PlanId, TestGpuAdmissionMode};
 use crate::renderer::gpu_prepare::ResidentShCodecProfile;
 use crate::renderer::{
-    ExactPlanPolicy, PreparedRuntimeSlot, SurfaceDepthPrecisionProfile, execute_frame,
+    ExactPlanPolicy, PreparedRuntimeSlot, ProjectedCachePrecisionProfile, ResidentShLayoutReceipt,
+    SurfaceDepthPrecisionProfile, execute_frame,
 };
 use crate::surface::{
     ExactSurfacePlanState, commit_exact_plan_state, exact_gpu_plan_for_producer,
@@ -70,6 +74,33 @@ fn resident_sh3_scene() -> ResidentSceneCpu {
     .expect("Resident SH3 fixture")
 }
 
+fn capture_precision_receipts(
+    depth: PresentedDepthPrecisionReceipt,
+) -> PresentedFramePrecisionReceipts {
+    let resident_profile = if cfg!(feature = "diagnostic-resident-sh-mantissa8") {
+        ResidentShCodecProfile::CandidateSigned8BandScale5
+    } else {
+        ResidentShCodecProfile::ExactSigned11BandScale5
+    };
+    PresentedFramePrecisionReceipts::new(
+        Some(depth),
+        Some(PresentedProjectedCachePrecisionReceipt::new(
+            ProjectedCachePrecisionProfile::configured_for_surface_build(),
+            depth.frame(),
+            depth.plan(),
+            depth.order_generation(),
+            depth.presentation_sequence(),
+        )),
+        Some(PresentedResidentShReceipt::new(
+            ResidentShLayoutReceipt::sh3_for_test(resident_profile),
+            depth.frame(),
+            depth.plan(),
+            depth.order_generation(),
+            depth.presentation_sequence(),
+        )),
+    )
+}
+
 #[test]
 fn surface_capture_receipt_join_freezes_the_requested_presented_profile() {
     let candidate = PresentedDepthPrecisionReceipt::new(
@@ -88,9 +119,9 @@ fn surface_capture_receipt_join_freezes_the_requested_presented_profile() {
     );
     let mut publication = SessionPublication::new(true);
 
-    assert!(publication.arm_capture_depth_precision());
-    publication.observe_presented_capture(Some(7), Some(candidate));
-    publication.observe_presented_capture(Some(10), Some(later_exact));
+    assert!(publication.arm_capture_precision());
+    publication.observe_presented_capture(Some(7), capture_precision_receipts(candidate));
+    publication.observe_presented_capture(Some(10), capture_precision_receipts(later_exact));
 
     let joined = compose_surface_capture_evidence(
         &mut publication,
@@ -104,11 +135,11 @@ fn surface_capture_receipt_join_freezes_the_requested_presented_profile() {
     let (capture, joined) = joined.into_parts();
     assert_eq!(capture.rgba8, [1, 2, 3, 4]);
     assert_eq!(
-        joined.profile(),
+        joined.depth_precision().profile(),
         SurfaceDepthPrecisionProfile::CandidateStable24
     );
-    assert_eq!(joined.presentation_sequence(), 7);
-    assert_eq!(publication.take_capture_depth_precision(), None);
+    assert_eq!(joined.depth_precision().presentation_sequence(), 7);
+    assert_eq!(publication.take_capture_precision(), None);
 }
 
 #[test]
@@ -121,8 +152,8 @@ fn ordinary_capture_projection_consumes_the_private_receipt_without_leaking_it()
         7,
     );
     let mut publication = SessionPublication::new(true);
-    assert!(publication.arm_capture_depth_precision());
-    publication.observe_presented_capture(Some(7), Some(receipt));
+    assert!(publication.arm_capture_precision());
+    publication.observe_presented_capture(Some(7), capture_precision_receipts(receipt));
 
     let capture = compose_surface_capture_evidence(
         &mut publication,
@@ -145,7 +176,7 @@ fn ordinary_capture_projection_consumes_the_private_receipt_without_leaking_it()
             },
         ),
         Err(SurfacePresenterError::SurfaceCaptureState(message))
-            if message.contains("no matching presented depth-precision receipt")
+            if message.contains("no matching complete presented precision receipt")
     ));
 }
 
@@ -159,8 +190,8 @@ fn surface_capture_evidence_rejects_mismatched_sequence_and_duplicate_take() {
         7,
     );
     let mut publication = SessionPublication::new(true);
-    assert!(publication.arm_capture_depth_precision());
-    publication.observe_presented_capture(Some(8), Some(receipt));
+    assert!(publication.arm_capture_precision());
+    publication.observe_presented_capture(Some(8), capture_precision_receipts(receipt));
 
     for rgba8 in [vec![1, 2, 3, 4], vec![5, 6, 7, 8]] {
         assert!(matches!(
@@ -173,7 +204,7 @@ fn surface_capture_evidence_rejects_mismatched_sequence_and_duplicate_take() {
                 },
             ),
             Err(SurfacePresenterError::SurfaceCaptureState(message))
-                if message.contains("no matching presented depth-precision receipt")
+                if message.contains("no matching complete presented precision receipt")
         ));
     }
 }
@@ -183,8 +214,11 @@ fn diagnostic_capture_receipt(
     receipt: PresentedDepthPrecisionReceipt,
 ) -> super::DiagnosticSurfaceCaptureReceipt {
     let mut publication = SessionPublication::new(true);
-    assert!(publication.arm_capture_depth_precision());
-    publication.observe_presented_capture(Some(receipt.presentation_sequence()), Some(receipt));
+    assert!(publication.arm_capture_precision());
+    publication.observe_presented_capture(
+        Some(receipt.presentation_sequence()),
+        capture_precision_receipts(receipt),
+    );
     super::DiagnosticSurfaceCaptureReceipt::from_evidence(
         compose_surface_capture_evidence(
             &mut publication,
@@ -216,6 +250,72 @@ fn diagnostic_capture_receipt_reports_exact_profile_in_normal_diagnostic_build()
     assert_eq!(receipt.height(), 1);
     assert_eq!(receipt.rgba8(), [1, 2, 3, 4, 5, 6, 7, 8]);
     assert_eq!(receipt.depth_precision_profile(), "ExactFull32");
+    assert_eq!(
+        receipt.projected_cache_precision_profile(),
+        if cfg!(feature = "diagnostic-surface-projected-axes16") {
+            "CandidateAxes16"
+        } else {
+            "ExactAxes32"
+        }
+    );
+    assert_eq!(
+        receipt.projected_axis_record_bytes(),
+        if cfg!(feature = "diagnostic-surface-projected-axes16") {
+            8
+        } else {
+            16
+        }
+    );
+    assert_eq!(
+        receipt.resident_sh_codec_profile(),
+        if cfg!(feature = "diagnostic-resident-sh-mantissa8") {
+            "CandidateSigned8BandScale5"
+        } else {
+            "ExactSigned11BandScale5"
+        }
+    );
+    assert_eq!(
+        receipt.resident_sh_mantissa_bits(),
+        if cfg!(feature = "diagnostic-resident-sh-mantissa8") {
+            8
+        } else {
+            11
+        }
+    );
+    assert_eq!(
+        receipt.resident_sh_symmetric_max_code(),
+        if cfg!(feature = "diagnostic-resident-sh-mantissa8") {
+            127
+        } else {
+            1023
+        }
+    );
+    assert_eq!(receipt.resident_sh_point_scale_bits(), 5);
+    assert_eq!(receipt.resident_sh_point_scale_max_code(), 31);
+    assert_eq!(receipt.resident_sh_range_chunk_splats(), 256);
+    assert_eq!(receipt.resident_sh_source_count(), 1);
+    assert_eq!(receipt.resident_sh_encoded_count(), 1);
+    assert_eq!(receipt.resident_sh_resident_count(), 1);
+    assert_eq!(receipt.resident_sh_addressable_count(), 1);
+    assert_eq!(receipt.resident_sh_source_degree(), 3);
+    assert_eq!(receipt.resident_sh_resident_degree(), 3);
+    assert_eq!(receipt.resident_sh_residual_coefficients_per_source(), 45);
+    assert_eq!(
+        receipt.resident_sh_plane_count(),
+        if cfg!(feature = "diagnostic-resident-sh-mantissa8") {
+            3
+        } else {
+            4
+        }
+    );
+    assert_eq!(
+        receipt.resident_sh_bytes_per_source(),
+        if cfg!(feature = "diagnostic-resident-sh-mantissa8") {
+            48
+        } else {
+            64
+        }
+    );
     assert_eq!(receipt.plan_id(), "GpuPostSort");
     assert_eq!(receipt.order_generation(), 6);
     assert_eq!(receipt.presentation_sequence(), 7);
@@ -264,15 +364,15 @@ fn diagnostic_capture_receipt_is_unavailable_before_present_and_after_take() {
         rgba8: vec![1, 2, 3, 4],
     };
     let mut publication = SessionPublication::new(true);
-    assert!(publication.arm_capture_depth_precision());
+    assert!(publication.arm_capture_precision());
     assert!(compose_surface_capture_evidence(&mut publication, capture()).is_err());
 
-    assert!(publication.arm_capture_depth_precision());
-    publication.observe_presented_capture(Some(7), None);
+    assert!(publication.arm_capture_precision());
+    publication.observe_presented_capture(Some(7), PresentedFramePrecisionReceipts::default());
     assert!(compose_surface_capture_evidence(&mut publication, capture()).is_err());
 
-    assert!(publication.arm_capture_depth_precision());
-    publication.observe_presented_capture(Some(7), Some(receipt));
+    assert!(publication.arm_capture_precision());
+    publication.observe_presented_capture(Some(7), capture_precision_receipts(receipt));
     let joined = compose_surface_capture_evidence(&mut publication, capture())
         .expect("one presented diagnostic join");
     let _diagnostic = super::DiagnosticSurfaceCaptureReceipt::from_evidence(joined);

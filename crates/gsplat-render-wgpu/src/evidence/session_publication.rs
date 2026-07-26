@@ -198,35 +198,65 @@ impl PresentedFramePrecisionReceipts {
     }
 }
 
-/// Capture evidence admitted only when the Surface lifecycle and renderer
-/// receipt identify the same successful presentation.
+/// Capture evidence admitted only when the Surface lifecycle and all three
+/// renderer receipts identify the same successful presentation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct PresentedCaptureDepthPrecisionReceipt {
+pub(crate) struct PresentedCapturePrecisionReceipt {
     depth_precision: PresentedDepthPrecisionReceipt,
+    projected_cache_precision: PresentedProjectedCachePrecisionReceipt,
+    resident_sh: PresentedResidentShReceipt,
 }
 
-impl PresentedCaptureDepthPrecisionReceipt {
-    const fn join(
+#[cfg_attr(
+    not(any(test, feature = "diagnostic-surface-capture-receipt")),
+    allow(dead_code)
+)]
+impl PresentedCapturePrecisionReceipt {
+    fn join(
         presentation_sequence: u64,
-        depth_precision: PresentedDepthPrecisionReceipt,
+        precision: PresentedFramePrecisionReceipts,
     ) -> Option<Self> {
-        if presentation_sequence != depth_precision.presentation_sequence() {
+        let depth_precision = precision.depth?;
+        let projected_cache_precision = precision.projected_cache?;
+        let resident_sh = precision.resident_sh?;
+        if presentation_sequence != depth_precision.presentation_sequence()
+            || presentation_sequence != projected_cache_precision.presentation_sequence()
+            || presentation_sequence != resident_sh.presentation_sequence()
+            || depth_precision.frame() != projected_cache_precision.frame()
+            || depth_precision.frame() != resident_sh.frame()
+            || depth_precision.plan() != projected_cache_precision.plan()
+            || depth_precision.plan() != resident_sh.plan()
+            || depth_precision.order_generation() != projected_cache_precision.order_generation()
+            || depth_precision.order_generation() != resident_sh.order_generation()
+        {
             return None;
         }
-        Some(Self { depth_precision })
+        Some(Self {
+            depth_precision,
+            projected_cache_precision,
+            resident_sh,
+        })
     }
 
-    const fn depth_precision(self) -> PresentedDepthPrecisionReceipt {
+    pub(crate) const fn depth_precision(self) -> PresentedDepthPrecisionReceipt {
         self.depth_precision
+    }
+
+    pub(crate) const fn projected_cache_precision(self) -> PresentedProjectedCachePrecisionReceipt {
+        self.projected_cache_precision
+    }
+
+    pub(crate) const fn resident_sh(self) -> PresentedResidentShReceipt {
+        self.resident_sh
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum CaptureDepthPrecisionState {
+enum CapturePrecisionState {
     Disabled,
     Idle,
     Armed,
-    Presented(PresentedCaptureDepthPrecisionReceipt),
+    Presented,
     Unavailable,
 }
 
@@ -434,7 +464,8 @@ pub(crate) struct SessionPublication {
     presented_depth_precision: Option<PresentedDepthPrecisionReceipt>,
     presented_projected_cache_precision: Option<PresentedProjectedCachePrecisionReceipt>,
     presented_resident_sh: Option<PresentedResidentShReceipt>,
-    capture_depth_precision: CaptureDepthPrecisionState,
+    capture_precision: CapturePrecisionState,
+    capture_precision_receipt: Option<PresentedCapturePrecisionReceipt>,
     pending_telemetry: SurfaceTelemetryBatch,
     evidence: SessionEvidence,
     #[cfg(test)]
@@ -454,11 +485,12 @@ impl SessionPublication {
             presented_depth_precision: None,
             presented_projected_cache_precision: None,
             presented_resident_sh: None,
-            capture_depth_precision: if exact_surface {
-                CaptureDepthPrecisionState::Idle
+            capture_precision: if exact_surface {
+                CapturePrecisionState::Idle
             } else {
-                CaptureDepthPrecisionState::Disabled
+                CapturePrecisionState::Disabled
             },
+            capture_precision_receipt: None,
             pending_telemetry: SurfaceTelemetryBatch::default(),
             evidence: SessionEvidence::new(),
             #[cfg(test)]
@@ -492,60 +524,59 @@ impl SessionPublication {
         self.presented_resident_sh
     }
 
-    pub(crate) fn arm_capture_depth_precision(&mut self) -> bool {
-        match self.capture_depth_precision {
-            CaptureDepthPrecisionState::Idle => {
-                self.capture_depth_precision = CaptureDepthPrecisionState::Armed;
+    pub(crate) fn arm_capture_precision(&mut self) -> bool {
+        match self.capture_precision {
+            CapturePrecisionState::Idle => {
+                self.capture_precision = CapturePrecisionState::Armed;
+                self.capture_precision_receipt = None;
                 true
             }
-            CaptureDepthPrecisionState::Disabled => true,
-            CaptureDepthPrecisionState::Armed
-            | CaptureDepthPrecisionState::Presented(_)
-            | CaptureDepthPrecisionState::Unavailable => false,
+            CapturePrecisionState::Disabled => true,
+            CapturePrecisionState::Armed
+            | CapturePrecisionState::Presented
+            | CapturePrecisionState::Unavailable => false,
         }
     }
 
-    pub(crate) fn cancel_capture_depth_precision(&mut self) {
-        if self.capture_depth_precision != CaptureDepthPrecisionState::Disabled {
-            self.capture_depth_precision = CaptureDepthPrecisionState::Idle;
+    pub(crate) fn cancel_capture_precision(&mut self) {
+        if self.capture_precision != CapturePrecisionState::Disabled {
+            self.capture_precision = CapturePrecisionState::Idle;
+            self.capture_precision_receipt = None;
         }
     }
 
     pub(crate) fn observe_presented_capture(
         &mut self,
         presentation_sequence: Option<u64>,
-        depth_precision: Option<PresentedDepthPrecisionReceipt>,
+        precision: PresentedFramePrecisionReceipts,
     ) {
-        if self.capture_depth_precision == CaptureDepthPrecisionState::Armed {
-            let joined =
-                presentation_sequence
-                    .zip(depth_precision)
-                    .and_then(|(sequence, receipt)| {
-                        PresentedCaptureDepthPrecisionReceipt::join(sequence, receipt)
-                    });
-            self.capture_depth_precision = joined.map_or(
-                CaptureDepthPrecisionState::Unavailable,
-                CaptureDepthPrecisionState::Presented,
-            );
+        if self.capture_precision == CapturePrecisionState::Armed {
+            let joined = presentation_sequence
+                .and_then(|sequence| PresentedCapturePrecisionReceipt::join(sequence, precision));
+            self.capture_precision = if joined.is_some() {
+                CapturePrecisionState::Presented
+            } else {
+                CapturePrecisionState::Unavailable
+            };
+            self.capture_precision_receipt = joined;
         }
     }
 
-    pub(crate) fn take_capture_depth_precision(
-        &mut self,
-    ) -> Option<PresentedDepthPrecisionReceipt> {
-        let previous = std::mem::replace(
-            &mut self.capture_depth_precision,
-            CaptureDepthPrecisionState::Idle,
-        );
+    pub(crate) fn take_capture_precision(&mut self) -> Option<PresentedCapturePrecisionReceipt> {
+        let previous = std::mem::replace(&mut self.capture_precision, CapturePrecisionState::Idle);
         match previous {
-            CaptureDepthPrecisionState::Presented(receipt) => Some(receipt.depth_precision()),
-            CaptureDepthPrecisionState::Disabled => {
-                self.capture_depth_precision = CaptureDepthPrecisionState::Disabled;
+            CapturePrecisionState::Presented => self.capture_precision_receipt.take(),
+            CapturePrecisionState::Disabled => {
+                self.capture_precision = CapturePrecisionState::Disabled;
+                self.capture_precision_receipt = None;
                 None
             }
-            CaptureDepthPrecisionState::Idle
-            | CaptureDepthPrecisionState::Armed
-            | CaptureDepthPrecisionState::Unavailable => None,
+            CapturePrecisionState::Idle
+            | CapturePrecisionState::Armed
+            | CapturePrecisionState::Unavailable => {
+                self.capture_precision_receipt = None;
+                None
+            }
         }
     }
 
@@ -1119,6 +1150,33 @@ mod tests {
         )
     }
 
+    fn capture_precision_receipts(
+        depth: PresentedDepthPrecisionReceipt,
+    ) -> PresentedFramePrecisionReceipts {
+        let resident_profile = if cfg!(feature = "diagnostic-resident-sh-mantissa8") {
+            ResidentShCodecProfile::CandidateSigned8BandScale5
+        } else {
+            ResidentShCodecProfile::ExactSigned11BandScale5
+        };
+        PresentedFramePrecisionReceipts::new(
+            Some(depth),
+            Some(PresentedProjectedCachePrecisionReceipt::new(
+                ProjectedCachePrecisionProfile::configured_for_surface_build(),
+                depth.frame(),
+                depth.plan(),
+                depth.order_generation(),
+                depth.presentation_sequence(),
+            )),
+            Some(PresentedResidentShReceipt::new(
+                ResidentShLayoutReceipt::sh3_for_test(resident_profile),
+                depth.frame(),
+                depth.plan(),
+                depth.order_generation(),
+                depth.presentation_sequence(),
+            )),
+        )
+    }
+
     fn publish_resident_sh_receipt(
         publication: &mut SessionPublication,
         receipt: PresentedResidentShReceipt,
@@ -1198,34 +1256,127 @@ mod tests {
     }
 
     #[test]
-    fn capture_depth_receipt_join_is_sequence_matched_take_once_and_not_overwritten() {
+    fn capture_precision_join_is_sequence_matched_take_once_and_not_overwritten() {
         let mut publication = SessionPublication::new(true);
         let captured =
             depth_precision_receipt(SurfaceDepthPrecisionProfile::CandidateStable24, 7, 11, 13);
         let later = depth_precision_receipt(SurfaceDepthPrecisionProfile::ExactFull32, 9, 15, 16);
 
-        assert!(publication.arm_capture_depth_precision());
-        publication.observe_presented_capture(Some(13), Some(captured));
-        publication.observe_presented_capture(Some(16), Some(later));
+        assert!(publication.arm_capture_precision());
+        publication.observe_presented_capture(Some(13), capture_precision_receipts(captured));
+        publication.observe_presented_capture(Some(16), capture_precision_receipts(later));
 
-        assert_eq!(publication.take_capture_depth_precision(), Some(captured));
-        assert_eq!(publication.take_capture_depth_precision(), None);
+        let joined = publication
+            .take_capture_precision()
+            .expect("complete capture precision receipt");
+        assert_eq!(joined.depth_precision(), captured);
+        assert_eq!(
+            joined.projected_cache_precision().profile(),
+            ProjectedCachePrecisionProfile::configured_for_surface_build()
+        );
+        assert_eq!(
+            joined.resident_sh().layout().profile(),
+            if cfg!(feature = "diagnostic-resident-sh-mantissa8") {
+                ResidentShCodecProfile::CandidateSigned8BandScale5
+            } else {
+                ResidentShCodecProfile::ExactSigned11BandScale5
+            }
+        );
+        assert_eq!(publication.take_capture_precision(), None);
     }
 
     #[test]
-    fn capture_depth_receipt_join_fails_closed_without_a_matching_presented_receipt() {
+    fn capture_precision_join_fails_closed_when_any_receipt_is_missing() {
         let receipt =
             depth_precision_receipt(SurfaceDepthPrecisionProfile::CandidateStable24, 7, 11, 13);
-
-        for (presentation_sequence, depth_precision) in
-            [(None, None), (Some(12), Some(receipt)), (Some(13), None)]
-        {
+        let complete = capture_precision_receipts(receipt);
+        for (presentation_sequence, precision) in [
+            (None, complete),
+            (Some(13), PresentedFramePrecisionReceipts::default()),
+            (
+                Some(13),
+                PresentedFramePrecisionReceipts::new(
+                    None,
+                    complete.projected_cache,
+                    complete.resident_sh,
+                ),
+            ),
+            (
+                Some(13),
+                PresentedFramePrecisionReceipts::new(complete.depth, None, complete.resident_sh),
+            ),
+            (
+                Some(13),
+                PresentedFramePrecisionReceipts::new(
+                    complete.depth,
+                    complete.projected_cache,
+                    None,
+                ),
+            ),
+        ] {
             let mut publication = SessionPublication::new(true);
-            assert!(publication.arm_capture_depth_precision());
-            if presentation_sequence.is_some() || depth_precision.is_some() {
-                publication.observe_presented_capture(presentation_sequence, depth_precision);
-            }
-            assert_eq!(publication.take_capture_depth_precision(), None);
+            assert!(publication.arm_capture_precision());
+            publication.observe_presented_capture(presentation_sequence, precision);
+            assert_eq!(publication.take_capture_precision(), None);
+        }
+    }
+
+    #[test]
+    fn capture_precision_join_rejects_cross_frame_plan_order_and_sequence_receipts() {
+        let depth =
+            depth_precision_receipt(SurfaceDepthPrecisionProfile::CandidateStable24, 7, 11, 13);
+        let complete = capture_precision_receipts(depth);
+        let mismatches = [
+            PresentedFramePrecisionReceipts::new(
+                complete.depth,
+                Some(PresentedProjectedCachePrecisionReceipt::new(
+                    ProjectedCachePrecisionProfile::ExactAxes32,
+                    FrameIdentity::new(2, 8, 3, 4, 5),
+                    depth.plan(),
+                    depth.order_generation(),
+                    depth.presentation_sequence(),
+                )),
+                complete.resident_sh,
+            ),
+            PresentedFramePrecisionReceipts::new(
+                complete.depth,
+                Some(PresentedProjectedCachePrecisionReceipt::new(
+                    ProjectedCachePrecisionProfile::ExactAxes32,
+                    depth.frame(),
+                    PlanId::GpuPostSort,
+                    depth.order_generation(),
+                    depth.presentation_sequence(),
+                )),
+                complete.resident_sh,
+            ),
+            PresentedFramePrecisionReceipts::new(
+                complete.depth,
+                Some(PresentedProjectedCachePrecisionReceipt::new(
+                    ProjectedCachePrecisionProfile::ExactAxes32,
+                    depth.frame(),
+                    depth.plan(),
+                    12,
+                    depth.presentation_sequence(),
+                )),
+                complete.resident_sh,
+            ),
+            PresentedFramePrecisionReceipts::new(
+                complete.depth,
+                Some(PresentedProjectedCachePrecisionReceipt::new(
+                    ProjectedCachePrecisionProfile::ExactAxes32,
+                    depth.frame(),
+                    depth.plan(),
+                    depth.order_generation(),
+                    14,
+                )),
+                complete.resident_sh,
+            ),
+        ];
+        for precision in mismatches {
+            let mut publication = SessionPublication::new(true);
+            assert!(publication.arm_capture_precision());
+            publication.observe_presented_capture(Some(13), precision);
+            assert_eq!(publication.take_capture_precision(), None);
         }
     }
 
@@ -1235,15 +1386,15 @@ mod tests {
         let receipt =
             depth_precision_receipt(SurfaceDepthPrecisionProfile::CandidateStable24, 7, 11, 13);
 
-        assert!(publication.arm_capture_depth_precision());
-        assert!(!publication.arm_capture_depth_precision());
-        assert_eq!(publication.take_capture_depth_precision(), None);
-        publication.observe_presented_capture(Some(13), Some(receipt));
-        assert_eq!(publication.take_capture_depth_precision(), None);
+        assert!(publication.arm_capture_precision());
+        assert!(!publication.arm_capture_precision());
+        assert_eq!(publication.take_capture_precision(), None);
+        publication.observe_presented_capture(Some(13), capture_precision_receipts(receipt));
+        assert_eq!(publication.take_capture_precision(), None);
 
-        assert!(publication.arm_capture_depth_precision());
-        publication.cancel_capture_depth_precision();
-        publication.observe_presented_capture(Some(13), Some(receipt));
-        assert_eq!(publication.take_capture_depth_precision(), None);
+        assert!(publication.arm_capture_precision());
+        publication.cancel_capture_precision();
+        publication.observe_presented_capture(Some(13), capture_precision_receipts(receipt));
+        assert_eq!(publication.take_capture_precision(), None);
     }
 }
