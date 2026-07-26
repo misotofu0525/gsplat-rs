@@ -4,13 +4,8 @@
 > Design candidate: [S0 coverage and streaming contract](s0-contract.md)
 
 <!-- gsplat-program-task-states: begin -->
-S0 = Active
+S0 = Accepted
 <!-- gsplat-program-task-states: end -->
-
-<!-- gsplat-program-active-lanes: begin -->
-activation_commit = 63678fcdd5d26973ec21427071ea9cea20bc5b24
-S0 = scalable-contract
-<!-- gsplat-program-active-lanes: end -->
 
 ## Scope
 
@@ -46,15 +41,15 @@ excluded.
   image thresholds and aggregation before work, then pass them to be Accepted.
   A geometric-only result may remain research but cannot unlock S2--S5.
 
-This branch is only a review candidate. The machine state remains `S0 = Active`
-until the root task accepts and integrates it; this writer does not activate
-S1.
+S0 is Accepted after independent review and root integration (`435d04d`,
+`f7164ed`). It activates neither implementation nor a product claim; S1 still
+requires its own predeclared, image-gated task contract.
 
 ## Ordered implementation ledger
 
 | Task | State in this candidate | Independent result |
 | --- | --- | --- |
-| S0 | Active, ready for root review | coverage/budget/source/receipt contract and selected asset approach |
+| S0 | Accepted | coverage/budget/source/receipt contract and selected asset approach |
 | S1 | Not started | predeclared image-gated, independently valid proxy hierarchy |
 | S2 | Locked until S1 Accepted | metadata-first `PageSource` and bounded direct decode |
 | S3 | Locked until S1 Accepted, then S2 | three byte-bounded caches and deterministic GPU page pool |

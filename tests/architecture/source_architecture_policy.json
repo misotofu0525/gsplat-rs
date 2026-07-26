@@ -3,41 +3,7 @@
   "baseline_commit": "9df0d6cb2e7e7df7ddc95e85d16c416e4e91d4b0",
   "program_task_state": {
     "external_owner_review_allowlist": [],
-    "parallel_execution": {
-      "activation_commit": "63678fcdd5d26973ec21427071ea9cea20bc5b24",
-      "members": [
-        {
-          "task": "B0",
-          "lane": "balanced-contract",
-          "write_allowlist": [
-            "docs/plans/active/2026-07-23-native-render-balanced/progress.md",
-            "docs/plans/active/2026-07-23-native-render-balanced/b0-contract.md"
-          ]
-        },
-        {
-          "task": "S0",
-          "lane": "scalable-contract",
-          "write_allowlist": [
-            "docs/plans/active/2026-07-23-native-render-scalable/progress.md",
-            "docs/plans/active/2026-07-23-native-render-scalable/s0-contract.md"
-          ]
-        },
-        {
-          "task": "Q0",
-          "lane": "qualification-contract",
-          "write_allowlist": [
-            "docs/plans/active/2026-07-23-native-render-qualification/progress.md",
-            "docs/plans/active/2026-07-23-native-render-qualification/q0-contract.md"
-          ]
-        }
-      ],
-      "integration_order": [
-        "balanced-contract",
-        "scalable-contract",
-        "qualification-contract"
-      ],
-      "reason": "M8 acceptance activates three independent planning contracts whose writes are isolated by package."
-    },
+    "parallel_execution": null,
     "task_catalog": {
       "A0": "A",
       "A1": "A",

@@ -3,13 +3,8 @@
 > Program plan: [Native Render Core Refactor](../../completed/2026-07-23-native-render-core-refactor/task_plan.md)
 
 <!-- gsplat-program-task-states: begin -->
-Q0 = Active
+Q0 = Accepted
 <!-- gsplat-program-task-states: end -->
-
-<!-- gsplat-program-active-lanes: begin -->
-activation_commit = 63678fcdd5d26973ec21427071ea9cea20bc5b24
-Q0 = qualification-contract
-<!-- gsplat-program-active-lanes: end -->
 
 ## Scope
 
@@ -27,7 +22,8 @@ defaults, or the Balanced and Scalable packages.
 
 - Branch: `codex/q0-qualification-contract`
 - Exact baseline: `6d5bd5442dee31cea24906744dfdd1d7492095ae`
-- State: Q0 remains Active pending root review and integration.
+- State: Q0 Accepted after independent review and root integration (`dd6af91`,
+  `b195055`).
 - Machine-state vocabulary: Q0--Q4 use only Accepted/Rejected/Deferred. If B6
   is Rejected, Q2 finishes Accepted after recording the finite decision; only
   its report may describe the Balanced comparison as `not_applicable`.
@@ -35,5 +31,5 @@ defaults, or the Balanced and Scalable packages.
   endpoint schedule, artifact receipts and finite Accepted/Rejected/Deferred
   outcomes are frozen in [q0-contract.md](q0-contract.md).
 - Execution: no native, browser or device product benchmark was run by Q0.
-- Next: root reviews this narrow candidate; Q1--Q3 start only from the accepted
-  contract and their own declared prerequisites.
+- Next: Q1--Q3 start only from the accepted contract and their own declared
+  prerequisites.

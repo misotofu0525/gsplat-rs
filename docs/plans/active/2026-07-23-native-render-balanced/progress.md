@@ -3,13 +3,8 @@
 > Program plan: [Native Render Core Refactor](../../completed/2026-07-23-native-render-core-refactor/task_plan.md)
 
 <!-- gsplat-program-task-states: begin -->
-B0 = Active
+B0 = Accepted
 <!-- gsplat-program-task-states: end -->
-
-<!-- gsplat-program-active-lanes: begin -->
-activation_commit = 63678fcdd5d26973ec21427071ea9cea20bc5b24
-B0 = balanced-contract
-<!-- gsplat-program-active-lanes: end -->
 
 ## B0 authoring slice
 
@@ -20,7 +15,7 @@ B0 = balanced-contract
 | author branch | `codex/b0-balanced-contract` |
 | owned files | this ledger and [B0 contract](b0-contract.md) only |
 | forbidden scope | renderer/shader/test/API/policy/package/default/remote changes |
-| completion owner | root integration review; this author produces one local candidate and does not self-Accept B0 |
+| completion owner | root integration review, completed with independent Accept review |
 
 ## Frozen package boundary
 
@@ -46,9 +41,8 @@ The [B0 contract](b0-contract.md) now fixes:
 
 ## Candidate status
 
-- Contract authoring: ready for root review.
+- Contract authoring: Accepted by independent review and root integration (`083870f`).
 - Implementation evidence: none; B0 is a document contract.
 - Product behavior/defaults: unchanged.
 - Remote publication: forbidden for this slice.
-- B0 remains **Active** until the root reviewer checks this local candidate and
-  records the integration decision.
+- B0 is **Accepted**. B1--B3 remain separate, not-yet-started experiments.
