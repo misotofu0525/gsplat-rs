@@ -4,6 +4,7 @@ mod configuration;
 mod current_stats;
 mod lifecycle;
 mod projected_adaptive;
+mod session_owner;
 pub(crate) mod shadow;
 pub(crate) mod standalone_direct_runtime;
 pub(crate) mod standalone_paged_runtime;
@@ -21,6 +22,7 @@ pub use current_stats::{
     SurfaceCurrentStatsTerminal, SurfaceCurrentStatsUnsampledReason,
 };
 pub(crate) use lifecycle::{SurfaceLifecycle, create_surface_instance, select_present_mode};
+pub(crate) use session_owner::SessionSurfaceOwner;
 
 #[cfg(test)]
 pub(crate) use adaptive_order::{ADAPTIVE_CPU_BOOTSTRAP_SAMPLES, ADAPTIVE_INITIAL_PROBE_DELAY};

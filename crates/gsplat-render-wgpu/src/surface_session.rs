@@ -30,13 +30,13 @@ use crate::surface::{ADAPTIVE_CPU_BOOTSTRAP_SAMPLES, ADAPTIVE_INITIAL_PROBE_DELA
 use crate::surface::{
     AdaptiveMetric, AdaptiveOrderPolicy, AdaptiveProjectedDrawPolicy, AdaptiveRefreshChoice,
     AdaptiveSampleKind, LegacySurfaceStatsAvailability, ProjectedAdaptiveChoice,
-    ProjectedAdaptiveSampleKind, adaptive_primary_metric,
+    ProjectedAdaptiveSampleKind, SessionSurfaceOwner, adaptive_primary_metric,
 };
 pub use crate::surface::{
     SurfaceAdaptiveGpuFailureReason, SurfaceAdaptivePendingSample, SurfaceAdaptiveState,
     SurfaceProjectedDrawAdaptivePendingSample, SurfaceProjectedDrawAdaptiveState,
 };
-use crate::surface_presenter::{CpuCompletionSampleRequest, SurfacePresenterHost};
+use crate::surface_presenter::CpuCompletionSampleRequest;
 use crate::{
     GeometryPath, Renderer, RendererError, SurfaceCurrentStatsCountSemantics,
     SurfaceCurrentStatsPlan, SurfaceCurrentStatsPoll, SurfaceCurrentStatsReceipt,
@@ -755,99 +755,10 @@ impl SurfaceFrameState {
     }
 }
 
-enum SessionSurfaceOwner {
-    Standalone(Box<SurfacePresenter>),
-    ExactPacked(Box<SurfacePresenterHost>),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SessionSurfaceConstruction {
-    StandalonePresenter,
-    ExactPackedHost,
-}
-
-impl SessionSurfaceConstruction {
-    const fn for_geometry(path: GeometryPath) -> Self {
-        match path {
-            GeometryPath::PackedAtlas => Self::ExactPackedHost,
-            GeometryPath::SortedIndexDirect | GeometryPath::PagedActiveAtlas => {
-                Self::StandalonePresenter
-            }
-        }
-    }
-
-    #[cfg(test)]
-    const fn creates_standalone_presenter_graph(self) -> bool {
-        matches!(self, Self::StandalonePresenter)
-    }
-}
-
+// Frame execution and telemetry stay with the Session facade. S1 extracts the
+// selected Surface resource owner, but deliberately leaves these policy-facing
+// operations in this module for the later S2-S5 ownership slices.
 impl SessionSurfaceOwner {
-    const fn geometry_path(&self) -> GeometryPath {
-        match self {
-            Self::Standalone(presenter) => presenter.geometry_path(),
-            Self::ExactPacked(_) => GeometryPath::PackedAtlas,
-        }
-    }
-
-    fn surface_size(&self) -> (u32, u32) {
-        match self {
-            Self::Standalone(presenter) => presenter.surface_size(),
-            Self::ExactPacked(host) => host.surface_size(),
-        }
-    }
-
-    fn adapter_info(&self) -> &wgpu::AdapterInfo {
-        match self {
-            Self::Standalone(presenter) => presenter.adapter_info(),
-            Self::ExactPacked(host) => host.adapter_info(),
-        }
-    }
-
-    fn addressable_splat_count(&self) -> usize {
-        match self {
-            Self::Standalone(presenter) => presenter.addressable_splat_count(),
-            Self::ExactPacked(host) => host.addressable_splat_count(),
-        }
-    }
-
-    const fn gpu_order_producer(&self) -> SurfaceGpuOrderProducer {
-        match self {
-            Self::Standalone(_) => SurfaceGpuOrderProducer::PostSort,
-            Self::ExactPacked(_) => SurfaceGpuOrderProducer::PostSort,
-        }
-    }
-
-    fn adapter_max_storage_buffers_per_shader_stage(&self) -> u32 {
-        match self {
-            Self::Standalone(presenter) => presenter.adapter_max_storage_buffers_per_shader_stage(),
-            Self::ExactPacked(host) => host.adapter_max_storage_buffers_per_shader_stage(),
-        }
-    }
-
-    fn adapter_max_storage_buffer_binding_size(&self) -> u64 {
-        match self {
-            Self::Standalone(presenter) => presenter.adapter_max_storage_buffer_binding_size(),
-            Self::ExactPacked(host) => host.adapter_max_storage_buffer_binding_size(),
-        }
-    }
-
-    fn exact_runtime_context(
-        &self,
-    ) -> (
-        std::sync::Arc<wgpu::Device>,
-        std::sync::Arc<wgpu::Queue>,
-        wgpu::TextureFormat,
-        bool,
-    ) {
-        match self {
-            Self::Standalone(_) => {
-                unreachable!("Exact Surface runtime requires the Packed host owner")
-            }
-            Self::ExactPacked(host) => host.exact_runtime_context(),
-        }
-    }
-
     fn render_exact_frame(
         &mut self,
         runtime: &mut crate::renderer::PreparedRuntimeSlot,
@@ -868,147 +779,6 @@ impl SessionSurfaceOwner {
                 force_cpu_order_refresh,
                 host_frame_started,
             ),
-        }
-    }
-
-    fn resize(&mut self, width: u32, height: u32) -> Result<(), SurfacePresenterError> {
-        match self {
-            Self::Standalone(presenter) => presenter.resize(width, height),
-            Self::ExactPacked(host) => host.resize(width, height),
-        }
-    }
-
-    #[cfg(target_arch = "wasm32")]
-    async fn resize_async(&mut self, width: u32, height: u32) -> Result<(), SurfacePresenterError> {
-        match self {
-            Self::Standalone(presenter) => presenter.resize_async(width, height).await,
-            Self::ExactPacked(host) => host.resize_async(width, height).await,
-        }
-    }
-
-    fn set_frame_latency(&mut self, latency: u32) {
-        match self {
-            Self::Standalone(presenter) => presenter.set_frame_latency(latency),
-            Self::ExactPacked(host) => {
-                host.set_frame_latency(latency);
-            }
-        }
-    }
-
-    fn last_presented_size(&self) -> Option<(u32, u32)> {
-        match self {
-            Self::Standalone(presenter) => presenter.last_presented_size(),
-            Self::ExactPacked(host) => host.last_presented_size(),
-        }
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    fn request_surface_capture(&mut self) -> Result<(), SurfacePresenterError> {
-        match self {
-            Self::Standalone(presenter) => presenter.request_surface_capture(),
-            Self::ExactPacked(host) => host.request_surface_capture(),
-        }
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    fn cancel_surface_capture(&mut self) -> bool {
-        match self {
-            Self::Standalone(presenter) => presenter.cancel_surface_capture(),
-            Self::ExactPacked(host) => host.cancel_surface_capture(),
-        }
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    fn take_surface_capture(&mut self) -> Result<SurfaceFrameCapture, SurfacePresenterError> {
-        match self {
-            Self::Standalone(presenter) => presenter.take_surface_capture(),
-            Self::ExactPacked(host) => host.take_surface_capture(),
-        }
-    }
-
-    fn raster_execution_plan(&self) -> SurfaceRasterExecutionPlan {
-        match self {
-            Self::Standalone(presenter) => presenter.raster_execution_plan(),
-            Self::ExactPacked(_) => SurfaceRasterExecutionPlan::ProjectedQuadsExact,
-        }
-    }
-
-    fn internal_render_size(&self) -> (u32, u32) {
-        match self {
-            Self::Standalone(presenter) => presenter.internal_render_size(),
-            Self::ExactPacked(host) => host.surface_size(),
-        }
-    }
-
-    async fn prepare_gpu_order_producer(
-        &mut self,
-        producer: SurfaceGpuOrderProducer,
-    ) -> Result<(), SurfacePresenterError> {
-        match self {
-            Self::Standalone(presenter) => presenter.prepare_gpu_order_producer(producer).await,
-            Self::ExactPacked(_) => Err(SurfacePresenterError::GpuOrderUnsupported),
-        }
-    }
-
-    fn set_gpu_order_producer(
-        &mut self,
-        producer: SurfaceGpuOrderProducer,
-    ) -> Result<(), SurfacePresenterError> {
-        match self {
-            Self::Standalone(_) => match producer {
-                SurfaceGpuOrderProducer::PostSort => Ok(()),
-                SurfaceGpuOrderProducer::Preproject => {
-                    Err(SurfacePresenterError::PreprojectProducerIncompatible)
-                }
-            },
-            Self::ExactPacked(_) => Err(SurfacePresenterError::GpuOrderUnsupported),
-        }
-    }
-
-    const fn projected_contributor_indirect_draw_enabled(&self) -> bool {
-        false
-    }
-
-    fn set_raster_execution_plan(
-        &mut self,
-        plan: SurfaceRasterExecutionPlan,
-    ) -> Result<(), SurfacePresenterError> {
-        match self {
-            Self::Standalone(presenter) => presenter.set_raster_execution_plan(plan),
-            Self::ExactPacked(_) => Err(SurfacePresenterError::SurfaceGeometrySwitchUnsupported),
-        }
-    }
-
-    fn set_geometry_path(
-        &mut self,
-        path: GeometryPath,
-        renderer: &Renderer,
-    ) -> Result<(), SurfacePresenterError> {
-        match self {
-            Self::Standalone(presenter) => presenter.set_geometry_path(path, renderer),
-            Self::ExactPacked(_) => Err(SurfacePresenterError::SurfaceGeometrySwitchUnsupported),
-        }
-    }
-
-    async fn prepare_gpu_order(&mut self) -> Result<(), SurfacePresenterError> {
-        match self {
-            Self::Standalone(presenter) => presenter.prepare_gpu_order().await,
-            Self::ExactPacked(_) => Err(SurfacePresenterError::GpuOrderUnsupported),
-        }
-    }
-
-    fn prepare_direct_gpu_order(&mut self) -> Result<(), SurfacePresenterError> {
-        match self {
-            Self::Standalone(presenter) => presenter.prepare_direct_gpu_order(),
-            Self::ExactPacked(_) => Err(SurfacePresenterError::GpuOrderUnsupported),
-        }
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    fn pump_receipt_callbacks(&self, timeout: Duration) -> Result<bool, RendererError> {
-        match self {
-            Self::Standalone(presenter) => presenter.pump_receipt_callbacks(timeout),
-            Self::ExactPacked(host) => host.pump_receipt_callbacks(timeout),
         }
     }
 
@@ -1071,13 +841,6 @@ impl SessionSurfaceOwner {
         }
     }
 
-    fn last_frame_presented(&self) -> bool {
-        match self {
-            Self::Standalone(presenter) => presenter.last_frame_presented(),
-            Self::ExactPacked(host) => host.last_frame_presented(),
-        }
-    }
-
     fn resolved_projected_draw_execution(&self) -> Option<SurfaceProjectedDrawExecution> {
         match self {
             Self::Standalone(_) => Some(SurfaceProjectedDrawExecution::Candidate),
@@ -1109,13 +872,6 @@ impl SessionSurfaceOwner {
                 presenter.render_sorted_indices(scene, sorted_indices, camera, refresh_indices)
             }
             Self::ExactPacked(_) => Err(SurfacePresenterError::SurfaceGeometrySwitchUnsupported),
-        }
-    }
-
-    fn instance_count(&self) -> Option<u32> {
-        match self {
-            Self::Standalone(presenter) => Some(presenter.instance_count()),
-            Self::ExactPacked(_) => None,
         }
     }
 
@@ -1452,11 +1208,7 @@ impl SurfaceRenderSession {
         presenter: SurfacePresenter,
         camera: Camera,
     ) -> Result<Self, RendererError> {
-        Self::new_with_surface_owner(
-            renderer,
-            SessionSurfaceOwner::Standalone(Box::new(presenter)),
-            camera,
-        )
+        Self::new_with_surface_owner(renderer, SessionSurfaceOwner::standalone(presenter), camera)
     }
 
     /// Creates a native window session. Exact Packed construction allocates
@@ -1473,16 +1225,7 @@ impl SurfaceRenderSession {
     where
         T: Into<wgpu::SurfaceTarget<'static>>,
     {
-        let presenter = match SessionSurfaceConstruction::for_geometry(renderer.geometry_path()) {
-            SessionSurfaceConstruction::ExactPackedHost => {
-                SessionSurfaceOwner::ExactPacked(Box::new(
-                    SurfacePresenterHost::from_window(target, width, height, &renderer).await?,
-                ))
-            }
-            SessionSurfaceConstruction::StandalonePresenter => SessionSurfaceOwner::Standalone(
-                Box::new(SurfacePresenter::from_window(target, width, height, &renderer).await?),
-            ),
-        };
+        let presenter = SessionSurfaceOwner::from_window(&renderer, target, width, height).await?;
         let (surface_width, surface_height) = presenter.surface_size();
         renderer.set_size(surface_width, surface_height)?;
         Self::new_with_surface_owner(renderer, presenter, camera)
@@ -1503,29 +1246,14 @@ impl SurfaceRenderSession {
         height: u32,
         camera: Camera,
     ) -> Result<Self, RendererError> {
-        let presenter = match SessionSurfaceConstruction::for_geometry(renderer.geometry_path()) {
-            SessionSurfaceConstruction::ExactPackedHost => {
-                SessionSurfaceOwner::ExactPacked(Box::new(unsafe {
-                    SurfacePresenterHost::from_raw_handles(
-                        raw_display_handle,
-                        raw_window_handle,
-                        width,
-                        height,
-                        &renderer,
-                    )?
-                }))
-            }
-            SessionSurfaceConstruction::StandalonePresenter => {
-                SessionSurfaceOwner::Standalone(Box::new(unsafe {
-                    SurfacePresenter::from_raw_handles(
-                        raw_display_handle,
-                        raw_window_handle,
-                        width,
-                        height,
-                        &renderer,
-                    )?
-                }))
-            }
+        let presenter = unsafe {
+            SessionSurfaceOwner::from_raw_handles(
+                &renderer,
+                raw_display_handle,
+                raw_window_handle,
+                width,
+                height,
+            )?
         };
         let (surface_width, surface_height) = presenter.surface_size();
         renderer.set_size(surface_width, surface_height)?;
@@ -1656,12 +1384,8 @@ impl SurfaceRenderSession {
         presenter: SurfacePresenter,
         camera: Camera,
     ) -> Result<Self, RendererError> {
-        Self::new_with_surface_owner(
-            renderer,
-            SessionSurfaceOwner::Standalone(Box::new(presenter)),
-            camera,
-        )
-        .await
+        Self::new_with_surface_owner(renderer, SessionSurfaceOwner::standalone(presenter), camera)
+            .await
     }
 
     /// Creates a browser canvas session. Packed selects the renderer-owned
@@ -1674,16 +1398,7 @@ impl SurfaceRenderSession {
         height: u32,
         camera: Camera,
     ) -> Result<Self, RendererError> {
-        let presenter = match SessionSurfaceConstruction::for_geometry(renderer.geometry_path()) {
-            SessionSurfaceConstruction::ExactPackedHost => {
-                SessionSurfaceOwner::ExactPacked(Box::new(
-                    SurfacePresenterHost::from_canvas(canvas, width, height, &renderer).await?,
-                ))
-            }
-            SessionSurfaceConstruction::StandalonePresenter => SessionSurfaceOwner::Standalone(
-                Box::new(SurfacePresenter::from_canvas(canvas, width, height, &renderer).await?),
-            ),
-        };
+        let presenter = SessionSurfaceOwner::from_canvas(&renderer, canvas, width, height).await?;
         let (surface_width, surface_height) = presenter.surface_size();
         renderer.set_size(surface_width, surface_height)?;
         Self::new_with_surface_owner(renderer, presenter, camera).await
@@ -3953,21 +3668,21 @@ mod tests {
     use super::{
         ADAPTIVE_INITIAL_PROBE_DELAY, AdaptiveMetric, AdaptiveOrderPolicy, AdaptiveProbeOwner,
         AdaptiveProjectedDrawPolicy, AdaptiveSampleKind, MAX_ASYNC_SORT_REVISION_LAG, PlanId,
-        ProjectedAdaptiveChoice, ProjectedAdaptiveSampleKind, SessionSurfaceConstruction,
-        SurfaceAdaptiveState, SurfaceFrameState, SurfaceGeometrySwitchEntry,
-        SurfaceGpuProducerMeasurementControl, SurfaceGpuProducerMeasurementSubmission,
-        SurfaceGpuProducerMeasurementUnsampledReason, SurfaceOrderBackend, SurfaceOrderBackendUsed,
-        SurfaceOrderMeasurementSubmission, SurfaceOrderMeasurementUnsampledReason,
-        SurfaceProjectedDrawAdaptiveState, SurfaceProjectedDrawMeasurementSubmission,
-        SurfaceProjectedDrawMeasurementUnsampledReason, SurfaceProjectedDrawPolicy,
-        SurfaceSortSchedule, TelemetrySubmission, adaptive_gpu_order_failure_reason,
-        adaptive_primary_metric, arbitrate_new_probe_owner, async_order_pose_compatible,
-        async_schedule_threshold, defer_projected_formal_choice, exact_order_refreshed,
-        exact_published_camera_revision, gpu_producer_measurement_context_is_valid,
-        gpu_projected_order_changed, legacy_surface_current_stats_poll,
-        legacy_surface_current_stats_request, legacy_surface_current_stats_submission,
-        order_probe_owner_should_yield, paged_surface_counts, projected_formal_sample_requested,
-        projected_order_changed, projected_policy_can_sample, projected_probe_claims_owner,
+        ProjectedAdaptiveChoice, ProjectedAdaptiveSampleKind, SurfaceAdaptiveState,
+        SurfaceFrameState, SurfaceGeometrySwitchEntry, SurfaceGpuProducerMeasurementControl,
+        SurfaceGpuProducerMeasurementSubmission, SurfaceGpuProducerMeasurementUnsampledReason,
+        SurfaceOrderBackend, SurfaceOrderBackendUsed, SurfaceOrderMeasurementSubmission,
+        SurfaceOrderMeasurementUnsampledReason, SurfaceProjectedDrawAdaptiveState,
+        SurfaceProjectedDrawMeasurementSubmission, SurfaceProjectedDrawMeasurementUnsampledReason,
+        SurfaceProjectedDrawPolicy, SurfaceSortSchedule, TelemetrySubmission,
+        adaptive_gpu_order_failure_reason, adaptive_primary_metric, arbitrate_new_probe_owner,
+        async_order_pose_compatible, async_schedule_threshold, defer_projected_formal_choice,
+        exact_order_refreshed, exact_published_camera_revision,
+        gpu_producer_measurement_context_is_valid, gpu_projected_order_changed,
+        legacy_surface_current_stats_poll, legacy_surface_current_stats_request,
+        legacy_surface_current_stats_submission, order_probe_owner_should_yield,
+        paged_surface_counts, projected_formal_sample_requested, projected_order_changed,
+        projected_policy_can_sample, projected_probe_claims_owner,
         reset_adaptive_for_gpu_producer_measurement_transition,
         reset_adaptive_for_raster_transition, retain_gpu_producer_terminal,
         should_measure_cpu_refresh, should_reset_order_for_projected_incumbent_change,
@@ -3984,38 +3699,8 @@ mod tests {
     };
 
     #[test]
-    fn exact_packed_session_construction_skips_standalone_presenter_resources() {
-        let packed = SessionSurfaceConstruction::for_geometry(GeometryPath::PackedAtlas);
-        assert_eq!(packed, SessionSurfaceConstruction::ExactPackedHost);
-        assert!(!packed.creates_standalone_presenter_graph());
-
-        for path in [
-            GeometryPath::SortedIndexDirect,
-            GeometryPath::PagedActiveAtlas,
-        ] {
-            let construction = SessionSurfaceConstruction::for_geometry(path);
-            assert_eq!(
-                construction,
-                SessionSurfaceConstruction::StandalonePresenter
-            );
-            assert!(construction.creates_standalone_presenter_graph());
-        }
-    }
-
-    #[test]
-    fn session_surface_owner_cannot_implicitly_deref_to_the_standalone_presenter() {
+    fn exact_surface_setters_share_the_same_transaction() {
         let source = include_str!("surface_session.rs");
-        assert!(!source.contains(concat!("impl ", "Deref for SessionSurfaceOwner")));
-        assert!(!source.contains(concat!("impl ", "DerefMut for SessionSurfaceOwner")));
-        assert_eq!(
-            source
-                .matches(concat!(
-                    "Self::ExactPacked(host) => ",
-                    "host.resize(width, height)"
-                ))
-                .count(),
-            1
-        );
         assert_eq!(
             source
                 .matches(concat!("try_set_exact_gpu_order_", "producer(producer)?"))
