@@ -214,6 +214,12 @@ class VerificationBootstrapTests(unittest.TestCase):
             self.assertEqual(result.commands[0].env["ANDROID_SDK_ROOT"], str(sdk))
             self.assertEqual(result.commands[0].env["JAVA_HOME"], str(java_home))
             self.assertIn("--serial", result.commands[0].argv)
+            self.assertTrue(
+                any(
+                    probe.key == "fresh-output:GSPLAT_ANDROID_OUTPUT"
+                    for probe in result.probes
+                )
+            )
             self.assertFalse(
                 any(pathlib.Path(call[0]).name in {"adb", "simctl"} for call in host.calls)
             )
@@ -249,6 +255,67 @@ class VerificationBootstrapTests(unittest.TestCase):
         with mock.patch.object(BOOTSTRAP.subprocess, "run") as run:
             self.assertEqual(BOOTSTRAP.run_profile(result, allow_device=False), 2)
             run.assert_not_called()
+
+    def test_existing_artifact_destination_blocks_before_execution(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            output = pathlib.Path(directory) / "retained-run"
+            output.mkdir()
+            probe = BOOTSTRAP.fresh_output_probe("GSPLAT_ARTIFACT_DIR", str(output))
+            result = BOOTSTRAP.ProfileResult(
+                name="web-webgpu",
+                description="test",
+                touches_device=False,
+                probes=(probe,),
+                commands=(BOOTSTRAP.Command(("must-not-run",)),),
+            )
+
+            self.assertFalse(probe.ok)
+            self.assertIn("preserve the existing artifact", probe.remedy or "")
+            with mock.patch.object(BOOTSTRAP.subprocess, "run") as run:
+                self.assertEqual(BOOTSTRAP.run_profile(result, allow_device=False), 2)
+                run.assert_not_called()
+
+    def test_web_profile_checks_a_fresh_artifact_destination(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            host = FakeHost(root)
+            discovery = BOOTSTRAP.Discovery(
+                env={"GSPLAT_ARTIFACT_DIR": str(root / "new-web-run")},
+                home=root,
+                which=host.which,
+                capture=host.capture,
+            )
+            with mock.patch.object(
+                BOOTSTRAP,
+                "web_environment",
+                return_value=([BOOTSTRAP.Probe("web", True, "ready")], {}),
+            ):
+                result = BOOTSTRAP.profile_result("web-webgpu", discovery)
+
+            probe = next(
+                probe
+                for probe in result.probes
+                if probe.key == "fresh-output:GSPLAT_ARTIFACT_DIR"
+            )
+            self.assertTrue(probe.ok)
+            self.assertIn("new-web-run", probe.detail)
+
+    def test_run_stops_after_first_failed_command_without_retry(self) -> None:
+        result = BOOTSTRAP.ProfileResult(
+            name="host",
+            description="test",
+            touches_device=False,
+            probes=(BOOTSTRAP.Probe("ready", True, "ready"),),
+            commands=(
+                BOOTSTRAP.Command(("first",)),
+                BOOTSTRAP.Command(("second",)),
+            ),
+        )
+        failed = BOOTSTRAP.subprocess.CompletedProcess(("first",), 17)
+        with mock.patch.object(BOOTSTRAP.subprocess, "run", return_value=failed) as run:
+            self.assertEqual(BOOTSTRAP.run_profile(result, allow_device=False), 17)
+            run.assert_called_once()
+            self.assertEqual(run.call_args.args[0], ("first",))
 
     def test_default_doctor_is_host_only(self) -> None:
         self.assertNotIn("android-a065", BOOTSTRAP.DEFAULT_DOCTOR_PROFILES)

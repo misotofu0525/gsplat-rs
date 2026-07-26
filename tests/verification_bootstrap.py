@@ -253,6 +253,35 @@ def directory_probe(key: str, path: pathlib.Path, remedy: str) -> Probe:
     )
 
 
+def fresh_output_probe(variable: str, value: str) -> Probe:
+    """Require a collector destination that has never been published.
+
+    These reusable profiles treat a published or partial run as immutable.
+    Checking the destination in doctor/command mode keeps that failure before
+    builds, browser launch, or device mutation while preserving the old
+    evidence for diagnosis.
+    """
+
+    # Match the delegated collectors exactly: absolute paths stay absolute and
+    # relative paths resolve from the repository root. Neither collector
+    # performs shell tilde expansion because bootstrap executes argv directly.
+    path = pathlib.Path(value)
+    if not path.is_absolute():
+        path = REPO_ROOT / path
+    occupied = os.path.lexists(path)
+    return Probe(
+        key=f"fresh-output:{variable}",
+        ok=not occupied,
+        detail=f"{path} ({'already exists' if occupied else 'available'})",
+        remedy=None
+        if not occupied
+        else (
+            f"set {variable} to a new output path; preserve the existing "
+            "artifact instead of deleting or overwriting it"
+        ),
+    )
+
+
 def rust_target_probes(discovery: Discovery, targets: Iterable[str]) -> list[Probe]:
     installed = discovery.rust_targets()
     return [
@@ -552,6 +581,7 @@ def profile_result(name: str, discovery: Discovery) -> ProfileResult:
             "GSPLAT_ANDROID_OUTPUT",
             f"target/android-sort-benchmarks/verification-a065-{head}",
         )
+        probes.append(fresh_output_probe("GSPLAT_ANDROID_OUTPUT", output))
         command = Command(
             (
                 str(python),
@@ -618,6 +648,7 @@ def profile_result(name: str, discovery: Discovery) -> ProfileResult:
             "GSPLAT_ARTIFACT_DIR",
             f"target/benchmarks/m4-webgpu-smoke-{head}",
         )
+        probes.append(fresh_output_probe("GSPLAT_ARTIFACT_DIR", artifact))
         collector_env = dict(env)
         collector_env.update({"GSPLAT_M4_SMOKE": "1", "GSPLAT_ARTIFACT_DIR": artifact})
         commands = (

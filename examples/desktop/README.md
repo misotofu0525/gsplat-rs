@@ -2,6 +2,10 @@
 
 Desktop viewer and offscreen PNG smoke harness.
 
+Before running the macOS/Metal conformance or a native Surface check, use the
+read-only prerequisite doctor and reusable command profile in
+[`handbook/VERIFICATION.md`](../../handbook/VERIFICATION.md#reusable-launchbook-android-web-and-macos).
+
 Run the deterministic PNG smoke from the repository root:
 
 ```bash

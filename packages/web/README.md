@@ -2,6 +2,10 @@
 
 Local browser SDK wrapper for the experimental `gsplat-web` Rust/WASM renderer.
 
+Before building Wasm or launching the Chrome/WebGPU collector, use the
+read-only prerequisite doctor and reusable command profile in
+[`handbook/VERIFICATION.md`](../../handbook/VERIFICATION.md#reusable-launchbook-android-web-and-macos).
+
 This is a local packaging slice, not a published npm release yet. Build the
 generated wasm-bindgen package and wrapper dist first:
 

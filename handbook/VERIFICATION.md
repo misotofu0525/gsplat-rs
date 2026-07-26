@@ -109,6 +109,64 @@ commit. A missing dataset, simulator UUID, device authorization, thermal
 admission, browser GPU capability, signing identity, or physical device remains
 an external prerequisite rather than a reason to weaken validation.
 
+### Reusable launchbook: Android, Web, and macOS
+
+Use this sequence for every run: `doctor` establishes host prerequisites,
+`command` prints the exact delegated repository command, and `run` executes it
+once. `READY` means the static prerequisites and fresh destination are present;
+it is not a promise that a device, driver, browser, or Surface will succeed at
+runtime. `BLOCKED` is an admission result: fix the reported prerequisite and
+rerun `doctor`. The bootstrap never installs software, deletes old evidence,
+or retries a failed command.
+
+| Target | Read-only admission | Execution | Evidence boundary |
+| --- | --- | --- | --- |
+| macOS / Metal | `python3 tests/verification_bootstrap.py doctor --profile macos-metal` | `python3 tests/verification_bootstrap.py run macos-metal` | Hardware-backed SortedAlpha Metal conformance; no benchmark artifact. |
+| Chrome / WebGPU | `GSPLAT_ARTIFACT_DIR=<fresh-path> python3 tests/verification_bootstrap.py doctor --profile web-webgpu` | Repeat the same environment with `run web-webgpu` | Real Chrome WebGPU/WASM functional artifact; not a performance comparison. |
+| Android A065 | `GSPLAT_ANDROID_SERIAL=<serial> GSPLAT_ANDROID_DATASET=<absolute-ply> GSPLAT_ANDROID_OUTPUT=<fresh-path> python3 tests/verification_bootstrap.py doctor --profile android-a065` | Repeat the same environment with `run android-a065 --allow-device` | One full-quality Packed/CPU functionality and strict-ledger artifact; not a CPU/GPU comparison. |
+
+Before `run`, substitute `command` for the action to inspect the exact command
+and derived environment without building, opening Chrome, querying `adb`, or
+touching a device. Keep every environment assignment identical between
+`doctor`, `command`, and `run`.
+
+Known, supported overrides remove repeated host discovery without embedding one
+maintainer's paths in scripts:
+
+- Android: `ANDROID_SDK_ROOT` and `JAVA_HOME`; the profile exports the selected
+  SDK as both `ANDROID_SDK_ROOT` and `ANDROID_HOME`. The Apple Silicon Homebrew
+  locations documented above are known working discovery results, not portable
+  defaults.
+- Web: `CHROME_PATH` selects the exact Chrome/Chromium executable, and
+  `GSPLAT_ARTIFACT_DIR` names the new artifact destination.
+- A065: `GSPLAT_ANDROID_SERIAL`, `GSPLAT_ANDROID_DATASET`, and
+  `GSPLAT_ANDROID_OUTPUT` make device, asset, and destination explicit. The
+  serial and dataset are intentionally never guessed or committed.
+
+Use an absolute output path or a repository-relative path. Because bootstrap
+executes collectors directly rather than through a shell, a literal `~` is not
+expanded.
+
+The Android collector and retained Web publication path refuse an existing
+destination. The bootstrap applies the same immutable-output rule to the short
+WebGPU smoke before execution. For a retry, keep the failed directory for
+diagnosis and choose a new path, for example one with the current short SHA
+plus a caller-chosen attempt label:
+
+```bash
+GSPLAT_ARTIFACT_DIR=target/benchmarks/webgpu-<sha>-attempt-2 \
+python3 tests/verification_bootstrap.py doctor --profile web-webgpu
+
+GSPLAT_ANDROID_SERIAL=<adb-serial> \
+GSPLAT_ANDROID_DATASET=/absolute/path/to/kitune1.ply \
+GSPLAT_ANDROID_OUTPUT=target/android-sort-benchmarks/a065-<sha>-attempt-2 \
+python3 tests/verification_bootstrap.py doctor --profile android-a065
+```
+
+Do not remove a retained artifact merely to make a profile `READY`. A runtime
+failure remains one finite failed attempt; inspect it, change only the proven
+cause, choose a fresh destination, and invoke `run` explicitly again.
+
 ## Fast Feedback
 
 - Smallest useful check:
