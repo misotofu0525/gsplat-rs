@@ -74,6 +74,10 @@ const RADIX: u32 = 16u;
 const MASK_WORDS_PER_DIGIT: u32 = WORKGROUP_SIZE / 32u;
 const MASK_WORD_COUNT: u32 = RADIX * MASK_WORDS_PER_DIGIT;
 
+// Exact is the product default. B1 contract tests compile the same generator
+// with 8 to retain a stable high-24 key without changing visibility or depth.
+override DEPTH_KEY_LOW_BITS_TO_CLEAR: u32 = 0u;
+
 // Histogram uses only workgroup atomics. Every logical group writes a unique
 // digit-major row in radix_prefix, so no cross-workgroup synchronization is
 // needed. The prefix buffer is scanned in-place by a separate pipeline.
@@ -102,6 +106,15 @@ fn descending_digit_slot(key: u32) -> u32 {
 fn canonical_depth(left: vec3<f32>, right: vec3<f32>) -> f32 {
   let xy = fma(left.y, right.y, left.x * right.x);
   return fma(left.z, right.z, xy);
+}
+
+fn visible_depth_key(depth: f32) -> u32 {
+  let bits = bitcast<u32>(max(depth, 0.0));
+  if (DEPTH_KEY_LOW_BITS_TO_CLEAR == 0u) {
+    return bits;
+  }
+  let retained = max(bits >> DEPTH_KEY_LOW_BITS_TO_CLEAR, 1u);
+  return retained << DEPTH_KEY_LOW_BITS_TO_CLEAR;
 }
 
 @compute @workgroup_size(128)
@@ -134,7 +147,7 @@ fn generate_pairs(
       var key = 0u;
       if (depth >= render_params.near_plane && depth <= render_params.far_plane) {
         // Positive finite IEEE-754 values have the same ordering as their bits.
-        key = bitcast<u32>(max(depth, 0.0));
+        key = visible_depth_key(depth);
         local_visible += 1u;
       }
       generated_keys[index] = key;

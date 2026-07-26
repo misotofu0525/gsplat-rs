@@ -57,6 +57,10 @@ const ITEMS_PER_THREAD: u32 = 8u;
 const TILE_SIZE: u32 = WORKGROUP_SIZE * ITEMS_PER_THREAD;
 const MASK_WORD_COUNT: u32 = WORKGROUP_SIZE / 32u;
 
+// Exact is the product default. B1 contract tests compile the same generator
+// with 8 to retain a stable high-24 key without changing visibility or depth.
+override DEPTH_KEY_LOW_BITS_TO_CLEAR: u32 = 0u;
+
 var<workgroup> group_visible_count: atomic<u32>;
 var<workgroup> visible_masks: array<atomic<u32>, 4>;
 var<workgroup> visible_prior: u32;
@@ -74,6 +78,15 @@ fn source_group_count() -> u32 {
 fn canonical_depth(left: vec3<f32>, right: vec3<f32>) -> f32 {
   let xy = fma(left.y, right.y, left.x * right.x);
   return fma(left.z, right.z, xy);
+}
+
+fn visible_depth_key(depth: f32) -> u32 {
+  let bits = bitcast<u32>(max(depth, 0.0));
+  if (DEPTH_KEY_LOW_BITS_TO_CLEAR == 0u) {
+    return bits;
+  }
+  let retained = max(bits >> DEPTH_KEY_LOW_BITS_TO_CLEAR, 1u);
+  return retained << DEPTH_KEY_LOW_BITS_TO_CLEAR;
 }
 
 // Phase 1 writes one key per source element and only one count per 1024-source
@@ -110,7 +123,7 @@ fn generate_keys_and_group_counts(
       let depth = canonical_depth(render_params.view_rot_row2.xyz, relative);
       var key = 0u;
       if (depth >= render_params.near_plane && depth <= render_params.far_plane) {
-        key = bitcast<u32>(max(depth, 0.0));
+        key = visible_depth_key(depth);
         local_visible += 1u;
       }
       raw_keys[index] = key;

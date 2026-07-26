@@ -13,6 +13,51 @@ mod scalar;
 #[cfg(all(test, not(target_arch = "wasm32"), target_arch = "x86_64"))]
 mod x86_64;
 
+/// Private depth-key precision used by Exact ordering and B1 contract tests.
+///
+/// Product callers remain on `ExactFull32`. The 24-bit variant retains the
+/// high IEEE-754 bits and reserves key zero for non-visible sources so the
+/// precision experiment cannot change visible membership.
+#[cfg_attr(not(test), allow(dead_code))]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum DepthKeyPrecision {
+    #[default]
+    ExactFull32,
+    CandidateStable24,
+}
+
+impl DepthKeyPrecision {
+    pub(crate) const fn retained_high_bits(self) -> u32 {
+        match self {
+            Self::ExactFull32 => 32,
+            Self::CandidateStable24 => 24,
+        }
+    }
+
+    pub(crate) const fn low_bits_to_clear(self) -> u32 {
+        32 - self.retained_high_bits()
+    }
+}
+
+/// Convert one already-visible positive depth into its stable radix key.
+///
+/// Positive finite IEEE-754 values sort in the same direction as their bits.
+/// CandidateStable24 clears the low eight bits. Its lowest positive bin is
+/// clamped to one retained-bit unit because zero remains the GPU visibility
+/// sentinel; this changes no near/far decision or source membership.
+#[inline]
+pub(crate) const fn visible_depth_key(depth: f32, precision: DepthKeyPrecision) -> u32 {
+    let bits = depth.max(0.0).to_bits();
+    let low_bits = precision.low_bits_to_clear();
+    if low_bits == 0 {
+        bits
+    } else {
+        let retained = bits >> low_bits;
+        let nonzero_retained = if retained == 0 { 1 } else { retained };
+        nonzero_retained << low_bits
+    }
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) const PARALLEL_PREPROCESS_THRESHOLD: usize = 256 * 1024;
 #[cfg(not(target_arch = "wasm32"))]
@@ -64,24 +109,53 @@ fn dispatch_leaf(
     positions: CpuPositionView<'_>,
     source_base: usize,
     context: PreprocessContext,
+    precision: DepthKeyPrecision,
     depth_keys: &mut Vec<u32>,
     source_ids: &mut Vec<u32>,
 ) {
     #[cfg(target_arch = "wasm32")]
-    scalar::preprocess_into(positions, source_base, context, depth_keys, source_ids);
+    scalar::preprocess_into_with_precision(
+        positions,
+        source_base,
+        context,
+        precision,
+        depth_keys,
+        source_ids,
+    );
 
     #[cfg(all(not(target_arch = "wasm32"), target_arch = "aarch64"))]
-    aarch64::preprocess_into(positions, source_base, context, depth_keys, source_ids);
+    aarch64::preprocess_into(
+        positions,
+        source_base,
+        context,
+        precision,
+        depth_keys,
+        source_ids,
+    );
 
     #[cfg(all(not(target_arch = "wasm32"), target_arch = "x86_64"))]
-    x86_64::preprocess_into(positions, source_base, context, depth_keys, source_ids);
+    x86_64::preprocess_into(
+        positions,
+        source_base,
+        context,
+        precision,
+        depth_keys,
+        source_ids,
+    );
 
     #[cfg(all(
         not(target_arch = "wasm32"),
         not(target_arch = "aarch64"),
         not(target_arch = "x86_64")
     ))]
-    scalar::preprocess_into(positions, source_base, context, depth_keys, source_ids);
+    scalar::preprocess_into_with_precision(
+        positions,
+        source_base,
+        context,
+        precision,
+        depth_keys,
+        source_ids,
+    );
 }
 
 pub(crate) fn positions_visible_into_scalar(
@@ -90,9 +164,27 @@ pub(crate) fn positions_visible_into_scalar(
     depth_keys: &mut Vec<u32>,
     source_ids: &mut Vec<u32>,
 ) -> Result<(), RendererError> {
+    positions_visible_into_scalar_with_precision(
+        positions,
+        camera,
+        DepthKeyPrecision::ExactFull32,
+        depth_keys,
+        source_ids,
+    )
+}
+
+pub(crate) fn positions_visible_into_scalar_with_precision(
+    positions: CpuPositionView<'_>,
+    camera: &Camera,
+    precision: DepthKeyPrecision,
+    depth_keys: &mut Vec<u32>,
+    source_ids: &mut Vec<u32>,
+) -> Result<(), RendererError> {
     let context = PreprocessContext::from_camera(camera)?;
     reserve_outputs(depth_keys, source_ids, positions.len());
-    scalar::preprocess_into(positions, 0, context, depth_keys, source_ids);
+    scalar::preprocess_into_with_precision(
+        positions, 0, context, precision, depth_keys, source_ids,
+    );
     Ok(())
 }
 
@@ -100,6 +192,26 @@ pub(crate) fn positions_visible_into_scalar(
 pub(crate) fn positions_visible_into(
     positions: CpuPositionView<'_>,
     camera: &Camera,
+    depth_keys: &mut Vec<u32>,
+    source_ids: &mut Vec<u32>,
+    #[cfg(not(target_arch = "wasm32"))] chunks: &mut Vec<PreprocessChunkScratch>,
+) -> Result<(), RendererError> {
+    positions_visible_into_with_precision(
+        positions,
+        camera,
+        DepthKeyPrecision::ExactFull32,
+        depth_keys,
+        source_ids,
+        #[cfg(not(target_arch = "wasm32"))]
+        chunks,
+    )
+}
+
+#[cfg(any(test, target_arch = "wasm32"))]
+pub(crate) fn positions_visible_into_with_precision(
+    positions: CpuPositionView<'_>,
+    camera: &Camera,
+    precision: DepthKeyPrecision,
     depth_keys: &mut Vec<u32>,
     source_ids: &mut Vec<u32>,
     #[cfg(not(target_arch = "wasm32"))] chunks: &mut Vec<PreprocessChunkScratch>,
@@ -130,6 +242,7 @@ pub(crate) fn positions_visible_into(
                     positions.slice(begin..end),
                     begin,
                     context,
+                    precision,
                     &mut scratch.depth_keys,
                     &mut scratch.source_ids,
                 );
@@ -144,7 +257,7 @@ pub(crate) fn positions_visible_into(
     }
 
     reserve_outputs(depth_keys, source_ids, positions.len());
-    dispatch_leaf(positions, 0, context, depth_keys, source_ids);
+    dispatch_leaf(positions, 0, context, precision, depth_keys, source_ids);
     Ok(())
 }
 
@@ -164,7 +277,7 @@ pub(crate) fn paged_visible_into(
         let depth = scalar::depth(position, context.camera_position, context.depth_row);
         if depth >= context.near_plane && depth <= context.far_plane {
             source_ids.push(global_index);
-            depth_keys.push(depth.max(0.0).to_bits());
+            depth_keys.push(visible_depth_key(depth, DepthKeyPrecision::ExactFull32));
         }
     }
     Ok(())

@@ -7,6 +7,7 @@ use crate::cpu::preprocess::PreprocessChunkScratch;
 use crate::cpu::workspace::{CpuOrderWorkspace, WorkspaceAllocationError};
 use crate::data::CpuPositionView;
 
+pub(crate) use crate::cpu::preprocess::DepthKeyPrecision;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 pub(crate) use crate::cpu::preprocess::PARALLEL_PREPROCESS_THRESHOLD;
 
@@ -107,7 +108,29 @@ pub(crate) fn is_visible(depth_z: f32, camera: &Camera) -> bool {
 
 #[cfg(test)]
 pub(crate) fn depth_to_key(depth_z: f32) -> u32 {
-    depth_z.max(0.0).to_bits()
+    preprocess::visible_depth_key(depth_z, DepthKeyPrecision::ExactFull32)
+}
+
+#[cfg(test)]
+pub(crate) fn depth_to_key_with_precision(depth_z: f32, precision: DepthKeyPrecision) -> u32 {
+    preprocess::visible_depth_key(depth_z, precision)
+}
+
+#[cfg(test)]
+pub(crate) fn preprocess_positions_visible_into_with_precision(
+    positions: &[Vec3f],
+    camera: &Camera,
+    precision: DepthKeyPrecision,
+    depth_keys: &mut Vec<u32>,
+    indices: &mut Vec<u32>,
+) -> Result<(), RendererError> {
+    preprocess::positions_visible_into_scalar_with_precision(
+        CpuPositionView::new(positions),
+        camera,
+        precision,
+        depth_keys,
+        indices,
+    )
 }
 
 /// Scalar authority retained for focused parity tests and narrow callers that
@@ -143,6 +166,25 @@ pub(crate) fn preprocess_positions_visible_into_parallel(
     )
 }
 
+#[cfg(all(test, not(target_arch = "wasm32")))]
+pub(crate) fn preprocess_positions_visible_into_parallel_with_precision(
+    positions: &[Vec3f],
+    camera: &Camera,
+    precision: DepthKeyPrecision,
+    depth_keys: &mut Vec<u32>,
+    indices: &mut Vec<u32>,
+    chunks: &mut Vec<PreprocessChunkScratch>,
+) -> Result<(), RendererError> {
+    preprocess::positions_visible_into_with_precision(
+        CpuPositionView::new(positions),
+        camera,
+        precision,
+        depth_keys,
+        indices,
+        chunks,
+    )
+}
+
 pub(crate) fn preprocess_paged_visible_into(
     scene: &SceneBuffers,
     entries: &[(u32, u32)],
@@ -170,8 +212,11 @@ mod tests {
 
     #[cfg(not(target_arch = "wasm32"))]
     use super::preprocess_positions_visible_into_parallel;
+    #[cfg(not(target_arch = "wasm32"))]
+    use super::preprocess_positions_visible_into_parallel_with_precision;
     use super::{
-        CpuOrderEngine, depth_to_key, preprocess_positions_visible_into,
+        CpuOrderEngine, DepthKeyPrecision, depth_to_key, depth_to_key_with_precision,
+        preprocess_positions_visible_into, preprocess_positions_visible_into_with_precision,
         world_to_camera_depth_with_view_row,
     };
     use crate::data::CpuPositionView;
@@ -261,6 +306,120 @@ mod tests {
         let actual = world_to_camera_depth_with_view_row(position, camera_position, row);
         assert_eq!(actual.to_bits(), expected.to_bits());
         assert_eq!(depth_to_key(actual), actual.max(0.0).to_bits());
+    }
+
+    #[test]
+    fn candidate_high24_retains_visibility_and_stable_source_id_ties() {
+        let depths = [
+            f32::from_bits(0x3f80_0001),
+            f32::from_bits(0x3f80_00fe),
+            f32::from_bits(0x3fc0_0000),
+            f32::from_bits(1.0_f32.to_bits() - 1),
+            f32::from_bits(2.0_f32.to_bits() + 1),
+        ];
+        let positions = depths
+            .into_iter()
+            .map(|depth| Vec3f::new(0.0, 0.0, depth))
+            .collect::<Vec<_>>();
+        let camera = camera(1.0, 2.0);
+        let mut exact_keys = Vec::new();
+        let mut exact_ids = Vec::new();
+        let mut candidate_keys = Vec::new();
+        let mut candidate_ids = Vec::new();
+
+        preprocess_positions_visible_into_with_precision(
+            &positions,
+            &camera,
+            DepthKeyPrecision::ExactFull32,
+            &mut exact_keys,
+            &mut exact_ids,
+        )
+        .expect("Exact preprocess");
+        preprocess_positions_visible_into_with_precision(
+            &positions,
+            &camera,
+            DepthKeyPrecision::CandidateStable24,
+            &mut candidate_keys,
+            &mut candidate_ids,
+        )
+        .expect("candidate preprocess");
+
+        assert_eq!(exact_ids, [0, 1, 2]);
+        assert_eq!(candidate_ids, exact_ids);
+        assert_eq!(exact_keys, [0x3f80_0001, 0x3f80_00fe, 0x3fc0_0000]);
+        assert_eq!(candidate_keys, [0x3f80_0000, 0x3f80_0000, 0x3fc0_0000]);
+        assert_eq!(DepthKeyPrecision::ExactFull32.retained_high_bits(), 32);
+        assert_eq!(
+            DepthKeyPrecision::CandidateStable24.retained_high_bits(),
+            24
+        );
+
+        gsplat_sort::CpuSortBackend::default()
+            .sort_values_by_keys(&candidate_keys, &mut candidate_ids)
+            .expect("candidate stable radix");
+        assert_eq!(candidate_ids, [2, 0, 1]);
+
+        let mut exact_order = exact_ids;
+        gsplat_sort::CpuSortBackend::default()
+            .sort_values_by_keys(&exact_keys, &mut exact_order)
+            .expect("Exact stable radix");
+        assert_eq!(exact_order, [2, 1, 0]);
+    }
+
+    #[test]
+    fn candidate_high24_reserves_zero_without_changing_exact_bits() {
+        let smallest_positive = f32::from_bits(1);
+        assert_eq!(
+            depth_to_key_with_precision(smallest_positive, DepthKeyPrecision::ExactFull32),
+            1
+        );
+        assert_eq!(
+            depth_to_key_with_precision(smallest_positive, DepthKeyPrecision::CandidateStable24),
+            0x0000_0100
+        );
+        assert_eq!(
+            depth_to_key_with_precision(1.0, DepthKeyPrecision::CandidateStable24),
+            1.0_f32.to_bits()
+        );
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn architecture_leaf_uses_the_shared_candidate_quantizer() {
+        let positions = (0..257)
+            .map(|index| {
+                let low_bits = (index as u32).wrapping_mul(37) & 0xff;
+                Vec3f::new(0.0, 0.0, f32::from_bits(0x3f80_0000 | low_bits))
+            })
+            .collect::<Vec<_>>();
+        let camera = camera(1.0, 2.0);
+        let mut scalar_keys = Vec::new();
+        let mut scalar_ids = Vec::new();
+        let mut leaf_keys = Vec::new();
+        let mut leaf_ids = Vec::new();
+        let mut chunks = Vec::new();
+
+        preprocess_positions_visible_into_with_precision(
+            &positions,
+            &camera,
+            DepthKeyPrecision::CandidateStable24,
+            &mut scalar_keys,
+            &mut scalar_ids,
+        )
+        .expect("scalar candidate preprocess");
+        preprocess_positions_visible_into_parallel_with_precision(
+            &positions,
+            &camera,
+            DepthKeyPrecision::CandidateStable24,
+            &mut leaf_keys,
+            &mut leaf_ids,
+            &mut chunks,
+        )
+        .expect("architecture candidate preprocess");
+
+        assert_eq!(leaf_keys, scalar_keys);
+        assert_eq!(leaf_ids, scalar_ids);
+        assert!(leaf_keys.iter().all(|key| key & 0xff == 0));
     }
 
     #[test]

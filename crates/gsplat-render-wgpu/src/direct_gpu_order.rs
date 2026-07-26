@@ -12,6 +12,7 @@ use std::{mem::size_of, num::NonZeroU64};
 use bytemuck::{Pod, Zeroable};
 use wgpu::util::DeviceExt;
 
+use crate::cpu_order::DepthKeyPrecision;
 use crate::gpu::{
     FULL32_DIRECT_RADIX as DIRECT_RADIX, FULL32_RESIDENT_RADIX as RESIDENT_RADIX,
     FULL32_RESIDENT_STORAGE_BINDINGS as RESIDENT_RADIX_STORAGE_BINDINGS,
@@ -34,6 +35,13 @@ use crate::gpu::{
 };
 
 const RESIDENT_COMPACTION_STORAGE_BINDINGS: u32 = 7;
+
+#[derive(Clone, Copy)]
+struct DirectGpuOrderProfile {
+    compatibility_output: bool,
+    prefer_resident_radix8: bool,
+    depth_key_precision: DepthKeyPrecision,
+}
 
 /// The fused byte-radix shader has a complete source-ID readback qualification
 /// on native macOS Metal only. Adreno Vulkan produced corrupt full-count ID
@@ -260,8 +268,11 @@ impl DirectGpuOrder {
             render_params_buffer,
             capacity,
             count,
-            true,
-            false,
+            DirectGpuOrderProfile {
+                compatibility_output: true,
+                prefer_resident_radix8: false,
+                depth_key_precision: DepthKeyPrecision::ExactFull32,
+            },
         )
     }
 
@@ -281,8 +292,11 @@ impl DirectGpuOrder {
             render_params_buffer,
             capacity,
             count,
-            false,
-            false,
+            DirectGpuOrderProfile {
+                compatibility_output: false,
+                prefer_resident_radix8: false,
+                depth_key_precision: DepthKeyPrecision::ExactFull32,
+            },
         )
     }
 
@@ -301,8 +315,34 @@ impl DirectGpuOrder {
             render_params_buffer,
             capacity,
             count,
-            false,
-            prefer_resident_radix8_for_target(),
+            DirectGpuOrderProfile {
+                compatibility_output: false,
+                prefer_resident_radix8: prefer_resident_radix8_for_target(),
+                depth_key_precision: DepthKeyPrecision::ExactFull32,
+            },
+        )
+    }
+
+    #[cfg(test)]
+    fn new_with_depth_key_precision(
+        device: &wgpu::Device,
+        source_buffer: &wgpu::Buffer,
+        render_params_buffer: &wgpu::Buffer,
+        capacity: u32,
+        count: u32,
+        precision: DepthKeyPrecision,
+    ) -> Result<Self, DirectSceneError> {
+        Self::new_inner(
+            device,
+            source_buffer,
+            render_params_buffer,
+            capacity,
+            count,
+            DirectGpuOrderProfile {
+                compatibility_output: true,
+                prefer_resident_radix8: false,
+                depth_key_precision: precision,
+            },
         )
     }
 
@@ -312,9 +352,13 @@ impl DirectGpuOrder {
         render_params_buffer: &wgpu::Buffer,
         capacity: u32,
         count: u32,
-        compatibility_output: bool,
-        prefer_resident_radix8: bool,
+        profile: DirectGpuOrderProfile,
     ) -> Result<Self, DirectSceneError> {
+        let DirectGpuOrderProfile {
+            compatibility_output,
+            prefer_resident_radix8,
+            depth_key_precision,
+        } = profile;
         Self::validate_limits(
             device,
             capacity,
@@ -383,6 +427,7 @@ impl DirectGpuOrder {
             &keygen_pipeline_layout,
             "generate_pairs",
             "gsplat-direct-gpu-order-keygen-pipeline",
+            depth_key_precision,
         );
         let radix_profile = if let Some(seed) = visible_seed.as_ref() {
             StableFull32RadixProfile::ResidentVisible {
@@ -613,7 +658,7 @@ mod tests {
     use super::*;
     use crate::data::GpuSurfaceSourceElem;
     use crate::make_surface_render_params;
-    use gsplat_core::camera_trace::CameraTrace;
+    use gsplat_core::{Camera, Vec3f, camera_trace::CameraTrace};
     use gsplat_io_ply::visit_ply_splats;
     use gsplat_sort::CpuSortBackend;
 
@@ -671,6 +716,136 @@ mod tests {
             usage: wgpu::BufferUsages::UNIFORM,
         });
         (source, params)
+    }
+
+    fn readback_resident_generated_keys(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        sources: &[[f32; 4]],
+        params: &GpuSurfaceRenderParams,
+        precision: DepthKeyPrecision,
+    ) -> (Vec<u32>, u32) {
+        let count = u32::try_from(sources.len()).expect("test source count fits u32");
+        let source_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("resident-candidate-keygen-source"),
+            contents: bytemuck::cast_slice(sources),
+            usage: wgpu::BufferUsages::STORAGE,
+        });
+        let params_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("resident-candidate-keygen-params"),
+            contents: bytemuck::bytes_of(params),
+            usage: wgpu::BufferUsages::UNIFORM,
+        });
+        let output_bytes = u64::from(count.max(1)) * size_of::<u32>() as u64;
+        let raw_keys = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("resident-candidate-raw-keys"),
+            size: output_bytes,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+        let group_count = workgroup_count(count);
+        let group_offsets = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("resident-candidate-group-counts"),
+            size: u64::from(group_count + 1) * size_of::<u32>() as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("resident-candidate-keygen-shader"),
+            source: wgpu::ShaderSource::Wgsl(
+                include_str!("../shaders/resident_gpu_order_compact.wgsl").into(),
+            ),
+        });
+        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("resident-candidate-keygen-bgl"),
+            entries: &[
+                storage_entry(0, true),
+                uniform_entry(
+                    1,
+                    false,
+                    NonZeroU64::new(size_of::<GpuSurfaceRenderParams>() as u64),
+                ),
+                storage_entry(2, false),
+                storage_entry(3, false),
+            ],
+        });
+        let pipeline_layout = pipeline_layout(device, "resident-candidate-keygen-layout", &layout);
+        let constants = [(
+            "DEPTH_KEY_LOW_BITS_TO_CLEAR",
+            f64::from(precision.low_bits_to_clear()),
+        )];
+        let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("resident-candidate-keygen-pipeline"),
+            layout: Some(&pipeline_layout),
+            module: &shader,
+            entry_point: Some("generate_keys_and_group_counts"),
+            compilation_options: wgpu::PipelineCompilationOptions {
+                constants: &constants,
+                ..Default::default()
+            },
+            cache: None,
+        });
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("resident-candidate-keygen-bg"),
+            layout: &layout,
+            entries: &[
+                entire_buffer_entry(0, &source_buffer),
+                entire_buffer_entry(1, &params_buffer),
+                entire_buffer_entry(2, &raw_keys),
+                entire_buffer_entry(3, &group_offsets),
+            ],
+        });
+        let readback = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("resident-candidate-keygen-readback"),
+            size: output_bytes + size_of::<u32>() as u64,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let dispatch = Dispatch2d::for_workgroups(
+            group_count,
+            device.limits().max_compute_workgroups_per_dimension,
+        )
+        .expect("test dispatch fits adapter limits");
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("resident-candidate-keygen-encoder"),
+        });
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("resident-candidate-keygen-pass"),
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&pipeline);
+            pass.set_bind_group(0, &bind_group, &[]);
+            pass.dispatch_workgroups(dispatch.x, dispatch.y, 1);
+        }
+        encoder.copy_buffer_to_buffer(&raw_keys, 0, &readback, 0, output_bytes);
+        encoder.copy_buffer_to_buffer(
+            &group_offsets,
+            0,
+            &readback,
+            output_bytes,
+            size_of::<u32>() as u64,
+        );
+        queue.submit(Some(encoder.finish()));
+
+        let slice = readback.slice(..);
+        let (tx, rx) = mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |result| {
+            let _ = tx.send(result);
+        });
+        device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .expect("poll Resident candidate keygen");
+        rx.recv()
+            .expect("receive Resident candidate callback")
+            .expect("map Resident candidate output");
+        let words = {
+            let mapped = slice.get_mapped_range();
+            bytemuck::cast_slice::<u8, u32>(&mapped).to_vec()
+        };
+        readback.unmap();
+        let visible_count = words[count as usize];
+        (words[..count as usize].to_vec(), visible_count)
     }
 
     fn sorted_on_gpu(
@@ -1568,6 +1743,176 @@ mod tests {
     }
 
     #[test]
+    fn candidate_high24_cpu_and_both_gpu_key_generators_match() {
+        let Some((device, queue)) = test_device() else {
+            eprintln!("skipping candidate depth-key GPU test; adapter unavailable");
+            return;
+        };
+        let depths = [
+            f32::from_bits(0x3f80_0001),
+            f32::from_bits(0x3f80_00fe),
+            1.5,
+            1.0,
+            2.0,
+            f32::MIN_POSITIVE,
+            0.0,
+            f32::from_bits(2.0_f32.to_bits() + 1),
+        ];
+        let positions = depths
+            .iter()
+            .copied()
+            .map(|depth| Vec3f::new(0.0, 0.0, depth))
+            .collect::<Vec<_>>();
+        let sources = depths
+            .iter()
+            .copied()
+            .map(|depth| [0.0, 0.0, depth, 0.0])
+            .collect::<Vec<_>>();
+        let mut camera = Camera::default();
+        camera.intrinsics.near_plane = f32::MIN_POSITIVE;
+        camera.intrinsics.far_plane = 2.0;
+        let mut params = GpuSurfaceRenderParams::zeroed();
+        params.view_rot_row2 = [0.0, 0.0, 1.0, 0.0];
+        params.near_plane = camera.intrinsics.near_plane;
+        params.far_plane = camera.intrinsics.far_plane;
+        params.len = depths.len() as u32;
+        params.source_position_stride_words = 4;
+        let source_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("candidate-high24-direct-source"),
+            contents: bytemuck::cast_slice(&sources),
+            usage: wgpu::BufferUsages::STORAGE,
+        });
+        let params_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("candidate-high24-direct-params"),
+            contents: bytemuck::bytes_of(&params),
+            usage: wgpu::BufferUsages::UNIFORM,
+        });
+
+        let exact = DirectGpuOrder::new(
+            &device,
+            &source_buffer,
+            &params_buffer,
+            depths.len() as u32,
+            depths.len() as u32,
+        )
+        .expect("Exact key generator");
+        let candidate = DirectGpuOrder::new_with_depth_key_precision(
+            &device,
+            &source_buffer,
+            &params_buffer,
+            depths.len() as u32,
+            depths.len() as u32,
+            DepthKeyPrecision::CandidateStable24,
+        )
+        .expect("candidate key generator");
+        let exact_pairs = readback_pairs(&device, &queue, &exact);
+        let candidate_pairs = readback_pairs(&device, &queue, &candidate);
+
+        let mut cpu_keys = Vec::new();
+        let mut cpu_ids = Vec::new();
+        crate::cpu_order::preprocess_positions_visible_into_with_precision(
+            &positions,
+            &camera,
+            DepthKeyPrecision::CandidateStable24,
+            &mut cpu_keys,
+            &mut cpu_ids,
+        )
+        .expect("CPU candidate preprocess");
+        let visible_count = cpu_ids.len();
+        CpuSortBackend::default()
+            .sort_values_by_keys(&cpu_keys, &mut cpu_ids)
+            .expect("CPU candidate radix");
+        let expected_visible = cpu_ids
+            .iter()
+            .map(|&id| GpuSortPair {
+                key: crate::cpu_order::depth_to_key_with_precision(
+                    depths[id as usize],
+                    DepthKeyPrecision::CandidateStable24,
+                ),
+                id,
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(&candidate_pairs[..visible_count], expected_visible);
+        assert!(
+            candidate_pairs[visible_count..]
+                .iter()
+                .all(|pair| pair.key == 0),
+            "visible_count={visible_count} candidate_pairs={candidate_pairs:?}"
+        );
+        assert_eq!(candidate_pairs[0].id, 4);
+        assert_eq!(
+            &candidate_pairs[2..5],
+            [
+                GpuSortPair {
+                    key: 0x3f80_0000,
+                    id: 0,
+                },
+                GpuSortPair {
+                    key: 0x3f80_0000,
+                    id: 1,
+                },
+                GpuSortPair {
+                    key: 0x3f80_0000,
+                    id: 3,
+                },
+            ]
+        );
+        assert_eq!(
+            &exact_pairs[2..5],
+            [
+                GpuSortPair {
+                    key: 0x3f80_00fe,
+                    id: 1,
+                },
+                GpuSortPair {
+                    key: 0x3f80_0001,
+                    id: 0,
+                },
+                GpuSortPair {
+                    key: 0x3f80_0000,
+                    id: 3,
+                },
+            ]
+        );
+        assert_eq!(
+            readback_indirect_args(&device, &queue, &candidate, 4).instance_count,
+            visible_count as u32
+        );
+        assert_eq!(
+            candidate_pairs[visible_count - 1],
+            GpuSortPair {
+                key: f32::MIN_POSITIVE.to_bits(),
+                id: 5,
+            }
+        );
+
+        let (resident_keys, resident_visible_count) = readback_resident_generated_keys(
+            &device,
+            &queue,
+            &sources,
+            &params,
+            DepthKeyPrecision::CandidateStable24,
+        );
+        let expected_raw = depths
+            .iter()
+            .copied()
+            .map(|depth| {
+                if (params.near_plane..=params.far_plane).contains(&depth) {
+                    crate::cpu_order::depth_to_key_with_precision(
+                        depth,
+                        DepthKeyPrecision::CandidateStable24,
+                    )
+                } else {
+                    0
+                }
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(resident_keys, expected_raw);
+        assert_eq!(resident_visible_count, visible_count as u32);
+    }
+
+    #[test]
     fn resident_position_stride_generates_the_same_complete_order() {
         let Some((device, queue)) = test_device() else {
             eprintln!("skipping resident GPU key-generation test; adapter unavailable");
@@ -1853,13 +2198,21 @@ fn compute_pipeline(
     layout: &wgpu::PipelineLayout,
     entry_point: &'static str,
     label: &'static str,
+    depth_key_precision: DepthKeyPrecision,
 ) -> wgpu::ComputePipeline {
+    let constants = [(
+        "DEPTH_KEY_LOW_BITS_TO_CLEAR",
+        f64::from(depth_key_precision.low_bits_to_clear()),
+    )];
     device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
         label: wgpu_label(label),
         layout: Some(layout),
         module: shader,
         entry_point: Some(entry_point),
-        compilation_options: wgpu::PipelineCompilationOptions::default(),
+        compilation_options: wgpu::PipelineCompilationOptions {
+            constants: &constants,
+            ..Default::default()
+        },
         cache: None,
     })
 }

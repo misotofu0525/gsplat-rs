@@ -105,3 +105,48 @@ evidence can identify the exact validator. Focused unit coverage exercises both
 valid camera modes and the fail-closed boundaries; it is repository-local
 contract evidence only and is not device, browser, image-quality, or B1
 experiment evidence.
+
+## B1 shared depth-key quantizer slice
+
+The first executable B1 slice is a private contract foundation on baseline
+`fb94f916c5e3416afc1012091696de6f1e54f23d`. Exact remains the only product
+selection: every production CPU/GPU constructor continues to use stable full32
+keys, and no public API, FFI, runtime policy, radix-pass count, or render plan
+changes in this slice.
+
+The candidate contract retains the high 24 bits of the canonical positive
+IEEE-754 depth key and clears the low eight bits. Key zero remains reserved for
+non-visible GPU sources, so the lowest positive candidate bin is represented by
+one retained-bit unit. This exception preserves the existing visibility
+sentinel without changing near/far tests, canonical FMA depth math, visible
+membership, descending order, or stable source-ID ties.
+
+Focused tests can force Exact full32 or Candidate stable-high24 independently.
+They prove:
+
+- Scalar and the current architecture leaf call the same Rust quantizer rather
+  than defining architecture-local masks;
+- Direct key generation compiles the existing WGSL with an explicit private
+  override while production compilation still supplies full32;
+- the Resident visible-compaction key generator uses the identical WGSL
+  override contract in an isolated keygen test without changing its
+  out-of-scope production owner; and
+- CPU, Direct GPU, and Resident GPU agree on boundary visibility, every emitted
+  candidate key, descending order, and source-ID order for depths that collapse
+  to the same 24-bit key.
+
+This is contract and focused GPU execution evidence only. It does not reduce
+radix passes, measure a performance benefit, run the Balanced image gate, or
+qualify Metal/WebGPU/Android endpoints. B1 therefore remains **Active**; 20-bit
+keys remain locked until a later 24-bit candidate completes the frozen B0
+identity and image gates.
+
+Focused verification for this candidate:
+
+- `cargo test -p gsplat-render-wgpu --lib cpu_order::tests`: 13 passed,
+  2 finite benchmark observations ignored;
+- `cargo test -p gsplat-render-wgpu --lib direct_gpu_order::tests`: 13 passed,
+  4 external-asset/GPU-pressure observations ignored;
+- required Metal SortedAlpha conformance: 1 passed;
+- renderer all-target Clippy with warnings denied, Rust format, diff check, and
+  source-architecture policy: passed.

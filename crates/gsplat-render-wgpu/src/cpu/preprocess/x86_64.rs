@@ -2,14 +2,22 @@
 
 use crate::data::CpuPositionView;
 
-use super::{PreprocessContext, scalar};
+use super::{DepthKeyPrecision, PreprocessContext, scalar};
 
 pub(super) fn preprocess_into(
     positions: CpuPositionView<'_>,
     source_base: usize,
     context: PreprocessContext,
+    precision: DepthKeyPrecision,
     depth_keys: &mut Vec<u32>,
     source_ids: &mut Vec<u32>,
 ) {
-    scalar::preprocess_into(positions, source_base, context, depth_keys, source_ids);
+    scalar::preprocess_into_with_precision(
+        positions,
+        source_base,
+        context,
+        precision,
+        depth_keys,
+        source_ids,
+    );
 }

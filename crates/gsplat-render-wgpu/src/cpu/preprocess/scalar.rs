@@ -2,12 +2,13 @@ use gsplat_core::Vec3f;
 
 use crate::data::CpuPositionView;
 
-use super::PreprocessContext;
+use super::{DepthKeyPrecision, PreprocessContext, visible_depth_key};
 
 /// Authoritative element-by-element CPU visibility and key oracle.
 ///
 /// Keep the explicit FMA sequence in `depth` identical to the renderer/WGSL
 /// contract. Architecture leaves must match this output bit-for-bit.
+#[cfg(test)]
 pub(super) fn preprocess_into(
     positions: CpuPositionView<'_>,
     source_base: usize,
@@ -15,11 +16,29 @@ pub(super) fn preprocess_into(
     depth_keys: &mut Vec<u32>,
     source_ids: &mut Vec<u32>,
 ) {
+    preprocess_into_with_precision(
+        positions,
+        source_base,
+        context,
+        DepthKeyPrecision::ExactFull32,
+        depth_keys,
+        source_ids,
+    );
+}
+
+pub(super) fn preprocess_into_with_precision(
+    positions: CpuPositionView<'_>,
+    source_base: usize,
+    context: PreprocessContext,
+    precision: DepthKeyPrecision,
+    depth_keys: &mut Vec<u32>,
+    source_ids: &mut Vec<u32>,
+) {
     for (local_index, position) in positions.as_slice().iter().copied().enumerate() {
         let depth = depth(position, context.camera_position, context.depth_row);
         if depth >= context.near_plane && depth <= context.far_plane {
             source_ids.push((source_base + local_index) as u32);
-            depth_keys.push(depth.max(0.0).to_bits());
+            depth_keys.push(visible_depth_key(depth, precision));
         }
     }
 }
