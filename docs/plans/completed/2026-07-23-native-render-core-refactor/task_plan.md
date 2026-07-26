@@ -371,6 +371,13 @@ evidence inventory and one reviewable candidate commit. Subagents are reserved
 for bounded read-only scope audits or fixed-SHA review; they do not edit shared
 production files or act as hidden implementation writers.
 
+Every newly created Codex task must be renamed before it receives work. Its
+title is unique and searchable: `<package/task> <short subject> <baseline or
+candidate SHA>`, for example `S1 proxy builder 3ecf0f2` or `B1 review
+d110abd`. The root task records the same identity in the prompt and rejects a
+worktree whose checked-out baseline differs. Default duplicate titles are not
+used for implementation, review, or verification tasks.
+
 Read-only audits may run in parallel with any implementation task. Multiple
 implementation tasks may also run concurrently when the plan records all of
 the following before either writer starts:
