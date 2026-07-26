@@ -489,7 +489,7 @@ impl LegacySurfaceStatsAvailability {
 mod tests {
     use super::*;
     use crate::evidence::{
-        CompatibilityEvidenceStore, SurfaceCompatibilityOrderSubmission,
+        SessionEvidence, SurfaceCompatibilityOrderSubmission,
         SurfaceCompatibilityProducerSubmission, SurfaceCompatibilityProjectedSubmission,
         SurfaceCompatibilityTerminal, SurfaceCompatibilityTerminalPoll,
         SurfaceCompatibilityTerminalSelector, SurfaceGpuProducerMeasurementSubmission,
@@ -540,7 +540,7 @@ mod tests {
     }
 
     fn observe_order_ticket(
-        store: &mut CompatibilityEvidenceStore,
+        store: &mut SessionEvidence,
         ticket: u64,
         camera_revision: u64,
         backend: SurfaceOrderBackendUsed,
@@ -578,7 +578,7 @@ mod tests {
 
     #[test]
     fn exact_cpu_current_stats_terminal_resolves_same_ticket_order_ledger() {
-        let mut store = CompatibilityEvidenceStore::new();
+        let mut store = SessionEvidence::new();
         observe_order_ticket(&mut store, 23, 29, SurfaceOrderBackendUsed::Cpu);
         let mut receipt = match ready(submission(23, 29)) {
             SurfaceCurrentStatsPoll::Terminal(SurfaceCurrentStatsTerminal::Ready(receipt)) => {
@@ -590,10 +590,7 @@ mod tests {
         receipt.cpu_preprocess_ms_bits = Some(1.25_f32.to_bits());
         receipt.cpu_sort_ms_bits = Some(2.5_f32.to_bits());
 
-        crate::surface_session::publish_exact_order_terminal(
-            &mut store,
-            SurfaceCurrentStatsTerminal::Ready(receipt),
-        );
+        store.publish_exact_order_terminal(SurfaceCurrentStatsTerminal::Ready(receipt));
 
         let SurfaceCompatibilityTerminalPoll::Ready(SurfaceCompatibilityTerminal::OrderCpuSuccess(
             success,

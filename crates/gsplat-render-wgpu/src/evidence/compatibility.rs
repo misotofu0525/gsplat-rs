@@ -1,17 +1,25 @@
+//! Pure compatibility-evidence state for [`SurfaceRenderSession`](crate::SurfaceRenderSession).
+//!
+//! This leaf owns immutable submission/terminal receipts, ticket correlation,
+//! bounded compatibility queues and take-once count ledgers. It never polls a
+//! device, controls a frame, submits work, or decides whether a frame commits.
+
 use std::{collections::VecDeque, num::NonZeroU64};
 
 use crate::evidence::BoundedEvidenceRing;
 use crate::gpu_telemetry::SurfaceCpuOrderMeasurement;
 use crate::{
-    SurfaceGpuOrderProducer, SurfaceGpuProducerDrawScope, SurfaceGpuProducerMeasurement,
-    SurfaceGpuProducerMeasurementFailure, SurfaceGpuProducerMeasurementFailureReason,
-    SurfaceOrderBackendUsed, SurfaceOrderMeasurement, SurfaceOrderMeasurementFailure,
-    SurfaceOrderMeasurementFailureReason, SurfaceProjectedDrawExecution,
-    SurfaceProjectedDrawMeasurement, SurfaceProjectedDrawMeasurementFailure,
-    SurfaceProjectedDrawMeasurementFailureReason, SurfaceTimingSource,
+    SurfaceCurrentStatsCountSemantics, SurfaceCurrentStatsPlan, SurfaceCurrentStatsReceipt,
+    SurfaceCurrentStatsTerminal, SurfaceGpuOrderProducer, SurfaceGpuProducerDrawScope,
+    SurfaceGpuProducerMeasurement, SurfaceGpuProducerMeasurementFailure,
+    SurfaceGpuProducerMeasurementFailureReason, SurfaceOrderBackendUsed, SurfaceOrderMeasurement,
+    SurfaceOrderMeasurementFailure, SurfaceOrderMeasurementFailureReason,
+    SurfaceProjectedDrawExecution, SurfaceProjectedDrawMeasurement,
+    SurfaceProjectedDrawMeasurementFailure, SurfaceProjectedDrawMeasurementFailureReason,
+    SurfaceTimingSource,
     surface_session::{
-        SurfaceAdaptiveState, SurfaceGpuProducerMeasurementSubmission, SurfaceOrderBackend,
-        SurfaceOrderMeasurementSubmission, SurfaceProjectedDrawAdaptiveState,
+        SurfaceAdaptiveState, SurfaceFrameOutput, SurfaceGpuProducerMeasurementSubmission,
+        SurfaceOrderBackend, SurfaceOrderMeasurementSubmission, SurfaceProjectedDrawAdaptiveState,
         SurfaceProjectedDrawMeasurementSubmission, SurfaceProjectedDrawPolicy,
     },
 };
@@ -536,7 +544,7 @@ impl<T: Copy, C: Copy> ProducerTerminalQueue<T, C> {
     }
 }
 
-pub(crate) struct CompatibilityEvidenceStore {
+pub(crate) struct SessionEvidence {
     last_order_submission: Option<SurfaceCompatibilityOrderSubmission>,
     last_projected_submission: Option<SurfaceCompatibilityProjectedSubmission>,
     last_producer_submission: Option<SurfaceCompatibilityProducerSubmission>,
@@ -569,7 +577,7 @@ pub(crate) struct CompatibilityEvidenceStore {
     projected_counts: CountLedger,
 }
 
-impl CompatibilityEvidenceStore {
+impl SessionEvidence {
     pub(crate) fn new() -> Self {
         Self {
             last_order_submission: None,
@@ -621,6 +629,154 @@ impl CompatibilityEvidenceStore {
             && let Some(issue) = producer.issued_context(ticket)
         {
             replace_pending(&mut self.pending_producer, ticket, issue);
+        }
+    }
+
+    pub(crate) fn observe_frame_output(
+        &mut self,
+        output: SurfaceFrameOutput,
+        requested_backend: SurfaceOrderBackend,
+        requested_producer: SurfaceGpuOrderProducer,
+        producer_measurement_enabled: bool,
+    ) {
+        let sampled_producer = match output.gpu_producer_measurement_submission {
+            SurfaceGpuProducerMeasurementSubmission::Issued { producer, .. }
+            | SurfaceGpuProducerMeasurementSubmission::Unsampled { producer, .. } => Some(producer),
+            SurfaceGpuProducerMeasurementSubmission::NotRequested => None,
+        };
+        self.observe_submissions(
+            SurfaceCompatibilityOrderSubmission {
+                camera_revision: output.camera_revision,
+                requested_backend,
+                actual_backend: output.order_backend,
+                adaptive_state: output.adaptive_state,
+                measurement: output.order_measurement_submission,
+            },
+            SurfaceCompatibilityProjectedSubmission {
+                camera_revision: output.camera_revision,
+                requested_policy: output.projected_draw_policy,
+                actual_execution: output.projected_draw_execution,
+                order_backend: output.order_backend,
+                adaptive_state: output.projected_draw_adaptive_state,
+                measurement: output.projected_draw_measurement_submission,
+            },
+            SurfaceCompatibilityProducerSubmission {
+                camera_revision: output.camera_revision,
+                requested_producer,
+                actual_producer: output.gpu_order_producer.or(sampled_producer),
+                order_backend: output.order_backend,
+                projected_execution: output.projected_draw_execution,
+                measurement_enabled: producer_measurement_enabled,
+                measurement: output.gpu_producer_measurement_submission,
+            },
+        );
+    }
+
+    pub(crate) fn publish_exact_order_terminal(&mut self, terminal: SurfaceCurrentStatsTerminal) {
+        let submission = terminal.submission();
+        let ticket = submission.ticket();
+        let camera_revision = submission.join().frame_identity().camera_revision();
+        match terminal {
+            SurfaceCurrentStatsTerminal::Ready(receipt) => {
+                self.publish_exact_order_success(receipt);
+            }
+            SurfaceCurrentStatsTerminal::MapFailure(_) => {
+                self.publish_order_failure(SurfaceOrderMeasurementFailure {
+                    ticket,
+                    camera_revision,
+                    reason: SurfaceOrderMeasurementFailureReason::ReadbackMap,
+                });
+            }
+            SurfaceCurrentStatsTerminal::GenerationInvalidated(_)
+            | SurfaceCurrentStatsTerminal::Expired(_)
+            | SurfaceCurrentStatsTerminal::Dropped(_) => {
+                self.publish_order_failure(SurfaceOrderMeasurementFailure {
+                    ticket,
+                    camera_revision,
+                    reason: SurfaceOrderMeasurementFailureReason::GenerationInvalidated,
+                });
+            }
+        }
+    }
+
+    fn publish_exact_order_success(&mut self, receipt: SurfaceCurrentStatsReceipt) {
+        let submission = receipt.submission();
+        let ticket = submission.ticket();
+        let join = submission.join();
+        let camera_revision = join.frame_identity().camera_revision();
+        let counts = receipt.counts();
+        let frame_complete_ms = receipt.frame_complete_ms();
+        let exact_contributor_compaction = matches!(
+            receipt.count_semantics(),
+            SurfaceCurrentStatsCountSemantics::IndirectDrawEqualsContributor
+        );
+        if !frame_complete_ms.is_finite() || frame_complete_ms < 0.0 {
+            self.publish_order_failure(SurfaceOrderMeasurementFailure {
+                ticket,
+                camera_revision,
+                reason: SurfaceOrderMeasurementFailureReason::GenerationInvalidated,
+            });
+            return;
+        }
+        match join.executed_plan() {
+            SurfaceCurrentStatsPlan::CpuPostSort => {
+                let Some(preprocess_ms) = receipt.cpu_preprocess_ms() else {
+                    self.publish_order_failure(SurfaceOrderMeasurementFailure {
+                        ticket,
+                        camera_revision,
+                        reason: SurfaceOrderMeasurementFailureReason::GenerationInvalidated,
+                    });
+                    return;
+                };
+                let Some(sort_ms) = receipt.cpu_sort_ms() else {
+                    self.publish_order_failure(SurfaceOrderMeasurementFailure {
+                        ticket,
+                        camera_revision,
+                        reason: SurfaceOrderMeasurementFailureReason::GenerationInvalidated,
+                    });
+                    return;
+                };
+                if !preprocess_ms.is_finite()
+                    || preprocess_ms < 0.0
+                    || !sort_ms.is_finite()
+                    || sort_ms < 0.0
+                {
+                    self.publish_order_failure(SurfaceOrderMeasurementFailure {
+                        ticket,
+                        camera_revision,
+                        reason: SurfaceOrderMeasurementFailureReason::GenerationInvalidated,
+                    });
+                    return;
+                }
+                self.publish_cpu_order(SurfaceCpuOrderMeasurement {
+                    ticket,
+                    camera_revision,
+                    preprocess_ms,
+                    sort_ms,
+                    frame_complete_ms,
+                    visible_count: counts.visible(),
+                    contributor_count: counts.contributor(),
+                    drawn_count: counts.drawn(),
+                    exact_contributor_compaction,
+                });
+            }
+            SurfaceCurrentStatsPlan::GpuPostSort | SurfaceCurrentStatsPlan::GpuPreproject => {
+                self.publish_gpu_order(SurfaceOrderMeasurement {
+                    ticket,
+                    camera_revision,
+                    timing_source: SurfaceTimingSource::CompletionOnly,
+                    gpu_preprocess_ms: None,
+                    gpu_radix_ms: None,
+                    gpu_order_ms: None,
+                    gpu_complete_ms: frame_complete_ms,
+                    timestamp_period_ns: None,
+                    below_timestamp_resolution: false,
+                    visible_count: counts.visible(),
+                    contributor_count: counts.contributor(),
+                    drawn_count: counts.drawn(),
+                    exact_contributor_compaction,
+                });
+            }
         }
     }
 
@@ -1126,7 +1282,7 @@ mod tests {
     }
 
     fn observe_ticket(
-        store: &mut CompatibilityEvidenceStore,
+        store: &mut SessionEvidence,
         ticket: u64,
         backend: SurfaceOrderBackendUsed,
         execution: SurfaceProjectedDrawExecution,
@@ -1219,7 +1375,7 @@ mod tests {
 
     #[test]
     fn gpu_success_terminal_keeps_ffi_counts_without_consuming_take_once_counts() {
-        let mut store = CompatibilityEvidenceStore::new();
+        let mut store = SessionEvidence::new();
         observe_ticket(
             &mut store,
             2,
@@ -1273,7 +1429,7 @@ mod tests {
 
     #[test]
     fn cpu_success_terminal_keeps_contributor_after_take_once_counts_are_consumed() {
-        let mut store = CompatibilityEvidenceStore::new();
+        let mut store = SessionEvidence::new();
         // An odd ticket is deliberately used for CPU: backend identity comes
         // from publication context, never ticket parity.
         observe_ticket(
@@ -1317,7 +1473,7 @@ mod tests {
 
     #[test]
     fn failure_is_terminal_without_usable_counts() {
-        let mut store = CompatibilityEvidenceStore::new();
+        let mut store = SessionEvidence::new();
         observe_ticket(
             &mut store,
             7,
@@ -1357,7 +1513,7 @@ mod tests {
 
     #[test]
     fn projected_and_producer_failures_preserve_identity_without_counts() {
-        let mut store = CompatibilityEvidenceStore::new();
+        let mut store = SessionEvidence::new();
         observe_ticket(
             &mut store,
             13,
@@ -1446,7 +1602,7 @@ mod tests {
 
     #[test]
     fn duplicate_terminal_callback_is_ignored_after_first_publication() {
-        let mut store = CompatibilityEvidenceStore::new();
+        let mut store = SessionEvidence::new();
         observe_ticket(
             &mut store,
             17,
@@ -1471,8 +1627,28 @@ mod tests {
     }
 
     #[test]
+    fn terminal_without_a_presented_issued_submission_publishes_nothing() {
+        let mut store = SessionEvidence::new();
+        store.publish_gpu_order(gpu_measurement(17));
+        assert!(matches!(
+            store.poll_terminal(SurfaceCompatibilityTerminalSelector::OrderGpuSuccess),
+            SurfaceCompatibilityTerminalPoll::Unavailable(
+                SurfaceCompatibilityTerminalUnavailable::Empty
+            )
+        ));
+        assert_eq!(
+            store.take_counts(SurfaceCompatibilityCountFamily::Order, nonzero(17)),
+            SurfaceCompatibilityCountsTake::Unavailable(SurfaceCompatibilityCountsUnavailable {
+                family: SurfaceCompatibilityCountFamily::Order,
+                ticket: nonzero(17),
+                reason: SurfaceCompatibilityCountsUnavailableReason::InvalidTicket,
+            })
+        );
+    }
+
+    #[test]
     fn republished_ticket_invalidates_prior_counts_instead_of_returning_stale_data() {
-        let mut store = CompatibilityEvidenceStore::new();
+        let mut store = SessionEvidence::new();
         observe_ticket(
             &mut store,
             19,
@@ -1500,7 +1676,7 @@ mod tests {
 
     #[test]
     fn projected_sixty_fifth_success_marks_drop_and_expires_oldest_counts() {
-        let mut store = CompatibilityEvidenceStore::new();
+        let mut store = SessionEvidence::new();
         for ticket in 1..=65 {
             observe_ticket(
                 &mut store,
@@ -1559,7 +1735,7 @@ mod tests {
 
     #[test]
     fn order_count_retention_covers_sixty_four_cpu_plus_sixty_four_gpu() {
-        let mut store = CompatibilityEvidenceStore::new();
+        let mut store = SessionEvidence::new();
         for ticket in 1..=64 {
             observe_ticket(
                 &mut store,
@@ -1592,7 +1768,7 @@ mod tests {
 
     #[test]
     fn producer_terminal_preserves_generation_scd_and_draw_scope() {
-        let mut store = CompatibilityEvidenceStore::new();
+        let mut store = SessionEvidence::new();
         observe_ticket(
             &mut store,
             9,
@@ -1632,7 +1808,7 @@ mod tests {
 
     #[test]
     fn producer_raw_drain_remains_fifo_and_lossless_past_compatibility_capacity() {
-        let mut store = CompatibilityEvidenceStore::new();
+        let mut store = SessionEvidence::new();
         for ticket in 1..=65 {
             observe_ticket(
                 &mut store,
@@ -1661,7 +1837,7 @@ mod tests {
 
     #[test]
     fn producer_compatibility_window_is_bounded_without_losing_raw_overflow() {
-        let mut store = CompatibilityEvidenceStore::new();
+        let mut store = SessionEvidence::new();
         for ticket in 1..=65 {
             observe_ticket(
                 &mut store,
@@ -1699,7 +1875,7 @@ mod tests {
 
     #[test]
     fn producer_raw_single_pop_is_fifo_lossless_and_independent_of_compatibility_capacity() {
-        let mut store = CompatibilityEvidenceStore::new();
+        let mut store = SessionEvidence::new();
         for ticket in 1..=65 {
             observe_ticket(
                 &mut store,
@@ -1751,7 +1927,7 @@ mod tests {
 
     #[test]
     fn legacy_and_compatibility_success_views_never_double_deliver() {
-        let mut store = CompatibilityEvidenceStore::new();
+        let mut store = SessionEvidence::new();
         observe_ticket(
             &mut store,
             11,
@@ -1771,7 +1947,7 @@ mod tests {
 
     #[test]
     fn latest_submissions_preserve_not_requested_and_unsampled_identity() {
-        let mut store = CompatibilityEvidenceStore::new();
+        let mut store = SessionEvidence::new();
         let order = SurfaceCompatibilityOrderSubmission {
             camera_revision: 4,
             requested_backend: SurfaceOrderBackend::Cpu,

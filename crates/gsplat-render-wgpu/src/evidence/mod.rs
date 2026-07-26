@@ -6,7 +6,7 @@ mod projected;
 mod ring;
 mod submission;
 
-pub(crate) use compatibility::CompatibilityEvidenceStore;
+pub(crate) use compatibility::SessionEvidence;
 pub use compatibility::{
     SurfaceCompatibilityChannel, SurfaceCompatibilityCountFamily, SurfaceCompatibilityCounts,
     SurfaceCompatibilityCountsTake, SurfaceCompatibilityCountsUnavailable,
