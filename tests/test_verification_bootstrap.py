@@ -244,6 +244,85 @@ class VerificationBootstrapTests(unittest.TestCase):
             self.assertFalse(probe.ok)
             self.assertIn(BOOTSTRAP.read_locked_wasm_bindgen_version(), probe.detail)
 
+    def test_wasm_bindgen_falls_back_to_explicit_cargo_home(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            host = FakeHost(root)
+            binary = root / "custom-cargo" / "bin" / "wasm-bindgen"
+            binary.parent.mkdir(parents=True)
+            binary.write_text("", encoding="utf-8")
+            binary.chmod(0o755)
+            discovery = BOOTSTRAP.Discovery(
+                env={"CARGO_HOME": str(root / "custom-cargo")},
+                home=root,
+                which=host.which,
+                capture=host.capture,
+            )
+
+            probe = BOOTSTRAP.wasm_bindgen_probe(discovery)
+
+            self.assertTrue(probe.ok)
+            self.assertIn(str(binary), probe.detail)
+
+    def test_wasm_bindgen_falls_back_to_default_cargo_home(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            host = FakeHost(root)
+            binary = root / ".cargo" / "bin" / "wasm-bindgen"
+            binary.parent.mkdir(parents=True)
+            binary.write_text("", encoding="utf-8")
+            binary.chmod(0o755)
+            discovery = BOOTSTRAP.Discovery(
+                env={}, home=root, which=host.which, capture=host.capture
+            )
+
+            probe = BOOTSTRAP.wasm_bindgen_probe(discovery)
+
+            self.assertTrue(probe.ok)
+            self.assertIn(str(binary), probe.detail)
+
+    def test_wrong_wasm_bindgen_version_in_cargo_home_remains_blocked(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            host = FakeHost(root)
+            binary = root / ".cargo" / "bin" / "wasm-bindgen"
+            binary.parent.mkdir(parents=True)
+            binary.write_text("", encoding="utf-8")
+            binary.chmod(0o755)
+
+            def wrong_version(argv: tuple[str, ...]) -> tuple[int, str]:
+                host.calls.append(tuple(argv))
+                return 0, "wasm-bindgen 0.2.1"
+
+            discovery = BOOTSTRAP.Discovery(
+                env={}, home=root, which=host.which, capture=wrong_version
+            )
+
+            probe = BOOTSTRAP.wasm_bindgen_probe(discovery)
+
+            self.assertFalse(probe.ok)
+            self.assertIn("version=0.2.1", probe.detail)
+            self.assertIn(BOOTSTRAP.read_locked_wasm_bindgen_version(), probe.detail)
+
+    def test_path_wasm_bindgen_takes_priority_over_cargo_home(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            host = FakeHost(root)
+            path_binary = host.add_executable("wasm-bindgen")
+            cargo_binary = root / ".cargo" / "bin" / "wasm-bindgen"
+            cargo_binary.parent.mkdir(parents=True)
+            cargo_binary.write_text("", encoding="utf-8")
+            cargo_binary.chmod(0o755)
+            discovery = BOOTSTRAP.Discovery(
+                env={}, home=root, which=host.which, capture=host.capture
+            )
+
+            probe = BOOTSTRAP.wasm_bindgen_probe(discovery)
+
+            self.assertTrue(probe.ok)
+            self.assertIn(str(path_binary.resolve()), probe.detail)
+            self.assertEqual(host.calls[-1][0], str(path_binary.resolve()))
+
     def test_device_profile_requires_explicit_run_permission(self) -> None:
         result = BOOTSTRAP.ProfileResult(
             name="device",

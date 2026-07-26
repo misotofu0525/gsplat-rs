@@ -60,8 +60,9 @@ rerun `doctor`.
 - Android components: NDK `29.0.14206865`, platform `android-35`, Build Tools
   `35.0.0`, platform-tools, and Rust target `aarch64-linux-android`.
 - Web: Rust target `wasm32-unknown-unknown`, the exact `wasm-bindgen-cli`
-  version in `Cargo.lock`, Node/npm, Chrome/Chromium, and the pinned
-  `puppeteer-core` install under `tests/competitive/playcanvas`. Set
+  version in `Cargo.lock` (discovered on `PATH`, then in `$CARGO_HOME/bin`, or
+  `~/.cargo/bin` when `CARGO_HOME` is unset), Node/npm, Chrome/Chromium, and the
+  pinned `puppeteer-core` install under `tests/competitive/playcanvas`. Set
   `CHROME_PATH` when automatic Chrome discovery is not appropriate.
 - Apple: macOS, Swift, the profile-specific Xcode tools, and the Rust targets
   needed by the XCFramework or simulator profile.

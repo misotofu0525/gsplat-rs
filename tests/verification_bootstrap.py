@@ -119,6 +119,24 @@ class Discovery:
         located = self.which(name)
         return pathlib.Path(located).resolve() if located else None
 
+    def cargo_command_path(self, name: str) -> pathlib.Path | None:
+        path_command = self.command_path(name)
+        if path_command is not None:
+            return path_command
+
+        cargo_home = self.env.get("CARGO_HOME")
+        cargo_root = (
+            pathlib.Path(cargo_home).expanduser()
+            if cargo_home
+            else self.home / ".cargo"
+        )
+        candidate = cargo_root / "bin" / name
+        return (
+            candidate.resolve()
+            if candidate.is_file() and os.access(candidate, os.X_OK)
+            else None
+        )
+
     def brew_prefix(self, formula: str) -> pathlib.Path | None:
         brew = self.command_path("brew")
         if brew is None:
@@ -310,7 +328,7 @@ def read_locked_wasm_bindgen_version() -> str:
 
 def wasm_bindgen_probe(discovery: Discovery) -> Probe:
     expected = read_locked_wasm_bindgen_version()
-    binary = discovery.command_path("wasm-bindgen")
+    binary = discovery.cargo_command_path("wasm-bindgen")
     if binary is None:
         return Probe(
             key="wasm-bindgen",
