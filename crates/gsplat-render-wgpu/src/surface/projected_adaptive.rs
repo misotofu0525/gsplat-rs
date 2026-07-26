@@ -128,7 +128,7 @@ impl ProjectedRollingEstimate {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct AdaptiveProjectedDrawPolicy {
     phase: ProjectedAdaptivePhase,
     candidate_baseline: ProjectedRollingEstimate,

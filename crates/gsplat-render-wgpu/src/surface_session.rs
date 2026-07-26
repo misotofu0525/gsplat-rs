@@ -31,13 +31,14 @@ use crate::surface::{
     AdaptiveMetric, AdaptiveOrderPolicy, AdaptiveProbeOwner, AdaptiveProjectedDrawPolicy,
     AdaptiveRefreshChoice, AdaptiveSampleKind, ExactSurfacePlanState,
     LegacySurfaceStatsAvailability, ProjectedAdaptiveChoice, ProjectedAdaptiveSampleKind,
-    SessionFrameExecutor, SessionSchedule, SessionSurfaceOwner, StandaloneCpuFrameAttempt,
-    StandaloneGpuFrameAttempt, SurfaceFramePlan, adaptive_primary_metric,
-    arbitrate_new_probe_owner, commit_exact_plan_state, commit_projected_draw_policy_transition,
-    defer_projected_formal_choice, gpu_producer_measurement_context_is_valid,
-    gpu_projected_order_changed, order_probe_owner_should_yield, prepare_exact_gpu_order,
-    prepare_exact_gpu_order_producer, projected_order_changed, projected_policy_can_sample,
-    projected_probe_claims_owner, reset_adaptive_for_gpu_producer_measurement_transition,
+    SessionFrameAttempt, SessionFrameExecutor, SessionSchedule, SessionSurfaceOwner,
+    StandaloneCpuFrameAttempt, StandaloneGpuFrameAttempt, SurfaceFramePlan,
+    adaptive_primary_metric, arbitrate_new_probe_owner, commit_exact_plan_state,
+    commit_projected_draw_policy_transition, defer_projected_formal_choice,
+    gpu_producer_measurement_context_is_valid, gpu_projected_order_changed,
+    order_probe_owner_should_yield, prepare_exact_gpu_order, prepare_exact_gpu_order_producer,
+    projected_order_changed, projected_policy_can_sample, projected_probe_claims_owner,
+    reset_adaptive_for_gpu_producer_measurement_transition,
     should_reset_order_for_projected_incumbent_change, validate_gpu_order_producer_transition,
 };
 pub use crate::surface::{
@@ -291,6 +292,8 @@ impl SessionSurfaceOwner {
         match self {
             Self::Standalone(presenter) => presenter.gpu_order_timestamps_enabled(),
             Self::ExactPacked(host) => host.gpu_order_timestamps_enabled(),
+            #[cfg(test)]
+            Self::Test(_) => false,
         }
     }
 
@@ -301,6 +304,11 @@ impl SessionSurfaceOwner {
                 completed: Vec::new(),
                 failures: Vec::new(),
             },
+            #[cfg(test)]
+            Self::Test(_) => CpuOrderTelemetryPoll {
+                completed: Vec::new(),
+                failures: Vec::new(),
+            },
         }
     }
 
@@ -308,6 +316,11 @@ impl SessionSurfaceOwner {
         match self {
             Self::Standalone(presenter) => presenter.poll_gpu_order_telemetry(),
             Self::ExactPacked(_) => GpuOrderTelemetryPoll {
+                completed: Vec::new(),
+                failures: Vec::new(),
+            },
+            #[cfg(test)]
+            Self::Test(_) => GpuOrderTelemetryPoll {
                 completed: Vec::new(),
                 failures: Vec::new(),
             },
@@ -368,6 +381,26 @@ pub struct SurfaceRenderSession {
     latest_cpu_order_measurement: Option<SurfaceCpuOrderMeasurement>,
     latest_gpu_order_measurement: Option<SurfaceOrderMeasurement>,
     evidence: SessionEvidence,
+    #[cfg(not(target_arch = "wasm32"))]
+    pending_async_completion: Option<PendingAsyncCompletion>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Clone, Copy)]
+struct PendingAsyncCompletion {
+    accepted_order: Option<PendingAsyncOrder>,
+    completed_timing: Option<(f32, f32)>,
+    observed_revision_lag: Option<u32>,
+    stale_result_dropped: bool,
+    completed_revision: Option<u64>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Clone, Copy)]
+struct PendingAsyncOrder {
+    camera: Camera,
+    camera_revision: u64,
+    revision_lag: u32,
 }
 
 #[derive(Debug, Default)]
@@ -641,6 +674,7 @@ impl SurfaceRenderSession {
             latest_cpu_order_measurement: None,
             latest_gpu_order_measurement: None,
             evidence,
+            pending_async_completion: None,
         })
     }
 
@@ -1745,12 +1779,18 @@ impl SurfaceRenderSession {
             return Err(RendererError::InvalidConfig);
         }
         self.schedule.set_async_enabled(&self.renderer, enabled)?;
+        if !enabled && self.pending_async_completion.take().is_some() {
+            self.schedule.force_sort();
+        }
         Ok(())
     }
 
     #[cfg(not(target_arch = "wasm32"))]
     fn disable_async_sort(&mut self) {
         self.schedule.disable_async();
+        if self.pending_async_completion.take().is_some() {
+            self.schedule.force_sort();
+        }
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -1773,7 +1813,9 @@ impl SurfaceRenderSession {
             .async_enabled(self.geometry_path(), self.order_backend)
         {
             let result = self.render_frame_async_sort();
-            if let Ok(output) = &result {
+            if let Ok(output) = &result
+                && output.frame_presented
+            {
                 self.observe_compatibility_submissions(*output);
             }
             return result;
@@ -2571,16 +2613,7 @@ impl SurfaceRenderSession {
         track_cpu_completion: bool,
         _projected_choice: ProjectedAdaptiveChoice,
     ) -> Result<SurfaceFrameOutput, RendererError> {
-        let frame_start = timer_now();
-        let attempt = SessionFrameExecutor::attempt_cpu_or_paged(
-            &mut self.renderer,
-            &mut self.presenter,
-            &self.camera,
-            self.camera_revision,
-            frame_start,
-            plan,
-            track_cpu_completion,
-        )?;
+        let attempt = self.attempt_with_plan(plan, track_cpu_completion)?;
         match attempt.commit(|candidate| {
             let output = self.standalone_cpu_frame_output(candidate, plan, sort_refreshed, true);
             self.last_stats = output.stats;
@@ -2594,6 +2627,23 @@ impl SurfaceRenderSession {
                 Ok(self.standalone_cpu_frame_output(candidate, plan, sort_refreshed, false))
             }
         }
+    }
+
+    fn attempt_with_plan(
+        &mut self,
+        plan: SurfaceFramePlan,
+        track_cpu_completion: bool,
+    ) -> Result<SessionFrameAttempt<StandaloneCpuFrameAttempt>, RendererError> {
+        let frame_start = timer_now();
+        SessionFrameExecutor::attempt_cpu_or_paged(
+            &mut self.renderer,
+            &mut self.presenter,
+            &self.camera,
+            self.camera_revision,
+            frame_start,
+            plan,
+            track_cpu_completion,
+        )
     }
 
     fn standalone_cpu_frame_output(
@@ -2674,50 +2724,95 @@ impl SurfaceRenderSession {
 
     #[cfg(not(target_arch = "wasm32"))]
     fn render_frame_async_sort(&mut self) -> Result<SurfaceFrameOutput, RendererError> {
-        let mut applied_order = false;
-        let mut async_poll = self
-            .schedule
-            .poll_async_order(&self.camera, self.camera_revision)?;
-        if let Some(mut candidate) = async_poll.candidate.take() {
-            let candidate_camera = candidate.camera;
-            let candidate_revision = candidate.camera_revision;
-            let candidate_lag = candidate.revision_lag;
-            let replace_result = self
-                .renderer
-                .replace_surface_sorted_indices_recycling(&mut candidate.ordered_ids);
-            self.schedule.recycle_async_order(candidate.ordered_ids);
-            replace_result?;
-            self.schedule
-                .accept_async_order(candidate_camera, candidate_revision, candidate_lag);
-            applied_order = true;
+        if self.pending_async_completion.is_none() {
+            let mut async_poll = self
+                .schedule
+                .poll_async_order(&self.camera, self.camera_revision)?;
+            let accepted_order = if let Some(mut candidate) = async_poll.candidate.take() {
+                let accepted_order = PendingAsyncOrder {
+                    camera: candidate.camera,
+                    camera_revision: candidate.camera_revision,
+                    revision_lag: candidate.revision_lag,
+                };
+                // The renderer cache is attempt-prepared input. Its public
+                // Session identity remains pending until this order presents.
+                let replace_result = self
+                    .renderer
+                    .replace_surface_sorted_indices_recycling(&mut candidate.ordered_ids);
+                self.schedule.recycle_async_order(candidate.ordered_ids);
+                replace_result?;
+                Some(accepted_order)
+            } else {
+                None
+            };
+            if async_poll.completed_revision.is_some() {
+                self.pending_async_completion = Some(PendingAsyncCompletion {
+                    accepted_order,
+                    completed_timing: async_poll.completed_timing,
+                    observed_revision_lag: async_poll.observed_revision_lag,
+                    stale_result_dropped: async_poll.stale_result_dropped,
+                    completed_revision: async_poll.completed_revision,
+                });
+            }
+        }
+
+        if let Some(completion) = self.pending_async_completion.as_mut()
+            && let Some(order) = completion.accepted_order
+        {
+            if let Some(revision_lag) = self.schedule.pending_async_order_revision_lag(
+                &order.camera,
+                order.camera_revision,
+                &self.camera,
+                self.camera_revision,
+            ) {
+                completion
+                    .accepted_order
+                    .as_mut()
+                    .expect("copied pending async order")
+                    .revision_lag = revision_lag;
+                completion.observed_revision_lag = Some(revision_lag);
+            } else {
+                completion.accepted_order = None;
+                completion.stale_result_dropped = true;
+                completion.observed_revision_lag = Some(
+                    u32::try_from(self.camera_revision.saturating_sub(order.camera_revision))
+                        .unwrap_or(u32::MAX),
+                );
+            }
         }
 
         let has_order = !self.renderer.current_sorted_indices().is_empty();
         if self.schedule.requires_initial_sync(has_order) {
-            return self.render_frame_sync();
-        }
-
-        if self
-            .schedule
-            .requires_stale_order_fallback(&self.camera, self.camera_revision)
-        {
+            if let Some(completion) = self.pending_async_completion.as_mut()
+                && completion.accepted_order.take().is_some()
+            {
+                completion.stale_result_dropped = true;
+            }
             let mut output = self.render_frame_sync()?;
-            output.async_sort_revision_lag = async_poll.observed_revision_lag;
-            output.stale_async_sort_dropped = async_poll.stale_result_dropped;
-            output.async_sort_completed_revision = async_poll.completed_revision;
-            output.async_sort_result_applied = applied_order;
-            output.sync_sort_fallback = true;
+            if output.frame_presented {
+                self.commit_presented_async_completion(&mut output);
+            }
             return Ok(output);
         }
 
-        let should_schedule = self.schedule.should_schedule_async();
-        let schedule_camera = self.camera;
-        let schedule_revision = self.camera_revision;
-        let (completed_projected_measurement, completed_projected_measurement_failure) =
-            self.collect_projected_draw_measurements();
-        let (completed_gpu_producer_measurement, completed_gpu_producer_measurement_failure) =
-            self.collect_gpu_producer_measurements();
-        self.refresh_adaptive_probe_owner();
+        let pending_order = self
+            .pending_async_completion
+            .and_then(|completion| completion.accepted_order);
+        if pending_order.is_none()
+            && self
+                .schedule
+                .requires_stale_order_fallback(&self.camera, self.camera_revision)
+        {
+            let mut output = self.render_frame_sync()?;
+            output.sync_sort_fallback = true;
+            if output.frame_presented {
+                self.commit_presented_async_completion(&mut output);
+            }
+            return Ok(output);
+        }
+
+        let mut projected_policy = self.adaptive_projected_cpu.clone();
+        let mut projected_probe_owner = self.adaptive_probe_owner;
         let compact_available = self.presenter.projected_contributor_indirect_draw_enabled();
         let projected_choice =
             self.pending_projected_choice
@@ -2731,21 +2826,49 @@ impl SurfaceRenderSession {
                         sample: None,
                     },
                     SurfaceProjectedDrawPolicy::Adaptive => {
-                        self.adaptive_projected_cpu.choose(compact_available)
+                        projected_policy.choose(compact_available)
                     }
                 });
-        if self.adaptive_probe_owner.is_none() && projected_choice.sample.is_some() {
-            self.adaptive_probe_owner = Some(AdaptiveProbeOwner::ProjectedCpu);
+        if projected_probe_owner.is_none() && projected_choice.sample.is_some() {
+            projected_probe_owner = Some(AdaptiveProbeOwner::ProjectedCpu);
         }
-        let plan = self.schedule.stable_order_plan();
-        let mut output = self.render_with_plan(plan, applied_order, false, projected_choice)?;
+        let mut plan = self.schedule.stable_order_plan();
+        plan.upload_order |= pending_order.is_some();
+        let attempt = self.attempt_with_plan(plan, false)?;
+        let mut output = match attempt {
+            SessionFrameAttempt::Presented(candidate) => {
+                let output = self.standalone_cpu_frame_output(
+                    candidate,
+                    plan,
+                    pending_order.is_some(),
+                    true,
+                );
+                self.presented_order_backend = SurfaceOrderBackendUsed::Cpu;
+                output
+            }
+            SessionFrameAttempt::Unavailable(candidate) => {
+                let mut output = self.standalone_cpu_frame_output(candidate, plan, false, false);
+                output.projected_draw_adaptive_state =
+                    self.projected_draw_adaptive_state(SurfaceOrderBackendUsed::Cpu);
+                return Ok(output);
+            }
+        };
+
+        self.adaptive_projected_cpu = projected_policy;
+        self.adaptive_probe_owner = projected_probe_owner;
+
+        let (completed_projected_measurement, completed_projected_measurement_failure) =
+            self.collect_projected_draw_measurements();
+        let (completed_gpu_producer_measurement, completed_gpu_producer_measurement_failure) =
+            self.collect_gpu_producer_measurements();
         output.completed_projected_draw_measurement = completed_projected_measurement;
         output.completed_projected_draw_measurement_failure =
             completed_projected_measurement_failure;
         output.completed_gpu_producer_measurement = completed_gpu_producer_measurement;
         output.completed_gpu_producer_measurement_failure =
             completed_gpu_producer_measurement_failure;
-        if output.frame_presented {
+
+        {
             let defer_projected_choice = defer_projected_formal_choice(
                 projected_choice,
                 output.sort_refreshed || output.order_uploaded,
@@ -2772,33 +2895,56 @@ impl SurfaceRenderSession {
                     }
                 }
             }
-        } else {
-            self.pending_projected_choice = Some(projected_choice);
         }
         output.projected_draw_adaptive_state =
             self.projected_draw_adaptive_state(SurfaceOrderBackendUsed::Cpu);
+        self.commit_presented_async_completion(&mut output);
+        Ok(output)
+    }
 
-        if let Some((preprocess_ms, sort_ms)) = async_poll.completed_timing {
-            output.stats.preprocess_ms = preprocess_ms;
-            output.stats.sort_ms = sort_ms;
-            self.last_stats = output.stats;
+    #[cfg(not(target_arch = "wasm32"))]
+    fn commit_presented_async_completion(&mut self, output: &mut SurfaceFrameOutput) {
+        debug_assert!(output.frame_presented);
+        let completion = self.pending_async_completion.take();
+        let accepted_order = completion.and_then(|completion| completion.accepted_order);
+        if let Some(order) = accepted_order {
+            self.schedule.accept_async_order(
+                order.camera,
+                order.camera_revision,
+                order.revision_lag,
+            );
         }
+        self.schedule
+            .finish_presented_frame(self.schedule.stable_order_plan(), output.order_uploaded);
+
+        if let Some(completion) = completion {
+            if let Some((preprocess_ms, sort_ms)) = completion.completed_timing {
+                output.stats.preprocess_ms = preprocess_ms;
+                output.stats.sort_ms = sort_ms;
+            }
+            output.async_sort_revision_lag = completion.observed_revision_lag;
+            output.stale_async_sort_dropped = completion.stale_result_dropped;
+            output.async_sort_completed_revision = completion.completed_revision;
+            output.async_sort_result_applied = completion.accepted_order.is_some();
+        }
+        if let Some(order) = accepted_order {
+            output.visible_count_revision = Some(order.camera_revision);
+            output.visible_count_pending = order.camera_revision != self.camera_revision;
+        }
+
+        let should_schedule = self.schedule.should_schedule_async();
         if should_schedule {
             self.schedule
-                .start_async_order(schedule_camera, schedule_revision);
+                .start_async_order(self.camera, self.camera_revision);
         }
-        output.async_sort_revision_lag = async_poll.observed_revision_lag;
-        output.stale_async_sort_dropped = async_poll.stale_result_dropped;
         output.async_sort_scheduled = should_schedule;
         output.camera_revision = self.camera_revision;
         output.applied_order_revision = self.schedule.applied_order_revision();
         output.presented_order_revision_lag = self
             .schedule
             .presented_order_revision_lag(self.camera_revision);
-        output.async_sort_scheduled_revision = should_schedule.then_some(schedule_revision);
-        output.async_sort_completed_revision = async_poll.completed_revision;
-        output.async_sort_result_applied = applied_order;
-        Ok(output)
+        output.async_sort_scheduled_revision = should_schedule.then_some(self.camera_revision);
+        self.last_stats = output.stats;
     }
 }
 
@@ -2832,12 +2978,16 @@ mod tests {
         validate_projected_draw_policy_transition,
     };
     #[cfg(not(target_arch = "wasm32"))]
-    use super::{ExactSurfacePlanState, async_sort_supported, publish_only_on_present};
+    use super::{
+        ExactSurfacePlanState, SurfaceRenderSession, async_sort_supported, publish_only_on_present,
+    };
+    #[cfg(not(target_arch = "wasm32"))]
+    use crate::surface::SessionSurfaceOwner;
     use crate::{
         GeometryPath, Renderer, RendererError, ResidentGpuError, ResidentSceneCpu,
-        SurfaceCurrentStatsPoll, SurfaceCurrentStatsRequest, SurfaceCurrentStatsSubmission,
-        SurfaceCurrentStatsUnsampledReason, SurfaceGpuOrderProducer, SurfacePresenterError,
-        SurfaceProjectedDrawExecution, SurfaceRasterExecutionPlan,
+        SurfaceCompatibilityChannel, SurfaceCurrentStatsPoll, SurfaceCurrentStatsRequest,
+        SurfaceCurrentStatsSubmission, SurfaceCurrentStatsUnsampledReason, SurfaceGpuOrderProducer,
+        SurfacePresenterError, SurfaceProjectedDrawExecution, SurfaceRasterExecutionPlan,
     };
 
     #[test]
@@ -3185,6 +3335,119 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn public_async_session_publishes_completion_only_after_presented_retry() {
+        let scene = SceneBuffers {
+            positions: vec![Vec3f::new(0.0, 0.0, 1.0), Vec3f::new(0.1, 0.0, 1.2)],
+            opacity: vec![1.0; 2],
+            scale_xyz: vec![[-3.0; 3]; 2],
+            rotation_xyzw: vec![[0.0, 0.0, 0.0, 1.0]; 2],
+            color_dc: vec![[0.0; 3]; 2],
+            sh_degree: 0,
+            sh_rest: None,
+        };
+        let mut renderer =
+            Renderer::with_config_for_surface(RendererConfig::default()).expect("test renderer");
+        renderer.load_scene(scene).expect("test Direct scene");
+        let presenter = SessionSurfaceOwner::test_direct(2, [true]);
+        let mut session =
+            SurfaceRenderSession::new_with_surface_owner(renderer, presenter, Camera::default())
+                .expect("public Surface session");
+        session
+            .set_async_sort_enabled(true)
+            .expect("Direct CPU async scheduling");
+
+        let initial = session.render_frame().expect("initial presented frame");
+        assert!(initial.frame_presented);
+        let published_stats = session.last_stats();
+        let published_order_submission = session
+            .compatibility_submission(SurfaceCompatibilityChannel::Order)
+            .expect("initial compatibility order submission");
+        let published_projected_submission = session
+            .compatibility_submission(SurfaceCompatibilityChannel::Projected)
+            .expect("initial compatibility projected submission");
+        let published_current_stats = session.current_stats_submission();
+        let published_projected_state =
+            session.projected_draw_adaptive_state(SurfaceOrderBackendUsed::Cpu);
+        assert_eq!(initial.applied_order_revision, 0);
+
+        let mut moved_camera = session.camera();
+        moved_camera.pose.position.x += 0.0001;
+        session
+            .set_camera(moved_camera)
+            .expect("compatible camera revision");
+        assert_eq!(session.camera_revision(), 1);
+
+        session.schedule.start_async_order(moved_camera, 1);
+        let unavailable = (0..1_000)
+            .find_map(|_| {
+                session.presenter.push_test_frame_presented(false);
+                let output = session
+                    .render_frame()
+                    .expect("unavailable drawable is not an error");
+                assert!(!output.frame_presented);
+                if session.pending_async_completion.is_some() {
+                    Some(output)
+                } else {
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                    None
+                }
+            })
+            .expect("native async completion became attempt input");
+        let completed_timing = session
+            .pending_async_completion
+            .expect("completion remains pending until present")
+            .completed_timing
+            .expect("native async timing");
+        assert!(!unavailable.frame_presented);
+        assert_eq!(unavailable.applied_order_revision, 0);
+        assert_eq!(unavailable.async_sort_completed_revision, None);
+        assert!(!unavailable.async_sort_result_applied);
+        assert!(!unavailable.async_sort_scheduled);
+        assert_eq!(session.last_stats(), published_stats);
+        assert_eq!(session.current_stats_submission(), published_current_stats);
+        assert_eq!(
+            session.projected_draw_adaptive_state(SurfaceOrderBackendUsed::Cpu),
+            published_projected_state,
+        );
+        assert_eq!(
+            session.compatibility_submission(SurfaceCompatibilityChannel::Order),
+            Some(published_order_submission),
+        );
+        assert_eq!(
+            session.compatibility_submission(SurfaceCompatibilityChannel::Projected),
+            Some(published_projected_submission),
+        );
+        assert_eq!(session.schedule.applied_order_revision(), 0);
+        assert!(session.pending_async_completion.is_some());
+
+        session.presenter.push_test_frame_presented(true);
+        let presented = session.render_frame().expect("presented retry");
+        assert!(presented.frame_presented);
+        assert!(presented.sort_refreshed);
+        assert!(presented.order_uploaded);
+        assert_eq!(presented.applied_order_revision, 1);
+        assert_eq!(presented.presented_order_revision_lag, 0);
+        assert_eq!(presented.async_sort_completed_revision, Some(1));
+        assert_eq!(presented.async_sort_revision_lag, Some(0));
+        assert!(presented.async_sort_result_applied);
+        assert_eq!(presented.visible_count_revision, Some(1));
+        assert!(!presented.visible_count_pending);
+        assert_eq!(
+            (presented.stats.preprocess_ms, presented.stats.sort_ms),
+            completed_timing,
+        );
+        assert_eq!(session.last_stats(), presented.stats);
+        assert_eq!(session.schedule.applied_order_revision(), 1);
+        assert!(session.pending_async_completion.is_none());
+        assert_eq!(session.current_stats_submission(), published_current_stats);
+        assert_ne!(
+            session.compatibility_submission(SurfaceCompatibilityChannel::Order),
+            Some(published_order_submission),
+        );
     }
 
     #[test]

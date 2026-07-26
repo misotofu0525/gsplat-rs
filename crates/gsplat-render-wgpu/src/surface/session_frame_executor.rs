@@ -78,6 +78,10 @@ impl SessionFrameExecutor {
             SessionSurfaceOwner::ExactPacked(host) => {
                 host.render_exact_frame(runtime, camera, force_cpu_order_refresh, frame_started)?
             }
+            #[cfg(test)]
+            SessionSurfaceOwner::Test(_) => {
+                unreachable!("test Direct owner cannot execute Exact")
+            }
         };
         Ok(match rendered {
             Some(rendered) => SessionFrameAttempt::Presented(rendered),
@@ -103,6 +107,10 @@ impl SessionFrameExecutor {
             SessionSurfaceOwner::ExactPacked(_) => {
                 return Err(SurfacePresenterError::GpuOrderUnsupported);
             }
+            #[cfg(test)]
+            SessionSurfaceOwner::Test(_) => {
+                return Err(SurfacePresenterError::GpuOrderUnsupported);
+            }
         };
         let frame_presented = surface.last_frame_presented();
         let candidate = StandaloneGpuFrameAttempt {
@@ -117,6 +125,8 @@ impl SessionFrameExecutor {
                     presenter.gpu_order_timestamps_enabled()
                 }
                 SessionSurfaceOwner::ExactPacked(host) => host.gpu_order_timestamps_enabled(),
+                #[cfg(test)]
+                SessionSurfaceOwner::Test(_) => false,
             },
             render_submit_ms: timer_elapsed_ms(render_started),
             frame_wall_ms: timer_elapsed_ms(frame_started),
@@ -143,6 +153,27 @@ impl SessionFrameExecutor {
         } else {
             renderer.build_surface_sorted_indices_with_sort_refresh(camera, frame.refresh_sort)?
         };
+        #[cfg(test)]
+        if let Some(frame_presented) = surface.take_test_frame_presented() {
+            let frame_wall_ms = timer_elapsed_ms(frame_started);
+            stats.frame_ms = frame_wall_ms;
+            let candidate = StandaloneCpuFrameAttempt {
+                stats,
+                presenter_submission: TelemetrySubmission::NotRequested,
+                projected_draw_execution: SurfaceProjectedDrawExecution::Candidate,
+                projected_draw_submission: TelemetrySubmission::NotRequested,
+                raster_execution_plan: surface.raster_execution_plan(),
+                gpu_timestamp_queries_enabled: false,
+                paged,
+                render_submit_ms: 0.0,
+                frame_wall_ms,
+            };
+            return Ok(if frame_presented {
+                SessionFrameAttempt::Presented(candidate)
+            } else {
+                SessionFrameAttempt::Unavailable(candidate)
+            });
+        }
         let render_started = timer_now();
         let presenter_submission = match surface {
             SessionSurfaceOwner::Standalone(presenter) if paged => {
@@ -171,6 +202,8 @@ impl SessionFrameExecutor {
             SessionSurfaceOwner::ExactPacked(_) => {
                 return Err(SurfacePresenterError::SurfaceGeometrySwitchUnsupported.into());
             }
+            #[cfg(test)]
+            SessionSurfaceOwner::Test(_) => unreachable!("test owner returned above"),
         };
         let frame_presented = surface.last_frame_presented();
         let frame_wall_ms = timer_elapsed_ms(frame_started);
@@ -186,6 +219,8 @@ impl SessionFrameExecutor {
                     presenter.gpu_order_timestamps_enabled()
                 }
                 SessionSurfaceOwner::ExactPacked(host) => host.gpu_order_timestamps_enabled(),
+                #[cfg(test)]
+                SessionSurfaceOwner::Test(_) => false,
             },
             paged,
             render_submit_ms: timer_elapsed_ms(render_started),

@@ -23,6 +23,19 @@ use super::SurfaceFrameCapture;
 pub(crate) enum SessionSurfaceOwner {
     Standalone(Box<SurfacePresenter>),
     ExactPacked(Box<SurfacePresenterHost>),
+    #[cfg(test)]
+    Test(TestSessionSurfaceOwner),
+}
+
+#[cfg(test)]
+pub(crate) struct TestSessionSurfaceOwner {
+    frame_presented: std::collections::VecDeque<bool>,
+    last_frame_presented: bool,
+    last_presented_size: Option<(u32, u32)>,
+    size: (u32, u32),
+    addressable_splat_count: usize,
+    adapter_info: wgpu::AdapterInfo,
+    raster_execution_plan: SurfaceRasterExecutionPlan,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -50,6 +63,34 @@ impl SessionSurfaceConstruction {
 impl SessionSurfaceOwner {
     pub(crate) fn standalone(presenter: SurfacePresenter) -> Self {
         Self::Standalone(Box::new(presenter))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_direct(
+        addressable_splat_count: usize,
+        frame_presented: impl IntoIterator<Item = bool>,
+    ) -> Self {
+        Self::Test(TestSessionSurfaceOwner {
+            frame_presented: frame_presented.into_iter().collect(),
+            last_frame_presented: false,
+            last_presented_size: None,
+            size: (64, 64),
+            addressable_splat_count,
+            adapter_info: wgpu::AdapterInfo {
+                name: "injected-session-surface".into(),
+                vendor: 0,
+                device: 0,
+                device_type: wgpu::DeviceType::Other,
+                device_pci_bus_id: String::new(),
+                driver: "test".into(),
+                driver_info: String::new(),
+                backend: wgpu::Backend::Noop,
+                subgroup_min_size: 1,
+                subgroup_max_size: 1,
+                transient_saves_memory: false,
+            },
+            raster_execution_plan: SurfaceRasterExecutionPlan::GlobalQuads,
+        })
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -132,6 +173,8 @@ impl SessionSurfaceOwner {
         match self {
             Self::Standalone(presenter) => presenter.geometry_path(),
             Self::ExactPacked(_) => GeometryPath::PackedAtlas,
+            #[cfg(test)]
+            Self::Test(_) => GeometryPath::SortedIndexDirect,
         }
     }
 
@@ -139,6 +182,8 @@ impl SessionSurfaceOwner {
         match self {
             Self::Standalone(presenter) => presenter.surface_size(),
             Self::ExactPacked(host) => host.surface_size(),
+            #[cfg(test)]
+            Self::Test(test) => test.size,
         }
     }
 
@@ -146,6 +191,8 @@ impl SessionSurfaceOwner {
         match self {
             Self::Standalone(presenter) => presenter.adapter_info(),
             Self::ExactPacked(host) => host.adapter_info(),
+            #[cfg(test)]
+            Self::Test(test) => &test.adapter_info,
         }
     }
 
@@ -153,6 +200,8 @@ impl SessionSurfaceOwner {
         match self {
             Self::Standalone(presenter) => presenter.addressable_splat_count(),
             Self::ExactPacked(host) => host.addressable_splat_count(),
+            #[cfg(test)]
+            Self::Test(test) => test.addressable_splat_count,
         }
     }
 
@@ -164,6 +213,10 @@ impl SessionSurfaceOwner {
         match self {
             Self::Standalone(presenter) => presenter.adapter_max_storage_buffers_per_shader_stage(),
             Self::ExactPacked(host) => host.adapter_max_storage_buffers_per_shader_stage(),
+            #[cfg(test)]
+            Self::Test(_) => {
+                wgpu::Limits::downlevel_defaults().max_storage_buffers_per_shader_stage
+            }
         }
     }
 
@@ -171,6 +224,10 @@ impl SessionSurfaceOwner {
         match self {
             Self::Standalone(presenter) => presenter.adapter_max_storage_buffer_binding_size(),
             Self::ExactPacked(host) => host.adapter_max_storage_buffer_binding_size(),
+            #[cfg(test)]
+            Self::Test(_) => {
+                u64::from(wgpu::Limits::downlevel_defaults().max_storage_buffer_binding_size)
+            }
         }
     }
 
@@ -187,6 +244,8 @@ impl SessionSurfaceOwner {
                 unreachable!("Exact Surface runtime requires the Packed host owner")
             }
             Self::ExactPacked(host) => host.exact_runtime_context(),
+            #[cfg(test)]
+            Self::Test(_) => unreachable!("test Direct owner has no Exact runtime"),
         }
     }
 
@@ -194,6 +253,11 @@ impl SessionSurfaceOwner {
         match self {
             Self::Standalone(presenter) => presenter.resize(width, height),
             Self::ExactPacked(host) => host.resize(width, height),
+            #[cfg(test)]
+            Self::Test(test) => {
+                test.size = (width, height);
+                Ok(())
+            }
         }
     }
 
@@ -215,6 +279,10 @@ impl SessionSurfaceOwner {
             Self::ExactPacked(host) => {
                 host.set_frame_latency(latency);
             }
+            #[cfg(test)]
+            Self::Test(_) => {
+                let _ = latency;
+            }
         }
     }
 
@@ -222,6 +290,8 @@ impl SessionSurfaceOwner {
         match self {
             Self::Standalone(presenter) => presenter.last_presented_size(),
             Self::ExactPacked(host) => host.last_presented_size(),
+            #[cfg(test)]
+            Self::Test(test) => test.last_presented_size,
         }
     }
 
@@ -230,6 +300,10 @@ impl SessionSurfaceOwner {
         match self {
             Self::Standalone(presenter) => presenter.request_surface_capture(),
             Self::ExactPacked(host) => host.request_surface_capture(),
+            #[cfg(test)]
+            Self::Test(_) => Err(SurfacePresenterError::SurfaceCaptureUnsupported(
+                "injected test Surface has no capture".into(),
+            )),
         }
     }
 
@@ -238,6 +312,8 @@ impl SessionSurfaceOwner {
         match self {
             Self::Standalone(presenter) => presenter.cancel_surface_capture(),
             Self::ExactPacked(host) => host.cancel_surface_capture(),
+            #[cfg(test)]
+            Self::Test(_) => false,
         }
     }
 
@@ -248,6 +324,10 @@ impl SessionSurfaceOwner {
         match self {
             Self::Standalone(presenter) => presenter.take_surface_capture(),
             Self::ExactPacked(host) => host.take_surface_capture(),
+            #[cfg(test)]
+            Self::Test(_) => Err(SurfacePresenterError::SurfaceCaptureUnsupported(
+                "injected test Surface has no capture".into(),
+            )),
         }
     }
 
@@ -255,6 +335,8 @@ impl SessionSurfaceOwner {
         match self {
             Self::Standalone(presenter) => presenter.raster_execution_plan(),
             Self::ExactPacked(_) => SurfaceRasterExecutionPlan::ProjectedQuadsExact,
+            #[cfg(test)]
+            Self::Test(test) => test.raster_execution_plan,
         }
     }
 
@@ -262,6 +344,8 @@ impl SessionSurfaceOwner {
         match self {
             Self::Standalone(presenter) => presenter.internal_render_size(),
             Self::ExactPacked(host) => host.surface_size(),
+            #[cfg(test)]
+            Self::Test(test) => test.size,
         }
     }
 
@@ -272,6 +356,8 @@ impl SessionSurfaceOwner {
         match self {
             Self::Standalone(presenter) => presenter.prepare_gpu_order_producer(producer).await,
             Self::ExactPacked(_) => Err(SurfacePresenterError::GpuOrderUnsupported),
+            #[cfg(test)]
+            Self::Test(_) => Err(SurfacePresenterError::GpuOrderUnsupported),
         }
     }
 
@@ -287,6 +373,13 @@ impl SessionSurfaceOwner {
                 }
             },
             Self::ExactPacked(_) => Err(SurfacePresenterError::GpuOrderUnsupported),
+            #[cfg(test)]
+            Self::Test(_) => match producer {
+                SurfaceGpuOrderProducer::PostSort => Ok(()),
+                SurfaceGpuOrderProducer::Preproject => {
+                    Err(SurfacePresenterError::PreprojectProducerIncompatible)
+                }
+            },
         }
     }
 
@@ -301,6 +394,11 @@ impl SessionSurfaceOwner {
         match self {
             Self::Standalone(presenter) => presenter.set_raster_execution_plan(plan),
             Self::ExactPacked(_) => Err(SurfacePresenterError::SurfaceGeometrySwitchUnsupported),
+            #[cfg(test)]
+            Self::Test(test) => {
+                test.raster_execution_plan = plan;
+                Ok(())
+            }
         }
     }
 
@@ -312,6 +410,10 @@ impl SessionSurfaceOwner {
         match self {
             Self::Standalone(presenter) => presenter.set_geometry_path(path, renderer),
             Self::ExactPacked(_) => Err(SurfacePresenterError::SurfaceGeometrySwitchUnsupported),
+            #[cfg(test)]
+            Self::Test(_) if path == GeometryPath::SortedIndexDirect => Ok(()),
+            #[cfg(test)]
+            Self::Test(_) => Err(SurfacePresenterError::SurfaceGeometrySwitchUnsupported),
         }
     }
 
@@ -319,6 +421,8 @@ impl SessionSurfaceOwner {
         match self {
             Self::Standalone(presenter) => presenter.prepare_gpu_order().await,
             Self::ExactPacked(_) => Err(SurfacePresenterError::GpuOrderUnsupported),
+            #[cfg(test)]
+            Self::Test(_) => Err(SurfacePresenterError::GpuOrderUnsupported),
         }
     }
 
@@ -326,6 +430,8 @@ impl SessionSurfaceOwner {
         match self {
             Self::Standalone(presenter) => presenter.prepare_direct_gpu_order(),
             Self::ExactPacked(_) => Err(SurfacePresenterError::GpuOrderUnsupported),
+            #[cfg(test)]
+            Self::Test(_) => Err(SurfacePresenterError::GpuOrderUnsupported),
         }
     }
 
@@ -334,6 +440,11 @@ impl SessionSurfaceOwner {
         match self {
             Self::Standalone(presenter) => presenter.pump_receipt_callbacks(timeout),
             Self::ExactPacked(host) => host.pump_receipt_callbacks(timeout),
+            #[cfg(test)]
+            Self::Test(_) => {
+                let _ = timeout;
+                Ok(true)
+            }
         }
     }
 
@@ -341,7 +452,31 @@ impl SessionSurfaceOwner {
         match self {
             Self::Standalone(presenter) => presenter.last_frame_presented(),
             Self::ExactPacked(host) => host.last_frame_presented(),
+            #[cfg(test)]
+            Self::Test(test) => test.last_frame_presented,
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn take_test_frame_presented(&mut self) -> Option<bool> {
+        let Self::Test(test) = self else {
+            return None;
+        };
+        let presented = test
+            .frame_presented
+            .pop_front()
+            .expect("test Surface frame outcome");
+        test.last_frame_presented = presented;
+        test.last_presented_size = presented.then_some(test.size);
+        Some(presented)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn push_test_frame_presented(&mut self, presented: bool) {
+        let Self::Test(test) = self else {
+            panic!("frame outcome injection requires the test Surface owner");
+        };
+        test.frame_presented.push_back(presented);
     }
 }
 

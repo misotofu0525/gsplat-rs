@@ -42,7 +42,7 @@ pub(crate) use session_control::{
 #[cfg(test)]
 pub(crate) use session_frame_executor::paged_surface_counts;
 pub(crate) use session_frame_executor::{
-    SessionFrameExecutor, StandaloneCpuFrameAttempt, StandaloneGpuFrameAttempt,
+    SessionFrameAttempt, SessionFrameExecutor, StandaloneCpuFrameAttempt, StandaloneGpuFrameAttempt,
 };
 pub(crate) use session_owner::SessionSurfaceOwner;
 #[cfg(not(target_arch = "wasm32"))]

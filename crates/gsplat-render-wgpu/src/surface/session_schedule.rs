@@ -289,6 +289,26 @@ impl SessionSchedule {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn pending_async_order_revision_lag(
+        &self,
+        result_camera: &Camera,
+        result_revision: u64,
+        current_camera: &Camera,
+        current_revision: u64,
+    ) -> Option<u32> {
+        let revision_delta = current_revision.saturating_sub(result_revision);
+        async_order_result_is_usable(
+            result_revision,
+            self.applied_order_revision,
+            revision_delta,
+            result_camera,
+            current_camera,
+            self.async_translation_limit,
+        )
+        .then(|| u32::try_from(revision_delta).unwrap_or(u32::MAX))
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn requires_initial_sync(&self, has_order: bool) -> bool {
         !has_order || self.schedule_state.force_sort
     }
