@@ -10,7 +10,7 @@ S1 = Active
 
 <!-- gsplat-program-active-lanes: begin -->
 activation_commit = 3ecf0f2d0180c197faa132443066b3b9b98d36d4
-S1 = bonsai-authority-manifest-admission
+S1 = proxy-image-evidence-validator
 <!-- gsplat-program-active-lanes: end -->
 
 ## Scope
@@ -147,6 +147,19 @@ dataset-identity admission after review and `--verify-available`; it cannot
 support redistribution or a public qualification claim. Manual authored-view
 review, proxy images, Metal/A065 runs and the aggregate S1 result were not run
 in this slice; the missing review remains an explicit Deferred prerequisite.
+
+## Current S1 proxy-image-evidence validator slice
+
+The next S1 slice is deliberately limited to a fail-closed validator and its
+focused tests. It consumes retained image-evidence artifacts; it does not add a
+renderer consumer, create a proxy bundle, select a camera, run a browser or
+device, or change any product default. The validator must independently bind
+each endpoint to the frozen source, camera, resolution, proxy cut, page/cut
+hashes, and exact `visible/contributor/drawn` relation before it may reuse the
+canonical image gate. A missing field, unavailable count, incomplete endpoint,
+or failed image threshold is Reject/Deferred evidence, never a substitute
+quality claim. Real Bonsai proxy generation and Metal/A065 qualification remain
+separate root-owned slices after this validator exists.
 
 ## Ordered implementation ledger
 

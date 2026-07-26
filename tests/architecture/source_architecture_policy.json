@@ -22,21 +22,19 @@
         },
         {
           "task": "S1",
-          "lane": "bonsai-authority-manifest-admission",
+          "lane": "proxy-image-evidence-validator",
           "write_allowlist": [
             "docs/plans/active/2026-07-23-native-render-scalable/progress.md",
-            "docs/plans/active/2026-07-23-native-render-scalable/s0-contract.md",
-            "tests/perf/datasets/bonsai.local-candidate.json",
-            "tests/perf/datasets/README.md",
-            "tests/perf/validate-dataset-manifests.py"
+            "tests/perf/validate-scalable-proxy-image-gate.py",
+            "tests/perf/test_validate_scalable_proxy_image_gate.py"
           ]
         }
       ],
       "integration_order": [
         "surface-depth-precision-presentation-receipt",
-        "bonsai-authority-manifest-admission"
+        "proxy-image-evidence-validator"
       ],
-      "reason": "B1 private Surface precision presentation receipt and S1 Bonsai authority-manifest admission are independent post-contract seams; neither changes a product default or unlocks later work alone."
+      "reason": "B1 private Surface precision presentation receipt and S1 fail-closed proxy-image evidence validation are independent post-contract seams; neither changes a product default or unlocks later work alone."
     },
     "task_catalog": {
       "A0": "A",
