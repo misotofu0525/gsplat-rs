@@ -33,6 +33,7 @@ use crate::scene::{ResidentSceneCpu, ResidentSceneError, SceneRuntime};
 
 use controller::{PlanDecision, SampleDisposition, WholePlanController, WholePlanControllerError};
 use frame::{FrameState, GenerationError, Viewport};
+pub(crate) use gpu_prepare::ResidentShLayoutReceipt;
 use gpu_prepare::{
     CurrentStatsCapabilityCandidate, GpuExecutionOwner, GpuPreparationError, GpuPreparationReceipt,
     GpuScenePreparation,
@@ -1272,6 +1273,14 @@ impl PreparedRuntimeSlot {
             "admitted projected-cache profile must match the construction-time profile"
         );
         realized
+    }
+
+    /// Returns only the Resident SH layout realized by the admitted GPU graph.
+    /// CPU construction and replacement intent remain unavailable until the
+    /// complete scene, PlanSet and raster transaction is admitted again.
+    pub(crate) fn surface_resident_sh_layout_receipt(&self) -> Option<ResidentShLayoutReceipt> {
+        self.gpu_preparation()
+            .map(GpuPreparationReceipt::resident_sh)
     }
 
     #[cfg(test)]

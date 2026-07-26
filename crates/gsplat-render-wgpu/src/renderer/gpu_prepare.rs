@@ -14,6 +14,7 @@ use gsplat_core::Camera;
 use thiserror::Error;
 
 use crate::cpu_order::DepthKeyPrecision;
+use crate::data::RESIDENT_CHUNK_SPLATS;
 use crate::gpu::{
     GpuPrefixScan, GpuPrefixScanProfile, ProjectedRankProjector, ProjectedRankSourceBindings,
 };
@@ -92,6 +93,213 @@ impl SceneResourceGeneration {
     }
 }
 
+/// The two realized Resident SH codec configurations exercised by B3.
+///
+/// This is a finite private identity, not a caller-selected format registry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ResidentShCodecProfile {
+    ExactSigned11BandScale5,
+    CandidateSigned8BandScale5,
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+impl ResidentShCodecProfile {
+    pub(crate) const fn mantissa_bits(self) -> u8 {
+        match self {
+            Self::ExactSigned11BandScale5 => 11,
+            Self::CandidateSigned8BandScale5 => 8,
+        }
+    }
+
+    pub(crate) const fn symmetric_max_code(self) -> u16 {
+        match self {
+            Self::ExactSigned11BandScale5 => 1023,
+            Self::CandidateSigned8BandScale5 => 127,
+        }
+    }
+
+    pub(crate) const fn point_scale_bits(self) -> u8 {
+        5
+    }
+
+    pub(crate) const fn point_scale_max_code(self) -> u8 {
+        31
+    }
+}
+
+/// Resident SH membership and layout realized by one complete GPU admission.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ResidentShLayoutReceipt {
+    profile: ResidentShCodecProfile,
+    source_count: u32,
+    encoded_count: u32,
+    resident_count: u32,
+    addressable_count: u32,
+    source_sh_degree: u8,
+    resident_sh_degree: u8,
+    residual_coefficients_per_source: u8,
+    plane_count: u8,
+    bytes_per_source: u16,
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+impl ResidentShLayoutReceipt {
+    fn from_realized(
+        scene: &ResidentSceneCpu,
+        resident: &ResidentGpuResources,
+        addressable_count: u32,
+    ) -> Result<Self, GpuPreparationError> {
+        let source_count = u32::try_from(scene.len())
+            .map_err(|_| GpuPreparationError::Resource(ResidentGpuError::AddressSpaceExceeded))?;
+        let encoded_count = u32::try_from(scene.encoded_count())
+            .map_err(|_| GpuPreparationError::Resource(ResidentGpuError::AddressSpaceExceeded))?;
+        let resident_count = u32::try_from(resident.capacity)
+            .map_err(|_| GpuPreparationError::Resource(ResidentGpuError::AddressSpaceExceeded))?;
+        let resident_sh_degree = u8::try_from(resident.sh_degree).map_err(|_| {
+            GpuPreparationError::ExactContractMismatch {
+                component: "Resident SH degree",
+            }
+        })?;
+        let plane_count = u8::try_from(resident.resident_sh_plane_count()).map_err(|_| {
+            GpuPreparationError::ExactContractMismatch {
+                component: "Resident SH plane count",
+            }
+        })?;
+        let residual_coefficients_per_source = scene
+            .sh_coeffs_per_channel()
+            .checked_mul(3)
+            .and_then(|count| u8::try_from(count).ok())
+            .ok_or(GpuPreparationError::ExactContractMismatch {
+                component: "Resident SH coefficient count",
+            })?;
+        let profile = match (
+            scene.sh_mantissa_bits(),
+            scene.sh_symmetric_max_code(),
+            scene.sh_point_scale_bits(),
+            scene.sh_point_scale_max_code(),
+        ) {
+            (11, 1023, 5, 31) => ResidentShCodecProfile::ExactSigned11BandScale5,
+            (8, 127, 5, 31) => ResidentShCodecProfile::CandidateSigned8BandScale5,
+            _ => {
+                return Err(GpuPreparationError::ExactContractMismatch {
+                    component: "Resident SH codec profile",
+                });
+            }
+        };
+        let receipt = Self {
+            profile,
+            source_count,
+            encoded_count,
+            resident_count,
+            addressable_count,
+            source_sh_degree: scene.sh_degree,
+            resident_sh_degree,
+            residual_coefficients_per_source,
+            plane_count,
+            bytes_per_source: resident.resident_sh_bytes_per_source(),
+        };
+        if receipt.plane_count as u32 != scene.sh_plane_count()
+            || !receipt.matches_realized(resident)
+        {
+            return Err(GpuPreparationError::ExactContractMismatch {
+                component: "Resident SH layout receipt",
+            });
+        }
+        Ok(receipt)
+    }
+
+    const fn matches_realized(self, resident: &ResidentGpuResources) -> bool {
+        self.source_count == self.encoded_count
+            && self.source_count == self.resident_count
+            && self.source_count == self.addressable_count
+            && self.source_sh_degree == self.resident_sh_degree
+            && self.resident_sh_degree as u32 == resident.sh_degree
+            && self.plane_count as u32 == resident.resident_sh_plane_count()
+            && self.bytes_per_source == resident.resident_sh_bytes_per_source()
+            && self.profile_matches_degree_layout()
+    }
+
+    const fn profile_matches_degree_layout(self) -> bool {
+        let expected_plane_count = match (self.profile, self.resident_sh_degree) {
+            (ResidentShCodecProfile::ExactSigned11BandScale5, 0)
+            | (ResidentShCodecProfile::CandidateSigned8BandScale5, 0) => 0,
+            (ResidentShCodecProfile::ExactSigned11BandScale5, 1)
+            | (ResidentShCodecProfile::CandidateSigned8BandScale5, 1) => 1,
+            (ResidentShCodecProfile::ExactSigned11BandScale5, 2) => 3,
+            (ResidentShCodecProfile::CandidateSigned8BandScale5, 2) => 2,
+            (ResidentShCodecProfile::ExactSigned11BandScale5, 3) => 4,
+            (ResidentShCodecProfile::CandidateSigned8BandScale5, 3) => 3,
+            _ => return false,
+        };
+        self.plane_count == expected_plane_count
+            && self.bytes_per_source == expected_plane_count as u16 * 16
+    }
+
+    pub(crate) const fn profile(self) -> ResidentShCodecProfile {
+        self.profile
+    }
+
+    pub(crate) const fn source_count(self) -> u32 {
+        self.source_count
+    }
+
+    pub(crate) const fn encoded_count(self) -> u32 {
+        self.encoded_count
+    }
+
+    pub(crate) const fn resident_count(self) -> u32 {
+        self.resident_count
+    }
+
+    pub(crate) const fn addressable_count(self) -> u32 {
+        self.addressable_count
+    }
+
+    pub(crate) const fn source_sh_degree(self) -> u8 {
+        self.source_sh_degree
+    }
+
+    pub(crate) const fn resident_sh_degree(self) -> u8 {
+        self.resident_sh_degree
+    }
+
+    pub(crate) const fn residual_coefficients_per_source(self) -> u8 {
+        self.residual_coefficients_per_source
+    }
+
+    pub(crate) const fn plane_count(self) -> u8 {
+        self.plane_count
+    }
+
+    pub(crate) const fn bytes_per_source(self) -> u16 {
+        self.bytes_per_source
+    }
+
+    pub(crate) const fn range_chunk_splats(self) -> u16 {
+        RESIDENT_CHUNK_SPLATS as u16
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn sh3_for_test(profile: ResidentShCodecProfile) -> Self {
+        let plane_count = match profile {
+            ResidentShCodecProfile::ExactSigned11BandScale5 => 4,
+            ResidentShCodecProfile::CandidateSigned8BandScale5 => 3,
+        };
+        Self {
+            profile,
+            source_count: 1,
+            encoded_count: 1,
+            resident_count: 1,
+            addressable_count: 1,
+            source_sh_degree: 3,
+            resident_sh_degree: 3,
+            residual_coefficients_per_source: 45,
+            plane_count,
+            bytes_per_source: plane_count as u16 * 16,
+        }
+    }
+}
+
 /// Immutable proof that one complete CPU scene has one complete device-owned
 /// counterpart. Every count is explicit so capacity cannot masquerade as
 /// source, resident or addressable membership.
@@ -104,6 +312,7 @@ pub(crate) struct GpuPreparationReceipt {
     sh_degree: u8,
     preproject_compute: bool,
     projected_cache_precision: ProjectedCachePrecisionProfile,
+    resident_sh: ResidentShLayoutReceipt,
     scene_resource_generation: SceneResourceGeneration,
     plan_set_generation: u64,
 }
@@ -135,6 +344,10 @@ impl GpuPreparationReceipt {
 
     pub(crate) const fn projected_cache_precision(self) -> ProjectedCachePrecisionProfile {
         self.projected_cache_precision
+    }
+
+    pub(crate) const fn resident_sh(self) -> ResidentShLayoutReceipt {
+        self.resident_sh
     }
 
     pub(crate) const fn scene_generation(self) -> u64 {
@@ -1233,6 +1446,8 @@ fn validate_complete_receipt(
         .map_err(|_| GpuPreparationError::Resource(ResidentGpuError::AddressSpaceExceeded))?;
     let capacity = u32::try_from(resident.capacity)
         .map_err(|_| GpuPreparationError::Resource(ResidentGpuError::AddressSpaceExceeded))?;
+    let resident_sh =
+        ResidentShLayoutReceipt::from_realized(scene, resident, projector.capacity())?;
     let receipt = GpuPreparationReceipt {
         source_count,
         capacity,
@@ -1241,6 +1456,7 @@ fn validate_complete_receipt(
         sh_degree: scene.sh_degree,
         preproject_compute: preproject.is_some(),
         projected_cache_precision,
+        resident_sh,
         scene_resource_generation: SceneResourceGeneration::from_frame(generation),
         plan_set_generation: generation.plan_set_generation(),
     };
@@ -1261,6 +1477,7 @@ fn validate_runtime_counts(
         || receipt.addressable_count != projector.capacity()
         || receipt.projected_cache_precision.axis_record_bytes()
             != projector.projected_axes_record_bytes()
+        || !receipt.resident_sh.matches_realized(resident)
         || preproject.is_some_and(|preproject| receipt.source_count != preproject.capacity())
         || preproject.is_some_and(|preproject| {
             receipt.projected_cache_precision.axis_record_bytes()
@@ -1496,6 +1713,27 @@ mod tests {
     }
 
     #[test]
+    fn resident_sh_profile_is_locked_to_the_degree_specific_plane_layout() {
+        let exact =
+            ResidentShLayoutReceipt::sh3_for_test(ResidentShCodecProfile::ExactSigned11BandScale5);
+        let candidate = ResidentShLayoutReceipt::sh3_for_test(
+            ResidentShCodecProfile::CandidateSigned8BandScale5,
+        );
+        assert!(exact.profile_matches_degree_layout());
+        assert!(candidate.profile_matches_degree_layout());
+
+        let mut wrong_exact = exact;
+        wrong_exact.plane_count = 3;
+        wrong_exact.bytes_per_source = 48;
+        assert!(!wrong_exact.profile_matches_degree_layout());
+
+        let mut wrong_candidate = candidate;
+        wrong_candidate.plane_count = 4;
+        wrong_candidate.bytes_per_source = 64;
+        assert!(!wrong_candidate.profile_matches_degree_layout());
+    }
+
+    #[test]
     fn cpu_post_order_upload_rejects_capacity_and_source_id_mismatch() {
         let receipt = GpuPreparationReceipt {
             source_count: 1,
@@ -1505,6 +1743,18 @@ mod tests {
             sh_degree: 0,
             preproject_compute: true,
             projected_cache_precision: ProjectedCachePrecisionProfile::ExactAxes32,
+            resident_sh: ResidentShLayoutReceipt {
+                profile: ResidentShCodecProfile::ExactSigned11BandScale5,
+                source_count: 1,
+                encoded_count: 1,
+                resident_count: 1,
+                addressable_count: 1,
+                source_sh_degree: 0,
+                resident_sh_degree: 0,
+                residual_coefficients_per_source: 0,
+                plane_count: 0,
+                bytes_per_source: 0,
+            },
             scene_resource_generation: SceneResourceGeneration {
                 scene: 1,
                 contract: 1,
@@ -1529,6 +1779,86 @@ mod tests {
                 addressable_count: 1,
             })
         );
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn resident_sh_receipt_is_gpu_realized_and_replacement_requires_readmission() {
+        pollster::block_on(async {
+            let Some((_instance, _adapter, _info, device, queue)) = request_device(8).await else {
+                return;
+            };
+            let resident_source =
+                ResidentSceneCpu::encode_owned(source(3, 3)).expect("SH3 resident scene");
+            let mut slot = PreparedRuntimeSlot::prepare_surface_candidate(&resident_source)
+                .expect("SH3 Surface CPU candidate");
+            assert_eq!(slot.surface_resident_sh_layout_receipt(), None);
+
+            slot.set_test_gpu_admission_mode(TestGpuAdmissionMode::ConcreteAll);
+            slot.prepare_gpu_from_source(
+                &resident_source,
+                &device,
+                &queue,
+                wgpu::TextureFormat::Rgba8Unorm,
+                true,
+            )
+            .await
+            .expect("admit SH3 GPU runtime");
+            let receipt = slot
+                .surface_resident_sh_layout_receipt()
+                .expect("GPU admission realizes Resident SH identity");
+            let expected_profile = if cfg!(feature = "diagnostic-resident-sh-mantissa8") {
+                ResidentShCodecProfile::CandidateSigned8BandScale5
+            } else {
+                ResidentShCodecProfile::ExactSigned11BandScale5
+            };
+            let expected_planes = if cfg!(feature = "diagnostic-resident-sh-mantissa8") {
+                3
+            } else {
+                4
+            };
+            assert_eq!(receipt.profile(), expected_profile);
+            assert_eq!(receipt.source_count(), 3);
+            assert_eq!(receipt.encoded_count(), 3);
+            assert_eq!(receipt.resident_count(), 3);
+            assert_eq!(receipt.addressable_count(), 3);
+            assert_eq!(receipt.source_sh_degree(), 3);
+            assert_eq!(receipt.resident_sh_degree(), 3);
+            assert_eq!(receipt.residual_coefficients_per_source(), 45);
+            assert_eq!(receipt.plane_count(), expected_planes);
+            assert_eq!(receipt.bytes_per_source(), u16::from(expected_planes) * 16);
+            assert_eq!(
+                receipt.profile().mantissa_bits(),
+                if expected_planes == 3 { 8 } else { 11 }
+            );
+            assert_eq!(
+                receipt.profile().symmetric_max_code(),
+                if expected_planes == 3 { 127 } else { 1023 }
+            );
+            assert_eq!(receipt.profile().point_scale_bits(), 5);
+            assert_eq!(receipt.profile().point_scale_max_code(), 31);
+            assert_eq!(receipt.range_chunk_splats(), 256);
+
+            slot.replace(ResidentSceneCpu::encode_owned(source(2, 3)).expect("replacement SH3"))
+                .expect("replace CPU runtime");
+            assert_eq!(
+                slot.surface_resident_sh_layout_receipt(),
+                None,
+                "replacement intent is unavailable until fresh GPU admission"
+            );
+            slot.set_test_gpu_admission_mode(TestGpuAdmissionMode::ConcreteAll);
+            slot.prepare_gpu(&device, &queue, wgpu::TextureFormat::Rgba8Unorm)
+                .await
+                .expect("re-admit replacement SH3 runtime");
+            let replacement = slot
+                .surface_resident_sh_layout_receipt()
+                .expect("fresh admission realizes replacement identity");
+            assert_eq!(replacement.source_count(), 2);
+            assert_eq!(replacement.encoded_count(), 2);
+            assert_eq!(replacement.resident_count(), 2);
+            assert_eq!(replacement.addressable_count(), 2);
+            assert_eq!(replacement.profile(), expected_profile);
+        });
     }
 
     #[test]

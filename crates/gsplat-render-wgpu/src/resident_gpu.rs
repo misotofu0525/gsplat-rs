@@ -172,6 +172,15 @@ impl ResidentGpuResources {
         })
     }
 
+    pub(crate) const fn resident_sh_plane_count(&self) -> u32 {
+        self._byte_plan.sh_plane_count
+    }
+
+    pub(crate) const fn resident_sh_bytes_per_source(&self) -> u16 {
+        (self._byte_plan.sh_plane_count as u16)
+            * (std::mem::size_of::<crate::data::ResidentShPlane>() as u16)
+    }
+
     pub fn prepare_cpu_order(
         &self,
         queue: &wgpu::Queue,

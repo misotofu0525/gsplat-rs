@@ -8,8 +8,8 @@ use crate::SurfaceFrameCapture;
 pub use crate::api::SurfaceOrderBackendUsed;
 use crate::evidence::{
     PresentedCurrentStats, PresentedDepthPrecisionReceipt, PresentedFramePrecisionReceipts,
-    PresentedFramePublication, PresentedProjectedCachePrecisionReceipt, PresentedTelemetry,
-    SessionPublication, SurfaceCompatibilityOrderSubmission,
+    PresentedFramePublication, PresentedProjectedCachePrecisionReceipt, PresentedResidentShReceipt,
+    PresentedTelemetry, SessionPublication, SurfaceCompatibilityOrderSubmission,
     SurfaceCompatibilityProducerSubmission, SurfaceCompatibilityProjectedSubmission,
     SurfaceTelemetryBatch,
 };
@@ -295,6 +295,7 @@ struct RenderedSessionFrame {
     current_stats: PresentedCurrentStats,
     depth_precision: Option<PresentedDepthPrecisionReceipt>,
     projected_cache_precision: Option<PresentedProjectedCachePrecisionReceipt>,
+    resident_sh: Option<PresentedResidentShReceipt>,
     capture_presentation_sequence: Option<u64>,
     telemetry: Option<PresentedTelemetry>,
 }
@@ -472,6 +473,7 @@ impl RenderedSessionFrame {
             current_stats: PresentedCurrentStats::Preserve,
             depth_precision: None,
             projected_cache_precision: None,
+            resident_sh: None,
             capture_presentation_sequence: None,
             telemetry: None,
         }
@@ -482,6 +484,7 @@ impl RenderedSessionFrame {
         current_stats: PresentedCurrentStats,
         depth_precision: Option<PresentedDepthPrecisionReceipt>,
         projected_cache_precision: Option<PresentedProjectedCachePrecisionReceipt>,
+        resident_sh: Option<PresentedResidentShReceipt>,
         capture_presentation_sequence: Option<u64>,
         telemetry: PresentedTelemetry,
     ) -> Self {
@@ -491,6 +494,7 @@ impl RenderedSessionFrame {
             current_stats,
             depth_precision,
             projected_cache_precision,
+            resident_sh,
             capture_presentation_sequence,
             telemetry: Some(telemetry),
         }
@@ -2076,6 +2080,7 @@ impl SurfaceRenderSession {
                 rendered.current_stats,
                 rendered.depth_precision,
                 rendered.projected_cache_precision,
+                rendered.resident_sh,
                 telemetry,
             );
             self.publication.publish_presented_frame(publication);
@@ -2095,6 +2100,7 @@ impl SurfaceRenderSession {
         current_stats: PresentedCurrentStats,
         depth_precision: Option<PresentedDepthPrecisionReceipt>,
         projected_cache_precision: Option<PresentedProjectedCachePrecisionReceipt>,
+        resident_sh: Option<PresentedResidentShReceipt>,
         telemetry: PresentedTelemetry,
     ) -> PresentedFramePublication {
         debug_assert!(output.frame_presented);
@@ -2106,7 +2112,11 @@ impl SurfaceRenderSession {
         PresentedFramePublication::new(
             output.stats,
             current_stats,
-            PresentedFramePrecisionReceipts::new(depth_precision, projected_cache_precision),
+            PresentedFramePrecisionReceipts::new(
+                depth_precision,
+                projected_cache_precision,
+                resident_sh,
+            ),
             SurfaceCompatibilityOrderSubmission {
                 camera_revision: output.camera_revision,
                 requested_backend: self.order_backend(),
@@ -2195,6 +2205,15 @@ impl SurfaceRenderSession {
             order_generation,
             submission.presentation_sequence(),
         );
+        let resident_sh = PresentedResidentShReceipt::new(
+            self.renderer
+                .exact_surface_resident_sh_layout_receipt()
+                .expect("presented Exact Surface runtime owns an admitted Resident SH layout"),
+            submission.frame_identity(),
+            plan,
+            order_generation,
+            submission.presentation_sequence(),
+        );
         let order_refreshed =
             exact_order_refreshed(self.exact_order_generation_receipt, plan, order_generation);
         self.schedule
@@ -2213,6 +2232,7 @@ impl SurfaceRenderSession {
             },
             Some(depth_precision),
             Some(projected_cache_precision),
+            Some(resident_sh),
             capture_presentation_sequence,
             telemetry,
         )
@@ -2701,6 +2721,7 @@ impl SurfaceRenderSession {
         Ok(RenderedSessionFrame::presented(
             output,
             PresentedCurrentStats::Preserve,
+            None,
             None,
             None,
             None,
@@ -3224,6 +3245,7 @@ impl SurfaceRenderSession {
         Ok(RenderedSessionFrame::presented(
             output,
             PresentedCurrentStats::Preserve,
+            None,
             None,
             None,
             None,

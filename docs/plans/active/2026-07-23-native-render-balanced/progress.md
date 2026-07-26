@@ -675,3 +675,54 @@ This is a finite candidate-local implementation for root review only. No
 browser, device, collector, formal image-quality artifact or performance
 endpoint was run, and no product acceptance or default promotion is claimed.
 B3 remains **Active** pending separately authorized evidence and root review.
+
+## B3 Resident SH presentation-receipt slice
+
+Implementation from exact baseline `f6adec70a67b8cead125e331549c091d2e3c09c0`
+on branch `codex/b3-sh8-presentation-receipt` adds only the private identity
+needed to prove which realized Resident SH layout reached one successfully
+presented Packed Exact frame. It does not add a collector, artifact field,
+platform adapter or public API.
+
+`GpuPreparationReceipt` now carries a narrow `ResidentShLayoutReceipt` created
+only after the complete Resident GPU resources exist. It binds
+source/encoded/resident/addressable equality, source and resident SH degree,
+residual coefficients per source, actual plane count and bytes per source to the
+real codec configuration. The profile identifies the existing signed mantissa,
+symmetric code range and five-bit per-point band-scale range; the existing
+256-source chunk identity is explicit, and no nonexistent per-scene range hash
+is invented. Degree-specific validation locks the profile to the actual GPU
+layout: SH3 is Exact signed-11 with four planes / 64 bytes per source in the
+default lane, and Candidate signed-8 with three planes / 48 bytes per source
+only under `diagnostic-resident-sh-mantissa8`.
+
+The renderer slot and facade expose this value only from the admitted GPU
+receipt. A CPU-only candidate and a replacement that has not completed fresh
+GPU admission return unavailable. `SessionPublication` retains a private
+`PresentedResidentShReceipt` through the existing grouped B1/B2 precision DTO,
+so `PresentedFramePublication` gains no parameter. The receipt binds the
+realized layout to the same `FrameIdentity`, actual `PlanId`, order generation
+and presentation sequence as the renderer submission. Unavailable acquisition,
+failed/unpresented attempts and retained telemetry cannot create or overwrite
+it; only the existing post-present single publication commit can install it.
+
+Finite candidate-local verification passed:
+
+- default and B3-feature presentation-publication tests: 9 passed in each lane;
+- default and B3-feature GPU admission/replacement tests: 14 passed in each
+  lane;
+- default and B3-feature Surface facade/control tests: 10 passed in each lane;
+- default and B3-feature resident scene/codec/layout tests: 41 passed in each
+  lane;
+- the feature-only production SH8 GPU/CPU parity test passed: 1 passed;
+- locked renderer library checks and all-target Clippy with warnings denied
+  passed for default and B3-feature builds;
+- the combined B2/B3 feature check failed as required with the existing
+  explicit mutual-exclusion diagnostic;
+- `cargo fmt --all -- --check`, `git diff --check`, all three source-architecture
+  policy unit tests and the repository architecture entrypoint passed.
+
+This is a finite candidate-local private receipt for root review. No browser,
+Android, device, real-window, collector, formal image-quality artifact or
+performance endpoint was run; those endpoints and any product acceptance or
+default promotion remain **Deferred**. B3 remains **Active**.

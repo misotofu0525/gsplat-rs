@@ -15,6 +15,7 @@ use super::{
 use crate::cpu_order::DepthKeyPrecision;
 use crate::evidence::{PresentedDepthPrecisionReceipt, SessionPublication};
 use crate::plans::{FrameIdentity, PlanId, TestGpuAdmissionMode};
+use crate::renderer::gpu_prepare::ResidentShCodecProfile;
 use crate::renderer::{
     ExactPlanPolicy, PreparedRuntimeSlot, SurfaceDepthPrecisionProfile, execute_frame,
 };
@@ -54,6 +55,19 @@ fn depth_precision_scene() -> ResidentSceneCpu {
         sh_rest: None,
     })
     .expect("depth precision fixture")
+}
+
+fn resident_sh3_scene() -> ResidentSceneCpu {
+    ResidentSceneCpu::encode_owned(SceneBuffers {
+        positions: vec![Vec3f::new(0.0, 0.0, 1.0), Vec3f::new(0.1, 0.0, 1.1)],
+        opacity: vec![1.0; 2],
+        scale_xyz: vec![[-1.0; 3]; 2],
+        rotation_xyzw: vec![[0.0, 0.0, 0.0, 1.0]; 2],
+        color_dc: vec![[0.1, 0.2, 0.3]; 2],
+        sh_degree: 3,
+        sh_rest: Some(vec![0.0; 2 * 45]),
+    })
+    .expect("Resident SH3 fixture")
 }
 
 #[test]
@@ -504,6 +518,62 @@ fn surface_gpu_candidate_carries_the_same_candidate_precision_to_resident_order(
             Some(DepthKeyPrecision::CandidateStable24),
             "replacement GPU admission preserves the construction-time profile"
         );
+    });
+}
+
+#[test]
+fn surface_facade_exposes_only_the_gpu_admitted_resident_sh_layout() {
+    pollster::block_on(async {
+        let Some((device, queue)) = exact_control_device().await else {
+            return;
+        };
+        let mut renderer = Renderer::with_config_for_surface(RendererConfig {
+            width: 64,
+            height: 64,
+            ..RendererConfig::default()
+        })
+        .expect("Surface-only renderer");
+        renderer.set_geometry_path(GeometryPath::PackedAtlas);
+        renderer
+            .load_resident_scene(resident_sh3_scene())
+            .expect("retained SH3 source");
+        assert_eq!(renderer.exact_surface_resident_sh_layout_receipt(), None);
+
+        let candidate = renderer
+            .prepare_surface_exact_candidate(&device, &queue, wgpu::TextureFormat::Rgba8Unorm, true)
+            .await
+            .expect("admitted SH3 Surface candidate");
+        let realized = candidate
+            .surface_resident_sh_layout_receipt()
+            .expect("candidate has a realized GPU layout");
+        renderer
+            .publish_surface_exact_candidate(candidate)
+            .expect("publish SH3 Surface candidate");
+        assert_eq!(
+            renderer.exact_surface_resident_sh_layout_receipt(),
+            Some(realized)
+        );
+
+        let expected_profile = if cfg!(feature = "diagnostic-resident-sh-mantissa8") {
+            ResidentShCodecProfile::CandidateSigned8BandScale5
+        } else {
+            ResidentShCodecProfile::ExactSigned11BandScale5
+        };
+        let expected_planes = if cfg!(feature = "diagnostic-resident-sh-mantissa8") {
+            3
+        } else {
+            4
+        };
+        assert_eq!(realized.profile(), expected_profile);
+        assert_eq!(realized.source_count(), 2);
+        assert_eq!(realized.encoded_count(), 2);
+        assert_eq!(realized.resident_count(), 2);
+        assert_eq!(realized.addressable_count(), 2);
+        assert_eq!(realized.source_sh_degree(), 3);
+        assert_eq!(realized.resident_sh_degree(), 3);
+        assert_eq!(realized.residual_coefficients_per_source(), 45);
+        assert_eq!(realized.plane_count(), expected_planes);
+        assert_eq!(realized.bytes_per_source(), u16::from(expected_planes) * 16);
     });
 }
 

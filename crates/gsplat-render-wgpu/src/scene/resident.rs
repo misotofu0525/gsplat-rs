@@ -10,14 +10,15 @@ use crate::data::{
 
 use super::budget::ResidentCpuByteAccounting;
 use super::builder::{ResidentSceneBuilder, push_scene_into_builder};
-#[cfg(any(test, feature = "diagnostic-resident-sh-mantissa8"))]
-use super::codec::{RESIDENT_SH_BITS, RESIDENT_SH_MAX_MAGNITUDE};
-#[cfg(test)]
 use super::codec::{
-    RESIDENT_SH_POINT_SCALE_BITS, RESIDENT_SH_POINT_SCALE_MAX, sh_band, sh_band_scale,
-    unpack_signed_sh, unpack_unsigned_bits, unpack_vec3_u16,
+    RESIDENT_SH_BITS, RESIDENT_SH_MAX_MAGNITUDE, RESIDENT_SH_POINT_SCALE_BITS,
+    RESIDENT_SH_POINT_SCALE_MAX,
 };
 use super::codec::{resident_sh_plane_count, sh_coeffs_per_channel};
+#[cfg(test)]
+use super::codec::{
+    sh_band, sh_band_scale, unpack_signed_sh, unpack_unsigned_bits, unpack_vec3_u16,
+};
 
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
 pub enum ResidentSceneError {
@@ -184,6 +185,26 @@ impl ResidentSceneCpu {
 
     pub const fn sh_plane_count(&self) -> u32 {
         resident_sh_plane_count(self.sh_degree) as u32
+    }
+
+    pub(crate) const fn encoded_count(&self) -> usize {
+        self.report.encoded_count
+    }
+
+    pub(crate) const fn sh_mantissa_bits(&self) -> u8 {
+        RESIDENT_SH_BITS as u8
+    }
+
+    pub(crate) const fn sh_symmetric_max_code(&self) -> u16 {
+        RESIDENT_SH_MAX_MAGNITUDE as u16
+    }
+
+    pub(crate) const fn sh_point_scale_bits(&self) -> u8 {
+        RESIDENT_SH_POINT_SCALE_BITS as u8
+    }
+
+    pub(crate) const fn sh_point_scale_max_code(&self) -> u8 {
+        RESIDENT_SH_POINT_SCALE_MAX as u8
     }
 
     /// True while compact attribute planes are still available for one GPU

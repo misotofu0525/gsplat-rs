@@ -494,6 +494,14 @@ impl Renderer {
             .and_then(renderer::PreparedRuntimeSlot::surface_projected_cache_precision_profile)
     }
 
+    pub(crate) fn exact_surface_resident_sh_layout_receipt(
+        &self,
+    ) -> Option<renderer::ResidentShLayoutReceipt> {
+        self.exact_offscreen_runtime
+            .as_ref()
+            .and_then(renderer::PreparedRuntimeSlot::surface_resident_sh_layout_receipt)
+    }
+
     pub(crate) fn set_exact_surface_policy(
         &mut self,
         policy: renderer::ExactPlanPolicy,

@@ -15,7 +15,9 @@ use super::{
 };
 use crate::gpu_telemetry::SurfaceCpuOrderMeasurement;
 use crate::plans::{FrameIdentity, PlanId};
-use crate::renderer::{ProjectedCachePrecisionProfile, SurfaceDepthPrecisionProfile};
+use crate::renderer::{
+    ProjectedCachePrecisionProfile, ResidentShLayoutReceipt, SurfaceDepthPrecisionProfile,
+};
 use crate::{
     SurfaceCurrentStatsPoll, SurfaceCurrentStatsSubmission, SurfaceGpuProducerMeasurement,
     SurfaceGpuProducerMeasurementFailure, SurfaceOrderMeasurement, SurfaceOrderMeasurementFailure,
@@ -125,20 +127,73 @@ impl PresentedProjectedCachePrecisionReceipt {
     }
 }
 
+/// GPU-admitted Resident SH layout joined to one successfully presented
+/// Packed Exact frame. No construction-time codec intent enters this DTO.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PresentedResidentShReceipt {
+    layout: ResidentShLayoutReceipt,
+    frame: FrameIdentity,
+    plan: PlanId,
+    order_generation: u64,
+    presentation_sequence: u64,
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+impl PresentedResidentShReceipt {
+    pub(crate) const fn new(
+        layout: ResidentShLayoutReceipt,
+        frame: FrameIdentity,
+        plan: PlanId,
+        order_generation: u64,
+        presentation_sequence: u64,
+    ) -> Self {
+        Self {
+            layout,
+            frame,
+            plan,
+            order_generation,
+            presentation_sequence,
+        }
+    }
+
+    pub(crate) const fn layout(self) -> ResidentShLayoutReceipt {
+        self.layout
+    }
+
+    pub(crate) const fn frame(self) -> FrameIdentity {
+        self.frame
+    }
+
+    pub(crate) const fn plan(self) -> PlanId {
+        self.plan
+    }
+
+    pub(crate) const fn order_generation(self) -> u64 {
+        self.order_generation
+    }
+
+    pub(crate) const fn presentation_sequence(self) -> u64 {
+        self.presentation_sequence
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct PresentedFramePrecisionReceipts {
     depth: Option<PresentedDepthPrecisionReceipt>,
     projected_cache: Option<PresentedProjectedCachePrecisionReceipt>,
+    resident_sh: Option<PresentedResidentShReceipt>,
 }
 
 impl PresentedFramePrecisionReceipts {
     pub(crate) const fn new(
         depth: Option<PresentedDepthPrecisionReceipt>,
         projected_cache: Option<PresentedProjectedCachePrecisionReceipt>,
+        resident_sh: Option<PresentedResidentShReceipt>,
     ) -> Self {
         Self {
             depth,
             projected_cache,
+            resident_sh,
         }
     }
 }
@@ -378,6 +433,7 @@ pub(crate) struct SessionPublication {
     last_stats: FrameStats,
     presented_depth_precision: Option<PresentedDepthPrecisionReceipt>,
     presented_projected_cache_precision: Option<PresentedProjectedCachePrecisionReceipt>,
+    presented_resident_sh: Option<PresentedResidentShReceipt>,
     capture_depth_precision: CaptureDepthPrecisionState,
     pending_telemetry: SurfaceTelemetryBatch,
     evidence: SessionEvidence,
@@ -397,6 +453,7 @@ impl SessionPublication {
             last_stats: FrameStats::zero(),
             presented_depth_precision: None,
             presented_projected_cache_precision: None,
+            presented_resident_sh: None,
             capture_depth_precision: if exact_surface {
                 CaptureDepthPrecisionState::Idle
             } else {
@@ -428,6 +485,11 @@ impl SessionPublication {
         &self,
     ) -> Option<PresentedProjectedCachePrecisionReceipt> {
         self.presented_projected_cache_precision
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn presented_resident_sh_receipt(&self) -> Option<PresentedResidentShReceipt> {
+        self.presented_resident_sh
     }
 
     pub(crate) fn arm_capture_depth_precision(&mut self) -> bool {
@@ -527,6 +589,9 @@ impl SessionPublication {
         if let Some(projected_cache_precision) = precision.projected_cache {
             self.presented_projected_cache_precision = Some(projected_cache_precision);
         }
+        if let Some(resident_sh) = precision.resident_sh {
+            self.presented_resident_sh = Some(resident_sh);
+        }
         if let PresentedCurrentStats::Exact {
             submission,
             counts_current,
@@ -602,6 +667,7 @@ mod tests {
     use std::num::NonZeroU64;
 
     use super::*;
+    use crate::renderer::gpu_prepare::ResidentShCodecProfile;
     use crate::{
         SurfaceAdaptiveState, SurfaceCompatibilityCountFamily, SurfaceCompatibilityCountsTake,
         SurfaceCompatibilityCountsUnavailableReason, SurfaceCompatibilityTerminal,
@@ -899,7 +965,7 @@ mod tests {
         publication.publish_presented_frame(PresentedFramePublication::new(
             FrameStats::zero(),
             PresentedCurrentStats::Preserve,
-            PresentedFramePrecisionReceipts::new(Some(receipt), None),
+            PresentedFramePrecisionReceipts::new(Some(receipt), None, None),
             order,
             projected,
             producer,
@@ -973,7 +1039,7 @@ mod tests {
         publication.publish_presented_frame(PresentedFramePublication::new(
             FrameStats::zero(),
             PresentedCurrentStats::Preserve,
-            PresentedFramePrecisionReceipts::new(None, Some(receipt)),
+            PresentedFramePrecisionReceipts::new(None, Some(receipt), None),
             order,
             projected,
             producer,
@@ -1034,6 +1100,99 @@ mod tests {
         publish_projected_cache_precision_receipt(&mut publication, next_presented);
         assert_eq!(
             publication.presented_projected_cache_precision_receipt(),
+            Some(next_presented)
+        );
+    }
+
+    fn resident_sh_receipt(
+        profile: ResidentShCodecProfile,
+        camera_revision: u64,
+        order_generation: u64,
+        presentation_sequence: u64,
+    ) -> PresentedResidentShReceipt {
+        PresentedResidentShReceipt::new(
+            ResidentShLayoutReceipt::sh3_for_test(profile),
+            FrameIdentity::new(2, camera_revision, 3, 4, 5),
+            PlanId::GpuPostSort,
+            order_generation,
+            presentation_sequence,
+        )
+    }
+
+    fn publish_resident_sh_receipt(
+        publication: &mut SessionPublication,
+        receipt: PresentedResidentShReceipt,
+    ) {
+        let (order, projected, producer) = submissions(receipt.presentation_sequence());
+        publication.publish_presented_frame(PresentedFramePublication::new(
+            FrameStats::zero(),
+            PresentedCurrentStats::Preserve,
+            PresentedFramePrecisionReceipts::new(None, None, Some(receipt)),
+            order,
+            projected,
+            producer,
+            PresentedTelemetry::from_batch(SurfaceTelemetryBatch::default()),
+        ));
+    }
+
+    #[test]
+    fn resident_sh_receipt_is_present_fenced_identity_bound_and_not_overwritten() {
+        let mut publication = SessionPublication::new(true);
+        let profile = if cfg!(feature = "diagnostic-resident-sh-mantissa8") {
+            ResidentShCodecProfile::CandidateSigned8BandScale5
+        } else {
+            ResidentShCodecProfile::ExactSigned11BandScale5
+        };
+        let expected_planes = if cfg!(feature = "diagnostic-resident-sh-mantissa8") {
+            3
+        } else {
+            4
+        };
+        let candidate = resident_sh_receipt(profile, 7, 11, 13);
+        assert_eq!(publication.presented_resident_sh_receipt(), None);
+
+        publication.retain_consumed_telemetry(SurfaceTelemetryBatch::default());
+        publication.terminalize_deferred_telemetry();
+        assert_eq!(publication.presented_resident_sh_receipt(), None);
+
+        publish_resident_sh_receipt(&mut publication, candidate);
+        let published = publication
+            .presented_resident_sh_receipt()
+            .expect("successful present publishes Resident SH identity");
+        let layout = published.layout();
+        assert_eq!(layout.profile(), profile);
+        assert_eq!(layout.source_count(), 1);
+        assert_eq!(layout.encoded_count(), 1);
+        assert_eq!(layout.resident_count(), 1);
+        assert_eq!(layout.addressable_count(), 1);
+        assert_eq!(layout.source_sh_degree(), 3);
+        assert_eq!(layout.resident_sh_degree(), 3);
+        assert_eq!(layout.residual_coefficients_per_source(), 45);
+        assert_eq!(layout.plane_count(), expected_planes);
+        assert_eq!(layout.bytes_per_source(), u16::from(expected_planes) * 16);
+        assert_eq!(
+            layout.profile().mantissa_bits(),
+            if expected_planes == 3 { 8 } else { 11 }
+        );
+        assert_eq!(
+            layout.profile().symmetric_max_code(),
+            if expected_planes == 3 { 127 } else { 1023 }
+        );
+        assert_eq!(layout.profile().point_scale_bits(), 5);
+        assert_eq!(layout.profile().point_scale_max_code(), 31);
+        assert_eq!(layout.range_chunk_splats(), 256);
+        assert_eq!(published.frame().camera_revision(), 7);
+        assert_eq!(published.plan(), PlanId::GpuPostSort);
+        assert_eq!(published.order_generation(), 11);
+        assert_eq!(published.presentation_sequence(), 13);
+
+        publication.retain_consumed_telemetry(SurfaceTelemetryBatch::default());
+        assert_eq!(publication.presented_resident_sh_receipt(), Some(candidate));
+
+        let next_presented = resident_sh_receipt(profile, 9, 15, 16);
+        publish_resident_sh_receipt(&mut publication, next_presented);
+        assert_eq!(
+            publication.presented_resident_sh_receipt(),
             Some(next_presented)
         );
     }
