@@ -13,6 +13,7 @@
             "docs/plans/active/2026-07-23-native-render-balanced/progress.md",
             "crates/gsplat-render-wgpu/src/cpu_order.rs",
             "crates/gsplat-render-wgpu/src/cpu/preprocess.rs",
+            "crates/gsplat-render-wgpu/src/cpu/preprocess/packed.rs",
             "crates/gsplat-render-wgpu/src/cpu/preprocess/scalar.rs",
             "crates/gsplat-render-wgpu/src/cpu/preprocess/aarch64.rs",
             "crates/gsplat-render-wgpu/src/cpu/preprocess/x86_64.rs",
