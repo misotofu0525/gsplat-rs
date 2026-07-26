@@ -302,6 +302,13 @@ pub fn visit_ply_bytes_splats_with_limits(
 /// from that same chunk. This gives the caller a transactional point at which
 /// to allocate its final scene builder; call `push(&[], visitor)` once to drain
 /// that retained tail.
+///
+/// Any error returned by [`Self::push`] or [`Self::finish`] is terminal. The
+/// failing call may already have delivered complete splats before detecting a
+/// later malformed vertex, so callers must discard the in-progress destination
+/// after an error. Subsequent calls return
+/// [`PlyLoadError::IncrementalDecoderFinished`] without invoking the visitor,
+/// which prevents replaying already-published callbacks.
 pub struct IncrementalPlyDecoder {
     limits: PlyLoadLimits,
     buffer: Vec<u8>,
@@ -310,7 +317,14 @@ pub struct IncrementalPlyDecoder {
     decoded_vertices: usize,
     total_input_bytes: usize,
     peak_buffered_bytes: usize,
-    finished: bool,
+    state: IncrementalPlyDecoderState,
+}
+
+#[derive(PartialEq, Eq)]
+enum IncrementalPlyDecoderState {
+    Active,
+    Finished,
+    Failed,
 }
 
 impl Default for IncrementalPlyDecoder {
@@ -329,7 +343,7 @@ impl IncrementalPlyDecoder {
             decoded_vertices: 0,
             total_input_bytes: 0,
             peak_buffered_bytes: 0,
-            finished: false,
+            state: IncrementalPlyDecoderState::Active,
         }
     }
 
@@ -340,9 +354,21 @@ impl IncrementalPlyDecoder {
         input: &[u8],
         mut visitor: impl FnMut(&DecodedPlySplat),
     ) -> Result<Option<PlySceneSummary>, PlyLoadError> {
-        if self.finished {
+        if self.state != IncrementalPlyDecoderState::Active {
             return Err(PlyLoadError::IncrementalDecoderFinished);
         }
+        let result = self.push_active(input, &mut visitor);
+        if result.is_err() {
+            self.state = IncrementalPlyDecoderState::Failed;
+        }
+        result
+    }
+
+    fn push_active(
+        &mut self,
+        input: &[u8],
+        visitor: &mut impl FnMut(&DecodedPlySplat),
+    ) -> Result<Option<PlySceneSummary>, PlyLoadError> {
         self.total_input_bytes = self
             .total_input_bytes
             .checked_add(input.len())
@@ -384,7 +410,7 @@ impl IncrementalPlyDecoder {
         }
 
         self.extend_buffer(input)?;
-        self.decode_available(false, &mut visitor)?;
+        self.decode_available(false, visitor)?;
         Ok(None)
     }
 
@@ -395,9 +421,22 @@ impl IncrementalPlyDecoder {
         &mut self,
         mut visitor: impl FnMut(&DecodedPlySplat),
     ) -> Result<PlySceneSummary, PlyLoadError> {
-        if self.finished {
+        if self.state != IncrementalPlyDecoderState::Active {
             return Err(PlyLoadError::IncrementalDecoderFinished);
         }
+        let result = self.finish_active(&mut visitor);
+        self.state = if result.is_ok() {
+            IncrementalPlyDecoderState::Finished
+        } else {
+            IncrementalPlyDecoderState::Failed
+        };
+        result
+    }
+
+    fn finish_active(
+        &mut self,
+        visitor: &mut impl FnMut(&DecodedPlySplat),
+    ) -> Result<PlySceneSummary, PlyLoadError> {
         if self.body.is_none() {
             // Permit a zero-body PLY whose end_header is the final input line.
             if let Some(header_end) = complete_header_end_at_eof(&self.buffer, self.limits)? {
@@ -407,13 +446,12 @@ impl IncrementalPlyDecoder {
         if self.body.is_none() {
             return Err(PlyLoadError::MalformedHeader);
         }
-        self.decode_available(true, &mut visitor)?;
+        self.decode_available(true, visitor)?;
         let expected = self.summary.ok_or(PlyLoadError::MalformedHeader)?.gaussians;
         if self.decoded_vertices != expected {
             return Err(PlyLoadError::VertexCountMismatch);
         }
         self.buffer.clear();
-        self.finished = true;
         self.summary.ok_or(PlyLoadError::MalformedHeader)
     }
 
@@ -2010,10 +2048,17 @@ mod tests {
         let mut decoder = IncrementalPlyDecoder::default();
         let header = decoder.push(&truncated, |_| {}).unwrap();
         assert!(header.is_some());
+        let mut truncated_callbacks = 0_usize;
         assert_eq!(
-            decoder.finish(|_| {}).unwrap_err(),
+            decoder.finish(|_| truncated_callbacks += 1).unwrap_err(),
             PlyLoadError::VertexCountMismatch
         );
+        assert_eq!(truncated_callbacks, 1);
+        assert_eq!(
+            decoder.finish(|_| truncated_callbacks += 1).unwrap_err(),
+            PlyLoadError::IncrementalDecoderFinished
+        );
+        assert_eq!(truncated_callbacks, 1);
 
         let mut decoder = IncrementalPlyDecoder::default();
         let mut visited = Vec::new();
@@ -2030,6 +2075,71 @@ mod tests {
             decoder.push(&[], |_| {}).unwrap_err(),
             PlyLoadError::IncrementalDecoderFinished
         );
+    }
+
+    #[test]
+    fn incremental_decoder_failure_never_replays_published_callbacks() {
+        let input = format!(
+            "{}0.0 0.1\n",
+            VALID_PLY.replace("element vertex 1", "element vertex 2")
+        );
+        let mut decoder = IncrementalPlyDecoder::default();
+        let mut visited = Vec::new();
+
+        let summary = decoder
+            .push(input.as_bytes(), |splat| visited.push(*splat))
+            .expect("validated header")
+            .expect("header summary");
+        assert_eq!(summary.gaussians, 2);
+        assert!(visited.is_empty());
+
+        assert_eq!(
+            decoder.push(&[], |splat| visited.push(*splat)).unwrap_err(),
+            PlyLoadError::VertexFieldCount
+        );
+        assert_eq!(visited.len(), 1);
+        assert_eq!(
+            visited[0].position_ruf,
+            gsplat_core::Vec3f::new(0.0, -0.1, 1.0)
+        );
+
+        assert_eq!(
+            decoder.push(&[], |splat| visited.push(*splat)).unwrap_err(),
+            PlyLoadError::IncrementalDecoderFinished
+        );
+        assert_eq!(
+            decoder.finish(|splat| visited.push(*splat)).unwrap_err(),
+            PlyLoadError::IncrementalDecoderFinished
+        );
+        assert_eq!(visited.len(), 1);
+    }
+
+    #[test]
+    fn incremental_decoder_treats_pre_callback_errors_as_terminal() {
+        let limits = PlyLoadLimits {
+            max_input_bytes: 2,
+            ..PlyLoadLimits::default()
+        };
+        let mut decoder = IncrementalPlyDecoder::new(limits);
+        let mut callbacks = 0_usize;
+
+        assert_eq!(
+            decoder.push(b"ply", |_| callbacks += 1).unwrap_err(),
+            PlyLoadError::ResourceLimit {
+                resource: "input bytes",
+                requested: 3,
+                limit: 2,
+            }
+        );
+        assert_eq!(
+            decoder.push(&[], |_| callbacks += 1).unwrap_err(),
+            PlyLoadError::IncrementalDecoderFinished
+        );
+        assert_eq!(
+            decoder.finish(|_| callbacks += 1).unwrap_err(),
+            PlyLoadError::IncrementalDecoderFinished
+        );
+        assert_eq!(callbacks, 0);
     }
 
     #[test]
