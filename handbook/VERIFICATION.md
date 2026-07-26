@@ -5,6 +5,109 @@
 - This file defines the canonical verification paths for the repository.
 - Prefer these repo-local commands and scripts over ad-hoc command sequences.
 
+## Verification Bootstrap
+
+Run the repository doctor before an expensive platform build or device test:
+
+```bash
+python3 tests/verification_bootstrap.py doctor
+```
+
+The default report covers host-only Android build, macOS/Metal, Web/WebGPU,
+Swift smoke, and XCFramework prerequisites. It is read-only: it may query tool
+versions and installation prefixes, but it never builds, starts Chrome, calls
+`adb`/`simctl`, installs a package, or changes shell configuration. Device
+profiles are opt-in:
+
+```bash
+python3 tests/verification_bootstrap.py doctor --profile android-a065
+python3 tests/verification_bootstrap.py doctor --profile ios-simulator
+```
+
+Use `command` to print the exact existing repository entrypoint and derived
+environment without running it. Use `run` only after the profile is READY:
+
+```bash
+python3 tests/verification_bootstrap.py command android-build
+python3 tests/verification_bootstrap.py run android-build
+
+python3 tests/verification_bootstrap.py command macos-metal
+python3 tests/verification_bootstrap.py run macos-metal
+
+python3 tests/verification_bootstrap.py command web-webgpu
+python3 tests/verification_bootstrap.py run web-webgpu
+
+python3 tests/verification_bootstrap.py command apple-host
+python3 tests/verification_bootstrap.py run apple-host
+
+python3 tests/verification_bootstrap.py command apple-xcframework
+python3 tests/verification_bootstrap.py run apple-xcframework
+```
+
+`run` delegates to the scripts documented below; the bootstrap does not
+duplicate their build, collection, or artifact-validation logic. It also does
+not install missing prerequisites. Follow the reported remedy explicitly, then
+rerun `doctor`.
+
+### Discovery and overrides
+
+- Android SDK: `ANDROID_SDK_ROOT`, then `ANDROID_HOME`, the standard macOS SDK
+  directory, an SDK containing `adb` on `PATH`, or Homebrew's
+  `share/android-commandlinetools` below `brew --prefix`.
+- Java: `JAVA_HOME`, macOS `java_home -v 21`, Homebrew `openjdk@21`, then Java
+  on `PATH`. Android profiles require major version 21 and JNI headers.
+- Android components: NDK `29.0.14206865`, platform `android-35`, Build Tools
+  `35.0.0`, platform-tools, and Rust target `aarch64-linux-android`.
+- Web: Rust target `wasm32-unknown-unknown`, the exact `wasm-bindgen-cli`
+  version in `Cargo.lock`, Node/npm, Chrome/Chromium, and the pinned
+  `puppeteer-core` install under `tests/competitive/playcanvas`. Set
+  `CHROME_PATH` when automatic Chrome discovery is not appropriate.
+- Apple: macOS, Swift, the profile-specific Xcode tools, and the Rust targets
+  needed by the XCFramework or simulator profile.
+
+The Homebrew setup proven on Apple Silicon is discovered rather than embedded
+as a required machine path: the SDK currently resolves to
+`/opt/homebrew/share/android-commandlinetools` and JDK 21 to
+`/opt/homebrew/opt/openjdk@21`. Intel Homebrew, a standard Android Studio SDK,
+or explicit environment overrides follow the same profile contract.
+
+### Explicit device runs
+
+The short A065 profile reuses the Android collector with one full-quality
+Kitsune Packed/CPU run, exact trace, native Surface PNG, and canonical artifact
+validation. It is a functionality/ledger check, not a CPU/GPU comparison. The
+serial and any non-default asset location are explicit:
+
+```bash
+GSPLAT_ANDROID_SERIAL=<adb-serial> \
+GSPLAT_ANDROID_DATASET=/absolute/path/to/kitune1.ply \
+python3 tests/verification_bootstrap.py command android-a065
+
+GSPLAT_ANDROID_SERIAL=<adb-serial> \
+GSPLAT_ANDROID_DATASET=/absolute/path/to/kitune1.ply \
+python3 tests/verification_bootstrap.py run android-a065 --allow-device
+```
+
+The iOS simulator profile similarly requires an already selected simulator UUID
+and the qualified Kitsune asset. Doctor/command do not boot or inspect it:
+
+```bash
+IOS_SIMULATOR_ID=<simulator-uuid> \
+GSPLAT_IOS_DATASET=/absolute/path/to/kitune1.ply \
+python3 tests/verification_bootstrap.py command ios-simulator
+
+IOS_SIMULATOR_ID=<simulator-uuid> \
+GSPLAT_IOS_DATASET=/absolute/path/to/kitune1.ply \
+python3 tests/verification_bootstrap.py run ios-simulator --allow-device
+```
+
+Both device collectors require a fresh output directory. Override
+`GSPLAT_ANDROID_OUTPUT` or `GSPLAT_IOS_OUTPUT` when retaining multiple runs;
+otherwise the bootstrap derives a target-local directory from the current
+commit. A missing dataset, simulator UUID, device authorization, thermal
+admission, browser GPU capability, signing identity, or physical device remains
+an external prerequisite rather than a reason to weaken validation.
+
 ## Fast Feedback
 
 - Smallest useful check:
@@ -75,6 +178,7 @@ bash bindings/android/scripts/test-android-benchmark-artifact-extraction.sh
 python3 bindings/android/scripts/test_android_sort_benchmark_collector.py
 bash bindings/apple/scripts/test-ios-benchmark-artifact-extraction.sh
 PYTHONDONTWRITEBYTECODE=1 python3 bindings/apple/scripts/test_ios_sim_benchmark_collector.py
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests/test_verification_bootstrap.py
 npm ci --ignore-scripts --prefix tests/competitive/playcanvas
 npm test --prefix tests/competitive/playcanvas
 bash tests/ffi/run-ffi-smoke.sh

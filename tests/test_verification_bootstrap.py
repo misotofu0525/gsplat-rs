@@ -1,0 +1,218 @@
+from __future__ import annotations
+
+import importlib.util
+import pathlib
+import sys
+import tempfile
+import unittest
+from unittest import mock
+
+
+MODULE_PATH = pathlib.Path(__file__).with_name("verification_bootstrap.py")
+SPEC = importlib.util.spec_from_file_location("verification_bootstrap", MODULE_PATH)
+assert SPEC is not None and SPEC.loader is not None
+BOOTSTRAP = importlib.util.module_from_spec(SPEC)
+sys.modules[SPEC.name] = BOOTSTRAP
+SPEC.loader.exec_module(BOOTSTRAP)
+
+
+class FakeHost:
+    def __init__(self, root: pathlib.Path) -> None:
+        self.root = root
+        self.calls: list[tuple[str, ...]] = []
+        self.paths: dict[str, pathlib.Path] = {}
+
+    def add_executable(self, name: str) -> pathlib.Path:
+        path = self.root / "bin" / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("", encoding="utf-8")
+        path.chmod(0o755)
+        self.paths[name] = path
+        return path
+
+    def which(self, name: str) -> str | None:
+        path = self.paths.get(name)
+        return str(path) if path is not None else None
+
+    def capture(self, argv: tuple[str, ...]) -> tuple[int, str]:
+        self.calls.append(tuple(argv))
+        binary = pathlib.Path(argv[0]).name
+        if binary == "rustup" and argv[1:] == ("target", "list", "--installed"):
+            return 0, "\n".join(
+                (
+                    BOOTSTRAP.ANDROID_RUST_TARGET,
+                    BOOTSTRAP.WEB_RUST_TARGET,
+                    *BOOTSTRAP.APPLE_XCFRAMEWORK_TARGETS,
+                )
+            )
+        if binary == "java" and argv[1:] == ("-version",):
+            return 0, 'openjdk version "21.0.11" 2026-04-21'
+        if binary == "git":
+            return 0, "048344feb8fe"
+        if binary == "wasm-bindgen":
+            return 0, f"wasm-bindgen {BOOTSTRAP.read_locked_wasm_bindgen_version()}"
+        return 1, "unsupported fake command"
+
+
+def make_android_sdk(root: pathlib.Path) -> pathlib.Path:
+    sdk = root / "android-sdk"
+    (sdk / "ndk" / BOOTSTRAP.ANDROID_NDK_VERSION).mkdir(parents=True)
+    (sdk / "platforms" / BOOTSTRAP.ANDROID_PLATFORM).mkdir(parents=True)
+    (sdk / "build-tools" / BOOTSTRAP.ANDROID_BUILD_TOOLS).mkdir(parents=True)
+    adb = sdk / "platform-tools" / "adb"
+    adb.parent.mkdir(parents=True)
+    adb.write_text("", encoding="utf-8")
+    return sdk
+
+
+def make_java_home(root: pathlib.Path) -> pathlib.Path:
+    java_home = root / "jdk-21"
+    java = java_home / "bin" / "java"
+    java.parent.mkdir(parents=True)
+    java.write_text("", encoding="utf-8")
+    include = java_home / "include" / "jni.h"
+    include.parent.mkdir(parents=True)
+    include.write_text("", encoding="utf-8")
+    return java_home
+
+
+class VerificationBootstrapTests(unittest.TestCase):
+    def test_profile_discovery_never_invokes_device_or_browser_tools(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            host = FakeHost(root)
+            for command in (
+                "bash",
+                "brew",
+                "cargo",
+                "git",
+                "node",
+                "npm",
+                "python3",
+                "rustup",
+                "swiftc",
+                "wasm-bindgen",
+                "xcodebuild",
+                "xcrun",
+            ):
+                host.add_executable(command)
+            discovery = BOOTSTRAP.Discovery(
+                env={},
+                home=root,
+                which=host.which,
+                capture=host.capture,
+                host_system="Darwin",
+            )
+
+            for profile in BOOTSTRAP.PROFILES:
+                BOOTSTRAP.profile_result(profile, discovery)
+
+            invoked = {pathlib.Path(call[0]).name for call in host.calls}
+            self.assertTrue(invoked.isdisjoint({"adb", "simctl", "node", "chrome"}))
+
+    def test_homebrew_cask_sdk_is_derived_from_the_brew_prefix(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            host = FakeHost(root)
+            brew = host.add_executable("brew")
+            prefix = root / "homebrew"
+            sdk = prefix / "share" / "android-commandlinetools"
+            sdk.mkdir(parents=True)
+
+            def capture(argv: tuple[str, ...]) -> tuple[int, str]:
+                host.calls.append(tuple(argv))
+                if pathlib.Path(argv[0]).name == brew.name and argv[1:] == ("--prefix",):
+                    return 0, str(prefix)
+                return 1, "not a formula"
+
+            discovery = BOOTSTRAP.Discovery(
+                env={}, home=root, which=host.which, capture=capture, host_system="Darwin"
+            )
+            actual, source = discovery.android_sdk()
+            self.assertEqual(actual, sdk)
+            self.assertEqual(source, "Homebrew share directory")
+
+    def test_explicit_android_roots_are_exported_and_do_not_query_device(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            host = FakeHost(root)
+            for command in ("bash", "cargo", "git", "python3", "rustup"):
+                host.add_executable(command)
+            sdk = make_android_sdk(root)
+            java_home = make_java_home(root)
+            dataset = root / "scene.ply"
+            dataset.write_bytes(b"ply\n")
+            trace = root / "trace.json"
+            trace.write_text("{}", encoding="utf-8")
+            discovery = BOOTSTRAP.Discovery(
+                env={
+                    "ANDROID_SDK_ROOT": str(sdk),
+                    "JAVA_HOME": str(java_home),
+                    "GSPLAT_ANDROID_SERIAL": "033ed212",
+                    "GSPLAT_ANDROID_DATASET": str(dataset),
+                    "GSPLAT_ANDROID_TRACE": str(trace),
+                },
+                home=root,
+                which=host.which,
+                capture=host.capture,
+                host_system="Darwin",
+            )
+
+            result = BOOTSTRAP.profile_result("android-a065", discovery)
+
+            self.assertTrue(result.ready)
+            self.assertEqual(result.commands[0].env["ANDROID_SDK_ROOT"], str(sdk))
+            self.assertEqual(result.commands[0].env["JAVA_HOME"], str(java_home))
+            self.assertIn("--serial", result.commands[0].argv)
+            self.assertFalse(
+                any(pathlib.Path(call[0]).name in {"adb", "simctl"} for call in host.calls)
+            )
+
+    def test_locked_wasm_bindgen_version_is_required(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            host = FakeHost(root)
+            host.add_executable("wasm-bindgen")
+            discovery = BOOTSTRAP.Discovery(
+                env={}, home=root, which=host.which, capture=host.capture
+            )
+            self.assertTrue(BOOTSTRAP.wasm_bindgen_probe(discovery).ok)
+
+            def wrong_version(argv: tuple[str, ...]) -> tuple[int, str]:
+                return 0, "wasm-bindgen 0.2.1"
+
+            mismatch = BOOTSTRAP.Discovery(
+                env={}, home=root, which=host.which, capture=wrong_version
+            )
+            probe = BOOTSTRAP.wasm_bindgen_probe(mismatch)
+            self.assertFalse(probe.ok)
+            self.assertIn(BOOTSTRAP.read_locked_wasm_bindgen_version(), probe.detail)
+
+    def test_device_profile_requires_explicit_run_permission(self) -> None:
+        result = BOOTSTRAP.ProfileResult(
+            name="device",
+            description="test",
+            touches_device=True,
+            probes=(BOOTSTRAP.Probe("ready", True, "ready"),),
+            commands=(BOOTSTRAP.Command(("true",)),),
+        )
+        with mock.patch.object(BOOTSTRAP.subprocess, "run") as run:
+            self.assertEqual(BOOTSTRAP.run_profile(result, allow_device=False), 2)
+            run.assert_not_called()
+
+    def test_default_doctor_is_host_only(self) -> None:
+        self.assertNotIn("android-a065", BOOTSTRAP.DEFAULT_DOCTOR_PROFILES)
+        self.assertNotIn("ios-simulator", BOOTSTRAP.DEFAULT_DOCTOR_PROFILES)
+
+    def test_command_display_shell_quotes_environment_and_arguments(self) -> None:
+        command = BOOTSTRAP.Command(
+            ("tool", "path with spaces"), {"CHROME_PATH": "/Applications/Google Chrome"}
+        )
+        self.assertEqual(
+            command.display(),
+            "CHROME_PATH='/Applications/Google Chrome' tool 'path with spaces'",
+        )
+
+
+if __name__ == "__main__":
+    unittest.main()

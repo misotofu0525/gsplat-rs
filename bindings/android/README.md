@@ -1,5 +1,9 @@
 # gsplat-android
 
+Before an Android build or device collection, use the read-only prerequisite
+doctor and reusable command profiles in
+[`handbook/VERIFICATION.md`](../../handbook/VERIFICATION.md#verification-bootstrap).
+
 Android binding, JNI bridge, and local packaging scripts.
 
 ## Integration boundary

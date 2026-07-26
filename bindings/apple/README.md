@@ -1,5 +1,9 @@
 # GsplatKit
 
+Before Swift, XCFramework, or simulator verification, use the read-only
+prerequisite doctor and reusable command profiles in
+[`handbook/VERIFICATION.md`](../../handbook/VERIFICATION.md#verification-bootstrap).
+
 Apple binding, Swift wrapper, and local packaging scripts.
 
 ## Integration boundary

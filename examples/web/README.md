@@ -1,5 +1,9 @@
 # gsplat-rs Web Example
 
+Before building Wasm or launching the Chrome/WebGPU collector, use the
+read-only prerequisite doctor and reusable command profile in
+[`handbook/VERIFICATION.md`](../../handbook/VERIFICATION.md#verification-bootstrap).
+
 This directory hosts the browser validation surface.
 
 There are three Web paths:
