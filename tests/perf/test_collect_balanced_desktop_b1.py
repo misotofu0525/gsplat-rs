@@ -199,6 +199,45 @@ class CollectorRecordTests(unittest.TestCase):
                     source_count=DATASET["splat_count"],
                 )
 
+    def test_viewport_generation_zero_is_valid_but_remains_strict(self) -> None:
+        records = valid_records()
+        for record in records:
+            record["current_stats_viewport_generation"] = "0"
+            record["capture_receipt_viewport_generation"] = "0"
+        normalized = collector.validate_terminal_records(
+            records,
+            lane=collector.LANES[0],
+            source_count=DATASET["splat_count"],
+        )
+        self.assertEqual(
+            [value["current"]["viewport_generation"] for value in normalized],
+            [0, 0, 0],
+        )
+
+        for field in (
+            "current_stats_viewport_generation",
+            "capture_receipt_viewport_generation",
+        ):
+            with self.subTest(non_integer=field):
+                malformed = valid_records()
+                malformed[1][field] = "not-an-integer"
+                with self.assertRaisesRegex(collector.ValidationError, "must be an integer"):
+                    collector.validate_terminal_records(
+                        malformed,
+                        lane=collector.LANES[0],
+                        source_count=DATASET["splat_count"],
+                    )
+
+        mismatch = valid_records()
+        mismatch[1]["current_stats_viewport_generation"] = "0"
+        mismatch[1]["capture_receipt_viewport_generation"] = "1"
+        with self.assertRaisesRegex(collector.ValidationError, "identity mismatch"):
+            collector.validate_terminal_records(
+                mismatch,
+                lane=collector.LANES[0],
+                source_count=DATASET["splat_count"],
+            )
+
     def test_invalid_timing_is_rejected(self) -> None:
         with self.subTest("non-finite"):
             records = valid_records()

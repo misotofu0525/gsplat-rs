@@ -288,7 +288,10 @@ def validate_terminal_records(
         current = {
             "scene_generation": parse_uint(record.get("current_stats_scene_generation", ""), f"{context}.scene", positive=True),
             "camera_revision": parse_uint(record.get("current_stats_camera_revision", ""), f"{context}.camera", positive=True),
-            "viewport_generation": parse_uint(record.get("current_stats_viewport_generation", ""), f"{context}.viewport", positive=True),
+            "viewport_generation": parse_uint(
+                record.get("current_stats_viewport_generation", ""),
+                f"{context}.viewport",
+            ),
             "contract_generation": parse_uint(record.get("current_stats_contract_generation", ""), f"{context}.contract", positive=True),
             "plan_set_generation": parse_uint(record.get("current_stats_plan_set_generation", ""), f"{context}.plan_set", positive=True),
             "order_generation": parse_uint(record.get("current_stats_order_generation", ""), f"{context}.order", positive=True),
@@ -297,7 +300,10 @@ def validate_terminal_records(
         captured = {
             "scene_generation": parse_uint(record.get("capture_receipt_scene_generation", ""), f"{context}.capture_scene", positive=True),
             "camera_revision": parse_uint(record.get("capture_receipt_camera_revision", ""), f"{context}.capture_camera", positive=True),
-            "viewport_generation": parse_uint(record.get("capture_receipt_viewport_generation", ""), f"{context}.capture_viewport", positive=True),
+            "viewport_generation": parse_uint(
+                record.get("capture_receipt_viewport_generation", ""),
+                f"{context}.capture_viewport",
+            ),
             "contract_generation": parse_uint(record.get("capture_receipt_contract_generation", ""), f"{context}.capture_contract", positive=True),
             "plan_set_generation": parse_uint(record.get("capture_receipt_plan_set_generation", ""), f"{context}.capture_plan_set", positive=True),
             "order_generation": parse_uint(record.get("capture_receipt_order_generation", ""), f"{context}.capture_order", positive=True),
