@@ -611,7 +611,8 @@ mod tests {
     use std::{path::PathBuf, sync::mpsc};
 
     use super::*;
-    use crate::{GpuSurfaceSourceElem, make_surface_render_params};
+    use crate::data::GpuSurfaceSourceElem;
+    use crate::make_surface_render_params;
     use gsplat_core::camera_trace::CameraTrace;
     use gsplat_io_ply::visit_ply_splats;
     use gsplat_sort::CpuSortBackend;

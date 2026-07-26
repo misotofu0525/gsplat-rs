@@ -7,6 +7,10 @@ use std::time::Duration;
 
 use crate::SurfaceRasterExecutionPlan;
 use crate::direct_gpu_order::GpuOrderTimestampRange;
+use crate::direct_scene_gpu::{
+    DirectGpuSceneOrder, DirectSceneResources, create_direct_bind_group_layout,
+    create_direct_pipeline,
+};
 use crate::gpu_producer_telemetry::SurfaceGpuOrderProducer;
 use crate::gpu_telemetry::{
     CpuOrderCompletionTelemetry, CpuOrderTelemetryPoll, FrameInstanceCounts, GpuOrderTelemetry,
@@ -30,10 +34,9 @@ use crate::surface::{
     SurfaceConfigurationOwner, SurfaceLifecycle, create_surface_instance, select_present_mode,
 };
 use crate::{
-    DEFAULT_PAGED_ATLAS_SLOTS, DirectGpuSceneOrder, DirectSceneError, DirectScenePath,
-    DirectScenePreflight, DirectSceneResources, GeometryPath, PackedScenePath,
-    PackedScenePreflight, Renderer, ResidentGpuBytePlan, SpatialPageSet, SurfacePresenterError,
-    TimerInstant, create_direct_bind_group_layout, create_direct_pipeline, direct_scene_preflight,
+    DEFAULT_PAGED_ATLAS_SLOTS, DirectSceneError, DirectScenePath, DirectScenePreflight,
+    GeometryPath, PackedScenePath, PackedScenePreflight, Renderer, ResidentGpuBytePlan,
+    SpatialPageSet, SurfacePresenterError, TimerInstant, direct_scene_preflight,
     packed_scene_preflight_with_limits, preprocess_paged_visible_into, refresh_paged_hot_colors,
     wgpu_label,
 };
@@ -152,7 +155,7 @@ impl SurfaceGeometry {
 
     fn addressable_splat_count(&self) -> usize {
         match self {
-            Self::Direct(direct) => direct.capacity,
+            Self::Direct(direct) => direct.capacity(),
             Self::Paged(paged) => paged.active_set.atlas.resources.capacity,
         }
     }
@@ -1373,7 +1376,6 @@ impl SurfacePresenter {
             SurfaceGeometry::Direct(direct) => !direct
                 .gpu_order()
                 .ok_or(SurfacePresenterError::GpuOrderUnsupported)?
-                .sorter
                 .is_empty(),
             SurfaceGeometry::Paged(_) => false,
         };
@@ -1408,9 +1410,7 @@ impl SurfacePresenter {
                     .gpu_order()
                     .ok_or(SurfacePresenterError::GpuOrderUnsupported)?;
                 if refresh_order {
-                    gpu_order
-                        .sorter
-                        .encode_with_timestamps(&mut encoder, timestamp_range);
+                    gpu_order.encode_with_timestamps(&mut encoder, timestamp_range);
                 }
             }
             SurfaceGeometry::Paged(_) => unreachable!(),
@@ -1425,26 +1425,21 @@ impl SurfacePresenter {
         let order = direct
             .gpu_order()
             .ok_or(SurfacePresenterError::GpuOrderUnsupported)?;
-        order
-            .sorter
-            .set_indirect_vertex_count(&self.host.queue, QUAD_VERTEX_COUNT);
+        order.set_indirect_vertex_count(&self.host.queue, QUAD_VERTEX_COUNT);
         encode_splat_indirect_draw_into(
             &mut encoder,
             &SplatIndirectDraw {
                 pass_label: "gsplat-surface-direct-gpu-order-draw-pass",
                 view: &view,
                 pipeline: &self.direct_pipeline,
-                bind_group: &order.bind_group,
+                bind_group: order.bind_group(),
                 clear: wgpu::Color::BLACK,
-                indirect_args: order.sorter.indirect_args(),
+                indirect_args: order.indirect_args(),
             },
         );
         if let Some(ticket) = telemetry_ticket.as_ref() {
-            self.gpu_order_telemetry.encode_readback(
-                &mut encoder,
-                ticket,
-                order.sorter.indirect_args(),
-            );
+            self.gpu_order_telemetry
+                .encode_readback(&mut encoder, ticket, order.indirect_args());
         }
 
         #[cfg(not(target_arch = "wasm32"))]
@@ -1521,7 +1516,7 @@ impl SurfacePresenter {
                     pass_label: "gsplat-surface-direct-pass",
                     view: &view,
                     pipeline: &self.direct_pipeline,
-                    bind_group: &direct.cpu_bind_group,
+                    bind_group: direct.cpu_bind_group(),
                     clear: wgpu::Color::BLACK,
                     vertex_count: QUAD_VERTEX_COUNT,
                     instance_count: self.instance_count,

@@ -42,7 +42,8 @@
 - `crates/gsplat-sort`: stable CPU radix ordering and shared sort utilities
 - `crates/gsplat-render-wgpu`: exact-count compact Resident scenes, CPU/GPU
   ordering, measured Adaptive selection, shared Surface/offscreen rendering,
-  the Direct-f32 oracle, the explicit diagnostic Paged runtime, and a completed
+  the Direct-f32 oracle with shared GPU scene ownership in
+  `direct_scene_gpu.rs`, the explicit diagnostic Paged runtime, and a completed
   Exact prepared-plan core consumed by product Packed offscreen and Surface
   rendering
 - `crates/gsplat-ffi-c`: small C ABI surface over the renderer and mobile Surface presenters

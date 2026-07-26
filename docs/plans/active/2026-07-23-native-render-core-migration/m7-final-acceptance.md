@@ -111,6 +111,27 @@ ownership, residual Session composition/publication ownership, and the
 Presenter responsibility audit are still open; the three grandfather records
 remain in force.
 
+## Direct wide-f32 GPU scene ownership progress
+
+The next isolated M7 slice moves the Direct compatibility path's complete GPU
+scene resource closure from `lib.rs` into `direct_scene_gpu.rs`: source and SH
+buffers, CPU/GPU order bindings, Direct GPU-order ownership, parameter upload,
+and the matching bind-group layout and render pipeline construction.
+
+Native offscreen and standalone Direct Surface rendering consume that same
+private owner through narrow methods. They no longer reach through
+`DirectSceneResources` or `DirectGpuSceneOrder` to access capacity, buffers,
+bind groups, sorter state or indirect arguments. `lib.rs` retains public
+renderer/facade wiring and the shared `make_surface_render_params`; the latter
+also serves Resident/Packed consumers and is intentionally outside this
+Direct-only slice. No crate-root re-export is introduced.
+
+This is a behavior-preserving ownership move. It changes no public Rust/C/Web
+or mobile surface, resource layout, shader, pass order, error scope,
+publication boundary or pixel contract. M7 remains Active: other concrete
+`lib.rs` responsibilities, residual Session composition/publication, and the
+Presenter audit still require separate review.
+
 ## Android retained artifact
 
 Machine-local suite:
@@ -184,9 +205,10 @@ out of order.
 
 One independently reviewed M7 candidate must:
 
-1. remove remaining concrete renderer ownership from `lib.rs` so it is crate
-   wiring, public facade/re-export and compatibility entrypoints rather than a
-   second implementation owner;
+1. continue removing remaining concrete renderer ownership from `lib.rs` so it
+   is crate wiring, public facade/re-export and compatibility entrypoints rather
+   than a second implementation owner; the shared Direct GPU scene resource
+   extraction described above is already satisfied;
 2. review and resolve the residual `surface_session.rs` composition,
    publication and host-coordination ownership. The CPU/GPU order and
    Candidate/Compact Projected Adaptive controller extractions described above

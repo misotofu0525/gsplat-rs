@@ -21,9 +21,11 @@
   `lib.rs` owns renderer/public entrypoints, private `scene/` modules own the
   exact-count compact CPU scene, builder and codec, and `data/layout.rs` owns
   the fixed Resident GPU ABI layouts. `resident_gpu.rs` owns GPU planes and
-  coherent SH resolve, while `direct_gpu_order.rs` owns portable GPU
-  visibility/radix/indirect draw and `gpu_telemetry.rs` owns ticketed
-  completion. The Exact core under `renderer/`, `plans/`, `cpu/`, `gpu/` and
+  coherent SH resolve, `direct_scene_gpu.rs` owns the Direct wide-f32 source,
+  order bindings and draw pipeline shared by Surface and offscreen, while
+  `direct_gpu_order.rs` owns portable GPU visibility/radix/indirect draw and
+  `gpu_telemetry.rs` owns ticketed completion. The Exact core under
+  `renderer/`, `plans/`, `cpu/`, `gpu/` and
   `raster/` owns complete CPU PostSort, GPU PostSort and GPU Preproject plans,
   rank-indexed projection, one canonical instanced SortedAlpha raster, and
   their policy/evidence state. `preproject_gpu.rs` remains the retained
@@ -349,6 +351,9 @@
   instanced SortedAlpha raster for rank- or source-indexed Exact work
 - `crates/gsplat-render-wgpu/src/direct_gpu_order.rs`: exact GPU visibility,
   hierarchical scan, stable radix, and indirect draw
+- `crates/gsplat-render-wgpu/src/direct_scene_gpu.rs`: private Direct wide-f32
+  source/order buffers, CPU/GPU-order draw bindings and shared Surface/offscreen
+  pipeline construction
 - `crates/gsplat-render-wgpu/src/surface_session.rs`: shared Surface lifecycle,
   Direct/Paged standalone versus Packed Exact-host execution composition,
   cross-controller arbitration, revisions, telemetry polling/publication and
