@@ -19,7 +19,7 @@ M3 = Accepted
 M4 = Accepted
 M5 = Accepted
 M6 = Accepted
-M7 = Active
+M7 = Accepted
 <!-- gsplat-program-task-states: end -->
 
 ## Package status
@@ -40,22 +40,21 @@ M7 = Active
 - M6 state: Accepted for the defined Apple/GsplatKit/XCFramework functional
   consumer scope. Physical-iPhone qualification remains explicit Deferred; see
   [M6 Apple functional evidence closeout](m6-apple-functional-evidence.md).
-- M7 state: Active at behavior tip
-  `3f525584c1f3c5909ecd2f87b6a953b8a984e9ec`, with canonical-doc
-  reconciliation at `9ebe7e3a1a115cbac18ef10e3adac2c14e984609`. TiledExact and the obsolete
-  standalone Packed presenter graph are deleted; standalone Packed rejects
-  before allocation; product Packed has one Session/Host/PreparedRuntimeSlot
-  route; Direct/Paged compatibility remains; Paged is CPU-only and rejects
-  async configuration. However, the M7-owned `lib.rs`, `surface_presenter.rs`
-  and `surface_session.rs` grandfather exit conditions are not all proven.
-  Existing evidence and the finite remaining ownership slice are recorded in
-  the [M7 acceptance audit](m7-final-acceptance.md).
+- M7 state: Accepted at source/evidence tip
+  `2739f4899facc03e6a0fb35c23b42d9762ede9cc`. An independent fixed-SHA
+  source-ownership audit accepted the `lib.rs`, `surface_session.rs` and
+  `surface_presenter.rs` exit boundaries with no P0/P1/P2. The complete
+  39-commit M7 range is tree-exactly rollbackable to accepted M6, the root
+  static/Metal/FFI/WASM matrix passed, and the formal A065 exactness artifact
+  passed canonical validation. See the
+  [M7 final acceptance audit](m7-final-acceptance.md).
 - Product state at M2 activation: native Packed offscreen, desktop
   non-interactive and bench-runner use the Exact runtime; the interactive
   `SurfaceRenderSession` remains legacy until its complete M2 candidate is
   accepted.
 - M8 remains unstarted and outside the machine registry. Package M remains
-  Active; neither M7 nor M8 is Accepted.
+  Active until M8 is separately activated and accepted; this M7 closeout does
+  not perform or activate M8 work.
 - Stable v0.1 signatures/layouts, Web behavior and rendered semantics remain
   frozen during M2. Additive current-stats v1 receipts and pending-compatible
   Android/Apple translation are prepared before M2 activation. No root
@@ -626,75 +625,50 @@ M7 = Active
 
 ## M7 integration and acceptance status
 
-- State: Active. The deletion and compatibility subrange is implemented and
-  evidenced, but the ownership exit requirement remains open.
-  Behavior tip is `3f525584c1f3c5909ecd2f87b6a953b8a984e9ec`; canonical-document
-  reconciliation tip is `9ebe7e3a1a115cbac18ef10e3adac2c14e984609`.
-  M8 remains unstarted and Package M remains Active.
-- `707cd80` removes the TiledExact runtime, public variant, Web labels and
-  desktop selector. The current tree exposes only GlobalQuads and
-  ProjectedQuadsExact; canonical docs must not describe TiledExact as present.
-- `08bd5bf` makes every low-level `SurfacePresenter::from_*` family reject
-  Packed before Surface/device/resource allocation while preserving standalone
-  Direct/Paged. Product Packed construction continues through
-  `SurfaceRenderSession::from_*`.
-- `6befc3b` records the call-site/API/ABI ledger. `048344f` hardens Android
-  terminal joins. `432c430` makes Paged CPU-only and rejects AsyncLatest before
-  mutation. `a454719` plus `38bd608` provide the documented, read-only-by-
-  default cross-platform verification bootstrap and correct SDK discovery
-  precedence.
-- `fc90662` deletes the unreachable second Packed semantic graph from
-  `SurfacePresenter`, including `SurfacePackedRuntime`, `ProjectedQuadsGpu`,
-  the legacy preproject raster adapter and compatibility WGPU readback-ring
-  implementations. Product Packed scene/plans/policy/evidence remain solely in
-  `Renderer::PreparedRuntimeSlot`; `SurfacePresenterHost` owns target/device/
-  lifecycle mechanics. `3f52558` corrects the Web product route description.
-- Root post-integration checks at this sequence include the Apple M4 hidden-
-  window public Surface route, forced Metal SortedAlpha conformance and C FFI
-  smoke. WASM evidence is compile-only; a current Chrome/WebGPU runtime rerun
-  is Deferred when its exact toolchain prerequisite is unavailable.
-- A physical Nothing A065 run built from clean `3f52558` retained all 279,199
-  Kitsune SH3 splats at 2412x1080 for 20 measured CPU frames, with sampling,
-  LOD, dynamic resolution and upscaling disabled. Its strict terminal ledger
-  reported `V=279199`, `C` in `{226450,236792}` and `D=279199`; the formal suite
-  validator passed with verified inputs. This is final-SHA functional,
-  membership, presentation and ledger evidence only. It is not a CPU/GPU,
-  PlayCanvas, FPS, power, thermal or general performance claim.
-- Root passed the final workspace, strict lint/docs, architecture, C FFI, WASM
-  compile, forced Metal conformance and public Metal Surface checks. WASM
-  compilation is not browser proof. Chrome/WebGPU runtime, physical iPhone and
-  Windows/Linux runtime stay Deferred rather than being inferred from another
-  endpoint.
-- The complete nine-commit M7 range reverse-reverted without conflict in an
-  isolated worktree. Its tree exactly matched accepted M6 base `a798b8a`, then
-  passed workspace check and C FFI smoke. This proves aggregate rollback, not
-  arbitrary out-of-order single-commit reverts.
-- The requirement-by-requirement evidence, machine-local Android identities,
-  commands, rollback tree IDs, finite Deferred cells and non-claims are recorded
-  in the [M7 acceptance audit](m7-final-acceptance.md).
-- Remaining M7 work must remove concrete renderer ownership from
-  `lib.rs`, move controller/adaptive/evidence ownership out of the legacy
-  `surface_session.rs` owner, and either prove `surface_presenter.rs` is only an
-  adapter/presentation host or extract its residual semantic ownership. The
-  three policy entries remain until those responsibility conditions are
-  independently demonstrated. No fixed LOC threshold is involved. Only then
-  may the same candidate remove the entries, mark M7 Accepted and rerun the
-  architecture policy. M8 is not activated by this partial closeout.
-- A later bounded candidate based on `7e8c7c6` extracts the standalone Direct
-  compatibility execution lane into private
-  `surface/standalone_direct_runtime.rs`: Direct pipeline/layout and active
-  scene state, Direct instance count, CPU/GPU order preparation and draw
-  encoding, and Direct GPU-order telemetry lifecycle. Presenter retains
-  Surface acquire/capture/submit/present, diagnostic Paged, path transactions
-  and shared CPU completion telemetry; Product Packed is unchanged. See
-  [the slice record](m7-standalone-direct-runtime.md). M7 remains Active and
-  the residual root/Session/Presenter acceptance audit is still required.
-- The following bounded candidate based on `1548893` extracts the standalone
-  diagnostic Paged compatibility lane into private
-  `surface/standalone_paged_runtime.rs`: Paged pipeline/layout and active scene,
-  synchronous page/color preparation, CPU preprocessing/stable-sort scratch,
-  Paged instance count and draw encoding. Presenter retains Surface mechanics,
-  shared CPU completion telemetry and prepare-then-commit routing while the
-  inactive Direct/Paged scene is cleared after successful publication. Product
-  Packed and all policies/public interfaces remain unchanged. See
-  [the Paged slice record](m7-standalone-paged-runtime.md). M7 remains Active.
+- State: **Accepted** at fixed source/evidence tip
+  `2739f4899facc03e6a0fb35c23b42d9762ede9cc`. M8 remains unstarted and Package
+  M remains Active.
+- The completed 39-commit range `a798b8a..2739f48` removes TiledExact and the
+  unreachable standalone Packed graph, preserves the classified Rust/C/Web/
+  mobile compatibility boundary, and leaves one product Packed route through
+  `SurfaceRenderSession -> SurfacePresenterHost -> PreparedRuntimeSlot`.
+- An independent read-only audit accepted the final `lib.rs`, Session and
+  Presenter responsibility boundaries with P0/P1/P2 each zero. Renderer
+  semantics live in the private renderer owners; Session is the public frame-
+  transaction composer with a single private publication ledger; Presenter is
+  the mechanical Surface adapter/host around private standalone Direct/Paged
+  runtime owners.
+- Root verification at clean `2739f48` passed workspace check, 462 renderer
+  library tests with 8 manual research tests ignored, strict Clippy, Rustdoc,
+  architecture self-tests and real-tree policy, the real C FFI smoke, renderer
+  and Web WASM compilation, forced Apple M4 Metal SortedAlpha conformance, and
+  the hidden-window Apple M4 Surface test.
+- The retained formal Nothing A065 run at
+  `target/android-sort-benchmarks/verification-a065-2739f4899fac` used the
+  complete 279,199-splat Kitsune SH3 scene at 2412x1080 with Packed/CPU
+  PostSort. Its 20/20 issued terminals retained `V=D=279199`, contributor count
+  in `{226450,236792}`, full membership and a native Surface PNG. Both the
+  benchmark artifact validator and the full-quality suite validator with
+  verified inputs passed. Timing remains observational, not a performance
+  claim.
+- Aggregate rollback is accepted for all 39 commits, not merely the old
+  nine-commit `3f52558` subset. A conflict-free newest-to-oldest reverse in an
+  isolated worktree produced tree
+  `fd13949e2237c96181b570671f23ecbfe408b1a1`, exactly equal to accepted M6
+  `a798b8a`, then passed workspace check and C FFI smoke.
+- Chrome/WebGPU runtime is Deferred because locked `wasm-bindgen-cli 0.2.121`
+  is unavailable. Physical-iPhone and Windows/Linux runtime also remain
+  Deferred. WASM compile, macOS/Metal or historical platform evidence is not
+  substituted for those endpoints, and M7 makes no broad pixel/performance,
+  power, thermal or competitor claim.
+- Exact identities, commands, validators, rollback proof and finite evidence
+  boundaries are recorded in the
+  [M7 final acceptance audit](m7-final-acceptance.md).
+- Integration note: this documentation candidate changes the machine registry
+  to `M7 = Accepted`, which expires the three satisfied M7 grandfather records
+  still present in `tests/architecture/source_architecture_policy.json`. Root
+  must co-land their removal and rerun the real-tree architecture policy; this
+  task does not edit test policy under its documentation-only ownership brief.
+- M8 remains unstarted. Final handbook/release alignment, accepted-SHA ledger,
+  command/link audit and migration-bundle archival remain M8 work and are not
+  activated by this closeout.
