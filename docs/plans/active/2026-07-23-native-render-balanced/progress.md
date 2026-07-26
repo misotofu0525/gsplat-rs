@@ -726,3 +726,44 @@ This is a finite candidate-local private receipt for root review. No browser,
 Android, device, real-window, collector, formal image-quality artifact or
 performance endpoint was run; those endpoints and any product acceptance or
 default promotion remain **Deferred**. B3 remains **Active**.
+
+## B1/B2/B3 diagnostic capture and artifact wiring
+
+Root integrated `c473411cd243c404da4ffe1774fde8c145405809` from its exact
+parent `43727ab9d58aa1a7fa58220c1be6de5ecd55bdb5`. This is the downstream
+evidence seam for the three already-private experiment lanes; it does not
+alter their algorithms, default selection, PlanId, Adaptive policy, shader
+math, stable Rust/C/Swift/Kotlin/JavaScript APIs, or endpoint schedule.
+
+`SessionPublication` now seals one private capture ledger only when all three
+actual receipts describe the same successfully presented frame: B1 depth-key
+profile, B2 projected-cache profile, and B3 Resident-SH layout. Their complete
+frame identity, actual plan, order generation and presentation sequence must
+match. A missing receipt, any mismatch, no successful present, cancellation or
+a repeated take makes the capture unavailable; an earlier capture cannot be
+overwritten by a later presented frame.
+
+The native default-off desktop diagnostic host serializes those actual receipt
+values immediately with the captured RGBA bytes. The existing formal collector
+and Balanced image validator preserve all three receipts and reject missing,
+null, defaulted, caller-labelled or cross-joined values. In particular, the
+B1 lanes require B2 and B3 to report their realized Exact layouts, while a
+future B2 or B3 lane can prove its own sole candidate layout without treating
+the requested feature label as evidence.
+
+Focused evidence is implementation-only:
+
+- renderer capture-ledger tests passed for default, Axes16 and SH8 diagnostic
+  builds, including missing receipt, identity mismatch, duplicate take and
+  unavailable-before-present paths;
+- desktop host tests passed for its default and two diagnostic feature builds;
+- collector tests (12) and Balanced validator tests (40) passed, including
+  receipt completeness and actual-source rejection cases;
+- default and diagnostic checks/Clippy, format, diff and source-architecture
+  policy passed; the B2+B3 feature combination remains explicitly rejected by
+  its existing compile-time mutual-exclusion guard.
+
+No real window, browser, Android/device run, formal artifact, image-gate
+decision, performance result or endpoint qualification was created by this
+integration. B1, B2 and B3 therefore remain **Active** pending separately
+authorized root-owned endpoint evidence.
