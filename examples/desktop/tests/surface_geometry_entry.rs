@@ -249,6 +249,34 @@ mod macos {
 
         assert_eq!(session.geometry_path(), GeometryPath::PackedAtlas);
         assert_eq!(session.addressable_splat_count(), 3);
+        assert_eq!(
+            session.raster_execution_plan(),
+            SurfaceRasterExecutionPlan::ProjectedQuadsExact
+        );
+        assert_eq!(session.internal_render_size(), (TEST_WIDTH, TEST_HEIGHT));
+        session
+            .resize(TEST_WIDTH, TEST_HEIGHT)
+            .map_err(failed("Exact Packed host idempotent sync resize"))?;
+        let producer = session.gpu_order_producer();
+        pollster::block_on(session.prepare_gpu_order_producer(producer))
+            .map_err(failed("Exact Packed host producer preparation"))?;
+        session
+            .set_gpu_order_producer(producer)
+            .map_err(failed("Exact Packed host producer setter"))?;
+        session
+            .set_gpu_producer_measurement_enabled(false)
+            .map_err(failed("Exact Packed host producer measurement setter"))?;
+        session
+            .set_projected_draw_policy(session.projected_draw_policy())
+            .map_err(failed("Exact Packed host projected policy setter"))?;
+        session
+            .set_raster_execution_plan(SurfaceRasterExecutionPlan::ProjectedQuadsExact)
+            .map_err(failed("Exact Packed host raster setter"))?;
+        session
+            .set_geometry_path(GeometryPath::PackedAtlas)
+            .map_err(failed("Exact Packed host geometry setter"))?;
+        session.poll_order_measurement_receipts();
+        session.set_frame_latency(2);
         let frame = session
             .render_frame()
             .map_err(failed("Exact Packed host session render"))?;

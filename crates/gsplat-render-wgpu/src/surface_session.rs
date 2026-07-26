@@ -1,11 +1,12 @@
-use gsplat_core::{Camera, FrameStats};
+use gsplat_core::{Camera, FrameStats, SceneBuffers};
 #[cfg(test)]
 use std::collections::VecDeque;
 use std::num::NonZeroU64;
-use std::ops::{Deref, DerefMut};
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::Duration;
 
+#[cfg(target_arch = "wasm32")]
+use crate::PreparedRendererGeometryPath;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::SurfaceFrameCapture;
 pub use crate::api::SurfaceOrderBackendUsed;
@@ -21,8 +22,14 @@ pub use crate::evidence::{
     SurfaceOrderMeasurementSubmission, SurfaceOrderMeasurementUnsampledReason,
     SurfaceProjectedDrawMeasurementSubmission, SurfaceProjectedDrawMeasurementUnsampledReason,
 };
-use crate::gpu_telemetry::{SurfaceCpuOrderMeasurement, TelemetrySubmission};
+use crate::gpu_producer_telemetry::GpuProducerTelemetryPoll;
+use crate::gpu_telemetry::{
+    CpuOrderTelemetryPoll, GpuOrderTelemetryPoll, SurfaceCpuOrderMeasurement, TelemetrySubmission,
+};
+use crate::projected_draw_telemetry::ProjectedDrawTelemetryPoll;
 use crate::surface::LegacySurfaceStatsAvailability;
+#[cfg(target_arch = "wasm32")]
+use crate::surface_presenter::PreparedSurfaceGeometryPath;
 use crate::surface_presenter::{
     CpuCompletionSampleRequest, ProjectedDrawSampleRequest, SurfacePresenterHost,
 };
@@ -1815,7 +1822,6 @@ impl SessionSurfaceOwner {
         }
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     fn resize(&mut self, width: u32, height: u32) -> Result<(), SurfacePresenterError> {
         match self {
             Self::Standalone(presenter) => presenter.resize(width, height),
@@ -1870,28 +1876,290 @@ impl SessionSurfaceOwner {
             Self::ExactPacked(host) => host.take_surface_capture(),
         }
     }
-}
 
-impl Deref for SessionSurfaceOwner {
-    type Target = SurfacePresenter;
-
-    fn deref(&self) -> &Self::Target {
+    fn raster_execution_plan(&self) -> SurfaceRasterExecutionPlan {
         match self {
-            Self::Standalone(presenter) => presenter,
-            Self::ExactPacked(_) => {
-                unreachable!("Exact Packed sessions use only SurfacePresenterHost methods")
-            }
+            Self::Standalone(presenter) => presenter.raster_execution_plan(),
+            Self::ExactPacked(_) => SurfaceRasterExecutionPlan::ProjectedQuadsExact,
         }
     }
-}
 
-impl DerefMut for SessionSurfaceOwner {
-    fn deref_mut(&mut self) -> &mut Self::Target {
+    fn internal_render_size(&self) -> (u32, u32) {
         match self {
-            Self::Standalone(presenter) => presenter,
-            Self::ExactPacked(_) => {
-                unreachable!("Exact Packed sessions use only SurfacePresenterHost methods")
+            Self::Standalone(presenter) => presenter.internal_render_size(),
+            Self::ExactPacked(host) => host.surface_size(),
+        }
+    }
+
+    async fn prepare_gpu_order_producer(
+        &mut self,
+        producer: SurfaceGpuOrderProducer,
+    ) -> Result<(), SurfacePresenterError> {
+        match self {
+            Self::Standalone(presenter) => presenter.prepare_gpu_order_producer(producer).await,
+            Self::ExactPacked(_) => Err(SurfacePresenterError::GpuOrderUnsupported),
+        }
+    }
+
+    fn set_gpu_order_producer(
+        &mut self,
+        producer: SurfaceGpuOrderProducer,
+    ) -> Result<(), SurfacePresenterError> {
+        match self {
+            Self::Standalone(presenter) => presenter.set_gpu_order_producer(producer),
+            Self::ExactPacked(_) => Err(SurfacePresenterError::GpuOrderUnsupported),
+        }
+    }
+
+    fn set_gpu_producer_measurement_enabled(&mut self, enabled: bool) {
+        if let Self::Standalone(presenter) = self {
+            presenter.set_gpu_producer_measurement_enabled(enabled);
+        }
+    }
+
+    fn projected_contributor_indirect_draw_enabled(&self) -> bool {
+        match self {
+            Self::Standalone(presenter) => presenter.projected_contributor_indirect_draw_enabled(),
+            Self::ExactPacked(_) => false,
+        }
+    }
+
+    fn set_raster_execution_plan(
+        &mut self,
+        plan: SurfaceRasterExecutionPlan,
+    ) -> Result<(), SurfacePresenterError> {
+        match self {
+            Self::Standalone(presenter) => presenter.set_raster_execution_plan(plan),
+            Self::ExactPacked(_) => Err(SurfacePresenterError::SurfaceGeometrySwitchUnsupported),
+        }
+    }
+
+    fn set_geometry_path(
+        &mut self,
+        path: GeometryPath,
+        renderer: &Renderer,
+    ) -> Result<(), SurfacePresenterError> {
+        match self {
+            Self::Standalone(presenter) => presenter.set_geometry_path(path, renderer),
+            Self::ExactPacked(_) => Err(SurfacePresenterError::SurfaceGeometrySwitchUnsupported),
+        }
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    async fn prepare_geometry_path_async(
+        &self,
+        path: GeometryPath,
+        renderer: &Renderer,
+        prepared_renderer: &PreparedRendererGeometryPath,
+        prepare_gpu_order: bool,
+        require_projected_compaction: bool,
+    ) -> Result<PreparedSurfaceGeometryPath, SurfacePresenterError> {
+        match self {
+            Self::Standalone(presenter) => {
+                presenter
+                    .prepare_geometry_path_async(
+                        path,
+                        renderer,
+                        prepared_renderer,
+                        prepare_gpu_order,
+                        require_projected_compaction,
+                    )
+                    .await
             }
+            Self::ExactPacked(_) => Err(SurfacePresenterError::SurfaceGeometrySwitchUnsupported),
+        }
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn publish_geometry_path_candidate(
+        &mut self,
+        prepared: PreparedSurfaceGeometryPath,
+    ) -> Result<(), SurfacePresenterError> {
+        match self {
+            Self::Standalone(presenter) => {
+                presenter.publish_geometry_path_candidate(prepared);
+                Ok(())
+            }
+            Self::ExactPacked(_) => Err(SurfacePresenterError::SurfaceGeometrySwitchUnsupported),
+        }
+    }
+
+    async fn prepare_gpu_order(&mut self) -> Result<(), SurfacePresenterError> {
+        match self {
+            Self::Standalone(presenter) => presenter.prepare_gpu_order().await,
+            Self::ExactPacked(_) => Err(SurfacePresenterError::GpuOrderUnsupported),
+        }
+    }
+
+    fn prepare_direct_gpu_order(&mut self) -> Result<(), SurfacePresenterError> {
+        match self {
+            Self::Standalone(presenter) => presenter.prepare_direct_gpu_order(),
+            Self::ExactPacked(_) => Err(SurfacePresenterError::GpuOrderUnsupported),
+        }
+    }
+
+    fn invalidate_gpu_order_producer_prefix(&mut self) {
+        if let Self::Standalone(presenter) = self {
+            presenter.invalidate_gpu_order_producer_prefix();
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn pump_receipt_callbacks(&self, timeout: Duration) -> Result<bool, RendererError> {
+        match self {
+            Self::Standalone(presenter) => presenter.pump_receipt_callbacks(timeout),
+            Self::ExactPacked(host) => host.pump_receipt_callbacks(timeout),
+        }
+    }
+
+    fn gpu_order_timestamps_enabled(&self) -> bool {
+        match self {
+            Self::Standalone(presenter) => presenter.gpu_order_timestamps_enabled(),
+            Self::ExactPacked(host) => host.gpu_order_timestamps_enabled(),
+        }
+    }
+
+    fn poll_cpu_order_completion_telemetry(&mut self) -> CpuOrderTelemetryPoll {
+        match self {
+            Self::Standalone(presenter) => presenter.poll_cpu_order_completion_telemetry(),
+            Self::ExactPacked(_) => CpuOrderTelemetryPoll {
+                completed: Vec::new(),
+                failures: Vec::new(),
+            },
+        }
+    }
+
+    fn poll_gpu_order_telemetry(&mut self) -> GpuOrderTelemetryPoll {
+        match self {
+            Self::Standalone(presenter) => presenter.poll_gpu_order_telemetry(),
+            Self::ExactPacked(_) => GpuOrderTelemetryPoll {
+                completed: Vec::new(),
+                failures: Vec::new(),
+            },
+        }
+    }
+
+    fn poll_projected_draw_telemetry(&mut self) -> ProjectedDrawTelemetryPoll {
+        match self {
+            Self::Standalone(presenter) => presenter.poll_projected_draw_telemetry(),
+            Self::ExactPacked(_) => ProjectedDrawTelemetryPoll {
+                completed: Vec::new(),
+                failures: Vec::new(),
+            },
+        }
+    }
+
+    fn poll_gpu_producer_telemetry(&mut self) -> GpuProducerTelemetryPoll {
+        match self {
+            Self::Standalone(presenter) => presenter.poll_gpu_producer_telemetry(),
+            Self::ExactPacked(_) => GpuProducerTelemetryPoll {
+                completed: Vec::new(),
+                failures: Vec::new(),
+            },
+        }
+    }
+
+    fn set_projected_draw_execution(
+        &mut self,
+        execution: SurfaceProjectedDrawExecution,
+        force_projection: bool,
+        sample_request: Option<ProjectedDrawSampleRequest>,
+    ) {
+        if let Self::Standalone(presenter) = self {
+            presenter.set_projected_draw_execution(execution, force_projection, sample_request);
+        }
+    }
+
+    fn render_direct_gpu_order(
+        &mut self,
+        camera: &Camera,
+        refresh_order: bool,
+        camera_revision: u64,
+        completion_started: crate::TimerInstant,
+    ) -> Result<TelemetrySubmission, SurfacePresenterError> {
+        match self {
+            Self::Standalone(presenter) => presenter.render_direct_gpu_order(
+                camera,
+                refresh_order,
+                camera_revision,
+                completion_started,
+            ),
+            Self::ExactPacked(_) => Err(SurfacePresenterError::GpuOrderUnsupported),
+        }
+    }
+
+    fn last_frame_presented(&self) -> bool {
+        match self {
+            Self::Standalone(presenter) => presenter.last_frame_presented(),
+            Self::ExactPacked(host) => host.last_frame_presented(),
+        }
+    }
+
+    fn resolved_projected_draw_execution(&self) -> Option<SurfaceProjectedDrawExecution> {
+        match self {
+            Self::Standalone(presenter) => Some(presenter.resolved_projected_draw_execution()),
+            Self::ExactPacked(_) => None,
+        }
+    }
+
+    fn take_projected_draw_submission(&mut self) -> TelemetrySubmission {
+        match self {
+            Self::Standalone(presenter) => presenter.take_projected_draw_submission(),
+            Self::ExactPacked(_) => TelemetrySubmission::NotRequested,
+        }
+    }
+
+    fn take_actual_gpu_order_producer(&mut self) -> Option<SurfaceGpuOrderProducer> {
+        match self {
+            Self::Standalone(presenter) => presenter.take_actual_gpu_order_producer(),
+            Self::ExactPacked(_) => None,
+        }
+    }
+
+    fn take_gpu_producer_submission(&mut self) -> TelemetrySubmission {
+        match self {
+            Self::Standalone(presenter) => presenter.take_gpu_producer_submission(),
+            Self::ExactPacked(_) => TelemetrySubmission::NotRequested,
+        }
+    }
+
+    fn render_sorted_indices(
+        &mut self,
+        scene: &SceneBuffers,
+        sorted_indices: &[u32],
+        camera: &Camera,
+        refresh_indices: bool,
+    ) -> Result<(), SurfacePresenterError> {
+        match self {
+            Self::Standalone(presenter) => {
+                presenter.render_sorted_indices(scene, sorted_indices, camera, refresh_indices)
+            }
+            Self::ExactPacked(_) => Err(SurfacePresenterError::SurfaceGeometrySwitchUnsupported),
+        }
+    }
+
+    fn instance_count(&self) -> Option<u32> {
+        match self {
+            Self::Standalone(presenter) => Some(presenter.instance_count()),
+            Self::ExactPacked(_) => None,
+        }
+    }
+
+    fn render_cpu_sorted_indices_tracked(
+        &mut self,
+        sorted_indices: &[u32],
+        camera: &Camera,
+        refresh_indices: bool,
+        completion: Option<CpuCompletionSampleRequest>,
+    ) -> Result<TelemetrySubmission, SurfacePresenterError> {
+        match self {
+            Self::Standalone(presenter) => presenter.render_cpu_sorted_indices_tracked(
+                sorted_indices,
+                camera,
+                refresh_indices,
+                completion,
+            ),
+            Self::ExactPacked(_) => Err(SurfacePresenterError::SurfaceGeometrySwitchUnsupported),
         }
     }
 }
@@ -2577,6 +2845,17 @@ impl SurfaceRenderSession {
         )
     }
 
+    fn try_set_exact_gpu_order_producer(
+        &mut self,
+        producer: SurfaceGpuOrderProducer,
+    ) -> Result<bool, RendererError> {
+        let Some(current) = self.exact_plan_state() else {
+            return Ok(false);
+        };
+        self.commit_exact_plan_state(current.with_producer(producer)?)?;
+        Ok(true)
+    }
+
     /// Requests one current-stats receipt from the next eligible Exact
     /// Surface frame. Direct, Paged and Web retain the additive fail-closed
     /// compatibility result until their later consumer cutovers.
@@ -2707,8 +2986,8 @@ impl SurfaceRenderSession {
         &mut self,
         producer: SurfaceGpuOrderProducer,
     ) -> Result<(), RendererError> {
-        if let Some(current) = self.exact_plan_state() {
-            return self.commit_exact_plan_state(current.with_producer(producer)?);
+        if self.try_set_exact_gpu_order_producer(producer)? {
+            return Ok(());
         }
         if !validate_gpu_order_producer_transition(
             self.gpu_order_producer(),
@@ -2731,6 +3010,9 @@ impl SurfaceRenderSession {
         &mut self,
         producer: SurfaceGpuOrderProducer,
     ) -> Result<(), RendererError> {
+        if self.try_set_exact_gpu_order_producer(producer)? {
+            return Ok(());
+        }
         if !validate_gpu_order_producer_transition(
             self.gpu_order_producer(),
             producer,
@@ -2983,10 +3265,10 @@ impl SurfaceRenderSession {
 
         // Both candidates are complete and every following operation is an
         // infallible assignment. No live session field changed before here.
+        self.presenter
+            .publish_geometry_path_candidate(prepared_presenter)?;
         self.renderer
             .publish_geometry_path_candidate(prepared_renderer);
-        self.presenter
-            .publish_geometry_path_candidate(prepared_presenter);
         self.finish_geometry_path_switch(path);
         Ok(())
     }
@@ -4347,7 +4629,10 @@ impl SurfaceRenderSession {
             SurfaceOrderBackendUsed::Gpu,
             presenter_submission,
         );
-        let projected_draw_execution = self.presenter.resolved_projected_draw_execution();
+        let projected_draw_execution = self
+            .presenter
+            .resolved_projected_draw_execution()
+            .ok_or(SurfacePresenterError::SurfaceGeometrySwitchUnsupported)?;
         let projected_draw_measurement_submission =
             SurfaceProjectedDrawMeasurementSubmission::from_presenter(
                 projected_draw_execution,
@@ -4468,8 +4753,11 @@ impl SurfaceRenderSession {
             let scene = self.renderer.scene().ok_or(RendererError::SceneNotLoaded)?;
             self.presenter
                 .render_sorted_indices(scene, &[], &self.camera, true)?;
-            let (visible_count, drawn_count) =
-                paged_surface_counts(scene.len(), self.presenter.instance_count());
+            let instance_count = self
+                .presenter
+                .instance_count()
+                .ok_or(SurfacePresenterError::SurfaceGeometrySwitchUnsupported)?;
+            let (visible_count, drawn_count) = paged_surface_counts(scene.len(), instance_count);
             stats.visible_count = visible_count;
             stats.drawn_count = drawn_count;
             TelemetrySubmission::NotRequested
@@ -4495,7 +4783,10 @@ impl SurfaceRenderSession {
             SurfaceOrderBackendUsed::Cpu,
             presenter_submission,
         );
-        let projected_draw_execution = self.presenter.resolved_projected_draw_execution();
+        let projected_draw_execution = self
+            .presenter
+            .resolved_projected_draw_execution()
+            .ok_or(SurfacePresenterError::SurfaceGeometrySwitchUnsupported)?;
         let projected_draw_measurement_submission =
             SurfaceProjectedDrawMeasurementSubmission::from_presenter(
                 projected_draw_execution,
@@ -4831,6 +5122,29 @@ mod tests {
             );
             assert!(construction.creates_legacy_presenter_graph());
         }
+    }
+
+    #[test]
+    fn session_surface_owner_cannot_implicitly_deref_to_the_legacy_graph() {
+        let source = include_str!("surface_session.rs");
+        assert!(!source.contains(concat!("impl ", "Deref for SessionSurfaceOwner")));
+        assert!(!source.contains(concat!("impl ", "DerefMut for SessionSurfaceOwner")));
+        assert_eq!(
+            source
+                .matches(concat!(
+                    "Self::ExactPacked(host) => ",
+                    "host.resize(width, height)"
+                ))
+                .count(),
+            1
+        );
+        assert_eq!(
+            source
+                .matches(concat!("try_set_exact_gpu_order_", "producer(producer)?"))
+                .count(),
+            2,
+            "sync and Web async setters must share the Exact transaction"
+        );
     }
     use gsplat_core::{Camera, RendererConfig, SceneBuffers, Vec3f};
     use std::collections::VecDeque;

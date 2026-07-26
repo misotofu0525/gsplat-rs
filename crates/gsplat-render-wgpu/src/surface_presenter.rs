@@ -1004,12 +1004,23 @@ impl SurfacePresenterHost {
         self.adapter_max_storage_buffer_binding_size
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn resize(&mut self, width: u32, height: u32) -> Result<(), SurfacePresenterError> {
-        if self.prepare_native_resize(width, height)? {
-            self.commit_native_resize(width, height);
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            if self.prepare_native_resize(width, height)? {
+                self.commit_native_resize(width, height);
+            }
+            Ok(())
         }
-        Ok(())
+        #[cfg(target_arch = "wasm32")]
+        {
+            self.surface_configuration.validate_size(width, height)?;
+            if self.surface_configuration.resize_required(width, height) {
+                Err(SurfacePresenterError::SurfaceResizePreparationRequired)
+            } else {
+                Ok(())
+            }
+        }
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -1053,6 +1064,24 @@ impl SurfacePresenterHost {
 
     pub(crate) const fn last_presented_size(&self) -> Option<(u32, u32)> {
         self.surface_lifecycle.last_presented_size()
+    }
+
+    pub(crate) const fn last_frame_presented(&self) -> bool {
+        self.surface_lifecycle.last_frame_presented()
+    }
+
+    pub(crate) const fn gpu_order_timestamps_enabled(&self) -> bool {
+        self.timestamp_queries_enabled
+    }
+
+    /// Advances callbacks for host-owned queue work without consulting any
+    /// legacy presenter telemetry graph.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn pump_receipt_callbacks(
+        &self,
+        timeout: Duration,
+    ) -> Result<bool, crate::RendererError> {
+        crate::pump_device_receipt_callbacks(&self.device, timeout)
     }
 
     pub(crate) fn exact_runtime_context(
@@ -3979,7 +4008,7 @@ impl SurfacePresenter {
         &self,
         timeout: Duration,
     ) -> Result<bool, crate::RendererError> {
-        crate::pump_device_receipt_callbacks(&self.host.device, timeout)
+        self.host.pump_receipt_callbacks(timeout)
     }
 
     pub(crate) fn poll_projected_draw_telemetry(&mut self) -> ProjectedDrawTelemetryPoll {
