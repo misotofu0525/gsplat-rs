@@ -44,14 +44,13 @@ use cpu::reference::{
     InstanceBuildParams, build_instances, ellipse_axes_from_covariance, project_covariance_to_ndc,
     project_world_covariance_terms_to_ndc, quat_normalize, world_to_camera_with_view_rot,
 };
-use cpu::reference::{
-    build_instances_into, precompute_alpha_values, precompute_world_covariances, quat_inverse,
-    quat_to_mat3, sh_color_unchecked,
-};
+use cpu::reference::{build_instances_into, quat_inverse, quat_to_mat3, sh_color_unchecked};
 pub(crate) use cpu::reference::{
     log_scale_has_finite_nonzero_covariance, rotation_has_finite_nonzero_norm,
     world_covariance_from_source,
 };
+#[cfg(test)]
+use cpu::reference::{precompute_alpha_values, precompute_world_covariances};
 use cpu_order::CpuOrderEngine;
 #[cfg(test)]
 pub(crate) use cpu_order::world_to_camera_depth_with_view_row;
@@ -120,7 +119,7 @@ pub use scene::{
     ResidentSceneError, ResidentSourceSplat, direct_scene_preflight, packed_scene_preflight,
     packed_scene_preflight_with_limits, resident_sh_plane_count,
 };
-pub(crate) use spatial_pages::{DEFAULT_PAGE_CAPACITY, SpatialPageSet};
+pub(crate) use spatial_pages::SpatialPageSet;
 #[cfg(test)]
 use surface::standalone_paged_runtime::StandalonePagedRuntime;
 pub use surface::{
@@ -508,21 +507,11 @@ pub struct Renderer {
     cpu_order_engine: CpuOrderEngine,
     #[cfg(not(target_arch = "wasm32"))]
     gpu_rasterizer: Option<GpuRasterizer>,
-    /// Wide source buffers are retained only by the Direct reference and the
-    /// experimental paged path. Production Packed loading consumes them.
-    scene: Option<SceneBuffers>,
-    /// Exact-count compact resident representation used by PackedAtlas.
-    resident_scene_cpu: Option<ResidentSceneCpu>,
+    scene_state: renderer::scene_state::RendererSceneState,
     /// Sole complete Exact runtime for Packed rendering. Offscreen and
     /// Surface hosts supply different targets but never own a second scene,
     /// PlanSet, controller, generation ledger, sampler, or raster graph.
     exact_offscreen_runtime: Option<renderer::PreparedRuntimeSlot>,
-    /// Spatial page metadata for [`GeometryPath::PagedActiveAtlas`].
-    spatial_pages: Option<SpatialPageSet>,
-    world_covariances: Option<Vec<[[f32; 3]; 3]>>,
-    world_covariance_terms: Option<Vec<CameraCovarianceTerms>>,
-    alpha_values: Option<Vec<f32>>,
-    preprocess_indices: Vec<u32>,
     last_stats: FrameStats,
 }
 
@@ -581,14 +570,8 @@ impl Renderer {
             cpu_order_engine: CpuOrderEngine::default(),
             #[cfg(not(target_arch = "wasm32"))]
             gpu_rasterizer: None,
-            scene: None,
-            resident_scene_cpu: None,
+            scene_state: renderer::scene_state::RendererSceneState::empty(),
             exact_offscreen_runtime: None,
-            spatial_pages: None,
-            world_covariances: None,
-            world_covariance_terms: None,
-            alpha_values: None,
-            preprocess_indices: Vec::new(),
             last_stats: FrameStats::zero(),
         }
     }
@@ -614,7 +597,7 @@ impl Renderer {
     pub fn set_geometry_path(&mut self, path: GeometryPath) {
         if self.geometry_path != path {
             self.geometry_path = path;
-            self.rebuild_path_specific_cpu_data();
+            self.scene_state.rebuild_for_path(path);
             #[cfg(not(target_arch = "wasm32"))]
             if let Some(rasterizer) = self.gpu_rasterizer.as_mut() {
                 rasterizer.clear_scene_resources();
@@ -682,7 +665,10 @@ impl Renderer {
     /// Surface-only renderers do not own a device, so callers must query the
     /// presenter path separately instead of assuming adapter or default limits.
     pub fn current_direct_scene_preflight(&self) -> Result<DirectScenePreflight, RendererError> {
-        let scene = self.scene.as_ref().ok_or(RendererError::SceneNotLoaded)?;
+        let scene = self
+            .scene_state
+            .wide()
+            .ok_or(RendererError::SceneNotLoaded)?;
 
         #[cfg(not(target_arch = "wasm32"))]
         {
@@ -772,13 +758,11 @@ impl Renderer {
             return Err(RendererError::InvalidScene);
         }
 
-        self.scene = Some(scene);
-        self.resident_scene_cpu = None;
+        self.scene_state.replace_wide(scene, self.geometry_path);
         #[cfg(not(target_arch = "wasm32"))]
         {
             self.exact_offscreen_runtime = None;
         }
-        self.rebuild_path_specific_cpu_data();
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(rasterizer) = self.gpu_rasterizer.as_mut() {
             rasterizer.clear_scene_resources();
@@ -813,9 +797,7 @@ impl Renderer {
             return Ok(());
         }
 
-        self.scene = None;
-        self.resident_scene_cpu = Some(resident);
-        self.rebuild_path_specific_cpu_data();
+        self.scene_state.replace_resident(resident);
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(rasterizer) = self.gpu_rasterizer.as_mut() {
             rasterizer.clear_scene_resources();
@@ -854,11 +836,8 @@ impl Renderer {
 
     #[cfg(not(target_arch = "wasm32"))]
     fn publish_exact_offscreen_candidate(&mut self, candidate: renderer::PreparedRuntimeSlot) {
-        self.scene = None;
-        self.resident_scene_cpu = None;
         self.exact_offscreen_runtime = Some(candidate);
-        self.preprocess_indices.clear();
-        self.rebuild_path_specific_cpu_data();
+        self.scene_state.clear_for_exact_runtime();
         self.gpu_rasterizer
             .as_mut()
             .expect("offscreen candidate requires the existing rasterizer")
@@ -883,8 +862,8 @@ impl Renderer {
             return Err(RendererError::InvalidConfig);
         }
         let source = self
-            .resident_scene_cpu
-            .as_ref()
+            .scene_state
+            .resident_upload()
             .ok_or(RendererError::SceneNotLoaded)?;
         renderer::PreparedRuntimeSlot::prepare_complete_surface_gpu_candidate(
             source,
@@ -911,8 +890,8 @@ impl Renderer {
             return Err(RendererError::InvalidConfig);
         }
         let source = self
-            .resident_scene_cpu
-            .as_ref()
+            .scene_state
+            .resident_upload()
             .ok_or(RendererError::SceneNotLoaded)?;
         if !candidate.has_same_surface_source(source) {
             return Err(RendererError::SurfacePresenter(
@@ -921,11 +900,8 @@ impl Renderer {
                 ),
             ));
         }
-        self.scene = None;
-        self.resident_scene_cpu = None;
         self.exact_offscreen_runtime = Some(candidate);
-        self.preprocess_indices.clear();
-        self.rebuild_path_specific_cpu_data();
+        self.scene_state.clear_for_exact_runtime();
         Ok(())
     }
 
@@ -1029,7 +1005,7 @@ impl Renderer {
         }
         match uploaded_path {
             GeometryPath::SortedIndexDirect | GeometryPath::PagedActiveAtlas => {
-                if self.scene.is_none() {
+                if self.scene_state.wide().is_none() {
                     return Err(RendererError::GeometrySourceUnavailable {
                         path: uploaded_path,
                     });
@@ -1037,7 +1013,7 @@ impl Renderer {
                 Ok(0)
             }
             GeometryPath::PackedAtlas => {
-                let resident = self.resident_scene_cpu.as_mut().ok_or(
+                let resident = self.scene_state.resident_upload_mut().ok_or(
                     RendererError::GeometrySourceUnavailable {
                         path: GeometryPath::PackedAtlas,
                     },
@@ -1047,43 +1023,13 @@ impl Renderer {
         }
     }
 
-    fn rebuild_path_specific_cpu_data(&mut self) {
-        match (self.geometry_path, self.scene.as_ref()) {
-            (GeometryPath::SortedIndexDirect, Some(scene)) => {
-                let world_covariances = precompute_world_covariances(scene);
-                let world_covariance_terms = world_covariances
-                    .iter()
-                    .copied()
-                    .map(CameraCovarianceTerms::from_matrix)
-                    .collect();
-                let alpha_values = precompute_alpha_values(scene);
-                self.world_covariances = Some(world_covariances);
-                self.world_covariance_terms = Some(world_covariance_terms);
-                self.alpha_values = Some(alpha_values);
-                self.spatial_pages = None;
-            }
-            (GeometryPath::PagedActiveAtlas, Some(scene)) => {
-                self.world_covariances = None;
-                self.world_covariance_terms = None;
-                self.alpha_values = None;
-                self.spatial_pages = Some(default_spatial_pages(scene));
-            }
-            _ => {
-                self.world_covariances = None;
-                self.world_covariance_terms = None;
-                self.alpha_values = None;
-                self.spatial_pages = None;
-            }
-        }
-    }
-
     pub fn scene(&self) -> Option<&SceneBuffers> {
-        self.scene.as_ref()
+        self.scene_state.wide()
     }
 
     /// Returns the compact source retained by the production Packed path.
     pub fn resident_scene(&self) -> Option<&ResidentSceneCpu> {
-        self.resident_scene_cpu.as_ref().or_else(|| {
+        self.scene_state.resident_upload().or_else(|| {
             #[cfg(not(target_arch = "wasm32"))]
             {
                 self.exact_offscreen_runtime
@@ -1099,34 +1045,54 @@ impl Renderer {
 
     /// True for either a wide Direct/Paged source or a compact Packed source.
     pub fn has_scene(&self) -> bool {
-        self.scene.is_some() || self.resident_scene().is_some()
+        self.scene_state.has_source() || self.resident_scene().is_some()
     }
 
     pub fn scene_len(&self) -> Option<usize> {
-        self.scene
-            .as_ref()
-            .map(SceneBuffers::len)
+        self.scene_state
+            .source_len()
             .or_else(|| self.resident_scene().map(ResidentSceneCpu::len))
     }
 
     pub fn scene_sh_degree(&self) -> Option<u8> {
-        self.scene
-            .as_ref()
-            .map(|scene| scene.sh_degree)
+        self.scene_state
+            .source_sh_degree()
             .or_else(|| self.resident_scene().map(|scene| scene.sh_degree))
     }
 
     /// Exact source-order world positions shared by CPU ordering, camera
     /// framing, and benchmark traces for every geometry path.
     pub fn positions(&self) -> Option<&[Vec3f]> {
-        self.scene
-            .as_ref()
-            .map(|scene| scene.positions.as_slice())
+        self.scene_state
+            .source_positions()
             .or_else(|| self.resident_scene().map(|scene| scene.positions.as_ref()))
     }
 
     pub fn world_covariances(&self) -> Option<&[[[f32; 3]; 3]]> {
-        self.world_covariances.as_deref()
+        self.scene_state
+            .direct_inputs()
+            .map(|inputs| inputs.world_covariances)
+    }
+
+    pub(crate) fn direct_scene_cpu_inputs(
+        &self,
+    ) -> Option<(&SceneBuffers, &[CameraCovarianceTerms], &[f32])> {
+        self.scene_state.direct_inputs().map(|inputs| {
+            (
+                inputs.scene,
+                inputs.world_covariance_terms,
+                inputs.alpha_values,
+            )
+        })
+    }
+
+    pub(crate) fn spatial_pages(&self) -> Option<&SpatialPageSet> {
+        self.scene_state.spatial_pages()
+    }
+
+    #[cfg(test)]
+    fn preprocess_capacity(&self) -> usize {
+        self.scene_state.preprocess_capacity()
     }
 
     pub fn preprocess_visible(&self, camera: &Camera) -> Result<PreprocessOutput, RendererError> {
@@ -1157,10 +1123,9 @@ impl Renderer {
         let stable_full32 = self.mode == RenderMode::SortedAlpha;
         let timings = match self.geometry_path {
             GeometryPath::PagedActiveAtlas => {
-                let scene = self.scene.as_ref().ok_or(RendererError::SceneNotLoaded)?;
-                let pages = self
-                    .spatial_pages
-                    .as_ref()
+                let (scene, pages, preprocess_indices) = self
+                    .scene_state
+                    .paged_order_inputs_mut()
                     .ok_or(RendererError::InvalidScene)?;
                 #[cfg(not(target_arch = "wasm32"))]
                 {
@@ -1180,39 +1145,46 @@ impl Renderer {
                         &entries,
                         camera,
                         stable_full32,
-                        &mut self.preprocess_indices,
+                        preprocess_indices,
                     )?
                 }
                 #[cfg(target_arch = "wasm32")]
                 {
-                    let _ = (scene, pages, camera, stable_full32);
+                    let _ = (scene, pages, preprocess_indices, camera, stable_full32);
                     return Err(RendererError::GpuRasterizerUnavailable);
                 }
             }
             GeometryPath::SortedIndexDirect | GeometryPath::PackedAtlas => {
-                let positions = if let Some(scene) = self.scene.as_ref() {
-                    scene.positions.as_slice()
-                } else if let Some(scene) = self.resident_scene_cpu.as_ref() {
-                    scene.positions.as_ref()
+                let order_engine = &mut self.cpu_order_engine;
+                if let Some((positions, preprocess_indices)) =
+                    self.scene_state.source_positions_and_preprocess_mut()
+                {
+                    order_engine.order_positions(
+                        CpuPositionView::new(positions),
+                        camera,
+                        stable_full32,
+                        preprocess_indices,
+                    )?
                 } else {
                     #[cfg(not(target_arch = "wasm32"))]
                     {
-                        self.exact_offscreen_runtime
+                        let positions = self
+                            .exact_offscreen_runtime
                             .as_ref()
                             .map(|slot| slot.scene().positions())
-                            .ok_or(RendererError::SceneNotLoaded)?
+                            .ok_or(RendererError::SceneNotLoaded)?;
+                        order_engine.order_positions(
+                            CpuPositionView::new(positions),
+                            camera,
+                            stable_full32,
+                            self.scene_state.preprocess_indices_mut(),
+                        )?
                     }
                     #[cfg(target_arch = "wasm32")]
                     {
                         return Err(RendererError::SceneNotLoaded);
                     }
-                };
-                self.cpu_order_engine.order_positions(
-                    CpuPositionView::new(positions),
-                    camera,
-                    stable_full32,
-                    &mut self.preprocess_indices,
-                )?
+                }
             }
         };
         Ok((timings.preprocess_ms, timings.sort_ms))
@@ -1231,7 +1203,7 @@ impl Renderer {
             preprocess_ms,
             sort_ms,
             raster_ms,
-            visible_count: self.preprocess_indices.len() as u32,
+            visible_count: self.scene_state.preprocess_indices().len() as u32,
             drawn_count,
         };
         self.last_stats = stats;
@@ -1248,20 +1220,15 @@ impl Renderer {
         let (preprocess_ms, sort_ms) = self.preprocess_and_sort_timed(camera)?;
 
         let raster_start = timer_now();
-        let scene = self.scene.as_ref().ok_or(RendererError::SceneNotLoaded)?;
-        let world_covariances = self
-            .world_covariances
-            .as_deref()
-            .ok_or(RendererError::InvalidScene)?;
-        let alpha_values = self
-            .alpha_values
-            .as_deref()
+        let inputs = self
+            .scene_state
+            .direct_inputs()
             .ok_or(RendererError::InvalidScene)?;
         build_instances_into(
-            scene,
-            world_covariances,
-            alpha_values,
-            &self.preprocess_indices,
+            inputs.scene,
+            inputs.world_covariances,
+            inputs.alpha_values,
+            self.scene_state.preprocess_indices(),
             camera,
             self.config,
             instances,
@@ -1279,7 +1246,7 @@ impl Renderer {
     ) -> Result<FrameStats, RendererError> {
         let frame_start = timer_now();
 
-        let refresh_sort = refresh_sort || self.preprocess_indices.is_empty();
+        let refresh_sort = refresh_sort || self.scene_state.preprocess_indices().is_empty();
         let (preprocess_ms, sort_ms) = if refresh_sort {
             self.preprocess_and_sort_timed(camera)?
         } else {
@@ -1289,7 +1256,7 @@ impl Renderer {
             (0.0, 0.0)
         };
 
-        let drawn_count = self.preprocess_indices.len() as u32;
+        let drawn_count = self.scene_state.preprocess_indices().len() as u32;
         Ok(self.record_stats(frame_start, preprocess_ms, sort_ms, 0.0, drawn_count))
     }
 
@@ -1303,7 +1270,7 @@ impl Renderer {
         {
             return order;
         }
-        &self.preprocess_indices
+        self.scene_state.preprocess_indices()
     }
 
     pub fn replace_surface_sorted_indices(
@@ -1321,8 +1288,8 @@ impl Renderer {
         match self.geometry_path {
             GeometryPath::PagedActiveAtlas => {
                 let max_index = self
-                    .spatial_pages
-                    .as_ref()
+                    .scene_state
+                    .spatial_pages()
                     .map(|pages| {
                         pages
                             .page_count()
@@ -1341,7 +1308,7 @@ impl Renderer {
             }
         }
 
-        std::mem::swap(&mut self.preprocess_indices, indices);
+        self.scene_state.swap_preprocess_indices(indices);
         Ok(())
     }
 
@@ -1353,9 +1320,9 @@ impl Renderer {
 
         let (preprocess_ms, sort_ms) = self.preprocess_and_sort_timed(camera)?;
 
-        let drawn_count = self.preprocess_indices.len() as u32;
+        let drawn_count = self.scene_state.preprocess_indices().len() as u32;
         let stats = self.record_stats(frame_start, preprocess_ms, sort_ms, 0.0, drawn_count);
-        Ok((self.preprocess_indices.clone(), stats))
+        Ok((self.scene_state.preprocess_indices().to_vec(), stats))
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -1365,22 +1332,23 @@ impl Renderer {
         sorted_indices: &[u32],
     ) -> Result<(), RendererError> {
         match self.geometry_path {
-            GeometryPath::SortedIndexDirect => self
-                .gpu_rasterizer
-                .as_mut()
-                .ok_or(RendererError::GpuRasterizerUnavailable)?
-                .render_direct_sorted_indices(
-                    self.config,
-                    sorted_indices,
-                    camera,
-                    self.scene.as_ref().ok_or(RendererError::SceneNotLoaded)?,
-                    self.world_covariance_terms
-                        .as_deref()
-                        .ok_or(RendererError::InvalidScene)?,
-                    self.alpha_values
-                        .as_deref()
-                        .ok_or(RendererError::InvalidScene)?,
-                ),
+            GeometryPath::SortedIndexDirect => {
+                let inputs = self
+                    .scene_state
+                    .direct_inputs()
+                    .ok_or(RendererError::InvalidScene)?;
+                self.gpu_rasterizer
+                    .as_mut()
+                    .ok_or(RendererError::GpuRasterizerUnavailable)?
+                    .render_direct_sorted_indices(
+                        self.config,
+                        sorted_indices,
+                        camera,
+                        inputs.scene,
+                        inputs.world_covariance_terms,
+                        inputs.alpha_values,
+                    )
+            }
             GeometryPath::PackedAtlas => self
                 .gpu_rasterizer
                 .as_mut()
@@ -1389,8 +1357,8 @@ impl Renderer {
                     self.config,
                     sorted_indices,
                     camera,
-                    self.resident_scene_cpu
-                        .as_ref()
+                    self.scene_state
+                        .resident_upload()
                         .ok_or(RendererError::SceneNotLoaded)?,
                 ),
             GeometryPath::PagedActiveAtlas => self
@@ -1401,7 +1369,9 @@ impl Renderer {
                     self.config,
                     sorted_indices,
                     camera,
-                    self.scene.as_ref().ok_or(RendererError::SceneNotLoaded)?,
+                    self.scene_state
+                        .wide()
+                        .ok_or(RendererError::SceneNotLoaded)?,
                 ),
         }
     }
@@ -1421,10 +1391,10 @@ impl Renderer {
         let (preprocess_ms, sort_ms) = self.preprocess_and_sort_timed(camera)?;
 
         let raster_start = timer_now();
-        let sorted_indices = std::mem::take(&mut self.preprocess_indices);
+        let sorted_indices = std::mem::take(self.scene_state.preprocess_indices_mut());
         let raster_result = self.raster_sorted_indices(camera, &sorted_indices);
         let drawn_count = sorted_indices.len() as u32;
-        self.preprocess_indices = sorted_indices;
+        *self.scene_state.preprocess_indices_mut() = sorted_indices;
         raster_result?;
         let raster_ms = timer_elapsed_ms(raster_start);
 
@@ -1577,15 +1547,9 @@ pub(crate) fn make_surface_render_params(
     }
 }
 
+#[cfg(test)]
 fn default_spatial_pages(scene: &SceneBuffers) -> SpatialPageSet {
-    let page_capacity = (scene.len() / 4).clamp(1, DEFAULT_PAGE_CAPACITY);
-    let grid_axis = ((scene.len() as f32).cbrt().ceil() as usize).clamp(1, 8);
-    spatial_pages::partition_scene_pages_with_coarse_cover(
-        scene,
-        page_capacity,
-        grid_axis,
-        DEFAULT_PAGED_ATLAS_SLOTS,
-    )
+    renderer::scene_state::default_spatial_pages(scene)
 }
 
 fn normalize_dir(dx: f32, dy: f32, dz: f32) -> [f32; 3] {
@@ -3003,9 +2967,8 @@ mod tests {
         assert_eq!(renderer.scene_len(), Some(expected_positions.len()));
         assert_eq!(renderer.scene_sh_degree(), Some(0));
         assert_eq!(renderer.positions(), Some(expected_positions.as_slice()));
-        assert!(renderer.world_covariances.is_none());
-        assert!(renderer.world_covariance_terms.is_none());
-        assert!(renderer.alpha_values.is_none());
+        assert!(renderer.world_covariances().is_none());
+        assert!(renderer.direct_scene_cpu_inputs().is_none());
 
         let stats = renderer
             .build_surface_sorted_indices_with_sort_refresh(&Camera::default(), true)
@@ -3016,9 +2979,8 @@ mod tests {
         // A compact-only production load cannot be losslessly reconstructed
         // into the float32 Direct oracle merely by flipping a benchmark knob.
         renderer.set_geometry_path(super::GeometryPath::SortedIndexDirect);
-        assert!(renderer.world_covariances.is_none());
-        assert!(renderer.world_covariance_terms.is_none());
-        assert!(renderer.alpha_values.is_none());
+        assert!(renderer.world_covariances().is_none());
+        assert!(renderer.direct_scene_cpu_inputs().is_none());
         assert!(renderer.resident_scene().is_some());
     }
 
@@ -3035,7 +2997,7 @@ mod tests {
             .expect("pre-handoff CPU order");
         let before_workspace = (
             renderer.cpu_order_engine.buffer_state(),
-            renderer.preprocess_indices.capacity(),
+            renderer.preprocess_capacity(),
         );
         let before = renderer
             .resident_scene()
@@ -3061,7 +3023,7 @@ mod tests {
         assert_eq!(
             (
                 renderer.cpu_order_engine.buffer_state(),
-                renderer.preprocess_indices.capacity(),
+                renderer.preprocess_capacity(),
             ),
             before_workspace
         );
@@ -3083,8 +3045,8 @@ mod tests {
             .cpu_byte_accounting()
             .unwrap();
         renderer
-            .resident_scene_cpu
-            .as_mut()
+            .scene_state
+            .resident_upload_mut()
             .unwrap()
             .report
             .encoded_count -= 1;
@@ -3188,6 +3150,41 @@ mod tests {
     }
 
     #[test]
+    fn invalid_wide_replacement_preserves_scene_caches_order_and_public_stats() {
+        let mut renderer = Renderer::with_config_for_surface(RendererConfig::default()).unwrap();
+        renderer.load_scene(build_scene()).unwrap();
+        renderer
+            .build_sorted_indices(&Camera::default())
+            .expect("establish published Direct state");
+
+        let positions = renderer.positions().unwrap().as_ptr();
+        let world_covariances = renderer.world_covariances().unwrap().as_ptr();
+        let (_, world_covariance_terms, alpha_values) = renderer.direct_scene_cpu_inputs().unwrap();
+        let world_covariance_terms = world_covariance_terms.as_ptr();
+        let alpha_values = alpha_values.as_ptr();
+        let order = renderer.current_sorted_indices().to_vec();
+        let stats = renderer.last_stats();
+
+        let mut invalid = build_scene();
+        invalid.rotation_xyzw[0] = [0.0; 4];
+        assert!(matches!(
+            renderer.load_scene(invalid),
+            Err(RendererError::InvalidScene)
+        ));
+
+        assert_eq!(renderer.positions().unwrap().as_ptr(), positions);
+        assert_eq!(
+            renderer.world_covariances().unwrap().as_ptr(),
+            world_covariances
+        );
+        let (_, retained_terms, retained_alpha) = renderer.direct_scene_cpu_inputs().unwrap();
+        assert_eq!(retained_terms.as_ptr(), world_covariance_terms);
+        assert_eq!(retained_alpha.as_ptr(), alpha_values);
+        assert_eq!(renderer.current_sorted_indices(), order);
+        assert_eq!(renderer.last_stats(), stats);
+    }
+
+    #[test]
     fn paged_renderer_preselection_builds_pages_without_direct_cpu_caches() {
         let mut renderer = Renderer::with_config_for_surface(RendererConfig::default()).unwrap();
         renderer.set_geometry_path(super::GeometryPath::PagedActiveAtlas);
@@ -3197,13 +3194,11 @@ mod tests {
             renderer.geometry_path(),
             super::GeometryPath::PagedActiveAtlas
         );
-        assert!(renderer.world_covariances.is_none());
-        assert!(renderer.world_covariance_terms.is_none());
-        assert!(renderer.alpha_values.is_none());
+        assert!(renderer.world_covariances().is_none());
+        assert!(renderer.direct_scene_cpu_inputs().is_none());
         assert!(
             renderer
-                .spatial_pages
-                .as_ref()
+                .spatial_pages()
                 .is_some_and(|pages| !pages.pages.is_empty())
         );
     }

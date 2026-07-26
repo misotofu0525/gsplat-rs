@@ -4337,8 +4337,7 @@ mod tests {
         RendererGeometrySnapshot {
             geometry_path: renderer.geometry_path(),
             scene_allocation: renderer
-                .scene
-                .as_ref()
+                .scene()
                 .map(|scene| std::ptr::from_ref(scene) as usize),
             resident_allocation: renderer
                 .resident_scene()
@@ -4351,22 +4350,18 @@ mod tests {
                 .positions()
                 .map(|positions| positions.as_ptr() as usize),
             world_covariances_allocation: renderer
-                .world_covariances
-                .as_ref()
+                .world_covariances()
                 .map(|values| values.as_ptr() as usize),
             world_covariance_terms_allocation: renderer
-                .world_covariance_terms
-                .as_ref()
-                .map(|values| values.as_ptr() as usize),
+                .direct_scene_cpu_inputs()
+                .map(|(_, values, _)| values.as_ptr() as usize),
             alpha_values_allocation: renderer
-                .alpha_values
-                .as_ref()
-                .map(|values| values.as_ptr() as usize),
+                .direct_scene_cpu_inputs()
+                .map(|(_, _, values)| values.as_ptr() as usize),
             spatial_pages_allocation: renderer
-                .spatial_pages
-                .as_ref()
+                .spatial_pages()
                 .map(|pages| std::ptr::from_ref(pages) as usize),
-            preprocess_indices: renderer.preprocess_indices.clone(),
+            preprocess_indices: renderer.current_sorted_indices().to_vec(),
             last_stats: renderer.last_stats(),
         }
     }
@@ -4384,15 +4379,15 @@ mod tests {
         };
         let mut renderer = Renderer::with_config_for_surface(RendererConfig::default()).unwrap();
         renderer.load_scene(scene).unwrap();
-        assert_eq!(renderer.world_covariances.as_ref().map(Vec::len), Some(2));
+        assert_eq!(renderer.world_covariances().map(<[_]>::len), Some(2));
 
         let result = try_switch_renderer_geometry_path(
             &mut renderer,
             GeometryPath::PagedActiveAtlas,
             |prepared| {
                 assert_eq!(prepared.geometry_path(), GeometryPath::PagedActiveAtlas);
-                assert!(prepared.world_covariances.is_none());
-                assert!(prepared.spatial_pages.is_some());
+                assert!(prepared.world_covariances().is_none());
+                assert!(prepared.spatial_pages().is_some());
                 Err(SurfacePresenterError::SurfaceConfigure(
                     "injected presenter allocation failure".into(),
                 ))
@@ -4405,8 +4400,8 @@ mod tests {
                 if message == "injected presenter allocation failure"
         ));
         assert_eq!(renderer.geometry_path(), GeometryPath::SortedIndexDirect);
-        assert_eq!(renderer.world_covariances.as_ref().map(Vec::len), Some(2));
-        assert!(renderer.spatial_pages.is_none());
+        assert_eq!(renderer.world_covariances().map(<[_]>::len), Some(2));
+        assert!(renderer.spatial_pages().is_none());
     }
 
     #[test]

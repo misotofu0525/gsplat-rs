@@ -5,6 +5,7 @@ mod current_stats;
 pub(crate) mod frame;
 pub(crate) mod gpu_prepare;
 mod sampler;
+pub(crate) mod scene_state;
 
 use std::sync::Arc;
 #[cfg(not(target_arch = "wasm32"))]

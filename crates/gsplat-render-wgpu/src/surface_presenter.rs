@@ -125,21 +125,14 @@ fn create_geometry_resources(
     } = context;
     match path {
         GeometryPath::SortedIndexDirect => {
-            let scene = renderer.scene().ok_or_else(|| {
-                if renderer.has_scene() {
-                    SurfacePresenterError::GeometrySourceUnavailable { path }
-                } else {
-                    SurfacePresenterError::SceneNotLoaded
-                }
-            })?;
-            let world_covariance_terms = renderer
-                .world_covariance_terms
-                .as_deref()
-                .ok_or(SurfacePresenterError::SceneNotLoaded)?;
-            let alpha_values = renderer
-                .alpha_values
-                .as_deref()
-                .ok_or(SurfacePresenterError::SceneNotLoaded)?;
+            let (scene, world_covariance_terms, alpha_values) =
+                renderer.direct_scene_cpu_inputs().ok_or_else(|| {
+                    if renderer.has_scene() {
+                        SurfacePresenterError::GeometrySourceUnavailable { path }
+                    } else {
+                        SurfacePresenterError::SceneNotLoaded
+                    }
+                })?;
             let direct_scene = direct_runtime.prepare_scene_candidate(
                 device,
                 scene,
@@ -160,8 +153,8 @@ fn create_geometry_resources(
                 }
             })?;
             let pages = renderer
-                .spatial_pages
-                .clone()
+                .spatial_pages()
+                .cloned()
                 .ok_or(SurfacePresenterError::SceneNotLoaded)?;
             let paged_scene = paged_runtime.prepare_scene_candidate(device, scene, pages)?;
             Ok(PreparedSurfaceGeometry::Paged(paged_scene))
@@ -420,8 +413,7 @@ impl SurfacePresenterHost {
             .ok_or(SurfacePresenterError::SceneNotLoaded)?;
         let geometry_path = renderer.geometry_path();
         let (page_count, page_capacity) = renderer
-            .spatial_pages
-            .as_ref()
+            .spatial_pages()
             .map(|pages| (pages.page_count(), pages.page_capacity))
             .unwrap_or_default();
         if geometry_path == GeometryPath::PagedActiveAtlas && page_count == 0 {

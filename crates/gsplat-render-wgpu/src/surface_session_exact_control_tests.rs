@@ -109,8 +109,7 @@ async fn exact_control_renderer(
         .load_resident_scene(exact_control_scene())
         .expect("retained Exact Surface source");
     let source = renderer
-        .resident_scene_cpu
-        .as_ref()
+        .resident_scene()
         .expect("retained Exact Surface source");
     let mut candidate = PreparedRuntimeSlot::prepare_surface_candidate(source)
         .expect("CPU Exact Surface candidate");
