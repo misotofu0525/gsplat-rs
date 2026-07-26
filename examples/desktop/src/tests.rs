@@ -261,6 +261,7 @@ fn args_parse_defaults_to_minimal_dataset() {
     assert_eq!(args.surface_gpu_producer, None);
     assert_eq!(args.surface_evidence_plan, None);
     assert!(!args.surface_diagnostic_capture_receipt);
+    assert!(!args.surface_diagnostic_multi_capture);
     assert!(args.png_out.is_none());
     assert!(args.camera_trace_path.is_none());
     assert_eq!(args.camera_frame, 0);
@@ -618,6 +619,27 @@ fn diagnostic_surface_capture_receipt_flag_requires_strict_surface_evidence() {
     ])
     .unwrap();
     assert!(args.surface_diagnostic_capture_receipt);
+    assert!(!args.surface_diagnostic_multi_capture);
+
+    assert!(
+        parse_args(&["--surface-diagnostic-multi-capture"])
+            .unwrap_err()
+            .contains("requires --surface-diagnostic-capture-receipt")
+    );
+
+    let args = parse_args(&[
+        "--interactive",
+        "--camera-trace",
+        CAMERA_TRACE_FIXTURE,
+        "--surface-evidence-plan",
+        "gpu-post-sort",
+        "--surface-diagnostic-capture-receipt",
+        "--surface-diagnostic-multi-capture",
+        "--png",
+        "target/capture.png",
+    ])
+    .unwrap();
+    assert!(args.surface_diagnostic_multi_capture);
 }
 
 #[cfg(feature = "diagnostic-surface-depth-key-candidate24")]

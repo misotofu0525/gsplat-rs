@@ -108,6 +108,16 @@ pub(crate) struct Args {
         allow(dead_code)
     )]
     pub(crate) surface_diagnostic_capture_receipt: bool,
+    /// Retains the diagnostic-only post-warmup trace-frame schedule [0, 1, 0]
+    /// in one strict Surface evidence session.
+    #[cfg_attr(
+        not(all(
+            feature = "diagnostic-surface-capture-receipt",
+            not(target_arch = "wasm32")
+        )),
+        allow(dead_code)
+    )]
+    pub(crate) surface_diagnostic_multi_capture: bool,
     pub(crate) png_out: Option<PathBuf>,
     pub(crate) camera_trace_path: Option<PathBuf>,
     pub(crate) camera_frame: usize,
@@ -146,11 +156,21 @@ impl Args {
             not(target_arch = "wasm32")
         ))]
         let mut surface_diagnostic_capture_receipt = false;
+        #[cfg(all(
+            feature = "diagnostic-surface-capture-receipt",
+            not(target_arch = "wasm32")
+        ))]
+        let mut surface_diagnostic_multi_capture = false;
         #[cfg(not(all(
             feature = "diagnostic-surface-capture-receipt",
             not(target_arch = "wasm32")
         )))]
         let surface_diagnostic_capture_receipt = false;
+        #[cfg(not(all(
+            feature = "diagnostic-surface-capture-receipt",
+            not(target_arch = "wasm32")
+        )))]
+        let surface_diagnostic_multi_capture = false;
         let mut order_backend_explicit = false;
         let mut png_out: Option<PathBuf> = None;
         let mut camera_trace_path: Option<PathBuf> = None;
@@ -273,6 +293,13 @@ impl Args {
                 ))]
                 "--surface-diagnostic-capture-receipt" => {
                     surface_diagnostic_capture_receipt = true;
+                }
+                #[cfg(all(
+                    feature = "diagnostic-surface-capture-receipt",
+                    not(target_arch = "wasm32")
+                ))]
+                "--surface-diagnostic-multi-capture" => {
+                    surface_diagnostic_multi_capture = true;
                 }
                 "--png" => {
                     let value = args
@@ -413,6 +440,12 @@ impl Args {
                 "--surface-diagnostic-capture-receipt requires --surface-evidence-plan".to_owned(),
             );
         }
+        if surface_diagnostic_multi_capture && !surface_diagnostic_capture_receipt {
+            return Err(
+                "--surface-diagnostic-multi-capture requires --surface-diagnostic-capture-receipt"
+                    .to_owned(),
+            );
+        }
         #[cfg(feature = "diagnostic-surface-depth-key-candidate24")]
         if !surface_diagnostic_capture_receipt {
             return Err(
@@ -451,6 +484,7 @@ impl Args {
             surface_gpu_producer,
             surface_evidence_plan,
             surface_diagnostic_capture_receipt,
+            surface_diagnostic_multi_capture,
             png_out,
             camera_trace_path,
             camera_frame,
@@ -502,6 +536,9 @@ fn usage() -> String {
         let mut lines = lines;
         lines.push(
             "  --surface-diagnostic-capture-receipt take the atomic native diagnostic capture receipt",
+        );
+        lines.push(
+            "  --surface-diagnostic-multi-capture retain post-warmup diagnostic trace frames [0,1,0]",
         );
         lines
     };

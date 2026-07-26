@@ -16,6 +16,12 @@ use std::{
     feature = "diagnostic-surface-capture-receipt",
     not(target_arch = "wasm32")
 ))]
+use std::fs;
+
+#[cfg(all(
+    feature = "diagnostic-surface-capture-receipt",
+    not(target_arch = "wasm32")
+))]
 use gsplat_render_wgpu::DiagnosticSurfaceCaptureReceipt;
 use gsplat_render_wgpu::{
     SurfaceCurrentStatsCountSemantics, SurfaceCurrentStatsPlan, SurfaceCurrentStatsPoll,
@@ -43,6 +49,47 @@ use crate::{
 
 const RECEIPT_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_INELIGIBLE_RETRIES: usize = 64;
+const DIAGNOSTIC_MULTI_CAPTURE_TRACE_FRAMES: [usize; 3] = [0, 1, 0];
+
+#[derive(Debug, Default, PartialEq, Eq)]
+struct MultiCaptureSchedule {
+    next_capture: usize,
+}
+
+impl MultiCaptureSchedule {
+    fn next_trace_frame(&self) -> Option<usize> {
+        DIAGNOSTIC_MULTI_CAPTURE_TRACE_FRAMES
+            .get(self.next_capture)
+            .copied()
+    }
+
+    fn accept(&mut self, capture_index: usize, trace_frame: usize) -> Result<(), String> {
+        let Some(expected_trace_frame) = self.next_trace_frame() else {
+            return Err(format!(
+                "duplicate diagnostic capture {capture_index}: terminal sequence is already complete"
+            ));
+        };
+        if capture_index != self.next_capture || trace_frame != expected_trace_frame {
+            return Err(format!(
+                "diagnostic capture out of order: expected capture {} trace frame {}, got capture {capture_index} trace frame {trace_frame}",
+                self.next_capture, expected_trace_frame,
+            ));
+        }
+        self.next_capture += 1;
+        Ok(())
+    }
+
+    fn require_complete(&self) -> Result<(), String> {
+        if self.next_capture != DIAGNOSTIC_MULTI_CAPTURE_TRACE_FRAMES.len() {
+            return Err(format!(
+                "incomplete diagnostic capture terminal sequence: retained {} of {} captures",
+                self.next_capture,
+                DIAGNOSTIC_MULTI_CAPTURE_TRACE_FRAMES.len(),
+            ));
+        }
+        Ok(())
+    }
+}
 
 pub(crate) fn configure(
     session: &mut SurfaceRenderSession,
@@ -91,6 +138,7 @@ struct EvidenceIdentity {
 enum PendingKind {
     Frame(SurfaceTraceStep),
     Capture {
+        capture_index: Option<usize>,
         step: SurfaceTraceStep,
         path: PathBuf,
         capture: PendingCapture,
@@ -247,6 +295,100 @@ struct PendingReceipt {
     deadline: Instant,
 }
 
+#[cfg(all(
+    feature = "diagnostic-surface-capture-receipt",
+    not(target_arch = "wasm32")
+))]
+#[derive(Debug)]
+struct ValidatedDiagnosticCapture {
+    capture_index: usize,
+    step: SurfaceTraceStep,
+    path: PathBuf,
+    capture: DiagnosticSurfaceCaptureReceipt,
+    output: SurfaceFrameOutput,
+    receipt: SurfaceCurrentStatsReceipt,
+    call_ms: f32,
+    elapsed_ns: u64,
+}
+
+fn diagnostic_multi_capture_steps(
+    playback: &CameraTracePlayback,
+    first_playback_index: usize,
+    template: SurfaceTraceStep,
+) -> Result<Vec<SurfaceTraceStep>, String> {
+    DIAGNOSTIC_MULTI_CAPTURE_TRACE_FRAMES
+        .into_iter()
+        .enumerate()
+        .map(|(capture_index, trace_frame_index)| {
+            let frame = playback.trace().frame(trace_frame_index).map_err(|error| {
+                format!(
+                    "diagnostic multi-capture requires trace frame {trace_frame_index}: {error}"
+                )
+            })?;
+            Ok(SurfaceTraceStep {
+                playback_index: first_playback_index + capture_index,
+                phase_frame_index: capture_index,
+                measured_sample_index: None,
+                trace_frame_index,
+                timestamp_ns: frame.timestamp_ns,
+                camera: frame.camera().map_err(|error| error.to_string())?,
+                ..template
+            })
+        })
+        .collect()
+}
+
+fn diagnostic_multi_capture_path(
+    base: &Path,
+    capture_index: usize,
+    trace_frame: usize,
+) -> Result<PathBuf, String> {
+    let stem = base
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| "diagnostic multi-capture PNG path requires a UTF-8 file stem".to_owned())?;
+    let extension = base
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or("png");
+    Ok(base
+        .with_file_name(format!("{stem}.captures"))
+        .join(format!(
+            "capture-{capture_index}-trace-{trace_frame}.{extension}"
+        )))
+}
+
+fn diagnostic_multi_capture_directory(base: &Path) -> Result<PathBuf, String> {
+    let stem = base
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| "diagnostic multi-capture PNG path requires a UTF-8 file stem".to_owned())?;
+    Ok(base.with_file_name(format!("{stem}.captures")))
+}
+
+fn validate_capture_timing(
+    call_ms: f32,
+    frame_wall_ms: f32,
+    elapsed_ns: u64,
+    previous_elapsed_ns: Option<u64>,
+) -> Result<(), String> {
+    if !call_ms.is_finite() || call_ms < 0.0 {
+        return Err(format!("diagnostic capture has invalid call_ms {call_ms}"));
+    }
+    if !frame_wall_ms.is_finite() || frame_wall_ms < 0.0 {
+        return Err(format!(
+            "diagnostic capture has invalid frame_wall_ms {frame_wall_ms}"
+        ));
+    }
+    if previous_elapsed_ns.is_some_and(|previous| elapsed_ns <= previous) {
+        return Err(format!(
+            "diagnostic capture elapsed_ns is not strictly ordered: previous={}, current={elapsed_ns}",
+            previous_elapsed_ns.unwrap_or_default(),
+        ));
+    }
+    Ok(())
+}
+
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 enum TerminalOutcome {
     #[default]
@@ -291,11 +433,29 @@ pub(crate) fn run(
         .clone()
         .ok_or_else(|| "surface evidence capture path is missing".to_owned())?;
     let diagnostic_capture_receipt = args.surface_diagnostic_capture_receipt;
+    let diagnostic_multi_capture = args.surface_diagnostic_multi_capture;
     let steps = surface_trace_steps(playback)?;
     let capture_step = steps
         .last()
         .copied()
         .ok_or_else(|| "surface evidence trace schedule is empty".to_owned())?;
+    let multi_capture_steps = if diagnostic_multi_capture {
+        diagnostic_multi_capture_steps(playback, steps.len(), capture_step)?
+    } else {
+        Vec::new()
+    };
+    let multi_capture_directory = if diagnostic_multi_capture {
+        let directory = diagnostic_multi_capture_directory(&capture_path)?;
+        if directory.exists() {
+            return Err(format!(
+                "diagnostic multi-capture destination already exists: {}",
+                directory.display()
+            ));
+        }
+        Some(directory)
+    } else {
+        None
+    };
     let trace = playback.trace();
     let source_count = session
         .renderer()
@@ -375,6 +535,12 @@ pub(crate) fn run(
     let mut actual_plans = BTreeSet::new();
     let mut measured_frames = 0_usize;
     let mut capture_retries = 0_usize;
+    let mut multi_capture_schedule = MultiCaptureSchedule::default();
+    #[cfg(all(
+        feature = "diagnostic-surface-capture-receipt",
+        not(target_arch = "wasm32")
+    ))]
+    let mut validated_multi_captures = Vec::<ValidatedDiagnosticCapture>::new();
 
     event_loop
         .run(move |event, target| match event {
@@ -489,10 +655,92 @@ pub(crate) fn run(
                                     next_step += 1;
                                 }
                                 PendingKind::Capture {
+                                    capture_index,
                                     step,
                                     path,
                                     capture,
                                 } => {
+                                    #[cfg(all(
+                                        feature = "diagnostic-surface-capture-receipt",
+                                        not(target_arch = "wasm32")
+                                    ))]
+                                    if diagnostic_multi_capture {
+                                        let Some(capture_index) = capture_index else {
+                                            store_error(
+                                                &shared_error,
+                                                "diagnostic multi-capture lost its capture index"
+                                                    .to_owned(),
+                                            );
+                                            target.exit();
+                                            return;
+                                        };
+                                        let PendingCapture::Diagnostic(capture) = capture else {
+                                            store_error(
+                                                &shared_error,
+                                                "diagnostic multi-capture received an ordinary capture"
+                                                    .to_owned(),
+                                            );
+                                            target.exit();
+                                            return;
+                                        };
+                                        if let Err(message) = multi_capture_schedule
+                                            .accept(capture_index, step.trace_frame_index)
+                                        {
+                                            store_error(&shared_error, message);
+                                            target.exit();
+                                            return;
+                                        }
+                                        let elapsed_ns = u64::try_from(started.elapsed().as_nanos())
+                                            .unwrap_or(u64::MAX);
+                                        if let Err(message) = validate_capture_timing(
+                                            waiting.call_ms,
+                                            waiting.output.timings.frame_wall_ms,
+                                            elapsed_ns,
+                                            validated_multi_captures
+                                                .last()
+                                                .map(|capture| capture.elapsed_ns),
+                                        ) {
+                                            store_error(&shared_error, message);
+                                            target.exit();
+                                            return;
+                                        }
+                                        validated_multi_captures.push(
+                                            ValidatedDiagnosticCapture {
+                                                capture_index,
+                                                step,
+                                                path,
+                                                capture,
+                                                output: waiting.output,
+                                                receipt,
+                                                call_ms: waiting.call_ms,
+                                                elapsed_ns,
+                                            },
+                                        );
+                                        if multi_capture_schedule.next_trace_frame().is_some() {
+                                            return;
+                                        }
+                                        if let Err(message) = multi_capture_schedule
+                                            .require_complete()
+                                            .and_then(|()| {
+                                                publish_diagnostic_multi_captures(
+                                                    &identity,
+                                                    multi_capture_directory.as_deref().ok_or_else(
+                                                        || {
+                                                            "diagnostic multi-capture destination was not admitted"
+                                                                .to_owned()
+                                                        },
+                                                    )?,
+                                                    &validated_multi_captures,
+                                                )
+                                            })
+                                        {
+                                            store_error(&shared_error, message);
+                                            target.exit();
+                                            return;
+                                        }
+                                        terminal_outcome.mark_capture_complete();
+                                        return;
+                                    }
                                     match capture {
                                         PendingCapture::Ordinary(capture) => {
                                             if let Err(message) = write_png(
@@ -564,7 +812,12 @@ pub(crate) fn run(
                         measured_frames,
                         ineligible_retries,
                         capture_retries,
-                        steps.len() + 1,
+                        steps.len()
+                            + if diagnostic_multi_capture {
+                                DIAGNOSTIC_MULTI_CAPTURE_TRACE_FRAMES.len()
+                            } else {
+                                1
+                            },
                     );
                     shared_completed.store(true, Ordering::Release);
                     target.exit();
@@ -573,6 +826,18 @@ pub(crate) fn run(
 
                 let (step, capture_attempt) = if next_step < steps.len() {
                     (steps[next_step], false)
+                } else if diagnostic_multi_capture {
+                    let capture_index = multi_capture_schedule.next_capture;
+                    let Some(step) = multi_capture_steps.get(capture_index).copied() else {
+                        store_error(
+                            &shared_error,
+                            "diagnostic multi-capture schedule completed without terminal commit"
+                                .to_owned(),
+                        );
+                        target.exit();
+                        return;
+                    };
+                    (step, true)
                 } else {
                     (capture_step, true)
                 };
@@ -660,8 +925,25 @@ pub(crate) fn run(
                         request_pending = false;
                         let kind = match capture {
                             Some(capture) => PendingKind::Capture {
+                                capture_index: diagnostic_multi_capture
+                                    .then_some(multi_capture_schedule.next_capture),
                                 step,
-                                path: capture_path.clone(),
+                                path: if diagnostic_multi_capture {
+                                    match diagnostic_multi_capture_path(
+                                        &capture_path,
+                                        multi_capture_schedule.next_capture,
+                                        step.trace_frame_index,
+                                    ) {
+                                        Ok(path) => path,
+                                        Err(message) => {
+                                            store_error(&shared_error, message);
+                                            target.exit();
+                                            return;
+                                        }
+                                    }
+                                } else {
+                                    capture_path.clone()
+                                },
                                 capture,
                             },
                             None => PendingKind::Frame(step),
@@ -722,7 +1004,12 @@ pub(crate) fn run(
         return Err(message);
     }
     if !completed.load(Ordering::Acquire) {
-        return Err("surface evidence ended without a validated final capture".to_owned());
+        return Err(if diagnostic_multi_capture {
+            "surface evidence ended with an incomplete diagnostic capture terminal sequence"
+                .to_owned()
+        } else {
+            "surface evidence ended without a validated final capture".to_owned()
+        });
     }
     Ok(())
 }
@@ -917,6 +1204,129 @@ fn print_frame(
     );
 }
 
+#[cfg(all(
+    feature = "diagnostic-surface-capture-receipt",
+    not(target_arch = "wasm32")
+))]
+fn publish_diagnostic_multi_captures(
+    identity: &EvidenceIdentity,
+    directory: &Path,
+    captures: &[ValidatedDiagnosticCapture],
+) -> Result<(), String> {
+    if captures.len() != DIAGNOSTIC_MULTI_CAPTURE_TRACE_FRAMES.len() {
+        return Err(format!(
+            "incomplete diagnostic capture terminal sequence: retained {} of {} captures",
+            captures.len(),
+            DIAGNOSTIC_MULTI_CAPTURE_TRACE_FRAMES.len(),
+        ));
+    }
+    for (capture_index, (capture, expected_trace_frame)) in captures
+        .iter()
+        .zip(DIAGNOSTIC_MULTI_CAPTURE_TRACE_FRAMES)
+        .enumerate()
+    {
+        if capture.capture_index != capture_index
+            || capture.step.trace_frame_index != expected_trace_frame
+        {
+            return Err(format!(
+                "diagnostic capture publication order mismatch at capture {capture_index}"
+            ));
+        }
+        validate_diagnostic_capture_join(
+            &capture.capture,
+            &capture.receipt,
+            identity.resolution.requested,
+        )?;
+        validate_capture_timing(
+            capture.call_ms,
+            capture.output.timings.frame_wall_ms,
+            capture.elapsed_ns,
+            capture_index
+                .checked_sub(1)
+                .map(|previous| captures[previous].elapsed_ns),
+        )?;
+        if capture.path.parent() != Some(directory) {
+            return Err(format!(
+                "diagnostic capture {} escaped admitted destination {}",
+                capture.path.display(),
+                directory.display(),
+            ));
+        }
+    }
+
+    fs::create_dir(directory).map_err(|error| {
+        format!(
+            "cannot create fresh diagnostic multi-capture destination {}: {error}",
+            directory.display()
+        )
+    })?;
+    for capture in captures {
+        write_png(
+            &capture.path,
+            capture.capture.width(),
+            capture.capture.height(),
+            capture.capture.rgba8(),
+        )?;
+    }
+    for capture in captures {
+        print_diagnostic_multi_capture_terminal(capture);
+    }
+    Ok(())
+}
+
+#[cfg(all(
+    feature = "diagnostic-surface-capture-receipt",
+    not(target_arch = "wasm32")
+))]
+fn print_diagnostic_multi_capture_terminal(capture: &ValidatedDiagnosticCapture) {
+    let submission = capture.receipt.submission();
+    let join = submission.join();
+    let frame = join.frame_identity();
+    let counts = capture.receipt.counts();
+    let atomic = DiagnosticCaptureReceiptRecord::from_receipt(&capture.capture);
+    println!(
+        "SURFACE_DIAGNOSTIC_MULTI_CAPTURE_TERMINAL status=ok capture_index={} path={:?} trace_frame={} trace_timestamp_ns={} elapsed_ns={} call_ms={:.6} frame_wall_ms={:.6} current_stats_ticket={} current_stats_scene_generation={} current_stats_camera_revision={} current_stats_viewport_generation={} current_stats_contract_generation={} current_stats_plan_set_generation={} current_stats_plan_id={} current_stats_order_generation={} current_stats_raster_generation={} current_stats_encode_attempt={} current_stats_presentation_sequence={} count_semantics={} source_count={} visible_count={} contributor_count={} drawn_count={} exact_contributor_compaction={} capture_receipt_profile={} capture_receipt_scene_generation={} capture_receipt_camera_revision={} capture_receipt_viewport_generation={} capture_receipt_contract_generation={} capture_receipt_plan_set_generation={} capture_receipt_plan_id={} capture_receipt_order_generation={} capture_receipt_presentation_sequence={} capture_receipt_width={} capture_receipt_height={} capture_receipt_rgba8_sha256={} frame_presented={} terminal_receipt=ready",
+        capture.capture_index,
+        capture.path.to_string_lossy(),
+        capture.step.trace_frame_index,
+        capture.step.timestamp_ns,
+        capture.elapsed_ns,
+        capture.call_ms,
+        capture.output.timings.frame_wall_ms,
+        submission.ticket(),
+        frame.scene_generation(),
+        frame.camera_revision(),
+        frame.viewport_generation(),
+        frame.contract_generation(),
+        frame.plan_set_generation(),
+        plan_label(join.executed_plan()),
+        join.order_generation(),
+        join.raster_generation(),
+        join.encode_attempt(),
+        join.presentation_sequence(),
+        count_semantics_label(capture.receipt.count_semantics()),
+        counts.source(),
+        counts.visible(),
+        counts.contributor(),
+        counts.drawn(),
+        capture.receipt.count_semantics()
+            == SurfaceCurrentStatsCountSemantics::IndirectDrawEqualsContributor,
+        atomic.profile,
+        atomic.scene_generation,
+        atomic.camera_revision,
+        atomic.viewport_generation,
+        atomic.contract_generation,
+        atomic.plan_set_generation,
+        atomic.plan_id,
+        atomic.order_generation,
+        atomic.presentation_sequence,
+        atomic.width,
+        atomic.height,
+        atomic.rgba8_sha256,
+        capture.output.frame_presented,
+    );
+}
+
 fn print_capture(
     identity: &EvidenceIdentity,
     step: SurfaceTraceStep,
@@ -1108,6 +1518,124 @@ fn nonempty_adapter_field(value: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn diagnostic_multi_capture_schedule_is_exact_and_complete_only_after_010() {
+        let mut schedule = MultiCaptureSchedule::default();
+        assert_eq!(schedule.next_trace_frame(), Some(0));
+        assert!(schedule.require_complete().is_err());
+
+        for (capture_index, trace_frame) in [0, 1, 0].into_iter().enumerate() {
+            schedule.accept(capture_index, trace_frame).unwrap();
+        }
+
+        assert_eq!(schedule.next_trace_frame(), None);
+        assert_eq!(schedule.require_complete(), Ok(()));
+        assert!(schedule.accept(3, 0).unwrap_err().contains("duplicate"));
+    }
+
+    #[test]
+    fn diagnostic_multi_capture_schedule_rejects_missing_and_out_of_order_terminals() {
+        let mut schedule = MultiCaptureSchedule::default();
+        assert!(schedule.accept(1, 1).unwrap_err().contains("out of order"));
+        assert!(schedule.accept(0, 1).unwrap_err().contains("out of order"));
+        assert_eq!(schedule.next_trace_frame(), Some(0));
+
+        schedule.accept(0, 0).unwrap();
+        schedule.accept(1, 1).unwrap();
+        assert!(
+            schedule
+                .require_complete()
+                .unwrap_err()
+                .contains("retained 2 of 3")
+        );
+        assert!(schedule.accept(1, 0).unwrap_err().contains("out of order"));
+    }
+
+    #[test]
+    fn diagnostic_multi_capture_steps_resolve_actual_trace_frames_010() {
+        let bytes = std::fs::read(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tests/perf/trace/fixtures/camera-trace-v1.json"
+        ))
+        .unwrap();
+        let trace = gsplat_core::camera_trace::CameraTrace::from_json_slice(&bytes).unwrap();
+        let playback = CameraTracePlayback::Fixed {
+            trace,
+            frame_index: 0,
+            warmup_frames: 1,
+            measured_frames: 1,
+        };
+        let ordinary = surface_trace_steps(&playback).unwrap();
+        let captures =
+            diagnostic_multi_capture_steps(&playback, ordinary.len(), *ordinary.last().unwrap())
+                .unwrap();
+
+        assert_eq!(
+            captures
+                .iter()
+                .map(|step| step.trace_frame_index)
+                .collect::<Vec<_>>(),
+            vec![0, 1, 0]
+        );
+        assert_eq!(
+            captures
+                .iter()
+                .map(|step| step.playback_index)
+                .collect::<Vec<_>>(),
+            vec![ordinary.len(), ordinary.len() + 1, ordinary.len() + 2]
+        );
+        assert!(
+            captures
+                .iter()
+                .all(|step| step.measured_sample_index.is_none())
+        );
+
+        let mut one_frame_trace = playback.trace().clone();
+        one_frame_trace.frames.truncate(1);
+        let one_frame_playback = CameraTracePlayback::Fixed {
+            trace: one_frame_trace,
+            frame_index: 0,
+            warmup_frames: 0,
+            measured_frames: 1,
+        };
+        assert!(
+            diagnostic_multi_capture_steps(&one_frame_playback, ordinary.len(), ordinary[0],)
+                .unwrap_err()
+                .contains("requires trace frame 1")
+        );
+    }
+
+    #[test]
+    fn diagnostic_multi_capture_paths_are_distinct_and_directory_scoped() {
+        let base = Path::new("target/final-frame.png");
+        let directory = diagnostic_multi_capture_directory(base).unwrap();
+        assert_eq!(directory, Path::new("target/final-frame.captures"));
+        assert_eq!(
+            DIAGNOSTIC_MULTI_CAPTURE_TRACE_FRAMES
+                .into_iter()
+                .enumerate()
+                .map(|(index, trace_frame)| {
+                    diagnostic_multi_capture_path(base, index, trace_frame).unwrap()
+                })
+                .collect::<Vec<_>>(),
+            vec![
+                PathBuf::from("target/final-frame.captures/capture-0-trace-0.png"),
+                PathBuf::from("target/final-frame.captures/capture-1-trace-1.png"),
+                PathBuf::from("target/final-frame.captures/capture-2-trace-0.png"),
+            ]
+        );
+    }
+
+    #[test]
+    fn diagnostic_capture_timing_fails_closed_on_invalid_or_unordered_values() {
+        assert_eq!(validate_capture_timing(1.0, 2.0, 3, None), Ok(()));
+        assert_eq!(validate_capture_timing(1.0, 2.0, 4, Some(3)), Ok(()));
+        assert!(validate_capture_timing(f32::NAN, 2.0, 3, None).is_err());
+        assert!(validate_capture_timing(1.0, f32::INFINITY, 3, None).is_err());
+        assert!(validate_capture_timing(1.0, 2.0, 3, Some(3)).is_err());
+        assert!(validate_capture_timing(1.0, 2.0, 2, Some(3)).is_err());
+    }
 
     #[cfg(all(
         feature = "diagnostic-surface-capture-receipt",
