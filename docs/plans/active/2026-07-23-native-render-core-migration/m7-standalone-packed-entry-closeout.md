@@ -70,7 +70,7 @@
 - `crates/gsplat-render-wgpu/src/lib.rs`
 - `crates/gsplat-render-wgpu/src/surface_presenter.rs`
 - `examples/desktop/tests/surface_geometry_entry.rs`
-- `docs/plans/active/2026-07-23-native-render-core-migration/m7-standalone-packed-entry-closeout.md`
+- `docs/plans/completed/2026-07-23-native-render-core-migration/m7-standalone-packed-entry-closeout.md`
 
 ## Fresh local verification
 

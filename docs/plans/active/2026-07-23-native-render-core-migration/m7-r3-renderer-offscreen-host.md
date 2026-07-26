@@ -92,7 +92,7 @@ The candidate allowlist is:
 - `crates/gsplat-render-wgpu/src/renderer/mod.rs`
 - `crates/gsplat-render-wgpu/src/renderer/offscreen_host.rs`
 - `crates/gsplat-render-wgpu/src/offscreen/shadow.rs`
-- `docs/plans/active/2026-07-23-native-render-core-migration/m7-r3-renderer-offscreen-host.md`
+- `docs/plans/completed/2026-07-23-native-render-core-migration/m7-r3-renderer-offscreen-host.md`
 
 No device or browser was launched. This slice is not R4 facade migration, does
 not edit `progress.md` or `m7-final-acceptance.md`, removes no grandfather

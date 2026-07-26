@@ -135,7 +135,7 @@ After this candidate:
 - `crates/gsplat-render-wgpu/src/renderer/gpu_prepare.rs`
 - `crates/gsplat-render-wgpu/src/raster/canonical/tests.rs`
 - `crates/gsplat-render-wgpu/src/scene/mod.rs`
-- `docs/plans/active/2026-07-23-native-render-core-migration/m7-legacy-packed-presenter-graph-closeout.md`
+- `docs/plans/completed/2026-07-23-native-render-core-migration/m7-legacy-packed-presenter-graph-closeout.md`
 
 ## Residual M7 boundaries
 

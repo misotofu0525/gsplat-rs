@@ -94,7 +94,7 @@ The candidate allowlist is:
 - `crates/gsplat-render-wgpu/src/lib.rs`
 - `crates/gsplat-render-wgpu/src/renderer/mod.rs`
 - `crates/gsplat-render-wgpu/src/renderer/facade.rs`
-- `docs/plans/active/2026-07-23-native-render-core-migration/m7-r4-renderer-facade.md`
+- `docs/plans/completed/2026-07-23-native-render-core-migration/m7-r4-renderer-facade.md`
 
 This slice does not edit `progress.md` or `m7-final-acceptance.md`, does not
 remove a grandfather record, does not accept M7 and does not activate or claim

@@ -303,7 +303,7 @@ placeholder is required.
 | task-local Python Web-name audit shown below | PASS: `web API name audit: PASS` | Exact raw/package names and resize layering. |
 | task-local Python C-symbol audit shown below | PASS: header 58, Rust 62, no header-only entry, exactly four classified source-only entries | Static ABI declaration/definition reconciliation. |
 | task-local relative Markdown-link check shown below | PASS: `relative Markdown links: PASS` | This ledger's local file links only. |
-| `git diff --no-index --check /dev/null docs/plans/active/2026-07-23-native-render-core-migration/m7-public-callsite-api-abi-ledger.md; test $? -eq 1` and `git diff --check` | PASS | New-file and tracked-patch hygiene. The committed-object check is reported in the handoff because a commit cannot contain its own result. |
+| Historical pre-archive command (not rerunnable after archival): `git diff --no-index --check /dev/null docs/plans/active/2026-07-23-native-render-core-migration/m7-public-callsite-api-abi-ledger.md; test $? -eq 1` and `git diff --check` | PASS | New-file and tracked-patch hygiene. The committed-object check is reported in the handoff because a commit cannot contain its own result. |
 
 The first C and Swift attempts were capacity-blocked. Under explicit root
 authorization, the exact command
@@ -393,7 +393,7 @@ python3 - <<'PY'
 from pathlib import Path
 import re
 
-doc = Path('docs/plans/active/2026-07-23-native-render-core-migration/m7-public-callsite-api-abi-ledger.md')
+doc = Path('docs/plans/completed/2026-07-23-native-render-core-migration/m7-public-callsite-api-abi-ledger.md')
 missing = []
 for target in re.findall(r'\[[^]]+\]\(([^)]+)\)', doc.read_text()):
     path = target.split('#', 1)[0]
