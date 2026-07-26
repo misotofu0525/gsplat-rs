@@ -323,7 +323,7 @@ and all device/browser/endpoint qualification remains **Deferred**. B1 remains
 **Active** pending separately scoped collector integration and formal endpoint
 evidence.
 
-## Next B1 diagnostic Surface capture bridge slice
+## B1 diagnostic Surface capture bridge slice
 
 The proven private capture-to-receipt join is not callable by the existing
 desktop real-window evidence host: the ordinary public capture method correctly
@@ -346,3 +346,28 @@ endpoint result. Its acceptance is focused host-only API and lifecycle tests in
 both normal diagnostic-receipt and Candidate24 feature builds. No browser,
 Android, iOS, image-quality, performance, or product-default conclusion is
 authorized by this slice.
+
+Implementation on baseline `51ffe09c8720eba99305ddb1aed71cbb7f4a5a7f`
+adds the independent, default-disabled
+`diagnostic-surface-capture-receipt` feature. Native diagnostic hosts that opt
+in can call `take_diagnostic_surface_capture_receipt` to consume the existing
+`take_surface_capture_evidence` composition and receive one immutable value
+containing the RGBA8 capture plus stable diagnostic profile/plan strings,
+complete frame generations, order generation and presentation sequence. The
+ordinary `take_surface_capture` remains pixels-only and consumes the same
+private join; no latest receipt getter or caller-labelled profile path exists.
+
+The bridge and its DTO are both excluded from `wasm32`, and the new feature
+does not enable `diagnostic-surface-depth-key-candidate24`. Focused native
+lifecycle tests passed for `ExactFull32` with only the receipt bridge enabled,
+`CandidateStable24` with both diagnostic features enabled, ordinary pixels-only
+consumption, absent/unpresented receipts, sequence mismatch and duplicate
+takes. The three requested locked library checks (default, receipt-only and
+Candidate24 plus receipt), Rust formatting/diff checks and the source
+architecture test passed.
+
+No browser, Android, iOS, real-device or evidence-host run was performed; no
+collector, binding, ABI, shader, plan, Adaptive policy or product default was
+changed. This bridge makes no image-quality, performance or endpoint claim.
+B1 remains **Active** pending separately scoped desktop/Metal host integration,
+formal artifact validation and endpoint evidence.

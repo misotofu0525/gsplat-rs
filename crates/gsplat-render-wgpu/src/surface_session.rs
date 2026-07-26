@@ -315,6 +315,137 @@ impl SurfaceCaptureDepthPrecisionEvidence {
     }
 }
 
+/// Immutable frame generations sealed into one diagnostic Surface capture.
+///
+/// This type exists only for explicitly opted-in native diagnostic hosts. It
+/// copies renderer-owned identity and cannot mutate the session or its plans.
+#[cfg(all(
+    feature = "diagnostic-surface-capture-receipt",
+    not(target_arch = "wasm32")
+))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DiagnosticSurfaceFrameIdentity {
+    scene_generation: u64,
+    camera_revision: u64,
+    viewport_generation: u64,
+    contract_generation: u64,
+    plan_set_generation: u64,
+}
+
+#[cfg(all(
+    feature = "diagnostic-surface-capture-receipt",
+    not(target_arch = "wasm32")
+))]
+impl DiagnosticSurfaceFrameIdentity {
+    pub const fn scene_generation(self) -> u64 {
+        self.scene_generation
+    }
+
+    pub const fn camera_revision(self) -> u64 {
+        self.camera_revision
+    }
+
+    pub const fn viewport_generation(self) -> u64 {
+        self.viewport_generation
+    }
+
+    pub const fn contract_generation(self) -> u64 {
+        self.contract_generation
+    }
+
+    pub const fn plan_set_generation(self) -> u64 {
+        self.plan_set_generation
+    }
+}
+
+/// One take-once native RGBA8 Surface capture and its presentation receipt.
+///
+/// The string identities are stable diagnostic values derived from the sealed
+/// renderer receipt. The value exposes no renderer or session owner.
+#[cfg(all(
+    feature = "diagnostic-surface-capture-receipt",
+    not(target_arch = "wasm32")
+))]
+#[derive(Debug, PartialEq, Eq)]
+pub struct DiagnosticSurfaceCaptureReceipt {
+    capture: SurfaceFrameCapture,
+    depth_precision_profile: &'static str,
+    frame: DiagnosticSurfaceFrameIdentity,
+    plan_id: &'static str,
+    order_generation: u64,
+    presentation_sequence: u64,
+}
+
+#[cfg(all(
+    feature = "diagnostic-surface-capture-receipt",
+    not(target_arch = "wasm32")
+))]
+impl DiagnosticSurfaceCaptureReceipt {
+    fn from_evidence(evidence: SurfaceCaptureDepthPrecisionEvidence) -> Self {
+        let (capture, receipt) = evidence.into_parts();
+        let frame = receipt.frame();
+        Self {
+            capture,
+            depth_precision_profile: match receipt.profile() {
+                crate::renderer::SurfaceDepthPrecisionProfile::ExactFull32 => "ExactFull32",
+                crate::renderer::SurfaceDepthPrecisionProfile::CandidateStable24 => {
+                    "CandidateStable24"
+                }
+            },
+            frame: DiagnosticSurfaceFrameIdentity {
+                scene_generation: frame.scene_generation(),
+                camera_revision: frame.camera_revision(),
+                viewport_generation: frame.viewport_generation(),
+                contract_generation: frame.contract_generation(),
+                plan_set_generation: frame.plan_set_generation(),
+            },
+            plan_id: match receipt.plan() {
+                PlanId::CpuPostSort => "CpuPostSort",
+                PlanId::GpuPostSort => "GpuPostSort",
+                PlanId::GpuPreproject => "GpuPreproject",
+            },
+            order_generation: receipt.order_generation(),
+            presentation_sequence: receipt.presentation_sequence(),
+        }
+    }
+
+    pub const fn width(&self) -> u32 {
+        self.capture.width
+    }
+
+    pub const fn height(&self) -> u32 {
+        self.capture.height
+    }
+
+    pub fn rgba8(&self) -> &[u8] {
+        &self.capture.rgba8
+    }
+
+    pub const fn depth_precision_profile(&self) -> &'static str {
+        self.depth_precision_profile
+    }
+
+    pub const fn frame_identity(&self) -> DiagnosticSurfaceFrameIdentity {
+        self.frame
+    }
+
+    pub const fn plan_id(&self) -> &'static str {
+        self.plan_id
+    }
+
+    pub const fn order_generation(&self) -> u64 {
+        self.order_generation
+    }
+
+    pub const fn presentation_sequence(&self) -> u64 {
+        self.presentation_sequence
+    }
+
+    pub fn into_capture(self) -> SurfaceFrameCapture {
+        self.capture
+    }
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 fn compose_surface_capture_evidence(
     publication: &mut SessionPublication,
@@ -1003,6 +1134,21 @@ impl SurfaceRenderSession {
             &mut self.publication,
             capture,
         )?)
+    }
+
+    /// Takes the existing atomic native Surface capture/receipt join for an
+    /// explicitly opted-in diagnostic host. Failed, unpresented, absent, or
+    /// repeated takes remain unavailable through the underlying take-once
+    /// composition.
+    #[cfg(all(
+        feature = "diagnostic-surface-capture-receipt",
+        not(target_arch = "wasm32")
+    ))]
+    pub fn take_diagnostic_surface_capture_receipt(
+        &mut self,
+    ) -> Result<DiagnosticSurfaceCaptureReceipt, RendererError> {
+        self.take_surface_capture_evidence()
+            .map(DiagnosticSurfaceCaptureReceipt::from_evidence)
     }
 
     pub fn geometry_path(&self) -> GeometryPath {

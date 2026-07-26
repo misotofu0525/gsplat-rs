@@ -164,6 +164,107 @@ fn surface_capture_evidence_rejects_mismatched_sequence_and_duplicate_take() {
     }
 }
 
+#[cfg(feature = "diagnostic-surface-capture-receipt")]
+fn diagnostic_capture_receipt(
+    receipt: PresentedDepthPrecisionReceipt,
+) -> super::DiagnosticSurfaceCaptureReceipt {
+    let mut publication = SessionPublication::new(true);
+    assert!(publication.arm_capture_depth_precision());
+    publication.observe_presented_capture(Some(receipt.presentation_sequence()), Some(receipt));
+    super::DiagnosticSurfaceCaptureReceipt::from_evidence(
+        compose_surface_capture_evidence(
+            &mut publication,
+            SurfaceFrameCapture {
+                width: 2,
+                height: 1,
+                rgba8: vec![1, 2, 3, 4, 5, 6, 7, 8],
+            },
+        )
+        .expect("presented diagnostic capture receipt"),
+    )
+}
+
+#[cfg(all(
+    feature = "diagnostic-surface-capture-receipt",
+    not(feature = "diagnostic-surface-depth-key-candidate24")
+))]
+#[test]
+fn diagnostic_capture_receipt_reports_exact_profile_in_normal_diagnostic_build() {
+    let receipt = diagnostic_capture_receipt(PresentedDepthPrecisionReceipt::new(
+        SurfaceDepthPrecisionProfile::configured_for_surface_build(),
+        FrameIdentity::new(1, 2, 3, 4, 5),
+        PlanId::GpuPostSort,
+        6,
+        7,
+    ));
+
+    assert_eq!(receipt.width(), 2);
+    assert_eq!(receipt.height(), 1);
+    assert_eq!(receipt.rgba8(), [1, 2, 3, 4, 5, 6, 7, 8]);
+    assert_eq!(receipt.depth_precision_profile(), "ExactFull32");
+    assert_eq!(receipt.plan_id(), "GpuPostSort");
+    assert_eq!(receipt.order_generation(), 6);
+    assert_eq!(receipt.presentation_sequence(), 7);
+    let frame = receipt.frame_identity();
+    assert_eq!(frame.scene_generation(), 1);
+    assert_eq!(frame.camera_revision(), 2);
+    assert_eq!(frame.viewport_generation(), 3);
+    assert_eq!(frame.contract_generation(), 4);
+    assert_eq!(frame.plan_set_generation(), 5);
+    assert_eq!(receipt.into_capture().rgba8, [1, 2, 3, 4, 5, 6, 7, 8]);
+}
+
+#[cfg(all(
+    feature = "diagnostic-surface-capture-receipt",
+    feature = "diagnostic-surface-depth-key-candidate24"
+))]
+#[test]
+fn diagnostic_capture_receipt_reports_candidate24_profile_in_candidate_build() {
+    let receipt = diagnostic_capture_receipt(PresentedDepthPrecisionReceipt::new(
+        SurfaceDepthPrecisionProfile::configured_for_surface_build(),
+        FrameIdentity::new(11, 12, 13, 14, 15),
+        PlanId::GpuPreproject,
+        16,
+        17,
+    ));
+
+    assert_eq!(receipt.depth_precision_profile(), "CandidateStable24");
+    assert_eq!(receipt.plan_id(), "GpuPreproject");
+    assert_eq!(receipt.order_generation(), 16);
+    assert_eq!(receipt.presentation_sequence(), 17);
+}
+
+#[cfg(feature = "diagnostic-surface-capture-receipt")]
+#[test]
+fn diagnostic_capture_receipt_is_unavailable_before_present_and_after_take() {
+    let receipt = PresentedDepthPrecisionReceipt::new(
+        SurfaceDepthPrecisionProfile::ExactFull32,
+        FrameIdentity::new(1, 2, 3, 4, 5),
+        PlanId::CpuPostSort,
+        6,
+        7,
+    );
+    let capture = || SurfaceFrameCapture {
+        width: 1,
+        height: 1,
+        rgba8: vec![1, 2, 3, 4],
+    };
+    let mut publication = SessionPublication::new(true);
+    assert!(publication.arm_capture_depth_precision());
+    assert!(compose_surface_capture_evidence(&mut publication, capture()).is_err());
+
+    assert!(publication.arm_capture_depth_precision());
+    publication.observe_presented_capture(Some(7), None);
+    assert!(compose_surface_capture_evidence(&mut publication, capture()).is_err());
+
+    assert!(publication.arm_capture_depth_precision());
+    publication.observe_presented_capture(Some(7), Some(receipt));
+    let joined = compose_surface_capture_evidence(&mut publication, capture())
+        .expect("one presented diagnostic join");
+    let _diagnostic = super::DiagnosticSurfaceCaptureReceipt::from_evidence(joined);
+    assert!(compose_surface_capture_evidence(&mut publication, capture()).is_err());
+}
+
 fn exact_control_limits() -> wgpu::Limits {
     let mut limits = wgpu::Limits::downlevel_defaults();
     limits.max_storage_buffers_per_shader_stage =

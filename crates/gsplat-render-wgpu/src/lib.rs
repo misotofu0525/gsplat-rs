@@ -128,6 +128,11 @@ use surface::{standalone_paged_runtime::StandalonePagedRuntime, try_prepare_then
 #[cfg(test)]
 use surface_presenter::surface_resource_plan;
 pub use surface_presenter::{SurfaceFrameCapture, SurfacePresenter};
+#[cfg(all(
+    feature = "diagnostic-surface-capture-receipt",
+    not(target_arch = "wasm32")
+))]
+pub use surface_session::{DiagnosticSurfaceCaptureReceipt, DiagnosticSurfaceFrameIdentity};
 pub use surface_session::{
     SurfaceAdaptiveGpuFailureReason, SurfaceAdaptivePendingSample, SurfaceAdaptiveState,
     SurfaceFrameOutput, SurfaceFrameTimings, SurfaceGpuProducerMeasurementSubmission,
