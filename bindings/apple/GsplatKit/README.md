@@ -2,9 +2,10 @@
 
 Local iOS SDK wrapper for the `gsplat-rs` v0.1 C ABI.
 
-This package is a packaging smoke target, not a published binary distribution
-yet. Build the local XCFramework before opening the package from Xcode or
-SwiftPM:
+This package is a local packaging smoke target, not a remote binary SwiftPM
+package. Tagged GitHub prereleases provide a directly downloadable
+`GsplatFFI.xcframework.zip`; for a source checkout, build the local XCFramework
+before opening the package from Xcode or SwiftPM:
 
 ```bash
 bash bindings/apple/scripts/build-xcframework.sh

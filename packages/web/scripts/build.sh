@@ -8,7 +8,7 @@ WASM_DIR="$DIST_DIR/wasm"
 WASM_PATH="$ROOT_DIR/target/wasm32-unknown-unknown/release/gsplat_web.wasm"
 
 if ! command -v wasm-bindgen >/dev/null 2>&1; then
-  echo "wasm-bindgen CLI is required: cargo install wasm-bindgen-cli" >&2
+  echo "wasm-bindgen CLI 0.2.121 is required: cargo install wasm-bindgen-cli --version 0.2.121 --locked" >&2
   exit 1
 fi
 

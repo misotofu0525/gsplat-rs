@@ -546,7 +546,7 @@ class ParsingTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "AAR does not exist"):
             COLLECTOR.validate_args(args)
 
-    def test_gpu_producer_collection_is_explicitly_deferred_until_m2b(self) -> None:
+    def test_gpu_producer_collection_is_deferred_to_real_window_evidence(self) -> None:
         for producer in COLLECTOR.GPU_PRODUCERS:
             with self.subTest(producer=producer):
                 args = COLLECTOR.parser().parse_args(
@@ -563,7 +563,9 @@ class ParsingTests(unittest.TestCase):
                         producer,
                     ]
                 )
-                with self.assertRaisesRegex(ValueError, "Deferred until M2b"):
+                with self.assertRaisesRegex(
+                    ValueError, "Deferred to a separate Android real-window"
+                ):
                     COLLECTOR.validate_args(args)
 
     def test_gpu_producer_diagnostic_rejects_non_isolated_configuration(self) -> None:

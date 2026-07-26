@@ -10,8 +10,9 @@ Apple binding, Swift wrapper, and local packaging scripts.
 
 This directory validates Swift -> C ABI -> Rust and includes the local
 `GsplatKit` Swift package wrapper. The runnable UIKit Surface sample app lives
-under `examples/ios/app`. `GsplatKit` is not a published binary SwiftPM release
-yet.
+under `examples/ios/app`. Tagged GitHub prereleases provide a directly
+downloadable XCFramework ZIP, but `GsplatKit` is not a remote binary SwiftPM
+package.
 
 The public native contract lives in `crates/gsplat-ffi-c/include/gsplat.h`.
 Use the helper functions and named constants from that header instead of copying
@@ -126,8 +127,10 @@ IOS_XCFRAMEWORK_SIM_TARGETS="aarch64-apple-ios-sim x86_64-apple-ios" \
   bash bindings/apple/scripts/build-xcframework.sh
 ```
 
-This is still a local packaging slice. It does not publish a binary artifact,
-tagged SwiftPM release, or polished iOS product API.
+This command is still a local packaging slice. Tagged GitHub prereleases also
+attach the resulting XCFramework as a directly downloadable ZIP; they do not
+provide a remote binary SwiftPM package, registry distribution, or polished
+iOS product API.
 
 ## 3) iOS simulator realtime Surface app
 

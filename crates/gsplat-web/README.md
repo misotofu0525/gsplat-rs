@@ -69,11 +69,13 @@ Browser WebAssembly bindings for the shared Rust `wgpu` Surface renderer.
 
 ## Build
 
-The local machine needs the wasm Rust target and the `wasm-bindgen` CLI:
+The local machine needs the wasm Rust target and the locked `wasm-bindgen` CLI.
+The repository doctor verifies the exact tool version without installing it:
 
 ```bash
+python3 tests/verification_bootstrap.py doctor --profile web-webgpu
 rustup target add wasm32-unknown-unknown
-cargo install wasm-bindgen-cli
+cargo install wasm-bindgen-cli --version 0.2.121 --locked
 ```
 
 Then build the example package from the repo root:

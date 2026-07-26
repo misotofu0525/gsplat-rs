@@ -100,9 +100,9 @@ Host transaction/iteration wall time remains available; preprocess, sort, and
 queue-completion timing is emitted only from the same sample's order terminal,
 while raster timing is explicitly unavailable.
 
-Android GPU-producer collection is Deferred until M2b provides a real-window
-measurement seam. The collector rejects `--gpu-producer` before device work;
-its synthetic fixtures validate only the future canonical schema (PostSort =
+Android GPU-producer collection is Deferred to a separate real-window producer
+evidence slice. The collector rejects `--gpu-producer` before device work; its
+synthetic fixtures validate only the future canonical schema (PostSort =
 Candidate with `D=V`, Preproject = Compact with `D=C<=V`, and exact unique
 frame/terminal ticket-set equality), not a current device qualification.
 

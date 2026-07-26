@@ -707,3 +707,12 @@ M8 = Active
 - Package M remains **Active**. Only a later independently reviewed root
   closeout may set `M8 = Accepted`, move this bundle to `docs/plans/completed/`,
   and declare Package M complete.
+- The independent read-only M8e release/distribution audit rejected D08, D09
+  and D16 for two factual contradictions and two maintenance drifts: stale
+  `0.1.2` release commands, inconsistent Apple artifact wording, an unlocked
+  `wasm-bindgen-cli` install diagnostic, and obsolete M2b ownership text for
+  the still-rejected Android GPU-producer option. The bounded M8f candidate
+  repairs only those facts and keeps workflow, manifests, collector behavior,
+  CI policy and all Deferred endpoint/release operations unchanged. M8f still
+  requires independent review and root integration; it does not accept M8 or
+  complete Package M.

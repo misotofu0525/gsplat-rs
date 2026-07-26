@@ -222,8 +222,9 @@ invalidates strict retained runs.
 `GsplatSurfaceGpuProducerDiagnostics` remains an additive compatibility/schema
 surface, but M2a rejects enabling its old independent measurement path. It is
 not a current Android qualification seam. Product defaults leave this telemetry
-disabled; M2b must provide a real-window producer measurement seam before these
-DTOs can support retained producer evidence.
+disabled; a separate Android real-window GPU-producer evidence slice must
+provide the measurement seam before these DTOs can support retained producer
+evidence.
 `presentation().fullResolution` additionally requires the last frame to have
 actually reached `present()`, with requested, Surface, internal-render, and
 presented dimensions equal and no dynamic resolution or upscaling.
@@ -394,11 +395,12 @@ external-trace validator.
 `--gpu-producer post_sort|preproject` is explicitly Deferred and rejected
 before device collection. M2a rejects the old independent producer measurement
 path, so synthetic validator fixtures are schema tests rather than Android
-runtime qualification. M2b must provide the real-window seam before this option
-can collect retained evidence. The preserved future validator contract is
-canonical: PostSort uses Candidate with `D=V` (including `C<V`), while
-Preproject uses Compact with `D=C<=V`; measured-frame tickets and terminal
-ledger tickets must be unique and exactly equal.
+runtime qualification. A separate Android real-window GPU-producer evidence
+slice must provide the seam before this option can collect retained evidence.
+The preserved future validator contract is canonical: PostSort uses Candidate
+with `D=V` (including `C<V`), while Preproject uses Compact with `D=C<=V`;
+measured-frame tickets and terminal ledger tickets must be unique and exactly
+equal.
 
 The collector defaults to `--geometry-path packed`, which selects the complete
 Resident scene and its production `ProjectedQuadsExact` Surface raster plan.

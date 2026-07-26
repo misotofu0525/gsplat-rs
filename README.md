@@ -28,7 +28,7 @@ can be fetched with `bash tests/datasets/fetch-wakufactory-kitune.sh`.*
 | --- | --- | --- |
 | Desktop | `examples/desktop` viewer and offscreen PNG harness; current migration evidence is macOS/Metal | Build from source (Rust workspace) |
 | Android | `examples/android` app over the `bindings/android` library module; retained exact-Surface evidence covers one arm64 device/configuration | Local AAR build, `arm64-v8a` only; not on Maven yet |
-| iOS | `examples/ios` app over the `bindings/apple` `GsplatKit` package; current migration evidence is Simulator/host-side, not a physical iPhone | Local XCFramework build; no binary SwiftPM release yet |
+| iOS | `examples/ios` app over the `bindings/apple` `GsplatKit` package; current migration evidence is Simulator/host-side, not a physical iPhone | GitHub prerelease XCFramework ZIP and local build; no remote binary SwiftPM package |
 | Web (WASM/WebGPU) | `examples/web` host over the `packages/web` ESM wrapper; runtime at the accepted M7 SHA remains unqualified | Local build of experimental `crates/gsplat-web`; not on npm yet |
 
 Windows and Linux runtime, Chrome/WebGPU at the accepted M7 SHA, and a
@@ -193,15 +193,16 @@ The current mobile-facing contract is the C ABI in
 - The local Web SDK wrapper is built with `bash packages/web/scripts/build.sh`.
 - Not in the v0.1 contract: SPZ consumer wiring, automatic geometry-path
   selection, scene-from-memory loading, runtime render-mode switching, Maven
-  publishing, multi-ABI Android distribution, and published binary
-  SwiftPM/XCFramework or npm distribution.
+  publishing, multi-ABI Android distribution, and remote binary SwiftPM or npm
+  registry distribution.
 
 ## Known Gaps Before External Release
 
 - Android: the local AAR is not published to Maven and currently packages
   `arm64-v8a` only.
-- iOS: `GsplatKit` is a local binary Swift package wrapper; there is no remote
-  binary SwiftPM release or published XCFramework artifact yet.
+- iOS: tagged GitHub prereleases provide a directly downloadable XCFramework
+  ZIP, and `GsplatKit` is a local binary Swift package wrapper; there is no
+  remote binary SwiftPM package or registry distribution yet.
 - Web: `@gsplat-rs/web` builds and packs locally, but is not published to npm
   and is not a stable v0.1 public contract.
 - Endpoint qualification: retained Android evidence covers one Nothing A065

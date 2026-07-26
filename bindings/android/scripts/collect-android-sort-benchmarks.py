@@ -2231,8 +2231,9 @@ def parser() -> argparse.ArgumentParser:
         "--gpu-producer",
         choices=GPU_PRODUCERS,
         help=(
-            "reserved for the deferred M2b real-window producer seam; the current "
-            "collector rejects this option before device collection"
+            "reserved for a separate deferred Android real-window GPU-producer "
+            "evidence seam; the current collector rejects this option before "
+            "device collection"
         ),
     )
     result.add_argument("--repetitions", type=int, default=1, help="runs per backend")
@@ -2384,8 +2385,8 @@ def validate_args(args: argparse.Namespace) -> list[str]:
         raise ValueError("--async-sort is only compatible with the cpu backend")
     if args.gpu_producer is not None:
         raise ValueError(
-            "--gpu-producer is Deferred until M2b provides a real-window producer "
-            "measurement seam; current M2a rejects the old independent path"
+            "--gpu-producer is Deferred to a separate Android real-window "
+            "GPU-producer evidence slice; current M2a rejects the old independent path"
         )
     if args.repetitions < 1:
         raise ValueError("--repetitions must be positive")

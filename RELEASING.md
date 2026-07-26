@@ -11,8 +11,13 @@ Before creating a tag:
 2. Confirm GitHub private vulnerability reporting is enabled and the link in
    `SECURITY.md` accepts a new report.
 3. Confirm the release commit is on `main`, the worktree is clean, and all
-   workspace/package versions match the intended tag. Verify locally with
-   `RELEASE_VERSION=0.1.2 bash tests/release/check-version.sh`.
+   workspace/package versions match the intended tag. Set `VERSION` once in
+   the release shell to the intended semantic version, then verify locally:
+
+   ```bash
+   : "${VERSION:?set VERSION to the intended major.minor.patch release}"
+   RELEASE_VERSION="$VERSION" bash tests/release/check-version.sh
+   ```
 4. Move completed plan bundles out of `docs/plans/active/` and update
    `CHANGELOG.md`, `README.md`, and affected handbook pages.
 5. Run the full local verification matrix in `handbook/VERIFICATION.md`,
@@ -30,8 +35,9 @@ manual gates and are not mutated by repository scripts.
 Create an annotated semantic-version tag from the verified release commit:
 
 ```bash
-git tag -s v0.1.2 -m "gsplat-rs v0.1.2"
-git push origin v0.1.2
+: "${VERSION:?set VERSION to the verified major.minor.patch release}"
+git tag -s "v$VERSION" -m "gsplat-rs v$VERSION"
+git push origin "v$VERSION"
 ```
 
 The tag workflow re-runs core checks, dependency policy, C ABI smoke, the
@@ -46,7 +52,7 @@ Verify the GitHub Release contains all three artifacts and generated notes.
 Verify each artifact against the attached `SHA256SUMS` file.
 
 ```bash
-VERSION=0.1.2
+: "${VERSION:?set VERSION to the verified major.minor.patch release}"
 VERIFY_DIR="target/release-verify-v$VERSION"
 gh release download "v$VERSION" --dir "$VERIFY_DIR"
 (cd "$VERIFY_DIR" && {
