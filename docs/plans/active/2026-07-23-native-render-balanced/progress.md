@@ -11,14 +11,44 @@ activation_commit = 63678fcdd5d26973ec21427071ea9cea20bc5b24
 B0 = balanced-contract
 <!-- gsplat-program-active-lanes: end -->
 
-## Scope
+## B0 authoring slice
 
-Package B begins only after M8. B0 freezes a machine-validated Balanced
-resident contract before any approximation: complete source membership, source
-SH degree and requested rendering resolution remain mandatory; each precision,
-cache or layout trade-off must pass its own moving-camera image gate or be
-recorded Rejected/Deferred. Exact stays the product default.
+| Field | Frozen value |
+| --- | --- |
+| hypothesis | Resident precision/layout trade-offs can be evaluated independently without reducing source membership, source SH degree or rendered resolution. |
+| integration baseline | `6d5bd5442dee31cea24906744dfdd1d7492095ae` |
+| author branch | `codex/b0-balanced-contract` |
+| owned files | this ledger and [B0 contract](b0-contract.md) only |
+| forbidden scope | renderer/shader/test/API/policy/package/default/remote changes |
+| completion owner | root integration review; this author produces one local candidate and does not self-Accept B0 |
 
-The active writer owns only this ledger and [B0 contract](b0-contract.md).
-It may not change renderer code, shader code, public APIs, product defaults or
-the Scalable/qualification packages.
+## Frozen package boundary
+
+Balanced is an all-resident, full-membership research profile. Exact remains
+the product default. Balanced is opt-in until B5 qualifies and explicitly
+promotes a named endpoint; B1--B3 cannot change a public default or stable API.
+
+The [B0 contract](b0-contract.md) now fixes:
+
+- source/decoded/encoded/resident/addressable equality, unchanged source SH
+  degree, full requested/Surface/internal/presented resolution, and the pinned
+  `SortedAlpha` count/lifecycle receipts;
+- a concrete `gsplat-balanced-image-gate/v1` with per-frame RGBA and
+  moving-sequence temporal bounds that a repository validator must enforce
+  before B1--B3 retain evidence;
+- canonical authored and moving camera modes, real-scene minimums and Tier 1
+  endpoint scopes;
+- one-variable B1 depth-key, B2 projected-plane and B3 Resident attribute
+  experiments, with combination deferred to B4;
+- finite per-endpoint Accepted/Rejected/Deferred outcomes. Unclear performance
+  Rejects instead of starting an unbounded tuning loop; unavailable external
+  evidence Defers only its named scope.
+
+## Candidate status
+
+- Contract authoring: ready for root review.
+- Implementation evidence: none; B0 is a document contract.
+- Product behavior/defaults: unchanged.
+- Remote publication: forbidden for this slice.
+- B0 remains **Active** until the root reviewer checks this local candidate and
+  records the integration decision.
