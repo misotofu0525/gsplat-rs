@@ -20,7 +20,7 @@ M4 = Accepted
 M5 = Accepted
 M6 = Accepted
 M7 = Accepted
-M8 = Active
+M8 = Accepted
 <!-- gsplat-program-task-states: end -->
 
 ## Package status
@@ -60,11 +60,10 @@ M8 = Active
   non-interactive and bench-runner use the Exact runtime; the interactive
   `SurfaceRenderSession` remains legacy until its complete M2 candidate is
   accepted.
-- M8 state: Active from fixed base
-  `1de3f79fa2fa22955f99c887bea421c918e31ee0`. The first slice is the
-  documentation-only [M8 closeout inventory](m8-closeout-inventory.md).
-  Package M remains Active; activation is not M8 acceptance or Package M
-  completion.
+- M8 state: Accepted. The fixed M8 base is
+  `1de3f79fa2fa22955f99c887bea421c918e31ee0`; the final pre-archive D15
+  candidate is `63678fcdd5d26973ec21427071ea9cea20bc5b24`. This D13 archive
+  commit completes Package M without promoting any Deferred endpoint evidence.
 - Stable v0.1 signatures/layouts, Web behavior and rendered semantics remain
   frozen during M2. Additive current-stats v1 receipts and pending-compatible
   Android/Apple translation are prepared before M2 activation. No root
@@ -682,10 +681,13 @@ M8 = Active
 - `M7_ACCEPT_SHA == M8_BASE_SHA` is
   `1de3f79fa2fa22955f99c887bea421c918e31ee0`.
 
-## M8 activation and closeout boundary
+## M8 closeout
 
-- State: **Active** from fixed accepted M7 tree
-  `1de3f79fa2fa22955f99c887bea421c918e31ee0`.
+- State: **Accepted**. The fixed accepted M7 tree is
+  `1de3f79fa2fa22955f99c887bea421c918e31ee0`; the final pre-archive D15
+  candidate is `63678fcdd5d26973ec21427071ea9cea20bc5b24`. This D13 commit
+  archives the bundle and completes Package M; its identity is reported by
+  root after commit creation rather than self-recorded here.
 - Activation slice: documentation-only fact inventory and closeout workplan;
   see [M8 closeout inventory](m8-closeout-inventory.md).
 - This activation changes no handbook, README, release file, source, ABI,
@@ -695,10 +697,8 @@ M8 = Active
   `76188933a87a37f50175fa80720a429d50608ee7`. D12 was independently reviewed
   and integrated as `315f78e059ee0cd94b7653b4465e1937039d0131`, with its
   status-order repair integrated as
-  `c6ea13e41bde1a9d0f8af7252d343538603bc059`. M8 acceptance still requires
-  D15 fixed-candidate clean-tree verification/review and the subsequent D13
-  archival of this bundle. Completing D11, D12 or D14 does not complete M8 or
-  Package M.
+  `c6ea13e41bde1a9d0f8af7252d343538603bc059`. The post-repair candidate
+  `63678fc` then passed D15 and independent review before this D13 archive.
 - The independent IO-SPZ ownership review at fixed baseline `41e18f8` accepted
   the existing loader as one cohesive `SPZ v4 -> validated SceneBuffers`
   transaction with no P0/P1/P2 ownership finding. Its M8 grandfather and
@@ -722,9 +722,9 @@ M8 = Active
 - Chrome/WebGPU at the accepted M7 SHA, physical iPhone, and Windows/Linux
   runtime remain **Deferred**. Compile, macOS/Metal, Simulator or historical
   evidence is not substituted.
-- Package M remains **Active**. Only a later independently reviewed root
-  closeout may set `M8 = Accepted`, move this bundle to `docs/plans/completed/`,
-  and declare Package M complete.
+- Package M is **Accepted** by this pure root archive/state commit. It changes
+  no renderer behavior, ABI, shader, product route, endpoint evidence or
+  release operation.
 - The independent read-only M8e release/distribution audit rejected D08, D09
   and D16 for two factual contradictions and two maintenance drifts: stale
   `0.1.2` release commands, inconsistent Apple artifact wording, an unlocked
@@ -748,27 +748,9 @@ M8 = Active
   not promote them to current-candidate qualification. D11 and D14 are now
   Accepted; the only `active/` path retained by D11 is an explicitly historical,
   non-rerunnable pre-archive command transcript. D12 is integrated. The D15
-  current-SHA matrix ran at `c6ea13e`, but independent review rejected that
-  tree because of the stale-status P1 repaired by this slice. Those results do
-  not validate the post-repair candidate. D15 remains Pending: the SHA created
-  by root integration of this repair must be frozen, receive a fresh matrix on
-  that exact tree and obtain an independent review.
-- To avoid a circular gate, D15 now runs on one fixed pre-archive candidate
-  after all source, documentation, policy, D11 and final-report edits. An
-  independent review accepts or rejects that exact SHA. Only then may root make
-  the pure archive/state commit; that move receives link, architecture-policy,
-  stale-path, diff-summary and clean-tree checks rather than another expensive
-  global matrix. M8 and Package M remain **Active** until that root closeout is
-  accepted.
-- **M8-D12 integrated; M8-D15 Pending.** The populated
-  [M8 final closeout report](m8-final-closeout.md) records the final
-  architecture/deprecation boundary, exact existing M0--M8 Git identities,
-  milestone-local versus historical endpoint evidence, explicit limitations
-  and the non-circular D15-before-D13 sequence. Its fixed input tree was
-  `76188933a87a37f50175fa80720a429d50608ee7`; root integrated the report as
-  `315f78e059ee0cd94b7653b4465e1937039d0131` and its status-order repair as
-  `c6ea13e41bde1a9d0f8af7252d343538603bc059`. Neither commit accepts M8 or
-  Package M or qualifies a new endpoint. The `c6ea13e` matrix attempt cannot
-  qualify the post-status-repair candidate. The SHA created by root integration
-  of this repair must be frozen, receive a fresh D15 run, and obtain an
-  independent review before D13.
+  current-SHA matrix at `c6ea13e` was rejected for stale status and was not
+  reused. Root froze `63678fc`, reran the matrix on that exact tree, and a
+  separate visible read-only review accepted it with P0/P1 zero (one
+  non-blocking P2 documentation-naming note). This D13 move receives only
+  link, architecture-policy, stale-path, diff-summary and clean-tree checks;
+  it does not circularly rerun the expensive matrix.

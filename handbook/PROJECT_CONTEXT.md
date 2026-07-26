@@ -79,10 +79,11 @@ For the broader command matrix, use `VERIFICATION.md`.
 
 - Package E's Exact core and Package M's native offscreen, shared Surface,
   C/Web/Android/Apple consumer migrations are integrated. M7 is Accepted for
-  its defined deletion, compatibility, ownership and available-endpoint scope;
-  [M8](../docs/plans/active/2026-07-23-native-render-core-migration/m8-closeout-inventory.md)
-  is Active for factual/release alignment and eventual migration-bundle
-  archival. Package M remains Active until M8 is separately accepted.
+  its defined deletion, compatibility, ownership and available-endpoint scope.
+  [M8](../docs/plans/completed/2026-07-23-native-render-core-migration/m8-final-closeout.md)
+  is Accepted for factual/release alignment and import ownership closeout;
+  Package M is complete. Chrome/WebGPU, physical iPhone, and Windows/Linux
+  runtime remain explicitly Deferred rather than implied by this closeout.
 - Keep the day-to-day verification paths passing and the release bar lightweight but real.
 - Expand conformance and perf coverage with real datasets before widening the public API surface.
 - Keep the exact-count Resident path, portable GPU visibility/radix/indirect
@@ -156,13 +157,13 @@ For the broader command matrix, use `VERIFICATION.md`.
 
 ## Known Open Gaps
 
-- Package M closeout: [M7 is Accepted](../docs/plans/active/2026-07-23-native-render-core-migration/m7-final-acceptance.md),
+- Package M closeout: [M7 is Accepted](../docs/plans/completed/2026-07-23-native-render-core-migration/m7-final-acceptance.md),
   including the `lib.rs`, `surface_session.rs` and `surface_presenter.rs`
-  ownership exits and aggregate rollback evidence. M8 is Active for factual
-  handbook/release/public-document alignment, remaining ownership decisions,
-  final verification and migration-bundle archival. Chrome/WebGPU at the
-  accepted M7 SHA, physical iPhone, and Windows/Linux runtime remain explicit
-  Deferred; compilation, historical runs, Simulator results and other
+  ownership exits and aggregate rollback evidence. M8 is Accepted for factual
+  handbook/release/public-document alignment and import ownership closeout;
+  Package M is complete. Chrome/WebGPU at the accepted M7 SHA, physical
+  iPhone, and Windows/Linux runtime remain explicit Deferred; compilation,
+  historical runs, Simulator results and other
   platforms are not substitutes.
 - Android external distribution: the GitHub prerelease attaches an AAR, but it
   is not published to Maven and the current package slice is `arm64-v8a` only.

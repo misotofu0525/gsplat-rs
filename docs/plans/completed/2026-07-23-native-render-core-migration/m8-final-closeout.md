@@ -1,4 +1,4 @@
-# M8 final closeout report candidate
+# M8 final closeout report
 
 ## Decision boundary
 
@@ -9,11 +9,12 @@
   Git identities, retained verification and explicit limitations. It adds no
   renderer behavior, API, ABI, shader, script, test, platform qualification or
   release operation.
-- This report does **not** accept M8 or Package M. M8-D15 remains Pending. Root
-  integration of this status-admission repair defines the clean pre-archive
-  SHA to freeze. The current-SHA matrix must be rerun on that exact new tree
-  and independently reviewed before the pure M8-D13 archive and state
-  transition. Results recorded at `c6ea13e` do not validate the new tree.
+- Root integrated the status-admission repair as
+  `63678fcdd5d26973ec21427071ea9cea20bc5b24`, ran D15 on that exact tree, and
+  obtained an independent Accept with P0/P1 zero. This D13 commit is the pure
+  archive/state transition that sets M8 and Package M Accepted; its self SHA is
+  reported by root after commit creation. Results recorded at `c6ea13e` remain
+  rejected predecessor evidence and were not reused.
 - Historical endpoint artifacts retain their recorded source SHAs. They are
   not current-candidate qualification and are never substituted for a missing
   browser, device or operating-system run.
@@ -48,8 +49,8 @@ This final boundary matches [PROJECT_CONTEXT](../../../../handbook/PROJECT_CONTE
 
 ## Exact M0--M8 SHA ledger
 
-All objects below exist and are ancestors of the last root-integrated report base
-`c6ea13e41bde1a9d0f8af7252d343538603bc059`. A behavior/evidence
+All objects below exist and are ancestors of the final pre-archive D15 candidate
+`63678fcdd5d26973ec21427071ea9cea20bc5b24`. A behavior/evidence
 tip identifies the tree on which that milestone's implementation or retained
 runtime evidence was accepted. A closeout/state tip records the later program
 transition; it must not be presented as if endpoint evidence were rerun there.
@@ -65,12 +66,11 @@ transition; it must not be presented as if endpoint evidence were rerun there.
 | M5 | `2d9f0e4d5769690a89abfad56da51a0d21fd89e1` | `46dce2ec1bad4c09f4688dfef9d59202803b0e9c` | `df87ff177097cb8b42c592b5e2826fa9bfe8d4e4` | Android/A065 current-stats repair and strict evidence, then M5 closeout. |
 | M6 | `df87ff177097cb8b42c592b5e2826fa9bfe8d4e4` | `8022841957a196824eb9669c477f11ce91d2aab1` | `4de4cbb38f98d5f69bc0aebe8a998f947c929879` | Apple/GsplatKit/XCFramework and Simulator evidence, then M6 acceptance record. |
 | M7 | accepted M6 rollback tree `a798b8accf454e96792df45d38e8564e7e27556e` | `2739f4899facc03e6a0fb35c23b42d9762ede9cc` | `0d291c5ea9b911fdfce8d064ff6617ee6f9955ed` -> `2e16fff072d6832d602d35c53e1c0582220ec9a2` -> `1de3f79fa2fa22955f99c887bea421c918e31ee0` | 39-commit deletion/ownership/evidence tree, acceptance record, test-count correction and final policy closeout. `1de3f79` is the M8 base. |
-| M8 | `1de3f79fa2fa22955f99c887bea421c918e31ee0` | no accepted final tip yet | activation `67e9bc5be3303af64291a87a6d34d75d1c984617`; D12 report `315f78e059ee0cd94b7653b4465e1937039d0131`; status repair `c6ea13e41bde1a9d0f8af7252d343538603bc059` | M8 remains Active. D12 is integrated. D15 remains Pending: the SHA produced by root integration of this status-admission repair must be frozen, receive a fresh exact-SHA matrix and pass independent review. Only then may D13 archive the bundle and mark M8 and Package M Accepted. |
+| M8 | `1de3f79fa2fa22955f99c887bea421c918e31ee0` | `63678fcdd5d26973ec21427071ea9cea20bc5b24` | this D13 archive/state commit | M8 documentation/import closeout and Package M are Accepted. D15 passed on `63678fc`; the archive commit does not relabel Deferred endpoints as current runtime qualification. |
 
-### M8 integrated chain through D12
+### M8 integrated chain through D15
 
-The chain from the accepted M7 tree through the integrated D12 status repair is
-linear:
+The chain from the accepted M7 tree through the accepted D15 candidate is linear:
 
 | SHA | Purpose |
 | --- | --- |
@@ -91,10 +91,10 @@ linear:
 | `76188933a87a37f50175fa80720a429d50608ee7` | repair pre-archive active/completed paths |
 | `315f78e059ee0cd94b7653b4465e1937039d0131` | populate and integrate the D12 final closeout report |
 | `c6ea13e41bde1a9d0f8af7252d343538603bc059` | repair D12/D15 closeout status ordering |
+| `63678fcdd5d26973ec21427071ea9cea20bc5b24` | admit and verify the post-repair D15 candidate |
 
-Root integration of this status-admission repair defines the next pre-archive
-D15 candidate. Root records that resulting SHA, which must be verified and
-reviewed on its own rather than inheriting the `c6ea13e` results.
+`63678fc` was verified and reviewed on its own rather than inheriting the
+rejected `c6ea13e` results.
 
 ## Verification evidence ledger
 
@@ -114,7 +114,7 @@ Detailed datasets, trace hashes, artifact paths and validator results remain in
 the milestone closeouts. Machine-local `target/` artifacts are not committed
 or guaranteed to survive their worktrees.
 
-### M8 work completed through D12
+### M8 work completed through D15
 
 - D01--D10 and documented D16 facts were independently reviewed and integrated
   with the narrow endpoint/release boundaries in the [M8 inventory](m8-closeout-inventory.md).
@@ -130,15 +130,19 @@ or guaranteed to survive their worktrees.
   retained by D11 is an explicitly historical, non-rerunnable pre-archive
   transcript.
 - D12 itself ran only document links, Git-object/ancestry checks and diff
-  hygiene. It did not run or pre-claim the D15 matrix.
+  hygiene. It did not pre-claim D15.
+- D15 on `63678fc` passed the global local matrix, forced Metal conformance,
+  C/Swift/JNI smoke, WASM/package checks, Android APK/AAR and XCFramework
+  builds. The independent fixed-SHA review accepted it with P0/P1 zero; its
+  P2 was a non-blocking documentation naming issue.
 
 ## Accepted limitations and non-claims
 
 - **Current-candidate endpoints:** no Chrome/WebGPU, physical iPhone, Windows
-  or Linux runtime is qualified at the post-status-repair D15 candidate until
-  an exact-SHA run actually produces such evidence. Historical results,
-  including the matrix attempt at `c6ea13e`, keep their own SHAs and do not
-  qualify the new candidate.
+  or Linux runtime is qualified at `63678fc`. Its doctors found the locked
+  Web CLI and explicit A065/iOS Simulator selections unavailable; historical
+  results, including the rejected matrix attempt at `c6ea13e`, keep their own
+  SHAs and do not qualify this tree.
 - **Android:** accepted A065 artifacts prove only their recorded full-quality
   configurations. They do not prove CPU/GPU superiority, sustained FPS,
   energy, thermal, memory or Vulkan-wide behavior.
@@ -163,26 +167,13 @@ or guaranteed to survive their worktrees.
   mobile convenience APIs do not become stable merely because migration is
   internally complete.
 
-## D15 freeze, review and D13 archive order
+## D15 and D13 completion order
 
-1. D12 is already integrated as `315f78e059ee0cd94b7653b4465e1937039d0131`,
-   with its status-order repair integrated as
-   `c6ea13e41bde1a9d0f8af7252d343538603bc059`. Root integration of this
-   status-admission repair defines the sole pre-archive D15 candidate; root
-   records that resulting clean SHA.
-2. On that exact new tree, root reruns the applicable [global migration
-   matrix](cutover.md#global-migration-matrix), M8 link/command validation,
-   dependency policy, C/consumer checks affected by the integrated range, and
-   committed-range diff checks. Results are joined to the candidate SHA; the
-   prior `c6ea13e` run cannot substitute for them.
-3. A separate visible read-only task reviews that exact SHA with a finite
-   Accept/Reject/Deferred result and P0/P1/P2 findings. Missing historical
-   endpoints stay Deferred unless a new run was actually required and made.
-4. Only after D15 acceptance may root move this entire bundle atomically from
-   `docs/plans/active/` to `docs/plans/completed/`, set `M8 = Accepted`, and
-   declare Package M complete in one pure D13 archive/state commit.
-5. The archive commit receives the documented relative-link, architecture
-   self/real-tree policy, stale-active-path, diff-summary and clean-tree checks.
-   The expensive D15 matrix is not rerun solely because paths moved.
-
-Until all five steps finish, M8 and Package M remain **Active**.
+1. Root froze `63678fc`, ran the documented matrix and joined all results to
+   that SHA; the prior `c6ea13e` run was not reused.
+2. A separate visible read-only task accepted `63678fc` with P0/P1 zero while
+   retaining unavailable endpoint runtime as Deferred.
+3. This D13 commit atomically moves the bundle to `completed/`, sets M8 and
+   Package M Accepted, and runs the documented link, architecture-policy,
+   stale-path, diff-summary and clean-tree checks. It does not rerun D15 solely
+   because documentation paths moved.

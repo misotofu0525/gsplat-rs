@@ -104,13 +104,12 @@ renderer-owned `PreparedRuntimeSlot`; standalone `SurfacePresenter` supports
 only Direct and diagnostic Paged. M7's obsolete standalone Packed graph and
 TiledExact deletion, compatibility and ownership exits, available-platform
 matrix and aggregate rollback evidence are
-[Accepted](../docs/plans/active/2026-07-23-native-render-core-migration/m7-final-acceptance.md).
-[M8 is Active](../docs/plans/active/2026-07-23-native-render-core-migration/m8-closeout-inventory.md)
-for factual/release alignment, remaining ownership decisions, final
-verification and migration-bundle archival; Package M remains Active until
-that separate closeout is accepted. Chrome/WebGPU at the accepted M7 SHA,
-physical iPhone, and Windows/Linux runtime remain Deferred and are not implied
-by earlier browser/device evidence, Simulator results or compilation.
+[Accepted](../docs/plans/completed/2026-07-23-native-render-core-migration/m7-final-acceptance.md).
+[M8 is Accepted](../docs/plans/completed/2026-07-23-native-render-core-migration/m8-final-closeout.md)
+for factual/release alignment and import ownership closeout; Package M is
+complete. Chrome/WebGPU at the accepted M7 SHA, physical iPhone, and
+Windows/Linux runtime remain Deferred and are not implied by earlier
+browser/device evidence, Simulator results or compilation.
 
 ## Full-Count Resident Evidence Boundary (completed 2026-07-23)
 
