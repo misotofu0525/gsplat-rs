@@ -59,7 +59,7 @@ membership, SH degree, resolution or pixel contract.
   PASS, closed policy/`PlanId` mapping and no-fake-sample arbitration.
 - `cargo test -p gsplat-render-wgpu exact_surface --lib`: PASS, including
   CPU-only rejection snapshots and capable three-plan switching.
-- `cargo test -p gsplat-render-wgpu projected_ --lib`: PASS, 23 focused
+- `cargo test -p gsplat-render-wgpu projected_ --lib`: PASS, 24 focused
   projected controller, arbitration, telemetry and raster tests.
 
 The final candidate additionally runs the crate/workspace, strict lint,
