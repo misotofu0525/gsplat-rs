@@ -25,13 +25,16 @@ use crate::gpu_telemetry::{
     CpuOrderTelemetryPoll, GpuOrderTelemetryPoll, SurfaceCpuOrderMeasurement, TelemetrySubmission,
 };
 use crate::projected_draw_telemetry::ProjectedDrawTelemetryPoll;
+#[cfg(test)]
+use crate::surface::{ADAPTIVE_CPU_BOOTSTRAP_SAMPLES, ADAPTIVE_INITIAL_PROBE_DELAY};
 use crate::surface::{
-    ADAPTIVE_CPU_BOOTSTRAP_SAMPLES, ADAPTIVE_INITIAL_PROBE_DELAY, ADAPTIVE_PROBE_SEQUENCE_LEN,
-    ADAPTIVE_REPROBE_INTERVAL, AdaptiveMetric, AdaptiveOrderPolicy, AdaptiveRefreshChoice,
-    AdaptiveSampleKind, LegacySurfaceStatsAvailability, RollingEstimate, adaptive_primary_metric,
+    AdaptiveMetric, AdaptiveOrderPolicy, AdaptiveProjectedDrawPolicy, AdaptiveRefreshChoice,
+    AdaptiveSampleKind, LegacySurfaceStatsAvailability, ProjectedAdaptiveChoice,
+    ProjectedAdaptiveSampleKind, adaptive_primary_metric,
 };
 pub use crate::surface::{
     SurfaceAdaptiveGpuFailureReason, SurfaceAdaptivePendingSample, SurfaceAdaptiveState,
+    SurfaceProjectedDrawAdaptivePendingSample, SurfaceProjectedDrawAdaptiveState,
 };
 use crate::surface_presenter::{CpuCompletionSampleRequest, SurfacePresenterHost};
 use crate::{
@@ -61,10 +64,6 @@ const MAX_ASYNC_SORT_REVISION_LAG: u64 = 2;
 const MAX_ASYNC_SORT_ROTATION_DELTA_RADIANS: f32 = 0.01;
 #[cfg(not(target_arch = "wasm32"))]
 const MAX_ASYNC_SORT_TRANSLATION_DIAGONAL_FRACTION: f32 = 0.02;
-const PROJECTED_COMPACT_PROMOTION_RATIO: f32 = 0.95;
-const PROJECTED_CANDIDATE_PROMOTION_RATIO: f32 = 0.97;
-const PROJECTED_TELEMETRY_FAILURE_COOLDOWN: u32 = 96;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SurfaceSortSchedule {
     Interval(u32),
@@ -394,447 +393,6 @@ impl SurfaceProjectedDrawMeasurementSubmission {
                 reason: SurfaceProjectedDrawMeasurementUnsampledReason::SurfaceUnavailable,
             },
         }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SurfaceProjectedDrawAdaptivePendingSample {
-    pub order_backend: SurfaceOrderBackendUsed,
-    pub execution: SurfaceProjectedDrawExecution,
-    pub ticket: u64,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum SurfaceProjectedDrawAdaptiveState {
-    #[default]
-    Disabled,
-    CandidateLearning,
-    CandidateStable,
-    CompactProbe,
-    CompactStable,
-    CandidateProbe,
-    CandidateOnly,
-    Cooldown,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ProjectedAdaptivePhase {
-    CandidateLearning {
-        completed: u8,
-    },
-    Stable {
-        incumbent: SurfaceProjectedDrawExecution,
-    },
-    Probe {
-        incumbent: SurfaceProjectedDrawExecution,
-        next_sample: u8,
-        active_execution: SurfaceProjectedDrawExecution,
-    },
-    CandidateOnly,
-    Cooldown {
-        incumbent: SurfaceProjectedDrawExecution,
-        remaining: u32,
-    },
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ProjectedAdaptiveSampleKind {
-    CandidateBootstrap,
-    Probe(u8),
-    TransitionWarmup,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct ProjectedAdaptiveChoice {
-    execution: SurfaceProjectedDrawExecution,
-    sample: Option<ProjectedAdaptiveSampleKind>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct ProjectedAdaptivePendingSample {
-    order_backend: SurfaceOrderBackendUsed,
-    execution: SurfaceProjectedDrawExecution,
-    ticket: u64,
-    kind: ProjectedAdaptiveSampleKind,
-}
-
-#[derive(Debug)]
-struct AdaptiveProjectedDrawPolicy {
-    phase: ProjectedAdaptivePhase,
-    candidate_baseline: RollingEstimate,
-    probe_candidate: RollingEstimate,
-    probe_compact: RollingEstimate,
-    pending: Option<ProjectedAdaptivePendingSample>,
-    frames_since_probe: u32,
-    next_probe_after: u32,
-    initial_selection_complete: bool,
-    incumbent_changed: bool,
-}
-
-impl Default for AdaptiveProjectedDrawPolicy {
-    fn default() -> Self {
-        Self {
-            phase: ProjectedAdaptivePhase::CandidateLearning { completed: 0 },
-            candidate_baseline: RollingEstimate::default(),
-            probe_candidate: RollingEstimate::default(),
-            probe_compact: RollingEstimate::default(),
-            pending: None,
-            frames_since_probe: 0,
-            next_probe_after: ADAPTIVE_INITIAL_PROBE_DELAY,
-            initial_selection_complete: false,
-            incumbent_changed: false,
-        }
-    }
-}
-
-impl AdaptiveProjectedDrawPolicy {
-    fn reset(&mut self) {
-        *self = Self::default();
-    }
-
-    /// Stops an in-flight formal sample without erasing stable evidence. The
-    /// eventual terminal telemetry receipt is still exposed to callers, but
-    /// cannot mutate policy while a deterministic forced mode is selected.
-    /// Returning to Adaptive repeats the interrupted phase from the same
-    /// sample index.
-    fn suspend_learning(&mut self) {
-        self.pending = None;
-        // This is an unconsumed owner-boundary notification, not historical
-        // timing evidence. Carrying it across an order-backend or forced draw
-        // transition could reset a newly learned order cohort later.
-        self.incumbent_changed = false;
-    }
-
-    fn state(&self) -> SurfaceProjectedDrawAdaptiveState {
-        match self.phase {
-            ProjectedAdaptivePhase::CandidateLearning { .. } => {
-                SurfaceProjectedDrawAdaptiveState::CandidateLearning
-            }
-            ProjectedAdaptivePhase::Stable {
-                incumbent: SurfaceProjectedDrawExecution::Candidate,
-            } => SurfaceProjectedDrawAdaptiveState::CandidateStable,
-            ProjectedAdaptivePhase::Stable {
-                incumbent: SurfaceProjectedDrawExecution::Compact,
-            } => SurfaceProjectedDrawAdaptiveState::CompactStable,
-            ProjectedAdaptivePhase::Probe {
-                incumbent: SurfaceProjectedDrawExecution::Candidate,
-                ..
-            } => SurfaceProjectedDrawAdaptiveState::CompactProbe,
-            ProjectedAdaptivePhase::Probe {
-                incumbent: SurfaceProjectedDrawExecution::Compact,
-                ..
-            } => SurfaceProjectedDrawAdaptiveState::CandidateProbe,
-            ProjectedAdaptivePhase::CandidateOnly => {
-                SurfaceProjectedDrawAdaptiveState::CandidateOnly
-            }
-            ProjectedAdaptivePhase::Cooldown { .. } => SurfaceProjectedDrawAdaptiveState::Cooldown,
-        }
-    }
-
-    fn choose(&mut self, compact_available: bool) -> ProjectedAdaptiveChoice {
-        if !compact_available {
-            self.phase = ProjectedAdaptivePhase::CandidateOnly;
-            self.pending = None;
-            self.initial_selection_complete = true;
-            return self.held_choice();
-        }
-        match self.phase {
-            ProjectedAdaptivePhase::CandidateLearning { .. } => ProjectedAdaptiveChoice {
-                execution: SurfaceProjectedDrawExecution::Candidate,
-                sample: self
-                    .pending
-                    .is_none()
-                    .then_some(ProjectedAdaptiveSampleKind::CandidateBootstrap),
-            },
-            ProjectedAdaptivePhase::Stable { incumbent } => {
-                if self.frames_since_probe < self.next_probe_after {
-                    self.frames_since_probe = self.frames_since_probe.saturating_add(1);
-                    return ProjectedAdaptiveChoice {
-                        execution: incumbent,
-                        sample: None,
-                    };
-                }
-                self.probe_candidate.clear();
-                self.probe_compact.clear();
-                self.phase = ProjectedAdaptivePhase::Probe {
-                    incumbent,
-                    next_sample: 0,
-                    active_execution: incumbent,
-                };
-                self.choose(compact_available)
-            }
-            ProjectedAdaptivePhase::Probe {
-                incumbent,
-                next_sample,
-                active_execution,
-            } => {
-                let target = projected_probe_sequence_execution(incumbent, next_sample);
-                if self.pending.is_some() {
-                    ProjectedAdaptiveChoice {
-                        execution: incumbent,
-                        sample: None,
-                    }
-                } else if active_execution != target {
-                    ProjectedAdaptiveChoice {
-                        execution: target,
-                        sample: Some(ProjectedAdaptiveSampleKind::TransitionWarmup),
-                    }
-                } else {
-                    ProjectedAdaptiveChoice {
-                        execution: target,
-                        sample: Some(ProjectedAdaptiveSampleKind::Probe(next_sample)),
-                    }
-                }
-            }
-            ProjectedAdaptivePhase::CandidateOnly => ProjectedAdaptiveChoice {
-                execution: SurfaceProjectedDrawExecution::Candidate,
-                sample: None,
-            },
-            ProjectedAdaptivePhase::Cooldown {
-                incumbent,
-                mut remaining,
-            } => {
-                remaining = remaining.saturating_sub(1);
-                if remaining == 0 {
-                    self.phase = ProjectedAdaptivePhase::Stable { incumbent };
-                    self.frames_since_probe = 0;
-                    self.next_probe_after = self
-                        .next_probe_after
-                        .max(PROJECTED_TELEMETRY_FAILURE_COOLDOWN);
-                } else {
-                    self.phase = ProjectedAdaptivePhase::Cooldown {
-                        incumbent,
-                        remaining,
-                    };
-                }
-                ProjectedAdaptiveChoice {
-                    execution: incumbent,
-                    sample: None,
-                }
-            }
-        }
-    }
-
-    fn held_choice(&self) -> ProjectedAdaptiveChoice {
-        let execution = match self.phase {
-            ProjectedAdaptivePhase::CandidateLearning { .. }
-            | ProjectedAdaptivePhase::CandidateOnly => SurfaceProjectedDrawExecution::Candidate,
-            ProjectedAdaptivePhase::Stable { incumbent }
-            | ProjectedAdaptivePhase::Probe { incumbent, .. }
-            | ProjectedAdaptivePhase::Cooldown { incumbent, .. } => incumbent,
-        };
-        ProjectedAdaptiveChoice {
-            execution,
-            sample: None,
-        }
-    }
-
-    fn cohort_active(&self) -> bool {
-        self.pending.is_some()
-            || !self.initial_selection_complete
-            || matches!(
-                self.phase,
-                ProjectedAdaptivePhase::CandidateLearning { .. }
-                    | ProjectedAdaptivePhase::Probe { .. }
-            )
-    }
-
-    fn take_incumbent_changed(&mut self) -> bool {
-        std::mem::take(&mut self.incumbent_changed)
-    }
-
-    fn complete_synchronous_sample(&mut self, choice: ProjectedAdaptiveChoice) {
-        if choice.sample == Some(ProjectedAdaptiveSampleKind::TransitionWarmup)
-            && let ProjectedAdaptivePhase::Probe {
-                active_execution, ..
-            } = &mut self.phase
-        {
-            *active_execution = choice.execution;
-        }
-    }
-
-    fn register_pending_sample(
-        &mut self,
-        order_backend: SurfaceOrderBackendUsed,
-        choice: ProjectedAdaptiveChoice,
-        ticket: u64,
-    ) {
-        let Some(kind) = choice.sample else {
-            return;
-        };
-        debug_assert_ne!(kind, ProjectedAdaptiveSampleKind::TransitionWarmup);
-        debug_assert!(self.pending.is_none());
-        // Adaptive is a live-workload policy, so one ABBA cohort may span
-        // camera revisions. Each telemetry ticket still records its exact
-        // camera revision for diagnostics. The admission boundary is instead
-        // strict about order identity: a frame that refreshes, uploads, or
-        // applies a different order is deferred before a ticket is reserved.
-        self.pending = Some(ProjectedAdaptivePendingSample {
-            order_backend,
-            execution: choice.execution,
-            ticket,
-            kind,
-        });
-    }
-
-    fn observe_measurement(&mut self, measurement: SurfaceProjectedDrawMeasurement) -> bool {
-        let Some(pending) = self.pending else {
-            return false;
-        };
-        if pending.ticket != measurement.ticket
-            || pending.order_backend != measurement.order_backend
-            || pending.execution != measurement.execution
-        {
-            return false;
-        }
-        self.pending = None;
-        self.complete_sample(
-            pending.kind,
-            pending.execution,
-            measurement.frame_complete_ms,
-        );
-        true
-    }
-
-    fn observe_failure(&mut self, failure: SurfaceProjectedDrawMeasurementFailure) -> bool {
-        let matches = self.pending.is_some_and(|pending| {
-            pending.ticket == failure.ticket
-                && pending.order_backend == failure.order_backend
-                && pending.execution == failure.execution
-        });
-        if matches {
-            self.pending = None;
-            // A broken measurement path must not hold the order arbiter for
-            // an entire cooldown. Candidate remains the safe incumbent and a
-            // later reprobe can refine it without blocking useful work.
-            self.initial_selection_complete = true;
-            if failure.execution == SurfaceProjectedDrawExecution::Compact
-                && failure.reason
-                    == crate::SurfaceProjectedDrawMeasurementFailureReason::InvariantViolation
-            {
-                self.phase = ProjectedAdaptivePhase::CandidateOnly;
-            } else {
-                let incumbent = match self.phase {
-                    ProjectedAdaptivePhase::Stable { incumbent }
-                    | ProjectedAdaptivePhase::Probe { incumbent, .. }
-                    | ProjectedAdaptivePhase::Cooldown { incumbent, .. } => incumbent,
-                    ProjectedAdaptivePhase::CandidateLearning { .. }
-                    | ProjectedAdaptivePhase::CandidateOnly => {
-                        SurfaceProjectedDrawExecution::Candidate
-                    }
-                };
-                self.phase = ProjectedAdaptivePhase::Cooldown {
-                    incumbent,
-                    remaining: PROJECTED_TELEMETRY_FAILURE_COOLDOWN,
-                };
-            }
-        }
-        matches
-    }
-
-    fn pending_sample(&self) -> Option<SurfaceProjectedDrawAdaptivePendingSample> {
-        self.pending
-            .map(|pending| SurfaceProjectedDrawAdaptivePendingSample {
-                order_backend: pending.order_backend,
-                execution: pending.execution,
-                ticket: pending.ticket,
-            })
-    }
-
-    fn complete_sample(
-        &mut self,
-        kind: ProjectedAdaptiveSampleKind,
-        execution: SurfaceProjectedDrawExecution,
-        sample_ms: f32,
-    ) {
-        if !sample_ms.is_finite() || sample_ms < 0.0 {
-            return;
-        }
-        match kind {
-            ProjectedAdaptiveSampleKind::CandidateBootstrap => {
-                self.candidate_baseline.push(sample_ms);
-                if let ProjectedAdaptivePhase::CandidateLearning { completed } = &mut self.phase {
-                    *completed = completed.saturating_add(1);
-                    if u32::from(*completed) >= ADAPTIVE_CPU_BOOTSTRAP_SAMPLES {
-                        self.phase = ProjectedAdaptivePhase::Stable {
-                            incumbent: SurfaceProjectedDrawExecution::Candidate,
-                        };
-                        self.frames_since_probe = 0;
-                    }
-                }
-            }
-            ProjectedAdaptiveSampleKind::Probe(sample_index) => {
-                match execution {
-                    SurfaceProjectedDrawExecution::Candidate => {
-                        self.probe_candidate.push(sample_ms)
-                    }
-                    SurfaceProjectedDrawExecution::Compact => self.probe_compact.push(sample_ms),
-                }
-                let ProjectedAdaptivePhase::Probe {
-                    incumbent,
-                    next_sample,
-                    ..
-                } = &mut self.phase
-                else {
-                    return;
-                };
-                if sample_index != *next_sample {
-                    return;
-                }
-                *next_sample = next_sample.saturating_add(1);
-                if *next_sample >= ADAPTIVE_PROBE_SEQUENCE_LEN {
-                    let incumbent = *incumbent;
-                    self.finish_probe(incumbent);
-                }
-            }
-            ProjectedAdaptiveSampleKind::TransitionWarmup => unreachable!(),
-        }
-    }
-
-    fn finish_probe(&mut self, incumbent: SurfaceProjectedDrawExecution) {
-        let winner = match (self.probe_candidate.p75(), self.probe_compact.p75()) {
-            (Some(candidate), Some(compact)) => match incumbent {
-                SurfaceProjectedDrawExecution::Candidate
-                    if compact < candidate * PROJECTED_COMPACT_PROMOTION_RATIO =>
-                {
-                    SurfaceProjectedDrawExecution::Compact
-                }
-                SurfaceProjectedDrawExecution::Compact
-                    if candidate < compact * PROJECTED_CANDIDATE_PROMOTION_RATIO =>
-                {
-                    SurfaceProjectedDrawExecution::Candidate
-                }
-                _ => incumbent,
-            },
-            _ => incumbent,
-        };
-        self.incumbent_changed |= winner != incumbent;
-        self.initial_selection_complete = true;
-        self.next_probe_after =
-            if winner != incumbent || self.next_probe_after < ADAPTIVE_REPROBE_INTERVAL {
-                ADAPTIVE_REPROBE_INTERVAL
-            } else {
-                self.next_probe_after.saturating_mul(2).min(384)
-            };
-        self.phase = ProjectedAdaptivePhase::Stable { incumbent: winner };
-        self.frames_since_probe = 0;
-        self.probe_candidate.clear();
-        self.probe_compact.clear();
-    }
-}
-
-fn projected_probe_sequence_execution(
-    incumbent: SurfaceProjectedDrawExecution,
-    sample_index: u8,
-) -> SurfaceProjectedDrawExecution {
-    let challenger = match incumbent {
-        SurfaceProjectedDrawExecution::Candidate => SurfaceProjectedDrawExecution::Compact,
-        SurfaceProjectedDrawExecution::Compact => SurfaceProjectedDrawExecution::Candidate,
-    };
-    match sample_index % 4 {
-        0 | 3 => incumbent,
-        1 | 2 => challenger,
-        _ => unreachable!(),
     }
 }
 
@@ -4394,25 +3952,23 @@ mod exact_control_tests;
 mod tests {
     use super::{
         ADAPTIVE_INITIAL_PROBE_DELAY, AdaptiveMetric, AdaptiveOrderPolicy, AdaptiveProbeOwner,
-        AdaptiveProjectedDrawPolicy, AdaptiveRefreshChoice, AdaptiveSampleKind,
-        MAX_ASYNC_SORT_REVISION_LAG, PROJECTED_TELEMETRY_FAILURE_COOLDOWN, PlanId,
-        ProjectedAdaptivePendingSample, ProjectedAdaptivePhase, ProjectedAdaptiveSampleKind,
-        SessionSurfaceConstruction, SurfaceAdaptiveState, SurfaceFrameState,
-        SurfaceGeometrySwitchEntry, SurfaceGpuProducerMeasurementControl,
-        SurfaceGpuProducerMeasurementSubmission, SurfaceGpuProducerMeasurementUnsampledReason,
-        SurfaceOrderBackend, SurfaceOrderBackendUsed, SurfaceOrderMeasurementSubmission,
-        SurfaceOrderMeasurementUnsampledReason, SurfaceProjectedDrawAdaptiveState,
-        SurfaceProjectedDrawMeasurementSubmission, SurfaceProjectedDrawMeasurementUnsampledReason,
-        SurfaceProjectedDrawPolicy, SurfaceSortSchedule, TelemetrySubmission,
-        adaptive_gpu_order_failure_reason, adaptive_primary_metric, arbitrate_new_probe_owner,
-        async_order_pose_compatible, async_schedule_threshold, defer_projected_formal_choice,
-        exact_order_refreshed, exact_published_camera_revision,
-        gpu_producer_measurement_context_is_valid, gpu_projected_order_changed,
-        legacy_surface_current_stats_poll, legacy_surface_current_stats_request,
-        legacy_surface_current_stats_submission, order_probe_owner_should_yield,
-        paged_surface_counts, projected_formal_sample_requested, projected_order_changed,
-        projected_policy_can_sample, projected_probe_claims_owner,
-        projected_probe_sequence_execution, reset_adaptive_for_gpu_producer_measurement_transition,
+        AdaptiveProjectedDrawPolicy, AdaptiveSampleKind, MAX_ASYNC_SORT_REVISION_LAG, PlanId,
+        ProjectedAdaptiveChoice, ProjectedAdaptiveSampleKind, SessionSurfaceConstruction,
+        SurfaceAdaptiveState, SurfaceFrameState, SurfaceGeometrySwitchEntry,
+        SurfaceGpuProducerMeasurementControl, SurfaceGpuProducerMeasurementSubmission,
+        SurfaceGpuProducerMeasurementUnsampledReason, SurfaceOrderBackend, SurfaceOrderBackendUsed,
+        SurfaceOrderMeasurementSubmission, SurfaceOrderMeasurementUnsampledReason,
+        SurfaceProjectedDrawAdaptiveState, SurfaceProjectedDrawMeasurementSubmission,
+        SurfaceProjectedDrawMeasurementUnsampledReason, SurfaceProjectedDrawPolicy,
+        SurfaceSortSchedule, TelemetrySubmission, adaptive_gpu_order_failure_reason,
+        adaptive_primary_metric, arbitrate_new_probe_owner, async_order_pose_compatible,
+        async_schedule_threshold, defer_projected_formal_choice, exact_order_refreshed,
+        exact_published_camera_revision, gpu_producer_measurement_context_is_valid,
+        gpu_projected_order_changed, legacy_surface_current_stats_poll,
+        legacy_surface_current_stats_request, legacy_surface_current_stats_submission,
+        order_probe_owner_should_yield, paged_surface_counts, projected_formal_sample_requested,
+        projected_order_changed, projected_policy_can_sample, projected_probe_claims_owner,
+        reset_adaptive_for_gpu_producer_measurement_transition,
         reset_adaptive_for_raster_transition, retain_gpu_producer_terminal,
         should_measure_cpu_refresh, should_reset_order_for_projected_incumbent_change,
         surface_geometry_switch_entry, try_switch_renderer_geometry_path,
@@ -4424,8 +3980,7 @@ mod tests {
         GeometryPath, Renderer, RendererError, ResidentGpuError, ResidentSceneCpu,
         SurfaceCurrentStatsPoll, SurfaceCurrentStatsRequest, SurfaceCurrentStatsSubmission,
         SurfaceCurrentStatsUnsampledReason, SurfaceGpuOrderProducer, SurfacePresenterError,
-        SurfaceProjectedDrawExecution, SurfaceProjectedDrawMeasurementFailure,
-        SurfaceProjectedDrawMeasurementFailureReason, SurfaceRasterExecutionPlan,
+        SurfaceProjectedDrawExecution, SurfaceRasterExecutionPlan,
     };
 
     #[test]
@@ -5433,105 +4988,6 @@ mod tests {
     }
 
     #[test]
-    fn projected_abba_sequence_is_independent_from_order_backend() {
-        for incumbent in [
-            SurfaceProjectedDrawExecution::Candidate,
-            SurfaceProjectedDrawExecution::Compact,
-        ] {
-            assert_eq!(
-                (0..4)
-                    .map(|index| projected_probe_sequence_execution(incumbent, index))
-                    .collect::<Vec<_>>(),
-                [
-                    incumbent,
-                    match incumbent {
-                        SurfaceProjectedDrawExecution::Candidate => {
-                            SurfaceProjectedDrawExecution::Compact
-                        }
-                        SurfaceProjectedDrawExecution::Compact => {
-                            SurfaceProjectedDrawExecution::Candidate
-                        }
-                    },
-                    match incumbent {
-                        SurfaceProjectedDrawExecution::Candidate => {
-                            SurfaceProjectedDrawExecution::Compact
-                        }
-                        SurfaceProjectedDrawExecution::Compact => {
-                            SurfaceProjectedDrawExecution::Candidate
-                        }
-                    },
-                    incumbent,
-                ],
-            );
-        }
-    }
-
-    #[test]
-    fn projected_hysteresis_promotes_an_eight_percent_compact_gain() {
-        let mut policy = AdaptiveProjectedDrawPolicy {
-            phase: ProjectedAdaptivePhase::Probe {
-                incumbent: SurfaceProjectedDrawExecution::Candidate,
-                next_sample: 0,
-                active_execution: SurfaceProjectedDrawExecution::Candidate,
-            },
-            ..AdaptiveProjectedDrawPolicy::default()
-        };
-        for _ in 0..8 {
-            policy.probe_candidate.push(100.0);
-            policy.probe_compact.push(91.2);
-        }
-        policy.finish_probe(SurfaceProjectedDrawExecution::Candidate);
-        assert_eq!(
-            policy.state(),
-            SurfaceProjectedDrawAdaptiveState::CompactStable,
-        );
-    }
-
-    #[test]
-    fn projected_telemetry_failure_backs_off_instead_of_retrying_each_frame() {
-        let mut policy = AdaptiveProjectedDrawPolicy::default();
-        let choice = policy.choose(true);
-        assert_eq!(
-            choice.sample,
-            Some(ProjectedAdaptiveSampleKind::CandidateBootstrap),
-        );
-        policy.register_pending_sample(SurfaceOrderBackendUsed::Cpu, choice, 101);
-        assert!(
-            policy.observe_failure(SurfaceProjectedDrawMeasurementFailure {
-                ticket: 101,
-                camera_revision: 4,
-                execution: SurfaceProjectedDrawExecution::Candidate,
-                order_backend: SurfaceOrderBackendUsed::Cpu,
-                projection_generation: 9,
-                probe_generation: 3,
-                reason: SurfaceProjectedDrawMeasurementFailureReason::ReadbackMap,
-            })
-        );
-        assert_eq!(policy.state(), SurfaceProjectedDrawAdaptiveState::Cooldown);
-        for _ in 0..PROJECTED_TELEMETRY_FAILURE_COOLDOWN - 1 {
-            assert!(policy.choose(true).sample.is_none());
-        }
-        assert!(policy.choose(true).sample.is_none());
-        assert_eq!(
-            policy.state(),
-            SurfaceProjectedDrawAdaptiveState::CandidateStable,
-        );
-    }
-
-    #[test]
-    fn projected_cpu_and_gpu_lanes_keep_separate_evidence() {
-        let mut cpu = AdaptiveProjectedDrawPolicy::default();
-        let gpu = AdaptiveProjectedDrawPolicy::default();
-        cpu.complete_sample(
-            ProjectedAdaptiveSampleKind::CandidateBootstrap,
-            SurfaceProjectedDrawExecution::Candidate,
-            12.0,
-        );
-        assert_eq!(cpu.candidate_baseline.sample_count(), 1);
-        assert_eq!(gpu.candidate_baseline.sample_count(), 0);
-    }
-
-    #[test]
     fn first_changed_then_cached_order_preserves_one_projected_grace_turn() {
         let mut lane = AdaptiveProjectedDrawPolicy::default();
         let formal = lane.choose(true);
@@ -5641,7 +5097,7 @@ mod tests {
         assert!(held.sample.is_none());
         assert!(!projected_probe_claims_owner(held, false, false));
         assert_eq!(owner, Some(AdaptiveProbeOwner::Order));
-        assert!(projected.pending.is_none());
+        assert!(projected.pending_sample().is_none());
 
         // Once that ticket is terminal, Order has no work on a stable frame
         // and yields without losing its CpuLearning phase or first sample.
@@ -5671,15 +5127,10 @@ mod tests {
 
     #[test]
     fn projected_transition_warmup_delays_order_once_without_claiming_owner() {
-        let mut lane = AdaptiveProjectedDrawPolicy {
-            phase: ProjectedAdaptivePhase::Probe {
-                incumbent: SurfaceProjectedDrawExecution::Candidate,
-                next_sample: 1,
-                active_execution: SurfaceProjectedDrawExecution::Candidate,
-            },
-            ..AdaptiveProjectedDrawPolicy::default()
+        let transition_warmup = ProjectedAdaptiveChoice {
+            execution: SurfaceProjectedDrawExecution::Compact,
+            sample: Some(ProjectedAdaptiveSampleKind::TransitionWarmup),
         };
-        let transition_warmup = lane.choose(true);
         assert!(!projected_formal_sample_requested(transition_warmup, false));
         assert!(!projected_probe_claims_owner(
             transition_warmup,
@@ -5711,12 +5162,10 @@ mod tests {
         assert!(projected_formal_sample_requested(formal, cached));
         assert!(!defer_projected_formal_choice(formal, cached));
 
-        lane.phase = ProjectedAdaptivePhase::Probe {
-            incumbent: SurfaceProjectedDrawExecution::Candidate,
-            next_sample: 1,
-            active_execution: SurfaceProjectedDrawExecution::Candidate,
+        let transition_warmup = ProjectedAdaptiveChoice {
+            execution: SurfaceProjectedDrawExecution::Compact,
+            sample: Some(ProjectedAdaptiveSampleKind::TransitionWarmup),
         };
-        let transition_warmup = lane.choose(true);
         assert_eq!(
             transition_warmup.sample,
             Some(ProjectedAdaptiveSampleKind::TransitionWarmup)
@@ -5739,87 +5188,6 @@ mod tests {
         assert!(!changed);
         assert!(projected_formal_sample_requested(formal, changed));
         assert!(!defer_projected_formal_choice(formal, changed));
-    }
-
-    #[test]
-    fn cpu_and_gpu_projected_lanes_stabilize_before_their_order_samples() {
-        let order_choice = AdaptiveRefreshChoice {
-            backend: SurfaceOrderBackendUsed::Cpu,
-            sample: Some(AdaptiveSampleKind::CpuBootstrap),
-        };
-        let mut cpu = AdaptiveProjectedDrawPolicy::default();
-        let cpu_choice = cpu.choose(true);
-        assert!(order_choice.sample.is_some());
-        assert!(cpu_choice.sample.is_some());
-        assert_eq!(
-            arbitrate_new_probe_owner(None, true, true, AdaptiveProbeOwner::ProjectedCpu,),
-            Some(AdaptiveProbeOwner::ProjectedCpu),
-        );
-        for _ in 0..super::ADAPTIVE_CPU_BOOTSTRAP_SAMPLES {
-            cpu.complete_sample(
-                ProjectedAdaptiveSampleKind::CandidateBootstrap,
-                SurfaceProjectedDrawExecution::Candidate,
-                10.0,
-            );
-        }
-        assert!(
-            cpu.cohort_active(),
-            "candidate bootstrap alone must not release the order owner"
-        );
-        cpu.phase = ProjectedAdaptivePhase::Probe {
-            incumbent: SurfaceProjectedDrawExecution::Candidate,
-            next_sample: 0,
-            active_execution: SurfaceProjectedDrawExecution::Candidate,
-        };
-        for _ in 0..8 {
-            cpu.probe_candidate.push(100.0);
-            cpu.probe_compact.push(85.0);
-        }
-        cpu.finish_probe(SurfaceProjectedDrawExecution::Candidate);
-        assert_eq!(
-            cpu.state(),
-            SurfaceProjectedDrawAdaptiveState::CompactStable
-        );
-        assert!(!cpu.cohort_active());
-
-        let mut gpu = AdaptiveProjectedDrawPolicy::default();
-        let gpu_choice = gpu.choose(true);
-        assert!(gpu_choice.sample.is_some());
-        assert_eq!(
-            arbitrate_new_probe_owner(None, true, true, AdaptiveProbeOwner::ProjectedGpu,),
-            Some(AdaptiveProbeOwner::ProjectedGpu),
-        );
-        for _ in 0..super::ADAPTIVE_CPU_BOOTSTRAP_SAMPLES {
-            gpu.complete_sample(
-                ProjectedAdaptiveSampleKind::CandidateBootstrap,
-                SurfaceProjectedDrawExecution::Candidate,
-                18.0,
-            );
-        }
-        assert!(
-            gpu.cohort_active(),
-            "the GPU-order lane also owns through its initial Compact probe"
-        );
-        gpu.phase = ProjectedAdaptivePhase::Probe {
-            incumbent: SurfaceProjectedDrawExecution::Candidate,
-            next_sample: 0,
-            active_execution: SurfaceProjectedDrawExecution::Candidate,
-        };
-        for _ in 0..8 {
-            gpu.probe_candidate.push(140.0);
-            gpu.probe_compact.push(110.0);
-        }
-        gpu.finish_probe(SurfaceProjectedDrawExecution::Candidate);
-        assert_eq!(
-            gpu.state(),
-            SurfaceProjectedDrawAdaptiveState::CompactStable
-        );
-        assert!(!gpu.cohort_active());
-        assert_eq!(
-            arbitrate_new_probe_owner(None, true, false, AdaptiveProbeOwner::ProjectedGpu,),
-            Some(AdaptiveProbeOwner::Order),
-            "order gets a formal ticket only after the target lane is stable",
-        );
     }
 
     #[test]
@@ -6007,47 +5375,15 @@ mod tests {
     }
 
     #[test]
-    fn forced_projected_mode_suspends_pending_learning_but_preserves_lane_history() {
-        let mut policy = AdaptiveProjectedDrawPolicy::default();
-        policy.candidate_baseline.push(11.0);
-        policy.phase = ProjectedAdaptivePhase::Probe {
-            incumbent: SurfaceProjectedDrawExecution::Candidate,
-            next_sample: 3,
-            active_execution: SurfaceProjectedDrawExecution::Compact,
-        };
-        policy.pending = Some(ProjectedAdaptivePendingSample {
-            order_backend: SurfaceOrderBackendUsed::Cpu,
-            execution: SurfaceProjectedDrawExecution::Compact,
-            ticket: 17,
-            kind: ProjectedAdaptiveSampleKind::Probe(3),
-        });
-        policy.incumbent_changed = true;
-
-        policy.suspend_learning();
-
-        assert!(policy.pending.is_none());
-        assert!(!policy.incumbent_changed);
-        assert_eq!(policy.candidate_baseline.sample_count(), 1);
-        assert_eq!(
-            policy.phase,
-            ProjectedAdaptivePhase::Probe {
-                incumbent: SurfaceProjectedDrawExecution::Candidate,
-                next_sample: 3,
-                active_execution: SurfaceProjectedDrawExecution::Compact,
-            }
-        );
-    }
-
-    #[test]
     fn resetting_order_policy_does_not_clear_either_projected_lane() {
         let mut order = AdaptiveOrderPolicy::default();
         let mut cpu = AdaptiveProjectedDrawPolicy::default();
         let mut gpu = AdaptiveProjectedDrawPolicy::default();
-        cpu.candidate_baseline.push(11.0);
-        gpu.candidate_baseline.push(19.0);
+        let cpu_choice = cpu.choose(true);
+        let gpu_choice = gpu.choose(true);
         order.reset(AdaptiveMetric::FrameCompletion);
-        assert_eq!(cpu.candidate_baseline.sample_count(), 1);
-        assert_eq!(gpu.candidate_baseline.sample_count(), 1);
+        assert_eq!(cpu.choose(true), cpu_choice);
+        assert_eq!(gpu.choose(true), gpu_choice);
     }
 
     #[test]
@@ -6058,11 +5394,9 @@ mod tests {
         order.register_pending_sample(order_choice, 41);
 
         let mut cpu = AdaptiveProjectedDrawPolicy::default();
-        cpu.candidate_baseline.push(11.0);
         let cpu_choice = cpu.choose(true);
         cpu.register_pending_sample(SurfaceOrderBackendUsed::Cpu, cpu_choice, 42);
         let mut gpu = AdaptiveProjectedDrawPolicy::default();
-        gpu.candidate_baseline.push(19.0);
         let gpu_choice = gpu.choose(true);
         gpu.register_pending_sample(SurfaceOrderBackendUsed::Gpu, gpu_choice, 43);
         let mut owner = Some(AdaptiveProbeOwner::Order);
@@ -6078,10 +5412,16 @@ mod tests {
 
         assert_eq!(order.state(), SurfaceAdaptiveState::CpuLearning);
         assert!(!order.has_pending_sample());
-        assert!(cpu.pending.is_none());
-        assert!(gpu.pending.is_none());
-        assert_eq!(cpu.candidate_baseline.sample_count(), 1);
-        assert_eq!(gpu.candidate_baseline.sample_count(), 1);
+        assert!(cpu.pending_sample().is_none());
+        assert!(gpu.pending_sample().is_none());
+        assert_eq!(
+            cpu.state(),
+            SurfaceProjectedDrawAdaptiveState::CandidateLearning
+        );
+        assert_eq!(
+            gpu.state(),
+            SurfaceProjectedDrawAdaptiveState::CandidateLearning
+        );
         assert!(owner.is_none());
         assert!(blocked.is_none());
     }

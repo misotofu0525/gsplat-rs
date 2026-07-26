@@ -549,6 +549,10 @@ mod tests {
             assert_eq!(choice.sample, Some(AdaptiveSampleKind::CpuBootstrap));
             policy.complete_synchronous_sample(choice, sample_ms);
         }
+        assert_eq!(
+            policy.cpu_baseline.sample_count(),
+            ADAPTIVE_CPU_BOOTSTRAP_SAMPLES as usize
+        );
         assert_eq!(policy.state(), SurfaceAdaptiveState::CpuStable);
         for _ in 0..ADAPTIVE_INITIAL_PROBE_DELAY {
             let choice = policy.choose_refresh_backend();

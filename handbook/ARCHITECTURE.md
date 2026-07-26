@@ -32,6 +32,9 @@
   `surface/lifecycle.rs`, `surface/configuration.rs` and `surface/capture.rs`
   respectively own swapchain acquire/retry/present, transactional
   configuration/resize and native one-shot capture/readback;
+  `surface/adaptive_order.rs` and `surface/projected_adaptive.rs` respectively
+  own the pure CPU/GPU order and Candidate/Compact projected-draw Adaptive
+  controllers;
   `offscreen/target.rs` and `offscreen/readback.rs` own the equivalent
   offscreen leaves. Product Packed rendering now uses that Exact core for both
   offscreen and Surface execution. `surface_session.rs` selects the Packed
@@ -346,6 +349,9 @@
 - `crates/gsplat-render-wgpu/src/surface_session.rs`: shared Surface lifecycle,
   Direct/Paged standalone versus Packed Exact-host ownership, CPU/GPU/Adaptive
   policy, revisions, failure cooldown, and timings
+- `crates/gsplat-render-wgpu/src/surface/adaptive_order.rs` and
+  `surface/projected_adaptive.rs`: private pure Adaptive controllers for the
+  independent order and projected-draw axes
 - `crates/gsplat-sort/src/lib.rs`: ordering correctness and performance
 - `crates/gsplat-io-spz/src/lib.rs`: bounded/cancellable SPZ v4 parsing, coordinate conversion, and source caches
 - `crates/gsplat-ffi-c/src/lib.rs` and `crates/gsplat-ffi-c/include/gsplat.h`: integration boundary stability

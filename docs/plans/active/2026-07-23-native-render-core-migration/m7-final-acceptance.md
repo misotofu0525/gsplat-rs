@@ -85,9 +85,30 @@ compatibility-evidence publication, and arbitration between order probes and
 the independent Projected Candidate/Compact controller. Public Rust re-export
 paths and enum discriminants remain unchanged through the Session facade.
 
-This is not M7 acceptance. The Projected controller/evidence coordination in
-Session, the residual `lib.rs` implementation ownership and the Presenter
-responsibility audit remain open; all three M7 grandfather records therefore
+This is not M7 acceptance. The Projected control extraction described below is
+now complete, but residual Session composition/publication, `lib.rs`
+implementation ownership and the Presenter responsibility audit remain open;
+all three M7 grandfather records therefore remain in force.
+
+## Projected-draw Adaptive ownership progress
+
+The next isolated M7 slice moves the complete private Candidate/Compact
+Adaptive control state from `surface_session.rs` into
+`surface/projected_adaptive.rs`. That owner now contains the public state and
+pending-sample receipts, private CPU/GPU-order policy lanes, phase and sample
+types, rolling p75 estimates, ABBA sequence, promotion hysteresis, cooldown /
+reprobe transitions, and their focused unit tests.
+
+`surface_session.rs` composes those lanes but deliberately retains the actual
+Candidate/Compact plan execution, projected telemetry reservation and polling,
+ticket/current-stats/evidence publication, and arbitration against the
+independent `adaptive_order` controller. Public Rust re-export paths and enum
+variant order remain unchanged through the Session facade. No ABI wrapper,
+shader, GPU allocation, pass order, or pixel contract moves in this slice.
+
+This remains an Active M7 ownership step, not acceptance. Concrete `lib.rs`
+ownership, residual Session composition/publication ownership, and the
+Presenter responsibility audit are still open; the three grandfather records
 remain in force.
 
 ## Android retained artifact
@@ -166,10 +187,12 @@ One independently reviewed M7 candidate must:
 1. remove remaining concrete renderer ownership from `lib.rs` so it is crate
    wiring, public facade/re-export and compatibility entrypoints rather than a
    second implementation owner;
-2. move the remaining Projected controller and evidence-policy ownership out
-   of the legacy `surface_session.rs` owner, leaving sorting execution,
-   composition, publication and host coordination only; the CPU/GPU Adaptive
-   order controller extraction described above is already satisfied;
+2. review and resolve the residual `surface_session.rs` composition,
+   publication and host-coordination ownership. The CPU/GPU order and
+   Candidate/Compact Projected Adaptive controller extractions described above
+   are already satisfied; actual plan execution, telemetry polling, evidence
+   publication and cross-controller arbitration intentionally remain Session
+   responsibilities in those isolated slices;
 3. prove `surface_presenter.rs` now contains only adapter/presentation-host
    responsibilities, or extract any residual semantic owner;
 4. preserve public Rust/C/Web/mobile compatibility and exact render behavior;
