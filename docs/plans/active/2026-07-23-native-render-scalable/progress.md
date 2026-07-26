@@ -10,7 +10,7 @@ S1 = Active
 
 <!-- gsplat-program-active-lanes: begin -->
 activation_commit = 3ecf0f2d0180c197faa132443066b3b9b98d36d4
-S1 = authored-proxy-builder
+S1 = proxy-image-gate-contract
 <!-- gsplat-program-active-lanes: end -->
 
 ## Scope

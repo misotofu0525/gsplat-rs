@@ -9,7 +9,7 @@ B1 = Active
 
 <!-- gsplat-program-active-lanes: begin -->
 activation_commit = 3ecf0f2d0180c197faa132443066b3b9b98d36d4
-B1 = balanced-image-gate
+B1 = shared-depth-key-quantizer
 <!-- gsplat-program-active-lanes: end -->
 
 ## B0 authoring slice
