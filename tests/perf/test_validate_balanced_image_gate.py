@@ -163,6 +163,14 @@ def base_manifest(root: pathlib.Path, *, moving: bool = False) -> dict:
             height,
             solid_pixels(width, height, 64 + capture_index),
         )
+        exact["depth_precision"] = {
+            "profile": "ExactFull32",
+            "presentation_sequence": capture_index + 1,
+        }
+        candidate["depth_precision"] = {
+            "profile": "CandidateStable24",
+            "presentation_sequence": capture_index + 1,
+        }
         frame = {
             "capture_index": capture_index,
             "trace_frame_index": trace_frame_index,
@@ -382,6 +390,9 @@ def write_canonical_benchmark_artifact(
                     "camera": copy.deepcopy(camera),
                     "terminal_outcome": "presented",
                     "presentation": copy.deepcopy(presentation),
+                    "capture_depth_precision": copy.deepcopy(
+                        image_receipt["depth_precision"]
+                    ),
                 }
             )
         frames.append(frame)
@@ -420,6 +431,7 @@ def write_canonical_benchmark_artifact(
         "sha256": VALIDATOR.artifact_directory_sha256(artifact),
         "run_id": run_id,
         "frame_index": capture_index,
+        "depth_precision": copy.deepcopy(image_receipt["depth_precision"]),
     }
 
 
@@ -457,6 +469,18 @@ def formal_manifest(root: pathlib.Path) -> dict:
             height,
             solid_pixels(width, height, 64 + capture_index),
         )
+        frame["exact"]["depth_precision"] = {
+            "profile": "ExactFull32",
+            "presentation_sequence": frame["presentation"]["exact"][
+                "presentation_generation"
+            ],
+        }
+        frame["candidate"]["depth_precision"] = {
+            "profile": "CandidateStable24",
+            "presentation_sequence": frame["presentation"]["candidate"][
+                "presentation_generation"
+            ],
+        }
         trace_frame = trace["frames"][frame["trace_frame_index"]]
         pose_intrinsics_sha256 = VALIDATOR.canonical_sha256(
             {"pose": trace_frame["pose"], "intrinsics": trace_frame["intrinsics"]}
@@ -653,6 +677,42 @@ class BalancedImageGateTests(unittest.TestCase):
             ):
                 validate_manifest(root, manifest)
 
+    def test_capture_depth_precision_profiles_are_lane_specific_and_required(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            baseline = base_manifest(root)
+
+            wrong_exact = copy.deepcopy(baseline)
+            wrong_exact["frames"][0]["exact"]["depth_precision"]["profile"] = (
+                "CandidateStable24"
+            )
+            with self.assertRaisesRegex(VALIDATOR.ValidationError, "ExactFull32"):
+                validate_manifest(root, wrong_exact)
+
+            wrong_candidate = copy.deepcopy(baseline)
+            wrong_candidate["frames"][0]["candidate"]["depth_precision"]["profile"] = (
+                "ExactFull32"
+            )
+            with self.assertRaisesRegex(VALIDATOR.ValidationError, "CandidateStable24"):
+                validate_manifest(root, wrong_candidate)
+
+            missing_profile = copy.deepcopy(baseline)
+            del missing_profile["frames"][0]["candidate"]["depth_precision"]["profile"]
+            with self.assertRaisesRegex(VALIDATOR.ValidationError, "profile"):
+                validate_manifest(root, missing_profile)
+
+    def test_capture_depth_precision_sequence_must_match_successful_present(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            manifest = base_manifest(root)
+            manifest["frames"][0]["candidate"]["depth_precision"][
+                "presentation_sequence"
+            ] = 99
+            with self.assertRaisesRegex(
+                VALIDATOR.ValidationError, "presentation_sequence must match"
+            ):
+                validate_manifest(root, manifest)
+
     def test_valid_1920x1080_formal_quality_binds_canonical_runs(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)
@@ -675,6 +735,24 @@ class BalancedImageGateTests(unittest.TestCase):
             )
             receipt["sha256"] = VALIDATOR.artifact_directory_sha256(artifact)
             with self.assertRaisesRegex(VALIDATOR.ValidationError, "capture_index mismatch"):
+                validate_manifest(root, manifest)
+
+    def test_canonical_benchmark_must_retain_capture_depth_precision_receipt(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            manifest = formal_manifest(root)
+            receipt = manifest["frames"][0]["benchmark_artifacts"]["candidate"]
+            artifact = root / receipt["path"]
+            frames_path = artifact / "frames.jsonl"
+            benchmark_frame = json.loads(frames_path.read_text(encoding="utf-8"))
+            del benchmark_frame["capture_depth_precision"]
+            frames_path.write_text(
+                json.dumps(benchmark_frame, sort_keys=True) + "\n", encoding="utf-8"
+            )
+            receipt["sha256"] = VALIDATOR.artifact_directory_sha256(artifact)
+            with self.assertRaisesRegex(
+                VALIDATOR.ValidationError, "benchmark capture depth-precision receipt"
+            ):
                 validate_manifest(root, manifest)
 
     def test_external_benchmark_artifact_is_rejected_before_validation(self) -> None:
@@ -789,6 +867,7 @@ class BalancedImageGateTests(unittest.TestCase):
             frame = manifest["frames"][1]
             width = frame["candidate"]["width"]
             height = frame["candidate"]["height"]
+            depth_precision = frame["candidate"]["depth_precision"]
             frame["candidate"] = write_image(
                 root,
                 "candidate-1-failed.png",
@@ -796,6 +875,7 @@ class BalancedImageGateTests(unittest.TestCase):
                 height,
                 solid_pixels(width, height, 255),
             )
+            frame["candidate"]["depth_precision"] = depth_precision
             refresh_frame_metrics(root, frame)
             with self.assertRaisesRegex(VALIDATOR.ValidationError, "Balanced v1 gate"):
                 validate_manifest(root, manifest)
@@ -831,6 +911,9 @@ class BalancedImageGateTests(unittest.TestCase):
             manifest = base_manifest(root)
             manifest["frames"][0]["candidate"] = copy.deepcopy(
                 manifest["frames"][0]["exact"]
+            )
+            manifest["frames"][0]["candidate"]["depth_precision"]["profile"] = (
+                "CandidateStable24"
             )
             with self.assertRaisesRegex(VALIDATOR.ValidationError, "separate artifacts"):
                 validate_manifest(root, manifest)
@@ -904,6 +987,14 @@ class BalancedImageGateTests(unittest.TestCase):
                     height,
                     solid_pixels(width, height, value),
                 )
+                frame["exact"]["depth_precision"] = {
+                    "profile": "ExactFull32",
+                    "presentation_sequence": index + 1,
+                }
+                frame["candidate"]["depth_precision"] = {
+                    "profile": "CandidateStable24",
+                    "presentation_sequence": index + 1,
+                }
                 refresh_frame_metrics(root, frame)
             refresh_transition_metrics(root, manifest)
             with self.assertRaisesRegex(VALIDATOR.ValidationError, VALIDATOR.TEMPORAL_METRIC):

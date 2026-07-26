@@ -5,6 +5,8 @@ use crate::{SurfacePresenterError, wgpu_label};
 ///
 /// Capture is a diagnostic-only opt-in. Ordinary Surface presenters never ask
 /// the swapchain for copy usage and do not allocate a readback buffer.
+/// This mechanical readback DTO deliberately carries no renderer profile or
+/// frame identity; `SurfaceRenderSession` owns that presentation-sequence join.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SurfaceFrameCapture {
     pub width: u32,

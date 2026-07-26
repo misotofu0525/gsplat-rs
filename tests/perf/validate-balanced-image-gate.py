@@ -68,6 +68,10 @@ MATCHED_LIFECYCLE_GENERATIONS = (
     "plan_generation",
     "presentation_generation",
 )
+DEPTH_PRECISION_PROFILES = {
+    "exact": "ExactFull32",
+    "candidate": "CandidateStable24",
+}
 
 
 class ValidationError(ValueError):
@@ -893,6 +897,15 @@ def validate_formal_benchmark_artifacts(
             fail(f"{lane_context} benchmark terminal_outcome must equal 'presented'")
         if benchmark_frame.get("presentation") != presentations[lane]:
             fail(f"{lane_context} benchmark presentation receipt mismatch")
+        capture_depth_precision = require_object(
+            image_receipts[lane], "depth_precision", f"{context}.{lane}"
+        )
+        if require_object(
+            lane_receipt, "depth_precision", lane_context
+        ) != capture_depth_precision:
+            fail(f"{lane_context} artifact depth-precision receipt mismatch")
+        if benchmark_frame.get("capture_depth_precision") != capture_depth_precision:
+            fail(f"{lane_context} benchmark capture depth-precision receipt mismatch")
         if benchmark_frame.get("active_splats") != authority.source_splat_count:
             fail(f"{lane_context} benchmark active_splats must equal source membership")
 
@@ -1003,6 +1016,29 @@ def validate_frames(
         exact_receipt = require_object(raw_frame, "exact", context)
         candidate_receipt = require_object(raw_frame, "candidate", context)
         image_receipts = {"exact": exact_receipt, "candidate": candidate_receipt}
+        for lane, expected_profile in DEPTH_PRECISION_PROFILES.items():
+            receipt_context = f"{context}.{lane}.depth_precision"
+            depth_precision = require_object(
+                image_receipts[lane], "depth_precision", f"{context}.{lane}"
+            )
+            if require_string(depth_precision, "profile", receipt_context) != expected_profile:
+                fail(
+                    f"{receipt_context}.profile must equal {expected_profile!r}"
+                )
+            presentation_sequence = require_int(
+                depth_precision,
+                "presentation_sequence",
+                receipt_context,
+                positive=True,
+            )
+            if (
+                presentation_sequence
+                != generation_receipts[lane]["presentation_generation"]
+            ):
+                fail(
+                    f"{receipt_context}.presentation_sequence must match the "
+                    "successful presentation generation"
+                )
         if evidence_class == "formal_quality":
             validate_formal_benchmark_artifacts(
                 raw_frame,

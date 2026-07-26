@@ -293,7 +293,42 @@ struct RenderedSessionFrame {
     output: SurfaceFrameOutput,
     current_stats: PresentedCurrentStats,
     depth_precision: Option<PresentedDepthPrecisionReceipt>,
+    capture_presentation_sequence: Option<u64>,
     telemetry: Option<PresentedTelemetry>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) struct SurfaceCaptureDepthPrecisionEvidence {
+    capture: SurfaceFrameCapture,
+    depth_precision: PresentedDepthPrecisionReceipt,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl SurfaceCaptureDepthPrecisionEvidence {
+    pub(crate) fn into_parts(self) -> (SurfaceFrameCapture, PresentedDepthPrecisionReceipt) {
+        (self.capture, self.depth_precision)
+    }
+
+    fn into_capture(self) -> SurfaceFrameCapture {
+        let (capture, _depth_precision) = self.into_parts();
+        capture
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn compose_surface_capture_evidence(
+    publication: &mut SessionPublication,
+    capture: SurfaceFrameCapture,
+) -> Result<SurfaceCaptureDepthPrecisionEvidence, crate::SurfacePresenterError> {
+    let depth_precision = publication.take_capture_depth_precision().ok_or_else(|| {
+        crate::SurfacePresenterError::SurfaceCaptureState(
+            "the capture has no matching presented depth-precision receipt".into(),
+        )
+    })?;
+    Ok(SurfaceCaptureDepthPrecisionEvidence {
+        capture,
+        depth_precision,
+    })
 }
 
 impl RenderedSessionFrame {
@@ -303,6 +338,7 @@ impl RenderedSessionFrame {
             output,
             current_stats: PresentedCurrentStats::Preserve,
             depth_precision: None,
+            capture_presentation_sequence: None,
             telemetry: None,
         }
     }
@@ -311,6 +347,7 @@ impl RenderedSessionFrame {
         output: SurfaceFrameOutput,
         current_stats: PresentedCurrentStats,
         depth_precision: Option<PresentedDepthPrecisionReceipt>,
+        capture_presentation_sequence: Option<u64>,
         telemetry: PresentedTelemetry,
     ) -> Self {
         debug_assert!(output.frame_presented);
@@ -318,6 +355,7 @@ impl RenderedSessionFrame {
             output,
             current_stats,
             depth_precision,
+            capture_presentation_sequence,
             telemetry: Some(telemetry),
         }
     }
@@ -909,6 +947,13 @@ impl SurfaceRenderSession {
     #[cfg(not(target_arch = "wasm32"))]
     pub fn request_surface_capture(&mut self) -> Result<(), RendererError> {
         self.presenter.request_surface_capture()?;
+        if self.exact_plan_receipt.is_some() && !self.publication.arm_capture_depth_precision() {
+            self.presenter.cancel_surface_capture();
+            return Err(crate::SurfacePresenterError::SurfaceCaptureState(
+                "the capture depth-precision receipt ledger is not idle".into(),
+            )
+            .into());
+        }
         Ok(())
     }
 
@@ -917,14 +962,47 @@ impl SurfaceRenderSession {
     /// Returns false when no capture was armed.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn cancel_surface_capture(&mut self) -> bool {
-        self.presenter.cancel_surface_capture()
+        let cancelled = self.presenter.cancel_surface_capture();
+        self.publication.cancel_capture_depth_precision();
+        cancelled
     }
 
     /// Blocks until the requested presented frame is readable and returns
     /// canonical RGBA8 bytes. Calling before a frame presents fails closed.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn take_surface_capture(&mut self) -> Result<SurfaceFrameCapture, RendererError> {
+        if self.exact_plan_receipt.is_some() {
+            return Ok(self.take_surface_capture_evidence()?.into_capture());
+        }
         Ok(self.presenter.take_surface_capture()?)
+    }
+
+    /// Takes one exact native capture together with the renderer receipt joined
+    /// to that same successful presentation. This crate-private evidence path
+    /// is intentionally unavailable to stable bindings and consumes both
+    /// values atomically.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn take_surface_capture_evidence(
+        &mut self,
+    ) -> Result<SurfaceCaptureDepthPrecisionEvidence, RendererError> {
+        if self.exact_plan_receipt.is_none() {
+            return Err(crate::SurfacePresenterError::SurfaceCaptureState(
+                "depth-precision evidence is available only for Exact Surface capture".into(),
+            )
+            .into());
+        }
+        let capture = match self.presenter.take_surface_capture() {
+            Ok(capture) => capture,
+            Err(error @ crate::SurfacePresenterError::SurfaceCaptureReadback) => {
+                self.publication.cancel_capture_depth_precision();
+                return Err(error.into());
+            }
+            Err(error) => return Err(error.into()),
+        };
+        Ok(compose_surface_capture_evidence(
+            &mut self.publication,
+            capture,
+        )?)
     }
 
     pub fn geometry_path(&self) -> GeometryPath {
@@ -1834,15 +1912,14 @@ impl SurfaceRenderSession {
         };
         let mut rendered = result?;
         if rendered.output.frame_presented {
-            debug_assert_eq!(
-                exact_surface,
-                rendered.depth_precision.is_some(),
-                "only a presented Packed Exact frame carries depth precision evidence"
-            );
             let telemetry = rendered
                 .telemetry
                 .take()
                 .expect("presented frame carries finalized telemetry");
+            self.publication.observe_presented_capture(
+                rendered.capture_presentation_sequence,
+                rendered.depth_precision,
+            );
             let publication = self.presented_frame_publication(
                 rendered.output,
                 rendered.current_stats,
@@ -1941,11 +2018,9 @@ impl SurfaceRenderSession {
         frame_started: crate::TimerInstant,
     ) -> RenderedSessionFrame {
         let submission = rendered.submission();
-        debug_assert_eq!(
-            rendered.target().presentation_sequence(),
-            submission.presentation_sequence(),
-            "Surface lifecycle and renderer publish the same successful present sequence"
-        );
+        // Keep the lifecycle sequence independent from the renderer receipt.
+        // The capture ledger admits the join only when they match exactly.
+        let capture_presentation_sequence = Some(rendered.target().presentation_sequence());
         let presented_current_stats_submission = submission.current_stats_submission().into();
         let plan = submission.plan_id();
         let order_generation = submission.order_generation();
@@ -1975,6 +2050,7 @@ impl SurfaceRenderSession {
                 counts_current,
             },
             Some(depth_precision),
+            capture_presentation_sequence,
             telemetry,
         )
     }
@@ -2462,6 +2538,7 @@ impl SurfaceRenderSession {
         Ok(RenderedSessionFrame::presented(
             output,
             PresentedCurrentStats::Preserve,
+            None,
             None,
             telemetry,
         ))
@@ -2983,6 +3060,7 @@ impl SurfaceRenderSession {
         Ok(RenderedSessionFrame::presented(
             output,
             PresentedCurrentStats::Preserve,
+            None,
             None,
             telemetry,
         ))

@@ -73,6 +73,38 @@ impl PresentedDepthPrecisionReceipt {
     }
 }
 
+/// Capture evidence admitted only when the Surface lifecycle and renderer
+/// receipt identify the same successful presentation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PresentedCaptureDepthPrecisionReceipt {
+    depth_precision: PresentedDepthPrecisionReceipt,
+}
+
+impl PresentedCaptureDepthPrecisionReceipt {
+    const fn join(
+        presentation_sequence: u64,
+        depth_precision: PresentedDepthPrecisionReceipt,
+    ) -> Option<Self> {
+        if presentation_sequence != depth_precision.presentation_sequence() {
+            return None;
+        }
+        Some(Self { depth_precision })
+    }
+
+    const fn depth_precision(self) -> PresentedDepthPrecisionReceipt {
+        self.depth_precision
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CaptureDepthPrecisionState {
+    Disabled,
+    Idle,
+    Armed,
+    Presented(PresentedCaptureDepthPrecisionReceipt),
+    Unavailable,
+}
+
 #[derive(Default)]
 pub(crate) struct SurfaceTelemetryBatch {
     cpu_order_completed: Vec<SurfaceCpuOrderMeasurement>,
@@ -275,6 +307,7 @@ pub(crate) struct SessionPublication {
     legacy_stats_availability: LegacySurfaceStatsAvailability,
     last_stats: FrameStats,
     presented_depth_precision: Option<PresentedDepthPrecisionReceipt>,
+    capture_depth_precision: CaptureDepthPrecisionState,
     pending_telemetry: SurfaceTelemetryBatch,
     evidence: SessionEvidence,
     #[cfg(test)]
@@ -292,6 +325,11 @@ impl SessionPublication {
             },
             last_stats: FrameStats::zero(),
             presented_depth_precision: None,
+            capture_depth_precision: if exact_surface {
+                CaptureDepthPrecisionState::Idle
+            } else {
+                CaptureDepthPrecisionState::Disabled
+            },
             pending_telemetry: SurfaceTelemetryBatch::default(),
             evidence: SessionEvidence::new(),
             #[cfg(test)]
@@ -311,6 +349,63 @@ impl SessionPublication {
         &self,
     ) -> Option<PresentedDepthPrecisionReceipt> {
         self.presented_depth_precision
+    }
+
+    pub(crate) fn arm_capture_depth_precision(&mut self) -> bool {
+        match self.capture_depth_precision {
+            CaptureDepthPrecisionState::Idle => {
+                self.capture_depth_precision = CaptureDepthPrecisionState::Armed;
+                true
+            }
+            CaptureDepthPrecisionState::Disabled => true,
+            CaptureDepthPrecisionState::Armed
+            | CaptureDepthPrecisionState::Presented(_)
+            | CaptureDepthPrecisionState::Unavailable => false,
+        }
+    }
+
+    pub(crate) fn cancel_capture_depth_precision(&mut self) {
+        if self.capture_depth_precision != CaptureDepthPrecisionState::Disabled {
+            self.capture_depth_precision = CaptureDepthPrecisionState::Idle;
+        }
+    }
+
+    pub(crate) fn observe_presented_capture(
+        &mut self,
+        presentation_sequence: Option<u64>,
+        depth_precision: Option<PresentedDepthPrecisionReceipt>,
+    ) {
+        if self.capture_depth_precision == CaptureDepthPrecisionState::Armed {
+            let joined =
+                presentation_sequence
+                    .zip(depth_precision)
+                    .and_then(|(sequence, receipt)| {
+                        PresentedCaptureDepthPrecisionReceipt::join(sequence, receipt)
+                    });
+            self.capture_depth_precision = joined.map_or(
+                CaptureDepthPrecisionState::Unavailable,
+                CaptureDepthPrecisionState::Presented,
+            );
+        }
+    }
+
+    pub(crate) fn take_capture_depth_precision(
+        &mut self,
+    ) -> Option<PresentedDepthPrecisionReceipt> {
+        let previous = std::mem::replace(
+            &mut self.capture_depth_precision,
+            CaptureDepthPrecisionState::Idle,
+        );
+        match previous {
+            CaptureDepthPrecisionState::Presented(receipt) => Some(receipt.depth_precision()),
+            CaptureDepthPrecisionState::Disabled => {
+                self.capture_depth_precision = CaptureDepthPrecisionState::Disabled;
+                None
+            }
+            CaptureDepthPrecisionState::Idle
+            | CaptureDepthPrecisionState::Armed
+            | CaptureDepthPrecisionState::Unavailable => None,
+        }
     }
 
     pub(crate) fn legacy_stats(&self) -> Option<FrameStats> {
@@ -771,5 +866,55 @@ mod tests {
             publication.presented_depth_precision_receipt(),
             Some(next_presented)
         );
+    }
+
+    #[test]
+    fn capture_depth_receipt_join_is_sequence_matched_take_once_and_not_overwritten() {
+        let mut publication = SessionPublication::new(true);
+        let captured =
+            depth_precision_receipt(SurfaceDepthPrecisionProfile::CandidateStable24, 7, 11, 13);
+        let later = depth_precision_receipt(SurfaceDepthPrecisionProfile::ExactFull32, 9, 15, 16);
+
+        assert!(publication.arm_capture_depth_precision());
+        publication.observe_presented_capture(Some(13), Some(captured));
+        publication.observe_presented_capture(Some(16), Some(later));
+
+        assert_eq!(publication.take_capture_depth_precision(), Some(captured));
+        assert_eq!(publication.take_capture_depth_precision(), None);
+    }
+
+    #[test]
+    fn capture_depth_receipt_join_fails_closed_without_a_matching_presented_receipt() {
+        let receipt =
+            depth_precision_receipt(SurfaceDepthPrecisionProfile::CandidateStable24, 7, 11, 13);
+
+        for (presentation_sequence, depth_precision) in
+            [(None, None), (Some(12), Some(receipt)), (Some(13), None)]
+        {
+            let mut publication = SessionPublication::new(true);
+            assert!(publication.arm_capture_depth_precision());
+            if presentation_sequence.is_some() || depth_precision.is_some() {
+                publication.observe_presented_capture(presentation_sequence, depth_precision);
+            }
+            assert_eq!(publication.take_capture_depth_precision(), None);
+        }
+    }
+
+    #[test]
+    fn failed_or_duplicate_capture_lifecycle_cannot_manufacture_a_join() {
+        let mut publication = SessionPublication::new(true);
+        let receipt =
+            depth_precision_receipt(SurfaceDepthPrecisionProfile::CandidateStable24, 7, 11, 13);
+
+        assert!(publication.arm_capture_depth_precision());
+        assert!(!publication.arm_capture_depth_precision());
+        assert_eq!(publication.take_capture_depth_precision(), None);
+        publication.observe_presented_capture(Some(13), Some(receipt));
+        assert_eq!(publication.take_capture_depth_precision(), None);
+
+        assert!(publication.arm_capture_depth_precision());
+        publication.cancel_capture_depth_precision();
+        publication.observe_presented_capture(Some(13), Some(receipt));
+        assert_eq!(publication.take_capture_depth_precision(), None);
     }
 }

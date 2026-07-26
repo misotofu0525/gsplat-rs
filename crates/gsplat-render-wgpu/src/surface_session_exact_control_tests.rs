@@ -8,9 +8,13 @@ use std::sync::Arc;
 
 use gsplat_core::{Camera, RendererConfig, SceneBuffers, Vec3f};
 
-use super::{SurfaceGpuOrderProducer, SurfaceOrderBackend, SurfaceProjectedDrawPolicy};
+use super::{
+    SurfaceGpuOrderProducer, SurfaceOrderBackend, SurfaceProjectedDrawPolicy,
+    compose_surface_capture_evidence,
+};
 use crate::cpu_order::DepthKeyPrecision;
-use crate::plans::{PlanId, TestGpuAdmissionMode};
+use crate::evidence::{PresentedDepthPrecisionReceipt, SessionPublication};
+use crate::plans::{FrameIdentity, PlanId, TestGpuAdmissionMode};
 use crate::renderer::{
     ExactPlanPolicy, PreparedRuntimeSlot, SurfaceDepthPrecisionProfile, execute_frame,
 };
@@ -18,7 +22,10 @@ use crate::surface::{
     ExactSurfacePlanState, commit_exact_plan_state, exact_gpu_plan_for_producer,
     prepare_exact_gpu_order, prepare_exact_gpu_order_producer,
 };
-use crate::{GeometryPath, Renderer, RendererError, ResidentSceneCpu, SurfacePresenterError};
+use crate::{
+    GeometryPath, Renderer, RendererError, ResidentSceneCpu, SurfaceFrameCapture,
+    SurfacePresenterError,
+};
 
 fn exact_control_scene() -> ResidentSceneCpu {
     ResidentSceneCpu::encode_owned(SceneBuffers {
@@ -47,6 +54,114 @@ fn depth_precision_scene() -> ResidentSceneCpu {
         sh_rest: None,
     })
     .expect("depth precision fixture")
+}
+
+#[test]
+fn surface_capture_receipt_join_freezes_the_requested_presented_profile() {
+    let candidate = PresentedDepthPrecisionReceipt::new(
+        SurfaceDepthPrecisionProfile::CandidateStable24,
+        FrameIdentity::new(1, 2, 3, 4, 5),
+        PlanId::CpuPostSort,
+        6,
+        7,
+    );
+    let later_exact = PresentedDepthPrecisionReceipt::new(
+        SurfaceDepthPrecisionProfile::ExactFull32,
+        FrameIdentity::new(1, 8, 3, 4, 5),
+        PlanId::CpuPostSort,
+        9,
+        10,
+    );
+    let mut publication = SessionPublication::new(true);
+
+    assert!(publication.arm_capture_depth_precision());
+    publication.observe_presented_capture(Some(7), Some(candidate));
+    publication.observe_presented_capture(Some(10), Some(later_exact));
+
+    let joined = compose_surface_capture_evidence(
+        &mut publication,
+        SurfaceFrameCapture {
+            width: 1,
+            height: 1,
+            rgba8: vec![1, 2, 3, 4],
+        },
+    )
+    .expect("capture keeps its original presented receipt");
+    let (capture, joined) = joined.into_parts();
+    assert_eq!(capture.rgba8, [1, 2, 3, 4]);
+    assert_eq!(
+        joined.profile(),
+        SurfaceDepthPrecisionProfile::CandidateStable24
+    );
+    assert_eq!(joined.presentation_sequence(), 7);
+    assert_eq!(publication.take_capture_depth_precision(), None);
+}
+
+#[test]
+fn ordinary_capture_projection_consumes_the_private_receipt_without_leaking_it() {
+    let receipt = PresentedDepthPrecisionReceipt::new(
+        SurfaceDepthPrecisionProfile::ExactFull32,
+        FrameIdentity::new(1, 2, 3, 4, 5),
+        PlanId::CpuPostSort,
+        6,
+        7,
+    );
+    let mut publication = SessionPublication::new(true);
+    assert!(publication.arm_capture_depth_precision());
+    publication.observe_presented_capture(Some(7), Some(receipt));
+
+    let capture = compose_surface_capture_evidence(
+        &mut publication,
+        SurfaceFrameCapture {
+            width: 1,
+            height: 1,
+            rgba8: vec![5, 6, 7, 8],
+        },
+    )
+    .expect("ordinary projection first consumes the complete private join")
+    .into_capture();
+    assert_eq!(capture.rgba8, [5, 6, 7, 8]);
+    assert!(matches!(
+        compose_surface_capture_evidence(
+            &mut publication,
+            SurfaceFrameCapture {
+                width: 1,
+                height: 1,
+                rgba8: vec![9, 10, 11, 12],
+            },
+        ),
+        Err(SurfacePresenterError::SurfaceCaptureState(message))
+            if message.contains("no matching presented depth-precision receipt")
+    ));
+}
+
+#[test]
+fn surface_capture_evidence_rejects_mismatched_sequence_and_duplicate_take() {
+    let receipt = PresentedDepthPrecisionReceipt::new(
+        SurfaceDepthPrecisionProfile::CandidateStable24,
+        FrameIdentity::new(1, 2, 3, 4, 5),
+        PlanId::CpuPostSort,
+        6,
+        7,
+    );
+    let mut publication = SessionPublication::new(true);
+    assert!(publication.arm_capture_depth_precision());
+    publication.observe_presented_capture(Some(8), Some(receipt));
+
+    for rgba8 in [vec![1, 2, 3, 4], vec![5, 6, 7, 8]] {
+        assert!(matches!(
+            compose_surface_capture_evidence(
+                &mut publication,
+                SurfaceFrameCapture {
+                    width: 1,
+                    height: 1,
+                    rgba8,
+                },
+            ),
+            Err(SurfacePresenterError::SurfaceCaptureState(message))
+                if message.contains("no matching presented depth-precision receipt")
+        ));
+    }
 }
 
 fn exact_control_limits() -> wgpu::Limits {

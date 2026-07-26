@@ -276,3 +276,49 @@ join; mismatched sequence, duplicate take, absent receipt, and malformed
 artifact precision fields must fail closed. This does not run a browser or
 device, produce a formal artifact, or make an image/performance claim. Web and
 Android adapters are later, separately scoped consumers of the proven join.
+
+Implementation on baseline `4f761eb7ef63bf2e960294797daa264e1dd909cb`
+keeps `SurfaceCapture` as the mechanical native readback owner and adds the
+join only to the private `SurfaceRenderSession` / `SessionPublication`
+composition boundary. A successful capture request arms a take-once ledger.
+Only an independently observed Surface lifecycle presentation sequence equal
+to the renderer-owned `PresentedDepthPrecisionReceipt` sequence can seal the
+join. Missing or mismatched receipts become unavailable, failed/unpresented
+attempts cannot seal it, a later successful frame cannot overwrite it, and
+take/cancel consumes or clears the private state.
+
+The session exposes the completed pair only through a restricted crate-private
+`take_surface_capture_evidence` path, which returns the captured RGBA8 bytes and
+their matched renderer receipt as one typed value. The stable public
+`take_surface_capture` remains pixels-only, projects from that same atomic take,
+and consumes the receipt so a later evidence producer cannot reuse or rejoin
+it. No latest-receipt getter participates in either path.
+
+The canonical Balanced validator now requires each retained image receipt to
+bind `ExactFull32` to the Exact lane and `CandidateStable24` to the Candidate
+lane, with an explicit `presentation_sequence` equal to that lane's successful
+presentation generation. Formal quality additionally requires the identical
+depth-precision receipt in both the hash-covered canonical benchmark terminal
+frame and its outer artifact receipt. Wrong or missing profiles, wrong
+sequences, missing benchmark receipts, and lane/profile swaps fail closed.
+
+Host-only focused verification for this candidate:
+
+- `cargo check -p gsplat-render-wgpu --lib`: passed;
+- `cargo test -p gsplat-render-wgpu --lib evidence::session_publication::tests`:
+  7 passed;
+- `cargo test -p gsplat-render-wgpu --lib surface_session::exact_control_tests`:
+  9 passed;
+- `cargo test -p gsplat-render-wgpu --lib surface::capture::tests`: 6 passed;
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests/perf/test_validate_balanced_image_gate.py`:
+  36 passed;
+- renderer all-target Clippy with warnings denied passed for ordinary and
+  `diagnostic-surface-depth-key-candidate24` builds;
+- Rust format, source-architecture tests (3 passed), and diff check passed.
+
+No browser, Android, iOS, `adb`, `simctl`, platform collector, shader, binding,
+PlanId, Adaptive policy, or product default was changed or run. No formal
+artifact was created, no image-quality or performance conclusion is claimed,
+and all device/browser/endpoint qualification remains **Deferred**. B1 remains
+**Active** pending separately scoped collector integration and formal endpoint
+evidence.
