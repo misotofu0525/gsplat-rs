@@ -8,16 +8,15 @@
       "members": [
         {
           "task": "B1",
-          "lane": "surface-depth-precision-presentation-receipt",
+          "lane": "surface-capture-depth-receipt-join",
           "write_allowlist": [
             "docs/plans/active/2026-07-23-native-render-balanced/progress.md",
-            "crates/gsplat-render-wgpu/Cargo.toml",
-            "crates/gsplat-render-wgpu/src/renderer/mod.rs",
-            "crates/gsplat-render-wgpu/src/renderer/facade.rs",
             "crates/gsplat-render-wgpu/src/surface_session.rs",
-            "crates/gsplat-render-wgpu/src/evidence/mod.rs",
             "crates/gsplat-render-wgpu/src/evidence/session_publication.rs",
-            "crates/gsplat-render-wgpu/src/surface_session_exact_control_tests.rs"
+            "crates/gsplat-render-wgpu/src/surface/capture.rs",
+            "crates/gsplat-render-wgpu/src/surface_session_exact_control_tests.rs",
+            "tests/perf/validate-balanced-image-gate.py",
+            "tests/perf/test_validate_balanced_image_gate.py"
           ]
         },
         {
@@ -31,10 +30,10 @@
         }
       ],
       "integration_order": [
-        "surface-depth-precision-presentation-receipt",
+        "surface-capture-depth-receipt-join",
         "proxy-image-evidence-validator"
       ],
-      "reason": "B1 private Surface precision presentation receipt and S1 fail-closed proxy-image evidence validation are independent post-contract seams; neither changes a product default or unlocks later work alone."
+      "reason": "B1 atomic native capture-to-depth-receipt joining and S1 fail-closed proxy-image evidence validation are independent post-contract seams; neither changes a product default or unlocks later work alone."
     },
     "task_catalog": {
       "A0": "A",

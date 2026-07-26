@@ -9,7 +9,7 @@ B1 = Active
 
 <!-- gsplat-program-active-lanes: begin -->
 activation_commit = 3ecf0f2d0180c197faa132443066b3b9b98d36d4
-B1 = surface-depth-precision-presentation-receipt
+B1 = surface-capture-depth-receipt-join
 <!-- gsplat-program-active-lanes: end -->
 
 ## B0 authoring slice
@@ -252,3 +252,27 @@ No browser, Android, platform collector or artifact writer was changed or run.
 No image, performance or endpoint qualification is claimed, and B1 remains
 **Active** pending root-owned capture/validator integration and formal endpoint
 evidence.
+
+## Current B1 atomic capture-to-receipt join slice
+
+The next B1 slice fixes a discovered evidence-integrity gap before any endpoint
+run: a native `SurfaceFrameCapture` freezes pixels after one successful
+presentation, while the session's latest precision receipt can be overwritten
+by a later successful frame. A delayed consumer could therefore pair the old
+RGBA8 bytes with the wrong depth profile.
+
+This slice adds only a private, take-once join at the `SurfaceRenderSession`
+composition boundary. The join must bind the capture to the same successful
+presentation sequence and `PresentedDepthPrecisionReceipt`, reject a mismatch,
+and be unavailable after a failed/unpresented frame or after consumption.
+`SurfaceCapture` remains a mechanical readback owner; stable Rust/C/Swift/JS
+APIs and platform collectors remain unchanged. The canonical Balanced validator
+will require the retained Exact/Candidate depth-profile receipt instead of
+trusting a caller-provided lane label.
+
+The acceptance tests are host-only: a capture followed by another successful
+frame must retain its original receipt; failed presentation cannot create a
+join; mismatched sequence, duplicate take, absent receipt, and malformed
+artifact precision fields must fail closed. This does not run a browser or
+device, produce a formal artifact, or make an image/performance claim. Web and
+Android adapters are later, separately scoped consumers of the proven join.
