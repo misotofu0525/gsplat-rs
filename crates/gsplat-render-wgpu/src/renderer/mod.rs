@@ -51,10 +51,24 @@ use current_stats::{CurrentStatsFrameCounts, CurrentStatsVisibleSource};
 
 #[cfg(all(
     feature = "diagnostic-surface-depth-key-candidate24",
-    feature = "diagnostic-surface-projected-axes16"
+    feature = "diagnostic-surface-depth-key-candidate20"
 ))]
 compile_error!(
-    "diagnostic-surface-depth-key-candidate24 and diagnostic-surface-projected-axes16 are mutually exclusive Balanced experiments"
+    "diagnostic depth-key candidate24 and candidate20 are separate Balanced experiments"
+);
+
+#[cfg(any(
+    all(
+        feature = "diagnostic-surface-depth-key-candidate24",
+        feature = "diagnostic-surface-projected-axes16"
+    ),
+    all(
+        feature = "diagnostic-surface-depth-key-candidate20",
+        feature = "diagnostic-surface-projected-axes16"
+    )
+))]
+compile_error!(
+    "diagnostic depth-key and projected-cache candidates are separate Balanced experiments"
 );
 
 /// Construction-time depth-key profile for the private Packed Surface graph.
@@ -67,6 +81,7 @@ pub(crate) enum SurfaceDepthPrecisionProfile {
     #[default]
     ExactFull32,
     CandidateStable24,
+    CandidateStable20,
 }
 
 impl SurfaceDepthPrecisionProfile {
@@ -75,7 +90,17 @@ impl SurfaceDepthPrecisionProfile {
         {
             Self::CandidateStable24
         }
-        #[cfg(not(feature = "diagnostic-surface-depth-key-candidate24"))]
+        #[cfg(all(
+            not(feature = "diagnostic-surface-depth-key-candidate24"),
+            feature = "diagnostic-surface-depth-key-candidate20"
+        ))]
+        {
+            Self::CandidateStable20
+        }
+        #[cfg(not(any(
+            feature = "diagnostic-surface-depth-key-candidate24",
+            feature = "diagnostic-surface-depth-key-candidate20"
+        )))]
         {
             Self::ExactFull32
         }
@@ -85,6 +110,7 @@ impl SurfaceDepthPrecisionProfile {
         match self {
             Self::ExactFull32 => DepthKeyPrecision::ExactFull32,
             Self::CandidateStable24 => DepthKeyPrecision::CandidateStable24,
+            Self::CandidateStable20 => DepthKeyPrecision::CandidateStable20,
         }
     }
 
@@ -92,6 +118,7 @@ impl SurfaceDepthPrecisionProfile {
         match precision {
             DepthKeyPrecision::ExactFull32 => Self::ExactFull32,
             DepthKeyPrecision::CandidateStable24 => Self::CandidateStable24,
+            DepthKeyPrecision::CandidateStable20 => Self::CandidateStable20,
         }
     }
 }

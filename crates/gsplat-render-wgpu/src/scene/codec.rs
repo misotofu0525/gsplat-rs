@@ -11,6 +11,7 @@ use super::{ResidentEncodingReport, ResidentSceneError, ResidentSourceSplat};
     feature = "diagnostic-resident-sh-mantissa8",
     any(
         feature = "diagnostic-surface-depth-key-candidate24",
+        feature = "diagnostic-surface-depth-key-candidate20",
         feature = "diagnostic-surface-projected-axes16"
     )
 ))]

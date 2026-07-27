@@ -374,6 +374,10 @@ mod tests {
             DepthKeyPrecision::CandidateStable24.retained_high_bits(),
             24
         );
+        assert_eq!(
+            DepthKeyPrecision::CandidateStable20.retained_high_bits(),
+            20
+        );
 
         gsplat_sort::CpuSortBackend::default()
             .sort_values_by_keys(&candidate_keys, &mut candidate_ids)
@@ -388,7 +392,7 @@ mod tests {
     }
 
     #[test]
-    fn candidate_high24_reserves_zero_without_changing_exact_bits() {
+    fn candidate_depth_precisions_reserve_zero_without_changing_exact_bits() {
         let smallest_positive = f32::from_bits(1);
         assert_eq!(
             depth_to_key_with_precision(smallest_positive, DepthKeyPrecision::ExactFull32),
@@ -402,11 +406,19 @@ mod tests {
             depth_to_key_with_precision(1.0, DepthKeyPrecision::CandidateStable24),
             1.0_f32.to_bits()
         );
+        assert_eq!(
+            depth_to_key_with_precision(smallest_positive, DepthKeyPrecision::CandidateStable20),
+            0x0000_1000
+        );
+        assert_eq!(
+            depth_to_key_with_precision(1.0, DepthKeyPrecision::CandidateStable20),
+            1.0_f32.to_bits()
+        );
     }
 
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
-    fn architecture_leaf_uses_the_shared_candidate_quantizer() {
+    fn architecture_leaf_uses_each_shared_candidate_quantizer() {
         let positions = (0..257)
             .map(|index| {
                 let low_bits = (index as u32).wrapping_mul(37) & 0xff;
@@ -420,27 +432,32 @@ mod tests {
         let mut leaf_ids = Vec::new();
         let mut chunks = Vec::new();
 
-        preprocess_positions_visible_into_with_precision(
-            &positions,
-            &camera,
-            DepthKeyPrecision::CandidateStable24,
-            &mut scalar_keys,
-            &mut scalar_ids,
-        )
-        .expect("scalar candidate preprocess");
-        preprocess_positions_visible_into_parallel_with_precision(
-            &positions,
-            &camera,
-            DepthKeyPrecision::CandidateStable24,
-            &mut leaf_keys,
-            &mut leaf_ids,
-            &mut chunks,
-        )
-        .expect("architecture candidate preprocess");
+        for (precision, low_mask) in [
+            (DepthKeyPrecision::CandidateStable24, 0xff),
+            (DepthKeyPrecision::CandidateStable20, 0xfff),
+        ] {
+            preprocess_positions_visible_into_with_precision(
+                &positions,
+                &camera,
+                precision,
+                &mut scalar_keys,
+                &mut scalar_ids,
+            )
+            .expect("scalar candidate preprocess");
+            preprocess_positions_visible_into_parallel_with_precision(
+                &positions,
+                &camera,
+                precision,
+                &mut leaf_keys,
+                &mut leaf_ids,
+                &mut chunks,
+            )
+            .expect("architecture candidate preprocess");
 
-        assert_eq!(leaf_keys, scalar_keys);
-        assert_eq!(leaf_ids, scalar_ids);
-        assert!(leaf_keys.iter().all(|key| key & 0xff == 0));
+            assert_eq!(leaf_keys, scalar_keys);
+            assert_eq!(leaf_ids, scalar_ids);
+            assert!(leaf_keys.iter().all(|key| key & low_mask == 0));
+        }
     }
 
     #[test]

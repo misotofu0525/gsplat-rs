@@ -15,15 +15,16 @@ mod x86_64;
 
 /// Private depth-key precision used by Exact ordering and B1 contract tests.
 ///
-/// Product callers remain on `ExactFull32`. The 24-bit variant retains the
-/// high IEEE-754 bits and reserves key zero for non-visible sources so the
-/// precision experiment cannot change visible membership.
+/// Product callers remain on `ExactFull32`. Candidate variants retain high
+/// IEEE-754 bits and reserve key zero for non-visible sources so the precision
+/// experiment cannot change visible membership.
 #[cfg_attr(not(test), allow(dead_code))]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum DepthKeyPrecision {
     #[default]
     ExactFull32,
     CandidateStable24,
+    CandidateStable20,
 }
 
 impl DepthKeyPrecision {
@@ -31,6 +32,7 @@ impl DepthKeyPrecision {
         match self {
             Self::ExactFull32 => 32,
             Self::CandidateStable24 => 24,
+            Self::CandidateStable20 => 20,
         }
     }
 
@@ -42,9 +44,10 @@ impl DepthKeyPrecision {
 /// Convert one already-visible positive depth into its stable radix key.
 ///
 /// Positive finite IEEE-754 values sort in the same direction as their bits.
-/// CandidateStable24 clears the low eight bits. Its lowest positive bin is
-/// clamped to one retained-bit unit because zero remains the GPU visibility
-/// sentinel; this changes no near/far decision or source membership.
+/// Candidate variants clear their low precision-specific bits. The lowest
+/// positive bin is clamped to one retained-bit unit because zero remains the
+/// GPU visibility sentinel; this changes no near/far decision or source
+/// membership.
 #[inline]
 pub(crate) const fn visible_depth_key(depth: f32, precision: DepthKeyPrecision) -> u32 {
     let bits = depth.max(0.0).to_bits();

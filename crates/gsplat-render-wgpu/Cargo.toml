@@ -16,6 +16,7 @@ rust-version.workspace = true
 default = []
 diagnostic-surface-capture-receipt = []
 diagnostic-surface-depth-key-candidate24 = []
+diagnostic-surface-depth-key-candidate20 = []
 diagnostic-surface-projected-axes16 = []
 diagnostic-resident-sh-mantissa8 = []
 

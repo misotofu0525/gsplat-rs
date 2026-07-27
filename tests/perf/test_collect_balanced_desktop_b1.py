@@ -209,6 +209,17 @@ def write_black_rgba_png(path: Path) -> tuple[str, str]:
 
 
 class CollectorRecordTests(unittest.TestCase):
+    def test_candidate20_is_a_separate_single_variable_experiment(self) -> None:
+        experiment = collector.EXPERIMENTS["b1-20"]
+        exact, candidate = experiment.lanes
+        self.assertEqual(experiment.name, "b1-depth-key-candidate20")
+        self.assertEqual(experiment.changed_receipt, "depth_precision")
+        self.assertEqual(exact.profile, "ExactFull32")
+        self.assertEqual(candidate.profile, "CandidateStable20")
+        self.assertEqual(
+            candidate.cargo_feature, "diagnostic-surface-depth-key-candidate20"
+        )
+
     def test_malformed_terminal_record_is_rejected(self) -> None:
         line = collector.PREFIXES["terminal"] + "status=ok malformed\n"
         with self.assertRaisesRegex(collector.ValidationError, "non key=value"):

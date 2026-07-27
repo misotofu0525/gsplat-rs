@@ -1941,6 +1941,121 @@ mod tests {
     }
 
     #[test]
+    fn candidate_high20_cpu_and_both_gpu_key_generators_match() {
+        let Some((device, queue)) = test_device() else {
+            eprintln!("skipping candidate depth-key GPU test; adapter unavailable");
+            return;
+        };
+        let depths = [
+            f32::from_bits(0x3f80_0001),
+            f32::from_bits(0x3f80_0ffe),
+            1.5,
+            2.0,
+            f32::MIN_POSITIVE,
+            0.0,
+        ];
+        let positions = depths
+            .iter()
+            .copied()
+            .map(|depth| Vec3f::new(0.0, 0.0, depth))
+            .collect::<Vec<_>>();
+        let sources = depths
+            .iter()
+            .copied()
+            .map(|depth| [0.0, 0.0, depth, 0.0])
+            .collect::<Vec<_>>();
+        let mut camera = Camera::default();
+        camera.intrinsics.near_plane = f32::MIN_POSITIVE;
+        camera.intrinsics.far_plane = 2.0;
+        let mut params = GpuSurfaceRenderParams::zeroed();
+        params.view_rot_row2 = [0.0, 0.0, 1.0, 0.0];
+        params.near_plane = camera.intrinsics.near_plane;
+        params.far_plane = camera.intrinsics.far_plane;
+        params.len = depths.len() as u32;
+        params.source_position_stride_words = 4;
+        let source_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("candidate-high20-direct-source"),
+            contents: bytemuck::cast_slice(&sources),
+            usage: wgpu::BufferUsages::STORAGE,
+        });
+        let params_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("candidate-high20-direct-params"),
+            contents: bytemuck::bytes_of(&params),
+            usage: wgpu::BufferUsages::UNIFORM,
+        });
+        let candidate = DirectGpuOrder::new_with_depth_key_precision(
+            &device,
+            &source_buffer,
+            &params_buffer,
+            depths.len() as u32,
+            depths.len() as u32,
+            DepthKeyPrecision::CandidateStable20,
+        )
+        .expect("candidate key generator");
+        let candidate_pairs = readback_pairs(&device, &queue, &candidate);
+
+        let mut cpu_keys = Vec::new();
+        let mut cpu_ids = Vec::new();
+        crate::cpu_order::preprocess_positions_visible_into_with_precision(
+            &positions,
+            &camera,
+            DepthKeyPrecision::CandidateStable20,
+            &mut cpu_keys,
+            &mut cpu_ids,
+        )
+        .expect("CPU candidate preprocess");
+        let visible_count = cpu_ids.len();
+        CpuSortBackend::default()
+            .sort_values_by_keys(&cpu_keys, &mut cpu_ids)
+            .expect("CPU candidate radix");
+        let expected_visible = cpu_ids
+            .iter()
+            .map(|&id| GpuSortPair {
+                key: crate::cpu_order::depth_to_key_with_precision(
+                    depths[id as usize],
+                    DepthKeyPrecision::CandidateStable20,
+                ),
+                id,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(&candidate_pairs[..visible_count], expected_visible);
+        assert!(
+            candidate_pairs[visible_count..]
+                .iter()
+                .all(|pair| pair.key == 0)
+        );
+        assert!(
+            candidate_pairs[..visible_count]
+                .iter()
+                .all(|pair| pair.key & 0xfff == 0)
+        );
+
+        let (resident_keys, resident_visible_count) = readback_resident_generated_keys(
+            &device,
+            &queue,
+            &sources,
+            &params,
+            DepthKeyPrecision::CandidateStable20,
+        );
+        let expected_raw = depths
+            .iter()
+            .copied()
+            .map(|depth| {
+                if (params.near_plane..=params.far_plane).contains(&depth) {
+                    crate::cpu_order::depth_to_key_with_precision(
+                        depth,
+                        DepthKeyPrecision::CandidateStable20,
+                    )
+                } else {
+                    0
+                }
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(resident_keys, expected_raw);
+        assert_eq!(resident_visible_count, visible_count as u32);
+    }
+
+    #[test]
     fn resident_position_stride_generates_the_same_complete_order() {
         let Some((device, queue)) = test_device() else {
             eprintln!("skipping resident GPU key-generation test; adapter unavailable");

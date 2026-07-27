@@ -234,7 +234,10 @@ fn diagnostic_capture_receipt(
 
 #[cfg(all(
     feature = "diagnostic-surface-capture-receipt",
-    not(feature = "diagnostic-surface-depth-key-candidate24")
+    not(any(
+        feature = "diagnostic-surface-depth-key-candidate24",
+        feature = "diagnostic-surface-depth-key-candidate20"
+    ))
 ))]
 #[test]
 fn diagnostic_capture_receipt_reports_exact_profile_in_normal_diagnostic_build() {
@@ -343,6 +346,26 @@ fn diagnostic_capture_receipt_reports_candidate24_profile_in_candidate_build() {
     ));
 
     assert_eq!(receipt.depth_precision_profile(), "CandidateStable24");
+    assert_eq!(receipt.plan_id(), "GpuPreproject");
+    assert_eq!(receipt.order_generation(), 16);
+    assert_eq!(receipt.presentation_sequence(), 17);
+}
+
+#[cfg(all(
+    feature = "diagnostic-surface-capture-receipt",
+    feature = "diagnostic-surface-depth-key-candidate20"
+))]
+#[test]
+fn diagnostic_capture_receipt_reports_candidate20_profile_in_candidate_build() {
+    let receipt = diagnostic_capture_receipt(PresentedDepthPrecisionReceipt::new(
+        SurfaceDepthPrecisionProfile::configured_for_surface_build(),
+        FrameIdentity::new(11, 12, 13, 14, 15),
+        PlanId::GpuPreproject,
+        16,
+        17,
+    ));
+
+    assert_eq!(receipt.depth_precision_profile(), "CandidateStable20");
     assert_eq!(receipt.plan_id(), "GpuPreproject");
     assert_eq!(receipt.order_generation(), 16);
     assert_eq!(receipt.presentation_sequence(), 17);
@@ -569,55 +592,63 @@ fn surface_gpu_candidate_carries_the_same_candidate_precision_to_resident_order(
             Some(crate::renderer::ProjectedCachePrecisionProfile::ExactAxes32),
             "ordinary builds cannot realize the Axes16 candidate profile"
         );
-        #[cfg(not(feature = "diagnostic-surface-depth-key-candidate24"))]
+        #[cfg(not(any(
+            feature = "diagnostic-surface-depth-key-candidate24",
+            feature = "diagnostic-surface-depth-key-candidate20"
+        )))]
         assert_eq!(
             default_candidate.surface_depth_precision_profile(),
             SurfaceDepthPrecisionProfile::ExactFull32,
             "ordinary builds keep the ExactFull32 profile"
         );
 
-        let mut candidate = renderer
-            .prepare_surface_exact_candidate_with_depth_precision_profile(
-                &device,
-                &queue,
-                wgpu::TextureFormat::Rgba8Unorm,
-                true,
+        for (profile, precision) in [
+            (
                 SurfaceDepthPrecisionProfile::CandidateStable24,
-            )
-            .await
-            .expect("Candidate Surface GPU runtime");
+                DepthKeyPrecision::CandidateStable24,
+            ),
+            (
+                SurfaceDepthPrecisionProfile::CandidateStable20,
+                DepthKeyPrecision::CandidateStable20,
+            ),
+        ] {
+            let mut candidate = renderer
+                .prepare_surface_exact_candidate_with_depth_precision_profile(
+                    &device,
+                    &queue,
+                    wgpu::TextureFormat::Rgba8Unorm,
+                    true,
+                    profile,
+                )
+                .await
+                .expect("Candidate Surface GPU runtime");
 
-        assert_eq!(
-            candidate.depth_key_precision_for_test(),
-            DepthKeyPrecision::CandidateStable24
-        );
-        assert_eq!(
-            candidate.gpu_depth_key_precision_for_test(),
-            Some(DepthKeyPrecision::CandidateStable24)
-        );
-        assert_eq!(
-            candidate.surface_depth_precision_profile(),
-            SurfaceDepthPrecisionProfile::CandidateStable24
-        );
+            assert_eq!(candidate.depth_key_precision_for_test(), precision);
+            assert_eq!(
+                candidate.gpu_depth_key_precision_for_test(),
+                Some(precision)
+            );
+            assert_eq!(candidate.surface_depth_precision_profile(), profile);
 
-        candidate
-            .replace(depth_precision_scene())
-            .expect("replace candidate runtime");
-        assert_eq!(
-            candidate.surface_depth_precision_profile(),
-            SurfaceDepthPrecisionProfile::CandidateStable24,
-            "replacement preserves the construction-time profile"
-        );
-        candidate.set_test_gpu_admission_mode(TestGpuAdmissionMode::ConcreteAll);
-        candidate
-            .prepare_gpu(&device, &queue, wgpu::TextureFormat::Rgba8Unorm)
-            .await
-            .expect("re-admit replacement GPU runtime");
-        assert_eq!(
-            candidate.gpu_depth_key_precision_for_test(),
-            Some(DepthKeyPrecision::CandidateStable24),
-            "replacement GPU admission preserves the construction-time profile"
-        );
+            candidate
+                .replace(depth_precision_scene())
+                .expect("replace candidate runtime");
+            assert_eq!(
+                candidate.surface_depth_precision_profile(),
+                profile,
+                "replacement preserves the construction-time profile"
+            );
+            candidate.set_test_gpu_admission_mode(TestGpuAdmissionMode::ConcreteAll);
+            candidate
+                .prepare_gpu(&device, &queue, wgpu::TextureFormat::Rgba8Unorm)
+                .await
+                .expect("re-admit replacement GPU runtime");
+            assert_eq!(
+                candidate.gpu_depth_key_precision_for_test(),
+                Some(precision),
+                "replacement GPU admission preserves the construction-time profile"
+            );
+        }
     });
 }
 

@@ -265,7 +265,7 @@ mod tests {
     }
 
     #[test]
-    fn packed_candidate_uses_the_shared_depth_key_precision_contract() {
+    fn packed_candidates_use_the_shared_depth_key_precision_contract() {
         let depths = [
             f32::from_bits(1.0_f32.to_bits() + 1),
             f32::from_bits(1.0_f32.to_bits() + 255),
@@ -278,29 +278,36 @@ mod tests {
         let camera = camera(0.5, 3.0);
         let mut expected_keys = Vec::new();
         let mut expected_ids = Vec::new();
-        scalar::preprocess_into_with_precision(
-            CpuPositionView::new(&positions),
-            0,
-            PreprocessContext::from_camera(&camera).expect("camera"),
+        for precision in [
             DepthKeyPrecision::CandidateStable24,
-            &mut expected_keys,
-            &mut expected_ids,
-        );
-        let mut packed = Vec::new();
-        let mut chunks = Vec::new();
-        positions_visible_into(
-            CpuPositionView::new(&positions),
-            &camera,
-            DepthKeyPrecision::CandidateStable24,
-            &mut packed,
-            &mut chunks,
-            PackedScalarExecution::serial(),
-        )
-        .expect("candidate packed preprocess");
+            DepthKeyPrecision::CandidateStable20,
+        ] {
+            expected_keys.clear();
+            expected_ids.clear();
+            scalar::preprocess_into_with_precision(
+                CpuPositionView::new(&positions),
+                0,
+                PreprocessContext::from_camera(&camera).expect("camera"),
+                precision,
+                &mut expected_keys,
+                &mut expected_ids,
+            );
+            let mut packed = Vec::new();
+            let mut chunks = Vec::new();
+            positions_visible_into(
+                CpuPositionView::new(&positions),
+                &camera,
+                precision,
+                &mut packed,
+                &mut chunks,
+                PackedScalarExecution::serial(),
+            )
+            .expect("candidate packed preprocess");
 
-        let (actual_keys, actual_ids) = unpack_pairs(&packed);
-        assert_eq!(actual_keys, expected_keys);
-        assert_eq!(actual_ids, expected_ids);
-        assert_eq!(actual_keys[0], actual_keys[1]);
+            let (actual_keys, actual_ids) = unpack_pairs(&packed);
+            assert_eq!(actual_keys, expected_keys);
+            assert_eq!(actual_ids, expected_ids);
+            assert_eq!(actual_keys[0], actual_keys[1]);
+        }
     }
 }

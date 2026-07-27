@@ -80,6 +80,17 @@ EXPERIMENTS = {
             ),
         },
     },
+    "b1-depth-key-candidate20": {
+        "changed_receipt": "depth_precision",
+        "profiles": {
+            "exact": ("ExactFull32", "ExactAxes32", "ExactSigned11BandScale5"),
+            "candidate": (
+                "CandidateStable20",
+                "ExactAxes32",
+                "ExactSigned11BandScale5",
+            ),
+        },
+    },
     "b2-projected-axes16": {
         "changed_receipt": "projected_cache_precision",
         "profiles": {

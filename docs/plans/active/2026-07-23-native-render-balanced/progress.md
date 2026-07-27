@@ -844,3 +844,27 @@ underlying ownership error in `a2437d4`: current-stats tickets are now kept out
 of CPU/GPU order telemetry, and the M4 smoke halts at its terminal receipt with
 an additional collector stability fence. The retained failed artifact is not
 rewritten and no browser retry has been performed after this repair.
+
+## B1 20-bit diagnostic implementation (pending endpoint authorization)
+
+The B0 prerequisite has been satisfied only for the recorded M4/Kitsune image
+scope: the independent 24-bit suite above passed its `0 -> 1 -> 0` image gate.
+On that basis, the separately named `CandidateStable20` diagnostic is now
+implemented, but it has not been run against a window, browser, or device.
+
+It retains the high 20 IEEE-754 depth-key bits, clears the low 12 bits, and
+keeps the existing nonzero visible-key sentinel. CPU scalar, native Packed
+preprocess, Direct GPU key generation, Resident GPU key generation, and
+Surface GPU admission all use the same private `DepthKeyPrecision` value. The
+candidate remains feature-gated, mutually exclusive with the 24-bit candidate
+and the other B2/B3 candidate experiments, and unavailable to public
+Rust/C/Swift/Kotlin or Web APIs. ExactFull32 remains the default.
+
+The desktop collector exposes this as its own `--experiment b1-20` lane and
+the Balanced validator requires the exact `CandidateStable20` receipt. Local
+CPU/GPU/Surface receipt tests, both default and candidate library suites,
+native and wasm checks, Clippy, collector/validator tests, formatting and the
+source-architecture policy pass. This is implementation readiness only: no
+image-gate artifact, timing comparison, Accepted/Rejected B1 result, or
+endpoint qualification has been created. A future endpoint run still requires
+fresh explicit authorization under the one-shot protocol.

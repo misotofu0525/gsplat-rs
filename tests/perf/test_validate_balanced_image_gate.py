@@ -626,6 +626,18 @@ def validate_manifest(root: pathlib.Path, manifest: dict):
 
 
 class BalancedImageGateTests(unittest.TestCase):
+    def test_candidate20_depth_experiment_has_its_own_profile_contract(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            manifest = base_manifest(root)
+            manifest["experiment"] = {
+                "name": "b1-depth-key-candidate20",
+                "changed_receipt": "depth_precision",
+            }
+            for frame in manifest["frames"]:
+                frame["candidate"]["depth_precision"]["profile"] = "CandidateStable20"
+            validate_manifest(root, manifest)
+
     def test_valid_authored_views_recompute_rgba_metrics(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)

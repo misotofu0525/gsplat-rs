@@ -418,6 +418,9 @@ impl DiagnosticSurfaceCaptureReceipt {
                 crate::renderer::SurfaceDepthPrecisionProfile::CandidateStable24 => {
                     "CandidateStable24"
                 }
+                crate::renderer::SurfaceDepthPrecisionProfile::CandidateStable20 => {
+                    "CandidateStable20"
+                }
             },
             projected_cache_precision_profile: match projected.profile() {
                 crate::renderer::ProjectedCachePrecisionProfile::ExactAxes32 => "ExactAxes32",

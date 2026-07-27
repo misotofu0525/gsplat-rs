@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Collect one fail-closed desktop B1 ExactFull32/CandidateStable24 suite.
+"""Collect one fail-closed desktop Balanced precision suite.
 
 The desktop host is invoked exactly twice.  Each invocation owns one continuous
 post-warmup 0 -> 1 -> 0 capture sequence; this collector never joins captures
@@ -84,6 +84,22 @@ B1_EXPERIMENT = Experiment(
         ),
     ),
 )
+B1_20_EXPERIMENT = Experiment(
+    name="b1-depth-key-candidate20",
+    changed_receipt="depth_precision",
+    lanes=(
+        Lane(
+            name="exact",
+            profile="ExactFull32",
+            cargo_feature="diagnostic-surface-capture-receipt",
+        ),
+        Lane(
+            name="candidate",
+            profile="CandidateStable20",
+            cargo_feature="diagnostic-surface-depth-key-candidate20",
+        ),
+    ),
+)
 B2_EXPERIMENT = Experiment(
     name="b2-projected-axes16",
     changed_receipt="projected_cache_precision",
@@ -120,6 +136,7 @@ B3_EXPERIMENT = Experiment(
 )
 EXPERIMENTS = {
     "b1": B1_EXPERIMENT,
+    "b1-20": B1_20_EXPERIMENT,
     "b2": B2_EXPERIMENT,
     "b3": B3_EXPERIMENT,
 }
