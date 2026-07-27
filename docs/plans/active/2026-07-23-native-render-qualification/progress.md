@@ -127,3 +127,24 @@ construction: it is a microbenchmark only, does not include renderer-owned
 preprocess, sort, upload, draw or terminal queue completion, and cannot select
 the product default. Q3 next requires a private renderer qualification selector
 and matched native terminal artifacts before making any whole-plan decision.
+
+The renderer-private selector and finite matrix mechanism were subsequently
+independently accepted and root-integrated as `6e67cb2`. Default dispatch and
+all public APIs remain unchanged; qualification-only native features can force
+the production Packed radix-count/unpack leaves to Scalar or NEON, reject an
+ambiguous dual selection, and cannot be enabled for WASM. The collector freezes
+five counterbalanced pairs, clean/fresh build and input identity, Exact
+presentation/count rules, and one execution per command without automatic
+retry.
+
+Its first and only pre-integration Truck attempt is terminal **Deferred**, not
+a performance result. The first NEON session presented all 100 planned frames
+and proved complete SH3 membership, Exact CPU execution, preprocess/sort,
+order upload and draw counts, but Packed Exact intentionally did not issue the
+legacy order-measurement ticket. Queue completion belongs to the independent
+renderer-owned current-stats namespace, which the desktop qualification host
+did not yet expose. The retained experiment therefore contains no fabricated
+pairs or runs. Q3 now has one bounded remaining owner slice: connect that
+private current-stats terminal to the desktop qualification harness, then let
+root execute one fresh five-pair matrix. A lack of consistent terminal benefit
+will make the optimization Rejected rather than trigger tuning loops.
