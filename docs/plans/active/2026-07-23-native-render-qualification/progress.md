@@ -455,6 +455,29 @@ been admitted. Q1 remains Active pending the predeclared paired/fairness work
 and native M4 endpoint; the fixed cell is nevertheless Accepted as the current
 WebGPU mechanism candidate.
 
+The following no-quality-change hypothesis was tested independently at
+`c285a8b`. Candidate visibility `V` previously used a complete prefix scan even
+though no downstream consumer read its per-group offsets; the candidate
+replaces that graph with one exact atomic addition per source workgroup and a
+single four-byte count buffer. Contributor scan/compaction, ExactFull32 keys,
+stable ties, radix and draw behavior remain unchanged. Two fixed-SHA reviews
+accepted the resource and correctness change with no P0/P1/P2; renderer tests,
+WASM check and Clippy passed.
+
+Root then ran exactly one fresh fixed-GPU Compact experiment at
+`target/qualification/q1-webgpu-truck-fixed-gpu-preproject-compact-c285a8bb9db7/`.
+Both canonical validators pass and the control counts are identical to the
+previous cell: mean `V=1,579,811.5`, `C=D=979,533.5`. The endpoint hypothesis
+did **not** show a performance improvement. Terminal N/time is
+`21.0425 ms/frame` (`47.5229 FPS`) versus the prior single-run
+`20.84625 ms/frame`; the observed delta is `+0.94%`, while both p95 values are
+`21.3 ms`. No retry or tuning run is used to search for a favorable sample.
+The simpler resource ownership remains a branch candidate, but it is not a
+performance claim and requires native/A065 regression evidence before product
+promotion. The next performance experiment, if admitted, must isolate the
+explicit 20-bit depth-key quality/speed tradeoff rather than mix it with this
+no-quality-change slice.
+
 ## Q3 M4 SIMD microbenchmark checkpoint (2026-07-27)
 
 At clean root commit `f025dff`, the fixed
