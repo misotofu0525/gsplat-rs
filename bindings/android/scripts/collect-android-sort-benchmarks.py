@@ -429,7 +429,7 @@ def pull_completed_device_png(
     width, height = png_dimensions(data)
     if (width, height) != FORMAL_ANDROID_SIZE:
         raise RuntimeError(
-            "formal Android final PNG must be "
+            "Android final-PNG capture must be "
             f"{FORMAL_ANDROID_SIZE[0]}x{FORMAL_ANDROID_SIZE[1]}, got {width}x{height}"
         )
     local_identity = {"bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}
@@ -761,6 +761,21 @@ def resolve_apk(explicit: pathlib.Path | None = None) -> pathlib.Path:
     return apk
 
 
+def capture_final_png_requested(args: argparse.Namespace) -> bool:
+    """Whether this run needs the existing app-sandbox final-frame capture.
+
+    A final PNG is useful to evidence collectors other than the full-quality
+    suite publisher.  Keep the device/app transaction shared while leaving
+    the stronger suite, AAR, and canonical-matrix semantics behind the
+    explicit ``--formal-artifact`` flag.
+    """
+
+    return bool(
+        getattr(args, "capture_final_png", False)
+        or getattr(args, "formal_artifact", False)
+    )
+
+
 def benchmark_launch_args(args: argparse.Namespace, backend: str) -> list[str]:
     result = [
         "shell",
@@ -843,7 +858,7 @@ def benchmark_launch_args(args: argparse.Namespace, backend: str) -> list[str]:
                 "true",
             ]
         )
-    if getattr(args, "formal_artifact", False):
+    if capture_final_png_requested(args):
         result.extend(
             [
                 "--es",
@@ -2222,6 +2237,14 @@ def parser() -> argparse.ArgumentParser:
         ),
     )
     result.add_argument(
+        "--capture-final-png",
+        action="store_true",
+        help=(
+            "request and attach the existing fixed app-sandbox final PNG for "
+            "each run without publishing a full-quality experiment suite"
+        ),
+    )
+    result.add_argument(
         "--backend",
         action="append",
         choices=BACKENDS,
@@ -2349,11 +2372,11 @@ def validate_args(args: argparse.Namespace) -> list[str]:
     trace_display = json.loads(args.camera_trace.read_text(encoding="utf-8")).get(
         "display", {}
     )
-    if args.formal_artifact and (
+    if capture_final_png_requested(args) and (
         trace_display.get("width"), trace_display.get("height")
     ) != FORMAL_ANDROID_SIZE:
         raise ValueError(
-            "--formal-artifact requires the exact 2412x1080 Android trace"
+            "final-PNG capture requires the exact 2412x1080 Android trace"
         )
     if args.formal_artifact and args.geometry_path != "packed":
         raise ValueError("--formal-artifact requires --geometry-path packed")
@@ -2471,7 +2494,7 @@ def dry_run(
             f"backend={spec.backend}"
         )
         print(f"+ {command_text(adb_args(adb, args.serial, 'shell', 'pm', 'clear', PACKAGE))}")
-        if args.formal_artifact:
+        if capture_final_png_requested(args):
             print(
                 f"+ {command_text(device_final_png_absence_command(adb, args.serial))}"
             )
@@ -2493,7 +2516,7 @@ def dry_run(
         print(
             f"+ {command_text(adb_args(adb, args.serial, *benchmark_launch_args(args, spec.backend)))}"
         )
-        if args.formal_artifact:
+        if capture_final_png_requested(args):
             print(
                 f"+ {command_text(adb_args(adb, args.serial, 'exec-out', 'run-as', PACKAGE, 'cat', INTERNAL_FINAL_PNG))} > <run>/device-final-frame.png"
             )
@@ -2573,7 +2596,7 @@ def collect_scheduled_runs(
             ),
             timeout=15.0,
         )
-        if args.formal_artifact:
+        if capture_final_png_requested(args):
             assert_device_final_png_absent(adb, args.serial)
 
         injected_identity = inject_device_dataset(
@@ -2634,7 +2657,7 @@ def collect_scheduled_runs(
         result_line = extract_result_line(log)
         final_png_path = run_dir / "device-final-frame.png"
         final_png_receipt_path = run_dir / "device-png-pull-receipt.json"
-        if args.formal_artifact:
+        if capture_final_png_requested(args):
             pull_completed_device_png(
                 adb,
                 args.serial,
@@ -2656,7 +2679,7 @@ def collect_scheduled_runs(
             "--android-environment-receipt",
             android_environment_receipt_path,
         ]
-        if args.formal_artifact:
+        if capture_final_png_requested(args):
             extractor_command.extend(
                 [
                     "--final-png",
@@ -2695,7 +2718,7 @@ def collect_scheduled_runs(
                 "artifact_run_id": manifest.get("run_id"),
                 "device_png_pull_receipt": (
                     str(final_png_receipt_path.relative_to(output))
-                    if args.formal_artifact
+                    if capture_final_png_requested(args)
                     else None
                 ),
             }
@@ -2971,6 +2994,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "frame_latency": args.frame_latency,
             "geometry_path": args.geometry_path,
             "gpu_producer": args.gpu_producer,
+            "capture_final_png": capture_final_png_requested(args),
             "formal_artifact": args.formal_artifact,
             "cooldown_seconds": args.cooldown_seconds,
             "max_thermal_status": args.max_thermal_status,

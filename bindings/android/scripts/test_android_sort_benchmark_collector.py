@@ -529,6 +529,32 @@ class ParsingTests(unittest.TestCase):
             f"/data/user/0/{COLLECTOR.PACKAGE}/{COLLECTOR.INTERNAL_FINAL_PNG}",
         )
 
+    def test_capture_only_mode_reuses_the_app_sandbox_final_png(self) -> None:
+        missing_aar = pathlib.Path(tempfile.gettempdir()) / "missing-capture-only.aar"
+        args = COLLECTOR.parser().parse_args(
+            [
+                "--serial",
+                "serial",
+                "--ply",
+                __file__,
+                "--camera-trace",
+                str(TEST_CAMERA_TRACE),
+                "--capture-final-png",
+                "--aar",
+                str(missing_aar),
+            ]
+        )
+        COLLECTOR.validate_args(args)
+        launch = COLLECTOR.benchmark_launch_args(args, "cpu")
+        key = "gsplat_benchmark_final_png_path"
+        self.assertTrue(COLLECTOR.capture_final_png_requested(args))
+        self.assertFalse(args.formal_artifact)
+        self.assertIn(key, launch)
+        self.assertEqual(
+            launch[launch.index(key) + 1],
+            f"/data/user/0/{COLLECTOR.PACKAGE}/{COLLECTOR.INTERNAL_FINAL_PNG}",
+        )
+
     def test_formal_mode_rejects_missing_aar_before_device_work(self) -> None:
         args = COLLECTOR.parser().parse_args(
             [
@@ -1572,6 +1598,35 @@ class SafetyTests(unittest.TestCase):
         self.assertEqual(result, 0)
         self.assertIn(str(COLLECTOR.BUILD_SCRIPT), plan)
         self.assertIn(str(COLLECTOR.BUILD_AAR_SCRIPT), plan)
+        self.assertIn(str(COLLECTOR.INTERNAL_FINAL_PNG), plan)
+        self.assertEqual(plan.count(" install -r "), 1)
+
+    def test_capture_only_prepare_dry_run_does_not_build_an_aar(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            output = pathlib.Path(directory) / "planned"
+            stdout = io.StringIO()
+            with contextlib.redirect_stdout(stdout):
+                result = COLLECTOR.main(
+                    [
+                        "--serial",
+                        "test-device",
+                        "--ply",
+                        __file__,
+                        "--backend",
+                        "cpu",
+                        "--prepare-apk",
+                        "--capture-final-png",
+                        "--camera-trace",
+                        str(TEST_CAMERA_TRACE),
+                        "--output",
+                        str(output),
+                        "--dry-run",
+                    ]
+                )
+        plan = stdout.getvalue()
+        self.assertEqual(result, 0)
+        self.assertIn(str(COLLECTOR.BUILD_SCRIPT), plan)
+        self.assertNotIn(str(COLLECTOR.BUILD_AAR_SCRIPT), plan)
         self.assertIn(str(COLLECTOR.INTERNAL_FINAL_PNG), plan)
         self.assertEqual(plan.count(" install -r "), 1)
 
