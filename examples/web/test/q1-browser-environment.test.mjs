@@ -3,9 +3,33 @@ import test from "node:test";
 
 import {
   assertStableBrowserRuntime,
+  assertStableRendererSurfaceDevice,
   browserProcessArgsReceipt,
   observedRunContext,
 } from "../scripts/q1-browser-environment.mjs";
+
+const surfaceDevice = () => ({
+  schema: "gsplat-renderer-surface-device/v1",
+  provenance: "renderer_owned_surface_session",
+  adapterSelectionClass: "high_performance",
+  geometryPath: "packed_atlas",
+  addressableSplatCount: 2_541_226,
+  adapter: {
+    name: "",
+    backend: "browser_webgpu",
+    identityStatus: "unavailable_wgpu28_web_backend",
+    vendorId: 0,
+    deviceId: 0,
+  },
+  supportedAdapterLimits: {
+    maxBufferSize: 4_294_967_292,
+    maxStorageBufferBindingSize: 4_294_967_292,
+  },
+  effectiveDeviceLimits: {
+    maxBufferSize: 268_435_456,
+    maxStorageBufferBindingSize: 134_217_728,
+  },
+});
 
 const runtime = (phase) => ({
   schema: "gsplat-q1-browser-runtime/v1",
@@ -84,4 +108,21 @@ test("Q1 observed context rejects caller-supplied physical build and environment
     environment,
     build_artifacts: buildArtifacts,
   });
+});
+
+test("Q1 device receipt must come from one stable renderer-owned Surface session", () => {
+  assert.deepEqual(
+    assertStableRendererSurfaceDevice(surfaceDevice(), surfaceDevice()),
+    surfaceDevice(),
+  );
+  assert.throws(() => assertStableRendererSurfaceDevice(
+    { ...surfaceDevice(), provenance: "navigator_request_adapter" },
+    surfaceDevice(),
+  ), /invalid/);
+  const drifted = surfaceDevice();
+  drifted.effectiveDeviceLimits.maxBufferSize += 1;
+  assert.throws(() => assertStableRendererSurfaceDevice(
+    surfaceDevice(),
+    drifted,
+  ), /drifted/);
 });

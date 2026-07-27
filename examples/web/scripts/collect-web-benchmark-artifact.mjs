@@ -66,9 +66,13 @@ import {
 import { rgba8Png } from './rgba8-png.mjs';
 import {
   assertStableBrowserRuntime,
+  assertStableRendererSurfaceDevice,
   browserProcessArgsReceipt,
   observedRunContext,
 } from './q1-browser-environment.mjs';
+import { Q1ArtifactTransaction } from './q1-artifact-transaction.mjs';
+import { cleanupBrowserAndServer, waitForChildExit } from './q1-process-cleanup.mjs';
+import { canonicalWebGpuAdapterEnvironment } from '../../../tests/perf/q1-webgpu-environment.mjs';
 
 const execFile = promisify(execFileCallback);
 
@@ -139,6 +143,7 @@ if (q1ArtifactRole !== null && q1SeriesRoot === null) {
 }
 let claimedTruckOutputRoot = null;
 let truckControlCompletion = null;
+let q1ArtifactTransaction = null;
 const m4Smoke = process.env.GSPLAT_M4_SMOKE === '1';
 const requestedFrameCount = Number(
   process.env.GSPLAT_BENCHMARK_FRAMES ?? (qualification ? 3600 : 30),
@@ -316,10 +321,6 @@ async function sha256File(path) {
   return digest.digest('hex');
 }
 
-function sha256Json(value) {
-  return createHash('sha256').update(JSON.stringify(value)).digest('hex');
-}
-
 function parseMacPowerReceipt(output) {
   const match = /Now drawing from '([^']+)'/.exec(output);
   if (!match) throw new Error('pmset did not report the active power source');
@@ -366,6 +367,59 @@ async function q1PackageSnapshot() {
   };
 }
 
+async function q1RepositorySnapshot(phase) {
+  const [head, status] = await Promise.all([
+    execFile('git', ['rev-parse', 'HEAD'], { cwd: repoRoot }),
+    execFile('git', ['status', '--porcelain'], { cwd: repoRoot }),
+  ]);
+  return {
+    schema: 'gsplat-q1-repository-snapshot/v1',
+    phase,
+    head: head.stdout.trim(),
+    porcelain: status.stdout,
+    clean: status.stdout.length === 0,
+  };
+}
+
+async function q1ServedSourceSnapshot(phase) {
+  if (q1ArtifactRole === null) return null;
+  const entrypoints = [
+    resolve(repoRoot, 'examples/web/index.html'),
+    resolve(repoRoot, 'examples/web/styles.css'),
+    resolve(repoRoot, 'examples/web/src/main.js'),
+  ];
+  const pending = [...entrypoints];
+  const visited = new Set();
+  const importPattern = /(?:import|export)\s+(?:[^"'()]*?\s+from\s+)?["']([^"']+)["']/g;
+  while (pending.length > 0) {
+    const path = pending.pop();
+    if (visited.has(path)) continue;
+    const relativePath = relative(repoRoot, path);
+    if (relativePath === '' || relativePath === '..' || relativePath.startsWith(`..${sep}`)) {
+      throw new Error('Q1 served first-party module escaped the repository');
+    }
+    visited.add(path);
+    if (!/\.(?:js|mjs)$/.test(path)) continue;
+    const source = await readFile(path, 'utf8');
+    for (const match of source.matchAll(importPattern)) {
+      const specifier = match[1].split('?')[0];
+      if (!specifier.startsWith('.')) continue;
+      pending.push(resolve(dirname(path), specifier));
+    }
+  }
+  const files = Object.fromEntries(await Promise.all([...visited].sort().map(async (path) => [
+    relative(repoRoot, path).split(sep).join('/'),
+    await sha256File(path),
+  ])));
+  return {
+    schema: 'gsplat-q1-served-first-party-sources/v1',
+    phase,
+    entrypoints: entrypoints.map((path) => relative(repoRoot, path).split(sep).join('/')),
+    files,
+    aggregate_sha256: createHash('sha256').update(JSON.stringify(files)).digest('hex'),
+  };
+}
+
 function q1BuildArtifactReceipts(snapshot) {
   if (snapshot === null) return null;
   const artifacts = {};
@@ -379,30 +433,6 @@ function q1BuildArtifactReceipts(snapshot) {
     artifacts[name] = { path: path.split(sep).join('/'), sha256: digest };
   }
   return artifacts;
-}
-
-async function browserAdapterReceipt(page) {
-  return page.evaluate(async () => {
-    const adapter = await navigator.gpu?.requestAdapter();
-    if (!adapter) throw new Error('Q1 browser adapter is unavailable');
-    const names = new Set();
-    let current = adapter.limits;
-    while (current && current !== Object.prototype) {
-      for (const name of Object.getOwnPropertyNames(current)) names.add(name);
-      current = Object.getPrototypeOf(current);
-    }
-    const limits = Object.fromEntries([...names]
-      .filter((name) => name !== 'constructor' && Number.isFinite(adapter.limits?.[name]))
-      .sort()
-      .map((name) => [name, Number(adapter.limits[name])]));
-    const info = Object.fromEntries([
-      'vendor', 'architecture', 'device', 'description', 'subgroupMinSize', 'subgroupMaxSize',
-    ].map((name) => [name, adapter.info?.[name] ?? null]));
-    const identity = [info.vendor, info.architecture, info.device]
-      .filter((value) => typeof value === 'string' && value.trim().length > 0)
-      .join(' / ');
-    return { adapter: identity || 'webgpu_adapter_identity_redacted_by_browser', info, limits };
-  });
 }
 
 function sameJson(left, right) {
@@ -585,7 +615,18 @@ function startHttpServer() {
     const fail = (error) => {
       if (!settled) {
         settled = true;
-        reject(error);
+        void (async () => {
+          try {
+            if (child.exitCode === null && child.signalCode === null) child.kill('SIGTERM');
+            await waitForChildExit(child, 2_000, 'failed HTTP server');
+            reject(error);
+          } catch (cleanupError) {
+            reject(new AggregateError(
+              [error, cleanupError],
+              'HTTP server startup and cleanup failed',
+            ));
+          }
+        })();
       }
     };
     child.once('error', fail);
@@ -1515,13 +1556,18 @@ async function writeArtifact({
   gpuProducerMeasurementSubmissions,
   gpuProducerMeasurementFailures,
 }) {
-  if (await pathExists(outDir)) {
-    throw new Error(`destination already exists: ${outDir}`);
+  let sibling;
+  if (q1ArtifactTransaction !== null) {
+    sibling = q1ArtifactTransaction.stagingDirectory;
+  } else {
+    if (await pathExists(outDir)) {
+      throw new Error(`destination already exists: ${outDir}`);
+    }
+    await mkdir(dirname(outDir), { recursive: true });
+    sibling = resolve(dirname(outDir), `.${outDir.split('/').pop()}.staging`);
+    await rm(sibling, { recursive: true, force: true });
+    await mkdir(sibling, { recursive: true });
   }
-  await mkdir(dirname(outDir), { recursive: true });
-  const sibling = resolve(dirname(outDir), `.${outDir.split('/').pop()}.staging`);
-  await rm(sibling, { recursive: true, force: true });
-  await mkdir(sibling, { recursive: true });
   if (q1BuildSnapshotForWrite !== null) {
     const buildRoot = resolve(sibling, 'build');
     await mkdir(buildRoot);
@@ -1612,13 +1658,16 @@ async function writeArtifact({
       ? `${gpuProducerMeasurementFailures.join('\n')}\n`
       : ''
   );
-  await runPythonValidator(
-    'tests/perf/validate-benchmark-artifacts.py',
-    [sibling],
-    'benchmark artifact validator',
-  );
-  await rename(sibling, outDir);
-  return outDir;
+  if (q1ArtifactTransaction === null) {
+    await runPythonValidator(
+      'tests/perf/validate-benchmark-artifacts.py',
+      [sibling],
+      'benchmark artifact validator',
+    );
+    await rename(sibling, outDir);
+    return outDir;
+  }
+  return sibling;
 }
 
 async function publishTruck1080pSuite({ manifest, frames, imagePath }) {
@@ -1674,12 +1723,13 @@ if (truck1080pQualification) {
 
 const currentStatsControlIdentity = await loadCurrentStatsControlIdentity();
 const q1ControlBindings = await loadQ1ControlBindings();
-const repositoryCommit = (
-  await execFile('git', ['rev-parse', 'HEAD'], { cwd: repoRoot })
-).stdout.trim();
-const dirty = (
-  await execFile('git', ['status', '--porcelain'], { cwd: repoRoot })
-).stdout.trim().length > 0;
+const q1RepositoryPre = await q1RepositorySnapshot('pre_browser_session');
+if (q1ArtifactRole !== null && !q1RepositoryPre.clean) {
+  throw new Error('Q1 repository is not clean before the browser session');
+}
+const repositoryCommit = q1RepositoryPre.head;
+const dirty = !q1RepositoryPre.clean;
+const q1ServedSourcesPre = await q1ServedSourceSnapshot('pre_browser_session');
 const q1PackageUrl = await q1WasmPackageUrl(repositoryCommit);
 const q1PackagePre = await q1PackageSnapshot();
 const q1HostPre = await observeQ1HostState('pre_browser_session');
@@ -1693,12 +1743,21 @@ const q1BrowserExecutableShaPre = q1ArtifactRole === null
   : await sha256File(chrome);
 
 const puppeteerApi = await loadPuppeteer();
+if (q1ArtifactRole !== null) {
+  q1ArtifactTransaction = await Q1ArtifactTransaction.claim({
+    seriesRoot: q1SeriesRoot,
+    finalDirectory: outDir,
+    collectionSessionId: q1CollectionSessionId,
+  });
+}
 let server;
 let browser;
 let q1BrowserArgsReceipt = null;
 let q1BrowserVersionPre = null;
 let q1AdapterPre = null;
 let q1BuildSnapshotForWrite = null;
+let q1PendingResult = null;
+let q1CollectionFailure = null;
 const consoleLines = [];
 try {
   server = await startHttpServer();
@@ -1787,7 +1846,13 @@ try {
   if (qualification) params.set('gsplat_camera_trace', `phase-e-${qualificationName}`);
   const url = `http://127.0.0.1:${port}/examples/web/?${params.toString()}`;
   await page.goto(url, { waitUntil: 'networkidle0', timeout: navigationTimeoutMs });
-  if (q1ArtifactRole !== null) q1AdapterPre = await browserAdapterReceipt(page);
+  if (q1ArtifactRole !== null) {
+    await page.waitForFunction(
+      () => globalThis.GSPLAT_Q1_SURFACE_DEVICE_PRE != null,
+      { timeout: benchmarkTimeoutMs },
+    );
+    q1AdapterPre = await page.evaluate(() => globalThis.GSPLAT_Q1_SURFACE_DEVICE_PRE);
+  }
   if (m4Smoke) {
     await page.waitForFunction(
       () => ['ready', 'failed'].includes(globalThis.GSPLAT_M4_SMOKE_RESULT?.status),
@@ -1916,19 +1981,26 @@ try {
   }
   let q1ObservedContext = q1RunContext;
   if (q1ArtifactRole !== null) {
-    const [browserRuntime, q1AdapterPost, q1HostPost, q1PackagePost] = await Promise.all([
+    const [browserRuntime, rendererDevice, q1HostPost, q1PackagePost] = await Promise.all([
       page.evaluate(() => ({
         pre: globalThis.GSPLAT_Q1_BROWSER_RUNTIME_PRE ?? null,
         post: globalThis.GSPLAT_Q1_BROWSER_RUNTIME_POST ?? null,
         user_agent: navigator.userAgent,
         platform: navigator.platform,
       })),
-      browserAdapterReceipt(page),
+      page.evaluate(() => ({
+        pre: globalThis.GSPLAT_Q1_SURFACE_DEVICE_PRE ?? null,
+        post: globalThis.GSPLAT_Q1_SURFACE_DEVICE_POST ?? null,
+      })),
       observeQ1HostState('post_measurement_terminal'),
       q1PackageSnapshot(),
     ]);
     const browserVersionPost = await browser.version();
     assertStableBrowserRuntime(browserRuntime.pre, browserRuntime.post);
+    const q1AdapterPost = assertStableRendererSurfaceDevice(
+      rendererDevice.pre,
+      rendererDevice.post,
+    );
     if (q1BrowserVersionPre !== browserVersionPost
         || !sameJson(q1AdapterPre, q1AdapterPost)
         || !sameJson(q1PackagePre.hashes, q1PackagePost.hashes)
@@ -1942,10 +2014,11 @@ try {
     if (browserExecutableSha256 !== q1BrowserExecutableShaPre) {
       throw new Error('Q1 browser executable changed during collection');
     }
-    const adapter = q1AdapterPost.adapter;
-    if (adapter.includes('redacted_by_browser')) {
-      throw new Error('Q1 browser redacted adapter identity');
-    }
+    const canonicalAdapter = canonicalWebGpuAdapterEnvironment({
+      backend: q1AdapterPost.adapter.backend,
+      selectionClass: q1AdapterPost.adapterSelectionClass,
+      supportedLimits: q1AdapterPost.supportedAdapterLimits,
+    });
     q1ObservedContext = observedRunContext({
       declared: q1RunContext,
       buildArtifacts,
@@ -1957,10 +2030,10 @@ try {
         browser_executable_sha256: browserExecutableSha256,
         browser_launch_args_sha256: q1BrowserArgsReceipt.normalized_sha256,
         browser_launch_args_receipt: q1BrowserArgsReceipt,
-        adapter,
+        adapter: canonicalAdapter.adapter,
         driver: `apple_metal_os_build:${q1HostPost.os_build}`,
         driver_source: 'macos_sw_vers_buildVersion',
-        adapter_limits_sha256: sha256Json(q1AdapterPost.limits),
+        adapter_limits_sha256: canonicalAdapter.adapter_limits_sha256,
         power_source: q1HostPost.power_source,
         collection_session_id: q1CollectionSessionId,
         thermal: {
@@ -1970,7 +2043,16 @@ try {
           admitted: true,
         },
         browser_runtime: browserRuntime,
-        webgpu_adapter_receipt: q1AdapterPost,
+        renderer_surface_device_receipt: q1AdapterPost,
+        repository_snapshot: q1RepositoryPre,
+        served_first_party_sources: q1ServedSourcesPre,
+        runtime_stability_receipt: {
+          path: relative(
+            q1SeriesRoot,
+            resolve(outDir, 'q1-runtime-stability.json'),
+          ).split(sep).join('/'),
+          publication_policy: 'written_after_cleanup_before_atomic_publish',
+        },
       },
     });
   }
@@ -2063,40 +2145,113 @@ try {
   const resultLine = consoleLines.find((line) => line.includes('BENCHMARK_RESULT '));
   const result = {
     status: 'ok',
-    artifact_dir: artifactDir,
+    artifact_dir: q1ArtifactRole === null ? artifactDir : outDir,
     result: resultLine ?? null,
   };
   if (suitePath !== null) result.full_quality_suite = suitePath;
-  console.log(JSON.stringify(result));
+  if (q1ArtifactRole === null) {
+    console.log(JSON.stringify(result));
+  } else {
+    q1PendingResult = { result, stagingDirectory: artifactDir };
+  }
   }
 } catch (error) {
-  const logPath = truck1080pQualification
-    ? resolve(dirname(outDir), 'collector-failure.log')
-    : resolve(repoRoot, 'target/benchmarks/phase-a/web-collector-failure.log');
-  await mkdir(dirname(logPath), { recursive: true });
-  await writeFile(
-    logPath,
-    `${consoleLines.join('\n')}\n\n${error.stack ?? error}\n`,
-    truck1080pQualification ? { flag: 'wx' } : undefined,
-  );
-  console.error(JSON.stringify({ status: 'failed', reason: error.message, log: logPath }));
-  process.exitCode = 1;
-} finally {
-  if (browser) {
-    const browserProcess = browser.process?.();
-    let cleanupTimer;
-    const closed = await Promise.race([
-      browser.close().then(() => true, () => true),
-      new Promise((resolvePromise) => {
-        cleanupTimer = setTimeout(() => resolvePromise(false), 2_000);
-      })
-    ]);
-    if (cleanupTimer !== undefined) clearTimeout(cleanupTimer);
-    if (!closed) browserProcess?.kill('SIGKILL');
+  if (q1ArtifactRole !== null) {
+    q1CollectionFailure = error;
+  } else {
+    const logPath = truck1080pQualification
+      ? resolve(dirname(outDir), 'collector-failure.log')
+      : resolve(repoRoot, 'target/benchmarks/phase-a/web-collector-failure.log');
+    await mkdir(dirname(logPath), { recursive: true });
+    await writeFile(
+      logPath,
+      `${consoleLines.join('\n')}\n\n${error.stack ?? error}\n`,
+      truck1080pQualification ? { flag: 'wx' } : undefined,
+    );
+    console.error(JSON.stringify({ status: 'failed', reason: error.message, log: logPath }));
+    process.exitCode = 1;
   }
-  if (server) {
-    server.kill('SIGTERM');
-    server.unref();
+} finally {
+  try {
+    await cleanupBrowserAndServer(browser, server);
+  } catch (error) {
+    if (q1ArtifactTransaction !== null) {
+      await q1ArtifactTransaction.recordCleanupFailure(error);
+    } else {
+      console.error(error);
+      process.exitCode = 1;
+    }
+    q1CollectionFailure ??= error;
+  }
+}
+
+if (q1ArtifactTransaction !== null) {
+  if (q1CollectionFailure !== null) {
+    if (!(await pathExists(q1ArtifactTransaction.cleanupBlockerPath))) {
+      await q1ArtifactTransaction.recordFailure(q1CollectionFailure, 'collection');
+    }
+    console.error(JSON.stringify({
+      status: 'failed',
+      reason: q1CollectionFailure.message,
+      blocker: q1ArtifactTransaction.blockerPath,
+      ...(await pathExists(q1ArtifactTransaction.cleanupBlockerPath)
+        ? { cleanup_blocker: q1ArtifactTransaction.cleanupBlockerPath }
+        : {}),
+    }));
+    process.exitCode = 1;
+  } else {
+    try {
+      if (q1PendingResult === null) throw new Error('Q1 collection produced no staged artifact');
+      const [repositoryPost, servedSourcesPost, packageAfterCleanup] = await Promise.all([
+        q1RepositorySnapshot('post_browser_cleanup'),
+        q1ServedSourceSnapshot('post_browser_cleanup'),
+        q1PackageSnapshot(),
+      ]);
+      if (!repositoryPost.clean || repositoryPost.head !== q1RepositoryPre.head
+          || repositoryPost.porcelain !== q1RepositoryPre.porcelain
+          || servedSourcesPost.aggregate_sha256 !== q1ServedSourcesPre.aggregate_sha256
+          || !sameJson(servedSourcesPost.files, q1ServedSourcesPre.files)
+          || !sameJson(packageAfterCleanup.hashes, q1PackagePre.hashes)) {
+        throw new Error('Q1 repository, served first-party sources, or runtime package drifted');
+      }
+      await writeFile(
+        resolve(q1PendingResult.stagingDirectory, 'q1-runtime-stability.json'),
+        `${JSON.stringify({
+          schema: 'gsplat-q1-runtime-stability/v1',
+          repository: { pre: q1RepositoryPre, post: repositoryPost },
+          served_first_party_sources: {
+            pre: q1ServedSourcesPre,
+            post: servedSourcesPost,
+          },
+          runtime_package_hashes: {
+            pre: q1PackagePre.hashes,
+            post: packageAfterCleanup.hashes,
+          },
+          browser_server_cleanup_complete: true,
+          automatic_retry: false,
+        }, null, 2)}\n`,
+      );
+      await writeFile(
+        resolve(q1PendingResult.stagingDirectory, 'browser-console.log'),
+        `${consoleLines.join('\n')}\n`,
+      );
+      await runPythonValidator(
+        'tests/perf/validate-benchmark-artifacts.py',
+        [q1PendingResult.stagingDirectory],
+        'benchmark artifact validator',
+      );
+      q1ArtifactTransaction.markCleanupComplete();
+      await q1ArtifactTransaction.publish();
+      console.log(JSON.stringify(q1PendingResult.result));
+    } catch (error) {
+      await q1ArtifactTransaction.recordFailure(error, 'pre_publish');
+      console.error(JSON.stringify({
+        status: 'failed',
+        reason: error.message,
+        blocker: q1ArtifactTransaction.blockerPath,
+      }));
+      process.exitCode = 1;
+    }
   }
 }
 process.exit(process.exitCode ?? 0);

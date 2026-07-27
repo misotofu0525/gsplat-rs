@@ -131,6 +131,9 @@ pub use surface_presenter::{SurfaceFrameCapture, SurfacePresenter};
 #[cfg(feature = "diagnostic-surface-presented-depth-receipt")]
 #[doc(hidden)]
 pub use surface_session::DiagnosticPresentedDepthPrecisionReceipt;
+#[cfg(feature = "diagnostic-surface-capture-receipt")]
+#[doc(hidden)]
+pub use surface_session::DiagnosticSurfaceDeviceReceipt;
 #[cfg(all(
     feature = "diagnostic-surface-capture-receipt",
     not(target_arch = "wasm32")

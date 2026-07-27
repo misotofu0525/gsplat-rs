@@ -43,6 +43,8 @@ pub(crate) struct TestSessionSurfaceOwner {
     size: (u32, u32),
     addressable_splat_count: usize,
     adapter_info: wgpu::AdapterInfo,
+    adapter_supported_limits: wgpu::Limits,
+    effective_device_limits: wgpu::Limits,
     geometry_path: GeometryPath,
     raster_execution_plan: SurfaceRasterExecutionPlan,
     cpu_completion_telemetry: Option<CpuOrderCompletionTelemetry>,
@@ -117,6 +119,8 @@ impl SessionSurfaceOwner {
                 subgroup_max_size: 1,
                 transient_saves_memory: false,
             },
+            adapter_supported_limits: wgpu::Limits::downlevel_defaults(),
+            effective_device_limits: wgpu::Limits::downlevel_defaults(),
             geometry_path: GeometryPath::SortedIndexDirect,
             raster_execution_plan: SurfaceRasterExecutionPlan::GlobalQuads,
             cpu_completion_telemetry: cpu_completion_telemetry
@@ -225,6 +229,26 @@ impl SessionSurfaceOwner {
             Self::ExactPacked(host) => host.adapter_info(),
             #[cfg(test)]
             Self::Test(test) => &test.adapter_info,
+        }
+    }
+
+    #[cfg(feature = "diagnostic-surface-capture-receipt")]
+    pub(crate) fn adapter_supported_limits(&self) -> &wgpu::Limits {
+        match self {
+            Self::Standalone(presenter) => presenter.adapter_supported_limits(),
+            Self::ExactPacked(host) => host.adapter_supported_limits(),
+            #[cfg(test)]
+            Self::Test(test) => &test.adapter_supported_limits,
+        }
+    }
+
+    #[cfg(feature = "diagnostic-surface-capture-receipt")]
+    pub(crate) fn effective_device_limits(&self) -> wgpu::Limits {
+        match self {
+            Self::Standalone(presenter) => presenter.effective_device_limits(),
+            Self::ExactPacked(host) => host.effective_device_limits(),
+            #[cfg(test)]
+            Self::Test(test) => test.effective_device_limits.clone(),
         }
     }
 

@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import { dirname, resolve } from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 
 import {
   normalizeQ1SurfaceCapture,
@@ -9,6 +12,7 @@ import {
 } from "../src/q1-gsplat-producer.mjs";
 
 const SHA = "a".repeat(64);
+const EXAMPLE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 function rawCapture() {
   return {
@@ -103,4 +107,22 @@ test("Q1 presentation identity binds the frozen trace and terminal frame", () =>
   assert.equal(value.camera.pose_intrinsics_sha256,
     "4b1d63381a662226712fd58cf5b3ea120fe5378beb73c228a509f55ec393f265");
   assert.equal(value.terminal_identity.frame_index, 79);
+});
+
+test("Q1 collector uses the renderer-selected device and atomic publication", async () => {
+  const collector = await readFile(
+    resolve(EXAMPLE_ROOT, "scripts/collect-web-benchmark-artifact.mjs"),
+    "utf8",
+  );
+  const main = await readFile(resolve(EXAMPLE_ROOT, "src/main.js"), "utf8");
+  assert.doesNotMatch(collector, /navigator\.gpu\?*\.requestAdapter|requestAdapter\s*\(/);
+  assert.match(collector, /GSPLAT_Q1_SURFACE_DEVICE_PRE/);
+  assert.match(collector, /Q1ArtifactTransaction\.claim/);
+  assert.ok(
+    collector.indexOf("Q1ArtifactTransaction.claim") < collector.indexOf("server = await startHttpServer"),
+  );
+  assert.ok(
+    collector.indexOf("await cleanupBrowserAndServer") < collector.indexOf("q1ArtifactTransaction.publish"),
+  );
+  assert.match(main, /diagnosticSurfaceDeviceReceipt\(\)/);
 });

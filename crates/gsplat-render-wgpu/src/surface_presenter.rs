@@ -34,6 +34,8 @@ use crate::{
 pub(crate) struct SurfacePresenterHost {
     surface: wgpu::Surface<'static>,
     adapter_info: wgpu::AdapterInfo,
+    #[cfg(feature = "diagnostic-surface-capture-receipt")]
+    adapter_supported_limits: wgpu::Limits,
     device: wgpu::Device,
     queue: wgpu::Queue,
     surface_configuration: SurfaceConfigurationOwner,
@@ -367,6 +369,8 @@ impl SurfacePresenterHost {
         Ok(Self {
             surface,
             adapter_info,
+            #[cfg(feature = "diagnostic-surface-capture-receipt")]
+            adapter_supported_limits: adapter_limits.clone(),
             device,
             queue,
             surface_configuration,
@@ -394,6 +398,16 @@ impl SurfacePresenterHost {
 
     pub(crate) const fn adapter_info(&self) -> &wgpu::AdapterInfo {
         &self.adapter_info
+    }
+
+    #[cfg(feature = "diagnostic-surface-capture-receipt")]
+    pub(crate) const fn adapter_supported_limits(&self) -> &wgpu::Limits {
+        &self.adapter_supported_limits
+    }
+
+    #[cfg(feature = "diagnostic-surface-capture-receipt")]
+    pub(crate) fn effective_device_limits(&self) -> wgpu::Limits {
+        self.device.limits()
     }
 
     pub(crate) const fn addressable_splat_count(&self) -> usize {
@@ -859,6 +873,22 @@ impl SurfacePresenter {
     /// change device capabilities, or influence renderer plan policy.
     pub const fn adapter_info(&self) -> &wgpu::AdapterInfo {
         &self.host.adapter_info
+    }
+
+    /// Supported limits reported by the actual adapter selected for this
+    /// Surface before its device was requested.
+    #[cfg(feature = "diagnostic-surface-capture-receipt")]
+    pub const fn adapter_supported_limits(&self) -> &wgpu::Limits {
+        self.host.adapter_supported_limits()
+    }
+
+    /// Effective limits of the device actually created for this Surface.
+    ///
+    /// This observation-only diagnostic is deliberately absent from ordinary
+    /// builds. It does not request a second adapter or device.
+    #[cfg(feature = "diagnostic-surface-capture-receipt")]
+    pub fn effective_device_limits(&self) -> wgpu::Limits {
+        self.host.effective_device_limits()
     }
 
     /// Number of splat records allocated by the selected Surface geometry.

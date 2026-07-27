@@ -1217,6 +1217,28 @@ class ScheduleAndAdmissionTests(unittest.TestCase):
         with self.assertRaisesRegex(ValidationError, "too hot for admission"):
             evaluate(self.schedule)
 
+    def test_endpoint_effective_device_limits_are_not_misreported_as_common_hardware(self) -> None:
+        for endpoint, value in (("playcanvas", 111), ("gsplat_rs", 222)):
+            for role in ("control-trace-0", "control-trace-1", "throughput"):
+                self.mutate_manifest(
+                    f"pairs/pair-01/{endpoint}/{role}",
+                    lambda manifest, observed=value: manifest["environment"].__setitem__(
+                        "endpoint_device_receipt",
+                        {"effective_device_limits": {"maxBufferSize": observed}},
+                    ),
+                )
+        self.assertEqual(evaluate(self.schedule)["state"], "Deferred")
+
+    def test_common_selected_adapter_supported_limits_hash_drift_is_rejected(self) -> None:
+        self.mutate_manifest(
+            "pairs/pair-01/gsplat_rs/throughput",
+            lambda value: value["environment"].__setitem__(
+                "adapter_limits_sha256", SHA_B
+            ),
+        )
+        with self.assertRaisesRegex(ValidationError, "identity drift"):
+            evaluate(self.schedule)
+
     def test_pair_order_label_without_timestamp_proof_is_rejected(self) -> None:
         self.mutate_manifest(
             "pairs/pair-01/gsplat_rs/throughput",

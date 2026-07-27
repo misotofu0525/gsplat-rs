@@ -2825,6 +2825,8 @@ function startBenchmark() {
   }
   if (state.q1QueueTerminalEnabled || state.q1CaptureTraceFrameIndex !== null) {
     globalThis.GSPLAT_Q1_BROWSER_RUNTIME_PRE = q1BrowserRuntimeReceipt("pre_measurement");
+    globalThis.GSPLAT_Q1_SURFACE_DEVICE_PRE =
+      state.wasmRenderer.diagnosticSurfaceDeviceReceipt();
   }
   const benchmark = createBenchmarkState(true);
   if (state.qualificationCamera && !benchmark.traceSequence) {
@@ -4360,6 +4362,8 @@ function finishBenchmark(benchmark) {
   benchmark.enabled = false;
   if (state.q1QueueTerminalEnabled || state.q1CaptureTraceFrameIndex !== null) {
     globalThis.GSPLAT_Q1_BROWSER_RUNTIME_POST = q1BrowserRuntimeReceipt("post_measurement");
+    globalThis.GSPLAT_Q1_SURFACE_DEVICE_POST =
+      state.wasmRenderer.diagnosticSurfaceDeviceReceipt();
   }
   maybeEmitMonotonicOrderingWindow(benchmark);
   const result = benchmarkResultLine(benchmark);

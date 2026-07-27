@@ -537,6 +537,17 @@ export class GsplatWebRenderer {
     status: "pending" | "ready";
     completedAtMonotonicMs: number | null;
   }>;
+  /** Renderer-selected Surface adapter and actual effective Device limits. */
+  diagnosticSurfaceDeviceReceipt(): Readonly<{
+    schema: "gsplat-renderer-surface-device/v1";
+    provenance: "renderer_owned_surface_session";
+    adapterSelectionClass: "high_performance";
+    geometryPath: string;
+    addressableSplatCount: number;
+    adapter: Readonly<Record<string, string | number | boolean>>;
+    supportedAdapterLimits: Readonly<Record<string, number>>;
+    effectiveDeviceLimits: Readonly<Record<string, number>>;
+  }>;
   sceneSummary(): GsplatSceneSummary;
   loadReceipt(): GsplatLoadReceipt | null;
   surfaceSize(): GsplatSurfaceSize;

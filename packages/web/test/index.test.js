@@ -1039,6 +1039,48 @@ test("GsplatWebRenderer rejects missing or malformed diagnostic queue terminals"
   assert.throws(() => malformed.pollDiagnosticQueueTerminal(), /invalid terminal/);
 });
 
+test("GsplatWebRenderer validates the renderer-selected Surface device receipt", () => {
+  const receipt = {
+    schema: "gsplat-renderer-surface-device/v1",
+    provenance: "renderer_owned_surface_session",
+    adapterSelectionClass: "high_performance",
+    geometryPath: "packed_atlas",
+    addressableSplatCount: 2_541_226,
+    adapter: {
+      name: "",
+      vendorId: 0,
+      deviceId: 0,
+      deviceType: "integrated_gpu",
+      devicePciBusId: "",
+      driver: "",
+      driverInfo: "",
+      backend: "browser_webgpu",
+      identityStatus: "unavailable_wgpu28_web_backend",
+      subgroupMinSize: 4,
+      subgroupMaxSize: 32,
+      transientSavesMemory: false,
+    },
+    supportedAdapterLimits: Object.fromEntries([
+      "maxBindGroups", "maxBindingsPerBindGroup", "maxBufferSize",
+      "maxComputeInvocationsPerWorkgroup", "maxComputeWorkgroupStorageSize",
+      "maxComputeWorkgroupsPerDimension", "maxStorageBufferBindingSize",
+      "maxStorageBuffersPerShaderStage", "maxTextureDimension2D",
+    ].map((name) => [name, 128])),
+  };
+  receipt.effectiveDeviceLimits = { ...receipt.supportedAdapterLimits };
+  const renderer = new GsplatWebRenderer(makeNativeRenderer({
+    diagnosticSurfaceDeviceReceipt() { return receipt; },
+  }));
+  assert.deepEqual(renderer.diagnosticSurfaceDeviceReceipt(), receipt);
+
+  const malformed = new GsplatWebRenderer(makeNativeRenderer({
+    diagnosticSurfaceDeviceReceipt() {
+      return { ...receipt, provenance: "navigator_request_adapter" };
+    },
+  }));
+  assert.throws(() => malformed.diagnosticSurfaceDeviceReceipt(), /session provenance/);
+});
+
 test("GsplatWebRenderer does not expose a benchmark-only terminal fence", () => {
   const renderer = new GsplatWebRenderer(makeNativeRenderer());
   assert.equal(renderer.requestTerminalQueueFence, undefined);

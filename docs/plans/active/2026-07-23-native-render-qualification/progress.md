@@ -936,3 +936,33 @@ The shared offline admission still owns blocker/cleanup-blocker rejection and
 the finite five-pair series remains **Deferred**. Until the hardened producer
 is independently reviewed and integrated, this mechanism candidate must not
 support a comparative performance claim.
+
+### Renderer-device and atomic-publication provenance repair
+
+The gsplat-rs Q1 producer no longer performs a second browser
+`requestAdapter()` for environment identity. A diagnostic-only receipt now
+comes from the actual renderer-owned `SurfaceRenderSession` and retains the
+selected adapter's supported limits separately from the effective limits of
+the created device. Because pinned wgpu 28 does not expose browser
+`AdapterInfo`, the receipt explicitly records
+`unavailable_wgpu28_web_backend`; it does not invent a name, vendor, device or
+driver. Cross-endpoint identity is the canonical 29-field supported-adapter
+limit subset. Endpoint-specific effective device limits remain evidence but do
+not create a false hardware mismatch.
+
+Q1 output is now claimed before the HTTP server or Chrome starts. Every file
+is written into one unique cell staging directory, browser/server cleanup is
+awaited, and repository HEAD/status, served first-party module hashes and
+runtime package hashes are compared pre/post before the staging directory can
+be atomically renamed. Collection and cleanup failures publish explicit
+blockers, never a complete-looking final artifact, and authorize no automatic
+retry.
+
+This mechanism slice ran no browser series and makes no quality or performance
+claim. Focused renderer-device, transaction, cleanup and environment tests,
+the full 143-test Web example suite, 55 Web package tests, the 37-test Q1
+comparison validator, renderer library tests (488 passed, eight existing
+research/asset tests ignored), wasm32 check, formatting and source architecture
+policy pass. PlayCanvas must still expose the same actual selected-adapter
+supported-limit receipt before root integration can authorize the finite paired
+series; Q1 remains **Active** and endpoint evidence remains **Deferred**.

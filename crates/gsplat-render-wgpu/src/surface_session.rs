@@ -97,6 +97,55 @@ pub enum SurfaceProjectedDrawPolicy {
     Adaptive,
 }
 
+/// Adapter and effective-device capabilities owned by one actual Surface
+/// render session.
+///
+/// The receipt is diagnostic-only and immutable. Constructing it never asks
+/// the browser for another adapter or device and cannot change renderer policy.
+#[cfg(feature = "diagnostic-surface-capture-receipt")]
+#[doc(hidden)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiagnosticSurfaceDeviceReceipt {
+    adapter_info: wgpu::AdapterInfo,
+    adapter_supported_limits: wgpu::Limits,
+    effective_device_limits: wgpu::Limits,
+    geometry_path: GeometryPath,
+    addressable_splat_count: usize,
+}
+
+#[cfg(feature = "diagnostic-surface-capture-receipt")]
+impl DiagnosticSurfaceDeviceReceipt {
+    fn from_session(session: &SurfaceRenderSession) -> Self {
+        Self {
+            adapter_info: session.presenter.adapter_info().clone(),
+            adapter_supported_limits: session.presenter.adapter_supported_limits().clone(),
+            effective_device_limits: session.presenter.effective_device_limits(),
+            geometry_path: session.presenter.geometry_path(),
+            addressable_splat_count: session.presenter.addressable_splat_count(),
+        }
+    }
+
+    pub const fn adapter_info(&self) -> &wgpu::AdapterInfo {
+        &self.adapter_info
+    }
+
+    pub const fn effective_device_limits(&self) -> &wgpu::Limits {
+        &self.effective_device_limits
+    }
+
+    pub const fn adapter_supported_limits(&self) -> &wgpu::Limits {
+        &self.adapter_supported_limits
+    }
+
+    pub const fn geometry_path(&self) -> GeometryPath {
+        self.geometry_path
+    }
+
+    pub const fn addressable_splat_count(&self) -> usize {
+        self.addressable_splat_count
+    }
+}
+
 impl SurfaceOrderMeasurementSubmission {
     fn from_presenter(backend: SurfaceOrderBackendUsed, submission: TelemetrySubmission) -> Self {
         match submission {
@@ -1209,6 +1258,15 @@ impl SurfaceRenderSession {
     /// Physical adapter identity selected for this session's Surface.
     pub fn adapter_info(&self) -> &wgpu::AdapterInfo {
         self.presenter.adapter_info()
+    }
+
+    /// Returns the adapter and effective limits of this renderer-owned
+    /// Surface session. This feature-gated observer cannot create or select a
+    /// second WebGPU adapter/device.
+    #[cfg(feature = "diagnostic-surface-capture-receipt")]
+    #[doc(hidden)]
+    pub fn diagnostic_surface_device_receipt(&self) -> DiagnosticSurfaceDeviceReceipt {
+        DiagnosticSurfaceDeviceReceipt::from_session(self)
     }
 
     /// Number of source records addressable by this session's selected path.
@@ -4078,6 +4136,27 @@ mod tests {
         };
         assert_eq!(backend, SurfaceOrderBackendUsed::Cpu);
         ticket
+    }
+
+    #[cfg(all(
+        not(target_arch = "wasm32"),
+        feature = "diagnostic-surface-capture-receipt"
+    ))]
+    #[test]
+    fn diagnostic_device_receipt_observes_the_owned_surface_session() {
+        let session = public_cpu_telemetry_session([true]);
+        let receipt = session.diagnostic_surface_device_receipt();
+        assert_eq!(receipt.adapter_info().name, "injected-session-surface");
+        assert_eq!(
+            receipt.adapter_supported_limits(),
+            &wgpu::Limits::downlevel_defaults()
+        );
+        assert_eq!(
+            receipt.effective_device_limits(),
+            &wgpu::Limits::downlevel_defaults()
+        );
+        assert_eq!(receipt.geometry_path(), GeometryPath::SortedIndexDirect);
+        assert_eq!(receipt.addressable_splat_count(), 2);
     }
 
     #[cfg(not(target_arch = "wasm32"))]

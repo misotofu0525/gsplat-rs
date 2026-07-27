@@ -36,6 +36,17 @@ const MIN_PROJECTED_TICKET = 2 ** 52;
 const MIN_GPU_PRODUCER_TICKET = 2 ** 51;
 const MAX_GPU_PRODUCER_TICKET = (2 ** 52) - 1;
 const MAX_ORDER_TICKET = (2 ** 51) - 1;
+const REQUIRED_SURFACE_DEVICE_LIMITS = Object.freeze([
+  "maxBindGroups",
+  "maxBindingsPerBindGroup",
+  "maxBufferSize",
+  "maxComputeInvocationsPerWorkgroup",
+  "maxComputeWorkgroupStorageSize",
+  "maxComputeWorkgroupsPerDimension",
+  "maxStorageBufferBindingSize",
+  "maxStorageBuffersPerShaderStage",
+  "maxTextureDimension2D",
+]);
 
 const FAILURE_STAGES = Object.freeze({
   rendererCreate: "renderer_create",
@@ -74,6 +85,68 @@ export async function initGsplatWeb(options = {}) {
 
 function wasmInitInput(wasmUrl) {
   return wasmUrl === undefined ? undefined : { module_or_path: wasmUrl };
+}
+
+function normalizeDiagnosticSurfaceDeviceReceipt(raw) {
+  if (raw?.schema !== "gsplat-renderer-surface-device/v1"
+      || raw.provenance !== "renderer_owned_surface_session"
+      || raw.adapterSelectionClass !== "high_performance"
+      || raw.geometryPath !== "packed_atlas"
+      || !Number.isSafeInteger(raw.addressableSplatCount)
+      || raw.addressableSplatCount <= 0) {
+    throw new TypeError("diagnostic Surface device receipt has invalid session provenance");
+  }
+  const adapter = raw.adapter;
+  if (!adapter || typeof adapter !== "object"
+      || typeof adapter.name !== "string"
+      || !["available", "unavailable_wgpu28_web_backend"].includes(adapter.identityStatus)
+      || (adapter.identityStatus === "available" && adapter.name.trim() === "")
+      || (adapter.identityStatus === "unavailable_wgpu28_web_backend"
+        && (adapter.backend !== "browser_webgpu" || adapter.name !== ""))
+      || typeof adapter.backend !== "string" || adapter.backend.trim() === ""
+      || typeof adapter.deviceType !== "string" || adapter.deviceType.trim() === ""
+      || !Number.isSafeInteger(adapter.vendorId) || adapter.vendorId < 0
+      || !Number.isSafeInteger(adapter.deviceId) || adapter.deviceId < 0
+      || !Number.isSafeInteger(adapter.subgroupMinSize) || adapter.subgroupMinSize < 0
+      || !Number.isSafeInteger(adapter.subgroupMaxSize) || adapter.subgroupMaxSize < 0
+      || typeof adapter.driver !== "string"
+      || typeof adapter.driverInfo !== "string"
+      || typeof adapter.devicePciBusId !== "string"
+      || typeof adapter.transientSavesMemory !== "boolean") {
+    throw new TypeError("diagnostic Surface device receipt has invalid adapter identity");
+  }
+  const normalizeLimits = (value, label) => {
+    const entries = Object.entries(value ?? {}).sort(([left], [right]) =>
+      left.localeCompare(right));
+    if (entries.length === 0 || entries.some(([name, limit]) =>
+      !/^[a-z][A-Za-z0-9]*$/.test(name)
+        || !Number.isSafeInteger(limit) || limit < 0)) {
+      throw new TypeError(`diagnostic Surface device receipt has invalid ${label}`);
+    }
+    const names = new Set(entries.map(([name]) => name));
+    if (REQUIRED_SURFACE_DEVICE_LIMITS.some((name) => !names.has(name))) {
+      throw new TypeError(`diagnostic Surface device receipt lacks required ${label}`);
+    }
+    return Object.freeze(Object.fromEntries(entries));
+  };
+  const supportedAdapterLimits = normalizeLimits(
+    raw.supportedAdapterLimits,
+    "supported adapter limits",
+  );
+  const effectiveDeviceLimits = normalizeLimits(
+    raw.effectiveDeviceLimits,
+    "effective device limits",
+  );
+  return Object.freeze({
+    schema: raw.schema,
+    provenance: raw.provenance,
+    adapterSelectionClass: raw.adapterSelectionClass,
+    geometryPath: raw.geometryPath,
+    addressableSplatCount: raw.addressableSplatCount,
+    adapter: Object.freeze({ ...adapter }),
+    supportedAdapterLimits,
+    effectiveDeviceLimits,
+  });
 }
 
 export function getGsplatApiVersion(module = loadedModule) {
@@ -678,6 +751,18 @@ export class GsplatWebRenderer {
       });
     }
     throw new TypeError("diagnostic queue completion returned an invalid terminal");
+  }
+
+  diagnosticSurfaceDeviceReceipt() {
+    const nativeRenderer = this.#requireNativeRenderer();
+    if (typeof nativeRenderer.diagnosticSurfaceDeviceReceipt !== "function") {
+      throw new Error(
+        "the loaded gsplat-web module does not include diagnostic Surface device evidence",
+      );
+    }
+    return normalizeDiagnosticSurfaceDeviceReceipt(
+      nativeRenderer.diagnosticSurfaceDeviceReceipt(),
+    );
   }
 
   sceneSummary() {

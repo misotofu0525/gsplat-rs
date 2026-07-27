@@ -881,6 +881,71 @@ impl GsplatWebRenderer {
         Ok(object.into())
     }
 
+    /// Observes the adapter and effective limits of the device owned by this
+    /// exact Surface session. No second `requestAdapter`/`requestDevice` call
+    /// is made and the method cannot mutate rendering policy.
+    #[cfg(feature = "diagnostic-web-surface-capture")]
+    #[wasm_bindgen(js_name = diagnosticSurfaceDeviceReceipt)]
+    pub fn diagnostic_surface_device_receipt(&self) -> Result<JsValue, JsValue> {
+        let receipt = self.session.diagnostic_surface_device_receipt();
+        let info = receipt.adapter_info();
+
+        let adapter = Object::new();
+        set_string(&adapter, "name", &info.name)?;
+        set_u32(&adapter, "vendorId", info.vendor)?;
+        set_u32(&adapter, "deviceId", info.device)?;
+        set_string(&adapter, "deviceType", device_type_label(info.device_type))?;
+        set_string(&adapter, "devicePciBusId", &info.device_pci_bus_id)?;
+        set_string(&adapter, "driver", &info.driver)?;
+        set_string(&adapter, "driverInfo", &info.driver_info)?;
+        set_string(&adapter, "backend", backend_label(info.backend))?;
+        set_string(
+            &adapter,
+            "identityStatus",
+            if info.backend == wgpu::Backend::BrowserWebGpu && info.name.is_empty() {
+                "unavailable_wgpu28_web_backend"
+            } else {
+                "available"
+            },
+        )?;
+        set_u32(&adapter, "subgroupMinSize", info.subgroup_min_size)?;
+        set_u32(&adapter, "subgroupMaxSize", info.subgroup_max_size)?;
+        set_bool(
+            &adapter,
+            "transientSavesMemory",
+            info.transient_saves_memory,
+        )?;
+        let supported = surface_limits_object(receipt.adapter_supported_limits())?;
+        let effective = surface_limits_object(receipt.effective_device_limits())?;
+
+        let object = Object::new();
+        set_string(&object, "schema", "gsplat-renderer-surface-device/v1")?;
+        set_string(&object, "provenance", "renderer_owned_surface_session")?;
+        set_string(&object, "adapterSelectionClass", "high_performance")?;
+        set_string(
+            &object,
+            "geometryPath",
+            geometry_path_label(receipt.geometry_path()),
+        )?;
+        set_u64(
+            &object,
+            "addressableSplatCount",
+            receipt.addressable_splat_count() as u64,
+        )?;
+        Reflect::set(&object, &JsValue::from_str("adapter"), &adapter)?;
+        Reflect::set(
+            &object,
+            &JsValue::from_str("supportedAdapterLimits"),
+            &supported,
+        )?;
+        Reflect::set(
+            &object,
+            &JsValue::from_str("effectiveDeviceLimits"),
+            &effective,
+        )?;
+        Ok(object.into())
+    }
+
     /// Requests one observer receipt from the next presented Exact frame.
     /// This does not create another controller or change renderer policy.
     #[wasm_bindgen(js_name = requestCurrentStats)]
@@ -1426,6 +1491,35 @@ const fn current_stats_plan_label(plan: SurfaceCurrentStatsPlan) -> &'static str
         SurfaceCurrentStatsPlan::CpuPostSort => "cpu_post_sort",
         SurfaceCurrentStatsPlan::GpuPostSort => "gpu_post_sort",
         SurfaceCurrentStatsPlan::GpuPreproject => "gpu_preproject",
+    }
+}
+
+const fn geometry_path_label(path: GeometryPath) -> &'static str {
+    match path {
+        GeometryPath::SortedIndexDirect => "sorted_index_direct",
+        GeometryPath::PackedAtlas => "packed_atlas",
+        GeometryPath::PagedActiveAtlas => "paged_active_atlas",
+    }
+}
+
+const fn device_type_label(device_type: wgpu::DeviceType) -> &'static str {
+    match device_type {
+        wgpu::DeviceType::Other => "other",
+        wgpu::DeviceType::IntegratedGpu => "integrated_gpu",
+        wgpu::DeviceType::DiscreteGpu => "discrete_gpu",
+        wgpu::DeviceType::VirtualGpu => "virtual_gpu",
+        wgpu::DeviceType::Cpu => "cpu",
+    }
+}
+
+const fn backend_label(backend: wgpu::Backend) -> &'static str {
+    match backend {
+        wgpu::Backend::Noop => "noop",
+        wgpu::Backend::Vulkan => "vulkan",
+        wgpu::Backend::Metal => "metal",
+        wgpu::Backend::Dx12 => "dx12",
+        wgpu::Backend::Gl => "gl",
+        wgpu::Backend::BrowserWebGpu => "browser_webgpu",
     }
 }
 
@@ -2512,6 +2606,69 @@ fn set_optional_f32(object: &Object, key: &str, value: Option<f32>) -> Result<()
         Some(value) => set_f32(object, key, value),
         None => set_null(object, key),
     }
+}
+
+#[cfg(feature = "diagnostic-web-surface-capture")]
+fn surface_limits_object(limits: &wgpu::Limits) -> Result<Object, JsValue> {
+    let object = Object::new();
+    macro_rules! u32_limits {
+        ($($field:ident => $name:literal),+ $(,)?) => {$({
+            set_u32(&object, $name, limits.$field)?;
+        })+};
+    }
+    u32_limits!(
+        max_texture_dimension_1d => "maxTextureDimension1D",
+        max_texture_dimension_2d => "maxTextureDimension2D",
+        max_texture_dimension_3d => "maxTextureDimension3D",
+        max_texture_array_layers => "maxTextureArrayLayers",
+        max_bind_groups => "maxBindGroups",
+        max_bindings_per_bind_group => "maxBindingsPerBindGroup",
+        max_dynamic_uniform_buffers_per_pipeline_layout => "maxDynamicUniformBuffersPerPipelineLayout",
+        max_dynamic_storage_buffers_per_pipeline_layout => "maxDynamicStorageBuffersPerPipelineLayout",
+        max_sampled_textures_per_shader_stage => "maxSampledTexturesPerShaderStage",
+        max_samplers_per_shader_stage => "maxSamplersPerShaderStage",
+        max_storage_buffers_per_shader_stage => "maxStorageBuffersPerShaderStage",
+        max_storage_textures_per_shader_stage => "maxStorageTexturesPerShaderStage",
+        max_uniform_buffers_per_shader_stage => "maxUniformBuffersPerShaderStage",
+        max_binding_array_elements_per_shader_stage => "maxBindingArrayElementsPerShaderStage",
+        max_binding_array_sampler_elements_per_shader_stage => "maxBindingArraySamplerElementsPerShaderStage",
+        max_uniform_buffer_binding_size => "maxUniformBufferBindingSize",
+        max_storage_buffer_binding_size => "maxStorageBufferBindingSize",
+        max_vertex_buffers => "maxVertexBuffers",
+        max_vertex_attributes => "maxVertexAttributes",
+        max_vertex_buffer_array_stride => "maxVertexBufferArrayStride",
+        min_uniform_buffer_offset_alignment => "minUniformBufferOffsetAlignment",
+        min_storage_buffer_offset_alignment => "minStorageBufferOffsetAlignment",
+        max_inter_stage_shader_components => "maxInterStageShaderComponents",
+        max_color_attachments => "maxColorAttachments",
+        max_color_attachment_bytes_per_sample => "maxColorAttachmentBytesPerSample",
+        max_compute_workgroup_storage_size => "maxComputeWorkgroupStorageSize",
+        max_compute_invocations_per_workgroup => "maxComputeInvocationsPerWorkgroup",
+        max_compute_workgroup_size_x => "maxComputeWorkgroupSizeX",
+        max_compute_workgroup_size_y => "maxComputeWorkgroupSizeY",
+        max_compute_workgroup_size_z => "maxComputeWorkgroupSizeZ",
+        max_compute_workgroups_per_dimension => "maxComputeWorkgroupsPerDimension",
+        max_immediate_size => "maxImmediateSize",
+        max_non_sampler_bindings => "maxNonSamplerBindings",
+        max_task_mesh_workgroup_total_count => "maxTaskMeshWorkgroupTotalCount",
+        max_task_mesh_workgroups_per_dimension => "maxTaskMeshWorkgroupsPerDimension",
+        max_task_invocations_per_workgroup => "maxTaskInvocationsPerWorkgroup",
+        max_task_invocations_per_dimension => "maxTaskInvocationsPerDimension",
+        max_mesh_invocations_per_workgroup => "maxMeshInvocationsPerWorkgroup",
+        max_mesh_invocations_per_dimension => "maxMeshInvocationsPerDimension",
+        max_task_payload_size => "maxTaskPayloadSize",
+        max_mesh_output_vertices => "maxMeshOutputVertices",
+        max_mesh_output_primitives => "maxMeshOutputPrimitives",
+        max_mesh_output_layers => "maxMeshOutputLayers",
+        max_mesh_multiview_view_count => "maxMeshMultiviewViewCount",
+        max_blas_primitive_count => "maxBlasPrimitiveCount",
+        max_blas_geometry_count => "maxBlasGeometryCount",
+        max_tlas_instance_count => "maxTlasInstanceCount",
+        max_acceleration_structures_per_shader_stage => "maxAccelerationStructuresPerShaderStage",
+        max_multiview_view_count => "maxMultiviewViewCount",
+    );
+    set_u64(&object, "maxBufferSize", limits.max_buffer_size)?;
+    Ok(object)
 }
 
 fn set_optional_u64(object: &Object, key: &str, value: Option<u64>) -> Result<(), JsValue> {
