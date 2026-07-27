@@ -88,7 +88,10 @@ The output is only `candidate`, `exact`, or `inconclusive`; percentage changes
 are observations rather than an acceptance threshold. The destination must not
 exist, and a failed attempt is preserved without automatic retry. This is a
 within-gsplat-rs depth-precision experiment, not PlayCanvas evidence or Q1
-acceptance.
+acceptance. Its secondary `renderer_call_wall_mean_ms` is the wall time inside
+one renderer call; it is not browser rAF cadence, presented FPS, or comparable
+to PlayCanvas `frame_wall_ms`. The classification metric is the explicitly
+named first-input-to-final-renderer-terminal interval.
 
 The default/product path fails closed when WASM/WebGPU construction or exact
 scene admission fails. To inspect the non-equivalent sampled WebGL2 diagnostic
