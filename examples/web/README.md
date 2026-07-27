@@ -45,6 +45,20 @@ source/SH/camera/resolution/presentation facts:
 GSPLAT_M4_SMOKE=1 node examples/web/scripts/collect-web-benchmark-artifact.mjs
 ```
 
+Candidate20 depth precision uses a separate diagnostic package and fresh
+artifact directory; it never enters the formal collector or quality suite:
+
+```bash
+GSPLAT_WEB_WASM_PROFILE=candidate20 \
+GSPLAT_WEB_WASM_OUT_DIR=target/diagnostic/web-candidate20/pkg \
+bash packages/web/scripts/build-wasm.sh
+
+node examples/web/scripts/collect-web-depth-precision-diagnostic.mjs \
+  --pkg target/diagnostic/web-candidate20/pkg \
+  --chrome /absolute/path/to/Chrome \
+  --output target/diagnostic/web-candidate20/run-1
+```
+
 Its `m4_functional_smoke` result is browser behavior evidence only. It is not a
 formal Kitsune performance run or broad device qualification.
 
