@@ -1,9 +1,31 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
-DEFAULT_OUT_DIR="$ROOT_DIR/examples/web/pkg"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd -P)"
 WASM_PATH="$ROOT_DIR/target/wasm32-unknown-unknown/release/gsplat_web.wasm"
+
+# Resolve lexical aliases and every existing symlink parent without creating
+# the requested leaf. Validation below completes before cargo, rm, bindgen, or
+# any other command can create or remove an output directory.
+normalize_output_path() {
+  PYTHONDONTWRITEBYTECODE=1 python3 - "$1" <<'PY'
+import os
+import sys
+
+print(os.path.realpath(os.path.abspath(sys.argv[1])))
+PY
+}
+
+lexical_output_path() {
+  PYTHONDONTWRITEBYTECODE=1 python3 - "$1" <<'PY'
+import os
+import sys
+
+print(os.path.abspath(sys.argv[1]))
+PY
+}
+
+DEFAULT_OUT_DIR="$(normalize_output_path "$ROOT_DIR/examples/web/pkg")"
 
 # Private diagnostics must opt into both the exact profile name and a fresh,
 # caller-owned destination. The normal package remains Exact and keeps its
@@ -23,22 +45,19 @@ case "$WASM_PROFILE" in
       echo "candidate20 requires an explicit fresh GSPLAT_WEB_WASM_OUT_DIR" >&2
       exit 2
     fi
-    case "/$REQUESTED_OUT_DIR/" in
-      *"/../"*|*"/./"*)
-        echo "GSPLAT_WEB_WASM_OUT_DIR must not contain '.' or '..' path components" >&2
-        exit 2
-        ;;
-    esac
     if [[ "$REQUESTED_OUT_DIR" = /* ]]; then
-      OUT_DIR="$REQUESTED_OUT_DIR"
+      REQUESTED_ABSOLUTE="$REQUESTED_OUT_DIR"
     else
-      OUT_DIR="$ROOT_DIR/$REQUESTED_OUT_DIR"
+      REQUESTED_ABSOLUTE="$ROOT_DIR/$REQUESTED_OUT_DIR"
     fi
+    REQUESTED_LEXICAL="$(lexical_output_path "$REQUESTED_ABSOLUTE")"
+    OUT_DIR="$(normalize_output_path "$REQUESTED_ABSOLUTE")"
     if [[ "$OUT_DIR" == "$DEFAULT_OUT_DIR" || "$OUT_DIR" == "$DEFAULT_OUT_DIR/"* ]]; then
       echo "candidate20 output must stay independent from examples/web/pkg" >&2
       exit 2
     fi
-    if [[ -e "$OUT_DIR" || -L "$OUT_DIR" ]]; then
+    if [[ -e "$REQUESTED_LEXICAL" || -L "$REQUESTED_LEXICAL" \
+      || -e "$OUT_DIR" || -L "$OUT_DIR" ]]; then
       echo "candidate20 output must be fresh; preserve the existing path: $OUT_DIR" >&2
       exit 2
     fi

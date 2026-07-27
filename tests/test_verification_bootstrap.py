@@ -205,6 +205,43 @@ class VerificationBootstrapTests(unittest.TestCase):
             self.assertIn("must be fresh", failed.stderr)
             self.assertFalse(log.exists())
 
+    def test_web_wasm_candidate_rejects_normalized_default_output_aliases(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            script, log = self.install_fake_web_build(root)
+            default_parent = root / "examples/web"
+            default_output = default_parent / "pkg"
+            default_output.mkdir(parents=True)
+            marker = default_output / "exact-marker.txt"
+            marker.write_text("keep", encoding="utf-8")
+            alias_parent = root / "default-output-alias"
+            alias_parent.symlink_to(default_parent, target_is_directory=True)
+            environment = {
+                **os.environ,
+                "PATH": f"{root / 'bin'}:{os.environ.get('PATH', '')}",
+                "WASM_BINDGEN_BIN": str(root / "bin/wasm-bindgen"),
+                BOOTSTRAP.WEB_WASM_PROFILE_ENV: "candidate20",
+            }
+
+            for requested in (
+                "examples/web//pkg",
+                str(alias_parent / "pkg/candidate20"),
+            ):
+                failed = subprocess.run(
+                    ("bash", str(script)),
+                    env={
+                        **environment,
+                        BOOTSTRAP.WEB_WASM_OUT_DIR_ENV: requested,
+                    },
+                    text=True,
+                    capture_output=True,
+                )
+                self.assertEqual(failed.returncode, 2, failed.stderr)
+                self.assertIn("independent from examples/web/pkg", failed.stderr)
+                self.assertFalse(log.exists())
+                self.assertEqual(marker.read_text(encoding="utf-8"), "keep")
+                self.assertFalse((default_output / "candidate20").exists())
+
     def test_profile_discovery_never_invokes_device_or_browser_tools(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)
