@@ -4219,13 +4219,19 @@ function benchmarkResultLine(benchmark) {
     : benchmark.terminalQueueThroughput
       ? " evidence_role=cross_implementation_terminal_queue_throughput performance_evidence=true"
     : "";
+  const fixedGpuCompactCell = state.requestedOrderBackend === "gpu"
+    && state.requestedProjectedPolicy === "compact"
+    && state.requestedGpuOrderProducer === null;
+  const producerResult = fixedGpuCompactCell
+    ? "gpu_order_producer_override=unset gpu_order_producer_actual=preproject"
+    : `gpu_order_producer=${state.requestedGpuOrderProducer ?? "post-sort"}`;
   return (
     `BENCHMARK_RESULT dataset=${state.scene.name} ` +
     `samples=${averages.count} warmup=${benchmark.warmupFrames} ` +
     `sort_interval=${Number(els.sortInterval.value)} renderer=${wasmRendererLabel()} ` +
     `requested_backend=${state.requestedOrderBackend} ` +
     `projected_policy=${state.requestedProjectedPolicy} ` +
-    `gpu_order_producer=${state.requestedGpuOrderProducer ?? "post-sort"} ` +
+    `${producerResult} ` +
     `draw_budget=${usingWasm() ? "full" : Number(els.drawBudget.value)} ` +
     `avg_call_ms=${(averages.callMs ?? 0).toFixed(3)} ` +
     `avg_frame_ms=${(averages.frameMs ?? 0).toFixed(3)} ` +
@@ -4431,7 +4437,11 @@ async function emitBenchmarkArtifacts(benchmark) {
     benchmark_window: benchmarkWindow,
     gpu_producer_evidence: {
       requested_producer: state.requestedGpuOrderProducer,
-      default_when_unset: "post-sort",
+      default_when_unset: state.requestedOrderBackend === "gpu"
+          && state.requestedProjectedPolicy === "compact"
+          && state.requestedGpuOrderProducer === null
+        ? "derived_from_exact_whole_plan"
+        : "post-sort",
       actual_producers: actualGpuOrderProducers,
       issued_count: benchmark.issuedGpuProducerTickets.size,
       terminal_count: benchmark.terminalGpuProducerTickets.size,

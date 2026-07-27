@@ -19,6 +19,7 @@ import {
   validateTruck1080pCleanWorkingTree,
   validateTruck1080pCollectorConfig,
   validateTruck1080pExactRasterEvidence,
+  validateTruck1080pFixedCompactControlEvidence,
   truck1080pQualificationByName,
 } from "../src/truck-1080p-qualification.mjs";
 
@@ -74,6 +75,47 @@ test("fixed GPU preproject Compact Truck cell is a separate frozen tuple", () =>
     () => validateTruck1080pCollectorConfig({ ...config, gpuOrderProducer: "post-sort" }, expected),
     /GPU order producer override/,
   );
+});
+
+test("fixed Compact control rejects visible-draw semantics when C is smaller than V", () => {
+  const terminal = {
+    plan: "gpu_preproject",
+    count_semantics: "indirect_draw_equals_contributor",
+    visible: 10,
+    contributor: 6,
+    drawn: 6,
+  };
+  const frame = {
+    visible: 10,
+    contributor: 6,
+    drawn: 6,
+    exact_contributor_compaction: true,
+  };
+  assert.equal(validateTruck1080pFixedCompactControlEvidence({
+    terminals: [terminal],
+    frames: [frame],
+  }), true);
+  assert.throws(
+    () => validateTruck1080pFixedCompactControlEvidence({
+      terminals: [{
+        ...terminal,
+        count_semantics: "candidate_visible_contributor_issued_v1",
+        drawn: 10,
+      }],
+      frames: [{ ...frame, drawn: 10, exact_contributor_compaction: false }],
+    }),
+    /does not prove gpu_preproject D=C/,
+  );
+});
+
+test("fixed Compact evidence discloses unset override and derived preproject actual", async () => {
+  const [mainSource, collectorSource] = await Promise.all([
+    readFile(resolve(REPO_ROOT, "examples/web/src/main.js"), "utf8"),
+    readFile(resolve(REPO_ROOT, "examples/web/scripts/collect-web-benchmark-artifact.mjs"), "utf8"),
+  ]);
+  assert.match(mainSource, /gpu_order_producer_override=unset gpu_order_producer_actual=preproject/);
+  assert.match(mainSource, /derived_from_exact_whole_plan/);
+  assert.match(collectorSource, /derived_whole_plan_actual/);
 });
 
 test("Truck 1080p collector admission freezes the full formal configuration", () => {

@@ -57,6 +57,7 @@ import {
   validateTruck1080pCleanWorkingTree,
   validateTruck1080pCollectorConfig,
   validateTruck1080pExactRasterEvidence,
+  validateTruck1080pFixedCompactControlEvidence,
 } from '../src/truck-1080p-qualification.mjs';
 
 const execFile = promisify(execFileCallback);
@@ -1034,6 +1035,12 @@ function parseArtifacts(consoleLines) {
     validateCurrentStatsEvidence({ frames: admittedFrames });
     const fixedGpuPreprojectCompactControl = truckQualification?.order_backend === 'gpu'
       && truckQualification?.projected_policy === 'compact';
+    if (fixedGpuPreprojectCompactControl) {
+      validateTruck1080pFixedCompactControlEvidence({
+        terminals: statsTerminals,
+        frames: admittedFrames,
+      });
+    }
     if (gpuOrderProducer !== null || fixedGpuPreprojectCompactControl) {
       const requiredPlan = fixedGpuPreprojectCompactControl || gpuOrderProducer === 'preproject'
         ? 'gpu_preproject'
@@ -1216,7 +1223,9 @@ function parseArtifacts(consoleLines) {
   };
   manifest.gpu_producer_evidence = {
     requested_producer: gpuOrderProducer,
-    default_when_unset: 'post-sort',
+    default_when_unset: fixedGpuPreprojectCompactCell
+      ? 'derived_from_exact_whole_plan'
+      : 'post-sort',
     actual_producers: [
       ...new Set(
         admittedFrames
@@ -1227,7 +1236,9 @@ function parseArtifacts(consoleLines) {
     completion_protocol: orderCompletionProtocol,
     ticket_namespace: 'javascript_safe_middle_quarter_from_2_pow_51',
     terminal_receipt_policy: 'exactly_one_success_or_structured_failure_per_issued_ticket',
-    exact_scope: gpuOrderProducer === null ? 'telemetry_disabled' : 'exact_current_contributors',
+    exact_scope: fixedGpuPreprojectCompactCell
+      ? 'derived_whole_plan_actual'
+      : gpuOrderProducer === null ? 'telemetry_disabled' : 'exact_current_contributors',
     ...producerLedger,
   };
   if (orderBackend !== 'cpu'

@@ -75,6 +75,27 @@ export function truck1080pQualificationByName(name) {
   return null;
 }
 
+export function validateTruck1080pFixedCompactControlEvidence({ terminals, frames }) {
+  if (!Array.isArray(terminals) || !Array.isArray(frames) || terminals.length === 0
+      || frames.length === 0) {
+    fail("fixed Compact control requires terminal and admitted-frame evidence");
+  }
+  for (const [index, terminal] of terminals.entries()) {
+    if (terminal?.plan !== "gpu_preproject"
+        || terminal?.count_semantics !== "indirect_draw_equals_contributor"
+        || terminal?.drawn !== terminal?.contributor) {
+      fail(`fixed Compact terminal ${index} does not prove gpu_preproject D=C`);
+    }
+  }
+  for (const [index, frame] of frames.entries()) {
+    if (frame?.exact_contributor_compaction !== true
+        || frame?.drawn !== frame?.contributor) {
+      fail(`fixed Compact admitted frame ${index} does not prove D=C`);
+    }
+  }
+  return true;
+}
+
 function fail(message) {
   throw new TypeError(`Truck 1080p qualification admission failed: ${message}`);
 }
