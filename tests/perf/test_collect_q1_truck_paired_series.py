@@ -7,6 +7,8 @@ import io
 import json
 import os
 import pathlib
+import signal
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -88,6 +90,21 @@ class Q1TruckPairedSeriesTests(unittest.TestCase):
         return COLLECTOR.build_plan(
             self.args, predeclared_at="2026-07-28T00:00:00Z"
         )
+
+    def ownership(self, name: str) -> dict[str, str]:
+        value = COLLECTOR.browser_ownership(self.root, name)
+        return {
+            key: value[key]
+            for key in ("marker", "marker_argument", "user_data_dir", "handshake_path")
+        }
+
+    def ownership_environment(self, ownership: dict[str, str]) -> dict[str, str]:
+        return {
+            **COLLECTOR.safe_host_environment(),
+            "GSPLAT_Q1_BROWSER_OWNER_MARKER": ownership["marker"],
+            "GSPLAT_Q1_BROWSER_USER_DATA_DIR": ownership["user_data_dir"],
+            "GSPLAT_Q1_BROWSER_HANDSHAKE_PATH": ownership["handshake_path"],
+        }
 
     def formal_inputs(self) -> dict[str, object]:
         required = set(COLLECTOR.LOCKED_REPOSITORY_FILES)
@@ -430,6 +447,109 @@ class Q1TruckPairedSeriesTests(unittest.TestCase):
             receipt["invocations"][0]["environment"],
             plan["invocations"][0]["environment"],
         )
+
+    def test_immediate_zero_marker_handshake_cannot_escape_cleanup(self) -> None:
+        ownership = self.ownership("immediate-zero")
+        script = self.root / "immediate-zero.py"
+        script.write_text(
+            "import json, os, pathlib, subprocess, sys\n"
+            "marker_arg = '--user-data-dir=' + os.environ['GSPLAT_Q1_BROWSER_USER_DATA_DIR']\n"
+            "child = subprocess.Popen([sys.executable, '-c', "
+            "'import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(300)', marker_arg], "
+            "stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)\n"
+            "receipt = {'schema':'gsplat-q1-browser-process-ownership/v1', "
+            "'marker':os.environ['GSPLAT_Q1_BROWSER_OWNER_MARKER'], 'marker_arg':marker_arg, "
+            "'user_data_dir':os.environ['GSPLAT_Q1_BROWSER_USER_DATA_DIR'], "
+            "'producer_pid':os.getpid(), 'producer_ppid':os.getppid(), "
+            "'browser_pid':child.pid, 'browser_spawnfile':sys.executable, "
+            "'browser_spawnargs':[sys.executable, marker_arg]}\n"
+            "path = pathlib.Path(os.environ['GSPLAT_Q1_BROWSER_HANDSHAKE_PATH'])\n"
+            "path.parent.mkdir(parents=True, exist_ok=True)\n"
+            "temporary = path.with_suffix('.tmp')\n"
+            "temporary.write_text(json.dumps(receipt))\n"
+            "temporary.replace(path)\n"
+        )
+        outcome = COLLECTOR.run_process_group(
+            [sys.executable, str(script)], cwd=self.root,
+            env=self.ownership_environment(ownership), timeout_seconds=5,
+            browser_ownership=ownership,
+        )
+        with self.assertRaisesRegex(COLLECTOR.ProcessTreeError, "descendant process tree"):
+            COLLECTOR.require_process_completed(outcome, "immediate zero producer")
+        self.assertTrue(outcome.cleanup["browser_ownership"]["handshake_verified"])
+        self.assertTrue(outcome.cleanup["orphan_descendants_detected"])
+        self.assertTrue(outcome.cleanup["group_gone"])
+
+    def test_missing_and_wrong_browser_handshakes_fail_closed(self) -> None:
+        for case in ("missing", "wrong-pid"):
+            with self.subTest(case=case):
+                ownership = self.ownership(case)
+                script = self.root / f"{case}.py"
+                if case == "missing":
+                    script.write_text("pass\n")
+                else:
+                    script.write_text(
+                        "import json, os, pathlib\n"
+                        "path=pathlib.Path(os.environ['GSPLAT_Q1_BROWSER_HANDSHAKE_PATH'])\n"
+                        "path.parent.mkdir(parents=True, exist_ok=True)\n"
+                        "path.write_text(json.dumps({'schema':'gsplat-q1-browser-process-ownership/v1',"
+                        "'marker':os.environ['GSPLAT_Q1_BROWSER_OWNER_MARKER'],"
+                        "'marker_arg':'--user-data-dir='+os.environ['GSPLAT_Q1_BROWSER_USER_DATA_DIR'],"
+                        "'user_data_dir':os.environ['GSPLAT_Q1_BROWSER_USER_DATA_DIR'],"
+                        "'producer_pid':os.getpid(),'browser_pid':999999}))\n"
+                    )
+                outcome = COLLECTOR.run_process_group(
+                    [sys.executable, str(script)], cwd=self.root,
+                    env=self.ownership_environment(ownership), timeout_seconds=5,
+                    browser_ownership=ownership,
+                )
+                with self.assertRaises(COLLECTOR.ProcessTreeError):
+                    COLLECTOR.require_process_completed(outcome, case)
+                self.assertFalse(outcome.cleanup["browser_ownership"]["handshake_verified"])
+
+    def test_preexisting_exact_browser_marker_blocks_before_launch(self) -> None:
+        ownership = self.ownership("preexisting")
+        marker_process = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(300)", ownership["marker_argument"]],
+            start_new_session=True,
+        )
+        sentinel = self.root / "must-not-run"
+        try:
+            with self.assertRaisesRegex(COLLECTOR.OrchestrationError, "already belongs"):
+                COLLECTOR.run_process_group(
+                    [sys.executable, "-c", f"open({str(sentinel)!r}, 'w').close()"],
+                    cwd=self.root, env=self.ownership_environment(ownership),
+                    timeout_seconds=5, browser_ownership=ownership,
+                )
+            self.assertFalse(sentinel.exists())
+        finally:
+            os.killpg(marker_process.pid, signal.SIGKILL)
+            marker_process.wait()
+
+    def test_ps_failure_after_spawn_reaps_stopped_launcher(self) -> None:
+        sentinel = self.root / "continued"
+        original = COLLECTOR.process_table_snapshot
+        calls = 0
+
+        def fail_first_snapshot():
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise COLLECTOR.OrchestrationError("synthetic ps failure")
+            return original()
+
+        with mock.patch.object(COLLECTOR, "process_table_snapshot", side_effect=fail_first_snapshot):
+            outcome = COLLECTOR.run_process_group(
+                [sys.executable, "-c", f"open({str(sentinel)!r}, 'w').close()"],
+                cwd=self.root, env=COLLECTOR.safe_host_environment(), timeout_seconds=5,
+            )
+        with self.assertRaises(COLLECTOR.ProcessTreeError):
+            COLLECTOR.require_process_completed(outcome, "ps failure")
+        self.assertFalse(sentinel.exists())
+        self.assertTrue(outcome.cleanup["leader_reaped"])
+        self.assertTrue(outcome.cleanup["group_gone"])
+        with self.assertRaises(ProcessLookupError):
+            os.kill(outcome.cleanup["process_group_id"], 0)
 
     def test_throughput_rejects_control_not_bound_to_declared_configuration(self) -> None:
         plan = self.plan()

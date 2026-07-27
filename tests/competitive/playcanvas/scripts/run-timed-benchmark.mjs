@@ -34,6 +34,10 @@ import {
   openBrowserSession
 } from './browser-session.mjs';
 import {
+  browserOwnershipConfig,
+  publishBrowserOwnershipHandshake,
+} from '../../../perf/browser-process-ownership.mjs';
+import {
   assertQ1Invocation,
   loadQ1ProducerConfig,
   materializeQ1BuildArtifacts,
@@ -106,6 +110,10 @@ const outputRoot = resolve(
 const sessionConfig = browserSessionConfig(process.env);
 const headless = process.env.HEADLESS !== '0';
 const q1Producer = await loadQ1ProducerConfig(process.env, outputRoot);
+const browserOwnership = browserOwnershipConfig(
+  process.env,
+  q1Producer !== null && sessionConfig.mode === 'local-launch'
+);
 assertQ1Invocation(q1Producer, {
   qualificationName,
   cameraMode,
@@ -289,9 +297,11 @@ try {
     config: sessionConfig,
     executablePath: chrome,
     headless,
-    viewport: { width: viewportWidth, height: viewportHeight, deviceScaleFactor: 1 }
+    viewport: { width: viewportWidth, height: viewportHeight, deviceScaleFactor: 1 },
+    userDataDir: browserOwnership?.userDataDir
   });
   ({ browser, page } = browserSession);
+  await publishBrowserOwnershipHandshake(browser, browserOwnership);
   if (q1Producer) {
     const processReceipt = browser.process();
     browserProcessArgsReceipt = q1BrowserProcessArgsReceipt({

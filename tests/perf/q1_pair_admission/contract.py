@@ -42,8 +42,13 @@ PROCESS_TIMEOUTS_SECONDS = {
     "process_group_term_grace": 5,
     "process_group_kill_grace": 5,
 }
+BROWSER_OWNERSHIP_ENVIRONMENT = frozenset({
+    "GSPLAT_Q1_BROWSER_OWNER_MARKER",
+    "GSPLAT_Q1_BROWSER_USER_DATA_DIR",
+    "GSPLAT_Q1_BROWSER_HANDSHAKE_PATH",
+})
 PUPPETEER_GRAPH_SCHEMA = "gsplat-q1-puppeteer-production-modules/v1"
-PLAYCANVAS_COMMAND_ENVIRONMENT = frozenset({
+PLAYCANVAS_COMMAND_ENVIRONMENT = BROWSER_OWNERSHIP_ENVIRONMENT | frozenset({
     "CHROME_PATH",
     "HEADLESS",
     "PHASE_E_QUALIFICATION",
@@ -56,7 +61,7 @@ PLAYCANVAS_COMMAND_ENVIRONMENT = frozenset({
     "PLAYCANVAS_Q1_PRODUCER_REQUEST",
     "PLAYCANVAS_ARTIFACT_DIR",
 })
-GSPLAT_COMMAND_ENVIRONMENT = frozenset({
+GSPLAT_COMMAND_ENVIRONMENT = BROWSER_OWNERSHIP_ENVIRONMENT | frozenset({
     "CHROME_PATH",
     "HEADLESS",
     "GSPLAT_PHASE_E_QUALIFICATION",
@@ -85,6 +90,7 @@ GSPLAT_COMMAND_ENVIRONMENT = frozenset({
 })
 LOCKED_REPOSITORY_FILES = frozenset({
     "tests/perf/collect-q1-truck-paired-series.py",
+    "tests/perf/browser-process-ownership.mjs",
     "tests/perf/validate-q1-truck-paired-comparison.py",
     "tests/perf/validate-benchmark-artifacts.py",
     "tests/perf/validate-balanced-image-gate.py",
@@ -289,7 +295,10 @@ def _hashed_entry(value: Any, context: str) -> dict[str, Any]:
     return value
 
 
-def _validate_command_environments(commands: dict[str, Any], browser_path: str) -> None:
+def _validate_command_environments(
+    commands: dict[str, Any], browser_path: str, root: pathlib.Path
+) -> None:
+    root = root.resolve()
     postprocess = obj(commands, "postprocess", "schedule orchestration command receipt")
     post_environment = obj(postprocess, "environment", "schedule orchestration postprocess")
     if (
@@ -337,6 +346,29 @@ def _validate_command_environments(commands: dict[str, Any], browser_path: str) 
             fail(f"schedule orchestration command {index} does not use the locked headful Chrome")
         if any(not isinstance(value, str) or not value for value in environment.values()):
             fail(f"schedule orchestration command {index} environment contains an empty value")
+        ownership = obj(invocation, "browser_ownership", f"schedule orchestration command {index}")
+        marker = ownership.get("marker")
+        invocation_id = string(
+            invocation, "invocation_id", f"schedule orchestration command {index}"
+        )
+        if not isinstance(marker, str) or not marker.startswith("gsplat-q1-"):
+            fail(f"schedule orchestration command {index} has an invalid browser marker")
+        expected_profile = root / "process-home" / "browser-profiles" / invocation_id
+        expected_handshake = root / "browser-handshakes" / f"{invocation_id}.json"
+        expected_ownership = {
+            "marker": marker,
+            "marker_argument": f"--user-data-dir={expected_profile}",
+            "user_data_dir": str(expected_profile),
+            "handshake_path": str(expected_handshake),
+        }
+        if ownership != expected_ownership:
+            fail(f"schedule orchestration command {index} browser ownership paths are not predeclared")
+        if (
+            environment.get("GSPLAT_Q1_BROWSER_OWNER_MARKER") != marker
+            or environment.get("GSPLAT_Q1_BROWSER_USER_DATA_DIR") != str(expected_profile)
+            or environment.get("GSPLAT_Q1_BROWSER_HANDSHAKE_PATH") != str(expected_handshake)
+        ):
+            fail(f"schedule orchestration command {index} browser ownership environment drifted")
         if invocation.get("timeout_seconds") != PROCESS_TIMEOUTS_SECONDS["producer"]:
             fail(f"schedule orchestration command {index} producer timeout is not frozen")
 
@@ -494,7 +526,7 @@ def validate_orchestration(
         or len(commands.get("invocations", [])) != 30
     ):
         fail("schedule orchestration command receipt is not frozen to this series")
-    _validate_command_environments(commands, browser["path"])
+    _validate_command_environments(commands, browser["path"], root)
     if locked.get("timeouts_seconds") != PROCESS_TIMEOUTS_SECONDS:
         fail("schedule orchestration execution lock timeouts are not frozen")
     lock_path = root / "formal-execution-lock.json"

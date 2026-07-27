@@ -87,6 +87,7 @@ IGNORED_MODULE_TREE_PARTS = frozenset({
 })
 LOCKED_REPOSITORY_FILES = (
     "tests/perf/collect-q1-truck-paired-series.py",
+    "tests/perf/browser-process-ownership.mjs",
     "tests/perf/validate-q1-truck-paired-comparison.py",
     "tests/perf/validate-benchmark-artifacts.py",
     "tests/perf/validate-balanced-image-gate.py",
@@ -145,6 +146,7 @@ class ProcessIdentity:
     ppid: int
     pgid: int
     started: str
+    command: str
 
     def receipt(self) -> dict[str, Any]:
         return {
@@ -152,6 +154,7 @@ class ProcessIdentity:
             "ppid": self.ppid,
             "pgid": self.pgid,
             "started": self.started,
+            "command": self.command,
         }
 
 
@@ -169,7 +172,7 @@ def process_table_snapshot() -> dict[int, ProcessIdentity]:
     """Read a bounded macOS/Linux ps snapshot without recursing into the runner."""
 
     process = subprocess.Popen(
-        ["/bin/ps", "-axo", "pid=,ppid=,pgid=,lstart="],
+        ["/bin/ps", "-axo", "pid=,ppid=,pgid=,lstart=,command="],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
@@ -183,15 +186,40 @@ def process_table_snapshot() -> dict[int, ProcessIdentity]:
     require(process.returncode == 0, stderr.strip() or "process-table snapshot failed")
     result = {}
     for line in stdout.splitlines():
-        fields = line.split()
-        if len(fields) < 8:
+        fields = line.split(None, 8)
+        if len(fields) < 9:
             continue
         try:
             pid, ppid, pgid = map(int, fields[:3])
         except ValueError:
             continue
-        result[pid] = ProcessIdentity(pid, ppid, pgid, " ".join(fields[3:8]))
+        result[pid] = ProcessIdentity(
+            pid, ppid, pgid, " ".join(fields[3:8]), fields[8]
+        )
     return result
+
+
+def marker_processes(
+    snapshot: dict[int, ProcessIdentity], marker_argument: str
+) -> list[ProcessIdentity]:
+    return [
+        identity
+        for identity in snapshot.values()
+        if marker_argument in identity.command.split()
+    ]
+
+
+def require_process_table_commandlines() -> None:
+    require(
+        sys.platform.startswith(("darwin", "linux")),
+        "formal browser ownership requires macOS or Linux ps command lines",
+    )
+    snapshot = process_table_snapshot()
+    current = snapshot.get(os.getpid())
+    require(
+        current is not None and bool(current.command),
+        "formal browser ownership cannot observe process command lines",
+    )
 
 
 class ProcessTreeTracker:
@@ -246,83 +274,78 @@ class ProcessTreeTracker:
                     self.errors.append(str(error))
                 return
 
-    def live(self, snapshot: dict[int, ProcessIdentity] | None = None) -> list[ProcessIdentity]:
-        observed = self.capture() if snapshot is None else snapshot
-        with self._lock:
-            return [
-                identity
-                for identity in self.known.values()
-                if same_process(observed.get(identity.pid), identity)
-            ]
-
     def finish(self) -> dict[int, ProcessIdentity]:
         self._stop.set()
         self._thread.join(timeout=6)
         return self.capture()
 
 
-def signal_known_processes(
+def signal_verified_identities(
     identities: list[ProcessIdentity],
     signal_number: signal.Signals,
-    *,
-    own_pid: int,
-    own_pgid: int,
 ) -> dict[str, Any]:
-    """Signal only identity-verified descendants and descendant-owned PGIDs."""
+    """Signal identities verified by the immediately preceding ps snapshot."""
 
-    snapshot = process_table_snapshot()
-    live = [
-        identity
-        for identity in identities
-        if same_process(snapshot.get(identity.pid), identity)
-    ]
-    safe_groups = sorted({
+    own_pid = os.getpid()
+    own_pgid = os.getpgrp()
+    groups = sorted({
         identity.pgid
-        for identity in live
-        if identity.pgid == identity.pid
-        and identity.pgid != own_pgid
+        for identity in identities
+        if identity.pid == identity.pgid
         and identity.pid != own_pid
+        and identity.pgid != own_pgid
     })
-    group_members = {identity.pid for identity in live if identity.pgid in safe_groups}
-    safe_pids = sorted({
-        identity.pid
-        for identity in live
+    group_members = {identity.pid for identity in identities if identity.pgid in groups}
+    pids = sorted({
+        identity.pid for identity in identities
         if identity.pid not in group_members and identity.pid != own_pid
     })
     signaled_groups = []
     signaled_pids = []
-    for process_group_id in safe_groups:
+    for process_group_id in groups:
         try:
             os.killpg(process_group_id, signal_number)
             signaled_groups.append(process_group_id)
-        except ProcessLookupError:
+        except OSError:
             pass
-    for pid in safe_pids:
+    for pid in pids:
         try:
             os.kill(pid, signal_number)
             signaled_pids.append(pid)
-        except ProcessLookupError:
+        except OSError:
             pass
-    return {
-        "signal": signal_number.name,
-        "groups": signaled_groups,
-        "pids": signaled_pids,
+    return {"signal": signal_number.name, "groups": signaled_groups, "pids": signaled_pids}
+
+
+def validate_browser_handshake(
+    ownership: dict[str, str],
+    producer_pid: int,
+    known: dict[int, ProcessIdentity],
+) -> dict[str, Any]:
+    handshake = load_object(
+        pathlib.Path(ownership["handshake_path"]), "browser ownership handshake"
+    )
+    expected = {
+        "schema": "gsplat-q1-browser-process-ownership/v1",
+        "marker": ownership["marker"],
+        "marker_arg": ownership["marker_argument"],
+        "user_data_dir": ownership["user_data_dir"],
+        "producer_pid": producer_pid,
     }
-
-
-def wait_for_known_exit(
-    tracker: ProcessTreeTracker,
-    timeout_seconds: int,
-    leader: subprocess.Popen[str],
-) -> list[ProcessIdentity]:
-    deadline = time.monotonic() + timeout_seconds
-    live = tracker.live()
-    while live and time.monotonic() < deadline:
-        leader.poll()
-        time.sleep(0.05)
-        live = tracker.live()
-    leader.poll()
-    return live
+    for key, value in expected.items():
+        require(handshake.get(key) == value, f"browser ownership handshake has wrong {key}")
+    browser_pid = handshake.get("browser_pid")
+    require(
+        isinstance(browser_pid, int) and browser_pid > 0,
+        "browser ownership handshake has invalid browser_pid",
+    )
+    identity = known.get(browser_pid)
+    require(identity is not None, "browser ownership handshake PID was never observed")
+    require(
+        ownership["marker_argument"] in identity.command.split(),
+        "browser ownership handshake PID lacks the exact marker",
+    )
+    return handshake
 
 
 def run_process_group(
@@ -331,10 +354,25 @@ def run_process_group(
     cwd: pathlib.Path,
     env: dict[str, str],
     timeout_seconds: int,
+    browser_ownership: dict[str, str] | None = None,
 ) -> ProcessOutcome:
-    """Run one command in a private process group and reap its whole tree."""
+    """Run one command and clean its observed tree plus declared browser owner."""
 
     require(timeout_seconds > 0, "process timeout must be positive")
+    if browser_ownership is not None:
+        marker_argument = browser_ownership["marker_argument"]
+        require(
+            not marker_processes(process_table_snapshot(), marker_argument),
+            "browser ownership marker already belongs to a live process",
+        )
+        require(
+            not pathlib.Path(browser_ownership["handshake_path"]).exists(),
+            "browser ownership handshake path already exists",
+        )
+        require(
+            not pathlib.Path(browser_ownership["user_data_dir"]).exists(),
+            "browser ownership user-data-dir already exists",
+        )
     launcher = (
         "import os,signal,sys;"
         "os.kill(os.getpid(),signal.SIGSTOP);"
@@ -349,79 +387,180 @@ def run_process_group(
         text=True,
         start_new_session=True,
     )
-    waited_pid, wait_status = os.waitpid(process.pid, os.WUNTRACED)
-    require(
-        waited_pid == process.pid and os.WIFSTOPPED(wait_status),
-        "process launcher did not stop before exec",
+    initial = ProcessIdentity(
+        process.pid, os.getpid(), process.pid, "unobserved", "stopped-launcher"
     )
-    initial = process_table_snapshot().get(process.pid)
-    require(initial is not None, "process leader identity was not observable before exec")
-    tracker = ProcessTreeTracker(initial)
-    tracker.start()
-    os.kill(process.pid, signal.SIGCONT)
+    tracker: ProcessTreeTracker | None = None
+    continued = False
     timed_out = False
-    try:
-        stdout, stderr = process.communicate(timeout=timeout_seconds)
-    except subprocess.TimeoutExpired:
-        timed_out = True
-        stdout = ""
-        stderr = ""
-
-    snapshot = tracker.capture()
-    live_before = tracker.live(snapshot)
-    descendants_before = [identity for identity in live_before if identity.pid != process.pid]
-    cleanup_required = timed_out or bool(descendants_before)
+    stdout = ""
+    stderr = ""
+    runner_errors: list[str] = []
     term_receipt = {"signal": "SIGTERM", "groups": [], "pids": []}
     kill_receipt = {"signal": "SIGKILL", "groups": [], "pids": []}
+    descendants_before: list[ProcessIdentity] = []
+    final_survivors: list[ProcessIdentity] = []
+    surviving_groups: list[int] = []
+    handshake: dict[str, Any] | None = None
     term_grace = PROCESS_TIMEOUTS_SECONDS["process_group_term_grace"]
     kill_grace = PROCESS_TIMEOUTS_SECONDS["process_group_kill_grace"]
-    if cleanup_required:
-        term_receipt = signal_known_processes(
-            live_before,
-            signal.SIGTERM,
-            own_pid=os.getpid(),
-            own_pgid=os.getpgrp(),
-        )
-        survivors = wait_for_known_exit(tracker, term_grace, process)
-        if survivors:
-            kill_receipt = signal_known_processes(
-                survivors,
-                signal.SIGKILL,
-                own_pid=os.getpid(),
-                own_pgid=os.getpgrp(),
-            )
-            survivors = wait_for_known_exit(tracker, kill_grace, process)
-    else:
-        survivors = []
-    final_snapshot = tracker.finish()
-    final_survivors = tracker.live(final_snapshot)
-    owned_groups = {
-        identity.pgid
-        for identity in tracker.known.values()
-        if identity.pid == identity.pgid
-    }
-    surviving_groups = sorted({
-        identity.pgid
-        for identity in final_snapshot.values()
-        if identity.pgid in owned_groups
-    })
-    if process.poll() is None:
+    try:
         try:
-            stdout, stderr = process.communicate(timeout=kill_grace)
-        except subprocess.TimeoutExpired:
-            process.kill()
+            waited_pid, wait_status = os.waitpid(process.pid, os.WUNTRACED)
+            require(
+                waited_pid == process.pid and os.WIFSTOPPED(wait_status),
+                "process launcher did not stop before exec",
+            )
+            observed = process_table_snapshot().get(process.pid)
+            require(observed is not None, "process leader identity was not observable before exec")
+            initial = observed
+            tracker = ProcessTreeTracker(initial)
+            tracker.start()
+            os.kill(process.pid, signal.SIGCONT)
+            continued = True
+            try:
+                stdout, stderr = process.communicate(timeout=timeout_seconds)
+            except subprocess.TimeoutExpired:
+                timed_out = True
+        except BaseException as error:
+            runner_errors.append(f"{type(error).__name__}: {error}")
+    finally:
+        # This block begins at spawn ownership, so even waitpid/ps/tracker
+        # failures cannot strand the deliberately stopped launcher.
+        if not continued and process.poll() is None:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+                kill_receipt["groups"].append(process.pid)
+            except OSError as error:
+                runner_errors.append(f"initial KILL: {type(error).__name__}: {error}")
+                pass
+        known: dict[int, ProcessIdentity] = {initial.pid: initial}
+        snapshot: dict[int, ProcessIdentity] = {}
+        if tracker is not None:
+            try:
+                snapshot = tracker.capture()
+                known.update(tracker.known)
+            except BaseException as error:
+                runner_errors.append(f"tracker capture: {type(error).__name__}: {error}")
+        else:
+            try:
+                snapshot = process_table_snapshot()
+            except BaseException as error:
+                runner_errors.append(f"cleanup snapshot: {type(error).__name__}: {error}")
+        marker_live: list[ProcessIdentity] = []
+        if browser_ownership is not None and snapshot:
+            marker_live = marker_processes(snapshot, browser_ownership["marker_argument"])
+            known.update({identity.pid: identity for identity in marker_live})
+        if browser_ownership is not None:
+            try:
+                handshake = validate_browser_handshake(browser_ownership, process.pid, known)
+            except BaseException as error:
+                runner_errors.append(f"browser handshake: {type(error).__name__}: {error}")
+        live_before = [
+            identity for identity in known.values()
+            if same_process(snapshot.get(identity.pid), identity)
+        ]
+        descendants_before = [identity for identity in live_before if identity.pid != process.pid]
+        cleanup_required = (
+            timed_out
+            or bool(runner_errors)
+            or bool(descendants_before)
+            or process.poll() is None
+        )
+        if cleanup_required:
+            try:
+                if process.pid != os.getpgrp():
+                    os.killpg(process.pid, signal.SIGTERM)
+                    term_receipt["groups"].append(process.pid)
+            except OSError:
+                pass
+            try:
+                extra = signal_verified_identities(live_before, signal.SIGTERM)
+                term_receipt["groups"] = sorted(set(term_receipt["groups"] + extra["groups"]))
+                term_receipt["pids"] = extra["pids"]
+            except BaseException as error:
+                runner_errors.append(f"TERM identity scan: {type(error).__name__}: {error}")
+            deadline = time.monotonic() + term_grace
+            while process.poll() is None and time.monotonic() < deadline:
+                time.sleep(0.02)
+            try:
+                remaining = process_table_snapshot()
+                survivors = [
+                    identity
+                    for identity in known.values()
+                    if same_process(remaining.get(identity.pid), identity)
+                ]
+            except BaseException as error:
+                runner_errors.append(f"TERM rescan: {type(error).__name__}: {error}")
+                survivors = live_before
+            if survivors or process.poll() is None:
+                try:
+                    if process.pid != os.getpgrp():
+                        os.killpg(process.pid, signal.SIGKILL)
+                        kill_receipt["groups"].append(process.pid)
+                except OSError:
+                    pass
+                try:
+                    extra = signal_verified_identities(survivors, signal.SIGKILL)
+                    kill_receipt["groups"] = sorted(set(kill_receipt["groups"] + extra["groups"]))
+                    kill_receipt["pids"] = extra["pids"]
+                except BaseException as error:
+                    runner_errors.append(f"KILL identity scan: {type(error).__name__}: {error}")
+        if process.poll() is None:
+            try:
+                stdout, stderr = process.communicate(timeout=kill_grace)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                stdout, stderr = process.communicate()
+        else:
             stdout, stderr = process.communicate()
-    else:
-        stdout, stderr = process.communicate()
+        if tracker is not None:
+            try:
+                final_snapshot = tracker.finish()
+                known.update(tracker.known)
+            except BaseException as error:
+                runner_errors.append(f"tracker finish: {type(error).__name__}: {error}")
+                try:
+                    final_snapshot = process_table_snapshot()
+                except BaseException:
+                    final_snapshot = {}
+        else:
+            try:
+                final_snapshot = process_table_snapshot()
+            except BaseException:
+                final_snapshot = {}
+        final_survivors = [
+            identity
+            for identity in known.values()
+            if same_process(final_snapshot.get(identity.pid), identity)
+        ]
+        if browser_ownership is not None:
+            final_survivors.extend(
+                identity
+                for identity in marker_processes(
+                    final_snapshot, browser_ownership["marker_argument"]
+                )
+                if identity.pid not in {value.pid for value in final_survivors}
+            )
+        owned_groups = {
+            identity.pgid for identity in known.values() if identity.pid == identity.pgid
+        }
+        surviving_groups = sorted({
+            identity.pgid
+            for identity in final_snapshot.values()
+            if identity.pgid in owned_groups
+        })
     cleanup = {
         "isolated_process_group": initial.pgid == initial.pid and initial.pgid != os.getpgrp(),
         "process_group_id": initial.pgid,
-        "lineage_complete": not tracker.errors,
-        "snapshot_count": tracker.snapshot_count,
-        "known_processes": [identity.receipt() for identity in sorted(tracker.known.values(), key=lambda item: item.pid)],
+        "ownership_scope": "marker_handshake" if browser_ownership else "initial_group_and_observed_descendants",
+        "whole_system_lineage_claimed": False,
+        "lineage_complete": not runner_errors and not (tracker.errors if tracker else []),
+        "snapshot_count": tracker.snapshot_count if tracker else 0,
+        "known_processes": [identity.receipt() for identity in sorted(known.values(), key=lambda item: item.pid)],
         "detached_process_groups": sorted({
             identity.pgid
-            for identity in tracker.known.values()
+            for identity in known.values()
             if identity.pid != process.pid and identity.pgid != initial.pgid
         }),
         "orphan_descendants_detected": bool(descendants_before),
@@ -433,7 +572,19 @@ def run_process_group(
         "group_gone": not final_survivors and not surviving_groups,
         "term_grace_seconds": term_grace,
         "kill_grace_seconds": kill_grace,
-        "tracker_errors": tracker.errors,
+        "tracker_errors": tracker.errors if tracker else [],
+        "runner_errors": runner_errors,
+        "browser_ownership": None if browser_ownership is None else {
+            **browser_ownership,
+            "handshake_verified": handshake is not None,
+            "handshake": handshake,
+            "marker_processes_final": [
+                identity.receipt()
+                for identity in marker_processes(
+                    final_snapshot, browser_ownership["marker_argument"]
+                )
+            ],
+        },
     }
     return ProcessOutcome(
         argv=list(argv),
@@ -902,6 +1053,24 @@ def playcanvas_request(
     return value
 
 
+def browser_ownership(root: pathlib.Path, invocation_id: str) -> dict[str, Any]:
+    digest = hashlib.sha256(f"{root}:{invocation_id}".encode()).hexdigest()[:32]
+    marker = f"gsplat-q1-{digest}"
+    user_data_dir = root / "process-home" / "browser-profiles" / invocation_id
+    handshake_path = root / "browser-handshakes" / f"{invocation_id}.json"
+    return {
+        "marker": marker,
+        "marker_argument": f"--user-data-dir={user_data_dir}",
+        "user_data_dir": str(user_data_dir),
+        "handshake_path": str(handshake_path),
+        "environment": {
+            "GSPLAT_Q1_BROWSER_OWNER_MARKER": marker,
+            "GSPLAT_Q1_BROWSER_USER_DATA_DIR": str(user_data_dir),
+            "GSPLAT_Q1_BROWSER_HANDSHAKE_PATH": str(handshake_path),
+        },
+    }
+
+
 def make_invocation(
     *,
     sequence: int,
@@ -923,6 +1092,7 @@ def make_invocation(
 ) -> dict[str, Any]:
     role_name = f"control-trace-{trace}" if role == "control" else "throughput"
     invocation_id = f"{sequence:02d}-{pair_id}-{endpoint}-{role_name}"
+    ownership = browser_ownership(root, invocation_id)
     artifact = root / "pairs" / pair_id / endpoint / role_name
     pairing_value = pairing(
         series_id=series_id,
@@ -973,6 +1143,7 @@ def make_invocation(
             }
         environment = {
             **child_base_environment(root),
+            **ownership["environment"],
             "CHROME_PATH": str(chrome),
             "HEADLESS": "0",
             "PHASE_E_QUALIFICATION": "truck-quality-1080p-v1",
@@ -1001,6 +1172,7 @@ def make_invocation(
         run_context = root / "run-contexts" / f"{invocation_id}.json"
         environment = {
             **child_base_environment(root),
+            **ownership["environment"],
             "CHROME_PATH": str(chrome),
             "HEADLESS": "0",
             "GSPLAT_PHASE_E_QUALIFICATION": GSPLAT_QUALIFICATION,
@@ -1084,6 +1256,10 @@ def make_invocation(
         "cwd": str(repo_root),
         "argv": argv,
         "environment": environment,
+        "browser_ownership": {
+            key: ownership[key]
+            for key in ("marker", "marker_argument", "user_data_dir", "handshake_path")
+        },
         "dynamic_inputs": dynamic_inputs,
         "automatic_retry": False,
         "timeout_seconds": PROCESS_TIMEOUTS_SECONDS["producer"],
@@ -1242,6 +1418,7 @@ def command_receipt(plan: dict[str, Any]) -> dict[str, Any]:
                     "cwd",
                     "argv",
                     "environment",
+                    "browser_ownership",
                     "dynamic_inputs",
                     "automatic_retry",
                     "timeout_seconds",
@@ -1293,6 +1470,8 @@ def preflight_execute(args: argparse.Namespace) -> dict[str, Any]:
     )
     require(not git_output("status", "--porcelain"), "formal Q1 execution requires a clean tree")
     require(args.chrome.is_file() and os.access(args.chrome, os.X_OK), "Chrome is not executable")
+    require_process_table_commandlines()
+    require(not any(character.isspace() for character in str(args.series_root)), "formal series root cannot contain whitespace because its exact browser ownership token must be observable")
     require(
         (REPO_ROOT / "examples/web/src/q1-gsplat-producer.mjs").is_file(),
         "gsplat-rs Q1 producer is not integrated at this commit",
@@ -1339,7 +1518,10 @@ def claim_series(args: argparse.Namespace, plan: dict[str, Any]) -> dict[str, An
     commands_sha = hashlib.sha256(json_bytes(commands)).hexdigest()
     locked = execution_lock(plan, commands)
     root.mkdir()
-    for directory in ("reference", "requests", "run-contexts", "logs", "process-home"):
+    for directory in (
+        "reference", "requests", "run-contexts", "logs", "process-home",
+        "process-home/browser-profiles", "browser-handshakes",
+    ):
         (root / directory).mkdir()
     for invocation in plan["invocations"]:
         # Producers atomically claim their final artifact directory; only the
@@ -1404,6 +1586,7 @@ def run_once(invocation: dict[str, Any], root: pathlib.Path) -> None:
         cwd=REPO_ROOT,
         env=invocation["environment"],
         timeout_seconds=invocation["timeout_seconds"],
+        browser_ownership=invocation["browser_ownership"],
     )
     log_root = root / "logs"
     (log_root / f"{invocation['invocation_id']}.stdout.log").write_text(
@@ -1571,6 +1754,9 @@ def compare_image(
     raw_relative = pathlib.Path("comparisons") / pair_id / endpoint / f"trace-{trace}.raw.json"
     raw = root / raw_relative
     raw.parent.mkdir(parents=True, exist_ok=True)
+    comparison_id = f"image-{pair_id}-{endpoint}-trace-{trace}"
+    ownership = browser_ownership(root, comparison_id)
+    comparison_environment = {**environment, **ownership["environment"]}
     completed = run_process_group(
         [
             "node",
@@ -1581,8 +1767,12 @@ def compare_image(
             str(raw),
         ],
         cwd=REPO_ROOT,
-        env=environment,
+        env=comparison_environment,
         timeout_seconds=PROCESS_TIMEOUTS_SECONDS["image_comparison"],
+        browser_ownership={
+            key: ownership[key]
+            for key in ("marker", "marker_argument", "user_data_dir", "handshake_path")
+        },
     )
     (raw.parent / f"{raw.stem}.stdout.log").write_text(completed.stdout, encoding="utf-8")
     (raw.parent / f"{raw.stem}.stderr.log").write_text(completed.stderr, encoding="utf-8")

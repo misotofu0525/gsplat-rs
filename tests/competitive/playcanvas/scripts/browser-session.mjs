@@ -113,7 +113,8 @@ export async function openBrowserSession({
   config,
   executablePath,
   headless,
-  viewport
+  viewport,
+  userDataDir = undefined
 }) {
   let browser;
   let page;
@@ -128,6 +129,7 @@ export async function openBrowserSession({
         executablePath,
         headless,
         defaultViewport: viewport,
+        userDataDir,
         args: [...LOCAL_BROWSER_ARGS]
       });
     }

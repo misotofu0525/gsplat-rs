@@ -73,6 +73,10 @@ import {
 import { Q1ArtifactTransaction } from './q1-artifact-transaction.mjs';
 import { cleanupBrowserAndServer, waitForChildExit } from './q1-process-cleanup.mjs';
 import { gsplatQ1WebGpuEnvironmentFields } from '../../../tests/perf/q1-webgpu-environment.mjs';
+import {
+  browserOwnershipConfig,
+  publishBrowserOwnershipHandshake,
+} from '../../../tests/perf/browser-process-ownership.mjs';
 
 const execFile = promisify(execFileCallback);
 
@@ -1750,6 +1754,10 @@ if (q1ArtifactRole !== null) {
     collectionSessionId: q1CollectionSessionId,
   });
 }
+const browserOwnership = browserOwnershipConfig(
+  process.env,
+  Boolean(process.env.GSPLAT_Q1_SERIES_ROOT)
+);
 let server;
 let browser;
 let q1BrowserArgsReceipt = null;
@@ -1761,14 +1769,19 @@ let q1CollectionFailure = null;
 const consoleLines = [];
 try {
   server = await startHttpServer();
-  browser = await puppeteerApi.launch({
+  const browserLaunchOptions = {
     executablePath: chrome,
     headless: q1ArtifactRole === null ? process.env.HEADLESS !== '0' : false,
     defaultViewport: q1ArtifactRole === null
       ? { width: 1280, height: 720, deviceScaleFactor: 1 }
       : { width: 1920, height: 1080, deviceScaleFactor: 1 },
     args: [...Q1_BROWSER_ARGS]
-  });
+  };
+  if (browserOwnership !== null) {
+    browserLaunchOptions.userDataDir = browserOwnership.userDataDir;
+  }
+  browser = await puppeteerApi.launch(browserLaunchOptions);
+  await publishBrowserOwnershipHandshake(browser, browserOwnership);
   const page = await browser.newPage();
   if (q1ArtifactRole !== null) {
     await page.bringToFront();

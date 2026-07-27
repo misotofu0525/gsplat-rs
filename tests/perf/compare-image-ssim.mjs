@@ -5,6 +5,10 @@ import { createHash } from 'node:crypto';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import process from 'node:process';
+import {
+  browserOwnershipConfig,
+  publishBrowserOwnershipHandshake,
+} from './browser-process-ownership.mjs';
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(scriptDir, '..', '..');
@@ -112,8 +116,14 @@ const browserIdentity = {
   executablePath: resolve(chrome),
   sha256: createHash('sha256').update(chromeBytes).digest('hex')
 };
-const browser = await puppeteer.launch({ executablePath: browserIdentity.executablePath, headless: true });
+const browserOwnership = browserOwnershipConfig(process.env, false);
+const browser = await puppeteer.launch({
+  executablePath: browserIdentity.executablePath,
+  headless: true,
+  userDataDir: browserOwnership?.userDataDir,
+});
 try {
+  await publishBrowserOwnershipHandshake(browser, browserOwnership);
   const page = await browser.newPage();
   const result = await page.evaluate(async ({ referenceBase64, candidateBase64 }) => {
     const WINDOW_SIZE = 8;
