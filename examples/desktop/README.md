@@ -24,6 +24,15 @@ cargo run -p desktop-example -- tests/datasets/minimal_ascii.ply \
 `--frames` repeats the selected fixed frame; it does not advance or recreate
 the path through desktop-specific camera controls.
 
+The Q1 comparator may create independent image references with
+`tests/perf/collect-q1-truck-direct-reference.py`. That collector is deliberately
+not a Web endpoint: it builds this native offscreen executable and selects the
+wide-f32 Direct path, stable CPU Full32 ordering, SortedAlpha, the wgpu Direct
+global-quad raster, and RGBA8 readback for frozen Truck trace frames 0 and 1.
+Its private `--offscreen-reference-receipt` flag fails closed unless all of
+those CLI/runtime choices are realized; it does not widen the Rust, C, Swift,
+or JavaScript API.
+
 Replay every camera revision exactly once (the sequence default) with:
 
 ```bash

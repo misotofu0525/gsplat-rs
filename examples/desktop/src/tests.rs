@@ -263,6 +263,7 @@ fn args_parse_defaults_to_minimal_dataset() {
     assert!(!args.surface_q1_m4_native);
     assert!(!args.surface_diagnostic_capture_receipt);
     assert!(!args.surface_diagnostic_multi_capture);
+    assert!(!args.offscreen_reference_receipt);
     assert!(args.png_out.is_none());
     assert!(args.camera_trace_path.is_none());
     assert_eq!(args.camera_frame, 0);
@@ -271,6 +272,48 @@ fn args_parse_defaults_to_minimal_dataset() {
     assert_eq!(args.camera_warmup_frames, 0);
     assert!(args.camera_measured_frames.is_none());
     assert_eq!(args.camera_loops, 1);
+}
+
+#[test]
+fn offscreen_reference_receipt_is_a_narrow_direct_fixed_frame_opt_in() {
+    let args = parse_args(&[
+        "scene.ply",
+        "--geometry-path",
+        "direct",
+        "--order-backend",
+        "cpu",
+        "--camera-trace",
+        CAMERA_TRACE_FIXTURE,
+        "--camera-frame",
+        "0",
+        "--frames",
+        "1",
+        "--png",
+        "reference.png",
+        "--offscreen-reference-receipt",
+    ])
+    .unwrap();
+    assert!(args.offscreen_reference_receipt);
+
+    assert!(parse_args(&["--offscreen-reference-receipt"]).is_err());
+    assert!(
+        parse_args(&[
+            "--geometry-path",
+            "packed",
+            "--order-backend",
+            "cpu",
+            "--camera-trace",
+            CAMERA_TRACE_FIXTURE,
+            "--camera-frame",
+            "0",
+            "--frames",
+            "1",
+            "--png",
+            "reference.png",
+            "--offscreen-reference-receipt",
+        ])
+        .is_err()
+    );
 }
 
 #[cfg(not(feature = "diagnostic-surface-depth-key-candidate24"))]

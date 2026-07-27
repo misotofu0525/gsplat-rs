@@ -1,7 +1,8 @@
 use std::f32::consts::PI;
 use std::time::Instant;
 
-use gsplat_render_wgpu::Renderer;
+use gsplat_core::RenderMode;
+use gsplat_render_wgpu::{GeometryPath, Renderer};
 
 use crate::cli::{Args, geometry_path_label};
 use crate::image_output::write_png;
@@ -93,6 +94,53 @@ pub(crate) fn run_offscreen(
         let rgba = renderer.readback_rgba8().map_err(|err| err.to_string())?;
         write_png(png_path, args.config.width, args.config.height, &rgba)?;
         println!("wrote_png={}", png_path.display());
+    }
+
+    if args.offscreen_reference_receipt {
+        let source_count = renderer
+            .scene_len()
+            .ok_or_else(|| "offscreen reference source count is unavailable".to_owned())?;
+        let sh_degree = renderer
+            .scene_sh_degree()
+            .ok_or_else(|| "offscreen reference SH degree is unavailable".to_owned())?;
+        let adapter = renderer
+            .gpu_adapter_info()
+            .ok_or_else(|| "offscreen reference GPU adapter is unavailable".to_owned())?;
+        if renderer.geometry_path() != GeometryPath::SortedIndexDirect
+            || renderer.mode() != RenderMode::SortedAlpha
+            || !renderer.has_gpu_rasterizer()
+            || stats.visible_count != stats.drawn_count
+        {
+            return Err(
+                "offscreen reference renderer did not realize the Direct-f32 Exact contract"
+                    .to_owned(),
+            );
+        }
+        println!(
+            "OFFSCREEN_REFERENCE_RECEIPT schema=gsplat-direct-f32-offscreen-receipt/v1 \
+geometry_path=sorted_index_direct representation=wide_f32 render_mode=sorted_alpha \
+order_backend=cpu depth_key_precision=exact_full32 stable_source_id_order=true \
+raster_execution_plan=wgpu_direct_global_quads gpu_rasterizer=true \
+adapter_backend={:?} adapter_device_type={:?} adapter_vendor={} adapter_device={} \
+source_count={source_count} decoded_count={source_count} encoded_count={source_count} resident_count={source_count} \
+addressable_count={source_count} source_sh_degree={sh_degree} resident_sh_degree={sh_degree} \
+requested_width={} requested_height={} internal_render_width={} internal_render_height={} \
+readback_width={} readback_height={} readback_format=rgba8_unorm readback_row_origin=top_left \
+source_membership=all sampling=disabled lod=disabled partial_scene_published=false \
+dynamic_resolution=disabled upscaling=disabled visible_count={} drawn_count={}",
+            adapter.backend,
+            adapter.device_type,
+            adapter.vendor,
+            adapter.device,
+            args.config.width,
+            args.config.height,
+            args.config.width,
+            args.config.height,
+            args.config.width,
+            args.config.height,
+            stats.visible_count,
+            stats.drawn_count,
+        );
     }
 
     println!("desktop-example ok");

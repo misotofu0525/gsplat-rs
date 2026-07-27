@@ -236,6 +236,24 @@ cause, choose a fresh destination, and invoke `run` explicitly again.
 
 ### Q1 WebGPU Truck 1080p prerequisite
 
+Before a Q1 image comparison, create the independent native Direct-f32 image
+authority from a clean reviewed commit and a fresh output directory:
+
+```bash
+python3 tests/perf/collect-q1-truck-direct-reference.py \
+  --expected-commit <full-40-character-sha> \
+  --output target/qualification/q1-direct-f32-reference-<sha>
+```
+
+The producer performs no browser or device work and is not a performance run.
+It renders only frozen Truck trace frames 0 and 1 through the existing native
+offscreen Direct renderer, then atomically publishes two 1920x1080 RGBA8 PNGs
+and `reference.json`. The sidecar freezes source, toolchain, release-binary,
+dataset, trace pose/intrinsics, exactness, visible/drawn, PNG, and decoded-RGBA
+identities. An existing output, dirty/different commit, identity drift, failed
+render, or incomplete Direct receipt publishes only `blocker.json`; the
+producer never retries automatically.
+
 The named `web-webgpu-truck-1080p` profile reuses the standard Web collector
 twice; it does not add a second wrapper. It admits only the canonical Truck PLY at
 `tests/datasets/external/inria_3dgs/truck/point_cloud.ply` with SHA-256

@@ -129,6 +129,10 @@ pub(crate) struct Args {
         allow(dead_code)
     )]
     pub(crate) surface_diagnostic_multi_capture: bool,
+    /// Emits one machine-readable receipt for the native Direct-f32
+    /// offscreen image-oracle collector. This is a desktop diagnostic, not a
+    /// stable renderer or FFI API.
+    pub(crate) offscreen_reference_receipt: bool,
     pub(crate) png_out: Option<PathBuf>,
     pub(crate) camera_trace_path: Option<PathBuf>,
     pub(crate) camera_frame: usize,
@@ -187,6 +191,7 @@ impl Args {
         )))]
         let surface_diagnostic_multi_capture = false;
         let mut order_backend_explicit = false;
+        let mut offscreen_reference_receipt = false;
         let mut png_out: Option<PathBuf> = None;
         let mut camera_trace_path: Option<PathBuf> = None;
         let mut camera_frame = 0_usize;
@@ -326,6 +331,7 @@ impl Args {
                         .ok_or_else(|| "missing value for --png".to_owned())?;
                     png_out = Some(PathBuf::from(value));
                 }
+                "--offscreen-reference-receipt" => offscreen_reference_receipt = true,
                 "--camera-trace" => {
                     let value = args
                         .next()
@@ -401,6 +407,32 @@ impl Args {
             && order_backend != SurfaceOrderBackend::Cpu
         {
             return Err("paged geometry only supports --order-backend cpu".to_owned());
+        }
+        if offscreen_reference_receipt {
+            if interactive {
+                return Err(
+                    "--offscreen-reference-receipt requires native offscreen rendering".to_owned(),
+                );
+            }
+            if geometry_path != GeometryPath::SortedIndexDirect {
+                return Err(
+                    "--offscreen-reference-receipt requires --geometry-path direct".to_owned(),
+                );
+            }
+            if order_backend != SurfaceOrderBackend::Cpu {
+                return Err("--offscreen-reference-receipt requires --order-backend cpu".to_owned());
+            }
+            if camera_trace_path.is_none() || !camera_frame_explicit || camera_sequence {
+                return Err(
+                    "--offscreen-reference-receipt requires a fixed --camera-trace and explicit --camera-frame"
+                        .to_owned(),
+                );
+            }
+            if frames != 1 || png_out.is_none() {
+                return Err(
+                    "--offscreen-reference-receipt requires --frames 1 and --png".to_owned(),
+                );
+            }
         }
         if surface_benchmark_mode == SurfaceBenchmarkMode::Throughput && !interactive {
             return Err("--surface-benchmark-mode throughput requires --interactive".to_owned());
@@ -557,6 +589,7 @@ impl Args {
             surface_q1_m4_native,
             surface_diagnostic_capture_receipt,
             surface_diagnostic_multi_capture,
+            offscreen_reference_receipt,
             png_out,
             camera_trace_path,
             camera_frame,
@@ -592,6 +625,7 @@ fn usage() -> String {
         "  --surface-evidence-plan P collect strict cpu-post-sort|gpu-post-sort|gpu-preproject|adaptive evidence",
         "  --surface-sort-policy S refresh every frame or only when the trace camera changes",
         "  --png PATH       write the last rendered frame to PATH (requires GPU rasterizer)",
+        "  --offscreen-reference-receipt emit a strict Direct-f32 oracle receipt",
         "  --camera-trace P render one validated gsplat-camera-trace/v1 frame",
         "  --camera-frame N select trace frame N (default: 0; repeated for --frames)",
         "  --camera-sequence replay selected trace revisions in order",
