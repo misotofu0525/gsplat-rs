@@ -4,17 +4,15 @@
   "program_task_state": {
     "external_owner_review_allowlist": [],
     "parallel_execution": {
-      "activation_commit": "3ecf0f2d0180c197faa132443066b3b9b98d36d4",
+      "activation_commit": "368a02186d3e2c7a6c32cece6ad779ba76194414",
       "members": [
         {
-          "task": "B1",
-          "lane": "desktop-diagnostic-receipt-host",
+          "task": "B2",
+          "lane": "paired-timing-qualification",
           "write_allowlist": [
             "docs/plans/active/2026-07-23-native-render-balanced/progress.md",
-            "examples/desktop/Cargo.toml",
-            "examples/desktop/src/cli.rs",
-            "examples/desktop/src/surface_evidence.rs",
-            "examples/desktop/src/tests.rs"
+            "tests/perf/collect-balanced-paired-timing.py",
+            "tests/perf/test_collect_balanced_paired_timing.py"
           ]
         },
         {
@@ -22,16 +20,20 @@
           "lane": "proxy-image-evidence-validator",
           "write_allowlist": [
             "docs/plans/active/2026-07-23-native-render-scalable/progress.md",
+            "docs/plans/active/2026-07-23-native-render-scalable/s0-contract.md",
+            "crates/gsplat-hierarchy/src/lib.rs",
+            "crates/gsplat-hierarchy/tests/s1_proxy_fixture.rs",
+            "handbook/VERIFICATION.md",
             "tests/perf/validate-scalable-proxy-image-gate.py",
             "tests/perf/test_validate_scalable_proxy_image_gate.py"
           ]
         }
       ],
       "integration_order": [
-        "desktop-diagnostic-receipt-host",
+        "paired-timing-qualification",
         "proxy-image-evidence-validator"
       ],
-      "reason": "B1 atomic native capture-to-depth-receipt joining and S1 fail-closed proxy-image evidence validation are independent post-contract seams; neither changes a product default or unlocks later work alone."
+      "reason": "B2 paired timing qualification and S1 fail-closed proxy generation/image preflight touch disjoint owners; neither changes a product default or unlocks later work alone."
     },
     "task_catalog": {
       "A0": "A",

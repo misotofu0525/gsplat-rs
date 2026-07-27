@@ -9,7 +9,7 @@ S1 = Active
 <!-- gsplat-program-task-states: end -->
 
 <!-- gsplat-program-active-lanes: begin -->
-activation_commit = 3ecf0f2d0180c197faa132443066b3b9b98d36d4
+activation_commit = 368a02186d3e2c7a6c32cece6ad779ba76194414
 S1 = proxy-image-evidence-validator
 <!-- gsplat-program-active-lanes: end -->
 

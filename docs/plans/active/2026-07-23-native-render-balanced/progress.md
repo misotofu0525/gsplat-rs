@@ -4,12 +4,13 @@
 
 <!-- gsplat-program-task-states: begin -->
 B0 = Accepted
-B1 = Active
+B1 = Rejected
+B2 = Active
 <!-- gsplat-program-task-states: end -->
 
 <!-- gsplat-program-active-lanes: begin -->
-activation_commit = 3ecf0f2d0180c197faa132443066b3b9b98d36d4
-B1 = desktop-diagnostic-receipt-host
+activation_commit = 368a02186d3e2c7a6c32cece6ad779ba76194414
+B2 = paired-timing-qualification
 <!-- gsplat-program-active-lanes: end -->
 
 ## B0 authoring slice
@@ -890,3 +891,40 @@ the schedule, full-quality/every-frame command shape, terminal classifications
 and final-frame diagnostic receipt join. No new endpoint process was launched
 while adding this collector, so B1 remains **Active** and no performance claim
 has been made.
+
+## B1 terminal M4 result (2026-07-27)
+
+B1 is **Rejected** for the Apple M4 / Metal / complete Truck scope. This is a
+finite performance decision, not an image-integrity failure and not a product
+regression. Exact remains the default and neither diagnostic candidate is
+eligible input to B4.
+
+Root first repaired two evidence-infrastructure defects without changing the
+renderer experiment: the desktop package now forwards the private 20-bit
+feature (`5f2b673`), and the paired collector distinguishes the committed
+trace's semantic `content_sha256` from its immutable file SHA (`625f475`). A
+third repair at `368a021` carries the complete scene/camera/viewport/contract/
+plan/order/raster/encode/presentation identity into the final capture line.
+The shared Surface validator now rejects a capture that omits any part of that
+identity. Earlier incomplete attempts remain failed artifacts and are not
+included below.
+
+At clean commit `368a021`, both independently named candidates passed their
+full-source SH3 Kitsune `1920x1080` image/temporal gates. Each then ran the
+predeclared complete 2,541,226-splat Truck moving sequence as three seeded,
+counterbalanced Exact/candidate pairs with 20 warmup and 80 measured frames per
+run. Every per-run benchmark artifact passed the canonical validator.
+
+| Candidate | Retained image suite | Paired mean deltas, candidate minus Exact | Terminal |
+| --- | --- | --- | --- |
+| `CandidateStable24` | `target/benchmarks/balanced/b1-macos-metal-368a021-terminal/` | `+0.037618`, `-0.136659`, `+0.075282` ms | Rejected: mixed winner |
+| `CandidateStable20` | `target/benchmarks/balanced/b1-20-macos-metal-368a021-attempt5/` | `-0.025429`, `-0.019492`, `+0.046213` ms | Rejected: mixed winner |
+
+The retained timing suites are respectively
+`target/benchmarks/balanced/b1-truck-macos-metal-368a021-terminal/` and
+`target/benchmarks/balanced/b1-20-truck-macos-metal-368a021-attempt4/`.
+Both classify the result as `inconclusive`, exactly matching the B0 rule that
+all three paired deltas must support the same winner. No fourth bit width,
+adaptive threshold, or automatic rerun is authorized. The private diagnostic
+implementation remains useful test machinery but cannot change defaults or be
+combined in B4.
