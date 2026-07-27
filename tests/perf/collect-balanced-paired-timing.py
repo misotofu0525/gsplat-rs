@@ -211,6 +211,47 @@ def make_command(binary: Path, workload: Workload, *, warmup: int, measured: int
     ]
 
 
+def expected_precision_fields(lane: Any, workload: Workload) -> dict[str, str]:
+    """Bind the timing lane to the complete realized B2/B3 layout receipt."""
+
+    source_count = workload.dataset["splat_count"]
+    source_sh_degree = workload.dataset["sh_degree"]
+    resident_candidate = lane.resident_sh_codec_profile == "CandidateSigned8BandScale5"
+    plane_count = (
+        {0: 0, 1: 1, 2: 2, 3: 3}
+        if resident_candidate
+        else {0: 0, 1: 1, 2: 3, 3: 4}
+    ).get(source_sh_degree)
+    require(plane_count is not None, "source SH degree has no Resident layout")
+    return {
+        "depth_precision_profile": lane.profile,
+        "projected_cache_precision_profile": lane.projected_cache_profile,
+        "projected_axis_record_bytes": (
+            "8" if lane.projected_cache_profile == "CandidateAxes16" else "16"
+        ),
+        "resident_sh_codec_profile": lane.resident_sh_codec_profile,
+        "resident_sh_mantissa_bits": "8" if resident_candidate else "11",
+        "resident_sh_symmetric_max_code": "127" if resident_candidate else "1023",
+        "resident_sh_point_scale_bits": "5",
+        "resident_sh_point_scale_max_code": "31",
+        "resident_sh_range_chunk_splats": "256",
+        "resident_sh_source_count": str(source_count),
+        "resident_sh_encoded_count": str(source_count),
+        "resident_sh_resident_count": str(source_count),
+        "resident_sh_addressable_count": str(source_count),
+        "resident_sh_source_degree": str(source_sh_degree),
+        "resident_sh_resident_degree": str(source_sh_degree),
+        "resident_sh_residual_coefficients_per_source": str(
+            (((source_sh_degree + 1) ** 2 - 1) * 3)
+        ),
+        "resident_sh_plane_count": str(plane_count),
+        "resident_sh_bytes_per_source": str(plane_count * 16),
+        "plan_id": B1.PLAN_CAPTURE_RECEIPT,
+        "width": str(workload.trace["width"]),
+        "height": str(workload.trace["height"]),
+    }
+
+
 def parse_diagnostic_capture(stdout: str, stderr: str, *, lane: Any, capture: dict[str, str], workload: Workload) -> dict[str, Any]:
     prefix = "SURFACE_DIAGNOSTIC_CAPTURE_RECEIPT "
     records: list[dict[str, str]] = []
@@ -220,20 +261,7 @@ def parse_diagnostic_capture(stdout: str, stderr: str, *, lane: Any, capture: di
                 records.append(M2B.parse_payload(line[len(prefix):], "diagnostic capture"))
     require(len(records) == 1, "expected exactly one diagnostic capture receipt")
     record = records[0]
-    M2B.assert_fields(record, {
-        "depth_precision_profile": lane.profile,
-        "projected_cache_precision_profile": lane.projected_cache_profile,
-        "resident_sh_codec_profile": lane.resident_sh_codec_profile,
-        "resident_sh_source_count": str(workload.dataset["splat_count"]),
-        "resident_sh_encoded_count": str(workload.dataset["splat_count"]),
-        "resident_sh_resident_count": str(workload.dataset["splat_count"]),
-        "resident_sh_addressable_count": str(workload.dataset["splat_count"]),
-        "resident_sh_source_degree": str(workload.dataset["sh_degree"]),
-        "resident_sh_resident_degree": str(workload.dataset["sh_degree"]),
-        "plan_id": B1.PLAN_CAPTURE_RECEIPT,
-        "width": str(workload.trace["width"]),
-        "height": str(workload.trace["height"]),
-    }, "diagnostic capture")
+    M2B.assert_fields(record, expected_precision_fields(lane, workload), "diagnostic capture")
     for key, capture_key in (
         ("scene_generation", "scene_generation"),
         ("camera_revision", "camera_revision"),
@@ -244,7 +272,62 @@ def parse_diagnostic_capture(stdout: str, stderr: str, *, lane: Any, capture: di
         ("presentation_sequence", "presentation_sequence"),
     ):
         require(record.get(key) == capture.get(capture_key), f"diagnostic capture {key} did not join final frame")
+    rgba8_sha256 = record.get("rgba8_sha256", "")
+    require(
+        len(rgba8_sha256) == 64
+        and all(character in "0123456789abcdef" for character in rgba8_sha256),
+        "diagnostic capture has invalid RGBA8 SHA-256",
+    )
     return record
+
+
+def representation_summary(
+    experiment: Any,
+    pair_runs: dict[str, dict[str, Any]],
+    source_count: int,
+) -> dict[str, Any]:
+    """Retain the realized one-variable representation delta for this pair."""
+
+    exact = pair_runs["exact"]["diagnostic_capture"]
+    candidate = pair_runs["candidate"]["diagnostic_capture"]
+    summary: dict[str, Any] = {
+        "changed_receipt": experiment.changed_receipt,
+        "exact": {
+            "depth_precision_profile": exact["depth_precision_profile"],
+            "projected_cache_precision_profile": exact[
+                "projected_cache_precision_profile"
+            ],
+            "resident_sh_codec_profile": exact["resident_sh_codec_profile"],
+        },
+        "candidate": {
+            "depth_precision_profile": candidate["depth_precision_profile"],
+            "projected_cache_precision_profile": candidate[
+                "projected_cache_precision_profile"
+            ],
+            "resident_sh_codec_profile": candidate["resident_sh_codec_profile"],
+        },
+    }
+    if experiment.changed_receipt == "projected_cache_precision":
+        exact_bytes = int(exact["projected_axis_record_bytes"])
+        candidate_bytes = int(candidate["projected_axis_record_bytes"])
+        summary["projected_axis_record_bytes"] = {
+            "exact": exact_bytes,
+            "candidate": candidate_bytes,
+            "candidate_minus_exact": candidate_bytes - exact_bytes,
+        }
+    elif experiment.changed_receipt == "resident_sh":
+        exact_bytes = int(exact["resident_sh_bytes_per_source"])
+        candidate_bytes = int(candidate["resident_sh_bytes_per_source"])
+        summary["resident_sh_logical_bytes"] = {
+            "source_count": source_count,
+            "exact_per_source": exact_bytes,
+            "candidate_per_source": candidate_bytes,
+            "exact_total": exact_bytes * source_count,
+            "candidate_total": candidate_bytes * source_count,
+            "candidate_minus_exact_total": (candidate_bytes - exact_bytes)
+            * source_count,
+        }
+    return summary
 
 
 def verdict(pair_results: Sequence[dict[str, Any]]) -> str:
@@ -271,8 +354,15 @@ def remove_private_builds(stage: Path, lanes: Sequence[Any]) -> None:
 def collect(args: argparse.Namespace, repo: Path = REPO_ROOT) -> dict[str, Any]:
     experiment = B1.EXPERIMENTS[args.experiment]
     require(args.pairs >= DEFAULT_PAIRS, "at least three paired runs are required")
-    require(args.warmup >= 0 and args.measured > 0, "invalid warmup/measured schedule")
+    require(
+        (args.warmup, args.measured) == (DEFAULT_WARMUP, DEFAULT_MEASURED),
+        "Balanced timing requires warmup=20 and measured=80",
+    )
     require(math.isfinite(args.refresh_hz) and args.refresh_hz > 0.0, "refresh-hz must be positive")
+    require(
+        args.matrix.resolve() == MATRIX_PATH.resolve(),
+        "Balanced timing requires the committed full-quality matrix",
+    )
     output = args.output.resolve()
     require(not output.exists(), f"output already exists: {output}")
     validate_ignored_output(repo, output)
@@ -286,6 +376,7 @@ def collect(args: argparse.Namespace, repo: Path = REPO_ROOT) -> dict[str, Any]:
     stage.mkdir(parents=True)
     runs: list[dict[str, Any]] = []
     pair_results: list[dict[str, Any]] = []
+    representation: dict[str, Any] | None = None
     result: dict[str, Any] = {
         "schema": SCHEMA, "status": "running", "experiment": experiment.name,
         "quality_gate": quality, "workload": {"dataset": workload.dataset["id"], "trace": workload.trace["trace_id"]},
@@ -325,7 +416,9 @@ def collect(args: argparse.Namespace, repo: Path = REPO_ROOT) -> dict[str, Any]:
                 manifest["renderer"]["balanced_experiment"] = experiment.name
                 manifest["renderer"]["depth_precision_profile"] = diagnostic["depth_precision_profile"]
                 manifest["renderer"]["projected_cache_precision_profile"] = diagnostic["projected_cache_precision_profile"]
+                manifest["renderer"]["projected_axis_record_bytes"] = int(diagnostic["projected_axis_record_bytes"])
                 manifest["renderer"]["resident_sh_codec_profile"] = diagnostic["resident_sh_codec_profile"]
+                manifest["renderer"]["resident_sh_bytes_per_source"] = int(diagnostic["resident_sh_bytes_per_source"])
                 write_json(manifest_path, manifest)
                 checked = subprocess.run([sys.executable, str(BENCHMARK_VALIDATOR_PATH), str(artifact)], cwd=repo, check=False, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
                 (run_dir / "benchmark-validator.stdout.log").write_text(checked.stdout, encoding="utf-8")
@@ -338,8 +431,18 @@ def collect(args: argparse.Namespace, repo: Path = REPO_ROOT) -> dict[str, Any]:
             require(set(pair_runs) == {"exact", "candidate"}, f"pair {pair_index} is incomplete")
             exact = pair_runs["exact"]["frame_wall_distribution"]["mean"]
             candidate = pair_runs["candidate"]["frame_wall_distribution"]["mean"]
-            pair_results.append({"pair_index": pair_index, "order": list(order), "exact_frame_wall_mean_ms": exact, "candidate_frame_wall_mean_ms": candidate, "candidate_minus_exact_frame_wall_ms": candidate - exact})
-        result.update({"status": "ok", "winner": verdict(pair_results), "aggregate": {"paired_deltas_frame_wall_ms": [pair["candidate_minus_exact_frame_wall_ms"] for pair in pair_results]}})
+            pair_representation = representation_summary(
+                experiment, pair_runs, workload.dataset["splat_count"]
+            )
+            if representation is None:
+                representation = pair_representation
+            require(
+                pair_representation == representation,
+                f"pair {pair_index} representation receipt drifted",
+            )
+            pair_results.append({"pair_index": pair_index, "order": list(order), "exact_frame_wall_mean_ms": exact, "candidate_frame_wall_mean_ms": candidate, "candidate_minus_exact_frame_wall_ms": candidate - exact, "representation": pair_representation})
+        require(representation is not None, "Balanced timing representation is unavailable")
+        result.update({"status": "ok", "winner": verdict(pair_results), "aggregate": {"paired_deltas_frame_wall_ms": [pair["candidate_minus_exact_frame_wall_ms"] for pair in pair_results], "representation": representation}})
         remove_private_builds(stage, experiment.lanes)
         write_json(stage / "experiment.json", result)
         require(not output.exists(), "output appeared during collection")
