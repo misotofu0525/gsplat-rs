@@ -1036,3 +1036,25 @@ name, version and runtime declarations, stay below `node_modules`, and contain
 no symlinked package directory, manifest or file. Real detached-child tests
 cover timeout and zero-exit counterexamples. No Chrome workload or formal
 artifact was run; the new SHA still requires fixed-SHA review.
+
+### Q1 Direct-f32 reference-authority admission candidate (2026-07-28)
+
+The offline Q1 gate now treats the independent native Direct-f32 producer as
+the sole image authority instead of accepting any decodable, self-consistent
+1920x1080 PNG. Both predeclared views bind one blocker-free
+`gsplat-q1-direct-f32-reference/v1` receipt by path and SHA. Admission verifies
+the clean full commit, Cargo/Rust/producer identities, the retained release
+binary inside the authority root, exact Truck SH3 and frozen trace/view hashes,
+Direct wide-f32 CPU ExactFull32 stable SortedAlpha GlobalQuads execution,
+complete five-stage membership, disabled quality reductions and exact per-view
+PNG/decoded-RGBA plus `0<D=V<=S` receipts. The authority must predate the
+predeclared schedule, its commit must equal every endpoint artifact commit, and
+its identity is retained in Deferred and finite terminal results.
+
+This is an offline mechanism candidate only. It performs no browser/device run
+and does not authorize a comparison by itself. The separate five-pair
+orchestrator must emit the new shared authority fields after this candidate is
+independently reviewed and integrated; no formal series should start before
+that schedule-emitter sync and a fresh authority artifact exist. The 55 focused
+Q1 admission tests, five producer-transaction tests, source architecture policy
+and diff hygiene pass on this isolated candidate.

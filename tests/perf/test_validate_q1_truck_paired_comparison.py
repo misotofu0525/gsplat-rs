@@ -21,6 +21,9 @@ from q1_pair_admission.artifacts import (
     HOST_ADMISSION_JOIN_SCHEMA,
     IMAGE_TOOL_SHA256,
     PLAYCANVAS_RGBA_UNAVAILABLE,
+    REFERENCE_RUST_TOOLCHAIN_SHA256,
+    REFERENCE_SOURCE_PATHS,
+    REFERENCE_TRACE_FILE_SHA256,
 )
 from q1_pair_admission.common import ValidationError, canonical_sha256, file_sha256
 from q1_pair_admission.contract import (
@@ -81,6 +84,7 @@ PLAYCANVAS_CAMERA_AUTHORITY_FIXTURE = pathlib.Path(__file__).parent / (
 PLAYCANVAS_CAMERA_RECEIPTS = json.loads(
     PLAYCANVAS_CAMERA_AUTHORITY_FIXTURE.read_text(encoding="utf-8")
 )["receipts"]
+REPO = pathlib.Path(__file__).parents[2]
 
 
 def webgpu_limits(offset: int = 0, *, extra: bool = False) -> dict[str, int]:
@@ -199,6 +203,220 @@ def write_rgba_png(path: pathlib.Path, value: int = 0) -> str:
 def write_reencoded_rgba_png(path: pathlib.Path, value: int = 0) -> str:
     path.write_bytes(rgba_png_bytes(value, ancillary=b"noncanonical=reencode"))
     return file_sha256(path)
+
+
+def local_identity(relative: str) -> dict[str, object]:
+    path = REPO / relative
+    return {
+        "path": relative,
+        "bytes": path.stat().st_size,
+        "sha256": file_sha256(path),
+    }
+
+
+def install_reference_authority(
+    root: pathlib.Path, *, repository_commit: str = COMMIT
+) -> list[dict[str, object]]:
+    authority = root / "reference-authority"
+    retained_binary = authority / "producer/desktop-example"
+    retained_binary.parent.mkdir(parents=True)
+    retained_binary.write_bytes(b"locked Direct-f32 reference producer\n")
+    binary_sha = file_sha256(retained_binary)
+    trace_path = REPO / (
+        "tests/perf/trace/fixtures/quality/"
+        "candidate-truck-quality-1920x1080-v1.json"
+    )
+    trace_document = json.loads(trace_path.read_text(encoding="utf-8"))
+    trace_frames = []
+    captures = []
+    references = []
+    for frame in trace_document["frames"]:
+        trace = int(frame["frame_index"])
+        semantic = {"pose": frame["pose"], "intrinsics": frame["intrinsics"]}
+        pose_sha = canonical_sha256(semantic)
+        trace_frames.append(
+            {
+                "frame_index": trace,
+                **semantic,
+                "pose_intrinsics_sha256": pose_sha,
+            }
+        )
+        image_name = f"reference-trace-{trace}.png"
+        image_path = authority / image_name
+        image_sha = write_rgba_png(image_path)
+        decoded_sha = solid_rgba_sha256()
+        visible = 1_800_000 + trace
+        renderer_receipt = {
+            "schema": "gsplat-direct-f32-offscreen-receipt/v1",
+            "geometry_path": "sorted_index_direct",
+            "representation": "wide_f32",
+            "render_mode": "sorted_alpha",
+            "order_backend": "cpu",
+            "depth_key_precision": "exact_full32",
+            "stable_source_id_order": "true",
+            "raster_execution_plan": "wgpu_direct_global_quads",
+            "gpu_rasterizer": "true",
+            "source_count": str(TRUCK["splat_count"]),
+            "decoded_count": str(TRUCK["splat_count"]),
+            "encoded_count": str(TRUCK["splat_count"]),
+            "resident_count": str(TRUCK["splat_count"]),
+            "addressable_count": str(TRUCK["splat_count"]),
+            "source_sh_degree": "3",
+            "resident_sh_degree": "3",
+            "requested_width": str(WIDTH),
+            "requested_height": str(HEIGHT),
+            "internal_render_width": str(WIDTH),
+            "internal_render_height": str(HEIGHT),
+            "readback_width": str(WIDTH),
+            "readback_height": str(HEIGHT),
+            "readback_format": "rgba8_unorm",
+            "readback_row_origin": "top_left",
+            "source_membership": "all",
+            "sampling": "disabled",
+            "lod": "disabled",
+            "partial_scene_published": "false",
+            "dynamic_resolution": "disabled",
+            "upscaling": "disabled",
+            "adapter_backend": "Metal",
+            "adapter_device_type": "IntegratedGpu",
+            "adapter_vendor": "0",
+            "adapter_device": "0",
+            "visible_count": str(visible),
+            "drawn_count": str(visible),
+        }
+        captures.append(
+            {
+                "frame_index": trace,
+                "pose_intrinsics_sha256": pose_sha,
+                "renderer_receipt": renderer_receipt,
+                "visible_count": visible,
+                "drawn_count": visible,
+                "image": {
+                    "path": image_name,
+                    "bytes": image_path.stat().st_size,
+                    "sha256": image_sha,
+                    "width": WIDTH,
+                    "height": HEIGHT,
+                    "format": "rgba8",
+                    "decoded_rgba8_sha256": decoded_sha,
+                },
+            }
+        )
+        references.append(
+            {
+                "trace_frame_index": trace,
+                "path": image_path.relative_to(root).as_posix(),
+                "sha256": image_sha,
+                "decoded_rgba8_sha256": decoded_sha,
+                "pose_intrinsics_sha256": pose_sha,
+            }
+        )
+    exactness = {
+        "source_count": TRUCK["splat_count"],
+        "decoded_count": TRUCK["splat_count"],
+        "encoded_count": TRUCK["splat_count"],
+        "resident_count": TRUCK["splat_count"],
+        "addressable_count": TRUCK["splat_count"],
+        "source_sh_degree": 3,
+        "resident_sh_degree": 3,
+        "source_membership": "all",
+        "sampling": "disabled",
+        "lod": "disabled",
+        "partial_scene_published": False,
+    }
+    binary_identity = {
+        "path": "/discarded/build/desktop-example",
+        "bytes": retained_binary.stat().st_size,
+        "sha256": binary_sha,
+    }
+    repository = {"commit": repository_commit, "clean": True}
+    source_identities = [local_identity(path) for path in REFERENCE_SOURCE_PATHS]
+    receipt = {
+        "schema": "gsplat-q1-direct-f32-reference/v1",
+        "status": "accepted",
+        "generated_at_utc": "2026-07-28T00:00:00Z",
+        "repository": repository,
+        "cargo_lock": local_identity("Cargo.lock"),
+        "rust_toolchain": {
+            **local_identity("rust-toolchain.toml"),
+            "channel": "1.93.0",
+            "profile": "default",
+            "components": ["rustfmt", "clippy"],
+        },
+        "toolchain": {
+            "rustc": {"path": "/toolchain/rustc", "version": "rustc 1.93.0"},
+            "cargo": {"path": "/toolchain/cargo", "version": "cargo 1.93.0"},
+        },
+        "release_binary": {
+            **binary_identity,
+            "retained": {
+                "path": "producer/desktop-example",
+                "bytes": retained_binary.stat().st_size,
+                "sha256": binary_sha,
+            },
+        },
+        "producer_sources": source_identities,
+        "dataset": {
+            "path": "tests/datasets/external/inria_3dgs/truck/point_cloud.ply",
+            "bytes": TRUCK["bytes"],
+            "sha256": TRUCK["sha256"],
+            "id": "truck-full",
+            "splat_count": TRUCK["splat_count"],
+            "sh_degree": 3,
+        },
+        "trace": {
+            "path": trace_path.relative_to(REPO).as_posix(),
+            "bytes": trace_path.stat().st_size,
+            "sha256": REFERENCE_TRACE_FILE_SHA256,
+            "trace_id": TRACE["id"],
+            "semantic_sha256": TRACE["sha256"],
+            "frames": trace_frames,
+        },
+        "exactness": exactness,
+        "execution": {
+            "geometry_path": "sorted_index_direct",
+            "representation": "wide_f32",
+            "order_backend": "cpu",
+            "depth_key_precision": "exact_full32",
+            "stable_source_id_order": True,
+            "render_mode": "sorted_alpha",
+            "raster_execution_plan": "wgpu_direct_global_quads",
+            "gpu_rasterizer": True,
+            "dynamic_resolution": "disabled",
+            "upscaling": "disabled",
+            "requested": {"width": WIDTH, "height": HEIGHT},
+            "internal_render": {"width": WIDTH, "height": HEIGHT, "format": "rgba8_unorm"},
+            "readback": {"width": WIDTH, "height": HEIGHT, "format": "rgba8", "row_origin": "top_left"},
+        },
+        "environment": {
+            "adapter_backend": "Metal",
+            "adapter_device_type": "IntegratedGpu",
+            "adapter_vendor": "0",
+            "adapter_device": "0",
+        },
+        "captures": captures,
+        "integrity": {
+            "repository_pre": repository,
+            "repository_post": repository,
+            "binary_pre": binary_identity,
+            "binary_post": binary_identity,
+            "producer_sources_pre_sha256": canonical_sha256(source_identities),
+            "producer_sources_post_sha256": canonical_sha256(source_identities),
+            "inputs_rechecked_after_render": True,
+        },
+    }
+    receipt_path = authority / "reference.json"
+    write_json(receipt_path, receipt)
+    receipt_sha = file_sha256(receipt_path)
+    for reference in references:
+        reference.update(
+            {
+                "authority_receipt_path": receipt_path.relative_to(root).as_posix(),
+                "authority_receipt_sha256": receipt_sha,
+            }
+        )
+    assert file_sha256(REPO / "rust-toolchain.toml") == REFERENCE_RUST_TOOLCHAIN_SHA256
+    return references
 
 
 def solid_rgba_sha256(value: int = 0) -> str:
@@ -674,14 +892,12 @@ def install_complete_playcanvas_producers(root: pathlib.Path, schedule_path: pat
 
 def build_series(
     root: pathlib.Path, *, gs_terminal_ms: float = 800.0, score: float = 1.0,
-    playcanvas_producer: bool = False,
+    playcanvas_producer: bool = False, authority_commit: str = COMMIT,
 ) -> pathlib.Path:
     series_id = "q1-truck-test"
-    references = []
-    for trace in (0, 1):
-        path = pathlib.Path("reference") / f"view-{trace}.png"
-        digest = write_rgba_png(root / path)
-        references.append({"trace_frame_index": trace, "path": str(path), "sha256": digest})
+    references = install_reference_authority(
+        root, repository_commit=authority_commit
+    )
     schedule_block = {
         "seed": 20260728,
         "predeclared_at_utc": PREDECLARED,
@@ -841,6 +1057,17 @@ class ScheduleAndAdmissionTests(unittest.TestCase):
             binding["manifest_sha256"] = digest
             write_json(throughput_path, throughput)
 
+    def mutate_reference_authority(self, callback) -> None:
+        receipt_path = self.root / "reference-authority/reference.json"
+        value = json.loads(receipt_path.read_text(encoding="utf-8"))
+        callback(value)
+        write_json(receipt_path, value)
+        digest = file_sha256(receipt_path)
+        document = json.loads(self.schedule.read_text(encoding="utf-8"))
+        for reference in document["schedule"]["reference_images"]:
+            reference["authority_receipt_sha256"] = digest
+        write_json(self.schedule, document)
+
     def test_legacy_presentation_without_renderer_capture_is_deferred(self) -> None:
         result = evaluate(self.schedule)
         self.assertEqual(result["state"], "Deferred")
@@ -852,6 +1079,121 @@ class ScheduleAndAdmissionTests(unittest.TestCase):
             result["reasons"],
             ["playcanvas_renderer_same_present_rgba_receipt_unavailable"],
         )
+        self.assertEqual(
+            result["reference_authority"]["repository_commit"], COMMIT
+        )
+        self.assertEqual(
+            result["reference_authority"]["receipt_path"],
+            "reference-authority/reference.json",
+        )
+
+    def test_arbitrary_self_consistent_png_is_not_a_reference_authority(self) -> None:
+        arbitrary = self.root / "arbitrary.png"
+        digest = write_rgba_png(arbitrary, value=7)
+        document = json.loads(self.schedule.read_text(encoding="utf-8"))
+        reference = document["schedule"]["reference_images"][0]
+        reference.update(
+            {
+                "path": "arbitrary.png",
+                "sha256": digest,
+                "decoded_rgba8_sha256": solid_rgba_sha256(7),
+            }
+        )
+        write_json(self.schedule, document)
+        with self.assertRaisesRegex(ValidationError, "identity mismatch"):
+            evaluate(self.schedule)
+
+    def test_reference_views_must_share_one_authority_receipt(self) -> None:
+        copied = self.root / "copied-authority/reference.json"
+        copied.parent.mkdir()
+        copied.write_bytes(
+            (self.root / "reference-authority/reference.json").read_bytes()
+        )
+        document = json.loads(self.schedule.read_text(encoding="utf-8"))
+        document["schedule"]["reference_images"][1].update(
+            {
+                "authority_receipt_path": "copied-authority/reference.json",
+                "authority_receipt_sha256": file_sha256(copied),
+            }
+        )
+        write_json(self.schedule, document)
+        with self.assertRaisesRegex(ValidationError, "one shared authority"):
+            evaluate(self.schedule)
+
+    def test_reference_authority_blocker_is_rejected(self) -> None:
+        write_json(
+            self.root / "reference-authority/blocker.json",
+            {"status": "rejected"},
+        )
+        with self.assertRaisesRegex(ValidationError, "contains blocker.json"):
+            evaluate(self.schedule)
+
+    def test_reference_authority_retained_binary_drift_is_rejected(self) -> None:
+        (self.root / "reference-authority/producer/desktop-example").write_bytes(
+            b"drift"
+        )
+        with self.assertRaisesRegex(ValidationError, "retained identity mismatch"):
+            evaluate(self.schedule)
+
+    def test_reference_authority_exactness_mutation_is_rejected(self) -> None:
+        self.mutate_reference_authority(
+            lambda value: value["exactness"].__setitem__(
+                "resident_count", TRUCK["splat_count"] - 1
+            )
+        )
+        with self.assertRaisesRegex(ValidationError, "not complete Truck SH3"):
+            evaluate(self.schedule)
+
+    def test_reference_authority_execution_mutation_is_rejected(self) -> None:
+        self.mutate_reference_authority(
+            lambda value: value["execution"].__setitem__(
+                "depth_key_precision", "candidate_stable20"
+            )
+        )
+        with self.assertRaisesRegex(ValidationError, "not the frozen Direct-f32 oracle"):
+            evaluate(self.schedule)
+
+    def test_reference_authority_view_hash_mutation_is_rejected(self) -> None:
+        self.mutate_reference_authority(
+            lambda value: value["captures"][0].__setitem__(
+                "pose_intrinsics_sha256", SHA_A
+            )
+        )
+        with self.assertRaisesRegex(ValidationError, "view identity mismatch"):
+            evaluate(self.schedule)
+
+    def test_reference_authority_zero_visible_oracle_is_rejected(self) -> None:
+        def zero_view(value: dict) -> None:
+            capture = value["captures"][0]
+            capture["visible_count"] = 0
+            capture["drawn_count"] = 0
+            capture["renderer_receipt"]["visible_count"] = "0"
+            capture["renderer_receipt"]["drawn_count"] = "0"
+
+        self.mutate_reference_authority(zero_view)
+        with self.assertRaisesRegex(ValidationError, "0<drawn=visible<=source"):
+            evaluate(self.schedule)
+
+    def test_reference_authority_must_precede_schedule(self) -> None:
+        self.mutate_reference_authority(
+            lambda value: value.__setitem__(
+                "generated_at_utc", "2026-07-28T00:00:01Z"
+            )
+        )
+        with self.assertRaisesRegex(
+            ValidationError, "generated after schedule predeclaration"
+        ):
+            evaluate(self.schedule)
+
+    def test_reference_authority_commit_must_equal_endpoint_commit(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            schedule = build_series(
+                pathlib.Path(directory), authority_commit="d" * 40
+            )
+            with self.assertRaisesRegex(
+                ValidationError, "commit does not match the Direct-f32 authority"
+            ):
+                evaluate(schedule)
 
     def test_partial_playcanvas_renderer_producer_is_rejected(self) -> None:
         self.mutate_manifest(
@@ -886,6 +1228,9 @@ class ScheduleAndAdmissionTests(unittest.TestCase):
         self.assertTrue(result["evidence_admitted"])
         self.assertTrue(result["quality_passed"])
         self.assertIsNotNone(result["performance"])
+        self.assertEqual(
+            result["reference_authority"]["repository_commit"], COMMIT
+        )
 
     def test_device_effective_limit_mutation_is_rejected_against_actual_receipt(self) -> None:
         self.mutate_manifest(
@@ -1101,7 +1446,7 @@ class ScheduleAndAdmissionTests(unittest.TestCase):
             evaluate(self.schedule)
 
     def test_twenty_four_byte_png_header_is_not_a_decodable_image(self) -> None:
-        reference = self.root / "reference/view-0.png"
+        reference = self.root / "reference-authority/reference-trace-0.png"
         reference.write_bytes(
             b"\x89PNG\r\n\x1a\n"
             + (13).to_bytes(4, "big")
@@ -1109,10 +1454,17 @@ class ScheduleAndAdmissionTests(unittest.TestCase):
             + WIDTH.to_bytes(4, "big")
             + HEIGHT.to_bytes(4, "big")
         )
+        receipt_path = self.root / "reference-authority/reference.json"
+        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+        receipt["captures"][0]["image"]["bytes"] = reference.stat().st_size
+        receipt["captures"][0]["image"]["sha256"] = file_sha256(reference)
+        write_json(receipt_path, receipt)
         document = json.loads(self.schedule.read_text(encoding="utf-8"))
         document["schedule"]["reference_images"][0]["sha256"] = file_sha256(reference)
+        for value in document["schedule"]["reference_images"]:
+            value["authority_receipt_sha256"] = file_sha256(receipt_path)
         write_json(self.schedule, document)
-        with self.assertRaisesRegex(ValidationError, "decodable RGBA8 PNG"):
+        with self.assertRaisesRegex(ValidationError, "image is not RGBA8"):
             evaluate(self.schedule)
 
     def test_copied_schedule_receipt_cannot_replace_renderer_terminal_evidence(self) -> None:
@@ -1194,11 +1546,9 @@ class ScheduleAndAdmissionTests(unittest.TestCase):
         with self.assertRaisesRegex(ValidationError, "reuses endpoint evidence path"):
             evaluate(self.schedule)
 
-    def test_reference_replacement_changes_predeclared_schedule_hash(self) -> None:
-        reference = self.root / "reference/view-0.png"
-        write_rgba_png(reference, value=1)
+    def test_schedule_mutation_changes_predeclared_schedule_hash(self) -> None:
         document = json.loads(self.schedule.read_text(encoding="utf-8"))
-        document["schedule"]["reference_images"][0]["sha256"] = file_sha256(reference)
+        document["schedule"]["seed"] += 1
         write_json(self.schedule, document)
         with self.assertRaisesRegex(ValidationError, "pairing.schedule_sha256"):
             evaluate(self.schedule)

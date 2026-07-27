@@ -64,6 +64,29 @@ IMAGE = _load_image_validator()
 IMAGE_TOOL = pathlib.Path(__file__).parents[1] / "compare-image-ssim.mjs"
 IMAGE_TOOL_SHA256 = file_sha256(IMAGE_TOOL)
 _IMAGE_SCORE_CACHE: dict[tuple[str, str], float] = {}
+REFERENCE_SCHEMA = "gsplat-q1-direct-f32-reference/v1"
+REFERENCE_RECEIPT_FIELDS = frozenset(
+    {"authority_receipt_path", "authority_receipt_sha256"}
+)
+REFERENCE_TRACE_FILE_SHA256 = (
+    "13081183bf2d1c6b6ec165324f53185cc30af2f304db3fefa7aa3d9044ac7c5a"
+)
+REFERENCE_RUST_TOOLCHAIN_SHA256 = (
+    "c4456f46c276e18ed729c3261a8ab245f49de776e5a4e4c3e3530352bdaffb12"
+)
+REFERENCE_SOURCE_PATHS = (
+    "tests/perf/collect-q1-truck-direct-reference.py",
+    "tests/perf/full-quality-matrix-plan-v1.json",
+    "examples/desktop/src/main.rs",
+    "examples/desktop/src/cli.rs",
+    "examples/desktop/src/offscreen.rs",
+    "examples/desktop/src/scene.rs",
+    "examples/desktop/src/trace.rs",
+    "examples/desktop/src/image_output.rs",
+    "crates/gsplat-render-wgpu/src/renderer/facade.rs",
+    "crates/gsplat-render-wgpu/src/renderer/offscreen_host.rs",
+    "crates/gsplat-render-wgpu/src/direct_scene_gpu.rs",
+)
 
 BUILD_ARTIFACT_KEYS = {
     "playcanvas": frozenset({"runtime_js", "package_lock"}),
@@ -1101,24 +1124,409 @@ def bind_controls(
         fail(f"{context} does not bind both exact same-configuration control artifacts")
 
 
+def _local_file_identity(relative: str) -> dict[str, Any]:
+    path = pathlib.Path(__file__).parents[3] / relative
+    try:
+        size = path.stat().st_size
+    except OSError as error:
+        fail(f"cannot inspect reference producer input {relative}: {error}")
+    return {"path": relative, "bytes": size, "sha256": file_sha256(path)}
+
+
+def _reference_authority(
+    root: pathlib.Path,
+    receipt_path: pathlib.Path,
+    receipt_sha256: str,
+) -> dict[str, Any]:
+    context = "schedule.reference_images.authority"
+    if file_sha256(receipt_path) != receipt_sha256:
+        fail(f"{context} receipt SHA-256 mismatch")
+    authority_root = receipt_path.parent
+    if receipt_path.name != "reference.json" or receipt_path.is_symlink():
+        fail(f"{context} must bind a non-symlink reference.json")
+    for blocker in ("blocker.json", "cleanup-blocker.json"):
+        if (authority_root / blocker).exists():
+            fail(f"{context} contains {blocker}")
+    receipt = load_json(receipt_path, f"{context}.receipt")
+    if set(receipt) != {
+        "schema",
+        "status",
+        "generated_at_utc",
+        "repository",
+        "cargo_lock",
+        "rust_toolchain",
+        "toolchain",
+        "release_binary",
+        "producer_sources",
+        "dataset",
+        "trace",
+        "exactness",
+        "execution",
+        "environment",
+        "captures",
+        "integrity",
+    }:
+        fail(f"{context} receipt fields are not frozen")
+    if receipt.get("schema") != REFERENCE_SCHEMA or receipt.get("status") != "accepted":
+        fail(f"{context} is not an accepted Direct-f32 reference receipt")
+    generated_at = receipt.get("generated_at_utc")
+    utc(generated_at, f"{context}.generated_at_utc")
+    if not isinstance(generated_at, str) or not generated_at.endswith("Z"):
+        fail(f"{context}.generated_at_utc must be UTC Z time")
+
+    repository = obj(receipt, "repository", context)
+    commit = string(repository, "commit", f"{context}.repository")
+    if (
+        len(commit) != 40
+        or any(character not in "0123456789abcdef" for character in commit)
+        or repository != {"commit": commit, "clean": True}
+    ):
+        fail(f"{context}.repository must bind a clean full lowercase commit")
+
+    expected_lock = _local_file_identity("Cargo.lock")
+    if obj(receipt, "cargo_lock", context) != expected_lock:
+        fail(f"{context}.cargo_lock identity mismatch")
+    expected_toolchain = {
+        **_local_file_identity("rust-toolchain.toml"),
+        "channel": "1.93.0",
+        "profile": "default",
+        "components": ["rustfmt", "clippy"],
+    }
+    if expected_toolchain["sha256"] != REFERENCE_RUST_TOOLCHAIN_SHA256:
+        fail("locked rust-toolchain.toml identity drifted")
+    if obj(receipt, "rust_toolchain", context) != expected_toolchain:
+        fail(f"{context}.rust_toolchain identity mismatch")
+
+    sources = array(receipt, "producer_sources", context)
+    expected_sources = [_local_file_identity(path) for path in REFERENCE_SOURCE_PATHS]
+    if sources != expected_sources:
+        fail(f"{context}.producer_sources identity mismatch")
+    toolchain = obj(receipt, "toolchain", context)
+    if set(toolchain) != {"rustc", "cargo"}:
+        fail(f"{context}.toolchain fields are not frozen")
+    for name in ("rustc", "cargo"):
+        identity = obj(toolchain, name, f"{context}.toolchain")
+        if (
+            set(identity) != {"path", "version"}
+            or not isinstance(identity.get("path"), str)
+            or not pathlib.Path(identity["path"]).is_absolute()
+            or not isinstance(identity.get("version"), str)
+            or not identity["version"].startswith(f"{name} 1.93.0")
+        ):
+            fail(f"{context}.toolchain.{name} identity is unavailable")
+
+    release_binary = obj(receipt, "release_binary", context)
+    if set(release_binary) != {"path", "bytes", "sha256", "retained"}:
+        fail(f"{context}.release_binary fields are not frozen")
+    binary_bytes = integer(release_binary, "bytes", f"{context}.release_binary")
+    binary_sha256 = sha256(
+        release_binary.get("sha256"), f"{context}.release_binary.sha256"
+    )
+    retained = obj(release_binary, "retained", f"{context}.release_binary")
+    if set(retained) != {"path", "bytes", "sha256"}:
+        fail(f"{context}.release_binary.retained fields are not frozen")
+    if retained.get("path") != "producer/desktop-example":
+        fail(f"{context}.release_binary.retained path mismatch")
+    retained_path = inside(
+        authority_root,
+        retained.get("path"),
+        f"{context}.release_binary.retained.path",
+    )
+    if retained_path.is_symlink():
+        fail(f"{context}.release_binary.retained must not be a symlink")
+    if (
+        integer(retained, "bytes", f"{context}.release_binary.retained") != binary_bytes
+        or sha256(
+            retained.get("sha256"),
+            f"{context}.release_binary.retained.sha256",
+        )
+        != binary_sha256
+        or retained_path.stat().st_size != binary_bytes
+        or file_sha256(retained_path) != binary_sha256
+    ):
+        fail(f"{context}.release_binary retained identity mismatch")
+
+    dataset = obj(receipt, "dataset", context)
+    expected_dataset = {
+        "path": "tests/datasets/external/inria_3dgs/truck/point_cloud.ply",
+        "bytes": TRUCK["bytes"],
+        "sha256": TRUCK["sha256"],
+        "id": "truck-full",
+        "splat_count": TRUCK["splat_count"],
+        "sh_degree": TRUCK["sh_degree"],
+    }
+    if dataset != expected_dataset:
+        fail(f"{context}.dataset is not the frozen complete Truck SH3 source")
+
+    trace = obj(receipt, "trace", context)
+    trace_path = pathlib.Path(__file__).parents[3] / (
+        "tests/perf/trace/fixtures/quality/"
+        "candidate-truck-quality-1920x1080-v1.json"
+    )
+    trace_document = load_json(trace_path, "frozen Truck trace")
+    if file_sha256(trace_path) != REFERENCE_TRACE_FILE_SHA256:
+        fail("frozen Truck trace file identity drifted")
+    expected_trace_frames = []
+    for frame in array(trace_document, "frames", "frozen Truck trace"):
+        semantic = {"pose": frame.get("pose"), "intrinsics": frame.get("intrinsics")}
+        expected_trace_frames.append(
+            {
+                "frame_index": frame.get("frame_index"),
+                **semantic,
+                "pose_intrinsics_sha256": canonical_sha256(semantic),
+            }
+        )
+    expected_trace = {
+        "path": trace_path.relative_to(pathlib.Path(__file__).parents[3]).as_posix(),
+        "bytes": trace_path.stat().st_size,
+        "sha256": REFERENCE_TRACE_FILE_SHA256,
+        "trace_id": TRACE["id"],
+        "semantic_sha256": TRACE["sha256"],
+        "frames": expected_trace_frames,
+    }
+    if trace != expected_trace:
+        fail(f"{context}.trace identity or view semantics mismatch")
+
+    expected_exactness = {
+        "source_count": TRUCK["splat_count"],
+        "decoded_count": TRUCK["splat_count"],
+        "encoded_count": TRUCK["splat_count"],
+        "resident_count": TRUCK["splat_count"],
+        "addressable_count": TRUCK["splat_count"],
+        "source_sh_degree": TRUCK["sh_degree"],
+        "resident_sh_degree": TRUCK["sh_degree"],
+        "source_membership": "all",
+        "sampling": "disabled",
+        "lod": "disabled",
+        "partial_scene_published": False,
+    }
+    if obj(receipt, "exactness", context) != expected_exactness:
+        fail(f"{context}.exactness is not complete Truck SH3")
+    expected_execution = {
+        "geometry_path": "sorted_index_direct",
+        "representation": "wide_f32",
+        "order_backend": "cpu",
+        "depth_key_precision": "exact_full32",
+        "stable_source_id_order": True,
+        "render_mode": "sorted_alpha",
+        "raster_execution_plan": "wgpu_direct_global_quads",
+        "gpu_rasterizer": True,
+        "dynamic_resolution": "disabled",
+        "upscaling": "disabled",
+        "requested": {"width": WIDTH, "height": HEIGHT},
+        "internal_render": {"width": WIDTH, "height": HEIGHT, "format": "rgba8_unorm"},
+        "readback": {"width": WIDTH, "height": HEIGHT, "format": "rgba8", "row_origin": "top_left"},
+    }
+    if obj(receipt, "execution", context) != expected_execution:
+        fail(f"{context}.execution is not the frozen Direct-f32 oracle")
+
+    environment = obj(receipt, "environment", context)
+    if set(environment) != {
+        "adapter_backend",
+        "adapter_device_type",
+        "adapter_vendor",
+        "adapter_device",
+    } or any(not isinstance(environment.get(key), str) or not environment[key] for key in environment):
+        fail(f"{context}.environment adapter identity is unavailable")
+    for key in ("adapter_vendor", "adapter_device"):
+        if not environment[key].isascii() or not environment[key].isdigit():
+            fail(f"{context}.environment.{key} must be an unsigned integer string")
+
+    captures = array(receipt, "captures", context)
+    if [capture.get("frame_index") if isinstance(capture, dict) else None for capture in captures] != [0, 1]:
+        fail(f"{context}.captures must contain exactly views 0 and 1")
+    views: dict[int, dict[str, Any]] = {}
+    for index, capture in enumerate(captures):
+        if not isinstance(capture, dict):
+            fail(f"{context}.captures[{index}] must be an object")
+        view = integer(capture, "frame_index", f"{context}.captures[{index}]")
+        if view not in {0, 1} or view in views:
+            fail(f"{context}.captures must contain views 0 and 1 once")
+        if set(capture) != {
+            "frame_index",
+            "pose_intrinsics_sha256",
+            "renderer_receipt",
+            "visible_count",
+            "drawn_count",
+            "image",
+        }:
+            fail(f"{context}.captures[{index}] fields are not frozen")
+        if capture.get("pose_intrinsics_sha256") != TRACE_FRAME_POSE_INTRINSICS_SHA256[view]:
+            fail(f"{context}.captures[{index}] view identity mismatch")
+        visible = integer(capture, "visible_count", f"{context}.captures[{index}]")
+        drawn = integer(capture, "drawn_count", f"{context}.captures[{index}]")
+        if not (0 < drawn == visible <= TRUCK["splat_count"]):
+            fail(f"{context}.captures[{index}] must prove 0<drawn=visible<=source")
+        renderer_receipt = obj(
+            capture, "renderer_receipt", f"{context}.captures[{index}]"
+        )
+        expected_renderer_receipt = {
+            "schema": "gsplat-direct-f32-offscreen-receipt/v1",
+            "geometry_path": "sorted_index_direct",
+            "representation": "wide_f32",
+            "render_mode": "sorted_alpha",
+            "order_backend": "cpu",
+            "depth_key_precision": "exact_full32",
+            "stable_source_id_order": "true",
+            "raster_execution_plan": "wgpu_direct_global_quads",
+            "gpu_rasterizer": "true",
+            "source_count": str(TRUCK["splat_count"]),
+            "decoded_count": str(TRUCK["splat_count"]),
+            "encoded_count": str(TRUCK["splat_count"]),
+            "resident_count": str(TRUCK["splat_count"]),
+            "addressable_count": str(TRUCK["splat_count"]),
+            "source_sh_degree": str(TRUCK["sh_degree"]),
+            "resident_sh_degree": str(TRUCK["sh_degree"]),
+            "requested_width": str(WIDTH),
+            "requested_height": str(HEIGHT),
+            "internal_render_width": str(WIDTH),
+            "internal_render_height": str(HEIGHT),
+            "readback_width": str(WIDTH),
+            "readback_height": str(HEIGHT),
+            "readback_format": "rgba8_unorm",
+            "readback_row_origin": "top_left",
+            "source_membership": "all",
+            "sampling": "disabled",
+            "lod": "disabled",
+            "partial_scene_published": "false",
+            "dynamic_resolution": "disabled",
+            "upscaling": "disabled",
+            **environment,
+            "visible_count": str(visible),
+            "drawn_count": str(drawn),
+        }
+        if renderer_receipt != expected_renderer_receipt:
+            fail(f"{context}.captures[{index}] renderer receipt mismatch")
+        image = obj(capture, "image", f"{context}.captures[{index}]")
+        if set(image) != {
+            "path",
+            "bytes",
+            "sha256",
+            "width",
+            "height",
+            "format",
+            "decoded_rgba8_sha256",
+        }:
+            fail(f"{context}.captures[{index}].image fields are not frozen")
+        expected_name = f"reference-trace-{view}.png"
+        image_path = inside(authority_root, image.get("path"), f"{context}.captures[{index}].image.path")
+        if image.get("path") != expected_name or image_path.is_symlink():
+            fail(f"{context}.captures[{index}] image path mismatch")
+        image_sha = sha256(image.get("sha256"), f"{context}.captures[{index}].image.sha256")
+        decoded_sha = sha256(
+            image.get("decoded_rgba8_sha256"),
+            f"{context}.captures[{index}].image.decoded_rgba8_sha256",
+        )
+        try:
+            decoded = _decode_image(image_path, f"{context}.captures[{index}].image")
+        except (OSError, IMAGE.ValidationError) as error:
+            fail(f"{context}.captures[{index}] image is not RGBA8: {error}")
+        if (
+            image.get("bytes") != image_path.stat().st_size
+            or image_sha != file_sha256(image_path)
+            or image.get("width") != WIDTH
+            or image.get("height") != HEIGHT
+            or image.get("format") != "rgba8"
+            or decoded_sha != hashlib.sha256(decoded.rgba).hexdigest()
+        ):
+            fail(f"{context}.captures[{index}] image identity mismatch")
+        views[view] = {
+            "path": image_path,
+            "sha256": image_sha,
+            "decoded_rgba8_sha256": decoded_sha,
+            "pose_intrinsics_sha256": capture["pose_intrinsics_sha256"],
+        }
+    binary_original = {
+        key: release_binary[key] for key in ("path", "bytes", "sha256")
+    }
+    if not pathlib.Path(str(binary_original["path"])).is_absolute():
+        fail(f"{context}.release_binary original path must be absolute")
+    expected_integrity = {
+        "repository_pre": repository,
+        "repository_post": repository,
+        "binary_pre": binary_original,
+        "binary_post": binary_original,
+        "producer_sources_pre_sha256": canonical_sha256(expected_sources),
+        "producer_sources_post_sha256": canonical_sha256(expected_sources),
+        "inputs_rechecked_after_render": True,
+    }
+    if obj(receipt, "integrity", context) != expected_integrity:
+        fail(f"{context}.integrity pre/post identity mismatch")
+    return {
+        "receipt_path": receipt_path,
+        "receipt_sha256": receipt_sha256,
+        "repository_commit": commit,
+        "release_binary_sha256": binary_sha256,
+        "generated_at_utc": generated_at,
+        "views": views,
+    }
+
+
 def reference_images(root: pathlib.Path, document: dict[str, Any]) -> dict[int, dict[str, Any]]:
     values = array(obj(document, "schedule", "schedule"), "reference_images", "schedule.schedule")
     if len(values) != 2:
         fail("schedule.reference_images must cover both views")
     result: dict[int, dict[str, Any]] = {}
+    shared_receipt: tuple[pathlib.Path, str] | None = None
+    authority: dict[str, Any] | None = None
     for index, value in enumerate(values):
         if not isinstance(value, dict):
             fail(f"schedule.reference_images[{index}] must be an object")
         trace = integer(value, "trace_frame_index", f"schedule.reference_images[{index}]")
+        if set(value) != {
+            "trace_frame_index",
+            "path",
+            "sha256",
+            "decoded_rgba8_sha256",
+            "pose_intrinsics_sha256",
+            *REFERENCE_RECEIPT_FIELDS,
+        }:
+            fail(f"schedule.reference_images[{index}] fields are not frozen")
+        receipt_path = inside(
+            root,
+            value.get("authority_receipt_path"),
+            f"schedule.reference_images[{index}].authority_receipt_path",
+        )
+        receipt_sha = sha256(
+            value.get("authority_receipt_sha256"),
+            f"schedule.reference_images[{index}].authority_receipt_sha256",
+        )
+        current_receipt = (receipt_path, receipt_sha)
+        if shared_receipt is None:
+            shared_receipt = current_receipt
+            authority = _reference_authority(root, receipt_path, receipt_sha)
+        elif current_receipt != shared_receipt:
+            fail("schedule.reference_images must bind one shared authority receipt")
+        assert authority is not None
         path = inside(root, value.get("path"), f"schedule.reference_images[{index}].path")
         digest = sha256(value.get("sha256"), f"schedule.reference_images[{index}].sha256")
         try:
             _decode_image(path, f"schedule.reference_images[{index}]")
         except (OSError, IMAGE.ValidationError) as error:
             fail(f"schedule.reference_images[{index}] is not a decodable RGBA8 PNG: {error}")
-        if trace not in {0, 1} or trace in result or file_sha256(path) != digest:
+        view = authority["views"].get(trace)
+        if (
+            trace not in {0, 1}
+            or trace in result
+            or view is None
+            or path != view["path"]
+            or digest != view["sha256"]
+            or value.get("decoded_rgba8_sha256") != view["decoded_rgba8_sha256"]
+            or value.get("pose_intrinsics_sha256") != view["pose_intrinsics_sha256"]
+            or file_sha256(path) != digest
+        ):
             fail(f"schedule.reference_images[{index}] identity mismatch")
-        result[trace] = {**value, "absolute_path": path}
+        result[trace] = {
+            **value,
+            "absolute_path": path,
+            "authority": {
+                "receipt_path": receipt_path.relative_to(root).as_posix(),
+                "receipt_sha256": receipt_sha,
+                "repository_commit": authority["repository_commit"],
+                "release_binary_sha256": authority["release_binary_sha256"],
+                "generated_at_utc": authority["generated_at_utc"],
+            },
+        }
     return result
 
 

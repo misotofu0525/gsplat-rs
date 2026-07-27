@@ -18,6 +18,7 @@ from .common import (
     load_json,
     obj,
     string,
+    utc,
 )
 from .contract import (
     MEASURED,
@@ -59,6 +60,13 @@ def evaluate(path: pathlib.Path) -> dict[str, Any]:
     if len(evidence) != 5:
         fail("schedule.pairs must bind all five predeclared pairs")
     references = reference_images(root, document)
+    authority_identity = references[0]["authority"]
+    if references[1]["authority"] != authority_identity:
+        fail("reference images do not share one Direct-f32 authority")
+    if utc(
+        authority_identity["generated_at_utc"], "reference authority generated_at_utc"
+    ) > predeclared:
+        fail("Direct-f32 reference authority was generated after schedule predeclaration")
     seen_paths: set[pathlib.Path] = set()
     seen_runs: set[str] = set()
     seen_endpoint_paths: set[pathlib.Path] = set()
@@ -130,6 +138,8 @@ def evaluate(path: pathlib.Path) -> dict[str, Any]:
                 frozen_commit = throughput["commit"]
             elif throughput["commit"] != frozen_commit:
                 fail(f"{pair_id}.{endpoint} changed the series Git commit")
+            if throughput["commit"] != authority_identity["repository_commit"]:
+                fail(f"{pair_id}.{endpoint} commit does not match the Direct-f32 authority")
             if frozen_builds.setdefault(endpoint, throughput["build_artifacts"]) != throughput["build_artifacts"]:
                 fail(f"{pair_id}.{endpoint} changed built artifacts")
             endpoint_environment = throughput["environment"]["identity"]
@@ -273,6 +283,7 @@ def evaluate(path: pathlib.Path) -> dict[str, Any]:
             "schedule_sha256": schedule_sha,
             "protocol_sha256": protocol_sha,
             "formal_execution": formal_execution,
+            "reference_authority": authority_identity,
             "pair_count": 5,
             "minimum_ssim": minimum_ssim,
             "minimum_observed_ssim": None,
@@ -336,6 +347,7 @@ def evaluate(path: pathlib.Path) -> dict[str, Any]:
         "schedule_sha256": schedule_sha,
         "protocol_sha256": protocol_sha,
         "formal_execution": formal_execution,
+        "reference_authority": authority_identity,
         "pair_count": 5,
         "minimum_ssim": minimum_ssim,
         "minimum_observed_ssim": min(scores),

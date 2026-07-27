@@ -35,8 +35,10 @@ The schedule is one JSON object with schema
 - a unique `series_id`;
 - the frozen `protocol` object;
 - `schedule.seed`, `schedule.predeclared_at_utc`, two reference-image receipts,
-  and exactly five unique pairs; the references are inside the canonical
-  schedule hash rather than mutable side input;
+  and exactly five unique pairs; both references bind the same independently
+  produced Direct-f32 authority receipt by relative path and SHA-256, and the
+  references are inside the canonical schedule hash rather than mutable side
+  input;
 - a counterbalanced `playcanvas-first` / `gsplat-rs-first` order whose counts
   differ by no more than one;
 - two immutable 1920x1080 reference PNG identities;
@@ -110,6 +112,34 @@ must derive exactly from the terminal duration and `N=80`; frame-wall or host
 call time cannot substitute for this boundary.
 
 ## Images
+
+The common reference is not an arbitrary pair of hash-consistent PNGs. Before
+any endpoint image or timing evidence is admitted, both schedule entries must
+bind one accepted `gsplat-q1-direct-f32-reference/v1` receipt inside the series
+root. The authority must be blocker-free and prove:
+
+- one clean full repository commit, equal to the frozen endpoint commit, and a
+  generation timestamp no later than schedule predeclaration;
+- the locked Cargo, Rust 1.93 toolchain and complete producer-source identities;
+- an immutable release desktop binary identity plus the matching retained
+  binary copy inside the authority directory (the original build path need not
+  continue to exist);
+- the exact complete Truck bytes/count/SH3 source and the frozen trace file,
+  semantic hash, poses and intrinsics for exactly views 0 and 1;
+- Direct wide-f32, CPU ExactFull32 stable ordering, SortedAlpha and wgpu
+  Direct GlobalQuads, with sampling, LOD, partial publication, dynamic
+  resolution and upscaling disabled;
+- `source = decoded = encoded = resident = addressable`, unchanged SH3, and
+  per-view `0 < drawn = visible <= source`; and
+- 1920x1080 RGBA8 top-left readback whose retained PNG and decoded-RGBA hashes
+  exactly match each schedule view.
+
+The validator reads the retained binary and images from the authority root; it
+never relies on the producer's now-disposable absolute Cargo target path. A
+self-consistent replacement PNG without that receipt and predeclared binding
+is rejected. Accepted, Rejected, and Deferred series results retain the common
+authority receipt, commit and binary identities so the image oracle cannot be
+detached from the endpoint result.
 
 Each control image names its trace-specific native control artifact by path and
 manifest hash. A host-owned `host_admission_join` binds that artifact identity,
