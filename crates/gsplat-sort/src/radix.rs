@@ -285,6 +285,71 @@ pub(crate) fn count_radix_digits_scalar_for_test(
     count_histograms_scalar(input, shift, counts);
 }
 
+#[cfg(all(test, not(target_arch = "wasm32")))]
+fn radix_sort_desc_u64_key_bits_with_counter_for_test(
+    values: &mut [u64],
+    scratch: &mut [u64],
+    counts: &mut [usize],
+    parallel_counts: &mut [usize],
+    count: impl Fn(&[u64], usize, &mut [usize]),
+) {
+    debug_assert_eq!(values.len(), scratch.len());
+    debug_assert_eq!(counts.len(), RADIX_SORT_BUCKETS);
+    debug_assert_eq!(parallel_counts.len(), RADIX_PARALLEL_COUNT_SLOTS);
+    // The Q3 fixed microbenchmark is intentionally below the production
+    // parallel threshold so it isolates the selected histogram kernel.
+    debug_assert!(values.len() < PARALLEL_SORT_THRESHOLD);
+
+    let mut values_to_scratch = true;
+    for shift in (32..64).step_by(RADIX_SORT_BITS) {
+        let (input, output) = if values_to_scratch {
+            (&*values, &mut *scratch)
+        } else {
+            (&*scratch, &mut *values)
+        };
+        count(input, shift, counts);
+        descending_prefix_offsets(counts);
+        scatter_radix_digits(input, output, shift, counts);
+        values_to_scratch = !values_to_scratch;
+    }
+    debug_assert!(values_to_scratch, "four key passes finish in values");
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+pub(crate) fn radix_sort_desc_u64_key_bits_scalar_for_test(
+    values: &mut [u64],
+    scratch: &mut [u64],
+    counts: &mut [usize],
+    parallel_counts: &mut [usize],
+) {
+    radix_sort_desc_u64_key_bits_with_counter_for_test(
+        values,
+        scratch,
+        counts,
+        parallel_counts,
+        count_histograms_scalar,
+    );
+}
+
+#[cfg(all(test, target_arch = "aarch64"))]
+pub(crate) fn radix_sort_desc_u64_key_bits_neon_for_test(
+    values: &mut [u64],
+    scratch: &mut [u64],
+    counts: &mut [usize],
+    parallel_counts: &mut [usize],
+) {
+    radix_sort_desc_u64_key_bits_with_counter_for_test(
+        values,
+        scratch,
+        counts,
+        parallel_counts,
+        |input, shift, counts| {
+            // SAFETY: this helper is compiled only for AArch64, where Neon is guaranteed.
+            unsafe { count_histograms_neon(input, shift, counts) };
+        },
+    );
+}
+
 #[cfg(target_arch = "aarch64")]
 #[allow(unsafe_op_in_unsafe_fn)]
 #[target_feature(enable = "neon")]

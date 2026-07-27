@@ -205,6 +205,12 @@ fn unpack_values(packed: &[u64], values: &mut [u32]) {
     }
 
     #[cfg(not(target_arch = "aarch64"))]
+    unpack_values_scalar(packed, values);
+}
+
+#[cfg(any(not(target_arch = "aarch64"), test))]
+fn unpack_values_scalar(packed: &[u64], values: &mut [u32]) {
+    debug_assert_eq!(packed.len(), values.len());
     for i in 0..packed.len() {
         values[i] = !(packed[i] as u32);
     }
@@ -342,6 +348,9 @@ unsafe fn unpack_values_neon(packed: &[u64], values: &mut [u32]) {
         i += 1;
     }
 }
+
+#[cfg(all(test, target_arch = "aarch64"))]
+mod q3_m4;
 
 #[cfg(test)]
 mod tests {
