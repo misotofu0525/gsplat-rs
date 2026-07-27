@@ -109,3 +109,21 @@ the artifact truthfully leaves presented width/height unavailable and
 `full_resolution=false` despite proving the full internal backing. Q1 still
 needs the matched native Exact run and the scoped external-presentation/
 quality decision before comparing terminal throughput.
+
+## Q3 M4 SIMD microbenchmark checkpoint (2026-07-27)
+
+At clean root commit `f025dff`, the fixed
+`Q3.M4.PackedCpuExact.ScalarVsNeon` cell completed once and published the
+fresh ignored artifact
+`target/benchmarks/qualification/q3-m4-simd-f025dff.json`. Its fixed
+200,003-item packed input and 11 interleaved sample pairs preserve exact key,
+source-id, NaN-bit, boundary-bit, FMA-derived-key and stable-tie parity between
+the forced Scalar and NEON radix-count/unpack leaves.
+
+The observed medians were `849,833 ns` for Scalar and `819,417 ns` for NEON.
+This is useful evidence that the native SIMD leaf is both correct and worth
+carrying into the whole-plan experiment, but the cell remains **Deferred** by
+construction: it is a microbenchmark only, does not include renderer-owned
+preprocess, sort, upload, draw or terminal queue completion, and cannot select
+the product default. Q3 next requires a private renderer qualification selector
+and matched native terminal artifacts before making any whole-plan decision.
