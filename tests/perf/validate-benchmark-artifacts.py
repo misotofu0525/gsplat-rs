@@ -446,6 +446,28 @@ def validate_terminal_queue_throughput(
     execution_cell = window.get("execution_cell", "adaptive")
     if execution_cell not in {"adaptive", "fixed_gpu_preproject_compact"}:
         fail("terminal-queue throughput execution_cell is unsupported")
+    if execution_cell == "fixed_gpu_preproject_compact":
+        fixed_renderer_identity = (
+            renderer.get("order_backend_requested") == "gpu" and
+            renderer.get("projected_policy_requested") == "compact" and
+            renderer.get("gpu_order_producer_requested") is None and
+            renderer.get("gpu_order_producer_actual") == "preproject"
+        )
+        if not fixed_renderer_identity:
+            fail("fixed GPU preproject Compact renderer identity mismatch")
+        for index, frame in enumerate(frames):
+            fixed_frame_identity = (
+                frame.get("order_backend_requested") == "gpu" and
+                frame.get("order_backend") == "gpu" and
+                frame.get("gpu_sort_fallback") is False and
+                frame.get("adaptive_state") == "disabled" and
+                frame.get("projected_policy") == "compact" and
+                frame.get("projected_execution") == "compact" and
+                frame.get("projected_adaptive_state") == "disabled" and
+                frame.get("gpu_order_producer") == "preproject"
+            )
+            if not fixed_frame_identity:
+                fail(f"fixed GPU preproject Compact frame {index} identity mismatch")
     for index, record in enumerate(adaptive):
         valid_adaptive = execution_cell == "adaptive" and \
             isinstance(record, dict) and record.get("state") != "disabled" and \
@@ -465,6 +487,9 @@ def validate_terminal_queue_throughput(
             final_receipt.get("status") != "ready" or \
             require_int(final_receipt, "ticket") != final_ticket:
         fail("terminal-queue throughput final receipt identity mismatch")
+    if execution_cell == "fixed_gpu_preproject_compact" and \
+            final_receipt.get("plan") != "gpu_preproject":
+        fail("fixed GPU preproject Compact final receipt plan mismatch")
     first_input = require_number(window, "first_measured_input_monotonic_ms")
     first_submit = require_number(window, "first_measured_submit_monotonic_ms")
     last_submit = require_number(window, "last_measured_submit_monotonic_ms")
@@ -500,6 +525,9 @@ def validate_terminal_queue_throughput(
                 warmup_receipt.get("status") != "ready" or \
                 require_int(warmup_receipt, "ticket") != warmup_ticket:
             fail("terminal-queue throughput warmup receipt identity mismatch")
+        if execution_cell == "fixed_gpu_preproject_compact" and \
+                warmup_receipt.get("plan") != "gpu_preproject":
+            fail("fixed GPU preproject Compact warmup receipt plan mismatch")
         warmup_submitted = require_number(warmup_receipt, "submitted_at_monotonic_ms")
         warmup_terminal = require_number(warmup_receipt, "terminal_at_monotonic_ms")
         assert warmup_submitted is not None and warmup_terminal is not None
@@ -554,6 +582,11 @@ def validate_terminal_queue_throughput(
             final_frame.get("current_stats_ticket") != final_ticket or \
             any(final_frame.get(field) is None for field in identity_fields):
         fail("terminal-queue throughput final frame lacks its same-submission receipt")
+    if final_frame.get("current_stats_plan") != final_receipt.get("plan"):
+        fail("terminal-queue throughput final frame and receipt plan mismatch")
+    if execution_cell == "fixed_gpu_preproject_compact" and \
+            final_frame.get("current_stats_plan") != "gpu_preproject":
+        fail("fixed GPU preproject Compact final current-stats plan mismatch")
 
     expected_receipt_count = 2 if warmup_count > 0 else 1
     ordering_expected = {

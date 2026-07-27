@@ -370,7 +370,49 @@ PY
 python3 "$VALIDATOR" "$TMP_DIR/terminal-queue-throughput-valid"
 
 cp -R "$TMP_DIR/terminal-queue-throughput-valid" "$TMP_DIR/terminal-queue-fixed-compact-valid"
-python3 - "$TMP_DIR/terminal-queue-fixed-compact-valid/manifest.json" <<'PY'
+python3 - "$TMP_DIR/terminal-queue-fixed-compact-valid" <<'PY'
+import json, pathlib, sys
+root = pathlib.Path(sys.argv[1])
+path = root / "manifest.json"
+value = json.loads(path.read_text())
+window = value["benchmark_window"]
+window["execution_cell"] = "fixed_gpu_preproject_compact"
+window["warmup_terminal_receipt"]["plan"] = "gpu_preproject"
+window["terminal_receipt"]["plan"] = "gpu_preproject"
+window["exact_adaptive_measured"] = [{
+    "state": "disabled",
+    "plan": "gpu_preproject",
+    "projected_state": "disabled",
+    "projected_execution": "compact",
+} for _ in window["exact_adaptive_measured"]]
+value["renderer"].update({
+    "order_backend_requested": "gpu",
+    "projected_policy_requested": "compact",
+    "gpu_order_producer_requested": None,
+    "gpu_order_producer_actual": "preproject",
+})
+path.write_text(json.dumps(value))
+
+frames_path = root / "frames.jsonl"
+frames = [json.loads(line) for line in frames_path.read_text().splitlines() if line]
+for frame in frames:
+    frame.update({
+        "order_backend_requested": "gpu",
+        "order_backend": "gpu",
+        "gpu_sort_fallback": False,
+        "adaptive_state": "disabled",
+        "projected_policy": "compact",
+        "projected_execution": "compact",
+        "projected_adaptive_state": "disabled",
+        "gpu_order_producer": "preproject",
+    })
+frames[-1]["current_stats_plan"] = "gpu_preproject"
+frames_path.write_text("\n".join(json.dumps(frame) for frame in frames) + "\n")
+PY
+python3 "$VALIDATOR" "$TMP_DIR/terminal-queue-fixed-compact-valid"
+
+cp -R "$TMP_DIR/terminal-queue-throughput-valid" "$TMP_DIR/terminal-queue-fixed-label-only"
+python3 - "$TMP_DIR/terminal-queue-fixed-label-only/manifest.json" <<'PY'
 import json, pathlib, sys
 path = pathlib.Path(sys.argv[1])
 value = json.loads(path.read_text())
@@ -384,7 +426,11 @@ window["exact_adaptive_measured"] = [{
 } for _ in window["exact_adaptive_measured"]]
 path.write_text(json.dumps(value))
 PY
-python3 "$VALIDATOR" "$TMP_DIR/terminal-queue-fixed-compact-valid"
+if python3 "$VALIDATOR" "$TMP_DIR/terminal-queue-fixed-label-only" >"$TMP_DIR/terminal-queue-fixed-label-only.out" 2>&1; then
+  echo "expected fixed label over CPU renderer identity to fail" >&2
+  exit 1
+fi
+grep -Fq 'renderer identity mismatch' "$TMP_DIR/terminal-queue-fixed-label-only.out"
 
 cp -R "$TMP_DIR/terminal-queue-fixed-compact-valid" "$TMP_DIR/terminal-queue-fixed-compact-adaptive"
 python3 - "$TMP_DIR/terminal-queue-fixed-compact-adaptive/manifest.json" <<'PY'
@@ -399,6 +445,45 @@ if python3 "$VALIDATOR" "$TMP_DIR/terminal-queue-fixed-compact-adaptive" >"$TMP_
   exit 1
 fi
 grep -Fq 'Exact adaptive record 0 is invalid' "$TMP_DIR/terminal-queue-fixed-compact-adaptive.out"
+
+for mutation in gpu-post-sort candidate active-projected fallback; do
+  target="$TMP_DIR/terminal-queue-fixed-compact-$mutation"
+  cp -R "$TMP_DIR/terminal-queue-fixed-compact-valid" "$target"
+  python3 - "$target/frames.jsonl" "$mutation" <<'PY'
+import json, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+mutation = sys.argv[2]
+frames = [json.loads(line) for line in path.read_text().splitlines() if line]
+if mutation == "gpu-post-sort":
+    frames[0]["gpu_order_producer"] = "post_sort"
+elif mutation == "candidate":
+    frames[0]["projected_execution"] = "candidate"
+elif mutation == "active-projected":
+    frames[0]["projected_adaptive_state"] = "compact_stable"
+elif mutation == "fallback":
+    frames[0]["gpu_sort_fallback"] = True
+path.write_text("\n".join(json.dumps(frame) for frame in frames) + "\n")
+PY
+  if python3 "$VALIDATOR" "$target" >"$target.out" 2>&1; then
+    echo "expected fixed Compact $mutation identity to fail" >&2
+    exit 1
+  fi
+  grep -Fq 'frame 0 identity mismatch' "$target.out"
+done
+
+cp -R "$TMP_DIR/terminal-queue-fixed-compact-valid" "$TMP_DIR/terminal-queue-fixed-wrong-final-plan"
+python3 - "$TMP_DIR/terminal-queue-fixed-wrong-final-plan/manifest.json" <<'PY'
+import json, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+value = json.loads(path.read_text())
+value["benchmark_window"]["terminal_receipt"]["plan"] = "gpu_post_sort"
+path.write_text(json.dumps(value))
+PY
+if python3 "$VALIDATOR" "$TMP_DIR/terminal-queue-fixed-wrong-final-plan" >"$TMP_DIR/terminal-queue-fixed-wrong-final-plan.out" 2>&1; then
+  echo "expected fixed Compact final plan drift to fail" >&2
+  exit 1
+fi
+grep -Fq 'final receipt plan mismatch' "$TMP_DIR/terminal-queue-fixed-wrong-final-plan.out"
 
 cp -R "$TMP_DIR/terminal-queue-throughput-valid" "$TMP_DIR/terminal-queue-adaptive-disabled"
 python3 - "$TMP_DIR/terminal-queue-adaptive-disabled/manifest.json" <<'PY'
