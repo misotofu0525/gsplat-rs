@@ -1069,3 +1069,25 @@ The second fixed-SHA repair extends the same fail-closed rule to series-root and
 endpoint `blocker.json` / `cleanup-blocker.json`: a dangling symlink is still a
 retained blocker and cannot disappear merely because `Path.exists()` follows
 it to a missing target.
+
+### Q1 reference-authority schedule wiring candidate (2026-07-28)
+
+The five-pair owner now accepts one required `--reference-authority` instead of
+two independently supplied PNG paths. Before either dry-run output or root
+claim, the shared admission owner validates the complete blocker- and
+symlink-free `gsplat-q1-direct-f32-reference/v1` tree, requires its clean commit
+to equal the reviewed SHA and its timestamp to precede the schedule, and emits
+the authority receipt, PNG, decoded RGBA and pose/intrinsics identities for
+both frozen views. Dry-run performs the same complete read-only Git, Chrome,
+process-table, Wasm, Puppeteer and formal-input preflight as execute while
+retaining zero filesystem, build or browser side effects.
+
+Execute copies the entire locked authority tree into the fresh series root
+without following symlinks, verifies each open source file descriptor, and
+rechecks both source and retained identities before the first producer and at
+the post-run boundary. Formal-input and execution-lock receipts preserve these
+pre/post joins. Process cleanup tests also cover a descendant first discovered
+after tracker shutdown and a persistently unavailable process-table snapshot.
+This candidate performs no reference generation, Chrome/device run or formal
+comparison. Q1 remains **Active** pending fixed-SHA review, integration, a new
+same-SHA authority artifact and one separately authorized finite execution.

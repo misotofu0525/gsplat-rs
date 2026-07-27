@@ -322,9 +322,11 @@ conclusion, so it cannot by itself make Q1 `Accepted`.
 
 ### Q1 same-Chrome five-pair series
 
-After the real PlayCanvas and gsplat-rs Q1 producers are integrated, inspect
-the complete immutable five-pair command plan without starting Chrome or
-creating output:
+Integrate the real PlayCanvas and gsplat-rs Q1 producers first, obtain a
+fixed-SHA review of that exact clean commit, and create the Direct-f32
+reference authority above from that same SHA. Then run the complete read-only
+preflight and inspect the immutable five-pair command plan without starting
+Chrome or creating output:
 
 ```bash
 PYTHONDONTWRITEBYTECODE=1 python3 \
@@ -336,16 +338,30 @@ PYTHONDONTWRITEBYTECODE=1 python3 \
   --seed <declared-integer> \
   --chrome /absolute/path/to/Chrome \
   --gsplat-wasm-package /absolute/repo-local/quality-exact-package \
-  --reference-trace-0 /absolute/reference/view-0.png \
-  --reference-trace-1 /absolute/reference/view-1.png
+  --reference-authority /absolute/q1-direct-f32-reference-<sha> \
+  --reviewed-sha <full-40-character-sha>
 ```
 
-Do not replace `--dry-run` with `--execute` until the exact integrated commit
-has passed fixed-SHA review. Formal mode additionally requires
-`--reviewed-sha <full-40-character-sha>` equal to clean `HEAD`. A
-repository-local output must stay below ignored `target/`; an output outside
-the repository is also valid. The parent directory must already exist and the
-series root must not.
+`--dry-run` performs the same complete read-only admission as `--execute`: it
+validates the full blocker- and symlink-free authority tree, requires its
+commit to equal `--reviewed-sha` and its generation time to precede the
+predeclared series time, verifies clean exact `HEAD`, the Chrome executable and
+process-table support, the quality-exact Wasm package and receipt, the locked
+Puppeteer production closure, every formal input, and the fresh series-root
+constraints. It does not create or copy files, build a package, or launch a
+browser. A repository-local output must stay below ignored `target/`; an
+output outside the repository is also valid. The parent directory must already
+exist and the series root must not.
+
+After inspecting a successful dry-run, invoke the same command with
+`--execute` instead of `--dry-run`; do not change the reviewed SHA, authority,
+package, Chrome, schedule identity, or destination. `--execute` claims the
+fresh root once, copies the complete authority tree to
+`reference-authority/` without following symlinks, verifies each open source
+file descriptor against the locked tree, then revalidates both source and
+retained trees before any producer starts. The formal-input and execution-lock
+receipts retain the authority source and claimed-tree identities before and
+after the run.
 
 Formal mode declares all 30 fresh producer commands before the first browser
 launch, executes each once, stops on the first failure, binds the two actual
@@ -353,13 +369,16 @@ control manifest hashes before each throughput run, and calls only the
 existing Q1 validator after the evidence schedule is complete. Retain a
 failed root and its blocker; never delete it to simulate a retry.
 
-The formal preflight fully decodes both reference PNGs and freezes the reviewed
-commit, exact Chrome binary, quality-exact Wasm package, producer/runtime
+The formal preflight fully admits the one authority receipt and complete tree,
+decodes both bound reference PNGs, and freezes the reviewed commit, exact
+Chrome binary, quality-exact Wasm package, producer/runtime
 trees, the package-lock-derived installed Puppeteer production dependency
 closure, Truck/trace inputs, validators and image tool. Producer subprocesses use
 only the exact environment printed in `commands.json`; ambient Node, Python,
 npm, Chrome, PlayCanvas, gsplat-rs and WebGPU variables are not inherited.
-Postprocessing receives that same isolated host environment plus the exact
+Each schedule reference binds the shared authority receipt path/SHA, PNG SHA,
+decoded RGBA SHA and frozen pose/intrinsics SHA. Postprocessing receives that
+same isolated host environment plus the exact
 locked `CHROME_PATH`; each image receipt records the executable path and hash
 reported by the image tool. Producer, canonical-validation, image-comparison,
 final-validation and Git-helper commands have generous but finite predeclared

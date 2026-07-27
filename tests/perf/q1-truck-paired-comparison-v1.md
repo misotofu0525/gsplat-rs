@@ -256,19 +256,23 @@ PYTHONDONTWRITEBYTECODE=1 python3 \
   --seed <declared-integer> \
   --chrome /absolute/path/to/Chrome \
   --gsplat-wasm-package /absolute/repo-local/quality-exact-package \
-  --reference-trace-0 /absolute/reference/view-0.png \
-  --reference-trace-1 /absolute/reference/view-1.png
+  --reference-authority /absolute/q1-direct-f32-reference-<sha> \
+  --reviewed-sha <full-40-character-sha>
 ```
 
-`--dry-run` (also spelled `--print-only`) reads the two reference identities
-and prints the immutable schedule plus all 30 commands. It creates no series
-directory, request, artifact or browser process.
+`--dry-run` (also spelled `--print-only`) performs the same complete read-only
+formal preflight as execute: clean reviewed SHA, complete Direct-f32 authority
+tree, Chrome/process-table support, quality-exact Wasm package, installed
+Puppeteer closure and every formal input. It prints the immutable schedule plus
+all 30 commands and creates no series directory, copy, build, artifact or
+browser process.
 
-Formal execution replaces `--dry-run` with `--execute` and adds the full
-40-character `--reviewed-sha`. Before the first browser action, the collector
-atomically claims the absent series root and writes:
+Formal execution replaces only `--dry-run` with `--execute`. Before the first
+browser action, the collector atomically claims the absent series root, copies
+and revalidates the complete authority under `reference-authority/`, and writes:
 
-- `schedule-declaration.json`, containing the two reference identities and
+- `schedule-declaration.json`, containing the shared authority receipt plus the
+  two PNG, decoded RGBA and pose/intrinsics identities and
   exactly five seeded counterbalanced pair declarations;
 - `commands.json`, containing all 30 producer argv/environment/output records;
 - every control request, every gsplat-rs pairing context and every throughput

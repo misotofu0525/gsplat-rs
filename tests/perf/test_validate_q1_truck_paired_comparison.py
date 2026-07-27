@@ -24,6 +24,7 @@ from q1_pair_admission.artifacts import (
     REFERENCE_RUST_TOOLCHAIN_SHA256,
     REFERENCE_SOURCE_PATHS,
     REFERENCE_TRACE_FILE_SHA256,
+    reference_authority,
 )
 from q1_pair_admission.common import ValidationError, canonical_sha256, file_sha256
 from q1_pair_admission.contract import (
@@ -1067,6 +1068,31 @@ class ScheduleAndAdmissionTests(unittest.TestCase):
         for reference in document["schedule"]["reference_images"]:
             reference["authority_receipt_sha256"] = digest
         write_json(self.schedule, document)
+
+    def test_public_reference_authority_seam_validates_the_complete_tree(self) -> None:
+        authority = self.root / "reference-authority"
+        admitted = reference_authority(authority)
+        self.assertEqual(admitted["repository_commit"], COMMIT)
+        self.assertEqual(admitted["receipt_path"], authority / "reference.json")
+        self.assertEqual(
+            admitted["tree"]["sha256"],
+            canonical_sha256(admitted["tree"]["files"]),
+        )
+        self.assertEqual(
+            {value["path"] for value in admitted["tree"]["files"]},
+            {
+                "producer/desktop-example",
+                "reference-trace-0.png",
+                "reference-trace-1.png",
+                "reference.json",
+            },
+        )
+
+        outside = self.root / "outside-support.log"
+        outside.write_text("outside\n")
+        (authority / "support.log").symlink_to(outside)
+        with self.assertRaisesRegex(ValidationError, "symlink"):
+            reference_authority(authority)
 
     def test_legacy_presentation_without_renderer_capture_is_deferred(self) -> None:
         result = evaluate(self.schedule)

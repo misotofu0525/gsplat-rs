@@ -6,6 +6,7 @@ import hashlib
 import importlib.util
 import json
 import math
+import os
 import pathlib
 import stat
 import struct
@@ -1494,6 +1495,7 @@ def _reference_authority(
     if obj(receipt, "integrity", context) != expected_integrity:
         fail(f"{context}.integrity pre/post identity mismatch")
     return {
+        "authority_root": authority_root,
         "receipt_path": receipt_path,
         "receipt_sha256": receipt_sha256,
         "repository_commit": commit,
@@ -1501,6 +1503,78 @@ def _reference_authority(
         "generated_at_utc": generated_at,
         "views": views,
     }
+
+
+def reference_authority(
+    authority_root: pathlib.Path,
+    *,
+    expected_receipt_sha256: str | None = None,
+) -> dict[str, Any]:
+    """Validate one complete external or retained Direct-f32 authority tree.
+
+    This is the public pre-browser seam shared by the Q1 orchestrator and the
+    final schedule admission path.  It deliberately owns both the frozen
+    receipt semantics and the lexical tree policy so callers never implement a
+    weaker partial parser.
+    """
+
+    context = "Direct-f32 reference authority"
+    try:
+        root_mode = authority_root.lstat().st_mode
+    except OSError as error:
+        fail(f"cannot inspect {context}: {error}")
+    if stat.S_ISLNK(root_mode) or not stat.S_ISDIR(root_mode):
+        fail(f"{context} root must be a real directory, not a symlink")
+
+    files: list[dict[str, Any]] = []
+    for directory, names, filenames in os.walk(authority_root, followlinks=False):
+        directory_path = pathlib.Path(directory)
+        for name in sorted(names):
+            path = directory_path / name
+            try:
+                mode = path.lstat().st_mode
+            except OSError as error:
+                fail(f"cannot inspect {context} directory: {error}")
+            if stat.S_ISLNK(mode):
+                fail(f"{context} contains a symlink component")
+            if not stat.S_ISDIR(mode):
+                fail(f"{context} contains a non-directory tree entry")
+        for name in sorted(filenames):
+            path = directory_path / name
+            try:
+                mode = path.lstat().st_mode
+            except OSError as error:
+                fail(f"cannot inspect {context} file: {error}")
+            if stat.S_ISLNK(mode):
+                fail(f"{context} contains a symlink component")
+            if not stat.S_ISREG(mode):
+                fail(f"{context} contains a non-regular file")
+            relative = path.relative_to(authority_root).as_posix()
+            files.append(
+                {
+                    "path": relative,
+                    "bytes": path.stat().st_size,
+                    "sha256": file_sha256(path),
+                }
+            )
+    files.sort(key=lambda value: value["path"])
+    receipt_path = authority_root / "reference.json"
+    receipt_sha256 = file_sha256(receipt_path)
+    if (
+        expected_receipt_sha256 is not None
+        and receipt_sha256 != expected_receipt_sha256
+    ):
+        fail(f"{context} receipt SHA-256 mismatch")
+    authority = _reference_authority(
+        authority_root, receipt_path, receipt_sha256
+    )
+    authority["tree"] = {
+        "file_count": len(files),
+        "bytes": sum(value["bytes"] for value in files),
+        "sha256": canonical_sha256(files),
+        "files": files,
+    }
+    return authority
 
 
 def reference_images(root: pathlib.Path, document: dict[str, Any]) -> dict[int, dict[str, Any]]:
@@ -1535,7 +1609,10 @@ def reference_images(root: pathlib.Path, document: dict[str, Any]) -> dict[int, 
         current_receipt = (receipt_path, receipt_sha)
         if shared_receipt is None:
             shared_receipt = current_receipt
-            authority = _reference_authority(root, receipt_path, receipt_sha)
+            authority = reference_authority(
+                receipt_path.parent,
+                expected_receipt_sha256=receipt_sha,
+            )
         elif current_receipt != shared_receipt:
             fail("schedule.reference_images must bind one shared authority receipt")
         assert authority is not None

@@ -15,6 +15,7 @@ import pathlib
 import random
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -34,7 +35,7 @@ from q1_pair_admission.artifacts import (  # noqa: E402
     HOST_ADMISSION_JOIN_SCHEMA,
     IMAGE_TOOL_SHA256,
     artifact as admit_artifact,
-    frozen_rgba8_png_receipt,
+    reference_authority as admit_reference_authority,
 )
 from q1_pair_admission.common import (  # noqa: E402
     ValidationError,
@@ -64,6 +65,7 @@ PLAYCANVAS_REQUEST_SCHEMA = "gsplat-q1-playcanvas-producer-request/v1"
 MINIMUM_SSIM = 0.99
 ENDPOINTS = ("playcanvas", "gsplat_rs")
 TRACE_INDICES = (0, 1)
+REFERENCE_AUTHORITY_DESTINATION = pathlib.Path("reference-authority")
 GSPLAT_QUALIFICATION = "truck-quality-1080p-fixed-gpu-preproject-compact-v1"
 TRACE_URL = "/tests/perf/trace/fixtures/quality/candidate-truck-quality-1920x1080-v1.json"
 IMAGE_TOOL = pathlib.Path("tests/perf/compare-image-ssim.mjs")
@@ -731,6 +733,147 @@ def sha256_path(path: pathlib.Path) -> str:
         raise OrchestrationError(str(error)) from error
 
 
+def authority_content_identity(
+    authority: dict[str, Any],
+    *,
+    root_path: str,
+) -> dict[str, Any]:
+    """Return the JSON-safe identity shared by source and retained copies."""
+
+    authority_root = pathlib.Path(authority["authority_root"])
+    views = []
+    for trace in TRACE_INDICES:
+        view = authority["views"][trace]
+        views.append(
+            {
+                "trace_frame_index": trace,
+                "path": pathlib.Path(view["path"])
+                .relative_to(authority_root)
+                .as_posix(),
+                "sha256": view["sha256"],
+                "decoded_rgba8_sha256": view["decoded_rgba8_sha256"],
+                "pose_intrinsics_sha256": view["pose_intrinsics_sha256"],
+            }
+        )
+    return {
+        "root_path": root_path,
+        "receipt_path": "reference.json",
+        "receipt_sha256": authority["receipt_sha256"],
+        "repository_commit": authority["repository_commit"],
+        "release_binary_sha256": authority["release_binary_sha256"],
+        "generated_at_utc": authority["generated_at_utc"],
+        "tree": authority["tree"],
+        "views": views,
+    }
+
+
+def validate_reference_authority_input(
+    args: argparse.Namespace,
+    predeclared_at: str,
+) -> dict[str, Any]:
+    """Fully admit the external authority before any series/browser action."""
+
+    try:
+        authority = admit_reference_authority(args.reference_authority)
+    except (OSError, ValidationError, ValueError) as error:
+        raise OrchestrationError(
+            f"Direct-f32 reference authority is not admissible: {error}"
+        ) from error
+    require(
+        authority["repository_commit"] == args.reviewed_sha,
+        "Direct-f32 reference authority commit does not equal --reviewed-sha",
+    )
+    require(
+        utc(
+            authority["generated_at_utc"],
+            "Direct-f32 reference authority generated_at_utc",
+        )
+        <= utc(predeclared_at, "Q1 schedule predeclared_at_utc"),
+        "Direct-f32 reference authority was generated after schedule predeclaration",
+    )
+    return authority
+
+
+def formal_reference_receipts(authority: dict[str, Any]) -> list[dict[str, Any]]:
+    authority_root = pathlib.Path(authority["authority_root"])
+    result = []
+    for trace in TRACE_INDICES:
+        view = authority["views"][trace]
+        result.append(
+            {
+                "trace_frame_index": trace,
+                "source_path": str(view["path"]),
+                "series_path": (
+                    REFERENCE_AUTHORITY_DESTINATION
+                    / pathlib.Path(view["path"]).relative_to(authority_root)
+                ).as_posix(),
+                "sha256": view["sha256"],
+                "rgba8_sha256": view["decoded_rgba8_sha256"],
+                "width": WIDTH,
+                "height": HEIGHT,
+                "pixel_format": "rgba8unorm-srgb",
+                "pose_intrinsics_sha256": view["pose_intrinsics_sha256"],
+                "authority_receipt_path": (
+                    REFERENCE_AUTHORITY_DESTINATION / "reference.json"
+                ).as_posix(),
+                "authority_receipt_sha256": authority["receipt_sha256"],
+            }
+        )
+    return result
+
+
+def copy_reference_authority(
+    source: pathlib.Path,
+    destination: pathlib.Path,
+    tree: dict[str, Any],
+) -> None:
+    """Copy the frozen regular-file tree without ever following a symlink."""
+
+    destination.mkdir()
+    nofollow = getattr(os, "O_NOFOLLOW", 0)
+    for entry in tree["files"]:
+        relative = pathlib.Path(entry["path"])
+        require(
+            not relative.is_absolute() and ".." not in relative.parts,
+            "authority tree contains an unsafe relative path",
+        )
+        source_path = source / relative
+        destination_path = destination / relative
+        destination_path.parent.mkdir(parents=True, exist_ok=True)
+        source_fd = os.open(source_path, os.O_RDONLY | nofollow)
+        try:
+            source_stat = os.fstat(source_fd)
+            require(
+                stat.S_ISREG(source_stat.st_mode),
+                f"authority source changed type before copy: {relative.as_posix()}",
+            )
+            require(
+                source_stat.st_size == entry["bytes"],
+                f"authority source size drifted before copy: {relative.as_posix()}",
+            )
+            copied_hash = hashlib.sha256()
+            copied_bytes = 0
+            with os.fdopen(source_fd, "rb", closefd=False) as source_file:
+                with destination_path.open("xb") as destination_file:
+                    while True:
+                        chunk = source_file.read(1024 * 1024)
+                        if not chunk:
+                            break
+                        copied_hash.update(chunk)
+                        copied_bytes += len(chunk)
+                        destination_file.write(chunk)
+                    destination_file.flush()
+                    os.fsync(destination_file.fileno())
+            require(
+                copied_bytes == entry["bytes"]
+                and copied_hash.hexdigest() == entry["sha256"],
+                f"authority source content drifted during copy: {relative.as_posix()}",
+            )
+            os.chmod(destination_path, stat.S_IMODE(source_stat.st_mode))
+        finally:
+            os.close(source_fd)
+
+
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
@@ -959,20 +1102,16 @@ def puppeteer_production_modules(playcanvas_root: pathlib.Path) -> dict[str, Any
     }
 
 
-def capture_formal_inputs(args: argparse.Namespace) -> dict[str, Any]:
-    reference_receipts = []
-    for trace in TRACE_INDICES:
-        path = args.reference_images[trace]
-        try:
-            receipt = frozen_rgba8_png_receipt(path, f"reference trace {trace}")
-        except (OSError, ValidationError) as error:
-            raise OrchestrationError(f"reference trace {trace} is not frozen RGBA8 1920x1080: {error}") from error
-        reference_receipts.append({
-            "trace_frame_index": trace,
-            "source_path": str(path),
-            "series_path": f"reference/trace-{trace}.png",
-            **receipt,
-        })
+def capture_formal_inputs(
+    args: argparse.Namespace,
+    *,
+    authority: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    if authority is None:
+        authority = validate_reference_authority_input(
+            args, args.predeclared_at_utc
+        )
+    reference_receipts = formal_reference_receipts(authority)
     wasm_files = []
     for name in ("gsplat_web.js", "gsplat_web_bg.wasm", "gsplat_web_build_receipt.json"):
         path = args.gsplat_wasm_package / name
@@ -1021,17 +1160,24 @@ def capture_formal_inputs(args: argparse.Namespace) -> dict[str, Any]:
         "puppeteer_production_modules": puppeteer_production_modules(
             REPO_ROOT / "tests/competitive/playcanvas"
         ),
+        "reference_authority": authority_content_identity(
+            authority,
+            root_path=str(args.reference_authority),
+        ),
         "references": reference_receipts,
     }
 
 
-def verify_formal_inputs(args: argparse.Namespace, expected: dict[str, Any]) -> None:
+def verify_formal_inputs(
+    args: argparse.Namespace, expected: dict[str, Any]
+) -> dict[str, Any]:
     require(not git_output("status", "--porcelain"), "repository became dirty during Q1 execution")
     observed = capture_formal_inputs(args)
     require(
         observed == expected,
         "reviewed commit, browser, WASM, producer, validator, runtime, dataset, trace, or reference input drifted",
     )
+    return observed
 
 
 def schedule_orders(seed: int) -> list[str]:
@@ -1351,11 +1497,28 @@ def build_plan(args: argparse.Namespace, *, predeclared_at: str) -> dict[str, An
     root = args.series_root.resolve()
     protocol_value = protocol()
     protocol_sha = canonical_sha256(protocol_value)
+    authority = args.reference_authority_admission
+    authority_root = pathlib.Path(authority["authority_root"])
     references = [
         {
             "trace_frame_index": trace,
-            "path": f"reference/trace-{trace}.png",
-            "sha256": sha256_path(args.reference_images[trace]),
+            "path": (
+                REFERENCE_AUTHORITY_DESTINATION
+                / pathlib.Path(authority["views"][trace]["path"]).relative_to(
+                    authority_root
+                )
+            ).as_posix(),
+            "sha256": authority["views"][trace]["sha256"],
+            "decoded_rgba8_sha256": authority["views"][trace][
+                "decoded_rgba8_sha256"
+            ],
+            "pose_intrinsics_sha256": authority["views"][trace][
+                "pose_intrinsics_sha256"
+            ],
+            "authority_receipt_path": (
+                REFERENCE_AUTHORITY_DESTINATION / "reference.json"
+            ).as_posix(),
+            "authority_receipt_sha256": authority["receipt_sha256"],
         }
         for trace in TRACE_INDICES
     ]
@@ -1417,6 +1580,25 @@ def build_plan(args: argparse.Namespace, *, predeclared_at: str) -> dict[str, An
         "series_id": args.series_id,
         "reviewed_commit": args.reviewed_sha,
         "formal_inputs": getattr(args, "formal_inputs", None),
+        "reference_authority": {
+            "source": authority_content_identity(
+                authority,
+                root_path=str(args.reference_authority),
+            ),
+            "series_root": REFERENCE_AUTHORITY_DESTINATION.as_posix(),
+            "series_receipt_path": (
+                REFERENCE_AUTHORITY_DESTINATION / "reference.json"
+            ).as_posix(),
+            "series_files": [
+                {
+                    **entry,
+                    "destination": (
+                        REFERENCE_AUTHORITY_DESTINATION / entry["path"]
+                    ).as_posix(),
+                }
+                for entry in authority["tree"]["files"]
+            ],
+        },
         "collection_session_id": args.collection_session_id,
         "protocol": protocol_value,
         "protocol_sha256": protocol_sha,
@@ -1478,6 +1660,7 @@ def command_receipt(plan: dict[str, Any]) -> dict[str, Any]:
         ),
         "schedule_sha256": plan["schedule_sha256"],
         "protocol_sha256": plan["protocol_sha256"],
+        "reference_authority": plan["reference_authority"],
         "invocation_count": len(plan["invocations"]),
         "postprocess": plan["postprocess"],
         "invocations": [
@@ -1510,7 +1693,12 @@ def command_receipt(plan: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def execution_lock(plan: dict[str, Any], commands: dict[str, Any]) -> dict[str, Any]:
+def execution_lock(
+    plan: dict[str, Any],
+    commands: dict[str, Any],
+    *,
+    claimed_reference_authority: dict[str, Any],
+) -> dict[str, Any]:
     formal_inputs = plan.get("formal_inputs")
     require(isinstance(formal_inputs, dict), "formal execution lacks its immutable input lock")
     return {
@@ -1521,6 +1709,15 @@ def execution_lock(plan: dict[str, Any], commands: dict[str, Any]) -> dict[str, 
         "protocol_sha256": plan["protocol_sha256"],
         "formal_inputs": formal_inputs,
         "formal_inputs_sha256": canonical_sha256(formal_inputs),
+        "reference_authority": {
+            "source_pre_sha256": canonical_sha256(
+                formal_inputs["reference_authority"]
+            ),
+            "claimed_pre": claimed_reference_authority,
+            "claimed_pre_sha256": canonical_sha256(
+                claimed_reference_authority
+            ),
+        },
         "command_receipt": {
             "path": "commands.json",
             "sha256": hashlib.sha256(json_bytes(commands)).hexdigest(),
@@ -1544,7 +1741,10 @@ def git_output(*arguments: str) -> str:
 
 
 def preflight_execute(args: argparse.Namespace) -> dict[str, Any]:
-    require(len(args.reviewed_sha or "") == 40, "--execute requires a full --reviewed-sha")
+    require(
+        len(args.reviewed_sha or "") == 40,
+        "formal Q1 planning requires a full --reviewed-sha",
+    )
     require(
         git_output("rev-parse", "HEAD") == args.reviewed_sha,
         "reviewed SHA does not equal the current exact commit",
@@ -1585,7 +1785,11 @@ def preflight_execute(args: argparse.Namespace) -> dict[str, Any]:
         args.gsplat_wasm_package.relative_to(REPO_ROOT)
     except ValueError as error:
         raise OrchestrationError("gsplat-rs WASM package must stay inside the repository") from error
-    formal_inputs = capture_formal_inputs(args)
+    authority = validate_reference_authority_input(
+        args, args.predeclared_at_utc
+    )
+    args.reference_authority_admission = authority
+    formal_inputs = capture_formal_inputs(args, authority=authority)
     require(
         formal_inputs["git"] == {"head": args.reviewed_sha, "clean": True},
         "formal input lock does not match the reviewed clean commit",
@@ -1595,12 +1799,28 @@ def preflight_execute(args: argparse.Namespace) -> dict[str, Any]:
 
 def claim_series(args: argparse.Namespace, plan: dict[str, Any]) -> dict[str, Any]:
     root = args.series_root
-    commands = command_receipt(plan)
-    commands_sha = hashlib.sha256(json_bytes(commands)).hexdigest()
-    locked = execution_lock(plan, commands)
+    # Re-admit before the first filesystem side effect.  This catches drift
+    # since preflight and preserves the authority-before-series invariant even
+    # when this function is exercised directly by focused tests.
+    source_authority = validate_reference_authority_input(
+        args, plan["schedule"]["predeclared_at_utc"]
+    )
+    source_identity = authority_content_identity(
+        source_authority,
+        root_path=str(args.reference_authority),
+    )
+    require(
+        source_identity == plan["reference_authority"]["source"],
+        "Direct-f32 reference authority drifted before series claim",
+    )
+    if isinstance(plan.get("formal_inputs"), dict):
+        require(
+            source_identity == plan["formal_inputs"].get("reference_authority"),
+            "formal input lock does not bind the admitted Direct-f32 authority",
+        )
     root.mkdir()
     for directory in (
-        "reference", "requests", "run-contexts", "logs", "process-home",
+        "requests", "run-contexts", "logs", "process-home",
         "process-home/browser-profiles", "browser-handshakes",
     ):
         (root / directory).mkdir()
@@ -1608,22 +1828,50 @@ def claim_series(args: argparse.Namespace, plan: dict[str, Any]) -> dict[str, An
         # Producers atomically claim their final artifact directory; only the
         # shared parents may exist before invocation.
         (root / invocation["artifact"]).parent.mkdir(parents=True, exist_ok=True)
-    for trace in TRACE_INDICES:
-        shutil.copyfile(args.reference_images[trace], root / f"reference/trace-{trace}.png")
-        copied = frozen_rgba8_png_receipt(
-            root / f"reference/trace-{trace}.png", f"claimed reference trace {trace}"
+    claimed_root = root / REFERENCE_AUTHORITY_DESTINATION
+    copy_reference_authority(
+        args.reference_authority,
+        claimed_root,
+        source_authority["tree"],
+    )
+    # Re-admit both ends after the no-follow copy.  A source mutation, an
+    # omitted support file, or a destination drift rejects before producer 1.
+    source_after = validate_reference_authority_input(
+        args, plan["schedule"]["predeclared_at_utc"]
+    )
+    require(
+        authority_content_identity(
+            source_after,
+            root_path=str(args.reference_authority),
         )
-        expected = next(
-            value for value in locked["formal_inputs"]["references"]
-            if value["trace_frame_index"] == trace
-        )
-        require(
-            copied == {
-                key: expected[key]
-                for key in ("sha256", "rgba8_sha256", "width", "height", "pixel_format")
-            },
-            f"claimed reference trace {trace} drifted before browser work",
-        )
+        == source_identity,
+        "Direct-f32 reference authority changed while being retained",
+    )
+    try:
+        claimed_authority = admit_reference_authority(claimed_root)
+    except (OSError, ValidationError, ValueError) as error:
+        raise OrchestrationError(
+            f"retained Direct-f32 reference authority is not admissible: {error}"
+        ) from error
+    claimed_identity = authority_content_identity(
+        claimed_authority,
+        root_path=REFERENCE_AUTHORITY_DESTINATION.as_posix(),
+    )
+    expected_claimed = {
+        **source_identity,
+        "root_path": REFERENCE_AUTHORITY_DESTINATION.as_posix(),
+    }
+    require(
+        claimed_identity == expected_claimed,
+        "retained Direct-f32 reference authority differs from its source",
+    )
+    commands = command_receipt(plan)
+    commands_sha = hashlib.sha256(json_bytes(commands)).hexdigest()
+    locked = execution_lock(
+        plan,
+        commands,
+        claimed_reference_authority=claimed_identity,
+    )
     write_new_json(root / "schedule-declaration.json", {
         "schema": SCHEMA,
         "series_id": plan["series_id"],
@@ -1909,7 +2157,30 @@ def post_run_verification(
     root: pathlib.Path,
     locked: dict[str, Any],
 ) -> dict[str, Any]:
-    verify_formal_inputs(args, locked["formal_inputs"])
+    observed_inputs = verify_formal_inputs(args, locked["formal_inputs"])
+    claimed_root = root / REFERENCE_AUTHORITY_DESTINATION
+    try:
+        claimed_authority = admit_reference_authority(claimed_root)
+    except (OSError, ValidationError, ValueError) as error:
+        raise OrchestrationError(
+            f"retained Direct-f32 reference authority drifted: {error}"
+        ) from error
+    claimed_post = authority_content_identity(
+        claimed_authority,
+        root_path=REFERENCE_AUTHORITY_DESTINATION.as_posix(),
+    )
+    authority_lock = locked["reference_authority"]
+    require(
+        canonical_sha256(observed_inputs["reference_authority"])
+        == authority_lock["source_pre_sha256"],
+        "source Direct-f32 reference authority drifted during Q1 execution",
+    )
+    require(
+        canonical_sha256(claimed_post)
+        == authority_lock["claimed_pre_sha256"]
+        and claimed_post == authority_lock["claimed_pre"],
+        "retained Direct-f32 reference authority drifted during Q1 execution",
+    )
     command_path = root / locked["command_receipt"]["path"]
     require(
         sha256_path(command_path) == locked["command_receipt"]["sha256"],
@@ -1925,6 +2196,16 @@ def post_run_verification(
         "formal_inputs_sha256": locked["formal_inputs_sha256"],
         "command_receipt_sha256": locked["command_receipt"]["sha256"],
         "formal_lock_sha256": sha256_path(lock_path),
+        "reference_authority": {
+            "source_pre_sha256": authority_lock["source_pre_sha256"],
+            "source_post_sha256": canonical_sha256(
+                observed_inputs["reference_authority"]
+            ),
+            "claimed_pre_sha256": authority_lock["claimed_pre_sha256"],
+            "claimed_post_sha256": canonical_sha256(claimed_post),
+            "receipt_sha256": claimed_post["receipt_sha256"],
+            "tree_sha256": claimed_post["tree"]["sha256"],
+        },
     }
 
 
@@ -2085,19 +2366,21 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--seed", type=int, required=True)
     parser.add_argument("--chrome", type=pathlib.Path, required=True)
     parser.add_argument("--gsplat-wasm-package", type=pathlib.Path, required=True)
-    parser.add_argument("--reference-trace-0", type=pathlib.Path, required=True)
-    parser.add_argument("--reference-trace-1", type=pathlib.Path, required=True)
-    parser.add_argument("--reviewed-sha")
+    parser.add_argument("--reference-authority", type=pathlib.Path, required=True)
+    parser.add_argument("--reviewed-sha", required=True)
     parser.add_argument("--gsplat-port-base", type=int, default=43000)
     args = parser.parse_args(argv)
     args.series_root = args.series_root.resolve()
     args.chrome = args.chrome.resolve()
     args.gsplat_wasm_package = args.gsplat_wasm_package.resolve()
-    args.reference_images = {
-        0: args.reference_trace_0.resolve(),
-        1: args.reference_trace_1.resolve(),
-    }
-    require(all(path.is_file() for path in args.reference_images.values()), "reference images must exist")
+    # Do not resolve away a lexical authority-root symlink before the shared
+    # admission owner has a chance to reject it.
+    args.reference_authority = args.reference_authority.absolute()
+    require(
+        len(args.reviewed_sha) == 40
+        and all(character in "0123456789abcdef" for character in args.reviewed_sha),
+        "--reviewed-sha must be a full lowercase Git SHA",
+    )
     require(
         1024 <= args.gsplat_port_base <= 65520,
         "--gsplat-port-base must leave room for 15 predeclared ports",
@@ -2108,11 +2391,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     try:
         args = parse_args(argv)
-        if args.execute:
-            args.formal_inputs = preflight_execute(args)
-        else:
-            args.formal_inputs = None
-        plan = build_plan(args, predeclared_at=utc_now())
+        args.predeclared_at_utc = utc_now()
+        args.reference_authority_admission = validate_reference_authority_input(
+            args, args.predeclared_at_utc
+        )
+        # Dry-run is the same full read-only admission as execute.  It locks
+        # clean Git, Chrome, WASM, Puppeteer, repository and authority inputs,
+        # but still performs no mkdir/copy/build/browser work.
+        args.formal_inputs = preflight_execute(args)
+        plan = build_plan(args, predeclared_at=args.predeclared_at_utc)
         if args.dry_run:
             print(json.dumps({
                 "mode": "dry-run",

@@ -25,7 +25,10 @@ assert SPEC is not None and SPEC.loader is not None
 COLLECTOR = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = COLLECTOR
 SPEC.loader.exec_module(COLLECTOR)
-from q1_pair_admission.contract import validate_orchestration  # noqa: E402
+from q1_pair_admission.contract import (  # noqa: E402
+    TRACE_FRAME_POSE_INTRINSICS_SHA256,
+    validate_orchestration,
+)
 
 
 def rgba_png_bytes(value: int) -> bytes:
@@ -52,10 +55,25 @@ class Q1TruckPairedSeriesTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.root = pathlib.Path(self.temp.name)
+        self.authority_root = self.root / "reference-authority-source"
+        self.authority_root.mkdir()
+        (self.authority_root / "producer").mkdir()
+        (self.authority_root / "producer/desktop-example").write_bytes(
+            b"retained-direct-reference-binary"
+        )
+        (self.authority_root / "reference.json").write_text(
+            json.dumps({"schema": "unit-authority"})
+        )
+        (self.authority_root / "build.stdout.log").write_text("build ok\n")
+        (self.authority_root / "build.stderr.log").write_text("")
         self.reference = {}
         for trace in (0, 1):
-            path = self.root / f"reference-source-{trace}.png"
+            path = self.authority_root / f"reference-trace-{trace}.png"
             path.write_bytes(rgba_png_bytes(trace))
+            (self.authority_root / f"trace-{trace}.stdout.log").write_text(
+                f"trace {trace} ok\n"
+            )
+            (self.authority_root / f"trace-{trace}.stderr.log").write_text("")
             self.reference[trace] = path
         self.series = self.root / "series"
         self.args = SimpleNamespace(
@@ -65,26 +83,81 @@ class Q1TruckPairedSeriesTests(unittest.TestCase):
             seed=20260728,
             chrome=self.root / "Chrome",
             gsplat_wasm_package=self.root / "quality-exact",
-            reference_images=self.reference,
+            reference_authority=self.authority_root,
             reviewed_sha="a" * 40,
             gsplat_port_base=43000,
+            predeclared_at_utc="2026-07-28T00:00:00Z",
+        )
+        self.args.reference_authority_admission = self.admit_authority(
+            self.authority_root
         )
         self.args.formal_inputs = {
-            "references": [
-                {
-                    "trace_frame_index": trace,
-                    "source_path": str(self.reference[trace]),
-                    "series_path": f"reference/trace-{trace}.png",
-                    **COLLECTOR.frozen_rgba8_png_receipt(
-                        self.reference[trace], f"test reference {trace}"
-                    ),
-                }
-                for trace in (0, 1)
-            ]
+            "reference_authority": COLLECTOR.authority_content_identity(
+                self.args.reference_authority_admission,
+                root_path=str(self.authority_root),
+            ),
+            "references": COLLECTOR.formal_reference_receipts(
+                self.args.reference_authority_admission
+            ),
         }
+        self.authority_patch = mock.patch.object(
+            COLLECTOR,
+            "admit_reference_authority",
+            side_effect=self.admit_authority,
+        )
+        self.authority_patch.start()
 
     def tearDown(self) -> None:
+        self.authority_patch.stop()
         self.temp.cleanup()
+
+    def admit_authority(self, root: pathlib.Path) -> dict[str, object]:
+        root = pathlib.Path(root)
+        if (root / "blocker.json").exists():
+            raise ValueError("authority contains blocker.json")
+        files = []
+        for path in sorted(value for value in root.rglob("*") if value.is_file()):
+            relative = path.relative_to(root).as_posix()
+            data = path.read_bytes()
+            files.append(
+                {
+                    "path": relative,
+                    "bytes": len(data),
+                    "sha256": hashlib.sha256(data).hexdigest(),
+                }
+            )
+        views = {}
+        for trace in (0, 1):
+            path = root / f"reference-trace-{trace}.png"
+            pixel = bytes((trace, trace, trace, 255))
+            views[trace] = {
+                "path": path,
+                "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                "decoded_rgba8_sha256": hashlib.sha256(
+                    pixel * COLLECTOR.WIDTH * COLLECTOR.HEIGHT
+                ).hexdigest(),
+                "pose_intrinsics_sha256": TRACE_FRAME_POSE_INTRINSICS_SHA256[trace],
+            }
+        retained = root / "producer/desktop-example"
+        return {
+            "authority_root": root,
+            "receipt_path": root / "reference.json",
+            "receipt_sha256": hashlib.sha256(
+                (root / "reference.json").read_bytes()
+            ).hexdigest(),
+            "repository_commit": self.args.reviewed_sha
+            if hasattr(self, "args")
+            else "a" * 40,
+            "release_binary_sha256": hashlib.sha256(retained.read_bytes()).hexdigest(),
+            "generated_at_utc": "2026-01-01T00:00:00Z",
+            "tree": {
+                "file_count": len(files),
+                "bytes": sum(value["bytes"] for value in files),
+                "sha256": COLLECTOR.canonical_sha256(files),
+                "files": files,
+            },
+            "views": views,
+        }
 
     def plan(self):
         return COLLECTOR.build_plan(
@@ -161,6 +234,9 @@ class Q1TruckPairedSeriesTests(unittest.TestCase):
                     "runtime_dependencies": [],
                 }]),
             },
+            "reference_authority": self.args.formal_inputs[
+                "reference_authority"
+            ],
             "references": self.args.formal_inputs["references"],
         }
 
@@ -211,16 +287,110 @@ class Q1TruckPairedSeriesTests(unittest.TestCase):
             "--seed", str(self.args.seed),
             "--chrome", str(self.args.chrome),
             "--gsplat-wasm-package", str(self.args.gsplat_wasm_package),
-            "--reference-trace-0", str(self.reference[0]),
-            "--reference-trace-1", str(self.reference[1]),
+            "--reference-authority", str(self.authority_root),
+            "--reviewed-sha", self.args.reviewed_sha,
         ]
         for mode in ("--dry-run", "--print-only"):
-            with self.subTest(mode=mode), contextlib.redirect_stdout(io.StringIO()) as output:
+            with (
+                self.subTest(mode=mode),
+                contextlib.redirect_stdout(io.StringIO()) as output,
+                mock.patch.object(
+                    COLLECTOR,
+                    "validate_reference_authority_input",
+                    wraps=COLLECTOR.validate_reference_authority_input,
+                ) as admitted,
+                mock.patch.object(
+                    COLLECTOR,
+                    "preflight_execute",
+                    return_value=self.formal_inputs(),
+                ) as preflight,
+            ):
                 self.assertEqual(COLLECTOR.main([mode, *common]), 0)
                 parsed = json.loads(output.getvalue())
                 self.assertFalse(parsed["side_effects"])
                 self.assertEqual(len(parsed["commands"]["invocations"]), 30)
+                self.assertEqual(admitted.call_count, 1)
+                self.assertEqual(preflight.call_count, 1)
+                self.assertIsNotNone(parsed["plan"]["formal_inputs"])
+                references = parsed["plan"]["schedule"]["reference_images"]
+                self.assertEqual(
+                    {value["authority_receipt_path"] for value in references},
+                    {"reference-authority/reference.json"},
+                )
+                self.assertTrue(
+                    all(value["decoded_rgba8_sha256"] for value in references)
+                )
             self.assertFalse(self.series.exists())
+
+    def test_dry_run_preflight_failure_is_side_effect_free(self) -> None:
+        arguments = [
+            "--dry-run",
+            "--series-root", str(self.series),
+            "--series-id", self.args.series_id,
+            "--collection-session-id", self.args.collection_session_id,
+            "--seed", str(self.args.seed),
+            "--chrome", str(self.args.chrome),
+            "--gsplat-wasm-package", str(self.args.gsplat_wasm_package),
+            "--reference-authority", str(self.authority_root),
+            "--reviewed-sha", self.args.reviewed_sha,
+        ]
+        with (
+            mock.patch.object(
+                COLLECTOR,
+                "preflight_execute",
+                side_effect=COLLECTOR.OrchestrationError(
+                    "quality-exact WASM package is unavailable"
+                ),
+            ),
+            contextlib.redirect_stderr(io.StringIO()) as stderr,
+        ):
+            self.assertEqual(COLLECTOR.main(arguments), 2)
+        self.assertIn("quality-exact", stderr.getvalue())
+        self.assertFalse(self.series.exists())
+
+    def test_authority_commit_or_time_mismatch_rejects_before_series_claim(self) -> None:
+        common = [
+            "--dry-run",
+            "--series-root", str(self.series),
+            "--series-id", self.args.series_id,
+            "--collection-session-id", self.args.collection_session_id,
+            "--seed", str(self.args.seed),
+            "--chrome", str(self.args.chrome),
+            "--gsplat-wasm-package", str(self.args.gsplat_wasm_package),
+            "--reference-authority", str(self.authority_root),
+            "--reviewed-sha", self.args.reviewed_sha,
+        ]
+        for field, value, message in (
+            ("repository_commit", "b" * 40, "commit"),
+            ("generated_at_utc", "2999-01-01T00:00:00Z", "after schedule"),
+        ):
+            with self.subTest(field=field):
+                admitted = self.admit_authority(self.authority_root)
+                admitted[field] = value
+                with (
+                    mock.patch.object(
+                        COLLECTOR,
+                        "admit_reference_authority",
+                        return_value=admitted,
+                    ),
+                    contextlib.redirect_stderr(io.StringIO()) as stderr,
+                ):
+                    self.assertEqual(COLLECTOR.main(common), 2)
+                self.assertIn(message, stderr.getvalue())
+                self.assertFalse(self.series.exists())
+
+    def test_authority_copy_checks_each_open_source_fd_identity(self) -> None:
+        authority = self.admit_authority(self.authority_root)
+        drifted_tree = json.loads(json.dumps(authority["tree"]))
+        drifted_tree["files"][0]["sha256"] = "f" * 64
+        with self.assertRaisesRegex(
+            COLLECTOR.OrchestrationError, "content drifted during copy"
+        ):
+            COLLECTOR.copy_reference_authority(
+                self.authority_root,
+                self.root / "bad-authority-copy",
+                drifted_tree,
+            )
 
     def test_claim_materializes_declaration_commands_and_requests_before_run(self) -> None:
         plan = self.plan()
@@ -246,8 +416,21 @@ class Q1TruckPairedSeriesTests(unittest.TestCase):
         self.assertTrue(first_artifact.parent.is_dir())
         self.assertFalse(first_artifact.exists())
         self.assertEqual(
-            (self.series / "reference/trace-0.png").read_bytes(),
+            (
+                self.series
+                / "reference-authority/reference-trace-0.png"
+            ).read_bytes(),
             self.reference[0].read_bytes(),
+        )
+        self.assertEqual(
+            (
+                self.series / "reference-authority/build.stdout.log"
+            ).read_bytes(),
+            (self.authority_root / "build.stdout.log").read_bytes(),
+        )
+        self.assertEqual(
+            formal_lock["reference_authority"]["claimed_pre"]["tree"]["sha256"],
+            plan["reference_authority"]["source"]["tree"]["sha256"],
         )
 
     def test_playcanvas_throughput_request_binds_real_control_hashes(self) -> None:
@@ -567,6 +750,112 @@ class Q1TruckPairedSeriesTests(unittest.TestCase):
             os.kill(browser_pid, 0)
         with self.assertRaises(COLLECTOR.ProcessTreeError):
             COLLECTOR.require_process_completed(outcome, "snapshot race")
+
+    def test_marker_first_discovered_after_tracker_stop_is_still_cleaned(self) -> None:
+        ownership = self.ownership("post-tracker-discovery")
+        script = self.root / "post-tracker-discovery.py"
+        script.write_text(
+            "import json, os, pathlib, subprocess, sys\n"
+            "marker_arg='--user-data-dir='+os.environ['GSPLAT_Q1_BROWSER_USER_DATA_DIR']\n"
+            "child=subprocess.Popen([sys.executable,'-c',"
+            "'import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(300)',marker_arg],"
+            "start_new_session=True)\n"
+            "receipt={'schema':'gsplat-q1-browser-process-ownership/v1',"
+            "'marker':os.environ['GSPLAT_Q1_BROWSER_OWNER_MARKER'],'marker_arg':marker_arg,"
+            "'user_data_dir':os.environ['GSPLAT_Q1_BROWSER_USER_DATA_DIR'],"
+            "'producer_pid':os.getpid(),'producer_ppid':os.getppid(),"
+            "'browser_pid':child.pid,'browser_spawnfile':sys.executable,"
+            "'browser_spawnargs':[sys.executable,marker_arg]}\n"
+            "path=pathlib.Path(os.environ['GSPLAT_Q1_BROWSER_HANDSHAKE_PATH']);"
+            "path.parent.mkdir(parents=True,exist_ok=True);path.write_text(json.dumps(receipt))\n"
+        )
+        original_snapshot = COLLECTOR.process_table_snapshot
+        original_stop = COLLECTOR.ProcessTreeTracker.stop
+        tracker_stopped = False
+
+        def idle_tracker(self):
+            self._stop.wait(30)
+
+        def mark_stopped(self):
+            nonlocal tracker_stopped
+            result = original_stop(self)
+            tracker_stopped = True
+            return result
+
+        def hide_marker_until_post_stop():
+            snapshot = original_snapshot()
+            if not tracker_stopped:
+                for identity in COLLECTOR.marker_processes(
+                    snapshot, ownership["marker_argument"]
+                ):
+                    snapshot.pop(identity.pid, None)
+            return snapshot
+
+        with (
+            mock.patch.object(COLLECTOR.ProcessTreeTracker, "_loop", idle_tracker),
+            mock.patch.object(COLLECTOR.ProcessTreeTracker, "stop", mark_stopped),
+            mock.patch.object(
+                COLLECTOR,
+                "process_table_snapshot",
+                side_effect=hide_marker_until_post_stop,
+            ),
+        ):
+            outcome = COLLECTOR.run_process_group(
+                [sys.executable, str(script)],
+                cwd=self.root,
+                env=self.ownership_environment(ownership),
+                timeout_seconds=5,
+                browser_ownership=ownership,
+            )
+        self.assertTrue(tracker_stopped)
+        self.assertTrue(outcome.cleanup["group_gone"])
+        self.assertEqual(outcome.cleanup["survivors"], [])
+        self.assertTrue(outcome.cleanup["detached_process_groups"])
+        self.assertTrue(outcome.cleanup["kill"]["groups"])
+        browser_pid = json.loads(
+            pathlib.Path(ownership["handshake_path"]).read_text()
+        )["browser_pid"]
+        with self.assertRaises(ProcessLookupError):
+            os.kill(browser_pid, 0)
+        with self.assertRaises(COLLECTOR.ProcessTreeError):
+            COLLECTOR.require_process_completed(outcome, "post tracker discovery")
+
+    def test_persistent_cleanup_snapshot_unavailability_fails_closed(self) -> None:
+        original_snapshot = COLLECTOR.process_table_snapshot
+        calls = 0
+
+        def only_initial_snapshot_available():
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                return original_snapshot()
+            raise COLLECTOR.OrchestrationError(
+                "synthetic persistent process-table outage"
+            )
+
+        with (
+            mock.patch.object(
+                COLLECTOR,
+                "process_table_snapshot",
+                side_effect=only_initial_snapshot_available,
+            ),
+            mock.patch.dict(
+                COLLECTOR.PROCESS_TIMEOUTS_SECONDS,
+                {"process_group_term_grace": 1, "process_group_kill_grace": 1},
+            ),
+        ):
+            outcome = COLLECTOR.run_process_group(
+                [sys.executable, "-c", "pass"],
+                cwd=self.root,
+                env=COLLECTOR.safe_host_environment(),
+                timeout_seconds=5,
+            )
+        self.assertFalse(outcome.cleanup["final_snapshot_available"])
+        self.assertFalse(outcome.cleanup["group_gone"])
+        self.assertGreater(outcome.cleanup["cleanup_snapshot_failures"], 0)
+        self.assertTrue(outcome.cleanup["leader_reaped"])
+        with self.assertRaises(COLLECTOR.ProcessTreeError):
+            COLLECTOR.require_process_completed(outcome, "persistent ps outage")
 
     def test_preexisting_exact_browser_marker_blocks_before_launch(self) -> None:
         ownership = self.ownership("preexisting")
