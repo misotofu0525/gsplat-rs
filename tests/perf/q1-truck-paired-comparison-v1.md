@@ -254,9 +254,14 @@ SHA-256. All child roles have generous finite safety timeouts predeclared in
 time or performance gate; expiry stops the one-shot series and cannot trigger
 an automatic retry. Each child runs as a new process-group leader; timeout
 cleanup records stdout/stderr and the TERM/grace/KILL/reap result in logs and
-the root blocker. The production dependency closure includes installed
+the root blocker. PID/PPID/PGID/start snapshots retain detached child identity;
+normal exit with a surviving child is also a terminal process-tree failure.
+The production dependency closure includes installed
 optional and peer runtime dependencies, permits absent platform-only optional
 packages, and rejects missing required or installed-but-unlocked modules.
+Requiredness comes only from package-lock; installed package names, versions,
+dependency declarations, directory containment and non-symlink identity must
+match without overriding it.
 
 Each pair then runs its declared first endpoint followed by its second. Within
 an endpoint, trace-0 control, trace-1 control and throughput run exactly once.

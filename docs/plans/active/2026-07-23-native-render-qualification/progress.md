@@ -1024,3 +1024,15 @@ allowed, and missing required or installed-but-unlocked modules fail closed.
 The focused process test uses a real leader/grandchild pair that ignores TERM;
 no Chrome workload or Q1 result was produced. The resulting SHA remains
 candidate-only until another fixed-SHA review.
+
+The fixed-SHA review of `7ccf904` rejected two remaining proof gaps. Puppeteer
+may launch Chrome in a detached process group, so the owner now polls the
+macOS/Linux process table during execution and retains PID/PPID/PGID/start
+lineage across reparenting. Both timeout and normal-exit cleanup rescan known
+descendants, signal only identity-verified child-owned groups/PIDs, and reject
+any surviving or unproven tree. The npm lock is now the sole authority for
+required/optional/peer classification; installed manifests must match locked
+name, version and runtime declarations, stay below `node_modules`, and contain
+no symlinked package directory, manifest or file. Real detached-child tests
+cover timeout and zero-exit counterexamples. No Chrome workload or formal
+artifact was run; the new SHA still requires fixed-SHA review.

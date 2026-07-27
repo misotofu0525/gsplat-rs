@@ -5,6 +5,7 @@ import hashlib
 import importlib.util
 import io
 import json
+import os
 import pathlib
 import sys
 import tempfile
@@ -298,7 +299,12 @@ class Q1TruckPairedSeriesTests(unittest.TestCase):
             stderr="failed once",
             timed_out=False,
             timeout_seconds=invocation["timeout_seconds"],
-            cleanup={"group_gone": True},
+            cleanup={
+                "isolated_process_group": True,
+                "lineage_complete": True,
+                "group_gone": True,
+                "orphan_descendants_detected": False,
+            },
         )
         with mock.patch.object(COLLECTOR, "run_process_group", return_value=response) as run:
             with self.assertRaisesRegex(COLLECTOR.OrchestrationError, "exited 9"):
@@ -323,7 +329,8 @@ class Q1TruckPairedSeriesTests(unittest.TestCase):
             "counter.write_text(str(count))\n"
             "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
             "child = subprocess.Popen([sys.executable, '-c', "
-            "'import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(300)'])\n"
+            "'import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(300)'], "
+            "start_new_session=True)\n"
             "pids.write_text(json.dumps({'leader': os.getpid(), 'grandchild': child.pid}))\n"
             "print('tree-ready', flush=True)\n"
             "time.sleep(300)\n"
@@ -343,16 +350,60 @@ class Q1TruckPairedSeriesTests(unittest.TestCase):
         self.assertFalse(blocker["automatic_retry"])
         self.assertFalse(blocker["retry_authorized"])
         self.assertTrue(blocker["process_timeout"]["cleanup"]["isolated_process_group"])
-        self.assertTrue(blocker["process_timeout"]["cleanup"]["term_sent"])
-        self.assertTrue(blocker["process_timeout"]["cleanup"]["kill_sent"])
+        self.assertTrue(blocker["process_timeout"]["cleanup"]["term"]["groups"])
+        self.assertTrue(blocker["process_timeout"]["cleanup"]["kill"]["groups"])
         self.assertTrue(blocker["process_timeout"]["cleanup"]["leader_reaped"])
         self.assertTrue(blocker["process_timeout"]["cleanup"]["group_gone"])
+        self.assertTrue(blocker["process_timeout"]["cleanup"]["detached_process_groups"])
         self.assertIn("tree-ready", blocker["process_timeout"]["stdout_tail"])
         receipt = json.loads(
             (self.series / "logs" / f"{first['invocation_id']}.process.json").read_text()
         )
         self.assertTrue(receipt["timed_out"])
         self.assertTrue(receipt["cleanup"]["group_gone"])
+        for pid in json.loads(pids.read_text()).values():
+            with self.assertRaises(ProcessLookupError):
+                os.kill(pid, 0)
+
+    def test_normal_exit_with_detached_descendant_is_cleaned_and_fails_closed(self) -> None:
+        plan = self.plan()
+        counter = self.root / "normal-counter.txt"
+        child_pid = self.root / "detached-child.pid"
+        script = self.root / "normal-detached-tree.py"
+        script.write_text(
+            "import os, pathlib, signal, subprocess, sys, time\n"
+            "counter = pathlib.Path(sys.argv[1])\n"
+            "child_pid = pathlib.Path(sys.argv[2])\n"
+            "counter.write_text(str((int(counter.read_text()) if counter.exists() else 0) + 1))\n"
+            "child = subprocess.Popen([sys.executable, '-c', "
+            "'import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(300)'], "
+            "stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, "
+            "start_new_session=True)\n"
+            "child_pid.write_text(str(child.pid))\n"
+            "time.sleep(0.4)\n"
+        )
+        first = plan["invocations"][0]
+        first["argv"] = [sys.executable, str(script), str(counter), str(child_pid)]
+        first["timeout_seconds"] = 5
+        with mock.patch.dict(
+            COLLECTOR.PROCESS_TIMEOUTS_SECONDS,
+            {"process_group_term_grace": 1, "process_group_kill_grace": 2},
+        ):
+            with self.assertRaisesRegex(COLLECTOR.ProcessTreeError, "descendant process tree"):
+                COLLECTOR.execute(self.args, plan)
+        self.assertEqual(counter.read_text(), "1")
+        blocker = json.loads((self.series / "blocker.json").read_text())
+        self.assertIsNone(blocker["process_timeout"])
+        self.assertFalse(blocker["process_failure"]["timed_out"])
+        cleanup = blocker["process_failure"]["cleanup"]
+        self.assertTrue(cleanup["orphan_descendants_detected"])
+        self.assertTrue(cleanup["detached_process_groups"])
+        self.assertTrue(cleanup["kill"]["groups"])
+        self.assertTrue(cleanup["group_gone"])
+        self.assertFalse(blocker["automatic_retry"])
+        self.assertFalse(blocker["retry_authorized"])
+        with self.assertRaises(ProcessLookupError):
+            os.kill(int(child_pid.read_text()), 0)
 
     def test_child_environment_ignores_all_undeclared_host_controls(self) -> None:
         injected = {
@@ -510,7 +561,12 @@ class Q1TruckPairedSeriesTests(unittest.TestCase):
                 stderr="",
                 timed_out=False,
                 timeout_seconds=kwargs["timeout_seconds"],
-                cleanup={"group_gone": True},
+                cleanup={
+                    "isolated_process_group": True,
+                    "lineage_complete": True,
+                    "group_gone": True,
+                    "orphan_descendants_detected": False,
+                },
             )
 
         with mock.patch.object(COLLECTOR, "run_process_group", side_effect=fake_run):
@@ -627,6 +683,73 @@ class Q1TruckPairedSeriesTests(unittest.TestCase):
         (platform / "index.js").write_text("export {};\n")
         with self.assertRaisesRegex(COLLECTOR.OrchestrationError, "absent from package-lock"):
             COLLECTOR.puppeteer_production_modules(root)
+
+    def test_lock_required_dependency_cannot_be_reclassified_optional(self) -> None:
+        root = self.root / "reclassified-playcanvas"
+        package = root / "node_modules/puppeteer-core"
+        package.mkdir(parents=True)
+        (package / "index.js").write_text("export {};\n")
+        (package / "package.json").write_text(json.dumps({
+            "name": "puppeteer-core",
+            "version": "1.0.0",
+            "optionalDependencies": {"required-runtime": "1.0.0"},
+        }))
+        (root / "package-lock.json").write_text(json.dumps({
+            "lockfileVersion": 3,
+            "packages": {
+                "node_modules/puppeteer-core": {
+                    "version": "1.0.0",
+                    "integrity": "sha512-root",
+                    "dependencies": {"required-runtime": "1.0.0"},
+                },
+                "node_modules/required-runtime": {
+                    "version": "1.0.0",
+                    "integrity": "sha512-required",
+                },
+            },
+        }))
+        with self.assertRaisesRegex(COLLECTOR.OrchestrationError, "differs from package-lock"):
+            COLLECTOR.puppeteer_production_modules(root)
+
+    def test_module_symlinks_and_installed_identity_mismatch_fail_closed(self) -> None:
+        for case in ("directory-symlink", "manifest-symlink", "identity-mismatch"):
+            with self.subTest(case=case):
+                root = self.root / case
+                node_modules = root / "node_modules"
+                node_modules.mkdir(parents=True)
+                outside = self.root / f"{case}-outside"
+                outside.mkdir()
+                package = node_modules / "puppeteer-core"
+                if case == "directory-symlink":
+                    (outside / "package.json").write_text(json.dumps({
+                        "name": "puppeteer-core", "version": "1.0.0"
+                    }))
+                    package.symlink_to(outside, target_is_directory=True)
+                else:
+                    package.mkdir()
+                    manifest = {
+                        "name": "wrong-name" if case == "identity-mismatch" else "puppeteer-core",
+                        "version": "2.0.0" if case == "identity-mismatch" else "1.0.0",
+                    }
+                    if case == "manifest-symlink":
+                        target = outside / "package.json"
+                        target.write_text(json.dumps(manifest))
+                        (package / "package.json").symlink_to(target)
+                    else:
+                        (package / "package.json").write_text(json.dumps(manifest))
+                (root / "package-lock.json").write_text(json.dumps({
+                    "lockfileVersion": 3,
+                    "packages": {
+                        "node_modules/puppeteer-core": {
+                            "version": "1.0.0", "integrity": "sha512-root"
+                        },
+                    },
+                }))
+                with self.assertRaisesRegex(
+                    COLLECTOR.OrchestrationError,
+                    "symlink|name mismatch|version mismatch",
+                ):
+                    COLLECTOR.puppeteer_production_modules(root)
 
 
 if __name__ == "__main__":

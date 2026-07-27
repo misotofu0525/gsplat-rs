@@ -17,6 +17,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import threading
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -119,6 +120,14 @@ class ProcessTimeoutError(OrchestrationError):
         self.outcome = outcome
 
 
+class ProcessTreeError(OrchestrationError):
+    """A normal exit that left an unproven or surviving descendant tree."""
+
+    def __init__(self, message: str, outcome: "ProcessOutcome") -> None:
+        super().__init__(message)
+        self.outcome = outcome
+
+
 @dataclass(frozen=True)
 class ProcessOutcome:
     argv: list[str]
@@ -130,31 +139,190 @@ class ProcessOutcome:
     cleanup: dict[str, Any]
 
 
-def process_group_exists(process_group_id: int) -> bool:
+@dataclass(frozen=True)
+class ProcessIdentity:
+    pid: int
+    ppid: int
+    pgid: int
+    started: str
+
+    def receipt(self) -> dict[str, Any]:
+        return {
+            "pid": self.pid,
+            "ppid": self.ppid,
+            "pgid": self.pgid,
+            "started": self.started,
+        }
+
+
+def same_process(observed: ProcessIdentity | None, expected: ProcessIdentity) -> bool:
+    """Match PID reuse safely while allowing PPID/PGID changes after detach."""
+
+    return (
+        observed is not None
+        and observed.pid == expected.pid
+        and observed.started == expected.started
+    )
+
+
+def process_table_snapshot() -> dict[int, ProcessIdentity]:
+    """Read a bounded macOS/Linux ps snapshot without recursing into the runner."""
+
+    process = subprocess.Popen(
+        ["/bin/ps", "-axo", "pid=,ppid=,pgid=,lstart="],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
     try:
-        os.killpg(process_group_id, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    return True
+        stdout, stderr = process.communicate(timeout=5)
+    except subprocess.TimeoutExpired as error:
+        process.kill()
+        process.communicate()
+        raise OrchestrationError("process-table snapshot exceeded 5 seconds") from error
+    require(process.returncode == 0, stderr.strip() or "process-table snapshot failed")
+    result = {}
+    for line in stdout.splitlines():
+        fields = line.split()
+        if len(fields) < 8:
+            continue
+        try:
+            pid, ppid, pgid = map(int, fields[:3])
+        except ValueError:
+            continue
+        result[pid] = ProcessIdentity(pid, ppid, pgid, " ".join(fields[3:8]))
+    return result
 
 
-def wait_for_process_group_exit(
-    process_group_id: int,
+class ProcessTreeTracker:
+    """Poll and retain descendant identities even after they reparent/detach."""
+
+    def __init__(self, leader: ProcessIdentity) -> None:
+        self.leader = leader
+        self.known: dict[int, ProcessIdentity] = {leader.pid: leader}
+        self.snapshot_count = 1
+        self.errors: list[str] = []
+        self._lock = threading.Lock()
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._loop, daemon=True)
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def _absorb(self, snapshot: dict[int, ProcessIdentity]) -> None:
+        with self._lock:
+            self.snapshot_count += 1
+            for pid, known in list(self.known.items()):
+                observed = snapshot.get(pid)
+                if same_process(observed, known):
+                    self.known[pid] = observed
+            changed = True
+            while changed:
+                changed = False
+                parents = {
+                    pid
+                    for pid, identity in self.known.items()
+                    if same_process(snapshot.get(pid), identity)
+                }
+                owned_groups = {identity.pgid for identity in self.known.values()}
+                for identity in snapshot.values():
+                    if identity.pid not in self.known and (
+                        identity.ppid in parents or identity.pgid in owned_groups
+                    ):
+                        self.known[identity.pid] = identity
+                        changed = True
+
+    def capture(self) -> dict[int, ProcessIdentity]:
+        snapshot = process_table_snapshot()
+        self._absorb(snapshot)
+        return snapshot
+
+    def _loop(self) -> None:
+        while not self._stop.wait(0.05):
+            try:
+                self.capture()
+            except BaseException as error:
+                with self._lock:
+                    self.errors.append(str(error))
+                return
+
+    def live(self, snapshot: dict[int, ProcessIdentity] | None = None) -> list[ProcessIdentity]:
+        observed = self.capture() if snapshot is None else snapshot
+        with self._lock:
+            return [
+                identity
+                for identity in self.known.values()
+                if same_process(observed.get(identity.pid), identity)
+            ]
+
+    def finish(self) -> dict[int, ProcessIdentity]:
+        self._stop.set()
+        self._thread.join(timeout=6)
+        return self.capture()
+
+
+def signal_known_processes(
+    identities: list[ProcessIdentity],
+    signal_number: signal.Signals,
+    *,
+    own_pid: int,
+    own_pgid: int,
+) -> dict[str, Any]:
+    """Signal only identity-verified descendants and descendant-owned PGIDs."""
+
+    snapshot = process_table_snapshot()
+    live = [
+        identity
+        for identity in identities
+        if same_process(snapshot.get(identity.pid), identity)
+    ]
+    safe_groups = sorted({
+        identity.pgid
+        for identity in live
+        if identity.pgid == identity.pid
+        and identity.pgid != own_pgid
+        and identity.pid != own_pid
+    })
+    group_members = {identity.pid for identity in live if identity.pgid in safe_groups}
+    safe_pids = sorted({
+        identity.pid
+        for identity in live
+        if identity.pid not in group_members and identity.pid != own_pid
+    })
+    signaled_groups = []
+    signaled_pids = []
+    for process_group_id in safe_groups:
+        try:
+            os.killpg(process_group_id, signal_number)
+            signaled_groups.append(process_group_id)
+        except ProcessLookupError:
+            pass
+    for pid in safe_pids:
+        try:
+            os.kill(pid, signal_number)
+            signaled_pids.append(pid)
+        except ProcessLookupError:
+            pass
+    return {
+        "signal": signal_number.name,
+        "groups": signaled_groups,
+        "pids": signaled_pids,
+    }
+
+
+def wait_for_known_exit(
+    tracker: ProcessTreeTracker,
     timeout_seconds: int,
-    leader: subprocess.Popen[str] | None = None,
-) -> bool:
+    leader: subprocess.Popen[str],
+) -> list[ProcessIdentity]:
     deadline = time.monotonic() + timeout_seconds
-    while time.monotonic() < deadline:
-        if leader is not None:
-            leader.poll()
-        if not process_group_exists(process_group_id):
-            return True
-        time.sleep(0.05)
-    if leader is not None:
+    live = tracker.live()
+    while live and time.monotonic() < deadline:
         leader.poll()
-    return not process_group_exists(process_group_id)
+        time.sleep(0.05)
+        live = tracker.live()
+    leader.poll()
+    return live
 
 
 def run_process_group(
@@ -167,8 +335,13 @@ def run_process_group(
     """Run one command in a private process group and reap its whole tree."""
 
     require(timeout_seconds > 0, "process timeout must be positive")
+    launcher = (
+        "import os,signal,sys;"
+        "os.kill(os.getpid(),signal.SIGSTOP);"
+        "os.execvpe(sys.argv[1],sys.argv[1:],os.environ)"
+    )
     process = subprocess.Popen(
-        argv,
+        [sys.executable, "-c", launcher, *argv],
         cwd=cwd,
         env=env,
         stdout=subprocess.PIPE,
@@ -176,87 +349,101 @@ def run_process_group(
         text=True,
         start_new_session=True,
     )
+    waited_pid, wait_status = os.waitpid(process.pid, os.WUNTRACED)
+    require(
+        waited_pid == process.pid and os.WIFSTOPPED(wait_status),
+        "process launcher did not stop before exec",
+    )
+    initial = process_table_snapshot().get(process.pid)
+    require(initial is not None, "process leader identity was not observable before exec")
+    tracker = ProcessTreeTracker(initial)
+    tracker.start()
+    os.kill(process.pid, signal.SIGCONT)
+    timed_out = False
     try:
         stdout, stderr = process.communicate(timeout=timeout_seconds)
-        return ProcessOutcome(
-            argv=list(argv),
-            returncode=process.returncode,
-            stdout=stdout,
-            stderr=stderr,
-            timed_out=False,
-            timeout_seconds=timeout_seconds,
-            cleanup={
-                "isolated_process_group": True,
-                "process_group_id": process.pid,
-                "term_sent": False,
-                "kill_sent": False,
-                "leader_reaped": True,
-                "group_gone": True,
-            },
-        )
     except subprocess.TimeoutExpired:
-        # start_new_session=True makes the child PID its PGID before exec. Use
-        # that frozen identity even if the leader exits while a descendant
-        # still holds stdout/stderr open.
-        process_group_id = process.pid
-        isolated = process_group_id != os.getpgrp()
-        if not isolated:
-            process.kill()
-            stdout, stderr = process.communicate()
-            outcome = ProcessOutcome(
-                argv=list(argv),
-                returncode=process.returncode,
-                stdout=stdout,
-                stderr=stderr,
-                timed_out=True,
-                timeout_seconds=timeout_seconds,
-                cleanup={
-                    "isolated_process_group": False,
-                    "process_group_id": process_group_id,
-                    "term_sent": False,
-                    "kill_sent": False,
-                    "leader_reaped": True,
-                    "group_gone": False,
-                },
-            )
-            return outcome
+        timed_out = True
+        stdout = ""
+        stderr = ""
 
-        os.killpg(process_group_id, signal.SIGTERM)
-        term_grace = PROCESS_TIMEOUTS_SECONDS["process_group_term_grace"]
-        kill_grace = PROCESS_TIMEOUTS_SECONDS["process_group_kill_grace"]
-        term_cleared_group = wait_for_process_group_exit(process_group_id, term_grace, process)
-        kill_sent = not term_cleared_group
-        if kill_sent:
-            try:
-                os.killpg(process_group_id, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-            group_gone = wait_for_process_group_exit(process_group_id, kill_grace, process)
-        else:
-            group_gone = True
+    snapshot = tracker.capture()
+    live_before = tracker.live(snapshot)
+    descendants_before = [identity for identity in live_before if identity.pid != process.pid]
+    cleanup_required = timed_out or bool(descendants_before)
+    term_receipt = {"signal": "SIGTERM", "groups": [], "pids": []}
+    kill_receipt = {"signal": "SIGKILL", "groups": [], "pids": []}
+    term_grace = PROCESS_TIMEOUTS_SECONDS["process_group_term_grace"]
+    kill_grace = PROCESS_TIMEOUTS_SECONDS["process_group_kill_grace"]
+    if cleanup_required:
+        term_receipt = signal_known_processes(
+            live_before,
+            signal.SIGTERM,
+            own_pid=os.getpid(),
+            own_pgid=os.getpgrp(),
+        )
+        survivors = wait_for_known_exit(tracker, term_grace, process)
+        if survivors:
+            kill_receipt = signal_known_processes(
+                survivors,
+                signal.SIGKILL,
+                own_pid=os.getpid(),
+                own_pgid=os.getpgrp(),
+            )
+            survivors = wait_for_known_exit(tracker, kill_grace, process)
+    else:
+        survivors = []
+    final_snapshot = tracker.finish()
+    final_survivors = tracker.live(final_snapshot)
+    owned_groups = {
+        identity.pgid
+        for identity in tracker.known.values()
+        if identity.pid == identity.pgid
+    }
+    surviving_groups = sorted({
+        identity.pgid
+        for identity in final_snapshot.values()
+        if identity.pgid in owned_groups
+    })
+    if process.poll() is None:
         try:
             stdout, stderr = process.communicate(timeout=kill_grace)
         except subprocess.TimeoutExpired:
             process.kill()
             stdout, stderr = process.communicate()
-        return ProcessOutcome(
-            argv=list(argv),
-            returncode=process.returncode,
-            stdout=stdout,
-            stderr=stderr,
-            timed_out=True,
-            timeout_seconds=timeout_seconds,
-            cleanup={
-                "isolated_process_group": True,
-                "process_group_id": process_group_id,
-                "term_sent": True,
-                "kill_sent": kill_sent,
-                "leader_reaped": process.poll() is not None,
-                "group_gone": group_gone,
-                "term_grace_seconds": term_grace,
-                "kill_grace_seconds": kill_grace,
-            },
-        )
+    else:
+        stdout, stderr = process.communicate()
+    cleanup = {
+        "isolated_process_group": initial.pgid == initial.pid and initial.pgid != os.getpgrp(),
+        "process_group_id": initial.pgid,
+        "lineage_complete": not tracker.errors,
+        "snapshot_count": tracker.snapshot_count,
+        "known_processes": [identity.receipt() for identity in sorted(tracker.known.values(), key=lambda item: item.pid)],
+        "detached_process_groups": sorted({
+            identity.pgid
+            for identity in tracker.known.values()
+            if identity.pid != process.pid and identity.pgid != initial.pgid
+        }),
+        "orphan_descendants_detected": bool(descendants_before),
+        "term": term_receipt,
+        "kill": kill_receipt,
+        "leader_reaped": process.poll() is not None,
+        "survivors": [identity.receipt() for identity in final_survivors],
+        "surviving_process_groups": surviving_groups,
+        "group_gone": not final_survivors and not surviving_groups,
+        "term_grace_seconds": term_grace,
+        "kill_grace_seconds": kill_grace,
+        "tracker_errors": tracker.errors,
+    }
+    return ProcessOutcome(
+        argv=list(argv),
+        returncode=process.returncode,
+        stdout=stdout,
+        stderr=stderr,
+        timed_out=timed_out,
+        timeout_seconds=timeout_seconds,
+        cleanup=cleanup,
+    )
 
 
 def require_process_completed(outcome: ProcessOutcome, context: str) -> None:
@@ -264,6 +451,17 @@ def require_process_completed(outcome: ProcessOutcome, context: str) -> None:
         raise ProcessTimeoutError(
             f"{context} exceeded its {outcome.timeout_seconds} second safety timeout; "
             f"process-group cleanup={json.dumps(outcome.cleanup, sort_keys=True)}",
+            outcome,
+        )
+    if (
+        not outcome.cleanup.get("isolated_process_group")
+        or not outcome.cleanup.get("lineage_complete")
+        or not outcome.cleanup.get("group_gone")
+        or outcome.cleanup.get("orphan_descendants_detected")
+    ):
+        raise ProcessTreeError(
+            f"{context} left or created an unqualified descendant process tree; "
+            f"cleanup={json.dumps(outcome.cleanup, sort_keys=True)}",
             outcome,
         )
 
@@ -355,13 +553,22 @@ def repository_tree_receipt(relative_path: str) -> dict[str, Any]:
     }
 
 
-def module_tree_receipt(root: pathlib.Path, lock_path: str) -> dict[str, Any]:
+def module_tree_receipt(
+    root: pathlib.Path, lock_path: str, node_modules_root: pathlib.Path
+) -> dict[str, Any]:
     """Hash installed production module bytes without caches/tests/temp files."""
 
+    require(not root.is_symlink(), f"locked production module is a symlink: {lock_path}")
     require(root.is_dir(), f"locked production module is unavailable: {lock_path}")
+    node_modules = node_modules_root.resolve()
+    require(
+        root.resolve().is_relative_to(node_modules),
+        f"locked production module escapes node_modules: {lock_path}",
+    )
     entries = []
     for path in sorted(root.rglob("*")):
         relative = path.relative_to(root)
+        require(not path.is_symlink(), f"locked production module contains a symlink: {lock_path}/{relative}")
         if (
             not path.is_file()
             or any(part in IGNORED_MODULE_TREE_PARTS for part in relative.parts)
@@ -394,32 +601,53 @@ def dependency_candidates(parent: str, name: str) -> list[str]:
     return list(dict.fromkeys(result))
 
 
-def runtime_dependency_requirements(
-    metadata: dict[str, Any], installed: dict[str, Any], package_key: str
+def dependency_object(source: dict[str, Any], field: str, package_key: str) -> dict[str, Any]:
+    value = source.get(field, {})
+    require(isinstance(value, dict), f"{package_key} {field} must be an object")
+    return value
+
+
+def locked_runtime_dependency_requirements(
+    metadata: dict[str, Any], package_key: str
 ) -> dict[str, bool]:
-    """Return runtime dependency names mapped to required/optional."""
+    """Return lock-authoritative runtime dependency requiredness."""
 
     requirements: dict[str, bool] = {}
-    for source in (metadata, installed):
-        dependencies = source.get("dependencies", {})
-        optional = source.get("optionalDependencies", {})
-        peers = source.get("peerDependencies", {})
-        peer_meta = source.get("peerDependenciesMeta", {})
-        for label, value in (
-            ("dependencies", dependencies),
-            ("optionalDependencies", optional),
-            ("peerDependencies", peers),
-            ("peerDependenciesMeta", peer_meta),
-        ):
-            require(isinstance(value, dict), f"{package_key} {label} must be an object")
-        for name in dependencies:
-            requirements[name] = True
-        for name in optional:
-            requirements[name] = False
-        for name in peers:
-            optional_peer = isinstance(peer_meta.get(name), dict) and peer_meta[name].get("optional") is True
-            requirements.setdefault(name, not optional_peer)
+    dependencies = dependency_object(metadata, "dependencies", package_key)
+    optional = dependency_object(metadata, "optionalDependencies", package_key)
+    peers = dependency_object(metadata, "peerDependencies", package_key)
+    peer_meta = dependency_object(metadata, "peerDependenciesMeta", package_key)
+    for name in dependencies:
+        requirements[name] = True
+    for name in optional:
+        requirements[name] = False
+    for name in peers:
+        optional_peer = isinstance(peer_meta.get(name), dict) and peer_meta[name].get("optional") is True
+        requirements.setdefault(name, not optional_peer)
     return requirements
+
+
+def validate_installed_manifest(
+    metadata: dict[str, Any], installed: dict[str, Any], package_key: str
+) -> None:
+    installed_name = package_key.rsplit("node_modules/", 1)[-1]
+    require(installed.get("name") == installed_name, f"installed package name mismatch: {package_key}")
+    require(
+        isinstance(metadata.get("version"), str)
+        and installed.get("version") == metadata["version"],
+        f"installed package version mismatch: {package_key}",
+    )
+    for field in (
+        "dependencies",
+        "optionalDependencies",
+        "peerDependencies",
+        "peerDependenciesMeta",
+    ):
+        require(
+            dependency_object(installed, field, package_key)
+            == dependency_object(metadata, field, package_key),
+            f"installed {package_key} {field} differs from package-lock semantics",
+        )
 
 
 def puppeteer_production_modules(playcanvas_root: pathlib.Path) -> dict[str, Any]:
@@ -442,10 +670,18 @@ def puppeteer_production_modules(playcanvas_root: pathlib.Path) -> dict[str, Any
         metadata = packages.get(package_key)
         require(isinstance(metadata, dict), f"package-lock entry is invalid: {package_key}")
         package_root = playcanvas_root / package_key
-        installed = load_object(package_root / "package.json", f"installed {package_key} package.json")
+        require(not package_root.is_symlink(), f"installed package directory is a symlink: {package_key}")
+        package_json = package_root / "package.json"
+        require(not package_json.is_symlink(), f"installed package.json is a symlink: {package_key}")
+        require(
+            package_root.resolve().is_relative_to((playcanvas_root / "node_modules").resolve()),
+            f"installed package escapes node_modules: {package_key}",
+        )
+        installed = load_object(package_json, f"installed {package_key} package.json")
+        validate_installed_manifest(metadata, installed, package_key)
         resolved_dependencies = []
         for name, required in sorted(
-            runtime_dependency_requirements(metadata, installed, package_key).items()
+            locked_runtime_dependency_requirements(metadata, package_key).items()
         ):
             installed_candidates = [
                 candidate
@@ -469,7 +705,11 @@ def puppeteer_production_modules(playcanvas_root: pathlib.Path) -> dict[str, Any
                 "lock_path": dependency_key,
                 "required": required,
             })
-        receipt = module_tree_receipt(package_root, package_key)
+        receipt = module_tree_receipt(
+            package_root,
+            package_key,
+            playcanvas_root / "node_modules",
+        )
         receipts.append({
             **receipt,
             "version": metadata.get("version"),
@@ -1504,7 +1744,16 @@ def publish_blocker(root: pathlib.Path, plan: dict[str, Any] | None, error: Base
     if not root.is_dir() or blocker.exists():
         return
     try:
-        process = error.outcome if isinstance(error, ProcessTimeoutError) else None
+        process = error.outcome if isinstance(error, (ProcessTimeoutError, ProcessTreeError)) else None
+        process_receipt = None if process is None else {
+            "argv": process.argv,
+            "timeout_seconds": process.timeout_seconds,
+            "timed_out": process.timed_out,
+            "returncode": process.returncode,
+            "stdout_tail": process.stdout[-4096:],
+            "stderr_tail": process.stderr[-4096:],
+            "cleanup": process.cleanup,
+        }
         write_new_json(blocker, {
             "schema": BLOCKER_SCHEMA,
             "series_id": None if plan is None else plan["series_id"],
@@ -1512,14 +1761,8 @@ def publish_blocker(root: pathlib.Path, plan: dict[str, Any] | None, error: Base
             "reason": str(error),
             "automatic_retry": False,
             "retry_authorized": False,
-            "process_timeout": None if process is None else {
-                "argv": process.argv,
-                "timeout_seconds": process.timeout_seconds,
-                "returncode": process.returncode,
-                "stdout_tail": process.stdout[-4096:],
-                "stderr_tail": process.stderr[-4096:],
-                "cleanup": process.cleanup,
-            },
+            "process_failure": process_receipt,
+            "process_timeout": process_receipt if isinstance(error, ProcessTimeoutError) else None,
         })
     except OSError:
         pass

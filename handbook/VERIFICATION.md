@@ -367,10 +367,16 @@ safety timeouts. A timeout is not a performance threshold: it terminates the
 one attempt, writes a blocker once after the root is claimed, and never retries.
 Every external command owns a fresh process group; timeout cleanup sends TERM,
 waits for the declared grace period, then KILLs the entire remaining group and
-reaps its leader so browser/server descendants cannot leak into the next run.
+reaps its leader. A bounded `ps` lineage tracker records PID, PPID, PGID and
+start identity while the command runs, so Chrome/server children that call
+`setsid` are also terminated and verified absent. A normal zero exit with a
+remaining detached descendant fails closed instead of claiming a clean run.
 Installed optional and peer runtime dependencies are included when reachable;
 missing platform-only optional packages are allowed, while missing required or
-installed-but-unlocked runtime dependencies fail preflight.
+installed-but-unlocked runtime dependencies fail preflight. Lockfile semantics
+alone decide requiredness; installed manifests must match name, version and
+runtime declarations, remain non-symlinked below `node_modules`, and cannot
+reclassify a required dependency as optional.
 After all producers and image comparisons, the same inputs plus clean HEAD are
 rechecked before the schedule/result boundary. The final validator consumes
 this lock and joins browser and Wasm hashes to endpoint artifacts. Integrate
