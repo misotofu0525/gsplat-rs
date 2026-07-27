@@ -777,6 +777,18 @@ impl SessionSurfaceOwner {
 /// the renderer device and draw their source IDs directly. The vertex shader
 /// fetches and projects the corresponding Gaussian for Web, desktop, Android,
 /// and iOS.
+#[cfg(any(target_arch = "wasm32", test))]
+fn validate_browser_capture_route(
+    exact_surface_session: bool,
+) -> Result<(), crate::SurfacePresenterError> {
+    if !exact_surface_session {
+        return Err(crate::SurfacePresenterError::SurfaceCaptureUnsupported(
+            "browser presentation-target capture requires an Exact Packed Surface session".into(),
+        ));
+    }
+    Ok(())
+}
+
 pub struct SurfaceRenderSession {
     renderer: Renderer,
     presenter: SessionSurfaceOwner,
@@ -1333,8 +1345,9 @@ impl SurfaceRenderSession {
     /// are ready; ordinary browser frames retain the direct Surface path.
     #[cfg(target_arch = "wasm32")]
     pub async fn request_surface_capture_async(&mut self) -> Result<(), RendererError> {
+        validate_browser_capture_route(self.exact_plan_receipt.is_some())?;
         self.presenter.request_surface_capture_async().await?;
-        if self.exact_plan_receipt.is_some() && !self.publication.arm_capture_precision() {
+        if !self.publication.arm_capture_precision() {
             self.presenter.cancel_surface_capture();
             return Err(crate::SurfacePresenterError::SurfaceCaptureState(
                 "the capture precision receipt ledger is not idle".into(),
@@ -3604,8 +3617,8 @@ mod tests {
         reset_adaptive_for_gpu_producer_measurement_transition,
         reset_adaptive_for_raster_transition, should_measure_cpu_refresh,
         should_reset_order_for_projected_incumbent_change, surface_geometry_switch_entry,
-        try_switch_renderer_geometry_path, validate_gpu_order_producer_transition,
-        validate_projected_draw_policy_transition,
+        try_switch_renderer_geometry_path, validate_browser_capture_route,
+        validate_gpu_order_producer_transition, validate_projected_draw_policy_transition,
     };
     #[cfg(not(target_arch = "wasm32"))]
     use super::{ExactSurfacePlanState, SurfaceRenderSession, async_sort_supported};
@@ -3633,6 +3646,16 @@ mod tests {
             2,
             "sync and Web async setters must share the Exact transaction"
         );
+    }
+
+    #[test]
+    fn browser_intermediate_capture_is_exact_surface_only() {
+        assert!(validate_browser_capture_route(true).is_ok());
+        assert!(matches!(
+            validate_browser_capture_route(false),
+            Err(SurfacePresenterError::SurfaceCaptureUnsupported(message))
+                if message.contains("requires an Exact Packed Surface session")
+        ));
     }
     use gsplat_core::{Camera, RendererConfig, SceneBuffers, Vec3f};
     #[cfg(not(target_arch = "wasm32"))]
