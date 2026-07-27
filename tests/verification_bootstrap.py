@@ -29,6 +29,8 @@ ANDROID_PLATFORM = "android-35"
 ANDROID_BUILD_TOOLS = "35.0.0"
 ANDROID_RUST_TARGET = "aarch64-linux-android"
 WEB_RUST_TARGET = "wasm32-unknown-unknown"
+WEB_WASM_PROFILE_ENV = "GSPLAT_WEB_WASM_PROFILE"
+WEB_WASM_OUT_DIR_ENV = "GSPLAT_WEB_WASM_OUT_DIR"
 APPLE_XCFRAMEWORK_TARGETS = (
     "aarch64-apple-ios",
     "aarch64-apple-ios-sim",
@@ -642,6 +644,43 @@ def dataset_probe(discovery: Discovery, variable: str, default: str) -> tuple[Pr
     )
 
 
+def exact_web_build_environment(
+    discovery: Discovery,
+    probes: list[Probe],
+    env: Mapping[str, str],
+) -> dict[str, str]:
+    """Freeze canonical Web profiles to Exact and reject diagnostic inheritance."""
+
+    requested_profile = discovery.env.get(WEB_WASM_PROFILE_ENV, "")
+    diagnostic_output = discovery.env.get(WEB_WASM_OUT_DIR_ENV, "")
+    profile_ok = requested_profile in ("", "exact")
+    output_ok = diagnostic_output == ""
+    probes.extend(
+        (
+            Probe(
+                key=f"exact-web-env:{WEB_WASM_PROFILE_ENV}",
+                ok=profile_ok,
+                detail=requested_profile or "unset (Exact default)",
+                remedy=None
+                if profile_ok
+                else f"unset {WEB_WASM_PROFILE_ENV}; canonical Web profiles are Exact",
+            ),
+            Probe(
+                key=f"exact-web-env:{WEB_WASM_OUT_DIR_ENV}",
+                ok=output_ok,
+                detail=diagnostic_output or "unset",
+                remedy=None
+                if output_ok
+                else f"unset {WEB_WASM_OUT_DIR_ENV}; it is diagnostic-only",
+            ),
+        )
+    )
+    frozen = dict(env)
+    frozen[WEB_WASM_PROFILE_ENV] = "exact"
+    frozen[WEB_WASM_OUT_DIR_ENV] = ""
+    return frozen
+
+
 def profile_result(name: str, discovery: Discovery) -> ProfileResult:
     head = discovery.git_head()
     python = discovery.command_path("python3") or pathlib.Path("python3")
@@ -807,6 +846,7 @@ def profile_result(name: str, discovery: Discovery) -> ProfileResult:
 
     if name == "web-webgpu":
         probes, env = web_environment(discovery)
+        env = exact_web_build_environment(discovery, probes, env)
         artifact = discovery.env.get(
             "GSPLAT_ARTIFACT_DIR",
             f"target/benchmarks/m4-webgpu-smoke-{head}",
@@ -834,6 +874,7 @@ def profile_result(name: str, discovery: Discovery) -> ProfileResult:
         "web-webgpu-truck-fixed-gpu-preproject-compact",
     ):
         probes, env = web_environment(discovery)
+        env = exact_web_build_environment(discovery, probes, env)
         dataset = REPO_ROOT / "tests/datasets/external/inria_3dgs/truck/point_cloud.ply"
         trace = (
             REPO_ROOT

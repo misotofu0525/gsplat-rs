@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import pathlib
+import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -84,6 +87,124 @@ def make_java_home(root: pathlib.Path) -> pathlib.Path:
 
 
 class VerificationBootstrapTests(unittest.TestCase):
+    @staticmethod
+    def install_fake_web_build(root: pathlib.Path) -> tuple[pathlib.Path, pathlib.Path]:
+        source = pathlib.Path(__file__).parents[1] / "packages/web/scripts/build-wasm.sh"
+        script = root / "packages/web/scripts/build-wasm.sh"
+        script.parent.mkdir(parents=True)
+        shutil.copy2(source, script)
+        script.chmod(0o755)
+
+        log = root / "fake-cargo.log"
+        cargo = root / "bin/cargo"
+        cargo.parent.mkdir(parents=True)
+        cargo.write_text(
+            "#!/usr/bin/env bash\n"
+            "set -euo pipefail\n"
+            f"printf '%s\\n' \"$*\" > {str(log)!r}\n"
+            f"mkdir -p {str(root / 'target/wasm32-unknown-unknown/release')!r}\n"
+            f": > {str(root / 'target/wasm32-unknown-unknown/release/gsplat_web.wasm')!r}\n",
+            encoding="utf-8",
+        )
+        cargo.chmod(0o755)
+
+        bindgen = root / "bin/wasm-bindgen"
+        bindgen.write_text(
+            "#!/usr/bin/env bash\n"
+            "set -euo pipefail\n"
+            "out=''\n"
+            "while (($#)); do\n"
+            "  if [[ \"$1\" == '--out-dir' ]]; then out=\"$2\"; shift 2; else shift; fi\n"
+            "done\n"
+            "[[ -n \"$out\" ]]\n"
+            "mkdir -p \"$out\"\n"
+            ": > \"$out/gsplat_web.js\"\n",
+            encoding="utf-8",
+        )
+        bindgen.chmod(0o755)
+        return script, log
+
+    def test_web_wasm_build_defaults_to_exact_and_candidate_is_isolated(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            script, log = self.install_fake_web_build(root)
+            default_output = root / "examples/web/pkg"
+            default_output.mkdir(parents=True)
+            (default_output / "stale.txt").write_text("stale", encoding="utf-8")
+            environment = {
+                **os.environ,
+                "PATH": f"{root / 'bin'}:{os.environ.get('PATH', '')}",
+                "WASM_BINDGEN_BIN": str(root / "bin/wasm-bindgen"),
+            }
+
+            exact = subprocess.run(
+                ("bash", str(script)), env=environment, text=True, capture_output=True
+            )
+            self.assertEqual(exact.returncode, 0, exact.stderr)
+            self.assertNotIn("--features", log.read_text(encoding="utf-8"))
+            self.assertFalse((default_output / "stale.txt").exists())
+            self.assertTrue((default_output / "gsplat_web.js").is_file())
+
+            marker = default_output / "exact-marker.txt"
+            marker.write_text("keep", encoding="utf-8")
+            candidate_output = root / "target/diagnostic/candidate20/pkg"
+            candidate = subprocess.run(
+                ("bash", str(script)),
+                env={
+                    **environment,
+                    BOOTSTRAP.WEB_WASM_PROFILE_ENV: "candidate20",
+                    BOOTSTRAP.WEB_WASM_OUT_DIR_ENV: str(candidate_output),
+                },
+                text=True,
+                capture_output=True,
+            )
+            self.assertEqual(candidate.returncode, 0, candidate.stderr)
+            self.assertIn(
+                "--features diagnostic-web-depth-key-candidate20",
+                log.read_text(encoding="utf-8"),
+            )
+            self.assertTrue((candidate_output / "gsplat_web.js").is_file())
+            self.assertEqual(marker.read_text(encoding="utf-8"), "keep")
+
+    def test_web_wasm_diagnostic_selection_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            script, log = self.install_fake_web_build(root)
+            environment = {
+                **os.environ,
+                "PATH": f"{root / 'bin'}:{os.environ.get('PATH', '')}",
+                "WASM_BINDGEN_BIN": str(root / "bin/wasm-bindgen"),
+            }
+            for extra_env, message in (
+                ({BOOTSTRAP.WEB_WASM_PROFILE_ENV: "unknown"}, "expected exact or candidate20"),
+                ({BOOTSTRAP.WEB_WASM_PROFILE_ENV: "candidate20"}, "requires an explicit fresh"),
+            ):
+                failed = subprocess.run(
+                    ("bash", str(script)),
+                    env={**environment, **extra_env},
+                    text=True,
+                    capture_output=True,
+                )
+                self.assertEqual(failed.returncode, 2)
+                self.assertIn(message, failed.stderr)
+                self.assertFalse(log.exists())
+
+            occupied = root / "occupied"
+            occupied.mkdir()
+            failed = subprocess.run(
+                ("bash", str(script)),
+                env={
+                    **environment,
+                    BOOTSTRAP.WEB_WASM_PROFILE_ENV: "candidate20",
+                    BOOTSTRAP.WEB_WASM_OUT_DIR_ENV: str(occupied),
+                },
+                text=True,
+                capture_output=True,
+            )
+            self.assertEqual(failed.returncode, 2)
+            self.assertIn("must be fresh", failed.stderr)
+            self.assertFalse(log.exists())
+
     def test_profile_discovery_never_invokes_device_or_browser_tools(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)
@@ -488,6 +609,12 @@ class VerificationBootstrapTests(unittest.TestCase):
 
             self.assertTrue(result.ready)
             self.assertEqual(len(result.commands), 3)
+            self.assertEqual(
+                result.commands[0].env[BOOTSTRAP.WEB_WASM_PROFILE_ENV], "exact"
+            )
+            self.assertEqual(
+                result.commands[0].env[BOOTSTRAP.WEB_WASM_OUT_DIR_ENV], ""
+            )
             control = result.commands[1]
             throughput = result.commands[2]
             self.assertEqual(
@@ -541,6 +668,48 @@ class VerificationBootstrapTests(unittest.TestCase):
             self.assertEqual(
                 throughput.env["GSPLAT_ARTIFACT_DIR"],
                 str(output / "throughput-terminal-queue"),
+            )
+
+    def test_formal_truck_web_profile_rejects_diagnostic_build_environment(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            dataset = root / "tests/datasets/external/inria_3dgs/truck/point_cloud.ply"
+            trace = root / "tests/perf/trace/fixtures/quality/candidate-truck-quality-1920x1080-v1.json"
+            dataset.parent.mkdir(parents=True)
+            trace.parent.mkdir(parents=True)
+            dataset.write_bytes(b"ply")
+            trace.write_text("{}", encoding="utf-8")
+            discovery = BOOTSTRAP.Discovery(
+                env={
+                    "GSPLAT_WEB_TRUCK_OUTPUT": str(root / "fresh-output"),
+                    BOOTSTRAP.WEB_WASM_PROFILE_ENV: "candidate20",
+                    BOOTSTRAP.WEB_WASM_OUT_DIR_ENV: str(root / "diagnostic-pkg"),
+                },
+                home=root,
+                which=FakeHost(root).which,
+                capture=FakeHost(root).capture,
+            )
+            with (
+                mock.patch.object(BOOTSTRAP, "REPO_ROOT", root),
+                mock.patch.object(
+                    BOOTSTRAP,
+                    "web_environment",
+                    return_value=([BOOTSTRAP.Probe("web", True, "ready")], {}),
+                ),
+            ):
+                result = BOOTSTRAP.profile_result("web-webgpu-truck-1080p", discovery)
+
+            self.assertFalse(result.ready)
+            failed = {probe.key for probe in result.probes if not probe.ok}
+            self.assertEqual(
+                failed,
+                {
+                    f"exact-web-env:{BOOTSTRAP.WEB_WASM_PROFILE_ENV}",
+                    f"exact-web-env:{BOOTSTRAP.WEB_WASM_OUT_DIR_ENV}",
+                },
+            )
+            self.assertEqual(
+                result.commands[0].env[BOOTSTRAP.WEB_WASM_PROFILE_ENV], "exact"
             )
 
     def test_truck_web_profile_blocks_on_missing_asset_or_used_output(self) -> None:
