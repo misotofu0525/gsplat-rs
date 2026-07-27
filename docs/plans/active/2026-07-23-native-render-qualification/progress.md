@@ -518,6 +518,28 @@ CandidateStable20 remains diagnostic and is not full-quality evidence. Web
 diagnostic exposure, same-camera image qualification, browser performance and
 Android/native endpoint behavior remain separate pending slices.
 
+## CandidateStable20 Web presentation diagnostic (2026-07-27)
+
+The hidden Web diagnostic is now isolated from the default Exact package. The
+standard Web build remains Exact; a separate build requires both the private
+`diagnostic-web-depth-key-candidate20` feature route and an explicit fresh
+`GSPLAT_WEB_WASM_OUT_DIR`. It cannot replace, alias or delete the default
+`examples/web/pkg` target, including when that path is a symlink.
+
+At clean commit `fd989580a5626825d529de7b34e22e4ca99f56c1`, root performed one
+real Chrome/WebGPU diagnostic run and retained
+`target/diagnostics/candidate20-web-fd98958/artifact/`. Three consecutive
+successful presents all reported actual Packed, GPU, Preproject, Compact and
+`CandidateStable20` execution. Their scene, viewport, contract and PlanSet
+generations remained identical; order generations and presentation sequences
+advanced `1,2,3`. The collector rejects missing, duplicated, regressing,
+cross-generation or mismatched receipts.
+
+This artifact is intentionally classified `diagnostic`, with
+`full_quality_eligible=false` and `validator=diagnostic_only`. It proves that
+the hidden browser build reaches the intended present-fenced execution path;
+it provides no image-quality, Truck-performance or product-default evidence.
+
 ## Q3 M4 SIMD microbenchmark checkpoint (2026-07-27)
 
 At clean root commit `f025dff`, the fixed

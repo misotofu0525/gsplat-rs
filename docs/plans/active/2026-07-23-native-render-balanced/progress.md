@@ -869,6 +869,31 @@ image-gate artifact, timing comparison, Accepted/Rejected B1 result, or
 endpoint qualification has been created. A future endpoint run still requires
 fresh explicit authorization under the one-shot protocol.
 
+## CandidateStable20 qualified image-contract checkpoint (2026-07-27)
+
+The Candidate20 image contract is now separate from `formal_quality`. Its
+`balanced_quality_candidate` class requires full source membership, source SH,
+actual 1920x1080 rendering, SortedAlpha execution, present-fenced identity and
+per-frame V/C/D receipts, while declaring `full_quality=false` and
+`quality_candidate=true`. It cannot be relabeled as formal quality.
+
+Unlike the older authored-view fixture path, this class must execute the full
+moving `0 -> 1 -> 0` sequence and pass both per-frame image thresholds and the
+two temporal residual checks. Every canonical lane artifact must declare
+`candidate_visible_contributor_issued_v1`, emit contributor plus compaction
+state on every frame, and prove the actual renderer blend mode is
+`sorted_alpha`. Combined removal of the count contract and all contributor
+fields is explicitly rejected rather than falling back to the legacy `D=V`
+artifact interpretation. Focused collector and validator suites pass with 13
+and 52 tests respectively.
+
+No Candidate20 image result was published in this checkpoint. A proposed
+Truck command was rejected by read-only preflight because this image collector
+is deliberately frozen to the canonical Kitsune manifest and trace. The
+failure occurred before staging, build or window creation and produced no
+artifact. It is a command-scope mismatch, not an image-quality failure; no
+automatic parameter-change rerun was performed.
+
 ## B0 paired Truck timing collector (not yet executed)
 
 The root-owned `tests/perf/collect-balanced-paired-timing.py` now closes the
