@@ -59,8 +59,10 @@ node examples/web/scripts/collect-web-depth-precision-diagnostic.mjs \
   --output target/diagnostic/web-candidate20/run-1
 ```
 
-Its `m4_functional_smoke` result is browser behavior evidence only. It is not a
-formal Kitsune performance run or broad device qualification.
+The default M4 collector's `m4_functional_smoke` result is browser behavior
+evidence only. It is not a formal Kitsune performance run or broad device
+qualification. The Candidate20 collector is narrower still: its
+`diagnostic_only` artifact cannot enter a quality or performance suite.
 
 The default/product path fails closed when WASM/WebGPU construction or exact
 scene admission fails. To inspect the non-equivalent sampled WebGL2 diagnostic
