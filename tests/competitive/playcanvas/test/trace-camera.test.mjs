@@ -163,6 +163,18 @@ function cameraCaptureFixture() {
     submit_version_after: 13 + frameIndex,
     queue_submit_call_count: 1
   }));
+  presentationFrames.at(-1).renderer_capture_copy = { submit_version_after: 16 };
+  const rendererCapture = {
+    schema: 'gsplat-playcanvas-webgpu-renderer-capture/v1',
+    producer: 'playcanvas_webgpu_copy_texture_to_buffer',
+    status: 'terminal',
+    renderer_submit_version: 15,
+    copy_submit_version_before: 15,
+    copy_submit_version_after: 16,
+    copy_map_complete: true,
+    queue_terminal_complete: true,
+    camera_receipt: presentationFrames.at(-1).camera_receipt
+  };
   return {
     samples,
     measurementDrain: { submitVersionAfter: 12 },
@@ -174,12 +186,13 @@ function cameraCaptureFixture() {
       capture_trace_frame_source: 'last_measured_trace_frame',
       stable_frame_count: 3,
       frames: presentationFrames,
+      renderer_capture: rendererCapture,
       queue_drain: {
         phase: 'post_capture_presentation',
         frameLoopStopped: true,
         submitVersionStable: true,
-        submitVersionBefore: 15,
-        submitVersionAfter: 15
+        submitVersionBefore: 16,
+        submitVersionAfter: 16
       },
       terminal_camera_receipt: receipt(1, 'external_capture_terminal')
     }

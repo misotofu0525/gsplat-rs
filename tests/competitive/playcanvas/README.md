@@ -165,6 +165,28 @@ comparative claim requires matched repeated runs, retained raw frames and
 images, and a comparator result whose scope names the exact scene, camera mode,
 resolution, browser, and machine.
 
+Formal qualification capture does not use `canvas.toDataURL()`, `toBlob()`, a
+Puppeteer screenshot, or a collector-authored renderer receipt. On the final
+stable presentation frame, the harness runs inside PlayCanvas' `frameend`
+callback, after the pinned `WebgpuGraphicsDevice.frameEnd()` renderer submit
+and before the RAF callback returns. It copies that frame's assigned WebGPU
+backbuffer texture into a MAP_READ buffer using the engine's own command
+encoder/submission path. The terminal producer receipt binds the resulting
+RGBA8 digest to the actual renderer/copy submit versions, PlayCanvas frame
+sequence, full runtime camera receipt, exact backing resolution, dataset hash,
+complete source/resident membership, and SH degree. The stopped frame loop is
+then drained before publication.
+The camera hash covers the receipt's retained `JSON.stringify` byte string;
+cross-language validators hash that exact string and parse it back to the
+embedded camera object instead of guessing a different canonical JSON format.
+
+The host writes the renderer bytes to `final-frame.rgba8` and deterministically
+encodes `final-frame.png` from those bytes. `renderer-capture.json` keeps the
+renderer-owned RGBA receipt and the separate host materialization receipt, so a
+PNG encoder cannot impersonate the renderer producer. A device screenshot is
+still an independent physical-presentation receipt; it is not substituted for
+the renderer image.
+
 ## Android true-fullscreen WebView remote CDP
 
 Normal Chrome tabs include browser chrome and system navigation in a physical

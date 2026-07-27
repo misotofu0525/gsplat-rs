@@ -1,3 +1,8 @@
+import {
+  PLAYCANVAS_WEBGPU_RENDERER_CAPTURE_PRODUCER,
+  PLAYCANVAS_WEBGPU_RENDERER_CAPTURE_SCHEMA
+} from './webgpu-renderer-capture.js';
+
 const EPSILON = 1e-12;
 const TRACE_MATRIX_TOLERANCE = 1e-9;
 const RUNTIME_ABSOLUTE_TOLERANCE = 2e-4;
@@ -500,6 +505,23 @@ export function validatePlayCanvasCaptureEvidence({
     }
     expectedSubmitVersion = frame.submit_version_after;
   });
+  const rendererCapture = presentation.renderer_capture;
+  const finalPresentationFrame = presentation.frames.at(-1);
+  if (rendererCapture?.schema !== PLAYCANVAS_WEBGPU_RENDERER_CAPTURE_SCHEMA ||
+      rendererCapture.producer !== PLAYCANVAS_WEBGPU_RENDERER_CAPTURE_PRODUCER ||
+      rendererCapture.status !== 'terminal' || rendererCapture.copy_map_complete !== true ||
+      rendererCapture.queue_terminal_complete !== true ||
+      rendererCapture.renderer_submit_version !== expectedSubmitVersion ||
+      rendererCapture.copy_submit_version_before !== expectedSubmitVersion ||
+      rendererCapture.copy_submit_version_after !== expectedSubmitVersion + 1 ||
+      finalPresentationFrame?.renderer_capture_copy?.submit_version_after !==
+        rendererCapture.copy_submit_version_after ||
+      rendererCapture.camera_receipt?.trace_frame_index !== expectedCaptureIndex ||
+      JSON.stringify(rendererCapture.camera_receipt) !==
+        JSON.stringify(finalPresentationFrame?.camera_receipt)) {
+    throw new Error('presentation terminal lacks a same-frame WebGPU renderer capture');
+  }
+  expectedSubmitVersion = rendererCapture.copy_submit_version_after;
   const drain = presentation.queue_drain;
   if (drain?.phase !== 'post_capture_presentation' || drain.frameLoopStopped !== true ||
       drain.submitVersionStable !== true || drain.submitVersionBefore !== expectedSubmitVersion ||

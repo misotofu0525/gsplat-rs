@@ -32,6 +32,7 @@ import {
   openBrowserSession
 } from './browser-session.mjs';
 import { startServer } from './server.mjs';
+import { materializeRendererCapture } from './renderer-capture-artifact.mjs';
 
 const execFile = promisify(execFileCallback);
 const harnessRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -187,6 +188,7 @@ let finalResolution = null;
 let canvasScreenReceipt = null;
 let screenshotBinding = null;
 let screenContentComparison = null;
+let rendererCaptureMaterialization = null;
 try {
   if (sessionConfig.mode === 'remote-cdp') {
     expectedAndroidReceipt = await loadExpectedAndroidDeviceReceipt(
@@ -289,20 +291,40 @@ try {
         JSON.stringify(cameraEvidence.presentation.terminal_camera_receipt)) {
       throw new Error('top-level camera receipt is not the terminal presentation receipt');
     }
-    const dataUrl = await page.$eval('#canvas', (canvas) => canvas.toDataURL('image/png'));
-    const canvasPng = Buffer.from(dataUrl.split(',')[1], 'base64');
+    const rendererCaptureReceipt = outcome.result.capture.presentationCapture.renderer_capture;
+    const rendererCaptureRgba8Base64 = await page.evaluate(
+      () => window.__PLAYCANVAS_RENDERER_CAPTURE_RGBA8_BASE64__ ?? null
+    );
+    const materialized = materializeRendererCapture({
+      receipt: rendererCaptureReceipt,
+      rgba8Base64: rendererCaptureRgba8Base64
+    });
+    rendererCaptureMaterialization = materialized.receipt;
     canvasScreenReceipt = {
-      file: 'final-frame.png',
-      source: 'canvas_toDataURL_after_presentation_terminal',
+      file: rendererCaptureMaterialization.png_file,
+      source: rendererCaptureMaterialization.source,
       captured_at_utc: new Date().toISOString(),
       captured_after_presentation_terminal: true,
       capture_trace_frame_index: cameraEvidence.expectedCaptureIndex,
-      width: outcome.result.canvasBackingWidth,
-      height: outcome.result.canvasBackingHeight,
-      byte_count: canvasPng.length,
-      sha256: sha256(canvasPng)
+      width: rendererCaptureMaterialization.width,
+      height: rendererCaptureMaterialization.height,
+      byte_count: rendererCaptureMaterialization.png_byte_length,
+      sha256: rendererCaptureMaterialization.png_sha256,
+      renderer_capture_schema: rendererCaptureReceipt.schema,
+      renderer_capture_producer: rendererCaptureReceipt.producer,
+      renderer_rgba8_sha256: rendererCaptureReceipt.rgba8_sha256
     };
-    await writeFile(resolve(outputRoot, canvasScreenReceipt.file), canvasPng);
+    await Promise.all([
+      writeFile(resolve(outputRoot, rendererCaptureMaterialization.rgba8_file), materialized.rgba8),
+      writeFile(resolve(outputRoot, canvasScreenReceipt.file), materialized.png),
+      writeFile(
+        resolve(outputRoot, 'renderer-capture.json'),
+        `${JSON.stringify({
+          producer: rendererCaptureReceipt,
+          materialization: rendererCaptureMaterialization
+        }, null, 2)}\n`
+      )
+    ]);
   }
 
   finalResolution = outcome.result.resolution;
@@ -622,6 +644,10 @@ try {
       ? outcome.result.capture.presentationCapture
       : null,
     screenshot_binding: qualification ? screenshotBinding : null,
+    renderer_capture: qualification
+      ? outcome.result.capture.presentationCapture.renderer_capture
+      : null,
+    renderer_capture_materialization: qualification ? rendererCaptureMaterialization : null,
     browser_presentation: outcome.result.browserPresentationReceipt,
     device_evidence: sessionConfig.mode === 'remote-cdp'
       ? {

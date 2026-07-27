@@ -33,6 +33,11 @@ import {
   validatePlayCanvasCameraReceipt
 } from '/harness/trace-camera.js';
 import { captureBrowserPresentationState } from '/harness/presentation-receipt.js';
+import {
+  beginPlayCanvasWebgpuRendererCapture,
+  finalizePlayCanvasWebgpuRendererCapture,
+  rgba8ToBase64
+} from '/harness/webgpu-renderer-capture.js';
 
 const EXPECTED_VERSION = '2.21.0-beta.14';
 const EXPECTED_RUNTIME_REVISION = 'd5fe888';
@@ -149,6 +154,11 @@ function rendererLabel(value) {
   return value === GSPLAT_RENDERER_RASTER_GPU_SORT ? 'raster_gpu_sort' : `unknown:${value}`;
 }
 
+async function sha256Hex(bytes) {
+  const digest = await crypto.subtle.digest('SHA-256', bytes);
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
 function centerBounds(centers) {
   if (!centers || centers.length < 3) return null;
   const min = [Infinity, Infinity, Infinity];
@@ -250,7 +260,8 @@ async function collectFrameSamples(
   trace,
   cameraMode,
   requestedCaptureFrameIndex,
-  presentationProbe
+  presentationProbe,
+  rendererCaptureIdentity
 ) {
   requireQueueTerminalApi(app.graphicsDevice);
   const traceFrames = trace?.frames ?? [];
@@ -278,6 +289,8 @@ async function collectFrameSamples(
   let presentationTraceFrameSource = null;
   let presentationDrain = null;
   let presentationCapture = null;
+  let pendingRendererCapture = null;
+  let rendererCapture = null;
   const presentationFrames = [];
   let state = warmupFrames > 0 ? 'warming_up' : 'draining_warmup';
 
@@ -334,7 +347,20 @@ async function collectFrameSamples(
 
     const finishPresentationAfterTerminalDrain = async () => {
       try {
-        presentationDrain = await drainQueueWhileFrameLoopStopped(app, 'post_capture_presentation');
+        if (!pendingRendererCapture) {
+          throw new Error('presentation terminal omitted its WebGPU renderer capture');
+        }
+        let completedRendererCapture;
+        [presentationDrain, completedRendererCapture] = await Promise.all([
+          drainQueueWhileFrameLoopStopped(app, 'post_capture_presentation'),
+          pendingRendererCapture.completion
+        ]);
+        rendererCapture = finalizePlayCanvasWebgpuRendererCapture(
+          completedRendererCapture,
+          presentationDrain
+        );
+        window.__PLAYCANVAS_RENDERER_CAPTURE_RGBA8_BASE64__ =
+          rgba8ToBase64(rendererCapture.rgba8);
         postPresentationTerminalPresentation = presentationProbe(
           'post_capture_presentation_terminal_drain'
         );
@@ -360,6 +386,7 @@ async function collectFrameSamples(
           measurement_terminal_submit_version: measurementDrain.submitVersionAfter,
           frames: presentationFrames,
           queue_drain: presentationDrain,
+          renderer_capture: rendererCapture.receipt,
           terminal_camera_receipt: terminalCameraReceipt,
           browser_presentation: postPresentationTerminalPresentation
         };
@@ -531,6 +558,20 @@ async function collectFrameSamples(
             submit_version_after: frameSubmitVersionEnd,
             queue_submit_call_count: frameSubmitVersionEnd - frameSubmitVersionStart
           });
+          if (presentationFrames.length === PLAYCANVAS_MIN_PRESENTATION_STABLE_FRAMES) {
+            pendingRendererCapture = beginPlayCanvasWebgpuRendererCapture({
+              graphicsDevice: app.graphicsDevice,
+              rendererFrameSequence: app.frame,
+              rendererSubmitVersion: frameSubmitVersionEnd,
+              identity: {
+                ...rendererCaptureIdentity,
+                camera_receipt: activeCameraReceipt
+              }
+            });
+            presentationFrames.at(-1).renderer_capture_copy = {
+              submit_version_after: pendingRendererCapture.copySubmitVersionAfter
+            };
+          }
           frameSubmitVersionStart = null;
           activeCameraReceipt = null;
           if (presentationFrames.length === PLAYCANVAS_MIN_PRESENTATION_STABLE_FRAMES) {
@@ -707,8 +748,9 @@ async function main() {
   runtimeSignals.rendererResolved = rendererLabel(app.scene.gsplat.currentRenderer);
 
   const diagnostic = qualification?.generated === true;
+  const diagnosticPly = diagnostic ? createRasterDiagnosticPly() : null;
   const diagnosticUrl = diagnostic
-    ? URL.createObjectURL(new Blob([createRasterDiagnosticPly()], { type: 'application/octet-stream' }))
+    ? URL.createObjectURL(new Blob([diagnosticPly], { type: 'application/octet-stream' }))
     : null;
   const asset = new Asset(diagnostic ? RASTER_DIAGNOSTIC_ID : qualificationName ?? 'minimal_binary', 'gsplat', {
     url: diagnosticUrl ?? DATASET_URL,
@@ -822,6 +864,20 @@ async function main() {
     internal_full_resolution: true,
     full_resolution: false
   };
+  const exactness = {
+    source_splat_count: expectedSplatCount,
+    decoded_splat_count: splatCount,
+    resident_splat_count: residentSplatCount,
+    source_sh_degree: expectedShDegree,
+    resident_sh_degree: asset.resource.shBands,
+    source_membership: 'all',
+    sampling: 'disabled',
+    lod: 'disabled',
+    partial_scene_published: false,
+    full_quality: true
+  };
+  const datasetSha256 = datasetManifest?.sha256 ??
+    (diagnosticPly ? await sha256Hex(diagnosticPly) : null);
   const resolutionPairs = [
     ['surface', resolution.surface_width, resolution.surface_height],
     ['internal_render', resolution.internal_render_width, resolution.internal_render_height]
@@ -880,7 +936,15 @@ async function main() {
       trace,
       requestedCameraMode,
       requestedCaptureTraceFrameIndex,
-      presentationProbe
+      presentationProbe,
+      {
+        resolution,
+        source: {
+          ...exactness,
+          dataset_id: datasetManifest?.id ?? asset.name,
+          dataset_sha256: datasetSha256
+        }
+      }
     )
     : null;
   const postCapturePresentation = presentationProbe('post_capture');
@@ -914,18 +978,7 @@ async function main() {
     canvasBackingHeight: canvas.height,
     devicePixelRatio: window.devicePixelRatio,
     cameraReceipt: terminalCameraReceipt,
-    exactness: {
-      source_splat_count: expectedSplatCount,
-      decoded_splat_count: splatCount,
-      resident_splat_count: residentSplatCount,
-      source_sh_degree: expectedShDegree,
-      resident_sh_degree: asset.resource.shBands,
-      source_membership: 'all',
-      sampling: 'disabled',
-      lod: 'disabled',
-      partial_scene_published: false,
-      full_quality: true
-    },
+    exactness,
     resolution,
     browserPresentationReceipt: {
       source: 'browser_page_visibility_focus_and_geometry',
