@@ -103,7 +103,14 @@ Each control image is bound to the same live-camera and presented-frame receipt
 as its trace view. The camera receipt binds the frozen trace ID, trace content,
 trace-frame pose/intrinsics and camera revision. The presentation receipt binds
 the control run, canonical terminal-frame hash, camera revision and presentation
-sequence. Opaque arbitrary digests are not accepted.
+sequence. The terminal frame additionally carries an endpoint-specific renderer
+copy receipt with an exact field set: producer, RGBA8 and materialized PNG
+SHA-256 values, dimensions, row and byte lengths, camera revision, presentation
+sequence and completed queue terminal. The manifest and schedule must carry
+that exact receipt; a copied schedule receipt without its terminal producer is
+invalid. Re-encoding identical pixels creates a different capture artifact and
+cannot silently replace the renderer-owned PNG. Opaque arbitrary digests are
+not accepted.
 
 The PNG must fully decode as non-interlaced RGBA8 at 1920x1080; an IHDR-shaped
 header is not an image. Its comparison

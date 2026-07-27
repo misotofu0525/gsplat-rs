@@ -740,6 +740,13 @@ comparator-tool content hash instead of trusting an IHDR header or self-reported
 score. Required JS/WASM/package files and thermal pre/post receipts are likewise
 admitted by content rather than by an arbitrary runtime label.
 
+The follow-up receipt hardening also makes image bytes producer-owned: each
+control terminal frame must contain the strict endpoint-specific renderer-copy
+receipt, and its RGBA8 plus materialized PNG digests are joined through the
+manifest and schedule to the candidate image. A copied JSON receipt cannot
+replace missing terminal evidence, and re-encoding the same pixels is rejected
+unless the renderer terminal itself names that exact PNG artifact.
+
 This slice performs no browser or device run. The historical unpaired
 PlayCanvas prerequisite and fixed-gsplat-rs diagnostic candidate remain
 inadmissible because they do not supply five fresh pairs, one common terminal

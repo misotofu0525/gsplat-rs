@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import math
 import pathlib
@@ -64,6 +65,28 @@ FORBIDDEN_THERMAL_STATES = frozenset(
     {"severe", "serious", "critical", "emergency", "shutdown"}
 )
 ADMISSIBLE_THERMAL_STATES = frozenset({"nominal", "fair", "moderate"})
+CAPTURE_SCHEMA = "gsplat-q1-renderer-capture-terminal/v1"
+CAPTURE_PRODUCERS = {
+    "playcanvas": "playcanvas_webgpu_copy_texture_to_buffer",
+    "gsplat_rs": "gsplat_rs_surface_copy_texture_to_buffer",
+}
+CAPTURE_FIELDS = frozenset(
+    {
+        "schema",
+        "producer",
+        "status",
+        "pixel_format",
+        "width",
+        "height",
+        "row_bytes",
+        "byte_length",
+        "rgba8_sha256",
+        "png_sha256",
+        "camera_revision",
+        "presentation_sequence",
+        "queue_terminal_complete",
+    }
+)
 
 
 def _decode_image(path: pathlib.Path, context: str) -> Any:
@@ -299,6 +322,11 @@ def _frames(frames: list[dict[str, Any]], endpoint: str, role: str, run_id: str,
             fail(f"{context}[{index}] run/frame/trace identity mismatch")
         if frame.get("sort_refreshed") is not True:
             fail(f"{context}[{index}].sort_refreshed must be true")
+        has_capture = isinstance(frame.get("surface_capture"), dict)
+        if role == "control" and has_capture != (index >= MEASURED - 2):
+            fail(f"{context}[{index}] renderer capture terminal placement mismatch")
+        if role == "throughput" and "surface_capture" in frame:
+            fail(f"{context}[{index}] timed throughput must not carry capture evidence")
         counts = (frame.get("visible"), frame.get("contributor"), frame.get("drawn"))
         if role == "throughput":
             if counts != (None, None, None):
@@ -323,6 +351,7 @@ def presentation_receipts(
     q1: dict[str, Any],
     frames: list[dict[str, Any]],
     run_id: str,
+    endpoint: str,
     context: str,
 ) -> dict[int, dict[str, Any]]:
     receipts = array(q1, "presentation_receipts", context)
@@ -379,6 +408,13 @@ def presentation_receipts(
         )
         if terminal_sha != canonical_sha256(terminal_frame):
             fail(f"{context}.presentation_receipts[{index}] terminal frame hash mismatch")
+        capture = obj(
+            terminal_frame,
+            "surface_capture",
+            f"{context}.presentation_receipts[{index}].terminal_frame",
+        )
+        if set(capture) != CAPTURE_FIELDS:
+            fail(f"{context}.presentation_receipts[{index}] capture fields are not frozen")
         presentation_sequence = integer(
             terminal,
             "presentation_sequence",
@@ -391,6 +427,35 @@ def presentation_receipts(
         ):
             fail(
                 f"{context}.presentation_receipts[{index}] camera/presentation is not same-present"
+            )
+        expected_capture = {
+            "schema": CAPTURE_SCHEMA,
+            "producer": CAPTURE_PRODUCERS[endpoint],
+            "status": "presented",
+            "pixel_format": "rgba8unorm-srgb",
+            "width": WIDTH,
+            "height": HEIGHT,
+            "row_bytes": WIDTH * 4,
+            "byte_length": WIDTH * HEIGHT * 4,
+            "camera_revision": camera_revision,
+            "presentation_sequence": presentation_sequence,
+            "queue_terminal_complete": True,
+        }
+        for field, expected in expected_capture.items():
+            if capture.get(field) != expected:
+                fail(
+                    f"{context}.presentation_receipts[{index}].capture.{field} "
+                    "does not match renderer terminal evidence"
+                )
+        for field in ("rgba8_sha256", "png_sha256"):
+            sha256(
+                capture.get(field),
+                f"{context}.presentation_receipts[{index}].capture.{field}",
+            )
+        if receipt.get("capture") != capture:
+            fail(
+                f"{context}.presentation_receipts[{index}] does not carry the exact "
+                "renderer capture terminal"
             )
         if any(
             receipt.get(field) is not True
@@ -482,7 +547,9 @@ def artifact(
         "started": started,
         "ended": ended,
         "presentations": (
-            presentation_receipts(q1, frames, run_id, f"{context}.q1_comparison")
+            presentation_receipts(
+                q1, frames, run_id, endpoint, f"{context}.q1_comparison"
+            )
             if role == "control"
             else None
         ),
@@ -557,6 +624,15 @@ def endpoint_images(
         presentation = control["presentations"][trace]
         if value.get("capture_receipt") != presentation:
             fail(f"{context} is not bound to the control presentation")
+        capture = obj(presentation, "capture", f"{context}.capture_receipt")
+        if digest != capture.get("png_sha256"):
+            fail(f"{context} PNG digest does not match renderer capture terminal")
+        try:
+            decoded = _decode_image(path, f"{context}.renderer_capture")
+        except (OSError, IMAGE.ValidationError) as error:
+            fail(f"{context} renderer capture PNG is invalid: {error}")
+        if hashlib.sha256(decoded.rgba).hexdigest() != capture.get("rgba8_sha256"):
+            fail(f"{context} RGBA8 digest does not match renderer capture terminal")
         receipt = load_json(comparison_path, f"{context}.comparison")
         expected = {
             "schema": IMAGE_SCHEMA,
