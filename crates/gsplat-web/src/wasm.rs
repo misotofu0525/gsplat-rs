@@ -849,6 +849,38 @@ impl GsplatWebRenderer {
         Ok(object.into())
     }
 
+    /// Arms the real WebGPU queue-completion callback after the caller's last
+    /// measured render submission. No command buffer or copy is submitted.
+    #[cfg(feature = "diagnostic-web-surface-capture")]
+    #[wasm_bindgen(js_name = requestDiagnosticQueueTerminal)]
+    pub fn request_diagnostic_queue_terminal(&mut self) -> Result<(), JsValue> {
+        self.session
+            .request_diagnostic_queue_terminal()
+            .map_err(renderer_error)
+    }
+
+    /// Polls the callback timestamp on the browser `performance.now()` clock.
+    #[cfg(feature = "diagnostic-web-surface-capture")]
+    #[wasm_bindgen(js_name = pollDiagnosticQueueTerminal)]
+    pub fn poll_diagnostic_queue_terminal(&mut self) -> Result<JsValue, JsValue> {
+        let object = Object::new();
+        match self.session.poll_diagnostic_queue_terminal() {
+            Some(completed_at) => {
+                set_string(&object, "status", "ready")?;
+                Reflect::set(
+                    &object,
+                    &JsValue::from_str("completedAtMonotonicMs"),
+                    &JsValue::from_f64(completed_at),
+                )?;
+            }
+            None => {
+                set_string(&object, "status", "pending")?;
+                set_null(&object, "completedAtMonotonicMs")?;
+            }
+        }
+        Ok(object.into())
+    }
+
     /// Requests one observer receipt from the next presented Exact frame.
     /// This does not create another controller or change renderer policy.
     #[wasm_bindgen(js_name = requestCurrentStats)]

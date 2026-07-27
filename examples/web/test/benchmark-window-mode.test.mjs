@@ -60,6 +60,7 @@ test("N>1 drains warmup before input and measures input through final terminal",
     measuredFrames: 3,
     configurationSha256: CONFIGURATION_SHA256,
     controlArtifactIdentity: controlIdentity(),
+    directQueueCompletion: true,
   });
 
   assert.equal(window.noteDraw(draw({ submittedAtMonotonicMs: 1 })), "warmup");
@@ -138,6 +139,16 @@ test("N>1 drains warmup before input and measures input through final terminal",
     "same_submission_result_ready_before_first_measured_input",
   );
   assert.equal(evidence.terminal_receipt_overhead.residual_warmup_queue_tail, "excluded");
+  assert.equal(evidence.completion_primitive, "gpu_queue_on_submitted_work_done");
+  assert.equal(
+    evidence.queue_completion_timestamp_source,
+    "wgpu_queue_callback_performance_now",
+  );
+  assert.equal(evidence.terminal_receipt_overhead.queue_completion_callback, true);
+  assert.equal(
+    evidence.terminal_receipt_overhead.fairness_assessment,
+    "same_queue_completion_primitive",
+  );
   assert.doesNotThrow(() => validateBenchmarkWindowManifest({
     window: evidence,
     currentStatsSubmissionCount: 2,
@@ -145,6 +156,19 @@ test("N>1 drains warmup before input and measures input through final terminal",
     expectedWarmupFrameCount: 2,
     expectedConfigurationSha256: CONFIGURATION_SHA256,
   }));
+  assert.throws(
+    () => validateBenchmarkWindowManifest({
+      window: {
+        ...evidence,
+        queue_completion_timestamp_source: "raf_current_stats_poll_performance_now",
+      },
+      currentStatsSubmissionCount: 2,
+      expectedLogicalFrameCount: 3,
+      expectedWarmupFrameCount: 2,
+      expectedConfigurationSha256: CONFIGURATION_SHA256,
+    }),
+    /lacks continuous submits/,
+  );
   for (const invalidCount of [0, 1, 3]) {
     assert.throws(
       () => validateBenchmarkWindowManifest({

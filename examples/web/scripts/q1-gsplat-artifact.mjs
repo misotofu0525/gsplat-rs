@@ -125,7 +125,14 @@ export function q1TerminalWindow(benchmarkWindow) {
   if (benchmarkWindow?.mode !== "terminal_queue_throughput_window"
       || benchmarkWindow.measured_submit_count !== 80
       || benchmarkWindow.draw_count_at_final_drain_start
-        !== benchmarkWindow.draw_count_at_completion) {
+        !== benchmarkWindow.draw_count_at_completion
+      || benchmarkWindow.completion_primitive
+        !== "gpu_queue_on_submitted_work_done"
+      || benchmarkWindow.queue_completion_timestamp_source
+        !== "wgpu_queue_callback_performance_now"
+      || benchmarkWindow.terminal_receipt_overhead?.queue_completion_callback !== true
+      || benchmarkWindow.terminal_receipt_overhead?.fairness_assessment
+        !== "same_queue_completion_primitive") {
     fail("throughput lacks its admitted continuous terminal window");
   }
   return {
@@ -133,7 +140,8 @@ export function q1TerminalWindow(benchmarkWindow) {
     clock: "performance_now_monotonic",
     start_boundary: "first_measured_camera_input_accepted",
     end_boundary: "final_measured_gpu_queue_completion",
-    completion_primitive: "gpu_queue_on_submitted_work_done",
+    completion_primitive: benchmarkWindow.completion_primitive,
+    completion_timestamp_source: benchmarkWindow.queue_completion_timestamp_source,
     frame_loop_policy: "controlled_presented_raf",
     camera_mutation_point: "before_update_order_project_render",
     warmup_queue_drained: true,

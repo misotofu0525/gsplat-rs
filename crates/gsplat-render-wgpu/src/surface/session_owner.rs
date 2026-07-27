@@ -390,6 +390,26 @@ impl SessionSurfaceOwner {
         }
     }
 
+    #[cfg(all(target_arch = "wasm32", feature = "diagnostic-surface-capture-receipt"))]
+    pub(crate) fn request_diagnostic_queue_terminal(&mut self) -> bool {
+        match self {
+            Self::ExactPacked(host) => host.request_diagnostic_queue_terminal(),
+            Self::Standalone(_) => false,
+            #[cfg(test)]
+            Self::Test(_) => false,
+        }
+    }
+
+    #[cfg(all(target_arch = "wasm32", feature = "diagnostic-surface-capture-receipt"))]
+    pub(crate) fn poll_diagnostic_queue_terminal(&mut self) -> Option<f64> {
+        match self {
+            Self::ExactPacked(host) => host.poll_diagnostic_queue_terminal(),
+            Self::Standalone(_) => None,
+            #[cfg(test)]
+            Self::Test(_) => None,
+        }
+    }
+
     pub(crate) fn raster_execution_plan(&self) -> SurfaceRasterExecutionPlan {
         match self {
             Self::Standalone(presenter) => presenter.raster_execution_plan(),

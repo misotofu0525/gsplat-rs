@@ -530,6 +530,13 @@ export class GsplatWebRenderer {
   requestDiagnosticSurfaceCapture(): Promise<void>;
   /** Take the same-present renderer-owned RGBA8 capture and precision receipts. */
   takeDiagnosticSurfaceCapture(): Promise<unknown>;
+  /** Arm a no-submission callback for all WebGPU queue work issued so far. */
+  requestDiagnosticQueueTerminal(): void;
+  /** Poll the callback-owned performance.now timestamp without submitting work. */
+  pollDiagnosticQueueTerminal(): Readonly<{
+    status: "pending" | "ready";
+    completedAtMonotonicMs: number | null;
+  }>;
   sceneSummary(): GsplatSceneSummary;
   loadReceipt(): GsplatLoadReceipt | null;
   surfaceSize(): GsplatSurfaceSize;

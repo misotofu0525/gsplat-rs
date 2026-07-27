@@ -1003,6 +1003,42 @@ test("GsplatWebRenderer fails closed when the loaded WASM lacks diagnostic captu
   await assert.rejects(renderer.takeDiagnosticSurfaceCapture(), /does not include/);
 });
 
+test("GsplatWebRenderer preserves the actual diagnostic queue callback timestamp", () => {
+  const terminals = [
+    { status: "pending", completedAtMonotonicMs: null },
+    { status: "ready", completedAtMonotonicMs: 42.5 },
+  ];
+  let requests = 0;
+  const renderer = new GsplatWebRenderer({
+    ...makeNativeRenderer(),
+    requestDiagnosticQueueTerminal() { requests += 1; },
+    pollDiagnosticQueueTerminal() { return terminals.shift(); },
+  });
+  renderer.requestDiagnosticQueueTerminal();
+  assert.equal(requests, 1);
+  assert.deepEqual(renderer.pollDiagnosticQueueTerminal(), {
+    status: "pending",
+    completedAtMonotonicMs: null,
+  });
+  assert.deepEqual(renderer.pollDiagnosticQueueTerminal(), {
+    status: "ready",
+    completedAtMonotonicMs: 42.5,
+  });
+});
+
+test("GsplatWebRenderer rejects missing or malformed diagnostic queue terminals", () => {
+  const missing = new GsplatWebRenderer(makeNativeRenderer());
+  assert.throws(() => missing.requestDiagnosticQueueTerminal(), /does not include/);
+  assert.throws(() => missing.pollDiagnosticQueueTerminal(), /does not include/);
+  const malformed = new GsplatWebRenderer({
+    ...makeNativeRenderer(),
+    pollDiagnosticQueueTerminal() {
+      return { status: "ready", completedAtMonotonicMs: Number.NaN };
+    },
+  });
+  assert.throws(() => malformed.pollDiagnosticQueueTerminal(), /invalid terminal/);
+});
+
 test("GsplatWebRenderer does not expose a benchmark-only terminal fence", () => {
   const renderer = new GsplatWebRenderer(makeNativeRenderer());
   assert.equal(renderer.requestTerminalQueueFence, undefined);

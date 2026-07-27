@@ -910,3 +910,24 @@ formal five-pair orchestrator, fresh Chrome series, image joins and offline
 verdict remain **Deferred** to their declared owners. Focused Q1/package tests,
 all Web example tests, all package tests, the 35-test Q1 admission suite,
 source architecture policy and the Web distribution build pass.
+
+### Queue-terminal fairness repair
+
+The Q1 throughput window no longer labels the next rAF observation of a
+current-stats map as WebGPU queue completion. Its quality-exact-only diagnostic
+seam registers `Queue::on_submitted_work_done` immediately after the warmup or
+final measured render submission and captures `performance.now()` inside that
+callback. Current-stats remains a separate same-submission identity/count
+proof. Polling either result submits no command buffer, copy or capture, and
+the Q1 decorator rejects the old rAF-observed timestamp source rather than
+relabeling it.
+
+This repair is a mechanism candidate only and ran no browser. Three producer
+fairness requirements remain **P1 / Deferred** before any fresh Q1 series is
+admissible: the gsplat-rs launcher must use a headful 1920x1080 DPR-1 Chrome
+session with pre/post visible/focused/CSS/backing receipts; record and bind the
+actual Chrome executable and normalized process `spawnargs`; and replace the
+currently caller-trusted environment/build context with self-observed stable
+adapter, driver, thermal and pre/post JS/WASM/package identities. The shared
+offline admission also owns blocker/cleanup-blocker rejection. Until those
+seams land, this candidate must not support a comparative performance claim.

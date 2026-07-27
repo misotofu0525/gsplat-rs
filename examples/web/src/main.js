@@ -164,6 +164,7 @@ const state = {
   benchmarkWindowMode: BENCHMARK_WINDOW_MODES.currentStatsEvidence,
   currentStatsControlArtifactIdentity: null,
   q1CaptureTraceFrameIndex: null,
+  q1QueueTerminalEnabled: false,
   sampledWebglEnabled: false,
   currentStatsSmokeEnabled: false,
   currentStatsSmokeRequested: false,
@@ -1663,13 +1664,17 @@ function progressBenchmarkTerminalReceipt(benchmark) {
       const phase = window.action === "poll_warmup_receipt"
         ? "warmup_boundary"
         : "final_measured";
-      const terminal = state.wasmRenderer.pollCurrentStats();
-      benchmark.terminalPollCount += 1;
-      if (terminal.status === "empty") return true;
-      if (terminal.status === "unsampled") {
-        throw new Error(
-          `${phase} current-stats receipt was unsampled: ${terminal.reason ?? "unknown"}`,
-        );
+      let terminal = benchmark.terminalCurrentStatsObserved;
+      if (terminal === null) {
+        terminal = state.wasmRenderer.pollCurrentStats();
+        benchmark.terminalPollCount += 1;
+        if (terminal.status === "empty") return true;
+        if (terminal.status === "unsampled") {
+          throw new Error(
+            `${phase} current-stats receipt was unsampled: ${terminal.reason ?? "unknown"}`,
+          );
+        }
+        benchmark.terminalCurrentStatsObserved = terminal;
       }
       const pending = benchmark.terminalCurrentStatsPending;
       if (!pending || pending.phase !== phase) {
@@ -1678,7 +1683,25 @@ function progressBenchmarkTerminalReceipt(benchmark) {
           + "had no matching issued ticket",
         );
       }
-      const terminalAtMonotonicMs = performance.now();
+      if (terminal.status !== "ready") {
+        joinBenchmarkCurrentStatsTerminal(
+          benchmark,
+          pending,
+          terminal,
+          performance.now(),
+        );
+        return true;
+      }
+      let terminalAtMonotonicMs = performance.now();
+      if (state.q1QueueTerminalEnabled) {
+        const queueTerminal = state.wasmRenderer.pollDiagnosticQueueTerminal();
+        if (queueTerminal.status === "pending") return true;
+        if (queueTerminal.status !== "ready"
+            || !Number.isFinite(queueTerminal.completedAtMonotonicMs)) {
+          throw new Error(`${phase} queue terminal callback returned invalid evidence`);
+        }
+        terminalAtMonotonicMs = queueTerminal.completedAtMonotonicMs;
+      }
       const joined = joinBenchmarkCurrentStatsTerminal(
         benchmark,
         pending,
@@ -1698,6 +1721,7 @@ function progressBenchmarkTerminalReceipt(benchmark) {
         window.recordTerminalReceipt(receipt);
       }
       benchmark.terminalCurrentStatsPending = null;
+      benchmark.terminalCurrentStatsObserved = null;
       benchmark.terminalCurrentStatsRequestOutstanding = false;
       if (phase === "warmup_boundary") {
         benchmark.lastObservedFrameMs = null;
@@ -2912,6 +2936,7 @@ function createBenchmarkState(enabled) {
           && state.requestedGpuOrderProducer === null
           ? "fixed_gpu_preproject_compact"
           : "adaptive",
+        directQueueCompletion: state.q1QueueTerminalEnabled,
       })
     : null;
   const q1Capture = state.q1CaptureTraceFrameIndex === null ? null : {
@@ -2973,6 +2998,7 @@ function createBenchmarkState(enabled) {
     q1Capture,
     terminalCurrentStatsRequestOutstanding: false,
     terminalCurrentStatsPending: null,
+    terminalCurrentStatsObserved: null,
     pendingProjectedSample: null,
     pendingGpuProducerSample: null,
     presentedSubmissionCount: 0,
@@ -3183,6 +3209,24 @@ function applyUrlConfig() {
     }
     state.q1CaptureTraceFrameIndex = traceFrameIndex;
   }
+  const q1QueueTerminalText = params.get("gsplat_q1_queue_terminal");
+  if (q1QueueTerminalText !== null) {
+    const fixedGpuCompactCell = state.requestedOrderBackend === "gpu"
+      && state.requestedProjectedPolicy === "compact"
+      && state.requestedGpuOrderProducer === null;
+    if (q1QueueTerminalText !== "1"
+        || !state.strictBenchmarkMode
+        || state.autoBenchmarkSync
+        || benchmarkWindowMode !== BENCHMARK_WINDOW_MODES.terminalQueueThroughput
+        || state.geometryPath !== "packed"
+        || !fixedGpuCompactCell
+        || state.orderCompletionProtocol !== "sustained_window") {
+      throw new TypeError(
+        "Q1 queue terminal requires strict async Packed GPU Preproject Compact throughput",
+      );
+    }
+    state.q1QueueTerminalEnabled = true;
+  }
   if (state.qualificationTraceSequenceEnabled) {
     if (params.has("gsplat_camera_frame")) {
       throw new TypeError("gsplat_camera_frame cannot be combined with gsplat_camera_trace_sequence");
@@ -3357,6 +3401,16 @@ function recordBenchmark(stats) {
       benchmark.presentedSubmissionCount += 1;
       benchmark.observedFrames += 1;
       benchmark.primingOrder = false;
+      if (terminalBoundary && state.q1QueueTerminalEnabled) {
+        try {
+          state.wasmRenderer.requestDiagnosticQueueTerminal();
+        } catch (error) {
+          failStrictBenchmarkForOrderEvidence(
+            `queue terminal callback arm failed: ${compactMessage(error)}`,
+          );
+          return;
+        }
+      }
       if (phase === "warmup") {
         benchmark.lastObservedFrameMs = now;
         return;

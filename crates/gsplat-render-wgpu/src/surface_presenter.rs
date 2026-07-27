@@ -1,6 +1,8 @@
 //! WGPU Surface presentation and geometry-resource ownership.
 
 use gsplat_core::{Camera, SceneBuffers};
+#[cfg(all(target_arch = "wasm32", feature = "diagnostic-surface-capture-receipt"))]
+use std::sync::{Arc, Mutex};
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::Duration;
 
@@ -37,6 +39,8 @@ pub(crate) struct SurfacePresenterHost {
     surface_configuration: SurfaceConfigurationOwner,
     surface_lifecycle: SurfaceLifecycle,
     surface_capture: SurfaceCapture,
+    #[cfg(all(target_arch = "wasm32", feature = "diagnostic-surface-capture-receipt"))]
+    diagnostic_queue_terminal: Option<Arc<Mutex<Option<f64>>>>,
     adapter_max_storage_buffers_per_shader_stage: u32,
     adapter_max_storage_buffer_binding_size: u64,
     indirect_execution_supported: bool,
@@ -370,6 +374,8 @@ impl SurfacePresenterHost {
             surface_capture: SurfaceCapture::new(
                 caps.usages.contains(wgpu::TextureUsages::COPY_SRC),
             ),
+            #[cfg(all(target_arch = "wasm32", feature = "diagnostic-surface-capture-receipt"))]
+            diagnostic_queue_terminal: None,
             adapter_max_storage_buffers_per_shader_stage: adapter_limits
                 .max_storage_buffers_per_shader_stage,
             adapter_max_storage_buffer_binding_size: u64::from(
@@ -582,6 +588,41 @@ impl SurfacePresenterHost {
         &mut self,
     ) -> Result<SurfaceFrameCapture, SurfacePresenterError> {
         self.surface_capture.take_async().await
+    }
+
+    /// Registers the actual WebGPU queue completion callback for all work
+    /// submitted before this call. This observer adds no command buffer or
+    /// queue submission; its timestamp is captured inside the callback on the
+    /// same `performance.now()` clock used by the browser harness.
+    #[cfg(all(target_arch = "wasm32", feature = "diagnostic-surface-capture-receipt"))]
+    pub(crate) fn request_diagnostic_queue_terminal(&mut self) -> bool {
+        if self.diagnostic_queue_terminal.is_some() {
+            return false;
+        }
+        let state = Arc::new(Mutex::new(None));
+        let callback_state = Arc::clone(&state);
+        self.queue.on_submitted_work_done(move || {
+            let mut completed = callback_state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            *completed = Some(crate::timer_now());
+        });
+        self.diagnostic_queue_terminal = Some(state);
+        true
+    }
+
+    /// Takes the callback timestamp once it is available. Pending polls retain
+    /// the request, while a ready value consumes it exactly once.
+    #[cfg(all(target_arch = "wasm32", feature = "diagnostic-surface-capture-receipt"))]
+    pub(crate) fn poll_diagnostic_queue_terminal(&mut self) -> Option<f64> {
+        let state = self.diagnostic_queue_terminal.as_ref()?;
+        let completed = *state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if completed.is_some() {
+            self.diagnostic_queue_terminal = None;
+        }
+        completed
     }
 }
 

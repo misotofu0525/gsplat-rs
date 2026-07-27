@@ -1454,6 +1454,29 @@ impl SurfaceRenderSession {
             .map(DiagnosticSurfaceCaptureReceipt::from_evidence)
     }
 
+    /// Arms a diagnostic callback for the actual WebGPU queue terminal after
+    /// the caller's final measured submission. This is absent from ordinary
+    /// builds and never submits additional GPU work.
+    #[cfg(all(feature = "diagnostic-surface-capture-receipt", target_arch = "wasm32"))]
+    #[doc(hidden)]
+    pub fn request_diagnostic_queue_terminal(&mut self) -> Result<(), RendererError> {
+        if self.presenter.request_diagnostic_queue_terminal() {
+            Ok(())
+        } else {
+            Err(crate::SurfacePresenterError::SurfaceCaptureState(
+                "a diagnostic queue terminal request is already pending".into(),
+            )
+            .into())
+        }
+    }
+
+    /// Returns the queue-callback timestamp once, or `None` while pending.
+    #[cfg(all(feature = "diagnostic-surface-capture-receipt", target_arch = "wasm32"))]
+    #[doc(hidden)]
+    pub fn poll_diagnostic_queue_terminal(&mut self) -> Option<f64> {
+        self.presenter.poll_diagnostic_queue_terminal()
+    }
+
     pub fn geometry_path(&self) -> GeometryPath {
         self.renderer.geometry_path()
     }

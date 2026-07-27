@@ -648,6 +648,38 @@ export class GsplatWebRenderer {
     return nativeRenderer.takeDiagnosticSurfaceCapture();
   }
 
+  requestDiagnosticQueueTerminal() {
+    const nativeRenderer = this.#requireNativeRenderer();
+    if (typeof nativeRenderer.requestDiagnosticQueueTerminal !== "function") {
+      throw new Error(
+        "the loaded gsplat-web module does not include diagnostic queue completion",
+      );
+    }
+    nativeRenderer.requestDiagnosticQueueTerminal();
+  }
+
+  pollDiagnosticQueueTerminal() {
+    const nativeRenderer = this.#requireNativeRenderer();
+    if (typeof nativeRenderer.pollDiagnosticQueueTerminal !== "function") {
+      throw new Error(
+        "the loaded gsplat-web module does not include diagnostic queue completion",
+      );
+    }
+    const terminal = nativeRenderer.pollDiagnosticQueueTerminal();
+    if (terminal?.status === "pending" && terminal.completedAtMonotonicMs === null) {
+      return Object.freeze({ status: "pending", completedAtMonotonicMs: null });
+    }
+    if (terminal?.status === "ready"
+        && Number.isFinite(terminal.completedAtMonotonicMs)
+        && terminal.completedAtMonotonicMs >= 0) {
+      return Object.freeze({
+        status: "ready",
+        completedAtMonotonicMs: terminal.completedAtMonotonicMs,
+      });
+    }
+    throw new TypeError("diagnostic queue completion returned an invalid terminal");
+  }
+
   sceneSummary() {
     const summary = this.#requireNativeRenderer().sceneSummary();
     return {

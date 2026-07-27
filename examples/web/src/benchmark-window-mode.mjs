@@ -147,6 +147,23 @@ export function validateBenchmarkWindowManifest({
       : window.terminal_receipt_overhead?.warmup_terminal_boundary
           === "same_submission_result_ready_before_first_measured_input"
         && window.terminal_receipt_overhead?.residual_warmup_queue_tail === "excluded";
+    const directQueueCompletion = window.completion_primitive
+      === "gpu_queue_on_submitted_work_done";
+    const terminalPrimitiveValid = directQueueCompletion
+      ? window.queue_completion_timestamp_source === "wgpu_queue_callback_performance_now"
+        && window.terminal_receipt_overhead?.kind
+          === "renderer_current_stats_map_plus_direct_queue_callback_v2"
+        && window.terminal_receipt_overhead?.queue_completion_callback === true
+        && window.terminal_receipt_overhead?.fairness_assessment
+          === "same_queue_completion_primitive"
+      : window.completion_primitive === "renderer_current_stats_poll_observed"
+        && window.queue_completion_timestamp_source
+          === "raf_current_stats_poll_performance_now"
+        && window.terminal_receipt_overhead?.kind
+          === "renderer_current_stats_same_submission_map_v1"
+        && window.terminal_receipt_overhead?.queue_completion_callback === false
+        && window.terminal_receipt_overhead?.fairness_assessment
+          === "conservative_nonidentical_terminal_proof_overhead_disclosed";
     if (window.warmup_submit_count !== expectedWarmupFrameCount
         || window.measured_submit_count !== expectedLogicalFrameCount
         || window.measured_wait_count_before_final_submit !== 0
@@ -178,8 +195,7 @@ export function validateBenchmarkWindowManifest({
           !== window.last_measured_terminal_monotonic_ms
         || window.draw_count_at_final_drain_start
           !== expectedWarmupFrameCount + expectedLogicalFrameCount
-        || window.terminal_receipt_overhead?.kind
-          !== "renderer_current_stats_same_submission_map_v1"
+        || !terminalPrimitiveValid
         || window.terminal_receipt_overhead?.readback_buffer_bytes !== 8
         || ![4, 8].includes(window.terminal_receipt_overhead?.encoded_copy_bytes)
         || window.terminal_receipt_overhead?.extra_queue_submissions !== 0
@@ -188,8 +204,6 @@ export function validateBenchmarkWindowManifest({
         || !warmupOverheadValid
         || window.terminal_receipt_overhead?.competitor_terminal_primitive
           !== "queue_on_submitted_work_done_promise"
-        || window.terminal_receipt_overhead?.fairness_assessment
-          !== "conservative_nonidentical_terminal_proof_overhead_disclosed"
         || !Number.isFinite(window.first_measured_input_monotonic_ms)
         || !Number.isFinite(window.first_measured_submit_monotonic_ms)
         || !Number.isFinite(window.last_measured_submit_monotonic_ms)
@@ -228,6 +242,7 @@ export function createTerminalQueueThroughputWindow({
   configurationSha256,
   controlArtifactIdentity,
   executionCell = "adaptive",
+  directQueueCompletion = false,
 }) {
   const warmup = frameCount(warmupFrames, "warmup frame count", true);
   const measured = frameCount(measuredFrames, "measured frame count");
@@ -528,8 +543,16 @@ export function createTerminalQueueThroughputWindow({
           ? null
           : { ...warmupTerminalReceipt },
         terminal_receipt: { ...finalTerminalReceipt },
+        completion_primitive: directQueueCompletion
+          ? "gpu_queue_on_submitted_work_done"
+          : "renderer_current_stats_poll_observed",
+        queue_completion_timestamp_source: directQueueCompletion
+          ? "wgpu_queue_callback_performance_now"
+          : "raf_current_stats_poll_performance_now",
         terminal_receipt_overhead: {
-          kind: "renderer_current_stats_same_submission_map_v1",
+          kind: directQueueCompletion
+            ? "renderer_current_stats_map_plus_direct_queue_callback_v2"
+            : "renderer_current_stats_same_submission_map_v1",
           readback_buffer_bytes: 8,
           encoded_copy_bytes: finalMeasuredPlan === "cpu_post_sort" ? 4 : 8,
           extra_queue_submissions: 0,
@@ -540,8 +563,10 @@ export function createTerminalQueueThroughputWindow({
             : "not_applicable_no_warmup",
           residual_warmup_queue_tail: warmup > 0 ? "excluded" : "not_applicable",
           competitor_terminal_primitive: "queue_on_submitted_work_done_promise",
-          fairness_assessment:
-            "conservative_nonidentical_terminal_proof_overhead_disclosed",
+          queue_completion_callback: directQueueCompletion,
+          fairness_assessment: directQueueCompletion
+            ? "same_queue_completion_primitive"
+            : "conservative_nonidentical_terminal_proof_overhead_disclosed",
         },
         exact_adaptive_measured: measuredExactAdaptive.map((record) => ({ ...record })),
       };

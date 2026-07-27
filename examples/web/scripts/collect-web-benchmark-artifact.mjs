@@ -1609,6 +1609,8 @@ try {
   }
   if (q1ArtifactRole === 'control') {
     params.set('gsplat_q1_capture_trace_frame', String(q1CaptureTraceFrame));
+  } else if (q1ArtifactRole === 'throughput') {
+    params.set('gsplat_q1_queue_terminal', '1');
   }
   if (q1PackageUrl !== null) params.set('gsplat_wasm_package_url', q1PackageUrl);
   if (dataset) params.set('dataset', dataset);

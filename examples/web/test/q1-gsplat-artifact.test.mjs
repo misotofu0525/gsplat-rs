@@ -26,6 +26,12 @@ function throughputParsed() {
     first_measured_input_monotonic_ms: 10,
     last_measured_terminal_monotonic_ms: 90,
     terminal_window_ms: 80,
+    completion_primitive: "gpu_queue_on_submitted_work_done",
+    queue_completion_timestamp_source: "wgpu_queue_callback_performance_now",
+    terminal_receipt_overhead: {
+      queue_completion_callback: true,
+      fairness_assessment: "same_queue_completion_primitive",
+    },
   };
   return {
     manifests: [JSON.stringify({
@@ -74,5 +80,13 @@ test("Q1 terminal rejects an extra draw during final drain", () => {
   const parsed = throughputParsed();
   const manifest = JSON.parse(parsed.manifests[0]);
   manifest.benchmark_window.draw_count_at_completion += 1;
+  assert.throws(() => q1TerminalWindow(manifest.benchmark_window), /continuous terminal/);
+});
+
+test("Q1 terminal rejects a RAF-observed completion relabeled as a queue callback", () => {
+  const parsed = throughputParsed();
+  const manifest = JSON.parse(parsed.manifests[0]);
+  manifest.benchmark_window.queue_completion_timestamp_source =
+    "raf_current_stats_poll_performance_now";
   assert.throws(() => q1TerminalWindow(manifest.benchmark_window), /continuous terminal/);
 });
