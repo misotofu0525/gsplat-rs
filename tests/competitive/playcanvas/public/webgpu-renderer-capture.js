@@ -122,19 +122,25 @@ export function beginPlayCanvasWebgpuRendererCapture({
     size: mappedByteLength,
     usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ
   });
-  const encoder = graphicsDevice.getCommandEncoder();
-  encoder.copyTextureToBuffer(
-    { texture },
-    { buffer: readback, offset: 0, bytesPerRow: paddedBytesPerRow, rowsPerImage: height },
-    { width, height, depthOrArrayLayers: 1 }
-  );
-  const copySubmitVersionBefore = graphicsDevice.submitVersion;
-  graphicsDevice.submit();
-  const copySubmitVersionAfter = graphicsDevice.submitVersion;
-  if (copySubmitVersionBefore !== rendererSubmitVersion ||
-      copySubmitVersionAfter !== copySubmitVersionBefore + 1) {
+  let copySubmitVersionBefore;
+  let copySubmitVersionAfter;
+  try {
+    const encoder = graphicsDevice.getCommandEncoder();
+    encoder.copyTextureToBuffer(
+      { texture },
+      { buffer: readback, offset: 0, bytesPerRow: paddedBytesPerRow, rowsPerImage: height },
+      { width, height, depthOrArrayLayers: 1 }
+    );
+    copySubmitVersionBefore = graphicsDevice.submitVersion;
+    graphicsDevice.submit();
+    copySubmitVersionAfter = graphicsDevice.submitVersion;
+    if (copySubmitVersionBefore !== rendererSubmitVersion ||
+        copySubmitVersionAfter !== copySubmitVersionBefore + 1) {
+      throw new Error('renderer capture copy did not form one ordered PlayCanvas WebGPU submission');
+    }
+  } catch (error) {
     readback.destroy();
-    throw new Error('renderer capture copy did not form one ordered PlayCanvas WebGPU submission');
+    throw error;
   }
 
   const completion = (async () => {

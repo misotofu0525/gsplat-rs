@@ -58,7 +58,7 @@ function captureIdentity() {
   };
 }
 
-function fakeGraphicsDevice({ copySrc = true } = {}) {
+function fakeGraphicsDevice({ copySrc = true, failAt = null } = {}) {
   const padded = new Uint8Array(256 * 2);
   // Two BGRA rows. Padding is deliberately non-zero to prove it is stripped.
   padded.fill(0xee);
@@ -88,9 +88,16 @@ function fakeGraphicsDevice({ copySrc = true } = {}) {
     backBuffer: { impl: { assignedColorTexture: { width: 2, height: 2 } } },
     wgpu: { createBuffer: () => buffer },
     getCommandEncoder() {
-      return { copyTextureToBuffer: (...args) => { copied = args; } };
+      if (failAt === 'encoder') throw new Error('encoder failed');
+      return { copyTextureToBuffer: (...args) => {
+        if (failAt === 'copy') throw new Error('copy failed');
+        copied = args;
+      } };
     },
-    submit() { this.submitVersion += 1; }
+    submit() {
+      if (failAt === 'submit') throw new Error('submit failed');
+      this.submitVersion += 1;
+    }
   };
   return { device, copied: () => copied, destroyed: () => destroyed };
 }
@@ -152,6 +159,19 @@ test('renderer capture fails closed before readback when COPY_SRC or source iden
     rendererSubmitVersion: 7,
     identity: incomplete
   }), /complete source scene/);
+});
+
+test('renderer capture destroys its readback buffer after synchronous encode failures', () => {
+  for (const failAt of ['encoder', 'copy', 'submit']) {
+    const fake = fakeGraphicsDevice({ failAt });
+    assert.throws(() => beginPlayCanvasWebgpuRendererCapture({
+      graphicsDevice: fake.device,
+      rendererFrameSequence: 1,
+      rendererSubmitVersion: 7,
+      identity: captureIdentity()
+    }), new RegExp(`${failAt} failed`));
+    assert.equal(fake.destroyed(), true, `${failAt} failure leaked the readback buffer`);
+  }
 });
 
 test('host PNG is derived from and cryptographically bound to renderer RGBA8 bytes', async () => {

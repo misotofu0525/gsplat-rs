@@ -514,6 +514,10 @@ export async function collect(args, { executeBrowser = runBrowser } = {}) {
       config,
       browserLog,
     });
+    // The server reads the SDK and timing modules directly from this worktree.
+    // Revalidate immediately before publication so a concurrent edit cannot
+    // inherit the preflight commit receipt.
+    await cleanExactCommit(args.expectedCommit);
     const published = await publishSuccess({
       args,
       config,
