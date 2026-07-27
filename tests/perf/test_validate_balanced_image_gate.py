@@ -777,6 +777,37 @@ class BalancedImageGateTests(unittest.TestCase):
             with self.assertRaisesRegex(VALIDATOR.ValidationError, "count_semantics"):
                 validate_manifest(root, manifest)
 
+    def test_candidate20_rejects_combined_legacy_count_downgrade(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            manifest = candidate20_manifest(root)
+            receipt = manifest["frames"][0]["benchmark_artifacts"]["exact"]
+            artifact = root / receipt["path"]
+            benchmark_manifest_path = artifact / "manifest.json"
+            benchmark_manifest = json.loads(
+                benchmark_manifest_path.read_text(encoding="utf-8")
+            )
+            del benchmark_manifest["renderer"]["count_semantics"]
+            write_json(benchmark_manifest_path, benchmark_manifest)
+            frames_path = artifact / "frames.jsonl"
+            benchmark_frames = [
+                json.loads(line)
+                for line in frames_path.read_text(encoding="utf-8").splitlines()
+            ]
+            for benchmark_frame in benchmark_frames:
+                del benchmark_frame["contributor"]
+                del benchmark_frame["exact_contributor_compaction"]
+            frames_path.write_text(
+                "".join(
+                    json.dumps(benchmark_frame, sort_keys=True) + "\n"
+                    for benchmark_frame in benchmark_frames
+                ),
+                encoding="utf-8",
+            )
+            receipt["sha256"] = VALIDATOR.artifact_directory_sha256(artifact)
+            with self.assertRaisesRegex(VALIDATOR.ValidationError, "count_semantics"):
+                validate_manifest(root, manifest)
+
     def test_candidate20_requires_sorted_alpha_benchmark_execution(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)
