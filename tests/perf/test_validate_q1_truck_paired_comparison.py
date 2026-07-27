@@ -18,9 +18,9 @@ from unittest import mock
 
 from q1_pair_admission.artifacts import (
     BUILD_ARTIFACT_KEYS,
-    CAPTURE_PRODUCERS,
-    CAPTURE_SCHEMA,
+    HOST_ADMISSION_JOIN_SCHEMA,
     IMAGE_TOOL_SHA256,
+    PLAYCANVAS_RGBA_UNAVAILABLE,
 )
 from q1_pair_admission.common import ValidationError, canonical_sha256, file_sha256
 from q1_pair_admission.contract import (
@@ -52,8 +52,7 @@ def write_json(path: pathlib.Path, value: object) -> None:
     path.write_text(f"{json.dumps(value, indent=2)}\n", encoding="utf-8")
 
 
-def write_rgba_png(path: pathlib.Path, nonce: str, value: int = 0) -> str:
-    path.parent.mkdir(parents=True, exist_ok=True)
+def rgba_png_bytes(value: int = 0, *, ancillary: bytes | None = None) -> bytes:
     pixel = bytes((value, value, value, 255))
     row = pixel * WIDTH
     filtered = (b"\0" + row) * HEIGHT
@@ -66,14 +65,23 @@ def write_rgba_png(path: pathlib.Path, nonce: str, value: int = 0) -> str:
             + struct.pack(">I", zlib.crc32(kind + payload) & 0xFFFFFFFF)
         )
 
-    data = (
+    return (
         b"\x89PNG\r\n\x1a\n"
         + chunk(b"IHDR", struct.pack(">IIBBBBB", WIDTH, HEIGHT, 8, 6, 0, 0, 0))
-        + chunk(b"tEXt", f"fixture={nonce}".encode())
+        + (chunk(b"tEXt", ancillary) if ancillary is not None else b"")
         + chunk(b"IDAT", zlib.compress(filtered, 9))
         + chunk(b"IEND", b"")
     )
-    path.write_bytes(data)
+
+
+def write_rgba_png(path: pathlib.Path, value: int = 0) -> str:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(rgba_png_bytes(value))
+    return file_sha256(path)
+
+
+def write_reencoded_rgba_png(path: pathlib.Path, value: int = 0) -> str:
+    path.write_bytes(rgba_png_bytes(value, ancillary=b"noncanonical=reencode"))
     return file_sha256(path)
 
 
@@ -81,26 +89,39 @@ def solid_rgba_sha256(value: int = 0) -> str:
     return hashlib.sha256(bytes((value, value, value, 255)) * (WIDTH * HEIGHT)).hexdigest()
 
 
-def renderer_capture(
-    endpoint: str,
-    png_sha256: str,
+def gsplat_renderer_rgba(
     camera_revision: int,
     presentation_sequence: int,
 ) -> dict[str, object]:
     return {
-        "schema": CAPTURE_SCHEMA,
-        "producer": CAPTURE_PRODUCERS[endpoint],
-        "status": "presented",
+        "scene_generation": 1,
+        "camera_revision": camera_revision,
+        "viewport_generation": 0,
+        "contract_generation": 1,
+        "plan_set_generation": 2,
+        "plan_id": "GpuPreproject",
+        "order_generation": camera_revision,
+        "presentation_sequence": presentation_sequence,
+        "width": WIDTH,
+        "height": HEIGHT,
+        "rgba8_sha256": solid_rgba_sha256(),
+        "profile": "ExactFull32",
+    }
+
+
+def host_admission_join(
+    png_sha256: str, producer_path: pathlib.Path, producer_sha256: str
+) -> dict[str, object]:
+    return {
+        "schema": HOST_ADMISSION_JOIN_SCHEMA,
+        "source": "decoded_png_rgba8_to_renderer_receipt",
         "pixel_format": "rgba8unorm-srgb",
         "width": WIDTH,
         "height": HEIGHT,
-        "row_bytes": WIDTH * 4,
-        "byte_length": WIDTH * HEIGHT * 4,
-        "rgba8_sha256": solid_rgba_sha256(),
+        "producer_artifact_path": producer_path.as_posix(),
+        "producer_manifest_sha256": producer_sha256,
+        "source_rgba8_sha256": solid_rgba_sha256(),
         "png_sha256": png_sha256,
-        "camera_revision": camera_revision,
-        "presentation_sequence": presentation_sequence,
-        "queue_terminal_complete": True,
     }
 
 
@@ -217,7 +238,7 @@ def presentation(
 ) -> dict[str, object]:
     terminal_index = MEASURED - 2 + trace
     terminal_frame = frames[terminal_index]
-    return {
+    result = {
         "trace_frame_index": trace,
         "camera": {
             "trace_id": TRACE["id"],
@@ -232,7 +253,6 @@ def presentation(
             "frame_sha256": canonical_sha256(terminal_frame),
             "presentation_sequence": terminal_frame["presentation_sequence"],
         },
-        "capture": terminal_frame["surface_capture"],
         "successful_present": True,
         "queue_terminal_complete": True,
         "captured_after_terminal": True,
@@ -241,6 +261,7 @@ def presentation(
             **{f"{stage}_height": HEIGHT for stage in ("requested", "surface", "internal_render", "presented")},
         },
     }
+    return result
 
 
 def protocol() -> dict[str, object]:
@@ -263,6 +284,7 @@ def manifest(
     protocol_sha: str, pair_id: str, order: str, position: int, configuration: str,
     terminal_ms: float | None, started_at: str, ended_at: str,
     build_artifacts: dict[str, object],
+    capture_trace: int | None = None,
 ) -> dict[str, object]:
     renderer = (
         {"implementation": "playcanvas-d5fe888", "path": "GSplatHybridRenderer", "backend": "webgpu", "sort_policy": "raster_gpu_sort", "uses_gpu_sort": True}
@@ -291,6 +313,10 @@ def manifest(
     }
     if role != "control":
         q1["terminal_window"] = terminal(terminal_ms or 1.0)
+    else:
+        q1["capture_trace_frame_index"] = capture_trace
+        if endpoint == "playcanvas":
+            q1["renderer_rgba_unavailable_reason"] = PLAYCANVAS_RGBA_UNAVAILABLE
     return {
         "schema": "gsplat-benchmark/v1",
         "record_type": "manifest",
@@ -317,25 +343,22 @@ def write_artifact(
     endpoint: str,
     role: str,
     terminal_ms: float | None,
-    capture_png_sha256: dict[int, str] | None = None,
+    capture_trace: int | None = None,
 ) -> pathlib.Path:
     directory = root / relative
     directory.mkdir(parents=True)
     records = [frame(str(doc["run_id"]), index, endpoint, role) for index in range(MEASURED)]
     if role == "control":
-        if capture_png_sha256 is None or set(capture_png_sha256) != {0, 1}:
-            raise AssertionError("control fixture requires both renderer capture digests")
-        for trace in (0, 1):
-            terminal_frame = records[MEASURED - 2 + trace]
-            terminal_frame["surface_capture"] = renderer_capture(
-                endpoint,
-                capture_png_sha256[trace],
+        if endpoint == "gsplat_rs":
+            assert capture_trace in {0, 1}
+            terminal_frame = records[MEASURED - 2 + capture_trace]
+            terminal_frame["capture_depth_precision"] = gsplat_renderer_rgba(
                 int(terminal_frame["camera_revision"]),
                 int(terminal_frame["presentation_sequence"]),
             )
-        doc["q1_comparison"]["presentation_receipts"] = [
-            presentation(trace, str(doc["run_id"]), records) for trace in (0, 1)
-        ]
+            doc["q1_comparison"]["presentation_identity"] = presentation(
+                capture_trace, str(doc["run_id"]), records
+            )
     write_json(directory / "manifest.json", doc)
     (directory / "frames.jsonl").write_text("".join(f"{json.dumps(value)}\n" for value in records), encoding="utf-8")
     write_json(directory / "summary.json", summary(str(doc["run_id"]), terminal_ms))
@@ -347,7 +370,7 @@ def build_series(root: pathlib.Path, *, gs_terminal_ms: float = 800.0, score: fl
     references = []
     for trace in (0, 1):
         path = pathlib.Path("reference") / f"view-{trace}.png"
-        digest = write_rgba_png(root / path, f"reference-{trace}")
+        digest = write_rgba_png(root / path)
         references.append({"trace_frame_index": trace, "path": str(path), "sha256": digest})
     schedule_block = {
         "seed": 20260728,
@@ -375,48 +398,89 @@ def build_series(root: pathlib.Path, *, gs_terminal_ms: float = 800.0, score: fl
             configuration = hashlib.sha256(f"config-{endpoint}".encode()).hexdigest()
             slot = (pair_index - 1) * 20 + (position - 1) * 8
             epoch = datetime(2026, 7, 28, tzinfo=timezone.utc)
-            control_started = epoch + timedelta(seconds=slot + 1)
-            control_ended = control_started + timedelta(seconds=2)
-            throughput_started = control_ended + timedelta(seconds=1)
+            throughput_started = epoch + timedelta(seconds=slot + 7)
             throughput_ended = throughput_started + timedelta(seconds=2)
-            image_material: list[dict[str, object]] = []
-            capture_digests: dict[int, str] = {}
+            controls: list[dict[str, object]] = []
+            controls_by_trace: dict[int, tuple[pathlib.Path, str]] = {}
+            for trace in (0, 1):
+                control_relative = base / f"control-trace-{trace}"
+                control_started = epoch + timedelta(seconds=slot + trace * 2 + 1)
+                control_ended = control_started + timedelta(seconds=1)
+                control_doc = manifest(
+                    endpoint=endpoint,
+                    role="control",
+                    run_id=f"{pair_id}-{endpoint}-control-{trace}",
+                    series_id=series_id,
+                    schedule_sha=schedule_sha,
+                    protocol_sha=protocol_sha,
+                    pair_id=pair_id,
+                    order=order,
+                    position=position,
+                    configuration=configuration,
+                    terminal_ms=None,
+                    started_at=control_started.isoformat(),
+                    ended_at=control_ended.isoformat(),
+                    build_artifacts=builds[endpoint],
+                    capture_trace=trace,
+                )
+                control_dir = write_artifact(
+                    root,
+                    control_relative,
+                    control_doc,
+                    endpoint,
+                    "control",
+                    None,
+                    capture_trace=trace,
+                )
+                control_sha = file_sha256(control_dir / "manifest.json")
+                controls.append(
+                    {
+                        "trace_frame_index": trace,
+                        "artifact": control_relative.as_posix(),
+                        "manifest_sha256": control_sha,
+                    }
+                )
+                controls_by_trace[trace] = (control_relative, control_sha)
+            images: list[dict[str, object]] = []
             for trace in (0, 1):
                 image_path = base / f"view-{trace}.png"
-                image_sha = write_rgba_png(
-                    root / image_path, f"{pair_id}-{endpoint}-{trace}"
-                )
-                capture_digests[trace] = image_sha
+                image_sha = write_rgba_png(root / image_path)
                 comparison_path = base / f"view-{trace}-comparison.json"
                 write_json(root / comparison_path, {"schema": IMAGE_SCHEMA, "metric": "ssim-luma-srgb-window8", "tool": "tests/perf/compare-image-ssim.mjs", "tool_sha256": IMAGE_TOOL_SHA256, "trace_frame_index": trace, "reference_sha256": references[trace]["sha256"], "candidate_sha256": image_sha, "width": WIDTH, "height": HEIGHT, "minimum_ssim": 0.99, "score": score})
-                image_material.append(
+                control_relative, control_sha = controls_by_trace[trace]
+                images.append(
                     {
                         "trace_frame_index": trace,
                         "path": str(image_path),
                         "sha256": image_sha,
                         "comparison": str(comparison_path),
+                        "producer_artifact": {
+                            "path": control_relative.as_posix(),
+                            "manifest_sha256": control_sha,
+                        },
+                        "host_admission_join": host_admission_join(
+                            image_sha, control_relative, control_sha
+                        ),
                     }
                 )
-            control_doc = manifest(endpoint=endpoint, role="control", run_id=f"{pair_id}-{endpoint}-control", series_id=series_id, schedule_sha=schedule_sha, protocol_sha=protocol_sha, pair_id=pair_id, order=order, position=position, configuration=configuration, terminal_ms=None, started_at=control_started.isoformat(), ended_at=control_ended.isoformat(), build_artifacts=builds[endpoint])
-            control_dir = write_artifact(
-                root,
-                base / "control",
-                control_doc,
-                endpoint,
-                "control",
-                None,
-                capture_digests,
-            )
             throughput_ms = 1000.0 if endpoint == "playcanvas" else gs_terminal_ms
             throughput_doc = manifest(endpoint=endpoint, role="throughput", run_id=f"{pair_id}-{endpoint}-throughput", series_id=series_id, schedule_sha=schedule_sha, protocol_sha=protocol_sha, pair_id=pair_id, order=order, position=position, configuration=configuration, terminal_ms=throughput_ms, started_at=throughput_started.isoformat(), ended_at=throughput_ended.isoformat(), build_artifacts=builds[endpoint])
-            throughput_doc["q1_comparison"]["control_binding"] = {"run_id": control_doc["run_id"], "manifest_sha256": file_sha256(control_dir / "manifest.json"), "configuration_sha256": configuration}
+            throughput_doc["q1_comparison"]["control_bindings"] = [
+                {
+                    "trace_frame_index": control["trace_frame_index"],
+                    "run_id": f"{pair_id}-{endpoint}-control-{control['trace_frame_index']}",
+                    "manifest_sha256": control["manifest_sha256"],
+                    "configuration_sha256": configuration,
+                }
+                for control in controls
+            ]
             write_artifact(root, base / "throughput", throughput_doc, endpoint, "throughput", throughput_ms)
-            images = []
-            for material in image_material:
-                trace = int(material["trace_frame_index"])
-                present = control_doc["q1_comparison"]["presentation_receipts"][trace]
-                images.append({**material, "capture_receipt": present})
-            pair[endpoint] = {"position": position, "control": str(base / "control"), "throughput": str(base / "throughput"), "images": images}
+            pair[endpoint] = {
+                "position": position,
+                "controls": controls,
+                "throughput": str(base / "throughput"),
+                "images": images,
+            }
         pairs.append(pair)
     schedule_path = root / "schedule.json"
     write_json(schedule_path, {"schema": SCHEMA, "series_id": series_id, "schedule": schedule_block, "protocol": protocol_value, "pairs": pairs})
@@ -437,16 +501,48 @@ class ScheduleAndAdmissionTests(unittest.TestCase):
         value = json.loads(path.read_text(encoding="utf-8"))
         callback(value)
         write_json(path, value)
+        parts = pathlib.Path(relative).parts
+        if len(parts) == 4 and parts[0] == "pairs" and parts[3].startswith("control-trace-"):
+            pair_id, endpoint = parts[1], parts[2]
+            trace = int(parts[3].removeprefix("control-trace-"))
+            digest = file_sha256(path)
+            document = json.loads(self.schedule.read_text(encoding="utf-8"))
+            pair = next(item for item in document["pairs"] if item["pair_id"] == pair_id)
+            control = next(
+                item for item in pair[endpoint]["controls"]
+                if item["trace_frame_index"] == trace
+            )
+            control["manifest_sha256"] = digest
+            image = next(
+                item for item in pair[endpoint]["images"]
+                if item["trace_frame_index"] == trace
+            )
+            image["producer_artifact"]["manifest_sha256"] = digest
+            image["host_admission_join"]["producer_manifest_sha256"] = digest
+            write_json(self.schedule, document)
+            throughput_path = self.root / "pairs" / pair_id / endpoint / "throughput" / "manifest.json"
+            throughput = json.loads(throughput_path.read_text(encoding="utf-8"))
+            binding = next(
+                item for item in throughput["q1_comparison"]["control_bindings"]
+                if item["trace_frame_index"] == trace
+            )
+            binding["manifest_sha256"] = digest
+            write_json(throughput_path, throughput)
 
-    def test_complete_five_pair_series_is_accepted(self) -> None:
+    def test_complete_candidate_series_is_deferred_without_playcanvas_producer(self) -> None:
         result = evaluate(self.schedule)
-        self.assertEqual(result["state"], "Accepted")
-        self.assertTrue(result["evidence_admitted"])
+        self.assertEqual(result["state"], "Deferred")
+        self.assertFalse(result["evidence_admitted"])
+        self.assertTrue(result["candidate_evidence_valid"])
         self.assertEqual(result["pair_count"], 5)
-        self.assertLess(result["performance"]["gsplat_rs_over_playcanvas_ratio"], 1)
+        self.assertIsNone(result["performance"])
+        self.assertEqual(
+            result["reasons"],
+            ["playcanvas_renderer_same_present_rgba_receipt_unavailable"],
+        )
 
     def test_null_pairing_from_historical_artifact_is_rejected(self) -> None:
-        self.mutate_manifest("pairs/pair-01/playcanvas/control", lambda value: value.__setitem__("pairing", {"pair_id": None, "run_order": None, "position": None}))
+        self.mutate_manifest("pairs/pair-01/playcanvas/control-trace-0", lambda value: value.__setitem__("pairing", {"pair_id": None, "run_order": None, "position": None}))
         with self.assertRaisesRegex(ValidationError, "pairing.series_id"):
             evaluate(self.schedule)
 
@@ -456,7 +552,7 @@ class ScheduleAndAdmissionTests(unittest.TestCase):
             evaluate(self.schedule)
 
     def test_missing_build_hash_is_rejected(self) -> None:
-        self.mutate_manifest("pairs/pair-01/playcanvas/control", lambda value: value["build"].__setitem__("artifacts", {}))
+        self.mutate_manifest("pairs/pair-01/playcanvas/control-trace-0", lambda value: value["build"].__setitem__("artifacts", {}))
         with self.assertRaisesRegex(ValidationError, "build.artifacts keys"):
             evaluate(self.schedule)
 
@@ -466,6 +562,35 @@ class ScheduleAndAdmissionTests(unittest.TestCase):
         write_json(self.schedule, document)
         with self.assertRaisesRegex(ValidationError, "comparison does not name a file"):
             evaluate(self.schedule)
+
+    def test_image_cannot_reference_the_other_trace_control(self) -> None:
+        document = json.loads(self.schedule.read_text(encoding="utf-8"))
+        endpoint = document["pairs"][0]["gsplat_rs"]
+        other = endpoint["controls"][1]
+        image = endpoint["images"][0]
+        image["producer_artifact"] = {
+            "path": other["artifact"],
+            "manifest_sha256": other["manifest_sha256"],
+        }
+        image["host_admission_join"]["producer_artifact_path"] = other["artifact"]
+        image["host_admission_join"]["producer_manifest_sha256"] = other[
+            "manifest_sha256"
+        ]
+        write_json(self.schedule, document)
+        with self.assertRaisesRegex(ValidationError, "native control manifest"):
+            evaluate(self.schedule)
+
+    def test_untimed_controls_do_not_define_pair_order(self) -> None:
+        self.mutate_manifest(
+            "pairs/pair-01/playcanvas/control-trace-0",
+            lambda value: value["identity"].update(
+                {
+                    "started_at_utc": "2026-07-28T00:00:40+00:00",
+                    "ended_at_utc": "2026-07-28T00:00:41+00:00",
+                }
+            ),
+        )
+        self.assertEqual(evaluate(self.schedule)["state"], "Deferred")
 
     def test_image_receipt_without_comparator_hash_is_rejected(self) -> None:
         receipt = self.root / "pairs/pair-01/playcanvas/view-0-comparison.json"
@@ -507,46 +632,74 @@ class ScheduleAndAdmissionTests(unittest.TestCase):
             evaluate(self.schedule)
 
     def test_copied_schedule_receipt_cannot_replace_renderer_terminal_evidence(self) -> None:
-        frames = self.root / "pairs/pair-01/gsplat_rs/control/frames.jsonl"
+        frames = self.root / "pairs/pair-01/gsplat_rs/control-trace-0/frames.jsonl"
         records = [json.loads(line) for line in frames.read_text().splitlines()]
-        del records[MEASURED - 2]["surface_capture"]
+        del records[MEASURED - 2]["capture_depth_precision"]
         frames.write_text(
             "".join(f"{json.dumps(value)}\n" for value in records), encoding="utf-8"
         )
-        with self.assertRaisesRegex(ValidationError, "capture terminal placement"):
+        with self.assertRaisesRegex(ValidationError, "RGBA terminal placement"):
             evaluate(self.schedule)
 
-    def test_reencoded_png_is_rejected_even_after_comparison_is_recomputed(self) -> None:
+    def test_gsplat_renderer_receipt_uses_real_depth_precision_fields(self) -> None:
+        frames = self.root / "pairs/pair-01/gsplat_rs/control-trace-0/frames.jsonl"
+        records = [json.loads(line) for line in frames.read_text().splitlines()]
+        del records[MEASURED - 2]["capture_depth_precision"]["plan_set_generation"]
+        frames.write_text(
+            "".join(f"{json.dumps(value)}\n" for value in records), encoding="utf-8"
+        )
+        self.mutate_manifest(
+            "pairs/pair-01/gsplat_rs/control-trace-0",
+            lambda value: value["q1_comparison"]["presentation_identity"][
+                "terminal_identity"
+            ].__setitem__("frame_sha256", canonical_sha256(records[MEASURED - 2])),
+        )
+        with self.assertRaisesRegex(ValidationError, "RGBA receipt fields are not frozen"):
+            evaluate(self.schedule)
+
+    def test_playcanvas_renderer_producer_cannot_be_fabricated(self) -> None:
+        self.mutate_manifest(
+            "pairs/pair-01/playcanvas/control-trace-0",
+            lambda value: value.__setitem__(
+                "renderer_capture", gsplat_renderer_rgba(79, 79)
+            ),
+        )
+        with self.assertRaisesRegex(ValidationError, "truthfully declare unavailable"):
+            evaluate(self.schedule)
+
+    def test_host_png_source_must_match_renderer_owned_rgba(self) -> None:
+        document = json.loads(self.schedule.read_text(encoding="utf-8"))
+        document["pairs"][0]["gsplat_rs"]["images"][0]["host_admission_join"][
+            "source_rgba8_sha256"
+        ] = SHA_A
+        write_json(self.schedule, document)
+        with self.assertRaisesRegex(ValidationError, "declared RGBA8 source"):
+            evaluate(self.schedule)
+
+    def test_reencoded_png_is_accepted_when_pixels_and_receipts_match(self) -> None:
         document = json.loads(self.schedule.read_text(encoding="utf-8"))
         image = document["pairs"][0]["gsplat_rs"]["images"][0]
         image_path = self.root / image["path"]
-        replacement_sha = write_rgba_png(image_path, "same-rgba-different-png")
+        replacement_sha = write_reencoded_rgba_png(image_path)
         self.assertNotEqual(replacement_sha, image["sha256"])
-        self.assertEqual(solid_rgba_sha256(), image["capture_receipt"]["capture"]["rgba8_sha256"])
+        self.assertEqual(solid_rgba_sha256(), image["host_admission_join"]["source_rgba8_sha256"])
         image["sha256"] = replacement_sha
+        image["host_admission_join"]["png_sha256"] = replacement_sha
         comparison_path = self.root / image["comparison"]
         comparison = json.loads(comparison_path.read_text(encoding="utf-8"))
         comparison["candidate_sha256"] = replacement_sha
         comparison["score"] = 1.0
         write_json(comparison_path, comparison)
         write_json(self.schedule, document)
-        with self.assertRaisesRegex(ValidationError, "PNG digest.*renderer capture terminal"):
-            evaluate(self.schedule)
+        self.assertEqual(evaluate(self.schedule)["state"], "Deferred")
 
-    def test_pair_two_cannot_reuse_pair_one_image_content(self) -> None:
-        source = self.root / "pairs/pair-01/playcanvas/view-0.png"
-        target = self.root / "pairs/pair-02/playcanvas/view-0.png"
-        target.write_bytes(source.read_bytes())
+    def test_host_materialization_may_repeat_identical_rgba_content(self) -> None:
         document = json.loads(self.schedule.read_text(encoding="utf-8"))
-        image = document["pairs"][1]["playcanvas"]["images"][0]
-        image["sha256"] = file_sha256(target)
-        comparison_path = self.root / image["comparison"]
-        comparison = json.loads(comparison_path.read_text(encoding="utf-8"))
-        comparison["candidate_sha256"] = image["sha256"]
-        write_json(comparison_path, comparison)
-        write_json(self.schedule, document)
-        with self.assertRaisesRegex(ValidationError, "reuses endpoint evidence content"):
-            evaluate(self.schedule)
+        first = document["pairs"][0]["playcanvas"]["images"][0]
+        second = document["pairs"][1]["playcanvas"]["images"][0]
+        self.assertEqual(first["sha256"], second["sha256"])
+        self.assertNotEqual(first["path"], second["path"])
+        self.assertEqual(evaluate(self.schedule)["state"], "Deferred")
 
     def test_pair_two_cannot_reuse_pair_one_comparison_path(self) -> None:
         document = json.loads(self.schedule.read_text(encoding="utf-8"))
@@ -559,7 +712,7 @@ class ScheduleAndAdmissionTests(unittest.TestCase):
 
     def test_reference_replacement_changes_predeclared_schedule_hash(self) -> None:
         reference = self.root / "reference/view-0.png"
-        write_rgba_png(reference, "replacement-reference", value=1)
+        write_rgba_png(reference, value=1)
         document = json.loads(self.schedule.read_text(encoding="utf-8"))
         document["schedule"]["reference_images"][0]["sha256"] = file_sha256(reference)
         write_json(self.schedule, document)
@@ -581,26 +734,19 @@ class ScheduleAndAdmissionTests(unittest.TestCase):
             evaluate(self.schedule)
 
     def test_pair_order_label_without_timestamp_proof_is_rejected(self) -> None:
-        control = self.root / "pairs/pair-01/gsplat_rs/control"
         self.mutate_manifest(
-            "pairs/pair-01/gsplat_rs/control",
+            "pairs/pair-01/gsplat_rs/throughput",
             lambda value: value["identity"].__setitem__(
-                "started_at_utc", "2026-07-28T00:00:02+00:00"
+                "started_at_utc", "2026-07-28T00:00:08+00:00"
             ),
         )
-        throughput = self.root / "pairs/pair-01/gsplat_rs/throughput/manifest.json"
-        throughput_value = json.loads(throughput.read_text(encoding="utf-8"))
-        throughput_value["q1_comparison"]["control_binding"]["manifest_sha256"] = (
-            file_sha256(control / "manifest.json")
-        )
-        write_json(throughput, throughput_value)
         with self.assertRaisesRegex(ValidationError, "timestamps do not prove"):
             evaluate(self.schedule)
 
     def test_camera_receipt_must_bind_frozen_trace_frame(self) -> None:
         self.mutate_manifest(
-            "pairs/pair-01/gsplat_rs/control",
-            lambda value: value["q1_comparison"]["presentation_receipts"][0]["camera"].__setitem__(
+            "pairs/pair-01/gsplat_rs/control-trace-0",
+            lambda value: value["q1_comparison"]["presentation_identity"]["camera"].__setitem__(
                 "pose_intrinsics_sha256", SHA_B
             ),
         )
@@ -609,8 +755,8 @@ class ScheduleAndAdmissionTests(unittest.TestCase):
 
     def test_presentation_receipt_must_bind_artifact_terminal_frame(self) -> None:
         self.mutate_manifest(
-            "pairs/pair-01/playcanvas/control",
-            lambda value: value["q1_comparison"]["presentation_receipts"][0][
+            "pairs/pair-01/gsplat_rs/control-trace-0",
+            lambda value: value["q1_comparison"]["presentation_identity"][
                 "terminal_identity"
             ].__setitem__("frame_sha256", SHA_B),
         )
@@ -618,7 +764,7 @@ class ScheduleAndAdmissionTests(unittest.TestCase):
             evaluate(self.schedule)
 
     def test_playcanvas_vcd_must_remain_unavailable(self) -> None:
-        path = self.root / "pairs/pair-01/playcanvas/control/frames.jsonl"
+        path = self.root / "pairs/pair-01/playcanvas/control-trace-0/frames.jsonl"
         records = [json.loads(line) for line in path.read_text().splitlines()]
         records[0]["visible"] = TRUCK["splat_count"]
         records[0]["drawn"] = TRUCK["splat_count"]
@@ -637,7 +783,7 @@ class ScheduleAndAdmissionTests(unittest.TestCase):
 
 
 class FiniteVerdictTests(unittest.TestCase):
-    def test_cli_publishes_admitted_finite_result(self) -> None:
+    def test_cli_publishes_deferred_candidate_without_performance(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)
             schedule = build_series(root)
@@ -650,7 +796,10 @@ class FiniteVerdictTests(unittest.TestCase):
             )
             result = json.loads(output.read_text(encoding="utf-8"))
         self.assertEqual(completed.returncode, 0, completed.stderr)
-        self.assertTrue(result["evidence_admitted"])
+        self.assertEqual(result["state"], "Deferred")
+        self.assertFalse(result["evidence_admitted"])
+        self.assertTrue(result["candidate_evidence_valid"])
+        self.assertIsNone(result["performance"])
 
     def test_cli_admission_failure_is_exit_two_and_no_performance_claim(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -672,24 +821,32 @@ class FiniteVerdictTests(unittest.TestCase):
         self.assertIsNone(result["performance"])
         self.assertFalse(result["retry_authorized"])
 
-    def test_slower_valid_series_is_finite_rejected_without_retry(self) -> None:
+    def test_slower_candidate_cannot_publish_comparison_without_both_producers(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             result = evaluate(build_series(pathlib.Path(directory), gs_terminal_ms=1200.0))
-        self.assertEqual(result["state"], "Rejected")
-        self.assertTrue(result["evidence_admitted"])
-        self.assertEqual(result["reasons"], ["gsplat_rs_slower_on_paired_median_terminal_window"])
+        self.assertEqual(result["state"], "Deferred")
+        self.assertFalse(result["evidence_admitted"])
+        self.assertIsNone(result["performance"])
+        self.assertEqual(
+            result["reasons"],
+            ["playcanvas_renderer_same_present_rgba_receipt_unavailable"],
+        )
         self.assertFalse(result["retry_authorized"])
 
-    def test_quality_failure_has_no_performance_claim(self) -> None:
+    def test_diagnostic_quality_miss_remains_deferred_without_both_producers(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             with mock.patch(
                 "q1_pair_admission.artifacts.recompute_image_score", return_value=0.98
             ):
                 result = evaluate(build_series(pathlib.Path(directory), score=0.98))
-        self.assertEqual(result["state"], "Rejected")
-        self.assertTrue(result["evidence_admitted"])
+        self.assertEqual(result["state"], "Deferred")
+        self.assertFalse(result["evidence_admitted"])
         self.assertIsNone(result["performance"])
-        self.assertEqual(result["reasons"], ["common_reference_image_gate_failed"])
+        self.assertIsNone(result["quality_passed"])
+        self.assertEqual(
+            result["reasons"],
+            ["playcanvas_renderer_same_present_rgba_receipt_unavailable"],
+        )
         encoded = json.dumps(result, sort_keys=True)
         for forbidden in (
             "playcanvas_terminal_mean_ms",

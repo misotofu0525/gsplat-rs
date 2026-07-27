@@ -42,24 +42,27 @@ The schedule is one JSON object with schema
 - two immutable 1920x1080 reference PNG identities;
 - five evidence pairs matching the predeclared IDs and order.
 
-Every endpoint has a fresh control artifact, a fresh throughput artifact and
-two terminal-present-bound images. Every endpoint image and comparison path and
-content hash is unique across all five pairs. Paths must be relative to the
-schedule, remain inside its root, and may not be reused. Run IDs must also be
-unique.
-Actual start/end timestamps must prove control before throughput, the declared
-AB/BA endpoint order, and non-overlapping pair order; labels alone do not prove
-randomization.
+Every endpoint has a fresh control evidence set containing exactly two untimed
+native artifacts (one per trace view), one fresh throughput artifact and two
+image paths. A control entry freezes its trace index, artifact path and native
+manifest SHA-256. The image for that trace may reference that artifact only; it
+does not copy a renderer receipt into the schedule. Paths must be relative to
+the schedule, remain inside its root, and may not be reused. Run IDs must also
+be unique.
+
+The two control artifacts are excluded from pair timing. Actual throughput
+start/end timestamps must prove the declared AB/BA endpoint order and
+non-overlapping pair order; labels alone do not prove randomization.
 
 ## Control and throughput separation
 
 Both endpoint artifacts use the canonical `manifest.json`, `frames.jsonl` and
 `summary.json`. The incremental manifest object is `q1_comparison`.
 
-The control artifact has:
+Each control artifact has:
 
 - `artifact_role = control` and `performance_evidence = false`;
-- two live-camera and successful-present receipts, one per trace view;
+- exactly one trace-selected live-camera and successful-present capture;
 - PlayCanvas count scope `full_membership_v_c_d_unavailable`; or
 - gsplat-rs count scope `exact_v_c_d_control_only`, with exact `C <= V <= S`
   and Compact `D = C` on every frame.
@@ -71,7 +74,7 @@ The throughput artifact has:
 - no copied per-frame `V/C/D` values;
 - the common terminal-window receipt below.
 
-Control and throughput must have the same clean repository commit, required
+Both controls and throughput must have the same clean repository commit, required
 build artifact key set, actual JS/WASM/package file content hashes, environment
 identity and configuration. Thermal `pre` and `post` receipts remain explicit
 for every artifact; severe/critical states reject admission. All five pairs
@@ -99,18 +102,37 @@ call time cannot substitute for this boundary.
 
 ## Images
 
-Each control image is bound to the same live-camera and presented-frame receipt
-as its trace view. The camera receipt binds the frozen trace ID, trace content,
-trace-frame pose/intrinsics and camera revision. The presentation receipt binds
-the control run, canonical terminal-frame hash, camera revision and presentation
-sequence. The terminal frame additionally carries an endpoint-specific renderer
-copy receipt with an exact field set: producer, RGBA8 and materialized PNG
-SHA-256 values, dimensions, row and byte lengths, camera revision, presentation
-sequence and completed queue terminal. The manifest and schedule must carry
-that exact receipt; a copied schedule receipt without its terminal producer is
-invalid. Re-encoding identical pixels creates a different capture artifact and
-cannot silently replace the renderer-owned PNG. Opaque arbitrary digests are
-not accepted.
+Each control image names its trace-specific native control artifact by path and
+manifest hash. A host-owned `host_admission_join` binds that artifact identity,
+the schedule PNG path/hash, decoded raw RGBA8 hash and dimensions. It is not a
+renderer receipt and does not prescribe one common PNG encoder.
+
+For gsplat-rs, the validator reads the actual selected
+`frames.jsonl[].capture_depth_precision`. That terminal frame must retain the
+real renderer-owned
+`capture_depth_precision` receipt already emitted by the Web Surface capture
+path: scene/camera/viewport/contract/plan-set/order generations, actual plan,
+presentation sequence, dimensions, depth profile and `rgba8_sha256`. The
+renderer owns RGBA bytes and their same-present identity; it does **not** own a
+PNG hash. Admission verifies its frozen trace, camera, presentation and plan
+identity, decodes the schedule PNG, and requires the raw RGBA digest to equal
+the renderer receipt. There is no invented gsplat-rs PNG materialization
+schema.
+
+For PlayCanvas, the validator reads the producer only from its native manifest
+locations: `presentation_capture.renderer_capture`, the last presentation
+frame's `renderer_capture_copy`, `presentation_capture.queue_drain`, and the
+terminal camera receipt. The frozen producer is
+`gsplat-playcanvas-webgpu-renderer-capture/v1` /
+`playcanvas_webgpu_copy_texture_to_buffer`; its raw camera JSON is hashed before
+parsing so Python never guesses JavaScript serialization. The separate real
+`gsplat-playcanvas-renderer-capture-materialization/v1` receipt must bind its
+RGBA file, PNG file, byte lengths and hashes. The top-level duplicate capture
+object is checked for equality but is not treated as a second producer.
+
+If either trace-specific PlayCanvas control lacks that real native producer,
+the candidate must say so explicitly. Host pixels alone then remain diagnostic,
+and the whole series is candidate-only `Deferred` with `performance=null`.
 
 The PNG must fully decode as non-interlaced RGBA8 at 1920x1080; an IHDR-shaped
 header is not an image. Its comparison
@@ -122,10 +144,8 @@ receipt has schema `gsplat-q1-reference-image-comparison/v1` and binds:
 - a finite score in `[0, 1]`, which is checked against SSIM recomputed from the
   decoded reference and candidate bytes with the repository's locked algorithm.
 
-A quality miss is admitted as a finite quality observation but is Rejected
-from a performance claim. The performance result is then `null`, and pair
-receipts omit terminal means, deltas and ratios; it is not a tuning or rerun
-trigger.
+Until both real producers exist, image scores are diagnostic inputs only. They
+do not become an admitted quality pass/miss or unlock a performance result.
 
 ## Result semantics
 
@@ -133,6 +153,16 @@ The result schema is `gsplat-q1-truck-paired-result/v1`.
 
 - malformed, missing or mismatched evidence: `Rejected`,
   `evidence_admitted=false`, `performance=null`, `retry_authorized=false`;
+- structurally valid candidate with either real renderer producer unavailable:
+  `Deferred`, `evidence_admitted=false`, `candidate_evidence_valid=true`,
+  `performance=null`, `retry_authorized=false`.
+
+When all ten trace-specific PlayCanvas controls and all ten gsplat-rs controls
+carry their respective real producers and pass the same host joins, this
+revision may admit the predeclared series and emit a finite Accepted/Rejected
+comparative verdict. It cannot report a winner or quality pass from host-only
+PlayCanvas pixels.
+
 - admitted image miss: finite `Rejected`, no performance comparison, no retry;
 - admitted image pass with slower gsplat-rs paired median terminal mean: finite
   `Rejected`, measured values retained, no retry;
@@ -140,7 +170,7 @@ The result schema is `gsplat-q1-truck-paired-result/v1`.
   mean: `Accepted` for the named near-contract only.
 
 There is deliberately no required lead percentage or “must beat PlayCanvas”
-completion gate. Accepted and Rejected are both terminal experiment outcomes.
+completion gate. Deferred is not a tuning or automatic-rerun trigger.
 
 The current historical unpaired PlayCanvas prerequisite and fixed-gsplat-rs
 candidate are not input-compatible: they lack the five fresh pair identities,
@@ -158,6 +188,6 @@ PYTHONDONTWRITEBYTECODE=1 python3 \
   --output /fresh/series/result.json
 ```
 
-An admitted finite Accepted or Rejected decision exits zero. Evidence admission
-failure exits two after writing a fail-closed Rejected result when the output is
-fresh. Existing output is immutable and is never overwritten.
+A structurally valid Deferred candidate exits zero without a performance claim.
+Malformed evidence exits two after writing a fail-closed Rejected result when
+the output is fresh. Existing output is immutable and is never overwritten.

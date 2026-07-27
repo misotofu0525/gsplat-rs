@@ -740,18 +740,43 @@ comparator-tool content hash instead of trusting an IHDR header or self-reported
 score. Required JS/WASM/package files and thermal pre/post receipts are likewise
 admitted by content rather than by an arbitrary runtime label.
 
-The follow-up receipt hardening also makes image bytes producer-owned: each
-control terminal frame must contain the strict endpoint-specific renderer-copy
-receipt, and its RGBA8 plus materialized PNG digests are joined through the
-manifest and schedule to the candidate image. A copied JSON receipt cannot
-replace missing terminal evidence, and re-encoding the same pixels is rejected
-unless the renderer terminal itself names that exact PNG artifact.
+The follow-up receipt hardening is aligned to each real producer boundary.
+gsplat-rs owns same-present RGBA8 through the terminal
+`capture_depth_precision` receipt; it does not own the PNG hash. A host-only
+admission join decodes the referenced PNG and binds its raw RGBA digest to that
+renderer receipt without prescribing a PNG codec.
+
+The first schema shape incorrectly asked one control manifest to prove both
+trace-view captures. The corrected shape treats Q0's control as an evidence
+set: two untimed native control artifacts, one per trace, plus one separately
+timed throughput artifact. AB/BA timestamps compare throughput only. Each image
+references its same-trace control manifest by path and SHA rather than copying a
+synthetic renderer envelope.
+
+PlayCanvas now has a real producer candidate at `6c3df43`: the validator accepts
+only its native `presentation_capture.renderer_capture`, final presentation
+frame copy join, terminal queue drain, exact raw camera JSON/hash, source and
+resolution receipts, plus the separate native host materialization receipt.
+The older retained Q1 inputs still lack those two per-trace native producer
+artifacts and therefore remain candidate-only **Deferred** with no performance
+claim; the producer is no longer permanently hard-coded unavailable.
+
+The read-only source for that correction was
+`target/qualification/k1d-web-quality-78d9d4a-attempt-3/artifact`: its first
+Exact capture retains renderer RGBA
+`b0efb0f89ffeb854bfcbe4b82025ebfdb8f14f70ca0d1e506cfd1835a09291cd`
+inside `capture_depth_precision`, while the separately materialized PNG is
+`643a4cc13a5cb1272b5df4b2323af4623237d4770dd4ebe9fed799c9943ed09f`.
+Decoding the retained PNG reproduced the renderer-owned RGBA digest. This is
+gsplat-rs producer evidence only; its PNG bytes remain host-owned and are not
+used to define a cross-endpoint encoder contract.
 
 This slice performs no browser or device run. The historical unpaired
 PlayCanvas prerequisite and fixed-gsplat-rs diagnostic candidate remain
 inadmissible because they do not supply five fresh pairs, one common terminal
 primitive, common image receipts and complete frozen build/environment
-identity. Q1 therefore remains **Active**. When root later executes one fresh
-predeclared series, a quality miss or slower admitted result closes as finite
-`Rejected` with no automatic retry; no lead-percentage threshold can keep the
-task spinning.
+identity. Q1 therefore remains **Active**. Root must integrate the real
+PlayCanvas producer and collect one fresh predeclared two-control-per-endpoint
+series; this validator can then reach a comparative verdict without another
+schema revision. Missing provenance does not authorize automatic retries, and
+no lead-percentage threshold can keep the task spinning.

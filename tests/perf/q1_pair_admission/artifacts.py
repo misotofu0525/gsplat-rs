@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
+import json
 import math
 import pathlib
 import struct
@@ -65,26 +66,88 @@ FORBIDDEN_THERMAL_STATES = frozenset(
     {"severe", "serious", "critical", "emergency", "shutdown"}
 )
 ADMISSIBLE_THERMAL_STATES = frozenset({"nominal", "fair", "moderate"})
-CAPTURE_SCHEMA = "gsplat-q1-renderer-capture-terminal/v1"
-CAPTURE_PRODUCERS = {
-    "playcanvas": "playcanvas_webgpu_copy_texture_to_buffer",
-    "gsplat_rs": "gsplat_rs_surface_copy_texture_to_buffer",
-}
-CAPTURE_FIELDS = frozenset(
+HOST_ADMISSION_JOIN_SCHEMA = "gsplat-q1-host-admission-join/v1"
+HOST_ADMISSION_JOIN_FIELDS = frozenset(
+    {
+        "schema",
+        "source",
+        "pixel_format",
+        "width",
+        "height",
+        "producer_artifact_path",
+        "producer_manifest_sha256",
+        "source_rgba8_sha256",
+        "png_sha256",
+    }
+)
+GSPLAT_RGBA_RECEIPT_FIELDS = frozenset(
+    {
+        "scene_generation",
+        "camera_revision",
+        "viewport_generation",
+        "contract_generation",
+        "plan_set_generation",
+        "plan_id",
+        "order_generation",
+        "presentation_sequence",
+        "width",
+        "height",
+        "rgba8_sha256",
+        "profile",
+    }
+)
+PLAYCANVAS_RGBA_UNAVAILABLE = "playcanvas_renderer_same_present_rgba_receipt_unavailable"
+PLAYCANVAS_CAPTURE_SCHEMA = "gsplat-playcanvas-webgpu-renderer-capture/v1"
+PLAYCANVAS_CAPTURE_PRODUCER = "playcanvas_webgpu_copy_texture_to_buffer"
+PLAYCANVAS_CAMERA_SCHEMA = "gsplat-playcanvas-runtime-camera-receipt/v1"
+PLAYCANVAS_PRESENTATION_SCHEMA = "gsplat-playcanvas-presentation-capture/v1"
+PLAYCANVAS_MATERIALIZATION_SCHEMA = (
+    "gsplat-playcanvas-renderer-capture-materialization/v1"
+)
+PLAYCANVAS_CAPTURE_FIELDS = frozenset(
     {
         "schema",
         "producer",
         "status",
+        "renderer_frame_sequence",
+        "renderer_submit_version",
+        "copy_submit_version_before",
+        "copy_submit_version_after",
+        "texture_format",
+        "render_view_format",
+        "canvas_color_space",
+        "canvas_alpha_mode",
         "pixel_format",
+        "row_origin",
         "width",
         "height",
         "row_bytes",
         "byte_length",
         "rgba8_sha256",
-        "png_sha256",
-        "camera_revision",
-        "presentation_sequence",
+        "camera_receipt_sha256",
+        "camera_receipt_json",
+        "camera_receipt",
+        "resolution",
+        "source",
+        "copy_map_complete",
         "queue_terminal_complete",
+        "terminal_queue_drain",
+    }
+)
+PLAYCANVAS_MATERIALIZATION_FIELDS = frozenset(
+    {
+        "schema",
+        "source",
+        "source_capture_schema",
+        "source_capture_producer",
+        "source_rgba8_sha256",
+        "rgba8_file",
+        "rgba8_byte_length",
+        "png_file",
+        "png_byte_length",
+        "png_sha256",
+        "width",
+        "height",
     }
 )
 
@@ -314,7 +377,10 @@ def _display(manifest: dict[str, Any], context: str) -> dict[str, Any]:
     }
 
 
-def _frames(frames: list[dict[str, Any]], endpoint: str, role: str, run_id: str, context: str) -> None:
+def _frames(
+    frames: list[dict[str, Any]], endpoint: str, role: str, run_id: str,
+    capture_trace: int | None, context: str,
+) -> None:
     if len(frames) != MEASURED:
         fail(f"{context} must contain exactly 80 frames")
     for index, frame in enumerate(frames):
@@ -322,10 +388,13 @@ def _frames(frames: list[dict[str, Any]], endpoint: str, role: str, run_id: str,
             fail(f"{context}[{index}] run/frame/trace identity mismatch")
         if frame.get("sort_refreshed") is not True:
             fail(f"{context}[{index}].sort_refreshed must be true")
-        has_capture = isinstance(frame.get("surface_capture"), dict)
-        if role == "control" and has_capture != (index >= MEASURED - 2):
-            fail(f"{context}[{index}] renderer capture terminal placement mismatch")
-        if role == "throughput" and "surface_capture" in frame:
+        has_capture = isinstance(frame.get("capture_depth_precision"), dict)
+        expected_capture = endpoint == "gsplat_rs" and role == "control" and (
+            index == MEASURED - 2 + capture_trace
+        )
+        if has_capture != expected_capture:
+            fail(f"{context}[{index}] renderer RGBA terminal placement mismatch")
+        if role == "throughput" and "capture_depth_precision" in frame:
             fail(f"{context}[{index}] timed throughput must not carry capture evidence")
         counts = (frame.get("visible"), frame.get("contributor"), frame.get("drawn"))
         if role == "throughput":
@@ -347,139 +416,237 @@ def _frames(frames: list[dict[str, Any]], endpoint: str, role: str, run_id: str,
                     fail(f"{context}[{index}].{key} must equal {value!r}")
 
 
-def presentation_receipts(
-    q1: dict[str, Any],
-    frames: list[dict[str, Any]],
-    run_id: str,
-    endpoint: str,
-    context: str,
-) -> dict[int, dict[str, Any]]:
-    receipts = array(q1, "presentation_receipts", context)
-    if len(receipts) != 2:
-        fail(f"{context}.presentation_receipts must cover both views")
-    indexed: dict[int, dict[str, Any]] = {}
-    for index, receipt in enumerate(receipts):
-        if not isinstance(receipt, dict):
-            fail(f"{context}.presentation_receipts[{index}] must be an object")
-        trace = integer(receipt, "trace_frame_index", f"{context}.presentation_receipts[{index}]")
-        if trace not in {0, 1} or trace in indexed:
-            fail(f"{context}.presentation_receipts must contain views 0 and 1 once")
-        camera = obj(receipt, "camera", f"{context}.presentation_receipts[{index}]")
-        expected_camera = {
-            "trace_id": TRACE["id"],
-            "trace_content_sha256": TRACE["sha256"],
+def _gsplat_presentation_receipt(
+    q1: dict[str, Any], frames: list[dict[str, Any]], run_id: str,
+    trace: int, context: str,
+) -> dict[str, Any]:
+    receipt = obj(q1, "presentation_identity", context)
+    if receipt.get("trace_frame_index") != trace:
+        fail(f"{context}.presentation_identity trace mismatch")
+    camera = obj(receipt, "camera", f"{context}.presentation_identity")
+    for field, expected in {
+        "trace_id": TRACE["id"],
+        "trace_content_sha256": TRACE["sha256"],
+        "trace_frame_index": trace,
+        "pose_intrinsics_sha256": TRACE_FRAME_POSE_INTRINSICS_SHA256[trace],
+    }.items():
+        if camera.get(field) != expected:
+            fail(f"{context}.presentation_identity.camera.{field} does not bind the frozen trace frame")
+    camera_revision = integer(camera, "camera_revision", f"{context}.presentation_identity.camera")
+    terminal = obj(receipt, "terminal_identity", f"{context}.presentation_identity")
+    terminal_index = integer(terminal, "frame_index", f"{context}.presentation_identity.terminal_identity")
+    expected_index = MEASURED - 2 + trace
+    if terminal.get("run_id") != run_id or terminal_index != expected_index:
+        fail(f"{context}.presentation_identity does not bind the artifact terminal")
+    terminal_frame = frames[terminal_index]
+    if terminal.get("frame_sha256") != canonical_sha256(terminal_frame):
+        fail(f"{context}.presentation_identity terminal frame hash mismatch")
+    presentation_sequence = integer(
+        terminal, "presentation_sequence", f"{context}.presentation_identity.terminal_identity"
+    )
+    if (
+        camera_revision <= 0
+        or terminal_frame.get("trace_frame_index") != trace
+        or terminal_frame.get("camera_revision") != camera_revision
+        or terminal_frame.get("presentation_sequence") != presentation_sequence
+        or presentation_sequence <= 0
+    ):
+        fail(f"{context}.presentation_identity is not same-present")
+    capture = obj(terminal_frame, "capture_depth_precision", f"{context}.terminal_frame")
+    if set(capture) != GSPLAT_RGBA_RECEIPT_FIELDS:
+        fail(f"{context} gsplat-rs renderer RGBA receipt fields are not frozen")
+    for field, expected in {
+        "camera_revision": camera_revision,
+        "presentation_sequence": presentation_sequence,
+        "plan_id": "GpuPreproject",
+        "width": WIDTH,
+        "height": HEIGHT,
+        "profile": "ExactFull32",
+    }.items():
+        if capture.get(field) != expected:
+            fail(f"{context}.renderer_rgba_receipt.{field} mismatch")
+    for field in ("scene_generation", "contract_generation", "plan_set_generation", "order_generation"):
+        if integer(capture, field, f"{context}.renderer_rgba_receipt") <= 0:
+            fail(f"{context}.renderer_rgba_receipt.{field} must be positive")
+    integer(capture, "viewport_generation", f"{context}.renderer_rgba_receipt")
+    sha256(capture.get("rgba8_sha256"), f"{context}.renderer_rgba_receipt.rgba8_sha256")
+    if any(receipt.get(field) is not True for field in (
+        "successful_present", "queue_terminal_complete", "captured_after_terminal"
+    )):
+        fail(f"{context}.presentation_identity lacks a successful terminal presentation")
+    dimensions = obj(receipt, "dimensions", f"{context}.presentation_identity")
+    for stage in ("requested", "surface", "internal_render", "presented"):
+        if (dimensions.get(f"{stage}_width"), dimensions.get(f"{stage}_height")) != (WIDTH, HEIGHT):
+            fail(f"{context}.presentation_identity {stage} dimensions mismatch")
+    return {
+        "trace_frame_index": trace,
+        "renderer_rgba_status": "ready",
+        "renderer_rgba_receipt": capture,
+        "native_materialization": None,
+        "native_identity": receipt,
+    }
+
+
+def _playcanvas_presentation_receipt(
+    manifest: dict[str, Any], q1: dict[str, Any], trace: int, context: str,
+) -> dict[str, Any]:
+    presentation = manifest.get("presentation_capture")
+    if not isinstance(presentation, dict):
+        if (
+            q1.get("renderer_rgba_unavailable_reason") != PLAYCANVAS_RGBA_UNAVAILABLE
+            or manifest.get("renderer_capture") is not None
+            or manifest.get("renderer_capture_materialization") is not None
+        ):
+            fail(f"{context} must truthfully declare unavailable PlayCanvas renderer RGBA")
+        return {
             "trace_frame_index": trace,
-            "pose_intrinsics_sha256": TRACE_FRAME_POSE_INTRINSICS_SHA256[trace],
+            "renderer_rgba_status": "unavailable",
+            "renderer_rgba_reason": PLAYCANVAS_RGBA_UNAVAILABLE,
+            "renderer_rgba_receipt": None,
+            "native_materialization": None,
+            "native_identity": None,
         }
-        for field, expected in expected_camera.items():
-            if camera.get(field) != expected:
-                fail(
-                    f"{context}.presentation_receipts[{index}].camera.{field} "
-                    "does not bind the frozen trace frame"
-                )
-        camera_revision = integer(
-            camera, "camera_revision", f"{context}.presentation_receipts[{index}].camera"
-        )
-        if camera_revision <= 0:
-            fail(f"{context}.presentation_receipts[{index}] camera revision must be positive")
-        terminal = obj(
-            receipt, "terminal_identity", f"{context}.presentation_receipts[{index}]"
-        )
-        terminal_index = integer(
-            terminal,
-            "frame_index",
-            f"{context}.presentation_receipts[{index}].terminal_identity",
-        )
-        expected_terminal_index = MEASURED - 2 + trace
-        if (
-            terminal.get("run_id") != run_id
-            or terminal_index != expected_terminal_index
-            or terminal_index >= len(frames)
-        ):
-            fail(
-                f"{context}.presentation_receipts[{index}] does not bind the artifact terminal"
-            )
-        terminal_frame = frames[terminal_index]
-        if terminal_frame.get("trace_frame_index") != trace:
-            fail(f"{context}.presentation_receipts[{index}] terminal trace mismatch")
-        terminal_sha = sha256(
-            terminal.get("frame_sha256"),
-            f"{context}.presentation_receipts[{index}].terminal_identity.frame_sha256",
-        )
-        if terminal_sha != canonical_sha256(terminal_frame):
-            fail(f"{context}.presentation_receipts[{index}] terminal frame hash mismatch")
-        capture = obj(
-            terminal_frame,
-            "surface_capture",
-            f"{context}.presentation_receipts[{index}].terminal_frame",
-        )
-        if set(capture) != CAPTURE_FIELDS:
-            fail(f"{context}.presentation_receipts[{index}] capture fields are not frozen")
-        presentation_sequence = integer(
-            terminal,
-            "presentation_sequence",
-            f"{context}.presentation_receipts[{index}].terminal_identity",
-        )
-        if (
-            terminal_frame.get("camera_revision") != camera_revision
-            or terminal_frame.get("presentation_sequence") != presentation_sequence
-            or presentation_sequence <= 0
-        ):
-            fail(
-                f"{context}.presentation_receipts[{index}] camera/presentation is not same-present"
-            )
-        expected_capture = {
-            "schema": CAPTURE_SCHEMA,
-            "producer": CAPTURE_PRODUCERS[endpoint],
-            "status": "presented",
-            "pixel_format": "rgba8unorm-srgb",
-            "width": WIDTH,
-            "height": HEIGHT,
-            "row_bytes": WIDTH * 4,
-            "byte_length": WIDTH * HEIGHT * 4,
-            "camera_revision": camera_revision,
-            "presentation_sequence": presentation_sequence,
-            "queue_terminal_complete": True,
-        }
-        for field, expected in expected_capture.items():
-            if capture.get(field) != expected:
-                fail(
-                    f"{context}.presentation_receipts[{index}].capture.{field} "
-                    "does not match renderer terminal evidence"
-                )
-        for field in ("rgba8_sha256", "png_sha256"):
-            sha256(
-                capture.get(field),
-                f"{context}.presentation_receipts[{index}].capture.{field}",
-            )
-        if receipt.get("capture") != capture:
-            fail(
-                f"{context}.presentation_receipts[{index}] does not carry the exact "
-                "renderer capture terminal"
-            )
-        if any(
-            receipt.get(field) is not True
-            for field in (
-                "successful_present",
-                "queue_terminal_complete",
-                "captured_after_terminal",
-            )
-        ):
-            fail(
-                f"{context}.presentation_receipts[{index}] lacks successful terminal presentation"
-            )
-        dimensions = obj(receipt, "dimensions", f"{context}.presentation_receipts[{index}]")
-        for stage in ("requested", "surface", "internal_render", "presented"):
-            if (dimensions.get(f"{stage}_width"), dimensions.get(f"{stage}_height")) != (WIDTH, HEIGHT):
-                fail(f"{context}.presentation_receipts[{index}] {stage} dimensions mismatch")
-        indexed[trace] = receipt
-    return indexed
+    if q1.get("renderer_rgba_unavailable_reason") is not None:
+        fail(f"{context} cannot mark an available PlayCanvas producer unavailable")
+    if (
+        presentation.get("schema") != PLAYCANVAS_PRESENTATION_SCHEMA
+        or presentation.get("ready_for_external_capture") is not True
+        or presentation.get("excluded_from_performance") is not True
+        or presentation.get("capture_trace_frame_index") != trace
+        or presentation.get("minimum_stable_frame_count") != 3
+    ):
+        fail(f"{context}.presentation_capture is not a frozen untimed producer terminal")
+    stable_count = integer(presentation, "stable_frame_count", f"{context}.presentation_capture")
+    presentation_frames = array(presentation, "frames", f"{context}.presentation_capture")
+    if stable_count < 3 or len(presentation_frames) != stable_count:
+        fail(f"{context}.presentation_capture lacks stable renderer frames")
+    prior_submit = integer(
+        presentation, "measurement_terminal_submit_version", f"{context}.presentation_capture"
+    )
+    for index, frame in enumerate(presentation_frames):
+        if not isinstance(frame, dict) or frame.get("trace_frame_index") != trace:
+            fail(f"{context}.presentation_capture.frames[{index}] trace mismatch")
+        camera = obj(frame, "camera_receipt", f"{context}.presentation_capture.frames[{index}]")
+        if camera.get("schema") != PLAYCANVAS_CAMERA_SCHEMA or camera.get("trace_frame_index") != trace:
+            fail(f"{context}.presentation_capture.frames[{index}] camera mismatch")
+        before = integer(frame, "submit_version_before", f"{context}.presentation_capture.frames[{index}]")
+        after = integer(frame, "submit_version_after", f"{context}.presentation_capture.frames[{index}]")
+        calls = integer(frame, "queue_submit_call_count", f"{context}.presentation_capture.frames[{index}]")
+        if before != prior_submit or after <= before or calls != after - before:
+            fail(f"{context}.presentation_capture.frames[{index}] submit chain mismatch")
+        prior_submit = after
+    final_frame = presentation_frames[-1]
+    capture = obj(presentation, "renderer_capture", f"{context}.presentation_capture")
+    if manifest.get("renderer_capture") != capture or set(capture) != PLAYCANVAS_CAPTURE_FIELDS:
+        fail(f"{context} PlayCanvas renderer capture fields/owner location are not frozen")
+    for field, expected in {
+        "schema": PLAYCANVAS_CAPTURE_SCHEMA,
+        "producer": PLAYCANVAS_CAPTURE_PRODUCER,
+        "status": "terminal",
+        "renderer_submit_version": prior_submit,
+        "copy_submit_version_before": prior_submit,
+        "copy_submit_version_after": prior_submit + 1,
+        "pixel_format": "rgba8unorm",
+        "row_origin": "top_left",
+        "width": WIDTH,
+        "height": HEIGHT,
+        "row_bytes": WIDTH * 4,
+        "byte_length": WIDTH * HEIGHT * 4,
+        "copy_map_complete": True,
+        "queue_terminal_complete": True,
+    }.items():
+        if capture.get(field) != expected:
+            fail(f"{context}.renderer_capture.{field} mismatch")
+    integer(capture, "renderer_frame_sequence", f"{context}.renderer_capture")
+    if capture.get("texture_format") not in {"bgra8unorm", "rgba8unorm"}:
+        fail(f"{context}.renderer_capture.texture_format is unsupported")
+    for field in ("render_view_format", "canvas_color_space", "canvas_alpha_mode"):
+        string(capture, field, f"{context}.renderer_capture")
+    rgba_sha = sha256(capture.get("rgba8_sha256"), f"{context}.renderer_capture.rgba8_sha256")
+    camera_json = string(capture, "camera_receipt_json", f"{context}.renderer_capture")
+    camera_sha = sha256(capture.get("camera_receipt_sha256"), f"{context}.renderer_capture.camera_receipt_sha256")
+    if hashlib.sha256(camera_json.encode("utf-8")).hexdigest() != camera_sha:
+        fail(f"{context}.renderer_capture camera JSON hash mismatch")
+    try:
+        parsed_camera = json.loads(camera_json)
+    except json.JSONDecodeError as error:
+        fail(f"{context}.renderer_capture.camera_receipt_json is invalid: {error}")
+    camera = obj(capture, "camera_receipt", f"{context}.renderer_capture")
+    if (
+        parsed_camera != camera
+        or camera.get("schema") != PLAYCANVAS_CAMERA_SCHEMA
+        or camera.get("trace_frame_index") != trace
+        or camera != final_frame.get("camera_receipt")
+    ):
+        fail(f"{context}.renderer_capture camera does not bind the final presentation frame")
+    copy = obj(final_frame, "renderer_capture_copy", f"{context}.presentation_capture.frames[-1]")
+    if copy.get("submit_version_after") != capture["copy_submit_version_after"]:
+        fail(f"{context}.renderer_capture copy submission is not same-frame")
+    terminal_drain = obj(capture, "terminal_queue_drain", f"{context}.renderer_capture")
+    if terminal_drain != {
+        "phase": "post_capture_presentation",
+        "submit_version_before": capture["copy_submit_version_after"],
+        "submit_version_after": capture["copy_submit_version_after"],
+        "submit_version_stable": True,
+    }:
+        fail(f"{context}.renderer_capture terminal queue drain mismatch")
+    outer_drain = obj(presentation, "queue_drain", f"{context}.presentation_capture")
+    expected_outer_drain = {
+        "phase": "post_capture_presentation",
+        "frameLoopStopped": True,
+        "submitVersionBefore": capture["copy_submit_version_after"],
+        "submitVersionAfter": capture["copy_submit_version_after"],
+        "submitVersionStable": True,
+    }
+    if any(outer_drain.get(field) != expected for field, expected in expected_outer_drain.items()):
+        fail(f"{context}.presentation_capture queue drain mismatch")
+    if presentation.get("terminal_camera_receipt") != manifest.get("camera_receipt"):
+        fail(f"{context}.presentation_capture terminal camera owner mismatch")
+    source = obj(capture, "source", f"{context}.renderer_capture")
+    for field, expected in {
+        "dataset_id": TRUCK["id"],
+        "dataset_sha256": TRUCK["sha256"],
+        "source_splat_count": TRUCK["splat_count"],
+        "decoded_splat_count": TRUCK["splat_count"],
+        "resident_splat_count": TRUCK["splat_count"],
+        "source_sh_degree": 3,
+        "resident_sh_degree": 3,
+        "source_membership": "all",
+        "sampling": "disabled",
+        "lod": "disabled",
+        "partial_scene_published": False,
+        "full_quality": True,
+    }.items():
+        if source.get(field) != expected:
+            fail(f"{context}.renderer_capture.source.{field} mismatch")
+    resolution = obj(capture, "resolution", f"{context}.renderer_capture")
+    for stage in ("requested", "surface", "internal_render"):
+        if (resolution.get(f"{stage}_width"), resolution.get(f"{stage}_height")) != (WIDTH, HEIGHT):
+            fail(f"{context}.renderer_capture.resolution.{stage} mismatch")
+    if (
+        resolution.get("dynamic_resolution") != "disabled"
+        or resolution.get("upscaling") != "disabled"
+        or resolution.get("internal_full_resolution") is not True
+    ):
+        fail(f"{context}.renderer_capture resolution policy mismatch")
+    materialization = obj(manifest, "renderer_capture_materialization", context)
+    if set(materialization) != PLAYCANVAS_MATERIALIZATION_FIELDS:
+        fail(f"{context}.renderer_capture_materialization fields are not frozen")
+    return {
+        "trace_frame_index": trace,
+        "renderer_rgba_status": "ready",
+        "renderer_rgba_receipt": capture,
+        "native_materialization": materialization,
+        "native_identity": presentation,
+        "rgba8_sha256": rgba_sha,
+    }
 
 
 def artifact(
     root: pathlib.Path, relative: Any, *, endpoint: str, role: str, series_id: str,
     schedule_sha: str, protocol_sha: str, pair_id: str, order: str, position: int,
     predeclared: datetime, seen_paths: set[pathlib.Path], seen_runs: set[str],
+    expected_trace: int | None = None,
 ) -> dict[str, Any]:
     directory = inside(root, relative, f"{pair_id}.{endpoint}.{role}", directory=True)
     if directory in seen_paths:
@@ -522,6 +689,15 @@ def artifact(
     expected_performance = role == "throughput"
     if q1.get("performance_evidence") is not expected_performance:
         fail(f"{context}.q1_comparison.performance_evidence must equal {expected_performance!r}")
+    capture_trace = None
+    if role == "control":
+        capture_trace = integer(
+            q1, "capture_trace_frame_index", f"{context}.q1_comparison"
+        )
+        if capture_trace not in {0, 1} or capture_trace != expected_trace:
+            fail(f"{context}.q1_comparison capture trace mismatch")
+    elif expected_trace is not None:
+        fail(f"{context} throughput cannot claim a capture trace")
     expected_count_scope = {
         ("playcanvas", "control"): "full_membership_v_c_d_unavailable",
         ("playcanvas", "throughput"): "full_membership_v_c_d_unavailable",
@@ -534,8 +710,24 @@ def artifact(
     if (role == "throughput" or endpoint == "playcanvas") and not {"frames[*].visible", "frames[*].contributor", "frames[*].drawn"}.issubset(unavailable):
         fail(f"{context} does not declare unavailable V/C/D")
     configuration = sha256(q1.get("configuration_sha256"), f"{context}.q1_comparison.configuration_sha256")
-    _frames(frames, endpoint, role, run_id, f"{pair_id}.{endpoint}.{role}.frames")
+    _frames(
+        frames, endpoint, role, run_id, capture_trace,
+        f"{pair_id}.{endpoint}.{role}.frames",
+    )
+    presentation = None
+    if role == "control":
+        presentation = (
+            _gsplat_presentation_receipt(
+                q1, frames, run_id, capture_trace, f"{context}.q1_comparison"
+            )
+            if endpoint == "gsplat_rs"
+            else _playcanvas_presentation_receipt(
+                manifest, q1, capture_trace, context
+            )
+        )
     return {
+        "directory": directory,
+        "relative_path": directory.relative_to(root).as_posix(),
         "manifest": manifest,
         "manifest_sha256": file_sha256(manifest_path),
         "run_id": run_id,
@@ -546,22 +738,31 @@ def artifact(
         "configuration": configuration,
         "started": started,
         "ended": ended,
-        "presentations": (
-            presentation_receipts(
-                q1, frames, run_id, endpoint, f"{context}.q1_comparison"
-            )
-            if role == "control"
-            else None
-        ),
+        "presentation": presentation,
         "terminal_ms": validate_terminal(q1, summary, f"{context}.q1_comparison") if role == "throughput" else None,
     }
 
 
-def bind_control(throughput: dict[str, Any], control: dict[str, Any], context: str) -> None:
-    binding = obj(throughput["manifest"]["q1_comparison"], "control_binding", context)
-    expected = {"run_id": control["run_id"], "manifest_sha256": control["manifest_sha256"], "configuration_sha256": control["configuration"]}
-    if any(binding.get(key) != value for key, value in expected.items()) or throughput["configuration"] != control["configuration"]:
-        fail(f"{context} does not bind the exact same-configuration control artifact")
+def bind_controls(
+    throughput: dict[str, Any], controls: dict[int, dict[str, Any]], context: str
+) -> None:
+    bindings = array(
+        throughput["manifest"]["q1_comparison"], "control_bindings", context
+    )
+    expected = [
+        {
+            "trace_frame_index": trace,
+            "run_id": control["run_id"],
+            "manifest_sha256": control["manifest_sha256"],
+            "configuration_sha256": control["configuration"],
+        }
+        for trace, control in sorted(controls.items())
+    ]
+    if bindings != expected or any(
+        throughput["configuration"] != control["configuration"]
+        for control in controls.values()
+    ):
+        fail(f"{context} does not bind both exact same-configuration control artifacts")
 
 
 def reference_images(root: pathlib.Path, document: dict[str, Any]) -> dict[int, dict[str, Any]]:
@@ -591,11 +792,10 @@ def endpoint_images(
     *,
     endpoint: str,
     pair_id: str,
-    control: dict[str, Any],
+    controls: dict[int, dict[str, Any]],
     references: dict[int, dict[str, Any]],
     minimum: float,
     seen_paths: set[pathlib.Path],
-    seen_hashes: set[str],
 ) -> list[dict[str, Any]]:
     if not isinstance(values, list) or len(values) != 2:
         fail(f"{pair_id}.{endpoint}.images must cover both views")
@@ -609,30 +809,89 @@ def endpoint_images(
         path = inside(root, value.get("path"), f"{context}.path")
         digest = sha256(value.get("sha256"), f"{context}.sha256")
         comparison_path = inside(root, value.get("comparison"), f"{context}.comparison")
-        comparison_digest = file_sha256(comparison_path)
         for evidence_path in (path, comparison_path):
             if evidence_path in seen_paths:
                 fail(f"{context} reuses endpoint evidence path {evidence_path}")
             seen_paths.add(evidence_path)
-        for evidence_digest in (digest, comparison_digest):
-            if evidence_digest in seen_hashes:
-                fail(f"{context} reuses endpoint evidence content SHA-256")
-            seen_hashes.add(evidence_digest)
         if trace not in {0, 1} or trace in seen or file_sha256(path) != digest:
             fail(f"{context} image identity mismatch")
         seen.add(trace)
-        presentation = control["presentations"][trace]
-        if value.get("capture_receipt") != presentation:
-            fail(f"{context} is not bound to the control presentation")
-        capture = obj(presentation, "capture", f"{context}.capture_receipt")
-        if digest != capture.get("png_sha256"):
-            fail(f"{context} PNG digest does not match renderer capture terminal")
+        control = controls.get(trace)
+        if control is None:
+            fail(f"{context} lacks its trace-specific producer control")
+        producer = obj(value, "producer_artifact", context)
+        if producer != {
+            "path": control["relative_path"],
+            "manifest_sha256": control["manifest_sha256"],
+        }:
+            fail(f"{context}.producer_artifact does not bind the native control manifest")
+        presentation = control["presentation"]
+        host_join = obj(value, "host_admission_join", context)
+        if set(host_join) != HOST_ADMISSION_JOIN_FIELDS:
+            fail(f"{context}.host_admission_join fields are not frozen")
+        expected_join = {
+            "schema": HOST_ADMISSION_JOIN_SCHEMA,
+            "source": "decoded_png_rgba8_to_renderer_receipt",
+            "pixel_format": "rgba8unorm-srgb",
+            "width": WIDTH,
+            "height": HEIGHT,
+            "producer_artifact_path": control["relative_path"],
+            "producer_manifest_sha256": control["manifest_sha256"],
+            "png_sha256": digest,
+        }
+        for field, expected in expected_join.items():
+            if host_join.get(field) != expected:
+                fail(f"{context}.host_admission_join.{field} mismatch")
+        source_rgba8 = sha256(
+            host_join.get("source_rgba8_sha256"),
+            f"{context}.host_admission_join.source_rgba8_sha256",
+        )
         try:
-            decoded = _decode_image(path, f"{context}.renderer_capture")
+            decoded = _decode_image(path, f"{context}.host_materialization")
         except (OSError, IMAGE.ValidationError) as error:
-            fail(f"{context} renderer capture PNG is invalid: {error}")
-        if hashlib.sha256(decoded.rgba).hexdigest() != capture.get("rgba8_sha256"):
-            fail(f"{context} RGBA8 digest does not match renderer capture terminal")
+            fail(f"{context} host PNG materialization is invalid: {error}")
+        if hashlib.sha256(decoded.rgba).hexdigest() != source_rgba8:
+            fail(f"{context} host PNG does not derive from its declared RGBA8 source")
+        renderer_rgba_ready = presentation.get("renderer_rgba_status") == "ready"
+        if renderer_rgba_ready:
+            capture = obj(
+                presentation,
+                "renderer_rgba_receipt",
+                f"{context}.producer_artifact",
+            )
+            if source_rgba8 != capture.get("rgba8_sha256"):
+                fail(f"{context} host PNG source does not match renderer-owned RGBA8")
+        if endpoint == "playcanvas" and renderer_rgba_ready:
+            materialization = obj(
+                presentation, "native_materialization", f"{context}.producer_artifact"
+            )
+            expected_native = {
+                "schema": PLAYCANVAS_MATERIALIZATION_SCHEMA,
+                "source": "host_png_from_renderer_owned_webgpu_rgba8",
+                "source_capture_schema": PLAYCANVAS_CAPTURE_SCHEMA,
+                "source_capture_producer": PLAYCANVAS_CAPTURE_PRODUCER,
+                "source_rgba8_sha256": source_rgba8,
+                "rgba8_byte_length": WIDTH * HEIGHT * 4,
+                "png_byte_length": path.stat().st_size,
+                "png_sha256": digest,
+                "width": WIDTH,
+                "height": HEIGHT,
+            }
+            for field, expected in expected_native.items():
+                if materialization.get(field) != expected:
+                    fail(f"{context}.native_materialization.{field} mismatch")
+            native_png = inside(
+                control["directory"], materialization.get("png_file"),
+                f"{context}.native_materialization.png_file",
+            )
+            native_rgba = inside(
+                control["directory"], materialization.get("rgba8_file"),
+                f"{context}.native_materialization.rgba8_file",
+            )
+            if native_png != path or file_sha256(native_rgba) != source_rgba8:
+                fail(f"{context} does not bind PlayCanvas native materialized files")
+            if native_rgba.stat().st_size != materialization["rgba8_byte_length"]:
+                fail(f"{context} PlayCanvas RGBA8 byte length mismatch")
         receipt = load_json(comparison_path, f"{context}.comparison")
         expected = {
             "schema": IMAGE_SCHEMA,
@@ -657,5 +916,11 @@ def endpoint_images(
         )
         if not math.isclose(float(score), recomputed, rel_tol=0.0, abs_tol=1.0e-9):
             fail(f"{context}.comparison.score does not match decoded PNG bytes")
-        result.append({"trace_frame_index": trace, "score": recomputed})
+        result.append(
+            {
+                "trace_frame_index": trace,
+                "score": recomputed,
+                "renderer_rgba_ready": renderer_rgba_ready,
+            }
+        )
     return sorted(result, key=lambda item: item["trace_frame_index"])

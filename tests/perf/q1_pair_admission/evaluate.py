@@ -1,4 +1,4 @@
-"""Series orchestration and finite Accepted/Rejected verdicts."""
+"""Series orchestration with fail-closed Deferred producer admission."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ import pathlib
 import statistics
 from typing import Any
 
-from .artifacts import artifact, bind_control, endpoint_images, reference_images
+from .artifacts import artifact, bind_controls, endpoint_images, reference_images
 from .common import ValidationError, array, fail, load_json, obj, string
 from .contract import MEASURED, RESULT_SCHEMA, SCHEMA, validate_protocol, validate_schedule
 
@@ -36,7 +36,6 @@ def evaluate(path: pathlib.Path) -> dict[str, Any]:
     seen_paths: set[pathlib.Path] = set()
     seen_runs: set[str] = set()
     seen_endpoint_paths: set[pathlib.Path] = set()
-    seen_endpoint_hashes: set[str] = set()
     frozen_commit: str | None = None
     frozen_builds: dict[str, dict[str, Any]] = {}
     frozen_environment: dict[str, Any] | None = None
@@ -57,51 +56,67 @@ def evaluate(path: pathlib.Path) -> dict[str, Any]:
             if values.get("position") != position:
                 fail(f"{pair_id}.{endpoint}.position does not match {order}")
             common = dict(endpoint=endpoint, series_id=series_id, schedule_sha=schedule_sha, protocol_sha=protocol_sha, pair_id=pair_id, order=order, position=position, predeclared=predeclared, seen_paths=seen_paths, seen_runs=seen_runs)
-            control = artifact(root, values.get("control"), role="control", **common)
+            control_values = array(values, "controls", f"{pair_id}.{endpoint}")
+            if len(control_values) != 2:
+                fail(f"{pair_id}.{endpoint}.controls must cover both trace views")
+            controls: dict[int, dict[str, Any]] = {}
+            for control_index, control_value in enumerate(control_values):
+                if not isinstance(control_value, dict):
+                    fail(f"{pair_id}.{endpoint}.controls[{control_index}] must be an object")
+                trace = control_value.get("trace_frame_index")
+                if trace not in {0, 1} or trace in controls:
+                    fail(f"{pair_id}.{endpoint}.controls must contain trace 0 and 1 once")
+                control = artifact(
+                    root,
+                    control_value.get("artifact"),
+                    role="control",
+                    expected_trace=trace,
+                    **common,
+                )
+                if control_value.get("manifest_sha256") != control["manifest_sha256"]:
+                    fail(f"{pair_id}.{endpoint}.controls[{control_index}] manifest SHA mismatch")
+                controls[trace] = control
             throughput = artifact(root, values.get("throughput"), role="throughput", **common)
-            bind_control(throughput, control, f"{pair_id}.{endpoint}.throughput.control_binding")
-            if throughput["started"] < control["ended"]:
-                fail(f"{pair_id}.{endpoint} throughput overlaps its control artifact")
-            if (
-                control["commit"] != throughput["commit"]
-                or control["build_artifacts"] != throughput["build_artifacts"]
-                or control["environment"]["identity"]
-                != throughput["environment"]["identity"]
-                or control["display"] != throughput["display"]
-            ):
-                fail(f"{pair_id}.{endpoint} control/throughput identity drift")
+            bind_controls(throughput, controls, f"{pair_id}.{endpoint}.throughput.control_bindings")
+            for trace, control in controls.items():
+                if (
+                    control["commit"] != throughput["commit"]
+                    or control["build_artifacts"] != throughput["build_artifacts"]
+                    or control["environment"]["identity"] != throughput["environment"]["identity"]
+                    or control["display"] != throughput["display"]
+                ):
+                    fail(f"{pair_id}.{endpoint} trace-{trace} control/throughput identity drift")
             images = endpoint_images(
                 root,
                 values.get("images"),
                 endpoint=endpoint,
                 pair_id=pair_id,
-                control=control,
+                controls=controls,
                 references=references,
                 minimum=minimum_ssim,
                 seen_paths=seen_endpoint_paths,
-                seen_hashes=seen_endpoint_hashes,
             )
             scores.extend(image["score"] for image in images)
-            endpoints[endpoint] = {"control": control, "throughput": throughput, "images": images}
+            endpoints[endpoint] = {"controls": controls, "throughput": throughput, "images": images}
             if frozen_commit is None:
-                frozen_commit = control["commit"]
-            elif control["commit"] != frozen_commit:
+                frozen_commit = throughput["commit"]
+            elif throughput["commit"] != frozen_commit:
                 fail(f"{pair_id}.{endpoint} changed the series Git commit")
-            if frozen_builds.setdefault(endpoint, control["build_artifacts"]) != control["build_artifacts"]:
+            if frozen_builds.setdefault(endpoint, throughput["build_artifacts"]) != throughput["build_artifacts"]:
                 fail(f"{pair_id}.{endpoint} changed built artifacts")
             if frozen_environment is None:
-                frozen_environment = control["environment"]["identity"]
-            elif control["environment"]["identity"] != frozen_environment:
+                frozen_environment = throughput["environment"]["identity"]
+            elif throughput["environment"]["identity"] != frozen_environment:
                 fail(f"{pair_id}.{endpoint} changed the collection environment")
             if frozen_display is None:
-                frozen_display = control["display"]
-            elif control["display"] != frozen_display:
+                frozen_display = throughput["display"]
+            elif throughput["display"] != frozen_display:
                 fail(f"{pair_id}.{endpoint} changed presentation cadence")
         first = "playcanvas" if order == "playcanvas-first" else "gsplat_rs"
         second = "gsplat_rs" if first == "playcanvas" else "playcanvas"
-        first_start = endpoints[first]["control"]["started"]
+        first_start = endpoints[first]["throughput"]["started"]
         first_end = endpoints[first]["throughput"]["ended"]
-        second_start = endpoints[second]["control"]["started"]
+        second_start = endpoints[second]["throughput"]["started"]
         pair_end = endpoints[second]["throughput"]["ended"]
         if first_end > second_start:
             fail(f"{pair_id}: timestamps do not prove predeclared {order} execution")
@@ -121,13 +136,58 @@ def evaluate(path: pathlib.Path) -> dict[str, Any]:
             "count_scope": {"playcanvas": "full_membership_v_c_d_unavailable", "gsplat_rs": "control_only_exact_v_c_d_throughput_unobserved"},
             "thermal": {
                 endpoint: {
-                    role: endpoints[endpoint][role]["environment"]["thermal"]
-                    for role in ("control", "throughput")
+                    "controls": {
+                        str(trace): control["environment"]["thermal"]
+                        for trace, control in endpoints[endpoint]["controls"].items()
+                    },
+                    "throughput": endpoints[endpoint]["throughput"]["environment"]["thermal"],
                 }
                 for endpoint in endpoints
             },
         })
     quality_passed = min(scores) >= minimum_ssim
+    real_producers_ready = all(
+        image["renderer_rgba_ready"]
+        for pair in pair_results
+        for endpoint in pair["images"].values()
+        for image in endpoint
+    )
+    if not real_producers_ready:
+        return {
+            "schema": RESULT_SCHEMA,
+            "series_id": series_id,
+            "state": "Deferred",
+            "evidence_admitted": False,
+            "candidate_evidence_valid": True,
+            "claim_scope": None,
+            "schedule_sha256": schedule_sha,
+            "protocol_sha256": protocol_sha,
+            "pair_count": 5,
+            "minimum_ssim": minimum_ssim,
+            "minimum_observed_ssim": None,
+            "quality_passed": None,
+            "performance": None,
+            "reasons": ["playcanvas_renderer_same_present_rgba_receipt_unavailable"],
+            "pairs": [
+                {
+                    "pair_id": pair["pair_id"],
+                    "run_order": pair["run_order"],
+                    "producer_readiness": {
+                        endpoint: all(
+                            image["renderer_rgba_ready"] for image in images
+                        )
+                        for endpoint, images in pair["images"].items()
+                    },
+                }
+                for pair in pair_results
+            ],
+            "limitations": [
+                "gsplat-rs images bind the real same-present renderer RGBA receipt",
+                "PlayCanvas same-present renderer RGBA provenance is unavailable",
+                "host PNG materialization alone cannot qualify a comparator image",
+            ],
+            "retry_authorized": False,
+        }
     median_delta = statistics.median(pair["gsplat_rs_minus_playcanvas_ms"] for pair in pair_results)
     reasons: list[str] = []
     performance = None
