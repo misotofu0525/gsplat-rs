@@ -1010,7 +1010,8 @@ def artifact(
         fail(f"artifact directory is reused: {directory}")
     seen_paths.add(directory)
     for blocker_name in ("blocker.json", "cleanup-blocker.json"):
-        if (directory / blocker_name).exists():
+        blocker_path = directory / blocker_name
+        if blocker_path.exists() or blocker_path.is_symlink():
             fail(f"{pair_id}.{endpoint}.{role} contains {blocker_name}")
     try:
         BENCHMARK.validate(directory)

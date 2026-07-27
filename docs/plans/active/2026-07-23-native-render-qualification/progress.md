@@ -1055,7 +1055,7 @@ This is an offline mechanism candidate only. It performs no browser/device run
 and does not authorize a comparison by itself. The separate five-pair
 orchestrator must emit the new shared authority fields after this candidate is
 independently reviewed and integrated; no formal series should start before
-that schedule-emitter sync and a fresh authority artifact exist. The 60 focused
+that schedule-emitter sync and a fresh authority artifact exist. The 64 focused
 Q1 admission tests, five producer-transaction tests, source architecture policy
 and diff hygiene pass on this isolated candidate.
 
@@ -1064,3 +1064,8 @@ directory/receipt, retained binary and reference PNGs by checking every path
 component before resolution. This contract detects retained mutation and join
 drift; it is not a cryptographic attestation against an actor who can rewrite
 the receipt and all hashes together, and this slice does not add signing.
+
+The second fixed-SHA repair extends the same fail-closed rule to series-root and
+endpoint `blocker.json` / `cleanup-blocker.json`: a dangling symlink is still a
+retained blocker and cannot disappear merely because `Path.exists()` follows
+it to a missing target.

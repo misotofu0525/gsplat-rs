@@ -33,7 +33,8 @@ from .contract import (
 def evaluate(path: pathlib.Path) -> dict[str, Any]:
     root = path.resolve().parent
     for blocker_name in ("blocker.json", "cleanup-blocker.json"):
-        if (root / blocker_name).exists():
+        blocker_path = root / blocker_name
+        if blocker_path.exists() or blocker_path.is_symlink():
             fail(f"schedule root contains {blocker_name}")
     document = load_json(path, "schedule")
     if document.get("schema") != SCHEMA:

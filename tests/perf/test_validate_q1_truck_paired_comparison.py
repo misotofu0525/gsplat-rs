@@ -1392,9 +1392,23 @@ class ScheduleAndAdmissionTests(unittest.TestCase):
         with self.assertRaisesRegex(ValidationError, "contains blocker.json"):
             evaluate(self.schedule)
 
+    def test_artifact_with_dangling_blocker_symlink_is_rejected(self) -> None:
+        directory = self.root / "pairs/pair-01/playcanvas/throughput"
+        (directory / "blocker.json").symlink_to("missing-blocker-target.json")
+        with self.assertRaisesRegex(ValidationError, "contains blocker.json"):
+            evaluate(self.schedule)
+
     def test_artifact_with_cleanup_blocker_is_rejected(self) -> None:
         directory = self.root / "pairs/pair-01/playcanvas/throughput"
         write_json(directory / "cleanup-blocker.json", {"status": "blocked"})
+        with self.assertRaisesRegex(ValidationError, "contains cleanup-blocker.json"):
+            evaluate(self.schedule)
+
+    def test_artifact_with_dangling_cleanup_blocker_symlink_is_rejected(self) -> None:
+        directory = self.root / "pairs/pair-01/playcanvas/throughput"
+        (directory / "cleanup-blocker.json").symlink_to(
+            "missing-cleanup-blocker-target.json"
+        )
         with self.assertRaisesRegex(ValidationError, "contains cleanup-blocker.json"):
             evaluate(self.schedule)
 
@@ -1403,8 +1417,23 @@ class ScheduleAndAdmissionTests(unittest.TestCase):
         with self.assertRaisesRegex(ValidationError, "schedule root contains blocker.json"):
             evaluate(self.schedule)
 
+    def test_schedule_root_with_dangling_blocker_symlink_is_rejected(self) -> None:
+        (self.root / "blocker.json").symlink_to("missing-blocker-target.json")
+        with self.assertRaisesRegex(ValidationError, "schedule root contains blocker.json"):
+            evaluate(self.schedule)
+
     def test_schedule_root_with_cleanup_blocker_is_rejected(self) -> None:
         write_json(self.root / "cleanup-blocker.json", {"status": "blocked"})
+        with self.assertRaisesRegex(
+            ValidationError,
+            "schedule root contains cleanup-blocker.json",
+        ):
+            evaluate(self.schedule)
+
+    def test_schedule_root_with_dangling_cleanup_blocker_symlink_is_rejected(self) -> None:
+        (self.root / "cleanup-blocker.json").symlink_to(
+            "missing-cleanup-blocker-target.json"
+        )
         with self.assertRaisesRegex(
             ValidationError,
             "schedule root contains cleanup-blocker.json",
