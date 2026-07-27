@@ -1,4 +1,5 @@
 import importlib.util
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -56,6 +57,15 @@ class Q3M4SimdCollectorTests(unittest.TestCase):
         COLLECTOR.validate_receipt(receipt)
         self.assertEqual(receipt["decision"], "Deferred")
         self.assertFalse(receipt["whole_plan_promotion"])
+
+    def test_output_is_fresh_and_published_once(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "nested" / "cell.json"
+            COLLECTOR.require_fresh_output(output)
+            COLLECTOR.publish_output(output, "{}")
+            self.assertEqual(output.read_text(encoding="utf-8"), "{}\n")
+            with self.assertRaisesRegex(ValueError, "already exists"):
+                COLLECTOR.require_fresh_output(output)
 
 
 if __name__ == "__main__":

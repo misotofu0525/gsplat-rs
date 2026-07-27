@@ -145,15 +145,27 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def require_fresh_output(path: Path) -> None:
+    if path.exists():
+        raise ValueError(f"Q3 SIMD output already exists: {path}")
+
+
+def publish_output(path: Path, contents: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("x", encoding="utf-8") as handle:
+        handle.write(contents + "\n")
+
+
 def main(argv: list[str]) -> int:
     args = parse_args(argv)
+    if args.output is not None:
+        require_fresh_output(args.output)
     brand = apple_cpu_brand()
     cell, exit_code = collect(repository_root(), brand)
     validate_receipt(cell)
     output = json.dumps(cell, sort_keys=True, separators=(",", ":"))
     if args.output is not None:
-        args.output.parent.mkdir(parents=True, exist_ok=True)
-        args.output.write_text(output + "\n", encoding="utf-8")
+        publish_output(args.output, output)
     print(output)
     return exit_code
 
