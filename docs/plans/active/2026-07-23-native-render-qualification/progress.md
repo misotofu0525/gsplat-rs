@@ -175,6 +175,85 @@ control artifact before starting throughput, bind the second run to the first
 manifest, and stop after either command fails. Only a newly reviewed exact SHA
 may become a separately authorized endpoint run.
 
+## Q1 M4 native sustained collector mechanism (2026-07-27)
+
+Starting from clean exact parent
+`9c81a05964ea8dd77d8f384f21cb4ee4bfa9d5f2`, the desktop private host and
+`tests/perf/collect-q1-m4-native.py` now define the missing native control plus
+terminal-throughput mechanism without changing renderer policy, a stable API,
+PlanId, Adaptive, or product defaults. The host is feature-gated and admits
+only Packed `ProjectedQuadsExact`, product Adaptive policies, every-frame
+ordering, the frozen two-view Truck trace and 60 Hz cadence.
+
+The first 20+80 stage remains sustained current-stats correctness/control
+evidence. It drains warmup tickets with drawing stopped, restarts its measured
+control at trace frame 0, continuously polls/recycles the bounded ring and
+retains complete presentation/submission/terminal plus `V/C/D` ledgers. It is
+explicitly `timing_eligible=false` and emits no throughput `N/FPS`.
+
+After that control is fully drained, the same process runs a second 20+80
+presentation stage under the same scene/trace/camera/config identity with zero
+current-stats requests or polls. After warmup frame 20, drawing stops for one
+shared-runtime queue completion outside the timed window; no current-stats or
+capture work is admitted, and measured frame 0 freezes the window start only
+after that Ready boundary. Drawing then stops after measured frame 80 for the
+single measured-terminal no-draw
+`SurfaceRenderSession::pump_receipts` owner. Only the common monotonic
+first-measured-camera-input to measured-queue-completion window publishes
+terminal `N/FPS`; it cannot reuse control `V/C/D`. The collector binds both
+stages to the clean Git SHA and locked binary SHA.
+
+Every timed member also records the actual Exact whole-plan Adaptive state,
+executed PlanId and Candidate/Compact execution. Exact intentionally reports
+the independent projected learner as `disabled` because `WholePlanController`
+owns the whole-plan choice; the validator records that state without requiring
+Preproject/Compact. The fairness gate is zero timed current-stats load plus the
+terminal-only no-draw drain.
+
+The host reads the live f32 camera back from `session.camera()`, derives Surface
+aspect, recomputes canonical view/projection/view-projection matrices, and binds
+the post-timing view 0/1 PNGs to camera revision, presentation sequence and
+Ready control terminals. Busy, failure, timed observer load,
+duplicate/missing/cross-joined ticket, failed queue completion, drain draw,
+incomplete member or identity drift is fail closed; the collector claims one
+fresh immutable root and never retries the host command.
+
+No formal Truck endpoint was run by this implementation slice. Q1 remains
+**Deferred** pending the separately authorized native run plus PlayCanvas
+headful external presentation, the common reference-image gate and five outer
+counterbalanced pairs; those boundaries are deliberately not implemented here.
+
+Fixed-SHA review of `95e6b5a` rejected duplicate host/collector ownership and a
+broad exception path that could misclassify protocol failures as Deferred. The
+direct repair moves winit dispatch, current-stats ledger/join, live-camera
+derivation, plan/count validation and ordinary capture I/O into the existing
+private `surface_evidence` owner. Q1 now supplies the control/timed/capture state
+transitions and frozen log contract. The Q1 collector reuses the existing
+locked builder, finalizer and ticket ledger, the paired Truck workload loader,
+and `trace_v1` camera math. Only an explicitly named preflight
+`EnvironmentPrerequisiteError` can be Deferred; build/host/protocol/output-stage
+exceptions are Rejected. Focused coverage includes unknown capture tickets and
+a post-protocol injected `KeyError` through the real collection state path.
+
+The second fixed-SHA review found four remaining fail-closed gaps. The direct
+follow-up makes `surface_evidence::SurfaceEvidenceRuntime` the sole live session
+owner; Q1 now issues request/present/poll/complete commands and consumes owned
+receipts without calling session camera/render/current-stats/capture/drain APIs.
+Collector joins now bind each ticket's phase/member/trace and full identity
+across presentation, submission, terminal and derived frame, and count semantics
+are a closed enum. Output publication now stages, cleans, fsyncs, chmods and
+atomically renames; finalization failure is itself Rejected and cannot leave an
+Accepted output root. Negative fixtures cover crossed ticket membership,
+unknown count semantics, and cleanup/write/chmod failures.
+
+Fixed-SHA review of `909b3bb` found that formal timed warmup still flowed into
+measured frame 0 without first completing the warmup queue. The direct repair
+adds a distinct no-draw `TimedWarmupDrain` through the shared runtime facade.
+Its begin/end receipts require zero draw, current-stats and capture work, and
+the collector admits the terminal window only when warmup completion is no
+later than the first measured camera input. The later measured-terminal drain
+remains the sole drain counted in `N/FPS`.
+
 ## Q3 M4 SIMD microbenchmark checkpoint (2026-07-27)
 
 At clean root commit `f025dff`, the fixed

@@ -334,6 +334,7 @@ npm --prefix packages/web run pack:dry-run
 cargo run --release -p bench-runner -- tests/datasets/minimal_ascii.ply 120 --warmup-iterations 10 --max-avg-gpu-complete-ms 250
 bash tests/perf/test-benchmark-artifacts.sh
 PYTHONDONTWRITEBYTECODE=1 python3 tests/perf/test_desktop_surface_evidence.py
+PYTHONDONTWRITEBYTECODE=1 python3 tests/perf/test_collect_q1_m4_native.py
 python3 tests/perf/validate-dataset-manifests.py
 python3 tests/datasets/test_dataset_tools.py
 bash tests/perf/trace/test-trace-v1.sh
@@ -465,6 +466,71 @@ Surface, so it is an endpoint action: inspect it through the launchbook first
 and run it only with the relevant one-shot authorization. Missing Truck data or
 a quality suite from another commit is rejected before either diagnostic binary
 is built.
+
+For the Q1 M4 native control plus terminal-throughput prerequisite, first run
+the pure collector/ledger tests. A separately authorized endpoint owner may
+then select one fresh ignored root and invoke the collector once:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 python3 tests/perf/test_collect_q1_m4_native.py
+python3 tests/perf/collect-q1-m4-native.py \
+  --output target/qualification/q1-m4-native-<candidate-sha>-attempt-1
+```
+
+This collector admits only a clean Apple M4/Metal source identity, the complete
+canonical Truck SH3 asset, the frozen two-view `1920x1080` trace, locked release
+private host, Packed `ProjectedQuadsExact`, product Adaptive policies,
+every-frame ordering and 60 Hz host cadence. It atomically claims the fresh
+root and invokes the host once with no automatic retry. The first 20+80 stage
+is an explicitly untimed sustained current-stats correctness control: warmup
+tickets are fully drained with drawing stopped, the measured control restarts
+at trace frame 0, and all issued tickets resolve before timing begins. Its
+`V/C/D` and terminals cannot populate a throughput field.
+
+The same process then runs a second 20+80 presentation stage with identical
+scene, trace, camera and config identity and zero current-stats requests or
+polls. After warmup frame 20 the host stops drawing and completes the warmup
+queue once outside the measurement window, with no current-stats or capture
+work. Measured frame 0 begins only after that drain is Ready. After measured
+frame 80 the host stops drawing and uses
+the existing no-draw queue-completion owner; only the monotonic
+first-measured-camera-input to queue-completion
+boundary derives terminal `N/FPS`. The two fixed-view PNG captures occur only
+afterward and bind recomputed live-session camera matrices, camera revision,
+presentation sequence and their own Ready control terminals. A phase-binding
+receipt also joins both stages to the clean Git SHA and locked binary SHA.
+Each timed presentation retains the actual Exact whole-plan Adaptive state,
+executed PlanId and Candidate/Compact execution. Exact's independent projected
+Adaptive state is intentionally `disabled` under `WholePlanController`; this is
+an admitted receipt, not a rejection, and no Compact/Preproject occurrence is
+required.
+
+Ring busy, request/terminal failure, missing/duplicate/cross-joined control
+tickets, timed current-stats load, incomplete counts or membership, failed
+queue completion, draw during a drain, and dataset, trace, camera, matrix,
+resolution, adapter, binary or Git drift reject the native artifact. This route
+does not run or qualify PlayCanvas headful external presentation, the common
+reference-image gate, or the five outer counterbalanced pairs, so even a valid
+native prerequisite leaves Q1 itself Deferred.
+
+The ordinary desktop Surface host and Q1 phase policy share one private runtime
+owner that holds `SurfaceRenderSession` and exposes only command/immutable-
+receipt events for current-stats, camera, render, capture and queue completion.
+Their collectors likewise share the locked release builder, transactional
+immutable-output finalizer and ticket ledger; Q1
+reuses the committed paired-workload loader and camera-trace math. Only a named
+`EnvironmentPrerequisiteError` raised during preflight may produce Deferred.
+Once build or host execution starts—or any runtime output exists—every parsing,
+ledger, `KeyError` or other unexpected exception is Rejected.
+
+Every control ticket joins phase, member, trace frame and full renderer identity
+across presentation, submission and terminal records. Count semantics are a
+closed enum; unknown strings reject rather than defaulting to `D=V`. Collection
+is written under a private sibling staging root, private build state is removed,
+files and directories are fsynced and made immutable, and only then is the root
+atomically renamed. Cleanup failure may publish only a bounded immutable
+Rejected result; write/chmod/publication failure leaves no Accepted root and
+reports an explicit finalization blocker.
 
 Committed dataset identities and the shared camera oracle have separate checks:
 

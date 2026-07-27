@@ -260,6 +260,7 @@ fn args_parse_defaults_to_minimal_dataset() {
     assert_eq!(args.surface_sort_policy, SurfaceSortPolicyArg::EveryFrame);
     assert_eq!(args.surface_gpu_producer, None);
     assert_eq!(args.surface_evidence_plan, None);
+    assert!(!args.surface_q1_m4_native);
     assert!(!args.surface_diagnostic_capture_receipt);
     assert!(!args.surface_diagnostic_multi_capture);
     assert!(args.png_out.is_none());
@@ -778,6 +779,72 @@ fn throughput_surface_benchmark_requires_a_trace_but_accepts_a_fixed_pose() {
             ..
         })
     ));
+}
+
+#[cfg(feature = "qualification-q1-m4-native")]
+#[test]
+fn q1_m4_native_cli_freezes_the_two_stage_profile() {
+    let required = [
+        "--interactive",
+        "--geometry-path",
+        "packed",
+        "--camera-trace",
+        CAMERA_TRACE_FIXTURE,
+        "--camera-sequence",
+        "--camera-frame-indices",
+        "0,1",
+        "--camera-warmup-frames",
+        "20",
+        "--camera-measured-frames",
+        "80",
+        "--camera-loops",
+        "1",
+        "--surface-benchmark-mode",
+        "throughput",
+        "--surface-sort-policy",
+        "every-frame",
+        "--order-backend",
+        "adaptive",
+        "--surface-q1-m4-native",
+        "--png",
+        "capture.png",
+    ];
+    let mut args = parse_args(&required).unwrap();
+    assert!(args.surface_q1_m4_native);
+    assert!(matches!(
+        load_camera_trace(&mut args).unwrap(),
+        Some(CameraTracePlayback::Sequence {
+            frame_indices,
+            warmup_frames: 20,
+            measured_frames: 80,
+            loops: 1,
+            ..
+        }) if frame_indices == vec![0, 1]
+    ));
+
+    let mut wrong_backend = required.to_vec();
+    let backend = wrong_backend
+        .iter()
+        .position(|value| *value == "adaptive")
+        .unwrap();
+    wrong_backend[backend] = "cpu";
+    assert!(
+        parse_args(&wrong_backend)
+            .unwrap_err()
+            .contains("requires --order-backend adaptive")
+    );
+
+    let mut wrong_measured = required.to_vec();
+    let measured = wrong_measured
+        .iter()
+        .position(|value| *value == "80")
+        .unwrap();
+    wrong_measured[measured] = "79";
+    assert!(
+        parse_args(&wrong_measured)
+            .unwrap_err()
+            .contains("exactly 20 warmup, 80 measured")
+    );
 }
 
 #[cfg(not(feature = "diagnostic-surface-depth-key-candidate24"))]

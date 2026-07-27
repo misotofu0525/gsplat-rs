@@ -41,6 +41,7 @@ qualification-q3-cpu-neon = [
     "interactive-viewer",
     "gsplat-render-wgpu/qualification-q3-cpu-neon",
 ]
+qualification-q1-m4-native = ["interactive-viewer"]
 
 [dependencies]
 gsplat-core = { path = "../../crates/gsplat-core", version = "0.1.3" }

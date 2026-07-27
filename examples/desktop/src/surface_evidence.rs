@@ -5,13 +5,14 @@
 //! remain in `SurfaceRenderSession` and its Renderer-owned Exact runtime.
 
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
     sync::atomic::{AtomicBool, Ordering},
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 
+use gsplat_core::Camera;
 #[cfg(all(
     feature = "diagnostic-surface-capture-receipt",
     not(target_arch = "wasm32")
@@ -23,6 +24,8 @@ use std::fs;
     not(target_arch = "wasm32")
 ))]
 use gsplat_render_wgpu::DiagnosticSurfaceCaptureReceipt;
+#[cfg(feature = "qualification-q1-m4-native")]
+use gsplat_render_wgpu::{SurfaceAdaptiveState, SurfaceProjectedDrawAdaptiveState};
 use gsplat_render_wgpu::{
     SurfaceCurrentStatsCountSemantics, SurfaceCurrentStatsPlan, SurfaceCurrentStatsPoll,
     SurfaceCurrentStatsReceipt, SurfaceCurrentStatsRequest, SurfaceCurrentStatsSubmission,
@@ -37,7 +40,7 @@ use gsplat_render_wgpu::{
 use sha2::{Digest, Sha256};
 use winit::{
     event::{Event, WindowEvent},
-    event_loop::EventLoop,
+    event_loop::{ActiveEventLoop, EventLoop},
 };
 
 use crate::{
@@ -47,7 +50,8 @@ use crate::{
     viewer::{SurfaceResolutionReceipt, SurfaceTraceStep, surface_trace_steps},
 };
 
-const RECEIPT_TIMEOUT: Duration = Duration::from_secs(30);
+pub(crate) const RECEIPT_TIMEOUT: Duration = Duration::from_secs(30);
+const CAMERA_TOLERANCE: f64 = 5.0e-5;
 const MAX_INELIGIBLE_RETRIES: usize = 64;
 const DIAGNOSTIC_MULTI_CAPTURE_TRACE_FRAMES: [usize; 3] = [0, 1, 0];
 
@@ -56,6 +60,7 @@ struct MultiCaptureSchedule {
     next_capture: usize,
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 impl MultiCaptureSchedule {
     fn next_trace_frame(&self) -> Option<usize> {
         DIAGNOSTIC_MULTI_CAPTURE_TRACE_FRAMES
@@ -123,6 +128,344 @@ pub(crate) fn configure(
     }
 }
 
+#[allow(deprecated)] // Shared with the existing desktop Surface host until run_app migration.
+pub(crate) fn run_surface_event_loop<F>(
+    event_loop: EventLoop<()>,
+    window: Arc<winit::window::Window>,
+    expected_size: (u32, u32),
+    label: &'static str,
+    error: Arc<Mutex<Option<String>>>,
+    completed: Arc<AtomicBool>,
+    mut redraw: F,
+) -> Result<(), String>
+where
+    F: FnMut(&ActiveEventLoop) + 'static,
+{
+    let window_id = window.id();
+    event_loop
+        .run(move |event, target| match event {
+            _ if completed.load(Ordering::Acquire) => {}
+            Event::AboutToWait if error.lock().is_ok_and(|slot| slot.is_none()) => {
+                window.request_redraw();
+            }
+            Event::WindowEvent {
+                window_id: id,
+                event: WindowEvent::CloseRequested,
+            } if id == window_id => {
+                store_error(
+                    &error,
+                    format!("{label} window closed before terminal publication"),
+                );
+                target.exit();
+            }
+            Event::WindowEvent {
+                window_id: id,
+                event: WindowEvent::Resized(size),
+            } if id == window_id && (size.width, size.height) != expected_size => {
+                store_error(
+                    &error,
+                    format!(
+                        "{label} resize {}x{} violates {}x{}",
+                        size.width, size.height, expected_size.0, expected_size.1
+                    ),
+                );
+                target.exit();
+            }
+            Event::WindowEvent {
+                window_id: id,
+                event: WindowEvent::RedrawRequested,
+            } if id == window_id && error.lock().is_ok_and(|slot| slot.is_none()) => {
+                redraw(target);
+            }
+            _ => {}
+        })
+        .map_err(|error| format!("{label} event loop failed: {error}"))
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct LiveCameraReceipt {
+    pub(crate) revision: u64,
+    pub(crate) surface_size: (u32, u32),
+    pub(crate) aspect: f32,
+    pub(crate) camera: Camera,
+    pub(crate) view_matrix: [f32; 16],
+    pub(crate) projection_matrix: [f32; 16],
+    pub(crate) view_projection_matrix: [f32; 16],
+}
+
+impl LiveCameraReceipt {
+    fn validated(
+        session: &SurfaceRenderSession,
+        playback: &CameraTracePlayback,
+        step: SurfaceTraceStep,
+    ) -> Result<Self, String> {
+        let surface_size = session.surface_size();
+        if surface_size.0 == 0 || surface_size.1 == 0 {
+            return Err("live camera receipt has a zero Surface dimension".to_owned());
+        }
+        let camera = session.camera();
+        camera
+            .validate()
+            .map_err(|_| "live session camera is invalid".to_owned())?;
+        let aspect = surface_size.0 as f32 / surface_size.1 as f32;
+        let view_matrix = canonical_view_matrix_f32(camera);
+        let projection_matrix = canonical_projection_matrix_f32(camera, aspect);
+        let receipt = Self {
+            revision: session.camera_revision(),
+            surface_size,
+            aspect,
+            camera,
+            view_matrix,
+            projection_matrix,
+            view_projection_matrix: multiply_mat4_f32(projection_matrix, view_matrix),
+        };
+        validate_live_camera(playback, step, receipt)?;
+        Ok(receipt)
+    }
+}
+
+#[derive(Debug, Clone)]
+#[cfg_attr(not(feature = "qualification-q1-m4-native"), allow(dead_code))]
+pub(crate) struct SurfaceRuntimeIdentity {
+    resolution: SurfaceResolutionReceipt,
+    source_count: usize,
+    resident_count: usize,
+    sh_degree: u8,
+    raster_execution_plan: SurfaceRasterExecutionPlan,
+    projected_draw_policy: gsplat_render_wgpu::SurfaceProjectedDrawPolicy,
+}
+
+#[cfg_attr(not(feature = "qualification-q1-m4-native"), allow(dead_code))]
+impl SurfaceRuntimeIdentity {
+    pub(crate) const fn resolution(&self) -> SurfaceResolutionReceipt {
+        self.resolution
+    }
+
+    pub(crate) const fn source_count(&self) -> usize {
+        self.source_count
+    }
+
+    pub(crate) const fn resident_count(&self) -> usize {
+        self.resident_count
+    }
+
+    pub(crate) const fn sh_degree(&self) -> u8 {
+        self.sh_degree
+    }
+
+    pub(crate) const fn raster_execution_plan(&self) -> SurfaceRasterExecutionPlan {
+        self.raster_execution_plan
+    }
+
+    pub(crate) const fn projected_draw_policy(
+        &self,
+    ) -> gsplat_render_wgpu::SurfaceProjectedDrawPolicy {
+        self.projected_draw_policy
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SurfaceRuntimeCaptureMode {
+    None,
+    Ordinary,
+    Diagnostic,
+}
+
+#[derive(Debug, Clone, Copy)]
+#[cfg_attr(not(feature = "qualification-q1-m4-native"), allow(dead_code))]
+pub(crate) enum SurfaceRuntimeCommand {
+    RequestCurrentStats,
+    Present {
+        step: SurfaceTraceStep,
+        capture: SurfaceRuntimeCaptureMode,
+    },
+    PollCurrentStats,
+    CompleteQueue(Duration),
+}
+
+#[derive(Debug)]
+#[cfg_attr(not(feature = "qualification-q1-m4-native"), allow(dead_code))]
+pub(crate) struct SurfaceRuntimePresentation {
+    output: SurfaceFrameOutput,
+    live_camera: LiveCameraReceipt,
+    current_stats_submission: SurfaceCurrentStatsSubmission,
+    capture: Option<SurfaceRuntimeCapture>,
+    call_ms: f32,
+}
+
+#[cfg_attr(not(feature = "qualification-q1-m4-native"), allow(dead_code))]
+impl SurfaceRuntimePresentation {
+    pub(crate) fn into_parts(
+        self,
+    ) -> (
+        SurfaceFrameOutput,
+        LiveCameraReceipt,
+        SurfaceCurrentStatsSubmission,
+        Option<SurfaceRuntimeCapture>,
+        f32,
+    ) {
+        (
+            self.output,
+            self.live_camera,
+            self.current_stats_submission,
+            self.capture,
+            self.call_ms,
+        )
+    }
+}
+
+#[derive(Debug)]
+#[cfg_attr(not(feature = "qualification-q1-m4-native"), allow(dead_code))]
+pub(crate) enum SurfaceRuntimeEvent {
+    CurrentStatsRequested,
+    Presented(Box<SurfaceRuntimePresentation>),
+    CurrentStatsEmpty,
+    CurrentStatsReady(SurfaceCurrentStatsReceipt),
+    QueueCompleted(bool),
+}
+
+/// The sole private owner of a live desktop Surface evidence session.
+///
+/// Evidence phase policies submit commands and receive owned immutable
+/// receipts. They never render, poll, capture, or read live camera state
+/// through `SurfaceRenderSession` directly.
+pub(crate) struct SurfaceEvidenceRuntime {
+    session: SurfaceRenderSession,
+    playback: CameraTracePlayback,
+    identity: SurfaceRuntimeIdentity,
+}
+
+impl SurfaceEvidenceRuntime {
+    pub(crate) fn new(
+        session: SurfaceRenderSession,
+        playback: &CameraTracePlayback,
+        requested_size: (u32, u32),
+    ) -> Result<Self, String> {
+        let source_count = session
+            .renderer()
+            .scene_len()
+            .ok_or_else(|| "Surface evidence scene is not loaded".to_owned())?;
+        let resident_count = session
+            .renderer()
+            .resident_scene()
+            .map_or(source_count, |scene| scene.len());
+        let resolution = SurfaceResolutionReceipt::validated(
+            requested_size,
+            session.surface_size(),
+            session.internal_render_size(),
+        )?;
+        let identity = SurfaceRuntimeIdentity {
+            resolution,
+            source_count,
+            resident_count,
+            sh_degree: session.renderer().scene_sh_degree().unwrap_or(0),
+            raster_execution_plan: session.raster_execution_plan(),
+            projected_draw_policy: session.projected_draw_policy(),
+        };
+        Ok(Self {
+            session,
+            playback: playback.clone(),
+            identity,
+        })
+    }
+
+    pub(crate) fn identity(&self) -> &SurfaceRuntimeIdentity {
+        &self.identity
+    }
+
+    pub(crate) fn execute(
+        &mut self,
+        command: SurfaceRuntimeCommand,
+    ) -> Result<SurfaceRuntimeEvent, String> {
+        match command {
+            SurfaceRuntimeCommand::RequestCurrentStats => {
+                match self.session.request_current_stats() {
+                    SurfaceCurrentStatsRequest::Requested => {
+                        Ok(SurfaceRuntimeEvent::CurrentStatsRequested)
+                    }
+                    SurfaceCurrentStatsRequest::Unsampled(reason) => {
+                        Err(format!("current-stats request unavailable: {reason:?}"))
+                    }
+                }
+            }
+            SurfaceRuntimeCommand::Present { step, capture } => {
+                self.session
+                    .set_camera(step.camera)
+                    .map_err(|error| format!("Surface evidence camera update failed: {error}"))?;
+                let live_camera =
+                    LiveCameraReceipt::validated(&self.session, &self.playback, step)?;
+                self.session.force_sort_refresh();
+                if capture != SurfaceRuntimeCaptureMode::None {
+                    self.session.request_surface_capture().map_err(|error| {
+                        format!("Surface evidence capture request failed: {error}")
+                    })?;
+                }
+                let call_started = Instant::now();
+                let output = self
+                    .session
+                    .render_frame()
+                    .map_err(|error| format!("Surface evidence render failed: {error}"))?;
+                let call_ms = call_started.elapsed().as_secs_f32() * 1_000.0;
+                if !output.frame_presented
+                    || output.gpu_order_preparation_pending
+                    || self.session.last_presented_size()
+                        != Some(self.identity.resolution.requested)
+                    || self.session.surface_size() != self.identity.resolution.requested
+                    || self.session.internal_render_size() != self.identity.resolution.requested
+                {
+                    return Err(format!(
+                        "Surface evidence frame was not a complete full-resolution presentation: presented={} preparation_pending={} presented_size={:?}",
+                        output.frame_presented,
+                        output.gpu_order_preparation_pending,
+                        self.session.last_presented_size()
+                    ));
+                }
+                if output.camera_revision != live_camera.revision
+                    || self.session.camera_revision() != live_camera.revision
+                {
+                    return Err(
+                        "Surface evidence live camera revision did not bind to the presented frame"
+                            .to_owned(),
+                    );
+                }
+                let capture = match capture {
+                    SurfaceRuntimeCaptureMode::None => None,
+                    SurfaceRuntimeCaptureMode::Ordinary => {
+                        Some(take_pending_capture(&mut self.session, false)?)
+                    }
+                    SurfaceRuntimeCaptureMode::Diagnostic => {
+                        Some(take_pending_capture(&mut self.session, true)?)
+                    }
+                };
+                Ok(SurfaceRuntimeEvent::Presented(Box::new(
+                    SurfaceRuntimePresentation {
+                        output,
+                        live_camera,
+                        current_stats_submission: self.session.current_stats_submission(),
+                        capture,
+                        call_ms,
+                    },
+                )))
+            }
+            SurfaceRuntimeCommand::PollCurrentStats => match self.session.poll_current_stats() {
+                SurfaceCurrentStatsPoll::Empty => Ok(SurfaceRuntimeEvent::CurrentStatsEmpty),
+                SurfaceCurrentStatsPoll::Unsampled(reason) => Err(format!(
+                    "current-stats request resolved unsampled without a joinable ticket: {reason:?}"
+                )),
+                SurfaceCurrentStatsPoll::Terminal(terminal) => {
+                    ready_current_stats_terminal(terminal)
+                        .map(SurfaceRuntimeEvent::CurrentStatsReady)
+                }
+            },
+            SurfaceRuntimeCommand::CompleteQueue(timeout) => self
+                .session
+                .pump_receipts(timeout)
+                .map(SurfaceRuntimeEvent::QueueCompleted)
+                .map_err(|error| format!("Surface evidence queue completion failed: {error}")),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 struct EvidenceIdentity {
     requested_plan: SurfaceEvidencePlanArg,
@@ -141,12 +484,12 @@ enum PendingKind {
         capture_index: Option<usize>,
         step: SurfaceTraceStep,
         path: PathBuf,
-        capture: Box<PendingCapture>,
+        capture: Box<SurfaceRuntimeCapture>,
     },
 }
 
 #[derive(Debug)]
-enum PendingCapture {
+pub(crate) enum SurfaceRuntimeCapture {
     Ordinary(SurfaceFrameCapture),
     #[cfg(all(
         feature = "diagnostic-surface-capture-receipt",
@@ -339,12 +682,175 @@ fn rgba8_sha256(rgba8: &[u8]) -> String {
 }
 
 #[derive(Debug)]
+struct OutstandingCurrentStats<T> {
+    submission: SurfaceCurrentStatsSubmissionReceipt,
+    payload: T,
+    deadline: Instant,
+}
+
+#[derive(Debug)]
+pub(crate) struct ResolvedCurrentStats<T> {
+    pub(crate) submission: SurfaceCurrentStatsSubmissionReceipt,
+    pub(crate) payload: T,
+    pub(crate) receipt: SurfaceCurrentStatsReceipt,
+}
+
+#[derive(Debug)]
+pub(crate) enum CurrentStatsLedgerPoll<T> {
+    Empty,
+    Ready(Box<ResolvedCurrentStats<T>>),
+}
+
+#[derive(Debug)]
+pub(crate) struct CurrentStatsLedger<T> {
+    outstanding: BTreeMap<u64, OutstandingCurrentStats<T>>,
+    issued: BTreeSet<u64>,
+    terminals: BTreeSet<u64>,
+    last_ticket: Option<u64>,
+    last_presentation_sequence: Option<u64>,
+}
+
+impl<T> Default for CurrentStatsLedger<T> {
+    fn default() -> Self {
+        Self {
+            outstanding: BTreeMap::new(),
+            issued: BTreeSet::new(),
+            terminals: BTreeSet::new(),
+            last_ticket: None,
+            last_presentation_sequence: None,
+        }
+    }
+}
+
+impl<T> CurrentStatsLedger<T> {
+    pub(crate) fn issue(
+        &mut self,
+        submission: SurfaceCurrentStatsSubmissionReceipt,
+        payload: T,
+        deadline: Instant,
+    ) -> Result<(), String> {
+        let ticket = submission.ticket();
+        let presentation_sequence = submission.join().presentation_sequence();
+        if self.last_ticket.is_some_and(|previous| ticket <= previous) {
+            return Err(format!(
+                "current-stats ticket is not strictly increasing: previous={:?}, current={ticket}",
+                self.last_ticket
+            ));
+        }
+        if self
+            .last_presentation_sequence
+            .is_some_and(|previous| presentation_sequence <= previous)
+        {
+            return Err(format!(
+                "current-stats presentation sequence is not strictly increasing: previous={:?}, current={presentation_sequence}",
+                self.last_presentation_sequence
+            ));
+        }
+        if !self.issued.insert(ticket)
+            || self
+                .outstanding
+                .insert(
+                    ticket,
+                    OutstandingCurrentStats {
+                        submission,
+                        payload,
+                        deadline,
+                    },
+                )
+                .is_some()
+        {
+            return Err(format!("duplicate current-stats ticket {ticket}"));
+        }
+        self.last_ticket = Some(ticket);
+        self.last_presentation_sequence = Some(presentation_sequence);
+        Ok(())
+    }
+
+    pub(crate) fn poll_one(
+        &mut self,
+        runtime: &mut SurfaceEvidenceRuntime,
+    ) -> Result<CurrentStatsLedgerPoll<T>, String> {
+        match runtime.execute(SurfaceRuntimeCommand::PollCurrentStats)? {
+            SurfaceRuntimeEvent::CurrentStatsEmpty => Ok(CurrentStatsLedgerPoll::Empty),
+            SurfaceRuntimeEvent::CurrentStatsReady(receipt) => {
+                let submission = receipt.submission();
+                let ticket = submission.ticket();
+                if !self.terminals.insert(ticket) {
+                    return Err(format!("duplicate current-stats terminal {ticket}"));
+                }
+                let pending = self
+                    .outstanding
+                    .remove(&ticket)
+                    .ok_or_else(|| format!("unknown current-stats terminal ticket {ticket}"))?;
+                if pending.submission != submission {
+                    return Err(format!(
+                        "current-stats terminal identity mismatch for ticket {ticket}"
+                    ));
+                }
+                Ok(CurrentStatsLedgerPoll::Ready(Box::new(
+                    ResolvedCurrentStats {
+                        submission,
+                        payload: pending.payload,
+                        receipt,
+                    },
+                )))
+            }
+            _ => Err("Surface runtime returned the wrong event for current-stats poll".to_owned()),
+        }
+    }
+
+    pub(crate) fn check_deadlines(&self, now: Instant, timeout: Duration) -> Result<(), String> {
+        if let Some((ticket, _)) = self
+            .outstanding
+            .iter()
+            .find(|(_, pending)| now >= pending.deadline)
+        {
+            return Err(format!(
+                "current-stats ticket {ticket} did not resolve within {timeout:?}"
+            ));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.outstanding.is_empty()
+    }
+
+    #[cfg(feature = "qualification-q1-m4-native")]
+    pub(crate) fn outstanding_payloads(&self) -> impl Iterator<Item = &T> {
+        self.outstanding.values().map(|pending| &pending.payload)
+    }
+
+    #[cfg(feature = "qualification-q1-m4-native")]
+    pub(crate) fn issued_len(&self) -> usize {
+        self.issued.len()
+    }
+
+    #[cfg(feature = "qualification-q1-m4-native")]
+    pub(crate) fn terminal_len(&self) -> usize {
+        self.terminals.len()
+    }
+
+    #[cfg(feature = "qualification-q1-m4-native")]
+    pub(crate) fn require_drained(&self) -> Result<(), String> {
+        if self.outstanding.is_empty() && self.issued == self.terminals {
+            Ok(())
+        } else {
+            Err(format!(
+                "current-stats ledger is incomplete: issued={} terminals={} outstanding={}",
+                self.issued.len(),
+                self.terminals.len(),
+                self.outstanding.len()
+            ))
+        }
+    }
+}
+
+#[derive(Debug)]
 struct PendingReceipt {
     kind: PendingKind,
     output: SurfaceFrameOutput,
-    submission: SurfaceCurrentStatsSubmissionReceipt,
     call_ms: f32,
-    deadline: Instant,
 }
 
 #[cfg(all(
@@ -418,6 +924,7 @@ fn diagnostic_multi_capture_directory(base: &Path) -> Result<PathBuf, String> {
     Ok(base.with_file_name(format!("{stem}.captures")))
 }
 
+#[allow(dead_code)]
 fn validate_capture_timing(
     call_ms: f32,
     frame_wall_ms: f32,
@@ -473,7 +980,7 @@ pub(crate) fn run(
     args: &Args,
     event_loop: EventLoop<()>,
     window: Arc<winit::window::Window>,
-    mut session: SurfaceRenderSession,
+    mut runtime: SurfaceEvidenceRuntime,
     playback: &CameraTracePlayback,
     adapter_info: wgpu::AdapterInfo,
 ) -> Result<(), String> {
@@ -496,6 +1003,7 @@ pub(crate) fn run(
     } else {
         Vec::new()
     };
+    #[allow(unused_variables)]
     let multi_capture_directory = if diagnostic_multi_capture {
         let directory = diagnostic_multi_capture_directory(&capture_path)?;
         if directory.exists() {
@@ -509,25 +1017,15 @@ pub(crate) fn run(
         None
     };
     let trace = playback.trace();
-    let source_count = session
-        .renderer()
-        .scene_len()
-        .ok_or_else(|| "surface evidence scene is not loaded".to_owned())?;
-    let resident_count = session
-        .renderer()
-        .resident_scene()
-        .map_or(source_count, |scene| scene.len());
+    let runtime_identity = runtime.identity().clone();
+    let source_count = runtime_identity.source_count;
+    let resident_count = runtime_identity.resident_count;
     if source_count != resident_count {
         return Err(format!(
             "surface evidence membership mismatch: source={source_count}, resident={resident_count}"
         ));
     }
-    let requested_size = (trace.display.width, trace.display.height);
-    let resolution = SurfaceResolutionReceipt::validated(
-        requested_size,
-        session.surface_size(),
-        session.internal_render_size(),
-    )?;
+    let resolution = runtime_identity.resolution;
     let identity = EvidenceIdentity {
         requested_plan,
         trace_id: trace.trace_id.clone(),
@@ -535,7 +1033,7 @@ pub(crate) fn run(
         resolution,
         source_count,
         resident_count,
-        sh_degree: session.renderer().scene_sh_degree().unwrap_or(0),
+        sh_degree: runtime_identity.sh_degree,
     };
     if identity.sh_degree != 3 {
         return Err(format!(
@@ -543,7 +1041,7 @@ pub(crate) fn run(
             identity.sh_degree
         ));
     }
-    if session.raster_execution_plan() != SurfaceRasterExecutionPlan::ProjectedQuadsExact {
+    if runtime_identity.raster_execution_plan != SurfaceRasterExecutionPlan::ProjectedQuadsExact {
         return Err("surface evidence did not select the canonical Exact raster".to_owned());
     }
 
@@ -573,20 +1071,20 @@ pub(crate) fn run(
         steps.len(),
     );
 
-    let window_id = window.id();
     let error = Arc::new(Mutex::new(None::<String>));
     let shared_error = Arc::clone(&error);
     let completed = Arc::new(AtomicBool::new(false));
     let shared_completed = Arc::clone(&completed);
     let started = Instant::now();
     let mut next_step = 0_usize;
-    let mut pending = None::<PendingReceipt>;
+    let mut pending = CurrentStatsLedger::<PendingReceipt>::default();
     let mut request_pending = false;
     let mut ineligible_retries = 0_usize;
     let mut terminal_outcome = TerminalOutcome::default();
     let mut actual_plans = BTreeSet::new();
     let mut measured_frames = 0_usize;
     let mut capture_retries = 0_usize;
+    #[allow(unused_mut)]
     let mut multi_capture_schedule = MultiCaptureSchedule::default();
     #[cfg(all(
         feature = "diagnostic-surface-capture-receipt",
@@ -594,186 +1092,140 @@ pub(crate) fn run(
     ))]
     let mut validated_multi_captures = Vec::<ValidatedDiagnosticCapture>::new();
 
-    event_loop
-        .run(move |event, target| match event {
-            _ if terminal_outcome.is_committed() => {}
-            Event::AboutToWait => window.request_redraw(),
-            Event::WindowEvent {
-                window_id: id,
-                event: WindowEvent::CloseRequested,
-            } if id == window_id => {
-                store_error(
-                    &shared_error,
-                    "surface evidence window closed before canonical publication".to_owned(),
-                );
-                target.exit();
+    run_surface_event_loop(
+        event_loop,
+        Arc::clone(&window),
+        identity.resolution.requested,
+        "surface evidence",
+        Arc::clone(&shared_error),
+        Arc::clone(&shared_completed),
+        move |target| {
+            if terminal_outcome.is_committed() {
+                return;
             }
-            Event::WindowEvent {
-                window_id: id,
-                event: WindowEvent::Resized(size),
-            } if id == window_id
-                && (size.width, size.height) != identity.resolution.requested =>
-            {
-                store_error(
-                    &shared_error,
-                    format!(
-                        "surface evidence resize {}x{} violates {}x{} trace",
-                        size.width,
-                        size.height,
-                        identity.resolution.requested.0,
-                        identity.resolution.requested.1
-                    ),
-                );
-                target.exit();
-            }
-            Event::WindowEvent {
-                window_id: id,
-                event: WindowEvent::RedrawRequested,
-            } if id == window_id => {
-                if let Some(waiting) = pending.take() {
-                    match session.poll_current_stats() {
-                        SurfaceCurrentStatsPoll::Empty => {
-                            if Instant::now() >= waiting.deadline {
-                                store_error(
-                                    &shared_error,
-                                    format!(
-                                        "current-stats ticket {} did not resolve within {:?}",
-                                        waiting.submission.ticket(),
-                                        RECEIPT_TIMEOUT
-                                    ),
-                                );
-                                target.exit();
-                            } else {
-                                pending = Some(waiting);
-                                std::thread::sleep(Duration::from_millis(1));
-                            }
-                            return;
-                        }
-                        SurfaceCurrentStatsPoll::Unsampled(reason) => {
-                            store_error(
-                                &shared_error,
-                                format!(
-                                    "issued current-stats ticket {} resolved as unsampled: {reason:?}",
-                                    waiting.submission.ticket()
-                                ),
-                            );
-                            target.exit();
-                            return;
-                        }
-                        SurfaceCurrentStatsPoll::Terminal(terminal) => {
-                            let receipt = match validate_terminal(
-                                &identity,
-                                &waiting,
-                                terminal,
-                                session.last_presented_size(),
-                            ) {
-                                Ok(receipt) => receipt,
-                                Err(message) => {
-                                    store_error(&shared_error, message);
-                                    target.exit();
-                                    return;
-                                }
-                            };
-                            #[cfg(all(
-                                feature = "diagnostic-surface-capture-receipt",
-                                not(target_arch = "wasm32")
-                            ))]
-                            if let PendingKind::Capture {
-                                capture,
-                                ..
-                            } = &waiting.kind
-                                && let PendingCapture::Diagnostic(capture_receipt) = capture.as_ref()
-                                && let Err(message) = validate_diagnostic_capture_join(
-                                    capture_receipt,
-                                    &receipt,
-                                    identity.resolution.requested,
-                                )
-                            {
+            if !pending.is_empty() {
+                if let Err(message) = pending.check_deadlines(Instant::now(), RECEIPT_TIMEOUT) {
+                    store_error(&shared_error, message);
+                    target.exit();
+                    return;
+                }
+                match pending.poll_one(&mut runtime) {
+                    Ok(CurrentStatsLedgerPoll::Empty) => {
+                        std::thread::sleep(Duration::from_millis(1));
+                        return;
+                    }
+                    Err(message) => {
+                        store_error(&shared_error, message);
+                        target.exit();
+                        return;
+                    }
+                    Ok(CurrentStatsLedgerPoll::Ready(resolved)) => {
+                        let waiting = resolved.payload;
+                        let receipt = match validate_terminal(&identity, &waiting, resolved.receipt)
+                        {
+                            Ok(receipt) => receipt,
+                            Err(message) => {
                                 store_error(&shared_error, message);
                                 target.exit();
                                 return;
                             }
-                            actual_plans.insert(plan_label(receipt.submission().join().executed_plan()));
-                            match waiting.kind {
-                                PendingKind::Frame(step) => {
-                                    print_frame(
-                                        &identity,
-                                        step,
-                                        waiting.output,
-                                        waiting.call_ms,
-                                        started.elapsed(),
-                                        receipt,
-                                    );
-                                    measured_frames += usize::from(step.measured());
-                                    next_step += 1;
-                                }
-                                PendingKind::Capture {
-                                    capture_index,
+                        };
+                        #[cfg(all(
+                            feature = "diagnostic-surface-capture-receipt",
+                            not(target_arch = "wasm32")
+                        ))]
+                        if let PendingKind::Capture { capture, .. } = &waiting.kind
+                            && let SurfaceRuntimeCapture::Diagnostic(capture_receipt) =
+                                capture.as_ref()
+                            && let Err(message) = validate_diagnostic_capture_join(
+                                capture_receipt,
+                                &receipt,
+                                identity.resolution.requested,
+                            )
+                        {
+                            store_error(&shared_error, message);
+                            target.exit();
+                        }
+                        actual_plans
+                            .insert(plan_label(receipt.submission().join().executed_plan()));
+                        match waiting.kind {
+                            PendingKind::Frame(step) => {
+                                print_frame(
+                                    &identity,
                                     step,
-                                    path,
-                                    capture,
-                                } => {
-                                    let capture = *capture;
-                                    #[cfg(all(
-                                        feature = "diagnostic-surface-capture-receipt",
-                                        not(target_arch = "wasm32")
-                                    ))]
-                                    if diagnostic_multi_capture {
-                                        let Some(capture_index) = capture_index else {
-                                            store_error(
-                                                &shared_error,
-                                                "diagnostic multi-capture lost its capture index"
-                                                    .to_owned(),
-                                            );
-                                            target.exit();
-                                            return;
-                                        };
-                                        let PendingCapture::Diagnostic(capture) = capture else {
-                                            store_error(
-                                                &shared_error,
-                                                "diagnostic multi-capture received an ordinary capture"
-                                                    .to_owned(),
-                                            );
-                                            target.exit();
-                                            return;
-                                        };
-                                        if let Err(message) = multi_capture_schedule
-                                            .accept(capture_index, step.trace_frame_index)
-                                        {
-                                            store_error(&shared_error, message);
-                                            target.exit();
-                                            return;
-                                        }
-                                        let elapsed_ns = u64::try_from(started.elapsed().as_nanos())
-                                            .unwrap_or(u64::MAX);
-                                        if let Err(message) = validate_capture_timing(
-                                            waiting.call_ms,
-                                            waiting.output.timings.frame_wall_ms,
-                                            elapsed_ns,
-                                            validated_multi_captures
-                                                .last()
-                                                .map(|capture| capture.elapsed_ns),
-                                        ) {
-                                            store_error(&shared_error, message);
-                                            target.exit();
-                                            return;
-                                        }
-                                        validated_multi_captures.push(
-                                            ValidatedDiagnosticCapture {
-                                                capture_index,
-                                                step,
-                                                path,
-                                                capture,
-                                                output: waiting.output,
-                                                receipt,
-                                                call_ms: waiting.call_ms,
-                                                elapsed_ns,
-                                            },
+                                    waiting.output,
+                                    waiting.call_ms,
+                                    started.elapsed(),
+                                    receipt,
+                                );
+                                measured_frames += usize::from(step.measured());
+                                next_step += 1;
+                            }
+                            PendingKind::Capture {
+                                capture_index: _capture_index,
+                                step,
+                                path,
+                                capture,
+                            } => {
+                                let capture = *capture;
+                                #[cfg(all(
+                                    feature = "diagnostic-surface-capture-receipt",
+                                    not(target_arch = "wasm32")
+                                ))]
+                                if diagnostic_multi_capture {
+                                    let Some(capture_index) = _capture_index else {
+                                        store_error(
+                                            &shared_error,
+                                            "diagnostic multi-capture lost its capture index"
+                                                .to_owned(),
                                         );
-                                        if multi_capture_schedule.next_trace_frame().is_some() {
-                                            return;
-                                        }
-                                        if let Err(message) = multi_capture_schedule
+                                        target.exit();
+                                        return;
+                                    };
+                                    let SurfaceRuntimeCapture::Diagnostic(capture) = capture else {
+                                        store_error(
+                                            &shared_error,
+                                            "diagnostic multi-capture received an ordinary capture"
+                                                .to_owned(),
+                                        );
+                                        target.exit();
+                                        return;
+                                    };
+                                    if let Err(message) = multi_capture_schedule
+                                        .accept(capture_index, step.trace_frame_index)
+                                    {
+                                        store_error(&shared_error, message);
+                                        target.exit();
+                                        return;
+                                    }
+                                    let elapsed_ns = u64::try_from(started.elapsed().as_nanos())
+                                        .unwrap_or(u64::MAX);
+                                    if let Err(message) = validate_capture_timing(
+                                        waiting.call_ms,
+                                        waiting.output.timings.frame_wall_ms,
+                                        elapsed_ns,
+                                        validated_multi_captures
+                                            .last()
+                                            .map(|capture| capture.elapsed_ns),
+                                    ) {
+                                        store_error(&shared_error, message);
+                                        target.exit();
+                                        return;
+                                    }
+                                    validated_multi_captures.push(ValidatedDiagnosticCapture {
+                                        capture_index,
+                                        step,
+                                        path,
+                                        capture,
+                                        output: waiting.output,
+                                        receipt,
+                                        call_ms: waiting.call_ms,
+                                        elapsed_ns,
+                                    });
+                                    if multi_capture_schedule.next_trace_frame().is_some() {
+                                        return;
+                                    }
+                                    if let Err(message) = multi_capture_schedule
                                             .require_complete()
                                             .and_then(|()| {
                                                 publish_diagnostic_multi_captures(
@@ -792,263 +1244,234 @@ pub(crate) fn run(
                                             target.exit();
                                             return;
                                         }
-                                        terminal_outcome.mark_capture_complete();
-                                        return;
-                                    }
-                                    match capture {
-                                        PendingCapture::Ordinary(capture) => {
-                                            if let Err(message) = write_png(
-                                                &path,
-                                                capture.width,
-                                                capture.height,
-                                                &capture.rgba8,
-                                            ) {
-                                                store_error(&shared_error, message);
-                                                target.exit();
-                                                return;
-                                            }
-                                            print_capture(
-                                                &identity,
-                                                step,
-                                                waiting.output,
-                                                &path,
-                                                capture.width,
-                                                capture.height,
-                                                receipt,
-                                            );
-                                        }
-                                        #[cfg(all(
-                                            feature = "diagnostic-surface-capture-receipt",
-                                            not(target_arch = "wasm32")
-                                        ))]
-                                        PendingCapture::Diagnostic(capture_receipt) => {
-                                            if let Err(message) = write_png(
-                                                &path,
-                                                capture_receipt.width(),
-                                                capture_receipt.height(),
-                                                capture_receipt.rgba8(),
-                                            ) {
-                                                store_error(&shared_error, message);
-                                                target.exit();
-                                                return;
-                                            }
-                                            print_capture(
-                                                &identity,
-                                                step,
-                                                waiting.output,
-                                                &path,
-                                                capture_receipt.width(),
-                                                capture_receipt.height(),
-                                                receipt,
-                                            );
-                                            println!(
-                                                "{}",
-                                                DiagnosticCaptureReceiptRecord::from_receipt(
-                                                    &capture_receipt
-                                                )
-                                                .line()
-                                            );
-                                        }
-                                    }
                                     terminal_outcome.mark_capture_complete();
+                                    return;
                                 }
-                            }
-                        }
-                    }
-                }
-
-                if terminal_outcome.commit_if_ready() {
-                    println!(
-                        "SURFACE_EXACT_EVIDENCE_SUMMARY status=ok exact_plan_requested={} actual_plan_set={} trace_frames={} measured_frames={} eligibility_retries={} capture_retries={} terminal_receipts={} final_capture=available",
-                        identity.requested_plan.label(),
-                        actual_plans.iter().copied().collect::<Vec<_>>().join(","),
-                        steps.len(),
-                        measured_frames,
-                        ineligible_retries,
-                        capture_retries,
-                        steps.len()
-                            + if diagnostic_multi_capture {
-                                DIAGNOSTIC_MULTI_CAPTURE_TRACE_FRAMES.len()
-                            } else {
-                                1
-                            },
-                    );
-                    shared_completed.store(true, Ordering::Release);
-                    target.exit();
-                    return;
-                }
-
-                let (step, capture_attempt) = if next_step < steps.len() {
-                    (steps[next_step], false)
-                } else if diagnostic_multi_capture {
-                    let capture_index = multi_capture_schedule.next_capture;
-                    let Some(step) = multi_capture_steps.get(capture_index).copied() else {
-                        store_error(
-                            &shared_error,
-                            "diagnostic multi-capture schedule completed without terminal commit"
-                                .to_owned(),
-                        );
-                        target.exit();
-                        return;
-                    };
-                    (step, true)
-                } else {
-                    (capture_step, true)
-                };
-                if !request_pending {
-                    match session.request_current_stats() {
-                        SurfaceCurrentStatsRequest::Requested => request_pending = true,
-                        SurfaceCurrentStatsRequest::Unsampled(reason) => {
-                            store_error(
-                                &shared_error,
-                                format!("current-stats request unavailable: {reason:?}"),
-                            );
-                            target.exit();
-                            return;
-                        }
-                    }
-                }
-                if let Err(message) = session
-                    .set_camera(step.camera)
-                    .map_err(|error| format!("surface evidence camera update failed: {error}"))
-                {
-                    store_error(&shared_error, message);
-                    target.exit();
-                    return;
-                }
-                session.force_sort_refresh();
-                if capture_attempt
-                    && let Err(error) = session.request_surface_capture()
-                {
-                    store_error(
-                        &shared_error,
-                        format!("surface evidence capture request failed: {error}"),
-                    );
-                    target.exit();
-                    return;
-                }
-                let call_started = Instant::now();
-                let output = match session.render_frame() {
-                    Ok(output) => output,
-                    Err(error) => {
-                        store_error(
-                            &shared_error,
-                            format!("surface evidence render failed: {error}"),
-                        );
-                        target.exit();
-                        return;
-                    }
-                };
-                let call_ms = call_started.elapsed().as_secs_f32() * 1_000.0;
-                if !output.frame_presented
-                    || output.gpu_order_preparation_pending
-                    || session.last_presented_size() != Some(identity.resolution.requested)
-                {
-                    store_error(
-                        &shared_error,
-                        format!(
-                            "surface evidence frame was not a complete full-resolution presentation: presented={} preparation_pending={} presented_size={:?}",
-                            output.frame_presented,
-                            output.gpu_order_preparation_pending,
-                            session.last_presented_size()
-                        ),
-                    );
-                    target.exit();
-                    return;
-                }
-                let capture = if capture_attempt {
-                    match take_pending_capture(
-                        &mut session,
-                        diagnostic_capture_receipt,
-                    ) {
-                        Ok(capture) => Some(capture),
-                        Err(error) => {
-                            store_error(
-                                &shared_error,
-                                format!("surface evidence capture readback failed: {error}"),
-                            );
-                            target.exit();
-                            return;
-                        }
-                    }
-                } else {
-                    None
-                };
-                match session.current_stats_submission() {
-                    SurfaceCurrentStatsSubmission::Issued(submission) => {
-                        request_pending = false;
-                        let kind = match capture {
-                            Some(capture) => PendingKind::Capture {
-                                capture_index: diagnostic_multi_capture
-                                    .then_some(multi_capture_schedule.next_capture),
-                                step,
-                                path: if diagnostic_multi_capture {
-                                    match diagnostic_multi_capture_path(
-                                        &capture_path,
-                                        multi_capture_schedule.next_capture,
-                                        step.trace_frame_index,
-                                    ) {
-                                        Ok(path) => path,
-                                        Err(message) => {
+                                match capture {
+                                    SurfaceRuntimeCapture::Ordinary(capture) => {
+                                        if let Err(message) =
+                                            publish_ordinary_surface_capture(&path, &capture)
+                                        {
                                             store_error(&shared_error, message);
                                             target.exit();
                                             return;
                                         }
+                                        print_capture(
+                                            &identity,
+                                            step,
+                                            waiting.output,
+                                            &path,
+                                            capture.width,
+                                            capture.height,
+                                            receipt,
+                                        );
                                     }
-                                } else {
-                                    capture_path.clone()
-                                },
-                                capture: Box::new(capture),
-                            },
-                            None => PendingKind::Frame(step),
-                        };
-                        pending = Some(PendingReceipt {
-                            kind,
-                            output,
-                            submission,
-                            call_ms,
-                            deadline: Instant::now() + RECEIPT_TIMEOUT,
-                        });
-                    }
-                    SurfaceCurrentStatsSubmission::NotRequested => {
-                        ineligible_retries += 1;
-                        capture_retries += usize::from(capture_attempt);
-                        if ineligible_retries > MAX_INELIGIBLE_RETRIES {
-                            store_error(
-                                &shared_error,
-                                format!(
-                                    "current-stats request remained ineligible for more than {MAX_INELIGIBLE_RETRIES} presented frames"
-                                ),
-                            );
-                            target.exit();
-                            return;
-                        }
-                        match session.poll_current_stats() {
-                            SurfaceCurrentStatsPoll::Empty => {}
-                            SurfaceCurrentStatsPoll::Unsampled(reason) => {
-                                request_pending = false;
-                                store_error(
-                                    &shared_error,
-                                    format!("current-stats request failed before issue: {reason:?}"),
-                                );
-                                target.exit();
-                            }
-                            SurfaceCurrentStatsPoll::Terminal(terminal) => {
-                                store_error(
-                                    &shared_error,
-                                    format!(
-                                        "current-stats returned an unjoined terminal before issue: {terminal:?}"
-                                    ),
-                                );
-                                target.exit();
+                                    #[cfg(all(
+                                        feature = "diagnostic-surface-capture-receipt",
+                                        not(target_arch = "wasm32")
+                                    ))]
+                                    SurfaceRuntimeCapture::Diagnostic(capture_receipt) => {
+                                        if let Err(message) = write_png(
+                                            &path,
+                                            capture_receipt.width(),
+                                            capture_receipt.height(),
+                                            capture_receipt.rgba8(),
+                                        ) {
+                                            store_error(&shared_error, message);
+                                            target.exit();
+                                            return;
+                                        }
+                                        print_capture(
+                                            &identity,
+                                            step,
+                                            waiting.output,
+                                            &path,
+                                            capture_receipt.width(),
+                                            capture_receipt.height(),
+                                            receipt,
+                                        );
+                                        println!(
+                                            "{}",
+                                            DiagnosticCaptureReceiptRecord::from_receipt(
+                                                &capture_receipt
+                                            )
+                                            .line()
+                                        );
+                                    }
+                                }
+                                terminal_outcome.mark_capture_complete();
                             }
                         }
                     }
                 }
             }
-            _ => {}
-        })
-        .map_err(|error| format!("surface evidence event loop failed: {error}"))?;
+
+            if terminal_outcome.commit_if_ready() {
+                println!(
+                    "SURFACE_EXACT_EVIDENCE_SUMMARY status=ok exact_plan_requested={} actual_plan_set={} trace_frames={} measured_frames={} eligibility_retries={} capture_retries={} terminal_receipts={} final_capture=available",
+                    identity.requested_plan.label(),
+                    actual_plans.iter().copied().collect::<Vec<_>>().join(","),
+                    steps.len(),
+                    measured_frames,
+                    ineligible_retries,
+                    capture_retries,
+                    steps.len()
+                        + if diagnostic_multi_capture {
+                            DIAGNOSTIC_MULTI_CAPTURE_TRACE_FRAMES.len()
+                        } else {
+                            1
+                        },
+                );
+                shared_completed.store(true, Ordering::Release);
+                target.exit();
+                return;
+            }
+
+            let (step, capture_attempt) = if next_step < steps.len() {
+                (steps[next_step], false)
+            } else if diagnostic_multi_capture {
+                let capture_index = multi_capture_schedule.next_capture;
+                let Some(step) = multi_capture_steps.get(capture_index).copied() else {
+                    store_error(
+                        &shared_error,
+                        "diagnostic multi-capture schedule completed without terminal commit"
+                            .to_owned(),
+                    );
+                    target.exit();
+                    return;
+                };
+                (step, true)
+            } else {
+                (capture_step, true)
+            };
+            if !request_pending {
+                match runtime.execute(SurfaceRuntimeCommand::RequestCurrentStats) {
+                    Ok(SurfaceRuntimeEvent::CurrentStatsRequested) => request_pending = true,
+                    Ok(_) => {
+                        store_error(
+                            &shared_error,
+                            "Surface runtime returned the wrong event for current-stats request"
+                                .to_owned(),
+                        );
+                        target.exit();
+                        return;
+                    }
+                    Err(message) => {
+                        store_error(&shared_error, message);
+                        target.exit();
+                        return;
+                    }
+                }
+            }
+            let capture_mode = if !capture_attempt {
+                SurfaceRuntimeCaptureMode::None
+            } else if diagnostic_capture_receipt {
+                SurfaceRuntimeCaptureMode::Diagnostic
+            } else {
+                SurfaceRuntimeCaptureMode::Ordinary
+            };
+            let presentation = match runtime.execute(SurfaceRuntimeCommand::Present {
+                step,
+                capture: capture_mode,
+            }) {
+                Ok(SurfaceRuntimeEvent::Presented(presentation)) => presentation,
+                Ok(_) => {
+                    store_error(
+                        &shared_error,
+                        "Surface runtime returned the wrong event for presentation".to_owned(),
+                    );
+                    target.exit();
+                    return;
+                }
+                Err(message) => {
+                    store_error(&shared_error, message);
+                    target.exit();
+                    return;
+                }
+            };
+            let SurfaceRuntimePresentation {
+                output,
+                current_stats_submission,
+                capture,
+                call_ms,
+                ..
+            } = *presentation;
+            match current_stats_submission {
+                SurfaceCurrentStatsSubmission::Issued(submission) => {
+                    request_pending = false;
+                    let kind = match capture {
+                        Some(capture) => PendingKind::Capture {
+                            capture_index: diagnostic_multi_capture
+                                .then_some(multi_capture_schedule.next_capture),
+                            step,
+                            path: if diagnostic_multi_capture {
+                                match diagnostic_multi_capture_path(
+                                    &capture_path,
+                                    multi_capture_schedule.next_capture,
+                                    step.trace_frame_index,
+                                ) {
+                                    Ok(path) => path,
+                                    Err(message) => {
+                                        store_error(&shared_error, message);
+                                        target.exit();
+                                        return;
+                                    }
+                                }
+                            } else {
+                                capture_path.clone()
+                            },
+                            capture: Box::new(capture),
+                        },
+                        None => PendingKind::Frame(step),
+                    };
+                    if let Err(message) = pending.issue(
+                        submission,
+                        PendingReceipt {
+                            kind,
+                            output,
+                            call_ms,
+                        },
+                        Instant::now() + RECEIPT_TIMEOUT,
+                    ) {
+                        store_error(&shared_error, message);
+                        target.exit();
+                    }
+                }
+                SurfaceCurrentStatsSubmission::NotRequested => {
+                    ineligible_retries += 1;
+                    capture_retries += usize::from(capture_attempt);
+                    if ineligible_retries > MAX_INELIGIBLE_RETRIES {
+                        store_error(
+                            &shared_error,
+                            format!(
+                                "current-stats request remained ineligible for more than {MAX_INELIGIBLE_RETRIES} presented frames"
+                            ),
+                        );
+                        target.exit();
+                        return;
+                    }
+                    match pending.poll_one(&mut runtime) {
+                        Ok(CurrentStatsLedgerPoll::Empty) => {}
+                        Err(message) => {
+                            request_pending = false;
+                            store_error(&shared_error, message);
+                            target.exit();
+                        }
+                        Ok(CurrentStatsLedgerPoll::Ready(resolved)) => {
+                            store_error(
+                                &shared_error,
+                                format!(
+                                    "current-stats returned an unjoined terminal before issue: ticket {}",
+                                    resolved.submission.ticket()
+                                ),
+                            );
+                            target.exit();
+                        }
+                    }
+                }
+            }
+        },
+    )?;
 
     if let Some(message) = error
         .lock()
@@ -1068,49 +1491,35 @@ pub(crate) fn run(
     Ok(())
 }
 
+pub(crate) fn ready_current_stats_terminal(
+    terminal: SurfaceCurrentStatsTerminal,
+) -> Result<SurfaceCurrentStatsReceipt, String> {
+    match terminal {
+        SurfaceCurrentStatsTerminal::Ready(receipt) => Ok(receipt),
+        SurfaceCurrentStatsTerminal::MapFailure(failure) => Err(format!(
+            "current-stats ticket {} map failed",
+            failure.submission().ticket()
+        )),
+        SurfaceCurrentStatsTerminal::GenerationInvalidated(failure) => Err(format!(
+            "current-stats ticket {} generation was invalidated",
+            failure.submission().ticket()
+        )),
+        SurfaceCurrentStatsTerminal::Expired(failure) => Err(format!(
+            "current-stats ticket {} expired",
+            failure.submission().ticket()
+        )),
+        SurfaceCurrentStatsTerminal::Dropped(failure) => Err(format!(
+            "current-stats ticket {} was dropped",
+            failure.submission().ticket()
+        )),
+    }
+}
+
 fn validate_terminal(
     identity: &EvidenceIdentity,
     waiting: &PendingReceipt,
-    terminal: SurfaceCurrentStatsTerminal,
-    presented_size: Option<(u32, u32)>,
+    receipt: SurfaceCurrentStatsReceipt,
 ) -> Result<SurfaceCurrentStatsReceipt, String> {
-    let receipt = match terminal {
-        SurfaceCurrentStatsTerminal::Ready(receipt) => receipt,
-        SurfaceCurrentStatsTerminal::MapFailure(failure) => {
-            return Err(format!(
-                "current-stats ticket {} map failed",
-                failure.submission().ticket()
-            ));
-        }
-        SurfaceCurrentStatsTerminal::GenerationInvalidated(failure) => {
-            return Err(format!(
-                "current-stats ticket {} generation was invalidated",
-                failure.submission().ticket()
-            ));
-        }
-        SurfaceCurrentStatsTerminal::Expired(failure) => {
-            return Err(format!(
-                "current-stats ticket {} expired",
-                failure.submission().ticket()
-            ));
-        }
-        SurfaceCurrentStatsTerminal::Dropped(failure) => {
-            return Err(format!(
-                "current-stats ticket {} was dropped",
-                failure.submission().ticket()
-            ));
-        }
-    };
-    if receipt.submission() != waiting.submission {
-        return Err(format!(
-            "current-stats terminal identity mismatch: expected ticket {}, got {}",
-            waiting.submission.ticket(),
-            receipt.submission().ticket()
-        ));
-    }
-    if presented_size != Some(identity.resolution.requested) {
-        return Err("current-stats terminal lost the matching presentation size".to_owned());
-    }
     let join = receipt.submission().join();
     if join.frame_identity().camera_revision() != waiting.output.camera_revision {
         return Err("current-stats terminal camera revision does not match its frame".to_owned());
@@ -1120,7 +1529,7 @@ fn validate_terminal(
         waiting.output,
         join.executed_plan(),
     )?;
-    validate_counts(identity.source_count, receipt)?;
+    validate_current_stats_counts(identity.source_count, receipt)?;
     Ok(receipt)
 }
 
@@ -1142,6 +1551,13 @@ fn validate_plan(
             plan_label(actual)
         ));
     }
+    validate_executed_plan_output(actual, output)
+}
+
+pub(crate) fn validate_executed_plan_output(
+    actual: SurfaceCurrentStatsPlan,
+    output: SurfaceFrameOutput,
+) -> Result<(), String> {
     let expected = match actual {
         SurfaceCurrentStatsPlan::CpuPostSort => (
             SurfaceOrderBackendUsed::Cpu,
@@ -1173,7 +1589,10 @@ fn validate_plan(
     Ok(())
 }
 
-fn validate_counts(source_count: usize, receipt: SurfaceCurrentStatsReceipt) -> Result<(), String> {
+pub(crate) fn validate_current_stats_counts(
+    source_count: usize,
+    receipt: SurfaceCurrentStatsReceipt,
+) -> Result<(), String> {
     let counts = receipt.counts();
     if counts.source() as usize != source_count
         || counts.contributor() > counts.visible()
@@ -1450,7 +1869,7 @@ fn print_capture(
 fn take_pending_capture(
     session: &mut SurfaceRenderSession,
     diagnostic: bool,
-) -> Result<PendingCapture, String> {
+) -> Result<SurfaceRuntimeCapture, String> {
     #[cfg(all(
         feature = "diagnostic-surface-capture-receipt",
         not(target_arch = "wasm32")
@@ -1458,17 +1877,29 @@ fn take_pending_capture(
     if diagnostic {
         return session
             .take_diagnostic_surface_capture_receipt()
-            .map(PendingCapture::Diagnostic)
+            .map(SurfaceRuntimeCapture::Diagnostic)
             .map_err(|error| error.to_string());
     }
 
     if diagnostic {
         return Err("diagnostic Surface capture receipt support is unavailable".to_owned());
     }
+    take_ordinary_surface_capture(session).map(SurfaceRuntimeCapture::Ordinary)
+}
+
+fn take_ordinary_surface_capture(
+    session: &mut SurfaceRenderSession,
+) -> Result<SurfaceFrameCapture, String> {
     session
         .take_surface_capture()
-        .map(PendingCapture::Ordinary)
         .map_err(|error| error.to_string())
+}
+
+pub(crate) fn publish_ordinary_surface_capture(
+    path: &Path,
+    capture: &SurfaceFrameCapture,
+) -> Result<(), String> {
+    write_png(path, capture.width, capture.height, &capture.rgba8)
 }
 
 #[cfg(all(
@@ -1526,7 +1957,193 @@ fn store_error(slot: &Mutex<Option<String>>, message: String) {
     }
 }
 
-const fn plan_label(plan: SurfaceCurrentStatsPlan) -> &'static str {
+fn validate_live_camera(
+    playback: &CameraTracePlayback,
+    step: SurfaceTraceStep,
+    live: LiveCameraReceipt,
+) -> Result<(), String> {
+    let expected_size = (
+        playback.trace().display.width,
+        playback.trace().display.height,
+    );
+    let expected_aspect = expected_size.0 as f32 / expected_size.1 as f32;
+    if live.surface_size != expected_size
+        || (live.aspect - expected_aspect).abs() > f32::EPSILON
+        || live.camera != step.camera
+    {
+        return Err("live session camera pose/intrinsics/aspect drifted".to_owned());
+    }
+    let frame = playback
+        .trace()
+        .frame(step.trace_frame_index)
+        .map_err(|error| error.to_string())?;
+    close_values(
+        &[
+            f64::from(live.camera.pose.position.x),
+            f64::from(live.camera.pose.position.y),
+            f64::from(live.camera.pose.position.z),
+        ],
+        &frame.pose.position,
+        "position",
+    )?;
+    close_values(
+        &live.camera.pose.rotation_xyzw.map(f64::from),
+        &frame.pose.rotation_xyzw,
+        "rotation_xyzw",
+    )?;
+    close_values(
+        &[
+            f64::from(live.camera.intrinsics.vertical_fov_radians),
+            f64::from(live.camera.intrinsics.near_plane),
+            f64::from(live.camera.intrinsics.far_plane),
+        ],
+        &[
+            frame.intrinsics.vertical_fov_radians,
+            frame.intrinsics.near_plane,
+            frame.intrinsics.far_plane,
+        ],
+        "intrinsics",
+    )?;
+    close_values(
+        &live.view_matrix.map(f64::from),
+        &frame.view_matrix,
+        "view_matrix",
+    )?;
+    close_values(
+        &live.projection_matrix.map(f64::from),
+        &frame.projection_matrix,
+        "projection_matrix",
+    )?;
+    close_values(
+        &live.view_projection_matrix.map(f64::from),
+        &frame.view_projection_matrix,
+        "view_projection_matrix",
+    )
+}
+
+fn close_values<const N: usize>(
+    actual: &[f64; N],
+    expected: &[f64; N],
+    field: &str,
+) -> Result<(), String> {
+    if let Some((index, (actual, expected))) = actual
+        .iter()
+        .zip(expected)
+        .enumerate()
+        .find(|(_, (actual, expected))| (*actual - *expected).abs() > CAMERA_TOLERANCE)
+    {
+        return Err(format!(
+            "live camera {field}[{index}] mismatch: actual={actual} expected={expected}"
+        ));
+    }
+    Ok(())
+}
+
+fn normalize_quaternion_f32(quaternion: [f32; 4]) -> [f32; 4] {
+    let norm2 = quaternion.iter().map(|value| value * value).sum::<f32>();
+    if norm2 <= 0.0 || !norm2.is_finite() {
+        return [0.0, 0.0, 0.0, 1.0];
+    }
+    let inverse_norm = 1.0 / norm2.sqrt();
+    quaternion.map(|value| value * inverse_norm)
+}
+
+fn canonical_view_matrix_f32(camera: Camera) -> [f32; 16] {
+    let [x, y, z, w] = normalize_quaternion_f32(camera.pose.rotation_xyzw);
+    let [x, y, z, w] = normalize_quaternion_f32([-x, -y, -z, w]);
+    let (xx, yy, zz) = (x * x, y * y, z * z);
+    let (xy, xz, yz) = (x * y, x * z, y * z);
+    let (wx, wy, wz) = (w * x, w * y, w * z);
+    let rotation = [
+        1.0 - 2.0 * (yy + zz),
+        2.0 * (xy - wz),
+        2.0 * (xz + wy),
+        2.0 * (xy + wz),
+        1.0 - 2.0 * (xx + zz),
+        2.0 * (yz - wx),
+        2.0 * (xz - wy),
+        2.0 * (yz + wx),
+        1.0 - 2.0 * (xx + yy),
+    ];
+    let position = [
+        camera.pose.position.x,
+        camera.pose.position.y,
+        camera.pose.position.z,
+    ];
+    let translation = std::array::from_fn::<_, 3, _>(|row| {
+        -rotation[row * 3 + 2].mul_add(
+            position[2],
+            rotation[row * 3 + 1].mul_add(position[1], rotation[row * 3] * position[0]),
+        )
+    });
+    [
+        rotation[0],
+        rotation[1],
+        rotation[2],
+        translation[0],
+        rotation[3],
+        rotation[4],
+        rotation[5],
+        translation[1],
+        rotation[6],
+        rotation[7],
+        rotation[8],
+        translation[2],
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+    ]
+}
+
+fn canonical_projection_matrix_f32(camera: Camera, aspect: f32) -> [f32; 16] {
+    let focal = 1.0 / (camera.intrinsics.vertical_fov_radians * 0.5).tan();
+    let depth =
+        camera.intrinsics.far_plane / (camera.intrinsics.far_plane - camera.intrinsics.near_plane);
+    [
+        focal / aspect,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        focal,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        depth,
+        -camera.intrinsics.near_plane * depth,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+    ]
+}
+
+fn multiply_mat4_f32(left: [f32; 16], right: [f32; 16]) -> [f32; 16] {
+    std::array::from_fn(|index| {
+        let row = index / 4;
+        let column = index % 4;
+        left[row * 4 + 3].mul_add(
+            right[12 + column],
+            left[row * 4 + 2].mul_add(
+                right[8 + column],
+                left[row * 4 + 1].mul_add(right[4 + column], left[row * 4] * right[column]),
+            ),
+        )
+    })
+}
+
+#[cfg(feature = "qualification-q1-m4-native")]
+pub(crate) fn format_f32_values(values: &[f32]) -> String {
+    values
+        .iter()
+        .map(|value| format!("{value:.9}"))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+pub(crate) const fn plan_label(plan: SurfaceCurrentStatsPlan) -> &'static str {
     match plan {
         SurfaceCurrentStatsPlan::CpuPostSort => "cpu_post_sort",
         SurfaceCurrentStatsPlan::GpuPostSort => "gpu_post_sort",
@@ -1546,7 +2163,9 @@ const fn diagnostic_plan_id(plan: SurfaceCurrentStatsPlan) -> &'static str {
     }
 }
 
-const fn count_semantics_label(semantics: SurfaceCurrentStatsCountSemantics) -> &'static str {
+pub(crate) const fn count_semantics_label(
+    semantics: SurfaceCurrentStatsCountSemantics,
+) -> &'static str {
     match semantics {
         SurfaceCurrentStatsCountSemantics::DirectDrawEqualsVisible => "direct_draw_equals_visible",
         SurfaceCurrentStatsCountSemantics::IndirectDrawEqualsVisible => {
@@ -1558,10 +2177,75 @@ const fn count_semantics_label(semantics: SurfaceCurrentStatsCountSemantics) -> 
     }
 }
 
-const fn backend_label(backend: SurfaceOrderBackendUsed) -> &'static str {
+pub(crate) const fn backend_label(backend: SurfaceOrderBackendUsed) -> &'static str {
     match backend {
         SurfaceOrderBackendUsed::Cpu => "cpu",
         SurfaceOrderBackendUsed::Gpu => "gpu",
+    }
+}
+
+#[cfg(feature = "qualification-q1-m4-native")]
+pub(crate) const fn projected_execution_label(
+    execution: SurfaceProjectedDrawExecution,
+) -> &'static str {
+    match execution {
+        SurfaceProjectedDrawExecution::Candidate => "candidate",
+        SurfaceProjectedDrawExecution::Compact => "compact",
+    }
+}
+
+#[cfg(feature = "qualification-q1-m4-native")]
+pub(crate) const fn adaptive_state_label(state: SurfaceAdaptiveState) -> &'static str {
+    match state {
+        SurfaceAdaptiveState::Disabled => "disabled",
+        SurfaceAdaptiveState::CpuLearning => "cpu_learning",
+        SurfaceAdaptiveState::CpuStable => "cpu_stable",
+        SurfaceAdaptiveState::GpuProbe => "gpu_probe",
+        SurfaceAdaptiveState::GpuStable => "gpu_stable",
+        SurfaceAdaptiveState::CpuProbe => "cpu_probe",
+        SurfaceAdaptiveState::Cooldown => "cooldown",
+    }
+}
+
+#[cfg(feature = "qualification-q1-m4-native")]
+pub(crate) const fn projected_adaptive_state_label(
+    state: SurfaceProjectedDrawAdaptiveState,
+) -> &'static str {
+    match state {
+        SurfaceProjectedDrawAdaptiveState::Disabled => "disabled",
+        SurfaceProjectedDrawAdaptiveState::CandidateLearning => "candidate_learning",
+        SurfaceProjectedDrawAdaptiveState::CandidateStable => "candidate_stable",
+        SurfaceProjectedDrawAdaptiveState::CompactProbe => "compact_probe",
+        SurfaceProjectedDrawAdaptiveState::CompactStable => "compact_stable",
+        SurfaceProjectedDrawAdaptiveState::CandidateProbe => "candidate_probe",
+        SurfaceProjectedDrawAdaptiveState::CandidateOnly => "candidate_only",
+        SurfaceProjectedDrawAdaptiveState::Cooldown => "cooldown",
+    }
+}
+
+#[cfg(feature = "qualification-q1-m4-native")]
+pub(crate) fn output_plan_label(output: SurfaceFrameOutput) -> Result<&'static str, String> {
+    match (
+        output.order_backend,
+        output.projected_draw_execution,
+        output.gpu_order_producer,
+    ) {
+        (SurfaceOrderBackendUsed::Cpu, SurfaceProjectedDrawExecution::Candidate, None) => {
+            Ok("cpu_post_sort")
+        }
+        (
+            SurfaceOrderBackendUsed::Gpu,
+            SurfaceProjectedDrawExecution::Candidate,
+            Some(SurfaceGpuOrderProducer::PostSort),
+        ) => Ok("gpu_post_sort"),
+        (
+            SurfaceOrderBackendUsed::Gpu,
+            SurfaceProjectedDrawExecution::Compact,
+            Some(SurfaceGpuOrderProducer::Preproject),
+        ) => Ok("gpu_preproject"),
+        actual => Err(format!(
+            "presentation has an inadmissible executed plan: {actual:?}"
+        )),
     }
 }
 
@@ -1601,6 +2285,54 @@ fn nonempty_adapter_field(value: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn live_f32_matrices_are_recomputed_close_to_frozen_trace() {
+        let bytes = std::fs::read(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tests/perf/trace/fixtures/quality/candidate-truck-quality-1920x1080-v1.json"
+        ))
+        .unwrap();
+        let trace = gsplat_core::camera_trace::CameraTrace::from_json_slice(&bytes).unwrap();
+        let playback = CameraTracePlayback::Sequence {
+            trace: trace.clone(),
+            frame_indices: vec![0, 1],
+            warmup_frames: 20,
+            measured_frames: 80,
+            loops: 1,
+        };
+        for (frame_index, frame) in trace.frames.iter().enumerate() {
+            let camera = frame.camera().unwrap();
+            let view = canonical_view_matrix_f32(camera);
+            let projection = canonical_projection_matrix_f32(camera, 1920.0 / 1080.0);
+            let view_projection = multiply_mat4_f32(projection, view);
+            let receipt = LiveCameraReceipt {
+                revision: (frame_index + 1) as u64,
+                surface_size: (1920, 1080),
+                aspect: 1920.0_f32 / 1080.0_f32,
+                camera,
+                view_matrix: view,
+                projection_matrix: projection,
+                view_projection_matrix: view_projection,
+            };
+            assert_eq!(receipt.revision, (frame_index + 1) as u64);
+            validate_live_camera(
+                &playback,
+                SurfaceTraceStep {
+                    playback_index: frame_index,
+                    phase: gsplat_core::camera_trace::CameraTraceSequencePhase::Measure,
+                    loop_index: 0,
+                    phase_frame_index: frame_index,
+                    measured_sample_index: Some(frame_index),
+                    trace_frame_index: frame_index,
+                    timestamp_ns: frame.timestamp_ns,
+                    camera,
+                },
+                receipt,
+            )
+            .unwrap();
+        }
+    }
 
     #[test]
     fn diagnostic_multi_capture_schedule_is_exact_and_complete_only_after_010() {

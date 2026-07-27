@@ -91,6 +91,11 @@ fn run_interactive(
         .map_err(|err| err.to_string())?;
     if let Some(plan) = args.surface_evidence_plan {
         crate::surface_evidence::configure(&mut session, plan)?;
+    } else if args.surface_q1_m4_native {
+        crate::surface_evidence::configure(
+            &mut session,
+            crate::cli::SurfaceEvidencePlanArg::Adaptive,
+        )?;
     } else if let Some(producer) = args.surface_gpu_producer {
         // The diagnostic producer comparison must construct only the selected
         // GPU graph before the backend becomes active. Both arms use the same
@@ -117,12 +122,39 @@ fn run_interactive(
     }
 
     if let Some(playback) = trace_playback {
+        #[cfg(all(feature = "qualification-q1-m4-native", not(target_arch = "wasm32")))]
+        if args.surface_q1_m4_native {
+            let runtime = crate::surface_evidence::SurfaceEvidenceRuntime::new(
+                session,
+                playback,
+                (
+                    playback.trace().display.width,
+                    playback.trace().display.height,
+                ),
+            )?;
+            return crate::surface_sustained::run(
+                args,
+                event_loop,
+                window,
+                runtime,
+                playback,
+                surface_adapter_info,
+            );
+        }
         if args.surface_evidence_plan.is_some() {
+            let runtime = crate::surface_evidence::SurfaceEvidenceRuntime::new(
+                session,
+                playback,
+                (
+                    playback.trace().display.width,
+                    playback.trace().display.height,
+                ),
+            )?;
             return crate::surface_evidence::run(
                 args,
                 event_loop,
                 window,
-                session,
+                runtime,
                 playback,
                 surface_adapter_info,
             );

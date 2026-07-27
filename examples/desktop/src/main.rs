@@ -4,6 +4,8 @@ mod offscreen;
 mod scene;
 #[cfg(feature = "interactive-viewer")]
 mod surface_evidence;
+#[cfg(all(feature = "qualification-q1-m4-native", not(target_arch = "wasm32")))]
+mod surface_sustained;
 mod trace;
 mod viewer;
 

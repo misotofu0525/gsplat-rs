@@ -135,6 +135,62 @@ because it does not keep every source splat resident. They also require
 source SH.
 Sampling, LOD, dynamic resolution, and upscaling are forbidden.
 
+The Q1 M4 native prerequisite uses a separate feature-gated host because its
+terminal-window boundary is stricter than the ordinary throughput diagnostic
+and must stay separate from current-stats observer cost.
+Do not launch the host directly for retained evidence. First run its focused
+tests, then let the one-shot collector build the locked release executable and
+claim a fresh ignored output root:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 python3 tests/perf/test_collect_q1_m4_native.py
+python3 tests/perf/collect-q1-m4-native.py \
+  --output target/qualification/q1-m4-native-<candidate-sha>-attempt-1
+```
+
+The collector admits only clean Apple M4/Metal, complete Truck SH3, the frozen
+two-view `1920x1080` trace, Packed `ProjectedQuadsExact`, every-frame sorting,
+product Adaptive policies and a 60 Hz host cadence. One untimed correctness
+control performs 20 warmup plus 80 measured current-stats members, continuously
+polls/recycles the bounded ring and retains complete presentation, submission,
+terminal and `V/C/D` ledgers. Adaptive presentations that cannot yet issue the
+pending observer ticket are control-only auxiliary presentations. The control
+summary explicitly publishes no throughput `N/FPS`.
+
+After the control is fully drained, the same process and frozen identity run a
+separate 20+80 presentation stage. That stage never requests or polls
+current-stats. After the 20 warmup presents it stops drawing and, outside the
+measurement window, completes the warmup queue once through the shared runtime
+owner. Only that Ready boundary permits measured trace frame 0 and freezes the
+window start. After the 80 measured presents it stops drawing and calls the
+existing no-draw `SurfaceRenderSession::pump_receipts` queue-completion owner.
+Only this first-measured-camera-input to measured-queue-completion interval
+publishes terminal `N/FPS`; it cannot inherit the control's tickets or counts.
+Every timed member records the actual Exact whole-plan Adaptive state, executed
+PlanId and Candidate/Compact execution. Exact intentionally reports the
+independent projected learner as disabled because `WholePlanController` owns
+that choice; disabled is recorded rather than rejected, and Compact/Preproject
+is not required.
+Ring busy or an unsampled/failed control terminal, a missing/duplicate ticket,
+timed observer load, incomplete membership, camera/trace/size drift, failed
+queue completion, or any draw during a drain fails closed.
+
+The Q1 host is a phase policy, not a second Surface evidence runtime.
+`surface_evidence::SurfaceEvidenceRuntime` exclusively owns the live
+`SurfaceRenderSession`; both hosts submit narrow request/present/poll/complete
+commands and receive owned immutable receipts. It owns current-stats access,
+live-camera matrix derivation, render/capture, queue completion and presentation
+validation. The Q1 module owns only its frozen identity,
+control/timed/capture transitions, cadence and Q1 protocol records.
+
+Only after the timed queue boundary does the host retain view 0 and view 1
+PNGs, each joined to the runtime's live-camera receipt, recomputed f32
+matrices, camera revision, presentation sequence and Ready control terminal.
+The collector binds both stages to one Git SHA, locked binary SHA, scene,
+trace, camera and config identity. This command is the native prerequisite
+only: PlayCanvas headful external presentation, the common reference-image
+gate, and the five outer counterbalanced pairs remain separate Q1 slices.
+
 For the strict M2b real-window evidence route, first fetch/verify the canonical
 Kitsune asset and run the focused collector test:
 

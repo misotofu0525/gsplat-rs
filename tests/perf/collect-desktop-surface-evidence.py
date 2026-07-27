@@ -16,6 +16,7 @@ import shutil
 import subprocess
 import sys
 import uuid
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
@@ -74,8 +75,76 @@ PREFIXES = {
     "capture": "SURFACE_EXACT_EVIDENCE_CAPTURE ",
     "summary": "SURFACE_EXACT_EVIDENCE_SUMMARY ",
 }
+
+
 class ValidationError(ValueError):
     """The run cannot be published as canonical evidence."""
+
+
+@dataclass
+class TicketJoinLedger:
+    """Private collector owner for issued/terminal ticket and presentation joins."""
+
+    strict_order: bool = False
+    issued: dict[int, dict[str, str]] = field(default_factory=dict)
+    terminals: dict[int, dict[str, str]] = field(default_factory=dict)
+    presentations: set[int] = field(default_factory=set)
+    last_ticket: int = 0
+    last_presentation: int = 0
+    validator: Any = None
+
+    def _require(self, condition: bool, message: str) -> None:
+        (self.validator or require)(condition, message)
+
+    def issue(
+        self,
+        ticket: int,
+        presentation: int,
+        record: dict[str, str],
+        context: str,
+    ) -> None:
+        self._require(ticket > 0, f"{context} ticket must be positive")
+        self._require(presentation > 0, f"{context} presentation sequence must be positive")
+        if self.strict_order:
+            self._require(ticket > self.last_ticket, f"{context} ticket is not strictly increasing")
+            self._require(
+                presentation > self.last_presentation,
+                f"{context} presentation sequence is not strictly increasing",
+            )
+        self._require(ticket not in self.issued, f"duplicate current-stats ticket {ticket}")
+        self._require(
+            presentation not in self.presentations,
+            f"reused current-stats presentation sequence {presentation}",
+        )
+        self.issued[ticket] = record
+        self.presentations.add(presentation)
+        self.last_ticket = max(self.last_ticket, ticket)
+        self.last_presentation = max(self.last_presentation, presentation)
+
+    def resolve(
+        self,
+        ticket: int,
+        terminal: dict[str, str],
+        context: str,
+        *,
+        join_fields: Sequence[str] = (),
+    ) -> dict[str, str]:
+        self._require(ticket in self.issued, f"{context} has unknown ticket {ticket}")
+        self._require(ticket not in self.terminals, f"duplicate current-stats terminal {ticket}")
+        submission = self.issued[ticket]
+        for field_name in join_fields:
+            self._require(
+                terminal.get(field_name) == submission.get(field_name),
+                f"current-stats ticket {ticket} {field_name} join mismatch",
+            )
+        self.terminals[ticket] = terminal
+        return submission
+
+    def require_complete(self, context: str = "current-stats") -> None:
+        self._require(
+            set(self.terminals) == set(self.issued),
+            f"{context} ticket terminal set mismatch",
+        )
 
 
 def require(condition: bool, message: str) -> None:
@@ -286,8 +355,7 @@ def validate_run_log(
     require(bool(begin["adapter_driver_info"]), "adapter driver-info field is not explicit")
     require(len(records["frame"]) == total, f"expected {total} frame receipts")
 
-    tickets: set[int] = set()
-    presentations: set[int] = set()
+    ticket_ledger = TicketJoinLedger()
     actual_plans: set[str] = set()
     measured_records: list[dict[str, Any]] = []
     previous_elapsed = -1
@@ -315,11 +383,10 @@ def validate_run_log(
         require(elapsed >= previous_elapsed, f"{context}.elapsed_ns is not monotonic")
         previous_elapsed = elapsed
         counts = validate_count_record(record, dataset["splat_count"], context)
-        require(counts["ticket"] not in tickets, f"duplicate current-stats ticket {counts['ticket']}")
-        require(counts["presentation_sequence"] not in presentations,
-                f"duplicate presentation sequence {counts['presentation_sequence']}")
-        tickets.add(counts["ticket"])
-        presentations.add(counts["presentation_sequence"])
+        ticket_ledger.issue(
+            counts["ticket"], counts["presentation_sequence"], record, context
+        )
+        ticket_ledger.resolve(counts["ticket"], record, context)
         actual_plans.add(counts["actual_plan"])
         if arm in FORCED_ACTUAL:
             require(counts["actual_plan"] == FORCED_ACTUAL[arm], f"{context} forced plan drift")
@@ -380,9 +447,14 @@ def validate_run_log(
         "capture",
     )
     capture_counts = validate_count_record(capture, dataset["splat_count"], "capture")
-    require(capture_counts["ticket"] not in tickets, "capture reused a frame current-stats ticket")
-    require(capture_counts["presentation_sequence"] not in presentations,
-            "capture reused a frame presentation sequence")
+    ticket_ledger.issue(
+        capture_counts["ticket"],
+        capture_counts["presentation_sequence"],
+        capture,
+        "capture",
+    )
+    ticket_ledger.resolve(capture_counts["ticket"], capture, "capture")
+    ticket_ledger.require_complete()
     require(parse_uint(capture.get("trace_frame", ""), "capture.trace_frame") == last_trace_frame,
             "capture is not the final scheduled trace pose")
     if arm in FORCED_ACTUAL:
@@ -588,6 +660,139 @@ def distribution(values: Sequence[float]) -> dict[str, Any]:
 
 def write_json(path: Path, value: Any) -> None:
     path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def write_jsonl(path: Path, values: Sequence[dict[str, Any]]) -> None:
+    path.write_text(
+        "".join(json.dumps(value, sort_keys=True) + "\n" for value in values),
+        encoding="utf-8",
+    )
+
+
+def timeout_stream(value: str | bytes | None) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return value
+
+
+def make_tree_immutable(root: Path) -> None:
+    for path in sorted(root.rglob("*"), key=lambda item: len(item.parts), reverse=True):
+        require(not path.is_symlink(), f"immutable output contains a symlink: {path}")
+        os.chmod(path, path.stat().st_mode & ~0o222)
+    os.chmod(root, root.stat().st_mode & ~0o222)
+
+
+def fsync_tree(root: Path) -> None:
+    """Durably stage file contents and directory entries before publication."""
+
+    for path in sorted(root.rglob("*"), key=lambda item: len(item.parts), reverse=True):
+        if path.is_symlink():
+            raise ValidationError(f"transaction staging contains a symlink: {path}")
+        if path.is_file():
+            with path.open("rb") as handle:
+                os.fsync(handle.fileno())
+        elif path.is_dir():
+            descriptor = os.open(path, os.O_RDONLY)
+            try:
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+    descriptor = os.open(root, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def fsync_directory(path: Path) -> None:
+    descriptor = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+class ImmutableOutputTransaction:
+    """Publish one immutable artifact root or leave no success claim."""
+
+    def __init__(self, output: Path):
+        self.output = output.resolve()
+        require(not self.output.exists(), f"artifact output already exists: {self.output}")
+        self.output.parent.mkdir(parents=True, exist_ok=True)
+        self.staging = self._new_staging("staging")
+        self._renamed = False
+        self._committed = False
+
+    def _new_staging(self, role: str) -> Path:
+        stage = self.output.parent / f".{self.output.name}.{role}-{uuid.uuid4().hex}"
+        require(stage.parent == self.output.parent, "transaction staging escaped output parent")
+        stage.mkdir(mode=0o700)
+        return stage
+
+    @staticmethod
+    def _make_tree_writable(root: Path) -> None:
+        if not root.exists():
+            return
+        os.chmod(root, root.stat().st_mode | 0o700)
+        for path in root.rglob("*"):
+            if path.is_symlink():
+                continue
+            writable = 0o700 if path.is_dir() else 0o600
+            os.chmod(path, path.stat().st_mode | writable)
+
+    @classmethod
+    def _remove_tree(cls, root: Path) -> None:
+        if root.exists():
+            cls._make_tree_writable(root)
+            try:
+                shutil.rmtree(root)
+            except OSError:
+                # A failed cleanup must not leave a terminal success claim in
+                # either the hidden staging root or the final output name.
+                result_path = root / "result.json"
+                if result_path.exists():
+                    os.chmod(result_path, result_path.stat().st_mode | 0o600)
+                    result_path.unlink()
+                raise
+
+    def _publish_stage(self) -> None:
+        fsync_tree(self.staging)
+        make_tree_immutable(self.staging)
+        fsync_tree(self.staging)
+        self.staging.rename(self.output)
+        self._renamed = True
+        fsync_directory(self.output.parent)
+        self._committed = True
+
+    def publish_result(self, result: dict[str, Any]) -> None:
+        """Clean private build state, write the terminal result, and publish once."""
+
+        target_dir = self.staging / "cargo-target"
+        if target_dir.exists():
+            remove_private_cargo_target(self.staging)
+        write_json(self.staging / "result.json", result)
+        self._publish_stage()
+
+    def replace_with_failure(self, result: dict[str, Any]) -> None:
+        """Discard any staged claim and make one bounded non-success artifact."""
+
+        self.discard()
+        require(not self.output.exists(), "cannot replace a surviving artifact claim")
+        self.staging = self._new_staging("rejected")
+        self._renamed = False
+        self._committed = False
+        write_json(self.staging / "result.json", result)
+        self._publish_stage()
+
+    def discard(self) -> None:
+        """Best-effort removal used only for this transaction's exact roots."""
+
+        if self._renamed and not self._committed:
+            self._remove_tree(self.output)
+            self._renamed = False
+        self._remove_tree(self.staging)
 
 
 def remove_private_cargo_target(stage: Path) -> None:
@@ -841,7 +1046,14 @@ def package_version(repo: Path) -> str:
     return match.group(1)
 
 
-def build_desktop_binary(repo: Path, stage: Path, expected_git: dict[str, Any]) -> Path:
+def build_locked_desktop_binary(
+    repo: Path,
+    stage: Path,
+    expected_git: dict[str, Any],
+    *,
+    feature: str,
+    build_jobs: int | None = None,
+) -> dict[str, Any]:
     build_dir = stage / "build"
     build_dir.mkdir()
     target_dir = stage / "cargo-target"
@@ -856,16 +1068,22 @@ def build_desktop_binary(repo: Path, stage: Path, expected_git: dict[str, Any]) 
         "-p",
         "desktop-example",
         "--features",
-        "interactive-viewer",
+        feature,
         "--message-format=json-render-diagnostics",
     ]
     build_environment = os.environ.copy()
     build_environment["CARGO_TARGET_DIR"] = str(target_dir.resolve())
+    if build_jobs is not None:
+        require(build_jobs > 0, "CARGO_BUILD_JOBS must be positive")
+        build_environment["CARGO_BUILD_JOBS"] = str(build_jobs)
+    recorded_environment = {"CARGO_TARGET_DIR": build_environment["CARGO_TARGET_DIR"]}
+    if build_jobs is not None:
+        recorded_environment["CARGO_BUILD_JOBS"] = build_environment["CARGO_BUILD_JOBS"]
     write_json(
         build_dir / "command.json",
         {
             "argv": command,
-            "environment": {"CARGO_TARGET_DIR": build_environment["CARGO_TARGET_DIR"]},
+            "environment": recorded_environment,
         },
     )
     completed = subprocess.run(
@@ -881,7 +1099,7 @@ def build_desktop_binary(repo: Path, stage: Path, expected_git: dict[str, Any]) 
     (build_dir / "stderr.log").write_text(completed.stderr, encoding="utf-8")
     require(
         completed.returncode == 0,
-        f"canonical desktop release build exited with {completed.returncode}",
+        f"locked desktop release build exited with {completed.returncode}",
     )
     executables: set[Path] = set()
     for line in completed.stdout.splitlines():
@@ -911,7 +1129,25 @@ def build_desktop_binary(repo: Path, stage: Path, expected_git: dict[str, Any]) 
         ) from error
     require(binary.is_file() and os.access(binary, os.X_OK), "collector-built binary is unavailable")
     require(git_receipt(repo) == expected_git, "git receipt changed during the canonical build")
-    return binary
+    return {
+        "path": binary,
+        "sha256": sha256_file(binary),
+        "command": "build/command.json",
+        "stdout": "build/stdout.log",
+        "stderr": "build/stderr.log",
+        "cargo_feature": feature,
+        "profile": "release",
+        "locked": True,
+    }
+
+
+def build_desktop_binary(repo: Path, stage: Path, expected_git: dict[str, Any]) -> Path:
+    return build_locked_desktop_binary(
+        repo,
+        stage,
+        expected_git,
+        feature="interactive-viewer",
+    )["path"]
 
 
 def require_binary_sha256(binary: Path, expected: str) -> None:

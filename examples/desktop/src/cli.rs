@@ -14,6 +14,9 @@ use gsplat_render_wgpu::{GeometryPath, SurfaceGpuOrderProducer, SurfaceOrderBack
 ))]
 compile_error!("desktop diagnostic Surface capture receipts are native-only");
 
+#[cfg(all(feature = "qualification-q1-m4-native", target_arch = "wasm32"))]
+compile_error!("Q1 M4 native sustained evidence is native-only");
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) enum SurfaceBenchmarkMode {
     #[default]
@@ -99,6 +102,12 @@ pub(crate) struct Args {
     /// Enables the strict M2b real-window current-stats/capture path.
     #[cfg_attr(not(feature = "interactive-viewer"), allow(dead_code))]
     pub(crate) surface_evidence_plan: Option<SurfaceEvidencePlanArg>,
+    /// Enables the private Q1 M4 control plus terminal-throughput host.
+    #[cfg_attr(
+        not(all(feature = "qualification-q1-m4-native", not(target_arch = "wasm32"))),
+        allow(dead_code)
+    )]
+    pub(crate) surface_q1_m4_native: bool,
     /// Takes the atomic diagnostic capture/receipt pair in the strict native
     /// Surface evidence host. The package feature and CLI flag are both
     /// required so ordinary evidence runs retain their existing behavior.
@@ -153,6 +162,10 @@ impl Args {
         let mut surface_sort_policy_explicit = false;
         let mut surface_gpu_producer = None;
         let mut surface_evidence_plan = None;
+        #[cfg(all(feature = "qualification-q1-m4-native", not(target_arch = "wasm32")))]
+        let mut surface_q1_m4_native = false;
+        #[cfg(not(all(feature = "qualification-q1-m4-native", not(target_arch = "wasm32"))))]
+        let surface_q1_m4_native = false;
         #[cfg(all(
             feature = "diagnostic-surface-capture-receipt",
             not(target_arch = "wasm32")
@@ -288,6 +301,10 @@ impl Args {
                         .next()
                         .ok_or_else(|| "missing value for --surface-evidence-plan".to_owned())?;
                     surface_evidence_plan = Some(parse_surface_evidence_plan(&value)?);
+                }
+                #[cfg(all(feature = "qualification-q1-m4-native", not(target_arch = "wasm32")))]
+                "--surface-q1-m4-native" => {
+                    surface_q1_m4_native = true;
                 }
                 #[cfg(all(
                     feature = "diagnostic-surface-capture-receipt",
@@ -437,6 +454,57 @@ impl Args {
             }
             order_backend = plan.order_backend();
         }
+        if surface_q1_m4_native {
+            if !interactive {
+                return Err("--surface-q1-m4-native requires --interactive".to_owned());
+            }
+            if geometry_path != GeometryPath::PackedAtlas {
+                return Err("--surface-q1-m4-native requires --geometry-path packed".to_owned());
+            }
+            if camera_trace_path.is_none() || !camera_sequence {
+                return Err(
+                    "--surface-q1-m4-native requires --camera-trace and --camera-sequence"
+                        .to_owned(),
+                );
+            }
+            if camera_frame_indices.as_deref() != Some(&[0, 1]) {
+                return Err("--surface-q1-m4-native requires --camera-frame-indices 0,1".to_owned());
+            }
+            if camera_warmup_frames != 20 || camera_measured_frames != Some(80) || camera_loops != 1
+            {
+                return Err(
+                    "--surface-q1-m4-native requires exactly 20 warmup, 80 measured, and one loop"
+                        .to_owned(),
+                );
+            }
+            if surface_benchmark_mode != SurfaceBenchmarkMode::Throughput {
+                return Err(
+                    "--surface-q1-m4-native requires --surface-benchmark-mode throughput"
+                        .to_owned(),
+                );
+            }
+            if surface_sort_policy != SurfaceSortPolicyArg::EveryFrame {
+                return Err(
+                    "--surface-q1-m4-native requires --surface-sort-policy every-frame".to_owned(),
+                );
+            }
+            if order_backend != SurfaceOrderBackend::Adaptive {
+                return Err("--surface-q1-m4-native requires --order-backend adaptive".to_owned());
+            }
+            if png_out.is_none() {
+                return Err("--surface-q1-m4-native requires --png".to_owned());
+            }
+            if surface_evidence_plan.is_some()
+                || surface_gpu_producer.is_some()
+                || surface_diagnostic_capture_receipt
+                || surface_diagnostic_multi_capture
+            {
+                return Err(
+                    "--surface-q1-m4-native cannot be combined with other private Surface evidence modes"
+                        .to_owned(),
+                );
+            }
+        }
         if surface_diagnostic_capture_receipt && surface_evidence_plan.is_none() {
             return Err(
                 "--surface-diagnostic-capture-receipt requires --surface-evidence-plan".to_owned(),
@@ -464,6 +532,7 @@ impl Args {
             && png_out.is_some()
             && surface_gpu_producer.is_none()
             && surface_evidence_plan.is_none()
+            && !surface_q1_m4_native
         {
             return Err(
                 "interactive --png requires an explicit --surface-gpu-producer post-sort|preproject"
@@ -485,6 +554,7 @@ impl Args {
             surface_sort_policy,
             surface_gpu_producer,
             surface_evidence_plan,
+            surface_q1_m4_native,
             surface_diagnostic_capture_receipt,
             surface_diagnostic_multi_capture,
             png_out,
@@ -530,6 +600,14 @@ fn usage() -> String {
         "  --camera-measured-frames N measured poses (fixed default: --frames; sequence: selected count)",
         "  --camera-loops N repeat the measured sequence N times (default: 1)",
     ];
+    #[cfg(all(feature = "qualification-q1-m4-native", not(target_arch = "wasm32")))]
+    let lines = {
+        let mut lines = lines;
+        lines.push(
+            "  --surface-q1-m4-native collect private Q1 M4 control and terminal-throughput evidence",
+        );
+        lines
+    };
     #[cfg(all(
         feature = "diagnostic-surface-capture-receipt",
         not(target_arch = "wasm32")
