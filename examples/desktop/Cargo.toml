@@ -21,6 +21,10 @@ diagnostic-surface-depth-key-candidate24 = [
     "diagnostic-surface-capture-receipt",
     "gsplat-render-wgpu/diagnostic-surface-depth-key-candidate24",
 ]
+diagnostic-surface-depth-key-candidate20 = [
+    "diagnostic-surface-capture-receipt",
+    "gsplat-render-wgpu/diagnostic-surface-depth-key-candidate20",
+]
 diagnostic-surface-projected-axes16 = [
     "diagnostic-surface-capture-receipt",
     "gsplat-render-wgpu/diagnostic-surface-projected-axes16",
