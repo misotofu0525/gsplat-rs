@@ -24,7 +24,7 @@ from typing import Any
 SCHEMA = "gsplat-scalable-proxy-image-gate/v1"
 VALIDATOR_VERSION = 1
 BALANCED_VALIDATOR_SHA256 = (
-    "8238c3eba0c577fd9b9a5cda017b02f7f7bb29dbd77290e981d0c53c5fed31d5"
+    "4866f4457ab14232daa8b1220573ff8d48c325afe1bfae6aef54cdcd1afee435"
 )
 BENCHMARK_VALIDATOR_SHA256 = (
     "3a47dc9221e28a13985928c531d53143934f62313f9d8d257758fb1befbecc6c"

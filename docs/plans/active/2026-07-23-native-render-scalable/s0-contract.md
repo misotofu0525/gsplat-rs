@@ -330,7 +330,11 @@ presentation join, RGBA8 PNG decoding/hash checks, metric recomputation and
 validator-version receipt used by
 [`validate-balanced-image-gate.py`](../../../../tests/perf/validate-balanced-image-gate.py).
 At this contract baseline that validator has SHA-256
-`8238c3eba0c577fd9b9a5cda017b02f7f7bb29dbd77290e981d0c53c5fed31d5`;
+`4866f4457ab14232daa8b1220573ff8d48c325afe1bfae6aef54cdcd1afee435`.
+This pin includes the B1 repair that admits only the valid initial
+`viewport_generation = 0` while retaining positive requirements for the other
+presentation identities; it does not change the shared image metric, path,
+artifact, resolution or exactness contract.
 the canonical benchmark validator has SHA-256
 `3a47dc9221e28a13985928c531d53143934f62313f9d8d257758fb1befbecc6c`.
 A later shared-helper refactor is allowed only when B1 stays fail-closed and

@@ -187,6 +187,24 @@ result, Metal/A065 run, quality pass, runtime integration or device
 qualification exists in this slice, so **S1 remains Active** and S2--S5 remain
 locked.
 
+## S1 shared-validator pin maintenance
+
+The B1 validator repair that admits the valid initial
+`viewport_generation = 0` changed the hash of the shared Balanced validator.
+S1 correctly failed closed rather than silently using the new dependency; the
+S0 contract and S1 validator pin now name the repaired hash
+`4866f4457ab14232daa8b1220573ff8d48c325afe1bfae6aef54cdcd1afee435`.
+The repair leaves the shared image metric, artifact/path confinement,
+resolution and Exactness rules unchanged. A focused regression now verifies
+that the S0 contract text, S1 pin and actual shared-validator bytes all agree,
+so any later unreviewed drift fails at the dependency identity rather than
+masking the remaining S1 assertions. The hierarchy fixture tests (7), S1 gate
+tests (15) and Balanced validator tests (42) pass after this maintenance.
+
+This is dependency identity maintenance only; it does not create proxy image
+evidence, revise the frozen S1 thresholds or unlock S2--S5. **S1 remains
+Active**.
+
 ## Ordered implementation ledger
 
 | Task | State in this candidate | Independent result |

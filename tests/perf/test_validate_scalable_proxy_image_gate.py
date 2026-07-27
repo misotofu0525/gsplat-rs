@@ -715,6 +715,18 @@ class ScalableProxyImageGateTests(unittest.TestCase):
         self.assertEqual(result.comparison_count, 72)
         self.assertEqual(result.transition_count, 32)
 
+    def test_pinned_shared_validator_hashes_match_contract_and_files(self) -> None:
+        contract = (
+            ROOT
+            / "docs/plans/active/2026-07-23-native-render-scalable/s0-contract.md"
+        ).read_text(encoding="utf-8")
+        for path, pinned in [
+            (VALIDATOR.BALANCED_VALIDATOR_PATH, VALIDATOR.BALANCED_VALIDATOR_SHA256),
+            (VALIDATOR.BENCHMARK_VALIDATOR_PATH, VALIDATOR.BENCHMARK_VALIDATOR_SHA256),
+        ]:
+            self.assertEqual(sha256_file(path), pinned)
+            self.assertIn(f"`{pinned}`", contract)
+
     def test_cli_emits_validated_fixture_not_accepted(self) -> None:
         path = self.root / "gate-cli.json"
         write_json(path, self.manifest)
