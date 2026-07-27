@@ -725,6 +725,9 @@ dependencies = [
 name = "gsplat-hierarchy"
 version = "0.1.3"
 dependencies = [
+ "gsplat-io-ply",
+ "serde",
+ "serde_json",
  "sha2",
 ]
 
