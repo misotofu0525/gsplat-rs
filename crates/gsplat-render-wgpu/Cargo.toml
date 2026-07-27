@@ -15,6 +15,7 @@ rust-version.workspace = true
 [features]
 default = []
 diagnostic-surface-capture-receipt = []
+diagnostic-surface-presented-depth-receipt = []
 diagnostic-surface-depth-key-candidate24 = []
 diagnostic-surface-depth-key-candidate20 = []
 diagnostic-surface-projected-axes16 = []

@@ -128,6 +128,9 @@ use surface::{standalone_paged_runtime::StandalonePagedRuntime, try_prepare_then
 #[cfg(test)]
 use surface_presenter::surface_resource_plan;
 pub use surface_presenter::{SurfaceFrameCapture, SurfacePresenter};
+#[cfg(feature = "diagnostic-surface-presented-depth-receipt")]
+#[doc(hidden)]
+pub use surface_session::DiagnosticPresentedDepthPrecisionReceipt;
 #[cfg(all(
     feature = "diagnostic-surface-capture-receipt",
     not(target_arch = "wasm32")

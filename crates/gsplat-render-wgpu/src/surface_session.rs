@@ -302,6 +302,92 @@ struct RenderedSessionFrame {
     telemetry: Option<PresentedTelemetry>,
 }
 
+/// Read-only diagnostic copy of the depth precision used by one successfully
+/// presented Exact Surface frame.
+///
+/// This is an opt-in observation of the existing `SessionPublication` ledger;
+/// it owns no renderer state and cannot request or change a precision profile.
+#[cfg(feature = "diagnostic-surface-presented-depth-receipt")]
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DiagnosticPresentedDepthPrecisionReceipt {
+    depth_precision_profile: &'static str,
+    scene_generation: u64,
+    camera_revision: u64,
+    viewport_generation: u64,
+    contract_generation: u64,
+    plan_set_generation: u64,
+    plan_id: &'static str,
+    order_generation: u64,
+    presentation_sequence: u64,
+}
+
+#[cfg(feature = "diagnostic-surface-presented-depth-receipt")]
+impl DiagnosticPresentedDepthPrecisionReceipt {
+    fn from_presented(receipt: PresentedDepthPrecisionReceipt) -> Self {
+        let frame = receipt.frame();
+        Self {
+            depth_precision_profile: match receipt.profile() {
+                crate::renderer::SurfaceDepthPrecisionProfile::ExactFull32 => "ExactFull32",
+                crate::renderer::SurfaceDepthPrecisionProfile::CandidateStable24 => {
+                    "CandidateStable24"
+                }
+                crate::renderer::SurfaceDepthPrecisionProfile::CandidateStable20 => {
+                    "CandidateStable20"
+                }
+            },
+            scene_generation: frame.scene_generation(),
+            camera_revision: frame.camera_revision(),
+            viewport_generation: frame.viewport_generation(),
+            contract_generation: frame.contract_generation(),
+            plan_set_generation: frame.plan_set_generation(),
+            plan_id: match receipt.plan() {
+                PlanId::CpuPostSort => "CpuPostSort",
+                PlanId::GpuPostSort => "GpuPostSort",
+                PlanId::GpuPreproject => "GpuPreproject",
+            },
+            order_generation: receipt.order_generation(),
+            presentation_sequence: receipt.presentation_sequence(),
+        }
+    }
+
+    pub const fn depth_precision_profile(self) -> &'static str {
+        self.depth_precision_profile
+    }
+
+    pub const fn scene_generation(self) -> u64 {
+        self.scene_generation
+    }
+
+    pub const fn camera_revision(self) -> u64 {
+        self.camera_revision
+    }
+
+    pub const fn viewport_generation(self) -> u64 {
+        self.viewport_generation
+    }
+
+    pub const fn contract_generation(self) -> u64 {
+        self.contract_generation
+    }
+
+    pub const fn plan_set_generation(self) -> u64 {
+        self.plan_set_generation
+    }
+
+    pub const fn plan_id(self) -> &'static str {
+        self.plan_id
+    }
+
+    pub const fn order_generation(self) -> u64 {
+        self.order_generation
+    }
+
+    pub const fn presentation_sequence(self) -> u64 {
+        self.presentation_sequence
+    }
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) struct SurfaceCapturePrecisionEvidence {
     capture: SurfaceFrameCapture,
@@ -1183,6 +1269,18 @@ impl SurfaceRenderSession {
         &self,
     ) -> Option<PresentedDepthPrecisionReceipt> {
         self.publication.presented_depth_precision_receipt()
+    }
+
+    /// Returns the latest successfully presented Exact Surface depth receipt.
+    /// Failed and unavailable attempts cannot create or overwrite this value.
+    #[cfg(feature = "diagnostic-surface-presented-depth-receipt")]
+    #[doc(hidden)]
+    pub fn diagnostic_presented_depth_precision_receipt(
+        &self,
+    ) -> Option<DiagnosticPresentedDepthPrecisionReceipt> {
+        self.publication
+            .presented_depth_precision_receipt()
+            .map(DiagnosticPresentedDepthPrecisionReceipt::from_presented)
     }
 
     /// Polls at most one current-stats resolution or atomic terminal. The

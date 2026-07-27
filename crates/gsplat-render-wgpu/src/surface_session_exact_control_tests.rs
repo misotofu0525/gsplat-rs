@@ -372,6 +372,31 @@ fn diagnostic_capture_receipt_reports_candidate20_profile_in_candidate_build() {
     assert_eq!(receipt.presentation_sequence(), 17);
 }
 
+#[cfg(feature = "diagnostic-surface-presented-depth-receipt")]
+#[test]
+fn diagnostic_presented_depth_receipt_copies_complete_identity() {
+    let publication = SessionPublication::new(true);
+    assert_eq!(publication.presented_depth_precision_receipt(), None);
+
+    let presented = PresentedDepthPrecisionReceipt::new(
+        SurfaceDepthPrecisionProfile::CandidateStable20,
+        FrameIdentity::new(21, 22, 23, 24, 25),
+        PlanId::GpuPreproject,
+        26,
+        27,
+    );
+    let diagnostic = super::DiagnosticPresentedDepthPrecisionReceipt::from_presented(presented);
+    assert_eq!(diagnostic.depth_precision_profile(), "CandidateStable20");
+    assert_eq!(diagnostic.scene_generation(), 21);
+    assert_eq!(diagnostic.camera_revision(), 22);
+    assert_eq!(diagnostic.viewport_generation(), 23);
+    assert_eq!(diagnostic.contract_generation(), 24);
+    assert_eq!(diagnostic.plan_set_generation(), 25);
+    assert_eq!(diagnostic.plan_id(), "GpuPreproject");
+    assert_eq!(diagnostic.order_generation(), 26);
+    assert_eq!(diagnostic.presentation_sequence(), 27);
+}
+
 #[cfg(feature = "diagnostic-surface-capture-receipt")]
 #[test]
 fn diagnostic_capture_receipt_is_unavailable_before_present_and_after_take() {

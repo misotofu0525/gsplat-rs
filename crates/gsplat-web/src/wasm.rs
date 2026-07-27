@@ -30,6 +30,13 @@ use sha2::{Digest, Sha256};
 use wasm_bindgen::prelude::*;
 use web_sys::HtmlCanvasElement;
 
+#[cfg(feature = "diagnostic-web-depth-key-candidate20")]
+#[wasm_bindgen]
+extern "C" {
+    #[wasm_bindgen(js_namespace = console, js_name = log)]
+    fn diagnostic_console_log(message: &str);
+}
+
 const SURFACE_CAMERA_MAX_PITCH: f32 = 1.45;
 const SURFACE_CAMERA_MIN_DISTANCE_MULTIPLIER: f32 = 0.2;
 const SURFACE_CAMERA_MAX_DISTANCE_MULTIPLIER: f32 = 20.0;
@@ -677,7 +684,7 @@ impl GsplatWebRenderer {
         let completed_gpu_producer_measurements = self.session.drain_gpu_producer_measurements();
         let failed_gpu_producer_measurements =
             self.session.drain_gpu_producer_measurement_failures();
-        frame_stats_object(
+        let stats = frame_stats_object(
             output,
             self.session.surface_size(),
             self.session.internal_render_size(),
@@ -690,7 +697,12 @@ impl GsplatWebRenderer {
             &failed_projected_measurements,
             &completed_gpu_producer_measurements,
             &failed_gpu_producer_measurements,
-        )
+        )?;
+        #[cfg(feature = "diagnostic-web-depth-key-candidate20")]
+        if output.frame_presented {
+            log_presented_depth_precision_receipt(&self.session);
+        }
+        Ok(stats)
     }
 
     /// Requests one observer receipt from the next presented Exact frame.
@@ -1217,6 +1229,33 @@ const fn current_stats_plan_label(plan: SurfaceCurrentStatsPlan) -> &'static str
         SurfaceCurrentStatsPlan::GpuPostSort => "gpu_post_sort",
         SurfaceCurrentStatsPlan::GpuPreproject => "gpu_preproject",
     }
+}
+
+#[cfg(feature = "diagnostic-web-depth-key-candidate20")]
+fn log_presented_depth_precision_receipt(session: &SurfaceRenderSession) {
+    let Some(receipt) = session.diagnostic_presented_depth_precision_receipt() else {
+        return;
+    };
+    diagnostic_console_log(&format!(
+        concat!(
+            "GSPLAT_DIAGNOSTIC_PRESENTED_DEPTH_PRECISION ",
+            "{{\"record_type\":\"presented_depth_precision\",",
+            "\"depth_precision_profile\":\"{}\",",
+            "\"scene_generation\":{},\"camera_revision\":{},",
+            "\"viewport_generation\":{},\"contract_generation\":{},",
+            "\"plan_set_generation\":{},\"plan_id\":\"{}\",",
+            "\"order_generation\":{},\"presentation_sequence\":{}}}"
+        ),
+        receipt.depth_precision_profile(),
+        receipt.scene_generation(),
+        receipt.camera_revision(),
+        receipt.viewport_generation(),
+        receipt.contract_generation(),
+        receipt.plan_set_generation(),
+        receipt.plan_id(),
+        receipt.order_generation(),
+        receipt.presentation_sequence(),
+    ));
 }
 
 const fn current_stats_count_semantics_label(
