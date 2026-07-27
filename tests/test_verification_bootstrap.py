@@ -166,6 +166,33 @@ class VerificationBootstrapTests(unittest.TestCase):
             self.assertTrue((candidate_output / "gsplat_web.js").is_file())
             self.assertEqual(marker.read_text(encoding="utf-8"), "keep")
 
+    def test_web_wasm_exact_removes_symlink_leaf_without_touching_target(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            script, log = self.install_fake_web_build(root)
+            external = root / "external-exact-output"
+            external.mkdir()
+            sentinel = external / "sentinel.txt"
+            sentinel.write_text("preserve", encoding="utf-8")
+            default_output = root / "examples/web/pkg"
+            default_output.parent.mkdir(parents=True)
+            default_output.symlink_to(external, target_is_directory=True)
+            environment = {
+                **os.environ,
+                "PATH": f"{root / 'bin'}:{os.environ.get('PATH', '')}",
+                "WASM_BINDGEN_BIN": str(root / "bin/wasm-bindgen"),
+            }
+
+            exact = subprocess.run(
+                ("bash", str(script)), env=environment, text=True, capture_output=True
+            )
+
+            self.assertEqual(exact.returncode, 0, exact.stderr)
+            self.assertNotIn("--features", log.read_text(encoding="utf-8"))
+            self.assertEqual(sentinel.read_text(encoding="utf-8"), "preserve")
+            self.assertFalse(default_output.is_symlink())
+            self.assertTrue((default_output / "gsplat_web.js").is_file())
+
     def test_web_wasm_diagnostic_selection_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)

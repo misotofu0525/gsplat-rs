@@ -25,7 +25,11 @@ print(os.path.abspath(sys.argv[1]))
 PY
 }
 
-DEFAULT_OUT_DIR="$(normalize_output_path "$ROOT_DIR/examples/web/pkg")"
+DEFAULT_OUT_DIR="$ROOT_DIR/examples/web/pkg"
+# Candidate20 compares against the real destination, but Exact deliberately
+# keeps operating on the historical lexical leaf. If that leaf is a symlink,
+# `rm -rf` removes only the link rather than its external target.
+DEFAULT_OUT_DIR_REAL="$(normalize_output_path "$DEFAULT_OUT_DIR")"
 
 # Private diagnostics must opt into both the exact profile name and a fresh,
 # caller-owned destination. The normal package remains Exact and keeps its
@@ -52,7 +56,7 @@ case "$WASM_PROFILE" in
     fi
     REQUESTED_LEXICAL="$(lexical_output_path "$REQUESTED_ABSOLUTE")"
     OUT_DIR="$(normalize_output_path "$REQUESTED_ABSOLUTE")"
-    if [[ "$OUT_DIR" == "$DEFAULT_OUT_DIR" || "$OUT_DIR" == "$DEFAULT_OUT_DIR/"* ]]; then
+    if [[ "$OUT_DIR" == "$DEFAULT_OUT_DIR_REAL" || "$OUT_DIR" == "$DEFAULT_OUT_DIR_REAL/"* ]]; then
       echo "candidate20 output must stay independent from examples/web/pkg" >&2
       exit 2
     fi
