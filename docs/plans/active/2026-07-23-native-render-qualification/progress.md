@@ -992,3 +992,13 @@ decision owner. This candidate runs focused unit/policy verification only: no
 Chrome instance, Truck render, formal series artifact or comparative result is
 created. Q1 remains **Active** pending fixed-SHA review, integration of the
 gsplat-rs endpoint producer, and one separately authorized execution.
+
+The first fixed-SHA review rejected `648b960` for three formal evidence gaps.
+The repair freezes and post-run rechecks the browser, Wasm/build,
+producer/runtime, validator/tool, dataset/trace/reference and clean reviewed
+commit inputs; passes producers an exact allowlisted child environment rather
+than ambient shell state; and performs complete canonical Q1 admission of both
+controls immediately before throughput. This remains candidate-only: no
+browser was started and no result was created. After integration, the new exact
+SHA still needs its own fixed-SHA review; neither the rejected SHA nor a
+component review authorizes collection.

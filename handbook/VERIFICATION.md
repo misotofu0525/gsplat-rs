@@ -353,6 +353,17 @@ control manifest hashes before each throughput run, and calls only the
 existing Q1 validator after the evidence schedule is complete. Retain a
 failed root and its blocker; never delete it to simulate a retry.
 
+The formal preflight fully decodes both reference PNGs and freezes the reviewed
+commit, exact Chrome binary, quality-exact Wasm package, producer/runtime
+trees, Truck/trace inputs, validators and image tool. Producer subprocesses use
+only the exact environment printed in `commands.json`; ambient Node, Python,
+npm, Chrome, PlayCanvas, gsplat-rs and WebGPU variables are not inherited.
+After all producers and image comparisons, the same inputs plus clean HEAD are
+rechecked before the schedule/result boundary. The final validator consumes
+this lock and joins browser and Wasm hashes to endpoint artifacts. Integrate
+all producer and orchestrator candidates first, then obtain a new fixed-SHA
+review of that exact clean integrated commit before authorizing `--execute`.
+
 ## Fast Feedback
 
 - Smallest useful check:

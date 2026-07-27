@@ -16,6 +16,7 @@ import random
 import shutil
 import subprocess
 import sys
+from collections.abc import Mapping
 from datetime import datetime, timezone
 from typing import Any
 
@@ -27,8 +28,15 @@ sys.path.insert(0, str(SCRIPT_DIR))
 from q1_pair_admission.artifacts import (  # noqa: E402
     HOST_ADMISSION_JOIN_SCHEMA,
     IMAGE_TOOL_SHA256,
+    artifact as admit_artifact,
+    frozen_rgba8_png_receipt,
 )
-from q1_pair_admission.common import canonical_sha256, file_sha256  # noqa: E402
+from q1_pair_admission.common import (  # noqa: E402
+    ValidationError,
+    canonical_sha256,
+    file_sha256,
+    utc,
+)
 from q1_pair_admission.contract import (  # noqa: E402
     HEIGHT,
     IMAGE_SCHEMA,
@@ -44,6 +52,9 @@ from q1_pair_admission.contract import (  # noqa: E402
 PLAN_SCHEMA = "gsplat-q1-truck-paired-series-plan/v1"
 COMMANDS_SCHEMA = "gsplat-q1-truck-paired-command-receipt/v1"
 BLOCKER_SCHEMA = "gsplat-q1-truck-paired-orchestrator-blocker/v1"
+FORMAL_INPUTS_SCHEMA = "gsplat-q1-truck-formal-inputs/v1"
+FORMAL_LOCK_SCHEMA = "gsplat-q1-truck-formal-execution-lock/v1"
+POST_RUN_SCHEMA = "gsplat-q1-truck-post-run-verification/v1"
 PLAYCANVAS_REQUEST_SCHEMA = "gsplat-q1-playcanvas-producer-request/v1"
 MINIMUM_SSIM = 0.99
 ENDPOINTS = ("playcanvas", "gsplat_rs")
@@ -51,6 +62,29 @@ TRACE_INDICES = (0, 1)
 GSPLAT_QUALIFICATION = "truck-quality-1080p-fixed-gpu-preproject-compact-v1"
 TRACE_URL = "/tests/perf/trace/fixtures/quality/candidate-truck-quality-1920x1080-v1.json"
 IMAGE_TOOL = pathlib.Path("tests/perf/compare-image-ssim.mjs")
+
+SAFE_HOST_ENVIRONMENT = ("PATH", "HOME", "TMPDIR", "LANG", "LC_ALL", "LC_CTYPE")
+LOCKED_REPOSITORY_FILES = (
+    "tests/perf/collect-q1-truck-paired-series.py",
+    "tests/perf/validate-q1-truck-paired-comparison.py",
+    "tests/perf/validate-benchmark-artifacts.py",
+    "tests/perf/validate-balanced-image-gate.py",
+    "tests/perf/compare-image-ssim.mjs",
+    "tests/perf/trace/fixtures/quality/candidate-truck-quality-1920x1080-v1.json",
+    "tests/datasets/external/inria_3dgs/truck/point_cloud.ply",
+    "tests/competitive/playcanvas/package.json",
+    "tests/competitive/playcanvas/package-lock.json",
+    "tests/competitive/playcanvas/expected-engine.json",
+)
+LOCKED_REPOSITORY_TREES = (
+    "tests/perf/q1_pair_admission",
+    "tests/competitive/playcanvas/scripts",
+    "tests/competitive/playcanvas/public",
+    "tests/competitive/playcanvas/node_modules/playcanvas/build/playcanvas",
+    "tests/competitive/playcanvas/node_modules/puppeteer-core",
+    "examples/web/scripts",
+    "examples/web/src",
+)
 
 
 class OrchestrationError(RuntimeError):
@@ -92,6 +126,128 @@ def sha256_path(path: pathlib.Path) -> str:
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def safe_host_environment(source: Mapping[str, str] | None = None) -> dict[str, str]:
+    """Return the complete inherited environment allowed in producer children."""
+
+    values = os.environ if source is None else source
+    result = {
+        key: values[key]
+        for key in SAFE_HOST_ENVIRONMENT
+        if key in values and values[key]
+    }
+    require("PATH" in result and "HOME" in result, "formal producer environment requires PATH and HOME")
+    return result
+
+
+def child_base_environment(root: pathlib.Path) -> dict[str, str]:
+    result = safe_host_environment()
+    result["HOME"] = str(root / "process-home")
+    return result
+
+
+def repository_file_receipt(relative_path: str) -> dict[str, Any]:
+    path = REPO_ROOT / relative_path
+    require(path.is_file(), f"locked repository input is unavailable: {relative_path}")
+    return {
+        "path": relative_path,
+        "bytes": path.stat().st_size,
+        "sha256": sha256_path(path),
+    }
+
+
+def repository_tree_receipt(relative_path: str) -> dict[str, Any]:
+    root = REPO_ROOT / relative_path
+    require(root.is_dir(), f"locked repository input tree is unavailable: {relative_path}")
+    entries = []
+    for path in sorted(root.rglob("*")):
+        if not path.is_file() or "__pycache__" in path.parts or path.suffix == ".pyc":
+            continue
+        entries.append({
+            "path": path.relative_to(root).as_posix(),
+            "bytes": path.stat().st_size,
+            "sha256": sha256_path(path),
+        })
+    require(entries, f"locked repository input tree is empty: {relative_path}")
+    return {
+        "path": relative_path,
+        "file_count": len(entries),
+        "bytes": sum(entry["bytes"] for entry in entries),
+        "sha256": canonical_sha256(entries),
+    }
+
+
+def capture_formal_inputs(args: argparse.Namespace) -> dict[str, Any]:
+    reference_receipts = []
+    for trace in TRACE_INDICES:
+        path = args.reference_images[trace]
+        try:
+            receipt = frozen_rgba8_png_receipt(path, f"reference trace {trace}")
+        except (OSError, ValidationError) as error:
+            raise OrchestrationError(f"reference trace {trace} is not frozen RGBA8 1920x1080: {error}") from error
+        reference_receipts.append({
+            "trace_frame_index": trace,
+            "source_path": str(path),
+            "series_path": f"reference/trace-{trace}.png",
+            **receipt,
+        })
+    wasm_files = []
+    for name in ("gsplat_web.js", "gsplat_web_bg.wasm", "gsplat_web_build_receipt.json"):
+        path = args.gsplat_wasm_package / name
+        require(path.is_file(), f"WASM package lacks {name}")
+        wasm_files.append({
+            "name": name,
+            "path": (args.gsplat_wasm_package.relative_to(REPO_ROOT) / name).as_posix(),
+            "bytes": path.stat().st_size,
+            "sha256": sha256_path(path),
+        })
+    host = safe_host_environment()
+    toolchains = []
+    for name, executable in (
+        ("node", shutil.which("node", path=host["PATH"])),
+        ("python", sys.executable),
+    ):
+        require(executable is not None, f"formal producer toolchain lacks {name}")
+        path = pathlib.Path(executable).resolve()
+        require(path.is_file() and os.access(path, os.X_OK), f"formal {name} is not executable")
+        toolchains.append({
+            "name": name,
+            "path": str(path),
+            "bytes": path.stat().st_size,
+            "sha256": sha256_path(path),
+        })
+    return {
+        "schema": FORMAL_INPUTS_SCHEMA,
+        "reviewed_commit": args.reviewed_sha,
+        "git": {"head": git_output("rev-parse", "HEAD"), "clean": True},
+        "browser": {
+            "path": str(args.chrome),
+            "bytes": args.chrome.stat().st_size,
+            "sha256": sha256_path(args.chrome),
+        },
+        "toolchains": toolchains,
+        "wasm_package": {
+            "path": args.gsplat_wasm_package.relative_to(REPO_ROOT).as_posix(),
+            "files": wasm_files,
+        },
+        "repository_files": [
+            repository_file_receipt(path) for path in LOCKED_REPOSITORY_FILES
+        ],
+        "repository_trees": [
+            repository_tree_receipt(path) for path in LOCKED_REPOSITORY_TREES
+        ],
+        "references": reference_receipts,
+    }
+
+
+def verify_formal_inputs(args: argparse.Namespace, expected: dict[str, Any]) -> None:
+    require(not git_output("status", "--porcelain"), "repository became dirty during Q1 execution")
+    observed = capture_formal_inputs(args)
+    require(
+        observed == expected,
+        "reviewed commit, browser, WASM, producer, validator, runtime, dataset, trace, or reference input drifted",
+    )
 
 
 def schedule_orders(seed: int) -> list[str]:
@@ -229,6 +385,18 @@ def make_invocation(
         "configuration_sha256": configuration_sha,
         "collection_session_id": collection_session_id,
     }
+    admission = {
+        "series_id": series_id,
+        "schedule_sha256": schedule_sha,
+        "protocol_sha256": protocol_sha,
+        "configuration_sha256": configuration_sha,
+        "pair_id": pair_id,
+        "run_order": order,
+        "position": pairing_value["position"],
+        "collection_session_id": collection_session_id,
+        "reviewed_commit": None,
+        "predeclared_at_utc": None,
+    }
     dynamic_inputs: dict[str, Any] | None = None
     if endpoint == "playcanvas":
         request = root / "requests" / f"{invocation_id}.json"
@@ -252,6 +420,7 @@ def make_invocation(
                 ],
             }
         environment = {
+            **child_base_environment(root),
             "CHROME_PATH": str(chrome),
             "HEADLESS": "0",
             "PHASE_E_QUALIFICATION": "truck-quality-1080p-v1",
@@ -269,13 +438,7 @@ def make_invocation(
                 else {}
             ),
         }
-        argv = [
-            "npm",
-            "run",
-            "benchmark:truck-1080p",
-            "--prefix",
-            "tests/competitive/playcanvas",
-        ]
+        argv = ["node", "tests/competitive/playcanvas/scripts/run-timed-benchmark.mjs"]
         producer_request = playcanvas_request(
             role=role,
             trace=trace,
@@ -285,6 +448,7 @@ def make_invocation(
     else:
         run_context = root / "run-contexts" / f"{invocation_id}.json"
         environment = {
+            **child_base_environment(root),
             "CHROME_PATH": str(chrome),
             "HEADLESS": "0",
             "GSPLAT_PHASE_E_QUALIFICATION": GSPLAT_QUALIFICATION,
@@ -364,6 +528,7 @@ def make_invocation(
         "artifact": relative(root, artifact),
         "request": relative(root, request),
         "request_value": producer_request,
+        "admission": admission,
         "cwd": str(repo_root),
         "argv": argv,
         "environment": environment,
@@ -434,11 +599,14 @@ def build_plan(args: argparse.Namespace, *, predeclared_at: str) -> dict[str, An
                         gsplat_port=gsplat_port,
                     )
                 )
+                invocations[-1]["admission"]["predeclared_at_utc"] = predeclared_at
+                invocations[-1]["admission"]["reviewed_commit"] = args.reviewed_sha
     require(len(invocations) == 30, "Q1 plan must contain exactly 30 producer invocations")
     return {
         "schema": PLAN_SCHEMA,
         "series_id": args.series_id,
         "reviewed_commit": args.reviewed_sha,
+        "formal_inputs": getattr(args, "formal_inputs", None),
         "collection_session_id": args.collection_session_id,
         "protocol": protocol_value,
         "protocol_sha256": protocol_sha,
@@ -448,6 +616,7 @@ def build_plan(args: argparse.Namespace, *, predeclared_at: str) -> dict[str, An
         "configuration_sha256": configuration_sha,
         "invocations": invocations,
         "postprocess": {
+            "environment": child_base_environment(root),
             "image_comparisons": {
                 "count": 20,
                 "tool": IMAGE_TOOL.as_posix(),
@@ -471,6 +640,8 @@ def build_plan(args: argparse.Namespace, *, predeclared_at: str) -> dict[str, An
             "stop_on_first_failed_command": True,
             "fresh_series_root": True,
             "formal_execution_requires_reviewed_exact_sha": True,
+            "child_environment_is_exact_allowlist": True,
+            "inherited_environment_allowlist": list(SAFE_HOST_ENVIRONMENT),
         },
     }
 
@@ -479,9 +650,16 @@ def command_receipt(plan: dict[str, Any]) -> dict[str, Any]:
     return {
         "schema": COMMANDS_SCHEMA,
         "series_id": plan["series_id"],
+        "reviewed_commit": plan["reviewed_commit"],
+        "formal_inputs_sha256": (
+            canonical_sha256(plan["formal_inputs"])
+            if plan["formal_inputs"] is not None
+            else None
+        ),
         "schedule_sha256": plan["schedule_sha256"],
         "protocol_sha256": plan["protocol_sha256"],
         "invocation_count": len(plan["invocations"]),
+        "postprocess": plan["postprocess"],
         "invocations": [
             {
                 key: invocation[key]
@@ -497,6 +675,7 @@ def command_receipt(plan: dict[str, Any]) -> dict[str, Any]:
                     "artifact",
                     "request",
                     "request_value",
+                    "admission",
                     "cwd",
                     "argv",
                     "environment",
@@ -509,6 +688,26 @@ def command_receipt(plan: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def execution_lock(plan: dict[str, Any], commands: dict[str, Any]) -> dict[str, Any]:
+    formal_inputs = plan.get("formal_inputs")
+    require(isinstance(formal_inputs, dict), "formal execution lacks its immutable input lock")
+    return {
+        "schema": FORMAL_LOCK_SCHEMA,
+        "series_id": plan["series_id"],
+        "reviewed_commit": plan["reviewed_commit"],
+        "schedule_sha256": plan["schedule_sha256"],
+        "protocol_sha256": plan["protocol_sha256"],
+        "formal_inputs": formal_inputs,
+        "formal_inputs_sha256": canonical_sha256(formal_inputs),
+        "command_receipt": {
+            "path": "commands.json",
+            "sha256": hashlib.sha256(json_bytes(commands)).hexdigest(),
+            "canonical_sha256": canonical_sha256(commands),
+            "invocation_count": len(plan["invocations"]),
+        },
+    }
+
+
 def git_output(*arguments: str) -> str:
     completed = subprocess.run(
         ["git", *arguments],
@@ -516,12 +715,13 @@ def git_output(*arguments: str) -> str:
         check=False,
         capture_output=True,
         text=True,
+        env=safe_host_environment(),
     )
     require(completed.returncode == 0, completed.stderr.strip() or "git command failed")
     return completed.stdout.strip()
 
 
-def preflight_execute(args: argparse.Namespace) -> None:
+def preflight_execute(args: argparse.Namespace) -> dict[str, Any]:
     require(len(args.reviewed_sha or "") == 40, "--execute requires a full --reviewed-sha")
     require(
         git_output("rev-parse", "HEAD") == args.reviewed_sha,
@@ -561,14 +761,21 @@ def preflight_execute(args: argparse.Namespace) -> None:
         args.gsplat_wasm_package.relative_to(REPO_ROOT)
     except ValueError as error:
         raise OrchestrationError("gsplat-rs WASM package must stay inside the repository") from error
+    formal_inputs = capture_formal_inputs(args)
+    require(
+        formal_inputs["git"] == {"head": args.reviewed_sha, "clean": True},
+        "formal input lock does not match the reviewed clean commit",
+    )
+    return formal_inputs
 
 
-def claim_series(args: argparse.Namespace, plan: dict[str, Any]) -> None:
+def claim_series(args: argparse.Namespace, plan: dict[str, Any]) -> dict[str, Any]:
     root = args.series_root
     commands = command_receipt(plan)
-    commands_sha = canonical_sha256(commands)
+    commands_sha = hashlib.sha256(json_bytes(commands)).hexdigest()
+    locked = execution_lock(plan, commands)
     root.mkdir()
-    for directory in ("reference", "requests", "run-contexts", "logs"):
+    for directory in ("reference", "requests", "run-contexts", "logs", "process-home"):
         (root / directory).mkdir()
     for invocation in plan["invocations"]:
         # Producers atomically claim their final artifact directory; only the
@@ -576,6 +783,20 @@ def claim_series(args: argparse.Namespace, plan: dict[str, Any]) -> None:
         (root / invocation["artifact"]).parent.mkdir(parents=True, exist_ok=True)
     for trace in TRACE_INDICES:
         shutil.copyfile(args.reference_images[trace], root / f"reference/trace-{trace}.png")
+        copied = frozen_rgba8_png_receipt(
+            root / f"reference/trace-{trace}.png", f"claimed reference trace {trace}"
+        )
+        expected = next(
+            value for value in locked["formal_inputs"]["references"]
+            if value["trace_frame_index"] == trace
+        )
+        require(
+            copied == {
+                key: expected[key]
+                for key in ("sha256", "rgba8_sha256", "width", "height", "pixel_format")
+            },
+            f"claimed reference trace {trace} drifted before browser work",
+        )
     write_new_json(root / "schedule-declaration.json", {
         "schema": SCHEMA,
         "series_id": plan["series_id"],
@@ -587,6 +808,7 @@ def claim_series(args: argparse.Namespace, plan: dict[str, Any]) -> None:
         "evidence_state": "predeclared_before_browser",
     })
     write_new_json(root / "commands.json", commands)
+    write_new_json(root / "formal-execution-lock.json", locked)
     write_new_json(root / "series-plan.json", {
         **{key: value for key, value in plan.items() if key != "invocations"},
         "command_receipt_sha256": commands_sha,
@@ -609,15 +831,14 @@ def claim_series(args: argparse.Namespace, plan: dict[str, Any]) -> None:
         os.fsync(directory_fd)
     finally:
         os.close(directory_fd)
+    return locked
 
 
 def run_once(invocation: dict[str, Any], root: pathlib.Path) -> None:
-    environment = os.environ.copy()
-    environment.update(invocation["environment"])
     completed = subprocess.run(
         invocation["argv"],
         cwd=REPO_ROOT,
-        env=environment,
+        env=invocation["environment"],
         check=False,
         capture_output=True,
         text=True,
@@ -633,16 +854,32 @@ def run_once(invocation: dict[str, Any], root: pathlib.Path) -> None:
         completed.returncode == 0,
         f"{invocation['invocation_id']} exited {completed.returncode}",
     )
+    validation_environment = {
+        key: invocation["environment"][key]
+        for key in SAFE_HOST_ENVIRONMENT
+        if key in invocation["environment"]
+    }
+    validate_canonical_artifact(
+        root / invocation["artifact"],
+        invocation["invocation_id"],
+        environment=validation_environment,
+    )
+
+
+def validate_canonical_artifact(
+    directory: pathlib.Path, context: str, *, environment: dict[str, str]
+) -> None:
     validate = subprocess.run(
-        [sys.executable, "tests/perf/validate-benchmark-artifacts.py", str(root / invocation["artifact"])],
+        [sys.executable, "tests/perf/validate-benchmark-artifacts.py", str(directory)],
         cwd=REPO_ROOT,
         check=False,
         capture_output=True,
         text=True,
+        env=environment,
     )
     require(
         validate.returncode == 0,
-        f"{invocation['invocation_id']} canonical validation failed: "
+        f"{context} canonical validation failed: "
         f"{validate.stderr.strip() or validate.stdout.strip()}",
     )
 
@@ -650,27 +887,62 @@ def run_once(invocation: dict[str, Any], root: pathlib.Path) -> None:
 def resolve_throughput(invocation: dict[str, Any], root: pathlib.Path) -> None:
     pair_id = invocation["pair_id"]
     endpoint = invocation["endpoint"]
+    expected = invocation["admission"]
     controls = []
+    seen_paths: set[pathlib.Path] = set()
+    seen_runs: set[str] = set()
     for trace in TRACE_INDICES:
-        directory = root / "pairs" / pair_id / endpoint / f"control-trace-{trace}"
-        manifest_path = directory / "manifest.json"
-        manifest = load_object(manifest_path, f"{invocation['invocation_id']} control {trace}")
-        q1 = manifest.get("q1_comparison")
-        require(isinstance(q1, dict), "control lacks q1_comparison")
+        relative_directory = pathlib.Path("pairs") / pair_id / endpoint / f"control-trace-{trace}"
+        try:
+            control = admit_artifact(
+                root,
+                relative_directory.as_posix(),
+                endpoint=endpoint,
+                role="control",
+                series_id=expected["series_id"],
+                schedule_sha=expected["schedule_sha256"],
+                protocol_sha=expected["protocol_sha256"],
+                pair_id=expected["pair_id"],
+                order=expected["run_order"],
+                position=expected["position"],
+                predeclared=utc(
+                    expected["predeclared_at_utc"],
+                    f"{invocation['invocation_id']}.predeclared_at_utc",
+                ),
+                seen_paths=seen_paths,
+                seen_runs=seen_runs,
+                expected_trace=trace,
+            )
+        except ValidationError as error:
+            raise OrchestrationError(
+                f"{invocation['invocation_id']} control {trace} admission failed: {error}"
+            ) from error
         require(
-            q1.get("artifact_role") == "control"
-            and q1.get("capture_trace_frame_index") == trace,
-            f"control trace {trace} has the wrong producer identity",
+            control["configuration"] == expected["configuration_sha256"],
+            f"control trace {trace} configuration differs from the declared command",
+        )
+        require(
+            control["commit"] == expected["reviewed_commit"],
+            f"control trace {trace} build commit differs from the reviewed command",
+        )
+        require(
+            control["environment"].get("collection_session_id")
+            == expected["collection_session_id"],
+            f"control trace {trace} collection session differs from the declared command",
         )
         controls.append({
             "trace_frame_index": trace,
-            "run_id": manifest.get("run_id"),
-            "manifest_sha256": sha256_path(manifest_path),
-            "configuration_sha256": q1.get("configuration_sha256"),
+            "run_id": control["run_id"],
+            "manifest_sha256": control["manifest_sha256"],
+            "configuration_sha256": control["configuration"],
         })
     require(
-        all(control["configuration_sha256"] == controls[0]["configuration_sha256"] for control in controls),
-        "controls do not share one configuration digest",
+        [control["trace_frame_index"] for control in controls] == list(TRACE_INDICES)
+        and all(
+            control["configuration_sha256"] == expected["configuration_sha256"]
+            for control in controls
+        ),
+        "controls do not bind the exact declared trace/configuration pair",
     )
     resolution = {
         "schema": "gsplat-q1-control-binding-resolution/v1",
@@ -716,7 +988,13 @@ def image_source_rgba(endpoint: str, control: pathlib.Path, trace: int) -> str:
 
 
 def compare_image(
-    *, root: pathlib.Path, pair_id: str, endpoint: str, trace: int, reference: dict[str, Any]
+    *,
+    root: pathlib.Path,
+    pair_id: str,
+    endpoint: str,
+    trace: int,
+    reference: dict[str, Any],
+    environment: dict[str, str],
 ) -> tuple[pathlib.Path, float]:
     control_relative = pathlib.Path("pairs") / pair_id / endpoint / f"control-trace-{trace}"
     candidate_relative = control_relative / "final-frame.png"
@@ -738,6 +1016,7 @@ def compare_image(
         check=False,
         capture_output=True,
         text=True,
+        env=environment,
     )
     require(
         completed.returncode == 0,
@@ -765,7 +1044,37 @@ def compare_image(
     return comparison_relative, float(score)
 
 
-def finalize_schedule(plan: dict[str, Any], root: pathlib.Path) -> pathlib.Path:
+def post_run_verification(
+    args: argparse.Namespace,
+    plan: dict[str, Any],
+    root: pathlib.Path,
+    locked: dict[str, Any],
+) -> dict[str, Any]:
+    verify_formal_inputs(args, locked["formal_inputs"])
+    command_path = root / locked["command_receipt"]["path"]
+    require(
+        sha256_path(command_path) == locked["command_receipt"]["sha256"],
+        "immutable command receipt drifted during Q1 execution",
+    )
+    lock_path = root / "formal-execution-lock.json"
+    require(load_object(lock_path, "formal execution lock") == locked, "formal lock file drifted")
+    return {
+        "schema": POST_RUN_SCHEMA,
+        "verified_at_utc": utc_now(),
+        "reviewed_commit": plan["reviewed_commit"],
+        "git": {"head": git_output("rev-parse", "HEAD"), "clean": True},
+        "formal_inputs_sha256": locked["formal_inputs_sha256"],
+        "command_receipt_sha256": locked["command_receipt"]["sha256"],
+        "formal_lock_sha256": sha256_path(lock_path),
+    }
+
+
+def finalize_schedule(
+    args: argparse.Namespace,
+    plan: dict[str, Any],
+    root: pathlib.Path,
+    locked: dict[str, Any],
+) -> pathlib.Path:
     references = {
         value["trace_frame_index"]: value for value in plan["schedule"]["reference_images"]
     }
@@ -792,6 +1101,7 @@ def finalize_schedule(plan: dict[str, Any], root: pathlib.Path) -> pathlib.Path:
                     endpoint=endpoint,
                     trace=trace,
                     reference=references[trace],
+                    environment=plan["postprocess"]["environment"],
                 )
                 image_relative = control_relative / "final-frame.png"
                 image_sha = sha256_path(root / image_relative)
@@ -823,12 +1133,19 @@ def finalize_schedule(plan: dict[str, Any], root: pathlib.Path) -> pathlib.Path:
                 "images": images,
             }
         pairs.append(pair)
+    # All producers and image comparisons are complete. Recheck every frozen
+    # executable/module/reference input before publishing the evidence schedule.
+    post_run = post_run_verification(args, plan, root, locked)
     schedule_path = root / "schedule.json"
     write_new_json(schedule_path, {
         "schema": SCHEMA,
         "series_id": plan["series_id"],
         "schedule": plan["schedule"],
         "protocol": plan["protocol"],
+        "orchestration": {
+            "formal_execution_lock": locked,
+            "post_run_verification": post_run,
+        },
         "pairs": pairs,
     })
     return schedule_path
@@ -854,12 +1171,12 @@ def publish_blocker(root: pathlib.Path, plan: dict[str, Any] | None, error: Base
 def execute(args: argparse.Namespace, plan: dict[str, Any]) -> int:
     root = args.series_root
     try:
-        claim_series(args, plan)
+        locked = claim_series(args, plan)
         for invocation in plan["invocations"]:
             if invocation["artifact_role"] == "throughput":
                 resolve_throughput(invocation, root)
             run_once(invocation, root)
-        schedule_path = finalize_schedule(plan, root)
+        schedule_path = finalize_schedule(args, plan, root, locked)
         result = subprocess.run(
             [
                 sys.executable,
@@ -870,6 +1187,7 @@ def execute(args: argparse.Namespace, plan: dict[str, Any]) -> int:
             ],
             cwd=REPO_ROOT,
             check=False,
+            env=plan["postprocess"]["environment"],
         )
         require(result.returncode == 0, f"final Q1 validator exited {result.returncode}")
         return 0
@@ -919,7 +1237,9 @@ def main(argv: list[str] | None = None) -> int:
     try:
         args = parse_args(argv)
         if args.execute:
-            preflight_execute(args)
+            args.formal_inputs = preflight_execute(args)
+        else:
+            args.formal_inputs = None
         plan = build_plan(args, predeclared_at=utc_now())
         if args.dry_run:
             print(json.dumps({

@@ -275,6 +275,19 @@ def _decode_image(path: pathlib.Path, context: str) -> Any:
     return IMAGE.decode_rgba8_png(data, context, (WIDTH, HEIGHT))
 
 
+def frozen_rgba8_png_receipt(path: pathlib.Path, context: str) -> dict[str, Any]:
+    """Fully decode one frozen 1080p RGBA8 reference before device work."""
+
+    decoded = _decode_image(path, context)
+    return {
+        "sha256": file_sha256(path),
+        "rgba8_sha256": hashlib.sha256(decoded.rgba).hexdigest(),
+        "width": decoded.width,
+        "height": decoded.height,
+        "pixel_format": "rgba8unorm-srgb",
+    }
+
+
 def recompute_image_score(reference: pathlib.Path, candidate: pathlib.Path, context: str) -> float:
     """Decode real RGBA8 PNGs and run the repository's locked SSIM algorithm."""
     key = (file_sha256(reference), file_sha256(candidate))

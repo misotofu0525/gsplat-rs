@@ -9,8 +9,24 @@ import statistics
 from typing import Any
 
 from .artifacts import artifact, bind_controls, endpoint_images, reference_images
-from .common import ValidationError, array, fail, load_json, obj, string
-from .contract import MEASURED, RESULT_SCHEMA, SCHEMA, validate_protocol, validate_schedule
+from .common import (
+    ValidationError,
+    array,
+    canonical_sha256,
+    fail,
+    inside,
+    load_json,
+    obj,
+    string,
+)
+from .contract import (
+    MEASURED,
+    RESULT_SCHEMA,
+    SCHEMA,
+    validate_orchestration,
+    validate_protocol,
+    validate_schedule,
+)
 
 
 def evaluate(path: pathlib.Path) -> dict[str, Any]:
@@ -24,6 +40,13 @@ def evaluate(path: pathlib.Path) -> dict[str, Any]:
     series_id = string(document, "series_id", "schedule")
     protocol_sha, minimum_ssim = validate_protocol(document)
     planned, schedule_sha, predeclared = validate_schedule(document)
+    orchestration = validate_orchestration(
+        document,
+        root,
+        series_id=series_id,
+        schedule_sha=schedule_sha,
+        protocol_sha=protocol_sha,
+    )
     evidence_values = array(document, "pairs", "schedule")
     evidence: dict[str, dict[str, Any]] = {}
     for index, value in enumerate(evidence_values):
@@ -155,6 +178,82 @@ def evaluate(path: pathlib.Path) -> dict[str, Any]:
                 for endpoint in endpoints
             },
         })
+    if orchestration is not None:
+        if frozen_commit != orchestration["reviewed_commit"]:
+            fail("formal lock reviewed commit differs from endpoint build commit")
+        if (
+            frozen_environment is None
+            or frozen_environment.get("browser_executable_sha256")
+            != orchestration["browser"]["sha256"]
+        ):
+            fail("formal browser binary lock differs from endpoint environment")
+        gsplat_build = frozen_builds.get("gsplat_rs", {}).get("artifacts", {})
+        expected_wasm_hashes = {
+            "runtime_js": next(
+                value["sha256"] for value in orchestration["wasm_files"]
+                if value["name"] == "gsplat_web.js"
+            ),
+            "runtime_wasm": next(
+                value["sha256"] for value in orchestration["wasm_files"]
+                if value["name"] == "gsplat_web_bg.wasm"
+            ),
+            "package_manifest": next(
+                value["sha256"] for value in orchestration["wasm_files"]
+                if value["name"] == "gsplat_web_build_receipt.json"
+            ),
+        }
+        if any(
+            gsplat_build.get(name) != digest
+            for name, digest in expected_wasm_hashes.items()
+        ):
+            fail("formal WASM lock differs from gsplat-rs endpoint build artifacts")
+        locked_files = {
+            value["path"]: value for value in orchestration["repository_files"]
+        }
+        playcanvas_build = frozen_builds.get("playcanvas", {}).get("artifacts", {})
+        if (
+            playcanvas_build.get("package_lock")
+            != locked_files["tests/competitive/playcanvas/package-lock.json"]["sha256"]
+        ):
+            fail("formal PlayCanvas package lock differs from endpoint build artifact")
+        first_pc_manifest = load_json(
+            root / "pairs/pair-01/playcanvas/throughput/manifest.json",
+            "formal PlayCanvas throughput manifest",
+        )
+        runtime_receipt = obj(
+            obj(obj(first_pc_manifest, "build", "formal PlayCanvas manifest"), "artifacts", "formal PlayCanvas build"),
+            "runtime_js",
+            "formal PlayCanvas build artifacts",
+        )
+        runtime_path = inside(
+            root,
+            runtime_receipt.get("path"),
+            "formal PlayCanvas runtime tree artifact",
+        )
+        runtime = load_json(runtime_path, "formal PlayCanvas runtime tree artifact")
+        runtime_files = runtime.get("files")
+        locked_trees = {
+            value["path"]: value for value in orchestration["repository_trees"]
+        }
+        if (
+            runtime.get("schema") != "gsplat-playcanvas-runtime-tree/v1"
+            or runtime.get("root") != "node_modules/playcanvas/build/playcanvas"
+            or not isinstance(runtime_files, list)
+            or canonical_sha256(runtime_files)
+            != locked_trees[
+                "tests/competitive/playcanvas/node_modules/playcanvas/build/playcanvas"
+            ]["sha256"]
+        ):
+            fail("formal PlayCanvas runtime tree differs from endpoint build artifact")
+    formal_execution = None if orchestration is None else {
+        "reviewed_commit": orchestration["reviewed_commit"],
+        "formal_inputs_sha256": orchestration["formal_inputs_sha256"],
+        "command_receipt_sha256": orchestration["command_receipt_sha256"],
+        "browser_executable_sha256": orchestration["browser"]["sha256"],
+        "wasm": {
+            value["name"]: value["sha256"] for value in orchestration["wasm_files"]
+        },
+    }
     quality_passed = min(scores) >= minimum_ssim
     real_producers_ready = all(
         image["renderer_rgba_ready"]
@@ -172,6 +271,7 @@ def evaluate(path: pathlib.Path) -> dict[str, Any]:
             "claim_scope": None,
             "schedule_sha256": schedule_sha,
             "protocol_sha256": protocol_sha,
+            "formal_execution": formal_execution,
             "pair_count": 5,
             "minimum_ssim": minimum_ssim,
             "minimum_observed_ssim": None,
@@ -234,6 +334,7 @@ def evaluate(path: pathlib.Path) -> dict[str, Any]:
         "claim_scope": "chrome_webgpu_truck_1080p_near_contract",
         "schedule_sha256": schedule_sha,
         "protocol_sha256": protocol_sha,
+        "formal_execution": formal_execution,
         "pair_count": 5,
         "minimum_ssim": minimum_ssim,
         "minimum_observed_ssim": min(scores),

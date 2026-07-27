@@ -236,12 +236,27 @@ atomically claims the absent series root and writes:
 - every control request, every gsplat-rs pairing context and every throughput
   control-binding source path.
 
+Formal execution also writes `formal-execution-lock.json`. It binds the full
+reviewed SHA and clean-tree state; the actual Chrome executable; the
+quality-exact Wasm JS, Wasm binary and build receipt; Truck and trace inputs;
+both fully decoded 1920x1080 non-interlaced RGBA8 references; endpoint
+producer/runtime module trees; the canonical artifact validator; this Q1
+validator; and the locked image tool. `commands.json` contains the complete
+child environment rather than overrides, and its file digest is part of the
+formal lock and final schedule. Undeclared Node, Python, npm, Chrome,
+PlayCanvas, gsplat-rs and WebGPU host controls are not inherited.
+
 Each pair then runs its declared first endpoint followed by its second. Within
 an endpoint, trace-0 control, trace-1 control and throughput run exactly once.
 The orchestrator validates each control before hashing its native
 `manifest.json`; only then does it materialize the PlayCanvas throughput
 request or expose the same two gsplat-rs control directories to its producer.
 The resolution receipt retains both manifest hashes and configuration digests.
+Before either throughput invocation, both controls are re-admitted through the
+canonical benchmark and Q1 endpoint contract. This checks blocker absence,
+run identity, endpoint/role/trace, configuration, protocol, schedule,
+pair/order/position, collection session and manifest digest. Merely observing
+that two controls share a configuration digest is insufficient.
 
 After all 30 commands complete, the orchestrator runs the locked image tool,
 writes the evidence-bearing `schedule.json`, and delegates the only
@@ -251,3 +266,11 @@ producer, canonical artifact, image-materialization or final-admission command
 failure stops the attempt immediately and writes root `blocker.json`; it never
 retries or reuses the claimed root. A later operator-authorized attempt must
 use a different path and is not authorized by this script.
+
+After the twentieth image comparison but before `schedule.json` is published,
+the owner re-hashes every frozen input and rechecks clean HEAD. The final
+validator reads and joins that post-run receipt, command digest, reviewed
+commit, browser digest and exact Wasm hashes to endpoint evidence. Any
+integrated SHA that changes a producer, orchestrator or contract requires a
+new fixed-SHA review before `--execute`; an earlier component review does not
+authorize the integrated commit.
