@@ -85,7 +85,9 @@ const truckQualificationStage = optionalEnvironmentValue(
 let claimedTruckOutputRoot = null;
 let truckControlCompletion = null;
 const m4Smoke = process.env.GSPLAT_M4_SMOKE === '1';
-const frames = Number(process.env.GSPLAT_BENCHMARK_FRAMES ?? (qualification ? 3600 : 30));
+const requestedFrameCount = Number(
+  process.env.GSPLAT_BENCHMARK_FRAMES ?? (qualification ? 3600 : 30),
+);
 const warmup = Number(process.env.GSPLAT_BENCHMARK_WARMUP_FRAMES ?? (qualification ? 120 : 5));
 const dataset = process.env.GSPLAT_DATASET ?? (
   formalDatasetLogicalId ?? 'minimal'
@@ -256,7 +258,7 @@ async function admitTruck1080pQualification() {
     benchmarkWindowMode,
     qualificationStage: truckQualificationStage,
     warmup,
-    frames,
+    frames: requestedFrameCount,
     cameraTraceUrl: process.env.GSPLAT_CAMERA_TRACE_URL ?? null,
     cameraTraceSequence: process.env.GSPLAT_CAMERA_TRACE_SEQUENCE === '1',
     cameraTraceLoops: Number(process.env.GSPLAT_CAMERA_TRACE_LOOPS ?? 0),
@@ -618,7 +620,7 @@ function parseArtifacts(consoleLines) {
       );
       const finalFrame = rawFrames.at(-1);
       const nonFinalFrames = rawFrames.slice(0, -1);
-      const expectedPresented = warmup + frames;
+      const expectedPresented = warmup + requestedFrameCount;
       const currentStatsIdentityFields = [
         'current_stats_ticket',
         'current_stats_plan',
@@ -685,7 +687,7 @@ function parseArtifacts(consoleLines) {
         throw new Error('warmup boundary lacks an untimed issued-terminal join before measured input');
       }
       if (manifest.benchmark_window?.warmup_submit_count !== warmup
-          || manifest.benchmark_window?.measured_submit_count !== frames
+          || manifest.benchmark_window?.measured_submit_count !== requestedFrameCount
           || (warmup > 0
             && manifest.benchmark_window?.draw_count_at_warmup_drain_start !== warmup)
           || manifest.benchmark_window?.draw_count_at_warmup_drain_start
@@ -989,7 +991,7 @@ function parseArtifacts(consoleLines) {
     }
   }
   const gpuFailures = failures.filter((failure) => failure.actual_backend === 'gpu');
-  const frames = rendererOwnedExact
+  const admittedFrames = rendererOwnedExact
     ? terminalQueueThroughput
       ? rawFrames.map((frame) => ({
           ...frame,
@@ -1009,13 +1011,15 @@ function parseArtifacts(consoleLines) {
         failures: gpuFailures,
       });
   if (rendererOwnedExact && !terminalQueueThroughput) {
-    validateCurrentStatsEvidence({ frames });
+    validateCurrentStatsEvidence({ frames: admittedFrames });
     if (gpuOrderProducer !== null) {
       const requiredPlan = gpuOrderProducer === 'preproject'
         ? 'gpu_preproject'
         : 'gpu_post_sort';
       if (statsTerminals.some((terminal) => terminal.plan !== requiredPlan)
-          || frames.some((frame) => frame.gpu_order_producer !== gpuOrderProducer)) {
+          || admittedFrames.some(
+            (frame) => frame.gpu_order_producer !== gpuOrderProducer,
+          )) {
         throw new Error(
           `renderer current-stats terminals do not prove requested producer ${gpuOrderProducer}`,
         );
@@ -1024,19 +1028,22 @@ function parseArtifacts(consoleLines) {
   } else if (!rendererOwnedExact) {
     validateOrderingEvidence({
       requestedBackend: orderBackend,
-      frames,
+      frames: admittedFrames,
       measurements,
       failures: gpuFailures,
       fixedCameraReuse: manifest.trace?.frame_index != null,
     });
   }
-  const summary = benchmarkSummaryFromFrameRecords(frames, JSON.parse(summaries[0]));
+  const summary = benchmarkSummaryFromFrameRecords(
+    admittedFrames,
+    JSON.parse(summaries[0]),
+  );
   summary.count_evidence = terminalQueueThroughput
     ? {
         source: 'bound_current_stats_control_artifact',
         control_artifact_identity: manifest.benchmark_window.control_artifact_identity,
       }
-    : benchmarkCountEvidence(frames);
+    : benchmarkCountEvidence(admittedFrames);
   summary.benchmark_window = manifest.benchmark_window ?? null;
   const measuredSubmissions = terminalQueueThroughput
     ? rawFrames.map((_, index) => ({ ticket: index + 1, phase: 'measured' }))
@@ -1176,7 +1183,9 @@ function parseArtifacts(consoleLines) {
   };
   manifest.projected_draw_evidence = {
     requested_policy: projectedPolicy,
-    actual_executions: [...new Set(frames.map((frame) => frame.projected_execution))],
+    actual_executions: [
+      ...new Set(admittedFrames.map((frame) => frame.projected_execution)),
+    ],
     adaptive_state_field: 'projected_adaptive_state',
     submission_field: 'projected_measurement_submission',
     terminal_receipt_policy: 'exactly_one_of_success_or_structured_failure_per_issued_ticket',
@@ -1188,7 +1197,7 @@ function parseArtifacts(consoleLines) {
     default_when_unset: 'post-sort',
     actual_producers: [
       ...new Set(
-        frames
+        admittedFrames
           .map((frame) => frame.gpu_order_producer)
           .filter((producer) => producer !== null),
       ),
@@ -1200,7 +1209,7 @@ function parseArtifacts(consoleLines) {
     ...producerLedger,
   };
   if (orderBackend !== 'cpu'
-      && frames.every((frame) => frame.gpu_complete_ms != null)
+      && admittedFrames.every((frame) => frame.gpu_complete_ms != null)
       && Array.isArray(manifest.unavailable_fields)) {
     manifest.unavailable_fields = manifest.unavailable_fields.filter(
       (field) => field !== 'frames[*].gpu_complete_ms'
@@ -1208,7 +1217,7 @@ function parseArtifacts(consoleLines) {
   }
   return {
     manifests: [JSON.stringify(manifest)],
-    frameRecords: frames.map((frame) => JSON.stringify(frame)),
+    frameRecords: admittedFrames.map((frame) => JSON.stringify(frame)),
     summaries: [JSON.stringify(summary)],
     orderMeasurements,
     cpuOrderMeasurements,
@@ -1451,7 +1460,7 @@ try {
   const params = new URLSearchParams({
     gsplat_benchmark: m4Smoke ? 'false' : 'true',
     gsplat_benchmark_sync: benchmarkSync ? 'true' : 'false',
-    gsplat_benchmark_frames: String(frames),
+    gsplat_benchmark_frames: String(requestedFrameCount),
     gsplat_benchmark_warmup_frames: String(warmup),
     gsplat_surface_sort_interval: String(sortInterval),
     gsplat_surface_order_backend: orderBackend,

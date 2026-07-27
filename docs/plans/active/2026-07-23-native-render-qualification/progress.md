@@ -325,6 +325,26 @@ finite per-ticket deadline in submitting and draining states. Focused negative
 tests reproduce all four review counterexamples. No browser result is claimed
 until this newer exact SHA is accepted.
 
+Both independent fixed-SHA reviews accepted `f0e0629` with no P0/P1/P2, and
+root executed its single authorized Web command into the immutable fresh root
+`target/qualification/q1-webgpu-truck-1080p-f0e0629-attempt-1/`. The untimed
+control stage is the first complete formal Web control artifact: all 100
+logical members terminalized, 47 deferred attempts remained outside the
+20+80 sample set, and all 147 actual presentations are retained and admitted.
+It preserved complete Truck SH3 membership and full 1920x1080 rendering. Its
+reported call/preprocess/sort timings remain control diagnostics with
+`performance_evidence=false` and are not a competitor result.
+
+The bound throughput stage rendered its 20 warmup and 80 measured frames, but
+the host then failed before artifact admission with
+`ReferenceError: Cannot access 'frames' before initialization`. The local
+`parseArtifacts` function declared a later `const frames`, placing the earlier
+configured frame-count reference in JavaScript's temporal dead zone. The
+entire command is terminal **Rejected** and is not retried or reused; no
+throughput number is retained. The direct follow-up renames the global
+configuration to `requestedFrameCount` and the post-join collection to
+`admittedFrames`, removing the collision without changing renderer behavior.
+
 ## Q3 M4 SIMD microbenchmark checkpoint (2026-07-27)
 
 At clean root commit `f025dff`, the fixed
