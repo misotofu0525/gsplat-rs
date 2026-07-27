@@ -7,6 +7,7 @@ import argparse
 import contextlib
 import copy
 import importlib.util
+import io
 import os
 import pathlib
 import subprocess
@@ -901,6 +902,176 @@ class Q3A065SimdCollectorTests(unittest.TestCase):
             COLLECTOR.terminal_for_error(error),
             ("Deferred", "environment_prerequisite"),
         )
+
+    @staticmethod
+    def _screen_runner(
+        *,
+        power: list[str],
+        display: list[str],
+        policy: list[str],
+    ) -> tuple[object, list[tuple[str, ...]]]:
+        calls: list[tuple[str, ...]] = []
+        outputs = {"power": power, "display": display, "policy": policy}
+
+        def run(args, **unused_kwargs):
+            command = tuple(os.fspath(item) for item in args)
+            calls.append(command)
+            tail = command[-1]
+            stdout = outputs[tail].pop(0) if tail in outputs else ""
+            return subprocess.CompletedProcess(command, 0, stdout=stdout)
+
+        return run, calls
+
+    def test_q3_screen_ready_preflight_is_read_only_when_already_ready(self) -> None:
+        run, calls = self._screen_runner(
+            power=["mWakefulness=Awake\nDisplay Power: state=ON\n"],
+            display=["mState=ON\n"],
+            policy=["mKeyguardShowing=false\nisStatusBarKeyguard=false\n"],
+        )
+        with mock.patch.object(COLLECTOR.BASE, "run_command", side_effect=run):
+            receipt = COLLECTOR.BASE.ensure_android_launch_screen_ready(
+                "adb", "fixture-serial"
+            )
+
+        self.assertTrue(receipt["final"]["ready"])
+        self.assertEqual(receipt["actions"], [])
+        self.assertEqual(receipt["automatic_retries"], 0)
+        self.assertFalse(receipt["credential_input_attempted"])
+        self.assertEqual(len(calls), 3)
+        self.assertTrue(all("dumpsys" in command for command in calls))
+
+    def test_q3_screen_preflight_wakes_and_dismisses_at_most_once(self) -> None:
+        run, calls = self._screen_runner(
+            power=[
+                "mWakefulness=Asleep\nDisplay Power: state=OFF\n",
+                "mWakefulness=Awake\nDisplay Power: state=ON\n",
+            ],
+            display=["mState=OFF\n", "mState=ON\n"],
+            policy=["mKeyguardShowing=true\n", "mKeyguardShowing=false\n"],
+        )
+        with mock.patch.object(COLLECTOR.BASE, "run_command", side_effect=run):
+            receipt = COLLECTOR.BASE.ensure_android_launch_screen_ready(
+                "adb", "fixture-serial"
+            )
+
+        self.assertEqual(
+            receipt["actions"], ["keycode_wakeup", "wm_dismiss_keyguard"]
+        )
+        self.assertEqual(
+            sum(command[-2:] == ("keyevent", "KEYCODE_WAKEUP") for command in calls),
+            1,
+        )
+        self.assertEqual(
+            sum(command[-2:] == ("wm", "dismiss-keyguard") for command in calls),
+            1,
+        )
+        self.assertTrue(receipt["final"]["ready"])
+
+    def test_q3_screen_preflight_does_not_bypass_a_secure_keyguard(self) -> None:
+        run, calls = self._screen_runner(
+            power=[
+                "mWakefulness=Asleep\nDisplay Power: state=OFF\n",
+                "mWakefulness=Awake\nDisplay Power: state=ON\n",
+            ],
+            display=["mState=OFF\n", "mState=ON\n"],
+            policy=["mKeyguardShowing=true\n", "mKeyguardShowing=true\n"],
+        )
+        with (
+            mock.patch.object(COLLECTOR.BASE, "run_command", side_effect=run),
+            self.assertRaisesRegex(RuntimeError, "keyguard_locked=True"),
+        ):
+            COLLECTOR.BASE.ensure_android_launch_screen_ready(
+                "adb", "fixture-serial"
+            )
+
+        flattened = " ".join(" ".join(command) for command in calls)
+        self.assertNotIn(" input text ", flattened)
+        self.assertNotIn(" swipe ", flattened)
+        self.assertEqual(flattened.count("KEYCODE_WAKEUP"), 1)
+        self.assertEqual(flattened.count("dismiss-keyguard"), 1)
+
+    def test_q3_screen_readiness_error_is_classified_as_environment_prerequisite(self) -> None:
+        args = argparse.Namespace(adb=None, serial="fixture-serial")
+        environment = {
+            "manufacturer": "Nothing",
+            "model": "A065",
+            "device": "pong",
+            "device_properties": {
+                "soc_model_property": {"value": "SM8475"},
+            },
+        }
+        with (
+            mock.patch.object(COLLECTOR.BASE, "resolve_adb", return_value="adb"),
+            mock.patch.object(COLLECTOR.BASE, "device_info", return_value={}),
+            mock.patch.object(
+                COLLECTOR.BASE,
+                "build_android_environment_receipt",
+                return_value=environment,
+            ),
+            mock.patch.object(
+                COLLECTOR.BASE,
+                "ensure_android_launch_screen_ready",
+                side_effect=RuntimeError("keyguard_locked=True"),
+            ),
+            self.assertRaisesRegex(
+                COLLECTOR.EnvironmentPrerequisiteError,
+                "before build/install/launch",
+            ),
+        ):
+            COLLECTOR.preflight_a065(args)
+
+    def test_q3_screen_failure_is_environment_prerequisite_before_output_claim(self) -> None:
+        expected_commit = "1" * 40
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            output = root / "q3-output"
+            args = argparse.Namespace(
+                output=output,
+                expected_commit=expected_commit,
+                dry_run=False,
+                matrix=COLLECTOR.MATRIX_PATH,
+                seed=17,
+                serial="fixture-serial",
+                adb=None,
+                run_timeout_seconds=10.0,
+                warmup=COLLECTOR.DEFAULT_WARMUP,
+                measured=COLLECTOR.DEFAULT_MEASURED,
+                correctness_frames=COLLECTOR.DEFAULT_CORRECTNESS_FRAMES,
+                max_thermal_status=0,
+                thermal_timeout_seconds=1.0,
+            )
+            prerequisite = COLLECTOR.EnvironmentPrerequisiteError(
+                "manually unlock the selected device"
+            )
+            with (
+                mock.patch.object(
+                    COLLECTOR,
+                    "git_receipt",
+                    return_value={"commit": expected_commit, "dirty": False},
+                ),
+                mock.patch.object(
+                    COLLECTOR, "preflight_a065", side_effect=prerequisite
+                ),
+                mock.patch.object(COLLECTOR, "load_workloads") as load_workloads,
+                self.assertRaises(COLLECTOR.EnvironmentPrerequisiteError),
+            ):
+                COLLECTOR.collect(args)
+
+            load_workloads.assert_not_called()
+            self.assertFalse(output.exists())
+            self.assertEqual(list(root.glob(".q3-output.staging-*")), [])
+
+    def test_q3_cli_names_prepublication_environment_prerequisite(self) -> None:
+        error = COLLECTOR.EnvironmentPrerequisiteError("device is still locked")
+        stderr = io.StringIO()
+        with (
+            mock.patch.object(COLLECTOR, "parse_args", return_value=object()),
+            mock.patch.object(COLLECTOR, "collect", side_effect=error),
+            contextlib.redirect_stderr(stderr),
+        ):
+            self.assertEqual(COLLECTOR.main([]), 1)
+        self.assertIn("[EnvironmentPrerequisite]", stderr.getvalue())
+        self.assertIn("device is still locked", stderr.getvalue())
 
     def test_base_collector_records_launched_and_evidence_from_control_flow(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

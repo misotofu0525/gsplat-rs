@@ -127,6 +127,19 @@ GSPLAT_Q3_A065_OUTPUT=target/qualification/q3-a065-simd-<sha>-attempt-1 \
 python3 tests/verification_bootstrap.py run android-a065-q3-simd --allow-device
 ```
 
+Immediately after `run --allow-device` enters the Q3 collector, and before it
+creates a staging/output claim, builds, installs, or launches the Activity, one
+bounded real-window readiness transaction reads the selected device's power,
+display, and keyguard state. If necessary it sends at most one
+`KEYCODE_WAKEUP` and one standard `wm dismiss-keyguard`, then observes state one
+final time. It never enters credentials, swipes, bypasses a secure lock, polls,
+or retries. If the display is still not awake/on or the keyguard is still
+showing, the collector exits with a precise pre-launch
+`EnvironmentPrerequisite`; manually unlock the device before another explicitly
+authorized one-shot invocation. Because this failure precedes the staging
+claim, the selected fresh output path remains unused. `doctor` and `command`
+retain their zero-ADB contract.
+
 The collector first requires a physical A065 AArch64 receipt proving Scalar and
 Neon element parity for keys, source IDs, NaN bits, boundary bits, FMA-derived
 keys, and stable ties, with both kernels executed. Only then may it run a short

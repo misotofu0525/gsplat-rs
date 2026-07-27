@@ -2125,6 +2125,135 @@ def device_info(adb: pathlib.Path | str, serial: str) -> dict[str, str]:
     return {"serial": serial, **properties}
 
 
+ANDROID_LAUNCH_READINESS_SCHEMA = "gsplat-android-launch-readiness/v1"
+
+
+def parse_android_launch_screen_state(
+    power_output: str,
+    display_output: str,
+    policy_output: str,
+) -> dict[str, Any]:
+    """Parse the minimal screen state needed before a real-window launch."""
+
+    wakefulness_match = re.search(
+        r"\bmWakefulness=([A-Za-z_]+)", power_output
+    ) or re.search(r"\bWakefulness:\s*([A-Za-z_]+)", power_output, re.IGNORECASE)
+    wakefulness = wakefulness_match.group(1) if wakefulness_match else None
+
+    display_match = re.search(
+        r"\bDisplay Power:\s*state=([A-Za-z_]+)", power_output, re.IGNORECASE
+    ) or re.search(r"\bmScreenOn=(true|false)\b", power_output, re.IGNORECASE)
+    display_source = "dumpsys_power" if display_match else None
+    if display_match is None:
+        display_match = re.search(
+            r"DisplayDeviceInfo\{[^\n]*\bstate\s+([A-Za-z_]+)\b",
+            display_output,
+            re.IGNORECASE,
+        ) or re.search(
+            r"^\s*mState=([A-Za-z_]+)\s*$",
+            display_output,
+            re.IGNORECASE | re.MULTILINE,
+        )
+        if display_match is not None:
+            display_source = "dumpsys_display"
+    display_state = display_match.group(1) if display_match else None
+    display_on = (
+        display_state.lower() in {"on", "true"}
+        if isinstance(display_state, str)
+        else None
+    )
+
+    keyguard_values = []
+    for pattern in (
+        r"\bmKeyguardShowing=(true|false)\b",
+        r"\bisStatusBarKeyguard=(true|false)\b",
+        r"^\s*showing=(true|false)\s*$",
+        r"^\s*showingAndNotOccluded=(true|false)\s*$",
+    ):
+        keyguard_values.extend(
+            match.lower() == "true"
+            for match in re.findall(pattern, policy_output, re.IGNORECASE | re.MULTILINE)
+        )
+    keyguard_locked = any(keyguard_values) if keyguard_values else None
+    ready = (
+        isinstance(wakefulness, str)
+        and wakefulness.lower() == "awake"
+        and display_on is True
+        and keyguard_locked is False
+    )
+    return {
+        "wakefulness": wakefulness,
+        "display_state": display_state,
+        "display_state_source": display_source,
+        "display_on": display_on,
+        "keyguard_locked": keyguard_locked,
+        "ready": ready,
+    }
+
+
+def read_android_launch_screen_state(
+    adb: pathlib.Path | str, serial: str
+) -> dict[str, Any]:
+    power_output = run_command(
+        adb_args(adb, serial, "shell", "dumpsys", "power"), capture=True
+    ).stdout
+    display_output = run_command(
+        adb_args(adb, serial, "shell", "dumpsys", "display"), capture=True
+    ).stdout
+    policy_output = run_command(
+        adb_args(adb, serial, "shell", "dumpsys", "window", "policy"),
+        capture=True,
+    ).stdout
+    return parse_android_launch_screen_state(
+        power_output, display_output, policy_output
+    )
+
+
+def ensure_android_launch_screen_ready(
+    adb: pathlib.Path | str, serial: str
+) -> dict[str, Any]:
+    """Perform one bounded wake/dismiss transaction and one final observation.
+
+    This helper never enters credentials, swipes, retries, or bypasses a secure
+    lock. A secure keyguard therefore remains a caller-visible prerequisite.
+    """
+
+    initial = read_android_launch_screen_state(adb, serial)
+    actions: list[str] = []
+    final = initial
+    if not initial["ready"]:
+        if initial["wakefulness"] is None or (
+            str(initial["wakefulness"]).lower() != "awake"
+        ) or initial["display_on"] is not True:
+            run_command(
+                adb_args(adb, serial, "shell", "input", "keyevent", "KEYCODE_WAKEUP")
+            )
+            actions.append("keycode_wakeup")
+        if initial["keyguard_locked"] is not False or actions:
+            run_command(adb_args(adb, serial, "shell", "wm", "dismiss-keyguard"))
+            actions.append("wm_dismiss_keyguard")
+        final = read_android_launch_screen_state(adb, serial)
+
+    receipt = {
+        "schema": ANDROID_LAUNCH_READINESS_SCHEMA,
+        "serial": serial,
+        "initial": initial,
+        "actions": actions,
+        "final": final,
+        "automatic_retries": 0,
+        "credential_input_attempted": False,
+    }
+    if not final["ready"]:
+        raise RuntimeError(
+            "Android real-window launch prerequisite is not ready after one bounded "
+            f"wake/dismiss transaction: wakefulness={final['wakefulness']!r}, "
+            f"display_state={final['display_state']!r}, "
+            f"keyguard_locked={final['keyguard_locked']!r}; manually wake and "
+            "unlock the selected device before explicitly invoking the one-shot run again"
+        )
+    return receipt
+
+
 def build_android_environment_receipt(device: dict[str, str]) -> dict[str, Any]:
     serial = device.get("serial")
     if not isinstance(serial, str) or not serial:

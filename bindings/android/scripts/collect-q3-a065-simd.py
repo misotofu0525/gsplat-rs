@@ -645,11 +645,19 @@ def preflight_a065(args: argparse.Namespace) -> dict[str, Any]:
         receipt = BASE.build_android_environment_receipt(
             BASE.device_info(adb, args.serial)
         )
-    except (OSError, subprocess.SubprocessError) as error:
+    except (OSError, RuntimeError, subprocess.SubprocessError, ValueError) as error:
         raise EnvironmentPrerequisiteError(
             f"A065 device prerequisite is unavailable before protocol launch: {error}"
         ) from error
     validate_a065_receipt(receipt)
+    try:
+        receipt["launch_readiness"] = BASE.ensure_android_launch_screen_ready(
+            adb, args.serial
+        )
+    except (OSError, RuntimeError, subprocess.SubprocessError) as error:
+        raise EnvironmentPrerequisiteError(
+            f"A065 screen readiness is unavailable before build/install/launch: {error}"
+        ) from error
     return receipt
 
 
@@ -1722,6 +1730,10 @@ def collect(args: argparse.Namespace) -> dict[str, Any]:
             "device_commands_executed": 0,
         }
 
+    # Device readiness is the only mutable preflight and must happen before a
+    # staging/output claim, build, install, or formal Activity launch. It may
+    # wake/dismiss once, then fails closed without publishing a Deferred run.
+    preflight_device = preflight_a065(args)
     stage = output.with_name(f".{output.name}.staging-{uuid.uuid4().hex}")
     stage.parent.mkdir(parents=True, exist_ok=True)
     stage.mkdir()
@@ -1778,7 +1790,7 @@ def collect(args: argparse.Namespace) -> dict[str, Any]:
     try:
         workloads, trace, trace_path = load_workloads((), args.matrix)
         result["workloads"] = [workload.identity for workload in workloads]
-        result["preflight_device"] = preflight_a065(args)
+        result["preflight_device"] = preflight_device
         parity_phase = ProtocolPhase(stage / "element-oracle-phase.json", "element-oracle")
         parity_phase.transition("build")
         oracle_build = build_element_oracle(stage, initial_git)
@@ -2010,8 +2022,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         args = parse_args(argv)
         result = collect(args)
     except (OSError, QualificationError, subprocess.SubprocessError, ValueError) as error:
+        classification = (
+            "EnvironmentPrerequisite"
+            if isinstance(error, EnvironmentPrerequisiteError)
+            else type(error).__name__
+        )
         print(
-            f"Q3 A065 SIMD collection failed before terminal publication: {error}",
+            "Q3 A065 SIMD collection failed before terminal publication "
+            f"[{classification}]: {error}",
             file=sys.stderr,
         )
         return 1
