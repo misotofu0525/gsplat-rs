@@ -379,6 +379,92 @@ class VerificationBootstrapTests(unittest.TestCase):
             self.assertTrue(probe.ok)
             self.assertIn("new-web-run", probe.detail)
 
+    def test_truck_web_profile_freezes_formal_collector_contract(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            dataset = root / "tests/datasets/external/inria_3dgs/truck/point_cloud.ply"
+            trace = (
+                root
+                / "tests/perf/trace/fixtures/quality/"
+                "candidate-truck-quality-1920x1080-v1.json"
+            )
+            dataset.parent.mkdir(parents=True)
+            dataset.write_text("test fixture", encoding="utf-8")
+            trace.parent.mkdir(parents=True)
+            trace.write_text("{}", encoding="utf-8")
+            output = root / "fresh-truck-run"
+            discovery = BOOTSTRAP.Discovery(
+                env={"GSPLAT_WEB_TRUCK_OUTPUT": str(output)},
+                home=root,
+                which=FakeHost(root).which,
+                capture=FakeHost(root).capture,
+            )
+            with (
+                mock.patch.object(BOOTSTRAP, "REPO_ROOT", root),
+                mock.patch.object(
+                    BOOTSTRAP,
+                    "web_environment",
+                    return_value=([BOOTSTRAP.Probe("web", True, "ready")], {}),
+                ),
+            ):
+                result = BOOTSTRAP.profile_result("web-webgpu-truck-1080p", discovery)
+
+            self.assertTrue(result.ready)
+            self.assertEqual(len(result.commands), 2)
+            collector = result.commands[1]
+            self.assertEqual(
+                collector.argv,
+                ("node", "examples/web/scripts/collect-web-benchmark-artifact.mjs"),
+            )
+            self.assertEqual(collector.env["GSPLAT_PHASE_E_QUALIFICATION"], "truck-quality-1080p-v1")
+            self.assertEqual(collector.env["GSPLAT_DATASET"], "truck")
+            self.assertEqual(collector.env["GSPLAT_GEOMETRY_PATH"], "packed")
+            self.assertEqual(collector.env["GSPLAT_ORDER_BACKEND"], "adaptive")
+            self.assertEqual(collector.env["GSPLAT_PROJECTED_POLICY"], "adaptive")
+            self.assertEqual(collector.env["GSPLAT_CAMERA_FRAME_INDICES"], "0,1")
+            self.assertEqual(collector.env["GSPLAT_BENCHMARK_WARMUP_FRAMES"], "20")
+            self.assertEqual(collector.env["GSPLAT_BENCHMARK_FRAMES"], "80")
+            self.assertEqual(collector.env["GSPLAT_GPU_ORDER_PRODUCER"], "")
+            self.assertEqual(collector.env["GSPLAT_BENCHMARK_SYNC"], "0")
+            self.assertEqual(collector.env["GSPLAT_M4_SMOKE"], "0")
+            self.assertEqual(collector.env["GSPLAT_ARTIFACT_DIR"], str(output / "run-adaptive"))
+            self.assertEqual(collector.env["GSPLAT_FULL_QUALITY_SUITE"], str(output / "suite.json"))
+
+    def test_truck_web_profile_blocks_on_missing_asset_or_used_output(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            trace = (
+                root
+                / "tests/perf/trace/fixtures/quality/"
+                "candidate-truck-quality-1920x1080-v1.json"
+            )
+            trace.parent.mkdir(parents=True)
+            trace.write_text("{}", encoding="utf-8")
+            output = root / "retained-truck-run"
+            output.mkdir()
+            discovery = BOOTSTRAP.Discovery(
+                env={"GSPLAT_WEB_TRUCK_OUTPUT": str(output)},
+                home=root,
+                which=FakeHost(root).which,
+                capture=FakeHost(root).capture,
+            )
+            with (
+                mock.patch.object(BOOTSTRAP, "REPO_ROOT", root),
+                mock.patch.object(
+                    BOOTSTRAP,
+                    "web_environment",
+                    return_value=([BOOTSTRAP.Probe("web", True, "ready")], {}),
+                ),
+            ):
+                result = BOOTSTRAP.profile_result("web-webgpu-truck-1080p", discovery)
+
+            self.assertFalse(result.ready)
+            failed = {probe.key for probe in result.probes if not probe.ok}
+            self.assertEqual(
+                failed,
+                {"truck-dataset", "fresh-output:GSPLAT_WEB_TRUCK_OUTPUT"},
+            )
+
     def test_run_stops_after_first_failed_command_without_retry(self) -> None:
         result = BOOTSTRAP.ProfileResult(
             name="host",
@@ -399,6 +485,7 @@ class VerificationBootstrapTests(unittest.TestCase):
     def test_default_doctor_is_host_only(self) -> None:
         self.assertNotIn("android-a065", BOOTSTRAP.DEFAULT_DOCTOR_PROFILES)
         self.assertNotIn("ios-simulator", BOOTSTRAP.DEFAULT_DOCTOR_PROFILES)
+        self.assertNotIn("web-webgpu-truck-1080p", BOOTSTRAP.DEFAULT_DOCTOR_PROFILES)
 
     def test_command_display_shell_quotes_environment_and_arguments(self) -> None:
         command = BOOTSTRAP.Command(

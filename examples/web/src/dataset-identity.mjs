@@ -49,6 +49,16 @@ const FIXED_IDENTITIES = Object.freeze({
   }),
 });
 
+const FORMAL_IDENTITY_OVERRIDES = Object.freeze({
+  truck: Object.freeze({
+    ...FIXED_IDENTITIES.truck,
+    sha256: "65ecf4058135a030cddd2198326f67172a4101344b0b54a3fa370cf45ea9688c",
+    bytes: 630225580,
+    splat_count: 2541226,
+    sh_degree: 3,
+  }),
+});
+
 export const WEB_DATASET_PATHS = Object.freeze({
   ...Object.fromEntries(
     Object.entries(FIXED_IDENTITIES).map(([selector, identity]) => [selector, identity.source_path]),
@@ -159,12 +169,43 @@ function validateDatasetEvidenceAgainstExpected({
   if (expected.sha256 !== null && manifestSha256 !== expected.sha256) {
     fail(`requested sha256 ${expected.sha256}, manifest observed ${manifestSha256}`);
   }
+  for (const field of ["bytes", "splat_count", "sh_degree"]) {
+    if (expected[field] !== undefined && manifestDataset?.[field] !== expected[field]) {
+      fail(`requested ${field} ${expected[field]}, manifest observed ${manifestDataset?.[field] ?? "missing"}`);
+    }
+  }
   if (loadReceipt !== null) {
     const receiptFields = {
       dataset: expected.id,
       source_path: expected.source_path,
       input_sha256: manifestSha256,
     };
+    if (expected.bytes !== undefined) receiptFields.source_bytes = expected.bytes;
+    if (expected.splat_count !== undefined) {
+      for (const field of [
+        "source_count",
+        "decoded_count",
+        "encoded_count",
+        "resident_count",
+        "addressable_count",
+      ]) {
+        receiptFields[field] = expected.splat_count;
+      }
+    }
+    if (expected.sh_degree !== undefined) {
+      receiptFields.source_sh_degree = expected.sh_degree;
+      receiptFields.resident_sh_degree = expected.sh_degree;
+      receiptFields.sh_degree = expected.sh_degree;
+    }
+    if (expected.logical_id === "truck") {
+      Object.assign(receiptFields, {
+        full_quality: true,
+        source_membership: "all",
+        sampling_enabled: false,
+        lod_enabled: false,
+        partial_scene_published: false,
+      });
+    }
     for (const [field, value] of Object.entries(receiptFields)) {
       if (loadReceipt?.[field] !== value) {
         fail(`manifest/request ${field} ${value}, load receipt observed ${loadReceipt?.[field] ?? "missing"}`);
@@ -193,14 +234,19 @@ export function validateFormalDatasetEvidenceIdentity({
   loadReceipt = null,
 }) {
   validateFormalDatasetLogicalRequest({ requestedLogicalId, expectedLogicalId });
-  const expected = Object.values(FIXED_IDENTITIES)
-    .find((identity) => identity.logical_id === expectedLogicalId);
-  if (expected == null) fail(`unsupported formal logical_id ${expectedLogicalId}`);
+  const expected = canonicalFormalDatasetIdentity(expectedLogicalId);
   return validateDatasetEvidenceAgainstExpected({
     expected,
     manifestDataset,
     loadReceipt,
   });
+}
+
+export function canonicalFormalDatasetIdentity(logicalId) {
+  const expected = Object.values(FIXED_IDENTITIES)
+    .find((identity) => identity.logical_id === logicalId);
+  if (expected == null) fail(`unsupported formal logical_id ${logicalId}`);
+  return { ...(FORMAL_IDENTITY_OVERRIDES[logicalId] ?? expected) };
 }
 
 export function validateFormalDatasetLogicalRequest({

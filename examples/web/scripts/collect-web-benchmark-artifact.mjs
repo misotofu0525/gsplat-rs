@@ -3,8 +3,9 @@
  * Headless Chrome collector for gsplat-rs Web Phase A baseline artifacts.
  * Emits a validated gsplat-benchmark/v1 directory from console JSON lines.
  */
-import { access, mkdir, writeFile, rename, rm } from 'node:fs/promises';
-import { constants } from 'node:fs';
+import { access, mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { constants, createReadStream } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { execFile as execFileCallback, spawn } from 'node:child_process';
@@ -41,6 +42,12 @@ import {
   validateFormalDatasetEvidenceIdentity,
   validateFormalDatasetLogicalRequest,
 } from '../src/dataset-identity.mjs';
+import {
+  TRUCK_1080P_QUALIFICATION,
+  publishValidatedTruck1080pSuite,
+  validateTruck1080pCleanWorkingTree,
+  validateTruck1080pCollectorConfig,
+} from '../src/truck-1080p-qualification.mjs';
 
 const execFile = promisify(execFileCallback);
 
@@ -59,7 +66,10 @@ const qualificationName = process.env.GSPLAT_PHASE_E_QUALIFICATION ?? '';
 const qualification = qualificationName.length > 0;
 const formalDatasetLogicalId = qualificationName === 'kitsune-static-v1'
   ? 'kitsune'
-  : qualificationName === 'raster-diagnostic-v1' ? 'raster_diagnostic_v1' : null;
+  : qualificationName === 'raster-diagnostic-v1'
+    ? 'raster_diagnostic_v1'
+    : qualificationName === TRUCK_1080P_QUALIFICATION.name ? 'truck' : null;
+const truck1080pQualification = qualificationName === TRUCK_1080P_QUALIFICATION.name;
 const m4Smoke = process.env.GSPLAT_M4_SMOKE === '1';
 const frames = Number(process.env.GSPLAT_BENCHMARK_FRAMES ?? (qualification ? 3600 : 30));
 const warmup = Number(process.env.GSPLAT_BENCHMARK_WARMUP_FRAMES ?? (qualification ? 120 : 5));
@@ -78,10 +88,15 @@ const outDir = resolve(
       repoRoot,
       m4Smoke
         ? 'target/benchmarks/m4-webgpu-smoke'
+        : truck1080pQualification
+          ? 'target/qualification/q1-webgpu-truck-1080p/run-adaptive'
         : qualification
           ? 'target/benchmarks/phase-e/gsplat-web-kitsune-static-v1'
           : 'target/benchmarks/phase-a/web-minimal-v1'
     )
+);
+const fullQualitySuitePath = resolve(
+  process.env.GSPLAT_FULL_QUALITY_SUITE ?? resolve(dirname(outDir), 'suite.json'),
 );
 const port = Number(process.env.GSPLAT_HTTP_PORT ?? 4173);
 const geometryPath = process.env.GSPLAT_GEOMETRY_PATH ?? 'packed';
@@ -115,6 +130,107 @@ if (gpuOrderProducer !== null && (
     'GPU producer qualification requires Packed geometry, forced GPU ordering, ' +
     'forced Compact projected drawing, sort interval 1, asynchronous progression, ' +
     'and isolated terminals',
+  );
+}
+
+async function sha256File(path) {
+  const digest = createHash('sha256');
+  for await (const chunk of createReadStream(path)) digest.update(chunk);
+  return digest.digest('hex');
+}
+
+async function runPythonValidator(script, args, label) {
+  await new Promise((resolvePromise, reject) => {
+    const child = spawn(
+      process.env.PYTHON ?? 'python3',
+      [resolve(repoRoot, script), ...args],
+      { stdio: 'inherit' },
+    );
+    child.once('error', reject);
+    child.once('exit', (code) => {
+      if (code === 0) resolvePromise();
+      else reject(new Error(`${label} exited ${code}`));
+    });
+  });
+}
+
+async function admitTruck1080pQualification() {
+  const expected = validateTruck1080pCollectorConfig({
+    qualificationName,
+    dataset,
+    geometryPath,
+    orderBackend,
+    projectedPolicy,
+    gpuOrderProducer,
+    sortInterval,
+    benchmarkSync,
+    m4Smoke,
+    orderCompletionProtocol,
+    warmup,
+    frames,
+    cameraTraceUrl: process.env.GSPLAT_CAMERA_TRACE_URL ?? null,
+    cameraTraceSequence: process.env.GSPLAT_CAMERA_TRACE_SEQUENCE === '1',
+    cameraTraceLoops: Number(process.env.GSPLAT_CAMERA_TRACE_LOOPS ?? 0),
+    cameraFrame: process.env.GSPLAT_CAMERA_FRAME ?? null,
+    cameraFrameIndices: (process.env.GSPLAT_CAMERA_FRAME_INDICES ?? '')
+      .split(',')
+      .filter((value) => value.length > 0)
+      .map(Number),
+  });
+  const porcelain = (
+    await execFile('git', ['status', '--porcelain'], { cwd: repoRoot })
+  ).stdout;
+  validateTruck1080pCleanWorkingTree(porcelain);
+  const outputRoot = dirname(outDir);
+  if (outDir !== resolve(outputRoot, expected.artifact_name)) {
+    throw new Error(`Truck 1080p artifact must be named ${expected.artifact_name}`);
+  }
+  if (fullQualitySuitePath !== resolve(outputRoot, expected.suite_name)) {
+    throw new Error(`Truck 1080p suite must be ${resolve(outputRoot, expected.suite_name)}`);
+  }
+  if (await pathExists(outputRoot)) {
+    throw new Error(`Truck 1080p output root already exists: ${outputRoot}`);
+  }
+
+  const datasetPath = resolve(repoRoot, expected.dataset.local_path);
+  const datasetStat = await stat(datasetPath);
+  if (datasetStat.size !== expected.dataset.bytes) {
+    throw new Error(
+      `Truck source bytes mismatch: expected ${expected.dataset.bytes}, observed ${datasetStat.size}`,
+    );
+  }
+  const datasetSha256 = await sha256File(datasetPath);
+  if (datasetSha256 !== expected.dataset.sha256) {
+    throw new Error(
+      `Truck source SHA-256 mismatch: expected ${expected.dataset.sha256}, observed ${datasetSha256}`,
+    );
+  }
+
+  const tracePath = resolve(repoRoot, expected.trace.local_path);
+  const traceFileSha256 = await sha256File(tracePath);
+  if (traceFileSha256 !== expected.trace.file_sha256) {
+    throw new Error(
+      `Truck trace file SHA-256 mismatch: expected ${expected.trace.file_sha256}, observed ${traceFileSha256}`,
+    );
+  }
+  const trace = JSON.parse(await readFile(tracePath, 'utf8'));
+  const derivation = trace.derivation ?? {};
+  if (trace.trace_id !== expected.trace.id
+      || trace.content_sha256 !== expected.trace.content_sha256
+      || trace.display?.width !== expected.trace.width
+      || trace.display?.height !== expected.trace.height
+      || trace.frames?.length !== expected.trace.frame_count
+      || derivation.source_path !== expected.dataset.local_path
+      || derivation.source_sha256 !== expected.dataset.sha256
+      || derivation.source_bytes !== expected.dataset.bytes
+      || derivation.source_splat_count !== expected.dataset.splat_count
+      || derivation.source_sh_degree !== expected.dataset.sh_degree) {
+    throw new Error('Truck trace identity, display, source, count, or SH3 receipt is not canonical');
+  }
+  await runPythonValidator(
+    'tests/perf/trace/validate_trace_v1.py',
+    [tracePath],
+    'camera trace validator',
   );
 }
 
@@ -822,20 +938,28 @@ async function writeArtifact({
       ? `${gpuProducerMeasurementFailures.join('\n')}\n`
       : ''
   );
-  await new Promise((resolvePromise, reject) => {
-    const child = spawn(
-      process.env.PYTHON ?? 'python3',
-      [resolve(repoRoot, 'tests/perf/validate-benchmark-artifacts.py'), sibling],
-      { stdio: 'inherit' }
-    );
-    child.once('error', reject);
-    child.once('exit', (code) => {
-      if (code === 0) resolvePromise();
-      else reject(new Error(`validator exited ${code}`));
-    });
-  });
+  await runPythonValidator(
+    'tests/perf/validate-benchmark-artifacts.py',
+    [sibling],
+    'benchmark artifact validator',
+  );
   await rename(sibling, outDir);
   return outDir;
+}
+
+async function publishTruck1080pSuite({ manifest, imagePath }) {
+  const imageSha256 = await sha256File(imagePath);
+  return publishValidatedTruck1080pSuite({
+    suitePath: fullQualitySuitePath,
+    manifest,
+    imagePath,
+    imageSha256,
+    validate: (staging) => runPythonValidator(
+      'tests/perf/validate-full-quality-experiment.py',
+      [staging, '--verify-inputs'],
+      'full-quality suite validator',
+    ),
+  });
 }
 
 async function loadPuppeteer() {
@@ -851,6 +975,27 @@ async function loadPuppeteer() {
     }
   }
   throw new Error('puppeteer-core not found under tests/competitive/playcanvas; run npm ci there first');
+}
+
+if (truck1080pQualification) {
+  try {
+    await admitTruck1080pQualification();
+  } catch (error) {
+    const outputRoot = dirname(outDir);
+    let logPath = null;
+    if (!await pathExists(outputRoot)) {
+      logPath = resolve(outputRoot, 'collector-admission-failure.log');
+      await mkdir(outputRoot, { recursive: true });
+      await writeFile(logPath, `${error.stack ?? error}\n`, { flag: 'wx' });
+    }
+    console.error(JSON.stringify({
+      status: 'blocked',
+      scope: TRUCK_1080P_QUALIFICATION.name,
+      reason: error.message,
+      ...(logPath === null ? {} : { log: logPath }),
+    }));
+    process.exit(2);
+  }
 }
 
 const chrome = await findChrome();
@@ -1054,15 +1199,34 @@ try {
   const parsed = parseArtifacts(consoleLines);
   const artifactDir = await writeArtifact(parsed);
   const dataUrl = await page.$eval('#viewport', (canvas) => canvas.toDataURL('image/png'));
-  await writeFile(resolve(artifactDir, 'final-frame.png'), Buffer.from(dataUrl.split(',')[1], 'base64'));
+  const imagePath = resolve(artifactDir, 'final-frame.png');
+  await writeFile(imagePath, Buffer.from(dataUrl.split(',')[1], 'base64'));
   await writeFile(resolve(artifactDir, 'browser-console.log'), `${consoleLines.join('\n')}\n`);
+  const suitePath = truck1080pQualification
+    ? await publishTruck1080pSuite({
+        manifest: JSON.parse(parsed.manifests[0]),
+        imagePath,
+      })
+    : null;
   const resultLine = consoleLines.find((line) => line.includes('BENCHMARK_RESULT '));
-  console.log(JSON.stringify({ status: 'ok', artifact_dir: artifactDir, result: resultLine ?? null }));
+  const result = {
+    status: 'ok',
+    artifact_dir: artifactDir,
+    result: resultLine ?? null,
+  };
+  if (suitePath !== null) result.full_quality_suite = suitePath;
+  console.log(JSON.stringify(result));
   }
 } catch (error) {
-  const logPath = resolve(repoRoot, 'target/benchmarks/phase-a/web-collector-failure.log');
+  const logPath = truck1080pQualification
+    ? resolve(dirname(outDir), 'collector-failure.log')
+    : resolve(repoRoot, 'target/benchmarks/phase-a/web-collector-failure.log');
   await mkdir(dirname(logPath), { recursive: true });
-  await writeFile(logPath, `${consoleLines.join('\n')}\n\n${error.stack ?? error}\n`);
+  await writeFile(
+    logPath,
+    `${consoleLines.join('\n')}\n\n${error.stack ?? error}\n`,
+    truck1080pQualification ? { flag: 'wx' } : undefined,
+  );
   console.error(JSON.stringify({ status: 'failed', reason: error.message, log: logPath }));
   process.exitCode = 1;
 } finally {

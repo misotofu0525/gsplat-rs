@@ -684,6 +684,79 @@ def profile_result(name: str, discovery: Discovery) -> ProfileResult:
             commands,
         )
 
+    if name == "web-webgpu-truck-1080p":
+        probes, env = web_environment(discovery)
+        dataset = REPO_ROOT / "tests/datasets/external/inria_3dgs/truck/point_cloud.ply"
+        trace = (
+            REPO_ROOT
+            / "tests/perf/trace/fixtures/quality/"
+            "candidate-truck-quality-1920x1080-v1.json"
+        )
+        probes.extend(
+            (
+                file_probe(
+                    "truck-dataset",
+                    dataset,
+                    "install the pinned Truck PLY at the canonical path; "
+                    "the profile does not fetch or copy the 630 MB asset",
+                ),
+                file_probe(
+                    "truck-trace",
+                    trace,
+                    "restore the canonical two-frame Truck 1920x1080 trace",
+                ),
+            )
+        )
+        output = discovery.env.get(
+            "GSPLAT_WEB_TRUCK_OUTPUT",
+            f"target/qualification/q1-webgpu-truck-1080p-{head}",
+        )
+        probes.append(fresh_output_probe("GSPLAT_WEB_TRUCK_OUTPUT", output))
+        artifact = str(pathlib.Path(output) / "run-adaptive")
+        suite = str(pathlib.Path(output) / "suite.json")
+        collector_env = dict(env)
+        collector_env.update(
+            {
+                "GSPLAT_PHASE_E_QUALIFICATION": "truck-quality-1080p-v1",
+                "GSPLAT_DATASET": "truck",
+                "GSPLAT_GEOMETRY_PATH": "packed",
+                "GSPLAT_ORDER_BACKEND": "adaptive",
+                "GSPLAT_PROJECTED_POLICY": "adaptive",
+                "GSPLAT_GPU_ORDER_PRODUCER": "",
+                "GSPLAT_SORT_INTERVAL": "1",
+                "GSPLAT_ORDER_COMPLETION_PROTOCOL": "sustained_window",
+                "GSPLAT_BENCHMARK_SYNC": "0",
+                "GSPLAT_M4_SMOKE": "0",
+                "GSPLAT_CAMERA_TRACE_URL": (
+                    "/tests/perf/trace/fixtures/quality/"
+                    "candidate-truck-quality-1920x1080-v1.json"
+                ),
+                "GSPLAT_CAMERA_TRACE_SEQUENCE": "1",
+                "GSPLAT_CAMERA_FRAME_INDICES": "0,1",
+                "GSPLAT_CAMERA_TRACE_LOOPS": "1",
+                "GSPLAT_CAMERA_FRAME": "",
+                "GSPLAT_BENCHMARK_WARMUP_FRAMES": "20",
+                "GSPLAT_BENCHMARK_FRAMES": "80",
+                "GSPLAT_ARTIFACT_DIR": artifact,
+                "GSPLAT_FULL_QUALITY_SUITE": suite,
+            }
+        )
+        commands = (
+            Command(("bash", "packages/web/scripts/build-wasm.sh"), env),
+            Command(
+                ("node", "examples/web/scripts/collect-web-benchmark-artifact.mjs"),
+                collector_env,
+            ),
+        )
+        return ProfileResult(
+            name,
+            "Formal 1920x1080 Truck Packed Exact WebGPU prerequisite artifact; "
+            "not a product performance comparison",
+            False,
+            tuple(probes),
+            commands,
+        )
+
     if name == "apple-host":
         probes, env = apple_environment(discovery, require_xcode_tools=False)
         command = Command(("bash", "bindings/apple/scripts/run-swift-smoke.sh"), env)
@@ -769,6 +842,7 @@ PROFILES = (
     "android-a065",
     "macos-metal",
     "web-webgpu",
+    "web-webgpu-truck-1080p",
     "apple-host",
     "apple-xcframework",
     "ios-simulator",

@@ -124,6 +124,7 @@ or retries a failed command.
 | --- | --- | --- | --- |
 | macOS / Metal | `python3 tests/verification_bootstrap.py doctor --profile macos-metal` | `python3 tests/verification_bootstrap.py run macos-metal` | Hardware-backed SortedAlpha Metal conformance; no benchmark artifact. |
 | Chrome / WebGPU | `GSPLAT_ARTIFACT_DIR=<fresh-path> python3 tests/verification_bootstrap.py doctor --profile web-webgpu` | Repeat the same environment with `run web-webgpu` | Real Chrome WebGPU/WASM functional artifact; not a performance comparison. |
+| Chrome / WebGPU Truck 1080p | `GSPLAT_WEB_TRUCK_OUTPUT=<fresh-root> python3 tests/verification_bootstrap.py doctor --profile web-webgpu-truck-1080p` | Repeat the same environment through `command`, then once through `run web-webgpu-truck-1080p` | Q1 Packed Exact full-quality prerequisite artifact; not PlayCanvas performance evidence or Q1 acceptance. |
 | Android A065 | `GSPLAT_ANDROID_SERIAL=<serial> GSPLAT_ANDROID_DATASET=<absolute-ply> GSPLAT_ANDROID_OUTPUT=<fresh-path> python3 tests/verification_bootstrap.py doctor --profile android-a065` | Repeat the same environment with `run android-a065 --allow-device` | One full-quality Packed/CPU functionality and strict-ledger artifact; not a CPU/GPU comparison. |
 
 Before `run`, substitute `command` for the action to inspect the exact command
@@ -167,6 +168,51 @@ python3 tests/verification_bootstrap.py doctor --profile android-a065
 Do not remove a retained artifact merely to make a profile `READY`. A runtime
 failure remains one finite failed attempt; inspect it, change only the proven
 cause, choose a fresh destination, and invoke `run` explicitly again.
+
+### Q1 WebGPU Truck 1080p prerequisite
+
+The named `web-webgpu-truck-1080p` profile reuses the standard Web collector;
+it does not add a second wrapper. It admits only the canonical Truck PLY at
+`tests/datasets/external/inria_3dgs/truck/point_cloud.ply` with SHA-256
+`65ecf4058135a030cddd2198326f67172a4101344b0b54a3fa370cf45ea9688c`,
+630225580 bytes, 2541226 splats, and source SH degree 3. The repository does not
+fetch, copy, or install that 630 MB input. A missing file is a finite `BLOCKED`
+doctor result.
+
+Use one unchanged environment and a never-before-used output root for the full
+launchbook sequence:
+
+```bash
+GSPLAT_WEB_TRUCK_OUTPUT=target/qualification/q1-webgpu-truck-1080p-<sha>-attempt-1 \
+python3 tests/verification_bootstrap.py doctor --profile web-webgpu-truck-1080p
+
+GSPLAT_WEB_TRUCK_OUTPUT=target/qualification/q1-webgpu-truck-1080p-<sha>-attempt-1 \
+python3 tests/verification_bootstrap.py command web-webgpu-truck-1080p
+
+GSPLAT_WEB_TRUCK_OUTPUT=target/qualification/q1-webgpu-truck-1080p-<sha>-attempt-1 \
+python3 tests/verification_bootstrap.py run web-webgpu-truck-1080p
+```
+
+The collector admission freezes Packed geometry, Adaptive ordering/projected
+policy, sort interval 1, sustained-window completion, no producer override,
+asynchronous progression, 20 warmup plus 80 measured frames, and the canonical
+two-frame 1920x1080 Truck trace at indices `[0,1]` with one loop. It also rejects
+a dirty working tree before Chrome starts. Its retained
+manifest and load receipt must prove source=decoded=encoded=resident=addressable
+=2541226, source/resident SH3, all source membership, and disabled sampling and
+LOD. The canonical full-quality validator additionally rejects dynamic
+resolution, upscaling, a non-WebGPU renderer path, or a display/image other
+than 1920x1080.
+
+On success, the standard collector first publishes a canonical benchmark
+artifact under `<fresh-root>/run-adaptive`, then writes its final WebGPU canvas
+PNG and publishes `<fresh-root>/suite.json` only after both
+`validate-benchmark-artifacts.py` and
+`validate-full-quality-experiment.py --verify-inputs` pass. A failed root is
+retained and must not be rewritten; use a new attempt root instead. This route
+is only the gsplat-rs Q1 prerequisite. It neither runs the PlayCanvas comparator
+nor establishes a competitive performance conclusion, so it cannot by itself
+make Q1 `Accepted`.
 
 ## Fast Feedback
 

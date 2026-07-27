@@ -1,0 +1,354 @@
+import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
+import test from "node:test";
+import { fileURLToPath } from "node:url";
+
+import {
+  TRUCK_1080P_QUALIFICATION,
+  buildTruck1080pFullQualitySuite,
+  publishValidatedTruck1080pSuite,
+  validateTruck1080pCleanWorkingTree,
+  validateTruck1080pCollectorConfig,
+} from "../src/truck-1080p-qualification.mjs";
+
+const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
+
+function validConfig() {
+  const expected = TRUCK_1080P_QUALIFICATION;
+  return {
+    qualificationName: expected.name,
+    dataset: expected.dataset.selector,
+    geometryPath: expected.geometry_path,
+    orderBackend: expected.order_backend,
+    projectedPolicy: expected.projected_policy,
+    gpuOrderProducer: null,
+    sortInterval: expected.sort_interval,
+    benchmarkSync: false,
+    m4Smoke: false,
+    orderCompletionProtocol: expected.order_completion_protocol,
+    warmup: expected.warmup_frames,
+    frames: expected.measured_frames,
+    cameraTraceUrl: expected.trace.url,
+    cameraTraceSequence: true,
+    cameraTraceLoops: 1,
+    cameraFrame: null,
+    cameraFrameIndices: [...expected.trace.frame_indices],
+  };
+}
+
+test("Truck 1080p collector admission freezes the full formal configuration", () => {
+  assert.equal(
+    validateTruck1080pCollectorConfig(validConfig()),
+    TRUCK_1080P_QUALIFICATION,
+  );
+
+  const mutations = [
+    ["dataset", "truck-2000000"],
+    ["geometryPath", "paged"],
+    ["orderBackend", "gpu"],
+    ["projectedPolicy", "compact"],
+    ["gpuOrderProducer", "preproject"],
+    ["sortInterval", 2],
+    ["benchmarkSync", true],
+    ["m4Smoke", true],
+    ["orderCompletionProtocol", "isolated_terminal"],
+    ["warmup", 19],
+    ["frames", 79],
+    ["cameraTraceUrl", "/different.json"],
+    ["cameraTraceSequence", false],
+    ["cameraTraceLoops", 2],
+    ["cameraFrame", 0],
+    ["cameraFrameIndices", [0]],
+  ];
+  for (const [field, value] of mutations) {
+    assert.throws(
+      () => validateTruck1080pCollectorConfig({ ...validConfig(), [field]: value }),
+      /Truck 1080p qualification admission failed/,
+      field,
+    );
+  }
+});
+
+test("Truck 1080p collector admission rejects a dirty working tree", () => {
+  assert.doesNotThrow(() => validateTruck1080pCleanWorkingTree(""));
+  assert.throws(
+    () => validateTruck1080pCleanWorkingTree(" M examples/web/src/main.js\n"),
+    /working tree must be clean before Chrome starts/,
+  );
+});
+
+test("Truck 1080p suite is a single non-performance full-quality prerequisite cell", () => {
+  const suite = buildTruck1080pFullQualitySuite({
+    manifest: {
+      build: {
+        repository_commit: "a".repeat(40),
+        dirty: false,
+      },
+    },
+    imageSha256: "b".repeat(64),
+  });
+
+  assert.equal(suite.status, "complete");
+  assert.deepEqual(suite.quality_contract, {
+    blend_mode: "sorted_alpha",
+    source_membership: "all",
+    sampling: "disabled",
+    lod: "disabled",
+    sh_degree: "source",
+    resolution_scale: 1.0,
+    capacity_failure: "reject_before_publish",
+  });
+  assert.deepEqual(suite.datasets, [{
+    id: "truck-full",
+    role: "full_scene",
+    local_path: "tests/datasets/external/inria_3dgs/truck/point_cloud.ply",
+    sha256: "65ecf4058135a030cddd2198326f67172a4101344b0b54a3fa370cf45ea9688c",
+    bytes: 630225580,
+    splat_count: 2541226,
+    sh_degree: 3,
+  }]);
+  assert.equal(suite.endpoints[0].performance_evidence, false);
+  assert.deepEqual(suite.protocols[0].display, { width: 1920, height: 1080 });
+  assert.deepEqual(suite.protocols[0].camera.frame_indices, [0, 1]);
+  assert.equal(suite.protocols[0].warmup_frames, 20);
+  assert.equal(suite.protocols[0].measured_frames, 80);
+  assert.equal(suite.protocols[0].sort_policies[0], "adaptive");
+  assert.equal(suite.runs[0].artifact, "run-adaptive");
+});
+
+function constantDistribution(count, value) {
+  return {
+    count,
+    mean: value,
+    p50: value,
+    p90: value,
+    p95: value,
+    p99: value,
+    max: value,
+  };
+}
+
+async function installTemporaryTruckArtifact(root) {
+  const expected = TRUCK_1080P_QUALIFICATION;
+  const artifact = join(root, expected.artifact_name);
+  await mkdir(artifact, { recursive: true });
+  const runId = "truck-1080p-validator-fixture";
+  const commit = "a".repeat(40);
+  const manifest = {
+    schema: "gsplat-benchmark/v1",
+    record_type: "manifest",
+    run_id: runId,
+    identity: {
+      series_id: "web-camera-trace-sequence-v1",
+      started_at_utc: "2026-07-27T00:00:00Z",
+      ended_at_utc: "2026-07-27T00:00:01Z",
+      measurement_started_at_utc: "2026-07-27T00:00:00.100Z",
+      measurement_ended_at_utc: "2026-07-27T00:00:00.900Z",
+    },
+    build: {
+      repository_commit: commit,
+      dirty: false,
+      profile: "browser",
+      package_version: "0.1.3",
+    },
+    dataset: {
+      id: "truck.ply",
+      logical_id: expected.dataset.selector,
+      source_path: `/${expected.dataset.local_path}`,
+      sha256: expected.dataset.sha256,
+      bytes: expected.dataset.bytes,
+      splat_count: expected.dataset.splat_count,
+      sh_degree: expected.dataset.sh_degree,
+    },
+    exactness: {
+      source_splat_count: expected.dataset.splat_count,
+      decoded_splat_count: expected.dataset.splat_count,
+      encoded_splat_count: expected.dataset.splat_count,
+      resident_splat_count: expected.dataset.splat_count,
+      addressable_splat_count: expected.dataset.splat_count,
+      source_sh_degree: expected.dataset.sh_degree,
+      resident_sh_degree: expected.dataset.sh_degree,
+      source_membership: "all",
+      sampling: "disabled",
+      lod: "disabled",
+      sh_degree_policy: "source",
+      partial_scene_published: false,
+      full_quality: true,
+    },
+    trace: {
+      id: expected.trace.id,
+      sha256: expected.trace.content_sha256,
+      reference_width: expected.trace.width,
+      reference_height: expected.trace.height,
+      require_display_match: true,
+      display_policy: "trace_display_exact",
+      quality_comparable: true,
+      frame_indices: [...expected.trace.frame_indices],
+    },
+    renderer: {
+      implementation: "gsplat-rs",
+      path: expected.renderer_path,
+      backend: "webgpu",
+      sort_policy: "interval_1",
+      order_backend_requested: expected.order_backend,
+      sort_interval: expected.sort_interval,
+      count_semantics: "candidate_visible_contributor_issued_v1",
+    },
+    display: {
+      width: expected.trace.width,
+      height: expected.trace.height,
+      dpr: 1,
+      refresh_hz: 60,
+      frame_budget_ms: 16.666667,
+      refresh_hz_source: "configured",
+      frame_budget_source: "configured",
+    },
+    resolution: {
+      requested_width: expected.trace.width,
+      requested_height: expected.trace.height,
+      surface_width: expected.trace.width,
+      surface_height: expected.trace.height,
+      internal_render_width: expected.trace.width,
+      internal_render_height: expected.trace.height,
+      presented_width: expected.trace.width,
+      presented_height: expected.trace.height,
+      dynamic_resolution: "disabled",
+      upscaling: "disabled",
+      full_resolution: true,
+    },
+    environment: {
+      platform: "web",
+      os: "fixture-os",
+      device: "fixture-device",
+      browser: "fixture-chrome",
+      adapter: "fixture-webgpu-adapter",
+      driver: "fixture-driver",
+    },
+    unavailable_fields: [
+      "frames[*].gpu_wait_ms",
+      "frames[*].gpu_complete_ms",
+    ],
+  };
+  const frames = Array.from({ length: expected.measured_frames }, (_, frameIndex) => ({
+    schema: "gsplat-benchmark/v1",
+    record_type: "frame",
+    run_id: runId,
+    frame_index: frameIndex,
+    elapsed_ns: (frameIndex + 1) * 1_000_000,
+    call_ms: 1,
+    frame_wall_ms: 1,
+    preprocess_ms: 0.1,
+    sort_ms: 0.2,
+    geometry_submit_ms: 0.3,
+    gpu_wait_ms: null,
+    gpu_complete_ms: null,
+    visible: expected.dataset.splat_count,
+    contributor: expected.dataset.splat_count,
+    drawn: expected.dataset.splat_count,
+    exact_contributor_compaction: true,
+    sort_refreshed: true,
+  }));
+  const summary = {
+    schema: "gsplat-benchmark/v1",
+    record_type: "summary",
+    run_id: runId,
+    sample_count: expected.measured_frames,
+    warmup_count: expected.warmup_frames,
+    frame_budget_ms: 16.666667,
+    missed_frame_count: 0,
+    distributions: {
+      call_ms: constantDistribution(expected.measured_frames, 1),
+      frame_wall_ms: constantDistribution(expected.measured_frames, 1),
+      preprocess_ms: constantDistribution(expected.measured_frames, 0.1),
+      sort_ms: constantDistribution(expected.measured_frames, 0.2),
+      geometry_submit_ms: constantDistribution(expected.measured_frames, 0.3),
+      gpu_wait_ms: null,
+      gpu_complete_ms: null,
+    },
+    sort_telemetry: {
+      cpu_frame_count: 0,
+      gpu_frame_count: expected.measured_frames,
+      gpu_sort_fallback_count: 0,
+    },
+  };
+  await writeFile(join(artifact, "manifest.json"), `${JSON.stringify(manifest)}\n`);
+  await writeFile(
+    join(artifact, "frames.jsonl"),
+    `${frames.map((frame) => JSON.stringify(frame)).join("\n")}\n`,
+  );
+  await writeFile(join(artifact, "summary.json"), `${JSON.stringify(summary)}\n`);
+
+  const png = Buffer.alloc(24);
+  Buffer.from("89504e470d0a1a0a0000000d49484452", "hex").copy(png);
+  png.writeUInt32BE(expected.trace.width, 16);
+  png.writeUInt32BE(expected.trace.height, 20);
+  const imagePath = join(artifact, "final-frame.png");
+  await writeFile(imagePath, png);
+  return {
+    artifact,
+    manifest,
+    imagePath,
+    imageSha256: createHash("sha256").update(png).digest("hex"),
+  };
+}
+
+function runValidator(script, ...args) {
+  return spawnSync(
+    process.env.PYTHON ?? "python3",
+    [resolve(REPO_ROOT, script), ...args],
+    { cwd: REPO_ROOT, encoding: "utf8" },
+  );
+}
+
+test("Truck suite publication passes the real benchmark and full-quality validators", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "gsplat-truck-suite-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const fixture = await installTemporaryTruckArtifact(root);
+  const benchmark = runValidator(
+    "tests/perf/validate-benchmark-artifacts.py",
+    fixture.artifact,
+  );
+  assert.equal(benchmark.status, 0, benchmark.stderr || benchmark.stdout);
+
+  const suitePath = join(root, TRUCK_1080P_QUALIFICATION.suite_name);
+  await publishValidatedTruck1080pSuite({
+    suitePath,
+    manifest: fixture.manifest,
+    imagePath: fixture.imagePath,
+    imageSha256: fixture.imageSha256,
+    validate: async (staging) => {
+      const result = runValidator(
+        "tests/perf/validate-full-quality-experiment.py",
+        staging,
+      );
+      assert.equal(result.status, 0, result.stderr || result.stdout);
+    },
+  });
+  assert.equal(JSON.parse(await readFile(suitePath, "utf8")).status, "complete");
+  await assert.rejects(access(join(root, ".suite.json.staging")), { code: "ENOENT" });
+});
+
+test("Truck suite validator failure never publishes suite.json", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "gsplat-truck-suite-failure-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const fixture = await installTemporaryTruckArtifact(root);
+  const suitePath = join(root, TRUCK_1080P_QUALIFICATION.suite_name);
+  await assert.rejects(
+    publishValidatedTruck1080pSuite({
+      suitePath,
+      manifest: fixture.manifest,
+      imagePath: fixture.imagePath,
+      imageSha256: fixture.imageSha256,
+      validate: async () => {
+        throw new Error("validator rejected fixture");
+      },
+    }),
+    /validator rejected fixture/,
+  );
+  await assert.rejects(access(suitePath), { code: "ENOENT" });
+  await access(join(root, ".suite.json.staging"));
+});
