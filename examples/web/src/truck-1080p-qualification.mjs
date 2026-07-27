@@ -59,6 +59,22 @@ export const TRUCK_1080P_QUALIFICATION = Object.freeze({
   suite_name: "suite.json",
 });
 
+export const TRUCK_1080P_FIXED_GPU_PREPROJECT_COMPACT_QUALIFICATION = Object.freeze({
+  ...TRUCK_1080P_QUALIFICATION,
+  name: "truck-quality-1080p-fixed-gpu-preproject-compact-v1",
+  order_backend: "gpu",
+  projected_policy: "compact",
+  gpu_order_producer: null,
+});
+
+export function truck1080pQualificationByName(name) {
+  if (name === TRUCK_1080P_QUALIFICATION.name) return TRUCK_1080P_QUALIFICATION;
+  if (name === TRUCK_1080P_FIXED_GPU_PREPROJECT_COMPACT_QUALIFICATION.name) {
+    return TRUCK_1080P_FIXED_GPU_PREPROJECT_COMPACT_QUALIFICATION;
+  }
+  return null;
+}
+
 function fail(message) {
   throw new TypeError(`Truck 1080p qualification admission failed: ${message}`);
 }
@@ -71,8 +87,10 @@ export function optionalEnvironmentValue(value) {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
 }
 
-export function validateTruck1080pCollectorConfig(config) {
-  const expected = TRUCK_1080P_QUALIFICATION;
+export function validateTruck1080pCollectorConfig(
+  config,
+  expected = TRUCK_1080P_QUALIFICATION,
+) {
   const stage = config.qualificationStage === expected.control.stage
     ? expected.control
     : config.qualificationStage === expected.throughput.stage
@@ -89,7 +107,7 @@ export function validateTruck1080pCollectorConfig(config) {
   requireExact(config.geometryPath, expected.geometry_path, "geometry path");
   requireExact(config.orderBackend, expected.order_backend, "order backend");
   requireExact(config.projectedPolicy, expected.projected_policy, "projected policy");
-  requireExact(config.gpuOrderProducer, null, "GPU order producer override");
+  requireExact(config.gpuOrderProducer, expected.gpu_order_producer ?? null, "GPU order producer override");
   requireExact(config.sortInterval, expected.sort_interval, "sort interval");
   requireExact(config.benchmarkSync, false, "benchmark sync");
   requireExact(config.m4Smoke, false, "M4 smoke mode");
@@ -145,8 +163,8 @@ export async function publishTruck1080pControlCompletion({
   controlRunId,
   configurationSha256,
   suitePath,
+  expected = TRUCK_1080P_QUALIFICATION,
 }) {
-  const expected = TRUCK_1080P_QUALIFICATION;
   const expectedManifest = resolve(
     outputRoot,
     expected.control.artifact_name,
@@ -189,8 +207,8 @@ export async function publishTruck1080pControlCompletion({
 export async function claimTruck1080pThroughputStage({
   outputRoot,
   controlManifestPath,
+  expected = TRUCK_1080P_QUALIFICATION,
 }) {
-  const expected = TRUCK_1080P_QUALIFICATION;
   const expectedManifest = resolve(
     outputRoot,
     expected.control.artifact_name,
@@ -246,8 +264,11 @@ export async function claimTruck1080pThroughputStage({
   return Object.freeze(marker);
 }
 
-export function validateTruck1080pExactRasterEvidence({ manifest, frames }) {
-  const expected = TRUCK_1080P_QUALIFICATION;
+export function validateTruck1080pExactRasterEvidence({
+  manifest,
+  frames,
+  expected = TRUCK_1080P_QUALIFICATION,
+}) {
   if (!Array.isArray(frames) || frames.length !== expected.measured_frames) {
     fail(
       `retained measured frame count must equal ${expected.measured_frames}, ` +
@@ -290,9 +311,13 @@ export function validateTruck1080pExactRasterEvidence({ manifest, frames }) {
   });
 }
 
-export function buildTruck1080pFullQualitySuite({ manifest, frames, imageSha256 }) {
-  const expected = TRUCK_1080P_QUALIFICATION;
-  validateTruck1080pExactRasterEvidence({ manifest, frames });
+export function buildTruck1080pFullQualitySuite({
+  manifest,
+  frames,
+  imageSha256,
+  expected = TRUCK_1080P_QUALIFICATION,
+}) {
+  validateTruck1080pExactRasterEvidence({ manifest, frames, expected });
   return {
     schema: "gsplat-full-quality-experiment/v1",
     suite_id: `q1-webgpu-truck-1080p-${manifest.build.repository_commit.slice(0, 12)}`,
@@ -397,9 +422,9 @@ export async function publishValidatedTruck1080pSuite({
   imagePath,
   imageSha256,
   validate,
+  expected = TRUCK_1080P_QUALIFICATION,
 }) {
-  const expected = TRUCK_1080P_QUALIFICATION;
-  validateTruck1080pExactRasterEvidence({ manifest, frames });
+  validateTruck1080pExactRasterEvidence({ manifest, frames, expected });
   const outputRoot = dirname(suitePath);
   const artifactPath = resolve(outputRoot, expected.control.artifact_name);
   const expectedImagePath = resolve(artifactPath, "final-frame.png");
@@ -419,7 +444,7 @@ export async function publishValidatedTruck1080pSuite({
     if (error?.code !== "ENOENT") throw error;
   }
 
-  const suite = buildTruck1080pFullQualitySuite({ manifest, frames, imageSha256 });
+  const suite = buildTruck1080pFullQualitySuite({ manifest, frames, imageSha256, expected });
   const staging = resolve(outputRoot, ".suite.json.staging");
   await writeFile(staging, `${JSON.stringify(suite, null, 2)}\n`, { flag: "wx" });
   await validate(staging);

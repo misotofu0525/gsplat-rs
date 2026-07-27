@@ -578,6 +578,44 @@ class VerificationBootstrapTests(unittest.TestCase):
                 {"truck-dataset", "fresh-output:GSPLAT_WEB_TRUCK_OUTPUT"},
             )
 
+    def test_fixed_gpu_preproject_compact_truck_profile_is_independent(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            dataset = root / "tests/datasets/external/inria_3dgs/truck/point_cloud.ply"
+            trace = root / "tests/perf/trace/fixtures/quality/candidate-truck-quality-1920x1080-v1.json"
+            dataset.parent.mkdir(parents=True)
+            trace.parent.mkdir(parents=True)
+            dataset.write_bytes(b"ply")
+            trace.write_text("{}", encoding="utf-8")
+            output = root / "fixed-cell"
+            discovery = BOOTSTRAP.Discovery(
+                env={"GSPLAT_WEB_TRUCK_FIXED_GPU_COMPACT_OUTPUT": str(output)},
+                home=root,
+                which=FakeHost(root).which,
+                capture=FakeHost(root).capture,
+            )
+            with (
+                mock.patch.object(BOOTSTRAP, "REPO_ROOT", root),
+                mock.patch.object(
+                    BOOTSTRAP,
+                    "web_environment",
+                    return_value=([BOOTSTRAP.Probe("web", True, "ready")], {}),
+                ),
+            ):
+                result = BOOTSTRAP.profile_result(
+                    "web-webgpu-truck-fixed-gpu-preproject-compact", discovery
+                )
+            self.assertTrue(result.ready)
+            self.assertEqual(len(result.commands), 3)
+            for collector in result.commands[1:]:
+                self.assertEqual(collector.env["GSPLAT_ORDER_BACKEND"], "gpu")
+                self.assertEqual(collector.env["GSPLAT_PROJECTED_POLICY"], "compact")
+                self.assertEqual(collector.env["GSPLAT_GPU_ORDER_PRODUCER"], "")
+                self.assertEqual(
+                    collector.env["GSPLAT_PHASE_E_QUALIFICATION"],
+                    "truck-quality-1080p-fixed-gpu-preproject-compact-v1",
+                )
+
     def test_run_stops_after_first_failed_command_without_retry(self) -> None:
         result = BOOTSTRAP.ProfileResult(
             name="host",

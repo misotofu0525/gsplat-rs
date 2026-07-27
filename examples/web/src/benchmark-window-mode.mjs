@@ -155,9 +155,13 @@ export function validateBenchmarkWindowManifest({
         || !warmupReceiptValid
         || window.draw_count_at_final_drain_start !== window.draw_count_at_completion
         || window.exact_adaptive_measured?.length !== expectedLogicalFrameCount
-        || window.exact_adaptive_measured.some(
-          (record) => record.state === "disabled"
-            || !["cpu_post_sort", "gpu_post_sort", "gpu_preproject"].includes(record.plan),
+        || window.exact_adaptive_measured.some((record) =>
+          window.execution_cell === "fixed_gpu_preproject_compact"
+            ? record.state !== "disabled" || record.plan !== "gpu_preproject"
+              || record.projected_state !== "disabled"
+              || record.projected_execution !== "compact"
+            : record.state === "disabled"
+              || !["cpu_post_sort", "gpu_post_sort", "gpu_preproject"].includes(record.plan),
         )
         || window.terminal_receipt?.phase !== "final_measured"
         || window.terminal_receipt?.status !== "ready"
@@ -223,6 +227,7 @@ export function createTerminalQueueThroughputWindow({
   measuredFrames,
   configurationSha256,
   controlArtifactIdentity,
+  executionCell = "adaptive",
 }) {
   const warmup = frameCount(warmupFrames, "warmup frame count", true);
   const measured = frameCount(measuredFrames, "measured frame count");
@@ -233,6 +238,9 @@ export function createTerminalQueueThroughputWindow({
   });
   if (control.configuration_sha256 !== configuration) {
     throw new Error("throughput window requires a same-configuration current-stats control");
+  }
+  if (!["adaptive", "fixed_gpu_preproject_compact"].includes(executionCell)) {
+    throw new Error(`unknown terminal-queue execution cell ${executionCell}`);
   }
 
   let state = warmup === 0
@@ -342,7 +350,12 @@ export function createTerminalQueueThroughputWindow({
           || !["candidate", "compact"].includes(projectedExecution)) {
         throw new Error("terminal-queue throughput lacks projected adaptive state/execution");
       }
-      if (!["cpu_learning", "cpu_stable", "gpu_probe", "gpu_stable", "cpu_probe", "cooldown"]
+      if (executionCell === "fixed_gpu_preproject_compact") {
+        if (exactAdaptiveState !== "disabled" || actualPlan !== "gpu_preproject"
+            || projectedAdaptiveState !== "disabled" || projectedExecution !== "compact") {
+          throw new Error("fixed GPU preproject Compact cell execution drifted");
+        }
+      } else if (!["cpu_learning", "cpu_stable", "gpu_probe", "gpu_stable", "cpu_probe", "cooldown"]
         .includes(exactAdaptiveState)
           || !["cpu_post_sort", "gpu_post_sort", "gpu_preproject"].includes(actualPlan)) {
         throw new Error("terminal-queue throughput lacks an active Exact adaptive state/plan");
@@ -532,6 +545,7 @@ export function createTerminalQueueThroughputWindow({
         },
         exact_adaptive_measured: measuredExactAdaptive.map((record) => ({ ...record })),
       };
+      if (executionCell !== "adaptive") window.execution_cell = executionCell;
       return validateBenchmarkWindowManifest({
         window,
         currentStatsSubmissionCount: warmup > 0 ? 2 : 1,

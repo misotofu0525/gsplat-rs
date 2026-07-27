@@ -2830,6 +2830,11 @@ function createBenchmarkState(enabled) {
         configurationSha256:
           state.currentStatsControlArtifactIdentity.configuration_sha256,
         controlArtifactIdentity: state.currentStatsControlArtifactIdentity,
+        executionCell: state.requestedOrderBackend === "gpu"
+          && state.requestedProjectedPolicy === "compact"
+          && state.requestedGpuOrderProducer === null
+          ? "fixed_gpu_preproject_compact"
+          : "adaptive",
       })
     : null;
   return {
@@ -3044,15 +3049,19 @@ function applyUrlConfig() {
       runId: params.get("gsplat_current_stats_control_run_id"),
       configurationSha256: params.get("gsplat_current_stats_control_configuration_sha256"),
     });
+    const adaptiveCell = state.requestedOrderBackend === "adaptive"
+      && state.requestedProjectedPolicy === "adaptive"
+      && state.requestedGpuOrderProducer === null;
+    const fixedGpuCompactCell = state.requestedOrderBackend === "gpu"
+      && state.requestedProjectedPolicy === "compact"
+      && state.requestedGpuOrderProducer === null;
     if (!state.strictBenchmarkMode
         || state.autoBenchmarkSync
         || state.geometryPath !== "packed"
-        || state.requestedOrderBackend !== "adaptive"
-        || state.requestedProjectedPolicy !== "adaptive"
-        || state.requestedGpuOrderProducer !== null
+        || (!adaptiveCell && !fixedGpuCompactCell)
         || state.orderCompletionProtocol !== "sustained_window") {
       throw new TypeError(
-        "terminal-queue throughput requires strict async Packed Exact Adaptive sustained_window",
+        "terminal-queue throughput requires an admitted strict async Packed Exact sustained_window cell",
       );
     }
   }
@@ -3189,8 +3198,11 @@ function recordBenchmark(stats) {
           && stats.currentStatsRasterGeneration === null
           && stats.currentStatsEncodeAttempt === null
           && stats.currentStatsPresentationSequence === null;
+      const fixedGpuCompactCell = state.requestedOrderBackend === "gpu"
+        && state.requestedProjectedPolicy === "compact"
+        && state.requestedGpuOrderProducer === null;
       if (!currentStatsShapeValid
-          || stats.adaptiveState === "disabled"
+          || (!fixedGpuCompactCell && stats.adaptiveState === "disabled")
           || stats.submittedMeasurementTicket !== null
           || stats.submittedMeasurementBackend !== null
           || stats.projectedMeasurementSubmission !== "not_requested"

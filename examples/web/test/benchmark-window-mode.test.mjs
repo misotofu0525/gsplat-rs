@@ -331,6 +331,51 @@ test("projected-disabled Exact whole-plan state is valid", () => {
   assert.equal(window.evidence().exact_adaptive_measured[0].projected_state, "disabled");
 });
 
+test("fixed GPU preproject Compact cell admits only the frozen execution tuple", () => {
+  const window = createTerminalQueueThroughputWindow({
+    warmupFrames: 0,
+    measuredFrames: 1,
+    configurationSha256: CONFIGURATION_SHA256,
+    controlArtifactIdentity: controlIdentity(),
+    executionCell: "fixed_gpu_preproject_compact",
+  });
+  window.beginMeasuredInput({ acceptedAtMonotonicMs: 0 });
+  window.beginFinalReceipt({ requestedAtMonotonicMs: 0 });
+  window.noteDraw(draw({
+    currentStatsSubmission: "issued",
+    currentStatsTicket: 31,
+    projectedAdaptiveState: "disabled",
+    projectedExecution: "compact",
+    exactAdaptiveState: "disabled",
+    actualPlan: "gpu_preproject",
+  }));
+  window.recordTerminalReceipt({
+    ticket: 31,
+    status: "ready",
+    plan: "gpu_preproject",
+    terminalAtMonotonicMs: 2,
+  });
+  const evidence = window.evidence();
+  assert.equal(evidence.execution_cell, "fixed_gpu_preproject_compact");
+  assert.equal(evidence.exact_adaptive_measured[0].plan, "gpu_preproject");
+
+  const drift = createTerminalQueueThroughputWindow({
+    warmupFrames: 0,
+    measuredFrames: 1,
+    configurationSha256: CONFIGURATION_SHA256,
+    controlArtifactIdentity: controlIdentity(),
+    executionCell: "fixed_gpu_preproject_compact",
+  });
+  drift.beginMeasuredInput({ acceptedAtMonotonicMs: 0 });
+  drift.beginFinalReceipt({ requestedAtMonotonicMs: 0 });
+  assert.throws(() => drift.noteDraw(draw({
+    currentStatsSubmission: "issued",
+    currentStatsTicket: 32,
+    exactAdaptiveState: "disabled",
+    actualPlan: "gpu_post_sort",
+  })), /execution drifted/);
+});
+
 test("inactive Exact state, receipt identity drift, and map failure reject", () => {
   const inactive = createTerminalQueueThroughputWindow({
     warmupFrames: 0,

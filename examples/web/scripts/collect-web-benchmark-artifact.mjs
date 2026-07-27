@@ -48,6 +48,7 @@ import {
 } from '../src/dataset-identity.mjs';
 import {
   TRUCK_1080P_QUALIFICATION,
+  truck1080pQualificationByName,
   claimTruck1080pOutputRoot,
   claimTruck1080pThroughputStage,
   optionalEnvironmentValue,
@@ -77,8 +78,9 @@ const formalDatasetLogicalId = qualificationName === 'kitsune-static-v1'
   ? 'kitsune'
   : qualificationName === 'raster-diagnostic-v1'
     ? 'raster_diagnostic_v1'
-    : qualificationName === TRUCK_1080P_QUALIFICATION.name ? 'truck' : null;
-const truck1080pQualification = qualificationName === TRUCK_1080P_QUALIFICATION.name;
+    : truck1080pQualificationByName(qualificationName) ? 'truck' : null;
+const truckQualification = truck1080pQualificationByName(qualificationName);
+const truck1080pQualification = truckQualification !== null;
 const truckQualificationStage = optionalEnvironmentValue(
   process.env.GSPLAT_TRUCK_QUALIFICATION_STAGE,
 );
@@ -146,17 +148,19 @@ if (!['current_stats_evidence_window', 'terminal_queue_throughput_window']
 const currentStatsControlArtifact = optionalEnvironmentValue(
   process.env.GSPLAT_CURRENT_STATS_CONTROL_ARTIFACT,
 );
+const terminalAdaptiveCell = orderBackend === 'adaptive'
+  && projectedPolicy === 'adaptive' && gpuOrderProducer === null;
+const terminalFixedGpuCompactCell = orderBackend === 'gpu'
+  && projectedPolicy === 'compact' && gpuOrderProducer === null;
 if (benchmarkWindowMode === 'terminal_queue_throughput_window' && (
   orderCompletionProtocol !== 'sustained_window'
   || geometryPath !== 'packed'
-  || orderBackend !== 'adaptive'
-  || projectedPolicy !== 'adaptive'
-  || gpuOrderProducer !== null
+  || (!terminalAdaptiveCell && !terminalFixedGpuCompactCell)
   || benchmarkSync
   || currentStatsControlArtifact === null
 )) {
   throw new Error(
-    'terminal-queue throughput requires async Packed Exact Adaptive sustained_window and '
+    'terminal-queue throughput requires an admitted async Packed Exact sustained_window cell and '
       + 'GSPLAT_CURRENT_STATS_CONTROL_ARTIFACT',
   );
 }
@@ -267,7 +271,7 @@ async function admitTruck1080pQualification() {
       .split(',')
       .filter((value) => value.length > 0)
       .map(Number),
-  });
+  }, truckQualification);
   const outputRoot = dirname(outDir);
   const stage = truckQualificationStage === expected.control.stage
     ? expected.control
@@ -302,6 +306,7 @@ async function admitTruck1080pQualification() {
     truckControlCompletion = await claimTruck1080pThroughputStage({
       outputRoot,
       controlManifestPath: requestedControlManifest,
+      expected,
     });
   }
 
@@ -697,7 +702,8 @@ function parseArtifacts(consoleLines) {
           || manifest.ordering_window?.presented_submit_count !== expectedPresented) {
         throw new Error('final current-stats drain submitted a new draw or lost a logical frame');
       }
-      if (rawFrames.some((frame) => frame.adaptive_state === 'disabled'
+      if (rawFrames.some((frame) => (!terminalFixedGpuCompactCell
+            && frame.adaptive_state === 'disabled')
           || frame.submitted_measurement_ticket !== null
           || frame.submitted_measurement_backend !== null
           || frame.projected_measurement_submission !== 'not_requested'
@@ -707,6 +713,14 @@ function parseArtifacts(consoleLines) {
           || !['cpu', 'gpu'].includes(frame.order_backend)
           || !['candidate', 'compact'].includes(frame.projected_execution))) {
         throw new Error('throughput frame lacks a natural Exact WholePlanController identity');
+      }
+      if (terminalFixedGpuCompactCell && rawFrames.some((frame) =>
+        frame.adaptive_state !== 'disabled'
+          || frame.projected_adaptive_state !== 'disabled'
+          || frame.order_backend !== 'gpu'
+          || frame.projected_execution !== 'compact'
+          || frame.gpu_order_producer !== 'preproject')) {
+        throw new Error('fixed GPU preproject Compact throughput execution drifted');
       }
       const adaptiveRecords = manifest.benchmark_window?.exact_adaptive_measured;
       if (!Array.isArray(adaptiveRecords) || adaptiveRecords.length !== rawFrames.length) {
@@ -841,7 +855,11 @@ function parseArtifacts(consoleLines) {
     );
   }
   const hasGpuFrame = rawFrames.some((frame) => frame.order_backend === 'gpu');
-  const expectedActualProducer = gpuOrderProducer ?? (hasGpuFrame ? 'post-sort' : null);
+  const fixedGpuPreprojectCompactCell = truckQualification?.order_backend === 'gpu'
+    && truckQualification?.projected_policy === 'compact';
+  const expectedActualProducer = fixedGpuPreprojectCompactCell
+    ? 'preproject'
+    : gpuOrderProducer ?? (hasGpuFrame ? 'post-sort' : null);
   const frameActualProducers = [
     ...new Set(rawFrames.map((frame) => frame.gpu_order_producer).filter(Boolean)),
   ].sort();
@@ -849,7 +867,9 @@ function parseArtifacts(consoleLines) {
     ...(manifest.gpu_producer_evidence?.actual_producers ?? []),
   ].sort();
   if (terminalQueueThroughput) {
-    if (JSON.stringify(frameActualProducers) !== JSON.stringify(manifestActualProducers)) {
+    if (JSON.stringify(frameActualProducers) !== JSON.stringify(manifestActualProducers)
+        || (fixedGpuPreprojectCompactCell
+          && JSON.stringify(frameActualProducers) !== JSON.stringify(['preproject']))) {
       throw new Error('throughput Exact actual-plan producer ledger drifted from its frames');
     }
   } else if (manifest.renderer?.gpu_order_producer_actual !== expectedActualProducer) {
@@ -1012,16 +1032,18 @@ function parseArtifacts(consoleLines) {
       });
   if (rendererOwnedExact && !terminalQueueThroughput) {
     validateCurrentStatsEvidence({ frames: admittedFrames });
-    if (gpuOrderProducer !== null) {
-      const requiredPlan = gpuOrderProducer === 'preproject'
+    const fixedGpuPreprojectCompactControl = truckQualification?.order_backend === 'gpu'
+      && truckQualification?.projected_policy === 'compact';
+    if (gpuOrderProducer !== null || fixedGpuPreprojectCompactControl) {
+      const requiredPlan = fixedGpuPreprojectCompactControl || gpuOrderProducer === 'preproject'
         ? 'gpu_preproject'
         : 'gpu_post_sort';
       if (statsTerminals.some((terminal) => terminal.plan !== requiredPlan)
-          || admittedFrames.some(
+          || (gpuOrderProducer !== null && admittedFrames.some(
             (frame) => frame.gpu_order_producer !== gpuOrderProducer,
-          )) {
+          ))) {
         throw new Error(
-          `renderer current-stats terminals do not prove requested producer ${gpuOrderProducer}`,
+          `renderer current-stats terminals do not prove required plan ${requiredPlan}`,
         );
       }
     }
@@ -1376,6 +1398,7 @@ async function publishTruck1080pSuite({ manifest, frames, imagePath }) {
     frames,
     imagePath,
     imageSha256,
+    expected: truckQualification,
     validate: (staging) => runPythonValidator(
       'tests/perf/validate-full-quality-experiment.py',
       [staging, '--verify-inputs'],
@@ -1634,6 +1657,7 @@ try {
     validateTruck1080pExactRasterEvidence({
       manifest: truckManifest,
       frames: truckFrames,
+      expected: truckQualification,
     });
   }
   const artifactDir = await writeArtifact(parsed);
@@ -1658,6 +1682,7 @@ try {
       controlRunId: truckManifest.run_id,
       configurationSha256: truckManifest.benchmark_window.configuration_sha256,
       suitePath,
+      expected: truckQualification,
     });
   }
   const resultLine = consoleLines.find((line) => line.includes('BENCHMARK_RESULT '));

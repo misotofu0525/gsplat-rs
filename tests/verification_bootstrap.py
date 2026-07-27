@@ -829,7 +829,10 @@ def profile_result(name: str, discovery: Discovery) -> ProfileResult:
             commands,
         )
 
-    if name == "web-webgpu-truck-1080p":
+    if name in (
+        "web-webgpu-truck-1080p",
+        "web-webgpu-truck-fixed-gpu-preproject-compact",
+    ):
         probes, env = web_environment(discovery)
         dataset = REPO_ROOT / "tests/datasets/external/inria_3dgs/truck/point_cloud.ply"
         trace = (
@@ -852,11 +855,19 @@ def profile_result(name: str, discovery: Discovery) -> ProfileResult:
                 ),
             )
         )
-        output = discovery.env.get(
-            "GSPLAT_WEB_TRUCK_OUTPUT",
-            f"target/qualification/q1-webgpu-truck-1080p-{head}",
+        fixed_cell = name == "web-webgpu-truck-fixed-gpu-preproject-compact"
+        output_env = (
+            "GSPLAT_WEB_TRUCK_FIXED_GPU_COMPACT_OUTPUT"
+            if fixed_cell else "GSPLAT_WEB_TRUCK_OUTPUT"
         )
-        probes.append(fresh_output_probe("GSPLAT_WEB_TRUCK_OUTPUT", output))
+        output = discovery.env.get(
+            output_env,
+            (
+                f"target/qualification/q1-webgpu-truck-fixed-gpu-preproject-compact-{head}"
+                if fixed_cell else f"target/qualification/q1-webgpu-truck-1080p-{head}"
+            ),
+        )
+        probes.append(fresh_output_probe(output_env, output))
         control_artifact = str(pathlib.Path(output) / "control-current-stats")
         throughput_artifact = str(pathlib.Path(output) / "throughput-terminal-queue")
         control_manifest = str(pathlib.Path(control_artifact) / "manifest.json")
@@ -864,11 +875,14 @@ def profile_result(name: str, discovery: Discovery) -> ProfileResult:
         common_collector_env = dict(env)
         common_collector_env.update(
             {
-                "GSPLAT_PHASE_E_QUALIFICATION": "truck-quality-1080p-v1",
+                "GSPLAT_PHASE_E_QUALIFICATION": (
+                    "truck-quality-1080p-fixed-gpu-preproject-compact-v1"
+                    if fixed_cell else "truck-quality-1080p-v1"
+                ),
                 "GSPLAT_DATASET": "truck",
                 "GSPLAT_GEOMETRY_PATH": "packed",
-                "GSPLAT_ORDER_BACKEND": "adaptive",
-                "GSPLAT_PROJECTED_POLICY": "adaptive",
+                "GSPLAT_ORDER_BACKEND": "gpu" if fixed_cell else "adaptive",
+                "GSPLAT_PROJECTED_POLICY": "compact" if fixed_cell else "adaptive",
                 "GSPLAT_GPU_ORDER_PRODUCER": "",
                 "GSPLAT_SORT_INTERVAL": "1",
                 "GSPLAT_BENCHMARK_SYNC": "0",
@@ -1014,6 +1028,7 @@ PROFILES = (
     "macos-metal",
     "web-webgpu",
     "web-webgpu-truck-1080p",
+    "web-webgpu-truck-fixed-gpu-preproject-compact",
     "apple-host",
     "apple-xcframework",
     "ios-simulator",

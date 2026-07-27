@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 
 import {
   TRUCK_1080P_QUALIFICATION,
+  TRUCK_1080P_FIXED_GPU_PREPROJECT_COMPACT_QUALIFICATION,
   buildTruck1080pFullQualitySuite,
   claimTruck1080pOutputRoot,
   claimTruck1080pThroughputStage,
@@ -18,6 +19,7 @@ import {
   validateTruck1080pCleanWorkingTree,
   validateTruck1080pCollectorConfig,
   validateTruck1080pExactRasterEvidence,
+  truck1080pQualificationByName,
 } from "../src/truck-1080p-qualification.mjs";
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
@@ -55,6 +57,23 @@ test("optional fixed camera environment treats an explicit empty override as abs
   assert.equal(optionalEnvironmentValue(""), null);
   assert.equal(optionalEnvironmentValue("  "), null);
   assert.equal(optionalEnvironmentValue("0"), "0");
+});
+
+test("fixed GPU preproject Compact Truck cell is a separate frozen tuple", () => {
+  const expected = TRUCK_1080P_FIXED_GPU_PREPROJECT_COMPACT_QUALIFICATION;
+  const config = {
+    ...validConfig(),
+    qualificationName: expected.name,
+    orderBackend: "gpu",
+    projectedPolicy: "compact",
+    gpuOrderProducer: null,
+  };
+  assert.equal(truck1080pQualificationByName(expected.name), expected);
+  assert.equal(validateTruck1080pCollectorConfig(config, expected), expected);
+  assert.throws(
+    () => validateTruck1080pCollectorConfig({ ...config, gpuOrderProducer: "post-sort" }, expected),
+    /GPU order producer override/,
+  );
 });
 
 test("Truck 1080p collector admission freezes the full formal configuration", () => {
