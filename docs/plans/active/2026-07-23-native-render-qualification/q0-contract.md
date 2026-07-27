@@ -1,8 +1,9 @@
 # Q0 Fair Qualification Contract
 
-> Status: **Active candidate**. This document freezes admission for Package Q;
-> it does not contain a product benchmark or a winner. Root review and
-> integration are still required before Q1--Q3 may collect formal evidence.
+> Status: **Accepted** after root review and integration (`dd6af91`,
+> `b195055`). This document freezes admission for Package Q; it does not
+> contain a product benchmark or a winner. Q1--Q3 may collect formal evidence
+> only after satisfying their own declared prerequisites.
 
 ## 1. Purpose and non-goals
 
