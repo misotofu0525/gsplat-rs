@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import argparse
 import copy
-import dataclasses
 import hashlib
 import importlib.util
 import json
@@ -393,6 +392,7 @@ def raw_capture_fixture(
                 "status": "complete",
                 "backend": spec.order_backend,
                 "thermal_status_before": 0,
+                "thermal_status_after": 0,
                 "artifact": "run/artifact",
             }
         ],
@@ -402,9 +402,9 @@ def raw_capture_fixture(
 
 
 class ScalableS1A065CollectorTests(unittest.TestCase):
-    def test_schedule_freezes_both_orders_views_moving_and_replacement(self) -> None:
+    def test_schedule_is_static_authored_views_only_and_rejects_synthetic_moving(self) -> None:
         specs = COLLECTOR.capture_specs()
-        self.assertEqual(len(specs), 36)
+        self.assertEqual(len(specs), 12)
         keys = {
             (
                 item.order_backend,
@@ -416,27 +416,50 @@ class ScalableS1A065CollectorTests(unittest.TestCase):
             )
             for item in specs
         }
-        self.assertEqual(len(keys), 36)
+        self.assertEqual(len(keys), 12)
         for order in COLLECTOR.REQUIRED_ORDERS:
             for cut in COLLECTOR.REQUIRED_CUTS:
-                moving = [
+                static = [
                     item
                     for item in specs
                     if item.order_backend == order
                     and item.cut_name == cut
-                    and item.sequence == "moving_sequence"
+                    and item.sequence == "authored_views"
                 ]
                 self.assertEqual(
-                    [(item.trace_frame_index, item.measured_frames) for item in moving],
-                    [(0, 1), (1, 2), (0, 3)],
+                    [
+                        (
+                            item.capture_index,
+                            item.trace_frame_index,
+                            item.measured_frames,
+                            item.playback,
+                        )
+                        for item in static
+                    ],
+                    [(0, 0, 1, "fixed"), (1, 1, 1, "fixed")],
                 )
-            replacement = [
-                item.cut_name
-                for item in specs
-                if item.order_backend == order
-                and item.sequence == "replacement_sequence"
-            ]
-            self.assertEqual(replacement, list(COLLECTOR.REPLACEMENT_CUTS))
+        self.assertFalse(
+            any(item.sequence in {"moving_sequence", "replacement_sequence"} for item in specs)
+        )
+
+        synthetic = COLLECTOR.CaptureSpec(
+            "cpu", "bootstrap_roots", "moving_sequence", 2, 0, 3, "sequence_prefix"
+        )
+        with self.assertRaisesRegex(ValueError, "static authored views"):
+            COLLECTOR.collector_command(
+                argparse.Namespace(
+                    serial="fixture",
+                    thermal_timeout_seconds=1,
+                    thermal_poll_seconds=1,
+                    run_timeout_seconds=1,
+                    apk=None,
+                    adb=None,
+                ),
+                synthetic,
+                "proxy",
+                mock.Mock(),
+                pathlib.Path("/unused"),
+            )
 
     def test_author_receipt_preserves_complete_S_R_and_materialized_P(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -458,24 +481,25 @@ class ScalableS1A065CollectorTests(unittest.TestCase):
             args = args_fixture(root, receipt_path)
             with mock.patch.object(COLLECTOR, "FORMAL_SOURCE", source):
                 package = COLLECTOR.validate_author_package(receipt_path)
-            moving = next(
+            static = next(
                 item
                 for item in COLLECTOR.capture_specs()
                 if item.order_backend == "gpu"
                 and item.cut_name == "mixed_depth_two_replacements"
-                and item.sequence == "moving_sequence"
-                and item.capture_index == 2
+                and item.sequence == "authored_views"
+                and item.capture_index == 1
             )
             command = COLLECTOR.collector_command(
-                args, moving, "proxy", package, root / "raw"
+                args, static, "proxy", package, root / "raw"
             )
         self.assertIn("--capture-final-png", command)
         self.assertNotIn("--formal-artifact", command)
         self.assertNotIn("--prepare-apk", command)
         self.assertEqual(command[command.index("--geometry-path") + 1], "packed")
         self.assertEqual(command[command.index("--backend") + 1], "gpu")
-        self.assertEqual(command[command.index("--camera-frame-indices") + 1], "0,1")
-        self.assertEqual(command[command.index("--frames") + 1], "3")
+        self.assertNotIn("--camera-frame-indices", command)
+        self.assertEqual(command[command.index("--camera-frame") + 1], "1")
+        self.assertEqual(command[command.index("--frames") + 1], "1")
         self.assertEqual(command[command.index("--max-thermal-status") + 1], "0")
 
     def test_raw_proxy_authority_is_actual_input_P_and_join_is_read_only(self) -> None:
@@ -508,6 +532,8 @@ class ScalableS1A065CollectorTests(unittest.TestCase):
             }
         self.assertEqual(evidence.dataset["splat_count"], 1)
         self.assertEqual(evidence.counts["source"], 1)
+        self.assertEqual(evidence.thermal_status_before, 0)
+        self.assertEqual(evidence.thermal_status_after, 0)
         self.assertEqual(before, after)
 
     def test_raw_proxy_rejects_S_substituted_for_actual_input_P(self) -> None:
@@ -528,7 +554,63 @@ class ScalableS1A065CollectorTests(unittest.TestCase):
             ):
                 COLLECTOR.read_lane_evidence(raw_root, spec, "proxy", input_path, 1)
 
-    def test_stale_png_current_stats_presentation_join_is_rejected(self) -> None:
+    def test_child_thermal_after_is_required_and_zero(self) -> None:
+        for mode in ("missing", "nonzero"):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as directory:
+                root = pathlib.Path(directory)
+                input_path = root / "proxy.ply"
+                input_path.write_bytes(b"proxy")
+                trace_path = root / "trace.json"
+                spec = COLLECTOR.CaptureSpec(
+                    "cpu", "bootstrap_roots", "authored_views", 0, 0, 1, "fixed"
+                )
+                raw_root = raw_capture_fixture(
+                    root, spec, input_path, 1, lane="proxy"
+                )
+                experiment_path = raw_root / "experiment.json"
+                experiment = json.loads(experiment_path.read_text())
+                if mode == "missing":
+                    experiment["runs"][0].pop("thermal_status_after")
+                    expected = "thermal_status_after"
+                else:
+                    experiment["runs"][0]["thermal_status_after"] = 1
+                    expected = "ended above thermal status zero"
+                experiment_path.write_text(json.dumps(experiment), encoding="utf-8")
+                with (
+                    mock.patch.object(COLLECTOR, "FORMAL_TRACE", trace_path),
+                    mock.patch.object(COLLECTOR, "FORMAL_SIZE", (2, 1)),
+                    mock.patch.object(COLLECTOR.ANDROID, "validate_run_artifact"),
+                    self.assertRaisesRegex(COLLECTOR.RejectedCollection, expected),
+                ):
+                    COLLECTOR.read_lane_evidence(
+                        raw_root, spec, "proxy", input_path, 1
+                    )
+
+    def test_malformed_child_benchmark_frames_are_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            input_path = root / "proxy.ply"
+            input_path.write_bytes(b"proxy")
+            trace_path = root / "trace.json"
+            spec = COLLECTOR.CaptureSpec(
+                "cpu", "bootstrap_roots", "authored_views", 0, 0, 1, "fixed"
+            )
+            raw_root = raw_capture_fixture(root, spec, input_path, 1, lane="proxy")
+            (raw_root / "run/artifact/frames.jsonl").write_text(
+                "{\n", encoding="utf-8"
+            )
+            with (
+                mock.patch.object(COLLECTOR, "FORMAL_TRACE", trace_path),
+                mock.patch.object(COLLECTOR, "FORMAL_SIZE", (2, 1)),
+                self.assertRaisesRegex(
+                    COLLECTOR.RejectedCollection, "benchmark frames are invalid"
+                ),
+            ):
+                COLLECTOR.read_lane_evidence(
+                    raw_root, spec, "proxy", input_path, 1
+                )
+
+    def test_stale_current_stats_presentation_join_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)
             input_path = root / "proxy.ply"
@@ -550,7 +632,7 @@ class ScalableS1A065CollectorTests(unittest.TestCase):
             ):
                 COLLECTOR.read_lane_evidence(raw_root, spec, "proxy", input_path, 1)
 
-    def test_pair_join_preserves_raw_images_and_requires_matching_present_identity(self) -> None:
+    def test_pixelcopy_pair_is_retained_but_formal_image_join_is_deferred(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)
             trace = {
@@ -584,7 +666,6 @@ class ScalableS1A065CollectorTests(unittest.TestCase):
                 "order_generation": 7,
                 "raster_generation": 8,
                 "encode_attempt": 9,
-                "image_join": {},
             }
 
             def lane(name: str, image: pathlib.Path, active: int) -> COLLECTOR.LaneEvidence:
@@ -623,6 +704,8 @@ class ScalableS1A065CollectorTests(unittest.TestCase):
                     build=build,
                     package_identity=package_identity,
                     environment_receipt=environment,
+                    thermal_status_before=0,
+                    thermal_status_after=0,
                 )
 
             exact = lane("exact", exact_path, 5)
@@ -651,22 +734,40 @@ class ScalableS1A065CollectorTests(unittest.TestCase):
                     {"splat_count": 5, "sha256": "e" * 64},
                     clear=False,
                 ),
+                mock.patch.object(COLLECTOR.BALANCED, "load_image") as load_image,
+                mock.patch.object(
+                    COLLECTOR.BALANCED, "compute_frame_metrics"
+                ) as frame_metrics,
             ):
-                comparison, _ = COLLECTOR.compare_lanes(
+                static_capture = COLLECTOR.retain_static_pair(
                     spec, cut, exact, proxy, root
                 )
-                mismatched = dataclasses.replace(
-                    proxy,
-                    presentation={**proxy.presentation, "presentation_generation": 99},
-                )
-                with self.assertRaisesRegex(
-                    COLLECTOR.RejectedCollection, "presentation_generation"
-                ):
-                    COLLECTOR.compare_lanes(spec, cut, exact, mismatched, root)
             after = (exact_path.read_bytes(), proxy_path.read_bytes())
-        self.assertTrue(comparison["frame_gate_pass"])
+        load_image.assert_not_called()
+        frame_metrics.assert_not_called()
+        self.assertEqual(static_capture["image_gate"]["decision"], "Deferred")
+        self.assertFalse(static_capture["image_gate"]["pass"])
         self.assertEqual(
-            comparison["raw_dataset_authority"]["exact"],
+            static_capture["image_gate"]["renderer_same_present_capture_identity"],
+            "unavailable",
+        )
+        self.assertFalse(static_capture["image_gate"]["formal_metrics_published"])
+        self.assertNotIn("metrics", static_capture)
+        self.assertNotIn("frame_gate_pass", static_capture)
+        self.assertEqual(
+            static_capture["image_gate"]["association_to_renderer_present"],
+            "same_benchmark_process_only",
+        )
+        self.assertNotIn(
+            "image_join", static_capture["renderer_present_evidence"]["exact"]
+        )
+        self.assertNotIn(
+            "image_join", static_capture["renderer_present_evidence"]["proxy"]
+        )
+        self.assertIn("pixelcopy_images", static_capture)
+        self.assertNotIn("images", static_capture)
+        self.assertEqual(
+            static_capture["raw_dataset_authority"]["exact"],
             {
                 "sha256": hashlib.sha256(b"exact").hexdigest(),
                 "bytes": 5,
@@ -675,17 +776,23 @@ class ScalableS1A065CollectorTests(unittest.TestCase):
             },
         )
         self.assertEqual(
-            comparison["raw_dataset_authority"]["proxy"]["authority_symbol"],
+            static_capture["raw_dataset_authority"]["proxy"]["authority_symbol"],
             "P",
         )
         self.assertEqual(
-            comparison["raw_dataset_authority"]["proxy"]["active_splats"], 1
+            static_capture["raw_dataset_authority"]["proxy"]["active_splats"], 1
         )
         self.assertEqual(
-            comparison["presented_cut"]["coverage_evidence"]["represented_source_leaves"],
+            static_capture["presented_cut"]["coverage_evidence"]["represented_source_leaves"],
             5,
         )
-        self.assertIn("not_runtime_coverage_generation", comparison["presented_cut"]["coverage_evidence"]["identity_semantics"])
+        self.assertIn(
+            "not_runtime_coverage_generation",
+            static_capture["presented_cut"]["coverage_evidence"]["identity_semantics"],
+        )
+        self.assertEqual(
+            static_capture["benchmark_artifacts"]["proxy"]["thermal_status_after"], 0
+        )
         self.assertEqual(before, after)
 
     def test_failed_child_command_is_not_retried(self) -> None:
@@ -717,6 +824,55 @@ class ScalableS1A065CollectorTests(unittest.TestCase):
                 COLLECTOR.run_collection(args, package, output)
         run.assert_called_once()
 
+    def test_post_launch_missing_or_malformed_artifact_is_rejected(self) -> None:
+        for mode in ("missing", "malformed"):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as directory:
+                root = pathlib.Path(directory)
+                receipt_path, source = author_fixture(root)
+                args = args_fixture(root, receipt_path)
+                args.dry_run = False
+                with mock.patch.object(COLLECTOR, "FORMAL_SOURCE", source):
+                    package = COLLECTOR.validate_author_package(receipt_path)
+                output = root / "output"
+                output.mkdir()
+                one_spec = COLLECTOR.CaptureSpec(
+                    "cpu", "bootstrap_roots", "authored_views", 0, 0, 1, "fixed"
+                )
+
+                def launch(command, **_kwargs):
+                    raw_output = pathlib.Path(command[command.index("--output") + 1])
+                    if mode == "malformed":
+                        raw_output.mkdir(parents=True)
+                        (raw_output / "experiment.json").write_text(
+                            "{", encoding="utf-8"
+                        )
+                    return COLLECTOR.subprocess.CompletedProcess(command, 0)
+
+                with (
+                    mock.patch.object(
+                        COLLECTOR, "validate_formal_preflight", return_value={}
+                    ),
+                    mock.patch.object(
+                        COLLECTOR,
+                        "repository_identity",
+                        return_value={"commit": "b" * 40, "dirty": False},
+                    ),
+                    mock.patch.object(
+                        COLLECTOR,
+                        "admit_device",
+                        return_value={"android_device_receipt": {}},
+                    ),
+                    mock.patch.object(
+                        COLLECTOR, "capture_specs", return_value=[one_spec]
+                    ),
+                    mock.patch.object(
+                        COLLECTOR.subprocess, "run", side_effect=launch
+                    ) as run,
+                    self.assertRaises(COLLECTOR.RejectedCollection),
+                ):
+                    COLLECTOR.run_collection(args, package, output)
+                run.assert_called_once()
+
     def test_unavailable_doctor_is_deferred_once_before_collection(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)
@@ -738,36 +894,95 @@ class ScalableS1A065CollectorTests(unittest.TestCase):
                 COLLECTOR.admit_device(args, package, root / "output")
         run.assert_called_once()
 
-    def test_transition_gate_reloads_only_the_needed_retained_images(self) -> None:
-        comparisons = []
-        for spec in COLLECTOR.capture_specs():
-            comparisons.append(
-                {
-                    "pair_id": spec.pair_id,
-                    "order_backend": spec.order_backend,
-                    "cut_name": spec.cut_name,
-                    "sequence": spec.sequence,
-                    "capture_index": spec.capture_index,
-                    "trace_frame_index": spec.trace_frame_index,
-                    "images": {
-                        "exact": {"path": f"{spec.slug}/exact.png"},
-                        "proxy": {"path": f"{spec.slug}/proxy.png"},
-                    },
-                }
+    def test_completed_static_collection_still_terminates_deferred(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            receipt_path, source = author_fixture(root)
+            args = args_fixture(root, receipt_path)
+            args.dry_run = False
+            with mock.patch.object(COLLECTOR, "FORMAL_SOURCE", source):
+                package = COLLECTOR.validate_author_package(receipt_path)
+            output = root / "output"
+            output.mkdir()
+            one_spec = COLLECTOR.CaptureSpec(
+                "cpu", "bootstrap_roots", "authored_views", 0, 0, 1, "fixed"
             )
-        with (
-            mock.patch.object(COLLECTOR.BALANCED, "load_image", return_value=object()) as load,
-            mock.patch.object(
-                COLLECTOR.BALANCED, "compute_temporal_metric", return_value=0.0
-            ) as temporal,
-        ):
-            transitions = COLLECTOR.compute_transitions(
-                comparisons, pathlib.Path("/unused")
-            )
-        self.assertEqual(len(transitions), 16)
-        self.assertEqual(load.call_count, 64)
-        self.assertEqual(temporal.call_count, 16)
-        self.assertTrue(all(item["transition_gate_pass"] for item in transitions))
+            evidence = mock.Mock(environment_receipt={})
+            with (
+                mock.patch.object(
+                    COLLECTOR, "validate_formal_preflight", return_value={}
+                ),
+                mock.patch.object(
+                    COLLECTOR,
+                    "repository_identity",
+                    return_value={"commit": "b" * 40, "dirty": False},
+                ),
+                mock.patch.object(
+                    COLLECTOR,
+                    "admit_device",
+                    return_value={"android_device_receipt": {}},
+                ),
+                mock.patch.object(COLLECTOR, "capture_specs", return_value=[one_spec]),
+                mock.patch.object(
+                    COLLECTOR.subprocess,
+                    "run",
+                    return_value=COLLECTOR.subprocess.CompletedProcess([], 0),
+                ) as run,
+                mock.patch.object(
+                    COLLECTOR,
+                    "read_lane_evidence",
+                    side_effect=[evidence, evidence],
+                ),
+                mock.patch.object(
+                    COLLECTOR,
+                    "retain_static_pair",
+                    return_value={"pair_id": one_spec.pair_id},
+                ),
+            ):
+                artifact = COLLECTOR.run_collection(args, package, output)
+        self.assertEqual(run.call_count, 2)
+        self.assertEqual(artifact["decision"], "Deferred")
+        self.assertFalse(artifact["pass"])
+        self.assertEqual(len(artifact["static_captures"]), 1)
+        self.assertNotIn("comparisons", artifact)
+        self.assertNotIn("transitions", artifact)
+        self.assertNotIn("EndpointPassed", json.dumps(artifact))
+        self.assertEqual(
+            artifact["deferred_gates"]["moving_same_session_capture"]["decision"],
+            "Deferred",
+        )
+
+    def test_cli_reports_completed_static_capture_as_deferred(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            output = root / "output"
+            artifact = {
+                "decision": "Deferred",
+                "reason": COLLECTOR.PIXELCOPY_IMAGE_GATE_REASON,
+                "ended_at_utc": "2026-07-27T00:00:00Z",
+            }
+            with (
+                mock.patch.object(
+                    COLLECTOR, "validate_author_package", return_value=mock.Mock()
+                ),
+                mock.patch.object(COLLECTOR, "run_collection", return_value=artifact),
+                mock.patch("builtins.print"),
+            ):
+                result = COLLECTOR.main(
+                    [
+                        "--serial",
+                        "fixture-serial",
+                        "--author-receipt",
+                        str(root / "author.json"),
+                        "--output",
+                        str(output),
+                    ]
+                )
+            decision = json.loads((output / "decision.json").read_text())
+        self.assertEqual(result, 2)
+        self.assertEqual(decision["decision"], "Deferred")
+        self.assertFalse(decision["pass"])
+        self.assertTrue(decision["collection_started"])
 
     def test_missing_author_is_one_finite_deferred_attempt(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

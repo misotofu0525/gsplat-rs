@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Collect the Nothing A065 half of the formal S1 materialized-cut image gate.
+"""Collect static Nothing A065 materialized-cut capture prerequisites for S1.
 
 This is an orchestration and evidence-join layer over the existing Android
 collector.  It never installs or builds an APK.  Every raw Android artifact
@@ -8,10 +8,18 @@ source lane and ``P`` for a materialized proxy cut.  The outer receipt joins
 that renderer evidence read-only with the offline author's complete ``S/R``
 coverage receipt; it never rewrites a raw manifest or claims an S4 runtime cut.
 
+The current Android app exposes one terminal PixelCopy PNG per process.  It has
+neither renderer-owned multi-capture nor a renderer capture identity that can
+be atomically joined to the successful present.  This collector therefore
+retains only static authored views 0/1 as diagnostic prerequisites.  The
+moving/replacement sequences and formal image gate always remain Deferred; no
+frame or temporal quality metric is published from PixelCopy.
+
 The command owns one attempt.  It performs one doctor/ADB/thermal admission,
 uses fresh child outputs, and never retries a failed child collector command.
-Missing device prerequisites are Deferred before collection; any failure after
-the first child launch is Rejected and retained in the fresh output root.
+Missing device prerequisites are Deferred before collection; missing or
+malformed child artifacts after launch are Rejected and retained in the fresh
+output root.
 """
 
 from __future__ import annotations
@@ -61,6 +69,18 @@ REPLACEMENT_CUTS = (
 )
 WARMUP_FRAMES = 20
 MAX_THERMAL_STATUS = 0
+PIXELCOPY_IMAGE_GATE_REASON = (
+    "Android PixelCopy has no renderer-owned capture identity joined atomically "
+    "to the successful present"
+)
+MOVING_CAPTURE_REASON = (
+    "the Android collector has no renderer-owned multi-capture receipt for one "
+    "continuous 0->1->0 renderer session"
+)
+REPLACEMENT_CAPTURE_REASON = (
+    "the Android collector has no renderer-owned multi-capture receipt for one "
+    "continuous replacement-cut renderer session"
+)
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
 
@@ -163,6 +183,8 @@ class LaneEvidence:
     build: dict[str, Any]
     package_identity: dict[str, Any]
     environment_receipt: dict[str, Any]
+    thermal_status_before: int
+    thermal_status_after: int
 
 
 def utc_now() -> str:
@@ -417,30 +439,6 @@ def capture_specs() -> list[CaptureSpec]:
                         "fixed",
                     )
                 )
-            for capture_index, trace_frame_index in enumerate(MOVING_TRACE):
-                result.append(
-                    CaptureSpec(
-                        order_backend,
-                        cut_name,
-                        "moving_sequence",
-                        capture_index,
-                        trace_frame_index,
-                        capture_index + 1,
-                        "sequence_prefix",
-                    )
-                )
-        for capture_index, cut_name in enumerate(REPLACEMENT_CUTS):
-            result.append(
-                CaptureSpec(
-                    order_backend,
-                    cut_name,
-                    "replacement_sequence",
-                    capture_index,
-                    0,
-                    1,
-                    "fixed",
-                )
-            )
     return result
 
 
@@ -453,6 +451,13 @@ def collector_command(
 ) -> list[str]:
     if lane not in {"exact", "proxy"}:
         raise ValueError(f"unknown lane {lane!r}")
+    if (
+        spec.sequence != "authored_views"
+        or spec.playback != "fixed"
+        or spec.measured_frames != 1
+        or spec.trace_frame_index not in {0, 1}
+    ):
+        raise ValueError("A065 collector supports static authored views 0/1 only")
     input_path = package.source_path if lane == "exact" else package.cuts[spec.cut_name].input_path
     command = [
         sys.executable,
@@ -491,10 +496,7 @@ def collector_command(
         "--output",
         os.fspath(raw_output),
     ]
-    if spec.playback == "fixed":
-        command.extend(["--camera-frame", str(spec.trace_frame_index)])
-    else:
-        command.extend(["--camera-frame-indices", "0,1"])
+    command.extend(["--camera-frame", str(spec.trace_frame_index)])
     if args.apk is not None:
         command.extend(["--apk", os.fspath(args.apk)])
     if args.adb is not None:
@@ -503,9 +505,14 @@ def collector_command(
 
 
 def expected_trace_schedule(spec: CaptureSpec) -> list[int]:
-    if spec.playback == "fixed":
-        return [spec.trace_frame_index]
-    return list(MOVING_TRACE[: spec.measured_frames])
+    if (
+        spec.sequence != "authored_views"
+        or spec.playback != "fixed"
+        or spec.measured_frames != 1
+        or spec.trace_frame_index not in {0, 1}
+    ):
+        raise RejectedCollection("A065 raw evidence is not one static authored view")
+    return [spec.trace_frame_index]
 
 
 def validate_a065_environment(receipt: dict[str, Any]) -> None:
@@ -601,8 +608,16 @@ def read_lane_evidence(
     run = runs[0]
     if run.get("backend") != spec.order_backend:
         raise RejectedCollection(f"{lane} raw run backend mismatch")
-    if run.get("thermal_status_before") != MAX_THERMAL_STATUS:
+    thermal_status_before = require_int(
+        run.get("thermal_status_before"), f"{lane} raw thermal_status_before"
+    )
+    thermal_status_after = require_int(
+        run.get("thermal_status_after"), f"{lane} raw thermal_status_after"
+    )
+    if thermal_status_before != MAX_THERMAL_STATUS:
         raise RejectedCollection(f"{lane} raw run was not admitted at thermal status zero")
+    if thermal_status_after != MAX_THERMAL_STATUS:
+        raise RejectedCollection(f"{lane} raw run ended above thermal status zero")
     artifact_relative = require_string(run.get("artifact"), f"{lane} raw artifact path")
     try:
         artifact = BALANCED.resolve_artifact_directory(
@@ -612,7 +627,10 @@ def read_lane_evidence(
         raise RejectedCollection(str(error)) from error
     manifest = load_json(artifact / "manifest.json", f"{lane} benchmark manifest")
     summary = load_json(artifact / "summary.json", f"{lane} benchmark summary")
-    frames = ANDROID.read_artifact_frames(artifact / "frames.jsonl")
+    try:
+        frames = ANDROID.read_artifact_frames(artifact / "frames.jsonl")
+    except (OSError, RuntimeError) as error:
+        raise RejectedCollection(f"{lane} benchmark frames are invalid: {error}") from error
     try:
         ANDROID.validate_run_artifact(
             manifest,
@@ -682,7 +700,7 @@ def read_lane_evidence(
         or terminal.get("current_stats_presentation_sequence") != presentation_sequence
         or identity.get("camera_revision") != camera_revision
     ):
-        raise RejectedCollection(f"{lane} PNG/current-stats terminal join is stale")
+        raise RejectedCollection(f"{lane} current-stats terminal join is stale")
     camera_receipt = require_object(terminal.get("camera_receipt"), f"{lane} camera receipt")
     if (
         camera_receipt.get("camera_revision") != camera_revision
@@ -787,13 +805,6 @@ def read_lane_evidence(
         "encode_attempt": require_int(
             identity.get("encode_attempt"), f"{lane} encode attempt", positive=True
         ),
-        "image_join": {
-            "benchmark_run_id": run_id,
-            "sha256": image["sha256"],
-            "width": FORMAL_SIZE[0],
-            "height": FORMAL_SIZE[1],
-            "source": "app_sandbox_pixelcopy_after_terminal_present",
-        },
     }
     return LaneEvidence(
         lane=lane,
@@ -813,6 +824,8 @@ def read_lane_evidence(
         build=build,
         package_identity=package_identity,
         environment_receipt=environment_receipt,
+        thermal_status_before=thermal_status_before,
+        thermal_status_after=thermal_status_after,
     )
 
 
@@ -832,13 +845,15 @@ def image_receipt(lane: LaneEvidence, output: pathlib.Path) -> dict[str, Any]:
     }
 
 
-def compare_lanes(
+def retain_static_pair(
     spec: CaptureSpec,
     cut: CutInput,
     exact: LaneEvidence,
     proxy: LaneEvidence,
     output: pathlib.Path,
-) -> tuple[dict[str, Any], BALANCED.FramePixels]:
+) -> dict[str, Any]:
+    if spec.sequence != "authored_views":
+        raise RejectedCollection("only static authored views may be retained")
     if exact.dataset.get("splat_count") != FORMAL_SOURCE["splat_count"]:
         raise RejectedCollection("Exact raw artifact active count must equal S")
     if proxy.dataset.get("splat_count") != cut.active_splats:
@@ -851,38 +866,9 @@ def compare_lanes(
         raise RejectedCollection(f"{spec.pair_id} Exact/proxy A065 identities differ")
     if exact.executed_plan != proxy.executed_plan:
         raise RejectedCollection(f"{spec.pair_id} Exact/proxy executed plans differ")
-    generation_fields = (
-        "scene_generation",
-        "camera_generation",
-        "viewport_generation",
-        "contract_generation",
-        "plan_generation",
-        "presentation_generation",
-        "order_generation",
-        "raster_generation",
-        "encode_attempt",
-    )
-    for field in generation_fields:
-        if exact.presentation[field] != proxy.presentation[field]:
-            raise RejectedCollection(f"{spec.pair_id} Exact/proxy {field} mismatch")
 
     exact_image_receipt = image_receipt(exact, output)
     proxy_image_receipt = image_receipt(proxy, output)
-    try:
-        exact_image = BALANCED.load_image(
-            output, exact_image_receipt, FORMAL_SIZE, f"{spec.pair_id}.images.exact"
-        )
-        proxy_image = BALANCED.load_image(
-            output, proxy_image_receipt, FORMAL_SIZE, f"{spec.pair_id}.images.proxy"
-        )
-        metrics = BALANCED.compute_frame_metrics(exact_image, proxy_image)
-    except BALANCED.ValidationError as error:
-        raise RejectedCollection(f"{spec.pair_id} image validation failed: {error}") from error
-    failures = []
-    for metric, (kind, limit) in S1.FRAME_METRIC_LIMITS.items():
-        value = metrics[metric]
-        if (kind == "minimum" and value < limit) or (kind == "maximum" and value > limit):
-            failures.append(f"{metric}={value} {kind}={limit}")
 
     trace = load_json(FORMAL_TRACE, "frozen A065 Bonsai trace")
     trace_frame = trace["frames"][spec.trace_frame_index]
@@ -898,7 +884,7 @@ def compare_lanes(
         "coverage_sha256": cut.coverage_sha256,
         "identity_semantics": "offline_author_receipt_join_not_runtime_coverage_generation",
     }
-    comparison = {
+    return {
         "pair_id": spec.pair_id,
         "endpoint_id": ENDPOINT_ID,
         "order_backend": spec.order_backend,
@@ -921,7 +907,7 @@ def compare_lanes(
                 "active_splats": proxy.dataset["splat_count"],
             },
         },
-        "presentation": {
+        "renderer_present_evidence": {
             "exact": exact.presentation,
             "proxy": proxy.presentation,
         },
@@ -941,9 +927,18 @@ def compare_lanes(
             "outcome": "presented",
             "presentation": proxy.presentation,
         },
-        "images": {
+        "pixelcopy_images": {
             "exact": exact_image_receipt,
             "proxy": proxy_image_receipt,
+        },
+        "image_gate": {
+            "decision": "Deferred",
+            "pass": False,
+            "reason": PIXELCOPY_IMAGE_GATE_REASON,
+            "capture_source": "android_surface_pixelcopy",
+            "association_to_renderer_present": "same_benchmark_process_only",
+            "renderer_same_present_capture_identity": "unavailable",
+            "formal_metrics_published": False,
         },
         "benchmark_artifacts": {
             "pair_id": spec.pair_id,
@@ -952,123 +947,19 @@ def compare_lanes(
                 "sha256": exact.artifact_sha256,
                 "run_id": exact.run_id,
                 "frame_index": exact.frame_index,
+                "thermal_status_before": exact.thermal_status_before,
+                "thermal_status_after": exact.thermal_status_after,
             },
             "proxy": {
                 "path": scoped_path(proxy.artifact_path, output, "proxy raw artifact"),
                 "sha256": proxy.artifact_sha256,
                 "run_id": proxy.run_id,
                 "frame_index": proxy.frame_index,
+                "thermal_status_before": proxy.thermal_status_before,
+                "thermal_status_after": proxy.thermal_status_after,
             },
         },
-        "metrics": metrics,
-        "frame_gate_pass": not failures,
-        "frame_gate_failures": failures,
     }
-    return (
-        comparison,
-        BALANCED.FramePixels(
-            capture_index=spec.capture_index,
-            trace_frame_index=spec.trace_frame_index,
-            exact=exact_image,
-            candidate=proxy_image,
-        ),
-    )
-
-
-def transition_specs() -> list[tuple[str, str, str, int, int]]:
-    result = []
-    for order in REQUIRED_ORDERS:
-        for cut in REQUIRED_CUTS:
-            result.extend(
-                [
-                    (order, cut, "moving_sequence", 0, 1),
-                    (order, cut, "moving_sequence", 1, 2),
-                ]
-            )
-        result.extend(
-            [
-                (order, REPLACEMENT_CUTS[0], "replacement_sequence", 0, 1),
-                (order, REPLACEMENT_CUTS[1], "replacement_sequence", 1, 2),
-            ]
-        )
-    return result
-
-
-def compute_transitions(
-    comparisons: list[dict[str, Any]], output: pathlib.Path
-) -> list[dict[str, Any]]:
-    indexed = {
-        (
-            item["order_backend"],
-            item["cut_name"],
-            item["sequence"],
-            item["capture_index"],
-        ): item
-        for item in comparisons
-    }
-    result = []
-    for order, cut, sequence, start, end in transition_specs():
-        if sequence == "moving_sequence":
-            previous_key = (order, cut, sequence, start)
-            current_key = (order, cut, sequence, end)
-        else:
-            previous_key = (order, REPLACEMENT_CUTS[start], sequence, start)
-            current_key = (order, REPLACEMENT_CUTS[end], sequence, end)
-        previous_comparison = indexed.get(previous_key)
-        current_comparison = indexed.get(current_key)
-        if previous_comparison is None or current_comparison is None:
-            raise RejectedCollection("A065 transition matrix is incomplete")
-        try:
-            previous = BALANCED.FramePixels(
-                capture_index=previous_comparison["capture_index"],
-                trace_frame_index=previous_comparison["trace_frame_index"],
-                exact=BALANCED.load_image(
-                    output,
-                    previous_comparison["images"]["exact"],
-                    FORMAL_SIZE,
-                    f"{previous_comparison['pair_id']}.images.exact",
-                ),
-                candidate=BALANCED.load_image(
-                    output,
-                    previous_comparison["images"]["proxy"],
-                    FORMAL_SIZE,
-                    f"{previous_comparison['pair_id']}.images.proxy",
-                ),
-            )
-            current = BALANCED.FramePixels(
-                capture_index=current_comparison["capture_index"],
-                trace_frame_index=current_comparison["trace_frame_index"],
-                exact=BALANCED.load_image(
-                    output,
-                    current_comparison["images"]["exact"],
-                    FORMAL_SIZE,
-                    f"{current_comparison['pair_id']}.images.exact",
-                ),
-                candidate=BALANCED.load_image(
-                    output,
-                    current_comparison["images"]["proxy"],
-                    FORMAL_SIZE,
-                    f"{current_comparison['pair_id']}.images.proxy",
-                ),
-            )
-            metric = BALANCED.compute_temporal_metric(previous, current)
-        except BALANCED.ValidationError as error:
-            raise RejectedCollection(
-                f"A065 transition image validation failed: {error}"
-            ) from error
-        result.append(
-            {
-                "endpoint_id": ENDPOINT_ID,
-                "order_backend": order,
-                "cut_name": cut,
-                "sequence": sequence,
-                "from_capture_index": start,
-                "to_capture_index": end,
-                "metrics": {S1.TEMPORAL_METRIC: metric},
-                "transition_gate_pass": metric <= S1.TEMPORAL_LIMIT,
-            }
-        )
-    return result
 
 
 def atomic_write_json(path: pathlib.Path, value: dict[str, Any]) -> None:
@@ -1223,7 +1114,7 @@ def endpoint_artifact_header(
         "schema": SCHEMA,
         "status": "running",
         "decision": None,
-        "scope": "a065_vulkan_materialized_cut_endpoint_only",
+        "scope": "a065_vulkan_static_authored_capture_prerequisite_only",
         "attempt": 1,
         "retry_policy": "none",
         "s1_promotion": False,
@@ -1238,17 +1129,25 @@ def endpoint_artifact_header(
             "required_order_backends": list(REQUIRED_ORDERS),
             "required_cuts": list(REQUIRED_CUTS),
             "authored_views": [0, 1],
-            "moving_sequence": list(MOVING_TRACE),
-            "replacement_sequence": list(REPLACEMENT_CUTS),
             "warmup_frames": WARMUP_FRAMES,
             "max_thermal_status": MAX_THERMAL_STATUS,
-            "aggregation": "logical_all",
-            "frame_metric_limits": {
-                metric: list(bound) for metric, bound in S1.FRAME_METRIC_LIMITS.items()
+            "implemented_capture": "one_static_authored_view_per_process",
+            "formal_image_qualification": False,
+        },
+        "deferred_gates": {
+            "formal_image_gate": {
+                "decision": "Deferred",
+                "reason": PIXELCOPY_IMAGE_GATE_REASON,
             },
-            "temporal_metric": {
-                "name": S1.TEMPORAL_METRIC,
-                "maximum": S1.TEMPORAL_LIMIT,
+            "moving_same_session_capture": {
+                "decision": "Deferred",
+                "required_trace": list(MOVING_TRACE),
+                "reason": MOVING_CAPTURE_REASON,
+            },
+            "replacement_same_session_capture": {
+                "decision": "Deferred",
+                "required_cuts": list(REPLACEMENT_CUTS),
+                "reason": REPLACEMENT_CAPTURE_REASON,
             },
         },
         "authority": {
@@ -1271,8 +1170,7 @@ def endpoint_artifact_header(
             }
             for name in REQUIRED_CUTS
         ],
-        "comparisons": [],
-        "transitions": [],
+        "static_captures": [],
         "completed_child_commands": 0,
         "planned_child_commands": len(capture_specs()) * 2,
     }
@@ -1304,9 +1202,15 @@ def run_collection(args: argparse.Namespace, package: AuthorPackage, output: pat
                 if lane == "exact"
                 else package.cuts[spec.cut_name].active_splats
             )
-            lane_evidence[lane] = read_lane_evidence(
-                raw_output, spec, lane, expected_path, expected_active
-            )
+            try:
+                lane_evidence[lane] = read_lane_evidence(
+                    raw_output, spec, lane, expected_path, expected_active
+                )
+            except DeferredCollection as error:
+                raise RejectedCollection(
+                    f"{spec.pair_id}/{lane} evidence is unavailable after its "
+                    f"single child launch: {error}"
+                ) from error
             if (
                 lane_evidence[lane].environment_receipt
                 != admission["android_device_receipt"]
@@ -1317,36 +1221,33 @@ def run_collection(args: argparse.Namespace, package: AuthorPackage, output: pat
             artifact["completed_child_commands"] += 1
             atomic_write_json(output / "capture.json", artifact)
 
-        comparison, _ = compare_lanes(
+        static_capture = retain_static_pair(
             spec,
             package.cuts[spec.cut_name],
             lane_evidence["exact"],
             lane_evidence["proxy"],
             output,
         )
-        artifact["comparisons"].append(comparison)
+        artifact["static_captures"].append(static_capture)
         atomic_write_json(output / "capture.json", artifact)
-        if not comparison["frame_gate_pass"]:
-            raise RejectedCollection(
-                f"{spec.pair_id} failed the frozen S1 frame gate: "
-                + "; ".join(comparison["frame_gate_failures"])
-            )
-
-    transitions = compute_transitions(artifact["comparisons"], output)
-    artifact["transitions"] = transitions
-    failed_transitions = [item for item in transitions if not item["transition_gate_pass"]]
-    if failed_transitions:
-        raise RejectedCollection("A065 materialized-cut temporal gate failed")
     artifact.update(
         {
             "status": "complete",
-            "decision": "EndpointPassed",
+            "decision": "Deferred",
+            "pass": False,
+            "reason": (
+                "static authored PixelCopy captures are retained, but renderer-owned "
+                "same-present image identity and same-session moving capture are unavailable"
+            ),
             "ended_at_utc": utc_now(),
             "limitations": [
                 "This artifact covers only Nothing A065 Vulkan; Apple M4 Metal remains separate.",
-                "EndpointPassed is not aggregate S1 Accepted and does not unlock S2-S5.",
+                "This artifact cannot pass the formal image or temporal gates.",
+                "PixelCopy PNGs are diagnostic captures without renderer same-present identity.",
+                "No moving or replacement sequence is synthesized from separate processes.",
                 "Coverage is joined from the offline author receipt and is not an S4 runtime generation.",
                 "Every proxy raw benchmark retains its actual materialized PLY P as dataset authority.",
+                "Deferred does not unlock S2-S5.",
             ],
         }
     )
@@ -1410,6 +1311,8 @@ def dry_run(args: argparse.Namespace, package: AuthorPackage, output: pathlib.Pa
     doctor, _ = doctor_environment(args, package, output)
     print(f"output_root={output}")
     print(f"attempt=1 retry_policy=none")
+    print(f"formal_image_gate=Deferred reason={PIXELCOPY_IMAGE_GATE_REASON}")
+    print(f"moving_same_session_capture=Deferred reason={MOVING_CAPTURE_REASON}")
     print(f"doctor={ANDROID.command_text(doctor)}")
     print(f"adb_serial={args.serial} thermal_max={MAX_THERMAL_STATUS}")
     for spec in capture_specs():
@@ -1475,16 +1378,18 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "schema": SCHEMA,
                 "status": "terminal",
                 "decision": artifact["decision"],
-                "pass": True,
+                "pass": False,
+                "reason": artifact["reason"],
                 "attempt": 1,
                 "retry_policy": "none",
+                "collection_started": True,
                 "s1_promotion": False,
                 "s2_s5_unlocked": False,
                 "ended_at_utc": artifact["ended_at_utc"],
             },
         )
         print(f"artifact={output / 'capture.json'}")
-        return 0
+        return 2
     except DeferredCollection as error:
         print(
             json.dumps(
