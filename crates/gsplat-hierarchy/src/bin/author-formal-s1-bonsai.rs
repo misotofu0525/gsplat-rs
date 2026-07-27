@@ -2,6 +2,8 @@
 
 #[path = "formal_s1_bonsai/authoring.rs"]
 mod authoring;
+#[path = "formal_s1_bonsai/cut_ply.rs"]
+mod cut_ply;
 
 use authoring::{
     AuthorRequest, AuthorityPaths, Result, admit_output, author_bundle, bonsai_authority,

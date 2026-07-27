@@ -243,6 +243,30 @@ prerequisite, not an endpoint or proxy-quality gate. S1 is now Deferred only on
 the M4 Metal and physical A065 proxy image artifacts after the corrected formal
 authoring candidate is integrated.
 
+## S1A Bonsai cut render-input checkpoint
+
+The formal author now materializes the two non-exact frozen cuts directly from
+the still-resident, already validated `HierarchyBundle`. It writes deterministic
+binary-little-endian complete-SH3 PLYs for `bootstrap_roots` and
+`mixed_depth_two_replacements`; it does not add a manifest/page reader or any
+runtime hierarchy path. `complete_leaf_exact` remains the original frozen
+Bonsai PLY, represented only by its content-addressed logical-path/byte-count/
+SHA-256 alias, so authoring does not duplicate the 308,716,644-byte source.
+
+Each render-input receipt binds the frozen source and hierarchy manifest, cut
+name, ordered node list, ordered page hashes, PLY SHA-256 and active `P`. Before
+publication the author re-reads the complete staging package and uses
+`gsplat-io-ply` to decode both PLYs back to the same runtime RUF/xyzw/SH3 proxy
+attributes. Sign and component-order transforms are bit-exact; the unavoidable
+f32 `ln`/`exp` and finite logit/sigmoid pairs are bounded to at most four ULP
+and that bound is receipted. Any byte, hash, count, transform, finite-value or
+readback mismatch preserves staging and prevents the final atomic rename.
+
+This is a renderer-neutral authoring input only. It does not run an endpoint,
+change a renderer/default/FFI/public product API, create S2 streaming or cache
+machinery, or qualify proxy image quality. **S1 remains Active** and S2--S5
+remain locked.
+
 ## Ordered implementation ledger
 
 | Task | State in this candidate | Independent result |

@@ -3,6 +3,7 @@
 //! This binary emits authored hierarchy bytes and structural coverage receipts.
 //! It deliberately does not render images, qualify endpoints, or unlock S2.
 
+use crate::cut_ply::{self, CutPlyIdentity};
 use gsplat_hierarchy::{
     BuildConfig, DrawableGaussian, FormalS1Cuts, HierarchyBundle, NodeId,
     build_formal_s1_proxy_hierarchy,
@@ -25,6 +26,7 @@ const CONFIGURATION_SCHEMA: &str = "gsplat-formal-s1-proxy-builder-configuration
 const SOURCE_DRAWABLE_SCHEMA: &str = "gsplat-drawable-gaussian-le-v1";
 const DRAWABLE_ENCODED_BYTES: u64 = 240;
 const PAGE_HEADER_BYTES: u64 = 32;
+const CUT_PLY_ENCODED_BYTES_PER_SPLAT: u64 = 236;
 const RECEIPT_BYTES_PER_PAGE_ESTIMATE: u64 = 512;
 const ESTIMATE_FIXED_MARGIN_BYTES: u64 = 512 * 1024 * 1024;
 
@@ -374,8 +376,18 @@ pub(super) fn estimate(
     let receipt_bytes = total_nodes
         .checked_mul(RECEIPT_BYTES_PER_PAGE_ESTIMATE)
         .ok_or_else(|| invalid("receipt-size estimate overflow"))?;
+    // The two proxy cuts cannot contain more drawables than the complete
+    // source cut. Reserve that conservative upper bound even though formal
+    // roots/mixed cuts are expected to be much smaller.
+    let cut_ply_bytes = expected
+        .splat_count
+        .checked_mul(CUT_PLY_ENCODED_BYTES_PER_SPLAT)
+        .and_then(|value| value.checked_mul(2))
+        .and_then(|value| value.checked_add(2 * 1024 * 1024))
+        .ok_or_else(|| invalid("cut PLY size estimate overflow"))?;
     let estimated_output_bytes = page_bytes
         .checked_add(receipt_bytes)
+        .and_then(|value| value.checked_add(cut_ply_bytes))
         .and_then(|value| value.checked_add(4 * 1024 * 1024))
         .ok_or_else(|| invalid("output-size estimate overflow"))?;
     let conservative_peak_working_set_bytes = source_drawable_bytes
@@ -395,6 +407,7 @@ pub(super) fn estimate(
         "total_node_and_page_count": total_nodes,
         "source_drawable_bytes": source_drawable_bytes,
         "estimated_page_bytes": page_bytes,
+        "estimated_proxy_cut_ply_bytes": cut_ply_bytes,
         "estimated_output_bytes": estimated_output_bytes,
         "conservative_peak_working_set_bytes": conservative_peak_working_set_bytes,
         "recommended_free_disk_bytes": recommended_free_disk_bytes,
@@ -607,6 +620,10 @@ fn configuration(source_leaves_per_node: u32) -> Value {
         "opacity_conversion": "f32_sigmoid_logit",
         "source_sh_degree": 3,
         "sh_representation": "source_sh3",
+        "proxy_cut_render_input_schema": cut_ply::CUT_PLY_SCHEMA,
+        "proxy_cut_ply_format": "binary_little_endian_1.0_complete_sh3",
+        "proxy_cut_readback": "gsplat_io_ply_exact_linear_and_max_4_ulp_nonlinear",
+        "complete_leaf_render_input": "content_addressed_source_ply_alias_without_copy",
         "sampling": "disabled",
         "partial_child_publication": "disabled",
         "cut_policy": "complete_leaf_roots_then_two_smallest_range_replacements",
@@ -701,6 +718,8 @@ fn cut_receipts(
     bundle: &HierarchyBundle,
     manifest_sha256: &str,
     expected: ExpectedAuthority<'_>,
+    bootstrap_ply: &CutPlyIdentity,
+    mixed_ply: &CutPlyIdentity,
 ) -> Result<Vec<Value>> {
     let depths = node_depths(bundle)?;
     let context = CoverageContext {
@@ -727,13 +746,120 @@ fn cut_receipts(
     .into_iter()
     .map(|(name, selected, replacement_count, exact)| {
         let coverage = context.receipt(name, selected, replacement_count, exact)?;
+        let render_input = match name {
+            "complete_leaf_exact" => source_alias_render_input(name, &coverage, expected)?,
+            "bootstrap_roots" => proxy_render_input(name, &coverage, bootstrap_ply)?,
+            "mixed_depth_two_replacements" => proxy_render_input(name, &coverage, mixed_ply)?,
+            _ => return Err(invalid(format!("unknown formal cut {name}"))),
+        };
         Ok(json!({
             "name": name,
             "coverage_sha256": canonical_json_hash(&coverage)?,
             "coverage": coverage,
+            "render_input": render_input,
         }))
     })
     .collect()
+}
+
+fn common_render_input_binding(name: &str, coverage: &Value) -> Result<Value> {
+    Ok(json!({
+        "schema": cut_ply::CUT_PLY_SCHEMA,
+        "cut_name": name,
+        "source_sha256": required_string(coverage, "source_sha256")?,
+        "hierarchy_manifest_sha256": required_string(coverage, "hierarchy_manifest_sha256")?,
+        "ordered_node_ids": coverage["ordered_node_ids"].clone(),
+        "ordered_node_list_sha256": required_string(coverage, "ordered_node_list_sha256")?,
+        "page_sha256": coverage["page_sha256"].clone(),
+        "page_list_sha256": required_string(coverage, "page_list_sha256")?,
+        "P": required_u64(coverage, "active_proxy_splats")?,
+        "sh_degree": required_u64(coverage, "source_sh_degree")?,
+        "sampling": "disabled",
+    }))
+}
+
+fn source_alias_render_input(
+    name: &str,
+    coverage: &Value,
+    expected: ExpectedAuthority<'_>,
+) -> Result<Value> {
+    let mut binding = common_render_input_binding(name, coverage)?;
+    let object = binding
+        .as_object_mut()
+        .ok_or_else(|| invalid("internal render-input binding shape error"))?;
+    object.insert(
+        "kind".to_owned(),
+        Value::String("content_addressed_source_ply_alias".to_owned()),
+    );
+    object.insert(
+        "logical_path".to_owned(),
+        Value::String(expected.source_logical_path.to_owned()),
+    );
+    object.insert(
+        "sha256".to_owned(),
+        Value::String(expected.source_sha256.to_owned()),
+    );
+    object.insert("bytes".to_owned(), Value::from(expected.source_bytes));
+    object.insert("copied_into_package".to_owned(), Value::Bool(false));
+    Ok(binding)
+}
+
+fn proxy_render_input(name: &str, coverage: &Value, ply: &CutPlyIdentity) -> Result<Value> {
+    let active = required_u64(coverage, "active_proxy_splats")?;
+    if ply.splat_count != active {
+        return Err(invalid(format!(
+            "cut {name} PLY P={} differs from coverage P={active}",
+            ply.splat_count
+        )));
+    }
+    let mut binding = common_render_input_binding(name, coverage)?;
+    let object = binding
+        .as_object_mut()
+        .ok_or_else(|| invalid("internal render-input binding shape error"))?;
+    object.insert(
+        "kind".to_owned(),
+        Value::String("materialized_binary_little_endian_sh3_ply".to_owned()),
+    );
+    object.insert("path".to_owned(), Value::String(ply.path.clone()));
+    object.insert("sha256".to_owned(), Value::String(ply.sha256.clone()));
+    object.insert("bytes".to_owned(), Value::from(ply.bytes));
+    object.insert(
+        "coordinate_conversion".to_owned(),
+        Value::String("runtime_ruf_to_ply_rdf".to_owned()),
+    );
+    object.insert(
+        "rotation_conversion".to_owned(),
+        Value::String("runtime_xyzw_to_ply_wxyz".to_owned()),
+    );
+    object.insert(
+        "scale_encoding".to_owned(),
+        Value::String("finite_f32_ln".to_owned()),
+    );
+    object.insert(
+        "opacity_encoding".to_owned(),
+        Value::String("finite_f32_logit".to_owned()),
+    );
+    object.insert(
+        "readback_validator".to_owned(),
+        Value::String("gsplat_io_ply_same_runtime_proxy_attributes".to_owned()),
+    );
+    object.insert(
+        "nonlinear_roundtrip_max_ulps".to_owned(),
+        Value::from(cut_ply::MAX_NONLINEAR_ROUNDTRIP_ULPS),
+    );
+    Ok(binding)
+}
+
+fn required_string<'a>(value: &'a Value, field: &str) -> Result<&'a str> {
+    value[field]
+        .as_str()
+        .ok_or_else(|| invalid(format!("internal receipt field {field} is not a string")))
+}
+
+fn required_u64(value: &Value, field: &str) -> Result<u64> {
+    value[field]
+        .as_u64()
+        .ok_or_else(|| invalid(format!("internal receipt field {field} is not a u64")))
 }
 
 fn staging_path(output: &Path) -> Result<PathBuf> {
@@ -774,6 +900,11 @@ pub(super) fn author_bundle(request: AuthorRequest<'_>) -> Result<AuthoringOutco
     write_bundle_with_hooks(request, |_| Ok(()), verify_staged_bundle)
 }
 
+struct StagedCut<'a> {
+    name: &'static str,
+    drawables: &'a [DrawableGaussian],
+}
+
 fn write_bundle_with_hooks<BeforePublication, VerifyStaging>(
     request: AuthorRequest<'_>,
     mut before_publication: BeforePublication,
@@ -781,7 +912,7 @@ fn write_bundle_with_hooks<BeforePublication, VerifyStaging>(
 ) -> Result<AuthoringOutcome>
 where
     BeforePublication: FnMut(&Path) -> Result<()>,
-    VerifyStaging: Fn(&Path, &Value) -> Result<String>,
+    VerifyStaging: Fn(&Path, &Value, &[StagedCut<'_>]) -> Result<String>,
 {
     let AuthorRequest {
         paths,
@@ -877,13 +1008,32 @@ where
         }));
     }
 
+    let cut_directory = staging.join("cuts");
+    fs::create_dir(&cut_directory)?;
+    let bootstrap_drawables = bundle.materialize_cut(&drawables, &cuts.bootstrap_roots)?;
+    let bootstrap_ply =
+        cut_ply::author_file(&staging, "cuts/bootstrap_roots.ply", &bootstrap_drawables)?;
+    let mixed_drawables = bundle.materialize_cut(&drawables, &cuts.mixed_depth_two_replacements)?;
+    let mixed_ply = cut_ply::author_file(
+        &staging,
+        "cuts/mixed_depth_two_replacements.ply",
+        &mixed_drawables,
+    )?;
+
     let configuration = configuration(source_leaves_per_node);
     let configuration_sha256 = canonical_json_hash(&configuration)?;
-    let cuts = cut_receipts(&cuts, &bundle, &manifest_sha256, expected)?;
+    let cuts = cut_receipts(
+        &cuts,
+        &bundle,
+        &manifest_sha256,
+        expected,
+        &bootstrap_ply,
+        &mixed_ply,
+    )?;
     let receipt = json!({
         "schema": RECEIPT_SCHEMA,
         "authoring_status": "complete",
-        "scope": "offline_hierarchy_authoring_only",
+        "scope": "offline_hierarchy_authoring_with_s1_cut_render_inputs",
         "s1_promotion_status": "Active",
         "endpoint_image_gate": "not_run",
         "s2_s5_unlocked": false,
@@ -957,7 +1107,17 @@ where
         serde_json::to_vec_pretty(&receipt)?,
     )?;
     before_publication(&staging)?;
-    let receipt_sha256 = verify_staging(&staging, &receipt)?;
+    let staged_cuts = [
+        StagedCut {
+            name: "bootstrap_roots",
+            drawables: &bootstrap_drawables,
+        },
+        StagedCut {
+            name: "mixed_depth_two_replacements",
+            drawables: &mixed_drawables,
+        },
+    ];
+    let receipt_sha256 = verify_staging(&staging, &receipt, &staged_cuts)?;
     let final_authority = verify_authority(paths, expected)?;
     if final_authority != *authority {
         return Err(invalid(
@@ -978,7 +1138,11 @@ where
     Ok(outcome)
 }
 
-fn verify_staged_bundle(staging: &Path, expected_receipt: &Value) -> Result<String> {
+fn verify_staged_bundle(
+    staging: &Path,
+    expected_receipt: &Value,
+    expected_cuts: &[StagedCut<'_>],
+) -> Result<String> {
     let expected_receipt_bytes = serde_json::to_vec_pretty(expected_receipt)?;
     let receipt_path = staging.join("cut-receipt.json");
     let retained_receipt_bytes = fs::read(&receipt_path)?;
@@ -1057,12 +1221,15 @@ fn verify_staged_bundle(staging: &Path, expected_receipt: &Value) -> Result<Stri
         ));
     }
 
+    verify_staged_cut_inputs(staging, expected_receipt, expected_cuts)?;
+
     let root_entries = fs::read_dir(staging)?
         .map(|entry| Ok(entry?.file_name().to_string_lossy().into_owned()))
         .collect::<Result<BTreeSet<_>>>()?;
     if root_entries
         != BTreeSet::from([
             "cut-receipt.json".to_owned(),
+            "cuts".to_owned(),
             "manifest.bin".to_owned(),
             "pages".to_owned(),
         ])
@@ -1072,6 +1239,111 @@ fn verify_staged_bundle(staging: &Path, expected_receipt: &Value) -> Result<Stri
         ));
     }
     Ok(retained_receipt_sha256)
+}
+
+fn verify_staged_cut_inputs(
+    staging: &Path,
+    receipt: &Value,
+    expected_cuts: &[StagedCut<'_>],
+) -> Result<()> {
+    let cuts = receipt["cuts"]
+        .as_array()
+        .ok_or_else(|| invalid("internal cut receipt shape error"))?;
+    let complete = cuts
+        .iter()
+        .find(|cut| cut["name"] == "complete_leaf_exact")
+        .ok_or_else(|| invalid("complete-leaf receipt is missing"))?;
+    let alias = &complete["render_input"];
+    let source = &receipt["authority"]["source"];
+    verify_render_input_coverage_binding(complete)?;
+    if alias["kind"] != "content_addressed_source_ply_alias"
+        || alias["logical_path"] != source["logical_path"]
+        || alias["sha256"] != source["sha256"]
+        || alias["bytes"] != source["bytes"]
+        || alias["P"] != source["splat_count"]
+        || alias["copied_into_package"] != false
+    {
+        return Err(invalid(
+            "complete-leaf render input is not the exact content-addressed source PLY alias",
+        ));
+    }
+
+    let mut expected_paths = BTreeSet::new();
+    for expected in expected_cuts {
+        let cut = cuts
+            .iter()
+            .find(|cut| cut["name"] == expected.name)
+            .ok_or_else(|| invalid(format!("cut receipt {} is missing", expected.name)))?;
+        let coverage = &cut["coverage"];
+        let input = &cut["render_input"];
+        verify_render_input_coverage_binding(cut)?;
+        if input["schema"] != cut_ply::CUT_PLY_SCHEMA
+            || input["cut_name"] != expected.name
+            || input["kind"] != "materialized_binary_little_endian_sh3_ply"
+            || input["P"] != coverage["active_proxy_splats"]
+            || input["sh_degree"] != 3
+        {
+            return Err(invalid(format!(
+                "cut {} render input metadata mismatch",
+                expected.name
+            )));
+        }
+        let identity = CutPlyIdentity {
+            path: required_string(input, "path")?.to_owned(),
+            sha256: required_string(input, "sha256")?.to_owned(),
+            bytes: required_u64(input, "bytes")?,
+            splat_count: required_u64(input, "P")?,
+        };
+        let canonical_path = format!("cuts/{}.ply", expected.name);
+        if identity.path != canonical_path || !expected_paths.insert(identity.path.clone()) {
+            return Err(invalid(format!(
+                "cut {} PLY path is non-canonical or duplicated",
+                expected.name
+            )));
+        }
+        cut_ply::verify_file(staging, &identity, expected.drawables)?;
+    }
+    let actual_paths = fs::read_dir(staging.join("cuts"))?
+        .map(|entry| {
+            let entry = entry?;
+            if !entry.file_type()?.is_file() {
+                return Err(invalid("staged cuts directory contains a non-file entry"));
+            }
+            Ok(format!("cuts/{}", entry.file_name().to_string_lossy()))
+        })
+        .collect::<Result<BTreeSet<_>>>()?;
+    if actual_paths != expected_paths {
+        return Err(invalid(
+            "staged cut PLY file set differs from the complete receipt",
+        ));
+    }
+    Ok(())
+}
+
+fn verify_render_input_coverage_binding(cut: &Value) -> Result<()> {
+    let name = required_string(cut, "name")?;
+    let coverage = &cut["coverage"];
+    let input = &cut["render_input"];
+    for field in [
+        "source_sha256",
+        "hierarchy_manifest_sha256",
+        "ordered_node_ids",
+        "ordered_node_list_sha256",
+        "page_sha256",
+        "page_list_sha256",
+    ] {
+        if input[field] != coverage[field] {
+            return Err(invalid(format!(
+                "cut {name} render input does not bind coverage field {field}"
+            )));
+        }
+    }
+    if input["cut_name"] != name || input["P"] != coverage["active_proxy_splats"] {
+        return Err(invalid(format!(
+            "cut {name} render input does not bind its name and P"
+        )));
+    }
+    Ok(())
 }
 
 pub(super) fn builder_identity() -> Result<BuilderIdentity> {
@@ -1314,10 +1586,31 @@ mod tests {
             );
         }
         let complete = &receipt_one["cuts"][0]["coverage"];
+        let complete_input = &receipt_one["cuts"][0]["render_input"];
         assert_eq!(complete["active_proxy_splats"], 8);
         assert_eq!(complete["represented_source_leaves"], 8);
         assert_eq!(complete["source_sh_degree"], 3);
         assert_eq!(complete["sampling"], "disabled");
+        assert_eq!(complete_input["kind"], "content_addressed_source_ply_alias");
+        assert_eq!(complete_input["sha256"], fixture.source_sha256);
+        assert_eq!(complete_input["bytes"], fixture.source_bytes);
+        assert_eq!(complete_input["P"], 8);
+        assert_eq!(complete_input["copied_into_package"], false);
+        assert!(!output_one.join("cuts/complete_leaf_exact.ply").exists());
+
+        for cut_index in [1, 2] {
+            let cut = &receipt_one["cuts"][cut_index];
+            let coverage = &cut["coverage"];
+            let input = &cut["render_input"];
+            assert_eq!(input["kind"], "materialized_binary_little_endian_sh3_ply");
+            assert_eq!(input["P"], coverage["active_proxy_splats"]);
+            assert_eq!(input["ordered_node_ids"], coverage["ordered_node_ids"]);
+            assert_eq!(input["page_sha256"], coverage["page_sha256"]);
+            let path = input["path"].as_str().expect("cut PLY path");
+            let retained = fs::read(output_one.join(path)).expect("read cut PLY");
+            assert!(retained.starts_with(b"ply\nformat binary_little_endian 1.0\n"));
+            assert_eq!(hash_bytes(&retained), input["sha256"]);
+        }
         let mixed = &receipt_one["cuts"][2]["coverage"];
         assert_eq!(mixed["replacement_count"], 2);
         assert!(mixed["depth_count"].as_u64().expect("depth count") >= 2);
@@ -1334,8 +1627,8 @@ mod tests {
     }
 
     #[test]
-    fn staged_manifest_page_and_receipt_tampering_never_publish_final_output() {
-        for target in ["manifest", "page", "receipt"] {
+    fn staged_manifest_page_cut_ply_and_receipt_tampering_never_publish_final_output() {
+        for target in ["manifest", "page", "cut-ply", "receipt"] {
             let fixture = Fixture::new();
             let expected = fixture.expected();
             let authority =
@@ -1352,6 +1645,7 @@ mod tests {
                             .next()
                             .ok_or_else(|| invalid("missing staged test page"))??
                             .path(),
+                        "cut-ply" => staging.join("cuts/bootstrap_roots.ply"),
                         _ => unreachable!(),
                     };
                     let mut bytes = fs::read(&path)?;
