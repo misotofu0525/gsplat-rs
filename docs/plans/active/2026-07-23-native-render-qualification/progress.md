@@ -376,6 +376,26 @@ not the rejected serialized sample's apparent `3.8x`. Formal comparison still
 requires a frozen common terminal boundary, stable-plan and cold-Adaptive cells,
 common image evidence, and the predeclared counterbalanced pairs.
 
+The first deliberately small bottleneck slice is `d8cdafd`: on WASM, scalar
+visibility/key preprocessing now writes the existing packed radix-pair ABI
+directly. It removes the split depth-key buffer and the subsequent full-scene
+split-to-packed pass without changing ExactFull32, inclusive near/far,
+source membership, stable source-ID ties, PlanId, controller, GPU or raster
+behavior. Two independent fixed-SHA reviews accepted the candidate, and host
+tests plus WASM checks passed before the single fresh browser run at
+`target/qualification/q1-webgpu-truck-1080p-d8cdafd-attempt-1/`.
+
+Both stages and both canonical validators passed. With the same 68 CPU / 12
+GPU measured-frame mix, terminal N/time improved from `26.875` to
+`26.2525 ms/frame` (`37.2093` to `38.0916 FPS`, about 2.3%). CPU-lane mean call
+time improved from `29.39265` to `28.14265 ms`; CPU preprocess from `14.56912`
+to `14.17500 ms`; CPU radix from `11.46912` to `10.50441 ms`. This accepts the
+memory-traffic slice as a small independent improvement but does not close Q1:
+the current single-run PlayCanvas diagnostic ratio remains about `1.40x`, and
+the Candidate `D/C` amplification remains unchanged. The next bounded cell is
+therefore the existing fixed-GPU, exact contributor-compaction plan, not more
+tuning of the WASM scalar pass.
+
 ## Q3 M4 SIMD microbenchmark checkpoint (2026-07-27)
 
 At clean root commit `f025dff`, the fixed
