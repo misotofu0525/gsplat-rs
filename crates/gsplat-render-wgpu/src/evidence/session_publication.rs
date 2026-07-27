@@ -562,6 +562,10 @@ impl SessionPublication {
         }
     }
 
+    #[cfg(any(
+        not(target_arch = "wasm32"),
+        feature = "diagnostic-surface-capture-receipt"
+    ))]
     pub(crate) fn take_capture_precision(&mut self) -> Option<PresentedCapturePrecisionReceipt> {
         let previous = std::mem::replace(&mut self.capture_precision, CapturePrecisionState::Idle);
         match previous {

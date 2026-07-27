@@ -22,6 +22,10 @@ use crate::gpu_telemetry::{
 #[cfg(not(target_arch = "wasm32"))]
 use crate::RendererError;
 
+#[cfg(any(
+    not(target_arch = "wasm32"),
+    feature = "diagnostic-surface-capture-receipt"
+))]
 use super::SurfaceFrameCapture;
 
 pub(crate) enum SessionSurfaceOwner {
@@ -372,7 +376,7 @@ impl SessionSurfaceOwner {
         }
     }
 
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(all(target_arch = "wasm32", feature = "diagnostic-surface-capture-receipt"))]
     pub(crate) async fn take_surface_capture_async(
         &mut self,
     ) -> Result<SurfaceFrameCapture, SurfacePresenterError> {

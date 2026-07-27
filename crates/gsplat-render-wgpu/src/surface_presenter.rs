@@ -573,7 +573,7 @@ impl SurfacePresenterHost {
         self.surface_capture.take(&self.device)
     }
 
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(all(target_arch = "wasm32", feature = "diagnostic-surface-capture-receipt"))]
     pub(crate) async fn take_surface_capture_async(
         &mut self,
     ) -> Result<SurfaceFrameCapture, SurfacePresenterError> {
@@ -796,7 +796,7 @@ impl SurfacePresenter {
         self.host.take_surface_capture()
     }
 
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(all(target_arch = "wasm32", feature = "diagnostic-surface-capture-receipt"))]
     pub(crate) async fn take_surface_capture_async(
         &mut self,
     ) -> Result<SurfaceFrameCapture, SurfacePresenterError> {

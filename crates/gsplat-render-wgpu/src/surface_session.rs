@@ -3,8 +3,16 @@ use std::num::NonZeroU64;
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::Duration;
 
+#[cfg(any(
+    not(target_arch = "wasm32"),
+    feature = "diagnostic-surface-capture-receipt"
+))]
 use crate::SurfaceFrameCapture;
 pub use crate::api::SurfaceOrderBackendUsed;
+#[cfg(any(
+    not(target_arch = "wasm32"),
+    feature = "diagnostic-surface-capture-receipt"
+))]
 use crate::evidence::PresentedCapturePrecisionReceipt;
 use crate::evidence::{
     PresentedCurrentStats, PresentedDepthPrecisionReceipt, PresentedFramePrecisionReceipts,
@@ -386,11 +394,19 @@ impl DiagnosticPresentedDepthPrecisionReceipt {
     }
 }
 
+#[cfg(any(
+    not(target_arch = "wasm32"),
+    feature = "diagnostic-surface-capture-receipt"
+))]
 pub(crate) struct SurfaceCapturePrecisionEvidence {
     capture: SurfaceFrameCapture,
     precision: PresentedCapturePrecisionReceipt,
 }
 
+#[cfg(any(
+    not(target_arch = "wasm32"),
+    feature = "diagnostic-surface-capture-receipt"
+))]
 impl SurfaceCapturePrecisionEvidence {
     pub(crate) fn into_parts(self) -> (SurfaceFrameCapture, PresentedCapturePrecisionReceipt) {
         (self.capture, self.precision)
@@ -645,6 +661,10 @@ impl DiagnosticSurfaceCaptureReceipt {
     }
 }
 
+#[cfg(any(
+    not(target_arch = "wasm32"),
+    feature = "diagnostic-surface-capture-receipt"
+))]
 fn compose_surface_capture_evidence(
     publication: &mut SessionPublication,
     capture: SurfaceFrameCapture,
@@ -1371,7 +1391,7 @@ impl SurfaceRenderSession {
         )?)
     }
 
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(all(target_arch = "wasm32", feature = "diagnostic-surface-capture-receipt"))]
     async fn take_surface_capture_evidence_async(
         &mut self,
     ) -> Result<SurfaceCapturePrecisionEvidence, RendererError> {

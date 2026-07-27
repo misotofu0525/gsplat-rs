@@ -7,6 +7,7 @@ import test from "node:test";
 
 import {
   parseArguments,
+  qualityRendererImplementation,
   rgba8Png,
   writeSuite,
 } from "../scripts/collect-web-depth-precision-quality.mjs";
@@ -124,6 +125,15 @@ test("collector requires separate Exact/Candidate package inputs and a fresh out
     output: resolve("out"),
   });
   assert.throws(() => parseArguments(["--exact-pkg", "only"]), /usage:/);
+});
+
+test("benchmark implementation labels distinguish Exact from Candidate20", () => {
+  assert.equal(qualityRendererImplementation("exact"), "gsplat-rs-webgpu-exact-quality");
+  assert.equal(
+    qualityRendererImplementation("candidate"),
+    "gsplat-rs-webgpu-candidate20-quality",
+  );
+  assert.throws(() => qualityRendererImplementation("other"), /unknown quality lane/);
 });
 
 test("camera trace pose and intrinsics map to the ten-value native contract", () => {

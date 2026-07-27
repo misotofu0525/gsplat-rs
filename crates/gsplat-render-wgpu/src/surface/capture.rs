@@ -52,6 +52,10 @@ impl CaptureProgress {
         }
     }
 
+    #[cfg(any(
+        not(target_arch = "wasm32"),
+        feature = "diagnostic-surface-capture-receipt"
+    ))]
     const fn ready(&self) -> bool {
         self.encoded && self.presented
     }
@@ -238,9 +242,10 @@ impl SurfaceCapture {
             pending.height,
             pending.padded_bytes_per_row,
             pending.format,
-        )?;
+        );
         drop(mapped);
         pending.buffer.unmap();
+        let rgba8 = rgba8.map_err(|_| SurfacePresenterError::SurfaceCaptureReadback)?;
         Ok(SurfaceFrameCapture {
             width: pending.width,
             height: pending.height,
@@ -250,7 +255,7 @@ impl SurfaceCapture {
 
     /// Asynchronously consumes one presented browser capture. The map callback
     /// wakes this future; it never blocks or spins the JavaScript event loop.
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(all(target_arch = "wasm32", feature = "diagnostic-surface-capture-receipt"))]
     pub(crate) async fn take_async(
         &mut self,
     ) -> Result<SurfaceFrameCapture, SurfacePresenterError> {
@@ -304,9 +309,10 @@ impl SurfaceCapture {
             pending.height,
             pending.padded_bytes_per_row,
             pending.format,
-        )?;
+        );
         drop(mapped);
         pending.buffer.unmap();
+        let rgba8 = rgba8.map_err(|_| SurfacePresenterError::SurfaceCaptureReadback)?;
         Ok(SurfaceFrameCapture {
             width: pending.width,
             height: pending.height,
@@ -361,6 +367,10 @@ fn validate_surface_capture_buffer_size(
     Ok(())
 }
 
+#[cfg(any(
+    not(target_arch = "wasm32"),
+    feature = "diagnostic-surface-capture-receipt"
+))]
 fn unpack_surface_capture_rows(
     mapped: &[u8],
     width: u32,

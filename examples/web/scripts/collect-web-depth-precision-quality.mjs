@@ -369,6 +369,12 @@ function presentationReceipt(capture) {
   };
 }
 
+export function qualityRendererImplementation(lane) {
+  if (lane === "exact") return "gsplat-rs-webgpu-exact-quality";
+  if (lane === "candidate") return "gsplat-rs-webgpu-candidate20-quality";
+  throw new Error(`unknown quality lane: ${lane}`);
+}
+
 async function writeBenchmarkArtifact({
   output,
   lane,
@@ -414,7 +420,7 @@ async function writeBenchmarkArtifact({
     },
     trace: { id: trace.trace_id, sha256: trace.content_sha256 },
     renderer: {
-      implementation: "gsplat-rs-webgpu-candidate20-quality",
+      implementation: qualityRendererImplementation(lane),
       path: "packed_atlas",
       backend: "webgpu",
       sort_policy: "gpu_preproject_every_capture",
