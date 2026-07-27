@@ -93,6 +93,7 @@ const WORKGROUP_SIZE: u32 = 128u;
 const SORT_TILE_SIZE: u32 = 1024u;
 const MASK_WORD_COUNT: u32 = WORKGROUP_SIZE / 32u;
 const ALPHA_THRESHOLD: f32 = 1.0 / 255.0;
+override DEPTH_KEY_LOW_BITS_TO_CLEAR: u32 = 0u;
 
 var<workgroup> contributor_count: atomic<u32>;
 var<workgroup> candidate_count: atomic<u32>;
@@ -184,6 +185,15 @@ fn next_down(value: f32) -> f32 {
 
 fn is_finite(value: f32) -> bool {
   return (bitcast<u32>(value) & 0x7f800000u) != 0x7f800000u;
+}
+
+fn visible_depth_key(depth: f32) -> u32 {
+  let bits = bitcast<u32>(max(depth, 0.0));
+  if (DEPTH_KEY_LOW_BITS_TO_CLEAR == 0u) {
+    return bits;
+  }
+  let retained = max(bits >> DEPTH_KEY_LOW_BITS_TO_CLEAR, 1u);
+  return retained << DEPTH_KEY_LOW_BITS_TO_CLEAR;
 }
 
 // Keep this predicate byte-for-byte equivalent to projected_quads_project.
@@ -306,7 +316,7 @@ fn project_splat(source_id: u32) -> ProjectedSplat {
     axis_u,
     axis_v,
     pa.w,
-    bitcast<u32>(max(p_cam.z, 0.0)),
+    visible_depth_key(p_cam.z),
     1u,
   );
 }

@@ -18,6 +18,7 @@ use crate::evidence::{
     PresentedProjectedCachePrecisionReceipt, PresentedResidentShReceipt, SessionPublication,
 };
 use crate::plans::{FrameIdentity, PlanId, TestGpuAdmissionMode};
+use crate::preproject_gpu::PreprojectDepthKeyReceipt;
 use crate::renderer::gpu_prepare::ResidentShCodecProfile;
 use crate::renderer::{
     ExactPlanPolicy, PreparedRuntimeSlot, ProjectedCachePrecisionProfile, ResidentShLayoutReceipt,
@@ -629,6 +630,11 @@ fn surface_gpu_candidate_carries_the_same_candidate_precision_to_resident_order(
                 Some(precision)
             );
             assert_eq!(candidate.surface_depth_precision_profile(), profile);
+            assert_eq!(
+                candidate.gpu_preproject_depth_key_receipt_for_test(),
+                Some(PreprojectDepthKeyReceipt::realized_for_request(precision)),
+                "the renderer reports the depth-key profile realized by preproject, not build intent"
+            );
 
             candidate
                 .replace(depth_precision_scene())
@@ -647,6 +653,11 @@ fn surface_gpu_candidate_carries_the_same_candidate_precision_to_resident_order(
                 candidate.gpu_depth_key_precision_for_test(),
                 Some(precision),
                 "replacement GPU admission preserves the construction-time profile"
+            );
+            assert_eq!(
+                candidate.gpu_preproject_depth_key_receipt_for_test(),
+                Some(PreprojectDepthKeyReceipt::realized_for_request(precision)),
+                "replacement re-admission realizes the same preproject profile"
             );
         }
     });

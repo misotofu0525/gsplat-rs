@@ -19,7 +19,7 @@ use crate::gpu::{
     GpuPrefixScan, GpuPrefixScanProfile, ProjectedRankProjector, ProjectedRankSourceBindings,
 };
 use crate::plans::{FrameIdentity, GpuExecutionContext, GpuOwnerToken};
-use crate::preproject_gpu::PreprojectedGpuCompute;
+use crate::preproject_gpu::{PreprojectDepthKeyReceipt, PreprojectedGpuCompute};
 use crate::raster::{
     CanonicalRaster, CanonicalRasterError, CanonicalRasterResources, QUAD_VERTEX_COUNT,
     RankIndexedRasterResources, SourceIndexedRasterResources,
@@ -311,6 +311,7 @@ pub(crate) struct GpuPreparationReceipt {
     addressable_count: u32,
     sh_degree: u8,
     preproject_compute: bool,
+    preproject_depth_key: Option<PreprojectDepthKeyReceipt>,
     projected_cache_precision: ProjectedCachePrecisionProfile,
     resident_sh: ResidentShLayoutReceipt,
     scene_resource_generation: SceneResourceGeneration,
@@ -340,6 +341,10 @@ impl GpuPreparationReceipt {
 
     pub(crate) const fn preproject_compute(self) -> bool {
         self.preproject_compute
+    }
+
+    pub(crate) const fn preproject_depth_key(self) -> Option<PreprojectDepthKeyReceipt> {
+        self.preproject_depth_key
     }
 
     pub(crate) const fn projected_cache_precision(self) -> ProjectedCachePrecisionProfile {
@@ -609,10 +614,20 @@ impl GpuScenePreparation {
                 Some(gpu_project_bind_group),
                 Some(match projected_cache_precision {
                     ProjectedCachePrecisionProfile::ExactAxes32 => {
-                        PreprojectedGpuCompute::new(device, &resident, QUAD_VERTEX_COUNT)?
+                        PreprojectedGpuCompute::new_with_depth_key_precision(
+                            device,
+                            &resident,
+                            QUAD_VERTEX_COUNT,
+                            depth_key_precision,
+                        )?
                     }
                     ProjectedCachePrecisionProfile::CandidateAxes16 => {
-                        PreprojectedGpuCompute::new_axes16(device, &resident, QUAD_VERTEX_COUNT)?
+                        PreprojectedGpuCompute::new_axes16_with_depth_key_precision(
+                            device,
+                            &resident,
+                            QUAD_VERTEX_COUNT,
+                            depth_key_precision,
+                        )?
                     }
                 }),
             )
@@ -626,6 +641,7 @@ impl GpuScenePreparation {
             &projector,
             preproject.as_ref(),
             generation,
+            depth_key_precision,
             projected_cache_precision,
         )?;
         Ok(Self {
@@ -1440,6 +1456,7 @@ fn validate_complete_receipt(
     projector: &ProjectedRankProjector,
     preproject: Option<&PreprojectedGpuCompute>,
     generation: FrameIdentity,
+    requested_depth_key_precision: DepthKeyPrecision,
     projected_cache_precision: ProjectedCachePrecisionProfile,
 ) -> Result<GpuPreparationReceipt, GpuPreparationError> {
     let source_count = u32::try_from(scene.len())
@@ -1448,6 +1465,14 @@ fn validate_complete_receipt(
         .map_err(|_| GpuPreparationError::Resource(ResidentGpuError::AddressSpaceExceeded))?;
     let resident_sh =
         ResidentShLayoutReceipt::from_realized(scene, resident, projector.capacity())?;
+    let preproject_depth_key = preproject.map(PreprojectedGpuCompute::depth_key_receipt);
+    let expected_preproject_depth_key = preproject
+        .map(|_| PreprojectDepthKeyReceipt::realized_for_request(requested_depth_key_precision));
+    if preproject_depth_key != expected_preproject_depth_key {
+        return Err(GpuPreparationError::ExactContractMismatch {
+            component: "Preproject depth-key profile",
+        });
+    }
     let receipt = GpuPreparationReceipt {
         source_count,
         capacity,
@@ -1455,6 +1480,7 @@ fn validate_complete_receipt(
         addressable_count: projector.capacity(),
         sh_degree: scene.sh_degree,
         preproject_compute: preproject.is_some(),
+        preproject_depth_key,
         projected_cache_precision,
         resident_sh,
         scene_resource_generation: SceneResourceGeneration::from_frame(generation),
@@ -1483,6 +1509,7 @@ fn validate_runtime_counts(
             receipt.projected_cache_precision.axis_record_bytes()
                 != preproject.source_axes_record_bytes()
         })
+        || receipt.preproject_depth_key != preproject.map(PreprojectedGpuCompute::depth_key_receipt)
     {
         return Err(GpuPreparationError::ExactContractMismatch {
             component: "source/capacity/resident/addressable count",
@@ -1742,6 +1769,9 @@ mod tests {
             addressable_count: 1,
             sh_degree: 0,
             preproject_compute: true,
+            preproject_depth_key: Some(PreprojectDepthKeyReceipt::realized_for_request(
+                DepthKeyPrecision::ExactFull32,
+            )),
             projected_cache_precision: ProjectedCachePrecisionProfile::ExactAxes32,
             resident_sh: ResidentShLayoutReceipt {
                 profile: ResidentShCodecProfile::ExactSigned11BandScale5,
@@ -1886,6 +1916,47 @@ mod tests {
             classify_scope_errors(Some("internal".into()), None, Some("validation".into())),
             Some(GpuPreparationError::Internal("internal".into()))
         );
+    }
+
+    #[test]
+    fn candidate20_gpu_admission_receipts_the_realized_preproject_profile() {
+        pollster::block_on(async {
+            let Some((_instance, _adapter, _info, device, queue)) = request_device(8).await else {
+                return;
+            };
+            let owner = GpuExecutionOwner::new(&device, &queue);
+            let resident = ResidentSceneCpu::encode_owned(source(129, 0)).expect("resident scene");
+            let candidate = GpuScenePreparation::prepare_with_precision_profiles(
+                &owner,
+                &resident,
+                frame(1, 0, 0),
+                true,
+                DepthKeyPrecision::CandidateStable20,
+                ProjectedCachePrecisionProfile::ExactAxes32,
+            )
+            .await
+            .expect("Candidate20 GPU graph");
+
+            assert_eq!(
+                candidate.depth_key_precision(),
+                Some(DepthKeyPrecision::CandidateStable20),
+            );
+            let actual = candidate
+                .receipt()
+                .preproject_depth_key()
+                .expect("realized preproject receipt");
+            assert_eq!(actual.precision(), DepthKeyPrecision::CandidateStable20);
+            assert_eq!(actual.radix_first_shift(), 12);
+            assert_eq!(actual.radix_pass_count(), 5);
+            assert_eq!(
+                candidate
+                    .preproject
+                    .as_ref()
+                    .expect("preproject graph")
+                    .depth_key_receipt(),
+                actual,
+            );
+        });
     }
 
     #[cfg(all(

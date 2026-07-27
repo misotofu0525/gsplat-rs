@@ -2,14 +2,17 @@
 //!
 //! The graph projects every resident source once, retains two source-indexed
 //! cache planes, compacts true contributors in stable source order, and hands
-//! the resulting `{full32 depth key, source_id}[0..C)` prefix to the reusable
-//! external-prefix radix sorter. Surface publication remains diagnostic and
-//! transactionally selected; the qualified post-sort graph stays the default.
+//! the resulting `{depth key, source_id}[0..C)` prefix to the reusable
+//! external-prefix radix sorter. ExactFull32 remains the default; the isolated
+//! CandidateStable20 graph clears the low 12 key bits and sorts five retained
+//! nibbles. Surface publication remains diagnostic and transactionally
+//! selected; the qualified post-sort graph stays the default.
 
 use std::{mem::size_of, num::NonZeroU64};
 
 use gsplat_core::Camera;
 
+use crate::cpu_order::DepthKeyPrecision;
 use crate::gpu::{
     ExternalPrefixRadix, ExternalPrefixRadixBytePlan, GpuPrefixScan,
     PREPROJECT_DRAW_INDIRECT_ARGS_BYTES, PreprojectKeyIdCompactor,
@@ -60,6 +63,46 @@ struct ScanBytePlan {
     params: u64,
 }
 
+/// Private proof of the depth-key profile actually realized by one
+/// preproject graph. Candidate24 intentionally retains the established Exact
+/// preproject behavior; Q1K1b changes only the explicitly requested
+/// Candidate20 experiment.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct PreprojectDepthKeyReceipt {
+    precision: DepthKeyPrecision,
+    radix_first_shift: u32,
+    radix_pass_count: u32,
+}
+
+impl PreprojectDepthKeyReceipt {
+    pub(crate) const fn realized_for_request(requested: DepthKeyPrecision) -> Self {
+        match requested {
+            DepthKeyPrecision::CandidateStable20 => Self {
+                precision: DepthKeyPrecision::CandidateStable20,
+                radix_first_shift: 12,
+                radix_pass_count: 5,
+            },
+            DepthKeyPrecision::ExactFull32 | DepthKeyPrecision::CandidateStable24 => Self {
+                precision: DepthKeyPrecision::ExactFull32,
+                radix_first_shift: 0,
+                radix_pass_count: 8,
+            },
+        }
+    }
+
+    pub(crate) const fn precision(self) -> DepthKeyPrecision {
+        self.precision
+    }
+
+    pub(crate) const fn radix_first_shift(self) -> u32 {
+        self.radix_first_shift
+    }
+
+    pub(crate) const fn radix_pass_count(self) -> u32 {
+        self.radix_pass_count
+    }
+}
+
 /// Exact static allocation owned by the direct S -> C graph.
 ///
 /// The radix fields already include their two key planes, two source-ID
@@ -84,7 +127,12 @@ impl PreprojectGpuBytePlan {
         capacity: u32,
         limits: &wgpu::Limits,
     ) -> Result<Self, ResidentGpuError> {
-        Self::for_capacity_with_axes_record_bytes(capacity, limits, SOURCE_AXES32_BYTES)
+        Self::for_capacity_with_axes_record_bytes(
+            capacity,
+            limits,
+            SOURCE_AXES32_BYTES,
+            DepthKeyPrecision::ExactFull32,
+        )
     }
 
     #[cfg(feature = "diagnostic-surface-projected-axes16")]
@@ -92,13 +140,19 @@ impl PreprojectGpuBytePlan {
         capacity: u32,
         limits: &wgpu::Limits,
     ) -> Result<Self, ResidentGpuError> {
-        Self::for_capacity_with_axes_record_bytes(capacity, limits, SOURCE_AXES16_BYTES)
+        Self::for_capacity_with_axes_record_bytes(
+            capacity,
+            limits,
+            SOURCE_AXES16_BYTES,
+            DepthKeyPrecision::ExactFull32,
+        )
     }
 
     fn for_capacity_with_axes_record_bytes(
         capacity: u32,
         limits: &wgpu::Limits,
         axes_record_bytes: u64,
+        depth_key_precision: DepthKeyPrecision,
     ) -> Result<Self, ResidentGpuError> {
         let center_plane = u64::from(capacity)
             .checked_mul(SOURCE_CENTER_ALPHA_KEY_BYTES)
@@ -119,7 +173,16 @@ impl PreprojectGpuBytePlan {
             offset_count,
             limits.min_uniform_buffer_offset_alignment.max(16),
         )?;
-        let radix = ExternalPrefixRadixBytePlan::for_capacity(capacity, limits)?;
+        let depth_key_receipt =
+            PreprojectDepthKeyReceipt::realized_for_request(depth_key_precision);
+        let radix = match depth_key_receipt.precision() {
+            DepthKeyPrecision::CandidateStable20 => {
+                ExternalPrefixRadixBytePlan::for_capacity_candidate_stable20(capacity, limits)?
+            }
+            DepthKeyPrecision::ExactFull32 | DepthKeyPrecision::CandidateStable24 => {
+                ExternalPrefixRadixBytePlan::for_capacity(capacity, limits)?
+            }
+        };
         let draw_args = PREPROJECT_DRAW_INDIRECT_ARGS_BYTES;
         let total_static = [
             center_plane,
@@ -234,7 +297,7 @@ fn scan_byte_plan(count: u32, uniform_stride: u32) -> Result<ScanBytePlan, Resid
     })
 }
 
-/// Target-independent owner of the Exact `S -> V/C -> stable full32` compute
+/// Target-independent owner of the Exact `S -> V/C -> stable depth-key` compute
 /// graph. It owns no render pipeline, texture format, target or presentation
 /// state, so the same graph can be staged with the device-owned scene.
 pub(crate) struct PreprojectedGpuCompute {
@@ -250,6 +313,7 @@ pub(crate) struct PreprojectedGpuCompute {
     source_center_alpha_key: wgpu::Buffer,
     source_axes: wgpu::Buffer,
     radix: ExternalPrefixRadix,
+    depth_key_receipt: PreprojectDepthKeyReceipt,
     _byte_plan: PreprojectGpuBytePlan,
 }
 
@@ -259,19 +323,35 @@ impl PreprojectedGpuCompute {
         resident: &ResidentGpuResources,
         indirect_vertex_count: u32,
     ) -> Result<Self, ResidentGpuError> {
+        Self::new_with_depth_key_precision(
+            device,
+            resident,
+            indirect_vertex_count,
+            DepthKeyPrecision::ExactFull32,
+        )
+    }
+
+    pub(crate) fn new_with_depth_key_precision(
+        device: &wgpu::Device,
+        resident: &ResidentGpuResources,
+        indirect_vertex_count: u32,
+        depth_key_precision: DepthKeyPrecision,
+    ) -> Result<Self, ResidentGpuError> {
         Self::new_with_axes_record_bytes(
             device,
             resident,
             indirect_vertex_count,
             SOURCE_AXES32_BYTES,
             include_str!("../shaders/preproject_contributors.wgsl"),
+            depth_key_precision,
         )
     }
 
-    pub(crate) fn new_axes16(
+    pub(crate) fn new_axes16_with_depth_key_precision(
         device: &wgpu::Device,
         resident: &ResidentGpuResources,
         indirect_vertex_count: u32,
+        depth_key_precision: DepthKeyPrecision,
     ) -> Result<Self, ResidentGpuError> {
         Self::new_with_axes_record_bytes(
             device,
@@ -279,6 +359,7 @@ impl PreprojectedGpuCompute {
             indirect_vertex_count,
             SOURCE_AXES16_BYTES,
             include_str!("../shaders/preproject_contributors_axes16.wgsl"),
+            depth_key_precision,
         )
     }
 
@@ -288,6 +369,7 @@ impl PreprojectedGpuCompute {
         indirect_vertex_count: u32,
         axes_record_bytes: u64,
         shader_source: &'static str,
+        requested_depth_key_precision: DepthKeyPrecision,
     ) -> Result<Self, ResidentGpuError> {
         let capacity =
             u32::try_from(resident.capacity).map_err(|_| ResidentGpuError::AddressSpaceExceeded)?;
@@ -296,6 +378,7 @@ impl PreprojectedGpuCompute {
             capacity,
             &limits,
             axes_record_bytes,
+            requested_depth_key_precision,
         )?
         .validate_limits(&limits)?;
         let dispatch_limit = limits.max_compute_workgroups_per_dimension;
@@ -330,7 +413,18 @@ impl PreprojectedGpuCompute {
                 | wgpu::BufferUsages::COPY_DST
                 | wgpu::BufferUsages::COPY_SRC,
         );
-        let radix = ExternalPrefixRadix::new(device, capacity)?;
+        let depth_key_receipt =
+            PreprojectDepthKeyReceipt::realized_for_request(requested_depth_key_precision);
+        let radix = match depth_key_receipt.precision() {
+            DepthKeyPrecision::CandidateStable20 => {
+                ExternalPrefixRadix::new_candidate_stable20(device, capacity)?
+            }
+            DepthKeyPrecision::ExactFull32 | DepthKeyPrecision::CandidateStable24 => {
+                ExternalPrefixRadix::new(device, capacity)?
+            }
+        };
+        debug_assert_eq!(radix.first_shift(), depth_key_receipt.radix_first_shift());
+        debug_assert_eq!(radix.pass_count(), depth_key_receipt.radix_pass_count());
 
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: wgpu_label("gsplat-preproject-contributor-shader"),
@@ -364,6 +458,7 @@ impl PreprojectedGpuCompute {
             &project_pipeline_layout,
             "project_count",
             "gsplat-preproject-project-pipeline",
+            depth_key_receipt.precision(),
         );
         let project_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: wgpu_label("gsplat-preproject-project-bg"),
@@ -409,11 +504,12 @@ impl PreprojectedGpuCompute {
             source_center_alpha_key,
             source_axes,
             radix,
+            depth_key_receipt,
             _byte_plan: byte_plan,
         })
     }
 
-    /// Encodes one coherent `S -> C -> stable full32 descending order` graph.
+    /// Encodes one coherent `S -> C -> stable descending depth order` graph.
     /// Every call refreshes all S projections and the complete order prefix;
     /// camera, viewport, or scene revisions never reuse an older producer.
     pub(crate) fn encode(
@@ -502,6 +598,10 @@ impl PreprojectedGpuCompute {
         self.radix.control()
     }
 
+    pub(crate) const fn depth_key_receipt(&self) -> PreprojectDepthKeyReceipt {
+        self.depth_key_receipt
+    }
+
     /// Current-camera complete-S near/far/alpha candidate count V accumulated
     /// exactly once per projection workgroup.
     pub(crate) fn candidate_count_buffer_and_offset(&self) -> (&wgpu::Buffer, u64) {
@@ -554,13 +654,21 @@ fn create_compute_pipeline(
     layout: &wgpu::PipelineLayout,
     entry_point: &'static str,
     label: &'static str,
+    depth_key_precision: DepthKeyPrecision,
 ) -> wgpu::ComputePipeline {
+    let constants = [(
+        "DEPTH_KEY_LOW_BITS_TO_CLEAR",
+        f64::from(depth_key_precision.low_bits_to_clear()),
+    )];
     device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
         label: wgpu_label(label),
         layout: Some(layout),
         module: shader,
         entry_point: Some(entry_point),
-        compilation_options: wgpu::PipelineCompilationOptions::default(),
+        compilation_options: wgpu::PipelineCompilationOptions {
+            constants: &constants,
+            ..Default::default()
+        },
         cache: None,
     })
 }
@@ -1139,6 +1247,9 @@ mod tests {
                 source.contains("atomicAdd(&candidate_total[0], atomicLoad(&candidate_count))")
             );
             assert!(!source.contains("candidate_group_counts"));
+            assert!(source.contains("override DEPTH_KEY_LOW_BITS_TO_CLEAR: u32 = 0u"));
+            assert!(source.contains("let retained = max(bits >> DEPTH_KEY_LOW_BITS_TO_CLEAR, 1u)"));
+            assert!(source.contains("visible_depth_key(p_cam.z)"));
         }
     }
 
@@ -1174,8 +1285,13 @@ mod tests {
         };
         let scene = base_scene(3);
         let resident = resident_resources(&device, &scene);
-        let producer = PreprojectedGpuCompute::new_axes16(&device, &resident, QUAD_VERTEX_COUNT)
-            .expect("axes16 preproject graph");
+        let producer = PreprojectedGpuCompute::new_axes16_with_depth_key_precision(
+            &device,
+            &resident,
+            QUAD_VERTEX_COUNT,
+            DepthKeyPrecision::ExactFull32,
+        )
+        .expect("axes16 preproject graph");
         let camera = camera();
         let position_alpha = [
             ResidentPositionAlpha {
@@ -1411,6 +1527,137 @@ mod tests {
         assert!(!actual.ids.contains(&11));
         assert!(!actual.ids.contains(&12));
         assert!(!actual.ids.contains(&13));
+    }
+
+    #[test]
+    fn exact_and_candidate20_preproject_match_their_key_id_oracles_and_counts() {
+        let Some((device, queue)) = test_device() else {
+            return;
+        };
+        let capacity = 1_025_usize;
+        let scene = base_scene(capacity);
+        let resident = resident_resources(&device, &scene);
+        let exact = PreprojectedGpuCompute::new(&device, &resident, QUAD_VERTEX_COUNT)
+            .expect("Exact preproject graph");
+        let candidate = PreprojectedGpuCompute::new_with_depth_key_precision(
+            &device,
+            &resident,
+            QUAD_VERTEX_COUNT,
+            DepthKeyPrecision::CandidateStable20,
+        )
+        .expect("Candidate20 preproject graph");
+        assert_eq!(
+            exact.depth_key_receipt(),
+            PreprojectDepthKeyReceipt::realized_for_request(DepthKeyPrecision::ExactFull32)
+        );
+        assert_eq!(
+            candidate.depth_key_receipt(),
+            PreprojectDepthKeyReceipt::realized_for_request(DepthKeyPrecision::CandidateStable20)
+        );
+        assert_eq!(candidate.radix.first_shift(), 12);
+        assert_eq!(candidate.radix.pass_count(), 5);
+
+        let position_alpha = (0..capacity)
+            .map(|source_id| {
+                let depth = if source_id == 0 {
+                    4.0
+                } else {
+                    f32::from_bits(2.0_f32.to_bits() + source_id as u32)
+                };
+                ResidentPositionAlpha {
+                    position_alpha: [0.0, 0.0, depth, 0.8],
+                }
+            })
+            .collect::<Vec<_>>();
+        let covariance0 = vec![
+            ResidentCovariance0 {
+                values: [0.01, 0.0, 0.0, 0.01],
+            };
+            capacity
+        ];
+        let covariance1 = vec![
+            ResidentCovariance1 {
+                values: [0.0, 0.01],
+            };
+            capacity
+        ];
+        upload_source_planes(
+            &queue,
+            &resident,
+            &position_alpha,
+            &covariance0,
+            &covariance1,
+        );
+
+        let camera = camera();
+        let exact_actual = run_and_read(&device, &queue, &resident, &exact, &camera);
+        let candidate_actual = run_and_read(&device, &queue, &resident, &candidate, &camera);
+        for actual in [&exact_actual, &candidate_actual] {
+            assert_eq!(actual.candidate_count, capacity as u32);
+            assert_eq!(actual.control.count, capacity as u32);
+            assert_eq!(actual.draw.instance_count, capacity as u32);
+        }
+
+        let expected_for = |precision| {
+            let mut pairs = position_alpha
+                .iter()
+                .enumerate()
+                .map(|(source_id, source)| {
+                    (
+                        crate::cpu_order::depth_to_key_with_precision(
+                            source.position_alpha[2],
+                            precision,
+                        ),
+                        source_id as u32,
+                    )
+                })
+                .collect::<Vec<_>>();
+            pairs.sort_by(|left, right| right.0.cmp(&left.0));
+            pairs
+        };
+        let exact_pairs = exact_actual
+            .keys
+            .iter()
+            .copied()
+            .zip(exact_actual.ids.iter().copied())
+            .collect::<Vec<_>>();
+        let candidate_pairs = candidate_actual
+            .keys
+            .iter()
+            .copied()
+            .zip(candidate_actual.ids.iter().copied())
+            .collect::<Vec<_>>();
+        assert_eq!(exact_pairs, expected_for(DepthKeyPrecision::ExactFull32));
+        assert_eq!(
+            candidate_pairs,
+            expected_for(DepthKeyPrecision::CandidateStable20)
+        );
+        assert_eq!(candidate_pairs[0].1, 0);
+        assert_eq!(
+            candidate_pairs[1..]
+                .iter()
+                .map(|pair| pair.1)
+                .collect::<Vec<_>>(),
+            (1..capacity as u32).collect::<Vec<_>>(),
+            "equal Candidate20 keys must retain source order across the 1,025 tail",
+        );
+        assert_eq!(
+            exact_pairs[1..]
+                .iter()
+                .map(|pair| pair.1)
+                .collect::<Vec<_>>(),
+            (1..capacity as u32).rev().collect::<Vec<_>>(),
+            "ExactFull32 must retain all low-bit depth distinctions",
+        );
+        for (source_id, source) in position_alpha.iter().enumerate() {
+            assert_eq!(
+                candidate_actual.center[source_id][3].to_bits(),
+                crate::cpu_order::depth_to_key_with_precision(
+                    source.position_alpha[2],
+                    DepthKeyPrecision::CandidateStable20,
+                )
+            );
+        }
     }
 
     #[test]

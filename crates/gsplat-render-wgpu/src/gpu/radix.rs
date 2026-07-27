@@ -149,6 +149,17 @@ impl ExternalPrefixRadixBytePlan {
         Self::for_capacity_with_profile(capacity, limits, ExternalPrefixRadixProfile::EXACT_FULL32)
     }
 
+    pub(crate) fn for_capacity_candidate_stable20(
+        capacity: u32,
+        limits: &wgpu::Limits,
+    ) -> Result<Self, ResidentGpuError> {
+        Self::for_capacity_with_profile(
+            capacity,
+            limits,
+            ExternalPrefixRadixProfile::CANDIDATE_STABLE20,
+        )
+    }
+
     fn for_capacity_with_profile(
         capacity: u32,
         limits: &wgpu::Limits,
@@ -281,6 +292,17 @@ pub(crate) struct ExternalPrefixRadix {
 impl ExternalPrefixRadix {
     pub(crate) fn new(device: &wgpu::Device, capacity: u32) -> Result<Self, ResidentGpuError> {
         Self::new_with_profile(device, capacity, ExternalPrefixRadixProfile::EXACT_FULL32)
+    }
+
+    pub(crate) fn new_candidate_stable20(
+        device: &wgpu::Device,
+        capacity: u32,
+    ) -> Result<Self, ResidentGpuError> {
+        Self::new_with_profile(
+            device,
+            capacity,
+            ExternalPrefixRadixProfile::CANDIDATE_STABLE20,
+        )
     }
 
     pub(crate) fn new_with_profile(
@@ -514,6 +536,14 @@ impl ExternalPrefixRadix {
 
     pub(crate) const fn profile(&self) -> ExternalPrefixRadixProfile {
         self.profile
+    }
+
+    pub(crate) const fn first_shift(&self) -> u32 {
+        self.profile.first_shift
+    }
+
+    pub(crate) const fn pass_count(&self) -> u32 {
+        self.profile.pass_count
     }
 
     pub(crate) fn input_keys(&self) -> &wgpu::Buffer {

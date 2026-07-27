@@ -1325,6 +1325,14 @@ impl PreparedRuntimeSlot {
         self.runtime.scene.gpu_depth_key_precision()
     }
 
+    #[cfg(test)]
+    pub(crate) fn gpu_preproject_depth_key_receipt_for_test(
+        &self,
+    ) -> Option<crate::preproject_gpu::PreprojectDepthKeyReceipt> {
+        self.gpu_preparation()
+            .and_then(GpuPreparationReceipt::preproject_depth_key)
+    }
+
     pub(crate) fn gpu_capability(&self) -> Option<GpuCapabilityReceipt> {
         self.runtime.plans.gpu_capability()
     }
