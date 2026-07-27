@@ -122,13 +122,18 @@ unique renderer current-stats tickets to 80 Ready terminals. The canonical
 benchmark and full-quality validators passed, and the final frame was inspected
 as a non-black, complete Truck image.
 
-This accepted prerequisite also records a serious observation without turning
-it into a premature comparison: gsplat-rs WebGPU reported frame-wall mean
-`66.875 ms` with 80/80 frames over 16.67 ms, while the separately retained
-PlayCanvas prerequisite reported `17.6675 ms`. These are not yet a Q1 paired
-result: the native M4 Exact endpoint, common external-presentation scope and
-counterbalanced pairing remain required. No claim of native or competitor
-advantage is made from either prerequisite alone.
+This endpoint is accepted only for complete-scene, image, Exact-count and
+ticket-integrity evidence. Its throughput observation is **Rejected**: the Web
+frame loop still stopped submission whenever one renderer current-stats ticket
+was pending, even while the artifact declared `sustained_window`. It therefore
+serialized each presented frame with its asynchronous terminal readback, while
+the PlayCanvas prerequisite submitted continuously and drained the queue only
+after its final measured frame. The resulting gsplat-rs frame-wall mean
+`66.875 ms` and 80/80 over-budget frames must not be compared with PlayCanvas
+`17.6675 ms`. A replacement sample is allowed only after the collector proves
+overlapped bounded current-stats tickets, continuous measured submissions and
+one final no-new-draw drain. Q1 still requires the native M4 Exact endpoint,
+common external-presentation scope and counterbalanced outer pairing.
 
 ## Q3 M4 SIMD microbenchmark checkpoint (2026-07-27)
 
