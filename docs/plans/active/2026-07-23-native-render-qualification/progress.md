@@ -206,3 +206,25 @@ unchanged and no tuning retry is permitted. Q3 itself remains active until the
 required A065 native cell reaches a finite terminal result; absent physical
 x86_64 and Apple-mobile breadth will be reported Deferred rather than
 substituted by cross-compilation or simulators.
+
+## Q3 A065 SIMD collector checkpoint (2026-07-27)
+
+The finite physical-A065 matrix mechanism was independently accepted and
+root-integrated as `36736a8`. It freezes the Scalar/NEON APK and prepared-input
+identities, stages each workload once, executes every matrix command once, and
+binds any structured renderer range-admission receipt to the exact host-issued
+collection identity. A stale or cross-run receipt cannot truncate the ladder.
+
+Generic OOM text, PNG failure, malformed artifact or ledger failure remains a
+cell-local integrity `Rejected`; collection continues through the later tiers
+and complete Truck, while the aggregate result stays sticky `Rejected`. Only a
+validated renderer scene-admission receipt may cut off larger workloads, and
+only loss of the frozen repository/device/APK/input identity may terminate the
+matrix early. The current Android product does not yet emit that range receipt.
+
+This checkpoint contains collector, qualification-only SIMD leaves, tests and
+launchbook support only. No A065 device run was performed during integration,
+so Q3 remains **Active** and publishes no Android performance or capacity
+result yet. The next root-owned action is one fresh doctor -> command -> run
+matrix at an exact clean integrated SHA; a failed cell is retained rather than
+retried or tuned in place.
