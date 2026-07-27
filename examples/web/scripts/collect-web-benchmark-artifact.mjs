@@ -44,9 +44,11 @@ import {
 } from '../src/dataset-identity.mjs';
 import {
   TRUCK_1080P_QUALIFICATION,
+  claimTruck1080pOutputRoot,
   publishValidatedTruck1080pSuite,
   validateTruck1080pCleanWorkingTree,
   validateTruck1080pCollectorConfig,
+  validateTruck1080pExactRasterEvidence,
 } from '../src/truck-1080p-qualification.mjs';
 
 const execFile = promisify(execFileCallback);
@@ -70,6 +72,7 @@ const formalDatasetLogicalId = qualificationName === 'kitsune-static-v1'
     ? 'raster_diagnostic_v1'
     : qualificationName === TRUCK_1080P_QUALIFICATION.name ? 'truck' : null;
 const truck1080pQualification = qualificationName === TRUCK_1080P_QUALIFICATION.name;
+let claimedTruckOutputRoot = null;
 const m4Smoke = process.env.GSPLAT_M4_SMOKE === '1';
 const frames = Number(process.env.GSPLAT_BENCHMARK_FRAMES ?? (qualification ? 3600 : 30));
 const warmup = Number(process.env.GSPLAT_BENCHMARK_WARMUP_FRAMES ?? (qualification ? 120 : 5));
@@ -177,10 +180,6 @@ async function admitTruck1080pQualification() {
       .filter((value) => value.length > 0)
       .map(Number),
   });
-  const porcelain = (
-    await execFile('git', ['status', '--porcelain'], { cwd: repoRoot })
-  ).stdout;
-  validateTruck1080pCleanWorkingTree(porcelain);
   const outputRoot = dirname(outDir);
   if (outDir !== resolve(outputRoot, expected.artifact_name)) {
     throw new Error(`Truck 1080p artifact must be named ${expected.artifact_name}`);
@@ -188,9 +187,12 @@ async function admitTruck1080pQualification() {
   if (fullQualitySuitePath !== resolve(outputRoot, expected.suite_name)) {
     throw new Error(`Truck 1080p suite must be ${resolve(outputRoot, expected.suite_name)}`);
   }
-  if (await pathExists(outputRoot)) {
-    throw new Error(`Truck 1080p output root already exists: ${outputRoot}`);
-  }
+  const porcelain = (
+    await execFile('git', ['status', '--porcelain'], { cwd: repoRoot })
+  ).stdout;
+  validateTruck1080pCleanWorkingTree(porcelain);
+  await claimTruck1080pOutputRoot(outputRoot);
+  claimedTruckOutputRoot = outputRoot;
 
   const datasetPath = resolve(repoRoot, expected.dataset.local_path);
   const datasetStat = await stat(datasetPath);
@@ -947,11 +949,12 @@ async function writeArtifact({
   return outDir;
 }
 
-async function publishTruck1080pSuite({ manifest, imagePath }) {
+async function publishTruck1080pSuite({ manifest, frames, imagePath }) {
   const imageSha256 = await sha256File(imagePath);
   return publishValidatedTruck1080pSuite({
     suitePath: fullQualitySuitePath,
     manifest,
+    frames,
     imagePath,
     imageSha256,
     validate: (staging) => runPythonValidator(
@@ -981,11 +984,9 @@ if (truck1080pQualification) {
   try {
     await admitTruck1080pQualification();
   } catch (error) {
-    const outputRoot = dirname(outDir);
     let logPath = null;
-    if (!await pathExists(outputRoot)) {
-      logPath = resolve(outputRoot, 'collector-admission-failure.log');
-      await mkdir(outputRoot, { recursive: true });
+    if (claimedTruckOutputRoot !== null) {
+      logPath = resolve(claimedTruckOutputRoot, 'collector-admission-failure.log');
       await writeFile(logPath, `${error.stack ?? error}\n`, { flag: 'wx' });
     }
     console.error(JSON.stringify({
@@ -1197,6 +1198,16 @@ try {
     throw new Error(`browser benchmark became ${settledBenchmarkState} while draining GPU receipts`);
   }
   const parsed = parseArtifacts(consoleLines);
+  const truckManifest = truck1080pQualification ? JSON.parse(parsed.manifests[0]) : null;
+  const truckFrames = truck1080pQualification
+    ? parsed.frameRecords.map((frame) => JSON.parse(frame))
+    : null;
+  if (truck1080pQualification) {
+    validateTruck1080pExactRasterEvidence({
+      manifest: truckManifest,
+      frames: truckFrames,
+    });
+  }
   const artifactDir = await writeArtifact(parsed);
   const dataUrl = await page.$eval('#viewport', (canvas) => canvas.toDataURL('image/png'));
   const imagePath = resolve(artifactDir, 'final-frame.png');
@@ -1204,7 +1215,8 @@ try {
   await writeFile(resolve(artifactDir, 'browser-console.log'), `${consoleLines.join('\n')}\n`);
   const suitePath = truck1080pQualification
     ? await publishTruck1080pSuite({
-        manifest: JSON.parse(parsed.manifests[0]),
+        manifest: truckManifest,
+        frames: truckFrames,
         imagePath,
       })
     : null;

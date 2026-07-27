@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
@@ -10,9 +10,11 @@ import { fileURLToPath } from "node:url";
 import {
   TRUCK_1080P_QUALIFICATION,
   buildTruck1080pFullQualitySuite,
+  claimTruck1080pOutputRoot,
   publishValidatedTruck1080pSuite,
   validateTruck1080pCleanWorkingTree,
   validateTruck1080pCollectorConfig,
+  validateTruck1080pExactRasterEvidence,
 } from "../src/truck-1080p-qualification.mjs";
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
@@ -81,14 +83,44 @@ test("Truck 1080p collector admission rejects a dirty working tree", () => {
   );
 });
 
+test("Truck 1080p output root has exactly one atomic claimant", async (t) => {
+  const parent = await mkdtemp(join(tmpdir(), "gsplat-truck-claim-"));
+  t.after(() => rm(parent, { recursive: true, force: true }));
+  const outputRoot = join(parent, "attempt-1");
+  const results = await Promise.allSettled([
+    claimTruck1080pOutputRoot(outputRoot),
+    claimTruck1080pOutputRoot(outputRoot),
+  ]);
+  assert.equal(results.filter((result) => result.status === "fulfilled").length, 1);
+  assert.equal(results.filter((result) => result.status === "rejected").length, 1);
+  assert.match(
+    results.find((result) => result.status === "rejected").reason.message,
+    /output root is already claimed/,
+  );
+  assert.equal((await stat(outputRoot)).isDirectory(), true);
+});
+
 test("Truck 1080p suite is a single non-performance full-quality prerequisite cell", () => {
+  const expected = TRUCK_1080P_QUALIFICATION;
   const suite = buildTruck1080pFullQualitySuite({
     manifest: {
       build: {
         repository_commit: "a".repeat(40),
         dirty: false,
       },
+      renderer: {
+        path: expected.renderer_path,
+        backend: "webgpu",
+        count_semantics: "candidate_visible_contributor_issued_v1",
+        raster_execution_plan: "projected_quads_exact",
+      },
+      ordering_evidence: {
+        terminal_model: "renderer_current_stats",
+      },
     },
+    frames: Array.from({ length: expected.measured_frames }, () => ({
+      raster_execution_plan: "projected_quads_exact",
+    })),
     imageSha256: "b".repeat(64),
   });
 
@@ -197,6 +229,10 @@ async function installTemporaryTruckArtifact(root) {
       order_backend_requested: expected.order_backend,
       sort_interval: expected.sort_interval,
       count_semantics: "candidate_visible_contributor_issued_v1",
+      raster_execution_plan: "projected_quads_exact",
+    },
+    ordering_evidence: {
+      terminal_model: "renderer_current_stats",
     },
     display: {
       width: expected.trace.width,
@@ -251,6 +287,7 @@ async function installTemporaryTruckArtifact(root) {
     drawn: expected.dataset.splat_count,
     exact_contributor_compaction: true,
     sort_refreshed: true,
+    raster_execution_plan: "projected_quads_exact",
   }));
   const summary = {
     schema: "gsplat-benchmark/v1",
@@ -291,6 +328,7 @@ async function installTemporaryTruckArtifact(root) {
   return {
     artifact,
     manifest,
+    frames,
     imagePath,
     imageSha256: createHash("sha256").update(png).digest("hex"),
   };
@@ -313,11 +351,19 @@ test("Truck suite publication passes the real benchmark and full-quality validat
     fixture.artifact,
   );
   assert.equal(benchmark.status, 0, benchmark.stderr || benchmark.stdout);
+  assert.equal(
+    validateTruck1080pExactRasterEvidence({
+      manifest: fixture.manifest,
+      frames: fixture.frames,
+    }).frame_count,
+    TRUCK_1080P_QUALIFICATION.measured_frames,
+  );
 
   const suitePath = join(root, TRUCK_1080P_QUALIFICATION.suite_name);
   await publishValidatedTruck1080pSuite({
     suitePath,
     manifest: fixture.manifest,
+    frames: fixture.frames,
     imagePath: fixture.imagePath,
     imageSha256: fixture.imageSha256,
     validate: async (staging) => {
@@ -332,6 +378,72 @@ test("Truck suite publication passes the real benchmark and full-quality validat
   await assert.rejects(access(join(root, ".suite.json.staging")), { code: "ENOENT" });
 });
 
+test("Truck raster admission rejects missing, one-frame legacy, and global plans", async (t) => {
+  const cases = [
+    {
+      name: "missing plan",
+      mutate: ({ frames }) => {
+        delete frames[0].raster_execution_plan;
+      },
+      message: /retained measured frame 0.*observed missing/,
+    },
+    {
+      name: "one-frame legacy mutation",
+      mutate: ({ frames }) => {
+        frames[37].raster_execution_plan = "legacy_quads";
+      },
+      message: /retained measured frame 37.*observed legacy_quads/,
+    },
+    {
+      name: "global plan",
+      mutate: ({ manifest, frames }) => {
+        manifest.renderer.raster_execution_plan = "global_quads";
+        for (const frame of frames) frame.raster_execution_plan = "global_quads";
+      },
+      message: /manifest renderer\.raster_execution_plan.*observed global_quads/,
+    },
+  ];
+
+  for (const testCase of cases) {
+    await t.test(testCase.name, async (subtest) => {
+      const root = await mkdtemp(join(tmpdir(), "gsplat-truck-raster-reject-"));
+      subtest.after(() => rm(root, { recursive: true, force: true }));
+      const fixture = await installTemporaryTruckArtifact(root);
+      testCase.mutate(fixture);
+      await writeFile(
+        join(fixture.artifact, "manifest.json"),
+        `${JSON.stringify(fixture.manifest)}\n`,
+      );
+      await writeFile(
+        join(fixture.artifact, "frames.jsonl"),
+        `${fixture.frames.map((frame) => JSON.stringify(frame)).join("\n")}\n`,
+      );
+      const benchmark = runValidator(
+        "tests/perf/validate-benchmark-artifacts.py",
+        fixture.artifact,
+      );
+      assert.equal(benchmark.status, 0, benchmark.stderr || benchmark.stdout);
+
+      const suitePath = join(root, TRUCK_1080P_QUALIFICATION.suite_name);
+      await assert.rejects(
+        publishValidatedTruck1080pSuite({
+          suitePath,
+          manifest: fixture.manifest,
+          frames: fixture.frames,
+          imagePath: fixture.imagePath,
+          imageSha256: fixture.imageSha256,
+          validate: async () => {
+            assert.fail("raster admission must fail before the suite validator");
+          },
+        }),
+        testCase.message,
+      );
+      await assert.rejects(access(suitePath), { code: "ENOENT" });
+      await assert.rejects(access(join(root, ".suite.json.staging")), { code: "ENOENT" });
+    });
+  }
+});
+
 test("Truck suite validator failure never publishes suite.json", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "gsplat-truck-suite-failure-"));
   t.after(() => rm(root, { recursive: true, force: true }));
@@ -341,6 +453,7 @@ test("Truck suite validator failure never publishes suite.json", async (t) => {
     publishValidatedTruck1080pSuite({
       suitePath,
       manifest: fixture.manifest,
+      frames: fixture.frames,
       imagePath: fixture.imagePath,
       imageSha256: fixture.imageSha256,
       validate: async () => {

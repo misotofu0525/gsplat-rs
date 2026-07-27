@@ -197,12 +197,18 @@ The collector admission freezes Packed geometry, Adaptive ordering/projected
 policy, sort interval 1, sustained-window completion, no producer override,
 asynchronous progression, 20 warmup plus 80 measured frames, and the canonical
 two-frame 1920x1080 Truck trace at indices `[0,1]` with one loop. It also rejects
-a dirty working tree before Chrome starts. Its retained
-manifest and load receipt must prove source=decoded=encoded=resident=addressable
-=2541226, source/resident SH3, all source membership, and disabled sampling and
-LOD. The canonical full-quality validator additionally rejects dynamic
-resolution, upscaling, a non-WebGPU renderer path, or a display/image other
-than 1920x1080.
+a dirty working tree before Chrome starts. On `run`, the collector atomically
+claims the fresh root before browser execution; concurrent collectors cannot
+share it, and a claimed failure root is retained without retry or removal. Its
+retained manifest and load receipt must prove
+source=decoded=encoded=resident=addressable=2541226, source/resident SH3, all
+source membership, and disabled sampling and LOD. The canonical full-quality
+validator additionally rejects dynamic resolution, upscaling, a non-WebGPU
+renderer path, or a display/image other than 1920x1080. Before any artifact,
+PNG, or suite publication, every one of the 80 retained measured frames must
+carry renderer-owned
+`raster_execution_plan=projected_quads_exact`; missing, legacy, global, or mixed
+raster plans fail closed.
 
 On success, the standard collector first publishes a canonical benchmark
 artifact under `<fresh-root>/run-adaptive`, then writes its final WebGPU canvas

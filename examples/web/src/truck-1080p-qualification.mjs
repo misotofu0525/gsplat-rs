@@ -1,10 +1,13 @@
-import { access, rename, stat, writeFile } from "node:fs/promises";
+import { access, mkdir, rename, stat, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 
 import { canonicalFormalDatasetIdentity } from "./dataset-identity.mjs";
 
 const QUALIFICATION_NAME = "truck-quality-1080p-v1";
 const TRUCK_IDENTITY = canonicalFormalDatasetIdentity("truck");
+const EXACT_RASTER_PLAN = "projected_quads_exact";
+const EXACT_COUNT_SEMANTICS = "candidate_visible_contributor_issued_v1";
+const EXACT_TERMINAL_MODEL = "renderer_current_stats";
 
 export const TRUCK_1080P_QUALIFICATION = Object.freeze({
   name: QUALIFICATION_NAME,
@@ -87,8 +90,66 @@ export function validateTruck1080pCleanWorkingTree(porcelain) {
   if (porcelain.trim() !== "") fail("working tree must be clean before Chrome starts");
 }
 
-export function buildTruck1080pFullQualitySuite({ manifest, imageSha256 }) {
+export async function claimTruck1080pOutputRoot(outputRoot) {
+  await mkdir(dirname(outputRoot), { recursive: true });
+  try {
+    await mkdir(outputRoot);
+  } catch (error) {
+    if (error?.code === "EEXIST") {
+      fail(`output root is already claimed: ${outputRoot}`);
+    }
+    throw error;
+  }
+  return outputRoot;
+}
+
+export function validateTruck1080pExactRasterEvidence({ manifest, frames }) {
   const expected = TRUCK_1080P_QUALIFICATION;
+  if (!Array.isArray(frames) || frames.length !== expected.measured_frames) {
+    fail(
+      `retained measured frame count must equal ${expected.measured_frames}, ` +
+      `observed ${Array.isArray(frames) ? frames.length : "invalid"}`,
+    );
+  }
+  const renderer = manifest?.renderer;
+  const requiredRendererFields = {
+    path: expected.renderer_path,
+    backend: "webgpu",
+    count_semantics: EXACT_COUNT_SEMANTICS,
+    raster_execution_plan: EXACT_RASTER_PLAN,
+  };
+  for (const [field, value] of Object.entries(requiredRendererFields)) {
+    if (renderer?.[field] !== value) {
+      fail(
+        `manifest renderer.${field} must equal ${value}, ` +
+        `observed ${renderer?.[field] ?? "missing"}`,
+      );
+    }
+  }
+  if (manifest?.ordering_evidence?.terminal_model !== EXACT_TERMINAL_MODEL) {
+    fail(
+      `manifest ordering_evidence.terminal_model must equal ${EXACT_TERMINAL_MODEL}, ` +
+      `observed ${manifest?.ordering_evidence?.terminal_model ?? "missing"}`,
+    );
+  }
+  for (const [index, frame] of frames.entries()) {
+    if (frame?.raster_execution_plan !== EXACT_RASTER_PLAN) {
+      fail(
+        `retained measured frame ${index} raster_execution_plan must equal ` +
+        `${EXACT_RASTER_PLAN}, observed ${frame?.raster_execution_plan ?? "missing"}`,
+      );
+    }
+  }
+  return Object.freeze({
+    frame_count: frames.length,
+    raster_execution_plan: EXACT_RASTER_PLAN,
+    terminal_model: EXACT_TERMINAL_MODEL,
+  });
+}
+
+export function buildTruck1080pFullQualitySuite({ manifest, frames, imageSha256 }) {
+  const expected = TRUCK_1080P_QUALIFICATION;
+  validateTruck1080pExactRasterEvidence({ manifest, frames });
   return {
     schema: "gsplat-full-quality-experiment/v1",
     suite_id: `q1-webgpu-truck-1080p-${manifest.build.repository_commit.slice(0, 12)}`,
@@ -189,11 +250,13 @@ export function buildTruck1080pFullQualitySuite({ manifest, imageSha256 }) {
 export async function publishValidatedTruck1080pSuite({
   suitePath,
   manifest,
+  frames,
   imagePath,
   imageSha256,
   validate,
 }) {
   const expected = TRUCK_1080P_QUALIFICATION;
+  validateTruck1080pExactRasterEvidence({ manifest, frames });
   const outputRoot = dirname(suitePath);
   const artifactPath = resolve(outputRoot, expected.artifact_name);
   const expectedImagePath = resolve(artifactPath, "final-frame.png");
@@ -213,7 +276,7 @@ export async function publishValidatedTruck1080pSuite({
     if (error?.code !== "ENOENT") throw error;
   }
 
-  const suite = buildTruck1080pFullQualitySuite({ manifest, imageSha256 });
+  const suite = buildTruck1080pFullQualitySuite({ manifest, frames, imageSha256 });
   const staging = resolve(outputRoot, ".suite.json.staging");
   await writeFile(staging, `${JSON.stringify(suite, null, 2)}\n`, { flag: "wx" });
   await validate(staging);
