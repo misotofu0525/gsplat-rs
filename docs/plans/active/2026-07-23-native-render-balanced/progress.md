@@ -5,12 +5,13 @@
 <!-- gsplat-program-task-states: begin -->
 B0 = Accepted
 B1 = Rejected
-B2 = Active
+B2 = Rejected
+B3 = Active
 <!-- gsplat-program-task-states: end -->
 
 <!-- gsplat-program-active-lanes: begin -->
-activation_commit = 368a02186d3e2c7a6c32cece6ad779ba76194414
-B2 = paired-timing-qualification
+activation_commit = 7c6409b6cfb79f036596bb96c9688f68b94d9970
+B3 = paired-timing-qualification
 <!-- gsplat-program-active-lanes: end -->
 
 ## B0 authoring slice
@@ -928,3 +929,21 @@ all three paired deltas must support the same winner. No fourth bit width,
 adaptive threshold, or automatic rerun is authorized. The private diagnostic
 implementation remains useful test machinery but cannot change defaults or be
 combined in B4.
+
+## B2 terminal M4 result (2026-07-27)
+
+B2 `CandidateAxes16` is **Rejected** for the Apple M4 / Metal / complete Truck
+scope. At clean commit `7c6409b`, its full-source SH3 Kitsune `1920x1080`
+image/temporal suite passed and the joined diagnostic receipt proved the sole
+representation change: projected axis records decreased from 16 to 8 bytes,
+while depth precision and Resident SH remained Exact.
+
+The retained image suite is
+`target/benchmarks/balanced/b2-macos-metal-7c6409b-terminal/`. The paired timing
+suite `target/benchmarks/balanced/b2-truck-macos-metal-7c6409b-terminal/` ran
+three seeded, counterbalanced Exact/candidate pairs over the complete
+2,541,226-splat Truck moving trace. Candidate-minus-Exact frame-wall means were
+`-0.045250`, `-0.073303`, and `+0.043636` ms. All six run artifacts passed the
+canonical validator, but the mixed winner is `inconclusive`; therefore the
+predeclared traffic/timing benefit is unsupported and the candidate cannot
+enter B4. No alternate fp16 field or corrective rerun is started inside B2.
