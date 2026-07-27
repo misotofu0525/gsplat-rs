@@ -26,6 +26,7 @@ import {
 import {
   joinCurrentStatsEvidence,
   validateAuxiliaryCurrentStatsFormalLedger,
+  validateCurrentStatsAttemptSubmissionJoin,
   validateCurrentStatsEvidence,
   validateCurrentStatsTerminalLedger,
 } from '../src/benchmark-current-stats-evidence.mjs';
@@ -737,6 +738,10 @@ function parseArtifacts(consoleLines) {
           'current-stats schedule counts do not match the retained submission/terminal ledger',
         );
       }
+      validateCurrentStatsAttemptSubmissionJoin({
+        issuedPresentations: currentStatsScheduleEvidence.issued_presentations,
+        submissions: statsSubmissions,
+      });
       if (manifest.timing?.performance_evidence !== false
           || manifest.qualification_scope !== 'qualification_q1_current_stats_control_only') {
         throw new Error(

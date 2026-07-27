@@ -3983,7 +3983,8 @@ function trackAuxiliaryCurrentStatsFormalSubmission(
   const ticket = stats.submittedMeasurementTicket;
   const revision = stats.cameraRevision;
   const backend = stats.submittedMeasurementBackend;
-  if (!schedule.requestOutstanding
+  if (schedule.protocol !== "isolated_terminal"
+      || !schedule.requestOutstanding
       || stats.refreshSort !== true
       || !Number.isSafeInteger(ticket) || ticket <= 0
       || !Number.isSafeInteger(revision) || revision < 0

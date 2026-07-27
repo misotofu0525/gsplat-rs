@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   joinCurrentStatsEvidence,
   validateAuxiliaryCurrentStatsFormalLedger,
+  validateCurrentStatsAttemptSubmissionJoin,
   validateCurrentStatsEvidence,
   validateCurrentStatsTerminalLedger,
 } from "../src/benchmark-current-stats-evidence.mjs";
@@ -253,5 +254,41 @@ test("auxiliary formal ledger rejects missing, failed, stale, and throughput ter
   assert.throws(
     () => validate({ terminalQueueThroughput: true }),
     /throughput emitted auxiliary control formal work/,
+  );
+});
+
+test("issued presentation attempts join their exact renderer submissions", () => {
+  const attempt = {
+    phase: "measured",
+    logical_submission_index: 4,
+    attempt_index: 2,
+    ticket: 31,
+    camera_revision: 9,
+    trace_frame_index: 1,
+    submitted_at_monotonic_ms: 42,
+  };
+  const submission = {
+    phase: "measured",
+    ticket: 31,
+    camera_revision: 9,
+    submitted_at_monotonic_ms: 42,
+  };
+  assert.doesNotThrow(() => validateCurrentStatsAttemptSubmissionJoin({
+    issuedPresentations: [attempt],
+    submissions: [submission],
+  }));
+  assert.throws(
+    () => validateCurrentStatsAttemptSubmissionJoin({
+      issuedPresentations: [attempt],
+      submissions: [{ ...submission, camera_revision: 10 }],
+    }),
+    /lacks its exact renderer submission join/,
+  );
+  assert.throws(
+    () => validateCurrentStatsAttemptSubmissionJoin({
+      issuedPresentations: [attempt],
+      submissions: [],
+    }),
+    /disagree/,
   );
 });

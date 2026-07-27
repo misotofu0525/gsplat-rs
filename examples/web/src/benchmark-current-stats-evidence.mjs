@@ -214,6 +214,35 @@ export function validateAuxiliaryCurrentStatsFormalLedger({
   }
 }
 
+export function validateCurrentStatsAttemptSubmissionJoin({
+  issuedPresentations,
+  submissions,
+}) {
+  if (!Array.isArray(issuedPresentations) || !Array.isArray(submissions)) {
+    throw new Error("current-stats attempt/submission join requires both ledgers");
+  }
+  if (issuedPresentations.length !== submissions.length) {
+    throw new Error("current-stats issued attempts disagree with renderer submissions");
+  }
+  const submissionByTicket = new Map();
+  for (const submission of submissions) {
+    if (!Number.isSafeInteger(submission.ticket) || submission.ticket <= 0
+        || submissionByTicket.has(submission.ticket)) {
+      throw new Error("current-stats renderer submission ticket is invalid or duplicate");
+    }
+    submissionByTicket.set(submission.ticket, submission);
+  }
+  for (const attempt of issuedPresentations) {
+    const submission = submissionByTicket.get(attempt.ticket);
+    if (!submission
+        || submission.phase !== attempt.phase
+        || submission.camera_revision !== attempt.camera_revision
+        || submission.submitted_at_monotonic_ms !== attempt.submitted_at_monotonic_ms) {
+      throw new Error("current-stats issued attempt lacks its exact renderer submission join");
+    }
+  }
+}
+
 export function joinCurrentStatsEvidence({ frames, submissions, terminals, sourceCount = null }) {
   validateCurrentStatsTerminalLedger({ submissions, terminals, sourceCount });
   const submissionByTicket = new Map(submissions.map((submission) => [submission.ticket, submission]));
