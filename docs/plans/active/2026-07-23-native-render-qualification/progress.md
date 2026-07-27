@@ -110,6 +110,26 @@ the artifact truthfully leaves presented width/height unavailable and
 needs the matched native Exact run and the scoped external-presentation/
 quality decision before comparing terminal throughput.
 
+The gsplat-rs Chrome/WebGPU prerequisite endpoint was subsequently accepted at
+clean root commit `74b2647`. The one authorized replacement followed the
+repository doctor -> command -> run launchbook without retry and retained
+`target/qualification/q1-webgpu-truck-1080p-74b2647-attempt-2/` in its isolated
+worktree. It used the same complete Truck SH3 source and two-view `1920x1080`
+trace, with 20 warmup and 80 measured frames. Source, decoded, encoded,
+resident and addressable counts all equal `2,541,226`; all measured frames used
+`projected_quads_exact`, preserved `C <= V <= S` and `D = V`, and joined 80
+unique renderer current-stats tickets to 80 Ready terminals. The canonical
+benchmark and full-quality validators passed, and the final frame was inspected
+as a non-black, complete Truck image.
+
+This accepted prerequisite also records a serious observation without turning
+it into a premature comparison: gsplat-rs WebGPU reported frame-wall mean
+`66.875 ms` with 80/80 frames over 16.67 ms, while the separately retained
+PlayCanvas prerequisite reported `17.6675 ms`. These are not yet a Q1 paired
+result: the native M4 Exact endpoint, common external-presentation scope and
+counterbalanced pairing remain required. No claim of native or competitor
+advantage is made from either prerequisite alone.
+
 ## Q3 M4 SIMD microbenchmark checkpoint (2026-07-27)
 
 At clean root commit `f025dff`, the fixed
@@ -148,3 +168,23 @@ pairs or runs. Q3 now has one bounded remaining owner slice: connect that
 private current-stats terminal to the desktop qualification harness, then let
 root execute one fresh five-pair matrix. A lack of consistent terminal benefit
 will make the optimization Rejected rather than trigger tuning loops.
+
+That owner slice was independently reviewed and integrated as `662221c` plus
+the fail-closed nonzero-exit correction `5d54ee3`. At clean root commit
+`74b2647`, root then executed the one authorized five-pair Truck whole-plan
+matrix and retained
+`target/benchmarks/qualification/q3-renderer-simd-74b2647-attempt-1/`.
+Each of the ten runs used complete Truck SH3, Packed Exact CPU ordering,
+`1920x1080`, 20 warmup plus 80 measured frames, and 101 renderer-owned
+current-stats terminals. Correctness parity remained exact.
+
+The M4 whole-plan cell is terminal **Rejected** under its predeclared rule.
+NEON sort time was lower in all five pairs with a median paired difference of
+`-0.421886 ms`, but queue-completion mean was lower in only three of five
+pairs; its median paired difference was `-0.520333 ms`. Preprocess was lower in
+only two pairs. This means the SIMD leaf is useful but does not establish a
+stable end-to-end M4 product advantage, so Scalar/default dispatch remains
+unchanged and no tuning retry is permitted. Q3 itself remains active until the
+required A065 native cell reaches a finite terminal result; absent physical
+x86_64 and Apple-mobile breadth will be reported Deferred rather than
+substituted by cross-compilation or simulators.
