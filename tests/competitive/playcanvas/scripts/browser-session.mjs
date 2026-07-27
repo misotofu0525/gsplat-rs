@@ -125,13 +125,14 @@ export async function openBrowserSession({
         defaultViewport: null
       });
     } else {
-      browser = await puppeteer.launch({
+      const launchOptions = {
         executablePath,
         headless,
         defaultViewport: viewport,
-        userDataDir,
         args: [...LOCAL_BROWSER_ARGS]
-      });
+      };
+      if (userDataDir !== undefined) launchOptions.userDataDir = userDataDir;
+      browser = await puppeteer.launch(launchOptions);
     }
     if (config.mode === 'remote-cdp') {
       if (config.targetMode === 'existing-page') {

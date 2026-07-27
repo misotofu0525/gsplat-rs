@@ -50,6 +50,30 @@ test('local browser session preserves launch and close behavior', async () => {
   ]);
 });
 
+test('formal local browser session adds only its explicit user data directory', async () => {
+  let launchOptions;
+  const browser = {
+    newPage: async () => ({}),
+    close: async () => {}
+  };
+  const session = await openBrowserSession({
+    puppeteer: {
+      launch: async (options) => {
+        launchOptions = options;
+        return browser;
+      },
+      connect: async () => assert.fail('local session must not connect')
+    },
+    config: browserSessionConfig({}),
+    executablePath: '/Applications/Google Chrome',
+    headless: false,
+    viewport,
+    userDataDir: '/tmp/q1-owned-profile'
+  });
+  await session.close();
+  assert.equal(launchOptions.userDataDir, '/tmp/q1-owned-profile');
+});
+
 test('remote browser session preserves native metrics and only disconnects', async () => {
   const calls = [];
   const page = {

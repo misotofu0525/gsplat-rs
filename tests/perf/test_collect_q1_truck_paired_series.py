@@ -507,6 +507,67 @@ class Q1TruckPairedSeriesTests(unittest.TestCase):
                     COLLECTOR.require_process_completed(outcome, case)
                 self.assertFalse(outcome.cleanup["browser_ownership"]["handshake_verified"])
 
+    def test_snapshot_failure_after_immediate_marker_spawn_still_converges(self) -> None:
+        ownership = self.ownership("snapshot-race")
+        counter = self.root / "snapshot-race-count"
+        script = self.root / "snapshot-race.py"
+        script.write_text(
+            "import json, os, pathlib, subprocess, sys\n"
+            "counter=pathlib.Path(sys.argv[1]); counter.write_text('1')\n"
+            "marker_arg='--user-data-dir='+os.environ['GSPLAT_Q1_BROWSER_USER_DATA_DIR']\n"
+            "child=subprocess.Popen([sys.executable,'-c',"
+            "'import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(300)',marker_arg],"
+            "start_new_session=True)\n"
+            "receipt={'schema':'gsplat-q1-browser-process-ownership/v1',"
+            "'marker':os.environ['GSPLAT_Q1_BROWSER_OWNER_MARKER'],'marker_arg':marker_arg,"
+            "'user_data_dir':os.environ['GSPLAT_Q1_BROWSER_USER_DATA_DIR'],"
+            "'producer_pid':os.getpid(),'producer_ppid':os.getppid(),"
+            "'browser_pid':child.pid,'browser_spawnfile':sys.executable,"
+            "'browser_spawnargs':[sys.executable,marker_arg]}\n"
+            "path=pathlib.Path(os.environ['GSPLAT_Q1_BROWSER_HANDSHAKE_PATH']);"
+            "path.parent.mkdir(parents=True,exist_ok=True)\n"
+            "temporary=path.with_suffix('.tmp'); temporary.write_text(json.dumps(receipt));"
+            "temporary.replace(path)\n"
+        )
+        original_snapshot = COLLECTOR.process_table_snapshot
+        injected = False
+
+        def fail_first_cleanup_snapshot():
+            nonlocal injected
+            if pathlib.Path(ownership["handshake_path"]).exists() and not injected:
+                injected = True
+                raise COLLECTOR.OrchestrationError("synthetic first cleanup snapshot failure")
+            return original_snapshot()
+
+        def idle_tracker(self):
+            self._stop.wait(30)
+
+        with (
+            mock.patch.object(COLLECTOR.ProcessTreeTracker, "_loop", idle_tracker),
+            mock.patch.object(
+                COLLECTOR, "process_table_snapshot", side_effect=fail_first_cleanup_snapshot
+            ),
+        ):
+            outcome = COLLECTOR.run_process_group(
+                [sys.executable, str(script), str(counter)], cwd=self.root,
+                env=self.ownership_environment(ownership), timeout_seconds=5,
+                browser_ownership=ownership,
+            )
+        self.assertTrue(injected)
+        self.assertEqual(counter.read_text(), "1")
+        self.assertGreaterEqual(outcome.cleanup["cleanup_snapshot_failures"], 1)
+        self.assertTrue(outcome.cleanup["browser_ownership"]["handshake_verified"])
+        self.assertTrue(outcome.cleanup["group_gone"])
+        self.assertEqual(outcome.cleanup["survivors"], [])
+        self.assertTrue(outcome.cleanup["kill"]["groups"])
+        browser_pid = json.loads(
+            pathlib.Path(ownership["handshake_path"]).read_text()
+        )["browser_pid"]
+        with self.assertRaises(ProcessLookupError):
+            os.kill(browser_pid, 0)
+        with self.assertRaises(COLLECTOR.ProcessTreeError):
+            COLLECTOR.require_process_completed(outcome, "snapshot race")
+
     def test_preexisting_exact_browser_marker_blocks_before_launch(self) -> None:
         ownership = self.ownership("preexisting")
         marker_process = subprocess.Popen(

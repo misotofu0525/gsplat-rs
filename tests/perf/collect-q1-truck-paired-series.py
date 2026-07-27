@@ -17,6 +17,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from collections.abc import Mapping
@@ -274,10 +275,14 @@ class ProcessTreeTracker:
                     self.errors.append(str(error))
                 return
 
-    def finish(self) -> dict[int, ProcessIdentity]:
+    def known_identities(self) -> dict[int, ProcessIdentity]:
+        with self._lock:
+            return dict(self.known)
+
+    def stop(self) -> bool:
         self._stop.set()
         self._thread.join(timeout=6)
-        return self.capture()
+        return not self._thread.is_alive()
 
 
 def signal_verified_identities(
@@ -378,15 +383,22 @@ def run_process_group(
         "os.kill(os.getpid(),signal.SIGSTOP);"
         "os.execvpe(sys.argv[1],sys.argv[1:],os.environ)"
     )
-    process = subprocess.Popen(
-        [sys.executable, "-c", launcher, *argv],
-        cwd=cwd,
-        env=env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        start_new_session=True,
-    )
+    stdout_file = tempfile.TemporaryFile(mode="w+t", encoding="utf-8")
+    stderr_file = tempfile.TemporaryFile(mode="w+t", encoding="utf-8")
+    try:
+        process = subprocess.Popen(
+            [sys.executable, "-c", launcher, *argv],
+            cwd=cwd,
+            env=env,
+            stdout=stdout_file,
+            stderr=stderr_file,
+            text=True,
+            start_new_session=True,
+        )
+    except BaseException:
+        stdout_file.close()
+        stderr_file.close()
+        raise
     initial = ProcessIdentity(
         process.pid, os.getpid(), process.pid, "unobserved", "stopped-launcher"
     )
@@ -419,7 +431,7 @@ def run_process_group(
             os.kill(process.pid, signal.SIGCONT)
             continued = True
             try:
-                stdout, stderr = process.communicate(timeout=timeout_seconds)
+                process.wait(timeout=timeout_seconds)
             except subprocess.TimeoutExpired:
                 timed_out = True
         except BaseException as error:
@@ -435,106 +447,164 @@ def run_process_group(
                 runner_errors.append(f"initial KILL: {type(error).__name__}: {error}")
                 pass
         known: dict[int, ProcessIdentity] = {initial.pid: initial}
-        snapshot: dict[int, ProcessIdentity] = {}
         if tracker is not None:
-            try:
-                snapshot = tracker.capture()
-                known.update(tracker.known)
-            except BaseException as error:
-                runner_errors.append(f"tracker capture: {type(error).__name__}: {error}")
-        else:
+            known.update(tracker.known_identities())
+        snapshot_failures = 0
+        convergence_rounds = 0
+        clean_snapshots = 0
+        final_snapshot: dict[int, ProcessIdentity] = {}
+        final_snapshot_available = False
+        term_seen: set[tuple[int, str]] = set()
+        cleanup_deadline = time.monotonic() + term_grace + kill_grace
+        while convergence_rounds < 64 and time.monotonic() < cleanup_deadline:
+            convergence_rounds += 1
             try:
                 snapshot = process_table_snapshot()
-            except BaseException as error:
-                runner_errors.append(f"cleanup snapshot: {type(error).__name__}: {error}")
-        marker_live: list[ProcessIdentity] = []
-        if browser_ownership is not None and snapshot:
-            marker_live = marker_processes(snapshot, browser_ownership["marker_argument"])
-            known.update({identity.pid: identity for identity in marker_live})
-        if browser_ownership is not None:
-            try:
-                handshake = validate_browser_handshake(browser_ownership, process.pid, known)
-            except BaseException as error:
-                runner_errors.append(f"browser handshake: {type(error).__name__}: {error}")
-        live_before = [
-            identity for identity in known.values()
-            if same_process(snapshot.get(identity.pid), identity)
-        ]
-        descendants_before = [identity for identity in live_before if identity.pid != process.pid]
-        cleanup_required = (
-            timed_out
-            or bool(runner_errors)
-            or bool(descendants_before)
-            or process.poll() is None
-        )
-        if cleanup_required:
-            try:
-                if process.pid != os.getpgrp():
-                    os.killpg(process.pid, signal.SIGTERM)
-                    term_receipt["groups"].append(process.pid)
-            except OSError:
-                pass
-            try:
-                extra = signal_verified_identities(live_before, signal.SIGTERM)
-                term_receipt["groups"] = sorted(set(term_receipt["groups"] + extra["groups"]))
-                term_receipt["pids"] = extra["pids"]
-            except BaseException as error:
-                runner_errors.append(f"TERM identity scan: {type(error).__name__}: {error}")
-            deadline = time.monotonic() + term_grace
-            while process.poll() is None and time.monotonic() < deadline:
-                time.sleep(0.02)
-            try:
-                remaining = process_table_snapshot()
-                survivors = [
+                final_snapshot = snapshot
+                final_snapshot_available = True
+                if tracker is not None:
+                    tracker._absorb(snapshot)
+                    known.update(tracker.known_identities())
+                marker_live = [] if browser_ownership is None else marker_processes(
+                    snapshot, browser_ownership["marker_argument"]
+                )
+                known.update({identity.pid: identity for identity in marker_live})
+                if browser_ownership is not None and handshake is None:
+                    try:
+                        handshake = validate_browser_handshake(
+                            browser_ownership, process.pid, known
+                        )
+                    except BaseException as error:
+                        message = f"browser handshake: {type(error).__name__}: {error}"
+                        if message not in runner_errors:
+                            runner_errors.append(message)
+                live = [
                     identity
                     for identity in known.values()
-                    if same_process(remaining.get(identity.pid), identity)
+                    if same_process(snapshot.get(identity.pid), identity)
                 ]
+                newly_seen = [
+                    identity
+                    for identity in live
+                    if identity.pid != process.pid
+                    and identity.pid not in {value.pid for value in descendants_before}
+                ]
+                descendants_before.extend(newly_seen)
+                initial_group_live = any(
+                    identity.pgid == initial.pgid for identity in snapshot.values()
+                )
+                if not live and not initial_group_live:
+                    clean_snapshots += 1
+                    if clean_snapshots >= 2:
+                        break
+                else:
+                    clean_snapshots = 0
+                term_targets = [
+                    identity
+                    for identity in live
+                    if (identity.pid, identity.started) not in term_seen
+                ]
+                kill_targets = [
+                    identity
+                    for identity in live
+                    if (identity.pid, identity.started) in term_seen
+                ]
+                if initial_group_live and (initial.pid, initial.started) not in term_seen:
+                    term_targets.append(initial)
+                elif initial_group_live:
+                    kill_targets.append(initial)
+                if term_targets:
+                    extra = signal_verified_identities(term_targets, signal.SIGTERM)
+                    term_receipt["groups"] = sorted(set(term_receipt["groups"] + extra["groups"]))
+                    term_receipt["pids"] = sorted(set(term_receipt["pids"] + extra["pids"]))
+                    term_seen.update((value.pid, value.started) for value in term_targets)
+                if kill_targets:
+                    extra = signal_verified_identities(kill_targets, signal.SIGKILL)
+                    kill_receipt["groups"] = sorted(set(kill_receipt["groups"] + extra["groups"]))
+                    kill_receipt["pids"] = sorted(set(kill_receipt["pids"] + extra["pids"]))
             except BaseException as error:
-                runner_errors.append(f"TERM rescan: {type(error).__name__}: {error}")
-                survivors = live_before
-            if survivors or process.poll() is None:
+                final_snapshot_available = False
+                snapshot_failures += 1
+                runner_errors.append(
+                    f"cleanup snapshot {convergence_rounds}: {type(error).__name__}: {error}"
+                )
+                # The initial PGID is owned from spawn and needs no ps identity.
                 try:
-                    if process.pid != os.getpgrp():
-                        os.killpg(process.pid, signal.SIGKILL)
-                        kill_receipt["groups"].append(process.pid)
+                    selected_signal = signal.SIGTERM if convergence_rounds == 1 else signal.SIGKILL
+                    os.killpg(process.pid, selected_signal)
+                    receipt = term_receipt if selected_signal == signal.SIGTERM else kill_receipt
+                    receipt["groups"] = sorted(set(receipt["groups"] + [process.pid]))
                 except OSError:
                     pass
-                try:
-                    extra = signal_verified_identities(survivors, signal.SIGKILL)
-                    kill_receipt["groups"] = sorted(set(kill_receipt["groups"] + extra["groups"]))
-                    kill_receipt["pids"] = extra["pids"]
-                except BaseException as error:
-                    runner_errors.append(f"KILL identity scan: {type(error).__name__}: {error}")
+            time.sleep(0.05)
+
         if process.poll() is None:
             try:
-                stdout, stderr = process.communicate(timeout=kill_grace)
-            except subprocess.TimeoutExpired:
+                os.killpg(process.pid, signal.SIGKILL)
+                kill_receipt["groups"] = sorted(set(kill_receipt["groups"] + [process.pid]))
+            except OSError:
                 process.kill()
-                stdout, stderr = process.communicate()
-        else:
-            stdout, stderr = process.communicate()
-        if tracker is not None:
             try:
-                final_snapshot = tracker.finish()
-                known.update(tracker.known)
-            except BaseException as error:
-                runner_errors.append(f"tracker finish: {type(error).__name__}: {error}")
-                try:
-                    final_snapshot = process_table_snapshot()
-                except BaseException:
-                    final_snapshot = {}
-        else:
+                process.wait(timeout=kill_grace)
+            except subprocess.TimeoutExpired as error:
+                runner_errors.append(f"leader reap timeout: {error}")
+        if tracker is not None:
+            if not tracker.stop():
+                runner_errors.append("process tracker did not stop within 6 seconds")
+            known.update(tracker.known_identities())
+        # The post-tracker rescan is itself convergent: an owner first observed
+        # here is signaled and rescanned instead of merely being reported.
+        post_stop_clean = 0
+        for post_stop_round in range(1, 9):
             try:
                 final_snapshot = process_table_snapshot()
-            except BaseException:
-                final_snapshot = {}
-        final_survivors = [
+                final_snapshot_available = True
+                marker_live = [] if browser_ownership is None else marker_processes(
+                    final_snapshot, browser_ownership["marker_argument"]
+                )
+                known.update({identity.pid: identity for identity in marker_live})
+                live = [
+                    identity
+                    for identity in known.values()
+                    if same_process(final_snapshot.get(identity.pid), identity)
+                ]
+                if not live:
+                    post_stop_clean += 1
+                    if post_stop_clean >= 2:
+                        break
+                else:
+                    post_stop_clean = 0
+                    term_targets = [
+                        identity
+                        for identity in live
+                        if (identity.pid, identity.started) not in term_seen
+                    ]
+                    kill_targets = [
+                        identity
+                        for identity in live
+                        if (identity.pid, identity.started) in term_seen
+                    ]
+                    if term_targets:
+                        extra = signal_verified_identities(term_targets, signal.SIGTERM)
+                        term_receipt["groups"] = sorted(set(term_receipt["groups"] + extra["groups"]))
+                        term_receipt["pids"] = sorted(set(term_receipt["pids"] + extra["pids"]))
+                        term_seen.update((value.pid, value.started) for value in term_targets)
+                    if kill_targets:
+                        extra = signal_verified_identities(kill_targets, signal.SIGKILL)
+                        kill_receipt["groups"] = sorted(set(kill_receipt["groups"] + extra["groups"]))
+                        kill_receipt["pids"] = sorted(set(kill_receipt["pids"] + extra["pids"]))
+            except BaseException as error:
+                final_snapshot_available = False
+                runner_errors.append(
+                    f"post-stop snapshot {post_stop_round}: {type(error).__name__}: {error}"
+                )
+            time.sleep(0.05)
+        final_survivors = [] if not final_snapshot_available else [
             identity
             for identity in known.values()
             if same_process(final_snapshot.get(identity.pid), identity)
         ]
-        if browser_ownership is not None:
+        if browser_ownership is not None and final_snapshot_available:
             final_survivors.extend(
                 identity
                 for identity in marker_processes(
@@ -545,11 +615,19 @@ def run_process_group(
         owned_groups = {
             identity.pgid for identity in known.values() if identity.pid == identity.pgid
         }
-        surviving_groups = sorted({
+        surviving_groups = [] if not final_snapshot_available else sorted({
             identity.pgid
             for identity in final_snapshot.values()
             if identity.pgid in owned_groups
         })
+        stdout_file.flush()
+        stderr_file.flush()
+        stdout_file.seek(0)
+        stderr_file.seek(0)
+        stdout = stdout_file.read()
+        stderr = stderr_file.read()
+        stdout_file.close()
+        stderr_file.close()
     cleanup = {
         "isolated_process_group": initial.pgid == initial.pid and initial.pgid != os.getpgrp(),
         "process_group_id": initial.pgid,
@@ -569,11 +647,14 @@ def run_process_group(
         "leader_reaped": process.poll() is not None,
         "survivors": [identity.receipt() for identity in final_survivors],
         "surviving_process_groups": surviving_groups,
-        "group_gone": not final_survivors and not surviving_groups,
+        "group_gone": final_snapshot_available and not final_survivors and not surviving_groups,
         "term_grace_seconds": term_grace,
         "kill_grace_seconds": kill_grace,
         "tracker_errors": tracker.errors if tracker else [],
         "runner_errors": runner_errors,
+        "cleanup_convergence_rounds": convergence_rounds,
+        "cleanup_snapshot_failures": snapshot_failures,
+        "final_snapshot_available": final_snapshot_available,
         "browser_ownership": None if browser_ownership is None else {
             **browser_ownership,
             "handshake_verified": handshake is not None,
