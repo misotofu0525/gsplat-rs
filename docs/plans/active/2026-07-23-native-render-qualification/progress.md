@@ -886,3 +886,27 @@ again for evidence.
 This is a mechanism-only repair. No browser or Truck performance run was
 performed, and Q1 remains **Active** pending the aligned gsplat-rs receipt and
 finite orchestrated series.
+
+## Q1 gsplat-rs Web producer mechanism candidate (2026-07-28)
+
+The gsplat-rs endpoint now has a bounded Q1 producer mode layered on the
+existing Truck collector. Each untimed control selects trace `0` or `1`, arms
+the existing renderer-owned Surface capture before its frozen terminal frame,
+and joins the returned ExactFull32 RGBA receipt to that same successful present
+and current-stats terminal. The package wrapper forwards the diagnostic capture
+without inventing or normalizing renderer identity. Host code materializes the
+renderer-owned RGBA8 as PNG; no PNG hash is attributed to the renderer.
+
+The independently timed throughput role retains the existing continuous
+20-warmup/80-measured terminal window, removes per-frame V/C/D and capture
+fields, and binds both control manifest identities. A caller-provided run
+context carries the predeclared pair, environment and immutable build
+artifacts; this producer does not invent scheduling or thermal identity. Q1
+also requires a fresh clean same-commit `quality-exact` WASM build receipt
+before Chrome can start.
+
+This slice ran no browser and publishes no performance or image result. The
+formal five-pair orchestrator, fresh Chrome series, image joins and offline
+verdict remain **Deferred** to their declared owners. Focused Q1/package tests,
+all Web example tests, all package tests, the 35-test Q1 admission suite,
+source architecture policy and the Web distribution build pass.

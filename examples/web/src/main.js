@@ -38,6 +38,10 @@ import {
   canonicalDatasetIdentityFromObservation,
   WEB_DATASET_PATHS,
 } from "./dataset-identity.mjs";
+import {
+  normalizeQ1SurfaceCapture,
+  q1CaptureMeasuredFrame,
+} from "./q1-gsplat-producer.mjs";
 
 const API_VERSION = "0.1";
 const ORBIT_RADIANS_PER_SCREEN = 3.2;
@@ -52,8 +56,16 @@ const reportedStructuredFailures = new WeakSet();
 
 const DATASETS = WEB_DATASET_PATHS;
 
-const WASM_ENTRY = new URL("../pkg/gsplat_web.js?v=sorted-index-20260710", import.meta.url);
-const WASM_BINARY = new URL("../pkg/gsplat_web_bg.wasm?v=sorted-index-20260710", import.meta.url);
+const requestedWasmPackage = new URLSearchParams(window.location.search)
+  .get("gsplat_wasm_package_url");
+const wasmPackageBase = requestedWasmPackage === null
+  ? new URL("../pkg/", import.meta.url)
+  : new URL(`${requestedWasmPackage.replace(/\/+$/, "")}/`, window.location.href);
+if (wasmPackageBase.origin !== window.location.origin) {
+  throw new TypeError("gsplat_wasm_package_url must remain on the collector origin");
+}
+const WASM_ENTRY = new URL("gsplat_web.js?v=sorted-index-20260710", wasmPackageBase);
+const WASM_BINARY = new URL("gsplat_web_bg.wasm?v=sorted-index-20260710", wasmPackageBase);
 
 const REQUIRED_FIELDS = [
   "x",
@@ -151,6 +163,7 @@ const state = {
   orderCompletionProtocol: "isolated_terminal",
   benchmarkWindowMode: BENCHMARK_WINDOW_MODES.currentStatsEvidence,
   currentStatsControlArtifactIdentity: null,
+  q1CaptureTraceFrameIndex: null,
   sampledWebglEnabled: false,
   currentStatsSmokeEnabled: false,
   currentStatsSmokeRequested: false,
@@ -1471,6 +1484,10 @@ function frame(now) {
 
   const benchmark = state.benchmark;
   if (benchmark?.enabled) benchmark.animationFrameTimestampMs = now;
+  if (benchmark?.q1Capture?.armPending || benchmark?.q1Capture?.takePending) {
+    requestAnimationFrame(frame);
+    return;
+  }
   if (usingWasm() && benchmark?.enabled && benchmark.terminalQueueThroughput
       && progressBenchmarkTerminalReceipt(benchmark)) {
     requestAnimationFrame(frame);
@@ -1511,6 +1528,10 @@ function frame(now) {
     requestAnimationFrame(frame);
     return;
   }
+  if (usingWasm() && benchmark?.enabled && maybeArmQ1ControlCapture(benchmark)) {
+    requestAnimationFrame(frame);
+    return;
+  }
   if (!state.gpuOrderPreparationPending && state.benchmark?.enabled
       && !benchmarkWaitingForTerminal
       && !currentStatsSchedule?.requestOutstanding) {
@@ -1542,8 +1563,64 @@ function frame(now) {
   const stats = render();
   if (stats && state.benchmark?.enabled) {
     recordBenchmark(stats);
+    maybeTakeQ1ControlCapture(state.benchmark, stats);
   }
   requestAnimationFrame(frame);
+}
+
+function q1CaptureLogicalSubmissionIndex(benchmark) {
+  return benchmark.warmupFrames + benchmark.q1Capture.measuredFrameIndex;
+}
+
+function maybeArmQ1ControlCapture(benchmark) {
+  const capture = benchmark.q1Capture;
+  const schedule = benchmark.currentStatsSchedule;
+  if (!capture || capture.armed || capture.ready || capture.armPending || capture.takePending
+      || !schedule || schedule.requestOutstanding
+      || schedule.nextSubmissionIndex !== q1CaptureLogicalSubmissionIndex(benchmark)) {
+    return false;
+  }
+  capture.armPending = true;
+  void state.wasmRenderer.requestDiagnosticSurfaceCapture().then(() => {
+    capture.armPending = false;
+    capture.armed = true;
+  }).catch((error) => {
+    capture.armPending = false;
+    failStrictBenchmarkForOrderEvidence(
+      `Q1 renderer capture arm failed: ${compactMessage(error)}`,
+    );
+  });
+  return true;
+}
+
+function maybeTakeQ1ControlCapture(benchmark, stats) {
+  const capture = benchmark.q1Capture;
+  const step = benchmark.currentTraceStep;
+  if (!capture || !capture.armed || capture.takePending || capture.ready
+      || !stats.framePresented || stats.currentStatsSubmission !== "issued"
+      || step?.phase !== "measured"
+      || step.phaseFrameIndex !== capture.measuredFrameIndex
+      || step.traceFrameIndex !== capture.traceFrameIndex) {
+    return;
+  }
+  capture.armed = false;
+  capture.takePending = true;
+  void state.wasmRenderer.takeDiagnosticSurfaceCapture().then((raw) => {
+    const normalized = normalizeQ1SurfaceCapture(raw);
+    capture.takePending = false;
+    capture.ready = normalized;
+    globalThis.GSPLAT_Q1_RENDERER_CAPTURE = {
+      trace_frame_index: capture.traceFrameIndex,
+      measured_frame_index: capture.measuredFrameIndex,
+      receipt: normalized.receipt,
+      rgba8: normalized.rgba8,
+    };
+  }).catch((error) => {
+    capture.takePending = false;
+    failStrictBenchmarkForOrderEvidence(
+      `Q1 renderer capture take failed: ${compactMessage(error)}`,
+    );
+  });
 }
 
 function progressBenchmarkTerminalReceipt(benchmark) {
@@ -2837,6 +2914,14 @@ function createBenchmarkState(enabled) {
           : "adaptive",
       })
     : null;
+  const q1Capture = state.q1CaptureTraceFrameIndex === null ? null : {
+    traceFrameIndex: state.q1CaptureTraceFrameIndex,
+    measuredFrameIndex: q1CaptureMeasuredFrame(state.q1CaptureTraceFrameIndex),
+    armPending: false,
+    armed: false,
+    takePending: false,
+    ready: null,
+  };
   return {
     enabled,
     frameWallSource: terminalQueueThroughput
@@ -2885,6 +2970,7 @@ function createBenchmarkState(enabled) {
     pendingOrderSample: null,
     currentStatsSchedule: null,
     terminalQueueThroughput,
+    q1Capture,
     terminalCurrentStatsRequestOutstanding: false,
     terminalCurrentStatsPending: null,
     pendingProjectedSample: null,
@@ -3079,6 +3165,23 @@ function applyUrlConfig() {
         "terminals, and sort interval 1",
       );
     }
+  }
+  const q1CaptureText = params.get("gsplat_q1_capture_trace_frame");
+  if (q1CaptureText !== null) {
+    const traceFrameIndex = Number(q1CaptureText);
+    q1CaptureMeasuredFrame(traceFrameIndex);
+    if (!state.strictBenchmarkMode || state.autoBenchmarkSync
+        || benchmarkWindowMode !== BENCHMARK_WINDOW_MODES.currentStatsEvidence
+        || state.geometryPath !== "packed"
+        || state.requestedOrderBackend !== "gpu"
+        || state.requestedProjectedPolicy !== "compact"
+        || state.requestedGpuOrderProducer !== null
+        || state.orderCompletionProtocol !== "isolated_terminal") {
+      throw new TypeError(
+        "Q1 control capture requires strict async Packed GPU Preproject Compact current-stats control",
+      );
+    }
+    state.q1CaptureTraceFrameIndex = traceFrameIndex;
   }
   if (state.qualificationTraceSequenceEnabled) {
     if (params.has("gsplat_camera_frame")) {
@@ -4109,7 +4212,7 @@ function accumulateBenchmark(
     exact_contributor_compaction: stats.exactContributorCompaction,
     sort_refreshed: stats.refreshSort ?? null,
   });
-  benchmark.frameReceipts.push({
+  const frameReceipt = {
     traceStep,
     rasterExecutionPlan: stats.rasterExecutionPlan ?? "global_quads",
     orderBackend: stats.orderBackend ?? "cpu",
@@ -4171,7 +4274,17 @@ function accumulateBenchmark(
     internalRenderHeight: stats.internalRenderHeight ?? null,
     presentedWidth: stats.presentedWidth ?? null,
     presentedHeight: stats.presentedHeight ?? null,
-  });
+  };
+  if (benchmark.q1Capture
+      && traceStep?.phase === "measured"
+      && traceStep.phaseFrameIndex === benchmark.q1Capture.measuredFrameIndex) {
+    if (traceStep.traceFrameIndex !== benchmark.q1Capture.traceFrameIndex
+        || benchmark.q1Capture.ready === null) {
+      throw new Error("Q1 terminal frame lacks its renderer-owned same-present capture");
+    }
+    frameReceipt.captureDepthPrecision = benchmark.q1Capture.ready.receipt;
+  }
+  benchmark.frameReceipts.push(frameReceipt);
   benchmark.measurementEndedAt = new Date().toISOString();
 }
 
@@ -4181,6 +4294,10 @@ function finishBenchmark(benchmark) {
       `renderer current-stats schedule attempted publication while ` +
       `${benchmark.currentStatsSchedule.state}`,
     );
+    return;
+  }
+  if (benchmark.q1Capture && benchmark.q1Capture.ready === null) {
+    failStrictBenchmarkForOrderEvidence("Q1 control completed without renderer-owned capture");
     return;
   }
   benchmark.enabled = false;
@@ -4545,6 +4662,7 @@ async function emitBenchmarkArtifacts(benchmark) {
       current_stats_encode_attempt: receipt?.currentStatsEncodeAttempt ?? null,
       current_stats_presentation_sequence:
         receipt?.currentStatsPresentationSequence ?? null,
+      presentation_sequence: receipt?.currentStatsPresentationSequence ?? null,
       current_stats_terminal_status: receipt?.currentStatsTerminalStatus ?? null,
       completed_measurement_ticket: receipt?.completedMeasurementTicket ?? null,
       completed_measurement_revision: receipt?.completedMeasurementRevision ?? null,
@@ -4557,6 +4675,9 @@ async function emitBenchmarkArtifacts(benchmark) {
       completed_drawn: receipt?.completedDrawnCount ?? null,
       completed_exact_contributor_compaction:
         receipt?.completedExactContributorCompaction ?? null,
+      ...(receipt?.captureDepthPrecision
+        ? { capture_depth_precision: receipt.captureDepthPrecision }
+        : {}),
     })}`);
   }
   console.info(`BENCHMARK_SUMMARY_JSON ${JSON.stringify(benchmarkSummary(benchmark.collector))}`);

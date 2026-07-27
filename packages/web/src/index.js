@@ -628,6 +628,26 @@ export class GsplatWebRenderer {
     return normalizeCurrentStatsPoll(nativeRenderer.pollCurrentStats());
   }
 
+  async requestDiagnosticSurfaceCapture() {
+    const nativeRenderer = this.#requireNativeRenderer();
+    if (typeof nativeRenderer.requestDiagnosticSurfaceCapture !== "function") {
+      throw new Error(
+        "the loaded gsplat-web module does not include diagnostic Surface capture",
+      );
+    }
+    await nativeRenderer.requestDiagnosticSurfaceCapture();
+  }
+
+  async takeDiagnosticSurfaceCapture() {
+    const nativeRenderer = this.#requireNativeRenderer();
+    if (typeof nativeRenderer.takeDiagnosticSurfaceCapture !== "function") {
+      throw new Error(
+        "the loaded gsplat-web module does not include diagnostic Surface capture",
+      );
+    }
+    return nativeRenderer.takeDiagnosticSurfaceCapture();
+  }
+
   sceneSummary() {
     const summary = this.#requireNativeRenderer().sceneSummary();
     return {

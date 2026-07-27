@@ -976,6 +976,33 @@ test("GsplatWebRenderer exposes renderer-owned Exact current-stats receipts", ()
   });
 });
 
+test("GsplatWebRenderer forwards the diagnostic same-present capture without normalizing it", async () => {
+  const capture = { rgba8: new Uint8Array([1, 2, 3, 4]), identity: { planId: "GpuPreproject" } };
+  const native = makeNativeRenderer({
+    async requestDiagnosticSurfaceCapture() {
+      this.calls.push(["requestDiagnosticSurfaceCapture"]);
+    },
+    async takeDiagnosticSurfaceCapture() {
+      this.calls.push(["takeDiagnosticSurfaceCapture"]);
+      return capture;
+    },
+  });
+  const renderer = new GsplatWebRenderer(native);
+
+  await renderer.requestDiagnosticSurfaceCapture();
+  assert.equal(await renderer.takeDiagnosticSurfaceCapture(), capture);
+  assert.deepEqual(native.calls, [
+    ["requestDiagnosticSurfaceCapture"],
+    ["takeDiagnosticSurfaceCapture"],
+  ]);
+});
+
+test("GsplatWebRenderer fails closed when the loaded WASM lacks diagnostic capture", async () => {
+  const renderer = new GsplatWebRenderer(makeNativeRenderer());
+  await assert.rejects(renderer.requestDiagnosticSurfaceCapture(), /does not include/);
+  await assert.rejects(renderer.takeDiagnosticSurfaceCapture(), /does not include/);
+});
+
 test("GsplatWebRenderer does not expose a benchmark-only terminal fence", () => {
   const renderer = new GsplatWebRenderer(makeNativeRenderer());
   assert.equal(renderer.requestTerminalQueueFence, undefined);

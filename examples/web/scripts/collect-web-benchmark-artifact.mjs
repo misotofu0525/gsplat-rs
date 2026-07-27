@@ -6,7 +6,7 @@
 import { access, mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { constants, createReadStream } from 'node:fs';
 import { createHash } from 'node:crypto';
-import { dirname, resolve } from 'node:path';
+import { dirname, relative, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { execFile as execFileCallback, spawn } from 'node:child_process';
 import process from 'node:process';
@@ -59,6 +59,11 @@ import {
   validateTruck1080pExactRasterEvidence,
   validateTruck1080pFixedCompactControlEvidence,
 } from '../src/truck-1080p-qualification.mjs';
+import {
+  decorateQ1GsplatControl,
+  decorateQ1GsplatThroughput,
+} from './q1-gsplat-artifact.mjs';
+import { rgba8Png } from './rgba8-png.mjs';
 
 const execFile = promisify(execFileCallback);
 
@@ -85,6 +90,30 @@ const truck1080pQualification = truckQualification !== null;
 const truckQualificationStage = optionalEnvironmentValue(
   process.env.GSPLAT_TRUCK_QUALIFICATION_STAGE,
 );
+const q1ArtifactRole = optionalEnvironmentValue(process.env.GSPLAT_Q1_ARTIFACT_ROLE);
+if (q1ArtifactRole !== null && !['control', 'throughput'].includes(q1ArtifactRole)) {
+  throw new Error('GSPLAT_Q1_ARTIFACT_ROLE must be control or throughput');
+}
+const q1CaptureTraceFrame = q1ArtifactRole === 'control'
+  ? Number(process.env.GSPLAT_Q1_CAPTURE_TRACE_FRAME)
+  : null;
+if (q1ArtifactRole === 'control' && ![0, 1].includes(q1CaptureTraceFrame)) {
+  throw new Error('Q1 control requires GSPLAT_Q1_CAPTURE_TRACE_FRAME=0 or 1');
+}
+const q1ProtocolSha256 = optionalEnvironmentValue(process.env.GSPLAT_Q1_PROTOCOL_SHA256);
+if (q1ArtifactRole !== null && !/^[0-9a-f]{64}$/.test(q1ProtocolSha256 ?? '')) {
+  throw new Error('Q1 producer requires GSPLAT_Q1_PROTOCOL_SHA256');
+}
+const q1WasmPackageDirectory = optionalEnvironmentValue(
+  process.env.GSPLAT_Q1_WASM_PACKAGE_DIR,
+);
+const q1RunContextPath = optionalEnvironmentValue(process.env.GSPLAT_Q1_RUN_CONTEXT);
+const q1RunContext = q1ArtifactRole === null ? null : q1RunContextPath === null
+  ? null
+  : JSON.parse(await readFile(resolve(repoRoot, q1RunContextPath), 'utf8'));
+if (q1ArtifactRole !== null && q1RunContext === null) {
+  throw new Error('Q1 producer requires GSPLAT_Q1_RUN_CONTEXT');
+}
 let claimedTruckOutputRoot = null;
 let truckControlCompletion = null;
 const m4Smoke = process.env.GSPLAT_M4_SMOKE === '1';
@@ -197,7 +226,8 @@ async function loadCurrentStatsControlIdentity() {
       || schedule.draw_count_at_final_drain_start !== schedule.draw_count_at_completion) {
     throw new Error('current-stats control artifact is not an admitted control-only window');
   }
-  if (truck1080pQualification && truckQualificationStage === 'throughput') {
+  if (q1ArtifactRole === null
+      && truck1080pQualification && truckQualificationStage === 'throughput') {
     if (truckControlCompletion === null
         || truckControlCompletion.control_manifest_sha256 !== manifestSha256
         || truckControlCompletion.control_run_id !== manifest.run_id
@@ -211,6 +241,30 @@ async function loadCurrentStatsControlIdentity() {
     manifestPath,
     manifestSha256,
   };
+}
+
+async function loadQ1ControlBindings() {
+  if (q1ArtifactRole !== 'throughput') return null;
+  const bindings = [];
+  for (const traceFrameIndex of [0, 1]) {
+    const value = optionalEnvironmentValue(
+      process.env[`GSPLAT_Q1_CONTROL_ARTIFACT_${traceFrameIndex}`],
+    );
+    if (value === null) throw new Error(`missing Q1 control artifact ${traceFrameIndex}`);
+    const manifestPath = resolve(repoRoot, value, 'manifest.json');
+    const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
+    if (manifest.q1_comparison?.artifact_role !== 'control'
+        || manifest.q1_comparison?.capture_trace_frame_index !== traceFrameIndex) {
+      throw new Error(`Q1 control artifact ${traceFrameIndex} has the wrong role or trace`);
+    }
+    bindings.push({
+      trace_frame_index: traceFrameIndex,
+      run_id: manifest.run_id,
+      manifest_sha256: await sha256File(manifestPath),
+      configuration_sha256: manifest.q1_comparison.configuration_sha256,
+    });
+  }
+  return bindings;
 }
 if (gpuOrderProducer !== null && (
   geometryPath !== 'packed'
@@ -277,38 +331,45 @@ async function admitTruck1080pQualification() {
   const stage = truckQualificationStage === expected.control.stage
     ? expected.control
     : expected.throughput;
-  if (outDir !== resolve(outputRoot, stage.artifact_name)) {
-    throw new Error(`Truck 1080p ${stage.stage} artifact must be named ${stage.artifact_name}`);
-  }
-  if (fullQualitySuitePath !== resolve(outputRoot, expected.suite_name)) {
-    throw new Error(`Truck 1080p suite must be ${resolve(outputRoot, expected.suite_name)}`);
-  }
   const porcelain = (
     await execFile('git', ['status', '--porcelain'], { cwd: repoRoot })
   ).stdout;
   validateTruck1080pCleanWorkingTree(porcelain);
-  if (stage === expected.control) {
-    if (currentStatsControlArtifact !== null) {
-      throw new Error('Truck control stage forbids a current-stats control artifact input');
+  if (q1ArtifactRole === null) {
+    if (outDir !== resolve(outputRoot, stage.artifact_name)) {
+      throw new Error(`Truck 1080p ${stage.stage} artifact must be named ${stage.artifact_name}`);
     }
-    await claimTruck1080pOutputRoot(outputRoot);
-    claimedTruckOutputRoot = outputRoot;
+    if (fullQualitySuitePath !== resolve(outputRoot, expected.suite_name)) {
+      throw new Error(`Truck 1080p suite must be ${resolve(outputRoot, expected.suite_name)}`);
+    }
+    if (stage === expected.control) {
+      if (currentStatsControlArtifact !== null) {
+        throw new Error('Truck control stage forbids a current-stats control artifact input');
+      }
+      await claimTruck1080pOutputRoot(outputRoot);
+      claimedTruckOutputRoot = outputRoot;
+    } else {
+      const expectedControlManifest = resolve(
+        outputRoot,
+        expected.control.artifact_name,
+        'manifest.json',
+      );
+      const requestedControlManifest = resolve(repoRoot, currentStatsControlArtifact);
+      if (requestedControlManifest !== expectedControlManifest) {
+        throw new Error(`Truck throughput control artifact must be ${expectedControlManifest}`);
+      }
+      claimedTruckOutputRoot = outputRoot;
+      truckControlCompletion = await claimTruck1080pThroughputStage({
+        outputRoot,
+        controlManifestPath: requestedControlManifest,
+        expected,
+      });
+    }
   } else {
-    const expectedControlManifest = resolve(
-      outputRoot,
-      expected.control.artifact_name,
-      'manifest.json',
-    );
-    const requestedControlManifest = resolve(repoRoot, currentStatsControlArtifact);
-    if (requestedControlManifest !== expectedControlManifest) {
-      throw new Error(`Truck throughput control artifact must be ${expectedControlManifest}`);
+    if ((q1ArtifactRole === 'control') !== (stage === expected.control)) {
+      throw new Error('Q1 artifact role and Truck qualification stage disagree');
     }
-    claimedTruckOutputRoot = outputRoot;
-    truckControlCompletion = await claimTruck1080pThroughputStage({
-      outputRoot,
-      controlManifestPath: requestedControlManifest,
-      expected,
-    });
+    if (await pathExists(outDir)) throw new Error(`Q1 output already exists: ${outDir}`);
   }
 
   const datasetPath = resolve(repoRoot, expected.dataset.local_path);
@@ -351,6 +412,32 @@ async function admitTruck1080pQualification() {
     [tracePath],
     'camera trace validator',
   );
+}
+
+async function q1WasmPackageUrl(repositoryCommit) {
+  if (q1ArtifactRole === null) return null;
+  if (q1WasmPackageDirectory === null) {
+    throw new Error('Q1 producer requires GSPLAT_Q1_WASM_PACKAGE_DIR');
+  }
+  const directory = resolve(repoRoot, q1WasmPackageDirectory);
+  const relativeDirectory = relative(repoRoot, directory);
+  if (relativeDirectory === '' || relativeDirectory === '..'
+      || relativeDirectory.startsWith(`..${sep}`)) {
+    throw new Error('Q1 WASM package must be a fresh directory inside the repository');
+  }
+  const receipt = JSON.parse(await readFile(
+    resolve(directory, 'gsplat_web_build_receipt.json'),
+    'utf8',
+  ));
+  if (receipt.schema !== 'gsplat-web-diagnostic-build/v1'
+      || receipt.profile !== 'quality-exact'
+      || receipt.repository_commit !== repositoryCommit
+      || receipt.dirty !== false
+      || receipt.js_sha256 !== await sha256File(resolve(directory, 'gsplat_web.js'))
+      || receipt.wasm_sha256 !== await sha256File(resolve(directory, 'gsplat_web_bg.wasm'))) {
+    throw new Error('Q1 WASM package is not a clean same-commit quality-exact build');
+  }
+  return `/${relativeDirectory.split(sep).join('/')}`;
 }
 
 async function findChrome() {
@@ -1453,6 +1540,14 @@ if (truck1080pQualification) {
 }
 
 const currentStatsControlIdentity = await loadCurrentStatsControlIdentity();
+const q1ControlBindings = await loadQ1ControlBindings();
+const repositoryCommit = (
+  await execFile('git', ['rev-parse', 'HEAD'], { cwd: repoRoot })
+).stdout.trim();
+const dirty = (
+  await execFile('git', ['status', '--porcelain'], { cwd: repoRoot })
+).stdout.trim().length > 0;
+const q1PackageUrl = await q1WasmPackageUrl(repositoryCommit);
 const chrome = await findChrome();
 if (!chrome) {
   console.error(JSON.stringify({ status: 'blocked', reason: 'no Chrome/Chromium found', chromeCandidates }));
@@ -1472,8 +1567,6 @@ try {
     args: ['--enable-unsafe-webgpu', '--enable-gpu', '--ignore-gpu-blocklist']
   });
   const page = await browser.newPage();
-  const repositoryCommit = (await execFile('git', ['rev-parse', 'HEAD'], { cwd: repoRoot })).stdout.trim();
-  const dirty = (await execFile('git', ['status', '--porcelain'], { cwd: repoRoot })).stdout.trim().length > 0;
   await page.evaluateOnNewDocument((commit, isDirty, device) => {
     globalThis.GSPLAT_BUILD_COMMIT = commit;
     globalThis.GSPLAT_BUILD_DIRTY = isDirty;
@@ -1514,6 +1607,10 @@ try {
   if (gpuOrderProducer !== null) {
     params.set('gsplat_surface_gpu_order_producer', gpuOrderProducer);
   }
+  if (q1ArtifactRole === 'control') {
+    params.set('gsplat_q1_capture_trace_frame', String(q1CaptureTraceFrame));
+  }
+  if (q1PackageUrl !== null) params.set('gsplat_wasm_package_url', q1PackageUrl);
   if (dataset) params.set('dataset', dataset);
   params.set('gsplat_geometry_path', geometryPath);
   if (process.env.GSPLAT_CAMERA_TRACE_URL) {
@@ -1659,7 +1756,51 @@ try {
   if (settledBenchmarkState !== 'complete') {
     throw new Error(`browser benchmark became ${settledBenchmarkState} while draining GPU receipts`);
   }
-  const parsed = parseArtifacts(consoleLines);
+  let parsed = parseArtifacts(consoleLines);
+  let q1RendererCapture = null;
+  if (q1ArtifactRole === 'control') {
+    const payload = await page.evaluate(() => {
+      const capture = globalThis.GSPLAT_Q1_RENDERER_CAPTURE;
+      if (!capture?.rgba8 || !capture?.receipt) return null;
+      let binary = '';
+      for (let offset = 0; offset < capture.rgba8.length; offset += 0x8000) {
+        binary += String.fromCharCode(...capture.rgba8.subarray(offset, offset + 0x8000));
+      }
+      return {
+        trace_frame_index: capture.trace_frame_index,
+        measured_frame_index: capture.measured_frame_index,
+        receipt: capture.receipt,
+        rgba8_base64: btoa(binary),
+      };
+    });
+    if (payload === null || payload.trace_frame_index !== q1CaptureTraceFrame) {
+      throw new Error('Q1 renderer-owned capture is unavailable or has the wrong trace');
+    }
+    q1RendererCapture = {
+      receipt: payload.receipt,
+      rgba8: Buffer.from(payload.rgba8_base64, 'base64'),
+    };
+    const trace = JSON.parse(await readFile(
+      resolve(repoRoot, truckQualification.trace.local_path),
+      'utf8',
+    ));
+    const decorated = decorateQ1GsplatControl({
+      parsed,
+      capture: q1RendererCapture,
+      trace,
+      traceFrameIndex: q1CaptureTraceFrame,
+      protocolSha256: q1ProtocolSha256,
+      runContext: q1RunContext,
+    });
+    parsed = decorated.parsed;
+  } else if (q1ArtifactRole === 'throughput') {
+    parsed = decorateQ1GsplatThroughput({
+      parsed,
+      protocolSha256: q1ProtocolSha256,
+      controlBindings: q1ControlBindings,
+      runContext: q1RunContext,
+    });
+  }
   const truckManifest = truck1080pQualification ? JSON.parse(parsed.manifests[0]) : null;
   const truckFrames = truck1080pQualification
     ? parsed.frameRecords.map((frame) => JSON.parse(frame))
@@ -1672,11 +1813,15 @@ try {
     });
   }
   const artifactDir = await writeArtifact(parsed);
-  const dataUrl = await page.$eval('#viewport', (canvas) => canvas.toDataURL('image/png'));
   const imagePath = resolve(artifactDir, 'final-frame.png');
-  await writeFile(imagePath, Buffer.from(dataUrl.split(',')[1], 'base64'));
+  if (q1RendererCapture !== null) {
+    await writeFile(imagePath, rgba8Png(1920, 1080, q1RendererCapture.rgba8));
+  } else {
+    const dataUrl = await page.$eval('#viewport', (canvas) => canvas.toDataURL('image/png'));
+    await writeFile(imagePath, Buffer.from(dataUrl.split(',')[1], 'base64'));
+  }
   await writeFile(resolve(artifactDir, 'browser-console.log'), `${consoleLines.join('\n')}\n`);
-  const suitePath = truck1080pQualification && !(
+  const suitePath = q1ArtifactRole === null && truck1080pQualification && !(
     benchmarkWindowMode === 'terminal_queue_throughput_window'
   )
     ? await publishTruck1080pSuite({
@@ -1685,7 +1830,8 @@ try {
         imagePath,
       })
     : null;
-  if (truck1080pQualification && truckQualificationStage === 'control') {
+  if (q1ArtifactRole === null
+      && truck1080pQualification && truckQualificationStage === 'control') {
     const controlManifestPath = resolve(artifactDir, 'manifest.json');
     await publishTruck1080pControlCompletion({
       outputRoot: dirname(outDir),

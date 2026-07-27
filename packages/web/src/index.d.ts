@@ -526,6 +526,10 @@ export class GsplatWebRenderer {
   requestCurrentStats(): GsplatCurrentStatsRequest;
   /** Poll at most one terminal without submitting or blocking on another frame. */
   pollCurrentStats(): GsplatCurrentStatsPoll;
+  /** Arm one renderer-owned RGBA8 capture for the next successful presentation. */
+  requestDiagnosticSurfaceCapture(): Promise<void>;
+  /** Take the same-present renderer-owned RGBA8 capture and precision receipts. */
+  takeDiagnosticSurfaceCapture(): Promise<unknown>;
   sceneSummary(): GsplatSceneSummary;
   loadReceipt(): GsplatLoadReceipt | null;
   surfaceSize(): GsplatSurfaceSize;
