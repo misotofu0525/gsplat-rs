@@ -141,6 +141,14 @@ is rejected. Accepted, Rejected, and Deferred series results retain the common
 authority receipt, commit and binary identities so the image oracle cannot be
 detached from the endpoint result.
 
+Authority paths are lexical trust boundaries. Every existing component from
+the series root through `reference.json`, the retained binary and both PNGs is
+checked with `lstat` before containment is resolved; an in-root symlink alias
+is rejected rather than normalized into an apparently canonical file. This
+detects mutation, aliasing and join drift in retained evidence. It is not a
+cryptographic attestation against an actor able to rewrite the receipt, binary,
+images and every bound hash together; signing is deliberately outside Q1 v1.
+
 Each control image names its trace-specific native control artifact by path and
 manifest hash. A host-owned `host_admission_join` binds that artifact identity,
 the schedule PNG path/hash, decoded raw RGBA8 hash and dimensions. It is not a

@@ -7,6 +7,7 @@ import importlib.util
 import json
 import math
 import pathlib
+import stat
 import struct
 import sys
 import zlib
@@ -1133,6 +1134,42 @@ def _local_file_identity(relative: str) -> dict[str, Any]:
     return {"path": relative, "bytes": size, "sha256": file_sha256(path)}
 
 
+def _authority_inside(
+    root: pathlib.Path,
+    value: Any,
+    context: str,
+    *,
+    directory: bool = False,
+) -> pathlib.Path:
+    """Resolve authority evidence only after rejecting every lexical symlink."""
+
+    if not isinstance(value, str) or not value:
+        fail(f"{context} must be a non-empty relative path")
+    relative = pathlib.Path(value)
+    if relative.is_absolute() or ".." in relative.parts:
+        fail(f"{context} must stay inside the series root")
+    resolved_root = root.resolve()
+    lexical = resolved_root
+    mode = 0
+    for component in relative.parts:
+        lexical = lexical / component
+        try:
+            mode = lexical.lstat().st_mode
+        except OSError as error:
+            fail(f"cannot inspect {context}: {error}")
+        if stat.S_ISLNK(mode):
+            fail(f"{context} must not use a symlink component")
+    try:
+        resolved = lexical.resolve(strict=True)
+        resolved.relative_to(resolved_root)
+    except (OSError, ValueError) as error:
+        fail(f"{context} escapes the series root: {error}")
+    expected_type = stat.S_ISDIR(mode) if directory else stat.S_ISREG(mode)
+    if not expected_type:
+        fail(f"{context} does not name a {'directory' if directory else 'regular file'}")
+    return resolved
+
+
 def _reference_authority(
     root: pathlib.Path,
     receipt_path: pathlib.Path,
@@ -1142,10 +1179,11 @@ def _reference_authority(
     if file_sha256(receipt_path) != receipt_sha256:
         fail(f"{context} receipt SHA-256 mismatch")
     authority_root = receipt_path.parent
-    if receipt_path.name != "reference.json" or receipt_path.is_symlink():
-        fail(f"{context} must bind a non-symlink reference.json")
+    if receipt_path.name != "reference.json":
+        fail(f"{context} must bind reference.json")
     for blocker in ("blocker.json", "cleanup-blocker.json"):
-        if (authority_root / blocker).exists():
+        blocker_path = authority_root / blocker
+        if blocker_path.exists() or blocker_path.is_symlink():
             fail(f"{context} contains {blocker}")
     receipt = load_json(receipt_path, f"{context}.receipt")
     if set(receipt) != {
@@ -1227,13 +1265,11 @@ def _reference_authority(
         fail(f"{context}.release_binary.retained fields are not frozen")
     if retained.get("path") != "producer/desktop-example":
         fail(f"{context}.release_binary.retained path mismatch")
-    retained_path = inside(
+    retained_path = _authority_inside(
         authority_root,
         retained.get("path"),
         f"{context}.release_binary.retained.path",
     )
-    if retained_path.is_symlink():
-        fail(f"{context}.release_binary.retained must not be a symlink")
     if (
         integer(retained, "bytes", f"{context}.release_binary.retained") != binary_bytes
         or sha256(
@@ -1409,8 +1445,12 @@ def _reference_authority(
         }:
             fail(f"{context}.captures[{index}].image fields are not frozen")
         expected_name = f"reference-trace-{view}.png"
-        image_path = inside(authority_root, image.get("path"), f"{context}.captures[{index}].image.path")
-        if image.get("path") != expected_name or image_path.is_symlink():
+        image_path = _authority_inside(
+            authority_root,
+            image.get("path"),
+            f"{context}.captures[{index}].image.path",
+        )
+        if image.get("path") != expected_name:
             fail(f"{context}.captures[{index}] image path mismatch")
         image_sha = sha256(image.get("sha256"), f"{context}.captures[{index}].image.sha256")
         decoded_sha = sha256(
@@ -1482,7 +1522,7 @@ def reference_images(root: pathlib.Path, document: dict[str, Any]) -> dict[int, 
             *REFERENCE_RECEIPT_FIELDS,
         }:
             fail(f"schedule.reference_images[{index}] fields are not frozen")
-        receipt_path = inside(
+        receipt_path = _authority_inside(
             root,
             value.get("authority_receipt_path"),
             f"schedule.reference_images[{index}].authority_receipt_path",
@@ -1498,7 +1538,11 @@ def reference_images(root: pathlib.Path, document: dict[str, Any]) -> dict[int, 
         elif current_receipt != shared_receipt:
             fail("schedule.reference_images must bind one shared authority receipt")
         assert authority is not None
-        path = inside(root, value.get("path"), f"schedule.reference_images[{index}].path")
+        path = _authority_inside(
+            root,
+            value.get("path"),
+            f"schedule.reference_images[{index}].path",
+        )
         digest = sha256(value.get("sha256"), f"schedule.reference_images[{index}].sha256")
         try:
             _decode_image(path, f"schedule.reference_images[{index}]")

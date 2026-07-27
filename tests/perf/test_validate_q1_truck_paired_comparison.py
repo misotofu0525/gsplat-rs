@@ -1128,6 +1128,60 @@ class ScheduleAndAdmissionTests(unittest.TestCase):
         with self.assertRaisesRegex(ValidationError, "contains blocker.json"):
             evaluate(self.schedule)
 
+    def test_reference_authority_receipt_symlink_is_rejected(self) -> None:
+        alias = self.root / "reference-authority/receipt-alias.json"
+        alias.symlink_to("reference.json")
+        document = json.loads(self.schedule.read_text(encoding="utf-8"))
+        for reference in document["schedule"]["reference_images"]:
+            reference["authority_receipt_path"] = (
+                "reference-authority/receipt-alias.json"
+            )
+        write_json(self.schedule, document)
+        with self.assertRaisesRegex(ValidationError, "symlink component"):
+            evaluate(self.schedule)
+
+    def test_reference_authority_directory_symlink_is_rejected(self) -> None:
+        (self.root / "authority-alias").symlink_to(
+            "reference-authority", target_is_directory=True
+        )
+        document = json.loads(self.schedule.read_text(encoding="utf-8"))
+        for reference in document["schedule"]["reference_images"]:
+            reference["authority_receipt_path"] = "authority-alias/reference.json"
+            reference["path"] = (
+                f"authority-alias/reference-trace-{reference['trace_frame_index']}.png"
+            )
+        write_json(self.schedule, document)
+        with self.assertRaisesRegex(ValidationError, "symlink component"):
+            evaluate(self.schedule)
+
+    def test_reference_authority_retained_binary_symlink_is_rejected(self) -> None:
+        retained = self.root / "reference-authority/producer/desktop-example"
+        real = retained.with_name("desktop-example-real")
+        retained.rename(real)
+        retained.symlink_to(real.name)
+        with self.assertRaisesRegex(ValidationError, "symlink component"):
+            evaluate(self.schedule)
+
+    def test_reference_authority_png_symlink_is_rejected(self) -> None:
+        image = self.root / "reference-authority/reference-trace-0.png"
+        real = image.with_name("reference-trace-0-real.png")
+        image.rename(real)
+        image.symlink_to(real.name)
+        with self.assertRaisesRegex(ValidationError, "symlink component"):
+            evaluate(self.schedule)
+
+    def test_schedule_reference_mixed_symlink_alias_is_rejected(self) -> None:
+        (self.root / "image-alias").symlink_to(
+            "reference-authority", target_is_directory=True
+        )
+        document = json.loads(self.schedule.read_text(encoding="utf-8"))
+        document["schedule"]["reference_images"][0]["path"] = (
+            "image-alias/reference-trace-0.png"
+        )
+        write_json(self.schedule, document)
+        with self.assertRaisesRegex(ValidationError, "symlink component"):
+            evaluate(self.schedule)
+
     def test_reference_authority_retained_binary_drift_is_rejected(self) -> None:
         (self.root / "reference-authority/producer/desktop-example").write_bytes(
             b"drift"
