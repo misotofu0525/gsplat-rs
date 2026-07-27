@@ -1012,3 +1012,15 @@ wide predeclared non-performance timeout with one-shot blocker semantics, and
 hashes the package-lock-derived Puppeteer production module graph before and
 after the run. This is still candidate-only and ran no Chrome workload. Its
 new integrated SHA must pass another fixed-SHA review before collection.
+
+The next review rejected `26bec8f`: Python's simple timeout killed only the
+Node leader and could leave Chrome/server descendants alive, while the npm
+closure did not yet model installed optional/peer runtime dependencies. The
+repair now runs every external command in a fresh process group and records a
+bounded TERM/grace/KILL/reap receipt on timeout. Its package-lock and installed
+package manifests jointly close the reachable production graph: installed
+optional/peer modules are hashed, absent platform-only optional modules are
+allowed, and missing required or installed-but-unlocked modules fail closed.
+The focused process test uses a real leader/grandchild pair that ignores TERM;
+no Chrome workload or Q1 result was produced. The resulting SHA remains
+candidate-only until another fixed-SHA review.

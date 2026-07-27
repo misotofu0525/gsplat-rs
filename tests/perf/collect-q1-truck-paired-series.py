@@ -14,9 +14,12 @@ import os
 import pathlib
 import random
 import shutil
+import signal
 import subprocess
 import sys
+import time
 from collections.abc import Mapping
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
@@ -73,6 +76,8 @@ PROCESS_TIMEOUTS_SECONDS = {
     "canonical_validator": 300,
     "image_comparison": 600,
     "final_validator": 600,
+    "process_group_term_grace": 5,
+    "process_group_kill_grace": 5,
 }
 PUPPETEER_GRAPH_SCHEMA = "gsplat-q1-puppeteer-production-modules/v1"
 IGNORED_MODULE_TREE_PARTS = frozenset({
@@ -104,6 +109,163 @@ LOCKED_REPOSITORY_TREES = (
 
 class OrchestrationError(RuntimeError):
     """A finite preflight, producer, materialization, or admission failure."""
+
+
+class ProcessTimeoutError(OrchestrationError):
+    """A timed-out isolated process group and its terminal cleanup receipt."""
+
+    def __init__(self, message: str, outcome: "ProcessOutcome") -> None:
+        super().__init__(message)
+        self.outcome = outcome
+
+
+@dataclass(frozen=True)
+class ProcessOutcome:
+    argv: list[str]
+    returncode: int
+    stdout: str
+    stderr: str
+    timed_out: bool
+    timeout_seconds: int
+    cleanup: dict[str, Any]
+
+
+def process_group_exists(process_group_id: int) -> bool:
+    try:
+        os.killpg(process_group_id, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def wait_for_process_group_exit(
+    process_group_id: int,
+    timeout_seconds: int,
+    leader: subprocess.Popen[str] | None = None,
+) -> bool:
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        if leader is not None:
+            leader.poll()
+        if not process_group_exists(process_group_id):
+            return True
+        time.sleep(0.05)
+    if leader is not None:
+        leader.poll()
+    return not process_group_exists(process_group_id)
+
+
+def run_process_group(
+    argv: list[str],
+    *,
+    cwd: pathlib.Path,
+    env: dict[str, str],
+    timeout_seconds: int,
+) -> ProcessOutcome:
+    """Run one command in a private process group and reap its whole tree."""
+
+    require(timeout_seconds > 0, "process timeout must be positive")
+    process = subprocess.Popen(
+        argv,
+        cwd=cwd,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
+    )
+    try:
+        stdout, stderr = process.communicate(timeout=timeout_seconds)
+        return ProcessOutcome(
+            argv=list(argv),
+            returncode=process.returncode,
+            stdout=stdout,
+            stderr=stderr,
+            timed_out=False,
+            timeout_seconds=timeout_seconds,
+            cleanup={
+                "isolated_process_group": True,
+                "process_group_id": process.pid,
+                "term_sent": False,
+                "kill_sent": False,
+                "leader_reaped": True,
+                "group_gone": True,
+            },
+        )
+    except subprocess.TimeoutExpired:
+        # start_new_session=True makes the child PID its PGID before exec. Use
+        # that frozen identity even if the leader exits while a descendant
+        # still holds stdout/stderr open.
+        process_group_id = process.pid
+        isolated = process_group_id != os.getpgrp()
+        if not isolated:
+            process.kill()
+            stdout, stderr = process.communicate()
+            outcome = ProcessOutcome(
+                argv=list(argv),
+                returncode=process.returncode,
+                stdout=stdout,
+                stderr=stderr,
+                timed_out=True,
+                timeout_seconds=timeout_seconds,
+                cleanup={
+                    "isolated_process_group": False,
+                    "process_group_id": process_group_id,
+                    "term_sent": False,
+                    "kill_sent": False,
+                    "leader_reaped": True,
+                    "group_gone": False,
+                },
+            )
+            return outcome
+
+        os.killpg(process_group_id, signal.SIGTERM)
+        term_grace = PROCESS_TIMEOUTS_SECONDS["process_group_term_grace"]
+        kill_grace = PROCESS_TIMEOUTS_SECONDS["process_group_kill_grace"]
+        term_cleared_group = wait_for_process_group_exit(process_group_id, term_grace, process)
+        kill_sent = not term_cleared_group
+        if kill_sent:
+            try:
+                os.killpg(process_group_id, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            group_gone = wait_for_process_group_exit(process_group_id, kill_grace, process)
+        else:
+            group_gone = True
+        try:
+            stdout, stderr = process.communicate(timeout=kill_grace)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            stdout, stderr = process.communicate()
+        return ProcessOutcome(
+            argv=list(argv),
+            returncode=process.returncode,
+            stdout=stdout,
+            stderr=stderr,
+            timed_out=True,
+            timeout_seconds=timeout_seconds,
+            cleanup={
+                "isolated_process_group": True,
+                "process_group_id": process_group_id,
+                "term_sent": True,
+                "kill_sent": kill_sent,
+                "leader_reaped": process.poll() is not None,
+                "group_gone": group_gone,
+                "term_grace_seconds": term_grace,
+                "kill_grace_seconds": kill_grace,
+            },
+        )
+
+
+def require_process_completed(outcome: ProcessOutcome, context: str) -> None:
+    if outcome.timed_out:
+        raise ProcessTimeoutError(
+            f"{context} exceeded its {outcome.timeout_seconds} second safety timeout; "
+            f"process-group cleanup={json.dumps(outcome.cleanup, sort_keys=True)}",
+            outcome,
+        )
 
 
 def require(condition: bool, message: str) -> None:
@@ -221,20 +383,43 @@ def module_tree_receipt(root: pathlib.Path, lock_path: str) -> dict[str, Any]:
     }
 
 
-def resolve_lock_dependency(packages: dict[str, Any], parent: str, name: str) -> str:
-    """Resolve one npm lockfile dependency with Node's ancestor lookup order."""
-
+def dependency_candidates(parent: str, name: str) -> list[str]:
+    result = []
     prefix: str | None = parent
     while prefix is not None:
-        candidate = f"{prefix}/node_modules/{name}"
-        if candidate in packages:
-            return candidate
+        result.append(f"{prefix}/node_modules/{name}")
         marker = prefix.rfind("/node_modules/")
         prefix = prefix[:marker] if marker >= 0 else None
-    root_candidate = f"node_modules/{name}"
-    if root_candidate in packages:
-        return root_candidate
-    raise OrchestrationError(f"package-lock cannot resolve production dependency {name!r} from {parent!r}")
+    result.append(f"node_modules/{name}")
+    return list(dict.fromkeys(result))
+
+
+def runtime_dependency_requirements(
+    metadata: dict[str, Any], installed: dict[str, Any], package_key: str
+) -> dict[str, bool]:
+    """Return runtime dependency names mapped to required/optional."""
+
+    requirements: dict[str, bool] = {}
+    for source in (metadata, installed):
+        dependencies = source.get("dependencies", {})
+        optional = source.get("optionalDependencies", {})
+        peers = source.get("peerDependencies", {})
+        peer_meta = source.get("peerDependenciesMeta", {})
+        for label, value in (
+            ("dependencies", dependencies),
+            ("optionalDependencies", optional),
+            ("peerDependencies", peers),
+            ("peerDependenciesMeta", peer_meta),
+        ):
+            require(isinstance(value, dict), f"{package_key} {label} must be an object")
+        for name in dependencies:
+            requirements[name] = True
+        for name in optional:
+            requirements[name] = False
+        for name in peers:
+            optional_peer = isinstance(peer_meta.get(name), dict) and peer_meta[name].get("optional") is True
+            requirements.setdefault(name, not optional_peer)
+    return requirements
 
 
 def puppeteer_production_modules(playcanvas_root: pathlib.Path) -> dict[str, Any]:
@@ -256,15 +441,40 @@ def puppeteer_production_modules(playcanvas_root: pathlib.Path) -> dict[str, Any
         visited.add(package_key)
         metadata = packages.get(package_key)
         require(isinstance(metadata, dict), f"package-lock entry is invalid: {package_key}")
-        dependencies = metadata.get("dependencies", {})
-        require(isinstance(dependencies, dict), f"package-lock dependencies are invalid: {package_key}")
-        for name in sorted(dependencies):
-            pending.append(resolve_lock_dependency(packages, package_key, name))
-        receipt = module_tree_receipt(playcanvas_root / package_key, package_key)
+        package_root = playcanvas_root / package_key
+        installed = load_object(package_root / "package.json", f"installed {package_key} package.json")
+        resolved_dependencies = []
+        for name, required in sorted(
+            runtime_dependency_requirements(metadata, installed, package_key).items()
+        ):
+            installed_candidates = [
+                candidate
+                for candidate in dependency_candidates(package_key, name)
+                if (playcanvas_root / candidate).is_dir()
+            ]
+            if not installed_candidates:
+                require(
+                    not required,
+                    f"required runtime dependency {name!r} from {package_key!r} is absent",
+                )
+                continue
+            dependency_key = installed_candidates[0]
+            require(
+                dependency_key in packages,
+                f"installed runtime dependency {dependency_key!r} is absent from package-lock",
+            )
+            pending.append(dependency_key)
+            resolved_dependencies.append({
+                "name": name,
+                "lock_path": dependency_key,
+                "required": required,
+            })
+        receipt = module_tree_receipt(package_root, package_key)
         receipts.append({
             **receipt,
             "version": metadata.get("version"),
             "integrity": metadata.get("integrity"),
+            "runtime_dependencies": resolved_dependencies,
         })
     receipts.sort(key=lambda value: value["lock_path"])
     return {
@@ -824,20 +1034,13 @@ def execution_lock(plan: dict[str, Any], commands: dict[str, Any]) -> dict[str, 
 
 
 def git_output(*arguments: str) -> str:
-    try:
-        completed = subprocess.run(
-            ["git", *arguments],
-            cwd=REPO_ROOT,
-            check=False,
-            capture_output=True,
-            text=True,
-            env=safe_host_environment(),
-            timeout=PROCESS_TIMEOUTS_SECONDS["git_helper"],
-        )
-    except subprocess.TimeoutExpired as error:
-        raise OrchestrationError(
-            f"git helper exceeded {PROCESS_TIMEOUTS_SECONDS['git_helper']} second safety timeout"
-        ) from error
+    completed = run_process_group(
+        ["git", *arguments],
+        cwd=REPO_ROOT,
+        env=safe_host_environment(),
+        timeout_seconds=PROCESS_TIMEOUTS_SECONDS["git_helper"],
+    )
+    require_process_completed(completed, "git helper")
     require(completed.returncode == 0, completed.stderr.strip() or "git command failed")
     return completed.stdout.strip()
 
@@ -956,21 +1159,12 @@ def claim_series(args: argparse.Namespace, plan: dict[str, Any]) -> dict[str, An
 
 
 def run_once(invocation: dict[str, Any], root: pathlib.Path) -> None:
-    try:
-        completed = subprocess.run(
-            invocation["argv"],
-            cwd=REPO_ROOT,
-            env=invocation["environment"],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=invocation["timeout_seconds"],
-        )
-    except subprocess.TimeoutExpired as error:
-        raise OrchestrationError(
-            f"{invocation['invocation_id']} exceeded its {invocation['timeout_seconds']} "
-            "second producer safety timeout"
-        ) from error
+    completed = run_process_group(
+        invocation["argv"],
+        cwd=REPO_ROOT,
+        env=invocation["environment"],
+        timeout_seconds=invocation["timeout_seconds"],
+    )
     log_root = root / "logs"
     (log_root / f"{invocation['invocation_id']}.stdout.log").write_text(
         completed.stdout, encoding="utf-8"
@@ -978,6 +1172,13 @@ def run_once(invocation: dict[str, Any], root: pathlib.Path) -> None:
     (log_root / f"{invocation['invocation_id']}.stderr.log").write_text(
         completed.stderr, encoding="utf-8"
     )
+    write_new_json(log_root / f"{invocation['invocation_id']}.process.json", {
+        "timed_out": completed.timed_out,
+        "timeout_seconds": completed.timeout_seconds,
+        "returncode": completed.returncode,
+        "cleanup": completed.cleanup,
+    })
+    require_process_completed(completed, invocation["invocation_id"])
     require(
         completed.returncode == 0,
         f"{invocation['invocation_id']} exited {completed.returncode}",
@@ -997,21 +1198,13 @@ def run_once(invocation: dict[str, Any], root: pathlib.Path) -> None:
 def validate_canonical_artifact(
     directory: pathlib.Path, context: str, *, environment: dict[str, str]
 ) -> None:
-    try:
-        validate = subprocess.run(
-            [sys.executable, "tests/perf/validate-benchmark-artifacts.py", str(directory)],
-            cwd=REPO_ROOT,
-            check=False,
-            capture_output=True,
-            text=True,
-            env=environment,
-            timeout=PROCESS_TIMEOUTS_SECONDS["canonical_validator"],
-        )
-    except subprocess.TimeoutExpired as error:
-        raise OrchestrationError(
-            f"{context} canonical validator exceeded "
-            f"{PROCESS_TIMEOUTS_SECONDS['canonical_validator']} second safety timeout"
-        ) from error
+    validate = run_process_group(
+        [sys.executable, "tests/perf/validate-benchmark-artifacts.py", str(directory)],
+        cwd=REPO_ROOT,
+        env=environment,
+        timeout_seconds=PROCESS_TIMEOUTS_SECONDS["canonical_validator"],
+    )
+    require_process_completed(validate, f"{context} canonical validator")
     require(
         validate.returncode == 0,
         f"{context} canonical validation failed: "
@@ -1138,28 +1331,31 @@ def compare_image(
     raw_relative = pathlib.Path("comparisons") / pair_id / endpoint / f"trace-{trace}.raw.json"
     raw = root / raw_relative
     raw.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        completed = subprocess.run(
-            [
-                "node",
-                str(IMAGE_TOOL),
-                str(root / reference["path"]),
-                str(candidate),
-                "--output",
-                str(raw),
-            ],
-            cwd=REPO_ROOT,
-            check=False,
-            capture_output=True,
-            text=True,
-            env=environment,
-            timeout=PROCESS_TIMEOUTS_SECONDS["image_comparison"],
-        )
-    except subprocess.TimeoutExpired as error:
-        raise OrchestrationError(
-            f"image comparison for {pair_id}.{endpoint}.trace-{trace} exceeded "
-            f"{PROCESS_TIMEOUTS_SECONDS['image_comparison']} second safety timeout"
-        ) from error
+    completed = run_process_group(
+        [
+            "node",
+            str(IMAGE_TOOL),
+            str(root / reference["path"]),
+            str(candidate),
+            "--output",
+            str(raw),
+        ],
+        cwd=REPO_ROOT,
+        env=environment,
+        timeout_seconds=PROCESS_TIMEOUTS_SECONDS["image_comparison"],
+    )
+    (raw.parent / f"{raw.stem}.stdout.log").write_text(completed.stdout, encoding="utf-8")
+    (raw.parent / f"{raw.stem}.stderr.log").write_text(completed.stderr, encoding="utf-8")
+    write_new_json(raw.parent / f"{raw.stem}.process.json", {
+        "timed_out": completed.timed_out,
+        "timeout_seconds": completed.timeout_seconds,
+        "returncode": completed.returncode,
+        "cleanup": completed.cleanup,
+    })
+    require_process_completed(
+        completed,
+        f"image comparison for {pair_id}.{endpoint}.trace-{trace}",
+    )
     require(
         completed.returncode == 0,
         f"image comparison failed for {pair_id}.{endpoint}.trace-{trace}: "
@@ -1308,6 +1504,7 @@ def publish_blocker(root: pathlib.Path, plan: dict[str, Any] | None, error: Base
     if not root.is_dir() or blocker.exists():
         return
     try:
+        process = error.outcome if isinstance(error, ProcessTimeoutError) else None
         write_new_json(blocker, {
             "schema": BLOCKER_SCHEMA,
             "series_id": None if plan is None else plan["series_id"],
@@ -1315,6 +1512,14 @@ def publish_blocker(root: pathlib.Path, plan: dict[str, Any] | None, error: Base
             "reason": str(error),
             "automatic_retry": False,
             "retry_authorized": False,
+            "process_timeout": None if process is None else {
+                "argv": process.argv,
+                "timeout_seconds": process.timeout_seconds,
+                "returncode": process.returncode,
+                "stdout_tail": process.stdout[-4096:],
+                "stderr_tail": process.stderr[-4096:],
+                "cleanup": process.cleanup,
+            },
         })
     except OSError:
         pass
@@ -1329,25 +1534,19 @@ def execute(args: argparse.Namespace, plan: dict[str, Any]) -> int:
                 resolve_throughput(invocation, root)
             run_once(invocation, root)
         schedule_path = finalize_schedule(args, plan, root, locked)
-        try:
-            result = subprocess.run(
-                [
-                    sys.executable,
-                    "tests/perf/validate-q1-truck-paired-comparison.py",
-                    str(schedule_path),
-                    "--output",
-                    str(root / "result.json"),
-                ],
-                cwd=REPO_ROOT,
-                check=False,
-                env=plan["postprocess"]["environment"],
-                timeout=PROCESS_TIMEOUTS_SECONDS["final_validator"],
-            )
-        except subprocess.TimeoutExpired as error:
-            raise OrchestrationError(
-                "final Q1 validator exceeded "
-                f"{PROCESS_TIMEOUTS_SECONDS['final_validator']} second safety timeout"
-            ) from error
+        result = run_process_group(
+            [
+                sys.executable,
+                "tests/perf/validate-q1-truck-paired-comparison.py",
+                str(schedule_path),
+                "--output",
+                str(root / "result.json"),
+            ],
+            cwd=REPO_ROOT,
+            env=plan["postprocess"]["environment"],
+            timeout_seconds=PROCESS_TIMEOUTS_SECONDS["final_validator"],
+        )
+        require_process_completed(result, "final Q1 validator")
         require(result.returncode == 0, f"final Q1 validator exited {result.returncode}")
         return 0
     except BaseException as error:

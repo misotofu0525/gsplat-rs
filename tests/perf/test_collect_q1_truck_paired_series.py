@@ -6,7 +6,6 @@ import importlib.util
 import io
 import json
 import pathlib
-import subprocess
 import sys
 import tempfile
 import unittest
@@ -131,6 +130,7 @@ class Q1TruckPairedSeriesTests(unittest.TestCase):
                     "file_count": 1,
                     "bytes": 1,
                     "sha256": "8" * 64,
+                    "runtime_dependencies": [],
                 }],
                 "sha256": COLLECTOR.canonical_sha256([{
                     "path": "node_modules/puppeteer-core",
@@ -140,6 +140,7 @@ class Q1TruckPairedSeriesTests(unittest.TestCase):
                     "file_count": 1,
                     "bytes": 1,
                     "sha256": "8" * 64,
+                    "runtime_dependencies": [],
                 }]),
             },
             "references": self.args.formal_inputs["references"],
@@ -290,28 +291,68 @@ class Q1TruckPairedSeriesTests(unittest.TestCase):
     def test_run_once_never_retries_a_failed_producer(self) -> None:
         invocation = self.plan()["invocations"][0]
         (self.root / "logs").mkdir()
-        response = SimpleNamespace(returncode=9, stdout="", stderr="failed once")
-        with mock.patch.object(COLLECTOR.subprocess, "run", return_value=response) as run:
+        response = COLLECTOR.ProcessOutcome(
+            argv=invocation["argv"],
+            returncode=9,
+            stdout="",
+            stderr="failed once",
+            timed_out=False,
+            timeout_seconds=invocation["timeout_seconds"],
+            cleanup={"group_gone": True},
+        )
+        with mock.patch.object(COLLECTOR, "run_process_group", return_value=response) as run:
             with self.assertRaisesRegex(COLLECTOR.OrchestrationError, "exited 9"):
                 COLLECTOR.run_once(invocation, self.root)
         self.assertEqual(run.call_count, 1)
         self.assertEqual(run.call_args.kwargs["env"], invocation["environment"])
-        self.assertEqual(run.call_args.kwargs["timeout"], COLLECTOR.PROCESS_TIMEOUTS_SECONDS["producer"])
+        self.assertEqual(
+            run.call_args.kwargs["timeout_seconds"],
+            COLLECTOR.PROCESS_TIMEOUTS_SECONDS["producer"],
+        )
 
     def test_hung_producer_times_out_once_and_publishes_blocker(self) -> None:
         plan = self.plan()
-        timeout = subprocess.TimeoutExpired(
-            cmd=plan["invocations"][0]["argv"],
-            timeout=COLLECTOR.PROCESS_TIMEOUTS_SECONDS["producer"],
+        counter = self.root / "producer-count.txt"
+        pids = self.root / "producer-pids.json"
+        script = self.root / "hung-process-tree.py"
+        script.write_text(
+            "import json, os, pathlib, signal, subprocess, sys, time\n"
+            "counter = pathlib.Path(sys.argv[1])\n"
+            "pids = pathlib.Path(sys.argv[2])\n"
+            "count = int(counter.read_text()) + 1 if counter.exists() else 1\n"
+            "counter.write_text(str(count))\n"
+            "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+            "child = subprocess.Popen([sys.executable, '-c', "
+            "'import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(300)'])\n"
+            "pids.write_text(json.dumps({'leader': os.getpid(), 'grandchild': child.pid}))\n"
+            "print('tree-ready', flush=True)\n"
+            "time.sleep(300)\n"
         )
-        with mock.patch.object(COLLECTOR.subprocess, "run", side_effect=timeout) as run:
-            with self.assertRaisesRegex(COLLECTOR.OrchestrationError, "producer safety timeout"):
+        first = plan["invocations"][0]
+        first["argv"] = [sys.executable, str(script), str(counter), str(pids)]
+        first["timeout_seconds"] = 1
+        with mock.patch.dict(
+            COLLECTOR.PROCESS_TIMEOUTS_SECONDS,
+            {"process_group_term_grace": 1, "process_group_kill_grace": 2},
+        ):
+            with self.assertRaisesRegex(COLLECTOR.OrchestrationError, "safety timeout"):
                 COLLECTOR.execute(self.args, plan)
-        self.assertEqual(run.call_count, 1)
+        self.assertEqual(counter.read_text(), "1")
         blocker = json.loads((self.series / "blocker.json").read_text())
-        self.assertIn("producer safety timeout", blocker["reason"])
+        self.assertIn("safety timeout", blocker["reason"])
         self.assertFalse(blocker["automatic_retry"])
         self.assertFalse(blocker["retry_authorized"])
+        self.assertTrue(blocker["process_timeout"]["cleanup"]["isolated_process_group"])
+        self.assertTrue(blocker["process_timeout"]["cleanup"]["term_sent"])
+        self.assertTrue(blocker["process_timeout"]["cleanup"]["kill_sent"])
+        self.assertTrue(blocker["process_timeout"]["cleanup"]["leader_reaped"])
+        self.assertTrue(blocker["process_timeout"]["cleanup"]["group_gone"])
+        self.assertIn("tree-ready", blocker["process_timeout"]["stdout_tail"])
+        receipt = json.loads(
+            (self.series / "logs" / f"{first['invocation_id']}.process.json").read_text()
+        )
+        self.assertTrue(receipt["timed_out"])
+        self.assertTrue(receipt["cleanup"]["group_gone"])
 
     def test_child_environment_ignores_all_undeclared_host_controls(self) -> None:
         injected = {
@@ -462,9 +503,17 @@ class Q1TruckPairedSeriesTests(unittest.TestCase):
                     "sha256": "0" * 64,
                 },
             }))
-            return SimpleNamespace(returncode=0, stdout="", stderr="")
+            return COLLECTOR.ProcessOutcome(
+                argv=argv,
+                returncode=0,
+                stdout="",
+                stderr="",
+                timed_out=False,
+                timeout_seconds=kwargs["timeout_seconds"],
+                cleanup={"group_gone": True},
+            )
 
-        with mock.patch.object(COLLECTOR.subprocess, "run", side_effect=fake_run):
+        with mock.patch.object(COLLECTOR, "run_process_group", side_effect=fake_run):
             with self.assertRaisesRegex(COLLECTOR.OrchestrationError, "locked Chrome"):
                 COLLECTOR.compare_image(
                     root=self.root,
@@ -482,9 +531,15 @@ class Q1TruckPairedSeriesTests(unittest.TestCase):
         dependency.mkdir(parents=True)
         child.mkdir(parents=True)
         (dependency / "index.js").write_text("import 'ws';\n")
+        (dependency / "package.json").write_text(json.dumps({
+            "name": "puppeteer-core",
+            "version": "1.0.0",
+            "dependencies": {"ws": "1.0.0"},
+        }))
         (dependency / "tests").mkdir()
         (dependency / "tests/ignored.js").write_text("ignored\n")
         (child / "index.js").write_text("export {};\n")
+        (child / "package.json").write_text(json.dumps({"name": "ws", "version": "1.0.0"}))
         (root / "package-lock.json").write_text(json.dumps({
             "lockfileVersion": 3,
             "packages": {
@@ -506,8 +561,72 @@ class Q1TruckPairedSeriesTests(unittest.TestCase):
         self.assertNotEqual(before["sha256"], after["sha256"])
         self.assertEqual(
             before["packages"][0 if before["packages"][0]["lock_path"] == "node_modules/puppeteer-core" else 1]["file_count"],
-            1,
+            2,
         )
+
+    def test_installed_optional_dependency_is_hashed_and_missing_required_fails(self) -> None:
+        root = self.root / "optional-playcanvas"
+        dependency = root / "node_modules/puppeteer-core"
+        optional = root / "node_modules/source-map-support"
+        dependency.mkdir(parents=True)
+        optional.mkdir(parents=True)
+        root_manifest = {
+            "name": "puppeteer-core",
+            "version": "1.0.0",
+            "dependencies": {"required-runtime": "1.0.0"},
+            "optionalDependencies": {"source-map-support": "1.0.0", "platform-only": "1.0.0"},
+        }
+        (dependency / "package.json").write_text(json.dumps(root_manifest))
+        (dependency / "index.js").write_text("export {};\n")
+        (optional / "package.json").write_text(json.dumps({
+            "name": "source-map-support", "version": "1.0.0"
+        }))
+        (optional / "index.js").write_text("export const value = 1;\n")
+        lock = {
+            "lockfileVersion": 3,
+            "packages": {
+                "node_modules/puppeteer-core": {
+                    "version": "1.0.0",
+                    "integrity": "sha512-root",
+                    "dependencies": {"required-runtime": "1.0.0"},
+                    "optionalDependencies": {
+                        "source-map-support": "1.0.0",
+                        "platform-only": "1.0.0",
+                    },
+                },
+                "node_modules/required-runtime": {
+                    "version": "1.0.0", "integrity": "sha512-required"
+                },
+                "node_modules/source-map-support": {
+                    "version": "1.0.0", "integrity": "sha512-optional"
+                },
+            },
+        }
+        (root / "package-lock.json").write_text(json.dumps(lock))
+        with self.assertRaisesRegex(COLLECTOR.OrchestrationError, "required runtime dependency"):
+            COLLECTOR.puppeteer_production_modules(root)
+
+        required = root / "node_modules/required-runtime"
+        required.mkdir()
+        (required / "package.json").write_text(json.dumps({
+            "name": "required-runtime", "version": "1.0.0"
+        }))
+        (required / "index.js").write_text("export {};\n")
+        before = COLLECTOR.puppeteer_production_modules(root)
+        locked_paths = {value["lock_path"] for value in before["packages"]}
+        self.assertIn("node_modules/source-map-support", locked_paths)
+        self.assertNotIn("node_modules/platform-only", locked_paths)
+        (optional / "index.js").write_text("export const value = 2;\n")
+        after = COLLECTOR.puppeteer_production_modules(root)
+        self.assertNotEqual(before["sha256"], after["sha256"])
+        platform = root / "node_modules/platform-only"
+        platform.mkdir()
+        (platform / "package.json").write_text(json.dumps({
+            "name": "platform-only", "version": "1.0.0"
+        }))
+        (platform / "index.js").write_text("export {};\n")
+        with self.assertRaisesRegex(COLLECTOR.OrchestrationError, "absent from package-lock"):
+            COLLECTOR.puppeteer_production_modules(root)
 
 
 if __name__ == "__main__":

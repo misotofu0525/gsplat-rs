@@ -365,6 +365,12 @@ reported by the image tool. Producer, canonical-validation, image-comparison,
 final-validation and Git-helper commands have generous but finite predeclared
 safety timeouts. A timeout is not a performance threshold: it terminates the
 one attempt, writes a blocker once after the root is claimed, and never retries.
+Every external command owns a fresh process group; timeout cleanup sends TERM,
+waits for the declared grace period, then KILLs the entire remaining group and
+reaps its leader so browser/server descendants cannot leak into the next run.
+Installed optional and peer runtime dependencies are included when reachable;
+missing platform-only optional packages are allowed, while missing required or
+installed-but-unlocked runtime dependencies fail preflight.
 After all producers and image comparisons, the same inputs plus clean HEAD are
 rechecked before the schedule/result boundary. The final validator consumes
 this lock and joins browser and Wasm hashes to endpoint artifacts. Integrate

@@ -39,6 +39,8 @@ PROCESS_TIMEOUTS_SECONDS = {
     "canonical_validator": 300,
     "image_comparison": 600,
     "final_validator": 600,
+    "process_group_term_grace": 5,
+    "process_group_kill_grace": 5,
 }
 PUPPETEER_GRAPH_SCHEMA = "gsplat-q1-puppeteer-production-modules/v1"
 PLAYCANVAS_COMMAND_ENVIRONMENT = frozenset({
@@ -431,6 +433,25 @@ def validate_orchestration(
         )
         string(entry, "lock_path", "Puppeteer production module")
         integer(entry, "file_count", "Puppeteer production module")
+        dependencies = array(
+            entry,
+            "runtime_dependencies",
+            f"schedule.orchestration.puppeteer_production_modules.packages[{index}]",
+        )
+        for dependency_index, dependency in enumerate(dependencies):
+            if not isinstance(dependency, dict):
+                fail(f"Puppeteer runtime dependency {dependency_index} must be an object")
+            string(dependency, "name", "Puppeteer runtime dependency")
+            string(dependency, "lock_path", "Puppeteer runtime dependency")
+            if not isinstance(dependency.get("required"), bool):
+                fail("Puppeteer runtime dependency required flag must be boolean")
+    package_paths = {value["lock_path"] for value in module_packages}
+    if "node_modules/puppeteer-core" not in package_paths or any(
+        dependency["lock_path"] not in package_paths
+        for value in module_packages
+        for dependency in value["runtime_dependencies"]
+    ):
+        fail("schedule orchestration Puppeteer production module graph is not closed")
     if puppeteer_modules.get("sha256") != canonical_sha256(module_packages):
         fail("schedule orchestration Puppeteer production module digest mismatch")
     references = array(formal, "references", "schedule.orchestration.formal_inputs")
