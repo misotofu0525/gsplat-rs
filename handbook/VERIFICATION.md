@@ -339,6 +339,29 @@ output absent. The collector is not a browser, mobile, performance or
 cross-device qualification, and a failed endpoint attempt must not be retried
 without a new explicit authorization.
 
+For the separate B0 timing decision, do not reuse the short Kitsune image gate
+as a throughput result. `collect-balanced-paired-timing.py` first validates a
+same-commit `gsplat-balanced-image-gate/v1` suite, then builds the two private
+diagnostic binaries and collects at least three counterbalanced Exact/candidate
+pairs on the complete Truck and its committed moving 1920x1080 trace. It keeps
+each run's terminal receipts, final capture and ordinary v1 artifact. It
+returns only `candidate`, `exact`, or `inconclusive`; the last is a finite
+result, not permission to tune indefinitely.
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 python3 tests/perf/test_collect_balanced_paired_timing.py
+python3 tests/perf/collect-balanced-paired-timing.py \
+  --experiment b1-20 \
+  --quality-suite <same-commit-validated-suite.json> \
+  --output target/benchmarks/balanced/b1-20-truck-<candidate-sha>
+```
+
+The output must be fresh and ignored. This command opens a native Metal
+Surface, so it is an endpoint action: inspect it through the launchbook first
+and run it only with the relevant one-shot authorization. Missing Truck data or
+a quality suite from another commit is rejected before either diagnostic binary
+is built.
+
 Committed dataset identities and the shared camera oracle have separate checks:
 
 ```bash

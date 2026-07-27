@@ -868,3 +868,25 @@ source-architecture policy pass. This is implementation readiness only: no
 image-gate artifact, timing comparison, Accepted/Rejected B1 result, or
 endpoint qualification has been created. A future endpoint run still requires
 fresh explicit authorization under the one-shot protocol.
+
+## B0 paired Truck timing collector (not yet executed)
+
+The root-owned `tests/perf/collect-balanced-paired-timing.py` now closes the
+remaining protocol wiring without changing renderer policy. Before it builds a
+binary or opens a Surface, it requires a validated Balanced image suite made by
+the same clean commit and matching named B1/B2/B3 experiment. It then admits
+only the full 2,541,226-splat Truck entry and its committed moving 1920x1080
+trace from the full-quality matrix; ladder subsets, alternate traces, missing
+assets, source/hash mismatch, stale quality evidence and an existing output
+directory are rejected.
+
+The collector runs at least three Exact/candidate pairs in a seeded,
+counterbalanced order. Every run retains all terminal frame receipts, a joined
+diagnostic precision receipt, final PNG and a standard `gsplat-benchmark/v1`
+artifact. Its aggregate makes exactly one timing classification: candidate
+wins every paired mean, Exact wins every paired mean, or `inconclusive`.
+It neither promotes the candidate nor triggers a retry. New unit tests cover
+the schedule, full-quality/every-frame command shape, terminal classifications
+and final-frame diagnostic receipt join. No new endpoint process was launched
+while adding this collector, so B1 remains **Active** and no performance claim
+has been made.
