@@ -1,0 +1,273 @@
+{
+  "schema": "gsplat-playcanvas-camera-authority-fixture/v1",
+  "source_trace": {
+    "id": "candidate-truck-quality-2view-1920x1080-v1",
+    "content_sha256": "34d47dbddf73d915bfd55431b33da9430882767a40d9d74c636c508f7d7a5ab3"
+  },
+  "authority": {
+    "path": "tests/competitive/playcanvas/public/trace-camera.js",
+    "sha256": "5976989c6af6565f3eb071e4aa09143bd7cd23f1b35b0ee005c65be93dfc6cc4",
+    "oracle_export": "canonicalPlayCanvasCameraOracle",
+    "receipt_export": "createPlayCanvasCameraReceipt"
+  },
+  "receipts": {
+    "0": {
+      "schema": "gsplat-playcanvas-runtime-camera-receipt/v1",
+      "trace_frame_index": 0,
+      "phase": "authority_fixture",
+      "runtime_source": "live PlayCanvas Entity and Camera matrices after trace application",
+      "position": [
+        3.398962270047007,
+        -0.683534043426368,
+        2.29915441055627
+      ],
+      "forward": [
+        -0.6177686028875999,
+        0.06318280453979654,
+        -0.783817508414292
+      ],
+      "up": [
+        0.016442044149287495,
+        0.9975867826238479,
+        0.06745569151963769
+      ],
+      "vertical_fov_radians": 0.881621552836618,
+      "near_plane": 0.01,
+      "far_plane": 682.139306023212,
+      "aspect": 1.7777777777777777,
+      "horizontal_fov": false,
+      "render_target_flip_y": false,
+      "webgpu_depth_range_applied": true,
+      "view_matrix_column_major": [
+        0.7861880261556364,
+        0.016442044149287495,
+        0.6177686028875999,
+        0,
+        0.02878444622857118,
+        0.9975867826238479,
+        -0.06318280453979654,
+        0,
+        -0.6173166474223895,
+        0.06745569151963769,
+        0.783817508414292,
+        0,
+        -1.233241996516337,
+        0.4709075888152065,
+        -3.9450772522386552,
+        1
+      ],
+      "projection_matrix_opengl_column_major": [
+        1.1923148080768302,
+        0,
+        0,
+        0,
+        0,
+        2.119670769914365,
+        0,
+        0,
+        0,
+        0,
+        -1.0000293199541836,
+        -1,
+        0,
+        0,
+        -0.020000293199541837,
+        0
+      ],
+      "view_projection_matrix_opengl_column_major": [
+        0.9373836255180596,
+        0.0348517203808862,
+        -0.6177867158347327,
+        -0.6177686028875999,
+        0.03432012148061669,
+        2.114555543580686,
+        0.06318465705673083,
+        0.06318280453979654,
+        -0.7360357799940586,
+        0.14298385757853632,
+        -0.783840489907727,
+        -0.783817508414292,
+        -1.4704126943886633,
+        0.9981690513424459,
+        3.9251926285234,
+        3.9450772522386552
+      ],
+      "shader_projection_matrix_webgpu_column_major": [
+        1.1923148080768302,
+        0,
+        0,
+        0,
+        0,
+        2.119670769914365,
+        0,
+        0,
+        0,
+        0,
+        -1.0000146599770918,
+        -1,
+        0,
+        0,
+        -0.010000146599770918,
+        0
+      ],
+      "shader_view_projection_matrix_webgpu_column_major": [
+        0.9373836255180596,
+        0.0348517203808862,
+        -0.6177776593611664,
+        -0.6177686028875999,
+        0.03432012148061669,
+        2.114555543580686,
+        0.06318373079826368,
+        0.06318280453979654,
+        -0.7360357799940586,
+        0.14298385757853632,
+        -0.7838289991610096,
+        -0.783817508414292,
+        -1.4704126943886633,
+        0.9981690513424459,
+        3.935134940381028,
+        3.9450772522386552
+      ],
+      "conversion": {
+        "world": "canonical RUF +Z-forward to PlayCanvas RUB -Z-forward by diag(1,1,-1)",
+        "projection": "canonical row-major +Z/[0,1] -> PlayCanvas column-major -Z/OpenGL[-1,1] -> WebGPU shader [0,1]",
+        "shader_flip_y": false
+      },
+      "validation": {
+        "oracle": "pose/intrinsics-recomputed canonical trace oracle; trace matrices verified independently",
+        "absolute_tolerance": 0.0002,
+        "relative_tolerance": 0.00002,
+        "passed": true
+      }
+    },
+    "1": {
+      "schema": "gsplat-playcanvas-runtime-camera-receipt/v1",
+      "trace_frame_index": 1,
+      "phase": "authority_fixture",
+      "runtime_source": "live PlayCanvas Entity and Camera matrices after trace application",
+      "position": [
+        2.8829987521200047,
+        0.3668563599035546,
+        -3.7353056684053323
+      ],
+      "forward": [
+        -0.46531460616295983,
+        -0.21552960391769505,
+        0.8585041101395448
+      ],
+      "up": [
+        0.02592649011846715,
+        0.9661669803666835,
+        0.2566109568184135
+      ],
+      "vertical_fov_radians": 0.881621552836618,
+      "near_plane": 0.01,
+      "far_plane": 681.8498969825473,
+      "aspect": 1.7777777777777777,
+      "horizontal_fov": false,
+      "render_target_flip_y": false,
+      "webgpu_depth_range_applied": true,
+      "view_matrix_column_major": [
+        -0.884765581609924,
+        0.02592649011846715,
+        0.46531460616295983,
+        0,
+        0.14166282463725668,
+        0.9661669803666835,
+        0.21552960391769505,
+        0,
+        -0.4439836818107702,
+        0.2566109568184135,
+        -0.8585041101395448,
+        0,
+        0.8403933961728223,
+        0.5293298214440129,
+        -4.627345103809242,
+        1
+      ],
+      "projection_matrix_opengl_column_major": [
+        1.1923148080768302,
+        0,
+        0,
+        0,
+        0,
+        2.119670769914365,
+        0,
+        0,
+        0,
+        0,
+        -1.0000293323991283,
+        -1,
+        0,
+        0,
+        -0.020000293323991284,
+        0
+      ],
+      "view_projection_matrix_opengl_column_major": [
+        -1.0549191046302215,
+        0.054955623270588436,
+        -0.46532825495670804,
+        -0.46531460616295983,
+        0.16890668356899236,
+        2.047955907139685,
+        -0.21553592591806112,
+        -0.21552960391769505,
+        -0.5293683183674529,
+        0.5439307444077484,
+        0.8585292921247566,
+        0.8585041101395448,
+        1.0020134908668341,
+        1.122004950158864,
+        4.60748054161874,
+        4.627345103809242
+      ],
+      "shader_projection_matrix_webgpu_column_major": [
+        1.1923148080768302,
+        0,
+        0,
+        0,
+        0,
+        2.119670769914365,
+        0,
+        0,
+        0,
+        0,
+        -1.0000146661995641,
+        -1,
+        0,
+        0,
+        -0.010000146661995642,
+        0
+      ],
+      "shader_view_projection_matrix_webgpu_column_major": [
+        -1.0549191046302215,
+        0.054955623270588436,
+        -0.46532143055983394,
+        -0.46531460616295983,
+        0.16890668356899236,
+        2.047955907139685,
+        -0.2155327649178781,
+        -0.21552960391769505,
+        -0.5293683183674529,
+        0.5439307444077484,
+        0.8585167011321507,
+        0.8585041101395448,
+        1.0020134908668341,
+        1.122004950158864,
+        4.617412822713992,
+        4.627345103809242
+      ],
+      "conversion": {
+        "world": "canonical RUF +Z-forward to PlayCanvas RUB -Z-forward by diag(1,1,-1)",
+        "projection": "canonical row-major +Z/[0,1] -> PlayCanvas column-major -Z/OpenGL[-1,1] -> WebGPU shader [0,1]",
+        "shader_flip_y": false
+      },
+      "validation": {
+        "oracle": "pose/intrinsics-recomputed canonical trace oracle; trace matrices verified independently",
+        "absolute_tolerance": 0.0002,
+        "relative_tolerance": 0.00002,
+        "passed": true
+      }
+    }
+  }
+}

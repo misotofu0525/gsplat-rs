@@ -45,6 +45,15 @@ COMMIT = "c" * 40
 PREDECLARED = "2026-07-28T00:00:00Z"
 ORDERS = ["playcanvas-first", "gsplat-rs-first", "playcanvas-first", "gsplat-rs-first", "playcanvas-first"]
 CLI = pathlib.Path(__file__).with_name("validate-q1-truck-paired-comparison.py")
+PLAYCANVAS_CAMERA_AUTHORITY_GENERATOR = pathlib.Path(__file__).parent / (
+    "q1_pair_admission/generate_playcanvas_camera_authority.mjs"
+)
+PLAYCANVAS_CAMERA_AUTHORITY_FIXTURE = pathlib.Path(__file__).parent / (
+    "q1_pair_admission/fixtures/playcanvas-truck-camera-receipts-v1.json"
+)
+PLAYCANVAS_CAMERA_RECEIPTS = json.loads(
+    PLAYCANVAS_CAMERA_AUTHORITY_FIXTURE.read_text(encoding="utf-8")
+)["receipts"]
 
 
 def write_json(path: pathlib.Path, value: object) -> None:
@@ -265,11 +274,9 @@ def presentation(
 
 
 def playcanvas_camera_receipt(trace: int, phase: str) -> dict[str, object]:
-    return {
-        "schema": "gsplat-playcanvas-runtime-camera-receipt/v1",
-        "trace_frame_index": trace,
-        "phase": phase,
-    }
+    receipt = json.loads(json.dumps(PLAYCANVAS_CAMERA_RECEIPTS[str(trace)]))
+    receipt["phase"] = phase
+    return receipt
 
 
 def legacy_playcanvas_presentation(trace: int) -> tuple[dict[str, object], dict[str, object]]:
@@ -759,6 +766,67 @@ class ScheduleAndAdmissionTests(unittest.TestCase):
         self.assertTrue(result["evidence_admitted"])
         self.assertTrue(result["quality_passed"])
         self.assertIsNotNone(result["performance"])
+
+    def test_playcanvas_camera_authority_fixture_is_current(self) -> None:
+        completed = subprocess.run(
+            ["node", str(PLAYCANVAS_CAMERA_AUTHORITY_GENERATOR), "--check"],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+
+    def test_self_consistent_playcanvas_camera_mutations_are_rejected(self) -> None:
+        mutations = {
+            "position": lambda camera: camera["position"].__setitem__(
+                0, camera["position"][0] + 0.25
+            ),
+            "fov": lambda camera: camera.__setitem__(
+                "vertical_fov_radians", camera["vertical_fov_radians"] + 0.01
+            ),
+            "matrix": lambda camera: camera[
+                "shader_view_projection_matrix_webgpu_column_major"
+            ].__setitem__(7, camera["shader_view_projection_matrix_webgpu_column_major"][7] + 0.25),
+        }
+        for label, mutate_camera in mutations.items():
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as directory:
+                root = pathlib.Path(directory)
+                schedule = build_series(root, playcanvas_producer=True)
+                manifest_path = root / "pairs/pair-01/playcanvas/control-trace-0/manifest.json"
+                manifest_value = json.loads(manifest_path.read_text(encoding="utf-8"))
+                presentation_value = manifest_value["presentation_capture"]
+                for frame_value in presentation_value["frames"]:
+                    mutate_camera(frame_value["camera_receipt"])
+                mutate_camera(presentation_value["terminal_camera_receipt"])
+                mutate_camera(manifest_value["camera_receipt"])
+                capture = manifest_value["renderer_capture"]
+                mutate_camera(capture["camera_receipt"])
+                camera_json = json.dumps(capture["camera_receipt"], separators=(",", ":"))
+                capture["camera_receipt_json"] = camera_json
+                capture["camera_receipt_sha256"] = hashlib.sha256(
+                    camera_json.encode()
+                ).hexdigest()
+                write_json(manifest_path, manifest_value)
+
+                manifest_sha = file_sha256(manifest_path)
+                schedule_value = json.loads(schedule.read_text(encoding="utf-8"))
+                endpoint = schedule_value["pairs"][0]["playcanvas"]
+                endpoint["controls"][0]["manifest_sha256"] = manifest_sha
+                endpoint["images"][0]["producer_artifact"]["manifest_sha256"] = manifest_sha
+                endpoint["images"][0]["host_admission_join"][
+                    "producer_manifest_sha256"
+                ] = manifest_sha
+                throughput_path = root / endpoint["throughput"] / "manifest.json"
+                throughput = json.loads(throughput_path.read_text(encoding="utf-8"))
+                throughput["q1_comparison"]["control_bindings"][0][
+                    "manifest_sha256"
+                ] = manifest_sha
+                write_json(throughput_path, throughput)
+                write_json(schedule, schedule_value)
+                with self.assertRaisesRegex(
+                    ValidationError, "authoritative PlayCanvas camera receipt"
+                ):
+                    evaluate(schedule)
 
     def test_null_pairing_from_historical_artifact_is_rejected(self) -> None:
         self.mutate_manifest("pairs/pair-01/playcanvas/control-trace-0", lambda value: value.__setitem__("pairing", {"pair_id": None, "run_order": None, "position": None}))

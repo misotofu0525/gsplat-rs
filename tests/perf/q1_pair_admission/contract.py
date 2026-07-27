@@ -3,10 +3,22 @@
 from __future__ import annotations
 
 import math
+import pathlib
 from datetime import datetime
 from typing import Any
 
-from .common import array, canonical_sha256, fail, integer, number, obj, string, utc
+from .common import (
+    array,
+    canonical_sha256,
+    fail,
+    file_sha256,
+    integer,
+    load_json,
+    number,
+    obj,
+    string,
+    utc,
+)
 
 
 SCHEMA = "gsplat-q1-truck-paired-comparison/v1"
@@ -29,6 +41,43 @@ TRACE_FRAME_POSE_INTRINSICS_SHA256 = {
     0: "a008beb20adfdc24af484b25112503edb636e03010028aaeae812c3454527b46",
     1: "4b1d63381a662226712fd58cf5b3ea120fe5378beb73c228a509f55ec393f265",
 }
+
+
+def _load_playcanvas_camera_authority() -> dict[int, dict[str, Any]]:
+    module_directory = pathlib.Path(__file__).parent
+    fixture = load_json(
+        module_directory / "fixtures/playcanvas-truck-camera-receipts-v1.json",
+        "PlayCanvas camera authority fixture",
+    )
+    if fixture.get("schema") != "gsplat-playcanvas-camera-authority-fixture/v1":
+        fail("PlayCanvas camera authority fixture schema mismatch")
+    if fixture.get("source_trace") != {
+        "id": TRACE["id"],
+        "content_sha256": TRACE["sha256"],
+    }:
+        fail("PlayCanvas camera authority fixture does not bind the frozen Truck trace")
+    authority = obj(fixture, "authority", "PlayCanvas camera authority fixture")
+    authority_path = "tests/competitive/playcanvas/public/trace-camera.js"
+    if authority != {
+        "path": authority_path,
+        "sha256": file_sha256(module_directory.parents[2] / authority_path),
+        "oracle_export": "canonicalPlayCanvasCameraOracle",
+        "receipt_export": "createPlayCanvasCameraReceipt",
+    }:
+        fail("PlayCanvas camera authority fixture is stale; run its generator")
+    receipts = obj(fixture, "receipts", "PlayCanvas camera authority fixture")
+    if set(receipts) != {str(index) for index in TRACE["frame_indices"]}:
+        fail("PlayCanvas camera authority fixture does not cover the frozen Truck trace")
+    result: dict[int, dict[str, Any]] = {}
+    for index in TRACE["frame_indices"]:
+        receipt = receipts[str(index)]
+        if not isinstance(receipt, dict):
+            fail(f"PlayCanvas camera authority fixture receipt {index} must be an object")
+        result[index] = receipt
+    return result
+
+
+PLAYCANVAS_CAMERA_AUTHORITY = _load_playcanvas_camera_authority()
 WIDTH = 1920
 HEIGHT = 1080
 WARMUP = 20

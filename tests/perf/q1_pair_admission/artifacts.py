@@ -20,6 +20,7 @@ from .contract import (
     IMAGE_SCHEMA,
     MEASURED,
     PLAYCANVAS,
+    PLAYCANVAS_CAMERA_AUTHORITY,
     TRACE,
     TRACE_FRAME_POSE_INTRINSICS_SHA256,
     TRUCK,
@@ -99,7 +100,6 @@ GSPLAT_RGBA_RECEIPT_FIELDS = frozenset(
 PLAYCANVAS_RGBA_UNAVAILABLE = "playcanvas_renderer_same_present_rgba_receipt_unavailable"
 PLAYCANVAS_CAPTURE_SCHEMA = "gsplat-playcanvas-webgpu-renderer-capture/v1"
 PLAYCANVAS_CAPTURE_PRODUCER = "playcanvas_webgpu_copy_texture_to_buffer"
-PLAYCANVAS_CAMERA_SCHEMA = "gsplat-playcanvas-runtime-camera-receipt/v1"
 PLAYCANVAS_PRESENTATION_SCHEMA = "gsplat-playcanvas-presentation-capture/v1"
 PLAYCANVAS_MATERIALIZATION_SCHEMA = (
     "gsplat-playcanvas-renderer-capture-materialization/v1"
@@ -150,6 +150,58 @@ PLAYCANVAS_MATERIALIZATION_FIELDS = frozenset(
         "height",
     }
 )
+PLAYCANVAS_CAMERA_APPROX_SCALARS = frozenset(
+    {"vertical_fov_radians", "near_plane", "far_plane", "aspect"}
+)
+PLAYCANVAS_CAMERA_APPROX_VECTORS = frozenset(
+    {
+        "position",
+        "forward",
+        "up",
+        "view_matrix_column_major",
+        "projection_matrix_opengl_column_major",
+        "view_projection_matrix_opengl_column_major",
+        "shader_projection_matrix_webgpu_column_major",
+        "shader_view_projection_matrix_webgpu_column_major",
+    }
+)
+
+
+def _playcanvas_number_close(actual: Any, expected: Any, context: str) -> None:
+    if (
+        not isinstance(actual, (int, float))
+        or isinstance(actual, bool)
+        or not math.isfinite(actual)
+        or abs(float(actual) - float(expected))
+        > 2.0e-4 + 2.0e-5 * abs(float(expected))
+    ):
+        fail(f"{context} does not match the authoritative PlayCanvas camera receipt")
+
+
+def _validate_playcanvas_camera_receipt(
+    receipt: dict[str, Any], trace: int, context: str
+) -> None:
+    """Compare a producer receipt with the JS-generated Truck camera authority."""
+
+    expected = PLAYCANVAS_CAMERA_AUTHORITY[trace]
+    if set(receipt) != set(expected):
+        fail(f"{context} fields do not match the authoritative PlayCanvas receipt shape")
+    string(receipt, "phase", context)
+    for field in PLAYCANVAS_CAMERA_APPROX_SCALARS:
+        _playcanvas_number_close(receipt.get(field), expected[field], f"{context}.{field}")
+    for field in PLAYCANVAS_CAMERA_APPROX_VECTORS:
+        actual_vector = receipt.get(field)
+        expected_vector = expected[field]
+        if not isinstance(actual_vector, list) or len(actual_vector) != len(expected_vector):
+            fail(f"{context}.{field} does not match the authoritative PlayCanvas receipt shape")
+        for index, (actual, expected_value) in enumerate(zip(actual_vector, expected_vector)):
+            _playcanvas_number_close(
+                actual, expected_value, f"{context}.{field}[{index}]"
+            )
+    approximate = PLAYCANVAS_CAMERA_APPROX_SCALARS | PLAYCANVAS_CAMERA_APPROX_VECTORS
+    for field in set(expected) - approximate - {"phase"}:
+        if receipt.get(field) != expected[field]:
+            fail(f"{context}.{field} does not match the authoritative PlayCanvas camera receipt")
 
 
 def _decode_image(path: pathlib.Path, context: str) -> Any:
@@ -525,8 +577,11 @@ def _playcanvas_presentation_receipt(
         if not isinstance(frame, dict) or frame.get("trace_frame_index") != trace:
             fail(f"{context}.presentation_capture.frames[{index}] trace mismatch")
         camera = obj(frame, "camera_receipt", f"{context}.presentation_capture.frames[{index}]")
-        if camera.get("schema") != PLAYCANVAS_CAMERA_SCHEMA or camera.get("trace_frame_index") != trace:
-            fail(f"{context}.presentation_capture.frames[{index}] camera mismatch")
+        _validate_playcanvas_camera_receipt(
+            camera,
+            trace,
+            f"{context}.presentation_capture.frames[{index}].camera_receipt",
+        )
         before = integer(frame, "submit_version_before", f"{context}.presentation_capture.frames[{index}]")
         after = integer(frame, "submit_version_after", f"{context}.presentation_capture.frames[{index}]")
         calls = integer(frame, "queue_submit_call_count", f"{context}.presentation_capture.frames[{index}]")
@@ -534,6 +589,16 @@ def _playcanvas_presentation_receipt(
             fail(f"{context}.presentation_capture.frames[{index}] submit chain mismatch")
         prior_submit = after
     final_frame = presentation_frames[-1]
+    terminal_camera = obj(
+        presentation, "terminal_camera_receipt", f"{context}.presentation_capture"
+    )
+    _validate_playcanvas_camera_receipt(
+        terminal_camera,
+        trace,
+        f"{context}.presentation_capture.terminal_camera_receipt",
+    )
+    if terminal_camera != manifest.get("camera_receipt"):
+        fail(f"{context}.presentation_capture terminal camera owner mismatch")
     capture_value = presentation.get("renderer_capture")
     if not isinstance(capture_value, dict):
         partial_producer = (
@@ -552,8 +617,6 @@ def _playcanvas_presentation_receipt(
             != PLAYCANVAS_RGBA_UNAVAILABLE
         ):
             fail(f"{context} contains a partial PlayCanvas renderer producer")
-        if presentation.get("terminal_camera_receipt") != manifest.get("camera_receipt"):
-            fail(f"{context}.presentation_capture terminal camera owner mismatch")
         return {
             "trace_frame_index": trace,
             "renderer_rgba_status": "unavailable",
@@ -600,10 +663,13 @@ def _playcanvas_presentation_receipt(
     except json.JSONDecodeError as error:
         fail(f"{context}.renderer_capture.camera_receipt_json is invalid: {error}")
     camera = obj(capture, "camera_receipt", f"{context}.renderer_capture")
+    _validate_playcanvas_camera_receipt(
+        camera,
+        trace,
+        f"{context}.renderer_capture.camera_receipt",
+    )
     if (
         parsed_camera != camera
-        or camera.get("schema") != PLAYCANVAS_CAMERA_SCHEMA
-        or camera.get("trace_frame_index") != trace
         or camera != final_frame.get("camera_receipt")
     ):
         fail(f"{context}.renderer_capture camera does not bind the final presentation frame")
@@ -628,8 +694,6 @@ def _playcanvas_presentation_receipt(
     }
     if any(outer_drain.get(field) != expected for field, expected in expected_outer_drain.items()):
         fail(f"{context}.presentation_capture queue drain mismatch")
-    if presentation.get("terminal_camera_receipt") != manifest.get("camera_receipt"):
-        fail(f"{context}.presentation_capture terminal camera owner mismatch")
     source = obj(capture, "source", f"{context}.renderer_capture")
     for field, expected in {
         "dataset_id": TRUCK["id"],
