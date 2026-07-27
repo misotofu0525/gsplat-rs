@@ -220,14 +220,16 @@ machine-readable `Deferred` receipt with exact missing prerequisites and keeps
 `s2_s5_unlocked=false`; malformed local authority or hash drift is `Rejected`.
 It never synthesizes pages, images, counts, review approval, or endpoint runs.
 
-At this checkpoint, the committed Bonsai dataset manifest and both frozen
-trace identities are available. The exact Bonsai PLY, official `cameras.json`,
-approved authored-camera review, Apple M4 formal proxy-image artifact, and
-physical A065 formal proxy-image artifact are unavailable in this worktree.
-The formal collection preflight is therefore **Deferred** at those named
-boundaries. Builder and validator behavior can close locally, but no Bonsai
-proxy images or threshold result exist, aggregate S1 remains Active, and
-S2--S5 remain locked.
+At root integration, the committed Bonsai dataset manifest, both frozen trace
+identities, exact Bonsai PLY (`a16af6d8...0d273`, `1,244,819` complete-SH3
+splats) and official 292-entry `cameras.json` (`41e62374...05af3`) all passed
+the formal preflight from ignored, read-only worktree asset links. The assets
+are not committed or redistributed. The remaining prerequisites are the
+approved authored-camera review plus Apple M4 and physical A065 formal
+proxy-image artifacts. The formal collection preflight is therefore
+**Deferred** only at those three named boundaries. Builder and validator
+behavior can close locally, but no Bonsai proxy images or threshold result
+exist, aggregate S1 remains Active, and S2--S5 remain locked.
 
 ## Ordered implementation ledger
 
