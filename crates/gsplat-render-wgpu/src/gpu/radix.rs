@@ -1,11 +1,12 @@
-//! Cohesive stable full32 radix mechanics for portable and qualified GPU profiles.
+//! Cohesive stable radix mechanics for portable and qualified GPU profiles.
 //!
 //! This module intentionally knows nothing about projection, scene storage,
 //! presentation, or target-selection policy. It owns descending full32
-//! profiles for external-prefix portable 8x4-bit LSD passes, Direct and the
+//! profiles for external-prefix portable nibble-aligned LSD passes, Direct and the
 //! four-binding fallback 8x4-bit passes, and qualified Resident/ResidentVisible
-//! 4x8-bit passes. Every profile preserves stable source-ID order and leaves
-//! final keys and IDs in the original A buffers. The external-prefix profile
+//! 4x8-bit passes. Every profile preserves stable source-ID order. Full32
+//! profiles leave final keys and IDs in the original A buffers; external-prefix
+//! profiles expose the actual parity-selected final buffers. The external-prefix profile
 //! consumes `{key, source_id}[0..C)` plus one [`ExternalPrefixControl`];
 //! capacity is a reusable high-water mark and C may vary from zero through
 //! capacity every submission.
@@ -31,6 +32,55 @@ pub(crate) const EXTERNAL_RADIX_TILE_SIZE: u32 =
 pub(crate) const EXTERNAL_RADIX: u32 = 16;
 pub(crate) const EXTERNAL_RADIX_PASSES: u32 = 8;
 const EXTERNAL_RADIX_STORAGE_BINDINGS: u32 = 6;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ExternalPrefixRadixProfile {
+    first_shift: u32,
+    pass_count: u32,
+}
+
+impl ExternalPrefixRadixProfile {
+    pub(crate) const EXACT_FULL32: Self = Self {
+        first_shift: 0,
+        pass_count: EXTERNAL_RADIX_PASSES,
+    };
+    pub(crate) const CANDIDATE_STABLE20: Self = Self {
+        first_shift: 12,
+        pass_count: 5,
+    };
+
+    const fn new(first_shift: u32, pass_count: u32) -> Self {
+        Self {
+            first_shift,
+            pass_count,
+        }
+    }
+
+    fn validate(self) -> Result<Self, ResidentGpuError> {
+        let covered_bits = self
+            .pass_count
+            .checked_mul(4)
+            .and_then(|bits| self.first_shift.checked_add(bits));
+        if self.pass_count == 0
+            || !self.first_shift.is_multiple_of(4)
+            || covered_bits.is_none_or(|bits| bits > u32::BITS)
+        {
+            return Err(ResidentGpuError::GpuOrderInitialization(
+                "external-prefix radix profile must cover a non-empty nibble-aligned u32 range"
+                    .into(),
+            ));
+        }
+        Ok(self)
+    }
+
+    const fn shift_for_pass(self, pass: u32) -> u32 {
+        self.first_shift + pass * 4
+    }
+
+    const fn final_is_a(self) -> bool {
+        self.pass_count.is_multiple_of(2)
+    }
+}
 
 pub(crate) const FULL32_WORKGROUP_SIZE: u32 = 128;
 pub(crate) const FULL32_ITEMS_PER_THREAD: u32 = 8;
@@ -96,6 +146,15 @@ impl ExternalPrefixRadixBytePlan {
         capacity: u32,
         limits: &wgpu::Limits,
     ) -> Result<Self, ResidentGpuError> {
+        Self::for_capacity_with_profile(capacity, limits, ExternalPrefixRadixProfile::EXACT_FULL32)
+    }
+
+    fn for_capacity_with_profile(
+        capacity: u32,
+        limits: &wgpu::Limits,
+        profile: ExternalPrefixRadixProfile,
+    ) -> Result<Self, ResidentGpuError> {
+        let profile = profile.validate()?;
         let one_plane = u64::from(capacity)
             .checked_mul(WORD_BYTES)
             .ok_or(ResidentGpuError::AddressSpaceExceeded)?
@@ -116,7 +175,7 @@ impl ExternalPrefixRadixBytePlan {
         let scan_params = u64::from(scan_levels)
             .checked_mul(u64::from(uniform_stride))
             .ok_or(ResidentGpuError::AddressSpaceExceeded)?;
-        let pass_params = u64::from(EXTERNAL_RADIX_PASSES)
+        let pass_params = u64::from(profile.pass_count)
             .checked_mul(u64::from(uniform_stride))
             .ok_or(ResidentGpuError::AddressSpaceExceeded)?;
         let control = size_of::<ExternalPrefixControl>() as u64;
@@ -204,10 +263,11 @@ pub(crate) struct ExternalPrefixRadix {
     capacity_groups: u32,
     dispatch_limit: u32,
     pass_stride: u32,
+    profile: ExternalPrefixRadixProfile,
     keys_a: wgpu::Buffer,
-    _keys_b: wgpu::Buffer,
+    keys_b: wgpu::Buffer,
     ids_a: wgpu::Buffer,
-    _ids_b: wgpu::Buffer,
+    ids_b: wgpu::Buffer,
     prefix: wgpu::Buffer,
     control: wgpu::Buffer,
     scan: GpuPrefixScan,
@@ -220,10 +280,19 @@ pub(crate) struct ExternalPrefixRadix {
 
 impl ExternalPrefixRadix {
     pub(crate) fn new(device: &wgpu::Device, capacity: u32) -> Result<Self, ResidentGpuError> {
+        Self::new_with_profile(device, capacity, ExternalPrefixRadixProfile::EXACT_FULL32)
+    }
+
+    pub(crate) fn new_with_profile(
+        device: &wgpu::Device,
+        capacity: u32,
+        profile: ExternalPrefixRadixProfile,
+    ) -> Result<Self, ResidentGpuError> {
         Self::new_with_dispatch_limit(
             device,
             capacity,
             device.limits().max_compute_workgroups_per_dimension,
+            profile,
         )
     }
 
@@ -231,14 +300,17 @@ impl ExternalPrefixRadix {
         device: &wgpu::Device,
         capacity: u32,
         dispatch_limit: u32,
+        profile: ExternalPrefixRadixProfile,
     ) -> Result<Self, ResidentGpuError> {
+        let profile = profile.validate()?;
         let physical_limit = device.limits().max_compute_workgroups_per_dimension;
         if dispatch_limit == 0 || dispatch_limit > physical_limit {
             return Err(ResidentGpuError::DispatchLimitExceeded);
         }
         let limits = device.limits();
-        let byte_plan = ExternalPrefixRadixBytePlan::for_capacity(capacity, &limits)?
-            .validate_limits(&limits)?;
+        let byte_plan =
+            ExternalPrefixRadixBytePlan::for_capacity_with_profile(capacity, &limits, profile)?
+                .validate_limits(&limits)?;
         let capacity_groups = capacity.div_ceil(EXTERNAL_RADIX_TILE_SIZE).max(1);
         Dispatch2d::for_workgroups(capacity_groups, dispatch_limit)?;
         let one_key_plane = byte_plan.key_ping_pong / 2;
@@ -296,11 +368,10 @@ impl ExternalPrefixRadix {
         });
 
         let pass_stride = limits.min_uniform_buffer_offset_alignment.max(16);
-        let mut pass_params_bytes =
-            vec![0_u8; pass_stride as usize * EXTERNAL_RADIX_PASSES as usize];
-        for pass in 0..EXTERNAL_RADIX_PASSES {
+        let mut pass_params_bytes = vec![0_u8; pass_stride as usize * profile.pass_count as usize];
+        for pass in 0..profile.pass_count {
             let params = RadixPassParams {
-                shift: pass * 4,
+                shift: profile.shift_for_pass(pass),
                 capacity_count: capacity,
                 capacity_group_count: capacity_groups,
                 _pad: 0,
@@ -389,10 +460,11 @@ impl ExternalPrefixRadix {
             capacity_groups,
             dispatch_limit,
             pass_stride,
+            profile,
             keys_a,
-            _keys_b: keys_b,
+            keys_b,
             ids_a,
-            _ids_b: ids_b,
+            ids_b,
             prefix,
             control,
             scan,
@@ -408,7 +480,7 @@ impl ExternalPrefixRadix {
     /// The full capacity prefix is cleared before every histogram because the
     /// hierarchical scan intentionally remains a fixed-capacity operation.
     pub(crate) fn encode(&self, encoder: &mut wgpu::CommandEncoder) {
-        for pass in 0..EXTERNAL_RADIX_PASSES {
+        for pass in 0..self.profile.pass_count {
             encoder.clear_buffer(&self.prefix, 0, None);
             encode_indirect_compute(
                 encoder,
@@ -440,6 +512,10 @@ impl ExternalPrefixRadix {
         self.capacity_groups
     }
 
+    pub(crate) const fn profile(&self) -> ExternalPrefixRadixProfile {
+        self.profile
+    }
+
     pub(crate) fn input_keys(&self) -> &wgpu::Buffer {
         &self.keys_a
     }
@@ -453,11 +529,19 @@ impl ExternalPrefixRadix {
     }
 
     pub(crate) fn final_keys(&self) -> &wgpu::Buffer {
-        &self.keys_a
+        if self.profile.final_is_a() {
+            &self.keys_a
+        } else {
+            &self.keys_b
+        }
     }
 
     pub(crate) fn final_source_ids(&self) -> &wgpu::Buffer {
-        &self.ids_a
+        if self.profile.final_is_a() {
+            &self.ids_a
+        } else {
+            &self.ids_b
+        }
     }
 
     #[cfg(test)]
@@ -1482,6 +1566,26 @@ mod tests {
         pairs
     }
 
+    fn expected_profile_pairs(
+        keys: &[u32],
+        ids: &[u32],
+        profile: ExternalPrefixRadixProfile,
+    ) -> Vec<(u32, u32)> {
+        let covered_bits = profile.pass_count * 4;
+        let mask = if covered_bits == u32::BITS {
+            u32::MAX
+        } else {
+            ((1_u32 << covered_bits) - 1) << profile.first_shift
+        };
+        let mut pairs = keys
+            .iter()
+            .copied()
+            .zip(ids.iter().copied())
+            .collect::<Vec<_>>();
+        pairs.sort_by(|left, right| (right.0 & mask).cmp(&(left.0 & mask)));
+        pairs
+    }
+
     fn generated_case(count: usize, salt: u32) -> (Vec<u32>, Vec<u32>) {
         let mut keys = Vec::with_capacity(count);
         let mut ids = Vec::with_capacity(count);
@@ -1631,6 +1735,32 @@ mod tests {
                 + plan.pass_params
                 + plan.control,
         );
+
+        let candidate_plan = ExternalPrefixRadixBytePlan::for_capacity_with_profile(
+            capacity,
+            &limits,
+            ExternalPrefixRadixProfile::CANDIDATE_STABLE20,
+        )
+        .expect("candidate plan");
+        assert_eq!(
+            candidate_plan.pass_params,
+            5 * u64::from(limits.min_uniform_buffer_offset_alignment.max(16)),
+        );
+        assert_eq!(
+            plan.total_static - candidate_plan.total_static,
+            3 * u64::from(limits.min_uniform_buffer_offset_alignment.max(16)),
+        );
+    }
+
+    #[test]
+    fn radix_profiles_reject_empty_unaligned_or_overflowing_bit_ranges() {
+        assert!(ExternalPrefixRadixProfile::new(0, 0).validate().is_err());
+        assert!(ExternalPrefixRadixProfile::new(3, 5).validate().is_err());
+        assert!(ExternalPrefixRadixProfile::new(16, 5).validate().is_err());
+        assert_eq!(
+            ExternalPrefixRadixProfile::new(12, 5).validate(),
+            Ok(ExternalPrefixRadixProfile::CANDIDATE_STABLE20),
+        );
     }
 
     #[test]
@@ -1679,6 +1809,7 @@ mod tests {
             .map(|id| 9_000 + id)
             .collect::<Vec<_>>();
         let radix = ExternalPrefixRadix::new(&device, keys.len() as u32).expect("radix graph");
+        assert_eq!(radix.profile(), ExternalPrefixRadixProfile::EXACT_FULL32);
         let (actual, _) = run_and_read(&device, &queue, &radix, &keys, &ids);
         assert_eq!(actual, expected_pairs(&keys, &ids));
         let equal_ids = actual
@@ -1686,6 +1817,61 @@ mod tests {
             .filter_map(|&(key, id)| (key == 0x8000_0001).then_some(id))
             .collect::<Vec<_>>();
         assert_eq!(equal_ids, vec![9_005, 9_006]);
+    }
+
+    #[test]
+    fn candidate20_odd_pass_profile_selects_b_and_preserves_stable_pairs() {
+        let Some((device, queue)) = test_device() else {
+            return;
+        };
+        let profile = ExternalPrefixRadixProfile::CANDIDATE_STABLE20;
+        for count in [0_usize, 1, 1_025] {
+            let (mut keys, ids) = generated_case(count, 0x20);
+            for (index, key) in keys.iter_mut().enumerate() {
+                // Candidate20 observes only bits 12..31. Deliberately retain
+                // distinct low bits to prove that equal retained keys remain
+                // in producer order and that key/ID pairs stay intact.
+                *key = (*key & 0xffff_f000) | (index as u32 & 0x0fff);
+            }
+            if count > 4 {
+                keys[1] = 0x7654_3001;
+                keys[2] = 0x7654_3ffe;
+                keys[3] = 0x7654_3080;
+            }
+            let radix = ExternalPrefixRadix::new_with_profile(&device, count as u32, profile)
+                .expect("candidate20 radix graph");
+            assert_eq!(radix.profile(), profile);
+            let (actual, control) = run_and_read(&device, &queue, &radix, &keys, &ids);
+            assert_eq!(
+                actual,
+                expected_profile_pairs(&keys, &ids, profile),
+                "count={count}",
+            );
+            assert_eq!(control.count, count as u32);
+        }
+    }
+
+    #[test]
+    fn exact_default_still_orders_low_twelve_bits_across_eight_passes() {
+        let Some((device, queue)) = test_device() else {
+            return;
+        };
+        let keys = vec![0x7654_3001, 0x7654_3ffe, 0x7654_3080, 0x7654_3000];
+        let ids = vec![10, 11, 12, 13];
+        let radix =
+            ExternalPrefixRadix::new(&device, keys.len() as u32).expect("exact radix graph");
+        assert_eq!(radix.profile(), ExternalPrefixRadixProfile::EXACT_FULL32);
+        let (actual, _) = run_and_read(&device, &queue, &radix, &keys, &ids);
+        assert_eq!(actual, expected_pairs(&keys, &ids));
+        assert_eq!(
+            actual,
+            vec![
+                (0x7654_3ffe, 11),
+                (0x7654_3080, 12),
+                (0x7654_3001, 10),
+                (0x7654_3000, 13),
+            ],
+        );
     }
 
     #[test]
@@ -1712,9 +1898,13 @@ mod tests {
         };
         let dispatch_limit = 7_u32;
         let count = (dispatch_limit * EXTERNAL_RADIX_TILE_SIZE + 137) as usize;
-        let radix =
-            ExternalPrefixRadix::new_with_dispatch_limit(&device, count as u32, dispatch_limit)
-                .expect("2D radix graph");
+        let radix = ExternalPrefixRadix::new_with_dispatch_limit(
+            &device,
+            count as u32,
+            dispatch_limit,
+            ExternalPrefixRadixProfile::EXACT_FULL32,
+        )
+        .expect("2D radix graph");
         let (keys, ids) = generated_case(count, 91);
         let (actual, control) = run_and_read(&device, &queue, &radix, &keys, &ids);
         assert_eq!(control.active_group_count, 8);
