@@ -815,3 +815,32 @@ authorized run.
 
 No Exact/Candidate image gate or B1/B2/B3 performance decision is therefore
 available from these attempts. All three Balanced tasks remain **Active**.
+
+## Root-owned macOS/Metal B1--B3 image-gate evidence (2026-07-27)
+
+With fresh authorization, root reran the repaired one-shot path from clean
+commit `edbc656e04befd589b8e425f0874f98aebb7333d` on the Apple M4 Metal
+endpoint. The three independent `gsplat-balanced-image-gate/v1` suites passed
+their full-source SH3 Kitsune moving trace (`0 -> 1 -> 0`) at `1920x1080`:
+
+| Lane | Exact comparison | Retained suite |
+| --- | --- | --- |
+| B1 | `CandidateStable24` depth key | `target/benchmarks/balanced/b1-macos-metal-edbc656/` |
+| B2 | `CandidateAxes16` projected cache | `target/benchmarks/balanced/b2-macos-metal-edbc656/` |
+| B3 | `CandidateSigned8BandScale5` Resident SH | `target/benchmarks/balanced/b3-macos-metal-edbc656/` |
+
+Each retained suite reports three validated frames and two validated moving
+transitions, with complete source/decoded/encoded/resident/addressable
+membership of `279,199`. These are Metal/Kitsune image-integrity results only.
+They do not quantify performance, authorize a default change, qualify Android
+or WebGPU, or combine the three candidates. B1--B3 therefore remain **Active**.
+
+The same authorization also covered a Chrome/WebGPU retry. Its Wasm build and
+initial exact presentation completed, but the renderer then raised
+`CPU order ticket 1 is outside the CPU namespace`. The collector had retained
+an early `ready` snapshot before that terminal render failure, so this browser
+attempt is explicitly **Deferred**, not functional Web evidence. Root fixed the
+underlying ownership error in `a2437d4`: current-stats tickets are now kept out
+of CPU/GPU order telemetry, and the M4 smoke halts at its terminal receipt with
+an additional collector stability fence. The retained failed artifact is not
+rewritten and no browser retry has been performed after this repair.

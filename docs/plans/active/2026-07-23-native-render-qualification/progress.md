@@ -58,3 +58,18 @@ validated with `validate-full-quality-experiment.py --verify-inputs`.
 This establishes A065 native functional evidence for its exact scope. It does
 not accept Q1--Q3, qualify the Balanced candidate lanes, or substitute for the
 separately frozen matched-comparator protocol.
+
+## Root-owned M4 Balanced image-gate observations (2026-07-27)
+
+The M4 Metal B1/B2/B3 suites at commit
+`edbc656e04befd589b8e425f0874f98aebb7333d` passed their formal image gate for
+complete SH3 Kitsune at `1920x1080`, including the frozen moving trace. This is
+candidate image-integrity evidence, not a matched performance comparison and
+does not advance Q1--Q3. Timing/performance claims remain unavailable until
+the Q0 paired comparator protocol has retained matching native and comparator
+artifacts.
+
+The newly authorized Chrome/WebGPU attempt must also remain **Deferred**: it
+exposed a ticket-namespace defect after the collector observed its initial
+`ready` object. The repair at `a2437d4` has local verification only; no
+post-repair browser endpoint evidence exists yet.
