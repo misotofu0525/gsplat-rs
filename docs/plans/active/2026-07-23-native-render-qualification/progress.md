@@ -165,15 +165,40 @@ started only its legacy per-frame `current_stats_evidence_window`, rather than
 first producing the required untimed control artifact and then launching the
 content-linked `terminal_queue_throughput_window`. Its first warmup frame issued
 ticket 1; the next warmup frame correctly failed closed when that legacy mode
-requested another receipt before the ring was available. No 80-frame timing or
-replacement comparison was published, and the failed directory is retained
-without retry.
+observed `NotRequested`. At that point the launch mismatch alone was sufficient
+to reject the attempt; the later correctly orchestrated run proved that this
+shape is a legal deferred request, not evidence that one ticket exhausted the
+four-slot ring. No 80-frame timing or replacement comparison was published, and
+the failed directory is retained without retry.
 
-The remaining Web slice is therefore launch orchestration, not renderer tuning:
-the canonical profile must run the two explicit modes in order, validate the
-control artifact before starting throughput, bind the second run to the first
-manifest, and stop after either command fails. Only a newly reviewed exact SHA
-may become a separately authorized endpoint run.
+The launch-orchestration repair was independently accepted and root-integrated
+as `3c4e8da`. Its canonical profile now runs build -> untimed control -> bound
+terminal throughput, validates the control artifact before throughput, and
+atomically claims each output stage once. Doctor and command preview on the
+integrated SHA proved all prerequisites READY and printed the three frozen
+commands in the required order.
+
+The separately authorized `3c4e8da` endpoint at
+`target/qualification/q1-webgpu-truck-1080p-3c4e8da-attempt-1/` nevertheless
+ended terminal **Rejected** during control warmup member 1, again before any
+throughput sample. This second failure proved a different, narrower defect:
+the renderer deliberately permits one accepted current-stats request to remain
+pending across queue-boundary and formal Adaptive presentations, but the Web
+control harness incorrectly required every such presentation to carry the
+ticket immediately. Ticket 1 had already reached Ready and its readback slot
+had been recycled; the next request was accepted, then legally deferred as
+`NotRequested`. Existing renderer tests prove the same boundary -> formal ->
+observer sequence. No 80-frame throughput number exists for this attempt.
+
+The focused Web repair now retains the same request, camera revision and trace
+member across those auxiliary presentations, terminates any formal Adaptive
+ticket without counting that presentation as a control sample, and advances
+the logical 20+80 schedule only when the observer ticket is actually Issued.
+Auxiliary presentations are recorded separately and a monotonic timeout remains
+fail closed. The renderer, WASM bridge, public SDK, product policy and formal
+throughput window are unchanged. A new endpoint remains unavailable until this
+collector-only candidate receives fixed-SHA review; neither failed directory
+may be retried or overwritten.
 
 ## Q1 M4 native sustained collector mechanism (2026-07-27)
 
@@ -256,15 +281,13 @@ remains the sole drain counted in `N/FPS`.
 
 The root-integrated mechanism at `da4887d` was launched once through
 doctor -> command -> run and failed closed before warmup frame 2, with no
-performance artifact. The profile had invoked only the default
-`current_stats_evidence_window` collector under `sustained_window`; ticket 1
-was still occupying the renderer ring when frame 2 correctly reported
-`not_requested`. The retained failure is not retryable. The follow-up
-launchbook repair makes the profile explicitly two-stage: an untimed isolated
-current-stats control must validate and publish its full-quality suite before a
-separate sustained terminal-throughput collector can bind that exact control.
-No replacement Chrome endpoint was run by the repair candidate, so Q1
-throughput remains Deferred.
+performance artifact. Its retained failure is not retryable. The follow-up
+launchbook repair at `3c4e8da` correctly made the profile explicitly two-stage,
+but its separately authorized endpoint then exposed the control harness's
+incorrect immediate-Issued assumption described above. Both attempts are
+terminal Rejected and neither contains throughput evidence. Q1 throughput
+therefore remains Deferred while the focused auxiliary-presentation repair is
+reviewed.
 
 ## Q3 M4 SIMD microbenchmark checkpoint (2026-07-27)
 

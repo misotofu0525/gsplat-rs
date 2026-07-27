@@ -179,6 +179,121 @@ test("isolated protocol preserves one-ticket terminal progression", () => {
   assert.equal(evidence.frame_wall_source, "isolated_terminal_progression");
 });
 
+test("isolated control retains one logical trace step across deferred observer presentations", () => {
+  const schedule = createCurrentStatsSchedule({
+    protocol: "isolated_terminal",
+    warmupFrames: 0,
+    measuredFrames: 1,
+  });
+
+  schedule.noteDraw(1);
+  const traceStep = { frame: 0 };
+  schedule.beginRequest({ nowMs: 1, traceStep });
+  schedule.recordDeferredPresentation({
+    submission: "not_requested",
+    ticket: null,
+    cameraRevision: 7,
+    traceStep,
+    observedAtMonotonicMs: 1.25,
+  });
+  assert.equal(schedule.nextSubmissionIndex, 0);
+  assert.equal(schedule.requestOutstanding, true);
+  assert.equal(schedule.action, "draw");
+
+  schedule.noteDraw(2);
+  schedule.recordDeferredPresentation({
+    submission: "not_requested",
+    ticket: null,
+    cameraRevision: 7,
+    traceStep,
+    observedAtMonotonicMs: 2.25,
+  });
+  assert.equal(schedule.nextSubmissionIndex, 0);
+
+  schedule.noteDraw(3);
+  schedule.recordIssued({
+    ticket: 63,
+    stats: { ticket: 63, cameraRevision: 7 },
+    submittedAtMonotonicMs: 3.25,
+  });
+  terminate(schedule, 63, 4);
+
+  const evidence = schedule.evidence();
+  assert.equal(evidence.submitted_logical_count, 1);
+  assert.equal(evidence.terminal_logical_count, 1);
+  assert.equal(evidence.deferred_presentation_count, 2);
+  assert.equal(evidence.peak_deferred_presentations_before_issue, 2);
+  assert.equal(evidence.draw_count_at_completion, 3);
+});
+
+test("deferred observer presentations fail closed on invalid shape or finite timeout", () => {
+  const schedule = createCurrentStatsSchedule({
+    protocol: "isolated_terminal",
+    warmupFrames: 0,
+    measuredFrames: 1,
+    finalDrainTimeoutMs: 10,
+  });
+  schedule.noteDraw(1);
+  schedule.beginRequest({ nowMs: 1, traceStep: null });
+
+  assert.throws(
+    () => schedule.recordDeferredPresentation({
+      submission: "issued",
+      ticket: 1,
+      cameraRevision: 1,
+      traceStep: null,
+      observedAtMonotonicMs: 2,
+    }),
+    /exposed a ticket or non-empty submission/,
+  );
+  assert.throws(
+    () => schedule.recordDeferredPresentation({
+      submission: "not_requested",
+      ticket: null,
+      cameraRevision: 1,
+      traceStep: null,
+      observedAtMonotonicMs: 11,
+    }),
+    /did not issue within 10ms/,
+  );
+});
+
+test("deferred observer presentations preserve camera and logical member identity", () => {
+  const schedule = createCurrentStatsSchedule({
+    protocol: "isolated_terminal",
+    warmupFrames: 0,
+    measuredFrames: 1,
+  });
+  const traceStep = { frame: 0 };
+  schedule.noteDraw(1);
+  schedule.beginRequest({ nowMs: 1, traceStep });
+  schedule.recordDeferredPresentation({
+    submission: "not_requested",
+    ticket: null,
+    cameraRevision: 9,
+    traceStep,
+    observedAtMonotonicMs: 2,
+  });
+  assert.throws(
+    () => schedule.recordDeferredPresentation({
+      submission: "not_requested",
+      ticket: null,
+      cameraRevision: 10,
+      traceStep,
+      observedAtMonotonicMs: 3,
+    }),
+    /changed its camera revision/,
+  );
+  assert.throws(
+    () => schedule.recordIssued({
+      ticket: 64,
+      stats: { cameraRevision: 10 },
+      submittedAtMonotonicMs: 4,
+    }),
+    /changed its deferred camera revision/,
+  );
+});
+
 test("schedule admission rejects sustained or isolated labels that overclaim behavior", () => {
   const schedule = createCurrentStatsSchedule({
     protocol: "sustained_window",

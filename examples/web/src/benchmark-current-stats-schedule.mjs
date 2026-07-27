@@ -95,6 +95,14 @@ export function validateCurrentStatsScheduleEvidence({
     evidence.draw_count_at_completion,
     "draw count at completion",
   );
+  const deferredPresentations = nonNegativeInteger(
+    evidence.deferred_presentation_count,
+    "deferred current-stats presentation count",
+  );
+  const peakDeferredBeforeIssue = nonNegativeInteger(
+    evidence.peak_deferred_presentations_before_issue,
+    "peak deferred current-stats presentations before issue",
+  );
   positiveInteger(evidence.final_drain_timeout_ms, "final drain timeout");
 
   if (submitted !== expectedLogicalFrameCount
@@ -123,6 +131,11 @@ export function validateCurrentStatsScheduleEvidence({
       `current-stats final drain submitted a new draw: ${drawAtDrain} -> ${drawAtCompletion}`,
     );
   }
+  if (peakDeferredBeforeIssue > deferredPresentations) {
+    throw new Error(
+      "current-stats peak deferred presentations exceeds the total deferred count",
+    );
+  }
   return evidence;
 }
 
@@ -149,6 +162,8 @@ export function createCurrentStatsSchedule({
   let terminalLogicalCount = 0;
   let terminalCount = 0;
   let peakPendingCount = 0;
+  let deferredPresentationCount = 0;
+  let peakDeferredPresentationsBeforeIssue = 0;
   let drawCount = 0;
   let lastDrawAtMonotonicMs = null;
   let drawCountAtFinalDrainStart = null;
@@ -255,14 +270,65 @@ export function createCurrentStatsSchedule({
         logicalSubmissionIndex: priming ? null : nextLogicalSubmissionIndex,
         requestedAtMonotonicMs: nowMs,
         traceStep,
+        deferredPresentations: 0,
+        presentationCameraRevision: null,
       };
       return { ...request };
+    },
+
+    recordDeferredPresentation({
+      submission,
+      ticket,
+      cameraRevision,
+      traceStep,
+      observedAtMonotonicMs,
+    }) {
+      finiteMonotonicMs(
+        observedAtMonotonicMs,
+        "deferred current-stats presentation timestamp",
+      );
+      if (request === null) {
+        throw new Error(
+          "renderer deferred a current-stats presentation without an outstanding request",
+        );
+      }
+      if (submission !== "not_requested" || ticket !== null) {
+        throw new Error(
+          "deferred current-stats presentation exposed a ticket or non-empty submission",
+        );
+      }
+      if (!Number.isSafeInteger(cameraRevision) || cameraRevision < 0) {
+        throw new Error("deferred current-stats presentation has an invalid camera revision");
+      }
+      if (traceStep !== request.traceStep) {
+        throw new Error("deferred current-stats presentation changed its logical trace step");
+      }
+      if (request.presentationCameraRevision === null) {
+        request.presentationCameraRevision = cameraRevision;
+      } else if (request.presentationCameraRevision !== cameraRevision) {
+        throw new Error("deferred current-stats presentation changed its camera revision");
+      }
+      if (observedAtMonotonicMs - request.requestedAtMonotonicMs >= drainTimeout) {
+        throw new Error(
+          `renderer current-stats request did not issue within ${drainTimeout}ms`,
+        );
+      }
+      request.deferredPresentations += 1;
+      deferredPresentationCount += 1;
+      peakDeferredPresentationsBeforeIssue = Math.max(
+        peakDeferredPresentationsBeforeIssue,
+        request.deferredPresentations,
+      );
     },
 
     recordIssued({ ticket, stats, submittedAtMonotonicMs }) {
       finiteMonotonicMs(submittedAtMonotonicMs, "current-stats submit timestamp");
       if (request === null) {
         throw new Error("renderer current-stats ticket was issued without a request");
+      }
+      if (request.presentationCameraRevision !== null
+          && stats?.cameraRevision !== request.presentationCameraRevision) {
+        throw new Error("issued current-stats presentation changed its deferred camera revision");
       }
       if (!Number.isSafeInteger(ticket) || ticket <= 0) {
         throw new Error(`renderer current-stats issued invalid ticket=${ticket}`);
@@ -378,6 +444,8 @@ export function createCurrentStatsSchedule({
         issued_count: issuedTickets.size,
         terminal_count: terminalCount,
         peak_pending_count: peakPendingCount,
+        deferred_presentation_count: deferredPresentationCount,
+        peak_deferred_presentations_before_issue: peakDeferredPresentationsBeforeIssue,
         final_drain_started_after_logical_submit_count: submittedLogicalCount,
         draw_count_at_final_drain_start: drawCountAtFinalDrainStart,
         draw_count_at_completion: drawCountAtCompletion,

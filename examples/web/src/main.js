@@ -3235,6 +3235,77 @@ function recordBenchmark(stats) {
       );
       return;
     }
+    if (stats.currentStatsSubmission === "not_requested") {
+      try {
+        // An accepted observer request may be deferred across queue-boundary
+        // and formal Adaptive sample presentations. Keep the same logical
+        // trace step until the renderer publishes the requested ticket; these
+        // boundary frames belong to the untimed control ledger, not its 20+80
+        // logical samples.
+        currentStatsSchedule.recordDeferredPresentation({
+          submission: stats.currentStatsSubmission,
+          ticket: stats.currentStatsTicket,
+          cameraRevision: stats.cameraRevision,
+          traceStep: benchmark.currentTraceStep,
+          observedAtMonotonicMs: now,
+        });
+        if (stats.measurementUnsampledReason !== null
+            || (stats.submittedMeasurementTicket === null)
+              !== (stats.submittedMeasurementBackend === null)
+            || (stats.submittedMeasurementTicket !== null && stats.refreshSort !== true)) {
+          throw new Error(
+            "deferred current-stats presentation exposed an incomplete order terminal identity",
+          );
+        }
+        if (stats.submittedMeasurementTicket !== null) {
+          if (!trackBenchmarkOrderSubmission(benchmark, stats)) return;
+          benchmark.pendingOrderSample = {
+            ticket: stats.submittedMeasurementTicket,
+            stats,
+            traceStep: benchmark.currentTraceStep,
+            priming: false,
+            auxiliaryCurrentStats: true,
+            gpuProducerTicket: stats.gpuProducerMeasurementSubmission === "issued"
+              ? stats.gpuProducerMeasurementTicket
+              : null,
+          };
+        }
+        if (!trackBenchmarkProjectedSubmission(benchmark, stats)) return;
+        if (!trackBenchmarkGpuProducerSubmission(benchmark, stats)) return;
+        if (stats.projectedMeasurementSubmission === "issued") {
+          if (benchmark.pendingOrderSample) {
+            throw new Error(
+              "deferred current-stats presentation exposed simultaneous order and projected tickets",
+            );
+          }
+          benchmark.pendingProjectedSample = {
+            ticket: stats.projectedMeasurementTicket,
+            stats,
+            traceStep: benchmark.currentTraceStep,
+            auxiliaryCurrentStats: true,
+          };
+        }
+        if (stats.gpuProducerMeasurementSubmission === "issued"
+            && !benchmark.pendingOrderSample) {
+          if (benchmark.pendingProjectedSample) {
+            throw new Error(
+              "deferred current-stats presentation exposed simultaneous projected and producer tickets",
+            );
+          }
+          benchmark.pendingGpuProducerSample = {
+            ticket: stats.gpuProducerMeasurementTicket,
+            stats,
+            traceStep: benchmark.currentTraceStep,
+            auxiliaryCurrentStats: true,
+          };
+        }
+      } catch (error) {
+        failStrictBenchmarkForOrderEvidence(compactMessage(error));
+        return;
+      }
+      benchmark.presentedSubmissionCount += 1;
+      return;
+    }
     if (stats.currentStatsSubmission !== "issued") {
       failStrictBenchmarkForOrderEvidence(
         `presented Exact frame did not issue its requested current-stats ticket: ` +
@@ -3649,7 +3720,7 @@ function pollPendingBenchmarkReceipts(benchmark) {
   if (pendingOrder) benchmark.pendingOrderSample = null;
   else if (pendingProjected) benchmark.pendingProjectedSample = null;
   else benchmark.pendingGpuProducerSample = null;
-  if (pending.priming) return;
+  if (pending.priming || pending.auxiliaryCurrentStats) return;
   acceptBenchmarkFrame(
     benchmark,
     pending.stats,
