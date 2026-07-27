@@ -353,6 +353,7 @@ def write_canonical_benchmark_artifact(
     *,
     lane: str,
     capture_index: int,
+    trace_frame_index: int,
     pair_id: str,
     dataset: dict,
     trace: dict,
@@ -459,7 +460,7 @@ def write_canonical_benchmark_artifact(
                 {
                     "pair_id": pair_id,
                     "capture_index": capture_index,
-                    "trace_frame_index": capture_index,
+                    "trace_frame_index": trace_frame_index,
                     "camera": copy.deepcopy(camera),
                     "terminal_outcome": "presented",
                     "presentation": copy.deepcopy(presentation),
@@ -518,8 +519,12 @@ def write_canonical_benchmark_artifact(
     }
 
 
-def formal_manifest(root: pathlib.Path, *, viewport_generation: int = 1) -> dict:
-    manifest = base_manifest(root, viewport_generation=viewport_generation)
+def formal_manifest(
+    root: pathlib.Path, *, viewport_generation: int = 1, moving: bool = False
+) -> dict:
+    manifest = base_manifest(
+        root, viewport_generation=viewport_generation, moving=moving
+    )
     authority, dataset, trace = authority_receipt(
         "tests/perf/datasets/flowers.json",
         "tests/perf/trace/fixtures/quality/candidate-flowers-quality-1920x1080-v1.json",
@@ -595,6 +600,7 @@ def formal_manifest(root: pathlib.Path, *, viewport_generation: int = 1) -> dict
                     root,
                     lane="exact",
                     capture_index=capture_index,
+                    trace_frame_index=frame["trace_frame_index"],
                     pair_id=pair_id,
                     dataset=dataset,
                     trace=trace,
@@ -608,6 +614,7 @@ def formal_manifest(root: pathlib.Path, *, viewport_generation: int = 1) -> dict
                     root,
                     lane="candidate",
                     capture_index=capture_index,
+                    trace_frame_index=frame["trace_frame_index"],
                     pair_id=pair_id,
                     dataset=dataset,
                     trace=trace,
@@ -621,7 +628,7 @@ def formal_manifest(root: pathlib.Path, *, viewport_generation: int = 1) -> dict
 
 
 def candidate20_manifest(root: pathlib.Path) -> dict:
-    manifest = formal_manifest(root)
+    manifest = formal_manifest(root, moving=True)
     manifest["evidence_class"] = "balanced_quality_candidate"
     manifest["experiment"] = {
         "name": "b1-depth-key-candidate20",
@@ -642,25 +649,34 @@ def candidate20_manifest(root: pathlib.Path) -> dict:
                 benchmark_manifest_path.read_text(encoding="utf-8")
             )
             benchmark_manifest["exactness"].update(quality["lanes"][lane])
+            benchmark_manifest["renderer"].update(
+                {
+                    "count_semantics": "candidate_visible_contributor_issued_v1",
+                    "blend_mode": "sorted_alpha",
+                }
+            )
+            frames_path = artifact / "frames.jsonl"
+            benchmark_frames = [
+                json.loads(line)
+                for line in frames_path.read_text(encoding="utf-8").splitlines()
+            ]
+            for benchmark_frame in benchmark_frames:
+                benchmark_frame["contributor"] = benchmark_frame["visible"]
+                benchmark_frame["exact_contributor_compaction"] = False
             if lane == "candidate":
                 benchmark_manifest["renderer"][
                     "depth_precision_profile"
                 ] = "CandidateStable20"
-                frames_path = artifact / "frames.jsonl"
-                benchmark_frames = [
-                    json.loads(line)
-                    for line in frames_path.read_text(encoding="utf-8").splitlines()
-                ]
                 benchmark_frames[-1]["capture_depth_precision"] = copy.deepcopy(
                     frame[lane]["depth_precision"]
                 )
-                frames_path.write_text(
-                    "".join(
-                        json.dumps(benchmark_frame, sort_keys=True) + "\n"
-                        for benchmark_frame in benchmark_frames
-                    ),
-                    encoding="utf-8",
-                )
+            frames_path.write_text(
+                "".join(
+                    json.dumps(benchmark_frame, sort_keys=True) + "\n"
+                    for benchmark_frame in benchmark_frames
+                ),
+                encoding="utf-8",
+            )
             write_json(benchmark_manifest_path, benchmark_manifest)
             receipt["sha256"] = VALIDATOR.artifact_directory_sha256(artifact)
     return manifest
@@ -730,6 +746,75 @@ class BalancedImageGateTests(unittest.TestCase):
             manifest = candidate20_manifest(root)
             manifest["evidence_class"] = "formal_quality"
             with self.assertRaisesRegex(VALIDATOR.ValidationError, "forbidden"):
+                validate_manifest(root, manifest)
+
+    def test_candidate20_rejects_authored_views_without_temporal_return(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            manifest = candidate20_manifest(root)
+            manifest["camera"] = {
+                "mode": "authored_views",
+                "trace_frame_indices": [0, 1],
+            }
+            with self.assertRaisesRegex(
+                VALIDATOR.ValidationError, "balanced_quality_candidate camera"
+            ):
+                validate_manifest(root, manifest)
+
+    def test_candidate20_requires_vcd_count_semantics(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            manifest = candidate20_manifest(root)
+            receipt = manifest["frames"][0]["benchmark_artifacts"]["exact"]
+            artifact = root / receipt["path"]
+            benchmark_manifest_path = artifact / "manifest.json"
+            benchmark_manifest = json.loads(
+                benchmark_manifest_path.read_text(encoding="utf-8")
+            )
+            del benchmark_manifest["renderer"]["count_semantics"]
+            write_json(benchmark_manifest_path, benchmark_manifest)
+            receipt["sha256"] = VALIDATOR.artifact_directory_sha256(artifact)
+            with self.assertRaisesRegex(VALIDATOR.ValidationError, "count_semantics"):
+                validate_manifest(root, manifest)
+
+    def test_candidate20_requires_sorted_alpha_benchmark_execution(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            manifest = candidate20_manifest(root)
+            receipt = manifest["frames"][0]["benchmark_artifacts"]["candidate"]
+            artifact = root / receipt["path"]
+            benchmark_manifest_path = artifact / "manifest.json"
+            benchmark_manifest = json.loads(
+                benchmark_manifest_path.read_text(encoding="utf-8")
+            )
+            benchmark_manifest["renderer"]["blend_mode"] = "weighted_oit"
+            write_json(benchmark_manifest_path, benchmark_manifest)
+            receipt["sha256"] = VALIDATOR.artifact_directory_sha256(artifact)
+            with self.assertRaisesRegex(VALIDATOR.ValidationError, "blend_mode"):
+                validate_manifest(root, manifest)
+
+    def test_candidate20_requires_contributor_and_compaction_on_every_frame(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            manifest = candidate20_manifest(root)
+            receipt = manifest["frames"][0]["benchmark_artifacts"]["candidate"]
+            artifact = root / receipt["path"]
+            frames_path = artifact / "frames.jsonl"
+            benchmark_frames = [
+                json.loads(line)
+                for line in frames_path.read_text(encoding="utf-8").splitlines()
+            ]
+            del benchmark_frames[0]["contributor"]
+            del benchmark_frames[0]["exact_contributor_compaction"]
+            frames_path.write_text(
+                "".join(
+                    json.dumps(benchmark_frame, sort_keys=True) + "\n"
+                    for benchmark_frame in benchmark_frames
+                ),
+                encoding="utf-8",
+            )
+            receipt["sha256"] = VALIDATOR.artifact_directory_sha256(artifact)
+            with self.assertRaisesRegex(VALIDATOR.ValidationError, "requires contributor"):
                 validate_manifest(root, manifest)
 
     def test_valid_authored_views_recompute_rgba_metrics(self) -> None:

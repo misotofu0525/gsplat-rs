@@ -866,7 +866,7 @@ def validate_resolution(
 
 
 def validate_camera(
-    manifest: dict[str, Any], trace: dict[str, Any]
+    manifest: dict[str, Any], trace: dict[str, Any], evidence_class: str
 ) -> tuple[str, list[int]]:
     camera = require_object(manifest, "camera", "manifest")
     mode = require_string(camera, "mode", "manifest.camera")
@@ -884,6 +884,8 @@ def validate_camera(
         fail("authored_views quality capture must cover trace frames 0 and 1")
     if mode == "moving_sequence" and indices != [0, 1, 0]:
         fail("moving_sequence quality capture must be exactly trace frames 0 -> 1 -> 0")
+    if evidence_class == "balanced_quality_candidate" and mode != "moving_sequence":
+        fail("balanced_quality_candidate camera must use moving_sequence 0 -> 1 -> 0")
     trace_frames = require_array(trace, "frames", "authoritative camera trace")
     if len(trace_frames) < 2:
         fail("authoritative camera trace must contain frozen frames 0 and 1")
@@ -1060,6 +1062,7 @@ def validate_formal_benchmark_artifacts(
     camera_receipt: dict[str, Any],
     context: str,
     experiment: dict[str, Any],
+    evidence_class: str,
 ) -> None:
     pair = require_object(raw_frame, "benchmark_artifacts", context)
     pair_context = f"{context}.benchmark_artifacts"
@@ -1101,6 +1104,17 @@ def validate_formal_benchmark_artifacts(
         run_ids.append(run_id)
         unavailable = set(benchmark_manifest["unavailable_fields"])
         benchmark_renderer = benchmark_manifest["renderer"]
+        if evidence_class == "balanced_quality_candidate":
+            if benchmark_renderer.get("count_semantics") != (
+                "candidate_visible_contributor_issued_v1"
+            ):
+                fail(
+                    f"{lane_context} benchmark renderer.count_semantics must prove V/C/D"
+                )
+            if benchmark_renderer.get("blend_mode") != "sorted_alpha":
+                fail(
+                    f"{lane_context} benchmark renderer.blend_mode must equal sorted_alpha"
+                )
         benchmark_frames = benchmark_validator.load_frames(
             artifact_directory / "frames.jsonl",
             run_id,
@@ -1312,6 +1326,7 @@ def validate_frames(
                 camera_receipt,
                 context,
                 experiment,
+                evidence_class,
             )
         exact = load_image(
             root,
@@ -1409,7 +1424,7 @@ def validate(path: pathlib.Path) -> ValidationResult:
     authority = validate_authority(manifest, evidence_class)
     validate_exactness(manifest, authority, experiment)
     dimensions = validate_resolution(manifest, authority.trace, evidence_class)
-    mode, trace_indices = validate_camera(manifest, authority.trace)
+    mode, trace_indices = validate_camera(manifest, authority.trace, evidence_class)
     frames = validate_frames(
         manifest,
         manifest_path.parent,
