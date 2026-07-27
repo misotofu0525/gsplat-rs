@@ -7,7 +7,14 @@ DIST_DIR="$SDK_DIR/dist"
 WASM_DIR="$DIST_DIR/wasm"
 WASM_PATH="$ROOT_DIR/target/wasm32-unknown-unknown/release/gsplat_web.wasm"
 
-if ! command -v wasm-bindgen >/dev/null 2>&1; then
+WASM_BINDGEN_BIN="${WASM_BINDGEN_BIN:-}"
+if [[ -z "$WASM_BINDGEN_BIN" ]]; then
+  WASM_BINDGEN_BIN="$(command -v wasm-bindgen 2>/dev/null || true)"
+fi
+if [[ -z "$WASM_BINDGEN_BIN" && -x "${CARGO_HOME:-$HOME/.cargo}/bin/wasm-bindgen" ]]; then
+  WASM_BINDGEN_BIN="${CARGO_HOME:-$HOME/.cargo}/bin/wasm-bindgen"
+fi
+if [[ -z "$WASM_BINDGEN_BIN" ]]; then
   echo "wasm-bindgen CLI 0.2.121 is required: cargo install wasm-bindgen-cli --version 0.2.121 --locked" >&2
   exit 1
 fi
@@ -17,7 +24,7 @@ cargo build -p gsplat-web --target wasm32-unknown-unknown --release
 
 rm -rf "$DIST_DIR"
 mkdir -p "$WASM_DIR"
-wasm-bindgen "$WASM_PATH" --target web --out-dir "$WASM_DIR"
+"$WASM_BINDGEN_BIN" "$WASM_PATH" --target web --out-dir "$WASM_DIR"
 cp "$SDK_DIR/src/index.js" "$DIST_DIR/index.js"
 cp "$SDK_DIR/src/index.d.ts" "$DIST_DIR/index.d.ts"
 

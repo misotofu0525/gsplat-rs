@@ -33,3 +33,28 @@ defaults, or the Balanced and Scalable packages.
 - Execution: no native, browser or device product benchmark was run by Q0.
 - Next: Q1--Q3 start only from the accepted contract and their own declared
   prerequisites.
+
+## Root-owned A065 formal functional artifact (2026-07-27)
+
+One authorized physical-device run at root SHA
+`95d2ccdc77adaf9bce9b0733a851939dc161fd9f` completed and was independently
+validated with `validate-full-quality-experiment.py --verify-inputs`.
+
+- Endpoint: Nothing A065 / Snapdragon SM8475 / Android 15 / Vulkan; thermal
+  status before and after the run was `0`.
+- Workload: complete SH3 Kitsune (`279,199` source, decoded and resident
+  splats), Packed `SortedAlpha` with CPU ordering, `2412x1080`, both frozen
+  trace views, 10 warmup and 20 measured frames.
+- Evidence: repository-local formal suite
+  `target/android-sort-benchmarks/verification-a065-95d2ccdc77ad/`, including
+  the native-Surface PNG, receipt, logcat, per-run artifact and immutable
+  input identities. The full-quality validator reported one expected and one
+  rendered run, with no capacity rejection or missing artifact.
+- Diagnostic only: the retained run reports `avg_call_ms=7.236`,
+  `avg_frame_ms=7.859`, CPU preprocess `0.769 ms` and CPU sort `2.566 ms`.
+  It is a 20-frame single-policy functional ledger, not a CPU/GPU comparison,
+  competitor comparison, or release-performance claim.
+
+This establishes A065 native functional evidence for its exact scope. It does
+not accept Q1--Q3, qualify the Balanced candidate lanes, or substitute for the
+separately frozen matched-comparator protocol.

@@ -790,3 +790,28 @@ The retained failed B1 evidence was not deleted or modified. No B1/B2/B3,
 Chrome or ADB collection was rerun, so macOS/Metal B1 acceptance and all other
 device/browser/endpoint qualification remain **Deferred** pending separate
 authorization.
+
+## Root-owned endpoint execution update (2026-07-27)
+
+The first authorized B1 macOS/Metal formal collection remains a terminal
+**Deferred** attempt, not a Balanced result: it reached the outer validator and
+was rejected only because the then-current validator incorrectly required the
+valid initial `viewport_generation = 0` to be positive. Its failure directory
+is retained above. The later validator repair was independently tested and
+fast-forwarded as `95d2ccd`; it does not rewrite that attempt. Under the
+one-shot protocol, B1 must receive fresh authorization before it can be run
+again. B2 and B3 were deliberately not started after the shared validator
+fault was found, so they have no endpoint result yet.
+
+The separate Chrome/WebGPU functional smoke was attempted once at
+`95d2ccd` and stopped before WASM compilation: the build entrypoint only
+searched its inherited `PATH`, despite the bootstrap doctor having verified
+the locked `wasm-bindgen` CLI in the standard Cargo bin directory. This is a
+launch-path failure, not browser rendering, image, or performance evidence;
+the attempt is retained as **Deferred** and is not retried in this execution
+window. The entrypoints now resolve an explicit `WASM_BINDGEN_BIN`, then
+`PATH`, then `${CARGO_HOME:-$HOME/.cargo}/bin/wasm-bindgen` for a future newly
+authorized run.
+
+No Exact/Candidate image gate or B1/B2/B3 performance decision is therefore
+available from these attempts. All three Balanced tasks remain **Active**.
