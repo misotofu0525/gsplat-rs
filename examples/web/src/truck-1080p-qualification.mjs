@@ -53,6 +53,10 @@ function requireExact(actual, expected, field) {
   if (actual !== expected) fail(`${field} must equal ${JSON.stringify(expected)}, observed ${JSON.stringify(actual)}`);
 }
 
+export function optionalEnvironmentValue(value) {
+  return typeof value === "string" && value.trim().length > 0 ? value : null;
+}
+
 export function validateTruck1080pCollectorConfig(config) {
   const expected = TRUCK_1080P_QUALIFICATION;
   requireExact(config.qualificationName, expected.name, "qualification name");

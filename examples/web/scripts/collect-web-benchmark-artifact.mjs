@@ -45,6 +45,7 @@ import {
 import {
   TRUCK_1080P_QUALIFICATION,
   claimTruck1080pOutputRoot,
+  optionalEnvironmentValue,
   publishValidatedTruck1080pSuite,
   validateTruck1080pCleanWorkingTree,
   validateTruck1080pCollectorConfig,
@@ -174,7 +175,7 @@ async function admitTruck1080pQualification() {
     cameraTraceUrl: process.env.GSPLAT_CAMERA_TRACE_URL ?? null,
     cameraTraceSequence: process.env.GSPLAT_CAMERA_TRACE_SEQUENCE === '1',
     cameraTraceLoops: Number(process.env.GSPLAT_CAMERA_TRACE_LOOPS ?? 0),
-    cameraFrame: process.env.GSPLAT_CAMERA_FRAME ?? null,
+    cameraFrame: optionalEnvironmentValue(process.env.GSPLAT_CAMERA_FRAME),
     cameraFrameIndices: (process.env.GSPLAT_CAMERA_FRAME_INDICES ?? '')
       .split(',')
       .filter((value) => value.length > 0)

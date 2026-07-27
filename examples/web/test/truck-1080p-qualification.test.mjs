@@ -11,6 +11,7 @@ import {
   TRUCK_1080P_QUALIFICATION,
   buildTruck1080pFullQualitySuite,
   claimTruck1080pOutputRoot,
+  optionalEnvironmentValue,
   publishValidatedTruck1080pSuite,
   validateTruck1080pCleanWorkingTree,
   validateTruck1080pCollectorConfig,
@@ -41,6 +42,13 @@ function validConfig() {
     cameraFrameIndices: [...expected.trace.frame_indices],
   };
 }
+
+test("optional fixed camera environment treats an explicit empty override as absent", () => {
+  assert.equal(optionalEnvironmentValue(undefined), null);
+  assert.equal(optionalEnvironmentValue(""), null);
+  assert.equal(optionalEnvironmentValue("  "), null);
+  assert.equal(optionalEnvironmentValue("0"), "0");
+});
 
 test("Truck 1080p collector admission freezes the full formal configuration", () => {
   assert.equal(
