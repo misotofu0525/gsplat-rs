@@ -1,0 +1,95 @@
+{
+  "schema": "gsplat-s1-authored-camera-review/v1",
+  "decision": "Accepted",
+  "scope": "camera_composition_only",
+  "s1_promotion": false,
+  "endpoint_qualification": false,
+  "reviewed_at_utc": "2026-07-27T07:31:47Z",
+  "reviewer": "root_task_visual_review",
+  "build": {
+    "repository_commit": "0026923d7a712ffcf953acef22db21718418e0d6",
+    "working_tree_dirty": false,
+    "binary": "target/release/desktop-example",
+    "binary_sha256": "c35d1b11912f1855294a44c08139d10a41ea71b6bf2662c7173e457a211c4ffa"
+  },
+  "source": {
+    "path": "tests/datasets/external/inria_3dgs/bonsai/point_cloud.ply",
+    "sha256": "a16af6d8815498ffbf9eb5d5ee93f5bcc9dca34c4e3eb6f7a796ef9e97c0d273",
+    "bytes": 308716644,
+    "splat_count": 1244819,
+    "sh_degree": 3,
+    "membership": "all",
+    "geometry_path": "packed_atlas",
+    "order_backend": "cpu"
+  },
+  "camera_metadata": {
+    "path": "tests/datasets/external/inria_3dgs/bonsai/cameras.json",
+    "sha256": "41e623748141d5b1a292c2bcafbf9e897a3876f90c11a14618e9ac6190b05af3",
+    "bytes": 116695,
+    "entry_count": 292,
+    "selected_camera_ids": [0, 146]
+  },
+  "traces": [
+    {
+      "path": "tests/perf/trace/fixtures/quality/candidate-bonsai-quality-1920x1080-v1.json",
+      "file_sha256": "ea7f09ca4cec606f153308f8c9ae707eff96efabd897752e5e462e9b76fe81a6",
+      "content_sha256": "8f0c419cdd090bc93bdfd46d5876f954c46b6d189e4f72d34c8a0fa475a87ef3",
+      "display": { "width": 1920, "height": 1080 },
+      "frames": [
+        {
+          "frame_index": 0,
+          "source_camera_id": 0,
+          "image": "target/scalable-s1-camera-review-0026923/view0.png",
+          "image_sha256": "40c8b84cc0ac691795c9d0a9789c90d55ef1fc0ae24231f16d3fdd3b078dd936",
+          "visible": 901773,
+          "drawn": 901773
+        },
+        {
+          "frame_index": 1,
+          "source_camera_id": 146,
+          "image": "target/scalable-s1-camera-review-0026923/view1.png",
+          "image_sha256": "d50f7fb3c920b5fa94dc4c1a0c795e938d97e8545aa875788d3632c553d41230",
+          "visible": 1054823,
+          "drawn": 1054823
+        }
+      ]
+    },
+    {
+      "path": "tests/perf/trace/fixtures/quality/candidate-bonsai-quality-2412x1080-v1.json",
+      "file_sha256": "af70f0291197ad6e13b2dc1ab7bce77588a1d497db26721d039b1e30655a4d53",
+      "content_sha256": "b189dc06ac35f0a4e3805b5f53d7caab5a40c3e06e042836c848cb4aa185975f",
+      "display": { "width": 2412, "height": 1080 },
+      "frames": [
+        {
+          "frame_index": 0,
+          "source_camera_id": 0,
+          "image": "target/scalable-s1-camera-review-0026923/view0-2412x1080.png",
+          "image_sha256": "4452bd18bdf2f19a0339a1233c37e12e50f20d47ccabbe60520fd528e85e5a62",
+          "visible": 901773,
+          "drawn": 901773
+        },
+        {
+          "frame_index": 1,
+          "source_camera_id": 146,
+          "image": "target/scalable-s1-camera-review-0026923/view1-2412x1080.png",
+          "image_sha256": "920fa86e8f322bced6f80b373125d828a9669528f5536187dece43c3dcc150a1",
+          "visible": 1054823,
+          "drawn": 1054823
+        }
+      ]
+    }
+  ],
+  "review": {
+    "camera_poses_match_selected_training_views": true,
+    "subject_is_present_and_readable_in_all_frames": true,
+    "orientation_is_correct": true,
+    "no_auto_framing_or_camera_substitution": true,
+    "no_obvious_subject_clipping": true,
+    "usable_as_exact_reference_compositions": true
+  },
+  "limitations": [
+    "The retained PNGs are offscreen full-source Exact composition evidence, not native Surface presentation evidence.",
+    "This review removes only the manual camera-composition prerequisite; M4 Metal and physical A065 proxy image gates remain required.",
+    "The ignored PNGs are local evaluation assets and are not redistributed."
+  ]
+}

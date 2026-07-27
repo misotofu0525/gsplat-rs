@@ -220,16 +220,28 @@ machine-readable `Deferred` receipt with exact missing prerequisites and keeps
 `s2_s5_unlocked=false`; malformed local authority or hash drift is `Rejected`.
 It never synthesizes pages, images, counts, review approval, or endpoint runs.
 
-At root integration, the committed Bonsai dataset manifest, both frozen trace
+At the pre-review root checkpoint, the committed Bonsai dataset manifest, both frozen trace
 identities, exact Bonsai PLY (`a16af6d8...0d273`, `1,244,819` complete-SH3
 splats) and official 292-entry `cameras.json` (`41e62374...05af3`) all passed
 the formal preflight from ignored, read-only worktree asset links. The assets
-are not committed or redistributed. The remaining prerequisites are the
+are not committed or redistributed. At that checkpoint the remaining prerequisites were the
 approved authored-camera review plus Apple M4 and physical A065 formal
 proxy-image artifacts. The formal collection preflight is therefore
-**Deferred** only at those three named boundaries. Builder and validator
+**Deferred** at those three named boundaries. Builder and validator
 behavior can close locally, but no Bonsai proxy images or threshold result
 exist, aggregate S1 remains Active, and S2--S5 remain locked.
+
+The root task subsequently completed the separately required authored-camera
+review at clean commit `0026923`. Full-source SH3 Packed Exact offscreen
+references for official training-camera IDs `0` and `146` were rendered and
+inspected at both frozen `1920x1080` and `2412x1080` trace displays. All four
+compositions retain a readable, correctly oriented subject without automatic
+framing, camera substitution or obvious clipping. The immutable review receipt
+is [s1-bonsai-camera-review.json](s1-bonsai-camera-review.json); its PNGs remain
+ignored local-research artifacts. This accepts only the camera-composition
+prerequisite, not an endpoint or proxy-quality gate. S1 is now Deferred only on
+the M4 Metal and physical A065 proxy image artifacts after the corrected formal
+authoring candidate is integrated.
 
 ## Ordered implementation ledger
 
