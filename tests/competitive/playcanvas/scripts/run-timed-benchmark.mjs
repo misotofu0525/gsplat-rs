@@ -1,5 +1,6 @@
 import { execFile as execFileCallback } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
+import { createReadStream } from 'node:fs';
 import { access, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import os from 'node:os';
@@ -29,8 +30,22 @@ import {
   browserSessionConfig,
   classifyBrowserFailure,
   isValidDevicePixelRatio,
+  LOCAL_BROWSER_ARGS,
   openBrowserSession
 } from './browser-session.mjs';
+import {
+  assertQ1Invocation,
+  loadQ1ProducerConfig,
+  materializeQ1BuildArtifacts,
+  parseMacPowerReceipt,
+  parseMacThermalReceipt,
+  q1BrowserProcessArgsReceipt,
+  q1EnvironmentFields,
+  q1ManifestFields,
+  q1PairingFields,
+  q1RendererCaptureEnabled,
+  verifyQ1BuildArtifacts
+} from './q1-producer.mjs';
 import { startServer } from './server.mjs';
 import { materializeRendererCapture } from './renderer-capture-artifact.mjs';
 
@@ -89,6 +104,20 @@ const outputRoot = resolve(
     )
 );
 const sessionConfig = browserSessionConfig(process.env);
+const headless = process.env.HEADLESS !== '0';
+const q1Producer = await loadQ1ProducerConfig(process.env, outputRoot);
+assertQ1Invocation(q1Producer, {
+  qualificationName,
+  cameraMode,
+  warmupFrames,
+  measuredFrames,
+  captureTraceFrame,
+  viewportWidth,
+  viewportHeight,
+  sessionMode: sessionConfig.mode,
+  headless
+});
+const rendererCaptureEnabled = q1RendererCaptureEnabled(q1Producer);
 const chromeCandidates = [
   process.env.CHROME_PATH,
   '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
@@ -109,6 +138,30 @@ async function findChrome() {
 
 function sha256(value) {
   return createHash('sha256').update(value).digest('hex');
+}
+
+async function fileSha256(path) {
+  const hash = createHash('sha256');
+  for await (const chunk of createReadStream(path)) hash.update(chunk);
+  return hash.digest('hex');
+}
+
+async function observeMacHostState(phase) {
+  if (!q1Producer) return null;
+  if (process.platform !== 'darwin') {
+    throw new Error('Q1 PlayCanvas producer currently requires the admitted macOS endpoint');
+  }
+  const [power, thermal, osBuild] = await Promise.all([
+    execFile('pmset', ['-g', 'batt']),
+    execFile('pmset', ['-g', 'therm']),
+    execFile('sw_vers', ['-buildVersion'])
+  ]);
+  return {
+    phase,
+    powerSource: parseMacPowerReceipt(power.stdout),
+    thermal: parseMacThermalReceipt(thermal.stdout),
+    osBuild: osBuild.stdout.trim()
+  };
 }
 
 function distribution(frames, metric) {
@@ -160,7 +213,19 @@ function sustainedManifestReceipt(receipt) {
   };
 }
 
-await mkdir(outputRoot, { recursive: true });
+const repositoryCommit = (
+  await execFile('git', ['rev-parse', 'HEAD'], { cwd: repoRoot })
+).stdout.trim();
+const dirty = (
+  await execFile('git', ['status', '--porcelain'], { cwd: repoRoot })
+).stdout.trim().length > 0;
+const expectedEngine = JSON.parse(
+  await readFile(resolve(harnessRoot, 'expected-engine.json'), 'utf8')
+);
+if (q1Producer && dirty) throw new Error('Q1 PlayCanvas producer requires a clean working tree');
+if (q1Producer) await mkdir(outputRoot);
+else await mkdir(outputRoot, { recursive: true });
+const q1BuildArtifacts = await materializeQ1BuildArtifacts(q1Producer, harnessRoot);
 const chrome = sessionConfig.mode === 'local-launch' ? await findChrome() : null;
 if (sessionConfig.mode === 'local-launch' && !chrome) {
   const blocker = { status: 'blocked', reason: 'no supported Chrome/Chromium executable found', candidates: chromeCandidates };
@@ -170,10 +235,14 @@ if (sessionConfig.mode === 'local-launch' && !chrome) {
 }
 
 const startedAtUtc = new Date().toISOString();
+const q1HostPre = await observeMacHostState('pre_browser_session');
+const browserExecutableSha256 = q1Producer ? await fileSha256(chrome) : null;
+let browserProcessArgsReceipt = null;
 const { server, port } = await startServer(sessionConfig.serverPort);
 let browserSession;
 let browser;
 let page;
+let serverClosed = false;
 const browserLog = [];
 let expectedAndroidReceipt = null;
 let preAndroidReceipt = null;
@@ -219,21 +288,31 @@ try {
     puppeteer,
     config: sessionConfig,
     executablePath: chrome,
-    headless: process.env.HEADLESS !== '0',
+    headless,
     viewport: { width: viewportWidth, height: viewportHeight, deviceScaleFactor: 1 }
   });
   ({ browser, page } = browserSession);
+  if (q1Producer) {
+    const processReceipt = browser.process();
+    browserProcessArgsReceipt = q1BrowserProcessArgsReceipt({
+      spawnfile: processReceipt?.spawnfile,
+      spawnargs: processReceipt?.spawnargs,
+      expectedExecutable: chrome,
+      requiredArgs: LOCAL_BROWSER_ARGS
+    });
+  }
   page.on('console', (message) => browserLog.push(`${message.type()}: ${message.text()}`));
   page.on('pageerror', (error) => browserLog.push(`pageerror: ${error.stack ?? error.message}`));
   const qualificationQuery = qualification ? `&qualification=${encodeURIComponent(qualificationName)}` : '';
   const captureTraceFrameQuery = captureTraceFrame === null
     ? ''
     : `&capture_trace_frame=${captureTraceFrame}`;
+  const rendererCaptureQuery = `&renderer_capture=${rendererCaptureEnabled ? 1 : 0}`;
   await page.goto(
     `http://127.0.0.1:${port}/?benchmark=1${qualificationQuery}` +
       `&trace_frame=${traceFrame}&warmup_frames=${warmupFrames}` +
       `&measured_frames=${measuredFrames}&camera_mode=${cameraMode}` +
-      captureTraceFrameQuery,
+      captureTraceFrameQuery + rendererCaptureQuery,
     {
     waitUntil: 'networkidle0',
     timeout: qualification ? 600_000 : 30_000
@@ -250,7 +329,10 @@ try {
   }));
   const browserVersion = await browser.version();
   await writeFile(resolve(outputRoot, 'runtime.log'), `${browserLog.join('\n')}\n`);
-  if (outcome.result.status !== 'raw_frame_capture_complete') throw new Error(JSON.stringify(outcome.result));
+  const expectedPageStatus = rendererCaptureEnabled
+    ? 'raw_frame_capture_complete'
+    : 'raw_frame_measurement_complete';
+  if (outcome.result.status !== expectedPageStatus) throw new Error(JSON.stringify(outcome.result));
   const browserPresentation = outcome.result.browserPresentationReceipt;
   const presentationReceipts = [
     ['preCapture', browserPresentation?.preCapture],
@@ -258,7 +340,7 @@ try {
     ['postMeasurement', browserPresentation?.postMeasurement],
     ['postCapture', browserPresentation?.postCapture]
   ];
-  if (qualification) {
+  if (qualification && rendererCaptureEnabled) {
     presentationReceipts.push([
       'postPresentationTerminal',
       browserPresentation?.postPresentationTerminal
@@ -269,13 +351,14 @@ try {
     assertBrowserPresentationState(receipt);
   }
   if (browserPresentation?.physicalPresentationClaim !== false ||
-      browserPresentation?.everyMeasuredFrameChecked !== true ||
-      browserPresentation?.measuredFrameCheckCount !== measuredFrames) {
+      browserPresentation?.measuredFrameCheckCount !==
+        (rendererCaptureEnabled ? measuredFrames : 0) ||
+      browserPresentation?.everyMeasuredFrameChecked !== rendererCaptureEnabled) {
     throw new Error('browser presentation lifecycle receipt is incomplete');
   }
 
   let cameraEvidence = null;
-  if (qualification) {
+  if (qualification && rendererCaptureEnabled) {
     cameraEvidence = validatePlayCanvasCaptureEvidence({
       trace: outcome.result.traceDescriptor,
       capture: outcome.result.capture,
@@ -437,7 +520,7 @@ try {
       }, null, 2)}\n`
     );
   }
-  if (qualification) {
+  if (qualification && rendererCaptureEnabled) {
     const adbBinding = androidScreenReceipt
       ? {
           file: 'device-screen.png',
@@ -474,12 +557,55 @@ try {
     );
   }
   const queueTerminal = validateQueueTerminalCapture(outcome.result.capture, measuredFrames);
+  const q1HostPost = await observeMacHostState('post_measurement_terminal');
+  if (q1Producer && q1HostPre.powerSource !== q1HostPost.powerSource) {
+    throw new Error('Q1 host power source changed during the artifact run');
+  }
+
+  // Q1 publishes no admissible manifest until browser and server cleanup both
+  // succeed. A cleanup failure therefore leaves only a blocker, never a valid
+  // artifact that the offline admission path could consume.
+  if (q1Producer) {
+    await browserSession.close();
+    browserSession = null;
+    await new Promise((resolvePromise, rejectPromise) => server.close((error) => {
+      if (error) rejectPromise(error);
+      else resolvePromise();
+    }));
+    serverClosed = true;
+  }
 
   const dataset = outcome.result.datasetReceipt ??
     JSON.parse(await readFile(resolve(repoRoot, 'tests/perf/datasets/minimal_binary.json'), 'utf8'));
-  const expectedEngine = JSON.parse(await readFile(resolve(harnessRoot, 'expected-engine.json'), 'utf8'));
-  const repositoryCommit = (await execFile('git', ['rev-parse', 'HEAD'], { cwd: repoRoot })).stdout.trim();
-  const dirty = (await execFile('git', ['status', '--porcelain'], { cwd: repoRoot })).stdout.trim().length > 0;
+  if (q1Producer) {
+    await verifyQ1BuildArtifacts(q1Producer, harnessRoot, q1BuildArtifacts);
+    const finalCommit = (
+      await execFile('git', ['rev-parse', 'HEAD'], { cwd: repoRoot })
+    ).stdout.trim();
+    const finalDirty = (
+      await execFile('git', ['status', '--porcelain'], { cwd: repoRoot })
+    ).stdout.trim().length > 0;
+    if (finalCommit !== repositoryCommit || finalDirty) {
+      throw new Error('Q1 repository identity changed during collection');
+    }
+  }
+  const q1Environment = q1EnvironmentFields(q1Producer, q1Producer ? {
+    adapterReceipt: outcome.result.webGpuEnvironmentReceipt,
+    browserExecutableSha256,
+    browserProcessArgsReceipt,
+    powerSource: q1HostPost.powerSource,
+    driverStack: {
+      source: 'macos_sw_vers_buildVersion',
+      pre: q1HostPre.osBuild,
+      post: q1HostPost.osBuild
+    },
+    thermal: {
+      source: 'macos_pmset_thermal_warning_level',
+      pre: q1HostPre.thermal,
+      post: q1HostPost.thermal,
+      admitted: true
+    }
+  } : {});
   const scope = qualification ? `competitive-${qualificationName}` : 'playcanvas-collector-smoke';
   const runId = `${scope}-${randomUUID()}`;
   const frameBudgetMs = 1000 / sessionConfig.refreshHz;
@@ -498,6 +624,7 @@ try {
     gpu_wait_ms: null,
     gpu_complete_ms: null,
     visible: null,
+    contributor: null,
     drawn: null,
     active_splats: sample.activeSplats,
     // The pinned GSplatHybridRenderer calls sortAndProjectForCamera for every
@@ -512,9 +639,9 @@ try {
     queue_submit_call_count: sample.queueSubmitCallCount
   }));
   const unavailableFields = [
-    'environment.adapter',
-    'environment.driver',
+    ...(q1Producer ? [] : ['environment.adapter', 'environment.driver']),
     'frames[*].visible',
+    'frames[*].contributor',
     'frames[*].drawn',
     ...nullMetrics.map((metric) => `frames[*].${metric}`),
     ...(qualification ? [] : ['frames[*].sort_refreshed'])
@@ -524,7 +651,8 @@ try {
     record_type: 'manifest',
     run_id: runId,
     identity: {
-      series_id: qualification ? `competitive-paired-${qualificationName}` : 'playcanvas-collector-smoke-v1',
+      series_id: q1Producer?.seriesId ??
+        (qualification ? `competitive-paired-${qualificationName}` : 'playcanvas-collector-smoke-v1'),
       started_at_utc: startedAtUtc,
       ended_at_utc: new Date().toISOString(),
       measurement_started_at_utc: outcome.result.capture.measurementStartedAtUtc,
@@ -536,7 +664,13 @@ try {
       profile: sessionConfig.mode === 'remote-cdp'
         ? 'playcanvas-production-esm-remote-cdp'
         : 'playcanvas-production-esm',
-      package_version: expectedEngine.version
+      package_version: expectedEngine.version,
+      ...(q1Producer ? {
+        upstream_revision: expectedEngine.revision,
+        runtime_revision: expectedEngine.runtimeRevision,
+        package_integrity: expectedEngine.integrity,
+        artifacts: q1BuildArtifacts
+      } : {})
     },
     dataset: {
       id: dataset.id,
@@ -548,12 +682,12 @@ try {
     trace: {
       id: outcome.result.traceDescriptor.trace_id ?? outcome.result.traceDescriptor.id,
       sha256: outcome.result.traceDescriptor.content_sha256 ?? sha256(JSON.stringify(outcome.result.traceDescriptor)),
-      camera_mode: cameraMode,
-      capture_frame_index: qualification
-        ? outcome.result.cameraReceipt.trace_frame_index
+      camera_mode: q1Producer ? 'trace_sequence' : cameraMode,
+      capture_frame_index: qualification && rendererCaptureEnabled
+        ? outcome.result.cameraReceipt?.trace_frame_index
         : undefined,
-      capture_frame_source: qualification
-        ? outcome.result.capture.presentationCapture.capture_trace_frame_source
+      capture_frame_source: qualification && rendererCaptureEnabled
+        ? outcome.result.capture.presentationCapture?.capture_trace_frame_source
         : undefined,
       frame_index: cameraMode === 'static' ? traceFrame : undefined,
       frame_indices: cameraMode === 'sequence'
@@ -564,7 +698,8 @@ try {
       implementation: `playcanvas-${outcome.result.engineRuntimeRevision}`,
       path: outcome.result.rendererPath,
       backend: outcome.result.backendSelected,
-      sort_policy: outcome.result.rendererActive
+      sort_policy: outcome.result.rendererActive,
+      uses_gpu_sort: outcome.result.usesGpuSort
     },
     display: {
       width: outcome.result.canvasBackingWidth,
@@ -620,7 +755,8 @@ try {
         : null,
       android_device_receipt: sessionConfig.mode === 'remote-cdp'
         ? 'android-device-receipt.json'
-        : null
+        : null,
+      ...(q1Environment ?? {})
     },
     timing: {
       ...outcome.result.capture.timing,
@@ -638,16 +774,31 @@ try {
         : null
     },
     exactness: outcome.result.exactness,
-    resolution: finalResolution,
-    camera_receipt: qualification ? outcome.result.cameraReceipt : null,
-    presentation_capture: qualification
+    resolution: q1Producer ? {
+      ...finalResolution,
+      presented_width: Math.round(
+        outcome.result.browserPresentationReceipt.postMeasurement
+          .physical_pixel_mapping.canvas_css_width_px
+      ),
+      presented_height: Math.round(
+        outcome.result.browserPresentationReceipt.postMeasurement
+          .physical_pixel_mapping.canvas_css_height_px
+      ),
+      presented_source: 'visible_focused_browser_presentation_receipt_after_queue_terminal',
+      internal_full_resolution: true,
+      full_resolution: true
+    } : finalResolution,
+    camera_receipt: qualification && rendererCaptureEnabled ? outcome.result.cameraReceipt : null,
+    presentation_capture: qualification && rendererCaptureEnabled
       ? outcome.result.capture.presentationCapture
       : null,
-    screenshot_binding: qualification ? screenshotBinding : null,
-    renderer_capture: qualification
+    screenshot_binding: qualification && rendererCaptureEnabled ? screenshotBinding : null,
+    renderer_capture: qualification && rendererCaptureEnabled
       ? outcome.result.capture.presentationCapture.renderer_capture
       : null,
-    renderer_capture_materialization: qualification ? rendererCaptureMaterialization : null,
+    renderer_capture_materialization: qualification && rendererCaptureEnabled
+      ? rendererCaptureMaterialization
+      : null,
     browser_presentation: outcome.result.browserPresentationReceipt,
     device_evidence: sessionConfig.mode === 'remote-cdp'
       ? {
@@ -673,13 +824,19 @@ try {
           canvas_screen_content_comparison: screenContentComparison
         }
       : null,
-    pairing: qualification ? {
+    pairing: q1Producer ? q1PairingFields(q1Producer) : qualification ? {
       pair_id: process.env.PHASE_E_PAIR_ID ?? null,
       run_order: process.env.PHASE_E_PAIR_ORDER ?? null,
       position: Number(process.env.PHASE_E_PAIR_POSITION ?? 0) || null
     } : undefined,
     qualification_scope: qualification ? outcome.result.policies.evidenceClass : 'collector_smoke_only',
-    unavailable_fields: unavailableFields
+    unavailable_fields: unavailableFields,
+    q1_comparison: q1ManifestFields(
+      q1Producer,
+      queueTerminal,
+      measuredFrames,
+      outcome.result.capture.presentation.measuredFrameCheckCount
+    )
   };
   const distributions = Object.fromEntries(
     ['call_ms', 'frame_wall_ms', ...nullMetrics].map((metric) => [metric, distribution(frames, metric)])
@@ -693,7 +850,14 @@ try {
     frame_budget_ms: frameBudgetMs,
     missed_frame_count: frames.filter((frame) => frame.frame_wall_ms > frameBudgetMs).length,
     distributions,
-    sustained_throughput: sustainedManifestReceipt(queueTerminal.sustained)
+    sustained_throughput: {
+      ...sustainedManifestReceipt(queueTerminal.sustained),
+      ...(q1Producer ? {
+        terminal_window_ms: queueTerminal.sustained.queueTerminalSpanMs,
+        mean_frame_ms: queueTerminal.sustained.sustainedMeanFrameMs,
+        mean_fps: queueTerminal.sustained.sustainedFps
+      } : {})
+    }
   };
   await writeFile(resolve(outputRoot, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
   await writeFile(resolve(outputRoot, 'frames.jsonl'), `${frames.map((frame) => JSON.stringify(frame)).join('\n')}\n`);
@@ -709,8 +873,8 @@ try {
     outputRoot,
     runId,
     sampleCount: frames.length,
-    captureTraceFrameIndex: qualification
-      ? outcome.result.cameraReceipt.trace_frame_index
+    captureTraceFrameIndex: qualification && rendererCaptureEnabled
+      ? outcome.result.cameraReceipt?.trace_frame_index ?? null
       : null,
     frameWallMeanMs: distributions.frame_wall_ms.mean,
     queueDrainAfterLastSubmitMs: queueTerminal.sustained.queueDrainAfterLastSubmitMs,
@@ -781,10 +945,12 @@ try {
     cleanupErrors.push({ stage: 'browser_session_close', message: error.message, stack: error.stack });
   }
   try {
-    await new Promise((resolvePromise, rejectPromise) => server.close((error) => {
-      if (error) rejectPromise(error);
-      else resolvePromise();
-    }));
+    if (!serverClosed) {
+      await new Promise((resolvePromise, rejectPromise) => server.close((error) => {
+        if (error) rejectPromise(error);
+        else resolvePromise();
+      }));
+    }
   } catch (error) {
     cleanupErrors.push({ stage: 'harness_server_close', message: error.message, stack: error.stack });
   }

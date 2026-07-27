@@ -4,8 +4,15 @@ import {
   assertBrowserPresentationState,
   captureBrowserPresentationState,
   PHYSICAL_PIXEL_MAPPING_TOLERANCE_PX,
+  shouldObserveMeasuredPresentation,
   VISUAL_VIEWPORT_QUANTIZATION_TOLERANCE_CSS_PX
 } from '../public/presentation-receipt.js';
+
+test('throughput disables per-frame presentation observers while controls retain them', () => {
+  assert.equal(shouldObserveMeasuredPresentation(false), false);
+  assert.equal(shouldObserveMeasuredPresentation(true), true);
+  assert.equal(shouldObserveMeasuredPresentation(undefined), false);
+});
 
 function fixture(overrides = {}) {
   let canvas;

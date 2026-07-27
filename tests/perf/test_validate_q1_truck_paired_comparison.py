@@ -43,6 +43,27 @@ SHA_A = "a" * 64
 SHA_B = "b" * 64
 COMMIT = "c" * 40
 PREDECLARED = "2026-07-28T00:00:00Z"
+NORMALIZED_BROWSER_ARGS = [
+    "<browser-executable>",
+    "--enable-unsafe-webgpu",
+    "--enable-gpu",
+    "--ignore-gpu-blocklist",
+    "--remote-debugging-port=<ephemeral-port>",
+    "--user-data-dir=<ephemeral-profile>",
+]
+NORMALIZED_BROWSER_ARGS_SHA = hashlib.sha256(
+    json.dumps(NORMALIZED_BROWSER_ARGS, separators=(",", ":")).encode()
+).hexdigest()
+PROCESS_ARGS_RECEIPT = {
+    "schema": "gsplat-q1-browser-process-args/v1",
+    "source": "node_child_process_spawnargs",
+    "normalized_args": NORMALIZED_BROWSER_ARGS,
+    "redactions": [
+        {"index": 4, "kind": "ephemeral_remote_debugging_port"},
+        {"index": 5, "kind": "ephemeral_user_data_dir"},
+    ],
+    "normalized_sha256": NORMALIZED_BROWSER_ARGS_SHA,
+}
 ORDERS = ["playcanvas-first", "gsplat-rs-first", "playcanvas-first", "gsplat-rs-first", "playcanvas-first"]
 CLI = pathlib.Path(__file__).with_name("validate-q1-truck-paired-comparison.py")
 PLAYCANVAS_CAMERA_AUTHORITY_GENERATOR = pathlib.Path(__file__).parent / (
@@ -375,7 +396,7 @@ def manifest(
         "trace": {**TRACE, "camera_mode": "trace_sequence"},
         "renderer": renderer,
         "display": {"width": WIDTH, "height": HEIGHT, "dpr": 1, "refresh_hz": 60, "frame_budget_ms": 16.666666666666668, "refresh_hz_source": "configured", "frame_budget_source": "configured"},
-        "environment": {"platform": "web", "os": "Darwin-test", "device": "M4-test", "browser": "Chrome-test", "adapter": "Apple M4", "driver": "Metal-test", "browser_executable_sha256": SHA_A, "browser_launch_args_sha256": SHA_B, "adapter_limits_sha256": SHA_A, "power_source": "ac", "collection_session_id": "session-1", "thermal": {"source": "host-probe", "pre": "nominal", "post": "nominal", "admitted": True}},
+        "environment": {"platform": "web", "os": "Darwin-test", "device": "M4-test", "browser": "Chrome-test", "adapter": "Apple M4", "driver": "apple_metal_os_build:25A1", "driver_source": "macos_sw_vers_buildVersion", "browser_executable_sha256": SHA_A, "browser_launch_args_sha256": NORMALIZED_BROWSER_ARGS_SHA, "browser_launch_args_receipt": PROCESS_ARGS_RECEIPT, "adapter_limits_sha256": SHA_A, "power_source": "ac", "collection_session_id": "session-1", "thermal": {"source": "host-probe", "pre": "nominal", "post": "nominal", "admitted": True}},
         "unavailable_fields": unavailable,
         "exactness": {"source_splat_count": TRUCK["splat_count"], "decoded_splat_count": TRUCK["splat_count"], "encoded_splat_count": TRUCK["splat_count"], "resident_splat_count": TRUCK["splat_count"], "addressable_splat_count": TRUCK["splat_count"], "source_sh_degree": 3, "resident_sh_degree": 3, "source_membership": "all", "sampling": "disabled", "lod": "disabled", "partial_scene_published": False, "full_quality": True},
         "resolution": {**{f"{stage}_width": WIDTH for stage in ("requested", "surface", "internal_render", "presented")}, **{f"{stage}_height": HEIGHT for stage in ("requested", "surface", "internal_render", "presented")}, "dynamic_resolution": "disabled", "upscaling": "disabled", "full_resolution": True},
@@ -841,6 +862,59 @@ class ScheduleAndAdmissionTests(unittest.TestCase):
     def test_missing_build_hash_is_rejected(self) -> None:
         self.mutate_manifest("pairs/pair-01/playcanvas/control-trace-0", lambda value: value["build"].__setitem__("artifacts", {}))
         with self.assertRaisesRegex(ValidationError, "build.artifacts keys"):
+            evaluate(self.schedule)
+
+    def test_artifact_with_blocker_is_rejected(self) -> None:
+        directory = self.root / "pairs/pair-01/playcanvas/throughput"
+        write_json(directory / "blocker.json", {"status": "blocked"})
+        with self.assertRaisesRegex(ValidationError, "contains blocker.json"):
+            evaluate(self.schedule)
+
+    def test_artifact_with_cleanup_blocker_is_rejected(self) -> None:
+        directory = self.root / "pairs/pair-01/playcanvas/throughput"
+        write_json(directory / "cleanup-blocker.json", {"status": "blocked"})
+        with self.assertRaisesRegex(ValidationError, "contains cleanup-blocker.json"):
+            evaluate(self.schedule)
+
+    def test_schedule_root_with_blocker_is_rejected(self) -> None:
+        write_json(self.root / "blocker.json", {"status": "blocked"})
+        with self.assertRaisesRegex(ValidationError, "schedule root contains blocker.json"):
+            evaluate(self.schedule)
+
+    def test_schedule_root_with_cleanup_blocker_is_rejected(self) -> None:
+        write_json(self.root / "cleanup-blocker.json", {"status": "blocked"})
+        with self.assertRaisesRegex(
+            ValidationError,
+            "schedule root contains cleanup-blocker.json",
+        ):
+            evaluate(self.schedule)
+
+    def test_browser_process_argument_receipt_hash_is_recomputed(self) -> None:
+        self.mutate_manifest(
+            "pairs/pair-01/playcanvas/throughput",
+            lambda value: value["environment"]["browser_launch_args_receipt"][
+                "normalized_args"
+            ].append("--unbound-mutation"),
+        )
+        with self.assertRaisesRegex(ValidationError, "browser_launch_args_receipt hash mismatch"):
+            evaluate(self.schedule)
+
+    def test_browser_process_argument_receipt_content_is_admitted(self) -> None:
+        def add_headless(value: dict) -> None:
+            environment = value["environment"]
+            receipt = environment["browser_launch_args_receipt"]
+            receipt["normalized_args"].append("--headless=new")
+            digest = hashlib.sha256(
+                json.dumps(receipt["normalized_args"], separators=(",", ":")).encode()
+            ).hexdigest()
+            receipt["normalized_sha256"] = digest
+            environment["browser_launch_args_sha256"] = digest
+
+        self.mutate_manifest("pairs/pair-01/playcanvas/throughput", add_headless)
+        with self.assertRaisesRegex(
+            ValidationError,
+            "browser_launch_args_receipt content is inadmissible",
+        ):
             evaluate(self.schedule)
 
     def test_missing_common_image_receipt_is_rejected(self) -> None:

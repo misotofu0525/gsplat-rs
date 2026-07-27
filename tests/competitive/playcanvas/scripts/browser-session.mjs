@@ -1,5 +1,11 @@
 import { androidRemoteConfig } from './android-device-receipt.mjs';
 
+export const LOCAL_BROWSER_ARGS = Object.freeze([
+  '--enable-unsafe-webgpu',
+  '--enable-gpu',
+  '--ignore-gpu-blocklist'
+]);
+
 function requiredRemoteText(environment, name) {
   const value = environment[name]?.trim();
   if (!value) throw new Error(`${name} is required for remote CDP`);
@@ -122,7 +128,7 @@ export async function openBrowserSession({
         executablePath,
         headless,
         defaultViewport: viewport,
-        args: ['--enable-unsafe-webgpu', '--enable-gpu', '--ignore-gpu-blocklist']
+        args: [...LOCAL_BROWSER_ARGS]
       });
     }
     if (config.mode === 'remote-cdp') {

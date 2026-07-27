@@ -15,6 +15,9 @@ from .contract import MEASURED, RESULT_SCHEMA, SCHEMA, validate_protocol, valida
 
 def evaluate(path: pathlib.Path) -> dict[str, Any]:
     root = path.resolve().parent
+    for blocker_name in ("blocker.json", "cleanup-blocker.json"):
+        if (root / blocker_name).exists():
+            fail(f"schedule root contains {blocker_name}")
     document = load_json(path, "schedule")
     if document.get("schema") != SCHEMA:
         fail(f"schedule.schema must equal {SCHEMA!r}")

@@ -1,0 +1,437 @@
+import assert from 'node:assert/strict';
+import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
+import test from 'node:test';
+import {
+  Q1_PRODUCER_REQUEST_SCHEMA,
+  assertQ1Invocation,
+  loadQ1ProducerConfig,
+  materializeQ1BuildArtifacts,
+  parseMacPowerReceipt,
+  parseMacThermalReceipt,
+  q1BrowserProcessArgsReceipt,
+  q1EnvironmentFields,
+  q1ManifestFields,
+  q1PairingFields,
+  q1RendererCaptureEnabled,
+  validateQ1ProducerRequest,
+  verifyQ1BuildArtifacts
+} from '../scripts/q1-producer.mjs';
+
+const SHA_A = 'a'.repeat(64);
+const SHA_B = 'b'.repeat(64);
+const SHA_C = 'c'.repeat(64);
+const SHA_D = 'd'.repeat(64);
+
+function request(role, overrides = {}) {
+  const base = {
+    schema: Q1_PRODUCER_REQUEST_SCHEMA,
+    artifact_role: role,
+    series_id: 'q1-series-001',
+    schedule_sha256: SHA_A,
+    protocol_sha256: SHA_B,
+    configuration_sha256: SHA_C,
+    pair_id: 'pair-01',
+    run_order: 'playcanvas-first',
+    position: 1,
+    collection_session_id: 'm4-chrome-session-001'
+  };
+  if (role === 'control') {
+    base.capture_trace_frame_index = 0;
+  } else {
+    base.control_bindings = [
+      {
+        trace_frame_index: 1,
+        run_id: 'control-1',
+        manifest_sha256: SHA_D,
+        configuration_sha256: SHA_C
+      },
+      {
+        trace_frame_index: 0,
+        run_id: 'control-0',
+        manifest_sha256: SHA_A,
+        configuration_sha256: SHA_C
+      }
+    ];
+  }
+  return { ...base, ...overrides };
+}
+
+function invocation(captureTraceFrame) {
+  return {
+    qualificationName: 'truck-quality-1080p-v1',
+    cameraMode: 'sequence',
+    warmupFrames: 20,
+    measuredFrames: 80,
+    captureTraceFrame,
+    viewportWidth: 1920,
+    viewportHeight: 1080,
+    sessionMode: 'local-launch',
+    headless: false
+  };
+}
+
+function queueTerminal() {
+  return {
+    sustained: {
+      measuredFrameCount: 80,
+      submitVersionStart: 100,
+      submitVersionEnd: 180,
+      queueTerminalSpanMs: 1600
+    },
+    measurementDrain: {
+      endedAtMs: 5000,
+      submitVersionStable: true
+    }
+  };
+}
+
+test('control and throughput roles remain separate and invocation-locked', () => {
+  const control = validateQ1ProducerRequest(request('control'));
+  assert.equal(q1RendererCaptureEnabled(control), true);
+  assert.doesNotThrow(() => assertQ1Invocation(control, invocation(0)));
+  assert.deepEqual(q1ManifestFields(control, queueTerminal(), 80, 80), {
+    artifact_role: 'control',
+    protocol_sha256: SHA_B,
+    configuration_sha256: SHA_C,
+    performance_evidence: false,
+    count_scope: 'full_membership_v_c_d_unavailable',
+    capture_trace_frame_index: 0
+  });
+
+  const throughput = validateQ1ProducerRequest(request('throughput'));
+  assert.equal(q1RendererCaptureEnabled(throughput), false);
+  assert.doesNotThrow(() => assertQ1Invocation(throughput, invocation(null)));
+  assert.deepEqual(throughput.controlBindings.map((value) => value.trace_frame_index), [0, 1]);
+  const fields = q1ManifestFields(throughput, queueTerminal(), 80, 0);
+  assert.equal(fields.performance_evidence, true);
+  assert.deepEqual(fields.control_bindings, throughput.controlBindings);
+  assert.deepEqual(fields.terminal_window, {
+    schema: 'gsplat-q1-webgpu-terminal-window/v1',
+    clock: 'performance_now_monotonic',
+    start_boundary: 'first_measured_camera_input_accepted',
+    end_boundary: 'final_measured_gpu_queue_completion',
+    completion_primitive: 'gpu_queue_on_submitted_work_done',
+    frame_loop_policy: 'controlled_presented_raf',
+    camera_mutation_point: 'before_update_order_project_render',
+    warmup_queue_drained: true,
+    continuous_submissions: true,
+    per_frame_observer_reads: 0,
+    extra_submissions_during_terminal_drain: 0,
+    measured_camera_input_count: 80,
+    measured_submission_count: 80,
+    dropped_frame_count: 0,
+    submission_counter_stable_during_drain: true,
+    submission_counter_before_first: 100,
+    submission_counter_after_last: 180,
+    started_at_monotonic_ms: 3400,
+    completed_at_monotonic_ms: 5000,
+    duration_ms: 1600
+  });
+  assert.throws(
+    () => q1ManifestFields(
+      throughput,
+      {
+        ...queueTerminal(),
+        sustained: { ...queueTerminal().sustained, submitVersionEnd: 181 }
+      },
+      80,
+      0
+    ),
+    /one continuous submission per measured frame/
+  );
+  assert.throws(
+    () => q1ManifestFields(throughput, queueTerminal(), 80, 1),
+    /one continuous submission per measured frame/
+  );
+});
+
+test('producer request rejects partial controls and mixed configurations', () => {
+  assert.throws(
+    () => validateQ1ProducerRequest(request('throughput', { control_bindings: [] })),
+    /exactly two controls/
+  );
+  assert.throws(
+    () => validateQ1ProducerRequest(request('throughput', {
+      control_bindings: [
+        request('throughput').control_bindings[0],
+        { ...request('throughput').control_bindings[0], run_id: 'duplicate-trace' }
+      ]
+    })),
+    /traces 0 and 1 exactly once/
+  );
+  assert.throws(
+    () => validateQ1ProducerRequest(request('throughput', {
+      control_bindings: request('throughput').control_bindings.map((binding, index) =>
+        index === 0 ? { ...binding, configuration_sha256: SHA_D } : binding)
+    })),
+    /configuration does not match/
+  );
+  assert.throws(
+    () => validateQ1ProducerRequest(request('control', { control_bindings: [] })),
+    /must not contain/
+  );
+  assert.throws(
+    () => assertQ1Invocation(
+      validateQ1ProducerRequest(request('control')),
+      { ...invocation(0), measuredFrames: 81 }
+    ),
+    /measuredFrames must equal 80/
+  );
+  assert.throws(
+    () => assertQ1Invocation(
+      validateQ1ProducerRequest(request('control')),
+      { ...invocation(0), headless: true }
+    ),
+    /headless must equal false/
+  );
+});
+
+test('request loading requires a fresh artifact child of its series', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'gsplat-q1-request-'));
+  try {
+    const seriesRoot = resolve(root, 'series');
+    const artifactRoot = resolve(seriesRoot, 'pair-01', 'playcanvas', 'control-0');
+    const requestPath = resolve(root, 'request.json');
+    await mkdir(seriesRoot);
+    await writeFile(requestPath, JSON.stringify(request('control')));
+    const config = await loadQ1ProducerConfig({
+      PLAYCANVAS_Q1_PRODUCER_REQUEST: requestPath,
+      PLAYCANVAS_Q1_SERIES_ROOT: seriesRoot
+    }, artifactRoot);
+    assert.equal(config.artifactRoot, artifactRoot);
+    assert.equal(config.seriesRoot, seriesRoot);
+    assert.deepEqual(q1PairingFields(config), {
+      series_id: 'q1-series-001',
+      schedule_sha256: SHA_A,
+      pair_id: 'pair-01',
+      run_order: 'playcanvas-first',
+      position: 1,
+      fresh_output: true,
+      automatic_retry: false
+    });
+    await assert.rejects(
+      loadQ1ProducerConfig({
+        PLAYCANVAS_Q1_PRODUCER_REQUEST: requestPath,
+        PLAYCANVAS_Q1_SERIES_ROOT: seriesRoot
+      }, resolve(root, 'outside')),
+      /inside the Q1 series root/
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('build artifacts are immutable content-addressed copies inside the series', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'gsplat-q1-build-'));
+  try {
+    const seriesRoot = resolve(root, 'series');
+    const artifactRoot = resolve(seriesRoot, 'pair-01', 'playcanvas', 'throughput');
+    const harnessRoot = resolve(root, 'harness');
+    await mkdir(artifactRoot, { recursive: true });
+    await mkdir(
+      resolve(harnessRoot, 'node_modules/playcanvas/build/playcanvas/src'),
+      { recursive: true }
+    );
+    await writeFile(
+      resolve(harnessRoot, 'node_modules/playcanvas/build/playcanvas/src/index.js'),
+      'runtime bytes\n'
+    );
+    await writeFile(resolve(harnessRoot, 'package-lock.json'), '{"lock":true}\n');
+    const artifacts = await materializeQ1BuildArtifacts(
+      { seriesRoot, artifactRoot },
+      harnessRoot
+    );
+    assert.deepEqual(Object.keys(artifacts).sort(), ['package_lock', 'runtime_js']);
+    const runtimeTree = JSON.parse(
+      await readFile(resolve(seriesRoot, artifacts.runtime_js.path), 'utf8')
+    );
+    assert.equal(runtimeTree.schema, 'gsplat-playcanvas-runtime-tree/v1');
+    assert.deepEqual(runtimeTree.files.map((value) => value.path), ['src/index.js']);
+    assert.match(artifacts.runtime_js.sha256, /^[0-9a-f]{64}$/);
+    await assert.doesNotReject(
+      verifyQ1BuildArtifacts({ seriesRoot, artifactRoot }, harnessRoot, artifacts)
+    );
+    await writeFile(
+      resolve(harnessRoot, 'node_modules/playcanvas/build/playcanvas/src/index.js'),
+      'changed runtime bytes\n'
+    );
+    await assert.rejects(
+      verifyQ1BuildArtifacts({ seriesRoot, artifactRoot }, harnessRoot, artifacts),
+      /runtime_js changed during collection/
+    );
+    await assert.rejects(
+      materializeQ1BuildArtifacts({ seriesRoot, artifactRoot }, harnessRoot),
+      /EEXIST/
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('environment receipt uses observed adapter, limits, host and thermal evidence', () => {
+  const config = validateQ1ProducerRequest(request('control'));
+  const processArgs = q1BrowserProcessArgsReceipt({
+    spawnfile: '/Applications/Google Chrome',
+    spawnargs: [
+      '/Applications/Google Chrome',
+      '--enable-unsafe-webgpu',
+      '--enable-gpu',
+      '--ignore-gpu-blocklist',
+      '--remote-debugging-port=49152',
+      '--user-data-dir=/private/tmp/profile-a'
+    ],
+    expectedExecutable: '/Applications/Google Chrome',
+    requiredArgs: ['--enable-unsafe-webgpu', '--enable-gpu', '--ignore-gpu-blocklist']
+  });
+  const environment = q1EnvironmentFields(config, {
+    adapterReceipt: {
+      schema: 'gsplat-playcanvas-webgpu-environment/v1',
+      adapter: 'Apple / apple8 / M4',
+      driver: null,
+      driver_status: 'not_exposed_by_webgpu',
+      adapter_info: { vendor: 'Apple', architecture: 'apple8', device: 'M4' },
+      limits: { maxBufferSize: 4294967292, maxTextureDimension2D: 16384 }
+    },
+    browserExecutableSha256: SHA_A,
+    browserProcessArgsReceipt: processArgs,
+    powerSource: 'ac_power',
+    driverStack: {
+      source: 'macos_sw_vers_buildVersion',
+      pre: '25A1',
+      post: '25A1'
+    },
+    thermal: { source: 'macos_pmset_thermal_warning_level', pre: 'nominal', post: 'fair', admitted: true }
+  });
+  assert.deepEqual({ ...environment, adapter_limits_sha256: '<observed>' }, {
+    adapter: 'Apple / apple8 / M4',
+    driver: 'apple_metal_os_build:25A1',
+    driver_source: 'macos_sw_vers_buildVersion',
+    browser_executable_sha256: SHA_A,
+    browser_launch_args_sha256: processArgs.normalized_sha256,
+    browser_launch_args_receipt: processArgs,
+    adapter_limits_sha256: '<observed>',
+    power_source: 'ac_power',
+    collection_session_id: 'm4-chrome-session-001',
+    thermal: { source: 'macos_pmset_thermal_warning_level', pre: 'nominal', post: 'fair', admitted: true }
+  });
+  assert.match(environment.adapter_limits_sha256, /^[0-9a-f]{64}$/);
+  assert.throws(
+    () => q1EnvironmentFields(config, {
+      adapterReceipt: { schema: 'wrong' },
+      thermal: { pre: 'nominal', post: 'nominal' }
+    }),
+    /renderer-selected WebGPU/
+  );
+  assert.throws(
+    () => q1EnvironmentFields(config, {
+      adapterReceipt: {
+        schema: 'gsplat-playcanvas-webgpu-environment/v1',
+        adapter: 'webgpu_adapter_identity_redacted_by_browser',
+        driver: null,
+        driver_status: 'not_exposed_by_webgpu',
+        adapter_info: {},
+        limits: { maxBufferSize: 1 }
+      },
+      browserExecutableSha256: SHA_A,
+      browserProcessArgsReceipt: processArgs,
+      powerSource: 'ac_power',
+      driverStack: {
+        source: 'macos_sw_vers_buildVersion',
+        pre: '25A1',
+        post: '25A1'
+      },
+      thermal: { source: 'observed', pre: 'nominal', post: 'nominal', admitted: true }
+    }),
+    /redacted adapter identity/
+  );
+  assert.throws(
+    () => q1EnvironmentFields(config, {
+      adapterReceipt: {
+        schema: 'gsplat-playcanvas-webgpu-environment/v1',
+        adapter: 'adapter',
+        driver: null,
+        driver_status: 'not_exposed_by_webgpu',
+        adapter_info: {},
+        limits: { maxBufferSize: 1 }
+      },
+      browserExecutableSha256: SHA_A,
+      browserProcessArgsReceipt: processArgs,
+      powerSource: 'ac_power',
+      driverStack: {
+        source: 'macos_sw_vers_buildVersion',
+        pre: '25A1',
+        post: '25A1'
+      },
+      thermal: { source: 'observed', pre: 'nominal', post: 'nominal', admitted: false }
+    }),
+    /admissible observed thermal/
+  );
+  assert.throws(
+    () => q1EnvironmentFields(config, {
+      adapterReceipt: {
+        schema: 'gsplat-playcanvas-webgpu-environment/v1',
+        adapter: 'adapter',
+        limits: { maxBufferSize: 1 }
+      },
+      driverStack: {
+        source: 'macos_sw_vers_buildVersion',
+        pre: '25A1',
+        post: '25A2'
+      }
+    }),
+    /stable observed Apple driver-stack identity/
+  );
+  assert.equal(parseMacPowerReceipt("Now drawing from 'AC Power'\n"), 'ac_power');
+  assert.equal(
+    parseMacThermalReceipt('Note: No thermal warning level has been recorded\n'),
+    'nominal'
+  );
+  assert.throws(() => parseMacThermalReceipt('CPU_Speed_Limit = 50'), /not admissible/);
+});
+
+test('browser process argument receipt hashes actual argv with only run-variant values normalized', () => {
+  const requiredArgs = ['--enable-gpu'];
+  const first = q1BrowserProcessArgsReceipt({
+    spawnfile: '/Applications/Chrome',
+    spawnargs: [
+      '/Applications/Chrome',
+      '--enable-gpu',
+      '--remote-debugging-port=50123',
+      '--user-data-dir=/tmp/profile-one',
+      '--disable-background-networking'
+    ],
+    expectedExecutable: '/Applications/Chrome',
+    requiredArgs
+  });
+  const second = q1BrowserProcessArgsReceipt({
+    spawnfile: '/Applications/Chrome',
+    spawnargs: [
+      '/Applications/Chrome',
+      '--enable-gpu',
+      '--remote-debugging-port=60124',
+      '--user-data-dir=/tmp/profile-two',
+      '--disable-background-networking'
+    ],
+    expectedExecutable: '/Applications/Chrome',
+    requiredArgs
+  });
+  assert.equal(first.normalized_sha256, second.normalized_sha256);
+  assert.deepEqual(first.normalized_args, [
+    '<browser-executable>',
+    '--enable-gpu',
+    '--remote-debugging-port=<ephemeral-port>',
+    '--user-data-dir=<ephemeral-profile>',
+    '--disable-background-networking'
+  ]);
+  assert.throws(
+    () => q1BrowserProcessArgsReceipt({
+      spawnfile: '/Applications/Chrome',
+      spawnargs: ['/Applications/Chrome', '--headless=new', '--enable-gpu'],
+      expectedExecutable: '/Applications/Chrome',
+      requiredArgs
+    }),
+    /headful launch configuration/
+  );
+});

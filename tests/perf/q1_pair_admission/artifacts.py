@@ -369,6 +369,81 @@ def _environment(manifest: dict[str, Any], context: str) -> dict[str, Any]:
         identity[field] = string(source, field, f"{context}.environment")
         if field.endswith("sha256"):
             sha256(identity[field], f"{context}.environment.{field}")
+    process_args = obj(
+        source, "browser_launch_args_receipt", f"{context}.environment"
+    )
+    if (
+        process_args.get("schema") != "gsplat-q1-browser-process-args/v1"
+        or process_args.get("source") != "node_child_process_spawnargs"
+    ):
+        fail(f"{context}.environment.browser_launch_args_receipt identity mismatch")
+    normalized_args = array(
+        process_args,
+        "normalized_args",
+        f"{context}.environment.browser_launch_args_receipt",
+    )
+    if not normalized_args or any(
+        not isinstance(argument, str) or not argument for argument in normalized_args
+    ):
+        fail(f"{context}.environment.browser_launch_args_receipt arguments are invalid")
+    required_browser_args = {
+        "--enable-unsafe-webgpu",
+        "--enable-gpu",
+        "--ignore-gpu-blocklist",
+    }
+    if (
+        normalized_args[0] != "<browser-executable>"
+        or not required_browser_args.issubset(normalized_args)
+        or any(argument.startswith("--headless") for argument in normalized_args)
+        or any(
+            argument.startswith("--user-data-dir=")
+            and argument != "--user-data-dir=<ephemeral-profile>"
+            for argument in normalized_args
+        )
+        or any(
+            argument.startswith("--remote-debugging-port=")
+            and argument != "--remote-debugging-port=<ephemeral-port>"
+            for argument in normalized_args
+        )
+    ):
+        fail(f"{context}.environment.browser_launch_args_receipt content is inadmissible")
+    expected_args_sha = hashlib.sha256(
+        json.dumps(normalized_args, separators=(",", ":")).encode()
+    ).hexdigest()
+    if (
+        process_args.get("normalized_sha256") != expected_args_sha
+        or identity["browser_launch_args_sha256"] != expected_args_sha
+    ):
+        fail(f"{context}.environment.browser_launch_args_receipt hash mismatch")
+    redactions = array(
+        process_args,
+        "redactions",
+        f"{context}.environment.browser_launch_args_receipt",
+    )
+    expected_redactions = {
+        "ephemeral_user_data_dir": "--user-data-dir=<ephemeral-profile>",
+        "ephemeral_remote_debugging_port": "--remote-debugging-port=<ephemeral-port>",
+    }
+    seen_redactions: set[int] = set()
+    for index, redaction in enumerate(redactions):
+        if not isinstance(redaction, dict):
+            fail(f"{context}.environment.browser_launch_args_receipt.redactions[{index}] must be an object")
+        argument_index = redaction.get("index")
+        kind = redaction.get("kind")
+        if (
+            not isinstance(argument_index, int)
+            or isinstance(argument_index, bool)
+            or argument_index < 0
+            or argument_index >= len(normalized_args)
+            or argument_index in seen_redactions
+            or kind not in expected_redactions
+            or normalized_args[argument_index] != expected_redactions[kind]
+        ):
+            fail(f"{context}.environment.browser_launch_args_receipt redaction is invalid")
+        seen_redactions.add(argument_index)
+    for argument_index, argument in enumerate(normalized_args):
+        if argument in expected_redactions.values() and argument_index not in seen_redactions:
+            fail(f"{context}.environment.browser_launch_args_receipt redaction is missing")
     thermal = obj(source, "thermal", f"{context}.environment")
     thermal_identity: dict[str, Any] = {}
     for field in ("source", "pre", "post"):
@@ -744,6 +819,9 @@ def artifact(
     if directory in seen_paths:
         fail(f"artifact directory is reused: {directory}")
     seen_paths.add(directory)
+    for blocker_name in ("blocker.json", "cleanup-blocker.json"):
+        if (directory / blocker_name).exists():
+            fail(f"{pair_id}.{endpoint}.{role} contains {blocker_name}")
     try:
         BENCHMARK.validate(directory)
     except BENCHMARK.ValidationError as error:

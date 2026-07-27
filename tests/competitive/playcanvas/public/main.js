@@ -32,12 +32,16 @@ import {
   traceFrameToPlayCanvasPose,
   validatePlayCanvasCameraReceipt
 } from '/harness/trace-camera.js';
-import { captureBrowserPresentationState } from '/harness/presentation-receipt.js';
+import {
+  captureBrowserPresentationState,
+  shouldObserveMeasuredPresentation
+} from '/harness/presentation-receipt.js';
 import {
   beginPlayCanvasWebgpuRendererCapture,
   finalizePlayCanvasWebgpuRendererCapture,
   rgba8ToBase64
 } from '/harness/webgpu-renderer-capture.js';
+import { captureWebGpuEnvironmentReceipt } from '/harness/webgpu-environment-receipt.js';
 
 const EXPECTED_VERSION = '2.21.0-beta.14';
 const EXPECTED_RUNTIME_REVISION = 'd5fe888';
@@ -117,6 +121,7 @@ const requestedCaptureTraceFrameParameter = params.get('capture_trace_frame');
 const requestedCaptureTraceFrameIndex = requestedCaptureTraceFrameParameter === null
   ? null
   : Number(requestedCaptureTraceFrameParameter);
+const rendererCaptureEnabled = params.get('renderer_capture') !== '0';
 const status = document.querySelector('#status');
 // The status panel is useful for an interactive smoke, but it would obscure
 // the top-left of a formal device presentation and contaminate an external
@@ -260,6 +265,7 @@ async function collectFrameSamples(
   trace,
   cameraMode,
   requestedCaptureFrameIndex,
+  capturePresentation,
   presentationProbe,
   rendererCaptureIdentity
 ) {
@@ -422,6 +428,11 @@ async function collectFrameSamples(
           trace,
           sample.traceFrameIndex
         ));
+        if (!capturePresentation) {
+          cleanup();
+          resolve();
+          return;
+        }
         presentationTraceFrameIndex = requestedCaptureFrameIndex ??
           samples.at(-1).traceFrameIndex;
         presentationTraceFrameSource = requestedCaptureFrameIndex === null
@@ -467,8 +478,10 @@ async function collectFrameSamples(
             throw new Error('measurement frame boundaries overlapped');
           }
           frameStart = performance.now();
-          presentationProbe(`measurement_frame_${samples.length}_start`);
-          measurementPresentationCheckCount += 1;
+          if (shouldObserveMeasuredPresentation(capturePresentation)) {
+            presentationProbe(`measurement_frame_${samples.length}_start`);
+            measurementPresentationCheckCount += 1;
+          }
           frameSubmitVersionStart = app.graphicsDevice.submitVersion;
           frameWallMs = measuredFrameWallMs({
             sampleIndex: samples.length,
@@ -633,7 +646,9 @@ async function collectFrameSamples(
       final_submission_order_source:
         'pinned AppBase tick fires frameend after render; render calls graphicsDevice.frameEnd; WebgpuGraphicsDevice.frameEnd submits queued command buffers',
       presentation_capture_source:
-        `after measurement terminal drain, ${PLAYCANVAS_MIN_PRESENTATION_STABLE_FRAMES} fixed-trace frames are submitted outside timing, then the stopped loop is drained again`,
+        capturePresentation
+          ? `after measurement terminal drain, ${PLAYCANVAS_MIN_PRESENTATION_STABLE_FRAMES} fixed-trace frames are submitted outside timing, then the stopped loop is drained again`
+          : 'disabled_for_independent_throughput_artifact',
       gpu_phase_timing: 'not_available_not_inferred'
     }
   };
@@ -867,7 +882,9 @@ async function main() {
   const exactness = {
     source_splat_count: expectedSplatCount,
     decoded_splat_count: splatCount,
+    encoded_splat_count: residentSplatCount,
     resident_splat_count: residentSplatCount,
+    addressable_splat_count: residentSplatCount,
     source_sh_degree: expectedShDegree,
     resident_sh_degree: asset.resource.shBands,
     source_membership: 'all',
@@ -936,6 +953,7 @@ async function main() {
       trace,
       requestedCameraMode,
       requestedCaptureTraceFrameIndex,
+      rendererCaptureEnabled,
       presentationProbe,
       {
         resolution,
@@ -950,13 +968,15 @@ async function main() {
   const postCapturePresentation = presentationProbe('post_capture');
   const terminalCameraReceipt = capture?.presentationCapture?.terminal_camera_receipt ??
     initialCameraReceipt;
-  if (benchmarkMode && qualificationMode &&
+  if (benchmarkMode && qualificationMode && rendererCaptureEnabled &&
       (capture?.presentationCapture?.ready_for_external_capture !== true ||
        !terminalCameraReceipt)) {
     fail('benchmark ended without a terminal presentation camera receipt');
   }
   const result = {
-    status: benchmarkMode ? 'raw_frame_capture_complete' : 'ready_for_pre_timing_capture',
+    status: benchmarkMode
+      ? rendererCaptureEnabled ? 'raw_frame_capture_complete' : 'raw_frame_measurement_complete'
+      : 'ready_for_pre_timing_capture',
     engine: 'playcanvas',
     engineVersion: version,
     engineRuntimeRevision: revision,
@@ -977,6 +997,7 @@ async function main() {
     canvasBackingWidth: canvas.width,
     canvasBackingHeight: canvas.height,
     devicePixelRatio: window.devicePixelRatio,
+    webGpuEnvironmentReceipt: captureWebGpuEnvironmentReceipt(app.graphicsDevice),
     cameraReceipt: terminalCameraReceipt,
     exactness,
     resolution,

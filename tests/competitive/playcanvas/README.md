@@ -187,6 +187,54 @@ PNG encoder cannot impersonate the renderer producer. A device screenshot is
 still an independent physical-presentation receipt; it is not substituted for
 the renderer image.
 
+## Q1 same-Chrome producer mode
+
+The Q1 producer is an explicit mode of the existing Truck 1080p runner, not a
+second renderer or an automatic experiment orchestrator. Each invocation
+materializes exactly one fresh artifact:
+
+- a `control` request selects trace 0 or 1 and enables the untimed native
+  renderer capture after the 80-frame measurement terminal;
+- a `throughput` request binds the exact run ID, manifest SHA-256 and shared
+  configuration of both controls, and disables the post-terminal capture/copy
+  submission entirely.
+
+Both roles are locked to complete Truck SH3, the two-frame sequence, 20 warmup
+plus 80 measured frames, local Chrome/WebGPU and an exact 1920x1080 backing.
+They record the actual browser executable and normalized child-process argv,
+including a content receipt that redacts only the ephemeral profile path and
+CDP port. WebGPU supplies the renderer-selected adapter/device limits; macOS
+`sw_vers -buildVersion` supplies the explicit Apple Metal OS driver-stack
+identity because WebGPU does not expose a portable driver version. Power and
+thermal receipts are sampled around the run. The pinned PlayCanvas runtime tree
+and `package-lock.json` are content-addressed before collection and rehashed
+after browser/server cleanup. The gsplat-rs repository commit separately pins
+the harness source. The artifact directory must be a previously absent child
+of `PLAYCANVAS_Q1_SERIES_ROOT`; a failed attempt is not overwritten or retried.
+
+Create a request JSON with schema
+`gsplat-q1-playcanvas-producer-request/v1`, then invoke the existing command:
+
+```bash
+PLAYCANVAS_Q1_SERIES_ROOT='/fresh/q1-series' \
+PLAYCANVAS_Q1_PRODUCER_REQUEST='/fresh/q1-series/requests/playcanvas-control-0.json' \
+PLAYCANVAS_ARTIFACT_DIR='/fresh/q1-series/pairs/pair-01/playcanvas/control-0' \
+HEADLESS=0 \
+PLAYCANVAS_CAMERA_MODE=sequence \
+PLAYCANVAS_CAPTURE_TRACE_FRAME=0 \
+PLAYCANVAS_WARMUP_FRAMES=20 \
+PLAYCANVAS_MEASURED_FRAMES=80 \
+npm run benchmark:truck-1080p --prefix tests/competitive/playcanvas
+```
+
+For throughput, use `artifact_role: "throughput"`, omit
+`PLAYCANVAS_CAPTURE_TRACE_FRAME`, and supply exactly two `control_bindings` in
+the request. This path performs zero per-frame presentation-observer reads and
+does not issue the post-terminal renderer capture/copy. The producer does not
+create a schedule, choose AB/BA order, run five pairs, or authorize a comparison
+result. Those remain separate root-owned steps governed by
+[`q1-truck-paired-comparison-v1.md`](../../perf/q1-truck-paired-comparison-v1.md).
+
 ## Android true-fullscreen WebView remote CDP
 
 Normal Chrome tabs include browser chrome and system navigation in a physical

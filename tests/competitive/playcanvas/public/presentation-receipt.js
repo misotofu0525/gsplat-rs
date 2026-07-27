@@ -11,6 +11,10 @@ function close(actual, expected, tolerance = 1e-6) {
 export const VISUAL_VIEWPORT_QUANTIZATION_TOLERANCE_CSS_PX = 0.5;
 export const PHYSICAL_PIXEL_MAPPING_TOLERANCE_PX = 2;
 
+export function shouldObserveMeasuredPresentation(capturePresentation) {
+  return capturePresentation === true;
+}
+
 function elementDescriptor(element, canvas) {
   if (!element) return null;
   const ancestry = [];

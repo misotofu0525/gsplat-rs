@@ -19,7 +19,7 @@ winner from incomplete evidence.
 - LOD, sampling, partial publication, dynamic resolution and upscaling off;
 - pinned PlayCanvas `2.21.0-beta.14`, full upstream revision, runtime revision
   and package integrity;
-- actual WebGPU backend plus immutable browser, adapter, driver, limits, build
+- actual WebGPU backend plus immutable browser, adapter, driver-stack, limits, build
   artifact hashes and one collection-session identity.
 
 The gsplat-rs cell is actual GPU Preproject ordering plus Compact exact
@@ -80,6 +80,15 @@ identity and configuration. Thermal `pre` and `post` receipts remain explicit
 for every artifact; severe/critical states reject admission. All five pairs
 must retain the same non-thermal identities. A diagnostic readback from control is never silently charged
 to or copied into the timed comparator.
+
+WebGPU does not expose a portable driver version, so the macOS endpoint never
+relabels `GPUAdapterInfo.description` as one. Apple ships the Metal driver stack
+with the OS; the producer records the pre/post-stable `sw_vers -buildVersion`
+as its explicit `apple_metal_os_build` driver-stack identity. The browser binary
+hash separately binds Chrome's Dawn implementation. The browser process
+argument receipt is derived from actual child-process argv; only the ephemeral
+profile path and debugging-port value are normalized, with their indices and
+kinds retained for admission to verify before comparing the cross-run digest.
 
 ## Common terminal window
 

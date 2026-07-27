@@ -828,3 +828,34 @@ throughput producer mode, then the equivalent gsplat-rs mode, then the finite
 five-pair orchestrator. Launching thirty browser executions before those two
 producer contracts exist would create another expensive but inadmissible
 sample, so no endpoint series is authorized at this checkpoint.
+
+## Q1 PlayCanvas two-control/throughput producer mechanism (2026-07-28)
+
+The existing pinned PlayCanvas runner now has an explicit Q1 producer request
+boundary. One invocation produces one fresh artifact only: a trace-0 or trace-1
+control retains the already integrated native WebGPU same-present capture;
+throughput binds both exact controls and disables the untimed presentation and
+copy submission instead of measuring one shape and publishing another.
+
+The request locks complete Truck SH3, the two-view sequence, 20+80 frames,
+local Chrome/WebGPU and 1920x1080. The host records the actual browser binary
+and normalized argv from the launched child process, redacting only its
+ephemeral profile path and CDP port. WebGPU provides the renderer-selected
+adapter/device limits, while the pre/post macOS OS build supplies the named
+Apple Metal driver-stack identity; an adapter description is never mislabeled
+as a driver. Power and thermal observations, pinned PlayCanvas identity, and
+content-addressed runtime-tree/package-lock copies are retained. The build
+inputs are rehashed after browser/server cleanup, and blocker or cleanup-blocker
+artifacts are inadmissible. Artifact roots must be fresh children of the
+declared series root; requests with duplicate/mixed control bindings or
+different execution parameters fail before browser work.
+
+The throughput loop performs zero per-frame presentation-observer reads and
+does not issue the post-terminal renderer capture/copy. Controls retain the
+presentation/capture observations outside the throughput claim.
+
+This slice adds producer mechanism and focused tests only. It does not run a
+browser, create a five-pair schedule, collect a formal Truck artifact, compare
+an endpoint, or change gsplat-rs renderer/public API behavior. Q1 therefore
+remains **Active** pending the equivalent gsplat-rs producer and the separately
+authorized finite series orchestration/collection.
