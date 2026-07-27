@@ -364,6 +364,52 @@ class Q3RendererSimdCollectorTests(unittest.TestCase):
             ("Rejected", "integrity_rejected"),
         )
 
+    def test_non_ready_terminal_plus_nonzero_exit_is_rejected(self):
+        stdout = fixture_log().replace(
+            "SURFACE_CURRENT_STATS_TERMINAL status=ready",
+            "SURFACE_CURRENT_STATS_TERMINAL status=map_failure",
+            1,
+        )
+        error = COLLECTOR.nonzero_run_error(1, stdout, "", "pair 1 scalar")
+        self.assertIsInstance(error, COLLECTOR.IntegrityRejectedError)
+        self.assertIn("non-ready current-stats terminal", str(error))
+        self.assertEqual(
+            COLLECTOR.terminal_for_error(error),
+            ("Rejected", "integrity_rejected"),
+        )
+
+    def test_ready_evidence_plus_nonzero_exit_is_rejected(self):
+        error = COLLECTOR.nonzero_run_error(
+            1, fixture_log(), "host validation failed", "pair 2 neon"
+        )
+        self.assertIsInstance(error, COLLECTOR.IntegrityRejectedError)
+        self.assertIn("after ready current-stats evidence", str(error))
+        self.assertEqual(
+            COLLECTOR.terminal_for_error(error),
+            ("Rejected", "integrity_rejected"),
+        )
+
+    def test_nonzero_exit_without_evidence_is_environment_deferred(self):
+        error = COLLECTOR.nonzero_run_error(
+            1, "", "surface creation unavailable", "pair 3 scalar"
+        )
+        self.assertIsInstance(error, COLLECTOR.EnvironmentPrerequisiteError)
+        self.assertIn("before entering the evidence protocol", str(error))
+        self.assertEqual(
+            COLLECTOR.terminal_for_error(error),
+            ("Deferred", "environment_prerequisite"),
+        )
+
+    def test_host_protocol_marker_without_terminal_is_still_rejected(self):
+        error = COLLECTOR.nonzero_run_error(
+            1,
+            "SURFACE_EXACT_EVIDENCE_BEGIN trace_id=truck\n",
+            "host join failed",
+            "pair 4 neon",
+        )
+        self.assertIsInstance(error, COLLECTOR.IntegrityRejectedError)
+        self.assertIn("after entering the evidence protocol", str(error))
+
     def test_command_uses_strict_evidence_and_no_order_measurement_ticket(self):
         workload = COLLECTOR.Workload(
             {"splat_count": 100}, Path("truck.ply"), {}, Path("trace.json")

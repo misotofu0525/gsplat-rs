@@ -50,6 +50,13 @@ CORRECTNESS_FIELDS = {
     "stable_tie",
 }
 CURRENT_STATS_PREFIX = "SURFACE_CURRENT_STATS_TERMINAL "
+EVIDENCE_PROTOCOL_PREFIXES = (
+    CURRENT_STATS_PREFIX,
+    "SURFACE_EXACT_EVIDENCE_BEGIN ",
+    "SURFACE_EXACT_EVIDENCE_FRAME ",
+    "SURFACE_EXACT_EVIDENCE_CAPTURE ",
+    "SURFACE_EXACT_EVIDENCE_SUMMARY ",
+)
 
 
 def load_module(name: str, path: Path) -> Any:
@@ -276,6 +283,47 @@ def parse_current_stats_log(stdout: str, stderr: str = "") -> list[dict[str, str
                     )
                 )
     return records
+
+
+def nonzero_run_error(
+    returncode: int,
+    stdout: str,
+    stderr: str,
+    context: str,
+) -> ValidationError | None:
+    if returncode == 0:
+        return None
+    entered_protocol = any(
+        line.startswith(EVIDENCE_PROTOCOL_PREFIXES)
+        for stream in (stdout, stderr)
+        for line in stream.splitlines()
+    )
+    if not entered_protocol:
+        return EnvironmentPrerequisiteError(
+            f"{context} exited with {returncode} before entering the evidence protocol"
+        )
+    try:
+        terminals = parse_current_stats_log(stdout, stderr)
+    except ValidationError as error:
+        return IntegrityRejectedError(
+            f"{context} exited with {returncode} after malformed current-stats evidence: {error}"
+        )
+    non_ready = [
+        terminal.get("status", "missing")
+        for terminal in terminals
+        if terminal.get("status") != "ready"
+    ]
+    if non_ready:
+        return IntegrityRejectedError(
+            f"{context} exited with {returncode} after non-ready current-stats terminal: {','.join(non_ready)}"
+        )
+    if terminals:
+        return IntegrityRejectedError(
+            f"{context} exited with {returncode} after ready current-stats evidence"
+        )
+    return IntegrityRejectedError(
+        f"{context} exited with {returncode} after entering the evidence protocol"
+    )
 
 
 def close_enough(left: float, right: float) -> bool:
@@ -718,10 +766,14 @@ def collect(args: argparse.Namespace, repo: Path = REPO_ROOT) -> dict[str, Any]:
                 ended = utc_now()
                 (run_dir / "stdout.log").write_text(completed.stdout, encoding="utf-8")
                 (run_dir / "stderr.log").write_text(completed.stderr, encoding="utf-8")
-                if completed.returncode != 0:
-                    raise EnvironmentPrerequisiteError(
-                        f"pair {pair_index} {lane_name} exited with {completed.returncode}"
-                    )
+                exit_error = nonzero_run_error(
+                    completed.returncode,
+                    completed.stdout,
+                    completed.stderr,
+                    f"pair {pair_index} {lane_name}",
+                )
+                if exit_error is not None:
+                    raise exit_error
                 require(sha256_file(binaries[lane_name]) == build_receipts[lane_name]["binary_sha256"], f"{lane_name} binary changed during collection")
                 require(sha256_file(workload.dataset_path) == workload.dataset["sha256"], "Truck dataset changed during collection")
                 require(sha256_file(workload.trace_path) == workload.trace["file_sha256"], "Truck trace changed during collection")
