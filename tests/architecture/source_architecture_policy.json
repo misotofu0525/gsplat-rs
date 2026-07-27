@@ -3,38 +3,7 @@
   "baseline_commit": "9df0d6cb2e7e7df7ddc95e85d16c416e4e91d4b0",
   "program_task_state": {
     "external_owner_review_allowlist": [],
-    "parallel_execution": {
-      "activation_commit": "7c6409b6cfb79f036596bb96c9688f68b94d9970",
-      "members": [
-        {
-          "task": "B3",
-          "lane": "paired-timing-qualification",
-          "write_allowlist": [
-            "docs/plans/active/2026-07-23-native-render-balanced/progress.md",
-            "tests/perf/collect-balanced-paired-timing.py",
-            "tests/perf/test_collect_balanced_paired_timing.py"
-          ]
-        },
-        {
-          "task": "S1",
-          "lane": "proxy-image-evidence-validator",
-          "write_allowlist": [
-            "docs/plans/active/2026-07-23-native-render-scalable/progress.md",
-            "docs/plans/active/2026-07-23-native-render-scalable/s0-contract.md",
-            "crates/gsplat-hierarchy/src/lib.rs",
-            "crates/gsplat-hierarchy/tests/s1_proxy_fixture.rs",
-            "handbook/VERIFICATION.md",
-            "tests/perf/validate-scalable-proxy-image-gate.py",
-            "tests/perf/test_validate_scalable_proxy_image_gate.py"
-          ]
-        }
-      ],
-      "integration_order": [
-        "paired-timing-qualification",
-        "proxy-image-evidence-validator"
-      ],
-      "reason": "B3 paired timing qualification and S1 fail-closed proxy generation/image preflight touch disjoint owners; neither changes a product default or unlocks later work alone."
-    },
+    "parallel_execution": null,
     "task_catalog": {
       "A0": "A",
       "A1": "A",

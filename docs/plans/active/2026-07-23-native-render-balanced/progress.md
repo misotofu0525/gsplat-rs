@@ -6,13 +6,11 @@
 B0 = Accepted
 B1 = Rejected
 B2 = Rejected
-B3 = Active
+B3 = Rejected
+B4 = Rejected
+B5 = Rejected
+B6 = Rejected
 <!-- gsplat-program-task-states: end -->
-
-<!-- gsplat-program-active-lanes: begin -->
-activation_commit = 7c6409b6cfb79f036596bb96c9688f68b94d9970
-B3 = paired-timing-qualification
-<!-- gsplat-program-active-lanes: end -->
 
 ## B0 authoring slice
 
@@ -947,3 +945,31 @@ three seeded, counterbalanced Exact/candidate pairs over the complete
 canonical validator, but the mixed winner is `inconclusive`; therefore the
 predeclared traffic/timing benefit is unsupported and the candidate cannot
 enter B4. No alternate fp16 field or corrective rerun is started inside B2.
+
+## B3 and Balanced package terminal result (2026-07-27)
+
+B3 `CandidateSigned8BandScale5` is **Rejected** for the Apple M4 / Metal /
+complete Truck scope. At clean commit `cdca16a`, its full-source SH3 Kitsune
+`1920x1080` image/temporal suite passed. The joined representation receipt
+proved that the Resident SH layout changed from 64 to 48 bytes per source and
+reduced Truck's logical Resident SH bytes by `40,659,616`, while depth and
+projected-cache precision remained Exact.
+
+The retained image suite is
+`target/benchmarks/balanced/b3-macos-metal-cdca16a-terminal/`. The paired timing
+suite `target/benchmarks/balanced/b3-truck-macos-metal-cdca16a-terminal/` ran
+the same three seeded, counterbalanced complete-Truck pairs. Candidate-minus-
+Exact frame-wall means were `+0.030419`, `+0.015363`, and `+0.004341` ms. All
+six run artifacts passed the canonical validator and all three pairs selected
+Exact. The candidate therefore consistently loses its terminal metric and is
+not eligible for B4.
+
+B1, B2 and B3 are now all terminal Rejected, so B4 has no Accepted component
+it may legally combine. B4 is **Rejected** without creating an empty or hidden
+Balanced plan. Consequently B5 has no candidate endpoint policy to qualify and
+is **Rejected**, and B6 closes the package **Rejected** with Exact retained as
+the sole product path. This is the clean finite outcome required by B0; it does
+not imply an Exact regression or prevent the independent Scalable package from
+continuing. Q2 must follow its Q0 dependency row and publish
+`product_comparison=not_applicable` rather than inventing a Balanced product
+comparison.

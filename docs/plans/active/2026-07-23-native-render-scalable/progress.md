@@ -8,11 +8,6 @@ S0 = Accepted
 S1 = Active
 <!-- gsplat-program-task-states: end -->
 
-<!-- gsplat-program-active-lanes: begin -->
-activation_commit = 7c6409b6cfb79f036596bb96c9688f68b94d9970
-S1 = proxy-image-evidence-validator
-<!-- gsplat-program-active-lanes: end -->
-
 ## Scope
 
 Package S begins after M8 as a separate Streamed semantic contract. It is not a
