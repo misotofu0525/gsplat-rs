@@ -174,6 +174,23 @@ post-measurement screenshot work are outside the window. A missing queue drain,
 extra submission during the drain, dropped frame or mismatched submission
 identity rejects the run.
 
+Per-frame diagnostic readback is not part of that common interval. Each Exact
+endpoint therefore retains two content-linked artifacts from the same binary,
+scene, trace, camera, resolution and policy configuration:
+
+1. an untimed control artifact proving source membership, live camera,
+   presented images and implementation-specific count/order receipts; and
+2. a timed throughput artifact that disables per-frame current-stats or other
+   readbacks, submits the declared frames continuously, stops drawing, then
+   performs the one terminal queue drain used by both implementations.
+
+The throughput artifact records the control artifact's content identity and
+may not copy its per-frame counts into the timed frames. A run that waits for a
+current-stats terminal between measured submissions is isolated evidence, even
+if its manifest says `sustained_window`, and is Rejected from Q1/Q2 throughput
+comparison. This separation prevents one implementation's richer diagnostics
+from becoming asymmetric benchmark work.
+
 The paired product track uses presented Surface loops with the same declared
 cadence policy. It never compares a browser rAF-limited run with an unthrottled
 native offscreen loop. A separate raw-throughput experiment is admissible only
