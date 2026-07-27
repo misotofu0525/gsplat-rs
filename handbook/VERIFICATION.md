@@ -369,6 +369,8 @@ python3 tests/datasets/test_dataset_tools.py
 python3 tests/perf/validate-dataset-manifests.py
 python3 tests/perf/validate-dataset-manifests.py --verify-available
 bash tests/perf/trace/test-trace-v1.sh
+PYTHONDONTWRITEBYTECODE=1 python3 tests/perf/validate-scalable-proxy-image-gate.py \
+  --preflight-formal
 python3 tests/perf/test_full_quality_experiment.py
 python3 tests/perf/validate-full-quality-experiment.py \
   tests/perf/full-quality-matrix-plan-v1.json --allow-incomplete
@@ -384,6 +386,12 @@ python3 tests/perf/validate-full-quality-experiment.py \
 - The trace test regenerates the `gsplat-camera-trace/v1` fixture and rejects
   hash or matrix-convention drift. A competitive harness must consume the
   explicit matrices or prove its API reconstruction matches them.
+- The S1 formal preflight verifies the pinned validator dependencies, Bonsai
+  authority manifest, any locally available full SH3 source/camera files, and
+  both frozen trace identities. Exit `2` with a machine-readable `Deferred`
+  receipt is the expected finite result while the source, authored-camera
+  review, or either required endpoint artifact is unavailable; it never
+  converts a missing prerequisite into proxy-quality success.
 - The full-quality plan rejects 640x360/640x480 as formal evidence, pins
   desktop/Web to 1920x1080, the connected A065 to its observed 2412x1080
   Surface, and the iOS simulator to its observed 2622x1206 drawable. It also

@@ -218,6 +218,109 @@ impl HierarchyManifest {
         leaves.into_iter().map(|node| node.id).collect()
     }
 
+    /// Derives the three cuts frozen by the S1 proxy-image contract without
+    /// consulting rendered images or caller-provided node choices.
+    ///
+    /// The mixed cut starts from the complete root cut and performs exactly
+    /// two replacements. At each step it selects the active refinable node
+    /// with the smallest `(leaf_range.start, leaf_range.end, node_id)` tuple,
+    /// then atomically substitutes all of that node's direct children.
+    pub fn formal_s1_cuts(&self) -> Result<FormalS1Cuts, HierarchyError> {
+        let complete_leaf_exact = self.canonical_cut(self.leaf_cut());
+        self.validate_cut(&complete_leaf_exact)
+            .map_err(HierarchyError::InvalidCut)?;
+
+        let bootstrap_roots = self.canonical_cut(self.roots.clone());
+        self.validate_cut(&bootstrap_roots)
+            .map_err(HierarchyError::InvalidCut)?;
+
+        let mut mixed_depth_two_replacements = bootstrap_roots.clone();
+        for _ in 0..2 {
+            let selected = mixed_depth_two_replacements
+                .iter()
+                .copied()
+                .find(|id| self.node(*id).is_some_and(|node| !node.is_leaf()))
+                .ok_or(HierarchyError::FormalCutUnavailable(
+                    "hierarchy cannot perform two frozen replacements",
+                ))?;
+            let node = self
+                .node(selected)
+                .ok_or(HierarchyError::FormalCutUnavailable(
+                    "frozen replacement selected an unknown node",
+                ))?;
+            mixed_depth_two_replacements.retain(|id| *id != selected);
+            mixed_depth_two_replacements.extend(node.children.iter().copied());
+            mixed_depth_two_replacements = self.canonical_cut(mixed_depth_two_replacements);
+            self.validate_cut(&mixed_depth_two_replacements)
+                .map_err(HierarchyError::InvalidCut)?;
+        }
+
+        let depths = self.node_depths()?;
+        let selected_depths = mixed_depth_two_replacements
+            .iter()
+            .map(|id| depths[id.0 as usize])
+            .collect::<BTreeSet<_>>();
+        if selected_depths.len() < 2 {
+            return Err(HierarchyError::FormalCutUnavailable(
+                "two frozen replacements did not produce a mixed-depth cut",
+            ));
+        }
+
+        Ok(FormalS1Cuts {
+            complete_leaf_exact,
+            bootstrap_roots,
+            mixed_depth_two_replacements,
+        })
+    }
+
+    fn canonical_cut(&self, mut selected: Vec<NodeId>) -> Vec<NodeId> {
+        selected.sort_by_key(|id| {
+            self.node(*id)
+                .map(|node| (node.leaf_range.start, node.leaf_range.end, node.id))
+                .unwrap_or((u64::MAX, u64::MAX, *id))
+        });
+        selected
+    }
+
+    fn node_depths(&self) -> Result<Vec<u32>, HierarchyError> {
+        let mut depths = vec![None; self.nodes.len()];
+        let mut stack = self
+            .roots
+            .iter()
+            .rev()
+            .map(|root| (*root, 0_u32))
+            .collect::<Vec<_>>();
+        while let Some((id, depth)) = stack.pop() {
+            let node = self.node(id).ok_or(HierarchyError::Malformed(
+                "hierarchy references an unknown node",
+            ))?;
+            let slot = depths
+                .get_mut(id.0 as usize)
+                .ok_or(HierarchyError::Malformed(
+                    "hierarchy references an unknown node",
+                ))?;
+            if slot.replace(depth).is_some() {
+                return Err(HierarchyError::Malformed(
+                    "hierarchy node must have one canonical depth",
+                ));
+            }
+            let child_depth = depth
+                .checked_add(1)
+                .ok_or(HierarchyError::ArithmeticOverflow)?;
+            for child in node.children.iter().rev() {
+                stack.push((*child, child_depth));
+            }
+        }
+        depths
+            .into_iter()
+            .map(|depth| {
+                depth.ok_or(HierarchyError::Malformed(
+                    "all nodes must be reachable from a root",
+                ))
+            })
+            .collect()
+    }
+
     /// Implements the recursive S0 coverage predicate over every root.
     pub fn validate_cut(&self, selected: &[NodeId]) -> Result<(), CutError> {
         let mut set = BTreeSet::new();
@@ -265,6 +368,14 @@ impl HierarchyManifest {
         }
         Ok(())
     }
+}
+
+/// The exact three cut identities frozen before S1 quality measurement.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FormalS1Cuts {
+    pub complete_leaf_exact: Vec<NodeId>,
+    pub bootstrap_roots: Vec<NodeId>,
+    pub mixed_depth_two_replacements: Vec<NodeId>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -550,6 +661,30 @@ pub fn build_authored_proxy_hierarchy(
     Ok(bundle)
 }
 
+/// Builds an S1 formal-quality candidate and proves that the source is full
+/// SH3 and the hierarchy can materialize every predeclared cut.
+///
+/// This is still offline authoring evidence. It does not render images or
+/// promote S1 without the separately frozen two-endpoint image gate.
+pub fn build_formal_s1_proxy_hierarchy(
+    source: &[DrawableGaussian],
+    config: BuildConfig,
+) -> Result<(HierarchyBundle, FormalS1Cuts), HierarchyError> {
+    if let Some((index, gaussian)) = source
+        .iter()
+        .enumerate()
+        .find(|(_, gaussian)| gaussian.sh_degree != MAX_SH_DEGREE)
+    {
+        return Err(HierarchyError::FormalSourceRequiresSh3 {
+            actual: gaussian.sh_degree,
+            index,
+        });
+    }
+    let bundle = build_authored_proxy_hierarchy(source, config)?;
+    let cuts = bundle.manifest.formal_s1_cuts()?;
+    Ok((bundle, cuts))
+}
+
 #[derive(Clone, Debug)]
 struct DraftNode {
     id: NodeId,
@@ -614,6 +749,11 @@ pub enum HierarchyError {
         actual: u32,
         index: usize,
     },
+    FormalSourceRequiresSh3 {
+        actual: u32,
+        index: usize,
+    },
+    FormalCutUnavailable(&'static str),
     NonDrawableNode(NodeId),
     InvalidSchema(u32),
     SourceCountMismatch {
@@ -659,6 +799,11 @@ impl fmt::Display for HierarchyError {
                 formatter,
                 "source Gaussian {index} has SH degree {actual}, expected {expected}"
             ),
+            Self::FormalSourceRequiresSh3 { actual, index } => write!(
+                formatter,
+                "formal S1 source Gaussian {index} has SH degree {actual}, expected complete SH3"
+            ),
+            Self::FormalCutUnavailable(message) => formatter.write_str(message),
             Self::NonDrawableNode(id) => {
                 write!(formatter, "node {} contains a non-drawable Gaussian", id.0)
             }

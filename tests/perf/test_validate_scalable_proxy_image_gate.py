@@ -738,6 +738,26 @@ class ScalableProxyImageGateTests(unittest.TestCase):
         self.assertIs(receipt["pass"], True)
         self.assertEqual(receipt["validator"]["balanced_image_gate_sha256"], VALIDATOR.BALANCED_VALIDATOR_SHA256)
 
+    def test_formal_preflight_is_finite_and_never_promotes_missing_endpoints(self) -> None:
+        receipt = VALIDATOR.formal_collection_preflight()
+        self.assertEqual(receipt["schema"], VALIDATOR.PREFLIGHT_SCHEMA)
+        self.assertEqual(receipt["decision"], "Deferred")
+        self.assertIs(receipt["pass"], False)
+        self.assertIs(receipt["s2_s5_unlocked"], False)
+        available = {check["name"] for check in receipt["checks"]}
+        self.assertIn("authority:bonsai-dataset-manifest", available)
+        self.assertIn("trace:apple_m4_metal", available)
+        self.assertIn("trace:nothing_a065_vulkan", available)
+        missing = {item["name"] for item in receipt["missing_prerequisites"]}
+        self.assertIn("authority:authored-camera-review", missing)
+        self.assertIn("endpoint:apple_m4_metal", missing)
+        self.assertIn("endpoint:nothing_a065_vulkan", missing)
+
+        output = io.StringIO()
+        with redirect_stdout(output):
+            self.assertEqual(VALIDATOR.main(["--preflight-formal"]), 2)
+        self.assertEqual(json.loads(output.getvalue())["decision"], "Deferred")
+
     def test_cli_emits_explicit_rejected_and_deferred_decisions(self) -> None:
         rejected = copy.deepcopy(self.manifest)
         rejected["cuts"][0]["coverage_sha256"] = "0" * 64

@@ -22,9 +22,10 @@ from typing import Any
 
 
 SCHEMA = "gsplat-scalable-proxy-image-gate/v1"
+PREFLIGHT_SCHEMA = "gsplat-scalable-proxy-image-gate-preflight/v1"
 VALIDATOR_VERSION = 1
 BALANCED_VALIDATOR_SHA256 = (
-    "4866f4457ab14232daa8b1220573ff8d48c325afe1bfae6aef54cdcd1afee435"
+    "6c1e61edf97096ecb8dd1555cc9553353d6a12dd77373c643f5a65a4138c0dfa"
 )
 BENCHMARK_VALIDATOR_SHA256 = (
     "3a47dc9221e28a13985928c531d53143934f62313f9d8d257758fb1befbecc6c"
@@ -67,6 +68,22 @@ FORMAL_SOURCE = {
     "bytes": 308_716_644,
     "splat_count": 1_244_819,
     "sh_degree": 3,
+}
+FORMAL_DATASET_POLICY = {
+    "qualification_status": "local_candidate",
+    "source_url": "https://repo-sam.inria.fr/fungraph/3d-gaussian-splatting/datasets/pretrained/models.zip",
+    "archive_entry": "bonsai/point_cloud/iteration_30000/point_cloud.ply",
+    "source_repository": "https://github.com/graphdeco-inria/gaussian-splatting",
+    "source_repository_license_url": "https://github.com/graphdeco-inria/gaussian-splatting/blob/main/LICENSE.md",
+    "upstream_dataset": "Mip-NeRF 360 indoor",
+    "upstream_dataset_url": "https://jonbarron.info/mipnerf360/",
+    "fetch_script": "tests/datasets/fetch_inria_3dgs_scenes.py",
+    "license": None,
+    "license_context": "the source repository publishes a research/evaluation software license, but the pretrained archive does not state an asset-specific model license",
+    "attribution": "Official pretrained 3D Gaussian Splatting model by Kerbl et al., Inria GRAPHDECO and MPII",
+    "allowed_use": "local research/evaluation only",
+    "redistribution": "prohibited unless model and upstream dataset rights are clarified",
+    "conversion": "none",
 }
 FORMAL_CAMERA = {
     "path": "tests/datasets/external/inria_3dgs/bonsai/cameras.json",
@@ -275,6 +292,254 @@ def validate_dependencies(manifest: dict[str, Any]) -> None:
             reject(f"manifest.validator_dependencies.{key} mismatch")
 
 
+def validate_pinned_dependencies() -> list[dict[str, Any]]:
+    checks = []
+    for path, pinned in (
+        (BALANCED_VALIDATOR_PATH, BALANCED_VALIDATOR_SHA256),
+        (BENCHMARK_VALIDATOR_PATH, BENCHMARK_VALIDATOR_SHA256),
+    ):
+        actual = sha256_file(path)
+        if actual != pinned:
+            reject(f"pinned dependency {path.name} has drifted from S0 section 9.4")
+        checks.append(
+            {
+                "name": f"validator:{path.name}",
+                "status": "available",
+                "sha256": actual,
+            }
+        )
+    return checks
+
+
+def load_json_file(path: pathlib.Path, context: str) -> Any:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        reject(f"cannot read {context}: {error}")
+
+
+def validate_frozen_trace(
+    path: pathlib.Path, endpoint_id: str, expected: dict[str, Any]
+) -> dict[str, Any]:
+    actual_file_hash = sha256_file(path)
+    if actual_file_hash != expected["trace_file_sha256"]:
+        reject(f"frozen {endpoint_id} trace file SHA-256 mismatch")
+    trace = load_json_file(path, f"frozen {endpoint_id} trace")
+    if not isinstance(trace, dict) or trace.get("schema") != "gsplat-camera-trace/v1":
+        reject(f"frozen {endpoint_id} trace schema mismatch")
+    if trace.get("content_sha256") != expected["trace_content_sha256"]:
+        reject(f"frozen {endpoint_id} trace content SHA-256 mismatch")
+    if trace.get("display") != {
+        "width": expected["width"],
+        "height": expected["height"],
+    }:
+        reject(f"frozen {endpoint_id} trace resolution mismatch")
+    derivation = trace.get("derivation")
+    if not isinstance(derivation, dict):
+        reject(f"frozen {endpoint_id} trace derivation is missing")
+    if derivation.get("status") != "candidate_requires_manual_image_review":
+        reject(f"frozen {endpoint_id} trace changed its manual-review boundary")
+    source_identity = {
+        "local_path": derivation.get("source_path"),
+        "sha256": derivation.get("source_sha256"),
+        "bytes": derivation.get("source_bytes"),
+        "splat_count": derivation.get("source_splat_count"),
+        "sh_degree": derivation.get("source_sh_degree"),
+    }
+    if source_identity != {
+        key: FORMAL_SOURCE[key]
+        for key in ("local_path", "sha256", "bytes", "splat_count", "sh_degree")
+    }:
+        reject(f"frozen {endpoint_id} trace source authority mismatch")
+    views = derivation.get("views")
+    if (
+        not isinstance(views, list)
+        or any(not isinstance(view, dict) for view in views)
+        or [view.get("source_camera_id") for view in views] != [0, 146]
+    ):
+        reject(f"frozen {endpoint_id} trace must retain authored cameras 0/146")
+    camera = derivation.get("official_camera_metadata")
+    if not isinstance(camera, dict) or {
+        "path": camera.get("local_path"),
+        "sha256": camera.get("sha256"),
+        "bytes": camera.get("bytes"),
+        "entry_count": camera.get("entry_count"),
+    } != {key: FORMAL_CAMERA[key] for key in ("path", "sha256", "bytes", "entry_count")}:
+        reject(f"frozen {endpoint_id} trace camera authority mismatch")
+    return {
+        "name": f"trace:{endpoint_id}",
+        "status": "available",
+        "file_sha256": actual_file_hash,
+        "content_sha256": trace["content_sha256"],
+    }
+
+
+def read_ply_header_identity(path: pathlib.Path) -> tuple[int, int]:
+    header = bytearray()
+    try:
+        with path.open("rb") as handle:
+            while b"end_header\n" not in header:
+                chunk = handle.read(4096)
+                if not chunk or len(header) + len(chunk) > 1024 * 1024:
+                    reject("formal Bonsai source has no bounded PLY header")
+                header.extend(chunk)
+    except OSError as error:
+        reject(f"cannot read formal Bonsai source header: {error}")
+    try:
+        text = bytes(header).split(b"end_header\n", 1)[0].decode("ascii")
+    except UnicodeDecodeError as error:
+        reject(f"formal Bonsai source header is not ASCII: {error}")
+    vertex_count = None
+    rest_count = 0
+    for line in text.splitlines():
+        if line.startswith("element vertex "):
+            try:
+                vertex_count = int(line.split()[2])
+            except (IndexError, ValueError):
+                reject("formal Bonsai source vertex count is malformed")
+        elif line.startswith("property ") and line.split()[-1].startswith("f_rest_"):
+            rest_count += 1
+    if vertex_count is None:
+        reject("formal Bonsai source vertex count is missing")
+    degree_by_rest = {0: 0, 9: 1, 24: 2, 45: 3}
+    if rest_count not in degree_by_rest:
+        reject(f"formal Bonsai source SH rest count {rest_count} is invalid")
+    return vertex_count, degree_by_rest[rest_count]
+
+
+def formal_collection_preflight() -> dict[str, Any]:
+    checks = validate_pinned_dependencies()
+    missing = []
+
+    dataset_path = REPO_ROOT / "tests/perf/datasets/bonsai.local-candidate.json"
+    dataset = load_json_file(dataset_path, "frozen Bonsai dataset manifest")
+    if not isinstance(dataset, dict) or dataset.get("schema") != "gsplat-dataset/v1":
+        reject("frozen Bonsai dataset manifest schema mismatch")
+    dataset_identity = {
+        "dataset_id": dataset.get("id"),
+        "local_path": dataset.get("local_path"),
+        "sha256": dataset.get("sha256"),
+        "bytes": dataset.get("bytes"),
+        "splat_count": dataset.get("splat_count"),
+        "sh_degree": dataset.get("sh_degree"),
+    }
+    if dataset_identity != FORMAL_SOURCE:
+        reject("frozen Bonsai dataset manifest identity mismatch")
+    if {key: dataset.get(key) for key in FORMAL_DATASET_POLICY} != FORMAL_DATASET_POLICY:
+        reject("Bonsai authority provenance or local-only rights scope mismatch")
+    checks.append(
+        {
+            "name": "authority:bonsai-dataset-manifest",
+            "status": "available",
+            "sha256": sha256_file(dataset_path),
+            "rights_scope": "local_research_evaluation_only",
+        }
+    )
+
+    source_path = REPO_ROOT / FORMAL_SOURCE["local_path"]
+    if source_path.exists():
+        if source_path.stat().st_size != FORMAL_SOURCE["bytes"]:
+            reject("formal Bonsai source byte count mismatch")
+        source_hash = sha256_file(source_path)
+        if source_hash != FORMAL_SOURCE["sha256"]:
+            reject("formal Bonsai source SHA-256 mismatch")
+        splat_count, sh_degree = read_ply_header_identity(source_path)
+        if (splat_count, sh_degree) != (
+            FORMAL_SOURCE["splat_count"],
+            FORMAL_SOURCE["sh_degree"],
+        ):
+            reject("formal Bonsai source count or complete SH3 identity mismatch")
+        checks.append(
+            {
+                "name": "authority:bonsai-source",
+                "status": "available",
+                "sha256": source_hash,
+                "splat_count": splat_count,
+                "sh_degree": sh_degree,
+            }
+        )
+    else:
+        missing.append(
+            {
+                "name": "authority:bonsai-source",
+                "reason": f"missing {FORMAL_SOURCE['local_path']}",
+            }
+        )
+
+    camera_path = REPO_ROOT / FORMAL_CAMERA["path"]
+    if camera_path.exists():
+        if camera_path.stat().st_size != FORMAL_CAMERA["bytes"]:
+            reject("formal Bonsai camera metadata byte count mismatch")
+        camera_hash = sha256_file(camera_path)
+        if camera_hash != FORMAL_CAMERA["sha256"]:
+            reject("formal Bonsai camera metadata SHA-256 mismatch")
+        camera_records = load_json_file(camera_path, "formal Bonsai camera metadata")
+        if not isinstance(camera_records, list) or len(camera_records) != FORMAL_CAMERA["entry_count"]:
+            reject("formal Bonsai camera metadata entry count mismatch")
+        camera_ids = set()
+        for index, record in enumerate(camera_records):
+            if not isinstance(record, dict):
+                reject(f"formal Bonsai camera metadata entry {index} must be an object")
+            camera_id = record.get("id")
+            if isinstance(camera_id, bool) or not isinstance(camera_id, int) or camera_id < 0:
+                reject(f"formal Bonsai camera metadata entry {index} has an invalid id")
+            camera_ids.add(camera_id)
+        if not set(FORMAL_CAMERA["selected_camera_ids"]).issubset(camera_ids):
+            reject("formal Bonsai camera metadata is missing cameras 0/146")
+        checks.append(
+            {
+                "name": "authority:bonsai-cameras-0-146",
+                "status": "available",
+                "sha256": camera_hash,
+                "entry_count": len(camera_records),
+            }
+        )
+    else:
+        missing.append(
+            {
+                "name": "authority:bonsai-cameras-0-146",
+                "reason": f"missing {FORMAL_CAMERA['path']}",
+            }
+        )
+
+    for endpoint_id, expected in FORMAL_ENDPOINTS.items():
+        checks.append(
+            validate_frozen_trace(REPO_ROOT / expected["trace_path"], endpoint_id, expected)
+        )
+
+    missing.extend(
+        [
+            {
+                "name": "authority:authored-camera-review",
+                "reason": "no approved review receipt binds both frozen trace hashes",
+            },
+            {
+                "name": "endpoint:apple_m4_metal",
+                "reason": "no retained formal proxy-image gate artifact was supplied",
+            },
+            {
+                "name": "endpoint:nothing_a065_vulkan",
+                "reason": "no retained formal proxy-image gate artifact was supplied",
+            },
+        ]
+    )
+    return {
+        "schema": PREFLIGHT_SCHEMA,
+        "decision": "Deferred",
+        "pass": False,
+        "scope": "formal_quality_collection_preflight",
+        "checks": checks,
+        "missing_prerequisites": missing,
+        "s2_s5_unlocked": False,
+        "validator": {
+            "version": VALIDATOR_VERSION,
+            "sha256": sha256_file(pathlib.Path(__file__).resolve()),
+            "balanced_image_gate_sha256": BALANCED_VALIDATOR_SHA256,
+            "benchmark_artifact_validator_sha256": BENCHMARK_VALIDATOR_SHA256,
+        },
+    }
+
+
 def validate_authority(
     manifest: dict[str, Any],
     artifact_root: pathlib.Path,
@@ -384,6 +649,8 @@ def validate_authority(
         }
         if actual_source != FORMAL_SOURCE:
             reject("formal_quality source identity does not match frozen Bonsai")
+        if {key: dataset.get(key) for key in FORMAL_DATASET_POLICY} != FORMAL_DATASET_POLICY:
+            reject("formal_quality Bonsai authority provenance or rights scope mismatch")
         actual_camera = {
             "path": camera_path,
             "sha256": camera_sha256,
@@ -1147,8 +1414,39 @@ def decision_receipt(decision: str, passed: bool, **extra: Any) -> str:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("manifest", type=pathlib.Path)
+    parser.add_argument("manifest", type=pathlib.Path, nargs="?")
+    parser.add_argument(
+        "--preflight-formal",
+        action="store_true",
+        help=(
+            "check the frozen local Bonsai/camera/trace prerequisites and emit "
+            "a finite Deferred receipt without fabricating missing endpoint evidence"
+        ),
+    )
     args = parser.parse_args(argv)
+    if args.preflight_formal:
+        if args.manifest is not None:
+            parser.error("--preflight-formal does not accept an evidence manifest")
+        try:
+            print(json.dumps(formal_collection_preflight(), sort_keys=True))
+        except ValidationError as error:
+            print(
+                json.dumps(
+                    {
+                        "schema": PREFLIGHT_SCHEMA,
+                        "decision": "Rejected",
+                        "pass": False,
+                        "scope": "formal_quality_collection_preflight",
+                        "reason": str(error),
+                        "s2_s5_unlocked": False,
+                    },
+                    sort_keys=True,
+                )
+            )
+            return 1
+        return 2
+    if args.manifest is None:
+        parser.error("manifest is required unless --preflight-formal is used")
     try:
         result = validate(args.manifest)
     except DeferredEvidence as error:

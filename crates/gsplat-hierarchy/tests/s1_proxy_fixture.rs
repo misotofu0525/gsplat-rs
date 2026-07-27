@@ -1,6 +1,6 @@
 use gsplat_hierarchy::{
     BuildConfig, CutError, DrawableGaussian, HierarchyError, LeafRange, NodeId,
-    build_authored_proxy_hierarchy,
+    build_authored_proxy_hierarchy, build_formal_s1_proxy_hierarchy,
 };
 
 fn sh3_rest(seed: f32) -> [f32; 45] {
@@ -37,6 +37,18 @@ fn fixture_source() -> Vec<DrawableGaussian> {
             sh_rest: sh3_rest(0.4),
         },
     ]
+}
+
+fn formal_fixture_source(count: usize) -> Vec<DrawableGaussian> {
+    let templates = fixture_source();
+    (0..count)
+        .map(|index| {
+            let mut gaussian = templates[index % templates.len()];
+            gaussian.position[0] += index as f32 * 0.75;
+            gaussian.sh_rest[0] += index as f32 * 0.001;
+            gaussian
+        })
+        .collect()
 }
 
 fn assert_f32_bits_equal(actual: f32, expected: f32, field: &str) {
@@ -284,4 +296,80 @@ fn manifest_encoding_normalizes_root_and_page_order() {
 
     assert_eq!(forward.canonical_bytes(), reversed.canonical_bytes());
     assert_eq!(forward.content_hash(), reversed.content_hash());
+}
+
+#[test]
+fn formal_s1_builder_derives_frozen_cuts_before_images() {
+    let source = formal_fixture_source(8);
+    let (bundle, cuts) = build_formal_s1_proxy_hierarchy(
+        &source,
+        BuildConfig {
+            source_leaves_per_node: 1,
+        },
+    )
+    .expect("formal S1 hierarchy");
+
+    assert_eq!(cuts.complete_leaf_exact, bundle.manifest.leaf_cut());
+    assert_eq!(cuts.bootstrap_roots, bundle.manifest.roots);
+    assert_eq!(cuts.bootstrap_roots.len(), 1);
+    assert_eq!(cuts.mixed_depth_two_replacements.len(), 3);
+
+    for cut in [
+        &cuts.complete_leaf_exact,
+        &cuts.bootstrap_roots,
+        &cuts.mixed_depth_two_replacements,
+    ] {
+        bundle
+            .manifest
+            .validate_cut(cut)
+            .expect("frozen cut retains complete recursive coverage");
+        bundle
+            .materialize_cut(&source, cut)
+            .expect("frozen cut has valid content-addressed pages");
+    }
+
+    let mixed_ranges = cuts
+        .mixed_depth_two_replacements
+        .iter()
+        .map(|id| bundle.manifest.node(*id).expect("mixed node").leaf_range)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        mixed_ranges,
+        vec![
+            LeafRange { start: 0, end: 2 },
+            LeafRange { start: 2, end: 4 },
+            LeafRange { start: 4, end: 8 },
+        ]
+    );
+}
+
+#[test]
+fn formal_s1_builder_fails_closed_for_downgraded_sh_or_shallow_hierarchy() {
+    let mut downgraded = formal_fixture_source(8);
+    downgraded[3].sh_degree = 2;
+    assert_eq!(
+        build_formal_s1_proxy_hierarchy(
+            &downgraded,
+            BuildConfig {
+                source_leaves_per_node: 1,
+            }
+        ),
+        Err(HierarchyError::FormalSourceRequiresSh3 {
+            actual: 2,
+            index: 3,
+        })
+    );
+
+    let shallow = formal_fixture_source(2);
+    assert_eq!(
+        build_formal_s1_proxy_hierarchy(
+            &shallow,
+            BuildConfig {
+                source_leaves_per_node: 1,
+            }
+        ),
+        Err(HierarchyError::FormalCutUnavailable(
+            "hierarchy cannot perform two frozen replacements"
+        ))
+    );
 }

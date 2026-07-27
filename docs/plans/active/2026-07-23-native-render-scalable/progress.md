@@ -188,17 +188,46 @@ The B1 validator repair that admits the valid initial
 `viewport_generation = 0` changed the hash of the shared Balanced validator.
 S1 correctly failed closed rather than silently using the new dependency; the
 S0 contract and S1 validator pin now name the repaired hash
-`4866f4457ab14232daa8b1220573ff8d48c325afe1bfae6aef54cdcd1afee435`.
-The repair leaves the shared image metric, artifact/path confinement,
-resolution and Exactness rules unchanged. A focused regression now verifies
-that the S0 contract text, S1 pin and actual shared-validator bytes all agree,
-so any later unreviewed drift fails at the dependency identity rather than
-masking the remaining S1 assertions. The hierarchy fixture tests (7), S1 gate
-tests (15) and Balanced validator tests (42) pass after this maintenance.
+`6c1e61edf97096ecb8dd1555cc9553353d6a12dd77373c643f5a65a4138c0dfa`.
+The repair and the later Balanced-only depth-profile registry leave the shared
+image metric, artifact/path confinement, resolution and Exactness rules
+unchanged. A focused regression verifies that the S0 contract text, S1 pin and
+actual shared-validator bytes agree, so later drift fails at dependency
+identity rather than masking the remaining S1 assertions.
 
 This is dependency identity maintenance only; it does not create proxy image
 evidence, revise the frozen S1 thresholds or unlock S2--S5. **S1 remains
 Active**.
+
+## S1 Bonsai proxy-quality closure checkpoint
+
+The offline builder now has one formal S1 entrypoint layered over the retained
+generic structural builder. It rejects any source Gaussian below complete SH3,
+derives `complete_leaf_exact`, `bootstrap_roots`, and
+`mixed_depth_two_replacements` before images are available, applies the frozen
+smallest-range replacement rule exactly twice, validates recursive coverage
+after each replacement, and rejects a hierarchy that cannot produce at least
+two selected depths. The complete leaf path continues to validate every page
+and reproduce every source Gaussian bit-for-bit. This does not add a renderer
+consumer, runtime hierarchy, S2 source, product default, FFI, or public product
+API.
+
+The S1 image validator also provides a read-only formal collection preflight.
+It binds the current shared-validator hashes, committed Bonsai authority
+manifest, complete-SH3 PLY identity when available, official camera metadata
+when available, and both frozen trace file/content hashes. It emits a
+machine-readable `Deferred` receipt with exact missing prerequisites and keeps
+`s2_s5_unlocked=false`; malformed local authority or hash drift is `Rejected`.
+It never synthesizes pages, images, counts, review approval, or endpoint runs.
+
+At this checkpoint, the committed Bonsai dataset manifest and both frozen
+trace identities are available. The exact Bonsai PLY, official `cameras.json`,
+approved authored-camera review, Apple M4 formal proxy-image artifact, and
+physical A065 formal proxy-image artifact are unavailable in this worktree.
+The formal collection preflight is therefore **Deferred** at those named
+boundaries. Builder and validator behavior can close locally, but no Bonsai
+proxy images or threshold result exist, aggregate S1 remains Active, and
+S2--S5 remain locked.
 
 ## Ordered implementation ledger
 
