@@ -230,6 +230,189 @@ frames_path.write_text("\n".join(json.dumps(frame) for frame in frames) + "\n")
 PY
 python3 "$VALIDATOR" "$TMP_DIR/unavailable-render-counts"
 
+cp -R "$TMP_DIR/unavailable-render-counts" "$TMP_DIR/bound-control-counts"
+python3 - "$TMP_DIR/bound-control-counts/manifest.json" <<'PY'
+import json, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+value = json.loads(path.read_text())
+value["renderer"]["count_semantics"] = "bound_current_stats_control_artifact"
+path.write_text(json.dumps(value))
+PY
+python3 "$VALIDATOR" "$TMP_DIR/bound-control-counts"
+
+cp -R "$TMP_DIR/bound-control-counts" "$TMP_DIR/terminal-queue-throughput-valid"
+python3 - "$TMP_DIR/terminal-queue-throughput-valid" <<'PY'
+import json, pathlib, sys
+root = pathlib.Path(sys.argv[1])
+manifest_path = root / "manifest.json"
+manifest = json.loads(manifest_path.read_text())
+manifest["timing"] = {"performance_evidence": True}
+manifest["ordering_window"] = {
+    "terminal_current_stats_receipts": 2,
+    "measured_submit_count": 5,
+    "terminal_queue_done_count": 1,
+    "warmup_queue_done_count": 1,
+    "last_measured_ticket": 23,
+    "queue_done_proven": True,
+    "first_measured_input_monotonic_ms": 5,
+    "first_measured_submit_monotonic_ms": 8,
+    "last_measured_submit_monotonic_ms": 12,
+    "last_measured_terminal_monotonic_ms": 15,
+    "input_to_first_submit_ms": 3,
+    "submit_span_ms": 4,
+    "terminal_tail_ms": 3,
+    "terminal_window_ms": 10,
+}
+manifest["benchmark_window"] = {
+    "mode": "terminal_queue_throughput_window",
+    "evidence_role": "cross_implementation_terminal_queue_throughput",
+    "performance_evidence": True,
+    "current_stats_policy": "one_untimed_warmup_boundary_and_one_final_measured_receipt",
+    "terminal_policy": "drain_warmup_before_first_measured_input_and_stop_after_final_measured_submit",
+    "configuration_sha256": "c" * 64,
+    "control_artifact_identity": {
+        "run_id": "control-fixture",
+        "configuration_sha256": "c" * 64,
+    },
+    "warmup_submit_count": 2,
+    "measured_submit_count": 5,
+    "measured_wait_count_before_final_submit": 0,
+    "warmup_terminal_receipt_submission_count": 1,
+    "warmup_terminal_receipt_terminal_count": 1,
+    "terminal_current_stats_submission_count": 1,
+    "terminal_current_stats_terminal_count": 1,
+    "warmup_boundary_current_stats_ticket": 11,
+    "final_measured_current_stats_ticket": 23,
+    "draw_count_at_warmup_drain_start": 2,
+    "draw_count_at_warmup_drain_completion": 2,
+    "draw_count_at_final_drain_start": 7,
+    "draw_count_at_completion": 7,
+    "first_measured_input_monotonic_ms": 5,
+    "first_measured_submit_monotonic_ms": 8,
+    "last_measured_submit_monotonic_ms": 12,
+    "last_measured_terminal_monotonic_ms": 15,
+    "input_to_first_submit_ms": 3,
+    "submit_span_ms": 4,
+    "terminal_tail_ms": 3,
+    "terminal_window_ms": 10,
+    "warmup_terminal_receipt": {
+        "phase": "warmup_boundary",
+        "ticket": 11,
+        "status": "ready",
+        "plan": "cpu_post_sort",
+        "requested_at_monotonic_ms": 1,
+        "submitted_at_monotonic_ms": 2,
+        "terminal_at_monotonic_ms": 4,
+    },
+    "terminal_receipt": {
+        "phase": "final_measured",
+        "ticket": 23,
+        "status": "ready",
+        "plan": "cpu_post_sort",
+        "requested_at_monotonic_ms": 11,
+        "submitted_at_monotonic_ms": 12,
+        "terminal_at_monotonic_ms": 15,
+    },
+    "terminal_receipt_overhead": {
+        "kind": "renderer_current_stats_same_submission_map_v1",
+        "readback_buffer_bytes": 8,
+        "encoded_copy_bytes": 4,
+        "extra_queue_submissions": 0,
+        "map_async_result_required": True,
+        "included_in_terminal_window": True,
+        "warmup_terminal_boundary": "same_submission_result_ready_before_first_measured_input",
+        "residual_warmup_queue_tail": "excluded",
+    },
+    "exact_adaptive_measured": [{
+        "state": "cpu_learning",
+        "plan": "cpu_post_sort",
+        "projected_state": "disabled",
+        "projected_execution": "candidate",
+    } for _ in range(5)],
+}
+manifest_path.write_text(json.dumps(manifest))
+
+identity_fields = (
+    "current_stats_ticket",
+    "current_stats_plan",
+    "current_stats_scene_generation",
+    "current_stats_camera_revision",
+    "current_stats_viewport_generation",
+    "current_stats_contract_generation",
+    "current_stats_plan_set_generation",
+    "current_stats_order_generation",
+    "current_stats_raster_generation",
+    "current_stats_encode_attempt",
+    "current_stats_presentation_sequence",
+)
+frames_path = root / "frames.jsonl"
+frames = [json.loads(line) for line in frames_path.read_text().splitlines() if line]
+for frame in frames:
+    frame["current_stats_submission"] = "not_requested"
+    for field in identity_fields:
+        frame[field] = None
+frames[-1].update({
+    "current_stats_submission": "issued",
+    "current_stats_ticket": 23,
+    "current_stats_plan": "cpu_post_sort",
+    "current_stats_scene_generation": 1,
+    "current_stats_camera_revision": 5,
+    "current_stats_viewport_generation": 1,
+    "current_stats_contract_generation": 1,
+    "current_stats_plan_set_generation": 1,
+    "current_stats_order_generation": 5,
+    "current_stats_raster_generation": 5,
+    "current_stats_encode_attempt": 7,
+    "current_stats_presentation_sequence": 7,
+})
+frames_path.write_text("\n".join(json.dumps(frame) for frame in frames) + "\n")
+PY
+python3 "$VALIDATOR" "$TMP_DIR/terminal-queue-throughput-valid"
+
+cp -R "$TMP_DIR/terminal-queue-throughput-valid" "$TMP_DIR/terminal-queue-warmup-tail"
+python3 - "$TMP_DIR/terminal-queue-warmup-tail/manifest.json" <<'PY'
+import json, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+value = json.loads(path.read_text())
+value["benchmark_window"]["warmup_terminal_receipt"]["terminal_at_monotonic_ms"] = 6
+path.write_text(json.dumps(value))
+PY
+if python3 "$VALIDATOR" "$TMP_DIR/terminal-queue-warmup-tail" >"$TMP_DIR/terminal-queue-warmup-tail.out" 2>&1; then
+  echo "expected residual warmup queue tail to fail" >&2
+  exit 1
+fi
+grep -Fq 'did not drain warmup before measured input' "$TMP_DIR/terminal-queue-warmup-tail.out"
+
+cp -R "$TMP_DIR/terminal-queue-throughput-valid" "$TMP_DIR/terminal-queue-omits-first-input"
+python3 - "$TMP_DIR/terminal-queue-omits-first-input/manifest.json" <<'PY'
+import json, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+value = json.loads(path.read_text())
+value["benchmark_window"]["terminal_window_ms"] = 7
+value["ordering_window"]["terminal_window_ms"] = 7
+path.write_text(json.dumps(value))
+PY
+if python3 "$VALIDATOR" "$TMP_DIR/terminal-queue-omits-first-input" >"$TMP_DIR/terminal-queue-omits-first-input.out" 2>&1; then
+  echo "expected terminal window that omits first-frame CPU/encode to fail" >&2
+  exit 1
+fi
+grep -Fq 'benchmark_window.terminal_window_ms mismatch' "$TMP_DIR/terminal-queue-omits-first-input.out"
+
+cp -R "$TMP_DIR/terminal-queue-throughput-valid" "$TMP_DIR/terminal-queue-early-observer"
+python3 - "$TMP_DIR/terminal-queue-early-observer/frames.jsonl" <<'PY'
+import json, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+frames = [json.loads(line) for line in path.read_text().splitlines() if line]
+frames[0]["current_stats_submission"] = "issued"
+frames[0]["current_stats_ticket"] = 9
+path.write_text("\n".join(json.dumps(frame) for frame in frames) + "\n")
+PY
+if python3 "$VALIDATOR" "$TMP_DIR/terminal-queue-early-observer" >"$TMP_DIR/terminal-queue-early-observer.out" 2>&1; then
+  echo "expected a pre-final measured observer to fail" >&2
+  exit 1
+fi
+grep -Fq 'frame 0 requested current stats' "$TMP_DIR/terminal-queue-early-observer.out"
+
 cp -R "$TMP_DIR/unavailable-render-counts" "$TMP_DIR/unlisted-render-counts"
 python3 - "$TMP_DIR/unlisted-render-counts/manifest.json" <<'PY'
 import json, pathlib, sys

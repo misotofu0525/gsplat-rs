@@ -976,6 +976,12 @@ test("GsplatWebRenderer exposes renderer-owned Exact current-stats receipts", ()
   });
 });
 
+test("GsplatWebRenderer does not expose a benchmark-only terminal fence", () => {
+  const renderer = new GsplatWebRenderer(makeNativeRenderer());
+  assert.equal(renderer.requestTerminalQueueFence, undefined);
+  assert.equal(renderer.pollTerminalQueueFence, undefined);
+});
+
 test("GsplatWebRenderer keeps pending Exact V/D counts unavailable", () => {
   const renderer = new GsplatWebRenderer(makeNativeRenderer({
     renderFrame() {

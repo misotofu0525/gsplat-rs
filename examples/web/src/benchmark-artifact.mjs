@@ -52,8 +52,15 @@ export function appendBenchmarkSample(collector, sample) {
     frame.exact_contributor_compaction = sample.exact_contributor_compaction;
   }
   if (!Number.isSafeInteger(frame.elapsed_ns) || frame.elapsed_ns < 0) throw new TypeError("elapsed_ns is invalid");
-  if (!Number.isSafeInteger(frame.visible) || frame.visible < 0) throw new TypeError("visible is invalid");
-  if (!Number.isSafeInteger(frame.drawn) || frame.drawn < 0) throw new TypeError("drawn is invalid");
+  const countsUnavailable = frame.visible === null && frame.drawn === null;
+  if ((frame.visible === null) !== (frame.drawn === null)) {
+    throw new TypeError("visible/drawn availability must match");
+  }
+  if (!countsUnavailable
+      && (!Number.isSafeInteger(frame.visible) || frame.visible < 0
+        || !Number.isSafeInteger(frame.drawn) || frame.drawn < 0)) {
+    throw new TypeError("visible/drawn must both be non-negative integers or both null");
+  }
   if (contributorPresent) {
     if (!Number.isSafeInteger(frame.contributor) || frame.contributor < 0) {
       throw new TypeError("contributor is invalid");
@@ -279,7 +286,12 @@ export function benchmarkResolutionEvidence(receipts, requestedWidth, requestedH
 export function legacyAverages(collector) {
   const count = collector.samples.length;
   if (count === 0) return { count: 0 };
-  const average = (key) => collector.samples.reduce((total, sample) => total + sample[key], 0) / count;
+  const average = (key) => {
+    const values = collector.samples.map((sample) => sample[key]).filter((value) => value !== null);
+    return values.length === 0
+      ? null
+      : values.reduce((total, value) => total + value, 0) / values.length;
+  };
   return {
     count,
     callMs: average("call_ms"),

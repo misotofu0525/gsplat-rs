@@ -37,6 +37,42 @@ Producers should add a `timing.frame_wall_source` field naming the presentation
 boundary or proxy. Synchronous throughput loops are smoke/microbenchmark data,
 not end-to-end frame-wall evidence.
 
+A Web Exact run that requests per-frame renderer current-stats receipts is a
+control/evidence window, not the common cross-implementation throughput
+interval. It sets `timing.performance_evidence=false`, carries
+`benchmark_window.mode=current_stats_evidence_window`, and binds its run ID to
+a digest of the immutable workload configuration. A separately timed
+terminal-queue throughput window requests no per-frame current stats. Warmup
+frames before the last warmup retain `current_stats_submission=not_requested`
+and null current-stats identity. The final warmup draw carries one untimed
+renderer receipt in that same command buffer. Drawing stops until its Ready
+`map_async` Result drains the warmup queue; only then may the first measured
+camera input be accepted. The first N-1 measured frames likewise request no
+current stats and submit continuously without terminal waits. Immediately
+before the final measured draw the page requests a separate terminal-only
+renderer receipt whose copy/map is encoded in that same command buffer;
+drawing then stops and only that ticket is drained. The final Ready Result
+proves the last measured submission and all earlier same-queue measured work
+without an additional GPU submission. Missing issue, ring busy, ticket reuse,
+duplicate, unknown, identity drift, map failure, or drain timeout rejects the
+artifact. The window names a same-configuration current-stats control identity;
+the per-frame control must not adopt the throughput label.
+
+B discloses each boundary receipt's existing 8-byte buffer, 4-byte CPU-plan or
+8-byte GPU-plan copy, map operation, and zero extra submissions. The warmup
+receipt is outside the timed interval. The final measured receipt cost is
+included and is conservatively non-identical to a competitor's terminal queue
+Promise. `first_measured_input_monotonic_ms` is frozen before the first measured
+camera mutation/order/render and is the terminal-window start;
+`first_measured_submit_monotonic_ms` and
+`last_measured_submit_monotonic_ms` are separate post-render boundaries. Thus
+the first frame's CPU/order/encode work cannot be omitted, and no residual
+warmup queue tail is admitted. B's frame ledger records the Exact whole-plan
+`adaptive_state` and actual CpuPostSort/GpuPostSort/GpuPreproject identity.
+`projected_adaptive_state=disabled` is valid for Exact because the independent
+projected learner is superseded by WholePlanController; admission neither
+requires nor infers a specific Candidate/Compact outcome.
+
 Phase E paired candidates additionally carry a `pairing` object with the same
 non-empty `pair_id` and `run_order` in both engine manifests plus complementary
 `position` values 1 and 2. `tests/perf/compare-paired-benchmarks.py` requires at

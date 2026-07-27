@@ -137,16 +137,25 @@ probe frames had mean host call time about `29.573 ms`; Candidate drew mean
 contributors. Those observations do not establish a bottleneck because the
 per-frame observer could itself perturb plan learning and queue cadence.
 
-A replacement therefore requires the two content-linked artifacts frozen by
-Q0 section 4.1: an untimed current-stats control and a separately timed window
-with continuous measured submissions, no wait between measured frames, no
-per-frame observer readback, drawing stopped before a single fail-closed
-terminal drain, and the actual Exact plan/state retained directly from each
-render result. The terminal mechanism may add one explicitly receipted
-same-submission completion observation on the final measured frame; it may not
-reintroduce an observer wait between frames or infer Promise success from an
-error-erasing callback. Q1 still requires the native M4 Exact endpoint, common
-external-presentation scope and counterbalanced outer pairing.
+A replacement sample is allowed only after the collector proves two separate
+windows: an untimed, overlapped current-stats control ledger and a
+same-configuration timed window with zero per-frame current-stats requests and
+continuous measured submissions. The scoped repair uses one renderer-owned
+current-stats ticket on the final warmup draw, stops drawing, and drains its
+Result-bearing map terminal before accepting the first measured camera input.
+It then uses a distinct ticket only on the final measured draw, after N-1
+observer-free continuous measured submissions, and drains that ticket with no
+new draw. The common terminal window starts before the first measured
+`setCamera`/order/render and ends at the final Ready terminal; separate
+post-render first/last submit timestamps expose rather than omit first-frame
+CPU/order/encode time. This adds no queue submission, removes the rejected
+per-fence device-loss handler/API, excludes any residual warmup queue tail, and
+records the small final-frame readback overhead plus its conservative
+difference from the PlayCanvas queue Promise. No replacement Chrome endpoint
+was run by the candidate; its mechanism passed root-owned fixed-SHA review, but
+Q1 throughput remains Deferred pending one authorized exact-SHA run. Q1 still
+requires the native M4 Exact endpoint, common external-presentation scope and
+counterbalanced outer pairing.
 
 ## Q3 M4 SIMD microbenchmark checkpoint (2026-07-27)
 

@@ -22,6 +22,13 @@ import {
   validateCameraTraceV1,
 } from "../../../tests/perf/trace/camera-trace-v1.mjs";
 import { monotonicOrderingWindow } from "./benchmark-order-evidence.mjs";
+import { createCurrentStatsSchedule } from "./benchmark-current-stats-schedule.mjs";
+import {
+  BENCHMARK_WINDOW_MODES,
+  createTerminalQueueThroughputWindow,
+  currentStatsEvidenceWindowIdentity,
+  currentStatsEvidenceWindowManifest,
+} from "./benchmark-window-mode.mjs";
 import {
   rendererFailurePolicy,
   sampledWebglOptIn,
@@ -142,6 +149,8 @@ const state = {
   requestedProjectedPolicy: "adaptive",
   requestedGpuOrderProducer: null,
   orderCompletionProtocol: "isolated_terminal",
+  benchmarkWindowMode: BENCHMARK_WINDOW_MODES.currentStatsEvidence,
+  currentStatsControlArtifactIdentity: null,
   sampledWebglEnabled: false,
   currentStatsSmokeEnabled: false,
   currentStatsSmokeRequested: false,
@@ -1448,6 +1457,10 @@ function frame(now) {
   if (state.currentStatsSmokeEnabled && state.currentStatsSmokeCompleted) {
     return;
   }
+  if (state.benchmark?.terminalQueueThroughput
+      && state.benchmark.terminalQueueThroughput.state === "complete") {
+    return;
+  }
 
   // resizeAsync holds the wasm renderer mutably until WebGPU error scopes
   // complete. Never submit or poll a frame against an in-flight/unknown size.
@@ -1456,21 +1469,51 @@ function frame(now) {
     return;
   }
 
-  const benchmarkWaitingForTerminal = state.benchmark?.enabled
-    && (state.benchmark.pendingCurrentStatsSample != null
-      || state.benchmark.pendingOrderSample != null
+  const benchmark = state.benchmark;
+  if (benchmark?.enabled) benchmark.animationFrameTimestampMs = now;
+  if (usingWasm() && benchmark?.enabled && benchmark.terminalQueueThroughput
+      && progressBenchmarkTerminalReceipt(benchmark)) {
+    requestAnimationFrame(frame);
+    return;
+  }
+  const currentStatsSchedule = benchmark?.currentStatsSchedule ?? null;
+  if (usingWasm() && benchmark?.enabled
+      && currentStatsSchedule?.pendingCount > 0) {
+    pollBenchmarkCurrentStatsReceipts(benchmark);
+    if (!benchmark.enabled) {
+      requestAnimationFrame(frame);
+      return;
+    }
+  }
+  if (usingWasm() && benchmark?.enabled && currentStatsSchedule) {
+    if (currentStatsSchedule.action === "fail_capacity") {
+      try {
+        currentStatsSchedule.noteDraw(now);
+      } catch (error) {
+        failStrictBenchmarkForOrderEvidence(compactMessage(error));
+      }
+      requestAnimationFrame(frame);
+      return;
+    }
+    if (currentStatsSchedule.action !== "draw") {
+      requestAnimationFrame(frame);
+      return;
+    }
+  }
+
+  const benchmarkWaitingForTerminal = benchmark?.enabled
+    && (benchmark.pendingOrderSample != null
       || state.benchmark.pendingProjectedSample != null
       || state.benchmark.pendingGpuProducerSample != null);
   if (usingWasm() && benchmarkWaitingForTerminal
-      && (state.benchmark.pendingCurrentStatsSample != null
-        || state.benchmark.orderCompletionProtocol === "isolated_terminal")) {
-    pollPendingBenchmarkReceipts(state.benchmark);
+      && state.benchmark.orderCompletionProtocol === "isolated_terminal") {
+    pollPendingBenchmarkReceipts(benchmark);
     requestAnimationFrame(frame);
     return;
   }
   if (!state.gpuOrderPreparationPending && state.benchmark?.enabled
       && !benchmarkWaitingForTerminal
-      && !state.benchmark.currentStatsRequestOutstanding) {
+      && !currentStatsSchedule?.requestOutstanding) {
     if (state.benchmark.traceSequence) {
       applyBenchmarkTraceStep(state.benchmark);
     } else if (state.benchmark.fixedCameraPrimePending && state.qualificationCamera) {
@@ -1501,6 +1544,98 @@ function frame(now) {
     recordBenchmark(stats);
   }
   requestAnimationFrame(frame);
+}
+
+function progressBenchmarkTerminalReceipt(benchmark) {
+  const window = benchmark.terminalQueueThroughput;
+  if (!window || window.action === "draw") return false;
+  try {
+    if (window.action === "accept_measured_input") {
+      // Freeze the common Q0 start before the first measured camera mutation,
+      // order work, encoding, submission, and presentation.
+      window.beginMeasuredInput({ acceptedAtMonotonicMs: performance.now() });
+      if (window.action !== "request_final_receipt") return false;
+      // N=1 accepts its first input and arms the final-frame receipt in this
+      // same RAF turn, still before setCamera/render below.
+    }
+    if (window.action === "request_warmup_receipt"
+        || window.action === "request_final_receipt") {
+      const phase = window.action === "request_warmup_receipt"
+        ? "warmup_boundary"
+        : "final_measured";
+      const request = state.wasmRenderer.requestCurrentStats();
+      if (request.status !== "requested") {
+        throw new Error(
+          `${phase} current-stats request was ${request.status ?? "missing"}: `
+          + `${request.reason ?? "unknown"}`,
+        );
+      }
+      const requestedAtMonotonicMs = performance.now();
+      if (phase === "warmup_boundary") {
+        window.beginWarmupReceipt({ requestedAtMonotonicMs });
+      } else {
+        window.beginFinalReceipt({ requestedAtMonotonicMs });
+      }
+      benchmark.terminalCurrentStatsRequestOutstanding = true;
+      // Continue in this same RAF turn. The renderer encodes the receipt in
+      // the boundary draw's command buffer, without another queue submission.
+      return false;
+    }
+    if (window.action === "poll_warmup_receipt"
+        || window.action === "poll_final_receipt") {
+      const phase = window.action === "poll_warmup_receipt"
+        ? "warmup_boundary"
+        : "final_measured";
+      const terminal = state.wasmRenderer.pollCurrentStats();
+      benchmark.terminalPollCount += 1;
+      if (terminal.status === "empty") return true;
+      if (terminal.status === "unsampled") {
+        throw new Error(
+          `${phase} current-stats receipt was unsampled: ${terminal.reason ?? "unknown"}`,
+        );
+      }
+      const pending = benchmark.terminalCurrentStatsPending;
+      if (!pending || pending.phase !== phase) {
+        throw new Error(
+          `${phase} current-stats terminal ${terminal.status ?? "missing"} `
+          + "had no matching issued ticket",
+        );
+      }
+      const terminalAtMonotonicMs = performance.now();
+      const joined = joinBenchmarkCurrentStatsTerminal(
+        benchmark,
+        pending,
+        terminal,
+        terminalAtMonotonicMs,
+      );
+      if (!joined || !benchmark.enabled) return true;
+      const receipt = {
+        ticket: terminal.ticket,
+        status: terminal.status,
+        plan: terminal.plan,
+        terminalAtMonotonicMs,
+      };
+      if (phase === "warmup_boundary") {
+        window.recordWarmupReceipt(receipt);
+      } else {
+        window.recordTerminalReceipt(receipt);
+      }
+      benchmark.terminalCurrentStatsPending = null;
+      benchmark.terminalCurrentStatsRequestOutstanding = false;
+      if (phase === "warmup_boundary") {
+        benchmark.lastObservedFrameMs = null;
+      } else {
+        finishBenchmark(benchmark);
+      }
+      return true;
+    }
+    return true;
+  } catch (error) {
+    failStrictBenchmarkForOrderEvidence(
+      `terminal-boundary current-stats receipt failed closed: ${compactMessage(error)}`,
+    );
+    return true;
+  }
 }
 
 function render() {
@@ -1833,6 +1968,31 @@ function recordOrderTerminalReceipt(backend, ticket, revision, outcome, terminal
 
 function maybeEmitMonotonicOrderingWindow(benchmark) {
   if (benchmark.enabled || benchmark.monotonicOrderingWindowEmitted) return;
+  if (benchmark.terminalQueueThroughput) {
+    const evidence = benchmark.terminalQueueThroughput.evidence();
+    benchmark.monotonicOrderingWindowEmitted = true;
+    console.info(`ORDERING_WINDOW_MONOTONIC_JSON ${JSON.stringify({
+      schema: BENCHMARK_SCHEMA,
+      record_type: "ordering_window_monotonic",
+      terminal_model: "untimed_warmup_boundary_plus_final_measured_current_stats_receipt",
+      measured_submit_count: evidence.measured_submit_count,
+      measured_terminal_count: evidence.terminal_current_stats_terminal_count,
+      monotonic_clock: "performance.now",
+      first_measured_input_monotonic_ms:
+        evidence.first_measured_input_monotonic_ms,
+      first_measured_submit_monotonic_ms:
+        evidence.first_measured_submit_monotonic_ms,
+      last_measured_submit_monotonic_ms:
+        evidence.last_measured_submit_monotonic_ms,
+      last_measured_terminal_monotonic_ms:
+        evidence.last_measured_terminal_monotonic_ms,
+      input_to_first_submit_ms: evidence.input_to_first_submit_ms,
+      submit_span_ms: evidence.submit_span_ms,
+      terminal_tail_ms: evidence.terminal_tail_ms,
+      terminal_window_ms: evidence.terminal_window_ms,
+    })}`);
+    return;
+  }
   const rendererOwned = benchmark.currentStatsSubmissionRecords.length > 0;
   const submissions = rendererOwned
     ? benchmark.currentStatsSubmissionRecords
@@ -1931,17 +2091,30 @@ function renderWasm() {
     const benchmark = state.benchmark;
     const exactBenchmark = benchmark?.enabled
       && state.wasmRenderer.rasterPath() === "packed_atlas";
-    if (exactBenchmark
-        && !benchmark.currentStatsRequestOutstanding
-        && benchmark.pendingCurrentStatsSample == null) {
-      const request = state.wasmRenderer.requestCurrentStats();
-      if (request.status !== "requested") {
+    if (exactBenchmark && !benchmark.terminalQueueThroughput) {
+      const schedule = ensureBenchmarkCurrentStatsSchedule(benchmark);
+      try {
+        schedule.noteDraw(benchmark.animationFrameTimestampMs ?? performance.now());
+        if (!schedule.requestOutstanding) {
+          schedule.beginRequest({
+            nowMs: performance.now(),
+            priming: benchmark.primingOrder,
+            traceStep: benchmark.currentTraceStep,
+          });
+          const request = state.wasmRenderer.requestCurrentStats();
+          if (request.status !== "requested") {
+            throw new Error(
+              `renderer current-stats request was ${request.status}: ` +
+              `${request.reason ?? "unknown"}`,
+            );
+          }
+        }
+      } catch (error) {
         failStrictBenchmarkForOrderEvidence(
-          `renderer current-stats request was ${request.status}: ${request.reason ?? "unknown"}`,
+          compactMessage(error),
         );
         return null;
       }
-      benchmark.currentStatsRequestOutstanding = true;
     }
     if (state.currentStatsSmokeEnabled && !state.currentStatsSmokeRequested) {
       const request = state.wasmRenderer.requestCurrentStats();
@@ -2622,9 +2795,21 @@ function createBenchmarkState(enabled) {
   globalThis.GSPLAT_PROJECTED_LEDGER_COMPLETE = true;
   globalThis.GSPLAT_GPU_PRODUCER_LEDGER_COMPLETE =
     state.requestedGpuOrderProducer === null;
+  const terminalQueueThroughput = state.benchmarkWindowMode
+    === BENCHMARK_WINDOW_MODES.terminalQueueThroughput
+    ? createTerminalQueueThroughputWindow({
+        warmupFrames,
+        measuredFrames: frames,
+        configurationSha256:
+          state.currentStatsControlArtifactIdentity.configuration_sha256,
+        controlArtifactIdentity: state.currentStatsControlArtifactIdentity,
+      })
+    : null;
   return {
     enabled,
-    frameWallSource: enabled
+    frameWallSource: terminalQueueThroughput
+      ? "request_animation_frame_interval_and_first_input_to_final_terminal_window"
+      : enabled
       ? state.orderCompletionProtocol === "isolated_terminal"
         ? "isolated_terminal_progression"
         : "request_animation_frame_interval"
@@ -2662,8 +2847,10 @@ function createBenchmarkState(enabled) {
     gpuProducerTerminalRecords: [],
     monotonicOrderingWindowEmitted: false,
     pendingOrderSample: null,
-    pendingCurrentStatsSample: null,
-    currentStatsRequestOutstanding: false,
+    currentStatsSchedule: null,
+    terminalQueueThroughput,
+    terminalCurrentStatsRequestOutstanding: false,
+    terminalCurrentStatsPending: null,
     pendingProjectedSample: null,
     pendingGpuProducerSample: null,
     presentedSubmissionCount: 0,
@@ -2671,6 +2858,7 @@ function createBenchmarkState(enabled) {
     failure: null,
     observedFrames: 0,
     presentationPending: false,
+    animationFrameTimestampMs: null,
     measuredStartMs: null,
     lastObservedFrameMs: null,
     startedAt,
@@ -2680,8 +2868,22 @@ function createBenchmarkState(enabled) {
   };
 }
 
+function ensureBenchmarkCurrentStatsSchedule(benchmark) {
+  if (benchmark.currentStatsSchedule === null) {
+    benchmark.currentStatsSchedule = createCurrentStatsSchedule({
+      protocol: benchmark.orderCompletionProtocol,
+      warmupFrames: benchmark.warmupFrames,
+      measuredFrames: benchmark.frames,
+    });
+    benchmark.frameWallSource = benchmark.currentStatsSchedule.frameWallSource;
+  }
+  return benchmark.currentStatsSchedule;
+}
+
 function applyBenchmarkTraceStep(benchmark) {
-  const step = benchmark.traceSequence.step(benchmark.observedFrames);
+  const submissionIndex = benchmark.currentStatsSchedule?.nextSubmissionIndex
+    ?? benchmark.observedFrames;
+  const step = benchmark.traceSequence.step(submissionIndex);
   benchmark.currentTraceStep = step;
   state.qualificationCamera = step.camera;
   state.camera.fovY = step.camera.intrinsics.verticalFovRadians;
@@ -2798,6 +3000,31 @@ function applyUrlConfig() {
     );
   }
   state.orderCompletionProtocol = orderCompletionProtocol;
+  const benchmarkWindowMode = (
+    params.get("gsplat_benchmark_window_mode")
+      ?? BENCHMARK_WINDOW_MODES.currentStatsEvidence
+  ).toLowerCase();
+  if (!Object.values(BENCHMARK_WINDOW_MODES).includes(benchmarkWindowMode)) {
+    throw new TypeError(`unknown gsplat_benchmark_window_mode ${benchmarkWindowMode}`);
+  }
+  state.benchmarkWindowMode = benchmarkWindowMode;
+  if (benchmarkWindowMode === BENCHMARK_WINDOW_MODES.terminalQueueThroughput) {
+    state.currentStatsControlArtifactIdentity = currentStatsEvidenceWindowIdentity({
+      runId: params.get("gsplat_current_stats_control_run_id"),
+      configurationSha256: params.get("gsplat_current_stats_control_configuration_sha256"),
+    });
+    if (!state.strictBenchmarkMode
+        || state.autoBenchmarkSync
+        || state.geometryPath !== "packed"
+        || state.requestedOrderBackend !== "adaptive"
+        || state.requestedProjectedPolicy !== "adaptive"
+        || state.requestedGpuOrderProducer !== null
+        || state.orderCompletionProtocol !== "sustained_window") {
+      throw new TypeError(
+        "terminal-queue throughput requires strict async Packed Exact Adaptive sustained_window",
+      );
+    }
+  }
   if (state.requestedGpuOrderProducer !== null) {
     if (!state.strictBenchmarkMode
         || state.autoBenchmarkSync
@@ -2899,27 +3126,139 @@ function recordBenchmark(stats) {
     return;
   }
   benchmark.presentationPending = false;
+  if (benchmark.currentStatsSchedule
+      && stats.rasterExecutionPlan !== "projected_quads_exact") {
+    failStrictBenchmarkForOrderEvidence(
+      `Packed Exact current-stats schedule observed raster plan ` +
+      `${stats.rasterExecutionPlan ?? "missing"}`,
+    );
+    return;
+  }
   if (stats.rasterExecutionPlan === "projected_quads_exact") {
-    if (stats.currentStatsSubmission === "not_requested"
-        && benchmark.currentStatsRequestOutstanding) {
-      if (stats.currentStatsTicket !== null
+    if (benchmark.terminalQueueThroughput) {
+      const terminalWarmup = benchmark.terminalQueueThroughput.state
+        === "warmup_terminal_submitting";
+      const terminalMeasured = benchmark.terminalQueueThroughput.state
+        === "terminal_measured_submitting";
+      const terminalBoundary = terminalWarmup || terminalMeasured;
+      const actualPlan = exactPlanForFrame(stats);
+      const currentStatsShapeValid = terminalBoundary
+        ? stats.currentStatsSubmission === "issued"
+          && Number.isSafeInteger(stats.currentStatsTicket)
+          && stats.currentStatsTicket > 0
+        : stats.currentStatsSubmission === "not_requested"
+          && stats.currentStatsTicket === null
+          && stats.currentStatsPlan === null
+          && stats.currentStatsSceneGeneration === null
+          && stats.currentStatsCameraRevision === null
+          && stats.currentStatsViewportGeneration === null
+          && stats.currentStatsContractGeneration === null
+          && stats.currentStatsPlanSetGeneration === null
+          && stats.currentStatsOrderGeneration === null
+          && stats.currentStatsRasterGeneration === null
+          && stats.currentStatsEncodeAttempt === null
+          && stats.currentStatsPresentationSequence === null;
+      if (!currentStatsShapeValid
+          || stats.adaptiveState === "disabled"
           || stats.submittedMeasurementTicket !== null
-          || stats.submittedMeasurementBackend !== null) {
+          || stats.submittedMeasurementBackend !== null
+          || stats.projectedMeasurementSubmission !== "not_requested"
+          || stats.projectedMeasurementTicket !== null
+          || stats.gpuProducerMeasurementSubmission !== "not_requested"
+          || stats.gpuProducerMeasurementTicket !== null
+          || actualPlan === null) {
         failStrictBenchmarkForOrderEvidence(
-          "deferred renderer current-stats frame exposed ticket identity",
+          "terminal-queue throughput observed non-terminal current-stats work, "
+          + "a missing boundary receipt, or an invalid Exact adaptive plan",
         );
+        return;
       }
+      let currentStatsSubmission = null;
+      if (terminalBoundary) {
+        const phase = terminalWarmup ? "warmup_boundary" : "final_measured";
+        currentStatsSubmission = trackBenchmarkCurrentStatsSubmission(
+          benchmark,
+          {
+            requestOutstanding: benchmark.terminalCurrentStatsRequestOutstanding,
+            requestPhase: phase,
+          },
+          stats,
+        );
+        if (!currentStatsSubmission || !benchmark.enabled) return;
+        benchmark.terminalCurrentStatsPending = {
+          ticket: stats.currentStatsTicket,
+          stats,
+          traceStep: benchmark.currentTraceStep,
+          phase,
+        };
+      }
+      let phase;
+      try {
+        phase = benchmark.terminalQueueThroughput.noteDraw({
+          currentStatsSubmission: stats.currentStatsSubmission,
+          currentStatsTicket: stats.currentStatsTicket,
+          submittedAtMonotonicMs:
+            currentStatsSubmission?.submitted_at_monotonic_ms ?? now,
+          projectedAdaptiveState: stats.projectedAdaptiveState,
+          projectedExecution: stats.projectedExecution,
+          exactAdaptiveState: stats.adaptiveState,
+          actualPlan,
+        });
+      } catch (error) {
+        failStrictBenchmarkForOrderEvidence(compactMessage(error));
+        return;
+      }
+      benchmark.presentedSubmissionCount += 1;
+      benchmark.observedFrames += 1;
+      benchmark.primingOrder = false;
+      if (phase === "warmup") {
+        benchmark.lastObservedFrameMs = now;
+        return;
+      }
+      const frameWallMs = benchmark.lastObservedFrameMs === null
+        ? stats.frameMs
+        : now - benchmark.lastObservedFrameMs;
+      benchmark.lastObservedFrameMs = now;
+      accumulateBenchmark(
+        benchmark,
+        { ...stats, visible: null, contributor: null, drawn: null },
+        frameWallMs,
+        now,
+        benchmark.currentTraceStep,
+      );
+      return;
+    }
+    const currentStatsSchedule = benchmark.currentStatsSchedule;
+    if (!currentStatsSchedule) {
+      failStrictBenchmarkForOrderEvidence(
+        "Exact benchmark frame lacks its current-stats schedule",
+      );
+      return;
+    }
+    if (stats.currentStatsSubmission !== "issued") {
+      failStrictBenchmarkForOrderEvidence(
+        `presented Exact frame did not issue its requested current-stats ticket: ` +
+        `${stats.currentStatsSubmission ?? "missing"}`,
+      );
       return;
     }
     benchmark.presentedSubmissionCount += 1;
-    if (!trackBenchmarkCurrentStatsSubmission(benchmark, stats)) return;
-    benchmark.pendingCurrentStatsSample = {
-      ticket: stats.currentStatsTicket,
+    const submission = trackBenchmarkCurrentStatsSubmission(
+      benchmark,
+      currentStatsSchedule,
       stats,
-      traceStep: benchmark.currentTraceStep,
-      priming: benchmark.primingOrder,
-    };
-    benchmark.currentStatsRequestOutstanding = false;
+    );
+    if (!submission) return;
+    try {
+      currentStatsSchedule.recordIssued({
+        ticket: stats.currentStatsTicket,
+        stats,
+        submittedAtMonotonicMs: submission.submitted_at_monotonic_ms,
+      });
+    } catch (error) {
+      failStrictBenchmarkForOrderEvidence(compactMessage(error));
+      return;
+    }
     benchmark.primingOrder = false;
     return;
   }
@@ -3013,7 +3352,7 @@ function currentStatsIdentityFromFrame(stats) {
   };
 }
 
-function trackBenchmarkCurrentStatsSubmission(benchmark, stats) {
+function trackBenchmarkCurrentStatsSubmission(benchmark, schedule, stats) {
   const identity = currentStatsIdentityFromFrame(stats);
   const countsUnavailable = stats.visible === null && stats.drawn === null;
   const countsAvailable = Number.isSafeInteger(stats.visible) && stats.visible >= 0
@@ -3021,7 +3360,7 @@ function trackBenchmarkCurrentStatsSubmission(benchmark, stats) {
   const invalidCountAvailability = stats.visibleCountPending
     ? !countsUnavailable
     : !countsAvailable;
-  if (!benchmark.currentStatsRequestOutstanding
+  if (!schedule.requestOutstanding
       || stats.currentStatsSubmission !== "issued"
       || !Number.isSafeInteger(identity.ticket) || identity.ticket <= 0
       || identity.camera_revision !== stats.cameraRevision
@@ -3034,17 +3373,21 @@ function trackBenchmarkCurrentStatsSubmission(benchmark, stats) {
       `ticket=${identity.ticket} revision=${identity.camera_revision}/${stats.cameraRevision} ` +
       `visible=${stats.visible} drawn=${stats.drawn} pending=${stats.visibleCountPending}`,
     );
-    return false;
+    return null;
   }
   if (benchmark.issuedCurrentStatsTickets.has(identity.ticket)) {
     failStrictBenchmarkForOrderEvidence(
       `duplicate renderer current-stats ticket=${identity.ticket}`,
     );
-    return false;
+    return null;
   }
-  const phase = benchmark.primingOrder
-    ? "preflight"
-    : benchmark.observedFrames < benchmark.warmupFrames ? "warmup" : "measured";
+  const phase = schedule.requestPhase;
+  if (!phase) {
+    failStrictBenchmarkForOrderEvidence(
+      `renderer current-stats ticket=${identity.ticket} lacks its request phase`,
+    );
+    return null;
+  }
   const record = {
     run_id: benchmark.collector.runId,
     ...identity,
@@ -3065,7 +3408,7 @@ function trackBenchmarkCurrentStatsSubmission(benchmark, stats) {
       visible_count_pending: true,
     })}`);
   }
-  return true;
+  return record;
 }
 
 function exactPlanForFrame(stats) {
@@ -3077,11 +3420,16 @@ function exactPlanForFrame(stats) {
   return null;
 }
 
-function joinBenchmarkCurrentStatsTerminal(benchmark, pending, terminal) {
+function joinBenchmarkCurrentStatsTerminal(
+  benchmark,
+  pending,
+  terminal,
+  terminalAtMonotonicMs = performance.now(),
+) {
   const issued = benchmark.issuedCurrentStatsTickets.get(pending.ticket);
-  const terminalAtMonotonicMs = performance.now();
   const terminalRecord = {
     run_id: benchmark.collector.runId,
+    phase: issued?.phase ?? null,
     status: terminal.status,
     ticket: terminal.ticket,
     plan: terminal.plan,
@@ -3170,40 +3518,90 @@ function joinBenchmarkCurrentStatsTerminal(benchmark, pending, terminal) {
   };
 }
 
-function pollPendingBenchmarkReceipts(benchmark) {
-  const pendingCurrentStats = benchmark.pendingCurrentStatsSample;
-  if (pendingCurrentStats) {
-    let terminal;
-    try {
-      benchmark.terminalPollCount += 1;
-      terminal = state.wasmRenderer.pollCurrentStats();
-    } catch (error) {
-      failStrictBenchmarkForOrderEvidence(
-        `renderer current-stats poll failed: ${compactMessage(error)}`,
-      );
-      return;
-    }
-    if (terminal.status === "empty") return;
-    if (terminal.status === "unsampled") {
-      failStrictBenchmarkForOrderEvidence(
-        `renderer current-stats poll was unsampled: ${terminal.reason ?? "unknown"}`,
-      );
-      return;
-    }
-    const joined = joinBenchmarkCurrentStatsTerminal(benchmark, pendingCurrentStats, terminal);
-    if (!joined || !benchmark.enabled) return;
-    benchmark.pendingCurrentStatsSample = null;
-    updateFrameStats(joined);
-    updateStatusOverlay(joined);
-    if (pendingCurrentStats.priming) return;
-    acceptBenchmarkFrame(
-      benchmark,
-      joined,
-      performance.now(),
-      pendingCurrentStats.traceStep,
+function pollBenchmarkCurrentStatsReceipts(benchmark) {
+  const schedule = benchmark.currentStatsSchedule;
+  if (!schedule || schedule.pendingCount === 0) return;
+  let terminal;
+  try {
+    benchmark.terminalPollCount += 1;
+    terminal = state.wasmRenderer.pollCurrentStats();
+  } catch (error) {
+    failStrictBenchmarkForOrderEvidence(
+      `renderer current-stats poll failed: ${compactMessage(error)}`,
     );
     return;
   }
+  if (terminal.status === "empty") {
+    try {
+      schedule.noteEmptyPoll(performance.now());
+    } catch (error) {
+      failStrictBenchmarkForOrderEvidence(compactMessage(error));
+    }
+    return;
+  }
+  if (terminal.status === "unsampled") {
+    failStrictBenchmarkForOrderEvidence(
+      `renderer current-stats poll was unsampled: ${terminal.reason ?? "unknown"}`,
+    );
+    return;
+  }
+  if (terminal.status !== "ready") {
+    // Preserve the renderer-owned failed terminal in the raw console ledger;
+    // join rejects it before dereferencing frame evidence or publishing.
+    joinBenchmarkCurrentStatsTerminal(
+      benchmark,
+      { ticket: terminal.ticket, stats: null },
+      terminal,
+    );
+    return;
+  }
+  let pending;
+  try {
+    pending = schedule.pendingForTerminal({
+      ticket: terminal.ticket,
+      status: terminal.status,
+    });
+  } catch (error) {
+    failStrictBenchmarkForOrderEvidence(compactMessage(error));
+    return;
+  }
+  const joined = joinBenchmarkCurrentStatsTerminal(benchmark, pending, terminal);
+  if (!joined || !benchmark.enabled) return;
+  try {
+    schedule.recordTerminal({
+      pending,
+      joined,
+      terminalAtMonotonicMs: performance.now(),
+    });
+    const ready = schedule.takeReadyInSubmissionOrder();
+    for (const completed of ready) {
+      updateFrameStats(completed.joined);
+      updateStatusOverlay(completed.joined);
+      if (completed.priming) continue;
+      const frameProgressAt = schedule.protocol === "sustained_window"
+        ? completed.frameProgressAtMonotonicMs
+        : completed.terminalAtMonotonicMs;
+      acceptBenchmarkFrame(
+        benchmark,
+        completed.joined,
+        frameProgressAt,
+        completed.traceStep,
+      );
+    }
+  } catch (error) {
+    failStrictBenchmarkForOrderEvidence(compactMessage(error));
+    return;
+  }
+  if (schedule.complete && benchmark.enabled
+      && benchmark.collector.samples.length !== benchmark.frames) {
+    failStrictBenchmarkForOrderEvidence(
+      `renderer current-stats drain completed with ${benchmark.collector.samples.length}/` +
+      `${benchmark.frames} measured samples`,
+    );
+  }
+}
+
+function pollPendingBenchmarkReceipts(benchmark) {
   const pendingOrder = benchmark.pendingOrderSample;
   const pendingProjected = benchmark.pendingProjectedSample;
   const pendingGpuProducer = benchmark.pendingGpuProducerSample;
@@ -3506,11 +3904,11 @@ function accumulateBenchmark(
     geometry_submit_ms: stats.pipelineMs,
     gpu_wait_ms: null,
     gpu_complete_ms: stats.gpuCompleteMs ?? null,
-    visible: Math.max(0, Math.trunc(stats.visible)),
+    visible: stats.visible == null ? null : Math.max(0, Math.trunc(stats.visible)),
     contributor: stats.contributor == null
       ? null
       : Math.max(0, Math.trunc(stats.contributor)),
-    drawn: Math.max(0, Math.trunc(stats.drawn)),
+    drawn: stats.drawn == null ? null : Math.max(0, Math.trunc(stats.drawn)),
     exact_contributor_compaction: stats.exactContributorCompaction,
     sort_refreshed: stats.refreshSort ?? null,
   });
@@ -3581,6 +3979,13 @@ function accumulateBenchmark(
 }
 
 function finishBenchmark(benchmark) {
+  if (benchmark.currentStatsSchedule && !benchmark.currentStatsSchedule.complete) {
+    failStrictBenchmarkForOrderEvidence(
+      `renderer current-stats schedule attempted publication while ` +
+      `${benchmark.currentStatsSchedule.state}`,
+    );
+    return;
+  }
   benchmark.enabled = false;
   maybeEmitMonotonicOrderingWindow(benchmark);
   const result = benchmarkResultLine(benchmark);
@@ -3612,6 +4017,11 @@ function wasmRendererLabel() {
 
 function benchmarkResultLine(benchmark) {
   const averages = legacyAverages(benchmark.collector);
+  const evidenceClassification = benchmark.currentStatsSchedule
+    ? " evidence_role=renderer_exact_current_stats_control performance_evidence=false"
+    : benchmark.terminalQueueThroughput
+      ? " evidence_role=cross_implementation_terminal_queue_throughput performance_evidence=true"
+    : "";
   return (
     `BENCHMARK_RESULT dataset=${state.scene.name} ` +
     `samples=${averages.count} warmup=${benchmark.warmupFrames} ` +
@@ -3626,7 +4036,8 @@ function benchmarkResultLine(benchmark) {
     `avg_sort_ms=${(averages.sortMs ?? 0).toFixed(3)} ` +
     `avg_geometry_submit_cpu_wall_ms=${(averages.geometrySubmitMs ?? 0).toFixed(3)} ` +
     `avg_visible=${Math.round(averages.visible ?? 0)} ` +
-    `avg_drawn=${Math.round(averages.drawn ?? 0)}`
+    `avg_drawn=${Math.round(averages.drawn ?? 0)}` +
+    evidenceClassification
   );
 }
 
@@ -3653,6 +4064,53 @@ async function emitBenchmarkArtifacts(benchmark) {
   const traceText = `benchmark_orbit_v1 yaw_step=${benchmark.yawStep} frames=${benchmark.frames}`;
   const traceSha256 = state.qualificationTrace?.content_sha256 ??
     await sha256Hex(new TextEncoder().encode(traceText));
+  const benchmarkWindowConfiguration = (
+    benchmark.currentStatsSchedule || benchmark.terminalQueueThroughput
+  ) ? {
+    schema: "gsplat-benchmark-window-configuration/v1",
+    build_commit: globalThis.GSPLAT_BUILD_COMMIT ?? null,
+    dataset_sha256: datasetIdentity.sha256,
+    dataset_bytes: scene.sourceBytes,
+    dataset_splat_count: scene.count,
+    dataset_sh_degree: scene.shDegree,
+    trace_sha256: traceSha256,
+    trace_frame_indices: benchmark.traceSequence
+      ? [...benchmark.traceSequence.frameIndices]
+      : state.qualificationTrace ? [state.qualificationTraceFrameIndex] : null,
+    requested_width: benchmark.requestedWidth,
+    requested_height: benchmark.requestedHeight,
+    warmup_frames: benchmark.warmupFrames,
+    measured_frames: benchmark.frames,
+    geometry_path: state.geometryPath,
+    order_backend: state.requestedOrderBackend,
+    projected_policy: state.requestedProjectedPolicy,
+    gpu_order_producer: state.requestedGpuOrderProducer,
+    sort_interval: sortInterval,
+    cadence: "request_animation_frame",
+  } : null;
+  const benchmarkWindowConfigurationSha256 = benchmarkWindowConfiguration
+    ? await sha256Hex(new TextEncoder().encode(JSON.stringify(benchmarkWindowConfiguration)))
+    : null;
+  let benchmarkWindow = null;
+  if (benchmark.currentStatsSchedule) {
+    benchmarkWindow = {
+        ...currentStatsEvidenceWindowManifest({
+          runId: benchmark.collector.runId,
+          configurationSha256: benchmarkWindowConfigurationSha256,
+        }),
+        configuration: benchmarkWindowConfiguration,
+      };
+  } else if (benchmark.terminalQueueThroughput) {
+    benchmarkWindow = {
+      ...benchmark.terminalQueueThroughput.evidence(),
+      configuration: benchmarkWindowConfiguration,
+    };
+    if (benchmarkWindow.configuration_sha256 !== benchmarkWindowConfigurationSha256) {
+      throw new Error(
+        "terminal-queue throughput configuration does not match its current-stats control",
+      );
+    }
+  }
   const actualGpuOrderProducers = [
     ...new Set(
       benchmark.frameReceipts
@@ -3668,6 +4126,14 @@ async function emitBenchmarkArtifacts(benchmark) {
   ];
   if (!usingWasm()) {
     unavailableFields.push("frames[*].sort_refreshed");
+  }
+  if (benchmark.terminalQueueThroughput) {
+    unavailableFields.push(
+      "frames[*].visible",
+      "frames[*].contributor",
+      "frames[*].drawn",
+      "summary.count_evidence",
+    );
   }
   if (globalThis.GSPLAT_BUILD_COMMIT == null) unavailableFields.push("build.repository_commit");
   if (globalThis.GSPLAT_BUILD_DIRTY == null) unavailableFields.push("build.dirty");
@@ -3743,19 +4209,27 @@ async function emitBenchmarkArtifacts(benchmark) {
       sort_policy: `interval_${sortInterval}`,
       raster_execution_plan: benchmark.frameReceipts[0]?.rasterExecutionPlan ?? null,
       count_semantics: usingWasm()
-        ? "candidate_visible_contributor_issued_v1"
+        ? benchmark.terminalQueueThroughput
+          ? "bound_current_stats_control_artifact"
+          : "candidate_visible_contributor_issued_v1"
         : undefined,
     },
     timing: {
       frame_wall_source: benchmark.frameWallSource,
       renderer_frame_ms_included: true,
+      performance_evidence: benchmarkWindow?.performance_evidence ?? null,
     },
     ordering_window: {
       completion_protocol: benchmark.orderCompletionProtocol,
       presented_submit_count: benchmark.presentedSubmissionCount,
       terminal_poll_count: benchmark.terminalPollCount,
       expected_logical_frame_count: benchmark.warmupFrames + benchmark.frames,
+      current_stats_schedule: benchmark.currentStatsSchedule?.evidence() ?? null,
+      terminal_current_stats_receipts: benchmark.terminalQueueThroughput
+        ? benchmark.currentStatsTerminalRecords.length
+        : null,
     },
+    benchmark_window: benchmarkWindow,
     gpu_producer_evidence: {
       requested_producer: state.requestedGpuOrderProducer,
       default_when_unset: "post-sort",
@@ -3790,7 +4264,11 @@ async function emitBenchmarkArtifacts(benchmark) {
       driver: null,
     },
     unavailable_fields: unavailableFields,
-    qualification_scope: state.qualificationTrace ? "phase_e_paired_candidate" : "collector_smoke_only",
+    qualification_scope: benchmark.currentStatsSchedule
+      ? "qualification_q1_current_stats_control_only"
+      : benchmark.terminalQueueThroughput
+        ? "qualification_q1_terminal_queue_throughput_candidate"
+      : state.qualificationTrace ? "phase_e_paired_candidate" : "collector_smoke_only",
     policies: state.qualificationTrace ? {
       dynamicResolution: `disabled_fixed_${surfaceWidth}x${surfaceHeight}`,
       lod: "disabled_full_ply",

@@ -28,6 +28,8 @@ REQUIRED_TIMINGS = {"call_ms", "frame_wall_ms"}
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 TOLERANCE = 1e-9
 COUNT_SEMANTICS = "candidate_visible_contributor_issued_v1"
+BOUND_CONTROL_COUNT_SEMANTICS = "bound_current_stats_control_artifact"
+TERMINAL_QUEUE_THROUGHPUT_MODE = "terminal_queue_throughput_window"
 
 
 class ValidationError(ValueError):
@@ -216,10 +218,12 @@ def validate_manifest(manifest: dict[str, Any]) -> str:
         if "renderer.exact_plan_actual" not in unavailable:
             fail("unavailable renderer.exact_plan_actual must be listed as unavailable")
     count_semantics = renderer.get("count_semantics")
-    if count_semantics is not None and count_semantics != COUNT_SEMANTICS:
+    if count_semantics is not None and count_semantics not in {
+        COUNT_SEMANTICS,
+        BOUND_CONTROL_COUNT_SEMANTICS,
+    }:
         fail(
-            "renderer.count_semantics must equal "
-            f"{COUNT_SEMANTICS!r} when present"
+            "renderer.count_semantics must be an admitted count contract when present"
         )
     display = manifest["display"]
     for key in ("width", "height"):
@@ -391,6 +395,184 @@ def validate_summary(summary: dict[str, Any], frames: list[dict[str, Any]], run_
             close(actual.get(field), float(expected[field]), f"distributions.{metric}.{field}")
 
 
+def validate_terminal_queue_throughput(
+    manifest: dict[str, Any],
+    frames: list[dict[str, Any]],
+    summary: dict[str, Any],
+) -> None:
+    window_value = manifest.get("benchmark_window")
+    if not isinstance(window_value, dict) or \
+            window_value.get("mode") != TERMINAL_QUEUE_THROUGHPUT_MODE:
+        return
+    window = window_value
+    timing = require_object(manifest, "timing")
+    ordering = require_object(manifest, "ordering_window")
+    renderer = require_object(manifest, "renderer")
+    if timing.get("performance_evidence") is not True or \
+            window.get("performance_evidence") is not True:
+        fail("terminal-queue throughput must declare timing.performance_evidence=true")
+    if renderer.get("count_semantics") != BOUND_CONTROL_COUNT_SEMANTICS:
+        fail("terminal-queue throughput must bind render counts to its control artifact")
+    if window.get("evidence_role") != "cross_implementation_terminal_queue_throughput":
+        fail("terminal-queue throughput evidence_role mismatch")
+    if window.get("current_stats_policy") != \
+            "one_untimed_warmup_boundary_and_one_final_measured_receipt":
+        fail("terminal-queue throughput current-stats boundary policy mismatch")
+    if window.get("terminal_policy") != \
+            "drain_warmup_before_first_measured_input_and_stop_after_final_measured_submit":
+        fail("terminal-queue throughput terminal policy mismatch")
+    configuration_sha256 = require_string(window, "configuration_sha256")
+    if not SHA256_RE.fullmatch(configuration_sha256):
+        fail("benchmark_window.configuration_sha256 must be lowercase SHA-256")
+    control = require_object(window, "control_artifact_identity")
+    require_string(control, "run_id")
+    if require_string(control, "configuration_sha256") != configuration_sha256:
+        fail("terminal-queue throughput control configuration identity mismatch")
+
+    warmup_count = require_int(summary, "warmup_count")
+    measured_count = len(frames)
+    if require_int(window, "warmup_submit_count") != warmup_count:
+        fail("terminal-queue throughput warmup submit count mismatch")
+    if require_int(window, "measured_submit_count") != measured_count:
+        fail("terminal-queue throughput measured submit count mismatch")
+    if require_int(window, "measured_wait_count_before_final_submit") != 0:
+        fail("terminal-queue throughput waited between measured submissions")
+    if require_int(window, "terminal_current_stats_submission_count") != 1 or \
+            require_int(window, "terminal_current_stats_terminal_count") != 1:
+        fail("terminal-queue throughput requires one final measured receipt")
+    adaptive = window.get("exact_adaptive_measured")
+    if not isinstance(adaptive, list) or len(adaptive) != measured_count:
+        fail("terminal-queue throughput lacks its complete Exact adaptive ledger")
+    for index, record in enumerate(adaptive):
+        if not isinstance(record, dict) or record.get("state") == "disabled" or \
+                record.get("plan") not in {
+                    "cpu_post_sort", "gpu_post_sort", "gpu_preproject"
+                } or record.get("projected_execution") not in {"candidate", "compact"}:
+            fail(f"terminal-queue throughput Exact adaptive record {index} is invalid")
+
+    final_ticket = require_int(window, "final_measured_current_stats_ticket")
+    final_receipt = require_object(window, "terminal_receipt")
+    if final_ticket == 0 or final_receipt.get("phase") != "final_measured" or \
+            final_receipt.get("status") != "ready" or \
+            require_int(final_receipt, "ticket") != final_ticket:
+        fail("terminal-queue throughput final receipt identity mismatch")
+    first_input = require_number(window, "first_measured_input_monotonic_ms")
+    first_submit = require_number(window, "first_measured_submit_monotonic_ms")
+    last_submit = require_number(window, "last_measured_submit_monotonic_ms")
+    last_terminal = require_number(window, "last_measured_terminal_monotonic_ms")
+    assert first_input is not None and first_submit is not None
+    assert last_submit is not None and last_terminal is not None
+    if not first_input <= first_submit <= last_submit <= last_terminal:
+        fail("terminal-queue throughput monotonic boundary ordering is invalid")
+    if require_number(final_receipt, "submitted_at_monotonic_ms") != last_submit or \
+            require_number(final_receipt, "terminal_at_monotonic_ms") != last_terminal:
+        fail("terminal-queue throughput final receipt timestamps mismatch")
+    if require_number(final_receipt, "requested_at_monotonic_ms") > last_submit:
+        fail("terminal-queue throughput final receipt was requested after submission")
+    close(window.get("input_to_first_submit_ms"), first_submit - first_input,
+          "benchmark_window.input_to_first_submit_ms")
+    close(window.get("submit_span_ms"), last_submit - first_submit,
+          "benchmark_window.submit_span_ms")
+    close(window.get("terminal_tail_ms"), last_terminal - last_submit,
+          "benchmark_window.terminal_tail_ms")
+    close(window.get("terminal_window_ms"), last_terminal - first_input,
+          "benchmark_window.terminal_window_ms")
+
+    warmup_ticket = window.get("warmup_boundary_current_stats_ticket")
+    warmup_receipt = window.get("warmup_terminal_receipt")
+    if warmup_count > 0:
+        if require_int(window, "warmup_terminal_receipt_submission_count") != 1 or \
+                require_int(window, "warmup_terminal_receipt_terminal_count") != 1 or \
+                not isinstance(warmup_receipt, dict):
+            fail("terminal-queue throughput requires one untimed warmup boundary receipt")
+        warmup_ticket = require_int(window, "warmup_boundary_current_stats_ticket")
+        if warmup_ticket == 0 or warmup_ticket == final_ticket or \
+                warmup_receipt.get("phase") != "warmup_boundary" or \
+                warmup_receipt.get("status") != "ready" or \
+                require_int(warmup_receipt, "ticket") != warmup_ticket:
+            fail("terminal-queue throughput warmup receipt identity mismatch")
+        warmup_submitted = require_number(warmup_receipt, "submitted_at_monotonic_ms")
+        warmup_terminal = require_number(warmup_receipt, "terminal_at_monotonic_ms")
+        assert warmup_submitted is not None and warmup_terminal is not None
+        if require_number(warmup_receipt, "requested_at_monotonic_ms") > warmup_submitted or \
+                warmup_submitted > warmup_terminal or warmup_terminal > first_input:
+            fail("terminal-queue throughput did not drain warmup before measured input")
+        if require_int(window, "draw_count_at_warmup_drain_start") != warmup_count or \
+                require_int(window, "draw_count_at_warmup_drain_completion") != warmup_count:
+            fail("terminal-queue throughput drew while draining warmup")
+    elif require_int(window, "warmup_terminal_receipt_submission_count") != 0 or \
+            require_int(window, "warmup_terminal_receipt_terminal_count") != 0 or \
+            warmup_ticket is not None or warmup_receipt is not None:
+        fail("zero-warmup throughput must not claim a warmup receipt")
+
+    expected_draw_count = warmup_count + measured_count
+    if require_int(window, "draw_count_at_final_drain_start") != expected_draw_count or \
+            require_int(window, "draw_count_at_completion") != expected_draw_count:
+        fail("terminal-queue throughput drew while draining its final receipt")
+    overhead = require_object(window, "terminal_receipt_overhead")
+    expected_warmup_boundary = "same_submission_result_ready_before_first_measured_input" \
+        if warmup_count > 0 else "not_applicable_no_warmup"
+    expected_residual = "excluded" if warmup_count > 0 else "not_applicable"
+    if overhead.get("kind") != "renderer_current_stats_same_submission_map_v1" or \
+            require_int(overhead, "readback_buffer_bytes") != 8 or \
+            require_int(overhead, "encoded_copy_bytes") not in {4, 8} or \
+            require_int(overhead, "extra_queue_submissions") != 0 or \
+            overhead.get("map_async_result_required") is not True or \
+            overhead.get("included_in_terminal_window") is not True or \
+            overhead.get("warmup_terminal_boundary") != expected_warmup_boundary or \
+            overhead.get("residual_warmup_queue_tail") != expected_residual:
+        fail("terminal-queue throughput terminal receipt overhead contract mismatch")
+
+    identity_fields = (
+        "current_stats_ticket",
+        "current_stats_plan",
+        "current_stats_scene_generation",
+        "current_stats_camera_revision",
+        "current_stats_viewport_generation",
+        "current_stats_contract_generation",
+        "current_stats_plan_set_generation",
+        "current_stats_order_generation",
+        "current_stats_raster_generation",
+        "current_stats_encode_attempt",
+        "current_stats_presentation_sequence",
+    )
+    for index, frame in enumerate(frames[:-1]):
+        if frame.get("current_stats_submission") != "not_requested" or \
+                any(field not in frame or frame[field] is not None for field in identity_fields):
+            fail(f"terminal-queue throughput frame {index} requested current stats")
+    final_frame = frames[-1]
+    if final_frame.get("current_stats_submission") != "issued" or \
+            final_frame.get("current_stats_ticket") != final_ticket or \
+            any(final_frame.get(field) is None for field in identity_fields):
+        fail("terminal-queue throughput final frame lacks its same-submission receipt")
+
+    expected_receipt_count = 2 if warmup_count > 0 else 1
+    ordering_expected = {
+        "measured_submit_count": measured_count,
+        "terminal_queue_done_count": 1,
+        "warmup_queue_done_count": 1 if warmup_count > 0 else 0,
+        "terminal_current_stats_receipts": expected_receipt_count,
+        "last_measured_ticket": final_ticket,
+    }
+    for field, expected in ordering_expected.items():
+        if ordering.get(field) != expected:
+            fail(f"ordering_window.{field} mismatch: expected {expected}")
+    if ordering.get("queue_done_proven") is not True:
+        fail("terminal-queue throughput queue completion is not proven")
+    for field in (
+        "first_measured_input_monotonic_ms",
+        "first_measured_submit_monotonic_ms",
+        "last_measured_submit_monotonic_ms",
+        "last_measured_terminal_monotonic_ms",
+        "input_to_first_submit_ms",
+        "submit_span_ms",
+        "terminal_tail_ms",
+        "terminal_window_ms",
+    ):
+        if ordering.get(field) != window.get(field):
+            fail(f"ordering_window.{field} does not match benchmark_window")
+
+
 def validate_async_sort_telemetry(frames: list[dict[str, Any]], summary: dict[str, Any]) -> None:
     boolean_fields = (
         "async_sort_scheduled",
@@ -466,6 +648,7 @@ def validate(directory: pathlib.Path) -> None:
     )
     summary = load_json(directory / "summary.json")
     validate_summary(summary, frames, run_id)
+    validate_terminal_queue_throughput(manifest, frames, summary)
     sort_policy = require_string(renderer, "sort_policy")
     if sort_policy.startswith("async_latest:"):
         validate_async_sort_telemetry(frames, summary)

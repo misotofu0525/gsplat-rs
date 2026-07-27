@@ -62,6 +62,43 @@ test("collector rejects non-finite values and non-monotonic timestamps", () => {
   assert.throws(() => append(collector, Number.NaN, 2), /finite non-negative/);
 });
 
+test("terminal-queue frames may leave counts null for their bound control artifact", () => {
+  const collector = createBenchmarkCollector({
+    runId: "throughput-no-readback",
+    warmupCount: 20,
+    frameBudgetMs: 1000 / 60,
+  });
+  assert.doesNotThrow(() => appendBenchmarkSample(collector, {
+    elapsed_ns: 1,
+    call_ms: 1,
+    frame_wall_ms: 2,
+    renderer_frame_ms: 1,
+    preprocess_ms: 0,
+    sort_ms: 0,
+    geometry_submit_ms: 1,
+    gpu_wait_ms: null,
+    gpu_complete_ms: null,
+    visible: null,
+    drawn: null,
+    sort_refreshed: true,
+  }));
+  assert.equal(frameRecords(collector)[0].visible, null);
+  assert.throws(() => appendBenchmarkSample(collector, {
+    elapsed_ns: 2,
+    call_ms: 1,
+    frame_wall_ms: 2,
+    renderer_frame_ms: 1,
+    preprocess_ms: 0,
+    sort_ms: 0,
+    geometry_submit_ms: 1,
+    gpu_wait_ms: null,
+    gpu_complete_ms: null,
+    visible: 1,
+    drawn: null,
+    sort_refreshed: true,
+  }), /availability must match/);
+});
+
 test("collector rebuilds summary from post-join frame timings", () => {
   const collector = createBenchmarkCollector({ runId: "joined", warmupCount: 1, frameBudgetMs: 16.67 });
   [1, 2].forEach((value, index) => append(collector, value, index));

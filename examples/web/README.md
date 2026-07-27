@@ -173,15 +173,69 @@ report issued, not-requested, or explicitly unsampled status; issued high-range
 JavaScript-safe tickets terminate exactly once as a success or structured
 failure.
 
-For a moving-camera throughput run, set
-`gsplat_order_completion_protocol=sustained_window`. This keeps submitting the
-trace at animation-frame cadence and drains every ordering receipt after the
-last measured submission. `isolated_terminal` instead waits for each ticket
-before accepting the corresponding frame and is useful for per-frame terminal
-latency, not sustained FPS. The collector derives `submit_span_ms`,
-`terminal_tail_ms`, and `terminal_window_ms` exclusively from the page's
+For a moving-camera current-stats evidence window, set
+`gsplat_order_completion_protocol=sustained_window`. This overlaps a bounded
+ledger of renderer current-stats tickets, keeps submitting the trace at
+animation-frame cadence, stops drawing after the last measured submission,
+then drains every issued ticket. Ring saturation, a missing issue, an unknown,
+duplicate, mismatched, unsampled or failed terminal, or final-drain timeout
+fails closed. `isolated_terminal` retains its previous behavior and waits for
+each ticket before accepting the corresponding frame. The collector derives
+`input_to_first_submit_ms`, `submit_span_ms`, `terminal_tail_ms`, and
+`terminal_window_ms` exclusively from the page's
 monotonic `performance.now()` clock; UTC timestamps are run identity metadata
 and are never subtracted for performance results.
+
+This current-stats window is control/correctness evidence, not the Q0
+cross-implementation throughput interval. Its manifest uses
+`benchmark_window.mode=current_stats_evidence_window`, sets
+`performance_evidence=false`, and records a configuration digest plus control
+artifact identity. `benchmark-window-mode.mjs` separately defines the
+`terminal_queue_throughput_window` state seam. Warmup and the first N-1 timed
+frames request no per-frame current stats. The final warmup draw alone carries
+an untimed renderer-owned current-stats receipt in its same command buffer;
+drawing stops until its Ready `map_async` Result proves the warmup queue is
+empty. Only then does the page accept the first measured camera input. Measured
+frames submit continuously with no intervening terminal wait; immediately
+before the final measured draw, the page requests one separate terminal
+receipt whose copy/map is encoded in that draw's command buffer. Drawing then
+stops and the page polls only that ticket. Its Ready Result proves the final
+submission, and therefore all prior measured work on the same ordered queue,
+completed. Missing issue, ring busy, ticket reuse, unknown, duplicate, failed,
+mismatched, or timed-out terminal evidence rejects the run without retry. No
+benchmark-only queue-fence API is added to the renderer, WASM, or Web package.
+
+Each boundary receipt uses the existing 8-byte readback buffer, a 4-byte
+CPU-plan or 8-byte GPU-plan copy, one map operation, and no extra queue
+submission. The warmup receipt is untimed. The measured receipt overhead is
+included and disclosed as conservative, non-identical terminal proof versus
+PlayCanvas's `queue.onSubmittedWorkDone()` Promise. The common monotonic window
+starts at `first_measured_input_monotonic_ms`, frozen before the first measured
+`setCamera`/order/render call, and ends at the final measured receipt terminal.
+Post-render `first_measured_submit_monotonic_ms` and
+`last_measured_submit_monotonic_ms` remain separate boundaries;
+`input_to_first_submit_ms` makes the first frame's CPU/order/encode cost
+explicit. The warmup terminal must precede the first measured input, so no
+residual warmup queue tail is admitted.
+
+The standard collector admits B only with an existing A control artifact:
+
+```bash
+GSPLAT_BENCHMARK_WINDOW_MODE=terminal_queue_throughput_window \
+GSPLAT_CURRENT_STATS_CONTROL_ARTIFACT=/absolute/path/to/control-artifact \
+GSPLAT_ORDER_COMPLETION_PROTOCOL=sustained_window \
+node examples/web/scripts/collect-web-benchmark-artifact.mjs
+```
+
+The configuration digest must match the control exactly. The final warmup and
+final measured tickets must be distinct. The first N-1 timed frames must report
+`current_stats_submission=not_requested`; only the final timed frame may report
+one `issued` ticket, and its complete identity must join one Ready terminal.
+Every frame must use renderer-owned Exact raster, an active
+Exact `adaptive_state`, and the corresponding actual
+CpuPostSort/GpuPostSort/GpuPreproject plan identity. Exact may intentionally
+report `projected_adaptive_state=disabled` because WholePlanController owns the
+closed plan; B does not require a particular Candidate/Compact selection.
 
 The result is printed in the Benchmark panel and to the browser console as a
 `BENCHMARK_RESULT` line. For headless smoke tests that need the result before
@@ -194,8 +248,8 @@ scene and supports forced CPU, forced GPU, or measured Adaptive ordering.
 Benchmark output reports `renderer=wasm_packed_atlas`. When motion stops, leave
 the page visible for at least three frames and confirm the canvas remains
 non-black with non-zero Visible/Drawn counts; this guards cached-order redraw.
-Packed Exact ordering artifacts request a renderer-owned current-stats receipt
-for every retained frame. `current-stats-submissions.jsonl` and
+Packed Exact current-stats control artifacts request a renderer-owned
+current-stats receipt for every retained frame. `current-stats-submissions.jsonl` and
 `current-stats-terminals.jsonl` must form a one-submission/one-terminal ledger;
 the collector joins the complete plan/generation/camera/encode/presentation
 identity and rejects missing, stale, mismatched, unsampled, or failed

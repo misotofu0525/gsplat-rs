@@ -28,6 +28,8 @@ import {
   validateCurrentStatsEvidence,
   validateCurrentStatsTerminalLedger,
 } from '../src/benchmark-current-stats-evidence.mjs';
+import { validateCurrentStatsScheduleEvidence } from '../src/benchmark-current-stats-schedule.mjs';
+import { validateBenchmarkWindowManifest } from '../src/benchmark-window-mode.mjs';
 import {
   validateProjectedFrameEvidence,
   validateProjectedTerminalLedger,
@@ -121,6 +123,67 @@ const benchmarkSettleMs = Number(process.env.GSPLAT_BENCHMARK_SETTLE_MS ?? 50);
 const orderCompletionProtocol = process.env.GSPLAT_ORDER_COMPLETION_PROTOCOL ?? 'isolated_terminal';
 if (!['isolated_terminal', 'sustained_window'].includes(orderCompletionProtocol)) {
   throw new Error('GSPLAT_ORDER_COMPLETION_PROTOCOL must be isolated_terminal or sustained_window');
+}
+const benchmarkWindowMode = process.env.GSPLAT_BENCHMARK_WINDOW_MODE
+  ?? 'current_stats_evidence_window';
+if (!['current_stats_evidence_window', 'terminal_queue_throughput_window']
+  .includes(benchmarkWindowMode)) {
+  throw new Error(
+    'GSPLAT_BENCHMARK_WINDOW_MODE must be current_stats_evidence_window or '
+      + 'terminal_queue_throughput_window',
+  );
+}
+const currentStatsControlArtifact = process.env.GSPLAT_CURRENT_STATS_CONTROL_ARTIFACT ?? null;
+if (benchmarkWindowMode === 'terminal_queue_throughput_window' && (
+  orderCompletionProtocol !== 'sustained_window'
+  || geometryPath !== 'packed'
+  || orderBackend !== 'adaptive'
+  || projectedPolicy !== 'adaptive'
+  || gpuOrderProducer !== null
+  || benchmarkSync
+  || currentStatsControlArtifact === null
+)) {
+  throw new Error(
+    'terminal-queue throughput requires async Packed Exact Adaptive sustained_window and '
+      + 'GSPLAT_CURRENT_STATS_CONTROL_ARTIFACT',
+  );
+}
+
+async function loadCurrentStatsControlIdentity() {
+  if (benchmarkWindowMode !== 'terminal_queue_throughput_window') return null;
+  const requested = resolve(repoRoot, currentStatsControlArtifact);
+  const manifestPath = (await stat(requested)).isDirectory()
+    ? resolve(requested, 'manifest.json')
+    : requested;
+  await runPythonValidator(
+    'tests/perf/validate-benchmark-artifacts.py',
+    [dirname(manifestPath)],
+    'current-stats control artifact validator',
+  );
+  const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
+  const window = manifest.benchmark_window;
+  const schedule = manifest.ordering_window?.current_stats_schedule;
+  const expectedLogicalFrames = (window?.configuration?.warmup_frames ?? -1)
+    + (window?.configuration?.measured_frames ?? -1);
+  if (window?.mode !== 'current_stats_evidence_window'
+      || window.performance_evidence !== false
+      || window.evidence_role !== 'renderer_exact_current_stats_control'
+      || window.control_artifact_identity?.run_id !== manifest.run_id
+      || window.control_artifact_identity?.configuration_sha256
+        !== window.configuration_sha256
+      || schedule?.state !== 'complete'
+      || schedule.protocol !== 'sustained_window'
+      || schedule.submitted_logical_count !== expectedLogicalFrames
+      || schedule.issued_count !== expectedLogicalFrames
+      || schedule.terminal_count !== expectedLogicalFrames
+      || schedule.draw_count_at_final_drain_start !== schedule.draw_count_at_completion) {
+    throw new Error('current-stats control artifact is not an admitted control-only window');
+  }
+  return {
+    runId: manifest.run_id,
+    configurationSha256: window.configuration_sha256,
+    manifestPath,
+  };
 }
 if (gpuOrderProducer !== null && (
   geometryPath !== 'packed'
@@ -368,6 +431,8 @@ function parseArtifacts(consoleLines) {
       gpuProducerMeasurementFailures.push(
         text.slice('GPU_PRODUCER_MEASUREMENT_FAILURE_JSON '.length),
       );
+    } else if (text.startsWith('TERMINAL_QUEUE_FENCE_')) {
+      throw new Error('retired terminal queue fence evidence is not admissible');
     }
   }
   if (manifests.length !== 1 || summaries.length !== 1 || frameRecords.length === 0) {
@@ -435,20 +500,231 @@ function parseArtifacts(consoleLines) {
   const rendererOwnedExact = rawFrames.every(
     (frame) => frame.raster_execution_plan === 'projected_quads_exact',
   );
-  const terminalSubmissions = rendererOwnedExact ? statsSubmissions : submissions;
+  const terminalQueueThroughput = manifest.benchmark_window?.mode
+    === 'terminal_queue_throughput_window';
+  if (rendererOwnedExact) {
+    const expectedLogicalFrameCount = manifest.ordering_window?.expected_logical_frame_count;
+    const logicalCurrentStatsSubmissionCount = terminalQueueThroughput
+      ? statsSubmissions.length
+      : statsSubmissions.filter(
+          (submission) => submission.phase === 'warmup' || submission.phase === 'measured',
+        ).length;
+    const benchmarkWindowConfiguration = manifest.benchmark_window?.configuration;
+    if (!benchmarkWindowConfiguration || typeof benchmarkWindowConfiguration !== 'object') {
+      throw new Error('renderer-owned Exact artifact lacks benchmark window configuration');
+    }
+    const configurationSha256 = createHash('sha256')
+      .update(JSON.stringify(benchmarkWindowConfiguration))
+      .digest('hex');
+    validateBenchmarkWindowManifest({
+      window: manifest.benchmark_window,
+      currentStatsSubmissionCount: logicalCurrentStatsSubmissionCount,
+      expectedLogicalFrameCount: terminalQueueThroughput
+        ? rawFrames.length
+        : expectedLogicalFrameCount,
+      expectedWarmupFrameCount: terminalQueueThroughput
+        ? benchmarkWindowConfiguration.warmup_frames
+        : 0,
+      expectedConfigurationSha256: configurationSha256,
+    });
+    if (terminalQueueThroughput) {
+      if (manifest.benchmark_window?.control_artifact_identity?.run_id
+            !== currentStatsControlIdentity?.runId
+          || manifest.benchmark_window?.control_artifact_identity?.configuration_sha256
+            !== currentStatsControlIdentity?.configurationSha256) {
+        throw new Error('throughput artifact drifted from its admitted current-stats control');
+      }
+      const expectedBoundaryReceiptCount = warmup > 0 ? 2 : 1;
+      if (statsSubmissions.length !== expectedBoundaryReceiptCount
+          || statsTerminals.length !== expectedBoundaryReceiptCount
+          || statsPendingFrames.length > expectedBoundaryReceiptCount
+          || manifest.ordering_window?.current_stats_schedule !== null
+          || manifest.ordering_window?.terminal_current_stats_receipts
+            !== expectedBoundaryReceiptCount
+          || manifest.timing?.performance_evidence !== true
+          || manifest.qualification_scope
+            !== 'qualification_q1_terminal_queue_throughput_candidate') {
+        throw new Error(
+          'terminal-queue throughput requires one untimed warmup boundary and one final receipt',
+        );
+      }
+      const warmupSubmission = warmup > 0
+        ? statsSubmissions.find((record) => record.phase === 'warmup_boundary')
+        : null;
+      const warmupTerminal = warmup > 0
+        ? statsTerminals.find((record) => record.phase === 'warmup_boundary')
+        : null;
+      const finalSubmission = statsSubmissions.find(
+        (record) => record.phase === 'final_measured',
+      );
+      const finalTerminal = statsTerminals.find(
+        (record) => record.phase === 'final_measured',
+      );
+      const finalFrame = rawFrames.at(-1);
+      const nonFinalFrames = rawFrames.slice(0, -1);
+      const expectedPresented = warmup + frames;
+      const currentStatsIdentityFields = [
+        'current_stats_ticket',
+        'current_stats_plan',
+        'current_stats_scene_generation',
+        'current_stats_camera_revision',
+        'current_stats_viewport_generation',
+        'current_stats_contract_generation',
+        'current_stats_plan_set_generation',
+        'current_stats_order_generation',
+        'current_stats_raster_generation',
+        'current_stats_encode_attempt',
+        'current_stats_presentation_sequence',
+      ];
+      if (nonFinalFrames.some((frame) => frame.current_stats_submission !== 'not_requested'
+          || currentStatsIdentityFields.some((field) => frame[field] !== null))) {
+        throw new Error('throughput requested current stats before its final measured frame');
+      }
+      if (!finalSubmission || !finalTerminal
+          || finalFrame.current_stats_submission !== 'issued'
+          || finalFrame.current_stats_ticket !== finalSubmission.ticket
+          || finalTerminal.ticket !== finalSubmission.ticket
+          || finalTerminal.status !== 'ready'
+          || manifest.benchmark_window?.final_measured_current_stats_ticket
+            !== finalSubmission.ticket
+          || manifest.benchmark_window?.terminal_receipt?.ticket !== finalSubmission.ticket
+          || manifest.benchmark_window?.terminal_receipt?.status !== 'ready'
+          || manifest.benchmark_window?.terminal_receipt?.plan !== finalTerminal.plan
+          || manifest.benchmark_window?.terminal_receipt?.submitted_at_monotonic_ms
+            !== finalSubmission.submitted_at_monotonic_ms
+          || manifest.benchmark_window?.terminal_receipt?.terminal_at_monotonic_ms
+            !== finalTerminal.terminal_at_monotonic_ms
+          || manifest.benchmark_window?.terminal_receipt?.requested_at_monotonic_ms
+            > finalSubmission.submitted_at_monotonic_ms
+          || finalTerminal.terminal_at_monotonic_ms
+            < finalSubmission.submitted_at_monotonic_ms
+          || manifest.benchmark_window?.last_measured_submit_monotonic_ms
+            !== finalSubmission.submitted_at_monotonic_ms
+          || manifest.benchmark_window?.last_measured_terminal_monotonic_ms
+            !== finalTerminal.terminal_at_monotonic_ms) {
+        throw new Error('final measured current-stats receipt lacks an exact issued-terminal join');
+      }
+      if (warmup > 0 && (
+        !warmupSubmission || !warmupTerminal
+        || warmupTerminal.ticket !== warmupSubmission.ticket
+        || warmupTerminal.status !== 'ready'
+        || manifest.benchmark_window?.warmup_boundary_current_stats_ticket
+          !== warmupSubmission.ticket
+        || manifest.benchmark_window?.warmup_terminal_receipt?.ticket
+          !== warmupSubmission.ticket
+        || manifest.benchmark_window?.warmup_terminal_receipt?.status !== 'ready'
+        || manifest.benchmark_window?.warmup_terminal_receipt?.plan !== warmupTerminal.plan
+        || manifest.benchmark_window?.warmup_terminal_receipt?.submitted_at_monotonic_ms
+          !== warmupSubmission.submitted_at_monotonic_ms
+        || manifest.benchmark_window?.warmup_terminal_receipt?.terminal_at_monotonic_ms
+          !== warmupTerminal.terminal_at_monotonic_ms
+        || manifest.benchmark_window?.warmup_terminal_receipt?.requested_at_monotonic_ms
+          > warmupSubmission.submitted_at_monotonic_ms
+        || warmupTerminal.terminal_at_monotonic_ms
+          < warmupSubmission.submitted_at_monotonic_ms
+        || warmupTerminal.terminal_at_monotonic_ms
+          > manifest.benchmark_window?.first_measured_input_monotonic_ms
+        || warmupSubmission.ticket === finalSubmission.ticket
+      )) {
+        throw new Error('warmup boundary lacks an untimed issued-terminal join before measured input');
+      }
+      if (manifest.benchmark_window?.warmup_submit_count !== warmup
+          || manifest.benchmark_window?.measured_submit_count !== frames
+          || (warmup > 0
+            && manifest.benchmark_window?.draw_count_at_warmup_drain_start !== warmup)
+          || manifest.benchmark_window?.draw_count_at_warmup_drain_start
+            !== manifest.benchmark_window?.draw_count_at_warmup_drain_completion
+          || manifest.benchmark_window?.draw_count_at_final_drain_start !== expectedPresented
+          || manifest.benchmark_window?.draw_count_at_completion !== expectedPresented
+          || manifest.ordering_window?.presented_submit_count !== expectedPresented) {
+        throw new Error('final current-stats drain submitted a new draw or lost a logical frame');
+      }
+      if (rawFrames.some((frame) => frame.adaptive_state === 'disabled'
+          || frame.submitted_measurement_ticket !== null
+          || frame.submitted_measurement_backend !== null
+          || frame.projected_measurement_submission !== 'not_requested'
+          || frame.projected_measurement_ticket !== null
+          || frame.gpu_producer_measurement_submission !== 'not_requested'
+          || frame.gpu_producer_measurement_ticket !== null
+          || !['cpu', 'gpu'].includes(frame.order_backend)
+          || !['candidate', 'compact'].includes(frame.projected_execution))) {
+        throw new Error('throughput frame lacks a natural Exact WholePlanController identity');
+      }
+      const adaptiveRecords = manifest.benchmark_window?.exact_adaptive_measured;
+      if (!Array.isArray(adaptiveRecords) || adaptiveRecords.length !== rawFrames.length) {
+        throw new Error('throughput window lacks its complete Exact adaptive state/plan ledger');
+      }
+      for (const [index, frame] of rawFrames.entries()) {
+        const actualPlan = frame.order_backend === 'cpu'
+          ? 'cpu_post_sort'
+          : frame.projected_execution === 'compact'
+            ? 'gpu_preproject'
+            : 'gpu_post_sort';
+        const adaptive = adaptiveRecords[index];
+        if (adaptive.state !== frame.adaptive_state || adaptive.plan !== actualPlan
+            || adaptive.projected_state !== frame.projected_adaptive_state
+            || adaptive.projected_execution !== frame.projected_execution) {
+          throw new Error(`throughput frame ${index} Exact adaptive plan identity drift`);
+        }
+      }
+    } else {
+      const currentStatsScheduleEvidence = validateCurrentStatsScheduleEvidence({
+        evidence: manifest.ordering_window?.current_stats_schedule,
+        protocol: manifest.ordering_window?.completion_protocol,
+        frameWallSource: manifest.timing?.frame_wall_source,
+        expectedLogicalFrameCount,
+      });
+      if (currentStatsScheduleEvidence.issued_count !== statsSubmissions.length
+          || currentStatsScheduleEvidence.terminal_count !== statsTerminals.length) {
+        throw new Error(
+          'current-stats schedule counts do not match the retained submission/terminal ledger',
+        );
+      }
+      if (manifest.timing?.performance_evidence !== false
+          || manifest.qualification_scope !== 'qualification_q1_current_stats_control_only') {
+        throw new Error(
+          'renderer current-stats evidence window overclaims cross-implementation performance',
+        );
+      }
+    }
+  }
+  const terminalSubmissions = rendererOwnedExact
+    ? statsSubmissions
+    : submissions;
   const terminalReceipts = rendererOwnedExact
     ? statsTerminals
     : [...measurements, ...cpuMeasurements, ...failures];
   const pageMonotonicWindow = JSON.parse(monotonicOrderingWindows[0]);
-  const monotonicWindow = monotonicOrderingWindow({
-    submissions: terminalSubmissions,
-    terminals: terminalReceipts,
-  });
-  const measuredSubmissionCount = terminalSubmissions.filter(
-    (submission) => submission.phase === 'measured',
-  ).length;
+  const monotonicWindow = terminalQueueThroughput
+      ? Object.fromEntries([
+        'monotonic_clock',
+        'first_measured_input_monotonic_ms',
+        'first_measured_submit_monotonic_ms',
+        'last_measured_submit_monotonic_ms',
+        'last_measured_terminal_monotonic_ms',
+        'input_to_first_submit_ms',
+        'submit_span_ms',
+        'terminal_tail_ms',
+        'terminal_window_ms',
+      ].map((field) => [
+        field,
+        field === 'monotonic_clock'
+          ? 'performance.now'
+          : manifest.benchmark_window[field],
+      ]))
+    : monotonicOrderingWindow({
+        submissions: terminalSubmissions,
+        terminals: terminalReceipts,
+      });
+  const measuredSubmissionCount = terminalQueueThroughput
+    ? rawFrames.length
+    : terminalSubmissions.filter((submission) => submission.phase === 'measured').length;
   if (pageMonotonicWindow.measured_submit_count !== measuredSubmissionCount
-      || pageMonotonicWindow.measured_terminal_count !== measuredSubmissionCount) {
+      || pageMonotonicWindow.measured_terminal_count
+        !== (terminalQueueThroughput ? 1 : measuredSubmissionCount)
+      || (terminalQueueThroughput
+        && pageMonotonicWindow.terminal_model
+          !== 'untimed_warmup_boundary_plus_final_measured_current_stats_receipt')) {
     throw new Error('page monotonic ordering window has an incorrect measured ledger count');
   }
   for (const [field, value] of Object.entries(monotonicWindow)) {
@@ -501,7 +777,17 @@ function parseArtifacts(consoleLines) {
   }
   const hasGpuFrame = rawFrames.some((frame) => frame.order_backend === 'gpu');
   const expectedActualProducer = gpuOrderProducer ?? (hasGpuFrame ? 'post-sort' : null);
-  if (manifest.renderer?.gpu_order_producer_actual !== expectedActualProducer) {
+  const frameActualProducers = [
+    ...new Set(rawFrames.map((frame) => frame.gpu_order_producer).filter(Boolean)),
+  ].sort();
+  const manifestActualProducers = [
+    ...(manifest.gpu_producer_evidence?.actual_producers ?? []),
+  ].sort();
+  if (terminalQueueThroughput) {
+    if (JSON.stringify(frameActualProducers) !== JSON.stringify(manifestActualProducers)) {
+      throw new Error('throughput Exact actual-plan producer ledger drifted from its frames');
+    }
+  } else if (manifest.renderer?.gpu_order_producer_actual !== expectedActualProducer) {
     throw new Error(
       `benchmark actual GPU producer mismatch: expected ${expectedActualProducer ?? 'none'}; observed ` +
       `${manifest.renderer?.gpu_order_producer_actual ?? 'missing'}`,
@@ -553,6 +839,17 @@ function parseArtifacts(consoleLines) {
       terminals: statsTerminals,
       sourceCount: manifest.dataset?.splat_count,
     });
+    if (terminalQueueThroughput) {
+      // Reuse the canonical join on the one observed final frame so every
+      // renderer-owned ticket/plan/generation identity is checked across the
+      // frame, submission, and Result-bearing terminal receipt.
+      joinCurrentStatsEvidence({
+        frames: [rawFrames.at(-1)],
+        submissions: statsSubmissions,
+        terminals: statsTerminals,
+        sourceCount: manifest.dataset?.splat_count,
+      });
+    }
     if (submissions.length > 0 || measurements.length > 0
         || cpuMeasurements.length > 0 || failures.length > 0) {
       throw new Error('renderer-owned Exact benchmark emitted a retired order-measurement ledger');
@@ -630,7 +927,12 @@ function parseArtifacts(consoleLines) {
   }
   const gpuFailures = failures.filter((failure) => failure.actual_backend === 'gpu');
   const frames = rendererOwnedExact
-    ? joinCurrentStatsEvidence({
+    ? terminalQueueThroughput
+      ? rawFrames.map((frame) => ({
+          ...frame,
+          count_statistics_eligible: false,
+        }))
+      : joinCurrentStatsEvidence({
         frames: rawFrames,
         submissions: statsSubmissions,
         terminals: statsTerminals,
@@ -643,7 +945,7 @@ function parseArtifacts(consoleLines) {
         cpuMeasurements,
         failures: gpuFailures,
       });
-  if (rendererOwnedExact) {
+  if (rendererOwnedExact && !terminalQueueThroughput) {
     validateCurrentStatsEvidence({ frames });
     if (gpuOrderProducer !== null) {
       const requiredPlan = gpuOrderProducer === 'preproject'
@@ -656,7 +958,7 @@ function parseArtifacts(consoleLines) {
         );
       }
     }
-  } else {
+  } else if (!rendererOwnedExact) {
     validateOrderingEvidence({
       requestedBackend: orderBackend,
       frames,
@@ -666,10 +968,16 @@ function parseArtifacts(consoleLines) {
     });
   }
   const summary = benchmarkSummaryFromFrameRecords(frames, JSON.parse(summaries[0]));
-  summary.count_evidence = benchmarkCountEvidence(frames);
-  const measuredSubmissions = terminalSubmissions.filter(
-    (submission) => submission.phase === 'measured',
-  );
+  summary.count_evidence = terminalQueueThroughput
+    ? {
+        source: 'bound_current_stats_control_artifact',
+        control_artifact_identity: manifest.benchmark_window.control_artifact_identity,
+      }
+    : benchmarkCountEvidence(frames);
+  summary.benchmark_window = manifest.benchmark_window ?? null;
+  const measuredSubmissions = terminalQueueThroughput
+    ? rawFrames.map((_, index) => ({ ticket: index + 1, phase: 'measured' }))
+    : terminalSubmissions.filter((submission) => submission.phase === 'measured');
   const traceSequence = Array.isArray(manifest.trace?.frame_indices);
   if (traceSequence) {
     if (rawFrames.some((frame) => frame.sort_refreshed !== true)) {
@@ -690,10 +998,13 @@ function parseArtifacts(consoleLines) {
       .filter((terminal) => !rendererOwnedExact || terminal.status === 'ready')
       .map((terminal) => terminal.ticket),
   );
-  const measuredTerminalCount = measuredSubmissions.filter(
-    (submission) => successfulTerminalTickets.has(submission.ticket),
-  ).length;
-  if (measuredTerminalCount !== measuredSubmissions.length) {
+  const measuredTerminalCount = terminalQueueThroughput
+    ? statsTerminals.filter((terminal) => terminal.phase === 'final_measured').length
+    : measuredSubmissions.filter(
+        (submission) => successfulTerminalTickets.has(submission.ticket),
+      ).length;
+  if (terminalQueueThroughput ? measuredTerminalCount !== 1
+    : measuredTerminalCount !== measuredSubmissions.length) {
     throw new Error(
       `measured queue-terminal off-by-one: submissions=${measuredSubmissions.length} ` +
       `terminals=${measuredTerminalCount}`,
@@ -709,10 +1020,29 @@ function parseArtifacts(consoleLines) {
     sample_count: rawFrames.length,
     measured_submit_count: measuredSubmissions.length,
     terminal_queue_done_count: measuredTerminalCount,
-    first_measured_ticket: measuredSubmissions[0]?.ticket ?? null,
-    last_measured_ticket: measuredSubmissions.at(-1)?.ticket ?? null,
-    queue_done_proven: measuredTerminalCount === measuredSubmissions.length,
-    off_by_one_check: traceSequence ? 'one_sort_submission_and_terminal_per_measured_frame' : 'fixed_order_reuse',
+    warmup_queue_done_count: terminalQueueThroughput && warmup > 0 ? 1 : 0,
+    first_measured_ticket: terminalQueueThroughput
+      ? null
+      : measuredSubmissions[0]?.ticket ?? null,
+    last_measured_ticket: terminalQueueThroughput
+      ? statsSubmissions.find((submission) => submission.phase === 'final_measured')?.ticket ?? null
+      : measuredSubmissions.at(-1)?.ticket ?? null,
+    queue_done_proven: terminalQueueThroughput
+      ? measuredTerminalCount === 1
+        && (warmup === 0
+          || (statsTerminals.filter(
+            (terminal) => terminal.phase === 'warmup_boundary' && terminal.status === 'ready',
+          ).length === 1
+            && manifest.benchmark_window?.warmup_terminal_receipt?.terminal_at_monotonic_ms
+              <= manifest.benchmark_window?.first_measured_input_monotonic_ms))
+        && manifest.benchmark_window?.draw_count_at_final_drain_start
+          === manifest.benchmark_window?.draw_count_at_completion
+      : measuredTerminalCount === measuredSubmissions.length,
+    off_by_one_check: terminalQueueThroughput
+      ? 'warmup_drained_before_input_and_all_measured_submits_covered_by_final_same_submission_terminal'
+      : traceSequence
+        ? 'one_sort_submission_and_terminal_per_measured_frame'
+        : 'fixed_order_reuse',
     ...monotonicWindow,
   };
   manifest.ordering_window = {
@@ -721,12 +1051,12 @@ function parseArtifacts(consoleLines) {
   };
   summary.ordering_window = orderingWindow;
   summary.order_completion = {
-    cpu_frame_complete_ms: distribution(
+    cpu_frame_complete_ms: terminalQueueThroughput ? null : distribution(
       cpuMeasurements
         .filter((measurement) => measuredTickets.has(measurement.ticket))
         .map((measurement) => measurement.frame_complete_ms),
     ),
-    gpu_frame_complete_ms: distribution(
+    gpu_frame_complete_ms: terminalQueueThroughput ? null : distribution(
       measurements
         .filter((measurement) => measuredTickets.has(measurement.ticket))
         .map((measurement) => measurement.gpu_complete_ms),
@@ -734,13 +1064,23 @@ function parseArtifacts(consoleLines) {
   };
   manifest.ordering_evidence = {
     terminal_model: rendererOwnedExact
-      ? 'renderer_current_stats'
+      ? terminalQueueThroughput
+        ? 'untimed_warmup_boundary_plus_final_measured_current_stats_receipt'
+        : 'renderer_current_stats'
       : 'legacy_order_measurement',
     submission_predicate: rendererOwnedExact
-      ? 'current_stats_submission=issued'
+      ? terminalQueueThroughput
+        ? 'warmup_ready_before_input_first_n_minus_1_no_stats_final_receipt_issued'
+        : 'current_stats_submission=issued'
       : 'sort_refreshed=true',
     receipt_join_keys: rendererOwnedExact
-      ? [
+      ? terminalQueueThroughput
+        ? [
+          'current_stats_ticket',
+          'current_stats_plan',
+          'current_stats_camera_revision',
+          'current_stats_presentation_sequence',
+        ] : [
           'current_stats_ticket',
           'current_stats_plan',
           'current_stats_camera_revision',
@@ -749,11 +1089,17 @@ function parseArtifacts(consoleLines) {
       : ['submitted_measurement_ticket', 'camera_revision'],
     terminal_receipt_policy: 'exactly_one_of_success_or_structured_failure',
     structured_failure_policy: 'reject_strict_benchmark',
-    cpu_completion: 'frame_start_to_queue_done',
-    gpu_completion: 'frame_start_to_queue_done',
+    cpu_completion: terminalQueueThroughput
+      ? 'first_measured_input_to_final_current_stats_map_result'
+      : 'frame_start_to_queue_done',
+    gpu_completion: terminalQueueThroughput
+      ? 'first_measured_input_to_final_current_stats_map_result'
+      : 'frame_start_to_queue_done',
     completion_protocol: orderCompletionProtocol,
     frame_counts: rendererOwnedExact
-      ? 'post_join_renderer_current_stats_terminal'
+      ? terminalQueueThroughput
+        ? 'unavailable_in_timed_window_bound_to_current_stats_control'
+        : 'post_join_renderer_current_stats_terminal'
       : orderBackend === 'cpu'
         ? 'synchronous_cpu_order'
         : 'post_join_terminal_gpu_receipt',
@@ -1000,6 +1346,7 @@ if (truck1080pQualification) {
   }
 }
 
+const currentStatsControlIdentity = await loadCurrentStatsControlIdentity();
 const chrome = await findChrome();
 if (!chrome) {
   console.error(JSON.stringify({ status: 'blocked', reason: 'no Chrome/Chromium found', chromeCandidates }));
@@ -1049,6 +1396,14 @@ try {
     benchmark_yaw_step: qualification ? '0' : '0.001'
   });
   params.set('gsplat_order_completion_protocol', orderCompletionProtocol);
+  params.set('gsplat_benchmark_window_mode', benchmarkWindowMode);
+  if (currentStatsControlIdentity !== null) {
+    params.set('gsplat_current_stats_control_run_id', currentStatsControlIdentity.runId);
+    params.set(
+      'gsplat_current_stats_control_configuration_sha256',
+      currentStatsControlIdentity.configurationSha256,
+    );
+  }
   if (m4Smoke) params.set('gsplat_current_stats_smoke', 'true');
   if (gpuOrderProducer !== null) {
     params.set('gsplat_surface_gpu_order_producer', gpuOrderProducer);
@@ -1214,7 +1569,9 @@ try {
   const imagePath = resolve(artifactDir, 'final-frame.png');
   await writeFile(imagePath, Buffer.from(dataUrl.split(',')[1], 'base64'));
   await writeFile(resolve(artifactDir, 'browser-console.log'), `${consoleLines.join('\n')}\n`);
-  const suitePath = truck1080pQualification
+  const suitePath = truck1080pQualification && !(
+    benchmarkWindowMode === 'terminal_queue_throughput_window'
+  )
     ? await publishTruck1080pSuite({
         manifest: truckManifest,
         frames: truckFrames,
