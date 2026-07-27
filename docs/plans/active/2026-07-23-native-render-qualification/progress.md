@@ -289,6 +289,29 @@ terminal Rejected and neither contains throughput evidence. Q1 throughput
 therefore remains Deferred while the focused auxiliary-presentation repair is
 reviewed.
 
+Fixed-SHA review of the first repair, `60d6cd3`, rejected two evidence gaps
+before any browser rerun. First, an Adaptive formal order ticket issued by a
+deferred current-stats presentation was still written into the retired order
+ledger, so the Exact artifact validator would reject its otherwise intentional
+auxiliary work. Second, the request deadline was not checked while waiting for
+that auxiliary ticket's terminal. Review also required the retained artifact
+to prove every deferred/issued presentation attempt, rather than keeping only
+aggregate counts.
+
+The direct follow-up keeps auxiliary formal submissions and terminals in a
+separate bounded ledger, joins each one to its exact deferred phase, logical
+member, attempt, trace frame, camera revision and monotonic timestamps, and
+checks the same finite request deadline during every empty terminal poll. The
+current-stats schedule now retains every deferred and final issued presentation
+and proves that each member has contiguous attempts ending in exactly one
+issued ticket. The collector additionally requires the schedule's attempt
+count to equal the manifest's actual presented count. Auxiliary frames remain
+untimed control evidence and can never become one of the logical 20+80 samples.
+Focused Web harness, Web SDK, benchmark-artifact, bootstrap and source-policy
+checks pass locally. A new endpoint run remains forbidden until this follow-up
+has its own fixed-SHA acceptance; the two prior failed output roots remain
+immutable Rejected evidence.
+
 ## Q3 M4 SIMD microbenchmark checkpoint (2026-07-27)
 
 At clean root commit `f025dff`, the fixed

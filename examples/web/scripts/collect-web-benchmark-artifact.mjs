@@ -25,6 +25,7 @@ import {
 } from '../src/benchmark-order-evidence.mjs';
 import {
   joinCurrentStatsEvidence,
+  validateAuxiliaryCurrentStatsFormalLedger,
   validateCurrentStatsEvidence,
   validateCurrentStatsTerminalLedger,
 } from '../src/benchmark-current-stats-evidence.mjs';
@@ -570,6 +571,17 @@ function parseArtifacts(consoleLines) {
         : 0,
       expectedConfigurationSha256: configurationSha256,
     });
+    validateAuxiliaryCurrentStatsFormalLedger({
+      runId: manifest.run_id,
+      expectedLogicalFrameCount: manifest.ordering_window?.expected_logical_frame_count,
+      deferredPresentationCount:
+        manifest.ordering_window?.current_stats_schedule?.deferred_presentation_count ?? 0,
+      deferredPresentations:
+        manifest.ordering_window?.current_stats_schedule?.deferred_presentations ?? [],
+      submissions: manifest.ordering_window?.auxiliary_formal_submissions,
+      terminals: manifest.ordering_window?.auxiliary_formal_terminals,
+      terminalQueueThroughput,
+    });
     if (terminalQueueThroughput) {
       if (manifest.benchmark_window?.control_artifact_identity?.run_id
             !== currentStatsControlIdentity?.runId
@@ -718,7 +730,9 @@ function parseArtifacts(consoleLines) {
         expectedLogicalFrameCount,
       });
       if (currentStatsScheduleEvidence.issued_count !== statsSubmissions.length
-          || currentStatsScheduleEvidence.terminal_count !== statsTerminals.length) {
+          || currentStatsScheduleEvidence.terminal_count !== statsTerminals.length
+          || currentStatsScheduleEvidence.presented_attempt_count
+            !== manifest.ordering_window?.presented_submit_count) {
         throw new Error(
           'current-stats schedule counts do not match the retained submission/terminal ledger',
         );

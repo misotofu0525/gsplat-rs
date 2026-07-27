@@ -3,9 +3,38 @@ import test from "node:test";
 
 import {
   joinCurrentStatsEvidence,
+  validateAuxiliaryCurrentStatsFormalLedger,
   validateCurrentStatsEvidence,
   validateCurrentStatsTerminalLedger,
 } from "../src/benchmark-current-stats-evidence.mjs";
+
+function auxiliaryFormal(overrides = {}) {
+  return {
+    run_id: "run-1",
+    phase: "warmup",
+    logical_submission_index: 1,
+    attempt_index: 0,
+    ticket: 23,
+    camera_revision: 5,
+    trace_frame_index: 0,
+    actual_backend: "cpu",
+    deferred_at_monotonic_ms: 19,
+    submitted_at_monotonic_ms: 20,
+    ...overrides,
+  };
+}
+
+function deferredAttempt(overrides = {}) {
+  return {
+    phase: "warmup",
+    logical_submission_index: 1,
+    attempt_index: 0,
+    camera_revision: 5,
+    trace_frame_index: 0,
+    observed_at_monotonic_ms: 19,
+    ...overrides,
+  };
+}
 
 function identity(overrides = {}) {
   return {
@@ -166,5 +195,63 @@ test("provisional Exact counts remain unavailable and cannot be labeled eligible
   assert.throws(
     () => validateCurrentStatsEvidence({ frames: [frame()] }),
     /lacks a current renderer terminal count join/,
+  );
+});
+
+test("auxiliary formal control ledger joins without becoming a logical sample", () => {
+  const submission = auxiliaryFormal();
+  const terminal = {
+    ...submission,
+    outcome: "success",
+    reason: null,
+    terminal_at_monotonic_ms: 22,
+  };
+  assert.doesNotThrow(() => validateAuxiliaryCurrentStatsFormalLedger({
+    runId: "run-1",
+    expectedLogicalFrameCount: 100,
+    deferredPresentationCount: 2,
+    deferredPresentations: [deferredAttempt()],
+    submissions: [submission],
+    terminals: [terminal],
+  }));
+});
+
+test("auxiliary formal ledger rejects missing, failed, stale, and throughput terminals", () => {
+  const submission = auxiliaryFormal();
+  const terminal = {
+    ...submission,
+    outcome: "success",
+    reason: null,
+    terminal_at_monotonic_ms: 22,
+  };
+  const validate = (overrides = {}) => validateAuxiliaryCurrentStatsFormalLedger({
+    runId: "run-1",
+    expectedLogicalFrameCount: 100,
+    deferredPresentationCount: 1,
+    deferredPresentations: [deferredAttempt()],
+    submissions: [submission],
+    terminals: [terminal],
+    ...overrides,
+  });
+  assert.throws(() => validate({ terminals: [] }), /disagrees/);
+  assert.throws(
+    () => validate({ terminals: [{ ...terminal, outcome: "failure", reason: "map" }] }),
+    /exact successful submission join/,
+  );
+  assert.throws(
+    () => validate({ terminals: [{ ...terminal, camera_revision: 6 }] }),
+    /exact successful submission join/,
+  );
+  assert.throws(
+    () => validate({ submissions: [{ ...submission, attempt_index: 1 }] }),
+    /invalid or duplicate identity/,
+  );
+  assert.throws(
+    () => validate({ submissions: [{ ...submission, submitted_at_monotonic_ms: 18 }] }),
+    /invalid or duplicate identity/,
+  );
+  assert.throws(
+    () => validate({ terminalQueueThroughput: true }),
+    /throughput emitted auxiliary control formal work/,
   );
 });

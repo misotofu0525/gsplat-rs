@@ -103,7 +103,16 @@ export function validateCurrentStatsScheduleEvidence({
     evidence.peak_deferred_presentations_before_issue,
     "peak deferred current-stats presentations before issue",
   );
+  const deferredAttempts = evidence.deferred_presentations;
+  const issuedAttempts = evidence.issued_presentations;
+  if (!Array.isArray(deferredAttempts) || !Array.isArray(issuedAttempts)) {
+    throw new Error("current-stats schedule lacks its per-presentation attempt ledger");
+  }
   positiveInteger(evidence.final_drain_timeout_ms, "final drain timeout");
+  const presentedAttempts = nonNegativeInteger(
+    evidence.presented_attempt_count,
+    "presented current-stats attempt count",
+  );
 
   if (submitted !== expectedLogicalFrameCount
       || terminal !== expectedLogicalFrameCount
@@ -135,6 +144,92 @@ export function validateCurrentStatsScheduleEvidence({
     throw new Error(
       "current-stats peak deferred presentations exceeds the total deferred count",
     );
+  }
+  if (deferredAttempts.length !== deferredPresentations
+      || issuedAttempts.length !== issued
+      || presentedAttempts !== deferredAttempts.length + issuedAttempts.length) {
+    throw new Error("current-stats presentation attempt totals are inconsistent");
+  }
+  const validAttemptIdentity = (record, logicalIndex) => (
+    ["preflight", "warmup", "measured"].includes(record.phase)
+    && ((logicalIndex === null && record.phase === "preflight")
+      || (logicalIndex !== null && record.phase !== "preflight"))
+    && (record.trace_frame_index === null
+      || (Number.isSafeInteger(record.trace_frame_index)
+        && record.trace_frame_index >= 0))
+  );
+  const deferredByMember = new Map();
+  for (const record of deferredAttempts) {
+    const logicalIndex = record.logical_submission_index;
+    if (!Number.isSafeInteger(record.attempt_index) || record.attempt_index < 0
+        || !Number.isSafeInteger(record.camera_revision) || record.camera_revision < 0
+        || !Number.isFinite(record.observed_at_monotonic_ms)
+        || record.observed_at_monotonic_ms < 0
+        || !validAttemptIdentity(record, logicalIndex)
+        || (logicalIndex !== null
+          && (!Number.isSafeInteger(logicalIndex) || logicalIndex < 0
+            || logicalIndex >= expectedLogicalFrameCount))) {
+      throw new Error("current-stats deferred attempt has invalid identity");
+    }
+    const key = `${record.phase}:${logicalIndex ?? "preflight"}`;
+    const group = deferredByMember.get(key) ?? [];
+    if (record.attempt_index !== group.length) {
+      throw new Error(`current-stats member ${key} has non-contiguous deferred attempts`);
+    }
+    if (group.length > 0
+        && (group[0].camera_revision !== record.camera_revision
+          || group[0].trace_frame_index !== record.trace_frame_index)) {
+      throw new Error(`current-stats member ${key} changed camera or trace identity`);
+    }
+    group.push(record);
+    deferredByMember.set(key, group);
+  }
+  const logicalIssued = new Set();
+  const issuedMembers = new Set();
+  const issuedTickets = new Set();
+  for (const record of issuedAttempts) {
+    const logicalIndex = record.logical_submission_index;
+    if (!Number.isSafeInteger(record.attempt_index) || record.attempt_index < 0
+        || !Number.isSafeInteger(record.ticket) || record.ticket <= 0
+        || !Number.isSafeInteger(record.camera_revision) || record.camera_revision < 0
+        || !Number.isFinite(record.submitted_at_monotonic_ms)
+        || record.submitted_at_monotonic_ms < 0
+        || !validAttemptIdentity(record, logicalIndex)
+        || issuedTickets.has(record.ticket)
+        || (logicalIndex !== null
+          && (!Number.isSafeInteger(logicalIndex) || logicalIndex < 0
+            || logicalIndex >= expectedLogicalFrameCount))) {
+      throw new Error("current-stats issued attempt has invalid identity");
+    }
+    const key = `${record.phase}:${logicalIndex ?? "preflight"}`;
+    const deferred = deferredByMember.get(key) ?? [];
+    if (record.attempt_index !== deferred.length
+        || (deferred.length > 0
+          && (deferred[0].camera_revision !== record.camera_revision
+            || deferred[0].trace_frame_index !== record.trace_frame_index
+            || deferred.at(-1).observed_at_monotonic_ms
+              > record.submitted_at_monotonic_ms))) {
+      throw new Error(`current-stats member ${key} did not end with its issued presentation`);
+    }
+    if (issuedMembers.has(key)) {
+      throw new Error(`current-stats member ${key} issued more than once`);
+    }
+    issuedMembers.add(key);
+    issuedTickets.add(record.ticket);
+    if (logicalIndex !== null) {
+      if (logicalIssued.has(logicalIndex)) {
+        throw new Error(`current-stats logical member ${logicalIndex} issued more than once`);
+      }
+      logicalIssued.add(logicalIndex);
+    }
+  }
+  for (const key of deferredByMember.keys()) {
+    if (!issuedMembers.has(key)) {
+      throw new Error(`current-stats member ${key} lacks its final issued presentation`);
+    }
+  }
+  if (logicalIssued.size !== expectedLogicalFrameCount) {
+    throw new Error("current-stats logical member attempt ledger is incomplete");
   }
   return evidence;
 }
@@ -173,6 +268,16 @@ export function createCurrentStatsSchedule({
   const terminalTickets = new Set();
   const pendingByTicket = new Map();
   const completedByOrdinal = new Map();
+  const deferredPresentationRecords = [];
+  const issuedPresentationRecords = [];
+
+  function traceFrameIndex(traceStep) {
+    const value = traceStep?.traceFrameIndex ?? traceStep?.frame ?? null;
+    if (value !== null && (!Number.isSafeInteger(value) || value < 0)) {
+      throw new Error("current-stats trace frame index is invalid");
+    }
+    return value;
+  }
 
   function pendingPreflight() {
     return [...pendingByTicket.values()].some((pending) => pending.priming);
@@ -199,6 +304,18 @@ export function createCurrentStatsSchedule({
     }
     scheduleState = "complete";
     drawCountAtCompletion = drawCount;
+  }
+
+  function requireRequestWithinDeadline(nowMs) {
+    finiteMonotonicMs(nowMs, "current-stats request progress timestamp");
+    if (request === null) {
+      throw new Error("current-stats request progress has no outstanding request");
+    }
+    if (nowMs - request.requestedAtMonotonicMs >= drainTimeout) {
+      throw new Error(
+        `renderer current-stats request did not issue within ${drainTimeout}ms`,
+      );
+    }
   }
 
   return {
@@ -230,6 +347,10 @@ export function createCurrentStatsSchedule({
     },
     get complete() {
       return scheduleState === "complete";
+    },
+
+    requireRequestWithinDeadline(nowMs) {
+      requireRequestWithinDeadline(nowMs);
     },
 
     noteDraw(nowMs) {
@@ -308,17 +429,23 @@ export function createCurrentStatsSchedule({
       } else if (request.presentationCameraRevision !== cameraRevision) {
         throw new Error("deferred current-stats presentation changed its camera revision");
       }
-      if (observedAtMonotonicMs - request.requestedAtMonotonicMs >= drainTimeout) {
-        throw new Error(
-          `renderer current-stats request did not issue within ${drainTimeout}ms`,
-        );
-      }
+      requireRequestWithinDeadline(observedAtMonotonicMs);
       request.deferredPresentations += 1;
       deferredPresentationCount += 1;
       peakDeferredPresentationsBeforeIssue = Math.max(
         peakDeferredPresentationsBeforeIssue,
         request.deferredPresentations,
       );
+      const record = {
+        phase: request.phase,
+        logical_submission_index: request.logicalSubmissionIndex,
+        attempt_index: request.deferredPresentations - 1,
+        camera_revision: cameraRevision,
+        trace_frame_index: traceFrameIndex(traceStep),
+        observed_at_monotonic_ms: observedAtMonotonicMs,
+      };
+      deferredPresentationRecords.push(record);
+      return record;
     },
 
     recordIssued({ ticket, stats, submittedAtMonotonicMs }) {
@@ -329,6 +456,9 @@ export function createCurrentStatsSchedule({
       if (request.presentationCameraRevision !== null
           && stats?.cameraRevision !== request.presentationCameraRevision) {
         throw new Error("issued current-stats presentation changed its deferred camera revision");
+      }
+      if (!Number.isSafeInteger(stats?.cameraRevision) || stats.cameraRevision < 0) {
+        throw new Error("issued current-stats presentation has an invalid camera revision");
       }
       if (!Number.isSafeInteger(ticket) || ticket <= 0) {
         throw new Error(`renderer current-stats issued invalid ticket=${ticket}`);
@@ -354,6 +484,15 @@ export function createCurrentStatsSchedule({
       pendingByTicket.set(ticket, pending);
       peakPendingCount = Math.max(peakPendingCount, pendingByTicket.size);
       request = null;
+      issuedPresentationRecords.push({
+        phase: pending.phase,
+        logical_submission_index: pending.logicalSubmissionIndex,
+        attempt_index: pending.deferredPresentations,
+        ticket,
+        camera_revision: stats.cameraRevision,
+        trace_frame_index: traceFrameIndex(pending.traceStep),
+        submitted_at_monotonic_ms: submittedAtMonotonicMs,
+      });
 
       if (!pending.priming) {
         nextLogicalSubmissionIndex += 1;
@@ -446,6 +585,10 @@ export function createCurrentStatsSchedule({
         peak_pending_count: peakPendingCount,
         deferred_presentation_count: deferredPresentationCount,
         peak_deferred_presentations_before_issue: peakDeferredPresentationsBeforeIssue,
+        presented_attempt_count:
+          deferredPresentationRecords.length + issuedPresentationRecords.length,
+        deferred_presentations: deferredPresentationRecords,
+        issued_presentations: issuedPresentationRecords,
         final_drain_started_after_logical_submit_count: submittedLogicalCount,
         draw_count_at_final_drain_start: drawCountAtFinalDrainStart,
         draw_count_at_completion: drawCountAtCompletion,

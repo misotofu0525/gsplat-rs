@@ -11,7 +11,7 @@ function issue(schedule, ticket, nowMs, priming = false) {
   schedule.beginRequest({ nowMs, priming, traceStep: { ticket } });
   return schedule.recordIssued({
     ticket,
-    stats: { ticket },
+    stats: { ticket, cameraRevision: 1 },
     submittedAtMonotonicMs: nowMs + 0.25,
   });
 }
@@ -256,6 +256,11 @@ test("deferred observer presentations fail closed on invalid shape or finite tim
     }),
     /did not issue within 10ms/,
   );
+  assert.doesNotThrow(() => schedule.requireRequestWithinDeadline(10.99));
+  assert.throws(
+    () => schedule.requireRequestWithinDeadline(11),
+    /did not issue within 10ms/,
+  );
 });
 
 test("deferred observer presentations preserve camera and logical member identity", () => {
@@ -333,5 +338,32 @@ test("schedule admission rejects sustained or isolated labels that overclaim beh
       expectedLogicalFrameCount: 1,
     }),
     /final drain submitted a new draw/,
+  );
+  assert.throws(
+    () => validateCurrentStatsScheduleEvidence({
+      evidence: {
+        ...evidence,
+        presented_attempt_count: evidence.presented_attempt_count + 1,
+      },
+      protocol: "sustained_window",
+      frameWallSource: "request_animation_frame_interval",
+      expectedLogicalFrameCount: 1,
+    }),
+    /presentation attempt totals are inconsistent/,
+  );
+  assert.throws(
+    () => validateCurrentStatsScheduleEvidence({
+      evidence: {
+        ...evidence,
+        issued_presentations: evidence.issued_presentations.map((record) => ({
+          ...record,
+          attempt_index: record.attempt_index + 1,
+        })),
+      },
+      protocol: "sustained_window",
+      frameWallSource: "request_animation_frame_interval",
+      expectedLogicalFrameCount: 1,
+    }),
+    /did not end with its issued presentation/,
   );
 });

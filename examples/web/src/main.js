@@ -1652,6 +1652,13 @@ function render() {
 function emitOrderMeasurements(measurements, adaptiveState) {
   for (const measurement of measurements) {
     const terminalAtMonotonicMs = performance.now();
+    if (recordAuxiliaryCurrentStatsFormalTerminal({
+      actualBackend: measurement.actualBackend ?? "gpu",
+      ticket: measurement.ticket,
+      cameraRevision: measurement.cameraRevision,
+      outcome: "success",
+      terminalAtMonotonicMs,
+    })) continue;
     console.info(`ORDER_MEASUREMENT_JSON ${JSON.stringify({
       requested_backend: state.requestedOrderBackend,
       // SurfaceOrderMeasurement is emitted only by the GPU telemetry ring.
@@ -1689,6 +1696,13 @@ function emitOrderMeasurements(measurements, adaptiveState) {
 function emitCpuOrderMeasurements(measurements, adaptiveState) {
   for (const measurement of measurements) {
     const terminalAtMonotonicMs = performance.now();
+    if (recordAuxiliaryCurrentStatsFormalTerminal({
+      actualBackend: "cpu",
+      ticket: measurement.ticket,
+      cameraRevision: measurement.cameraRevision,
+      outcome: "success",
+      terminalAtMonotonicMs,
+    })) continue;
     console.info(`CPU_ORDER_MEASUREMENT_JSON ${JSON.stringify({
       requested_backend: state.requestedOrderBackend,
       actual_backend: "cpu",
@@ -1718,6 +1732,19 @@ function emitCpuOrderMeasurements(measurements, adaptiveState) {
 function emitOrderMeasurementFailures(failures, adaptiveState) {
   for (const failure of failures) {
     const terminalAtMonotonicMs = performance.now();
+    if (recordAuxiliaryCurrentStatsFormalTerminal({
+      actualBackend: failure.actualBackend ?? (failure.ticket % 2 === 0 ? "cpu" : "gpu"),
+      ticket: failure.ticket,
+      cameraRevision: failure.cameraRevision,
+      outcome: "failure",
+      reason: failure.reason,
+      terminalAtMonotonicMs,
+    })) {
+      failStrictBenchmarkForOrderEvidence(
+        `auxiliary formal order ticket=${failure.ticket} failed: ${failure.reason}`,
+      );
+      continue;
+    }
     console.error(`ORDER_MEASUREMENT_FAILURE_JSON ${JSON.stringify({
       requested_backend: state.requestedOrderBackend,
       actual_backend: failure.actualBackend ?? (failure.ticket % 2 === 0 ? "cpu" : "gpu"),
@@ -2831,6 +2858,10 @@ function createBenchmarkState(enabled) {
     requestedHeight: els.canvas.height,
     issuedOrderTickets: new Map(),
     terminalOrderTickets: new Map(),
+    issuedAuxiliaryFormalTickets: new Map(),
+    terminalAuxiliaryFormalTickets: new Map(),
+    auxiliaryFormalSubmissionRecords: [],
+    auxiliaryFormalTerminalRecords: [],
     orderSubmissionRecords: [],
     orderTerminalRecords: [],
     issuedCurrentStatsTickets: new Map(),
@@ -3242,7 +3273,7 @@ function recordBenchmark(stats) {
         // trace step until the renderer publishes the requested ticket; these
         // boundary frames belong to the untimed control ledger, not its 20+80
         // logical samples.
-        currentStatsSchedule.recordDeferredPresentation({
+        const deferredPresentation = currentStatsSchedule.recordDeferredPresentation({
           submission: stats.currentStatsSubmission,
           ticket: stats.currentStatsTicket,
           cameraRevision: stats.cameraRevision,
@@ -3258,7 +3289,12 @@ function recordBenchmark(stats) {
           );
         }
         if (stats.submittedMeasurementTicket !== null) {
-          if (!trackBenchmarkOrderSubmission(benchmark, stats)) return;
+          if (!trackAuxiliaryCurrentStatsFormalSubmission(
+            benchmark,
+            currentStatsSchedule,
+            stats,
+            deferredPresentation,
+          )) return;
           benchmark.pendingOrderSample = {
             ticket: stats.submittedMeasurementTicket,
             stats,
@@ -3270,34 +3306,13 @@ function recordBenchmark(stats) {
               : null,
           };
         }
-        if (!trackBenchmarkProjectedSubmission(benchmark, stats)) return;
-        if (!trackBenchmarkGpuProducerSubmission(benchmark, stats)) return;
-        if (stats.projectedMeasurementSubmission === "issued") {
-          if (benchmark.pendingOrderSample) {
-            throw new Error(
-              "deferred current-stats presentation exposed simultaneous order and projected tickets",
-            );
-          }
-          benchmark.pendingProjectedSample = {
-            ticket: stats.projectedMeasurementTicket,
-            stats,
-            traceStep: benchmark.currentTraceStep,
-            auxiliaryCurrentStats: true,
-          };
-        }
-        if (stats.gpuProducerMeasurementSubmission === "issued"
-            && !benchmark.pendingOrderSample) {
-          if (benchmark.pendingProjectedSample) {
-            throw new Error(
-              "deferred current-stats presentation exposed simultaneous projected and producer tickets",
-            );
-          }
-          benchmark.pendingGpuProducerSample = {
-            ticket: stats.gpuProducerMeasurementTicket,
-            stats,
-            traceStep: benchmark.currentTraceStep,
-            auxiliaryCurrentStats: true,
-          };
+        if (stats.projectedMeasurementSubmission !== "not_requested"
+            || stats.projectedMeasurementTicket !== null
+            || stats.gpuProducerMeasurementSubmission !== "not_requested"
+            || stats.gpuProducerMeasurementTicket !== null) {
+          throw new Error(
+            "deferred current-stats presentation exposed an unrelated formal ticket",
+          );
         }
       } catch (error) {
         failStrictBenchmarkForOrderEvidence(compactMessage(error));
@@ -3686,6 +3701,9 @@ function pollPendingBenchmarkReceipts(benchmark) {
   const pending = pendingOrder ?? pendingProjected ?? pendingGpuProducer;
   if (!pending) return;
   try {
+    if (pending.auxiliaryCurrentStats) {
+      benchmark.currentStatsSchedule.requireRequestWithinDeadline(performance.now());
+    }
     benchmark.terminalPollCount += 1;
     const receipts = state.wasmRenderer.drainOrderMeasurementReceipts();
     const adaptiveState = pending.stats.adaptiveState ?? "disabled";
@@ -3710,7 +3728,9 @@ function pollPendingBenchmarkReceipts(benchmark) {
     return;
   }
   const terminalObserved = pendingOrder
-    ? benchmark.terminalOrderTickets.has(pending.ticket)
+    ? (pending.auxiliaryCurrentStats
+      ? benchmark.terminalAuxiliaryFormalTickets.has(pending.ticket)
+      : benchmark.terminalOrderTickets.has(pending.ticket))
       && (pending.gpuProducerTicket === null
         || benchmark.terminalGpuProducerTickets.has(pending.gpuProducerTicket))
     : pendingProjected
@@ -3951,6 +3971,88 @@ function trackBenchmarkOrderSubmission(benchmark, stats) {
   };
   benchmark.orderSubmissionRecords.push(submissionRecord);
   console.info(`ORDER_MEASUREMENT_SUBMISSION_JSON ${JSON.stringify(submissionRecord)}`);
+  return true;
+}
+
+function trackAuxiliaryCurrentStatsFormalSubmission(
+  benchmark,
+  schedule,
+  stats,
+  deferredPresentation,
+) {
+  const ticket = stats.submittedMeasurementTicket;
+  const revision = stats.cameraRevision;
+  const backend = stats.submittedMeasurementBackend;
+  if (!schedule.requestOutstanding
+      || stats.refreshSort !== true
+      || !Number.isSafeInteger(ticket) || ticket <= 0
+      || !Number.isSafeInteger(revision) || revision < 0
+      || !["cpu", "gpu"].includes(backend)
+      || backend !== stats.orderBackend
+      || stats.measurementUnsampledReason !== null
+      || benchmark.issuedOrderTickets.has(ticket)
+      || benchmark.terminalOrderTickets.has(ticket)
+      || benchmark.issuedAuxiliaryFormalTickets.has(ticket)
+      || benchmark.terminalAuxiliaryFormalTickets.has(ticket)
+      || deferredPresentation?.phase !== schedule.requestPhase
+      || deferredPresentation?.logical_submission_index !== schedule.nextSubmissionIndex
+      || deferredPresentation?.camera_revision !== revision) {
+    failStrictBenchmarkForOrderEvidence(
+      `deferred current-stats presentation has invalid auxiliary formal identity ` +
+      `ticket=${ticket} backend=${backend} revision=${revision}`,
+    );
+    return false;
+  }
+  const record = {
+    run_id: benchmark.collector.runId,
+    phase: schedule.requestPhase,
+    logical_submission_index: schedule.nextSubmissionIndex,
+    attempt_index: deferredPresentation.attempt_index,
+    trace_frame_index: deferredPresentation.trace_frame_index,
+    deferred_at_monotonic_ms: deferredPresentation.observed_at_monotonic_ms,
+    ticket,
+    camera_revision: revision,
+    actual_backend: backend,
+    submitted_at_monotonic_ms: performance.now(),
+  };
+  benchmark.issuedAuxiliaryFormalTickets.set(ticket, record);
+  benchmark.auxiliaryFormalSubmissionRecords.push(record);
+  console.info(`CURRENT_STATS_AUXILIARY_FORMAL_SUBMISSION_JSON ${JSON.stringify(record)}`);
+  return true;
+}
+
+function recordAuxiliaryCurrentStatsFormalTerminal({
+  actualBackend,
+  ticket,
+  cameraRevision,
+  outcome,
+  reason = null,
+  terminalAtMonotonicMs,
+}) {
+  const benchmark = state.benchmark;
+  const submission = benchmark?.issuedAuxiliaryFormalTickets.get(ticket);
+  if (!submission) return false;
+  if (submission.actual_backend !== actualBackend
+      || submission.camera_revision !== cameraRevision
+      || benchmark.terminalOrderTickets.has(ticket)
+      || benchmark.terminalAuxiliaryFormalTickets.has(ticket)) {
+    failStrictBenchmarkForOrderEvidence(
+      `auxiliary formal ticket=${ticket} terminal identity or uniqueness mismatch`,
+    );
+    return true;
+  }
+  const terminal = {
+    ...submission,
+    outcome,
+    reason,
+    terminal_at_monotonic_ms: terminalAtMonotonicMs,
+  };
+  benchmark.terminalAuxiliaryFormalTickets.set(ticket, terminal);
+  benchmark.auxiliaryFormalTerminalRecords.push(terminal);
+  const method = outcome === "success" ? "info" : "error";
+  console[method](
+    `CURRENT_STATS_AUXILIARY_FORMAL_TERMINAL_JSON ${JSON.stringify(terminal)}`,
+  );
   return true;
 }
 
@@ -4299,6 +4401,8 @@ async function emitBenchmarkArtifacts(benchmark) {
       terminal_current_stats_receipts: benchmark.terminalQueueThroughput
         ? benchmark.currentStatsTerminalRecords.length
         : null,
+      auxiliary_formal_submissions: benchmark.auxiliaryFormalSubmissionRecords,
+      auxiliary_formal_terminals: benchmark.auxiliaryFormalTerminalRecords,
     },
     benchmark_window: benchmarkWindow,
     gpu_producer_evidence: {

@@ -129,6 +129,91 @@ export function validateCurrentStatsTerminalLedger({ submissions, terminals, sou
   }
 }
 
+export function validateAuxiliaryCurrentStatsFormalLedger({
+  runId,
+  expectedLogicalFrameCount,
+  deferredPresentationCount,
+  deferredPresentations,
+  submissions,
+  terminals,
+  terminalQueueThroughput = false,
+}) {
+  if (!Array.isArray(deferredPresentations)
+      || !Array.isArray(submissions) || !Array.isArray(terminals)) {
+    throw new Error("renderer-owned Exact artifact lacks its auxiliary formal ledger");
+  }
+  if (terminalQueueThroughput) {
+    if (deferredPresentations.length !== 0
+        || submissions.length !== 0 || terminals.length !== 0) {
+      throw new Error("terminal throughput emitted auxiliary control formal work");
+    }
+    return;
+  }
+  safeNonNegativeInteger(
+    deferredPresentationCount,
+    "deferred current-stats presentation count",
+  );
+  safeNonNegativeInteger(expectedLogicalFrameCount, "expected logical frame count");
+  if (submissions.length > deferredPresentationCount
+      || submissions.length !== terminals.length) {
+    throw new Error("auxiliary formal ledger disagrees with deferred control presentations");
+  }
+  const deferredByAttempt = new Map();
+  for (const record of deferredPresentations) {
+    const key = `${record.phase}:${record.logical_submission_index}:${record.attempt_index}`;
+    if (deferredByAttempt.has(key)) {
+      throw new Error("auxiliary formal ledger saw a duplicate deferred attempt identity");
+    }
+    deferredByAttempt.set(key, record);
+  }
+  const submissionByTicket = new Map();
+  for (const record of submissions) {
+    const attempt = deferredByAttempt.get(
+      `${record.phase}:${record.logical_submission_index}:${record.attempt_index}`,
+    );
+    if (record.run_id !== runId
+        || !["warmup", "measured", "preflight"].includes(record.phase)
+        || !Number.isSafeInteger(record.logical_submission_index)
+        || record.logical_submission_index < 0
+        || record.logical_submission_index >= expectedLogicalFrameCount
+        || !Number.isSafeInteger(record.ticket) || record.ticket <= 0
+        || !Number.isSafeInteger(record.camera_revision) || record.camera_revision < 0
+        || !Number.isSafeInteger(record.attempt_index) || record.attempt_index < 0
+        || (record.trace_frame_index !== null
+          && (!Number.isSafeInteger(record.trace_frame_index)
+            || record.trace_frame_index < 0))
+        || !Number.isFinite(record.deferred_at_monotonic_ms)
+        || !["cpu", "gpu"].includes(record.actual_backend)
+        || !Number.isFinite(record.submitted_at_monotonic_ms)
+        || submissionByTicket.has(record.ticket)
+        || !attempt
+        || attempt.camera_revision !== record.camera_revision
+        || attempt.trace_frame_index !== record.trace_frame_index
+        || attempt.observed_at_monotonic_ms !== record.deferred_at_monotonic_ms
+        || record.submitted_at_monotonic_ms < record.deferred_at_monotonic_ms) {
+      throw new Error("auxiliary formal submission has invalid or duplicate identity");
+    }
+    submissionByTicket.set(record.ticket, record);
+  }
+  const terminalTickets = new Set();
+  for (const terminal of terminals) {
+    const submission = submissionByTicket.get(terminal.ticket);
+    if (!submission || terminalTickets.has(terminal.ticket)
+        || terminal.outcome !== "success" || terminal.reason !== null
+        || terminal.run_id !== submission.run_id
+        || terminal.phase !== submission.phase
+        || terminal.logical_submission_index !== submission.logical_submission_index
+        || terminal.camera_revision !== submission.camera_revision
+        || terminal.actual_backend !== submission.actual_backend
+        || terminal.submitted_at_monotonic_ms !== submission.submitted_at_monotonic_ms
+        || !Number.isFinite(terminal.terminal_at_monotonic_ms)
+        || terminal.terminal_at_monotonic_ms < submission.submitted_at_monotonic_ms) {
+      throw new Error("auxiliary formal terminal lacks an exact successful submission join");
+    }
+    terminalTickets.add(terminal.ticket);
+  }
+}
+
 export function joinCurrentStatsEvidence({ frames, submissions, terminals, sourceCount = null }) {
   validateCurrentStatsTerminalLedger({ submissions, terminals, sourceCount });
   const submissionByTicket = new Map(submissions.map((submission) => [submission.ticket, submission]));
