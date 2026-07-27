@@ -657,3 +657,32 @@ library tests, native strict Clippy, default/diagnostic WASM checks, Web unit
 tests and the source architecture policy pass. This checkpoint is mechanism
 evidence only until a fixed-SHA review and one new fresh Chrome run produce the
 paired images; capture frames remain excluded from performance measurements.
+
+The cumulative implementation at `78d9d4a` was independently accepted with no
+P0/P1/P2. Review found and root closed one pre-endpoint defect: Direct/Paged
+browser sessions do not raster into the intermediate target, so they now reject
+the diagnostic request before resource allocation or GPU work. Exact Packed is
+the sole browser owner of this diagnostic path; native copy-capable standalone
+capture remains unchanged.
+
+Root then executed exactly one fresh Chrome attempt at that clean SHA and
+retained
+`target/qualification/k1d-web-quality-78d9d4a-attempt-3/artifact/`.
+All six Exact/Candidate20 captures joined the complete 279,199-splat Kitsune
+SH3 scene, the `0 -> 1 -> 0` moving trace, `1920x1080`, `GpuPreproject`, current
+order generation and successful presentation sequence. The image gate and all
+six canonical benchmark-artifact validators pass.
+
+| Trace frame | SSIM | normalized RGB MAE | RGB bad pixels over 3 |
+| --- | ---: | ---: | ---: |
+| 0 | `0.9998697584` | `0.0001101409` | `0.0018156829` |
+| 1 | `0.9996730161` | `0.0002533777` | `0.0045987654` |
+| 0 retry | `0.9998697584` | `0.0001101409` | `0.0018156829` |
+
+Both transition residuals are `0.0003529746`; alpha MAE and alpha bad-pixel
+fractions are zero in every frame. Returning to trace frame 0 reproduces the
+same renderer RGBA hash in each lane. This accepts K1d's Web image-quality
+prerequisite only. The capture/blit frames are not timing samples, complete
+Truck performance remains unmeasured for Candidate20, and the separate Q1 pair
+admission candidate is still rejected until real gsplat-rs and PlayCanvas
+terminal image producers own their endpoint receipts.
