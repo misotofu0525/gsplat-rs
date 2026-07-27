@@ -186,7 +186,32 @@ def validate_count_record(record: dict[str, str], source_count: int, context: st
     presentation = parse_uint(
         record.get("presentation_sequence", ""), f"{context}.presentation_sequence", positive=True
     )
-    camera = parse_uint(record.get("camera_revision", ""), f"{context}.camera_revision")
+    frame_identity = {
+        "scene_generation": parse_uint(
+            record.get("scene_generation", ""), f"{context}.scene_generation", positive=True
+        ),
+        "camera_revision": parse_uint(
+            record.get("camera_revision", ""), f"{context}.camera_revision"
+        ),
+        "viewport_generation": parse_uint(
+            record.get("viewport_generation", ""), f"{context}.viewport_generation"
+        ),
+        "contract_generation": parse_uint(
+            record.get("contract_generation", ""), f"{context}.contract_generation", positive=True
+        ),
+        "plan_set_generation": parse_uint(
+            record.get("plan_set_generation", ""), f"{context}.plan_set_generation", positive=True
+        ),
+        "order_generation": parse_uint(
+            record.get("order_generation", ""), f"{context}.order_generation", positive=True
+        ),
+        "raster_generation": parse_uint(
+            record.get("raster_generation", ""), f"{context}.raster_generation", positive=True
+        ),
+        "encode_attempt": parse_uint(
+            record.get("encode_attempt", ""), f"{context}.encode_attempt", positive=True
+        ),
+    }
     return {
         "actual_plan": actual_plan,
         "visible": visible,
@@ -195,7 +220,7 @@ def validate_count_record(record: dict[str, str], source_count: int, context: st
         "compacted": compacted,
         "ticket": ticket,
         "presentation_sequence": presentation,
-        "camera_revision": camera,
+        **frame_identity,
     }
 
 

@@ -1409,15 +1409,23 @@ fn print_capture(
 ) {
     let submission = receipt.submission();
     let join = submission.join();
+    let frame = join.frame_identity();
     let counts = receipt.counts();
     println!(
-        "SURFACE_EXACT_EVIDENCE_CAPTURE status=ok path={:?} trace_frame={} exact_plan_requested={} exact_plan_actual={} current_stats_ticket={} camera_revision={} presentation_sequence={} count_semantics={} source_count={} visible_count={} contributor_count={} drawn_count={} exact_contributor_compaction={} actual_backend={} requested_width={} requested_height={} captured_width={} captured_height={} frame_presented={} terminal_receipt=ready",
+        "SURFACE_EXACT_EVIDENCE_CAPTURE status=ok path={:?} trace_frame={} exact_plan_requested={} exact_plan_actual={} current_stats_ticket={} scene_generation={} camera_revision={} viewport_generation={} contract_generation={} plan_set_generation={} order_generation={} raster_generation={} encode_attempt={} presentation_sequence={} count_semantics={} source_count={} visible_count={} contributor_count={} drawn_count={} exact_contributor_compaction={} actual_backend={} requested_width={} requested_height={} captured_width={} captured_height={} frame_presented={} terminal_receipt=ready",
         path.to_string_lossy(),
         step.trace_frame_index,
         identity.requested_plan.label(),
         plan_label(join.executed_plan()),
         submission.ticket(),
-        join.frame_identity().camera_revision(),
+        frame.scene_generation(),
+        frame.camera_revision(),
+        frame.viewport_generation(),
+        frame.contract_generation(),
+        frame.plan_set_generation(),
+        join.order_generation(),
+        join.raster_generation(),
+        join.encode_attempt(),
         join.presentation_sequence(),
         count_semantics_label(receipt.count_semantics()),
         counts.source(),
