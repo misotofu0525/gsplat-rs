@@ -1509,10 +1509,14 @@ fn validate_runtime_counts(
             receipt.projected_cache_precision.axis_record_bytes()
                 != preproject.source_axes_record_bytes()
         })
-        || receipt.preproject_depth_key != preproject.map(PreprojectedGpuCompute::depth_key_receipt)
     {
         return Err(GpuPreparationError::ExactContractMismatch {
             component: "source/capacity/resident/addressable count",
+        });
+    }
+    if receipt.preproject_depth_key != preproject.map(PreprojectedGpuCompute::depth_key_receipt) {
+        return Err(GpuPreparationError::ExactContractMismatch {
+            component: "Preproject depth-key profile",
         });
     }
     if u32::from(receipt.sh_degree) != resident.sh_degree || receipt.sh_degree > 3 {
@@ -1919,43 +1923,45 @@ mod tests {
     }
 
     #[test]
-    fn candidate20_gpu_admission_receipts_the_realized_preproject_profile() {
+    fn candidate_gpu_admission_receipts_the_realized_preproject_profile() {
         pollster::block_on(async {
             let Some((_instance, _adapter, _info, device, queue)) = request_device(8).await else {
                 return;
             };
             let owner = GpuExecutionOwner::new(&device, &queue);
             let resident = ResidentSceneCpu::encode_owned(source(129, 0)).expect("resident scene");
-            let candidate = GpuScenePreparation::prepare_with_precision_profiles(
-                &owner,
-                &resident,
-                frame(1, 0, 0),
-                true,
-                DepthKeyPrecision::CandidateStable20,
-                ProjectedCachePrecisionProfile::ExactAxes32,
-            )
-            .await
-            .expect("Candidate20 GPU graph");
+            for (precision, first_shift, pass_count) in [
+                (DepthKeyPrecision::CandidateStable24, 8, 6),
+                (DepthKeyPrecision::CandidateStable20, 12, 5),
+            ] {
+                let candidate = GpuScenePreparation::prepare_with_precision_profiles(
+                    &owner,
+                    &resident,
+                    frame(1, 0, 0),
+                    true,
+                    precision,
+                    ProjectedCachePrecisionProfile::ExactAxes32,
+                )
+                .await
+                .expect("candidate GPU graph");
 
-            assert_eq!(
-                candidate.depth_key_precision(),
-                Some(DepthKeyPrecision::CandidateStable20),
-            );
-            let actual = candidate
-                .receipt()
-                .preproject_depth_key()
-                .expect("realized preproject receipt");
-            assert_eq!(actual.precision(), DepthKeyPrecision::CandidateStable20);
-            assert_eq!(actual.radix_first_shift(), 12);
-            assert_eq!(actual.radix_pass_count(), 5);
-            assert_eq!(
-                candidate
-                    .preproject
-                    .as_ref()
-                    .expect("preproject graph")
-                    .depth_key_receipt(),
-                actual,
-            );
+                assert_eq!(candidate.depth_key_precision(), Some(precision));
+                let actual = candidate
+                    .receipt()
+                    .preproject_depth_key()
+                    .expect("realized preproject receipt");
+                assert_eq!(actual.precision(), precision);
+                assert_eq!(actual.radix_first_shift(), first_shift);
+                assert_eq!(actual.radix_pass_count(), pass_count);
+                assert_eq!(
+                    candidate
+                        .preproject
+                        .as_ref()
+                        .expect("preproject graph")
+                        .depth_key_receipt(),
+                    actual,
+                );
+            }
         });
     }
 
@@ -2646,6 +2652,23 @@ mod tests {
                 ),
                 Err(GpuPreparationError::ExactContractMismatch {
                     component: "Preproject compute graph"
+                })
+            ));
+
+            let mut depth_key_mismatch = candidate.receipt;
+            depth_key_mismatch.preproject_depth_key =
+                Some(PreprojectDepthKeyReceipt::realized_for_request(
+                    DepthKeyPrecision::CandidateStable24,
+                ));
+            assert!(matches!(
+                validate_runtime_counts(
+                    depth_key_mismatch,
+                    &candidate.resident,
+                    &candidate.projector,
+                    candidate.preproject.as_ref(),
+                ),
+                Err(GpuPreparationError::ExactContractMismatch {
+                    component: "Preproject depth-key profile"
                 })
             ));
         });

@@ -64,9 +64,8 @@ struct ScanBytePlan {
 }
 
 /// Private proof of the depth-key profile actually realized by one
-/// preproject graph. Candidate24 intentionally retains the established Exact
-/// preproject behavior; Q1K1b changes only the explicitly requested
-/// Candidate20 experiment.
+/// preproject graph. The precision, radix shift, and pass count travel as one
+/// receipt so a requested candidate cannot silently execute ExactFull32.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct PreprojectDepthKeyReceipt {
     precision: DepthKeyPrecision,
@@ -77,12 +76,17 @@ pub(crate) struct PreprojectDepthKeyReceipt {
 impl PreprojectDepthKeyReceipt {
     pub(crate) const fn realized_for_request(requested: DepthKeyPrecision) -> Self {
         match requested {
+            DepthKeyPrecision::CandidateStable24 => Self {
+                precision: DepthKeyPrecision::CandidateStable24,
+                radix_first_shift: 8,
+                radix_pass_count: 6,
+            },
             DepthKeyPrecision::CandidateStable20 => Self {
                 precision: DepthKeyPrecision::CandidateStable20,
                 radix_first_shift: 12,
                 radix_pass_count: 5,
             },
-            DepthKeyPrecision::ExactFull32 | DepthKeyPrecision::CandidateStable24 => Self {
+            DepthKeyPrecision::ExactFull32 => Self {
                 precision: DepthKeyPrecision::ExactFull32,
                 radix_first_shift: 0,
                 radix_pass_count: 8,
@@ -176,10 +180,13 @@ impl PreprojectGpuBytePlan {
         let depth_key_receipt =
             PreprojectDepthKeyReceipt::realized_for_request(depth_key_precision);
         let radix = match depth_key_receipt.precision() {
+            DepthKeyPrecision::CandidateStable24 => {
+                ExternalPrefixRadixBytePlan::for_capacity_candidate_stable24(capacity, limits)?
+            }
             DepthKeyPrecision::CandidateStable20 => {
                 ExternalPrefixRadixBytePlan::for_capacity_candidate_stable20(capacity, limits)?
             }
-            DepthKeyPrecision::ExactFull32 | DepthKeyPrecision::CandidateStable24 => {
+            DepthKeyPrecision::ExactFull32 => {
                 ExternalPrefixRadixBytePlan::for_capacity(capacity, limits)?
             }
         };
@@ -416,12 +423,13 @@ impl PreprojectedGpuCompute {
         let depth_key_receipt =
             PreprojectDepthKeyReceipt::realized_for_request(requested_depth_key_precision);
         let radix = match depth_key_receipt.precision() {
+            DepthKeyPrecision::CandidateStable24 => {
+                ExternalPrefixRadix::new_candidate_stable24(device, capacity)?
+            }
             DepthKeyPrecision::CandidateStable20 => {
                 ExternalPrefixRadix::new_candidate_stable20(device, capacity)?
             }
-            DepthKeyPrecision::ExactFull32 | DepthKeyPrecision::CandidateStable24 => {
-                ExternalPrefixRadix::new(device, capacity)?
-            }
+            DepthKeyPrecision::ExactFull32 => ExternalPrefixRadix::new(device, capacity)?,
         };
         debug_assert_eq!(radix.first_shift(), depth_key_receipt.radix_first_shift());
         debug_assert_eq!(radix.pass_count(), depth_key_receipt.radix_pass_count());
@@ -1530,7 +1538,7 @@ mod tests {
     }
 
     #[test]
-    fn exact_and_candidate20_preproject_match_their_key_id_oracles_and_counts() {
+    fn exact_candidate24_and_candidate20_preproject_match_key_id_oracles_and_counts() {
         let Some((device, queue)) = test_device() else {
             return;
         };
@@ -1539,7 +1547,14 @@ mod tests {
         let resident = resident_resources(&device, &scene);
         let exact = PreprojectedGpuCompute::new(&device, &resident, QUAD_VERTEX_COUNT)
             .expect("Exact preproject graph");
-        let candidate = PreprojectedGpuCompute::new_with_depth_key_precision(
+        let candidate24 = PreprojectedGpuCompute::new_with_depth_key_precision(
+            &device,
+            &resident,
+            QUAD_VERTEX_COUNT,
+            DepthKeyPrecision::CandidateStable24,
+        )
+        .expect("Candidate24 preproject graph");
+        let candidate20 = PreprojectedGpuCompute::new_with_depth_key_precision(
             &device,
             &resident,
             QUAD_VERTEX_COUNT,
@@ -1551,11 +1566,17 @@ mod tests {
             PreprojectDepthKeyReceipt::realized_for_request(DepthKeyPrecision::ExactFull32)
         );
         assert_eq!(
-            candidate.depth_key_receipt(),
+            candidate24.depth_key_receipt(),
+            PreprojectDepthKeyReceipt::realized_for_request(DepthKeyPrecision::CandidateStable24)
+        );
+        assert_eq!(candidate24.radix.first_shift(), 8);
+        assert_eq!(candidate24.radix.pass_count(), 6);
+        assert_eq!(
+            candidate20.depth_key_receipt(),
             PreprojectDepthKeyReceipt::realized_for_request(DepthKeyPrecision::CandidateStable20)
         );
-        assert_eq!(candidate.radix.first_shift(), 12);
-        assert_eq!(candidate.radix.pass_count(), 5);
+        assert_eq!(candidate20.radix.first_shift(), 12);
+        assert_eq!(candidate20.radix.pass_count(), 5);
 
         let position_alpha = (0..capacity)
             .map(|source_id| {
@@ -1591,8 +1612,9 @@ mod tests {
 
         let camera = camera();
         let exact_actual = run_and_read(&device, &queue, &resident, &exact, &camera);
-        let candidate_actual = run_and_read(&device, &queue, &resident, &candidate, &camera);
-        for actual in [&exact_actual, &candidate_actual] {
+        let candidate24_actual = run_and_read(&device, &queue, &resident, &candidate24, &camera);
+        let candidate20_actual = run_and_read(&device, &queue, &resident, &candidate20, &camera);
+        for actual in [&exact_actual, &candidate24_actual, &candidate20_actual] {
             assert_eq!(actual.candidate_count, capacity as u32);
             assert_eq!(actual.control.count, capacity as u32);
             assert_eq!(actual.draw.instance_count, capacity as u32);
@@ -1621,20 +1643,42 @@ mod tests {
             .copied()
             .zip(exact_actual.ids.iter().copied())
             .collect::<Vec<_>>();
-        let candidate_pairs = candidate_actual
+        let candidate24_pairs = candidate24_actual
             .keys
             .iter()
             .copied()
-            .zip(candidate_actual.ids.iter().copied())
+            .zip(candidate24_actual.ids.iter().copied())
+            .collect::<Vec<_>>();
+        let candidate20_pairs = candidate20_actual
+            .keys
+            .iter()
+            .copied()
+            .zip(candidate20_actual.ids.iter().copied())
             .collect::<Vec<_>>();
         assert_eq!(exact_pairs, expected_for(DepthKeyPrecision::ExactFull32));
         assert_eq!(
-            candidate_pairs,
+            candidate24_pairs,
+            expected_for(DepthKeyPrecision::CandidateStable24)
+        );
+        assert_eq!(
+            candidate20_pairs,
             expected_for(DepthKeyPrecision::CandidateStable20)
         );
-        assert_eq!(candidate_pairs[0].1, 0);
+        let candidate24_tie_key = crate::cpu_order::depth_to_key_with_precision(
+            position_alpha[768].position_alpha[2],
+            DepthKeyPrecision::CandidateStable24,
+        );
         assert_eq!(
-            candidate_pairs[1..]
+            candidate24_pairs
+                .iter()
+                .filter_map(|&(key, source_id)| (key == candidate24_tie_key).then_some(source_id))
+                .collect::<Vec<_>>(),
+            (768..=1_023).collect::<Vec<_>>(),
+            "equal Candidate24 low-eight-bit keys must retain source order",
+        );
+        assert_eq!(candidate20_pairs[0].1, 0);
+        assert_eq!(
+            candidate20_pairs[1..]
                 .iter()
                 .map(|pair| pair.1)
                 .collect::<Vec<_>>(),
@@ -1651,7 +1695,14 @@ mod tests {
         );
         for (source_id, source) in position_alpha.iter().enumerate() {
             assert_eq!(
-                candidate_actual.center[source_id][3].to_bits(),
+                candidate24_actual.center[source_id][3].to_bits(),
+                crate::cpu_order::depth_to_key_with_precision(
+                    source.position_alpha[2],
+                    DepthKeyPrecision::CandidateStable24,
+                )
+            );
+            assert_eq!(
+                candidate20_actual.center[source_id][3].to_bits(),
                 crate::cpu_order::depth_to_key_with_precision(
                     source.position_alpha[2],
                     DepthKeyPrecision::CandidateStable20,

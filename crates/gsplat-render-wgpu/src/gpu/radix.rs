@@ -44,6 +44,10 @@ impl ExternalPrefixRadixProfile {
         first_shift: 0,
         pass_count: EXTERNAL_RADIX_PASSES,
     };
+    pub(crate) const CANDIDATE_STABLE24: Self = Self {
+        first_shift: 8,
+        pass_count: 6,
+    };
     pub(crate) const CANDIDATE_STABLE20: Self = Self {
         first_shift: 12,
         pass_count: 5,
@@ -157,6 +161,17 @@ impl ExternalPrefixRadixBytePlan {
             capacity,
             limits,
             ExternalPrefixRadixProfile::CANDIDATE_STABLE20,
+        )
+    }
+
+    pub(crate) fn for_capacity_candidate_stable24(
+        capacity: u32,
+        limits: &wgpu::Limits,
+    ) -> Result<Self, ResidentGpuError> {
+        Self::for_capacity_with_profile(
+            capacity,
+            limits,
+            ExternalPrefixRadixProfile::CANDIDATE_STABLE24,
         )
     }
 
@@ -302,6 +317,17 @@ impl ExternalPrefixRadix {
             device,
             capacity,
             ExternalPrefixRadixProfile::CANDIDATE_STABLE20,
+        )
+    }
+
+    pub(crate) fn new_candidate_stable24(
+        device: &wgpu::Device,
+        capacity: u32,
+    ) -> Result<Self, ResidentGpuError> {
+        Self::new_with_profile(
+            device,
+            capacity,
+            ExternalPrefixRadixProfile::CANDIDATE_STABLE24,
         )
     }
 
@@ -1766,12 +1792,21 @@ mod tests {
                 + plan.control,
         );
 
-        let candidate_plan = ExternalPrefixRadixBytePlan::for_capacity_with_profile(
-            capacity,
-            &limits,
-            ExternalPrefixRadixProfile::CANDIDATE_STABLE20,
-        )
-        .expect("candidate plan");
+        let candidate24_plan =
+            ExternalPrefixRadixBytePlan::for_capacity_candidate_stable24(capacity, &limits)
+                .expect("Candidate24 plan");
+        assert_eq!(
+            candidate24_plan.pass_params,
+            6 * u64::from(limits.min_uniform_buffer_offset_alignment.max(16)),
+        );
+        assert_eq!(
+            plan.total_static - candidate24_plan.total_static,
+            2 * u64::from(limits.min_uniform_buffer_offset_alignment.max(16)),
+        );
+
+        let candidate_plan =
+            ExternalPrefixRadixBytePlan::for_capacity_candidate_stable20(capacity, &limits)
+                .expect("Candidate20 plan");
         assert_eq!(
             candidate_plan.pass_params,
             5 * u64::from(limits.min_uniform_buffer_offset_alignment.max(16)),
@@ -1788,9 +1823,15 @@ mod tests {
         assert!(ExternalPrefixRadixProfile::new(3, 5).validate().is_err());
         assert!(ExternalPrefixRadixProfile::new(16, 5).validate().is_err());
         assert_eq!(
+            ExternalPrefixRadixProfile::new(8, 6).validate(),
+            Ok(ExternalPrefixRadixProfile::CANDIDATE_STABLE24),
+        );
+        assert!(ExternalPrefixRadixProfile::CANDIDATE_STABLE24.final_is_a());
+        assert_eq!(
             ExternalPrefixRadixProfile::new(12, 5).validate(),
             Ok(ExternalPrefixRadixProfile::CANDIDATE_STABLE20),
         );
+        assert!(!ExternalPrefixRadixProfile::CANDIDATE_STABLE20.final_is_a());
     }
 
     #[test]
