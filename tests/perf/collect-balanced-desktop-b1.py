@@ -66,6 +66,22 @@ class Experiment:
     name: str
     changed_receipt: str
     lanes: tuple[Lane, Lane]
+    evidence_class: str = "formal_quality"
+
+
+def exactness_quality_fields(
+    experiment: Experiment, lane_name: str | None = None
+) -> dict[str, bool]:
+    """Freeze quality semantics independently from membership and resolution."""
+
+    if experiment.name != "b1-depth-key-candidate20":
+        return {"full_quality": True}
+    quality_candidate = lane_name != "exact"
+    return {
+        "full_quality": not quality_candidate,
+        "full_membership_full_resolution": True,
+        "quality_candidate": quality_candidate,
+    }
 
 
 B1_EXPERIMENT = Experiment(
@@ -99,6 +115,7 @@ B1_20_EXPERIMENT = Experiment(
             cargo_feature="diagnostic-surface-depth-key-candidate20",
         ),
     ),
+    evidence_class="balanced_quality_candidate",
 )
 B2_EXPERIMENT = Experiment(
     name="b2-projected-axes16",
@@ -994,7 +1011,7 @@ def build_run_artifact(
             "lod": "disabled",
             "sh_degree_policy": "source",
             "partial_scene_published": False,
-            "full_quality": True,
+            **exactness_quality_fields(experiment, lane_session.lane.name),
         },
         "resolution": {
             **{f"{stage}_width": FORMAL_SIZE[0] for stage in ("requested", "surface", "internal_render", "presented")},
@@ -1221,7 +1238,7 @@ def materialize_suite(
 
     suite = {
         "schema": SUITE_SCHEMA,
-        "evidence_class": "formal_quality",
+        "evidence_class": experiment.evidence_class,
         "experiment": {
             "name": experiment.name,
             "changed_receipt": experiment.changed_receipt,
@@ -1254,7 +1271,7 @@ def materialize_suite(
             "sh_degree_policy": "source",
             "render_mode": "sorted_alpha",
             "partial_scene_published": False,
-            "full_quality": True,
+            **exactness_quality_fields(experiment),
         },
         "resolution": {
             **{f"{stage}_width": FORMAL_SIZE[0] for stage in ("requested", "surface", "internal_render", "presented")},

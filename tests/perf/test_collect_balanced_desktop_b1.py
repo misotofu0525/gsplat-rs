@@ -219,6 +219,31 @@ class CollectorRecordTests(unittest.TestCase):
         self.assertEqual(
             candidate.cargo_feature, "diagnostic-surface-depth-key-candidate20"
         )
+        self.assertEqual(experiment.evidence_class, "balanced_quality_candidate")
+        self.assertEqual(
+            collector.exactness_quality_fields(experiment, "exact"),
+            {
+                "full_quality": True,
+                "full_membership_full_resolution": True,
+                "quality_candidate": False,
+            },
+        )
+        self.assertEqual(
+            collector.exactness_quality_fields(experiment, "candidate"),
+            {
+                "full_quality": False,
+                "full_membership_full_resolution": True,
+                "quality_candidate": True,
+            },
+        )
+        self.assertEqual(
+            collector.exactness_quality_fields(experiment),
+            {
+                "full_quality": False,
+                "full_membership_full_resolution": True,
+                "quality_candidate": True,
+            },
+        )
 
     def test_malformed_terminal_record_is_rejected(self) -> None:
         line = collector.PREFIXES["terminal"] + "status=ok malformed\n"

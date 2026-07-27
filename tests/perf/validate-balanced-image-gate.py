@@ -49,7 +49,12 @@ PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 TRACE_VALIDATOR_PATH = REPO_ROOT / "tests/perf/trace/validate_trace_v1.py"
 BENCHMARK_VALIDATOR_PATH = REPO_ROOT / "tests/perf/validate-benchmark-artifacts.py"
-EVIDENCE_CLASSES = {"contract_fixture", "formal_quality"}
+EVIDENCE_CLASSES = {
+    "contract_fixture",
+    "formal_quality",
+    "balanced_quality_candidate",
+}
+QUALIFIED_EVIDENCE_CLASSES = {"formal_quality", "balanced_quality_candidate"}
 FORMAL_MIN_WIDTH = 1920
 FORMAL_MIN_HEIGHT = 1080
 LIFECYCLE_GENERATIONS = (
@@ -71,6 +76,11 @@ MATCHED_LIFECYCLE_GENERATIONS = (
 EXPERIMENTS = {
     "b1-depth-key-candidate24": {
         "changed_receipt": "depth_precision",
+        "evidence_classes": {"contract_fixture", "formal_quality"},
+        "quality": {
+            "suite": {"full_quality": True},
+            "lanes": {"exact": {"full_quality": True}, "candidate": {"full_quality": True}},
+        },
         "profiles": {
             "exact": ("ExactFull32", "ExactAxes32", "ExactSigned11BandScale5"),
             "candidate": (
@@ -82,6 +92,26 @@ EXPERIMENTS = {
     },
     "b1-depth-key-candidate20": {
         "changed_receipt": "depth_precision",
+        "evidence_classes": {"contract_fixture", "balanced_quality_candidate"},
+        "quality": {
+            "suite": {
+                "full_quality": False,
+                "full_membership_full_resolution": True,
+                "quality_candidate": True,
+            },
+            "lanes": {
+                "exact": {
+                    "full_quality": True,
+                    "full_membership_full_resolution": True,
+                    "quality_candidate": False,
+                },
+                "candidate": {
+                    "full_quality": False,
+                    "full_membership_full_resolution": True,
+                    "quality_candidate": True,
+                },
+            },
+        },
         "profiles": {
             "exact": ("ExactFull32", "ExactAxes32", "ExactSigned11BandScale5"),
             "candidate": (
@@ -93,6 +123,11 @@ EXPERIMENTS = {
     },
     "b2-projected-axes16": {
         "changed_receipt": "projected_cache_precision",
+        "evidence_classes": {"contract_fixture", "formal_quality"},
+        "quality": {
+            "suite": {"full_quality": True},
+            "lanes": {"exact": {"full_quality": True}, "candidate": {"full_quality": True}},
+        },
         "profiles": {
             "exact": ("ExactFull32", "ExactAxes32", "ExactSigned11BandScale5"),
             "candidate": (
@@ -104,6 +139,11 @@ EXPERIMENTS = {
     },
     "b3-resident-sh-mantissa8": {
         "changed_receipt": "resident_sh",
+        "evidence_classes": {"contract_fixture", "formal_quality"},
+        "quality": {
+            "suite": {"full_quality": True},
+            "lanes": {"exact": {"full_quality": True}, "candidate": {"full_quality": True}},
+        },
         "profiles": {
             "exact": ("ExactFull32", "ExactAxes32", "ExactSigned11BandScale5"),
             "candidate": (
@@ -386,8 +426,11 @@ def validate_authority(manifest: dict[str, Any], evidence_class: str) -> Authori
     dataset = load_json(dataset_path)
     if dataset.get("schema") != "gsplat-dataset/v1":
         fail("authoritative dataset manifest schema must be 'gsplat-dataset/v1'")
-    if evidence_class == "formal_quality" and dataset.get("qualification_status") != "qualified":
-        fail("formal_quality requires a qualified authoritative dataset manifest")
+    if (
+        evidence_class in QUALIFIED_EVIDENCE_CLASSES
+        and dataset.get("qualification_status") != "qualified"
+    ):
+        fail(f"{evidence_class} requires a qualified authoritative dataset manifest")
     dataset_id = require_string(dataset, "id", "authoritative dataset manifest")
     asset_sha256 = require_sha256(dataset, "sha256", "authoritative dataset manifest")
     dataset_local_path = require_string(
@@ -408,9 +451,9 @@ def validate_authority(manifest: dict[str, Any], evidence_class: str) -> Authori
         dataset, "bytes", "authoritative dataset manifest", positive=True
     )
     source_sh_degree = require_int(dataset, "sh_degree", "authoritative dataset manifest")
-    if evidence_class == "formal_quality":
+    if evidence_class in QUALIFIED_EVIDENCE_CLASSES:
         if not dataset_local_path.startswith("tests/datasets/external/"):
-            fail("formal_quality forbids minimal contract fixture datasets")
+            fail(f"{evidence_class} forbids minimal contract fixture datasets")
 
     trace_receipt = require_object(authority, "trace", "manifest.authority")
     trace_path = resolve_artifact_file(
@@ -442,7 +485,7 @@ def validate_authority(manifest: dict[str, Any], evidence_class: str) -> Authori
         trace_receipt, "content_sha256", "manifest.authority.trace"
     ) != trace_content_sha256:
         fail("manifest.authority.trace.content_sha256 mismatch")
-    if evidence_class == "formal_quality":
+    if evidence_class in QUALIFIED_EVIDENCE_CLASSES:
         derivation = require_object(trace, "derivation", "authoritative camera trace")
         expected_derivation = {
             "source_path": dataset_local_path,
@@ -742,7 +785,17 @@ def verify_metric_receipt(
         fail(f"{context}.{key} does not match recomputed RGBA8 bytes")
 
 
-def validate_exactness(manifest: dict[str, Any], authority: Authority) -> None:
+def validate_quality_contract(
+    exactness: dict[str, Any], expected: dict[str, bool], context: str
+) -> None:
+    for key, expected_value in expected.items():
+        if require_bool(exactness, key, context) is not expected_value:
+            fail(f"{context}.{key} must be {str(expected_value).lower()}")
+
+
+def validate_exactness(
+    manifest: dict[str, Any], authority: Authority, experiment: dict[str, Any]
+) -> None:
     exactness = require_object(manifest, "exactness", "manifest")
     counts = [
         require_int(exactness, key, "manifest.exactness", positive=True)
@@ -770,8 +823,9 @@ def validate_exactness(manifest: dict[str, Any], authority: Authority) -> None:
             fail(f"manifest.exactness.{key} must equal {expected!r}")
     if require_bool(exactness, "partial_scene_published", "manifest.exactness"):
         fail("manifest.exactness.partial_scene_published must be false")
-    if not require_bool(exactness, "full_quality", "manifest.exactness"):
-        fail("manifest.exactness.full_quality must be true")
+    validate_quality_contract(
+        exactness, experiment["quality"]["suite"], "manifest.exactness"
+    )
 
 
 def validate_resolution(
@@ -804,10 +858,10 @@ def validate_resolution(
     )
     if dimensions[0] != trace_dimensions:
         fail("manifest.resolution does not match authoritative trace display")
-    if evidence_class == "formal_quality" and (
+    if evidence_class in QUALIFIED_EVIDENCE_CLASSES and (
         dimensions[0][0] < FORMAL_MIN_WIDTH or dimensions[0][1] < FORMAL_MIN_HEIGHT
     ):
-        fail("formal_quality resolution must be at least 1920x1080")
+        fail(f"{evidence_class} resolution must be at least 1920x1080")
     return dimensions[0]
 
 
@@ -1005,6 +1059,7 @@ def validate_formal_benchmark_artifacts(
     trace_frame_index: int,
     camera_receipt: dict[str, Any],
     context: str,
+    experiment: dict[str, Any],
 ) -> None:
     pair = require_object(raw_frame, "benchmark_artifacts", context)
     pair_context = f"{context}.benchmark_artifacts"
@@ -1032,6 +1087,13 @@ def validate_formal_benchmark_artifacts(
 
         benchmark_manifest = benchmark_validator.load_json(
             artifact_directory / "manifest.json"
+        )
+        validate_quality_contract(
+            require_object(
+                benchmark_manifest, "exactness", f"{lane_context}.manifest"
+            ),
+            experiment["quality"]["lanes"][lane],
+            f"{lane_context}.manifest.exactness",
         )
         run_id = require_string(lane_receipt, "run_id", lane_context)
         if benchmark_manifest.get("run_id") != run_id:
@@ -1237,7 +1299,7 @@ def validate_frames(
             experiment,
             context,
         )
-        if evidence_class == "formal_quality":
+        if evidence_class in QUALIFIED_EVIDENCE_CLASSES:
             validate_formal_benchmark_artifacts(
                 raw_frame,
                 presentations,
@@ -1249,6 +1311,7 @@ def validate_frames(
                 trace_frame_index,
                 camera_receipt,
                 context,
+                experiment,
             )
         exact = load_image(
             root,
@@ -1336,10 +1399,15 @@ def validate(path: pathlib.Path) -> ValidationResult:
         fail(f"manifest.schema must equal {SCHEMA!r}")
     evidence_class = require_string(manifest, "evidence_class", "manifest")
     if evidence_class not in EVIDENCE_CLASSES:
-        fail("manifest.evidence_class must be contract_fixture or formal_quality")
+        fail(
+            "manifest.evidence_class must be contract_fixture, formal_quality, "
+            "or balanced_quality_candidate"
+        )
     experiment = validate_experiment(manifest)
+    if evidence_class not in experiment["evidence_classes"]:
+        fail("manifest.evidence_class is forbidden for the named experiment")
     authority = validate_authority(manifest, evidence_class)
-    validate_exactness(manifest, authority)
+    validate_exactness(manifest, authority, experiment)
     dimensions = validate_resolution(manifest, authority.trace, evidence_class)
     mode, trace_indices = validate_camera(manifest, authority.trace)
     frames = validate_frames(

@@ -427,6 +427,7 @@ def write_canonical_benchmark_artifact(
             "adapter": None,
             "driver": None,
         },
+        "exactness": {"full_quality": True},
         "image": benchmark_image,
         "unavailable_fields": unavailable,
     }
@@ -619,6 +620,52 @@ def formal_manifest(root: pathlib.Path, *, viewport_generation: int = 1) -> dict
     return manifest
 
 
+def candidate20_manifest(root: pathlib.Path) -> dict:
+    manifest = formal_manifest(root)
+    manifest["evidence_class"] = "balanced_quality_candidate"
+    manifest["experiment"] = {
+        "name": "b1-depth-key-candidate20",
+        "changed_receipt": "depth_precision",
+    }
+    quality = VALIDATOR.EXPERIMENTS["b1-depth-key-candidate20"]["quality"]
+    manifest["exactness"].update(quality["suite"])
+    for frame in manifest["frames"]:
+        frame["candidate"]["depth_precision"]["profile"] = "CandidateStable20"
+        for lane in ("exact", "candidate"):
+            receipt = frame["benchmark_artifacts"][lane]
+            receipt["depth_precision"] = copy.deepcopy(
+                frame[lane]["depth_precision"]
+            )
+            artifact = root / receipt["path"]
+            benchmark_manifest_path = artifact / "manifest.json"
+            benchmark_manifest = json.loads(
+                benchmark_manifest_path.read_text(encoding="utf-8")
+            )
+            benchmark_manifest["exactness"].update(quality["lanes"][lane])
+            if lane == "candidate":
+                benchmark_manifest["renderer"][
+                    "depth_precision_profile"
+                ] = "CandidateStable20"
+                frames_path = artifact / "frames.jsonl"
+                benchmark_frames = [
+                    json.loads(line)
+                    for line in frames_path.read_text(encoding="utf-8").splitlines()
+                ]
+                benchmark_frames[-1]["capture_depth_precision"] = copy.deepcopy(
+                    frame[lane]["depth_precision"]
+                )
+                frames_path.write_text(
+                    "".join(
+                        json.dumps(benchmark_frame, sort_keys=True) + "\n"
+                        for benchmark_frame in benchmark_frames
+                    ),
+                    encoding="utf-8",
+                )
+            write_json(benchmark_manifest_path, benchmark_manifest)
+            receipt["sha256"] = VALIDATOR.artifact_directory_sha256(artifact)
+    return manifest
+
+
 def validate_manifest(root: pathlib.Path, manifest: dict):
     path = root / "gate.json"
     write_json(path, manifest)
@@ -634,9 +681,56 @@ class BalancedImageGateTests(unittest.TestCase):
                 "name": "b1-depth-key-candidate20",
                 "changed_receipt": "depth_precision",
             }
+            manifest["exactness"].update(
+                VALIDATOR.EXPERIMENTS["b1-depth-key-candidate20"]["quality"][
+                    "suite"
+                ]
+            )
             for frame in manifest["frames"]:
                 frame["candidate"]["depth_precision"]["profile"] = "CandidateStable20"
             validate_manifest(root, manifest)
+
+    def test_candidate20_rejects_full_quality_true(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            manifest = candidate20_manifest(root)
+            manifest["exactness"]["full_quality"] = True
+            with self.assertRaisesRegex(VALIDATOR.ValidationError, "full_quality must be false"):
+                validate_manifest(root, manifest)
+
+    def test_candidate20_rejects_missing_complete_quality_candidate_field(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            manifest = candidate20_manifest(root)
+            del manifest["exactness"]["full_membership_full_resolution"]
+            with self.assertRaisesRegex(
+                VALIDATOR.ValidationError, "full_membership_full_resolution"
+            ):
+                validate_manifest(root, manifest)
+
+    def test_candidate20_rejects_exact_lane_full_quality_false(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            manifest = candidate20_manifest(root)
+            receipt = manifest["frames"][0]["benchmark_artifacts"]["exact"]
+            artifact = root / receipt["path"]
+            benchmark_manifest_path = artifact / "manifest.json"
+            benchmark_manifest = json.loads(
+                benchmark_manifest_path.read_text(encoding="utf-8")
+            )
+            benchmark_manifest["exactness"]["full_quality"] = False
+            write_json(benchmark_manifest_path, benchmark_manifest)
+            receipt["sha256"] = VALIDATOR.artifact_directory_sha256(artifact)
+            with self.assertRaisesRegex(VALIDATOR.ValidationError, "full_quality must be true"):
+                validate_manifest(root, manifest)
+
+    def test_candidate20_rejects_formal_quality_evidence_class(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            manifest = candidate20_manifest(root)
+            manifest["evidence_class"] = "formal_quality"
+            with self.assertRaisesRegex(VALIDATOR.ValidationError, "forbidden"):
+                validate_manifest(root, manifest)
 
     def test_valid_authored_views_recompute_rgba_metrics(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
