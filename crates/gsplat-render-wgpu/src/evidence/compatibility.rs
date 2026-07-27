@@ -9,14 +9,12 @@ use std::{collections::VecDeque, num::NonZeroU64};
 use crate::evidence::BoundedEvidenceRing;
 use crate::gpu_telemetry::SurfaceCpuOrderMeasurement;
 use crate::{
-    SurfaceCurrentStatsCountSemantics, SurfaceCurrentStatsPlan, SurfaceCurrentStatsReceipt,
-    SurfaceCurrentStatsTerminal, SurfaceGpuOrderProducer, SurfaceGpuProducerDrawScope,
-    SurfaceGpuProducerMeasurement, SurfaceGpuProducerMeasurementFailure,
-    SurfaceGpuProducerMeasurementFailureReason, SurfaceOrderBackendUsed, SurfaceOrderMeasurement,
-    SurfaceOrderMeasurementFailure, SurfaceOrderMeasurementFailureReason,
-    SurfaceProjectedDrawExecution, SurfaceProjectedDrawMeasurement,
-    SurfaceProjectedDrawMeasurementFailure, SurfaceProjectedDrawMeasurementFailureReason,
-    SurfaceTimingSource,
+    SurfaceGpuOrderProducer, SurfaceGpuProducerDrawScope, SurfaceGpuProducerMeasurement,
+    SurfaceGpuProducerMeasurementFailure, SurfaceGpuProducerMeasurementFailureReason,
+    SurfaceOrderBackendUsed, SurfaceOrderMeasurement, SurfaceOrderMeasurementFailure,
+    SurfaceOrderMeasurementFailureReason, SurfaceProjectedDrawExecution,
+    SurfaceProjectedDrawMeasurement, SurfaceProjectedDrawMeasurementFailure,
+    SurfaceProjectedDrawMeasurementFailureReason, SurfaceTimingSource,
     surface_session::{
         SurfaceAdaptiveState, SurfaceGpuProducerMeasurementSubmission, SurfaceOrderBackend,
         SurfaceOrderMeasurementSubmission, SurfaceProjectedDrawAdaptiveState,
@@ -629,114 +627,6 @@ impl SessionEvidence {
             && let Some(issue) = producer.issued_context(ticket)
         {
             replace_pending(&mut self.pending_producer, ticket, issue);
-        }
-    }
-
-    pub(crate) fn publish_exact_order_terminal(&mut self, terminal: SurfaceCurrentStatsTerminal) {
-        let submission = terminal.submission();
-        let ticket = submission.ticket();
-        let camera_revision = submission.join().frame_identity().camera_revision();
-        match terminal {
-            SurfaceCurrentStatsTerminal::Ready(receipt) => {
-                self.publish_exact_order_success(receipt);
-            }
-            SurfaceCurrentStatsTerminal::MapFailure(_) => {
-                self.publish_order_failure(SurfaceOrderMeasurementFailure {
-                    ticket,
-                    camera_revision,
-                    reason: SurfaceOrderMeasurementFailureReason::ReadbackMap,
-                });
-            }
-            SurfaceCurrentStatsTerminal::GenerationInvalidated(_)
-            | SurfaceCurrentStatsTerminal::Expired(_)
-            | SurfaceCurrentStatsTerminal::Dropped(_) => {
-                self.publish_order_failure(SurfaceOrderMeasurementFailure {
-                    ticket,
-                    camera_revision,
-                    reason: SurfaceOrderMeasurementFailureReason::GenerationInvalidated,
-                });
-            }
-        }
-    }
-
-    fn publish_exact_order_success(&mut self, receipt: SurfaceCurrentStatsReceipt) {
-        let submission = receipt.submission();
-        let ticket = submission.ticket();
-        let join = submission.join();
-        let camera_revision = join.frame_identity().camera_revision();
-        let counts = receipt.counts();
-        let frame_complete_ms = receipt.frame_complete_ms();
-        let exact_contributor_compaction = matches!(
-            receipt.count_semantics(),
-            SurfaceCurrentStatsCountSemantics::IndirectDrawEqualsContributor
-        );
-        if !frame_complete_ms.is_finite() || frame_complete_ms < 0.0 {
-            self.publish_order_failure(SurfaceOrderMeasurementFailure {
-                ticket,
-                camera_revision,
-                reason: SurfaceOrderMeasurementFailureReason::GenerationInvalidated,
-            });
-            return;
-        }
-        match join.executed_plan() {
-            SurfaceCurrentStatsPlan::CpuPostSort => {
-                let Some(preprocess_ms) = receipt.cpu_preprocess_ms() else {
-                    self.publish_order_failure(SurfaceOrderMeasurementFailure {
-                        ticket,
-                        camera_revision,
-                        reason: SurfaceOrderMeasurementFailureReason::GenerationInvalidated,
-                    });
-                    return;
-                };
-                let Some(sort_ms) = receipt.cpu_sort_ms() else {
-                    self.publish_order_failure(SurfaceOrderMeasurementFailure {
-                        ticket,
-                        camera_revision,
-                        reason: SurfaceOrderMeasurementFailureReason::GenerationInvalidated,
-                    });
-                    return;
-                };
-                if !preprocess_ms.is_finite()
-                    || preprocess_ms < 0.0
-                    || !sort_ms.is_finite()
-                    || sort_ms < 0.0
-                {
-                    self.publish_order_failure(SurfaceOrderMeasurementFailure {
-                        ticket,
-                        camera_revision,
-                        reason: SurfaceOrderMeasurementFailureReason::GenerationInvalidated,
-                    });
-                    return;
-                }
-                self.publish_cpu_order(SurfaceCpuOrderMeasurement {
-                    ticket,
-                    camera_revision,
-                    preprocess_ms,
-                    sort_ms,
-                    frame_complete_ms,
-                    visible_count: counts.visible(),
-                    contributor_count: counts.contributor(),
-                    drawn_count: counts.drawn(),
-                    exact_contributor_compaction,
-                });
-            }
-            SurfaceCurrentStatsPlan::GpuPostSort | SurfaceCurrentStatsPlan::GpuPreproject => {
-                self.publish_gpu_order(SurfaceOrderMeasurement {
-                    ticket,
-                    camera_revision,
-                    timing_source: SurfaceTimingSource::CompletionOnly,
-                    gpu_preprocess_ms: None,
-                    gpu_radix_ms: None,
-                    gpu_order_ms: None,
-                    gpu_complete_ms: frame_complete_ms,
-                    timestamp_period_ns: None,
-                    below_timestamp_resolution: false,
-                    visible_count: counts.visible(),
-                    contributor_count: counts.contributor(),
-                    drawn_count: counts.drawn(),
-                    exact_contributor_compaction,
-                });
-            }
         }
     }
 

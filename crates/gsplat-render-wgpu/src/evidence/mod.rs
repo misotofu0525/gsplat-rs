@@ -37,11 +37,12 @@ pub use projected::{
 pub(crate) use ring::BoundedEvidenceRing;
 #[cfg(test)]
 pub(crate) use session_publication::LegacySurfaceStatsAvailability;
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) use session_publication::PresentedCapturePrecisionReceipt;
 pub(crate) use session_publication::{
-    PresentedCapturePrecisionReceipt, PresentedCurrentStats, PresentedDepthPrecisionReceipt,
-    PresentedFramePrecisionReceipts, PresentedFramePublication,
-    PresentedProjectedCachePrecisionReceipt, PresentedResidentShReceipt, PresentedTelemetry,
-    SessionPublication, SurfaceTelemetryBatch,
+    PresentedCurrentStats, PresentedDepthPrecisionReceipt, PresentedFramePrecisionReceipts,
+    PresentedFramePublication, PresentedProjectedCachePrecisionReceipt, PresentedResidentShReceipt,
+    PresentedTelemetry, SessionPublication, SurfaceTelemetryBatch,
 };
 pub use submission::{
     SurfaceGpuProducerMeasurementSubmission, SurfaceGpuProducerMeasurementUnsampledReason,

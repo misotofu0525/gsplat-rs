@@ -930,6 +930,11 @@ try {
       () => ['ready', 'failed'].includes(globalThis.GSPLAT_M4_SMOKE_RESULT?.status),
       { timeout: benchmarkTimeoutMs },
     );
+    // Let the next animation turn report an asynchronous render failure before
+    // retaining the smoke receipt. This is a stability fence, not a retry.
+    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(
+      () => requestAnimationFrame(resolve),
+    )));
     const smoke = await page.evaluate(() => {
       const canvas = document.getElementById('viewport');
       return {

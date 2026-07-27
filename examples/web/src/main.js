@@ -1441,6 +1441,14 @@ function frame(now) {
   state.lastFrameTime = now;
   state.fps = dt > 0 ? 1 / dt : state.fps;
 
+  // The bounded M4 smoke is complete after its one presentation and terminal
+  // current-stats receipt. Stop submitting new frames so its retained result
+  // describes one stable endpoint observation rather than a stale snapshot of
+  // a renderer that continues to mutate in the background.
+  if (state.currentStatsSmokeEnabled && state.currentStatsSmokeCompleted) {
+    return;
+  }
+
   // resizeAsync holds the wasm renderer mutably until WebGPU error scopes
   // complete. Never submit or poll a frame against an in-flight/unknown size.
   if (state.resizeMeasurePending || wasmResizeCoordinator.pending) {
@@ -1892,6 +1900,17 @@ function failClosedWasmRender(error) {
   }
   state.wasmUnavailableReason = reason;
   state.wasmFatalError = reason;
+  // A smoke receipt is only valid while the renderer remains healthy. A later
+  // render failure must replace an earlier ready value rather than letting a
+  // collector observe a stale success during the next animation turn.
+  if (state.currentStatsSmokeEnabled) {
+    globalThis.GSPLAT_M4_SMOKE_RESULT = {
+      status: "failed",
+      stage: "render_frame",
+      reason,
+    };
+    state.currentStatsSmokeCompleted = true;
+  }
   if (state.benchmark) state.benchmark.enabled = false;
   els.benchmarkStatus.textContent = "failed";
   els.runBenchmark.disabled = false;

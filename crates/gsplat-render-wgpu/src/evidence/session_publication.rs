@@ -524,6 +524,7 @@ impl SessionPublication {
         self.presented_resident_sh
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn arm_capture_precision(&mut self) -> bool {
         match self.capture_precision {
             CapturePrecisionState::Idle => {
@@ -538,6 +539,7 @@ impl SessionPublication {
         }
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn cancel_capture_precision(&mut self) {
         if self.capture_precision != CapturePrecisionState::Disabled {
             self.capture_precision = CapturePrecisionState::Idle;
@@ -562,6 +564,7 @@ impl SessionPublication {
         }
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn take_capture_precision(&mut self) -> Option<PresentedCapturePrecisionReceipt> {
         let previous = std::mem::replace(&mut self.capture_precision, CapturePrecisionState::Idle);
         match previous {
@@ -585,9 +588,10 @@ impl SessionPublication {
     }
 
     pub(crate) fn observe_current_stats_poll(&mut self, poll: SurfaceCurrentStatsPoll) {
-        if let SurfaceCurrentStatsPoll::Terminal(terminal) = poll {
-            self.evidence.publish_exact_order_terminal(terminal);
-        }
+        // Current-stats terminals are renderer-owned count receipts, not CPU
+        // order telemetry. In particular, their ticket namespace is distinct
+        // from the even-valued CPU-order namespace. Keep them out of the
+        // compatibility order ledger; callers consume them via poll_current_stats.
         self.legacy_stats_availability.observe_poll(
             self.current_stats_submission,
             poll,

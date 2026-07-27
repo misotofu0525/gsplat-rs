@@ -6,11 +6,12 @@ use std::time::Duration;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::SurfaceFrameCapture;
 pub use crate::api::SurfaceOrderBackendUsed;
+#[cfg(not(target_arch = "wasm32"))]
+use crate::evidence::PresentedCapturePrecisionReceipt;
 use crate::evidence::{
-    PresentedCapturePrecisionReceipt, PresentedCurrentStats, PresentedDepthPrecisionReceipt,
-    PresentedFramePrecisionReceipts, PresentedFramePublication,
-    PresentedProjectedCachePrecisionReceipt, PresentedResidentShReceipt, PresentedTelemetry,
-    SessionPublication, SurfaceCompatibilityOrderSubmission,
+    PresentedCurrentStats, PresentedDepthPrecisionReceipt, PresentedFramePrecisionReceipts,
+    PresentedFramePublication, PresentedProjectedCachePrecisionReceipt, PresentedResidentShReceipt,
+    PresentedTelemetry, SessionPublication, SurfaceCompatibilityOrderSubmission,
     SurfaceCompatibilityProducerSubmission, SurfaceCompatibilityProjectedSubmission,
     SurfaceTelemetryBatch,
 };
@@ -2393,18 +2394,11 @@ impl SurfaceRenderSession {
         let counts_pending = submission.is_some_and(|submission| {
             submission.visible_count().is_none() || submission.draw_count().is_none()
         });
-        let order_measurement_submission = if frame_presented && order_refreshed {
-            submission
-                .and_then(|submission| submission.current_stats_submission().receipt())
-                .map_or(SurfaceOrderMeasurementSubmission::NotRequested, |receipt| {
-                    SurfaceOrderMeasurementSubmission::Issued {
-                        backend: order_backend,
-                        ticket: receipt.ticket().get(),
-                    }
-                })
-        } else {
-            SurfaceOrderMeasurementSubmission::NotRequested
-        };
+        // Current-stats is an independent renderer receipt. Its ticket starts
+        // in a different namespace from CPU/GPU ordering telemetry, so it must
+        // never be advertised as an order-measurement submission. Consumers
+        // join it only through `poll_current_stats`.
+        let order_measurement_submission = SurfaceOrderMeasurementSubmission::NotRequested;
         let camera_revision = exact_published_camera_revision(
             self.camera_revision,
             submission.map(|submission| submission.frame_identity().camera_revision()),
