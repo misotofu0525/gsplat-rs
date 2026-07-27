@@ -1233,10 +1233,10 @@ class ScheduleAndAdmissionTests(unittest.TestCase):
         self.mutate_manifest(
             "pairs/pair-01/gsplat_rs/throughput",
             lambda value: value["environment"].__setitem__(
-                "adapter_limits_sha256", SHA_B
+                "canonical_adapter_supported_limits_sha256", SHA_B
             ),
         )
-        with self.assertRaisesRegex(ValidationError, "identity drift"):
+        with self.assertRaisesRegex(ValidationError, "does not match"):
             evaluate(self.schedule)
 
     def test_pair_order_label_without_timestamp_proof_is_rejected(self) -> None:

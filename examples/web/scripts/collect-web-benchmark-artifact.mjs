@@ -72,7 +72,7 @@ import {
 } from './q1-browser-environment.mjs';
 import { Q1ArtifactTransaction } from './q1-artifact-transaction.mjs';
 import { cleanupBrowserAndServer, waitForChildExit } from './q1-process-cleanup.mjs';
-import { canonicalWebGpuAdapterEnvironment } from '../../../tests/perf/q1-webgpu-environment.mjs';
+import { gsplatQ1WebGpuEnvironmentFields } from '../../../tests/perf/q1-webgpu-environment.mjs';
 
 const execFile = promisify(execFileCallback);
 
@@ -2014,11 +2014,7 @@ try {
     if (browserExecutableSha256 !== q1BrowserExecutableShaPre) {
       throw new Error('Q1 browser executable changed during collection');
     }
-    const canonicalAdapter = canonicalWebGpuAdapterEnvironment({
-      backend: q1AdapterPost.adapter.backend,
-      selectionClass: q1AdapterPost.adapterSelectionClass,
-      supportedLimits: q1AdapterPost.supportedAdapterLimits,
-    });
+    const webGpuEnvironment = gsplatQ1WebGpuEnvironmentFields(q1AdapterPost);
     q1ObservedContext = observedRunContext({
       declared: q1RunContext,
       buildArtifacts,
@@ -2030,10 +2026,18 @@ try {
         browser_executable_sha256: browserExecutableSha256,
         browser_launch_args_sha256: q1BrowserArgsReceipt.normalized_sha256,
         browser_launch_args_receipt: q1BrowserArgsReceipt,
-        adapter: canonicalAdapter.adapter,
+        adapter: webGpuEnvironment.adapter,
+        adapter_identity_status: webGpuEnvironment.adapter_identity_status,
         driver: `apple_metal_os_build:${q1HostPost.os_build}`,
         driver_source: 'macos_sw_vers_buildVersion',
-        adapter_limits_sha256: canonicalAdapter.adapter_limits_sha256,
+        canonical_adapter_supported_limits_sha256:
+          webGpuEnvironment.canonical_adapter_supported_limits_sha256,
+        adapter_supported_limits_sha256:
+          webGpuEnvironment.adapter_supported_limits_sha256,
+        device_effective_limits_sha256:
+          webGpuEnvironment.device_effective_limits_sha256,
+        webgpu_device_environment_receipt:
+          webGpuEnvironment.webgpu_device_environment_receipt,
         power_source: q1HostPost.power_source,
         collection_session_id: q1CollectionSessionId,
         thermal: {
