@@ -770,13 +770,6 @@ impl SessionSurfaceOwner {
     }
 }
 
-/// Owns the ordering + direct GPU draw lifecycle shared by every Surface client.
-///
-/// PLY-derived scene attributes stay GPU-resident. CPU refreshes upload compact
-/// source IDs, while GPU refreshes keep stable `(depth_key, source_id)` pairs on
-/// the renderer device and draw their source IDs directly. The vertex shader
-/// fetches and projects the corresponding Gaussian for Web, desktop, Android,
-/// and iOS.
 #[cfg(any(target_arch = "wasm32", test))]
 fn validate_browser_capture_route(
     exact_surface_session: bool,
@@ -789,6 +782,13 @@ fn validate_browser_capture_route(
     Ok(())
 }
 
+/// Owns the ordering + direct GPU draw lifecycle shared by every Surface client.
+///
+/// PLY-derived scene attributes stay GPU-resident. CPU refreshes upload compact
+/// source IDs, while GPU refreshes keep stable `(depth_key, source_id)` pairs on
+/// the renderer device and draw their source IDs directly. The vertex shader
+/// fetches and projects the corresponding Gaussian for Web, desktop, Android,
+/// and iOS.
 pub struct SurfaceRenderSession {
     renderer: Renderer,
     presenter: SessionSurfaceOwner,
