@@ -14,6 +14,7 @@ import {
 import {
   WEB_DEPTH_QUALITY,
   cameraValues,
+  configureQualityRenderer,
   computeFrameMetrics,
   computeTemporalMetric,
   normalizeAndValidateCapture,
@@ -134,6 +135,25 @@ test("benchmark implementation labels distinguish Exact from Candidate20", () =>
     "gsplat-rs-webgpu-candidate20-quality",
   );
   assert.throws(() => qualityRendererImplementation("other"), /unknown quality lane/);
+});
+
+test("quality lane selects Compact only after the GPU plan exists", async () => {
+  const calls = [];
+  const renderer = {
+    setSortInterval(value) { calls.push(["interval", value]); },
+    async prepareGpuOrder() { calls.push(["prepare-gpu"]); },
+    setOrderBackend(value) { calls.push(["order", value]); },
+    setProjectedPolicy(value) { calls.push(["projected", value]); },
+    async setGpuOrderProducerAsync(value) { calls.push(["producer", value]); },
+  };
+  await configureQualityRenderer(renderer);
+  assert.deepEqual(calls, [
+    ["interval", 1],
+    ["prepare-gpu"],
+    ["order", WEB_DEPTH_QUALITY.orderBackendId],
+    ["projected", WEB_DEPTH_QUALITY.projectedPolicyId],
+    ["producer", WEB_DEPTH_QUALITY.gpuProducerId],
+  ]);
 });
 
 test("camera trace pose and intrinsics map to the ten-value native contract", () => {

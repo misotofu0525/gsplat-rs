@@ -60,6 +60,18 @@ export async function sha256Bytes(bytes) {
   return Array.from(new Uint8Array(digest), (value) => value.toString(16).padStart(2, "0")).join("");
 }
 
+/// Applies the only valid transition order for the forced GPU Preproject
+/// quality lane. Selecting GPU from the initial CPU plan canonicalizes the
+/// projected policy back to Candidate, so Compact must be committed after the
+/// GPU plan exists and before Preproject is selected.
+export async function configureQualityRenderer(renderer) {
+  renderer.setSortInterval(1);
+  await renderer.prepareGpuOrder();
+  renderer.setOrderBackend(WEB_DEPTH_QUALITY.orderBackendId);
+  renderer.setProjectedPolicy(WEB_DEPTH_QUALITY.projectedPolicyId);
+  await renderer.setGpuOrderProducerAsync(WEB_DEPTH_QUALITY.gpuProducerId);
+}
+
 function sameJson(left, right) {
   return JSON.stringify(left) === JSON.stringify(right);
 }
@@ -259,11 +271,7 @@ export async function captureQualityLane({ module, wasmUrl, canvas, plyBytes, tr
     WEB_DEPTH_QUALITY.geometryPathId,
   );
   try {
-    renderer.setSortInterval(1);
-    renderer.setProjectedPolicy(WEB_DEPTH_QUALITY.projectedPolicyId);
-    await renderer.prepareGpuOrder();
-    renderer.setOrderBackend(WEB_DEPTH_QUALITY.orderBackendId);
-    await renderer.setGpuOrderProducerAsync(WEB_DEPTH_QUALITY.gpuProducerId);
+    await configureQualityRenderer(renderer);
     const loadReceipt = renderer.loadReceipt();
     const captures = [];
     for (let captureIndex = 0; captureIndex < WEB_DEPTH_QUALITY.traceFrameIndices.length; captureIndex += 1) {
