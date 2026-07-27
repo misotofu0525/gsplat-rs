@@ -381,7 +381,7 @@ async function publishSuccess({ args, config, inputs, browserResult, browserLog 
       path: `runs/${name}`,
       sha256: await sha256File(path),
       terminal_ms_per_frame: run.terminal_ms_per_frame,
-      frame_wall_mean_ms: run.frame_wall_mean_ms,
+      renderer_call_wall_mean_ms: run.renderer_call_wall_mean_ms,
     });
   }
   const result = classifyPairs(browserResult.outcome.runs);
@@ -412,6 +412,8 @@ async function publishSuccess({ args, config, inputs, browserResult, browserLog 
       measured_frames: WEB_DEPTH_PAIRED_TIMING.measuredFrames,
       capture_during_timing: false,
       current_stats_terminals_per_run: 2,
+      renderer_call_wall_source: "renderer renderFrame() internal wall; not rAF cadence or presentation FPS",
+      comparable_cross_implementation_metric: null,
       automatic_retry: false,
       executions_per_scheduled_run: 1,
     },

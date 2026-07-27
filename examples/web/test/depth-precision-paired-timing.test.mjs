@@ -212,7 +212,7 @@ function runReceipt(pairIndex, pairPosition, lane, time) {
     measured_evidence: {},
     terminal_window_ms: time * 80,
     terminal_ms_per_frame: time,
-    frame_wall_mean_ms: time,
+    renderer_call_wall_mean_ms: time,
     frames: Array.from({ length: 80 }, () => ({})),
   };
 }

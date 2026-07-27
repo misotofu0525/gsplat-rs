@@ -356,7 +356,7 @@ export async function collectLaneTiming({
       frame_index: index,
       trace_frame_index: index % frames.length,
       frame_ms: finite(frame.frameMs, `frame ${index}.frameMs`),
-      frame_wall_ms: finite(frame.frameWallMs, `frame ${index}.frameWallMs`),
+      renderer_call_wall_ms: finite(frame.frameWallMs, `frame ${index}.frameWallMs`),
       camera_revision: frame.cameraRevision,
       order_generation: frame.currentStatsOrderGeneration ?? null,
       presentation_sequence: frame.currentStatsPresentationSequence ?? null,
@@ -380,7 +380,10 @@ export async function collectLaneTiming({
     measured_evidence: measuredEvidence,
     terminal_window_ms: terminalWindowMs,
     terminal_ms_per_frame: terminalWindowMs / measuredFrames,
-    frame_wall_mean_ms: measured.reduce((sum, frame) => sum + frame.frame_wall_ms, 0)
+    renderer_call_wall_mean_ms: measured.reduce(
+      (sum, frame) => sum + frame.renderer_call_wall_ms,
+      0,
+    )
       / measuredFrames,
     frames: measured,
   });
@@ -421,7 +424,7 @@ export function validateCollectedRuns(runs, schedule, {
     object(run.measured_evidence, `timing run ${index} measured evidence`);
     finite(run.terminal_window_ms, `timing run ${index} terminal window`);
     finite(run.terminal_ms_per_frame, `timing run ${index} terminal time per frame`);
-    finite(run.frame_wall_mean_ms, `timing run ${index} frame-wall mean`);
+    finite(run.renderer_call_wall_mean_ms, `timing run ${index} renderer-call wall mean`);
   }
   return runs;
 }
