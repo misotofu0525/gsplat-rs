@@ -438,11 +438,11 @@ pub enum SurfacePresenterError {
         resize_error: String,
         rollback_error: String,
     },
-    #[error("surface framebuffer capture is unsupported: {0}")]
+    #[error("surface presentation-target capture is unsupported: {0}")]
     SurfaceCaptureUnsupported(String),
-    #[error("surface framebuffer capture state is invalid: {0}")]
+    #[error("surface presentation-target capture state is invalid: {0}")]
     SurfaceCaptureState(String),
-    #[error("surface framebuffer capture readback failed")]
+    #[error("surface presentation-target capture readback failed")]
     SurfaceCaptureReadback,
 }
 

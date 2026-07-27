@@ -706,8 +706,9 @@ impl GsplatWebRenderer {
     }
 
     /// Arms one renderer-owned capture for the next successfully presented
-    /// diagnostic frame. This can reconfigure the WebGPU canvas Surface for
-    /// COPY_SRC and therefore remains absent from ordinary builds.
+    /// diagnostic frame. The Web backend uses a renderer-owned present source
+    /// when its Surface lacks COPY_SRC; this remains absent from ordinary
+    /// builds and does not introduce a second splat render.
     #[cfg(feature = "diagnostic-web-surface-capture")]
     #[wasm_bindgen(js_name = requestDiagnosticSurfaceCapture)]
     pub async fn request_diagnostic_surface_capture(&mut self) -> Result<(), JsValue> {

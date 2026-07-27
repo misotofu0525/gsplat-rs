@@ -536,10 +536,12 @@ impl SurfacePresenterHost {
         let pending = self
             .surface_capture
             .prepare_request(&self.device, width, height, format)?;
-        pollster::block_on(
-            self.surface_configuration
-                .ensure_copy_src(&self.surface, &self.device),
-        )?;
+        if crate::surface::SurfaceCapture::prepared_requires_surface_copy_src(&pending) {
+            pollster::block_on(
+                self.surface_configuration
+                    .ensure_copy_src(&self.surface, &self.device),
+            )?;
+        }
         self.surface_capture.publish(pending);
         Ok(())
     }
@@ -555,9 +557,11 @@ impl SurfacePresenterHost {
             .surface_capture
             .prepare_request_async(&self.device, width, height, format)
             .await?;
-        self.surface_configuration
-            .ensure_copy_src(&self.surface, &self.device)
-            .await?;
+        if crate::surface::SurfaceCapture::prepared_requires_surface_copy_src(&pending) {
+            self.surface_configuration
+                .ensure_copy_src(&self.surface, &self.device)
+                .await?;
+        }
         self.surface_capture.publish(pending);
         Ok(())
     }
@@ -764,10 +768,10 @@ impl SurfacePresenter {
         self.host.surface_configuration.size()
     }
 
-    /// Arms a one-shot exact framebuffer readback for the next presented
-    /// native frame. The first request upgrades this Surface to `COPY_SRC`;
-    /// normal product sessions remain render-attachment-only forever unless a
-    /// caller explicitly opts into this diagnostic path.
+    /// Arms a one-shot exact presentation-target readback for the next
+    /// presented native frame. A copy-capable Surface is read directly; other
+    /// backends raster once into a renderer-owned target and present that same
+    /// target through a no-filter blit. Ordinary frames allocate neither path.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn request_surface_capture(&mut self) -> Result<(), SurfacePresenterError> {
         self.host.request_surface_capture()

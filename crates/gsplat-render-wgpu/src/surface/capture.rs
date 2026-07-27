@@ -1,6 +1,7 @@
 use crate::{SurfacePresenterError, wgpu_label};
 
-/// Exact Surface framebuffer captured immediately before presentation.
+/// Exact renderer-owned presentation target captured immediately before its
+/// successful Surface presentation.
 ///
 /// Capture is a diagnostic-only opt-in. Ordinary Surface presenters never ask
 /// the swapchain for copy usage and do not allocate a readback buffer.
@@ -24,11 +25,21 @@ pub(crate) struct PreparedSurfaceCapture {
 
 struct PendingSurfaceCapture {
     buffer: wgpu::Buffer,
+    source: CaptureSource,
     width: u32,
     height: u32,
     padded_bytes_per_row: u32,
     format: wgpu::TextureFormat,
     progress: CaptureProgress,
+}
+
+enum CaptureSource {
+    Surface,
+    Intermediate {
+        texture: wgpu::Texture,
+        present_pipeline: wgpu::RenderPipeline,
+        present_bind_group: wgpu::BindGroup,
+    },
 }
 
 #[derive(Default)]
@@ -73,6 +84,16 @@ impl SurfaceCapture {
         self.pending.is_some()
     }
 
+    pub(crate) fn render_target_texture<'a>(
+        &'a self,
+        surface_texture: &'a wgpu::Texture,
+    ) -> &'a wgpu::Texture {
+        match self.pending.as_ref().map(|pending| &pending.source) {
+            Some(CaptureSource::Intermediate { texture, .. }) => texture,
+            Some(CaptureSource::Surface) | None => surface_texture,
+        }
+    }
+
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn prepare_request(
         &self,
@@ -97,11 +118,6 @@ impl SurfaceCapture {
         if self.pending.is_some() {
             return Err(SurfacePresenterError::SurfaceCaptureState(
                 "a previous capture has not been taken".into(),
-            ));
-        }
-        if !self.copy_src_supported {
-            return Err(SurfacePresenterError::SurfaceCaptureUnsupported(
-                "the adapter does not expose COPY_SRC for this Surface".into(),
             ));
         }
         if !surface_capture_format_supported(format) {
@@ -129,6 +145,11 @@ impl SurfaceCapture {
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
             mapped_at_creation: false,
         });
+        let source = if self.copy_src_supported {
+            CaptureSource::Surface
+        } else {
+            create_intermediate_capture_source(device, width, height, format)
+        };
         let (internal_error, oom_error, validation_error) = (
             internal_scope.pop().await,
             oom_scope.pop().await,
@@ -136,13 +157,14 @@ impl SurfaceCapture {
         );
         if let Some(error) = internal_error.or(oom_error).or(validation_error) {
             return Err(SurfacePresenterError::SurfaceCaptureUnsupported(format!(
-                "readback buffer allocation failed: {error}"
+                "capture resource allocation failed: {error}"
             )));
         }
 
         Ok(PreparedSurfaceCapture {
             pending: PendingSurfaceCapture {
                 buffer,
+                source,
                 width,
                 height,
                 padded_bytes_per_row,
@@ -155,6 +177,12 @@ impl SurfaceCapture {
     pub(crate) fn publish(&mut self, prepared: PreparedSurfaceCapture) {
         debug_assert!(self.pending.is_none());
         self.pending = Some(prepared.pending);
+    }
+
+    pub(crate) const fn prepared_requires_surface_copy_src(
+        prepared: &PreparedSurfaceCapture,
+    ) -> bool {
+        matches!(prepared.pending.source, CaptureSource::Surface)
     }
 
     pub(crate) fn cancel(&mut self) -> bool {
@@ -175,9 +203,13 @@ impl SurfaceCapture {
             (pending.width, pending.height)
         );
         debug_assert_eq!(texture.format(), pending.format);
+        let source_texture = match &pending.source {
+            CaptureSource::Surface => texture,
+            CaptureSource::Intermediate { texture, .. } => texture,
+        };
         encoder.copy_texture_to_buffer(
             wgpu::TexelCopyTextureInfo {
-                texture,
+                texture: source_texture,
                 mip_level: 0,
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
@@ -196,6 +228,33 @@ impl SurfaceCapture {
                 depth_or_array_layers: 1,
             },
         );
+        if let CaptureSource::Intermediate {
+            present_pipeline,
+            present_bind_group,
+            ..
+        } = &pending.source
+        {
+            let surface_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: wgpu_label("gsplat-surface-capture-present-pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &surface_view,
+                    resolve_target: None,
+                    depth_slice: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_pipeline(present_pipeline);
+            pass.set_bind_group(0, present_bind_group, &[]);
+            pass.draw(0..3, 0..1);
+        }
         pending.progress.mark_encoded();
     }
 
@@ -221,7 +280,7 @@ impl SurfaceCapture {
         })?;
         if !pending.progress.ready() {
             return Err(SurfacePresenterError::SurfaceCaptureState(
-                "the requested framebuffer copy has not completed a presentation".into(),
+                "the requested presentation-target copy has not completed a presentation".into(),
             ));
         }
         let pending = self.pending.take().expect("validated pending capture");
@@ -273,7 +332,7 @@ impl SurfaceCapture {
         })?;
         if !pending.progress.ready() {
             return Err(SurfacePresenterError::SurfaceCaptureState(
-                "the requested framebuffer copy has not completed a presentation".into(),
+                "the requested presentation-target copy has not completed a presentation".into(),
             ));
         }
         let pending = self.pending.take().expect("validated pending capture");
@@ -318,6 +377,93 @@ impl SurfaceCapture {
             height: pending.height,
             rgba8,
         })
+    }
+}
+
+fn create_intermediate_capture_source(
+    device: &wgpu::Device,
+    width: u32,
+    height: u32,
+    format: wgpu::TextureFormat,
+) -> CaptureSource {
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: wgpu_label("gsplat-surface-capture-intermediate-target"),
+        size: wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+            | wgpu::TextureUsages::COPY_SRC
+            | wgpu::TextureUsages::TEXTURE_BINDING,
+        view_formats: &[],
+    });
+    let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: wgpu_label("gsplat-surface-capture-present-bind-group-layout"),
+        entries: &[wgpu::BindGroupLayoutEntry {
+            binding: 0,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                view_dimension: wgpu::TextureViewDimension::D2,
+                multisampled: false,
+            },
+            count: None,
+        }],
+    });
+    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: wgpu_label("gsplat-surface-capture-present-shader"),
+        source: wgpu::ShaderSource::Wgsl(
+            include_str!("../../shaders/surface_capture_present.wgsl").into(),
+        ),
+    });
+    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: wgpu_label("gsplat-surface-capture-present-pipeline-layout"),
+        bind_group_layouts: &[&layout],
+        immediate_size: 0,
+    });
+    let present_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: wgpu_label("gsplat-surface-capture-present-pipeline"),
+        layout: Some(&pipeline_layout),
+        vertex: wgpu::VertexState {
+            module: &shader,
+            entry_point: Some("vs_main"),
+            buffers: &[],
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: &shader,
+            entry_point: Some("fs_main"),
+            targets: &[Some(wgpu::ColorTargetState {
+                format,
+                blend: None,
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+        }),
+        primitive: wgpu::PrimitiveState::default(),
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState::default(),
+        multiview_mask: None,
+        cache: None,
+    });
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    let present_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: wgpu_label("gsplat-surface-capture-present-bind-group"),
+        layout: &layout,
+        entries: &[wgpu::BindGroupEntry {
+            binding: 0,
+            resource: wgpu::BindingResource::TextureView(&view),
+        }],
+    });
+    CaptureSource::Intermediate {
+        texture,
+        present_pipeline,
+        present_bind_group,
     }
 }
 

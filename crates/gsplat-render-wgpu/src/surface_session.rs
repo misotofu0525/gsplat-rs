@@ -456,7 +456,7 @@ impl DiagnosticSurfaceFrameIdentity {
     }
 }
 
-/// One take-once RGBA8 Surface capture and its presentation receipt.
+/// One take-once RGBA8 renderer presentation-target capture and its receipt.
 ///
 /// The string identities are stable diagnostic values derived from the sealed
 /// renderer receipt. The value exposes no renderer or session owner.
@@ -1328,9 +1328,9 @@ impl SurfaceRenderSession {
         Ok(())
     }
 
-    /// Asynchronously arms an exact readback of the next browser Surface
-    /// frame. The request is published only after both the readback allocation
-    /// and transactional `COPY_SRC` Surface reconfiguration succeed.
+    /// Asynchronously arms an exact readback of the next browser presentation
+    /// target. The request is published only after all diagnostic resources
+    /// are ready; ordinary browser frames retain the direct Surface path.
     #[cfg(target_arch = "wasm32")]
     pub async fn request_surface_capture_async(&mut self) -> Result<(), RendererError> {
         self.presenter.request_surface_capture_async().await?;

@@ -121,9 +121,8 @@ pub(crate) fn render_surface_exact_frame(
         });
     }
 
-    let view = frame
-        .texture
-        .create_view(&wgpu::TextureViewDescriptor::default());
+    let render_target = host.capture.render_target_texture(&frame.texture);
+    let view = render_target.create_view(&wgpu::TextureViewDescriptor::default());
     let mut encode_request = match runtime.active_policy() {
         ExactPlanPolicy::Forced(plan) => GpuFrameEncodeRequest::new(
             plan,
@@ -452,7 +451,8 @@ mod tests {
         camera: &Camera,
         viewport: Viewport,
     ) -> SubmittedGpuFrame {
-        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let render_target = capture.render_target_texture(texture);
+        let view = render_target.create_view(&wgpu::TextureViewDescriptor::default());
         let mut request = match selection {
             SurfaceShadowSelection::Forced(plan) => GpuFrameEncodeRequest::new(
                 plan,
@@ -667,6 +667,93 @@ mod tests {
                 capture.take(&device).expect("retry capture").rgba8.len(),
                 4 * WIDTH as usize * HEIGHT as usize
             );
+        });
+    }
+
+    #[test]
+    fn intermediate_capture_blit_matches_its_renderer_owned_source() {
+        pollster::block_on(async {
+            let Some((device, queue)) = request_device().await else {
+                return;
+            };
+            for format in [
+                wgpu::TextureFormat::Rgba8Unorm,
+                wgpu::TextureFormat::Rgba8UnormSrgb,
+                wgpu::TextureFormat::Bgra8Unorm,
+                wgpu::TextureFormat::Bgra8UnormSrgb,
+            ] {
+                let surface = device.create_texture(&wgpu::TextureDescriptor {
+                    label: Some("exact-intermediate-capture-blit-target"),
+                    size: wgpu::Extent3d {
+                        width: WIDTH,
+                        height: HEIGHT,
+                        depth_or_array_layers: 1,
+                    },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format,
+                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+                    view_formats: &[],
+                });
+                let mut fallback = SurfaceCapture::new(false);
+                fallback.publish(
+                    fallback
+                        .prepare_request(&device, WIDTH, HEIGHT, format)
+                        .expect("intermediate capture request"),
+                );
+                let source_view = fallback
+                    .render_target_texture(&surface)
+                    .create_view(&wgpu::TextureViewDescriptor::default());
+                let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("exact-intermediate-capture-blit-encoder"),
+                });
+                {
+                    let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                        label: Some("exact-intermediate-capture-source-clear"),
+                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                            view: &source_view,
+                            resolve_target: None,
+                            depth_slice: None,
+                            ops: wgpu::Operations {
+                                load: wgpu::LoadOp::Clear(wgpu::Color {
+                                    r: 0.125,
+                                    g: 0.5,
+                                    b: 0.875,
+                                    a: 1.0,
+                                }),
+                                store: wgpu::StoreOp::Store,
+                            },
+                        })],
+                        depth_stencil_attachment: None,
+                        timestamp_writes: None,
+                        occlusion_query_set: None,
+                        multiview_mask: None,
+                    });
+                }
+                fallback.encode(&mut encoder, &surface);
+                queue.submit([encoder.finish()]);
+                fallback.mark_presented();
+                let source = fallback.take(&device).expect("intermediate source capture");
+
+                let mut presented = SurfaceCapture::new(true);
+                presented.publish(
+                    presented
+                        .prepare_request(&device, WIDTH, HEIGHT, format)
+                        .expect("presented target capture"),
+                );
+                let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("exact-intermediate-presented-copy-encoder"),
+                });
+                presented.encode(&mut encoder, &surface);
+                queue.submit([encoder.finish()]);
+                presented.mark_presented();
+                let destination = presented.take(&device).expect("presented target readback");
+                assert_eq!(
+                    source.rgba8, destination.rgba8,
+                    "intermediate capture/blit mismatch for {format:?}"
+                );
+            }
         });
     }
 

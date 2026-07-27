@@ -620,3 +620,40 @@ so Q3 remains **Active** and publishes no Android performance or capacity
 result yet. The next root-owned action is one fresh doctor -> command -> run
 matrix at an exact clean integrated SHA; a failed cell is retained rather than
 retried or tuned in place.
+
+## K1d Web same-present capture checkpoint (2026-07-27)
+
+The Web depth-precision image gate now has a renderer-owned, take-once RGBA8
+receipt joined to the same successfully presented Exact frame. Exact and
+Candidate20 use separately built WASM packages, preserve the complete Kitsune
+SH3 source at `1920x1080`, and fail closed on profile, plan, order generation,
+presentation sequence, image hash or temporal-identity drift. The first fresh
+endpoint attempt at `571b5f7` reached renderer construction but rejected an
+invalid host transition order before capture. Root corrected the transition at
+`452e462`: GPU plans are admitted, GPU ordering is selected, Compact is forced,
+and only then is Preproject selected. Independent review found no partial state
+or render/present opportunity between those transactional calls.
+
+The second fresh endpoint attempt at `452e462` stopped before capture because
+wgpu 28's Web backend exposes its Surface with `RENDER_ATTACHMENT` only. The
+WebGPU canvas configuration API can represent other usages, but the current
+wgpu Web Surface capability implementation does not expose `COPY_SRC`; this is
+therefore a backend seam, not a Truck, Chrome or device-capacity result. Both
+attempts retain structured failure artifacts and contain no image or
+performance evidence.
+
+The bounded correction stays in the Surface target adapter. Native/copy-capable
+Surfaces retain direct readback. Only an explicitly requested diagnostic frame
+on a non-copyable Surface allocates a same-size, same-format renderer-owned
+presentation target. Exact splats raster once into that target; the same command
+encoder copies it to the readback buffer and performs a sampler-free
+`textureLoad` fullscreen blit to the acquired Surface. One submission and one
+primitive present remain the only publication path. Ordinary frames still
+raster directly to the Surface and allocate or encode no capture resources.
+
+The GPU equivalence test compares the renderer-owned source with the blitted
+destination byte for byte for RGBA/BGRA, linear and sRGB formats. Renderer
+library tests, native strict Clippy, default/diagnostic WASM checks, Web unit
+tests and the source architecture policy pass. This checkpoint is mechanism
+evidence only until a fixed-SHA review and one new fresh Chrome run produce the
+paired images; capture frames remain excluded from performance measurements.
