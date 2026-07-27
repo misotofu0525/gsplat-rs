@@ -478,6 +478,46 @@ promotion. The next performance experiment, if admitted, must isolate the
 explicit 20-bit depth-key quality/speed tradeoff rather than mix it with this
 no-quality-change slice.
 
+## Q1 K1 depth-key candidate execution checkpoint (2026-07-27)
+
+The depth-key experiment is split into independent mechanism, evidence,
+quality and performance slices. K1a parameterizes the existing external-prefix
+radix graph without changing the product default. ExactFull32 remains shift 0
+with eight 4-bit passes; CandidateStable24 uses shift 8 with six passes; and
+CandidateStable20 uses shift 12 with five passes. Odd/even pass parity selects
+the actual final B/A key and source-ID planes, so the shorter candidate graph
+does not add a copy or readback. K1a was committed as `85f4f6e`; two fixed-SHA
+reviews accepted it with no P0/P1/P2, and host GPU oracle, WASM check, Clippy
+and full renderer tests passed.
+
+The first K1b wiring commit, `b6b5e95`, was **Rejected** before any browser or
+device run. CandidateStable20 was real, but a requested CandidateStable24 GPU
+preproject graph still executed ExactFull32 while the successful-presentation
+receipt reported the requested CandidateStable24 profile. That requested /
+actual split violated the fail-closed evidence contract even though the image
+path itself remained exact.
+
+The bounded correction at `2a953f8` makes CandidateStable24 real: the shared
+preproject key producer clears the low eight key bits, radix executes shifts
+8/12/16/20/24/28, and the even-pass graph exposes its final A planes.
+CandidateStable20 remains low-twelve-bit with five passes and final B;
+ExactFull32 remains the unchanged eight-pass default. One graph-derived private
+receipt now binds the realized precision, first shift and pass count through
+byte planning, construction and admission. A separately tampered preparation
+receipt fails before encode/present as `Preproject depth-key profile` rather
+than publishing a false precision claim.
+
+The 1,025-item Metal GPU oracle compares ExactFull32, CandidateStable24 and
+CandidateStable20 key/ID output against the shared CPU precision function,
+including cross-workgroup stable ties and exact `V=C=D` counts. Default,
+Candidate24 and Candidate20 full library suites each report 483 passed and 8
+ignored; all three WASM checks and all-targets Clippy runs pass. Two independent
+fixed-SHA reviews accepted `2a953f8` with no P0/P1/P2. This accepts only the
+private execution mechanism and truthful admission/presentation chain.
+CandidateStable20 remains diagnostic and is not full-quality evidence. Web
+diagnostic exposure, same-camera image qualification, browser performance and
+Android/native endpoint behavior remain separate pending slices.
+
 ## Q3 M4 SIMD microbenchmark checkpoint (2026-07-27)
 
 At clean root commit `f025dff`, the fixed
