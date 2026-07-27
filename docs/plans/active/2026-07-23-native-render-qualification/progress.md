@@ -1002,3 +1002,13 @@ controls immediately before throughput. This remains candidate-only: no
 browser was started and no result was created. After integration, the new exact
 SHA still needs its own fixed-SHA review; neither the rejected SHA nor a
 component review authorizes collection.
+
+The follow-up fixed-SHA review of `cc9b43e` found that postprocessing could
+still rediscover a different Chrome, subprocesses lacked finite liveness
+bounds, and only the Puppeteer top-level directory/lockfile—not its installed
+production dependency closure—was frozen. The next repair binds the image
+tool's actual Chrome path/hash to the formal receipt, gives every child role a
+wide predeclared non-performance timeout with one-shot blocker semantics, and
+hashes the package-lock-derived Puppeteer production module graph before and
+after the run. This is still candidate-only and ran no Chrome workload. Its
+new integrated SHA must pass another fixed-SHA review before collection.

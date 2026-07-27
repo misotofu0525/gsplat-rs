@@ -241,10 +241,18 @@ reviewed SHA and clean-tree state; the actual Chrome executable; the
 quality-exact Wasm JS, Wasm binary and build receipt; Truck and trace inputs;
 both fully decoded 1920x1080 non-interlaced RGBA8 references; endpoint
 producer/runtime module trees; the canonical artifact validator; this Q1
-validator; and the locked image tool. `commands.json` contains the complete
+validator; the locked image tool; and the installed production dependency
+closure rooted at `puppeteer-core`, resolved from `package-lock.json` without
+cache, test or temporary files. `commands.json` contains the complete
 child environment rather than overrides, and its file digest is part of the
 formal lock and final schedule. Undeclared Node, Python, npm, Chrome,
 PlayCanvas, gsplat-rs and WebGPU host controls are not inherited.
+The postprocess environment adds only the exact locked `CHROME_PATH`; image
+tool output and the retained comparison receipt bind its executable path and
+SHA-256. All child roles have generous finite safety timeouts predeclared in
+`commands.json` and the formal lock. They are liveness bounds, never a frame
+time or performance gate; expiry stops the one-shot series and cannot trigger
+an automatic retry.
 
 Each pair then runs its declared first endpoint followed by its second. Within
 an endpoint, trace-0 control, trace-1 control and throughput run exactly once.

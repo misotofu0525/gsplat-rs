@@ -6,6 +6,7 @@ import importlib.util
 import io
 import json
 import pathlib
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -117,6 +118,30 @@ class Q1TruckPairedSeriesTests(unittest.TestCase):
                 {"path": path, "file_count": 1, "bytes": 1, "sha256": "6" * 64}
                 for path in COLLECTOR.LOCKED_REPOSITORY_TREES
             ],
+            "puppeteer_production_modules": {
+                "schema": COLLECTOR.PUPPETEER_GRAPH_SCHEMA,
+                "package_lock_sha256": "5" * 64,
+                "root": "node_modules/puppeteer-core",
+                "package_count": 1,
+                "packages": [{
+                    "path": "node_modules/puppeteer-core",
+                    "lock_path": "node_modules/puppeteer-core",
+                    "version": "24.15.0",
+                    "integrity": "sha512-test",
+                    "file_count": 1,
+                    "bytes": 1,
+                    "sha256": "8" * 64,
+                }],
+                "sha256": COLLECTOR.canonical_sha256([{
+                    "path": "node_modules/puppeteer-core",
+                    "lock_path": "node_modules/puppeteer-core",
+                    "version": "24.15.0",
+                    "integrity": "sha512-test",
+                    "file_count": 1,
+                    "bytes": 1,
+                    "sha256": "8" * 64,
+                }]),
+            },
             "references": self.args.formal_inputs["references"],
         }
 
@@ -271,6 +296,22 @@ class Q1TruckPairedSeriesTests(unittest.TestCase):
                 COLLECTOR.run_once(invocation, self.root)
         self.assertEqual(run.call_count, 1)
         self.assertEqual(run.call_args.kwargs["env"], invocation["environment"])
+        self.assertEqual(run.call_args.kwargs["timeout"], COLLECTOR.PROCESS_TIMEOUTS_SECONDS["producer"])
+
+    def test_hung_producer_times_out_once_and_publishes_blocker(self) -> None:
+        plan = self.plan()
+        timeout = subprocess.TimeoutExpired(
+            cmd=plan["invocations"][0]["argv"],
+            timeout=COLLECTOR.PROCESS_TIMEOUTS_SECONDS["producer"],
+        )
+        with mock.patch.object(COLLECTOR.subprocess, "run", side_effect=timeout) as run:
+            with self.assertRaisesRegex(COLLECTOR.OrchestrationError, "producer safety timeout"):
+                COLLECTOR.execute(self.args, plan)
+        self.assertEqual(run.call_count, 1)
+        blocker = json.loads((self.series / "blocker.json").read_text())
+        self.assertIn("producer safety timeout", blocker["reason"])
+        self.assertFalse(blocker["automatic_retry"])
+        self.assertFalse(blocker["retry_authorized"])
 
     def test_child_environment_ignores_all_undeclared_host_controls(self) -> None:
         injected = {
@@ -286,6 +327,12 @@ class Q1TruckPairedSeriesTests(unittest.TestCase):
         for invocation in plan["invocations"]:
             for name in injected:
                 self.assertNotIn(name, invocation["environment"])
+        for name in injected:
+            self.assertNotIn(name, plan["postprocess"]["environment"])
+        self.assertEqual(
+            plan["postprocess"]["environment"]["CHROME_PATH"],
+            str(self.args.chrome.resolve()),
+        )
         receipt = COLLECTOR.command_receipt(plan)
         self.assertEqual(
             receipt["invocations"][0]["environment"],
@@ -353,6 +400,114 @@ class Q1TruckPairedSeriesTests(unittest.TestCase):
                 schedule_sha=plan["schedule_sha256"],
                 protocol_sha=plan["protocol_sha256"],
             )
+
+    def test_postprocess_chrome_must_equal_frozen_browser(self) -> None:
+        self.args.formal_inputs = self.formal_inputs()
+        plan = self.plan()
+        plan["postprocess"]["environment"]["CHROME_PATH"] = "/tmp/drifted-chrome"
+        locked = COLLECTOR.claim_series(self.args, plan)
+        document = {
+            "schedule": plan["schedule"],
+            "orchestration": {
+                "formal_execution_lock": locked,
+                "post_run_verification": {
+                    "schema": COLLECTOR.POST_RUN_SCHEMA,
+                    "verified_at_utc": "2026-07-28T01:00:00Z",
+                    "reviewed_commit": self.args.reviewed_sha,
+                    "git": {"head": self.args.reviewed_sha, "clean": True},
+                    "formal_inputs_sha256": locked["formal_inputs_sha256"],
+                    "command_receipt_sha256": locked["command_receipt"]["sha256"],
+                    "formal_lock_sha256": COLLECTOR.sha256_path(
+                        self.series / "formal-execution-lock.json"
+                    ),
+                },
+            },
+        }
+        with self.assertRaisesRegex(ValueError, "postprocess environment"):
+            validate_orchestration(
+                document,
+                self.series,
+                series_id=plan["series_id"],
+                schedule_sha=plan["schedule_sha256"],
+                protocol_sha=plan["protocol_sha256"],
+            )
+
+    def test_post_run_rehash_rejects_browser_executable_drift(self) -> None:
+        expected = self.formal_inputs()
+        observed = json.loads(json.dumps(expected))
+        observed["browser"]["sha256"] = "9" * 64
+        with (
+            mock.patch.object(COLLECTOR, "git_output", return_value=""),
+            mock.patch.object(COLLECTOR, "capture_formal_inputs", return_value=observed),
+        ):
+            with self.assertRaisesRegex(COLLECTOR.OrchestrationError, "browser.*drifted"):
+                COLLECTOR.verify_formal_inputs(self.args, expected)
+
+    def test_image_comparison_rejects_actual_chrome_hash_drift(self) -> None:
+        chrome = self.args.chrome
+        chrome.write_bytes(b"locked chrome")
+        candidate = self.root / "pairs/pair-01/playcanvas/control-trace-0/final-frame.png"
+        candidate.parent.mkdir(parents=True)
+        candidate.write_bytes(b"candidate")
+        reference = self.root / "reference/trace-0.png"
+        reference.parent.mkdir(parents=True)
+        reference.write_bytes(self.reference[0].read_bytes())
+
+        def fake_run(argv, **kwargs):
+            output = pathlib.Path(argv[argv.index("--output") + 1])
+            output.write_text(json.dumps({
+                "score": 1.0,
+                "browser": {
+                    "executablePath": str(chrome),
+                    "sha256": "0" * 64,
+                },
+            }))
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        with mock.patch.object(COLLECTOR.subprocess, "run", side_effect=fake_run):
+            with self.assertRaisesRegex(COLLECTOR.OrchestrationError, "locked Chrome"):
+                COLLECTOR.compare_image(
+                    root=self.root,
+                    pair_id="pair-01",
+                    endpoint="playcanvas",
+                    trace=0,
+                    reference={"path": "reference/trace-0.png", "sha256": "1" * 64},
+                    environment={"PATH": "/usr/bin", "HOME": str(self.root), "CHROME_PATH": str(chrome)},
+                )
+
+    def test_puppeteer_production_dependency_bytes_are_frozen(self) -> None:
+        root = self.root / "playcanvas"
+        dependency = root / "node_modules/puppeteer-core"
+        child = root / "node_modules/ws"
+        dependency.mkdir(parents=True)
+        child.mkdir(parents=True)
+        (dependency / "index.js").write_text("import 'ws';\n")
+        (dependency / "tests").mkdir()
+        (dependency / "tests/ignored.js").write_text("ignored\n")
+        (child / "index.js").write_text("export {};\n")
+        (root / "package-lock.json").write_text(json.dumps({
+            "lockfileVersion": 3,
+            "packages": {
+                "node_modules/puppeteer-core": {
+                    "version": "1.0.0",
+                    "integrity": "sha512-root",
+                    "dependencies": {"ws": "1.0.0"},
+                },
+                "node_modules/ws": {
+                    "version": "1.0.0",
+                    "integrity": "sha512-child",
+                },
+            },
+        }))
+        before = COLLECTOR.puppeteer_production_modules(root)
+        self.assertEqual(before["package_count"], 2)
+        (child / "index.js").write_text("export const drift = true;\n")
+        after = COLLECTOR.puppeteer_production_modules(root)
+        self.assertNotEqual(before["sha256"], after["sha256"])
+        self.assertEqual(
+            before["packages"][0 if before["packages"][0]["lock_path"] == "node_modules/puppeteer-core" else 1]["file_count"],
+            1,
+        )
 
 
 if __name__ == "__main__":

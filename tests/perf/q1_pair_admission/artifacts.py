@@ -1132,6 +1132,7 @@ def endpoint_images(
     references: dict[int, dict[str, Any]],
     minimum: float,
     seen_paths: set[pathlib.Path],
+    locked_browser: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     if not isinstance(values, list) or len(values) != 2:
         fail(f"{pair_id}.{endpoint}.images must cover both views")
@@ -1244,6 +1245,11 @@ def endpoint_images(
             fail(f"{context}.comparison identity mismatch")
         if receipt.get("tool_sha256") != IMAGE_TOOL_SHA256:
             fail(f"{context}.comparison.tool_sha256 does not match the locked tool")
+        if locked_browser is not None and (
+            receipt.get("browser_executable_path") != locked_browser.get("path")
+            or receipt.get("browser_executable_sha256") != locked_browser.get("sha256")
+        ):
+            fail(f"{context}.comparison browser does not match the formal execution lock")
         score = receipt.get("score")
         if not isinstance(score, (int, float)) or isinstance(score, bool) or not 0 <= score <= 1:
             fail(f"{context}.comparison.score must be in [0,1]")

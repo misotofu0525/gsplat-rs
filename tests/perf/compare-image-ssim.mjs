@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { access, readFile, writeFile } from 'node:fs/promises';
 import { constants } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import process from 'node:process';
@@ -106,7 +107,12 @@ const [referenceBytes, candidateBytes, puppeteer, chrome] = await Promise.all([
 ]);
 if (!chrome) throw new Error(`no supported Chrome/Chromium found: ${chromeCandidates.join(', ')}`);
 
-const browser = await puppeteer.launch({ executablePath: chrome, headless: true });
+const chromeBytes = await readFile(chrome);
+const browserIdentity = {
+  executablePath: resolve(chrome),
+  sha256: createHash('sha256').update(chromeBytes).digest('hex')
+};
+const browser = await puppeteer.launch({ executablePath: browserIdentity.executablePath, headless: true });
 try {
   const page = await browser.newPage();
   const result = await page.evaluate(async ({ referenceBase64, candidateBase64 }) => {
@@ -244,6 +250,7 @@ try {
   const output = {
     schema: 'gsplat-image-parity/v1',
     metric: 'ssim-luma-srgb-window8',
+    browser: browserIdentity,
     constants: { k1: 0.01, k2: 0.03, dynamicRange: 255 },
     reference: args.reference,
     candidate: args.candidate,

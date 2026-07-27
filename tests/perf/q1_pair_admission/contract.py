@@ -32,6 +32,15 @@ FORMAL_LOCK_SCHEMA = "gsplat-q1-truck-formal-execution-lock/v1"
 POST_RUN_SCHEMA = "gsplat-q1-truck-post-run-verification/v1"
 COMMANDS_SCHEMA = "gsplat-q1-truck-paired-command-receipt/v1"
 SAFE_HOST_ENVIRONMENT = frozenset({"PATH", "HOME", "TMPDIR", "LANG", "LC_ALL", "LC_CTYPE"})
+POSTPROCESS_ENVIRONMENT = SAFE_HOST_ENVIRONMENT | {"CHROME_PATH"}
+PROCESS_TIMEOUTS_SECONDS = {
+    "git_helper": 120,
+    "producer": 1800,
+    "canonical_validator": 300,
+    "image_comparison": 600,
+    "final_validator": 600,
+}
+PUPPETEER_GRAPH_SCHEMA = "gsplat-q1-puppeteer-production-modules/v1"
 PLAYCANVAS_COMMAND_ENVIRONMENT = frozenset({
     "CHROME_PATH",
     "HEADLESS",
@@ -281,10 +290,18 @@ def _hashed_entry(value: Any, context: str) -> dict[str, Any]:
 def _validate_command_environments(commands: dict[str, Any], browser_path: str) -> None:
     postprocess = obj(commands, "postprocess", "schedule orchestration command receipt")
     post_environment = obj(postprocess, "environment", "schedule orchestration postprocess")
-    if not {"PATH", "HOME"}.issubset(post_environment) or not set(post_environment).issubset(
-        SAFE_HOST_ENVIRONMENT
+    if (
+        not {"PATH", "HOME"}.issubset(post_environment)
+        or set(post_environment) != POSTPROCESS_ENVIRONMENT
+        or post_environment.get("CHROME_PATH") != browser_path
     ):
         fail("schedule orchestration postprocess environment is not the strict host allowlist")
+    timeouts = obj(postprocess, "timeout_seconds", "schedule orchestration postprocess")
+    if timeouts != {
+        key: PROCESS_TIMEOUTS_SECONDS[key]
+        for key in ("canonical_validator", "image_comparison", "final_validator")
+    }:
+        fail("schedule orchestration postprocess timeouts are not the frozen safety bounds")
     invocations = array(commands, "invocations", "schedule orchestration command receipt")
     for index, invocation in enumerate(invocations):
         if not isinstance(invocation, dict):
@@ -318,6 +335,8 @@ def _validate_command_environments(commands: dict[str, Any], browser_path: str) 
             fail(f"schedule orchestration command {index} does not use the locked headful Chrome")
         if any(not isinstance(value, str) or not value for value in environment.values()):
             fail(f"schedule orchestration command {index} environment contains an empty value")
+        if invocation.get("timeout_seconds") != PROCESS_TIMEOUTS_SECONDS["producer"]:
+            fail(f"schedule orchestration command {index} producer timeout is not frozen")
 
 
 def validate_orchestration(
@@ -377,6 +396,11 @@ def validate_orchestration(
         _hashed_entry(value, f"schedule.orchestration.wasm_package.files[{index}]")
     repository_files = array(formal, "repository_files", "schedule.orchestration.formal_inputs")
     repository_trees = array(formal, "repository_trees", "schedule.orchestration.formal_inputs")
+    puppeteer_modules = obj(
+        formal,
+        "puppeteer_production_modules",
+        "schedule.orchestration.formal_inputs",
+    )
     for index, value in enumerate(repository_files):
         _hashed_entry(value, f"schedule.orchestration.repository_files[{index}]")
     for index, value in enumerate(repository_trees):
@@ -386,6 +410,29 @@ def validate_orchestration(
     locked_tree_paths = {value["path"] for value in repository_trees}
     if locked_file_paths != LOCKED_REPOSITORY_FILES or locked_tree_paths != LOCKED_REPOSITORY_TREES:
         fail("schedule orchestration omits a producer/validator/dataset input")
+    module_packages = array(
+        puppeteer_modules,
+        "packages",
+        "schedule.orchestration.puppeteer_production_modules",
+    )
+    if (
+        puppeteer_modules.get("schema") != PUPPETEER_GRAPH_SCHEMA
+        or puppeteer_modules.get("root") != "node_modules/puppeteer-core"
+        or puppeteer_modules.get("package_count") != len(module_packages)
+        or not module_packages
+        or puppeteer_modules.get("package_lock_sha256")
+        != next(value["sha256"] for value in repository_files if value["path"].endswith("package-lock.json"))
+    ):
+        fail("schedule orchestration Puppeteer production module graph is incomplete")
+    for index, value in enumerate(module_packages):
+        entry = _hashed_entry(
+            value,
+            f"schedule.orchestration.puppeteer_production_modules.packages[{index}]",
+        )
+        string(entry, "lock_path", "Puppeteer production module")
+        integer(entry, "file_count", "Puppeteer production module")
+    if puppeteer_modules.get("sha256") != canonical_sha256(module_packages):
+        fail("schedule orchestration Puppeteer production module digest mismatch")
     references = array(formal, "references", "schedule.orchestration.formal_inputs")
     scheduled_references = {
         value.get("trace_frame_index"): value
@@ -427,6 +474,8 @@ def validate_orchestration(
     ):
         fail("schedule orchestration command receipt is not frozen to this series")
     _validate_command_environments(commands, browser["path"])
+    if locked.get("timeouts_seconds") != PROCESS_TIMEOUTS_SECONDS:
+        fail("schedule orchestration execution lock timeouts are not frozen")
     lock_path = root / "formal-execution-lock.json"
     if load_json(lock_path, "formal execution lock file") != locked:
         fail("schedule orchestration embedded/file lock mismatch")
@@ -450,6 +499,7 @@ def validate_orchestration(
         "wasm_files": wasm_files,
         "repository_files": repository_files,
         "repository_trees": repository_trees,
+        "puppeteer_production_modules": puppeteer_modules,
     }
 
 

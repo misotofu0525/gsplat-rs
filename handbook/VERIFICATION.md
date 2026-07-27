@@ -355,9 +355,16 @@ failed root and its blocker; never delete it to simulate a retry.
 
 The formal preflight fully decodes both reference PNGs and freezes the reviewed
 commit, exact Chrome binary, quality-exact Wasm package, producer/runtime
-trees, Truck/trace inputs, validators and image tool. Producer subprocesses use
+trees, the package-lock-derived installed Puppeteer production dependency
+closure, Truck/trace inputs, validators and image tool. Producer subprocesses use
 only the exact environment printed in `commands.json`; ambient Node, Python,
 npm, Chrome, PlayCanvas, gsplat-rs and WebGPU variables are not inherited.
+Postprocessing receives that same isolated host environment plus the exact
+locked `CHROME_PATH`; each image receipt records the executable path and hash
+reported by the image tool. Producer, canonical-validation, image-comparison,
+final-validation and Git-helper commands have generous but finite predeclared
+safety timeouts. A timeout is not a performance threshold: it terminates the
+one attempt, writes a blocker once after the root is claimed, and never retries.
 After all producers and image comparisons, the same inputs plus clean HEAD are
 rechecked before the schedule/result boundary. The final validator consumes
 this lock and joins browser and Wasm hashes to endpoint artifacts. Integrate

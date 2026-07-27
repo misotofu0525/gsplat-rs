@@ -64,6 +64,21 @@ TRACE_URL = "/tests/perf/trace/fixtures/quality/candidate-truck-quality-1920x108
 IMAGE_TOOL = pathlib.Path("tests/perf/compare-image-ssim.mjs")
 
 SAFE_HOST_ENVIRONMENT = ("PATH", "HOME", "TMPDIR", "LANG", "LC_ALL", "LC_CTYPE")
+PROCESS_TIMEOUTS_SECONDS = {
+    # These are safety bounds, not performance gates. They are intentionally
+    # wider than the expected duration and a timeout always terminates the
+    # one-shot attempt without retrying it.
+    "git_helper": 120,
+    "producer": 1800,
+    "canonical_validator": 300,
+    "image_comparison": 600,
+    "final_validator": 600,
+}
+PUPPETEER_GRAPH_SCHEMA = "gsplat-q1-puppeteer-production-modules/v1"
+IGNORED_MODULE_TREE_PARTS = frozenset({
+    ".cache", "coverage", "docs", "examples", "test", "tests", "tmp",
+    "__pycache__", ".DS_Store",
+})
 LOCKED_REPOSITORY_FILES = (
     "tests/perf/collect-q1-truck-paired-series.py",
     "tests/perf/validate-q1-truck-paired-comparison.py",
@@ -178,6 +193,90 @@ def repository_tree_receipt(relative_path: str) -> dict[str, Any]:
     }
 
 
+def module_tree_receipt(root: pathlib.Path, lock_path: str) -> dict[str, Any]:
+    """Hash installed production module bytes without caches/tests/temp files."""
+
+    require(root.is_dir(), f"locked production module is unavailable: {lock_path}")
+    entries = []
+    for path in sorted(root.rglob("*")):
+        relative = path.relative_to(root)
+        if (
+            not path.is_file()
+            or any(part in IGNORED_MODULE_TREE_PARTS for part in relative.parts)
+            or path.suffix == ".pyc"
+        ):
+            continue
+        entries.append({
+            "path": relative.as_posix(),
+            "bytes": path.stat().st_size,
+            "sha256": sha256_path(path),
+        })
+    require(entries, f"locked production module is empty: {lock_path}")
+    return {
+        "path": lock_path,
+        "lock_path": lock_path,
+        "file_count": len(entries),
+        "bytes": sum(entry["bytes"] for entry in entries),
+        "sha256": canonical_sha256(entries),
+    }
+
+
+def resolve_lock_dependency(packages: dict[str, Any], parent: str, name: str) -> str:
+    """Resolve one npm lockfile dependency with Node's ancestor lookup order."""
+
+    prefix: str | None = parent
+    while prefix is not None:
+        candidate = f"{prefix}/node_modules/{name}"
+        if candidate in packages:
+            return candidate
+        marker = prefix.rfind("/node_modules/")
+        prefix = prefix[:marker] if marker >= 0 else None
+    root_candidate = f"node_modules/{name}"
+    if root_candidate in packages:
+        return root_candidate
+    raise OrchestrationError(f"package-lock cannot resolve production dependency {name!r} from {parent!r}")
+
+
+def puppeteer_production_modules(playcanvas_root: pathlib.Path) -> dict[str, Any]:
+    """Lock the installed production dependency closure rooted at puppeteer-core."""
+
+    lock_path = playcanvas_root / "package-lock.json"
+    lock = load_object(lock_path, "PlayCanvas package-lock")
+    packages = lock.get("packages")
+    require(isinstance(packages, dict), "PlayCanvas package-lock lacks packages")
+    root_key = "node_modules/puppeteer-core"
+    require(isinstance(packages.get(root_key), dict), "package-lock lacks puppeteer-core")
+    pending = [root_key]
+    visited: set[str] = set()
+    receipts = []
+    while pending:
+        package_key = pending.pop()
+        if package_key in visited:
+            continue
+        visited.add(package_key)
+        metadata = packages.get(package_key)
+        require(isinstance(metadata, dict), f"package-lock entry is invalid: {package_key}")
+        dependencies = metadata.get("dependencies", {})
+        require(isinstance(dependencies, dict), f"package-lock dependencies are invalid: {package_key}")
+        for name in sorted(dependencies):
+            pending.append(resolve_lock_dependency(packages, package_key, name))
+        receipt = module_tree_receipt(playcanvas_root / package_key, package_key)
+        receipts.append({
+            **receipt,
+            "version": metadata.get("version"),
+            "integrity": metadata.get("integrity"),
+        })
+    receipts.sort(key=lambda value: value["lock_path"])
+    return {
+        "schema": PUPPETEER_GRAPH_SCHEMA,
+        "package_lock_sha256": sha256_path(lock_path),
+        "root": root_key,
+        "package_count": len(receipts),
+        "packages": receipts,
+        "sha256": canonical_sha256(receipts),
+    }
+
+
 def capture_formal_inputs(args: argparse.Namespace) -> dict[str, Any]:
     reference_receipts = []
     for trace in TRACE_INDICES:
@@ -237,6 +336,9 @@ def capture_formal_inputs(args: argparse.Namespace) -> dict[str, Any]:
         "repository_trees": [
             repository_tree_receipt(path) for path in LOCKED_REPOSITORY_TREES
         ],
+        "puppeteer_production_modules": puppeteer_production_modules(
+            REPO_ROOT / "tests/competitive/playcanvas"
+        ),
         "references": reference_receipts,
     }
 
@@ -534,6 +636,7 @@ def make_invocation(
         "environment": environment,
         "dynamic_inputs": dynamic_inputs,
         "automatic_retry": False,
+        "timeout_seconds": PROCESS_TIMEOUTS_SECONDS["producer"],
     }
 
 
@@ -616,7 +719,15 @@ def build_plan(args: argparse.Namespace, *, predeclared_at: str) -> dict[str, An
         "configuration_sha256": configuration_sha,
         "invocations": invocations,
         "postprocess": {
-            "environment": child_base_environment(root),
+            "environment": {
+                **child_base_environment(root),
+                "CHROME_PATH": str(args.chrome.resolve()),
+            },
+            "timeout_seconds": {
+                "canonical_validator": PROCESS_TIMEOUTS_SECONDS["canonical_validator"],
+                "image_comparison": PROCESS_TIMEOUTS_SECONDS["image_comparison"],
+                "final_validator": PROCESS_TIMEOUTS_SECONDS["final_validator"],
+            },
             "image_comparisons": {
                 "count": 20,
                 "tool": IMAGE_TOOL.as_posix(),
@@ -642,6 +753,8 @@ def build_plan(args: argparse.Namespace, *, predeclared_at: str) -> dict[str, An
             "formal_execution_requires_reviewed_exact_sha": True,
             "child_environment_is_exact_allowlist": True,
             "inherited_environment_allowlist": list(SAFE_HOST_ENVIRONMENT),
+            "timeouts_seconds": PROCESS_TIMEOUTS_SECONDS,
+            "timeouts_are_safety_bounds_not_performance_gates": True,
         },
     }
 
@@ -681,6 +794,7 @@ def command_receipt(plan: dict[str, Any]) -> dict[str, Any]:
                     "environment",
                     "dynamic_inputs",
                     "automatic_retry",
+                    "timeout_seconds",
                 )
             }
             for invocation in plan["invocations"]
@@ -705,18 +819,25 @@ def execution_lock(plan: dict[str, Any], commands: dict[str, Any]) -> dict[str, 
             "canonical_sha256": canonical_sha256(commands),
             "invocation_count": len(plan["invocations"]),
         },
+        "timeouts_seconds": plan["execution_policy"]["timeouts_seconds"],
     }
 
 
 def git_output(*arguments: str) -> str:
-    completed = subprocess.run(
-        ["git", *arguments],
-        cwd=REPO_ROOT,
-        check=False,
-        capture_output=True,
-        text=True,
-        env=safe_host_environment(),
-    )
+    try:
+        completed = subprocess.run(
+            ["git", *arguments],
+            cwd=REPO_ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+            env=safe_host_environment(),
+            timeout=PROCESS_TIMEOUTS_SECONDS["git_helper"],
+        )
+    except subprocess.TimeoutExpired as error:
+        raise OrchestrationError(
+            f"git helper exceeded {PROCESS_TIMEOUTS_SECONDS['git_helper']} second safety timeout"
+        ) from error
     require(completed.returncode == 0, completed.stderr.strip() or "git command failed")
     return completed.stdout.strip()
 
@@ -835,14 +956,21 @@ def claim_series(args: argparse.Namespace, plan: dict[str, Any]) -> dict[str, An
 
 
 def run_once(invocation: dict[str, Any], root: pathlib.Path) -> None:
-    completed = subprocess.run(
-        invocation["argv"],
-        cwd=REPO_ROOT,
-        env=invocation["environment"],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
+    try:
+        completed = subprocess.run(
+            invocation["argv"],
+            cwd=REPO_ROOT,
+            env=invocation["environment"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=invocation["timeout_seconds"],
+        )
+    except subprocess.TimeoutExpired as error:
+        raise OrchestrationError(
+            f"{invocation['invocation_id']} exceeded its {invocation['timeout_seconds']} "
+            "second producer safety timeout"
+        ) from error
     log_root = root / "logs"
     (log_root / f"{invocation['invocation_id']}.stdout.log").write_text(
         completed.stdout, encoding="utf-8"
@@ -869,14 +997,21 @@ def run_once(invocation: dict[str, Any], root: pathlib.Path) -> None:
 def validate_canonical_artifact(
     directory: pathlib.Path, context: str, *, environment: dict[str, str]
 ) -> None:
-    validate = subprocess.run(
-        [sys.executable, "tests/perf/validate-benchmark-artifacts.py", str(directory)],
-        cwd=REPO_ROOT,
-        check=False,
-        capture_output=True,
-        text=True,
-        env=environment,
-    )
+    try:
+        validate = subprocess.run(
+            [sys.executable, "tests/perf/validate-benchmark-artifacts.py", str(directory)],
+            cwd=REPO_ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+            env=environment,
+            timeout=PROCESS_TIMEOUTS_SECONDS["canonical_validator"],
+        )
+    except subprocess.TimeoutExpired as error:
+        raise OrchestrationError(
+            f"{context} canonical validator exceeded "
+            f"{PROCESS_TIMEOUTS_SECONDS['canonical_validator']} second safety timeout"
+        ) from error
     require(
         validate.returncode == 0,
         f"{context} canonical validation failed: "
@@ -1003,27 +1138,42 @@ def compare_image(
     raw_relative = pathlib.Path("comparisons") / pair_id / endpoint / f"trace-{trace}.raw.json"
     raw = root / raw_relative
     raw.parent.mkdir(parents=True, exist_ok=True)
-    completed = subprocess.run(
-        [
-            "node",
-            str(IMAGE_TOOL),
-            str(root / reference["path"]),
-            str(candidate),
-            "--output",
-            str(raw),
-        ],
-        cwd=REPO_ROOT,
-        check=False,
-        capture_output=True,
-        text=True,
-        env=environment,
-    )
+    try:
+        completed = subprocess.run(
+            [
+                "node",
+                str(IMAGE_TOOL),
+                str(root / reference["path"]),
+                str(candidate),
+                "--output",
+                str(raw),
+            ],
+            cwd=REPO_ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+            env=environment,
+            timeout=PROCESS_TIMEOUTS_SECONDS["image_comparison"],
+        )
+    except subprocess.TimeoutExpired as error:
+        raise OrchestrationError(
+            f"image comparison for {pair_id}.{endpoint}.trace-{trace} exceeded "
+            f"{PROCESS_TIMEOUTS_SECONDS['image_comparison']} second safety timeout"
+        ) from error
     require(
         completed.returncode == 0,
         f"image comparison failed for {pair_id}.{endpoint}.trace-{trace}: "
         f"{completed.stderr.strip() or completed.stdout.strip()}",
     )
     raw_value = load_object(raw, "raw image comparison")
+    browser = raw_value.get("browser")
+    require(
+        browser == {
+            "executablePath": environment.get("CHROME_PATH"),
+            "sha256": sha256_path(pathlib.Path(environment["CHROME_PATH"])),
+        },
+        "image comparison did not use the locked Chrome executable",
+    )
     score = raw_value.get("score")
     require(isinstance(score, (int, float)) and 0 <= score <= 1, "image comparison score is invalid")
     receipt = {
@@ -1031,6 +1181,8 @@ def compare_image(
         "metric": "ssim-luma-srgb-window8",
         "tool": IMAGE_TOOL.as_posix(),
         "tool_sha256": IMAGE_TOOL_SHA256,
+        "browser_executable_path": browser["executablePath"],
+        "browser_executable_sha256": browser["sha256"],
         "trace_frame_index": trace,
         "reference_sha256": reference["sha256"],
         "candidate_sha256": sha256_path(candidate),
@@ -1177,18 +1329,25 @@ def execute(args: argparse.Namespace, plan: dict[str, Any]) -> int:
                 resolve_throughput(invocation, root)
             run_once(invocation, root)
         schedule_path = finalize_schedule(args, plan, root, locked)
-        result = subprocess.run(
-            [
-                sys.executable,
-                "tests/perf/validate-q1-truck-paired-comparison.py",
-                str(schedule_path),
-                "--output",
-                str(root / "result.json"),
-            ],
-            cwd=REPO_ROOT,
-            check=False,
-            env=plan["postprocess"]["environment"],
-        )
+        try:
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "tests/perf/validate-q1-truck-paired-comparison.py",
+                    str(schedule_path),
+                    "--output",
+                    str(root / "result.json"),
+                ],
+                cwd=REPO_ROOT,
+                check=False,
+                env=plan["postprocess"]["environment"],
+                timeout=PROCESS_TIMEOUTS_SECONDS["final_validator"],
+            )
+        except subprocess.TimeoutExpired as error:
+            raise OrchestrationError(
+                "final Q1 validator exceeded "
+                f"{PROCESS_TIMEOUTS_SECONDS['final_validator']} second safety timeout"
+            ) from error
         require(result.returncode == 0, f"final Q1 validator exited {result.returncode}")
         return 0
     except BaseException as error:

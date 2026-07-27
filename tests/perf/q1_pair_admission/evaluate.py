@@ -122,6 +122,7 @@ def evaluate(path: pathlib.Path) -> dict[str, Any]:
                 references=references,
                 minimum=minimum_ssim,
                 seen_paths=seen_endpoint_paths,
+                locked_browser=None if orchestration is None else orchestration["browser"],
             )
             scores.extend(image["score"] for image in images)
             endpoints[endpoint] = {"controls": controls, "throughput": throughput, "images": images}
