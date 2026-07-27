@@ -732,8 +732,13 @@ in `tests/perf/q1-truck-paired-comparison-v1.md`.
 The mechanism leaves PlayCanvas `V/C/D` explicitly unavailable, requires exact
 gsplat-rs control `C <= V <= S` and Compact `D=C`, and rejects copied counts in
 the timed artifacts. Actual timestamps—not pair labels—must prove the
-predeclared endpoint order. Image receipts bind the raw images, terminal
-presentation, common reference and comparison-tool hash.
+predeclared endpoint order. Image receipts bind fully decoded RGBA8 PNGs to a
+structured frozen-trace and artifact-terminal presentation identity. Reference
+identities participate in the predeclared schedule hash, and the validator
+recomputes SSIM with the repository's locked algorithm and actual
+comparator-tool content hash instead of trusting an IHDR header or self-reported
+score. Required JS/WASM/package files and thermal pre/post receipts are likewise
+admitted by content rather than by an arbitrary runtime label.
 
 This slice performs no browser or device run. The historical unpaired
 PlayCanvas prerequisite and fixed-gsplat-rs diagnostic candidate remain

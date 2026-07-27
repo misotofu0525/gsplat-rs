@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import importlib.util
+import math
 import pathlib
+import struct
+import sys
+import zlib
 from datetime import datetime
 from typing import Any
 
-from .common import array, fail, file_sha256, inside, integer, load_json, load_jsonl, number, obj, png_dimensions, sha256, string, utc
+from .common import array, canonical_sha256, fail, file_sha256, inside, integer, load_json, load_jsonl, number, obj, sha256, string, utc
 from .contract import (
     COMMON_ENVIRONMENT_FIELDS,
     HEIGHT,
@@ -15,6 +19,7 @@ from .contract import (
     MEASURED,
     PLAYCANVAS,
     TRACE,
+    TRACE_FRAME_POSE_INTRINSICS_SHA256,
     TRUCK,
     WARMUP,
     WIDTH,
@@ -33,6 +38,117 @@ def _load_benchmark_validator() -> Any:
 
 
 BENCHMARK = _load_benchmark_validator()
+
+
+def _load_image_validator() -> Any:
+    path = pathlib.Path(__file__).parents[1] / "validate-balanced-image-gate.py"
+    spec = importlib.util.spec_from_file_location("q1_canonical_image_validator", path)
+    if spec is None or spec.loader is None:
+        fail("cannot load canonical image validator")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+IMAGE = _load_image_validator()
+IMAGE_TOOL = pathlib.Path(__file__).parents[1] / "compare-image-ssim.mjs"
+IMAGE_TOOL_SHA256 = file_sha256(IMAGE_TOOL)
+_IMAGE_SCORE_CACHE: dict[tuple[str, str], float] = {}
+
+BUILD_ARTIFACT_KEYS = {
+    "playcanvas": frozenset({"runtime_js", "package_lock"}),
+    "gsplat_rs": frozenset({"runtime_js", "runtime_wasm", "package_manifest"}),
+}
+FORBIDDEN_THERMAL_STATES = frozenset(
+    {"severe", "serious", "critical", "emergency", "shutdown"}
+)
+ADMISSIBLE_THERMAL_STATES = frozenset({"nominal", "fair", "moderate"})
+
+
+def _decode_image(path: pathlib.Path, context: str) -> Any:
+    data = path.read_bytes()
+    chunks = list(IMAGE.png_chunks(data))
+    chunk_types = [kind for kind, _ in chunks]
+    if (
+        not chunk_types
+        or chunk_types[0] != b"IHDR"
+        or chunk_types[-1] != b"IEND"
+        or chunk_types.count(b"IHDR") != 1
+        or chunk_types.count(b"IEND") != 1
+    ):
+        fail(f"{context} has an invalid PNG chunk sequence")
+    unsupported_critical = [
+        kind
+        for kind in chunk_types
+        if kind[:1].isupper() and kind not in {b"IHDR", b"IDAT", b"IEND"}
+    ]
+    if unsupported_critical:
+        fail(f"{context} uses unsupported critical PNG chunks")
+    if any(kind in {b"cHRM", b"gAMA", b"iCCP", b"sRGB"} for kind in chunk_types):
+        fail(f"{context} uses color-management chunks outside the raw sRGB byte contract")
+    ihdr = next((payload for kind, payload in chunks if kind == b"IHDR"), None)
+    idat = b"".join(payload for kind, payload in chunks if kind == b"IDAT")
+    if ihdr is None or len(ihdr) != 13 or not idat:
+        fail(f"{context} is missing required PNG chunks")
+    width, height, bit_depth, color_type, compression, filter_method, interlace = (
+        struct.unpack(">IIBBBBB", ihdr)
+    )
+    if (width, height) != (WIDTH, HEIGHT):
+        fail(f"{context} PNG dimensions do not match the frozen 1920x1080 receipt")
+    if (bit_depth, color_type, compression, filter_method, interlace) != (8, 6, 0, 0, 0):
+        fail(f"{context} must be non-interlaced RGBA8 PNG")
+    row_bytes = width * 4
+    expected_bytes = height * (row_bytes + 1)
+    try:
+        decompressor = zlib.decompressobj()
+        filtered = bytearray()
+        pending = idat
+        while pending:
+            remaining = expected_bytes + 1 - len(filtered)
+            if remaining <= 0:
+                fail(f"{context} decompressed byte length exceeds its RGBA receipt")
+            before = len(pending)
+            filtered.extend(decompressor.decompress(pending, remaining))
+            pending = decompressor.unconsumed_tail
+            if pending and len(pending) == before:
+                fail(f"{context} compressed pixel stream made no progress")
+    except zlib.error as error:
+        fail(f"{context} has invalid compressed pixel data: {error}")
+    if (
+        len(filtered) != expected_bytes
+        or not decompressor.eof
+        or decompressor.unused_data
+        or decompressor.unconsumed_tail
+    ):
+        fail(f"{context} decompressed byte length is invalid")
+    offsets = range(0, expected_bytes, row_bytes + 1)
+    if all(filtered[offset] == 0 for offset in offsets):
+        rgba = b"".join(
+            filtered[offset + 1 : offset + 1 + row_bytes] for offset in offsets
+        )
+        return IMAGE.DecodedImage(width=width, height=height, rgba=rgba)
+    return IMAGE.decode_rgba8_png(data, context, (WIDTH, HEIGHT))
+
+
+def recompute_image_score(reference: pathlib.Path, candidate: pathlib.Path, context: str) -> float:
+    """Decode real RGBA8 PNGs and run the repository's locked SSIM algorithm."""
+    key = (file_sha256(reference), file_sha256(candidate))
+    if key in _IMAGE_SCORE_CACHE:
+        return _IMAGE_SCORE_CACHE[key]
+    try:
+        exact = _decode_image(reference, f"{context}.reference")
+        observed = _decode_image(candidate, f"{context}.candidate")
+        if exact.rgba == observed.rgba:
+            score = 1.0
+        else:
+            score = float(
+                IMAGE.compute_frame_metrics(exact, observed)["ssim_luma_srgb_window8"]
+            )
+        _IMAGE_SCORE_CACHE[key] = score
+        return score
+    except (OSError, IMAGE.ValidationError) as error:
+        fail(f"{context} cannot recompute {IMAGE_TOOL.relative_to(pathlib.Path(__file__).parents[2])}: {error}")
 
 
 def _exactness(manifest: dict[str, Any], context: str) -> None:
@@ -62,7 +178,9 @@ def _resolution(manifest: dict[str, Any], context: str) -> None:
         fail(f"{context}.resolution does not prove native 1920x1080 presentation")
 
 
-def _build(manifest: dict[str, Any], endpoint: str, context: str) -> tuple[str, dict[str, str]]:
+def _build(
+    root: pathlib.Path, manifest: dict[str, Any], endpoint: str, context: str
+) -> tuple[str, dict[str, Any]]:
     build = obj(manifest, "build", context)
     commit = string(build, "repository_commit", f"{context}.build")
     if len(commit) != 40 or any(character not in "0123456789abcdef" for character in commit):
@@ -70,9 +188,25 @@ def _build(manifest: dict[str, Any], endpoint: str, context: str) -> tuple[str, 
     if build.get("dirty") is not False:
         fail(f"{context}.build.dirty must be false")
     artifacts = obj(build, "artifacts", f"{context}.build")
-    if not artifacts:
-        fail(f"{context}.build.artifacts must not be empty")
-    normalized = {string({"name": name}, "name", f"{context}.build.artifacts"): sha256(digest, f"{context}.build.artifacts.{name}") for name, digest in artifacts.items()}
+    required = BUILD_ARTIFACT_KEYS[endpoint]
+    if set(artifacts) != required:
+        fail(
+            f"{context}.build.artifacts keys must equal {sorted(required)!r}"
+        )
+    normalized: dict[str, str] = {}
+    artifact_paths: set[pathlib.Path] = set()
+    for name in sorted(required):
+        receipt = obj(artifacts, name, f"{context}.build.artifacts")
+        path = inside(root, receipt.get("path"), f"{context}.build.artifacts.{name}.path")
+        if path in artifact_paths:
+            fail(f"{context}.build.artifacts reuses one file for multiple required keys")
+        artifact_paths.add(path)
+        digest = sha256(
+            receipt.get("sha256"), f"{context}.build.artifacts.{name}.sha256"
+        )
+        if file_sha256(path) != digest:
+            fail(f"{context}.build.artifacts.{name} content SHA-256 mismatch")
+        normalized[name] = digest
     if endpoint == "playcanvas":
         expected = {
             "package_version": PLAYCANVAS["version"],
@@ -83,7 +217,11 @@ def _build(manifest: dict[str, Any], endpoint: str, context: str) -> tuple[str, 
         for key, value in expected.items():
             if build.get(key) != value:
                 fail(f"{context}.build.{key} does not match pinned PlayCanvas")
-    return commit, normalized
+    return commit, {
+        "profile": string(build, "profile", f"{context}.build"),
+        "package_version": string(build, "package_version", f"{context}.build"),
+        "artifacts": normalized,
+    }
 
 
 def _environment(manifest: dict[str, Any], context: str) -> dict[str, Any]:
@@ -94,12 +232,22 @@ def _environment(manifest: dict[str, Any], context: str) -> dict[str, Any]:
         if field.endswith("sha256"):
             sha256(identity[field], f"{context}.environment.{field}")
     thermal = obj(source, "thermal", f"{context}.environment")
+    thermal_identity: dict[str, Any] = {}
     for field in ("source", "pre", "post"):
-        string(thermal, field, f"{context}.environment.thermal")
+        thermal_identity[field] = string(
+            thermal, field, f"{context}.environment.thermal"
+        )
+    for field in ("pre", "post"):
+        state = thermal_identity[field].strip().lower()
+        if state in FORBIDDEN_THERMAL_STATES:
+            fail(f"{context}.environment.thermal.{field} is too hot for admission")
+        if state not in ADMISSIBLE_THERMAL_STATES:
+            fail(f"{context}.environment.thermal.{field} is not a recognized state")
     if thermal.get("admitted") is not True:
         fail(f"{context}.environment.thermal.admitted must be true")
-    identity["thermal_source"] = thermal["source"]
-    return identity
+    thermal_identity["admitted"] = True
+    identity["thermal_source"] = thermal_identity["source"]
+    return {"identity": identity, "thermal": thermal_identity}
 
 
 def _renderer(manifest: dict[str, Any], endpoint: str, context: str) -> None:
@@ -171,7 +319,12 @@ def _frames(frames: list[dict[str, Any]], endpoint: str, role: str, run_id: str,
                     fail(f"{context}[{index}].{key} must equal {value!r}")
 
 
-def presentation_receipts(q1: dict[str, Any], context: str) -> dict[int, dict[str, Any]]:
+def presentation_receipts(
+    q1: dict[str, Any],
+    frames: list[dict[str, Any]],
+    run_id: str,
+    context: str,
+) -> dict[int, dict[str, Any]]:
     receipts = array(q1, "presentation_receipts", context)
     if len(receipts) != 2:
         fail(f"{context}.presentation_receipts must cover both views")
@@ -182,10 +335,74 @@ def presentation_receipts(q1: dict[str, Any], context: str) -> dict[int, dict[st
         trace = integer(receipt, "trace_frame_index", f"{context}.presentation_receipts[{index}]")
         if trace not in {0, 1} or trace in indexed:
             fail(f"{context}.presentation_receipts must contain views 0 and 1 once")
-        for field in ("camera_receipt_sha256", "presentation_receipt_sha256"):
-            sha256(receipt.get(field), f"{context}.presentation_receipts[{index}].{field}")
-        if any(receipt.get(field) is not True for field in ("successful_present", "queue_terminal_complete", "captured_after_terminal")):
-            fail(f"{context}.presentation_receipts[{index}] lacks successful terminal presentation")
+        camera = obj(receipt, "camera", f"{context}.presentation_receipts[{index}]")
+        expected_camera = {
+            "trace_id": TRACE["id"],
+            "trace_content_sha256": TRACE["sha256"],
+            "trace_frame_index": trace,
+            "pose_intrinsics_sha256": TRACE_FRAME_POSE_INTRINSICS_SHA256[trace],
+        }
+        for field, expected in expected_camera.items():
+            if camera.get(field) != expected:
+                fail(
+                    f"{context}.presentation_receipts[{index}].camera.{field} "
+                    "does not bind the frozen trace frame"
+                )
+        camera_revision = integer(
+            camera, "camera_revision", f"{context}.presentation_receipts[{index}].camera"
+        )
+        if camera_revision <= 0:
+            fail(f"{context}.presentation_receipts[{index}] camera revision must be positive")
+        terminal = obj(
+            receipt, "terminal_identity", f"{context}.presentation_receipts[{index}]"
+        )
+        terminal_index = integer(
+            terminal,
+            "frame_index",
+            f"{context}.presentation_receipts[{index}].terminal_identity",
+        )
+        expected_terminal_index = MEASURED - 2 + trace
+        if (
+            terminal.get("run_id") != run_id
+            or terminal_index != expected_terminal_index
+            or terminal_index >= len(frames)
+        ):
+            fail(
+                f"{context}.presentation_receipts[{index}] does not bind the artifact terminal"
+            )
+        terminal_frame = frames[terminal_index]
+        if terminal_frame.get("trace_frame_index") != trace:
+            fail(f"{context}.presentation_receipts[{index}] terminal trace mismatch")
+        terminal_sha = sha256(
+            terminal.get("frame_sha256"),
+            f"{context}.presentation_receipts[{index}].terminal_identity.frame_sha256",
+        )
+        if terminal_sha != canonical_sha256(terminal_frame):
+            fail(f"{context}.presentation_receipts[{index}] terminal frame hash mismatch")
+        presentation_sequence = integer(
+            terminal,
+            "presentation_sequence",
+            f"{context}.presentation_receipts[{index}].terminal_identity",
+        )
+        if (
+            terminal_frame.get("camera_revision") != camera_revision
+            or terminal_frame.get("presentation_sequence") != presentation_sequence
+            or presentation_sequence <= 0
+        ):
+            fail(
+                f"{context}.presentation_receipts[{index}] camera/presentation is not same-present"
+            )
+        if any(
+            receipt.get(field) is not True
+            for field in (
+                "successful_present",
+                "queue_terminal_complete",
+                "captured_after_terminal",
+            )
+        ):
+            fail(
+                f"{context}.presentation_receipts[{index}] lacks successful terminal presentation"
+            )
         dimensions = obj(receipt, "dimensions", f"{context}.presentation_receipts[{index}]")
         for stage in ("requested", "surface", "internal_render", "presented"):
             if (dimensions.get(f"{stage}_width"), dimensions.get(f"{stage}_height")) != (WIDTH, HEIGHT):
@@ -227,7 +444,7 @@ def artifact(
         fail(f"{context} ended before it started")
     _common(manifest, context)
     _renderer(manifest, endpoint, context)
-    commit, build_artifacts = _build(manifest, endpoint, context)
+    commit, build_artifacts = _build(root, manifest, endpoint, context)
     environment = _environment(manifest, context)
     pairing = obj(manifest, "pairing", context)
     expected_pairing = {"series_id": series_id, "schedule_sha256": schedule_sha, "pair_id": pair_id, "run_order": order, "position": position, "fresh_output": True, "automatic_retry": False}
@@ -264,7 +481,11 @@ def artifact(
         "configuration": configuration,
         "started": started,
         "ended": ended,
-        "presentations": presentation_receipts(q1, f"{context}.q1_comparison") if role == "control" else None,
+        "presentations": (
+            presentation_receipts(q1, frames, run_id, f"{context}.q1_comparison")
+            if role == "control"
+            else None
+        ),
         "terminal_ms": validate_terminal(q1, summary, f"{context}.q1_comparison") if role == "throughput" else None,
     }
 
@@ -277,7 +498,7 @@ def bind_control(throughput: dict[str, Any], control: dict[str, Any], context: s
 
 
 def reference_images(root: pathlib.Path, document: dict[str, Any]) -> dict[int, dict[str, Any]]:
-    values = array(document, "reference_images", "schedule")
+    values = array(obj(document, "schedule", "schedule"), "reference_images", "schedule.schedule")
     if len(values) != 2:
         fail("schedule.reference_images must cover both views")
     result: dict[int, dict[str, Any]] = {}
@@ -287,13 +508,28 @@ def reference_images(root: pathlib.Path, document: dict[str, Any]) -> dict[int, 
         trace = integer(value, "trace_frame_index", f"schedule.reference_images[{index}]")
         path = inside(root, value.get("path"), f"schedule.reference_images[{index}].path")
         digest = sha256(value.get("sha256"), f"schedule.reference_images[{index}].sha256")
-        if trace not in {0, 1} or trace in result or file_sha256(path) != digest or png_dimensions(path) != (WIDTH, HEIGHT):
+        try:
+            _decode_image(path, f"schedule.reference_images[{index}]")
+        except (OSError, IMAGE.ValidationError) as error:
+            fail(f"schedule.reference_images[{index}] is not a decodable RGBA8 PNG: {error}")
+        if trace not in {0, 1} or trace in result or file_sha256(path) != digest:
             fail(f"schedule.reference_images[{index}] identity mismatch")
-        result[trace] = value
+        result[trace] = {**value, "absolute_path": path}
     return result
 
 
-def endpoint_images(root: pathlib.Path, values: Any, *, endpoint: str, pair_id: str, control: dict[str, Any], references: dict[int, dict[str, Any]], minimum: float) -> list[dict[str, Any]]:
+def endpoint_images(
+    root: pathlib.Path,
+    values: Any,
+    *,
+    endpoint: str,
+    pair_id: str,
+    control: dict[str, Any],
+    references: dict[int, dict[str, Any]],
+    minimum: float,
+    seen_paths: set[pathlib.Path],
+    seen_hashes: set[str],
+) -> list[dict[str, Any]]:
     if not isinstance(values, list) or len(values) != 2:
         fail(f"{pair_id}.{endpoint}.images must cover both views")
     result: list[dict[str, Any]] = []
@@ -305,13 +541,23 @@ def endpoint_images(root: pathlib.Path, values: Any, *, endpoint: str, pair_id: 
         trace = integer(value, "trace_frame_index", context)
         path = inside(root, value.get("path"), f"{context}.path")
         digest = sha256(value.get("sha256"), f"{context}.sha256")
-        if trace not in {0, 1} or trace in seen or file_sha256(path) != digest or png_dimensions(path) != (WIDTH, HEIGHT):
+        comparison_path = inside(root, value.get("comparison"), f"{context}.comparison")
+        comparison_digest = file_sha256(comparison_path)
+        for evidence_path in (path, comparison_path):
+            if evidence_path in seen_paths:
+                fail(f"{context} reuses endpoint evidence path {evidence_path}")
+            seen_paths.add(evidence_path)
+        for evidence_digest in (digest, comparison_digest):
+            if evidence_digest in seen_hashes:
+                fail(f"{context} reuses endpoint evidence content SHA-256")
+            seen_hashes.add(evidence_digest)
+        if trace not in {0, 1} or trace in seen or file_sha256(path) != digest:
             fail(f"{context} image identity mismatch")
         seen.add(trace)
         presentation = control["presentations"][trace]
-        if any(value.get(field) != presentation.get(field) for field in ("camera_receipt_sha256", "presentation_receipt_sha256")):
+        if value.get("capture_receipt") != presentation:
             fail(f"{context} is not bound to the control presentation")
-        receipt = load_json(inside(root, value.get("comparison"), f"{context}.comparison"), f"{context}.comparison")
+        receipt = load_json(comparison_path, f"{context}.comparison")
         expected = {
             "schema": IMAGE_SCHEMA,
             "metric": "ssim-luma-srgb-window8",
@@ -325,9 +571,15 @@ def endpoint_images(root: pathlib.Path, values: Any, *, endpoint: str, pair_id: 
         }
         if any(receipt.get(key) != expected_value for key, expected_value in expected.items()):
             fail(f"{context}.comparison identity mismatch")
-        sha256(receipt.get("tool_sha256"), f"{context}.comparison.tool_sha256")
+        if receipt.get("tool_sha256") != IMAGE_TOOL_SHA256:
+            fail(f"{context}.comparison.tool_sha256 does not match the locked tool")
         score = receipt.get("score")
         if not isinstance(score, (int, float)) or isinstance(score, bool) or not 0 <= score <= 1:
             fail(f"{context}.comparison.score must be in [0,1]")
-        result.append({"trace_frame_index": trace, "score": float(score)})
+        recomputed = recompute_image_score(
+            references[trace]["absolute_path"], path, f"{context}.comparison"
+        )
+        if not math.isclose(float(score), recomputed, rel_tol=0.0, abs_tol=1.0e-9):
+            fail(f"{context}.comparison.score does not match decoded PNG bytes")
+        result.append({"trace_frame_index": trace, "score": recomputed})
     return sorted(result, key=lambda item: item["trace_frame_index"])

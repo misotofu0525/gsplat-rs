@@ -6,7 +6,6 @@ import hashlib
 import json
 import math
 import pathlib
-import struct
 from datetime import datetime
 from typing import Any
 
@@ -109,17 +108,6 @@ def file_sha256(path: pathlib.Path) -> str:
     except OSError as error:
         fail(f"cannot hash {path}: {error}")
     return digest.hexdigest()
-
-
-def png_dimensions(path: pathlib.Path) -> tuple[int, int]:
-    try:
-        with path.open("rb") as handle:
-            header = handle.read(24)
-    except OSError as error:
-        fail(f"cannot read image {path}: {error}")
-    if len(header) != 24 or header[:8] != b"\x89PNG\r\n\x1a\n" or header[12:16] != b"IHDR":
-        fail(f"image is not a PNG with an IHDR header: {path}")
-    return struct.unpack(">II", header[16:24])
 
 
 def inside(root: pathlib.Path, value: Any, context: str, *, directory: bool = False) -> pathlib.Path:

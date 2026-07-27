@@ -34,15 +34,19 @@ The schedule is one JSON object with schema
 
 - a unique `series_id`;
 - the frozen `protocol` object;
-- `schedule.seed`, `schedule.predeclared_at_utc`, and exactly five unique pairs;
+- `schedule.seed`, `schedule.predeclared_at_utc`, two reference-image receipts,
+  and exactly five unique pairs; the references are inside the canonical
+  schedule hash rather than mutable side input;
 - a counterbalanced `playcanvas-first` / `gsplat-rs-first` order whose counts
   differ by no more than one;
 - two immutable 1920x1080 reference PNG identities;
 - five evidence pairs matching the predeclared IDs and order.
 
 Every endpoint has a fresh control artifact, a fresh throughput artifact and
-two terminal-present-bound images. Paths must be relative to the schedule,
-remain inside its root, and may not be reused. Run IDs must also be unique.
+two terminal-present-bound images. Every endpoint image and comparison path and
+content hash is unique across all five pairs. Paths must be relative to the
+schedule, remain inside its root, and may not be reused. Run IDs must also be
+unique.
 Actual start/end timestamps must prove control before throughput, the declared
 AB/BA endpoint order, and non-overlapping pair order; labels alone do not prove
 randomization.
@@ -67,9 +71,11 @@ The throughput artifact has:
 - no copied per-frame `V/C/D` values;
 - the common terminal-window receipt below.
 
-Control and throughput must have the same clean repository commit, build
-artifact hashes, environment and configuration. All five pairs must retain the
-same identities. A diagnostic readback from control is never silently charged
+Control and throughput must have the same clean repository commit, required
+build artifact key set, actual JS/WASM/package file content hashes, environment
+identity and configuration. Thermal `pre` and `post` receipts remain explicit
+for every artifact; severe/critical states reject admission. All five pairs
+must retain the same non-thermal identities. A diagnostic readback from control is never silently charged
 to or copied into the timed comparator.
 
 ## Common terminal window
@@ -94,17 +100,25 @@ call time cannot substitute for this boundary.
 ## Images
 
 Each control image is bound to the same live-camera and presented-frame receipt
-as its trace view. The PNG bytes and 1920x1080 IHDR are checked. Its comparison
+as its trace view. The camera receipt binds the frozen trace ID, trace content,
+trace-frame pose/intrinsics and camera revision. The presentation receipt binds
+the control run, canonical terminal-frame hash, camera revision and presentation
+sequence. Opaque arbitrary digests are not accepted.
+
+The PNG must fully decode as non-interlaced RGBA8 at 1920x1080; an IHDR-shaped
+header is not an image. Its comparison
 receipt has schema `gsplat-q1-reference-image-comparison/v1` and binds:
 
 - the raw reference and candidate SHA-256 values;
 - `tests/perf/compare-image-ssim.mjs` and its content SHA-256;
 - the trace view, dimensions, metric and predeclared SSIM threshold;
-- a finite score in `[0, 1]`.
+- a finite score in `[0, 1]`, which is checked against SSIM recomputed from the
+  decoded reference and candidate bytes with the repository's locked algorithm.
 
 A quality miss is admitted as a finite quality observation but is Rejected
-from a performance claim. The performance result is then `null`; it is not a
-tuning or rerun trigger.
+from a performance claim. The performance result is then `null`, and pair
+receipts omit terminal means, deltas and ratios; it is not a tuning or rerun
+trigger.
 
 ## Result semantics
 

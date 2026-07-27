@@ -6,12 +6,17 @@ from __future__ import annotations
 import hashlib
 import json
 import pathlib
+import struct
 import subprocess
 import sys
 import tempfile
 import unittest
+import zlib
 from datetime import datetime, timedelta, timezone
 
+from unittest import mock
+
+from q1_pair_admission.artifacts import BUILD_ARTIFACT_KEYS, IMAGE_TOOL_SHA256
 from q1_pair_admission.common import ValidationError, canonical_sha256, file_sha256
 from q1_pair_admission.contract import (
     HEIGHT,
@@ -21,6 +26,7 @@ from q1_pair_admission.contract import (
     SCHEMA,
     TERMINAL_SCHEMA,
     TRACE,
+    TRACE_FRAME_POSE_INTRINSICS_SHA256,
     TRUCK,
     WARMUP,
     WIDTH,
@@ -41,13 +47,41 @@ def write_json(path: pathlib.Path, value: object) -> None:
     path.write_text(f"{json.dumps(value, indent=2)}\n", encoding="utf-8")
 
 
-def write_png_header(path: pathlib.Path) -> str:
+def write_rgba_png(path: pathlib.Path, nonce: str, value: int = 0) -> str:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(
-        b"\x89PNG\r\n\x1a\n" + (13).to_bytes(4, "big") + b"IHDR"
-        + WIDTH.to_bytes(4, "big") + HEIGHT.to_bytes(4, "big")
+    pixel = bytes((value, value, value, 255))
+    row = pixel * WIDTH
+    filtered = (b"\0" + row) * HEIGHT
+
+    def chunk(kind: bytes, payload: bytes) -> bytes:
+        return (
+            struct.pack(">I", len(payload))
+            + kind
+            + payload
+            + struct.pack(">I", zlib.crc32(kind + payload) & 0xFFFFFFFF)
+        )
+
+    data = (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", struct.pack(">IIBBBBB", WIDTH, HEIGHT, 8, 6, 0, 0, 0))
+        + chunk(b"tEXt", f"fixture={nonce}".encode())
+        + chunk(b"IDAT", zlib.compress(filtered, 9))
+        + chunk(b"IEND", b"")
     )
+    path.write_bytes(data)
     return file_sha256(path)
+
+
+def build_artifact_receipts(root: pathlib.Path, endpoint: str) -> dict[str, object]:
+    receipts: dict[str, object] = {}
+    for name in sorted(BUILD_ARTIFACT_KEYS[endpoint]):
+        path = pathlib.Path("build") / endpoint / name
+        absolute = root / path
+        absolute.parent.mkdir(parents=True, exist_ok=True)
+        if not absolute.exists():
+            absolute.write_bytes(f"{endpoint}:{name}:locked\n".encode())
+        receipts[name] = {"path": path.as_posix(), "sha256": file_sha256(absolute)}
+    return receipts
 
 
 def distribution(value: float | None) -> dict[str, float | int] | None:
@@ -74,6 +108,8 @@ def frame(run_id: str, index: int, endpoint: str, role: str) -> dict[str, object
         "drawn": None,
         "sort_refreshed": True,
         "trace_frame_index": index % 2,
+        "camera_revision": index + 1,
+        "presentation_sequence": index + 1,
     }
     if endpoint == "playcanvas":
         value["active_splats"] = TRUCK["splat_count"]
@@ -144,11 +180,26 @@ def terminal(duration: float) -> dict[str, object]:
     }
 
 
-def presentation(trace: int) -> dict[str, object]:
+def presentation(
+    trace: int, run_id: str, frames: list[dict[str, object]]
+) -> dict[str, object]:
+    terminal_index = MEASURED - 2 + trace
+    terminal_frame = frames[terminal_index]
     return {
         "trace_frame_index": trace,
-        "camera_receipt_sha256": hashlib.sha256(f"camera-{trace}".encode()).hexdigest(),
-        "presentation_receipt_sha256": hashlib.sha256(f"present-{trace}".encode()).hexdigest(),
+        "camera": {
+            "trace_id": TRACE["id"],
+            "trace_content_sha256": TRACE["sha256"],
+            "trace_frame_index": trace,
+            "pose_intrinsics_sha256": TRACE_FRAME_POSE_INTRINSICS_SHA256[trace],
+            "camera_revision": terminal_frame["camera_revision"],
+        },
+        "terminal_identity": {
+            "run_id": run_id,
+            "frame_index": terminal_index,
+            "frame_sha256": canonical_sha256(terminal_frame),
+            "presentation_sequence": terminal_frame["presentation_sequence"],
+        },
         "successful_present": True,
         "queue_terminal_complete": True,
         "captured_after_terminal": True,
@@ -178,6 +229,7 @@ def manifest(
     *, endpoint: str, role: str, run_id: str, series_id: str, schedule_sha: str,
     protocol_sha: str, pair_id: str, order: str, position: int, configuration: str,
     terminal_ms: float | None, started_at: str, ended_at: str,
+    build_artifacts: dict[str, object],
 ) -> dict[str, object]:
     renderer = (
         {"implementation": "playcanvas-d5fe888", "path": "GSplatHybridRenderer", "backend": "webgpu", "sort_policy": "raster_gpu_sort", "uses_gpu_sort": True}
@@ -186,7 +238,7 @@ def manifest(
     )
     if endpoint == "gsplat_rs" and role == "control":
         renderer["count_semantics"] = "candidate_visible_contributor_issued_v1"
-    build: dict[str, object] = {"repository_commit": COMMIT, "dirty": False, "profile": "browser", "package_version": "0.1.3", "artifacts": {"runtime": SHA_A if endpoint == "playcanvas" else SHA_B}}
+    build: dict[str, object] = {"repository_commit": COMMIT, "dirty": False, "profile": "browser", "package_version": "0.1.3", "artifacts": build_artifacts}
     if endpoint == "playcanvas":
         build.update({"package_version": PLAYCANVAS["version"], "upstream_revision": PLAYCANVAS["revision"], "runtime_revision": PLAYCANVAS["runtime_revision"], "package_integrity": PLAYCANVAS["integrity"]})
     unavailable = ["frames[*].preprocess_ms", "frames[*].sort_ms", "frames[*].geometry_submit_ms", "frames[*].gpu_wait_ms", "frames[*].gpu_complete_ms"]
@@ -204,9 +256,7 @@ def manifest(
             ("gsplat_rs", "throughput"): "control_bound_v_c_d_unavailable",
         }[(endpoint, role)],
     }
-    if role == "control":
-        q1["presentation_receipts"] = [presentation(0), presentation(1)]
-    else:
+    if role != "control":
         q1["terminal_window"] = terminal(terminal_ms or 1.0)
     return {
         "schema": "gsplat-benchmark/v1",
@@ -230,24 +280,40 @@ def manifest(
 def write_artifact(root: pathlib.Path, relative: pathlib.Path, doc: dict[str, object], endpoint: str, role: str, terminal_ms: float | None) -> pathlib.Path:
     directory = root / relative
     directory.mkdir(parents=True)
-    write_json(directory / "manifest.json", doc)
     records = [frame(str(doc["run_id"]), index, endpoint, role) for index in range(MEASURED)]
+    if role == "control":
+        doc["q1_comparison"]["presentation_receipts"] = [
+            presentation(trace, str(doc["run_id"]), records) for trace in (0, 1)
+        ]
+    write_json(directory / "manifest.json", doc)
     (directory / "frames.jsonl").write_text("".join(f"{json.dumps(value)}\n" for value in records), encoding="utf-8")
     write_json(directory / "summary.json", summary(str(doc["run_id"]), terminal_ms))
     return directory
 
 
-def build_series(root: pathlib.Path, *, gs_terminal_ms: float = 800.0, score: float = 0.995) -> pathlib.Path:
+def build_series(root: pathlib.Path, *, gs_terminal_ms: float = 800.0, score: float = 1.0) -> pathlib.Path:
     series_id = "q1-truck-test"
-    schedule_block = {"seed": 20260728, "predeclared_at_utc": PREDECLARED, "pairs": [{"pair_id": f"pair-{index + 1:02d}", "run_order": order} for index, order in enumerate(ORDERS)]}
-    schedule_sha = canonical_sha256(schedule_block)
-    protocol_value = protocol()
-    protocol_sha = canonical_sha256(protocol_value)
     references = []
     for trace in (0, 1):
         path = pathlib.Path("reference") / f"view-{trace}.png"
-        digest = write_png_header(root / path)
+        digest = write_rgba_png(root / path, f"reference-{trace}")
         references.append({"trace_frame_index": trace, "path": str(path), "sha256": digest})
+    schedule_block = {
+        "seed": 20260728,
+        "predeclared_at_utc": PREDECLARED,
+        "reference_images": references,
+        "pairs": [
+            {"pair_id": f"pair-{index + 1:02d}", "run_order": order}
+            for index, order in enumerate(ORDERS)
+        ],
+    }
+    schedule_sha = canonical_sha256(schedule_block)
+    protocol_value = protocol()
+    protocol_sha = canonical_sha256(protocol_value)
+    builds = {
+        endpoint: build_artifact_receipts(root, endpoint)
+        for endpoint in ("playcanvas", "gsplat_rs")
+    }
     pairs = []
     for pair_index, order in enumerate(ORDERS, 1):
         pair_id = f"pair-{pair_index:02d}"
@@ -262,24 +328,26 @@ def build_series(root: pathlib.Path, *, gs_terminal_ms: float = 800.0, score: fl
             control_ended = control_started + timedelta(seconds=2)
             throughput_started = control_ended + timedelta(seconds=1)
             throughput_ended = throughput_started + timedelta(seconds=2)
-            control_doc = manifest(endpoint=endpoint, role="control", run_id=f"{pair_id}-{endpoint}-control", series_id=series_id, schedule_sha=schedule_sha, protocol_sha=protocol_sha, pair_id=pair_id, order=order, position=position, configuration=configuration, terminal_ms=None, started_at=control_started.isoformat(), ended_at=control_ended.isoformat())
+            control_doc = manifest(endpoint=endpoint, role="control", run_id=f"{pair_id}-{endpoint}-control", series_id=series_id, schedule_sha=schedule_sha, protocol_sha=protocol_sha, pair_id=pair_id, order=order, position=position, configuration=configuration, terminal_ms=None, started_at=control_started.isoformat(), ended_at=control_ended.isoformat(), build_artifacts=builds[endpoint])
             control_dir = write_artifact(root, base / "control", control_doc, endpoint, "control", None)
             throughput_ms = 1000.0 if endpoint == "playcanvas" else gs_terminal_ms
-            throughput_doc = manifest(endpoint=endpoint, role="throughput", run_id=f"{pair_id}-{endpoint}-throughput", series_id=series_id, schedule_sha=schedule_sha, protocol_sha=protocol_sha, pair_id=pair_id, order=order, position=position, configuration=configuration, terminal_ms=throughput_ms, started_at=throughput_started.isoformat(), ended_at=throughput_ended.isoformat())
+            throughput_doc = manifest(endpoint=endpoint, role="throughput", run_id=f"{pair_id}-{endpoint}-throughput", series_id=series_id, schedule_sha=schedule_sha, protocol_sha=protocol_sha, pair_id=pair_id, order=order, position=position, configuration=configuration, terminal_ms=throughput_ms, started_at=throughput_started.isoformat(), ended_at=throughput_ended.isoformat(), build_artifacts=builds[endpoint])
             throughput_doc["q1_comparison"]["control_binding"] = {"run_id": control_doc["run_id"], "manifest_sha256": file_sha256(control_dir / "manifest.json"), "configuration_sha256": configuration}
             write_artifact(root, base / "throughput", throughput_doc, endpoint, "throughput", throughput_ms)
             images = []
             for trace in (0, 1):
                 image_path = base / f"view-{trace}.png"
-                image_sha = write_png_header(root / image_path)
+                image_sha = write_rgba_png(
+                    root / image_path, f"{pair_id}-{endpoint}-{trace}"
+                )
                 comparison_path = base / f"view-{trace}-comparison.json"
-                write_json(root / comparison_path, {"schema": IMAGE_SCHEMA, "metric": "ssim-luma-srgb-window8", "tool": "tests/perf/compare-image-ssim.mjs", "tool_sha256": SHA_A, "trace_frame_index": trace, "reference_sha256": references[trace]["sha256"], "candidate_sha256": image_sha, "width": WIDTH, "height": HEIGHT, "minimum_ssim": 0.99, "score": score})
-                present = presentation(trace)
-                images.append({"trace_frame_index": trace, "path": str(image_path), "sha256": image_sha, "camera_receipt_sha256": present["camera_receipt_sha256"], "presentation_receipt_sha256": present["presentation_receipt_sha256"], "comparison": str(comparison_path)})
+                write_json(root / comparison_path, {"schema": IMAGE_SCHEMA, "metric": "ssim-luma-srgb-window8", "tool": "tests/perf/compare-image-ssim.mjs", "tool_sha256": IMAGE_TOOL_SHA256, "trace_frame_index": trace, "reference_sha256": references[trace]["sha256"], "candidate_sha256": image_sha, "width": WIDTH, "height": HEIGHT, "minimum_ssim": 0.99, "score": score})
+                present = control_doc["q1_comparison"]["presentation_receipts"][trace]
+                images.append({"trace_frame_index": trace, "path": str(image_path), "sha256": image_sha, "capture_receipt": present, "comparison": str(comparison_path)})
             pair[endpoint] = {"position": position, "control": str(base / "control"), "throughput": str(base / "throughput"), "images": images}
         pairs.append(pair)
     schedule_path = root / "schedule.json"
-    write_json(schedule_path, {"schema": SCHEMA, "series_id": series_id, "schedule": schedule_block, "protocol": protocol_value, "reference_images": references, "pairs": pairs})
+    write_json(schedule_path, {"schema": SCHEMA, "series_id": series_id, "schedule": schedule_block, "protocol": protocol_value, "pairs": pairs})
     return schedule_path
 
 
@@ -317,7 +385,7 @@ class ScheduleAndAdmissionTests(unittest.TestCase):
 
     def test_missing_build_hash_is_rejected(self) -> None:
         self.mutate_manifest("pairs/pair-01/playcanvas/control", lambda value: value["build"].__setitem__("artifacts", {}))
-        with self.assertRaisesRegex(ValidationError, "build.artifacts"):
+        with self.assertRaisesRegex(ValidationError, "build.artifacts keys"):
             evaluate(self.schedule)
 
     def test_missing_common_image_receipt_is_rejected(self) -> None:
@@ -333,6 +401,84 @@ class ScheduleAndAdmissionTests(unittest.TestCase):
         del value["tool_sha256"]
         write_json(receipt, value)
         with self.assertRaisesRegex(ValidationError, "tool_sha256"):
+            evaluate(self.schedule)
+
+    def test_fake_comparator_hash_is_rejected_even_when_well_formed(self) -> None:
+        receipt = self.root / "pairs/pair-01/playcanvas/view-0-comparison.json"
+        value = json.loads(receipt.read_text(encoding="utf-8"))
+        value["tool_sha256"] = SHA_A
+        write_json(receipt, value)
+        with self.assertRaisesRegex(ValidationError, "locked tool"):
+            evaluate(self.schedule)
+
+    def test_self_reported_score_is_rejected_when_decoded_pixels_disagree(self) -> None:
+        receipt = self.root / "pairs/pair-01/playcanvas/view-0-comparison.json"
+        value = json.loads(receipt.read_text(encoding="utf-8"))
+        value["score"] = 0.98
+        write_json(receipt, value)
+        with self.assertRaisesRegex(ValidationError, "decoded PNG bytes"):
+            evaluate(self.schedule)
+
+    def test_twenty_four_byte_png_header_is_not_a_decodable_image(self) -> None:
+        reference = self.root / "reference/view-0.png"
+        reference.write_bytes(
+            b"\x89PNG\r\n\x1a\n"
+            + (13).to_bytes(4, "big")
+            + b"IHDR"
+            + WIDTH.to_bytes(4, "big")
+            + HEIGHT.to_bytes(4, "big")
+        )
+        document = json.loads(self.schedule.read_text(encoding="utf-8"))
+        document["schedule"]["reference_images"][0]["sha256"] = file_sha256(reference)
+        write_json(self.schedule, document)
+        with self.assertRaisesRegex(ValidationError, "decodable RGBA8 PNG"):
+            evaluate(self.schedule)
+
+    def test_pair_two_cannot_reuse_pair_one_image_content(self) -> None:
+        source = self.root / "pairs/pair-01/playcanvas/view-0.png"
+        target = self.root / "pairs/pair-02/playcanvas/view-0.png"
+        target.write_bytes(source.read_bytes())
+        document = json.loads(self.schedule.read_text(encoding="utf-8"))
+        image = document["pairs"][1]["playcanvas"]["images"][0]
+        image["sha256"] = file_sha256(target)
+        comparison_path = self.root / image["comparison"]
+        comparison = json.loads(comparison_path.read_text(encoding="utf-8"))
+        comparison["candidate_sha256"] = image["sha256"]
+        write_json(comparison_path, comparison)
+        write_json(self.schedule, document)
+        with self.assertRaisesRegex(ValidationError, "reuses endpoint evidence content"):
+            evaluate(self.schedule)
+
+    def test_pair_two_cannot_reuse_pair_one_comparison_path(self) -> None:
+        document = json.loads(self.schedule.read_text(encoding="utf-8"))
+        document["pairs"][1]["playcanvas"]["images"][0]["comparison"] = document[
+            "pairs"
+        ][0]["playcanvas"]["images"][0]["comparison"]
+        write_json(self.schedule, document)
+        with self.assertRaisesRegex(ValidationError, "reuses endpoint evidence path"):
+            evaluate(self.schedule)
+
+    def test_reference_replacement_changes_predeclared_schedule_hash(self) -> None:
+        reference = self.root / "reference/view-0.png"
+        write_rgba_png(reference, "replacement-reference", value=1)
+        document = json.loads(self.schedule.read_text(encoding="utf-8"))
+        document["schedule"]["reference_images"][0]["sha256"] = file_sha256(reference)
+        write_json(self.schedule, document)
+        with self.assertRaisesRegex(ValidationError, "pairing.schedule_sha256"):
+            evaluate(self.schedule)
+
+    def test_build_artifact_file_content_drift_is_rejected(self) -> None:
+        path = self.root / "build/gsplat_rs/runtime_wasm"
+        path.write_bytes(b"drifted wasm\n")
+        with self.assertRaisesRegex(ValidationError, "content SHA-256 mismatch"):
+            evaluate(self.schedule)
+
+    def test_severe_post_thermal_state_is_rejected(self) -> None:
+        self.mutate_manifest(
+            "pairs/pair-02/playcanvas/throughput",
+            lambda value: value["environment"]["thermal"].__setitem__("post", "severe"),
+        )
+        with self.assertRaisesRegex(ValidationError, "too hot for admission"):
             evaluate(self.schedule)
 
     def test_pair_order_label_without_timestamp_proof_is_rejected(self) -> None:
@@ -352,26 +498,24 @@ class ScheduleAndAdmissionTests(unittest.TestCase):
         with self.assertRaisesRegex(ValidationError, "timestamps do not prove"):
             evaluate(self.schedule)
 
-    def test_cross_endpoint_camera_receipt_mismatch_is_rejected(self) -> None:
+    def test_camera_receipt_must_bind_frozen_trace_frame(self) -> None:
         self.mutate_manifest(
             "pairs/pair-01/gsplat_rs/control",
-            lambda value: value["q1_comparison"]["presentation_receipts"][0].__setitem__(
-                "camera_receipt_sha256", SHA_B
+            lambda value: value["q1_comparison"]["presentation_receipts"][0]["camera"].__setitem__(
+                "pose_intrinsics_sha256", SHA_B
             ),
         )
-        control = self.root / "pairs/pair-01/gsplat_rs/control/manifest.json"
-        throughput = self.root / "pairs/pair-01/gsplat_rs/throughput/manifest.json"
-        throughput_value = json.loads(throughput.read_text(encoding="utf-8"))
-        throughput_value["q1_comparison"]["control_binding"]["manifest_sha256"] = (
-            file_sha256(control)
+        with self.assertRaisesRegex(ValidationError, "frozen trace frame"):
+            evaluate(self.schedule)
+
+    def test_presentation_receipt_must_bind_artifact_terminal_frame(self) -> None:
+        self.mutate_manifest(
+            "pairs/pair-01/playcanvas/control",
+            lambda value: value["q1_comparison"]["presentation_receipts"][0][
+                "terminal_identity"
+            ].__setitem__("frame_sha256", SHA_B),
         )
-        write_json(throughput, throughput_value)
-        schedule_value = json.loads(self.schedule.read_text(encoding="utf-8"))
-        schedule_value["pairs"][0]["gsplat_rs"]["images"][0][
-            "camera_receipt_sha256"
-        ] = SHA_B
-        write_json(self.schedule, schedule_value)
-        with self.assertRaisesRegex(ValidationError, "live-camera receipts differ"):
+        with self.assertRaisesRegex(ValidationError, "terminal frame hash"):
             evaluate(self.schedule)
 
     def test_playcanvas_vcd_must_remain_unavailable(self) -> None:
@@ -439,11 +583,22 @@ class FiniteVerdictTests(unittest.TestCase):
 
     def test_quality_failure_has_no_performance_claim(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            result = evaluate(build_series(pathlib.Path(directory), score=0.98))
+            with mock.patch(
+                "q1_pair_admission.artifacts.recompute_image_score", return_value=0.98
+            ):
+                result = evaluate(build_series(pathlib.Path(directory), score=0.98))
         self.assertEqual(result["state"], "Rejected")
         self.assertTrue(result["evidence_admitted"])
         self.assertIsNone(result["performance"])
         self.assertEqual(result["reasons"], ["common_reference_image_gate_failed"])
+        encoded = json.dumps(result, sort_keys=True)
+        for forbidden in (
+            "playcanvas_terminal_mean_ms",
+            "gsplat_rs_terminal_mean_ms",
+            "gsplat_rs_minus_playcanvas_ms",
+            "gsplat_rs_over_playcanvas_ratio",
+        ):
+            self.assertNotIn(forbidden, encoded)
 
     def test_admission_rejection_has_no_performance_or_retry(self) -> None:
         result = admission_rejection("series", "missing common terminal")

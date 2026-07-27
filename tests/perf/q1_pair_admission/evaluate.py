@@ -35,8 +35,10 @@ def evaluate(path: pathlib.Path) -> dict[str, Any]:
     references = reference_images(root, document)
     seen_paths: set[pathlib.Path] = set()
     seen_runs: set[str] = set()
+    seen_endpoint_paths: set[pathlib.Path] = set()
+    seen_endpoint_hashes: set[str] = set()
     frozen_commit: str | None = None
-    frozen_builds: dict[str, dict[str, str]] = {}
+    frozen_builds: dict[str, dict[str, Any]] = {}
     frozen_environment: dict[str, Any] | None = None
     frozen_display: dict[str, Any] | None = None
     previous_pair_end = None
@@ -60,9 +62,25 @@ def evaluate(path: pathlib.Path) -> dict[str, Any]:
             bind_control(throughput, control, f"{pair_id}.{endpoint}.throughput.control_binding")
             if throughput["started"] < control["ended"]:
                 fail(f"{pair_id}.{endpoint} throughput overlaps its control artifact")
-            if control["commit"] != throughput["commit"] or control["build_artifacts"] != throughput["build_artifacts"] or control["environment"] != throughput["environment"] or control["display"] != throughput["display"]:
+            if (
+                control["commit"] != throughput["commit"]
+                or control["build_artifacts"] != throughput["build_artifacts"]
+                or control["environment"]["identity"]
+                != throughput["environment"]["identity"]
+                or control["display"] != throughput["display"]
+            ):
                 fail(f"{pair_id}.{endpoint} control/throughput identity drift")
-            images = endpoint_images(root, values.get("images"), endpoint=endpoint, pair_id=pair_id, control=control, references=references, minimum=minimum_ssim)
+            images = endpoint_images(
+                root,
+                values.get("images"),
+                endpoint=endpoint,
+                pair_id=pair_id,
+                control=control,
+                references=references,
+                minimum=minimum_ssim,
+                seen_paths=seen_endpoint_paths,
+                seen_hashes=seen_endpoint_hashes,
+            )
             scores.extend(image["score"] for image in images)
             endpoints[endpoint] = {"control": control, "throughput": throughput, "images": images}
             if frozen_commit is None:
@@ -72,22 +90,13 @@ def evaluate(path: pathlib.Path) -> dict[str, Any]:
             if frozen_builds.setdefault(endpoint, control["build_artifacts"]) != control["build_artifacts"]:
                 fail(f"{pair_id}.{endpoint} changed built artifacts")
             if frozen_environment is None:
-                frozen_environment = control["environment"]
-            elif control["environment"] != frozen_environment:
+                frozen_environment = control["environment"]["identity"]
+            elif control["environment"]["identity"] != frozen_environment:
                 fail(f"{pair_id}.{endpoint} changed the collection environment")
             if frozen_display is None:
                 frozen_display = control["display"]
             elif control["display"] != frozen_display:
                 fail(f"{pair_id}.{endpoint} changed presentation cadence")
-        for trace_index in (0, 1):
-            pc_camera = endpoints["playcanvas"]["control"]["presentations"][trace_index][
-                "camera_receipt_sha256"
-            ]
-            gs_camera = endpoints["gsplat_rs"]["control"]["presentations"][trace_index][
-                "camera_receipt_sha256"
-            ]
-            if pc_camera != gs_camera:
-                fail(f"{pair_id}: trace view {trace_index} live-camera receipts differ")
         first = "playcanvas" if order == "playcanvas-first" else "gsplat_rs"
         second = "gsplat_rs" if first == "playcanvas" else "playcanvas"
         first_start = endpoints[first]["control"]["started"]
@@ -110,6 +119,13 @@ def evaluate(path: pathlib.Path) -> dict[str, Any]:
             "gsplat_rs_over_playcanvas_ratio": gs / pc,
             "images": {endpoint: endpoints[endpoint]["images"] for endpoint in endpoints},
             "count_scope": {"playcanvas": "full_membership_v_c_d_unavailable", "gsplat_rs": "control_only_exact_v_c_d_throughput_unobserved"},
+            "thermal": {
+                endpoint: {
+                    role: endpoints[endpoint][role]["environment"]["thermal"]
+                    for role in ("control", "throughput")
+                }
+                for endpoint in endpoints
+            },
         })
     quality_passed = min(scores) >= minimum_ssim
     median_delta = statistics.median(pair["gsplat_rs_minus_playcanvas_ms"] for pair in pair_results)
@@ -128,6 +144,18 @@ def evaluate(path: pathlib.Path) -> dict[str, Any]:
         }
         if median_delta > 0:
             reasons.append("gsplat_rs_slower_on_paired_median_terminal_window")
+    published_pairs = pair_results
+    if not quality_passed:
+        published_pairs = [
+            {
+                "pair_id": pair["pair_id"],
+                "run_order": pair["run_order"],
+                "images": pair["images"],
+                "count_scope": pair["count_scope"],
+                "thermal": pair["thermal"],
+            }
+            for pair in pair_results
+        ]
     return {
         "schema": RESULT_SCHEMA,
         "series_id": series_id,
@@ -142,7 +170,7 @@ def evaluate(path: pathlib.Path) -> dict[str, Any]:
         "quality_passed": quality_passed,
         "performance": performance,
         "reasons": reasons,
-        "pairs": pair_results,
+        "pairs": published_pairs,
         "limitations": [
             "PlayCanvas V/C/D remain unavailable and are not inferred from source membership",
             "gsplat-rs control V/C/D are not copied into throughput",

@@ -25,6 +25,10 @@ TRACE = {
     "sha256": "34d47dbddf73d915bfd55431b33da9430882767a40d9d74c636c508f7d7a5ab3",
     "frame_indices": [0, 1],
 }
+TRACE_FRAME_POSE_INTRINSICS_SHA256 = {
+    0: "a008beb20adfdc24af484b25112503edb636e03010028aaeae812c3454527b46",
+    1: "4b1d63381a662226712fd58cf5b3ea120fe5378beb73c228a509f55ec393f265",
+}
 WIDTH = 1920
 HEIGHT = 1080
 WARMUP = 20
@@ -82,6 +86,9 @@ def validate_schedule(document: dict[str, Any]) -> tuple[list[dict[str, Any]], s
     integer(schedule, "seed", "schedule.schedule")
     predeclared = utc(schedule.get("predeclared_at_utc"), "schedule.schedule.predeclared_at_utc")
     pairs = array(schedule, "pairs", "schedule.schedule")
+    references = array(schedule, "reference_images", "schedule.schedule")
+    if len(references) != 2:
+        fail("schedule.schedule.reference_images must cover both views")
     if len(pairs) != 5:
         fail("schedule.schedule.pairs must contain exactly five pairs")
     seen: set[str] = set()
