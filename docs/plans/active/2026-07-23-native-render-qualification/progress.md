@@ -4,6 +4,7 @@
 
 <!-- gsplat-program-task-states: begin -->
 Q0 = Accepted
+Q2 = Accepted
 <!-- gsplat-program-task-states: end -->
 
 ## Scope
@@ -73,3 +74,13 @@ The newly authorized Chrome/WebGPU attempt must also remain **Deferred**: it
 exposed a ticket-namespace defect after the collector observed its initial
 `ready` object. The repair at `a2437d4` has local verification only; no
 post-repair browser endpoint evidence exists yet.
+
+## Q2 finite dependency result (2026-07-27)
+
+Balanced B6 is terminal **Rejected** after B1--B3 produced no Accepted
+component, leaving no legal B4 combination or B5 product policy. Under the
+predeclared Q0 dependency table, Q2 is therefore machine-state **Accepted**
+with report result `product_comparison=not_applicable`. No gsplat-rs Balanced
+product plan exists to compare with PlayCanvas, so launching or fabricating a
+matched product-throughput run would be misleading. This outcome is not a
+performance win; it is the finite truthful completion path for a rejected B6.
