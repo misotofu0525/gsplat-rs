@@ -21,6 +21,7 @@ profiles are opt-in:
 
 ```bash
 python3 tests/verification_bootstrap.py doctor --profile android-a065
+python3 tests/verification_bootstrap.py doctor --profile android-a065-q3-simd
 python3 tests/verification_bootstrap.py doctor --profile ios-simulator
 ```
 
@@ -103,6 +104,52 @@ GSPLAT_IOS_DATASET=/absolute/path/to/kitune1.ply \
 python3 tests/verification_bootstrap.py run ios-simulator --allow-device
 ```
 
+The Q3 A065 SIMD entry is the single final qualification invocation. Doctor and
+command are read-only: they verify the pinned SDK/NDK/Rust target, all canonical
+Truck ladder inputs, the trace, a fresh output, and an explicit full commit SHA;
+they never call `adb`. `run` requires `--allow-device` and delegates exactly once
+to the Q3 collector (no automatic retry):
+
+```bash
+GSPLAT_ANDROID_SERIAL=<adb-serial> \
+GSPLAT_Q3_A065_EXPECTED_COMMIT=<full-40-character-sha> \
+GSPLAT_Q3_A065_OUTPUT=target/qualification/q3-a065-simd-<sha>-attempt-1 \
+python3 tests/verification_bootstrap.py doctor --profile android-a065-q3-simd
+
+GSPLAT_ANDROID_SERIAL=<adb-serial> \
+GSPLAT_Q3_A065_EXPECTED_COMMIT=<full-40-character-sha> \
+GSPLAT_Q3_A065_OUTPUT=target/qualification/q3-a065-simd-<sha>-attempt-1 \
+python3 tests/verification_bootstrap.py command android-a065-q3-simd
+
+GSPLAT_ANDROID_SERIAL=<adb-serial> \
+GSPLAT_Q3_A065_EXPECTED_COMMIT=<full-40-character-sha> \
+GSPLAT_Q3_A065_OUTPUT=target/qualification/q3-a065-simd-<sha>-attempt-1 \
+python3 tests/verification_bootstrap.py run android-a065-q3-simd --allow-device
+```
+
+The collector first requires a physical A065 AArch64 receipt proving Scalar and
+Neon element parity for keys, source IDs, NaN bits, boundary bits, FMA-derived
+keys, and stable ties, with both kernels executed. Only then may it run a short
+Scalar/Neon image/count control plus one diagnostic pair per point-ladder tier.
+Those cells cannot promote a plan. Complete Truck alone receives five matched,
+counterbalanced terminal pairs. Timing runs do not repeat PNG capture. A
+diagnostic performance rejection continues the later point ladder and does not
+replace the complete-Truck terminal. Only an explicit capacity, admission, or
+resource-range receipt from the renderer scene-admission producer, schema-bound
+to the post-launch Activity phase, exact dataset ID/hash/splat count, and the
+exact host-issued collector run identity, may scope out larger workloads. The
+current Android product does not publish that receipt, so generic log text,
+OOMs, PNG/artifact failures, and collector or ledger errors remain cell-local
+integrity `Rejected` without range inference; the collector continues the
+predeclared later ladder and complete-Truck cells, but the matrix remains
+sticky `Rejected` even if that later terminal is otherwise Accepted. Only a
+failure that prevents the matrix from maintaining its frozen repository,
+device, installed-APK, or prepared-input identity terminates the matrix as
+`Rejected`, while a proven pre-launch environment prerequisite is `Deferred`.
+The trace is pushed and copied once for the matrix, each PLY is pushed and
+copied once per workload, and the one-shot correctness/timing commands reuse
+hash-bound prepared-input and installed-lane receipts without automatic retry.
+
 Both device collectors require a fresh output directory. Override
 `GSPLAT_ANDROID_OUTPUT` or `GSPLAT_IOS_OUTPUT` when retaining multiple runs;
 otherwise the bootstrap derives a target-local directory from the current
@@ -126,6 +173,7 @@ or retries a failed command.
 | Chrome / WebGPU | `GSPLAT_ARTIFACT_DIR=<fresh-path> python3 tests/verification_bootstrap.py doctor --profile web-webgpu` | Repeat the same environment with `run web-webgpu` | Real Chrome WebGPU/WASM functional artifact; not a performance comparison. |
 | Chrome / WebGPU Truck 1080p | `GSPLAT_WEB_TRUCK_OUTPUT=<fresh-root> python3 tests/verification_bootstrap.py doctor --profile web-webgpu-truck-1080p` | Repeat the same environment through `command`, then once through `run web-webgpu-truck-1080p` | Q1 Packed Exact full-quality prerequisite artifact; not PlayCanvas performance evidence or Q1 acceptance. |
 | Android A065 | `GSPLAT_ANDROID_SERIAL=<serial> GSPLAT_ANDROID_DATASET=<absolute-ply> GSPLAT_ANDROID_OUTPUT=<fresh-path> python3 tests/verification_bootstrap.py doctor --profile android-a065` | Repeat the same environment with `run android-a065 --allow-device` | One full-quality Packed/CPU functionality and strict-ledger artifact; not a CPU/GPU comparison. |
+| Android A065 Q3 SIMD | `GSPLAT_ANDROID_SERIAL=<serial> GSPLAT_Q3_A065_EXPECTED_COMMIT=<full-sha> GSPLAT_Q3_A065_OUTPUT=<fresh-path> python3 tests/verification_bootstrap.py doctor --profile android-a065-q3-simd` | Repeat the same environment through `command`, then once through `run android-a065-q3-simd --allow-device` | Physical element parity, diagnostic ladder, and complete-Truck five-pair terminal. No device run is implied by READY. |
 
 Before `run`, substitute `command` for the action to inspect the exact command
 and derived environment without building, opening Chrome, querying `adb`, or
@@ -144,6 +192,10 @@ maintainer's paths in scripts:
 - A065: `GSPLAT_ANDROID_SERIAL`, `GSPLAT_ANDROID_DATASET`, and
   `GSPLAT_ANDROID_OUTPUT` make device, asset, and destination explicit. The
   serial and dataset are intentionally never guessed or committed.
+- A065 Q3 SIMD: `GSPLAT_ANDROID_SERIAL`,
+  `GSPLAT_Q3_A065_EXPECTED_COMMIT`, and `GSPLAT_Q3_A065_OUTPUT` freeze the
+  device selector, exact integrated source, and immutable destination. Dataset
+  paths come only from the committed full-quality matrix.
 
 Use an absolute output path or a repository-relative path. Because bootstrap
 executes collectors directly rather than through a shell, a literal `~` is not

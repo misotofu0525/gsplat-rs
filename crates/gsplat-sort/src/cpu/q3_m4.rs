@@ -20,7 +20,7 @@ enum ForcedKernel {
 }
 
 #[derive(Default)]
-struct Parity {
+pub(super) struct Parity {
     key: bool,
     source_id: bool,
     nan: bool,
@@ -30,8 +30,15 @@ struct Parity {
 }
 
 impl Parity {
-    fn all(&self) -> bool {
+    pub(super) fn all(&self) -> bool {
         self.key && self.source_id && self.nan && self.boundary && self.fma && self.stable_tie
+    }
+
+    pub(super) fn json_fields(&self) -> String {
+        format!(
+            "\"key\":{},\"source_id\":{},\"nan_bits\":{},\"boundary_bits\":{},\"fma_derived_key\":{},\"stable_tie\":{}",
+            self.key, self.source_id, self.nan, self.boundary, self.fma, self.stable_tie,
+        )
     }
 }
 
@@ -117,7 +124,7 @@ fn parity_case(keys: &[u32], source_ids: &[u32]) -> bool {
     scalar == expected && neon == scalar
 }
 
-fn verify_parity() -> Parity {
+pub(super) fn verify_parity() -> Parity {
     let mut seed = 0x5133_d00d_u32;
     let keys = (0..4_099).map(|_| lcg_next(&mut seed)).collect::<Vec<_>>();
     let key_case_ids = (0..keys.len())

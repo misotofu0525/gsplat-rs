@@ -536,6 +536,101 @@ def required_env_probe(discovery: Discovery, variable: str, purpose: str) -> Pro
     )
 
 
+def full_sha_env_probe(discovery: Discovery, variable: str, purpose: str) -> Probe:
+    value = discovery.env.get(variable, "").strip()
+    ok = re.fullmatch(r"[0-9a-f]{40}", value) is not None
+    return Probe(
+        key=f"env:{variable}",
+        ok=ok,
+        detail=value or "not set",
+        remedy=None if ok else f"set {variable} to the exact 40-character lowercase commit ({purpose})",
+    )
+
+
+def clean_exact_repository_probe(discovery: Discovery, expected: str) -> Probe:
+    git = discovery.command_path("git")
+    if git is None:
+        return Probe("q3-clean-exact-repository", False, "git not found", "install Git")
+    head_code, head = discovery.capture((str(git), "-C", str(REPO_ROOT), "rev-parse", "HEAD"))
+    status_code, status = discovery.capture(
+        (str(git), "-C", str(REPO_ROOT), "status", "--porcelain", "--untracked-files=normal")
+    )
+    ok = head_code == 0 and status_code == 0 and head == expected and not status
+    detail = f"head={head or 'unknown'} clean={status_code == 0 and not status} expected={expected or 'unset'}"
+    return Probe(
+        "q3-clean-exact-repository",
+        ok,
+        detail,
+        None if ok else "check out the exact integrated SHA in a clean worktree before qualification",
+    )
+
+
+def q3_a065_input_probes() -> list[Probe]:
+    matrix_path = REPO_ROOT / "tests/perf/full-quality-matrix-plan-v1.json"
+    if not matrix_path.is_file():
+        return [
+            file_probe(
+                "q3-a065-matrix",
+                matrix_path,
+                "restore the committed full-quality matrix",
+            )
+        ]
+    matrix = json.loads(matrix_path.read_text(encoding="utf-8"))
+    ids = {
+        "truck-050k",
+        "truck-100k",
+        "truck-200k",
+        "truck-300k",
+        "truck-500k",
+        "truck-1m",
+        "truck-1p5m",
+        "truck-2m",
+        "truck-full",
+    }
+    dataset_entries = {
+        entry["id"]: entry
+        for entry in matrix.get("datasets", [])
+        if isinstance(entry, dict) and entry.get("id") in ids
+    }
+    probes = [
+        file_probe(
+            f"q3-a065-dataset:{dataset_id}",
+            REPO_ROOT / dataset_entries[dataset_id]["local_path"],
+            f"install the pinned {dataset_id} input at its canonical matrix path",
+        )
+        for dataset_id in sorted(ids & set(dataset_entries))
+    ]
+    probes.extend(
+        Probe(
+            f"q3-a065-dataset:{dataset_id}",
+            False,
+            "matrix entry missing",
+            f"restore the canonical {dataset_id} matrix entry",
+        )
+        for dataset_id in sorted(ids - set(dataset_entries))
+    )
+    trace = next(
+        (
+            entry
+            for entry in matrix.get("traces", [])
+            if isinstance(entry, dict)
+            and entry.get("id") == "candidate-truck-quality-2view-2412x1080-v1"
+        ),
+        None,
+    )
+    if isinstance(trace, dict):
+        probes.append(
+            file_probe(
+                "q3-a065-trace",
+                REPO_ROOT / trace["local_path"],
+                "restore the canonical A065 Truck trace",
+            )
+        )
+    else:
+        probes.append(Probe("q3-a065-trace", False, "matrix entry missing", "restore the canonical A065 Truck trace entry"))
+    return probes
+
+
 def dataset_probe(discovery: Discovery, variable: str, default: str) -> tuple[Probe, pathlib.Path]:
     value = discovery.env.get(variable, default)
     path = pathlib.Path(value)
@@ -641,6 +736,56 @@ def profile_result(name: str, discovery: Discovery) -> ProfileResult:
             name,
             "Short formal A065 Packed/CPU ledger and native-Surface PNG "
             "verification; not a performance comparison",
+            True,
+            tuple(probes),
+            (command,),
+        )
+
+    if name == "android-a065-q3-simd":
+        probes, env = android_environment(discovery)
+        probes.extend(
+            (
+                required_env_probe(
+                    discovery,
+                    "GSPLAT_ANDROID_SERIAL",
+                    "exact adb serial; doctor never queries the device",
+                ),
+                full_sha_env_probe(
+                    discovery,
+                    "GSPLAT_Q3_A065_EXPECTED_COMMIT",
+                    "the clean integrated Q3 candidate",
+                ),
+            )
+        )
+        probes.extend(q3_a065_input_probes())
+        serial = discovery.env.get("GSPLAT_ANDROID_SERIAL", "<set-GSPLAT_ANDROID_SERIAL>")
+        expected = discovery.env.get(
+            "GSPLAT_Q3_A065_EXPECTED_COMMIT",
+            "<set-GSPLAT_Q3_A065_EXPECTED_COMMIT>",
+        )
+        probes.append(clean_exact_repository_probe(discovery, expected))
+        output = discovery.env.get(
+            "GSPLAT_Q3_A065_OUTPUT",
+            f"target/qualification/q3-a065-simd-{head}",
+        )
+        probes.append(fresh_output_probe("GSPLAT_Q3_A065_OUTPUT", output))
+        command = Command(
+            (
+                str(python),
+                "bindings/android/scripts/collect-q3-a065-simd.py",
+                "--serial",
+                serial,
+                "--expected-commit",
+                expected,
+                "--output",
+                output,
+            ),
+            env,
+        )
+        return ProfileResult(
+            name,
+            "One-shot physical A065 Q3 Scalar/Neon staged qualification: "
+            "diagnostic point ladder then complete-Truck terminal pairs",
             True,
             tuple(probes),
             (command,),
@@ -840,6 +985,7 @@ def profile_result(name: str, discovery: Discovery) -> ProfileResult:
 PROFILES = (
     "android-build",
     "android-a065",
+    "android-a065-q3-simd",
     "macos-metal",
     "web-webgpu",
     "web-webgpu-truck-1080p",

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import pathlib
 import sys
 import tempfile
@@ -48,7 +49,13 @@ class FakeHost:
         if binary == "java" and argv[1:] == ("-version",):
             return 0, 'openjdk version "21.0.11" 2026-04-21'
         if binary == "git":
-            return 0, "048344feb8fe"
+            if argv[-3:] == ("rev-parse", "--short=12", "HEAD"):
+                return 0, "048344feb8fe"
+            if argv[-2:] == ("rev-parse", "HEAD"):
+                return 0, "1" * 40
+            if "status" in argv:
+                return 0, ""
+            return 1, "unsupported fake git command"
         if binary == "wasm-bindgen":
             return 0, f"wasm-bindgen {BOOTSTRAP.read_locked_wasm_bindgen_version()}"
         return 1, "unsupported fake command"
@@ -243,6 +250,76 @@ class VerificationBootstrapTests(unittest.TestCase):
             probe = BOOTSTRAP.wasm_bindgen_probe(mismatch)
             self.assertFalse(probe.ok)
             self.assertIn(BOOTSTRAP.read_locked_wasm_bindgen_version(), probe.detail)
+
+    def test_q3_a065_profile_is_read_only_and_emits_one_canonical_command(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            host = FakeHost(root)
+            for command in ("bash", "cargo", "git", "python3", "rustup"):
+                host.add_executable(command)
+            sdk = make_android_sdk(root)
+            java_home = make_java_home(root)
+            dataset_ids = (
+                "truck-050k",
+                "truck-100k",
+                "truck-200k",
+                "truck-300k",
+                "truck-500k",
+                "truck-1m",
+                "truck-1p5m",
+                "truck-2m",
+                "truck-full",
+            )
+            datasets = []
+            for dataset_id in dataset_ids:
+                path = root / "fixtures" / f"{dataset_id}.ply"
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(b"ply\n")
+                datasets.append({"id": dataset_id, "local_path": str(path.relative_to(root))})
+            trace = root / "fixtures" / "trace.json"
+            trace.write_text("{}", encoding="utf-8")
+            matrix = root / "tests/perf/full-quality-matrix-plan-v1.json"
+            matrix.parent.mkdir(parents=True)
+            matrix.write_text(
+                json.dumps(
+                    {
+                        "datasets": datasets,
+                        "traces": [
+                            {
+                                "id": "candidate-truck-quality-2view-2412x1080-v1",
+                                "local_path": str(trace.relative_to(root)),
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            expected = "1" * 40
+            discovery = BOOTSTRAP.Discovery(
+                env={
+                    "ANDROID_SDK_ROOT": str(sdk),
+                    "JAVA_HOME": str(java_home),
+                    "GSPLAT_ANDROID_SERIAL": "033ed212",
+                    "GSPLAT_Q3_A065_EXPECTED_COMMIT": expected,
+                    "GSPLAT_Q3_A065_OUTPUT": str(root / "fresh-output"),
+                },
+                home=root,
+                which=host.which,
+                capture=host.capture,
+                host_system="Darwin",
+            )
+            with mock.patch.object(BOOTSTRAP, "REPO_ROOT", root):
+                result = BOOTSTRAP.profile_result("android-a065-q3-simd", discovery)
+
+            self.assertTrue(result.ready)
+            self.assertTrue(result.touches_device)
+            self.assertEqual(len(result.commands), 1)
+            command = result.commands[0].argv
+            self.assertIn("bindings/android/scripts/collect-q3-a065-simd.py", command)
+            self.assertEqual(command[command.index("--expected-commit") + 1], expected)
+            self.assertFalse(
+                any(pathlib.Path(call[0]).name in {"adb", "simctl"} for call in host.calls)
+            )
 
     def test_wasm_bindgen_falls_back_to_explicit_cargo_home(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -484,6 +561,7 @@ class VerificationBootstrapTests(unittest.TestCase):
 
     def test_default_doctor_is_host_only(self) -> None:
         self.assertNotIn("android-a065", BOOTSTRAP.DEFAULT_DOCTOR_PROFILES)
+        self.assertNotIn("android-a065-q3-simd", BOOTSTRAP.DEFAULT_DOCTOR_PROFILES)
         self.assertNotIn("ios-simulator", BOOTSTRAP.DEFAULT_DOCTOR_PROFILES)
         self.assertNotIn("web-webgpu-truck-1080p", BOOTSTRAP.DEFAULT_DOCTOR_PROFILES)
 

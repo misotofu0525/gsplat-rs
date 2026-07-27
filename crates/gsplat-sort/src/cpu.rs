@@ -359,6 +359,9 @@ unsafe fn unpack_values_neon(packed: &[u64], values: &mut [u32]) {
 #[cfg(all(test, target_arch = "aarch64"))]
 mod q3_m4;
 
+#[cfg(all(test, target_arch = "aarch64"))]
+mod q3_a065;
+
 #[cfg(test)]
 mod tests {
     use super::{CpuSortBackend, SortBackend, SortError};

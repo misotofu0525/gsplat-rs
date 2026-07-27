@@ -6,6 +6,27 @@ BINDINGS_DIR="$ROOT_DIR/bindings/android"
 SAMPLE_APP_DIR="$ROOT_DIR/examples/android/app"
 cd "$ROOT_DIR"
 
+GSPLAT_ANDROID_Q3_CPU_LANE="${GSPLAT_ANDROID_Q3_CPU_LANE:-}"
+case "$GSPLAT_ANDROID_Q3_CPU_LANE" in
+  "")
+    CARGO_FEATURE_ARGS=()
+    Q3_CPU_LANE="default"
+    ;;
+  scalar)
+    CARGO_FEATURE_ARGS=(--features qualification-q3-cpu-scalar)
+    Q3_CPU_LANE="scalar"
+    ;;
+  neon)
+    CARGO_FEATURE_ARGS=(--features qualification-q3-cpu-neon)
+    Q3_CPU_LANE="neon"
+    ;;
+  *)
+    echo "Unsupported GSPLAT_ANDROID_Q3_CPU_LANE: $GSPLAT_ANDROID_Q3_CPU_LANE"
+    echo "Expected one of: scalar, neon, or empty for the product default"
+    exit 1
+    ;;
+esac
+
 UNAME_S="$(uname -s)"
 
 ANDROID_SDK_ROOT="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-$HOME/Library/Android/sdk}}"
@@ -102,7 +123,8 @@ esac
 
 rustup target add aarch64-linux-android >/dev/null
 CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$CLANG" \
-  cargo build -p gsplat-ffi-c --target aarch64-linux-android "${CARGO_PROFILE_ARGS[@]}"
+  cargo build -p gsplat-ffi-c --target aarch64-linux-android \
+  "${CARGO_PROFILE_ARGS[@]}" "${CARGO_FEATURE_ARGS[@]}"
 
 RUST_STATIC_LIB="$ROOT_DIR/target/aarch64-linux-android/$CARGO_TARGET_DIR_NAME/libgsplat_ffi_c.a"
 if [[ ! -f "$RUST_STATIC_LIB" ]]; then
@@ -132,4 +154,5 @@ cp "$OUT_SO" "$SYMBOLS_DIR/libgsplat_jni.so"
 
 echo "android native build complete"
 echo "android_api_level=$ANDROID_API_LEVEL"
+echo "qualification_q3_cpu_lane=$Q3_CPU_LANE"
 echo "so=$OUT_SO"

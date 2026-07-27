@@ -6,6 +6,8 @@ debuggable sample package. By default it refuses to run unless the installed
 base.apk is byte-for-byte the local APK, then stages the selected PLY once and
 restores it with ``run-as`` after every per-run package-data clear. Building and
 installing the APK is an explicit one-time preparation mode, not dataset setup.
+The private Q3 orchestration path may instead supply strict installed-APK and
+prepared-input receipts so one-shot measurements do not repeat that setup.
 """
 
 from __future__ import annotations
@@ -72,6 +74,9 @@ FORMAL_ANDROID_SIZE = (2412, 1080)
 DEVICE_PNG_PULL_RECEIPT_SCHEMA = "gsplat-android-device-png-pull/v1"
 DEVICE_DATASET_PREFIX = "/data/local/tmp/gsplat-benchmark-"
 DEVICE_TRACE_PREFIX = "/data/local/tmp/gsplat-camera-trace-"
+Q3_PHASE_SCHEMA = "gsplat-q3-android-protocol-phase/v1"
+Q3_PREPARED_INPUTS_SCHEMA = "gsplat-q3-android-prepared-inputs/v1"
+Q3_INSTALLED_APK_SCHEMA = "gsplat-q3-android-installed-apk/v1"
 CAMERA_RECEIPT_SCHEMA = "gsplat-surface-camera-receipt/v1"
 ANDROID_ENVIRONMENT_RECEIPT_SCHEMA = "gsplat-android-environment-receipt/v2"
 CAMERA_RECEIPT_TOLERANCE = 5.0e-5
@@ -581,6 +586,48 @@ def verify_installed_apk(
     return {"device_path": device_path, **actual, "run_as_verified": True}
 
 
+def install_apk(
+    adb: pathlib.Path | str,
+    serial: str,
+    apk: pathlib.Path,
+    timeout_seconds: float,
+) -> None:
+    """Install one exact APK once and wait for vendor package queues to settle."""
+    run_command(
+        adb_args(adb, serial, "install", "-r", str(apk)),
+        timeout=timeout_seconds,
+    )
+    run_command(
+        adb_args(
+            adb,
+            serial,
+            "shell",
+            "cmd",
+            "package",
+            "wait-for-handler",
+            "--timeout",
+            "10000",
+        ),
+        timeout=15.0,
+    )
+    run_command(
+        adb_args(
+            adb,
+            serial,
+            "shell",
+            "cmd",
+            "package",
+            "wait-for-background-handler",
+            "--timeout",
+            "10000",
+        ),
+        timeout=15.0,
+    )
+    # Some vendor builds deliver PACKAGE_REPLACED after both package queues
+    # report idle. This remains one wait inside the single install attempt.
+    time.sleep(2.0)
+
+
 def inject_device_dataset(
     adb: pathlib.Path | str,
     serial: str,
@@ -628,6 +675,23 @@ def inject_device_trace(
     )
     require_matching_identity(expected_identity, actual, "injected camera_trace.json")
     return actual
+
+
+def remove_device_final_png(
+    adb: pathlib.Path | str, serial: str
+) -> None:
+    run_command(
+        adb_args(
+            adb,
+            serial,
+            "shell",
+            "run-as",
+            PACKAGE,
+            "rm",
+            "-f",
+            INTERNAL_FINAL_PNG,
+        )
+    )
 
 
 def cleanup_device_dataset(
@@ -746,6 +810,24 @@ def atomic_write_json(path: pathlib.Path, payload: dict[str, Any]) -> None:
     os.replace(temporary, path)
 
 
+def qualification_q3_phase_transition(path: pathlib.Path | None, phase: str) -> None:
+    """Advance the private Q3 receipt from the collector's actual control flow."""
+    if path is None:
+        return
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if payload.get("schema") != Q3_PHASE_SCHEMA:
+        raise RuntimeError("Q3 protocol phase receipt schema drifted")
+    history = payload.get("history")
+    if not isinstance(history, list) or not history:
+        raise RuntimeError("Q3 protocol phase receipt history is missing")
+    current = payload.get("phase")
+    if (current, phase) not in {("install", "launched"), ("launched", "evidence")}:
+        raise RuntimeError(f"invalid Q3 protocol phase transition: {current!r} -> {phase!r}")
+    payload["phase"] = phase
+    history.append({"phase": phase, "at_utc": utc_now()})
+    atomic_write_json(path, payload)
+
+
 def resolve_apk(explicit: pathlib.Path | None = None) -> pathlib.Path:
     if explicit is not None:
         apk = explicit.expanduser().resolve()
@@ -773,6 +855,7 @@ def capture_final_png_requested(args: argparse.Namespace) -> bool:
     return bool(
         getattr(args, "capture_final_png", False)
         or getattr(args, "formal_artifact", False)
+        or getattr(args, "qualification_q3_capture_final_png", False)
     )
 
 
@@ -900,6 +983,7 @@ def collect_logcat_run(
     launch_args: list[str],
     log_path: pathlib.Path,
     timeout_seconds: float,
+    qualification_q3_phase_receipt: pathlib.Path | None = None,
 ) -> str:
     # A clean buffer ensures an old summary cannot satisfy this run's polling.
     run_command(adb_args(adb, serial, "logcat", "-c"))
@@ -919,10 +1003,19 @@ def collect_logcat_run(
         )
         try:
             run_command(adb_args(adb, serial, *launch_args))
+            qualification_q3_phase_transition(
+                qualification_q3_phase_receipt, "launched"
+            )
             deadline = time.monotonic() + timeout_seconds
+            evidence_recorded = False
             while time.monotonic() < deadline:
                 log_file.flush()
                 contents = log_path.read_text(encoding="utf-8", errors="replace")
+                if not evidence_recorded and "GSPLAT_BENCHMARK_" in contents:
+                    qualification_q3_phase_transition(
+                        qualification_q3_phase_receipt, "evidence"
+                    )
+                    evidence_recorded = True
                 if "BENCHMARK_RESULT " in contents:
                     try:
                         completed_benchmark_run_id(contents)
@@ -2245,6 +2338,33 @@ def parser() -> argparse.ArgumentParser:
         ),
     )
     result.add_argument(
+        "--qualification-q3-capture-final-png",
+        action="store_true",
+        help=(
+            "private Q3 mode: retain and validate the exact 2412x1080 final PNG "
+            "without publishing a full-quality suite"
+        ),
+    )
+    result.add_argument(
+        "--qualification-q3-phase-receipt",
+        type=pathlib.Path,
+        help=argparse.SUPPRESS,
+    )
+    result.add_argument(
+        "--qualification-q3-run-identity",
+        help=argparse.SUPPRESS,
+    )
+    result.add_argument(
+        "--qualification-q3-prepared-inputs",
+        type=pathlib.Path,
+        help=argparse.SUPPRESS,
+    )
+    result.add_argument(
+        "--qualification-q3-installed-apk-receipt",
+        type=pathlib.Path,
+        help=argparse.SUPPRESS,
+    )
+    result.add_argument(
         "--backend",
         action="append",
         choices=BACKENDS,
@@ -2380,6 +2500,48 @@ def validate_args(args: argparse.Namespace) -> list[str]:
         )
     if args.formal_artifact and args.geometry_path != "packed":
         raise ValueError("--formal-artifact requires --geometry-path packed")
+    if args.qualification_q3_capture_final_png and args.geometry_path != "packed":
+        raise ValueError(
+            "--qualification-q3-capture-final-png requires --geometry-path packed"
+        )
+    if args.qualification_q3_capture_final_png and (
+        trace_display.get("width"), trace_display.get("height")
+    ) != FORMAL_ANDROID_SIZE:
+        raise ValueError(
+            "--qualification-q3-capture-final-png requires the exact "
+            "2412x1080 Android trace"
+        )
+    if args.qualification_q3_phase_receipt is not None:
+        args.qualification_q3_phase_receipt = (
+            args.qualification_q3_phase_receipt.expanduser().resolve()
+        )
+        if args.geometry_path != "packed":
+            raise ValueError("Q3 phase receipt requires --geometry-path packed")
+        if re.fullmatch(r"[0-9a-f]{32}", str(args.qualification_q3_run_identity)) is None:
+            raise ValueError("Q3 phase receipt requires one 32-hex host run identity")
+    elif args.qualification_q3_run_identity is not None:
+        raise ValueError("Q3 run identity requires the Q3 phase receipt")
+    q3_prepared_paths = (
+        args.qualification_q3_prepared_inputs,
+        args.qualification_q3_installed_apk_receipt,
+    )
+    if any(path is not None for path in q3_prepared_paths):
+        if not all(path is not None for path in q3_prepared_paths):
+            raise ValueError(
+                "Q3 prepared inputs and installed APK receipts must be supplied together"
+            )
+        if args.qualification_q3_phase_receipt is None:
+            raise ValueError("Q3 prepared receipts require the Q3 phase receipt")
+        if args.prepare_apk:
+            raise ValueError("Q3 prepared receipts cannot prepare or install an APK")
+        for field in (
+            "qualification_q3_prepared_inputs",
+            "qualification_q3_installed_apk_receipt",
+        ):
+            path = getattr(args, field).expanduser().resolve()
+            if not path.is_file():
+                raise ValueError(f"Q3 prepared receipt does not exist: {path}")
+            setattr(args, field, path)
     if args.camera_frame is not None:
         if args.camera_frame < 0:
             raise ValueError("--camera-frame must be non-negative")
@@ -2404,6 +2566,10 @@ def validate_args(args: argparse.Namespace) -> list[str]:
     backends = args.backend or ["cpu", "gpu"]
     if len(set(backends)) != len(backends):
         raise ValueError("--backend values must be unique")
+    if args.qualification_q3_phase_receipt is not None and (
+        backends != ["cpu"] or args.repetitions != 1
+    ):
+        raise ValueError("Q3 phase receipt requires exactly one forced CPU run")
     if args.async_sort and any(backend != "cpu" for backend in backends):
         raise ValueError("--async-sort is only compatible with the cpu backend")
     if args.gpu_producer is not None:
@@ -2436,6 +2602,108 @@ def validate_args(args: argparse.Namespace) -> list[str]:
         if not math.isfinite(value) or value <= 0:
             raise ValueError(f"--{label.replace('_', '-')} must be positive")
     return backends
+
+
+def _q3_receipt_identity(value: Any, description: str) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise RuntimeError(f"Q3 {description} identity is missing")
+    if (
+        type(value.get("bytes")) is not int
+        or value["bytes"] <= 0
+        or re.fullmatch(r"[0-9a-f]{64}", str(value.get("sha256"))) is None
+    ):
+        raise RuntimeError(f"Q3 {description} identity is invalid")
+    return value
+
+
+def load_q3_prepared_inputs(
+    path: pathlib.Path,
+    args: argparse.Namespace,
+    dataset_identity: dict[str, Any],
+    trace_identity: dict[str, Any],
+) -> dict[str, Any]:
+    receipt = json.loads(path.read_text(encoding="utf-8"))
+    if receipt.get("schema") != Q3_PREPARED_INPUTS_SCHEMA:
+        raise RuntimeError("Q3 prepared-input receipt schema drifted")
+    if receipt.get("serial") != args.serial or receipt.get("package") != PACKAGE:
+        raise RuntimeError("Q3 prepared-input device/package identity drifted")
+    preparation_id = receipt.get("preparation_id")
+    if not isinstance(preparation_id, str) or not preparation_id:
+        raise RuntimeError("Q3 prepared-input preparation_id is missing")
+    counts = receipt.get("preparation_counts_at_publish")
+    if (
+        not isinstance(counts, dict)
+        or counts.get("package_clear") != 1
+        or counts.get("trace_push") != 1
+        or counts.get("trace_copy") != 1
+        or type(counts.get("dataset_push")) is not int
+        or counts["dataset_push"] < 1
+        or counts.get("dataset_copy") != counts["dataset_push"]
+    ):
+        raise RuntimeError("Q3 prepared-input operation counts are invalid")
+    for name, expected, internal_path in (
+        ("dataset", dataset_identity, INTERNAL_DATASET),
+        ("trace", trace_identity, INTERNAL_TRACE),
+    ):
+        item = receipt.get(name)
+        if not isinstance(item, dict):
+            raise RuntimeError(f"Q3 prepared {name} receipt is missing")
+        local = _q3_receipt_identity(item.get("local"), f"prepared {name} local")
+        if {field: local[field] for field in ("bytes", "sha256")} != {
+            field: expected[field] for field in ("bytes", "sha256")
+        }:
+            raise RuntimeError(f"Q3 prepared {name} local identity drifted")
+        staged = _q3_receipt_identity(
+            item.get("device_staged"), f"prepared {name} device-staged"
+        )
+        expected_staged_path = (
+            device_dataset_path(expected["sha256"])
+            if name == "dataset"
+            else device_trace_path(expected["sha256"])
+        )
+        if item.get("device_staged", {}).get("path") != expected_staged_path:
+            raise RuntimeError(f"Q3 prepared {name} staged path drifted")
+        internal = _q3_receipt_identity(
+            item.get("package_internal"), f"prepared {name} package-internal"
+        )
+        if item.get("package_internal", {}).get("path") != internal_path:
+            raise RuntimeError(f"Q3 prepared {name} internal path drifted")
+        for identity in (staged, internal):
+            if {field: identity[field] for field in ("bytes", "sha256")} != {
+                field: expected[field] for field in ("bytes", "sha256")
+            }:
+                raise RuntimeError(f"Q3 prepared {name} device identity drifted")
+    return receipt
+
+
+def load_q3_installed_apk_receipt(
+    path: pathlib.Path,
+    args: argparse.Namespace,
+    apk_identity: dict[str, Any],
+    native_identity: dict[str, Any],
+) -> dict[str, Any]:
+    receipt = json.loads(path.read_text(encoding="utf-8"))
+    if receipt.get("schema") != Q3_INSTALLED_APK_SCHEMA:
+        raise RuntimeError("Q3 installed-APK receipt schema drifted")
+    if receipt.get("serial") != args.serial or receipt.get("package") != PACKAGE:
+        raise RuntimeError("Q3 installed-APK device/package identity drifted")
+    if type(receipt.get("install_sequence")) is not int or receipt["install_sequence"] < 1:
+        raise RuntimeError("Q3 installed-APK sequence is invalid")
+    if receipt.get("lane") not in {"scalar", "neon"}:
+        raise RuntimeError("Q3 installed-APK lane is invalid")
+    for name, expected in (
+        ("local_apk", apk_identity),
+        ("installed_apk", apk_identity),
+        ("native_library", native_identity),
+    ):
+        actual = _q3_receipt_identity(receipt.get(name), name)
+        if {field: actual[field] for field in ("bytes", "sha256")} != {
+            field: expected[field] for field in ("bytes", "sha256")
+        }:
+            raise RuntimeError(f"Q3 {name} identity drifted")
+    if receipt["installed_apk"].get("run_as_verified") is not True:
+        raise RuntimeError("Q3 installed APK lacks run-as verification")
+    return receipt
 
 
 def default_output(ply: pathlib.Path) -> pathlib.Path:
@@ -2535,11 +2803,12 @@ def collect_scheduled_runs(
     output: pathlib.Path,
     experiment: dict[str, Any],
     experiment_path: pathlib.Path,
-    temporary_dataset_path: str,
-    temporary_trace_path: str,
+    temporary_dataset_path: str | None,
+    temporary_trace_path: str | None,
     expected_trace: dict[str, Any],
     android_environment_receipt_path: pathlib.Path,
     android_environment_receipt: dict[str, Any],
+    prepared_inputs: dict[str, Any] | None = None,
 ) -> None:
     for spec in schedule:
         if spec.index > 1 and args.cooldown_seconds > 0:
@@ -2572,56 +2841,74 @@ def collect_scheduled_runs(
             "log": str(log_path.relative_to(output)),
             "artifact": str(artifact_dir.relative_to(output)),
         }
+        if args.qualification_q3_run_identity is not None:
+            run_record["qualification_q3_run_identity"] = (
+                args.qualification_q3_run_identity
+            )
         experiment["runs"].append(run_record)
         atomic_write_json(experiment_path, experiment)
 
-        clear_result = run_command(
-            adb_args(adb, args.serial, "shell", "pm", "clear", PACKAGE),
-            capture=True,
-        ).stdout.strip()
-        if clear_result != "Success":
-            raise RuntimeError(
-                f"failed to clear exact benchmark package {PACKAGE}: {clear_result}"
+        if prepared_inputs is None:
+            if temporary_dataset_path is None or temporary_trace_path is None:
+                raise RuntimeError("ordinary Android collection lacks staged inputs")
+            clear_result = run_command(
+                adb_args(adb, args.serial, "shell", "pm", "clear", PACKAGE),
+                capture=True,
+            ).stdout.strip()
+            if clear_result != "Success":
+                raise RuntimeError(
+                    f"failed to clear exact benchmark package {PACKAGE}: {clear_result}"
+                )
+            run_command(
+                adb_args(
+                    adb,
+                    args.serial,
+                    "shell",
+                    "cmd",
+                    "package",
+                    "wait-for-handler",
+                    "--timeout",
+                    "10000",
+                ),
+                timeout=15.0,
             )
-        run_command(
-            adb_args(
+            if capture_final_png_requested(args):
+                assert_device_final_png_absent(adb, args.serial)
+
+            injected_identity = inject_device_dataset(
                 adb,
                 args.serial,
-                "shell",
-                "cmd",
-                "package",
-                "wait-for-handler",
-                "--timeout",
-                "10000",
-            ),
-            timeout=15.0,
-        )
-        if capture_final_png_requested(args):
-            assert_device_final_png_absent(adb, args.serial)
+                temporary_dataset_path,
+                experiment["dataset"],
+            )
+            run_record["injected_dataset"] = {
+                "internal_path": INTERNAL_DATASET,
+                **injected_identity,
+            }
+            injected_trace_identity = inject_device_trace(
+                adb,
+                args.serial,
+                temporary_trace_path,
+                experiment["trace"],
+            )
+            run_record["injected_trace"] = {
+                "internal_path": INTERNAL_TRACE,
+                **injected_trace_identity,
+            }
+        else:
+            if capture_final_png_requested(args):
+                remove_device_final_png(adb, args.serial)
+                assert_device_final_png_absent(adb, args.serial)
+            run_record["prepared_inputs"] = {
+                "preparation_id": prepared_inputs["preparation_id"],
+                "workload": prepared_inputs["workload"],
+                "receipt": experiment["prepared_inputs_receipt"],
+                "dataset": prepared_inputs["dataset"]["package_internal"],
+                "trace": prepared_inputs["trace"]["package_internal"],
+            }
 
-        injected_identity = inject_device_dataset(
-            adb,
-            args.serial,
-            temporary_dataset_path,
-            experiment["dataset"],
-        )
-        run_record["injected_dataset"] = {
-            "internal_path": INTERNAL_DATASET,
-            **injected_identity,
-        }
-        injected_trace_identity = inject_device_trace(
-            adb,
-            args.serial,
-            temporary_trace_path,
-            experiment["trace"],
-        )
-        run_record["injected_trace"] = {
-            "internal_path": INTERNAL_TRACE,
-            **injected_trace_identity,
-        }
-
-        # Large tiers can make the per-run verified copy itself observable in
-        # thermal state, so gate immediately before launch, after injection.
+        # Gate immediately before launch. Ordinary collection does this after
+        # per-run injection; private Q3 collection reuses its workload receipt.
         if args.max_thermal_status is None:
             thermal_before = read_thermal_status(adb, args.serial)
         else:
@@ -2653,6 +2940,7 @@ def collect_scheduled_runs(
             benchmark_launch_args(args, spec.backend),
             log_path,
             args.run_timeout_seconds,
+            args.qualification_q3_phase_receipt,
         )
         result_line = extract_result_line(log)
         final_png_path = run_dir / "device-final-frame.png"
@@ -2969,15 +3257,22 @@ def main(argv: Sequence[str] | None = None) -> int:
             else [int(value) for value in args.camera_frame_indices.split(",")]
         ),
     }
+    q3_prepared_mode = args.qualification_q3_prepared_inputs is not None
     experiment: dict[str, Any] = {
         "schema": "gsplat-android-sort-experiment/v1",
         "status": "running",
         "started_at_utc": utc_now(),
-        "package_cleared_before_each_run": PACKAGE,
+        "package_cleared_before_each_run": (
+            False if q3_prepared_mode else PACKAGE
+        ),
         "dataset": dataset_identity,
         "trace": trace_identity,
         "dataset_delivery": {
-            "mode": "adb-push-once+run-as-copy-per-run",
+            "mode": (
+                "q3-workload-prepared-once"
+                if q3_prepared_mode
+                else "adb-push-once+run-as-copy-per-run"
+            ),
             "internal_path": INTERNAL_DATASET,
             "temporary_path": device_dataset_path(dataset_identity["sha256"]),
         },
@@ -2996,24 +3291,37 @@ def main(argv: Sequence[str] | None = None) -> int:
             "gpu_producer": args.gpu_producer,
             "capture_final_png": capture_final_png_requested(args),
             "formal_artifact": args.formal_artifact,
+            "qualification_q3_capture_final_png": (
+                args.qualification_q3_capture_final_png
+            ),
             "cooldown_seconds": args.cooldown_seconds,
             "max_thermal_status": args.max_thermal_status,
-            "apk_mode": "prepare-once" if args.prepare_apk else "reuse-exact-installed",
+            "apk_mode": (
+                "q3-reuse-verified-install-receipt"
+                if q3_prepared_mode
+                else ("prepare-once" if args.prepare_apk else "reuse-exact-installed")
+            ),
             "rust_profile": args.rust_profile if args.prepare_apk else None,
         },
         "schedule": [dataclasses.asdict(spec) for spec in schedule],
         "runs": [],
     }
+    if args.qualification_q3_run_identity is not None:
+        experiment["qualification_q3_run_identity"] = (
+            args.qualification_q3_run_identity
+        )
     experiment_path = output / "experiment.json"
     android_environment_receipt_path = output / "android-environment-receipt.json"
 
     try:
         experiment["repository"] = repository_identity()
         if (
-            args.formal_artifact
+            capture_final_png_requested(args)
             and experiment["repository"].get("dirty") is not False
         ):
-            raise RuntimeError("formal Android collection requires a clean repository")
+            raise RuntimeError(
+                "formal/Q3 Android collection requires a clean repository"
+            )
         if args.prepare_apk:
             build_env = os.environ.copy()
             build_env["ANDROID_RUST_PROFILE"] = args.rust_profile
@@ -3068,67 +3376,89 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.prepare_apk:
             # Installation is an explicit one-time preparation step. Dataset
             # changes after this point are delivered through run-as only.
-            run_command(
-                adb_args(adb, args.serial, "install", "-r", str(apk)),
-                timeout=args.run_timeout_seconds,
-            )
-            run_command(
-                adb_args(
-                    adb,
-                    args.serial,
-                    "shell",
-                    "cmd",
-                    "package",
-                    "wait-for-handler",
-                    "--timeout",
-                    "10000",
-                ),
-                timeout=15.0,
-            )
-            run_command(
-                adb_args(
-                    adb,
-                    args.serial,
-                    "shell",
-                    "cmd",
-                    "package",
-                    "wait-for-background-handler",
-                    "--timeout",
-                    "10000",
-                ),
-                timeout=15.0,
-            )
-            # Some vendor builds deliver PACKAGE_REPLACED after both package
-            # queues report idle. This wait happens only in preparation mode.
-            time.sleep(2.0)
+            install_apk(adb, args.serial, apk, args.run_timeout_seconds)
 
-        experiment["installed_apk"] = verify_installed_apk(
-            adb, args.serial, apk
-        )
-        experiment["installed_apk"]["prepared_by_this_invocation"] = bool(
-            args.prepare_apk
-        )
+        prepared_inputs = None
+        if q3_prepared_mode:
+            prepared_inputs = load_q3_prepared_inputs(
+                args.qualification_q3_prepared_inputs,
+                args,
+                dataset_identity,
+                trace_identity,
+            )
+            installed_receipt = load_q3_installed_apk_receipt(
+                args.qualification_q3_installed_apk_receipt,
+                args,
+                apk_identity,
+                native_identity,
+            )
+            experiment["prepared_inputs_receipt"] = {
+                "path": os.path.relpath(
+                    args.qualification_q3_prepared_inputs, output
+                ),
+                **local_file_identity(args.qualification_q3_prepared_inputs),
+                "preparation_id": prepared_inputs["preparation_id"],
+            }
+            experiment["q3_preparation_counts"] = prepared_inputs[
+                "preparation_counts_at_publish"
+            ]
+            experiment["installed_apk_receipt"] = {
+                "path": os.path.relpath(
+                    args.qualification_q3_installed_apk_receipt, output
+                ),
+                **local_file_identity(args.qualification_q3_installed_apk_receipt),
+                "lane": installed_receipt["lane"],
+                "install_sequence": installed_receipt["install_sequence"],
+            }
+            experiment["installed_apk"] = {
+                **installed_receipt["installed_apk"],
+                "prepared_by_this_invocation": False,
+                "verified_by_install_receipt": True,
+            }
+        else:
+            experiment["installed_apk"] = verify_installed_apk(
+                adb, args.serial, apk
+            )
+            experiment["installed_apk"]["prepared_by_this_invocation"] = bool(
+                args.prepare_apk
+            )
         atomic_write_json(experiment_path, experiment)
 
-        with staged_device_dataset(
-            adb, args.serial, args.ply, experiment["dataset"]
-        ) as temporary_dataset_path:
-            with staged_device_trace(
-                adb, args.serial, args.camera_trace, experiment["trace"]
-            ) as temporary_trace_path:
-                collect_scheduled_runs(
-                    args,
-                    adb,
-                    schedule,
-                    output,
-                    experiment,
-                    experiment_path,
-                    temporary_dataset_path,
-                    temporary_trace_path,
-                    trace_json,
-                    android_environment_receipt_path,
-                    android_environment_receipt,
-                )
+        if prepared_inputs is not None:
+            collect_scheduled_runs(
+                args,
+                adb,
+                schedule,
+                output,
+                experiment,
+                experiment_path,
+                None,
+                None,
+                trace_json,
+                android_environment_receipt_path,
+                android_environment_receipt,
+                prepared_inputs,
+            )
+        else:
+            with staged_device_dataset(
+                adb, args.serial, args.ply, experiment["dataset"]
+            ) as temporary_dataset_path:
+                with staged_device_trace(
+                    adb, args.serial, args.camera_trace, experiment["trace"]
+                ) as temporary_trace_path:
+                    collect_scheduled_runs(
+                        args,
+                        adb,
+                        schedule,
+                        output,
+                        experiment,
+                        experiment_path,
+                        temporary_dataset_path,
+                        temporary_trace_path,
+                        trace_json,
+                        android_environment_receipt_path,
+                        android_environment_receipt,
+                    )
 
         experiment["status"] = "complete"
         experiment["ended_at_utc"] = utc_now()
