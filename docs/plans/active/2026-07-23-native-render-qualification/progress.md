@@ -254,6 +254,18 @@ the collector admits the terminal window only when warmup completion is no
 later than the first measured camera input. The later measured-terminal drain
 remains the sole drain counted in `N/FPS`.
 
+The root-integrated mechanism at `da4887d` was launched once through
+doctor -> command -> run and failed closed before warmup frame 2, with no
+performance artifact. The profile had invoked only the default
+`current_stats_evidence_window` collector under `sustained_window`; ticket 1
+was still occupying the renderer ring when frame 2 correctly reported
+`not_requested`. The retained failure is not retryable. The follow-up
+launchbook repair makes the profile explicitly two-stage: an untimed isolated
+current-stats control must validate and publish its full-quality suite before a
+separate sustained terminal-throughput collector can bind that exact control.
+No replacement Chrome endpoint was run by the repair candidate, so Q1
+throughput remains Deferred.
+
 ## Q3 M4 SIMD microbenchmark checkpoint (2026-07-27)
 
 At clean root commit `f025dff`, the fixed

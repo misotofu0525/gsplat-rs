@@ -1,4 +1,5 @@
-import { access, mkdir, rename, stat, writeFile } from "node:fs/promises";
+import { access, mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { dirname, resolve } from "node:path";
 
 import { canonicalFormalDatasetIdentity } from "./dataset-identity.mjs";
@@ -8,6 +9,7 @@ const TRUCK_IDENTITY = canonicalFormalDatasetIdentity("truck");
 const EXACT_RASTER_PLAN = "projected_quads_exact";
 const EXACT_COUNT_SEMANTICS = "candidate_visible_contributor_issued_v1";
 const EXACT_TERMINAL_MODEL = "renderer_current_stats";
+const CONTROL_COMPLETE_SCHEMA = "gsplat-truck-1080p-control-complete/v1";
 
 export const TRUCK_1080P_QUALIFICATION = Object.freeze({
   name: QUALIFICATION_NAME,
@@ -39,9 +41,21 @@ export const TRUCK_1080P_QUALIFICATION = Object.freeze({
   order_backend: "adaptive",
   projected_policy: "adaptive",
   sort_interval: 1,
-  order_completion_protocol: "sustained_window",
   renderer_path: "wasm_packed_atlas",
-  artifact_name: "run-adaptive",
+  control: Object.freeze({
+    stage: "control",
+    artifact_name: "control-current-stats",
+    benchmark_window_mode: "current_stats_evidence_window",
+    order_completion_protocol: "isolated_terminal",
+    completion_name: ".control-stage-complete.json",
+  }),
+  throughput: Object.freeze({
+    stage: "throughput",
+    artifact_name: "throughput-terminal-queue",
+    benchmark_window_mode: "terminal_queue_throughput_window",
+    order_completion_protocol: "sustained_window",
+    claim_name: ".throughput-stage-claimed",
+  }),
   suite_name: "suite.json",
 });
 
@@ -59,6 +73,17 @@ export function optionalEnvironmentValue(value) {
 
 export function validateTruck1080pCollectorConfig(config) {
   const expected = TRUCK_1080P_QUALIFICATION;
+  const stage = config.qualificationStage === expected.control.stage
+    ? expected.control
+    : config.qualificationStage === expected.throughput.stage
+      ? expected.throughput
+      : null;
+  if (stage === null) {
+    fail(
+      `qualification stage must be ${expected.control.stage} or ` +
+      `${expected.throughput.stage}, observed ${JSON.stringify(config.qualificationStage)}`,
+    );
+  }
   requireExact(config.qualificationName, expected.name, "qualification name");
   requireExact(config.dataset, expected.dataset.selector, "dataset");
   requireExact(config.geometryPath, expected.geometry_path, "geometry path");
@@ -70,9 +95,10 @@ export function validateTruck1080pCollectorConfig(config) {
   requireExact(config.m4Smoke, false, "M4 smoke mode");
   requireExact(
     config.orderCompletionProtocol,
-    expected.order_completion_protocol,
+    stage.order_completion_protocol,
     "order completion protocol",
   );
+  requireExact(config.benchmarkWindowMode, stage.benchmark_window_mode, "benchmark window mode");
   requireExact(config.warmup, expected.warmup_frames, "warmup frames");
   requireExact(config.frames, expected.measured_frames, "measured frames");
   requireExact(config.cameraTraceUrl, expected.trace.url, "camera trace URL");
@@ -105,6 +131,119 @@ export async function claimTruck1080pOutputRoot(outputRoot) {
     throw error;
   }
   return outputRoot;
+}
+
+function requireSha256(value, field) {
+  if (typeof value !== "string" || !/^[0-9a-f]{64}$/.test(value)) {
+    fail(`${field} must be a lowercase SHA-256 digest`);
+  }
+}
+
+export async function publishTruck1080pControlCompletion({
+  outputRoot,
+  controlManifestPath,
+  controlRunId,
+  configurationSha256,
+  suitePath,
+}) {
+  const expected = TRUCK_1080P_QUALIFICATION;
+  const expectedManifest = resolve(
+    outputRoot,
+    expected.control.artifact_name,
+    "manifest.json",
+  );
+  const expectedSuite = resolve(outputRoot, expected.suite_name);
+  requireExact(controlManifestPath, expectedManifest, "control manifest path");
+  requireExact(suitePath, expectedSuite, "control suite path");
+  requireSha256(configurationSha256, "control configuration SHA-256");
+  if (typeof controlRunId !== "string" || controlRunId.length === 0) {
+    fail("control run ID must be a non-empty string");
+  }
+  const [manifestStatus, suiteStatus] = await Promise.all([
+    stat(controlManifestPath),
+    stat(suitePath),
+  ]);
+  if (!manifestStatus.isFile()) fail("control manifest is not a file");
+  if (!suiteStatus.isFile()) fail("control full-quality suite is not a file");
+  const controlManifestSha256 = createHash("sha256")
+    .update(await readFile(controlManifestPath))
+    .digest("hex");
+  const fullQualitySuiteSha256 = createHash("sha256")
+    .update(await readFile(suitePath))
+    .digest("hex");
+  const marker = {
+    schema: CONTROL_COMPLETE_SCHEMA,
+    control_artifact: expected.control.artifact_name,
+    control_manifest: `${expected.control.artifact_name}/manifest.json`,
+    control_manifest_sha256: controlManifestSha256,
+    control_run_id: controlRunId,
+    configuration_sha256: configurationSha256,
+    full_quality_suite: expected.suite_name,
+    full_quality_suite_sha256: fullQualitySuiteSha256,
+  };
+  const markerPath = resolve(outputRoot, expected.control.completion_name);
+  await writeFile(markerPath, `${JSON.stringify(marker, null, 2)}\n`, { flag: "wx" });
+  return Object.freeze({ markerPath, marker: Object.freeze(marker) });
+}
+
+export async function claimTruck1080pThroughputStage({
+  outputRoot,
+  controlManifestPath,
+}) {
+  const expected = TRUCK_1080P_QUALIFICATION;
+  const expectedManifest = resolve(
+    outputRoot,
+    expected.control.artifact_name,
+    "manifest.json",
+  );
+  requireExact(controlManifestPath, expectedManifest, "throughput control manifest path");
+  const markerPath = resolve(outputRoot, expected.control.completion_name);
+  let marker;
+  try {
+    marker = JSON.parse(await readFile(markerPath, "utf8"));
+  } catch (error) {
+    fail(`validated control completion is unavailable: ${error.message}`);
+  }
+  if (marker?.schema !== CONTROL_COMPLETE_SCHEMA
+      || marker.control_artifact !== expected.control.artifact_name
+      || marker.control_manifest !== `${expected.control.artifact_name}/manifest.json`
+      || marker.full_quality_suite !== expected.suite_name) {
+    fail("validated control completion identity is invalid");
+  }
+  requireSha256(marker.control_manifest_sha256, "retained control manifest SHA-256");
+  requireSha256(marker.configuration_sha256, "retained control configuration SHA-256");
+  requireSha256(marker.full_quality_suite_sha256, "retained full-quality suite SHA-256");
+  if (typeof marker.control_run_id !== "string" || marker.control_run_id.length === 0) {
+    fail("retained control run ID is invalid");
+  }
+  const [manifestStatus, suiteStatus] = await Promise.all([
+    stat(controlManifestPath),
+    stat(resolve(outputRoot, expected.suite_name)),
+  ]);
+  if (!manifestStatus.isFile() || !suiteStatus.isFile()) {
+    fail("validated control artifact or suite is not retained");
+  }
+  const retainedManifestSha256 = createHash("sha256")
+    .update(await readFile(controlManifestPath))
+    .digest("hex");
+  const retainedSuiteSha256 = createHash("sha256")
+    .update(await readFile(resolve(outputRoot, expected.suite_name)))
+    .digest("hex");
+  if (retainedManifestSha256 !== marker.control_manifest_sha256) {
+    fail("retained control manifest content drifted after validation");
+  }
+  if (retainedSuiteSha256 !== marker.full_quality_suite_sha256) {
+    fail("retained full-quality suite content drifted after validation");
+  }
+  try {
+    await mkdir(resolve(outputRoot, expected.throughput.claim_name));
+  } catch (error) {
+    if (error?.code === "EEXIST") {
+      fail("throughput stage is already claimed; retry is forbidden");
+    }
+    throw error;
+  }
+  return Object.freeze(marker);
 }
 
 export function validateTruck1080pExactRasterEvidence({ manifest, frames }) {
@@ -240,9 +379,9 @@ export function buildTruck1080pFullQualitySuite({ manifest, frames, imageSha256 
       repetition: 1,
       schedule_index: 1,
       policy_position: 1,
-      artifact: expected.artifact_name,
+      artifact: expected.control.artifact_name,
       image: {
-        path: `${expected.artifact_name}/final-frame.png`,
+        path: `${expected.control.artifact_name}/final-frame.png`,
         sha256: imageSha256,
         width: expected.trace.width,
         height: expected.trace.height,
@@ -262,7 +401,7 @@ export async function publishValidatedTruck1080pSuite({
   const expected = TRUCK_1080P_QUALIFICATION;
   validateTruck1080pExactRasterEvidence({ manifest, frames });
   const outputRoot = dirname(suitePath);
-  const artifactPath = resolve(outputRoot, expected.artifact_name);
+  const artifactPath = resolve(outputRoot, expected.control.artifact_name);
   const expectedImagePath = resolve(artifactPath, "final-frame.png");
   if (imagePath !== expectedImagePath) {
     fail(`final image must be ${expectedImagePath}, observed ${imagePath}`);

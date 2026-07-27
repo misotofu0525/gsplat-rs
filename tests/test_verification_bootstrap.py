@@ -487,25 +487,61 @@ class VerificationBootstrapTests(unittest.TestCase):
                 result = BOOTSTRAP.profile_result("web-webgpu-truck-1080p", discovery)
 
             self.assertTrue(result.ready)
-            self.assertEqual(len(result.commands), 2)
-            collector = result.commands[1]
+            self.assertEqual(len(result.commands), 3)
+            control = result.commands[1]
+            throughput = result.commands[2]
             self.assertEqual(
-                collector.argv,
+                control.argv,
                 ("node", "examples/web/scripts/collect-web-benchmark-artifact.mjs"),
             )
-            self.assertEqual(collector.env["GSPLAT_PHASE_E_QUALIFICATION"], "truck-quality-1080p-v1")
-            self.assertEqual(collector.env["GSPLAT_DATASET"], "truck")
-            self.assertEqual(collector.env["GSPLAT_GEOMETRY_PATH"], "packed")
-            self.assertEqual(collector.env["GSPLAT_ORDER_BACKEND"], "adaptive")
-            self.assertEqual(collector.env["GSPLAT_PROJECTED_POLICY"], "adaptive")
-            self.assertEqual(collector.env["GSPLAT_CAMERA_FRAME_INDICES"], "0,1")
-            self.assertEqual(collector.env["GSPLAT_BENCHMARK_WARMUP_FRAMES"], "20")
-            self.assertEqual(collector.env["GSPLAT_BENCHMARK_FRAMES"], "80")
-            self.assertEqual(collector.env["GSPLAT_GPU_ORDER_PRODUCER"], "")
-            self.assertEqual(collector.env["GSPLAT_BENCHMARK_SYNC"], "0")
-            self.assertEqual(collector.env["GSPLAT_M4_SMOKE"], "0")
-            self.assertEqual(collector.env["GSPLAT_ARTIFACT_DIR"], str(output / "run-adaptive"))
-            self.assertEqual(collector.env["GSPLAT_FULL_QUALITY_SUITE"], str(output / "suite.json"))
+            self.assertEqual(throughput.argv, control.argv)
+            for collector in (control, throughput):
+                self.assertEqual(
+                    collector.env["GSPLAT_PHASE_E_QUALIFICATION"],
+                    "truck-quality-1080p-v1",
+                )
+                self.assertEqual(collector.env["GSPLAT_DATASET"], "truck")
+                self.assertEqual(collector.env["GSPLAT_GEOMETRY_PATH"], "packed")
+                self.assertEqual(collector.env["GSPLAT_ORDER_BACKEND"], "adaptive")
+                self.assertEqual(collector.env["GSPLAT_PROJECTED_POLICY"], "adaptive")
+                self.assertEqual(collector.env["GSPLAT_CAMERA_FRAME_INDICES"], "0,1")
+                self.assertEqual(collector.env["GSPLAT_BENCHMARK_WARMUP_FRAMES"], "20")
+                self.assertEqual(collector.env["GSPLAT_BENCHMARK_FRAMES"], "80")
+                self.assertEqual(collector.env["GSPLAT_GPU_ORDER_PRODUCER"], "")
+                self.assertEqual(collector.env["GSPLAT_BENCHMARK_SYNC"], "0")
+                self.assertEqual(collector.env["GSPLAT_M4_SMOKE"], "0")
+                self.assertEqual(
+                    collector.env["GSPLAT_FULL_QUALITY_SUITE"],
+                    str(output / "suite.json"),
+                )
+            self.assertEqual(control.env["GSPLAT_TRUCK_QUALIFICATION_STAGE"], "control")
+            self.assertEqual(
+                control.env["GSPLAT_BENCHMARK_WINDOW_MODE"],
+                "current_stats_evidence_window",
+            )
+            self.assertEqual(control.env["GSPLAT_ORDER_COMPLETION_PROTOCOL"], "isolated_terminal")
+            self.assertEqual(control.env["GSPLAT_CURRENT_STATS_CONTROL_ARTIFACT"], "")
+            self.assertEqual(
+                control.env["GSPLAT_ARTIFACT_DIR"],
+                str(output / "control-current-stats"),
+            )
+            self.assertEqual(throughput.env["GSPLAT_TRUCK_QUALIFICATION_STAGE"], "throughput")
+            self.assertEqual(
+                throughput.env["GSPLAT_BENCHMARK_WINDOW_MODE"],
+                "terminal_queue_throughput_window",
+            )
+            self.assertEqual(
+                throughput.env["GSPLAT_ORDER_COMPLETION_PROTOCOL"],
+                "sustained_window",
+            )
+            self.assertEqual(
+                throughput.env["GSPLAT_CURRENT_STATS_CONTROL_ARTIFACT"],
+                str(output / "control-current-stats" / "manifest.json"),
+            )
+            self.assertEqual(
+                throughput.env["GSPLAT_ARTIFACT_DIR"],
+                str(output / "throughput-terminal-queue"),
+            )
 
     def test_truck_web_profile_blocks_on_missing_asset_or_used_output(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -558,6 +594,29 @@ class VerificationBootstrapTests(unittest.TestCase):
             self.assertEqual(BOOTSTRAP.run_profile(result, allow_device=False), 17)
             run.assert_called_once()
             self.assertEqual(run.call_args.args[0], ("first",))
+
+    def test_truck_two_stage_run_stops_after_control_failure(self) -> None:
+        result = BOOTSTRAP.ProfileResult(
+            name="web-webgpu-truck-1080p",
+            description="test",
+            touches_device=False,
+            probes=(BOOTSTRAP.Probe("ready", True, "ready"),),
+            commands=(
+                BOOTSTRAP.Command(("build",)),
+                BOOTSTRAP.Command(("control",)),
+                BOOTSTRAP.Command(("throughput",)),
+            ),
+        )
+        completed = (
+            BOOTSTRAP.subprocess.CompletedProcess(("build",), 0),
+            BOOTSTRAP.subprocess.CompletedProcess(("control",), 23),
+        )
+        with mock.patch.object(BOOTSTRAP.subprocess, "run", side_effect=completed) as run:
+            self.assertEqual(BOOTSTRAP.run_profile(result, allow_device=False), 23)
+            self.assertEqual(
+                [call.args[0] for call in run.call_args_list],
+                [("build",), ("control",)],
+            )
 
     def test_default_doctor_is_host_only(self) -> None:
         self.assertNotIn("android-a065", BOOTSTRAP.DEFAULT_DOCTOR_PROFILES)

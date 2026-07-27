@@ -857,10 +857,12 @@ def profile_result(name: str, discovery: Discovery) -> ProfileResult:
             f"target/qualification/q1-webgpu-truck-1080p-{head}",
         )
         probes.append(fresh_output_probe("GSPLAT_WEB_TRUCK_OUTPUT", output))
-        artifact = str(pathlib.Path(output) / "run-adaptive")
+        control_artifact = str(pathlib.Path(output) / "control-current-stats")
+        throughput_artifact = str(pathlib.Path(output) / "throughput-terminal-queue")
+        control_manifest = str(pathlib.Path(control_artifact) / "manifest.json")
         suite = str(pathlib.Path(output) / "suite.json")
-        collector_env = dict(env)
-        collector_env.update(
+        common_collector_env = dict(env)
+        common_collector_env.update(
             {
                 "GSPLAT_PHASE_E_QUALIFICATION": "truck-quality-1080p-v1",
                 "GSPLAT_DATASET": "truck",
@@ -869,7 +871,6 @@ def profile_result(name: str, discovery: Discovery) -> ProfileResult:
                 "GSPLAT_PROJECTED_POLICY": "adaptive",
                 "GSPLAT_GPU_ORDER_PRODUCER": "",
                 "GSPLAT_SORT_INTERVAL": "1",
-                "GSPLAT_ORDER_COMPLETION_PROTOCOL": "sustained_window",
                 "GSPLAT_BENCHMARK_SYNC": "0",
                 "GSPLAT_M4_SMOKE": "0",
                 "GSPLAT_CAMERA_TRACE_URL": (
@@ -882,21 +883,45 @@ def profile_result(name: str, discovery: Discovery) -> ProfileResult:
                 "GSPLAT_CAMERA_FRAME": "",
                 "GSPLAT_BENCHMARK_WARMUP_FRAMES": "20",
                 "GSPLAT_BENCHMARK_FRAMES": "80",
-                "GSPLAT_ARTIFACT_DIR": artifact,
                 "GSPLAT_FULL_QUALITY_SUITE": suite,
+            }
+        )
+        control_env = dict(common_collector_env)
+        control_env.update(
+            {
+                "GSPLAT_TRUCK_QUALIFICATION_STAGE": "control",
+                "GSPLAT_BENCHMARK_WINDOW_MODE": "current_stats_evidence_window",
+                "GSPLAT_ORDER_COMPLETION_PROTOCOL": "isolated_terminal",
+                "GSPLAT_CURRENT_STATS_CONTROL_ARTIFACT": "",
+                "GSPLAT_ARTIFACT_DIR": control_artifact,
+            }
+        )
+        throughput_env = dict(common_collector_env)
+        throughput_env.update(
+            {
+                "GSPLAT_TRUCK_QUALIFICATION_STAGE": "throughput",
+                "GSPLAT_BENCHMARK_WINDOW_MODE": "terminal_queue_throughput_window",
+                "GSPLAT_ORDER_COMPLETION_PROTOCOL": "sustained_window",
+                "GSPLAT_CURRENT_STATS_CONTROL_ARTIFACT": control_manifest,
+                "GSPLAT_ARTIFACT_DIR": throughput_artifact,
             }
         )
         commands = (
             Command(("bash", "packages/web/scripts/build-wasm.sh"), env),
             Command(
                 ("node", "examples/web/scripts/collect-web-benchmark-artifact.mjs"),
-                collector_env,
+                control_env,
+            ),
+            Command(
+                ("node", "examples/web/scripts/collect-web-benchmark-artifact.mjs"),
+                throughput_env,
             ),
         )
         return ProfileResult(
             name,
-            "Formal 1920x1080 Truck Packed Exact WebGPU prerequisite artifact; "
-            "not a product performance comparison",
+            "Formal 1920x1080 Truck Packed Exact WebGPU two-stage prerequisite: "
+            "validated untimed current-stats control, then bound terminal throughput; "
+            "not a product performance conclusion",
             False,
             tuple(probes),
             commands,

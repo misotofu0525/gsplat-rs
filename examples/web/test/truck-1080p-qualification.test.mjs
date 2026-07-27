@@ -11,7 +11,9 @@ import {
   TRUCK_1080P_QUALIFICATION,
   buildTruck1080pFullQualitySuite,
   claimTruck1080pOutputRoot,
+  claimTruck1080pThroughputStage,
   optionalEnvironmentValue,
+  publishTruck1080pControlCompletion,
   publishValidatedTruck1080pSuite,
   validateTruck1080pCleanWorkingTree,
   validateTruck1080pCollectorConfig,
@@ -20,9 +22,13 @@ import {
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 
-function validConfig() {
+function validConfig(qualificationStage = "control") {
   const expected = TRUCK_1080P_QUALIFICATION;
+  const stage = qualificationStage === expected.control.stage
+    ? expected.control
+    : expected.throughput;
   return {
+    qualificationStage,
     qualificationName: expected.name,
     dataset: expected.dataset.selector,
     geometryPath: expected.geometry_path,
@@ -32,7 +38,8 @@ function validConfig() {
     sortInterval: expected.sort_interval,
     benchmarkSync: false,
     m4Smoke: false,
-    orderCompletionProtocol: expected.order_completion_protocol,
+    orderCompletionProtocol: stage.order_completion_protocol,
+    benchmarkWindowMode: stage.benchmark_window_mode,
     warmup: expected.warmup_frames,
     frames: expected.measured_frames,
     cameraTraceUrl: expected.trace.url,
@@ -55,6 +62,10 @@ test("Truck 1080p collector admission freezes the full formal configuration", ()
     validateTruck1080pCollectorConfig(validConfig()),
     TRUCK_1080P_QUALIFICATION,
   );
+  assert.equal(
+    validateTruck1080pCollectorConfig(validConfig("throughput")),
+    TRUCK_1080P_QUALIFICATION,
+  );
 
   const mutations = [
     ["dataset", "truck-2000000"],
@@ -65,7 +76,9 @@ test("Truck 1080p collector admission freezes the full formal configuration", ()
     ["sortInterval", 2],
     ["benchmarkSync", true],
     ["m4Smoke", true],
-    ["orderCompletionProtocol", "isolated_terminal"],
+    ["orderCompletionProtocol", "sustained_window"],
+    ["benchmarkWindowMode", "terminal_queue_throughput_window"],
+    ["qualificationStage", "missing"],
     ["warmup", 19],
     ["frames", 79],
     ["cameraTraceUrl", "/different.json"],
@@ -81,6 +94,91 @@ test("Truck 1080p collector admission freezes the full formal configuration", ()
       field,
     );
   }
+});
+
+test("Truck control completion binds one atomically claimed throughput stage", async (t) => {
+  const parent = await mkdtemp(join(tmpdir(), "gsplat-truck-two-stage-"));
+  t.after(() => rm(parent, { recursive: true, force: true }));
+  const outputRoot = join(parent, "attempt-1");
+  await claimTruck1080pOutputRoot(outputRoot);
+  const controlArtifact = join(
+    outputRoot,
+    TRUCK_1080P_QUALIFICATION.control.artifact_name,
+  );
+  await mkdir(controlArtifact);
+  const controlManifestPath = join(controlArtifact, "manifest.json");
+  const suitePath = join(outputRoot, TRUCK_1080P_QUALIFICATION.suite_name);
+  await writeFile(controlManifestPath, "{}\n");
+  await writeFile(suitePath, "{}\n");
+  const completion = await publishTruck1080pControlCompletion({
+    outputRoot,
+    controlManifestPath,
+    controlRunId: "control-run",
+    configurationSha256: "b".repeat(64),
+    suitePath,
+  });
+  assert.equal(completion.marker.control_manifest, "control-current-stats/manifest.json");
+  assert.equal(
+    completion.marker.control_manifest_sha256,
+    createHash("sha256").update("{}\n").digest("hex"),
+  );
+
+  const claims = await Promise.allSettled([
+    claimTruck1080pThroughputStage({ outputRoot, controlManifestPath }),
+    claimTruck1080pThroughputStage({ outputRoot, controlManifestPath }),
+  ]);
+  assert.equal(claims.filter((result) => result.status === "fulfilled").length, 1);
+  assert.equal(claims.filter((result) => result.status === "rejected").length, 1);
+  assert.match(
+    claims.find((result) => result.status === "rejected").reason.message,
+    /throughput stage is already claimed; retry is forbidden/,
+  );
+});
+
+test("Truck throughput cannot start before a validated control completion", async (t) => {
+  const parent = await mkdtemp(join(tmpdir(), "gsplat-truck-no-control-"));
+  t.after(() => rm(parent, { recursive: true, force: true }));
+  const outputRoot = join(parent, "attempt-1");
+  await claimTruck1080pOutputRoot(outputRoot);
+  const controlArtifact = join(
+    outputRoot,
+    TRUCK_1080P_QUALIFICATION.control.artifact_name,
+  );
+  await mkdir(controlArtifact);
+  const controlManifestPath = join(controlArtifact, "manifest.json");
+  await writeFile(controlManifestPath, "{}\n");
+  await assert.rejects(
+    claimTruck1080pThroughputStage({ outputRoot, controlManifestPath }),
+    /validated control completion is unavailable/,
+  );
+});
+
+test("Truck throughput rejects a control manifest changed after validation", async (t) => {
+  const parent = await mkdtemp(join(tmpdir(), "gsplat-truck-control-drift-"));
+  t.after(() => rm(parent, { recursive: true, force: true }));
+  const outputRoot = join(parent, "attempt-1");
+  await claimTruck1080pOutputRoot(outputRoot);
+  const controlArtifact = join(
+    outputRoot,
+    TRUCK_1080P_QUALIFICATION.control.artifact_name,
+  );
+  await mkdir(controlArtifact);
+  const controlManifestPath = join(controlArtifact, "manifest.json");
+  const suitePath = join(outputRoot, TRUCK_1080P_QUALIFICATION.suite_name);
+  await writeFile(controlManifestPath, "{}\n");
+  await writeFile(suitePath, "{}\n");
+  await publishTruck1080pControlCompletion({
+    outputRoot,
+    controlManifestPath,
+    controlRunId: "control-run",
+    configurationSha256: "b".repeat(64),
+    suitePath,
+  });
+  await writeFile(controlManifestPath, '{"changed":true}\n');
+  await assert.rejects(
+    claimTruck1080pThroughputStage({ outputRoot, controlManifestPath }),
+    /control manifest content drifted after validation/,
+  );
 });
 
 test("Truck 1080p collector admission rejects a dirty working tree", () => {
@@ -157,7 +255,7 @@ test("Truck 1080p suite is a single non-performance full-quality prerequisite ce
   assert.equal(suite.protocols[0].warmup_frames, 20);
   assert.equal(suite.protocols[0].measured_frames, 80);
   assert.equal(suite.protocols[0].sort_policies[0], "adaptive");
-  assert.equal(suite.runs[0].artifact, "run-adaptive");
+  assert.equal(suite.runs[0].artifact, "control-current-stats");
 });
 
 function constantDistribution(count, value) {
@@ -174,7 +272,7 @@ function constantDistribution(count, value) {
 
 async function installTemporaryTruckArtifact(root) {
   const expected = TRUCK_1080P_QUALIFICATION;
-  const artifact = join(root, expected.artifact_name);
+  const artifact = join(root, expected.control.artifact_name);
   await mkdir(artifact, { recursive: true });
   const runId = "truck-1080p-validator-fixture";
   const commit = "a".repeat(40);

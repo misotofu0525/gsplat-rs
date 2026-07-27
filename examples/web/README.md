@@ -227,6 +227,20 @@ GSPLAT_ORDER_COMPLETION_PROTOCOL=sustained_window \
 node examples/web/scripts/collect-web-benchmark-artifact.mjs
 ```
 
+The canonical Truck 1080p launchbook does not rely on the collector default.
+`tests/verification_bootstrap.py command web-webgpu-truck-1080p` prints two
+standard-collector commands after the WASM build. The first explicitly selects
+`current_stats_evidence_window` with untimed `isolated_terminal` progression
+and publishes `control-current-stats/` plus the validated full-quality suite.
+Only on success does the second explicitly select
+`terminal_queue_throughput_window`, bind
+`control-current-stats/manifest.json`, and publish
+`throughput-terminal-queue/` with sustained submission. Both use the identical
+Truck/trace/resolution/Packed/Adaptive/20+80 workload configuration. The first
+collector owns the fresh root; a validated completion marker admits one
+throughput stage claim. Any failure stops the sequence, preserves the root, and
+forbids automatic retry or overwrite.
+
 The configuration digest must match the control exactly. The final warmup and
 final measured tickets must be distinct. The first N-1 timed frames must report
 `current_stats_submission=not_requested`; only the final timed frame may report

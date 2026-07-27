@@ -47,7 +47,9 @@ import {
 import {
   TRUCK_1080P_QUALIFICATION,
   claimTruck1080pOutputRoot,
+  claimTruck1080pThroughputStage,
   optionalEnvironmentValue,
+  publishTruck1080pControlCompletion,
   publishValidatedTruck1080pSuite,
   validateTruck1080pCleanWorkingTree,
   validateTruck1080pCollectorConfig,
@@ -75,7 +77,11 @@ const formalDatasetLogicalId = qualificationName === 'kitsune-static-v1'
     ? 'raster_diagnostic_v1'
     : qualificationName === TRUCK_1080P_QUALIFICATION.name ? 'truck' : null;
 const truck1080pQualification = qualificationName === TRUCK_1080P_QUALIFICATION.name;
+const truckQualificationStage = optionalEnvironmentValue(
+  process.env.GSPLAT_TRUCK_QUALIFICATION_STAGE,
+);
 let claimedTruckOutputRoot = null;
+let truckControlCompletion = null;
 const m4Smoke = process.env.GSPLAT_M4_SMOKE === '1';
 const frames = Number(process.env.GSPLAT_BENCHMARK_FRAMES ?? (qualification ? 3600 : 30));
 const warmup = Number(process.env.GSPLAT_BENCHMARK_WARMUP_FRAMES ?? (qualification ? 120 : 5));
@@ -95,7 +101,7 @@ const outDir = resolve(
       m4Smoke
         ? 'target/benchmarks/m4-webgpu-smoke'
         : truck1080pQualification
-          ? 'target/qualification/q1-webgpu-truck-1080p/run-adaptive'
+          ? `target/qualification/q1-webgpu-truck-1080p/${TRUCK_1080P_QUALIFICATION.control.artifact_name}`
         : qualification
           ? 'target/benchmarks/phase-e/gsplat-web-kitsune-static-v1'
           : 'target/benchmarks/phase-a/web-minimal-v1'
@@ -133,7 +139,9 @@ if (!['current_stats_evidence_window', 'terminal_queue_throughput_window']
       + 'terminal_queue_throughput_window',
   );
 }
-const currentStatsControlArtifact = process.env.GSPLAT_CURRENT_STATS_CONTROL_ARTIFACT ?? null;
+const currentStatsControlArtifact = optionalEnvironmentValue(
+  process.env.GSPLAT_CURRENT_STATS_CONTROL_ARTIFACT,
+);
 if (benchmarkWindowMode === 'terminal_queue_throughput_window' && (
   orderCompletionProtocol !== 'sustained_window'
   || geometryPath !== 'packed'
@@ -161,6 +169,7 @@ async function loadCurrentStatsControlIdentity() {
     'current-stats control artifact validator',
   );
   const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
+  const manifestSha256 = await sha256File(manifestPath);
   const window = manifest.benchmark_window;
   const schedule = manifest.ordering_window?.current_stats_schedule;
   const expectedLogicalFrames = (window?.configuration?.warmup_frames ?? -1)
@@ -172,17 +181,26 @@ async function loadCurrentStatsControlIdentity() {
       || window.control_artifact_identity?.configuration_sha256
         !== window.configuration_sha256
       || schedule?.state !== 'complete'
-      || schedule.protocol !== 'sustained_window'
+      || !['isolated_terminal', 'sustained_window'].includes(schedule.protocol)
       || schedule.submitted_logical_count !== expectedLogicalFrames
       || schedule.issued_count !== expectedLogicalFrames
       || schedule.terminal_count !== expectedLogicalFrames
       || schedule.draw_count_at_final_drain_start !== schedule.draw_count_at_completion) {
     throw new Error('current-stats control artifact is not an admitted control-only window');
   }
+  if (truck1080pQualification && truckQualificationStage === 'throughput') {
+    if (truckControlCompletion === null
+        || truckControlCompletion.control_manifest_sha256 !== manifestSha256
+        || truckControlCompletion.control_run_id !== manifest.run_id
+        || truckControlCompletion.configuration_sha256 !== window.configuration_sha256) {
+      throw new Error('Truck throughput control artifact drifted from its completed control stage');
+    }
+  }
   return {
     runId: manifest.run_id,
     configurationSha256: window.configuration_sha256,
     manifestPath,
+    manifestSha256,
   };
 }
 if (gpuOrderProducer !== null && (
@@ -233,6 +251,8 @@ async function admitTruck1080pQualification() {
     benchmarkSync,
     m4Smoke,
     orderCompletionProtocol,
+    benchmarkWindowMode,
+    qualificationStage: truckQualificationStage,
     warmup,
     frames,
     cameraTraceUrl: process.env.GSPLAT_CAMERA_TRACE_URL ?? null,
@@ -245,8 +265,11 @@ async function admitTruck1080pQualification() {
       .map(Number),
   });
   const outputRoot = dirname(outDir);
-  if (outDir !== resolve(outputRoot, expected.artifact_name)) {
-    throw new Error(`Truck 1080p artifact must be named ${expected.artifact_name}`);
+  const stage = truckQualificationStage === expected.control.stage
+    ? expected.control
+    : expected.throughput;
+  if (outDir !== resolve(outputRoot, stage.artifact_name)) {
+    throw new Error(`Truck 1080p ${stage.stage} artifact must be named ${stage.artifact_name}`);
   }
   if (fullQualitySuitePath !== resolve(outputRoot, expected.suite_name)) {
     throw new Error(`Truck 1080p suite must be ${resolve(outputRoot, expected.suite_name)}`);
@@ -255,8 +278,28 @@ async function admitTruck1080pQualification() {
     await execFile('git', ['status', '--porcelain'], { cwd: repoRoot })
   ).stdout;
   validateTruck1080pCleanWorkingTree(porcelain);
-  await claimTruck1080pOutputRoot(outputRoot);
-  claimedTruckOutputRoot = outputRoot;
+  if (stage === expected.control) {
+    if (currentStatsControlArtifact !== null) {
+      throw new Error('Truck control stage forbids a current-stats control artifact input');
+    }
+    await claimTruck1080pOutputRoot(outputRoot);
+    claimedTruckOutputRoot = outputRoot;
+  } else {
+    const expectedControlManifest = resolve(
+      outputRoot,
+      expected.control.artifact_name,
+      'manifest.json',
+    );
+    const requestedControlManifest = resolve(repoRoot, currentStatsControlArtifact);
+    if (requestedControlManifest !== expectedControlManifest) {
+      throw new Error(`Truck throughput control artifact must be ${expectedControlManifest}`);
+    }
+    claimedTruckOutputRoot = outputRoot;
+    truckControlCompletion = await claimTruck1080pThroughputStage({
+      outputRoot,
+      controlManifestPath: requestedControlManifest,
+    });
+  }
 
   const datasetPath = resolve(repoRoot, expected.dataset.local_path);
   const datasetStat = await stat(datasetPath);
@@ -1558,7 +1601,7 @@ try {
   const truckFrames = truck1080pQualification
     ? parsed.frameRecords.map((frame) => JSON.parse(frame))
     : null;
-  if (truck1080pQualification) {
+  if (truck1080pQualification && truckQualificationStage === 'control') {
     validateTruck1080pExactRasterEvidence({
       manifest: truckManifest,
       frames: truckFrames,
@@ -1578,6 +1621,16 @@ try {
         imagePath,
       })
     : null;
+  if (truck1080pQualification && truckQualificationStage === 'control') {
+    const controlManifestPath = resolve(artifactDir, 'manifest.json');
+    await publishTruck1080pControlCompletion({
+      outputRoot: dirname(outDir),
+      controlManifestPath,
+      controlRunId: truckManifest.run_id,
+      configurationSha256: truckManifest.benchmark_window.configuration_sha256,
+      suitePath,
+    });
+  }
   const resultLine = consoleLines.find((line) => line.includes('BENCHMARK_RESULT '));
   const result = {
     status: 'ok',
