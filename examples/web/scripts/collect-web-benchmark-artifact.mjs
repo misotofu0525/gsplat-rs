@@ -3,7 +3,7 @@
  * Headless Chrome collector for gsplat-rs Web Phase A baseline artifacts.
  * Emits a validated gsplat-benchmark/v1 directory from console JSON lines.
  */
-import { access, mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { access, copyFile, mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { constants, createReadStream } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { dirname, relative, resolve, sep } from 'node:path';
@@ -64,12 +64,22 @@ import {
   decorateQ1GsplatThroughput,
 } from './q1-gsplat-artifact.mjs';
 import { rgba8Png } from './rgba8-png.mjs';
+import {
+  assertStableBrowserRuntime,
+  browserProcessArgsReceipt,
+  observedRunContext,
+} from './q1-browser-environment.mjs';
 
 const execFile = promisify(execFileCallback);
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(scriptDir, '../../..');
 const playcanvasRoot = resolve(repoRoot, 'tests/competitive/playcanvas');
+const Q1_BROWSER_ARGS = Object.freeze([
+  '--enable-unsafe-webgpu',
+  '--enable-gpu',
+  '--ignore-gpu-blocklist',
+]);
 const chromeCandidates = [
   process.env.CHROME_PATH,
   '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
@@ -114,6 +124,19 @@ const q1RunContext = q1ArtifactRole === null ? null : q1RunContextPath === null
 if (q1ArtifactRole !== null && q1RunContext === null) {
   throw new Error('Q1 producer requires GSPLAT_Q1_RUN_CONTEXT');
 }
+const q1CollectionSessionId = optionalEnvironmentValue(
+  process.env.GSPLAT_Q1_COLLECTION_SESSION_ID,
+);
+if (q1ArtifactRole !== null && q1CollectionSessionId === null) {
+  throw new Error('Q1 producer requires GSPLAT_Q1_COLLECTION_SESSION_ID');
+}
+const q1SeriesRootText = optionalEnvironmentValue(process.env.GSPLAT_Q1_SERIES_ROOT);
+const q1SeriesRoot = q1ArtifactRole === null || q1SeriesRootText === null
+  ? null
+  : resolve(q1SeriesRootText);
+if (q1ArtifactRole !== null && q1SeriesRoot === null) {
+  throw new Error('Q1 producer requires GSPLAT_Q1_SERIES_ROOT');
+}
 let claimedTruckOutputRoot = null;
 let truckControlCompletion = null;
 const m4Smoke = process.env.GSPLAT_M4_SMOKE === '1';
@@ -143,6 +166,12 @@ const outDir = resolve(
           : 'target/benchmarks/phase-a/web-minimal-v1'
     )
 );
+if (q1SeriesRoot !== null) {
+  const pathFromSeries = relative(q1SeriesRoot, outDir);
+  if (pathFromSeries === '' || pathFromSeries === '..' || pathFromSeries.startsWith(`..${sep}`)) {
+    throw new Error('Q1 artifact directory must be a fresh child of GSPLAT_Q1_SERIES_ROOT');
+  }
+}
 const fullQualitySuitePath = resolve(
   process.env.GSPLAT_FULL_QUALITY_SUITE ?? resolve(dirname(outDir), 'suite.json'),
 );
@@ -285,6 +314,99 @@ async function sha256File(path) {
   const digest = createHash('sha256');
   for await (const chunk of createReadStream(path)) digest.update(chunk);
   return digest.digest('hex');
+}
+
+function sha256Json(value) {
+  return createHash('sha256').update(JSON.stringify(value)).digest('hex');
+}
+
+function parseMacPowerReceipt(output) {
+  const match = /Now drawing from '([^']+)'/.exec(output);
+  if (!match) throw new Error('pmset did not report the active power source');
+  return match[1].trim().toLowerCase().replaceAll(' ', '_');
+}
+
+function parseMacThermalReceipt(output) {
+  if (/No thermal warning level has been recorded/.test(output)) return 'nominal';
+  throw new Error('macOS thermal state is not admissible or cannot be interpreted');
+}
+
+async function observeQ1HostState(phase) {
+  if (q1ArtifactRole === null) return null;
+  if (process.platform !== 'darwin') {
+    throw new Error('Q1 gsplat-rs producer currently requires the admitted macOS endpoint');
+  }
+  const [power, thermal, osBuild] = await Promise.all([
+    execFile('pmset', ['-g', 'batt']),
+    execFile('pmset', ['-g', 'therm']),
+    execFile('sw_vers', ['-buildVersion']),
+  ]);
+  return {
+    phase,
+    power_source: parseMacPowerReceipt(power.stdout),
+    thermal: parseMacThermalReceipt(thermal.stdout),
+    os_build: osBuild.stdout.trim(),
+  };
+}
+
+async function q1PackageSnapshot() {
+  if (q1ArtifactRole === null) return null;
+  const directory = resolve(repoRoot, q1WasmPackageDirectory);
+  const files = {
+    runtime_js: resolve(directory, 'gsplat_web.js'),
+    runtime_wasm: resolve(directory, 'gsplat_web_bg.wasm'),
+    package_manifest: resolve(directory, 'gsplat_web_build_receipt.json'),
+  };
+  return {
+    directory,
+    files,
+    hashes: Object.fromEntries(await Promise.all(Object.entries(files).map(
+      async ([name, path]) => [name, await sha256File(path)],
+    ))),
+  };
+}
+
+function q1BuildArtifactReceipts(snapshot) {
+  if (snapshot === null) return null;
+  const artifacts = {};
+  for (const [name, source] of Object.entries(snapshot.files)) {
+    const destination = resolve(outDir, 'build', source.split(sep).at(-1));
+    const digest = snapshot.hashes[name];
+    const path = relative(q1SeriesRoot, destination);
+    if (path === '' || path === '..' || path.startsWith(`..${sep}`)) {
+      throw new Error(`Q1 ${name} artifact escaped the series root`);
+    }
+    artifacts[name] = { path: path.split(sep).join('/'), sha256: digest };
+  }
+  return artifacts;
+}
+
+async function browserAdapterReceipt(page) {
+  return page.evaluate(async () => {
+    const adapter = await navigator.gpu?.requestAdapter();
+    if (!adapter) throw new Error('Q1 browser adapter is unavailable');
+    const names = new Set();
+    let current = adapter.limits;
+    while (current && current !== Object.prototype) {
+      for (const name of Object.getOwnPropertyNames(current)) names.add(name);
+      current = Object.getPrototypeOf(current);
+    }
+    const limits = Object.fromEntries([...names]
+      .filter((name) => name !== 'constructor' && Number.isFinite(adapter.limits?.[name]))
+      .sort()
+      .map((name) => [name, Number(adapter.limits[name])]));
+    const info = Object.fromEntries([
+      'vendor', 'architecture', 'device', 'description', 'subgroupMinSize', 'subgroupMaxSize',
+    ].map((name) => [name, adapter.info?.[name] ?? null]));
+    const identity = [info.vendor, info.architecture, info.device]
+      .filter((value) => typeof value === 'string' && value.trim().length > 0)
+      .join(' / ');
+    return { adapter: identity || 'webgpu_adapter_identity_redacted_by_browser', info, limits };
+  });
+}
+
+function sameJson(left, right) {
+  return JSON.stringify(left) === JSON.stringify(right);
 }
 
 async function runPythonValidator(script, args, label) {
@@ -1400,6 +1522,17 @@ async function writeArtifact({
   const sibling = resolve(dirname(outDir), `.${outDir.split('/').pop()}.staging`);
   await rm(sibling, { recursive: true, force: true });
   await mkdir(sibling, { recursive: true });
+  if (q1BuildSnapshotForWrite !== null) {
+    const buildRoot = resolve(sibling, 'build');
+    await mkdir(buildRoot);
+    for (const [name, source] of Object.entries(q1BuildSnapshotForWrite.files)) {
+      const destination = resolve(buildRoot, source.split(sep).at(-1));
+      await copyFile(source, destination);
+      if (await sha256File(destination) !== q1BuildSnapshotForWrite.hashes[name]) {
+        throw new Error(`Q1 ${name} changed while materializing the artifact`);
+      }
+    }
+  }
   await writeFile(resolve(sibling, 'manifest.json'), `${manifests[0]}\n`);
   await writeFile(resolve(sibling, 'frames.jsonl'), `${frameRecords.join('\n')}\n`);
   await writeFile(resolve(sibling, 'summary.json'), `${summaries[0]}\n`);
@@ -1548,25 +1681,47 @@ const dirty = (
   await execFile('git', ['status', '--porcelain'], { cwd: repoRoot })
 ).stdout.trim().length > 0;
 const q1PackageUrl = await q1WasmPackageUrl(repositoryCommit);
+const q1PackagePre = await q1PackageSnapshot();
+const q1HostPre = await observeQ1HostState('pre_browser_session');
 const chrome = await findChrome();
 if (!chrome) {
   console.error(JSON.stringify({ status: 'blocked', reason: 'no Chrome/Chromium found', chromeCandidates }));
   process.exit(2);
 }
+const q1BrowserExecutableShaPre = q1ArtifactRole === null
+  ? null
+  : await sha256File(chrome);
 
 const puppeteerApi = await loadPuppeteer();
 let server;
 let browser;
+let q1BrowserArgsReceipt = null;
+let q1BrowserVersionPre = null;
+let q1AdapterPre = null;
+let q1BuildSnapshotForWrite = null;
 const consoleLines = [];
 try {
   server = await startHttpServer();
   browser = await puppeteerApi.launch({
     executablePath: chrome,
-    headless: process.env.HEADLESS !== '0',
-    defaultViewport: { width: 1280, height: 720, deviceScaleFactor: 1 },
-    args: ['--enable-unsafe-webgpu', '--enable-gpu', '--ignore-gpu-blocklist']
+    headless: q1ArtifactRole === null ? process.env.HEADLESS !== '0' : false,
+    defaultViewport: q1ArtifactRole === null
+      ? { width: 1280, height: 720, deviceScaleFactor: 1 }
+      : { width: 1920, height: 1080, deviceScaleFactor: 1 },
+    args: [...Q1_BROWSER_ARGS]
   });
   const page = await browser.newPage();
+  if (q1ArtifactRole !== null) {
+    await page.bringToFront();
+    const browserProcess = browser.process();
+    q1BrowserArgsReceipt = browserProcessArgsReceipt({
+      spawnfile: browserProcess?.spawnfile,
+      spawnargs: browserProcess?.spawnargs,
+      expectedExecutable: chrome,
+      requiredArgs: Q1_BROWSER_ARGS,
+    });
+    q1BrowserVersionPre = await browser.version();
+  }
   await page.evaluateOnNewDocument((commit, isDirty, device) => {
     globalThis.GSPLAT_BUILD_COMMIT = commit;
     globalThis.GSPLAT_BUILD_DIRTY = isDirty;
@@ -1632,6 +1787,7 @@ try {
   if (qualification) params.set('gsplat_camera_trace', `phase-e-${qualificationName}`);
   const url = `http://127.0.0.1:${port}/examples/web/?${params.toString()}`;
   await page.goto(url, { waitUntil: 'networkidle0', timeout: navigationTimeoutMs });
+  if (q1ArtifactRole !== null) q1AdapterPre = await browserAdapterReceipt(page);
   if (m4Smoke) {
     await page.waitForFunction(
       () => ['ready', 'failed'].includes(globalThis.GSPLAT_M4_SMOKE_RESULT?.status),
@@ -1758,6 +1914,66 @@ try {
   if (settledBenchmarkState !== 'complete') {
     throw new Error(`browser benchmark became ${settledBenchmarkState} while draining GPU receipts`);
   }
+  let q1ObservedContext = q1RunContext;
+  if (q1ArtifactRole !== null) {
+    const [browserRuntime, q1AdapterPost, q1HostPost, q1PackagePost] = await Promise.all([
+      page.evaluate(() => ({
+        pre: globalThis.GSPLAT_Q1_BROWSER_RUNTIME_PRE ?? null,
+        post: globalThis.GSPLAT_Q1_BROWSER_RUNTIME_POST ?? null,
+        user_agent: navigator.userAgent,
+        platform: navigator.platform,
+      })),
+      browserAdapterReceipt(page),
+      observeQ1HostState('post_measurement_terminal'),
+      q1PackageSnapshot(),
+    ]);
+    const browserVersionPost = await browser.version();
+    assertStableBrowserRuntime(browserRuntime.pre, browserRuntime.post);
+    if (q1BrowserVersionPre !== browserVersionPost
+        || !sameJson(q1AdapterPre, q1AdapterPost)
+        || !sameJson(q1PackagePre.hashes, q1PackagePost.hashes)
+        || q1HostPre.power_source !== q1HostPost.power_source
+        || q1HostPre.os_build !== q1HostPost.os_build) {
+      throw new Error('Q1 browser, adapter, host, or runtime package identity drifted');
+    }
+    q1BuildSnapshotForWrite = q1PackagePost;
+    const buildArtifacts = q1BuildArtifactReceipts(q1PackagePost);
+    const browserExecutableSha256 = await sha256File(chrome);
+    if (browserExecutableSha256 !== q1BrowserExecutableShaPre) {
+      throw new Error('Q1 browser executable changed during collection');
+    }
+    const adapter = q1AdapterPost.adapter;
+    if (adapter.includes('redacted_by_browser')) {
+      throw new Error('Q1 browser redacted adapter identity');
+    }
+    q1ObservedContext = observedRunContext({
+      declared: q1RunContext,
+      buildArtifacts,
+      environment: {
+        platform: browserRuntime.platform,
+        os: `${os.type()} ${os.release()}`,
+        device: os.hostname(),
+        browser: `${browserVersionPost} ${browserRuntime.user_agent}`,
+        browser_executable_sha256: browserExecutableSha256,
+        browser_launch_args_sha256: q1BrowserArgsReceipt.normalized_sha256,
+        browser_launch_args_receipt: q1BrowserArgsReceipt,
+        adapter,
+        driver: `apple_metal_os_build:${q1HostPost.os_build}`,
+        driver_source: 'macos_sw_vers_buildVersion',
+        adapter_limits_sha256: sha256Json(q1AdapterPost.limits),
+        power_source: q1HostPost.power_source,
+        collection_session_id: q1CollectionSessionId,
+        thermal: {
+          source: 'macos_pmset_thermal_warning_level',
+          pre: q1HostPre.thermal,
+          post: q1HostPost.thermal,
+          admitted: true,
+        },
+        browser_runtime: browserRuntime,
+        webgpu_adapter_receipt: q1AdapterPost,
+      },
+    });
+  }
   let parsed = parseArtifacts(consoleLines);
   let q1RendererCapture = null;
   if (q1ArtifactRole === 'control') {
@@ -1792,7 +2008,7 @@ try {
       trace,
       traceFrameIndex: q1CaptureTraceFrame,
       protocolSha256: q1ProtocolSha256,
-      runContext: q1RunContext,
+      runContext: q1ObservedContext,
     });
     parsed = decorated.parsed;
   } else if (q1ArtifactRole === 'throughput') {
@@ -1800,7 +2016,7 @@ try {
       parsed,
       protocolSha256: q1ProtocolSha256,
       controlBindings: q1ControlBindings,
-      runContext: q1RunContext,
+      runContext: q1ObservedContext,
     });
   }
   const truckManifest = truck1080pQualification ? JSON.parse(parsed.manifests[0]) : null;

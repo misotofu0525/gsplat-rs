@@ -2823,6 +2823,9 @@ function startBenchmark() {
     els.benchmarkStatus.textContent = "failed";
     return;
   }
+  if (state.q1QueueTerminalEnabled || state.q1CaptureTraceFrameIndex !== null) {
+    globalThis.GSPLAT_Q1_BROWSER_RUNTIME_PRE = q1BrowserRuntimeReceipt("pre_measurement");
+  }
   const benchmark = createBenchmarkState(true);
   if (state.qualificationCamera && !benchmark.traceSequence) {
     // The qualification camera is installed while the streamed scene is
@@ -4355,6 +4358,9 @@ function finishBenchmark(benchmark) {
     return;
   }
   benchmark.enabled = false;
+  if (state.q1QueueTerminalEnabled || state.q1CaptureTraceFrameIndex !== null) {
+    globalThis.GSPLAT_Q1_BROWSER_RUNTIME_POST = q1BrowserRuntimeReceipt("post_measurement");
+  }
   maybeEmitMonotonicOrderingWindow(benchmark);
   const result = benchmarkResultLine(benchmark);
   console.info(result);
@@ -4374,6 +4380,25 @@ function finishBenchmark(benchmark) {
     setStatus(`state=benchmark_failed ${benchmark.failure}`);
     console.error(`BENCHMARK_ARTIFACT_ERROR ${reason}`);
   });
+}
+
+function q1BrowserRuntimeReceipt(phase) {
+  const rect = els.canvas.getBoundingClientRect();
+  return {
+    schema: "gsplat-q1-browser-runtime/v1",
+    phase,
+    inner_width: window.innerWidth,
+    inner_height: window.innerHeight,
+    visual_viewport_width: window.visualViewport?.width ?? null,
+    visual_viewport_height: window.visualViewport?.height ?? null,
+    canvas_css_width: rect.width,
+    canvas_css_height: rect.height,
+    canvas_backing_width: els.canvas.width,
+    canvas_backing_height: els.canvas.height,
+    device_pixel_ratio: window.devicePixelRatio,
+    visibility_state: document.visibilityState,
+    document_has_focus: document.hasFocus(),
+  };
 }
 
 function wasmRendererLabel() {
