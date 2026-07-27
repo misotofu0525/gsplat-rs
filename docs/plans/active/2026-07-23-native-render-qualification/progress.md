@@ -345,6 +345,37 @@ throughput number is retained. The direct follow-up renames the global
 configuration to `requestedFrameCount` and the post-join collection to
 `admittedFrames`, removing the collision without changing renderer behavior.
 
+Two independent fixed-SHA reviews accepted that one-line collector repair at
+`47f4ef5` with no P0/P1/P2. Root then executed the single authorized command
+into the fresh immutable root
+`target/qualification/q1-webgpu-truck-1080p-47f4ef5-attempt-1/`. Both the
+untimed control artifact and the bound terminal-queue throughput artifact pass
+the canonical benchmark and full-quality validators. The run preserves the
+complete 2,541,226-splat Truck SH3 source, both trace views, 20 warmup plus 80
+measured frames, and a 1920x1080 internal/presented backing with sampling, LOD,
+dynamic resolution and upscaling disabled.
+
+The accepted throughput candidate reports a 2,150 ms first-input-to-final-
+terminal window, or `26.875 ms/frame` and `37.2093 FPS` by terminal N/time.
+Headless RAF frame-wall mean is `26.51875 ms` (p95 `37.8 ms`) with 68/80 frames
+over the 16.67 ms budget. Host call mean is `25.03375 ms`; its recorded CPU
+preprocess and radix-sort means are `12.38375 ms` and `9.74875 ms`. Adaptive
+ordering used CPU on 68 frames and GPU on 12, while projected execution stayed
+Candidate. The bound control artifact proves mean `V=D=1,779,155.5` but mean
+exact contributors `C=979,533.5`, so Candidate issues about 1.82 drawn splats
+per actual contributor on this trace.
+
+This is a valid gsplat-rs qualification candidate, not yet a public competitor
+result. The existing PlayCanvas prerequisite uses the same asset, trace,
+internal 1080p resolution and headless WebGPU browser, but it is unpaired,
+records a different terminal anchor, lacks common pixel-quality evidence, and
+ran the comparator's fixed GPU sort while gsplat-rs was still learning its
+mixed Adaptive order lane. For internal diagnosis only, its terminal N/time is
+`18.7625 ms/frame`; the current single-run ratio is therefore about `1.43x`,
+not the rejected serialized sample's apparent `3.8x`. Formal comparison still
+requires a frozen common terminal boundary, stable-plan and cold-Adaptive cells,
+common image evidence, and the predeclared counterbalanced pairs.
+
 ## Q3 M4 SIMD microbenchmark checkpoint (2026-07-27)
 
 At clean root commit `f025dff`, the fixed
