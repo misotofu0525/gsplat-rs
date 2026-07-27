@@ -12,6 +12,12 @@ const RECEIPT_INTEGER_FIELDS = Object.freeze([
   "order_generation",
   "presentation_sequence",
 ]);
+const STABLE_GENERATION_FIELDS = Object.freeze([
+  "scene_generation",
+  "viewport_generation",
+  "contract_generation",
+  "plan_set_generation",
+]);
 
 function fail(message) {
   throw new Error(`Candidate20 diagnostic rejected: ${message}`);
@@ -58,6 +64,7 @@ export function validateDepthPrecisionDiagnostic({ frames, receipts, runtime }) 
 
   let previousPresentation = 0;
   let previousOrderGeneration = 0;
+  let stableGenerations = null;
   const normalizedFrames = [];
   const normalizedReceipts = [];
   for (let index = 0; index < frames.length; index += 1) {
@@ -99,6 +106,17 @@ export function validateDepthPrecisionDiagnostic({ frames, receipts, runtime }) 
       requireSafeInteger(receipt[field], `receipts[${index}].${field}`, {
         positive: field === "presentation_sequence",
       });
+    }
+    if (stableGenerations === null) {
+      stableGenerations = Object.fromEntries(
+        STABLE_GENERATION_FIELDS.map((field) => [field, receipt[field]]),
+      );
+    } else {
+      for (const field of STABLE_GENERATION_FIELDS) {
+        if (receipt[field] !== stableGenerations[field]) {
+          fail(`${field} must remain stable across the diagnostic session`);
+        }
+      }
     }
     if (receipt.camera_revision !== cameraRevision) {
       fail(`receipts[${index}].camera_revision does not match its presented frame`);

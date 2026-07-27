@@ -94,6 +94,22 @@ test("missing wrong duplicate regressing and mismatched receipts fail closed", (
   }
 });
 
+test("diagnostic receipts must remain in one renderer generation tuple", () => {
+  for (const field of [
+    "scene_generation",
+    "viewport_generation",
+    "contract_generation",
+    "plan_set_generation",
+  ]) {
+    const value = structuredClone(validEvidence());
+    value.receipts[1][field] += 1;
+    assert.throws(
+      () => validateDepthPrecisionDiagnostic(value),
+      new RegExp(`${field} must remain stable`),
+    );
+  }
+});
+
 test("collector source cannot route diagnostics into formal evidence", async () => {
   const source = await readFile(
     resolve(here, "../scripts/collect-web-depth-precision-diagnostic.mjs"),
