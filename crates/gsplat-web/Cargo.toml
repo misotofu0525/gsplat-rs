@@ -17,6 +17,9 @@ crate-type = ["cdylib", "rlib"]
 
 [features]
 default = []
+diagnostic-web-surface-capture = [
+    "gsplat-render-wgpu/diagnostic-surface-capture-receipt",
+]
 diagnostic-web-depth-key-candidate20 = [
     "gsplat-render-wgpu/diagnostic-surface-depth-key-candidate20",
     "gsplat-render-wgpu/diagnostic-surface-presented-depth-receipt",

@@ -9,7 +9,6 @@ use crate::gpu_producer_telemetry::SurfaceGpuOrderProducer;
 use crate::gpu_telemetry::{CpuOrderTelemetryPoll, GpuOrderTelemetryPoll, TelemetrySubmission};
 use crate::packed_gpu;
 use crate::resident_gpu;
-#[cfg(not(target_arch = "wasm32"))]
 use crate::surface::SurfaceCapture;
 pub use crate::surface::SurfaceFrameCapture;
 use crate::surface::shadow::{
@@ -37,7 +36,6 @@ pub(crate) struct SurfacePresenterHost {
     queue: wgpu::Queue,
     surface_configuration: SurfaceConfigurationOwner,
     surface_lifecycle: SurfaceLifecycle,
-    #[cfg(not(target_arch = "wasm32"))]
     surface_capture: SurfaceCapture,
     adapter_max_storage_buffers_per_shader_stage: u32,
     adapter_max_storage_buffer_binding_size: u64,
@@ -369,7 +367,6 @@ impl SurfacePresenterHost {
             queue,
             surface_configuration,
             surface_lifecycle: SurfaceLifecycle::new(),
-            #[cfg(not(target_arch = "wasm32"))]
             surface_capture: SurfaceCapture::new(
                 caps.usages.contains(wgpu::TextureUsages::COPY_SRC),
             ),
@@ -447,6 +444,7 @@ impl SurfacePresenterHost {
         width: u32,
         height: u32,
     ) -> Result<(), SurfacePresenterError> {
+        ensure_surface_capture_allows_resize(self.surface_capture.has_pending())?;
         self.surface_configuration.validate_size(width, height)?;
         if !self.surface_configuration.resize_required(width, height) {
             return Ok(());
@@ -518,7 +516,6 @@ impl SurfacePresenterHost {
                 device: &self.device,
                 configuration: &self.surface_configuration,
                 lifecycle: &mut self.surface_lifecycle,
-                #[cfg(not(target_arch = "wasm32"))]
                 capture: &mut self.surface_capture,
             },
             SurfaceExactRequest {
@@ -547,7 +544,24 @@ impl SurfacePresenterHost {
         Ok(())
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) async fn request_surface_capture_async(
+        &mut self,
+    ) -> Result<(), SurfacePresenterError> {
+        self.surface_configuration.ensure_capture_valid()?;
+        let (width, height) = self.surface_configuration.size();
+        let format = self.surface_configuration.format();
+        let pending = self
+            .surface_capture
+            .prepare_request_async(&self.device, width, height, format)
+            .await?;
+        self.surface_configuration
+            .ensure_copy_src(&self.surface, &self.device)
+            .await?;
+        self.surface_capture.publish(pending);
+        Ok(())
+    }
+
     pub(crate) fn cancel_surface_capture(&mut self) -> bool {
         self.surface_capture.cancel()
     }
@@ -557,6 +571,13 @@ impl SurfacePresenterHost {
         &mut self,
     ) -> Result<SurfaceFrameCapture, SurfacePresenterError> {
         self.surface_capture.take(&self.device)
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) async fn take_surface_capture_async(
+        &mut self,
+    ) -> Result<SurfaceFrameCapture, SurfacePresenterError> {
+        self.surface_capture.take_async().await
     }
 }
 
@@ -752,12 +773,18 @@ impl SurfacePresenter {
         self.host.request_surface_capture()
     }
 
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) async fn request_surface_capture_async(
+        &mut self,
+    ) -> Result<(), SurfacePresenterError> {
+        self.host.request_surface_capture_async().await
+    }
+
     /// Cancels an armed capture that has not yet been taken.
     ///
     /// The Surface may remain configured with `COPY_SRC`; that diagnostic
     /// capability is harmless after the readback buffer is released and
     /// avoids a second fallible swapchain transition during recovery.
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn cancel_surface_capture(&mut self) -> bool {
         self.host.cancel_surface_capture()
     }
@@ -767,6 +794,13 @@ impl SurfacePresenter {
         &mut self,
     ) -> Result<SurfaceFrameCapture, SurfacePresenterError> {
         self.host.take_surface_capture()
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) async fn take_surface_capture_async(
+        &mut self,
+    ) -> Result<SurfaceFrameCapture, SurfacePresenterError> {
+        self.host.take_surface_capture_async().await
     }
 
     /// Actual dimensions of the raster target before presentation.
@@ -1008,7 +1042,6 @@ impl SurfacePresenter {
             telemetry_sample.as_ref(),
         )?;
 
-        #[cfg(not(target_arch = "wasm32"))]
         self.host
             .surface_capture
             .encode(&mut encoder, &frame.texture);
@@ -1079,7 +1112,6 @@ impl SurfacePresenter {
         self.session_runtime.encode_draw(&mut encoder, &view)?;
         let mut completion_ticket = completion
             .and_then(|request| self.session_runtime.begin_cpu_completion_sample(request));
-        #[cfg(not(target_arch = "wasm32"))]
         self.host
             .surface_capture
             .encode(&mut encoder, &frame.texture);
@@ -1113,7 +1145,6 @@ impl SurfacePresenter {
 
     fn present_frame(&mut self, frame: wgpu::SurfaceTexture) {
         self.host.surface_lifecycle.present(frame);
-        #[cfg(not(target_arch = "wasm32"))]
         self.host.surface_capture.mark_presented();
     }
 
@@ -1122,7 +1153,6 @@ impl SurfacePresenter {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 fn ensure_surface_capture_allows_resize(pending: bool) -> Result<(), SurfacePresenterError> {
     if pending {
         return Err(SurfacePresenterError::SurfaceCaptureState(

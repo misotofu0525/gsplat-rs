@@ -705,6 +705,149 @@ impl GsplatWebRenderer {
         Ok(stats)
     }
 
+    /// Arms one renderer-owned capture for the next successfully presented
+    /// diagnostic frame. This can reconfigure the WebGPU canvas Surface for
+    /// COPY_SRC and therefore remains absent from ordinary builds.
+    #[cfg(feature = "diagnostic-web-surface-capture")]
+    #[wasm_bindgen(js_name = requestDiagnosticSurfaceCapture)]
+    pub async fn request_diagnostic_surface_capture(&mut self) -> Result<(), JsValue> {
+        self.session
+            .request_surface_capture_async()
+            .await
+            .map_err(renderer_error)
+    }
+
+    /// Takes the RGBA8 bytes and all precision identities sealed by the same
+    /// successful presentation. An unpresented, failed, absent or duplicate
+    /// take rejects instead of returning a canvas/compositor approximation.
+    #[cfg(feature = "diagnostic-web-surface-capture")]
+    #[wasm_bindgen(js_name = takeDiagnosticSurfaceCapture)]
+    pub async fn take_diagnostic_surface_capture(&mut self) -> Result<JsValue, JsValue> {
+        let receipt = self
+            .session
+            .take_diagnostic_surface_capture_receipt_async()
+            .await
+            .map_err(renderer_error)?;
+        let rgba8_sha256 = format!("{:x}", Sha256::digest(receipt.rgba8()));
+        let rgba8 = Uint8Array::from(receipt.rgba8());
+        let frame = receipt.frame_identity();
+        let identity = Object::new();
+        set_u64(&identity, "sceneGeneration", frame.scene_generation())?;
+        set_u64(&identity, "cameraRevision", frame.camera_revision())?;
+        set_u64(&identity, "viewportGeneration", frame.viewport_generation())?;
+        set_u64(&identity, "contractGeneration", frame.contract_generation())?;
+        set_u64(&identity, "planSetGeneration", frame.plan_set_generation())?;
+        set_string(&identity, "planId", receipt.plan_id())?;
+        set_u64(&identity, "orderGeneration", receipt.order_generation())?;
+        set_u64(
+            &identity,
+            "presentationSequence",
+            receipt.presentation_sequence(),
+        )?;
+        set_u32(&identity, "width", receipt.width())?;
+        set_u32(&identity, "height", receipt.height())?;
+        set_string(&identity, "rgba8Sha256", &rgba8_sha256)?;
+
+        let depth = Object::new();
+        set_string(&depth, "profile", receipt.depth_precision_profile())?;
+        copy_capture_identity_fields(&depth, &identity)?;
+
+        let projected = Object::new();
+        set_string(
+            &projected,
+            "profile",
+            receipt.projected_cache_precision_profile(),
+        )?;
+        set_u64(
+            &projected,
+            "axisRecordBytes",
+            receipt.projected_axis_record_bytes(),
+        )?;
+        copy_capture_identity_fields(&projected, &identity)?;
+
+        let resident = Object::new();
+        set_string(&resident, "profile", receipt.resident_sh_codec_profile())?;
+        set_u32(
+            &resident,
+            "mantissaBits",
+            u32::from(receipt.resident_sh_mantissa_bits()),
+        )?;
+        set_u32(
+            &resident,
+            "symmetricMaxCode",
+            u32::from(receipt.resident_sh_symmetric_max_code()),
+        )?;
+        set_u32(
+            &resident,
+            "pointScaleBits",
+            u32::from(receipt.resident_sh_point_scale_bits()),
+        )?;
+        set_u32(
+            &resident,
+            "pointScaleMaxCode",
+            u32::from(receipt.resident_sh_point_scale_max_code()),
+        )?;
+        set_u32(
+            &resident,
+            "rangeChunkSplats",
+            u32::from(receipt.resident_sh_range_chunk_splats()),
+        )?;
+        set_u32(&resident, "sourceCount", receipt.resident_sh_source_count())?;
+        set_u32(
+            &resident,
+            "encodedCount",
+            receipt.resident_sh_encoded_count(),
+        )?;
+        set_u32(
+            &resident,
+            "residentCount",
+            receipt.resident_sh_resident_count(),
+        )?;
+        set_u32(
+            &resident,
+            "addressableCount",
+            receipt.resident_sh_addressable_count(),
+        )?;
+        set_u32(
+            &resident,
+            "sourceShDegree",
+            u32::from(receipt.resident_sh_source_degree()),
+        )?;
+        set_u32(
+            &resident,
+            "residentShDegree",
+            u32::from(receipt.resident_sh_resident_degree()),
+        )?;
+        set_u32(
+            &resident,
+            "residualCoefficientsPerSource",
+            u32::from(receipt.resident_sh_residual_coefficients_per_source()),
+        )?;
+        set_u32(
+            &resident,
+            "planeCount",
+            u32::from(receipt.resident_sh_plane_count()),
+        )?;
+        set_u32(
+            &resident,
+            "bytesPerSource",
+            u32::from(receipt.resident_sh_bytes_per_source()),
+        )?;
+        copy_capture_identity_fields(&resident, &identity)?;
+
+        let object = Object::new();
+        Reflect::set(&object, &JsValue::from_str("rgba8"), &rgba8)?;
+        Reflect::set(&object, &JsValue::from_str("identity"), &identity)?;
+        Reflect::set(&object, &JsValue::from_str("depthPrecision"), &depth)?;
+        Reflect::set(
+            &object,
+            &JsValue::from_str("projectedCachePrecision"),
+            &projected,
+        )?;
+        Reflect::set(&object, &JsValue::from_str("residentSh"), &resident)?;
+        Ok(object.into())
+    }
+
     /// Requests one observer receipt from the next presented Exact frame.
     /// This does not create another controller or change renderer policy.
     #[wasm_bindgen(js_name = requestCurrentStats)]
@@ -1160,6 +1303,28 @@ fn set_current_stats_submission_fields(
             set_string(object, "currentStatsSubmission", "issued")?;
             set_current_stats_receipt_fields_prefixed(object, receipt, "currentStats")?;
         }
+    }
+    Ok(())
+}
+
+#[cfg(feature = "diagnostic-web-surface-capture")]
+fn copy_capture_identity_fields(target: &Object, identity: &Object) -> Result<(), JsValue> {
+    for key in [
+        "sceneGeneration",
+        "cameraRevision",
+        "viewportGeneration",
+        "contractGeneration",
+        "planSetGeneration",
+        "planId",
+        "orderGeneration",
+        "presentationSequence",
+        "width",
+        "height",
+        "rgba8Sha256",
+    ] {
+        let key = JsValue::from_str(key);
+        let value = Reflect::get(identity, &key)?;
+        Reflect::set(target, &key, &value)?;
     }
     Ok(())
 }

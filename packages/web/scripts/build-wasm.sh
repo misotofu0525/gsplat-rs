@@ -66,8 +66,30 @@ case "$WASM_PROFILE" in
       exit 2
     fi
     ;;
+  quality-exact|quality-candidate20)
+    if [[ -z "$REQUESTED_OUT_DIR" ]]; then
+      echo "$WASM_PROFILE requires an explicit fresh GSPLAT_WEB_WASM_OUT_DIR" >&2
+      exit 2
+    fi
+    if [[ "$REQUESTED_OUT_DIR" = /* ]]; then
+      REQUESTED_ABSOLUTE="$REQUESTED_OUT_DIR"
+    else
+      REQUESTED_ABSOLUTE="$ROOT_DIR/$REQUESTED_OUT_DIR"
+    fi
+    REQUESTED_LEXICAL="$(lexical_output_path "$REQUESTED_ABSOLUTE")"
+    OUT_DIR="$(normalize_output_path "$REQUESTED_ABSOLUTE")"
+    if [[ "$OUT_DIR" == "$DEFAULT_OUT_DIR_REAL" || "$OUT_DIR" == "$DEFAULT_OUT_DIR_REAL/"* ]]; then
+      echo "$WASM_PROFILE output must stay independent from examples/web/pkg" >&2
+      exit 2
+    fi
+    if [[ -e "$REQUESTED_LEXICAL" || -L "$REQUESTED_LEXICAL" \
+      || -e "$OUT_DIR" || -L "$OUT_DIR" ]]; then
+      echo "$WASM_PROFILE output must be fresh; preserve the existing path: $OUT_DIR" >&2
+      exit 2
+    fi
+    ;;
   *)
-    echo "unknown GSPLAT_WEB_WASM_PROFILE '$WASM_PROFILE'; expected exact or candidate20" >&2
+    echo "unknown GSPLAT_WEB_WASM_PROFILE '$WASM_PROFILE'; expected exact or candidate20, quality-exact, or quality-candidate20" >&2
     exit 2
     ;;
 esac
@@ -84,11 +106,55 @@ if [[ -z "$WASM_BINDGEN_BIN" ]]; then
   exit 1
 fi
 
-if [[ "$WASM_PROFILE" == "candidate20" ]]; then
-  cargo build -p gsplat-web --target wasm32-unknown-unknown --release \
-    --features diagnostic-web-depth-key-candidate20
-else
-  cargo build -p gsplat-web --target wasm32-unknown-unknown --release
-  rm -rf "$OUT_DIR"
+QUALITY_BUILD_COMMIT=""
+if [[ "$WASM_PROFILE" == quality-exact || "$WASM_PROFILE" == quality-candidate20 ]]; then
+  QUALITY_BUILD_COMMIT="$(git -C "$ROOT_DIR" rev-parse HEAD)"
+  if [[ -n "$(git -C "$ROOT_DIR" status --porcelain)" ]]; then
+    echo "$WASM_PROFILE requires a clean committed worktree" >&2
+    exit 2
+  fi
 fi
+
+case "$WASM_PROFILE" in
+  candidate20)
+    cargo build -p gsplat-web --target wasm32-unknown-unknown --release \
+      --features diagnostic-web-depth-key-candidate20
+    ;;
+  quality-exact)
+    cargo build -p gsplat-web --target wasm32-unknown-unknown --release \
+      --features diagnostic-web-surface-capture
+    ;;
+  quality-candidate20)
+    cargo build -p gsplat-web --target wasm32-unknown-unknown --release \
+      --features diagnostic-web-surface-capture,diagnostic-web-depth-key-candidate20
+    ;;
+  exact)
+    cargo build -p gsplat-web --target wasm32-unknown-unknown --release
+    rm -rf "$OUT_DIR"
+    ;;
+esac
 "$WASM_BINDGEN_BIN" "$WASM_PATH" --target web --out-dir "$OUT_DIR"
+
+if [[ "$WASM_PROFILE" == quality-exact || "$WASM_PROFILE" == quality-candidate20 ]]; then
+  PYTHONDONTWRITEBYTECODE=1 python3 - \
+    "$OUT_DIR" "$QUALITY_BUILD_COMMIT" "$WASM_PROFILE" <<'PY'
+import hashlib
+import json
+import pathlib
+import sys
+
+root = pathlib.Path(sys.argv[1])
+receipt = {
+    "schema": "gsplat-web-diagnostic-build/v1",
+    "repository_commit": sys.argv[2],
+    "dirty": False,
+    "profile": sys.argv[3],
+    "js_sha256": hashlib.sha256((root / "gsplat_web.js").read_bytes()).hexdigest(),
+    "wasm_sha256": hashlib.sha256((root / "gsplat_web_bg.wasm").read_bytes()).hexdigest(),
+}
+(root / "gsplat_web_build_receipt.json").write_text(
+    json.dumps(receipt, indent=2, sort_keys=True) + "\n",
+    encoding="utf-8",
+)
+PY
+fi

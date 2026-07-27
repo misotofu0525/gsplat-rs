@@ -25,7 +25,6 @@ impl ConfigureScopeErrors {
         classify_surface_configure_scope_errors(self.internal, self.out_of_memory, self.validation)
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     fn capture_error(self) -> Option<String> {
         self.internal.or(self.out_of_memory).or(self.validation)
     }
@@ -79,7 +78,6 @@ impl SurfaceConfigurationOwner {
         }
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn ensure_capture_valid(&self) -> Result<(), SurfacePresenterError> {
         if self.valid {
             Ok(())
@@ -155,7 +153,6 @@ impl SurfaceConfigurationOwner {
             .map_err(resize_transaction_failure_to_error)
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) async fn ensure_copy_src(
         &mut self,
         surface: &wgpu::Surface<'_>,
@@ -207,7 +204,6 @@ impl SurfaceConfigurationOwner {
         candidate
     }
 
-    #[cfg(any(not(target_arch = "wasm32"), test))]
     fn copy_src_candidate(&self) -> wgpu::SurfaceConfiguration {
         let mut candidate = self.config.clone();
         candidate.usage |= wgpu::TextureUsages::COPY_SRC;
@@ -282,7 +278,6 @@ fn resize_transaction_failure_to_error(
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 fn copy_src_transaction_failure_to_error(
     failure: ConfigurationTransactionFailure<String>,
 ) -> SurfacePresenterError {

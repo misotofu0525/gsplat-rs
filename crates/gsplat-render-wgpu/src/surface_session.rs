@@ -3,10 +3,8 @@ use std::num::NonZeroU64;
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::Duration;
 
-#[cfg(not(target_arch = "wasm32"))]
 use crate::SurfaceFrameCapture;
 pub use crate::api::SurfaceOrderBackendUsed;
-#[cfg(not(target_arch = "wasm32"))]
 use crate::evidence::PresentedCapturePrecisionReceipt;
 use crate::evidence::{
     PresentedCurrentStats, PresentedDepthPrecisionReceipt, PresentedFramePrecisionReceipts,
@@ -388,18 +386,17 @@ impl DiagnosticPresentedDepthPrecisionReceipt {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) struct SurfaceCapturePrecisionEvidence {
     capture: SurfaceFrameCapture,
     precision: PresentedCapturePrecisionReceipt,
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 impl SurfaceCapturePrecisionEvidence {
     pub(crate) fn into_parts(self) -> (SurfaceFrameCapture, PresentedCapturePrecisionReceipt) {
         (self.capture, self.precision)
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     fn into_capture(self) -> SurfaceFrameCapture {
         let (capture, _precision) = self.into_parts();
         capture
@@ -408,12 +405,9 @@ impl SurfaceCapturePrecisionEvidence {
 
 /// Immutable frame generations sealed into one diagnostic Surface capture.
 ///
-/// This type exists only for explicitly opted-in native diagnostic hosts. It
+/// This type exists only for explicitly opted-in diagnostic hosts. It
 /// copies renderer-owned identity and cannot mutate the session or its plans.
-#[cfg(all(
-    feature = "diagnostic-surface-capture-receipt",
-    not(target_arch = "wasm32")
-))]
+#[cfg(feature = "diagnostic-surface-capture-receipt")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DiagnosticSurfaceFrameIdentity {
     scene_generation: u64,
@@ -423,10 +417,7 @@ pub struct DiagnosticSurfaceFrameIdentity {
     plan_set_generation: u64,
 }
 
-#[cfg(all(
-    feature = "diagnostic-surface-capture-receipt",
-    not(target_arch = "wasm32")
-))]
+#[cfg(feature = "diagnostic-surface-capture-receipt")]
 impl DiagnosticSurfaceFrameIdentity {
     pub const fn scene_generation(self) -> u64 {
         self.scene_generation
@@ -449,14 +440,11 @@ impl DiagnosticSurfaceFrameIdentity {
     }
 }
 
-/// One take-once native RGBA8 Surface capture and its presentation receipt.
+/// One take-once RGBA8 Surface capture and its presentation receipt.
 ///
 /// The string identities are stable diagnostic values derived from the sealed
 /// renderer receipt. The value exposes no renderer or session owner.
-#[cfg(all(
-    feature = "diagnostic-surface-capture-receipt",
-    not(target_arch = "wasm32")
-))]
+#[cfg(feature = "diagnostic-surface-capture-receipt")]
 #[derive(Debug, PartialEq, Eq)]
 pub struct DiagnosticSurfaceCaptureReceipt {
     capture: SurfaceFrameCapture,
@@ -484,10 +472,7 @@ pub struct DiagnosticSurfaceCaptureReceipt {
     presentation_sequence: u64,
 }
 
-#[cfg(all(
-    feature = "diagnostic-surface-capture-receipt",
-    not(target_arch = "wasm32")
-))]
+#[cfg(feature = "diagnostic-surface-capture-receipt")]
 impl DiagnosticSurfaceCaptureReceipt {
     fn from_evidence(evidence: SurfaceCapturePrecisionEvidence) -> Self {
         let (capture, precision) = evidence.into_parts();
@@ -660,7 +645,6 @@ impl DiagnosticSurfaceCaptureReceipt {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 fn compose_surface_capture_evidence(
     publication: &mut SessionPublication,
     capture: SurfaceFrameCapture,
@@ -1324,10 +1308,25 @@ impl SurfaceRenderSession {
         Ok(())
     }
 
-    /// Cancels a requested native Surface capture and releases its readback
+    /// Asynchronously arms an exact readback of the next browser Surface
+    /// frame. The request is published only after both the readback allocation
+    /// and transactional `COPY_SRC` Surface reconfiguration succeed.
+    #[cfg(target_arch = "wasm32")]
+    pub async fn request_surface_capture_async(&mut self) -> Result<(), RendererError> {
+        self.presenter.request_surface_capture_async().await?;
+        if self.exact_plan_receipt.is_some() && !self.publication.arm_capture_precision() {
+            self.presenter.cancel_surface_capture();
+            return Err(crate::SurfacePresenterError::SurfaceCaptureState(
+                "the capture precision receipt ledger is not idle".into(),
+            )
+            .into());
+        }
+        Ok(())
+    }
+
+    /// Cancels a requested Surface capture and releases its readback
     /// buffer. This also discards a presented capture that was not taken.
     /// Returns false when no capture was armed.
-    #[cfg(not(target_arch = "wasm32"))]
     pub fn cancel_surface_capture(&mut self) -> bool {
         let cancelled = self.presenter.cancel_surface_capture();
         self.publication.cancel_capture_precision();
@@ -1372,7 +1371,31 @@ impl SurfaceRenderSession {
         )?)
     }
 
-    /// Takes the existing atomic native Surface capture/receipt join for an
+    #[cfg(target_arch = "wasm32")]
+    async fn take_surface_capture_evidence_async(
+        &mut self,
+    ) -> Result<SurfaceCapturePrecisionEvidence, RendererError> {
+        if self.exact_plan_receipt.is_none() {
+            return Err(crate::SurfacePresenterError::SurfaceCaptureState(
+                "depth-precision evidence is available only for Exact Surface capture".into(),
+            )
+            .into());
+        }
+        let capture = match self.presenter.take_surface_capture_async().await {
+            Ok(capture) => capture,
+            Err(error @ crate::SurfacePresenterError::SurfaceCaptureReadback) => {
+                self.publication.cancel_capture_precision();
+                return Err(error.into());
+            }
+            Err(error) => return Err(error.into()),
+        };
+        Ok(compose_surface_capture_evidence(
+            &mut self.publication,
+            capture,
+        )?)
+    }
+
+    /// Takes the existing atomic Surface capture/receipt join for an
     /// explicitly opted-in diagnostic host. Failed, unpresented, absent, or
     /// repeated takes remain unavailable through the underlying take-once
     /// composition.
@@ -1384,6 +1407,17 @@ impl SurfaceRenderSession {
         &mut self,
     ) -> Result<DiagnosticSurfaceCaptureReceipt, RendererError> {
         self.take_surface_capture_evidence()
+            .map(DiagnosticSurfaceCaptureReceipt::from_evidence)
+    }
+
+    /// Asynchronously consumes the browser capture and the immutable receipt
+    /// sealed by that same successful presentation.
+    #[cfg(all(feature = "diagnostic-surface-capture-receipt", target_arch = "wasm32"))]
+    pub async fn take_diagnostic_surface_capture_receipt_async(
+        &mut self,
+    ) -> Result<DiagnosticSurfaceCaptureReceipt, RendererError> {
+        self.take_surface_capture_evidence_async()
+            .await
             .map(DiagnosticSurfaceCaptureReceipt::from_evidence)
     }
 

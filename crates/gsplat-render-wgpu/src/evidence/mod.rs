@@ -37,7 +37,6 @@ pub use projected::{
 pub(crate) use ring::BoundedEvidenceRing;
 #[cfg(test)]
 pub(crate) use session_publication::LegacySurfaceStatsAvailability;
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) use session_publication::PresentedCapturePrecisionReceipt;
 pub(crate) use session_publication::{
     PresentedCurrentStats, PresentedDepthPrecisionReceipt, PresentedFramePrecisionReceipts,

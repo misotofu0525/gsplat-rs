@@ -22,7 +22,6 @@ use crate::gpu_telemetry::{
 #[cfg(not(target_arch = "wasm32"))]
 use crate::RendererError;
 
-#[cfg(not(target_arch = "wasm32"))]
 use super::SurfaceFrameCapture;
 
 pub(crate) enum SessionSurfaceOwner {
@@ -336,7 +335,20 @@ impl SessionSurfaceOwner {
         }
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) async fn request_surface_capture_async(
+        &mut self,
+    ) -> Result<(), SurfacePresenterError> {
+        match self {
+            Self::Standalone(presenter) => presenter.request_surface_capture_async().await,
+            Self::ExactPacked(host) => host.request_surface_capture_async().await,
+            #[cfg(test)]
+            Self::Test(_) => Err(SurfacePresenterError::SurfaceCaptureUnsupported(
+                "injected test Surface has no capture".into(),
+            )),
+        }
+    }
+
     pub(crate) fn cancel_surface_capture(&mut self) -> bool {
         match self {
             Self::Standalone(presenter) => presenter.cancel_surface_capture(),
@@ -353,6 +365,20 @@ impl SessionSurfaceOwner {
         match self {
             Self::Standalone(presenter) => presenter.take_surface_capture(),
             Self::ExactPacked(host) => host.take_surface_capture(),
+            #[cfg(test)]
+            Self::Test(_) => Err(SurfacePresenterError::SurfaceCaptureUnsupported(
+                "injected test Surface has no capture".into(),
+            )),
+        }
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) async fn take_surface_capture_async(
+        &mut self,
+    ) -> Result<SurfaceFrameCapture, SurfacePresenterError> {
+        match self {
+            Self::Standalone(presenter) => presenter.take_surface_capture_async().await,
+            Self::ExactPacked(host) => host.take_surface_capture_async().await,
             #[cfg(test)]
             Self::Test(_) => Err(SurfacePresenterError::SurfaceCaptureUnsupported(
                 "injected test Surface has no capture".into(),

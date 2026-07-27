@@ -524,7 +524,6 @@ impl SessionPublication {
         self.presented_resident_sh
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn arm_capture_precision(&mut self) -> bool {
         match self.capture_precision {
             CapturePrecisionState::Idle => {
@@ -539,7 +538,6 @@ impl SessionPublication {
         }
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn cancel_capture_precision(&mut self) {
         if self.capture_precision != CapturePrecisionState::Disabled {
             self.capture_precision = CapturePrecisionState::Idle;
@@ -564,7 +562,6 @@ impl SessionPublication {
         }
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn take_capture_precision(&mut self) -> Option<PresentedCapturePrecisionReceipt> {
         let previous = std::mem::replace(&mut self.capture_precision, CapturePrecisionState::Idle);
         match previous {

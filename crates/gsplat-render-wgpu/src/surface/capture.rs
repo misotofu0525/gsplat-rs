@@ -1,7 +1,6 @@
-#[cfg(not(target_arch = "wasm32"))]
 use crate::{SurfacePresenterError, wgpu_label};
 
-/// Exact native Surface framebuffer captured immediately before presentation.
+/// Exact Surface framebuffer captured immediately before presentation.
 ///
 /// Capture is a diagnostic-only opt-in. Ordinary Surface presenters never ask
 /// the swapchain for copy usage and do not allocate a readback buffer.
@@ -14,18 +13,15 @@ pub struct SurfaceFrameCapture {
     pub rgba8: Vec<u8>,
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) struct SurfaceCapture {
     copy_src_supported: bool,
     pending: Option<PendingSurfaceCapture>,
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) struct PreparedSurfaceCapture {
     pending: PendingSurfaceCapture,
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 struct PendingSurfaceCapture {
     buffer: wgpu::Buffer,
     width: u32,
@@ -35,14 +31,12 @@ struct PendingSurfaceCapture {
     progress: CaptureProgress,
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 #[derive(Default)]
 struct CaptureProgress {
     encoded: bool,
     presented: bool,
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 impl CaptureProgress {
     const fn copy_required(&self) -> bool {
         !self.presented
@@ -63,7 +57,6 @@ impl CaptureProgress {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 impl SurfaceCapture {
     pub(crate) const fn new(copy_src_supported: bool) -> Self {
         Self {
@@ -76,7 +69,21 @@ impl SurfaceCapture {
         self.pending.is_some()
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn prepare_request(
+        &self,
+        device: &wgpu::Device,
+        width: u32,
+        height: u32,
+        format: wgpu::TextureFormat,
+    ) -> Result<PreparedSurfaceCapture, SurfacePresenterError> {
+        pollster::block_on(self.prepare_request_async(device, width, height, format))
+    }
+
+    /// Prepares one unpublished readback without blocking the browser event
+    /// loop. The allocation and its error scopes complete before the Surface
+    /// can be reconfigured or the capture can be published.
+    pub(crate) async fn prepare_request_async(
         &self,
         device: &wgpu::Device,
         width: u32,
@@ -103,7 +110,7 @@ impl SurfaceCapture {
         validate_surface_capture_buffer_size(buffer_size, device.limits().max_buffer_size)?;
 
         // Allocate the unpublished readback resource first. Device creation
-        // errors are asynchronous even on native wgpu backends, so a plain
+        // errors are asynchronous on every wgpu backend, so a plain
         // create_buffer call could otherwise turn this Result-returning API
         // into an uncaptured validation/OOM and leave a reconfigured Surface
         // without a usable pending capture.
@@ -118,13 +125,11 @@ impl SurfaceCapture {
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
             mapped_at_creation: false,
         });
-        let (internal_error, oom_error, validation_error) = pollster::block_on(async {
-            (
-                internal_scope.pop().await,
-                oom_scope.pop().await,
-                validation_scope.pop().await,
-            )
-        });
+        let (internal_error, oom_error, validation_error) = (
+            internal_scope.pop().await,
+            oom_scope.pop().await,
+            validation_scope.pop().await,
+        );
         if let Some(error) = internal_error.or(oom_error).or(validation_error) {
             return Err(SurfacePresenterError::SurfaceCaptureUnsupported(format!(
                 "readback buffer allocation failed: {error}"
@@ -200,6 +205,7 @@ impl SurfaceCapture {
         }
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn take(
         &mut self,
         device: &wgpu::Device,
@@ -241,9 +247,74 @@ impl SurfaceCapture {
             rgba8,
         })
     }
+
+    /// Asynchronously consumes one presented browser capture. The map callback
+    /// wakes this future; it never blocks or spins the JavaScript event loop.
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) async fn take_async(
+        &mut self,
+    ) -> Result<SurfaceFrameCapture, SurfacePresenterError> {
+        use std::future::poll_fn;
+        use std::sync::{Arc, Mutex};
+        use std::task::{Poll, Waker};
+
+        struct MapState {
+            result: Option<Result<(), wgpu::BufferAsyncError>>,
+            waker: Option<Waker>,
+        }
+
+        let pending = self.pending.as_ref().ok_or_else(|| {
+            SurfacePresenterError::SurfaceCaptureState("no capture was requested".into())
+        })?;
+        if !pending.progress.ready() {
+            return Err(SurfacePresenterError::SurfaceCaptureState(
+                "the requested framebuffer copy has not completed a presentation".into(),
+            ));
+        }
+        let pending = self.pending.take().expect("validated pending capture");
+        let slice = pending.buffer.slice(..);
+        let state = Arc::new(Mutex::new(MapState {
+            result: None,
+            waker: None,
+        }));
+        let callback_state = Arc::clone(&state);
+        slice.map_async(wgpu::MapMode::Read, move |result| {
+            let mut state = callback_state.lock().expect("capture map state poisoned");
+            state.result = Some(result);
+            if let Some(waker) = state.waker.take() {
+                waker.wake();
+            }
+        });
+        poll_fn(|cx| {
+            let mut state = state.lock().expect("capture map state poisoned");
+            if let Some(result) = state.result.take() {
+                Poll::Ready(result)
+            } else {
+                state.waker = Some(cx.waker().clone());
+                Poll::Pending
+            }
+        })
+        .await
+        .map_err(|_| SurfacePresenterError::SurfaceCaptureReadback)?;
+
+        let mapped = slice.get_mapped_range();
+        let rgba8 = unpack_surface_capture_rows(
+            &mapped,
+            pending.width,
+            pending.height,
+            pending.padded_bytes_per_row,
+            pending.format,
+        )?;
+        drop(mapped);
+        pending.buffer.unmap();
+        Ok(SurfaceFrameCapture {
+            width: pending.width,
+            height: pending.height,
+            rgba8,
+        })
+    }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 fn surface_capture_format_supported(format: wgpu::TextureFormat) -> bool {
     matches!(
         format,
@@ -254,7 +325,6 @@ fn surface_capture_format_supported(format: wgpu::TextureFormat) -> bool {
     )
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 fn surface_capture_layout(width: u32, height: u32) -> Result<(u32, u64), SurfacePresenterError> {
     let unpadded = width.checked_mul(4).ok_or_else(|| {
         SurfacePresenterError::SurfaceCaptureUnsupported("row byte size overflow".into())
@@ -279,7 +349,6 @@ fn surface_capture_layout(width: u32, height: u32) -> Result<(u32, u64), Surface
     Ok((padded, size))
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 fn validate_surface_capture_buffer_size(
     buffer_size: u64,
     max_buffer_size: u64,
@@ -292,7 +361,6 @@ fn validate_surface_capture_buffer_size(
     Ok(())
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 fn unpack_surface_capture_rows(
     mapped: &[u8],
     width: u32,

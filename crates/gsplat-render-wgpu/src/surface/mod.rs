@@ -13,7 +13,6 @@ pub(crate) mod standalone_direct_runtime;
 pub(crate) mod standalone_paged_runtime;
 mod standalone_session_runtime;
 
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) use capture::SurfaceCapture;
 pub use capture::SurfaceFrameCapture;
 pub(crate) use configuration::SurfaceConfigurationOwner;
