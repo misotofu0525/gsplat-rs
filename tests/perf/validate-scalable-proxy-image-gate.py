@@ -92,6 +92,11 @@ FORMAL_CAMERA = {
     "entry_count": 292,
     "selected_camera_ids": [0, 146],
 }
+FORMAL_CAMERA_REVIEW_PATH = (
+    REPO_ROOT
+    / "docs/plans/active/2026-07-23-native-render-scalable/"
+    "s1-bonsai-camera-review.json"
+)
 FORMAL_ENDPOINTS = {
     "apple_m4_metal": {
         "backend": "metal",
@@ -407,7 +412,112 @@ def read_ply_header_identity(path: pathlib.Path) -> tuple[int, int]:
     return vertex_count, degree_by_rest[rest_count]
 
 
-def formal_collection_preflight() -> dict[str, Any]:
+def validate_formal_camera_review(path: pathlib.Path) -> dict[str, Any]:
+    """Validate the retained manual composition review for both formal traces."""
+
+    if not path.exists():
+        raise DeferredEvidence(f"authored-camera review is unavailable: missing {path}")
+    review = load_json_file(path, "formal authored-camera review")
+    if not isinstance(review, dict):
+        reject("formal authored-camera review must be an object")
+    if review.get("schema") != "gsplat-s1-authored-camera-review/v1":
+        reject("formal authored-camera review schema mismatch")
+    if review.get("decision") != "Accepted":
+        reject("formal authored-camera review decision must equal Accepted")
+    if review.get("scope") != "camera_composition_only":
+        reject("formal authored-camera review scope mismatch")
+    if review.get("s1_promotion") is not False or review.get("endpoint_qualification") is not False:
+        reject("formal authored-camera review must not claim S1 or endpoint qualification")
+
+    source = require_object(review, "source", "formal authored-camera review")
+    source_identity = {
+        "local_path": source.get("path"),
+        "sha256": source.get("sha256"),
+        "bytes": source.get("bytes"),
+        "splat_count": source.get("splat_count"),
+        "sh_degree": source.get("sh_degree"),
+    }
+    if source_identity != {
+        key: FORMAL_SOURCE[key]
+        for key in ("local_path", "sha256", "bytes", "splat_count", "sh_degree")
+    }:
+        reject("formal authored-camera review source identity mismatch")
+    if source.get("membership") != "all":
+        reject("formal authored-camera review must use complete source membership")
+
+    camera = require_object(review, "camera_metadata", "formal authored-camera review")
+    camera_identity = {
+        "path": camera.get("path"),
+        "sha256": camera.get("sha256"),
+        "bytes": camera.get("bytes"),
+        "entry_count": camera.get("entry_count"),
+        "selected_camera_ids": camera.get("selected_camera_ids"),
+    }
+    if camera_identity != FORMAL_CAMERA:
+        reject("formal authored-camera review camera identity mismatch")
+
+    raw_traces = require_array(review, "traces", "formal authored-camera review")
+    traces_by_path: dict[str, dict[str, Any]] = {}
+    for index, raw_trace in enumerate(raw_traces):
+        context = f"formal authored-camera review.traces[{index}]"
+        if not isinstance(raw_trace, dict):
+            reject(f"{context} must be an object")
+        trace_path = require_string(raw_trace, "path", context)
+        if trace_path in traces_by_path:
+            reject(f"formal authored-camera review has duplicate trace {trace_path!r}")
+        traces_by_path[trace_path] = raw_trace
+    if set(traces_by_path) != {
+        endpoint["trace_path"] for endpoint in FORMAL_ENDPOINTS.values()
+    }:
+        reject("formal authored-camera review must bind both frozen endpoint traces")
+
+    for endpoint_id, expected in FORMAL_ENDPOINTS.items():
+        context = f"formal authored-camera review trace {endpoint_id}"
+        trace = traces_by_path[expected["trace_path"]]
+        if trace.get("file_sha256") != expected["trace_file_sha256"]:
+            reject(f"{context} file SHA-256 mismatch")
+        if trace.get("content_sha256") != expected["trace_content_sha256"]:
+            reject(f"{context} content SHA-256 mismatch")
+        if trace.get("display") != {
+            "width": expected["width"],
+            "height": expected["height"],
+        }:
+            reject(f"{context} display mismatch")
+        frames = require_array(trace, "frames", context)
+        if (
+            len(frames) != 2
+            or any(not isinstance(frame, dict) for frame in frames)
+            or [
+                (frame.get("frame_index"), frame.get("source_camera_id"))
+                for frame in frames
+            ]
+            != [(0, 0), (1, 146)]
+        ):
+            reject(f"{context} must retain authored cameras 0/146")
+
+    decision = require_object(review, "review", "formal authored-camera review")
+    required_decisions = (
+        "camera_poses_match_selected_training_views",
+        "subject_is_present_and_readable_in_all_frames",
+        "orientation_is_correct",
+        "no_auto_framing_or_camera_substitution",
+        "no_obvious_subject_clipping",
+        "usable_as_exact_reference_compositions",
+    )
+    if any(decision.get(key) is not True for key in required_decisions):
+        reject("formal authored-camera review did not accept every composition check")
+    return {
+        "name": "authority:authored-camera-review",
+        "status": "available",
+        "sha256": sha256_file(path),
+        "scope": review["scope"],
+        "endpoint_qualification": False,
+    }
+
+
+def formal_collection_preflight(
+    *, camera_review_path: pathlib.Path | None = None
+) -> dict[str, Any]:
     checks = validate_pinned_dependencies()
     missing = []
 
@@ -507,12 +617,19 @@ def formal_collection_preflight() -> dict[str, Any]:
             validate_frozen_trace(REPO_ROOT / expected["trace_path"], endpoint_id, expected)
         )
 
-    missing.extend(
-        [
+    selected_review_path = camera_review_path or FORMAL_CAMERA_REVIEW_PATH
+    try:
+        checks.append(validate_formal_camera_review(selected_review_path))
+    except DeferredEvidence as error:
+        missing.append(
             {
                 "name": "authority:authored-camera-review",
-                "reason": "no approved review receipt binds both frozen trace hashes",
-            },
+                "reason": str(error),
+            }
+        )
+
+    missing.extend(
+        [
             {
                 "name": "endpoint:apple_m4_metal",
                 "reason": "no retained formal proxy-image gate artifact was supplied",

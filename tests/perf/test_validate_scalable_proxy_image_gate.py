@@ -746,10 +746,11 @@ class ScalableProxyImageGateTests(unittest.TestCase):
         self.assertIs(receipt["s2_s5_unlocked"], False)
         available = {check["name"] for check in receipt["checks"]}
         self.assertIn("authority:bonsai-dataset-manifest", available)
+        self.assertIn("authority:authored-camera-review", available)
         self.assertIn("trace:apple_m4_metal", available)
         self.assertIn("trace:nothing_a065_vulkan", available)
         missing = {item["name"] for item in receipt["missing_prerequisites"]}
-        self.assertIn("authority:authored-camera-review", missing)
+        self.assertNotIn("authority:authored-camera-review", missing)
         self.assertIn("endpoint:apple_m4_metal", missing)
         self.assertIn("endpoint:nothing_a065_vulkan", missing)
 
@@ -757,6 +758,57 @@ class ScalableProxyImageGateTests(unittest.TestCase):
         with redirect_stdout(output):
             self.assertEqual(VALIDATOR.main(["--preflight-formal"]), 2)
         self.assertEqual(json.loads(output.getvalue())["decision"], "Deferred")
+
+    def test_formal_preflight_missing_camera_review_is_deferred(self) -> None:
+        receipt = VALIDATOR.formal_collection_preflight(
+            camera_review_path=self.root / "missing-camera-review.json"
+        )
+        missing = {item["name"] for item in receipt["missing_prerequisites"]}
+        self.assertIn("authority:authored-camera-review", missing)
+        self.assertEqual(receipt["decision"], "Deferred")
+        self.assertIs(receipt["s2_s5_unlocked"], False)
+
+    def test_malformed_formal_camera_review_is_rejected(self) -> None:
+        path = self.root / "malformed-camera-review.json"
+        path.write_text("[]\n", encoding="utf-8")
+        with self.assertRaisesRegex(VALIDATOR.ValidationError, "must be an object"):
+            VALIDATOR.validate_formal_camera_review(path)
+
+    def test_formal_camera_review_identity_mismatches_are_rejected(self) -> None:
+        canonical = json.loads(
+            VALIDATOR.FORMAL_CAMERA_REVIEW_PATH.read_text(encoding="utf-8")
+        )
+        mutations = [
+            ("schema", lambda value: value.__setitem__("schema", "wrong"), "schema"),
+            (
+                "source",
+                lambda value: value["source"].__setitem__("sha256", "0" * 64),
+                "source identity",
+            ),
+            (
+                "camera",
+                lambda value: value["camera_metadata"].__setitem__("sha256", "0" * 64),
+                "camera identity",
+            ),
+            (
+                "trace-file",
+                lambda value: value["traces"][0].__setitem__("file_sha256", "0" * 64),
+                "file SHA-256",
+            ),
+            (
+                "trace-content",
+                lambda value: value["traces"][1].__setitem__("content_sha256", "0" * 64),
+                "content SHA-256",
+            ),
+        ]
+        for slug, mutate, message in mutations:
+            with self.subTest(slug=slug):
+                review = copy.deepcopy(canonical)
+                mutate(review)
+                path = self.root / f"bad-camera-review-{slug}.json"
+                write_json(path, review)
+                with self.assertRaisesRegex(VALIDATOR.ValidationError, message):
+                    VALIDATOR.validate_formal_camera_review(path)
 
     def test_cli_emits_explicit_rejected_and_deferred_decisions(self) -> None:
         rejected = copy.deepcopy(self.manifest)
