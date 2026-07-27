@@ -443,11 +443,20 @@ def validate_terminal_queue_throughput(
     adaptive = window.get("exact_adaptive_measured")
     if not isinstance(adaptive, list) or len(adaptive) != measured_count:
         fail("terminal-queue throughput lacks its complete Exact adaptive ledger")
+    execution_cell = window.get("execution_cell", "adaptive")
+    if execution_cell not in {"adaptive", "fixed_gpu_preproject_compact"}:
+        fail("terminal-queue throughput execution_cell is unsupported")
     for index, record in enumerate(adaptive):
-        if not isinstance(record, dict) or record.get("state") == "disabled" or \
-                record.get("plan") not in {
-                    "cpu_post_sort", "gpu_post_sort", "gpu_preproject"
-                } or record.get("projected_execution") not in {"candidate", "compact"}:
+        valid_adaptive = execution_cell == "adaptive" and \
+            isinstance(record, dict) and record.get("state") != "disabled" and \
+            record.get("plan") in {"cpu_post_sort", "gpu_post_sort", "gpu_preproject"} and \
+            record.get("projected_execution") in {"candidate", "compact"}
+        valid_fixed_compact = execution_cell == "fixed_gpu_preproject_compact" and \
+            isinstance(record, dict) and record.get("state") == "disabled" and \
+            record.get("plan") == "gpu_preproject" and \
+            record.get("projected_state") == "disabled" and \
+            record.get("projected_execution") == "compact"
+        if not (valid_adaptive or valid_fixed_compact):
             fail(f"terminal-queue throughput Exact adaptive record {index} is invalid")
 
     final_ticket = require_int(window, "final_measured_current_stats_ticket")

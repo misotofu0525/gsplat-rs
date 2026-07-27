@@ -369,6 +369,65 @@ frames_path.write_text("\n".join(json.dumps(frame) for frame in frames) + "\n")
 PY
 python3 "$VALIDATOR" "$TMP_DIR/terminal-queue-throughput-valid"
 
+cp -R "$TMP_DIR/terminal-queue-throughput-valid" "$TMP_DIR/terminal-queue-fixed-compact-valid"
+python3 - "$TMP_DIR/terminal-queue-fixed-compact-valid/manifest.json" <<'PY'
+import json, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+value = json.loads(path.read_text())
+window = value["benchmark_window"]
+window["execution_cell"] = "fixed_gpu_preproject_compact"
+window["exact_adaptive_measured"] = [{
+    "state": "disabled",
+    "plan": "gpu_preproject",
+    "projected_state": "disabled",
+    "projected_execution": "compact",
+} for _ in window["exact_adaptive_measured"]]
+path.write_text(json.dumps(value))
+PY
+python3 "$VALIDATOR" "$TMP_DIR/terminal-queue-fixed-compact-valid"
+
+cp -R "$TMP_DIR/terminal-queue-fixed-compact-valid" "$TMP_DIR/terminal-queue-fixed-compact-adaptive"
+python3 - "$TMP_DIR/terminal-queue-fixed-compact-adaptive/manifest.json" <<'PY'
+import json, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+value = json.loads(path.read_text())
+value["benchmark_window"]["exact_adaptive_measured"][0]["state"] = "gpu_stable"
+path.write_text(json.dumps(value))
+PY
+if python3 "$VALIDATOR" "$TMP_DIR/terminal-queue-fixed-compact-adaptive" >"$TMP_DIR/terminal-queue-fixed-compact-adaptive.out" 2>&1; then
+  echo "expected fixed Compact cell with active Adaptive state to fail" >&2
+  exit 1
+fi
+grep -Fq 'Exact adaptive record 0 is invalid' "$TMP_DIR/terminal-queue-fixed-compact-adaptive.out"
+
+cp -R "$TMP_DIR/terminal-queue-throughput-valid" "$TMP_DIR/terminal-queue-adaptive-disabled"
+python3 - "$TMP_DIR/terminal-queue-adaptive-disabled/manifest.json" <<'PY'
+import json, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+value = json.loads(path.read_text())
+value["benchmark_window"]["exact_adaptive_measured"][0]["state"] = "disabled"
+path.write_text(json.dumps(value))
+PY
+if python3 "$VALIDATOR" "$TMP_DIR/terminal-queue-adaptive-disabled" >"$TMP_DIR/terminal-queue-adaptive-disabled.out" 2>&1; then
+  echo "expected Adaptive cell with disabled state to fail" >&2
+  exit 1
+fi
+grep -Fq 'Exact adaptive record 0 is invalid' "$TMP_DIR/terminal-queue-adaptive-disabled.out"
+
+cp -R "$TMP_DIR/terminal-queue-throughput-valid" "$TMP_DIR/terminal-queue-unknown-cell"
+python3 - "$TMP_DIR/terminal-queue-unknown-cell/manifest.json" <<'PY'
+import json, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+value = json.loads(path.read_text())
+value["benchmark_window"]["execution_cell"] = "unknown"
+path.write_text(json.dumps(value))
+PY
+if python3 "$VALIDATOR" "$TMP_DIR/terminal-queue-unknown-cell" >"$TMP_DIR/terminal-queue-unknown-cell.out" 2>&1; then
+  echo "expected unknown throughput execution cell to fail" >&2
+  exit 1
+fi
+grep -Fq 'execution_cell is unsupported' "$TMP_DIR/terminal-queue-unknown-cell.out"
+
 cp -R "$TMP_DIR/terminal-queue-throughput-valid" "$TMP_DIR/terminal-queue-warmup-tail"
 python3 - "$TMP_DIR/terminal-queue-warmup-tail/manifest.json" <<'PY'
 import json, pathlib, sys
