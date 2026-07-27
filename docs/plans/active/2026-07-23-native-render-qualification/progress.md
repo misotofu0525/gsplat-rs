@@ -719,3 +719,27 @@ output, one execution, and no automatic retry are fail-closed. A real clean-SHA
 K1d rerun followed by complete-Truck Chrome execution remains **Deferred** to
 the root endpoint owner. This mechanism alone is not PlayCanvas comparison or
 Q1 acceptance.
+
+## Q1 Truck pair-admission mechanism candidate (2026-07-28)
+
+The Q1 same-Chrome WebGPU isolation lane now has a pure offline admission and
+finite-verdict mechanism candidate. It first invokes the canonical benchmark
+artifact validator, then adds the frozen complete Truck SH3, two-view 1080p,
+20+80, actual WebGPU/build/environment, control-versus-throughput, common
+terminal-window, same-present image and five-pair AB/BA obligations documented
+in `tests/perf/q1-truck-paired-comparison-v1.md`.
+
+The mechanism leaves PlayCanvas `V/C/D` explicitly unavailable, requires exact
+gsplat-rs control `C <= V <= S` and Compact `D=C`, and rejects copied counts in
+the timed artifacts. Actual timestamps—not pair labels—must prove the
+predeclared endpoint order. Image receipts bind the raw images, terminal
+presentation, common reference and comparison-tool hash.
+
+This slice performs no browser or device run. The historical unpaired
+PlayCanvas prerequisite and fixed-gsplat-rs diagnostic candidate remain
+inadmissible because they do not supply five fresh pairs, one common terminal
+primitive, common image receipts and complete frozen build/environment
+identity. Q1 therefore remains **Active**. When root later executes one fresh
+predeclared series, a quality miss or slower admitted result closes as finite
+`Rejected` with no automatic retry; no lead-percentage threshold can keep the
+task spinning.
