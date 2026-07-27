@@ -117,11 +117,14 @@ const browserIdentity = {
   sha256: createHash('sha256').update(chromeBytes).digest('hex')
 };
 const browserOwnership = browserOwnershipConfig(process.env, false);
-const browser = await puppeteer.launch({
+const browserLaunchOptions = {
   executablePath: browserIdentity.executablePath,
   headless: true,
-  userDataDir: browserOwnership?.userDataDir,
-});
+};
+if (browserOwnership !== null) {
+  browserLaunchOptions.userDataDir = browserOwnership.userDataDir;
+}
+const browser = await puppeteer.launch(browserLaunchOptions);
 try {
   await publishBrowserOwnershipHandshake(browser, browserOwnership);
   const page = await browser.newPage();
