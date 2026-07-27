@@ -157,6 +157,24 @@ Q1 throughput remains Deferred pending one authorized exact-SHA run. Q1 still
 requires the native M4 Exact endpoint, common external-presentation scope and
 counterbalanced outer pairing.
 
+Root integrated that mechanism as `da4887d` and performed the single fresh
+doctor -> command -> run attempt at
+`target/qualification/q1-webgpu-truck-1080p-da4887d-attempt-1/`. The attempt is
+terminal **Rejected** before any throughput sample: the launchbook profile still
+started only its legacy per-frame `current_stats_evidence_window`, rather than
+first producing the required untimed control artifact and then launching the
+content-linked `terminal_queue_throughput_window`. Its first warmup frame issued
+ticket 1; the next warmup frame correctly failed closed when that legacy mode
+requested another receipt before the ring was available. No 80-frame timing or
+replacement comparison was published, and the failed directory is retained
+without retry.
+
+The remaining Web slice is therefore launch orchestration, not renderer tuning:
+the canonical profile must run the two explicit modes in order, validate the
+control artifact before starting throughput, bind the second run to the first
+manifest, and stop after either command fails. Only a newly reviewed exact SHA
+may become a separately authorized endpoint run.
+
 ## Q3 M4 SIMD microbenchmark checkpoint (2026-07-27)
 
 At clean root commit `f025dff`, the fixed
