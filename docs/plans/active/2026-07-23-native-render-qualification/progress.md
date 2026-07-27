@@ -966,3 +966,29 @@ research/asset tests ignored), wasm32 check, formatting and source architecture
 policy pass. PlayCanvas must still expose the same actual selected-adapter
 supported-limit receipt before root integration can authorize the finite paired
 series; Q1 remains **Active** and endpoint evidence remains **Deferred**.
+## Q1 finite five-pair orchestration mechanism (2026-07-28)
+
+`tests/perf/collect-q1-truck-paired-series.py` now owns the previously missing
+finite outer series without copying either endpoint producer. A seeded
+declaration contains exactly five counterbalanced `playcanvas-first` /
+`gsplat-rs-first` pairs. Every pair has exactly six predeclared invocations:
+trace-0 control, trace-1 control and throughput for the first endpoint, then
+the same three for the second endpoint. The resulting 30 argv, environments,
+fresh artifact paths, pairing identities and dynamic control-binding sources
+are written before any browser action.
+
+Dry-run/print-only produces that complete plan with no filesystem or browser
+side effect. Formal execution requires an explicit reviewed full SHA equal to
+clean `HEAD`, atomically claims one absent series root, and never retries a
+producer. The two native control manifests are canonically validated and
+hashed before throughput; the exact hashes, run IDs and configuration digest
+are then bound through the producer's existing contract. A first failure stops
+the matrix and leaves a non-retryable blocker in the claimed root.
+
+Only after all 30 commands succeed does the owner materialize the twenty
+reference-image comparisons and final evidence schedule. It then calls the
+existing offline Q1 validator, which remains the sole quality and performance
+decision owner. This candidate runs focused unit/policy verification only: no
+Chrome instance, Truck render, formal series artifact or comparative result is
+created. Q1 remains **Active** pending fixed-SHA review, integration of the
+gsplat-rs endpoint producer, and one separately authorized execution.

@@ -200,3 +200,54 @@ PYTHONDONTWRITEBYTECODE=1 python3 \
 A structurally valid Deferred candidate exits zero without a performance claim.
 Malformed evidence exits two after writing a fail-closed Rejected result when
 the output is fresh. Existing output is immutable and is never overwritten.
+
+## One-shot series orchestration
+
+`collect-q1-truck-paired-series.py` is the sole finite collection owner once
+both endpoint producers have been integrated and its **exact integrated SHA**
+has passed fixed-SHA review. It does not duplicate either renderer collector.
+The default-safe route is print-only:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 python3 \
+  tests/perf/collect-q1-truck-paired-series.py \
+  --dry-run \
+  --series-root /absolute/fresh/series-root \
+  --series-id <unique-series-id> \
+  --collection-session-id <one-session-id> \
+  --seed <declared-integer> \
+  --chrome /absolute/path/to/Chrome \
+  --gsplat-wasm-package /absolute/repo-local/quality-exact-package \
+  --reference-trace-0 /absolute/reference/view-0.png \
+  --reference-trace-1 /absolute/reference/view-1.png
+```
+
+`--dry-run` (also spelled `--print-only`) reads the two reference identities
+and prints the immutable schedule plus all 30 commands. It creates no series
+directory, request, artifact or browser process.
+
+Formal execution replaces `--dry-run` with `--execute` and adds the full
+40-character `--reviewed-sha`. Before the first browser action, the collector
+atomically claims the absent series root and writes:
+
+- `schedule-declaration.json`, containing the two reference identities and
+  exactly five seeded counterbalanced pair declarations;
+- `commands.json`, containing all 30 producer argv/environment/output records;
+- every control request, every gsplat-rs pairing context and every throughput
+  control-binding source path.
+
+Each pair then runs its declared first endpoint followed by its second. Within
+an endpoint, trace-0 control, trace-1 control and throughput run exactly once.
+The orchestrator validates each control before hashing its native
+`manifest.json`; only then does it materialize the PlayCanvas throughput
+request or expose the same two gsplat-rs control directories to its producer.
+The resolution receipt retains both manifest hashes and configuration digests.
+
+After all 30 commands complete, the orchestrator runs the locked image tool,
+writes the evidence-bearing `schedule.json`, and delegates the only
+quality/performance decision to
+`validate-q1-truck-paired-comparison.py`. It does not compute a winner. Any
+producer, canonical artifact, image-materialization or final-admission command
+failure stops the attempt immediately and writes root `blocker.json`; it never
+retries or reuses the claimed root. A later operator-authorized attempt must
+use a different path and is not authorized by this script.

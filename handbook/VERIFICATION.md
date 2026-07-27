@@ -320,6 +320,39 @@ authorization. This route is only the gsplat-rs Q1 prerequisite. It neither
 runs the PlayCanvas comparator nor establishes a competitive performance
 conclusion, so it cannot by itself make Q1 `Accepted`.
 
+### Q1 same-Chrome five-pair series
+
+After the real PlayCanvas and gsplat-rs Q1 producers are integrated, inspect
+the complete immutable five-pair command plan without starting Chrome or
+creating output:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 python3 \
+  tests/perf/collect-q1-truck-paired-series.py \
+  --dry-run \
+  --series-root /absolute/fresh/q1-series \
+  --series-id <unique-series-id> \
+  --collection-session-id <one-session-id> \
+  --seed <declared-integer> \
+  --chrome /absolute/path/to/Chrome \
+  --gsplat-wasm-package /absolute/repo-local/quality-exact-package \
+  --reference-trace-0 /absolute/reference/view-0.png \
+  --reference-trace-1 /absolute/reference/view-1.png
+```
+
+Do not replace `--dry-run` with `--execute` until the exact integrated commit
+has passed fixed-SHA review. Formal mode additionally requires
+`--reviewed-sha <full-40-character-sha>` equal to clean `HEAD`. A
+repository-local output must stay below ignored `target/`; an output outside
+the repository is also valid. The parent directory must already exist and the
+series root must not.
+
+Formal mode declares all 30 fresh producer commands before the first browser
+launch, executes each once, stops on the first failure, binds the two actual
+control manifest hashes before each throughput run, and calls only the
+existing Q1 validator after the evidence schedule is complete. Retain a
+failed root and its blocker; never delete it to simulate a retry.
+
 ## Fast Feedback
 
 - Smallest useful check:
