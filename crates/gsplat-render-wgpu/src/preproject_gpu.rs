@@ -69,10 +69,7 @@ struct ScanBytePlan {
 pub(crate) struct PreprojectGpuBytePlan {
     pub(crate) source_center_alpha_key: u64,
     pub(crate) source_axes: u64,
-    pub(crate) candidate_group_offsets: u64,
-    pub(crate) candidate_scan_sums: u64,
-    pub(crate) candidate_largest_scan_sum: u64,
-    pub(crate) candidate_scan_params: u64,
+    pub(crate) candidate_count: u64,
     pub(crate) contributor_group_offsets: u64,
     pub(crate) contributor_scan_sums: u64,
     pub(crate) contributor_largest_scan_sum: u64,
@@ -115,7 +112,7 @@ impl PreprojectGpuBytePlan {
         let offset_count = contributor_groups
             .checked_add(1)
             .ok_or(ResidentGpuError::AddressSpaceExceeded)?;
-        let group_offsets = u64::from(offset_count)
+        let contributor_group_offsets = u64::from(offset_count)
             .checked_mul(WORD_BYTES)
             .ok_or(ResidentGpuError::AddressSpaceExceeded)?;
         let scan = scan_byte_plan(
@@ -127,10 +124,8 @@ impl PreprojectGpuBytePlan {
         let total_static = [
             center_plane,
             axes_plane,
-            group_offsets,
-            scan.sums,
-            scan.params,
-            group_offsets,
+            WORD_BYTES,
+            contributor_group_offsets,
             scan.sums,
             scan.params,
             radix.total_static,
@@ -145,11 +140,8 @@ impl PreprojectGpuBytePlan {
         Ok(Self {
             source_center_alpha_key: center_plane,
             source_axes: axes_plane,
-            candidate_group_offsets: group_offsets,
-            candidate_scan_sums: scan.sums,
-            candidate_largest_scan_sum: scan.largest_sum,
-            candidate_scan_params: scan.params,
-            contributor_group_offsets: group_offsets,
+            candidate_count: WORD_BYTES,
+            contributor_group_offsets,
             contributor_scan_sums: scan.sums,
             contributor_largest_scan_sum: scan.largest_sum,
             contributor_scan_params: scan.params,
@@ -174,11 +166,7 @@ impl PreprojectGpuBytePlan {
                 self.source_center_alpha_key,
             ),
             ("preproject source axes", self.source_axes),
-            ("preproject candidate offsets", self.candidate_group_offsets),
-            (
-                "preproject candidate scan sums",
-                self.candidate_largest_scan_sum,
-            ),
+            ("preproject candidate count", self.candidate_count),
             (
                 "preproject contributor offsets",
                 self.contributor_group_offsets,
@@ -197,16 +185,10 @@ impl PreprojectGpuBytePlan {
                 });
             }
         }
-        for (resource, bytes) in [
-            (
-                "preproject candidate scan params",
-                self.candidate_scan_params,
-            ),
-            (
-                "preproject contributor scan params",
-                self.contributor_scan_params,
-            ),
-        ] {
+        for (resource, bytes) in [(
+            "preproject contributor scan params",
+            self.contributor_scan_params,
+        )] {
             if bytes > limits.max_buffer_size {
                 return Err(ResidentGpuError::BindingLimitExceeded {
                     resource,
@@ -261,9 +243,7 @@ pub(crate) struct PreprojectedGpuCompute {
     project_pipeline: wgpu::ComputePipeline,
     project_bind_group: wgpu::BindGroup,
     key_id_compactor: PreprojectKeyIdCompactor,
-    candidate_offsets: wgpu::Buffer,
-    candidate_count_offset: u64,
-    candidate_scan: GpuPrefixScan,
+    candidate_count: wgpu::Buffer,
     contributor_offsets: wgpu::Buffer,
     contributor_count_offset: u64,
     contributor_scan: GpuPrefixScan,
@@ -334,10 +314,10 @@ impl PreprojectedGpuCompute {
             byte_plan.source_axes,
             wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
         );
-        let candidate_offsets = storage_buffer(
+        let candidate_count = storage_buffer(
             device,
-            "gsplat-preproject-candidate-offsets",
-            byte_plan.candidate_group_offsets,
+            "gsplat-preproject-candidate-count",
+            byte_plan.candidate_count,
             wgpu::BufferUsages::STORAGE
                 | wgpu::BufferUsages::COPY_DST
                 | wgpu::BufferUsages::COPY_SRC,
@@ -396,7 +376,7 @@ impl PreprojectedGpuCompute {
                 entry(4, &source_center_alpha_key),
                 entry(5, &source_axes),
                 entry(6, &contributor_offsets),
-                entry(7, &candidate_offsets),
+                entry(7, &candidate_count),
             ],
         });
         let key_id_compactor = PreprojectKeyIdCompactor::new(
@@ -412,8 +392,6 @@ impl PreprojectedGpuCompute {
             .div_ceil(PREPROJECT_WORKGROUP_SIZE)
             .checked_add(1)
             .ok_or(ResidentGpuError::AddressSpaceExceeded)?;
-        let candidate_scan =
-            GpuPrefixScan::new(device, &candidate_offsets, offset_count, dispatch_limit)?;
         let contributor_scan =
             GpuPrefixScan::new(device, &contributor_offsets, offset_count, dispatch_limit)?;
         let count_offset = u64::from(offset_count - 1) * WORD_BYTES;
@@ -424,9 +402,7 @@ impl PreprojectedGpuCompute {
             project_pipeline,
             project_bind_group,
             key_id_compactor,
-            candidate_offsets,
-            candidate_count_offset: count_offset,
-            candidate_scan,
+            candidate_count,
             contributor_offsets,
             contributor_count_offset: count_offset,
             contributor_scan,
@@ -476,9 +452,10 @@ impl PreprojectedGpuCompute {
         params.source_position_stride_words = 4;
         queue.write_buffer(&resident.draw_params_buffer, 0, bytemuck::bytes_of(&params));
 
-        // Clear both complete fixed-capacity count/offset planes, sentinels
-        // included. Their exclusive-scan sentinels are current full-S V/C.
-        encoder.clear_buffer(&self.candidate_offsets, 0, None);
+        // Candidate V needs only one exact scalar, accumulated once per
+        // workgroup. Contributor C still needs the complete offset plane for
+        // stable source-order compaction, including its scan sentinel.
+        encoder.clear_buffer(&self.candidate_count, 0, None);
         encoder.clear_buffer(&self.contributor_offsets, 0, None);
         if self.capacity > 0 {
             encode_compute(
@@ -490,7 +467,6 @@ impl PreprojectedGpuCompute {
                 "gsplat-preproject-project-pass",
             );
         }
-        self.candidate_scan.encode(encoder);
         self.contributor_scan.encode(encoder);
     }
 
@@ -526,10 +502,10 @@ impl PreprojectedGpuCompute {
         self.radix.control()
     }
 
-    /// Current-camera complete-S near/far/alpha candidate count V produced by
-    /// the sentinel element of the candidate group-count exclusive scan.
+    /// Current-camera complete-S near/far/alpha candidate count V accumulated
+    /// exactly once per projection workgroup.
     pub(crate) fn candidate_count_buffer_and_offset(&self) -> (&wgpu::Buffer, u64) {
-        (&self.candidate_offsets, self.candidate_count_offset)
+        (&self.candidate_count, 0)
     }
 
     /// Current-camera complete-S contributor count produced by the sentinel
@@ -1131,7 +1107,7 @@ mod tests {
         let offset_count = capacity.div_ceil(PREPROJECT_WORKGROUP_SIZE) + 1;
         assert_eq!(plan.source_center_alpha_key, 16 * u64::from(capacity));
         assert_eq!(plan.source_axes, 16 * u64::from(capacity));
-        assert_eq!(plan.candidate_group_offsets, 4 * u64::from(offset_count));
+        assert_eq!(plan.candidate_count, 4);
         assert_eq!(plan.contributor_group_offsets, 4 * u64::from(offset_count));
         assert_eq!(
             plan.radix.radix_prefix,
@@ -1143,15 +1119,27 @@ mod tests {
             plan.total_static,
             plan.source_center_alpha_key
                 + plan.source_axes
-                + plan.candidate_group_offsets
-                + plan.candidate_scan_sums
-                + plan.candidate_scan_params
+                + plan.candidate_count
                 + plan.contributor_group_offsets
                 + plan.contributor_scan_sums
                 + plan.contributor_scan_params
                 + plan.radix.total_static
                 + plan.draw_args
         );
+    }
+
+    #[test]
+    fn both_preproject_shaders_accumulate_exact_v_once_per_workgroup() {
+        for source in [
+            include_str!("../shaders/preproject_contributors.wgsl"),
+            include_str!("../shaders/preproject_contributors_axes16.wgsl"),
+        ] {
+            assert!(source.contains("candidate_total: array<atomic<u32>, 1>"));
+            assert!(
+                source.contains("atomicAdd(&candidate_total[0], atomicLoad(&candidate_count))")
+            );
+            assert!(!source.contains("candidate_group_counts"));
+        }
     }
 
     #[cfg(feature = "diagnostic-surface-projected-axes16")]
@@ -1472,6 +1460,7 @@ mod tests {
 
         upload_source_planes(&queue, &resident, &full, &covariance0, &covariance1);
         let first = run_and_read(&device, &queue, &resident, &producer, &camera);
+        assert_eq!(first.candidate_count, capacity as u32);
         assert_eq!(first.control.count, capacity as u32);
         let first_pairs = first
             .keys
@@ -1482,6 +1471,7 @@ mod tests {
 
         upload_source_planes(&queue, &resident, &zero, &covariance0, &covariance1);
         let empty = run_and_read(&device, &queue, &resident, &producer, &camera);
+        assert_eq!(empty.candidate_count, 0);
         assert_eq!(empty.control.count, 0);
         assert_eq!(empty.control.active_group_count, 0);
         assert_eq!(empty.control.dispatch_x, 0);
@@ -1491,6 +1481,7 @@ mod tests {
 
         upload_source_planes(&queue, &resident, &full, &covariance0, &covariance1);
         let second = run_and_read(&device, &queue, &resident, &producer, &camera);
+        assert_eq!(second.candidate_count, capacity as u32);
         assert_eq!(second.control.count, capacity as u32);
         assert_eq!(
             second
@@ -1515,6 +1506,7 @@ mod tests {
             .collect::<Vec<_>>();
         upload_source_planes(&queue, &resident, &all_equal, &covariance0, &covariance1);
         let equal = run_and_read(&device, &queue, &resident, &producer, &camera);
+        assert_eq!(equal.candidate_count, capacity as u32);
         assert_eq!(equal.control.count, capacity as u32);
         assert_eq!(equal.ids, (0..capacity as u32).collect::<Vec<_>>());
     }

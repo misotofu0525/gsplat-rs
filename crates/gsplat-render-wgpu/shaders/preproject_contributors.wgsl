@@ -72,7 +72,7 @@ var<storage, read_write> projected_axes: array<vec4<f32>>;
 @group(0) @binding(6)
 var<storage, read_write> contributor_group_counts: array<atomic<u32>>;
 @group(0) @binding(7)
-var<storage, read_write> candidate_group_counts: array<atomic<u32>>;
+var<storage, read_write> candidate_total: array<atomic<u32>, 1>;
 
 @group(1) @binding(0)
 var<storage, read> compact_center_alpha_key: array<vec4<f32>>;
@@ -350,10 +350,9 @@ fn project_count(
   }
   workgroupBarrier();
   if (lane == 0u) {
-    atomicStore(
-      &candidate_group_counts[group],
-      atomicLoad(&candidate_count),
-    );
+    // V has no downstream per-group offset consumer. One atomic per source
+    // workgroup preserves its exact sum without a second prefix-scan graph.
+    atomicAdd(&candidate_total[0], atomicLoad(&candidate_count));
     atomicStore(
       &contributor_group_counts[group],
       atomicLoad(&contributor_count),
