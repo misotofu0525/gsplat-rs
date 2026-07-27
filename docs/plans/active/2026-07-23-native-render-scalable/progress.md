@@ -267,6 +267,28 @@ change a renderer/default/FFI/public product API, create S2 streaming or cache
 machinery, or qualify proxy image quality. **S1 remains Active** and S2--S5
 remain locked.
 
+## S1B/S1C endpoint-collector checkpoint
+
+The root branch now contains reviewed collectors for the frozen materialized
+cuts on Apple M4 and physical A065. Both reuse the repository's existing
+benchmark and shared-validator entrypoints, require fresh immutable output,
+and stop after the first failed prerequisite or run without retrying.
+
+The A065 collector is deliberately limited to twelve independent static
+observations: CPU/GPU ordering across the three frozen cuts at authored camera
+views `0` and `1`. Android `PixelCopy` images are retained only as diagnostic
+screenshots; they are not joined to a renderer-owned same-present identity and
+cannot publish an image-gate pass or `EndpointPassed`. The former attempt to
+assemble a moving `0 -> 1 -> 0` result from separate Activity processes was
+removed. Missing or malformed evidence after launch is `Rejected`, and both
+pre-run and post-run thermal status must be zero.
+
+This checkpoint accepts only the collector mechanisms and their local tests.
+No physical A065 run was performed during integration. Same-session moving
+replacement, renderer-owned same-present image evidence, the M4/A065 formal
+artifacts, and aggregate S1 acceptance remain **Deferred**. S2--S5 therefore
+remain locked.
+
 ## Ordered implementation ledger
 
 | Task | State in this candidate | Independent result |
