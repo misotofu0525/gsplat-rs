@@ -67,6 +67,37 @@ class Q3M4SimdCollectorTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "already exists"):
                 COLLECTOR.require_fresh_output(output)
 
+    def test_git_receipt_hashes_the_exact_status_bytes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            import subprocess
+
+            subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+            subprocess.run(
+                ["git", "config", "user.email", "q3@example.invalid"],
+                cwd=root,
+                check=True,
+            )
+            subprocess.run(
+                ["git", "config", "user.name", "Q3 Test"], cwd=root, check=True
+            )
+            tracked = root / "tracked.txt"
+            tracked.write_text("fixed\n", encoding="utf-8")
+            subprocess.run(["git", "add", "tracked.txt"], cwd=root, check=True)
+            subprocess.run(["git", "commit", "-qm", "fixture"], cwd=root, check=True)
+
+            clean = COLLECTOR.git_receipt(root)
+            self.assertFalse(clean["dirty"])
+            self.assertEqual(clean["status_porcelain_sha256"], "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")
+
+            tracked.write_text("changed\n", encoding="utf-8")
+            dirty = COLLECTOR.git_receipt(root)
+            self.assertTrue(dirty["dirty"])
+            self.assertEqual(dirty["commit"], clean["commit"])
+            self.assertNotEqual(
+                dirty["status_porcelain_sha256"], clean["status_porcelain_sha256"]
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

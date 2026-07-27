@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import platform
@@ -21,6 +22,27 @@ DECISIONS = {"Accepted", "Rejected", "Deferred"}
 
 def repository_root() -> Path:
     return Path(__file__).resolve().parents[2]
+
+
+def git_receipt(root: Path) -> dict[str, Any]:
+    commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=root,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    status = subprocess.run(
+        ["git", "status", "--porcelain=v1", "-z", "--untracked-files=all"],
+        cwd=root,
+        check=True,
+        capture_output=True,
+    ).stdout
+    return {
+        "commit": commit,
+        "dirty": bool(status),
+        "status_porcelain_sha256": hashlib.sha256(status).hexdigest(),
+    }
 
 
 def apple_cpu_brand() -> str:
@@ -80,6 +102,14 @@ def collect(root: Path, brand: str) -> tuple[dict[str, Any], int]:
     if reason is not None:
         return terminal_cell("Deferred", reason, brand=brand), 0
 
+    build = git_receipt(root)
+    if build["dirty"]:
+        cell = terminal_cell(
+            "Deferred", "requires_clean_exact_commit_for_correctness", brand=brand
+        )
+        cell["build"] = build
+        return cell, 0
+
     with tempfile.TemporaryDirectory(prefix="gsplat-q3-m4-simd-") as temp_dir:
         receipt_path = Path(temp_dir) / "cell.json"
         environment = os.environ.copy()
@@ -128,6 +158,7 @@ def collect(root: Path, brand: str) -> tuple[dict[str, Any], int]:
             "machine": platform.machine(),
             "cpu_brand": brand,
         }
+        receipt["build"] = build
         receipt["evidence_scope"] = "microbenchmark_only"
         if result.returncode != 0 and receipt["decision"] != "Rejected":
             receipt["decision"] = "Rejected"

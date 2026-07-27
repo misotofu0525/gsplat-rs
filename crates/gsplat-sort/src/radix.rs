@@ -18,7 +18,13 @@ const MAX_PARALLEL_CHUNKS: usize = 4;
 #[cfg(not(target_arch = "wasm32"))]
 const PARALLEL_SORT_THRESHOLD: usize = 256 * 1024;
 pub const RADIX_PARALLEL_COUNT_SLOTS: usize = MAX_PARALLEL_CHUNKS * RADIX_SORT_BUCKETS;
-#[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
+#[cfg(any(
+    target_arch = "x86_64",
+    all(
+        target_arch = "aarch64",
+        any(test, not(feature = "qualification-q3-cpu-scalar"))
+    )
+))]
 const HIST_LANES: usize = 4;
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -210,7 +216,7 @@ fn count_radix_digits(input: &[u64], shift: usize, counts: &mut [usize]) {
     debug_assert_eq!(counts.len(), RADIX_SORT_BUCKETS);
     debug_assert!(shift < 64 && shift.is_multiple_of(RADIX_SORT_BITS));
 
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(all(target_arch = "aarch64", not(feature = "qualification-q3-cpu-scalar")))]
     {
         // SAFETY: AArch64 guarantees Neon; slices are length-validated by callers.
         unsafe {
@@ -230,7 +236,10 @@ fn count_radix_digits(input: &[u64], shift: usize, counts: &mut [usize]) {
         }
     }
 
-    #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
+    #[cfg(any(
+        all(target_arch = "aarch64", feature = "qualification-q3-cpu-scalar"),
+        not(any(target_arch = "aarch64", target_arch = "x86_64"))
+    ))]
     {
         count_histograms_scalar(input, shift, counts);
     }
@@ -246,7 +255,13 @@ fn count_histograms_scalar(input: &[u64], shift: usize, counts: &mut [usize]) {
     }
 }
 
-#[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
+#[cfg(any(
+    target_arch = "x86_64",
+    all(
+        target_arch = "aarch64",
+        any(test, not(feature = "qualification-q3-cpu-scalar"))
+    )
+))]
 fn merge_histograms(hist: &[[u32; RADIX_SORT_BUCKETS]; HIST_LANES], counts: &mut [usize]) {
     for digit in 0..RADIX_SORT_BUCKETS {
         let mut sum = 0_usize;
@@ -350,7 +365,10 @@ pub(crate) fn radix_sort_desc_u64_key_bits_neon_for_test(
     );
 }
 
-#[cfg(target_arch = "aarch64")]
+#[cfg(all(
+    target_arch = "aarch64",
+    any(test, not(feature = "qualification-q3-cpu-scalar"))
+))]
 #[allow(unsafe_op_in_unsafe_fn)]
 #[target_feature(enable = "neon")]
 unsafe fn count_histograms_neon(input: &[u64], shift: usize, counts: &mut [usize]) {

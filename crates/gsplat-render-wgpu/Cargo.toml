@@ -19,6 +19,8 @@ diagnostic-surface-depth-key-candidate24 = []
 diagnostic-surface-depth-key-candidate20 = []
 diagnostic-surface-projected-axes16 = []
 diagnostic-resident-sh-mantissa8 = []
+qualification-q3-cpu-scalar = ["gsplat-sort/qualification-q3-cpu-scalar"]
+qualification-q3-cpu-neon = ["gsplat-sort/qualification-q3-cpu-neon"]
 
 [dependencies]
 gsplat-core = { path = "../gsplat-core", version = "0.1.3" }

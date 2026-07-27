@@ -33,6 +33,14 @@ diagnostic-resident-sh-mantissa8 = [
     "diagnostic-surface-capture-receipt",
     "gsplat-render-wgpu/diagnostic-resident-sh-mantissa8",
 ]
+qualification-q3-cpu-scalar = [
+    "interactive-viewer",
+    "gsplat-render-wgpu/qualification-q3-cpu-scalar",
+]
+qualification-q3-cpu-neon = [
+    "interactive-viewer",
+    "gsplat-render-wgpu/qualification-q3-cpu-neon",
+]
 
 [dependencies]
 gsplat-core = { path = "../../crates/gsplat-core", version = "0.1.3" }

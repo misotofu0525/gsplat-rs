@@ -196,7 +196,7 @@ fn unpack_pairs(packed: &[u64], keys: &mut [u32], values: &mut [u32]) {
 fn unpack_values(packed: &[u64], values: &mut [u32]) {
     debug_assert_eq!(packed.len(), values.len());
 
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(all(target_arch = "aarch64", not(feature = "qualification-q3-cpu-scalar")))]
     {
         // SAFETY: AArch64 guarantees Neon availability and slices are length-validated above.
         unsafe {
@@ -204,11 +204,15 @@ fn unpack_values(packed: &[u64], values: &mut [u32]) {
         }
     }
 
-    #[cfg(not(target_arch = "aarch64"))]
+    #[cfg(any(not(target_arch = "aarch64"), feature = "qualification-q3-cpu-scalar"))]
     unpack_values_scalar(packed, values);
 }
 
-#[cfg(any(not(target_arch = "aarch64"), test))]
+#[cfg(any(
+    not(target_arch = "aarch64"),
+    test,
+    feature = "qualification-q3-cpu-scalar"
+))]
 fn unpack_values_scalar(packed: &[u64], values: &mut [u32]) {
     debug_assert_eq!(packed.len(), values.len());
     for i in 0..packed.len() {
@@ -322,7 +326,10 @@ unsafe fn unpack_pairs_neon(packed: &[u64], keys: &mut [u32], values: &mut [u32]
     }
 }
 
-#[cfg(target_arch = "aarch64")]
+#[cfg(all(
+    target_arch = "aarch64",
+    any(test, not(feature = "qualification-q3-cpu-scalar"))
+))]
 #[allow(unsafe_op_in_unsafe_fn)]
 #[target_feature(enable = "neon")]
 unsafe fn unpack_values_neon(packed: &[u64], values: &mut [u32]) {

@@ -1,5 +1,23 @@
 //! Sort backend abstraction for depth ordering.
 
+#[cfg(all(
+    feature = "qualification-q3-cpu-scalar",
+    feature = "qualification-q3-cpu-neon"
+))]
+compile_error!("Q3 CPU qualification must select exactly one Scalar or Neon kernel");
+
+#[cfg(all(feature = "qualification-q3-cpu-neon", not(target_arch = "aarch64")))]
+compile_error!("Q3 Neon qualification requires a native AArch64 target");
+
+#[cfg(all(
+    target_arch = "wasm32",
+    any(
+        feature = "qualification-q3-cpu-scalar",
+        feature = "qualification-q3-cpu-neon"
+    )
+))]
+compile_error!("Q3 CPU qualification selectors are native-only");
+
 mod cpu;
 mod gpu_odd_even;
 mod radix;

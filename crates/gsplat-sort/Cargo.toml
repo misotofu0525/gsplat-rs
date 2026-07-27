@@ -12,6 +12,11 @@ repository.workspace = true
 homepage.workspace = true
 rust-version.workspace = true
 
+[features]
+default = []
+qualification-q3-cpu-scalar = []
+qualification-q3-cpu-neon = []
+
 [dependencies]
 thiserror.workspace = true
 wgpu.workspace = true
