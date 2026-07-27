@@ -396,6 +396,65 @@ the Candidate `D/C` amplification remains unchanged. The next bounded cell is
 therefore the existing fixed-GPU, exact contributor-compaction plan, not more
 tuning of the WASM scalar pass.
 
+## Q1 M4 fixed GPU preproject + Compact checkpoint (2026-07-27)
+
+The next bounded cell freezes two independent choices instead of asking the
+Adaptive controller to learn them inside an 80-frame sample: GPU ordering uses
+the existing preproject producer, and projected drawing uses exact stable
+contributor compaction. Its two-stage collector first proves the actual Whole
+Plan and `V/C/D` in an untimed current-stats control, then runs the same frozen
+configuration with 79 observer-free measured frames and one final
+same-submission current-stats terminal. It does not add a new renderer plan or
+change the product default.
+
+The first formal command at `4038c9b`, retained under
+`target/qualification/q1-webgpu-truck-fixed-gpu-preproject-compact-4038c9b-`
+`attempt-1/`, is terminal **Rejected**. Its browser render and control stages
+completed, but the canonical artifact validator still assumed that every
+terminal-throughput ledger must contain an active Adaptive state and rejected
+the disabled fixed cell. The staging data is preserved for diagnosis only; its
+timing is not promoted after the fact.
+
+The first validator repair at `b9c3f35` was also rejected before any browser
+run. Two independent fixed-SHA reviews demonstrated that a CPU artifact could
+be relabelled by changing only `execution_cell` and its self-reported ledger.
+The accepted correction at `fe03ce7` binds the fixed cell to the renderer
+request/actual tuple, every measured frame's GPU/Compact/preproject/no-fallback
+identity, both warmup/final terminal plans and the final same-submission
+current-stats plan. Label-only, post-sort, Candidate, active-Adaptive,
+projected-state, fallback and final-plan counterexamples now fail closed. Two
+independent reviews accepted that fixed SHA with no P0/P1/P2.
+
+Root then executed exactly one fresh doctor -> command -> run into
+`target/qualification/q1-webgpu-truck-fixed-gpu-preproject-compact-fe03ce7e2fd5/`.
+Build, untimed control and bound throughput all exited successfully; canonical
+benchmark and full-quality validation passed. The artifact preserves all
+2,541,226 Truck SH3 splats at `1920x1080`, both moving trace views, 20 warmup
+and 80 measured frames, with LOD, sampling, dynamic resolution and upscaling
+disabled. Every measured frame reports actual GPU preproject, Compact and no
+GPU fallback. The control mean is `V=1,579,811.5` and
+`C=D=979,533.5`; Compact therefore removes about 600,278 guaranteed
+non-contributor draws per frame for this plan and trace.
+
+The accepted terminal window is `1,667.7 ms`, or `20.84625 ms/frame` and
+`47.9703 FPS`. RAF frame-wall mean is `19.75375 ms`, p95 `21.3 ms`, with 75
+of 80 frames above the configured 16.67 ms budget. Host call mean is only
+`0.385 ms` and is not reported as GPU time. Against the earlier accepted
+Adaptive candidate at `d8cdafd`, terminal N/time improves by `20.59%`
+(`26.2525` to `20.84625 ms/frame`) while execution changes from a 68 CPU / 12
+GPU Candidate mix to fixed GPU preproject + Compact; this is a cell comparison,
+not attribution to one isolated shader instruction.
+
+For internal diagnosis only, the single unpaired PlayCanvas prerequisite's
+terminal mean is `18.7625 ms`, so the remaining observed terminal ratio is
+about `1.111x`, rather than the rejected serialized sample's apparent `3.8x`
+or the Adaptive candidate's `1.40x`. This is not yet a competitor result:
+the two runs are unpaired, their terminal proof primitives differ, adapter and
+driver identities remain unavailable, and no common same-camera pixel gate has
+been admitted. Q1 remains Active pending the predeclared paired/fairness work
+and native M4 endpoint; the fixed cell is nevertheless Accepted as the current
+WebGPU mechanism candidate.
+
 ## Q3 M4 SIMD microbenchmark checkpoint (2026-07-27)
 
 At clean root commit `f025dff`, the fixed
