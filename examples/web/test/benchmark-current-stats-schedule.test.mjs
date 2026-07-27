@@ -146,8 +146,8 @@ test("final drain forbids new draws and times out without retry", () => {
 
   assert.equal(schedule.action, "drain");
   assert.throws(() => schedule.noteDraw(3), /forbids draw while drain/);
-  assert.doesNotThrow(() => schedule.noteEmptyPoll(11.9));
-  assert.throws(() => schedule.noteEmptyPoll(12.25), /final drain timed out/);
+  assert.doesNotThrow(() => schedule.noteEmptyPoll(11.24));
+  assert.throws(() => schedule.noteEmptyPoll(11.25), /ticket=51 timed out/);
 
   terminate(schedule, 51, 13);
   terminate(schedule, 52, 14);
@@ -189,12 +189,18 @@ test("isolated control retains one logical trace step across deferred observer p
   schedule.noteDraw(1);
   const traceStep = { frame: 0 };
   schedule.beginRequest({ nowMs: 1, traceStep });
-  schedule.recordDeferredPresentation({
+  const firstDeferred = schedule.recordDeferredPresentation({
     submission: "not_requested",
     ticket: null,
     cameraRevision: 7,
     traceStep,
     observedAtMonotonicMs: 1.25,
+  });
+  schedule.recordAuxiliaryFormal({
+    deferredPresentation: firstDeferred,
+    ticket: 900,
+    backend: "cpu",
+    submittedAtMonotonicMs: 1.5,
   });
   assert.equal(schedule.nextSubmissionIndex, 0);
   assert.equal(schedule.requestOutstanding, true);
@@ -224,6 +230,10 @@ test("isolated control retains one logical trace step across deferred observer p
   assert.equal(evidence.deferred_presentation_count, 2);
   assert.equal(evidence.peak_deferred_presentations_before_issue, 2);
   assert.equal(evidence.draw_count_at_completion, 3);
+  assert.equal(evidence.deferred_presentations[0].attempt_index, 0);
+  assert.equal(evidence.deferred_presentations[0].auxiliary_formal_ticket, 900);
+  assert.equal(evidence.deferred_presentations[1].attempt_index, 1);
+  assert.equal(evidence.issued_presentations[0].attempt_index, 2);
 });
 
 test("deferred observer presentations fail closed on invalid shape or finite timeout", () => {
@@ -299,6 +309,19 @@ test("deferred observer presentations preserve camera and logical member identit
   );
 });
 
+test("isolated non-final current-stats terminal wait has the same finite deadline", () => {
+  const schedule = createCurrentStatsSchedule({
+    protocol: "isolated_terminal",
+    warmupFrames: 0,
+    measuredFrames: 2,
+    finalDrainTimeoutMs: 10,
+  });
+  issue(schedule, 65, 1);
+  assert.equal(schedule.state, "submitting");
+  assert.doesNotThrow(() => schedule.noteEmptyPoll(11.24));
+  assert.throws(() => schedule.noteEmptyPoll(11.25), /ticket=65 timed out/);
+});
+
 test("schedule admission rejects sustained or isolated labels that overclaim behavior", () => {
   const schedule = createCurrentStatsSchedule({
     protocol: "sustained_window",
@@ -315,6 +338,7 @@ test("schedule admission rejects sustained or isolated labels that overclaim beh
       protocol: "sustained_window",
       frameWallSource: "request_animation_frame_interval",
       expectedLogicalFrameCount: 1,
+      expectedWarmupFrameCount: 0,
     }),
     /labels do not prove sustained_window behavior/,
   );
@@ -324,6 +348,7 @@ test("schedule admission rejects sustained or isolated labels that overclaim beh
       protocol: "sustained_window",
       frameWallSource: "isolated_terminal_progression",
       expectedLogicalFrameCount: 1,
+      expectedWarmupFrameCount: 0,
     }),
     /labels do not prove sustained_window behavior/,
   );
@@ -336,6 +361,7 @@ test("schedule admission rejects sustained or isolated labels that overclaim beh
       protocol: "sustained_window",
       frameWallSource: "request_animation_frame_interval",
       expectedLogicalFrameCount: 1,
+      expectedWarmupFrameCount: 0,
     }),
     /final drain submitted a new draw/,
   );
@@ -348,6 +374,7 @@ test("schedule admission rejects sustained or isolated labels that overclaim beh
       protocol: "sustained_window",
       frameWallSource: "request_animation_frame_interval",
       expectedLogicalFrameCount: 1,
+      expectedWarmupFrameCount: 0,
     }),
     /presentation attempt totals are inconsistent/,
   );
@@ -363,7 +390,37 @@ test("schedule admission rejects sustained or isolated labels that overclaim beh
       protocol: "sustained_window",
       frameWallSource: "request_animation_frame_interval",
       expectedLogicalFrameCount: 1,
+      expectedWarmupFrameCount: 0,
     }),
     /did not end with its issued presentation/,
+  );
+});
+
+test("schedule admission freezes the warmup and measured phase boundary", () => {
+  const schedule = createCurrentStatsSchedule({
+    protocol: "sustained_window",
+    warmupFrames: 1,
+    measuredFrames: 1,
+  });
+  issue(schedule, 81, 1);
+  issue(schedule, 82, 2);
+  terminate(schedule, 81, 3);
+  terminate(schedule, 82, 4);
+  const evidence = schedule.evidence();
+  const tampered = {
+    ...evidence,
+    issued_presentations: evidence.issued_presentations.map((record, index) => (
+      index === 0 ? { ...record, phase: "measured" } : record
+    )),
+  };
+  assert.throws(
+    () => validateCurrentStatsScheduleEvidence({
+      evidence: tampered,
+      protocol: "sustained_window",
+      frameWallSource: "request_animation_frame_interval",
+      expectedLogicalFrameCount: 2,
+      expectedWarmupFrameCount: 1,
+    }),
+    /invalid identity/,
   );
 });

@@ -50,9 +50,17 @@ export function validateCurrentStatsScheduleEvidence({
   protocol,
   frameWallSource,
   expectedLogicalFrameCount,
+  expectedWarmupFrameCount,
 }) {
   const policy = policyFor(protocol);
   positiveInteger(expectedLogicalFrameCount, "expected logical frame count");
+  const expectedWarmup = nonNegativeInteger(
+    expectedWarmupFrameCount,
+    "expected warmup frame count",
+  );
+  if (expectedWarmup > expectedLogicalFrameCount) {
+    throw new Error("expected warmup frame count exceeds the logical frame count");
+  }
   if (!evidence || typeof evidence !== "object" || Array.isArray(evidence)) {
     throw new TypeError("renderer current-stats schedule evidence is required");
   }
@@ -158,14 +166,34 @@ export function validateCurrentStatsScheduleEvidence({
       || (Number.isSafeInteger(record.trace_frame_index)
         && record.trace_frame_index >= 0))
   );
+  const expectedPhase = (logicalIndex) => (
+    logicalIndex === null
+      ? "preflight"
+      : logicalIndex < expectedWarmup ? "warmup" : "measured"
+  );
   const deferredByMember = new Map();
   for (const record of deferredAttempts) {
     const logicalIndex = record.logical_submission_index;
+    const formalFields = [
+      record.auxiliary_formal_ticket,
+      record.auxiliary_formal_backend,
+      record.auxiliary_formal_submitted_at_monotonic_ms,
+    ];
+    const hasNoFormal = formalFields.every((value) => value === null);
+    const hasValidFormal = protocol === "isolated_terminal"
+      && Number.isSafeInteger(record.auxiliary_formal_ticket)
+      && record.auxiliary_formal_ticket > 0
+      && ["cpu", "gpu"].includes(record.auxiliary_formal_backend)
+      && Number.isFinite(record.auxiliary_formal_submitted_at_monotonic_ms)
+      && record.auxiliary_formal_submitted_at_monotonic_ms
+        >= record.observed_at_monotonic_ms;
     if (!Number.isSafeInteger(record.attempt_index) || record.attempt_index < 0
         || !Number.isSafeInteger(record.camera_revision) || record.camera_revision < 0
         || !Number.isFinite(record.observed_at_monotonic_ms)
         || record.observed_at_monotonic_ms < 0
         || !validAttemptIdentity(record, logicalIndex)
+        || record.phase !== expectedPhase(logicalIndex)
+        || (!hasNoFormal && !hasValidFormal)
         || (logicalIndex !== null
           && (!Number.isSafeInteger(logicalIndex) || logicalIndex < 0
             || logicalIndex >= expectedLogicalFrameCount))) {
@@ -195,6 +223,7 @@ export function validateCurrentStatsScheduleEvidence({
         || !Number.isFinite(record.submitted_at_monotonic_ms)
         || record.submitted_at_monotonic_ms < 0
         || !validAttemptIdentity(record, logicalIndex)
+        || record.phase !== expectedPhase(logicalIndex)
         || issuedTickets.has(record.ticket)
         || (logicalIndex !== null
           && (!Number.isSafeInteger(logicalIndex) || logicalIndex < 0
@@ -263,7 +292,6 @@ export function createCurrentStatsSchedule({
   let lastDrawAtMonotonicMs = null;
   let drawCountAtFinalDrainStart = null;
   let drawCountAtCompletion = null;
-  let finalDrainStartedAtMs = null;
   const issuedTickets = new Set();
   const terminalTickets = new Set();
   const pendingByTicket = new Map();
@@ -443,9 +471,40 @@ export function createCurrentStatsSchedule({
         camera_revision: cameraRevision,
         trace_frame_index: traceFrameIndex(traceStep),
         observed_at_monotonic_ms: observedAtMonotonicMs,
+        auxiliary_formal_ticket: null,
+        auxiliary_formal_backend: null,
+        auxiliary_formal_submitted_at_monotonic_ms: null,
       };
       deferredPresentationRecords.push(record);
       return record;
+    },
+
+    recordAuxiliaryFormal({
+      deferredPresentation,
+      ticket,
+      backend,
+      submittedAtMonotonicMs,
+    }) {
+      finiteMonotonicMs(
+        submittedAtMonotonicMs,
+        "auxiliary formal submit timestamp",
+      );
+      if (protocol !== "isolated_terminal"
+          || request === null
+          || deferredPresentation !== deferredPresentationRecords.at(-1)
+          || deferredPresentation.phase !== request.phase
+          || deferredPresentation.logical_submission_index
+            !== request.logicalSubmissionIndex
+          || deferredPresentation.auxiliary_formal_ticket !== null
+          || !Number.isSafeInteger(ticket) || ticket <= 0
+          || !["cpu", "gpu"].includes(backend)
+          || submittedAtMonotonicMs < deferredPresentation.observed_at_monotonic_ms) {
+        throw new Error("deferred current-stats attempt has invalid auxiliary formal identity");
+      }
+      deferredPresentation.auxiliary_formal_ticket = ticket;
+      deferredPresentation.auxiliary_formal_backend = backend;
+      deferredPresentation.auxiliary_formal_submitted_at_monotonic_ms =
+        submittedAtMonotonicMs;
     },
 
     recordIssued({ ticket, stats, submittedAtMonotonicMs }) {
@@ -499,7 +558,6 @@ export function createCurrentStatsSchedule({
         submittedLogicalCount += 1;
         if (submittedLogicalCount === expectedLogicalFrameCount) {
           scheduleState = "draining";
-          finalDrainStartedAtMs = submittedAtMonotonicMs;
           drawCountAtFinalDrainStart = drawCount;
         }
       }
@@ -557,12 +615,13 @@ export function createCurrentStatsSchedule({
 
     noteEmptyPoll(nowMs) {
       finiteMonotonicMs(nowMs, "current-stats poll timestamp");
-      if (scheduleState === "draining"
-          && pendingByTicket.size > 0
-          && nowMs - finalDrainStartedAtMs >= drainTimeout) {
+      const expired = [...pendingByTicket.values()].find(
+        (pending) => nowMs - pending.submittedAtMonotonicMs >= drainTimeout,
+      );
+      if (expired) {
         throw new Error(
-          `renderer current-stats final drain timed out after ${drainTimeout}ms ` +
-          `with ${pendingByTicket.size} pending ticket(s)`,
+          `renderer current-stats terminal ticket=${expired.ticket} timed out after ` +
+          `${drainTimeout}ms while ${scheduleState}`,
         );
       }
     },
@@ -599,6 +658,7 @@ export function createCurrentStatsSchedule({
         protocol,
         frameWallSource: policy.frameWallSource,
         expectedLogicalFrameCount,
+        expectedWarmupFrameCount: warmup,
       });
     },
   };

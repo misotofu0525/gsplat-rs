@@ -312,6 +312,19 @@ checks pass locally. A new endpoint run remains forbidden until this follow-up
 has its own fixed-SHA acceptance; the two prior failed output roots remain
 immutable Rejected evidence.
 
+The next two fixed-SHA reviews of `7a17b80` found four final admission gaps,
+again before browser execution: auxiliary terminal joins omitted their
+attempt/trace/deferred-time fields; deleting both auxiliary terminal arrays
+could hide an actual formal ticket; the validator did not freeze the exact
+20-warmup/80-measured phase boundary; and an isolated non-final current-stats
+terminal depended on the outer collector timeout. The follow-up records the
+auxiliary ticket/backend/submit time on its originating deferred attempt,
+requires the full attempt -> submission -> terminal identity, validates each
+logical index against the configured warmup boundary, and applies the same
+finite per-ticket deadline in submitting and draining states. Focused negative
+tests reproduce all four review counterexamples. No browser result is claimed
+until this newer exact SHA is accepted.
+
 ## Q3 M4 SIMD microbenchmark checkpoint (2026-07-27)
 
 At clean root commit `f025dff`, the fixed

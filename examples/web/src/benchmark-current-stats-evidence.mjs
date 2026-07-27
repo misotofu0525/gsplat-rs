@@ -154,7 +154,10 @@ export function validateAuxiliaryCurrentStatsFormalLedger({
     "deferred current-stats presentation count",
   );
   safeNonNegativeInteger(expectedLogicalFrameCount, "expected logical frame count");
-  if (submissions.length > deferredPresentationCount
+  const formalDeferredPresentations = deferredPresentations.filter(
+    (record) => record.auxiliary_formal_ticket !== null,
+  );
+  if (submissions.length !== formalDeferredPresentations.length
       || submissions.length !== terminals.length) {
     throw new Error("auxiliary formal ledger disagrees with deferred control presentations");
   }
@@ -187,6 +190,10 @@ export function validateAuxiliaryCurrentStatsFormalLedger({
         || !Number.isFinite(record.submitted_at_monotonic_ms)
         || submissionByTicket.has(record.ticket)
         || !attempt
+        || attempt.auxiliary_formal_ticket !== record.ticket
+        || attempt.auxiliary_formal_backend !== record.actual_backend
+        || attempt.auxiliary_formal_submitted_at_monotonic_ms
+          !== record.submitted_at_monotonic_ms
         || attempt.camera_revision !== record.camera_revision
         || attempt.trace_frame_index !== record.trace_frame_index
         || attempt.observed_at_monotonic_ms !== record.deferred_at_monotonic_ms
@@ -205,6 +212,10 @@ export function validateAuxiliaryCurrentStatsFormalLedger({
         || terminal.logical_submission_index !== submission.logical_submission_index
         || terminal.camera_revision !== submission.camera_revision
         || terminal.actual_backend !== submission.actual_backend
+        || terminal.attempt_index !== submission.attempt_index
+        || terminal.trace_frame_index !== submission.trace_frame_index
+        || terminal.deferred_at_monotonic_ms
+          !== submission.deferred_at_monotonic_ms
         || terminal.submitted_at_monotonic_ms !== submission.submitted_at_monotonic_ms
         || !Number.isFinite(terminal.terminal_at_monotonic_ms)
         || terminal.terminal_at_monotonic_ms < submission.submitted_at_monotonic_ms) {

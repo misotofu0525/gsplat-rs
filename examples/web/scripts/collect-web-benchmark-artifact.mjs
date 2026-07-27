@@ -729,6 +729,7 @@ function parseArtifacts(consoleLines) {
         protocol: manifest.ordering_window?.completion_protocol,
         frameWallSource: manifest.timing?.frame_wall_source,
         expectedLogicalFrameCount,
+        expectedWarmupFrameCount: benchmarkWindowConfiguration.warmup_frames,
       });
       if (currentStatsScheduleEvidence.issued_count !== statsSubmissions.length
           || currentStatsScheduleEvidence.terminal_count !== statsTerminals.length

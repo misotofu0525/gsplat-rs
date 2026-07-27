@@ -33,6 +33,9 @@ function deferredAttempt(overrides = {}) {
     camera_revision: 5,
     trace_frame_index: 0,
     observed_at_monotonic_ms: 19,
+    auxiliary_formal_ticket: 23,
+    auxiliary_formal_backend: "cpu",
+    auxiliary_formal_submitted_at_monotonic_ms: 20,
     ...overrides,
   };
 }
@@ -236,6 +239,10 @@ test("auxiliary formal ledger rejects missing, failed, stale, and throughput ter
   });
   assert.throws(() => validate({ terminals: [] }), /disagrees/);
   assert.throws(
+    () => validate({ submissions: [], terminals: [] }),
+    /disagrees/,
+  );
+  assert.throws(
     () => validate({ terminals: [{ ...terminal, outcome: "failure", reason: "map" }] }),
     /exact successful submission join/,
   );
@@ -243,6 +250,16 @@ test("auxiliary formal ledger rejects missing, failed, stale, and throughput ter
     () => validate({ terminals: [{ ...terminal, camera_revision: 6 }] }),
     /exact successful submission join/,
   );
+  for (const [field, value] of [
+    ["attempt_index", 99],
+    ["trace_frame_index", 7],
+    ["deferred_at_monotonic_ms", 123],
+  ]) {
+    assert.throws(
+      () => validate({ terminals: [{ ...terminal, [field]: value }] }),
+      /exact successful submission join/,
+    );
+  }
   assert.throws(
     () => validate({ submissions: [{ ...submission, attempt_index: 1 }] }),
     /invalid or duplicate identity/,

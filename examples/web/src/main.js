@@ -4016,6 +4016,17 @@ function trackAuxiliaryCurrentStatsFormalSubmission(
     actual_backend: backend,
     submitted_at_monotonic_ms: performance.now(),
   };
+  try {
+    schedule.recordAuxiliaryFormal({
+      deferredPresentation,
+      ticket,
+      backend,
+      submittedAtMonotonicMs: record.submitted_at_monotonic_ms,
+    });
+  } catch (error) {
+    failStrictBenchmarkForOrderEvidence(compactMessage(error));
+    return false;
+  }
   benchmark.issuedAuxiliaryFormalTickets.set(ticket, record);
   benchmark.auxiliaryFormalSubmissionRecords.push(record);
   console.info(`CURRENT_STATS_AUXILIARY_FORMAL_SUBMISSION_JSON ${JSON.stringify(record)}`);
