@@ -1187,7 +1187,12 @@ def validate_frames(
                 fail(f"{presentation_context}.ticket must be strictly increasing")
             previous_tickets[lane] = ticket
             generations = {
-                key: require_int(presentation, key, presentation_context, positive=True)
+                key: require_int(
+                    presentation,
+                    key,
+                    presentation_context,
+                    positive=key != "viewport_generation",
+                )
                 for key in LIFECYCLE_GENERATIONS
             }
             generation_receipts[lane] = generations

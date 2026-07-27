@@ -767,3 +767,26 @@ No real window, browser, Android/device run, formal artifact, image-gate
 decision, performance result or endpoint qualification was created by this
 integration. B1, B2 and B3 therefore remain **Active** pending separately
 authorized root-owned endpoint evidence.
+
+## B1 initial viewport-generation validator repair
+
+The authorized macOS/Metal B1 one-shot at baseline
+`577d5c471644bd234fc9208dc44b44a6c4eb251f` terminated in the retained
+`target/benchmarks/balanced/b1-macos-metal-577d5c4.failed-25020-1c67c83a/`
+directory because the outer Balanced validator required every presentation
+generation to be positive. This contradicted the renderer/collector contract:
+an initial `viewport_generation` of zero is valid, while the other lifecycle
+generations remain positive.
+
+The validator now admits only a non-negative integer for
+`viewport_generation`; it retains the positive requirements for scene, camera,
+contract, plan, order and presentation identities and retains exact
+Exact/Candidate, capture/presentation and canonical-artifact joins. The full
+formal fixture with generation zero passes, while negative, cross-lane and
+capture-mismatched viewport generations fail closed. Focused validator tests
+passed: 42 tests.
+
+The retained failed B1 evidence was not deleted or modified. No B1/B2/B3,
+Chrome or ADB collection was rerun, so macOS/Metal B1 acceptance and all other
+device/browser/endpoint qualification remain **Deferred** pending separate
+authorization.

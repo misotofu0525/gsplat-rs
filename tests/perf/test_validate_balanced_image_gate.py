@@ -96,11 +96,12 @@ def attach_precision_receipts(
     source_count: int,
     sh_degree: int,
     camera_revision: int,
+    viewport_generation: int = 1,
 ) -> None:
     identity = {
         "scene_generation": 1,
         "camera_revision": camera_revision,
-        "viewport_generation": 1,
+        "viewport_generation": viewport_generation,
         "contract_generation": 1,
         "plan_set_generation": 1,
         "plan_id": "GpuPostSort",
@@ -193,7 +194,9 @@ def refresh_transition_metrics(root: pathlib.Path, manifest: dict) -> None:
         }
 
 
-def base_manifest(root: pathlib.Path, *, moving: bool = False) -> dict:
+def base_manifest(
+    root: pathlib.Path, *, moving: bool = False, viewport_generation: int = 1
+) -> dict:
     authority, dataset, trace = authority_receipt()
     width = trace["display"]["width"]
     height = trace["display"]["height"]
@@ -224,6 +227,7 @@ def base_manifest(root: pathlib.Path, *, moving: bool = False) -> dict:
             source_count=dataset["splat_count"],
             sh_degree=dataset["sh_degree"],
             camera_revision=capture_index + 1,
+            viewport_generation=viewport_generation,
         )
         attach_precision_receipts(
             candidate,
@@ -233,6 +237,7 @@ def base_manifest(root: pathlib.Path, *, moving: bool = False) -> dict:
             source_count=dataset["splat_count"],
             sh_degree=dataset["sh_degree"],
             camera_revision=capture_index + 1,
+            viewport_generation=viewport_generation,
         )
         frame = {
             "capture_index": capture_index,
@@ -254,7 +259,7 @@ def base_manifest(root: pathlib.Path, *, moving: bool = False) -> dict:
                     "outcome": "presented",
                     "scene_generation": 1,
                     "camera_generation": capture_index + 1,
-                    "viewport_generation": 1,
+                    "viewport_generation": viewport_generation,
                     "contract_generation": 1,
                     "plan_generation": 1,
                     "presentation_generation": capture_index + 1,
@@ -512,8 +517,8 @@ def write_canonical_benchmark_artifact(
     }
 
 
-def formal_manifest(root: pathlib.Path) -> dict:
-    manifest = base_manifest(root)
+def formal_manifest(root: pathlib.Path, *, viewport_generation: int = 1) -> dict:
+    manifest = base_manifest(root, viewport_generation=viewport_generation)
     authority, dataset, trace = authority_receipt(
         "tests/perf/datasets/flowers.json",
         "tests/perf/trace/fixtures/quality/candidate-flowers-quality-1920x1080-v1.json",
@@ -558,6 +563,7 @@ def formal_manifest(root: pathlib.Path) -> dict:
             source_count=dataset["splat_count"],
             sh_degree=dataset["sh_degree"],
             camera_revision=frame["presentation"]["exact"]["camera_generation"],
+            viewport_generation=viewport_generation,
         )
         attach_precision_receipts(
             frame["candidate"],
@@ -569,6 +575,7 @@ def formal_manifest(root: pathlib.Path) -> dict:
             source_count=dataset["splat_count"],
             sh_degree=dataset["sh_degree"],
             camera_revision=frame["presentation"]["candidate"]["camera_generation"],
+            viewport_generation=viewport_generation,
         )
         trace_frame = trace["frames"][frame["trace_frame_index"]]
         pose_intrinsics_sha256 = VALIDATOR.canonical_sha256(
@@ -750,6 +757,50 @@ class BalancedImageGateTests(unittest.TestCase):
             manifest["frames"][0]["presentation"]["candidate"]["plan_generation"] = 2
             with self.assertRaisesRegex(VALIDATOR.ValidationError, "plan_generation must match"):
                 validate_manifest(root, manifest)
+
+    def test_formal_initial_viewport_generation_zero_is_valid(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            result = validate_manifest(root, formal_manifest(root, viewport_generation=0))
+            self.assertEqual(result.evidence_class, "formal_quality")
+            self.assertEqual(result.frame_count, 2)
+
+    def test_viewport_generation_must_remain_non_negative_and_joined(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            baseline = formal_manifest(root, viewport_generation=0)
+
+            negative = copy.deepcopy(baseline)
+            negative["frames"][0]["presentation"]["exact"]["viewport_generation"] = -1
+            with self.assertRaisesRegex(
+                VALIDATOR.ValidationError,
+                "viewport_generation must be a non-negative integer",
+            ):
+                validate_manifest(root, negative)
+
+            cross_lane = copy.deepcopy(baseline)
+            cross_lane["frames"][0]["presentation"]["candidate"][
+                "viewport_generation"
+            ] = 1
+            with self.assertRaisesRegex(
+                VALIDATOR.ValidationError, "viewport_generation must match"
+            ):
+                validate_manifest(root, cross_lane)
+
+            capture_mismatch = copy.deepcopy(baseline)
+            for receipt in (
+                "depth_precision",
+                "projected_cache_precision",
+                "resident_sh",
+            ):
+                capture_mismatch["frames"][0]["candidate"][receipt][
+                    "viewport_generation"
+                ] = 1
+            with self.assertRaisesRegex(
+                VALIDATOR.ValidationError,
+                "capture receipt viewport_generation must match",
+            ):
+                validate_manifest(root, capture_mismatch)
 
     def test_presentation_generation_must_match_even_when_both_lanes_are_monotonic(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
